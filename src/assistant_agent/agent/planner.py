@@ -7,7 +7,6 @@ from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.schemas.tool_ids import (
     IMAGE_GENERATION_TOOL_NAME,
     IMAGE_UNDERSTANDING_TOOL_NAME,
-    MEMORY_RETRIEVAL_TOOL_NAME,
     SHOPPING_SEARCH_CAPABILITY,
     SHOPPING_SEARCH_TOOL_NAME,
     WEB_FETCH_TOOL_NAME,
@@ -19,8 +18,6 @@ class RuleBasedTaskPlanner:
     """Build a TaskPlan from request media and keyword rules."""
 
     url_re = re.compile(r"https?://\S+")
-    memory_keywords = ("上次", "刚才", "之前", "以前", "我喜欢")
-    memory_save_keywords = ("记住", "帮我记", "保存偏好")
     search_keywords = ("找", "搜索", "同款", "相似")
     web_search_keywords = (
         "最新",
@@ -72,15 +69,6 @@ class RuleBasedTaskPlanner:
             return followup
 
         steps: list[TaskStep] = []
-
-        if self._contains(text, self.memory_keywords):
-            self._append_step(
-                steps,
-                action="retrieve_memory",
-                tool_name=MEMORY_RETRIEVAL_TOOL_NAME,
-                required_inputs=["user_id", "session_id", "reference_phrase"],
-                reason="用户引用历史上下文，先检索记忆。",
-            )
 
         if request.image_ids or request.video_ids:
             is_video = bool(request.video_ids)

@@ -11,12 +11,12 @@ import pytest
 from assistant_agent.agent.runtime import AgentGraphRuntime
 from assistant_agent.config import ProviderConfig
 from assistant_agent.gateway.event_mapping import realtime_event_to_frame
-from assistant_agent.memory.store import InMemoryStore
+from assistant_agent.memory.mem0.base import bind_mem0_identity
 from assistant_agent.realtime.event_mapping import map_agent_event_stream
 from assistant_agent.schemas.assistant_decision import NativeToolCall
 from assistant_agent.schemas.events import AgentEvent
 from assistant_agent.schemas.llm_events import LLMEvent, LLMEventAccumulator, LLMToolCallDelta
-from assistant_agent.schemas.memory import MemoryItem, MemoryQuery
+from assistant_agent.schemas.identity import RequestIdentity
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.services.chat_adapter import (
     ChatProviderError,
@@ -103,13 +103,7 @@ def test_package_and_runtime_initialize_offline() -> None:
         "question"
     }
     assert "memory" not in specs
-    assert {
-        specs[name].toolset
-        for name in (
-            "memory_search",
-            "memory_get",
-        )
-    } == {"memory"}
+    assert {"memory_search", "memory_get", "memory_save"}.isdisjoint(specs)
     assert specs["calendar_search"].toolset == "personal.calendar"
     assert specs["calendar_create"].toolset == "personal.calendar"
     assert runtime.chat_adapter.provider == "mock"
@@ -724,7 +718,6 @@ def test_plain_text_run_completes() -> None:
     state = AgentGraphRuntime(
         config=_offline_config(),
         chat_adapter=MockChatAdapter(),
-        memory_store=InMemoryStore(),
         session_store=InMemorySessionStore(),
     ).run_state(
         UserRequest(user_id="user-1", session_id="session-1", text="你好"),
@@ -752,7 +745,6 @@ def test_provider_native_text_is_committed_without_repair_call() -> None:
     state = AgentGraphRuntime(
         config=_offline_config(),
         chat_adapter=adapter,
-        memory_store=InMemoryStore(),
         session_store=InMemorySessionStore(),
     ).run_state(
         UserRequest(user_id="user-1", session_id="session-1", text="我想麦牛奶"),
@@ -782,83 +774,12 @@ def test_truncated_provider_text_is_not_committed_as_complete_answer() -> None:
     state = AgentGraphRuntime(
         config=_offline_config(),
         chat_adapter=adapter,
-        memory_store=InMemoryStore(),
         session_store=InMemorySessionStore(),
     ).run_state(UserRequest(user_id="user-1", session_id="session-1", text="详细回答"))
 
     assert state.response is not None
     assert state.response.message == "抱歉，刚才模型的回答被截断了，请缩短问题或让我分段回答。"
     assert "这是一段未完成的回答" not in state.response.message
-
-
-def test_native_tool_call_loop_completes_with_observation() -> None:
-    memory_store = InMemoryStore()
-    memory_store.save(
-        MemoryItem(
-            memory_id="memory-1",
-            user_id="user-1",
-            memory_type="preference",
-            content={"item": "黑色通勤包"},
-            summary="用户喜欢黑色通勤包。",
-            tags=["daily"],
-            created_at=datetime.now(timezone.utc),
-        )
-    )
-    tool_call = ChatResult(
-        provider="scripted",
-        model="scripted-model",
-        finish_reason="tool_calls",
-        response_text="我先查询一下。",
-        tool_calls=[
-            NativeToolCall(
-                id="call-1",
-                name="memory_search",
-                arguments={"query": "通勤包"},
-                raw={
-                    "id": "call-1",
-                    "type": "function",
-                    "function": {
-                        "name": "memory_search",
-                        "arguments": '{"query":"通勤包"}',
-                    },
-                },
-            )
-        ],
-    )
-    final_answer = ChatResult(
-        provider="scripted",
-        model="scripted-model",
-        finish_reason="stop",
-        response_text="已结合记忆完成推荐。",
-    )
-    runtime = AgentGraphRuntime(
-        config=_offline_config(),
-        chat_adapter=ScriptedChatAdapter([tool_call, final_answer]),
-        memory_store=memory_store,
-        session_store=InMemorySessionStore(),
-    )
-
-    state = runtime.run_state(
-        UserRequest(user_id="user-1", session_id="session-1", text="推荐一个通勤包")
-    )
-
-    assert state.status == "completed"
-    assert [call.tool_name for call in state.tool_calls] == ["memory_search"]
-    assert "黑色通勤包" in str(runtime.chat_adapter.requests[1].messages)
-    assert state.response is not None
-    assert state.response.message == "已结合记忆完成推荐。"
-    assert "我先查询一下" not in state.response.message
-    trace_content = get_default_trace_conversation_store().get(
-        user_id=state.user_id,
-        session_id=state.session_id,
-        trace_id=state.trace_id,
-        include_tool_observations=True,
-    )
-    assert trace_content is not None
-    assert len(trace_content.tool_observations) == 1
-    assert trace_content.tool_observations[0].observation == json.loads(
-        runtime.chat_adapter.requests[1].messages[-1]["content"]
-    )
 
 
 def test_provider_request_fallback_is_captured_without_content_switch() -> None:
@@ -875,7 +796,6 @@ def test_provider_request_fallback_is_captured_without_content_switch() -> None:
     runtime = AgentGraphRuntime(
         config=_offline_config(),
         chat_adapter=adapter,
-        memory_store=InMemoryStore(),
         session_store=InMemorySessionStore(),
     )
 
@@ -960,7 +880,6 @@ def test_real_adapter_uses_langgraph_and_finishes_without_tools_after_budget() -
             langgraph_checkpointer_backend="none",
         ),
         chat_adapter=adapter,
-        memory_store=InMemoryStore(),
         session_store=InMemorySessionStore(),
     )
 
@@ -995,7 +914,6 @@ def test_provider_timeout_returns_terminal_retry_response() -> None:
     state = AgentGraphRuntime(
         config=_offline_config(),
         chat_adapter=ScriptedChatAdapter([timeout]),
-        memory_store=InMemoryStore(),
         session_store=InMemorySessionStore(),
     ).run_state(UserRequest(user_id="user-1", session_id="session-1", text="你好"))
 
@@ -1009,7 +927,6 @@ def test_cancelled_run_terminates_without_final_response() -> None:
     sink = ListEventSink()
     state = AgentGraphRuntime(
         config=_offline_config(),
-        memory_store=InMemoryStore(),
         session_store=InMemorySessionStore(),
     ).run_state(
         UserRequest(user_id="user-1", session_id="session-1", text="你好"),
@@ -1060,7 +977,7 @@ def test_core_event_contract_reaches_gateway_frame() -> None:
     assert frame["payload"]["text"] == "处理完成"
 
 
-def test_session_and_memory_identity_are_isolated() -> None:
+def test_session_and_mem0_identity_are_isolated() -> None:
     sessions = InMemorySessionStore()
     sessions.touch_run(
         user_id="user-1",
@@ -1079,20 +996,22 @@ def test_session_and_memory_identity_are_isolated() -> None:
         status="completed",
     )
 
-    memories = InMemoryStore()
-    memories.save(
-        MemoryItem(
-            memory_id="memory-1",
+    memory_identity_1 = bind_mem0_identity(
+        RequestIdentity.for_user(
             user_id="user-1",
             session_id="shared-session",
-            memory_type="preference",
-            summary="喜欢蓝色",
-            content={"preference": "蓝色"},
-            created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
-        )
+        ),
+        namespace="tests",
+    )
+    memory_identity_2 = bind_mem0_identity(
+        RequestIdentity.for_user(
+            user_id="user-2",
+            session_id="shared-session",
+        ),
+        namespace="tests",
     )
 
     assert sessions.get("user-1", "shared-session").last_run_id == "run-1"
     assert sessions.get("user-2", "shared-session").last_run_id == "run-2"
-    assert memories.search(MemoryQuery(user_id="user-1", query="蓝色")).total == 1
-    assert memories.search(MemoryQuery(user_id="user-2", query="蓝色")).total == 0
+    assert memory_identity_1.user_id != memory_identity_2.user_id
+    assert memory_identity_1.agent_id == memory_identity_2.agent_id

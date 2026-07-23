@@ -5,29 +5,29 @@ from threading import Event, Lock
 
 from assistant_agent.agent.runtime import AgentGraphRuntime
 from assistant_agent.config import ProviderConfig
-from assistant_agent.memory.store import InMemoryStore
-from assistant_agent.schemas.memory_framework import FrameworkTurnCaptureResult
+from assistant_agent.schemas.mem0 import Mem0TurnCaptureResult
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.services.memory_capture_dispatcher import MemoryCaptureDispatcher
 from assistant_agent.services.session_store import InMemorySessionStore
 
 
-class _BlockingCaptureStore(InMemoryStore):
+class _BlockingCaptureStore:
     supports_turn_capture = True
 
     def __init__(self) -> None:
-        super().__init__()
         self.capture_started = Event()
         self.capture_release = Event()
 
-    def capture_turn(self, **kwargs) -> FrameworkTurnCaptureResult:
+    def recall(self, identity, *, top_k=5):
+        return []
+
+    def capture_turn(self, **kwargs) -> Mem0TurnCaptureResult:
         self.capture_started.set()
         if not self.capture_release.wait(2.0):
             raise TimeoutError("test capture was not released")
-        return FrameworkTurnCaptureResult(
+        return Mem0TurnCaptureResult(
             accepted=True,
-            daily_engine_ids=["daily-1"],
-            core_engine_ids=["core-1"],
+            memory_ids=["memory-1"],
         )
 
 
@@ -68,7 +68,7 @@ def test_runtime_returns_final_state_while_turn_capture_is_still_running() -> No
             if event.canonical_event == "memory.capture.finished"
         )
         assert capture.status == "succeeded"
-        assert capture.attributes["execution_phase"] == "post_response_background"
+        assert capture.attributes["memory_count"] == 1
     finally:
         store.capture_release.set()
         runtime.close()

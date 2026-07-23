@@ -1,4 +1,4 @@
-"""Small dependency-free HTTP transport for local framework sidecars."""
+"""Small dependency-free HTTP transport for Mem0."""
 
 from __future__ import annotations
 
@@ -8,18 +8,20 @@ import urllib.request
 from collections.abc import Callable
 from typing import Any
 
-from assistant_agent.memory.framework.base import FrameworkHttpRequest
-from assistant_agent.memory.remote import MemoryServiceOperationError
+from assistant_agent.memory.mem0.base import (
+    Mem0HttpRequest,
+    Mem0OperationError,
+)
 from assistant_agent.services.provider_errors import sanitize_error_message
 
 
-FrameworkTransport = Callable[[FrameworkHttpRequest], Any]
+Mem0Transport = Callable[[Mem0HttpRequest], Any]
 
 
-def urllib_framework_transport(base_url: str) -> FrameworkTransport:
+def urllib_mem0_transport(base_url: str) -> Mem0Transport:
     normalized = base_url.rstrip("/")
 
-    def send(request: FrameworkHttpRequest) -> Any:
+    def send(request: Mem0HttpRequest) -> Any:
         url = normalized + request.path
         if request.query:
             url += "?" + urllib.parse.urlencode(request.query)
@@ -32,9 +34,9 @@ def urllib_framework_transport(base_url: str) -> FrameworkTransport:
             ) as response:
                 payload = json.loads(response.read().decode("utf-8") or "{}")
         except Exception as exc:
-            raise MemoryServiceOperationError(
+            raise Mem0OperationError(
                 request.path,
-                f"memory framework request failed: {sanitize_error_message(str(exc))}",
+                f"Mem0 request failed: {sanitize_error_message(str(exc))}",
             ) from exc
         return payload
 

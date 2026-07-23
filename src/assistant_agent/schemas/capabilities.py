@@ -7,8 +7,6 @@ from pydantic import BaseModel, Field
 from assistant_agent.schemas.tool_ids import (
     IMAGE_GENERATION_TOOL_NAME,
     IMAGE_UNDERSTANDING_TOOL_NAME,
-    MEMORY_RETRIEVAL_TOOL_NAME,
-    MEMORY_SAVE_TOOL_NAME,
     SHOPPING_SEARCH_TOOL_NAME,
     VISUAL_IMAGE_SEARCH_TOOL_NAME,
     WEB_FETCH_TOOL_NAME,
@@ -25,10 +23,8 @@ CapabilityName = Literal[
     "web_fetch",
     "visual_image_search",
     "shopping_search",
-    "memory_retrieval",
     "multi_step_orchestration",
     "ask_followup",
-    "memory_save",
 ]
 
 
@@ -41,8 +37,6 @@ CANONICAL_INTENTS: tuple[CapabilityName, ...] = (
     "web_fetch",
     "visual_image_search",
     "shopping_search",
-    "memory_retrieval",
-    "memory_save",
     "multi_step_orchestration",
     "ask_followup",
 )
@@ -62,8 +56,6 @@ LEGACY_INTENT_ALIASES: dict[str, CapabilityName] = {
     "fetch_web": "web_fetch",
     "read_url": "web_fetch",
     "search_image_by_image": "visual_image_search",
-    "retrieve_memory": "memory_retrieval",
-    "save_memory": "memory_save",
 }
 
 
@@ -146,14 +138,6 @@ CAPABILITY_CONTRACTS: dict[CapabilityName, CapabilityContract] = {
         text_required=False,
         media_optional=True,
     ),
-    "memory_retrieval": CapabilityContract(
-        name="memory_retrieval",
-        input_requirements=["text", "user_id", "session_id"],
-        output_contract="list[MemoryItem]",
-        tool_name=MEMORY_RETRIEVAL_TOOL_NAME,
-        text_required=True,
-        media_optional=False,
-    ),
     "multi_step_orchestration": CapabilityContract(
         name="multi_step_orchestration",
         input_requirements=["text", "optional media"],
@@ -168,13 +152,6 @@ CAPABILITY_CONTRACTS: dict[CapabilityName, CapabilityContract] = {
         output_contract="TaskPlan.followup_question",
         tool_name=None,
         media_optional=True,
-    ),
-    "memory_save": CapabilityContract(
-        name="memory_save",
-        input_requirements=["text or content", "user_id", "session_id", "source_intent for assistant-loop calls"],
-        output_contract="saved MemoryItem or candidate/confirmation/rejection status",
-        tool_name=MEMORY_SAVE_TOOL_NAME,
-        media_optional=False,
     ),
 }
 

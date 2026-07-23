@@ -17,7 +17,6 @@ from assistant_agent.services.prompt_builder import (
 )
 from assistant_agent.schemas.tool_ids import (
     IMAGE_UNDERSTANDING_TOOL_NAME,
-    MEMORY_RETRIEVAL_TOOL_NAME,
     SHOPPING_SEARCH_TOOL_NAME,
 )
 
@@ -53,8 +52,7 @@ def build_image_generation_request(
 
     product = _latest_product(outputs_by_step)
     visual_summary = _latest_visual_summary(outputs_by_step)
-    memory_items = _latest_memory_items(outputs_by_step)
-    memory_context = _memory_summaries(memory_items) or _request_memory_summaries(request)
+    memory_context = _request_memory_summaries(request)
     product_title = (
         product.get("title")
         or product.get("summary")
@@ -107,27 +105,13 @@ def _latest_visual_summary(outputs_by_step: dict[str, ToolResult]) -> str | None
     return None
 
 
-def _latest_memory_items(outputs_by_step: dict[str, ToolResult]) -> list[dict[str, Any]]:
-    for result in reversed(list(outputs_by_step.values())):
-        if result.tool_name == MEMORY_RETRIEVAL_TOOL_NAME and result.data:
-            items = result.data.get("items")
-            if isinstance(items, list):
-                return items
-    return []
-
-
 def _request_memory_summaries(request: UserRequest) -> list[str]:
-    summaries = request.metadata.get("memory_context_summaries")
-    if isinstance(summaries, list):
-        return [summary for summary in summaries if isinstance(summary, str)]
-    context_text = request.metadata.get("memory_context_text")
-    if isinstance(context_text, str) and context_text.strip():
-        return [context_text.strip()]
+    snapshot = request.metadata.get("memory_prompt_snapshot")
+    if isinstance(snapshot, dict):
+        text = snapshot.get("text")
+        if isinstance(text, str) and text.strip():
+            return [text.strip()]
     return []
-
-
-def _memory_summaries(items: list[dict[str, Any]]) -> list[str]:
-    return [item["summary"] for item in items if isinstance(item.get("summary"), str)]
 
 
 def _compact_context(value: dict[str, Any]) -> str | None:

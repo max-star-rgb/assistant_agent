@@ -8,19 +8,15 @@ from typing import Any
 from assistant_agent.agent.runtime import AgentGraphRuntime
 from assistant_agent.config import ProviderConfig
 from assistant_agent.schemas.identity import RequestIdentity
-from assistant_agent.schemas.memory_snapshot import MemoryStorageSnapshot
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.schemas.sessions import SessionCreate, SessionList, SessionRecord
 from assistant_agent.services.assistant_run_service import (
     AssistantRunArtifacts,
     clear_conversation_history,
     clear_user_conversation_history,
-    get_default_conversation_store,
     run_assistant_request,
     runtime_info,
 )
-from assistant_agent.services.memory_audit import MemoryAuditService
-from assistant_agent.services.memory_snapshot import MemorySnapshotService
 from assistant_agent.services.trace_query import TraceQueryService
 
 
@@ -70,26 +66,6 @@ class AssistantRuntimeApp:
     def trace_query(self) -> TraceQueryService:
         return TraceQueryService(self.runtime.trace_store)
 
-    def memory_audit_service(self) -> MemoryAuditService:
-        runtime = self.runtime
-        return MemoryAuditService(runtime.memory_manager, config=runtime.config)
-
-    def memory_snapshot_service(self) -> MemorySnapshotService:
-        runtime = self.runtime
-        conversation_store = get_default_conversation_store(runtime.config)
-        return MemorySnapshotService(
-            memory_manager=runtime.memory_manager,
-            session_store=runtime.session_store,
-            conversation_store=conversation_store,
-            storage=MemoryStorageSnapshot(
-                memory_store=type(runtime.memory_store).__name__,
-                session_store=type(runtime.session_store).__name__,
-                conversation_store=type(conversation_store).__name__,
-                checkpointer=type(runtime.checkpointer).__name__ if runtime.checkpointer is not None else "none",
-            ),
-            config=runtime.config,
-        )
-
     def create_session(
         self,
         session: SessionCreate,
@@ -129,15 +105,12 @@ class AssistantRuntimeApp:
 
     def delete_user_runtime_data(self, user_id: str) -> dict[str, int]:
         runtime = self.runtime
-        memory_items = runtime.memory_manager.list_by_user(user_id)
-        runtime.memory_manager.clear_user(user_id)
         run_history_deleted = runtime.run_history.delete_by_user(user_id) if runtime.run_history is not None else 0
         trace_deleted = runtime.trace_store.delete_by_user(user_id)
         conversation_sessions_deleted = clear_user_conversation_history(user_id, config=runtime.config)
         session_records_deleted = runtime.session_store.delete_by_user(user_id)
         runtime.session_memory_context_store.clear_user(user_id=user_id)
         return {
-            "memory_items": len(memory_items),
             "run_history_records": run_history_deleted,
             "trace_events": trace_deleted,
             "conversation_sessions": conversation_sessions_deleted,

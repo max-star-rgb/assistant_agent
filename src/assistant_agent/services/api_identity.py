@@ -10,7 +10,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from assistant_agent.schemas.identity import DEFAULT_MEMORY_SCOPES, RequestIdentity
+from assistant_agent.schemas.identity import RequestIdentity
 from assistant_agent.services.trial_access import TrialAccessGate, TrialAccessStatus
 
 
@@ -41,7 +41,6 @@ class AuthContext(BaseModel):
     session_id: str | None = None
     tenant_id: str | None = None
     project_id: str | None = None
-    allowed_scopes: list[str] | None = None
 
     @classmethod
     def anonymous(cls) -> "AuthContext":
@@ -186,7 +185,6 @@ def resolve_request_identity(
     source: ApiIdentitySource,
     tenant_id: str | None = None,
     project_id: str | None = None,
-    allowed_scopes: list[str] | None = None,
     auth_context: AuthContext | None = None,
     auth_user_id: str | None = None,
     auth_session_id: str | None = None,
@@ -207,7 +205,6 @@ def resolve_request_identity(
         auth_session_id = auth_context.session_id
         auth_tenant_id = auth_context.tenant_id
         auth_project_id = auth_context.project_id
-        allowed_scopes = auth_context.allowed_scopes or allowed_scopes
     elif auth_user_id:
         auth_context_source = "test"
 
@@ -225,7 +222,6 @@ def resolve_request_identity(
             session_id=trusted_session_id,
             tenant_id=_clean_optional(auth_tenant_id) or _clean_optional(tenant_id),
             project_id=_clean_optional(auth_project_id) or _clean_optional(project_id),
-            allowed_scopes=allowed_scopes or list(DEFAULT_MEMORY_SCOPES),
         )
         return ResolvedRequestIdentity(
             identity=identity,
@@ -245,7 +241,6 @@ def resolve_request_identity(
         session_id=requested_session_id,
         tenant_id=_clean_optional(tenant_id),
         project_id=_clean_optional(project_id),
-        allowed_scopes=allowed_scopes or list(DEFAULT_MEMORY_SCOPES),
     )
     return ResolvedRequestIdentity(
         identity=identity,

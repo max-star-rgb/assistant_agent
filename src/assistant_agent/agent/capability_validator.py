@@ -12,8 +12,6 @@ from assistant_agent.schemas.tool_ids import (
     DIRECT_CHAT_CAPABILITY,
     IMAGE_GENERATION_CAPABILITY,
     IMAGE_UNDERSTANDING_CAPABILITY,
-    MEMORY_RETRIEVAL_CAPABILITY,
-    MEMORY_SAVE_CAPABILITY,
     MULTI_STEP_ORCHESTRATION_CAPABILITY,
     SHOPPING_SEARCH_CAPABILITY,
     VIDEO_UNDERSTANDING_CAPABILITY,
@@ -80,22 +78,6 @@ class CapabilityValidator:
             return [] if self._has_url(request) else ["url"]
         if capability == SHOPPING_SEARCH_CAPABILITY:
             return [] if self._has_search_input(request) else ["search_query"]
-        if capability == MEMORY_RETRIEVAL_CAPABILITY:
-            missing = []
-            if not getattr(request, "user_id", None):
-                missing.append("user_id")
-            if not getattr(request, "session_id", None):
-                missing.append("session_id")
-            return missing
-        if capability == MEMORY_SAVE_CAPABILITY:
-            missing = []
-            if not self._has_query(request):
-                missing.append("content")
-            if not getattr(request, "user_id", None):
-                missing.append("user_id")
-            if not getattr(request, "session_id", None):
-                missing.append("session_id")
-            return missing
         return []
 
     def _ask_followup(self, decision: IntentDecision, missing_inputs: list[str]) -> IntentDecision:

@@ -155,9 +155,6 @@ def context_trace_summary(pack: AssistantContextPack) -> dict[str, Any]:
         "context_sources": pack.context_source_report.model_dump(mode="json"),
         "compactor_type": pack.compactor_type,
         "context_summary_present": pack.context_summary is not None,
-        "memory_promotion_candidates": _metadata_int(pack.request.metadata, "memory_promotion_candidates"),
-        "memory_promotion_written": _metadata_int(pack.request.metadata, "memory_promotion_written"),
-        "memory_tool_selection": _memory_tool_selection_trace(pack.request.metadata),
         "realtime_video": _realtime_video_trace(pack),
     }
 
@@ -215,30 +212,6 @@ def _realtime_video_trace(pack: AssistantContextPack) -> dict[str, Any]:
 
 def _elapsed_ms(started_at: float) -> int:
     return max(0, int((perf_counter() - started_at) * 1000))
-
-
-def _memory_tool_selection_trace(metadata: dict[str, Any]) -> dict[str, Any]:
-    selection = metadata.get("memory_tool_selection")
-    if not isinstance(selection, dict):
-        return {}
-    return {
-        "strategy": selection.get("strategy"),
-        "action": selection.get("action"),
-        "selected_memory_tool": selection.get("selected_memory_tool"),
-        "keyword_signals": selection.get("keyword_signals", []),
-        "missed_signals": selection.get("missed_signals", []),
-        "candidate_mode": selection.get("candidate_mode"),
-        "auto_write": selection.get("auto_write"),
-        "vector_shadow_hit_count": _selection_vector_hit_count(selection),
-    }
-
-
-def _selection_vector_hit_count(selection: dict[str, Any]) -> int:
-    signal = selection.get("vector_shadow_signal")
-    if not isinstance(signal, dict):
-        return 0
-    value = signal.get("hit_count")
-    return value if isinstance(value, int) and value >= 0 else 0
 
 
 def _context_compaction_summary(observations: list[dict[str, Any]]) -> dict[str, int]:

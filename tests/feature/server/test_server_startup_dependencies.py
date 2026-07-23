@@ -28,9 +28,7 @@ def test_startup_dependencies_report_ready_services_and_export_state() -> None:
             provider_mode="real",
             chat_provider="qwen",
             qwen_api_key="test-chat-key",
-            memory_backend="framework",
-            memory_framework="mem0",
-            memory_framework_base_url="http://127.0.0.1:8890",
+            mem0_base_url="http://127.0.0.1:8890",
             search_provider="tavily",
             tavily_api_key="test-tavily-key",
         ),
@@ -42,7 +40,7 @@ def test_startup_dependencies_report_ready_services_and_export_state() -> None:
     )
 
     assert statuses == (
-        StartupDependencyStatus(name="Memo", state="ready", detail="mem0 2.0.11"),
+        StartupDependencyStatus(name="Mem0", state="ready", detail="mem0 2.0.11"),
         StartupDependencyStatus(name="Langfuse", state="ready", detail="export enabled"),
         StartupDependencyStatus(name="Web search", state="ready", detail="tavily"),
     )
@@ -52,7 +50,7 @@ def test_startup_dependencies_report_ready_services_and_export_state() -> None:
     ]
     assert format_startup_dependency_statuses(statuses) == [
         "Dependencies:",
-        "  Memo: ready (mem0 2.0.11)",
+        "  Mem0: ready (mem0 2.0.11)",
         "  Langfuse: ready (export enabled)",
         "  Web search: ready (tavily)",
     ]
@@ -69,7 +67,7 @@ def test_startup_dependencies_are_disabled_when_not_in_use() -> None:
     )
 
     assert statuses == (
-        StartupDependencyStatus(name="Memo", state="disabled"),
+        StartupDependencyStatus(name="Mem0", state="disabled"),
         StartupDependencyStatus(name="Langfuse", state="disabled"),
         StartupDependencyStatus(name="Web search", state="ready", detail="mock"),
     )
@@ -83,7 +81,7 @@ def test_langfuse_can_be_ready_while_export_is_disabled() -> None:
     )
 
     assert statuses == (
-        StartupDependencyStatus(name="Memo", state="disabled"),
+        StartupDependencyStatus(name="Mem0", state="disabled"),
         StartupDependencyStatus(name="Langfuse", state="ready", detail="export disabled"),
         StartupDependencyStatus(name="Web search", state="ready", detail="mock"),
     )
@@ -98,9 +96,7 @@ def test_startup_dependencies_fail_open_when_enabled_services_are_unavailable() 
             provider_mode="real",
             chat_provider="qwen",
             qwen_api_key="test-chat-key",
-            memory_backend="framework",
-            memory_framework="mem0",
-            memory_framework_base_url="http://127.0.0.1:8890",
+            mem0_base_url="http://127.0.0.1:8890",
             search_provider="tavily",
         ),
         env={"ASSISTANT_AGENT_OTEL_EXPORT_ENABLED": "true"},
@@ -108,7 +104,7 @@ def test_startup_dependencies_fail_open_when_enabled_services_are_unavailable() 
     )
 
     assert statuses == (
-        StartupDependencyStatus(name="Memo", state="unavailable"),
+        StartupDependencyStatus(name="Mem0", state="unavailable"),
         StartupDependencyStatus(name="Langfuse", state="unavailable", detail="export enabled"),
         StartupDependencyStatus(name="Web search", state="unavailable", detail="tavily"),
     )
@@ -116,7 +112,7 @@ def test_startup_dependencies_fail_open_when_enabled_services_are_unavailable() 
 
 def test_server_launcher_prints_compact_dependency_summary(monkeypatch, capsys) -> None:
     statuses = (
-        StartupDependencyStatus(name="Memo", state="ready", detail="mem0 2.0.11"),
+        StartupDependencyStatus(name="Mem0", state="ready", detail="mem0 2.0.11"),
         StartupDependencyStatus(name="Langfuse", state="ready", detail="export enabled"),
         StartupDependencyStatus(name="Web search", state="ready", detail="tavily"),
     )
@@ -135,7 +131,7 @@ def test_server_launcher_prints_compact_dependency_summary(monkeypatch, capsys) 
         "Provider mode: mock",
         "Main LLM: mock / default",
         "Dependencies:",
-        "  Memo: ready (mem0 2.0.11)",
+        "  Mem0: ready (mem0 2.0.11)",
         "  Langfuse: ready (export enabled)",
         "  Web search: ready (tavily)",
         "Services:",

@@ -35,10 +35,6 @@ from assistant_agent.services.tool_call_boundary import (
 from assistant_agent.schemas.tool_ids import (
     IMAGE_GENERATION_CAPABILITY,
     IMAGE_GENERATION_TOOL_NAME,
-    MEMORY_RETRIEVAL_CAPABILITY,
-    MEMORY_RETRIEVAL_TOOL_NAME,
-    MEMORY_SAVE_CAPABILITY,
-    MEMORY_SAVE_TOOL_NAME,
 )
 from assistant_agent.services.trace_store import TraceEvent, TraceStore, sanitize_trace_value
 from assistant_agent.services.trace_content_policy import local_trace_content_enabled
@@ -811,11 +807,7 @@ def _capability_name(tool_name: str, step: TaskStep | None) -> str:
         manifest_capability = canonical_capability_for_action(step.action)
         if manifest_capability is not None:
             return manifest_capability
-    tool_map = {
-        IMAGE_GENERATION_TOOL_NAME: IMAGE_GENERATION_CAPABILITY,
-        MEMORY_RETRIEVAL_TOOL_NAME: MEMORY_RETRIEVAL_CAPABILITY,
-        MEMORY_SAVE_TOOL_NAME: MEMORY_SAVE_CAPABILITY,
-    }
+    tool_map = {IMAGE_GENERATION_TOOL_NAME: IMAGE_GENERATION_CAPABILITY}
     manifest_capability = canonical_capability_for_tool(tool_name)
     if manifest_capability is not None:
         return manifest_capability

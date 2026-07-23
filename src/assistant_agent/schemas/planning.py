@@ -13,7 +13,6 @@ IntentName = Literal[
     "web_search",
     "web_fetch",
     "shopping_search",
-    "memory_retrieval",
     "multi_step_orchestration",
     "chat",
     "understand_image",
@@ -22,8 +21,6 @@ IntentName = Literal[
     "fetch_web",
     "read_url",
     "generate_image",
-    "retrieve_memory",
-    "save_memory",
     "multi_tool_task",
     "ask_followup",
 ]

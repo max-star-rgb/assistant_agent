@@ -23,7 +23,6 @@ from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.schemas.tools import (
     RunToolCatalog,
     ToolResult,
-    ToolSpec,
 )
 from assistant_agent.schemas.tool_ids import (
     IMAGE_GENERATION_TOOL_NAME,
@@ -195,29 +194,8 @@ def test_provider_tools_hide_runtime_fields_and_pydantic_titles() -> None:
         for field_name, field_schema in parameters.get("properties", {}).items():
             assert field_schema.get("description"), f"{spec.name}.{field_name}"
 
-    search = tool_spec_to_openai_tool(registry.get_spec("memory_search"))["function"]
-    assert search["parameters"] == {
-        "type": "object",
-        "properties": {
-            "query": {
-                "type": "string",
-                "description": "需要从过往对话记忆中检索的主题、事实或问题。",
-            }
-        },
-        "required": ["query"],
-    }
-
-    get = tool_spec_to_openai_tool(registry.get_spec("memory_get"))["function"]
-    assert get["parameters"] == {
-        "type": "object",
-        "properties": {
-            "memory_id": {
-                "type": "string",
-                "description": "需要读取的完整每日记忆记录 ID。",
-            }
-        },
-        "required": ["memory_id"],
-    }
+    assert "memory_search" not in registry.list()
+    assert "memory_get" not in registry.list()
     assert "memory_save" not in registry.list()
 
     shopping = tool_spec_to_openai_tool(registry.get_spec(SHOPPING_SEARCH_TOOL_NAME))["function"]
@@ -353,27 +331,9 @@ def test_model_cannot_submit_runtime_owned_tool_fields() -> None:
     assert result.code == "runtime_owned_tool_input"
 
 
-def test_memory_tools_expose_read_only_contracts() -> None:
+def test_memory_is_runtime_lifecycle_not_a_default_tool() -> None:
     registry = create_default_registry()
-    request = UserRequest(user_id="user-1", session_id="session-1", text="查一下昨天的记录")
-    state = AgentState.from_request(request)
-    state.run_tool_catalog = RunToolCatalog(available_tool_names=["memory_search"])
-    tool_input = {"query": "昨天喝了什么"}
-    validation = ActionValidator().validate(
-        decision=AssistantDecision(
-            type="tool_call",
-            tool_name="memory_search",
-            tool_input=tool_input,
-        ),
-        registry=registry,
-        request=request,
-        state=state,
-    )
-
-    assert validation.accepted is True
-    assert registry.get_spec("memory_search").category == "read"
-    assert registry.get_spec("memory_get").category == "read"
-    assert "memory_save" not in registry.list()
+    assert {"memory_search", "memory_get", "memory_save"}.isdisjoint(registry.list())
 
 
 def test_mcp_tool_spec_preserves_canonical_json_schema() -> None:

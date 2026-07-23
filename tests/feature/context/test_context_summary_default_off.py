@@ -2,7 +2,6 @@
 
 from assistant_agent.agent.runtime import AgentGraphRuntime
 from assistant_agent.config import ProviderConfig
-from assistant_agent.memory.store import InMemoryStore
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.services.assistant_run_service import (
     ConversationTurn,
@@ -37,7 +36,6 @@ def test_default_runtime_sends_all_stored_history_without_summary_or_trimming() 
     runtime = AgentGraphRuntime(
         config=ProviderConfig(langgraph_checkpointer_backend="none"),
         chat_adapter=adapter,
-        memory_store=InMemoryStore(),
         session_store=InMemorySessionStore(),
     )
     conversation_store = InMemoryConversationStore()
@@ -114,7 +112,6 @@ def test_runtime_ignores_configured_and_injected_compactors() -> None:
         ),
         chat_adapter=adapter,
         context_compactor=DeterministicContextCompactor(),
-        memory_store=InMemoryStore(),
         session_store=InMemorySessionStore(),
     )
     conversation_store = InMemoryConversationStore()

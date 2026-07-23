@@ -4,7 +4,6 @@ import json
 
 from assistant_agent.agent.runtime import AgentGraphRuntime
 from assistant_agent.config import ProviderConfig
-from assistant_agent.memory.store import InMemoryStore
 from assistant_agent.schemas.assistant_decision import NativeToolCall
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.services.chat_adapter import ChatRequest, ChatResult
@@ -58,7 +57,6 @@ def test_shopping_native_tool_call_exports_provider_path(monkeypatch) -> None:
     runtime = AgentGraphRuntime(
         config=ProviderConfig(langgraph_checkpointer_backend="none"),
         chat_adapter=adapter,
-        memory_store=InMemoryStore(),
         session_store=InMemorySessionStore(),
     )
     request = UserRequest(

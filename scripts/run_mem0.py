@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Start the repository-local Memo (Mem0 + Qdrant) stack."""
+"""Start the repository-local Mem0 + Qdrant stack."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from urllib.request import urlopen
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ENV_FILE = REPO_ROOT / ".env"
-COMPOSE_FILE = REPO_ROOT / "docker" / "memory-frameworks" / "compose.yaml"
+COMPOSE_FILE = REPO_ROOT / "docker" / "mem0" / "compose.yaml"
 HEALTH_URL = "http://127.0.0.1:8890/ready"
 STARTUP_TIMEOUT_SECONDS = 600.0
 POLL_INTERVAL_SECONDS = 1.0
@@ -40,13 +40,13 @@ def main() -> int:
         )
         container_id = _compose_output("ps", "-q", "mem0")
         if not container_id:
-            print("Memo container was not created.", file=sys.stderr)
+            print("Mem0 container was not created.", file=sys.stderr)
             return 1
 
         status = _wait_until_healthy(container_id)
         if status != "healthy":
             print(
-                f"Memo did not become healthy (container status: {status}).",
+                f"Mem0 did not become healthy (container status: {status}).",
                 file=sys.stderr,
             )
             _print_diagnostics_hint()
@@ -56,10 +56,10 @@ def main() -> int:
         version = str(payload.get("version") or "unknown")
         framework = str(payload.get("framework") or "mem0")
         print(
-            f"Memo ready: {HEALTH_URL} (framework {framework}, version {version})",
+            f"Mem0 ready: {HEALTH_URL} (framework {framework}, version {version})",
             flush=True,
         )
-        print("Memo and Qdrant will continue running after this script exits.", flush=True)
+        print("Mem0 and Qdrant will continue running after this script exits.", flush=True)
         print(f"Stop them with: {_stop_command()}", flush=True)
         return 0
     except KeyboardInterrupt:
@@ -69,11 +69,11 @@ def main() -> int:
         )
         return 130
     except subprocess.TimeoutExpired:
-        print("Timed out while starting Memo.", file=sys.stderr)
+        print("Timed out while starting Mem0.", file=sys.stderr)
         _print_diagnostics_hint()
         return 1
     except (OSError, subprocess.CalledProcessError, URLError, ValueError) as exc:
-        print(f"Failed to start Memo: {exc}", file=sys.stderr)
+        print(f"Failed to start Mem0: {exc}", file=sys.stderr)
         _print_diagnostics_hint()
         return 1
 
@@ -170,7 +170,7 @@ def _stop_command() -> str:
 def _display_command(*args: str) -> str:
     return (
         "docker compose --env-file .env "
-        "-f docker/memory-frameworks/compose.yaml --profile mem0 "
+        "-f docker/mem0/compose.yaml --profile mem0 "
         + " ".join(args)
     )
 

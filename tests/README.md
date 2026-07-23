@@ -31,13 +31,13 @@ tests/
 - Agent-Service interrupt 会取消活动 turn、抑制旧输出并保持连接；
 - 入口超时仍保留 trace correlation 和可诊断的部分 trace；
 - `LLMEvent -> AgentEvent -> RealtimeAgentEvent -> Gateway frame` 的核心转换可用；
-- session、run 与 memory 按用户身份隔离；
-- 跳过自动 memory read 时不会访问持久化 store；
+- session、run 与 Mem0 身份按用户隔离；
+- 只有 session 启动可以召回 Mem0，turn 只复用 snapshot；
 - Tool schema、catalog、validation、confirmation 和 execution 保持治理边界。
 
 `feature` 保存某次功能实现期间有价值、但功能稳定后不需要在每次普通开发中重复执行的 pytest。
 它们不会被裸 `pytest` 收集；修改对应功能、排查相关回归或准备较宽验证时，显式指定文件或目录。
-典型内容包括 Provider streaming、插件装配、context accounting、具体 memory backend 生命周期、
+典型内容包括 Provider streaming、插件装配、context accounting、Mem0 session/capture 生命周期、
 可观测性映射、启动展示、购物策略和 realtime task 等功能验证。
 
 `feature` 内按主要故障域使用 `context/`、`memory/`、`observability/`、`runtime/`、`server/`、

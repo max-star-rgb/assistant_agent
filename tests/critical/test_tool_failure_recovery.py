@@ -7,7 +7,6 @@ from assistant_agent.agent.state import AgentState
 from assistant_agent.agent.tool_executor import ToolExecutor
 from assistant_agent.config import ProviderConfig
 from assistant_agent.gateway.event_mapping import realtime_event_to_frame
-from assistant_agent.memory.store import InMemoryStore
 from assistant_agent.realtime.event_mapping import map_agent_event_stream
 from assistant_agent.schemas.assistant_decision import NativeToolCall
 from assistant_agent.schemas.requests import UserRequest
@@ -115,7 +114,6 @@ def _runtime(
         registry=registry,
         config=ProviderConfig(langgraph_checkpointer_backend="none"),
         chat_adapter=adapter,
-        memory_store=InMemoryStore(),
         session_store=InMemorySessionStore(),
         event_sink=sink,
     )

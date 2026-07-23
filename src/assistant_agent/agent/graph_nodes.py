@@ -24,8 +24,6 @@ from assistant_agent.services.session_memory_context import SessionMemoryContext
 from assistant_agent.schemas.tool_ids import (
     IMAGE_GENERATION_CAPABILITY,
     IMAGE_UNDERSTANDING_CAPABILITY,
-    MEMORY_RETRIEVAL_CAPABILITY,
-    MEMORY_SAVE_CAPABILITY,
     SHOPPING_SEARCH_CAPABILITY,
     VIDEO_UNDERSTANDING_CAPABILITY,
     WEB_FETCH_CAPABILITY,
@@ -96,8 +94,6 @@ def route_by_intent(graph_state: AgentGraphState) -> str:
         return "search_node"
     if capability == IMAGE_GENERATION_CAPABILITY:
         return "image_generation_node"
-    if capability in {MEMORY_RETRIEVAL_CAPABILITY, MEMORY_SAVE_CAPABILITY}:
-        return "memory_node"
     if capability == "multi_step_orchestration":
         return "multi_tool_node"
     return "chat_node"
@@ -167,7 +163,6 @@ def chat_node(graph_state: AgentGraphState) -> AgentGraphState:
     intent = state.intent
     if intent is not None and canonical_intent(intent.intent) == "direct_chat":
         memory_summaries = [item.summary for item in state.memory_context]
-        memory_context_text = state.request.metadata.get("memory_context_text", "")
         chat_request = _with_response_stream_callback(
             build_direct_chat_request(
                 graph_state["request"],
@@ -182,8 +177,6 @@ def chat_node(graph_state: AgentGraphState) -> AgentGraphState:
             if result.success
             else f"处理失败：{result.errors[0].code}: {result.errors[0].message}"
         )
-        if result.success and memory_summaries:
-            message = f"{message}；参考记忆：{memory_summaries[0]}"
         errors = [error.model_dump(mode="json") for error in result.errors]
         contract = build_text_capability_output(
             capability="direct_chat",
@@ -202,9 +195,6 @@ def chat_node(graph_state: AgentGraphState) -> AgentGraphState:
                     "model": result.model,
                     "usage": result.usage,
                     "output_ref": result.output_ref,
-                    "memory_context_count": len(state.memory_context),
-                    "memory_context_summaries": memory_summaries,
-                    "memory_context_text": memory_context_text,
                     "errors": errors,
                     "contract": contract,
                 },

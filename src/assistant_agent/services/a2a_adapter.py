@@ -21,8 +21,6 @@ from assistant_agent.schemas.api import AgentRunResponse
 from assistant_agent.schemas.tool_ids import (
     IMAGE_GENERATION_TOOL_NAME,
     IMAGE_UNDERSTANDING_TOOL_NAME,
-    MEMORY_RETRIEVAL_TOOL_NAME,
-    MEMORY_SAVE_TOOL_NAME,
     SHOPPING_SEARCH_TOOL_NAME,
 )
 
@@ -33,8 +31,6 @@ PUBLIC_CAPABILITY_TAGS = {
     "agent_delegation",
     "chat",
     IMAGE_GENERATION_TOOL_NAME,
-    MEMORY_RETRIEVAL_TOOL_NAME,
-    MEMORY_SAVE_TOOL_NAME,
     SHOPPING_SEARCH_TOOL_NAME,
     "tool_calling",
     IMAGE_UNDERSTANDING_TOOL_NAME,

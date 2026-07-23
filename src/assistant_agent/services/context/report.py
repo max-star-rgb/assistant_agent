@@ -392,7 +392,7 @@ def _tool_schema_notes(
 
 
 def _memory_item_ids(pack: AssistantContextPack) -> list[str]:
-    ids = _string_list(pack.request.metadata.get("memory_context_injected_ids"))
+    ids = list(pack.memory_source_ids)
     if ids:
         return ids
     discovered: list[str] = []

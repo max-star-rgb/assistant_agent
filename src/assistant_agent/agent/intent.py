@@ -14,8 +14,6 @@ from assistant_agent.schemas.tool_ids import (
     DIRECT_CHAT_CAPABILITY,
     IMAGE_GENERATION_CAPABILITY,
     IMAGE_UNDERSTANDING_CAPABILITY,
-    MEMORY_RETRIEVAL_CAPABILITY,
-    MEMORY_SAVE_CAPABILITY,
     SHOPPING_SEARCH_CAPABILITY,
     VIDEO_UNDERSTANDING_CAPABILITY,
     WEB_FETCH_CAPABILITY,
@@ -37,8 +35,6 @@ class IntentDetector:
     """Detect user intent with deterministic keyword rules."""
 
     url_re = re.compile(r"https?://\S+")
-    memory_keywords = ("上次", "刚才", "之前", "以前", "我喜欢")
-    save_memory_keywords = ("记住", "帮我记", "保存偏好")
     image_understanding_keywords = (
         "图里",
         "图片里",
@@ -138,13 +134,6 @@ class IntentDetector:
                 intent="multi_step_orchestration",
                 confidence=0.95,
                 rationale="用户指令包含多个工具目标，需要规划多步骤任务。",
-            )
-
-        if self._contains(text, self.memory_keywords):
-            return IntentResult(
-                intent=MEMORY_RETRIEVAL_CAPABILITY,
-                confidence=0.9,
-                rationale="用户提到历史上下文，需要检索记忆。",
             )
 
         if self._needs_followup(text, request):
@@ -255,10 +244,6 @@ class IntentDetector:
                 )
             ]
 
-        if self._contains(text, self.memory_keywords):
-            matches.append(
-                RuleMatch("memory_reference_keywords", MEMORY_RETRIEVAL_CAPABILITY, 0.9, "用户提到历史上下文，需要检索记忆。")
-            )
         if self._contains(text, self.video_understanding_keywords):
             matches.append(
                 RuleMatch("media_understanding_keywords", VIDEO_UNDERSTANDING_CAPABILITY, 0.9, "用户询问视频内容。")
@@ -332,8 +317,6 @@ class IntentDetector:
             return ["ask_followup"]
 
         ordered: list[CapabilityName] = []
-        if any(match.intent == MEMORY_RETRIEVAL_CAPABILITY for match in matches):
-            ordered.append(MEMORY_RETRIEVAL_CAPABILITY)
         if request.video_ids and any(match.intent == VIDEO_UNDERSTANDING_CAPABILITY for match in matches):
             ordered.append(VIDEO_UNDERSTANDING_CAPABILITY)
         elif request.image_ids and any(match.intent == IMAGE_UNDERSTANDING_CAPABILITY for match in matches):
@@ -348,7 +331,6 @@ class IntentDetector:
             WEB_SEARCH_CAPABILITY,
             SHOPPING_SEARCH_CAPABILITY,
             IMAGE_GENERATION_CAPABILITY,
-            MEMORY_SAVE_CAPABILITY,
         ):
             if any(match.intent == capability for match in matches):
                 ordered.append(capability)
@@ -405,7 +387,6 @@ class IntentDetector:
     def _is_multi_tool_task(self, text: str, request: UserRequest) -> bool:
         groups = [
             self.video_understanding_keywords + self.image_understanding_keywords,
-            self.memory_keywords + self.save_memory_keywords,
             self.search_keywords + self.web_search_keywords,
             self.compare_keywords,
             self.generation_keywords,
@@ -423,13 +404,6 @@ class IntentDetector:
         if has_media and self._contains(text, self.generation_keywords) and self._contains(
             text, self.media_reference_keywords
         ):
-            return True
-        if request.video_ids and self._contains(text, self.save_memory_keywords) and self._contains(
-            text,
-            self.media_reference_keywords,
-        ):
-            return True
-        if self._contains(text, self.memory_keywords) and self._contains(text, self.generation_keywords):
             return True
         return False
 

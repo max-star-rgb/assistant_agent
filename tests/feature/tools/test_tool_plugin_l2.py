@@ -114,8 +114,6 @@ def test_agent_service_entry_profile_exposes_registered_read_tools_by_policy(
     assert {
         "calendar_search",
         "contacts_search",
-        "memory_get",
-        "memory_search",
         "shopping_search",
         "tool_search",
         "weather",

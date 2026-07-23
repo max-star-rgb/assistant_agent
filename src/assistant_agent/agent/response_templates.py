@@ -5,8 +5,6 @@ from typing import Any
 from assistant_agent.schemas.tool_ids import (
     IMAGE_GENERATION_CAPABILITY,
     IMAGE_UNDERSTANDING_CAPABILITY,
-    MEMORY_RETRIEVAL_CAPABILITY,
-    MEMORY_SAVE_CAPABILITY,
     SHOPPING_SEARCH_CAPABILITY,
     VIDEO_UNDERSTANDING_CAPABILITY,
     WEB_SEARCH_CAPABILITY,
@@ -83,15 +81,6 @@ def _summary_for_contract(contract: dict[str, Any]) -> str:
         if image_url:
             return f"已根据你的需求生成图片，图片生成结果为 {image_url}。"
         return "已根据你的需求生成图片。"
-    if capability == MEMORY_RETRIEVAL_CAPABILITY:
-        items = data.get("items") or []
-        if items:
-            summary = items[0].get("summary") or data.get("memory_context")
-            return f"已检索到相关记忆：{summary}。" if summary else "已检索到相关记忆。"
-        return "已检索记忆。"
-    if capability == MEMORY_SAVE_CAPABILITY:
-        summary = data.get("summary")
-        return f"记忆已保存：{summary}。" if summary else "记忆已保存。"
     return ""
 
 

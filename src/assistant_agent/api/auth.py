@@ -8,7 +8,6 @@ is enabled.
 from __future__ import annotations
 
 import os
-import re
 from collections.abc import Mapping
 from typing import Literal, Protocol
 
@@ -23,7 +22,6 @@ AUTH_USER_ID_HEADER = "X-Multimodal-Agent-User-Id"
 AUTH_SESSION_ID_HEADER = "X-Multimodal-Agent-Session-Id"
 AUTH_TENANT_ID_HEADER = "X-Multimodal-Agent-Tenant-Id"
 AUTH_PROJECT_ID_HEADER = "X-Multimodal-Agent-Project-Id"
-AUTH_SCOPES_HEADER = "X-Multimodal-Agent-Scopes"
 AuthMode = Literal["anonymous", "header_pilot", "trusted_header", "jwt", "session"]
 
 _TRUE_VALUES = {"1", "true", "yes", "on"}
@@ -32,7 +30,6 @@ _AUTH_MODE_ALIASES = {
     "local": "anonymous",
 }
 _AUTH_MODES: set[str] = {"anonymous", "header_pilot", "trusted_header", "jwt", "session"}
-_SCOPE_SPLIT_RE = re.compile(r"[\s,;]+")
 
 
 class AuthProvider(Protocol):
@@ -71,7 +68,6 @@ class HeaderAuthProvider:
             session_id=_header_value(headers, AUTH_SESSION_ID_HEADER),
             tenant_id=_header_value(headers, AUTH_TENANT_ID_HEADER),
             project_id=_header_value(headers, AUTH_PROJECT_ID_HEADER),
-            allowed_scopes=_parse_scopes(_header_value(headers, AUTH_SCOPES_HEADER)),
         )
 
 
@@ -161,18 +157,6 @@ def _header_value(headers: Mapping[str, str], name: str) -> str | None:
     if raw_value is None:
         return None
     cleaned = str(raw_value).strip()
-    return cleaned or None
-
-
-def _parse_scopes(value: str | None) -> list[str] | None:
-    if not value:
-        return None
-    scopes = [scope for scope in (_clean_scope(part) for part in _SCOPE_SPLIT_RE.split(value)) if scope]
-    return scopes or None
-
-
-def _clean_scope(value: str) -> str | None:
-    cleaned = value.strip()
     return cleaned or None
 
 

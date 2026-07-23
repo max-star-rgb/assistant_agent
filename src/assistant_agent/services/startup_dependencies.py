@@ -17,7 +17,7 @@ from assistant_agent.services.otel_exporter import OtlpHttpTextExporterConfig
 
 DEFAULT_STARTUP_DEPENDENCY_TIMEOUT_SECONDS = 0.75
 LANGFUSE_HEALTH_PATH = "/api/public/health"
-MEMO_READY_PATH = "/ready"
+MEM0_READY_PATH = "/ready"
 
 DependencyState = Literal["disabled", "ready", "unavailable"]
 JsonHealthProbe = Callable[[str, float], Mapping[str, Any]]
@@ -51,15 +51,14 @@ def collect_startup_dependency_statuses(
 
     values = os.environ if env is None else env
     health_probe = probe or _read_json_health
-    memo_disabled = not (
-        config.memory_backend == "framework"
-        and config.memory_framework == "mem0"
+    mem0_disabled = not (
+        config.provider_mode == "real" and config.mem0_base_url
     )
     otel_export_enabled = OtlpHttpTextExporterConfig.from_env(values).enabled
 
-    memo_default = StartupDependencyStatus(
-        name="Memo",
-        state="disabled" if memo_disabled else "unavailable",
+    mem0_default = StartupDependencyStatus(
+        name="Mem0",
+        state="disabled" if mem0_disabled else "unavailable",
     )
     langfuse_default = StartupDependencyStatus(
         name="Langfuse",
@@ -76,14 +75,14 @@ def collect_startup_dependency_statuses(
             export_enabled=otel_export_enabled,
         ),
     }
-    if not memo_disabled:
-        checks["memo"] = lambda: _probe_memo(
+    if not mem0_disabled:
+        checks["mem0"] = lambda: _probe_mem0(
             config,
             timeout_seconds=timeout_seconds,
             probe=health_probe,
         )
     resolved = {
-        "memo": memo_default,
+        "mem0": mem0_default,
         "langfuse": langfuse_default,
         "web_search": web_search_default,
     }
@@ -102,7 +101,7 @@ def collect_startup_dependency_statuses(
                 # Startup dependency reporting is diagnostic and must stay fail-open.
                 continue
     return (
-        resolved["memo"],
+        resolved["mem0"],
         resolved["langfuse"],
         resolved["web_search"],
     )
@@ -116,25 +115,25 @@ def format_startup_dependency_statuses(
     return ["Dependencies:", *(status.format() for status in statuses)]
 
 
-def _probe_memo(
+def _probe_mem0(
     config: ProviderConfig,
     *,
     timeout_seconds: float,
     probe: JsonHealthProbe,
 ) -> StartupDependencyStatus:
-    if not config.memory_framework_base_url:
-        return StartupDependencyStatus(name="Memo", state="unavailable")
+    if not config.mem0_base_url:
+        return StartupDependencyStatus(name="Mem0", state="unavailable")
     payload = probe(
-        f"{config.memory_framework_base_url.rstrip('/')}{MEMO_READY_PATH}",
+        f"{config.mem0_base_url.rstrip('/')}{MEM0_READY_PATH}",
         timeout_seconds,
     )
     if str(payload.get("status") or "").lower() != "ok":
-        return StartupDependencyStatus(name="Memo", state="unavailable")
-    framework = str(payload.get("framework") or config.memory_framework)
-    version = str(payload.get("version") or config.memory_framework_version)
+        return StartupDependencyStatus(name="Mem0", state="unavailable")
+    framework = str(payload.get("framework") or "mem0")
+    version = str(payload.get("version") or "")
     detail = " ".join(part for part in (framework, version) if part)
     return StartupDependencyStatus(
-        name="Memo",
+        name="Mem0",
         state="ready",
         detail=detail or None,
     )

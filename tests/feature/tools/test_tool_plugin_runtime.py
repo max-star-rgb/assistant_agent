@@ -1,6 +1,5 @@
 """Cross-layer mock runtime acceptance for a tool built by a capability plugin."""
 
-from datetime import datetime, timezone
 from types import ModuleType
 import sys
 
@@ -9,18 +8,15 @@ from pydantic import BaseModel
 
 from assistant_agent.agent.runtime import AgentGraphRuntime
 from assistant_agent.config import ProviderConfig
-from assistant_agent.memory.store import InMemoryStore
 from assistant_agent.schemas.assistant_decision import NativeToolCall
-from assistant_agent.schemas.memory import MemoryItem
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.schemas.tools import ToolResult
 from assistant_agent.services.chat_adapter import ChatRequest, ChatResult
 from assistant_agent.services.session_store import InMemorySessionStore
 from assistant_agent.tools.plugins.contracts import ToolPluginContext
 from assistant_agent.tools.plugins.contracts import ToolPluginDescriptor
-from assistant_agent.tools.plugins.memory.plugin import MemoryToolPlugin
 from assistant_agent.tools.base import ToolBase, ToolContext
-from assistant_agent.tools.registry import ToolRegistry, create_default_registry
+from assistant_agent.tools.registry import create_default_registry
 
 
 class _ScriptedChatAdapter:
@@ -34,67 +30,6 @@ class _ScriptedChatAdapter:
     def chat(self, request: ChatRequest) -> ChatResult:
         self.requests.append(request)
         return next(self._results)
-
-
-def test_agent_runtime_executes_tool_built_by_plugin_in_mock_mode() -> None:
-    config = ProviderConfig(langgraph_checkpointer_backend="none")
-    registry = ToolRegistry()
-    for tool in MemoryToolPlugin().build_tools(
-        ToolPluginContext(config=config, mcp_server_configs=[])
-    ):
-        registry.register(tool)
-    memory_store = InMemoryStore()
-    memory_store.save(
-        MemoryItem(
-            memory_id="plugin-memory-1",
-            user_id="plugin-user",
-            memory_type="preference",
-            content={"item": "黑色通勤包"},
-            summary="用户喜欢黑色通勤包。",
-            tags=["daily"],
-            created_at=datetime.now(timezone.utc),
-        )
-    )
-    adapter = _ScriptedChatAdapter(
-        [
-            ChatResult(
-                provider="scripted",
-                model="scripted-plugin-runtime",
-                finish_reason="tool_calls",
-                tool_calls=[
-                    NativeToolCall(
-                        id="plugin-call-1",
-                        name="memory_search",
-                        arguments={"query": "通勤包"},
-                    )
-                ],
-            ),
-            ChatResult(
-                provider="scripted",
-                model="scripted-plugin-runtime",
-                finish_reason="stop",
-                response_text="已通过插件工具读取记忆。",
-            ),
-        ]
-    )
-    runtime = AgentGraphRuntime(
-        config=config,
-        registry=registry,
-        chat_adapter=adapter,
-        memory_store=memory_store,
-        session_store=InMemorySessionStore(),
-    )
-
-    state = runtime.run_state(
-        UserRequest(user_id="plugin-user", session_id="plugin-session", text="推荐通勤包")
-    )
-
-    assert state.status == "completed"
-    assert [call.tool_name for call in state.tool_calls] == ["memory_search"]
-    assert state.tool_results[0].success is True
-    assert "黑色通勤包" in str(adapter.requests[1].messages)
-    assert state.response is not None
-    assert state.response.message == "已通过插件工具读取记忆。"
 
 
 class _ConfiguredInput(BaseModel):
@@ -163,7 +98,6 @@ def test_configured_plugin_tool_runs_through_default_runtime_governance(
         config=config,
         registry=registry,
         chat_adapter=adapter,
-        memory_store=InMemoryStore(),
         session_store=InMemorySessionStore(),
     )
 

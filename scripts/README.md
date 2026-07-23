@@ -10,7 +10,7 @@ eval、Gateway 主链路覆盖的 probe 不应继续沉积到本目录。
 - `scripts/run_langfuse.py`: PyCharm-friendly local Langfuse supervisor. It starts
   the ignored `.data/langfuse` Compose stack, waits for health, stays attached as
   one Run process, and stops the containers without deleting data when terminated.
-- `scripts/run_memo.py`: starts the repository-local Memo stack (Mem0 + Qdrant),
+- `scripts/run_mem0.py`: starts the repository-local Mem0 stack (Mem0 + Qdrant),
   waits until Mem0 is healthy, and then exits while leaving both containers
   running. It reuses local images and persistent Compose volumes without building,
   pulling, or clearing stored memory.
@@ -44,10 +44,6 @@ For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
 
 ## Specialized integrations
 
-- `scripts/collect_memory_framework_bakeoff.py` and
-  `scripts/run_memory_framework_bakeoff.py`: collect and score explicit
-  Hindsight/Mem0 bakeoff evidence.
-- `scripts/smoke_memory_dual_core.py`: offline-first dual-core memory acceptance.
 
 新增脚本必须对应当前权威文档中的稳定入口或无法由现有 pytest/eval 表达的 operator 流程；
 临时诊断优先使用不提交的一次性命令。

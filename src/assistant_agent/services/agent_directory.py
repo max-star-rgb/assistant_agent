@@ -15,8 +15,6 @@ from assistant_agent.schemas.agent_communication import (
 from assistant_agent.schemas.tool_ids import (
     IMAGE_GENERATION_TOOL_NAME,
     IMAGE_UNDERSTANDING_TOOL_NAME,
-    MEMORY_RETRIEVAL_TOOL_NAME,
-    MEMORY_SAVE_TOOL_NAME,
     SHOPPING_SEARCH_TOOL_NAME,
 )
 
@@ -127,8 +125,6 @@ def default_agent_instance(
             IMAGE_UNDERSTANDING_TOOL_NAME,
             SHOPPING_SEARCH_TOOL_NAME,
             IMAGE_GENERATION_TOOL_NAME,
-            MEMORY_RETRIEVAL_TOOL_NAME,
-            MEMORY_SAVE_TOOL_NAME,
         ],
         transports=["local"],
         can_delegate=can_delegate,

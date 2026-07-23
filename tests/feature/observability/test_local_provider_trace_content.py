@@ -4,7 +4,6 @@ import json
 
 from assistant_agent.agent.runtime import AgentGraphRuntime
 from assistant_agent.config import ProviderConfig
-from assistant_agent.memory.store import InMemoryStore
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.services.chat_adapter import (
     ChatRequest,
@@ -103,7 +102,6 @@ def test_local_trace_pairs_primary_provider_result_by_span(monkeypatch) -> None:
     runtime = AgentGraphRuntime(
         config=ProviderConfig(langgraph_checkpointer_backend="none"),
         chat_adapter=adapter,
-        memory_store=InMemoryStore(),
         session_store=InMemorySessionStore(),
     )
 

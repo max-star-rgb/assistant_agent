@@ -40,7 +40,6 @@ def build_conditional_agent_graph(
     graph.add_node("compare_node", bind_runtime_node("compare_node", run_first_tool_node, runtime_context))
     graph.add_node("image_generation_node", bind_runtime_node("image_generation_node", run_first_tool_node, runtime_context))
     graph.add_node("render_node", bind_runtime_node("render_node", run_first_tool_node, runtime_context))
-    graph.add_node("memory_node", bind_runtime_node("memory_node", run_first_tool_node, runtime_context))
     graph.add_node("chat_node", bind_runtime_node("chat_node", chat_node, runtime_context))
     graph.add_node("plan_steps", bind_runtime_node("plan_steps", plan_steps_node, runtime_context))
     # Explicit loop nodes kept trace-wrapped:
@@ -60,7 +59,6 @@ def build_conditional_agent_graph(
             "compare_node": "compare_node",
             "image_generation_node": "image_generation_node",
             "render_node": "render_node",
-            "memory_node": "memory_node",
             "chat_node": "chat_node",
             "multi_tool_node": "plan_steps",
         },
@@ -71,7 +69,6 @@ def build_conditional_agent_graph(
         "compare_node",
         "image_generation_node",
         "render_node",
-        "memory_node",
         "chat_node",
     ):
         graph.add_edge(node_name, "compose_response")

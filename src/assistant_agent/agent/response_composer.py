@@ -9,7 +9,6 @@ from assistant_agent.agent.response_templates import (
 from assistant_agent.schemas.requests import AgentResponse
 from assistant_agent.schemas.tool_ids import (
     IMAGE_GENERATION_TOOL_NAME,
-    MEMORY_SAVE_TOOL_NAME,
     SHOPPING_SEARCH_TOOL_NAME,
 )
 
@@ -20,10 +19,6 @@ def compose_response(state: AgentState) -> AgentResponse:
     if state.response is not None:
         return state.response
 
-    memory_ref = None
-    memory_status = None
-    memory_summaries = [item.summary for item in state.memory_context]
-    memory_context_text = state.request.metadata.get("memory_context_text", "")
     successful_results = [result for result in state.tool_results if result.success]
     contracts = [
         result.contract.model_dump(mode="json")
@@ -70,10 +65,6 @@ def compose_response(state: AgentState) -> AgentResponse:
             best_price = first_item.get("price")
         elif result.tool_name == IMAGE_GENERATION_TOOL_NAME and not image_url:
             image_url = result.data.get("image_url")
-        elif result.tool_name == MEMORY_SAVE_TOOL_NAME:
-            memory_ref = result.output_ref
-            if isinstance(result.data, dict):
-                memory_status = result.data.get("status")
 
     message = compose_contract_response(contracts, failures)
     parts = [message] if message and message != "已完成请求处理。" else []
@@ -82,12 +73,6 @@ def compose_response(state: AgentState) -> AgentResponse:
             parts.append(f"商品：{product_title}，最低价格：{best_price}")
         if image_url:
             parts.append(f"图片生成结果：{image_url}")
-    if memory_ref and memory_status == "candidate_recorded":
-        parts.append(f"记忆候选已记录：{memory_ref}")
-    elif memory_ref:
-        parts.append(f"记忆已保存：{memory_ref}")
-    if memory_summaries:
-        parts.append(f"参考记忆：{memory_summaries[0]}")
     return AgentResponse(
         message="；".join(parts) if parts else "已完成请求处理。",
         data={
@@ -97,10 +82,6 @@ def compose_response(state: AgentState) -> AgentResponse:
             "best_price": best_price,
             "image_url": image_url,
             "render_ref": render_ref,
-            "memory_ref": memory_ref,
-            "memory_context_count": len(state.memory_context),
-            "memory_context_summaries": memory_summaries,
-            "memory_context_text": memory_context_text,
             "errors": failures,
             "degraded": bool(failures),
             "handled_tool_failures": handled_tool_failures,

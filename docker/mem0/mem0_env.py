@@ -19,21 +19,18 @@ def resolve_mem0_provider_environment(
     qwen_api_key = _required_first(
         env,
         "OPENAI_API_KEY",
-        "MEMORY_BAKEOFF_CHAT_API_KEY",
         "QWEN_API_KEY",
         "DASHSCOPE_API_KEY",
     )
     qwen_base_url = _first(
         env,
         "OPENAI_BASE_URL",
-        "MEMORY_BAKEOFF_CHAT_BASE_URL",
         "QWEN_CHAT_BASE_URL",
     ) or DEFAULT_QWEN_BASE_URL
     return {
         "chat_model": _required_first(
             env,
             "OPENAI_MODEL",
-            "MEMORY_BAKEOFF_CHAT_MODEL",
             "QWEN_CHAT_MODEL",
         ),
         "chat_api_key": qwen_api_key,
@@ -41,17 +38,14 @@ def resolve_mem0_provider_environment(
         "embedding_model": _first(
             env,
             "EMBEDDING_MODEL",
-            "MEMORY_BAKEOFF_EMBEDDING_MODEL",
         ) or DEFAULT_EMBEDDING_MODEL,
         "embedding_api_key": _first(
             env,
             "EMBEDDING_API_KEY",
-            "MEMORY_BAKEOFF_EMBEDDING_API_KEY",
         ) or qwen_api_key,
         "embedding_base_url": _first(
             env,
             "EMBEDDING_BASE_URL",
-            "MEMORY_BAKEOFF_EMBEDDING_BASE_URL",
         ) or qwen_base_url,
     }
 

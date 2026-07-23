@@ -1,19 +1,31 @@
-"""Trace helpers for memory lifecycle boundaries."""
+"""Minimal trace hooks for Mem0 session recall and background capture."""
 
 from __future__ import annotations
 
 from threading import Event
 from time import perf_counter
-from typing import Any, Literal
+from typing import Any
 
 from assistant_agent.agent.state import AgentState
-from assistant_agent.memory.manager import MemoryContext, MemoryManager, PreparedTurnCapture
+from assistant_agent.memory.manager import (
+    MemoryContext,
+    MemoryManager,
+    PreparedTurnCapture,
+)
 from assistant_agent.schemas.identity import RequestIdentity
-from assistant_agent.schemas.memory import MemoryItem
 from assistant_agent.schemas.requests import UserRequest
-from assistant_agent.services.memory_capture_dispatcher import MemoryCaptureDispatcher
-from assistant_agent.services.session_memory_context import SessionMemoryContextStore
-from assistant_agent.services.trace_store import TraceStore, append_observability_event, new_span_id, sanitize_trace_value
+from assistant_agent.services.memory_capture_dispatcher import (
+    MemoryCaptureDispatcher,
+)
+from assistant_agent.services.session_memory_context import (
+    SessionMemoryContextStore,
+)
+from assistant_agent.services.trace_store import (
+    TraceStore,
+    append_observability_event,
+    new_span_id,
+    sanitize_trace_value,
+)
 
 
 def load_memory_with_trace(
@@ -24,17 +36,14 @@ def load_memory_with_trace(
     node_name: str,
     state: AgentState,
     request: UserRequest,
-    capability: str | None = None,
     top_k: int | None = None,
-    max_context_chars: int | None = None,
-    max_context_tokens: int | None = None,
     session_context_store: SessionMemoryContextStore | None = None,
     session_start: bool = False,
 ) -> MemoryContext:
-    """Load memory context and emit prompt-safe lifecycle trace events."""
+    """Recall once at session start or reuse the frozen snapshot."""
 
     span_id = new_span_id()
-    started_at = perf_counter()
+    started = perf_counter()
     append_observability_event(
         trace_store,
         trace_id=trace_id or state.trace_id,
@@ -42,75 +51,55 @@ def load_memory_with_trace(
         user_id=state.user_id,
         session_id=state.session_id,
         canonical_event="memory.load.started",
+        observation_name=(
+            "memory.core_recall"
+            if session_start
+            else "memory.session_snapshot"
+        ),
         node_name=node_name,
         status="started",
         span_id=span_id,
-        attributes={
-            "capability": capability,
-            "query_present": bool((request.text or "").strip()),
-            "request_metadata_keys": sorted(request.metadata.keys()),
-        },
     )
-    snapshot_status = "disabled"
-    retrieval_count = 1
     try:
         if session_context_store is None:
-            context = manager.load_into_state(
-                state,
-                request,
-                capability=capability,
-                top_k=top_k,
-                max_context_chars=max_context_chars,
-                max_context_tokens=max_context_tokens,
+            context = (
+                manager.load_context_for_request(
+                    request,
+                    top_k=top_k,
+                    session_initial=True,
+                )
+                if session_start
+                else manager.missing_session_snapshot_context()
             )
+            snapshot_status = "loaded" if session_start else "missing"
         else:
             resolution = session_context_store.resolve(
                 RequestIdentity.from_user_request(request),
                 loader=lambda: manager.load_context_for_request(
                     request,
-                    capability=capability,
                     top_k=top_k,
-                    max_context_chars=max_context_chars,
-                    max_context_tokens=max_context_tokens,
                     session_initial=True,
                 ),
                 allow_load=session_start,
-                reset=session_start
-                and request.metadata.get("reset_conversation") is True,
+                reset=(
+                    session_start
+                    and request.metadata.get("reset_conversation") is True
+                ),
             )
             snapshot_status = resolution.status
-            retrieval_count = 1 if resolution.status == "loaded" else 0
             context = (
                 resolution.context
                 if resolution.context is not None
                 else manager.missing_session_snapshot_context()
             )
-            manager.attach_context_to_state(state, context)
-            request.metadata["memory_context_source"] = (
-                "long_term_recall"
-                if resolution.status == "loaded"
-                else "session_snapshot"
-            )
-            request.metadata["memory_session_snapshot_status"] = resolution.status
-    except Exception as exc:
-        _record_local_memory_operation(
-            state=state,
-            trace_id=trace_id or state.trace_id,
-            span_id=span_id,
-            operation="load",
-            input_payload=_memory_load_input(
-                request=request,
-                capability=capability,
-                top_k=top_k,
-                max_context_chars=max_context_chars,
-                max_context_tokens=max_context_tokens,
-            ),
-            output_payload={
-                "status": "failed",
-                "error_type": exc.__class__.__name__,
-                "error_message": str(exc),
-            },
+        manager.attach_context_to_state(state, context)
+        request.metadata["memory_context_source"] = (
+            "mem0_session_start"
+            if snapshot_status == "loaded"
+            else "session_snapshot"
         )
+        request.metadata["memory_session_snapshot_status"] = snapshot_status
+    except Exception as exc:
         append_observability_event(
             trace_store,
             trace_id=trace_id or state.trace_id,
@@ -119,62 +108,21 @@ def load_memory_with_trace(
             session_id=state.session_id,
             canonical_event="memory.load.finished",
             observation_type="span",
-            observation_name="memory.core_recall",
+            observation_name=(
+                "memory.core_recall"
+                if session_start
+                else "memory.session_snapshot"
+            ),
             node_name=node_name,
             status="failed",
-            latency_ms=_elapsed_ms(started_at),
+            latency_ms=_elapsed_ms(started),
             span_id=span_id,
-            error={"code": "memory_load_failed", "message": sanitize_trace_value(str(exc))},
+            error={
+                "code": "mem0_recall_failed",
+                "message": sanitize_trace_value(str(exc)),
+            },
         )
         raise
-
-    summary = memory_load_trace_summary(
-        context,
-        retrieval_count=retrieval_count,
-        session_snapshot_status=snapshot_status,
-    )
-    _record_local_memory_operation(
-        state=state,
-        trace_id=trace_id or state.trace_id,
-        span_id=span_id,
-        operation="load",
-        input_payload=_memory_load_input(
-            request=request,
-            capability=capability,
-            top_k=top_k,
-            max_context_chars=max_context_chars,
-            max_context_tokens=max_context_tokens,
-        ),
-        output_payload={
-            "status": (
-                "degraded"
-                if summary["search_error_codes"]
-                else "succeeded"
-                if context.read_policy_allowed
-                else "skipped"
-            ),
-            "retrieved_items": [
-                item.model_dump(mode="json") for item in context.retrieved_items
-            ],
-            "injected_items": [
-                item.model_dump(mode="json") for item in context.items
-            ],
-            "rendered_context": context.text,
-            "attached_to_runtime_context": (
-                [item.memory_id for item in state.memory_context]
-                == [item.memory_id for item in context.items]
-                and request.metadata.get("memory_context_text") == context.text
-            ),
-            "omitted_count": context.omitted_count,
-            "rejected_reasons": list(context.rejected_reasons),
-            "read_policy": context.read_policy,
-            "recall_report": context.recall_report,
-            "retrieval_count": retrieval_count,
-            "session_snapshot_status": snapshot_status,
-            "memory_context_source": request.metadata.get("memory_context_source"),
-        },
-    )
-    search_error_codes = summary["search_error_codes"]
     append_observability_event(
         trace_store,
         trace_id=trace_id or state.trace_id,
@@ -185,120 +133,28 @@ def load_memory_with_trace(
         observation_type="span",
         observation_name=(
             "memory.core_recall"
-            if retrieval_count
+            if snapshot_status == "loaded"
             else "memory.session_snapshot"
         ),
         node_name=node_name,
-        status=(
-            "degraded"
-            if search_error_codes
-            else "succeeded"
-            if context.read_policy_allowed
-            else "skipped"
-        ),
-        latency_ms=_elapsed_ms(started_at),
+        status=context.status,
+        latency_ms=_elapsed_ms(started),
         span_id=span_id,
         attributes={
-            "retrieval_count": retrieval_count,
             "session_snapshot_status": snapshot_status,
-            "memory_context_source": request.metadata.get("memory_context_source"),
-            "retrieved_item_count": summary["retrieved_item_count"],
-            "injected_count": summary["injected_count"],
-            "memory_context_tokens": summary["memory_context_tokens"],
-            "memory_context_budget_tokens": summary["memory_context_budget_tokens"],
-            "omitted_count": summary["omitted_count"],
-            "rejected_count": summary["rejected_count"],
-            "search_error_count": len(search_error_codes),
-            "retrieval_version": summary["retrieval_version"],
-            "read_policy": summary["read_policy"],
+            "memory_count": len(context.items),
+            "error_codes": context.error_codes,
         },
-        output_summary={"memory": summary},
-        error=(
-            {
-                "code": search_error_codes[0],
-                "message": "memory recall degraded",
-                "detail": {"error_codes": search_error_codes},
+        output_summary={
+            "memory": {
+                "status": context.status,
+                "memory_count": len(context.items),
+                "source_ids": [item.memory_id for item in context.items],
+                "error_codes": context.error_codes,
             }
-            if search_error_codes
-            else None
-        ),
+        },
     )
     return context
-
-
-def save_memory_with_trace(
-    *,
-    manager: MemoryManager,
-    trace_store: TraceStore | None,
-    trace_id: str | None,
-    node_name: str,
-    state: AgentState,
-    skipped_reason: str | None = None,
-) -> MemoryItem | None:
-    """Save post-run memory candidate and emit prompt-safe lifecycle trace events."""
-
-    span_id = new_span_id()
-    started_at = perf_counter()
-    append_observability_event(
-        trace_store,
-        trace_id=trace_id or state.trace_id,
-        run_id=state.run_id,
-        user_id=state.user_id,
-        session_id=state.session_id,
-        canonical_event="memory.save.started",
-        node_name=node_name,
-        status="started",
-        span_id=span_id,
-        attributes={
-            "state_status": state.status,
-            "response_present": state.response is not None,
-            "skipped": skipped_reason is not None,
-            "skip_reason": skipped_reason,
-        },
-    )
-    try:
-        saved = None if skipped_reason else manager.save_from_run(state)
-    except Exception as exc:
-        append_observability_event(
-            trace_store,
-            trace_id=trace_id or state.trace_id,
-            run_id=state.run_id,
-            user_id=state.user_id,
-            session_id=state.session_id,
-            canonical_event="memory.save.finished",
-            observation_type="span",
-            node_name=node_name,
-            status="failed",
-            latency_ms=_elapsed_ms(started_at),
-            span_id=span_id,
-            error={"code": "memory_save_failed", "message": sanitize_trace_value(str(exc))},
-        )
-        raise
-
-    summary = memory_save_trace_summary(state, saved=saved, skipped_reason=skipped_reason)
-    append_observability_event(
-        trace_store,
-        trace_id=trace_id or state.trace_id,
-        run_id=state.run_id,
-        user_id=state.user_id,
-        session_id=state.session_id,
-        canonical_event="memory.save.finished",
-        observation_type="span",
-        node_name=node_name,
-        status="skipped" if skipped_reason else "succeeded",
-        latency_ms=_elapsed_ms(started_at),
-        span_id=span_id,
-        attributes={
-            "save_candidate_count": summary["save_candidate_count"],
-            "saved_count": summary["saved_count"],
-            "rejected_count": summary["rejected_count"],
-            "skipped": summary["skipped"],
-            "skip_reason": summary["skip_reason"],
-            "written_memory_id": summary["written_memory_id"],
-        },
-        output_summary={"memory": summary},
-    )
-    return saved
 
 
 def enqueue_memory_capture_with_trace(
@@ -310,454 +166,117 @@ def enqueue_memory_capture_with_trace(
     node_name: str,
     state: AgentState,
 ) -> bool:
-    """Freeze and enqueue post-response capture without waiting for provider I/O."""
+    """Queue Mem0 capture without delaying the foreground response."""
 
-    resolved_trace_id = trace_id or state.trace_id
-    span_id = new_span_id()
-    try:
-        prepared = manager.prepare_completed_turn_capture(state)
-    except Exception as exc:
-        state.request.metadata["memory_capture"] = {
-            "status": "failed",
-            "error_code": "memory_capture_prepare_failed",
-        }
-        append_observability_event(
-            trace_store,
-            trace_id=resolved_trace_id,
-            run_id=state.run_id,
-            user_id=state.user_id,
-            session_id=state.session_id,
-            canonical_event="memory.capture.finished",
-            observation_type="span",
-            observation_name="memory.turn_capture",
-            observation_scope="runtime",
-            node_name=node_name,
-            status="failed",
-            latency_ms=0,
-            span_id=span_id,
-            attributes={"execution_phase": "post_response_background"},
-            error={
-                "code": "memory_capture_prepare_failed",
-                "message": sanitize_trace_value(str(exc)),
-            },
-        )
-        return False
+    prepared = manager.prepare_completed_turn_capture(state)
     if prepared is None:
         state.request.metadata["memory_capture"] = {"status": "skipped"}
-        append_observability_event(
-            trace_store,
-            trace_id=resolved_trace_id,
-            run_id=state.run_id,
-            user_id=state.user_id,
-            session_id=state.session_id,
-            canonical_event="memory.capture.finished",
-            observation_type="span",
-            observation_name="memory.turn_capture",
-            observation_scope="runtime",
-            node_name=node_name,
-            status="skipped",
-            latency_ms=0,
-            span_id=span_id,
-            attributes={"execution_phase": "post_response_background"},
-        )
         return False
-
     queued = Event()
     submitted = dispatcher.submit(
         ordering_key=prepared.ordering_key,
-        callback=lambda: _capture_prepared_turn_with_trace(
+        callback=lambda: _capture(
             queued=queued,
             manager=manager,
             prepared=prepared,
             trace_store=trace_store,
-            trace_id=resolved_trace_id,
-            run_id=state.run_id,
-            user_id=state.user_id,
-            session_id=state.session_id,
+            trace_id=trace_id or state.trace_id,
             node_name=node_name,
-            span_id=span_id,
+            state=state,
         ),
     )
     if not submitted.accepted:
-        error_code = submitted.reason or "memory_capture_enqueue_failed"
         state.request.metadata["memory_capture"] = {
             "status": "failed",
-            "error_code": error_code,
+            "error_code": submitted.reason,
         }
-        append_observability_event(
-            trace_store,
-            trace_id=resolved_trace_id,
-            run_id=state.run_id,
-            user_id=state.user_id,
-            session_id=state.session_id,
-            canonical_event="memory.capture.finished",
-            observation_type="span",
-            observation_name="memory.turn_capture",
-            observation_scope="runtime",
-            node_name=node_name,
-            status="failed",
-            latency_ms=0,
-            span_id=span_id,
-            attributes={
-                "execution_phase": "post_response_background",
-                "pending_count": submitted.pending_count,
-            },
-            error={
-                "code": error_code,
-                "message": "memory capture could not be queued",
-            },
-        )
         return False
-
     state.request.metadata["memory_capture"] = {
         "status": "queued",
         "pending_count": submitted.pending_count,
     }
     append_observability_event(
         trace_store,
-        trace_id=resolved_trace_id,
+        trace_id=trace_id or state.trace_id,
         run_id=state.run_id,
         user_id=state.user_id,
         session_id=state.session_id,
         canonical_event="memory.capture.queued",
+        observation_type="event",
+        observation_name="memory.turn_capture",
+        observation_scope="runtime",
         node_name=node_name,
         status="queued",
-        span_id=span_id,
-        attributes={
-            "execution_phase": "post_response_background",
-            "pending_count": submitted.pending_count,
-        },
+        attributes={"pending_count": submitted.pending_count},
     )
     queued.set()
     return True
 
 
-def _capture_prepared_turn_with_trace(
+def _capture(
     *,
     queued: Event,
     manager: MemoryManager,
     prepared: PreparedTurnCapture,
     trace_store: TraceStore | None,
     trace_id: str,
-    run_id: str,
-    user_id: str,
-    session_id: str,
     node_name: str,
-    span_id: str,
-) -> Any | None:
+    state: AgentState,
+) -> Any:
     queued.wait()
-    started_at = perf_counter()
-    append_observability_event(
-        trace_store,
-        trace_id=trace_id,
-        run_id=run_id,
-        user_id=user_id,
-        session_id=session_id,
-        canonical_event="memory.capture.started",
-        node_name=node_name,
-        status="started",
-        span_id=span_id,
-        observation_scope="runtime",
-        attributes={"execution_phase": "post_response_background"},
-    )
+    started = perf_counter()
+    span_id = new_span_id()
     try:
         result = manager.capture_prepared_turn(prepared)
     except Exception as exc:
-        _record_local_memory_operation_by_identity(
-            user_id=user_id,
-            session_id=session_id,
-            trace_id=trace_id,
-            span_id=span_id,
-            operation="capture",
-            input_payload=_prepared_memory_capture_input(prepared),
-            output_payload={
-                "status": "failed",
-                "error_type": exc.__class__.__name__,
-                "error_message": str(exc),
-            },
-        )
         append_observability_event(
             trace_store,
             trace_id=trace_id,
-            run_id=run_id,
-            user_id=user_id,
-            session_id=session_id,
+            run_id=state.run_id,
+            user_id=state.user_id,
+            session_id=state.session_id,
             canonical_event="memory.capture.finished",
             observation_type="span",
             observation_name="memory.turn_capture",
             observation_scope="runtime",
             node_name=node_name,
             status="failed",
-            latency_ms=_elapsed_ms(started_at),
+            latency_ms=_elapsed_ms(started),
             span_id=span_id,
-            attributes={"execution_phase": "post_response_background"},
-            error={"code": "memory_capture_failed", "message": sanitize_trace_value(str(exc))},
+            error={
+                "code": "mem0_capture_failed",
+                "message": sanitize_trace_value(str(exc)),
+            },
         )
         return None
-
-    daily_ids = list(getattr(result, "daily_engine_ids", []) or []) if result is not None else []
-    core_ids = list(getattr(result, "core_engine_ids", []) or []) if result is not None else []
-    errors = list(getattr(result, "errors", []) or []) if result is not None else []
-    safe_errors = _capture_errors(errors)
-    accepted = bool(getattr(result, "accepted", False)) if result is not None else False
-    if result is None:
-        status = "skipped"
-    elif errors and accepted:
-        status = "partial"
-    elif not accepted:
-        status = "failed"
-    else:
-        status = "succeeded"
-    _record_local_memory_operation_by_identity(
-        user_id=user_id,
-        session_id=session_id,
-        trace_id=trace_id,
-        span_id=span_id,
-        operation="capture",
-        input_payload=_prepared_memory_capture_input(prepared),
-        output_payload={
-            "status": status,
-            "result": _model_dump_or_value(result),
-        },
+    status = (
+        "partial"
+        if result.errors and result.accepted
+        else "failed"
+        if not result.accepted
+        else "succeeded"
     )
     append_observability_event(
         trace_store,
         trace_id=trace_id,
-        run_id=run_id,
-        user_id=user_id,
-        session_id=session_id,
+        run_id=state.run_id,
+        user_id=state.user_id,
+        session_id=state.session_id,
         canonical_event="memory.capture.finished",
         observation_type="span",
         observation_name="memory.turn_capture",
         observation_scope="runtime",
         node_name=node_name,
         status=status,
-        latency_ms=_elapsed_ms(started_at),
+        latency_ms=_elapsed_ms(started),
         span_id=span_id,
         attributes={
-            "execution_phase": "post_response_background",
-            "daily_count": len(daily_ids),
-            "core_count": len(core_ids),
-            "error_count": len(safe_errors),
+            "memory_count": len(result.memory_ids),
+            "errors": result.errors,
         },
-        output_summary={"memory_capture": {"errors": safe_errors}},
-        error=(
-            {
-                "code": (
-                    "memory_framework_capture_partial"
-                    if accepted
-                    else "memory_framework_capture_failed"
-                ),
-                "message": "memory capture completed with framework errors",
-                "detail": {"errors": safe_errors},
-            }
-            if safe_errors
-            else None
-        ),
     )
     return result
 
 
-def memory_load_trace_summary(
-    context: MemoryContext,
-    *,
-    retrieval_count: int = 1,
-    session_snapshot_status: str = "disabled",
-) -> dict[str, Any]:
-    """Return a memory-load trace summary without memory text or summaries."""
-
-    return {
-        "retrieval_count": retrieval_count,
-        "session_snapshot_status": session_snapshot_status,
-        "retrieved_item_count": len(context.retrieved_items),
-        "injected_count": len(context.items),
-        "injected_memory_ids": [item.memory_id for item in context.items],
-        "memory_layers": [block.layer for block in context.blocks],
-        "memory_context_tokens": context.total_tokens,
-        "memory_context_budget_tokens": context.budget_tokens,
-        "omitted_count": context.omitted_count,
-        "rejected_count": len(context.rejected_reasons),
-        "search_error_codes": _string_list(context.recall_report.get("search_error_codes")),
-        "rejected_reasons": context.rejected_reasons[:8],
-        "retrieval_version": context.retrieval_version,
-        "read_policy": context.read_policy or {
-            "allowed": context.read_policy_allowed,
-            "reason": context.read_policy_reason,
-        },
-    }
-
-
-def _capture_errors(errors: list[Any]) -> list[dict[str, str]]:
-    safe: list[dict[str, str]] = []
-    for error in errors:
-        if not isinstance(error, dict):
-            continue
-        code = error.get("code")
-        phase = error.get("phase")
-        if isinstance(code, str) and code:
-            item = {"code": code}
-            if isinstance(phase, str) and phase:
-                item["phase"] = phase
-            safe.append(item)
-    return safe
-
-
-def _string_list(value: Any) -> list[str]:
-    if not isinstance(value, list):
-        return []
-    return [item for item in value if isinstance(item, str) and item]
-
-
-def _memory_load_input(
-    *,
-    request: UserRequest,
-    capability: str | None,
-    top_k: int | None,
-    max_context_chars: int | None,
-    max_context_tokens: int | None,
-) -> dict[str, Any]:
-    return {
-        "query": request.text or "",
-        "capability": capability,
-        "top_k": top_k,
-        "max_context_chars": max_context_chars,
-        "max_context_tokens": max_context_tokens,
-    }
-
-
-def _prepared_memory_capture_input(prepared: PreparedTurnCapture) -> dict[str, Any]:
-    return {
-        "user": prepared.user_text,
-        "assistant": prepared.assistant_text,
-    }
-
-
-def _model_dump_or_value(value: Any) -> Any:
-    model_dump = getattr(value, "model_dump", None)
-    if callable(model_dump):
-        return model_dump(mode="json")
-    if value is None or isinstance(value, dict | list | str | int | float | bool):
-        return value
-    return vars(value) if hasattr(value, "__dict__") else str(value)
-
-
-def _record_local_memory_operation(
-    *,
-    state: AgentState,
-    trace_id: str,
-    span_id: str,
-    operation: Literal["load", "capture"],
-    input_payload: dict[str, Any],
-    output_payload: dict[str, Any],
-) -> None:
-    _record_local_memory_operation_by_identity(
-        user_id=state.user_id,
-        session_id=state.session_id,
-        trace_id=trace_id,
-        span_id=span_id,
-        operation=operation,
-        input_payload=input_payload,
-        output_payload=output_payload,
-    )
-
-
-def _record_local_memory_operation_by_identity(
-    *,
-    user_id: str,
-    session_id: str,
-    trace_id: str,
-    span_id: str,
-    operation: Literal["load", "capture"],
-    input_payload: dict[str, Any],
-    output_payload: dict[str, Any],
-) -> None:
-    from assistant_agent.services.trace_conversation import (
-        TraceMemoryOperation,
-        get_default_trace_conversation_store,
-    )
-
-    get_default_trace_conversation_store().append_memory_operation(
-        user_id=user_id,
-        session_id=session_id,
-        trace_id=trace_id,
-        memory_operation=TraceMemoryOperation(
-            operation=operation,
-            span_id=span_id,
-            input=input_payload,
-            output=output_payload,
-        ),
-    )
-
-
-def memory_save_trace_summary(
-    state: AgentState,
-    *,
-    saved: MemoryItem | None,
-    skipped_reason: str | None = None,
-) -> dict[str, Any]:
-    """Return a memory-save trace summary without candidate or memory content."""
-
-    metadata = state.request.metadata
-    auto_summary = _auto_task_summary(metadata.get("auto_task_summary_memory"), skipped_reason=skipped_reason)
-    return {
-        "save_candidate_count": _metadata_int(metadata, "memory_promotion_candidates"),
-        "saved_count": _metadata_int(metadata, "memory_promotion_written"),
-        "rejected_count": _metadata_int(metadata, "memory_promotion_rejected"),
-        "skipped": bool(auto_summary.get("skipped")),
-        "skip_reason": auto_summary.get("reason"),
-        "candidate": auto_summary.get("candidate"),
-        "written_memory_id": saved.memory_id if saved is not None else auto_summary.get("memory_id"),
-        "written_memory_type": saved.memory_type if saved is not None else None,
-        "candidate_decisions": _safe_candidate_decisions(metadata.get("memory_promotion_candidate_audit")),
-    }
-
-
-def _elapsed_ms(started_at: float) -> int:
-    return max(0, int((perf_counter() - started_at) * 1000))
-
-
-def _auto_task_summary(value: Any, *, skipped_reason: str | None) -> dict[str, Any]:
-    if not isinstance(value, dict):
-        return {"skipped": skipped_reason is not None, "reason": skipped_reason}
-    return {
-        "skipped": value.get("skipped") is True or skipped_reason is not None,
-        "reason": _safe_text(value.get("reason") or skipped_reason),
-        "candidate": value.get("candidate") if isinstance(value.get("candidate"), bool) else None,
-        "written": value.get("written") if isinstance(value.get("written"), bool) else None,
-        "memory_id": _safe_text(value.get("memory_id")),
-    }
-
-
-def _safe_candidate_decisions(value: Any) -> list[dict[str, Any]]:
-    if not isinstance(value, list):
-        return []
-    return [_safe_candidate_decision(item) for item in value[-5:] if isinstance(item, dict)]
-
-
-def _safe_candidate_decision(value: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "kind": _safe_text(value.get("kind")),
-        "memory_type": _safe_text(value.get("memory_type")),
-        "allowed": value.get("allowed") if isinstance(value.get("allowed"), bool) else None,
-        "destination": _safe_text(value.get("destination")),
-        "written": value.get("written") if isinstance(value.get("written"), bool) else None,
-        "written_memory_id": _safe_text(value.get("written_memory_id")),
-        "reason": _safe_text(value.get("reason")),
-        "user_intent_explicit": value.get("user_intent_explicit")
-        if isinstance(value.get("user_intent_explicit"), bool)
-        else None,
-        "require_user_confirmation": value.get("require_user_confirmation")
-        if isinstance(value.get("require_user_confirmation"), bool)
-        else None,
-        "sensitivity": _safe_text(value.get("sensitivity")),
-        "ttl_days": _metadata_int(value, "ttl_days"),
-    }
-
-
-def _safe_text(value: Any) -> str | None:
-    return sanitize_trace_value(value) if isinstance(value, str) and value else None
-
-
-def _metadata_int(metadata: dict[str, Any], key: str) -> int:
-    value = metadata.get(key)
-    return value if isinstance(value, int) and value >= 0 else 0
+def _elapsed_ms(started: float) -> int:
+    return max(0, int((perf_counter() - started) * 1000))

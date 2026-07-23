@@ -20,10 +20,6 @@ from assistant_agent.agent.cancellation import AgentRunCancelled
 from assistant_agent.agent.intent import IntentDetector
 from assistant_agent.agent.llm_event_mapping import stream_delta_to_agent_event
 from assistant_agent.agent.loop_guard import LoopGuard, LoopGuardDecision
-from assistant_agent.agent.memory_tool_selection import (
-    build_memory_tool_selection_audit,
-    record_memory_tool_selection_audit,
-)
 from assistant_agent.agent.plan_validator import PlanValidationResult, PlanValidator
 from assistant_agent.agent.prompt_builder import build_direct_chat_request, build_text_capability_output
 from assistant_agent.agent.router import ToolRouter
@@ -220,7 +216,6 @@ def assistant_node(graph_state: AssistantLoopState) -> AssistantLoopState:
         chat_adapter=chat_adapter,
         state=state,
     )
-    decision = _apply_memory_tool_selection_policy(graph_state, decision, context)
     decision = _apply_decision_guards(graph_state, decision, context)
     pending_decisions = graph_state.get("pending_tool_decisions")
     if isinstance(pending_decisions, list) and pending_decisions:
@@ -1055,25 +1050,6 @@ def _apply_decision_guards(
     return decision
 
 
-def _apply_memory_tool_selection_policy(
-    graph_state: AssistantLoopState,
-    decision: AssistantDecision,
-    context: AssistantDecisionContext,
-) -> AssistantDecision:
-    """Record LLM-first memory tool selection without local semantic override."""
-
-    audit = build_memory_tool_selection_audit(
-        request=context.request,
-        decision=decision,
-        state=graph_state["state"],
-        iteration=context.iterations,
-        max_iterations=context.max_iterations,
-        is_mock=context.is_mock,
-    )
-    record_memory_tool_selection_audit(context.request, audit)
-    return decision
-
-
 def _apply_terminal_decision(
     graph_state: AssistantLoopState,
     decision: AssistantDecision,
@@ -1203,7 +1179,6 @@ def _set_direct_chat_response(
     state = graph_state["state"]
     request = graph_state["request"]
     memory_summaries = [item.summary for item in state.memory_context]
-    memory_context_text = state.request.metadata.get("memory_context_text", "")
     chat_request = _with_response_stream_callback(
         build_direct_chat_request(
             request,
@@ -1222,8 +1197,6 @@ def _set_direct_chat_response(
         errors=errors,
     )
     message = result.response_text if result.success else decision.message or "已处理请求。"
-    if result.success and memory_summaries:
-        message = f"{message}；参考记忆：{memory_summaries[0]}"
     state.set_response(
         AgentResponse(
             message=message,
@@ -1238,9 +1211,6 @@ def _set_direct_chat_response(
                 "model": result.model,
                 "usage": result.usage,
                 "output_ref": result.output_ref,
-                "memory_context_count": len(state.memory_context),
-                "memory_context_summaries": memory_summaries,
-                "memory_context_text": memory_context_text,
                 "errors": errors,
                 "contract": contract,
                 "plan_status": state.plan_status,
@@ -2006,7 +1976,6 @@ def _record_react_decision(
         steps = []
         state.request.metadata["assistant_loop_steps"] = steps
     trace_event = _decision_trace_event(decision, iteration)
-    memory_selection = _memory_tool_selection_trace(state.request.metadata)
     decision_trace = state.request.metadata.setdefault("decision_trace", [])
     if isinstance(decision_trace, list):
         decision_trace.append(trace_event)
@@ -2024,7 +1993,6 @@ def _record_react_decision(
             "safety_notes": decision.safety_notes,
             "plan_step_count": len(decision.plan.steps) if decision.plan is not None else (len(state.plan.steps) if state.plan is not None else 0),
             "plan_status": state.plan_status,
-            "memory_tool_selection": memory_selection,
         }
     )
     _emit_agent_trace_event(graph_state, trace_event)
@@ -2041,8 +2009,6 @@ def _record_react_decision(
     if context_summary:
         output_summary["context"] = context_summary
         output_summary["context_report_v1"] = _context_report_summary(context, state)
-    if memory_selection:
-        output_summary["memory_tool_selection"] = memory_selection
     _append_trace(
         graph_state,
         event_type="assistant_decision",
@@ -2074,9 +2040,6 @@ def _context_trace_summary(context: AssistantDecisionContext | None) -> dict[str
         "context_sources": pack.context_source_report.model_dump(mode="json"),
         "compactor_type": pack.compactor_type,
         "context_summary_present": pack.context_summary is not None,
-        "memory_promotion_candidates": _metadata_int(pack.request.metadata, "memory_promotion_candidates"),
-        "memory_promotion_written": _metadata_int(pack.request.metadata, "memory_promotion_written"),
-        "memory_tool_selection": _memory_tool_selection_trace(pack.request.metadata),
     }
 
 
@@ -2090,22 +2053,6 @@ def _context_report_summary(
         selected_tool_specs=_selected_native_tool_specs(context),
         compiled_request=compilation.chat_request,
     ).model_dump(mode="json")
-
-
-def _memory_tool_selection_trace(metadata: dict[str, Any]) -> dict[str, Any]:
-    selection = metadata.get("memory_tool_selection")
-    if not isinstance(selection, dict):
-        return {}
-    return {
-        "strategy": selection.get("strategy"),
-        "action": selection.get("action"),
-        "selected_memory_tool": selection.get("selected_memory_tool"),
-        "keyword_signals": selection.get("keyword_signals", []),
-        "missed_signals": selection.get("missed_signals", []),
-        "candidate_mode": selection.get("candidate_mode"),
-        "auto_write": selection.get("auto_write"),
-        "vector_shadow_hit_count": _selection_vector_hit_count(selection),
-    }
 
 
 def _selection_vector_hit_count(selection: dict[str, Any]) -> int:

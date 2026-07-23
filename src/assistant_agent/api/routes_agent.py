@@ -11,7 +11,6 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from assistant_agent.agent_routing import AgentRouteRequest, AgentRouter, create_default_agent_router
 from assistant_agent.api import gateway_runtime
 from assistant_agent.api.auth import get_auth_context, require_auth_bound_identity
-from assistant_agent.memory.remote import MemoryServiceOperationError
 from assistant_agent.schemas.agent_control_plane import (
     AgentAuditEvent,
     AgentAuditEventList,
@@ -23,22 +22,6 @@ from assistant_agent.schemas.agent_control_plane import (
 )
 from assistant_agent.schemas.api import AgentRunResponse, PROTOCOL_VERSION
 from assistant_agent.schemas.identity import RequestIdentity
-from assistant_agent.schemas.memory import MemoryType
-from assistant_agent.schemas.memory_audit import (
-    MemoryAuditEventList,
-    MemoryAuditItem,
-    MemoryAuditList,
-    MemoryAuditReport,
-    MemoryConfirmationList,
-    MemoryConfirmationResult,
-    MemoryDeleteResult,
-    MemoryExport,
-    MemoryMetricsReport,
-    MemoryProfileRepairResult,
-    MemoryRetentionSweepResult,
-    MemoryUpdateRequest,
-)
-from assistant_agent.schemas.memory_snapshot import MemorySnapshot, MemoryStorageSnapshot
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.schemas.sessions import SessionCreate, SessionDeleteResult, SessionList, SessionRecord
 from assistant_agent.services.assistant_run_service import (
@@ -71,8 +54,6 @@ from assistant_agent.services.gateway_turn_facade import (
     GatewayTurnResult,
     GatewayTurnTimeout,
 )
-from assistant_agent.services.memory_audit import MemoryAuditService
-from assistant_agent.services.memory_snapshot import MemorySnapshotService
 from assistant_agent.services.agent_pilot_readiness import PilotReadinessChecker, PilotReadinessReport
 from assistant_agent.services.provider_readiness import build_provider_readiness_report
 from assistant_agent.services.trace_query import (
@@ -575,340 +556,6 @@ def get_control_plane_replay_preview(run_id: str) -> AgentControlPlaneReplayPrev
     return summary
 
 
-@router.get("/memory/users/{user_id}/items", response_model=MemoryAuditList)
-def list_memory_items(
-    user_id: str,
-    memory_type: MemoryType | None = Query(default=None),
-    include_content: bool = Query(default=False),
-    auth_context: AuthContext = Depends(get_auth_context),
-) -> MemoryAuditList:
-    identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, source="path", auth_context=auth_context))
-    result = _memory_audit_service().list_items_for_identity(
-        identity,
-        memory_type=memory_type,
-        include_content=include_content,
-    )
-    _record_memory_control_plane_event(
-        identity,
-        action="list_memory_items",
-        event_type="memory_access",
-        detail={
-            "memory_type": memory_type,
-            "include_content": include_content,
-            "item_count": result.total,
-        },
-    )
-    return result
-
-
-@router.get("/memory/users/{user_id}/items/{memory_id}", response_model=MemoryAuditItem)
-def get_memory_item(
-    user_id: str,
-    memory_id: str,
-    include_content: bool = Query(default=True),
-    auth_context: AuthContext = Depends(get_auth_context),
-) -> MemoryAuditItem:
-    identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, source="path", auth_context=auth_context))
-    item = _memory_audit_service().get_item_for_identity(
-        identity,
-        memory_id=memory_id,
-        include_content=include_content,
-    )
-    if item is None:
-        raise HTTPException(status_code=404, detail="memory item not found")
-    _record_memory_control_plane_event(
-        identity,
-        action="get_memory_item",
-        event_type="memory_access",
-        detail={
-            "memory_id": memory_id,
-            "include_content": include_content,
-            "content_included": include_content,
-        },
-    )
-    return item
-
-
-@router.put("/memory/users/{user_id}/items/{memory_id}", response_model=MemoryAuditItem)
-def update_memory_item(
-    user_id: str,
-    memory_id: str,
-    request: MemoryUpdateRequest,
-    auth_context: AuthContext = Depends(get_auth_context),
-) -> MemoryAuditItem:
-    identity = _require_trial_access_for_identity(
-        _identity_from_user_id(user_id, source="path", auth_context=auth_context)
-    )
-    try:
-        item = _memory_audit_service().update_item_for_identity(
-            identity,
-            memory_id=memory_id,
-            text=request.text,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except MemoryServiceOperationError as exc:
-        raise HTTPException(
-            status_code=503 if exc.recoverable else 409,
-            detail="memory update is temporarily unavailable" if exc.recoverable else str(exc),
-        ) from exc
-    if item is None:
-        raise HTTPException(status_code=404, detail="memory item not found")
-    _record_memory_control_plane_event(
-        identity,
-        action="update_memory_item",
-        event_type="memory_update",
-        detail={"memory_id": memory_id},
-    )
-    return item
-
-
-@router.get("/memory/users/{user_id}/audit", response_model=MemoryAuditReport)
-def audit_memory(
-    user_id: str,
-    auth_context: AuthContext = Depends(get_auth_context),
-) -> MemoryAuditReport:
-    identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, source="path", auth_context=auth_context))
-    result = _memory_audit_service().audit_for_identity(identity)
-    _record_memory_control_plane_event(
-        identity,
-        action="audit_memory",
-        event_type="memory_access",
-        detail={
-            "total": result.total,
-            "duplicate_group_count": len(result.duplicate_groups),
-            "warning_count": len(result.warnings),
-            "expired_count": result.expired_count,
-            "sensitive_count": result.sensitive_count,
-            "profile_present": result.profile_present,
-        },
-    )
-    return result
-
-
-@router.get("/memory/users/{user_id}/events", response_model=MemoryAuditEventList)
-def list_memory_events(
-    user_id: str,
-    event_type: str | None = Query(default=None),
-    limit: int = Query(default=100, ge=1, le=1000),
-    auth_context: AuthContext = Depends(get_auth_context),
-) -> MemoryAuditEventList:
-    identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, source="path", auth_context=auth_context))
-    return _memory_audit_service().events_for_identity(
-        identity,
-        event_type=event_type,
-        limit=limit,
-    )
-
-
-@router.get("/memory/users/{user_id}/metrics", response_model=MemoryMetricsReport)
-def get_memory_metrics(
-    user_id: str,
-    auth_context: AuthContext = Depends(get_auth_context),
-) -> MemoryMetricsReport:
-    identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, source="path", auth_context=auth_context))
-    return _memory_audit_service().metrics_for_identity(identity)
-
-
-@router.get("/memory/users/{user_id}/confirmations", response_model=MemoryConfirmationList)
-def list_memory_confirmations(
-    user_id: str,
-    include_resolved: bool = Query(default=False),
-    auth_context: AuthContext = Depends(get_auth_context),
-) -> MemoryConfirmationList:
-    identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, source="path", auth_context=auth_context))
-    return _memory_audit_service().confirmations_for_identity(
-        identity,
-        include_resolved=include_resolved,
-    )
-
-
-@router.post("/memory/users/{user_id}/confirmations/{confirmation_id}/confirm", response_model=MemoryConfirmationResult)
-def confirm_memory_confirmation(
-    user_id: str,
-    confirmation_id: str,
-    auth_context: AuthContext = Depends(get_auth_context),
-) -> MemoryConfirmationResult:
-    identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, source="path", auth_context=auth_context))
-    try:
-        result = _memory_audit_service().confirm_memory_for_identity(
-            identity,
-            confirmation_id=confirmation_id,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    if result is None:
-        raise HTTPException(status_code=404, detail="memory confirmation not found")
-    return result
-
-
-@router.post("/memory/users/{user_id}/confirmations/{confirmation_id}/reject", response_model=MemoryConfirmationResult)
-def reject_memory_confirmation(
-    user_id: str,
-    confirmation_id: str,
-    auth_context: AuthContext = Depends(get_auth_context),
-) -> MemoryConfirmationResult:
-    identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, source="path", auth_context=auth_context))
-    try:
-        result = _memory_audit_service().reject_memory_for_identity(
-            identity,
-            confirmation_id=confirmation_id,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    if result is None:
-        raise HTTPException(status_code=404, detail="memory confirmation not found")
-    return result
-
-
-@router.get("/memory/users/{user_id}/profile/status", response_model=MemoryProfileRepairResult)
-def get_memory_profile_status(
-    user_id: str,
-    auth_context: AuthContext = Depends(get_auth_context),
-) -> MemoryProfileRepairResult:
-    identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, source="path", auth_context=auth_context))
-    return _memory_audit_service().profile_status_for_identity(identity)
-
-
-@router.post("/memory/users/{user_id}/profile/rebuild", response_model=MemoryProfileRepairResult)
-def rebuild_memory_profile(
-    user_id: str,
-    dry_run: bool = Query(default=False),
-    auth_context: AuthContext = Depends(get_auth_context),
-) -> MemoryProfileRepairResult:
-    identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, source="path", auth_context=auth_context))
-    return _memory_audit_service().rebuild_profile_for_identity(
-        identity,
-        dry_run=dry_run,
-    )
-
-
-@router.get("/memory/users/{user_id}/export", response_model=MemoryExport)
-def export_memory(
-    user_id: str,
-    include_content: bool = Query(default=True),
-    auth_context: AuthContext = Depends(get_auth_context),
-) -> MemoryExport:
-    identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, source="path", auth_context=auth_context))
-    result = _memory_audit_service().export_for_identity(
-        identity,
-        include_content=include_content,
-    )
-    _record_memory_control_plane_event(
-        identity,
-        action="export_memory",
-        event_type="memory_export",
-        detail={
-            "include_content": include_content,
-            "item_count": len(result.items),
-        },
-    )
-    return result
-
-
-@router.post("/memory/users/{user_id}/retention/sweep", response_model=MemoryRetentionSweepResult)
-def sweep_expired_memory(
-    user_id: str,
-    hard_delete: bool = Query(default=False),
-    dry_run: bool = Query(default=False),
-    auth_context: AuthContext = Depends(get_auth_context),
-) -> MemoryRetentionSweepResult:
-    identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, source="path", auth_context=auth_context))
-    return _memory_audit_service().sweep_expired_for_identity(
-        identity,
-        hard_delete=hard_delete,
-        dry_run=dry_run,
-    )
-
-
-@router.get("/memory/users/{user_id}/snapshot", response_model=MemorySnapshot)
-def get_memory_snapshot(
-    user_id: str,
-    session_id: str | None = Query(default=None),
-    query: str = Query(default=""),
-    top_k: int = Query(default=5, ge=1, le=50),
-    max_context_chars: int = Query(default=1000, ge=50, le=4000),
-    include_content: bool = Query(default=False),
-    include_superseded: bool = Query(default=False),
-    auth_context: AuthContext = Depends(get_auth_context),
-) -> MemorySnapshot:
-    identity = _require_trial_access_for_identity(
-        _identity_from_user_id(user_id, session_id=session_id, source="path", auth_context=auth_context)
-    )
-    result = _memory_snapshot_service().snapshot_for_identity(
-        identity,
-        query=query,
-        top_k=top_k,
-        max_context_chars=max_context_chars,
-        include_content=include_content,
-        include_superseded=include_superseded,
-    )
-    _record_memory_control_plane_event(
-        identity,
-        action="memory_snapshot",
-        event_type="memory_access",
-        detail={
-            "top_k": top_k,
-            "max_context_chars": max_context_chars,
-            "include_content": include_content,
-            "include_superseded": include_superseded,
-            "memory_context_total": result.memory_context.total,
-            "memory_block_count": len(result.memory_context.blocks),
-            "conversation_turn_count": result.conversation_history.total,
-        },
-    )
-    return result
-
-
-@router.delete("/memory/users/{user_id}/items/{memory_id}", response_model=MemoryDeleteResult)
-def delete_memory_item(
-    user_id: str,
-    memory_id: str,
-    auth_context: AuthContext = Depends(get_auth_context),
-) -> MemoryDeleteResult:
-    identity = _require_trial_access_for_identity(_identity_from_user_id(user_id, source="path", auth_context=auth_context))
-    result = _memory_audit_service().delete_item_for_identity(
-        identity,
-        memory_id=memory_id,
-    )
-    if result.deleted.get("memory_items", 0) == 0:
-        raise HTTPException(status_code=404, detail="memory item not found")
-    _record_memory_control_plane_event(
-        identity,
-        action="delete_memory_item",
-        event_type="memory_delete",
-        detail={
-            "memory_id": memory_id,
-            "deleted": result.deleted,
-        },
-    )
-    return result
-
-
-@router.delete("/memory/users/{user_id}/sessions/{session_id}", response_model=MemoryDeleteResult)
-def delete_memory_session(
-    user_id: str,
-    session_id: str,
-    auth_context: AuthContext = Depends(get_auth_context),
-) -> MemoryDeleteResult:
-    identity = _require_trial_access_for_identity(
-        _identity_from_user_id(user_id, session_id=session_id, source="path", auth_context=auth_context)
-    )
-    result = _memory_audit_service().delete_session_for_identity(
-        identity,
-    )
-    _record_memory_control_plane_event(
-        identity,
-        action="delete_memory_session",
-        event_type="memory_delete",
-        detail={
-            "session_id": session_id,
-            "deleted": result.deleted,
-        },
-    )
-    return result
-
-
 @router.post("/beta/feedback", response_model=BetaFeedbackRecord)
 def submit_beta_feedback(
     feedback: BetaFeedbackCreate,
@@ -959,7 +606,6 @@ def delete_beta_user_data(
         "protocol_version": PROTOCOL_VERSION,
         "user_id": user_id,
         "deleted": {
-            "memory_items": runtime_deleted["memory_items"],
             "run_history_records": runtime_deleted["run_history_records"],
             "trace_events": runtime_deleted["trace_events"],
             "feedback_records": feedback_deleted,
@@ -975,27 +621,6 @@ def _assert_run_belongs_to_user(run_id: str, user_id: str) -> None:
         raise HTTPException(status_code=404, detail="run not found")
     if summary.user_id != user_id:
         raise HTTPException(status_code=403, detail="run does not belong to user")
-
-
-def _memory_audit_service() -> MemoryAuditService:
-    return get_assistant_runtime_app().memory_audit_service()
-
-
-def _memory_snapshot_service() -> MemorySnapshotService:
-    runtime = get_agent_runtime()
-    conversation_store = get_default_conversation_store(runtime.config)
-    return MemorySnapshotService(
-        memory_manager=runtime.memory_manager,
-        session_store=runtime.session_store,
-        conversation_store=conversation_store,
-        storage=MemoryStorageSnapshot(
-            memory_store=type(runtime.memory_store).__name__,
-            session_store=type(runtime.session_store).__name__,
-            conversation_store=type(conversation_store).__name__,
-            checkpointer=type(runtime.checkpointer).__name__ if runtime.checkpointer is not None else "none",
-        ),
-        config=runtime.config,
-    )
 
 
 def _control_plane_query_service() -> AgentControlPlaneQueryService:
@@ -1025,26 +650,6 @@ def _record_auth_audit_event(resolution: ResolvedRequestIdentity, *, action: str
             user_id=resolution.identity.user_id,
             session_id=resolution.identity.session_id,
             detail=resolution.metadata(),
-        )
-    )
-
-
-def _record_memory_control_plane_event(
-    identity: RequestIdentity,
-    *,
-    action: str,
-    event_type: str,
-    detail: dict[str, Any],
-) -> None:
-    _record_control_plane_audit_event(
-        audit_event(
-            event_type=event_type,
-            component="memory_api",
-            action=action,
-            outcome="allowed",
-            user_id=identity.user_id,
-            session_id=identity.session_id,
-            detail=detail,
         )
     )
 

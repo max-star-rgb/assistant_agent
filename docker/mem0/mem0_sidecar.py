@@ -54,7 +54,7 @@ def _build_memory() -> Memory:
                 "provider": "qdrant",
                 "config": {
                     "client": _qdrant_client(),
-                    "collection_name": "assistant_agent_memory_bakeoff",
+                    "collection_name": "assistant_agent_memory",
                     "embedding_model_dims": 1024,
                 },
             },
@@ -112,8 +112,12 @@ def list_memories(
     user_id: str | None = Query(None),
     agent_id: str | None = Query(None),
     run_id: str | None = Query(None),
+    limit: int = Query(5, ge=1, le=50),
 ) -> dict[str, Any]:
-    return _result(memory().get_all(filters=_entity_filters(locals())))
+    results = _result(
+        memory().get_all(filters=_entity_filters(locals()))
+    ).get("results", [])
+    return {"results": results[:limit]}
 
 
 @app.get("/memories/{memory_id}")

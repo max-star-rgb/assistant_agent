@@ -75,9 +75,9 @@ Tool 注册时会检查绑定字段存在、没有重复且静态默认值符合
 字段，`ActionValidator` 统一返回 `runtime_owned_tool_input`；内部 observer/worker 如需提供帧引用等
 可信动态值，必须使用 `ToolExecutor.runtime_input`，该通道也只能覆盖已声明的 runtime-owned 字段。
 
-这些字段都是工具级静态事实，不根据输入中的 `action` 动态改变安全语义。当前主模型只看到只读
-`memory_search` 与 `memory_get`，二者共享 `toolset="memory"`；记忆 capture 是 runtime 生命周期，
-不是隐藏在某个动态 `action` 后面的模型工具。
+这些字段都是工具级静态事实，不根据输入中的 `action` 动态改变安全语义。长期记忆不是工具：
+主模型不看到 `memory_search`、`memory_get` 或 `memory_save`；Mem0 recall/capture 是 runtime
+生命周期。
 
 未知或未声明分类的本地工具使用保守默认值：`category="dangerous"` 且
 `requires_confirmation=true`。
@@ -250,11 +250,7 @@ category、确认、profile、env 等系统字段不会发送给模型，也不�
 一份混合 JSON 中剥离。adapter 只挑选 provider 协议需要的 name、description 和 input schema。
 
 所有仓库内置工具的模型可见参数都应提供简短、明确的中文 `description`；只写 Pydantic 类型或
-校验约束而不解释字段语义，不视为完整工具契约。当前常见工具中，`memory_search` 只接收必填 `query`；
-`memory_get` 只接收必填 `memory_id`；`memory_save` 不注册，也不会进入 Provider payload；
-Agent-Service 默认 profile 只直接暴露 `memory_search`，因为其 observation 已返回完整匹配记录，
-不再为同一读取流程额外支付 `memory_get` schema；`memory_get` 仍保留在 Registry 供其他显式 profile 使用。
-`shopping_search` 向模型暴露 `query` 及会改变结果的预算和平台过滤条件，固定候选数量和
+校验约束而不解释字段语义，不视为完整工具契约。`shopping_search` 向模型暴露 `query` 及会改变结果的预算和平台过滤条件，固定候选数量和
 前序视觉结果由 runtime binding 补齐；购物请求不携带未使用的身份、memory context 或假想
 Provider 兼容字段。`weather` 暴露 `location`、`target_date` 和
 `days`，公制单位由 runtime 固定。`vision_understanding.question` 等没有必填要求但会改变任务结果的
@@ -356,8 +352,6 @@ durable task 协议中处理；通用 executor 不维护进程内重复调用 le
 
 - `calendar_search`: `category=read`, `requires_confirmation=false`；
 - `calendar_create`: `category=write`, `requires_confirmation=true`；
-- `memory_search`: `category=read`, `requires_confirmation=false`；
-- `memory_get`: `category=read`, `requires_confirmation=false`。
 
 未确认的通用写工具不会调用 `tool.run()`，而是返回：
 

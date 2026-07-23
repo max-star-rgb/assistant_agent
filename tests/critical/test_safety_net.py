@@ -1,22 +1,25 @@
 """默认离线安全网：只保护少量稳定、跨层且高风险的运行边界。"""
 
-from datetime import datetime, timezone
 import importlib
+
+from pydantic import BaseModel, Field
 
 from assistant_agent.agent.runtime import AgentGraphRuntime
 from assistant_agent.config import ProviderConfig
 from assistant_agent.gateway.event_mapping import realtime_event_to_frame
-from assistant_agent.memory.store import InMemoryStore
+from assistant_agent.memory.mem0.base import bind_mem0_identity
+from assistant_agent.memory.mem0.store import Mem0MemoryStore
 from assistant_agent.realtime.event_mapping import map_agent_event_stream
 from assistant_agent.schemas.assistant_decision import NativeToolCall
 from assistant_agent.schemas.events import AgentEvent
+from assistant_agent.schemas.identity import RequestIdentity
 from assistant_agent.schemas.llm_events import (
     LLMEvent,
     LLMEventAccumulator,
     LLMToolCallDelta,
 )
-from assistant_agent.schemas.memory import MemoryItem, MemoryQuery
 from assistant_agent.schemas.requests import UserRequest
+from assistant_agent.schemas.tools import ToolResult
 from assistant_agent.services.chat_adapter import (
     ChatProviderError,
     ChatRequest,
@@ -25,6 +28,8 @@ from assistant_agent.services.chat_adapter import (
 )
 from assistant_agent.services.event_sink import ListEventSink
 from assistant_agent.services.session_store import InMemorySessionStore
+from assistant_agent.tools.base import ToolBase, ToolContext
+from assistant_agent.tools.registry import ToolRegistry
 
 
 def _offline_config() -> ProviderConfig:
@@ -49,6 +54,26 @@ class _CancelledToken:
         return True
 
 
+class _ProbeInput(BaseModel):
+    value: str = Field(min_length=1)
+
+
+class _ProbeTool(ToolBase):
+    name = "probe_tool"
+    description = "Return a test value."
+    input_schema = _ProbeInput
+    output_schema = _ProbeInput
+    category = "read"
+    requires_confirmation = False
+
+    def _run(self, input: _ProbeInput, context: ToolContext) -> ToolResult:
+        return ToolResult(
+            tool_name=self.name,
+            success=True,
+            data={"value": input.value},
+        )
+
+
 def test_package_and_runtime_initialize_offline() -> None:
     package = importlib.import_module("assistant_agent")
     runtime = AgentGraphRuntime(config=_offline_config())
@@ -56,7 +81,9 @@ def test_package_and_runtime_initialize_offline() -> None:
         assert package is not None
         assert runtime.chat_adapter.provider == "mock"
         assert runtime.registry.sealed is True
-        assert runtime.registry.get("memory_search") is not None
+        assert "memory_search" not in runtime.registry.list()
+        assert isinstance(runtime.memory_store, Mem0MemoryStore)
+        assert runtime.memory_store.supports_turn_capture is False
     finally:
         runtime.close()
 
@@ -66,7 +93,6 @@ def test_plain_text_run_completes() -> None:
     runtime = AgentGraphRuntime(
         config=_offline_config(),
         chat_adapter=MockChatAdapter(),
-        memory_store=InMemoryStore(),
         session_store=InMemorySessionStore(),
     )
     try:
@@ -89,17 +115,8 @@ def test_plain_text_run_completes() -> None:
 
 
 def test_provider_native_tool_call_completes_through_governed_runtime() -> None:
-    memory_store = InMemoryStore()
-    memory_store.save(
-        MemoryItem(
-            memory_id="memory-sentinel",
-            user_id="tool-user",
-            memory_type="preference",
-            content={"value": "tool-observation-sentinel"},
-            summary="tool-observation-sentinel",
-            created_at=datetime.now(timezone.utc),
-        )
-    )
+    registry = ToolRegistry()
+    registry.register(_ProbeTool())
     adapter = _ScriptedChatAdapter(
         [
             ChatResult(
@@ -109,8 +126,8 @@ def test_provider_native_tool_call_completes_through_governed_runtime() -> None:
                 tool_calls=[
                     NativeToolCall(
                         id="call-sentinel",
-                        name="memory_search",
-                        arguments={"query": "tool-observation-sentinel"},
+                        name="probe_tool",
+                        arguments={"value": "tool-observation-sentinel"},
                     )
                 ],
             ),
@@ -123,9 +140,9 @@ def test_provider_native_tool_call_completes_through_governed_runtime() -> None:
         ]
     )
     runtime = AgentGraphRuntime(
+        registry=registry,
         config=_offline_config(),
         chat_adapter=adapter,
-        memory_store=memory_store,
         session_store=InMemorySessionStore(),
     )
     try:
@@ -140,10 +157,10 @@ def test_provider_native_tool_call_completes_through_governed_runtime() -> None:
         assert state.status == "completed"
         assert state.response is not None
         assert len(adapter.requests) == 2
-        assert [call.tool_name for call in state.tool_calls] == ["memory_search"]
+        assert [call.tool_name for call in state.tool_calls] == ["probe_tool"]
         assert len(state.tool_results) == 1
         assert state.tool_results[0].success is True
-        assert state.tool_results[0].tool_name == "memory_search"
+        assert state.tool_results[0].tool_name == "probe_tool"
     finally:
         runtime.close()
 
@@ -167,7 +184,6 @@ def test_provider_timeout_returns_terminal_retry_response() -> None:
     runtime = AgentGraphRuntime(
         config=_offline_config(),
         chat_adapter=adapter,
-        memory_store=InMemoryStore(),
         session_store=InMemorySessionStore(),
     )
     try:
@@ -191,7 +207,6 @@ def test_cancelled_run_terminates_without_final_response() -> None:
     sink = ListEventSink()
     runtime = AgentGraphRuntime(
         config=_offline_config(),
-        memory_store=InMemoryStore(),
         session_store=InMemorySessionStore(),
     )
     try:
@@ -221,13 +236,13 @@ def test_core_event_contract_reaches_gateway_frame() -> None:
             tool_call_delta=LLMToolCallDelta(
                 index=0,
                 id="call-sentinel",
-                name_delta="memory_search",
-                arguments_delta='{"query":"query-sentinel"}',
+                name_delta="probe_tool",
+                arguments_delta='{"value":"query-sentinel"}',
             ),
         )
     )
     assert accumulator.finalize_tool_calls()[0].arguments == {
-        "query": "query-sentinel"
+        "value": "query-sentinel"
     }
 
     realtime_events = map_agent_event_stream(
@@ -252,7 +267,7 @@ def test_core_event_contract_reaches_gateway_frame() -> None:
     assert frame["payload"]["text"] == "frame-payload-sentinel"
 
 
-def test_session_and_memory_are_isolated_by_user_identity() -> None:
+def test_session_and_mem0_identity_are_isolated_by_user_identity() -> None:
     sessions = InMemorySessionStore()
     sessions.touch_run(
         user_id="identity-user-a",
@@ -271,32 +286,33 @@ def test_session_and_memory_are_isolated_by_user_identity() -> None:
         status="completed",
     )
 
-    memories = InMemoryStore()
-    memories.save(
-        MemoryItem(
-            memory_id="identity-memory",
-            user_id="identity-user-a",
-            session_id="shared-session",
-            memory_type="preference",
-            summary="identity-memory-sentinel",
-            content={"value": "identity-memory-sentinel"},
-            created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
-        )
-    )
-
     session_a = sessions.get("identity-user-a", "shared-session")
     session_b = sessions.get("identity-user-b", "shared-session")
     assert session_a is not None and session_a.last_run_id == "run-a"
     assert session_b is not None and session_b.last_run_id == "run-b"
-    assert (
-        memories.search(
-            MemoryQuery(user_id="identity-user-a", query="identity-memory-sentinel")
-        ).total
-        == 1
+    identity_a = bind_mem0_identity(
+        RequestIdentity.for_user(
+            user_id="identity-user-a",
+            session_id="shared-session",
+        ),
+        namespace="test",
     )
-    assert (
-        memories.search(
-            MemoryQuery(user_id="identity-user-b", query="identity-memory-sentinel")
-        ).total
-        == 0
+    identity_b = bind_mem0_identity(
+        RequestIdentity.for_user(
+            user_id="identity-user-b",
+            session_id="shared-session",
+        ),
+        namespace="test",
     )
+    project_identity = bind_mem0_identity(
+        RequestIdentity.for_user(
+            user_id="identity-user-a",
+            project_id="other-project",
+            session_id="shared-session",
+        ),
+        namespace="test",
+    )
+    assert identity_a.user_id != identity_b.user_id
+    assert identity_a.agent_id == identity_b.agent_id
+    assert identity_a.user_id == project_identity.user_id
+    assert identity_a.agent_id != project_identity.agent_id

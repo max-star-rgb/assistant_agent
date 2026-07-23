@@ -17,8 +17,6 @@ EventType = Literal[
     "tool_completed",
     "tool_finished",
     "tool_failed",
-    "memory_loaded",
-    "memory_saved",
     "progress_message",
     "response_delta",
     "agent_response",

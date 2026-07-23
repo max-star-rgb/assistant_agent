@@ -1,10 +1,8 @@
 """Application and provider configuration."""
 
 import os
-import re
 from collections.abc import Mapping
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Literal
 
 from assistant_agent.provider_mode import ProviderMode, get_provider_mode
@@ -23,23 +21,13 @@ AgentGraphMode = Literal["conditional", "assistant_loop"]
 ContextCompactorMode = Literal["off", "deterministic", "llm"]
 ConversationHistoryBackend = Literal["memory", "jsonl"]
 LangGraphCheckpointerBackend = Literal["none", "memory"]
-LocalMemoryBackend = Literal["memory", "jsonl", "sqlite"]
-MemoryBackend = str
-MemoryFrameworkName = Literal["hindsight", "mem0"]
-MemoryFrameworkFallbackBackend = Literal["none", "memory", "jsonl", "sqlite"]
-RemoteMemoryServiceAdapterKind = Literal["unavailable", "http"]
 
 
-DEFAULT_JSONL_MEMORY_PATH = ".local/memory/long_term_memories.jsonl"
-DEFAULT_SQLITE_MEMORY_PATH = ".local/memory/long_term_memories.sqlite3"
-DEFAULT_FRAMEWORK_LEDGER_PATH = ".local/memory/framework_governance.sqlite3"
 DEFAULT_QWEN_REALTIME_VISION_BASE_URL = "wss://dashscope.aliyuncs.com/api-ws/v1/realtime"
 DEFAULT_QWEN_REALTIME_VISION_REGION = "cn-beijing"
 DEFAULT_QWEN_IMAGE_SEARCH_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 DEFAULT_QWEN_IMAGE_SEARCH_MODEL = "qwen3.7-plus"
 SUPPORTED_QWEN_REALTIME_VISION_REGIONS = {"cn-beijing", "ap-southeast-1"}
-_REMOTE_MEMORY_BACKENDS = {"hybrid_remote", "dual_core", "remote_service"}
-_MEMORY_BACKEND_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
 VisionProviderName = str
@@ -100,24 +88,10 @@ class ProviderConfig:
     ark_vision_model: str = "doubao-seed-2-0-lite-260215"
     seed_vision_base_url: str = "https://api.seed.example/v1/vision"
     seed_vision_model: str = "seed-vision"
-    memory_backend: MemoryBackend = "memory"
-    memory_plugin_enabled: bool = False
-    memory_local_backend: LocalMemoryBackend = "jsonl"
-    memory_path: str = DEFAULT_JSONL_MEMORY_PATH
-    memory_server_base_url: str | None = None
-    memory_server_timeout_seconds: float = 2.0
-    memory_server_query_strategy: str = "vector"
-    memory_server_direct_answer: bool = False
-    memory_server_include_media_chunks: bool = False
-    memory_remote_service_adapter: RemoteMemoryServiceAdapterKind = "unavailable"
-    memory_framework: MemoryFrameworkName = "mem0"
-    memory_framework_version: str = ""
-    memory_framework_base_url: str | None = None
-    memory_framework_api_key: str | None = None
-    memory_framework_timeout_seconds: float = 5.0
-    memory_framework_identity_namespace: str = "assistant-agent-local"
-    memory_framework_ledger_path: str = DEFAULT_FRAMEWORK_LEDGER_PATH
-    memory_framework_fallback_backend: MemoryFrameworkFallbackBackend = "none"
+    mem0_base_url: str | None = None
+    mem0_api_key: str | None = None
+    mem0_timeout_seconds: float = 5.0
+    mem0_identity_namespace: str = "assistant-agent"
     memory_capture_max_workers: int = 2
     memory_capture_max_pending: int = 64
     memory_capture_shutdown_timeout_seconds: float = 10.0
@@ -211,11 +185,6 @@ class ProviderConfig:
     durable_task_poll_seconds: float = 1.0
 
     def __post_init__(self) -> None:
-        expected = "0.8.4" if self.memory_framework == "hindsight" else "2.0.11"
-        if not self.memory_framework_version:
-            object.__setattr__(self, "memory_framework_version", expected)
-        elif self.memory_framework_version != expected:
-            raise ValueError(f"unsupported {self.memory_framework} version: {self.memory_framework_version}")
         self.validate_provider_mode()
 
     @classmethod
@@ -253,38 +222,11 @@ class ProviderConfig:
         qwen_realtime_vision_region = _qwen_realtime_vision_region(
             source.get("QWEN_REALTIME_VISION_REGION")
         )
-        memory_remote_enabled = _bool_env(source.get("MULTIMODAL_AGENT_MEMORY_REMOTE_ENABLED"), False)
-        memory_framework_enabled = _bool_env(
-            source.get("MULTIMODAL_AGENT_MEMORY_FRAMEWORK_ENABLED"),
-            False,
-        )
-        memory_plugin_enabled = _bool_env(
-            source.get("MULTIMODAL_AGENT_MEMORY_PLUGIN_ENABLED"),
-            False,
-        )
-        memory_backend_env = source.get("MULTIMODAL_AGENT_MEMORY_BACKEND")
-        if not memory_backend_env and memory_framework_enabled:
-            memory_backend_env = "framework"
-        memory_backend = _memory_backend(
-            memory_backend_env,
-            allow_remote=allow_real_providers and memory_remote_enabled,
-            allow_framework=allow_real_providers and memory_framework_enabled,
-            allow_plugin=memory_plugin_enabled,
-        )
-        memory_local_backend = _memory_local_backend(
-            source.get("MULTIMODAL_AGENT_MEMORY_LOCAL_BACKEND"),
-            memory_backend=memory_backend,
-        )
-        memory_path = source.get("MULTIMODAL_AGENT_MEMORY_PATH") or _default_memory_path(
-            memory_backend,
-            memory_local_backend=memory_local_backend,
-        )
         conversation_history_backend = _conversation_history_backend(
             source.get("MULTIMODAL_AGENT_CONVERSATION_HISTORY_BACKEND"),
-            memory_backend=memory_backend,
         )
         conversation_history_path = source.get("MULTIMODAL_AGENT_CONVERSATION_HISTORY_PATH") or (
-            _default_conversation_history_path(memory_path)
+            ".local/memory/conversation_history.jsonl"
         )
         config = cls(
             provider_mode=provider_mode,
@@ -347,38 +289,15 @@ class ProviderConfig:
             ark_vision_model=source.get("ARK_VISION_MODEL", "doubao-seed-2-0-lite-260215"),
             seed_vision_base_url=source.get("SEED_VISION_BASE_URL", "https://api.seed.example/v1/vision"),
             seed_vision_model=source.get("SEED_VISION_MODEL", "seed-vision"),
-            memory_backend=memory_backend,
-            memory_plugin_enabled=memory_plugin_enabled,
-            memory_local_backend=memory_local_backend,
-            memory_path=memory_path,
-            memory_server_base_url=source.get("MEMORY_SERVER_BASE_URL")
-            or source.get("MULTIMODAL_AGENT_MEMORY_SERVER_BASE_URL"),
-            memory_server_timeout_seconds=_float_env(source.get("MEMORY_SERVER_TIMEOUT_SECONDS"), 2.0),
-            memory_server_query_strategy=source.get("MEMORY_SERVER_QUERY_STRATEGY") or "vector",
-            memory_server_direct_answer=_bool_env(source.get("MEMORY_SERVER_DIRECT_ANSWER"), False),
-            memory_server_include_media_chunks=_bool_env(source.get("MEMORY_SERVER_INCLUDE_MEDIA_CHUNKS"), False),
-            memory_remote_service_adapter=_memory_remote_service_adapter(
-                source.get("MULTIMODAL_AGENT_MEMORY_REMOTE_SERVICE_ADAPTER")
-                or source.get("MEMORY_REMOTE_SERVICE_ADAPTER"),
-                allow_remote=allow_real_providers and memory_remote_enabled,
+            mem0_base_url=source.get("MEM0_BASE_URL"),
+            mem0_api_key=source.get("MEM0_API_KEY"),
+            mem0_timeout_seconds=_float_env(
+                source.get("MEM0_TIMEOUT_SECONDS"),
+                5.0,
             ),
-            memory_framework=_memory_framework_name(
-                source.get("MULTIMODAL_AGENT_MEMORY_FRAMEWORK")
-            ),
-            memory_framework_version=source.get("MEMORY_FRAMEWORK_VERSION") or "",
-            memory_framework_base_url=source.get("MEMORY_FRAMEWORK_BASE_URL"),
-            memory_framework_api_key=source.get("MEMORY_FRAMEWORK_API_KEY"),
-            memory_framework_timeout_seconds=_float_env(
-                source.get("MEMORY_FRAMEWORK_TIMEOUT_SECONDS"), 5.0
-            ),
-            memory_framework_identity_namespace=(
-                source.get("MEMORY_FRAMEWORK_IDENTITY_NAMESPACE") or "assistant-agent-local"
-            ),
-            memory_framework_ledger_path=(
-                source.get("MEMORY_FRAMEWORK_LEDGER_PATH") or DEFAULT_FRAMEWORK_LEDGER_PATH
-            ),
-            memory_framework_fallback_backend=_memory_framework_fallback_backend(
-                source.get("MEMORY_FRAMEWORK_FALLBACK_BACKEND")
+            mem0_identity_namespace=(
+                source.get("MEM0_IDENTITY_NAMESPACE")
+                or "assistant-agent"
             ),
             memory_capture_max_workers=max(
                 1,
@@ -745,91 +664,18 @@ class ProviderConfig:
         )
 
 
-def _memory_backend(
-    value: str | None,
-    *,
-    allow_remote: bool = False,
-    allow_framework: bool = False,
-    allow_plugin: bool = False,
-) -> MemoryBackend:
-    backend_name = (value or "").strip().lower()
-    if backend_name in {"memory", "jsonl", "sqlite"}:
-        return backend_name
-    if backend_name in _REMOTE_MEMORY_BACKENDS:
-        return backend_name if allow_remote else "memory"
-    if backend_name == "framework":
-        return "framework" if allow_framework else "memory"
-    if allow_plugin and _MEMORY_BACKEND_NAME_PATTERN.fullmatch(backend_name):
-        return backend_name
-    return "memory"
-
-
-def _memory_framework_name(value: str | None) -> MemoryFrameworkName:
-    if value and value.strip().lower() == "hindsight":
-        return "hindsight"
-    return "mem0"
-
-
-def _memory_framework_fallback_backend(value: str | None) -> MemoryFrameworkFallbackBackend:
-    if value in {"memory", "jsonl", "sqlite"}:
-        return value
-    return "none"
-
-
-def _memory_local_backend(value: str | None, *, memory_backend: MemoryBackend) -> LocalMemoryBackend:
-    if value in {"memory", "jsonl", "sqlite"}:
-        return value
-    if memory_backend == "sqlite":
-        return "sqlite"
-    if memory_backend == "jsonl":
-        return "jsonl"
-    if memory_backend in {"hybrid_remote", "dual_core"}:
-        return "jsonl"
-    return "memory"
-
-
-def _memory_remote_service_adapter(
-    value: str | None,
-    *,
-    allow_remote: bool = False,
-) -> RemoteMemoryServiceAdapterKind:
-    if allow_remote and value and value.strip().lower() == "http":
-        return "http"
-    return "unavailable"
-
-
 def _conversation_history_backend(
     value: str | None,
-    *,
-    memory_backend: MemoryBackend,
 ) -> ConversationHistoryBackend:
     if value == "jsonl":
         return "jsonl"
-    if value == "memory":
-        return "memory"
-    return "jsonl" if memory_backend == "jsonl" else "memory"
-
-
-def _default_memory_path(
-    memory_backend: MemoryBackend,
-    *,
-    memory_local_backend: LocalMemoryBackend | None = None,
-) -> str:
-    if memory_backend == "sqlite" or (
-        memory_backend in {"hybrid_remote", "dual_core"} and memory_local_backend == "sqlite"
-    ):
-        return DEFAULT_SQLITE_MEMORY_PATH
-    return DEFAULT_JSONL_MEMORY_PATH
+    return "memory"
 
 
 def _langgraph_checkpointer_backend(value: str | None) -> LangGraphCheckpointerBackend:
     if value == "none":
         return "none"
     return "memory"
-
-
-def _default_conversation_history_path(memory_path: str) -> str:
-    return str(Path(memory_path).with_name("conversation_history.jsonl"))
 
 
 def _vision_provider(value: str | None, *, allow_real: bool = True) -> VisionProviderName:

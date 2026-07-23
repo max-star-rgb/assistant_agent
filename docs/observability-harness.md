@@ -221,15 +221,15 @@ validator 和 tool 证据在 Decision Trace 中按 iteration 聚合，Raw events
 `.run/Langfuse.run.xml` 无需参数，通过 `scripts/run_langfuse.py` 启停本机 Compose stack；
 停止该 Run 配置只执行 `docker compose stop`，不会删除数据卷。`.run/Assistant Client.run.xml`
 同样固化本机 8089 server、stream、progress、ACK 和 interactive 参数，作为文本手工测试入口。
-`.run/Memo.run.xml` 通过 `scripts/run_memo.py` 启动 Mem0 与 Qdrant；健康检查通过后该 Run
+`.run/Mem0.run.xml` 通过 `scripts/run_mem0.py` 启动 Mem0 与 Qdrant；健康检查通过后该 Run
 配置正常结束，但两个容器继续在后台运行。
 
-`Assistant Server` launcher 在 Provider 摘要之后一次性输出 `Dependencies`：Memo 仅在
-当前 runtime 选择 `framework/mem0` 时探测，状态为 `disabled / ready / unavailable`；
+`Assistant Server` launcher 在 Provider 摘要之后一次性输出 `Dependencies`：Mem0 仅在
+real mode 且配置 `MEM0_BASE_URL` 时探测，状态为 `disabled / ready / unavailable`；
 Langfuse 同时显示服务可达性与 `export enabled/disabled`；Web search 显示随 runtime
 进程装配的 Tool Provider readiness，mock 模式为 `ready (mock)`，real 模式按显式选择的
 `http` 或 `tavily` 配置显示 `ready / unavailable`，不会为 Tavily 启动额外 relay 进程。
-Memo 与 Langfuse 的 HTTP 探活并行执行且使用亚秒级超时，失败只改变启动摘要，不阻断 Server，
+Mem0 与 Langfuse 的 HTTP 探活并行执行且使用亚秒级超时，失败只改变启动摘要，不阻断 Server，
 也不改变 Memory 降级、Web Tool 注册或 OpenTelemetry fail-open 语义。控制台不输出依赖 URL、
 凭据或底层异常。
 
@@ -440,7 +440,7 @@ public names, but they should map to this vocabulary.
 | `response.delta` | User-visible response text chunk was emitted. |
 | `response.final` | Final response was set. |
 | `response.delivered` | Realtime/entry recorded the final text actually delivered to the client. |
-| `memory.save.started` / `memory.save.finished` | Post-run memory save or promotion lifecycle. |
+| `memory.capture.queued` / `memory.capture.finished` | Post-response Mem0 capture lifecycle. |
 | `run.completed` | Run ended successfully. |
 | `run.failed` | Run ended with an error. |
 | `run.cancelled` | Run ended through cooperative cancellation. |
@@ -454,12 +454,11 @@ the result into assistant-facing data.
 `AssistantContextPack` construction is wrapped by the context observability
 helper, which emits `context.build.started` and `context.build.finished` with
 redacted budget, source-count, compaction, and tool-catalog summaries.
-Memory lifecycle calls are wrapped at the runtime and graph memory boundaries:
-`memory.load.started` / `memory.load.finished` summarize retrieval/injection
-counts, token budget fields, retrieval version, and injected memory IDs;
-`memory.save.started` / `memory.save.finished` summarize promotion/save
-decisions, skipped reasons, and written IDs. These events must not include
-memory summaries, rendered memory context, candidate content, or raw user text.
+Memory lifecycle calls are wrapped at the runtime boundary:
+`memory.load.started` / `memory.load.finished` distinguish session-start recall
+from turn-time snapshot reuse; `memory.capture.queued` /
+`memory.capture.finished` report non-blocking Mem0 add status. These events do
+not include raw user/assistant text or Mem0 responses.
 Final response tracing emits `response.final` with only prompt-safe response
 shape data such as message presence, character count, output-ref count, response
 data keys, status, and error count. It must not include the response text.
@@ -599,7 +598,7 @@ server 已用 `--allow-local-trace-content` 启动；`decision` 按 ReAct iterat
 
 推荐 PyCharm 本地流程：
 
-1. 运行 `.run/Memo.run.xml`，等待控制台输出 `Memo ready`。该配置随后结束，但记忆服务继续运行。
+1. 运行 `.run/Mem0.run.xml`，等待控制台输出 `Mem0 ready`。该配置随后结束，但记忆服务继续运行。
 2. 运行 `.run/Langfuse.run.xml`，等待控制台输出 `Langfuse ready`；需要持续保留该 Run 进程。
 3. 运行 `.run/Assistant Server.run.xml`。共享配置已带 `--allow-local-trace-content`，
    并持续写 `.data/gateway_events.jsonl`；如果个人配置移除了内容开关，Conversation 层会不可用。
@@ -688,7 +687,7 @@ possible:
 | LLM | chat call count, latency, token usage, native tool-call rate, direct-answer rate, provider error count. |
 | Context | total chars/tokens, budget ratio, compaction triggered count, overflow retry count. |
 | Gateway/realtime | active runs, interrupt count, cancel source, hangup cancellation, deadline expiry. |
-| Memory | retrieval count, save candidate count, confirmed/rejected count, promotion counters. |
+| Memory | session recall count/status, snapshot reuse count, background capture count/failure rate. |
 
 Do not add high-cardinality labels such as raw prompts, raw queries, full URLs,
 full memory text, full provider errors, or media payloads.
@@ -826,9 +825,8 @@ Regression tests should enforce these invariants:
   `react.decision` and terminal run events.
 - Successful native provider runtime and mock/offline ReAct runtime both emit
   `response.final` before the terminal run event.
-- Native provider runtime emits skipped `memory.save.started` /
-  `memory.save.finished` events when automatic task-summary memory is delegated
-  to explicit LLM `memory_save` tool calls.
+- Successful runs may enqueue `memory.turn_capture` after the terminal response;
+  capture failure never changes the already returned run result.
 - A validation rejection never enters `ToolExecutor`.
 - A failed tool carries error code, source, recovery action, and redacted message.
 - Cancel, interrupt, timeout, and hangup traces include their source.

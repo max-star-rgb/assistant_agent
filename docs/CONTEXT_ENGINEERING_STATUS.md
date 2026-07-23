@@ -17,10 +17,12 @@ Last updated: 2026-07-23
   实现仍保留，但 `MULTIMODAL_AGENT_CONTEXT_COMPACTOR` 不再接入 `AgentGraphRuntime`，构造函数显式传入
   compactor 也不会启用压缩。
 - 预算现状：字符/token 预算只报告、不裁剪；AgentRuntime 不执行 token-aware recent transcript、
-  字符预算裁剪或 structured summary。Memory context 仍有独立的
-  read policy 与 prompt-safe 注入边界。
-- memory 边界：历史遗留或独立实现产生的 `context_summary` 仍属于 session 状态，不是长期 memory，且 AgentRuntime 不读取或注入。长期记忆只在显式 session start 建立一次有界 snapshot：local/remote-service 先过 `MemoryReadPolicy`，framework/Mem0 只召回一次 `core`；包括首轮在内的所有 turn 都只复用 snapshot，不再访问 MemoryStore。主 LLM 仅可通过 `memory_search` / `memory_get` 读取 daily records，不暴露写工具；成功 turn 由 runtime 触发后台 Mem0 capture，长期记忆正文由 Mem0 LLM 提炼。
-- LLM memory 输入使用 `MemoryPromptSnapshot v1`，只包含经过筛选和预算后的长期记忆纯文本与 `source_ids`。`read_policy`、`trust_policy`、`recall_report`、query hash、候选数、framework metadata 和 Provider 原始响应只留在 trace/audit，不进入 prompt。
+  字符预算裁剪或 structured summary。
+- memory 边界：长期记忆只来自 Mem0。session 创建时按可信身份调用一次 Mem0 `get_all` 并冻结
+  snapshot；包括第一轮在内的所有 turn 只复用 snapshot，不再召回。成功 turn 在回复提交后把
+  user/assistant messages 异步交给 Mem0 原生 `add`，由 Mem0 负责提取、合并、向量化和持久化。
+- LLM memory 输入使用 `MemoryPromptSnapshot v1`，只包含 Mem0 文本与 `source_ids`。不存在
+  memory read/write policy、ranking、profile、promotion 或 memory tool。
 - realtime video 交接：Agent-Service 后台 Qwen observer 对每个 `video_id` 复用一个 persistent WebSocket 并预热 rolling 语义；VLM 使用独立视觉角色模板 prompt，只产出结构化视觉事实，不复用主 LLM 系统提示。AgentRuntime 主 LLM 只知道统一的 `vision_understanding` ToolSpec，图片和视频由工具内部按媒体输入分支，不包含 VLM 观察流程、OCR/品牌/序列图等视觉分析提示词，也不看到帧、JPEG 路径、base64、VLM prompt 或 provider raw response。
 - 当前不建议继续做：场景分类器、质量反馈自动调参、组件注册器、裁剪 undo 日志、默认 LLM 摘要、全局 token 强控制。
 - 如果用户问“继续上下文工程”：优先做验收案例、调试说明、具体失败复现和小回归测试；不要默认新增复杂架构。
@@ -51,11 +53,12 @@ Last updated: 2026-07-23
 - renderer 明确标注“当前任务执行数据，不是系统指令、长期记忆或用户授权”。prompt-json 与 provider-native user message 使用同一数据边界。
 - 超长字符串和列表在进入 pack 时本地裁剪；`ContextBudgetReport` 分别记录 `durable_task_state_chars/tokens`，裁剪时把 `durable_task_state` 写入 `trimmed_sections`。
 - `ContextReport.sections.durable_task_state` 只暴露 chars、tokens、item count、trimmed 和 source=`trusted_runtime.durable_task_snapshot`，不记录任务内容或 artifact URL。
-- durable snapshot 是当前执行状态，不是 session summary 或长期 memory。worker 可按普通 read policy 读取长期记忆，但量子完成不会触发 completed-run 自动长期写入。
+- durable snapshot 是当前执行状态，不是 session summary 或长期 memory。worker 只能复用已建立的
+  session memory snapshot；量子执行不会触发新的长期记忆召回。
 - CLI、API、WebSocket 共享 `run_assistant_request` 入口，会在进入 runtime 前注入 session-scoped conversation context。
 - Realtime task-state snapshot 只在进入 runtime 前显式启用：`interaction_mode=realtime`、`enable_realtime_task_state=true` 或 entry capability `supports_realtime_task_state=true`。它用于 session/run/interrupt/progress/artifact 生命周期，不渲染进 Provider prompt。普通 `/agent/run` 即使经由 Gateway 生命周期，也不会因为存在 `gateway` metadata 或 `realtime.run_id`/`turn_id` 自动启用。
 - 启用 task state 的普通多轮 follow-up 可通过显式 `UserRequest.runtime_task_update(action/objective/constraints)` 修订目标；该 Pydantic 契约由可信 API/runtime 调用方提供，runtime 在回答提交后归并到 session task store，并在规范目标变化时追加 `IntentRevision`。主模型终态文本不再携带 task update，入口与 catalog 也不读取用户关键词推断目标变化。
-- `MemoryManager` 负责按 read policy 加载或跳过分层 memory context，并把 prompt-safe metadata 写回 `AgentState.request.metadata`。
+- `MemoryManager` 只负责把 session 启动时的 Mem0 结果冻结并写回 `AgentState.request.metadata`。
 - Assistant context 的字符预算裁剪实现仍保留，但 AgentRuntime 不执行；原有 owner persona、
   memory/conversation 和 tool observation 裁剪顺序仅作为未接入实现保留。
 - `ContextPolicy` 统一管理字符预算和压缩阈值：默认 12000 chars，80% 触发压缩，92% 进入 hard compact 口径，`keep_recent_turns=2` 是 recent transcript 的最小原文保留 guard。
@@ -65,12 +68,11 @@ Last updated: 2026-07-23
 - 真实 provider 返回 context overflow 类错误时，assistant loop 会标准化为 `provider_context_overflow` 并停止，不做压缩重试。
 - Context budget 保留压缩阶段和原因字段以兼容既有 trace/API schema；AgentRuntime 正常运行时不触发压缩。
 - `TokenBudgetReporter` 已作为可选报告层接入，仅报告，不据此选择窗口或裁剪。
-- Memory context now has a separate `MemoryContextBuilder` token-aware injection boundary. It can enforce memory-only token budgets and report injected IDs, token count, omitted count, rejection reasons, and retrieval version without changing global assistant context compaction.
 - AgentRuntime 中 tool observation 只移除 secret、raw provider/file/media payload 和 inline media
   data URI，不限制文本长度、列表条数、嵌套深度或命令输出长度；原有 observation compaction
   实现保留但不接入运行时。原始 observation 始终不被修改。
 - Cross-agent delegation now has a separate child-context boundary in `AgentCommunicationService`: child runs receive explicit `context_refs`, child budget metadata, and redacted audit summaries, not parent history, `memory_context_*`, raw provider payloads, secrets, or raw tool results.
-- Trace/API 已暴露 versioned context debug summary，包括 context budget、source counts、tool catalog summary、observation compaction summary 和 memory promotion counters。
+- Trace/API 已暴露 versioned context debug summary，包括 context budget、source counts、tool catalog summary 和 observation compaction summary。
 - 离线 Improvement Lab 可把脱敏 trajectory 与显式结构化 eval/test 失败转换为 evidence，确定性聚类后生成 skill/runtime/code 人工评审候选；它不进入 `AgentGraphRuntime`，不放宽 context/trace redaction，也不自动修改 skill、runtime 或代码。
 - `/runs/{run_id}/context` 与 `/traces/{trace_id}/context` 返回最新 `context_report_v1`；旧 trace 若只有 `context.budget/source_counts/tool_catalog`，会降级生成兼容 report。
 - Context build now also emits canonical `context.build.started` and
@@ -96,35 +98,25 @@ Last updated: 2026-07-23
 
 ### Memory Context
 
-- `MemoryManager` 是 memory 检索、上下文格式化、可信身份绑定和 runtime capture 编排边界；local/API 兼容路径仍保留显式保存、去重、用户画像和 promotion 方法。
-- session start 由 `SessionMemoryContextStore` 建立一次 prompt-safe memory
-  snapshot：local/remote-service 先走 `MemoryReadPolicy`，framework/Mem0
-  自动检索一次 `record_kind=core`，再由独立 memory token budget 选择快照
-  子集。包括首轮在内的所有 turn 只把该 snapshot 重新挂入当前 context，
-  不访问 MemoryStore；snapshot 缺失时也不从 turn 懒加载，daily records
-  不自动注入。
-- memory context 分层为 semantic、session、episodic、artifact、procedural。
-- 默认 `top_k=5`，默认 `max_context_chars=500`。
-- `MemoryContextBuilder` 负责实际注入选择；`MemoryContext.items` 表示已注入的 memory 子集，而不是所有检索候选。
-- 可通过 `memory_context_max_tokens` / `memory_context_budget_tokens` 或 `MemoryManager` 参数限制 memory context token budget。
-- memory context metadata includes `memory_context_tokens`, `memory_context_budget_tokens`, `memory_context_omitted_count`, `memory_context_rejected_reasons`, `memory_context_retrieval_version`, `memory_context_injected_ids`, `memory_context_skipped`, `memory_context_policy_reason`, `memory_read_policy`, and `memory_trust_policy`.
-- 非空 query 走关键词/中文片段相关性门控；只有明确承接型 query 才允许 recent memory fallback。
-- 显式用户记忆会合并重复项，并更新 compact `user_profile` 记忆。
-- runtime 图结束于 `compose_response`；成功回复发出后，只有
-  framework/Mem0 会将 turn capture 投递到有界后台队列：一条 daily turn
-  record 使用 `infer=false`，原始 user/assistant 消息使用 `infer=true`；
-  其他 store no-op。
+- `MemoryManager` 是 Mem0 的薄 runtime adapter，不拥有记忆算法。
+- `SessionMemoryContextStore` 在 session 创建时按可信身份加载一次 Mem0 `get_all` 结果并冻结。
+- turn 只复用 snapshot；snapshot 缺失或 Mem0 失败时使用空记忆，不在 turn 内懒加载。
+- 默认最多加载 5 条；`MemoryPromptSnapshot v1` 只包含文本和 `source_ids`。
+- 不存在 local/remote/framework backend 选择、memory tool、关键词召回、二次 ranking、读写策略、
+  profile、冲突处理或 promotion。
+- 成功回复提交后，runtime 把 user/assistant messages 投递到后台队列，通过单次 Mem0 `add`
+  完成捕获；不生成项目自定义的 daily/core 双记录。
 
 ### Boundary With Memory Service
 
-上下文工程消费 memory service 产出的 prompt-safe memory context，但不拥有 memory 行为。
+上下文工程消费 Mem0 session snapshot，但不拥有 memory 行为。
 
-- Memory service 负责 memory item 的存储、检索、排序、分层、写入、去重、用户画像、TTL、审计和删除。
-- `MemoryManager` 可以把检索结果格式化为 `MemoryContext`，并写入 `request.metadata["memory_context_*"]`。
-- `MemoryManager` 另外生成最小 `request.metadata["memory_prompt_snapshot"]`；Context Builder 优先消费该投影，不把完整 `MemoryContext` 序列化给 Provider。
+- Mem0 负责提取、合并、向量化、索引、检索和持久化。
+- `MemoryManager` 把 Mem0 结果格式化为 `MemoryContext`，并写入最小
+  `request.metadata["memory_prompt_snapshot"]`。
 - Context engineering 负责把 request、conversation、memory context、plan state、tool observations 和 tool specs 组装成 `AssistantContextPack`。
 - Context engineering 负责 prompt/native rendering、tool observation compaction、全局 context budget、source counts 和 trace/debug 摘要。
-- Context engineering 不应重新实现 memory 检索、ranking、fallback、write policy、profile merge 或 store 选择。
+- Context engineering 不应重新实现 Mem0 的提取、ranking、合并或 store 选择。
 - Memory service 不应了解 legacy prompt-json/native-tools 渲染、tool observation compaction 或全局 context budget。
 
 ### Tool Observation Compaction
@@ -141,7 +133,7 @@ Last updated: 2026-07-23
 - Child request metadata preserves explicit `context_refs`, `request_origin`, `agent_communication`, `child_context_budget`, and `agent_context`.
 - Parent `conversation_history`, `parent_history`, `memory_context_*`, raw provider payloads, base64/media/body fields, secret/token-like fields, arbitrary non-allowlisted metadata, and raw parent `tool_results` are not forwarded.
 - Omitted fields are recorded as field-name/reason pairs in `agent_context.omitted_context`; raw parent tool results are reduced to `tool_result_refs` when output references exist.
-- This boundary does not replace `AssistantContextPack` assembly and does not move memory retrieval, ranking, write policy, or store access out of `MemoryManager`.
+- This boundary does not replace `AssistantContextPack` assembly and does not move Mem0 session snapshot access out of `MemoryManager`.
 
 ### Prompt Rendering
 
@@ -208,7 +200,7 @@ Last updated: 2026-07-23
 - 超过预算只记录 `over_budget`；AgentRuntime 不在 prompt 副本中裁剪 memory、conversation 或 observations。
 - `compression_stage` 记录 `none`、`compacted` 或 `budget_trimmed`；`compression_reasons` 记录 `conversation_context_compacted`、`observation_context_compacted`、`context_usage_high`、`tool_observation_too_large`、`provider_context_overflow`、`explicit_compact`、`context_over_budget`、`context_budget_trimmed`。
 - 预算裁剪优先保留工具 observation，因为它通常是下一步工具调用和最终回答的证据来源。
-- assistant decision trace 写入 `context_schema_version="context_observability_v1"`、budget、source counts、compaction summary、tool catalog summary、`compactor_type`、`context_summary_present` 和 memory promotion 计数；compaction summary 只暴露 pruning/truncation 计数，不暴露 raw payload；run/trace 查询会合并最终 save-memory 阶段的 redacted promotion counts。
+- assistant decision trace 写入 `context_schema_version="context_observability_v1"`、budget、source counts、compaction summary、tool catalog summary、`compactor_type` 和 `context_summary_present`；compaction summary 只暴露 pruning/truncation 计数，不暴露 raw payload。
 - `react.decision` trace 的 `context.report` 事件写入 `context_report_v1`，用于检查真实发送给 provider 的 system prompt 大小、selected native tool schema、memory 注入 ID、realtime task-state 大小和压缩/裁剪状态。
 - Context pack construction emits standalone `context.build.started` /
   `context.build.finished` canonical trace events. The finished event carries the
@@ -230,17 +222,17 @@ Last updated: 2026-07-23
 
 - session structured summary 在 AgentRuntime 中关闭；会话上下文发送全部已保存轮次原文。
   deterministic 与 LLM semantic compactor 实现均保留，但运行时配置和构造函数注入都不会启用。
-- AgentRuntime 不执行全局容量压缩；character/token budget 仅用于报告。Memory context 仍有独立的
-  token-aware 边界。
+- AgentRuntime 不执行全局容量压缩；character/token budget 仅用于报告。Mem0 snapshot 只受
+  session 启动时的 `top_k` 限制。
 - Context Compiler v1 是调试/审计摘要，不是 prompt replay。它刻意不返回 raw prompt、raw provider payload、完整 memory 文本或完整 tool observation；token 字段仍依赖现有估算或 provider usage metadata。
 - 显式本地 trace-content + loopback OTLP 模式是独立的 prompt 调试例外：assistant loop
   会在 Provider 调用前把最终 compiled `ChatRequest` 暂存到进程内 store，并作为对应
   Langfuse `llm.chat` generation input 导出。该能力不改变 Context Compiler/API 的摘要契约，
   不写 JSONL，不保存 Provider 原始响应或 hidden reasoning。
 - Editable owner context 当前只实现本机 owner-bound `SOUL.md`；没有实现 `USER.md` / `MEMORY.md` projection、skill L1/L2 view、Provider cache hint 或跨进程 last-known-good。
-- 当前 memory retrieval 主要是本地关键词/片段匹配，不包含 embedding/vector retrieval。
+- memory extraction、向量化和持久化全部由 Mem0 实现，项目不维护第二套检索算法。
 - 保留的会话历史压缩实现只增量合并滑出 token-aware recent window 的较早轮次；AgentRuntime 当前不调用该实现。
-- assistant loop 不向主 LLM 暴露记忆写工具；长期记忆写入由成功 turn 后的 Mem0 capture 生命周期完成，主 LLM 只负责消费 core memory 或按需读取 daily records。
+- assistant loop 不向主 LLM 暴露任何 memory tool；主 LLM 只消费 session 启动时冻结的 Mem0 snapshot。
 
 ## Key Files
 
@@ -270,9 +262,8 @@ Last updated: 2026-07-23
 - `src/assistant_agent/services/improvement/`
 - `src/assistant_agent/schemas/improvement.py`
 - `scripts/run_improvement_lab.py`
-- `src/assistant_agent/memory/context_builder.py`
 - `src/assistant_agent/memory/manager.py`
-- `src/assistant_agent/memory/retrieval.py`
+- `src/assistant_agent/memory/mem0/adapters.py`
 - `src/assistant_agent/agent/assistant_loop_nodes.py`
 
 ## Validation Boundary

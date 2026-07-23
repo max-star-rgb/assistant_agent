@@ -4,7 +4,6 @@ import pytest
 
 from assistant_agent.agent.runtime import AgentGraphRuntime
 from assistant_agent.config import ProviderConfig
-from assistant_agent.memory.store import InMemoryStore
 from assistant_agent.schemas.llm_events import LLMEvent
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.services.chat_adapter import ChatRequest
@@ -88,7 +87,6 @@ def test_native_streaming_chat_emits_llm_span_and_final_answer() -> None:
     runtime = AgentGraphRuntime(
         config=ProviderConfig(native_provider_streaming=True),
         chat_adapter=StreamingChatAdapter(),
-        memory_store=InMemoryStore(),
         session_store=InMemorySessionStore(),
         trace_store=trace_store,
     )
@@ -163,7 +161,6 @@ def test_native_streaming_never_commits_reasoning_delta() -> None:
     state = AgentGraphRuntime(
         config=ProviderConfig(native_provider_streaming=True),
         chat_adapter=ReasoningStreamingChatAdapter(),
-        memory_store=InMemoryStore(),
         session_store=InMemorySessionStore(),
     ).run_state(
         UserRequest(user_id="user-1", session_id="session-1", text="回答问题"),

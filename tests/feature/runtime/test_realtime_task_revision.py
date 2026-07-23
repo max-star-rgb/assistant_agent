@@ -2,7 +2,6 @@
 
 from assistant_agent.agent.runtime import AgentGraphRuntime
 from assistant_agent.config import ProviderConfig
-from assistant_agent.memory.store import InMemoryStore
 from assistant_agent.schemas.requests import RuntimeTaskUpdate, UserRequest
 from assistant_agent.services.assistant_run_service import (
     InMemoryConversationStore,
@@ -41,7 +40,6 @@ def test_ordinary_followup_commits_structured_objective_revision() -> None:
     runtime = AgentGraphRuntime(
         config=ProviderConfig(langgraph_checkpointer_backend="none"),
         chat_adapter=adapter,
-        memory_store=InMemoryStore(),
         session_store=InMemorySessionStore(),
     )
     task_store = InMemoryRealtimeTaskStateStore()
