@@ -96,12 +96,9 @@ class ProductSearchRequest(BaseModel):
         description="需要搜索、推荐或比价的商品名称及关键要求。",
     )
     visual_summary: str | None = None
-    video_summary: str | None = None
     objects: list[str] = Field(default_factory=list)
     colors: list[str] = Field(default_factory=list)
     materials: list[str] = Field(default_factory=list)
-    brand: str | None = None
-    category: str | None = None
     budget_min: float | None = Field(
         default=None,
         ge=0,
@@ -112,15 +109,11 @@ class ProductSearchRequest(BaseModel):
         ge=0,
         description="用户明确给出的最高预算；未指定时省略。",
     )
-    budget: float | None = Field(default=None, ge=0)
     platforms: list[str] = Field(
         default_factory=list,
         description="用户明确指定的购物平台列表；未指定时省略。",
     )
     top_k: int = Field(default=5, ge=1)
-    user_id: str | None = None
-    session_id: str | None = None
-    memory_context: list[str] = Field(default_factory=list)
 
 class PriceOffer(BaseModel):
     """A normalized offer used by price comparison."""
@@ -187,11 +180,6 @@ class PriceCompareRequest(BaseModel):
     sort_by: Literal["price", "similarity", "rating", "value"] = "value"
     currency: str = "CNY"
     top_k: int = Field(default=5, ge=1)
-    user_id: str | None = None
-    session_id: str | None = None
-
-
-PriceCompareInput = PriceCompareRequest
 
 
 class ShoppingSearchResult(BaseModel):

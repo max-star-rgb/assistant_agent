@@ -8,7 +8,6 @@ from assistant_agent.config import ProviderConfig
 from assistant_agent.schemas.products import (
     PriceOffer,
     PriceCompareResult,
-    PriceCompareInput,
     PriceCompareRequest,
     ProductProviderError,
     ProductResult,
@@ -33,10 +32,6 @@ class PriceCompareAdapter(Protocol):
 
     def compare(self, request: PriceCompareRequest) -> PriceCompareResult:
         """Return structured price offers."""
-
-
-ShoppingSearchAdapter = ProductSearchAdapter
-ShoppingCompareAdapter = PriceCompareAdapter
 
 
 class MockProductSearchAdapter:
@@ -232,7 +227,7 @@ class UnconfiguredProductSearchAdapter:
         )
 
 
-def create_shopping_search_adapter(config: ProviderConfig | None = None) -> ShoppingSearchAdapter:
+def create_shopping_search_adapter(config: ProviderConfig | None = None) -> ProductSearchAdapter:
     """Create a shopping search adapter without initializing real provider clients."""
 
     resolved = config or ProviderConfig.from_env()
@@ -271,7 +266,7 @@ def create_shopping_search_adapter(config: ProviderConfig | None = None) -> Shop
     return MockProductSearchAdapter()
 
 
-def create_shopping_compare_adapter(config: ProviderConfig | None = None) -> ShoppingCompareAdapter:
+def create_shopping_compare_adapter(config: ProviderConfig | None = None) -> PriceCompareAdapter:
     """Create a shopping compare adapter without initializing real provider clients."""
 
     resolved = config or ProviderConfig.from_env()
@@ -406,12 +401,8 @@ def _filter_products(items: list[ProductResult], request: ProductSearchRequest) 
     if request.platforms:
         platforms = set(request.platforms)
         filtered = [item for item in filtered if item.platform in platforms]
-    if request.brand:
-        brand = request.brand.lower()
-        filtered = [item for item in filtered if brand in item.title.lower()]
-    max_budget = request.budget_max if request.budget_max is not None else request.budget
-    if max_budget is not None:
-        filtered = [item for item in filtered if item.price <= max_budget]
+    if request.budget_max is not None:
+        filtered = [item for item in filtered if item.price <= request.budget_max]
 
     tokens = _query_tokens(request)
     if tokens:
@@ -430,11 +421,9 @@ def _query_text(request: ProductSearchRequest) -> str:
     parts = [
         request.query,
         request.visual_summary,
-        request.video_summary,
         " ".join(request.objects),
         " ".join(request.colors),
         " ".join(request.materials),
-        request.category,
     ]
     return " ".join(part.strip() for part in parts if part and part.strip())
 
@@ -446,7 +435,7 @@ def _query_tokens(request: ProductSearchRequest) -> list[str]:
 
 def _filters_used(request: ProductSearchRequest) -> dict[str, object]:
     filters: dict[str, object] = {}
-    for key in ("brand", "category", "budget_min", "budget_max", "budget", "platforms", "top_k"):
+    for key in ("budget_min", "budget_max", "platforms", "top_k"):
         value = getattr(request, key)
         if value not in (None, [], ""):
             filters[key] = value

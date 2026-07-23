@@ -4,7 +4,7 @@ from typing import Any
 
 from assistant_agent.schemas.capability_output import build_capability_output_contract
 from assistant_agent.schemas.products import (
-    PriceCompareInput,
+    PriceCompareRequest,
     PriceCompareResult,
     ProductProviderError,
     ProductSearchRequest,
@@ -13,8 +13,8 @@ from assistant_agent.schemas.products import (
 )
 from assistant_agent.schemas.tools import ToolResult
 from assistant_agent.services.product_adapter import (
-    ShoppingCompareAdapter,
-    ShoppingSearchAdapter,
+    PriceCompareAdapter,
+    ProductSearchAdapter,
     create_shopping_compare_adapter,
     create_shopping_search_adapter,
 )
@@ -36,9 +36,6 @@ class ShoppingSearchTool(ToolBase):
     category = "read"
     requires_confirmation = False
     input_bindings = (
-        ToolInputBinding(field="user_id", source="runtime_identity", key="user_id"),
-        ToolInputBinding(field="session_id", source="runtime_identity", key="session_id"),
-        ToolInputBinding(field="memory_context", source="memory_context", key="summaries"),
         ToolInputBinding(
             field="visual_summary",
             source="latest_tool_result",
@@ -63,18 +60,14 @@ class ShoppingSearchTool(ToolBase):
             result_tool_name="vision_understanding",
             result_path="materials",
         ),
-        ToolInputBinding(field="video_summary", source="constant", value=None),
-        ToolInputBinding(field="brand", source="constant", value=None),
-        ToolInputBinding(field="category", source="constant", value=None),
-        ToolInputBinding(field="budget", source="constant", value=None),
         ToolInputBinding(field="top_k", source="constant", value=5),
     )
 
     def __init__(
         self,
         *,
-        search_adapter: ShoppingSearchAdapter | None = None,
-        compare_adapter: ShoppingCompareAdapter | None = None,
+        search_adapter: ProductSearchAdapter | None = None,
+        compare_adapter: PriceCompareAdapter | None = None,
     ) -> None:
         self.search_adapter = search_adapter or create_shopping_search_adapter()
         self.compare_adapter = compare_adapter or create_shopping_compare_adapter()
@@ -147,18 +140,16 @@ class ShoppingSearchTool(ToolBase):
 def _compare_input_from_search(
     input: ProductSearchRequest,
     search_result: ProductSearchResult,
-) -> PriceCompareInput:
+) -> PriceCompareRequest:
     platforms = search_result.succeeded_platforms or input.platforms
-    return PriceCompareInput(
+    return PriceCompareRequest(
         items=search_result.items,
         query=search_result.query_used or _query_text(input) or SHOPPING_SEARCH_CAPABILITY,
         budget_min=input.budget_min,
-        budget_max=input.budget_max if input.budget_max is not None else input.budget,
+        budget_max=input.budget_max,
         platforms=platforms,
         sort_by="value",
         top_k=input.top_k,
-        user_id=input.user_id,
-        session_id=input.session_id,
     )
 
 
@@ -274,12 +265,9 @@ def _query_text(input: ProductSearchRequest) -> str:
     parts = [
         input.query,
         input.visual_summary,
-        input.video_summary,
         " ".join(input.objects),
         " ".join(input.colors),
         " ".join(input.materials),
-        input.brand,
-        input.category,
     ]
     return " ".join(part.strip() for part in parts if part and part.strip())
 

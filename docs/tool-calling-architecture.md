@@ -242,8 +242,9 @@ category、确认、profile、env 等系统字段不会发送给模型，也不�
 `memory_get` 只接收必填 `memory_id`；`memory_save` 不注册，也不会进入 Provider payload；
 Agent-Service 默认 profile 只直接暴露 `memory_search`，因为其 observation 已返回完整匹配记录，
 不再为同一读取流程额外支付 `memory_get` schema；`memory_get` 仍保留在 Registry 供其他显式 profile 使用。
-`shopping_search` 向模型暴露 `query` 及会改变结果的预算和平台过滤条件，固定候选数量、身份、
-memory context 和前序视觉结果由 runtime binding 补齐。`weather` 暴露 `location`、`target_date` 和
+`shopping_search` 向模型暴露 `query` 及会改变结果的预算和平台过滤条件，固定候选数量和
+前序视觉结果由 runtime binding 补齐；购物请求不携带未使用的身份、memory context 或假想
+Provider 兼容字段。`weather` 暴露 `location`、`target_date` 和
 `days`，公制单位由 runtime 固定。`vision_understanding.question` 等没有必填要求但会改变任务结果的
 语义型可选参数仍应暴露；当前媒体引用、用户原始请求、身份、采样参数和 rolling context 均来自
 runtime。`web_fetch` 只暴露必填 `url`，读取上限和内容格式由 Tool 静态默认值分配。

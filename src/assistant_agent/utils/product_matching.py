@@ -63,12 +63,8 @@ def filter_products(items: list[ProductResult], request: ProductSearchRequest) -
     if request.platforms:
         platforms = set(request.platforms)
         filtered = [item for item in filtered if item.platform in platforms]
-    if request.brand:
-        brand = request.brand.lower()
-        filtered = [item for item in filtered if brand in item.title.lower()]
-    max_budget = request.budget_max if request.budget_max is not None else request.budget
-    if max_budget is not None:
-        filtered = [item for item in filtered if item.price <= max_budget]
+    if request.budget_max is not None:
+        filtered = [item for item in filtered if item.price <= request.budget_max]
 
     tokens = query_tokens(request)
     if tokens:
@@ -91,11 +87,9 @@ def query_text(request: ProductSearchRequest) -> str:
     parts = [
         request.query,
         request.visual_summary,
-        request.video_summary,
         " ".join(request.objects),
         " ".join(request.colors),
         " ".join(request.materials),
-        request.category,
     ]
     return " ".join(part.strip() for part in parts if part and part.strip())
 
@@ -111,7 +105,7 @@ def filters_used(request: ProductSearchRequest) -> dict[str, object]:
     """Return non-empty filters applied to a product search."""
 
     filters: dict[str, object] = {}
-    for key in ("brand", "category", "budget_min", "budget_max", "budget", "platforms", "top_k"):
+    for key in ("budget_min", "budget_max", "platforms", "top_k"):
         value = getattr(request, key)
         if value not in (None, [], ""):
             filters[key] = value
