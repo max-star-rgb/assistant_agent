@@ -17,7 +17,7 @@ class PersonalAssistantProviderError(BaseModel):
 
 
 class WeatherRequest(BaseModel):
-    """Weather lookup input."""
+    """天气查询输入。"""
 
     location: str = Field(min_length=1)
     target_date: date | None = Field(
@@ -63,12 +63,12 @@ class WeatherResult(BaseModel):
 
 
 class CalendarSearchRequest(BaseModel):
-    """Calendar event search input."""
+    """日历事件搜索输入。"""
 
     query: str = Field(
         default="today",
         min_length=1,
-        description="Natural-language calendar query. Defaults to today when omitted.",
+        description="自然语言日历查询；省略时默认为今天。",
     )
     start_time: str | None = None
     end_time: str | None = None
@@ -111,7 +111,7 @@ class CalendarSearchResult(BaseModel):
 
 
 class CalendarCreateRequest(BaseModel):
-    """Calendar event creation input."""
+    """日历事件创建输入。"""
 
     title: str = Field(min_length=1)
     start_time: str = Field(min_length=1)
@@ -139,7 +139,7 @@ class CalendarCreateResult(BaseModel):
 
 
 class ContactsSearchRequest(BaseModel):
-    """Contacts search input."""
+    """联系人搜索输入。"""
 
     query: str = Field(min_length=1)
     limit: int = Field(default=5, ge=1, le=20)

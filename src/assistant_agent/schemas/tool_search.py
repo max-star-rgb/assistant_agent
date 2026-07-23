@@ -8,23 +8,22 @@ from pydantic import BaseModel, Field
 
 
 class ToolSearchInput(BaseModel):
-    """Search configured MCP server tools when core tools are insufficient."""
+    """核心工具不足时搜索已配置的 MCP 服务器工具。"""
 
     query: str = Field(
         default="",
         description=(
-            "Capability need or missing action, such as 'send email' "
-            "or 'search notion pages'."
+            "所需能力或缺失操作，例如“发送邮件”或“搜索 Notion 页面”。"
         ),
     )
     limit: int = Field(default=8, ge=1, le=20)
     server_name: str | None = Field(
         default=None,
-        description="Optional configured MCP server name to inspect.",
+        description="可选的已配置 MCP 服务器名称，用于限定搜索范围。",
     )
     include_permission_required: bool = Field(
         default=True,
-        description="Include allowlisted MCP tools that are registered/configured but not enabled by default.",
+        description="是否包含已注册或配置、位于允许列表但默认未启用的 MCP 工具。",
     )
 
 

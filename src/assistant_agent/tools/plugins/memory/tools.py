@@ -20,7 +20,7 @@ from assistant_agent.tools.input_binding import ToolInputBinding
 
 
 class MemorySearchInput(BaseModel):
-    """Public input for daily-memory search."""
+    """每日记忆搜索的公开输入。"""
 
     model_config = ConfigDict(extra="ignore")
 
@@ -30,7 +30,7 @@ class MemorySearchInput(BaseModel):
 
 
 class MemoryGetInput(BaseModel):
-    """Public input for exact daily-memory retrieval."""
+    """按 ID 精确读取每日记忆的公开输入。"""
 
     model_config = ConfigDict(extra="ignore")
 
@@ -41,7 +41,7 @@ class MemoryGetInput(BaseModel):
 
 class MemorySearchTool(ToolBase):
     name = MEMORY_RETRIEVAL_TOOL_NAME
-    description = "Search detailed daily memory records from prior conversations."
+    description = "搜索过往对话中保存的详细每日记忆记录。"
     input_schema = MemorySearchInput
     output_schema = MemoryItem
     category = "read"
@@ -78,7 +78,7 @@ class MemorySearchTool(ToolBase):
 
 class MemoryGetTool(ToolBase):
     name = MEMORY_GET_TOOL_NAME
-    description = "Read one complete daily memory record by its memory ID."
+    description = "根据记忆 ID 读取一条完整的每日记忆记录。"
     input_schema = MemoryGetInput
     output_schema = MemoryItem
     category = "read"

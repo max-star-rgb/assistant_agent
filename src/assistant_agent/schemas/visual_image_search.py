@@ -41,29 +41,29 @@ class VisualImageSearchResult(BaseModel):
 
 
 class VisualImageSearchRequest(BaseModel):
-    """Input for visual image search providers.
+    """视觉图片搜索 Provider 的输入。
 
-    v1 accepts only public HTTP(S) image references. Local paths, base64, and
-    private media IDs are rejected by ActionValidator before tool execution.
+    v1 只接受公开 HTTP(S) 图片引用。本地路径、base64 和私有媒体 ID
+    会在工具执行前被 ActionValidator 拒绝。
     """
 
     image_url: str | None = Field(
         default=None,
-        description="Public http or https image URL to search from.",
+        description="用于发起搜索的公开 HTTP 或 HTTPS 图片 URL。",
     )
     image_ids: list[str] = Field(
         default_factory=list,
-        description="Public http or https image references. v1 uses the first image.",
+        description="公开 HTTP 或 HTTPS 图片引用；v1 使用第一张图片。",
     )
     query_hint: str | None = Field(
         default=None,
-        description="Optional text hint to guide visual similarity search.",
+        description="用于引导视觉相似搜索的可选文本提示。",
     )
     limit: int = Field(
         default=5,
         ge=1,
         le=10,
-        description="Maximum number of similar image results to return.",
+        description="最多返回的相似图片结果数量。",
     )
 
     @model_validator(mode="after")

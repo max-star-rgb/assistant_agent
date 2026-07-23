@@ -37,8 +37,8 @@ from assistant_agent.tools.plugins.vision.video_branch import VideoUnderstanding
 class VisionUnderstandingTool(ToolBase):
     name = IMAGE_UNDERSTANDING_TOOL_NAME
     description = (
-        "Understand images or videos attached to the current request. Optionally provide "
-        "a focused question; runtime selects the matching media and internal vision branch."
+        "理解当前请求附带的图片或视频。可提供聚焦问题；"
+        "运行时会选择对应媒体和内部视觉分支。"
     )
     input_schema = VisionUnderstandingRequest
     output_schema = VisionUnderstandingResult

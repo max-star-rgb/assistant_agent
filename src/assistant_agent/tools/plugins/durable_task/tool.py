@@ -17,6 +17,8 @@ if TYPE_CHECKING:
 
 
 class TaskPlanSubmitInput(BaseModel):
+    """持久任务计划提交输入。"""
+
     plan: TaskPlan
     revision_reason: str = Field(min_length=1, max_length=500)
 
@@ -29,7 +31,7 @@ class TaskPlanSubmitTool(ToolBase):
     """Create or revise the task bound by trusted execution context."""
 
     name = "task_plan_submit"
-    description = "Submit a bounded structured plan for durable asynchronous execution."
+    description = "提交用于持久异步执行的有界结构化计划。"
     input_schema = TaskPlanSubmitInput
     output_schema = TaskPlanSubmitOutput
     category = "write"

@@ -19,9 +19,7 @@ from assistant_agent.tools.base import ToolBase, ToolContext
 
 class VisualImageSearchTool(ToolBase):
     name = VISUAL_IMAGE_SEARCH_TOOL_NAME
-    description = (
-        "Search the internet for visually similar images from a public image URL."
-    )
+    description = "根据公开图片 URL 在互联网搜索视觉相似图片。"
     input_schema = VisualImageSearchInput
     output_schema = VisualImageSearchResult
     category = "read"

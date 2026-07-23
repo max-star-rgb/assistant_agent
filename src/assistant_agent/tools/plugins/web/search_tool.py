@@ -16,9 +16,7 @@ from assistant_agent.tools.input_binding import ToolInputBinding
 
 class WebSearchTool(ToolBase):
     name = WEB_SEARCH_TOOL_NAME
-    description = (
-        "Search public web pages for current facts when no dedicated personal tool covers the request."
-    )
+    description = "当专用个人工具无法覆盖请求时，搜索公开网页中的当前信息。"
     input_schema = WebSearchInput
     output_schema = WebSearchResult
     category = "read"

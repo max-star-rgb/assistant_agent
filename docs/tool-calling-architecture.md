@@ -40,6 +40,9 @@ requires_media
 工具类直接声明这些字段；Registry 不再维护按工具名索引的 `_TOOL_CONTRACTS` 或
 `_ACTION_USAGE` 副本。`description` 同时承担 provider 可见的简短使用说明，避免再造一套
 `when_to_use/when_not_to_use/runtime_constraints` 元数据。
+仓库自有的内置 ToolSpec 及其模型可见参数 `description` 统一使用中文；工具名、字段名、
+枚举值、协议标识符和代码符号保持英文。外部 MCP 与配置插件的描述属于上游契约，不由
+runtime 猜测翻译或改写。
 
 `shopping_search` 的短 description 保留三条必要边界：只表达想要某物时先询问；明确要求推荐、
 查价、比价或购买链接时调用；工具只搜索和比较，不能下单。展示模板等执行后说明只随 observation

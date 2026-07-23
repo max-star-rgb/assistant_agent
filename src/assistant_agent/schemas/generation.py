@@ -9,7 +9,7 @@ GenerationStatus = Literal["pending", "running", "succeeded", "failed"]
 
 
 class ImageGenerationInput(BaseModel):
-    """Input for image generation tools and provider adapters."""
+    """图片生成工具和 Provider 适配器的输入。"""
 
     prompt: str | None = None
     size: str | None = None

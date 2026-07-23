@@ -39,23 +39,23 @@ class WebSearchResult(BaseModel):
 
 
 class WebSearchRequest(BaseModel):
-    """Input for web search providers."""
+    """网页搜索 Provider 的输入。"""
 
     query: str = Field(
         min_length=1,
-        description="Search query for current or time-sensitive web information.",
+        description="用于搜索当前或时效性网页信息的查询词。",
     )
     recency_days: int | None = Field(
-        default=None, ge=1, le=3650, description="Optional recency window in days."
+        default=None, ge=1, le=3650, description="可选的结果时效窗口，单位为天。"
     )
     site_filter: str | None = Field(
-        default=None, description="Optional site or domain filter."
+        default=None, description="可选的网站或域名过滤条件。"
     )
     limit: int = Field(
         default=5,
         ge=1,
         le=10,
-        description="Maximum number of search results to return.",
+        description="最多返回的搜索结果数量。",
     )
 
 

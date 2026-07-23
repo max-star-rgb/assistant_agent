@@ -39,7 +39,7 @@ class IntentResult(BaseModel):
 
 
 class TaskStep(BaseModel):
-    """A single planned step in an agent task."""
+    """Agent 任务中的单个计划步骤。"""
 
     step_id: str = Field(min_length=1)
     action: str = Field(min_length=1)
@@ -52,7 +52,7 @@ class TaskStep(BaseModel):
 
 
 class TaskPlan(BaseModel):
-    """Executable task plan built from an intent."""
+    """根据意图构建的可执行任务计划。"""
 
     goal: str = Field(min_length=1)
     steps: list[TaskStep] = Field(default_factory=list)

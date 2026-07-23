@@ -16,9 +16,7 @@ from assistant_agent.tools.input_binding import ToolInputBinding
 
 class WebFetchTool(ToolBase):
     name = WEB_FETCH_TOOL_NAME
-    description = (
-        "Fetch readable page content from a specific HTTP(S) URL."
-    )
+    description = "从指定 HTTP(S) URL 获取可读的网页内容。"
     input_schema = WebFetchInput
     output_schema = WebFetchResult
     category = "read"

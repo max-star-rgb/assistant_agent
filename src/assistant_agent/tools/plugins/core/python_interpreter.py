@@ -23,10 +23,7 @@ from assistant_agent.tools.input_binding import ToolInputBinding
 
 class PythonInterpreterTool(ToolBase):
     name = PYTHON_INTERPRETER_TOOL_NAME
-    description = (
-        "Run short, local, restricted Python code for math, scientific, data, "
-        "or code analysis."
-    )
+    description = "运行简短、受限的本地 Python 代码，用于数学、科学、数据或代码分析。"
     input_schema = PythonInterpreterInput
     output_schema = PythonInterpreterResult
     category = "dangerous"

@@ -25,9 +25,8 @@ class ToolSearchTool(ToolBase):
 
     name = TOOL_SEARCH_TOOL_NAME
     description = (
-        "Search configured MCP servers for additional tools only when the exposed core tools "
-        "cannot satisfy the user request. This discovers candidates; it does not execute them "
-        "or grant permission to execute them."
+        "仅当已暴露的核心工具无法满足用户请求时，搜索已配置的 MCP 服务器以发现其他工具。"
+        "此工具只发现候选，不执行工具，也不授予执行权限。"
     )
     input_schema = ToolSearchInput
     output_schema = ToolSearchResult

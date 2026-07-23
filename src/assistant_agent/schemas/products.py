@@ -89,7 +89,7 @@ class ProductSearchResult(BaseModel):
 
 
 class ProductSearchRequest(BaseModel):
-    """Input for product search providers."""
+    """商品搜索 Provider 的输入。"""
 
     query: str = Field(min_length=1)
     visual_summary: str | None = None

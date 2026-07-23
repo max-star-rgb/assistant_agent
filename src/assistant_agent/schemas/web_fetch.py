@@ -36,22 +36,22 @@ class WebFetchResult(BaseModel):
 
 
 class WebFetchRequest(BaseModel):
-    """Input for fetching readable content from one web URL."""
+    """从单个网页 URL 获取可读内容的输入。"""
 
     url: str = Field(
         min_length=1,
         pattern=r"^https?://",
-        description="HTTP(S) URL to fetch or extract readable content from.",
+        description="需要获取或提取可读内容的 HTTP(S) URL。",
     )
     max_chars: int = Field(
         default=6000,
         ge=1,
         le=20000,
-        description="Maximum content characters returned to the model.",
+        description="最多返回给模型的内容字符数。",
     )
     content_format: WebFetchContentFormat = Field(
         default="markdown",
-        description="Preferred readable content format.",
+        description="期望的可读内容格式。",
     )
 
 

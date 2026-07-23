@@ -25,29 +25,29 @@ PythonInterpreterStatus = Literal["succeeded", "failed", "timeout", "rejected"]
 
 
 class PythonInterpreterInput(BaseModel):
-    """Input for a restricted local Python analysis run."""
+    """受限本地 Python 分析任务的输入。"""
 
     code: str = Field(
         min_length=1,
         max_length=PYTHON_INTERPRETER_MAX_CODE_CHARS,
         description=(
-            "Python code to run for local analysis. Assign a final JSON-serializable "
-            "value to the variable result when the answer needs structured output."
+            "用于本地分析的 Python 代码。需要结构化输出时，"
+            "请将最终可 JSON 序列化的值赋给变量 result。"
         ),
     )
     purpose: PythonInterpreterPurpose = Field(
         default="general_analysis",
-        description="The analysis purpose: math, scientific, code, data, or general.",
+        description="分析用途：数学、科学、代码、数据或通用分析。",
     )
     input_data: Any | None = Field(
         default=None,
-        description="Optional JSON-serializable data exposed to the code as input_data.",
+        description="可选的 JSON 可序列化数据，代码中通过 input_data 访问。",
     )
     timeout_s: int | None = Field(
         default=None,
         ge=1,
         le=PYTHON_INTERPRETER_MAX_TIMEOUT_S,
-        description="Optional execution timeout in seconds, clamped by the sandbox.",
+        description="可选执行超时秒数，最终值受沙箱上限约束。",
     )
 
 

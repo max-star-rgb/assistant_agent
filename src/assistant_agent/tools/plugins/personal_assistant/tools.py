@@ -52,9 +52,8 @@ class WeatherTool(ToolBase):
         self.adapter = adapter or MockWeatherAdapter()
         if getattr(self.adapter, "location_input_language", "any") == "en":
             self.description = (
-                f"{type(self).description} The configured provider requires canonical English "
-                "location names; translate localized place names before calling the tool, "
-                "while keeping the final answer in the user's language."
+                f"{type(self).description} 当前 Provider 要求使用规范英文地点名；"
+                "调用前请翻译本地化地名，最终回答仍使用用户语言。"
             )
 
     def _run(self, input: WeatherRequest, context: ToolContext) -> ToolResult:
@@ -76,7 +75,7 @@ class CalendarSearchTool(ToolBase):
     """Search calendar events through the configured calendar adapter."""
 
     name = CALENDAR_SEARCH_TOOL_NAME
-    description = "Search the user's calendar events."
+    description = "搜索用户的日历事件。"
     input_schema = CalendarSearchRequest
     output_schema = CalendarSearchResult
     category = "read"
@@ -109,7 +108,7 @@ class CalendarCreateTool(ToolBase):
     """Create calendar events after ToolExecutor confirmation."""
 
     name = CALENDAR_CREATE_TOOL_NAME
-    description = "Create a calendar event after explicit user confirmation."
+    description = "在获得用户明确确认后创建日历事件。"
     input_schema = CalendarCreateRequest
     output_schema = CalendarCreateResult
     category = "write"
@@ -148,7 +147,7 @@ class ContactsSearchTool(ToolBase):
     """Search personal contacts through the configured contacts adapter."""
 
     name = CONTACTS_SEARCH_TOOL_NAME
-    description = "Search the user's contacts for candidate people or contact details."
+    description = "搜索用户联系人中的候选人员或联系方式。"
     input_schema = ContactsSearchRequest
     output_schema = ContactsSearchResult
     category = "read"

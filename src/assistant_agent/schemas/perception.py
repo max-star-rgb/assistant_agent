@@ -18,7 +18,7 @@ class VisualUnderstandingResult(BaseModel):
 
 
 class VisionUnderstandingRequest(BaseModel):
-    """Unified request for image, explicit video, and realtime keyframe understanding."""
+    """图片、显式视频和实时关键帧理解的统一请求。"""
 
     image_ids: list[str] = Field(default_factory=list)
     video_ids: list[str] = Field(default_factory=list)
