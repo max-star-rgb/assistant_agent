@@ -144,11 +144,11 @@ history from an older call. Observability/Langfuse therefore uses that internal
 id as `agent_session_id` / `langfuse.session.id` and explicitly labels its scope
 as `agent_service_connection`; it must not present the vendor correlation id as
 a durable conversation id. Its Gateway session uses the trusted Agent-Service
-entry profile and a trusted AgentRuntime tool set: `web_search`, `weather`, `shopping_search`,
-`memory_retrieval`, `memory_save`, plus dynamically exposed `vision_understanding`
-when active-video state makes it valid. These tools enter the Agent-Service
-catalog through their own visibility metadata, not through catalog-side
-business-tool name rules. `weather` 只有在当前运行模式已经正确注册对应 adapter 时才进入目录；
+entry profile without a business-tool name allowlist. Every registered read tool
+enters the candidate set by the shared exposure policy; media requirements and
+other structured conditions are then applied, so `vision_understanding` appears
+only when active media makes it valid. Provider-backed tools such as `weather`
+只有在当前运行模式已经正确注册对应 adapter 时才进入目录；
 真实模式缺少 MCP mapping 或配置时仍然 fail closed。`shopping_search` performs product
 search plus price comparison；其结构化结果作为 tool observation 回到下一轮 LLM，由 LLM 生成最终
 购物文本。Realtime/Gateway 不执行购物展示决策，也不覆盖模型最终正文。Tool qualification is derived from trusted session

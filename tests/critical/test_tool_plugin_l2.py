@@ -91,8 +91,12 @@ def test_configured_write_tool_is_not_host_enabled_by_plugin_declaration(
     assert selection.summary.registry_generation == registry.generation
 
 
-def test_agent_service_entry_profile_limits_the_runtime_tool_catalog() -> None:
-    registry = create_default_registry()
+def test_agent_service_entry_profile_exposes_registered_read_tools_by_policy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module_name = "tests_fake_agent_service_read_plugin"
+    _install_plugin_module(monkeypatch, module_name, _ConfiguredPlugin())
+    registry = create_default_registry(plugin_modules=[module_name])
     request = UserRequest(
         user_id="agent-service-user",
         session_id="agent-service-session",
@@ -107,16 +111,25 @@ def test_agent_service_entry_profile_limits_the_runtime_tool_catalog() -> None:
         host_configured_tool_names=registry.host_configured_tool_names(),
     )
 
-    assert selection.run_tool_catalog.available_tool_names == [
+    assert {
+        "calendar_search",
+        "contacts_search",
+        "memory_get",
         "memory_search",
         "shopping_search",
+        "tool_search",
         "weather",
         "web_fetch",
         "web_search",
-    ]
-    assert selection.run_tool_catalog.excluded_reasons["calendar_search"] == [
-        "entry_profile_not_allowed"
-    ]
+    }.issubset(selection.run_tool_catalog.available_tool_names)
+    assert "configured_read" in selection.run_tool_catalog.available_tool_names
+    assert "configured_write" not in selection.run_tool_catalog.available_tool_names
+    assert "calendar_create" not in selection.run_tool_catalog.available_tool_names
+    assert "entry_profile_not_allowed" not in {
+        reason
+        for reasons in selection.run_tool_catalog.excluded_reasons.values()
+        for reason in reasons
+    }
     assert selection.run_tool_catalog.excluded_reasons["vision_understanding"] == [
         "required_media_not_available"
     ]
@@ -128,14 +141,9 @@ def test_agent_service_entry_profile_limits_the_runtime_tool_catalog() -> None:
         registry_generation=registry.generation,
         host_configured_tool_names=registry.host_configured_tool_names(),
     )
-    assert video_selection.run_tool_catalog.available_tool_names == [
-        "memory_search",
-        "shopping_search",
-        "vision_understanding",
-        "weather",
-        "web_fetch",
-        "web_search",
-    ]
+    assert "vision_understanding" in (
+        video_selection.run_tool_catalog.available_tool_names
+    )
 
 
 def test_explicit_invalid_plugin_configuration_fails_closed() -> None:
