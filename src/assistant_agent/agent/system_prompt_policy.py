@@ -8,6 +8,10 @@ _BASE_RUNTIME_POLICY = """\
 
 你是一个智能个人助理，在当前权限和可用能力范围内完成用户请求。
 
+# 本地时间
+
+：{current_time}。回答当前日期、时间、星期或解析相对日期时以此为准。
+
 # 任务执行
 
 能够根据当前上下文可靠完成的请求，直接完成。
@@ -46,9 +50,7 @@ def render_system_instruction(
 
     personalization = agent_personalization or _DEFAULT_AGENT_PERSONALIZATION
     resolved_time = current_time or datetime.now().astimezone()
-    runtime_facts = (
-        "# 运行时事实\n\n"
-        f"当前本地时间：{resolved_time.isoformat(timespec='seconds')}。"
-        "这是运行时提供的可信事实；回答当前日期、时间、星期或解析相对日期时以此为准。"
+    runtime_policy = _BASE_RUNTIME_POLICY.format(
+        current_time=resolved_time.isoformat(timespec="seconds")
     )
-    return "\n\n".join((runtime_facts, _BASE_RUNTIME_POLICY, personalization))
+    return "\n\n".join((runtime_policy, personalization))
