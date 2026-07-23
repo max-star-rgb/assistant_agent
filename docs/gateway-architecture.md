@@ -375,7 +375,9 @@ message.user -> per-session FIFO -> process-wide admission -> backend run
   The default runtime limit follows `max_active_runs`, and a smaller value is
   rejected at startup. Each admitted turn checks out a runtime and returns it
   after completion/cancellation; connection hangup destroys only its logical
-  AgentSession and never closes this process-owned pool.
+  AgentSession and never closes this process-owned pool. Application shutdown
+  closes every pooled runtime and drains its shared bounded post-response memory
+  capture dispatcher within the configured memory shutdown bound.
 - `run.cancel` can target a queued `run_id`. Queue timeout and pre-run cancel
   end with `run.end(reason=cancelled)` plus prompt-safe cancellation metadata
   with `phase=before_llm`; neither path calls the backend.

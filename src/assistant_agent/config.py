@@ -118,6 +118,9 @@ class ProviderConfig:
     memory_framework_identity_namespace: str = "assistant-agent-local"
     memory_framework_ledger_path: str = DEFAULT_FRAMEWORK_LEDGER_PATH
     memory_framework_fallback_backend: MemoryFrameworkFallbackBackend = "none"
+    memory_capture_max_workers: int = 2
+    memory_capture_max_pending: int = 64
+    memory_capture_shutdown_timeout_seconds: float = 10.0
     conversation_history_backend: ConversationHistoryBackend = "memory"
     conversation_history_path: str = ".local/memory/conversation_history.jsonl"
     max_conversation_history_turns: int = 0
@@ -373,6 +376,21 @@ class ProviderConfig:
             ),
             memory_framework_fallback_backend=_memory_framework_fallback_backend(
                 source.get("MEMORY_FRAMEWORK_FALLBACK_BACKEND")
+            ),
+            memory_capture_max_workers=max(
+                1,
+                _int_env(source.get("MULTIMODAL_AGENT_MEMORY_CAPTURE_MAX_WORKERS"), 2),
+            ),
+            memory_capture_max_pending=max(
+                1,
+                _int_env(source.get("MULTIMODAL_AGENT_MEMORY_CAPTURE_MAX_PENDING"), 64),
+            ),
+            memory_capture_shutdown_timeout_seconds=max(
+                0.0,
+                _float_env(
+                    source.get("MULTIMODAL_AGENT_MEMORY_CAPTURE_SHUTDOWN_TIMEOUT_SECONDS"),
+                    10.0,
+                ),
             ),
             conversation_history_backend=conversation_history_backend,
             conversation_history_path=conversation_history_path,

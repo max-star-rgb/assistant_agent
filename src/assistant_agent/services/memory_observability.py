@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+from threading import Event
 from time import perf_counter
 from typing import Any, Literal
 
 from assistant_agent.agent.state import AgentState
-from assistant_agent.memory.manager import MemoryContext, MemoryManager
+from assistant_agent.memory.manager import MemoryContext, MemoryManager, PreparedTurnCapture
 from assistant_agent.schemas.memory import MemoryItem
 from assistant_agent.schemas.requests import UserRequest
+from assistant_agent.services.memory_capture_dispatcher import MemoryCaptureDispatcher
 from assistant_agent.services.trace_store import TraceStore, append_observability_event, new_span_id, sanitize_trace_value
 
 
@@ -250,39 +252,175 @@ def save_memory_with_trace(
     return saved
 
 
-def capture_memory_with_trace(
+def enqueue_memory_capture_with_trace(
     *,
+    dispatcher: MemoryCaptureDispatcher,
     manager: MemoryManager,
     trace_store: TraceStore | None,
     trace_id: str | None,
     node_name: str,
     state: AgentState,
-) -> Any | None:
-    """Capture a completed turn without making memory failure fail the user run."""
+) -> bool:
+    """Freeze and enqueue post-response capture without waiting for provider I/O."""
 
+    resolved_trace_id = trace_id or state.trace_id
     span_id = new_span_id()
-    started_at = perf_counter()
+    try:
+        prepared = manager.prepare_completed_turn_capture(state)
+    except Exception as exc:
+        state.request.metadata["memory_capture"] = {
+            "status": "failed",
+            "error_code": "memory_capture_prepare_failed",
+        }
+        append_observability_event(
+            trace_store,
+            trace_id=resolved_trace_id,
+            run_id=state.run_id,
+            user_id=state.user_id,
+            session_id=state.session_id,
+            canonical_event="memory.capture.finished",
+            observation_type="span",
+            observation_name="memory.turn_capture",
+            observation_scope="runtime",
+            node_name=node_name,
+            status="failed",
+            latency_ms=0,
+            span_id=span_id,
+            attributes={"execution_phase": "post_response_background"},
+            error={
+                "code": "memory_capture_prepare_failed",
+                "message": sanitize_trace_value(str(exc)),
+            },
+        )
+        return False
+    if prepared is None:
+        state.request.metadata["memory_capture"] = {"status": "skipped"}
+        append_observability_event(
+            trace_store,
+            trace_id=resolved_trace_id,
+            run_id=state.run_id,
+            user_id=state.user_id,
+            session_id=state.session_id,
+            canonical_event="memory.capture.finished",
+            observation_type="span",
+            observation_name="memory.turn_capture",
+            observation_scope="runtime",
+            node_name=node_name,
+            status="skipped",
+            latency_ms=0,
+            span_id=span_id,
+            attributes={"execution_phase": "post_response_background"},
+        )
+        return False
+
+    queued = Event()
+    submitted = dispatcher.submit(
+        ordering_key=prepared.ordering_key,
+        callback=lambda: _capture_prepared_turn_with_trace(
+            queued=queued,
+            manager=manager,
+            prepared=prepared,
+            trace_store=trace_store,
+            trace_id=resolved_trace_id,
+            run_id=state.run_id,
+            user_id=state.user_id,
+            session_id=state.session_id,
+            node_name=node_name,
+            span_id=span_id,
+        ),
+    )
+    if not submitted.accepted:
+        error_code = submitted.reason or "memory_capture_enqueue_failed"
+        state.request.metadata["memory_capture"] = {
+            "status": "failed",
+            "error_code": error_code,
+        }
+        append_observability_event(
+            trace_store,
+            trace_id=resolved_trace_id,
+            run_id=state.run_id,
+            user_id=state.user_id,
+            session_id=state.session_id,
+            canonical_event="memory.capture.finished",
+            observation_type="span",
+            observation_name="memory.turn_capture",
+            observation_scope="runtime",
+            node_name=node_name,
+            status="failed",
+            latency_ms=0,
+            span_id=span_id,
+            attributes={
+                "execution_phase": "post_response_background",
+                "pending_count": submitted.pending_count,
+            },
+            error={
+                "code": error_code,
+                "message": "memory capture could not be queued",
+            },
+        )
+        return False
+
+    state.request.metadata["memory_capture"] = {
+        "status": "queued",
+        "pending_count": submitted.pending_count,
+    }
     append_observability_event(
         trace_store,
-        trace_id=trace_id or state.trace_id,
+        trace_id=resolved_trace_id,
         run_id=state.run_id,
         user_id=state.user_id,
         session_id=state.session_id,
+        canonical_event="memory.capture.queued",
+        node_name=node_name,
+        status="queued",
+        span_id=span_id,
+        attributes={
+            "execution_phase": "post_response_background",
+            "pending_count": submitted.pending_count,
+        },
+    )
+    queued.set()
+    return True
+
+
+def _capture_prepared_turn_with_trace(
+    *,
+    queued: Event,
+    manager: MemoryManager,
+    prepared: PreparedTurnCapture,
+    trace_store: TraceStore | None,
+    trace_id: str,
+    run_id: str,
+    user_id: str,
+    session_id: str,
+    node_name: str,
+    span_id: str,
+) -> Any | None:
+    queued.wait()
+    started_at = perf_counter()
+    append_observability_event(
+        trace_store,
+        trace_id=trace_id,
+        run_id=run_id,
+        user_id=user_id,
+        session_id=session_id,
         canonical_event="memory.capture.started",
         node_name=node_name,
         status="started",
         span_id=span_id,
-        attributes={"state_status": state.status, "response_present": state.response is not None},
+        observation_scope="runtime",
+        attributes={"execution_phase": "post_response_background"},
     )
     try:
-        result = manager.capture_completed_turn(state)
+        result = manager.capture_prepared_turn(prepared)
     except Exception as exc:
-        _record_local_memory_operation(
-            state=state,
-            trace_id=trace_id or state.trace_id,
+        _record_local_memory_operation_by_identity(
+            user_id=user_id,
+            session_id=session_id,
+            trace_id=trace_id,
             span_id=span_id,
             operation="capture",
-            input_payload=_memory_capture_input(state),
+            input_payload=_prepared_memory_capture_input(prepared),
             output_payload={
                 "status": "failed",
                 "error_type": exc.__class__.__name__,
@@ -291,24 +429,23 @@ def capture_memory_with_trace(
         )
         append_observability_event(
             trace_store,
-            trace_id=trace_id or state.trace_id,
-            run_id=state.run_id,
-            user_id=state.user_id,
-            session_id=state.session_id,
+            trace_id=trace_id,
+            run_id=run_id,
+            user_id=user_id,
+            session_id=session_id,
             canonical_event="memory.capture.finished",
             observation_type="span",
             observation_name="memory.turn_capture",
+            observation_scope="runtime",
             node_name=node_name,
             status="failed",
             latency_ms=_elapsed_ms(started_at),
             span_id=span_id,
+            attributes={"execution_phase": "post_response_background"},
             error={"code": "memory_capture_failed", "message": sanitize_trace_value(str(exc))},
         )
-        state.request.metadata["memory_capture"] = {
-            "status": "failed",
-            "error_code": "memory_capture_failed",
-        }
         return None
+
     daily_ids = list(getattr(result, "daily_engine_ids", []) or []) if result is not None else []
     core_ids = list(getattr(result, "core_engine_ids", []) or []) if result is not None else []
     errors = list(getattr(result, "errors", []) or []) if result is not None else []
@@ -322,18 +459,13 @@ def capture_memory_with_trace(
         status = "failed"
     else:
         status = "succeeded"
-    state.request.metadata["memory_capture"] = {
-        "status": status,
-        "daily_count": len(daily_ids),
-        "core_count": len(core_ids),
-        "error_count": len(errors),
-    }
-    _record_local_memory_operation(
-        state=state,
-        trace_id=trace_id or state.trace_id,
+    _record_local_memory_operation_by_identity(
+        user_id=user_id,
+        session_id=session_id,
+        trace_id=trace_id,
         span_id=span_id,
         operation="capture",
-        input_payload=_memory_capture_input(state),
+        input_payload=_prepared_memory_capture_input(prepared),
         output_payload={
             "status": status,
             "result": _model_dump_or_value(result),
@@ -341,18 +473,20 @@ def capture_memory_with_trace(
     )
     append_observability_event(
         trace_store,
-        trace_id=trace_id or state.trace_id,
-        run_id=state.run_id,
-        user_id=state.user_id,
-        session_id=state.session_id,
+        trace_id=trace_id,
+        run_id=run_id,
+        user_id=user_id,
+        session_id=session_id,
         canonical_event="memory.capture.finished",
         observation_type="span",
         observation_name="memory.turn_capture",
+        observation_scope="runtime",
         node_name=node_name,
         status=status,
         latency_ms=_elapsed_ms(started_at),
         span_id=span_id,
         attributes={
+            "execution_phase": "post_response_background",
             "daily_count": len(daily_ids),
             "core_count": len(core_ids),
             "error_count": len(safe_errors),
@@ -436,10 +570,10 @@ def _memory_load_input(
     }
 
 
-def _memory_capture_input(state: AgentState) -> dict[str, Any]:
+def _prepared_memory_capture_input(prepared: PreparedTurnCapture) -> dict[str, Any]:
     return {
-        "user": state.request.text or "",
-        "assistant": state.response.message if state.response is not None else "",
+        "user": prepared.user_text,
+        "assistant": prepared.assistant_text,
     }
 
 
@@ -461,14 +595,35 @@ def _record_local_memory_operation(
     input_payload: dict[str, Any],
     output_payload: dict[str, Any],
 ) -> None:
+    _record_local_memory_operation_by_identity(
+        user_id=state.user_id,
+        session_id=state.session_id,
+        trace_id=trace_id,
+        span_id=span_id,
+        operation=operation,
+        input_payload=input_payload,
+        output_payload=output_payload,
+    )
+
+
+def _record_local_memory_operation_by_identity(
+    *,
+    user_id: str,
+    session_id: str,
+    trace_id: str,
+    span_id: str,
+    operation: Literal["load", "capture"],
+    input_payload: dict[str, Any],
+    output_payload: dict[str, Any],
+) -> None:
     from assistant_agent.services.trace_conversation import (
         TraceMemoryOperation,
         get_default_trace_conversation_store,
     )
 
     get_default_trace_conversation_store().append_memory_operation(
-        user_id=state.user_id,
-        session_id=state.session_id,
+        user_id=user_id,
+        session_id=session_id,
         trace_id=trace_id,
         memory_operation=TraceMemoryOperation(
             operation=operation,

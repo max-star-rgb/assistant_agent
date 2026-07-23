@@ -181,6 +181,7 @@ def create_gateway_session_manager(
             max_runtime_instances=max_runtime_instances,
             runtime_factory=_default_gateway_runtime_factory(),
             run_request=_run_assistant_request_with_http_runtime,
+            runtime_cleanup=lambda runtime: runtime.close(),
         )
         _GATEWAY_RUNTIME_POOL = runtime_pool
         resolved_backend_factory = _default_gateway_backend_factory(runtime_pool)

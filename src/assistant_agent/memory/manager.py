@@ -1,6 +1,7 @@
 """Memory manager boundary for layered agent memory access."""
 
 import hashlib
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, cast
 from uuid import uuid4
@@ -97,6 +98,30 @@ _SAFE_EXPLICIT_CONTENT_KEYS = {
     "conflict_policy",
     "confidence",
 }
+
+
+@dataclass(frozen=True)
+class PreparedTurnCapture:
+    """Immutable, prompt-safe input for post-response turn capture."""
+
+    identity: RequestIdentity
+    user_text: str
+    assistant_text: str
+    daily_text: str
+    daily_memory_id: str
+    occurred_at: datetime
+    source_turn: str
+
+    @property
+    def ordering_key(self) -> tuple[str, str, str, str]:
+        """Serialize captures that share one governed identity/session."""
+
+        return (
+            self.identity.tenant_id or "",
+            self.identity.user_id,
+            self.identity.project_id or "",
+            self.identity.session_id or "",
+        )
 
 
 class MemoryContext(BaseModel):
@@ -361,6 +386,14 @@ class MemoryManager:
     def capture_completed_turn(self, state: Any) -> Any | None:
         """Submit a completed turn to a framework-owned memory lifecycle."""
 
+        prepared = self.prepare_completed_turn_capture(state)
+        if prepared is None:
+            return None
+        return self.capture_prepared_turn(prepared)
+
+    def prepare_completed_turn_capture(self, state: Any) -> PreparedTurnCapture | None:
+        """Freeze one completed turn before it crosses a background boundary."""
+
         capture_turn = getattr(self.store, "capture_turn", None)
         if not callable(capture_turn) or not bool(getattr(self.store, "supports_turn_capture", False)):
             return None
@@ -383,14 +416,30 @@ class MemoryManager:
             f"用户：{user_text}\n"
             f"助手结果：{assistant_text}"
         )
-        return capture_turn(
-            identity=identity,
+        return PreparedTurnCapture(
+            identity=identity.model_copy(deep=True),
             user_text=user_text,
             assistant_text=assistant_text,
             daily_text=daily_text,
             daily_memory_id=f"daily:{local_time.date().isoformat()}:{source_turn}",
             occurred_at=occurred_at,
             source_turn=source_turn,
+        )
+
+    def capture_prepared_turn(self, prepared: PreparedTurnCapture) -> Any | None:
+        """Submit a previously frozen turn to the lifecycle-owning store."""
+
+        capture_turn = getattr(self.store, "capture_turn", None)
+        if not callable(capture_turn) or not bool(getattr(self.store, "supports_turn_capture", False)):
+            return None
+        return capture_turn(
+            identity=prepared.identity,
+            user_text=prepared.user_text,
+            assistant_text=prepared.assistant_text,
+            daily_text=prepared.daily_text,
+            daily_memory_id=prepared.daily_memory_id,
+            occurred_at=prepared.occurred_at,
+            source_turn=prepared.source_turn,
         )
 
     def load_into_state(

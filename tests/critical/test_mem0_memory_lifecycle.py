@@ -214,12 +214,8 @@ def test_mem0_unavailable_runtime_records_recall_and_capture_failures(tmp_path) 
     )
 
     assert state.status == "completed"
-    assert state.request.metadata["memory_capture"] == {
-        "status": "failed",
-        "daily_count": 0,
-        "core_count": 0,
-        "error_count": 2,
-    }
+    assert state.request.metadata["memory_capture"]["status"] == "queued"
+    assert runtime.drain_memory_captures(timeout=10.0) is True
     events = runtime.trace_store.list_by_run(state.run_id)
     recall = next(event for event in events if event.canonical_event == "memory.load.finished")
     capture = next(
@@ -235,6 +231,7 @@ def test_mem0_unavailable_runtime_records_recall_and_capture_failures(tmp_path) 
         {"phase": "daily", "code": "memory_framework_request_failed"},
         {"phase": "core", "code": "memory_framework_request_failed"},
     ]
+    runtime.close()
     assert sanitize_trace_value("") == ""
 
 
@@ -302,12 +299,8 @@ def test_completed_runtime_turn_triggers_mem0_capture(tmp_path) -> None:
     assert state.request.metadata["memory_context_policy_reason"] == (
         "framework_core_memory_auto_load"
     )
-    assert state.request.metadata["memory_capture"] == {
-        "status": "succeeded",
-        "daily_count": 1,
-        "core_count": 1,
-        "error_count": 0,
-    }
+    assert state.request.metadata["memory_capture"]["status"] == "queued"
+    assert runtime.drain_memory_captures(timeout=10.0) is True
     assert requests[0].path == "/search"
     assert requests[0].body is not None
     assert requests[0].body["filters"]["record_kind"] == "core"
@@ -324,3 +317,4 @@ def test_completed_runtime_turn_triggers_mem0_capture(tmp_path) -> None:
     )
     assert daily_item is not None
     assert daily_item.content["record_kind"] == "daily"
+    runtime.close()

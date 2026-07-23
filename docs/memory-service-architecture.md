@@ -1,6 +1,6 @@
 # Local Memory Service Architecture
 
-Last updated: 2026-07-22
+Last updated: 2026-07-23
 
 This document is the current authority for assistant_agent's local/project-side memory service architecture. Update it whenever `MemoryManager`, built-in memory stores, local retrieval, write policy, user profile behavior, memory tools, local memory APIs, or memory context boundaries change.
 
@@ -137,13 +137,38 @@ UserRequest
   -> memory_search / memory_get through ToolExecutor
   -> MemoryManager.search(...) or MemoryManager.get_for_identity(...)
   -> compose_response
-  -> capture_memory node
-  -> framework/Mem0 only: MemoryManager.capture_completed_turn(...)
+  -> emit final_response
+  -> freeze prompt-safe PreparedTurnCapture
+  -> bounded MemoryCaptureDispatcher enqueue (no Provider I/O on response path)
+  -> return runtime result / Gateway delivers reply
+
+post-response background:
+  -> framework/Mem0 only: MemoryManager.capture_prepared_turn(...)
        -> daily record: infer=false
        -> original user/assistant messages: infer=true
 ```
 
-Both assistant-loop and compatibility graphs start with `load_memory` and finish with `capture_memory`. Capture is a runtime lifecycle operation, not a model tool. It is a no-op for stores without completed-turn capture support; the default local/offline runtime therefore does not call a real memory Provider.
+Both assistant-loop and compatibility graphs start with `load_memory` and finish
+with `compose_response`. Completed-turn capture is a post-response runtime
+lifecycle operation, not a LangGraph node and not a model tool. The runtime
+first emits its final-response event, freezes an immutable sanitized capture
+payload, and performs only a non-blocking bounded enqueue before returning.
+Capture Provider latency and capture failure therefore cannot delay or fail an
+otherwise successful user response. Stores without completed-turn capture
+support use a no-I/O skipped path; the default local/offline runtime does not
+start a capture worker or call a real memory Provider.
+
+`MemoryCaptureDispatcher` provides a bounded process-local queue. Captures for
+the same tenant/user/project/session identity run FIFO so memory inference does
+not reorder one conversation; different identities may run concurrently.
+Queue saturation or a closed dispatcher fails the capture with a structured
+trace error instead of blocking the foreground turn. Accepted jobs are drained
+within a configured bound during runtime/Gateway pool shutdown. The queue is
+not a durable outbox: a process crash may lose accepted work that has not
+finished, and this version does not persist raw turn capture payloads for retry.
+The next immediately arriving turn may therefore observe eventual rather than
+strict read-after-write consistency; same-session continuity remains owned by
+conversation history.
 
 Read-policy rejection is a no-I/O fast path. It must not call the configured
 memory store, framework adapter, remote service, or persistent governance ledger.
@@ -156,6 +181,7 @@ failure and degradation events retain their durable audit behavior.
 | module | responsibility |
 | --- | --- |
 | `src/assistant_agent/memory/manager.py` | Boundary for memory retrieval, layered context formatting, explicit saves, pending confirmation flow, duplicate merge, user profile upsert, run-summary saves, get/list/delete/hard-delete passthroughs. |
+| `src/assistant_agent/services/memory_capture_dispatcher.py` | Bounded post-response capture workers, per-identity FIFO scheduling, non-blocking admission, drain, and close lifecycle. |
 | `src/assistant_agent/memory/factory.py` | 可插拔 `MemoryStore` backend registry 和运行时 store factory。内置 backend 与自定义替换实现都必须在 `MemoryManager` 后面返回 `MemoryStore`；替换内置名称必须显式声明。 |
 | `src/assistant_agent/memory/context_builder.py` | Token-aware, prompt-safe memory context selection and layer rendering. Produces injected items, rendered context, token count, omission count, rejection reasons, and retrieval version. |
 | `src/assistant_agent/memory/read_policy.py` | Deterministic long-term memory read gate and trust metadata. Decides automatic memory context injection and validates explicit retrieval intent before store access. |
@@ -309,6 +335,9 @@ Environment variables:
 - `MEMORY_FRAMEWORK_IDENTITY_NAMESPACE`
 - `MEMORY_FRAMEWORK_LEDGER_PATH`
 - `MEMORY_FRAMEWORK_FALLBACK_BACKEND` (`none`, `memory`, `jsonl`, or `sqlite`)
+- `MULTIMODAL_AGENT_MEMORY_CAPTURE_MAX_WORKERS` (default `2`)
+- `MULTIMODAL_AGENT_MEMORY_CAPTURE_MAX_PENDING` (default `64`)
+- `MULTIMODAL_AGENT_MEMORY_CAPTURE_SHUTDOWN_TIMEOUT_SECONDS` (default `10`)
 
 Mem0 sidecar 的 Provider 配置由
 `docker/memory-frameworks/compose.yaml` 从仓库根目录 `.env` 解析。启动时应显式传入
@@ -661,7 +690,11 @@ and redaction boundaries.
 
 ## Writes
 
-The main assistant no longer receives a memory write tool. In framework/Mem0 mode, the normal runtime write path is the post-response `capture_memory` lifecycle described above. The local explicit-save, confirmation, promotion and compatibility APIs below remain available to non-model callers and legacy local/remote-service backends; they are not part of the Qwen tool catalog.
+The main assistant no longer receives a memory write tool. In framework/Mem0
+mode, the normal runtime write path is the bounded post-response capture
+lifecycle described above. The local explicit-save, confirmation, promotion
+and compatibility APIs below remain available to non-model callers and legacy
+local/remote-service backends; they are not part of the Qwen tool catalog.
 
 Explicit saves:
 
@@ -821,15 +854,10 @@ Validation for memory changes:
 
 ```bash
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_evals.py --suite memory
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_evals.py --suite memory_quality
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/smoke_memory_dual_core.py --offline-only
 ```
 
-For broad behavior changes, run the full offline suite:
-
-```bash
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_evals.py
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_demo_flows.py
-```
+The former `scripts/run_evals.py` and
+`scripts/smoke_memory_dual_core.py` entrypoints are no longer present. Memory
+retrieval and write-quality helpers remain available under
+`src/assistant_agent/memory/`; add or restore a documented runner before
+claiming standalone eval/smoke execution evidence.

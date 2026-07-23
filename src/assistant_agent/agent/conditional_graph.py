@@ -11,7 +11,6 @@ from assistant_agent.agent.graph_nodes import (
     compose_response_node,
     detect_intent_node,
     load_memory_node,
-    capture_memory_node,
     route_by_intent,
     run_first_tool_node,
     plan_steps_node,
@@ -50,7 +49,6 @@ def build_conditional_agent_graph(
     graph.add_node("select_next_step", bind_runtime_node("select_next_step", select_next_step_node, runtime_context))
     graph.add_node("execute_step", bind_runtime_node("execute_step", execute_step_node, runtime_context))
     graph.add_node("compose_response", bind_runtime_node("compose_response", compose_response_node, runtime_context))
-    graph.add_node("capture_memory", bind_runtime_node("capture_memory", capture_memory_node, runtime_context))
     graph.add_edge(START, "load_memory")
     graph.add_edge("load_memory", "detect_intent")
     graph.add_conditional_edges(
@@ -87,8 +85,7 @@ def build_conditional_agent_graph(
             "finish": "compose_response",
         },
     )
-    graph.add_edge("compose_response", "capture_memory")
-    graph.add_edge("capture_memory", END)
+    graph.add_edge("compose_response", END)
     return graph.compile(checkpointer=checkpointer)
 
 

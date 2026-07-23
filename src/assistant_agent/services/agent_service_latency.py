@@ -404,6 +404,7 @@ def _active_trace_stage(events: list[TraceEvent]) -> tuple[str | None, int]:
         if event.span_id
         and (event.canonical_event or "").endswith(".started")
         and event.span_id not in finished_spans
+        and event.attributes.get("execution_phase") != "post_response_background"
     ]
     if not open_events:
         return None, 0

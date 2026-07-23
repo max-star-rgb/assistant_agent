@@ -1,6 +1,6 @@
 # Runtime Event Stream Architecture
 
-Last updated: 2026-07-22
+Last updated: 2026-07-23
 
 This document is the current authority for provider and assistant runtime
 streaming in `assistant_agent`. It defines the event contracts, stream/result
@@ -192,6 +192,16 @@ Async migration remains selective:
   measured concurrency or latency justifies a focused migration;
 - do not duplicate business logic merely to remove `asyncio.to_thread()`.
 
+Completed-turn long-term-memory capture is a separate post-response thread
+boundary. `AgentGraphRuntime` emits `final_response` first, freezes a sanitized
+capture payload, and submits it to the bounded `MemoryCaptureDispatcher`
+without waiting for memory Provider I/O. Its trace span carries
+`execution_phase=post_response_background`; Agent-Service critical-path and
+active-stage accounting exclude that background span. Runtime close drains
+accepted work within the configured shutdown bound. Detailed identity,
+ordering, saturation and eventual-consistency rules remain authoritative in
+`docs/memory-service-architecture.md`.
+
 `ProviderStreamingTurnRunner` bridges an async provider stream into the current
 synchronous runtime turn. It uses an event loop directly when called from a
 normal worker thread and isolates the coroutine in a helper thread if the
@@ -262,6 +272,7 @@ separate process or an upstream API that actually provides it.
 | `src/assistant_agent/schemas/events.py` | runtime `AgentEvent` contract |
 | `src/assistant_agent/agent/event_stream.py` | `AgentRunStream` and thread-safe queue sink |
 | `src/assistant_agent/agent/runtime.py` | graph lifecycle, provider-path selection, `run_state`/`run`/`run_stream` |
+| `src/assistant_agent/services/memory_capture_dispatcher.py` | bounded post-response turn-capture queue, per-identity ordering, drain and shutdown |
 | `src/assistant_agent/services/assistant_run_service.py` | shared sync and streaming run service, `AssistantRunArtifacts` |
 | `src/assistant_agent/realtime/agent_graph_backend.py` | assistant stream consumption and realtime terminal result |
 | `src/assistant_agent/realtime/event_mapping.py` | `AgentEvent` to `RealtimeAgentEvent` mapping |

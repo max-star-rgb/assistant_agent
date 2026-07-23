@@ -60,7 +60,11 @@ from assistant_agent.services.context.sources import (
     ContextSourceCoordinator,
     ContextSourceRequest,
 )
-from assistant_agent.services.memory_observability import load_memory_with_trace
+from assistant_agent.services.memory_capture_dispatcher import MemoryCaptureDispatcher
+from assistant_agent.services.memory_observability import (
+    enqueue_memory_capture_with_trace,
+    load_memory_with_trace,
+)
 from assistant_agent.services.memory_core_status import build_memory_core_status, update_memory_core_status_errors
 from assistant_agent.services.run_history import RunHistoryStore
 from assistant_agent.services.session_store import SessionStore, create_session_store
@@ -96,12 +100,23 @@ class AgentGraphRuntime:
         checkpointer: Any | None = None,
         context_source_coordinator: ContextSourceCoordinator | None = None,
         durable_task_service: DurableTaskService | None = None,
+        memory_capture_dispatcher: MemoryCaptureDispatcher | None = None,
     ) -> None:
         self.config = config or ProviderConfig.from_env()
         self.video_context_store = video_context_store or InMemoryVideoContextStore()
         self.realtime_video_memory_store = realtime_video_memory_store or RealtimeVideoMemoryStore()
         self.memory_store = memory_store or create_memory_store(self.config)
         self.memory_manager = MemoryManager(self.memory_store)
+        self.memory_capture_dispatcher = (
+            memory_capture_dispatcher
+            or MemoryCaptureDispatcher(
+                max_workers=self.config.memory_capture_max_workers,
+                max_pending=self.config.memory_capture_max_pending,
+                shutdown_timeout_seconds=(
+                    self.config.memory_capture_shutdown_timeout_seconds
+                ),
+            )
+        )
         self.durable_task_service = durable_task_service
         if registry is None:
             if self.config.durable_tasks_enabled and self.durable_task_service is None:
@@ -436,8 +451,28 @@ class AgentGraphRuntime:
                 ),
                 run_event_sink,
             )
+            enqueue_memory_capture_with_trace(
+                dispatcher=self.memory_capture_dispatcher,
+                manager=self.memory_manager,
+                trace_store=self.trace_store,
+                trace_id=state.trace_id,
+                node_name="post_response_memory_capture",
+                state=state,
+            )
         _update_memory_core_status_from_recall(state.request.metadata)
         return state
+
+    def drain_memory_captures(self, *, timeout: float | None = None) -> bool:
+        """Wait for accepted post-response captures without accepting new work changes."""
+
+        return self.memory_capture_dispatcher.drain(timeout=timeout)
+
+    def close(self) -> bool:
+        """Drain and close runtime-owned background lifecycle services."""
+
+        return self.memory_capture_dispatcher.close(
+            timeout=self.config.memory_capture_shutdown_timeout_seconds,
+        )
 
     def run_task_quantum(
         self,

@@ -18,7 +18,7 @@ from assistant_agent.schemas.planning import TaskPlan
 from assistant_agent.schemas.requests import AgentResponse, UserRequest
 from assistant_agent.schemas.tools import ToolResult
 from assistant_agent.services.chat_adapter import ChatAdapter
-from assistant_agent.services.memory_observability import capture_memory_with_trace, load_memory_with_trace
+from assistant_agent.services.memory_observability import load_memory_with_trace
 from assistant_agent.services.response_observability import append_response_final_event
 from assistant_agent.schemas.tool_ids import (
     IMAGE_GENERATION_CAPABILITY,
@@ -226,17 +226,6 @@ def compose_response_node(graph_state: AgentGraphState) -> AgentGraphState:
         state=state,
         source="compose_response",
         latency_ms=int((perf_counter() - response_started_at) * 1000),
-    )
-    return graph_state
-
-
-def capture_memory_node(graph_state: AgentGraphState) -> AgentGraphState:
-    capture_memory_with_trace(
-        manager=_memory_manager(graph_state),
-        trace_store=graph_state.get("trace_store"),
-        trace_id=graph_state.get("trace_id"),
-        node_name=graph_state.get("current_node_name", "capture_memory"),
-        state=graph_state["state"],
     )
     return graph_state
 
