@@ -22,6 +22,8 @@ class WebToolPlugin:
 
 
 def web_provider_ready(config: ProviderConfig) -> bool:
+    if config.search_provider == "tavily":
+        return bool(config.tavily_api_key and config.tavily_base_url)
     return bool(
         config.search_provider == "http"
         and config.web_search_base_url

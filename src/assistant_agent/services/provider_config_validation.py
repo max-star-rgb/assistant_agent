@@ -15,6 +15,7 @@ from assistant_agent.schemas.tool_ids import (
     IMAGE_UNDERSTANDING_CAPABILITY,
     SHOPPING_SEARCH_CAPABILITY,
     VIDEO_UNDERSTANDING_CAPABILITY,
+    WEB_SEARCH_CAPABILITY,
 )
 
 
@@ -80,6 +81,12 @@ def validate_provider_config(config: ProviderConfig) -> ProviderConfigValidation
         capability=SHOPPING_SEARCH_CAPABILITY,
         provider=config.shopping_compare_provider,
         missing=_shopping_compare_missing(config),
+    )
+    _add_issue_if_missing(
+        issues,
+        capability=WEB_SEARCH_CAPABILITY,
+        provider=config.search_provider,
+        missing=_web_search_missing(config),
     )
     _add_issue_if_missing(
         issues,
@@ -157,6 +164,20 @@ def _shopping_compare_missing(config: ProviderConfig) -> list[str]:
         return _missing(
             ("SHOPPING_COMPARE_BASE_URL", config.shopping_compare_base_url),
             ("SHOPPING_COMPARE_API_KEY", config.shopping_compare_api_key),
+        )
+    return []
+
+
+def _web_search_missing(config: ProviderConfig) -> list[str]:
+    if config.search_provider == "http":
+        return _missing(
+            ("WEB_SEARCH_BASE_URL", config.web_search_base_url),
+            ("WEB_SEARCH_API_KEY", config.web_search_api_key),
+        )
+    if config.search_provider == "tavily":
+        return _missing(
+            ("TAVILY_BASE_URL", config.tavily_base_url),
+            ("TAVILY_API_KEY", config.tavily_api_key),
         )
     return []
 

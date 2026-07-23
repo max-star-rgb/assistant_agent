@@ -150,6 +150,11 @@ LLM 和所有 Provider-backed tools 使用 mock 实现，即使环境中存在�
 不属于 Provider，不受“真实调用”伪分类。weather、calendar、contacts 等 MCP 能力在 real 模式按实际
 MCP mapping 逐个注册，未映射的能力不进入 Registry。
 
+`web_search` 与 `web_fetch` 随 `run_server` 创建的 runtime 作为进程内 Web Tool 插件装配，不要求
+额外启动本地 relay。`MULTIMODAL_AGENT_SEARCH_PROVIDER=tavily` 时，插件使用 `TAVILY_API_KEY`
+直接构造 Tavily Search/Extract adapter；配置不完整则两个 Tool 都不注册。`http` 仍保留为部署方显式
+提供通用 HTTP backend 的兼容 Provider，两种真实 Provider 都不得互相静默 fallback。
+
 进程内 Tool 插件采用 L2 启动时可插拔协议。每个插件声明
 `ToolPluginDescriptor(plugin_id, plugin_version, api_version="tool_plugin_v1")`，并通过
 `build_tools(context)` 构造 Tool。内置工具继续按能力域自包含在 `tools/plugins/<capability>/`，

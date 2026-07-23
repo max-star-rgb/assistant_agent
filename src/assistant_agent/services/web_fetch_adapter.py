@@ -178,6 +178,106 @@ class HttpWebFetchAdapter:
         )
 
 
+class TavilyWebFetchAdapter:
+    """In-process Tavily Extract API adapter."""
+
+    provider = "tavily"
+
+    def __init__(
+        self,
+        base_url: str,
+        api_key: str | None,
+        timeout_seconds: float = 10.0,
+    ) -> None:
+        self.base_url = _provider_endpoint(base_url, "extract")
+        self.api_key = api_key
+        self.timeout_seconds = timeout_seconds
+
+    def fetch(self, request: WebFetchRequest) -> WebFetchResult:
+        if not self.api_key:
+            return _failed_web_fetch_result(
+                provider=self.provider,
+                url=request.url,
+                code="provider_unconfigured",
+                message="tavily web fetch provider is missing TAVILY_API_KEY.",
+                recoverable=True,
+                content_format=request.content_format,
+            )
+
+        started = perf_counter()
+        try:
+            http_request = urllib.request.Request(
+                self.base_url,
+                data=json.dumps(
+                    {
+                        "urls": request.url,
+                        "extract_depth": "basic",
+                        "format": request.content_format,
+                    },
+                    ensure_ascii=False,
+                ).encode("utf-8"),
+                headers={
+                    "Accept": "application/json",
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {self.api_key}",
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(
+                http_request,
+                timeout=self.timeout_seconds,
+            ) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            return _failed_web_fetch_result(
+                provider=self.provider,
+                url=request.url,
+                code=_http_error_code(exc.code),
+                message=f"tavily web fetch provider returned HTTP {exc.code}.",
+                recoverable=exc.code in {408, 429, 500, 502, 503, 504},
+                content_format=request.content_format,
+                latency_ms=_elapsed_ms(started),
+            )
+        except urllib.error.URLError as exc:
+            return _failed_from_exception(
+                exc,
+                request=request,
+                code="provider_network_error",
+                latency_ms=_elapsed_ms(started),
+                provider=self.provider,
+            )
+        except TimeoutError as exc:
+            return _failed_from_exception(
+                exc,
+                request=request,
+                code="provider_timeout",
+                latency_ms=_elapsed_ms(started),
+                provider=self.provider,
+            )
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            return _failed_from_exception(
+                exc,
+                request=request,
+                code="provider_bad_response",
+                latency_ms=_elapsed_ms(started),
+                provider=self.provider,
+            )
+        except Exception as exc:  # pragma: no cover - defensive provider boundary
+            return _failed_from_exception(
+                exc,
+                request=request,
+                code="provider_unknown_error",
+                latency_ms=_elapsed_ms(started),
+                provider=self.provider,
+            )
+
+        return _web_fetch_result_from_payload(
+            _normalize_tavily_extract_payload(payload, request=request),
+            request=request,
+            latency_ms=_elapsed_ms(started),
+        )
+
+
 def create_web_fetch_adapter(config: ProviderConfig | None = None) -> WebFetchAdapter:
     """Create a web fetch adapter without initializing real provider clients."""
 
@@ -186,6 +286,12 @@ def create_web_fetch_adapter(config: ProviderConfig | None = None) -> WebFetchAd
         return HttpWebFetchAdapter(
             base_url=resolved.web_search_base_url,
             api_key=resolved.web_search_api_key,
+            timeout_seconds=resolved.web_search_timeout_seconds,
+        )
+    if resolved.search_provider == "tavily":
+        return TavilyWebFetchAdapter(
+            base_url=resolved.tavily_base_url,
+            api_key=resolved.tavily_api_key,
             timeout_seconds=resolved.web_search_timeout_seconds,
         )
     if resolved.provider_mode == "real":
@@ -198,6 +304,50 @@ def _request_payload(request: WebFetchRequest) -> dict[str, Any]:
     return {
         key: value for key, value in payload.items() if value not in (None, "", [], {})
     }
+
+
+def _normalize_tavily_extract_payload(
+    payload: Any,
+    *,
+    request: WebFetchRequest,
+) -> Any:
+    if not isinstance(payload, dict):
+        return payload
+    raw_results = payload.get("results")
+    if not isinstance(raw_results, list) or not raw_results:
+        return {
+            "provider": "tavily",
+            "url": request.url,
+            "content_format": request.content_format,
+            "errors": [
+                {
+                    "code": "provider_empty_response",
+                    "message": "tavily extract returned no usable results.",
+                    "recoverable": True,
+                }
+            ],
+        }
+    first = raw_results[0]
+    if not isinstance(first, dict):
+        return payload
+    content = first.get("raw_content")
+    if not isinstance(content, str):
+        content = first.get("content")
+    normalized: dict[str, Any] = {
+        "provider": "tavily",
+        "url": first.get("url") or request.url,
+        "content": content,
+        "content_format": request.content_format,
+    }
+    if isinstance(payload.get("request_id"), str):
+        normalized["output_ref"] = f"tavily://extract/{payload['request_id']}"
+    return normalized
+
+
+def _provider_endpoint(base_url: str, endpoint: str) -> str:
+    stripped = base_url.rstrip("/")
+    suffix = f"/{endpoint}"
+    return stripped if stripped.endswith(suffix) else f"{stripped}{suffix}"
 
 
 def _web_fetch_result_from_payload(
@@ -334,13 +484,14 @@ def _failed_from_exception(
     request: WebFetchRequest,
     code: str,
     latency_ms: int,
+    provider: str = "http",
 ) -> WebFetchResult:
     error = map_exception_to_provider_error(
-        exc, provider="http", capability=WEB_FETCH_CAPABILITY, code=code
+        exc, provider=provider, capability=WEB_FETCH_CAPABILITY, code=code
     )
     return WebFetchResult(
         url=request.url,
-        provider="http",
+        provider=provider,
         content_format=request.content_format,
         errors=[
             WebFetchProviderError(

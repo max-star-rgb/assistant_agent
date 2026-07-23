@@ -7,6 +7,7 @@ import ipaddress
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import UTC, datetime, timedelta
 from time import perf_counter
 from typing import Any, Protocol
 
@@ -181,6 +182,100 @@ class HttpWebSearchAdapter:
         )
 
 
+class TavilyWebSearchAdapter:
+    """In-process Tavily Search API adapter."""
+
+    provider = "tavily"
+
+    def __init__(
+        self,
+        base_url: str,
+        api_key: str | None,
+        timeout_seconds: float = 10.0,
+    ) -> None:
+        self.base_url = _provider_endpoint(base_url, "search")
+        self.api_key = api_key
+        self.timeout_seconds = timeout_seconds
+
+    def search(self, request: WebSearchRequest) -> WebSearchResult:
+        if not self.api_key:
+            return _failed_web_search_result(
+                provider=self.provider,
+                query_used=request.query,
+                code="provider_unconfigured",
+                message="tavily web search provider is missing TAVILY_API_KEY.",
+                recoverable=True,
+            )
+
+        started = perf_counter()
+        try:
+            http_request = urllib.request.Request(
+                self.base_url,
+                data=json.dumps(
+                    _tavily_search_request_payload(request),
+                    ensure_ascii=False,
+                ).encode("utf-8"),
+                headers={
+                    "Accept": "application/json",
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {self.api_key}",
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(
+                http_request,
+                timeout=self.timeout_seconds,
+            ) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            return _failed_web_search_result(
+                provider=self.provider,
+                query_used=request.query,
+                code=_http_error_code(exc.code),
+                message=f"tavily web search provider returned HTTP {exc.code}.",
+                recoverable=exc.code in {408, 429, 500, 502, 503, 504},
+                latency_ms=_elapsed_ms(started),
+            )
+        except urllib.error.URLError as exc:
+            return _failed_from_exception(
+                exc,
+                request=request,
+                code="provider_network_error",
+                latency_ms=_elapsed_ms(started),
+                provider=self.provider,
+            )
+        except TimeoutError as exc:
+            return _failed_from_exception(
+                exc,
+                request=request,
+                code="provider_timeout",
+                latency_ms=_elapsed_ms(started),
+                provider=self.provider,
+            )
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            return _failed_from_exception(
+                exc,
+                request=request,
+                code="provider_bad_response",
+                latency_ms=_elapsed_ms(started),
+                provider=self.provider,
+            )
+        except Exception as exc:  # pragma: no cover - defensive provider boundary
+            return _failed_from_exception(
+                exc,
+                request=request,
+                code="provider_unknown_error",
+                latency_ms=_elapsed_ms(started),
+                provider=self.provider,
+            )
+
+        return _web_search_result_from_payload(
+            _normalize_tavily_search_payload(payload),
+            request=request,
+            latency_ms=_elapsed_ms(started),
+        )
+
+
 def create_web_search_adapter(config: ProviderConfig | None = None) -> WebSearchAdapter:
     """Create a web search adapter without initializing real provider clients."""
 
@@ -189,6 +284,12 @@ def create_web_search_adapter(config: ProviderConfig | None = None) -> WebSearch
         return HttpWebSearchAdapter(
             base_url=resolved.web_search_base_url,
             api_key=resolved.web_search_api_key,
+            timeout_seconds=resolved.web_search_timeout_seconds,
+        )
+    if resolved.search_provider == "tavily":
+        return TavilyWebSearchAdapter(
+            base_url=resolved.tavily_base_url,
+            api_key=resolved.tavily_api_key,
             timeout_seconds=resolved.web_search_timeout_seconds,
         )
     if resolved.provider_mode == "real":
@@ -201,6 +302,52 @@ def _request_payload(request: WebSearchRequest) -> dict[str, Any]:
     return {
         key: value for key, value in payload.items() if value not in (None, "", [], {})
     }
+
+
+def _tavily_search_request_payload(request: WebSearchRequest) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "query": request.query,
+        "max_results": request.limit,
+        "search_depth": "basic",
+    }
+    if request.recency_days is not None:
+        payload["start_date"] = (
+            datetime.now(UTC).date() - timedelta(days=request.recency_days)
+        ).isoformat()
+    if request.site_filter:
+        payload["include_domains"] = [request.site_filter]
+    return payload
+
+
+def _normalize_tavily_search_payload(payload: Any) -> Any:
+    if not isinstance(payload, dict):
+        return payload
+    normalized = dict(payload)
+    normalized["provider"] = "tavily"
+    if isinstance(payload.get("answer"), str):
+        normalized["summary"] = payload["answer"]
+    if isinstance(payload.get("request_id"), str):
+        normalized["output_ref"] = f"tavily://search/{payload['request_id']}"
+    raw_results = payload.get("results")
+    if isinstance(raw_results, list):
+        results: list[Any] = []
+        for item in raw_results:
+            if not isinstance(item, dict):
+                results.append(item)
+                continue
+            normalized_item = dict(item)
+            if "published_at" not in normalized_item:
+                normalized_item["published_at"] = item.get("published_date")
+            results.append(normalized_item)
+        normalized["results"] = results
+        normalized["total"] = len(results)
+    return normalized
+
+
+def _provider_endpoint(base_url: str, endpoint: str) -> str:
+    stripped = base_url.rstrip("/")
+    suffix = f"/{endpoint}"
+    return stripped if stripped.endswith(suffix) else f"{stripped}{suffix}"
 
 
 def _loopback_proxy_bypass_opener(base_url: str | None) -> Any | None:
@@ -382,13 +529,14 @@ def _failed_from_exception(
     request: WebSearchRequest,
     code: str,
     latency_ms: int,
+    provider: str = "http",
 ) -> WebSearchResult:
     error = map_exception_to_provider_error(
-        exc, provider="http", capability=WEB_SEARCH_CAPABILITY, code=code
+        exc, provider=provider, capability=WEB_SEARCH_CAPABILITY, code=code
     )
     return WebSearchResult(
         query_used=request.query,
-        provider="http",
+        provider=provider,
         errors=[
             WebSearchProviderError(
                 code=error.code, message=error.message, recoverable=error.recoverable

@@ -226,9 +226,12 @@ validator 和 tool 证据在 Decision Trace 中按 iteration 聚合，Raw events
 
 `Assistant Server` launcher 在 Provider 摘要之后一次性输出 `Dependencies`：Memo 仅在
 当前 runtime 选择 `framework/mem0` 时探测，状态为 `disabled / ready / unavailable`；
-Langfuse 同时显示服务可达性与 `export enabled/disabled`。两个 HTTP 探活并行执行且使用
-亚秒级超时，失败只改变启动摘要，不阻断 Server，也不改变 Memory 降级或 OpenTelemetry
-fail-open 语义。控制台不输出依赖 URL、凭据或底层异常。
+Langfuse 同时显示服务可达性与 `export enabled/disabled`；Web search 显示随 runtime
+进程装配的 Tool Provider readiness，mock 模式为 `ready (mock)`，real 模式按显式选择的
+`http` 或 `tavily` 配置显示 `ready / unavailable`，不会为 Tavily 启动额外 relay 进程。
+Memo 与 Langfuse 的 HTTP 探活并行执行且使用亚秒级超时，失败只改变启动摘要，不阻断 Server，
+也不改变 Memory 降级、Web Tool 注册或 OpenTelemetry fail-open 语义。控制台不输出依赖 URL、
+凭据或底层异常。
 
 对应关系保持明确：
 

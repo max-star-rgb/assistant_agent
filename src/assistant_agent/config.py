@@ -49,7 +49,7 @@ ImageGenerationProviderName = str
 ShoppingSearchProviderName = Literal["mock", "local_json", "http", "haodanku"]
 ShoppingCompareProviderName = Literal["mock", "local", "http", "haodanku"]
 IntentRouterName = Literal["rule", "mock_llm", "hybrid", "llm"]
-SearchProviderName = Literal["mock", "http"]
+SearchProviderName = Literal["mock", "http", "tavily"]
 VisualImageSearchProviderName = Literal["mock", "qwen"]
 
 
@@ -171,6 +171,8 @@ class ProviderConfig:
     web_search_base_url: str | None = None
     web_search_api_key: str | None = None
     web_search_timeout_seconds: float = 10.0
+    tavily_api_key: str | None = None
+    tavily_base_url: str = "https://api.tavily.com"
     visual_image_search_provider: VisualImageSearchProviderName = "mock"
     qwen_image_search_api_key: str | None = None
     qwen_image_search_base_url: str = DEFAULT_QWEN_IMAGE_SEARCH_BASE_URL
@@ -495,6 +497,8 @@ class ProviderConfig:
             web_search_base_url=source.get("WEB_SEARCH_BASE_URL"),
             web_search_api_key=source.get("WEB_SEARCH_API_KEY"),
             web_search_timeout_seconds=_float_env(source.get("WEB_SEARCH_TIMEOUT_SECONDS"), 10.0),
+            tavily_api_key=source.get("TAVILY_API_KEY"),
+            tavily_base_url=source.get("TAVILY_BASE_URL", "https://api.tavily.com"),
             visual_image_search_provider=_visual_image_search_provider(
                 source.get("MULTIMODAL_AGENT_VISUAL_IMAGE_SEARCH_PROVIDER"),
                 allow_real=allow_real_providers,
@@ -597,6 +601,7 @@ class ProviderConfig:
                 self.search_api_base_url,
                 self.web_search_base_url,
                 self.web_search_api_key,
+                self.tavily_api_key,
                 self.qwen_image_search_api_key,
                 self.shopping_search_api_key,
                 self.shopping_compare_api_key,
@@ -938,8 +943,8 @@ def _image_generation_provider(value: str | None, *, allow_real: bool = True) ->
 
 
 def _search_provider(value: str | None, *, allow_real: bool = True) -> SearchProviderName:
-    if allow_real and value == "http":
-        return "http"
+    if allow_real and value in {"http", "tavily"}:
+        return value
     return "mock"
 
 

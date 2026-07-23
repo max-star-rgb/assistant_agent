@@ -25,9 +25,14 @@ def test_startup_dependencies_report_ready_services_and_export_state() -> None:
 
     statuses = collect_startup_dependency_statuses(
         ProviderConfig(
+            provider_mode="real",
+            chat_provider="qwen",
+            qwen_api_key="test-chat-key",
             memory_backend="framework",
             memory_framework="mem0",
             memory_framework_base_url="http://127.0.0.1:8890",
+            search_provider="tavily",
+            tavily_api_key="test-tavily-key",
         ),
         env={
             "ASSISTANT_AGENT_OTEL_EXPORT_ENABLED": "true",
@@ -39,6 +44,7 @@ def test_startup_dependencies_report_ready_services_and_export_state() -> None:
     assert statuses == (
         StartupDependencyStatus(name="Memo", state="ready", detail="mem0 2.0.11"),
         StartupDependencyStatus(name="Langfuse", state="ready", detail="export enabled"),
+        StartupDependencyStatus(name="Web search", state="ready", detail="tavily"),
     )
     assert sorted(requested_urls) == [
         "http://127.0.0.1:3000/api/public/health",
@@ -48,6 +54,7 @@ def test_startup_dependencies_report_ready_services_and_export_state() -> None:
         "Dependencies:",
         "  Memo: ready (mem0 2.0.11)",
         "  Langfuse: ready (export enabled)",
+        "  Web search: ready (tavily)",
     ]
 
 
@@ -64,6 +71,7 @@ def test_startup_dependencies_are_disabled_when_not_in_use() -> None:
     assert statuses == (
         StartupDependencyStatus(name="Memo", state="disabled"),
         StartupDependencyStatus(name="Langfuse", state="disabled"),
+        StartupDependencyStatus(name="Web search", state="ready", detail="mock"),
     )
 
 
@@ -77,6 +85,7 @@ def test_langfuse_can_be_ready_while_export_is_disabled() -> None:
     assert statuses == (
         StartupDependencyStatus(name="Memo", state="disabled"),
         StartupDependencyStatus(name="Langfuse", state="ready", detail="export disabled"),
+        StartupDependencyStatus(name="Web search", state="ready", detail="mock"),
     )
 
 
@@ -86,9 +95,13 @@ def test_startup_dependencies_fail_open_when_enabled_services_are_unavailable() 
 
     statuses = collect_startup_dependency_statuses(
         ProviderConfig(
+            provider_mode="real",
+            chat_provider="qwen",
+            qwen_api_key="test-chat-key",
             memory_backend="framework",
             memory_framework="mem0",
             memory_framework_base_url="http://127.0.0.1:8890",
+            search_provider="tavily",
         ),
         env={"ASSISTANT_AGENT_OTEL_EXPORT_ENABLED": "true"},
         probe=probe,
@@ -97,6 +110,7 @@ def test_startup_dependencies_fail_open_when_enabled_services_are_unavailable() 
     assert statuses == (
         StartupDependencyStatus(name="Memo", state="unavailable"),
         StartupDependencyStatus(name="Langfuse", state="unavailable", detail="export enabled"),
+        StartupDependencyStatus(name="Web search", state="unavailable", detail="tavily"),
     )
 
 
@@ -104,6 +118,7 @@ def test_server_launcher_prints_compact_dependency_summary(monkeypatch, capsys) 
     statuses = (
         StartupDependencyStatus(name="Memo", state="ready", detail="mem0 2.0.11"),
         StartupDependencyStatus(name="Langfuse", state="ready", detail="export enabled"),
+        StartupDependencyStatus(name="Web search", state="ready", detail="tavily"),
     )
     monkeypatch.setattr(
         run_server,
@@ -122,6 +137,7 @@ def test_server_launcher_prints_compact_dependency_summary(monkeypatch, capsys) 
         "Dependencies:",
         "  Memo: ready (mem0 2.0.11)",
         "  Langfuse: ready (export enabled)",
+        "  Web search: ready (tavily)",
         "Services:",
         "  media_agent: ws://127.0.0.1:8089/agent-service/v1",
     ]

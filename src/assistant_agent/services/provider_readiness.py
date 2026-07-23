@@ -17,6 +17,7 @@ from assistant_agent.schemas.tool_ids import (
     IMAGE_UNDERSTANDING_CAPABILITY,
     SHOPPING_SEARCH_CAPABILITY,
     VIDEO_UNDERSTANDING_CAPABILITY,
+    WEB_SEARCH_CAPABILITY,
 )
 
 
@@ -68,6 +69,7 @@ def build_provider_readiness_report(config: ProviderConfig) -> ProviderReadiness
         _check(IMAGE_GENERATION_CAPABILITY, config.image_generation_provider, config, issues_by_key),
         _check(SHOPPING_SEARCH_CAPABILITY, config.shopping_search_provider, config, issues_by_key),
         _check(SHOPPING_SEARCH_CAPABILITY, config.shopping_compare_provider, config, issues_by_key),
+        _check(WEB_SEARCH_CAPABILITY, config.search_provider, config, issues_by_key),
         _check(VIDEO_UNDERSTANDING_CAPABILITY, config.vision_provider, config, issues_by_key),
     ]
 
@@ -170,6 +172,7 @@ def _offline_providers(capability: str) -> set[str]:
         DIRECT_CHAT_CAPABILITY: {"mock"},
         IMAGE_GENERATION_CAPABILITY: {"mock"},
         SHOPPING_SEARCH_CAPABILITY: {"mock"},
+        WEB_SEARCH_CAPABILITY: {"mock"},
         VIDEO_UNDERSTANDING_CAPABILITY: {"mock"},
     }
     return local_by_capability.get(capability, {"mock"})

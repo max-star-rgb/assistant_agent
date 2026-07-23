@@ -42,7 +42,11 @@ def collect_startup_dependency_statuses(
     env: Mapping[str, str] | None = None,
     timeout_seconds: float = DEFAULT_STARTUP_DEPENDENCY_TIMEOUT_SECONDS,
     probe: JsonHealthProbe | None = None,
-) -> tuple[StartupDependencyStatus, StartupDependencyStatus]:
+) -> tuple[
+    StartupDependencyStatus,
+    StartupDependencyStatus,
+    StartupDependencyStatus,
+]:
     """Probe configured local dependencies concurrently without blocking startup."""
 
     values = os.environ if env is None else env
@@ -62,6 +66,7 @@ def collect_startup_dependency_statuses(
         state="unavailable" if otel_export_enabled else "disabled",
         detail=_langfuse_export_detail(otel_export_enabled) if otel_export_enabled else None,
     )
+    web_search_default = _web_search_status(config)
 
     checks: dict[str, Callable[[], StartupDependencyStatus]] = {
         "langfuse": lambda: _probe_langfuse(
@@ -77,10 +82,10 @@ def collect_startup_dependency_statuses(
             timeout_seconds=timeout_seconds,
             probe=health_probe,
         )
-
     resolved = {
         "memo": memo_default,
         "langfuse": langfuse_default,
+        "web_search": web_search_default,
     }
     with ThreadPoolExecutor(
         max_workers=len(checks),
@@ -96,7 +101,11 @@ def collect_startup_dependency_statuses(
             except Exception:
                 # Startup dependency reporting is diagnostic and must stay fail-open.
                 continue
-    return resolved["memo"], resolved["langfuse"]
+    return (
+        resolved["memo"],
+        resolved["langfuse"],
+        resolved["web_search"],
+    )
 
 
 def format_startup_dependency_statuses(
@@ -148,6 +157,26 @@ def _probe_langfuse(
         name="Langfuse",
         state=state,
         detail=_langfuse_export_detail(export_enabled) if state != "disabled" else None,
+    )
+
+
+def _web_search_status(config: ProviderConfig) -> StartupDependencyStatus:
+    if config.provider_mode == "mock":
+        return StartupDependencyStatus(
+            name="Web search",
+            state="ready",
+            detail="mock",
+        )
+    if config.search_provider == "tavily":
+        ready = bool(config.tavily_api_key and config.tavily_base_url)
+    elif config.search_provider == "http":
+        ready = bool(config.web_search_base_url and config.web_search_api_key)
+    else:
+        return StartupDependencyStatus(name="Web search", state="disabled")
+    return StartupDependencyStatus(
+        name="Web search",
+        state="ready" if ready else "unavailable",
+        detail=config.search_provider,
     )
 
 
