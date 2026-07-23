@@ -10,6 +10,10 @@ eval、Gateway 主链路覆盖的 probe 不应继续沉积到本目录。
 - `scripts/run_langfuse.py`: PyCharm-friendly local Langfuse supervisor. It starts
   the ignored `.data/langfuse` Compose stack, waits for health, stays attached as
   one Run process, and stops the containers without deleting data when terminated.
+- `scripts/run_memo.py`: starts the repository-local Memo stack (Mem0 + Qdrant),
+  waits until Mem0 is healthy, and then exits while leaving both containers
+  running. It reuses local images and persistent Compose volumes without building,
+  pulling, or clearing stored memory.
 - `scripts/run_client.py`: server-backed Media-Agent protocol console client for
   `/agent-service/v1`; type text repeatedly, or use `/new [sessionId]` to open a
   new media session. Agent chat responses print only the reply text, not the

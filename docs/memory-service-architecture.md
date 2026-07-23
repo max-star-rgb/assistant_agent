@@ -320,9 +320,16 @@ Embedding 未单独配置时复用 Qwen key/base URL，模型默认为
 `.env` 注入容器。
 
 ```bash
+./scripts/run_memo.py
+```
+
+该入口复用本机已有镜像和 Compose 持久卷，等待 Mem0 健康后退出，Mem0 与 Qdrant
+容器继续在后台运行。它不会构建或拉取镜像，也不会清理已有记忆数据。需要手动停止时：
+
+```bash
 docker compose --env-file .env \
   -f docker/memory-frameworks/compose.yaml \
-  --profile mem0 up -d mem0 qdrant
+  --profile mem0 stop mem0 qdrant
 ```
 
 ### Framework governance ledger and recovery
