@@ -294,8 +294,7 @@ durable task 协议中处理；通用 executor 不维护进程内重复调用 le
 - `calendar_search`: `category=read`, `requires_confirmation=false`；
 - `calendar_create`: `category=write`, `requires_confirmation=true`；
 - `memory_search`: `category=read`, `requires_confirmation=false`；
-- `memory_get`: `category=read`, `requires_confirmation=false`；
-- `memory_media_ingest`: `category=write`, `requires_confirmation=true`。
+- `memory_get`: `category=read`, `requires_confirmation=false`。
 
 未确认的通用写工具不会调用 `tool.run()`，而是返回：
 

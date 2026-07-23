@@ -106,8 +106,6 @@ def test_package_and_runtime_initialize_offline() -> None:
         for name in (
             "memory_search",
             "memory_get",
-            "memory_media_ingest",
-            "memory_ingest_status",
         )
     } == {"memory"}
     assert specs["calendar_search"].toolset == "personal.calendar"

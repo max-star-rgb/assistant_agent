@@ -29,10 +29,8 @@ Tool、整合结果并给出可执行建议，而不是验证“用户说出 Too
 | `shopping_search` | read | 按预算与需求筛选日用品或礼物 | 推荐需解释约束与取舍 |
 | `web_search` | read | 查询近期活动、规则与公开事实 | 无专用 Tool 时使用 |
 | `web_fetch` | read | 阅读指定公开页面并整理内容 | 只接受 HTTP(S) URL |
-| `memory_retrieval` | read | 读取饮食、住宿、礼物等个人偏好 | 没有记录时不得编造 |
-| `memory_save` | write | 保存用户明确表达的稳定偏好 | 仍经过 MemoryManager policy |
-| `memory_media_ingest` | write | 提交媒体给记忆服务处理 | 需要确认和有效媒体引用 |
-| `memory_ingest_status` | read | 查询媒体记忆处理状态 | 需要已有 `task_id` |
+| `memory_search` | read | 搜索跨 session 的 daily memory records | 没有记录时不得编造 |
+| `memory_get` | read | 按 ID 读取一条 daily memory record | 只能读取当前可信身份可见的记录 |
 | `vision_understanding` | read | 理解冰箱、房间、服装等图片/视频 | request 必须携带结构化媒体 |
 | `visual_image_search` | read | 从公开图片 URL 查找相似图片 | 不接受本地路径或 base64 |
 | `image_generation` | generate | 生成邀请图、空间或穿搭预览 | 生成结果要标明仅供参考 |

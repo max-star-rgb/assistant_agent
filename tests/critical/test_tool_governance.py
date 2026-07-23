@@ -1,6 +1,5 @@
 """Focused offline checks for stable tool-governance behavior."""
 
-from datetime import datetime, timezone
 import json
 from typing import ClassVar
 
@@ -30,7 +29,6 @@ from assistant_agent.schemas.tool_ids import (
     IMAGE_GENERATION_TOOL_NAME,
     IMAGE_UNDERSTANDING_CAPABILITY,
     IMAGE_UNDERSTANDING_TOOL_NAME,
-    MEMORY_MEDIA_INGEST_TOOL_NAME,
     PYTHON_INTERPRETER_TOOL_NAME,
     SHOPPING_SEARCH_TOOL_NAME,
     VIDEO_UNDERSTANDING_CAPABILITY,
@@ -577,28 +575,7 @@ def test_confirmation_is_bound_to_the_declared_tool_name() -> None:
     assert tool.run_count == 1
 
 
-@pytest.mark.parametrize(
-    ("tool_name", "tool_input"),
-    [
-        (
-            MEMORY_MEDIA_INGEST_TOOL_NAME,
-            {
-                "files": [
-                    {
-                        "file_url": "local://media/example.mp4",
-                        "filename": "example.mp4",
-                        "media_type": "video",
-                        "start_time": datetime.now(timezone.utc).isoformat(),
-                    }
-                ]
-            },
-        ),
-    ],
-)
-def test_llm_selected_tool_is_not_rejected_by_natural_language_intent_rules(
-    tool_name: str,
-    tool_input: dict[str, object],
-) -> None:
+def test_llm_selected_tool_is_not_rejected_by_natural_language_intent_rules() -> None:
     request = UserRequest(
         user_id="user-1",
         session_id="session-1",
@@ -608,8 +585,8 @@ def test_llm_selected_tool_is_not_rejected_by_natural_language_intent_rules(
     result = ActionValidator().validate(
         decision=AssistantDecision(
             type="tool_call",
-            tool_name=tool_name,
-            tool_input=tool_input,
+            tool_name=SHOPPING_SEARCH_TOOL_NAME,
+            tool_input={"query": "牛奶"},
         ),
         registry=create_default_registry(),
         request=request,

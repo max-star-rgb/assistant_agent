@@ -14,7 +14,7 @@ Base URL: `http://<host>:<port>`
 
 - 默认 mock/local/offline 运行不得因为存在 URL 或 credential 自动调用外部 Memory Service。
 - 当前外部接口 contract 不声明生产级鉴权、配额、租户隔离或公网安全边界；接入方不得把它当作已认证的外部用户数据面。
-- `assistant_agent` 侧必须通过 `MemoryManager`、`MemoryStore`/remote adapter、`MemoryMediaIngestionService`、`ToolExecutor` 和身份治理边界访问这些接口。
+- `assistant_agent` 侧必须通过 `MemoryManager`、`MemoryStore`/remote adapter、`MemoryMediaIngestionService` 和身份治理边界访问这些接口；媒体 ingestion 当前不是模型工具。
 - 运行时身份以 assistant_agent 侧可信 `RequestIdentity` / `ToolContext` 为准；远端返回的 user/session 字段不能覆盖本地绑定身份。
 - 外部接口 payload 不得把 raw provider response、base64/raw media、secret、token 或 credential 注入长期记忆内容、prompt、trace 或审计摘要。
 - 当前 `file_id` 由调用方保证全局唯一；assistant_agent 侧媒体 ingestion service 会生成安全 `file_id`，避免复用用户输入作为持久主键。
