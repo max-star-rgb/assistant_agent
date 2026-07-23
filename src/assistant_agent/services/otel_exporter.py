@@ -496,8 +496,8 @@ class TextOtelTraceObserver:
 
         if not self.enabled:
             return
-        safe_event = redact_trace_event(event)
-        events_to_export = self._buffer_event(safe_event)
+        exported_event = event if self.include_content else redact_trace_event(event)
+        events_to_export = self._buffer_event(exported_event)
         if events_to_export is None:
             return
         self._export_events(events_to_export)
@@ -572,6 +572,7 @@ class TextOtelTraceObserver:
             limit=4000,
             include_llm_inputs=True,
             include_llm_outputs=True,
+            include_tool_observations=True,
         )
 
     def _call_exporter_lifecycle(self, method_name: str, *, timeout: float) -> bool:

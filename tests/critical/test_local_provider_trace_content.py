@@ -117,9 +117,11 @@ def test_local_trace_pairs_primary_provider_result_by_span(monkeypatch) -> None:
         limit=4000,
         include_llm_inputs=True,
         include_llm_outputs=True,
+        include_tool_observations=True,
     )
 
     assert conversation is not None
+    assert conversation.tool_observations == []
     assert [item.attempt_kind for item in conversation.llm_outputs] == ["primary"]
     assert [item.normalized_result["response_text"] for item in conversation.llm_outputs] == [
         "provider native answer"

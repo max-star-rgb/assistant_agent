@@ -42,6 +42,7 @@ from assistant_agent.services.trace_conversation import (
     TraceConversationText,
     TraceConversationView,
     TraceLlmInput,
+    TraceToolObservation,
     get_default_trace_conversation_store,
 )
 from assistant_agent.services.trace_store import TraceEvent
@@ -394,8 +395,16 @@ def test_langfuse_mapping_exposes_conversation_and_tool_diagnostics() -> None:
             status="succeeded",
             tool_name="weather",
             latency_ms=12,
-            input_summary={"field_count": 1, "prompt_length": 7},
-            output_summary={"success": True, "result_count": 1, "output_ref": "weather://beijing"},
+            input_summary={"location": "Beijing", "days": 1},
+            output_summary={
+                "success": True,
+                "output_ref": "weather://beijing",
+                "data": {
+                    "forecast": [{"condition": "Clear", "high_c": 30}],
+                    "provider": "mcp:weather",
+                    "debug_value": "api_key=test-dev-value",
+                },
+            },
         ),
         TraceEvent(
             **common,
@@ -406,6 +415,7 @@ def test_langfuse_mapping_exposes_conversation_and_tool_diagnostics() -> None:
             observation_scope="iteration",
             status="succeeded",
             tool_name="weather",
+            attributes={"observation_index": 1},
             output_summary={"summary": "北京晴，最高温 30 摄氏度。", "output_ref": "weather://beijing"},
         ),
     ]
@@ -413,6 +423,24 @@ def test_langfuse_mapping_exposes_conversation_and_tool_diagnostics() -> None:
         trace_id="trace-tool",
         user=TraceConversationText(text="北京今天天气怎么样？", chars=10),
         assistant=TraceConversationText(text="北京今天晴。", chars=7),
+        tool_observations=[
+            TraceToolObservation(
+                observation_index=1,
+                tool_name="weather",
+                observation={
+                    "tool_name": "weather",
+                    "status": "succeeded",
+                    "summary": "北京晴，最高温 30 摄氏度。",
+                    "output_ref": "weather://beijing",
+                    "structured_output": {
+                        "location": "Beijing",
+                        "forecast": [{"condition": "Clear", "high_c": 30}],
+                    },
+                    "redacted": True,
+                    "truncated": False,
+                },
+            )
+        ],
     )
 
     spans = build_text_otel_span_specs(events, conversation=conversation)
@@ -428,10 +456,24 @@ def test_langfuse_mapping_exposes_conversation_and_tool_diagnostics() -> None:
         "langfuse.observation.input"
     ]
     assert by_name["tool.execute"].attributes["gen_ai.tool.name"] == "weather"
-    assert '"result_count":1' in by_name["tool.execute"].attributes[
-        "langfuse.observation.output"
-    ]
-    assert "北京晴" in by_name["tool.observation"].attributes["langfuse.observation.output"]
+    assert json.loads(
+        by_name["tool.execute"].attributes["langfuse.observation.input"]
+    ) == {"tool_name": "weather", "location": "Beijing", "days": 1}
+    assert json.loads(
+        by_name["tool.execute"].attributes["langfuse.observation.output"]
+    )["data"] == {
+        "forecast": [{"condition": "Clear", "high_c": 30}],
+        "provider": "mcp:weather",
+        "debug_value": "api_key=test-dev-value",
+    }
+    observation_output = json.loads(
+        by_name["tool.observation"].attributes["langfuse.observation.output"]
+    )
+    assert observation_output["structured_output"] == {
+        "location": "Beijing",
+        "forecast": [{"condition": "Clear", "high_c": 30}],
+    }
+    assert observation_output["redacted"] is True
 
 
 def test_langfuse_root_uses_delivered_response_without_rewriting_runtime_final() -> None:
@@ -808,6 +850,17 @@ def test_native_tool_call_loop_completes_with_observation() -> None:
     assert state.response is not None
     assert state.response.message == "已结合记忆完成推荐。"
     assert "我先查询一下" not in state.response.message
+    trace_content = get_default_trace_conversation_store().get(
+        user_id=state.user_id,
+        session_id=state.session_id,
+        trace_id=state.trace_id,
+        include_tool_observations=True,
+    )
+    assert trace_content is not None
+    assert len(trace_content.tool_observations) == 1
+    assert trace_content.tool_observations[0].observation == json.loads(
+        runtime.chat_adapter.requests[1].messages[-1]["content"]
+    )
 
 
 def test_provider_request_fallback_is_captured_without_content_switch() -> None:

@@ -48,6 +48,8 @@ requires_media
 tool observation，下一轮 LLM 消费商品、报价、链接和展示模板后生成最终文本。系统不注册额外的展示
 工具，也不在 Realtime/Gateway 用 presenter 覆盖模型回复；是否输出 `<detail>` 以及选择哪些合格商品
 由 LLM 根据 observation 决定，代码只负责工具治理、上下文传递和原样交付最终回答。
+本地 Langfuse 会按 observation index 展示 assistant loop 产生的完整 `ToolObservation`，不会再次把它
+压缩成 summary/output ref；具体开发观测边界见 `docs/observability-harness.md`。
 
 系统不维护中心 Tool manifest。`schemas/tool_ids.py` 只保存已经成为跨层协议的稳定字符串，不枚举
 Tool、不参与注册或暴露，新插件内使用的 Tool 默认无需加入。旧 planner/intent 所需的 action、alias

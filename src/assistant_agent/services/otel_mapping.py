@@ -23,6 +23,7 @@ if TYPE_CHECKING:
         TraceConversationView,
         TraceLlmInput,
         TraceLlmOutput,
+        TraceToolObservation,
     )
 
 
@@ -117,7 +118,11 @@ def build_text_otel_span_specs(
 ) -> list[OtelSpanSpec]:
     """Map redacted text-run trace events into dependency-free OTel span specs."""
 
-    safe_events = [redact_trace_event(event) for event in events]
+    safe_events = (
+        list(events)
+        if conversation is not None
+        else [redact_trace_event(event) for event in events]
+    )
     if not safe_events:
         return []
     root_span = _root_span(safe_events, conversation=conversation)
@@ -448,37 +453,50 @@ def _event_io_attributes(
         if event.tool_name:
             output_payload["tool_name"] = event.tool_name
     elif name in {"tool.finished", "tool.failed"}:
-        input_payload = {
-            "tool_name": event.tool_name,
-            **_selected_payload(
-                event.input_summary,
-                ("field_count", "media_count", "prompt_length"),
-            ),
-        }
-        output_payload = {
-            "tool_name": event.tool_name,
-            **_selected_payload(
-                event.output_summary,
-                (
-                    "success",
-                    "output_ref",
-                    "error_code",
-                    "item_count",
-                    "result_count",
-                    "artifact_id",
-                    "artifact_ref",
+        if conversation is not None:
+            input_payload = {"tool_name": event.tool_name, **event.input_summary}
+            output_payload = {"tool_name": event.tool_name, **event.output_summary}
+        else:
+            input_payload = {
+                "tool_name": event.tool_name,
+                **_selected_payload(
+                    event.input_summary,
+                    ("field_count", "media_count", "prompt_length"),
                 ),
-            ),
-        }
+            }
+            output_payload = {
+                "tool_name": event.tool_name,
+                **_selected_payload(
+                    event.output_summary,
+                    (
+                        "success",
+                        "output_ref",
+                        "error_code",
+                        "item_count",
+                        "result_count",
+                        "artifact_id",
+                        "artifact_ref",
+                    ),
+                ),
+            }
     elif name == "tool.observation":
         input_payload = {"tool_name": event.tool_name}
-        output_payload = {
-            "tool_name": event.tool_name,
-            **_selected_payload(
-                {**event.output_summary, **event.attributes},
-                ("summary", "output_ref", "next_step_hint"),
-            ),
-        }
+        tool_observation = _tool_observation_for_event(
+            conversation,
+            observation_index=_mapping_int(event.attributes, "observation_index"),
+            tool_name=event.tool_name,
+        )
+        output_payload = (
+            dict(tool_observation.observation)
+            if tool_observation is not None
+            else {
+                "tool_name": event.tool_name,
+                **_selected_payload(
+                    {**event.output_summary, **event.attributes},
+                    ("summary", "output_ref", "next_step_hint"),
+                ),
+            }
+        )
     elif name == "context.build.finished":
         output_payload = {
             "status": event.status or _event_status(event),
@@ -663,6 +681,37 @@ def _llm_output_for_event(
         return None
     return next(
         (item for item in conversation.llm_outputs if item.span_id == span_id),
+        None,
+    )
+
+
+def _tool_observation_for_event(
+    conversation: "TraceConversationView | None",
+    *,
+    observation_index: int | None,
+    tool_name: str | None,
+) -> "TraceToolObservation | None":
+    if conversation is None:
+        return None
+    if observation_index is not None:
+        matched = next(
+            (
+                item
+                for item in conversation.tool_observations
+                if item.observation_index == observation_index
+            ),
+            None,
+        )
+        if matched is not None:
+            return matched
+    if tool_name is None:
+        return None
+    return next(
+        (
+            item
+            for item in conversation.tool_observations
+            if item.tool_name == tool_name
+        ),
         None,
     )
 

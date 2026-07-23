@@ -2179,6 +2179,21 @@ def _record_react_observation(
     state = graph_state["state"]
     payload = observation.model_dump(mode="json") if isinstance(observation, ToolObservation) else observation
     observations = existing + [payload]
+    from assistant_agent.services.trace_conversation import (
+        TraceToolObservation,
+        get_default_trace_conversation_store,
+    )
+
+    get_default_trace_conversation_store().append_tool_observation(
+        user_id=state.user_id,
+        session_id=state.session_id,
+        trace_id=graph_state.get("trace_id") or state.trace_id,
+        tool_observation=TraceToolObservation(
+            observation_index=len(observations),
+            tool_name=str(payload.get("tool_name") or "unknown"),
+            observation=dict(payload),
+        ),
+    )
     trace_event = _observation_trace_event(payload, len(observations))
     decision_trace = state.request.metadata.setdefault("decision_trace", [])
     if isinstance(decision_trace, list):
@@ -2212,6 +2227,7 @@ def _record_react_observation(
             "next_step_hint": payload.get("next_step_hint"),
         },
         attributes={
+            "observation_index": len(observations),
             "summary": payload.get("summary"),
             "output_ref": payload.get("output_ref"),
             "next_step_hint": payload.get("next_step_hint"),

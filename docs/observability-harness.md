@@ -765,6 +765,16 @@ output preview；缺失时从归一化 `ChatResult` 重建完整语义回复。`
 实际 `fallback | tool_governance | final_answer` 动作并留在 metadata。上述正文不写入
 `.data/graph_trace.jsonl`。
 
+本地 Langfuse 的工具链同样使用完整开发视图：`tool.execute` 直接显示执行 trace event 当前持有的
+完整 input/output summary，不再只挑 field count、result count 和 output ref，也不在 OTLP observer
+或 mapping 层再次执行 sanitizer；每个
+`tool.observation` 还会在独立的进程内 store 保存完整 `ToolObservation`，Langfuse 按
+`observation_index` 投影该对象，原样展示 `status`、`structured_output`、error 字段、
+`next_step_hint`、`redacted`、`truncated` 和 `original_chars`。因此它与 assistant loop 产生的模型观察
+是同一对象，而不是观测层再次生成的摘要。`redacted=true` 若存在，是 `ToolObservation` 自身记录的
+模型上下文投影事实，不表示 Langfuse 页面又隐藏了一层字段。普通 `.data/graph_trace.jsonl` 的
+`tool.observation` 仍保持摘要，完整对象只在进程内与本地 Langfuse 导出链路中传递。
+
 同一个 `MULTIMODAL_AGENT_LOCAL_TRACE_CONTENT=1` 也允许本地 ToolHistory 和工具 trace 保存经过
 secret sanitizer 的工具输入输出，便于单机调试；默认关闭，且始终排除 Provider 原始 payload/response
 和内联二进制内容。该开关不得用于真实 Provider smoke/pilot 证据采集。
@@ -858,9 +868,9 @@ Regression tests should enforce these invariants:
   trace endpoint by appending `/v1/traces`.
 - Root、`react.decision`、`llm.chat`、`tool.execute`、`tool.observation` 和
   `response.final` 使用 Langfuse 的 `langfuse.observation.input/output` 映射结构化 JSON；
-  root 同时写入 `langfuse.trace.input/output`。工具字段仅使用 prompt-safe 参数摘要、
-  decision summary、结果计数、output ref 和 bounded observation summary，不导出完整工具
-  请求体或 Provider payload。
+  root 同时写入 `langfuse.trace.input/output`。远程或无 content overlay 时工具字段仍使用
+  prompt-safe 参数摘要、结果计数、output ref 和 bounded observation summary；本地 Langfuse
+  则显示完整 tool execution summary 与 assistant-facing `ToolObservation`。
 - Observation 导出由 `TraceEvent.observation_type/name/scope` 驱动，iteration 父子关系由
   scope 与 `attributes.iteration` 驱动；Langfuse/OTel 映射层不枚举 canonical event。新增工具沿用
   `ToolExecutor` 的统一 lifecycle 即自动获得 `tool.execute` span，新增 memory operation
