@@ -1,0 +1,73 @@
+"""Environment resolution for the isolated Mem0 sidecar."""
+
+from __future__ import annotations
+
+import os
+from collections.abc import Mapping
+
+
+DEFAULT_QWEN_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+DEFAULT_EMBEDDING_MODEL = "text-embedding-v4"
+
+
+def resolve_mem0_provider_environment(
+    source: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    """Resolve sidecar settings from explicit overrides or repo dotenv names."""
+
+    env = source if source is not None else os.environ
+    qwen_api_key = _required_first(
+        env,
+        "OPENAI_API_KEY",
+        "MEMORY_BAKEOFF_CHAT_API_KEY",
+        "QWEN_API_KEY",
+        "DASHSCOPE_API_KEY",
+    )
+    qwen_base_url = _first(
+        env,
+        "OPENAI_BASE_URL",
+        "MEMORY_BAKEOFF_CHAT_BASE_URL",
+        "QWEN_CHAT_BASE_URL",
+    ) or DEFAULT_QWEN_BASE_URL
+    return {
+        "chat_model": _required_first(
+            env,
+            "OPENAI_MODEL",
+            "MEMORY_BAKEOFF_CHAT_MODEL",
+            "QWEN_CHAT_MODEL",
+        ),
+        "chat_api_key": qwen_api_key,
+        "chat_base_url": qwen_base_url,
+        "embedding_model": _first(
+            env,
+            "EMBEDDING_MODEL",
+            "MEMORY_BAKEOFF_EMBEDDING_MODEL",
+        ) or DEFAULT_EMBEDDING_MODEL,
+        "embedding_api_key": _first(
+            env,
+            "EMBEDDING_API_KEY",
+            "MEMORY_BAKEOFF_EMBEDDING_API_KEY",
+        ) or qwen_api_key,
+        "embedding_base_url": _first(
+            env,
+            "EMBEDDING_BASE_URL",
+            "MEMORY_BAKEOFF_EMBEDDING_BASE_URL",
+        ) or qwen_base_url,
+    }
+
+
+def _required_first(source: Mapping[str, str], *names: str) -> str:
+    value = _first(source, *names)
+    if value:
+        return value
+    raise RuntimeError(
+        "required sidecar environment variable is missing: " + " or ".join(names)
+    )
+
+
+def _first(source: Mapping[str, str], *names: str) -> str | None:
+    for name in names:
+        value = source.get(name)
+        if value and value.strip():
+            return value.strip()
+    return None

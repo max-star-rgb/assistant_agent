@@ -12,6 +12,7 @@ from qdrant_client import QdrantClient
 os.environ.setdefault("MEM0_TELEMETRY", "False")
 
 from mem0 import Memory
+from mem0_env import resolve_mem0_provider_environment
 
 
 app = FastAPI(title="assistant_agent Mem0 sidecar", version="2.0.11")
@@ -29,22 +30,23 @@ def memory() -> Memory:
 
 
 def _build_memory() -> Memory:
+    provider_env = resolve_mem0_provider_environment()
     return Memory.from_config(
         {
             "llm": {
                 "provider": "openai",
                 "config": {
-                    "model": _required("OPENAI_MODEL"),
-                    "api_key": _required("OPENAI_API_KEY"),
-                    "openai_base_url": _required("OPENAI_BASE_URL"),
+                    "model": provider_env["chat_model"],
+                    "api_key": provider_env["chat_api_key"],
+                    "openai_base_url": provider_env["chat_base_url"],
                 },
             },
             "embedder": {
                 "provider": "openai",
                 "config": {
-                    "model": _required("EMBEDDING_MODEL"),
-                    "api_key": _required("EMBEDDING_API_KEY"),
-                    "openai_base_url": _required("EMBEDDING_BASE_URL"),
+                    "model": provider_env["embedding_model"],
+                    "api_key": provider_env["embedding_api_key"],
+                    "openai_base_url": provider_env["embedding_base_url"],
                     "embedding_dims": 1024,
                 },
             },
@@ -149,13 +151,6 @@ def clear_memories(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]
     before = _result(memory().get_all(filters=filters)).get("results", [])
     memory().delete_all(**filters)
     return {"success": True, "deleted_count": len(before)}
-
-
-def _required(name: str) -> str:
-    value = os.getenv(name)
-    if not value:
-        raise RuntimeError(f"required sidecar environment variable is missing: {name}")
-    return value
 
 
 def _qdrant_client() -> QdrantClient:

@@ -1,6 +1,8 @@
 """Stable Mem0 capture and read contracts used by the runtime memory lifecycle."""
 
 from datetime import datetime, timezone
+import importlib.util
+from pathlib import Path
 
 from assistant_agent.agent.runtime import AgentGraphRuntime
 from assistant_agent.config import ProviderConfig
@@ -30,6 +32,38 @@ def _identity() -> MemoryEngineIdentity:
         project_tag="project_" + "7" * 24,
         session_tag="session_" + "8" * 24,
     )
+
+
+def test_mem0_sidecar_resolves_repo_dotenv_qwen_settings() -> None:
+    module_path = (
+        Path(__file__).resolve().parents[2]
+        / "docker"
+        / "memory-frameworks"
+        / "mem0_env.py"
+    )
+    spec = importlib.util.spec_from_file_location("test_mem0_env", module_path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    resolved = module.resolve_mem0_provider_environment(
+        {
+            "OPENAI_MODEL": "",
+            "MEMORY_BAKEOFF_CHAT_MODEL": "qwen-memory-model",
+            "QWEN_CHAT_MODEL": "qwen-main-model",
+            "QWEN_API_KEY": "test-qwen-key",
+            "QWEN_CHAT_BASE_URL": "https://qwen.test/v1",
+        }
+    )
+
+    assert resolved == {
+        "chat_model": "qwen-memory-model",
+        "chat_api_key": "test-qwen-key",
+        "chat_base_url": "https://qwen.test/v1",
+        "embedding_model": "text-embedding-v4",
+        "embedding_api_key": "test-qwen-key",
+        "embedding_base_url": "https://qwen.test/v1",
+    }
 
 
 def test_mem0_capture_stores_daily_record_and_infers_core_memory() -> None:

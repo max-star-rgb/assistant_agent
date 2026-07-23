@@ -310,6 +310,21 @@ Environment variables:
 - `MEMORY_FRAMEWORK_LEDGER_PATH`
 - `MEMORY_FRAMEWORK_FALLBACK_BACKEND` (`none`, `memory`, `jsonl`, or `sqlite`)
 
+Mem0 sidecar 的 Provider 配置由
+`docker/memory-frameworks/compose.yaml` 从仓库根目录 `.env` 解析。启动时应显式传入
+`--env-file .env`。模型优先使用 `MEMORY_BAKEOFF_CHAT_MODEL`，未设置时回退
+`QWEN_CHAT_MODEL` / `qwen-plus`；API key 和 base URL 优先使用对应
+`MEMORY_BAKEOFF_*`，否则复用 `QWEN_API_KEY`、`QWEN_CHAT_BASE_URL`。
+Embedding 未单独配置时复用 Qwen key/base URL，模型默认为
+`text-embedding-v4`。只有这些被 compose 明确映射的字段进入 sidecar，不能把整份
+`.env` 注入容器。
+
+```bash
+docker compose --env-file .env \
+  -f docker/memory-frameworks/compose.yaml \
+  --profile mem0 up -d mem0 qdrant
+```
+
 ### Framework governance ledger and recovery
 
 `FrameworkGovernanceLedger` stores governance state only: project-memory/engine-ID mappings with their memory scope, delete tombstones, redacted confirmations, prompt-safe audit events, coarse call latency/error status, and pending retain/delete outbox entries. Completed framework facts, embeddings, relationship graphs, recall indexes, and profile or mental-model content are not copied into the ledger. A pending retain necessarily contains the already-approved prompt-safe retain request until delivery; it leaves the active outbox after success or user deletion.
@@ -387,11 +402,10 @@ with `ToolExecutor`. The probe delegates lifecycle behavior to `MemoryManager`;
 lifecycle-owner store outbox. Direct calls are limited to sidecar health,
 adapter history, and Docker resource/lifecycle observations.
 
-The collector requires `MULTIMODAL_AGENT_PROVIDER_MODE=real`, one shell-only
-`MEMORY_BAKEOFF_API_KEY`, and fixed Alibaba Cloud Model Studio configuration:
-`https://dashscope.aliyuncs.com/compatible-mode/v1`, `qwen-plus`, and
-`text-embedding-v4`. The CLI maps the same key to chat and embedding container
-variables without writing it. Each invocation removes the dedicated
+The Mem0/Hindsight compose profiles use Alibaba Cloud Model Studio's
+OpenAI-compatible configuration. The explicit `MEMORY_BAKEOFF_*` variables can
+override the normal Qwen dotenv settings without writing resolved credentials
+to code or generated files. Each measured invocation removes the dedicated
 `assistant-agent-memory-bakeoff` Compose volumes before startup and never
 opens, migrates, or modifies the v2 database. Its governance ledger is a
 temporary runtime file; successful evidence contains only anonymous case and
