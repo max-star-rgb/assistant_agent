@@ -19,6 +19,7 @@ from assistant_agent.services.generated_artifacts import (
 from assistant_agent.services.prompt_builder import build_text_capability_output
 from assistant_agent.schemas.tool_ids import IMAGE_GENERATION_CAPABILITY, IMAGE_GENERATION_TOOL_NAME
 from assistant_agent.tools.base import ToolBase, ToolContext
+from assistant_agent.tools.input_binding import ToolInputBinding
 
 
 class ImageGenerationTool(ToolBase):
@@ -28,7 +29,13 @@ class ImageGenerationTool(ToolBase):
     output_schema = ImageGenerationResult
     category = "generate"
     requires_confirmation = False
-    model_hidden_input_fields = ("user_id", "session_id", "memory_context")
+    input_bindings = (
+        ToolInputBinding(field="user_id", source="runtime_identity", key="user_id"),
+        ToolInputBinding(field="session_id", source="runtime_identity", key="session_id"),
+        ToolInputBinding(field="memory_context", source="memory_context", key="summaries"),
+        ToolInputBinding(field="prompt_extend", source="constant", value=True),
+        ToolInputBinding(field="watermark", source="constant", value=False),
+    )
 
     def __init__(self, adapter: ImageGenerationAdapter | None = None) -> None:
         self.adapter = adapter or MockImageGenerationAdapter()

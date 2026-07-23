@@ -21,7 +21,6 @@ from assistant_agent.agent.recovery import RecoveryPolicy, ToolFailureMode, clas
 from assistant_agent.schemas.api import api_error
 from assistant_agent.schemas.capability_output import contract_summary
 from assistant_agent.schemas.events import AgentEvent
-from assistant_agent.schemas.durable_tasks import TrustedTaskBinding
 from assistant_agent.schemas.identity import RequestIdentity
 from assistant_agent.schemas.planning import TaskStep
 from assistant_agent.schemas.realtime_cancellation import build_realtime_turn_cancellation_metadata
@@ -29,7 +28,6 @@ from assistant_agent.schemas.tools import ToolResult, ToolSpec
 from assistant_agent.services.event_sink import EventSink
 from assistant_agent.services.provider_errors import sanitize_error_detail, sanitize_error_message
 from assistant_agent.services.provider_policy import ProviderExecutionPolicy
-from assistant_agent.services.agent_service_entry import is_trusted_agent_service_request
 from assistant_agent.services.tool_call_boundary import (
     build_post_tool_call_summary,
     build_pre_tool_call_summary,
@@ -45,6 +43,7 @@ from assistant_agent.schemas.tool_ids import (
 from assistant_agent.services.trace_store import TraceEvent, TraceStore, sanitize_trace_value
 from assistant_agent.services.trace_content_policy import local_trace_content_enabled
 from assistant_agent.tools.base import ToolContext
+from assistant_agent.tools.input_binding import bind_runtime_tool_input
 from assistant_agent.tools.registry import ToolRegistry, create_default_registry
 
 
@@ -111,6 +110,7 @@ class ToolExecutor:
         trace_id: str | None = None,
         node_name: str | None = None,
         validated_input: BaseModel | None = None,
+        runtime_input: dict[str, Any] | None = None,
         failure_mode: ToolFailureMode = "stop_run",
     ) -> ToolResult:
         """Run one governed tool through serial prepare/invoke/commit stages."""
@@ -125,6 +125,7 @@ class ToolExecutor:
             trace_id=trace_id,
             node_name=node_name,
             validated_input=validated_input,
+            runtime_input=runtime_input,
             failure_mode=failure_mode,
         )
         invocation = self.invoke_tool(prepared)
@@ -141,6 +142,7 @@ class ToolExecutor:
         trace_id: str | None = None,
         node_name: str | None = None,
         validated_input: BaseModel | None = None,
+        runtime_input: dict[str, Any] | None = None,
         failure_mode: ToolFailureMode = "stop_run",
     ) -> PreparedToolCall:
         """Prepare governance and lifecycle state in serial order."""
@@ -165,12 +167,13 @@ class ToolExecutor:
             else tool_input
         )
         tool = self.registry.get(tool_name)
-        bound_input = _bind_runtime_identity(tool, normalized_input, state)
-        bound_input = _bind_runtime_media_inputs(tool, bound_input, state)
-        bound_input = _bind_durable_idempotency(
-            bound_input,
+        bound_input = bind_runtime_tool_input(
+            tool,
+            normalized_input,
+            state=state,
             step_id=step_id,
             context_metadata=self.context_metadata,
+            runtime_input=runtime_input,
         )
         tool_spec = self.registry.get_spec(tool_name)
         confirmed = _tool_confirmation_granted(state.request.metadata, tool_name)
@@ -255,8 +258,10 @@ class ToolExecutor:
                 cancel_token=self.cancel_token,
             )
         invocation_input: BaseModel | dict[str, Any] = bound_input
-        if validated_input is not None:
-            invocation_input = validated_input.model_copy(update=bound_input)
+        if validated_input is not None and bound_input == normalized_input:
+            invocation_input = validated_input
+        elif validated_input is not None:
+            invocation_input = tool.input_schema.model_validate(bound_input)
         return PreparedToolCall(
             step_id=step_id,
             tool_name=tool_name,
@@ -840,55 +845,6 @@ def _cancelled_tool_result(
         },
         latency_ms=latency_ms,
     )
-
-
-def _bind_runtime_identity(tool: Any, tool_input: dict[str, Any], state: AgentState) -> dict[str, Any]:
-    """Bind declared identity fields from authenticated runtime state."""
-
-    fields = set(getattr(tool, "runtime_identity_fields", ()))
-    if not fields:
-        return tool_input
-    bound = dict(tool_input)
-    if "user_id" in fields:
-        bound["user_id"] = state.user_id
-    if "session_id" in fields:
-        bound["session_id"] = state.session_id
-    return bound
-
-
-def _bind_runtime_media_inputs(tool: Any, tool_input: dict[str, Any], state: AgentState) -> dict[str, Any]:
-    """Bind request-scoped media refs for tools without exposing them as model-visible facts."""
-
-    if getattr(tool, "bind_request_video_ids", False) is not True:
-        return tool_input
-    if state.request.video_ids and is_trusted_agent_service_request(state.request):
-        sanitized = dict(tool_input)
-        sanitized.pop("video_ref", None)
-        sanitized["video_ids"] = list(state.request.video_ids)
-        return sanitized
-    if tool_input.get("video_ref") or tool_input.get("video_ids"):
-        return tool_input
-    if not state.request.video_ids:
-        return tool_input
-    return {**tool_input, "video_ids": list(state.request.video_ids)}
-
-
-def _bind_durable_idempotency(
-    tool_input: dict[str, Any],
-    *,
-    step_id: str,
-    context_metadata: dict[str, Any],
-) -> dict[str, Any]:
-    """Inject worker-issued idempotency keys from trusted runtime metadata."""
-
-    raw_binding = context_metadata.get("durable_task_binding")
-    if raw_binding is None:
-        return tool_input
-    binding = TrustedTaskBinding.model_validate(raw_binding)
-    idempotency_key = binding.step_idempotency_keys.get(step_id)
-    if not idempotency_key:
-        return tool_input
-    return {**tool_input, "idempotency_key": idempotency_key}
 
 
 def _provider_name(payload: dict[str, Any]) -> str | None:

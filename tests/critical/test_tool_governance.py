@@ -42,6 +42,7 @@ from assistant_agent.schemas.tool_spec_adapters import (
 from assistant_agent.services.event_sink import ListEventSink
 from assistant_agent.services.trace_store import InMemoryTraceStore
 from assistant_agent.tools.base import ToolBase, ToolContext, ToolInputValidationError
+from assistant_agent.tools.input_binding import ToolInputBinding
 from assistant_agent.tools.registry import ToolRegistry, create_default_registry
 
 
@@ -120,6 +121,40 @@ class _ConfirmationBoundaryTool(_ExecutionBoundaryTool):
     requires_confirmation = True
 
 
+class _RuntimeBindingInput(BaseModel):
+    query: str
+    user_id: str | None = None
+    session_id: str | None = None
+    image_ids: list[str] = Field(default_factory=list)
+    limit: int = 0
+    prior_summary: str | None = None
+    runtime_note: str | None = None
+
+
+class _RuntimeBindingTool(ToolBase):
+    name = "runtime_binding_tool"
+    description = "Test generic runtime-owned input binding."
+    input_schema = _RuntimeBindingInput
+    output_schema = _RuntimeBindingInput
+    category = "read"
+    requires_confirmation = False
+    input_bindings = (
+        ToolInputBinding(field="user_id", source="runtime_identity", key="user_id"),
+        ToolInputBinding(field="session_id", source="runtime_identity", key="session_id"),
+        ToolInputBinding(field="image_ids", source="request", key="image_ids"),
+        ToolInputBinding(field="limit", source="constant", value=5),
+        ToolInputBinding(
+            field="prior_summary",
+            source="latest_tool_result",
+            result_path="summary",
+        ),
+        ToolInputBinding(field="runtime_note", source="constant", value="default"),
+    )
+
+    def _run(self, input: _RuntimeBindingInput, context: ToolContext) -> ToolResult:
+        return ToolResult(tool_name=self.name, success=True, data=input.model_dump())
+
+
 def test_provider_description_uses_simple_tool_spec() -> None:
     spec = ToolSpec(
         name="canonical_policy_tool",
@@ -177,6 +212,112 @@ def test_provider_tools_hide_runtime_fields_and_pydantic_titles() -> None:
     assert "description" not in shopping["parameters"]
     assert "anyOf" not in json.dumps(shopping["parameters"], ensure_ascii=False)
     assert '"default"' not in json.dumps(shopping["parameters"], ensure_ascii=False)
+
+    vision = tool_spec_to_openai_tool(
+        registry.get_spec(IMAGE_UNDERSTANDING_TOOL_NAME)
+    )["function"]
+    assert set(vision["parameters"]["properties"]) == {"question"}
+
+    web_fetch = tool_spec_to_openai_tool(registry.get_spec("web_fetch"))["function"]
+    assert set(web_fetch["parameters"]["properties"]) == {"url"}
+    assert web_fetch["parameters"]["required"] == ["url"]
+
+    calendar_create = tool_spec_to_openai_tool(
+        registry.get_spec("calendar_create")
+    )["function"]
+    assert "idempotency_key" not in calendar_create["parameters"]["properties"]
+
+
+def test_generic_runtime_bindings_shrink_schema_and_bind_each_run_identity() -> None:
+    tool = _RuntimeBindingTool()
+    registry = ToolRegistry()
+    registry.register(tool)
+    spec = registry.get_spec(tool.name)
+    first_request = UserRequest(
+        user_id="user-1",
+        session_id="session-1",
+        text="bind",
+        image_ids=["image-1"],
+    )
+    first_state = AgentState.from_request(first_request)
+    first_state.tool_results.append(
+        ToolResult(
+            tool_name="prior_tool",
+            success=True,
+            data={"summary": "derived from a prior result"},
+        )
+    )
+    decision = AssistantDecision(
+        type="tool_call",
+        tool_name=tool.name,
+        tool_input={"query": "first"},
+    )
+    validation = ActionValidator().validate(
+        decision=decision,
+        registry=registry,
+        request=first_request,
+        state=first_state,
+    )
+
+    first = ToolExecutor(registry=registry).run_tool(
+        first_state,
+        "step-1",
+        tool.name,
+        decision.tool_input,
+        validated_input=validation.validated_input,
+        runtime_input={"runtime_note": "trusted override"},
+    )
+    second_state = AgentState.from_request(
+        UserRequest(
+            user_id="user-2",
+            session_id="session-2",
+            text="bind",
+        )
+    )
+    second = ToolExecutor(registry=registry).run_tool(
+        second_state,
+        "step-2",
+        tool.name,
+        {"query": "second"},
+    )
+
+    assert set(spec.input_schema["properties"]) == {"query"}
+    assert spec.input_schema["required"] == ["query"]
+    assert validation.accepted is True
+    assert first.data == {
+        "query": "first",
+        "user_id": "user-1",
+        "session_id": "session-1",
+        "image_ids": ["image-1"],
+        "limit": 5,
+        "prior_summary": "derived from a prior result",
+        "runtime_note": "trusted override",
+    }
+    assert second.data["user_id"] == "user-2"
+    assert second.data["session_id"] == "session-2"
+    assert second.data["image_ids"] == []
+    assert second.data["prior_summary"] is None
+
+
+def test_model_cannot_submit_runtime_owned_tool_fields() -> None:
+    tool = _RuntimeBindingTool()
+    registry = ToolRegistry()
+    registry.register(tool)
+    request = UserRequest(user_id="user-1", session_id="session-1", text="bind")
+
+    result = ActionValidator().validate(
+        decision=AssistantDecision(
+            type="tool_call",
+            tool_name=tool.name,
+            tool_input={"query": "value", "user_id": "spoofed"},
+        ),
+        registry=registry,
+        request=request,
+        state=AgentState.from_request(request),
+    )
+
+    assert result.accepted is False
+    assert result.code == "runtime_owned_tool_input"
 
 
 def test_memory_tools_expose_read_only_contracts() -> None:

@@ -57,9 +57,16 @@ Tool、不参与注册或暴露，新插件内使用的 Tool 默认无需加入�
 
 `input_schema` 是工具输入描述的唯一事实源，必填字段只由标准 JSON Schema 的 `required` 表达。
 `ToolSpec` 不再维护独立的 `required_inputs` 或自定义 `fields` 视图；prompt 若需要压缩，只在渲染时
-临时移除 title、截短 description，不改变原始 schema。工具可通过
-`model_hidden_input_fields` 声明由 runtime 注入或仅供执行期使用的字段；这些字段不进入
-`ToolSpec.input_schema`，因此也不会发送给模型。
+临时移除 title、截短 description，不改变原始 schema。工具通过 `input_bindings` 声明
+runtime-owned 输入；绑定字段不进入
+`ToolSpec.input_schema`，因此不会发送给模型。绑定来源只使用结构化执行事实：
+`constant`、`runtime_identity`、`request`、`memory_context`、`latest_tool_result` 和
+`durable_idempotency`。`model_hidden_input_fields` 仅保留为旧插件兼容入口；新增内置工具应优先使用
+`input_bindings`，使“模型不可见”和“由谁赋值”成为同一份契约。
+
+Tool 注册时会检查绑定字段存在、没有重复且静态默认值符合目标字段类型。模型若自行提交 runtime-owned
+字段，`ActionValidator` 统一返回 `runtime_owned_tool_input`；内部 observer/worker 如需提供帧引用等
+可信动态值，必须使用 `ToolExecutor.runtime_input`，该通道也只能覆盖已声明的 runtime-owned 字段。
 
 这些字段都是工具级静态事实，不根据输入中的 `action` 动态改变安全语义。当前主模型只看到只读
 `memory_search` 与 `memory_get`，二者共享 `toolset="memory"`；记忆 capture 是 runtime 生命周期，
@@ -102,10 +109,21 @@ excluded_reasons
 adapter 使用运行时当天。`web_fetch.url` 的 URL 格式和访问安全分别由其 schema 与工具/adapter 的
 URL 安全边界负责。
 
+模型输入遵循最小语义参数原则：
+
+- 用户目标中不可可靠推导的业务语义，例如地点、搜索词、URL、代码、事件标题和开始时间，仍由模型
+  按用户输入填写；
+- provider、adapter、units、limit、timeout、输出格式等静态技术参数由 Tool 实例的 `constant`
+  binding 分配；
+- user/session identity、请求媒体、memory context、前序工具结果和 durable 幂等键只在每次执行时
+  绑定，不能固化到进程级复用的 Tool 实例，避免并发请求串数据；
+- runtime binding 后再次通过工具 Pydantic schema 校验，再进入 `tool.run()`。
+
 ### 2.4 统一视觉工具
 
-LLM 只看到一个公共视觉工具 `vision_understanding`。图片理解和视频理解不是两个并列工具，而是
-该工具根据 `image_ids`、`video_ids` 或 `video_ref` 选择的内部执行分支：
+LLM 只看到一个公共视觉工具 `vision_understanding`，模型侧仅有可选 `question`；当前请求中的
+`image_ids`、`video_ids` 或内部 `video_ref` 由 runtime binding 注入。图片理解和视频理解不是两个
+并列工具，而是该工具根据绑定后的媒体引用选择内部执行分支：
 
 ```text
 vision_understanding
@@ -218,8 +236,10 @@ category、确认、profile、env 等系统字段不会发送给模型，也不�
 Agent-Service 默认 profile 只直接暴露 `memory_search`，因为其 observation 已返回完整匹配记录，
 不再为同一读取流程额外支付 `memory_get` schema；`memory_get` 仍保留在 Registry 供其他显式 profile 使用。
 `shopping_search` 只向模型暴露 `query`、`budget_min`、`budget_max` 和 `platforms`，固定候选数量
-`top_k` 是执行期默认值；`weather` 只暴露 `location`、`target_date` 和 `days`，固定公制 `units`
-同样不进入模型 schema。隐藏字段仍由 Pydantic 默认值和 runtime 注入补齐。
+`top_k`、身份、memory context 和前序视觉结果由 runtime binding 补齐；`weather` 只暴露
+`location`、`target_date` 和 `days`，固定公制 `units` 不进入模型 schema。`vision_understanding`
+只暴露可选 `question`，本轮图片/视频引用、用户原始请求、身份、采样参数和 rolling context 均来自
+runtime；`web_fetch` 只暴露必填 `url`，读取上限和内容格式由 Tool 静态默认值分配。
 
 当前 Agent-Service 目录规模很小，继续直接发送治理后的完整 ToolSpec。只有未来 eligible schema
 达到明显上下文占比时，才考虑类似 OpenClaw/Hermes 的 `search -> describe -> call` 渐进披露；

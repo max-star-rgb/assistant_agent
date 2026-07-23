@@ -20,6 +20,7 @@ from assistant_agent.services.product_adapter import (
 )
 from assistant_agent.schemas.tool_ids import SHOPPING_SEARCH_CAPABILITY, SHOPPING_SEARCH_TOOL_NAME
 from assistant_agent.tools.base import ToolBase, ToolContext
+from assistant_agent.tools.input_binding import ToolInputBinding
 
 
 class ShoppingSearchTool(ToolBase):
@@ -34,21 +35,40 @@ class ShoppingSearchTool(ToolBase):
     output_schema = ShoppingSearchResult
     category = "read"
     requires_confirmation = False
-    model_hidden_input_fields = (
-        "user_id",
-        "session_id",
-        "memory_context",
-        "visual_summary",
-        "video_summary",
-        "objects",
-        "colors",
-        "materials",
-        "brand",
-        "category",
-        "budget",
-        "top_k",
+    input_bindings = (
+        ToolInputBinding(field="user_id", source="runtime_identity", key="user_id"),
+        ToolInputBinding(field="session_id", source="runtime_identity", key="session_id"),
+        ToolInputBinding(field="memory_context", source="memory_context", key="summaries"),
+        ToolInputBinding(
+            field="visual_summary",
+            source="latest_tool_result",
+            result_tool_name="vision_understanding",
+            result_path="summary",
+        ),
+        ToolInputBinding(
+            field="objects",
+            source="latest_tool_result",
+            result_tool_name="vision_understanding",
+            result_path="objects",
+        ),
+        ToolInputBinding(
+            field="colors",
+            source="latest_tool_result",
+            result_tool_name="vision_understanding",
+            result_path="colors",
+        ),
+        ToolInputBinding(
+            field="materials",
+            source="latest_tool_result",
+            result_tool_name="vision_understanding",
+            result_path="materials",
+        ),
+        ToolInputBinding(field="video_summary", source="constant", value=None),
+        ToolInputBinding(field="brand", source="constant", value=None),
+        ToolInputBinding(field="category", source="constant", value=None),
+        ToolInputBinding(field="budget", source="constant", value=None),
+        ToolInputBinding(field="top_k", source="constant", value=5),
     )
-    runtime_identity_fields = ("user_id", "session_id")
 
     def __init__(
         self,

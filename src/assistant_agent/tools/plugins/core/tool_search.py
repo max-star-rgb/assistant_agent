@@ -17,6 +17,7 @@ from assistant_agent.schemas.tools import ToolResult
 from assistant_agent.services.provider_errors import sanitize_error_message
 from assistant_agent.schemas.tool_ids import TOOL_SEARCH_TOOL_NAME
 from assistant_agent.tools.base import ToolBase, ToolContext
+from assistant_agent.tools.input_binding import ToolInputBinding
 
 
 class ToolSearchTool(ToolBase):
@@ -33,6 +34,14 @@ class ToolSearchTool(ToolBase):
     category = "read"
     toolset = "tool.discovery"
     requires_confirmation = False
+    input_bindings = (
+        ToolInputBinding(field="limit", source="constant", value=8),
+        ToolInputBinding(
+            field="include_permission_required",
+            source="constant",
+            value=True,
+        ),
+    )
 
     def __init__(
         self,

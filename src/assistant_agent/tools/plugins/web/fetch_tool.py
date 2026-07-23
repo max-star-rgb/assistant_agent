@@ -11,6 +11,7 @@ from assistant_agent.services.web_fetch_adapter import (
 )
 from assistant_agent.schemas.tool_ids import WEB_FETCH_CAPABILITY, WEB_FETCH_TOOL_NAME
 from assistant_agent.tools.base import ToolBase, ToolContext
+from assistant_agent.tools.input_binding import ToolInputBinding
 
 
 class WebFetchTool(ToolBase):
@@ -22,6 +23,10 @@ class WebFetchTool(ToolBase):
     output_schema = WebFetchResult
     category = "read"
     requires_confirmation = False
+    input_bindings = (
+        ToolInputBinding(field="max_chars", source="constant", value=6000),
+        ToolInputBinding(field="content_format", source="constant", value="markdown"),
+    )
 
     def __init__(self, adapter: WebFetchAdapter | None = None) -> None:
         self.adapter = adapter or create_web_fetch_adapter()

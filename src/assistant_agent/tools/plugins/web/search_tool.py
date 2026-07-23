@@ -11,6 +11,7 @@ from assistant_agent.services.web_search_adapter import (
 )
 from assistant_agent.schemas.tool_ids import WEB_SEARCH_CAPABILITY, WEB_SEARCH_TOOL_NAME
 from assistant_agent.tools.base import ToolBase, ToolContext
+from assistant_agent.tools.input_binding import ToolInputBinding
 
 
 class WebSearchTool(ToolBase):
@@ -22,6 +23,9 @@ class WebSearchTool(ToolBase):
     output_schema = WebSearchResult
     category = "read"
     requires_confirmation = False
+    input_bindings = (
+        ToolInputBinding(field="limit", source="constant", value=5),
+    )
 
     def __init__(self, adapter: WebSearchAdapter | None = None) -> None:
         self.adapter = adapter or create_web_search_adapter()

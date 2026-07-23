@@ -30,30 +30,35 @@ from assistant_agent.services.provider_errors import (
 )
 from assistant_agent.schemas.tool_ids import IMAGE_UNDERSTANDING_CAPABILITY, IMAGE_UNDERSTANDING_TOOL_NAME
 from assistant_agent.tools.base import ToolBase, ToolContext
+from assistant_agent.tools.input_binding import ToolInputBinding
 from assistant_agent.tools.plugins.vision.video_branch import VideoUnderstandingBranch
 
 
 class VisionUnderstandingTool(ToolBase):
     name = IMAGE_UNDERSTANDING_TOOL_NAME
     description = (
-        "Understand images or videos. Use image_ids for images and video_ids or "
-        "video_ref for videos; the tool selects the matching internal vision branch."
+        "Understand images or videos attached to the current request. Optionally provide "
+        "a focused question; runtime selects the matching media and internal vision branch."
     )
     input_schema = VisionUnderstandingRequest
     output_schema = VisionUnderstandingResult
     category = "read"
     requires_confirmation = False
     requires_media = ["image", "video"]
-    model_hidden_input_fields = (
-        "frame_refs",
-        "context_id",
-        "metadata",
-        "memory_context",
-        "sample_strategy",
-        "user_id",
-        "session_id",
+    input_bindings = (
+        ToolInputBinding(field="image_ids", source="request", key="image_ids"),
+        ToolInputBinding(field="video_ids", source="request", key="video_ids"),
+        ToolInputBinding(field="video_ref", source="constant", value=None),
+        ToolInputBinding(field="frame_refs", source="constant", value=[]),
+        ToolInputBinding(field="context_id", source="constant", value=None),
+        ToolInputBinding(field="user_query", source="request", key="text"),
+        ToolInputBinding(field="user_id", source="runtime_identity", key="user_id"),
+        ToolInputBinding(field="session_id", source="runtime_identity", key="session_id"),
+        ToolInputBinding(field="max_frames", source="constant", value=None),
+        ToolInputBinding(field="sample_strategy", source="constant", value=None),
+        ToolInputBinding(field="metadata", source="constant", value={}),
+        ToolInputBinding(field="memory_context", source="memory_context", key="text"),
     )
-    bind_request_video_ids = True
 
     def __init__(
         self,

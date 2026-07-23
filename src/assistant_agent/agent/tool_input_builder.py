@@ -33,36 +33,27 @@ def build_tool_input(
     capability = canonical_capability_for_action(action) or action
 
     if action == "understand_video":
-        return {
-            "video_ref": request.video_ids[0] if request.video_ids else None,
-            "video_ids": request.video_ids,
-            "user_query": request.text,
-            "user_id": request.user_id,
-            "session_id": request.session_id,
-            "metadata": _metadata_snapshot(request.metadata),
-        }
+        return {"question": request.text}
     if action == "understand_image":
-        return {"image_ids": request.image_ids, "video_ids": request.video_ids, "question": request.text}
+        return {"question": request.text}
     if capability == SHOPPING_SEARCH_CAPABILITY:
-        visual = latest_visual_data(outputs_by_step)
-        summary = visual.get("summary") if visual else None
-        payload = {
-            "query": request.text,
-            "visual_summary": summary,
-            "video_summary": summary if latest_video_data(outputs_by_step) else None,
-            "objects": visual.get("objects", []) if visual else [],
-            "colors": visual.get("colors", []) if visual else [],
-            "materials": visual.get("materials", []) if visual else [],
-        }
-        return {key: value for key, value in payload.items() if value not in (None, "", [], {})}
+        return {"query": request.text}
     if capability == WEB_SEARCH_CAPABILITY:
         return build_web_search_input(request)
     if capability == WEB_FETCH_CAPABILITY:
         return build_web_fetch_input(request)
     if capability == IMAGE_GENERATION_CAPABILITY:
-        return build_image_generation_request(request, outputs_by_step).model_dump()
+        generated = build_image_generation_request(request, outputs_by_step).model_dump()
+        runtime_owned = {
+            "user_id",
+            "session_id",
+            "memory_context",
+            "prompt_extend",
+            "watermark",
+        }
+        return {key: value for key, value in generated.items() if key not in runtime_owned}
     if capability == MEMORY_RETRIEVAL_CAPABILITY:
-        return {"user_id": request.user_id, "query": request.text}
+        return {"query": request.text}
     if capability == MEMORY_SAVE_CAPABILITY:
         return {
             "user_id": request.user_id,
@@ -98,16 +89,6 @@ def build_web_fetch_input(request: UserRequest) -> dict[str, Any]:
     match = _URL_RE.search(request.text or "")
     url = match.group(0).rstrip(".,，。)") if match else ""
     return {"url": url}
-
-
-def _metadata_snapshot(metadata: dict[str, Any]) -> dict[str, Any]:
-    """Return a small copy safe to persist in tool call records."""
-
-    return {
-        key: value
-        for key, value in metadata.items()
-        if key not in {"assistant_loop_steps"} and isinstance(value, str | int | float | bool | list | dict | type(None))
-    }
 
 
 def latest_success_data(outputs_by_step: dict[str, ToolResult]) -> dict[str, Any]:

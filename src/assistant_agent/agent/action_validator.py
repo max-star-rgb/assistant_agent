@@ -14,6 +14,7 @@ from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.services.tool_call_boundary import build_pre_tool_call_summary
 from assistant_agent.schemas.tool_ids import TASK_PLAN_SUBMIT_TOOL_NAME
 from assistant_agent.tools.base import ToolInputValidationError
+from assistant_agent.tools.input_binding import runtime_owned_input_fields
 from assistant_agent.tools.registry import ToolRegistry
 
 
@@ -83,6 +84,18 @@ class ActionValidator:
         }
 
         tool = registry.get(tool_name)
+        supplied_runtime_fields = sorted(
+            set(runtime_owned_input_fields(tool)).intersection(decision.tool_input)
+        )
+        if supplied_runtime_fields:
+            return _reject(
+                "runtime_owned_tool_input",
+                (
+                    f"{tool_name} input contains runtime-owned fields: "
+                    f"{', '.join(supplied_runtime_fields)}."
+                ),
+                metadata=metadata,
+            )
         try:
             validated_input = tool.input_schema.model_validate(decision.tool_input)
         except ValidationError as exc:

@@ -99,11 +99,9 @@ def test_package_and_runtime_initialize_offline() -> None:
     assert "render_3d" not in runtime.registry.list()
     assert "vision_understanding" in runtime.registry.list()
     assert "video_understanding" not in runtime.registry.list()
-    assert {
-        "image_ids",
-        "video_ids",
-        "video_ref",
-    }.issubset(specs["vision_understanding"].input_schema["properties"])
+    assert set(specs["vision_understanding"].input_schema["properties"]) == {
+        "question"
+    }
     assert "memory" not in specs
     assert {
         specs[name].toolset

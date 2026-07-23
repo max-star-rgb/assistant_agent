@@ -16,6 +16,7 @@ from assistant_agent.schemas.tool_ids import (
 )
 from assistant_agent.schemas.tools import ToolResult
 from assistant_agent.tools.base import ToolBase, ToolContext
+from assistant_agent.tools.input_binding import ToolInputBinding
 
 
 class MemorySearchInput(BaseModel):
@@ -46,8 +47,10 @@ class MemorySearchTool(ToolBase):
     category = "read"
     toolset = "memory"
     requires_confirmation = False
-    model_hidden_input_fields = ("user_id", "session_id")
-    runtime_identity_fields = ("user_id", "session_id")
+    input_bindings = (
+        ToolInputBinding(field="user_id", source="runtime_identity", key="user_id"),
+        ToolInputBinding(field="session_id", source="runtime_identity", key="session_id"),
+    )
 
     def _run(self, input: MemorySearchInput, context: ToolContext) -> ToolResult:
         manager = _manager_from_context(context)
@@ -81,8 +84,10 @@ class MemoryGetTool(ToolBase):
     category = "read"
     toolset = "memory"
     requires_confirmation = False
-    model_hidden_input_fields = ("user_id", "session_id")
-    runtime_identity_fields = ("user_id", "session_id")
+    input_bindings = (
+        ToolInputBinding(field="user_id", source="runtime_identity", key="user_id"),
+        ToolInputBinding(field="session_id", source="runtime_identity", key="session_id"),
+    )
 
     def _run(self, input: MemoryGetInput, context: ToolContext) -> ToolResult:
         manager = _manager_from_context(context)

@@ -18,6 +18,7 @@ from assistant_agent.services.tool_python_sandbox import (
 )
 from assistant_agent.schemas.tool_ids import PYTHON_INTERPRETER_TOOL_NAME
 from assistant_agent.tools.base import ToolBase, ToolContext, ToolInputValidationError
+from assistant_agent.tools.input_binding import ToolInputBinding
 
 
 class PythonInterpreterTool(ToolBase):
@@ -32,6 +33,10 @@ class PythonInterpreterTool(ToolBase):
     toolset = "analysis.local"
     requires_confirmation = False
     enabled_by_default = False
+    input_bindings = (
+        ToolInputBinding(field="purpose", source="constant", value="general_analysis"),
+        ToolInputBinding(field="timeout_s", source="constant", value=None),
+    )
 
     def __init__(
         self,

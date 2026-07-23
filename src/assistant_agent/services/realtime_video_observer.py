@@ -424,7 +424,7 @@ class RealtimeVideoObserver:
         decision = AssistantDecision(
             type="tool_call",
             tool_name=IMAGE_UNDERSTANDING_TOOL_NAME,
-            tool_input=tool_input,
+            tool_input={},
             reason="Observe a selected realtime video keyframe.",
         )
         validation = self.validator.validate(
@@ -447,8 +447,9 @@ class RealtimeVideoObserver:
             state,
             f"video-observation-{item.sequence}",
             IMAGE_UNDERSTANDING_TOOL_NAME,
-            tool_input,
+            {},
             node_name="realtime_video_observer",
+            runtime_input=tool_input,
         )
 
     async def _close_video_adapter(self) -> None:

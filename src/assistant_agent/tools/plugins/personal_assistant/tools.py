@@ -31,6 +31,7 @@ from assistant_agent.schemas.tool_ids import (
     WEATHER_TOOL_NAME,
 )
 from assistant_agent.tools.base import ToolBase, ToolContext
+from assistant_agent.tools.input_binding import ToolInputBinding
 
 
 class WeatherTool(ToolBase):
@@ -43,7 +44,9 @@ class WeatherTool(ToolBase):
     category = "read"
     toolset = "personal.readonly"
     requires_confirmation = False
-    model_hidden_input_fields = ("units",)
+    input_bindings = (
+        ToolInputBinding(field="units", source="constant", value="metric"),
+    )
 
     def __init__(self, adapter: WeatherAdapter | None = None) -> None:
         self.adapter = adapter or MockWeatherAdapter()
@@ -79,6 +82,9 @@ class CalendarSearchTool(ToolBase):
     category = "read"
     toolset = "personal.calendar"
     requires_confirmation = False
+    input_bindings = (
+        ToolInputBinding(field="limit", source="constant", value=5),
+    )
 
     def __init__(self, adapter: CalendarAdapter | None = None) -> None:
         self.adapter = adapter or MockCalendarAdapter()
@@ -109,6 +115,9 @@ class CalendarCreateTool(ToolBase):
     category = "write"
     toolset = "personal.calendar"
     requires_confirmation = True
+    input_bindings = (
+        ToolInputBinding(field="idempotency_key", source="durable_idempotency"),
+    )
 
     def __init__(self, adapter: CalendarAdapter | None = None) -> None:
         self.adapter = adapter or MockCalendarAdapter()
@@ -145,6 +154,9 @@ class ContactsSearchTool(ToolBase):
     category = "read"
     toolset = "personal.contacts"
     requires_confirmation = False
+    input_bindings = (
+        ToolInputBinding(field="limit", source="constant", value=5),
+    )
 
     def __init__(self, adapter: ContactsAdapter | None = None) -> None:
         self.adapter = adapter or MockContactsAdapter()

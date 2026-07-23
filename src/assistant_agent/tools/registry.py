@@ -14,6 +14,10 @@ from assistant_agent.services.provider_errors import sanitize_error_message
 from assistant_agent.services.video_context import VideoContextStore
 from assistant_agent.services.realtime_video_memory import RealtimeVideoMemoryStore
 from assistant_agent.tools.base import Tool, ToolContext
+from assistant_agent.tools.input_binding import (
+    runtime_owned_input_fields,
+    validate_tool_input_bindings,
+)
 from assistant_agent.tools.plugins.assembly import (
     ToolContribution,
     ToolPluginAssemblyError,
@@ -184,12 +188,13 @@ class ToolRegistry:
 
     @staticmethod
     def _tool_spec(tool: Tool) -> ToolSpec:
+        validate_tool_input_bindings(tool)
         return ToolSpec(
             name=tool.name,
             description=tool.description,
             input_schema=_schema_to_dict(
                 tool.input_schema,
-                hidden_fields=getattr(tool, "model_hidden_input_fields", ()),
+                hidden_fields=runtime_owned_input_fields(tool),
             ),
             **_declared_contract(tool),
         )
