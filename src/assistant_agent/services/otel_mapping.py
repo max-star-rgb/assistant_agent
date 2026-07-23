@@ -522,7 +522,7 @@ def _event_io_attributes(
             iteration=_mapping_int(event.attributes, "iteration"),
         )
         input_payload = (
-            _llm_provider_input_preview(llm_input.request, model=event.model)
+            _llm_provider_input(llm_input.request)
             if llm_input is not None
             else _pretty_json_text(
                 _selected_payload(event.attributes, ("iteration", "input_tokens"))
@@ -562,24 +562,10 @@ def _event_io_attributes(
     return attributes
 
 
-def _llm_provider_input_preview(
-    request: Mapping[str, Any],
-    *,
-    model: str | None,
-) -> dict[str, Any]:
-    """Return the original semantic Provider input without presentation rewrites."""
+def _llm_provider_input(request: Mapping[str, Any]) -> dict[str, Any]:
+    """Return the adapter-captured SDK request without presentation rewrites."""
 
-    return _drop_none(
-        {
-            "model": model or request.get("model"),
-            "messages": request.get("messages", []),
-            "tools": request.get("tools", []),
-            "tool_choice": request.get("tool_choice"),
-            "response_format": request.get("response_format"),
-            "temperature": request.get("temperature"),
-            "max_tokens": request.get("max_tokens"),
-        }
-    )
+    return dict(request)
 
 
 def _llm_provider_output_preview(llm_output: "TraceLlmOutput") -> dict[str, Any]:

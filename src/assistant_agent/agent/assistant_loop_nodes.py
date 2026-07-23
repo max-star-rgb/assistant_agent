@@ -452,6 +452,26 @@ def _run_chat_turn(
         span_id=span_id,
         attempt_kind=attempt_kind,
     )
+    prior_provider_request_callback = request.provider_request_callback
+
+    def record_provider_request(payload: dict[str, Any]) -> None:
+        _record_local_llm_input(
+            state,
+            trace_id=graph_state.get("trace_id") or state.trace_id,
+            iteration=iteration,
+            provider=provider,
+            model=model,
+            request=request,
+            span_id=span_id,
+            attempt_kind=attempt_kind,
+            provider_payload=payload,
+        )
+        if prior_provider_request_callback is not None:
+            prior_provider_request_callback(payload)
+
+    request = request.model_copy(
+        update={"provider_request_callback": record_provider_request}
+    )
     append_observability_event(
         graph_state.get("trace_store"),
         trace_id=graph_state.get("trace_id") or state.trace_id,
@@ -570,21 +590,19 @@ def _record_local_llm_input(
     request: ChatRequest,
     span_id: str,
     attempt_kind: str,
+    provider_payload: dict[str, Any] | None = None,
 ) -> None:
-    """Capture the compiled provider request only for explicit local debugging."""
+    """Capture one Provider request for local Langfuse generation input."""
 
-    from assistant_agent.services.trace_content_policy import local_trace_content_enabled
-
-    if not local_trace_content_enabled():
-        return
     from assistant_agent.services.trace_conversation import (
         TraceLlmInput,
         get_default_trace_conversation_store,
     )
 
-    payload = request.model_dump(mode="json", exclude={"stream_callback"})
-    safe_payload = cast(dict[str, Any], _sanitize_local_llm_value(payload))
-    safe_payload["tools"] = payload.get("tools", [])
+    payload = provider_payload or _fallback_provider_request_payload(
+        request,
+        model=model,
+    )
     get_default_trace_conversation_store().append_llm_input(
         user_id=state.user_id,
         session_id=state.session_id,
@@ -595,9 +613,27 @@ def _record_local_llm_input(
             attempt_kind=attempt_kind,
             provider=provider,
             model=model,
-            request=safe_payload,
+            request=payload,
         ),
     )
+
+
+def _fallback_provider_request_payload(
+    request: ChatRequest,
+    *,
+    model: str | None,
+) -> dict[str, Any]:
+    """Provide a semantic fallback for adapters without request capture support."""
+
+    return {
+        "model": model,
+        "messages": request.messages,
+        "tools": request.tools,
+        "tool_choice": request.tool_choice,
+        "response_format": request.response_format,
+        "temperature": request.temperature,
+        "max_tokens": request.max_tokens,
+    }
 
 
 def _record_local_llm_output(

@@ -1,6 +1,7 @@
 """Direct chat adapter contracts and local implementations."""
 
 from collections.abc import AsyncIterator, Callable, Iterator
+from copy import deepcopy
 from dataclasses import dataclass, field
 import inspect
 import json
@@ -29,6 +30,7 @@ from assistant_agent.services.provider_http import without_unsupported_socks_pro
 
 ChatProviderName = Literal["mock", "openai", "qwen", "ark", "deepseek", "local"]
 ChatStreamCallback = Callable[[str, dict[str, Any]], None]
+ProviderRequestCallback = Callable[[dict[str, Any]], None]
 ProviderTransportMode = Literal["sync", "sdk_stream", "provider_stream"]
 
 
@@ -59,6 +61,7 @@ class ChatRequest(BaseModel):
     temperature: float = Field(default=0.2, ge=0.0, le=2.0)
     max_tokens: int = Field(default=512, ge=1)
     stream_callback: ChatStreamCallback | None = Field(default=None, exclude=True)
+    provider_request_callback: ProviderRequestCallback | None = Field(default=None, exclude=True)
 
 
 class ChatProviderError(BaseModel):
@@ -282,6 +285,7 @@ class OpenAICompatibleChatAdapter:
             stream=self.stream,
             extra_body=self._extra_body(),
         )
+        _emit_provider_request(request.provider_request_callback, payload)
         try:
             if self.stream:
                 stream = self._sdk_client().chat.completions.create(**payload)
@@ -345,6 +349,7 @@ class OpenAICompatibleChatAdapter:
             stream=True,
             extra_body=self._extra_body(),
         )
+        _emit_provider_request(request.provider_request_callback, payload)
         stream: Any | None = None
         try:
             stream_result = self._async_sdk_client().chat.completions.create(**payload)
@@ -440,6 +445,20 @@ def _build_chat_completions_payload(
         if capabilities.include_stream_usage:
             payload["stream_options"] = {"include_usage": True}
     return payload
+
+
+def _emit_provider_request(
+    callback: ProviderRequestCallback | None,
+    payload: dict[str, Any],
+) -> None:
+    """Expose the exact SDK call kwargs without letting observability break the call."""
+
+    if callback is None:
+        return
+    try:
+        callback(deepcopy(payload))
+    except Exception:
+        return
 
 
 def _parse_openai_chat_response(

@@ -90,8 +90,8 @@ The foreground assistant loop must emit one paired `llm.chat.started` /
 metadata、usage 和 latency 使用独立 generation attributes。
 `assistant_agent.result_kind` 是观测层根据归一化 `ChatResult` 即时计算的
 `error | tool_call | refusal | truncated | text | empty`，不属于 Qwen/OpenAI 协议，也不写回
-`ChatResult`。本地 content overlay 将 `llm.chat` generation preview 固定为两个按顺序展示的
-字段：input 是 Langfuse 可直接格式化的完整消息列表，output 是保留 `role`、`content`、
+`ChatResult`。本地 Langfuse 将 `llm.chat` generation 固定为两个按顺序展示的
+字段：input 是 Provider adapter 传给 SDK 的完整调用参数，output 是保留 `role`、`content`、
 `tool_calls` 和可选 `refusal/errors` 的 OpenAI-compatible assistant message。
 Langfuse Formatted 面板可能折叠长字符串；是否完整以 observation input JSON/Public API 为准。
 system message 把可信运行时间放在第一段，使折叠预览也优先显示日期事实。
@@ -730,16 +730,16 @@ Trace and monitoring records must not include:
 - Base64, inline media payloads, full command outputs, or large binary/text blobs.
 - Real user data dumps.
 
-默认 OTLP export 同样遵守上述边界。仅本地开发允许一个显式例外：当
-`ASSISTANT_AGENT_OTEL_INCLUDE_CONTENT=true`、
-`MULTIMODAL_AGENT_LOCAL_TRACE_CONTENT=1` 且 OTLP endpoint host 是
-`localhost`、`127.0.0.1` 或 `::1` 时，Langfuse root observation 和
-`response.final` 可以接收当前轮 Runtime 助手原文，`response.delivered` 和 Langfuse root output
-可以接收最终交付原文；每个 `llm.chat` generation 还可以接收
-实际编译后的 Provider 语义输入，包括 model、messages、完整 tool schemas、tool choice、
-response format 和生成参数。preview 保持原始字段与 message role，不把 tools 或生成参数改写为
-虚构的 system/tool message；`user_id`、`session_id`、重复的 `user_query`、iteration 等运行时字段
-不进入 input preview。generation output 以 OpenAI-compatible assistant message 保留 Provider 的
+默认 OTLP export 同样遵守上述边界。仅本地开发例外：启用 OTLP export 且 endpoint host 是
+`localhost`、`127.0.0.1` 或 `::1` 时，每个 `llm.chat` generation input 自动接收
+Provider adapter 传给 `chat.completions.create(**payload)` 的完整 payload。该对象不经过字段挑选、
+摘要、裁剪或 secret sanitizer，因而会原样保留实际的 `model`、`messages`、完整 tool schemas、
+`tool_choice`、实际 token 参数名、`stream`、`stream_options` 和 Provider 特有的 `extra_body`。
+它是 SDK 调用参数，不是序列化后的 HTTP 字节流，也不包括 Authorization header。
+
+`MULTIMODAL_AGENT_LOCAL_TRACE_CONTENT=1` 继续控制 Langfuse root observation、
+`response.final`、`response.delivered` 和 generation output 的本地原文 overlay。generation output
+以 OpenAI-compatible assistant message 保留 Provider 的
 原始语义回复（正文、工具调用、拒绝/错误），不把结构化 tool call 改写为展示文本；
 finish reason 保留在 trace/协议快照，usage 保留在独立 observation attributes 中，不拼接到 output 文本。
 若同时显式设置
@@ -749,9 +749,8 @@ finish reason 保留在 trace/协议快照，usage 保留在独立 observation a
 body 或 `reasoning_content`，并按
 对应 `llm.chat` 的 `span_id` 配对，不能只按 iteration 取第一条。内容来自独立的进程内
 `TraceConversationStore`，用户/助手单侧
-最多导出 4000 字符；compiled request 保留消息换行和工具 schema，并继续执行 secret
-sanitizer。上一轮 Provider 的 hidden reasoning 字段始终替换为 `[redacted]`，Provider
-SDK 原始请求/响应对象和 stream callback 不进入该 store。protocol snapshot 优先用于生成精确
+最多导出 4000 字符。上一轮 Provider 的 hidden reasoning 字段始终替换为 `[redacted]`；
+stream callback 不进入该 store。protocol snapshot 优先用于生成精确
 output preview；缺失时从归一化 `ChatResult` 重建完整语义回复。`runtime_route` 记录归一化结果触发的
 实际 `fallback | tool_governance | final_answer` 动作并留在 metadata。上述正文不写入
 `.data/graph_trace.jsonl`。
@@ -853,10 +852,10 @@ Regression tests should enforce these invariants:
   decision summary、结果计数、output ref 和 bounded observation summary，不导出完整工具
   请求体或 Provider payload。
 - `llm.chat` generation 默认不设置 `langfuse.observation.output`；Provider/model、usage、latency 和
-  attempt kind 使用独立 observation attributes，finish reason 保留在 trace/协议快照。只有满足上述 localhost 三重 opt-in
-  时，才从进程内 `TraceConversationStore` 按 span id 投影完整 Provider 语义输入和回复。两者
-  input 保留原始 `model/messages/tools/tool_choice/response_format/temperature/max_tokens` 结构，
-  message role 不做展示性重写。output 使用带 `role/content/tool_calls` 的结构化 assistant message
+  attempt kind 使用独立 observation attributes，finish reason 保留在 trace/协议快照。本地 OTLP
+  export 自动从进程内 `TraceConversationStore` 按 span id 投影 adapter 捕获的完整 SDK 调用参数；
+  input 不做字段重建或展示性重写。启用 local trace content 后，output 使用带
+  `role/content/tool_calls` 的结构化 assistant message
   展示 Provider 的原始语义回复，不附加 finish reason 或 usage。协议语义快照还需要独立设置
   `MULTIMODAL_AGENT_LOCAL_PROVIDER_PROTOCOL_CAPTURE=1`。JSONL 只保留 route、transport、terminal
   和 delta count 等安全摘要；这些对象都不是 vendor SDK 原始 envelope。
@@ -864,8 +863,8 @@ Regression tests should enforce these invariants:
   chars/tokens、item count、included/compacted/trimmed、source，以及总预算、已选工具、
   context source、skill exposure 和 compression 状态；完整 compiled `ChatRequest` 仍只放在
   对应 `llm.chat` generation input，避免重复且保持 Provider 调用边界明确。
-- 本地 compiled request 的逐行安全处理必须原样保留空行；空字符串不能经过 provider-error
-  fallback 后变成字面量 `provider error`。hidden reasoning 和 secret marker 仍按原边界过滤。
+- 未实现 request callback 的自定义 adapter 使用编译后 `ChatRequest` 的语义字段作为 fallback；
+  内置 OpenAI-compatible adapter 必须以传给 SDK 的同一 payload 覆盖该 fallback。
 - Langfuse Trace 名称固定为 `assistant.turn`，observation hierarchy 固定为
   `assistant.runtime -> react.iteration[n] -> context/llm/decision/tool`，避免把
   Trace 名称再次导出成同名根 observation。memory、final response 和
@@ -876,8 +875,7 @@ Regression tests should enforce these invariants:
   AgentSession id。OTLP metadata 同时写入 `agent_session_id` 和 `session_scope`。
   Agent-Service 当前为 `session_scope=agent_service_connection`，表示该 session 是
   WebSocket 连接级逻辑会话，不能被解释成 vendor `sessionId` 或跨重连 conversation。
-- 本地原文模式还需显式设置 `ASSISTANT_AGENT_OTEL_INCLUDE_CONTENT=true`，并同时满足
-  local trace content 与 loopback endpoint 限制；该开关不能用于远程 OTLP endpoint。
+- 远程 OTLP endpoint 不导出上述原始 generation input；本地 endpoint 无需额外 content 开关。
 - Disabled export must not import OpenTelemetry packages. Missing optional
   dependencies, missing endpoint, full queues, and exporter exceptions are
   observability failures only; they must not block local trace persistence or

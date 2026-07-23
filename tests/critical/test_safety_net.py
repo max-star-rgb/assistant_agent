@@ -277,6 +277,7 @@ def test_interactive_provider_latency_controls_are_explicit() -> None:
 
 def test_qwen_chat_adapter_disables_thinking_in_provider_payload() -> None:
     captured: dict[str, object] = {}
+    observed: list[dict[str, object]] = []
 
     class Completions:
         def create(self, **payload: object) -> dict[str, object]:
@@ -297,10 +298,18 @@ def test_qwen_chat_adapter_disables_thinking_in_provider_payload() -> None:
         client=client,
     )
 
-    result = adapter.chat(ChatRequest(user_id="user", session_id="session", user_query="测试"))
+    result = adapter.chat(
+        ChatRequest(
+            user_id="user",
+            session_id="session",
+            user_query="测试",
+            provider_request_callback=observed.append,
+        )
+    )
 
     assert result.response_text == "完成"
     assert captured["extra_body"] == {"enable_thinking": False}
+    assert observed == [captured]
 
 
 def test_media_client_surfaces_top_level_chat_failure() -> None:
@@ -309,11 +318,9 @@ def test_media_client_surfaces_top_level_chat_failure() -> None:
     )
 
 
-def test_otel_content_export_requires_explicit_local_loopback_configuration() -> None:
+def test_local_otel_export_includes_original_content_without_extra_switches() -> None:
     base = {
         "ASSISTANT_AGENT_OTEL_EXPORT_ENABLED": "true",
-        "ASSISTANT_AGENT_OTEL_INCLUDE_CONTENT": "true",
-        "MULTIMODAL_AGENT_LOCAL_TRACE_CONTENT": "1",
         "LANGFUSE_PUBLIC_KEY": "pk-local",
         "LANGFUSE_SECRET_KEY": "sk-local",
     }
@@ -322,12 +329,8 @@ def test_otel_content_export_requires_explicit_local_loopback_configuration() ->
     remote = OtlpHttpTextExporterConfig.from_env(
         {**base, "OTEL_EXPORTER_OTLP_ENDPOINT": "https://cloud.langfuse.com/api/public/otel"}
     )
-    missing_local_opt_in = OtlpHttpTextExporterConfig.from_env(
-        {
-            **base,
-            "MULTIMODAL_AGENT_LOCAL_TRACE_CONTENT": "0",
-            "OTEL_EXPORTER_OTLP_ENDPOINT": "http://localhost:3000/api/public/otel",
-        }
+    disabled = OtlpHttpTextExporterConfig.from_env(
+        {key: value for key, value in base.items() if key != "ASSISTANT_AGENT_OTEL_EXPORT_ENABLED"}
     )
 
     assert local.endpoint == "http://localhost:3000/api/public/otel/v1/traces"
@@ -337,7 +340,7 @@ def test_otel_content_export_requires_explicit_local_loopback_configuration() ->
     assert local.queue_capacity == 1024
     assert local.include_content is True
     assert remote.include_content is False
-    assert missing_local_opt_in.include_content is False
+    assert disabled.include_content is False
 
     scores = LangfuseScoreWriterConfig.from_env(
         {
@@ -758,8 +761,7 @@ def test_native_tool_call_loop_completes_with_observation() -> None:
     assert "我先查询一下" not in state.response.message
 
 
-def test_local_trace_content_captures_compiled_provider_request(monkeypatch) -> None:
-    monkeypatch.setenv("MULTIMODAL_AGENT_LOCAL_TRACE_CONTENT", "1")
+def test_provider_request_fallback_is_captured_without_content_switch() -> None:
     adapter = ScriptedChatAdapter(
         [
             ChatResult(

@@ -42,8 +42,6 @@ ASSISTANT_AGENT_OTEL_EXPORT_HEADERS_ENV = "ASSISTANT_AGENT_OTEL_EXPORT_HEADERS"
 ASSISTANT_AGENT_OTEL_EXPORT_TIMEOUT_ENV = "ASSISTANT_AGENT_OTEL_EXPORT_TIMEOUT"
 ASSISTANT_AGENT_OTEL_EXPORT_QUEUE_CAPACITY_ENV = "ASSISTANT_AGENT_OTEL_EXPORT_QUEUE_CAPACITY"
 ASSISTANT_AGENT_OTEL_SERVICE_NAME_ENV = "ASSISTANT_AGENT_OTEL_SERVICE_NAME"
-ASSISTANT_AGENT_OTEL_INCLUDE_CONTENT_ENV = "ASSISTANT_AGENT_OTEL_INCLUDE_CONTENT"
-LOCAL_TRACE_CONTENT_ENV = "MULTIMODAL_AGENT_LOCAL_TRACE_CONTENT"
 OTEL_EXPORTER_OTLP_ENDPOINT_ENV = "OTEL_EXPORTER_OTLP_ENDPOINT"
 OTEL_EXPORTER_OTLP_HEADERS_ENV = "OTEL_EXPORTER_OTLP_HEADERS"
 OTEL_EXPORTER_OTLP_TIMEOUT_ENV = "OTEL_EXPORTER_OTLP_TIMEOUT"
@@ -73,6 +71,7 @@ class OtlpHttpTextExporterConfig:
     def from_env(cls, env: Mapping[str, str] | None = None) -> "OtlpHttpTextExporterConfig":
         values = os.environ if env is None else env
         endpoint = _trace_endpoint_from_env(values)
+        enabled = _truthy_env_value(values.get(ASSISTANT_AGENT_OTEL_EXPORT_ENABLED_ENV))
         headers = _parse_otlp_headers(
             _first_non_empty(
                 values,
@@ -82,7 +81,7 @@ class OtlpHttpTextExporterConfig:
             )
         ) or langfuse_authorization_headers(values)
         return cls(
-            enabled=_truthy_env_value(values.get(ASSISTANT_AGENT_OTEL_EXPORT_ENABLED_ENV)),
+            enabled=enabled,
             endpoint=endpoint,
             headers=headers,
             timeout_seconds=_optional_positive_float(
@@ -104,11 +103,7 @@ class OtlpHttpTextExporterConfig:
                 values.get(ASSISTANT_AGENT_OTEL_EXPORT_QUEUE_CAPACITY_ENV)
             )
             or DEFAULT_EXPORT_QUEUE_CAPACITY,
-            include_content=(
-                _truthy_env_value(values.get(ASSISTANT_AGENT_OTEL_INCLUDE_CONTENT_ENV))
-                and values.get(LOCAL_TRACE_CONTENT_ENV) == "1"
-                and _is_loopback_endpoint(endpoint)
-            ),
+            include_content=enabled and _is_loopback_endpoint(endpoint),
         )
 
 

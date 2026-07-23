@@ -118,7 +118,7 @@ class InMemoryTraceConversationStore:
         trace_id: str,
         llm_input: TraceLlmInput,
     ) -> None:
-        """Append one exact compiled LLM request to the local debug record."""
+        """Upsert one compiled LLM request, preferring adapter-boundary payloads."""
 
         with self._lock:
             existing = self._matching_record(
@@ -126,7 +126,12 @@ class InMemoryTraceConversationStore:
                 session_id=session_id,
                 trace_id=trace_id,
             )
-            inputs = (*existing.llm_inputs, llm_input) if existing is not None else (llm_input,)
+            existing_inputs = existing.llm_inputs if existing is not None else ()
+            inputs = tuple(
+                item
+                for item in existing_inputs
+                if not (llm_input.span_id and item.span_id == llm_input.span_id)
+            ) + (llm_input,)
             record = TraceConversationRecord(
                 user_id=user_id,
                 session_id=session_id,

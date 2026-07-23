@@ -10,6 +10,7 @@ from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.services.chat_adapter import ChatRequest
 from assistant_agent.services.event_sink import ListEventSink
 from assistant_agent.services.session_store import InMemorySessionStore
+from assistant_agent.services.trace_conversation import get_default_trace_conversation_store
 from assistant_agent.services.trace_store import InMemoryTraceStore
 
 
@@ -17,7 +18,16 @@ class StreamingChatAdapter:
     provider = "qwen"
     model = "qwen3.7-max"
 
-    async def stream_chat(self, _request: ChatRequest) -> AsyncIterator[LLMEvent]:
+    async def stream_chat(self, request: ChatRequest) -> AsyncIterator[LLMEvent]:
+        if request.provider_request_callback is not None:
+            request.provider_request_callback(
+                {
+                    "model": self.model,
+                    "messages": [{"role": "user", "content": "native stream payload"}],
+                    "stream": True,
+                    "stream_options": {"include_usage": True},
+                }
+            )
         yield LLMEvent(
             event_type="token_delta",
             provider=self.provider,
@@ -109,6 +119,19 @@ def test_native_streaming_chat_emits_llm_span_and_final_answer() -> None:
         "selected_branch": "provider_content",
         "runtime_action": "final_answer",
         "tool_call_count": 0,
+    }
+    conversation = get_default_trace_conversation_store().get(
+        user_id=state.user_id,
+        session_id=state.session_id,
+        trace_id=state.trace_id,
+        include_llm_inputs=True,
+    )
+    assert conversation is not None
+    assert conversation.llm_inputs[0].request == {
+        "model": "qwen3.7-max",
+        "messages": [{"role": "user", "content": "native stream payload"}],
+        "stream": True,
+        "stream_options": {"include_usage": True},
     }
     deltas = [event for event in event_sink.events if event.type == "response_delta"]
     assert [event.text for event in deltas] == ["你好，我是你的助理。"]
