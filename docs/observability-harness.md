@@ -221,6 +221,8 @@ validator 和 tool 证据在 Decision Trace 中按 iteration 聚合，Raw events
 `.run/Langfuse.run.xml` 无需参数，通过 `scripts/run_langfuse.py` 启停本机 Compose stack；
 停止该 Run 配置只执行 `docker compose stop`，不会删除数据卷。`.run/Assistant Client.run.xml`
 同样固化本机 8089 server、stream、progress、ACK 和 interactive 参数，作为文本手工测试入口。
+`.run/Memo.run.xml` 通过 `scripts/run_memo.py` 启动 Mem0 与 Qdrant；健康检查通过后该 Run
+配置正常结束，但两个容器继续在后台运行。
 
 对应关系保持明确：
 
@@ -588,13 +590,16 @@ server 已用 `--allow-local-trace-content` 启动；`decision` 按 ReAct iterat
 
 推荐 PyCharm 本地流程：
 
-1. 运行 `.run/Assistant Server.run.xml`。共享配置已带 `--allow-local-trace-content`，
+1. 运行 `.run/Memo.run.xml`，等待控制台输出 `Memo ready`。该配置随后结束，但记忆服务继续运行。
+2. 运行 `.run/Langfuse.run.xml`，等待控制台输出 `Langfuse ready`；需要持续保留该 Run 进程。
+3. 运行 `.run/Assistant Server.run.xml`。共享配置已带 `--allow-local-trace-content`，
    并持续写 `.data/gateway_events.jsonl`；如果个人配置移除了内容开关，Conversation 层会不可用。
-2. 运行 `.run/Gateway.run.xml`，它常驻输出 Gateway server、session、queue、
+4. 运行 `.run/Gateway.run.xml`，它常驻输出 Gateway server、session、queue、
    run、cancel 和 interrupt lifecycle。
-3. 运行 `.run/AgentRuntime.run.xml`，它全局常驻输出
+5. 运行 `.run/AgentRuntime.run.xml`，它全局常驻输出
    Turn Overview -> Conversation，并在 session 切换时打印单行 banner。需要看执行路径时
    临时运行 `--sections overview,decision`；需要查事件状态机时再运行 `--sections timeline`。
+6. 需要文本联调时运行 `.run/Assistant Client.run.xml`。
 
 共享 `.run` 配置与 `.run/Assistant Server.run.xml` 对齐为
 `http://127.0.0.1:8089`。实际通话测试如果本机 server 跑在其他端口，复制对应

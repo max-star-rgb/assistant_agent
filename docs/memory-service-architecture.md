@@ -323,6 +323,9 @@ Embedding 未单独配置时复用 Qwen key/base URL，模型默认为
 ./scripts/run_memo.py
 ```
 
+PyCharm 可直接运行共享配置 `.run/Memo.run.xml`，效果与上述命令相同。
+配置在健康检查通过后结束，Mem0 与 Qdrant 容器继续在后台运行。
+
 该入口复用本机已有镜像和 Compose 持久卷，等待 Mem0 健康后退出，Mem0 与 Qdrant
 容器继续在后台运行。它不会构建或拉取镜像，也不会清理已有记忆数据。需要手动停止时：
 
