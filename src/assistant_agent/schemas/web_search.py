@@ -57,6 +57,3 @@ class WebSearchRequest(BaseModel):
         le=10,
         description="最多返回的搜索结果数量。",
     )
-
-
-WebSearchInput = WebSearchRequest

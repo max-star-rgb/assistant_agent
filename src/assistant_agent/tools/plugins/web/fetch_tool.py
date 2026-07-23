@@ -4,7 +4,7 @@ from typing import Any
 
 from assistant_agent.schemas.capability_output import build_capability_output_contract
 from assistant_agent.schemas.tools import ToolResult
-from assistant_agent.schemas.web_fetch import WebFetchInput, WebFetchResult
+from assistant_agent.schemas.web_fetch import WebFetchRequest, WebFetchResult
 from assistant_agent.services.web_fetch_adapter import (
     WebFetchAdapter,
     create_web_fetch_adapter,
@@ -17,7 +17,7 @@ from assistant_agent.tools.input_binding import ToolInputBinding
 class WebFetchTool(ToolBase):
     name = WEB_FETCH_TOOL_NAME
     description = "从指定 HTTP(S) URL 获取可读的网页内容。"
-    input_schema = WebFetchInput
+    input_schema = WebFetchRequest
     output_schema = WebFetchResult
     category = "read"
     requires_confirmation = False
@@ -29,7 +29,7 @@ class WebFetchTool(ToolBase):
     def __init__(self, adapter: WebFetchAdapter | None = None) -> None:
         self.adapter = adapter or create_web_fetch_adapter()
 
-    def _run(self, input: WebFetchInput, context: ToolContext) -> ToolResult:
+    def _run(self, input: WebFetchRequest, context: ToolContext) -> ToolResult:
         result = self.adapter.fetch(input)
         data = result.model_dump(mode="json")
         model_observation = _web_fetch_model_observation(data)

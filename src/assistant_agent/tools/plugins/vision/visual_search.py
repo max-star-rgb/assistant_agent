@@ -5,7 +5,7 @@ from typing import Any
 from assistant_agent.schemas.capability_output import build_capability_output_contract
 from assistant_agent.schemas.tools import ToolResult
 from assistant_agent.schemas.visual_image_search import (
-    VisualImageSearchInput,
+    VisualImageSearchRequest,
     VisualImageSearchResult,
 )
 from assistant_agent.services.provider_errors import sanitize_error_detail
@@ -21,7 +21,7 @@ from assistant_agent.tools.input_binding import ToolInputBinding
 class VisualImageSearchTool(ToolBase):
     name = VISUAL_IMAGE_SEARCH_TOOL_NAME
     description = "根据公开图片 URL 在互联网搜索视觉相似图片。"
-    input_schema = VisualImageSearchInput
+    input_schema = VisualImageSearchRequest
     output_schema = VisualImageSearchResult
     category = "read"
     requires_confirmation = False
@@ -33,7 +33,7 @@ class VisualImageSearchTool(ToolBase):
     def __init__(self, adapter: VisualImageSearchAdapter | None = None) -> None:
         self.adapter = adapter or create_visual_image_search_adapter()
 
-    def _run(self, input: VisualImageSearchInput, context: ToolContext) -> ToolResult:
+    def _run(self, input: VisualImageSearchRequest, context: ToolContext) -> ToolResult:
         result = self.adapter.search(input)
         data = result.model_dump(mode="json")
         model_observation = _visual_image_search_model_observation(data)

@@ -53,6 +53,3 @@ class WebFetchRequest(BaseModel):
         default="markdown",
         description="期望的可读内容格式。",
     )
-
-
-WebFetchInput = WebFetchRequest

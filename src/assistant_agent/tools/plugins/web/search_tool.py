@@ -4,7 +4,7 @@ from typing import Any
 
 from assistant_agent.schemas.capability_output import build_capability_output_contract
 from assistant_agent.schemas.tools import ToolResult
-from assistant_agent.schemas.web_search import WebSearchInput, WebSearchResult
+from assistant_agent.schemas.web_search import WebSearchRequest, WebSearchResult
 from assistant_agent.services.web_search_adapter import (
     WebSearchAdapter,
     create_web_search_adapter,
@@ -17,7 +17,7 @@ from assistant_agent.tools.input_binding import ToolInputBinding
 class WebSearchTool(ToolBase):
     name = WEB_SEARCH_TOOL_NAME
     description = "当专用个人工具无法覆盖请求时，搜索公开网页中的当前信息。"
-    input_schema = WebSearchInput
+    input_schema = WebSearchRequest
     output_schema = WebSearchResult
     category = "read"
     requires_confirmation = False
@@ -28,7 +28,7 @@ class WebSearchTool(ToolBase):
     def __init__(self, adapter: WebSearchAdapter | None = None) -> None:
         self.adapter = adapter or create_web_search_adapter()
 
-    def _run(self, input: WebSearchInput, context: ToolContext) -> ToolResult:
+    def _run(self, input: WebSearchRequest, context: ToolContext) -> ToolResult:
         result = self.adapter.search(input)
         data = result.model_dump(mode="json")
         model_observation = _web_search_model_observation(data)

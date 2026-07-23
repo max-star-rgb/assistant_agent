@@ -105,11 +105,6 @@ class MemoryGetTool(ToolBase):
             return _memory_error(self.name, "daily memory record was not found", "memory_not_found")
         return _search_result(self.name, [item], item.summary)
 
-
-# Compatibility import for code that still names the old retrieval class.
-MemoryRetrievalTool = MemorySearchTool
-
-
 def _manager_from_context(context: ToolContext) -> MemoryManager | None:
     manager = context.metadata.get("memory_manager")
     return manager if isinstance(manager, MemoryManager) else None

@@ -3,7 +3,7 @@
 from typing import Protocol
 
 from assistant_agent.config import ProviderConfig
-from assistant_agent.schemas.generation import ImageGenerationInput, ImageGenerationRequest, ImageGenerationResult
+from assistant_agent.schemas.generation import ImageGenerationRequest, ImageGenerationResult
 from assistant_agent.services.provider_errors import build_provider_error
 from assistant_agent.schemas.tool_ids import IMAGE_GENERATION_CAPABILITY
 from assistant_agent.utils.prompting import build_image_prompt
@@ -12,7 +12,7 @@ from assistant_agent.utils.prompting import build_image_prompt
 class ImageGenerationAdapter(Protocol):
     """Adapter contract for image generation providers."""
 
-    def generate(self, input: ImageGenerationInput) -> ImageGenerationResult:
+    def generate(self, input: ImageGenerationRequest) -> ImageGenerationResult:
         """Generate an image and return structured task output."""
 
 
@@ -22,7 +22,7 @@ class MockImageGenerationAdapter:
     provider = "mock"
     model = "mock-image-generation"
 
-    def generate(self, input: ImageGenerationInput) -> ImageGenerationResult:
+    def generate(self, input: ImageGenerationRequest) -> ImageGenerationResult:
         prompt = build_image_prompt(input)
         return ImageGenerationResult(
             task_id="mock_image_task_1",
@@ -45,7 +45,7 @@ class UnconfiguredImageGenerationAdapter:
         self.provider = provider
         self.missing = missing
 
-    def generate(self, input: ImageGenerationInput) -> ImageGenerationResult:
+    def generate(self, input: ImageGenerationRequest) -> ImageGenerationResult:
         prompt = input.prompt or input.style or "image generation request"
         error = build_provider_error(
             "provider_unconfigured",

@@ -1,13 +1,13 @@
 """Shared prompt helpers that are safe for tools, providers, and services."""
 
-from assistant_agent.schemas.generation import ImageGenerationInput
+from assistant_agent.schemas.generation import ImageGenerationRequest
 
 
 MAX_PROMPT_CHARS = 1200
 MAX_CONTEXT_CHARS = 500
 
 
-def build_image_prompt(input: ImageGenerationInput) -> str:
+def build_image_prompt(input: ImageGenerationRequest) -> str:
     """Build a deterministic prompt from product information and style."""
 
     product = input.product_title or input.product_info.get("title") or input.product_id

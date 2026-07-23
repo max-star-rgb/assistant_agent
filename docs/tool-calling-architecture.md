@@ -40,6 +40,8 @@ requires_media
 工具类直接声明这些字段；Registry 不再维护按工具名索引的 `_TOOL_CONTRACTS` 或
 `_ACTION_USAGE` 副本。`description` 同时承担 provider 可见的简短使用说明，避免再造一套
 `when_to_use/when_not_to_use/runtime_constraints` 元数据。
+仓库自有工具直接引用唯一的规范 `*Request` / `*Result` 契约，不为同一 Pydantic 模型保留
+`*Input = *Request` 或旧 Tool 类名等无转换兼容别名。
 仓库自有的内置 ToolSpec 及其模型可见参数 `description` 统一使用中文；工具名、字段名、
 枚举值、协议标识符和代码符号保持英文。外部 MCP 与配置插件的描述属于上游契约，不由
 runtime 猜测翻译或改写。

@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field, model_validator
 GenerationStatus = Literal["pending", "running", "succeeded", "failed"]
 
 
-class ImageGenerationInput(BaseModel):
+class ImageGenerationRequest(BaseModel):
     """图片生成工具和 Provider 适配器的输入。"""
 
     prompt: str | None = Field(
@@ -71,17 +71,13 @@ class ImageGenerationInput(BaseModel):
     session_id: str | None = None
 
     @model_validator(mode="after")
-    def require_generation_source(self) -> "ImageGenerationInput":
+    def require_generation_source(self) -> "ImageGenerationRequest":
         if any(
             isinstance(value, str) and value.strip()
             for value in (self.prompt, self.product_id, self.product_title)
         ) or self.product_info:
             return self
         raise ValueError("image_generation requires prompt or product information")
-
-
-ImageGenerationRequest = ImageGenerationInput
-
 
 class ImageGenerationResult(BaseModel):
     """Result returned by an image generation adapter or tool."""

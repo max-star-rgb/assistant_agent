@@ -3,10 +3,10 @@
 from typing import Any
 
 from assistant_agent.agent.system_prompt_policy import render_system_instruction
+from assistant_agent.schemas.generation import ImageGenerationRequest
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.schemas.tools import ToolResult
 from assistant_agent.services.chat_adapter import ChatRequest
-from assistant_agent.services.image_generation_adapter import ImageGenerationRequest
 from assistant_agent.services.prompt_builder import (
     MAX_CONTEXT_CHARS,
     MAX_PROMPT_CHARS,

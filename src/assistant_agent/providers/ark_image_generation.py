@@ -8,7 +8,7 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Any
 
-from assistant_agent.schemas.generation import ImageGenerationInput, ImageGenerationResult
+from assistant_agent.schemas.generation import ImageGenerationRequest, ImageGenerationResult
 from assistant_agent.services.provider_errors import ProviderAdapterError, sanitize_error_message
 from assistant_agent.utils.prompting import build_image_prompt
 
@@ -39,7 +39,7 @@ class ArkImageGenerationAdapter:
     def __init__(self, config: ArkImageGenerationConfig) -> None:
         self.config = config
 
-    def generate(self, input: ImageGenerationInput) -> ImageGenerationResult:
+    def generate(self, input: ImageGenerationRequest) -> ImageGenerationResult:
         """Generate images through Ark and return the stable generation schema."""
 
         if not self.config.api_key:

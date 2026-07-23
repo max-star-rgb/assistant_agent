@@ -82,6 +82,3 @@ class VisualImageSearchRequest(BaseModel):
 def _is_http_url(value: str) -> bool:
     lowered = value.lower()
     return lowered.startswith("http://") or lowered.startswith("https://")
-
-
-VisualImageSearchInput = VisualImageSearchRequest
