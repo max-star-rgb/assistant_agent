@@ -25,7 +25,10 @@ class VisionUnderstandingRequest(BaseModel):
     video_ref: str | None = None
     frame_refs: list[str] = Field(default_factory=list)
     context_id: str | None = None
-    question: str | None = None
+    question: str | None = Field(
+        default=None,
+        description="希望重点从当前图片或视频中回答的问题；无特定重点时省略。",
+    )
     user_query: str | None = None
     user_id: str | None = None
     session_id: str | None = None

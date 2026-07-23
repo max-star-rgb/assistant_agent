@@ -206,7 +206,7 @@ class ToolRegistry:
 
 
 def _schema_to_dict(schema_type, *, hidden_fields: Iterable[str] = ()):
-    """Convert a Pydantic model to the model-visible required-input schema."""
+    """Convert a Pydantic model to the model-visible semantic input schema."""
     try:
         schema = schema_type.model_json_schema()
         definitions = schema.get("$defs", {})
@@ -219,11 +219,7 @@ def _schema_to_dict(schema_type, *, hidden_fields: Iterable[str] = ()):
             if field_name in hidden:
                 properties.pop(field_name, None)
                 required = [item for item in required if item != field_name]
-        normalized["properties"] = {
-            field_name: properties[field_name]
-            for field_name in required
-            if field_name in properties
-        }
+        normalized["properties"] = properties
         normalized["required"] = required
         return normalized
     except Exception:

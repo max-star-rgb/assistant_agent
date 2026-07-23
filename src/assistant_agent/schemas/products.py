@@ -91,7 +91,10 @@ class ProductSearchResult(BaseModel):
 class ProductSearchRequest(BaseModel):
     """商品搜索 Provider 的输入。"""
 
-    query: str = Field(min_length=1)
+    query: str = Field(
+        min_length=1,
+        description="需要搜索、推荐或比价的商品名称及关键要求。",
+    )
     visual_summary: str | None = None
     video_summary: str | None = None
     objects: list[str] = Field(default_factory=list)
@@ -99,10 +102,21 @@ class ProductSearchRequest(BaseModel):
     materials: list[str] = Field(default_factory=list)
     brand: str | None = None
     category: str | None = None
-    budget_min: float | None = Field(default=None, ge=0)
-    budget_max: float | None = Field(default=None, ge=0)
+    budget_min: float | None = Field(
+        default=None,
+        ge=0,
+        description="用户明确给出的最低预算；未指定时省略。",
+    )
+    budget_max: float | None = Field(
+        default=None,
+        ge=0,
+        description="用户明确给出的最高预算；未指定时省略。",
+    )
     budget: float | None = Field(default=None, ge=0)
-    platforms: list[str] = Field(default_factory=list)
+    platforms: list[str] = Field(
+        default_factory=list,
+        description="用户明确指定的购物平台列表；未指定时省略。",
+    )
     top_k: int = Field(default=5, ge=1)
     user_id: str | None = None
     session_id: str | None = None

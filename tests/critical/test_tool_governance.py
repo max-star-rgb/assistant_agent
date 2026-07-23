@@ -197,6 +197,23 @@ def test_builtin_tool_spec_descriptions_use_chinese() -> None:
 
 def test_provider_tools_hide_runtime_fields_and_pydantic_titles() -> None:
     registry = create_default_registry()
+    execution_only_schema_keys = {
+        "additionalProperties",
+        "exclusiveMaximum",
+        "exclusiveMinimum",
+        "format",
+        "maxItems",
+        "maxLength",
+        "maxProperties",
+        "maximum",
+        "minItems",
+        "minLength",
+        "minProperties",
+        "minimum",
+        "multipleOf",
+        "pattern",
+        "uniqueItems",
+    }
 
     for tool_name in (IMAGE_GENERATION_TOOL_NAME, SHOPPING_SEARCH_TOOL_NAME):
         spec = registry.get_spec(tool_name)
@@ -210,23 +227,46 @@ def test_provider_tools_hide_runtime_fields_and_pydantic_titles() -> None:
             ensure_ascii=False,
         )
 
+    for spec in registry.list_specs():
+        parameters = tool_spec_to_openai_tool(spec)["function"]["parameters"]
+        encoded = json.dumps(parameters, ensure_ascii=False)
+        for key in execution_only_schema_keys:
+            assert f'"{key}"' not in encoded
+        for field_name, field_schema in parameters.get("properties", {}).items():
+            assert field_schema.get("description"), f"{spec.name}.{field_name}"
+
     search = tool_spec_to_openai_tool(registry.get_spec("memory_search"))["function"]
     assert search["parameters"] == {
         "type": "object",
-        "properties": {"query": {"type": "string", "minLength": 1}},
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "需要从过往对话记忆中检索的主题、事实或问题。",
+            }
+        },
         "required": ["query"],
     }
 
     get = tool_spec_to_openai_tool(registry.get_spec("memory_get"))["function"]
     assert get["parameters"] == {
         "type": "object",
-        "properties": {"memory_id": {"type": "string", "minLength": 1}},
+        "properties": {
+            "memory_id": {
+                "type": "string",
+                "description": "需要读取的完整每日记忆记录 ID。",
+            }
+        },
         "required": ["memory_id"],
     }
     assert "memory_save" not in registry.list()
 
     shopping = tool_spec_to_openai_tool(registry.get_spec(SHOPPING_SEARCH_TOOL_NAME))["function"]
-    assert set(shopping["parameters"]["properties"]) == {"query"}
+    assert set(shopping["parameters"]["properties"]) == {
+        "query",
+        "budget_min",
+        "budget_max",
+        "platforms",
+    }
     assert shopping["parameters"]["required"] == ["query"]
     assert "description" not in shopping["parameters"]
     assert "anyOf" not in json.dumps(shopping["parameters"], ensure_ascii=False)
@@ -235,7 +275,7 @@ def test_provider_tools_hide_runtime_fields_and_pydantic_titles() -> None:
     vision = tool_spec_to_openai_tool(
         registry.get_spec(IMAGE_UNDERSTANDING_TOOL_NAME)
     )["function"]
-    assert vision["parameters"]["properties"] == {}
+    assert set(vision["parameters"]["properties"]) == {"question"}
 
     web_fetch = tool_spec_to_openai_tool(registry.get_spec("web_fetch"))["function"]
     assert set(web_fetch["parameters"]["properties"]) == {"url"}
@@ -247,6 +287,11 @@ def test_provider_tools_hide_runtime_fields_and_pydantic_titles() -> None:
     assert set(calendar_create["parameters"]["properties"]) == {
         "title",
         "start_time",
+        "end_time",
+        "timezone",
+        "location",
+        "attendees",
+        "notes",
     }
     assert calendar_create["parameters"]["required"] == ["title", "start_time"]
 
@@ -470,9 +515,11 @@ def test_weather_declares_location_and_normalized_target_date() -> None:
     assert "required_inputs" not in spec.model_dump(mode="json")
     assert "fields" not in spec.input_schema
     assert '"title"' not in json.dumps(parameters, ensure_ascii=False)
-    assert mcp_tool["inputSchema"] == spec.input_schema
+    assert mcp_tool["inputSchema"] == parameters
     assert parameters["required"] == ["location"]
-    assert set(parameters["properties"]) == {"location"}
+    assert set(parameters["properties"]) == {"location", "target_date", "days"}
+    assert parameters["properties"]["target_date"]["type"] == "string"
+    assert "format" not in parameters["properties"]["target_date"]
     assert "additionalProperties" not in parameters
     assert '"default"' not in json.dumps(parameters, ensure_ascii=False)
     assert result.accepted is False

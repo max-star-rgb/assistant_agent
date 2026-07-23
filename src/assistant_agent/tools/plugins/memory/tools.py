@@ -26,7 +26,10 @@ class MemorySearchInput(BaseModel):
 
     user_id: str | None = None
     session_id: str | None = None
-    query: str = Field(min_length=1)
+    query: str = Field(
+        min_length=1,
+        description="需要从过往对话记忆中检索的主题、事实或问题。",
+    )
 
 
 class MemoryGetInput(BaseModel):
@@ -36,7 +39,10 @@ class MemoryGetInput(BaseModel):
 
     user_id: str | None = None
     session_id: str | None = None
-    memory_id: str = Field(min_length=1)
+    memory_id: str = Field(
+        min_length=1,
+        description="需要读取的完整每日记忆记录 ID。",
+    )
 
 
 class MemorySearchTool(ToolBase):

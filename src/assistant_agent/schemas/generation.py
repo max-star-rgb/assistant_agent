@@ -11,20 +11,61 @@ GenerationStatus = Literal["pending", "running", "succeeded", "failed"]
 class ImageGenerationInput(BaseModel):
     """图片生成工具和 Provider 适配器的输入。"""
 
-    prompt: str | None = None
-    size: str | None = None
-    n: int = Field(default=1, ge=1, le=4)
+    prompt: str | None = Field(
+        default=None,
+        description="希望生成的图片内容、构图、风格和关键视觉要求。",
+    )
+    size: str | None = Field(
+        default=None,
+        description="用户明确指定的图片尺寸或宽高比；未指定时省略。",
+    )
+    n: int = Field(
+        default=1,
+        ge=1,
+        le=4,
+        description="用户明确要求生成的图片数量；未指定时省略。",
+    )
     prompt_extend: bool = True
     watermark: bool = False
-    style: str | None = None
-    product_id: str | None = None
-    product_title: str | None = None
-    product_info: dict[str, Any] = Field(default_factory=dict)
-    reference_image_ids: list[str] = Field(default_factory=list)
-    negative_prompt: str | None = None
-    seed: int | None = Field(default=None, ge=0)
-    width: int | None = Field(default=None, ge=1)
-    height: int | None = Field(default=None, ge=1)
+    style: str | None = Field(
+        default=None,
+        description="用户明确指定的视觉风格；未指定时省略。",
+    )
+    product_id: str | None = Field(
+        default=None,
+        description="作为生成依据的商品 ID；没有商品上下文时省略。",
+    )
+    product_title: str | None = Field(
+        default=None,
+        description="作为生成依据的商品标题；没有商品上下文时省略。",
+    )
+    product_info: dict[str, Any] = Field(
+        default_factory=dict,
+        description="作为生成依据的结构化商品信息；没有商品上下文时省略。",
+    )
+    reference_image_ids: list[str] = Field(
+        default_factory=list,
+        description="用户明确要求参考的图片 ID 列表。",
+    )
+    negative_prompt: str | None = Field(
+        default=None,
+        description="用户明确要求避免出现在图片中的内容。",
+    )
+    seed: int | None = Field(
+        default=None,
+        ge=0,
+        description="用户明确指定的随机种子；未指定时省略。",
+    )
+    width: int | None = Field(
+        default=None,
+        ge=1,
+        description="用户明确指定的图片宽度；未指定时省略。",
+    )
+    height: int | None = Field(
+        default=None,
+        ge=1,
+        description="用户明确指定的图片高度；未指定时省略。",
+    )
     memory_context: list[str] = Field(default_factory=list)
     user_id: str | None = None
     session_id: str | None = None
