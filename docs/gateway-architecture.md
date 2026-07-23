@@ -377,7 +377,10 @@ message.user -> per-session FIFO -> process-wide admission -> backend run
   after completion/cancellation; connection hangup destroys only its logical
   AgentSession and never closes this process-owned pool. Application shutdown
   closes every pooled runtime and drains its shared bounded post-response memory
-  capture dispatcher within the configured memory shutdown bound.
+  capture dispatcher within the configured memory shutdown bound. Pooled
+  runtimes also share the application-owned `SessionMemoryContextStore`, so a
+  later turn may reuse the session's first-turn long-term-memory snapshot even
+  when Gateway checks out a different runtime instance.
 - `run.cancel` can target a queued `run_id`. Queue timeout and pre-run cancel
   end with `run.end(reason=cancelled)` plus prompt-safe cancellation metadata
   with `phase=before_llm`; neither path calls the backend.

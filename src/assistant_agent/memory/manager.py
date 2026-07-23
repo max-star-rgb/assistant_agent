@@ -237,11 +237,13 @@ class MemoryManager:
         top_k: int | None = None,
         max_context_chars: int | None = None,
         max_context_tokens: int | None = None,
+        session_initial: bool = False,
     ) -> MemoryContext:
         """Load bounded, layered memory context for a user request."""
 
         token_budget = max_context_tokens or _memory_context_token_budget_from_metadata(request.metadata)
-        if bool(getattr(self.store, "always_load_core_memory", False)):
+        always_load_core = bool(getattr(self.store, "always_load_core_memory", False))
+        if always_load_core:
             decision = MemoryReadDecision(
                 mode="auto_load",
                 allowed=True,
@@ -286,7 +288,7 @@ class MemoryManager:
             return context
         return self.load_context_for_identity(
             RequestIdentity.from_user_request(request),
-            query_text=request.text or "",
+            query_text="" if session_initial and always_load_core else request.text or "",
             capability=capability,
             top_k=decision.top_k,
             max_context_chars=decision.max_context_chars,
@@ -461,6 +463,12 @@ class MemoryManager:
             max_context_chars=max_context_chars,
             max_context_tokens=max_context_tokens,
         )
+        self.attach_context_to_state(state, context)
+        return context
+
+    def attach_context_to_state(self, state: Any, context: MemoryContext) -> None:
+        """Attach a recalled or session-cached context to the current run."""
+
         state.memory_context = context.items
         state.request.metadata["memory_context_text"] = context.text
         state.request.metadata["memory_context_summaries"] = context.summaries
@@ -480,7 +488,32 @@ class MemoryManager:
         state.request.metadata["memory_trust_policy"] = context.trust_policy
         state.request.metadata["memory_usage_hint"] = context.usage_hint
         state.request.metadata["memory_recall_report"] = context.recall_report
-        return context
+
+    def missing_session_snapshot_context(self) -> MemoryContext:
+        """Return an explicit no-I/O context for a later-turn cache miss."""
+
+        reason = "session_memory_snapshot_missing"
+        return MemoryContext(
+            read_policy_allowed=False,
+            read_policy_reason=reason,
+            read_policy={
+                "mode": "session_snapshot",
+                "allowed": False,
+                "reason": reason,
+                "trigger": "session:later_turn",
+                "injection_strategy": "inject_as_evidence",
+                "trust_policy": trust_policy_metadata(),
+                "usage_hint": memory_usage_hint(),
+            },
+            trust_policy=trust_policy_metadata(),
+            usage_hint=memory_usage_hint(),
+            recall_report={
+                "read_policy_allowed": False,
+                "read_policy_reason": reason,
+                "search_error_codes": [],
+                "injected_memory_ids": [],
+            },
+        )
 
     def build_context(
         self,

@@ -355,7 +355,14 @@ def _memory_metrics(events: list[TraceEvent]) -> dict[str, Any]:
     for event in events:
         canonical = event.canonical_event or ""
         if canonical == "memory.load.finished":
-            retrieval_count += _event_int(event, "retrieval_count") or _event_int(event, "retrieved_count") or 1
+            event_retrieval_count = _event_int(event, "retrieval_count")
+            if event_retrieval_count is None:
+                event_retrieval_count = _event_int(event, "retrieved_count")
+            retrieval_count += (
+                event_retrieval_count
+                if event_retrieval_count is not None
+                else 1
+            )
         if canonical == "memory.save.finished":
             save_count += 1
             save_candidate_count += _event_int(event, "save_candidate_count") or _event_int(

@@ -122,9 +122,14 @@ AgentGraphRuntime
 
 UserRequest
   -> graph load_memory node
-  -> MemoryManager.load_into_state(...)
-       -> local/remote stores: MemoryReadPolicy decides whether memory may be read
-       -> framework/Mem0: bounded core-memory recall is always enabled
+  -> SessionMemoryContextStore
+       -> first session turn: MemoryManager.load_context_for_request(...)
+          -> local/remote stores: MemoryReadPolicy decides whether memory may be read
+          -> framework/Mem0: one bounded core-memory recall
+          -> freeze bounded session memory snapshot
+       -> later session turns: reuse frozen snapshot with no MemoryStore access
+       -> later-turn snapshot miss: attach explicit empty context; never re-recall
+  -> MemoryManager.attach_context_to_state(...)
        -> if skipped: request.metadata["memory_context_skipped"]=true, no store search,
           and no synchronous persistent-audit backend write; the prompt-safe skip
           remains available in request metadata, the run trace and the process-local
@@ -170,6 +175,17 @@ The next immediately arriving turn may therefore observe eventual rather than
 strict read-after-write consistency; same-session continuity remains owned by
 conversation history.
 
+`SessionMemoryContextStore` independently owns the read-side session snapshot.
+The application-owned default store and all Gateway pooled runtimes share it.
+Its key includes tenant, user, project and session identity; concurrent first
+turns use single-flight so only one recall reaches the store. The default
+process-local capacity is 1024 snapshots with LRU eviction. A later turn whose
+snapshot is missing after process restart or eviction does not perform another
+long-term-memory recall; it receives an explicit empty
+`session_memory_snapshot_missing` context. `reset_conversation=true` starts a
+new snapshot lifecycle and permits one new recall. Deleting a session or user
+through `AssistantRuntimeApp` clears the corresponding retained snapshots.
+
 Read-policy rejection is a no-I/O fast path. It must not call the configured
 memory store, framework adapter, remote service, or persistent governance ledger.
 This prevents an ordinary greeting that cannot consume long-term memory from
@@ -182,6 +198,7 @@ failure and degradation events retain their durable audit behavior.
 | --- | --- |
 | `src/assistant_agent/memory/manager.py` | Boundary for memory retrieval, layered context formatting, explicit saves, pending confirmation flow, duplicate merge, user profile upsert, run-summary saves, get/list/delete/hard-delete passthroughs. |
 | `src/assistant_agent/services/memory_capture_dispatcher.py` | Bounded post-response capture workers, per-identity FIFO scheduling, non-blocking admission, drain, and close lifecycle. |
+| `src/assistant_agent/services/session_memory_context.py` | Process-local bounded session memory snapshots, governed identity keys, concurrent first-turn single-flight, reuse, reset and deletion. |
 | `src/assistant_agent/memory/factory.py` | 可插拔 `MemoryStore` backend registry 和运行时 store factory。内置 backend 与自定义替换实现都必须在 `MemoryManager` 后面返回 `MemoryStore`；替换内置名称必须显式声明。 |
 | `src/assistant_agent/memory/context_builder.py` | Token-aware, prompt-safe memory context selection and layer rendering. Produces injected items, rendered context, token count, omission count, rejection reasons, and retrieval version. |
 | `src/assistant_agent/memory/read_policy.py` | Deterministic long-term memory read gate and trust metadata. Decides automatic memory context injection and validates explicit retrieval intent before store access. |
@@ -279,7 +296,13 @@ If memory logic grows beyond identity binding, input adaptation, or result wrapp
 
 Long-term memory reads are policy-gated before retrieval:
 
-- Automatic runtime `load_memory` calls go through `MemoryManager.load_context_for_request(...)`. Local/remote-service stores apply `MemoryReadPolicy` before access; framework/Mem0 always performs a bounded `record_kind=core` recall so relevant long-term memory can be injected on every turn.
+- Automatic runtime `load_memory` first resolves `SessionMemoryContextStore`.
+  Only the first turn of a retained session may call
+  `MemoryManager.load_context_for_request(...)`. Local/remote-service stores
+  apply `MemoryReadPolicy` on that first turn; framework/Mem0 performs one
+  bounded, request-independent recent `record_kind=core` recall so the snapshot
+  is not narrowed to the wording of the first message. Later turns reuse the
+  frozen prompt-safe snapshot without MemoryStore or framework I/O.
 - If the current user request does not explicitly refer to prior chats, previous/last context, saved memory, remembered preferences, continuing an old task, or a clearly personal style/preference customization task, memory context is skipped and the store is not searched.
 - The personal style/preference path is deliberately narrow: Chinese requests must contain a preference marker such as `风格`, `偏好`, `喜好`, or `口味` plus a task marker such as `推荐`, `方案`, `文案`, `设计`, `搭配`, `回答`, `写`, `生成`, or `继续`. Ordinary first-pass product search, generic advice, and generic copywriting still skip store access.
 - Skipped loads write prompt-safe metadata: `memory_context_skipped=true`, `memory_context_policy_reason`, `memory_read_policy`, `memory_trust_policy`, and empty `memory_context_*` injection fields.
@@ -338,6 +361,7 @@ Environment variables:
 - `MULTIMODAL_AGENT_MEMORY_CAPTURE_MAX_WORKERS` (default `2`)
 - `MULTIMODAL_AGENT_MEMORY_CAPTURE_MAX_PENDING` (default `64`)
 - `MULTIMODAL_AGENT_MEMORY_CAPTURE_SHUTDOWN_TIMEOUT_SECONDS` (default `10`)
+- `MULTIMODAL_AGENT_MEMORY_SESSION_SNAPSHOT_MAX_ENTRIES` (default `1024`)
 
 Mem0 sidecar 的 Provider 配置由
 `docker/memory-frameworks/compose.yaml` 从仓库根目录 `.env` 解析。启动时应显式传入
@@ -630,7 +654,12 @@ Current behavior:
 
 Retrieval is deterministic and local:
 
-- Local/remote-service automatic retrieval first passes `MemoryReadPolicy`; ordinary first-pass writing, advice, generation, search, and recommendations do not auto-inject long-term memory. Framework/Mem0 is the explicit exception: every turn performs bounded core-memory recall, still subject to identity filtering, trust labeling and memory-context budget.
+- On the first session turn, local/remote-service automatic retrieval passes
+  `MemoryReadPolicy`; ordinary first-pass writing, advice, generation, search,
+  and recommendations may therefore establish an empty snapshot. Framework/Mem0
+  performs one bounded core-memory recall for that session, still subject to
+  identity filtering, trust labeling and memory-context budget. Later turns
+  reuse the resulting snapshot and never repeat automatic retrieval.
 - Explicit retrieval tools are allowed only when the current user request has historical-memory intent; a non-empty query alone is not sufficient.
 - Non-empty query uses `KeywordMemoryRetriever`.
 - Stores may implement the optional candidate-search protocol. SQLite uses FTS5 to return a bounded user/type-scoped candidate set; stores without it continue to use the deterministic scan path.

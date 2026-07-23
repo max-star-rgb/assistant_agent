@@ -121,6 +121,7 @@ class ProviderConfig:
     memory_capture_max_workers: int = 2
     memory_capture_max_pending: int = 64
     memory_capture_shutdown_timeout_seconds: float = 10.0
+    memory_session_snapshot_max_entries: int = 1024
     conversation_history_backend: ConversationHistoryBackend = "memory"
     conversation_history_path: str = ".local/memory/conversation_history.jsonl"
     max_conversation_history_turns: int = 0
@@ -390,6 +391,13 @@ class ProviderConfig:
                 _float_env(
                     source.get("MULTIMODAL_AGENT_MEMORY_CAPTURE_SHUTDOWN_TIMEOUT_SECONDS"),
                     10.0,
+                ),
+            ),
+            memory_session_snapshot_max_entries=max(
+                1,
+                _int_env(
+                    source.get("MULTIMODAL_AGENT_MEMORY_SESSION_SNAPSHOT_MAX_ENTRIES"),
+                    1024,
                 ),
             ),
             conversation_history_backend=conversation_history_backend,

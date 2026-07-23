@@ -20,6 +20,7 @@ from assistant_agent.schemas.tools import ToolResult
 from assistant_agent.services.chat_adapter import ChatAdapter
 from assistant_agent.services.memory_observability import load_memory_with_trace
 from assistant_agent.services.response_observability import append_response_final_event
+from assistant_agent.services.session_memory_context import SessionMemoryContextStore
 from assistant_agent.schemas.tool_ids import (
     IMAGE_GENERATION_CAPABILITY,
     IMAGE_UNDERSTANDING_CAPABILITY,
@@ -43,6 +44,7 @@ class AgentGraphState(TypedDict):
     tool_executor: NotRequired[ToolExecutor]
     chat_adapter: NotRequired[ChatAdapter]
     memory_manager: NotRequired[MemoryManager]
+    session_memory_context_store: NotRequired[SessionMemoryContextStore]
     outputs_by_step: dict[str, ToolResult]
     current_step_index: int
     trace_id: NotRequired[str]
@@ -59,6 +61,7 @@ def load_memory_node(graph_state: AgentGraphState) -> AgentGraphState:
         node_name=graph_state.get("current_node_name", "load_memory"),
         state=graph_state["state"],
         request=graph_state["request"],
+        session_context_store=graph_state.get("session_memory_context_store"),
     )
     return graph_state
 

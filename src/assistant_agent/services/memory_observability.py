@@ -8,9 +8,11 @@ from typing import Any, Literal
 
 from assistant_agent.agent.state import AgentState
 from assistant_agent.memory.manager import MemoryContext, MemoryManager, PreparedTurnCapture
+from assistant_agent.schemas.identity import RequestIdentity
 from assistant_agent.schemas.memory import MemoryItem
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.services.memory_capture_dispatcher import MemoryCaptureDispatcher
+from assistant_agent.services.session_memory_context import SessionMemoryContextStore
 from assistant_agent.services.trace_store import TraceStore, append_observability_event, new_span_id, sanitize_trace_value
 
 
@@ -26,6 +28,7 @@ def load_memory_with_trace(
     top_k: int | None = None,
     max_context_chars: int | None = None,
     max_context_tokens: int | None = None,
+    session_context_store: SessionMemoryContextStore | None = None,
 ) -> MemoryContext:
     """Load memory context and emit prompt-safe lifecycle trace events."""
 
@@ -47,15 +50,47 @@ def load_memory_with_trace(
             "request_metadata_keys": sorted(request.metadata.keys()),
         },
     )
+    snapshot_status = "disabled"
+    retrieval_count = 1
     try:
-        context = manager.load_into_state(
-            state,
-            request,
-            capability=capability,
-            top_k=top_k,
-            max_context_chars=max_context_chars,
-            max_context_tokens=max_context_tokens,
-        )
+        if session_context_store is None:
+            context = manager.load_into_state(
+                state,
+                request,
+                capability=capability,
+                top_k=top_k,
+                max_context_chars=max_context_chars,
+                max_context_tokens=max_context_tokens,
+            )
+        else:
+            turn_index = _conversation_turn_index(request)
+            resolution = session_context_store.resolve(
+                RequestIdentity.from_user_request(request),
+                loader=lambda: manager.load_context_for_request(
+                    request,
+                    capability=capability,
+                    top_k=top_k,
+                    max_context_chars=max_context_chars,
+                    max_context_tokens=max_context_tokens,
+                    session_initial=True,
+                ),
+                allow_load=turn_index in {None, 1},
+                reset=request.metadata.get("reset_conversation") is True,
+            )
+            snapshot_status = resolution.status
+            retrieval_count = 1 if resolution.status == "loaded" else 0
+            context = (
+                resolution.context
+                if resolution.context is not None
+                else manager.missing_session_snapshot_context()
+            )
+            manager.attach_context_to_state(state, context)
+            request.metadata["memory_context_source"] = (
+                "long_term_recall"
+                if resolution.status == "loaded"
+                else "session_snapshot"
+            )
+            request.metadata["memory_session_snapshot_status"] = resolution.status
     except Exception as exc:
         _record_local_memory_operation(
             state=state,
@@ -92,7 +127,11 @@ def load_memory_with_trace(
         )
         raise
 
-    summary = memory_load_trace_summary(context)
+    summary = memory_load_trace_summary(
+        context,
+        retrieval_count=retrieval_count,
+        session_snapshot_status=snapshot_status,
+    )
     _record_local_memory_operation(
         state=state,
         trace_id=trace_id or state.trace_id,
@@ -129,6 +168,9 @@ def load_memory_with_trace(
             "rejected_reasons": list(context.rejected_reasons),
             "read_policy": context.read_policy,
             "recall_report": context.recall_report,
+            "retrieval_count": retrieval_count,
+            "session_snapshot_status": snapshot_status,
+            "memory_context_source": request.metadata.get("memory_context_source"),
         },
     )
     search_error_codes = summary["search_error_codes"]
@@ -140,7 +182,11 @@ def load_memory_with_trace(
         session_id=state.session_id,
         canonical_event="memory.load.finished",
         observation_type="span",
-        observation_name="memory.core_recall",
+        observation_name=(
+            "memory.core_recall"
+            if retrieval_count
+            else "memory.session_snapshot"
+        ),
         node_name=node_name,
         status=(
             "degraded"
@@ -152,7 +198,9 @@ def load_memory_with_trace(
         latency_ms=_elapsed_ms(started_at),
         span_id=span_id,
         attributes={
-            "retrieval_count": 1,
+            "retrieval_count": retrieval_count,
+            "session_snapshot_status": snapshot_status,
+            "memory_context_source": request.metadata.get("memory_context_source"),
             "retrieved_item_count": summary["retrieved_item_count"],
             "injected_count": summary["injected_count"],
             "memory_context_tokens": summary["memory_context_tokens"],
@@ -509,11 +557,17 @@ def _capture_prepared_turn_with_trace(
     return result
 
 
-def memory_load_trace_summary(context: MemoryContext) -> dict[str, Any]:
+def memory_load_trace_summary(
+    context: MemoryContext,
+    *,
+    retrieval_count: int = 1,
+    session_snapshot_status: str = "disabled",
+) -> dict[str, Any]:
     """Return a memory-load trace summary without memory text or summaries."""
 
     return {
-        "retrieval_count": 1,
+        "retrieval_count": retrieval_count,
+        "session_snapshot_status": session_snapshot_status,
         "retrieved_item_count": len(context.retrieved_items),
         "injected_count": len(context.items),
         "injected_memory_ids": [item.memory_id for item in context.items],
@@ -551,6 +605,13 @@ def _string_list(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
     return [item for item in value if isinstance(item, str) and item]
+
+
+def _conversation_turn_index(request: UserRequest) -> int | None:
+    value = request.metadata.get("conversation_turn_index")
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        return None
+    return value
 
 
 def _memory_load_input(

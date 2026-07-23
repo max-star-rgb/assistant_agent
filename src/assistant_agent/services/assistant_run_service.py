@@ -33,6 +33,9 @@ from assistant_agent.services.context.conversation import (
 from assistant_agent.services.context.policy import context_policy_from_request
 from assistant_agent.services.event_sink import EventSink, ListEventSink
 from assistant_agent.services.durable_tasks.service import DurableTaskService
+from assistant_agent.services.session_memory_context import (
+    get_default_session_memory_context_store,
+)
 from assistant_agent.services.realtime_task_state import (
     apply_realtime_task_update,
     RealtimeTaskStateStore,
@@ -441,6 +444,9 @@ def create_runtime(
         event_sink=event_sink,
         trace_store=trace_store,
         durable_task_service=durable_task_service,
+        session_memory_context_store=get_default_session_memory_context_store(
+            max_entries=resolved_config.memory_session_snapshot_max_entries
+        ),
     )
 
 

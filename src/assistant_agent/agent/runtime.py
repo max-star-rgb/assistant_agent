@@ -68,6 +68,7 @@ from assistant_agent.services.memory_observability import (
 from assistant_agent.services.memory_core_status import build_memory_core_status, update_memory_core_status_errors
 from assistant_agent.services.run_history import RunHistoryStore
 from assistant_agent.services.session_store import SessionStore, create_session_store
+from assistant_agent.services.session_memory_context import SessionMemoryContextStore
 from assistant_agent.schemas.tool_ids import IMAGE_UNDERSTANDING_TOOL_NAME
 from assistant_agent.services.trace_store import InMemoryTraceStore, TraceStore, append_observability_event
 from assistant_agent.services.turn_summary import append_runtime_turn_summary
@@ -101,12 +102,19 @@ class AgentGraphRuntime:
         context_source_coordinator: ContextSourceCoordinator | None = None,
         durable_task_service: DurableTaskService | None = None,
         memory_capture_dispatcher: MemoryCaptureDispatcher | None = None,
+        session_memory_context_store: SessionMemoryContextStore | None = None,
     ) -> None:
         self.config = config or ProviderConfig.from_env()
         self.video_context_store = video_context_store or InMemoryVideoContextStore()
         self.realtime_video_memory_store = realtime_video_memory_store or RealtimeVideoMemoryStore()
         self.memory_store = memory_store or create_memory_store(self.config)
         self.memory_manager = MemoryManager(self.memory_store)
+        self.session_memory_context_store = (
+            session_memory_context_store
+            or SessionMemoryContextStore(
+                max_entries=self.config.memory_session_snapshot_max_entries
+            )
+        )
         self.memory_capture_dispatcher = (
             memory_capture_dispatcher
             or MemoryCaptureDispatcher(
@@ -286,6 +294,7 @@ class AgentGraphRuntime:
             context_compactor=self.context_compactor,
             context_projector=self._refresh_realtime_video_context,
             memory_manager=self.memory_manager,
+            session_memory_context_store=self.session_memory_context_store,
             trace_store=self.trace_store,
             event_sink=run_event_sink,
             cancel_token=cancel_token,
@@ -512,6 +521,7 @@ class AgentGraphRuntime:
                 node_name="durable_task_quantum",
                 state=state,
                 request=request,
+                session_context_store=self.session_memory_context_store,
             )
             chat_request = self._durable_quantum_chat_request(request, state=state)
             if chat_request is None:

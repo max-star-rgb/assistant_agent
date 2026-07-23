@@ -117,6 +117,7 @@ def shared_gateway_runtime_factory(primary_factory: RuntimeFactory) -> RuntimeFa
             config=primary_runtime.config,
             memory_store=primary_runtime.memory_store,
             memory_capture_dispatcher=primary_runtime.memory_capture_dispatcher,
+            session_memory_context_store=primary_runtime.session_memory_context_store,
             session_store=primary_runtime.session_store,
             trace_store=primary_runtime.trace_store,
             video_context_store=primary_runtime.video_context_store,

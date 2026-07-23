@@ -1,6 +1,6 @@
 # Context Engineering Status
 
-Last updated: 2026-07-22
+Last updated: 2026-07-23
 
 本文件记录上下文工程的当前进展、已实现能力、限制和下一步方向。涉及 assistant context、prompt/context rendering、conversation history、memory context、tool observation compaction 或 context budget 的任务，应先读本文件顶部快速交接，再读对应小节、源码和测试。
 
@@ -19,7 +19,7 @@ Last updated: 2026-07-22
 - 预算现状：字符/token 预算只报告、不裁剪；AgentRuntime 不执行 token-aware recent transcript、
   字符预算裁剪或 structured summary。Memory context 仍有独立的
   read policy 与 prompt-safe 注入边界。
-- memory 边界：历史遗留或独立实现产生的 `context_summary` 仍属于 session 状态，不是长期 memory，且 AgentRuntime 不读取或注入。local/remote-service 自动注入仍由 `MemoryReadPolicy` gate；framework/Mem0 每轮只自动召回有界 `core` 记忆。主 LLM 仅可通过 `memory_search` / `memory_get` 读取 daily records，不暴露写工具；成功 turn 由 runtime 触发 Mem0 capture，长期记忆正文由 Mem0 LLM 提炼。
+- memory 边界：历史遗留或独立实现产生的 `context_summary` 仍属于 session 状态，不是长期 memory，且 AgentRuntime 不读取或注入。长期记忆只在 session 首轮建立一次有界 snapshot：local/remote-service 先过 `MemoryReadPolicy`，framework/Mem0 只召回一次 `core`；后续 turn 复用 snapshot，不再访问 MemoryStore。主 LLM 仅可通过 `memory_search` / `memory_get` 读取 daily records，不暴露写工具；成功 turn 由 runtime 触发后台 Mem0 capture，长期记忆正文由 Mem0 LLM 提炼。
 - realtime video 交接：Agent-Service 后台 Qwen observer 对每个 `video_id` 复用一个 persistent WebSocket 并预热 rolling 语义；VLM 使用独立视觉角色模板 prompt，只产出结构化视觉事实，不复用主 LLM 系统提示。AgentRuntime 主 LLM 只知道统一的 `vision_understanding` ToolSpec，图片和视频由工具内部按媒体输入分支，不包含 VLM 观察流程、OCR/品牌/序列图等视觉分析提示词，也不看到帧、JPEG 路径、base64、VLM prompt 或 provider raw response。
 - 当前不建议继续做：场景分类器、质量反馈自动调参、组件注册器、裁剪 undo 日志、默认 LLM 摘要、全局 token 强控制。
 - 如果用户问“继续上下文工程”：优先做验收案例、调试说明、具体失败复现和小回归测试；不要默认新增复杂架构。
@@ -96,7 +96,11 @@ Last updated: 2026-07-22
 ### Memory Context
 
 - `MemoryManager` 是 memory 检索、上下文格式化、可信身份绑定和 runtime capture 编排边界；local/API 兼容路径仍保留显式保存、去重、用户画像和 promotion 方法。
-- local/remote-service 自动 memory context 注入先走 `MemoryReadPolicy`。framework/Mem0 每轮自动检索 `record_kind=core`，再由独立 memory token budget 选择实际注入子集；daily records 不自动注入。
+- session 首轮由 `SessionMemoryContextStore` 建立一次 prompt-safe memory
+  snapshot：local/remote-service 先走 `MemoryReadPolicy`，framework/Mem0
+  自动检索一次 `record_kind=core`，再由独立 memory token budget 选择快照
+  子集。后续 turn 只把该 snapshot 重新挂入当前 context，不访问
+  MemoryStore；daily records 不自动注入。
 - memory context 分层为 semantic、session、episodic、artifact、procedural。
 - 默认 `top_k=5`，默认 `max_context_chars=500`。
 - `MemoryContextBuilder` 负责实际注入选择；`MemoryContext.items` 表示已注入的 memory 子集，而不是所有检索候选。
@@ -104,7 +108,10 @@ Last updated: 2026-07-22
 - memory context metadata includes `memory_context_tokens`, `memory_context_budget_tokens`, `memory_context_omitted_count`, `memory_context_rejected_reasons`, `memory_context_retrieval_version`, `memory_context_injected_ids`, `memory_context_skipped`, `memory_context_policy_reason`, `memory_read_policy`, and `memory_trust_policy`.
 - 非空 query 走关键词/中文片段相关性门控；只有明确承接型 query 才允许 recent memory fallback。
 - 显式用户记忆会合并重复项，并更新 compact `user_profile` 记忆。
-- runtime 图尾统一为 `capture_memory`。仅 framework/Mem0 执行：一条 daily turn record 使用 `infer=false`，原始 user/assistant 消息使用 `infer=true`；其他 store no-op。
+- runtime 图结束于 `compose_response`；成功回复发出后，只有
+  framework/Mem0 会将 turn capture 投递到有界后台队列：一条 daily turn
+  record 使用 `infer=false`，原始 user/assistant 消息使用 `infer=true`；
+  其他 store no-op。
 
 ### Boundary With Memory Service
 
@@ -247,6 +254,7 @@ Last updated: 2026-07-22
 - `src/assistant_agent/services/context/sources.py`
 - `src/assistant_agent/services/context/soul_source.py`
 - `src/assistant_agent/services/realtime_task_state.py`
+- `src/assistant_agent/services/session_memory_context.py`
 - `src/assistant_agent/services/realtime_video_memory.py`
 - `src/assistant_agent/services/realtime_video_observer.py`
 - `src/assistant_agent/services/video_context.py`
