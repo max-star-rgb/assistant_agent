@@ -224,6 +224,12 @@ validator 和 tool 证据在 Decision Trace 中按 iteration 聚合，Raw events
 `.run/Memo.run.xml` 通过 `scripts/run_memo.py` 启动 Mem0 与 Qdrant；健康检查通过后该 Run
 配置正常结束，但两个容器继续在后台运行。
 
+`Assistant Server` launcher 在 Provider 摘要之后一次性输出 `Dependencies`：Memo 仅在
+当前 runtime 选择 `framework/mem0` 时探测，状态为 `disabled / ready / unavailable`；
+Langfuse 同时显示服务可达性与 `export enabled/disabled`。两个 HTTP 探活并行执行且使用
+亚秒级超时，失败只改变启动摘要，不阻断 Server，也不改变 Memory 降级或 OpenTelemetry
+fail-open 语义。控制台不输出依赖 URL、凭据或底层异常。
+
 对应关系保持明确：
 
 - Gateway 机器事件：`.data/gateway_events.jsonl`

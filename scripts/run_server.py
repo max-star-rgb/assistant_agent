@@ -38,6 +38,10 @@ from assistant_agent.services.operational_logging import (
     configure_operational_logging_from_env,
     record_gateway_lifecycle,
 )
+from assistant_agent.services.startup_dependencies import (
+    collect_startup_dependency_statuses,
+    format_startup_dependency_statuses,
+)
 from assistant_agent.schemas.provider_specs import (
     supported_chat_providers,
     supported_image_generation_providers,
@@ -233,6 +237,10 @@ def _print_startup_summary(
 
     print(f"Provider mode: {config.provider_mode}")
     print(f"Main LLM: {config.chat_provider} / {model}")
+    for line in format_startup_dependency_statuses(
+        collect_startup_dependency_statuses(config)
+    ):
+        print(line)
     print("Services:")
     print(f"  media_agent: {ws_base}/agent-service/v1")
 
