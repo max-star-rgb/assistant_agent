@@ -6,6 +6,7 @@ from typing import Any, Protocol
 
 AGENT_SERVICE_PROFILE_TOOL_NAMES = (
     "web_search",
+    "web_fetch",
     "weather",
     "shopping_search",
     "memory_search",

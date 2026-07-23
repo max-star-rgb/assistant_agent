@@ -200,6 +200,10 @@ ToolRegistry.list_specs()
 `tool_choice="auto"` 是 provider API 参数：允许模型在回答文本和调用已提供工具之间选择。它不授予
 额外权限；模型只能看到 `RunToolCatalog` 对应的 schema。
 
+可信 Agent-Service profile 默认允许已注册且 readiness 完整的只读 Web 工具 `web_search` 与
+`web_fetch`。profile 只限定入口允许集合，不替代插件 readiness：real 模式仍需显式选择 HTTP search
+provider，并完整配置 endpoint 与 API key；未就绪时两个 Web 工具都不会注册，禁止回退 mock。
+
 目录装配只读取结构化事实，不读取 `request.text` 做关键词/正则意图路由：
 
 - `read` 默认可暴露；

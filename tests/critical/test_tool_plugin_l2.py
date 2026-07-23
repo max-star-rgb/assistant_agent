@@ -111,6 +111,7 @@ def test_agent_service_entry_profile_limits_the_runtime_tool_catalog() -> None:
         "memory_search",
         "shopping_search",
         "weather",
+        "web_fetch",
         "web_search",
     ]
     assert selection.run_tool_catalog.excluded_reasons["calendar_search"] == [
@@ -132,6 +133,7 @@ def test_agent_service_entry_profile_limits_the_runtime_tool_catalog() -> None:
         "shopping_search",
         "vision_understanding",
         "weather",
+        "web_fetch",
         "web_search",
     ]
 
