@@ -30,15 +30,17 @@ class _InterruptibleBackend:
             return RealtimeAgentResult(
                 status="cancelled",
                 run_id=request.run_id,
-                response_text="不应发送的旧回复",
+                response_text="stale-response-sentinel",
             )
 
         assert event_sink is not None
-        await event_sink(RealtimeAgentEvent(type="response.chunk", text="新回复"))
+        await event_sink(
+            RealtimeAgentEvent(type="response.chunk", text="fresh-response-sentinel")
+        )
         return RealtimeAgentResult(
             status="completed",
             run_id=request.run_id,
-            response_text="新回复",
+            response_text="fresh-response-sentinel",
         )
 
 
@@ -68,7 +70,7 @@ def test_interrupt_cancels_active_turn_suppresses_old_output_and_keeps_connectio
         )
         assert _body(websocket.receive_json())["code"] == 0
 
-        websocket.send_json(_chat("chat-1", "请执行一个长任务"))
+        websocket.send_json(_chat("chat-1", "first-input-sentinel"))
         assert backend.started.wait(timeout=2.0)
 
         websocket.send_json(_envelope("interrupt", {"number": "10086"}))
@@ -78,12 +80,15 @@ def test_interrupt_cancels_active_turn_suppresses_old_output_and_keeps_connectio
         assert _body(interrupt_ack) == {"code": 0, "message": "interrupted"}
         assert backend.cancelled.wait(timeout=2.0)
 
-        websocket.send_json(_chat("chat-2", "继续新任务"))
+        websocket.send_json(_chat("chat-2", "second-input-sentinel"))
         next_response = websocket.receive_json()
 
         assert next_response["message"] == "chatResponse"
         assert _body(next_response)["message"]["chatIndex"] == "chat-2"
-        assert _body(next_response)["message"]["content"]["intentResult"]["description"] == "新回复"
+        assert (
+            _body(next_response)["message"]["content"]["intentResult"]["description"]
+            == "fresh-response-sentinel"
+        )
 
         websocket.send_json(_envelope("interrupt", {"number": "10086"}))
         idle_interrupt_ack = websocket.receive_json()

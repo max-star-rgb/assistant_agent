@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from types import SimpleNamespace
 
 import pytest
@@ -25,61 +24,6 @@ from assistant_agent.services.trace_store import InMemoryTraceStore, TraceEvent
 from assistant_agent.services.turn_evaluator import build_turn_diagnostic
 from assistant_agent.services.turn_summary import append_agent_service_turn_summary
 from scripts import agentruntime_view
-
-
-class _JsonResponse:
-    def __init__(self, payload: dict) -> None:
-        self.body = json.dumps(payload).encode()
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *_args) -> None:
-        return None
-
-    def read(self) -> bytes:
-        return self.body
-
-
-def test_langfuse_trace_fallback_restores_persisted_conversation(monkeypatch) -> None:
-    captured_authorization: list[str] = []
-
-    def fake_urlopen(request, timeout):
-        assert timeout == 10
-        assert request.full_url == "http://localhost:3000/api/public/traces/trace-persisted"
-        captured_authorization.append(request.get_header("Authorization"))
-        return _JsonResponse(
-            {
-                "input": {"role": "user", "content": "用户原文"},
-                "output": {"role": "assistant", "content": "最终回答"},
-                "observations": [
-                    {
-                        "name": "llm.chat",
-                        "input": {"messages": [{"role": "user", "content": "用户原文"}]},
-                        "output": {"normalized_result": {"response_text": "最终回答"}},
-                    }
-                ],
-            }
-        )
-
-    monkeypatch.setattr(agentruntime_view, "urlopen", fake_urlopen)
-    trace = agentruntime_view._get_langfuse_trace(
-        "trace-persisted",
-        env={
-            "LANGFUSE_PUBLIC_KEY": "pk-local",
-            "LANGFUSE_SECRET_KEY": "sk-local",
-        },
-    )
-
-    assert trace is not None
-    conversation = agentruntime_view._conversation_from_langfuse_trace(
-        "trace-persisted", trace
-    )
-    assert conversation["source"] == "langfuse_public_api"
-    assert conversation["user"]["text"] == "用户原文"
-    assert conversation["assistant"]["text"] == "最终回答"
-    assert conversation["llm_outputs"][0]["normalized_result"]["response_text"] == "最终回答"
-    assert captured_authorization == ["Basic cGstbG9jYWw6c2stbG9jYWw="]
 
 
 class _HangingGatewayEndpoint:

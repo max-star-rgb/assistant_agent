@@ -13,7 +13,7 @@ from assistant_agent.tools.plugins import assembly as plugin_assembly
 from assistant_agent.tools.plugins.contracts import ToolPluginDescriptor
 from assistant_agent.tools.registry import create_default_registry
 
-from tests.critical.test_tool_plugin_l2 import _ConfiguredReadTool
+from tests.feature.tools.test_tool_plugin_l2 import _ConfiguredReadTool
 
 
 def _module(monkeypatch: pytest.MonkeyPatch, name: str, plugin: object | None) -> None:

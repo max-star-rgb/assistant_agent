@@ -40,7 +40,7 @@ def _identity() -> MemoryEngineIdentity:
 
 def test_mem0_sidecar_resolves_repo_dotenv_qwen_settings() -> None:
     module_path = (
-        Path(__file__).resolve().parents[2]
+        Path(__file__).resolve().parents[3]
         / "docker"
         / "memory-frameworks"
         / "mem0_env.py"

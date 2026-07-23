@@ -8,7 +8,7 @@
 ```text
 tests/
   critical/      # 基础必要测试；裸 pytest 默认收集
-  feature/       # 功能开发验证；稳定后仅按需运行
+  feature/       # 功能开发验证；按 context/memory/runtime 等领域分子目录
   tools_plugin/  # 用户显式触发的真实 Provider/MCP 调用
 ```
 
@@ -36,10 +36,13 @@ tests/
 - Tool schema、catalog、validation、confirmation 和 execution 保持治理边界。
 
 `feature` 保存某次功能实现期间有价值、但功能稳定后不需要在每次普通开发中重复执行的 pytest。
-它们不会被裸 `pytest` 收集；修改对应功能、排查相关回归或准备较宽验证时，显式指定文件或目录：
+它们不会被裸 `pytest` 收集；修改对应功能、排查相关回归或准备较宽验证时，显式指定文件或目录。
+典型内容包括 Provider streaming、插件装配、context accounting、具体 memory backend 生命周期、
+可观测性映射、启动展示、购物策略和 realtime task 等功能验证。
 
-- `test_runtime_provider_streaming.py`：Provider 原生 streaming 功能验证；
-- `test_tool_plugin_runtime.py`：mock plugin Tool 的跨层 runtime 装配闭环。
+`feature` 内按主要故障域使用 `context/`、`memory/`、`observability/`、`runtime/`、`server/`、
+`shopping/` 和 `tools/` 子目录。新增子目录必须表达稳定领域边界，不按源码文件机械镜像，也不要
+为单个测试创建一层目录。
 
 ```bash
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q tests/feature
@@ -100,6 +103,11 @@ skip、回退 mock 或伪造成功。默认先收录无副作用的只读 smoke�
 新增测试前先搜索现有测试，确认没有重复覆盖，并选择最稳定、最低成本的可观察边界。测试应
 验证外部行为、状态转换、事件、持久化结果和副作用，不以项目私有方法调用次数作为主要断言。
 外部边界优先使用 reusable fake 或 in-memory adapter。
+
+断言优先针对结构化状态、协议字段、事件类型、schema、持久化结果和副作用。普通功能开发测试
+不要断言完整自然语言回复、prompt 片段、Tool description 文案或整段控制台输出，也不要用文本
+包含关系代替行为或路由判断；验证内容透传时使用无语义 sentinel。只有文本本身就是明确、稳定的
+外部契约时才允许做聚焦文本断言，并应把它隔离在对应 formatter 或协议测试中。
 
 默认测试不得访问远程或付费服务；外部集成验证必须显式 opt-in。不得新增或提高覆盖率门槛。
 修改行为时应同步删除或合并已经冗余的测试。

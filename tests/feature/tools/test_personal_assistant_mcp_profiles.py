@@ -20,8 +20,6 @@ from assistant_agent.services.personal_assistant_mcp_adapters import (
     MCPPersonalAssistantToolBinding,
     MCPPersonalAssistantWeatherAdapter,
 )
-from assistant_agent.tools.plugins.personal_assistant.tools import WeatherTool
-from assistant_agent.tools.registry import ToolRegistry
 
 
 class RecordingRunner:
@@ -159,7 +157,7 @@ def test_weather_profile_rejects_success_envelope_without_forecast_data() -> Non
     assert result.errors[0]["code"] == "provider_unsupported_input"
 
 
-def test_weather_profile_exposes_english_location_requirement_to_the_model() -> None:
+def test_weather_profile_declares_english_location_input() -> None:
     adapter = MCPPersonalAssistantWeatherAdapter(
         binding=MCPPersonalAssistantToolBinding(
             server_name="weather",
@@ -169,14 +167,7 @@ def test_weather_profile_exposes_english_location_requirement_to_the_model() -> 
         ),
         runner=RecordingRunner({}),
     )
-    registry = ToolRegistry()
-    registry.register(WeatherTool(adapter=adapter))
-
-    spec = registry.get_spec("weather")
-
     assert adapter.location_input_language == "en"
-    assert "canonical English location names" in spec.description
-    assert "translate localized place names" in spec.description
 
 
 def test_weather_profile_classifies_upstream_503_as_unavailable() -> None:

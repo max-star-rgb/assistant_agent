@@ -43,7 +43,6 @@ from assistant_agent.services.event_sink import ListEventSink
 from assistant_agent.services.trace_store import InMemoryTraceStore
 from assistant_agent.tools.base import ToolBase, ToolContext, ToolInputValidationError
 from assistant_agent.tools.input_binding import ToolInputBinding
-from assistant_agent.tools.plugins.durable_task.tool import TaskPlanSubmitTool
 from assistant_agent.tools.registry import ToolRegistry, create_default_registry
 
 
@@ -156,45 +155,6 @@ class _RuntimeBindingTool(ToolBase):
         return ToolResult(tool_name=self.name, success=True, data=input.model_dump())
 
 
-def test_provider_description_uses_simple_tool_spec() -> None:
-    spec = ToolSpec(
-        name="canonical_policy_tool",
-        description="Read canonical data.",
-        category="read",
-        requires_confirmation=False,
-    )
-
-    payload = tool_spec_to_openai_tool(spec)
-
-    description = payload["function"]["description"]
-    assert description == "Read canonical data."
-
-
-def test_builtin_tool_spec_descriptions_use_chinese() -> None:
-    registry = create_default_registry()
-    durable_registry = ToolRegistry()
-    durable_registry.register(TaskPlanSubmitTool(object()))
-    specs = [*registry.list_specs(), *durable_registry.list_specs()]
-
-    descriptions: list[tuple[str, str]] = []
-    for spec in specs:
-        _collect_descriptions(
-            {
-                "description": spec.description,
-                "input_schema": spec.input_schema,
-            },
-            path=spec.name,
-            result=descriptions,
-        )
-
-    assert descriptions
-    assert [
-        (path, description)
-        for path, description in descriptions
-        if not any("\u4e00" <= character <= "\u9fff" for character in description)
-    ] == []
-
-
 def test_provider_tools_hide_runtime_fields_and_pydantic_titles() -> None:
     registry = create_default_registry()
     execution_only_schema_keys = {
@@ -299,29 +259,6 @@ def test_provider_tools_hide_runtime_fields_and_pydantic_titles() -> None:
         registry.get_spec("calendar_create")
     )["function"]
     assert "idempotency_key" not in calendar_create["parameters"]["properties"]
-
-
-def _collect_descriptions(
-    value: object,
-    *,
-    path: str,
-    result: list[tuple[str, str]],
-) -> None:
-    if isinstance(value, list):
-        for index, item in enumerate(value):
-            _collect_descriptions(
-                item,
-                path=f"{path}[{index}]",
-                result=result,
-            )
-        return
-    if not isinstance(value, dict):
-        return
-    for key, item in value.items():
-        item_path = f"{path}.{key}"
-        if key == "description" and isinstance(item, str):
-            result.append((item_path, item))
-        _collect_descriptions(item, path=item_path, result=result)
 
 
 def test_generic_runtime_bindings_shrink_schema_and_bind_each_run_identity() -> None:

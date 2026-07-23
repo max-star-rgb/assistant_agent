@@ -1,9 +1,7 @@
 """Regression coverage for compiled prompt context accounting."""
 
 import json
-from datetime import datetime, timedelta, timezone
 
-from assistant_agent.agent.system_prompt_policy import render_system_instruction
 from assistant_agent.agent.runtime import AgentGraphRuntime
 from assistant_agent.config import ProviderConfig
 from assistant_agent.memory.store import InMemoryStore
@@ -32,26 +30,6 @@ class _CapturedChatAdapter:
 
 def _json_chars(value: object) -> int:
     return len(json.dumps(value, ensure_ascii=False, default=str))
-
-
-def test_system_instruction_contains_trusted_runtime_time() -> None:
-    current_time = datetime(
-        2026,
-        7,
-        22,
-        16,
-        30,
-        5,
-        tzinfo=timezone(timedelta(hours=8)),
-    )
-
-    instruction = render_system_instruction(current_time=current_time)
-
-    assert instruction.startswith("# 运行时事实\n\n")
-    assert "当前本地时间：2026-07-22T16:30:05+08:00" in instruction
-    assert "可信事实" in instruction
-    assert "相对日期" in instruction
-    assert instruction.index("# 运行时事实") < instruction.index("# 角色")
 
 
 def test_context_report_accounts_for_the_compiled_chat_request() -> None:
