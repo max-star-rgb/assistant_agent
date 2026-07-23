@@ -37,15 +37,13 @@ class WeatherTool(ToolBase):
     """Look up weather through the configured personal weather adapter."""
 
     name = WEATHER_TOOL_NAME
-    description = (
-        "Look up current or short-range weather for a location. Pass target_date as "
-        "YYYY-MM-DD when the user specifies a date."
-    )
+    description = "查询指定地点的当前或短期天气；用户指定日期时传 YYYY-MM-DD。"
     input_schema = WeatherRequest
     output_schema = WeatherResult
     category = "read"
     toolset = "personal.readonly"
     requires_confirmation = False
+    model_hidden_input_fields = ("units",)
 
     def __init__(self, adapter: WeatherAdapter | None = None) -> None:
         self.adapter = adapter or MockWeatherAdapter()

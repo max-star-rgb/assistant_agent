@@ -93,6 +93,8 @@ metadata、usage 和 latency 使用独立 generation attributes。
 `ChatResult`。本地 content overlay 将 `llm.chat` generation preview 固定为两个按顺序展示的
 字段：input 是 Langfuse 可直接格式化的完整消息列表，output 是保留 `role`、`content`、
 `tool_calls` 和可选 `refusal/errors` 的 OpenAI-compatible assistant message。
+Langfuse Formatted 面板可能折叠长字符串；是否完整以 observation input JSON/Public API 为准。
+system message 把可信运行时间放在第一段，使折叠预览也优先显示日期事实。
 运行时分支和传输模式继续作为 observation metadata，不再包进 output preview。
 每个 attempt 另外记录 `attempt_kind`（当前包括 `primary` 和
 `context_overflow_retry`），避免同一 ReAct iteration 内的上下文溢出重试被误读成

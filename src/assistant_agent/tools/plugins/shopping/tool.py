@@ -27,10 +27,8 @@ class ShoppingSearchTool(ToolBase):
 
     name = SHOPPING_SEARCH_TOOL_NAME
     description = (
-        "搜索可购买商品，返回候选、价格优惠、比价依据和购买链接。"
-        "用户明确要求商品推荐、查价、比价或购买链接，且可从当前请求或对话确定商品时，直接调用，无需再次确认。"
-        "用户只表达想吃、想喝、想要或想用某物但未请求购物帮助时，先简短询问是否需要找商品或链接，不要立即搜索。"
-        "本工具不能下单、结算，也不能声称购买已完成。"
+        "搜索商品、优惠、比价和购买链接。用户明确要求推荐、查价、比价或购买链接时直接调用，无需再次确认；"
+        "只表达想要某物时先询问，不要立即搜索。不能下单、结算。"
     )
     input_schema = ProductSearchInput
     output_schema = ShoppingSearchResult
@@ -48,6 +46,7 @@ class ShoppingSearchTool(ToolBase):
         "brand",
         "category",
         "budget",
+        "top_k",
     )
     runtime_identity_fields = ("user_id", "session_id")
 

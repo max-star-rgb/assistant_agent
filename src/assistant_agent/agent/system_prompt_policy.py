@@ -51,4 +51,4 @@ def render_system_instruction(
         f"当前本地时间：{resolved_time.isoformat(timespec='seconds')}。"
         "这是运行时提供的可信事实；回答当前日期、时间、星期或解析相对日期时以此为准。"
     )
-    return "\n\n".join((_BASE_RUNTIME_POLICY, runtime_facts, personalization))
+    return "\n\n".join((runtime_facts, _BASE_RUNTIME_POLICY, personalization))

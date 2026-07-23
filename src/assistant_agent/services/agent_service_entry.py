@@ -9,7 +9,6 @@ AGENT_SERVICE_PROFILE_TOOL_NAMES = (
     "weather",
     "shopping_search",
     "memory_search",
-    "memory_get",
     "vision_understanding",
 )
 

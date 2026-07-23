@@ -172,11 +172,11 @@ def test_provider_tools_hide_runtime_fields_and_pydantic_titles() -> None:
         "budget_min",
         "budget_max",
         "platforms",
-        "top_k",
     }
     assert shopping["parameters"]["required"] == ["query"]
     assert "description" not in shopping["parameters"]
     assert "anyOf" not in json.dumps(shopping["parameters"], ensure_ascii=False)
+    assert '"default"' not in json.dumps(shopping["parameters"], ensure_ascii=False)
 
 
 def test_memory_tools_expose_read_only_contracts() -> None:
@@ -275,9 +275,11 @@ def test_weather_declares_location_and_normalized_target_date() -> None:
     assert '"title"' not in json.dumps(parameters, ensure_ascii=False)
     assert mcp_tool["inputSchema"] == spec.input_schema
     assert parameters["required"] == ["location"]
+    assert set(parameters["properties"]) == {"location", "target_date", "days"}
     assert parameters["properties"]["target_date"]["format"] == "date"
     assert parameters["properties"]["target_date"]["type"] == "string"
     assert "anyOf" not in parameters["properties"]["target_date"]
+    assert '"default"' not in json.dumps(parameters, ensure_ascii=False)
     assert result.accepted is False
     assert result.code == "invalid_tool_input"
 

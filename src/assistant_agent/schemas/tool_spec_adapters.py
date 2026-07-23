@@ -57,8 +57,8 @@ def _provider_schema(value: Any, *, root: bool = False) -> Any:
         key: _provider_schema(item)
         for key, item in value.items()
         if key != "title"
+        and key != "default"
         and not (root and key == "description")
-        and not (key == "default" and item is None)
     }
     any_of = normalized.get("anyOf")
     if isinstance(any_of, list) and len(any_of) == 2:

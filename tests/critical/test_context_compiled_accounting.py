@@ -47,9 +47,11 @@ def test_system_instruction_contains_trusted_runtime_time() -> None:
 
     instruction = render_system_instruction(current_time=current_time)
 
+    assert instruction.startswith("# 运行时事实\n\n")
     assert "当前本地时间：2026-07-22T16:30:05+08:00" in instruction
     assert "可信事实" in instruction
     assert "相对日期" in instruction
+    assert instruction.index("# 运行时事实") < instruction.index("# 角色")
 
 
 def test_context_report_accounts_for_the_compiled_chat_request() -> None:

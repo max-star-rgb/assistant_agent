@@ -41,9 +41,9 @@ requires_media
 `_ACTION_USAGE` 副本。`description` 同时承担 provider 可见的简短使用说明，避免再造一套
 `when_to_use/when_not_to_use/runtime_constraints` 元数据。
 
-`shopping_search` 的 description 明确区分三种边界：只表达想吃、想喝、想要或想用某物时先询问
-是否需要购物帮助；明确要求推荐、查价、比价或购买链接且商品可从当前对话确定时直接调用；该工具
-只返回候选、优惠、比价依据和链接，不能下单、结算或声称购买完成。
+`shopping_search` 的短 description 保留三条必要边界：只表达想要某物时先询问；明确要求推荐、
+查价、比价或购买链接时调用；工具只搜索和比较，不能下单。展示模板等执行后说明只随 observation
+提供，不重复塞进每轮工具 schema。
 购物结果遵循标准 ReAct 闭环：`shopping_search` 返回结构化 `ToolResult`，runtime 将其转换为
 tool observation，下一轮 LLM 消费商品、报价、链接和展示模板后生成最终文本。系统不注册额外的展示
 工具，也不在 Realtime/Gateway 用 presenter 覆盖模型回复；是否输出 `<detail>` 以及选择哪些合格商品
@@ -193,8 +193,8 @@ LLM 决定是否调用、调用哪个已暴露工具以及参数内容。categor
 
 `schemas/tool_spec_adapters.py` 只给 provider-neutral `ToolSpec.input_schema` 包装协议外壳。当前以
 Qwen/OpenAI-compatible Function Calling 为主：发送前递归移除 Pydantic 自动生成的
-`title`、根 schema `description`、空 `required`和 `default: null`，并把“可省略字段的
-`anyOf(T, null)`”收敛为 `T`。字段是否可省略仍由 `required` 表达；字段描述、非空默认值、
+`title`、所有执行期 `default`、根 schema `description` 和空 `required`，并把“可省略字段的
+`anyOf(T, null)`”收敛为 `T`。字段是否可省略仍由 `required` 表达；有决策价值的字段描述、
 类型/范围约束和 `additionalProperties=false` 继续保留，不合并另一套字段描述：
 
 ```json
@@ -202,7 +202,7 @@ Qwen/OpenAI-compatible Function Calling 为主：发送前递归移除 Pydantic 
   "type": "function",
   "function": {
     "name": "weather",
-    "description": "Look up current or short-range weather for a location.",
+    "description": "查询指定地点的当前或短期天气；用户指定日期时传 YYYY-MM-DD。",
     "parameters": {"type": "object", "properties": {}}
   }
 }
@@ -213,8 +213,15 @@ category、确认、profile、env 等系统字段不会发送给模型，也不�
 
 当前常见工具的模型可见输入保持窄契约：`memory_search` 只接收必填 `query`；
 `memory_get` 只接收必填 `memory_id`；`memory_save` 不注册，也不会进入 Provider payload；
-`shopping_search` 只向模型暴露
-`query`、`budget_min`、`budget_max`、`platforms` 和 `top_k`，视觉结构化字段仅供内部编排兼容路径使用。
+Agent-Service 默认 profile 只直接暴露 `memory_search`，因为其 observation 已返回完整匹配记录，
+不再为同一读取流程额外支付 `memory_get` schema；`memory_get` 仍保留在 Registry 供其他显式 profile 使用。
+`shopping_search` 只向模型暴露 `query`、`budget_min`、`budget_max` 和 `platforms`，固定候选数量
+`top_k` 是执行期默认值；`weather` 只暴露 `location`、`target_date` 和 `days`，固定公制 `units`
+同样不进入模型 schema。隐藏字段仍由 Pydantic 默认值和 runtime 注入补齐。
+
+当前 Agent-Service 目录规模很小，继续直接发送治理后的完整 ToolSpec。只有未来 eligible schema
+达到明显上下文占比时，才考虑类似 OpenClaw/Hermes 的 `search -> describe -> call` 渐进披露；
+小目录不为节省少量 token 引入额外模型往返。
 
 模型返回的 native `tool_calls` 会归一化为内部 `AssistantDecision`，然后进入统一执行链路。
 
