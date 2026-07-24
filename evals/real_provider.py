@@ -16,8 +16,8 @@ from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.services.trace_store import JsonlTraceStore, TraceEvent
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
-DEFAULT_CASES_PATH = PROJECT_ROOT / "evals" / "real_provider" / "personal_assistant_briefing.json"
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_CASES_PATH = PROJECT_ROOT / "evals" / "personal_assistant_daily.json"
 DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / ".data" / "evals" / "real_provider"
 class EvalConfigurationError(RuntimeError):
     """Raised when a real-provider eval is not explicitly configured."""
@@ -27,7 +27,7 @@ class RealProviderEvalCase(BaseModel):
     """One real chat provider eval case with trace-level expectations."""
 
     id: str = Field(min_length=1)
-    suite: str = "personal_assistant_briefing"
+    suite: str = "personal_assistant_daily"
     category: str = "personal_assistant"
     text: str = Field(min_length=1)
     user_id: str = "eval_user"
@@ -254,7 +254,7 @@ def run_real_provider_eval_suite(
     *,
     config: ProviderConfig | None = None,
     output_root: Path | str = DEFAULT_OUTPUT_ROOT,
-    suite_name: str = "personal_assistant_briefing",
+    suite_name: str = "personal_assistant_daily",
     allow_real_tools: bool = False,
 ) -> RealProviderEvalRun:
     """Run cases through AgentGraphRuntime with a real chat provider and write artifacts."""

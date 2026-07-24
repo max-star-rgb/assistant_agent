@@ -1,4 +1,4 @@
-"""Deterministic stateful Calendar environment for closed-loop evaluations."""
+"""Deterministic stateful Calendar environment for Langfuse experiments."""
 
 from __future__ import annotations
 

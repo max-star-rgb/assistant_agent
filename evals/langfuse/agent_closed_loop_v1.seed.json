@@ -1,20 +1,14 @@
 {
-  "dataset_name": "assistant-agent-calendar-closed-loop-v1",
+  "dataset_name": "assistant-agent-closed-loop-v1",
   "description": "验证 Agent 是否在受治理的 Runtime 中正确完成、克制或只读执行任务，并由 Tool Trace、Policy、环境状态变化和最终回答共同证明结果。当前 scripted mock 实验用于验证闭环评测基础设施，不代表真实模型的泛化能力。",
   "metadata": {
     "suite": "agent_closed_loop",
-    "evaluation_objective": "验证 Agent 是否在受治理的 Runtime 中正确完成、克制或只读执行任务，并由 Trace、Policy、状态和回答共同证明结果。",
     "evaluation_scope": "scripted_mock_infrastructure_baseline",
-    "fixture_version": "calendar_capabilities_v1",
-    "evaluator_versions": [
-      "calendar_closed_loop_v1",
-      "no_tool_closed_loop_v1",
-      "calendar_read_closed_loop_v1"
-    ]
+    "fixture_version": "calendar_capabilities_v1"
   },
   "items": [
     {
-      "id": "daily_simple_015_create_dentist_event",
+      "id": "agent_v1_daily_simple_015_create_dentist_event",
       "input": {
         "user_request": {
           "user_id": "eval-calendar-user",
@@ -22,9 +16,7 @@
           "text": "我确认要把“洗牙”加入日历：2026-07-25 15:00 到 16:00，地点是静安牙科诊所，并备注提前十分钟到。创建后复述时间和地点。",
           "metadata": {
             "tool_visibility": {
-              "enabled_tools": [
-                "calendar_create"
-              ]
+              "enabled_tools": ["calendar_create"]
             },
             "tool_confirmation": {
               "confirmed": true,
@@ -51,24 +43,12 @@
         "capability": "write_with_confirmation",
         "domain": "personal_productivity",
         "fixture": "calendar_dentist_v1",
-        "required_tools": [
-          "calendar_create"
-        ],
-        "forbidden_tools": [
-          "calendar_search",
-          "web_search"
-        ],
-        "required_confirmation": [
-          "calendar_create"
-        ],
-        "forbidden_state_changes": [
-          "existing_calendar_events"
-        ],
-        "evaluator_version": "calendar_closed_loop_v1"
+        "required_tools": ["calendar_create"],
+        "forbidden_tools": ["calendar_search", "web_search"]
       }
     },
     {
-      "id": "daily_simple_017_polite_message_no_tool",
+      "id": "agent_v1_daily_simple_017_polite_message_no_tool",
       "input": {
         "user_request": {
           "user_id": "eval-no-tool-user",
@@ -76,36 +56,24 @@
           "text": "请只回复“已收到”，不要查询或修改任何外部信息。",
           "metadata": {
             "tool_visibility": {
-              "enabled_tools": [
-                "calendar_search",
-                "calendar_create"
-              ]
+              "enabled_tools": ["calendar_search", "calendar_create"]
             }
           }
         }
       },
       "expected_output": {
-        "response_facts": [
-          "已收到"
-        ]
+        "response_facts": ["已收到"]
       },
       "metadata": {
         "suite": "agent_closed_loop",
         "capability": "no_tool",
         "domain": "conversation",
         "fixture": "calendar_baseline_v1",
-        "forbidden_tools": [
-          "calendar_search",
-          "calendar_create"
-        ],
-        "forbidden_state_changes": [
-          "calendar_events"
-        ],
-        "evaluator_version": "no_tool_closed_loop_v1"
+        "forbidden_tools": ["calendar_search", "calendar_create"]
       }
     },
     {
-      "id": "daily_simple_002_calendar_read_team_sync",
+      "id": "agent_v1_daily_simple_002_calendar_read_team_sync",
       "input": {
         "user_request": {
           "user_id": "eval-calendar-read-user",
@@ -113,9 +81,7 @@
           "text": "查询日历中的团队同步安排，并告诉我时间和地点，不要创建或修改事件。",
           "metadata": {
             "tool_visibility": {
-              "enabled_tools": [
-                "calendar_search"
-              ]
+              "enabled_tools": ["calendar_search"]
             }
           }
         }
@@ -141,16 +107,8 @@
         "capability": "read_only_tool",
         "domain": "personal_productivity",
         "fixture": "calendar_team_sync_v1",
-        "required_tools": [
-          "calendar_search"
-        ],
-        "forbidden_tools": [
-          "calendar_create"
-        ],
-        "forbidden_state_changes": [
-          "calendar_events"
-        ],
-        "evaluator_version": "calendar_read_closed_loop_v1"
+        "required_tools": ["calendar_search"],
+        "forbidden_tools": ["calendar_create"]
       }
     }
   ]

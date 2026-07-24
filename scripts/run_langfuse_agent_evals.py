@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Synchronize and run the Langfuse-native agent capability experiment."""
+"""Seed or run the Langfuse-native agent capability experiment."""
 
 # ruff: noqa: E402
 
@@ -25,11 +25,12 @@ if str(SRC) not in sys.path:
 
 from langfuse import Langfuse
 
-from assistant_agent.eval.langfuse_experiment import (
-    DEFAULT_DATASET_SOURCE,
-    load_langfuse_dataset_source,
+from evals.langfuse.experiment import (
+    DEFAULT_DATASET_NAME,
+    DEFAULT_DATASET_SEED,
+    load_dataset_seed,
     run_langfuse_agent_experiment,
-    sync_langfuse_dataset,
+    seed_langfuse_dataset,
 )
 from assistant_agent.services.assistant_run_service import load_env_file
 from assistant_agent.services.langfuse_config import (
@@ -42,32 +43,42 @@ def main() -> int:
     parser = ArgumentParser(
         description="Run the Langfuse-native closed-loop agent capability evaluation."
     )
-    parser.add_argument("--dataset-source", type=Path, default=DEFAULT_DATASET_SOURCE)
+    parser.add_argument("--dataset-name", default=DEFAULT_DATASET_NAME)
+    parser.add_argument("--seed-source", type=Path, default=DEFAULT_DATASET_SEED)
+    parser.add_argument(
+        "--seed-dataset",
+        action="store_true",
+        help="Explicitly upsert the local bootstrap seed before the run.",
+    )
     parser.add_argument(
         "--experiment-name",
         default="agent-capability-closed-loop-scripted-v1",
     )
     parser.add_argument("--run-name", default=None)
     parser.add_argument("--max-concurrency", type=int, default=1)
-    parser.add_argument("--sync-only", action="store_true")
+    parser.add_argument(
+        "--seed-only",
+        action="store_true",
+        help="Seed the Dataset and exit without creating an Experiment run.",
+    )
     parser.add_argument("--env-file", type=Path, default=Path(".env"))
     parser.add_argument("--no-env-file", action="store_true")
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Validate the Dataset source without connecting to Langfuse.",
+        help="Validate the optional Dataset seed without connecting to Langfuse.",
     )
     args = parser.parse_args()
 
-    source = load_langfuse_dataset_source(args.dataset_source)
+    seed = load_dataset_seed(args.seed_source)
     if args.dry_run:
         print(
             json.dumps(
                 {
                     "dry_run": True,
-                    "dataset_name": source.dataset_name,
-                    "dataset_hash": source.content_hash(),
-                    "item_ids": [item.id for item in source.items],
+                    "dataset_name": seed.dataset_name,
+                    "seed_hash": seed.content_hash(),
+                    "item_ids": [item.id for item in seed.items],
                 },
                 ensure_ascii=False,
                 indent=2,
@@ -120,13 +131,15 @@ def main() -> int:
                 file=sys.stderr,
             )
             return 2
-        sync = sync_langfuse_dataset(client, source)
-        if args.sync_only:
-            print(sync.model_dump_json(indent=2))
+        seed_result = None
+        if args.seed_dataset or args.seed_only:
+            seed_result = seed_langfuse_dataset(client, seed)
+        if args.seed_only:
+            print(seed_result.model_dump_json(indent=2))
             return 0
         result = run_langfuse_agent_experiment(
             client,
-            source,
+            dataset_name=args.dataset_name,
             experiment_name=args.experiment_name,
             run_name=args.run_name,
             max_concurrency=max(1, args.max_concurrency),
@@ -136,21 +149,15 @@ def main() -> int:
         print(
             json.dumps(
                 {
-                    **sync.model_dump(mode="json"),
+                    "dataset_name": args.dataset_name,
+                    "seeded": seed_result is not None,
                     "experiment_name": result.name,
                     "run_name": result.run_name,
                     "experiment_id": result.experiment_id,
                     "dataset_run_id": result.dataset_run_id,
                     "dataset_run_url": result.dataset_run_url,
                     "item_count": len(result.item_results),
-                    "run_evaluations": [
-                        {
-                            "name": evaluation.name,
-                            "value": evaluation.value,
-                            "comment": evaluation.comment,
-                        }
-                        for evaluation in result.run_evaluations
-                    ],
+                    "scoring": "langfuse_code_evaluator_async",
                 },
                 ensure_ascii=False,
                 indent=2,

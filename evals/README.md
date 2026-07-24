@@ -41,7 +41,7 @@ Tool、整合结果并给出可执行建议，而不是验证“用户说出 Too
 
 ## 数据格式
 
-案例遵循 `assistant_agent.eval.real_provider.RealProviderEvalCase`：
+案例遵循 `evals.real_provider.RealProviderEvalCase`：
 
 - `expected_tools`：至少应出现的 Tool，不要求列表外 Tool 全部禁止；
 - `expected_tool_sequence`：有真实数据依赖时使用，按有序子序列评分；
@@ -85,24 +85,37 @@ category 过滤；需要按难度批量运行时，可先从 JSON 生成临时 c
 
 ## Langfuse 原生闭环评测
 
-`evals/langfuse/calendar_closed_loop_v1.json` 是首个闭环评测 Dataset 源文件；文件名为首期
-Calendar 历史名称，Dataset 已扩展为多能力集合。当前闭环包括：
+这里采用一条刻意简化的职责边界：
 
-- `AgentEvalEvidence` 汇总 Runtime 终态、完整 Trace、环境初始/最终状态和 state diff；
-- stateful Calendar fixture 保存时间、地点、备注和幂等键，而不是只记录标题；
-- `no_tool` 验证有候选 Tool 时仍能克制调用，并检查状态零污染；
-- `read_only_tool` 验证查询参数、返回事件、回答依据和只读状态不变；
-- 确定性 evaluator 返回 Langfuse 原生 `Evaluation`，形成 `agent.*` item scores；
-- scripted mock chat adapter 实际驱动 `AgentGraphRuntime`，工具仍经过完整治理链；
-- 正确创建与故意错误变体均在离线 feature tests 中验证，包括不必要调用、错误查询和写越界；
-- Dataset Run evaluator 写入成功率、违规率、平均调用次数和延迟分位数；
-- Langfuse Experiment task 把当前 W3C trace/span identity 传入 Runtime，Runtime observations、
-  item scores 和 Dataset Run 属于同一条 Experiment trace。
+```text
+Langfuse Dataset
+  -> Langfuse Experiment
+  -> evals/langfuse/experiment.py 执行 AgentGraphRuntime
+  -> 结构化 AgentExperimentOutput
+  -> Langfuse Code Evaluator
+  -> Langfuse 原生 Score
+```
 
-本 Dataset 的测试目标是：验证 Agent 是否在受治理的 Runtime 中正确完成、克制或只读执行任务，
-并由 Tool Trace、Policy、环境状态变化和最终回答共同证明结果。当前使用 scripted mock，目标是
-验证 Dataset、Runtime、治理链、Trace、Evaluator 和 Langfuse Score 的基础设施闭环；它不是对真实
-模型泛化能力的结论。每个 `agent.*` Score 的 Langfuse comment/metadata 都会携带该总目标和指标说明。
+Langfuse 是 Dataset、Evaluator、Score 和 Experiment 对比的运行时权威。项目不再注册 SDK
+`evaluators` 或自行计算分数，只负责执行 Agent 并返回紧凑证据：
+
+- Runtime 终态和最终回答；
+- Tool 调用参数、结果和 ActionValidator 状态；
+- 环境初始/最终状态和 state diff；
+- Trace 事件名称、关联 ID 和总延迟。
+
+`evals/langfuse/agent_closed_loop_v1.seed.json` 只是第一次创建 Dataset 或显式重置 seed
+items 时使用的 bootstrap 文件。普通 Experiment 默认直接读取 Langfuse 中的 Dataset，不会用
+本地 JSON 覆盖 UI 修改。
+
+`evals/langfuse/agent_strict_pass.ts` 是 Langfuse Code Evaluator 的可版本控制部署源。
+评分代码必须粘贴并启用在 Langfuse Evaluators 页面中；真正执行评分、保存 Score 和显示执行日志的
+都是 Langfuse。首期只保留一个 `agent.strict_pass` Boolean Score，避免在入门阶段同时理解多套
+评分聚合。
+
+本 Dataset 的目标是验证 Agent 是否在受治理的 Runtime 中正确完成、克制或只读执行任务，并由
+Tool Trace、Policy、环境状态变化和最终回答共同证明结果。scripted mock 只验证评测基础设施闭环，
+不代表真实模型的泛化能力。
 
 安装独立 optional dependency：
 
@@ -117,19 +130,27 @@ Calendar 历史名称，Dataset 已扩展为多能力集合。当前闭环包括
   tests/feature/eval
 ```
 
-只校验 Dataset 源文件，不连接 Langfuse：
+只校验可选 seed，不连接 Langfuse：
 
 ```bash
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python \
   scripts/run_langfuse_agent_evals.py --dry-run
 ```
 
-同步 Dataset 并运行本地 scripted Experiment：
+第一次显式创建 Dataset：
 
 ```bash
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python \
   scripts/run_langfuse_agent_evals.py \
-  --run-name calendar-closed-loop-local-v1
+  --seed-only
+```
+
+之后运行 Experiment，不再覆盖 Langfuse Dataset：
+
+```bash
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python \
+  scripts/run_langfuse_agent_evals.py \
+  --run-name my-first-agent-eval
 ```
 
 命令默认从未跟踪的 `.env` 加载 Langfuse 凭据和 host；可用 `--env-file` 覆盖或
@@ -166,17 +187,45 @@ Calendar 历史名称，Dataset 已扩展为多能力集合。当前闭环包括
 
    应看到三个 `item_ids`，分别覆盖写入、无需 Tool 和只读 Tool。
 
-4. 运行离线 evaluator 测试：
+4. 运行 Runtime Task 契约测试：
 
    ```bash
    /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q \
      tests/feature/eval
    ```
 
-   看到 `23 passed` 表示 fixture、故意失败变体、Runtime 串联和 Langfuse adapter
-   都通过；这一步仍然不会连接 Langfuse。
+   这一步只验证 Agent 执行证据和 Langfuse Experiment wiring，不在项目进程里计算分数，
+   也不会连接 Langfuse。
 
-5. 运行一次真正写入本地 Langfuse 的 Experiment。每次换一个 `run-name`，便于横向比较：
+5. 第一次运行时，显式把 seed 导入 Langfuse：
+
+   ```bash
+   /home/lenovo1/miniconda3/envs/hello_agent/bin/python \
+     scripts/run_langfuse_agent_evals.py --seed-only
+   ```
+
+   之后可直接在 Langfuse UI 编辑 Dataset；普通评测不会覆盖这些修改。
+
+6. 在 Langfuse 的 `Evaluators` 页面创建 TypeScript Code Evaluator：
+
+   - evaluator target 选择 `Experiments`；
+   - Dataset 选择 `assistant-agent-closed-loop-v1`；
+   - observation 选择 Experiment 的 `experiment-item-task`；
+   - evaluator source 使用 `evals/langfuse/agent_strict_pass.ts`；
+   - 先用 Preview/Test 验证，再启用 evaluator。
+
+   本机自托管环境必须已经启用 Code Evaluator dispatcher，否则 UI 会禁用这项能力。
+   当前可信本机 Compose 使用：
+
+   ```text
+   LANGFUSE_CODE_EVAL_DISPATCHER=insecure-local
+   QUEUE_CONSUMER_CODE_EVAL_EXECUTION_QUEUE_IS_ENABLED=true
+   ```
+
+   两个变量必须同时提供给 Langfuse Web 和 Worker；`insecure-local` 会在 Worker
+   进程内执行可信 TypeScript，不是处理不可信代码的沙箱。
+
+7. 运行一次真正写入本地 Langfuse 的 Experiment。每次换一个 `run-name`，便于横向比较：
 
    ```bash
    /home/lenovo1/miniconda3/envs/hello_agent/bin/python \
@@ -184,19 +233,22 @@ Calendar 历史名称，Dataset 已扩展为多能力集合。当前闭环包括
      --run-name my-first-agent-eval
    ```
 
-   成功输出应包含 `item_count: 3`、`strict_pass_rate: 1.0` 和
-   `dataset_run_url`。复制该 URL 到浏览器。
+   成功输出应包含 `item_count: 3`、`scoring: langfuse_code_evaluator_async`
+   和 `dataset_run_url`。复制该 URL 到浏览器。Code Evaluator 是异步执行的，Score
+   可能需要短暂等待后才出现。
 
-6. 在 Langfuse 页面依次查看：
+8. 在 Langfuse 页面依次查看：
 
-   - Dataset Run 顶部的 8 个聚合分数；
-   - 三个 Dataset item 的 8 个 `agent.*` 分数；
-   - 点击一个 item 进入 Trace；
+   - 三个 Dataset item 的 `agent.strict_pass`；
+   - 点击 Score 查看 evaluator 来源和执行信息；
+   - 点击一个 item 的 Trace；
    - 展开 `experiment-item-task -> assistant.runtime`；
    - 写入案例应出现 `calendar_create`，只读案例应出现 `calendar_search`，
      `no_tool` 案例不应出现 Tool observation。
+   - 如需查评分代码本身的执行 Trace，在 Tracing 中筛选
+     `environment = langfuse-code-eval`。
 
-7. 想重复体验时，只需换一个名字再次执行第 5 步，例如：
+9. 想重复体验时，只需换一个名字再次执行第 7 步，例如：
 
    ```bash
    /home/lenovo1/miniconda3/envs/hello_agent/bin/python \

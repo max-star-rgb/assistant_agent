@@ -17,7 +17,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from assistant_agent.config import ProviderConfig
-from assistant_agent.eval.real_provider import (
+from evals.real_provider import (
     DEFAULT_CASES_PATH,
     DEFAULT_OUTPUT_ROOT,
     EvalConfigurationError,
@@ -32,7 +32,7 @@ def main() -> int:
     parser = ArgumentParser(description="Run opt-in real chat provider eval cases.")
     parser.add_argument("--cases", type=Path, default=DEFAULT_CASES_PATH)
     parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
-    parser.add_argument("--suite", default="personal_assistant_briefing")
+    parser.add_argument("--suite", default="personal_assistant_daily")
     parser.add_argument("--case-id", action="append", default=[])
     parser.add_argument("--max-cases", type=int, default=None)
     parser.add_argument("--allow-real-tools", action="store_true")

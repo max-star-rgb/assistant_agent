@@ -38,10 +38,11 @@ For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
 - `scripts/run_real_provider_evals.py`: opt-in real chat provider eval harness;
   requires `MULTIMODAL_AGENT_PROVIDER_MODE=real` and writes machine logs under
   `.data/evals/real_provider/`.
-- `scripts/run_langfuse_agent_evals.py`: synchronizes the version-controlled
-  multi-capability Dataset and runs the scripted mock Runtime through Langfuse native
-  Experiment, item evaluators, run evaluators, and the shared Runtime trace.
-  It loads the untracked `.env` by default and never calls a real Provider.
+- `scripts/run_langfuse_agent_evals.py`: optionally seeds the first Dataset, then
+  runs the scripted mock Runtime through a Langfuse Experiment and shared Runtime
+  trace. Scoring is asynchronous and owned by a Langfuse Code Evaluator; the script
+  does not register SDK evaluators. It loads the untracked `.env` by default and
+  never calls a real Provider.
 - `scripts/run_improvement_lab.py`: offline, non-mutating improvement proposal runner.
 - `scripts/check_pilot_readiness.py` and `scripts/collect_pilot_evidence.py`:
   multi-agent pilot operator helpers.
