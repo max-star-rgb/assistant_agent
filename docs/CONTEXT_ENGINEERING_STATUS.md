@@ -21,9 +21,9 @@ Last updated: 2026-07-24
 - memory 边界：长期记忆只来自 Mem0。session 创建时按可信身份调用一次 Mem0 `get_all` 并冻结
   snapshot；包括第一轮在内的所有 turn 只复用 snapshot，不再召回。成功 turn 在回复提交后把
   user/assistant messages 异步交给 Mem0 原生 `add`，由 Mem0 负责提取、合并、向量化和持久化。
-- LLM memory 输入使用 `MemoryPromptSnapshot v1`，只包含 Mem0 文本与 `source_ids`。不存在
-  memory read/write policy、ranking、profile、promotion 或 memory tool。快照文本最多 2,000 字符，
-  作为带明确信任边界的历史证据进入当前 `user` message，不进入 `system` message。
+- session memory snapshot 只保存 Mem0 返回的结构化 `MemoryItem`。不存在 memory read/write
+  policy、ranking、profile、promotion 或 memory tool。ContextBuilder 在每轮把同一份冻结 items
+  的原始文本按顺序直接组装为历史证据，进入当前 `user` message，不进入 `system` message。
 - realtime video 交接：Agent-Service 后台 Qwen observer 对每个 `video_id` 复用一个 persistent WebSocket 并预热 rolling 语义；VLM 使用独立视觉角色模板 prompt，只产出结构化视觉事实，不复用主 LLM 系统提示。AgentRuntime 主 LLM 只知道统一的 `vision_understanding` ToolSpec，图片和视频由工具内部按媒体输入分支，不包含 VLM 观察流程、OCR/品牌/序列图等视觉分析提示词，也不看到帧、JPEG 路径、base64、VLM prompt 或 provider raw response。
 - 当前不建议继续做：场景分类器、质量反馈自动调参、组件注册器、裁剪 undo 日志、默认 LLM 摘要、全局 token 强控制。
 - 如果用户问“继续上下文工程”：优先做验收案例、调试说明、具体失败复现和小回归测试；不要默认新增复杂架构。
@@ -102,7 +102,7 @@ Last updated: 2026-07-24
 - `MemoryManager` 是 Mem0 的薄 runtime adapter，不拥有记忆算法。
 - `SessionMemoryContextStore` 在 session 创建时按可信身份加载一次 Mem0 `get_all` 结果并冻结。
 - turn 只复用 snapshot；snapshot 缺失或 Mem0 失败时使用空记忆，不在 turn 内懒加载。
-- 默认最多加载 5 条；`MemoryPromptSnapshot v1` 只包含文本和 `source_ids`。
+- 默认最多加载 5 条结构化 `MemoryItem`；ContextBuilder 每轮直接组装其文本和注入 ID。
 - 不存在 local/remote/framework backend 选择、memory tool、关键词召回、二次 ranking、读写策略、
   profile、冲突处理或 promotion。
 - 成功回复提交后，runtime 把 user/assistant messages 投递到后台队列，通过单次 Mem0 `add`
@@ -113,8 +113,8 @@ Last updated: 2026-07-24
 上下文工程消费 Mem0 session snapshot，但不拥有 memory 行为。
 
 - Mem0 负责提取、合并、向量化、索引、检索和持久化。
-- `MemoryManager` 把 Mem0 结果格式化为 `MemoryContext`，并写入最小
-  `request.metadata["memory_prompt_snapshot"]`。
+- `MemoryManager` 只把 Mem0 结果格式化为结构化 `MemoryContext`；Runtime 将冻结 items 附加到
+  本轮 `AgentState`，不生成或写入 prompt metadata。
 - Context engineering 负责把 request、conversation、memory context、plan state、tool observations 和 tool specs 组装成 `AssistantContextPack`。
 - Context engineering 负责 prompt/native rendering、tool observation compaction、全局 context budget、source counts 和 trace/debug 摘要。
 - Context engineering 不应重新实现 Mem0 的提取、ranking、合并或 store 选择。
@@ -223,8 +223,8 @@ Last updated: 2026-07-24
 
 - session structured summary 在 AgentRuntime 中关闭；会话上下文发送全部已保存轮次原文。
   deterministic 与 LLM semantic compactor 实现均保留，但运行时配置和构造函数注入都不会启用。
-- AgentRuntime 不执行全局容量压缩；character/token budget 仅用于报告。Mem0 session recall 受
-  `top_k` 限制，进入 prompt 的冻结文本另有 2,000 字符硬上限。
+- AgentRuntime 不执行全局容量压缩；character/token budget 仅用于报告。Mem0 session recall 只受
+  `top_k` 限制，ContextBuilder 不再对冻结记忆文本设置额外字符上限。
 - Context Compiler v1 是调试/审计摘要，不是 prompt replay。它刻意不返回 raw prompt、raw provider payload、完整 memory 文本或完整 tool observation；token 字段仍依赖现有估算或 provider usage metadata。
 - 显式本地 trace-content + loopback OTLP 模式是独立的 prompt 调试例外：assistant loop
   会在 Provider 调用前把最终 compiled `ChatRequest` 暂存到进程内 store，并作为对应

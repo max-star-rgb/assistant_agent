@@ -65,7 +65,7 @@ from assistant_agent.services.context.sources import (
 from assistant_agent.services.memory_capture_dispatcher import MemoryCaptureDispatcher
 from assistant_agent.services.memory_observability import (
     enqueue_memory_capture_with_trace,
-    load_memory_with_trace,
+    recall_session_memory_with_trace,
 )
 from assistant_agent.services.run_history import RunHistoryStore
 from assistant_agent.services.session_store import SessionStore, create_session_store
@@ -220,7 +220,7 @@ class AgentGraphRuntime:
         )
         state = AgentState.from_request(request, agent_id=identity.agent_id)
         try:
-            load_memory_with_trace(
+            context = recall_session_memory_with_trace(
                 manager=self.memory_manager,
                 trace_store=self.trace_store,
                 trace_id=state.trace_id,
@@ -228,15 +228,13 @@ class AgentGraphRuntime:
                 state=state,
                 request=request,
                 session_context_store=self.session_memory_context_store,
-                session_start=True,
                 identity=identity,
             )
+            state.memory_context = context.items
         except Exception:  # noqa: BLE001 - session startup must fail open.
             context = self.memory_manager.failed_session_snapshot_context()
             self.session_memory_context_store.put(identity, context)
-            self.memory_manager.attach_context_to_state(state, context)
-            request.metadata["memory_context_source"] = "session_start_fallback"
-            request.metadata["memory_session_snapshot_status"] = "loaded"
+            state.memory_context = context.items
         return state
 
     def run_state(
@@ -281,6 +279,7 @@ class AgentGraphRuntime:
             trace_id=trace_context.trace_id if trace_context is not None else None,
             agent_id=self.agent_id,
         )
+        self._hydrate_session_memory_items(state)
         state.context_source_result = self.context_source_coordinator.load_once(
             ContextSourceRequest(
                 user_id=state.user_id,
@@ -345,8 +344,6 @@ class AgentGraphRuntime:
             chat_turn=self._run_native_chat_turn,
             context_compactor=self.context_compactor,
             context_projector=self._refresh_realtime_video_context,
-            memory_manager=self.memory_manager,
-            session_memory_context_store=self.session_memory_context_store,
             trace_store=self.trace_store,
             event_sink=run_event_sink,
             cancel_token=cancel_token,
@@ -528,6 +525,18 @@ class AgentGraphRuntime:
 
         return self.memory_capture_dispatcher.drain(timeout=timeout)
 
+    def _hydrate_session_memory_items(self, state: AgentState) -> None:
+        """Attach frozen raw items to the turn without performing recall."""
+
+        context = self.session_memory_context_store.get(
+            RequestIdentity.for_user(
+                user_id=state.user_id,
+                agent_id=state.agent_id,
+                session_id=state.session_id,
+            )
+        )
+        state.memory_context = context.items if context is not None else []
+
     def close(self) -> bool:
         """Drain and close runtime-owned background lifecycle services."""
 
@@ -552,7 +561,8 @@ class AgentGraphRuntime:
         snapshot = DurableTaskSnapshot.model_validate(
             request.metadata.get("durable_task_snapshot")
         )
-        state = AgentState.from_request(request)
+        state = AgentState.from_request(request, agent_id=self.agent_id)
+        self._hydrate_session_memory_items(state)
         state.request.metadata["durable_task_quantum"] = True
         tool_executor = ToolExecutor(
             registry=self.registry,
@@ -566,15 +576,6 @@ class AgentGraphRuntime:
         )
         try:
             raise_if_cancelled(cancel_token, phase="durable_quantum_start", state=state)
-            load_memory_with_trace(
-                manager=self.memory_manager,
-                trace_store=self.trace_store,
-                trace_id=state.trace_id,
-                node_name="durable_task_quantum",
-                state=state,
-                request=request,
-                session_context_store=self.session_memory_context_store,
-            )
             chat_request = self._durable_quantum_chat_request(request, state=state)
             if chat_request is None:
                 return TaskQuantumResult(

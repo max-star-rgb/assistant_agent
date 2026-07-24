@@ -1,19 +1,8 @@
-"""Prompt-facing projection of Mem0 records."""
+"""Runtime-facing projection of Mem0 records."""
 
 from datetime import datetime
-from typing import Literal
 
 from pydantic import BaseModel, Field
-
-
-class MemoryPromptSnapshot(BaseModel):
-    """Long-term memory frozen when a session starts."""
-
-    schema_version: Literal["memory_prompt_snapshot_v1"] = (
-        "memory_prompt_snapshot_v1"
-    )
-    text: str = ""
-    source_ids: list[str] = Field(default_factory=list, max_length=50)
 
 
 class MemoryItem(BaseModel):

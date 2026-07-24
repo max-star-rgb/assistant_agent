@@ -14,8 +14,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from assistant_agent.schemas.identity import RequestIdentity
-from assistant_agent.schemas.memory import MemoryItem, MemoryPromptSnapshot
-from assistant_agent.schemas.requests import UserRequest
+from assistant_agent.schemas.memory import MemoryItem
 from assistant_agent.services.provider_errors import ProviderSafetyPolicy, sanitize_error_message
 
 
@@ -24,9 +23,6 @@ _CAPTURE_TEXT_POLICY = ProviderSafetyPolicy(
     max_detail_chars=4000,
     redact_absolute_paths=False,
 )
-_MEMORY_PROMPT_SNAPSHOT_MAX_CHARS = 2000
-
-
 @dataclass(frozen=True)
 class PreparedTurnCapture:
     """Immutable input for the post-response Mem0 capture."""
@@ -47,10 +43,9 @@ class PreparedTurnCapture:
 
 
 class MemoryContext(BaseModel):
-    """The complete Mem0 result frozen for one session."""
+    """The structured Mem0 result frozen for one session."""
 
     items: list[MemoryItem] = Field(default_factory=list)
-    text: str = ""
     error_codes: list[str] = Field(default_factory=list)
     status: str = "succeeded"
 
@@ -61,21 +56,17 @@ class MemoryManager:
     def __init__(self, store: Any) -> None:
         self.store = store
 
-    def load_context_for_request(
+    def recall_session(
         self,
-        request: UserRequest,
+        identity: RequestIdentity,
         *,
         top_k: int | None = None,
-        session_initial: bool = False,
-        identity: RequestIdentity | None = None,
     ) -> MemoryContext:
-        """Recall Mem0 only from the explicit session-start path."""
+        """Recall Mem0 for the explicit session-start lifecycle."""
 
-        if not session_initial:
-            return self.missing_session_snapshot_context()
         try:
             items = self.store.recall(
-                identity or RequestIdentity.from_user_request(request),
+                identity,
                 top_k=top_k or 5,
             )
         except Exception:
@@ -85,33 +76,8 @@ class MemoryManager:
             )
         return MemoryContext(
             items=items,
-            text=_bounded_prompt_snapshot_text(items),
             status="succeeded",
         )
-
-    def load_into_state(
-        self,
-        state: Any,
-        request: UserRequest,
-        **_: Any,
-    ) -> MemoryContext:
-        """Turns never recall; they only receive an explicit missing snapshot."""
-
-        context = self.missing_session_snapshot_context()
-        self.attach_context_to_state(state, context)
-        return context
-
-    def attach_context_to_state(self, state: Any, context: MemoryContext) -> None:
-        source_ids = [item.memory_id for item in context.items]
-        state.memory_context = context.items
-        state.request.metadata["memory_prompt_snapshot"] = MemoryPromptSnapshot(
-            text=context.text,
-            source_ids=source_ids,
-        ).model_dump(mode="json")
-        state.request.metadata["memory_context_status"] = context.status
-
-    def missing_session_snapshot_context(self) -> MemoryContext:
-        return MemoryContext(status="session_snapshot_missing")
 
     def failed_session_snapshot_context(self) -> MemoryContext:
         return MemoryContext(
@@ -166,12 +132,3 @@ class MemoryManager:
             occurred_at=prepared.occurred_at,
             source_turn=prepared.source_turn,
         )
-
-
-def _bounded_prompt_snapshot_text(items: list[MemoryItem]) -> str:
-    """Project Mem0's ranked records into one bounded prompt-only string."""
-
-    text = "\n".join(item.summary for item in items if item.summary)
-    if len(text) <= _MEMORY_PROMPT_SNAPSHOT_MAX_CHARS:
-        return text
-    return text[: _MEMORY_PROMPT_SNAPSHOT_MAX_CHARS - 1].rstrip() + "…"

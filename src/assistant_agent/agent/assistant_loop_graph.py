@@ -11,7 +11,7 @@ from assistant_agent.agent.assistant_loop_nodes import (
     execute_requested_tool_node,
     route_after_assistant,
 )
-from assistant_agent.agent.graph_nodes import compose_response_node, load_memory_node
+from assistant_agent.agent.graph_nodes import compose_response_node
 from assistant_agent.agent.graph_runtime import GraphRuntimeContext, bind_runtime_node
 
 
@@ -24,20 +24,18 @@ def build_assistant_loop_graph(
     Build and compile the assistant loop graph.
 
     This is a ReAct-style graph:
-        START -> load_memory -> assistant -> route -> finish -> END
-                                      -> execute_tool -> assistant
-                                      -> plan_transition -> assistant
+        START -> assistant -> route -> finish -> END
+                           -> execute_tool -> assistant
+                           -> plan_transition -> assistant
     """
     graph = StateGraph(AssistantLoopState)
 
-    graph.add_node("load_memory", bind_runtime_node("load_memory", load_memory_node, runtime_context))
     graph.add_node("assistant", bind_runtime_node("assistant", assistant_node, runtime_context))
     graph.add_node("execute_tool", bind_runtime_node("execute_tool", execute_requested_tool_node, runtime_context))
     graph.add_node("apply_plan_mode_transition", bind_runtime_node("apply_plan_mode_transition", apply_plan_mode_transition_node, runtime_context))
     graph.add_node("compose_response", bind_runtime_node("compose_response", compose_response_node, runtime_context))
 
-    graph.add_edge(START, "load_memory")
-    graph.add_edge("load_memory", "assistant")
+    graph.add_edge(START, "assistant")
 
     graph.add_conditional_edges(
         "assistant",

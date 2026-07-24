@@ -12,15 +12,12 @@ from assistant_agent.agent.state import AgentState
 from assistant_agent.agent.response_composer import compose_response
 from assistant_agent.agent.tool_executor import ToolExecutor
 from assistant_agent.agent.tool_input_builder import build_tool_input
-from assistant_agent.memory.manager import MemoryManager
 from assistant_agent.schemas.capabilities import canonical_intent
 from assistant_agent.schemas.planning import TaskPlan
 from assistant_agent.schemas.requests import AgentResponse, UserRequest
 from assistant_agent.schemas.tools import ToolResult
 from assistant_agent.services.chat_adapter import ChatAdapter
-from assistant_agent.services.memory_observability import load_memory_with_trace
 from assistant_agent.services.response_observability import append_response_final_event
-from assistant_agent.services.session_memory_context import SessionMemoryContextStore
 from assistant_agent.schemas.tool_ids import (
     IMAGE_GENERATION_CAPABILITY,
     IMAGE_UNDERSTANDING_CAPABILITY,
@@ -41,27 +38,12 @@ class AgentGraphState(TypedDict):
     router: NotRequired[ToolRouter]
     tool_executor: NotRequired[ToolExecutor]
     chat_adapter: NotRequired[ChatAdapter]
-    memory_manager: NotRequired[MemoryManager]
-    session_memory_context_store: NotRequired[SessionMemoryContextStore]
     outputs_by_step: dict[str, ToolResult]
     current_step_index: int
     trace_id: NotRequired[str]
     trace_store: NotRequired[TraceStore]
     event_sink: NotRequired[object]
     current_node_name: NotRequired[str]
-
-
-def load_memory_node(graph_state: AgentGraphState) -> AgentGraphState:
-    load_memory_with_trace(
-        manager=_memory_manager(graph_state),
-        trace_store=graph_state.get("trace_store"),
-        trace_id=graph_state.get("trace_id"),
-        node_name=graph_state.get("current_node_name", "load_memory"),
-        state=graph_state["state"],
-        request=graph_state["request"],
-        session_context_store=graph_state.get("session_memory_context_store"),
-    )
-    return graph_state
 
 
 def detect_intent_node(graph_state: AgentGraphState) -> AgentGraphState:
@@ -221,10 +203,6 @@ def compose_response_node(graph_state: AgentGraphState) -> AgentGraphState:
         latency_ms=int((perf_counter() - response_started_at) * 1000),
     )
     return graph_state
-
-
-def _memory_manager(graph_state: AgentGraphState) -> MemoryManager:
-    return graph_state["memory_manager"]
 
 
 def _is_assistant_loop_state(graph_state: AgentGraphState) -> bool:

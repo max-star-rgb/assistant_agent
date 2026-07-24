@@ -10,7 +10,6 @@ from assistant_agent.agent.graph_nodes import (
     chat_node,
     compose_response_node,
     detect_intent_node,
-    load_memory_node,
     route_by_intent,
     run_first_tool_node,
     plan_steps_node,
@@ -33,7 +32,6 @@ def build_conditional_agent_graph(
     """Build and compile a conditional LangGraph workflow."""
 
     graph = StateGraph(AgentGraphState)
-    graph.add_node("load_memory", bind_runtime_node("load_memory", load_memory_node, runtime_context))
     graph.add_node("detect_intent", bind_runtime_node("detect_intent", detect_intent_node, runtime_context))
     graph.add_node("vision_node", bind_runtime_node("vision_node", run_first_tool_node, runtime_context))
     graph.add_node("search_node", bind_runtime_node("search_node", run_first_tool_node, runtime_context))
@@ -48,8 +46,7 @@ def build_conditional_agent_graph(
     graph.add_node("select_next_step", bind_runtime_node("select_next_step", select_next_step_node, runtime_context))
     graph.add_node("execute_step", bind_runtime_node("execute_step", execute_step_node, runtime_context))
     graph.add_node("compose_response", bind_runtime_node("compose_response", compose_response_node, runtime_context))
-    graph.add_edge(START, "load_memory")
-    graph.add_edge("load_memory", "detect_intent")
+    graph.add_edge(START, "detect_intent")
     graph.add_conditional_edges(
         "detect_intent",
         route_by_intent,

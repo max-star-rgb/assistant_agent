@@ -133,7 +133,9 @@ def _resolve_binding(
         return getattr(state.request, binding.key or "", _UNRESOLVED)
     if binding.source == "memory_context":
         if binding.key == "summaries":
-            return [item.summary for item in state.memory_context if item.summary]
+            return [
+                item.summary for item in state.memory_context if item.summary
+            ]
         if binding.key == "text":
             return "\n".join(
                 item.summary for item in state.memory_context if item.summary

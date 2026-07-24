@@ -85,7 +85,7 @@ def build_context_report(
         item_count=_source_count(pack, "memory_items") or len(memory_item_ids),
         included=bool(pack.memory_text or memory_item_ids),
         trimmed="memory" in pack.budget.trimmed_sections,
-        source="MemoryManager.memory_context",
+        source="ContextBuilder.session_memory_snapshot",
     )
     sections["realtime_task_state"] = ContextReportSection(
         chars=_json_chars(pack.realtime_task_state) if pack.realtime_task_state else 0,

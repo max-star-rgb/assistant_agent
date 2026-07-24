@@ -427,7 +427,6 @@ public names, but they should map to this vocabulary.
 | `run.started` | A user request has entered the assistant runtime. |
 | `gateway.turn.started` | Gateway accepted a normalized user turn. |
 | `memory.session_recall.finished` | Session 创建时唯一一次 Mem0 长期记忆召回。 |
-| `memory.session_snapshot.reused` / `memory.session_snapshot.missing` | Turn 复用冻结快照，或在未初始化 session 时使用空快照。 |
 | `context.build.started` / `context.build.finished` | Prompt/native context pack construction and budget report. |
 | `llm.chat.started` / `llm.chat.finished` | One provider chat call, including direct-answer and native tool-call responses. |
 | `react.decision` | Assistant selected final answer, follow-up, tool call, or plan transition. |
@@ -456,9 +455,9 @@ helper, which emits `context.build.started` and `context.build.finished` with
 redacted budget, source-count, compaction, and tool-catalog summaries.
 Memory lifecycle calls are wrapped at the runtime boundary:
 `memory.session_recall.finished` 只记录 session-start recall 的终态；
-`memory.session_snapshot.reused` / `memory.session_snapshot.missing` 记录 turn
-对冻结快照的使用；`memory.capture.queued` / `memory.capture.finished` 记录非阻塞
+`memory.capture.queued` / `memory.capture.finished` 记录非阻塞
 Mem0 add。事件不包含原始 user/assistant 文本或 Mem0 响应，也不维护第二份 memory operation overlay。
+每轮是否注入冻结 snapshot、注入数量和字符数属于 `context.build.finished`。
 Final response tracing emits `response.final` with only prompt-safe response
 shape data such as message presence, character count, output-ref count, response
 data keys, status, and error count. It must not include the response text.
@@ -793,7 +792,8 @@ Langfuse 的工具链同样使用完整视图：`tool.execute` 直接显示执�
 `.data/graph_trace.jsonl` 的 `trace.content` 事件。
 
 记忆链路只保留最小生命周期事件。session 创建阶段的 `memory.session_recall` 显示状态、
-数量和错误码；turn 内只出现 `memory.session_snapshot`，证明没有再次访问 Mem0。最终
+数量和错误码；turn 内不产生 memory lifecycle event，冻结 snapshot 的注入事实由
+`context.build` 展示。最终
 `llm.chat` generation input 可用于确认冻结文本已作为 user evidence 进入 Provider 请求。
 回复提交后的 `memory.turn_capture` 独立记录后台 Mem0 add 的结果，不存在 memory tool
 observation 或观测层自建的 memory operation overlay。
@@ -899,8 +899,7 @@ Regression tests should enforce these invariants:
   scope 与 `attributes.iteration` 驱动；Langfuse/OTel 映射层不枚举 canonical event。新增工具沿用
   `ToolExecutor` 的统一 lifecycle 即自动获得 `tool.execute` span。现有
   `memory.session_recall.finished` 与 `memory.capture.finished` 在 Langfuse 中分别展示为
-  `memory.session_recall` 和 `memory.turn_capture`；turn 内的 snapshot 事件展示为
-  `memory.session_snapshot`。canonical timeline 名称不因展示层命名而改变。
+  `memory.session_recall` 和 `memory.turn_capture`。canonical timeline 名称不因展示层命名而改变。
 - `llm.chat` generation 默认不设置 `langfuse.observation.output`；Provider/model、usage、latency 和
   attempt kind 使用独立 observation attributes，finish reason 保留在 trace/协议快照。本地 OTLP
   export 自动从进程内 `TraceConversationStore` 按 span id 投影 adapter 捕获的完整 SDK 调用参数；

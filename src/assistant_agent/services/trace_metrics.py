@@ -348,11 +348,6 @@ def _memory_metrics(events: list[TraceEvent]) -> dict[str, Any]:
         for event in events
         if event.canonical_event == "memory.session_recall.finished"
     ]
-    snapshots = [
-        event
-        for event in events
-        if event.canonical_event == "memory.session_snapshot.reused"
-    ]
     captures = [
         event
         for event in events
@@ -363,7 +358,6 @@ def _memory_metrics(events: list[TraceEvent]) -> dict[str, Any]:
         "session_recall_failure_count": sum(
             event.status != "succeeded" for event in recalls
         ),
-        "snapshot_reuse_count": len(snapshots),
         "capture_count": len(captures),
         "capture_failure_count": sum(
             event.status != "succeeded" for event in captures

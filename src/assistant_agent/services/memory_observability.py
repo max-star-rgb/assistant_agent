@@ -28,7 +28,7 @@ from assistant_agent.services.trace_store import (
 )
 
 
-def load_memory_with_trace(
+def recall_session_memory_with_trace(
     *,
     manager: MemoryManager,
     trace_store: TraceStore | None,
@@ -37,59 +37,22 @@ def load_memory_with_trace(
     state: AgentState,
     request: UserRequest,
     top_k: int | None = None,
-    session_context_store: SessionMemoryContextStore | None = None,
-    session_start: bool = False,
-    identity: RequestIdentity | None = None,
+    session_context_store: SessionMemoryContextStore,
+    identity: RequestIdentity,
 ) -> MemoryContext:
-    """Recall once at session start or reuse the frozen snapshot."""
+    """Recall once at session start and freeze the structured result."""
 
     started = perf_counter()
     try:
-        if session_context_store is None:
-            context = (
-                manager.load_context_for_request(
-                    request,
-                    top_k=top_k,
-                    session_initial=True,
-                    identity=identity,
-                )
-                if session_start
-                else manager.missing_session_snapshot_context()
-            )
-            snapshot_status = "loaded" if session_start else "missing"
-        else:
-            resolution = session_context_store.resolve(
-                identity
-                or RequestIdentity.for_user(
-                    user_id=state.user_id,
-                    agent_id=state.agent_id,
-                    session_id=state.session_id,
-                ),
-                loader=lambda: manager.load_context_for_request(
-                    request,
-                    top_k=top_k,
-                    session_initial=True,
-                    identity=identity,
-                ),
-                allow_load=session_start,
-                reset=(
-                    session_start
-                    and request.metadata.get("reset_conversation") is True
-                ),
-            )
-            snapshot_status = resolution.status
-            context = (
-                resolution.context
-                if resolution.context is not None
-                else manager.missing_session_snapshot_context()
-            )
-        manager.attach_context_to_state(state, context)
-        request.metadata["memory_context_source"] = (
-            "mem0_session_start"
-            if snapshot_status == "loaded"
-            else "session_snapshot"
+        resolution = session_context_store.resolve(
+            identity,
+            loader=lambda: manager.recall_session(
+                identity,
+                top_k=top_k,
+            ),
+            reset=request.metadata.get("reset_conversation") is True,
         )
-        request.metadata["memory_session_snapshot_status"] = snapshot_status
+        context = resolution.context
     except Exception as exc:
         append_observability_event(
             trace_store,
@@ -97,17 +60,9 @@ def load_memory_with_trace(
             run_id=state.run_id,
             user_id=state.user_id,
             session_id=state.session_id,
-            canonical_event=(
-                "memory.session_recall.finished"
-                if session_start
-                else "memory.session_snapshot.missing"
-            ),
+            canonical_event="memory.session_recall.finished",
             observation_type="span",
-            observation_name=(
-                "memory.session_recall"
-                if session_start
-                else "memory.session_snapshot"
-            ),
+            observation_name="memory.session_recall",
             node_name=node_name,
             status="failed",
             latency_ms=_elapsed_ms(started),
@@ -118,39 +73,29 @@ def load_memory_with_trace(
             },
         )
         raise
-    append_observability_event(
-        trace_store,
-        trace_id=trace_id or state.trace_id,
-        run_id=state.run_id,
-        user_id=state.user_id,
-        session_id=state.session_id,
-        canonical_event=(
-            "memory.session_recall.finished"
-            if snapshot_status == "loaded"
-            else "memory.session_snapshot.reused"
-            if snapshot_status == "reused"
-            else "memory.session_snapshot.missing"
-        ),
-        observation_type="span",
-        observation_name=(
-            "memory.session_recall"
-            if snapshot_status == "loaded"
-            else "memory.session_snapshot"
-        ),
-        node_name=node_name,
-        status=context.status,
-        latency_ms=_elapsed_ms(started),
-        span_id=new_span_id(),
-        attributes={
-            "session_snapshot_status": snapshot_status,
-            "memory_count": len(context.items),
-            "error_codes": context.error_codes,
-        },
-        output_summary={
-            "memory_count": len(context.items),
-            "error_codes": context.error_codes,
-        },
-    )
+    if resolution.status == "loaded":
+        append_observability_event(
+            trace_store,
+            trace_id=trace_id or state.trace_id,
+            run_id=state.run_id,
+            user_id=state.user_id,
+            session_id=state.session_id,
+            canonical_event="memory.session_recall.finished",
+            observation_type="span",
+            observation_name="memory.session_recall",
+            node_name=node_name,
+            status=context.status,
+            latency_ms=_elapsed_ms(started),
+            span_id=new_span_id(),
+            attributes={
+                "memory_count": len(context.items),
+                "error_codes": context.error_codes,
+            },
+            output_summary={
+                "memory_count": len(context.items),
+                "error_codes": context.error_codes,
+            },
+        )
     return context
 
 

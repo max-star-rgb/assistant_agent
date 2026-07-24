@@ -9,7 +9,6 @@ from assistant_agent.agent.graph_nodes import (
     AgentGraphState,
     compose_response_node,
     detect_intent_node,
-    load_memory_node,
     execute_tools_node,
     route_tools_node,
 )
@@ -28,13 +27,11 @@ def build_agent_graph(
     """Build and compile the minimal LangGraph workflow."""
 
     graph = StateGraph(AgentGraphState)
-    graph.add_node("load_memory", bind_runtime_node("load_memory", load_memory_node, runtime_context, trace=False))
     graph.add_node("detect_intent", bind_runtime_node("detect_intent", detect_intent_node, runtime_context, trace=False))
     graph.add_node("route_tools", bind_runtime_node("route_tools", route_tools_node, runtime_context, trace=False))
     graph.add_node("execute_tools", bind_runtime_node("execute_tools", execute_tools_node, runtime_context, trace=False))
     graph.add_node("compose_response", bind_runtime_node("compose_response", compose_response_node, runtime_context, trace=False))
-    graph.add_edge(START, "load_memory")
-    graph.add_edge("load_memory", "detect_intent")
+    graph.add_edge(START, "detect_intent")
     graph.add_edge("detect_intent", "route_tools")
     graph.add_edge("route_tools", "execute_tools")
     graph.add_edge("execute_tools", "compose_response")

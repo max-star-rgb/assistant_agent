@@ -52,7 +52,6 @@ def build_image_generation_request(
 
     product = _latest_product(outputs_by_step)
     visual_summary = _latest_visual_summary(outputs_by_step)
-    memory_context = _request_memory_summaries(request)
     product_title = (
         product.get("title")
         or product.get("summary")
@@ -64,7 +63,7 @@ def build_image_generation_request(
         style=style or "日系海报",
         product_context=product_context,
         visual_summary=visual_summary,
-        memory_context=memory_context,
+        memory_context=[],
         max_chars=max_prompt_chars,
     )
     return ImageGenerationRequest(
@@ -74,7 +73,7 @@ def build_image_generation_request(
         product_title=product_title,
         product_info=product,
         reference_image_ids=request.image_ids,
-        memory_context=memory_context,
+        memory_context=[],
         user_id=request.user_id,
         session_id=request.session_id,
     )
@@ -103,15 +102,6 @@ def _latest_visual_summary(outputs_by_step: dict[str, ToolResult]) -> str | None
             if isinstance(summary, str):
                 return summary
     return None
-
-
-def _request_memory_summaries(request: UserRequest) -> list[str]:
-    snapshot = request.metadata.get("memory_prompt_snapshot")
-    if isinstance(snapshot, dict):
-        text = snapshot.get("text")
-        if isinstance(text, str) and text.strip():
-            return [text.strip()]
-    return []
 
 
 def _compact_context(value: dict[str, Any]) -> str | None:

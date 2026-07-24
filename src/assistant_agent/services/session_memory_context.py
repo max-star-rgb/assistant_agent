@@ -12,7 +12,7 @@ from assistant_agent.memory.manager import MemoryContext
 from assistant_agent.schemas.identity import RequestIdentity
 
 
-SessionMemorySnapshotStatus = Literal["loaded", "reused", "missing"]
+SessionMemorySnapshotStatus = Literal["loaded", "reused"]
 SessionMemoryKey = tuple[str, str, str]
 
 
@@ -20,7 +20,7 @@ SessionMemoryKey = tuple[str, str, str]
 class SessionMemoryContextResolution:
     """One immutable resolution from the session snapshot boundary."""
 
-    context: MemoryContext | None
+    context: MemoryContext
     status: SessionMemorySnapshotStatus
 
 
@@ -40,7 +40,6 @@ class SessionMemoryContextStore:
         identity: RequestIdentity,
         *,
         loader: Callable[[], MemoryContext],
-        allow_load: bool,
         reset: bool = False,
     ) -> SessionMemoryContextResolution:
         """Load once or reuse; a later-turn miss never triggers recall."""
@@ -58,8 +57,6 @@ class SessionMemoryContextStore:
                         context=cached.model_copy(deep=True),
                         status="reused",
                     )
-                if not allow_load:
-                    return SessionMemoryContextResolution(context=None, status="missing")
             cached = self._entries.get(key)
             if cached is not None:
                 self._entries.move_to_end(key)
@@ -67,8 +64,6 @@ class SessionMemoryContextStore:
                     context=cached.model_copy(deep=True),
                     status="reused",
                 )
-            if not allow_load:
-                return SessionMemoryContextResolution(context=None, status="missing")
             self._loading.add(key)
 
         try:
@@ -91,6 +86,17 @@ class SessionMemoryContextStore:
             context=frozen.model_copy(deep=True),
             status="loaded",
         )
+
+    def get(self, identity: RequestIdentity) -> MemoryContext | None:
+        """Return the frozen structured snapshot without triggering recall."""
+
+        key = _session_memory_key(identity)
+        with self._condition:
+            cached = self._entries.get(key)
+            if cached is None:
+                return None
+            self._entries.move_to_end(key)
+            return cached.model_copy(deep=True)
 
     def clear(self, identity: RequestIdentity) -> bool:
         """Remove one retained session snapshot."""

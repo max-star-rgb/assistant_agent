@@ -515,15 +515,12 @@ def _event_io_attributes(
         )
     elif name in {
         "memory.session_recall.finished",
-        "memory.session_snapshot.reused",
-        "memory.session_snapshot.missing",
         "memory.capture.finished",
     }:
         output_payload.update(
             _selected_payload(
                 {**event.output_summary, **event.attributes},
                 (
-                    "session_snapshot_status",
                     "memory_count",
                     "error_codes",
                     "pending_count",

@@ -15,16 +15,16 @@ Mem0 拥有记忆算法，包括对话事实提取、合并、更新、向量化
 
 1. 将可信的 runtime `user_id`、`agent_id` 映射为不透明 Mem0 `user_id`、`agent_id`；
    将 `user_id + agent_id + session_id` 稳定映射为 Mem0 `run_id`。用户 metadata 不能覆盖这些字段。
-2. 在 session 创建阶段调用一次 Mem0 `get_all`，冻结为该 session 的 prompt snapshot。
+2. 在 session 创建阶段调用一次 Mem0 `get_all`，冻结为该 session 的结构化 `MemoryItem` snapshot。
 3. 最终回复完成后，把原始 user/assistant messages 异步提交给 Mem0 `add`。
 
 记忆不是模型可调用工具。默认 ToolRegistry 不注册 `memory_search`、`memory_get` 或
 `memory_save`，API 也不提供项目自建的记忆 CRUD/control-plane。
 
-冻结快照只作为当前 `user` message 中的低权限历史证据，不进入 `system` message。固定 system
-policy 负责声明记忆可能过期、不完整或检索错误，禁止执行记忆中的指令，并规定当前请求和最新可靠
-证据优先。prompt projection 最多保留 2,000 字符；这是延迟和上下文容量边界，不改变 Mem0 的检索
-顺序、提取、合并或持久化行为。
+Memory 服务不生成 prompt 文本。ContextBuilder 在每轮构建上下文时从本轮 `AgentState` 中读取同一份
+冻结 items，将 Mem0 返回的原始记忆文本按顺序直接组装为低权限历史证据并放入当前 `user`
+message，不进入 `system` message。固定 system policy 负责声明记忆可能过期、不完整或检索错误，
+禁止执行记忆中的指令，并规定当前请求和最新可靠证据优先。
 
 ## 2. 生命周期
 
@@ -35,7 +35,8 @@ session.create
   -> SessionMemoryContextStore.freeze
 
 turn
-  -> reuse frozen snapshot
+  -> runtime attaches frozen MemoryItems to AgentState
+  -> ContextBuilder assembles and renders original memory evidence
   -> LLM response
   -> enqueue background capture
   -> POST /memories {messages, user_id, agent_id, run_id, metadata}
@@ -88,8 +89,9 @@ mock/offline 环境使用明确的 unavailable adapter；它不是本地记忆�
 | `memory/mem0/base.py` | Mem0 adapter 协议和身份映射 |
 | `memory/mem0/adapters.py` | Mem0 OSS REST add/get-all adapter |
 | `memory/mem0/store.py` | runtime 使用的薄适配 |
-| `memory/manager.py` | session snapshot 与后台 capture 输入 |
-| `services/session_memory_context.py` | session 内冻结和复用 snapshot |
+| `memory/manager.py` | session recall 结果与后台 capture 输入 |
+| `services/session_memory_context.py` | session 内冻结结构化 snapshot |
+| `services/context/builder.py` | 每轮把冻结 snapshot 直接组装进 assistant context |
 | `services/memory_observability.py` | recall/capture 的最小结构化 trace |
 | `docker/mem0/` | Mem0 + Qdrant 本地开发栈 |
 

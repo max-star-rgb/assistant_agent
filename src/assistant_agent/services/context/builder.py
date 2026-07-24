@@ -15,7 +15,6 @@ from assistant_agent.schemas.context import (
     RealtimeVideoContext,
     ToolCapabilityDescriptor,
 )
-from assistant_agent.schemas.memory import MemoryPromptSnapshot
 from assistant_agent.schemas.durable_tasks import DurableTaskSnapshot
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.schemas.tools import ToolSpec
@@ -70,21 +69,27 @@ def build_assistant_context_pack(
     active_request = request or state.request
     compaction_enabled = context_compactor is not None
     context_policy = context_policy_from_request(active_request)
-    summaries = memory_summaries if memory_summaries is not None else [item.summary for item in state.memory_context]
-    prompt_snapshot = _memory_prompt_snapshot(active_request)
     conversation_text = _conversation_context_text(active_request)
     context_summary = _context_summary(active_request) if context_compactor is not None else None
     compactor_type = _metadata_text(active_request, "context_compactor_type") or "none"
-    if prompt_snapshot is not None:
-        text = prompt_snapshot.text
-        memory_source_ids = list(prompt_snapshot.source_ids)
-    else:
-        text = (
-            memory_text
-            if memory_text is not None
-            else "\n".join(summary for summary in summaries if summary)
+    if memory_text is not None:
+        text = memory_text
+        summaries = (
+            list(memory_summaries)
+            if memory_summaries is not None
+            else ([text] if text else [])
         )
         memory_source_ids = []
+    elif memory_summaries is not None:
+        summaries = [summary for summary in memory_summaries if summary]
+        text = "\n".join(summaries)
+        memory_source_ids = []
+    else:
+        summaries = [item.summary for item in state.memory_context if item.summary]
+        text = "\n".join(summaries)
+        memory_source_ids = [
+            item.memory_id for item in state.memory_context if item.summary
+        ]
     memory_blocks: list[dict[str, Any]] = []
     # Realtime task state remains runtime/session data. It is intentionally not
     # projected into the model context: the current request and conversation
@@ -366,16 +371,6 @@ def _metadata_text(request: UserRequest, key: str) -> str:
 def _metadata_dict(request: UserRequest, key: str) -> dict[str, Any] | None:
     value = request.metadata.get(key)
     return dict(value) if isinstance(value, dict) else None
-
-
-def _memory_prompt_snapshot(request: UserRequest) -> MemoryPromptSnapshot | None:
-    value = request.metadata.get("memory_prompt_snapshot")
-    if not isinstance(value, dict):
-        return None
-    try:
-        return MemoryPromptSnapshot.model_validate(value)
-    except (TypeError, ValueError):
-        return None
 
 
 def _realtime_video_context(request: UserRequest) -> RealtimeVideoContext | None:
