@@ -12,7 +12,6 @@ from pydantic import BaseModel, Field, ValidationError
 class SkillVisibility(BaseModel):
     """Prompt-safe visibility declaration for one repo-local skill."""
 
-    toolset: str | None = None
     tags: list[str] = Field(default_factory=list)
     enabled_by_default: bool = True
     skill_only: bool = False
@@ -371,9 +370,7 @@ def _visibility_from_section(lines: list[str]) -> SkillVisibility:
         raw_key, raw_value = item.split(":", 1)
         key = raw_key.strip().replace("-", "_").lower()
         value = raw_value.strip()
-        if key == "toolset":
-            values["toolset"] = _clean_token(value)
-        elif key == "tags":
+        if key == "tags":
             values["tags"] = [
                 _clean_token(candidate)
                 for candidate in value.split(",")

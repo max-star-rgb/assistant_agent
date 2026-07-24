@@ -35,7 +35,6 @@ class TaskPlanSubmitTool(ToolBase):
     input_schema = TaskPlanSubmitInput
     output_schema = TaskPlanSubmitOutput
     category = "write"
-    toolset = "durable_task"
     requires_confirmation = False
 
     def __init__(self, service: DurableTaskService) -> None:

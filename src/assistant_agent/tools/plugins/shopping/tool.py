@@ -34,7 +34,6 @@ class ShoppingSearchTool(ToolBase):
     input_schema = ProductSearchRequest
     output_schema = ShoppingSearchResult
     category = "read"
-    toolset = "shopping"
     requires_confirmation = False
     input_bindings = (
         ToolInputBinding(

@@ -24,7 +24,6 @@ class VisualImageSearchTool(ToolBase):
     input_schema = VisualImageSearchRequest
     output_schema = VisualImageSearchResult
     category = "read"
-    toolset = "vision"
     requires_confirmation = False
     requires_media = ["image"]
     input_bindings = (

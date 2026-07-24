@@ -27,7 +27,6 @@ class PythonInterpreterTool(ToolBase):
     input_schema = PythonInterpreterInput
     output_schema = PythonInterpreterResult
     category = "dangerous"
-    toolset = "analysis.local"
     requires_confirmation = False
     enabled_by_default = False
     input_bindings = (

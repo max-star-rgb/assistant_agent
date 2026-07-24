@@ -92,7 +92,7 @@ def test_configured_write_tool_is_not_host_enabled_by_plugin_declaration(
     assert selection.summary.registry_generation == registry.generation
 
 
-def test_explicit_toolset_activation_exposes_the_governed_group(
+def test_explicit_tool_activation_exposes_only_named_governed_tools(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
@@ -107,7 +107,7 @@ def test_explicit_toolset_activation_exposes_the_governed_group(
         text="manage calendar",
         metadata={
             "tool_visibility": {
-                "enabled_toolsets": ["personal.calendar"],
+                "enabled_tools": ["calendar_search", "calendar_create"],
             }
         },
     )

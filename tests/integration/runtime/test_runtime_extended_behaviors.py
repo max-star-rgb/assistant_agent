@@ -104,8 +104,14 @@ def test_package_and_runtime_initialize_offline() -> None:
     }
     assert "memory" not in specs
     assert {"memory_search", "memory_get", "memory_save"}.isdisjoint(specs)
-    assert specs["calendar_search"].toolset == "personal.calendar"
-    assert specs["calendar_create"].toolset == "personal.calendar"
+    assert (
+        runtime.registry.registration_record("calendar_search").plugin_id
+        == "personal_assistant"
+    )
+    assert (
+        runtime.registry.registration_record("calendar_create").plugin_id
+        == "personal_assistant"
+    )
     assert runtime.chat_adapter.provider == "mock"
 
 

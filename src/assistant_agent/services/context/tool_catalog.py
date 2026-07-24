@@ -60,10 +60,8 @@ class ToolVisibilityOverrides:
     """Structured per-run tool exposure overrides."""
 
     explicit_tools: set[str]
-    explicit_toolsets: set[str]
     explicit_skills: set[str]
     configured_tools: set[str]
-    configured_toolsets: set[str]
     allowed_tools: set[str]
     profile: str | None
 
@@ -170,17 +168,9 @@ def qualify_tool_specs(
             or durable_ready
             or durable_plan_submission
             or spec.name in visibility_overrides.configured_tools
-            or bool(
-                spec.toolset
-                and spec.toolset in visibility_overrides.configured_toolsets
-            )
         )
         explicitly_enabled = (
             spec.name in visibility_overrides.explicit_tools
-            or bool(
-                spec.toolset
-                and spec.toolset in visibility_overrides.explicit_toolsets
-            )
             or spec.name in active_skill_tools
         )
         if not spec.enabled_by_default and not (
@@ -281,10 +271,8 @@ def _visibility_overrides(request: UserRequest) -> ToolVisibilityOverrides:
     payload = payload if isinstance(payload, dict) else {}
     return ToolVisibilityOverrides(
         explicit_tools=set(_string_list(payload.get("enabled_tools"))),
-        explicit_toolsets=set(_string_list(payload.get("enabled_toolsets"))),
         explicit_skills=set(_string_list(payload.get("enabled_skills"))),
         configured_tools=set(_string_list(payload.get("configured_tools"))),
-        configured_toolsets=set(_string_list(payload.get("configured_toolsets"))),
         allowed_tools=set(_string_list(payload.get("allowed_tools"))),
         profile=_string_value(payload.get("profile")),
     )

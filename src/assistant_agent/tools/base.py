@@ -47,7 +47,6 @@ class Tool(Protocol):
     input_schema: type[BaseModel]
     output_schema: type[BaseModel]
     category: ToolCategory
-    toolset: str | None
     requires_confirmation: bool
     enabled_by_default: bool
     requires_media: list[ToolMediaRequirement]
@@ -63,7 +62,6 @@ class ToolBase:
     input_schema: type[BaseModel]
     output_schema: type[BaseModel]
     category: ToolCategory = "dangerous"
-    toolset: str | None = None
     requires_confirmation = True
     enabled_by_default = True
     requires_media: list[ToolMediaRequirement] = []

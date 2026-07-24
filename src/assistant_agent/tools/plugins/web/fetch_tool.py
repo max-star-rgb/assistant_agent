@@ -20,7 +20,6 @@ class WebFetchTool(ToolBase):
     input_schema = WebFetchRequest
     output_schema = WebFetchResult
     category = "read"
-    toolset = "web"
     requires_confirmation = False
     input_bindings = (
         ToolInputBinding(field="max_chars", source="constant", value=6000),

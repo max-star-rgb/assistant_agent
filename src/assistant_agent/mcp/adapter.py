@@ -53,7 +53,6 @@ class MCPProxyTool:
         self.output_schema = self.input_schema
         self.category = "read" if config.is_read_only(definition.name) else "write"
         self.requires_confirmation = not config.is_read_only(definition.name)
-        self.toolset = f"mcp.{_safe_name(config.server_name)}"
         self.enabled_by_default = config.is_enabled_by_default(definition.name)
 
     def run(
@@ -101,7 +100,6 @@ class MCPToolAdapter:
             input_schema=_canonical_input_schema(definition.input_schema),
             category="read" if self.config.is_read_only(definition.name) else "write",
             requires_confirmation=not self.config.is_read_only(definition.name),
-            toolset=f"mcp.{_safe_name(self.config.server_name)}",
             enabled_by_default=self.config.is_enabled_by_default(definition.name),
         )
 

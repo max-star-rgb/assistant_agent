@@ -7,7 +7,7 @@
 工具系统采用最小安全模式，只在公共运行时保留四个核心机制：
 
 1. `ToolRegistry` 注册和查找工具；
-2. 基于 `ToolSpec.category`、toolset、profile、media、env 和显式配置组装本轮工具目录；
+2. 基于 `ToolSpec.category`、profile、media、env 和显式工具配置组装本轮工具目录；
 3. 使用工具自己的 Pydantic `input_schema` 校验模型参数；
 4. 对声明 `requires_confirmation=true` 的工具执行简单、结构化的确认检查。
 
@@ -18,7 +18,7 @@ ToolScheduler。工具执行顺序由 assistant loop 决定，当前 native tool
 
 > 本轮暴露给模型的工具，就是本轮允许模型调用的工具。
 
-因此 category/toolset/profile 负责构造候选空间，`RunToolCatalog.available_tool_names` 是唯一的
+因此 category/profile 负责构造候选空间，`RunToolCatalog.available_tool_names` 是唯一的
 run-scoped 可用集合，不再另建 executable allowlist。
 
 ## 2. 核心数据契约
@@ -31,7 +31,6 @@ run-scoped 可用集合，不再另建 executable allowlist。
 name / description
 input_schema（包含模型需要理解和填写的语义参数，不含 runtime-owned 参数）
 category: read | generate | write | dangerous
-toolset
 requires_confirmation
 enabled_by_default
 requires_media
@@ -83,17 +82,16 @@ Tool 注册时会检查绑定字段存在、没有重复且静态默认值符合
 未知或未声明分类的本地工具使用保守默认值：`category="dangerous"` 且
 `requires_confirmation=true`。
 
-Tool 的分类使用相互独立的边界，不合并成一棵中心分类树：
+Tool 系统只保留职责明确且不可互相替代的边界：
 
 - `category` 只表达副作用与安全等级；
-- `toolset` 只表达结构化暴露分组；
 - Plugin 只表达代码所有权、Provider、依赖和生命周期；
+- Tool name 用于每轮精确启用和执行授权；
 - Skill 只表达如何组合已治理工具的工作流。
 
-仓库内置 Tool 必须声明非空 `toolset`。Toolset 按业务或运行场景命名，例如 `web`、
-`vision`、`shopping`、`personal.calendar`，不能用 `readonly` 等安全概念代替
-`category`。同一 Plugin 可以贡献多个 Toolset，同一 Toolset 也不能替代 Tool 自己的
-category、确认和输入校验。
+系统不维护独立 toolset 或业务分类树。部署级批量启停使用 Plugin，单轮暴露使用精确 Tool name
+或显式 Skill；Plugin 被装配不代表其 write/dangerous Tool 自动获得授权，Tool 自己的 category、
+确认和输入校验仍然生效。
 
 `defer_loading` 只决定大目录下是否允许延迟发送完整 Schema，不改变注册、授权或执行语义。默认值为
 `true`；`tool_search` 以及依赖当前结构化媒体事实的统一视觉入口等少量基础 Tool 可以声明为 `false`。
@@ -204,10 +202,9 @@ assistant loop、Prompt/Context 编译或中心 Tool name 表。只有引入新�
 
 可用 `python -m assistant_agent.tools.cli plugins` 只读查看启动装配结果、ownership、issue、seal 状态和
 generation；该命令不会执行 Tool。`--module` 可重复传入并覆盖环境 module 列表用于部署前验证。
-`scripts/run_server.py` 则在服务 lifespan 初始化真实 runtime 后，按 `ToolSpec.toolset` 的展示投影输出该
-runtime 最终 Registry 的工具名：空 toolset 显示为 `normal（通用）`，所有 `personal.*` 显示为统一的
-`personal`；该投影不修改 ToolSpec 或工具暴露语义。不输出 description、插件 ownership、source、seal
-状态或 generation，也不会为了展示而重复装配插件。
+`scripts/run_server.py` 则在服务 lifespan 初始化真实 runtime 后，按 Registry 已保存的 `plugin_id`
+输出该 runtime 最终 Registry 的工具名；该展示不修改 ToolSpec 或工具暴露语义，不输出 description、
+source、seal 状态或 generation，也不会为了展示而重复装配插件。
 
 `ToolRegistry.list_specs()` 和 `get_spec(name)` 复用同一个 builder，因此 provider schema、validator 和
 executor 读取的是同一份契约。新增或移除一个内置能力包时，只增删对应插件目录及 `defaults.py`
@@ -245,9 +242,9 @@ ToolRegistry.list_specs()
 - `dangerous` 必须结构化显式启用，工具执行阶段仍负责自身环境和安全校验；
 - `requires_media` 可以基于入口携带的结构化媒体事实排除工具；
 - `enabled_by_default` 保留给 MCP 等需要区分“已注册”和“默认暴露”的能力；
-- `enabled_tools`、`enabled_toolsets`、`enabled_skills` 等 metadata 是显式结构化 opt-in。
+- `enabled_tools`、`enabled_skills` 等 metadata 是显式结构化 opt-in。
 
-LLM 决定是否调用、调用哪个已暴露工具以及参数内容。category/toolset/profile 只定义候选空间，不替
+LLM 决定是否调用、调用哪个已暴露工具以及参数内容。category/profile 只定义候选空间，不替
 模型猜测用户意图。
 
 ## 4. Provider schema 转换
@@ -289,7 +286,7 @@ ToolSpec，不增加额外往返；超过预算后，只直接发送 `defer_load
 
 该机制不读取原始 `request.text` 做关键词或正则路由。检索词是模型显式构造的 `tool_search` 输入；
 搜索结果只能激活当前 `RunToolCatalog` 中标记为 `deferred_for_schema_budget` 的名称，不能发现或授权
-被 category、media、profile、toolset、skill、env 或 allowlist 排除的工具。激活只改变下一轮 Schema
+被 category、media、profile、skill、env 或 allowlist 排除的工具。激活只改变下一轮 Schema
 披露，实际调用仍经过 `ActionValidator -> ToolExecutor -> ToolRegistry -> tool`。
 
 模型返回的 native `tool_calls` 会归一化为内部 `AssistantDecision`，然后进入统一执行链路。
@@ -454,7 +451,7 @@ weather、calendar search 和 contacts mapping 必须位于 `read_only_tools`。
   --case-id weather_beijing_today
 ```
 
-本地 `@tool` decorator 直接声明 `category`、`requires_confirmation`、`toolset` 和
+本地 `@tool` decorator 直接声明 `category`、`requires_confirmation` 和
 `requires_media`，不再要求 rich policy 或 per-tool timeout/retry metadata。CLI validate 检查能否生成
 合法 ToolSpec；simulate 仍通过 validator/executor 执行。
 
@@ -480,7 +477,7 @@ workflow skill 只能调用已注册且 permission 匹配的工具。read 工具
 
 - 所有模型驱动工具调用必须经过 `ActionValidator -> ToolExecutor -> ToolRegistry -> tool`；
 - 暴露给模型的工具一定可进入执行链路，未暴露工具一定被 validator 拒绝；
-- category/toolset/profile/media 只基于结构化事实，不从自然语言推断；
+- category/profile/media 只基于结构化事实，不从自然语言推断；
 - Pydantic schema 是工具参数形状的权威；
 - 主模型工具调用链对同一输入只构造一次 Pydantic model；
 - 工具级确认只读可信 request metadata，不信任模型输入；

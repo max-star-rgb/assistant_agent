@@ -254,7 +254,6 @@ def _declared_contract(tool: Tool) -> dict[str, Any]:
 
     fields = (
         "category",
-        "toolset",
         "requires_confirmation",
         "enabled_by_default",
         "requires_media",

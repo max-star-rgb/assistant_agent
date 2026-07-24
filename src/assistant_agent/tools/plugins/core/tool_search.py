@@ -31,7 +31,6 @@ class ToolSearchTool(ToolBase):
     input_schema = ToolSearchInput
     output_schema = ToolSearchResult
     category = "read"
-    toolset = "tool.discovery"
     requires_confirmation = False
     defer_loading = False
     input_bindings = (
@@ -312,7 +311,7 @@ def _registry_match_score(query: str, spec: ToolSpec) -> int:
     )
     return _match_score_values(
         terms,
-        " ".join((spec.name, spec.description, spec.toolset or "", *field_names)),
+        " ".join((spec.name, spec.description, *field_names)),
     )
 
 

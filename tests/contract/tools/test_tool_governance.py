@@ -239,7 +239,7 @@ def test_provider_tools_hide_runtime_fields_and_pydantic_titles() -> None:
     assert "idempotency_key" not in calendar_create["parameters"]["properties"]
 
 
-def test_builtin_tools_declare_plugin_ownership_and_toolset() -> None:
+def test_builtin_tools_declare_plugin_ownership_without_duplicate_grouping() -> None:
     registry = create_default_registry()
 
     for record in registry.list_registration_records():
@@ -247,7 +247,7 @@ def test_builtin_tools_declare_plugin_ownership_and_toolset() -> None:
             continue
         spec = registry.get_spec(record.tool_name)
         assert record.plugin_id != "manual", record.tool_name
-        assert spec.toolset and spec.toolset.strip(), record.tool_name
+        assert "toolset" not in spec.model_dump(mode="json"), record.tool_name
 
 
 def test_generic_runtime_bindings_shrink_schema_and_bind_each_run_identity() -> None:

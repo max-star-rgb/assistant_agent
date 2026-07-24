@@ -27,7 +27,6 @@ class DecoratedTool:
         handler: ToolHandler,
         category: ToolCategory = "dangerous",
         requires_confirmation: bool = True,
-        toolset: str | None = None,
         requires_media: list[ToolMediaRequirement] | None = None,
     ) -> None:
         self.name = name
@@ -36,7 +35,6 @@ class DecoratedTool:
         self.output_schema = input_schema
         self.category = category
         self.requires_confirmation = requires_confirmation
-        self.toolset = toolset
         self.requires_media = list(requires_media or [])
         self._handler = handler
 
@@ -76,7 +74,6 @@ def tool(
     input_schema: type[BaseModel],
     category: ToolCategory = "dangerous",
     requires_confirmation: bool = True,
-    toolset: str | None = None,
     requires_media: list[ToolMediaRequirement] | None = None,
 ) -> Callable[[ToolHandler], DecoratedTool]:
     """Return a local tool object without registering it globally."""
@@ -89,7 +86,6 @@ def tool(
             handler=handler,
             category=category,
             requires_confirmation=requires_confirmation,
-            toolset=toolset,
             requires_media=requires_media,
         )
 
