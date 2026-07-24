@@ -69,12 +69,10 @@ operator 确认开关显式启用。
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q
 ```
 
-裸 pytest 默认收集整个 `tests/`，其中只能包含 mock/fake/in-memory/local 的离线
-`unit`、`integration` 和 `contract` 测试；测试决策、文件组织和新增测试规则以
-`tests/README.md` 为准。真实 Provider、真实 Tool/MCP 和真实外部服务不得进入 pytest，
-统一走 `evals/system`。服务、demo、eval、smoke 命令按 README、`scripts/README.md`
-或对应 `docs/*.md` 执行；历史 runbook 只有用户点名时才读取。只有在需要 conda 激活环境变量时
-才使用 `conda run -n hello_agent <command>`。
+测试与 eval 的职责边界见第 8 节；具体命令和运行约束以 `tests/README.md`、
+`evals/README.md`、`scripts/README.md` 或对应 `docs/*.md` 为准。历史 runbook
+只有用户点名时才读取。只有在需要 conda 激活环境变量时才使用
+`conda run -n hello_agent <command>`。
 
 ## 5. 目录导航
 
