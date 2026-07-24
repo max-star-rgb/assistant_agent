@@ -7,8 +7,8 @@ from pydantic import BaseModel, Field
 from assistant_agent.agent.runtime import AgentGraphRuntime
 from assistant_agent.config import ProviderConfig
 from assistant_agent.gateway.event_mapping import realtime_event_to_frame
-from assistant_agent.memory.mem0.base import bind_mem0_identity
-from assistant_agent.memory.mem0.store import Mem0MemoryStore
+from assistant_agent.memory.mem0.client import UnavailableMem0Client
+from assistant_agent.memory.mem0.identity import bind_mem0_identity
 from assistant_agent.realtime.event_mapping import map_agent_event_stream
 from assistant_agent.schemas.assistant_decision import NativeToolCall
 from assistant_agent.schemas.events import AgentEvent
@@ -82,8 +82,10 @@ def test_package_and_runtime_initialize_offline() -> None:
         assert runtime.chat_adapter.provider == "mock"
         assert runtime.registry.sealed is True
         assert "memory_search" not in runtime.registry.list()
-        assert isinstance(runtime.memory_store, Mem0MemoryStore)
-        assert runtime.memory_store.supports_turn_capture is False
+        assert isinstance(
+            runtime.long_term_memory_service.client,
+            UnavailableMem0Client,
+        )
     finally:
         runtime.close()
 

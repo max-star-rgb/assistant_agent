@@ -85,10 +85,15 @@ def build_assistant_context_pack(
         text = "\n".join(summaries)
         memory_source_ids = []
     else:
-        summaries = [item.summary for item in state.memory_context if item.summary]
+        memories = (
+            state.session_memory_snapshot.memories
+            if state.session_memory_snapshot is not None
+            else []
+        )
+        summaries = [memory.text for memory in memories if memory.text]
         text = "\n".join(summaries)
         memory_source_ids = [
-            item.memory_id for item in state.memory_context if item.summary
+            memory.memory_id for memory in memories if memory.text
         ]
     memory_blocks: list[dict[str, Any]] = []
     # Realtime task state remains runtime/session data. It is intentionally not

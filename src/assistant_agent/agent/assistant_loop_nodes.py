@@ -90,7 +90,6 @@ class AssistantLoopState(TypedDict):
     chat_turn: NotRequired[Any]
     context_compactor: NotRequired[Any]
     context_projector: NotRequired[Any]
-    memory_manager: NotRequired[Any]
     outputs_by_step: dict[str, ToolResult]
     current_step_index: int
     trace_id: NotRequired[str]
@@ -1178,7 +1177,14 @@ def _set_direct_chat_response(
 
     state = graph_state["state"]
     request = graph_state["request"]
-    memory_summaries = [item.summary for item in state.memory_context]
+    memory_summaries = [
+        memory.text
+        for memory in (
+            state.session_memory_snapshot.memories
+            if state.session_memory_snapshot is not None
+            else []
+        )
+    ]
     chat_request = _with_response_stream_callback(
         build_direct_chat_request(
             request,

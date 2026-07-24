@@ -92,9 +92,9 @@ class ProviderConfig:
     mem0_api_key: str | None = None
     mem0_timeout_seconds: float = 5.0
     mem0_identity_namespace: str = "assistant-agent"
-    memory_capture_max_workers: int = 2
-    memory_capture_max_pending: int = 64
-    memory_capture_shutdown_timeout_seconds: float = 10.0
+    memory_ingestion_max_workers: int = 2
+    memory_ingestion_max_pending: int = 64
+    memory_ingestion_shutdown_timeout_seconds: float = 10.0
     memory_session_snapshot_max_entries: int = 1024
     conversation_history_backend: ConversationHistoryBackend = "memory"
     conversation_history_path: str = ".local/memory/conversation_history.jsonl"
@@ -299,18 +299,18 @@ class ProviderConfig:
                 source.get("MEM0_IDENTITY_NAMESPACE")
                 or "assistant-agent"
             ),
-            memory_capture_max_workers=max(
+            memory_ingestion_max_workers=max(
                 1,
-                _int_env(source.get("MULTIMODAL_AGENT_MEMORY_CAPTURE_MAX_WORKERS"), 2),
+                _int_env(source.get("MULTIMODAL_AGENT_MEMORY_INGESTION_MAX_WORKERS"), 2),
             ),
-            memory_capture_max_pending=max(
+            memory_ingestion_max_pending=max(
                 1,
-                _int_env(source.get("MULTIMODAL_AGENT_MEMORY_CAPTURE_MAX_PENDING"), 64),
+                _int_env(source.get("MULTIMODAL_AGENT_MEMORY_INGESTION_MAX_PENDING"), 64),
             ),
-            memory_capture_shutdown_timeout_seconds=max(
+            memory_ingestion_shutdown_timeout_seconds=max(
                 0.0,
                 _float_env(
-                    source.get("MULTIMODAL_AGENT_MEMORY_CAPTURE_SHUTDOWN_TIMEOUT_SECONDS"),
+                    source.get("MULTIMODAL_AGENT_MEMORY_INGESTION_SHUTDOWN_TIMEOUT_SECONDS"),
                     10.0,
                 ),
             ),

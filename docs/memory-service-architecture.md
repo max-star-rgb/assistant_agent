@@ -15,7 +15,8 @@ Mem0 拥有记忆算法，包括对话事实提取、合并、更新、向量化
 
 1. 将可信的 runtime `user_id`、`agent_id` 映射为不透明 Mem0 `user_id`、`agent_id`；
    将 `user_id + agent_id + session_id` 稳定映射为 Mem0 `run_id`。用户 metadata 不能覆盖这些字段。
-2. 在 session 创建阶段调用一次 Mem0 `get_all`，冻结为该 session 的结构化 `MemoryItem` snapshot。
+2. 在 session 创建阶段调用一次 Mem0 `get_all`，冻结为该 session 的结构化
+   `SessionMemorySnapshot`。
 3. 最终回复完成后，把原始 user/assistant messages 异步提交给 Mem0 `add`。
 
 记忆不是模型可调用工具。默认 ToolRegistry 不注册 `memory_search`、`memory_get` 或
@@ -30,26 +31,27 @@ message，不进入 `system` message。固定 system policy 负责声明记忆�
 
 ```text
 session.create
-  -> bind_engine_identity
+  -> LongTermMemoryService.initialize_session
+  -> bind_mem0_identity
   -> GET /memories?user_id=...&agent_id=...&limit=...
-  -> SessionMemoryContextStore.freeze
+  -> SessionMemorySnapshotStore.resolve
 
 turn
-  -> runtime attaches frozen MemoryItems to AgentState
+  -> LongTermMemoryService attaches the frozen snapshot to AgentState
   -> ContextBuilder assembles and renders original memory evidence
   -> LLM response
-  -> enqueue background capture
+  -> enqueue background ingestion
   -> POST /memories {messages, user_id, agent_id, run_id, metadata}
 ```
 
 任何 turn（包括第一轮）都不会触发长期记忆召回。调用方必须先创建 session；如果没有
 snapshot，turn 使用空记忆继续运行。Mem0 召回失败也冻结为空结果，不能阻断回复。
 
-turn capture 不等待 Mem0。后台队列按身份串行、不同身份可并行；队列已满或 Mem0 失败只写
+turn ingestion 不等待 Mem0。后台队列按身份串行、不同身份可并行；队列已满或 Mem0 失败只写
 结构化 trace，不把失败升级为前台 run 错误。
 
 `MEM0_TIMEOUT_SECONDS` 约束 session-start recall 等前台请求，默认 5 秒。后台 `add` 不占用回复
-关键路径，REST adapter 在实例化时自动为它分配至少 30 秒的超时，避免为了容纳提取与 embedding
+关键路径，`Mem0Client` 在实例化时自动为它分配至少 30 秒的超时，避免为了容纳提取与 embedding
 耗时而扩大 session 启动的失败等待时间。
 
 ## 3. Mem0 原生调用
@@ -72,6 +74,9 @@ Python API 暴露为 HTTP，不实现第二套记忆策略。
 - `MEM0_API_KEY`（可选）
 - `MEM0_TIMEOUT_SECONDS`（默认 `5`）
 - `MEM0_IDENTITY_NAMESPACE`（默认 `assistant-agent`）
+- `MULTIMODAL_AGENT_MEMORY_INGESTION_MAX_WORKERS`（默认 `2`）
+- `MULTIMODAL_AGENT_MEMORY_INGESTION_MAX_PENDING`（默认 `64`）
+- `MULTIMODAL_AGENT_MEMORY_INGESTION_SHUTDOWN_TIMEOUT_SECONDS`（默认 `10`）
 
 只有 `MULTIMODAL_AGENT_PROVIDER_MODE=real` 且配置了 `MEM0_BASE_URL` 时才连接真实 Mem0。
 mock/offline 环境使用明确的 unavailable adapter；它不是本地记忆实现，也不会保存或召回。
@@ -86,13 +91,16 @@ mock/offline 环境使用明确的 unavailable adapter；它不是本地记忆�
 
 | 路径 | 职责 |
 | --- | --- |
-| `memory/mem0/base.py` | Mem0 adapter 协议和身份映射 |
-| `memory/mem0/adapters.py` | Mem0 OSS REST add/get-all adapter |
-| `memory/mem0/store.py` | runtime 使用的薄适配 |
-| `memory/manager.py` | session recall 结果与后台 capture 输入 |
-| `services/session_memory_context.py` | session 内冻结结构化 snapshot |
+| `memory/service.py` | runtime 唯一依赖；编排 session recall、冻结 snapshot 与异步 ingestion |
+| `memory/models.py` | `LongTermMemory`、`SessionMemorySnapshot` 和 `CompletedTurn` 领域模型 |
+| `memory/session_snapshot.py` | session 内冻结并复用结构化 snapshot |
+| `memory/ingestion_queue.py` | 有界后台队列、同身份有序与关闭排空 |
+| `memory/observability.py` | recall/ingestion 的最小结构化 trace |
+| `memory/mem0/client.py` | Mem0 原生 `get_all` / `add` 客户端 |
+| `memory/mem0/models.py` | 仅供 Mem0 adapter 使用的身份、健康和写入结果模型 |
+| `memory/mem0/identity.py` | runtime 身份到 Mem0 原生 ID 的稳定映射 |
+| `memory/mem0/transport.py` | 薄 HTTP transport 与错误边界 |
 | `services/context/builder.py` | 每轮把冻结 snapshot 直接组装进 assistant context |
-| `services/memory_observability.py` | recall/capture 的最小结构化 trace |
 | `docker/mem0/` | Mem0 + Qdrant 本地开发栈 |
 
 ## 6. 不再支持

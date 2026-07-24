@@ -132,13 +132,18 @@ def _resolve_binding(
     if binding.source == "request":
         return getattr(state.request, binding.key or "", _UNRESOLVED)
     if binding.source == "memory_context":
+        memories = (
+            state.session_memory_snapshot.memories
+            if state.session_memory_snapshot is not None
+            else []
+        )
         if binding.key == "summaries":
             return [
-                item.summary for item in state.memory_context if item.summary
+                memory.text for memory in memories if memory.text
             ]
         if binding.key == "text":
             return "\n".join(
-                item.summary for item in state.memory_context if item.summary
+                memory.text for memory in memories if memory.text
             )
         return _UNRESOLVED
     if binding.source == "latest_tool_result":

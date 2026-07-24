@@ -144,7 +144,14 @@ def chat_node(graph_state: AgentGraphState) -> AgentGraphState:
     state = graph_state["state"]
     intent = state.intent
     if intent is not None and canonical_intent(intent.intent) == "direct_chat":
-        memory_summaries = [item.summary for item in state.memory_context]
+        memory_summaries = [
+            memory.text
+            for memory in (
+                state.session_memory_snapshot.memories
+                if state.session_memory_snapshot is not None
+                else []
+            )
+        ]
         chat_request = _with_response_stream_callback(
             build_direct_chat_request(
                 graph_state["request"],

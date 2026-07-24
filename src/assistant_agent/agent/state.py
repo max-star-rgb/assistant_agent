@@ -6,7 +6,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from assistant_agent.agent.cancellation import CANCELLATION_ERROR_CODE, DEFAULT_CANCELLATION_MESSAGE
-from assistant_agent.schemas.memory import MemoryItem
+from assistant_agent.memory.models import SessionMemorySnapshot
 from assistant_agent.schemas.context import ContextSourceResult
 from assistant_agent.schemas.perception import PerceptionBundle
 from assistant_agent.schemas.planning import IntentResult, TaskPlan
@@ -44,7 +44,7 @@ class AgentState(BaseModel):
     request: UserRequest
     execution_strategy: ExecutionStrategyName = "react"
 
-    memory_context: list[MemoryItem] = Field(default_factory=list)
+    session_memory_snapshot: SessionMemorySnapshot | None = None
     context_source_result: ContextSourceResult = Field(default_factory=ContextSourceResult)
     perception: PerceptionBundle | None = None
     intent: IntentResult | None = None

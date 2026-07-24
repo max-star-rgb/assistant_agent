@@ -1,4 +1,4 @@
-"""Bounded post-response dispatch for completed-turn memory capture."""
+"""Bounded background queue for completed-turn memory ingestion."""
 
 from __future__ import annotations
 
@@ -10,20 +10,20 @@ from threading import Condition, Thread
 from time import monotonic
 
 
-CaptureCallback = Callable[[], None]
+IngestionCallback = Callable[[], None]
 
 
 @dataclass(frozen=True)
-class MemoryCaptureSubmitResult:
-    """Prompt-safe result of a non-blocking capture submission."""
+class MemoryIngestionSubmitResult:
+    """Prompt-safe result of a non-blocking ingestion submission."""
 
     accepted: bool
     pending_count: int
     reason: str | None = None
 
 
-class MemoryCaptureDispatcher:
-    """Run bounded captures in the background with per-key FIFO ordering."""
+class MemoryIngestionQueue:
+    """Run bounded memory ingestions in the background with per-key FIFO ordering."""
 
     def __init__(
         self,
@@ -46,7 +46,7 @@ class MemoryCaptureDispatcher:
         self.max_pending = max_pending
         self.shutdown_timeout_seconds = float(shutdown_timeout_seconds)
         self._condition = Condition()
-        self._queues: dict[Hashable, deque[CaptureCallback]] = {}
+        self._queues: dict[Hashable, deque[IngestionCallback]] = {}
         self._ready_keys: deque[Hashable] = deque()
         self._active_keys: set[Hashable] = set()
         self._workers: list[Thread] = []
@@ -64,22 +64,22 @@ class MemoryCaptureDispatcher:
         self,
         *,
         ordering_key: Hashable,
-        callback: CaptureCallback,
-    ) -> MemoryCaptureSubmitResult:
-        """Enqueue without waiting for capacity or capture completion."""
+        callback: IngestionCallback,
+    ) -> MemoryIngestionSubmitResult:
+        """Enqueue without waiting for capacity or ingestion completion."""
 
         with self._condition:
             if not self._accepting:
-                return MemoryCaptureSubmitResult(
+                return MemoryIngestionSubmitResult(
                     accepted=False,
                     pending_count=self._pending_count,
-                    reason="memory_capture_dispatcher_closed",
+                    reason="memory_ingestion_queue_closed",
                 )
             if self._pending_count >= self.max_pending:
-                return MemoryCaptureSubmitResult(
+                return MemoryIngestionSubmitResult(
                     accepted=False,
                     pending_count=self._pending_count,
-                    reason="memory_capture_queue_full",
+                    reason="memory_ingestion_queue_full",
                 )
             self._start_workers_locked()
             queue = self._queues.setdefault(ordering_key, deque())
@@ -88,13 +88,13 @@ class MemoryCaptureDispatcher:
             if ordering_key not in self._active_keys and len(queue) == 1:
                 self._ready_keys.append(ordering_key)
             self._condition.notify()
-            return MemoryCaptureSubmitResult(
+            return MemoryIngestionSubmitResult(
                 accepted=True,
                 pending_count=self._pending_count,
             )
 
     def drain(self, *, timeout: float | None = None) -> bool:
-        """Wait until all accepted captures finish."""
+        """Wait until all accepted ingestions finish."""
 
         deadline = None if timeout is None else monotonic() + max(0.0, timeout)
         with self._condition:
@@ -130,7 +130,7 @@ class MemoryCaptureDispatcher:
         for index in range(self.max_workers):
             worker = Thread(
                 target=self._worker,
-                name=f"memory-capture-{index + 1}",
+                name=f"memory-ingestion-{index + 1}",
                 daemon=True,
             )
             self._workers.append(worker)
@@ -156,7 +156,7 @@ class MemoryCaptureDispatcher:
             try:
                 callback()
             except Exception:
-                # Capture callbacks own structured failure recording. This final
+                # Ingestion callbacks own structured failure recording. This final
                 # guard prevents one unexpected callback defect from killing a
                 # shared worker or changing foreground run behavior.
                 pass

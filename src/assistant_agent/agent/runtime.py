@@ -19,8 +19,8 @@ from assistant_agent.agent.state import AgentError, AgentState
 from assistant_agent.agent.event_stream import AgentRunStream, AsyncQueueEventSink
 from assistant_agent.agent.tool_executor import ToolExecutor
 from assistant_agent.agent.provider_streaming import ProviderStreamingTurnRunner, supports_async_streaming_chat
-from assistant_agent.memory.factory import create_memory_store
-from assistant_agent.memory.manager import MemoryManager
+from assistant_agent.memory.factory import create_long_term_memory_service
+from assistant_agent.memory.service import LongTermMemoryService
 from assistant_agent.config import ProviderConfig
 from assistant_agent.schemas.assistant_decision import native_tool_call_to_assistant_decision
 from assistant_agent.schemas.api import api_error_from_agent_error
@@ -62,14 +62,8 @@ from assistant_agent.services.context.sources import (
     ContextSourceCoordinator,
     ContextSourceRequest,
 )
-from assistant_agent.services.memory_capture_dispatcher import MemoryCaptureDispatcher
-from assistant_agent.services.memory_observability import (
-    enqueue_memory_capture_with_trace,
-    recall_session_memory_with_trace,
-)
 from assistant_agent.services.run_history import RunHistoryStore
 from assistant_agent.services.session_store import SessionStore, create_session_store
-from assistant_agent.services.session_memory_context import SessionMemoryContextStore
 from assistant_agent.schemas.tool_ids import IMAGE_UNDERSTANDING_TOOL_NAME
 from assistant_agent.services.trace_store import InMemoryTraceStore, TraceStore, append_observability_event
 from assistant_agent.services.turn_summary import append_runtime_turn_summary
@@ -87,7 +81,7 @@ class AgentGraphRuntime:
     def __init__(
         self,
         registry: ToolRegistry | None = None,
-        memory_store: Any | None = None,
+        long_term_memory_service: LongTermMemoryService | None = None,
         config: ProviderConfig | None = None,
         intent_detector: IntentDetector | None = None,
         router: ToolRouter | None = None,
@@ -102,31 +96,15 @@ class AgentGraphRuntime:
         checkpointer: Any | None = None,
         context_source_coordinator: ContextSourceCoordinator | None = None,
         durable_task_service: DurableTaskService | None = None,
-        memory_capture_dispatcher: MemoryCaptureDispatcher | None = None,
-        session_memory_context_store: SessionMemoryContextStore | None = None,
         agent_id: str = DEFAULT_AGENT_ID,
     ) -> None:
         self.agent_id = agent_id
         self.config = config or ProviderConfig.from_env()
         self.video_context_store = video_context_store or InMemoryVideoContextStore()
         self.realtime_video_memory_store = realtime_video_memory_store or RealtimeVideoMemoryStore()
-        self.memory_store = memory_store or create_memory_store(self.config)
-        self.memory_manager = MemoryManager(self.memory_store)
-        self.session_memory_context_store = (
-            session_memory_context_store
-            or SessionMemoryContextStore(
-                max_entries=self.config.memory_session_snapshot_max_entries
-            )
-        )
-        self.memory_capture_dispatcher = (
-            memory_capture_dispatcher
-            or MemoryCaptureDispatcher(
-                max_workers=self.config.memory_capture_max_workers,
-                max_pending=self.config.memory_capture_max_pending,
-                shutdown_timeout_seconds=(
-                    self.config.memory_capture_shutdown_timeout_seconds
-                ),
-            )
+        self.long_term_memory_service = (
+            long_term_memory_service
+            or create_long_term_memory_service(self.config)
         )
         self.durable_task_service = durable_task_service
         if registry is None:
@@ -189,7 +167,6 @@ class AgentGraphRuntime:
             registry=self.registry,
             event_sink=self.event_sink,
             context_metadata={
-                "memory_manager": self.memory_manager,
                 "durable_task_service": self.durable_task_service,
             },
         )
@@ -208,33 +185,20 @@ class AgentGraphRuntime:
         if not identity.session_id:
             raise ValueError("session_id is required to initialize session memory")
         identity = identity.model_copy(update={"agent_id": self.agent_id})
-        metadata: dict[str, Any] = {
-            "memory_session_lifecycle": "start",
-            **({"reset_conversation": True} if reset else {}),
-        }
         request = UserRequest(
             user_id=identity.user_id,
             session_id=identity.session_id,
             text="",
-            metadata=metadata,
         )
         state = AgentState.from_request(request, agent_id=identity.agent_id)
-        try:
-            context = recall_session_memory_with_trace(
-                manager=self.memory_manager,
-                trace_store=self.trace_store,
-                trace_id=state.trace_id,
-                node_name="session_start",
-                state=state,
-                request=request,
-                session_context_store=self.session_memory_context_store,
+        state.session_memory_snapshot = (
+            self.long_term_memory_service.initialize_session(
                 identity=identity,
+                state=state,
+                trace_store=self.trace_store,
+                reset=reset,
             )
-            state.memory_context = context.items
-        except Exception:  # noqa: BLE001 - session startup must fail open.
-            context = self.memory_manager.failed_session_snapshot_context()
-            self.session_memory_context_store.put(identity, context)
-            state.memory_context = context.items
+        )
         return state
 
     def run_state(
@@ -268,7 +232,6 @@ class AgentGraphRuntime:
             registry=self.registry,
             event_sink=run_event_sink,
             context_metadata={
-                "memory_manager": self.memory_manager,
                 "durable_task_service": self.durable_task_service,
             },
             cancel_token=cancel_token,
@@ -279,7 +242,7 @@ class AgentGraphRuntime:
             trace_id=trace_context.trace_id if trace_context is not None else None,
             agent_id=self.agent_id,
         )
-        self._hydrate_session_memory_items(state)
+        self._attach_session_memory_snapshot(state)
         state.context_source_result = self.context_source_coordinator.load_once(
             ContextSourceRequest(
                 user_id=state.user_id,
@@ -510,38 +473,27 @@ class AgentGraphRuntime:
                 ),
                 run_event_sink,
             )
-            enqueue_memory_capture_with_trace(
-                dispatcher=self.memory_capture_dispatcher,
-                manager=self.memory_manager,
+            self.long_term_memory_service.enqueue_completed_turn(
                 trace_store=self.trace_store,
-                trace_id=state.trace_id,
-                node_name="post_response_memory_capture",
                 state=state,
             )
         return state
 
-    def drain_memory_captures(self, *, timeout: float | None = None) -> bool:
-        """Wait for accepted post-response captures without accepting new work changes."""
+    def drain_memory_ingestions(self, *, timeout: float | None = None) -> bool:
+        """Wait for accepted memory ingestions."""
 
-        return self.memory_capture_dispatcher.drain(timeout=timeout)
+        return self.long_term_memory_service.drain(timeout=timeout)
 
-    def _hydrate_session_memory_items(self, state: AgentState) -> None:
-        """Attach frozen raw items to the turn without performing recall."""
+    def _attach_session_memory_snapshot(self, state: AgentState) -> None:
+        """Attach the frozen snapshot without performing recall."""
 
-        context = self.session_memory_context_store.get(
-            RequestIdentity.for_user(
-                user_id=state.user_id,
-                agent_id=state.agent_id,
-                session_id=state.session_id,
-            )
-        )
-        state.memory_context = context.items if context is not None else []
+        self.long_term_memory_service.attach_session_snapshot(state)
 
     def close(self) -> bool:
         """Drain and close runtime-owned background lifecycle services."""
 
-        return self.memory_capture_dispatcher.close(
-            timeout=self.config.memory_capture_shutdown_timeout_seconds,
+        return self.long_term_memory_service.close(
+            timeout=self.config.memory_ingestion_shutdown_timeout_seconds,
         )
 
     def run_task_quantum(
@@ -562,13 +514,12 @@ class AgentGraphRuntime:
             request.metadata.get("durable_task_snapshot")
         )
         state = AgentState.from_request(request, agent_id=self.agent_id)
-        self._hydrate_session_memory_items(state)
+        self._attach_session_memory_snapshot(state)
         state.request.metadata["durable_task_quantum"] = True
         tool_executor = ToolExecutor(
             registry=self.registry,
             event_sink=event_sink,
             context_metadata={
-                "memory_manager": self.memory_manager,
                 "durable_task_service": self.durable_task_service,
                 "durable_task_binding": binding,
             },

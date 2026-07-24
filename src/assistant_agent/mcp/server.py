@@ -212,7 +212,6 @@ class OfflineMCPServer:
             )
         result = ToolExecutor(
             registry=self.registry,
-            context_metadata={"memory_manager": self.runtime.memory_manager},
         ).run_tool(
             state,
             "mcp_tool_run",

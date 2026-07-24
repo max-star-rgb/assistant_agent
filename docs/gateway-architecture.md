@@ -378,8 +378,9 @@ message.user -> per-session FIFO -> process-wide admission -> backend run
   after completion/cancellation; connection hangup destroys only its logical
   AgentSession and never closes this process-owned pool. Application shutdown
   closes every pooled runtime and drains its shared bounded post-response memory
-  capture dispatcher within the configured memory shutdown bound. Pooled
-  runtimes also share the application-owned `SessionMemoryContextStore`, so a
+  ingestion queue within the configured memory shutdown bound. Pooled
+  runtimes also share the application-owned `LongTermMemoryService` and
+  `SessionMemorySnapshotStore`, so a
   Gateway session start can prewarm one long-term-memory snapshot before any
   turn, and every turn can reuse it even when Gateway checks out a different
   runtime instance. `call.incoming`, `session.open`, the Media-Agent

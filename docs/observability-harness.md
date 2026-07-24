@@ -439,7 +439,7 @@ public names, but they should map to this vocabulary.
 | `response.delta` | User-visible response text chunk was emitted. |
 | `response.final` | Final response was set. |
 | `response.delivered` | Realtime/entry recorded the final text actually delivered to the client. |
-| `memory.capture.queued` / `memory.capture.finished` | Post-response Mem0 capture lifecycle. |
+| `memory.ingestion.queued` / `memory.ingestion.finished` | Post-response Mem0 ingestion lifecycle. |
 | `run.completed` | Run ended successfully. |
 | `run.failed` | Run ended with an error. |
 | `run.cancelled` | Run ended through cooperative cancellation. |
@@ -455,7 +455,7 @@ helper, which emits `context.build.started` and `context.build.finished` with
 redacted budget, source-count, compaction, and tool-catalog summaries.
 Memory lifecycle calls are wrapped at the runtime boundary:
 `memory.session_recall.finished` 只记录 session-start recall 的终态；
-`memory.capture.queued` / `memory.capture.finished` 记录非阻塞
+`memory.ingestion.queued` / `memory.ingestion.finished` 记录非阻塞
 Mem0 add。事件不包含原始 user/assistant 文本或 Mem0 响应，也不维护第二份 memory operation overlay。
 每轮是否注入冻结 snapshot、注入数量和字符数属于 `context.build.finished`。
 Final response tracing emits `response.final` with only prompt-safe response
@@ -688,7 +688,7 @@ possible:
 | LLM | chat call count, latency, token usage, native tool-call rate, direct-answer rate, provider error count. |
 | Context | total chars/tokens, budget ratio, compaction triggered count, overflow retry count. |
 | Gateway/realtime | active runs, interrupt count, cancel source, hangup cancellation, deadline expiry. |
-| Memory | session recall count/status, snapshot reuse count, background capture count/failure rate. |
+| Memory | session recall count/status, snapshot reuse count, background ingestion count/failure rate. |
 
 Do not add high-cardinality labels such as raw prompts, raw queries, full URLs,
 full memory text, full provider errors, or media payloads.
@@ -795,7 +795,7 @@ Langfuse 的工具链同样使用完整视图：`tool.execute` 直接显示执�
 数量和错误码；turn 内不产生 memory lifecycle event，冻结 snapshot 的注入事实由
 `context.build` 展示。最终
 `llm.chat` generation input 可用于确认冻结文本已作为 user evidence 进入 Provider 请求。
-回复提交后的 `memory.turn_capture` 独立记录后台 Mem0 add 的结果，不存在 memory tool
+回复提交后的 `memory.turn_ingestion` 独立记录后台 Mem0 add 的结果，不存在 memory tool
 observation 或观测层自建的 memory operation overlay。
 
 默认内容策略也允许 ToolHistory 和工具 trace 保存工具输入输出，并适用于真实 Provider
@@ -828,8 +828,8 @@ Regression tests should enforce these invariants:
   `react.decision` and terminal run events.
 - Successful native provider runtime and mock/offline ReAct runtime both emit
   `response.final` before the terminal run event.
-- Successful runs may enqueue `memory.turn_capture` after the terminal response;
-  capture failure never changes the already returned run result.
+- Successful runs may enqueue `memory.turn_ingestion` after the terminal response;
+  ingestion failure never changes the already returned run result.
 - A validation rejection never enters `ToolExecutor`.
 - A failed tool carries error code, source, recovery action, and redacted message.
 - Cancel, interrupt, timeout, and hangup traces include their source.
@@ -898,8 +898,8 @@ Regression tests should enforce these invariants:
 - Observation 导出由 `TraceEvent.observation_type/name/scope` 驱动，iteration 父子关系由
   scope 与 `attributes.iteration` 驱动；Langfuse/OTel 映射层不枚举 canonical event。新增工具沿用
   `ToolExecutor` 的统一 lifecycle 即自动获得 `tool.execute` span。现有
-  `memory.session_recall.finished` 与 `memory.capture.finished` 在 Langfuse 中分别展示为
-  `memory.session_recall` 和 `memory.turn_capture`。canonical timeline 名称不因展示层命名而改变。
+  `memory.session_recall.finished` 与 `memory.ingestion.finished` 在 Langfuse 中分别展示为
+  `memory.session_recall` 和 `memory.turn_ingestion`。canonical timeline 名称不因展示层命名而改变。
 - `llm.chat` generation 默认不设置 `langfuse.observation.output`；Provider/model、usage、latency 和
   attempt kind 使用独立 observation attributes，finish reason 保留在 trace/协议快照。本地 OTLP
   export 自动从进程内 `TraceConversationStore` 按 span id 投影 adapter 捕获的完整 SDK 调用参数；

@@ -2,48 +2,38 @@
 
 from datetime import datetime, timezone
 
-from assistant_agent.memory.mem0.adapters import Mem0RestAdapter
-from assistant_agent.memory.mem0.base import Mem0HttpRequest
-from assistant_agent.schemas.mem0 import (
-    Mem0ConversationMessage,
-    Mem0RecallRequest,
-    Mem0TurnCaptureRequest,
-    Mem0Identity,
-)
+from assistant_agent.memory.mem0.client import Mem0Client
+from assistant_agent.memory.mem0.identity import bind_mem0_identity
+from assistant_agent.memory.mem0.transport import Mem0HttpRequest
+from assistant_agent.memory.models import CompletedTurn
+from assistant_agent.schemas.identity import RequestIdentity
 
 
-def _identity() -> Mem0Identity:
-    return Mem0Identity(
-        user_id="usr_" + "1" * 32,
-        agent_id="agt_" + "2" * 32,
-        run_id="run_" + "3" * 32,
+def _identity() -> RequestIdentity:
+    return RequestIdentity.for_user(
+        user_id="memory-user",
+        agent_id="memory-agent",
+        session_id="memory-session",
     )
 
 
-def test_turn_capture_delegates_extraction_to_one_native_mem0_add() -> None:
+def test_turn_ingestion_delegates_extraction_to_one_native_mem0_add() -> None:
     requests: list[Mem0HttpRequest] = []
 
     def transport(request: Mem0HttpRequest) -> dict:
         requests.append(request)
         return {"results": [{"id": "memory-1"}]}
 
-    adapter = Mem0RestAdapter(
+    client = Mem0Client(
         base_url="http://mem0.test",
+        identity_namespace="test",
         transport=transport,
     )
-    result = adapter.capture_turn(
-        Mem0TurnCaptureRequest(
+    result = client.ingest_completed_turn(
+        CompletedTurn(
             identity=_identity(),
-            messages=[
-                Mem0ConversationMessage(
-                    role="user",
-                    content="我喜欢简洁回答",
-                ),
-                Mem0ConversationMessage(
-                    role="assistant",
-                    content="好的",
-                ),
-            ],
+            user_text="我喜欢简洁回答",
+            assistant_text="好的",
             occurred_at=datetime(2026, 7, 23, tzinfo=timezone.utc),
             source_turn="turn-1",
         )
@@ -61,9 +51,10 @@ def test_turn_capture_delegates_extraction_to_one_native_mem0_add() -> None:
         {"role": "assistant", "content": "好的"},
     ]
     assert "infer" not in request.body
-    assert request.body["user_id"] == _identity().user_id
-    assert request.body["agent_id"] == _identity().agent_id
-    assert request.body["run_id"] == _identity().run_id
+    engine_identity = bind_mem0_identity(_identity(), namespace="test")
+    assert request.body["user_id"] == engine_identity.user_id
+    assert request.body["agent_id"] == engine_identity.agent_id
+    assert request.body["run_id"] == engine_identity.run_id
     assert request.timeout_seconds == 30.0
 
 
@@ -82,24 +73,24 @@ def test_session_recall_uses_native_get_all_with_identity_filters() -> None:
             ]
         }
 
-    adapter = Mem0RestAdapter(
+    client = Mem0Client(
         base_url="http://mem0.test",
+        identity_namespace="test",
         transport=transport,
     )
-    result = adapter.recall(
-        Mem0RecallRequest(identity=_identity(), top_k=5)
-    )
+    result = client.recall_long_term_memory(_identity(), top_k=5)
 
-    assert [record.text for record in result.records] == [
+    assert [memory.text for memory in result] == [
         "用户喜欢简洁回答"
     ]
+    engine_identity = bind_mem0_identity(_identity(), namespace="test")
     assert requests == [
         Mem0HttpRequest(
             method="GET",
             path="/memories",
             query={
-                "user_id": _identity().user_id,
-                "agent_id": _identity().agent_id,
+                "user_id": engine_identity.user_id,
+                "agent_id": engine_identity.agent_id,
                 "limit": "5",
             },
             timeout_seconds=5.0,
@@ -107,25 +98,24 @@ def test_session_recall_uses_native_get_all_with_identity_filters() -> None:
     ]
 
 
-def test_capture_failure_is_structured_and_does_not_raise() -> None:
+def test_ingestion_failure_is_structured_and_does_not_raise() -> None:
     def transport(request: Mem0HttpRequest) -> dict:
         raise RuntimeError(request.path)
 
-    adapter = Mem0RestAdapter(
+    client = Mem0Client(
         base_url="http://mem0.test",
+        identity_namespace="test",
         transport=transport,
     )
-    result = adapter.capture_turn(
-        Mem0TurnCaptureRequest(
+    result = client.ingest_completed_turn(
+        CompletedTurn(
             identity=_identity(),
-            messages=[
-                Mem0ConversationMessage(role="user", content="你好"),
-                Mem0ConversationMessage(role="assistant", content="你好"),
-            ],
+            user_text="你好",
+            assistant_text="你好",
             occurred_at=datetime.now(timezone.utc),
             source_turn="turn-1",
         )
     )
 
     assert result.accepted is False
-    assert result.errors == [{"code": "mem0_capture_failed"}]
+    assert result.errors == [{"code": "mem0_ingestion_failed"}]

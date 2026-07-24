@@ -21,7 +21,7 @@ Last updated: 2026-07-24
 - memory 边界：长期记忆只来自 Mem0。session 创建时按可信身份调用一次 Mem0 `get_all` 并冻结
   snapshot；包括第一轮在内的所有 turn 只复用 snapshot，不再召回。成功 turn 在回复提交后把
   user/assistant messages 异步交给 Mem0 原生 `add`，由 Mem0 负责提取、合并、向量化和持久化。
-- session memory snapshot 只保存 Mem0 返回的结构化 `MemoryItem`。不存在 memory read/write
+- session memory snapshot 只保存从 Mem0 原始记录提取的结构化 `LongTermMemory`。不存在 memory read/write
   policy、ranking、profile、promotion 或 memory tool。ContextBuilder 在每轮把同一份冻结 items
   的原始文本按顺序直接组装为历史证据，进入当前 `user` message，不进入 `system` message。
 - realtime video 交接：Agent-Service 后台 Qwen observer 对每个 `video_id` 复用一个 persistent WebSocket 并预热 rolling 语义；VLM 使用独立视觉角色模板 prompt，只产出结构化视觉事实，不复用主 LLM 系统提示。AgentRuntime 主 LLM 只知道统一的 `vision_understanding` ToolSpec，图片和视频由工具内部按媒体输入分支，不包含 VLM 观察流程、OCR/品牌/序列图等视觉分析提示词，也不看到帧、JPEG 路径、base64、VLM prompt 或 provider raw response。
@@ -59,7 +59,8 @@ Last updated: 2026-07-24
 - CLI、API、WebSocket 共享 `run_assistant_request` 入口，会在进入 runtime 前注入 session-scoped conversation context。
 - Realtime task-state snapshot 只在进入 runtime 前显式启用：`interaction_mode=realtime`、`enable_realtime_task_state=true` 或 entry capability `supports_realtime_task_state=true`。它用于 session/run/interrupt/progress/artifact 生命周期，不渲染进 Provider prompt。普通 `/agent/run` 即使经由 Gateway 生命周期，也不会因为存在 `gateway` metadata 或 `realtime.run_id`/`turn_id` 自动启用。
 - 启用 task state 的普通多轮 follow-up 可通过显式 `UserRequest.runtime_task_update(action/objective/constraints)` 修订目标；该 Pydantic 契约由可信 API/runtime 调用方提供，runtime 在回答提交后归并到 session task store，并在规范目标变化时追加 `IntentRevision`。主模型终态文本不再携带 task update，入口与 catalog 也不读取用户关键词推断目标变化。
-- `MemoryManager` 只负责把 session 启动时的 Mem0 结果冻结并写回 `AgentState.request.metadata`。
+- `LongTermMemoryService` 在 session 启动时召回并冻结 Mem0 结果；turn 只把冻结 snapshot
+  附加到 `AgentState.session_memory_snapshot`。
 - Assistant context 的字符预算裁剪实现仍保留，但 AgentRuntime 不执行；原有 owner persona、
   memory/conversation 和 tool observation 裁剪顺序仅作为未接入实现保留。
 - `ContextPolicy` 统一管理字符预算和压缩阈值：默认 12000 chars，80% 触发压缩，92% 进入 hard compact 口径，`keep_recent_turns=2` 是 recent transcript 的最小原文保留 guard。
@@ -99,22 +100,25 @@ Last updated: 2026-07-24
 
 ### Memory Context
 
-- `MemoryManager` 是 Mem0 的薄 runtime adapter，不拥有记忆算法。
-- `SessionMemoryContextStore` 在 session 创建时按可信身份加载一次 Mem0 `get_all` 结果并冻结。
+- `LongTermMemoryService` 是 runtime 唯一依赖，统一编排召回、冻结 snapshot 和异步写入，
+  不拥有记忆算法。
+- `SessionMemorySnapshotStore` 在 session 创建时按可信身份加载一次 Mem0 `get_all` 结果并冻结。
 - turn 只复用 snapshot；snapshot 缺失或 Mem0 失败时使用空记忆，不在 turn 内懒加载。
-- 默认最多加载 5 条结构化 `MemoryItem`；ContextBuilder 每轮直接组装其文本和注入 ID。
+- 默认最多加载 5 条结构化 `LongTermMemory`；ContextBuilder 每轮直接组装其原始文本。
 - 不存在 local/remote/framework backend 选择、memory tool、关键词召回、二次 ranking、读写策略、
   profile、冲突处理或 promotion。
-- 成功回复提交后，runtime 把 user/assistant messages 投递到后台队列，通过单次 Mem0 `add`
-  完成捕获；不生成项目自定义的 daily/core 双记录。
+- 成功回复提交后，`LongTermMemoryService` 把 user/assistant messages 投递到后台队列，通过
+  单次 Mem0 `add` 完成 ingestion；不生成项目自定义的 daily/core 双记录。
 
 ### Boundary With Memory Service
 
 上下文工程消费 Mem0 session snapshot，但不拥有 memory 行为。
 
 - Mem0 负责提取、合并、向量化、索引、检索和持久化。
-- `MemoryManager` 只把 Mem0 结果格式化为结构化 `MemoryContext`；Runtime 将冻结 items 附加到
-  本轮 `AgentState`，不生成或写入 prompt metadata。
+- Memory service 从 Mem0 响应中提取 `LongTermMemory` 并冻结为 `SessionMemorySnapshot`；
+  Runtime 只调用 service 生命周期方法。
+- ContextBuilder 从本轮 `AgentState.session_memory_snapshot` 读取原始文本并组装上下文；
+  snapshot 不写入 request metadata，也不由 memory service 渲染。
 - Context engineering 负责把 request、conversation、memory context、plan state、tool observations 和 tool specs 组装成 `AssistantContextPack`。
 - Context engineering 负责 prompt/native rendering、tool observation compaction、全局 context budget、source counts 和 trace/debug 摘要。
 - Context engineering 不应重新实现 Mem0 的提取、ranking、合并或 store 选择。
@@ -134,7 +138,8 @@ Last updated: 2026-07-24
 - Child request metadata preserves explicit `context_refs`, `request_origin`, `agent_communication`, `child_context_budget`, and `agent_context`.
 - Parent `conversation_history`, `parent_history`, `memory_context_*`, raw provider payloads, base64/media/body fields, secret/token-like fields, arbitrary non-allowlisted metadata, and raw parent `tool_results` are not forwarded.
 - Omitted fields are recorded as field-name/reason pairs in `agent_context.omitted_context`; raw parent tool results are reduced to `tool_result_refs` when output references exist.
-- This boundary does not replace `AssistantContextPack` assembly and does not move Mem0 session snapshot access out of `MemoryManager`.
+- This boundary does not replace `AssistantContextPack` assembly and does not move Mem0 session snapshot
+  lifecycle out of `LongTermMemoryService`.
 
 ### Prompt Rendering
 
@@ -250,7 +255,9 @@ Last updated: 2026-07-24
 - `src/assistant_agent/services/context/sources.py`
 - `src/assistant_agent/services/context/soul_source.py`
 - `src/assistant_agent/services/realtime_task_state.py`
-- `src/assistant_agent/services/session_memory_context.py`
+- `src/assistant_agent/memory/service.py`
+- `src/assistant_agent/memory/models.py`
+- `src/assistant_agent/memory/session_snapshot.py`
 - `src/assistant_agent/services/realtime_video_memory.py`
 - `src/assistant_agent/services/realtime_video_observer.py`
 - `src/assistant_agent/services/video_context.py`
@@ -263,8 +270,8 @@ Last updated: 2026-07-24
 - `src/assistant_agent/services/improvement/`
 - `src/assistant_agent/schemas/improvement.py`
 - `scripts/run_improvement_lab.py`
-- `src/assistant_agent/memory/manager.py`
-- `src/assistant_agent/memory/mem0/adapters.py`
+- `src/assistant_agent/memory/mem0/client.py`
+- `src/assistant_agent/memory/ingestion_queue.py`
 - `src/assistant_agent/agent/assistant_loop_nodes.py`
 
 ## Validation Boundary

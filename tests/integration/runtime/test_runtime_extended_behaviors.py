@@ -11,7 +11,7 @@ import pytest
 from assistant_agent.agent.runtime import AgentGraphRuntime
 from assistant_agent.config import ProviderConfig
 from assistant_agent.gateway.event_mapping import realtime_event_to_frame
-from assistant_agent.memory.mem0.base import bind_mem0_identity
+from assistant_agent.memory.mem0.identity import bind_mem0_identity
 from assistant_agent.realtime.event_mapping import map_agent_event_stream
 from assistant_agent.schemas.assistant_decision import NativeToolCall
 from assistant_agent.schemas.events import AgentEvent
@@ -592,9 +592,9 @@ def test_langfuse_mapping_builds_runtime_iteration_hierarchy_and_exact_local_llm
             **common,
             node_name="memory",
             event_type="observability",
-            canonical_event="memory.capture.finished",
+            canonical_event="memory.ingestion.finished",
             observation_type="span",
-            observation_name="memory.turn_capture",
+            observation_name="memory.turn_ingestion",
             span_id="4444444444444444",
             status="succeeded",
             created_at=created_at + timedelta(milliseconds=33),
@@ -668,14 +668,16 @@ def test_langfuse_mapping_builds_runtime_iteration_hierarchy_and_exact_local_llm
     iteration = next(span for span in spans if span.name == "react.iteration")
     context = next(span for span in spans if span.name == "context.build")
     generation = next(span for span in spans if span.name == "llm.chat")
-    memory_capture = next(span for span in spans if span.name == "memory.turn_capture")
+    memory_ingestion = next(
+        span for span in spans if span.name == "memory.turn_ingestion"
+    )
 
     assert runtime.parent_span_id is None
     assert not any(span.name == "assistant.turn" for span in spans)
     assert iteration.parent_span_id == runtime.span_id
     assert context.parent_span_id == iteration.span_id
     assert generation.parent_span_id == iteration.span_id
-    assert memory_capture.parent_span_id == runtime.span_id
+    assert memory_ingestion.parent_span_id == runtime.span_id
     assert not any(span.name == "agent_service.turn" for span in spans)
     generation_input = json.loads(generation.attributes["langfuse.observation.input"])
     assert isinstance(generation_input, dict)

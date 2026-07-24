@@ -1,4 +1,4 @@
-"""Process-local session snapshots for bounded long-term memory context."""
+"""Process-local frozen long-term memory snapshots."""
 
 from __future__ import annotations
 
@@ -8,23 +8,23 @@ from dataclasses import dataclass
 from threading import Condition, Lock
 from typing import Literal
 
-from assistant_agent.memory.manager import MemoryContext
+from assistant_agent.memory.models import SessionMemorySnapshot
 from assistant_agent.schemas.identity import RequestIdentity
 
 
-SessionMemorySnapshotStatus = Literal["loaded", "reused"]
+SnapshotInitializationStatus = Literal["loaded", "reused"]
 SessionMemoryKey = tuple[str, str, str]
 
 
 @dataclass(frozen=True)
-class SessionMemoryContextResolution:
-    """One immutable resolution from the session snapshot boundary."""
+class SnapshotInitialization:
+    """Result of initializing one immutable session snapshot."""
 
-    context: MemoryContext
-    status: SessionMemorySnapshotStatus
+    snapshot: SessionMemorySnapshot
+    status: SnapshotInitializationStatus
 
 
-class SessionMemoryContextStore:
+class SessionMemorySnapshotStore:
     """Keep one immutable long-term memory snapshot per retained session."""
 
     def __init__(self, *, max_entries: int = 1024) -> None:
@@ -32,17 +32,17 @@ class SessionMemoryContextStore:
             raise ValueError("max_entries must be a positive integer")
         self.max_entries = max_entries
         self._condition = Condition()
-        self._entries: OrderedDict[SessionMemoryKey, MemoryContext] = OrderedDict()
+        self._entries: OrderedDict[SessionMemoryKey, SessionMemorySnapshot] = OrderedDict()
         self._loading: set[SessionMemoryKey] = set()
 
     def resolve(
         self,
         identity: RequestIdentity,
         *,
-        loader: Callable[[], MemoryContext],
+        loader: Callable[[], SessionMemorySnapshot],
         reset: bool = False,
-    ) -> SessionMemoryContextResolution:
-        """Load once or reuse; a later-turn miss never triggers recall."""
+    ) -> SnapshotInitialization:
+        """Initialize once or reuse an existing frozen snapshot."""
 
         key = _session_memory_key(identity)
         with self._condition:
@@ -53,15 +53,15 @@ class SessionMemoryContextStore:
                 cached = self._entries.get(key)
                 if cached is not None:
                     self._entries.move_to_end(key)
-                    return SessionMemoryContextResolution(
-                        context=cached.model_copy(deep=True),
+                    return SnapshotInitialization(
+                        snapshot=cached.model_copy(deep=True),
                         status="reused",
                     )
             cached = self._entries.get(key)
             if cached is not None:
                 self._entries.move_to_end(key)
-                return SessionMemoryContextResolution(
-                    context=cached.model_copy(deep=True),
+                return SnapshotInitialization(
+                    snapshot=cached.model_copy(deep=True),
                     status="reused",
                 )
             self._loading.add(key)
@@ -82,12 +82,12 @@ class SessionMemoryContextStore:
                 self._entries.popitem(last=False)
             self._loading.discard(key)
             self._condition.notify_all()
-        return SessionMemoryContextResolution(
-            context=frozen.model_copy(deep=True),
+        return SnapshotInitialization(
+            snapshot=frozen.model_copy(deep=True),
             status="loaded",
         )
 
-    def get(self, identity: RequestIdentity) -> MemoryContext | None:
+    def get(self, identity: RequestIdentity) -> SessionMemorySnapshot | None:
         """Return the frozen structured snapshot without triggering recall."""
 
         key = _session_memory_key(identity)
@@ -104,12 +104,12 @@ class SessionMemoryContextStore:
         with self._condition:
             return self._entries.pop(_session_memory_key(identity), None) is not None
 
-    def put(self, identity: RequestIdentity, context: MemoryContext) -> None:
+    def put(self, identity: RequestIdentity, snapshot: SessionMemorySnapshot) -> None:
         """Freeze an already-governed context for one session."""
 
         key = _session_memory_key(identity)
         with self._condition:
-            self._entries[key] = context.model_copy(deep=True)
+            self._entries[key] = snapshot.model_copy(deep=True)
             self._entries.move_to_end(key)
             while len(self._entries) > self.max_entries:
                 self._entries.popitem(last=False)
@@ -151,19 +151,19 @@ def _session_memory_key(identity: RequestIdentity) -> SessionMemoryKey:
     )
 
 
-_DEFAULT_STORES: dict[int, SessionMemoryContextStore] = {}
+_DEFAULT_STORES: dict[int, SessionMemorySnapshotStore] = {}
 _DEFAULT_STORES_LOCK = Lock()
 
 
-def get_default_session_memory_context_store(
+def get_default_session_memory_snapshot_store(
     *,
     max_entries: int = 1024,
-) -> SessionMemoryContextStore:
+) -> SessionMemorySnapshotStore:
     """Return one process-owned store for runtimes sharing session history."""
 
     with _DEFAULT_STORES_LOCK:
         store = _DEFAULT_STORES.get(max_entries)
         if store is None:
-            store = SessionMemoryContextStore(max_entries=max_entries)
+            store = SessionMemorySnapshotStore(max_entries=max_entries)
             _DEFAULT_STORES[max_entries] = store
         return store

@@ -515,7 +515,7 @@ def _event_io_attributes(
         )
     elif name in {
         "memory.session_recall.finished",
-        "memory.capture.finished",
+        "memory.ingestion.finished",
     }:
         output_payload.update(
             _selected_payload(
