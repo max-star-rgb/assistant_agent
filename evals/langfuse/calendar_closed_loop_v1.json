@@ -1,8 +1,10 @@
 {
   "dataset_name": "assistant-agent-calendar-closed-loop-v1",
-  "description": "assistant_agent 基于 Trace、Policy、工具结果与最终状态的多能力闭环评测。",
+  "description": "验证 Agent 是否在受治理的 Runtime 中正确完成、克制或只读执行任务，并由 Tool Trace、Policy、环境状态变化和最终回答共同证明结果。当前 scripted mock 实验用于验证闭环评测基础设施，不代表真实模型的泛化能力。",
   "metadata": {
     "suite": "agent_closed_loop",
+    "evaluation_objective": "验证 Agent 是否在受治理的 Runtime 中正确完成、克制或只读执行任务，并由 Trace、Policy、状态和回答共同证明结果。",
+    "evaluation_scope": "scripted_mock_infrastructure_baseline",
     "fixture_version": "calendar_capabilities_v1",
     "evaluator_versions": [
       "calendar_closed_loop_v1",

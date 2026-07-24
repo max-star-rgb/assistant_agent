@@ -99,6 +99,11 @@ Calendar 历史名称，Dataset 已扩展为多能力集合。当前闭环包括
 - Langfuse Experiment task 把当前 W3C trace/span identity 传入 Runtime，Runtime observations、
   item scores 和 Dataset Run 属于同一条 Experiment trace。
 
+本 Dataset 的测试目标是：验证 Agent 是否在受治理的 Runtime 中正确完成、克制或只读执行任务，
+并由 Tool Trace、Policy、环境状态变化和最终回答共同证明结果。当前使用 scripted mock，目标是
+验证 Dataset、Runtime、治理链、Trace、Evaluator 和 Langfuse Score 的基础设施闭环；它不是对真实
+模型泛化能力的结论。每个 `agent.*` Score 的 Langfuse comment/metadata 都会携带该总目标和指标说明。
+
 安装独立 optional dependency：
 
 ```bash

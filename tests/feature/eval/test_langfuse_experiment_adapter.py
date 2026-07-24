@@ -9,7 +9,9 @@ from langfuse import Evaluation
 
 from assistant_agent.eval.contracts import AgentEvalEvidence
 from assistant_agent.eval.langfuse_experiment import (
+    AGENT_EVALUATION_OBJECTIVE,
     CalendarExperimentTask,
+    ITEM_SCORE_DESCRIPTIONS,
     calendar_item_evaluators,
     calendar_run_evaluators,
     load_langfuse_dataset_source,
@@ -206,6 +208,19 @@ def test_item_evaluators_return_native_langfuse_evaluations() -> None:
     )
     assert strict.value is True
     assert strict.data_type == "BOOLEAN"
+    assert strict.metadata["agent_evaluation_objective"] == AGENT_EVALUATION_OBJECTIVE
+    assert strict.metadata["score_description"] == ITEM_SCORE_DESCRIPTIONS[
+        "agent.strict_pass"
+    ]
+    assert strict.metadata["score_interpretation"] == "quality_gate"
+    assert strict.comment.startswith("指标说明：")
+
+    latency = next(
+        evaluation
+        for evaluation in evaluations
+        if evaluation.name == "agent.total_latency_ms"
+    )
+    assert latency.metadata["score_interpretation"] == "diagnostic_metric"
 
 
 def test_run_evaluators_aggregate_item_scores() -> None:

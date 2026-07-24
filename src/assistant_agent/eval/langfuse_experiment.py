@@ -62,6 +62,21 @@ ITEM_SCORE_NAMES = (
     "agent.tool_call_count",
     "agent.total_latency_ms",
 )
+AGENT_EVALUATION_OBJECTIVE = (
+    "验证 Agent 是否在受治理的 Runtime 中正确完成、克制或只读执行任务，并由 Tool Trace、"
+    "Policy、环境状态变化和最终回答共同证明结果。当前 scripted mock 实验用于验证闭环评测"
+    "基础设施，不代表真实模型的泛化能力。"
+)
+ITEM_SCORE_DESCRIPTIONS = {
+    "agent.strict_pass": "严格总门槛：运行完成、Trace 完整且五项质量分全部为 1。",
+    "agent.goal_completion": "目标完成度：最终环境状态或查询结果是否满足结构化期望。",
+    "agent.tool_correctness": "工具正确性：Tool 选择、调用次数、参数、幂等与执行结果是否正确。",
+    "agent.policy_compliance": "策略合规性：工具暴露、确认、ActionValidator 和只读/写入边界是否合规。",
+    "agent.state_integrity": "状态完整性：是否只产生允许的状态变化且没有修改、删除或重复污染。",
+    "agent.response_grounding": "回答依据：最终回答是否与 Tool 结果和实际环境状态一致。",
+    "agent.tool_call_count": "诊断指标：记录实际 Tool 调用次数，本身不直接表示通过或失败。",
+    "agent.total_latency_ms": "诊断指标：记录 Runtime 总延迟（毫秒），本身不直接表示通过或失败。",
+}
 
 
 class LangfuseDatasetSourceItem(BaseModel):
@@ -372,7 +387,7 @@ def run_langfuse_agent_experiment(
         return dataset.run_experiment(
             name=experiment_name,
             run_name=run_name,
-            description="assistant_agent trace-and-state capability evaluation.",
+            description=AGENT_EVALUATION_OBJECTIVE,
             task=AgentExperimentTask(
                 client=client,
                 runtime_factory=runtime_factory,
@@ -385,6 +400,8 @@ def run_langfuse_agent_experiment(
                 "dataset_hash": source.content_hash(),
                 "provider_mode": "mock",
                 "chat_provider": "scripted",
+                "evaluation_objective": AGENT_EVALUATION_OBJECTIVE,
+                "evaluation_scope": "scripted_mock_infrastructure_baseline",
                 "evaluator_versions": sorted(
                     {
                         str(item.metadata.get("evaluator_version"))
@@ -592,6 +609,7 @@ def _agent_item_evaluator(score_name: str) -> Callable[..., Evaluation]:
 def langfuse_evaluation_from_score(score: AgentEvalScore) -> Evaluation:
     """Convert the project score into the native Langfuse Evaluation."""
 
+    score_description = ITEM_SCORE_DESCRIPTIONS[score.name]
     value: float | bool = (
         bool(score.value)
         if score.data_type == "BOOLEAN"
@@ -600,8 +618,18 @@ def langfuse_evaluation_from_score(score: AgentEvalScore) -> Evaluation:
     return Evaluation(
         name=score.name,
         value=value,
-        comment=score.comment,
-        metadata=score.evidence,
+        comment=f"指标说明：{score_description} 本次结果：{score.comment}",
+        metadata={
+            **score.evidence,
+            "agent_evaluation_objective": AGENT_EVALUATION_OBJECTIVE,
+            "score_description": score_description,
+            "score_interpretation": (
+                "diagnostic_metric"
+                if score.name
+                in {"agent.tool_call_count", "agent.total_latency_ms"}
+                else "quality_gate"
+            ),
+        },
         data_type=score.data_type,
     )
 
