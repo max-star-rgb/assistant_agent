@@ -1,4 +1,4 @@
-"""Governed discovery tool for configured MCP server tools."""
+"""Governed discovery tool for deferred Registry and configured MCP tools."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from assistant_agent.schemas.tool_search import (
     ToolSearchInputField,
     ToolSearchResult,
 )
-from assistant_agent.schemas.tools import ToolResult
+from assistant_agent.schemas.tools import ToolResult, ToolSpec
 from assistant_agent.services.provider_errors import sanitize_error_message
 from assistant_agent.schemas.tool_ids import TOOL_SEARCH_TOOL_NAME
 from assistant_agent.tools.base import ToolBase, ToolContext
@@ -21,18 +21,19 @@ from assistant_agent.tools.input_binding import ToolInputBinding
 
 
 class ToolSearchTool(ToolBase):
-    """Inspect configured MCP servers for fallback tools without executing them."""
+    """Discover already-governed deferred or MCP tools without executing them."""
 
     name = TOOL_SEARCH_TOOL_NAME
     description = (
-        "仅当已暴露的核心工具无法满足用户请求时，搜索已配置的 MCP 服务器以发现其他工具。"
-        "此工具只发现候选，不执行工具，也不授予执行权限。"
+        "仅当当前直接暴露的工具无法满足请求时，搜索本轮已授权的延迟工具目录或已配置 MCP 工具。"
+        "此工具只发现候选；延迟工具会在下一轮加载完整 Schema，所有执行仍经过统一治理。"
     )
     input_schema = ToolSearchInput
     output_schema = ToolSearchResult
     category = "read"
     toolset = "tool.discovery"
     requires_confirmation = False
+    defer_loading = False
     input_bindings = (
         ToolInputBinding(field="limit", source="constant", value=8),
         ToolInputBinding(
@@ -50,35 +51,87 @@ class ToolSearchTool(ToolBase):
     ) -> None:
         self.server_configs = list(server_configs or [])
         self.runner = runner
+        self._registry_specs: dict[str, ToolSpec] = {}
+        self._registry_catalog_bound = False
+
+    def bind_registry_catalog(self, specs: list[ToolSpec]) -> None:
+        """Bind the immutable startup inventory before Registry sealing."""
+
+        if self._registry_catalog_bound:
+            raise RuntimeError("Tool discovery catalog is already bound.")
+        self._registry_specs = {
+            spec.name: spec.model_copy(deep=True)
+            for spec in specs
+            if spec.name != self.name
+        }
+        self._registry_catalog_bound = True
 
     def _run(self, input: ToolSearchInput, context: ToolContext) -> ToolResult:
-        result = self.search(input)
+        result = self.search(
+            input,
+            allowed_registry_names=_deferred_registry_names(context),
+        )
         data = result.model_dump(mode="json")
+        activated_names = [
+            candidate.tool_name
+            for candidate in result.matches
+            if candidate.source == "registry"
+            and candidate.status == "enabled"
+        ]
         return ToolResult(
             tool_name=self.name,
             success=True,
             data=data,
             model_observation=data,
+            tool_catalog_activation=activated_names,
         )
 
-    def search(self, input: ToolSearchInput) -> ToolSearchResult:
-        """Return prompt-safe MCP discovery candidates for the requested capability."""
+    def search(
+        self,
+        input: ToolSearchInput,
+        *,
+        allowed_registry_names: set[str] | None = None,
+    ) -> ToolSearchResult:
+        """Return prompt-safe candidates from already-governed discovery spaces."""
 
         servers = _selected_servers(self.server_configs, input.server_name)
-        if not servers:
-            return ToolSearchResult(
-                query=input.query,
-                configured_server_count=len(self.server_configs),
-                summary="No configured MCP servers matched the discovery request.",
-            )
-        runner = self._runner()
         candidates: list[ToolSearchCandidate] = []
         issues: list[str] = []
         omitted_unallowlisted_count = 0
         searched_server_names: list[str] = []
+        deferred_names = set(allowed_registry_names or ())
+        if input.server_name is None:
+            for tool_name in sorted(deferred_names):
+                spec = self._registry_specs.get(tool_name)
+                if spec is None:
+                    continue
+                score = _registry_match_score(input.query, spec)
+                if input.query.strip() and score <= 0:
+                    continue
+                candidates.append(
+                    ToolSearchCandidate(
+                        tool_name=spec.name,
+                        source="registry",
+                        description=_clip(spec.description, 240),
+                        status="enabled",
+                        permission_required=False,
+                        read_only=spec.category == "read",
+                        side_effect_level=(
+                            "external_read"
+                            if spec.category == "read"
+                            else "pending_confirmation"
+                        ),
+                        required_inputs=list(spec.input_schema.get("required", [])),
+                        input_fields=_input_fields(spec.input_schema),
+                        match_score=score,
+                    )
+                )
+
+        runner = self._runner() if servers else None
         for server in servers:
             searched_server_names.append(server.server_name)
             try:
+                assert runner is not None
                 definitions = runner.list_tools(server=server)
             except Exception as exc:  # pragma: no cover - defensive discovery boundary
                 issues.append(f"{server.server_name}: {sanitize_error_message(exc)}")
@@ -114,6 +167,7 @@ class ToolSearchTool(ToolBase):
                 candidates.append(
                     ToolSearchCandidate(
                         tool_name=spec.name,
+                        source="mcp",
                         server_name=server.server_name,
                         mcp_tool_name=definition.name,
                         description=_clip(definition.description, 240),
@@ -147,6 +201,7 @@ class ToolSearchTool(ToolBase):
             query=input.query,
             matches=limited,
             total_matches=len(candidates),
+            deferred_registry_count=len(deferred_names),
             configured_server_count=len(self.server_configs),
             searched_server_names=searched_server_names,
             omitted_unallowlisted_count=omitted_unallowlisted_count,
@@ -245,6 +300,50 @@ def _match_score(
     return score
 
 
+def _registry_match_score(query: str, spec: ToolSpec) -> int:
+    terms = _tokens(query)
+    if not terms:
+        return 1
+    properties = spec.input_schema.get("properties")
+    field_names = (
+        [name for name in properties if isinstance(name, str)]
+        if isinstance(properties, dict)
+        else []
+    )
+    return _match_score_values(
+        terms,
+        " ".join((spec.name, spec.description, spec.toolset or "", *field_names)),
+    )
+
+
+def _match_score_values(terms: list[str], haystack: str) -> int:
+    haystack_tokens = set(_tokens(haystack))
+    normalized_haystack = _normalize_text(haystack)
+    score = 0
+    for term in terms:
+        if term in haystack_tokens:
+            score += 3
+        elif term in normalized_haystack:
+            score += 1
+    return score
+
+
+def _deferred_registry_names(context: ToolContext) -> set[str]:
+    catalog = context.metadata.get("run_tool_catalog")
+    if not isinstance(catalog, dict):
+        return set()
+    excluded = catalog.get("excluded_reasons")
+    if not isinstance(excluded, dict):
+        return set()
+    return {
+        name
+        for name, reasons in excluded.items()
+        if isinstance(name, str)
+        and isinstance(reasons, list)
+        and "deferred_for_schema_budget" in reasons
+    }
+
+
 def _tokens(value: str) -> list[str]:
     normalized = _normalize_text(value)
     return [item for item in normalized.split() if item]
@@ -276,12 +375,12 @@ def _summary(
     issues: list[str],
 ) -> str:
     if not matches and not issues:
-        return "No matching configured MCP tools were found."
+        return "No matching deferred or configured MCP tools were found."
     permission_required = sum(1 for item in matches if item.permission_required)
     enabled = len(matches) - permission_required
     issue_part = f" Issues: {len(issues)}." if issues else ""
     return (
-        f"Found {len(matches)} matching MCP tools"
+        f"Found {len(matches)} matching governed tools"
         f" ({enabled} enabled, {permission_required} permission required)"
         f" out of {total_matches} total matches.{issue_part}"
     )

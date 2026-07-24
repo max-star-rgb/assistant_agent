@@ -1663,6 +1663,7 @@ def _execute_single_requested_tool_node(graph_state: AssistantLoopState) -> Assi
             request_text=graph_state["request"].text,
             prior_observations=tool_observations,
         )
+        _apply_tool_catalog_activation(state, result)
         if _is_plan_mode_active(state) and not result.success:
             _mark_plan_mode_status(state, "replanning")
         tool_spec = tool_executor.registry.get_spec(tool_name)
@@ -1717,6 +1718,52 @@ def _execute_single_requested_tool_node(graph_state: AssistantLoopState) -> Assi
             **graph_state,
             "tool_observations": _record_react_observation(graph_state, tool_observations, observation),
         }
+
+
+def _apply_tool_catalog_activation(state: AgentState, result: ToolResult) -> None:
+    """Activate only names already qualified and deferred in the current run."""
+
+    if not result.success or not result.tool_catalog_activation:
+        return
+    catalog = state.run_tool_catalog
+    if catalog is None:
+        return
+    deferred_names = {
+        name
+        for name, reasons in catalog.excluded_reasons.items()
+        if "deferred_for_schema_budget" in reasons
+    }
+    accepted = [
+        name
+        for name in result.tool_catalog_activation
+        if name in deferred_names
+    ]
+    if not accepted:
+        return
+    metadata = state.request.metadata
+    activated = _metadata_string_list(metadata.get("_activated_tool_names"))
+    for name in accepted:
+        if name not in activated:
+            activated.append(name)
+    metadata["_activated_tool_names"] = activated
+    history = metadata.setdefault("tool_catalog_activation_history", [])
+    if isinstance(history, list):
+        history.append(
+            {
+                "source_tool": result.tool_name,
+                "activated_tool_names": accepted,
+            }
+        )
+
+
+def _metadata_string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [
+        item.strip()
+        for item in value
+        if isinstance(item, str) and item.strip()
+    ]
 
 
 def _current_plan_step(

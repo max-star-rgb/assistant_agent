@@ -13,6 +13,7 @@ from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.schemas.tools import ToolResult
 from assistant_agent.services.chat_adapter import ChatRequest, ChatResult
 from assistant_agent.services.session_store import InMemorySessionStore
+from assistant_agent.services.context import tool_catalog as tool_catalog_module
 from assistant_agent.tools.plugins.contracts import ToolPluginContext
 from assistant_agent.tools.plugins.contracts import ToolPluginDescriptor
 from assistant_agent.tools.base import ToolBase, ToolContext
@@ -109,3 +110,83 @@ def test_configured_plugin_tool_runs_through_default_runtime_governance(
     assert [call.tool_name for call in state.tool_calls] == ["configured_runtime_read"]
     assert state.tool_results[0].data == {"answer": "hello"}
     assert registry.registration_record("configured_runtime_read").plugin_id == "tests.runtime"
+
+
+def test_deferred_plugin_tool_is_discovered_loaded_and_executed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        tool_catalog_module,
+        "DEFAULT_DIRECT_TOOL_SCHEMA_MAX_CHARS",
+        1,
+    )
+    module_name = "tests_fake_deferred_runtime_plugin"
+    module = ModuleType(module_name)
+    module.__assistant_tool_plugin__ = _ConfiguredRuntimePlugin()
+    monkeypatch.setitem(sys.modules, module_name, module)
+    config = ProviderConfig(langgraph_checkpointer_backend="none")
+    registry = create_default_registry(config, plugin_modules=[module_name])
+    adapter = _ScriptedChatAdapter(
+        [
+            ChatResult(
+                provider="scripted",
+                model="scripted-plugin-runtime",
+                finish_reason="tool_calls",
+                tool_calls=[
+                    NativeToolCall(
+                        id="tool-search-call",
+                        name="tool_search",
+                        arguments={"query": "configured_runtime_read"},
+                    )
+                ],
+            ),
+            ChatResult(
+                provider="scripted",
+                model="scripted-plugin-runtime",
+                finish_reason="tool_calls",
+                tool_calls=[
+                    NativeToolCall(
+                        id="configured-call",
+                        name="configured_runtime_read",
+                        arguments={"query": "loaded"},
+                    )
+                ],
+            ),
+            ChatResult(
+                provider="scripted",
+                model="scripted-plugin-runtime",
+                finish_reason="stop",
+                response_text="deferred tool completed",
+            ),
+        ]
+    )
+    runtime = AgentGraphRuntime(
+        config=config,
+        registry=registry,
+        chat_adapter=adapter,
+        session_store=InMemorySessionStore(),
+    )
+
+    state = runtime.run_state(
+        UserRequest(
+            user_id="plugin-user",
+            session_id="plugin-session",
+            text="discover and run configured",
+        )
+    )
+
+    first_tools = {
+        item["function"]["name"] for item in adapter.requests[0].tools
+    }
+    second_tools = {
+        item["function"]["name"] for item in adapter.requests[1].tools
+    }
+    assert "tool_search" in first_tools
+    assert "configured_runtime_read" not in first_tools
+    assert "configured_runtime_read" in second_tools
+    assert [call.tool_name for call in state.tool_calls] == [
+        "tool_search",
+        "configured_runtime_read",
+    ]
+    assert state.tool_results[-1].data == {"answer": "loaded"}
+    assert state.response.message == "deferred tool completed"

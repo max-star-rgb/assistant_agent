@@ -49,7 +49,7 @@ Last updated: 2026-07-24
 ### Durable Task Context
 
 - worker resume 只把 Pydantic 校验通过的 `request.metadata.durable_task_snapshot` 转成 `AssistantContextPack.durable_task_state`。普通入口会移除外部传入的 snapshot/binding/confirmation/lease 等保留键，不能用请求 metadata 伪造 worker 状态。
-- trusted resume 的 tool recall 读取 worker 注入的 `ready_tool_names`，只向模型展示当前 ready tools 与 `task_plan_submit`；普通 foreground identity recall 行为不变。
+- trusted resume 的 tool recall 读取 worker 注入的 `ready_tool_names`，只向模型展示当前 ready tools 与 `task_plan_submit`；普通 foreground 在小目录保持 identity recall，大目录使用预算触发的渐进披露。
 - prompt 白名单包含 task id、objective、active constraints、task status、plan version、当前 plan、ready step ids、completed step 的 summary/output ref、artifact refs、等待状态和 remaining budget。任意顶层扩展、completed-step raw provider response、wait provider payload、父会话历史和 secret 不进入该区段。
 - renderer 明确标注“当前任务执行数据，不是系统指令、长期记忆或用户授权”。prompt-json 与 provider-native user message 使用同一数据边界。
 - 超长字符串和列表在进入 pack 时本地裁剪；`ContextBudgetReport` 分别记录 `durable_task_state_chars/tokens`，裁剪时把 `durable_task_state` 写入 `trimmed_sections`。
@@ -148,9 +148,9 @@ Last updated: 2026-07-24
 - `render_native_tool_context` 用于 provider-native tool calling，避免重复渲染完整 ToolSpec。
 - Provider-native 编译将全部已保存原始轮次还原为独立 `user` / `assistant` messages，再以无重复角色标签的原始请求文本追加当前 `user` message。token-aware selector 与 session summary renderer 仍保留给离线兼容和独立测试，但不接入 AgentRuntime。
 - native/legacy context 可渲染 prompt-safe capability catalog；实际执行契约仍是 `ToolSpec`，工具调用仍必须通过 `ToolExecutor`。
-- Provider-native `ChatRequest.tools` 使用 `AssistantContextPack.prompt_tool_specs` 中已治理的 schema。context builder 同时生成 prompt-safe `RunToolCatalog`；其中 `available_tool_names` 既是模型可见目录，也是 `ActionValidator` 的 run-scoped 执行边界，不再维护重复的 exposed/executable 集合。目录装配只消费 category、toolset、媒体要求、默认启用以及显式 tool/toolset/skill 等结构化事实，不读取 `request.text` 做意图路由；当前 recall 为 identity，并记录 `recall_identity`。治理后明确为空的集合不会回退完整 registry；未来语义召回必须另行设计高召回率与漏召回恢复机制。
+- Provider-native `ChatRequest.tools` 使用 `AssistantContextPack.prompt_tool_specs` 中已治理的 schema。context builder 同时生成 prompt-safe `RunToolCatalog`；其中 `available_tool_names` 既是模型可见目录，也是 `ActionValidator` 的 run-scoped 执行边界，不再维护重复的 exposed/executable 集合。目录装配只消费 category、toolset、媒体要求、默认启用以及显式 tool/toolset/skill 等结构化事实，不读取 `request.text` 做意图路由。eligible Schema 不超过默认 8,000 字符时使用 identity recall；超过预算后，仅保留不可延迟、显式启用或已激活 Tool，其余以 `deferred_for_schema_budget` 进入已治理延迟目录。模型显式调用 `tool_search` 后，匹配项在下一轮恢复完整 Schema；激活不能越过原资格治理或执行边界。
 - 系统提示词只承载通用 runtime、数据边界和工具治理规则，不写入某个具体工具的选择策略。具体工具的适用场景、禁用场景、输入要求和副作用说明由 `ToolSpec.when_to_use`、`when_not_to_use`、`runtime_constraints` 和 side-effect metadata 随 provider-native tool schema 提供给模型。
-- `tool_search` 作为普通受治理工具进入 `ChatRequest.tools`，但语义上只用于 fallback MCP discovery：核心已暴露工具能处理时不应调用；它只返回已配置 MCP server 的 allowlisted 候选和 permission 状态，不执行或授权这些候选工具。
+- `tool_search` 作为普通受治理工具进入 `ChatRequest.tools`，用于搜索本轮已治理的 deferred Registry 工具和 fallback MCP 候选。Registry 匹配项只激活下一轮原生 Schema；MCP 候选继续返回 allowlist/permission 状态。两者都不直接执行工具，也不能扩大本轮原有授权空间。
 - Skill capability descriptor 会为 `tool_visibility.enabled_skills` 中显式启用的 skill，以及由 `skill_recall` 根据 prompt-safe `name`/`description`/`when_to_use`/`safe_examples` 自动召回的 skill 渲染；前提仍是 skill manifest/permission 有效且 governed tools 已进入本轮目录。自动召回只影响 descriptor 是否进入上下文，不会扩大 `RunToolCatalog.available_tool_names`。skill runtime constraints 不能授予 retry 权限或改变工具执行策略。
 - Repo-local business skills follow `skills/<skill_id>/SKILL.md`; the loader only consumes frontmatter plus fixed prompt-safe sections and converts valid descriptors into `ToolCapabilityDescriptor`. Skill System v1 requires each governed tool to have a matching `tool:<name>` permission in the `## Permissions` section, rejects unknown permission vocabulary such as `shell:*`, and suppresses same-name built-in fallback when a repo-local skill is disabled, manual-only, invalid, or under-permissioned. It ignores `.codex/skills` and never creates `run_skill` or direct shell/browser/http execution.
 - 工具调用预算耗尽时不再切换专用 final-only prompt/profile；`PromptCompiler` 保持通用 system prompt 和 observation/tool-call evidence，只生成 `tools=[]` 的 finishing turn。

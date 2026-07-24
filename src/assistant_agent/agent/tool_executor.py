@@ -251,6 +251,11 @@ class ToolExecutor:
                     state.request,
                     agent_id=state.agent_id,
                 ).model_dump(mode="json"),
+                "run_tool_catalog": (
+                    state.run_tool_catalog.model_dump(mode="json")
+                    if state.run_tool_catalog is not None
+                    else None
+                ),
             }
             context = ToolContext(
                 run_id=state.run_id,

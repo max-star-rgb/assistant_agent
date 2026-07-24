@@ -52,6 +52,7 @@ class VideoUnderstandingBranch(ToolBase):
     input_schema = VideoUnderstandingRequest
     output_schema = VideoUnderstandingResult
     category = "read"
+    toolset = "vision"
     requires_confirmation = False
     requires_media = ["video"]
 

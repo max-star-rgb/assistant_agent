@@ -1,4 +1,4 @@
-"""Schemas for governed MCP tool discovery."""
+"""Schemas for governed deferred-tool and MCP discovery."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 
 
 class ToolSearchInput(BaseModel):
-    """核心工具不足时搜索已配置的 MCP 服务器工具。"""
+    """核心工具不足时搜索本轮延迟目录和已配置 MCP 工具。"""
 
     query: str = Field(
         default="",
@@ -19,7 +19,7 @@ class ToolSearchInput(BaseModel):
     limit: int = Field(default=8, ge=1, le=20)
     server_name: str | None = Field(
         default=None,
-        description="可选的已配置 MCP 服务器名称，用于限定搜索范围。",
+        description="可选的已配置 MCP 服务器名称；提供后只搜索该服务器。",
     )
     include_permission_required: bool = Field(
         default=True,
@@ -37,14 +37,16 @@ class ToolSearchInputField(BaseModel):
 
 
 ToolSearchCandidateStatus = Literal["enabled", "permission_required"]
+ToolSearchCandidateSource = Literal["registry", "mcp"]
 
 
 class ToolSearchCandidate(BaseModel):
-    """One prompt-safe MCP tool discovery candidate."""
+    """One prompt-safe governed tool discovery candidate."""
 
     tool_name: str = Field(min_length=1)
-    server_name: str = Field(min_length=1)
-    mcp_tool_name: str = Field(min_length=1)
+    source: ToolSearchCandidateSource
+    server_name: str | None = None
+    mcp_tool_name: str | None = None
     description: str = ""
     status: ToolSearchCandidateStatus
     permission_required: bool
@@ -62,6 +64,7 @@ class ToolSearchResult(BaseModel):
     query: str = ""
     matches: list[ToolSearchCandidate] = Field(default_factory=list)
     total_matches: int = 0
+    deferred_registry_count: int = 0
     configured_server_count: int = 0
     searched_server_names: list[str] = Field(default_factory=list)
     omitted_unallowlisted_count: int = 0

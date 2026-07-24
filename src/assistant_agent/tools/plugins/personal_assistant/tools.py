@@ -42,7 +42,7 @@ class WeatherTool(ToolBase):
     input_schema = WeatherRequest
     output_schema = WeatherResult
     category = "read"
-    toolset = "personal.readonly"
+    toolset = "personal.weather"
     requires_confirmation = False
     input_bindings = (
         ToolInputBinding(field="units", source="constant", value="metric"),

@@ -48,6 +48,7 @@ class ToolResult(BaseModel):
     output_ref: str | None = None
     latency_ms: int | None = Field(default=None, ge=0)
     contract: CapabilityOutputContract | None = None
+    tool_catalog_activation: list[str] = Field(default_factory=list)
 
 
 class ToolSpec(BaseModel):
@@ -61,6 +62,7 @@ class ToolSpec(BaseModel):
     requires_confirmation: bool = True
     enabled_by_default: bool = True
     requires_media: list[ToolMediaRequirement] = Field(default_factory=list)
+    defer_loading: bool = True
 
 
 class RunToolCatalog(BaseModel):

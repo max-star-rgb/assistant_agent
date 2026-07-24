@@ -35,6 +35,7 @@ toolset
 requires_confirmation
 enabled_by_default
 requires_media
+defer_loading
 ```
 
 工具类直接声明这些字段；Registry 不再维护按工具名索引的 `_TOOL_CONTRACTS` 或
@@ -82,6 +83,21 @@ Tool 注册时会检查绑定字段存在、没有重复且静态默认值符合
 未知或未声明分类的本地工具使用保守默认值：`category="dangerous"` 且
 `requires_confirmation=true`。
 
+Tool 的分类使用相互独立的边界，不合并成一棵中心分类树：
+
+- `category` 只表达副作用与安全等级；
+- `toolset` 只表达结构化暴露分组；
+- Plugin 只表达代码所有权、Provider、依赖和生命周期；
+- Skill 只表达如何组合已治理工具的工作流。
+
+仓库内置 Tool 必须声明非空 `toolset`。Toolset 按业务或运行场景命名，例如 `web`、
+`vision`、`shopping`、`personal.calendar`，不能用 `readonly` 等安全概念代替
+`category`。同一 Plugin 可以贡献多个 Toolset，同一 Toolset 也不能替代 Tool 自己的
+category、确认和输入校验。
+
+`defer_loading` 只决定大目录下是否允许延迟发送完整 Schema，不改变注册、授权或执行语义。默认值为
+`true`；`tool_search` 以及依赖当前结构化媒体事实的统一视觉入口等少量基础 Tool 可以声明为 `false`。
+
 ### 2.2 RunToolCatalog
 
 `RunToolCatalog` 是每个 assistant turn 的工具目录快照：
@@ -101,6 +117,9 @@ excluded_reasons
 
 目录中不存在 registered、qualified、exposed、executable 四份重复集合。registry inventory 仍可通过
 `ToolRegistry.list_specs()` 独立获得；排除原因只用于解释为什么某个已注册工具没有进入本轮目录。
+超过直接 Schema 预算后，已通过资格治理但尚未直接加载的工具使用
+`deferred_for_schema_budget` 作为排除原因。它们不在 `available_tool_names` 中，因此被发现并在下一轮
+加载完整 Schema 之前仍不可执行。
 
 ### 2.3 工具前置输入
 
@@ -176,6 +195,12 @@ generation。运行期间不能继续 `register()`，配置变化需要重启生
 `ActionValidator -> ToolExecutor -> ToolRegistry` 治理链路。插件加载不等于本轮授权，write/dangerous
 Tool 仍默认不暴露，必须由宿主配置或每轮结构化显式 opt-in。`tools.loader` 的 `__assistant_tools__` 保留给
 本地 workflow/CLI 兼容入口，不会自动并入默认 runtime 插件协议。
+
+Plugin 按共享 Provider、配置、依赖和生命周期划分，不按 Tool 数量机械拆分。新增已有 Plugin 内的普通
+Tool 只修改该 Plugin 目录及其测试；新增内置 Plugin 额外在 `defaults.py` 可信清单登记一次；新增外部
+Plugin 只增加独立 module 和部署配置。普通 Tool 的增删不得要求修改 Registry、Executor、Validator、
+assistant loop、Prompt/Context 编译或中心 Tool name 表。只有引入新的宿主级共享基础设施时，才扩展
+`ToolPluginContext` 和 composition root。
 
 可用 `python -m assistant_agent.tools.cli plugins` 只读查看启动装配结果、ownership、issue、seal 状态和
 generation；该命令不会执行 Tool。`--module` 可重复传入并覆盖环境 module 列表用于部署前验证。
@@ -257,9 +282,15 @@ Provider 兼容字段。`weather` 暴露 `location`、`target_date` 和
 语义型可选参数仍应暴露；当前媒体引用、用户原始请求、身份、采样参数和 rolling context 均来自
 runtime。`web_fetch` 只暴露必填 `url`，读取上限和内容格式由 Tool 静态默认值分配。
 
-当前 Agent-Service 目录规模很小，继续直接发送治理后的完整 ToolSpec。只有未来 eligible schema
-达到明显上下文占比时，才考虑类似 OpenClaw/Hermes 的 `search -> describe -> call` 渐进披露；
-小目录不为节省少量 token 引入额外模型往返。
+目录使用预算触发的渐进披露：治理后的 eligible Schema 不超过默认 8,000 字符时，继续直接发送完整
+ToolSpec，不增加额外往返；超过预算后，只直接发送 `defer_loading=false`、宿主/用户结构化显式启用或
+已经由 discovery 激活的 Tool，其余工具进入本轮已治理的延迟目录。模型显式调用 `tool_search` 搜索
+延迟目录后，匹配工具在下一轮恢复完整原生 Schema，再由模型正常发起 native tool call。
+
+该机制不读取原始 `request.text` 做关键词或正则路由。检索词是模型显式构造的 `tool_search` 输入；
+搜索结果只能激活当前 `RunToolCatalog` 中标记为 `deferred_for_schema_budget` 的名称，不能发现或授权
+被 category、media、profile、toolset、skill、env 或 allowlist 排除的工具。激活只改变下一轮 Schema
+披露，实际调用仍经过 `ActionValidator -> ToolExecutor -> ToolRegistry -> tool`。
 
 模型返回的 native `tool_calls` 会归一化为内部 `AssistantDecision`，然后进入统一执行链路。
 
@@ -284,6 +315,10 @@ native tool_calls
     -> model observation
     -> 下一轮 LLM
 ```
+
+`ToolResult.tool_catalog_activation` 是 discovery 专用的 prompt-Schema 激活请求。assistant loop 只接受
+当前 run catalog 中已标记 `deferred_for_schema_budget` 的名称，并把它们加入本 run 后续轮次的直接目录；
+其他名称会被忽略。该字段不能授予权限，也不能跳过下一轮 `RunToolCatalog` 和执行校验。
 
 ### 5.1 ActionValidator
 
