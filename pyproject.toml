@@ -23,5 +23,5 @@ observability = [
 ]
 
 [tool.pytest.ini_options]
-testpaths = ["tests/critical"]
+testpaths = ["tests"]
 pythonpath = ["src"]

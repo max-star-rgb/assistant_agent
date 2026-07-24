@@ -35,14 +35,18 @@ For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
 
 - `scripts/run_demo_flows.py`: offline scenario matrix for regression demos.
 - `scripts/run_evals.py`: offline eval harness for lower-layer behavior checks.
-- `scripts/run_real_provider_evals.py`: opt-in real chat provider eval harness;
-  requires `MULTIMODAL_AGENT_PROVIDER_MODE=real` and writes machine logs under
-  `.data/evals/real_provider/`.
+- `scripts/run_system_tool_evals.py`: 真实 LLM + 真实 Tool 的 system eval；
+  要求 `MULTIMODAL_AGENT_PROVIDER_MODE=real` 和 `--allow-real-tools`，产物写入
+  `.data/evals/system/tools/`。
+- `scripts/run_system_context_eval.py`: 捕获真实 Runtime 编译的 `ChatRequest`
+  和 Provider payload；要求 real 模式与 `--allow-unredacted-context`，产物写入
+  `.data/evals/system/context/`。
 - `scripts/run_langfuse_agent_evals.py`: optionally seeds the first Dataset, then
   runs the scripted mock Runtime through a Langfuse Experiment and shared Runtime
   trace. Scoring is asynchronous and owned by a Langfuse Code Evaluator; the script
   does not register SDK evaluators. It loads the untracked `.env` by default and
-  never calls a real Provider.
+  never calls a real Provider. Case implementation lives under
+  `evals/cases/langfuse/`.
 - `scripts/run_improvement_lab.py`: offline, non-mutating improvement proposal runner.
 - `scripts/check_pilot_readiness.py` and `scripts/collect_pilot_evidence.py`:
   multi-agent pilot operator helpers.

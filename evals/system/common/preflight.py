@@ -1,0 +1,25 @@
+"""Fail-closed preflight checks shared by real system evals."""
+
+from assistant_agent.config import ProviderConfig
+
+
+class SystemEvalConfigurationError(RuntimeError):
+    """A real system eval is not explicitly or completely configured."""
+
+
+def validate_real_chat_config(config: ProviderConfig) -> None:
+    """Require real mode and a completely configured non-mock chat Provider."""
+
+    if config.provider_mode != "real":
+        raise SystemEvalConfigurationError(
+            "System eval requires MULTIMODAL_AGENT_PROVIDER_MODE=real."
+        )
+    if config.chat_provider == "mock" or config.chat_adapter_kind == "mock":
+        raise SystemEvalConfigurationError(
+            "System eval requires an explicit real chat Provider."
+        )
+    missing = config.resolved_chat_provider().missing_required_env()
+    if missing:
+        raise SystemEvalConfigurationError(
+            "System eval chat Provider is missing: " + ", ".join(missing) + "."
+        )

@@ -409,12 +409,14 @@ weather、calendar search 和 contacts mapping 必须位于 `read_only_tools`。
   `manage_event`，并注入本地 `calendar_user_email`；创建动作固定为 `action=create`。
 
 `calendar_create` 不应放入 `enabled_tools`；它作为写工具仍需 runtime 的同名结构化确认。真实天气与
-日历只读 smoke 只能在用户当次明确要求后，用专用命令行开关执行；该命令会调用外部 Provider 并输出
-真实结果，失败时直接令测试失败：
+日历只读能力只能在用户当次明确要求后，通过 Tool system eval 执行。该命令让真实 LLM 经过 Runtime
+和工具治理链路自主调用外部 Provider，失败时明确报告：
 
 ```bash
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q \
-  -s --run-real-tools-plugin tests/tools_plugin/test_personal_assistant_plugin.py
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python \
+  scripts/run_system_tool_evals.py \
+  --allow-real-tools \
+  --case-id weather_beijing_today
 ```
 
 本地 `@tool` decorator 直接声明 `category`、`requires_confirmation`、`toolset` 和
@@ -437,7 +439,7 @@ workflow skill 只能调用已注册且 permission 匹配的工具。read 工具
 - `schemas/tool_spec_adapters.py`：OpenAI/MCP schema 转换；
 - `agent/action_validator.py`：run catalog、Pydantic、media、durable 校验；
 - `agent/tool_executor.py`：身份绑定、简单确认、调用和提交；
-- `tests/critical/test_tool_governance.py`：工具治理稳定契约。
+- `tests/contract/tools/test_tool_governance.py`：工具治理稳定契约。
 
 ## 9. 不变量
 

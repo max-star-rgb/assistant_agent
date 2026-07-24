@@ -31,7 +31,7 @@ from assistant_agent.services.session_store import InMemorySessionStore
 from assistant_agent.services.trace_store import InMemoryTraceStore, TraceEvent
 from assistant_agent.tools.plugins.personal_assistant.tools import CalendarSearchTool
 from assistant_agent.tools.registry import ToolRegistry
-from evals.langfuse.calendar_fixture import (
+from evals.cases.langfuse.calendar_fixture import (
     CalendarEvalCreateTool,
     CalendarEvalEnvironment,
     EvalCalendarEvent,
@@ -39,7 +39,9 @@ from evals.langfuse.calendar_fixture import (
 
 
 DEFAULT_DATASET_NAME = "assistant-agent-closed-loop-v1"
-DEFAULT_DATASET_SEED = Path("evals/langfuse/agent_closed_loop_v1.seed.json")
+DEFAULT_DATASET_SEED = Path(
+    "evals/cases/langfuse/agent_closed_loop_v1.seed.json"
+)
 AGENT_EVALUATION_OBJECTIVE = (
     "验证 Agent 是否在受治理的 Runtime 中正确完成、克制或只读执行任务，并由 Tool Trace、"
     "Policy、环境状态变化和最终回答共同证明结果。当前 scripted mock 实验用于验证闭环评测"

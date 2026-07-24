@@ -1,122 +1,122 @@
-# 测试分层与最小安全网
+# pytest 测试体系
 
-本文件是 pytest 测试分层、目录归属、默认收集、测试决策、验证范围和任务汇报的唯一权威；
-`AGENTS.md` 只提供导航，skill 只提供 workflow 入口，不复制本文件规则。
+本文件是 pytest 目录归属、默认收集、测试决策和任务汇报的唯一权威。真实 Provider、真实外部服务和
+模型行为质量不属于 pytest，统一进入根目录 `evals/`。
 
-测试按运行目的分为三个目录，不再将不同生命周期的用例平铺混放：
+## 目录
 
 ```text
 tests/
-  critical/      # 基础必要测试；裸 pytest 默认收集
-  feature/       # 功能开发验证；按 context/memory/runtime 等领域分子目录
-  tools_plugin/  # 用户显式触发的真实 Provider/MCP 调用
+  unit/          # 单一纯逻辑边界；当前没有需要独立保留的用例时可以不存在
+  integration/   # 多个项目模块协作，使用 mock/fake/in-memory/local adapter
+  contract/      # schema、协议、事件、治理和稳定外部契约
 ```
 
-`critical` 只保留由真实风险驱动、需要长期守住的默认离线安全网。它不承担覆盖率证明、模块枚举、
-实现细节验证或第三方框架验证，也不按源码目录建立镜像 scope。
+目录第一层表达测试性质，第二层表达故障域，例如：
 
-默认命令：
+```text
+tests/integration/context/
+tests/integration/memory/
+tests/integration/runtime/
+tests/integration/tools/
+tests/contract/gateway/
+tests/contract/observability/
+tests/contract/tools/
+```
+
+不要按源码文件机械镜像目录，也不要为单个测试创建一层目录。
+
+## 三层边界
+
+### unit
+
+只验证一个窄逻辑单元，不启动 Runtime，不访问数据库、网络或进程。外部依赖应当不存在或完全替换。
+
+### integration
+
+验证多个项目模块的协作和可观察行为。允许启动 `AgentGraphRuntime`、Gateway、FastAPI TestClient、
+in-memory store、scripted chat adapter 和本地 fake，但不得访问真实 Provider、付费 API、真实 MCP
+或真实 Memory 服务。
+
+### contract
+
+验证需要长期守住的稳定边界，例如协议 frame、事件映射、Tool schema、validation、confirmation、
+身份隔离和 trace correlation。契约测试可以跨少量模块，但断言重点必须是稳定协议或状态，而不是私有
+实现调用次数。
+
+## 默认执行
+
+所有 pytest 都必须离线安全，因此裸 pytest 收集整个 `tests/`：
 
 ```bash
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q
 ```
 
-当前安全网保护以下稳定边界：
-
-- 包与默认离线 runtime 可以初始化；
-- 普通文本 run 可以完成并形成终态事件；
-- provider-native tool call 可以经过治理链路并返回最终回答；
-- 主 LLM 超时会形成可终止的重试响应；
-- cancel token 会终止 run；
-- Agent-Service interrupt 会取消活动 turn、抑制旧输出并保持连接；
-- 入口超时仍保留 trace correlation 和可诊断的部分 trace；
-- `LLMEvent -> AgentEvent -> RealtimeAgentEvent -> Gateway frame` 的核心转换可用；
-- session、run 与 Mem0 身份按用户隔离；
-- 只有 session 启动可以召回 Mem0，turn 只复用 snapshot；
-- Tool schema、catalog、validation、confirmation 和 execution 保持治理边界。
-
-`feature` 保存某次功能实现期间有价值、但功能稳定后不需要在每次普通开发中重复执行的 pytest。
-它们不会被裸 `pytest` 收集；修改对应功能、排查相关回归或准备较宽验证时，显式指定文件或目录。
-典型内容包括 Provider streaming、插件装配、context accounting、Mem0 session/capture 生命周期、
-可观测性映射、启动展示、购物策略和 realtime task 等功能验证。
-
-`feature` 内按主要故障域使用 `context/`、`memory/`、`observability/`、`runtime/`、`server/`、
-`shopping/` 和 `tools/` 子目录。新增子目录必须表达稳定领域边界，不按源码文件机械镜像，也不要
-为单个测试创建一层目录。
-
-```bash
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q tests/feature
-```
-
-不要因为用例已进入 `feature` 就假设它必须永久保留。对应功能稳定且不再提供独立风险证据时，
-可以在后续相关变更中删除；若它保护的是稳定外部契约、具名缺陷或高风险机制，则应移入
-`critical`，而不是长期留在模糊的中间状态。
-
-Agent 行为 eval 数据统一放在根目录 `evals/`，格式、分层和运行方式见 `evals/README.md`，不属于
-pytest。真实 Provider、付费 API 和外部服务验证使用显式 operator eval/smoke/pilot 脚本，不进入默认
-pytest。
-
-`tests/tools_plugin/test_*_plugin.py` 只保存用户显式触发的真实 Provider/MCP 调用。这里禁止 mock、
-只装配不调用、用 skip 把未配置能力伪装成通过，或者由程序、agent、CI、定时任务和默认 pytest 自主
-启用。只有用户在当前任务中明确要求运行真实工具测试后，才允许人工执行带专用命令行开关的命令：
+定向运行示例：
 
 ```bash
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q \
-  -s --run-real-tools-plugin tests/tools_plugin
+  tests/integration/memory
+
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q \
+  tests/contract/tools
 ```
 
-仅设置环境变量不能启用该目录；显式指定目录但缺少 `--run-real-tools-plugin` 时测试必须失败。真实工具
-必须经过 `ActionValidator -> ToolExecutor -> ToolRegistry -> tool`，并把 Provider 的真实结果输出到本次
-测试终端；Provider 未配置、认证失效、超时、限流、响应无效或返回失败时，测试必须明确失败，不能
-skip、回退 mock 或伪造成功。默认先收录无副作用的只读 smoke；任何付费、写入或危险工具都必须有
-独立具名测试、确定性输入和安全清理策略，并由用户在当次任务中明确要求后才能运行。
+pytest 中禁止：
 
-`tests/feature/test_tool_plugin_runtime.py` 始终使用 mock，验证插件 Tool 经 `AgentGraphRuntime` 治理链路
-完成一次原生 tool-call 闭环；真实 Provider 装配本身由启动 fail-closed 和上述真实调用共同验证，不在
-`tests/tools_plugin` 保留只装配测试。
+- 真实 chat Provider；
+- 真实 MCP、Mem0、Google Calendar、天气或搜索服务；
+- 仅因未配置外部能力而 `skip`；
+- 检测到本机 key 后自动启用真实调用；
+- 从 real 静默回退到 mock 并报告通过。
+
+真实系统能力验证见 `evals/system/`；Langfuse 案例评估见 `evals/cases/langfuse/`。
 
 ## 测试策略
 
-本项目采用风险驱动测试，而不是覆盖率驱动测试。不要因为实现了新代码，就自动新增 pytest。
+项目采用风险驱动测试，而不是覆盖率驱动测试。只有出现以下情况时才新增或修改测试：
 
-只有出现以下情况时，才新增或修改测试：
+1. 发现真实 bug，需要最小回归测试；
+2. 新增或修改稳定、可观察的外部行为或协议契约；
+3. 修改并发、取消、超时、重试、状态机、持久化、事件顺序或身份隔离等高风险机制；
+4. 修改关键主链路，且现有测试无法发现其严重故障。
 
-1. 发现了真实 bug，需要最小回归测试；
-2. 新增或修改了稳定、可观察的外部行为或协议契约；
-3. 修改了并发、取消、超时、重试、状态机、持久化兼容性、事件顺序或身份隔离等高风险机制；
-4. 修改了关键主链路，并且现有安全网无法发现该链路的严重故障。
+文档、日志、注释、行为不变的移动或重命名、简单 wrapper、第三方框架自身行为和没有风险证据的
+假设性边缘场景，默认不新增测试。
 
-重命名、移动文件、行为不变的内部重构、日志、注释、文档、简单 wrapper、私有实现细节、
-第三方框架自身行为以及没有真实风险依据的假设性边缘场景，默认不新增测试。
+新增用例前先搜索现有测试。相同入口、fixture 和失败语义应扩展现有文件；独立契约或故障域应创建
+聚焦命名的文件。一个文件混合多个无关领域时应拆分。
 
-## 测试文件组织
+## 断言原则
 
-测试文件按稳定行为边界组织，不按“文件数量最少”组织，也不按源码目录机械镜像：
+优先断言：
 
-- `tests/critical/test_safety_net.py` 只承载跨层启动、核心运行闭环和少量全局不变量，不是所有新测试的默认落点；
-- 新用例先判断其生命周期：长期必要边界进入 `critical`，开发期功能验证进入 `feature`，真实外部配置验证进入 `tools_plugin`；
-- 现有测试已经覆盖同一个行为边界，且新增场景共享相同入口、fixture 和失败语义时，扩展现有文件；
-- 新测试属于独立契约、独立故障域或需要不同 fixture 时，创建聚焦命名的新测试文件；
-- 一个测试文件开始混合多个无关领域，或失败时无法从文件名和测试名判断责任边界时，应拆分而不是继续追加；
-- 不得为了“优先修改已有测试”而机械地把新场景堆进 `test_safety_net.py`；也不得为了目录整齐而给每个源码文件创建对应测试文件。
+- 结构化状态和终态；
+- schema、协议字段和事件类型；
+- Tool validation/execution 结果；
+- 持久化结果和副作用；
+- 身份隔离、调用顺序和错误分类。
 
-新增测试前先搜索现有测试，确认没有重复覆盖，并选择最稳定、最低成本的可观察边界。测试应
-验证外部行为、状态转换、事件、持久化结果和副作用，不以项目私有方法调用次数作为主要断言。
-外部边界优先使用 reusable fake 或 in-memory adapter。
+普通 pytest 不断言完整自然语言回复、整段 prompt、Tool description 或控制台输出。验证内容透传时
+使用无语义 sentinel；只有文本本身是稳定外部契约时才做聚焦文本断言。
 
-断言优先针对结构化状态、协议字段、事件类型、schema、持久化结果和副作用。普通功能开发测试
-不要断言完整自然语言回复、prompt 片段、Tool description 文案或整段控制台输出，也不要用文本
-包含关系代替行为或路由判断；验证内容透传时使用无语义 sentinel。只有文本本身就是明确、稳定的
-外部契约时才允许做聚焦文本断言，并应把它隔离在对应 formatter 或协议测试中。
+外部边界优先使用 reusable fake、scripted adapter 或 in-memory implementation，不以私有方法调用次数
+作为主要正确性证据。
 
-默认测试不得访问远程或付费服务；外部集成验证必须显式 opt-in。不得新增或提高覆盖率门槛。
-修改行为时应同步删除或合并已经冗余的测试。
+## 与 Eval 的转换
+
+- system eval 发现确定性代码缺陷后，应补充最小 pytest regression；
+- pytest 通过但真实模型选择或任务质量不稳定时，问题留在 eval，不写成随机 pytest；
+- 真实 Provider/MCP 直调 smoke 也属于 `evals/system/`，不得重新放回 `tests/`。
 
 ## 任务汇报
 
-每次任务结束时明确写出以下之一：
+每次开发任务结束时明确写出以下之一：
 
 - `Tests: existing tests were sufficient.`
 - `Tests: updated <test name> because <observable behavior changed>.`
 - `Tests: added <test name> as a regression for <specific bug>.`
 - `Tests: not added because the change does not affect observable behavior or a high-risk boundary.`
+
+同时列出实际执行的 pytest 命令。若本轮调用真实 Provider，还必须另外报告 system/case eval 的范围和
+结果。

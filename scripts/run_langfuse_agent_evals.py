@@ -25,7 +25,7 @@ if str(SRC) not in sys.path:
 
 from langfuse import Langfuse
 
-from evals.langfuse.experiment import (
+from evals.cases.langfuse.experiment import (
     DEFAULT_DATASET_NAME,
     DEFAULT_DATASET_SEED,
     load_dataset_seed,

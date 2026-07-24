@@ -1,4 +1,4 @@
-"""Run opt-in real chat provider evals for end-to-end agent behavior."""
+"""运行需要 operator 显式确认的真实 Tool system eval。"""
 
 # ruff: noqa: E402
 
@@ -17,31 +17,38 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from assistant_agent.config import ProviderConfig
-from evals.real_provider import (
+from assistant_agent.services.assistant_run_service import load_env_file
+from evals.system.tools.runner import (
     DEFAULT_CASES_PATH,
     DEFAULT_OUTPUT_ROOT,
     EvalConfigurationError,
-    filter_real_provider_eval_cases,
-    load_real_provider_eval_cases,
-    run_real_provider_eval_suite,
-    validate_real_provider_config,
+    filter_system_tool_eval_cases,
+    load_system_tool_eval_cases,
+    run_system_tool_eval_suite,
+    validate_system_tool_config,
 )
 
 
 def main() -> int:
-    parser = ArgumentParser(description="Run opt-in real chat provider eval cases.")
+    parser = ArgumentParser(description="Run real LLM + real Tool system eval cases.")
     parser.add_argument("--cases", type=Path, default=DEFAULT_CASES_PATH)
     parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
-    parser.add_argument("--suite", default="personal_assistant_daily")
+    parser.add_argument("--suite", default="system_tools")
     parser.add_argument("--case-id", action="append", default=[])
     parser.add_argument("--max-cases", type=int, default=None)
-    parser.add_argument("--allow-real-tools", action="store_true")
+    parser.add_argument(
+        "--allow-real-tools",
+        action="store_true",
+        help="Operator confirmation required before any real external Tool call.",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Validate and list selected cases without provider calls.")
     parser.add_argument("--no-fail-on-regression", action="store_true")
+    parser.add_argument("--env-file", type=Path, default=Path(".env"))
+    parser.add_argument("--no-env-file", action="store_true")
     args = parser.parse_args()
 
-    cases = filter_real_provider_eval_cases(
-        load_real_provider_eval_cases(args.cases),
+    cases = filter_system_tool_eval_cases(
+        load_system_tool_eval_cases(args.cases),
         suite=args.suite,
         case_ids=set(args.case_id),
         max_cases=args.max_cases,
@@ -64,20 +71,31 @@ def main() -> int:
         )
         return 0
 
+    if not args.no_env_file:
+        load_env_file(args.env_file)
     config = ProviderConfig.from_env()
     try:
-        validate_real_provider_config(config)
+        validate_system_tool_config(config)
     except EvalConfigurationError as exc:
-        print(json.dumps({"error": "real_provider_eval_not_configured", "message": str(exc)}, ensure_ascii=False))
+        print(json.dumps({"error": "system_tool_eval_not_configured", "message": str(exc)}, ensure_ascii=False))
         return 2
 
-    run = run_real_provider_eval_suite(
-        cases,
-        config=config,
-        output_root=args.output_root,
-        suite_name=args.suite,
-        allow_real_tools=args.allow_real_tools,
-    )
+    try:
+        run = run_system_tool_eval_suite(
+            cases,
+            config=config,
+            output_root=args.output_root,
+            suite_name=args.suite,
+            allow_real_tools=args.allow_real_tools,
+        )
+    except EvalConfigurationError as exc:
+        print(
+            json.dumps(
+                {"error": "system_tool_eval_not_authorized", "message": str(exc)},
+                ensure_ascii=False,
+            )
+        )
+        return 2
     payload = {
         **run.summary,
         "run_dir": str(run.artifact.run_dir),

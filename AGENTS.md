@@ -6,7 +6,11 @@
 
 项目名、发行名和 Python 包名均为 `assistant_agent`，源码在 `src/assistant_agent/`。默认 Python 使用本机 conda 环境 `hello_agent`，除非用户明确要求，不要重命名环境路径。
 
-本项目是本地优先的助理 Agent。默认运行、测试和 eval 使用 `MULTIMODAL_AGENT_PROVIDER_MODE=mock`；真实 Provider 必须通过 `MULTIMODAL_AGENT_PROVIDER_MODE=real` 和本机未跟踪配置显式启用。
+本项目是本地优先的助理 Agent。默认运行和 pytest 使用
+`MULTIMODAL_AGENT_PROVIDER_MODE=mock`；`evals/cases/langfuse` 当前 scripted
+基础设施实验同样保持 mock。只有 `evals/system` 或明确的真实 case eval 可以使用真实
+Provider，并且必须通过 `MULTIMODAL_AGENT_PROVIDER_MODE=real`、本机未跟踪配置和对应
+operator 确认开关显式启用。
 
 开始任务时，先按任务类型读取对应 `docs/*.md` 权威文档；如果文档与当前源码不一致，以源码和测试为准，并在本次变更中回补文档。项目 skill 只作为 workflow 检查清单或脚本入口，不作为事实权威。
 
@@ -19,8 +23,8 @@
 | context、prompt、conversation history、context budget | `docs/CONTEXT_ENGINEERING_STATUS.md` |
 | multi-agent、A2A、delegation | `docs/agent-communication-routing.md` |
 | trace、observability、redaction | `docs/observability-harness.md` |
-| pytest 分层、目录归属、默认收集、最小安全网和新增测试规则 | `tests/README.md` |
-| eval 案例、难度分层、真实 Provider 评测运行 | `evals/README.md` |
+| pytest 分层、目录归属、默认收集和新增测试规则 | `tests/README.md` |
+| system eval、Langfuse case eval、真实 Provider 评测运行 | `evals/README.md` |
 
 - 遇到 Provider 相关实现/调试时，优先联网核对官方文档，重点包括 DeepSeek tool calls（`https://api-docs.deepseek.com/zh-cn/guides/tool_calls`）、阿里百炼模型文档（`https://bailian.console.aliyun.com/cn-beijing/?spm=a2c4g.11186623.0.0.60393ba2UI7e5t&tab=doc#/doc/?type=model&url=2963787`）和火山引擎模型文档（`https://docs.volcengine.com/docs/82379/1099455?lang=zh`）。
 
@@ -65,15 +69,22 @@
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q
 ```
 
-pytest 默认只运行最小离线安全网；测试决策、文件组织和新增测试规则以 `tests/README.md` 为准。服务、demo、eval、smoke 命令按 README、`scripts/README.md` 或对应 `docs/*.md` 执行；历史 runbook 只有用户点名时才读取。只有在需要 conda 激活环境变量时才使用 `conda run -n hello_agent <command>`。
+裸 pytest 默认收集整个 `tests/`，其中只能包含 mock/fake/in-memory/local 的离线
+`unit`、`integration` 和 `contract` 测试；测试决策、文件组织和新增测试规则以
+`tests/README.md` 为准。真实 Provider、真实 Tool/MCP 和真实外部服务不得进入 pytest，
+统一走 `evals/system`。服务、demo、eval、smoke 命令按 README、`scripts/README.md`
+或对应 `docs/*.md` 执行；历史 runbook 只有用户点名时才读取。只有在需要 conda 激活环境变量时
+才使用 `conda run -n hello_agent <command>`。
 
 ## 5. 目录导航
 
 | path | responsibility |
 | --- | --- |
 | `src/assistant_agent/` | 主源码；具体归属先看第 1 节任务路由和对应架构文档 |
-| `tests/`, `scripts/` | 测试先读 `tests/README.md`；该文件是分层、目录归属和运行规则的唯一权威。其余为 eval 数据、服务、demo 和 smoke 入口 |
-| `evals/` | Agent 行为评测语料、案例分层与运行说明；开始 eval 任务先读 `evals/README.md` |
+| `tests/` | 全部离线 pytest；按 `unit/integration/contract` 和稳定故障域组织，规则以 `tests/README.md` 为唯一权威 |
+| `evals/system/` | operator 显式触发的真实能力验证；手写 Python runner、结构化硬断言和 `.data/evals/system/` artifact 是结果权威 |
+| `evals/cases/langfuse/` | 端到端 Agent 案例评估；Langfuse Dataset、Experiment、Evaluator 和 Score 是运行时权威 |
+| `scripts/` | 服务、demo、system eval 和 Langfuse case eval 的稳定命令入口；索引见 `scripts/README.md` |
 | `docs/*.md` | 当前架构、接口和状态权威文档 |
 | `docs/development/`, `docs/superpowers/`, `docs/interview/` | 非默认材料：开发阶段记录、历史计划/spec、面试资料；不作为当前规则入口 |
 | `.codex/skills/` | 少量项目 workflow、检查清单和脚本；不作为事实权威 |
@@ -103,7 +114,10 @@ pytest 默认只运行最小离线安全网；测试决策、文件组织和新�
 ## 8. 测试导航
 
 本项目采用风险驱动测试。是否新增测试、测试文件如何组织、默认验证范围和任务结束时的
-`Tests:` 汇报格式，统一以 `tests/README.md` 为准。`AGENTS.md` 只提供入口，不复制具体测试规则。
+`Tests:` 汇报格式，统一以 `tests/README.md` 为准。pytest 只回答确定性代码契约是否正确；
+`evals/system` 回答真实 Tool、Context 或 Memory 能力是否连通；`evals/cases/langfuse`
+回答 Agent 在端到端案例上的行为质量。三者不得用 mock fallback、路径混放或重复 runner
+伪装成彼此。`AGENTS.md` 只提供入口，不复制具体测试与评分规则。
 
 ## 9. 业务专项
 

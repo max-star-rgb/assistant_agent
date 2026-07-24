@@ -10,14 +10,21 @@ from assistant_agent.schemas.memory import MemoryItem
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.schemas.sessions import SessionCreate
 from assistant_agent.services.assistant_runtime_app import AssistantRuntimeApp
+from assistant_agent.services.chat_adapter import ChatRequest, ChatResult
 from assistant_agent.services.session_store import InMemorySessionStore
 
 
 class _CountingMem0Store:
     supports_turn_capture = False
 
-    def __init__(self, *, fail: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        fail: bool = False,
+        memory_text: str = "用户偏好简洁回答",
+    ) -> None:
         self.fail = fail
+        self.memory_text = memory_text
         self.recall_count = 0
         self._lock = Lock()
 
@@ -34,17 +41,39 @@ class _CountingMem0Store:
         return [
             MemoryItem(
                 memory_id=f"memory-{identity.user_id}",
-                summary="用户偏好简洁回答",
+                summary=self.memory_text,
                 created_at=datetime.now(timezone.utc),
             )
         ][:top_k]
 
 
-def _runtime(store: _CountingMem0Store) -> AgentGraphRuntime:
+class _CapturedChatAdapter:
+    provider = "scripted"
+    model = "scripted-model"
+
+    def __init__(self) -> None:
+        self.requests: list[ChatRequest] = []
+
+    def chat(self, request: ChatRequest) -> ChatResult:
+        self.requests.append(request)
+        return ChatResult(
+            provider=self.provider,
+            model=self.model,
+            finish_reason="stop",
+            response_text="完成。",
+        )
+
+
+def _runtime(
+    store: _CountingMem0Store,
+    *,
+    chat_adapter: _CapturedChatAdapter | None = None,
+) -> AgentGraphRuntime:
     return AgentGraphRuntime(
         config=ProviderConfig(langgraph_checkpointer_backend="none"),
         memory_store=store,
         session_store=InMemorySessionStore(),
+        chat_adapter=chat_adapter,
     )
 
 
@@ -89,11 +118,11 @@ def test_session_start_recalls_once_and_turns_only_reuse_snapshot() -> None:
             "memory_session_snapshot_status"
         ] == "reused"
         first_memory_observations = {
-            event.observation_name
+            event.canonical_event
             for event in runtime.trace_store.list_by_run(first.run_id)
-            if (event.canonical_event or "").startswith("memory.load.")
+            if (event.canonical_event or "").startswith("memory.session_")
         }
-        assert first_memory_observations == {"memory.session_snapshot"}
+        assert first_memory_observations == {"memory.session_snapshot.reused"}
     finally:
         runtime.close()
 
@@ -139,5 +168,30 @@ def test_application_session_creation_recalls_before_first_turn() -> None:
 
         runtime.run_state(_request(session.session_id, 1))
         assert store.recall_count == 1
+    finally:
+        runtime.close()
+
+
+def test_frozen_memory_is_bounded_user_evidence_not_system_instruction() -> None:
+    memory_sentinel = "memory-evidence-sentinel-" + ("x" * 2500)
+    store = _CountingMem0Store(memory_text=memory_sentinel)
+    adapter = _CapturedChatAdapter()
+    runtime = _runtime(store, chat_adapter=adapter)
+    try:
+        initialized = runtime.initialize_session_memory(_identity("prompt-boundary"))
+        runtime.run_state(_request("prompt-boundary", 1))
+
+        snapshot = initialized.request.metadata["memory_prompt_snapshot"]
+        assert len(snapshot["text"]) == 2000
+        assert snapshot["text"].endswith("…")
+        assert store.recall_count == 1
+
+        messages = adapter.requests[0].messages
+        assert messages[0]["role"] == "system"
+        assert "memory-evidence-sentinel" not in messages[0]["content"]
+        assert messages[-1]["role"] == "user"
+        assert "长期记忆证据" in messages[-1]["content"]
+        assert "memory-evidence-sentinel" in messages[-1]["content"]
+        assert "当前用户请求：" in messages[-1]["content"]
     finally:
         runtime.close()

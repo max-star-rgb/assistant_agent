@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from evals.langfuse.experiment import (
+from evals.cases.langfuse.experiment import (
     AgentExperimentTask,
     load_dataset_seed,
     run_langfuse_agent_experiment,

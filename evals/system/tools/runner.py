@@ -1,4 +1,4 @@
-"""Opt-in real chat provider eval runner for end-to-end agent behavior."""
+"""真实 Tool system eval：由真实 LLM 经主 Runtime 自主发起 Tool 调用。"""
 
 from __future__ import annotations
 
@@ -14,21 +14,27 @@ from assistant_agent.agent.state import AgentState
 from assistant_agent.config import ProviderConfig
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.services.trace_store import JsonlTraceStore, TraceEvent
+from evals.system.common.preflight import (
+    SystemEvalConfigurationError,
+    validate_real_chat_config,
+)
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_CASES_PATH = PROJECT_ROOT / "evals" / "personal_assistant_daily.json"
-DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / ".data" / "evals" / "real_provider"
-class EvalConfigurationError(RuntimeError):
-    """Raised when a real-provider eval is not explicitly configured."""
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+DEFAULT_CASES_PATH = PROJECT_ROOT / "evals" / "system" / "tools" / "cases.json"
+DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / ".data" / "evals" / "system" / "tools"
 
 
-class RealProviderEvalCase(BaseModel):
+class EvalConfigurationError(SystemEvalConfigurationError):
+    """真实 Tool system eval 未显式、完整配置。"""
+
+
+class SystemToolEvalCase(BaseModel):
     """One real chat provider eval case with trace-level expectations."""
 
     id: str = Field(min_length=1)
-    suite: str = "personal_assistant_daily"
-    category: str = "personal_assistant"
+    suite: str = "system_tools"
+    category: str = "tool_capability"
     text: str = Field(min_length=1)
     user_id: str = "eval_user"
     session_id: str | None = None
@@ -50,10 +56,10 @@ class RealProviderEvalCase(BaseModel):
     notes: str | None = None
 
 
-class RealProviderEvalCaseResult(BaseModel):
-    """Machine-readable score for one real-provider eval case."""
+class SystemToolEvalCaseResult(BaseModel):
+    """一个真实 Tool system eval case 的机器可读结果。"""
 
-    schema_version: Literal["real_provider_eval_case_result_v1"] = "real_provider_eval_case_result_v1"
+    schema_version: Literal["system_tool_eval_case_result_v1"] = "system_tool_eval_case_result_v1"
     id: str
     suite: str
     category: str
@@ -81,7 +87,7 @@ class RealProviderEvalCaseResult(BaseModel):
     trace_event_count: int = 0
 
 
-class RealProviderEvalArtifact(BaseModel):
+class SystemToolEvalArtifact(BaseModel):
     """Paths written for one eval run."""
 
     run_dir: Path
@@ -91,35 +97,35 @@ class RealProviderEvalArtifact(BaseModel):
     cases_path: Path
 
 
-class RealProviderEvalRun(BaseModel):
-    """Completed real-provider eval run."""
+class SystemToolEvalRun(BaseModel):
+    """一次完成的真实 Tool system eval run。"""
 
-    artifact: RealProviderEvalArtifact
+    artifact: SystemToolEvalArtifact
     summary: dict[str, Any]
-    details: list[RealProviderEvalCaseResult]
+    details: list[SystemToolEvalCaseResult]
 
 
-def load_real_provider_eval_cases(path: Path | str = DEFAULT_CASES_PATH) -> list[RealProviderEvalCase]:
+def load_system_tool_eval_cases(path: Path | str = DEFAULT_CASES_PATH) -> list[SystemToolEvalCase]:
     """Load eval cases from a JSON array or an object with a ``cases`` array."""
 
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
     defaults = payload.get("defaults", {}) if isinstance(payload, dict) else {}
     raw_cases = payload.get("cases") if isinstance(payload, dict) else payload
     if not isinstance(raw_cases, list):
-        raise ValueError("real-provider eval cases must be a JSON array or an object with cases[]")
+        raise ValueError("system Tool eval cases must be a JSON array or an object with cases[]")
     return [
-        RealProviderEvalCase.model_validate(_merge_case_defaults(defaults, item))
+        SystemToolEvalCase.model_validate(_merge_case_defaults(defaults, item))
         for item in raw_cases
     ]
 
 
-def filter_real_provider_eval_cases(
-    cases: list[RealProviderEvalCase],
+def filter_system_tool_eval_cases(
+    cases: list[SystemToolEvalCase],
     *,
     suite: str | None = None,
     case_ids: set[str] | None = None,
     max_cases: int | None = None,
-) -> list[RealProviderEvalCase]:
+) -> list[SystemToolEvalCase]:
     """Return selected cases without mutating the loaded corpus."""
 
     selected = [
@@ -147,31 +153,26 @@ def _merge_case_defaults(defaults: Any, case: Any) -> Any:
     return merged
 
 
-def validate_real_provider_config(config: ProviderConfig) -> None:
+def validate_system_tool_config(config: ProviderConfig) -> None:
     """Fail unless the global mode and chat model are both real."""
 
-    if config.provider_mode != "real":
-        raise EvalConfigurationError(
-            "Real-provider eval requires MULTIMODAL_AGENT_PROVIDER_MODE=real."
-        )
-    if config.chat_provider == "mock" or config.chat_adapter_kind == "mock":
-        raise EvalConfigurationError(
-            "Real-provider eval requires an explicit chat provider, "
-            "for example MULTIMODAL_AGENT_CHAT_PROVIDER=deepseek."
-        )
-    missing = config.resolved_chat_provider().missing_required_env()
-    if missing:
-        joined = ", ".join(missing)
-        raise EvalConfigurationError(f"Real-provider eval chat provider is missing: {joined}.")
+    try:
+        validate_real_chat_config(config)
+    except SystemEvalConfigurationError as exc:
+        raise EvalConfigurationError(str(exc)) from exc
 
 
 def controlled_tool_provider_config(config: ProviderConfig, *, allow_real_tools: bool = False) -> ProviderConfig:
-    """Keep the real-mode invariant; provider-backed tools may not be mocked."""
+    """真实 Tool 调用必须由 operator 在命令行再次显式确认。"""
 
+    if not allow_real_tools:
+        raise EvalConfigurationError(
+            "System Tool eval requires --allow-real-tools before external Tool calls."
+        )
     return config
 
 
-def user_request_from_eval_case(case: RealProviderEvalCase) -> UserRequest:
+def user_request_from_system_tool_case(case: SystemToolEvalCase) -> UserRequest:
     """Build the runtime request for one eval case."""
 
     return UserRequest(
@@ -187,12 +188,12 @@ def user_request_from_eval_case(case: RealProviderEvalCase) -> UserRequest:
     )
 
 
-def evaluate_real_provider_state(
-    case: RealProviderEvalCase,
+def evaluate_system_tool_state(
+    case: SystemToolEvalCase,
     state: AgentState,
     *,
     trace_events: list[TraceEvent],
-) -> RealProviderEvalCaseResult:
+) -> SystemToolEvalCaseResult:
     """Score one completed runtime state against one eval case."""
 
     actual_tools = [call.tool_name for call in state.tool_calls]
@@ -220,7 +221,7 @@ def evaluate_real_provider_state(
         "no_runtime_errors": not error_codes,
     }
     failures = [name for name, passed in checks.items() if not passed]
-    return RealProviderEvalCaseResult(
+    return SystemToolEvalCaseResult(
         id=case.id,
         suite=case.suite,
         category=case.category,
@@ -249,38 +250,38 @@ def evaluate_real_provider_state(
     )
 
 
-def run_real_provider_eval_suite(
-    cases: list[RealProviderEvalCase],
+def run_system_tool_eval_suite(
+    cases: list[SystemToolEvalCase],
     *,
     config: ProviderConfig | None = None,
     output_root: Path | str = DEFAULT_OUTPUT_ROOT,
-    suite_name: str = "personal_assistant_daily",
+    suite_name: str = "system_tools",
     allow_real_tools: bool = False,
-) -> RealProviderEvalRun:
+) -> SystemToolEvalRun:
     """Run cases through AgentGraphRuntime with a real chat provider and write artifacts."""
 
     base_config = config or ProviderConfig.from_env()
-    validate_real_provider_config(base_config)
+    validate_system_tool_config(base_config)
     runtime_config = controlled_tool_provider_config(base_config, allow_real_tools=allow_real_tools)
     provider = runtime_config.chat_provider
     model = runtime_config.chat_model or runtime_config.resolved_chat_provider().model or "unknown"
     run_dir = _new_run_dir(Path(output_root), suite_name=suite_name, provider=provider, model=model)
     trace_store = JsonlTraceStore(run_dir / "traces.jsonl")
-    details: list[RealProviderEvalCaseResult] = []
+    details: list[SystemToolEvalCaseResult] = []
     for case in cases:
         runtime = AgentGraphRuntime(
             config=runtime_config,
             trace_store=trace_store,
         )
-        state = runtime.run_state(user_request_from_eval_case(case))
+        state = runtime.run_state(user_request_from_system_tool_case(case))
         details.append(
-            evaluate_real_provider_state(
+            evaluate_system_tool_state(
                 case,
                 state,
                 trace_events=trace_store.list_by_run(state.run_id),
             )
         )
-    artifact = write_real_provider_eval_artifacts(
+    artifact = write_system_tool_eval_artifacts(
         output_root=run_dir,
         suite_name=suite_name,
         provider=provider,
@@ -290,24 +291,24 @@ def run_real_provider_eval_suite(
         trace_events=[],
         output_root_is_run_dir=True,
     )
-    return RealProviderEvalRun(
+    return SystemToolEvalRun(
         artifact=artifact,
         summary=_summary(provider=provider, model=model, details=details),
         details=details,
     )
 
 
-def write_real_provider_eval_artifacts(
+def write_system_tool_eval_artifacts(
     *,
     output_root: Path | str,
     suite_name: str,
     provider: str,
     model: str | None,
-    cases: list[RealProviderEvalCase],
-    details: list[RealProviderEvalCaseResult],
+    cases: list[SystemToolEvalCase],
+    details: list[SystemToolEvalCaseResult],
     trace_events: list[TraceEvent],
     output_root_is_run_dir: bool = False,
-) -> RealProviderEvalArtifact:
+) -> SystemToolEvalArtifact:
     """Write machine-readable eval summary, per-case results, cases, and traces."""
 
     root = Path(output_root)
@@ -334,7 +335,7 @@ def write_real_provider_eval_artifacts(
                 file.write(json.dumps(event.model_dump(mode="json"), ensure_ascii=False) + "\n")
     else:
         trace_path.touch(exist_ok=True)
-    return RealProviderEvalArtifact(
+    return SystemToolEvalArtifact(
         run_dir=run_dir,
         summary_path=summary_path,
         results_path=results_path,
@@ -403,13 +404,13 @@ def _summary(
     *,
     provider: str,
     model: str | None,
-    details: list[RealProviderEvalCaseResult],
+    details: list[SystemToolEvalCaseResult],
 ) -> dict[str, Any]:
     total = len(details)
     passed = sum(1 for detail in details if detail.passed)
     failed_details = [detail for detail in details if not detail.passed]
     return {
-        "schema_version": "real_provider_eval_summary_v1",
+        "schema_version": "system_tool_eval_summary_v1",
         "created_at": datetime.now(timezone.utc).isoformat(),
         "provider": provider,
         "model": model,
@@ -422,7 +423,7 @@ def _summary(
     }
 
 
-def _failure_counts(details: list[RealProviderEvalCaseResult]) -> dict[str, int]:
+def _failure_counts(details: list[SystemToolEvalCaseResult]) -> dict[str, int]:
     counts: dict[str, int] = {}
     for detail in details:
         for failure in detail.failures:

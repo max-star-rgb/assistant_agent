@@ -64,6 +64,7 @@ def test_turn_capture_delegates_extraction_to_one_native_mem0_add() -> None:
     assert request.body["user_id"] == _identity().user_id
     assert request.body["agent_id"] == _identity().agent_id
     assert request.body["run_id"] == _identity().run_id
+    assert request.timeout_seconds == 30.0
 
 
 def test_session_recall_uses_native_get_all_with_identity_filters() -> None:

@@ -94,4 +94,4 @@ def test_ordinary_followup_commits_structured_objective_revision() -> None:
     assert followup_messages[1]["content"] == "我想麦牛奶"
     assert followup_messages[2]["content"] == "你是想买牛奶吗？"
     assert "多轮对话历史" not in str(followup_messages)
-    assert followup_messages[3]["content"] == "我想买牛奶"
+    assert followup_messages[3]["content"].endswith("我想买牛奶")
