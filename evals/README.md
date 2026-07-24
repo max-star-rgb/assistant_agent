@@ -114,8 +114,18 @@ Langfuse Evaluators 页面的 Code Evaluator 源码。
 Dataset 的候选 catalog；当前 Experiment 不会自动执行它，也不存在第二套本地评分 runner。
 
 当前 Experiment 默认使用 scripted mock，只验证 Langfuse 闭环基础设施，不代表真实模型泛化能力。
-后续真实模型 case eval 仍通过同一个 Langfuse Dataset/Experiment 入口注入 real Runtime，不恢复独立
-本地 case runner。
+`agent_real_readonly_v1.seed.json` 是第一批真实模型 Dataset seed，包含 2 个 no-tool 和 3 个真实天气
+案例。它仍通过同一个 Langfuse Dataset/Experiment 入口注入 real Runtime，不恢复独立本地 case
+runner。真实 profile 强制关闭 Mem0、持久化会话、checkpointer 和 durable task，并要求
+`--allow-real-tools`，避免把 scripted 日历写入 Dataset 误用于真实环境。
+
+`agent_strict_pass.ts` 同时支持 scripted baseline 和 real-readonly Dataset，并为每个 Dataset item
+产生 Langfuse 原生 `agent.execution_pass`、`agent.tool_selection_pass`、
+`agent.forbidden_tool_pass`、`agent.tool_execution_pass`、
+`agent.response_contract_pass` 和 `agent.strict_pass`。动态天气建议的语义质量不伪装成确定性
+grounding 分数；`response_contract_pass` 会拒绝 Provider
+`error/refusal/truncated/empty` 结果，避免把 Runtime 的降级提示当作有效回答。后续语义质量应由
+Langfuse 原生 LLM-as-a-Judge Evaluator 单独评估。
 
 ### 离线契约验证
 
@@ -129,6 +139,13 @@ Dataset 的候选 catalog；当前 Experiment 不会自动执行它，也不存�
 ```bash
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python \
   scripts/run_langfuse_agent_evals.py --dry-run
+```
+
+只校验第一批真实 Dataset seed，不连接 Langfuse，也不调用 Provider：
+
+```bash
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python \
+  scripts/run_langfuse_agent_evals.py --real-readonly --dry-run
 ```
 
 ### Langfuse 运行
@@ -147,6 +164,29 @@ Dataset 的候选 catalog；当前 Experiment 不会自动执行它，也不存�
   scripts/run_langfuse_agent_evals.py \
   --run-name my-agent-eval
 ```
+
+第一次创建真实只读 Dataset：
+
+```bash
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python \
+  scripts/run_langfuse_agent_evals.py \
+  --real-readonly \
+  --seed-only
+```
+
+真实运行会调用已配置的 Chat Provider 和 weather MCP，必须由 operator 显式确认：
+
+```bash
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python \
+  scripts/run_langfuse_agent_evals.py \
+  --real-readonly \
+  --allow-real-tools \
+  --run-name my-first-real-readonly-eval
+```
+
+在运行前，需要在 Langfuse Evaluators 中部署最新 `agent_strict_pass.ts`，并让 Experiment rule 匹配
+`assistant-agent-real-readonly-v1` Dataset。Score 由 Langfuse 异步生成，不由 Python runner
+回写。
 
 命令默认从未跟踪的 `.env` 加载 Langfuse 凭据和 host。显式 Experiment 对 Dataset、Runtime OTLP trace
 和 evaluator 闭环采用 fail-fast；普通生产观测仍保持 fail-open。

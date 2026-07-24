@@ -31,6 +31,15 @@ function evaluate({
   const traceNames = new Set(
     Array.isArray(actual.trace_event_names) ? actual.trace_event_names : [],
   );
+  const providerResultKinds = Array.isArray(actual.provider_result_kinds)
+    ? actual.provider_result_kinds
+    : [];
+  const unusableProviderResults = new Set([
+    "error",
+    "refusal",
+    "truncated",
+    "empty",
+  ]);
   const commonTrace = [
     "run.completed",
     "response.final",
@@ -43,11 +52,22 @@ function evaluate({
     response_facts_present: responseFacts.every((fact: string) =>
       responseText.includes(fact),
     ),
+    provider_results_usable:
+      providerResultKinds.length > 0 &&
+      !providerResultKinds.some((kind: string) =>
+        unusableProviderResults.has(kind),
+      ),
     required_trace_present: commonTrace.every((name) => traceNames.has(name)),
     required_tools_exact:
       JSON.stringify(toolNames) === JSON.stringify(requiredTools),
     forbidden_tools_absent: !toolNames.some((name: string) =>
       forbiddenTools.includes(name),
+    ),
+    required_tools_exposed: requiredTools.every((name: string) =>
+      (Array.isArray(actual.available_tools)
+        ? actual.available_tools
+        : []
+      ).includes(name),
     ),
   };
 
@@ -104,6 +124,26 @@ function evaluate({
       emptyArray(diff.modified) &&
       emptyArray(diff.deleted) &&
       emptyArray(diff.duplicate_groups);
+  } else if (capability === "real_no_tool") {
+    checks.no_tool_called = executions.length === 0;
+    checks.state_unchanged =
+      JSON.stringify(actual.initial_state) ===
+        JSON.stringify(actual.final_state) &&
+      emptyArray(diff.added) &&
+      emptyArray(diff.modified) &&
+      emptyArray(diff.deleted) &&
+      emptyArray(diff.duplicate_groups);
+  } else if (capability === "real_read_only_tool") {
+    checks.tools_succeeded =
+      executions.length === requiredTools.length &&
+      executions.every((execution: any) => execution.status === "succeeded");
+    checks.state_unchanged =
+      JSON.stringify(actual.initial_state) ===
+        JSON.stringify(actual.final_state) &&
+      emptyArray(diff.added) &&
+      emptyArray(diff.modified) &&
+      emptyArray(diff.deleted) &&
+      emptyArray(diff.duplicate_groups);
   } else {
     checks.supported_capability = false;
   }
@@ -114,6 +154,36 @@ function evaluate({
   const passed = failedChecks.length === 0;
   return {
     scores: [
+      booleanScore(
+        "agent.execution_pass",
+        checks.terminal_completed && checks.required_trace_present,
+        "Runtime 正常完成并保留完整闭环 trace。",
+      ),
+      booleanScore(
+        "agent.tool_selection_pass",
+        checks.required_tools_exact && checks.required_tools_exposed,
+        "所需工具已暴露，且实际工具调用与期望完全一致。",
+      ),
+      booleanScore(
+        "agent.forbidden_tool_pass",
+        checks.forbidden_tools_absent,
+        "未调用案例禁止的工具。",
+      ),
+      booleanScore(
+        "agent.tool_execution_pass",
+        checks.tool_succeeded ??
+          checks.tools_succeeded ??
+          checks.no_tool_called ??
+          false,
+        "所需工具执行成功；无工具案例保持零调用。",
+      ),
+      booleanScore(
+        "agent.response_contract_pass",
+        checks.response_present &&
+          checks.response_facts_present &&
+          checks.provider_results_usable,
+        "最终回答存在、包含确定性事实，且 Provider 未截断、拒答或异常。",
+      ),
       {
         name: "agent.strict_pass",
         value: passed,
@@ -129,6 +199,19 @@ function evaluate({
         },
       },
     ],
+  };
+}
+
+function booleanScore(
+  name: string,
+  value: boolean,
+  comment: string,
+): any {
+  return {
+    name,
+    value,
+    dataType: "BOOLEAN",
+    comment,
   };
 }
 

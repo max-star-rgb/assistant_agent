@@ -11,6 +11,7 @@ import subprocess
 import sys
 from argparse import ArgumentParser
 from contextlib import contextmanager, nullcontext
+from functools import partial
 from pathlib import Path
 from collections.abc import Iterator
 from urllib.parse import urlparse
@@ -28,10 +29,15 @@ from langfuse import Langfuse
 from evals.cases.langfuse.experiment import (
     DEFAULT_DATASET_NAME,
     DEFAULT_DATASET_SEED,
+    REAL_READONLY_DATASET_NAME,
+    REAL_READONLY_DATASET_SEED,
+    build_real_readonly_runtime,
     load_dataset_seed,
     run_langfuse_agent_experiment,
     seed_langfuse_dataset,
+    validate_real_readonly_config,
 )
+from assistant_agent.config import ProviderConfig
 from assistant_agent.services.assistant_run_service import load_env_file
 from assistant_agent.services.langfuse_config import (
     langfuse_credentials_from_env,
@@ -43,8 +49,8 @@ def main() -> int:
     parser = ArgumentParser(
         description="Run the Langfuse-native closed-loop agent capability evaluation."
     )
-    parser.add_argument("--dataset-name", default=DEFAULT_DATASET_NAME)
-    parser.add_argument("--seed-source", type=Path, default=DEFAULT_DATASET_SEED)
+    parser.add_argument("--dataset-name", default=None)
+    parser.add_argument("--seed-source", type=Path, default=None)
     parser.add_argument(
         "--seed-dataset",
         action="store_true",
@@ -52,7 +58,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--experiment-name",
-        default="agent-capability-closed-loop-scripted-v1",
+        default=None,
     )
     parser.add_argument("--run-name", default=None)
     parser.add_argument("--max-concurrency", type=int, default=1)
@@ -64,18 +70,50 @@ def main() -> int:
     parser.add_argument("--env-file", type=Path, default=Path(".env"))
     parser.add_argument("--no-env-file", action="store_true")
     parser.add_argument(
+        "--real-readonly",
+        action="store_true",
+        help=(
+            "Use the isolated real Chat Provider + read-only Tool profile and "
+            "its five-case Dataset."
+        ),
+    )
+    parser.add_argument(
+        "--allow-real-tools",
+        action="store_true",
+        help="Operator confirmation required before the real-readonly Experiment.",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Validate the optional Dataset seed without connecting to Langfuse.",
     )
     args = parser.parse_args()
 
-    seed = load_dataset_seed(args.seed_source)
+    execution_profile = (
+        "real_readonly" if args.real_readonly else "scripted_mock"
+    )
+    dataset_name = args.dataset_name or (
+        REAL_READONLY_DATASET_NAME
+        if args.real_readonly
+        else DEFAULT_DATASET_NAME
+    )
+    seed_source = args.seed_source or (
+        REAL_READONLY_DATASET_SEED
+        if args.real_readonly
+        else DEFAULT_DATASET_SEED
+    )
+    experiment_name = args.experiment_name or (
+        "agent-real-readonly-v1"
+        if args.real_readonly
+        else "agent-capability-closed-loop-scripted-v1"
+    )
+    seed = load_dataset_seed(seed_source)
     if args.dry_run:
         print(
             json.dumps(
                 {
                     "dry_run": True,
+                    "execution_profile": execution_profile,
                     "dataset_name": seed.dataset_name,
                     "seed_hash": seed.content_hash(),
                     "item_ids": [item.id for item in seed.items],
@@ -88,6 +126,43 @@ def main() -> int:
 
     if not args.no_env_file:
         load_env_file(args.env_file)
+    runtime_factory = None
+    runtime_config = None
+    if args.real_readonly and not args.seed_only:
+        if not args.allow_real_tools:
+            print(
+                json.dumps(
+                    {
+                        "error": "real_tools_not_authorized",
+                        "message": (
+                            "Real-readonly Experiment requires "
+                            "--allow-real-tools."
+                        ),
+                    },
+                    ensure_ascii=False,
+                ),
+                file=sys.stderr,
+            )
+            return 2
+        runtime_config = ProviderConfig.from_env()
+        try:
+            validate_real_readonly_config(runtime_config)
+        except RuntimeError as exc:
+            print(
+                json.dumps(
+                    {
+                        "error": "real_readonly_not_configured",
+                        "message": str(exc),
+                    },
+                    ensure_ascii=False,
+                ),
+                file=sys.stderr,
+            )
+            return 2
+        runtime_factory = partial(
+            build_real_readonly_runtime,
+            config=runtime_config,
+        )
     public_key, secret_key = langfuse_credentials_from_env(os.environ)
     if not public_key or not secret_key:
         print(
@@ -139,18 +214,24 @@ def main() -> int:
             return 0
         result = run_langfuse_agent_experiment(
             client,
-            dataset_name=args.dataset_name,
-            experiment_name=args.experiment_name,
+            dataset_name=dataset_name,
+            experiment_name=experiment_name,
             run_name=args.run_name,
             max_concurrency=max(1, args.max_concurrency),
-            metadata=_run_metadata(),
+            metadata=_run_metadata(
+                execution_profile=execution_profile,
+                config=runtime_config,
+            ),
+            runtime_factory=runtime_factory,
+            execution_profile=execution_profile,
         )
         client.flush()
         print(
             json.dumps(
                 {
-                    "dataset_name": args.dataset_name,
+                    "dataset_name": dataset_name,
                     "seeded": seed_result is not None,
+                    "execution_profile": execution_profile,
                     "experiment_name": result.name,
                     "run_name": result.run_name,
                     "experiment_id": result.experiment_id,
@@ -183,16 +264,41 @@ def main() -> int:
             httpx_client.close()
 
 
-def _run_metadata() -> dict[str, str]:
+def _run_metadata(
+    *,
+    execution_profile: str,
+    config: ProviderConfig | None,
+) -> dict[str, str]:
     commit = _git_output("rev-parse", "HEAD") or "unknown"
     dirty = bool(_git_output("status", "--short"))
+    provider = config.chat_provider if config is not None else "scripted"
+    model = (
+        config.chat_model or config.resolved_chat_provider().model or "unknown"
+        if config is not None
+        else "scripted-calendar-eval"
+    )
     return {
         "git_commit": commit,
         "dirty_worktree": str(dirty).lower(),
         "execution_strategy": "react",
-        "runtime_config_fingerprint": "agent-capability-scripted-mock-v1",
-        "tool_catalog_fingerprint": "calendar-read-write-v1",
-        "fixture_version": "calendar_capabilities_v1",
+        "execution_profile": execution_profile,
+        "chat_provider": provider,
+        "chat_model": model,
+        "runtime_config_fingerprint": (
+            "agent-real-readonly-v1"
+            if execution_profile == "real_readonly"
+            else "agent-capability-scripted-mock-v1"
+        ),
+        "tool_catalog_fingerprint": (
+            "weather-readonly-v1"
+            if execution_profile == "real_readonly"
+            else "calendar-read-write-v1"
+        ),
+        "fixture_version": (
+            "dynamic-readonly-v1"
+            if execution_profile == "real_readonly"
+            else "calendar_capabilities_v1"
+        ),
     }
 
 

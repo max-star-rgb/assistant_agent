@@ -42,11 +42,12 @@ For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
   和 Provider payload；要求 real 模式与 `--allow-unredacted-context`，产物写入
   `.data/evals/system/context/`。
 - `scripts/run_langfuse_agent_evals.py`: optionally seeds the first Dataset, then
-  runs the scripted mock Runtime through a Langfuse Experiment and shared Runtime
-  trace. Scoring is asynchronous and owned by a Langfuse Code Evaluator; the script
-  does not register SDK evaluators. It loads the untracked `.env` by default and
-  never calls a real Provider. Case implementation lives under
-  `evals/cases/langfuse/`.
+  runs either the default scripted mock baseline or the explicit
+  `--real-readonly --allow-real-tools` five-case real Chat Provider/weather
+  profile through a Langfuse Experiment and shared Runtime trace. Scoring is
+  asynchronous and owned by a Langfuse Code Evaluator; the script does not
+  register SDK evaluators. It loads the untracked `.env` by default. Case
+  implementation lives under `evals/cases/langfuse/`.
 - `scripts/run_improvement_lab.py`: offline, non-mutating improvement proposal runner.
 - `scripts/check_pilot_readiness.py` and `scripts/collect_pilot_evidence.py`:
   multi-agent pilot operator helpers.

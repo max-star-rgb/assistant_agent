@@ -1,0 +1,136 @@
+{
+  "dataset_name": "assistant-agent-real-readonly-v1",
+  "description": "使用真实 Chat Provider 和真实只读 Tool 验证 Agent 的工具选择、调用克制、治理链路和回答完整性。该 Dataset 不包含写操作，不使用真实 Memory。",
+  "metadata": {
+    "suite": "agent_real_readonly",
+    "evaluation_scope": "real_chat_and_readonly_tools",
+    "fixture_version": "dynamic_readonly_v1"
+  },
+  "items": [
+    {
+      "id": "agent_real_v1_daily_simple_017_polite_message_no_tool",
+      "input": {
+        "user_request": {
+          "user_id": "eval-real-no-tool-user",
+          "session_id": "eval-real-politeness-session",
+          "text": "把这句话改得礼貌但不生硬：‘我今晚赶不完，明天中午给你。’给我一个适合发给同事的版本，不需要查任何资料。",
+          "metadata": {
+            "tool_visibility": {
+              "enabled_tools": ["weather"]
+            }
+          }
+        }
+      },
+      "expected_output": {
+        "response_facts": []
+      },
+      "metadata": {
+        "suite": "agent_real_readonly",
+        "capability": "real_no_tool",
+        "domain": "conversation",
+        "required_tools": [],
+        "forbidden_tools": ["weather"]
+      }
+    },
+    {
+      "id": "agent_real_v1_daily_simple_018_home_checklist_no_tool",
+      "input": {
+        "user_request": {
+          "user_id": "eval-real-no-tool-user",
+          "session_id": "eval-real-checklist-session",
+          "text": "我今晚离家三天，已知家里有猫、阳台有植物、冰箱里有开封牛奶。请按‘出门前、离家期间、回家后’做一份清单，不要联网。",
+          "metadata": {
+            "tool_visibility": {
+              "enabled_tools": ["weather"]
+            }
+          }
+        }
+      },
+      "expected_output": {
+        "response_facts": []
+      },
+      "metadata": {
+        "suite": "agent_real_readonly",
+        "capability": "real_no_tool",
+        "domain": "planning",
+        "required_tools": [],
+        "forbidden_tools": ["weather"]
+      }
+    },
+    {
+      "id": "agent_real_v1_daily_simple_001_commute_weather",
+      "input": {
+        "user_request": {
+          "user_id": "eval-real-weather-user",
+          "session_id": "eval-real-commute-weather-session",
+          "text": "我明早八点坐地铁去公司，结合上海明天的天气告诉我该穿什么、要不要带伞，并先给一句结论。",
+          "metadata": {
+            "tool_visibility": {
+              "enabled_tools": ["weather"]
+            }
+          }
+        }
+      },
+      "expected_output": {
+        "response_facts": []
+      },
+      "metadata": {
+        "suite": "agent_real_readonly",
+        "capability": "real_read_only_tool",
+        "domain": "weather",
+        "required_tools": ["weather"],
+        "forbidden_tools": ["web_search", "shopping_search"]
+      }
+    },
+    {
+      "id": "agent_real_v1_daily_simple_002_laundry_weather",
+      "input": {
+        "user_request": {
+          "user_id": "eval-real-weather-user",
+          "session_id": "eval-real-laundry-weather-session",
+          "text": "我想明天下班后洗床单并晾在阳台，看看上海天气，判断是否合适；如果不合适给一个替代建议。",
+          "metadata": {
+            "tool_visibility": {
+              "enabled_tools": ["weather"]
+            }
+          }
+        }
+      },
+      "expected_output": {
+        "response_facts": []
+      },
+      "metadata": {
+        "suite": "agent_real_readonly",
+        "capability": "real_read_only_tool",
+        "domain": "weather",
+        "required_tools": ["weather"],
+        "forbidden_tools": ["web_search", "shopping_search"]
+      }
+    },
+    {
+      "id": "agent_real_v1_daily_simple_019_dog_walk_weather",
+      "input": {
+        "user_request": {
+          "user_id": "eval-real-weather-user",
+          "session_id": "eval-real-dog-walk-weather-session",
+          "text": "我家狗怕热，帮我看上海明天的天气，建议一个更适合遛狗的时间段，并说明需要带水还是雨具。",
+          "metadata": {
+            "tool_visibility": {
+              "enabled_tools": ["weather"]
+            }
+          }
+        }
+      },
+      "expected_output": {
+        "response_facts": []
+      },
+      "metadata": {
+        "suite": "agent_real_readonly",
+        "capability": "real_read_only_tool",
+        "domain": "weather",
+        "required_tools": ["weather"],
+        "forbidden_tools": ["web_search", "shopping_search"]
+      }
+    }
+  ]
+}

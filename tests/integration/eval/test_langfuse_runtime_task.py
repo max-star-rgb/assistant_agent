@@ -6,10 +6,20 @@ from typing import Any
 
 from evals.cases.langfuse.experiment import (
     AgentExperimentTask,
+    REAL_READONLY_DATASET_SEED,
+    RuntimeBundle,
+    StatelessEvalEnvironment,
+    build_real_readonly_runtime,
     load_dataset_seed,
     run_langfuse_agent_experiment,
     seed_langfuse_dataset,
 )
+from assistant_agent.agent.runtime import AgentGraphRuntime
+from assistant_agent.config import ProviderConfig
+from assistant_agent.services.chat_adapter import ChatResult
+from assistant_agent.services.session_store import InMemorySessionStore
+from assistant_agent.services.trace_store import InMemoryTraceStore
+from assistant_agent.tools.registry import ToolRegistry
 from assistant_agent.services.otel_mapping import build_text_otel_span_specs
 
 
@@ -63,6 +73,34 @@ class _FakeTraceObserver:
         return timeout > 0
 
 
+class _TruncatedChat:
+    provider = "scripted"
+    model = "truncated-sentinel"
+
+    def chat(self, _request: object) -> ChatResult:
+        return ChatResult(
+            provider=self.provider,
+            model=self.model,
+            finish_reason="length",
+            response_text="partial-sentinel",
+        )
+
+
+def _truncated_runtime_factory(_request: object, _case: object) -> RuntimeBundle:
+    registry = ToolRegistry()
+    registry.seal()
+    return RuntimeBundle(
+        runtime=AgentGraphRuntime(
+            registry=registry,
+            config=ProviderConfig(langgraph_checkpointer_backend="none"),
+            chat_adapter=_TruncatedChat(),
+            trace_store=InMemoryTraceStore(),
+            session_store=InMemorySessionStore(),
+        ),
+        environment=StatelessEvalEnvironment(),
+    )
+
+
 def _seed_item(case_id: str) -> dict[str, Any]:
     seed = load_dataset_seed()
     item = next(item for item in seed.items if item.id == case_id)
@@ -89,6 +127,75 @@ def test_explicit_seed_uses_stable_native_dataset_ids() -> None:
     ]
     assert client.datasets[0]["metadata"]["seed_hash"] == result.seed_hash
     assert client.items[0]["metadata"]["case_id"] == result.item_ids[0]
+
+
+def test_real_readonly_seed_contains_only_no_tool_and_weather_cases() -> None:
+    seed = load_dataset_seed(REAL_READONLY_DATASET_SEED)
+
+    assert seed.dataset_name == "assistant-agent-real-readonly-v1"
+    assert len(seed.items) == 5
+    assert {
+        item.metadata["capability"]
+        for item in seed.items
+    } == {"real_no_tool", "real_read_only_tool"}
+    assert {
+        tool
+        for item in seed.items
+        for tool in item.metadata.get("required_tools", [])
+    } == {"weather"}
+    assert all(
+        item.input["user_request"]["metadata"]["tool_visibility"][
+            "enabled_tools"
+        ]
+        == ["weather"]
+        for item in seed.items
+    )
+
+
+def test_real_readonly_runtime_fails_closed_in_mock_mode() -> None:
+    seed = load_dataset_seed(REAL_READONLY_DATASET_SEED)
+    item = seed.items[0]
+
+    try:
+        AgentExperimentTask(
+            client=_FakeLangfuseClient(),
+            runtime_factory=lambda request, case: build_real_readonly_runtime(
+                request,
+                case,
+                config=ProviderConfig(),
+            ),
+        )(
+            item={
+                "id": item.id,
+                "input": item.input,
+                "expected_output": item.expected_output,
+                "metadata": {**item.metadata, "case_id": item.id},
+            }
+        )
+    except RuntimeError as exc:
+        assert "MULTIMODAL_AGENT_PROVIDER_MODE=real" in str(exc)
+    else:
+        raise AssertionError("mock mode must not run a real-readonly eval")
+
+
+def test_runtime_task_exposes_truncated_provider_result_for_native_score() -> None:
+    seed = load_dataset_seed(REAL_READONLY_DATASET_SEED)
+    item = seed.items[0]
+
+    output = AgentExperimentTask(
+        client=_FakeLangfuseClient(),
+        runtime_factory=_truncated_runtime_factory,
+    )(
+        item={
+            "id": item.id,
+            "input": item.input,
+            "expected_output": item.expected_output,
+            "metadata": {**item.metadata, "case_id": item.id},
+        }
+    )
+
+    assert output.terminal_status == "completed"
+    assert output.provider_result_kinds == ["truncated"]
 
 
 def test_runtime_task_returns_compact_code_evaluator_evidence() -> None:
@@ -154,4 +261,37 @@ def test_experiment_wires_task_without_project_evaluators() -> None:
     assert (
         client.dataset.run_kwargs["metadata"]["evaluation_owner"]
         == "langfuse_code_evaluator"
+    )
+
+
+def test_real_experiment_metadata_is_explicit_without_running_provider() -> None:
+    client = _FakeLangfuseClient()
+
+    run_langfuse_agent_experiment(
+        client,
+        dataset_name="real-dataset-sentinel",
+        experiment_name="real-experiment-sentinel",
+        runtime_factory=lambda request, case: build_real_readonly_runtime(
+            request,
+            case,
+            config=ProviderConfig(),
+        ),
+        trace_observer=_FakeTraceObserver(),
+        execution_profile="real_readonly",
+        metadata={"chat_provider": "provider-sentinel"},
+    )
+
+    assert client.dataset.run_kwargs["metadata"]["provider_mode"] == "real"
+    assert (
+        client.dataset.run_kwargs["metadata"]["execution_profile"]
+        == "real_readonly"
+    )
+    assert (
+        client.dataset.run_kwargs["metadata"]["chat_provider"]
+        == "provider-sentinel"
+    )
+    assert "真实 Chat Provider" in client.dataset.run_kwargs["description"]
+    assert (
+        "真实 Chat Provider"
+        in client.dataset.run_kwargs["metadata"]["evaluation_objective"]
     )

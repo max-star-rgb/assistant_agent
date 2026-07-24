@@ -29,6 +29,11 @@ from assistant_agent.services.otel_exporter import (
 )
 from assistant_agent.services.session_store import InMemorySessionStore
 from assistant_agent.services.trace_store import InMemoryTraceStore, TraceEvent
+from assistant_agent.services.personal_assistant_mcp_adapters import (
+    configured_personal_assistant_tools,
+)
+from assistant_agent.mcp.config import load_mcp_server_configs_from_env
+from assistant_agent.schemas.tool_ids import WEATHER_TOOL_NAME
 from assistant_agent.tools.plugins.personal_assistant.tools import CalendarSearchTool
 from assistant_agent.tools.registry import ToolRegistry
 from evals.cases.langfuse.calendar_fixture import (
@@ -42,10 +47,19 @@ DEFAULT_DATASET_NAME = "assistant-agent-closed-loop-v1"
 DEFAULT_DATASET_SEED = Path(
     "evals/cases/langfuse/agent_closed_loop_v1.seed.json"
 )
+REAL_READONLY_DATASET_NAME = "assistant-agent-real-readonly-v1"
+REAL_READONLY_DATASET_SEED = Path(
+    "evals/cases/langfuse/agent_real_readonly_v1.seed.json"
+)
 AGENT_EVALUATION_OBJECTIVE = (
     "验证 Agent 是否在受治理的 Runtime 中正确完成、克制或只读执行任务，并由 Tool Trace、"
     "Policy、环境状态变化和最终回答共同证明结果。当前 scripted mock 实验用于验证闭环评测"
     "基础设施，不代表真实模型的泛化能力。"
+)
+REAL_READONLY_EVALUATION_OBJECTIVE = (
+    "验证真实 Chat Provider 是否在受治理的 Runtime 中正确克制或调用真实只读 Tool，"
+    "并由 Tool Trace、Policy、Provider 终态和最终回答共同证明结果。该 profile 不执行"
+    "写操作，不接入真实 Memory。"
 )
 
 
@@ -113,7 +127,17 @@ class NoToolCase(BaseModel):
     response_facts: list[str] = Field(default_factory=list)
 
 
-ExperimentCase = CreateCalendarCase | ReadCalendarCase | NoToolCase
+class RealReadonlyCase(BaseModel):
+    """Dynamic real-provider case scored from runtime evidence, not fixtures."""
+
+    id: str = Field(min_length=1)
+    capability: Literal["real_no_tool", "real_read_only_tool"]
+    response_facts: list[str] = Field(default_factory=list)
+
+
+ExperimentCase = (
+    CreateCalendarCase | ReadCalendarCase | NoToolCase | RealReadonlyCase
+)
 
 
 class AgentExperimentOutput(BaseModel):
@@ -133,6 +157,7 @@ class AgentExperimentOutput(BaseModel):
     final_state: dict[str, Any] = Field(default_factory=dict)
     state_diff: dict[str, Any] = Field(default_factory=dict)
     trace_event_names: list[str] = Field(default_factory=list)
+    provider_result_kinds: list[str] = Field(default_factory=list)
     total_latency_ms: int = Field(default=0, ge=0)
 
 
@@ -165,6 +190,53 @@ class RuntimeBundle:
 
 
 RuntimeFactory = Callable[[UserRequest, ExperimentCase], RuntimeBundle]
+
+
+class StatelessEvalEnvironment:
+    """No-persistence state boundary for real read-only and no-tool evals."""
+
+    def snapshot(self) -> dict[str, Any]:
+        return {}
+
+    def diff(
+        self,
+        before: dict[str, Any],
+        after: dict[str, Any],
+    ) -> dict[str, Any]:
+        return {
+            "added": [],
+            "modified": [],
+            "deleted": [],
+            "duplicate_groups": [],
+        }
+
+
+def validate_real_readonly_config(config: ProviderConfig) -> None:
+    """Fail before an Experiment unless real chat and weather are configured."""
+
+    if config.provider_mode != "real":
+        raise RuntimeError(
+            "Real Langfuse eval requires "
+            "MULTIMODAL_AGENT_PROVIDER_MODE=real."
+        )
+    if config.chat_provider == "mock" or config.chat_adapter_kind == "mock":
+        raise RuntimeError(
+            "Real Langfuse eval requires an explicit real chat Provider."
+        )
+    missing = config.resolved_chat_provider().missing_required_env()
+    if missing:
+        raise RuntimeError(
+            "Real Langfuse eval chat Provider is missing: "
+            + ", ".join(missing)
+            + "."
+        )
+    configured_tools = configured_personal_assistant_tools(
+        load_mcp_server_configs_from_env()
+    )
+    if WEATHER_TOOL_NAME not in configured_tools:
+        raise RuntimeError(
+            "Real-readonly Dataset requires a configured MCP weather mapping."
+        )
 
 
 class _ScriptedCalendarCreateChat:
@@ -335,6 +407,7 @@ class AgentExperimentTask:
                 for event in trace_events
                 if event.canonical_event is not None
             ],
+            provider_result_kinds=_provider_result_kinds(trace_events),
             total_latency_ms=_total_latency_ms(trace_events),
         )
 
@@ -383,17 +456,23 @@ def run_langfuse_agent_experiment(
     metadata: dict[str, Any] | None = None,
     runtime_factory: RuntimeFactory | None = None,
     trace_observer: RuntimeTraceObserver | None = None,
+    execution_profile: Literal["scripted_mock", "real_readonly"] = "scripted_mock",
 ) -> Any:
     """Run the Agent task; Langfuse-native rules evaluate it asynchronously."""
 
     dataset = client.get_dataset(dataset_name)
     observer = trace_observer or create_required_eval_trace_observer()
     owns_observer = trace_observer is None
+    evaluation_objective = (
+        REAL_READONLY_EVALUATION_OBJECTIVE
+        if execution_profile == "real_readonly"
+        else AGENT_EVALUATION_OBJECTIVE
+    )
     try:
         return dataset.run_experiment(
             name=experiment_name,
             run_name=run_name,
-            description=AGENT_EVALUATION_OBJECTIVE,
+            description=evaluation_objective,
             task=AgentExperimentTask(
                 client=client,
                 runtime_factory=runtime_factory,
@@ -401,9 +480,16 @@ def run_langfuse_agent_experiment(
             ),
             max_concurrency=max_concurrency,
             metadata={
-                "provider_mode": "mock",
-                "chat_provider": "scripted",
-                "evaluation_objective": AGENT_EVALUATION_OBJECTIVE,
+                "provider_mode": (
+                    "real" if execution_profile == "real_readonly" else "mock"
+                ),
+                "chat_provider": (
+                    "configured"
+                    if execution_profile == "real_readonly"
+                    else "scripted"
+                ),
+                "execution_profile": execution_profile,
+                "evaluation_objective": evaluation_objective,
                 "evaluation_owner": "langfuse_code_evaluator",
                 **(metadata or {}),
             },
@@ -479,6 +565,40 @@ def build_scripted_runtime(
     )
 
 
+def build_real_readonly_runtime(
+    _request: UserRequest,
+    case: ExperimentCase,
+    *,
+    config: ProviderConfig | None = None,
+) -> RuntimeBundle:
+    """Build an isolated real-provider Runtime for no-tool/read-only cases."""
+
+    if not isinstance(case, RealReadonlyCase):
+        raise ValueError(
+            "The real-readonly Runtime only accepts real_no_tool or "
+            "real_read_only_tool Dataset items."
+        )
+    resolved = config or ProviderConfig.from_env()
+    validate_real_readonly_config(resolved)
+
+    isolated = replace(
+        resolved,
+        mem0_base_url=None,
+        conversation_history_backend="memory",
+        langgraph_checkpointer_backend="none",
+        durable_tasks_enabled=False,
+        durable_task_worker_enabled=False,
+    )
+    return RuntimeBundle(
+        runtime=AgentGraphRuntime(
+            config=isolated,
+            trace_store=InMemoryTraceStore(),
+            session_store=InMemorySessionStore(),
+        ),
+        environment=StatelessEvalEnvironment(),
+    )
+
+
 def case_from_dataset_fields(
     *,
     expected_output: dict[str, Any],
@@ -505,6 +625,12 @@ def case_from_dataset_fields(
         )
     if capability == "no_tool":
         return NoToolCase(id=case_id, response_facts=response_facts)
+    if capability in {"real_no_tool", "real_read_only_tool"}:
+        return RealReadonlyCase(
+            id=case_id,
+            capability=capability,
+            response_facts=response_facts,
+        )
     raise ValueError(f"Unsupported Dataset capability: {capability!r}.")
 
 
@@ -546,6 +672,19 @@ def _validation_results(events: list[TraceEvent]) -> list[dict[str, Any]]:
         }
         for event in events
         if event.canonical_event == "action.validation.finished"
+    ]
+
+
+def _provider_result_kinds(events: list[TraceEvent]) -> list[str]:
+    return [
+        result_kind
+        for event in events
+        if event.canonical_event == "llm.chat.finished"
+        and isinstance(
+            result_kind := event.attributes.get("result_kind"),
+            str,
+        )
+        and result_kind
     ]
 
 
