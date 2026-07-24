@@ -54,6 +54,7 @@ class UnavailableMem0Adapter:
 class Mem0RestAdapter:
     name = "mem0"
     configured = True
+    _MIN_CAPTURE_TIMEOUT_SECONDS = 30.0
 
     def __init__(
         self,
@@ -65,6 +66,10 @@ class Mem0RestAdapter:
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout_seconds = timeout_seconds
+        self.capture_timeout_seconds = max(
+            timeout_seconds,
+            self._MIN_CAPTURE_TIMEOUT_SECONDS,
+        )
         self._transport = transport or urllib_mem0_transport(self.base_url)
         self._headers = {"X-API-Key": api_key} if api_key else None
 
@@ -75,6 +80,7 @@ class Mem0RestAdapter:
         *,
         body: Mapping[str, Any] | None = None,
         query: Mapping[str, str] | None = None,
+        timeout_seconds: float | None = None,
     ) -> Mapping[str, Any]:
         payload = self._transport(
             Mem0HttpRequest(
@@ -83,7 +89,11 @@ class Mem0RestAdapter:
                 body=body,
                 query=query,
                 headers=self._headers,
-                timeout_seconds=self.timeout_seconds,
+                timeout_seconds=(
+                    self.timeout_seconds
+                    if timeout_seconds is None
+                    else timeout_seconds
+                ),
             )
         )
         if not isinstance(payload, Mapping):
@@ -118,6 +128,7 @@ class Mem0RestAdapter:
                         "occurred_at": request.occurred_at.isoformat(),
                     },
                 },
+                timeout_seconds=self.capture_timeout_seconds,
             )
         except Exception:
             return Mem0TurnCaptureResult(

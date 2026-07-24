@@ -1,6 +1,6 @@
 # Mem0 HTTP 接入契约
 
-最后更新：2026-07-23
+最后更新：2026-07-24
 
 项目不再定义独立的 Memory Server 协议。本文件只记录 `assistant_agent` 实际使用的
 Mem0 OSS REST 子集；完整行为以 Mem0 官方 API 为准。
@@ -42,6 +42,7 @@ Content-Type: application/json
 ```
 
 项目不设置 `infer=false`，不发送自定义 extraction prompt，不创建 core/daily 双记录。
+该后台请求由 adapter 自动使用至少 30 秒超时；不复用 session-start recall 的 5 秒前台超时。
 
 ## 错误语义
 

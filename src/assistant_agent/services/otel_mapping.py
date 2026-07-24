@@ -19,7 +19,6 @@ if TYPE_CHECKING:
         TraceConversationView,
         TraceLlmInput,
         TraceLlmOutput,
-        TraceMemoryOperation,
         TraceToolObservation,
     )
 
@@ -514,24 +513,23 @@ def _event_io_attributes(
                 ),
             }
         )
-    elif name == "memory.load.finished":
-        memory_operation = _memory_operation_for_event(
-            conversation,
-            span_id=event.span_id,
-            operation="load",
+    elif name in {
+        "memory.session_recall.finished",
+        "memory.session_snapshot.reused",
+        "memory.session_snapshot.missing",
+        "memory.capture.finished",
+    }:
+        output_payload.update(
+            _selected_payload(
+                {**event.output_summary, **event.attributes},
+                (
+                    "session_snapshot_status",
+                    "memory_count",
+                    "error_codes",
+                    "pending_count",
+                ),
+            )
         )
-        if memory_operation is not None:
-            input_payload = dict(memory_operation.input)
-            output_payload = dict(memory_operation.output)
-    elif name == "memory.capture.finished":
-        memory_operation = _memory_operation_for_event(
-            conversation,
-            span_id=event.span_id,
-            operation="capture",
-        )
-        if memory_operation is not None:
-            input_payload = dict(memory_operation.input)
-            output_payload = dict(memory_operation.output)
     elif name == "context.build.finished":
         context_report = event.output_summary.get("context_report_v1")
         output_payload = {
@@ -542,12 +540,6 @@ def _event_io_attributes(
                 context_report
             ),
         }
-        memory_injection = _memory_injection_for_context(
-            conversation,
-            context_report=context_report,
-        )
-        if memory_injection is not None:
-            output_payload["memory_injection"] = memory_injection
     elif name == "llm.chat.finished":
         llm_input = _llm_input_for_event(
             conversation,
@@ -756,63 +748,6 @@ def _tool_observation_for_event(
         ),
         None,
     )
-
-
-def _memory_operation_for_event(
-    conversation: "TraceConversationView | None",
-    *,
-    span_id: str | None,
-    operation: Literal["load", "capture"],
-) -> "TraceMemoryOperation | None":
-    if conversation is None:
-        return None
-    if span_id is not None:
-        matched = next(
-            (
-                item
-                for item in conversation.memory_operations
-                if item.span_id == span_id and item.operation == operation
-            ),
-            None,
-        )
-        if matched is not None:
-            return matched
-    return next(
-        (
-            item
-            for item in reversed(conversation.memory_operations)
-            if item.operation == operation
-        ),
-        None,
-    )
-
-
-def _memory_injection_for_context(
-    conversation: "TraceConversationView | None",
-    *,
-    context_report: Any,
-) -> dict[str, Any] | None:
-    if conversation is None or not isinstance(context_report, Mapping):
-        return None
-    sections = context_report.get("sections")
-    memory_section = sections.get("memory") if isinstance(sections, Mapping) else None
-    if not isinstance(memory_section, Mapping):
-        return None
-    memory_operation = _memory_operation_for_event(
-        conversation,
-        span_id=None,
-        operation="load",
-    )
-    rendered_context = (
-        memory_operation.output.get("rendered_context", "")
-        if memory_operation is not None
-        else ""
-    )
-    return {
-        "included": memory_section.get("included") is True,
-        "item_ids": context_report.get("memory_item_ids", []),
-        "rendered_context": rendered_context if memory_section.get("included") is True else "",
-    }
 
 
 def _safe_payload_value(value: Any) -> Any:

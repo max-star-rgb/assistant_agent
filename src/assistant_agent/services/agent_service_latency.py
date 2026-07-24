@@ -28,7 +28,7 @@ CheckpointName = Literal[
 
 TRACE_STAGE_EVENTS = {
     "conversation.prepare.finished": "conversation_prepare",
-    "memory.load.finished": "memory_load",
+    "memory.session_recall.finished": "memory_load",
     "context.build.finished": "context_build",
     "llm.chat.finished": "llm_chat",
     "action.validation.finished": "action_validation",

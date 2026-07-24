@@ -22,7 +22,6 @@ ContextStability = Literal["invariant", "semi_stable", "volatile"]
 ContextSectionKind = Literal[
     "soul",
     "user_profile",
-    "core_memory",
     "skill_index",
     "skill_body",
     "skill_reference",
@@ -265,7 +264,6 @@ class ContextPolicy(BaseModel):
     hard_compact_at_ratio: float = Field(default=0.92, ge=0.0, le=1.0)
     keep_recent_turns: int = Field(default=2, ge=1)
     max_tool_result_chars: int = Field(default=1_200, ge=100)
-    max_memory_context_chars: int = Field(default=500, ge=50)
 
 
 class SessionHandoffV2(BaseModel):

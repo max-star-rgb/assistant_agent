@@ -164,16 +164,11 @@ def _tool_call_summary(event: TraceEvent) -> dict[str, Any]:
 
 
 def _latest_context_summary(events: list[TraceEvent]) -> dict[str, Any]:
-    latest_context: dict[str, Any] = {}
     for event in reversed(events):
         context = event.output_summary.get("context") if isinstance(event.output_summary, dict) else None
         if isinstance(context, dict):
-            latest_context = dict(context)
-            break
-    memory_promotion = _latest_memory_promotion_summary(events)
-    if memory_promotion:
-        latest_context.update(memory_promotion)
-    return latest_context
+            return dict(context)
+    return {}
 
 
 def _latest_turn_latency(events: list[TraceEvent]) -> dict[str, Any] | None:
@@ -203,11 +198,3 @@ def _latest_context_report(events: list[TraceEvent]) -> ContextReport:
             if isinstance(nested_report, dict):
                 return ContextReport.model_validate(nested_report)
     return context_report_from_trace_context_summary(_latest_context_summary(events))
-
-
-def _latest_memory_promotion_summary(events: list[TraceEvent]) -> dict[str, Any]:
-    for event in reversed(events):
-        summary = event.after_state_summary.get("memory_promotion") if isinstance(event.after_state_summary, dict) else None
-        if isinstance(summary, dict):
-            return summary
-    return {}

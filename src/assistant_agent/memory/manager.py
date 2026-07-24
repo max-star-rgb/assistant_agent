@@ -24,6 +24,7 @@ _CAPTURE_TEXT_POLICY = ProviderSafetyPolicy(
     max_detail_chars=4000,
     redact_absolute_paths=False,
 )
+_MEMORY_PROMPT_SNAPSHOT_MAX_CHARS = 2000
 
 
 @dataclass(frozen=True)
@@ -84,7 +85,7 @@ class MemoryManager:
             )
         return MemoryContext(
             items=items,
-            text="\n".join(item.summary for item in items if item.summary),
+            text=_bounded_prompt_snapshot_text(items),
             status="succeeded",
         )
 
@@ -165,3 +166,12 @@ class MemoryManager:
             occurred_at=prepared.occurred_at,
             source_turn=prepared.source_turn,
         )
+
+
+def _bounded_prompt_snapshot_text(items: list[MemoryItem]) -> str:
+    """Project Mem0's ranked records into one bounded prompt-only string."""
+
+    text = "\n".join(item.summary for item in items if item.summary)
+    if len(text) <= _MEMORY_PROMPT_SNAPSHOT_MAX_CHARS:
+        return text
+    return text[: _MEMORY_PROMPT_SNAPSHOT_MAX_CHARS - 1].rstrip() + "…"

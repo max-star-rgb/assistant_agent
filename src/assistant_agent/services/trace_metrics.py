@@ -343,48 +343,31 @@ def _gateway_metrics(events: list[TraceEvent]) -> dict[str, Any]:
 
 
 def _memory_metrics(events: list[TraceEvent]) -> dict[str, Any]:
-    retrieval_count = 0
-    save_count = 0
-    save_candidate_count = 0
-    saved_count = 0
-    rejected_count = 0
-    capture_count = 0
-    daily_captured_count = 0
-    core_captured_count = 0
-    capture_error_count = 0
-    for event in events:
-        canonical = event.canonical_event or ""
-        if canonical == "memory.load.finished":
-            event_retrieval_count = _event_int(event, "retrieval_count")
-            if event_retrieval_count is None:
-                event_retrieval_count = _event_int(event, "retrieved_count")
-            retrieval_count += (
-                event_retrieval_count
-                if event_retrieval_count is not None
-                else 1
-            )
-        if canonical == "memory.save.finished":
-            save_count += 1
-            save_candidate_count += _event_int(event, "save_candidate_count") or _event_int(
-                event, "memory_promotion_candidates"
-            )
-            saved_count += _event_int(event, "saved_count") or _event_int(event, "memory_promotion_written")
-            rejected_count += _event_int(event, "rejected_count") or _event_int(event, "memory_promotion_rejected")
-        if canonical == "memory.capture.finished":
-            capture_count += 1
-            daily_captured_count += _event_int(event, "daily_count") or 0
-            core_captured_count += _event_int(event, "core_count") or 0
-            capture_error_count += _event_int(event, "error_count") or 0
+    recalls = [
+        event
+        for event in events
+        if event.canonical_event == "memory.session_recall.finished"
+    ]
+    snapshots = [
+        event
+        for event in events
+        if event.canonical_event == "memory.session_snapshot.reused"
+    ]
+    captures = [
+        event
+        for event in events
+        if event.canonical_event == "memory.capture.finished"
+    ]
     return {
-        "retrieval_count": retrieval_count,
-        "save_count": save_count,
-        "save_candidate_count": save_candidate_count,
-        "saved_count": saved_count,
-        "rejected_count": rejected_count,
-        "capture_count": capture_count,
-        "daily_captured_count": daily_captured_count,
-        "core_captured_count": core_captured_count,
-        "capture_error_count": capture_error_count,
+        "session_recall_count": len(recalls),
+        "session_recall_failure_count": sum(
+            event.status != "succeeded" for event in recalls
+        ),
+        "snapshot_reuse_count": len(snapshots),
+        "capture_count": len(captures),
+        "capture_failure_count": sum(
+            event.status != "succeeded" for event in captures
+        ),
     }
 
 

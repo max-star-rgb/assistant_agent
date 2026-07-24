@@ -1020,7 +1020,6 @@ def _append_trace_content_event(trace_store: TraceStore | None, state: AgentStat
         include_llm_inputs=True,
         include_llm_outputs=True,
         include_tool_observations=True,
-        include_memory_operations=True,
     )
     conversation_payload = (
         conversation.model_dump(mode="json") if conversation is not None else {}
@@ -1056,7 +1055,6 @@ def _append_trace_content_event(trace_store: TraceStore | None, state: AgentStat
                     "delivered",
                     "llm_outputs",
                     "tool_observations",
-                    "memory_operations",
                 }
             },
         },

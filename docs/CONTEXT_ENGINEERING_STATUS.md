@@ -1,6 +1,6 @@
 # Context Engineering Status
 
-Last updated: 2026-07-23
+Last updated: 2026-07-24
 
 本文件记录上下文工程的当前进展、已实现能力、限制和下一步方向。涉及 assistant context、prompt/context rendering、conversation history、memory context、tool observation compaction 或 context budget 的任务，应先读本文件顶部快速交接，再读对应小节、源码和测试。
 
@@ -22,7 +22,8 @@ Last updated: 2026-07-23
   snapshot；包括第一轮在内的所有 turn 只复用 snapshot，不再召回。成功 turn 在回复提交后把
   user/assistant messages 异步交给 Mem0 原生 `add`，由 Mem0 负责提取、合并、向量化和持久化。
 - LLM memory 输入使用 `MemoryPromptSnapshot v1`，只包含 Mem0 文本与 `source_ids`。不存在
-  memory read/write policy、ranking、profile、promotion 或 memory tool。
+  memory read/write policy、ranking、profile、promotion 或 memory tool。快照文本最多 2,000 字符，
+  作为带明确信任边界的历史证据进入当前 `user` message，不进入 `system` message。
 - realtime video 交接：Agent-Service 后台 Qwen observer 对每个 `video_id` 复用一个 persistent WebSocket 并预热 rolling 语义；VLM 使用独立视觉角色模板 prompt，只产出结构化视觉事实，不复用主 LLM 系统提示。AgentRuntime 主 LLM 只知道统一的 `vision_understanding` ToolSpec，图片和视频由工具内部按媒体输入分支，不包含 VLM 观察流程、OCR/品牌/序列图等视觉分析提示词，也不看到帧、JPEG 路径、base64、VLM prompt 或 provider raw response。
 - 当前不建议继续做：场景分类器、质量反馈自动调参、组件注册器、裁剪 undo 日志、默认 LLM 摘要、全局 token 强控制。
 - 如果用户问“继续上下文工程”：优先做验收案例、调试说明、具体失败复现和小回归测试；不要默认新增复杂架构。
@@ -222,8 +223,8 @@ Last updated: 2026-07-23
 
 - session structured summary 在 AgentRuntime 中关闭；会话上下文发送全部已保存轮次原文。
   deterministic 与 LLM semantic compactor 实现均保留，但运行时配置和构造函数注入都不会启用。
-- AgentRuntime 不执行全局容量压缩；character/token budget 仅用于报告。Mem0 snapshot 只受
-  session 启动时的 `top_k` 限制。
+- AgentRuntime 不执行全局容量压缩；character/token budget 仅用于报告。Mem0 session recall 受
+  `top_k` 限制，进入 prompt 的冻结文本另有 2,000 字符硬上限。
 - Context Compiler v1 是调试/审计摘要，不是 prompt replay。它刻意不返回 raw prompt、raw provider payload、完整 memory 文本或完整 tool observation；token 字段仍依赖现有估算或 provider usage metadata。
 - 显式本地 trace-content + loopback OTLP 模式是独立的 prompt 调试例外：assistant loop
   会在 Provider 调用前把最终 compiled `ChatRequest` 暂存到进程内 store，并作为对应

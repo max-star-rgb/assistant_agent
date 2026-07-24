@@ -135,8 +135,9 @@ def _resolve_binding(
         if binding.key == "summaries":
             return [item.summary for item in state.memory_context if item.summary]
         if binding.key == "text":
-            text = state.request.metadata.get("memory_context_text")
-            return text if isinstance(text, str) else ""
+            return "\n".join(
+                item.summary for item in state.memory_context if item.summary
+            )
         return _UNRESOLVED
     if binding.source == "latest_tool_result":
         return _latest_tool_result_value(

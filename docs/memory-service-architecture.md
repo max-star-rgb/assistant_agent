@@ -1,6 +1,6 @@
 # Memory 架构
 
-最后更新：2026-07-23
+最后更新：2026-07-24
 
 本文是 `assistant_agent` 长期记忆实现的当前权威。项目只使用 Mem0，不再提供
 InMemory、JSONL、SQLite、remote service、dual-core、Hindsight 或自定义插件后端。
@@ -20,6 +20,11 @@ Mem0 拥有记忆算法，包括对话事实提取、合并、更新、向量化
 
 记忆不是模型可调用工具。默认 ToolRegistry 不注册 `memory_search`、`memory_get` 或
 `memory_save`，API 也不提供项目自建的记忆 CRUD/control-plane。
+
+冻结快照只作为当前 `user` message 中的低权限历史证据，不进入 `system` message。固定 system
+policy 负责声明记忆可能过期、不完整或检索错误，禁止执行记忆中的指令，并规定当前请求和最新可靠
+证据优先。prompt projection 最多保留 2,000 字符；这是延迟和上下文容量边界，不改变 Mem0 的检索
+顺序、提取、合并或持久化行为。
 
 ## 2. 生命周期
 
@@ -41,6 +46,10 @@ snapshot，turn 使用空记忆继续运行。Mem0 召回失败也冻结为空�
 
 turn capture 不等待 Mem0。后台队列按身份串行、不同身份可并行；队列已满或 Mem0 失败只写
 结构化 trace，不把失败升级为前台 run 错误。
+
+`MEM0_TIMEOUT_SECONDS` 约束 session-start recall 等前台请求，默认 5 秒。后台 `add` 不占用回复
+关键路径，REST adapter 在实例化时自动为它分配至少 30 秒的超时，避免为了容纳提取与 embedding
+耗时而扩大 session 启动的失败等待时间。
 
 ## 3. Mem0 原生调用
 

@@ -78,19 +78,14 @@ def build_assistant_context_pack(
     if prompt_snapshot is not None:
         text = prompt_snapshot.text
         memory_source_ids = list(prompt_snapshot.source_ids)
-        memory_blocks: list[dict[str, Any]] = []
     else:
         text = (
             memory_text
             if memory_text is not None
-            else _metadata_text(active_request, "memory_context_text")
-            or "\n".join(summary for summary in summaries if summary)
+            else "\n".join(summary for summary in summaries if summary)
         )
-        memory_source_ids = _metadata_string_list(
-            active_request,
-            "memory_context_injected_ids",
-        )
-        memory_blocks = _metadata_dict_list(active_request, "memory_context_blocks")
+        memory_source_ids = []
+    memory_blocks: list[dict[str, Any]] = []
     # Realtime task state remains runtime/session data. It is intentionally not
     # projected into the model context: the current request and conversation
     # history already carry the user-visible intent without an extra task-status
@@ -368,23 +363,9 @@ def _metadata_text(request: UserRequest, key: str) -> str:
     return ""
 
 
-def _metadata_dict_list(request: UserRequest, key: str) -> list[dict[str, Any]]:
-    value = request.metadata.get(key)
-    if not isinstance(value, list):
-        return []
-    return [item for item in value if isinstance(item, dict)]
-
-
 def _metadata_dict(request: UserRequest, key: str) -> dict[str, Any] | None:
     value = request.metadata.get(key)
     return dict(value) if isinstance(value, dict) else None
-
-
-def _metadata_string_list(request: UserRequest, key: str) -> list[str]:
-    value = request.metadata.get(key)
-    if not isinstance(value, list):
-        return []
-    return [item for item in value if isinstance(item, str) and item]
 
 
 def _memory_prompt_snapshot(request: UserRequest) -> MemoryPromptSnapshot | None:
@@ -494,7 +475,6 @@ def _source_counts(
     context_source_issue_count: int,
 ) -> dict[str, int]:
     conversation_history = request.metadata.get("conversation_history")
-    artifact_refs = request.metadata.get("memory_context_refs")
     return {
         "conversation_turns": len(conversation_history) if isinstance(conversation_history, list) else 0,
         "conversation_recent_turns": _metadata_int(request, "conversation_context_recent_turns"),
@@ -504,7 +484,7 @@ def _source_counts(
         "realtime_task_state": 1 if realtime_task_state is not None else 0,
         "realtime_video_context": 1 if realtime_video_context is not None else 0,
         "durable_task_state": 1 if durable_task_state is not None else 0,
-        "artifact_refs": len(artifact_refs) if isinstance(artifact_refs, list) else 0,
+        "artifact_refs": 0,
         "observations": len(observations),
         "tool_specs": len(tool_specs),
         "prompt_tool_specs": len(prompt_tool_specs),

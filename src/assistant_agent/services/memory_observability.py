@@ -43,24 +43,7 @@ def load_memory_with_trace(
 ) -> MemoryContext:
     """Recall once at session start or reuse the frozen snapshot."""
 
-    span_id = new_span_id()
     started = perf_counter()
-    append_observability_event(
-        trace_store,
-        trace_id=trace_id or state.trace_id,
-        run_id=state.run_id,
-        user_id=state.user_id,
-        session_id=state.session_id,
-        canonical_event="memory.load.started",
-        observation_name=(
-            "memory.core_recall"
-            if session_start
-            else "memory.session_snapshot"
-        ),
-        node_name=node_name,
-        status="started",
-        span_id=span_id,
-    )
     try:
         if session_context_store is None:
             context = (
@@ -114,17 +97,21 @@ def load_memory_with_trace(
             run_id=state.run_id,
             user_id=state.user_id,
             session_id=state.session_id,
-            canonical_event="memory.load.finished",
+            canonical_event=(
+                "memory.session_recall.finished"
+                if session_start
+                else "memory.session_snapshot.missing"
+            ),
             observation_type="span",
             observation_name=(
-                "memory.core_recall"
+                "memory.session_recall"
                 if session_start
                 else "memory.session_snapshot"
             ),
             node_name=node_name,
             status="failed",
             latency_ms=_elapsed_ms(started),
-            span_id=span_id,
+            span_id=new_span_id(),
             error={
                 "code": "mem0_recall_failed",
                 "message": sanitize_trace_value(str(exc)),
@@ -137,29 +124,31 @@ def load_memory_with_trace(
         run_id=state.run_id,
         user_id=state.user_id,
         session_id=state.session_id,
-        canonical_event="memory.load.finished",
+        canonical_event=(
+            "memory.session_recall.finished"
+            if snapshot_status == "loaded"
+            else "memory.session_snapshot.reused"
+            if snapshot_status == "reused"
+            else "memory.session_snapshot.missing"
+        ),
         observation_type="span",
         observation_name=(
-            "memory.core_recall"
+            "memory.session_recall"
             if snapshot_status == "loaded"
             else "memory.session_snapshot"
         ),
         node_name=node_name,
         status=context.status,
         latency_ms=_elapsed_ms(started),
-        span_id=span_id,
+        span_id=new_span_id(),
         attributes={
             "session_snapshot_status": snapshot_status,
             "memory_count": len(context.items),
             "error_codes": context.error_codes,
         },
         output_summary={
-            "memory": {
-                "status": context.status,
-                "memory_count": len(context.items),
-                "source_ids": [item.memory_id for item in context.items],
-                "error_codes": context.error_codes,
-            }
+            "memory_count": len(context.items),
+            "error_codes": context.error_codes,
         },
     )
     return context
