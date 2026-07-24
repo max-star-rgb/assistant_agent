@@ -128,8 +128,7 @@ class GovernedProbeRunner:
             text="Explicit proactive wake rule probe.",
             metadata={
                 "source": "proactive_wake",
-                "tenant_id": rule.owner.tenant_id,
-                "project_id": rule.owner.project_id,
+                "agent_id": rule.owner.agent_id,
                 "rule_id": rule.rule_id,
                 "signal_id": signal.signal_id,
             },

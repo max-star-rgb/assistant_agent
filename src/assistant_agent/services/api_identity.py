@@ -39,8 +39,6 @@ class AuthContext(BaseModel):
     source: AuthContextSource = "none"
     user_id: str | None = None
     session_id: str | None = None
-    tenant_id: str | None = None
-    project_id: str | None = None
 
     @classmethod
     def anonymous(cls) -> "AuthContext":
@@ -183,13 +181,9 @@ def resolve_request_identity(
     user_id: str,
     session_id: str | None = None,
     source: ApiIdentitySource,
-    tenant_id: str | None = None,
-    project_id: str | None = None,
     auth_context: AuthContext | None = None,
     auth_user_id: str | None = None,
     auth_session_id: str | None = None,
-    auth_tenant_id: str | None = None,
-    auth_project_id: str | None = None,
     strict_auth_match: bool = True,
 ) -> ResolvedRequestIdentity:
     """Resolve identity from request data or a future trusted auth context.
@@ -203,8 +197,6 @@ def resolve_request_identity(
     if auth_context is not None and auth_context.authenticated:
         auth_user_id = auth_context.user_id
         auth_session_id = auth_context.session_id
-        auth_tenant_id = auth_context.tenant_id
-        auth_project_id = auth_context.project_id
     elif auth_user_id:
         auth_context_source = "test"
 
@@ -220,8 +212,6 @@ def resolve_request_identity(
         identity = RequestIdentity.for_user(
             user_id=trusted_user_id,
             session_id=trusted_session_id,
-            tenant_id=_clean_optional(auth_tenant_id) or _clean_optional(tenant_id),
-            project_id=_clean_optional(auth_project_id) or _clean_optional(project_id),
         )
         return ResolvedRequestIdentity(
             identity=identity,
@@ -239,8 +229,6 @@ def resolve_request_identity(
     identity = RequestIdentity.for_user(
         user_id=requested_user_id,
         session_id=requested_session_id,
-        tenant_id=_clean_optional(tenant_id),
-        project_id=_clean_optional(project_id),
     )
     return ResolvedRequestIdentity(
         identity=identity,

@@ -252,8 +252,6 @@ async def _initialize_gateway_session_memory(
     identity = RequestIdentity.for_user(
         user_id=user_id,
         session_id=session_id,
-        tenant_id=_optional_config_string(config, "tenant_id"),
-        project_id=_optional_config_string(config, "project_id"),
     )
     await asyncio.to_thread(runtime_pool.initialize_session_memory, identity)
 

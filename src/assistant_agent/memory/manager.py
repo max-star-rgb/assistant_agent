@@ -37,11 +37,10 @@ class PreparedTurnCapture:
     source_turn: str
 
     @property
-    def ordering_key(self) -> tuple[str, str, str, str]:
+    def ordering_key(self) -> tuple[str, str, str]:
         return (
-            self.identity.tenant_id or "",
             self.identity.user_id,
-            self.identity.project_id or "",
+            self.identity.agent_id,
             self.identity.session_id or "",
         )
 
@@ -67,6 +66,7 @@ class MemoryManager:
         *,
         top_k: int | None = None,
         session_initial: bool = False,
+        identity: RequestIdentity | None = None,
     ) -> MemoryContext:
         """Recall Mem0 only from the explicit session-start path."""
 
@@ -74,7 +74,7 @@ class MemoryManager:
             return self.missing_session_snapshot_context()
         try:
             items = self.store.recall(
-                RequestIdentity.from_user_request(request),
+                identity or RequestIdentity.from_user_request(request),
                 top_k=top_k or 5,
             )
         except Exception:
@@ -138,7 +138,11 @@ class MemoryManager:
         )
         if not user_text or not assistant_text:
             return None
-        identity = RequestIdentity.from_user_request(request)
+        identity = RequestIdentity.for_user(
+            user_id=state.user_id,
+            agent_id=state.agent_id,
+            session_id=state.session_id,
+        )
         run_id = str(getattr(state, "run_id", "") or "run")
         turn_index = str(request.metadata.get("conversation_turn_index") or "1")
         source_turn = hashlib.sha256(

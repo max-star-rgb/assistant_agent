@@ -6,6 +6,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field, model_validator
 
+from assistant_agent.schemas.agent_communication import DEFAULT_AGENT_ID
 from assistant_agent.schemas.identity import RequestIdentity
 
 WakeSignalKind = Literal["provider_event", "reconcile_tick", "manual"]
@@ -47,16 +48,14 @@ def _id(prefix: str) -> str:
 
 
 class WakeOwner(BaseModel):
-    tenant_id: str | None = None
     user_id: str = Field(min_length=1)
-    project_id: str | None = None
+    agent_id: str = Field(default=DEFAULT_AGENT_ID, min_length=1)
 
     @classmethod
     def from_identity(cls, identity: RequestIdentity) -> "WakeOwner":
         return cls(
-            tenant_id=identity.tenant_id,
             user_id=identity.user_id,
-            project_id=identity.project_id,
+            agent_id=identity.agent_id,
         )
 
 

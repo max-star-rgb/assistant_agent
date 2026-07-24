@@ -36,7 +36,7 @@ def compose_response(state: AgentState) -> AgentResponse:
         for error in state.errors
     ]
     handled_tool_failures = sum(
-        1 for error in state.errors if "call_id" in error.details
+        1 for error in state.errors if "tool_call_id" in error.details
     )
     if state.plan is not None and state.plan.requires_followup:
         return AgentResponse(

@@ -63,7 +63,7 @@ def build_post_tool_call_summary(
     result: ToolResult,
     state: AgentState,
     step_id: str | None = None,
-    call_id: str | None = None,
+    tool_call_id: str | None = None,
     latency_ms: int | None = None,
     retry_count: int | None = None,
     cancel_metadata: dict[str, Any] | None = None,
@@ -92,7 +92,7 @@ def build_post_tool_call_summary(
             "phase": "post_tool_call",
             "tool_name": tool_name,
             "step_id": step_id,
-            "call_id": call_id,
+            "tool_call_id": tool_call_id,
             "status": status,
             "lifecycle": lifecycle,
             "runtime_identity": {

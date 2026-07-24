@@ -36,6 +36,7 @@ from assistant_agent.schemas.requests import (
     UserRequest,
     normalize_task_execution_mode,
 )
+from assistant_agent.schemas.agent_communication import DEFAULT_AGENT_ID
 from assistant_agent.schemas.trace_context import RuntimeTraceContext
 from assistant_agent.schemas.tools import ToolResult, ToolSpec
 from assistant_agent.services.agent_service_entry import is_trusted_agent_service_request
@@ -103,7 +104,9 @@ class AgentGraphRuntime:
         durable_task_service: DurableTaskService | None = None,
         memory_capture_dispatcher: MemoryCaptureDispatcher | None = None,
         session_memory_context_store: SessionMemoryContextStore | None = None,
+        agent_id: str = DEFAULT_AGENT_ID,
     ) -> None:
+        self.agent_id = agent_id
         self.config = config or ProviderConfig.from_env()
         self.video_context_store = video_context_store or InMemoryVideoContextStore()
         self.realtime_video_memory_store = realtime_video_memory_store or RealtimeVideoMemoryStore()
@@ -204,10 +207,9 @@ class AgentGraphRuntime:
 
         if not identity.session_id:
             raise ValueError("session_id is required to initialize session memory")
+        identity = identity.model_copy(update={"agent_id": self.agent_id})
         metadata: dict[str, Any] = {
             "memory_session_lifecycle": "start",
-            **({"tenant_id": identity.tenant_id} if identity.tenant_id else {}),
-            **({"project_id": identity.project_id} if identity.project_id else {}),
             **({"reset_conversation": True} if reset else {}),
         }
         request = UserRequest(
@@ -216,7 +218,7 @@ class AgentGraphRuntime:
             text="",
             metadata=metadata,
         )
-        state = AgentState.from_request(request)
+        state = AgentState.from_request(request, agent_id=identity.agent_id)
         try:
             load_memory_with_trace(
                 manager=self.memory_manager,
@@ -227,6 +229,7 @@ class AgentGraphRuntime:
                 request=request,
                 session_context_store=self.session_memory_context_store,
                 session_start=True,
+                identity=identity,
             )
         except Exception:  # noqa: BLE001 - session startup must fail open.
             context = self.memory_manager.failed_session_snapshot_context()
@@ -242,6 +245,7 @@ class AgentGraphRuntime:
         event_sink: EventSink | None = None,
         cancel_token: Any | None = None,
         trace_context: RuntimeTraceContext | None = None,
+        run_id: str | None = None,
     ) -> AgentState:
         """Run the graph and return the full state for compatibility callers.
 
@@ -273,7 +277,9 @@ class AgentGraphRuntime:
         )
         state = AgentState.from_request(
             request,
+            run_id=run_id,
             trace_id=trace_context.trace_id if trace_context is not None else None,
+            agent_id=self.agent_id,
         )
         state.context_source_result = self.context_source_coordinator.load_once(
             ContextSourceRequest(
@@ -294,7 +300,7 @@ class AgentGraphRuntime:
                 run_id=state.run_id,
                 payload={
                     "user_id": state.user_id,
-                    "assistant_run_id": state.run_id,
+                    "agent_id": state.agent_id,
                     "trace_id": state.trace_id,
                 },
             ),

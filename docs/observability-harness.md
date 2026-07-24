@@ -45,21 +45,20 @@ Its bounded attributes also include `client_type`: omitted media handshakes are
 classified as `media_agent`, while the local `scripts/run_client.py` console is
 classified as `run_client`.
 
-The correlation identifiers are deliberately distinct:
+关联标识保持最小且职责明确：
 
 - `delivery_id` identifies media delivery and optional ACK state;
-- `gateway_run_id` identifies the Gateway lifecycle wrapper;
-- `assistant_run_id` identifies the Assistant runtime execution whose trace
-  contains LLM/tool stages;
+- `run_id` identifies one execution from Gateway ingress through Assistant Runtime
+  and delivery audit;
 - `trace_id` is the common lookup key used by trace queries and `agentruntime_view.py`.
 
-The runtime publishes `assistant_run_id` and `trace_id` with its first
+The runtime preserves the ingress `run_id` and publishes `trace_id` with its first
 `task_started` progress fact, so an entry deadline does not lose an already-created
 partial trace. Timeout summaries deliberately separate `entry_status=failed`,
 `runtime_status=pending_cancel`, and `terminal_status=unknown`. The later raw
 `run.cancelled` or `run.failed` event remains the runtime terminal truth; observers
 must not fabricate matching `*.finished` spans for work that was still exiting.
-`agent_service_turn_latency_v1` records the safe failure code/source, deadline,
+`agent_service_turn_latency_v2` records the safe failure code/source, deadline,
 and latest unmatched started span as `active_stage`.
 
 The latency summary is a non-overlapping critical-path view where possible:
@@ -105,7 +104,7 @@ system message 把可信运行时间放在第一段，使折叠预览也优先�
 Langfuse generation 的 `usage_details.input/output/total`，并同步写入 OTel
 `gen_ai.usage.input_tokens/output_tokens`；usage 嵌套结构不能被当作普通标量属性而丢弃。
 
-The versioned `agent_service_turn_latency_v1` summary also exposes only bounded
+The versioned `agent_service_turn_latency_v2` summary also exposes only bounded
 stream facts: `stream_requested`, `provider_token_stream_seen`,
 `stream_chunk_count`, `first_stream_chunk_latency_ms`, and
 `final_response_sent`. The count is incremented only after a provider-token
@@ -120,7 +119,7 @@ business-success flag.
 ## Assistant Turn Summary
 
 Every terminal Assistant turn writes one prompt-safe `assistant.turn.summary`
-trace event with `schema_version=assistant_turn_summary_v1`. This event is the
+trace event with `schema_version=assistant_turn_summary_v2`. This event is the
 canonical machine fact for developer-facing turn identity and terminal status.
 Raw trace timeline events remain the detailed diagnostic source, but viewers
 and local tools should prefer the summary when deciding session banners, client
@@ -132,11 +131,11 @@ Agent-Service suppresses that ordinary runtime write and appends the same schema
 after `agent_service.turn.finished`, so the summary can include the Gateway run,
 turn id, media session turn, classified client, and a safe reference to the
 latency event. This keeps one summary per terminal turn while preserving the
-existing `agent_service_turn_latency_v1` schema.
+existing `agent_service_turn_latency_v2` schema.
 
 Allowed summary fields are:
 
-- `trace_id`, `assistant_run_id`, optional `gateway_run_id`, optional `turn_id`;
+- `trace_id`, `run_id`, optional `turn_id`;
 - `user_id`, `session_id`, optional `session_turn`;
 - `client_type` in `api`, `cli`, `gateway`, `media_agent`, `run_client`, or
   `unknown`;
@@ -154,8 +153,8 @@ for failed or cancelled local debugging remains only in the explicit
 The safe INFO records have this shape and never contain prompts or responses:
 
 ```text
-turn_latency status=sent trace=trace_x gateway_run=run_g assistant_run=run_a delivery=delivery_x session_turn=2 total=824ms bottleneck=llm_chat[2] bottleneck_ms=410ms share=49.8%
-delivery_ack status=acked trace=trace_x gateway_run=run_g assistant_run=run_a delivery=delivery_x session_turn=2 ack_latency=18ms
+turn_latency status=sent trace=trace_x run=run_x delivery=delivery_x session_turn=2 total=824ms bottleneck=llm_chat[2] bottleneck_ms=410ms share=49.8%
+delivery_ack status=acked trace=trace_x run=run_x delivery=delivery_x session_turn=2 ack_latency=18ms
 ```
 
 `scripts/run_server.py` enables an in-memory primary trace store plus a bounded
@@ -383,7 +382,6 @@ span_id
 parent_span_id
 tool_call_id
 turn_id
-event_id
 ```
 
 Required fields by layer:
@@ -404,12 +402,11 @@ shape for hierarchical traces and optional OpenTelemetry export.
 
 | identity | new format | lifecycle |
 | --- | --- | --- |
-| Assistant `run_id` | `run_<uuid7-hex>` | 一次 Assistant 执行 |
+| `run_id` | `run_<uuid7-hex>` | 从入口到 Assistant Runtime 的一次执行 |
 | Runtime `session_id` | `session_<uuid7-hex>`；外部可信 session 可保持原值 | 多轮会话 |
 | Gateway `turn_id` | `turn_<uuid7-hex>` | 一次入口用户轮次 |
-| Gateway `run_id` | `gateway_run_<uuid7-hex>` | 一次 Gateway 生命周期包装 |
 | `delivery_id` | `delivery_<uuid7-hex>` | 一次 Agent-Service 投递与 ACK |
-| `tool_call_id` / `event_id` | typed prefix + UUIDv7 hex | 一次工具调用或 Agent event |
+| `tool_call_id` | `tool_call_<uuid7-hex>` | 一次工具调用 |
 | `trace_id` | 32 lowercase hex / 128 bit | W3C Trace Context trace identity |
 | `span_id` | 16 lowercase hex / 64 bit | W3C Trace Context span identity |
 

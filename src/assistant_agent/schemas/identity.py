@@ -6,13 +6,14 @@ from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 
+from assistant_agent.schemas.agent_communication import DEFAULT_AGENT_ID
+
 
 class RequestIdentity(BaseModel):
-    """Authenticated or request-derived identity for scoped service access."""
+    """Minimal trusted identity shared by runtime and Mem0."""
 
-    tenant_id: str | None = None
     user_id: str = Field(min_length=1)
-    project_id: str | None = None
+    agent_id: str = Field(default=DEFAULT_AGENT_ID, min_length=1)
     session_id: str | None = None
 
     @classmethod
@@ -20,16 +21,14 @@ class RequestIdentity(BaseModel):
         cls,
         *,
         user_id: str,
+        agent_id: str = DEFAULT_AGENT_ID,
         session_id: str | None = None,
-        tenant_id: str | None = None,
-        project_id: str | None = None,
     ) -> "RequestIdentity":
         """Build an identity from trusted local/API path parameters."""
 
         return cls(
-            tenant_id=tenant_id,
             user_id=user_id,
-            project_id=project_id,
+            agent_id=agent_id,
             session_id=session_id,
         )
 
@@ -37,21 +36,19 @@ class RequestIdentity(BaseModel):
     def from_user_request(
         cls,
         request: Any,
+        *,
+        agent_id: str = DEFAULT_AGENT_ID,
     ) -> "RequestIdentity":
         """Build an identity from the local mock/offline UserRequest boundary."""
 
-        metadata = getattr(request, "metadata", {}) or {}
-        project_id = metadata.get("project_id") if isinstance(metadata, dict) else None
-        tenant_id = metadata.get("tenant_id") if isinstance(metadata, dict) else None
         session_id = getattr(request, "session_id", None)
         return cls.for_user(
-            tenant_id=str(tenant_id) if tenant_id else None,
             user_id=str(getattr(request, "user_id")),
-            project_id=str(project_id) if project_id else None,
+            agent_id=agent_id,
             session_id=str(session_id) if session_id else None,
         )
 
-    @field_validator("tenant_id", "project_id", "session_id", mode="before")
+    @field_validator("session_id", mode="before")
     @classmethod
     def _empty_optional_strings_to_none(cls, value: Any) -> Any:
         if isinstance(value, str) and not value.strip():

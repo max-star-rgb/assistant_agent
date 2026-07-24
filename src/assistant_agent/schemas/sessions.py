@@ -19,7 +19,6 @@ class SessionRecord(BaseModel):
 
     user_id: str = Field(min_length=1)
     session_id: str = Field(min_length=1)
-    thread_id: str = Field(min_length=1)
     title: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
     run_count: int = Field(default=0, ge=0)

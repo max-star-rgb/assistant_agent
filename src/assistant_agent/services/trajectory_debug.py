@@ -21,20 +21,18 @@ TRAJECTORY_REDACTION = {
 }
 
 _SAFE_ATTRIBUTE_KEYS = {
-    "assistant_run_id",
     "budget_ratio",
     "cancel_source",
     "confirmation_state",
     "context_usage_ratio",
     "decision_type",
     "error_count",
-    "gateway_run_id",
+    "run_id",
     "iteration",
     "parent_memory_forwarded",
     "provider_latency_ms",
     "recovery_action",
     "response_present",
-    "result_run_id",
     "retry_count",
     "risk",
     "runtime_call_latency_ms",
@@ -201,4 +199,3 @@ def _safe_error(event: TraceEvent) -> dict[str, Any]:
     if event.error.get("message"):
         payload["message"] = sanitize_error_message(event.error["message"])
     return payload
-

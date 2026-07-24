@@ -132,7 +132,7 @@ def build_notification_envelope(
     owner = rule.owner
     idempotency_key = hashlib.sha256(
         (
-            f"{owner.tenant_id}|{owner.user_id}|{owner.project_id}|{rule.rule_id}|"
+            f"{owner.user_id}|{owner.agent_id}|{rule.rule_id}|"
             f"{evidence.fingerprint}|{rule.attention.channel}"
         ).encode()
     ).hexdigest()

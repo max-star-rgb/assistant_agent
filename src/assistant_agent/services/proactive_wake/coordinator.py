@@ -40,7 +40,7 @@ from assistant_agent.services.proactive_wake.store import (
     SQLiteProactiveWakeStore,
 )
 
-_RuleLockKey = tuple[str | None, str, str | None, str]
+_RuleLockKey = tuple[str, str, str]
 
 
 @dataclass
@@ -331,7 +331,7 @@ class ProactiveWakeCoordinator:
 
 
 def _lock_key(owner: WakeOwner, rule_id: str) -> _RuleLockKey:
-    return owner.tenant_id, owner.user_id, owner.project_id, rule_id
+    return owner.user_id, owner.agent_id, rule_id
 
 
 def _retain_process_rule_lock(key: _RuleLockKey) -> _ProcessRuleLockEntry:

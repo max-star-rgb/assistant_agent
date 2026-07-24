@@ -9,7 +9,7 @@ from typing import Any, Literal
 
 from assistant_agent.gateway.protocol import Frame, frame
 from assistant_agent.gateway.session import GatewaySessionManager
-from assistant_agent.services.identifiers import new_prefixed_uuid7, new_turn_id
+from assistant_agent.services.identifiers import new_run_id, new_turn_id
 
 GatewayStreamChunkConsumer = Callable[[str, Frame], Awaitable[None]]
 GatewayTurnCorrelationObserver = Callable[["GatewayTurnCorrelation"], None]
@@ -20,8 +20,7 @@ class GatewayTurnCorrelation:
     """Prompt-safe identifiers known while a Gateway turn is still running."""
 
     turn_id: str
-    gateway_run_id: str
-    assistant_run_id: str | None = None
+    run_id: str
     trace_id: str | None = None
 
 
@@ -179,10 +178,10 @@ class GatewayTurnFacade:
                 config=request.config,
             )
         turn_id = new_turn_id()
-        run_id = new_prefixed_uuid7("gateway_run")
+        run_id = new_run_id()
         dispatcher = await self._dispatcher_for(request.user_id, handle.endpoint)
         inbox = await dispatcher.register(run_id)
-        correlation = GatewayTurnCorrelation(turn_id=turn_id, gateway_run_id=run_id)
+        correlation = GatewayTurnCorrelation(turn_id=turn_id, run_id=run_id)
         _notify_correlation(on_correlation, correlation)
         try:
             await handle.endpoint.send(
@@ -306,16 +305,12 @@ def _correlation_from_frame(
     payload = received.get("payload")
     if not isinstance(payload, Mapping) or payload.get("agent_event_type") != "task_started":
         return current
-    assistant_run_id = _optional_string(payload.get("assistant_run_id")) or _optional_string(
-        payload.get("run_id")
-    )
     trace_id = _optional_string(payload.get("trace_id"))
-    if not assistant_run_id and not trace_id:
+    if not trace_id:
         return current
     return GatewayTurnCorrelation(
         turn_id=current.turn_id,
-        gateway_run_id=current.gateway_run_id,
-        assistant_run_id=assistant_run_id or current.assistant_run_id,
+        run_id=current.run_id,
         trace_id=trace_id or current.trace_id,
     )
 

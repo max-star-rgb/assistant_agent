@@ -54,7 +54,6 @@ class _HangingGatewayEndpoint:
                 **common,
                 "payload": {
                     "agent_event_type": "task_started",
-                    "assistant_run_id": "assistant-run-1",
                     "trace_id": "trace-1",
                 },
             }
@@ -82,9 +81,8 @@ def test_runtime_announces_trace_correlation_before_work() -> None:
         AgentEvent(
             type="task_started",
             session_id="session-1",
-            run_id="assistant-run-1",
+            run_id="run-1",
             payload={
-                "assistant_run_id": "assistant-run-1",
                 "trace_id": "trace-1",
             },
         )
@@ -92,7 +90,7 @@ def test_runtime_announces_trace_correlation_before_work() -> None:
 
     assert mapped is not None
     assert mapped.type == "run.progress"
-    assert mapped.payload["assistant_run_id"] == "assistant-run-1"
+    assert mapped.payload["run_id"] == "run-1"
     assert mapped.payload["trace_id"] == "trace-1"
 
 
@@ -120,7 +118,7 @@ async def _assert_gateway_timeout_preserves_partial_trace_correlation() -> None:
 
     correlation = captured.value.correlation
     assert correlation is not None
-    assert correlation.assistant_run_id == "assistant-run-1"
+    assert correlation.run_id == endpoint.sent[0]["payload"]["run_id"]
     assert correlation.trace_id == "trace-1"
     assert observed[-1] == correlation
     cancel = endpoint.sent[-1]
@@ -136,15 +134,13 @@ def test_timeout_failure_audit_keeps_all_correlation_ids() -> None:
     failed = registry.mark_failed(
         delivery.delivery_id,
         error_code="gateway_turn_timeout",
-        gateway_run_id="gateway-run-1",
-        assistant_run_id="assistant-run-1",
+        run_id="run-1",
         trace_id="trace-1",
         runtime_status="pending_cancel",
         failure_source="gateway_turn_facade",
     )
 
-    assert failed.gateway_run_id == "gateway-run-1"
-    assert failed.assistant_run_id == "assistant-run-1"
+    assert failed.run_id == "run-1"
     assert failed.trace_id == "trace-1"
     _, event_type, metadata = audit.records[-1]
     assert event_type == "failed"
@@ -168,8 +164,7 @@ def test_partial_trace_reports_layered_timeout_and_open_stage() -> None:
     )
     timing.bind_turn(
         turn_id="turn-1",
-        gateway_run_id="gateway-run-1",
-        assistant_run_id="assistant-run-1",
+        run_id="run-1",
         trace_id="trace-1",
     )
     timing.mark("failed", at_ns=32_000_000)
@@ -183,7 +178,7 @@ def test_partial_trace_reports_layered_timeout_and_open_stage() -> None:
     events = [
         TraceEvent(
             trace_id="trace-1",
-            run_id="assistant-run-1",
+            run_id="run-1",
             user_id="user-1",
             session_id="agent-service-session-1",
             node_name="assistant_loop",

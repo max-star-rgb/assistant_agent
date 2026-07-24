@@ -12,6 +12,7 @@ from assistant_agent.schemas.perception import PerceptionBundle
 from assistant_agent.schemas.planning import IntentResult, TaskPlan
 from assistant_agent.schemas.requests import AgentResponse, UserRequest
 from assistant_agent.schemas.tools import RunToolCatalog, ToolCallRecord, ToolResult, ToolSelection
+from assistant_agent.schemas.agent_communication import DEFAULT_AGENT_ID
 from assistant_agent.services.identifiers import (
     new_run_id,
     new_session_id,
@@ -39,8 +40,7 @@ class AgentState(BaseModel):
 
     run_id: str = Field(default_factory=new_run_id)
     trace_id: str = Field(default_factory=new_trace_id)
-    user_id: str = Field(min_length=1)
-    session_id: str = Field(min_length=1)
+    agent_id: str = Field(default=DEFAULT_AGENT_ID, min_length=1)
     request: UserRequest
     execution_strategy: ExecutionStrategyName = "react"
 
@@ -67,28 +67,36 @@ class AgentState(BaseModel):
         request: UserRequest,
         run_id: str | None = None,
         trace_id: str | None = None,
+        agent_id: str = DEFAULT_AGENT_ID,
     ) -> "AgentState":
         """Create state from a normalized user request."""
 
         return cls(
             run_id=run_id or new_run_id(),
             trace_id=trace_id or new_trace_id(),
-            user_id=request.user_id,
-            session_id=request.session_id,
+            agent_id=agent_id,
             request=request,
             execution_strategy=request.execution_strategy,
         )
+
+    @property
+    def user_id(self) -> str:
+        return self.request.user_id
+
+    @property
+    def session_id(self) -> str:
+        return self.request.session_id
 
     def add_tool_call(
         self,
         tool_name: str,
         input: dict[str, Any] | None = None,
-        call_id: str | None = None,
+        tool_call_id: str | None = None,
     ) -> ToolCallRecord:
         """Append a running tool call record and mark the run as active."""
 
         record = ToolCallRecord(
-            call_id=call_id or new_tool_call_id(),
+            tool_call_id=tool_call_id or new_tool_call_id(),
             tool_name=tool_name,
             input=input or {},
             status="running",
@@ -100,13 +108,13 @@ class AgentState(BaseModel):
 
     def complete_tool_call(
         self,
-        call_id: str,
+        tool_call_id: str,
         result: ToolResult,
         output_ref: str | None = None,
     ) -> ToolCallRecord:
         """Mark a tool call as succeeded and append its result."""
 
-        record = self._get_tool_call(call_id)
+        record = self._get_tool_call(tool_call_id)
         record.status = "succeeded"
         record.finished_at = datetime.now(timezone.utc)
         record.output_ref = output_ref or result.output_ref
@@ -116,7 +124,7 @@ class AgentState(BaseModel):
 
     def fail_tool_call(
         self,
-        call_id: str,
+        tool_call_id: str,
         error_message: str,
         result: ToolResult | None = None,
         error_details: dict[str, Any] | None = None,
@@ -124,11 +132,11 @@ class AgentState(BaseModel):
     ) -> ToolCallRecord:
         """Mark a tool call as failed and record a structured error."""
 
-        record = self._get_tool_call(call_id)
+        record = self._get_tool_call(tool_call_id)
         record.status = "failed"
         record.finished_at = datetime.now(timezone.utc)
         record.error_message = error_message
-        details = {"call_id": call_id}
+        details = {"tool_call_id": tool_call_id}
         if error_details is not None:
             details.update(error_details)
         self.errors.append(
@@ -185,8 +193,8 @@ class AgentState(BaseModel):
         self.response = None
         self.status = "cancelled"
 
-    def _get_tool_call(self, call_id: str) -> ToolCallRecord:
+    def _get_tool_call(self, tool_call_id: str) -> ToolCallRecord:
         for record in self.tool_calls:
-            if record.call_id == call_id:
+            if record.tool_call_id == tool_call_id:
                 return record
-        raise ValueError(f"Tool call not found: {call_id}")
+        raise ValueError(f"Tool call not found: {tool_call_id}")

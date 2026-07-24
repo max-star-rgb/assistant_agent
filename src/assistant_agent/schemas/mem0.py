@@ -13,13 +13,19 @@ class Mem0Identity(BaseModel):
 
     user_id: str = Field(pattern=r"^usr_[0-9a-f]{32}$")
     agent_id: str = Field(pattern=r"^agt_[0-9a-f]{32}$")
+    run_id: str = Field(pattern=r"^run_[0-9a-f]{32}$")
 
     @property
     def mem0_filters(self) -> dict[str, str]:
         return {
             "user_id": self.user_id,
             "agent_id": self.agent_id,
+            "run_id": self.run_id,
         }
+
+    @property
+    def long_term_filters(self) -> dict[str, str]:
+        return {"user_id": self.user_id, "agent_id": self.agent_id}
 
 
 class Mem0RecallRequest(BaseModel):

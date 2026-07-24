@@ -47,7 +47,7 @@ from assistant_agent.schemas.realtime_turn_arbitration import (
     prompt_safe_arbitration_task_state,
 )
 from assistant_agent.services.provider_errors import sanitize_error_message
-from assistant_agent.services.identifiers import new_prefixed_uuid7, new_turn_id
+from assistant_agent.services.identifiers import new_prefixed_uuid7, new_run_id, new_turn_id
 from assistant_agent.services.realtime_task_state import (
     RealtimeTaskStateStore,
     apply_cancel_only_arbitration_to_task_state,
@@ -64,7 +64,6 @@ class ActiveRun:
     task: "asyncio.Task[None]"
     permit: RunPermit
     deadline_task: "asyncio.Task[None] | None" = None
-    assistant_run_id: str | None = None
     trace_id: str | None = None
 
 
@@ -301,7 +300,7 @@ class GatewaySessionService:
             return
         session_id = str(raw_session_id)
         turn_id = str(payload.get("turn_id") or new_turn_id())
-        run_id = str(payload.get("run_id") or new_prefixed_uuid7("gateway_run"))
+        run_id = str(payload.get("run_id") or new_run_id())
         now = time.monotonic()
         turn = QueuedTurn(
             user_id=user_id,
@@ -1058,7 +1057,6 @@ class GatewaySessionService:
         expects_reply = True
         end_reason = "error"
         result: RealtimeAgentResult | None = None
-        active_assistant_run_id: str | None = None
         active_trace_id: str | None = None
         try:
             self._emit_lifecycle(
@@ -1173,7 +1171,6 @@ class GatewaySessionService:
                 if cur and cur.run_id == run_id:
                     deadline_task = cur.deadline_task
                     permit = cur.permit
-                    active_assistant_run_id = cur.assistant_run_id
                     active_trace_id = cur.trace_id
                     self._active_by_session.pop(session_id, None)
                 current = self._current_by_session.get(session_id)
@@ -1195,8 +1192,6 @@ class GatewaySessionService:
                 terminal_payload["trace_id"] = result.trace_id
             elif active_trace_id:
                 terminal_payload["trace_id"] = active_trace_id
-            if active_assistant_run_id:
-                terminal_payload["assistant_run_id"] = active_assistant_run_id
             self._emit_lifecycle(
                 _terminal_lifecycle_event_type(end_reason),
                 session_id=session_id,
@@ -1300,15 +1295,13 @@ class GatewaySessionService:
     ) -> None:
         if event.type != "run.progress" or event.payload.get("agent_event_type") != "task_started":
             return
-        assistant_run_id = _optional_string(event.payload.get("assistant_run_id"))
         trace_id = _optional_string(event.payload.get("trace_id"))
-        if not assistant_run_id and not trace_id:
+        if not trace_id:
             return
         async with self._lock:
             active = self._active_by_session.get(request.session_id)
             if active is None or active.run_id != request.run_id:
                 return
-            active.assistant_run_id = assistant_run_id or active.assistant_run_id
             active.trace_id = trace_id or active.trace_id
 
     async def _interrupt_if_needed(
@@ -1349,7 +1342,6 @@ class GatewaySessionService:
         cancelled_session_id: str | None = None
         cancelled_run_id: str | None = None
         cancelled_turn_id: str | None = None
-        cancelled_assistant_run_id: str | None = None
         cancelled_trace_id: str | None = None
 
         queued_targets: list[QueuedTurn] = []
@@ -1396,7 +1388,6 @@ class GatewaySessionService:
                     cancelled_session_id = str(session_id)
                     cancelled_run_id = cur.run_id
                     cancelled_turn_id = cur.turn_id
-                    cancelled_assistant_run_id = cur.assistant_run_id
                     cancelled_trace_id = cur.trace_id
             elif run_id:
                 for active_session_id, cur in self._active_by_session.items():
@@ -1406,7 +1397,6 @@ class GatewaySessionService:
                         cancelled_session_id = active_session_id
                         cancelled_run_id = cur.run_id
                         cancelled_turn_id = cur.turn_id
-                        cancelled_assistant_run_id = cur.assistant_run_id
                         cancelled_trace_id = cur.trace_id
                         break
 
@@ -1414,8 +1404,6 @@ class GatewaySessionService:
             cancel_payload: dict[str, Any] = {"source": cancel_source}
             if cancel_reason:
                 cancel_payload["reason"] = cancel_reason
-            if cancelled_assistant_run_id:
-                cancel_payload["assistant_run_id"] = cancelled_assistant_run_id
             if cancelled_trace_id:
                 cancel_payload["trace_id"] = cancelled_trace_id
             self._emit_lifecycle(
@@ -2212,8 +2200,6 @@ def _optional_string(value: Any) -> str | None:
 
 def _active_run_correlation_payload(active: ActiveRun) -> dict[str, str]:
     payload: dict[str, str] = {}
-    if active.assistant_run_id:
-        payload["assistant_run_id"] = active.assistant_run_id
     if active.trace_id:
         payload["trace_id"] = active.trace_id
     return payload

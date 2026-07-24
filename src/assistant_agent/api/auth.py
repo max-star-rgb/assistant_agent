@@ -20,8 +20,6 @@ AUTH_HEADER_ENABLED_ENV = "MULTIMODAL_AGENT_AUTH_HEADER_ENABLED"
 AUTH_REQUIRE_BOUND_IDENTITY_ENV = "MULTIMODAL_AGENT_REQUIRE_AUTH_BOUND_IDENTITY"
 AUTH_USER_ID_HEADER = "X-Multimodal-Agent-User-Id"
 AUTH_SESSION_ID_HEADER = "X-Multimodal-Agent-Session-Id"
-AUTH_TENANT_ID_HEADER = "X-Multimodal-Agent-Tenant-Id"
-AUTH_PROJECT_ID_HEADER = "X-Multimodal-Agent-Project-Id"
 AuthMode = Literal["anonymous", "header_pilot", "trusted_header", "jwt", "session"]
 
 _TRUE_VALUES = {"1", "true", "yes", "on"}
@@ -66,8 +64,6 @@ class HeaderAuthProvider:
             source="header",
             user_id=user_id,
             session_id=_header_value(headers, AUTH_SESSION_ID_HEADER),
-            tenant_id=_header_value(headers, AUTH_TENANT_ID_HEADER),
-            project_id=_header_value(headers, AUTH_PROJECT_ID_HEADER),
         )
 
 

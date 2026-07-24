@@ -7,8 +7,8 @@ Mem0 OSS REST 子集；完整行为以 Mem0 官方 API 为准。
 
 ## 身份
 
-所有请求必须同时携带项目从可信身份生成的不透明 `user_id` 和 `agent_id`。用户输入不能直接
-覆盖这两个字段。
+召回请求携带项目从可信 runtime 身份生成的不透明 `user_id` 和 `agent_id`；写入请求还必须
+携带由 `user_id + agent_id + session_id` 稳定生成的不透明 `run_id`。用户输入不能直接覆盖这些字段。
 
 ## Session 启动召回
 
@@ -32,6 +32,7 @@ Content-Type: application/json
   ],
   "user_id": "<opaque>",
   "agent_id": "<opaque>",
+  "run_id": "<opaque>",
   "metadata": {
     "source": "runtime_turn_capture",
     "source_turn": "<opaque>",

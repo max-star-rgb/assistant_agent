@@ -39,6 +39,7 @@ def load_memory_with_trace(
     top_k: int | None = None,
     session_context_store: SessionMemoryContextStore | None = None,
     session_start: bool = False,
+    identity: RequestIdentity | None = None,
 ) -> MemoryContext:
     """Recall once at session start or reuse the frozen snapshot."""
 
@@ -67,6 +68,7 @@ def load_memory_with_trace(
                     request,
                     top_k=top_k,
                     session_initial=True,
+                    identity=identity,
                 )
                 if session_start
                 else manager.missing_session_snapshot_context()
@@ -74,11 +76,17 @@ def load_memory_with_trace(
             snapshot_status = "loaded" if session_start else "missing"
         else:
             resolution = session_context_store.resolve(
-                RequestIdentity.from_user_request(request),
+                identity
+                or RequestIdentity.for_user(
+                    user_id=state.user_id,
+                    agent_id=state.agent_id,
+                    session_id=state.session_id,
+                ),
                 loader=lambda: manager.load_context_for_request(
                     request,
                     top_k=top_k,
                     session_initial=True,
+                    identity=identity,
                 ),
                 allow_load=session_start,
                 reset=(

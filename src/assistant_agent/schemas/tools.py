@@ -84,7 +84,7 @@ class RunToolCatalog(BaseModel):
 class ToolCallRecord(BaseModel):
     """Persistent record for one tool invocation."""
 
-    call_id: str = Field(min_length=1)
+    tool_call_id: str = Field(min_length=1)
     tool_name: str = Field(min_length=1)
     input: dict[str, Any] = Field(default_factory=dict)
     status: Literal["pending", "running", "succeeded", "failed"]

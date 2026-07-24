@@ -13,7 +13,7 @@ from assistant_agent.schemas.identity import RequestIdentity
 
 
 SessionMemorySnapshotStatus = Literal["loaded", "reused", "missing"]
-SessionMemoryKey = tuple[str, str, str, str]
+SessionMemoryKey = tuple[str, str, str]
 
 
 @dataclass(frozen=True)
@@ -116,21 +116,21 @@ class SessionMemoryContextStore:
             keys = [
                 key
                 for key in self._entries
-                if key[1] == user_id and key[3] == session_id
+                if key[0] == user_id and key[2] == session_id
             ]
             for key in keys:
                 self._entries.pop(key, None)
             return len(keys)
 
-    def clear_user(self, *, user_id: str, tenant_id: str | None = None) -> int:
+    def clear_user(self, *, user_id: str, agent_id: str | None = None) -> int:
         """Remove every retained snapshot for one governed user."""
 
         with self._condition:
             keys = [
                 key
                 for key in self._entries
-                if key[1] == user_id
-                and (tenant_id is None or key[0] == tenant_id)
+                if key[0] == user_id
+                and (agent_id is None or key[1] == agent_id)
             ]
             for key in keys:
                 self._entries.pop(key, None)
@@ -139,9 +139,8 @@ class SessionMemoryContextStore:
 
 def _session_memory_key(identity: RequestIdentity) -> SessionMemoryKey:
     return (
-        identity.tenant_id or "",
         identity.user_id,
-        identity.project_id or "",
+        identity.agent_id,
         identity.session_id or "",
     )
 

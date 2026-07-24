@@ -137,7 +137,7 @@ class Mem0RestAdapter:
             "GET",
             "/memories",
             query={
-                **request.identity.mem0_filters,
+                **request.identity.long_term_filters,
                 "limit": str(request.top_k),
             },
         )

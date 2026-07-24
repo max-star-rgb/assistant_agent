@@ -57,7 +57,7 @@ class PreparedToolCall:
     tool_input: dict[str, Any]
     invocation_input: BaseModel | dict[str, Any]
     step: TaskStep | None
-    call_id: str
+    tool_call_id: str
     capability: str
     tool_spec: ToolSpec
     started_at: float
@@ -207,7 +207,7 @@ class ToolExecutor:
             status="started",
             capability=capability,
             tool_name=tool_name,
-            call_id=call.call_id,
+            tool_call_id=call.tool_call_id,
             step_id=step_id,
             span_id=tool_span_id,
             tool_contract=execution_summary,
@@ -220,7 +220,7 @@ class ToolExecutor:
                 run_id=state.run_id,
                 tool_name=tool_name,
                 payload={
-                    "call_id": call.call_id,
+                    "tool_call_id": call.tool_call_id,
                     "step_id": step_id,
                     "pre_tool_call": pre_tool_call,
                 },
@@ -248,7 +248,8 @@ class ToolExecutor:
                 "request_text": state.request.text or "",
                 "request_metadata": dict(state.request.metadata),
                 "request_identity": RequestIdentity.from_user_request(
-                    state.request
+                    state.request,
+                    agent_id=state.agent_id,
                 ).model_dump(mode="json"),
             }
             context = ToolContext(
@@ -269,7 +270,7 @@ class ToolExecutor:
             tool_input=bound_input,
             invocation_input=invocation_input,
             step=step,
-            call_id=call.call_id,
+            tool_call_id=call.tool_call_id,
             capability=capability,
             tool_spec=tool_spec,
             started_at=started_at,
@@ -356,20 +357,20 @@ class ToolExecutor:
         result = invocation.result
         reported_latency_ms = result.latency_ms
         latency_ms = int((perf_counter() - prepared.started_at) * 1000)
-        state.complete_tool_call(prepared.call_id, result)
+        state.complete_tool_call(prepared.tool_call_id, result)
         post_tool_call = build_post_tool_call_summary(
             tool_name=prepared.tool_name,
             result=result,
             state=state,
             step_id=prepared.step_id,
-            call_id=prepared.call_id,
+            tool_call_id=prepared.tool_call_id,
             latency_ms=latency_ms,
             retry_count=invocation.retry_count,
             tool_contract=_execution_summary(prepared.tool_spec, prepared.disposition),
             registry=self.registry,
         )
         event_payload = {
-            "call_id": prepared.call_id,
+            "tool_call_id": prepared.tool_call_id,
             "step_id": prepared.step_id,
             "latency_ms": latency_ms,
             "retry_count": invocation.retry_count,
@@ -396,7 +397,7 @@ class ToolExecutor:
             status=str(post_tool_call.get("status") or "succeeded"),
             capability=prepared.capability,
             tool_name=prepared.tool_name,
-            call_id=prepared.call_id,
+            tool_call_id=prepared.tool_call_id,
             step_id=prepared.step_id,
             span_id=prepared.tool_span_id,
             latency_ms=latency_ms,
@@ -432,14 +433,14 @@ class ToolExecutor:
             result=result,
             state=state,
             step_id=prepared.step_id,
-            call_id=prepared.call_id,
+            tool_call_id=prepared.tool_call_id,
             latency_ms=latency_ms,
             retry_count=invocation.retry_count,
             tool_contract=_execution_summary(prepared.tool_spec, prepared.disposition),
             registry=self.registry,
         )
         state.fail_tool_call(
-            prepared.call_id,
+            prepared.tool_call_id,
             decision.message,
             result,
             error_details={
@@ -465,7 +466,7 @@ class ToolExecutor:
                     recoverable=decision.retryable,
                 ).model_dump(mode="json"),
                 payload={
-                    "call_id": prepared.call_id,
+                    "tool_call_id": prepared.tool_call_id,
                     "step_id": prepared.step_id,
                     "latency_ms": latency_ms,
                     "retry_count": invocation.retry_count,
@@ -486,7 +487,7 @@ class ToolExecutor:
             status="failed",
             capability=prepared.capability,
             tool_name=prepared.tool_name,
-            call_id=prepared.call_id,
+            tool_call_id=prepared.tool_call_id,
             step_id=prepared.step_id,
             span_id=prepared.tool_span_id,
             latency_ms=latency_ms,
@@ -520,7 +521,7 @@ class ToolExecutor:
             result=result,
             state=state,
             step_id=prepared.step_id,
-            call_id=prepared.call_id,
+            tool_call_id=prepared.tool_call_id,
             latency_ms=latency_ms,
             retry_count=0,
             cancel_metadata=error_details,
@@ -528,7 +529,7 @@ class ToolExecutor:
             registry=self.registry,
         )
         state.fail_tool_call(
-            prepared.call_id,
+            prepared.tool_call_id,
             DEFAULT_CANCELLATION_MESSAGE,
             result,
             error_details=error_details,
@@ -547,7 +548,7 @@ class ToolExecutor:
                     recoverable=False,
                 ).model_dump(mode="json"),
                 payload={
-                    "call_id": prepared.call_id,
+                    "tool_call_id": prepared.tool_call_id,
                     "step_id": prepared.step_id,
                     "latency_ms": latency_ms,
                     "retry_count": 0,
@@ -566,7 +567,7 @@ class ToolExecutor:
             status="failed",
             capability=prepared.capability,
             tool_name=prepared.tool_name,
-            call_id=prepared.call_id,
+            tool_call_id=prepared.tool_call_id,
             step_id=prepared.step_id,
             span_id=prepared.tool_span_id,
             latency_ms=latency_ms,
@@ -698,7 +699,7 @@ def _append_tool_trace_event(
     status: str,
     capability: str,
     tool_name: str,
-    call_id: str,
+    tool_call_id: str,
     step_id: str,
     span_id: str,
     event_type: str = "observability",
@@ -745,7 +746,7 @@ def _append_tool_trace_event(
             input_summary=input_summary or {},
             output_summary=output_summary or {},
             attributes=_tool_trace_attributes(
-                call_id=call_id,
+                tool_call_id=tool_call_id,
                 step_id=step_id,
                 retry_count=retry_count,
                 tool_contract=tool_contract,
@@ -758,14 +759,14 @@ def _append_tool_trace_event(
 
 def _tool_trace_attributes(
     *,
-    call_id: str,
+    tool_call_id: str,
     step_id: str,
     retry_count: int | None,
     tool_contract: dict[str, Any] | None,
     reported_latency_ms: int | None = None,
 ) -> dict[str, Any]:
     attributes: dict[str, Any] = {
-        "tool_call_id": call_id,
+        "tool_call_id": tool_call_id,
         "step_id": step_id,
     }
     if retry_count is not None:

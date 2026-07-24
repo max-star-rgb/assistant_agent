@@ -185,7 +185,8 @@ def _map_confirmation_required(event: AgentEvent) -> RealtimeAgentEvent | None:
     payload = {
         "agent_event_type": event.type,
         "tool_name": tool_name,
-        "call_id": event.payload.get("call_id") or post_tool_call.get("call_id"),
+        "tool_call_id": event.payload.get("tool_call_id")
+        or post_tool_call.get("tool_call_id"),
         "step_id": event.payload.get("step_id") or post_tool_call.get("step_id"),
         "confirmation_id": confirmation_dict.get("id"),
         "confirmation_kind": confirmation_dict.get("kind"),

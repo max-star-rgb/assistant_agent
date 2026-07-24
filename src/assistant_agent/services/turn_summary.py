@@ -12,7 +12,7 @@ from assistant_agent.services.provider_errors import sanitize_error_message
 from assistant_agent.services.trace_store import TraceEvent, TraceStore, new_span_id
 
 
-ASSISTANT_TURN_SUMMARY_SCHEMA_VERSION = "assistant_turn_summary_v1"
+ASSISTANT_TURN_SUMMARY_SCHEMA_VERSION = "assistant_turn_summary_v2"
 ASSISTANT_TURN_SUMMARY_EVENT = "assistant.turn.summary"
 ASSISTANT_TURN_SUMMARY_KEY = "turn_summary"
 _FAILURE_MESSAGE_LIMIT = 240
@@ -29,12 +29,11 @@ _CLIENT_TYPES = frozenset(
 class AssistantTurnSummary(BaseModel):
     """Stable, prompt-safe terminal fact for one assistant turn."""
 
-    schema_version: Literal["assistant_turn_summary_v1"] = (
+    schema_version: Literal["assistant_turn_summary_v2"] = (
         ASSISTANT_TURN_SUMMARY_SCHEMA_VERSION
     )
     trace_id: str
-    assistant_run_id: str
-    gateway_run_id: str | None = None
+    run_id: str
     turn_id: str | None = None
     user_id: str | None = None
     session_id: str | None = None
@@ -92,7 +91,6 @@ def append_runtime_turn_summary(
 def build_turn_summary_from_state(
     state: AgentState,
     *,
-    gateway_run_id: str | None = None,
     turn_id: str | None = None,
     session_turn: int | None = None,
     client_type: str | None = None,
@@ -101,15 +99,13 @@ def build_turn_summary_from_state(
     """Build a safe terminal summary from final runtime state."""
 
     metadata = state.request.metadata
-    resolved_gateway_run_id = gateway_run_id or _metadata_realtime_string(metadata, "run_id")
     resolved_turn_id = turn_id or _metadata_realtime_string(metadata, "turn_id")
     resolved_session_turn = session_turn or _safe_positive_int(
         metadata.get("conversation_turn_index")
     )
     return AssistantTurnSummary(
         trace_id=state.trace_id,
-        assistant_run_id=state.run_id,
-        gateway_run_id=resolved_gateway_run_id,
+        run_id=state.run_id,
         turn_id=resolved_turn_id,
         user_id=state.user_id,
         session_id=state.session_id,
@@ -136,8 +132,8 @@ def append_agent_service_turn_summary(
     """Append the Agent-Service terminal summary after latency correlation exists."""
 
     trace_id = _optional_string(getattr(timing, "trace_id", None))
-    assistant_run_id = _optional_string(getattr(timing, "assistant_run_id", None))
-    if trace_store is None or not trace_id or not assistant_run_id:
+    run_id = _optional_string(getattr(timing, "run_id", None))
+    if trace_store is None or not trace_id or not run_id:
         return False
     facts = _terminal_facts_from_events(events)
     latency_status = _optional_string(getattr(latency_summary, "status", None))
@@ -154,8 +150,7 @@ def append_agent_service_turn_summary(
     response_present = facts.get("response_present")
     summary = AssistantTurnSummary(
         trace_id=trace_id,
-        assistant_run_id=assistant_run_id,
-        gateway_run_id=_optional_string(getattr(timing, "gateway_run_id", None)),
+        run_id=run_id,
         turn_id=_optional_string(getattr(timing, "turn_id", None)),
         user_id=_optional_string(getattr(timing, "user_id", None)),
         session_id=_optional_string(getattr(timing, "session_id", None)),
@@ -200,8 +195,7 @@ def append_assistant_turn_summary_trace(
     if trace_store is None:
         return False
     attributes: dict[str, Any] = {
-        "assistant_run_id": summary.assistant_run_id,
-        "gateway_run_id": summary.gateway_run_id,
+        "run_id": summary.run_id,
         "turn_id": summary.turn_id,
         "session_turn": summary.session_turn,
         "client_type": summary.client_type,
@@ -216,7 +210,7 @@ def append_assistant_turn_summary_trace(
         trace_store.append(
             TraceEvent(
                 trace_id=summary.trace_id,
-                run_id=summary.assistant_run_id,
+                run_id=summary.run_id,
                 user_id=summary.user_id,
                 session_id=summary.session_id,
                 node_name=node_name,
@@ -246,10 +240,18 @@ def latest_turn_summary_from_events(events: list[TraceEvent]) -> dict[str, Any] 
         summary = event.output_summary.get(ASSISTANT_TURN_SUMMARY_KEY)
         if (
             isinstance(summary, dict)
-            and summary.get("schema_version") == ASSISTANT_TURN_SUMMARY_SCHEMA_VERSION
+            and summary.get("schema_version")
+            in {ASSISTANT_TURN_SUMMARY_SCHEMA_VERSION, "assistant_turn_summary_v1"}
         ):
             try:
-                return AssistantTurnSummary.model_validate(summary).model_dump(mode="json")
+                normalized = dict(summary)
+                if normalized.get("schema_version") == "assistant_turn_summary_v1":
+                    normalized["schema_version"] = ASSISTANT_TURN_SUMMARY_SCHEMA_VERSION
+                    normalized["run_id"] = (
+                        normalized.pop("assistant_run_id", None)
+                        or normalized.pop("gateway_run_id", None)
+                    )
+                return AssistantTurnSummary.model_validate(normalized).model_dump(mode="json")
             except Exception:
                 continue
     return None
@@ -432,12 +434,7 @@ def _latency_ref(latency_summary: Any) -> dict[str, Any] | None:
         "canonical_event": "agent_service.turn.finished",
         "delivery_id": delivery_id,
         "trace_id": _optional_string(getattr(latency_summary, "trace_id", None)),
-        "gateway_run_id": _optional_string(
-            getattr(latency_summary, "gateway_run_id", None)
-        ),
-        "assistant_run_id": _optional_string(
-            getattr(latency_summary, "assistant_run_id", None)
-        ),
+        "run_id": _optional_string(getattr(latency_summary, "run_id", None)),
     }
 
 

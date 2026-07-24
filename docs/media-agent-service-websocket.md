@@ -465,7 +465,7 @@ provider/tool 前后的 cooperative cancellation checkpoint 实际停止执行�
 | 缺少必填字段 | 返回当前消息对应响应类型，`body.code=\"FAIL\"` |
 | `videoContent` 非法、超过大小限制或无法解码 | 返回 `videoResponse`，`body.code=\"FAIL\"`；连接保持可用 |
 | 未知 `message` 类型 | 返回 `error` |
-| Gateway 超时或后端错误 | 返回 `chatResponse`，`body.code=\"FAIL\"`；本地 `run_client.py` 会在 stderr 显示失败原因并以非零状态结束。若 runtime 已启动，失败 delivery audit 与 trace terminal summary 保留 `gateway_run_id`、`assistant_run_id`、`trace_id`；超时时 runtime 状态先记为 `pending_cancel`，以后续真实取消/失败事件为准。 |
+| Gateway 超时或后端错误 | 返回 `chatResponse`，`body.code=\"FAIL\"`；本地 `run_client.py` 会在 stderr 显示失败原因并以非零状态结束。若 runtime 已启动，失败 delivery audit 与 trace terminal summary 保留统一的 `run_id` 与独立的 `trace_id`；超时时 runtime 状态先记为 `pending_cancel`，以后续真实取消/失败事件为准。 |
 | WebSocket 异常断开 | 记录 ERROR 级安全日志；取消当前 session 的活动 Gateway run |
 
 通用 `error` 示例：
@@ -546,8 +546,8 @@ pytest。只有同时选择 real provider mode、显式配置 Qwen vision provid
 ### 7.1 单轮耗时诊断
 
 `scripts/run_server.py` 默认启用非阻塞 trace 持久化。收到安全 INFO 日志中的
-`trace` 后，默认直接从本地机器级 JSONL trace 生成视图；`gateway_run` 是 Gateway
-包装 run，`assistant_run` 才是承载 LLM/工具事件的 Assistant run：
+`trace` 后，默认直接从本地机器级 JSONL trace 生成视图；入口与 Assistant Runtime
+共享同一个 `run_id`，LLM/工具事件使用该 `run_id` 与独立 `trace_id` 关联：
 
 ```bash
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/agentruntime_view.py trace_xxx

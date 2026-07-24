@@ -534,7 +534,10 @@ def test_tool_trace_content_is_enabled_by_default_with_explicit_opt_out(
 
     content_events = content_trace.list_by_run(content_state.run_id)
     assert content_events[0].input_summary == {"value": "private-value"}
-    assert content_events[0].attributes["tool_call_id"] == content_state.tool_calls[0].call_id
+    assert (
+        content_events[0].attributes["tool_call_id"]
+        == content_state.tool_calls[0].tool_call_id
+    )
     assert content_events[1].output_summary["data"] == {"value": "private-value"}
 
     monkeypatch.setenv("MULTIMODAL_AGENT_LOCAL_TRACE_CONTENT", "0")

@@ -13,8 +13,8 @@ Mem0 拥有记忆算法，包括对话事实提取、合并、更新、向量化
 
 项目侧只保留三项职责：
 
-1. 将可信的 tenant/user 映射为不透明 Mem0 `user_id`，将 tenant/project 映射为
-   `agent_id`；session id 不进入长期记忆命名空间。
+1. 将可信的 runtime `user_id`、`agent_id` 映射为不透明 Mem0 `user_id`、`agent_id`；
+   将 `user_id + agent_id + session_id` 稳定映射为 Mem0 `run_id`。用户 metadata 不能覆盖这些字段。
 2. 在 session 创建阶段调用一次 Mem0 `get_all`，冻结为该 session 的 prompt snapshot。
 3. 最终回复完成后，把原始 user/assistant messages 异步提交给 Mem0 `add`。
 
@@ -33,7 +33,7 @@ turn
   -> reuse frozen snapshot
   -> LLM response
   -> enqueue background capture
-  -> POST /memories {messages, user_id, agent_id, metadata}
+  -> POST /memories {messages, user_id, agent_id, run_id, metadata}
 ```
 
 任何 turn（包括第一轮）都不会触发长期记忆召回。调用方必须先创建 session；如果没有
@@ -45,8 +45,10 @@ turn capture 不等待 Mem0。后台队列按身份串行、不同身份可并�
 ## 3. Mem0 原生调用
 
 - 写入：只调用一次 `POST /memories`，传递完整 user/assistant messages；不显式传
-  `infer=false`，由 Mem0 默认 inference 负责提取和更新。
+  `infer=false`，由 Mem0 默认 inference 负责提取和更新；同时传入 Mem0 原生 `run_id`
+  标记 session 范围的短期上下文。
 - 召回：session 启动使用 `GET /memories`，按 `user_id + agent_id` 限定身份，并限制返回数量。
+  不携带 `run_id`，因此新 session 可以召回同一用户与 Agent 的跨 session 长期记忆。
 - 项目不写 `core`/`daily` 记录、不维护稳定 ID 映射，也不二次处理 Mem0 结果。
 
 这与 Mem0 OSS REST API 的 `add` 和 `get_all` 语义一致。仓库内 sidecar 只是把原生 Mem0

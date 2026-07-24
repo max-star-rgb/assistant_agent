@@ -689,7 +689,7 @@ async def _cleanup_agent_service_connection(
     if state.chat_tasks:
         await asyncio.gather(*state.chat_tasks, return_exceptions=True)
     for delivery_id, timing in list(state.turn_timings.items()):
-        if timing.trace_id and timing.assistant_run_id:
+        if timing.trace_id and timing.run_id:
             current = state.delivery_registry.get(delivery_id)
             _observe_turn_terminal(
                 state,
@@ -933,8 +933,7 @@ async def _run_chat_delivery(
             return
         timing.bind_turn(
             turn_id=correlation.turn_id,
-            gateway_run_id=correlation.gateway_run_id,
-            assistant_run_id=correlation.assistant_run_id,
+            run_id=correlation.run_id,
             trace_id=correlation.trace_id,
         )
 
@@ -963,8 +962,7 @@ async def _run_chat_delivery(
                 timing.mark("gateway_finished", at_ns=state.clock_ns())
                 timing.bind_turn(
                     turn_id=turn.turn_id,
-                    gateway_run_id=turn.run_id,
-                    assistant_run_id=_assistant_run_id(state.trace_store, turn.trace_id),
+                    run_id=turn.run_id,
                     trace_id=turn.trace_id,
                 )
                 timing.runtime_status = {
@@ -992,8 +990,7 @@ async def _run_chat_delivery(
             state.delivery_registry.mark_failed(
                 delivery.delivery_id,
                 error_code="gateway_run_failed",
-                gateway_run_id=turn.run_id,
-                assistant_run_id=timing.assistant_run_id if timing is not None else None,
+                run_id=turn.run_id,
                 trace_id=turn.trace_id,
                 runtime_status=timing.runtime_status if timing is not None else None,
                 failure_source="gateway_runtime",
@@ -1001,8 +998,7 @@ async def _run_chat_delivery(
         else:
             state.delivery_registry.mark_sent(
                 delivery.delivery_id,
-                gateway_run_id=turn.run_id,
-                assistant_run_id=timing.assistant_run_id if timing is not None else None,
+                run_id=turn.run_id,
                 trace_id=turn.trace_id,
             )
         if timing is not None:
@@ -1021,8 +1017,7 @@ async def _run_chat_delivery(
                 )
             interrupted = state.delivery_registry.mark_interrupted(
                 delivery.delivery_id,
-                gateway_run_id=timing.gateway_run_id if timing is not None else None,
-                assistant_run_id=timing.assistant_run_id if timing is not None else None,
+                run_id=timing.run_id if timing is not None else None,
                 trace_id=timing.trace_id if timing is not None else None,
             )
             if timing is not None:
@@ -1075,8 +1070,7 @@ async def _run_chat_delivery(
                 state.delivery_registry.mark_failed(
                     delivery.delivery_id,
                     error_code=failure_code,
-                    gateway_run_id=timing.gateway_run_id if timing is not None else None,
-                    assistant_run_id=timing.assistant_run_id if timing is not None else None,
+                    run_id=timing.run_id if timing is not None else None,
                     trace_id=timing.trace_id if timing is not None else None,
                     runtime_status=runtime_status,
                     failure_source=failure_source,
@@ -1264,16 +1258,6 @@ def _get_agent_service_trace_store() -> TraceStore | None:
         return None
 
 
-def _assistant_run_id(trace_store: TraceStore | None, trace_id: str | None) -> str | None:
-    if trace_store is None or not trace_id:
-        return None
-    try:
-        events = trace_store.list_by_trace(trace_id)
-    except Exception:  # noqa: BLE001 - observer-only correlation.
-        return None
-    return events[0].run_id if events else None
-
-
 def _observe_turn_terminal(
     state: AgentServiceConnectionState,
     timing: AgentServiceTurnTiming,
@@ -1316,12 +1300,12 @@ def _observe_delivery_ack(
         timing.checkpoints.get("send_finished"),
         timing.checkpoints.get("ack_received"),
     )
-    if state.trace_store is not None and timing.trace_id and timing.assistant_run_id:
+    if state.trace_store is not None and timing.trace_id and timing.run_id:
         try:
             append_observability_event(
                 state.trace_store,
                 trace_id=timing.trace_id,
-                run_id=timing.assistant_run_id,
+                run_id=timing.run_id,
                 user_id=timing.user_id,
                 session_id=timing.session_id,
                 canonical_event="agent_service.delivery.acked",
@@ -1331,7 +1315,7 @@ def _observe_delivery_ack(
                 attributes={
                     "delivery_id": timing.delivery_id,
                     "session_turn": timing.session_turn,
-                    "gateway_run_id": timing.gateway_run_id,
+                    "run_id": timing.run_id,
                     "turn_id": timing.turn_id,
                     **_client_trace_attributes(timing),
                 },
@@ -1340,11 +1324,10 @@ def _observe_delivery_ack(
             pass
     try:
         logger.info(
-            "delivery_ack status=acked trace=%s gateway_run=%s assistant_run=%s "
+            "delivery_ack status=acked trace=%s run=%s "
             "delivery=%s session_turn=%s ack_latency=%s",
             timing.trace_id or "none",
-            timing.gateway_run_id or "none",
-            timing.assistant_run_id or "none",
+            timing.run_id or "none",
             timing.delivery_id,
             timing.session_turn,
             f"{ack_latency_ms}ms" if ack_latency_ms is not None else "none",

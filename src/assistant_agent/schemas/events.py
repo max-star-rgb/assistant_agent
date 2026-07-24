@@ -5,9 +5,6 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from assistant_agent.services.identifiers import new_prefixed_uuid7
-
-
 EventType = Literal[
     "task_started",
     "graph_node_started",
@@ -38,7 +35,6 @@ EventType = Literal[
 class AgentEvent(BaseModel):
     """Structured event emitted by the agent runtime and sent over WebSocket."""
 
-    event_id: str = Field(default_factory=lambda: new_prefixed_uuid7("event"))
     type: EventType
     session_id: str = Field(min_length=1)
     run_id: str | None = None

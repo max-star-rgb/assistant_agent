@@ -62,16 +62,18 @@ def bind_mem0_identity(
 ) -> Mem0Identity:
     """Map trusted application identity to opaque Mem0 identity filters."""
 
-    tenant = identity.tenant_id or "default"
-    project = identity.project_id or "global"
+    if not identity.session_id:
+        raise ValueError("session_id is required for Mem0 run identity")
 
     def digest(kind: str, value: str) -> str:
         payload = f"assistant_agent:{namespace}:{kind}:{value}".encode()
         return hashlib.sha256(payload).hexdigest()[:32]
 
-    user_seed = f"{tenant}\x1f{identity.user_id}"
-    agent_seed = f"{tenant}\x1f{project}"
+    run_seed = "\x1f".join(
+        (identity.user_id, identity.agent_id, identity.session_id)
+    )
     return Mem0Identity(
-        user_id=f"usr_{digest('user', user_seed)}",
-        agent_id=f"agt_{digest('agent', agent_seed)}",
+        user_id=f"usr_{digest('user', identity.user_id)}",
+        agent_id=f"agt_{digest('agent', identity.agent_id)}",
+        run_id=f"run_{digest('run', run_seed)}",
     )

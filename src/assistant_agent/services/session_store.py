@@ -205,7 +205,6 @@ def _new_session_record(session: SessionCreate, *, session_id: str | None = None
     return SessionRecord(
         user_id=session.user_id,
         session_id=resolved_session_id,
-        thread_id=resolved_session_id,
         title=session.title,
         metadata=session.metadata,
         created_at=now,

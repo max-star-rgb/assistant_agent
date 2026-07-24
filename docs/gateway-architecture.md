@@ -106,8 +106,9 @@ sync-turn bridge: it sends a normalized `message.user` frame through
 structured turn result. Endpoint-specific response schemas remain entry-adapter
 concerns on top of that Gateway result.
 
-Runtime-owned `assistant_run_id` and `trace_id` are announced in the initial
-`task_started` progress event. The facade exposes this prompt-safe correlation
+Gateway 在入口创建的 `run_id` 会原样传入 Assistant Runtime；Gateway lifecycle、
+Runtime trace 和终态 frame 共享同一个 `run_id`。Runtime-owned `trace_id` is announced
+in the initial `task_started` progress event. The facade exposes this prompt-safe correlation
 before `run.end` and preserves it on timeout/error exceptions. A caller timeout
 therefore means the entry failed while the runtime is `pending_cancel`; it does
 not synthesize a runtime failure. Gateway cancel and terminal lifecycle records

@@ -12,11 +12,7 @@ from pydantic import BaseModel, Field
 
 from assistant_agent.services.trace_store import TraceEvent, redact_trace_event, sanitize_trace_value
 from assistant_agent.services.turn_evaluator import build_turn_diagnostic
-from assistant_agent.services.turn_summary import (
-    ASSISTANT_TURN_SUMMARY_EVENT,
-    ASSISTANT_TURN_SUMMARY_KEY,
-    ASSISTANT_TURN_SUMMARY_SCHEMA_VERSION,
-)
+from assistant_agent.services.turn_summary import latest_turn_summary_from_events
 
 if TYPE_CHECKING:
     from assistant_agent.services.trace_conversation import (
@@ -44,7 +40,6 @@ _VOICE_ATTRIBUTE_TOKENS = frozenset(
 _ALLOWED_ATTRIBUTE_KEYS = frozenset(
     {
         "attempt_kind",
-        "assistant_run_id",
         "budget_ratio",
         "client_type",
         "context_usage_ratio",
@@ -52,14 +47,13 @@ _ALLOWED_ATTRIBUTE_KEYS = frozenset(
         "error_count",
         "failure_code",
         "first_text_latency_ms",
-        "gateway_run_id",
         "input_tokens",
         "iteration",
         "next_action",
         "output_tokens",
         "provider_latency_ms",
         "response_present",
-        "result_run_id",
+        "run_id",
         "route_branch",
         "runtime_action",
         "runtime_call_latency_ms",
@@ -294,12 +288,12 @@ def _trace_attributes(events: list[TraceEvent]) -> dict[str, Any]:
     summary = _latest_turn_summary(events)
     user_id = _string_or_none(summary.get("user_id")) or first.user_id
     session_id = _string_or_none(summary.get("session_id")) or first.session_id
-    run_id = _string_or_none(summary.get("assistant_run_id")) or first.run_id
+    run_id = _string_or_none(summary.get("run_id")) or first.run_id
     trace_id = _string_or_none(summary.get("trace_id")) or first.trace_id
     attrs: dict[str, Any] = {
         "langfuse.trace.name": "assistant.turn",
         "langfuse.trace.metadata.assistant_trace_id": trace_id,
-        "langfuse.trace.metadata.assistant_run_id": run_id,
+        "langfuse.trace.metadata.run_id": run_id,
         "assistant_agent.trace_id": trace_id,
         "assistant_agent.run_id": run_id,
         "assistant_agent.modality": TEXT_MODALITY,
@@ -320,8 +314,7 @@ def _turn_summary_attributes(events: list[TraceEvent]) -> dict[str, Any]:
     summary = _latest_turn_summary(events)
     attrs: dict[str, Any] = {}
     for key in (
-        "assistant_run_id",
-        "gateway_run_id",
+        "run_id",
         "turn_id",
         "session_turn",
         "terminal_status",
@@ -888,16 +881,7 @@ def _first_mapping_int(source: Mapping[str, Any], keys: tuple[str, ...]) -> int 
 
 
 def _latest_turn_summary(events: list[TraceEvent]) -> dict[str, Any]:
-    for event in reversed(events):
-        if _event_name(event) != ASSISTANT_TURN_SUMMARY_EVENT:
-            continue
-        summary = event.output_summary.get(ASSISTANT_TURN_SUMMARY_KEY)
-        if (
-            isinstance(summary, dict)
-            and summary.get("schema_version") == ASSISTANT_TURN_SUMMARY_SCHEMA_VERSION
-        ):
-            return summary
-    return {}
+    return latest_turn_summary_from_events(events) or {}
 
 
 def _root_span_id(events: list[TraceEvent]) -> str:

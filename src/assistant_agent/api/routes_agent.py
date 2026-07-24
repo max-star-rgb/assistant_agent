@@ -194,8 +194,7 @@ def _gateway_error_correlation(exc: GatewayTurnError) -> dict[str, str]:
         return {"trace_status": "not_available"}
     values = {
         "turn_id": correlation.turn_id,
-        "gateway_run_id": correlation.gateway_run_id,
-        "assistant_run_id": correlation.assistant_run_id,
+        "run_id": correlation.run_id,
         "trace_id": correlation.trace_id,
     }
     payload = {key: value for key, value in values.items() if value}
@@ -659,14 +658,11 @@ def _identity_from_request(
     *,
     auth_context: AuthContext | None = None,
 ) -> ResolvedRequestIdentity:
-    metadata = request.metadata or {}
     try:
         resolution = resolve_request_identity(
             user_id=request.user_id,
             session_id=request.session_id,
             source="request_body",
-            tenant_id=_metadata_string(metadata, "tenant_id"),
-            project_id=_metadata_string(metadata, "project_id"),
             auth_context=auth_context,
         )
         return _enforce_identity_policy(resolution)

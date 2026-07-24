@@ -800,7 +800,8 @@ def _latest_turn_latency_summary(events: list[dict[str, Any]]) -> dict[str, Any]
         value = output_summary.get("turn_latency")
         if (
             isinstance(value, dict)
-            and value.get("schema_version") == "agent_service_turn_latency_v1"
+            and value.get("schema_version")
+            in {"agent_service_turn_latency_v1", "agent_service_turn_latency_v2"}
         ):
             return dict(value)
     return None

@@ -114,6 +114,31 @@ def test_plain_text_run_completes() -> None:
         runtime.close()
 
 
+def test_runtime_preserves_entry_run_id_and_agent_identity() -> None:
+    runtime = AgentGraphRuntime(
+        config=_offline_config(),
+        agent_id="agent.worker",
+        session_store=InMemorySessionStore(),
+    )
+    try:
+        state = runtime.run_state(
+            UserRequest(
+                user_id="identity-user",
+                session_id="identity-session",
+                text="hello",
+            ),
+            run_id="run-entry-owned",
+        )
+
+        assert state.run_id == "run-entry-owned"
+        assert state.agent_id == "agent.worker"
+        assert {
+            event.run_id for event in runtime.trace_store.list_by_run("run-entry-owned")
+        } == {"run-entry-owned"}
+    finally:
+        runtime.close()
+
+
 def test_provider_native_tool_call_completes_through_governed_runtime() -> None:
     registry = ToolRegistry()
     registry.register(_ProbeTool())
@@ -304,15 +329,17 @@ def test_session_and_mem0_identity_are_isolated_by_user_identity() -> None:
         ),
         namespace="test",
     )
-    project_identity = bind_mem0_identity(
+    other_agent_identity = bind_mem0_identity(
         RequestIdentity.for_user(
             user_id="identity-user-a",
-            project_id="other-project",
+            agent_id="agent.other",
             session_id="shared-session",
         ),
         namespace="test",
     )
     assert identity_a.user_id != identity_b.user_id
     assert identity_a.agent_id == identity_b.agent_id
-    assert identity_a.user_id == project_identity.user_id
-    assert identity_a.agent_id != project_identity.agent_id
+    assert identity_a.user_id == other_agent_identity.user_id
+    assert identity_a.agent_id != other_agent_identity.agent_id
+    assert identity_a.run_id != identity_b.run_id
+    assert identity_a.run_id != other_agent_identity.run_id

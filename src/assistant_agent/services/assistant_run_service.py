@@ -477,6 +477,7 @@ def run_assistant_request(
     enable_conversation_history: bool = True,
     realtime_task_state_store: RealtimeTaskStateStore | None = None,
     cancel_token: Any | None = None,
+    run_id: str | None = None,
 ) -> AssistantRunArtifacts:
     """Run one request and return shared artifacts."""
 
@@ -519,6 +520,7 @@ def run_assistant_request(
         resolved_request,
         runtime_sink,
         cancel_token=cancel_token,
+        run_id=run_id,
     )
     apply_realtime_task_update(state, store=resolved_task_store)
     record_realtime_task_state_run_artifacts(state, store=resolved_task_store)
@@ -544,6 +546,7 @@ def run_assistant_request_stream(
     enable_conversation_history: bool = True,
     realtime_task_state_store: RealtimeTaskStateStore | None = None,
     cancel_token: Any | None = None,
+    run_id: str | None = None,
 ) -> AgentRunStream[AssistantRunArtifacts]:
     """Run the shared assistant service and expose its AgentEvent records asynchronously."""
 
@@ -564,6 +567,7 @@ def run_assistant_request_stream(
                 enable_conversation_history=enable_conversation_history,
                 realtime_task_state_store=realtime_task_state_store,
                 cancel_token=cancel_token,
+                run_id=run_id,
             )
         except BaseException as exc:
             stream.set_exception(exc)
@@ -730,6 +734,7 @@ def _run_state_with_sink(
     sink: EventSink,
     *,
     cancel_token: Any | None = None,
+    run_id: str | None = None,
 ) -> AgentState:
     """Call run_state with per-run options, tolerating test doubles that omit params."""
 
@@ -742,6 +747,8 @@ def _run_state_with_sink(
         kwargs["event_sink"] = sink
     if cancel_token is not None and "cancel_token" in parameters:
         kwargs["cancel_token"] = cancel_token
+    if run_id is not None and "run_id" in parameters:
+        kwargs["run_id"] = run_id
     if kwargs:
         return runtime.run_state(request, **kwargs)
     return runtime.run_state(request)

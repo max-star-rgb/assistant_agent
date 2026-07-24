@@ -1271,7 +1271,7 @@ def _set_assistant_final_answer_response(
         for error in state.errors
     ]
     handled_tool_failures = sum(
-        1 for error in state.errors if "call_id" in error.details
+        1 for error in state.errors if "tool_call_id" in error.details
     )
     state.set_response(
         AgentResponse(

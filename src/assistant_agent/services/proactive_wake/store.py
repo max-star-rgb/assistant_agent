@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Iterator
 from uuid import uuid4
 
+from assistant_agent.schemas.agent_communication import DEFAULT_AGENT_ID
 from assistant_agent.schemas.proactive_wake import (
     NotificationEnvelope,
     WakeOwner,
@@ -20,7 +21,7 @@ from assistant_agent.schemas.proactive_wake import (
     WakeSignal,
 )
 
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3
 
 
 class ProactiveWakeStoreError(RuntimeError):
@@ -47,9 +48,8 @@ _SCHEMA_V1_STATEMENTS = (
     """
     CREATE TABLE IF NOT EXISTS wake_rules (
         rule_id TEXT PRIMARY KEY,
-        tenant_id TEXT,
         user_id TEXT NOT NULL,
-        project_id TEXT,
+        agent_id TEXT NOT NULL,
         enabled INTEGER NOT NULL,
         version INTEGER NOT NULL,
         rule_json TEXT NOT NULL,
@@ -59,7 +59,7 @@ _SCHEMA_V1_STATEMENTS = (
     """,
     """
     CREATE INDEX IF NOT EXISTS idx_wake_rules_owner
-    ON wake_rules (tenant_id, user_id, project_id, enabled)
+    ON wake_rules (user_id, agent_id, enabled)
     """,
     """
     CREATE TABLE IF NOT EXISTS wake_rule_state (
@@ -81,9 +81,8 @@ _SCHEMA_V1_STATEMENTS = (
     CREATE TABLE IF NOT EXISTS wake_runs (
         run_id TEXT PRIMARY KEY,
         rule_id TEXT NOT NULL,
-        tenant_id TEXT,
         user_id TEXT NOT NULL,
-        project_id TEXT,
+        agent_id TEXT NOT NULL,
         status TEXT NOT NULL,
         run_json TEXT NOT NULL,
         created_at TEXT NOT NULL,
@@ -97,9 +96,8 @@ _SCHEMA_V2_STATEMENTS = (
     CREATE TABLE IF NOT EXISTS notification_outbox (
         delivery_id TEXT PRIMARY KEY,
         idempotency_key TEXT NOT NULL UNIQUE,
-        tenant_id TEXT,
         user_id TEXT NOT NULL,
-        project_id TEXT,
+        agent_id TEXT NOT NULL,
         rule_id TEXT NOT NULL,
         status TEXT NOT NULL,
         envelope_json TEXT NOT NULL,
@@ -144,24 +142,22 @@ class SQLiteProactiveWakeStore:
             cursor = connection.execute(
                 """
                 INSERT INTO wake_rules (
-                    rule_id, tenant_id, user_id, project_id, enabled, version,
+                    rule_id, user_id, agent_id, enabled, version,
                     rule_json, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(rule_id) DO UPDATE SET
                     enabled = excluded.enabled,
                     version = excluded.version,
                     rule_json = excluded.rule_json,
                     created_at = excluded.created_at,
                     updated_at = excluded.updated_at
-                WHERE wake_rules.tenant_id IS excluded.tenant_id
-                  AND wake_rules.user_id = excluded.user_id
-                  AND wake_rules.project_id IS excluded.project_id
+                WHERE wake_rules.user_id = excluded.user_id
+                  AND wake_rules.agent_id = excluded.agent_id
                 """,
                 (
                     rule.rule_id,
-                    owner.tenant_id,
                     owner.user_id,
-                    owner.project_id,
+                    owner.agent_id,
                     int(rule.enabled),
                     rule.version,
                     rule.model_dump_json(),
@@ -192,11 +188,10 @@ class SQLiteProactiveWakeStore:
                 SELECT rule_json
                 FROM wake_rules
                 WHERE rule_id = ?
-                  AND tenant_id IS ?
                   AND user_id = ?
-                  AND project_id IS ?
+                  AND agent_id = ?
                 """,
-                (rule_id, owner.tenant_id, owner.user_id, owner.project_id),
+                (rule_id, owner.user_id, owner.agent_id),
             ).fetchone()
         return WakeRule.model_validate_json(str(row["rule_json"])) if row else None
 
@@ -206,12 +201,11 @@ class SQLiteProactiveWakeStore:
                 """
                 SELECT rule_json
                 FROM wake_rules
-                WHERE tenant_id IS ?
-                  AND user_id = ?
-                  AND project_id IS ?
+                WHERE user_id = ?
+                  AND agent_id = ?
                 ORDER BY created_at, rule_id
                 """,
-                (owner.tenant_id, owner.user_id, owner.project_id),
+                (owner.user_id, owner.agent_id),
             ).fetchall()
         return [WakeRule.model_validate_json(str(row["rule_json"])) for row in rows]
 
@@ -221,11 +215,10 @@ class SQLiteProactiveWakeStore:
                 """
                 DELETE FROM wake_rules
                 WHERE rule_id = ?
-                  AND tenant_id IS ?
                   AND user_id = ?
-                  AND project_id IS ?
+                  AND agent_id = ?
                 """,
-                (rule_id, owner.tenant_id, owner.user_id, owner.project_id),
+                (rule_id, owner.user_id, owner.agent_id),
             )
         return cursor.rowcount > 0
 
@@ -304,9 +297,9 @@ class SQLiteProactiveWakeStore:
             connection.execute(
                 """
                 INSERT INTO wake_runs (
-                    run_id, rule_id, tenant_id, user_id, project_id, status,
+                    run_id, rule_id, user_id, agent_id, status,
                     run_json, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 _run_values(run),
             )
@@ -360,18 +353,17 @@ class SQLiteProactiveWakeStore:
                 outbox_cursor = connection.execute(
                     """
                     INSERT INTO notification_outbox (
-                        delivery_id, idempotency_key, tenant_id, user_id, project_id,
+                        delivery_id, idempotency_key, user_id, agent_id,
                         rule_id, status, envelope_json, available_at, lease_until,
                         attempt_count, last_reason_code, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(idempotency_key) DO NOTHING
                     """,
                     (
                         notification.delivery_id,
                         notification.idempotency_key,
-                        owner.tenant_id,
                         owner.user_id,
-                        owner.project_id,
+                        owner.agent_id,
                         notification.rule_id,
                         notification.status,
                         notification.model_dump_json(),
@@ -419,9 +411,8 @@ class SQLiteProactiveWakeStore:
                 """
                 UPDATE wake_runs
                 SET rule_id = ?,
-                    tenant_id = ?,
                     user_id = ?,
-                    project_id = ?,
+                    agent_id = ?,
                     status = ?,
                     run_json = ?,
                     created_at = ?,
@@ -452,8 +443,8 @@ class SQLiteProactiveWakeStore:
         query = "SELECT envelope_json FROM notification_outbox"
         parameters: tuple[object, ...] = ()
         if owner is not None:
-            query += " WHERE tenant_id IS ? AND user_id = ? AND project_id IS ?"
-            parameters = (owner.tenant_id, owner.user_id, owner.project_id)
+            query += " WHERE user_id = ? AND agent_id = ?"
+            parameters = (owner.user_id, owner.agent_id)
         query += " ORDER BY created_at, delivery_id"
         with self._connect() as connection:
             rows = connection.execute(query, parameters).fetchall()
@@ -754,13 +745,12 @@ class SQLiteProactiveWakeStore:
                 """
                 SELECT run_json
                 FROM wake_runs
-                WHERE tenant_id IS ?
-                  AND user_id = ?
-                  AND project_id IS ?
+                WHERE user_id = ?
+                  AND agent_id = ?
                 ORDER BY created_at DESC, run_id DESC
                 LIMIT ?
                 """,
-                (owner.tenant_id, owner.user_id, owner.project_id, max(0, limit)),
+                (owner.user_id, owner.agent_id, max(0, limit)),
             ).fetchall()
         return [WakeRun.model_validate_json(str(row["run_json"])) for row in rows]
 
@@ -799,7 +789,12 @@ class SQLiteProactiveWakeStore:
                     """,
                     (_SCHEMA_VERSION,),
                 )
-            elif int(row["version"]) == 1:
+            elif int(row["version"]) in {1, 2}:
+                legacy_version = int(row["version"])
+                _migrate_owner_table(connection, "wake_rules")
+                _migrate_owner_table(connection, "wake_runs")
+                if legacy_version == 2:
+                    _migrate_owner_table(connection, "notification_outbox")
                 for statement in _SCHEMA_V2_STATEMENTS:
                     connection.execute(statement)
                 connection.execute(
@@ -818,15 +813,39 @@ class SQLiteProactiveWakeStore:
             raise
 
 
+def _migrate_owner_table(connection: sqlite3.Connection, table: str) -> None:
+    """Upgrade the retired tenant/project owner columns without dropping rows."""
+
+    columns = {
+        str(row["name"])
+        for row in connection.execute(f"PRAGMA table_info({table})").fetchall()
+    }
+    if "tenant_id" not in columns:
+        return
+    if table == "wake_rules":
+        connection.execute("DROP INDEX IF EXISTS idx_wake_rules_owner")
+    connection.execute(f"ALTER TABLE {table} RENAME COLUMN tenant_id TO agent_id")
+    connection.execute(
+        f"UPDATE {table} SET agent_id = ?",
+        (DEFAULT_AGENT_ID,),
+    )
+    if "project_id" in columns:
+        connection.execute(f"ALTER TABLE {table} DROP COLUMN project_id")
+    if table == "wake_rules":
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_wake_rules_owner "
+            "ON wake_rules (user_id, agent_id, enabled)"
+        )
+
+
 def _run_values(run: WakeRun) -> tuple[object, ...]:
     owner = run.owner
     persisted_run = _safe_run(run)
     return (
         run.run_id,
         run.rule_id,
-        owner.tenant_id,
         owner.user_id,
-        owner.project_id,
+        owner.agent_id,
         run.status,
         persisted_run.model_dump_json(),
         _datetime_text(run.created_at),
@@ -1132,7 +1151,7 @@ def _later_datetime(first: datetime | None, second: datetime | None) -> datetime
 
 def _dedup_key(owner: WakeOwner, rule_id: str, event_or_signal_id: str) -> str:
     payload = json.dumps(
-        [owner.tenant_id, owner.user_id, owner.project_id, rule_id, event_or_signal_id],
+        [owner.user_id, owner.agent_id, rule_id, event_or_signal_id],
         ensure_ascii=False,
         separators=(",", ":"),
     )

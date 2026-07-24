@@ -131,6 +131,7 @@ class AgentGraphRealtimeBackend:
                 stream = self._assistant_request_stream(
                     user_request,
                     cancel_token=cancel_token,
+                    run_id=request.run_id,
                 )
                 async for agent_event in stream:
                     await forwarder.forward_agent_event(agent_event)
@@ -142,8 +143,8 @@ class AgentGraphRealtimeBackend:
             await forwarder.drain()
 
             state = artifacts.state
-            result_run_id = request.run_id or state.run_id
-            result_metadata = {"assistant_run_id": state.run_id}
+            result_run_id = state.run_id
+            result_metadata: dict[str, Any] = {}
             _append_realtime_backend_finished_event(
                 artifacts=artifacts,
                 request=request,
@@ -242,6 +243,7 @@ class AgentGraphRealtimeBackend:
         request: UserRequest,
         *,
         cancel_token: RealtimeCancelToken | None = None,
+        run_id: str | None = None,
     ) -> AgentRunStream[Any]:
         if self._run_request_stream is not None:
             return self._run_request_stream(
@@ -249,6 +251,7 @@ class AgentGraphRealtimeBackend:
                 load_env=self._load_env,
                 enable_conversation_history=self._enable_conversation_history,
                 cancel_token=cancel_token,
+                run_id=run_id,
             )
         if self._run_request is not None:
             return _sync_run_request_stream(
@@ -257,12 +260,14 @@ class AgentGraphRealtimeBackend:
                 load_env=self._load_env,
                 enable_conversation_history=self._enable_conversation_history,
                 cancel_token=cancel_token,
+                run_id=run_id,
             )
         return run_assistant_request_stream(
             request,
             load_env=self._load_env,
             enable_conversation_history=self._enable_conversation_history,
             cancel_token=cancel_token,
+            run_id=run_id,
         )
 
 
@@ -289,9 +294,7 @@ def _append_realtime_backend_finished_event(
         status="succeeded" if state.status not in {"failed", "cancelled"} else state.status,
         latency_ms=backend_latency_ms,
         attributes={
-            "gateway_run_id": request.run_id,
-            "assistant_run_id": state.run_id,
-            "result_run_id": result_run_id,
+            "run_id": result_run_id,
             "runtime_call_latency_ms": runtime_call_latency_ms,
             "user_visible_event_count": progress_summary.get("user_visible_event_count"),
             "sla_fallback_emitted": progress_summary.get("sla_fallback_emitted"),
@@ -492,6 +495,7 @@ def _sync_run_request_stream(
     load_env: bool,
     enable_conversation_history: bool,
     cancel_token: RealtimeCancelToken | None,
+    run_id: str | None = None,
 ) -> AgentRunStream[Any]:
     loop = asyncio.get_running_loop()
     stream: AgentRunStream[Any] = AgentRunStream(loop=loop)
@@ -506,6 +510,7 @@ def _sync_run_request_stream(
                 load_env=load_env,
                 enable_conversation_history=enable_conversation_history,
                 cancel_token=cancel_token,
+                run_id=run_id,
             )
         except BaseException as exc:
             stream.set_exception(exc)

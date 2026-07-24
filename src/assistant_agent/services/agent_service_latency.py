@@ -56,8 +56,7 @@ class AgentServiceTurnTiming:
     stream_chunk_count: int = 0
     first_stream_chunk_ns: int | None = None
     turn_id: str | None = None
-    gateway_run_id: str | None = None
-    assistant_run_id: str | None = None
+    run_id: str | None = None
     trace_id: str | None = None
     user_id: str | None = None
     session_id: str | None = None
@@ -89,13 +88,11 @@ class AgentServiceTurnTiming:
         self,
         *,
         turn_id: str | None,
-        gateway_run_id: str | None,
-        assistant_run_id: str | None,
+        run_id: str | None,
         trace_id: str | None,
     ) -> None:
         self.turn_id = turn_id
-        self.gateway_run_id = gateway_run_id
-        self.assistant_run_id = assistant_run_id
+        self.run_id = run_id
         self.trace_id = trace_id
 
     def mark_failure(
@@ -150,7 +147,7 @@ class VideoLatencyContext(BaseModel):
 class TurnLatencySummary(BaseModel):
     """Safe terminal latency view for one media-service chat turn."""
 
-    schema_version: Literal["agent_service_turn_latency_v1"] = "agent_service_turn_latency_v1"
+    schema_version: Literal["agent_service_turn_latency_v2"] = "agent_service_turn_latency_v2"
     status: str
     delivery_id: str
     session_turn: int
@@ -158,8 +155,7 @@ class TurnLatencySummary(BaseModel):
     client_type: str = "media_agent"
     client_name: str | None = None
     turn_id: str | None = None
-    gateway_run_id: str | None = None
-    assistant_run_id: str | None = None
+    run_id: str | None = None
     trace_id: str | None = None
     runtime_status: str = "unknown"
     failure_code: str | None = None
@@ -245,8 +241,7 @@ def analyze_agent_service_turn(
         client_type=timing.client_type or "media_agent",
         client_name=timing.client_name,
         turn_id=timing.turn_id,
-        gateway_run_id=timing.gateway_run_id,
-        assistant_run_id=timing.assistant_run_id,
+        run_id=timing.run_id,
         trace_id=timing.trace_id,
         runtime_status=runtime_status,
         failure_code=timing.failure_code,
@@ -283,14 +278,14 @@ def append_turn_latency_trace(
 ) -> bool:
     """Append the safe terminal summary when Assistant correlation exists."""
 
-    if trace_store is None or not timing.trace_id or not timing.assistant_run_id:
+    if trace_store is None or not timing.trace_id or not timing.run_id:
         return False
     attributes = {
         "delivery_id": timing.delivery_id,
         "session_turn": timing.session_turn,
         "chat_index_digest": timing.chat_index_digest,
         "turn_id": timing.turn_id,
-        "gateway_run_id": timing.gateway_run_id,
+        "run_id": timing.run_id,
         "client_type": timing.client_type or "media_agent",
         "runtime_status": summary.runtime_status,
     }
@@ -300,7 +295,7 @@ def append_turn_latency_trace(
         trace_store.append(
             TraceEvent(
                 trace_id=timing.trace_id,
-                run_id=timing.assistant_run_id,
+                run_id=timing.run_id,
                 user_id=timing.user_id,
                 session_id=timing.session_id,
                 node_name="agent_service",
@@ -331,12 +326,11 @@ def report_turn_latency(summary: TurnLatencySummary, *, logger: logging.Logger) 
 
     try:
         logger.info(
-            "turn_latency status=%s trace=%s gateway_run=%s assistant_run=%s "
+            "turn_latency status=%s trace=%s run=%s "
             "delivery=%s session_turn=%s client=%s total=%s bottleneck=%s bottleneck_ms=%s share=%s",
             summary.status,
             summary.trace_id or "none",
-            summary.gateway_run_id or "none",
-            summary.assistant_run_id or "none",
+            summary.run_id or "none",
             summary.delivery_id,
             summary.session_turn,
             summary.client_type,

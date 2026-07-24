@@ -173,8 +173,14 @@ def create_default_agent_router(
     """Create the default offline/local router with one controller and one worker."""
 
     resolved_config = resolve_runtime_config(config=config, load_env=load_env)
-    default_runtime = AgentGraphRuntime(config=resolved_config)
-    worker_runtime = AgentGraphRuntime(config=resolved_config)
+    default_runtime = AgentGraphRuntime(
+        config=resolved_config,
+        agent_id=DEFAULT_AGENT_ID,
+    )
+    worker_runtime = AgentGraphRuntime(
+        config=resolved_config,
+        agent_id=worker_agent_id,
+    )
     instances = [
         default_agent_instance(can_delegate=False, allowed_targets=[]),
         AgentInstance(

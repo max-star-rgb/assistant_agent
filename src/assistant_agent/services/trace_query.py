@@ -183,7 +183,8 @@ def _latest_turn_latency(events: list[TraceEvent]) -> dict[str, Any] | None:
         summary = event.output_summary.get("turn_latency")
         if (
             isinstance(summary, dict)
-            and summary.get("schema_version") == "agent_service_turn_latency_v1"
+            and summary.get("schema_version")
+            in {"agent_service_turn_latency_v1", "agent_service_turn_latency_v2"}
         ):
             return dict(summary)
     return None

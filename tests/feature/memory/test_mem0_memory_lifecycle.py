@@ -16,6 +16,7 @@ def _identity() -> Mem0Identity:
     return Mem0Identity(
         user_id="usr_" + "1" * 32,
         agent_id="agt_" + "2" * 32,
+        run_id="run_" + "3" * 32,
     )
 
 
@@ -62,6 +63,7 @@ def test_turn_capture_delegates_extraction_to_one_native_mem0_add() -> None:
     assert "infer" not in request.body
     assert request.body["user_id"] == _identity().user_id
     assert request.body["agent_id"] == _identity().agent_id
+    assert request.body["run_id"] == _identity().run_id
 
 
 def test_session_recall_uses_native_get_all_with_identity_filters() -> None:
