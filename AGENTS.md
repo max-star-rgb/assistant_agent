@@ -62,13 +62,6 @@ operator 确认开关显式启用。
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python
 ```
 
-常用验证：
-
-```bash
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/check_env.py
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q
-```
-
 测试与 eval 的职责边界见第 8 节；具体命令和运行约束以 `tests/README.md`、
 `evals/README.md`、`scripts/README.md` 或对应 `docs/*.md` 为准。历史 runbook
 只有用户点名时才读取。只有在需要 conda 激活环境变量时才使用
