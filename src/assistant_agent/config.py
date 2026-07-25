@@ -102,6 +102,7 @@ class ProviderConfig:
     editable_context_enabled: bool = False
     editable_context_root: str = ".local/context"
     editable_context_user_id: str | None = None
+    local_file_access_root: str = ".data/files"
     chat_provider: ChatProviderName = "mock"
     chat_api_key: str | None = None
     chat_base_url: str | None = None
@@ -337,6 +338,9 @@ class ProviderConfig:
             ),
             editable_context_user_id=(
                 source.get("MULTIMODAL_AGENT_EDITABLE_CONTEXT_USER_ID") or None
+            ),
+            local_file_access_root=(
+                source.get("MULTIMODAL_AGENT_FILE_ACCESS_ROOT") or ".data/files"
             ),
             chat_provider=chat_provider,
             chat_api_key=chat_settings.api_key,

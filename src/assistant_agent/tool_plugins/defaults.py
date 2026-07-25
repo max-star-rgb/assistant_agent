@@ -3,6 +3,9 @@
 from assistant_agent.tool_plugins.contracts import ToolPlugin
 from assistant_agent.tool_plugins.builtin.durable_task.plugin import DurableTaskToolPlugin
 from assistant_agent.tool_plugins.builtin.image_generation.plugin import ImageGenerationToolPlugin
+from assistant_agent.tool_plugins.builtin.local_file_access.plugin import (
+    LocalFileAccessPlugin,
+)
 from assistant_agent.tool_plugins.builtin.personal_assistant_mcp.plugin import (
     PersonalAssistantMCPToolPlugin,
 )
@@ -26,6 +29,7 @@ def default_tool_plugins() -> tuple[ToolPlugin, ...]:
     """Return the explicit, ordered set of trusted built-in capability plugins."""
 
     return (
+        LocalFileAccessPlugin(),
         ToolDiscoveryPlugin(),
         PythonExecutionPlugin(),
         VisionUnderstandingPlugin(),

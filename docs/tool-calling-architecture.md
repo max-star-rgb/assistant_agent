@@ -172,6 +172,12 @@ MCP mapping 逐个注册，未映射的能力不进入 Registry。
 直接构造 Tavily Search/Extract adapter；配置不完整则两个 Tool 都不注册。`http` 仍保留为部署方显式
 提供通用 HTTP backend 的兼容 Provider，两种真实 Provider 都不得互相静默 fallback。
 
+本地文本文件通过内置 `local_file_access` Plugin 的 `file_read` 工具读取。该工具只接受相对于
+`MULTIMODAL_AGENT_FILE_ACCESS_ROOT` 的白名单文本文件路径，默认根目录为 `.data/files`；绝对路径、
+隐藏路径、目录穿越、越界 symlink、非普通文件、超限文件和非 UTF-8 内容均拒绝。单次读取上限由
+runtime constant binding 注入，长文件通过结果中的 `next_cursor` 分页；工具只返回受控文本，
+内容理解和总结仍由主 assistant loop 完成。
+
 进程内 Tool 插件采用 L2 启动时可插拔协议。每个插件声明
 `ToolPluginDescriptor(plugin_id, plugin_version, api_version="tool_plugin_v1")`，并通过
 `build_tools(context)` 构造 Tool。Plugin 是独立的启动期装配机制，不是 Tool 契约的子类型，因此插件
