@@ -346,6 +346,10 @@ def test_experiment_wires_task_without_project_evaluators() -> None:
         == "langfuse_native_evaluators"
     )
     assert client.dataset.run_kwargs["metadata"]["evaluation_methods"] == ["code"]
+    assert client.dataset.run_kwargs["metadata"]["deterministic_score_names"] == [
+        "agent.runtime_trace_pass",
+        "agent.tool_mechanical_pass",
+    ]
     assert client.dataset.run_kwargs["metadata"]["semantic_score_names"] == []
 
 
@@ -380,7 +384,8 @@ def test_real_experiment_metadata_is_explicit_without_running_provider() -> None
         "llm_as_a_judge",
     ]
     assert client.dataset.run_kwargs["metadata"]["semantic_score_names"] == [
-        "agent.answer_helpfulness"
+        "agent.tool_semantic_pass",
+        "agent.answer_semantic_pass",
     ]
     assert "真实 Chat Provider" in client.dataset.run_kwargs["description"]
     assert (
@@ -416,6 +421,7 @@ def test_real_system_experiment_metadata_is_explicit_without_running_provider() 
         "llm_as_a_judge",
     ]
     assert client.dataset.run_kwargs["metadata"]["semantic_score_names"] == [
-        "agent.task_quality",
+        "agent.tool_semantic_pass",
+        "agent.answer_semantic_pass",
     ]
     assert "多工具自主执行" in client.dataset.run_kwargs["description"]

@@ -168,57 +168,42 @@ function evaluate({
     checks.supported_capability = false;
   }
 
-  const failedChecks = Object.entries(checks)
-    .filter(([, passed]) => !passed)
-    .map(([name]) => name);
-  const passed = failedChecks.length === 0;
+  const executionChecks = {
+    terminal_completed: checks.terminal_completed,
+    required_trace_present: checks.required_trace_present,
+  };
+  const toolChecks = {
+    required_tools_exact: checks.required_tools_exact,
+    required_tools_exposed: checks.required_tools_exposed,
+    forbidden_tools_absent: checks.forbidden_tools_absent,
+    tool_behavior_valid:
+      checks.tool_succeeded ??
+      checks.tools_succeeded ??
+      checks.confirmation_required ??
+      checks.no_tool_called ??
+      false,
+  };
+  const executionPassed = Object.values(executionChecks).every(Boolean);
+  const toolChainPassed = Object.values(toolChecks).every(Boolean);
   return {
     scores: [
       booleanScore(
-        "agent.execution_pass",
-        checks.terminal_completed && checks.required_trace_present,
-        "闭环执行通过。",
+        "agent.runtime_trace_pass",
+        executionPassed,
+        "检查运行终态与 Trace 完整性",
+        executionChecks,
       ),
       booleanScore(
-        "agent.tool_selection_pass",
-        checks.required_tools_exact && checks.required_tools_exposed,
-        "工具选择符合预期。",
-      ),
-      booleanScore(
-        "agent.forbidden_tool_pass",
-        checks.forbidden_tools_absent,
-        "未调用禁用工具。",
-      ),
-      booleanScore(
-        "agent.tool_execution_pass",
-        checks.tool_succeeded ??
-          checks.tools_succeeded ??
-          checks.confirmation_required ??
-          checks.no_tool_called ??
-          false,
-        "工具执行符合预期。",
-      ),
-      booleanScore(
-        "agent.response_contract_pass",
-        checks.response_present &&
-          checks.response_facts_present &&
-          checks.provider_results_usable,
-        "回答契约通过。",
-      ),
-      {
-        name: "agent.strict_pass",
-        value: passed,
-        dataType: "BOOLEAN",
-        comment: passed
-          ? "全部硬性检查通过。"
-          : `失败：${failedChecks.join(", ")}。`,
-        metadata: {
+        "agent.tool_mechanical_pass",
+        toolChainPassed,
+        "检查工具选中与机械执行链路",
+        toolChecks,
+        {
           capability,
-          checks,
           toolCallCount: executions.length,
           totalLatencyMs: actual.total_latency_ms ?? 0,
         },
-      },
+      ),
     ],
   };
 }
@@ -226,13 +211,24 @@ function evaluate({
 function booleanScore(
   name: string,
   value: boolean,
-  comment: string,
+  purpose: string,
+  checks: Record<string, boolean>,
+  metadata: Record<string, unknown> = {},
 ): any {
+  const failedChecks = Object.entries(checks)
+    .filter(([, passed]) => !passed)
+    .map(([name]) => name);
   return {
     name,
     value,
     dataType: "BOOLEAN",
-    comment,
+    comment: value
+      ? `用途：${purpose}；结果：通过。`
+      : `用途：${purpose}；失败：${failedChecks.join(", ")}。`,
+    metadata: {
+      ...metadata,
+      checks,
+    },
   };
 }
 

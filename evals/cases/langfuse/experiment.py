@@ -60,15 +60,15 @@ REAL_SYSTEM_DATASET_SEED = Path(
     "evals/cases/langfuse/agent_real_system_v1.seed.json"
 )
 DETERMINISTIC_SCORE_NAMES = (
-    "agent.execution_pass",
-    "agent.tool_selection_pass",
-    "agent.forbidden_tool_pass",
-    "agent.tool_execution_pass",
-    "agent.response_contract_pass",
-    "agent.strict_pass",
+    "agent.runtime_trace_pass",
+    "agent.tool_mechanical_pass",
 )
-REAL_READONLY_SEMANTIC_SCORE_NAMES = ("agent.answer_helpfulness",)
-REAL_SYSTEM_SEMANTIC_SCORE_NAMES = ("agent.task_quality",)
+REAL_AGENT_SEMANTIC_SCORE_NAMES = (
+    "agent.tool_semantic_pass",
+    "agent.answer_semantic_pass",
+)
+REAL_READONLY_SEMANTIC_SCORE_NAMES = REAL_AGENT_SEMANTIC_SCORE_NAMES
+REAL_SYSTEM_SEMANTIC_SCORE_NAMES = REAL_AGENT_SEMANTIC_SCORE_NAMES
 AGENT_EVALUATION_OBJECTIVE = (
     "验证 Agent 是否在受治理的 Runtime 中正确完成、克制或只读执行任务，并由 Tool Trace、"
     "Policy、环境状态变化和最终回答共同证明结果。当前 scripted mock 实验用于验证闭环评测"

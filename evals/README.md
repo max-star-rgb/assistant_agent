@@ -120,33 +120,23 @@ runner。真实 profile 强制关闭 Mem0、持久化会话、checkpointer 和 d
 `--allow-real-tools`，避免把 scripted 日历写入 Dataset 误用于真实环境。
 
 `agent_strict_pass.ts` 同时支持 scripted baseline 和 real-readonly Dataset，并为每个 Dataset item
-产生 Langfuse 原生 `agent.execution_pass`、`agent.tool_selection_pass`、
-`agent.forbidden_tool_pass`、`agent.tool_execution_pass`、
-`agent.response_contract_pass` 和 `agent.strict_pass`。动态天气建议的语义质量不伪装成确定性
-grounding 分数；`response_contract_pass` 会拒绝 Provider
-`error/refusal/truncated/empty` 结果，避免把 Runtime 的降级提示当作有效回答。后续语义质量应由
-Langfuse 原生 LLM-as-a-Judge Evaluator 单独评估。
-
-真实只读 Dataset 额外使用从 Langfuse managed `Helpfulness` 克隆的项目级
-`assistant-agent-answer-helpfulness-zh` Evaluator，生成数值 Score
-`agent.answer_helpfulness`。它只判断最终文本是否清晰、相关且有帮助，不替代六个确定性闭环
-Score，也不证明回答中的动态天气事实绝对正确。裁判理由约束为中文且不超过 20 个汉字。变量映射为：
-
-```text
-query      <- Experiment Input，JSONPath $.user_request.text
-generation <- Experiment Output，JSONPath $.response.message
-```
-
-Evaluator target 必须选择 `Experiments / Experiment Runner SDK`，filter 只匹配
-`assistant-agent-real-readonly-v1`，sampling 为 `100%`。因此真实 Dataset 每个新案例最终应有
-六个确定性 Score 和一个语义 Score。历史 Experiment 不会因为新建规则自动补分。
+产生两个 Langfuse 原生确定性 Score：`agent.runtime_trace_pass` 检查运行终态和 Trace 完整性，
+`agent.tool_mechanical_pass` 合并检查工具选中、禁用约束、工具暴露和执行状态。底层细分检查保留在
+Score metadata 中供失败诊断，不再各自占据 UI。最终回答质量由 Langfuse 原生
+LLM-as-a-Judge Evaluator 单独评估。
 
 更完整的 `assistant-agent-real-system-v1` Dataset 覆盖无工具克制、必要澄清、天气、日历读取、
 本地文件、购物、网页搜索/抓取、图片理解、图片生成、多工具组合和日历写入确认边界。它使用项目级
-`assistant-agent-task-quality-zh` Evaluator 生成 `agent.task_quality`：裁判同时消费用户请求、
-案例验收标准、最终回答和实际 Tool Trace，检查任务是否真正完成、是否有工具依据以及是否违反约束。
-该 criteria-aware 裁判取代只看最终文本的通用 Helpfulness，避免把成功生成的 artifact 误判为未生成，
-或忽略等待确认与已执行之间的差异。裁判理由限制为 20 个汉字以内的中文。
+`assistant-agent-tool-semantic-pass-zh` 和 `assistant-agent-answer-semantic-pass-zh` 两个裁判：
+`agent.tool_semantic_pass` 判断工具选择、参数和结果在用户语境中是否正确，
+`agent.answer_semantic_pass` 判断最终回答是否忠于工具证据并满足验收标准。这样可以区分“工具机械执行
+成功但语义错误”和“工具语义正确但最终回答错误”。裁判理由不限制为固定字数，应说明判定、关键
+Trace 证据、失败原因和可操作的改进方向，但不复述无关 Trace 内容。
+
+这两个 LLM-as-a-Judge 规则同时匹配 `assistant-agent-real-readonly-v1` 和
+`assistant-agent-real-system-v1`，sampling 为 `100%`。因此所有新的真实 Agent Experiment
+统一产生四个分层 Score；旧的 `agent.answer_helpfulness` 规则已停用并归档。历史 Experiment
+不会因规则变更自动补分或改分。
 
 运行完整真实系统 Dataset：
 
@@ -161,11 +151,12 @@ Evaluator target 必须选择 `Experiments / Experiment Runner SDK`，filter 只
 该 profile 使用当前 Registry 中实际配置成功的能力，但不自动执行未确认写操作，也不写入真实 Memory。
 日历创建案例只验证 confirmation guard，不会制造无法清理的真实事件。
 
-完整运行应满足：Dataset item 数量与 seed 一致，并且每个 item 都有六个确定性 Score。真实 Runtime
+完整运行应满足：Dataset item 数量与 seed 一致，并且每个 item 都有四个分层 Score。真实 Runtime
 抛出的网络或协议异常会被评测边界转换为 `terminal_status=failed` 和
 `provider_result_kinds=["error"]`，从而保留失败样本并让 Code Evaluator 正常评分。评估 Agent
-是否真正完成任务时，应同时检查 `agent.strict_pass=true` 和 `agent.task_quality>=0.75`；
-前者只证明硬性闭环，不能替代语义质量。
+是否真正完成任务时，四个 Score 应同时为 `true`：
+`agent.runtime_trace_pass`、`agent.tool_mechanical_pass`、
+`agent.tool_semantic_pass` 和 `agent.answer_semantic_pass`。
 
 本机自托管实例当前使用独立的 `deepseek-judge` LLM Connection 作为默认裁判模型：
 
