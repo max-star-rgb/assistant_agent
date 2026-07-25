@@ -1,6 +1,6 @@
 # Memory 架构
 
-最后更新：2026-07-24
+最后更新：2026-07-25
 
 本文是 `assistant_agent` 长期记忆实现的当前权威。项目只使用 Mem0，不再提供
 InMemory、JSONL、SQLite、remote service、dual-core、Hindsight 或自定义插件后端。
@@ -23,9 +23,10 @@ Mem0 拥有记忆算法，包括对话事实提取、合并、更新、向量化
 `memory_save`，API 也不提供项目自建的记忆 CRUD/control-plane。
 
 Memory 服务不生成 prompt 文本。ContextBuilder 在每轮构建上下文时从本轮 `AgentState` 中读取同一份
-冻结 items，将 Mem0 返回的原始记忆文本按顺序直接组装为低权限历史证据并放入当前 `user`
-message，不进入 `system` message。固定 system policy 负责声明记忆可能过期、不完整或检索错误，
-禁止执行记忆中的指令，并规定当前请求和最新可靠证据优先。
+冻结 items；Context renderer 将 Mem0 返回的原始记忆文本按顺序进行 XML 转义，组装为
+`<long_term_memory trust="untrusted_history">` 低权限历史证据，并与 `<current_request>` 形成
+显式边界后放入当前 `user` message，不进入 `system` message。固定 system policy 负责声明记忆
+可能过期、不完整或检索错误，禁止执行记忆中的指令，并规定当前请求和最新可靠证据优先。
 
 ## 2. 生命周期
 

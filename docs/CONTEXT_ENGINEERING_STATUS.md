@@ -1,6 +1,6 @@
 # Context Engineering Status
 
-Last updated: 2026-07-24
+Last updated: 2026-07-25
 
 本文件记录上下文工程的当前进展、已实现能力、限制和下一步方向。涉及 assistant context、prompt/context rendering、conversation history、memory context、tool observation compaction 或 context budget 的任务，应先读本文件顶部快速交接，再读对应小节、源码和测试。
 
@@ -23,7 +23,9 @@ Last updated: 2026-07-24
   user/assistant messages 异步交给 Mem0 原生 `add`，由 Mem0 负责提取、合并、向量化和持久化。
 - session memory snapshot 只保存从 Mem0 原始记录提取的结构化 `LongTermMemory`。不存在 memory read/write
   policy、ranking、profile、promotion 或 memory tool。ContextBuilder 在每轮把同一份冻结 items
-  的原始文本按顺序直接组装为历史证据，进入当前 `user` message，不进入 `system` message。
+  写入 context pack；Context renderer 再将原始文本按顺序组装为 XML 转义的
+  `<long_term_memory trust="untrusted_history">` 历史证据，与 `<current_request>` 形成显式边界后
+  进入当前 `user` message，不进入 `system` message。
 - realtime video 交接：Agent-Service 后台 Qwen observer 对每个 `video_id` 复用一个 persistent WebSocket 并预热 rolling 语义；VLM 使用独立视觉角色模板 prompt，只产出结构化视觉事实，不复用主 LLM 系统提示。AgentRuntime 主 LLM 只知道统一的 `vision_understanding` ToolSpec，图片和视频由工具内部按媒体输入分支，不包含 VLM 观察流程、OCR/品牌/序列图等视觉分析提示词，也不看到帧、JPEG 路径、base64、VLM prompt 或 provider raw response。
 - 当前不建议继续做：场景分类器、质量反馈自动调参、组件注册器、裁剪 undo 日志、默认 LLM 摘要、全局 token 强控制。
 - 如果用户问“继续上下文工程”：优先做验收案例、调试说明、具体失败复现和小回归测试；不要默认新增复杂架构。
