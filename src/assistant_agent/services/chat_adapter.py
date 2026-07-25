@@ -21,7 +21,10 @@ from openai import (
 from pydantic import BaseModel, Field
 
 from assistant_agent.config import ProviderConfig
-from assistant_agent.schemas.assistant_decision import NativeToolCall, openai_tool_call_to_native_tool_call
+from assistant_agent.schemas.assistant_output import (
+    NativeToolCall,
+    openai_tool_call_to_native_tool_call,
+)
 from assistant_agent.schemas.llm_events import LLMEvent, LLMEventAccumulator, LLMProviderError, LLMToolCallDelta
 from assistant_agent.schemas.provider_specs import CHAT_PROVIDER_SPECS, ProviderCapabilities
 from assistant_agent.services.provider_errors import ProviderAdapterError, build_provider_error

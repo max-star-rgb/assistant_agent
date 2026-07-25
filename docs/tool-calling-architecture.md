@@ -311,7 +311,9 @@ media、profile、默认启用和显式 Tool/Skill 治理的 ToolSpec 都直接�
 安装的 Plugin、MCP allowlist 和入口 `allowed_tools` 控制。Context report 继续记录 Tool Schema 的实际
 字符和 token 占用，只有真实 Provider 失败、延迟或选择质量证据出现后才重新设计大目录方案。
 
-模型返回的 native `tool_calls` 会归一化为内部 `AssistantDecision`，然后进入统一执行链路。
+模型返回的 native `tool_calls` 会归一化为严格的内部 `AssistantToolCall`，然后进入统一执行链路。
+assistant turn 的内部输出只允许非空 `AssistantTextOutput` 或 `AssistantToolCall`；计划提交通过显式
+`task_plan_submit` 工具完成，不再扩展 assistant 输出协议。
 
 OpenAI-compatible Chat adapter 从 `ProviderConfig` 读取主调用超时；默认
 `MULTIMODAL_AGENT_CHAT_TIMEOUT_SECONDS=75`，应小于入口 turn 总预算。Qwen 混合思考模型默认由
@@ -325,7 +327,7 @@ payload。
 
 ```text
 native tool_calls
-    -> AssistantDecision
+    -> AssistantToolCall
     -> ActionValidator
     -> ToolExecutor
     -> ToolRegistry

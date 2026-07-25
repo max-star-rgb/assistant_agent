@@ -827,14 +827,14 @@ def current_stage(state: AgentState) -> str:
     last = steps[-1]
     if last.get("observation_tool"):
         return "observation_received"
-    decision_type = last.get("decision_type")
-    if decision_type == "tool_call":
+    output_type = last.get("output_type") or last.get("decision_type")
+    if output_type == "tool_call":
         return "tool_selected"
-    if decision_type == "ask_followup":
+    if output_type == "ask_followup":
         return "waiting_for_user"
-    if decision_type == "final_answer":
+    if output_type in {"text", "final_answer"}:
         return "final_answer"
-    return "assistant_decision"
+    return "assistant_output"
 
 
 def _cli_status(status: str) -> str:

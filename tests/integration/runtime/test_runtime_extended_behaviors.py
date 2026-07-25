@@ -391,14 +391,14 @@ def test_langfuse_mapping_exposes_conversation_and_tool_diagnostics() -> None:
         TraceEvent(
             **common,
             node_name="assistant",
-            event_type="assistant_decision",
-            canonical_event="react.decision",
+            event_type="assistant_output",
+            canonical_event="assistant.output",
             observation_type="event",
             observation_scope="iteration",
             status="tool_call",
             tool_name="weather",
-            attributes={"iteration": 1, "decision_type": "tool_call"},
-            output_summary={"decision_type": "tool_call", "reason": "需要查询实时天气。"},
+            attributes={"iteration": 1, "output_type": "tool_call"},
+            output_summary={"output_type": "tool_call", "reason": "需要查询实时天气。"},
         ),
         TraceEvent(
             **common,
@@ -463,10 +463,10 @@ def test_langfuse_mapping_exposes_conversation_and_tool_diagnostics() -> None:
 
     assert "北京今天天气怎么样？" in by_name["assistant.runtime"].attributes["langfuse.trace.input"]
     assert "北京今天晴。" in by_name["assistant.runtime"].attributes["langfuse.trace.output"]
-    assert '"decision_type":"tool_call"' in by_name["react.decision"].attributes[
+    assert '"output_type":"tool_call"' in by_name["assistant.output"].attributes[
         "langfuse.observation.output"
     ]
-    assert "gen_ai.tool.name" not in by_name["react.decision"].attributes
+    assert "gen_ai.tool.name" not in by_name["assistant.output"].attributes
     assert '"tool_name":"weather"' in by_name["tool.execute"].attributes[
         "langfuse.observation.input"
     ]
@@ -603,12 +603,12 @@ def test_langfuse_mapping_builds_runtime_iteration_hierarchy_and_exact_local_llm
         TraceEvent(
             **common,
             node_name="assistant",
-            event_type="assistant_decision",
-            canonical_event="react.decision",
+            event_type="assistant_output",
+            canonical_event="assistant.output",
             observation_type="event",
             observation_scope="iteration",
-            status="final_answer",
-            attributes={"iteration": 1, "decision_type": "final_answer"},
+            status="text",
+            attributes={"iteration": 1, "output_type": "text"},
             created_at=created_at + timedelta(milliseconds=32),
         ),
         TraceEvent(

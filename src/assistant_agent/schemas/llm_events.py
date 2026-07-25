@@ -8,7 +8,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from assistant_agent.schemas.assistant_decision import NativeToolCall
+from assistant_agent.schemas.assistant_output import NativeToolCall
 
 
 LLMEventType = Literal["token_delta", "reasoning_delta", "tool_call_delta", "completed", "error"]

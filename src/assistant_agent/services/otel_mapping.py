@@ -43,6 +43,7 @@ _ALLOWED_ATTRIBUTE_KEYS = frozenset(
         "client_type",
         "context_usage_ratio",
         "decision_type",
+        "output_type",
         "error_count",
         "failure_code",
         "first_text_latency_ms",
@@ -456,16 +457,27 @@ def _event_io_attributes(
     if event.latency_ms is not None:
         output_payload["latency_ms"] = event.latency_ms
 
-    if name == "react.decision":
+    if name in {"assistant.output", "react.decision"}:
         input_payload = {
             "iteration": event.attributes.get("iteration"),
             "plan_status": event.attributes.get("plan_status"),
         }
         output_payload = _selected_payload(
             {**event.output_summary, **event.attributes},
-            ("decision_type", "tool_name", "reason", "confidence", "step_id", "plan_status"),
+            (
+                "output_type",
+                "decision_type",
+                "tool_name",
+                "reason",
+                "confidence",
+                "step_id",
+                "plan_status",
+            ),
         )
-        output_payload.setdefault("decision_type", event.status or "unknown")
+        output_payload.setdefault(
+            "output_type" if name == "assistant.output" else "decision_type",
+            event.status or "unknown",
+        )
         if event.tool_name:
             output_payload["tool_name"] = event.tool_name
     elif name in {"tool.finished", "tool.failed"}:

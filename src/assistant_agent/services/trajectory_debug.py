@@ -26,6 +26,7 @@ _SAFE_ATTRIBUTE_KEYS = {
     "confirmation_state",
     "context_usage_ratio",
     "decision_type",
+    "output_type",
     "error_count",
     "run_id",
     "iteration",

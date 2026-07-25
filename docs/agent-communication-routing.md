@@ -38,7 +38,7 @@ The default path remains single-instance and unchanged:
 User / CLI / API / realtime entry
   -> FastAPI routes or local runner
   -> AgentGraphRuntime / assistant loop
-  -> AssistantDecision
+  -> AssistantTextOutput | AssistantToolCall
   -> ActionValidator
   -> ToolExecutor
   -> ToolRegistry

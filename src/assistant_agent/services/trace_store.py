@@ -20,6 +20,7 @@ TraceEventType = Literal[
     "node_finished",
     "tool_failed",
     "assistant_decision",
+    "assistant_output",
     "action_rejected",
     "tool_observation",
     "loop_guard_triggered",

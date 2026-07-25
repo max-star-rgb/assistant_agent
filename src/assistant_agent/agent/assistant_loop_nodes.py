@@ -20,12 +20,16 @@ from assistant_agent.agent.cancellation import AgentRunCancelled
 from assistant_agent.agent.intent import IntentDetector
 from assistant_agent.agent.llm_event_mapping import stream_delta_to_agent_event
 from assistant_agent.agent.loop_guard import LoopGuard, LoopGuardDecision
-from assistant_agent.agent.plan_validator import PlanValidationResult, PlanValidator
 from assistant_agent.agent.prompt_builder import build_direct_chat_request, build_text_capability_output
 from assistant_agent.agent.router import ToolRouter
 from assistant_agent.agent.state import AgentError, AgentState
 from assistant_agent.agent.tool_executor import ToolExecutor
-from assistant_agent.schemas.assistant_decision import AssistantDecision, native_tool_call_to_assistant_decision
+from assistant_agent.schemas.assistant_output import (
+    AssistantTextOutput,
+    AssistantToolCall,
+    AssistantTurnOutput,
+    native_tool_call_to_assistant_output,
+)
 from assistant_agent.schemas.capabilities import canonical_intent
 from assistant_agent.schemas.context import AssistantContextPack
 from assistant_agent.schemas.events import AgentEvent
@@ -63,8 +67,6 @@ from assistant_agent.services.trace_store import (
 )
 
 
-MAX_PLAN_STEPS = 8
-MAX_PLAN_REVISIONS = 2
 PROVIDER_CONTEXT_OVERFLOW_CODES = {
     "provider_context_overflow",
     "context_length_exceeded",
@@ -95,8 +97,8 @@ class AssistantLoopState(TypedDict):
     trace_id: NotRequired[str]
     trace_store: NotRequired[Any]
     event_sink: NotRequired[Any]
-    assistant_decision: NotRequired[AssistantDecision | None]
-    pending_tool_decisions: NotRequired[list[AssistantDecision]]
+    assistant_output: NotRequired[AssistantTurnOutput | None]
+    pending_tool_calls: NotRequired[list[AssistantToolCall]]
     assistant_iterations: NotRequired[int]
     tool_calls_used: NotRequired[int]
     tool_observations: NotRequired[list[dict[str, Any]]]
@@ -183,15 +185,14 @@ def assistant_node(graph_state: AssistantLoopState) -> AssistantLoopState:
     max_iterations = int(graph_state.get("max_tool_iterations", _get_max_tool_iterations()))
 
     if state.status == "completed" and state.response is not None:
-        decision = AssistantDecision(
-            type="final_answer",
-            message=state.response.message,
+        decision = AssistantTextOutput(
+            text=state.response.message,
             reason="Run already completed before the next assistant turn.",
         )
         _record_react_decision(graph_state, decision, iterations)
         return {
             **graph_state,
-            "assistant_decision": decision,
+            "assistant_output": decision,
             "assistant_iterations": iterations + 1,
         }
 
@@ -216,9 +217,12 @@ def assistant_node(graph_state: AssistantLoopState) -> AssistantLoopState:
         state=state,
     )
     decision = _apply_decision_guards(graph_state, decision, context)
-    pending_decisions = graph_state.get("pending_tool_decisions")
+    pending_decisions = graph_state.get("pending_tool_calls")
     if isinstance(pending_decisions, list) and pending_decisions:
-        pending_decisions[0] = decision
+        if isinstance(decision, AssistantToolCall):
+            pending_decisions[0] = decision
+        else:
+            graph_state["pending_tool_calls"] = []
     _record_react_decision(graph_state, decision, iterations, context=context)
     _apply_terminal_decision(graph_state, decision, context)
 
@@ -227,12 +231,12 @@ def assistant_node(graph_state: AssistantLoopState) -> AssistantLoopState:
 
 def _assistant_node_result(
     graph_state: AssistantLoopState,
-    decision: AssistantDecision,
+    decision: AssistantTurnOutput,
     iterations: int,
 ) -> AssistantLoopState:
     return {
         **graph_state,
-        "assistant_decision": decision,
+        "assistant_output": decision,
         "assistant_iterations": iterations + 1,
     }
 
@@ -319,7 +323,7 @@ def _decide_next_action(
     context: AssistantDecisionContext,
     chat_adapter: ChatAdapter,
     state: AgentState,
-) -> tuple[AssistantDecision, AssistantDecisionContext]:
+) -> tuple[AssistantTurnOutput, AssistantDecisionContext]:
     """Select the next assistant action without mutating response state."""
 
     if context.is_mock:
@@ -331,7 +335,7 @@ def _decide_with_mock_plan(
     graph_state: AssistantLoopState,
     context: AssistantDecisionContext,
     state: AgentState,
-) -> AssistantDecision:
+) -> AssistantTurnOutput:
     """Return deterministic offline decisions backed by the rule-generated plan."""
 
     decision = _mock_assistant_decision_from_plan(
@@ -349,15 +353,14 @@ def _decide_with_llm(
     state: AgentState,
     *,
     graph_state: AssistantLoopState,
-) -> tuple[AssistantDecision, AssistantDecisionContext]:
+) -> tuple[AssistantTurnOutput, AssistantDecisionContext]:
     """Ask the real chat adapter for the next ReAct action."""
 
     use_native_tools = _use_native_tool_calling(context, chat_adapter)
     if not use_native_tools:
         return (
-            AssistantDecision(
-                type="final_answer",
-                message="当前模型不支持原生工具调用，无法执行 agent runtime。",
+            AssistantTextOutput(
+                text="当前模型不支持原生工具调用，无法执行 agent runtime。",
                 reason="Provider-native tool calling is required; legacy JSON controller is disabled.",
                 safety_notes=["native_tool_calling_unsupported"],
             ),
@@ -401,7 +404,7 @@ def _decide_with_llm(
             state.request.metadata["tool_call_returned_after_budget_exhaustion"] = True
             return _max_iteration_final_answer(context.max_iterations), context
         pending_decisions = [
-            native_tool_call_to_assistant_decision(call)
+            native_tool_call_to_assistant_output(call)
             for call in result.tool_calls
         ]
         _record_native_tool_calls(
@@ -409,16 +412,15 @@ def _decide_with_llm(
             result,
             iteration=context.iterations,
         )
-        graph_state["pending_tool_decisions"] = pending_decisions
+        graph_state["pending_tool_calls"] = pending_decisions
         decision = pending_decisions[0]
     elif result.success:
-        graph_state["pending_tool_decisions"] = []
+        graph_state["pending_tool_calls"] = []
         decision = _native_final_decision(result)
-        if decision.message:
-            stream_buffer.flush_answer(decision.message)
+        stream_buffer.flush_answer(decision.text)
     else:
         stream_buffer.discard()
-        graph_state["pending_tool_decisions"] = []
+        graph_state["pending_tool_calls"] = []
         decision = _native_final_decision(result)
     return decision, context
 
@@ -698,9 +700,9 @@ def _runtime_route_for_chat_result(result: ChatResult) -> dict[str, Any]:
     selected_branch, runtime_action = {
         "error": ("provider_error", "fallback"),
         "tool_call": ("native_tool_calls", "tool_governance"),
-        "refusal": ("provider_refusal", "final_answer"),
+        "refusal": ("provider_refusal", "text"),
         "truncated": ("truncated_content", "fallback"),
-        "text": ("provider_content", "final_answer"),
+        "text": ("provider_content", "text"),
         "empty": ("empty_content", "fallback"),
     }[result_kind]
     return {
@@ -840,16 +842,15 @@ def _project_request_context(graph_state: AssistantLoopState, request: UserReque
         projector(request)
 
 
-def _provider_context_overflow_final_answer(result: ChatResult) -> AssistantDecision:
+def _provider_context_overflow_final_answer(result: ChatResult) -> AssistantTextOutput:
     message = "模型上下文超出限制，已尝试压缩后重试一次但仍失败。请缩短输入或拆分任务后再试。"
     reason = "Provider context overflow persisted after one compaction retry."
     error_message = next((sanitize_trace_value(error.message) for error in result.errors), "")
     notes = ["provider_context_overflow", "provider_context_overflow_retry_failed"]
     if error_message:
         notes.append("provider_error_sanitized")
-    return AssistantDecision(
-        type="final_answer",
-        message=message,
+    return AssistantTextOutput(
+        text=message,
         reason=reason,
         safety_notes=notes,
     )
@@ -868,53 +869,47 @@ def _chat_adapter_supports_native_tools(chat_adapter: ChatAdapter) -> bool:
     return bool(getattr(capabilities, "supports_native_tools", True))
 
 
-def _native_final_decision(result: ChatResult) -> AssistantDecision:
-    """Convert a native provider non-tool response into an internal terminal decision."""
+def _native_final_decision(result: ChatResult) -> AssistantTextOutput:
+    """Convert a native provider non-tool result into strict text output."""
 
     no_answer_code = next(
         (error.code for error in result.errors if error.code in MAIN_LLM_NO_ANSWER_MESSAGES),
         None,
     )
     if no_answer_code is not None:
-        return AssistantDecision(
-            type="final_answer",
-            message=MAIN_LLM_NO_ANSWER_MESSAGES[no_answer_code],
+        return AssistantTextOutput(
+            text=MAIN_LLM_NO_ANSWER_MESSAGES[no_answer_code],
             reason=f"Main LLM returned {no_answer_code} without usable content.",
             safety_notes=[no_answer_code],
         )
     if result.errors:
-        return AssistantDecision(
-            type="final_answer",
-            message="抱歉，刚才模型调用失败，请再试一次。",
+        return AssistantTextOutput(
+            text="抱歉，刚才模型调用失败，请再试一次。",
             reason="Main LLM returned an error without a usable terminal response.",
             safety_notes=["provider_error"],
         )
     if result.refusal:
-        return AssistantDecision(
-            type="final_answer",
-            message=result.refusal,
+        return AssistantTextOutput(
+            text=result.refusal,
             reason=_native_finish_reason(result, fallback="Provider returned a refusal instead of a tool call."),
             safety_notes=["provider_refusal"],
         )
     if result.finish_reason == "length":
-        return AssistantDecision(
-            type="final_answer",
-            message="抱歉，刚才模型的回答被截断了，请缩短问题或让我分段回答。",
+        return AssistantTextOutput(
+            text="抱歉，刚才模型的回答被截断了，请缩短问题或让我分段回答。",
             reason="Provider response was truncated before completion. finish_reason=length.",
             safety_notes=["provider_response_truncated"],
         )
     if result.response_text.strip():
-        return AssistantDecision(
-            type="final_answer",
-            message=result.response_text.strip(),
+        return AssistantTextOutput(
+            text=result.response_text.strip(),
             reason=_native_finish_reason(
                 result,
                 fallback="Provider finished without requesting a tool; content is the final answer.",
             ),
         )
-    return AssistantDecision(
-        type="final_answer",
-        message="模型没有返回可用回答。",
+    return AssistantTextOutput(
+        text="模型没有返回可用回答。",
         reason=_native_finish_reason(result, fallback="Provider finished without content or tool calls."),
         safety_notes=["empty_native_final_answer"],
     )
@@ -996,9 +991,9 @@ def _native_tool_calls_from_metadata(state: AgentState) -> list[dict[str, Any]]:
 
 def _apply_decision_guards(
     graph_state: AssistantLoopState,
-    decision: AssistantDecision,
+    decision: AssistantTurnOutput,
     context: AssistantDecisionContext,
-) -> AssistantDecision:
+) -> AssistantTurnOutput:
     """Apply loop/safety guards after a policy proposes an assistant decision."""
 
     state = graph_state["state"]
@@ -1008,8 +1003,7 @@ def _apply_decision_guards(
             _record_loop_guard(graph_state, guard)
             return _guard_final_answer(guard)
     if (
-        decision.type == "tool_call"
-        and decision.tool_name
+        isinstance(decision, AssistantToolCall)
         and not _is_plan_mode_active(state)
         and LoopGuard(state.request.metadata).terminal_tool_already_succeeded(decision.tool_name)
     ):
@@ -1019,15 +1013,13 @@ def _apply_decision_guards(
             f"{decision.tool_name} already succeeded in this run; answering with the existing result instead of calling it again.",
         )
         _record_loop_guard(graph_state, guard)
-        return AssistantDecision(
-            type="final_answer",
-            message=None,
+        return AssistantTextOutput(
+            text="工具已成功执行，我会基于已有结果回答。",
             reason=guard.message,
             safety_notes=[guard.code],
         )
     if (
-        decision.type == "tool_call"
-        and decision.tool_name
+        isinstance(decision, AssistantToolCall)
         and not _is_plan_mode_active(state)
         and LoopGuard(state.request.metadata).failed_call_already_seen(
             tool_name=decision.tool_name,
@@ -1051,27 +1043,27 @@ def _apply_decision_guards(
 
 def _apply_terminal_decision(
     graph_state: AssistantLoopState,
-    decision: AssistantDecision,
+    decision: AssistantTurnOutput,
     context: AssistantDecisionContext,
 ) -> None:
-    """Persist response state when the assistant decides to stop the loop."""
+    """Persist response state when the assistant returns text."""
 
-    if decision.type not in ("final_answer", "ask_followup"):
+    if not isinstance(decision, AssistantTextOutput):
         return
 
     state = graph_state["state"]
     if _is_plan_mode_active(state):
         _mark_plan_mode_status(state, "completed")
-    if decision.type == "ask_followup" or not state.tool_results:
+    if not state.tool_results:
         if _is_direct_chat_state(state):
             _set_direct_chat_response(graph_state, decision, context.iterations, context.tool_observations)
             return
         state.set_response(
             AgentResponse(
-                message=decision.message or "已处理请求。",
+                message=decision.text,
                 data={
                     "intent": state.intent.intent if state.intent else None,
-                    "assistant_decision": decision.type,
+                    "assistant_output": decision.type,
                     "reason": decision.reason,
                     "iterations": context.iterations,
                     "tool_observations": len(context.tool_observations),
@@ -1080,7 +1072,6 @@ def _apply_terminal_decision(
                     "plan_revision_count": state.plan_revision_count,
                     **_fallback_response_data(decision),
                 },
-                followup_question=decision.message if decision.type == "ask_followup" else None,
             )
         )
         state.status = "completed"
@@ -1093,7 +1084,7 @@ def _apply_terminal_decision(
         state.status = "completed"
 
 
-def _fallback_response_data(decision: AssistantDecision) -> dict[str, Any]:
+def _fallback_response_data(decision: AssistantTextOutput) -> dict[str, Any]:
     code = next(
         (note for note in decision.safety_notes if note in MAIN_LLM_NO_ANSWER_MESSAGES),
         None,
@@ -1115,10 +1106,9 @@ def _ensure_rule_plan(graph_state: AssistantLoopState) -> None:
     state.selected_tools = _select_tools_with_optional_request(router, state.intent, request)
 
 
-def _max_iteration_final_answer(max_iterations: int) -> AssistantDecision:
-    return AssistantDecision(
-        type="final_answer",
-        message=f"已达到最大工具调用次数 ({max_iterations})，这是我能提供的最好回答。",
+def _max_iteration_final_answer(max_iterations: int) -> AssistantTextOutput:
+    return AssistantTextOutput(
+        text=f"已达到最大工具调用次数 ({max_iterations})，这是我能提供的最好回答。",
         reason="安全限制：防止无限工具调用循环",
     )
 
@@ -1129,21 +1119,19 @@ def _mock_assistant_decision_from_plan(
     tool_observations: list[dict[str, Any]],
     state: AgentState,
     outputs_by_step: dict[str, ToolResult],
-) -> AssistantDecision:
+) -> AssistantTurnOutput:
     """Return the next deterministic ReAct decision from the rule-based plan."""
 
     if state.plan is None:
-        return AssistantDecision(
-            type="final_answer",
-            message="离线计划不可用，无法选择下一步工具。",
+        return AssistantTextOutput(
+            text="离线计划不可用，无法选择下一步工具。",
             reason="_decide_with_mock_plan(...) requires state.plan from the rule router.",
             safety_notes=["missing_rule_plan"],
         )
 
     if state.plan.requires_followup:
-        return AssistantDecision(
-            type="ask_followup",
-            message=state.plan.followup_question or "请补充你想让我处理的对象或目标。",
+        return AssistantTextOutput(
+            text=state.plan.followup_question or "请补充你想让我处理的对象或目标。",
             reason="计划缺少必要输入，需要追问用户。",
         )
 
@@ -1153,23 +1141,21 @@ def _mock_assistant_decision_from_plan(
         step = executable_steps[next_index]
         from assistant_agent.agent.tool_input_builder import build_tool_input
 
-        return AssistantDecision(
-            type="tool_call",
+        return AssistantToolCall(
             tool_name=step.tool_name,
             tool_input=build_tool_input(step.action, request, outputs_by_step),
             reason=step.reason or f"执行计划步骤：{step.action}",
         )
 
-    return AssistantDecision(
-        type="final_answer",
-        message=None,
+    return AssistantTextOutput(
+        text="计划步骤已执行完毕。",
         reason="计划步骤已执行完毕，交给响应合成器生成最终答复。",
     )
 
 
 def _set_direct_chat_response(
     graph_state: AssistantLoopState,
-    decision: AssistantDecision,
+    decision: AssistantTextOutput,
     iterations: int,
     tool_observations: list[dict[str, Any]],
 ) -> None:
@@ -1202,13 +1188,13 @@ def _set_direct_chat_response(
         data={"response_text": result.response_text, "provider": result.provider, "model": result.model},
         errors=errors,
     )
-    message = result.response_text if result.success else decision.message or "已处理请求。"
+    message = result.response_text if result.success else decision.text
     state.set_response(
         AgentResponse(
             message=message,
             data={
                 "intent": state.intent.intent if state.intent else None,
-                "assistant_decision": decision.type,
+                "assistant_output": decision.type,
                 "reason": decision.reason,
                 "iterations": iterations,
                 "tool_observations": len(tool_observations),
@@ -1228,21 +1214,19 @@ def _set_direct_chat_response(
     )
 
 
-def _should_preserve_assistant_final_answer(*, decision: AssistantDecision, is_mock: bool) -> bool:
+def _should_preserve_assistant_final_answer(*, decision: AssistantTextOutput, is_mock: bool) -> bool:
     """Return true when an assistant final answer should bypass response composition."""
 
     return (
-        decision.type == "final_answer"
-        and bool(decision.message)
-        and not is_mock
+        not is_mock
         and not _assistant_final_answer_is_technical_failure(decision)
     )
 
 
-def _assistant_final_answer_is_technical_failure(decision: AssistantDecision) -> bool:
+def _assistant_final_answer_is_technical_failure(decision: AssistantTextOutput) -> bool:
     """Detect provider self-repair/parsing messages that should not face users."""
 
-    message = decision.message or ""
+    message = decision.text
     technical_messages = (
         "原始输出格式不完整",
         "无法正常解析",
@@ -1253,7 +1237,7 @@ def _assistant_final_answer_is_technical_failure(decision: AssistantDecision) ->
 
 def _set_assistant_final_answer_response(
     graph_state: AssistantLoopState,
-    decision: AssistantDecision,
+    decision: AssistantTextOutput,
     iterations: int,
     tool_observations: list[dict[str, Any]],
 ) -> None:
@@ -1281,11 +1265,11 @@ def _set_assistant_final_answer_response(
     )
     state.set_response(
         AgentResponse(
-            message=decision.message or "已处理请求。",
+            message=decision.text,
             data={
                 "intent": state.intent.intent if state.intent else None,
                 "final_answer_source": "assistant_loop",
-                "assistant_decision": decision.type,
+                "assistant_output": decision.type,
                 "reason": decision.reason,
                 "iterations": iterations,
                 "tool_count": len(state.tool_calls),
@@ -1361,155 +1345,13 @@ def _is_mock_chat_adapter(chat_adapter: ChatAdapter) -> bool:
     return getattr(chat_adapter, "provider", "") == "mock" or hasattr(chat_adapter, "MockChatAdapter")
 
 
-def apply_plan_mode_transition_node(graph_state: AssistantLoopState) -> AssistantLoopState:
-    """Apply enter/exit plan-mode decisions without executing tools."""
-
-    decision = graph_state.get("assistant_decision")
-    if decision is None or decision.type not in {"enter_plan_mode", "exit_plan_mode"}:
-        return graph_state
-    if decision.type == "enter_plan_mode":
-        return _enter_plan_mode(graph_state, decision)
-    return _exit_plan_mode(graph_state, decision)
-
-
-def _enter_plan_mode(graph_state: AssistantLoopState, decision: AssistantDecision) -> AssistantLoopState:
-    state = graph_state["state"]
-    plan = decision.plan
-    if plan is None:
-        _fail_plan_mode_transition(
-            graph_state,
-            PlanValidationResult(
-                accepted=False,
-                code="planner_output_invalid",
-                message="enter_plan_mode must include a valid TaskPlan in the plan field.",
-            ),
-        )
-        return graph_state
-
-    if state.plan is not None and state.plan_revision_count >= int(graph_state.get("max_plan_revisions", MAX_PLAN_REVISIONS)):
-        _fail_plan_mode_transition(
-            graph_state,
-            PlanValidationResult(
-                accepted=False,
-                code="plan_revision_limit_exceeded",
-                message=f"Plan revision limit reached ({graph_state.get('max_plan_revisions', MAX_PLAN_REVISIONS)}).",
-            ),
-        )
-        return graph_state
-
-    validation = PlanValidator(max_steps=int(graph_state.get("max_plan_steps", MAX_PLAN_STEPS))).validate(
-        plan,
-        graph_state["tool_executor"].registry,
-    )
-    state.request.metadata["last_plan_validation"] = validation.model_dump(mode="json")
-    if not validation.accepted:
-        _fail_plan_mode_transition(graph_state, validation)
-        return graph_state
-
-    if state.plan is not None:
-        state.plan_revision_count += 1
-    state.set_plan(plan)
-    state.current_step_id = None if plan.requires_followup else _next_pending_plan_step_id(plan, graph_state["outputs_by_step"])
-    _mark_plan_mode_status(state, "completed" if plan.requires_followup else "active")
-    _record_plan_mode_transition(
-        graph_state,
-        decision_type="enter_plan_mode",
-        reason=decision.reason or validation.message,
-        plan=plan,
-        validation=validation,
-    )
-    if plan.requires_followup:
-        state.set_response(
-            AgentResponse(
-                message=plan.followup_question or "请补充必要信息后我再继续。",
-                data={
-                    "assistant_decision": "ask_followup",
-                    "plan_status": state.plan_status,
-                    "plan_revision_count": state.plan_revision_count,
-                    "plan_validation": validation.model_dump(mode="json"),
-                },
-                followup_question=plan.followup_question,
-            )
-        )
-    return graph_state
-
-
-def _exit_plan_mode(graph_state: AssistantLoopState, decision: AssistantDecision) -> AssistantLoopState:
-    state = graph_state["state"]
-    state.current_step_id = None
-    _mark_plan_mode_status(state, "completed")
-    _record_plan_mode_transition(
-        graph_state,
-        decision_type="exit_plan_mode",
-        reason=decision.reason or "Assistant exited plan mode.",
-        plan=state.plan,
-    )
-    next_action = decision.next_action or "continue"
-    if next_action in {"final_answer", "ask_followup"}:
-        output_refs = [result.output_ref for result in state.tool_results if result.output_ref]
-        state.set_response(
-            AgentResponse(
-                message=decision.message or "已处理请求。",
-                data={
-                    "final_answer_source": "assistant_loop",
-                    "assistant_decision": next_action,
-                    "reason": decision.reason,
-                    "plan_status": state.plan_status,
-                    "plan_revision_count": state.plan_revision_count,
-                    "tool_count": len(state.tool_calls),
-                    "tool_observations": len(graph_state.get("tool_observations", [])),
-                    "output_refs": output_refs,
-                },
-                followup_question=decision.message if next_action == "ask_followup" else None,
-                output_refs=output_refs,
-            )
-        )
-    return graph_state
-
-
-def _fail_plan_mode_transition(graph_state: AssistantLoopState, validation: PlanValidationResult) -> None:
-    state = graph_state["state"]
-    _mark_plan_mode_status(state, "failed")
-    state.errors.append(
-        AgentError(
-            message=validation.message,
-            source="plan_mode",
-            details={"code": validation.code, "recovery_action": "stop_with_error"},
-        )
-    )
-    state.request.metadata["last_plan_validation"] = validation.model_dump(mode="json")
-    state.set_response(
-        AgentResponse(
-            message=f"计划无效：{validation.message}",
-            data={
-                "assistant_decision": "final_answer",
-                "plan_status": state.plan_status,
-                "plan_validation": validation.model_dump(mode="json"),
-            },
-        )
-    )
-    _record_plan_mode_transition(
-        graph_state,
-        decision_type="plan_rejected",
-        reason=validation.message,
-        validation=validation,
-    )
-    _append_trace(
-        graph_state,
-        event_type="assistant_decision",
-        status="plan_rejected",
-        output_summary={"plan_validation": validation.model_dump(mode="json")},
-        error={"code": validation.code, "message": validation.message},
-    )
-
-
 def execute_requested_tool_node(graph_state: AssistantLoopState) -> AssistantLoopState:
     """Execute the current provider-native tool batch within the run budget."""
 
-    pending = list(graph_state.get("pending_tool_decisions") or [])
+    pending = list(graph_state.get("pending_tool_calls") or [])
     if not pending:
-        decision = graph_state.get("assistant_decision")
-        pending = [decision] if decision is not None and decision.type == "tool_call" else []
+        decision = graph_state.get("assistant_output")
+        pending = [decision] if isinstance(decision, AssistantToolCall) else []
     if not pending:
         return graph_state
 
@@ -1528,7 +1370,7 @@ def execute_requested_tool_node(graph_state: AssistantLoopState) -> AssistantLoo
         current = _execute_single_requested_tool_node(
             {
                 **current,
-                "assistant_decision": decision,
+                "assistant_output": decision,
             }
         )
         tool_calls_used += 1
@@ -1536,7 +1378,7 @@ def execute_requested_tool_node(graph_state: AssistantLoopState) -> AssistantLoo
         if current["state"].status in {"failed", "cancelled"}:
             break
 
-    current["pending_tool_decisions"] = []
+    current["pending_tool_calls"] = []
     return current
 
 
@@ -1544,19 +1386,19 @@ def _execute_single_requested_tool_node(graph_state: AssistantLoopState) -> Assi
     """
     Execute the tool requested by the assistant.
 
-    Reads the assistant_decision, validates it, runs the tool,
+    Reads the assistant tool output, validates it, runs the tool,
     and stores the observation for the next iteration.
     """
     state = graph_state["state"]
-    decision = graph_state.get("assistant_decision")
+    decision = graph_state.get("assistant_output")
     tool_executor = graph_state["tool_executor"]
     tool_observations = graph_state.get("tool_observations", [])
 
-    if decision is None or decision.type != "tool_call":
+    if not isinstance(decision, AssistantToolCall):
         return graph_state
 
     tool_name = decision.tool_name
-    tool_input = decision.tool_input or {}
+    tool_input = decision.tool_input
     if "duplicate_failed_tool_call" in decision.safety_notes:
         observation = rejected_observation(
             tool_name=tool_name or "unknown",
@@ -1632,7 +1474,7 @@ def _execute_single_requested_tool_node(graph_state: AssistantLoopState) -> Assi
                     message=f"我没有执行这个工具调用：{validation.message}",
                     data={
                         "intent": state.intent.intent if state.intent else None,
-                        "assistant_decision": "final_answer",
+                        "assistant_output": "text",
                         "validator_result": validation.model_dump(mode="json"),
                         "loop_guard": guard.__dict__,
                         "errors": [{"code": validation.code, "message": validation.message}],
@@ -1721,7 +1563,7 @@ def _execute_single_requested_tool_node(graph_state: AssistantLoopState) -> Assi
 
 def _current_plan_step(
     state: AgentState,
-    decision: AssistantDecision,
+    decision: AssistantToolCall,
     outputs_by_step: dict[str, ToolResult],
 ) -> tuple[TaskStep | None, ToolObservation | None]:
     if not _is_plan_mode_active(state):
@@ -1736,7 +1578,7 @@ def _current_plan_step(
                 tool_name=decision.tool_name or "unknown",
                 error_code="unknown_step",
                 error_message=f"Unknown plan step: {decision.step_id}.",
-                next_step_hint="Use an existing plan step id or revise the plan with enter_plan_mode.",
+                next_step_hint="Use an existing bound plan step id.",
             )
     else:
         step = _next_matching_plan_step(state.plan, decision.tool_name, outputs_by_step)
@@ -1865,54 +1707,6 @@ def _advance_plan_after_tool_result(
     _mark_plan_mode_status(state, "completed" if next_step_id is None else "active")
 
 
-def _record_plan_mode_transition(
-    graph_state: AssistantLoopState,
-    *,
-    decision_type: str,
-    reason: str,
-    plan: TaskPlan | None = None,
-    validation: PlanValidationResult | None = None,
-) -> None:
-    state = graph_state["state"]
-    steps = state.request.metadata.setdefault("assistant_loop_steps", [])
-    if isinstance(steps, list):
-        steps.append(
-            {
-                "iteration": len(steps) + 1,
-                "decision_type": decision_type,
-                "reason": reason,
-                "plan_step_count": len(plan.steps) if plan is not None else 0,
-                "plan_status": state.plan_status,
-                "step_id": state.current_step_id,
-            }
-        )
-    trace_event = {
-        "iteration": len(state.request.metadata.get("decision_trace", [])) + 1,
-        "event": "decision",
-        "decision_type": decision_type,
-        "decision_summary": reason,
-        "plan_step_count": len(plan.steps) if plan is not None else 0,
-        "step_id": state.current_step_id,
-        "plan_status": state.plan_status,
-    }
-    decision_trace = state.request.metadata.setdefault("decision_trace", [])
-    if isinstance(decision_trace, list):
-        decision_trace.append(trace_event)
-    _emit_agent_trace_event(graph_state, trace_event)
-    _append_trace(
-        graph_state,
-        event_type="assistant_decision",
-        status=decision_type,
-        output_summary={
-            "reason": reason,
-            "plan_step_count": len(plan.steps) if plan is not None else 0,
-            "plan_status": state.plan_status,
-            "plan_validation": validation.model_dump(mode="json") if validation is not None else None,
-        },
-        error={"code": validation.code, "message": validation.message} if validation is not None and not validation.accepted else None,
-    )
-
-
 def _route_with_optional_request(router: ToolRouter, intent, request: UserRequest):
     if len(signature(router.route).parameters) >= 2:
         return router.route(intent, request)
@@ -1926,13 +1720,9 @@ def _select_tools_with_optional_request(router: ToolRouter, intent, request: Use
 
 
 def route_after_assistant(graph_state: AssistantLoopState) -> str:
-    """
-    Route after the assistant decision.
-
-    Returns "execute_tool", "apply_plan_mode_transition", or "finish".
-    """
+    """Route strict assistant text/tool output."""
     state = graph_state["state"]
-    decision = graph_state.get("assistant_decision")
+    output = graph_state.get("assistant_output")
 
     if state.status == "failed":
         return "finish"
@@ -1940,15 +1730,10 @@ def route_after_assistant(graph_state: AssistantLoopState) -> str:
     if state.status == "completed":
         return "finish"
 
-    if decision is None:
+    if output is None:
         return "finish"
 
-    if decision.type in {"enter_plan_mode", "exit_plan_mode"}:
-        return "apply_plan_mode_transition"
-
-    if decision.type == "tool_call":
-        if not decision.tool_name:
-            return "finish"
+    if isinstance(output, AssistantToolCall):
         return "execute_tool"
 
     return "finish"
@@ -1969,12 +1754,12 @@ def _get_tool_context(state: AgentState) -> Any:
 
 def _record_react_decision(
     graph_state: AssistantLoopState,
-    decision: AssistantDecision,
+    decision: AssistantTurnOutput,
     iteration: int,
     *,
     context: AssistantDecisionContext | None = None,
 ) -> None:
-    """Keep compact decision trace data for local demo inspection."""
+    """Record one strict assistant text/tool output from the ReAct iteration."""
 
     state = graph_state["state"]
     steps = state.request.metadata.setdefault("assistant_loop_steps", [])
@@ -1985,48 +1770,43 @@ def _record_react_decision(
     decision_trace = state.request.metadata.setdefault("decision_trace", [])
     if isinstance(decision_trace, list):
         decision_trace.append(trace_event)
-    steps.append(
-        {
-            "iteration": iteration + 1,
-            "decision_type": decision.type,
-            "tool_name": decision.tool_name,
-            "tool_input": decision.tool_input or {},
-            "step_id": decision.step_id,
-            "message": decision.message,
-            "reason": decision.reason,
-            "decision_summary": decision.reason,
-            "confidence": decision.confidence,
-            "safety_notes": decision.safety_notes,
-            "plan_step_count": len(decision.plan.steps) if decision.plan is not None else (len(state.plan.steps) if state.plan is not None else 0),
-            "plan_status": state.plan_status,
-        }
-    )
+    is_tool_call = isinstance(decision, AssistantToolCall)
+    steps.append({
+        "iteration": iteration + 1,
+        "output_type": decision.type,
+        "tool_name": decision.tool_name if is_tool_call else None,
+        "tool_input": decision.tool_input if is_tool_call else {},
+        "step_id": decision.step_id if is_tool_call else None,
+        "message": decision.text if isinstance(decision, AssistantTextOutput) else None,
+        "reason": decision.reason,
+        "safety_notes": decision.safety_notes,
+        "plan_status": state.plan_status,
+    })
     _emit_agent_trace_event(graph_state, trace_event)
     context_summary = _context_trace_summary(context)
     output_summary = {
-        "decision_type": decision.type,
+        "output_type": decision.type,
         "reason": decision.reason,
-        "confidence": decision.confidence,
-        "message_present": bool(decision.message),
-        "step_id": decision.step_id,
+        "confidence": decision.confidence if is_tool_call else None,
+        "message_present": isinstance(decision, AssistantTextOutput),
+        "step_id": decision.step_id if is_tool_call else None,
         "plan_status": state.plan_status,
-        "plan_step_count": len(decision.plan.steps) if decision.plan is not None else (len(state.plan.steps) if state.plan is not None else 0),
     }
     if context_summary:
         output_summary["context"] = context_summary
         output_summary["context_report_v1"] = _context_report_summary(context, state)
     _append_trace(
         graph_state,
-        event_type="assistant_decision",
-        canonical_event="react.decision",
+        event_type="assistant_output",
+        canonical_event="assistant.output",
         status=decision.type,
-        tool_name=decision.tool_name,
+        tool_name=decision.tool_name if is_tool_call else None,
         output_summary=output_summary,
         attributes={
             "iteration": iteration + 1,
-            "decision_type": decision.type,
-            "tool_name": decision.tool_name,
-            "step_id": decision.step_id,
+            "output_type": decision.type,
+            "tool_name": decision.tool_name if is_tool_call else None,
+            "step_id": decision.step_id if is_tool_call else None,
             "plan_status": state.plan_status,
             "safety_notes": decision.safety_notes,
         },
@@ -2190,24 +1970,22 @@ def _record_react_observation(
     return observations
 
 
-def _decision_trace_event(decision: AssistantDecision, iteration: int) -> dict[str, Any]:
-    event_name = "final_answer" if decision.type == "final_answer" else "decision"
+def _decision_trace_event(decision: AssistantTurnOutput, iteration: int) -> dict[str, Any]:
+    is_tool_call = isinstance(decision, AssistantToolCall)
+    event_name = "decision" if is_tool_call else "final_answer"
     payload: dict[str, Any] = {
         "iteration": iteration + 1,
         "event": event_name,
-        "decision_type": "clarification" if decision.type == "ask_followup" else decision.type,
+        "output_type": decision.type,
         "decision_summary": decision.reason or "",
     }
-    if decision.type == "tool_call":
+    if is_tool_call:
         payload["action"] = decision.tool_name
-        payload["action_input"] = decision.tool_input or {}
+        payload["action_input"] = decision.tool_input
         if decision.step_id:
             payload["step_id"] = decision.step_id
-    if decision.type in {"enter_plan_mode", "exit_plan_mode"}:
-        payload["step_id"] = decision.step_id
-        payload["plan_step_count"] = len(decision.plan.steps) if decision.plan is not None else 0
-    if decision.type == "final_answer":
-        payload["answer"] = decision.message or ""
+    else:
+        payload["answer"] = decision.text
     return payload
 
 
@@ -2255,10 +2033,9 @@ def _emit_agent_trace_event(graph_state: AssistantLoopState, trace_event: dict[s
     )
 
 
-def _guard_final_answer(guard: LoopGuardDecision) -> AssistantDecision:
-    return AssistantDecision(
-        type="final_answer",
-        message="工具调用保护已触发，我已停止继续调用工具。请补充更明确的信息，或稍后重试。",
+def _guard_final_answer(guard: LoopGuardDecision) -> AssistantTextOutput:
+    return AssistantTextOutput(
+        text="工具调用保护已触发，我已停止继续调用工具。请补充更明确的信息，或稍后重试。",
         reason=guard.message,
         safety_notes=[guard.code],
     )
@@ -2351,7 +2128,7 @@ def _append_trace(
 
 
 def _point_observation_type(event_type: str) -> TraceObservationType | None:
-    if event_type in {"assistant_decision", "tool_observation", "loop_guard_triggered"}:
+    if event_type in {"assistant_decision", "assistant_output", "tool_observation", "loop_guard_triggered"}:
         return "event"
     return None
 

@@ -207,6 +207,7 @@ def _public_react_steps(value: Any) -> list[dict[str, Any]]:
     allowed_keys = {
         "iteration",
         "decision_type",
+        "output_type",
         "tool_name",
         "tool_input",
         "message",
@@ -240,6 +241,7 @@ def _public_decision_trace(value: Any) -> list[dict[str, Any]]:
         "iteration",
         "event",
         "decision_type",
+        "output_type",
         "decision_summary",
         "action",
         "action_input",

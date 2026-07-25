@@ -115,9 +115,20 @@ def test_native_streaming_chat_emits_llm_span_and_final_answer() -> None:
         "schema_version": "runtime_route_v1",
         "result_kind": "text",
         "selected_branch": "provider_content",
-        "runtime_action": "final_answer",
+        "runtime_action": "text",
         "tool_call_count": 0,
     }
+    assistant_output = next(
+        event
+        for event in trace_store.events
+        if event.canonical_event == "assistant.output"
+    )
+    assert assistant_output.status == "text"
+    assert assistant_output.attributes["output_type"] == "text"
+    assert not any(
+        event.canonical_event == "react.decision"
+        for event in trace_store.events
+    )
     conversation = get_default_trace_conversation_store().get(
         user_id=state.user_id,
         session_id=state.session_id,

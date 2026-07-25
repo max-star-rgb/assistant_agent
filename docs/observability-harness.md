@@ -429,7 +429,7 @@ public names, but they should map to this vocabulary.
 | `memory.session_recall.finished` | Session 创建时唯一一次 Mem0 长期记忆召回。 |
 | `context.build.started` / `context.build.finished` | Prompt/native context pack construction and budget report. |
 | `llm.chat.started` / `llm.chat.finished` | One provider chat call, including direct-answer and native tool-call responses. |
-| `react.decision` | Assistant selected final answer, follow-up, tool call, or plan transition. |
+| `assistant.output` | Strict assistant turn output selected: non-empty text or a tool call. |
 | `action.validation.started` / `action.validation.finished` | Local validation before tool execution. |
 | `tool.started` | Tool execution lifecycle began through `ToolExecutor`. |
 | `tool.finished` | Tool returned successfully, including duplicate suppression or pending confirmation result. |
@@ -476,7 +476,7 @@ run
   memory.load
   context.build
   llm.chat(iteration=1)
-  react.decision(iteration=1)
+  assistant.output(iteration=1)
   action.validation
   tool.execute(shopping_search)
     provider.call(shopping_search.search)
@@ -778,7 +778,7 @@ body 或 `reasoning_content`，并按
 OTel 单侧最多导出 4000 字符；`trace.content` 使用更高的持久化上限。上一轮 Provider 的 hidden reasoning 字段始终替换为 `[redacted]`；
 stream callback 不进入该 store。protocol snapshot 优先用于生成精确
 output preview；缺失时从归一化 `ChatResult` 重建完整语义回复。`runtime_route` 记录归一化结果触发的
-实际 `fallback | tool_governance | final_answer` 动作并留在 metadata。上述正文同时进入
+实际 `fallback | tool_governance | text` 动作并留在 metadata。上述正文同时进入
 `.data/graph_trace.jsonl` 的 `trace.content` 事件。
 
 Langfuse 的工具链同样使用完整视图：`tool.execute` 直接显示执行 trace event 当前持有的
@@ -825,7 +825,7 @@ Regression tests should enforce these invariants:
 - Every `tool.started` has a matching `tool.finished` or `tool.failed`.
 - Every `tool.observation` references a prior tool call or a validation rejection.
 - Native provider runtime and mock/offline ReAct runtime both emit
-  `react.decision` and terminal run events.
+  `assistant.output` and terminal run events.
 - Successful native provider runtime and mock/offline ReAct runtime both emit
   `response.final` before the terminal run event.
 - Successful runs may enqueue `memory.turn_ingestion` after the terminal response;
@@ -851,7 +851,7 @@ Regression tests should enforce these invariants:
 
 - Add canonical event names to trace summaries without breaking existing public
   response fields.
-- Make native provider runtime write `llm.chat`, `react.decision`,
+- Make native provider runtime write `llm.chat`, `assistant.output`,
   `action.validation`, `tool.observation`, and terminal run events to
   `TraceStore`.
 - Keep existing LangGraph node trace for mock/offline debugging, but map it into
@@ -891,7 +891,7 @@ Regression tests should enforce these invariants:
   `ASSISTANT_AGENT_OTEL_EXPORT_QUEUE_CAPACITY` 覆盖。If only generic
   `OTEL_EXPORTER_OTLP_ENDPOINT` is set, the text trace exporter derives the
   trace endpoint by appending `/v1/traces`.
-- Root、`react.decision`、`llm.chat`、`tool.execute`、`tool.observation` 和
+- Root、`assistant.output`、`llm.chat`、`tool.execute`、`tool.observation` 和
   `response.final` 使用 Langfuse 的 `langfuse.observation.input/output` 映射结构化 JSON；
   root 同时写入 `langfuse.trace.input/output`。默认显示完整 tool execution summary 与
   assistant-facing `ToolObservation`；显式关闭 content capture 时才退化为摘要。

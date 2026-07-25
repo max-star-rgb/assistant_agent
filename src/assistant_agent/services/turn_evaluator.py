@@ -355,14 +355,25 @@ def _decision_path(
     path: list[str] = []
     if llm_summary.count:
         path.append(f"LLM chat x{llm_summary.count}")
-    decisions = [event for event in events if _event_name(event) == "react.decision"]
-    for event in decisions[:3]:
+    outputs = [
+        event
+        for event in events
+        if _event_name(event) in {"assistant.output", "react.decision"}
+    ]
+    for event in outputs[:3]:
         output_summary = _mapping_or_empty(event.get("output_summary"))
         attributes = _mapping_or_empty(event.get("attributes"))
-        decision = output_summary.get("decision_type") or attributes.get("decision_type") or event.get("status") or "unknown"
+        output_type = (
+            output_summary.get("output_type")
+            or attributes.get("output_type")
+            or output_summary.get("decision_type")
+            or attributes.get("decision_type")
+            or event.get("status")
+            or "unknown"
+        )
         tool = _safe_string(event.get("tool_name"))
         suffix = f" {tool}" if tool else ""
-        path.append(f"Decision {decision}{suffix}")
+        path.append(f"Assistant output {output_type}{suffix}")
     for tool in tool_summary:
         path.append(f"Tool {tool.tool_name} x{tool.count}")
     return path

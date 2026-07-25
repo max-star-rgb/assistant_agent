@@ -107,9 +107,11 @@ usage、route 与 transport 保留在诊断字段，都不拼接到 output 文�
 和 `.data/graph_trace.jsonl` 仍只保存安全摘要，vendor SDK response envelope、HTTP header、stream
 chunk body 与 hidden reasoning 不进入 debug store。
 普通前台调用不设置 `response_format`，系统提示词也不要求终态 JSON；因此一次非工具终态只对应
-一次 `llm.chat`。`answer` 与自然语言追问都作为本轮 `final_answer` 提交；只有 validator、planner
-等运行时组件显式构造 `ask_followup` 时才进入 `waiting_for_user`。session task-state 更新由
-`UserRequest.runtime_task_update` 的 Pydantic 契约承担，不从 Provider 文本推断。
+一次 `llm.chat`。主 assistant loop 只接受严格的 `AssistantTextOutput | AssistantToolCall`：
+普通回答和自然语言追问都作为非空 `text` 交付，native tool call 归一化为 `tool_call` 后进入工具
+治理；Provider refusal、截断、空响应和错误仍是 `ChatResult`/runtime 诊断状态，不扩展 assistant
+输出类型。未知类型、空文本和跨变体字段直接校验失败，不静默改写为成功文本。session task-state
+更新由 `UserRequest.runtime_task_update` 的 Pydantic 契约承担，不从 Provider 文本推断。
 
 The compatibility contracts remain supported:
 
