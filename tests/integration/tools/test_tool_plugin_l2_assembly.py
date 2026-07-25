@@ -5,12 +5,12 @@ import sys
 
 import pytest
 
-from assistant_agent.tools.plugins.assembly import (
+from assistant_agent.tool_plugins.assembly import (
     ToolPluginAssemblyError,
     configured_plugin_modules_from_env,
 )
-from assistant_agent.tools.plugins import assembly as plugin_assembly
-from assistant_agent.tools.plugins.contracts import ToolPluginDescriptor
+from assistant_agent.tool_plugins import assembly as plugin_assembly
+from assistant_agent.tool_plugins.contracts import ToolPluginDescriptor
 from assistant_agent.tools.registry import create_default_registry
 
 from tests.integration.tools.test_tool_plugin_l2 import _ConfiguredReadTool
@@ -81,14 +81,17 @@ def test_invalid_configured_plugin_protocol_fails_closed(
     assert exc_info.value.report.issues[0].code == expected_code
 
 
-def test_duplicate_plugin_id_fails_before_registry_creation(
+def test_duplicate_builtin_plugin_id_fails_before_registry_creation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     plugin = type(
-        "DuplicateCorePlugin",
+        "DuplicateToolDiscoveryPlugin",
         (),
         {
-            "descriptor": ToolPluginDescriptor(plugin_id="core", plugin_version="external"),
+            "descriptor": ToolPluginDescriptor(
+                plugin_id="tool_discovery",
+                plugin_version="external",
+            ),
             "build_tools": lambda self, context: [],
         },
     )()

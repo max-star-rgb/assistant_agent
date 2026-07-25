@@ -1,4 +1,4 @@
-"""Personal assistant MCP-backed tool plugin."""
+"""MCP-backed weather, calendar, and contacts Tool plugin."""
 
 from assistant_agent.services.personal_assistant_mcp_adapters import (
     configured_personal_assistant_tools,
@@ -11,8 +11,8 @@ from assistant_agent.schemas.tool_ids import (
     WEATHER_TOOL_NAME,
 )
 from assistant_agent.tools.base import Tool
-from assistant_agent.tools.plugins.contracts import ToolPluginContext, ToolPluginDescriptor
-from assistant_agent.tools.plugins.personal_assistant.tools import (
+from assistant_agent.tool_plugins.contracts import ToolPluginContext, ToolPluginDescriptor
+from assistant_agent.tool_plugins.builtin.personal_assistant_mcp.tools import (
     CalendarCreateTool,
     CalendarSearchTool,
     ContactsSearchTool,
@@ -20,8 +20,11 @@ from assistant_agent.tools.plugins.personal_assistant.tools import (
 )
 
 
-class PersonalAssistantToolPlugin:
-    descriptor = ToolPluginDescriptor(plugin_id="personal_assistant", plugin_version="1")
+class PersonalAssistantMCPToolPlugin:
+    descriptor = ToolPluginDescriptor(
+        plugin_id="personal_assistant_mcp",
+        plugin_version="1",
+    )
 
     def build_tools(self, context: ToolPluginContext) -> list[Tool]:
         tool_names = configured_personal_assistant_tools(context.mcp_server_configs)

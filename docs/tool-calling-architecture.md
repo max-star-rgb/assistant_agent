@@ -174,8 +174,10 @@ MCP mapping 逐个注册，未映射的能力不进入 Registry。
 
 进程内 Tool 插件采用 L2 启动时可插拔协议。每个插件声明
 `ToolPluginDescriptor(plugin_id, plugin_version, api_version="tool_plugin_v1")`，并通过
-`build_tools(context)` 构造 Tool。内置工具继续按能力域自包含在 `tools/plugins/<capability>/`，
-`defaults.py` 只保留受信任内置插件的显式清单，不扫描目录。
+`build_tools(context)` 构造 Tool。Plugin 是独立的启动期装配机制，不是 Tool 契约的子类型，因此插件
+框架位于顶层 `tool_plugins/`，内置装配单元位于
+`tool_plugins/builtin/<assembly_boundary>/`；`defaults.py` 只保留受信任内置插件的显式清单，不扫描
+目录。`tools/` 只保留 Tool 协议、参数绑定、Registry、本地兼容加载和 CLI，不反向拥有 Plugin。
 
 部署方可以通过逗号分隔的 `MULTIMODAL_AGENT_TOOL_PLUGIN_MODULES` 显式列出可信 Python module；每个
 module 必须导出单个 `__assistant_tool_plugin__`。未配置 module 不会被 import，配置错误、协议不兼容、
@@ -194,11 +196,15 @@ generation。运行期间不能继续 `register()`，配置变化需要重启生
 Tool 仍默认不暴露，必须由宿主配置或每轮结构化显式 opt-in。`tools.loader` 的 `__assistant_tools__` 保留给
 本地 workflow/CLI 兼容入口，不会自动并入默认 runtime 插件协议。
 
-Plugin 按共享 Provider、配置、依赖和生命周期划分，不按 Tool 数量机械拆分。新增已有 Plugin 内的普通
-Tool 只修改该 Plugin 目录及其测试；新增内置 Plugin 额外在 `defaults.py` 可信清单登记一次；新增外部
-Plugin 只增加独立 module 和部署配置。普通 Tool 的增删不得要求修改 Registry、Executor、Validator、
-assistant loop、Prompt/Context 编译或中心 Tool name 表。只有引入新的宿主级共享基础设施时，才扩展
-`ToolPluginContext` 和 composition root。
+Plugin 按共享 Provider、配置、依赖和生命周期划分，不按 Tool 数量或宽泛业务标签机械拆分。目录名与
+`plugin_id` 应表达独立装配边界，避免 `core`、`misc` 等兜底分类。共享同一 MCP mapping、runner 和
+adapter bundle 的 weather/calendar/contacts 归属 `personal_assistant_mcp`；配置与 readiness 独立的
+`vision_understanding`、`visual_image_search` 分别装配；`tool_search` 和本地 Python 执行也分别归属
+`tool_discovery`、`python_execution`。新增已有 Plugin 内的普通 Tool 只修改该 Plugin 目录及其测试；
+新增内置 Plugin 额外在 `defaults.py` 可信清单登记一次；新增外部 Plugin 只增加独立 module 和部署
+配置。普通 Tool 的增删不得要求修改 Registry、Executor、Validator、assistant loop、Prompt/Context
+编译或中心 Tool name 表。只有引入新的宿主级共享基础设施时，才扩展 `ToolPluginContext` 和
+composition root。
 
 可用 `python -m assistant_agent.tools.cli plugins` 只读查看启动装配结果、ownership、issue、seal 状态和
 generation；该命令不会执行 Tool。`--module` 可重复传入并覆盖环境 module 列表用于部署前验证。
@@ -212,9 +218,10 @@ executor 读取的是同一份契约。新增或移除一个内置能力包时�
 `tool_ids.py` 或中心 Tool name 表。修改已有插件内的 Tool 时只改该插件目录，不再向
 `create_default_registry()` 添加领域工具的实现、实例化或 Provider readiness 分支。
 
-`visual_image_search` 与 `vision_understanding` 同属 `VisionToolPlugin`，但在 real 模式下仍分别检查各自
-Provider 配置。原 `delegate_to_agent` 工具已暂时删除；multi-agent 路由与通信服务保留，但不会向任何
-Registry 暴露 delegation tool。
+`visual_image_search` 与 `vision_understanding` 虽然同属视觉业务域，但 Provider 配置、readiness 和
+启停生命周期不同，因此分别归属 `VisualImageSearchPlugin` 与 `VisionUnderstandingPlugin`。原
+`delegate_to_agent` 工具已暂时删除；multi-agent 路由与通信服务保留，但不会向任何 Registry 暴露
+delegation tool。
 
 本轮目录由以下链路生成：
 
@@ -463,7 +470,9 @@ workflow skill 只能调用已注册且 permission 匹配的工具。read 工具
 - `schemas/tools.py`：`ToolSpec`、`RunToolCatalog`、`ToolResult`、`ToolCallRecord`；
 - `schemas/tool_ids.py`：仅供既有跨层协议共享的稳定 Tool/capability 字符串；
 - `agent/legacy_tool_mapping.py`：旧 planner/intent action 与 capability 兼容映射；
-- `tools/plugins/<capability>/`：插件装配及其 Tool 实现、description、category 和确认等静态契约；
+- `tool_plugins/contracts.py`、`assembly.py`、`defaults.py`：Plugin 协议、原子装配和可信内置清单；
+- `tool_plugins/builtin/<assembly_boundary>/`：按共享 Provider、配置、依赖和生命周期组织的内置 Plugin
+  及其 Tool 实现；
 - `tools/base.py`：公共 Tool 协议；
 - `tools/registry.py`：工具注册、查找和 Pydantic schema 提取；
 - `services/context/tool_catalog.py`：结构化目录装配；

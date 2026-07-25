@@ -15,7 +15,7 @@ from assistant_agent.schemas.personal_assistant import (
     CalendarSearchResult,
 )
 from assistant_agent.tools.input_binding import ToolInputBinding
-from assistant_agent.tools.plugins.personal_assistant.tools import CalendarCreateTool
+from assistant_agent.tool_plugins.builtin.personal_assistant_mcp.tools import CalendarCreateTool
 
 
 class EvalCalendarEvent(BaseModel):

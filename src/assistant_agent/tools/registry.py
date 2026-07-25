@@ -19,22 +19,22 @@ from assistant_agent.tools.input_binding import (
     runtime_owned_input_fields,
     validate_tool_input_bindings,
 )
-from assistant_agent.tools.plugins.assembly import (
+from assistant_agent.tool_plugins.assembly import (
     ToolContribution,
     ToolPluginAssemblyError,
     assemble_tool_plugins,
     configured_plugin_modules_from_env,
     normalize_configured_plugin_modules,
 )
-from assistant_agent.tools.plugins.contracts import (
+from assistant_agent.tool_plugins.contracts import (
     ToolPluginAssemblyReport,
     ToolPluginContext,
     ToolPluginLoadIssue,
     ToolPluginSourceRecord,
     ToolRegistrationRecord,
 )
-from assistant_agent.tools.plugins.defaults import default_tool_plugins
-from assistant_agent.tools.plugins.vision.plugin import (
+from assistant_agent.tool_plugins.defaults import default_tool_plugins
+from assistant_agent.tool_plugins.builtin.vision_understanding.plugin import (
     build_realtime_video_observation_tool,
 )
 
@@ -412,7 +412,10 @@ def create_realtime_video_observation_registry(
             plugin_id="vision.realtime_observer",
             plugin_version="1",
             source_type="realtime_observer",
-            source_ref="assistant_agent.tools.plugins.vision.plugin",
+            source_ref=(
+                "assistant_agent.tool_plugins.builtin."
+                "vision_understanding.plugin"
+            ),
         ),
     )
     registry.seal()

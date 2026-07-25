@@ -106,11 +106,27 @@ def test_package_and_runtime_initialize_offline() -> None:
     assert {"memory_search", "memory_get", "memory_save"}.isdisjoint(specs)
     assert (
         runtime.registry.registration_record("calendar_search").plugin_id
-        == "personal_assistant"
+        == "personal_assistant_mcp"
     )
     assert (
         runtime.registry.registration_record("calendar_create").plugin_id
-        == "personal_assistant"
+        == "personal_assistant_mcp"
+    )
+    assert (
+        runtime.registry.registration_record("tool_search").plugin_id
+        == "tool_discovery"
+    )
+    assert (
+        runtime.registry.registration_record("python_interpreter").plugin_id
+        == "python_execution"
+    )
+    assert (
+        runtime.registry.registration_record("vision_understanding").plugin_id
+        == "vision_understanding"
+    )
+    assert (
+        runtime.registry.registration_record("visual_image_search").plugin_id
+        == "visual_image_search"
     )
     assert runtime.chat_adapter.provider == "mock"
 

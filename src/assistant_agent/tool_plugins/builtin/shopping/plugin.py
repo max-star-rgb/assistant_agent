@@ -6,8 +6,8 @@ from assistant_agent.services.product_adapter import (
     create_shopping_search_adapter,
 )
 from assistant_agent.tools.base import Tool
-from assistant_agent.tools.plugins.contracts import ToolPluginContext, ToolPluginDescriptor
-from assistant_agent.tools.plugins.shopping.tool import ShoppingSearchTool
+from assistant_agent.tool_plugins.contracts import ToolPluginContext, ToolPluginDescriptor
+from assistant_agent.tool_plugins.builtin.shopping.tool import ShoppingSearchTool
 
 
 class ShoppingToolPlugin:

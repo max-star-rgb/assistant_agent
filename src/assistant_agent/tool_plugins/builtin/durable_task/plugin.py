@@ -1,8 +1,8 @@
 """Durable task planning tool plugin."""
 
 from assistant_agent.tools.base import Tool
-from assistant_agent.tools.plugins.contracts import ToolPluginContext, ToolPluginDescriptor
-from assistant_agent.tools.plugins.durable_task.tool import TaskPlanSubmitTool
+from assistant_agent.tool_plugins.contracts import ToolPluginContext, ToolPluginDescriptor
+from assistant_agent.tool_plugins.builtin.durable_task.tool import TaskPlanSubmitTool
 
 
 class DurableTaskToolPlugin:

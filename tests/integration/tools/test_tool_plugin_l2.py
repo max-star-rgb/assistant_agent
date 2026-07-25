@@ -12,8 +12,8 @@ from assistant_agent.services.context.tool_catalog import select_prompt_tool_spe
 from assistant_agent.services.context import tool_catalog as tool_catalog_module
 from assistant_agent.services.agent_service_entry import agent_service_tool_visibility
 from assistant_agent.tools.base import ToolBase, ToolContext
-from assistant_agent.tools.plugins.assembly import ToolPluginAssemblyError
-from assistant_agent.tools.plugins.contracts import ToolPluginDescriptor
+from assistant_agent.tool_plugins.assembly import ToolPluginAssemblyError
+from assistant_agent.tool_plugins.contracts import ToolPluginDescriptor
 from assistant_agent.tools.registry import create_default_registry
 from assistant_agent.agent.runtime import AgentGraphRuntime
 from assistant_agent.config import ProviderConfig

@@ -15,7 +15,7 @@ from assistant_agent.services.web_search_adapter import (
     TavilyWebSearchAdapter,
     create_web_search_adapter,
 )
-from assistant_agent.tools.plugins.web.plugin import web_provider_ready
+from assistant_agent.tool_plugins.builtin.web_access.plugin import web_provider_ready
 
 
 class _FakeResponse:

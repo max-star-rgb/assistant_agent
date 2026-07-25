@@ -14,8 +14,8 @@ from assistant_agent.schemas.tools import ToolResult
 from assistant_agent.services.chat_adapter import ChatRequest, ChatResult
 from assistant_agent.services.session_store import InMemorySessionStore
 from assistant_agent.services.context import tool_catalog as tool_catalog_module
-from assistant_agent.tools.plugins.contracts import ToolPluginContext
-from assistant_agent.tools.plugins.contracts import ToolPluginDescriptor
+from assistant_agent.tool_plugins.contracts import ToolPluginContext
+from assistant_agent.tool_plugins.contracts import ToolPluginDescriptor
 from assistant_agent.tools.base import ToolBase, ToolContext
 from assistant_agent.tools.registry import create_default_registry
 
