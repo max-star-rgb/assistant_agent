@@ -8,6 +8,7 @@ import json
 import secrets
 from datetime import datetime, timezone
 from threading import Event, RLock
+from typing import TYPE_CHECKING
 
 from assistant_agent.agent.plan_validator import PlanValidator
 from assistant_agent.schemas.durable_tasks import (
@@ -26,9 +27,19 @@ from assistant_agent.schemas.durable_tasks import (
     utc_now,
 )
 from assistant_agent.schemas.identity import RequestIdentity
+from assistant_agent.schemas.notifications import (
+    NotificationEnvelope,
+    NotificationOwner,
+)
 from assistant_agent.schemas.planning import TaskPlan, TaskStep
 from assistant_agent.services.durable_tasks.store import TaskStore
 from assistant_agent.tools.registry import ToolRegistry
+
+if TYPE_CHECKING:
+    from assistant_agent.services.notifications import NotificationOutbox
+    from assistant_agent.services.durable_tasks.event_stream import (
+        TaskEventSubscription,
+    )
 
 
 class DurableTaskError(RuntimeError):
@@ -66,6 +77,7 @@ class DurableTaskService:
         max_step_attempts: int = 3,
         max_task_seconds: int = 3600,
         lease_seconds: int = 30,
+        notification_outbox: "NotificationOutbox | None" = None,
     ) -> None:
         self.store = store
         self.registry = registry
@@ -76,6 +88,7 @@ class DurableTaskService:
         self.max_step_attempts = max_step_attempts
         self.max_task_seconds = max_task_seconds
         self.lease_seconds = lease_seconds
+        self.notification_outbox = notification_outbox
         self._cancel_events: dict[str, Event] = {}
         self._cancel_events_lock = RLock()
 
@@ -93,6 +106,7 @@ class DurableTaskService:
         record = TaskRecord(
             task_id=task_id,
             user_id=identity.user_id,
+            agent_id=identity.agent_id,
             session_id=identity.session_id or "session_unknown",
             ingress_run_id=ingress_run_id,
             objective=plan.goal,
@@ -228,6 +242,33 @@ class DurableTaskService:
         self.get_task(identity=identity, task_id=task_id)
         return self.store.list_events(task_id, after=after, limit=min(max(limit, 1), 500))
 
+    def subscribe_events(
+        self,
+        *,
+        identity: RequestIdentity,
+        task_id: str,
+        after: int = 0,
+        batch_size: int = 100,
+        poll_seconds: float = 0.25,
+        stop_on_quiescent: bool = True,
+    ) -> "TaskEventSubscription":
+        """Return an identity-scoped replay/tail view over persisted TaskEvents."""
+
+        from assistant_agent.services.durable_tasks.event_stream import (
+            TaskEventSubscription,
+        )
+
+        self.get_task(identity=identity, task_id=task_id)
+        return TaskEventSubscription(
+            service=self,
+            identity=identity,
+            task_id=task_id,
+            after=after,
+            batch_size=batch_size,
+            poll_seconds=poll_seconds,
+            stop_on_quiescent=stop_on_quiescent,
+        )
+
     def cancel(
         self,
         *,
@@ -245,6 +286,7 @@ class DurableTaskService:
         bundle.task.lease_owner = None
         bundle.task.lease_token = None
         bundle.task.lease_expires_at = None
+        bundle.task.wait = None
         for run in self._current_step_runs(bundle):
             if run.status not in {"succeeded", "skipped"}:
                 run.status = "cancelled"
@@ -375,6 +417,25 @@ class DurableTaskService:
             if lease is None:
                 return None
             bundle = self._lease_bundle(lease)
+            if bundle.task.wait is not None:
+                wait = bundle.task.wait
+                if wait.expires_at is not None and wait.expires_at <= claimed_at:
+                    self.checkpoint(
+                        lease,
+                        TaskCheckpoint(
+                            kind="failed",
+                            step_id=wait.step_id,
+                            summary="Scheduled task wait expired before resumption.",
+                            error_code="durable_wait_expired",
+                            error_message="The scheduled wait expired.",
+                        ),
+                    )
+                    continue
+                lease, bundle = self._resume_scheduled_wait(
+                    lease=lease,
+                    bundle=bundle,
+                    resumed_at=claimed_at,
+                )
             interrupted = next(
                 (run for run in self._current_step_runs(bundle) if run.status == "running"),
                 None,
@@ -521,6 +582,7 @@ class DurableTaskService:
                 if run.status == "succeeded"
             ],
             artifact_refs=list(bundle.artifacts),
+            wait=bundle.task.wait,
             remaining_budget=dict(bundle.task.remaining_budget),
         )
 
@@ -562,6 +624,37 @@ class DurableTaskService:
             run.error_message = transition.error_message
             bundle.task.status = "replanning"
             event_type = "step.failed"
+        elif transition.kind == "waiting_schedule":
+            wait = transition.wait
+            if wait is None:
+                raise TaskTransitionRejected(
+                    "scheduled wait checkpoint requires wait"
+                )
+            if transition.step_id and wait.step_id not in {
+                None,
+                transition.step_id,
+            }:
+                raise TaskTransitionRejected(
+                    "scheduled wait step does not match checkpoint step"
+                )
+            if wait.next_eligible_at <= utc_now():
+                raise TaskTransitionRejected(
+                    "scheduled wait must target a future time"
+                )
+            if run is not None:
+                if run.status not in {"ready", "leased", "running"}:
+                    raise TaskTransitionRejected(
+                        "step is not ready for scheduled wait"
+                    )
+                run.status = "waiting_schedule"
+            bundle.task.wait = wait.model_copy(
+                update={"step_id": transition.step_id or wait.step_id}
+            )
+            bundle.task.status = "waiting_schedule"
+            bundle.task.lease_owner = None
+            bundle.task.lease_token = None
+            bundle.task.lease_expires_at = None
+            event_type = "task.wait_scheduled"
         elif transition.kind == "waiting_confirmation":
             if (
                 run is None
@@ -615,6 +708,7 @@ class DurableTaskService:
             ):
                 raise TaskTransitionRejected("required steps remain incomplete")
             bundle.task.status = "completed"
+            bundle.task.wait = None
             bundle.task.terminal_at = utc_now()
             event_type = "task.completed"
         elif transition.kind in {"failed", "cancelled", "outcome_unknown"}:
@@ -627,22 +721,175 @@ class DurableTaskService:
             bundle.task.lease_owner = None
             bundle.task.lease_token = None
             bundle.task.lease_expires_at = None
+            bundle.task.wait = None
             if transition.kind in {"failed", "cancelled"}:
                 bundle.task.terminal_at = utc_now()
             event_type = f"task.{transition.kind}"
         else:
             bundle.task.status = transition.kind
+        notification = self._enqueue_task_notification(bundle, transition)
+        events = [
+            self._event(
+                bundle,
+                event_type,
+                bundle.task.status,
+                (
+                    {
+                        "step_id": transition.step_id,
+                        "summary": transition.summary,
+                        "reason_code": transition.wait.reason_code,
+                        "next_eligible_at": (
+                            transition.wait.next_eligible_at.isoformat()
+                        ),
+                        "expires_at": (
+                            transition.wait.expires_at.isoformat()
+                            if transition.wait.expires_at is not None
+                            else None
+                        ),
+                    }
+                    if transition.kind == "waiting_schedule"
+                    and transition.wait is not None
+                    else {
+                        "step_id": transition.step_id,
+                        "summary": transition.summary,
+                    }
+                ),
+            )
+        ]
+        if notification is not None:
+            events.append(
+                self._event(
+                    bundle,
+                    "notification.enqueued",
+                    bundle.task.status,
+                    _notification_event_payload(notification),
+                )
+            )
         return self.store.save(
             bundle,
             expected_version=lease.task_version,
+            events=events,
+        )
+
+    def record_notification_delivery(
+        self,
+        notification: NotificationEnvelope,
+    ) -> None:
+        """Project a durable-task notification transition into TaskEvent."""
+
+        if notification.origin_kind != "durable_task":
+            return
+        task_id = notification.origin_ref
+        if not task_id:
+            raise TaskTransitionRejected("durable notification has no task origin")
+        bundle = self.store.load(task_id)
+        if bundle is None:
+            raise TaskNotFound(task_id)
+        if (
+            bundle.task.user_id != notification.owner.user_id
+            or bundle.task.agent_id != notification.owner.agent_id
+        ):
+            raise TaskAccessDenied(task_id)
+        payload = _notification_event_payload(notification)
+        event_type = f"notification.{notification.status}"
+        existing = self.store.list_events(task_id, after=0, limit=500)
+        if any(
+            event.event_type == event_type
+            and event.payload.get("delivery_id") == notification.delivery_id
+            and event.payload.get("attempt_count") == notification.attempt_count
+            for event in existing
+        ):
+            return
+        self.store.save(
+            bundle,
+            expected_version=bundle.task.version,
             events=[
                 self._event(
                     bundle,
                     event_type,
                     bundle.task.status,
-                    {"step_id": transition.step_id, "summary": transition.summary},
+                    payload,
                 )
             ],
+        )
+
+    def _enqueue_task_notification(
+        self,
+        bundle: DurableTaskBundle,
+        transition: TaskCheckpoint,
+    ) -> NotificationEnvelope | None:
+        request = transition.notification
+        if request is None:
+            return None
+        if self.notification_outbox is None:
+            raise TaskTransitionRejected(
+                "durable notification outbox is not configured"
+            )
+        task_id = bundle.task.task_id
+        namespaced_key = hashlib.sha256(
+            f"durable_task|{task_id}|{request.idempotency_key}".encode()
+        ).hexdigest()
+        notification = NotificationEnvelope(
+            owner=NotificationOwner(
+                user_id=bundle.task.user_id,
+                agent_id=bundle.task.agent_id,
+            ),
+            channel=request.channel,
+            destination_ref=f"user:{bundle.task.user_id}",
+            message=request.message,
+            idempotency_key=namespaced_key,
+            rule_id=f"durable_task:{task_id}",
+            origin_kind="durable_task",
+            origin_ref=task_id,
+            evidence_ids=request.evidence_ids,
+            evidence_fingerprint=request.evidence_fingerprint,
+            deliver_after=request.deliver_after,
+            expires_at=request.expires_at,
+        )
+        return self.notification_outbox.enqueue_notification(notification)
+
+    def _resume_scheduled_wait(
+        self,
+        *,
+        lease: DurableTaskLease,
+        bundle: DurableTaskBundle,
+        resumed_at: datetime,
+    ) -> tuple[DurableTaskLease, DurableTaskBundle]:
+        wait = bundle.task.wait
+        if wait is None or wait.kind != "schedule":
+            raise TaskConflict("claimed task does not have a scheduled wait")
+        if wait.next_eligible_at > resumed_at:
+            raise TaskConflict("scheduled task was claimed before it became due")
+        if wait.step_id is not None:
+            run = self._step_run(bundle, wait.step_id)
+            if run is None or run.status != "waiting_schedule":
+                raise TaskConflict("scheduled wait step is not resumable")
+            run.status = "ready"
+        bundle.task.wait = None
+        saved = self.store.save(
+            bundle,
+            expected_version=lease.task_version,
+            events=[
+                self._event(
+                    bundle,
+                    "task.wake_received",
+                    bundle.task.status,
+                    {
+                        "reason_code": wait.reason_code,
+                        "scheduled_for": wait.next_eligible_at.isoformat(),
+                    },
+                ),
+                self._event(
+                    bundle,
+                    "task.resumed",
+                    bundle.task.status,
+                    {"step_id": wait.step_id, "resume_source": "schedule"},
+                ),
+            ],
+        )
+        return (
+            lease.model_copy(update={"task_version": saved.task.version}),
+            saved,
         )
 
     def _validate_plan(self, plan: TaskPlan) -> None:
@@ -677,7 +924,10 @@ class DurableTaskService:
 
     @staticmethod
     def _require_identity(identity: RequestIdentity, bundle: DurableTaskBundle) -> None:
-        if bundle.task.user_id != identity.user_id:
+        if (
+            bundle.task.user_id != identity.user_id
+            or bundle.task.agent_id != identity.agent_id
+        ):
             raise TaskAccessDenied(bundle.task.task_id)
 
     @staticmethod
@@ -715,10 +965,9 @@ class DurableTaskService:
                     step.tool_name,
                 ),
                 tool_name=step.tool_name,
-                side_effect_level=(
-                    self.registry.get_spec(step.tool_name).side_effect.level
-                    if step.tool_name
-                    else "none"
+                side_effect_level=_durable_side_effect_level(
+                    self.registry,
+                    step.tool_name,
                 ),
             )
             for step in plan_version.plan.steps
@@ -759,6 +1008,31 @@ def _idempotency_key(
 ) -> str:
     raw = f"{task_id}:{plan_version}:{step_id}:{tool_name or ''}"
     return "task:" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
+
+
+def _durable_side_effect_level(
+    registry: ToolRegistry,
+    tool_name: str | None,
+) -> str:
+    if tool_name is None:
+        return "none"
+    return (
+        "external_read"
+        if registry.get_spec(tool_name).category == "read"
+        else "possible_write"
+    )
+
+
+def _notification_event_payload(
+    notification: NotificationEnvelope,
+) -> dict[str, object]:
+    return {
+        "delivery_id": notification.delivery_id,
+        "channel": notification.channel,
+        "status": notification.status,
+        "attempt_count": notification.attempt_count,
+        "reason_code": notification.last_reason_code,
+    }
 
 
 def _confirmation_digest(

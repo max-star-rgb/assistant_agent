@@ -453,6 +453,16 @@ The API derives identity from the authenticated context (or explicit local/offli
 
 SQLite tasks survive app restart and expired leases can be reclaimed, but this is not a distributed queue or exactly-once protocol. A step attempt is committed before the external call; expired read-only attempts may retry within budget, while possible writes with uncertain commit state stop at `outcome_unknown` for operator/user resolution. API cancellation also raises a process-local cooperative task token; cross-process cancellation is outside the single-host first-version boundary.
 
+Durable tasks may checkpoint into `waiting_schedule` with a structured UTC
+`next_eligible_at`, reason code, bounded summary and optional expiry. SQLite
+persists the due time separately from the task JSON so workers do not claim,
+lease or consume model/tool budget for an early task. Once due, the service
+atomically clears the wait, restores the waiting step to `ready`, records
+`task.wake_received` / `task.resumed`, and admits one new bounded quantum.
+Cancelled tasks never resume; an expired scheduled wait fails with
+`durable_wait_expired`. This is worker scheduling, not a long-lived Gateway run,
+WebSocket or coroutine.
+
 ## Realtime Semantic Interrupt Arbitration
 
 Gateway supports two interrupt models at the lifecycle layer:

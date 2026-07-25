@@ -12,8 +12,8 @@ from typing import Iterator
 from uuid import uuid4
 
 from assistant_agent.schemas.agent_communication import DEFAULT_AGENT_ID
+from assistant_agent.schemas.notifications import NotificationEnvelope
 from assistant_agent.schemas.proactive_wake import (
-    NotificationEnvelope,
     WakeOwner,
     WakeRule,
     WakeRuleState,
@@ -451,6 +451,61 @@ class SQLiteProactiveWakeStore:
         return [
             NotificationEnvelope.model_validate_json(str(row["envelope_json"])) for row in rows
         ]
+
+    def enqueue_notification(
+        self,
+        notification: NotificationEnvelope,
+    ) -> NotificationEnvelope:
+        """Persist a transport-neutral notification idempotently."""
+
+        created_at = datetime.now(timezone.utc)
+        with self._connect() as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            cursor = connection.execute(
+                """
+                INSERT INTO notification_outbox (
+                    delivery_id, idempotency_key, user_id, agent_id,
+                    rule_id, status, envelope_json, available_at, lease_until,
+                    attempt_count, last_reason_code, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(idempotency_key) DO NOTHING
+                """,
+                (
+                    notification.delivery_id,
+                    notification.idempotency_key,
+                    notification.owner.user_id,
+                    notification.owner.agent_id,
+                    notification.rule_id,
+                    notification.status,
+                    notification.model_dump_json(),
+                    _datetime_text(notification.deliver_after),
+                    _optional_datetime_text(notification.lease_until),
+                    notification.attempt_count,
+                    notification.last_reason_code,
+                    _datetime_text(created_at),
+                    _datetime_text(created_at),
+                ),
+            )
+            if cursor.rowcount > 0:
+                return notification
+            row = connection.execute(
+                """
+                SELECT envelope_json
+                FROM notification_outbox
+                WHERE idempotency_key = ?
+                """,
+                (notification.idempotency_key,),
+            ).fetchone()
+            if row is None:  # pragma: no cover - defensive SQLite boundary
+                raise RuntimeError("notification idempotency conflict was not readable")
+            existing = NotificationEnvelope.model_validate_json(
+                str(row["envelope_json"])
+            )
+            if not _same_notification_identity(existing, notification):
+                raise sqlite3.IntegrityError(
+                    "notification idempotency conflict identity mismatch"
+                )
+            return existing
 
     def claim_due_notifications(
         self,
@@ -1056,8 +1111,11 @@ def _same_notification_identity(
     return (
         existing.owner == candidate.owner
         and existing.rule_id == candidate.rule_id
+        and existing.origin_kind == candidate.origin_kind
+        and existing.origin_ref == candidate.origin_ref
         and existing.evidence_fingerprint == candidate.evidence_fingerprint
         and existing.channel == candidate.channel
+        and existing.destination_ref == candidate.destination_ref
     )
 
 

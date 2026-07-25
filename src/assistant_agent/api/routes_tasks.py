@@ -207,6 +207,11 @@ def _task_response(bundle: Any) -> DurableTaskResponse:
             "updated_at": bundle.task.updated_at,
             "started_at": bundle.task.started_at,
             "terminal_at": bundle.task.terminal_at,
+            "wait": (
+                bundle.task.wait.model_dump(mode="json")
+                if bundle.task.wait is not None
+                else None
+            ),
         },
         plan=plan.plan.model_dump(mode="json"),
         steps=steps,

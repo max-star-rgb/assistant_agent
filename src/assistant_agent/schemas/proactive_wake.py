@@ -6,8 +6,12 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field, model_validator
 
-from assistant_agent.schemas.agent_communication import DEFAULT_AGENT_ID
-from assistant_agent.schemas.identity import RequestIdentity
+from assistant_agent.schemas.notifications import (
+    DeliveryResult as DeliveryResult,
+    DeliveryStatus as DeliveryStatus,
+    NotificationEnvelope,
+    NotificationOwner,
+)
 
 WakeSignalKind = Literal["provider_event", "reconcile_tick", "manual"]
 WakeConditionMode = Literal["changed", "semantic"]
@@ -27,15 +31,6 @@ WakeRunStatus = Literal[
     "delivered",
     "delivery_failed",
 ]
-DeliveryStatus = Literal[
-    "queued",
-    "leased",
-    "sent",
-    "acknowledged",
-    "retry_wait",
-    "expired",
-    "dead_letter",
-]
 Severity = Literal["low", "normal", "high"]
 
 
@@ -47,16 +42,7 @@ def _id(prefix: str) -> str:
     return f"{prefix}_{uuid4().hex}"
 
 
-class WakeOwner(BaseModel):
-    user_id: str = Field(min_length=1)
-    agent_id: str = Field(default=DEFAULT_AGENT_ID, min_length=1)
-
-    @classmethod
-    def from_identity(cls, identity: RequestIdentity) -> "WakeOwner":
-        return cls(
-            user_id=identity.user_id,
-            agent_id=identity.agent_id,
-        )
+WakeOwner = NotificationOwner
 
 
 class WakeTriggerSpec(BaseModel):
@@ -181,31 +167,6 @@ class WakeRun(BaseModel):
     delivery_id: str | None = None
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
-
-
-class NotificationEnvelope(BaseModel):
-    delivery_id: str = Field(default_factory=lambda: _id("wake_delivery"), min_length=1)
-    owner: WakeOwner
-    channel: str = Field(min_length=1)
-    destination_ref: str = Field(min_length=1)
-    message: str = Field(min_length=1, max_length=500)
-    idempotency_key: str = Field(min_length=1)
-    rule_id: str = Field(min_length=1)
-    evidence_ids: list[str] = Field(min_length=1)
-    evidence_fingerprint: str = Field(min_length=1)
-    deliver_after: datetime
-    expires_at: datetime
-    status: DeliveryStatus = "queued"
-    attempt_count: int = Field(default=0, ge=0)
-    lease_until: datetime | None = None
-    provider_message_id: str | None = None
-    last_reason_code: str | None = None
-
-
-class DeliveryResult(BaseModel):
-    accepted: bool
-    provider_message_id: str | None = None
-    error_code: str | None = None
 
 
 class ProactiveWakeRunResult(BaseModel):

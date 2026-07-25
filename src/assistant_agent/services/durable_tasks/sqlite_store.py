@@ -39,6 +39,7 @@ class SQLiteTaskStore:
                   task_id TEXT PRIMARY KEY,
                   user_id TEXT NOT NULL,
                   status TEXT NOT NULL,
+                  next_eligible_at TEXT,
                   version INTEGER NOT NULL,
                   lease_owner TEXT,
                   lease_token TEXT,
@@ -52,8 +53,25 @@ class SQLiteTaskStore:
                   event_json TEXT NOT NULL,
                   PRIMARY KEY (task_id, cursor)
                 );
-                CREATE INDEX IF NOT EXISTS idx_durable_tasks_claim
-                ON durable_tasks(status, lease_expires_at, updated_at);
+                """
+            )
+            columns = {
+                str(row["name"])
+                for row in self._connection.execute(
+                    "PRAGMA table_info(durable_tasks)"
+                ).fetchall()
+            }
+            if "next_eligible_at" not in columns:
+                self._connection.execute(
+                    "ALTER TABLE durable_tasks ADD COLUMN next_eligible_at TEXT"
+                )
+            self._connection.execute("DROP INDEX IF EXISTS idx_durable_tasks_claim")
+            self._connection.execute(
+                """
+                CREATE INDEX idx_durable_tasks_claim
+                ON durable_tasks(
+                  status, next_eligible_at, lease_expires_at, updated_at
+                )
                 """
             )
 
@@ -106,7 +124,8 @@ class SQLiteTaskStore:
                 updated = self._connection.execute(
                     """
                     UPDATE durable_tasks
-                    SET user_id = ?, status = ?, version = ?, lease_owner = ?,
+                    SET user_id = ?, status = ?, next_eligible_at = ?,
+                        version = ?, lease_owner = ?,
                         lease_token = ?, lease_expires_at = ?, bundle_json = ?, updated_at = ?
                     WHERE task_id = ? AND version = ?
                     """,
@@ -147,11 +166,21 @@ class SQLiteTaskStore:
                 row = self._connection.execute(
                     """
                     SELECT task_id, bundle_json FROM durable_tasks
-                    WHERE status IN ('queued', 'running', 'replanning')
+                    WHERE status IN (
+                      'queued', 'running', 'replanning', 'waiting_schedule'
+                    )
+                      AND (
+                        status != 'waiting_schedule'
+                        OR (
+                          next_eligible_at IS NOT NULL
+                          AND next_eligible_at <= ?
+                        )
+                      )
                       AND (lease_expires_at IS NULL OR lease_expires_at <= ?)
-                    ORDER BY updated_at, task_id LIMIT 1
+                    ORDER BY COALESCE(next_eligible_at, updated_at), task_id
+                    LIMIT 1
                     """,
-                    (now.isoformat(),),
+                    (now.isoformat(), now.isoformat()),
                 ).fetchone()
                 if row is None:
                     self._connection.commit()
@@ -161,7 +190,7 @@ class SQLiteTaskStore:
                 task.lease_owner = worker_id
                 task.lease_token = secrets.token_urlsafe(18)
                 task.lease_expires_at = now + timedelta(seconds=lease_seconds)
-                if task.status == "queued":
+                if task.status in {"queued", "waiting_schedule"}:
                     task.status = "running"
                     task.started_at = task.started_at or now
                 previous_version = task.version
@@ -254,9 +283,10 @@ class SQLiteTaskStore:
         self._connection.execute(
             """
             INSERT INTO durable_tasks (
-              task_id, user_id, status, version, lease_owner, lease_token,
+              task_id, user_id, status, next_eligible_at, version,
+              lease_owner, lease_token,
               lease_expires_at, bundle_json, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (bundle.task.task_id,) + self._bundle_values(bundle),
         )
@@ -267,6 +297,11 @@ class SQLiteTaskStore:
         return (
             task.user_id,
             task.status,
+            (
+                task.wait.next_eligible_at.isoformat()
+                if task.wait is not None
+                else None
+            ),
             task.version,
             task.lease_owner,
             task.lease_token,

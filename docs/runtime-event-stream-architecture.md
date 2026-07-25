@@ -158,6 +158,24 @@ the same events are yielded. At service level, streamed events are also present
 in `AssistantRunArtifacts.events`. A worker exception is re-raised after
 already-enqueued events drain and is also re-raised by `result()`.
 
+## Durable Task Event Subscription
+
+长时任务进度流与单次前台运行流是两个独立契约。`TaskEventSubscription`
+通过 `DurableTaskService.subscribe_events()` 对持久化 `TaskEvent` 提供
+cursor-based replay/tail：
+
+- `after` 表示最后已确认消费的 event cursor，重连后只读取更大的 cursor；
+- 订阅采用 pull-based async iterator，没有独立 producer queue，消费者读取速度自然形成
+  backpressure；
+- 每次读取仍经过 `DurableTaskService` 的 identity 校验，事件流不能绕过任务归属边界；
+- 取消或关闭订阅只结束观察，不取消 durable task；
+- 默认在任务进入 waiting 或 terminal quiescent 状态且已有事件排空后结束订阅，调用方后续可从
+  cursor 重连；`stop_on_quiescent=False` 只用于需要持续 tail 的内部消费者；
+- 订阅只读取持久化事实，不拥有 task transition、lease、checkpoint 或 terminal result。
+
+因此 `AgentRunStream` 仍表示一次前台 runtime run，`TaskEventSubscription` 表示一个可跨进程
+重启的 durable task 的观察窗口；两者不能互相替代，也不应共享内存队列作为事实源。
+
 ## Thread Model And Ordering
 
 The core runtime and shared assistant service remain synchronous sources of

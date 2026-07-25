@@ -8,13 +8,13 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from assistant_agent.schemas.proactive_wake import (
     AttentionDecision,
-    NotificationEnvelope,
     QuietHours,
     WakeDecision,
     WakeEvidence,
     WakeRule,
     WakeRuleState,
 )
+from assistant_agent.schemas.notifications import NotificationEnvelope
 from assistant_agent.services.provider_errors import sanitize_error_message
 
 _SEVERITY_RANK = {"low": 0, "normal": 1, "high": 2}

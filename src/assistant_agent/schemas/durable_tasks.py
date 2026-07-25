@@ -7,12 +7,14 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
+from assistant_agent.schemas.agent_communication import DEFAULT_AGENT_ID
 from assistant_agent.schemas.planning import TaskPlan
 
 
 TaskStatus = Literal[
     "queued",
     "running",
+    "waiting_schedule",
     "waiting_confirmation",
     "waiting_input",
     "replanning",
@@ -28,6 +30,7 @@ TaskStepStatus = Literal[
     "running",
     "succeeded",
     "failed",
+    "waiting_schedule",
     "waiting_confirmation",
     "waiting_input",
     "skipped",
@@ -41,9 +44,52 @@ def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+class TaskWaitState(BaseModel):
+    """Structured, persisted reason why a durable task is not currently claimable."""
+
+    kind: Literal["schedule"]
+    reason_code: str = Field(min_length=1, max_length=120)
+    summary: str = Field(min_length=1, max_length=500)
+    step_id: str | None = Field(default=None, min_length=1)
+    next_eligible_at: datetime
+    expires_at: datetime | None = None
+
+    @model_validator(mode="after")
+    def validate_schedule(self) -> "TaskWaitState":
+        if self.next_eligible_at.tzinfo is None:
+            raise ValueError("next_eligible_at must be timezone-aware")
+        if self.expires_at is not None:
+            if self.expires_at.tzinfo is None:
+                raise ValueError("expires_at must be timezone-aware")
+            if self.expires_at <= self.next_eligible_at:
+                raise ValueError("expires_at must be later than next_eligible_at")
+        return self
+
+
+class TaskNotificationRequest(BaseModel):
+    """A transport-neutral notification requested by one durable quantum."""
+
+    channel: str = Field(default="mock_app", min_length=1, max_length=80)
+    message: str = Field(min_length=1, max_length=500)
+    idempotency_key: str = Field(min_length=1, max_length=240)
+    evidence_ids: list[str] = Field(min_length=1)
+    evidence_fingerprint: str = Field(min_length=1, max_length=240)
+    deliver_after: datetime
+    expires_at: datetime
+
+    @model_validator(mode="after")
+    def validate_delivery_window(self) -> "TaskNotificationRequest":
+        if self.deliver_after.tzinfo is None or self.expires_at.tzinfo is None:
+            raise ValueError("notification timestamps must be timezone-aware")
+        if self.expires_at <= self.deliver_after:
+            raise ValueError("notification expires_at must follow deliver_after")
+        return self
+
+
 class TaskRecord(BaseModel):
     task_id: str = Field(min_length=1)
     user_id: str = Field(min_length=1)
+    agent_id: str = Field(default=DEFAULT_AGENT_ID, min_length=1)
     session_id: str = Field(min_length=1)
     ingress_run_id: str = Field(min_length=1)
     objective: str = Field(min_length=1)
@@ -56,6 +102,7 @@ class TaskRecord(BaseModel):
     lease_owner: str | None = None
     lease_token: str | None = None
     lease_expires_at: datetime | None = None
+    wait: TaskWaitState | None = None
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
     started_at: datetime | None = None
@@ -162,7 +209,7 @@ class DurableTaskSnapshot(BaseModel):
     ready_step_ids: list[str]
     completed_steps: list[dict[str, str]]
     artifact_refs: list[TaskArtifactRef]
-    wait: dict[str, Any] | None = None
+    wait: TaskWaitState | None = None
     remaining_budget: dict[str, int | float]
 
 
@@ -192,6 +239,7 @@ class TaskCheckpoint(BaseModel):
     kind: Literal[
         "tool_succeeded",
         "tool_failed",
+        "waiting_schedule",
         "waiting_confirmation",
         "waiting_input",
         "plan_revised",
@@ -209,3 +257,15 @@ class TaskCheckpoint(BaseModel):
     tool_input_digest: str | None = None
     confirmation_expires_at: datetime | None = None
     confirmation_summary: str | None = Field(default=None, max_length=1_000)
+    wait: TaskWaitState | None = None
+    notification: TaskNotificationRequest | None = None
+
+    @model_validator(mode="after")
+    def validate_wait_checkpoint(self) -> "TaskCheckpoint":
+        if self.kind == "waiting_schedule" and self.wait is None:
+            raise ValueError("waiting_schedule checkpoint requires wait")
+        if self.kind != "waiting_schedule" and self.wait is not None:
+            raise ValueError("wait is only valid for waiting_schedule checkpoint")
+        if self.notification is not None and self.kind != "completed":
+            raise ValueError("notification is only valid for completed checkpoint")
+        return self

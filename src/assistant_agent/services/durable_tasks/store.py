@@ -127,14 +127,23 @@ class InMemoryTaskStore:
             candidates = sorted(self._bundles.values(), key=lambda item: item.task.created_at)
             for bundle in candidates:
                 task = bundle.task
-                if task.status not in {"queued", "running", "replanning"}:
+                if task.status not in {
+                    "queued",
+                    "running",
+                    "replanning",
+                    "waiting_schedule",
+                }:
+                    continue
+                if task.status == "waiting_schedule" and (
+                    task.wait is None or task.wait.next_eligible_at > now
+                ):
                     continue
                 if task.lease_expires_at is not None and task.lease_expires_at > now:
                     continue
                 task.lease_owner = worker_id
                 task.lease_token = secrets.token_urlsafe(18)
                 task.lease_expires_at = now + timedelta(seconds=lease_seconds)
-                if task.status == "queued":
+                if task.status in {"queued", "waiting_schedule"}:
                     task.status = "running"
                     task.started_at = task.started_at or now
                 task.version += 1

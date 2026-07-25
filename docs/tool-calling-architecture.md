@@ -389,6 +389,13 @@ run 终态为 `completed`，响应通过 `degraded` 和 `handled_tool_failures` 
 幂等语义不再由通用 ToolSpec 治理。具体 provider 若需要 idempotency key，应在领域 schema/adapter 或
 durable task 协议中处理；通用 executor 不维护进程内重复调用 ledger。
 
+durable task 的通知同样不属于 ToolExecutor 的渠道副作用。一个 quantum 只能在 terminal checkpoint
+中提交 `TaskNotificationRequest`；`DurableTaskService` 使用任务的可信 `user_id` / `agent_id`
+绑定 owner 和 `destination_ref`，再写入共享 `NotificationEnvelope` outbox。通知正文和目的地址不进入
+TaskEvent，事件只记录 delivery id、channel、状态、尝试次数和安全 reason code。实际发送由
+`NotificationDeliveryWorker` 通过 lease、重试、过期和 dead-letter 状态机完成；订阅取消、worker
+重启或相同 idempotency key 重放都不能制造第二次发送。默认测试只使用 mock transport。
+
 工具不再各自声明 trace 脱敏策略。完整内容开关是本地运行级事实：默认关闭；开启后仍排除
 `raw_provider_payload`、`provider_raw_response` 和内联大块数据，并继续执行 secret、base64、绝对路径
 和长度清理。real 模式不应开启该变量。

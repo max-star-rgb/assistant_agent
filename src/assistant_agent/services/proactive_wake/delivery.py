@@ -5,11 +5,11 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Callable, Protocol
 
-from assistant_agent.schemas.proactive_wake import (
+from assistant_agent.schemas.notifications import (
     DeliveryResult,
     NotificationEnvelope,
-    utc_now,
 )
+from assistant_agent.schemas.proactive_wake import utc_now
 from assistant_agent.services.proactive_wake.activity import (
     NullUserActivityReader,
     UserActivityReader,
@@ -18,6 +18,7 @@ from assistant_agent.services.proactive_wake.store import (
     SQLiteProactiveWakeStore,
     StaleNotificationLeaseError,
 )
+from assistant_agent.services.notifications import NotificationDeliveryObserver
 
 
 class ProactiveNotificationTransport(Protocol):
@@ -49,6 +50,7 @@ class NotificationDeliveryWorker:
         activity_reader: UserActivityReader | None = None,
         now_fn: Callable[[], datetime] = utc_now,
         max_attempts: int = 3,
+        delivery_observer: NotificationDeliveryObserver | None = None,
     ) -> None:
         if max_attempts <= 0:
             raise ValueError("max_attempts must be positive")
@@ -57,6 +59,7 @@ class NotificationDeliveryWorker:
         self.activity_reader = activity_reader or NullUserActivityReader()
         self.now_fn = now_fn
         self.max_attempts = max_attempts
+        self.delivery_observer = delivery_observer
 
     async def drain_once(self, *, limit: int = 20) -> list[NotificationEnvelope]:
         now = self.now_fn()
@@ -141,4 +144,7 @@ class NotificationDeliveryWorker:
                 )
             except StaleNotificationLeaseError:
                 continue
+        if self.delivery_observer is not None:
+            for notification in completed:
+                self.delivery_observer.record_notification_delivery(notification)
         return completed

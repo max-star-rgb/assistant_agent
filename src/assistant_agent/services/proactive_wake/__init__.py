@@ -1,11 +1,13 @@
 """Stable schema contracts for proactive wake services."""
 
-from assistant_agent.schemas.proactive_wake import (
-    AttentionDecision,
-    AttentionOutcome,
+from assistant_agent.schemas.notifications import (
     DeliveryResult,
     DeliveryStatus,
     NotificationEnvelope,
+)
+from assistant_agent.schemas.proactive_wake import (
+    AttentionDecision,
+    AttentionOutcome,
     ProactiveWakeRunResult,
     QuietHours,
     Severity,
