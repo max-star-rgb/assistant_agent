@@ -7,15 +7,15 @@ from assistant_agent.agent.runtime import AgentGraphRuntime
 from assistant_agent.config import ProviderConfig
 from assistant_agent.schemas.web_fetch import WebFetchRequest
 from assistant_agent.schemas.web_search import WebSearchRequest
-from assistant_agent.services.web_fetch_adapter import (
+from assistant_agent.tools.plugins.builtin.web_access.fetch_backend import (
     TavilyWebFetchAdapter,
     create_web_fetch_adapter,
 )
-from assistant_agent.services.web_search_adapter import (
+from assistant_agent.tools.plugins.builtin.web_access.search_backend import (
     TavilyWebSearchAdapter,
     create_web_search_adapter,
 )
-from assistant_agent.tool_plugins.builtin.web_access.plugin import web_provider_ready
+from assistant_agent.tools.plugins.builtin.web_access.plugin import web_provider_ready
 
 
 class _FakeResponse:
@@ -59,7 +59,8 @@ def test_tavily_search_adapter_maps_request_and_normalizes_response(
         )
 
     monkeypatch.setattr(
-        "assistant_agent.services.web_search_adapter.urllib.request.urlopen",
+        "assistant_agent.tools.plugins.builtin.web_access."
+        "search_backend.urllib.request.urlopen",
         urlopen,
     )
     adapter = TavilyWebSearchAdapter(
@@ -116,7 +117,8 @@ def test_tavily_fetch_adapter_maps_extract_and_normalizes_response(
         )
 
     monkeypatch.setattr(
-        "assistant_agent.services.web_fetch_adapter.urllib.request.urlopen",
+        "assistant_agent.tools.plugins.builtin.web_access."
+        "fetch_backend.urllib.request.urlopen",
         urlopen,
     )
     adapter = TavilyWebFetchAdapter(

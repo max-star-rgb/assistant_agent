@@ -49,7 +49,8 @@ from assistant_agent.services.trace_store import (
 )
 from assistant_agent.tools.base import ToolContext
 from assistant_agent.tools.input_binding import bind_runtime_tool_input
-from assistant_agent.tools.registry import ToolRegistry, create_default_registry
+from assistant_agent.tools.plugins.registry_factory import create_default_registry
+from assistant_agent.tools.registry import ToolRegistry
 
 
 class ToolExecutor:

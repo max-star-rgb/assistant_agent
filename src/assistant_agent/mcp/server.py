@@ -14,7 +14,8 @@ from assistant_agent.schemas.assistant_decision import AssistantDecision
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.services.provider_errors import sanitize_error_detail, sanitize_error_message
 from assistant_agent.agent.tool_executor import ToolExecutor
-from assistant_agent.tools.registry import ToolRegistry, create_default_registry
+from assistant_agent.tools.plugins.registry_factory import create_default_registry
+from assistant_agent.tools.registry import ToolRegistry
 
 
 MCP_TOOL_NAMES = ("agent_run", "tool_list", "tool_run", "demo_flow_run")

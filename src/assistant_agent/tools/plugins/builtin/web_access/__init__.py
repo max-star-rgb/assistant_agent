@@ -1,0 +1,1 @@
+"""Web access Tool plugin."""

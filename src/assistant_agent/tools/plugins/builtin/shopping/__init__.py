@@ -1,0 +1,1 @@
+"""Shopping Tool plugin."""

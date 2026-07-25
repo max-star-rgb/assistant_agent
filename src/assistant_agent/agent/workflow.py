@@ -11,7 +11,8 @@ from assistant_agent.agent.tool_input_builder import build_tool_input
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.schemas.tools import ToolResult
 from assistant_agent.services.run_history import RunHistoryStore
-from assistant_agent.tools.registry import ToolRegistry, create_default_registry
+from assistant_agent.tools.plugins.registry_factory import create_default_registry
+from assistant_agent.tools.registry import ToolRegistry
 
 
 class AgentWorkflow:

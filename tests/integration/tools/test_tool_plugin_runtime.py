@@ -13,10 +13,10 @@ from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.schemas.tools import ToolResult
 from assistant_agent.services.chat_adapter import ChatRequest, ChatResult
 from assistant_agent.services.session_store import InMemorySessionStore
-from assistant_agent.tool_plugins.contracts import ToolPluginContext
-from assistant_agent.tool_plugins.contracts import ToolPluginDescriptor
+from assistant_agent.tools.plugins.contracts import ToolPluginContext
+from assistant_agent.tools.plugins.contracts import ToolPluginDescriptor
 from assistant_agent.tools.base import ToolBase, ToolContext
-from assistant_agent.tools.registry import create_default_registry
+from assistant_agent.tools.plugins.registry_factory import create_default_registry
 
 
 class _ScriptedChatAdapter:

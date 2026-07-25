@@ -16,8 +16,9 @@ from assistant_agent.schemas.tool_observation import observation_from_tool_resul
 from assistant_agent.services.event_sink import ListEventSink
 from assistant_agent.tools.loader import LocalToolLoadIssue, load_local_tools
 from assistant_agent.tools.loader import register_local_tools
-from assistant_agent.tool_plugins.assembly import ToolPluginAssemblyError
-from assistant_agent.tools.registry import ToolRegistry, create_default_registry
+from assistant_agent.tools.plugins.assembly import ToolPluginAssemblyError
+from assistant_agent.tools.plugins.registry_factory import create_default_registry
+from assistant_agent.tools.registry import ToolRegistry
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -172,12 +172,22 @@ MCP mapping 逐个注册，未映射的能力不进入 Registry。
 runtime constant binding 注入，长文件通过结果中的 `next_cursor` 分页；工具只返回受控文本，
 内容理解和总结仍由主 assistant loop 完成。
 
+邮件只读能力由独立 `email_access` Plugin 装配，不归入
+`personal_assistant_mcp`，也不在顶层 `services/` 新增 Provider 专用 adapter。该 Plugin 暴露稳定
+`email_search` / `email_read`，内部私有 backend 将它们映射到显式配置的 Workspace MCP
+`search_gmail_messages` / `get_gmail_messages_content_batch`。邮件正文 observation 标记为
+`untrusted_external_content` 和 `do_not_execute`，只作为主模型分析证据；首版不注册发送、草稿、
+标签修改或附件下载工具。
+
 进程内 Tool 插件采用 L2 启动时可插拔协议。每个插件声明
 `ToolPluginDescriptor(plugin_id, plugin_version, api_version="tool_plugin_v1")`，并通过
-`build_tools(context)` 构造 Tool。Plugin 是独立的启动期装配机制，不是 Tool 契约的子类型，因此插件
-框架位于顶层 `tool_plugins/`，内置装配单元位于
-`tool_plugins/builtin/<assembly_boundary>/`；`defaults.py` 只保留受信任内置插件的显式清单，不扫描
-目录。`tools/` 只保留 Tool 协议、参数绑定、Registry、本地兼容加载和 CLI，不反向拥有 Plugin。
+`build_tools(context)` 构造 Tool。Plugin 是独立的启动期装配机制，不是 Tool 契约的子类型；整个
+Tool 子系统统一位于 `tools/`，其中内核协议、参数绑定和 Registry 保留在根层，Plugin 框架位于
+`tools/plugins/`，内置装配单元位于
+`tools/plugins/builtin/<assembly_boundary>/`。`defaults.py` 只保留受信任内置插件的显式清单，不扫描
+目录；Tool 内核不反向拥有 Plugin，只有 composition root 知道具体内置 Plugin。
+旧 `assistant_agent.tool_plugins.contracts` 仅保留稳定外部 Plugin contract 的兼容转发，不再拥有
+assembly、默认清单、内置 Plugin 或领域实现；新增代码统一使用 `assistant_agent.tools.plugins`。
 
 部署方可以通过逗号分隔的 `MULTIMODAL_AGENT_TOOL_PLUGIN_MODULES` 显式列出可信 Python module；每个
 module 必须导出单个 `__assistant_tool_plugin__`。未配置 module 不会被 import，配置错误、协议不兼容、
@@ -199,7 +209,7 @@ Tool 仍默认不暴露，必须由宿主配置或每轮结构化显式 opt-in�
 Plugin 按共享 Provider、配置、依赖和生命周期划分，不按 Tool 数量或宽泛业务标签机械拆分。目录名与
 `plugin_id` 应表达独立装配边界，避免 `core`、`misc` 等兜底分类。共享同一 MCP mapping、runner 和
 adapter bundle 的 weather/calendar/contacts 归属 `personal_assistant_mcp`；配置与 readiness 独立的
-`vision_understanding`、`visual_image_search` 分别装配；本地 Python 执行独立归属
+`email_access`、`vision_understanding`、`visual_image_search` 分别装配；本地 Python 执行独立归属
 `python_execution`。新增已有 Plugin 内的普通 Tool 只修改该 Plugin 目录及其测试；
 新增内置 Plugin 额外在 `defaults.py` 可信清单登记一次；新增外部 Plugin 只增加独立 module 和部署
 配置。普通 Tool 的增删不得要求修改 Registry、Executor、Validator、assistant loop、Prompt/Context
@@ -216,7 +226,17 @@ source、seal 状态或 generation，也不会为了展示而重复装配插件�
 executor 读取的是同一份契约。新增或移除一个内置能力包时，只增删对应插件目录及 `defaults.py`
 可信清单；新增普通外部插件只需提供 module 导出并修改部署配置，无需修改 Registry、Executor、
 `tool_ids.py` 或中心 Tool name 表。修改已有插件内的 Tool 时只改该插件目录，不再向
-`create_default_registry()` 添加领域工具的实现、实例化或 Provider readiness 分支。
+`create_default_registry()` 添加领域工具的实现、实例化或 Provider readiness 分支。`ToolRegistry`
+本身只保留在 `tools/registry.py`；默认 Plugin、MCP proxy 和 realtime observer 的启动装配位于
+`tools/plugins/registry_factory.py`，避免工具内核反向导入具体内置 Plugin。
+
+weather、calendar、contacts 的 mock adapter 和 MCP backend 是
+`personal_assistant_mcp` 的私有实现，分别位于该 Plugin 的 `adapters.py`、`backend.py`；顶层
+`services/` 不再保存仅由该 Plugin 消费的 Provider adapter。只有出现跨 Plugin、跨入口的真实复用或
+独立应用生命周期时，能力实现才提升为共享 service。同样，image generation、shopping、visual image
+search、web access 和 Python execution 的单一 owner backend/sandbox 均保留在对应内置 Plugin；
+共享的 Provider 错误治理、Context、Session、Trace、durable task 和 realtime media 生命周期仍属于
+service。
 
 `visual_image_search` 与 `vision_understanding` 虽然同属视觉业务域，但 Provider 配置、readiness 和
 启停生命周期不同，因此分别归属 `VisualImageSearchPlugin` 与 `VisionUnderstandingPlugin`。原
@@ -397,7 +417,7 @@ MCP 定义先经过 server allowlist，再转换成 namespace tool name 和简�
 `category=read`；其他 MCP 工具是 `category=write` 且需要确认。注册后的 MCP proxy 走相同
 `ActionValidator -> ToolExecutor -> ToolRegistry` 链路。
 
-### 7.1 weather / calendar 真实 MCP 配置
+### 7.1 weather / calendar / email 真实 MCP 配置
 
 仓库提供 `deploy/mcp_servers.example.json` 作为无凭据模板。部署时复制到默认忽略的
 `.local/mcp_servers.json`，并只在本地配置实际 MCP Server 命令、参数和认证环境：
@@ -424,6 +444,9 @@ Provider 完整配置；MCP 配置不会绕过这个全局边界。
 weather、calendar 和 contacts 只有存在
 对应 `personal_assistant_tools` mapping 时才注册，映射的远端工具还必须同时位于 `allowed_tools`；
 weather、calendar search 和 contacts mapping 必须位于 `read_only_tools`。
+`email_search` 和 `email_read` 只有存在独立 `email_tools` mapping 时才注册；两个远端 Gmail 工具必须
+同时位于 `allowed_tools` 与 `read_only_tools`。推荐使用独立 `google_gmail_readonly` MCP server，并
+以 `workspace-mcp --tools gmail --read-only` 限制 OAuth scope 和远端工具集合。
 
 两个已支持 profile 都是显式配置，不根据工具名猜测 Provider：
 
@@ -458,9 +481,11 @@ workflow skill 只能调用已注册且 permission 匹配的工具。read 工具
 - `schemas/tools.py`：`ToolSpec`、`RunToolCatalog`、`ToolResult`、`ToolCallRecord`；
 - `schemas/tool_ids.py`：仅供既有跨层协议共享的稳定 Tool/capability 字符串；
 - `agent/legacy_tool_mapping.py`：旧 planner/intent action 与 capability 兼容映射；
-- `tool_plugins/contracts.py`、`assembly.py`、`defaults.py`：Plugin 协议、原子装配和可信内置清单；
-- `tool_plugins/builtin/<assembly_boundary>/`：按共享 Provider、配置、依赖和生命周期组织的内置 Plugin
-  及其 Tool 实现；
+- `tools/plugins/contracts.py`、`assembly.py`、`defaults.py`：Plugin 协议、原子装配和可信内置清单；
+- `tools/plugins/registry_factory.py`：默认 Plugin、MCP proxy 和 realtime observer 的 Registry
+  composition root；
+- `tools/plugins/builtin/<assembly_boundary>/`：按共享 Provider、配置、依赖和生命周期组织的内置 Plugin
+  及其 Tool、私有 adapter/backend 实现；
 - `tools/base.py`：公共 Tool 协议；
 - `tools/registry.py`：工具注册、查找和 Pydantic schema 提取；
 - `services/context/tool_catalog.py`：结构化目录装配；

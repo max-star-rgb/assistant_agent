@@ -43,6 +43,40 @@
         "calendar_user_email": "<your-google-account@example.com>"
       },
       "timeout_seconds": 60
+    },
+    {
+      "server_name": "google_gmail_readonly",
+      "transport": "stdio",
+      "command": [
+        "/home/lenovo1/miniconda3/envs/hello_agent/bin/uvx",
+        "--with",
+        "PySocks",
+        "--from",
+        "workspace-mcp==1.22.0",
+        "workspace-mcp",
+        "--tools",
+        "gmail",
+        "--read-only"
+      ],
+      "allowed_tools": [
+        "search_gmail_messages",
+        "get_gmail_messages_content_batch"
+      ],
+      "read_only_tools": [
+        "search_gmail_messages",
+        "get_gmail_messages_content_batch"
+      ],
+      "enabled_tools": [
+        "search_gmail_messages",
+        "get_gmail_messages_content_batch"
+      ],
+      "email_tools": {
+        "search": "search_gmail_messages",
+        "read_batch": "get_gmail_messages_content_batch",
+        "profile": "workspace_mcp_v1",
+        "user_email": "<your-google-account@example.com>"
+      },
+      "timeout_seconds": 60
     }
   ]
 }

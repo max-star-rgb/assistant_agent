@@ -29,12 +29,14 @@ from assistant_agent.services.otel_exporter import (
 )
 from assistant_agent.services.session_store import InMemorySessionStore
 from assistant_agent.services.trace_store import InMemoryTraceStore, TraceEvent
-from assistant_agent.services.personal_assistant_mcp_adapters import (
+from assistant_agent.tools.plugins.builtin.personal_assistant_mcp.backend import (
     configured_personal_assistant_tools,
 )
 from assistant_agent.mcp.config import load_mcp_server_configs_from_env
 from assistant_agent.schemas.tool_ids import WEATHER_TOOL_NAME
-from assistant_agent.tool_plugins.builtin.personal_assistant_mcp.tools import CalendarSearchTool
+from assistant_agent.tools.plugins.builtin.personal_assistant_mcp.tools import (
+    CalendarSearchTool,
+)
 from assistant_agent.tools.registry import ToolRegistry
 from evals.cases.langfuse.calendar_fixture import (
     CalendarEvalCreateTool,

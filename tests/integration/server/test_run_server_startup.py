@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 from assistant_agent.api import app as api_app
 from assistant_agent.config import ProviderConfig
-from assistant_agent.tools.registry import create_default_registry
+from assistant_agent.tools.plugins.registry_factory import create_default_registry
 
 
 def test_server_startup_reports_the_runtime_registry(monkeypatch) -> None:

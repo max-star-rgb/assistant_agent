@@ -69,7 +69,8 @@ from assistant_agent.services.trace_store import InMemoryTraceStore, TraceStore,
 from assistant_agent.services.turn_summary import append_runtime_turn_summary
 from assistant_agent.services.video_context import InMemoryVideoContextStore, VideoContextStore
 from assistant_agent.services.realtime_video_memory import RealtimeVideoMemoryStore
-from assistant_agent.tools.registry import ToolRegistry, create_default_registry
+from assistant_agent.tools.plugins.registry_factory import create_default_registry
+from assistant_agent.tools.registry import ToolRegistry
 
 if TYPE_CHECKING:
     from assistant_agent.services.durable_tasks.worker import TaskQuantumResult

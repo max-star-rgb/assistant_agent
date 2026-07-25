@@ -15,7 +15,7 @@ from assistant_agent.schemas.personal_assistant import (
     WeatherRequest,
 )
 from assistant_agent.schemas.tools import ToolResult
-from assistant_agent.services.personal_assistant_mcp_adapters import (
+from assistant_agent.tools.plugins.builtin.personal_assistant_mcp.backend import (
     MCPPersonalAssistantCalendarAdapter,
     MCPPersonalAssistantToolBinding,
     MCPPersonalAssistantWeatherAdapter,

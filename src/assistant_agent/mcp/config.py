@@ -27,6 +27,7 @@ MCPPersonalAssistantAdapterProfile = Literal[
     "mcp_weather_server_v1",
     "workspace_mcp_v1",
 ]
+MCPEmailAdapterProfile = Literal["passthrough", "workspace_mcp_v1"]
 
 
 class MCPPersonalAssistantToolMapping(BaseModel):
@@ -89,6 +90,49 @@ class MCPPersonalAssistantToolMapping(BaseModel):
         )
 
 
+class MCPEmailToolMapping(BaseModel):
+    """Map stable read-only email Tools to provider-specific MCP tools."""
+
+    search: str | None = None
+    read_batch: str | None = None
+    profile: MCPEmailAdapterProfile = "passthrough"
+    user_email: str | None = None
+
+    @model_validator(mode="after")
+    def validate_adapter_profile(self) -> "MCPEmailToolMapping":
+        if self.profile != "workspace_mcp_v1":
+            return self
+        if self.search and self.search != "search_gmail_messages":
+            raise ValueError(
+                "workspace_mcp_v1 requires email search=search_gmail_messages"
+            )
+        if (
+            self.read_batch
+            and self.read_batch != "get_gmail_messages_content_batch"
+        ):
+            raise ValueError(
+                "workspace_mcp_v1 requires "
+                "email read_batch=get_gmail_messages_content_batch"
+            )
+        if (self.search or self.read_batch) and not (
+            self.user_email and self.user_email.strip()
+        ):
+            raise ValueError("workspace_mcp_v1 email tools require user_email")
+        return self
+
+    def mapped_tool_names(self) -> list[str]:
+        return _dedupe(
+            [
+                tool_name
+                for tool_name in (self.search, self.read_batch)
+                if tool_name
+            ]
+        )
+
+    def read_only_tool_names(self) -> list[str]:
+        return self.mapped_tool_names()
+
+
 class MCPToolAdapterConfig(BaseModel):
     """Conservative allowlist for one inbound MCP tool source."""
 
@@ -123,6 +167,9 @@ class MCPServerConfig(BaseModel):
     personal_assistant_tools: MCPPersonalAssistantToolMapping = Field(
         default_factory=MCPPersonalAssistantToolMapping
     )
+    email_tools: MCPEmailToolMapping = Field(
+        default_factory=MCPEmailToolMapping
+    )
     namespace_prefix: str = "mcp"
     timeout_seconds: float = Field(default=10.0, gt=0)
 
@@ -137,12 +184,15 @@ class MCPServerConfig(BaseModel):
             return data
         merged = dict(data)
         for key, value in preset_defaults.items():
-            if key == "personal_assistant_tools":
+            if key in {"personal_assistant_tools", "email_tools"}:
                 mapping = dict(value)
                 explicit = merged.get(key)
                 if isinstance(explicit, dict):
                     mapping.update(explicit)
-                elif isinstance(explicit, MCPPersonalAssistantToolMapping):
+                elif isinstance(
+                    explicit,
+                    (MCPPersonalAssistantToolMapping, MCPEmailToolMapping),
+                ):
                     mapping.update(explicit.model_dump(exclude_none=True))
                 merged[key] = mapping
                 continue
@@ -164,19 +214,30 @@ class MCPServerConfig(BaseModel):
             if unknown:
                 raise ValueError(f"{field_name} contains tools outside allowed_tools: {unknown}")
         mapped_tools = set(self.personal_assistant_tools.mapped_tool_names())
-        mapped_unknown = sorted(mapped_tools - allowed)
-        if mapped_unknown:
-            raise ValueError(
-                f"personal_assistant_tools contains tools outside allowed_tools: {mapped_unknown}"
-            )
+        email_mapped_tools = set(self.email_tools.mapped_tool_names())
+        for mapping_name, mapped in (
+            ("personal_assistant_tools", mapped_tools),
+            ("email_tools", email_mapped_tools),
+        ):
+            mapped_unknown = sorted(mapped - allowed)
+            if mapped_unknown:
+                raise ValueError(
+                    f"{mapping_name} contains tools outside allowed_tools: "
+                    f"{mapped_unknown}"
+                )
         read_only = set(self.read_only_tools)
         mapped_read_tools = set(self.personal_assistant_tools.read_only_tool_names())
-        mapped_not_read_only = sorted(mapped_read_tools - read_only)
-        if mapped_not_read_only:
-            raise ValueError(
-                "personal_assistant_tools read mappings must also be in read_only_tools: "
-                f"{mapped_not_read_only}"
-            )
+        email_read_tools = set(self.email_tools.read_only_tool_names())
+        for mapping_name, mapped_read in (
+            ("personal_assistant_tools", mapped_read_tools),
+            ("email_tools", email_read_tools),
+        ):
+            mapped_not_read_only = sorted(mapped_read - read_only)
+            if mapped_not_read_only:
+                raise ValueError(
+                    f"{mapping_name} read mappings must also be in "
+                    f"read_only_tools: {mapped_not_read_only}"
+                )
         if self.transport == "stdio" and not self.command:
             raise ValueError("stdio MCP server requires command.")
         return self

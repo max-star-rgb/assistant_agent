@@ -42,7 +42,8 @@ from assistant_agent.services.event_sink import ListEventSink
 from assistant_agent.services.trace_store import InMemoryTraceStore
 from assistant_agent.tools.base import ToolBase, ToolContext, ToolInputValidationError
 from assistant_agent.tools.input_binding import ToolInputBinding
-from assistant_agent.tools.registry import ToolRegistry, create_default_registry
+from assistant_agent.tools.plugins.registry_factory import create_default_registry
+from assistant_agent.tools.registry import ToolRegistry
 
 
 class _DeclaredValidationInput(BaseModel):

@@ -1,1 +1,1 @@
-"""Trusted built-in tool plugins, kept import-isolated by capability module."""
+"""Deprecated compatibility namespace for external Tool Plugin contracts."""

@@ -9,8 +9,8 @@ from assistant_agent.schemas.file_access import FileReadRequest
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.services.chat_adapter import ChatRequest, ChatResult
 from assistant_agent.services.session_store import InMemorySessionStore
-from assistant_agent.tools.registry import create_default_registry
-from assistant_agent.tool_plugins.builtin.local_file_access.tool import (
+from assistant_agent.tools.plugins.registry_factory import create_default_registry
+from assistant_agent.tools.plugins.builtin.local_file_access.tool import (
     LocalFileReadTool,
 )
 

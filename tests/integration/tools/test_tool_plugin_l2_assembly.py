@@ -5,13 +5,13 @@ import sys
 
 import pytest
 
-from assistant_agent.tool_plugins.assembly import (
+from assistant_agent.tools.plugins.assembly import (
     ToolPluginAssemblyError,
     configured_plugin_modules_from_env,
 )
-from assistant_agent.tool_plugins import assembly as plugin_assembly
-from assistant_agent.tool_plugins.contracts import ToolPluginDescriptor
-from assistant_agent.tools.registry import create_default_registry
+from assistant_agent.tools.plugins import assembly as plugin_assembly
+from assistant_agent.tools.plugins.contracts import ToolPluginDescriptor
+from assistant_agent.tools.plugins.registry_factory import create_default_registry
 
 from tests.integration.tools.test_tool_plugin_l2 import _ConfiguredReadTool
 
