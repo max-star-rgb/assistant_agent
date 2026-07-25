@@ -7,6 +7,7 @@ from typing import Any
 from evals.cases.langfuse.experiment import (
     AgentExperimentTask,
     REAL_READONLY_DATASET_SEED,
+    REAL_SYSTEM_DATASET_SEED,
     RuntimeBundle,
     StatelessEvalEnvironment,
     build_real_readonly_runtime,
@@ -101,6 +102,21 @@ def _truncated_runtime_factory(_request: object, _case: object) -> RuntimeBundle
     )
 
 
+class _ExplodingRuntime:
+    def run_state(self, *_args: object, **_kwargs: object) -> object:
+        raise RuntimeError("peer closed incomplete response")
+
+    def close(self) -> None:
+        return None
+
+
+def _exploding_runtime_factory(_request: object, _case: object) -> RuntimeBundle:
+    return RuntimeBundle(
+        runtime=_ExplodingRuntime(),  # type: ignore[arg-type]
+        environment=StatelessEvalEnvironment(),
+    )
+
+
 def _seed_item(case_id: str) -> dict[str, Any]:
     seed = load_dataset_seed()
     item = next(item for item in seed.items if item.id == case_id)
@@ -152,6 +168,48 @@ def test_real_readonly_seed_contains_only_no_tool_and_weather_cases() -> None:
     )
 
 
+def test_real_system_seed_covers_production_like_capabilities() -> None:
+    seed = load_dataset_seed(REAL_SYSTEM_DATASET_SEED)
+
+    assert seed.dataset_name == "assistant-agent-real-system-v1"
+    assert len(seed.items) == 14
+    assert {
+        item.metadata["capability"] for item in seed.items
+    } == {
+        "real_no_tool",
+        "real_read_only_tool",
+        "real_confirmation_guard",
+    }
+    required_tools = {
+        tool
+        for item in seed.items
+        for tool in item.metadata.get("required_tools", [])
+    }
+    assert required_tools == {
+        "calendar_create",
+        "calendar_search",
+        "file_read",
+        "image_generation",
+        "shopping_search",
+        "vision_understanding",
+        "weather",
+        "web_fetch",
+        "web_search",
+    }
+    confirmation_case = next(
+        item
+        for item in seed.items
+        if item.metadata["capability"] == "real_confirmation_guard"
+    )
+    assert confirmation_case.input["user_request"]["metadata"] == {
+        "tool_visibility": {"enabled_tools": ["calendar_create"]}
+    }
+    assert "tool_confirmation" not in confirmation_case.input["user_request"][
+        "metadata"
+    ]
+    assert all(item.input.get("evaluation_criteria") for item in seed.items)
+
+
 def test_real_readonly_runtime_fails_closed_in_mock_mode() -> None:
     seed = load_dataset_seed(REAL_READONLY_DATASET_SEED)
     item = seed.items[0]
@@ -196,6 +254,31 @@ def test_runtime_task_exposes_truncated_provider_result_for_native_score() -> No
 
     assert output.terminal_status == "completed"
     assert output.provider_result_kinds == ["truncated"]
+
+
+def test_real_runtime_exception_becomes_scorable_failed_output() -> None:
+    seed = load_dataset_seed(REAL_SYSTEM_DATASET_SEED)
+    item = seed.items[0]
+
+    output = AgentExperimentTask(
+        client=_FakeLangfuseClient(),
+        runtime_factory=_exploding_runtime_factory,
+        contain_runtime_errors=True,
+    )(
+        item={
+            "id": item.id,
+            "input": item.input,
+            "expected_output": item.expected_output,
+            "metadata": {**item.metadata, "case_id": item.id},
+        }
+    )
+
+    assert output.terminal_status == "failed"
+    assert output.provider_result_kinds == ["error"]
+    assert output.execution_error == {
+        "code": "eval_runtime_exception",
+        "message": "RuntimeError: peer closed incomplete response",
+    }
 
 
 def test_runtime_task_returns_compact_code_evaluator_evidence() -> None:
@@ -260,8 +343,10 @@ def test_experiment_wires_task_without_project_evaluators() -> None:
     assert "run_evaluators" not in client.dataset.run_kwargs
     assert (
         client.dataset.run_kwargs["metadata"]["evaluation_owner"]
-        == "langfuse_code_evaluator"
+        == "langfuse_native_evaluators"
     )
+    assert client.dataset.run_kwargs["metadata"]["evaluation_methods"] == ["code"]
+    assert client.dataset.run_kwargs["metadata"]["semantic_score_names"] == []
 
 
 def test_real_experiment_metadata_is_explicit_without_running_provider() -> None:
@@ -290,8 +375,47 @@ def test_real_experiment_metadata_is_explicit_without_running_provider() -> None
         client.dataset.run_kwargs["metadata"]["chat_provider"]
         == "provider-sentinel"
     )
+    assert client.dataset.run_kwargs["metadata"]["evaluation_methods"] == [
+        "code",
+        "llm_as_a_judge",
+    ]
+    assert client.dataset.run_kwargs["metadata"]["semantic_score_names"] == [
+        "agent.answer_helpfulness"
+    ]
     assert "真实 Chat Provider" in client.dataset.run_kwargs["description"]
     assert (
         "真实 Chat Provider"
         in client.dataset.run_kwargs["metadata"]["evaluation_objective"]
     )
+
+
+def test_real_system_experiment_metadata_is_explicit_without_running_provider() -> None:
+    client = _FakeLangfuseClient()
+
+    run_langfuse_agent_experiment(
+        client,
+        dataset_name="real-system-dataset-sentinel",
+        experiment_name="real-system-experiment-sentinel",
+        runtime_factory=lambda request, case: build_real_readonly_runtime(
+            request,
+            case,
+            config=ProviderConfig(),
+        ),
+        trace_observer=_FakeTraceObserver(),
+        execution_profile="real_system",
+        metadata={"chat_provider": "provider-sentinel"},
+    )
+
+    assert client.dataset.run_kwargs["metadata"]["provider_mode"] == "real"
+    assert (
+        client.dataset.run_kwargs["metadata"]["execution_profile"]
+        == "real_system"
+    )
+    assert client.dataset.run_kwargs["metadata"]["evaluation_methods"] == [
+        "code",
+        "llm_as_a_judge",
+    ]
+    assert client.dataset.run_kwargs["metadata"]["semantic_score_names"] == [
+        "agent.task_quality",
+    ]
+    assert "多工具自主执行" in client.dataset.run_kwargs["description"]

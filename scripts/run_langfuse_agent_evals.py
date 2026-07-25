@@ -29,8 +29,13 @@ from langfuse import Langfuse
 from evals.cases.langfuse.experiment import (
     DEFAULT_DATASET_NAME,
     DEFAULT_DATASET_SEED,
+    DETERMINISTIC_SCORE_NAMES,
     REAL_READONLY_DATASET_NAME,
     REAL_READONLY_DATASET_SEED,
+    REAL_READONLY_SEMANTIC_SCORE_NAMES,
+    REAL_SYSTEM_DATASET_NAME,
+    REAL_SYSTEM_DATASET_SEED,
+    REAL_SYSTEM_SEMANTIC_SCORE_NAMES,
     build_real_readonly_runtime,
     load_dataset_seed,
     run_langfuse_agent_experiment,
@@ -69,7 +74,8 @@ def main() -> int:
     )
     parser.add_argument("--env-file", type=Path, default=Path(".env"))
     parser.add_argument("--no-env-file", action="store_true")
-    parser.add_argument(
+    real_profile = parser.add_mutually_exclusive_group()
+    real_profile.add_argument(
         "--real-readonly",
         action="store_true",
         help=(
@@ -77,10 +83,18 @@ def main() -> int:
             "its five-case Dataset."
         ),
     )
+    real_profile.add_argument(
+        "--real-system",
+        action="store_true",
+        help=(
+            "Use the production-like real Chat Provider + configured Tool "
+            "profile and its comprehensive system Dataset."
+        ),
+    )
     parser.add_argument(
         "--allow-real-tools",
         action="store_true",
-        help="Operator confirmation required before the real-readonly Experiment.",
+        help="Operator confirmation required before any real-provider Experiment.",
     )
     parser.add_argument(
         "--dry-run",
@@ -90,20 +104,30 @@ def main() -> int:
     args = parser.parse_args()
 
     execution_profile = (
-        "real_readonly" if args.real_readonly else "scripted_mock"
+        "real_system"
+        if args.real_system
+        else "real_readonly"
+        if args.real_readonly
+        else "scripted_mock"
     )
     dataset_name = args.dataset_name or (
-        REAL_READONLY_DATASET_NAME
+        REAL_SYSTEM_DATASET_NAME
+        if args.real_system
+        else REAL_READONLY_DATASET_NAME
         if args.real_readonly
         else DEFAULT_DATASET_NAME
     )
     seed_source = args.seed_source or (
-        REAL_READONLY_DATASET_SEED
+        REAL_SYSTEM_DATASET_SEED
+        if args.real_system
+        else REAL_READONLY_DATASET_SEED
         if args.real_readonly
         else DEFAULT_DATASET_SEED
     )
     experiment_name = args.experiment_name or (
-        "agent-real-readonly-v1"
+        "agent-real-system-v1"
+        if args.real_system
+        else "agent-real-readonly-v1"
         if args.real_readonly
         else "agent-capability-closed-loop-scripted-v1"
     )
@@ -128,14 +152,14 @@ def main() -> int:
         load_env_file(args.env_file)
     runtime_factory = None
     runtime_config = None
-    if args.real_readonly and not args.seed_only:
+    if (args.real_readonly or args.real_system) and not args.seed_only:
         if not args.allow_real_tools:
             print(
                 json.dumps(
                     {
                         "error": "real_tools_not_authorized",
                         "message": (
-                            "Real-readonly Experiment requires "
+                            "Real-provider Experiment requires "
                             "--allow-real-tools."
                         ),
                     },
@@ -151,7 +175,7 @@ def main() -> int:
             print(
                 json.dumps(
                     {
-                        "error": "real_readonly_not_configured",
+                            "error": "real_provider_not_configured",
                         "message": str(exc),
                     },
                     ensure_ascii=False,
@@ -238,7 +262,19 @@ def main() -> int:
                     "dataset_run_id": result.dataset_run_id,
                     "dataset_run_url": result.dataset_run_url,
                     "item_count": len(result.item_results),
-                    "scoring": "langfuse_code_evaluator_async",
+                    "scoring": "langfuse_native_evaluators_async",
+                    "expected_score_names": [
+                        *DETERMINISTIC_SCORE_NAMES,
+                        *(
+                            (
+                                REAL_SYSTEM_SEMANTIC_SCORE_NAMES
+                                if args.real_system
+                                else REAL_READONLY_SEMANTIC_SCORE_NAMES
+                            )
+                            if args.real_readonly or args.real_system
+                            else ()
+                        ),
+                    ],
                 },
                 ensure_ascii=False,
                 indent=2,
@@ -285,17 +321,23 @@ def _run_metadata(
         "chat_provider": provider,
         "chat_model": model,
         "runtime_config_fingerprint": (
-            "agent-real-readonly-v1"
+            "agent-real-system-v1"
+            if execution_profile == "real_system"
+            else "agent-real-readonly-v1"
             if execution_profile == "real_readonly"
             else "agent-capability-scripted-mock-v1"
         ),
         "tool_catalog_fingerprint": (
-            "weather-readonly-v1"
+            "configured-real-tools-v1"
+            if execution_profile == "real_system"
+            else "weather-readonly-v1"
             if execution_profile == "real_readonly"
             else "calendar-read-write-v1"
         ),
         "fixture_version": (
-            "dynamic-readonly-v1"
+            "real-system-v1"
+            if execution_profile == "real_system"
+            else "dynamic-readonly-v1"
             if execution_profile == "real_readonly"
             else "calendar_capabilities_v1"
         ),

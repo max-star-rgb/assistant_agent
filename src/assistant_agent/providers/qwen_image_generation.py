@@ -52,7 +52,12 @@ class QwenImageGenerationAdapter:
         payload = build_qwen_image_payload(
             prompt=prompt,
             model=self.config.model,
-            size=normalize_qwen_image_size(input.size or self.config.default_size, width=input.width, height=input.height),
+            size=normalize_qwen_image_size(
+                input.size or self.config.default_size,
+                width=input.width,
+                height=input.height,
+                model=self.config.model,
+            ),
             n=input.n,
             negative_prompt=input.negative_prompt,
             prompt_extend=input.prompt_extend,
@@ -138,12 +143,38 @@ def build_qwen_image_payload(
     }
 
 
-def normalize_qwen_image_size(size: str | None, *, width: int | None = None, height: int | None = None) -> str:
+def normalize_qwen_image_size(
+    size: str | None,
+    *,
+    width: int | None = None,
+    height: int | None = None,
+    model: str = DEFAULT_QWEN_IMAGE_MODEL,
+) -> str:
     """Normalize common image size formats to DashScope's width*height format."""
 
     if width is not None and height is not None:
         return f"{width}*{height}"
     candidate = (size or DEFAULT_QWEN_IMAGE_SIZE).strip().lower()
+    if candidate in {"1:1", "16:9", "9:16", "4:3", "3:4"}:
+        qwen_2_sizes = {
+            "1:1": "2048*2048",
+            "16:9": "2688*1536",
+            "9:16": "1536*2688",
+            "4:3": "2304*1728",
+            "3:4": "1728*2304",
+        }
+        legacy_sizes = {
+            "1:1": "1328*1328",
+            "16:9": "1664*928",
+            "9:16": "928*1664",
+            "4:3": "1472*1104",
+            "3:4": "1104*1472",
+        }
+        return (
+            qwen_2_sizes
+            if model.strip().lower().startswith("qwen-image-2.0")
+            else legacy_sizes
+        )[candidate]
     if "x" in candidate and "*" not in candidate:
         left, right = candidate.split("x", 1)
         if left.strip().isdigit() and right.strip().isdigit():

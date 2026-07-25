@@ -22,11 +22,13 @@ from assistant_agent.schemas.assistant_decision import NativeToolCall
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.schemas.trace_context import RuntimeTraceContext
 from assistant_agent.services.chat_adapter import ChatRequest, ChatResult
+from assistant_agent.services.identifiers import new_run_id
 from assistant_agent.services.otel_exporter import (
     OtlpHttpTextExporterConfig,
     TextOtelTraceObserver,
     create_otlp_http_text_span_exporter,
 )
+from assistant_agent.services.provider_errors import sanitize_error_message
 from assistant_agent.services.session_store import InMemorySessionStore
 from assistant_agent.services.trace_store import InMemoryTraceStore, TraceEvent
 from assistant_agent.tools.plugins.builtin.personal_assistant_mcp.backend import (
@@ -53,6 +55,20 @@ REAL_READONLY_DATASET_NAME = "assistant-agent-real-readonly-v1"
 REAL_READONLY_DATASET_SEED = Path(
     "evals/cases/langfuse/agent_real_readonly_v1.seed.json"
 )
+REAL_SYSTEM_DATASET_NAME = "assistant-agent-real-system-v1"
+REAL_SYSTEM_DATASET_SEED = Path(
+    "evals/cases/langfuse/agent_real_system_v1.seed.json"
+)
+DETERMINISTIC_SCORE_NAMES = (
+    "agent.execution_pass",
+    "agent.tool_selection_pass",
+    "agent.forbidden_tool_pass",
+    "agent.tool_execution_pass",
+    "agent.response_contract_pass",
+    "agent.strict_pass",
+)
+REAL_READONLY_SEMANTIC_SCORE_NAMES = ("agent.answer_helpfulness",)
+REAL_SYSTEM_SEMANTIC_SCORE_NAMES = ("agent.task_quality",)
 AGENT_EVALUATION_OBJECTIVE = (
     "验证 Agent 是否在受治理的 Runtime 中正确完成、克制或只读执行任务，并由 Tool Trace、"
     "Policy、环境状态变化和最终回答共同证明结果。当前 scripted mock 实验用于验证闭环评测"
@@ -62,6 +78,12 @@ REAL_READONLY_EVALUATION_OBJECTIVE = (
     "验证真实 Chat Provider 是否在受治理的 Runtime 中正确克制或调用真实只读 Tool，"
     "并由 Tool Trace、Policy、Provider 终态和最终回答共同证明结果。该 profile 不执行"
     "写操作，不接入真实 Memory。"
+)
+REAL_SYSTEM_EVALUATION_OBJECTIVE = (
+    "使用真实 Chat Provider 和当前已配置的真实能力，系统评估 Agent 的无工具克制、"
+    "必要澄清、单工具与多工具自主执行、媒体理解、内容生成和写操作确认边界。"
+    "动态结果以 Tool Trace、Provider 终态、最终回答和 Langfuse 原生评分共同证明；"
+    "该 profile 不执行未确认写操作，也不写入真实 Memory。"
 )
 
 
@@ -133,7 +155,11 @@ class RealReadonlyCase(BaseModel):
     """Dynamic real-provider case scored from runtime evidence, not fixtures."""
 
     id: str = Field(min_length=1)
-    capability: Literal["real_no_tool", "real_read_only_tool"]
+    capability: Literal[
+        "real_no_tool",
+        "real_read_only_tool",
+        "real_confirmation_guard",
+    ]
     response_facts: list[str] = Field(default_factory=list)
 
 
@@ -143,7 +169,7 @@ ExperimentCase = (
 
 
 class AgentExperimentOutput(BaseModel):
-    """Compact evidence contract consumed by a Langfuse Code Evaluator."""
+    """Compact evidence consumed by Langfuse-native code and LLM evaluators."""
 
     schema_version: Literal["agent_experiment_output_v1"] = "agent_experiment_output_v1"
     case_id: str = Field(min_length=1)
@@ -161,6 +187,7 @@ class AgentExperimentOutput(BaseModel):
     trace_event_names: list[str] = Field(default_factory=list)
     provider_result_kinds: list[str] = Field(default_factory=list)
     total_latency_ms: int = Field(default=0, ge=0)
+    execution_error: dict[str, str] | None = None
 
 
 class LangfuseExperimentClient(Protocol):
@@ -338,10 +365,12 @@ class AgentExperimentTask:
         client: LangfuseExperimentClient,
         runtime_factory: RuntimeFactory | None = None,
         trace_observer: RuntimeTraceObserver | None = None,
+        contain_runtime_errors: bool = False,
     ) -> None:
         self.client = client
         self.runtime_factory = runtime_factory or build_scripted_runtime
         self.trace_observer = trace_observer
+        self.contain_runtime_errors = contain_runtime_errors
 
     def __call__(self, *, item: Any, **_: Any) -> AgentExperimentOutput:
         trace_id = self.client.get_current_trace_id()
@@ -375,6 +404,30 @@ class AgentExperimentTask:
                 ),
             )
             trace_events = bundle.runtime.trace_store.list_by_run(state.run_id)
+        except Exception as exc:
+            if not self.contain_runtime_errors:
+                raise
+            message = sanitize_error_message(exc)
+            final_state = bundle.environment.snapshot()
+            return AgentExperimentOutput(
+                case_id=case_id,
+                run_id=new_run_id(),
+                trace_id=trace_id,
+                terminal_status="failed",
+                response={
+                    "message": f"评测执行失败：{message}",
+                    "data": {"error_code": "eval_runtime_exception"},
+                },
+                request_metadata=dict(request.metadata),
+                initial_state=initial_state,
+                final_state=final_state,
+                state_diff=bundle.environment.diff(initial_state, final_state),
+                provider_result_kinds=["error"],
+                execution_error={
+                    "code": "eval_runtime_exception",
+                    "message": message,
+                },
+            )
         finally:
             bundle.runtime.close()
         final_state = bundle.environment.snapshot()
@@ -458,18 +511,31 @@ def run_langfuse_agent_experiment(
     metadata: dict[str, Any] | None = None,
     runtime_factory: RuntimeFactory | None = None,
     trace_observer: RuntimeTraceObserver | None = None,
-    execution_profile: Literal["scripted_mock", "real_readonly"] = "scripted_mock",
+    execution_profile: Literal[
+        "scripted_mock",
+        "real_readonly",
+        "real_system",
+    ] = "scripted_mock",
 ) -> Any:
     """Run the Agent task; Langfuse-native rules evaluate it asynchronously."""
 
     dataset = client.get_dataset(dataset_name)
     observer = trace_observer or create_required_eval_trace_observer()
     owns_observer = trace_observer is None
-    evaluation_objective = (
-        REAL_READONLY_EVALUATION_OBJECTIVE
-        if execution_profile == "real_readonly"
-        else AGENT_EVALUATION_OBJECTIVE
-    )
+    evaluation_objective = {
+        "scripted_mock": AGENT_EVALUATION_OBJECTIVE,
+        "real_readonly": REAL_READONLY_EVALUATION_OBJECTIVE,
+        "real_system": REAL_SYSTEM_EVALUATION_OBJECTIVE,
+    }[execution_profile]
+    evaluation_methods = ["code"]
+    semantic_score_names: list[str] = []
+    if execution_profile in {"real_readonly", "real_system"}:
+        evaluation_methods.append("llm_as_a_judge")
+        semantic_score_names.extend(
+            REAL_SYSTEM_SEMANTIC_SCORE_NAMES
+            if execution_profile == "real_system"
+            else REAL_READONLY_SEMANTIC_SCORE_NAMES
+        )
     try:
         return dataset.run_experiment(
             name=experiment_name,
@@ -479,20 +545,27 @@ def run_langfuse_agent_experiment(
                 client=client,
                 runtime_factory=runtime_factory,
                 trace_observer=observer,
+                contain_runtime_errors=execution_profile
+                in {"real_readonly", "real_system"},
             ),
             max_concurrency=max_concurrency,
             metadata={
                 "provider_mode": (
-                    "real" if execution_profile == "real_readonly" else "mock"
+                    "real"
+                    if execution_profile in {"real_readonly", "real_system"}
+                    else "mock"
                 ),
                 "chat_provider": (
                     "configured"
-                    if execution_profile == "real_readonly"
+                    if execution_profile in {"real_readonly", "real_system"}
                     else "scripted"
                 ),
                 "execution_profile": execution_profile,
                 "evaluation_objective": evaluation_objective,
-                "evaluation_owner": "langfuse_code_evaluator",
+                "evaluation_owner": "langfuse_native_evaluators",
+                "evaluation_methods": evaluation_methods,
+                "deterministic_score_names": list(DETERMINISTIC_SCORE_NAMES),
+                "semantic_score_names": semantic_score_names,
                 **(metadata or {}),
             },
         )
@@ -627,7 +700,11 @@ def case_from_dataset_fields(
         )
     if capability == "no_tool":
         return NoToolCase(id=case_id, response_facts=response_facts)
-    if capability in {"real_no_tool", "real_read_only_tool"}:
+    if capability in {
+        "real_no_tool",
+        "real_read_only_tool",
+        "real_confirmation_guard",
+    }:
         return RealReadonlyCase(
             id=case_id,
             capability=capability,

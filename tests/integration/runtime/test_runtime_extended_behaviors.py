@@ -9,6 +9,7 @@ from uuid import UUID
 import pytest
 
 from assistant_agent.agent.runtime import AgentGraphRuntime
+from assistant_agent.agent.system_prompt_policy import render_system_instruction
 from assistant_agent.config import ProviderConfig
 from assistant_agent.gateway.event_mapping import realtime_event_to_frame
 from assistant_agent.memory.mem0.identity import bind_mem0_identity
@@ -51,6 +52,10 @@ from scripts.run_client import chat_response_error
 
 def _offline_config() -> ProviderConfig:
     return ProviderConfig(langgraph_checkpointer_backend="none")
+
+
+def test_default_runtime_policy_requires_missing_tool_inputs_to_be_clarified() -> None:
+    assert "工具缺少地点、对象、时间等必要参数时，先向用户澄清" in render_system_instruction()
 
 
 class ScriptedChatAdapter:

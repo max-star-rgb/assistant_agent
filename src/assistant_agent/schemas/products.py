@@ -93,7 +93,10 @@ class ProductSearchRequest(BaseModel):
 
     query: str = Field(
         min_length=1,
-        description="需要搜索、推荐或比价的商品名称及关键要求。",
+        description=(
+            "用于 Provider 检索的简短商品核心关键词，例如“电脑双肩包”；"
+            "不要把预算、使用场景和全部要求拼进关键词，预算和平台应填写对应结构化字段。"
+        ),
     )
     visual_summary: str | None = None
     objects: list[str] = Field(default_factory=list)

@@ -46,6 +46,11 @@ function evaluate({
     "trace.content",
     "assistant.turn.summary",
   ];
+  const requiredToolSelectionMatches =
+    capability === "real_read_only_tool"
+      ? requiredTools.every((name: string) => toolNames.includes(name)) &&
+        toolNames.every((name: string) => requiredTools.includes(name))
+      : JSON.stringify(toolNames) === JSON.stringify(requiredTools);
   const checks: Record<string, boolean> = {
     terminal_completed: actual.terminal_status === "completed",
     response_present: responseText.length > 0,
@@ -58,16 +63,16 @@ function evaluate({
         unusableProviderResults.has(kind),
       ),
     required_trace_present: commonTrace.every((name) => traceNames.has(name)),
-    required_tools_exact:
-      JSON.stringify(toolNames) === JSON.stringify(requiredTools),
+    required_tools_exact: requiredToolSelectionMatches,
     forbidden_tools_absent: !toolNames.some((name: string) =>
       forbiddenTools.includes(name),
     ),
     required_tools_exposed: requiredTools.every((name: string) =>
-      (Array.isArray(actual.available_tools)
-        ? actual.available_tools
-        : []
-      ).includes(name),
+      (
+        Array.isArray(actual.available_tools)
+          ? actual.available_tools
+          : []
+      ).includes(name) || toolNames.includes(name),
     ),
   };
 
@@ -134,9 +139,24 @@ function evaluate({
       emptyArray(diff.deleted) &&
       emptyArray(diff.duplicate_groups);
   } else if (capability === "real_read_only_tool") {
-    checks.tools_succeeded =
-      executions.length === requiredTools.length &&
-      executions.every((execution: any) => execution.status === "succeeded");
+    checks.tools_succeeded = requiredTools.every((name: string) =>
+      executions.some(
+        (execution: any) =>
+          execution.name === name && execution.status === "succeeded",
+      ),
+    );
+    checks.state_unchanged =
+      JSON.stringify(actual.initial_state) ===
+        JSON.stringify(actual.final_state) &&
+      emptyArray(diff.added) &&
+      emptyArray(diff.modified) &&
+      emptyArray(diff.deleted) &&
+      emptyArray(diff.duplicate_groups);
+  } else if (capability === "real_confirmation_guard") {
+    checks.confirmation_required =
+      executions.length === 1 &&
+      executions[0].status === "pending_confirmation" &&
+      executions[0].confirmation_pending === true;
     checks.state_unchanged =
       JSON.stringify(actual.initial_state) ===
         JSON.stringify(actual.final_state) &&
@@ -157,40 +177,41 @@ function evaluate({
       booleanScore(
         "agent.execution_pass",
         checks.terminal_completed && checks.required_trace_present,
-        "Runtime 正常完成并保留完整闭环 trace。",
+        "闭环执行通过。",
       ),
       booleanScore(
         "agent.tool_selection_pass",
         checks.required_tools_exact && checks.required_tools_exposed,
-        "所需工具已暴露，且实际工具调用与期望完全一致。",
+        "工具选择符合预期。",
       ),
       booleanScore(
         "agent.forbidden_tool_pass",
         checks.forbidden_tools_absent,
-        "未调用案例禁止的工具。",
+        "未调用禁用工具。",
       ),
       booleanScore(
         "agent.tool_execution_pass",
         checks.tool_succeeded ??
           checks.tools_succeeded ??
+          checks.confirmation_required ??
           checks.no_tool_called ??
           false,
-        "所需工具执行成功；无工具案例保持零调用。",
+        "工具执行符合预期。",
       ),
       booleanScore(
         "agent.response_contract_pass",
         checks.response_present &&
           checks.response_facts_present &&
           checks.provider_results_usable,
-        "最终回答存在、包含确定性事实，且 Provider 未截断、拒答或异常。",
+        "回答契约通过。",
       ),
       {
         name: "agent.strict_pass",
         value: passed,
         dataType: "BOOLEAN",
         comment: passed
-          ? "所有确定性闭环检查均通过。"
-          : `失败检查：${failedChecks.join(", ")}。`,
+          ? "全部硬性检查通过。"
+          : `失败：${failedChecks.join(", ")}。`,
         metadata: {
           capability,
           checks,

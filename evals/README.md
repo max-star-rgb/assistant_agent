@@ -99,7 +99,7 @@ Langfuse Dataset
   -> Langfuse Experiment
   -> AgentGraphRuntime
   -> AgentExperimentOutput
-  -> Langfuse Code Evaluator
+  -> Langfuse Code Evaluator + LLM-as-a-Judge
   -> Langfuse Score
 ```
 
@@ -126,6 +126,65 @@ runner。真实 profile 强制关闭 Mem0、持久化会话、checkpointer 和 d
 grounding 分数；`response_contract_pass` 会拒绝 Provider
 `error/refusal/truncated/empty` 结果，避免把 Runtime 的降级提示当作有效回答。后续语义质量应由
 Langfuse 原生 LLM-as-a-Judge Evaluator 单独评估。
+
+真实只读 Dataset 额外使用从 Langfuse managed `Helpfulness` 克隆的项目级
+`assistant-agent-answer-helpfulness-zh` Evaluator，生成数值 Score
+`agent.answer_helpfulness`。它只判断最终文本是否清晰、相关且有帮助，不替代六个确定性闭环
+Score，也不证明回答中的动态天气事实绝对正确。裁判理由约束为中文且不超过 20 个汉字。变量映射为：
+
+```text
+query      <- Experiment Input，JSONPath $.user_request.text
+generation <- Experiment Output，JSONPath $.response.message
+```
+
+Evaluator target 必须选择 `Experiments / Experiment Runner SDK`，filter 只匹配
+`assistant-agent-real-readonly-v1`，sampling 为 `100%`。因此真实 Dataset 每个新案例最终应有
+六个确定性 Score 和一个语义 Score。历史 Experiment 不会因为新建规则自动补分。
+
+更完整的 `assistant-agent-real-system-v1` Dataset 覆盖无工具克制、必要澄清、天气、日历读取、
+本地文件、购物、网页搜索/抓取、图片理解、图片生成、多工具组合和日历写入确认边界。它使用项目级
+`assistant-agent-task-quality-zh` Evaluator 生成 `agent.task_quality`：裁判同时消费用户请求、
+案例验收标准、最终回答和实际 Tool Trace，检查任务是否真正完成、是否有工具依据以及是否违反约束。
+该 criteria-aware 裁判取代只看最终文本的通用 Helpfulness，避免把成功生成的 artifact 误判为未生成，
+或忽略等待确认与已执行之间的差异。裁判理由限制为 20 个汉字以内的中文。
+
+运行完整真实系统 Dataset：
+
+```bash
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python \
+  scripts/run_langfuse_agent_evals.py \
+  --real-system \
+  --allow-real-tools \
+  --run-name my-real-system-eval
+```
+
+该 profile 使用当前 Registry 中实际配置成功的能力，但不自动执行未确认写操作，也不写入真实 Memory。
+日历创建案例只验证 confirmation guard，不会制造无法清理的真实事件。
+
+完整运行应满足：Dataset item 数量与 seed 一致，并且每个 item 都有六个确定性 Score。真实 Runtime
+抛出的网络或协议异常会被评测边界转换为 `terminal_status=failed` 和
+`provider_result_kinds=["error"]`，从而保留失败样本并让 Code Evaluator 正常评分。评估 Agent
+是否真正完成任务时，应同时检查 `agent.strict_pass=true` 和 `agent.task_quality>=0.75`；
+前者只证明硬性闭环，不能替代语义质量。
+
+本机自托管实例当前使用独立的 `deepseek-judge` LLM Connection 作为默认裁判模型：
+
+```text
+adapter: anthropic
+base URL: https://api.deepseek.com/anthropic
+model: deepseek-v4-flash
+```
+
+选择 Anthropic-compatible API 是因为 Langfuse 3.221.1 的结构化输出探测与
+OpenAI-compatible JSON mode 存在兼容限制；DeepSeek 官方 Anthropic API 支持裁判所需的
+tool-based structured output。裁判仍可能偶发返回无法解析的结构化结果；缺失的 LLM Score
+属于 evaluator 基础设施失败，不得记成 Agent 通过或失败，必要时应重试裁判。凭据只在
+Langfuse UI 中配置，不进入仓库。若本机代理使用
+`198.18.0.0/15` fake-IP DNS，需要在未跟踪的 `.data/langfuse/.env` 中为自托管实例设置：
+
+```text
+LANGFUSE_LLM_CONNECTION_WHITELISTED_HOST=api.deepseek.com
+```
 
 ### 离线契约验证
 
@@ -184,9 +243,9 @@ Langfuse 原生 LLM-as-a-Judge Evaluator 单独评估。
   --run-name my-first-real-readonly-eval
 ```
 
-在运行前，需要在 Langfuse Evaluators 中部署最新 `agent_strict_pass.ts`，并让 Experiment rule 匹配
-`assistant-agent-real-readonly-v1` Dataset。Score 由 Langfuse 异步生成，不由 Python runner
-回写。
+在运行前，需要在 Langfuse Evaluators 中部署最新 `agent_strict_pass.ts`，并让 Code Evaluator
+rule 匹配 `assistant-agent-real-readonly-v1` Dataset；同时启用上述项目级中文 Helpfulness
+Evaluator。Score 均由 Langfuse 异步生成，不由 Python runner 回写。
 
 命令默认从未跟踪的 `.env` 加载 Langfuse 凭据和 host。显式 Experiment 对 Dataset、Runtime OTLP trace
 和 evaluator 闭环采用 fail-fast；普通生产观测仍保持 fail-open。

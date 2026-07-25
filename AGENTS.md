@@ -21,6 +21,7 @@ operator 确认开关显式启用。
 | tool calling、MCP、durable task、provider 调用治理 | `docs/tool-calling-architecture.md` |
 | memory、本地/外部记忆服务、记忆读写策略 | `docs/memory-service-architecture.md`；`docs/memory_server_api_spec.md` |
 | context、prompt、conversation history、context budget | `docs/CONTEXT_ENGINEERING_STATUS.md` |
+| 长时 Agent、durable task 定时恢复、proactive wake、任务提醒 | 先读 `docs/gateway-architecture.md`、`docs/runtime-event-stream-architecture.md`、`docs/tool-calling-architecture.md`，再读开发路线图 `docs/development/2026-07-25-long-running-agent-plan.md`；路线图不是当前事实权威 |
 | multi-agent、A2A、delegation | `docs/agent-communication-routing.md` |
 | trace、observability、redaction | `docs/observability-harness.md` |
 | pytest 分层、目录归属、默认收集和新增测试规则 | `tests/README.md` |

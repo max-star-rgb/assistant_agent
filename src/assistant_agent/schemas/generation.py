@@ -17,7 +17,10 @@ class ImageGenerationRequest(BaseModel):
     )
     size: str | None = Field(
         default=None,
-        description="用户明确指定的图片尺寸或宽高比；未指定时省略。",
+        description=(
+            "用户明确指定的图片尺寸或宽高比；尺寸使用“宽*高”，"
+            "也可传 1:1、16:9、9:16、4:3、3:4；未指定时省略。"
+        ),
     )
     n: int = Field(
         default=1,
