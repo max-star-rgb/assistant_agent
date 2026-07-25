@@ -1,1 +1,0 @@
-"""Tool catalog discovery plugin."""

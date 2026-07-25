@@ -1,8 +1,7 @@
-"""Tool execution service used by workflows and LangGraph nodes."""
+"""Serial governed Tool execution used by workflows and assistant loops."""
 
-from dataclasses import dataclass
 from time import monotonic, perf_counter, sleep
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import BaseModel
 
@@ -16,73 +15,45 @@ from assistant_agent.agent.legacy_tool_mapping import (
     canonical_capability_for_action,
     canonical_capability_for_tool,
 )
-from assistant_agent.agent.state import AgentState
 from assistant_agent.agent.recovery import RecoveryPolicy, ToolFailureMode, classify_error
+from assistant_agent.agent.state import AgentState
 from assistant_agent.schemas.api import api_error
 from assistant_agent.schemas.capability_output import contract_summary
 from assistant_agent.schemas.events import AgentEvent
 from assistant_agent.schemas.identity import RequestIdentity
 from assistant_agent.schemas.planning import TaskStep
-from assistant_agent.schemas.realtime_cancellation import build_realtime_turn_cancellation_metadata
-from assistant_agent.schemas.tools import ToolResult, ToolSpec
-from assistant_agent.services.event_sink import EventSink
-from assistant_agent.services.provider_errors import sanitize_error_detail, sanitize_error_message
-from assistant_agent.services.provider_policy import ProviderExecutionPolicy
-from assistant_agent.services.tool_call_boundary import (
-    build_post_tool_call_summary,
-    build_pre_tool_call_summary,
+from assistant_agent.schemas.realtime_cancellation import (
+    build_realtime_turn_cancellation_metadata,
 )
 from assistant_agent.schemas.tool_ids import (
     IMAGE_GENERATION_CAPABILITY,
     IMAGE_GENERATION_TOOL_NAME,
 )
+from assistant_agent.schemas.tools import ToolResult, ToolSpec
+from assistant_agent.services.event_sink import EventSink
+from assistant_agent.services.provider_errors import (
+    sanitize_error_detail,
+    sanitize_error_message,
+)
+from assistant_agent.services.provider_policy import ProviderExecutionPolicy
+from assistant_agent.services.tool_call_boundary import (
+    build_post_tool_call_summary,
+    build_pre_tool_call_summary,
+)
+from assistant_agent.services.trace_content_policy import local_trace_content_enabled
 from assistant_agent.services.trace_store import (
     TraceEvent,
     TraceStore,
     new_span_id,
     sanitize_trace_value,
 )
-from assistant_agent.services.trace_content_policy import local_trace_content_enabled
 from assistant_agent.tools.base import ToolContext
 from assistant_agent.tools.input_binding import bind_runtime_tool_input
 from assistant_agent.tools.registry import ToolRegistry, create_default_registry
 
 
-@dataclass(frozen=True)
-class PreparedToolCall:
-    """Serially prepared call whose invocation no longer needs mutable AgentState."""
-
-    step_id: str
-    tool_name: str
-    tool_input: dict[str, Any]
-    invocation_input: BaseModel | dict[str, Any]
-    step: TaskStep | None
-    tool_call_id: str
-    capability: str
-    tool_spec: ToolSpec
-    started_at: float
-    tool_span_id: str
-    context: ToolContext | None
-    disposition: Literal["invoke", "confirmation"]
-    prepared_result: ToolResult | None
-    trace_store: TraceStore | None
-    trace_id: str | None
-    node_name: str
-    failure_mode: ToolFailureMode
-
-
-@dataclass(frozen=True)
-class ToolInvocationResult:
-    """Tool-body outcome awaiting ordered state/trace commit."""
-
-    result: ToolResult
-    retry_count: int = 0
-    cancellation: AgentRunCancelled | None = None
-    cancellation_metadata: dict[str, Any] | None = None
-
-
 class ToolExecutor:
-    """Run tools through the registry and update AgentState records."""
+    """Execute one Tool serially and commit its lifecycle to AgentState."""
 
     def __init__(
         self,
@@ -114,39 +85,7 @@ class ToolExecutor:
         runtime_input: dict[str, Any] | None = None,
         failure_mode: ToolFailureMode = "stop_run",
     ) -> ToolResult:
-        """Run one governed tool through serial prepare/invoke/commit stages."""
-
-        prepared = self.prepare_tool_call(
-            state,
-            step_id,
-            tool_name,
-            tool_input,
-            step=step,
-            trace_store=trace_store,
-            trace_id=trace_id,
-            node_name=node_name,
-            validated_input=validated_input,
-            runtime_input=runtime_input,
-            failure_mode=failure_mode,
-        )
-        invocation = self.invoke_tool(prepared)
-        return self.commit_tool_result(state, prepared, invocation)
-
-    def prepare_tool_call(
-        self,
-        state: AgentState,
-        step_id: str,
-        tool_name: str,
-        tool_input: dict[str, Any],
-        step: TaskStep | None = None,
-        trace_store: TraceStore | None = None,
-        trace_id: str | None = None,
-        node_name: str | None = None,
-        validated_input: BaseModel | None = None,
-        runtime_input: dict[str, Any] | None = None,
-        failure_mode: ToolFailureMode = "stop_run",
-    ) -> PreparedToolCall:
-        """Prepare governance and lifecycle state in serial order."""
+        """Bind, confirm, invoke and commit one governed Tool call."""
 
         effective_node_name = node_name or "tool_executor"
         raise_if_cancelled(
@@ -157,9 +96,9 @@ class ToolExecutor:
             details={"tool_name": tool_name, "step_id": step_id},
             state=state,
         )
+        tool = self.registry.get(tool_name)
         if validated_input is not None and not isinstance(
-            validated_input,
-            self.registry.get(tool_name).input_schema,
+            validated_input, tool.input_schema
         ):
             raise TypeError(f"validated_input does not match {tool_name} input_schema")
         normalized_input = (
@@ -167,7 +106,6 @@ class ToolExecutor:
             if validated_input is not None
             else tool_input
         )
-        tool = self.registry.get(tool_name)
         bound_input = bind_runtime_tool_input(
             tool,
             normalized_input,
@@ -178,10 +116,11 @@ class ToolExecutor:
         )
         tool_spec = self.registry.get_spec(tool_name)
         confirmed = _tool_confirmation_granted(state.request.metadata, tool_name)
-        requires_confirmation = tool_spec.requires_confirmation and not confirmed
+        confirmation_pending = tool_spec.requires_confirmation and not confirmed
+        disposition = "confirmation" if confirmation_pending else "invoke"
         execution_summary = {
             "category": tool_spec.category,
-            "requires_confirmation": requires_confirmation,
+            "requires_confirmation": confirmation_pending,
             "confirmation_granted": confirmed,
         }
         pre_tool_call = build_pre_tool_call_summary(
@@ -226,12 +165,10 @@ class ToolExecutor:
                 },
             )
         )
-        disposition: Literal["invoke", "confirmation"] = "invoke"
-        prepared_result = None
-        context = None
-        if requires_confirmation:
-            disposition = "confirmation"
-            prepared_result = _confirmation_required_result(
+
+        retry_count = 0
+        if confirmation_pending:
+            result = _confirmation_required_result(
                 tool_name=tool_name,
                 latency_ms=int((perf_counter() - started_at) * 1000),
             )
@@ -239,302 +176,231 @@ class ToolExecutor:
             before_tool_execution = self.context_metadata.get("_before_tool_execution")
             if callable(before_tool_execution):
                 before_tool_execution()
-            context_metadata = {
-                **{
-                    key: value
-                    for key, value in self.context_metadata.items()
-                    if key != "_before_tool_execution"
-                },
-                "request_text": state.request.text or "",
-                "request_metadata": dict(state.request.metadata),
-                "request_identity": RequestIdentity.from_user_request(
-                    state.request,
-                    agent_id=state.agent_id,
-                ).model_dump(mode="json"),
-                "run_tool_catalog": (
-                    state.run_tool_catalog.model_dump(mode="json")
-                    if state.run_tool_catalog is not None
-                    else None
-                ),
-            }
             context = ToolContext(
                 run_id=state.run_id,
                 user_id=state.user_id,
                 session_id=state.session_id,
-                metadata=context_metadata,
+                metadata={
+                    **{
+                        key: value
+                        for key, value in self.context_metadata.items()
+                        if key != "_before_tool_execution"
+                    },
+                    "request_text": state.request.text or "",
+                    "request_metadata": dict(state.request.metadata),
+                    "request_identity": RequestIdentity.from_user_request(
+                        state.request,
+                        agent_id=state.agent_id,
+                    ).model_dump(mode="json"),
+                    "run_tool_catalog": (
+                        state.run_tool_catalog.model_dump(mode="json")
+                        if state.run_tool_catalog is not None
+                        else None
+                    ),
+                },
                 cancel_token=self.cancel_token,
             )
-        invocation_input: BaseModel | dict[str, Any] = bound_input
-        if validated_input is not None and bound_input == normalized_input:
-            invocation_input = validated_input
-        elif validated_input is not None:
-            invocation_input = tool.input_schema.model_validate(bound_input)
-        return PreparedToolCall(
-            step_id=step_id,
-            tool_name=tool_name,
-            tool_input=bound_input,
-            invocation_input=invocation_input,
-            step=step,
-            tool_call_id=call.tool_call_id,
-            capability=capability,
-            tool_spec=tool_spec,
-            started_at=started_at,
-            tool_span_id=tool_span_id,
-            context=context,
-            disposition=disposition,
-            prepared_result=prepared_result,
-            trace_store=trace_store,
-            trace_id=trace_id,
-            node_name=effective_node_name,
-            failure_mode=failure_mode,
-        )
+            invocation_input: BaseModel | dict[str, Any] = bound_input
+            if validated_input is not None and bound_input == normalized_input:
+                invocation_input = validated_input
+            elif validated_input is not None:
+                invocation_input = tool.input_schema.model_validate(bound_input)
+            try:
+                result, retry_count = self._run_with_retry(
+                    tool_name,
+                    invocation_input,
+                    context,
+                    step_id=step_id,
+                    preserve_success_after_cancel=tool_spec.category != "read",
+                    max_retries=_effective_max_retries(
+                        tool_spec=tool_spec,
+                        global_max_retries=self.execution_policy.retry.max_retries,
+                    ),
+                )
+            except AgentRunCancelled as exc:
+                self._commit_cancellation(
+                    state=state,
+                    exc=exc,
+                    tool_name=tool_name,
+                    step_id=step_id,
+                    tool_call_id=call.tool_call_id,
+                    capability=capability,
+                    started_at=started_at,
+                    tool_span_id=tool_span_id,
+                    tool_input=bound_input,
+                    tool_spec=tool_spec,
+                    trace_store=trace_store,
+                    trace_id=trace_id,
+                    node_name=effective_node_name,
+                )
+                raise AssertionError("cancellation commit must raise")
 
-    def invoke_tool(self, prepared: PreparedToolCall) -> ToolInvocationResult:
-        """Invoke a prepared tool body without mutating AgentState/history/trace."""
+        reported_latency_ms = result.latency_ms
+        latency_ms = int((perf_counter() - started_at) * 1000)
+        if result.latency_ms is None:
+            result.latency_ms = latency_ms
+        tool_contract = _execution_summary(tool_spec, disposition)
 
-        if prepared.prepared_result is not None:
-            return ToolInvocationResult(result=prepared.prepared_result)
-        if prepared.context is None:
-            raise RuntimeError("Prepared tool call is missing its ToolContext.")
-        try:
-            result, retry_count = self._run_with_retry(
-                prepared.tool_name,
-                prepared.invocation_input,
-                prepared.context,
-                step_id=prepared.step_id,
-                preserve_success_after_cancel=_preserve_success_after_cancel(
-                    prepared.tool_spec
-                ),
-                max_retries=_effective_max_retries(
-                    tool_spec=prepared.tool_spec,
-                    global_max_retries=self.execution_policy.retry.max_retries,
-                ),
-            )
-            latency_ms = int((perf_counter() - prepared.started_at) * 1000)
-            if result.latency_ms is None:
-                result.latency_ms = latency_ms
-            return ToolInvocationResult(result=result, retry_count=retry_count)
-        except AgentRunCancelled as exc:
-            latency_ms = int((perf_counter() - prepared.started_at) * 1000)
-            error_details = build_realtime_turn_cancellation_metadata(
-                {
-                    **exc.details,
-                    "step_id": prepared.step_id,
-                    "tool_name": prepared.tool_name,
-                    "retryable": False,
-                },
-                phase="tool_running",
-            )
-            return ToolInvocationResult(
-                result=_cancelled_tool_result(
-                    prepared.tool_name,
-                    latency_ms=latency_ms,
-                    cancel_metadata=error_details,
-                ),
-                cancellation=exc,
-                cancellation_metadata=error_details,
-            )
-
-    def commit_tool_result(
-        self,
-        state: AgentState,
-        prepared: PreparedToolCall,
-        invocation: ToolInvocationResult,
-    ) -> ToolResult:
-        """Commit one invocation outcome to shared runtime stores in coordinator order."""
-
-        if invocation.cancellation is not None:
-            return self._commit_staged_cancellation(state, prepared, invocation)
-        if prepared.disposition == "confirmation":
-            return self._commit_staged_success(state, prepared, invocation)
-
-        result = invocation.result
+        error_code = None
+        recovery_action = None
+        retryable = False
         if result.success:
-            return self._commit_staged_success(state, prepared, invocation)
-        return self._commit_staged_failure(state, prepared, invocation)
-
-    def _commit_staged_success(
-        self,
-        state: AgentState,
-        prepared: PreparedToolCall,
-        invocation: ToolInvocationResult,
-    ) -> ToolResult:
-        result = invocation.result
-        reported_latency_ms = result.latency_ms
-        latency_ms = int((perf_counter() - prepared.started_at) * 1000)
-        state.complete_tool_call(prepared.tool_call_id, result)
-        post_tool_call = build_post_tool_call_summary(
-            tool_name=prepared.tool_name,
-            result=result,
-            state=state,
-            step_id=prepared.step_id,
-            tool_call_id=prepared.tool_call_id,
-            latency_ms=latency_ms,
-            retry_count=invocation.retry_count,
-            tool_contract=_execution_summary(prepared.tool_spec, prepared.disposition),
-            registry=self.registry,
-        )
-        event_payload = {
-            "tool_call_id": prepared.tool_call_id,
-            "step_id": prepared.step_id,
-            "latency_ms": latency_ms,
-            "retry_count": invocation.retry_count,
-            "post_tool_call": post_tool_call,
-        }
-        if prepared.disposition == "invoke":
-            event_payload["contract"] = contract_summary(result.contract)
-        self._emit(
-            AgentEvent(
-                type="tool_finished",
-                session_id=state.session_id,
-                run_id=state.run_id,
-                tool_name=prepared.tool_name,
-                output_ref=result.output_ref,
-                payload=event_payload,
+            state.complete_tool_call(call.tool_call_id, result)
+            event_type = "tool_finished"
+            canonical_event = "tool.finished"
+            status = "succeeded"
+        else:
+            decision = self.recovery_policy.decide(
+                result,
+                step,
+                failure_mode=failure_mode,
             )
-        )
-        _append_tool_trace_event(
-            prepared.trace_store,
-            trace_id=prepared.trace_id,
-            state=state,
-            node_name=prepared.node_name,
-            canonical_event="tool.finished",
-            status=str(post_tool_call.get("status") or "succeeded"),
-            capability=prepared.capability,
-            tool_name=prepared.tool_name,
-            tool_call_id=prepared.tool_call_id,
-            step_id=prepared.step_id,
-            span_id=prepared.tool_span_id,
-            latency_ms=latency_ms,
-            reported_latency_ms=reported_latency_ms,
-            retry_count=invocation.retry_count,
-            tool_contract=_execution_summary(prepared.tool_spec, prepared.disposition),
-            input_summary=_policy_safe_input_summary(prepared.tool_input),
-            output_summary={
-                **_policy_safe_output_summary(result),
-            },
-            provider=_provider_name(result.data or {}),
-            model=_model_name(result.data or {}),
-        )
-        return result
-
-    def _commit_staged_failure(
-        self,
-        state: AgentState,
-        prepared: PreparedToolCall,
-        invocation: ToolInvocationResult,
-    ) -> ToolResult:
-        result = invocation.result
-        reported_latency_ms = result.latency_ms
-        latency_ms = int((perf_counter() - prepared.started_at) * 1000)
-        decision = self.recovery_policy.decide(
-            result,
-            prepared.step,
-            failure_mode=prepared.failure_mode,
-        )
-        result.error = decision.message
-        post_tool_call = build_post_tool_call_summary(
-            tool_name=prepared.tool_name,
-            result=result,
-            state=state,
-            step_id=prepared.step_id,
-            tool_call_id=prepared.tool_call_id,
-            latency_ms=latency_ms,
-            retry_count=invocation.retry_count,
-            tool_contract=_execution_summary(prepared.tool_spec, prepared.disposition),
-            registry=self.registry,
-        )
-        state.fail_tool_call(
-            prepared.tool_call_id,
-            decision.message,
-            result,
-            error_details={
-                "code": decision.error_code,
-                "recovery_action": decision.action,
-                "optional_step": decision.optional_step,
-                "retryable": decision.retryable,
-                "step_id": prepared.step_id,
-                "retry_count": invocation.retry_count,
-            },
-            stop_run=decision.action == "stop_with_error",
-        )
-        self._emit(
-            AgentEvent(
-                type="tool_failed",
-                session_id=state.session_id,
-                run_id=state.run_id,
-                tool_name=prepared.tool_name,
-                error=api_error(
-                    decision.error_code,
-                    decision.message,
-                    detail={"step_id": prepared.step_id, "recovery_action": decision.action},
-                    recoverable=decision.retryable,
-                ).model_dump(mode="json"),
-                payload={
-                    "tool_call_id": prepared.tool_call_id,
-                    "step_id": prepared.step_id,
-                    "latency_ms": latency_ms,
-                    "retry_count": invocation.retry_count,
+            result.error = decision.message
+            error_code = decision.error_code
+            recovery_action = decision.action
+            retryable = decision.retryable
+            state.fail_tool_call(
+                call.tool_call_id,
+                decision.message,
+                result,
+                error_details={
                     "code": decision.error_code,
                     "recovery_action": decision.action,
-                    "contract": contract_summary(result.contract),
-                    "post_tool_call": post_tool_call,
+                    "optional_step": decision.optional_step,
+                    "retryable": decision.retryable,
+                    "step_id": step_id,
+                    "retry_count": retry_count,
                 },
+                stop_run=decision.action == "stop_with_error",
+            )
+            event_type = "tool_failed"
+            canonical_event = "tool.failed"
+            status = "failed"
+
+        post_tool_call = build_post_tool_call_summary(
+            tool_name=tool_name,
+            result=result,
+            state=state,
+            step_id=step_id,
+            tool_call_id=call.tool_call_id,
+            latency_ms=latency_ms,
+            retry_count=retry_count,
+            tool_contract=tool_contract,
+            registry=self.registry,
+        )
+        payload = {
+            "tool_call_id": call.tool_call_id,
+            "step_id": step_id,
+            "latency_ms": latency_ms,
+            "retry_count": retry_count,
+            "post_tool_call": post_tool_call,
+        }
+        if disposition == "invoke":
+            payload["contract"] = contract_summary(result.contract)
+        if error_code is not None:
+            payload.update(
+                {
+                    "code": error_code,
+                    "recovery_action": recovery_action,
+                }
+            )
+        self._emit(
+            AgentEvent(
+                type=event_type,
+                session_id=state.session_id,
+                run_id=state.run_id,
+                tool_name=tool_name,
+                output_ref=result.output_ref if result.success else None,
+                error=(
+                    api_error(
+                        error_code or "tool_failed",
+                        result.error or "Tool failed.",
+                        detail={
+                            "step_id": step_id,
+                            "recovery_action": recovery_action,
+                        },
+                        recoverable=retryable,
+                    ).model_dump(mode="json")
+                    if not result.success
+                    else None
+                ),
+                payload=payload,
             )
         )
         _append_tool_trace_event(
-            prepared.trace_store,
-            trace_id=prepared.trace_id,
+            trace_store,
+            trace_id=trace_id,
             state=state,
-            node_name=prepared.node_name,
-            event_type="tool_failed",
-            canonical_event="tool.failed",
-            status="failed",
-            capability=prepared.capability,
-            tool_name=prepared.tool_name,
-            tool_call_id=prepared.tool_call_id,
-            step_id=prepared.step_id,
-            span_id=prepared.tool_span_id,
+            node_name=effective_node_name,
+            event_type="observability" if result.success else "tool_failed",
+            canonical_event=canonical_event,
+            status=str(post_tool_call.get("status") or status),
+            capability=capability,
+            tool_name=tool_name,
+            tool_call_id=call.tool_call_id,
+            step_id=step_id,
+            span_id=tool_span_id,
             latency_ms=latency_ms,
             reported_latency_ms=reported_latency_ms,
-            retry_count=invocation.retry_count,
-            tool_contract=_execution_summary(prepared.tool_spec, prepared.disposition),
-            input_summary=_policy_safe_input_summary(prepared.tool_input),
-            output_summary={
-                **_policy_safe_output_summary(result),
-            },
+            retry_count=retry_count,
+            tool_contract=tool_contract,
+            input_summary=_policy_safe_input_summary(bound_input),
+            output_summary=_policy_safe_output_summary(result),
             provider=_provider_name(result.data or {}),
             model=_model_name(result.data or {}),
-            error_code=decision.error_code,
-            error_message=_policy_safe_error(decision.message),
-            recovery_action=decision.action,
+            error_code=error_code,
+            error_message=_policy_safe_error(result.error) if not result.success else None,
+            recovery_action=recovery_action,
         )
         return result
 
-    def _commit_staged_cancellation(
+    def _commit_cancellation(
         self,
+        *,
         state: AgentState,
-        prepared: PreparedToolCall,
-        invocation: ToolInvocationResult,
-    ) -> ToolResult:
-        result = invocation.result
-        error_details = invocation.cancellation_metadata or {}
-        reported_latency_ms = result.latency_ms
-        latency_ms = int((perf_counter() - prepared.started_at) * 1000)
+        exc: AgentRunCancelled,
+        tool_name: str,
+        step_id: str,
+        tool_call_id: str,
+        capability: str,
+        started_at: float,
+        tool_span_id: str,
+        tool_input: dict[str, Any],
+        tool_spec: ToolSpec,
+        trace_store: TraceStore | None,
+        trace_id: str | None,
+        node_name: str,
+    ) -> None:
+        latency_ms = int((perf_counter() - started_at) * 1000)
+        error_details = build_realtime_turn_cancellation_metadata(
+            {
+                **exc.details,
+                "step_id": step_id,
+                "tool_name": tool_name,
+                "retryable": False,
+            },
+            phase="tool_running",
+        )
+        result = _cancelled_tool_result(
+            tool_name,
+            latency_ms=latency_ms,
+            cancel_metadata=error_details,
+        )
+        tool_contract = _execution_summary(tool_spec, "invoke")
         post_tool_call = build_post_tool_call_summary(
-            tool_name=prepared.tool_name,
+            tool_name=tool_name,
             result=result,
             state=state,
-            step_id=prepared.step_id,
-            tool_call_id=prepared.tool_call_id,
+            step_id=step_id,
+            tool_call_id=tool_call_id,
             latency_ms=latency_ms,
             retry_count=0,
             cancel_metadata=error_details,
-            tool_contract=_execution_summary(prepared.tool_spec, prepared.disposition),
+            tool_contract=tool_contract,
             registry=self.registry,
         )
         state.fail_tool_call(
-            prepared.tool_call_id,
+            tool_call_id,
             DEFAULT_CANCELLATION_MESSAGE,
             result,
             error_details=error_details,
@@ -545,16 +411,16 @@ class ToolExecutor:
                 type="tool_failed",
                 session_id=state.session_id,
                 run_id=state.run_id,
-                tool_name=prepared.tool_name,
+                tool_name=tool_name,
                 error=api_error(
                     CANCELLATION_ERROR_CODE,
                     DEFAULT_CANCELLATION_MESSAGE,
-                    detail={"step_id": prepared.step_id, "source": prepared.tool_name},
+                    detail={"step_id": step_id, "source": tool_name},
                     recoverable=False,
                 ).model_dump(mode="json"),
                 payload={
-                    "tool_call_id": prepared.tool_call_id,
-                    "step_id": prepared.step_id,
+                    "tool_call_id": tool_call_id,
+                    "step_id": step_id,
                     "latency_ms": latency_ms,
                     "retry_count": 0,
                     "code": CANCELLATION_ERROR_CODE,
@@ -563,38 +429,33 @@ class ToolExecutor:
             )
         )
         _append_tool_trace_event(
-            prepared.trace_store,
-            trace_id=prepared.trace_id,
+            trace_store,
+            trace_id=trace_id,
             state=state,
-            node_name=prepared.node_name,
+            node_name=node_name,
             event_type="tool_failed",
             canonical_event="tool.failed",
             status="failed",
-            capability=prepared.capability,
-            tool_name=prepared.tool_name,
-            tool_call_id=prepared.tool_call_id,
-            step_id=prepared.step_id,
-            span_id=prepared.tool_span_id,
+            capability=capability,
+            tool_name=tool_name,
+            tool_call_id=tool_call_id,
+            step_id=step_id,
+            span_id=tool_span_id,
             latency_ms=latency_ms,
-            reported_latency_ms=reported_latency_ms,
+            reported_latency_ms=result.latency_ms,
             retry_count=0,
-            tool_contract=_execution_summary(prepared.tool_spec, prepared.disposition),
-            input_summary=_policy_safe_input_summary(prepared.tool_input),
+            tool_contract=tool_contract,
+            input_summary=_policy_safe_input_summary(tool_input),
             output_summary={"cancelled": True},
             error_code=CANCELLATION_ERROR_CODE,
             error_message=DEFAULT_CANCELLATION_MESSAGE,
             recovery_action="cancelled",
         )
-        exc = invocation.cancellation
         raise AgentRunCancelled(
             DEFAULT_CANCELLATION_MESSAGE,
-            phase=exc.phase if exc is not None and exc.phase else "tool",
-            node_name=(
-                exc.node_name
-                if exc is not None and exc.node_name
-                else prepared.node_name
-            ),
-            source=exc.source if exc is not None else "tool_executor",
+            phase=exc.phase or "tool",
+            node_name=exc.node_name or node_name,
+            source=exc.source,
             details=error_details,
             state=state,
         ) from exc
@@ -606,7 +467,7 @@ class ToolExecutor:
         context: ToolContext,
         *,
         step_id: str,
-        preserve_success_after_cancel: bool = False,
+        preserve_success_after_cancel: bool,
         max_retries: int,
     ) -> tuple[ToolResult, int]:
         failed_attempts = 0
@@ -616,7 +477,11 @@ class ToolExecutor:
                 self.cancel_token,
                 phase="before_tool_attempt",
                 source="tool_executor",
-                details={"tool_name": tool_name, "step_id": step_id, "retry_count": retry_count},
+                details={
+                    "tool_name": tool_name,
+                    "step_id": step_id,
+                    "retry_count": retry_count,
+                },
             )
             result = self._run_once(tool_name, tool_input, context)
             if not (preserve_success_after_cancel and result.success):
@@ -624,19 +489,22 @@ class ToolExecutor:
                     self.cancel_token,
                     phase="after_tool_attempt",
                     source="tool_executor",
-                    details={"tool_name": tool_name, "step_id": step_id, "retry_count": retry_count},
+                    details={
+                        "tool_name": tool_name,
+                        "step_id": step_id,
+                        "retry_count": retry_count,
+                    },
                 )
             if result.success:
                 return result, retry_count
-
-            error_code = classify_error(result.error or "")
             failed_attempts += 1
             if (
                 failed_attempts > max_retries
-                or not self.execution_policy.retry.is_retryable(error_code)
+                or not self.execution_policy.retry.is_retryable(
+                    classify_error(result.error or "")
+                )
             ):
                 return result, retry_count
-
             retry_count += 1
             if self.execution_policy.retry.backoff_seconds > 0:
                 _sleep_with_cancel(
@@ -658,7 +526,11 @@ class ToolExecutor:
         except AgentRunCancelled:
             raise
         except Exception as exc:  # pragma: no cover - registry boundary
-            return ToolResult(tool_name=tool_name, success=False, error=sanitize_error_message(exc))
+            return ToolResult(
+                tool_name=tool_name,
+                success=False,
+                error=sanitize_error_message(exc),
+            )
 
     def _emit(self, event: AgentEvent) -> None:
         if self.event_sink is not None:
@@ -673,7 +545,11 @@ def _sleep_with_cancel(
     step_id: str,
     retry_count: int,
 ) -> None:
-    details = {"tool_name": tool_name, "step_id": step_id, "retry_count": retry_count}
+    details = {
+        "tool_name": tool_name,
+        "step_id": step_id,
+        "retry_count": retry_count,
+    }
     raise_if_cancelled(
         cancel_token,
         phase="before_tool_retry_sleep",
@@ -722,13 +598,34 @@ def _append_tool_trace_event(
 ) -> None:
     if trace_store is None or trace_id is None:
         return
-    error = _tool_trace_error(
-        error_code=error_code,
-        error_message=error_message,
-        recovery_action=recovery_action,
-        step_id=step_id,
-        retry_count=retry_count,
-    )
+    error = None
+    if error_code or error_message or recovery_action:
+        error = {
+            key: value
+            for key, value in {
+                "code": error_code,
+                "message": (
+                    sanitize_trace_value(error_message) if error_message else None
+                ),
+                "recovery_action": recovery_action,
+                "step_id": step_id,
+                "retry_count": retry_count,
+            }.items()
+            if value is not None
+        }
+    attributes = {
+        "tool_call_id": tool_call_id,
+        "step_id": step_id,
+        "retry_count": retry_count,
+        "tool_reported_latency_ms": reported_latency_ms,
+        "tool_category": (tool_contract or {}).get("category"),
+        "requires_confirmation": (tool_contract or {}).get(
+            "requires_confirmation"
+        ),
+        "confirmation_pending": (tool_contract or {}).get(
+            "confirmation_pending"
+        ),
+    }
     trace_store.append(
         TraceEvent(
             trace_id=trace_id,
@@ -738,7 +635,9 @@ def _append_tool_trace_event(
             node_name=node_name,
             event_type=event_type,
             canonical_event=canonical_event,
-            observation_type="span" if canonical_event != "tool.started" else None,
+            observation_type=(
+                "span" if canonical_event != "tool.started" else None
+            ),
             observation_scope="iteration",
             span_id=span_id,
             capability=capability,
@@ -750,86 +649,32 @@ def _append_tool_trace_event(
             error_code=error_code,
             input_summary=input_summary or {},
             output_summary=output_summary or {},
-            attributes=_tool_trace_attributes(
-                tool_call_id=tool_call_id,
-                step_id=step_id,
-                retry_count=retry_count,
-                tool_contract=tool_contract,
-                reported_latency_ms=reported_latency_ms,
-            ),
+            attributes={
+                key: value for key, value in attributes.items() if value is not None
+            },
             error=error,
         )
     )
 
 
-def _tool_trace_attributes(
-    *,
-    tool_call_id: str,
-    step_id: str,
-    retry_count: int | None,
-    tool_contract: dict[str, Any] | None,
-    reported_latency_ms: int | None = None,
-) -> dict[str, Any]:
-    attributes: dict[str, Any] = {
-        "tool_call_id": tool_call_id,
-        "step_id": step_id,
-    }
-    if retry_count is not None:
-        attributes["retry_count"] = retry_count
-    if reported_latency_ms is not None:
-        attributes["tool_reported_latency_ms"] = reported_latency_ms
-    if tool_contract:
-        attributes["tool_category"] = tool_contract.get("category")
-        attributes["requires_confirmation"] = tool_contract.get(
-            "requires_confirmation"
-        )
-        attributes["confirmation_pending"] = tool_contract.get(
-            "confirmation_pending"
-        )
-    return {key: value for key, value in attributes.items() if value is not None}
-
-
-def _tool_trace_error(
-    *,
-    error_code: str | None,
-    error_message: str | None,
-    recovery_action: str | None,
-    step_id: str,
-    retry_count: int | None,
-) -> dict[str, Any] | None:
-    if error_code is None and error_message is None and recovery_action is None:
-        return None
-    error = {
-        "code": error_code,
-        "message": sanitize_trace_value(error_message) if error_message else None,
-        "recovery_action": recovery_action,
-        "step_id": step_id,
-        "retry_count": retry_count,
-    }
-    return {key: value for key, value in error.items() if value is not None}
-
-
-def _preserve_success_after_cancel(tool_spec: ToolSpec) -> bool:
-    return tool_spec.category != "read"
-
-
 def _capability_name(tool_name: str, step: TaskStep | None) -> str:
     if step is not None:
-        manifest_capability = canonical_capability_for_action(step.action)
-        if manifest_capability is not None:
-            return manifest_capability
-    tool_map = {IMAGE_GENERATION_TOOL_NAME: IMAGE_GENERATION_CAPABILITY}
-    manifest_capability = canonical_capability_for_tool(tool_name)
-    if manifest_capability is not None:
-        return manifest_capability
-    return tool_map.get(tool_name, tool_name)
+        capability = canonical_capability_for_action(step.action)
+        if capability is not None:
+            return capability
+    capability = canonical_capability_for_tool(tool_name)
+    if capability is not None:
+        return capability
+    return {
+        IMAGE_GENERATION_TOOL_NAME: IMAGE_GENERATION_CAPABILITY
+    }.get(tool_name, tool_name)
 
 
 def _cancelled_tool_result(
     tool_name: str,
     *,
     latency_ms: int,
-    cancel_metadata: dict[str, Any] | None = None,
+    cancel_metadata: dict[str, Any],
 ) -> ToolResult:
     metadata = build_realtime_turn_cancellation_metadata(
         cancel_metadata,
@@ -850,6 +695,62 @@ def _cancelled_tool_result(
     )
 
 
+def _policy_safe_input_summary(payload: dict[str, Any]) -> dict[str, Any]:
+    if local_trace_content_enabled():
+        safe = sanitize_error_detail(payload)
+        return safe if isinstance(safe, dict) else {}
+    return {
+        "redacted": True,
+        "field_names": sorted(str(key) for key in payload),
+        "input_size_bytes": len(str(payload).encode("utf-8")),
+    }
+
+
+def _policy_safe_output_summary(result: ToolResult) -> dict[str, Any]:
+    if local_trace_content_enabled():
+        data = result.data if isinstance(result.data, dict) else {}
+        safe = sanitize_error_detail(
+            {
+                "success": result.success,
+                "output_ref": result.output_ref,
+                "raw_data_ref": result.raw_data_ref,
+                "error": result.error,
+                "data": {
+                    key: value
+                    for key, value in data.items()
+                    if key
+                    not in {
+                        "raw_data_ref",
+                        "raw_provider_payload",
+                        "provider_raw_response",
+                    }
+                },
+                "model_observation": result.model_observation,
+                "trace_summary": result.trace_summary,
+                "audit_payload": result.audit_payload,
+            }
+        )
+        return (
+            {key: value for key, value in safe.items() if value is not None}
+            if isinstance(safe, dict)
+            else {}
+        )
+    data = result.data if isinstance(result.data, dict) else {}
+    return {
+        "redacted": True,
+        "success": result.success,
+        "output_ref": result.output_ref,
+        "raw_data_ref": (
+            sanitize_trace_value(result.raw_data_ref)
+            if result.raw_data_ref
+            else None
+        ),
+        "error_code": classify_error(result.error or "") if result.error else None,
+        "data_field_names": sorted(str(key) for key in data),
+        "result_size_bytes": len(str(data).encode("utf-8")),
+    }
+
+
 def _provider_name(payload: dict[str, Any]) -> str | None:
     value = payload.get("provider")
     return value if isinstance(value, str) and value else None
@@ -860,143 +761,9 @@ def _model_name(payload: dict[str, Any]) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
-def _input_size_bytes(payload: dict[str, Any]) -> int | None:
-    explicit = payload.get("input_size_bytes")
-    if isinstance(explicit, int) and explicit >= 0:
-        return explicit
-    size = len(str(payload).encode("utf-8"))
-    return size if size >= 0 else None
-
-
-def _input_summary(payload: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "field_count": len(payload),
-        "input_size_bytes": _input_size_bytes(payload),
-        "media_count": sum(
-            len(value)
-            for key, value in payload.items()
-            if key in {"image_ids", "video_ids", "reference_image_ids"} and isinstance(value, list)
-        ),
-        "prompt_length": len(payload.get("prompt", "") or payload.get("text", "") or payload.get("query", "")),
-    }
-
-
-def _output_summary(result: ToolResult) -> dict[str, Any]:
-    data = result.data or {}
-    payload: dict[str, Any] = {
-        "success": result.success,
-        "output_ref": result.output_ref,
-        "error_code": classify_error(result.error or "") if result.error else None,
-    }
-    if isinstance(result.trace_summary, dict):
-        safe_trace = sanitize_error_detail(result.trace_summary)
-        if isinstance(safe_trace, dict):
-            payload.update(
-                {
-                    key: value
-                    for key, value in safe_trace.items()
-                    if key not in {"raw_data_ref", "raw_provider_payload", "provider_raw_response"}
-                }
-            )
-    else:
-        payload["item_count"] = len(data.get("items", [])) if isinstance(data.get("items"), list) else None
-    return payload
-
-
-def _policy_safe_input_summary(
-    payload: dict[str, Any],
-) -> dict[str, Any]:
-    if local_trace_content_enabled():
-        safe_payload = sanitize_error_detail(payload)
-        return safe_payload if isinstance(safe_payload, dict) else {}
-    return {
-        "redacted": True,
-        "field_names": sorted(str(key) for key in payload),
-        **_input_summary(payload),
-    }
-
-
-def _policy_safe_output_summary(
-    result: ToolResult,
-) -> dict[str, Any]:
-    if local_trace_content_enabled():
-        data = result.data if isinstance(result.data, dict) else {}
-        safe_data = {
-            key: value
-            for key, value in data.items()
-            if key not in {"raw_data_ref", "raw_provider_payload", "provider_raw_response"}
-        }
-        payload = sanitize_error_detail(
-            {
-                "success": result.success,
-                "output_ref": result.output_ref,
-                "raw_data_ref": result.raw_data_ref,
-                "error": result.error,
-                "data": safe_data,
-                "model_observation": result.model_observation,
-                "trace_summary": result.trace_summary,
-                "audit_payload": _policy_safe_audit_payload(result),
-            }
-        )
-        if isinstance(payload, dict):
-            return {key: value for key, value in payload.items() if value is not None}
-        return _output_summary(result)
-    data = result.data if isinstance(result.data, dict) else {}
-    trace = result.trace_summary if isinstance(result.trace_summary, dict) else {}
-    approved_summary = trace.get("summary")
-    return {
-        "redacted": True,
-        "success": result.success,
-        "output_ref": result.output_ref,
-        "raw_data_ref": sanitize_trace_value(result.raw_data_ref) if result.raw_data_ref else None,
-        "error_code": classify_error(result.error or "") if result.error else None,
-        "summary": (
-            sanitize_error_message(approved_summary)[:240]
-            if isinstance(approved_summary, str) and approved_summary.strip()
-            else None
-        ),
-        "data_field_names": sorted(str(key) for key in data),
-        "trace_field_names": sorted(str(key) for key in trace),
-        "audit_payload": _policy_safe_audit_payload(result),
-        "result_size_bytes": len(str(data).encode("utf-8")),
-    }
-
-
-def _policy_safe_audit_payload(
-    result: ToolResult,
-) -> dict[str, Any] | None:
-    payload = result.audit_payload
-    if not isinstance(payload, dict):
-        return payload
-    if local_trace_content_enabled():
-        safe_payload = sanitize_error_detail(payload)
-        return safe_payload if isinstance(safe_payload, dict) else None
-    if payload.get("redacted") is True:
-        safe_payload = sanitize_error_detail(payload)
-        if isinstance(safe_payload, dict):
-            return {
-                key: value
-                for key, value in safe_payload.items()
-                if key
-                in {
-                    "provider",
-                    "request_id",
-                    "operation_id",
-                    "status",
-                    "item_count",
-                    "redacted",
-                }
-            }
-    return {
-        "redacted": True,
-        "field_names": sorted(str(key) for key in payload),
-        "payload_size_bytes": len(str(payload).encode("utf-8")),
-    }
-
-
 def _policy_safe_error(error: str | None) -> str | None:
     if error is None:
-        return error
+        return None
     if local_trace_content_enabled():
         return sanitize_error_message(error)
     return classify_error(error)
@@ -1012,10 +779,11 @@ def _effective_max_retries(
 
 def _tool_confirmation_granted(metadata: dict[str, Any], tool_name: str) -> bool:
     confirmation = metadata.get("tool_confirmation")
-    if not isinstance(confirmation, dict) or confirmation.get("confirmed") is not True:
-        return False
-    confirmed_tool = confirmation.get("tool_name")
-    return confirmed_tool == tool_name
+    return bool(
+        isinstance(confirmation, dict)
+        and confirmation.get("confirmed") is True
+        and confirmation.get("tool_name") == tool_name
+    )
 
 
 def _confirmation_required_result(*, tool_name: str, latency_ms: int) -> ToolResult:

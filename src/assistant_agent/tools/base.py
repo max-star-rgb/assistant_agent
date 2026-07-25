@@ -50,7 +50,6 @@ class Tool(Protocol):
     requires_confirmation: bool
     enabled_by_default: bool
     requires_media: list[ToolMediaRequirement]
-    defer_loading: bool
 
     def run(self, input: BaseModel | dict[str, Any], context: ToolContext | None = None) -> ToolResult:
         """Execute the tool and return a structured result."""
@@ -65,7 +64,6 @@ class ToolBase:
     requires_confirmation = True
     enabled_by_default = True
     requires_media: list[ToolMediaRequirement] = []
-    defer_loading = True
     model_hidden_input_fields: tuple[str, ...] = ()
     input_bindings: tuple[Any, ...] = ()
     host_configured_exposure: bool = False

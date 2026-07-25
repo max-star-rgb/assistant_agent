@@ -113,10 +113,6 @@ def test_package_and_runtime_initialize_offline() -> None:
         == "personal_assistant_mcp"
     )
     assert (
-        runtime.registry.registration_record("tool_search").plugin_id
-        == "tool_discovery"
-    )
-    assert (
         runtime.registry.registration_record("python_interpreter").plugin_id
         == "python_execution"
     )

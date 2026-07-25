@@ -292,7 +292,7 @@ class ContextSummary(BaseModel):
 
 
 class ToolCatalogSummary(BaseModel):
-    """Summary of prompt tool-spec recall for trace/debug views."""
+    """Summary of prompt ToolSpec selection for trace/debug views."""
 
     total_tool_count: int = Field(default=0, ge=0)
     prompt_tool_count: int = Field(default=0, ge=0)

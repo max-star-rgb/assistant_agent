@@ -9,7 +9,6 @@ from pydantic import BaseModel
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.schemas.tools import ToolResult
 from assistant_agent.services.context.tool_catalog import select_prompt_tool_specs
-from assistant_agent.services.context import tool_catalog as tool_catalog_module
 from assistant_agent.services.agent_service_entry import agent_service_tool_visibility
 from assistant_agent.tools.base import ToolBase, ToolContext
 from assistant_agent.tool_plugins.assembly import ToolPluginAssemblyError
@@ -92,14 +91,7 @@ def test_configured_write_tool_is_not_host_enabled_by_plugin_declaration(
     assert selection.summary.registry_generation == registry.generation
 
 
-def test_explicit_tool_activation_exposes_only_named_governed_tools(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        tool_catalog_module,
-        "DEFAULT_DIRECT_TOOL_SCHEMA_MAX_CHARS",
-        1,
-    )
+def test_explicit_tool_activation_exposes_only_named_governed_tools() -> None:
     registry = create_default_registry()
     request = UserRequest(
         user_id="u",
@@ -122,103 +114,6 @@ def test_explicit_tool_activation_exposes_only_named_governed_tools(
     assert {"calendar_search", "calendar_create"}.issubset(
         selection.run_tool_catalog.available_tool_names
     )
-
-
-def test_large_qualified_catalog_defers_then_activates_tool_schema(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        tool_catalog_module,
-        "DEFAULT_DIRECT_TOOL_SCHEMA_MAX_CHARS",
-        1,
-    )
-    registry = create_default_registry()
-    request = UserRequest(
-        user_id="u",
-        session_id="s",
-        text="discover",
-    )
-
-    deferred = select_prompt_tool_specs(
-        request,
-        registry.list_specs(),
-        registry_generation=registry.generation,
-        host_configured_tool_names=registry.host_configured_tool_names(),
-    )
-
-    assert "tool_search" in deferred.run_tool_catalog.available_tool_names
-    assert "web_search" not in deferred.run_tool_catalog.available_tool_names
-    assert deferred.run_tool_catalog.excluded_reasons["web_search"] == [
-        "deferred_for_schema_budget"
-    ]
-    assert "recall_progressive_disclosure" in (
-        deferred.run_tool_catalog.selection_reasons
-    )
-
-    activated_request = request.model_copy(
-        update={
-            "metadata": {
-                **request.metadata,
-                "_activated_tool_names": ["web_search", "calendar_create"],
-            }
-        }
-    )
-    activated = select_prompt_tool_specs(
-        activated_request,
-        registry.list_specs(),
-        registry_generation=registry.generation,
-        host_configured_tool_names=registry.host_configured_tool_names(),
-    )
-
-    assert "web_search" in activated.run_tool_catalog.available_tool_names
-    assert "calendar_create" not in activated.run_tool_catalog.available_tool_names
-    assert activated.run_tool_catalog.excluded_reasons["calendar_create"] == [
-        "write_not_enabled_by_visibility"
-    ]
-
-
-def test_tool_search_discovers_only_current_run_deferred_registry_tools(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        tool_catalog_module,
-        "DEFAULT_DIRECT_TOOL_SCHEMA_MAX_CHARS",
-        1,
-    )
-    registry = create_default_registry()
-    request = UserRequest(
-        user_id="u",
-        session_id="s",
-        text="discover",
-    )
-    selection = select_prompt_tool_specs(
-        request,
-        registry.list_specs(),
-        registry_generation=registry.generation,
-        host_configured_tool_names=registry.host_configured_tool_names(),
-    )
-    tool = registry.get("tool_search")
-
-    result = tool.run(
-        {"query": "web_search"},
-        ToolContext(
-            metadata={
-                "run_tool_catalog": selection.run_tool_catalog.model_dump(
-                    mode="json"
-                )
-            }
-        ),
-    )
-
-    assert result.success is True
-    assert "web_search" in result.tool_catalog_activation
-    assert result.data is not None
-    matches = result.data["matches"]
-    assert any(
-        item["tool_name"] == "web_search" and item["source"] == "registry"
-        for item in matches
-    )
-    assert "calendar_create" not in result.tool_catalog_activation
 
 
 def test_agent_service_entry_profile_exposes_registered_read_tools_by_policy(
@@ -245,7 +140,6 @@ def test_agent_service_entry_profile_exposes_registered_read_tools_by_policy(
         "calendar_search",
         "contacts_search",
         "shopping_search",
-        "tool_search",
         "weather",
         "web_fetch",
         "web_search",

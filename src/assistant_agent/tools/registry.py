@@ -9,7 +9,6 @@ from typing import TYPE_CHECKING, Any, Dict, Iterable, List
 from pydantic import BaseModel
 
 from assistant_agent.config import ProviderConfig
-from assistant_agent.schemas.tool_ids import TOOL_SEARCH_TOOL_NAME
 from assistant_agent.schemas.tools import ToolResult, ToolSpec
 from assistant_agent.services.provider_errors import sanitize_error_message
 from assistant_agent.services.video_context import VideoContextStore
@@ -257,7 +256,6 @@ def _declared_contract(tool: Tool) -> dict[str, Any]:
         "requires_confirmation",
         "enabled_by_default",
         "requires_media",
-        "defer_loading",
     )
     return {name: getattr(tool, name) for name in fields if hasattr(tool, name)}
 
@@ -368,7 +366,6 @@ def create_default_registry(
                 ],
             )
         ) from exc
-    _bind_registry_catalog_tools(registry)
     report = ToolPluginAssemblyReport(
         sources=sources,
         registrations=[item.registration for item in contributions],
@@ -376,20 +373,6 @@ def create_default_registry(
     )
     registry.seal(assembly_report=report)
     return registry
-
-
-def _bind_registry_catalog_tools(registry: ToolRegistry) -> None:
-    """Bind the finalized startup inventory to discovery tools before sealing."""
-
-    if TOOL_SEARCH_TOOL_NAME not in registry.list():
-        return
-    binder = getattr(
-        registry.get(TOOL_SEARCH_TOOL_NAME),
-        "bind_registry_catalog",
-        None,
-    )
-    if callable(binder):
-        binder(registry.list_specs())
 
 
 def create_realtime_video_observation_registry(

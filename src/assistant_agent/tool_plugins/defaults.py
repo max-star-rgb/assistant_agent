@@ -13,9 +13,6 @@ from assistant_agent.tool_plugins.builtin.python_execution.plugin import (
     PythonExecutionPlugin,
 )
 from assistant_agent.tool_plugins.builtin.shopping.plugin import ShoppingToolPlugin
-from assistant_agent.tool_plugins.builtin.tool_discovery.plugin import (
-    ToolDiscoveryPlugin,
-)
 from assistant_agent.tool_plugins.builtin.vision_understanding.plugin import (
     VisionUnderstandingPlugin,
 )
@@ -30,7 +27,6 @@ def default_tool_plugins() -> tuple[ToolPlugin, ...]:
 
     return (
         LocalFileAccessPlugin(),
-        ToolDiscoveryPlugin(),
         PythonExecutionPlugin(),
         VisionUnderstandingPlugin(),
         VisualImageSearchPlugin(),

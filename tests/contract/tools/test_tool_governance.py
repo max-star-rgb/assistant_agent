@@ -612,44 +612,6 @@ def test_action_validator_uses_available_catalog_as_its_only_run_allowlist() -> 
     assert accepted.code == "accepted"
 
 
-def test_tool_executor_stages_do_not_commit_during_invocation() -> None:
-    tool = _ExecutionBoundaryTool()
-    registry = ToolRegistry()
-    registry.register(tool)
-    events = ListEventSink()
-    executor = ToolExecutor(registry=registry, event_sink=events)
-    request = UserRequest(
-        user_id="user-1",
-        session_id="session-1",
-        text="execute",
-    )
-    state = AgentState.from_request(request)
-
-    prepared = executor.prepare_tool_call(
-        state,
-        "step-1",
-        tool.name,
-        {"value": "ok"},
-    )
-
-    assert tool.run_count == 0
-    assert len(state.tool_calls) == 1
-    assert state.tool_results == []
-    assert [event.type for event in events.events] == ["tool_started"]
-
-    invocation = executor.invoke_tool(prepared)
-
-    assert tool.run_count == 1
-    assert state.tool_results == []
-    assert [event.type for event in events.events] == ["tool_started"]
-
-    result = executor.commit_tool_result(state, prepared, invocation)
-
-    assert result.success is True
-    assert [item.data for item in state.tool_results] == [{"value": "ok"}]
-    assert [event.type for event in events.events] == ["tool_started", "tool_finished"]
-
-
 def test_tool_trace_uses_executor_wall_latency_instead_of_tool_reported_latency(monkeypatch) -> None:
     tool = _ReportedLatencyTool()
     registry = ToolRegistry()
@@ -682,7 +644,7 @@ def test_tool_trace_uses_executor_wall_latency_instead_of_tool_reported_latency(
     assert terminal.attributes["tool_reported_latency_ms"] == 1
 
 
-def test_staged_executor_preserves_confirmation_without_invoking_tool() -> None:
+def test_tool_executor_preserves_confirmation_without_invoking_tool() -> None:
     tool = _ConfirmationBoundaryTool()
     registry = ToolRegistry()
     registry.register(tool)

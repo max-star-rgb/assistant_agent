@@ -85,11 +85,11 @@ def test_duplicate_builtin_plugin_id_fails_before_registry_creation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     plugin = type(
-        "DuplicateToolDiscoveryPlugin",
+        "DuplicatePythonExecutionPlugin",
         (),
         {
             "descriptor": ToolPluginDescriptor(
-                plugin_id="tool_discovery",
+                plugin_id="python_execution",
                 plugin_version="external",
             ),
             "build_tools": lambda self, context: [],
