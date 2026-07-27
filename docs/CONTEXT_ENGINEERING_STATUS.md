@@ -42,6 +42,10 @@ Last updated: 2026-07-27
 
 - 多阶段 Context Engine + Memory Policy 计划已经完成；后续应把 `docs/CONTEXT_ENGINEERING_STATUS.md` 作为当前入口。
 - 主运行时是 LangGraph/ReAct assistant loop，默认 mock/local/offline。
+- LangGraph 拓扑保持 `assistant -> execute_tool -> assistant`；`ContextService` 作为非 checkpoint
+  runtime dependency 注入 assistant node，统一负责 context pack 构建、Provider-native request
+  编译、token preflight、rolling compaction 和压缩后重建。assistant node 只保留工具目录选择、
+  模型 turn 调度、决策 guard 与状态归并，不为纯上下文计算增加 graph node。
 - `AssistantContextPack` 已接入 assistant 每轮决策，统一收集 request、conversation、memory、realtime video、plan state、tool observations、tool specs、source counts 和 budget。
 - `AgentGraphRuntime` 可在 run 入口通过 `ContextSourceCoordinator` 加载一次显式 owner-bound 的 `SOUL.md`，把验证后的 `ContextSourceResult` 冻结到 `AgentState`；同一 run 的多次 assistant iteration 不重复读文件，下一 run 才观察合法更新。
 - 生产 provider-native `ChatRequest` 统一通过无副作用 `PromptCompiler` 编译；真实与 mock provider 共用 LangGraph assistant loop。工具预算耗尽后的 finishing turn 仍使用同一通用 system prompt 和 native context，只把工具集合置空。legacy prompt-json renderer 仍只用于离线兼容与测试。
@@ -285,6 +289,7 @@ Last updated: 2026-07-27
 - `src/assistant_agent/automation/durable_tasks/`
 - `src/assistant_agent/multi_agent/agent_delegation_context.py`
 - `src/assistant_agent/context/models.py`
+- `src/assistant_agent/context/service.py`
 - `src/assistant_agent/runtime/assistant_run_service.py`
 - `src/assistant_agent/runtime/chat_adapter.py`
 - `src/assistant_agent/providers/provider_errors.py`

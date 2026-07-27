@@ -15,9 +15,7 @@ from assistant_agent.runtime.intent import IntentDetector
 from assistant_agent.runtime.router import ToolRouter
 from assistant_agent.runtime.tool_executor import ToolExecutor
 from assistant_agent.runtime.chat_adapter import ChatAdapter
-from assistant_agent.context.compactor import ContextCompactor
-from assistant_agent.context.token_counter import ContextTokenCounter
-from assistant_agent.context.token_budget import ContextWindowPolicy
+from assistant_agent.context.service import ContextService
 from assistant_agent.runtime.event_sink import EventSink
 from assistant_agent.observability.trace_store import TraceStore, trace_graph_node
 
@@ -33,9 +31,7 @@ RUNTIME_STATE_KEYS = frozenset(
         "tool_executor",
         "chat_adapter",
         "chat_turn",
-        "context_compactor",
-        "context_token_counter",
-        "context_window_policy",
+        "context_service",
         "context_projector",
         "trace_store",
         "event_sink",
@@ -52,9 +48,7 @@ class GraphRuntimeContext:
     tool_executor: ToolExecutor
     chat_adapter: ChatAdapter
     chat_turn: Callable[[Any], Any] | None = None
-    context_compactor: ContextCompactor | None = None
-    context_token_counter: ContextTokenCounter | None = None
-    context_window_policy: ContextWindowPolicy | None = None
+    context_service: ContextService | None = None
     context_projector: Callable[[Any], None] | None = None
     intent_detector: IntentDetector | None = None
     router: ToolRouter | None = None
@@ -110,12 +104,8 @@ def _with_runtime_context(graph_state: GraphStateT, runtime_context: GraphRuntim
     enriched_state["chat_adapter"] = runtime_context.chat_adapter
     if runtime_context.chat_turn is not None:
         enriched_state["chat_turn"] = runtime_context.chat_turn
-    if runtime_context.context_compactor is not None:
-        enriched_state["context_compactor"] = runtime_context.context_compactor
-    if runtime_context.context_token_counter is not None:
-        enriched_state["context_token_counter"] = runtime_context.context_token_counter
-    if runtime_context.context_window_policy is not None:
-        enriched_state["context_window_policy"] = runtime_context.context_window_policy
+    if runtime_context.context_service is not None:
+        enriched_state["context_service"] = runtime_context.context_service
     if runtime_context.context_projector is not None:
         enriched_state["context_projector"] = runtime_context.context_projector
     if runtime_context.trace_store is not None:

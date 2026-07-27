@@ -51,6 +51,7 @@ from assistant_agent.context.token_counter import (
     create_context_token_counter,
 )
 from assistant_agent.context.token_budget import ContextWindowPolicy
+from assistant_agent.context.service import ContextService
 from assistant_agent.context.prompt_compiler import (
     PromptCompileMode,
     PromptCompileRequest,
@@ -217,6 +218,11 @@ class AgentGraphRuntime:
             safety_margin_tokens=self.config.context_compaction_safety_margin_tokens,
             summary_max_tokens=self.config.context_summary_max_tokens,
         )
+        self.context_service = ContextService(
+            compactor=self.context_compactor,
+            token_counter=self.context_token_counter,
+            window_policy=self.context_window_policy,
+        )
         self.checkpointer = checkpointer if checkpointer is not None else create_checkpointer(self.config)
         self.context_source_coordinator = context_source_coordinator or ContextSourceCoordinator(
             [SoulContextSource()]
@@ -363,9 +369,7 @@ class AgentGraphRuntime:
             tool_executor=tool_executor,
             chat_adapter=self.chat_adapter,
             chat_turn=self._run_native_chat_turn,
-            context_compactor=self.context_compactor,
-            context_token_counter=self.context_token_counter,
-            context_window_policy=self.context_window_policy,
+            context_service=self.context_service,
             context_projector=self._refresh_realtime_video_context,
             trace_store=self.trace_store,
             event_sink=run_event_sink,
