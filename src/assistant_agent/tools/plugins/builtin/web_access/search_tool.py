@@ -11,7 +11,6 @@ from assistant_agent.tools.plugins.builtin.web_access.search_backend import (
 )
 from assistant_agent.tools.ids import WEB_SEARCH_CAPABILITY, WEB_SEARCH_TOOL_NAME
 from assistant_agent.tools.base import ToolBase, ToolContext
-from assistant_agent.tools.input_binding import ToolInputBinding
 
 
 class WebSearchTool(ToolBase):
@@ -23,9 +22,7 @@ class WebSearchTool(ToolBase):
     input_schema = WebSearchRequest
     output_schema = WebSearchResult
     category = "read"
-    runtime_input_bindings = (
-        ToolInputBinding(field="limit", source="constant", value=5),
-    )
+    llm_hidden_input_fields = ("limit",)
 
     def __init__(self, adapter: WebSearchAdapter | None = None) -> None:
         self.adapter = adapter or create_web_search_adapter()

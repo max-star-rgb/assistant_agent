@@ -14,7 +14,11 @@ from assistant_agent.tools.ids import (
     DURABLE_TASK_SUBMISSION_TOOL_NAMES,
 )
 from assistant_agent.tools.base import ToolInputValidationError
-from assistant_agent.tools.input_binding import runtime_owned_input_fields
+from assistant_agent.tools.input_binding import (
+    bind_runtime_tool_input,
+    llm_hidden_input_fields,
+    runtime_bound_input_fields,
+)
 from assistant_agent.tools.registry import ToolRegistry
 
 
@@ -77,8 +81,20 @@ class ActionValidator:
         }
 
         tool = registry.get(tool_name)
+        unknown_fields = sorted(
+            set(decision.tool_input) - set(tool.input_schema.model_fields)
+        )
+        if unknown_fields:
+            return _reject(
+                "invalid_tool_input",
+                (
+                    f"{tool_name} input contains unknown fields: "
+                    f"{', '.join(unknown_fields)}."
+                ),
+                metadata=metadata,
+            )
         supplied_runtime_fields = sorted(
-            set(runtime_owned_input_fields(tool)).intersection(decision.tool_input)
+            set(runtime_bound_input_fields(tool)).intersection(decision.tool_input)
         )
         if supplied_runtime_fields:
             return _reject(
@@ -89,8 +105,27 @@ class ActionValidator:
                 ),
                 metadata=metadata,
             )
+        supplied_tool_default_fields = sorted(
+            set(llm_hidden_input_fields(tool)).intersection(decision.tool_input)
+        )
+        if supplied_tool_default_fields:
+            return _reject(
+                "tool_default_input_override",
+                (
+                    f"{tool_name} input attempts to override tool defaults: "
+                    f"{', '.join(supplied_tool_default_fields)}."
+                ),
+                metadata=metadata,
+            )
         try:
-            validated_input = tool.input_schema.model_validate(decision.tool_input)
+            complete_input = bind_runtime_tool_input(
+                tool,
+                decision.tool_input,
+                state=state,
+                step_id=decision.step_id or tool_name,
+                context_metadata=request.metadata,
+            )
+            validated_input = tool.input_schema.model_validate(complete_input)
         except ValidationError as exc:
             first = exc.errors()[0] if exc.errors() else {"msg": "invalid input"}
             return _reject(

@@ -40,7 +40,11 @@ from assistant_agent.tools.spec_adapters import (
 from assistant_agent.runtime.event_sink import ListEventSink
 from assistant_agent.observability.trace_store import InMemoryTraceStore
 from assistant_agent.tools.base import ToolBase, ToolContext, ToolInputValidationError
-from assistant_agent.tools.input_binding import ToolInputBinding
+from assistant_agent.tools.input_binding import (
+    RuntimeInputBinding,
+    llm_hidden_input_fields,
+    runtime_bound_input_fields,
+)
 from assistant_agent.tools.plugins.registry_factory import create_default_registry
 from assistant_agent.tools.registry import ToolRegistry
 
@@ -129,10 +133,10 @@ class _WriteBoundaryTool(_ExecutionBoundaryTool):
 
 class _RuntimeBindingInput(BaseModel):
     query: str
-    user_id: str | None = None
-    session_id: str | None = None
-    image_ids: list[str] = Field(default_factory=list)
-    limit: int = 0
+    user_id: str
+    session_id: str
+    image_ids: list[str]
+    limit: int = 5
     prior_summary: str | None = None
     runtime_note: str | None = None
 
@@ -143,21 +147,118 @@ class _RuntimeBindingTool(ToolBase):
     input_schema = _RuntimeBindingInput
     output_schema = _RuntimeBindingInput
     category = "read"
+    llm_hidden_input_fields = ("limit",)
     runtime_input_bindings = (
-        ToolInputBinding(field="user_id", source="runtime_identity", key="user_id"),
-        ToolInputBinding(field="session_id", source="runtime_identity", key="session_id"),
-        ToolInputBinding(field="image_ids", source="request", key="image_ids"),
-        ToolInputBinding(field="limit", source="constant", value=5),
-        ToolInputBinding(
+        RuntimeInputBinding(field="user_id", source="runtime_identity", key="user_id"),
+        RuntimeInputBinding(field="session_id", source="runtime_identity", key="session_id"),
+        RuntimeInputBinding(field="image_ids", source="request", key="image_ids"),
+        RuntimeInputBinding(
             field="prior_summary",
             source="latest_tool_result",
             result_path="summary",
         ),
-        ToolInputBinding(field="runtime_note", source="constant", value="default"),
+        RuntimeInputBinding(field="runtime_note", source="runtime_input"),
     )
 
     def _run(self, input: _RuntimeBindingInput, context: ToolContext) -> ToolResult:
         return ToolResult(tool_name=self.name, success=True, data=input.model_dump())
+
+
+class _InputOwnershipInput(BaseModel):
+    required_query: str
+    overridable_limit: int = Field(default=3, ge=1)
+    fixed_limit: int = Field(default=5, ge=1)
+    runtime_user_id: str
+
+
+class _InputOwnershipTool(ToolBase):
+    name = "input_ownership_tool"
+    description = "Test the three tool-input ownership sources."
+    input_schema = _InputOwnershipInput
+    output_schema = _InputOwnershipInput
+    category = "read"
+    llm_hidden_input_fields = ("fixed_limit",)
+    runtime_input_bindings = (
+        RuntimeInputBinding(
+            field="runtime_user_id",
+            source="runtime_identity",
+            key="user_id",
+        ),
+    )
+
+    def _run(self, input: _InputOwnershipInput, context: ToolContext) -> ToolResult:
+        return ToolResult(tool_name=self.name, success=True, data=input.model_dump())
+
+
+def test_tool_input_ownership_separates_required_optional_default_and_runtime() -> None:
+    tool = _InputOwnershipTool()
+    registry = ToolRegistry()
+    registry.register(tool)
+    spec = registry.get_spec(tool.name)
+    request = UserRequest(user_id="user-1", session_id="session-1", text="run")
+    state = AgentState.from_request(request)
+
+    defaulted = ActionValidator().validate(
+        decision=AssistantDecision(
+            type="tool_call",
+            tool_name=tool.name,
+            tool_input={"required_query": "first"},
+        ),
+        registry=registry,
+        request=request,
+        state=state,
+    )
+    overridden = ActionValidator().validate(
+        decision=AssistantDecision(
+            type="tool_call",
+            tool_name=tool.name,
+            tool_input={"required_query": "second", "overridable_limit": 8},
+        ),
+        registry=registry,
+        request=request,
+        state=state,
+    )
+    forbidden = ActionValidator().validate(
+        decision=AssistantDecision(
+            type="tool_call",
+            tool_name=tool.name,
+            tool_input={"required_query": "third", "fixed_limit": 9},
+        ),
+        registry=registry,
+        request=request,
+        state=state,
+    )
+    unknown = ActionValidator().validate(
+        decision=AssistantDecision(
+            type="tool_call",
+            tool_name=tool.name,
+            tool_input={"required_query": "fourth", "undeclared": True},
+        ),
+        registry=registry,
+        request=request,
+        state=state,
+    )
+
+    assert set(spec.input_schema["properties"]) == {
+        "required_query",
+        "overridable_limit",
+    }
+    assert spec.input_schema["required"] == ["required_query"]
+    assert defaulted.accepted is True
+    assert defaulted.validated_input is not None
+    assert defaulted.validated_input.model_dump() == {
+        "required_query": "first",
+        "overridable_limit": 3,
+        "fixed_limit": 5,
+        "runtime_user_id": "user-1",
+    }
+    assert overridden.accepted is True
+    assert overridden.validated_input is not None
+    assert overridden.validated_input.overridable_limit == 8
+    assert forbidden.accepted is False
+    assert forbidden.code == "tool_default_input_override"
+    assert unknown.accepted is False
+    assert unknown.code == "invalid_tool_input"
 
 
 def test_provider_tools_hide_runtime_fields_and_pydantic_titles() -> None:
@@ -240,6 +341,63 @@ def test_provider_tools_hide_runtime_fields_and_pydantic_titles() -> None:
         registry.get_spec("calendar_create")
     )["function"]
     assert "idempotency_key" not in calendar_create["parameters"]["properties"]
+
+
+def test_builtin_tool_input_ownership_matches_provider_schema() -> None:
+    registry = create_default_registry()
+
+    for tool_name in registry.list():
+        tool = registry.get(tool_name)
+        schema = registry.get_spec(tool_name).input_schema
+        visible = set(schema["properties"])
+        required = set(schema["required"])
+        runtime_bound = set(runtime_bound_input_fields(tool))
+        hidden_defaults = set(llm_hidden_input_fields(tool))
+
+        assert runtime_bound.isdisjoint(hidden_defaults), tool_name
+        assert visible == (
+            set(tool.input_schema.model_fields) - runtime_bound - hidden_defaults
+        ), tool_name
+        assert required == {
+            field_name
+            for field_name in visible
+            if tool.input_schema.model_fields[field_name].is_required()
+        }, tool_name
+        assert all(
+            not tool.input_schema.model_fields[field_name].is_required()
+            for field_name in hidden_defaults
+        ), tool_name
+
+
+def test_tool_input_ownership_rejects_hidden_required_or_runtime_overlap() -> None:
+    class InvalidInput(BaseModel):
+        value: str
+
+    class HiddenRequiredTool(ToolBase):
+        name = "hidden_required_tool"
+        description = "Invalid hidden required input."
+        input_schema = InvalidInput
+        output_schema = InvalidInput
+        llm_hidden_input_fields = ("value",)
+
+    class OverlappingOwnershipTool(ToolBase):
+        name = "overlapping_ownership_tool"
+        description = "Invalid overlapping input ownership."
+        input_schema = InvalidInput
+        output_schema = InvalidInput
+        llm_hidden_input_fields = ("value",)
+        runtime_input_bindings = (
+            RuntimeInputBinding(
+                field="value",
+                source="runtime_identity",
+                key="user_id",
+            ),
+        )
+
+    with pytest.raises(ValueError, match="require Pydantic defaults"):
+        ToolRegistry().register(HiddenRequiredTool())
+    with pytest.raises(ValueError, match="both runtime-bound and LLM-hidden"):
+        ToolRegistry().register(OverlappingOwnershipTool())
 
 
 def test_builtin_tools_declare_plugin_ownership_without_duplicate_grouping() -> None:

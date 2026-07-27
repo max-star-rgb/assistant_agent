@@ -11,7 +11,7 @@ from assistant_agent.tools.plugins.builtin.shopping.models import (
     PriceCompareRequest,
     ProductProviderError,
     ProductResult,
-    ProductSearchRequest,
+    ShoppingSearchRequest,
     ProductSearchResult,
     RankingReason,
 )
@@ -23,7 +23,7 @@ from assistant_agent.tools.plugins.builtin.shopping.product_matching import comp
 class ProductSearchAdapter(Protocol):
     """Adapter contract for product search providers."""
 
-    def search(self, request: ProductSearchRequest) -> ProductSearchResult:
+    def search(self, request: ShoppingSearchRequest) -> ProductSearchResult:
         """Return structured product candidates."""
 
 
@@ -39,7 +39,7 @@ class MockProductSearchAdapter:
 
     provider = "mock"
 
-    def search(self, request: ProductSearchRequest) -> ProductSearchResult:
+    def search(self, request: ShoppingSearchRequest) -> ProductSearchResult:
         if not _query_text(request):
             return _failed_search_result(
                 provider=self.provider,
@@ -130,7 +130,7 @@ class LocalJsonProductSearchAdapter:
     def __init__(self, path: str | Path | None) -> None:
         self.path = Path(path) if path else None
 
-    def search(self, request: ProductSearchRequest) -> ProductSearchResult:
+    def search(self, request: ShoppingSearchRequest) -> ProductSearchResult:
         if self.path is None:
             return _failed_search_result(
                 provider=self.provider,
@@ -190,7 +190,7 @@ class HttpProductSearchAdapter:
         self.api_key = api_key
         self.timeout_seconds = timeout_seconds
 
-    def search(self, request: ProductSearchRequest) -> ProductSearchResult:
+    def search(self, request: ShoppingSearchRequest) -> ProductSearchResult:
         missing = []
         if not self.base_url:
             missing.append("SHOPPING_SEARCH_BASE_URL")
@@ -218,7 +218,7 @@ class UnconfiguredProductSearchAdapter:
         self.provider = provider
         self.missing = missing
 
-    def search(self, request: ProductSearchRequest) -> ProductSearchResult:
+    def search(self, request: ShoppingSearchRequest) -> ProductSearchResult:
         return _failed_search_result(
             provider=self.provider,
             code="provider_unconfigured",
@@ -396,7 +396,7 @@ def _load_local_products(path: Path) -> list[ProductResult]:
     return [ProductResult.model_validate(item) for item in raw_items]
 
 
-def _filter_products(items: list[ProductResult], request: ProductSearchRequest) -> list[ProductResult]:
+def _filter_products(items: list[ProductResult], request: ShoppingSearchRequest) -> list[ProductResult]:
     filtered = items
     if request.platforms:
         platforms = set(request.platforms)
@@ -417,16 +417,16 @@ def _filter_products(items: list[ProductResult], request: ProductSearchRequest) 
     return filtered[: request.top_k]
 
 
-def _query_text(request: ProductSearchRequest) -> str:
+def _query_text(request: ShoppingSearchRequest) -> str:
     return request.query.strip()
 
 
-def _query_tokens(request: ProductSearchRequest) -> list[str]:
+def _query_tokens(request: ShoppingSearchRequest) -> list[str]:
     text = _query_text(request).lower()
     return [token for token in text.replace("/", " ").split() if len(token) >= 2]
 
 
-def _filters_used(request: ProductSearchRequest) -> dict[str, object]:
+def _filters_used(request: ShoppingSearchRequest) -> dict[str, object]:
     filters: dict[str, object] = {}
     for key in ("budget_min", "budget_max", "platforms", "top_k"):
         value = getattr(request, key)

@@ -21,7 +21,7 @@ from assistant_agent.runtime.generated_artifacts import (
 )
 from assistant_agent.tools.ids import IMAGE_GENERATION_CAPABILITY, IMAGE_GENERATION_TOOL_NAME
 from assistant_agent.tools.base import ToolBase, ToolContext
-from assistant_agent.tools.input_binding import ToolInputBinding
+from assistant_agent.tools.input_binding import RuntimeInputBinding
 
 
 class ImageGenerationTool(ToolBase):
@@ -30,12 +30,11 @@ class ImageGenerationTool(ToolBase):
     input_schema = ImageGenerationRequest
     output_schema = ImageGenerationResult
     category = "generate"
+    llm_hidden_input_fields = ("prompt_extend", "watermark")
     runtime_input_bindings = (
-        ToolInputBinding(field="user_id", source="runtime_identity", key="user_id"),
-        ToolInputBinding(field="session_id", source="runtime_identity", key="session_id"),
-        ToolInputBinding(field="memory_context", source="memory_context", key="summaries"),
-        ToolInputBinding(field="prompt_extend", source="constant", value=True),
-        ToolInputBinding(field="watermark", source="constant", value=False),
+        RuntimeInputBinding(field="user_id", source="runtime_identity", key="user_id"),
+        RuntimeInputBinding(field="session_id", source="runtime_identity", key="session_id"),
+        RuntimeInputBinding(field="memory_context", source="memory_context", key="summaries"),
     )
 
     def __init__(self, adapter: ImageGenerationAdapter | None = None) -> None:

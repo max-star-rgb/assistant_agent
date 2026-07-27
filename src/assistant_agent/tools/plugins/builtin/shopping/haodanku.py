@@ -26,7 +26,7 @@ from assistant_agent.tools.plugins.builtin.shopping.models import (
     PriceOffer,
     ProductProviderError,
     ProductResult,
-    ProductSearchRequest,
+    ShoppingSearchRequest,
     ProductSearchResult,
 )
 from assistant_agent.tools.plugins.builtin.shopping.product_matching import (
@@ -121,7 +121,7 @@ class HaodankuProductSearchAdapter:
     def __init__(self, config: HaodankuConfig) -> None:
         self.config = config
 
-    def search(self, request: ProductSearchRequest) -> ProductSearchResult:
+    def search(self, request: ShoppingSearchRequest) -> ProductSearchResult:
         if not self.config.api_key:
             return failed_search_result(
                 provider=self.provider,
@@ -307,7 +307,7 @@ class HaodankuPriceCompareAdapter:
                     recoverable=True,
                 )
             search_result = self._search_adapter.search(
-                ProductSearchRequest(
+                ShoppingSearchRequest(
                     query=request.query,
                     platforms=normalized_platforms,
                     top_k=request.top_k,

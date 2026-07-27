@@ -18,7 +18,6 @@ from assistant_agent.tools.plugins.builtin.email_access.backend import (
     EmailBackend,
 )
 from assistant_agent.tools.base import ToolBase, ToolContext
-from assistant_agent.tools.input_binding import ToolInputBinding
 
 
 class EmailSearchTool(ToolBase):
@@ -30,9 +29,7 @@ class EmailSearchTool(ToolBase):
     input_schema = EmailSearchRequest
     output_schema = EmailSearchResult
     category = "read"
-    runtime_input_bindings = (
-        ToolInputBinding(field="limit", source="constant", value=10),
-    )
+    llm_hidden_input_fields = ("limit",)
 
     def __init__(self, backend: EmailBackend) -> None:
         self.backend = backend
@@ -78,13 +75,7 @@ class EmailReadTool(ToolBase):
     input_schema = EmailReadRequest
     output_schema = EmailReadResult
     category = "read"
-    runtime_input_bindings = (
-        ToolInputBinding(
-            field="max_total_chars",
-            source="constant",
-            value=20_000,
-        ),
-    )
+    llm_hidden_input_fields = ("max_total_chars",)
 
     def __init__(self, backend: EmailBackend) -> None:
         self.backend = backend

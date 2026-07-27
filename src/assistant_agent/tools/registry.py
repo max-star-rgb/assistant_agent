@@ -11,8 +11,8 @@ from pydantic import BaseModel
 from assistant_agent.tools.models import ToolResult, ToolSpec
 from assistant_agent.tools.base import Tool, ToolContext
 from assistant_agent.tools.input_binding import (
-    runtime_owned_input_fields,
-    validate_runtime_input_bindings,
+    llm_forbidden_input_fields,
+    validate_tool_input_contract,
 )
 from assistant_agent.tools.plugins.contracts import (
     ToolPluginAssemblyReport,
@@ -169,13 +169,13 @@ class ToolRegistry:
 
     @staticmethod
     def _tool_spec(tool: Tool) -> ToolSpec:
-        validate_runtime_input_bindings(tool)
+        validate_tool_input_contract(tool)
         return ToolSpec(
             name=tool.name,
             description=tool.description,
             input_schema=_schema_to_dict(
                 tool.input_schema,
-                hidden_fields=runtime_owned_input_fields(tool),
+                hidden_fields=llm_forbidden_input_fields(tool),
             ),
             **_declared_contract(tool),
         )

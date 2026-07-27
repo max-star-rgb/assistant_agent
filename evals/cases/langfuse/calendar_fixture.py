@@ -14,7 +14,7 @@ from assistant_agent.tools.plugins.builtin.personal_assistant_mcp.models import 
     CalendarSearchRequest,
     CalendarSearchResult,
 )
-from assistant_agent.tools.input_binding import ToolInputBinding
+from assistant_agent.tools.input_binding import RuntimeInputBinding
 from assistant_agent.tools.plugins.builtin.personal_assistant_mcp.tools import (
     CalendarCreateTool,
 )
@@ -37,8 +37,8 @@ class EvalCalendarEvent(BaseModel):
 class CalendarEvalCreateTool(CalendarCreateTool):
     """Calendar create Tool with a run-owned key for deterministic experiments."""
 
-    input_bindings = (
-        ToolInputBinding(
+    runtime_input_bindings = (
+        RuntimeInputBinding(
             field="idempotency_key",
             source="runtime_identity",
             key="run_id",

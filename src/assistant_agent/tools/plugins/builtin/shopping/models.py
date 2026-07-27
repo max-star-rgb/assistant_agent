@@ -88,8 +88,8 @@ class ProductSearchResult(BaseModel):
         return bool(self.items) or not self.errors
 
 
-class ProductSearchRequest(BaseModel):
-    """商品搜索 Provider 的输入。"""
+class ShoppingSearchRequest(BaseModel):
+    """购物搜索工具的模型语义输入。"""
 
     query: str = Field(
         min_length=1,

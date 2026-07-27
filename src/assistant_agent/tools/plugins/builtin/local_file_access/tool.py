@@ -16,7 +16,6 @@ from assistant_agent.tools.base import (
     ToolContext,
     ToolInputValidationError,
 )
-from assistant_agent.tools.input_binding import ToolInputBinding
 
 
 LOCAL_FILE_READ_TOOL_NAME: Final = "file_read"
@@ -58,9 +57,7 @@ class LocalFileReadTool(ToolBase):
     input_schema = FileReadRequest
     output_schema = FileReadResult
     category = "read"
-    runtime_input_bindings = (
-        ToolInputBinding(field="max_chars", source="constant", value=12_000),
-    )
+    llm_hidden_input_fields = ("max_chars",)
 
     def __init__(
         self,

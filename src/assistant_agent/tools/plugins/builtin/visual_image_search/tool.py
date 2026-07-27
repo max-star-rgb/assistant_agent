@@ -15,7 +15,6 @@ from assistant_agent.tools.plugins.builtin.visual_image_search.backend import (
 )
 from assistant_agent.tools.ids import VISUAL_IMAGE_SEARCH_CAPABILITY, VISUAL_IMAGE_SEARCH_TOOL_NAME
 from assistant_agent.tools.base import ToolBase, ToolContext
-from assistant_agent.tools.input_binding import ToolInputBinding
 
 
 class VisualImageSearchTool(ToolBase):
@@ -25,9 +24,7 @@ class VisualImageSearchTool(ToolBase):
     output_schema = VisualImageSearchResult
     category = "read"
     requires_media = ["image"]
-    runtime_input_bindings = (
-        ToolInputBinding(field="limit", source="constant", value=5),
-    )
+    llm_hidden_input_fields = ("limit",)
 
     def __init__(self, adapter: VisualImageSearchAdapter | None = None) -> None:
         self.adapter = adapter or create_visual_image_search_adapter()

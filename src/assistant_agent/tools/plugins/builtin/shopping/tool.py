@@ -7,7 +7,7 @@ from assistant_agent.tools.plugins.builtin.shopping.models import (
     PriceCompareRequest,
     PriceCompareResult,
     ProductProviderError,
-    ProductSearchRequest,
+    ShoppingSearchRequest,
     ProductSearchResult,
     ShoppingSearchResult,
 )
@@ -30,10 +30,10 @@ class ShoppingSearchTool(ToolBase):
         "搜索商品、优惠、比价和购买链接。用户明确要求推荐、查价、比价或购买链接时直接调用，无需再次确认；"
         "只表达想要某物时先询问，不要立即搜索。不能下单、结算。"
     )
-    input_schema = ProductSearchRequest
+    input_schema = ShoppingSearchRequest
     output_schema = ShoppingSearchResult
     category = "read"
-    model_hidden_input_fields = ("platforms", "top_k")
+    llm_hidden_input_fields = ("platforms", "top_k")
 
     def __init__(
         self,
@@ -44,7 +44,7 @@ class ShoppingSearchTool(ToolBase):
         self.search_adapter = search_adapter or create_shopping_search_adapter()
         self.compare_adapter = compare_adapter or create_shopping_compare_adapter()
 
-    def _run(self, input: ProductSearchRequest, context: ToolContext) -> ToolResult:
+    def _run(self, input: ShoppingSearchRequest, context: ToolContext) -> ToolResult:
         search_result = self.search_adapter.search(input)
         comparison_result: PriceCompareResult | None = None
         if search_result.items:
@@ -110,7 +110,7 @@ class ShoppingSearchTool(ToolBase):
 
 
 def _compare_input_from_search(
-    input: ProductSearchRequest,
+    input: ShoppingSearchRequest,
     search_result: ProductSearchResult,
 ) -> PriceCompareRequest:
     platforms = search_result.succeeded_platforms or input.platforms
@@ -126,7 +126,7 @@ def _compare_input_from_search(
 
 
 def _shopping_result(
-    input: ProductSearchRequest,
+    input: ShoppingSearchRequest,
     search_result: ProductSearchResult,
     comparison_result: PriceCompareResult | None,
 ) -> ShoppingSearchResult:
@@ -233,7 +233,7 @@ def _combined_latency(
     return sum(values) if values else None
 
 
-def _query_text(input: ProductSearchRequest) -> str:
+def _query_text(input: ShoppingSearchRequest) -> str:
     return input.query.strip()
 
 

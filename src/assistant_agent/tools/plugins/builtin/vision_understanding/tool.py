@@ -30,7 +30,7 @@ from assistant_agent.providers.provider_errors import (
 )
 from assistant_agent.tools.ids import IMAGE_UNDERSTANDING_CAPABILITY, IMAGE_UNDERSTANDING_TOOL_NAME
 from assistant_agent.tools.base import ToolBase, ToolContext
-from assistant_agent.tools.input_binding import ToolInputBinding
+from assistant_agent.tools.input_binding import RuntimeInputBinding
 from assistant_agent.tools.plugins.builtin.vision_understanding.video_branch import (
     VideoUnderstandingBranch,
 )
@@ -47,18 +47,18 @@ class VisionUnderstandingTool(ToolBase):
     category = "read"
     requires_media = ["image", "video"]
     runtime_input_bindings = (
-        ToolInputBinding(field="image_ids", source="request", key="image_ids"),
-        ToolInputBinding(field="video_ids", source="request", key="video_ids"),
-        ToolInputBinding(field="video_ref", source="constant", value=None),
-        ToolInputBinding(field="frame_refs", source="constant", value=[]),
-        ToolInputBinding(field="context_id", source="constant", value=None),
-        ToolInputBinding(field="user_query", source="request", key="text"),
-        ToolInputBinding(field="user_id", source="runtime_identity", key="user_id"),
-        ToolInputBinding(field="session_id", source="runtime_identity", key="session_id"),
-        ToolInputBinding(field="max_frames", source="constant", value=None),
-        ToolInputBinding(field="sample_strategy", source="constant", value=None),
-        ToolInputBinding(field="metadata", source="constant", value={}),
-        ToolInputBinding(field="memory_context", source="memory_context", key="text"),
+        RuntimeInputBinding(field="image_ids", source="request", key="image_ids"),
+        RuntimeInputBinding(field="video_ids", source="request", key="video_ids"),
+        RuntimeInputBinding(field="video_ref", source="runtime_input"),
+        RuntimeInputBinding(field="frame_refs", source="runtime_input"),
+        RuntimeInputBinding(field="context_id", source="runtime_input"),
+        RuntimeInputBinding(field="user_query", source="request", key="text"),
+        RuntimeInputBinding(field="user_id", source="runtime_identity", key="user_id"),
+        RuntimeInputBinding(field="session_id", source="runtime_identity", key="session_id"),
+        RuntimeInputBinding(field="max_frames", source="runtime_input"),
+        RuntimeInputBinding(field="sample_strategy", source="runtime_input"),
+        RuntimeInputBinding(field="metadata", source="runtime_input"),
+        RuntimeInputBinding(field="memory_context", source="memory_context", key="text"),
     )
 
     def __init__(

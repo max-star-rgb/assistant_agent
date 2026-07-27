@@ -11,7 +11,6 @@ from assistant_agent.tools.plugins.builtin.web_access.fetch_backend import (
 )
 from assistant_agent.tools.ids import WEB_FETCH_CAPABILITY, WEB_FETCH_TOOL_NAME
 from assistant_agent.tools.base import ToolBase, ToolContext
-from assistant_agent.tools.input_binding import ToolInputBinding
 
 
 class WebFetchTool(ToolBase):
@@ -20,10 +19,7 @@ class WebFetchTool(ToolBase):
     input_schema = WebFetchRequest
     output_schema = WebFetchResult
     category = "read"
-    runtime_input_bindings = (
-        ToolInputBinding(field="max_chars", source="constant", value=6000),
-        ToolInputBinding(field="content_format", source="constant", value="markdown"),
-    )
+    llm_hidden_input_fields = ("max_chars", "content_format")
 
     def __init__(self, adapter: WebFetchAdapter | None = None) -> None:
         self.adapter = adapter or create_web_fetch_adapter()

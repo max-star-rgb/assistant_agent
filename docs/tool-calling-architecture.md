@@ -28,7 +28,7 @@ run-scoped 可用集合，不再另建 executable allowlist。
 
 ```text
 name / description
-input_schema（包含模型需要理解和填写的语义参数，不含 runtime-owned 参数）
+input_schema（从完整执行输入投影出的 LLM 可见参数）
 category: read | generate | write | dangerous
 enabled_by_default
 requires_media
@@ -58,19 +58,31 @@ Tool、不参与注册或暴露，新插件内使用的 Tool 默认无需加入�
 与 capability 映射隔离在 `runtime/legacy_tool_mapping.py`，不能作为新增 Tool 的登记入口。
 
 工具类的 Pydantic `input_schema` 是执行期完整输入和校验的事实源；Registry 生成的
-`ToolSpec.input_schema` 保留必填参数及会实质改变业务结果的语义型可选参数，必填字段由标准
-JSON Schema 的 `required` 表达。
+`ToolSpec.input_schema` 是它的 LLM 可见投影视图。参数值只有三种来源：
+
+- Runtime 参数通过 `runtime_input_bindings` 声明，不进入 LLM schema，由可信运行态注入；
+- 工具预定义参数直接使用 Pydantic 默认值；默认向 LLM 暴露并允许覆盖，加入
+  `llm_hidden_input_fields` 后则隐藏并固定使用工具默认值；
+- LLM 必填参数不声明 Pydantic 默认值，进入 LLM schema 的 `properties` 和 `required`。
+
+因此“有默认值”只决定参数是否必填，不自动决定可见性；工具作者通过
+`llm_hidden_input_fields` 显式控制默认参数能否由 LLM 覆盖。
 `ToolSpec` 不再维护独立的 `required_inputs` 或自定义 `fields` 视图；prompt 若需要压缩，只在渲染时
 临时移除 title、截短 description，不改变原始 schema。工具通过 `runtime_input_bindings` 声明
 runtime-owned 输入；绑定字段不进入
 `ToolSpec.input_schema`，因此不会发送给模型。绑定来源只使用结构化执行事实：
-`constant`、`runtime_identity`、`request`、`memory_context`、`latest_tool_result` 和
-`durable_idempotency`。有 Pydantic 默认值、但不应由模型填写的工具内部参数使用
-`model_hidden_input_fields`；它们不需要 runtime binding，执行时由 Pydantic 补齐默认值。
+`runtime_identity`、`request`、`memory_context`、`latest_tool_result`、
+`durable_idempotency` 和显式可信 `runtime_input`。有 Pydantic 默认值、但不应由 LLM 填写的
+工具内部参数使用 `llm_hidden_input_fields`；它们不需要 runtime binding，执行时由 Pydantic
+补齐默认值。
 
-Tool 注册时会检查绑定字段存在、没有重复且静态默认值符合目标字段类型。模型若自行提交 runtime-owned
-字段，`ActionValidator` 统一返回 `runtime_owned_tool_input`；内部 observer/worker 如需提供帧引用等
-可信动态值，必须使用 `ToolExecutor.runtime_input`，该通道也只能覆盖已声明的 runtime-owned 字段。
+Tool 注册时会检查绑定字段和隐藏字段存在、两者不重叠，并要求隐藏字段具有 Pydantic 默认值。
+LLM 若提交 runtime-owned 字段，`ActionValidator` 返回 `runtime_owned_tool_input`；若尝试覆盖隐藏的
+工具默认参数，则返回 `tool_default_input_override`；未在完整输入模型声明的字段返回
+`invalid_tool_input`，不得被 Pydantic 静默忽略。ActionValidator 先注入可解析的 Runtime 参数，再使用
+完整 Pydantic schema 校验；ToolExecutor 在执行边界重新绑定并完成最终校验。内部 observer/worker
+如需提供帧引用等可信动态值，必须使用 `ToolExecutor.runtime_input`，该通道也只能覆盖已声明的
+runtime-owned 字段。
 
 这些字段都是工具级静态事实，不根据输入中的 `action` 动态改变安全语义。长期记忆不是工具：
 主模型不看到 `memory_search`、`memory_get` 或 `memory_save`；Mem0 recall/capture 是 runtime
@@ -132,8 +144,8 @@ media、profile、默认启用或显式授权治理。
 
 - 用户目标中不可可靠推导的业务语义，例如地点、搜索词、URL、代码、事件标题和开始时间，仍由模型
   按用户输入填写；
-- provider、adapter、units、limit、timeout、输出格式等静态技术参数由 Tool 实例的 `constant`
-  binding 分配；
+- provider、adapter、units、limit、timeout、输出格式等静态技术参数使用 Pydantic 默认值，并通过
+  `llm_hidden_input_fields` 禁止模型覆盖；
 - user/session identity、请求媒体、memory context、前序工具结果和 durable 幂等键只在每次执行时
   绑定，不能固化到进程级复用的 Tool 实例，避免并发请求串数据；
 - runtime binding 后再次通过工具 Pydantic schema 校验，再进入 `tool.run()`。
@@ -171,8 +183,8 @@ MCP mapping 逐个注册，未映射的能力不进入 Registry。开发阶段�
 
 本地文本文件通过内置 `local_file_access` Plugin 的 `file_read` 工具读取。该工具只接受相对于
 `MULTIMODAL_AGENT_FILE_ACCESS_ROOT` 的白名单文本文件路径，默认根目录为 `.data/files`；绝对路径、
-隐藏路径、目录穿越、越界 symlink、非普通文件、超限文件和非 UTF-8 内容均拒绝。单次读取上限由
-runtime constant binding 注入，长文件通过结果中的 `next_cursor` 分页；工具只返回受控文本，
+隐藏路径、目录穿越、越界 symlink、非普通文件、超限文件和非 UTF-8 内容均拒绝。单次读取上限使用
+隐藏的 Pydantic 默认值，长文件通过结果中的 `next_cursor` 分页；工具只返回受控文本，
 内容理解和总结仍由主 assistant loop 完成。
 
 邮件只读能力由独立 `email_access` Plugin 装配，不归入

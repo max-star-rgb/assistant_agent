@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-from copy import deepcopy
 from typing import TYPE_CHECKING, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from assistant_agent.automation.durable_tasks.models import TrustedTaskBinding
 
@@ -13,32 +12,31 @@ if TYPE_CHECKING:
     from assistant_agent.runtime.state import AgentState
 
 
-ToolInputBindingSource = Literal[
-    "constant",
+RuntimeInputBindingSource = Literal[
     "runtime_identity",
     "request",
     "memory_context",
     "latest_tool_result",
     "durable_idempotency",
+    "runtime_input",
 ]
-ToolInputBindingMode = Literal["always", "if_missing"]
+RuntimeInputBindingMode = Literal["always", "if_missing"]
 
 
-class ToolInputBinding(BaseModel):
+class RuntimeInputBinding(BaseModel):
     """Declare one model-hidden field supplied outside model tool arguments."""
 
     model_config = ConfigDict(frozen=True)
 
     field: str = Field(min_length=1)
-    source: ToolInputBindingSource
+    source: RuntimeInputBindingSource
     key: str | None = None
-    value: Any = None
     result_tool_name: str | None = None
     result_path: str | None = None
-    mode: ToolInputBindingMode = "always"
+    mode: RuntimeInputBindingMode = "always"
 
     @model_validator(mode="after")
-    def validate_source_options(self) -> "ToolInputBinding":
+    def validate_source_options(self) -> "RuntimeInputBinding":
         if self.source in {"runtime_identity", "request", "memory_context"} and not self.key:
             raise ValueError(f"{self.source} binding requires key")
         if self.source == "latest_tool_result" and not self.result_path:
@@ -46,16 +44,30 @@ class ToolInputBinding(BaseModel):
         return self
 
 
-def runtime_owned_input_fields(tool: Any) -> tuple[str, ...]:
-    """Return every field that must not be supplied by the model."""
+def runtime_bound_input_fields(tool: Any) -> tuple[str, ...]:
+    """Return fields whose values come from trusted runtime state."""
 
-    fields = list(getattr(tool, "model_hidden_input_fields", ()))
-    fields.extend(binding.field for binding in _runtime_input_bindings(tool))
-    return tuple(dict.fromkeys(fields))
+    return tuple(binding.field for binding in _runtime_input_bindings(tool))
 
 
-def validate_runtime_input_bindings(tool: Any) -> None:
-    """Fail startup when a Tool declares an invalid runtime binding contract."""
+def llm_hidden_input_fields(tool: Any) -> tuple[str, ...]:
+    """Return tool-default fields intentionally omitted from the LLM schema."""
+
+    return tuple(dict.fromkeys(getattr(tool, "llm_hidden_input_fields", ())))
+
+
+def llm_forbidden_input_fields(tool: Any) -> tuple[str, ...]:
+    """Return all input fields that the LLM is not allowed to submit."""
+
+    return tuple(
+        dict.fromkeys(
+            (*runtime_bound_input_fields(tool), *llm_hidden_input_fields(tool))
+        )
+    )
+
+
+def validate_tool_input_contract(tool: Any) -> None:
+    """Fail startup when a Tool declares inconsistent input ownership."""
 
     bindings = _runtime_input_bindings(tool)
     field_names = set(tool.input_schema.model_fields)
@@ -72,11 +84,29 @@ def validate_runtime_input_bindings(tool: Any) -> None:
             f"{tool.name} runtime input bindings contain duplicate fields: "
             f"{', '.join(duplicates)}"
         )
-    for binding in bindings:
-        if binding.source != "constant":
-            continue
-        annotation = tool.input_schema.model_fields[binding.field].annotation
-        TypeAdapter(annotation).validate_python(binding.value)
+    hidden = list(llm_hidden_input_fields(tool))
+    unknown_hidden = sorted(set(hidden) - field_names)
+    if unknown_hidden:
+        raise ValueError(
+            f"{tool.name} llm hidden inputs reference unknown fields: "
+            f"{', '.join(unknown_hidden)}"
+        )
+    overlap = sorted(set(declared).intersection(hidden))
+    if overlap:
+        raise ValueError(
+            f"{tool.name} input fields cannot be both runtime-bound and "
+            f"LLM-hidden defaults: {', '.join(overlap)}"
+        )
+    required_hidden = sorted(
+        field
+        for field in hidden
+        if tool.input_schema.model_fields[field].is_required()
+    )
+    if required_hidden:
+        raise ValueError(
+            f"{tool.name} llm hidden inputs require Pydantic defaults: "
+            f"{', '.join(required_hidden)}"
+        )
 
 
 def bind_runtime_tool_input(
@@ -104,7 +134,7 @@ def bind_runtime_tool_input(
             bound[binding.field] = resolved
 
     trusted = dict(runtime_input or {})
-    disallowed = set(trusted) - set(runtime_owned_input_fields(tool))
+    disallowed = set(trusted) - set(runtime_bound_input_fields(tool))
     if disallowed:
         names = ", ".join(sorted(disallowed))
         raise ValueError(f"runtime_input contains model-owned fields: {names}")
@@ -112,23 +142,23 @@ def bind_runtime_tool_input(
     return bound
 
 
-def _runtime_input_bindings(tool: Any) -> tuple[ToolInputBinding, ...]:
+def _runtime_input_bindings(tool: Any) -> tuple[RuntimeInputBinding, ...]:
     raw = getattr(tool, "runtime_input_bindings", ())
     return tuple(
-        item if isinstance(item, ToolInputBinding) else ToolInputBinding.model_validate(item)
+        item
+        if isinstance(item, RuntimeInputBinding)
+        else RuntimeInputBinding.model_validate(item)
         for item in raw
     )
 
 
 def _resolve_binding(
-    binding: ToolInputBinding,
+    binding: RuntimeInputBinding,
     *,
     state: AgentState,
     step_id: str,
     context_metadata: dict[str, Any],
 ) -> Any:
-    if binding.source == "constant":
-        return deepcopy(binding.value)
     if binding.source == "runtime_identity":
         return getattr(state, binding.key or "", _UNRESOLVED)
     if binding.source == "request":
@@ -160,6 +190,8 @@ def _resolve_binding(
             return _UNRESOLVED
         task_binding = TrustedTaskBinding.model_validate(raw)
         return task_binding.step_idempotency_keys.get(step_id, _UNRESOLVED)
+    if binding.source == "runtime_input":
+        return _UNRESOLVED
     return _UNRESOLVED
 
 

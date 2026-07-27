@@ -883,26 +883,26 @@ def test_real_adapter_uses_langgraph_and_finishes_without_tools_after_budget() -
             NativeToolCall(
                 id="call-budget-1",
                 name="shopping_search",
-                arguments={"query": "通勤耳机", "limit": 2},
+                arguments={"query": "通勤耳机"},
                 raw={
                     "id": "call-budget-1",
                     "type": "function",
                     "function": {
                         "name": "shopping_search",
-                        "arguments": '{"query":"通勤耳机","limit":2}',
+                        "arguments": '{"query":"通勤耳机"}',
                     },
                 },
             ),
             NativeToolCall(
                 id="call-budget-2",
                 name="shopping_search",
-                arguments={"query": "降噪耳机", "limit": 2},
+                arguments={"query": "降噪耳机"},
                 raw={
                     "id": "call-budget-2",
                     "type": "function",
                     "function": {
                         "name": "shopping_search",
-                        "arguments": '{"query":"降噪耳机","limit":2}',
+                        "arguments": '{"query":"降噪耳机"}',
                     },
                 },
             ),

@@ -1,6 +1,6 @@
 """Regression coverage for shopping relevance and price comparability."""
 
-from assistant_agent.tools.plugins.builtin.shopping.models import PriceCompareRequest, ProductResult, ProductSearchRequest
+from assistant_agent.tools.plugins.builtin.shopping.models import PriceCompareRequest, ProductResult, ShoppingSearchRequest
 from assistant_agent.tools.plugins.builtin.shopping.product_matching import compare_products, filter_products
 
 
@@ -20,7 +20,7 @@ def test_unrelated_cheapest_search_candidate_is_not_declared_best_offer() -> Non
         _product("milk", "纯牛奶整箱装", 39.9, score=0.95),
     ]
 
-    ranked = filter_products(items, ProductSearchRequest(query="牛奶", top_k=5))
+    ranked = filter_products(items, ShoppingSearchRequest(query="牛奶", top_k=5))
     comparison = compare_products(
         ranked,
         PriceCompareRequest(query="牛奶", items=ranked),

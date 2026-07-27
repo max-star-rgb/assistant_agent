@@ -31,7 +31,7 @@ from assistant_agent.tools.ids import (
     WEATHER_TOOL_NAME,
 )
 from assistant_agent.tools.base import ToolBase, ToolContext
-from assistant_agent.tools.input_binding import ToolInputBinding
+from assistant_agent.tools.input_binding import RuntimeInputBinding
 
 
 class WeatherTool(ToolBase):
@@ -45,9 +45,7 @@ class WeatherTool(ToolBase):
     input_schema = WeatherRequest
     output_schema = WeatherResult
     category = "read"
-    runtime_input_bindings = (
-        ToolInputBinding(field="units", source="constant", value="metric"),
-    )
+    llm_hidden_input_fields = ("units",)
 
     def __init__(self, adapter: WeatherAdapter | None = None) -> None:
         self.adapter = adapter or MockWeatherAdapter()
@@ -80,9 +78,7 @@ class CalendarSearchTool(ToolBase):
     input_schema = CalendarSearchRequest
     output_schema = CalendarSearchResult
     category = "read"
-    runtime_input_bindings = (
-        ToolInputBinding(field="limit", source="constant", value=5),
-    )
+    llm_hidden_input_fields = ("limit",)
 
     def __init__(self, adapter: CalendarAdapter | None = None) -> None:
         self.adapter = adapter or MockCalendarAdapter()
@@ -112,7 +108,7 @@ class CalendarCreateTool(ToolBase):
     output_schema = CalendarCreateResult
     category = "write"
     runtime_input_bindings = (
-        ToolInputBinding(field="idempotency_key", source="durable_idempotency"),
+        RuntimeInputBinding(field="idempotency_key", source="durable_idempotency"),
     )
 
     def __init__(self, adapter: CalendarAdapter | None = None) -> None:
@@ -148,9 +144,7 @@ class ContactsSearchTool(ToolBase):
     input_schema = ContactsSearchRequest
     output_schema = ContactsSearchResult
     category = "read"
-    runtime_input_bindings = (
-        ToolInputBinding(field="limit", source="constant", value=5),
-    )
+    llm_hidden_input_fields = ("limit",)
 
     def __init__(self, adapter: ContactsAdapter | None = None) -> None:
         self.adapter = adapter or MockContactsAdapter()

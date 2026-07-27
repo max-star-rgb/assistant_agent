@@ -18,7 +18,6 @@ from assistant_agent.tools.plugins.builtin.python_execution.sandbox import (
 )
 from assistant_agent.tools.ids import PYTHON_INTERPRETER_TOOL_NAME
 from assistant_agent.tools.base import ToolBase, ToolContext, ToolInputValidationError
-from assistant_agent.tools.input_binding import ToolInputBinding
 
 
 class PythonInterpreterTool(ToolBase):
@@ -28,10 +27,7 @@ class PythonInterpreterTool(ToolBase):
     output_schema = PythonInterpreterResult
     category = "dangerous"
     enabled_by_default = False
-    runtime_input_bindings = (
-        ToolInputBinding(field="purpose", source="constant", value="general_analysis"),
-        ToolInputBinding(field="timeout_s", source="constant", value=None),
-    )
+    llm_hidden_input_fields = ("purpose", "timeout_s")
 
     def __init__(
         self,
