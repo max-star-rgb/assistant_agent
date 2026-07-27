@@ -68,7 +68,6 @@ class WorkflowSkillStep(BaseModel):
     input: dict[str, Any] = Field(default_factory=dict)
     retry: WorkflowSkillRetryPolicy = Field(default_factory=WorkflowSkillRetryPolicy)
     checkpoint: bool = False
-    confirmation: bool = False
     idempotency: Literal["none", "optional", "required"] = "none"
 
 

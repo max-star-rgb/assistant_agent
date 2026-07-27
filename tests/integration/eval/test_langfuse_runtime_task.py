@@ -342,12 +342,18 @@ def test_experiment_wires_task_without_project_evaluators() -> None:
         client.dataset.run_kwargs["metadata"]["evaluation_owner"]
         == "langfuse_native_evaluators"
     )
-    assert client.dataset.run_kwargs["metadata"]["evaluation_methods"] == ["code"]
+    assert client.dataset.run_kwargs["metadata"]["evaluation_methods"] == [
+        "code",
+        "llm_as_a_judge",
+    ]
     assert client.dataset.run_kwargs["metadata"]["deterministic_score_names"] == [
         "agent.runtime_trace_pass",
         "agent.tool_mechanical_pass",
     ]
-    assert client.dataset.run_kwargs["metadata"]["semantic_score_names"] == []
+    assert client.dataset.run_kwargs["metadata"]["semantic_score_names"] == [
+        "agent.tool_semantic_pass",
+        "agent.answer_semantic_pass",
+    ]
 
 
 def test_real_experiment_metadata_is_explicit_without_running_provider() -> None:

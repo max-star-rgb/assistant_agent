@@ -527,15 +527,8 @@ def run_langfuse_agent_experiment(
         "real_readonly": REAL_READONLY_EVALUATION_OBJECTIVE,
         "real_system": REAL_SYSTEM_EVALUATION_OBJECTIVE,
     }[execution_profile]
-    evaluation_methods = ["code"]
-    semantic_score_names: list[str] = []
-    if execution_profile in {"real_readonly", "real_system"}:
-        evaluation_methods.append("llm_as_a_judge")
-        semantic_score_names.extend(
-            REAL_SYSTEM_SEMANTIC_SCORE_NAMES
-            if execution_profile == "real_system"
-            else REAL_READONLY_SEMANTIC_SCORE_NAMES
-        )
+    evaluation_methods = ["code", "llm_as_a_judge"]
+    semantic_score_names = list(REAL_AGENT_SEMANTIC_SCORE_NAMES)
     try:
         return dataset.run_experiment(
             name=experiment_name,

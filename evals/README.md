@@ -133,10 +133,11 @@ LLM-as-a-Judge Evaluator 单独评估。
 成功但语义错误”和“工具语义正确但最终回答错误”。裁判理由不限制为固定字数，应说明判定、关键
 Trace 证据、失败原因和可操作的改进方向，但不复述无关 Trace 内容。
 
-这两个 LLM-as-a-Judge 规则同时匹配 `assistant-agent-real-readonly-v1` 和
-`assistant-agent-real-system-v1`，sampling 为 `100%`。因此所有新的真实 Agent Experiment
-统一产生四个分层 Score；旧的 `agent.answer_helpfulness` 规则已停用并归档。历史 Experiment
-不会因规则变更自动补分或改分。
+这两个 LLM-as-a-Judge 规则同时匹配 `assistant-agent-closed-loop-v1`、
+`assistant-agent-real-readonly-v1` 和 `assistant-agent-real-system-v1`，sampling 为 `100%`。
+因此所有新的 Agent Experiment 统一产生四个分层 Score；scripted mock 的两个语义 Score 只验证
+裁判闭环，不代表真实模型泛化能力。旧的 `agent.answer_helpfulness` 规则已停用并归档。历史
+Experiment 不会因规则变更自动补分或改分。
 
 运行完整真实系统 Dataset：
 

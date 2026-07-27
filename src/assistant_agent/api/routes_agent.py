@@ -728,7 +728,6 @@ def _public_request_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
         "source",
         "durable_task_binding",
         "durable_task_snapshot",
-        "durable_confirmation",
         "durable_idempotency_key",
         "worker_lease",
         "_trusted_durable_execution",

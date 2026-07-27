@@ -266,13 +266,9 @@ def main() -> int:
                     "expected_score_names": [
                         *DETERMINISTIC_SCORE_NAMES,
                         *(
-                            (
-                                REAL_SYSTEM_SEMANTIC_SCORE_NAMES
-                                if args.real_system
-                                else REAL_READONLY_SEMANTIC_SCORE_NAMES
-                            )
-                            if args.real_readonly or args.real_system
-                            else ()
+                            REAL_SYSTEM_SEMANTIC_SCORE_NAMES
+                            if args.real_system
+                            else REAL_READONLY_SEMANTIC_SCORE_NAMES
                         ),
                     ],
                 },
