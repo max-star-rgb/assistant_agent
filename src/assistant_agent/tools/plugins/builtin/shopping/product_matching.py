@@ -84,14 +84,7 @@ def filter_products(items: list[ProductResult], request: ProductSearchRequest) -
 def query_text(request: ProductSearchRequest) -> str:
     """Build a provider-neutral product query string."""
 
-    parts = [
-        request.query,
-        request.visual_summary,
-        " ".join(request.objects),
-        " ".join(request.colors),
-        " ".join(request.materials),
-    ]
-    return " ".join(part.strip() for part in parts if part and part.strip())
+    return request.query.strip()
 
 
 def query_tokens(request: ProductSearchRequest) -> list[str]:

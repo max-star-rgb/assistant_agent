@@ -103,7 +103,7 @@ class RuleBasedTaskPlanner:
                 steps,
                 action=SHOPPING_SEARCH_CAPABILITY,
                 tool_name=SHOPPING_SEARCH_TOOL_NAME,
-                required_inputs=["query or visual_summary"],
+                required_inputs=["query"],
                 reason="用户要求查找商品，执行购物搜索。",
             )
 

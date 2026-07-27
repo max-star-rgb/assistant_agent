@@ -98,10 +98,6 @@ class ProductSearchRequest(BaseModel):
             "“淘宝上适合通勤的电脑双肩包”；预算填写到对应结构化字段。"
         ),
     )
-    visual_summary: str | None = None
-    objects: list[str] = Field(default_factory=list)
-    colors: list[str] = Field(default_factory=list)
-    materials: list[str] = Field(default_factory=list)
     budget_min: float | None = Field(
         default=None,
         ge=0,

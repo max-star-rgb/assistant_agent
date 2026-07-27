@@ -51,6 +51,87 @@ class _ShoppingToolCallAdapter:
         return next(self.results)
 
 
+class _VisualShoppingToolCallAdapter:
+    provider = "scripted"
+    model = "scripted-model"
+
+    def __init__(self) -> None:
+        self.requests: list[ChatRequest] = []
+        self.results = iter(
+            (
+                ChatResult(
+                    provider=self.provider,
+                    model=self.model,
+                    finish_reason="tool_calls",
+                    tool_calls=[
+                        NativeToolCall(
+                            id="call-vision-1",
+                            name="vision_understanding",
+                            arguments={"question": "识别图片中的商品特征"},
+                        )
+                    ],
+                ),
+                ChatResult(
+                    provider=self.provider,
+                    model=self.model,
+                    finish_reason="tool_calls",
+                    tool_calls=[
+                        NativeToolCall(
+                            id="call-shopping-1",
+                            name="shopping_search",
+                            arguments={"query": "白色低帮皮革运动鞋，简约日系风格"},
+                        )
+                    ],
+                ),
+                ChatResult(
+                    provider=self.provider,
+                    model=self.model,
+                    finish_reason="stop",
+                    response_text="已根据图片中的商品特征完成搜索。",
+                ),
+            )
+        )
+
+    def chat(self, request: ChatRequest) -> ChatResult:
+        self.requests.append(request)
+        return next(self.results)
+
+
+def test_visual_shopping_requires_model_to_translate_observation_into_query() -> None:
+    adapter = _VisualShoppingToolCallAdapter()
+    runtime = AgentGraphRuntime(
+        config=ProviderConfig(langgraph_checkpointer_backend="none"),
+        chat_adapter=adapter,
+        session_store=InMemorySessionStore(),
+    )
+
+    state = runtime.run_state(
+        UserRequest(
+            user_id="visual-shopping-user",
+            session_id="visual-shopping-session",
+            text="帮我找图片里的同款商品",
+            image_ids=["image-1"],
+        )
+    )
+
+    assert state.status == "completed"
+    assert [call.tool_name for call in state.tool_calls] == [
+        "vision_understanding",
+        "shopping_search",
+    ]
+    assert len(adapter.requests) == 3
+    second_request = json.dumps(adapter.requests[1].messages, ensure_ascii=False)
+    assert "图片中展示了一双白色低帮运动鞋" in second_request
+    shopping_input = state.tool_calls[1].input
+    assert shopping_input["query"] == "白色低帮皮革运动鞋，简约日系风格"
+    assert {
+        "visual_summary",
+        "objects",
+        "colors",
+        "materials",
+    }.isdisjoint(shopping_input)
+
+
 def test_shopping_native_tool_call_exports_provider_path(monkeypatch) -> None:
     monkeypatch.setenv(LOCAL_TRACE_CONTENT_ENV, "1")
     adapter = _ShoppingToolCallAdapter()

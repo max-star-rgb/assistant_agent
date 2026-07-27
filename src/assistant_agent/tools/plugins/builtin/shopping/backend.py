@@ -418,14 +418,7 @@ def _filter_products(items: list[ProductResult], request: ProductSearchRequest) 
 
 
 def _query_text(request: ProductSearchRequest) -> str:
-    parts = [
-        request.query,
-        request.visual_summary,
-        " ".join(request.objects),
-        " ".join(request.colors),
-        " ".join(request.materials),
-    ]
-    return " ".join(part.strip() for part in parts if part and part.strip())
+    return request.query.strip()
 
 
 def _query_tokens(request: ProductSearchRequest) -> list[str]:

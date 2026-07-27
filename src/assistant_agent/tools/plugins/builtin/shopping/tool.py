@@ -20,7 +20,6 @@ from assistant_agent.tools.plugins.builtin.shopping.backend import (
 )
 from assistant_agent.tools.ids import SHOPPING_SEARCH_CAPABILITY, SHOPPING_SEARCH_TOOL_NAME
 from assistant_agent.tools.base import ToolBase, ToolContext
-from assistant_agent.tools.input_binding import ToolInputBinding
 
 
 class ShoppingSearchTool(ToolBase):
@@ -34,34 +33,7 @@ class ShoppingSearchTool(ToolBase):
     input_schema = ProductSearchRequest
     output_schema = ShoppingSearchResult
     category = "read"
-    runtime_input_bindings = (
-        ToolInputBinding(
-            field="visual_summary",
-            source="latest_tool_result",
-            result_tool_name="vision_understanding",
-            result_path="summary",
-        ),
-        ToolInputBinding(
-            field="objects",
-            source="latest_tool_result",
-            result_tool_name="vision_understanding",
-            result_path="objects",
-        ),
-        ToolInputBinding(
-            field="colors",
-            source="latest_tool_result",
-            result_tool_name="vision_understanding",
-            result_path="colors",
-        ),
-        ToolInputBinding(
-            field="materials",
-            source="latest_tool_result",
-            result_tool_name="vision_understanding",
-            result_path="materials",
-        ),
-        ToolInputBinding(field="platforms", source="constant", value=[]),
-        ToolInputBinding(field="top_k", source="constant", value=5),
-    )
+    model_hidden_input_fields = ("platforms", "top_k")
 
     def __init__(
         self,
@@ -262,14 +234,7 @@ def _combined_latency(
 
 
 def _query_text(input: ProductSearchRequest) -> str:
-    parts = [
-        input.query,
-        input.visual_summary,
-        " ".join(input.objects),
-        " ".join(input.colors),
-        " ".join(input.materials),
-    ]
-    return " ".join(part.strip() for part in parts if part and part.strip())
+    return input.query.strip()
 
 
 def _shopping_search_model_observation(data: dict[str, Any]) -> dict[str, Any]:

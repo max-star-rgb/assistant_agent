@@ -65,8 +65,8 @@ JSON Schema 的 `required` 表达。
 runtime-owned 输入；绑定字段不进入
 `ToolSpec.input_schema`，因此不会发送给模型。绑定来源只使用结构化执行事实：
 `constant`、`runtime_identity`、`request`、`memory_context`、`latest_tool_result` 和
-`durable_idempotency`。`model_hidden_input_fields` 仅保留为旧插件兼容入口；新增内置工具应优先使用
-`runtime_input_bindings`，使“模型不可见”和“由谁赋值”成为同一份契约。
+`durable_idempotency`。有 Pydantic 默认值、但不应由模型填写的工具内部参数使用
+`model_hidden_input_fields`；它们不需要 runtime binding，执行时由 Pydantic 补齐默认值。
 
 Tool 注册时会检查绑定字段存在、没有重复且静态默认值符合目标字段类型。模型若自行提交 runtime-owned
 字段，`ActionValidator` 统一返回 `runtime_owned_tool_input`；内部 observer/worker 如需提供帧引用等
@@ -310,8 +310,10 @@ category、profile、env 等系统字段不会发送给模型，也不需要靠�
 所有仓库内置工具的模型可见参数都应提供简短、明确的中文 `description`；只写 Pydantic 类型或
 校验约束而不解释字段语义，不视为完整工具契约。`shopping_search` 向模型暴露必填 `query` 以及
 会实质改变检索结果的可选 `budget_min`、`budget_max`；商品特征、使用场景和指定平台写入
-`query`，用户明确给出的预算写入对应结构化字段。固定平台列表、候选数量和前序视觉结果由
-runtime binding 补齐。购物请求不携带未使用的身份、memory context 或假想 Provider 兼容字段。`weather`
+`query`，用户明确给出的预算写入对应结构化字段。平台过滤列表和候选数量由 Pydantic 默认值补齐。
+购物工具不读取前序视觉结果；需要看图购物时，LLM 先调用
+`vision_understanding`，消费其 observation 后自行构造 `shopping_search.query`。购物请求不携带
+未使用的身份、memory context 或假想 Provider 兼容字段。`weather`
 只暴露 `location` 和 `target_date`，日期范围解析与公制单位由
 工具内部固定。`vision_understanding.question` 等没有必填要求但会改变任务结果的
 语义型可选参数仍应暴露；当前媒体引用、用户原始请求、身份、采样参数和 rolling context 均来自
