@@ -2128,7 +2128,7 @@ def _append_trace(
 
 
 def _point_observation_type(event_type: str) -> TraceObservationType | None:
-    if event_type in {"assistant_decision", "assistant_output", "tool_observation", "loop_guard_triggered"}:
+    if event_type in {"assistant_decision", "tool_observation", "loop_guard_triggered"}:
         return "event"
     return None
 

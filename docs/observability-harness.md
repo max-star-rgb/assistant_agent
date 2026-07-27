@@ -476,7 +476,6 @@ run
   memory.load
   context.build
   llm.chat(iteration=1)
-  assistant.output(iteration=1)
   action.validation
   tool.execute(shopping_search)
     provider.call(shopping_search.search)
@@ -825,7 +824,9 @@ Regression tests should enforce these invariants:
 - Every `tool.started` has a matching `tool.finished` or `tool.failed`.
 - Every `tool.observation` references a prior tool call or a validation rejection.
 - Native provider runtime and mock/offline ReAct runtime both emit
-  `assistant.output` and terminal run events.
+  internal `assistant.output` trace facts and terminal run events. `assistant.output`
+  remains available to local trace evaluation but is not exported as a separate
+  Langfuse/OTel observation because `llm.chat` already shows the Provider reply.
 - Successful native provider runtime and mock/offline ReAct runtime both emit
   `response.final` before the terminal run event.
 - Successful runs may enqueue `memory.turn_ingestion` after the terminal response;
@@ -891,7 +892,7 @@ Regression tests should enforce these invariants:
   `ASSISTANT_AGENT_OTEL_EXPORT_QUEUE_CAPACITY` 覆盖。If only generic
   `OTEL_EXPORTER_OTLP_ENDPOINT` is set, the text trace exporter derives the
   trace endpoint by appending `/v1/traces`.
-- Root、`assistant.output`、`llm.chat`、`tool.execute`、`tool.observation` 和
+- Root、`llm.chat`、`tool.execute`、`tool.observation` 和
   `response.final` 使用 Langfuse 的 `langfuse.observation.input/output` 映射结构化 JSON；
   root 同时写入 `langfuse.trace.input/output`。默认显示完整 tool execution summary 与
   assistant-facing `ToolObservation`；显式关闭 content capture 时才退化为摘要。

@@ -125,6 +125,7 @@ def test_native_streaming_chat_emits_llm_span_and_final_answer() -> None:
     )
     assert assistant_output.status == "text"
     assert assistant_output.attributes["output_type"] == "text"
+    assert assistant_output.observation_type is None
     assert not any(
         event.canonical_event == "react.decision"
         for event in trace_store.events
