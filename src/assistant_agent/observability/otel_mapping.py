@@ -167,7 +167,7 @@ def _root_span(
         trace_id=events[0].trace_id,
         span_id=_root_span_id(events),
         parent_span_id=_external_parent_span_id(events),
-        name="assistant.runtime",
+        name="agent.runtime",
         start_time=started_at,
         end_time=finished_at,
         status=_root_status(events),
@@ -829,7 +829,7 @@ def _latest_turn_summary(events: list[TraceEvent]) -> dict[str, Any]:
 
 
 def _root_span_id(events: list[TraceEvent]) -> str:
-    return _stable_span_id(events[0].trace_id, "assistant.runtime")
+    return _stable_span_id(events[0].trace_id, "agent.runtime")
 
 
 def _stable_span_id(trace_id: str, name: str) -> str:

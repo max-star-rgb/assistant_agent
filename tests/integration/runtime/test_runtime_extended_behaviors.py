@@ -475,10 +475,10 @@ def test_langfuse_mapping_exposes_conversation_and_tool_diagnostics() -> None:
     by_name = {span.name: span for span in spans}
 
     runtime_input = json.loads(
-        by_name["assistant.runtime"].attributes["langfuse.trace.input"]
+        by_name["agent.runtime"].attributes["langfuse.trace.input"]
     )
     runtime_output = json.loads(
-        by_name["assistant.runtime"].attributes["langfuse.trace.output"]
+        by_name["agent.runtime"].attributes["langfuse.trace.output"]
     )
     assert runtime_input["content"] == "北京今天天气怎么样？"
     assert runtime_output["content"] == "北京今天晴。"
@@ -541,7 +541,7 @@ def test_langfuse_root_uses_delivered_response_without_rewriting_runtime_final()
     by_name = {span.name: span for span in spans}
 
     runtime_output = json.loads(
-        by_name["assistant.runtime"].attributes["langfuse.trace.output"]
+        by_name["agent.runtime"].attributes["langfuse.trace.output"]
     )
     final_output = json.loads(
         by_name["response.final"].attributes["langfuse.observation.output"]
@@ -703,7 +703,7 @@ def test_langfuse_mapping_builds_runtime_iteration_hierarchy_and_exact_local_llm
     )
 
     spans = build_text_otel_span_specs(events, conversation=conversation)
-    runtime = next(span for span in spans if span.name == "assistant.runtime")
+    runtime = next(span for span in spans if span.name == "agent.runtime")
     iteration = next(span for span in spans if span.name == "react.iteration")
     context = next(span for span in spans if span.name == "context.build")
     generation = next(span for span in spans if span.name == "llm.chat")
@@ -712,6 +712,7 @@ def test_langfuse_mapping_builds_runtime_iteration_hierarchy_and_exact_local_llm
     )
 
     assert runtime.parent_span_id is None
+    assert runtime.attributes["langfuse.trace.name"] == "assistant.turn"
     assert not any(span.name == "assistant.turn" for span in spans)
     assert iteration.parent_span_id == runtime.span_id
     assert context.parent_span_id == iteration.span_id

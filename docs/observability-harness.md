@@ -914,15 +914,15 @@ Regression tests should enforce these invariants:
   context source、skill exposure 和 compression 状态。本地开发 overlay 还附带最终 memory
   section 的注入状态、ID 和实际渲染文本；完整 compiled `ChatRequest` 仍只放在对应
   `llm.chat` generation input，作为 Provider 调用边界的最终事实。`assistant.output`
-  只记录归一化决策，不再复制 `context` 或 `context_report_v1`。`assistant.runtime`
+  只记录归一化决策，不再复制 `context` 或 `context_report_v1`。`agent.runtime`
   根 span 最多保留 `context_peak_ratio` 这一 turn-level 压力摘要，不携带完整 section
   accounting 或 Provider input。
 - 未实现 request callback 的自定义 adapter 使用编译后 `ChatRequest` 的语义字段作为 fallback；
   内置 OpenAI-compatible adapter 必须以传给 SDK 的同一 payload 覆盖该 fallback。
 - Langfuse Trace 名称固定为 `assistant.turn`，observation hierarchy 固定为
-  `assistant.runtime -> react.iteration[n] -> context/llm/decision/tool`，避免把
+  `agent.runtime -> react.iteration[n] -> context/llm/decision/tool`，避免把
   Trace 名称再次导出成同名根 observation。memory、final response 和
-  runtime postprocess 直接归属 `assistant.runtime`。`agent_service.turn.finished`
+  runtime postprocess 直接归属 `agent.runtime`。`agent_service.turn.finished`
   是入口延迟汇总事实，不再映射成一个与 root 几乎完全重叠的长 Span；其关联 ID、
   terminal 状态和诊断元数据合并到 root/turn summary。
 - `langfuse.user.id` 继续映射 Runtime `user_id`；`langfuse.session.id` 映射内部
@@ -979,7 +979,7 @@ Experiment SDK 创建 Dataset Run、item `Evaluation` 和 run-level `Evaluation`
 Experiment task 从 Langfuse 当前 observation 读取 W3C trace ID 和 parent span ID，通过
 `RuntimeTraceContext` 传入 `AgentGraphRuntime.run_state()`。Runtime 仍产生自己的 canonical
 TraceEvent；显式 Experiment 在 task 内把这批事件同步映射并导出为
-`experiment-item-task -> assistant.runtime -> react.iteration/tool/llm/...`。因此
+`experiment-item-task -> agent.runtime -> react.iteration/tool/llm/...`。因此
 DatasetRunItem、Runtime observations 和 `agent.*` item scores 位于同一条 trace。普通 API、
 Gateway、CLI 未传 `RuntimeTraceContext` 时仍自行生成 trace ID，行为不变。
 

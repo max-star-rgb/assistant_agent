@@ -77,7 +77,7 @@ def test_context_report_accounts_for_the_compiled_chat_request() -> None:
     assert "context_report_v1" not in assistant_event.output_summary
 
     spans = build_text_otel_span_specs(trace_store.list_by_run(state.run_id))
-    runtime_span = next(span for span in spans if span.name == "assistant.runtime")
+    runtime_span = next(span for span in spans if span.name == "agent.runtime")
     context_span = next(span for span in spans if span.name == "context.build")
     runtime_context_keys = {
         key for key in runtime_span.attributes if "context" in key.lower()

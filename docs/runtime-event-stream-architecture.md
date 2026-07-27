@@ -53,7 +53,7 @@ is emitted after trace finalization.
 Context evidence also has a single owner: `context.build` carries
 `context_report_v1`, while `llm.chat` carries the exact Provider input.
 `assistant.output` records only the normalized decision and does not duplicate
-either payload. The `assistant.runtime` root may retain the scalar
+either payload. The `agent.runtime` root may retain the scalar
 `context_peak_ratio` as a turn-level diagnostic, but not the full context report.
 
 ## Provider Stream Boundary
