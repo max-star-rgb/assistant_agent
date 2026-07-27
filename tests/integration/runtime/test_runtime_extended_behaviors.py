@@ -54,6 +54,16 @@ def _offline_config() -> ProviderConfig:
     return ProviderConfig(langgraph_checkpointer_backend="none")
 
 
+def _contains_mapping_key(value: object, key: str) -> bool:
+    if isinstance(value, dict):
+        return key in value or any(
+            _contains_mapping_key(item, key) for item in value.values()
+        )
+    if isinstance(value, list):
+        return any(_contains_mapping_key(item, key) for item in value)
+    return False
+
+
 def test_default_runtime_policy_requires_missing_tool_inputs_to_be_clarified() -> None:
     assert "工具缺少地点、对象、时间等必要参数时，先向用户澄清" in render_system_instruction()
 
@@ -460,12 +470,15 @@ def test_langfuse_mapping_exposes_conversation_and_tool_diagnostics() -> None:
     spans = build_text_otel_span_specs(events, conversation=conversation)
     by_name = {span.name: span for span in spans}
 
-    assert "北京今天天气怎么样？" in by_name["assistant.runtime"].attributes["langfuse.trace.input"]
-    assert "北京今天晴。" in by_name["assistant.runtime"].attributes["langfuse.trace.output"]
+    runtime_input = json.loads(
+        by_name["assistant.runtime"].attributes["langfuse.trace.input"]
+    )
+    runtime_output = json.loads(
+        by_name["assistant.runtime"].attributes["langfuse.trace.output"]
+    )
+    assert runtime_input["content"] == "北京今天天气怎么样？"
+    assert runtime_output["content"] == "北京今天晴。"
     assert "assistant.output" not in by_name
-    assert '"tool_name":"weather"' in by_name["tool.execute"].attributes[
-        "langfuse.observation.input"
-    ]
     assert by_name["tool.execute"].attributes["gen_ai.tool.name"] == "weather"
     assert json.loads(
         by_name["tool.execute"].attributes["langfuse.observation.input"]
@@ -523,16 +536,19 @@ def test_langfuse_root_uses_delivered_response_without_rewriting_runtime_final()
     spans = build_text_otel_span_specs(events, conversation=conversation)
     by_name = {span.name: span for span in spans}
 
-    assert "购物详情" in by_name["assistant.runtime"].attributes["langfuse.trace.output"]
-    assert "模型最终回复" in by_name["response.final"].attributes[
-        "langfuse.observation.output"
-    ]
-    assert "购物详情" in by_name["response.delivered"].attributes[
-        "langfuse.observation.output"
-    ]
-    assert "shopping_detail_v1" in by_name["response.delivered"].attributes[
-        "langfuse.observation.output"
-    ]
+    runtime_output = json.loads(
+        by_name["assistant.runtime"].attributes["langfuse.trace.output"]
+    )
+    final_output = json.loads(
+        by_name["response.final"].attributes["langfuse.observation.output"]
+    )
+    delivered_output = json.loads(
+        by_name["response.delivered"].attributes["langfuse.observation.output"]
+    )
+    assert runtime_output["content"] == "购物详情"
+    assert final_output["content"] == "模型最终回复"
+    assert delivered_output["content"] == "购物详情"
+    assert delivered_output["source"] == "shopping_detail_v1"
 
 
 def test_langfuse_mapping_builds_runtime_iteration_hierarchy_and_exact_local_llm_input() -> None:
@@ -702,11 +718,13 @@ def test_langfuse_mapping_builds_runtime_iteration_hierarchy_and_exact_local_llm
     assert isinstance(generation_input, dict)
     assert generation_input["messages"][1]["content"] == "compiled context"
     assert generation_input["tools"][0]["function"]["name"] == "image_generation"
-    assert "user_id" not in json.dumps(generation_input, ensure_ascii=False)
+    assert not _contains_mapping_key(generation_input, "user_id")
     assert "langfuse.observation.output" not in generation.attributes
-    assert '"context_report_v1"' in context.attributes["langfuse.observation.output"]
-    assert '"selected_tool_names":["image_generation"]' in context.attributes[
-        "langfuse.observation.output"
+    context_output = json.loads(
+        context.attributes["langfuse.observation.output"]
+    )
+    assert context_output["context_report_v1"]["selected_tool_names"] == [
+        "image_generation"
     ]
     assert runtime.attributes["assistant_agent.session_scope"] == "agent_service_connection"
     assert runtime.attributes["assistant_agent.turn_id"] == "turn-1"

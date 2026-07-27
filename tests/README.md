@@ -110,6 +110,12 @@ pytest 中禁止：
 普通 pytest 不断言完整自然语言回复、整段 prompt、Tool description 或控制台输出。验证内容透传时
 使用无语义 sentinel；只有文本本身是稳定外部契约时才做聚焦文本断言。
 
+- 属性值是 JSON 字符串时，先解析为结构化对象再断言字段、类型和值；不得用序列化片段或字段顺序做
+  字符串包含断言。
+- Tool description 默认只验证字段存在且非空，不通过本地化文案关键字证明工具行为；调用前置条件、
+  必填参数和拒绝语义应由 schema、validator 或执行结果断言。
+- 检查敏感字段缺失时递归检查结构化 key，不把序列化 JSON 的关键字搜索当作主要证据。
+
 外部边界优先使用 reusable fake、scripted adapter 或 in-memory implementation，不以私有方法调用次数
 作为主要正确性证据。
 

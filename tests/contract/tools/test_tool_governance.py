@@ -1,6 +1,5 @@
 """Focused offline checks for stable tool-governance behavior."""
 
-import json
 from typing import ClassVar
 
 import pytest
@@ -44,6 +43,16 @@ from assistant_agent.tools.base import ToolBase, ToolContext, ToolInputValidatio
 from assistant_agent.tools.input_binding import ToolInputBinding
 from assistant_agent.tools.plugins.registry_factory import create_default_registry
 from assistant_agent.tools.registry import ToolRegistry
+
+
+def _contains_mapping_key(value: object, key: str) -> bool:
+    if isinstance(value, dict):
+        return key in value or any(
+            _contains_mapping_key(item, key) for item in value.values()
+        )
+    if isinstance(value, list):
+        return any(_contains_mapping_key(item, key) for item in value)
+    return False
 
 
 class _DeclaredValidationInput(BaseModel):
@@ -178,16 +187,14 @@ def test_provider_tools_hide_runtime_fields_and_pydantic_titles() -> None:
         assert "session_id" not in properties
         assert "memory_context" not in properties
         provider_tool = tool_spec_to_openai_tool(spec)
-        assert '"title"' not in json.dumps(
-            provider_tool["function"]["parameters"],
-            ensure_ascii=False,
+        assert not _contains_mapping_key(
+            provider_tool["function"]["parameters"], "title"
         )
 
     for spec in registry.list_specs():
         parameters = tool_spec_to_openai_tool(spec)["function"]["parameters"]
-        encoded = json.dumps(parameters, ensure_ascii=False)
         for key in execution_only_schema_keys:
-            assert f'"{key}"' not in encoded
+            assert not _contains_mapping_key(parameters, key)
         for field_name, field_schema in parameters.get("properties", {}).items():
             assert field_schema.get("description"), f"{spec.name}.{field_name}"
 
@@ -198,10 +205,9 @@ def test_provider_tools_hide_runtime_fields_and_pydantic_titles() -> None:
     shopping = tool_spec_to_openai_tool(registry.get_spec(SHOPPING_SEARCH_TOOL_NAME))["function"]
     assert set(shopping["parameters"]["properties"]) == {"query"}
     assert shopping["parameters"]["required"] == ["query"]
-    assert "预算、平台和使用场景" in shopping["parameters"]["properties"]["query"]["description"]
     assert "description" not in shopping["parameters"]
-    assert "anyOf" not in json.dumps(shopping["parameters"], ensure_ascii=False)
-    assert '"default"' not in json.dumps(shopping["parameters"], ensure_ascii=False)
+    assert not _contains_mapping_key(shopping["parameters"], "anyOf")
+    assert not _contains_mapping_key(shopping["parameters"], "default")
 
     vision = tool_spec_to_openai_tool(
         registry.get_spec(IMAGE_UNDERSTANDING_TOOL_NAME)
@@ -415,18 +421,14 @@ def test_weather_declares_location_and_normalized_target_date() -> None:
     parameters = openai_tool["function"]["parameters"]
     assert "required_inputs" not in spec.model_dump(mode="json")
     assert "fields" not in spec.input_schema
-    assert '"title"' not in json.dumps(parameters, ensure_ascii=False)
+    assert not _contains_mapping_key(parameters, "title")
     assert mcp_tool["inputSchema"] == parameters
     assert parameters["required"] == ["location"]
     assert set(parameters["properties"]) == {"location", "target_date"}
-    assert "必须先追问" in openai_tool["function"]["description"]
-    assert "不得猜测" in parameters["properties"]["location"]["description"]
     assert parameters["properties"]["target_date"]["type"] == "string"
-    assert "YYYY-MM-DD/YYYY-MM-DD" in parameters["properties"]["target_date"]["description"]
-    assert "每天的天气" in parameters["properties"]["target_date"]["description"]
     assert "format" not in parameters["properties"]["target_date"]
     assert "additionalProperties" not in parameters
-    assert '"default"' not in json.dumps(parameters, ensure_ascii=False)
+    assert not _contains_mapping_key(parameters, "default")
     assert result.accepted is False
     assert result.code == "invalid_tool_input"
 

@@ -36,7 +36,6 @@ def test_image_generation_requires_only_prompt_from_model() -> None:
         "width",
         "height",
     }
-    assert "必填的文本提示词" in function["description"]
 
 
 def test_image_generation_rejects_blank_prompt() -> None:
