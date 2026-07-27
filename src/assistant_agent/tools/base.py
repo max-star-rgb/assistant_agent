@@ -63,7 +63,7 @@ class ToolBase:
     enabled_by_default = True
     requires_media: list[ToolMediaRequirement] = []
     model_hidden_input_fields: tuple[str, ...] = ()
-    input_bindings: tuple[Any, ...] = ()
+    runtime_input_bindings: tuple[Any, ...] = ()
     host_configured_exposure: bool = False
 
     def run(self, input: BaseModel | dict[str, Any], context: ToolContext | None = None) -> ToolResult:

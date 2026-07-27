@@ -20,7 +20,7 @@ class WebFetchTool(ToolBase):
     input_schema = WebFetchRequest
     output_schema = WebFetchResult
     category = "read"
-    input_bindings = (
+    runtime_input_bindings = (
         ToolInputBinding(field="max_chars", source="constant", value=6000),
         ToolInputBinding(field="content_format", source="constant", value="markdown"),
     )

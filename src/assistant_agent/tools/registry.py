@@ -12,7 +12,7 @@ from assistant_agent.tools.models import ToolResult, ToolSpec
 from assistant_agent.tools.base import Tool, ToolContext
 from assistant_agent.tools.input_binding import (
     runtime_owned_input_fields,
-    validate_tool_input_bindings,
+    validate_runtime_input_bindings,
 )
 from assistant_agent.tools.plugins.contracts import (
     ToolPluginAssemblyReport,
@@ -169,7 +169,7 @@ class ToolRegistry:
 
     @staticmethod
     def _tool_spec(tool: Tool) -> ToolSpec:
-        validate_tool_input_bindings(tool)
+        validate_runtime_input_bindings(tool)
         return ToolSpec(
             name=tool.name,
             description=tool.description,

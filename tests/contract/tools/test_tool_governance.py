@@ -143,7 +143,7 @@ class _RuntimeBindingTool(ToolBase):
     input_schema = _RuntimeBindingInput
     output_schema = _RuntimeBindingInput
     category = "read"
-    input_bindings = (
+    runtime_input_bindings = (
         ToolInputBinding(field="user_id", source="runtime_identity", key="user_id"),
         ToolInputBinding(field="session_id", source="runtime_identity", key="session_id"),
         ToolInputBinding(field="image_ids", source="request", key="image_ids"),
@@ -207,7 +207,6 @@ def test_provider_tools_hide_runtime_fields_and_pydantic_titles() -> None:
         "query",
         "budget_min",
         "budget_max",
-        "platforms",
     }
     assert shopping["parameters"]["required"] == ["query"]
     assert "description" not in shopping["parameters"]

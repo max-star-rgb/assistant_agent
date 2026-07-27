@@ -25,7 +25,7 @@ class VisualImageSearchTool(ToolBase):
     output_schema = VisualImageSearchResult
     category = "read"
     requires_media = ["image"]
-    input_bindings = (
+    runtime_input_bindings = (
         ToolInputBinding(field="limit", source="constant", value=5),
     )
 

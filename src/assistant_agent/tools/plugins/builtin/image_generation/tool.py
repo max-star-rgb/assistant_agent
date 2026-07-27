@@ -30,7 +30,7 @@ class ImageGenerationTool(ToolBase):
     input_schema = ImageGenerationRequest
     output_schema = ImageGenerationResult
     category = "generate"
-    input_bindings = (
+    runtime_input_bindings = (
         ToolInputBinding(field="user_id", source="runtime_identity", key="user_id"),
         ToolInputBinding(field="session_id", source="runtime_identity", key="session_id"),
         ToolInputBinding(field="memory_context", source="memory_context", key="summaries"),

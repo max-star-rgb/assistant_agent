@@ -28,7 +28,7 @@ class PythonInterpreterTool(ToolBase):
     output_schema = PythonInterpreterResult
     category = "dangerous"
     enabled_by_default = False
-    input_bindings = (
+    runtime_input_bindings = (
         ToolInputBinding(field="purpose", source="constant", value="general_analysis"),
         ToolInputBinding(field="timeout_s", source="constant", value=None),
     )

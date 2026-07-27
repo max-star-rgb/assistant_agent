@@ -45,7 +45,7 @@ class WeatherTool(ToolBase):
     input_schema = WeatherRequest
     output_schema = WeatherResult
     category = "read"
-    input_bindings = (
+    runtime_input_bindings = (
         ToolInputBinding(field="units", source="constant", value="metric"),
     )
 
@@ -80,7 +80,7 @@ class CalendarSearchTool(ToolBase):
     input_schema = CalendarSearchRequest
     output_schema = CalendarSearchResult
     category = "read"
-    input_bindings = (
+    runtime_input_bindings = (
         ToolInputBinding(field="limit", source="constant", value=5),
     )
 
@@ -111,7 +111,7 @@ class CalendarCreateTool(ToolBase):
     input_schema = CalendarCreateRequest
     output_schema = CalendarCreateResult
     category = "write"
-    input_bindings = (
+    runtime_input_bindings = (
         ToolInputBinding(field="idempotency_key", source="durable_idempotency"),
     )
 
@@ -148,7 +148,7 @@ class ContactsSearchTool(ToolBase):
     input_schema = ContactsSearchRequest
     output_schema = ContactsSearchResult
     category = "read"
-    input_bindings = (
+    runtime_input_bindings = (
         ToolInputBinding(field="limit", source="constant", value=5),
     )
 

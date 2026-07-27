@@ -46,7 +46,7 @@ class VisionUnderstandingTool(ToolBase):
     output_schema = VisionUnderstandingResult
     category = "read"
     requires_media = ["image", "video"]
-    input_bindings = (
+    runtime_input_bindings = (
         ToolInputBinding(field="image_ids", source="request", key="image_ids"),
         ToolInputBinding(field="video_ids", source="request", key="video_ids"),
         ToolInputBinding(field="video_ref", source="constant", value=None),

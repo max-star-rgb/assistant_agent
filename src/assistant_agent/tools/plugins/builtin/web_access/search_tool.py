@@ -23,7 +23,7 @@ class WebSearchTool(ToolBase):
     input_schema = WebSearchRequest
     output_schema = WebSearchResult
     category = "read"
-    input_bindings = (
+    runtime_input_bindings = (
         ToolInputBinding(field="limit", source="constant", value=5),
     )
 

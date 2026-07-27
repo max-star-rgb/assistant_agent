@@ -61,12 +61,12 @@ Tool、不参与注册或暴露，新插件内使用的 Tool 默认无需加入�
 `ToolSpec.input_schema` 保留必填参数及会实质改变业务结果的语义型可选参数，必填字段由标准
 JSON Schema 的 `required` 表达。
 `ToolSpec` 不再维护独立的 `required_inputs` 或自定义 `fields` 视图；prompt 若需要压缩，只在渲染时
-临时移除 title、截短 description，不改变原始 schema。工具通过 `input_bindings` 声明
+临时移除 title、截短 description，不改变原始 schema。工具通过 `runtime_input_bindings` 声明
 runtime-owned 输入；绑定字段不进入
 `ToolSpec.input_schema`，因此不会发送给模型。绑定来源只使用结构化执行事实：
 `constant`、`runtime_identity`、`request`、`memory_context`、`latest_tool_result` 和
 `durable_idempotency`。`model_hidden_input_fields` 仅保留为旧插件兼容入口；新增内置工具应优先使用
-`input_bindings`，使“模型不可见”和“由谁赋值”成为同一份契约。
+`runtime_input_bindings`，使“模型不可见”和“由谁赋值”成为同一份契约。
 
 Tool 注册时会检查绑定字段存在、没有重复且静态默认值符合目标字段类型。模型若自行提交 runtime-owned
 字段，`ActionValidator` 统一返回 `runtime_owned_tool_input`；内部 observer/worker 如需提供帧引用等
@@ -309,9 +309,9 @@ category、profile、env 等系统字段不会发送给模型，也不需要靠�
 
 所有仓库内置工具的模型可见参数都应提供简短、明确的中文 `description`；只写 Pydantic 类型或
 校验约束而不解释字段语义，不视为完整工具契约。`shopping_search` 向模型暴露必填 `query` 以及
-会实质改变检索结果的可选 `budget_min`、`budget_max`、`platforms`；商品特征和使用场景写入
-`query`，用户明确给出的预算与平台写入对应结构化字段。固定候选数量和前序视觉结果由 runtime
-binding 补齐。购物请求不携带未使用的身份、memory context 或假想 Provider 兼容字段。`weather`
+会实质改变检索结果的可选 `budget_min`、`budget_max`；商品特征、使用场景和指定平台写入
+`query`，用户明确给出的预算写入对应结构化字段。固定平台列表、候选数量和前序视觉结果由
+runtime binding 补齐。购物请求不携带未使用的身份、memory context 或假想 Provider 兼容字段。`weather`
 只暴露 `location` 和 `target_date`，日期范围解析与公制单位由
 工具内部固定。`vision_understanding.question` 等没有必填要求但会改变任务结果的
 语义型可选参数仍应暴露；当前媒体引用、用户原始请求、身份、采样参数和 rolling context 均来自

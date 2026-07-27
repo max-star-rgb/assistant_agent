@@ -50,25 +50,27 @@ def runtime_owned_input_fields(tool: Any) -> tuple[str, ...]:
     """Return every field that must not be supplied by the model."""
 
     fields = list(getattr(tool, "model_hidden_input_fields", ()))
-    fields.extend(binding.field for binding in _tool_input_bindings(tool))
+    fields.extend(binding.field for binding in _runtime_input_bindings(tool))
     return tuple(dict.fromkeys(fields))
 
 
-def validate_tool_input_bindings(tool: Any) -> None:
+def validate_runtime_input_bindings(tool: Any) -> None:
     """Fail startup when a Tool declares an invalid runtime binding contract."""
 
-    bindings = _tool_input_bindings(tool)
+    bindings = _runtime_input_bindings(tool)
     field_names = set(tool.input_schema.model_fields)
     declared = [binding.field for binding in bindings]
     unknown = sorted(set(declared) - field_names)
     if unknown:
         raise ValueError(
-            f"{tool.name} input bindings reference unknown fields: {', '.join(unknown)}"
+            f"{tool.name} runtime input bindings reference unknown fields: "
+            f"{', '.join(unknown)}"
         )
     duplicates = sorted({field for field in declared if declared.count(field) > 1})
     if duplicates:
         raise ValueError(
-            f"{tool.name} input bindings contain duplicate fields: {', '.join(duplicates)}"
+            f"{tool.name} runtime input bindings contain duplicate fields: "
+            f"{', '.join(duplicates)}"
         )
     for binding in bindings:
         if binding.source != "constant":
@@ -89,7 +91,7 @@ def bind_runtime_tool_input(
     """Resolve declared bindings, then merge explicitly trusted runtime input."""
 
     bound = dict(model_input)
-    for binding in _tool_input_bindings(tool):
+    for binding in _runtime_input_bindings(tool):
         if binding.mode == "if_missing" and _has_value(bound.get(binding.field)):
             continue
         resolved = _resolve_binding(
@@ -110,8 +112,8 @@ def bind_runtime_tool_input(
     return bound
 
 
-def _tool_input_bindings(tool: Any) -> tuple[ToolInputBinding, ...]:
-    raw = getattr(tool, "input_bindings", ())
+def _runtime_input_bindings(tool: Any) -> tuple[ToolInputBinding, ...]:
+    raw = getattr(tool, "runtime_input_bindings", ())
     return tuple(
         item if isinstance(item, ToolInputBinding) else ToolInputBinding.model_validate(item)
         for item in raw
