@@ -28,24 +28,29 @@ from assistant_agent.providers.provider_errors import (
     ProviderAdapterError,
     build_provider_error,
 )
-from assistant_agent.tools.ids import IMAGE_UNDERSTANDING_CAPABILITY, IMAGE_UNDERSTANDING_TOOL_NAME
+from assistant_agent.tools.ids import (
+    IMAGE_UNDERSTANDING_CAPABILITY,
+    LIVE_VIEW_INSPECT_TOOL_NAME,
+    MEDIA_INSPECT_TOOL_NAME,
+    REALTIME_VIDEO_OBSERVE_TOOL_NAME,
+)
 from assistant_agent.tools.base import ToolBase, ToolContext
 from assistant_agent.tools.input_binding import RuntimeInputBinding
-from assistant_agent.tools.plugins.builtin.vision_understanding.video_branch import (
+from assistant_agent.tools.plugins.builtin.media_inspection.video_branch import (
     VideoUnderstandingBranch,
 )
 
 
-class VisionUnderstandingTool(ToolBase):
-    name = IMAGE_UNDERSTANDING_TOOL_NAME
-    description = (
-        "理解当前请求附带的图片或视频。可提供聚焦问题；"
-        "运行时会选择对应媒体和内部视觉分支。"
-    )
+class MediaInspectTool(ToolBase):
+    """Inspect image or explicit-video media attached to the current request."""
+
+    name = MEDIA_INSPECT_TOOL_NAME
+    description = "分析当前请求附带的图片或视频。"
     input_schema = VisionUnderstandingRequest
     output_schema = VisionUnderstandingResult
     category = "read"
     requires_media = ["image", "video"]
+    media_scope = "attached"
     runtime_input_bindings = (
         RuntimeInputBinding(field="image_ids", source="request", key="image_ids"),
         RuntimeInputBinding(field="video_ids", source="request", key="video_ids"),
@@ -187,6 +192,24 @@ class VisionUnderstandingTool(ToolBase):
         )
 
 
+class LiveViewInspectTool(MediaInspectTool):
+    """Inspect the latest governed snapshot from a trusted live media session."""
+
+    name = LIVE_VIEW_INSPECT_TOOL_NAME
+    description = "查询可信实时媒体会话的最新画面。"
+    requires_media = ["video"]
+    media_scope = "live"
+
+
+class RealtimeVideoObserveTool(MediaInspectTool):
+    """Internal governed tool used only by the background frame observer."""
+
+    name = REALTIME_VIDEO_OBSERVE_TOOL_NAME
+    description = "内部实时视频帧观察工具。"
+    requires_media = ["video"]
+    media_scope = "any"
+
+
 def _vision_model_observation(data: dict[str, Any]) -> dict[str, Any]:
     keys = (
         "summary",
@@ -204,6 +227,8 @@ def _vision_model_observation(data: dict[str, Any]) -> dict[str, Any]:
         "text_in_video",
         "confidence",
         "source",
+        "media_kind",
+        "media_refs",
         "errors",
     )
     return {key: data[key] for key in keys if data.get(key) not in (None, "", [], {})}

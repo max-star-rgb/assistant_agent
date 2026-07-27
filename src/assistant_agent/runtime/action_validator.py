@@ -6,6 +6,10 @@ from typing import Any
 
 from pydantic import BaseModel, Field, ValidationError
 
+from assistant_agent.context.tool_exposure import (
+    tool_exposure_facts,
+    tool_media_requirements_satisfied,
+)
 from assistant_agent.runtime.state import AgentState
 from assistant_agent.runtime.output_models import AssistantToolCall
 from assistant_agent.runtime.requests import UserRequest
@@ -69,6 +73,13 @@ class ActionValidator:
                     }
                 },
             )
+        media_error = _validate_required_media_scope(
+            registry=registry,
+            tool_name=tool_name,
+            request=request,
+        )
+        if media_error is not None:
+            return media_error
         metadata = {
             "pre_tool_call": build_pre_tool_call_summary(
                 tool_name=tool_name,
@@ -221,6 +232,24 @@ def _validate_required_media(
     return _reject(
         "missing_required_input",
         f"{tool_name} requires one of these media types: {expected}.",
+    )
+
+
+def _validate_required_media_scope(
+    *,
+    registry: ToolRegistry,
+    tool_name: str,
+    request: UserRequest,
+) -> ActionValidationResult | None:
+    spec = registry.get_spec(tool_name)
+    if spec.media_scope == "any":
+        return None
+    if tool_media_requirements_satisfied(spec, tool_exposure_facts(request)):
+        return None
+    return _reject(
+        "media_scope_not_available",
+        f"{tool_name} is unavailable for the current media source.",
+        metadata={"media_scope": spec.media_scope},
     )
 
 

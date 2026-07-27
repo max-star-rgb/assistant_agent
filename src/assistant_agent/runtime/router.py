@@ -11,7 +11,7 @@ from assistant_agent.runtime.requests import UserRequest
 from assistant_agent.tools.models import ToolSelection
 from assistant_agent.tools.ids import (
     IMAGE_GENERATION_TOOL_NAME,
-    IMAGE_UNDERSTANDING_TOOL_NAME,
+    MEDIA_INSPECT_TOOL_NAME,
     SHOPPING_SEARCH_CAPABILITY,
     SHOPPING_SEARCH_TOOL_NAME,
 )
@@ -47,7 +47,7 @@ class ToolRouter:
                     TaskStep(
                         step_id="step_1",
                         action="understand_video",
-                        tool_name=IMAGE_UNDERSTANDING_TOOL_NAME,
+                        tool_name=MEDIA_INSPECT_TOOL_NAME,
                     ),
                     TaskStep(
                         step_id="step_2",

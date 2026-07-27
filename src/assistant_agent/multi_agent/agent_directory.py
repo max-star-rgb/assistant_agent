@@ -14,7 +14,7 @@ from assistant_agent.multi_agent.models import (
 )
 from assistant_agent.tools.ids import (
     IMAGE_GENERATION_TOOL_NAME,
-    IMAGE_UNDERSTANDING_TOOL_NAME,
+    MEDIA_INSPECT_TOOL_NAME,
     SHOPPING_SEARCH_TOOL_NAME,
 )
 
@@ -122,7 +122,7 @@ def default_agent_instance(
         capabilities=[
             "chat",
             "tool_calling",
-            IMAGE_UNDERSTANDING_TOOL_NAME,
+            MEDIA_INSPECT_TOOL_NAME,
             SHOPPING_SEARCH_TOOL_NAME,
             IMAGE_GENERATION_TOOL_NAME,
         ],

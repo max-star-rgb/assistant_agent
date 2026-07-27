@@ -4,7 +4,12 @@ from typing import Any, Protocol
 
 from pydantic import BaseModel, Field, ValidationError
 
-from assistant_agent.tools.models import ToolCategory, ToolMediaRequirement, ToolResult
+from assistant_agent.tools.models import (
+    ToolCategory,
+    ToolMediaRequirement,
+    ToolMediaScope,
+    ToolResult,
+)
 from assistant_agent.providers.provider_errors import sanitize_error_message
 
 
@@ -49,6 +54,7 @@ class Tool(Protocol):
     category: ToolCategory
     enabled_by_default: bool
     requires_media: list[ToolMediaRequirement]
+    media_scope: ToolMediaScope
     llm_hidden_input_fields: tuple[str, ...]
     runtime_input_bindings: tuple[Any, ...]
 
@@ -64,6 +70,7 @@ class ToolBase:
     category: ToolCategory = "dangerous"
     enabled_by_default = True
     requires_media: list[ToolMediaRequirement] = []
+    media_scope: ToolMediaScope = "any"
     llm_hidden_input_fields: tuple[str, ...] = ()
     runtime_input_bindings: tuple[Any, ...] = ()
     host_configured_exposure: bool = False

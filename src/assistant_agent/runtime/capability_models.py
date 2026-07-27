@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 
 from assistant_agent.tools.ids import (
     IMAGE_GENERATION_TOOL_NAME,
-    IMAGE_UNDERSTANDING_TOOL_NAME,
+    MEDIA_INSPECT_TOOL_NAME,
     SHOPPING_SEARCH_TOOL_NAME,
     VISUAL_IMAGE_SEARCH_TOOL_NAME,
     WEB_FETCH_TOOL_NAME,
@@ -93,7 +93,7 @@ CAPABILITY_CONTRACTS: dict[CapabilityName, CapabilityContract] = {
         name="image_understanding",
         input_requirements=["image"],
         output_contract="VisualUnderstandingResult",
-        tool_name=IMAGE_UNDERSTANDING_TOOL_NAME,
+        tool_name=MEDIA_INSPECT_TOOL_NAME,
         image_required=True,
         media_optional=False,
     ),
@@ -101,7 +101,7 @@ CAPABILITY_CONTRACTS: dict[CapabilityName, CapabilityContract] = {
         name="video_understanding",
         input_requirements=["video"],
         output_contract="VideoUnderstandingResult",
-        tool_name=IMAGE_UNDERSTANDING_TOOL_NAME,
+        tool_name=MEDIA_INSPECT_TOOL_NAME,
         video_required=True,
         media_optional=False,
     ),

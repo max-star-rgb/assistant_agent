@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from time import perf_counter
 from typing import Protocol
 
 from assistant_agent.config import ProviderConfig
@@ -54,14 +55,30 @@ class AdapterVisionUnderstandingClient:
             result = self.video_adapter.understand_video(
                 video_request_from_vision_request(request)
             )
-            return vision_result_from_video_result(result)
-        result = self.image_adapter.understand(image_input_from_vision_request(request))
+            return vision_result_from_video_result(result).model_copy(
+                update={
+                    "source": result.source or "explicit_video",
+                    "media_kind": result.media_kind or "explicit_video",
+                    "media_refs": (
+                        list(result.media_refs)
+                        or list(request.video_ids)
+                        or ([request.video_ref] if request.video_ref else [])
+                    ),
+                }
+            )
+        started_at = perf_counter()
+        result = self.image_adapter.understand(
+            image_input_from_vision_request(request)
+        )
+        latency_ms = max(0, int((perf_counter() - started_at) * 1000))
         return vision_result_from_visual_result(
             result,
             provider=_adapter_provider(self.image_adapter),
             model=_adapter_model(self.image_adapter),
             output_ref=_vision_output_ref(self.image_adapter),
-            latency_ms=1,
+            latency_ms=latency_ms,
+            source="request_image",
+            media_refs=list(request.image_ids),
         )
 
     @property
@@ -185,6 +202,8 @@ def vision_result_from_visual_result(
     model: str | None,
     output_ref: str,
     latency_ms: int | None,
+    source: str | None = None,
+    media_refs: list[str] | None = None,
 ) -> VisionUnderstandingResult:
     """Map the legacy image result into the unified result schema."""
 
@@ -201,6 +220,9 @@ def vision_result_from_visual_result(
         output_ref=output_ref,
         errors=[],
         latency_ms=latency_ms,
+        source=source,
+        media_kind="image",
+        media_refs=list(media_refs or ()),
     )
 
 
@@ -230,6 +252,9 @@ def vision_result_from_video_result(
         output_ref=result.output_ref,
         errors=[dict(item) for item in result.errors],
         latency_ms=result.latency_ms,
+        source=result.source,
+        media_kind=result.media_kind,
+        media_refs=list(result.media_refs),
     )
 
 
@@ -258,6 +283,9 @@ def video_result_from_vision_result(
         output_ref=result.output_ref,
         errors=[dict(item) for item in result.errors],
         latency_ms=result.latency_ms,
+        source=result.source,
+        media_kind=result.media_kind,
+        media_refs=list(result.media_refs),
     )
 
 

@@ -2,11 +2,15 @@
 
 import re
 
+from assistant_agent.media.agent_service_entry import (
+    is_trusted_agent_service_request,
+)
 from assistant_agent.runtime.planning_models import TaskPlan, TaskStep
 from assistant_agent.runtime.requests import UserRequest
 from assistant_agent.tools.ids import (
     IMAGE_GENERATION_TOOL_NAME,
-    IMAGE_UNDERSTANDING_TOOL_NAME,
+    LIVE_VIEW_INSPECT_TOOL_NAME,
+    MEDIA_INSPECT_TOOL_NAME,
     SHOPPING_SEARCH_CAPABILITY,
     SHOPPING_SEARCH_TOOL_NAME,
     WEB_FETCH_TOOL_NAME,
@@ -72,10 +76,15 @@ class RuleBasedTaskPlanner:
 
         if request.image_ids or request.video_ids:
             is_video = bool(request.video_ids)
+            tool_name = (
+                LIVE_VIEW_INSPECT_TOOL_NAME
+                if is_video and is_trusted_agent_service_request(request)
+                else MEDIA_INSPECT_TOOL_NAME
+            )
             self._append_step(
                 steps,
                 action="understand_video" if is_video else "understand_image",
-                tool_name=IMAGE_UNDERSTANDING_TOOL_NAME,
+                tool_name=tool_name,
                 required_inputs=["video"] if is_video else ["image"],
                 reason="用户提供了媒体输入，先理解媒体内容。",
             )

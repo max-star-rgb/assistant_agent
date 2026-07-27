@@ -222,7 +222,7 @@ def test_real_system_seed_covers_production_like_capabilities() -> None:
         "file_read",
         "image_generation",
         "shopping_search",
-        "vision_understanding",
+        "media_inspect",
         "weather",
         "web_fetch",
         "web_search",

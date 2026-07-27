@@ -31,7 +31,7 @@ Last updated: 2026-07-27
   写入 context pack；Context renderer 再将原始文本按顺序组装为 XML 转义的
   `<long_term_memory trust="untrusted_history">` 历史证据，与 `<current_request>` 形成显式边界后
   进入当前 `user` message，不进入 `system` message。
-- realtime video 交接：Agent-Service 后台 Qwen observer 对每个 `video_id` 复用一个 persistent WebSocket 并预热 rolling 语义；VLM 使用独立视觉角色模板 prompt，只产出结构化视觉事实，不复用主 LLM 系统提示。AgentRuntime 主 LLM 只知道统一的 `vision_understanding` ToolSpec，图片和视频由工具内部按媒体输入分支，不包含 VLM 观察流程、OCR/品牌/序列图等视觉分析提示词，也不看到帧、JPEG 路径、base64、VLM prompt 或 provider raw response。
+- realtime video 交接：Agent-Service 后台 Qwen observer 对每个 `video_id` 复用一个 persistent WebSocket 并预热 rolling 语义；VLM 使用独立视觉角色模板 prompt，只产出结构化视觉事实，不复用主 LLM 系统提示。普通图片/显式视频只暴露 `media_inspect`，可信实时媒体会话只暴露 `live_view_inspect`；后台 observer 使用不进入模型目录的 `realtime_video_observe`。主 LLM 不包含 VLM 观察流程、OCR/品牌/序列图等视觉分析提示词，也不看到帧、JPEG 路径、base64、VLM prompt 或 provider raw response。
 - 当前不建议继续做：场景分类器、质量反馈自动调参、组件注册器、裁剪 undo 日志或把长期记忆并入 session summary。
 - 如果用户问“继续上下文工程”：优先做验收案例、调试说明、具体失败复现和小回归测试；不要默认新增复杂架构。
 - 按需补读：解释机制时读本文件对应小节；涉及长期记忆写入/检索时读 `docs/memory-service-architecture.md`。
@@ -202,15 +202,15 @@ Last updated: 2026-07-27
 
 ### Realtime Video Context
 
-- Agent-Service 的后台 observer 继续通过工具治理链执行 Qwen；“后台受治理工具执行”和“AgentRuntime 可见工具目录”是两个边界。有 active video 的可信 AgentRuntime turn 可以通过动态工具目录暴露 `vision_understanding`，但主 LLM 只看到唯一视觉工具 schema 和 prompt-safe 文本上下文，不见帧、内部媒体路径或 VLM 角色模板。
+- Agent-Service 的后台 observer 继续通过内部 `realtime_video_observe` 和工具治理链执行 Qwen；“后台受治理工具执行”和“AgentRuntime 可见工具目录”是两个边界。有 active video 的可信 AgentRuntime turn 只动态暴露 `live_view_inspect`，普通附件工具 `media_inspect` 不进入该目录；主 LLM 只看到 prompt-safe 文本上下文，不见帧、内部媒体路径或 VLM 角色模板。
 - `AgentGraphRuntime` 在每次模型 context build 前按请求中最后一个 `video_id` 重新投影共享 `RealtimeVideoMemoryStore`，生成 `ready`、`refreshing`、`pending`、`stale`、`failed` 或 `unavailable` 状态。
 - 可信 Agent-Service 入口把 `video_ids` 渲染为“当前共享的实时画面”而不是上传式“附带视频 ID”；AgentRuntime system prompt 保持入口和通道无关，不注入电话、口播、挂断或传输层规则。普通上传/API 仍保留上传语义。
 - observer 首帧必选、明显变化立即候选、静态画面最长 2 秒产生一次候选；队列保持一个 Qwen in-flight 和一个 latest-wins pending。每轮 Provider 请求只含当前单帧和最多 2,000 字符的上一成功语义摘要，不重发多帧历史。
-- 明确指代当前画面的问题由 AgentRuntime 主 LLM 通过动态暴露的 `vision_understanding` 表达；工具内部选择视频分支，入口不放视觉分析提示词，也不基于文本自行完成 VLM 判断。问候/闲聊不应主动提及视觉。
+- 明确指代当前画面的问题由 AgentRuntime 主 LLM 通过动态暴露的 `live_view_inspect` 表达；该工具只读取后台滚动语义快照，入口不放视觉分析提示词，也不基于文本自行完成 VLM 判断。问候/闲聊不应主动提及视觉。
 - 每个 `video_id` 复用一个 persistent Qwen WebSocket；20 次成功观察或 60 秒后轮换，断线按 0.25/0.5/1/2/5 秒封顶退避重连。失败保留最后成功快照并投影 `refreshing`/`stale`；关闭或切换 video id 会关闭 Provider session 并清理 pending、语义状态和帧文件。
 - 投影只包含裁剪后的 summary、objects、people、actions、events、scene、`snapshot_sequence`、`target_sequence`、`completed_sequence`、`sequence_gap`、观察耗时、provider/model、`transport`、`session_generation`、`connection_reused`、`reconnect_count` 和 pending/in-flight 状态，序列化上限约 2,000 字符；不含帧路径、媒体数据、Qwen 原文、raw event 或 provider 原始错误。
 - `snapshot_age_ms` 与 `frame_capture_age_ms` 以成功语义对应帧的采集时间为主，`snapshot_publish_age_ms` 独立表示结果发布时间年龄；缺失或未来采集时间返回空值，不伪造年龄。存在正 `sequence_gap` 时投影为 `stale`（仍有任务时为 `refreshing`），prompt 不得把旧观察断言成当前事实。
-- renderer 把它标注为被动外部观察数据，不作为工具调用策略；何时调用 `vision_understanding` 只由本轮动态 ToolSpec 描述和模型工具选择表达。
+- renderer 把它标注为被动外部观察数据，不作为工具调用策略；何时调用 `live_view_inspect` 只由本轮动态 ToolSpec 描述和模型工具选择表达。
 - `ContextBudgetReport`、token estimate、`ContextReport.sections.realtime_video_context` 和 `context.build.finished.realtime_video` 独立记账，不并入 conversation、memory、realtime task state 或普通 tool observation。
 
 ### Context Budget And Observability

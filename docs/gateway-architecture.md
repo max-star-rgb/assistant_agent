@@ -20,7 +20,7 @@ This document is the current canonical entry for `assistant_agent.gateway`, real
 - Product-level "Agent instance" means the connection/user-owned logical `GatewaySessionService`, not a dedicated `AgentGraphRuntime` object. A logical AgentSession owns history, queued/active turns, cancellation and media/session correlation. Runtime execution remains application-owned and pooled across sessions.
 - Durable structured tasks are a separate post-acceptance lifecycle owned by `DurableTaskService` and its worker. Gateway owns only the ingress turn that accepts and returns the task handle; it does not keep the durable task as an active Gateway run.
 - Web, CLI, HTTP, WebSocket, and realtime product entries should converge on Gateway ingress adapters before reaching the assistant runtime. HTTP `/agent/run`, local CLI `--text`, and local CLI `--scenario` through demo flows enter Gateway through `GatewayTurnFacade`; remaining direct `AssistantRuntimeApp` callers in product entry paths are migration debt, not the target architecture.
-- The main FastAPI app exposes `/ws/gateway` for normalized Gateway JSON frames and `/agent-service/v1` as the Media Service WebSocket. The vendor route preserves the `message` / optional `sessionId` / stringified `body` protocol, accepts `assistantControl`, `chat`, `audio`, `video`, and `interrupt`, keeps legacy `assistantControlStart` compatibility, routes `chat` through Gateway, treats raw `audio` as entry-layer ACK traffic, and maps `interrupt` to cancellation of the active Gateway turn plus locally queued connection-owned turns before acknowledging it. Self-contained H.264 I-frame `video` messages are decoded into a bounded JPEG context; a governed background observer pre-warms rolling semantics, while AgentRuntime may dynamically expose the unified `vision_understanding` tool for active-video turns. The main LLM knows only this single visual tool; it never receives VLM role instructions, frames, JPEG paths, base64 media, or provider raw responses. The exact Media-Agent wire contract is `docs/media-agent-service-websocket.md`.
+- The main FastAPI app exposes `/ws/gateway` for normalized Gateway JSON frames and `/agent-service/v1` as the Media Service WebSocket. The vendor route preserves the `message` / optional `sessionId` / stringified `body` protocol, accepts `assistantControl`, `chat`, `audio`, `video`, and `interrupt`, keeps legacy `assistantControlStart` compatibility, routes `chat` through Gateway, treats raw `audio` as entry-layer ACK traffic, and maps `interrupt` to cancellation of the active Gateway turn plus locally queued connection-owned turns before acknowledging it. Self-contained H.264 I-frame `video` messages are decoded into a bounded JPEG context; the governed internal `realtime_video_observe` tool pre-warms rolling semantics, while AgentRuntime may dynamically expose `live_view_inspect` for trusted active-video turns. Ordinary image and explicit-video requests use `media_inspect`. The main LLM never receives VLM role instructions, frames, JPEG paths, base64 media, or provider raw responses. The exact Media-Agent wire contract is `docs/media-agent-service-websocket.md`.
 - The old browser Web Chat console, `/demo/console`, `/static/index.html`, and legacy `/ws/agent/{session_id}` event stream are removed from the product app. `scripts/run_client.py` is only a local Media-Agent protocol console client for `/agent-service/v1`, not a browser chat runtime. It still uses the real Media-Agent compatibility route and marks `clientInfo.clientType=run_client` only for prompt-safe observability.
 - OpenClaw / `runTime` is compatibility reference material for wire protocol and lifecycle behavior only. Do not import it into this project.
 
@@ -147,7 +147,7 @@ as `agent_service_connection`; it must not present the vendor correlation id as
 a durable conversation id. Its Gateway session uses the trusted Agent-Service
 entry profile without a business-tool name allowlist. Every registered read tool
 enters the candidate set by the shared exposure policy; media requirements and
-other structured conditions are then applied, so `vision_understanding` appears
+other structured conditions are then applied, so `live_view_inspect` appears
 only when active media makes it valid. Provider-backed tools such as `weather`
 只有在当前运行模式已经正确注册对应 adapter 时才进入目录；
 真实模式缺少 MCP mapping 或配置时仍然 fail closed。`shopping_search` performs product
@@ -183,8 +183,8 @@ adaptive sampling, pixel difference, SSIM, and local histogram change detection;
 首帧、明显变化帧和最长静态 2 秒到期帧进入 latest-wins 后台队列。每轮后台理解只向
 Provider 发送当前选中的一张 JPEG；历史画面不作为多帧请求重发，只把上次成功语义摘要
 裁剪后作为文本上下文。Background understanding still runs through
-`ActionValidator -> ToolExecutor -> ToolRegistry -> vision_understanding`；视频输入
-由该工具内部的视频分支处理，不存在独立公共 video ToolSpec 或 Provider 路径。
+`ActionValidator -> ToolExecutor -> ToolRegistry -> realtime_video_observe`；该
+ToolSpec 只供连接级 observer 内部使用，不进入前台 LLM 的 tool catalog。
 这里的成功分三层：Execution Success 只表示 `ToolResult.success is True`；
 Semantic Success 表示 `VideoUnderstandingResult` 可验证且 `errors` 为空；
 Publishability 还要求 `source == "background_keyframe_observation"`。Rolling
@@ -192,9 +192,9 @@ semantic snapshot 只从满足 Publishability 的工具结果发布；failure、
 harness explanatory results，以及 query-time
 `realtime_video_memory_unavailable` 说明性结果都只更新失败/可解释状态，不能成为
 `current_state`。
-When a later chat turn has active video, AgentRuntime may expose the unified
-`vision_understanding` tool; ordinary image and explicit-video flows use the same
-ToolSpec. The main LLM sees
+When a later trusted Agent-Service chat turn has active video, AgentRuntime may
+expose `live_view_inspect`; ordinary image and explicit-video flows expose
+`media_inspect` instead. The main LLM sees
 the live-camera availability, tool schema, and projected
 `realtime_video_context`, not frame bytes, frame paths, VLM role prompt, or
 Provider payloads. The entry adapter does not call the video provider directly.
@@ -203,15 +203,16 @@ The runtime owns a bounded semantic snapshot per opaque `video_id`. Immediately
 before every Agent-Service model context build it projects the latest snapshot
 into the independent `realtime_video_context` section. Thus the first DeepSeek
 decision can use completed Qwen observations or call dynamically exposed
-`vision_understanding` when it needs current visual facts. For Agent-Service,
+`live_view_inspect` when it needs current visual facts. For Agent-Service,
 the internal video branch consumes only rolling semantic memory produced
 by the background observer; if no semantic text is available yet, the tool
 returns a prompt-safe descriptive observation, including
 `pending` / `failed` / `unavailable` state, that the LLM can directly use to
 explain the situation instead of calling the video Provider with raw frames. Frame
 freshness uses capture age; snapshot publication age remains a separate
-diagnostic. Ordinary non-Agent-Service video/API requests use the same
-`vision_understanding` tool and retain `recent_frame_fallback` behavior.
+diagnostic. Ordinary non-Agent-Service image/video/API requests use
+`media_inspect`; explicit video is sent through the normal governed video
+Provider path and never borrows rolling live-camera memory.
 本地 raw window 仍为 3 帧，语义记忆仍最多保留 8 个成功关键帧；它们不等于 Qwen
 单轮输入历史。每个 `video_id` 只持有一个 persistent Qwen WebSocket，observer
 concurrency 为一个 in-flight 加一个 latest pending。连接每 20 次成功观察或 60 秒轮换，
@@ -774,7 +775,7 @@ This boundary lets Gateway preserve OpenClaw-compatible session/run semantics wi
 | `src/assistant_agent/api/gateway_websocket.py` | FastAPI entry adapter for normalized `/ws/gateway` frames. |
 | `src/assistant_agent/api/agent_service_websocket.py` | FastAPI compatibility adapter for the vendor `/agent-service/v1` media protocol; preserves `message` / optional `sessionId` / stringified `body` envelopes, accepts media `assistantControl` / `chat` / `audio` / `video` / `interrupt`, ingests self-contained H.264 video frames, and routes chat plus stable video references through a local `GatewayTurnFacade`. |
 | `src/assistant_agent/media/video/h264_video_ingestion.py` | Entry-layer H.264 validation, bounded FFmpeg I-frame decode, JPEG artifact lifecycle, and registration in the runtime-owned `VideoContextStore`; never calls an understanding provider. |
-| `src/assistant_agent/media/video/realtime_video_observer.py` | Per-connection local adaptive selection, retained-keyframe lifecycle, latest-wins background scheduling, and governed `vision_understanding` video-branch execution. |
+| `src/assistant_agent/media/video/realtime_video_observer.py` | Per-connection local adaptive selection, retained-keyframe lifecycle, latest-wins background scheduling, and governed internal `realtime_video_observe` execution. |
 | `src/assistant_agent/media/video/realtime_video_memory.py` | Runtime-owned bounded prompt-safe semantic video snapshots, health/failure state, and per-video isolation. |
 | `src/assistant_agent/api/` | FastAPI HTTP/WebSocket entry adapters and product API routes. |
 | `src/assistant_agent/gateway/turn_facade.py` | In-process sync-turn facade for request/response entries that need Gateway lifecycle semantics without a WebSocket transport. |

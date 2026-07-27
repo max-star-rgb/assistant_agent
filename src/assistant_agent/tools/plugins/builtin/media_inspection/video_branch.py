@@ -32,16 +32,16 @@ from assistant_agent.media.video.realtime_video_memory import (
     RealtimeVideoSnapshot,
 )
 from assistant_agent.tools.ids import (
-    IMAGE_UNDERSTANDING_TOOL_NAME,
+    MEDIA_INSPECT_TOOL_NAME,
     VIDEO_UNDERSTANDING_CAPABILITY,
 )
 from assistant_agent.tools.base import ToolBase, ToolContext
 
 
 class VideoUnderstandingBranch(ToolBase):
-    """Internal video branch of the public vision_understanding tool."""
+    """Shared explicit-video and governed live-view execution branch."""
 
-    name = IMAGE_UNDERSTANDING_TOOL_NAME
+    name = MEDIA_INSPECT_TOOL_NAME
     description = (
         "查询当前实时镜头或显式视频引用中的视觉事实。当前 turn 已有 active video 时，"
         "可只提供 user_query，由运行时绑定当前 turn 的视频引用；普通上传/API 场景使用 "
@@ -84,7 +84,11 @@ class VideoUnderstandingBranch(ToolBase):
             not observation_mode and _is_agent_service_realtime_video_tool_call(context)
         )
         snapshot = None
-        if video_ref and not observation_mode and self.memory_store is not None:
+        if (
+            video_ref
+            and agent_service_text_only
+            and self.memory_store is not None
+        ):
             snapshot = self.memory_store.snapshot(video_ref)
             if snapshot is not None and (
                 snapshot.healthy
@@ -124,9 +128,16 @@ class VideoUnderstandingBranch(ToolBase):
         source = (
             "background_keyframe_observation"
             if observation_mode
-            else "recent_frame_fallback"
+            else "explicit_video"
         )
-        payload = {**result.model_dump(mode="json"), "source": source}
+        payload = {
+            **result.model_dump(mode="json"),
+            "source": source,
+            "media_kind": (
+                "live_view" if observation_mode else "explicit_video"
+            ),
+            "media_refs": [video_ref] if video_ref else [],
+        }
         output_ref = result.output_ref
         status = "failed" if result.errors else "succeeded"
         contract = build_capability_output_contract(
@@ -193,6 +204,8 @@ class VideoUnderstandingBranch(ToolBase):
             "errors": [],
             "latency_ms": 0,
             "source": "rolling_video_memory",
+            "media_kind": "live_view",
+            "media_refs": [snapshot.video_id],
             "snapshot_sequence": snapshot.last_success_sequence,
             "observed_timestamp_ms": snapshot.last_success_timestamp_ms,
             "keyframe_count": len(snapshot.keyframes),
@@ -269,6 +282,8 @@ class VideoUnderstandingBranch(ToolBase):
             "errors": [],
             "latency_ms": 0,
             "source": "realtime_video_memory_unavailable",
+            "media_kind": "live_view",
+            "media_refs": [video_ref] if video_ref else [],
             "snapshot_sequence": (
                 snapshot.last_success_sequence if snapshot is not None else None
             ),
@@ -285,6 +300,8 @@ class VideoUnderstandingBranch(ToolBase):
             "summary": description,
             "description": description,
             "source": "realtime_video_memory_unavailable",
+            "media_kind": "live_view",
+            "media_refs": [video_ref] if video_ref else [],
             "snapshot_sequence": payload["snapshot_sequence"],
             "pending_count": pending_count,
             "in_flight": in_flight,
@@ -348,7 +365,7 @@ class VideoUnderstandingBranch(ToolBase):
             ),
             "pending_count": snapshot.pending_count if snapshot is not None else 0,
             "in_flight": snapshot.in_flight if snapshot is not None else False,
-            "fallback_used": source == "recent_frame_fallback",
+            "fallback_used": False,
             "snapshot_sequence": snapshot.last_success_sequence
             if snapshot is not None
             else None,
@@ -506,6 +523,8 @@ def _video_model_observation(payload: dict[str, Any]) -> dict[str, Any]:
         "style_tags",
         "confidence",
         "source",
+        "media_kind",
+        "media_refs",
         "snapshot_sequence",
         "observed_timestamp_ms",
         "pending_count",

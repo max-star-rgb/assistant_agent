@@ -12,7 +12,9 @@ from assistant_agent.tools.ids import (
     DIRECT_CHAT_CAPABILITY,
     IMAGE_GENERATION_CAPABILITY,
     IMAGE_UNDERSTANDING_CAPABILITY,
-    IMAGE_UNDERSTANDING_TOOL_NAME,
+    LIVE_VIEW_INSPECT_TOOL_NAME,
+    MEDIA_INSPECT_TOOL_NAME,
+    REALTIME_VIDEO_OBSERVE_TOOL_NAME,
     SHOPPING_SEARCH_CAPABILITY,
     VIDEO_UNDERSTANDING_CAPABILITY,
 )
@@ -78,7 +80,9 @@ class TimeoutPolicy(BaseModel):
             DIRECT_CHAT_CAPABILITY: self.chat_timeout_seconds,
             IMAGE_GENERATION_CAPABILITY: self.image_timeout_seconds,
             IMAGE_UNDERSTANDING_CAPABILITY: self.vision_timeout_seconds,
-            IMAGE_UNDERSTANDING_TOOL_NAME: self.vision_timeout_seconds,
+            MEDIA_INSPECT_TOOL_NAME: self.vision_timeout_seconds,
+            LIVE_VIEW_INSPECT_TOOL_NAME: self.video_timeout_seconds,
+            REALTIME_VIDEO_OBSERVE_TOOL_NAME: self.video_timeout_seconds,
             VIDEO_UNDERSTANDING_CAPABILITY: self.video_timeout_seconds,
             SHOPPING_SEARCH_CAPABILITY: self.search_timeout_seconds,
         }

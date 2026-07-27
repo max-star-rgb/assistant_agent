@@ -9,6 +9,7 @@ from assistant_agent.tools.capability_output import CapabilityOutputContract
 
 ToolCategory = Literal["read", "generate", "write", "dangerous"]
 ToolMediaRequirement = Literal["video", "image", "audio"]
+ToolMediaScope = Literal["any", "attached", "live"]
 
 
 def _empty_tool_input_schema() -> dict[str, Any]:
@@ -59,6 +60,7 @@ class ToolSpec(BaseModel):
     category: ToolCategory = "dangerous"
     enabled_by_default: bool = True
     requires_media: list[ToolMediaRequirement] = Field(default_factory=list)
+    media_scope: ToolMediaScope = "any"
 
 
 class RunToolCatalog(BaseModel):

@@ -262,21 +262,22 @@ Conversation 层要求 server 已显式启用 `--allow-local-trace-content`；�
 
 ## Realtime Video Observation
 
-Realtime video observation remains visible through the governed background
-`vision_understanding` video branch and the redacted context projection consumed
-by the foreground model. These are distinct boundaries: Qwen still runs behind
-`ActionValidator` and `ToolExecutor`, while the Agent-Service DeepSeek tool
-catalog exposes only the unified `vision_understanding` ToolSpec. Structured diagnostics use these
+Realtime video observation remains visible through the governed internal
+`realtime_video_observe` tool and the redacted context projection consumed by
+the foreground model. These are distinct boundaries: Qwen still runs behind
+`ActionValidator` and `ToolExecutor`, while a trusted Agent-Service turn may
+expose `live_view_inspect`; ordinary referenced media exposes `media_inspect`.
+Structured diagnostics use these
 prompt-safe sources:
 
 - `background_keyframe_observation`: a selected keyframe was analyzed by the
   per-connection observer through `ActionValidator` and `ToolExecutor`;
 - `realtime_video_context`: the foreground model consumed the latest rolling
   snapshot on its first context build, with no query-time visual Provider call;
-- `rolling_video_memory`: a non-Agent-Service explicit tool query reused the
-  latest healthy semantic snapshot;
-- `recent_frame_fallback`: semantic memory was absent, not ready, or latest
-  failed, so the ordinary recent-frame Provider path ran.
+- `rolling_video_memory`: `live_view_inspect` reused the latest healthy
+  semantic snapshot;
+- `request_image` / `explicit_video`: `media_inspect` analyzed media explicitly
+  attached to the current request.
 
 允许记录的视频字段仅限 prompt-safe scalar 或有限枚举：source、opaque video/output
 reference、snapshot/target/completed sequence、sequence gap、observed timestamp、
@@ -299,10 +300,9 @@ turn: source, snapshot/target sequence, sequence gap, frame-capture age,
 snapshot-publication age, freshness wait duration/result, observation latency,
 queue state, and Provider/model. The latency
 projection prefers `context.build.finished.realtime_video`; only non-realtime
-foreground tool calls fall back to tool-result projection. If
-`recent_frame_fallback` performs a query-time Provider call,
-that work is inside `tool_execute[vision_understanding]` and can become the turn
-bottleneck.
+foreground tool calls fall back to tool-result projection. Explicit uploaded
+video Provider work is inside `tool_execute[media_inspect]` and can become the
+turn bottleneck; `live_view_inspect` itself only reads the rolling snapshot.
 
 `context.build.finished` reports only presence, state, snapshot/target sequence,
 sequence gap, capture/publish ages, freshness wait duration/result, observation

@@ -26,7 +26,8 @@ from assistant_agent.tools.models import (
 from assistant_agent.tools.ids import (
     IMAGE_GENERATION_TOOL_NAME,
     IMAGE_UNDERSTANDING_CAPABILITY,
-    IMAGE_UNDERSTANDING_TOOL_NAME,
+    LIVE_VIEW_INSPECT_TOOL_NAME,
+    MEDIA_INSPECT_TOOL_NAME,
     PYTHON_INTERPRETER_TOOL_NAME,
     SHOPPING_SEARCH_TOOL_NAME,
     VIDEO_UNDERSTANDING_CAPABILITY,
@@ -314,10 +315,16 @@ def test_provider_tools_hide_runtime_fields_and_pydantic_titles() -> None:
     assert not _contains_mapping_key(shopping["parameters"], "anyOf")
     assert not _contains_mapping_key(shopping["parameters"], "default")
 
-    vision = tool_spec_to_openai_tool(
-        registry.get_spec(IMAGE_UNDERSTANDING_TOOL_NAME)
+    media_inspect = tool_spec_to_openai_tool(
+        registry.get_spec(MEDIA_INSPECT_TOOL_NAME)
     )["function"]
-    assert set(vision["parameters"]["properties"]) == {"question"}
+    live_view_inspect = tool_spec_to_openai_tool(
+        registry.get_spec(LIVE_VIEW_INSPECT_TOOL_NAME)
+    )["function"]
+    assert set(media_inspect["parameters"]["properties"]) == {"question"}
+    assert set(live_view_inspect["parameters"]["properties"]) == {"question"}
+    assert registry.get_spec(MEDIA_INSPECT_TOOL_NAME).media_scope == "attached"
+    assert registry.get_spec(LIVE_VIEW_INSPECT_TOOL_NAME).media_scope == "live"
 
     web_fetch = tool_spec_to_openai_tool(registry.get_spec("web_fetch"))["function"]
     assert set(web_fetch["parameters"]["properties"]) == {"url"}
@@ -633,12 +640,12 @@ def test_registry_exposes_one_simple_tool_contract() -> None:
 
 def test_legacy_tool_mapping_remains_compatible_without_a_tool_manifest() -> None:
     assert canonical_tool_for_capability(IMAGE_UNDERSTANDING_CAPABILITY) == (
-        IMAGE_UNDERSTANDING_TOOL_NAME
+        MEDIA_INSPECT_TOOL_NAME
     )
     assert canonical_tool_for_capability(VIDEO_UNDERSTANDING_CAPABILITY) == (
-        IMAGE_UNDERSTANDING_TOOL_NAME
+        MEDIA_INSPECT_TOOL_NAME
     )
-    assert canonical_capability_for_tool(IMAGE_UNDERSTANDING_TOOL_NAME) == (
+    assert canonical_capability_for_tool(MEDIA_INSPECT_TOOL_NAME) == (
         IMAGE_UNDERSTANDING_CAPABILITY
     )
     assert canonical_action_for_capability(VIDEO_UNDERSTANDING_CAPABILITY) == (
@@ -874,6 +881,74 @@ def test_declared_media_requirement_is_enforced_without_tool_name_branch() -> No
 
     assert result.accepted is False
     assert result.code == "missing_required_input"
+
+
+def test_media_scope_prevents_static_and_live_visual_tools_from_crossing_sources() -> None:
+    registry = create_default_registry()
+    static_request = UserRequest(
+        user_id="user-1",
+        session_id="session-1",
+        text="分析图片",
+        image_ids=["https://example.com/image.jpg"],
+    )
+    live_request = UserRequest(
+        user_id="user-1",
+        session_id="session-1",
+        text="看看当前画面",
+        video_ids=["agent-service-video-1"],
+        metadata={
+            "transport": "agent_service_websocket",
+            "gateway": {
+                "session_config": {"entry_profile": "agent_service"}
+            },
+        },
+    )
+
+    static_media = ActionValidator().validate(
+        decision=AssistantDecision(
+            type="tool_call",
+            tool_name=MEDIA_INSPECT_TOOL_NAME,
+            tool_input={"question": "主要场景是什么？"},
+        ),
+        registry=registry,
+        request=static_request,
+        state=AgentState.from_request(static_request),
+    )
+    static_live = ActionValidator().validate(
+        decision=AssistantDecision(
+            type="tool_call",
+            tool_name=LIVE_VIEW_INSPECT_TOOL_NAME,
+            tool_input={"question": "主要场景是什么？"},
+        ),
+        registry=registry,
+        request=static_request,
+        state=AgentState.from_request(static_request),
+    )
+    live_media = ActionValidator().validate(
+        decision=AssistantDecision(
+            type="tool_call",
+            tool_name=MEDIA_INSPECT_TOOL_NAME,
+            tool_input={"question": "当前画面是什么？"},
+        ),
+        registry=registry,
+        request=live_request,
+        state=AgentState.from_request(live_request),
+    )
+    live_view = ActionValidator().validate(
+        decision=AssistantDecision(
+            type="tool_call",
+            tool_name=LIVE_VIEW_INSPECT_TOOL_NAME,
+            tool_input={"question": "当前画面是什么？"},
+        ),
+        registry=registry,
+        request=live_request,
+        state=AgentState.from_request(live_request),
+    )
+
+    assert static_media.accepted is True
+    assert static_live.code == "media_scope_not_available"
+    assert live_media.code == "media_scope_not_available"
+    assert live_view.accepted is True
 
 
 def test_tool_owned_validator_runs_without_action_validator_branch() -> None:

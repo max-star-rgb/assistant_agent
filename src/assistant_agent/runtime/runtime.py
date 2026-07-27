@@ -73,7 +73,7 @@ from assistant_agent.context.sources import (
 )
 from assistant_agent.runtime.run_history import RunHistoryStore
 from assistant_agent.runtime.session_store import SessionStore, create_session_store
-from assistant_agent.tools.ids import IMAGE_UNDERSTANDING_TOOL_NAME
+from assistant_agent.tools.ids import LIVE_VIEW_INSPECT_TOOL_NAME
 from assistant_agent.observability.trace_store import InMemoryTraceStore, TraceStore, append_observability_event
 from assistant_agent.observability.turn_summary import append_runtime_turn_summary
 from assistant_agent.media.video.video_context import InMemoryVideoContextStore, VideoContextStore
@@ -185,7 +185,7 @@ class AgentGraphRuntime:
         registry_get = getattr(self.registry, "get", None)
         if registry is not None and callable(registry_get):
             try:
-                vision_tool = registry_get(IMAGE_UNDERSTANDING_TOOL_NAME)
+                vision_tool = registry_get(LIVE_VIEW_INSPECT_TOOL_NAME)
             except KeyError:
                 pass
             else:

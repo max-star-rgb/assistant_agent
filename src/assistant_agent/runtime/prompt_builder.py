@@ -16,7 +16,8 @@ from assistant_agent.providers.prompting import (
     clip_text,
 )
 from assistant_agent.tools.ids import (
-    IMAGE_UNDERSTANDING_TOOL_NAME,
+    LIVE_VIEW_INSPECT_TOOL_NAME,
+    MEDIA_INSPECT_TOOL_NAME,
     SHOPPING_SEARCH_TOOL_NAME,
 )
 
@@ -97,7 +98,11 @@ def _latest_product(outputs_by_step: dict[str, ToolResult]) -> dict[str, Any]:
 
 def _latest_visual_summary(outputs_by_step: dict[str, ToolResult]) -> str | None:
     for result in reversed(list(outputs_by_step.values())):
-        if result.tool_name == IMAGE_UNDERSTANDING_TOOL_NAME and result.data:
+        if (
+            result.tool_name
+            in {MEDIA_INSPECT_TOOL_NAME, LIVE_VIEW_INSPECT_TOOL_NAME}
+            and result.data
+        ):
             summary = result.data.get("summary")
             if isinstance(summary, str):
                 return summary

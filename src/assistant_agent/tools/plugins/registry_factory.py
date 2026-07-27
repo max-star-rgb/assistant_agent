@@ -19,7 +19,7 @@ from assistant_agent.tools.plugins.assembly import (
     configured_plugin_modules_from_env,
     normalize_configured_plugin_modules,
 )
-from assistant_agent.tools.plugins.builtin.vision_understanding.plugin import (
+from assistant_agent.tools.plugins.builtin.media_inspection.plugin import (
     build_realtime_video_observation_tool,
 )
 from assistant_agent.tools.plugins.contracts import (
@@ -171,7 +171,7 @@ def create_realtime_video_observation_registry(
             source_type="realtime_observer",
             source_ref=(
                 "assistant_agent.tools.plugins.builtin."
-                "vision_understanding.plugin"
+                "media_inspection.plugin"
             ),
         ),
     )

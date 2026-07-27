@@ -12,8 +12,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from assistant_agent.media.agent_service_entry import (
+    is_trusted_agent_service_request,
+)
 from assistant_agent.runtime.requests import UserRequest
-from assistant_agent.tools.models import ToolSpec
+from assistant_agent.tools.models import ToolMediaScope, ToolSpec
 
 ToolExposureCategory = Literal["read", "generate", "write", "dangerous"]
 
@@ -25,6 +28,7 @@ class ToolExposureFacts:
     active_image_ids: tuple[str, ...] = ()
     active_video_ids: tuple[str, ...] = ()
     active_audio_id: str | None = None
+    trusted_live_video: bool = False
 
     @property
     def has_active_video(self) -> bool:
@@ -39,6 +43,13 @@ class ToolExposureFacts:
             active.add("video")
         if self.active_audio_id:
             active.add("audio")
+        return frozenset(active)
+
+    @property
+    def attached_media_types(self) -> frozenset[str]:
+        active = set(self.active_media_types)
+        if self.trusted_live_video:
+            active.discard("video")
         return frozenset(active)
 
 
@@ -59,6 +70,10 @@ def tool_exposure_facts(request: UserRequest) -> ToolExposureFacts:
         active_image_ids=tuple(_string_list(request.image_ids)),
         active_video_ids=tuple(_string_list(request.video_ids)),
         active_audio_id=_string_value(request.audio_id),
+        trusted_live_video=(
+            bool(_string_list(request.video_ids))
+            and is_trusted_agent_service_request(request)
+        ),
     )
 
 
@@ -72,10 +87,10 @@ def evaluate_tool_exposure(
     """Return whether one tool is exposed for the current turn."""
 
     facts = tool_exposure_facts(request)
-    if not _has_required_media(spec, facts):
+    if not tool_media_requirements_satisfied(spec, facts):
         return ToolExposureDecision(
             exposed=False,
-            excluded_reasons=("required_media_not_available",),
+            excluded_reasons=(_media_exclusion_reason(spec.media_scope),),
             facts=facts,
         )
     category = tool_exposure_category(spec)
@@ -152,11 +167,28 @@ def _exposure_source_reason(
     return "default_tool_exposure"
 
 
-def _has_required_media(spec: ToolSpec, facts: ToolExposureFacts) -> bool:
+def tool_media_requirements_satisfied(
+    spec: ToolSpec,
+    facts: ToolExposureFacts,
+) -> bool:
+    """Return whether typed media facts satisfy a tool's media contract."""
+
     required = set(spec.requires_media)
-    if required:
-        return bool(required.intersection(facts.active_media_types))
-    return True
+    if not required:
+        return True
+    if spec.media_scope == "attached":
+        return bool(required.intersection(facts.attached_media_types))
+    if spec.media_scope == "live":
+        return facts.trusted_live_video and "video" in required
+    return bool(required.intersection(facts.active_media_types))
+
+
+def _media_exclusion_reason(scope: ToolMediaScope) -> str:
+    if scope == "attached":
+        return "attached_media_not_available"
+    if scope == "live":
+        return "trusted_live_video_not_available"
+    return "required_media_not_available"
 
 
 def _string_list(value: list[str]) -> list[str]:

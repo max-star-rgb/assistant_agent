@@ -9,7 +9,8 @@ from assistant_agent.runtime.requests import UserRequest
 from assistant_agent.tools.models import ToolResult
 from assistant_agent.tools.ids import (
     IMAGE_GENERATION_CAPABILITY,
-    IMAGE_UNDERSTANDING_TOOL_NAME,
+    LIVE_VIEW_INSPECT_TOOL_NAME,
+    MEDIA_INSPECT_TOOL_NAME,
     SHOPPING_SEARCH_CAPABILITY,
     SHOPPING_SEARCH_TOOL_NAME,
     WEB_FETCH_CAPABILITY,
@@ -101,6 +102,11 @@ def latest_visual_data(outputs_by_step: dict[str, ToolResult]) -> dict[str, Any]
     """Return the latest visual/video understanding data payload."""
 
     for result in reversed(list(outputs_by_step.values())):
-        if result.tool_name == IMAGE_UNDERSTANDING_TOOL_NAME and result.success and result.data:
+        if (
+            result.tool_name
+            in {MEDIA_INSPECT_TOOL_NAME, LIVE_VIEW_INSPECT_TOOL_NAME}
+            and result.success
+            and result.data
+        ):
             return result.data
     return {}

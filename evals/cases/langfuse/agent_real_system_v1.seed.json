@@ -216,7 +216,7 @@
         "suite": "agent_real_system",
         "capability": "real_read_only_tool",
         "domain": "vision",
-        "required_tools": ["vision_understanding"],
+        "required_tools": ["media_inspect"],
         "forbidden_tools": ["web_search", "shopping_search"]
       }
     },

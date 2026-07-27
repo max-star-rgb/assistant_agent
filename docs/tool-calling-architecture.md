@@ -155,22 +155,26 @@ media、profile、默认启用或显式授权治理。
   绑定，不能固化到进程级复用的 Tool 实例，避免并发请求串数据；
 - runtime binding 后再次通过工具 Pydantic schema 校验，再进入 `tool.run()`。
 
-### 2.4 统一视觉工具
+### 2.4 静态媒体与实时画面
 
-LLM 只看到一个公共视觉工具 `vision_understanding`，模型侧仅有可选 `question`；当前请求中的
-`image_ids`、`video_ids` 或内部 `video_ref` 由 runtime binding 注入。图片理解和视频理解不是两个
-并列工具，而是该工具根据绑定后的媒体引用选择内部执行分支：
+模型可见视觉能力按媒体生命周期拆成两个工具，二者都只向 LLM 暴露可选 `question`：
 
 ```text
-vision_understanding
-  -> image branch
-  -> video branch
+普通图片或显式视频 -> media_inspect
+可信实时媒体会话   -> live_view_inspect
+后台关键帧观察     -> realtime_video_observe（内部工具）
 ```
 
-`video_understanding` 只可作为内部 capability/result 标签用于兼容、trace 和结构化结果区分，不能
-注册为独立 ToolSpec、进入 `RunToolCatalog.available_tool_names` 或发送给主 LLM。实时视频后台观察、
-显式视频上传和图片理解都经过同一个 `ActionValidator -> ToolExecutor -> ToolRegistry ->
-vision_understanding` 公共边界；视频 Provider、滚动语义记忆与关键帧 fallback 均封装在内部视频分支。
+`media_inspect` 的 `media_scope=attached`，只处理当前请求附带的图片或显式视频；图片 URL、上传引用
+和视频引用由 runtime binding 注入。`live_view_inspect` 的 `media_scope=live`，只在可信
+Agent-Service 请求同时携带 active video 时暴露，并且只读取后台已经发布的滚动语义快照，不在查询时
+发送原始帧。`realtime_video_observe` 不进入普通 Runtime 的 Tool Registry 或模型工具目录，只供后台
+observer 经过 `ActionValidator -> ToolExecutor -> ToolRegistry` 执行关键帧分析。
+
+`ToolSpec.media_scope` 与 `requires_media` 共同形成结构化暴露和执行约束，静态媒体工具与实时画面工具
+不能跨作用域调用。`image_understanding` / `video_understanding` 仍可作为内部 capability/result 标签，
+但不作为公共 Tool 名。视觉结果使用 `source`、`media_kind` 和 `media_refs` 标明证据来源；显式视频
+直接走普通视频 Provider，不读取实时滚动内存。
 
 ## 3. 注册与暴露
 
@@ -264,8 +268,8 @@ Langfuse `real_system` Eval 通过 composition root 注入独立数据库，默�
 串数据；Trace 负责执行审计，SQLite 负责可检索业务状态。Google Calendar MCP mapping 暂时不被这两个
 稳定工具调用。
 
-`visual_image_search` 与 `vision_understanding` 虽然同属视觉业务域，但 Provider 配置、readiness 和
-启停生命周期不同，因此分别归属 `VisualImageSearchPlugin` 与 `VisionUnderstandingPlugin`。原
+`visual_image_search` 与 `media_inspect` / `live_view_inspect` 虽然同属视觉业务域，但 Provider 配置、readiness 和
+启停生命周期不同，因此分别归属 `VisualImageSearchPlugin` 与 `MediaInspectionPlugin`。原
 `delegate_to_agent` 工具已暂时删除；multi-agent 路由与通信服务保留，但不会向任何 Registry 暴露
 delegation tool。
 
@@ -329,10 +333,10 @@ category、profile、env 等系统字段不会发送给模型，也不需要靠�
 会实质改变检索结果的可选 `budget_min`、`budget_max`；商品特征、使用场景和指定平台写入
 `query`，用户明确给出的预算写入对应结构化字段。平台过滤列表和候选数量由 Pydantic 默认值补齐。
 购物工具不读取前序视觉结果；需要看图购物时，LLM 先调用
-`vision_understanding`，消费其 observation 后自行构造 `shopping_search.query`。购物请求不携带
+`media_inspect`，消费其 observation 后自行构造 `shopping_search.query`。购物请求不携带
 未使用的身份、memory context 或假想 Provider 兼容字段。`weather`
 只暴露 `location` 和 `target_date`，日期范围解析与公制单位由
-工具内部固定。`vision_understanding.question` 等没有必填要求但会改变任务结果的
+工具内部固定。`media_inspect.question` / `live_view_inspect.question` 等没有必填要求但会改变任务结果的
 语义型可选参数仍应暴露；当前媒体引用、用户原始请求、身份、采样参数和 rolling context 均来自
 runtime。`web_fetch` 只暴露必填 `url`，读取上限和内容格式由 Tool 静态默认值分配。
 

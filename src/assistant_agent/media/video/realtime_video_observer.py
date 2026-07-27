@@ -25,7 +25,7 @@ from assistant_agent.media.video.realtime_video_memory import (
     RealtimeVideoObservationDiagnostics,
     SemanticKeyframeRecord,
 )
-from assistant_agent.tools.ids import IMAGE_UNDERSTANDING_TOOL_NAME
+from assistant_agent.tools.ids import REALTIME_VIDEO_OBSERVE_TOOL_NAME
 from assistant_agent.media.video.video_context import VideoFrame
 from assistant_agent.tools.registry import ToolRegistry
 from assistant_agent.media.video.keyframe.collector import AdaptiveKeyframeCollector
@@ -423,7 +423,7 @@ class RealtimeVideoObserver:
         }
         decision = AssistantDecision(
             type="tool_call",
-            tool_name=IMAGE_UNDERSTANDING_TOOL_NAME,
+            tool_name=REALTIME_VIDEO_OBSERVE_TOOL_NAME,
             tool_input={},
             reason="Observe a selected realtime video keyframe.",
         )
@@ -435,7 +435,7 @@ class RealtimeVideoObserver:
         )
         if not validation.accepted:
             return ToolResult(
-                tool_name=IMAGE_UNDERSTANDING_TOOL_NAME,
+                tool_name=REALTIME_VIDEO_OBSERVE_TOOL_NAME,
                 success=False,
                 error=f"{validation.code}: {validation.message}",
             )
@@ -446,7 +446,7 @@ class RealtimeVideoObserver:
         return executor.run_tool(
             state,
             f"video-observation-{item.sequence}",
-            IMAGE_UNDERSTANDING_TOOL_NAME,
+            REALTIME_VIDEO_OBSERVE_TOOL_NAME,
             {},
             node_name="realtime_video_observer",
             runtime_input=tool_input,
@@ -454,7 +454,7 @@ class RealtimeVideoObserver:
 
     async def _close_video_adapter(self) -> None:
         try:
-            tool = self.registry.get(IMAGE_UNDERSTANDING_TOOL_NAME)
+            tool = self.registry.get(REALTIME_VIDEO_OBSERVE_TOOL_NAME)
         except KeyError:
             return
         adapter = getattr(tool, "video_adapter", None)
@@ -495,7 +495,7 @@ class RealtimeVideoObserver:
 
     def _provider_diagnostics(self) -> dict[str, Any]:
         try:
-            tool = self.registry.get(IMAGE_UNDERSTANDING_TOOL_NAME)
+            tool = self.registry.get(REALTIME_VIDEO_OBSERVE_TOOL_NAME)
         except KeyError:
             return {}
         adapter = getattr(tool, "video_adapter", None)

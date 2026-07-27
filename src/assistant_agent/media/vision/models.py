@@ -1,6 +1,6 @@
 """Perception and visual understanding schemas."""
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -62,6 +62,8 @@ class VisionUnderstandingResult(BaseModel):
     errors: list[dict[str, Any]] = Field(default_factory=list)
     latency_ms: int | None = Field(default=None, ge=0)
     source: str | None = None
+    media_kind: Literal["image", "explicit_video", "live_view"] | None = None
+    media_refs: list[str] = Field(default_factory=list)
 
 
 class PerceptionBundle(BaseModel):
@@ -111,3 +113,6 @@ class VideoUnderstandingResult(BaseModel):
     output_ref: str = Field(min_length=1)
     errors: list[dict[str, Any]] = Field(default_factory=list)
     latency_ms: int | None = Field(default=None, ge=0)
+    source: str | None = None
+    media_kind: Literal["explicit_video", "live_view"] | None = None
+    media_refs: list[str] = Field(default_factory=list)

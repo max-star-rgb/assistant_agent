@@ -236,6 +236,7 @@ def _declared_contract(tool: Tool) -> dict[str, Any]:
         "category",
         "enabled_by_default",
         "requires_media",
+        "media_scope",
     )
     return {name: getattr(tool, name) for name in fields if hasattr(tool, name)}
 

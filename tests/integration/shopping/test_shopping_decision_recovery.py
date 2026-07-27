@@ -66,7 +66,7 @@ class _VisualShoppingToolCallAdapter:
                     tool_calls=[
                         NativeToolCall(
                             id="call-vision-1",
-                            name="vision_understanding",
+                            name="media_inspect",
                             arguments={"question": "识别图片中的商品特征"},
                         )
                     ],
@@ -116,7 +116,7 @@ def test_visual_shopping_requires_model_to_translate_observation_into_query() ->
 
     assert state.status == "completed"
     assert [call.tool_name for call in state.tool_calls] == [
-        "vision_understanding",
+        "media_inspect",
         "shopping_search",
     ]
     assert len(adapter.requests) == 3

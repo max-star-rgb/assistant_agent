@@ -8,8 +8,12 @@ DIRECT_CHAT_CAPABILITY = "direct_chat"
 MULTI_STEP_ORCHESTRATION_CAPABILITY = "multi_step_orchestration"
 ASK_FOLLOWUP_CAPABILITY = "ask_followup"
 IMAGE_UNDERSTANDING_CAPABILITY = "image_understanding"
-IMAGE_UNDERSTANDING_TOOL_NAME = "vision_understanding"
 VIDEO_UNDERSTANDING_CAPABILITY = "video_understanding"
+MEDIA_INSPECT_TOOL_NAME = "media_inspect"
+LIVE_VIEW_INSPECT_TOOL_NAME = "live_view_inspect"
+REALTIME_VIDEO_OBSERVE_TOOL_NAME = "realtime_video_observe"
+# Deprecated import compatibility only; no tool is registered under the legacy name.
+IMAGE_UNDERSTANDING_TOOL_NAME = MEDIA_INSPECT_TOOL_NAME
 IMAGE_GENERATION_CAPABILITY = "image_generation"
 IMAGE_GENERATION_TOOL_NAME = "image_generation"
 WEB_SEARCH_CAPABILITY = "web_search"

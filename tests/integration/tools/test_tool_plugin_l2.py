@@ -157,18 +157,47 @@ def test_agent_service_entry_profile_exposes_registered_read_tools_by_policy(
         for reasons in selection.run_tool_catalog.excluded_reasons.values()
         for reason in reasons
     }
-    assert selection.run_tool_catalog.excluded_reasons["vision_understanding"] == [
-        "required_media_not_available"
+    assert selection.run_tool_catalog.excluded_reasons["media_inspect"] == [
+        "attached_media_not_available"
+    ]
+    assert selection.run_tool_catalog.excluded_reasons["live_view_inspect"] == [
+        "trusted_live_video_not_available"
     ]
     assert "entry_profile:agent_service" in selection.run_tool_catalog.selection_reasons
 
-    video_selection = select_prompt_tool_specs(
-        request.model_copy(update={"video_ids": ["live-video-1"]}),
+    image_selection = select_prompt_tool_specs(
+        request.model_copy(update={"image_ids": ["https://example.com/image.jpg"]}),
         registry.list_specs(),
         registry_generation=registry.generation,
         host_configured_tool_names=registry.host_configured_tool_names(),
     )
-    assert "vision_understanding" in (
+    assert "media_inspect" in image_selection.run_tool_catalog.available_tool_names
+    assert (
+        "live_view_inspect"
+        not in image_selection.run_tool_catalog.available_tool_names
+    )
+
+    video_selection = select_prompt_tool_specs(
+        request.model_copy(
+            update={
+                "video_ids": ["live-video-1"],
+                "metadata": {
+                    "tool_visibility": agent_service_tool_visibility(),
+                    "transport": "agent_service_websocket",
+                    "gateway": {
+                        "session_config": {"entry_profile": "agent_service"}
+                    },
+                },
+            }
+        ),
+        registry.list_specs(),
+        registry_generation=registry.generation,
+        host_configured_tool_names=registry.host_configured_tool_names(),
+    )
+    assert "live_view_inspect" in (
+        video_selection.run_tool_catalog.available_tool_names
+    )
+    assert "media_inspect" not in (
         video_selection.run_tool_catalog.available_tool_names
     )
 

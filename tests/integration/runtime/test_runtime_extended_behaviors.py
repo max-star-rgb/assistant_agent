@@ -161,9 +161,11 @@ def test_package_and_runtime_initialize_offline() -> None:
     assert "shopping_search" in runtime.registry.list()
     assert "reminder_create" not in runtime.registry.list()
     assert "render_3d" not in runtime.registry.list()
-    assert "vision_understanding" in runtime.registry.list()
+    assert {"media_inspect", "live_view_inspect"}.issubset(
+        runtime.registry.list()
+    )
     assert "video_understanding" not in runtime.registry.list()
-    assert set(specs["vision_understanding"].input_schema["properties"]) == {
+    assert set(specs["media_inspect"].input_schema["properties"]) == {
         "question"
     }
     assert "memory" not in specs
@@ -181,8 +183,8 @@ def test_package_and_runtime_initialize_offline() -> None:
         == "python_execution"
     )
     assert (
-        runtime.registry.registration_record("vision_understanding").plugin_id
-        == "vision_understanding"
+        runtime.registry.registration_record("media_inspect").plugin_id
+        == "media_inspection"
     )
     assert (
         runtime.registry.registration_record("visual_image_search").plugin_id
@@ -250,7 +252,8 @@ def test_real_mode_registry_never_loads_mock_provider_tools() -> None:
 
     assert config.chat_provider == "qwen"
     assert {
-        "vision_understanding",
+        "media_inspect",
+        "live_view_inspect",
         "shopping_search",
         "weather",
         "contacts_search",
