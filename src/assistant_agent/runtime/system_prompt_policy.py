@@ -44,12 +44,18 @@ _DEFAULT_AGENT_PERSONALIZATION = """\
 
 避免客服话术、机械复述、盲目附和和过度解释。"""
 
+_ANSWER_ONLY_POLICY = """\
+# 本轮回答约束
+
+当前回合不再提供工具。请直接基于已有工具观察回答用户；如证据不足或工具失败，明确说明已取得的结果、无法确认的部分和真实失败情况，不得编造结论，也不要提及内部限制。"""
+
 
 def render_system_instruction(
     *,
     agent_personalization: str = "",
     current_time: datetime | None = None,
     current_location: str | None = None,
+    answer_only: bool = False,
 ) -> str:
     """Combine the base runtime policy with one personalization block."""
 
@@ -65,4 +71,7 @@ def render_system_instruction(
         current_time=resolved_time.isoformat(timespec="seconds"),
         current_location=location_line,
     )
-    return "\n\n".join((runtime_policy, personalization))
+    sections = [runtime_policy, personalization]
+    if answer_only:
+        sections.append(_ANSWER_ONLY_POLICY)
+    return "\n\n".join(sections)

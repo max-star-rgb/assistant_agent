@@ -1009,9 +1009,110 @@ def test_real_adapter_uses_langgraph_and_finishes_without_tools_after_budget() -
     assert [call.tool_name for call in state.tool_calls] == ["shopping_search"]
     assert state.request.metadata["tool_calls_skipped_for_budget"] == 1
     assert adapter.requests[1].tools == []
-    assert adapter.requests[1].messages[0]["content"] == adapter.requests[0].messages[0]["content"]
     graph_nodes = [event.node_name for event in sink.events if event.type == "graph_node_started"]
     assert "agent_graph" in graph_nodes
+
+
+def test_answer_only_retry_synthesizes_existing_results_without_exposing_budget() -> None:
+    first_tool_call = ChatResult(
+        provider="scripted",
+        model="scripted-model",
+        finish_reason="tool_calls",
+        tool_calls=[
+            NativeToolCall(
+                id="call-budget-1",
+                name="shopping_search",
+                arguments={"query": "通勤背包"},
+            )
+        ],
+    )
+    unavailable_tool_call = ChatResult(
+        provider="scripted",
+        model="scripted-model",
+        finish_reason="tool_calls",
+        tool_calls=[
+            NativeToolCall(
+                id="call-budget-2",
+                name="web_search",
+                arguments={"query": "通勤背包"},
+            )
+        ],
+    )
+    final_answer = ChatResult(
+        provider="scripted",
+        model="scripted-model",
+        finish_reason="stop",
+        response_text="基于已有结果给出谨慎结论。",
+    )
+    adapter = ScriptedChatAdapter(
+        [first_tool_call, unavailable_tool_call, final_answer]
+    )
+    runtime = AgentGraphRuntime(
+        config=ProviderConfig(
+            agent_graph_mode="assistant_loop",
+            max_tool_iterations=1,
+            langgraph_checkpointer_backend="none",
+        ),
+        chat_adapter=adapter,
+        session_store=InMemorySessionStore(),
+    )
+
+    state = runtime.run_state(
+        UserRequest(
+            user_id="user-answer-only",
+            session_id="session-answer-only",
+            text="帮我找通勤背包",
+        )
+    )
+
+    assert state.status == "completed"
+    assert state.response is not None
+    assert state.response.message == "基于已有结果给出谨慎结论。"
+    assert len(adapter.requests) == 3
+    assert adapter.requests[1].tools == []
+    assert adapter.requests[2].tools == []
+    assert "最大工具调用次数" not in state.response.message
+    assert state.request.metadata["tool_call_returned_after_budget_exhaustion"] is True
+    assert state.request.metadata.get("answer_only_retry_failed") is not True
+
+
+def test_answer_only_retry_uses_truthful_fallback_when_model_repeats_tool_call() -> None:
+    tool_call = ChatResult(
+        provider="scripted",
+        model="scripted-model",
+        finish_reason="tool_calls",
+        tool_calls=[
+            NativeToolCall(
+                id="call-repeated",
+                name="shopping_search",
+                arguments={"query": "通勤背包"},
+            )
+        ],
+    )
+    adapter = ScriptedChatAdapter([tool_call, tool_call, tool_call])
+    runtime = AgentGraphRuntime(
+        config=ProviderConfig(
+            agent_graph_mode="assistant_loop",
+            max_tool_iterations=1,
+            langgraph_checkpointer_backend="none",
+        ),
+        chat_adapter=adapter,
+        session_store=InMemorySessionStore(),
+    )
+
+    state = runtime.run_state(
+        UserRequest(
+            user_id="user-answer-only-fallback",
+            session_id="session-answer-only-fallback",
+            text="帮我找通勤背包",
+        )
+    )
+
+    assert state.status == "completed"
+    assert state.response is not None
+    assert "最大工具调用次数" not in state.response.message
+    assert state.request.metadata["answer_only_retry_failed"] is True
+    assert len(adapter.requests) == 3
 
 
 def test_provider_timeout_returns_terminal_retry_response() -> None:

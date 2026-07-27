@@ -257,6 +257,7 @@ def _build_decision_context(
         iteration=iterations,
         max_iterations=max_iterations,
         is_mock=is_mock,
+        answer_only=tool_calls_used >= max_iterations or answer_only,
         trace_store=graph_state.get("trace_store"),
         trace_id=graph_state.get("trace_id"),
         node_name=graph_state.get("current_node_name", "assistant"),
@@ -359,6 +360,7 @@ def _decide_with_llm(
     graph_state["request"] = context.request
     if preflight.failure is not None:
         return _context_compaction_failed_output(preflight.failure), context
+    answer_only_base_request = preflight.request
     request, stream_buffer = _with_buffered_response_stream(
         preflight.request,
         graph_state,
@@ -389,6 +391,7 @@ def _decide_with_llm(
                 retry_preflight.context,
             )
         retry_context = retry_preflight.context
+        answer_only_base_request = retry_preflight.request
         retry_request, stream_buffer = _with_buffered_response_stream(
             retry_preflight.request,
             graph_state,
@@ -410,7 +413,26 @@ def _decide_with_llm(
         stream_buffer.discard()
         if not context_service.selected_tool_specs(context):
             state.request.metadata["tool_call_returned_after_budget_exhaustion"] = True
-            return _max_iteration_final_answer(context.max_iterations), context
+            retry_request, retry_stream_buffer = _with_buffered_response_stream(
+                _with_answer_only_retry_guidance(answer_only_base_request),
+                graph_state,
+                source="assistant_langgraph_answer",
+            )
+            result = _run_chat_turn(
+                graph_state,
+                chat_adapter,
+                retry_request,
+                attempt_kind="answer_only_retry",
+            )
+            _record_chat_usage_metadata(state, result)
+            if result.success and not result.tool_calls:
+                decision = _native_final_decision(result)
+                retry_stream_buffer.flush_answer(decision.text)
+                graph_state["pending_tool_calls"] = []
+                return decision, context
+            retry_stream_buffer.discard()
+            state.request.metadata["answer_only_retry_failed"] = True
+            return _answer_only_fallback(context), context
         pending_decisions = [
             native_tool_call_to_assistant_output(call)
             for call in result.tool_calls
@@ -1051,10 +1073,43 @@ def _ensure_rule_plan(graph_state: AssistantLoopState) -> None:
     state.selected_tools = _select_tools_with_optional_request(router, state.intent, request)
 
 
-def _max_iteration_final_answer(max_iterations: int) -> AssistantTextOutput:
+def _with_answer_only_retry_guidance(request: ChatRequest) -> ChatRequest:
+    guidance = "你刚才返回了不可执行的工具调用；本次必须返回自然语言最终答复。"
+    messages = [dict(message) for message in request.messages]
+    if messages and messages[0].get("role") == "system":
+        content = str(messages[0].get("content") or "")
+        messages[0]["content"] = f"{content}\n\n# 本轮回答重试\n\n{guidance}"
+    else:
+        messages.insert(0, {"role": "system", "content": guidance})
+    return request.model_copy(
+        update={
+            "messages": messages,
+            "tools": [],
+            "tool_choice": None,
+        }
+    )
+
+
+def _answer_only_fallback(context: AssistantDecisionContext) -> AssistantTextOutput:
+    statuses = {
+        str(observation.get("status"))
+        for observation in context.tool_observations
+        if isinstance(observation, dict)
+    }
+    if "succeeded" in statuses:
+        text = (
+            "我已经取得部分工具结果，但现有证据仍不足以可靠完成你的请求。"
+            "我不会据此编造结论，请稍后重试。"
+        )
+    else:
+        text = (
+            "本次工具未能返回足以完成请求的可靠结果。"
+            "我不会据此编造结论，请稍后重试。"
+        )
     return AssistantTextOutput(
-        text=f"已达到最大工具调用次数 ({max_iterations})，这是我能提供的最好回答。",
-        reason="安全限制：防止无限工具调用循环",
+        text=text,
+        reason="Answer-only synthesis did not produce a usable final response.",
+        safety_notes=["answer_only_retry_failed"],
     )
 
 

@@ -96,13 +96,18 @@ metadata、usage 和 latency 使用独立 generation attributes。
 Langfuse Formatted 面板可能折叠长字符串；是否完整以 observation input JSON/Public API 为准。
 system message 把可信运行时间放在第一段，使折叠预览也优先显示日期事实。
 运行时分支和传输模式继续作为 observation metadata，不再包进 output preview。
-每个 attempt 另外记录 `attempt_kind`（当前包括 `primary` 和
-`context_overflow_retry`），避免同一 ReAct iteration 内的上下文溢出重试被误读成
+每个 attempt 另外记录 `attempt_kind`（当前包括 `primary`、`context_overflow_retry` 和
+`answer_only_retry`），避免同一 ReAct iteration 内的上下文溢出或只回答收敛重试被误读成
 两次独立决策。Provider-native 终态按 `tool_calls`、refusal、`finish_reason=length`、content、empty/error
 的固定运行时顺序路由，不再产生 JSON contract validation 或 repair span。
 归一化后的 `attributes.usage.prompt_tokens/completion_tokens/total_tokens` 会映射为
 Langfuse generation 的 `usage_details.input/output/total`，并同步写入 OTel
 `gen_ai.usage.input_tokens/output_tokens`；usage 嵌套结构不能被当作普通标量属性而丢弃。
+
+工具调用预算耗尽或 runtime guard 要求只回答时，下一次 Provider request 会移除工具并注入临时
+answer-only 收敛约束，要求模型基于已有 observation 如实回答，不向用户暴露内部预算或调用次数。
+若 Provider 仍返回不可执行的 tool call，runtime 记录一次 `answer_only_retry`；再次失败时使用不包含
+内部限制数值的诚实降级答复。具体预算、跳过数量和 guard 原因只保留在 trace/metadata。
 
 The versioned `agent_service_turn_latency_v2` summary also exposes only bounded
 stream facts: `stream_requested`, `provider_token_stream_seen`,

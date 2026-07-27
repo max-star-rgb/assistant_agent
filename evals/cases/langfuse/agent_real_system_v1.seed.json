@@ -141,7 +141,7 @@
           "session_id": "eval-system-shopping-backpack",
           "text": "预算 500 元，真实搜索适合放 14 英寸电脑、地铁通勤且能防小雨的双肩包。给首选和备选，说明取舍，不要下单。"
         },
-        "evaluation_criteria": "必须使用购物搜索；推荐应尊重500元预算、14英寸电脑、通勤和防小雨约束，并明确只是搜索比较、没有下单。"
+        "evaluation_criteria": "必须优先使用购物搜索；购物搜索成功时应基于其结构化结果回答，不应无故改用网页搜索。购物搜索明确失败或只返回不足以回答的部分结果时，允许使用网页搜索降级，但必须区分购物平台结果与网页线索的可信度。推荐应尊重500元预算、14英寸电脑、通勤和防小雨约束，并明确只是搜索比较、没有下单。"
       },
       "expected_output": {
         "response_facts": []
@@ -151,7 +151,7 @@
         "capability": "real_read_only_tool",
         "domain": "shopping",
         "required_tools": ["shopping_search"],
-        "forbidden_tools": ["web_search", "image_generation"]
+        "forbidden_tools": ["image_generation"]
       }
     },
     {

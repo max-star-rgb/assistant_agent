@@ -244,7 +244,10 @@ class HaodankuProductSearchAdapter:
 
         error_message = _haodanku_error_message(payload)
         if error_message is not None:
-            return [], ProductProviderError(code="provider_bad_response", message=error_message), {}
+            return [], ProductProviderError(
+                code="provider_bad_response",
+                message=_normalized_haodanku_error_message(error_message),
+            ), {}
         items = map_haodanku_platform_items(platform, payload)
         metadata: dict[str, Any] = {"provider_back": provider_limit}
         if platform == "taobao":
@@ -467,6 +470,12 @@ def _requested_platforms(
         if value in enabled_platforms and value not in normalized:
             normalized.append(value)
     return normalized
+
+
+def _normalized_haodanku_error_message(message: str) -> str:
+    if message.strip() == "数据已获取完毕或获取数据失败!":
+        return "好单库未返回可用商品数据。"
+    return message
 
 
 def _platform_disabled_search_result(

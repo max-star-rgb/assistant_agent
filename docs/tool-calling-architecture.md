@@ -46,6 +46,11 @@ runtime 猜测翻译或改写。
 `shopping_search` 的短 description 保留三条必要边界：只表达想要某物时先询问；明确要求推荐、
 查价、比价或购买链接时调用；工具只搜索和比较，不能下单。展示模板等执行后说明只随 observation
 提供，不重复塞进每轮工具 schema。
+购物结果以 `outcome=success | partial | empty | failed` 区分完整结果、仍有可用候选的部分结果、
+正常完成但没有候选和工具执行失败。`ToolResult.success` 对 `success`、`partial` 和 `empty` 为真，
+只有 `failed` 为假，避免把“没有匹配商品”或“比价失败但搜索候选可用”误报成整个工具执行失败。
+模型可见 observation 保留用户明确给出的预算和平台约束、可用商品/报价及结构化 Provider 错误，
+并避免在 `structured_output` 中重复顶层 `output_ref`。
 购物结果遵循标准 ReAct 闭环：`shopping_search` 返回结构化 `ToolResult`，runtime 将其转换为
 tool observation，下一轮 LLM 消费商品、报价、链接和展示模板后生成最终文本。系统不注册额外的展示
 工具，也不在 Realtime/Gateway 用 presenter 覆盖模型回复；是否输出 `<detail>` 以及选择哪些合格商品

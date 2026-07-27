@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 
 ProductUrlStatus = Literal["unverified", "missing", "invalid_id", "verified", "unreachable"]
 ProductAvailability = Literal["unknown", "available", "unavailable"]
+ShoppingSearchOutcome = Literal["success", "partial", "empty", "failed"]
 
 
 class ProductResult(BaseModel):
@@ -114,6 +115,15 @@ class ShoppingSearchRequest(BaseModel):
     )
     top_k: int = Field(default=5, ge=1)
 
+
+class ShoppingSearchConstraints(BaseModel):
+    """User-provided filters retained as recommendation evidence."""
+
+    budget_min: float | None = Field(default=None, ge=0)
+    budget_max: float | None = Field(default=None, ge=0)
+    platforms: list[str] = Field(default_factory=list)
+
+
 class PriceOffer(BaseModel):
     """A normalized offer used by price comparison."""
 
@@ -184,7 +194,11 @@ class PriceCompareRequest(BaseModel):
 class ShoppingSearchResult(BaseModel):
     """Combined shopping search and price comparison result."""
 
+    outcome: ShoppingSearchOutcome
     query: str = Field(min_length=1)
+    requested_constraints: ShoppingSearchConstraints = Field(
+        default_factory=ShoppingSearchConstraints
+    )
     search: ProductSearchResult
     comparison: PriceCompareResult | None = None
     items: list[ProductResult] = Field(default_factory=list)
@@ -200,4 +214,4 @@ class ShoppingSearchResult(BaseModel):
 
     @property
     def success(self) -> bool:
-        return self.comparison is not None and self.comparison.success
+        return self.outcome != "failed"

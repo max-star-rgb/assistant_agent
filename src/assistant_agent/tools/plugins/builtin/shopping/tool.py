@@ -7,6 +7,8 @@ from assistant_agent.tools.plugins.builtin.shopping.models import (
     PriceCompareRequest,
     PriceCompareResult,
     ProductProviderError,
+    ShoppingSearchConstraints,
+    ShoppingSearchOutcome,
     ShoppingSearchRequest,
     ProductSearchResult,
     ShoppingSearchResult,
@@ -61,7 +63,11 @@ class ShoppingSearchTool(ToolBase):
             status="succeeded" if result.success else "failed",
             output_ref=result.output_ref,
             data={
+                "outcome": result.outcome,
                 "query": result.query,
+                "requested_constraints": result.requested_constraints.model_dump(
+                    mode="json"
+                ),
                 "search": {
                     "items": data.get("search", {}).get("items", []),
                     "query_used": data.get("search", {}).get("query_used"),
@@ -152,7 +158,13 @@ def _shopping_result(
     )
     summary = _shopping_summary(search_result, comparison_result, errors)
     return ShoppingSearchResult(
+        outcome=_shopping_outcome(search_result, comparison_result),
         query=query,
+        requested_constraints=ShoppingSearchConstraints(
+            budget_min=input.budget_min,
+            budget_max=input.budget_max,
+            platforms=input.platforms,
+        ),
         search=search_result,
         comparison=comparison_result,
         items=items,
@@ -183,15 +195,22 @@ def _combined_errors(
     errors = [*search_result.errors]
     if comparison_result is not None:
         errors.extend(comparison_result.errors)
-    elif not search_result.items and not search_result.errors:
-        errors.append(
-            ProductProviderError(
-                code="price_no_products",
-                message="没有商品候选，无法比价",
-                recoverable=True,
-            )
-        )
     return errors
+
+
+def _shopping_outcome(
+    search_result: ProductSearchResult,
+    comparison_result: PriceCompareResult | None,
+) -> ShoppingSearchOutcome:
+    if not search_result.items:
+        return "failed" if search_result.errors else "empty"
+    if (
+        search_result.errors
+        or comparison_result is None
+        or not comparison_result.success
+    ):
+        return "partial"
+    return "success"
 
 
 def _shopping_summary(
@@ -201,8 +220,15 @@ def _shopping_summary(
 ) -> str:
     if comparison_result is not None and comparison_result.best_offer is not None:
         return comparison_result.summary
+    if search_result.items and errors:
+        return (
+            f"已取得 {len(search_result.items)} 个商品候选，"
+            f"但部分搜索或比价失败：{errors[0].message}"
+        )
     if errors:
         return errors[0].message
+    if not search_result.items:
+        return "未找到符合条件的商品。"
     return f"已搜索到 {search_result.total} 个商品候选，但没有可比价报价。"
 
 
@@ -239,9 +265,20 @@ def _query_text(input: ShoppingSearchRequest) -> str:
 
 def _shopping_search_model_observation(data: dict[str, Any]) -> dict[str, Any]:
     search = data.get("search") if isinstance(data.get("search"), dict) else {}
+    requested_constraints = (
+        data.get("requested_constraints")
+        if isinstance(data.get("requested_constraints"), dict)
+        else {}
+    )
     observation: dict[str, Any] = {
+        "outcome": data.get("outcome"),
         "summary": data.get("summary"),
         "query": data.get("query"),
+        "requested_constraints": {
+            key: value
+            for key, value in requested_constraints.items()
+            if value not in (None, [], {})
+        },
         "search": {
             "query_used": search.get("query_used"),
             "total": search.get("total"),
@@ -266,7 +303,6 @@ def _shopping_search_model_observation(data: dict[str, Any]) -> dict[str, Any]:
         ),
         "best_value_product_id": data.get("best_value_product_id"),
         "ranking_reason": data.get("ranking_reason"),
-        "output_ref": data.get("output_ref"),
     }
     errors = data.get("errors")
     if errors:

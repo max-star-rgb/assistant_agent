@@ -44,6 +44,7 @@ class AssistantDecisionContext:
     iterations: int
     max_iterations: int
     is_mock: bool
+    answer_only: bool = False
 
 
 @dataclass(frozen=True)
@@ -105,6 +106,7 @@ class ContextService:
         host_configured_tool_names: set[str] | None = None,
         context_projector: Callable[[UserRequest], None] | None = None,
         native_calls: list[dict[str, Any]] | None = None,
+        answer_only: bool = False,
     ) -> AssistantDecisionContext:
         if context_projector is not None:
             context_projector(request)
@@ -123,12 +125,14 @@ class ContextService:
             host_configured_tool_names=host_configured_tool_names,
             native_calls=native_calls,
             current_location=self.current_location,
+            answer_only=answer_only,
         )
         return self._from_pack(
             pack,
             iterations=iteration,
             max_iterations=max_iterations,
             is_mock=is_mock,
+            answer_only=answer_only,
         )
 
     def compile_native_request(
@@ -147,6 +151,7 @@ class ContextService:
                 native_calls=tuple(_native_tool_calls(state)),
                 tool_call_id_prefix="call_",
                 current_location=self.current_location,
+                answer_only=context.answer_only,
             )
         )
         if compilation.selected_tool_specs:
@@ -369,12 +374,14 @@ class ContextService:
             context_compactor=self.compactor,
             native_calls=_native_tool_calls(state),
             current_location=self.current_location,
+            answer_only=context.answer_only,
         )
         return self._from_pack(
             pack,
             iterations=context.iterations,
             max_iterations=context.max_iterations,
             is_mock=context.is_mock,
+            answer_only=context.answer_only,
         )
 
     @staticmethod
@@ -384,6 +391,7 @@ class ContextService:
         iterations: int,
         max_iterations: int,
         is_mock: bool,
+        answer_only: bool = False,
     ) -> AssistantDecisionContext:
         return AssistantDecisionContext(
             context_pack=pack,
@@ -395,6 +403,7 @@ class ContextService:
             iterations=iterations,
             max_iterations=max_iterations,
             is_mock=is_mock,
+            answer_only=answer_only,
         )
 
 
@@ -506,6 +515,7 @@ def _context_without_raw_history(
         iterations=context.iterations,
         max_iterations=context.max_iterations,
         is_mock=context.is_mock,
+        answer_only=context.answer_only,
     )
 
 
@@ -557,6 +567,7 @@ def _rolling_summary_context(
         iterations=context.iterations,
         max_iterations=context.max_iterations,
         is_mock=context.is_mock,
+        answer_only=context.answer_only,
     )
 
 
