@@ -68,6 +68,27 @@ def test_default_runtime_policy_requires_missing_tool_inputs_to_be_clarified() -
     assert "工具缺少地点、对象、时间等必要参数时，先向用户澄清" in render_system_instruction()
 
 
+def test_runtime_policy_groups_dynamic_time_and_location_as_current_environment() -> None:
+    instruction = render_system_instruction(
+        current_time=datetime(2026, 7, 27, 15, 30, tzinfo=timezone(timedelta(hours=8))),
+        current_location=" 上海市  浦东新区 ",
+    )
+
+    assert "# 当前环境" in instruction
+    assert "本地时间：2026-07-27T15:30:00+08:00" in instruction
+    assert "当前位置：上海市 浦东新区。" in instruction
+    assert "用户明确指定目标地点时，以用户指定地点为准" in instruction
+    assert "# 本地时间" not in instruction
+
+
+def test_current_location_is_loaded_from_environment() -> None:
+    config = ProviderConfig.from_env(
+        {"MULTIMODAL_AGENT_CURRENT_LOCATION": " 杭州市 "}
+    )
+
+    assert config.current_location == "杭州市"
+
+
 class ScriptedChatAdapter:
     """Small provider-boundary fake that returns complete public ChatResult values."""
 
@@ -81,6 +102,34 @@ class ScriptedChatAdapter:
     def chat(self, request: ChatRequest) -> ChatResult:
         self.requests.append(request)
         return next(self._results)
+
+
+def test_runtime_injects_configured_location_into_system_prompt() -> None:
+    adapter = ScriptedChatAdapter(
+        [
+            ChatResult(
+                provider="scripted",
+                model="scripted-model",
+                finish_reason="stop",
+                response_text="完成。",
+            )
+        ]
+    )
+    runtime = AgentGraphRuntime(
+        config=ProviderConfig(
+            current_location="北京市海淀区",
+            langgraph_checkpointer_backend="none",
+        ),
+        chat_adapter=adapter,
+        session_store=InMemorySessionStore(),
+    )
+
+    state = runtime.run_state(
+        UserRequest(user_id="user-1", session_id="session-1", text="你好")
+    )
+
+    assert state.status == "completed"
+    assert "当前位置：北京市海淀区。" in adapter.requests[0].messages[0]["content"]
 
 
 class CancelledToken:

@@ -8,9 +8,13 @@ _BASE_RUNTIME_POLICY = """\
 
 你是一个智能个人助理，在当前权限和可用能力范围内完成用户请求。
 
-# 本地时间
+# 当前环境
 
-{current_time}。回答当前日期、时间、星期或解析相对日期时以此为准。
+本地时间：{current_time}。回答当前日期、时间、星期或解析相对日期时以此为准。
+
+{current_location}
+
+用户明确指定目标地点时，以用户指定地点为准。用户未指定地点且当前位置可用时，可以把当前位置作为默认地点，并说明所采用的默认值；当前位置不可用且地点是必要参数时，向用户澄清，不得猜测。
 
 # 任务执行
 
@@ -45,12 +49,20 @@ def render_system_instruction(
     *,
     agent_personalization: str = "",
     current_time: datetime | None = None,
+    current_location: str | None = None,
 ) -> str:
     """Combine the base runtime policy with one personalization block."""
 
     personalization = agent_personalization or _DEFAULT_AGENT_PERSONALIZATION
     resolved_time = current_time or datetime.now().astimezone()
+    normalized_location = " ".join((current_location or "").split())
+    location_line = (
+        f"当前位置：{normalized_location}。"
+        if normalized_location
+        else "当前位置：未提供。"
+    )
     runtime_policy = _BASE_RUNTIME_POLICY.format(
-        current_time=resolved_time.isoformat(timespec="seconds")
+        current_time=resolved_time.isoformat(timespec="seconds"),
+        current_location=location_line,
     )
     return "\n\n".join((runtime_policy, personalization))

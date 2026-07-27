@@ -79,12 +79,14 @@ class ContextService:
         compactor: ContextCompactor | None = None,
         token_counter: ContextTokenCounter | None = None,
         window_policy: ContextWindowPolicy | None = None,
+        current_location: str | None = None,
     ) -> None:
         if compactor is not None and token_counter is None:
             raise ValueError("context compaction requires a model tokenizer")
         self.compactor = compactor
         self.token_counter = token_counter
         self.window_policy = window_policy
+        self.current_location = current_location
 
     def build(
         self,
@@ -120,6 +122,7 @@ class ContextService:
             registry_generation=registry_generation,
             host_configured_tool_names=host_configured_tool_names,
             native_calls=native_calls,
+            current_location=self.current_location,
         )
         return self._from_pack(
             pack,
@@ -143,6 +146,7 @@ class ContextService:
                 observations=tuple(context.tool_observations),
                 native_calls=tuple(_native_tool_calls(state)),
                 tool_call_id_prefix="call_",
+                current_location=self.current_location,
             )
         )
         if compilation.selected_tool_specs:
@@ -364,6 +368,7 @@ class ContextService:
             memory_text=context.memory_text,
             context_compactor=self.compactor,
             native_calls=_native_tool_calls(state),
+            current_location=self.current_location,
         )
         return self._from_pack(
             pack,

@@ -36,6 +36,7 @@ class PromptCompileRequest:
     stream_callback: ChatStreamCallback | None = None
     temperature: float = 0.2
     max_tokens: int = 1024
+    current_location: str | None = None
 
 
 @dataclass(frozen=True)
@@ -54,6 +55,7 @@ class PromptCompiler:
     def compile(self, request: PromptCompileRequest) -> PromptCompileResult:
         system_instruction = render_system_instruction(
             agent_personalization=owner_persona_for_pack(request.context_pack),
+            current_location=request.current_location,
         )
         rendered_context = _render_context(request)
         user_content = _rendered_user_content(rendered_context, request.mode)

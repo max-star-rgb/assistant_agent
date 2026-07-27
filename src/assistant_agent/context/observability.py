@@ -37,6 +37,7 @@ def build_traced_assistant_context_pack(
     registry_generation: str | None = None,
     host_configured_tool_names: set[str] | None = None,
     native_calls: list[dict[str, Any]] | None = None,
+    current_location: str | None = None,
 ) -> AssistantContextPack:
     """Build an assistant context pack and emit redacted canonical trace events."""
 
@@ -85,6 +86,7 @@ def build_traced_assistant_context_pack(
                 observations=tuple(pack.observations),
                 native_calls=tuple(native_calls or ()),
                 tool_call_id_prefix="call_",
+                current_location=current_location,
             )
         )
     except Exception as exc:

@@ -226,6 +226,7 @@ class AgentGraphRuntime:
             compactor=self.context_compactor,
             token_counter=self.context_token_counter,
             window_policy=self.context_window_policy,
+            current_location=self.config.current_location,
         )
         self.checkpointer = checkpointer if checkpointer is not None else create_checkpointer(self.config)
         self.context_source_coordinator = context_source_coordinator or ContextSourceCoordinator(
@@ -725,6 +726,7 @@ class AgentGraphRuntime:
                 observations=(),
                 native_calls=(),
                 tool_call_id_prefix="durable_task_call_",
+                current_location=self.config.current_location,
             )
         )
         return compilation.chat_request

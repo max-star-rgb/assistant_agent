@@ -49,9 +49,12 @@ Last updated: 2026-07-27
 - `AssistantContextPack` 已接入 assistant 每轮决策，统一收集 request、conversation、memory、realtime video、plan state、tool observations、tool specs、source counts 和 budget。
 - `AgentGraphRuntime` 可在 run 入口通过 `ContextSourceCoordinator` 加载一次显式 owner-bound 的 `SOUL.md`，把验证后的 `ContextSourceResult` 冻结到 `AgentState`；同一 run 的多次 assistant iteration 不重复读文件，下一 run 才观察合法更新。
 - 生产 provider-native `ChatRequest` 统一通过无副作用 `PromptCompiler` 编译；真实与 mock provider 共用 LangGraph assistant loop。工具预算耗尽后的 finishing turn 仍使用同一通用 system prompt 和 native context，只把工具集合置空。legacy prompt-json renderer 仍只用于离线兼容与测试。
-- 通用 system prompt 在每次编译时把带时区的可信本地运行时间放在第一段，确保 Provider 原始 input
-  和受长度限制的开发预览都优先显示；当前日期、星期、时间和相对日期解析以该事实为准，不依赖模型
-  训练时知识猜测。该事实不承担天气、新闻等外部动态信息查询，外部事实仍必须使用已暴露工具。
+- 通用 system prompt 在每次编译时把带时区的可信本地运行时间和部署侧配置的当前位置放入独立的
+  `当前环境` 段，确保 Provider 原始 input 和受长度限制的开发预览都优先显示。当前日期、星期、
+  时间和相对日期解析以本地时间为准；用户未指定目标地点时可把已配置的当前位置作为默认值，
+  用户明确指定地点时则始终以用户输入为准。当前位置通过
+  `MULTIMODAL_AGENT_CURRENT_LOCATION` 配置，未配置时明确标记为不可用，不得猜测。这些事实不承担
+  天气、新闻等外部动态信息查询，外部事实仍必须使用已暴露工具。
 - Provider-native Prompt 不注入 capability catalog 或 Skill descriptor，也不根据 `request.text` 做关键词、
   正则或确定性意图召回。模型只通过本轮结构化资格化后的原生 `ToolSpec` schema 了解候选工具。
 - Context Compiler v1 以 `ContextReport` 暴露每次 LLM call 的 redacted section accounting：`system_prompt`、`request`、`session_summary`、`recent_transcript`、`memory`、`realtime_video_context`、`durable_task_state`、`plan_state`、`tool_observations` 和 `tool_schema`，并以非累加的 `context_source_report_v1` 报告 section kind/authority/stability 字符数、稳定 issue code、last-known-good 和版本变化计数；不暴露 SOUL 原文、source version、绝对路径、完整 prompt、memory 文本、视频摘要、tool observation 或 provider payload。兼容 schema 仍保留 `realtime_task_state` section，但编译时始终为未包含。
