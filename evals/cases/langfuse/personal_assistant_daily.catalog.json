@@ -188,7 +188,7 @@
     {
       "id": "daily_simple_015_create_dentist_event",
       "category": "simple",
-      "text": "我确认要把“洗牙”加入日历：2026-07-25 15:00 到 16:00，地点是静安牙科诊所，并备注提前十分钟到。创建后复述时间和地点。",
+      "text": "把“洗牙”加入日历：2026-07-25 15:00 到 16:00，地点是静安牙科诊所，并备注提前十分钟到。创建后复述时间和地点。",
       "expected_tools": ["calendar_create"],
       "expected_exposed_tools": ["calendar_create"],
       "must_not_call": ["calendar_search", "web_search"],
@@ -198,10 +198,6 @@
       "metadata": {
         "tool_visibility": {
           "enabled_tools": ["calendar_create"]
-        },
-        "tool_confirmation": {
-          "confirmed": true,
-          "tool_name": "calendar_create"
         }
       }
     },
@@ -302,7 +298,7 @@
     {
       "id": "daily_medium_004_call_and_schedule",
       "category": "medium",
-      "text": "我确认要在 2026-07-24 19:00 到 19:30 给陈阿姨打电话。先找到她的联系方式，再创建日历提醒，备注‘询问术后恢复并提醒下周复诊’。最后把号码和提醒时间一起告诉我。",
+      "text": "在 2026-07-24 19:00 到 19:30 给陈阿姨打电话。先找到她的联系方式，再创建日历提醒，备注‘询问术后恢复并提醒下周复诊’。最后把号码和提醒时间一起告诉我。",
       "expected_tools": ["contacts_search", "calendar_create"],
       "expected_tool_sequence": ["contacts_search", "calendar_create"],
       "expected_exposed_tools": ["contacts_search", "calendar_create"],
@@ -313,10 +309,6 @@
       "metadata": {
         "tool_visibility": {
           "enabled_tools": ["calendar_create"]
-        },
-        "tool_confirmation": {
-          "confirmed": true,
-          "tool_name": "calendar_create"
         }
       }
     },
@@ -372,7 +364,7 @@
     {
       "id": "daily_medium_009_event_research_and_calendar",
       "category": "medium",
-      "text": "我确认想参加 2026-07-26 上海的一场公开读书活动。先查到一个有明确时间地点的候选，再把最合适的活动加入日历，备注报名或预约要求；如果信息不完整就不要创建。",
+      "text": "我想参加 2026-07-26 上海的一场公开读书活动。先查到一个有明确时间地点的候选，再把最合适的活动加入日历，备注报名或预约要求；如果信息不完整就不要创建。",
       "expected_tools": ["web_search", "calendar_create"],
       "expected_tool_sequence": ["web_search", "calendar_create"],
       "expected_exposed_tools": ["web_search", "calendar_create"],
@@ -383,10 +375,6 @@
       "metadata": {
         "tool_visibility": {
           "enabled_tools": ["calendar_create"]
-        },
-        "tool_confirmation": {
-          "confirmed": true,
-          "tool_name": "calendar_create"
         }
       }
     },
@@ -406,7 +394,7 @@
     {
       "id": "daily_advanced_001_day_trip_plan",
       "category": "advanced",
-      "text": "我确认要安排 2026-07-25 的苏州一日游。请先查苏州天气，再搜索两个近期开放且适合雨天备选的景点，综合交通和开放信息做出早中晚行程，并把最终行程作为一个日历事件创建；信息不确定处要明确标注。",
+      "text": "安排 2026-07-25 的苏州一日游。请先查苏州天气，再搜索两个近期开放且适合雨天备选的景点，综合交通和开放信息做出早中晚行程，并把最终行程作为一个日历事件创建；信息不确定处要明确标注。",
       "execution_strategy": "plan_and_solve",
       "expected_tools": ["weather", "web_search", "calendar_create"],
       "expected_tool_sequence": ["weather", "web_search", "calendar_create"],
@@ -419,17 +407,13 @@
       "metadata": {
         "tool_visibility": {
           "enabled_tools": ["calendar_create"]
-        },
-        "tool_confirmation": {
-          "confirmed": true,
-          "tool_name": "calendar_create"
         }
       }
     },
     {
       "id": "daily_advanced_002_birthday_coordination",
       "category": "advanced",
-      "text": "我确认要筹备母亲的生日晚餐。先回忆她的饮食和礼物偏好，找到姐姐的联系方式，再挑一份 1000 元以内的礼物，最后创建 2026-07-26 18:00 到 21:00 的家庭晚餐日历事件。给我一份联系姐姐、下单礼物和当天准备的执行顺序。",
+      "text": "筹备母亲的生日晚餐。先回忆她的饮食和礼物偏好，找到姐姐的联系方式，再挑一份 1000 元以内的礼物，最后创建 2026-07-26 18:00 到 21:00 的家庭晚餐日历事件。给我一份联系姐姐、下单礼物和当天准备的执行顺序。",
       "execution_strategy": "plan_and_solve",
       "expected_tools": ["memory_retrieval", "contacts_search", "shopping_search", "calendar_create"],
       "expected_tool_sequence": ["memory_retrieval", "contacts_search", "shopping_search", "calendar_create"],
@@ -441,10 +425,6 @@
       "metadata": {
         "tool_visibility": {
           "enabled_tools": ["calendar_create"]
-        },
-        "tool_confirmation": {
-          "confirmed": true,
-          "tool_name": "calendar_create"
         }
       }
     },
@@ -478,7 +458,7 @@
     {
       "id": "daily_advanced_005_moving_day_coordination",
       "category": "advanced",
-      "text": "我确认 2026-07-27 搬家。请搜索上海搬家当天常见的物业和交通注意事项，挑一套 500 元以内真正必要的打包用品，从联系人里找到房东，并创建 08:00 到 18:00 的搬家日历事件。最后按‘前一晚、当天出发前、交接时’给清单，不要编造物业规定。",
+      "text": "我 2026-07-27 搬家。请搜索上海搬家当天常见的物业和交通注意事项，挑一套 500 元以内真正必要的打包用品，从联系人里找到房东，并创建 08:00 到 18:00 的搬家日历事件。最后按‘前一晚、当天出发前、交接时’给清单，不要编造物业规定。",
       "execution_strategy": "plan_and_solve",
       "expected_tools": ["web_search", "shopping_search", "contacts_search", "calendar_create"],
       "expected_tool_sequence": ["web_search", "shopping_search", "contacts_search", "calendar_create"],
@@ -491,10 +471,6 @@
       "metadata": {
         "tool_visibility": {
           "enabled_tools": ["calendar_create"]
-        },
-        "tool_confirmation": {
-          "confirmed": true,
-          "tool_name": "calendar_create"
         }
       }
     }

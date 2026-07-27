@@ -233,7 +233,7 @@ second agent runtime.
 `AgentGraphRealtimeBackend` consumes the shared assistant stream, maps each
 `AgentEvent` through `assistant_agent.realtime.event_mapping`, and awaits the
 realtime event sink. Mapping may produce progress, response chunks, final
-response, tool/trace display events, confirmation events, or errors. Final
+response, tool/trace display events, or errors. Final
 response chunking and duplicate streamed-delta suppression remain realtime
 adapter policy.
 

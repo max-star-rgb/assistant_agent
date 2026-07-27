@@ -4,12 +4,11 @@ from typing import Any
 
 from assistant_agent.schemas.capability_output import build_capability_output_contract
 from assistant_agent.utils.prompting import (
-    MAX_CONTEXT_CHARS,
-    MAX_PROMPT_CHARS,
-    build_image_prompt,
-    build_image_prompt_text,
-    clip_list,
-    clip_text,
+    MAX_CONTEXT_CHARS as MAX_CONTEXT_CHARS,
+    MAX_PROMPT_CHARS as MAX_PROMPT_CHARS,
+    build_image_prompt_text as build_image_prompt_text,
+    clip_list as clip_list,
+    clip_text as clip_text,
 )
 
 
@@ -32,4 +31,3 @@ def build_text_capability_output(
     if not payload.get("metadata"):
         payload.pop("metadata", None)
     return payload
-

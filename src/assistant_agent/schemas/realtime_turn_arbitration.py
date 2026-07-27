@@ -120,9 +120,6 @@ def prompt_safe_arbitration_task_state(raw: Mapping[str, Any] | Any) -> dict[str
                     value,
                     max_chars=_TASK_STATE_PENDING_TEXT_CHARS,
                 )
-        requires_confirmation = pending_tool_value.get("requires_confirmation")
-        if isinstance(requires_confirmation, bool):
-            pending_tool["requires_confirmation"] = requires_confirmation
         if not pending_tool:
             pending_tool = None
 

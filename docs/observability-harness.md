@@ -432,7 +432,7 @@ public names, but they should map to this vocabulary.
 | `assistant.output` | Strict assistant turn output selected: non-empty text or a tool call. |
 | `action.validation.started` / `action.validation.finished` | Local validation before tool execution. |
 | `tool.started` | Tool execution lifecycle began through `ToolExecutor`. |
-| `tool.finished` | Tool returned successfully, including duplicate suppression or pending confirmation result. |
+| `tool.finished` | Tool returned successfully, including duplicate suppression. |
 | `tool.failed` | Tool failed, budget was blocked, or cancellation interrupted execution. |
 | `tool.observation` | Tool result was converted into assistant-facing observation data. |
 | `loop_guard.triggered` | ReAct guard stopped or redirected the loop. |
@@ -684,7 +684,7 @@ possible:
 | area | metrics |
 | --- | --- |
 | Run | count, success rate, failure rate, cancel rate, duration p50/p95. |
-| Tool | call count by tool, latency, failure rate, retry count, risk gate decisions, confirmation-required count. |
+| Tool | call count by tool, latency, failure rate, retry count and category. |
 | LLM | chat call count, latency, token usage, native tool-call rate, direct-answer rate, provider error count. |
 | Context | total chars/tokens, budget ratio, compaction triggered count, overflow retry count. |
 | Gateway/realtime | active runs, interrupt count, cancel source, hangup cancellation, deadline expiry. |

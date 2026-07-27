@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 from assistant_agent.agent.state import AgentState
 from assistant_agent.schemas.durable_tasks import (
@@ -18,6 +18,16 @@ from assistant_agent.services.durable_tasks.store import TaskLeaseConflict
 
 if TYPE_CHECKING:
     from assistant_agent.agent.runtime import AgentGraphRuntime
+
+
+class DurableTaskRuntime(Protocol):
+    def run_task_quantum(
+        self,
+        request: UserRequest,
+        *,
+        binding: TrustedTaskBinding,
+        cancel_token: Any,
+    ) -> TaskQuantumResult: ...
 
 
 @dataclass(frozen=True)
@@ -34,7 +44,7 @@ class DurableTaskWorker:
         self,
         *,
         service: DurableTaskService,
-        runtime: AgentGraphRuntime,
+        runtime: AgentGraphRuntime | DurableTaskRuntime,
         worker_id: str,
         poll_seconds: float = 1.0,
     ) -> None:
@@ -119,22 +129,42 @@ class DurableTaskWorker:
             stop_event.wait(self.poll_seconds)
 
 
+class DurableTaskRuntimeRouter:
+    """Route explicit persisted execution profiles without intent inference."""
+
+    def __init__(
+        self,
+        *,
+        default_runtime: DurableTaskRuntime,
+        profile_runtimes: dict[str, DurableTaskRuntime],
+    ) -> None:
+        self.default_runtime = default_runtime
+        self.profile_runtimes = dict(profile_runtimes)
+
+    def run_task_quantum(
+        self,
+        request: UserRequest,
+        *,
+        binding: TrustedTaskBinding,
+        cancel_token: Any,
+    ) -> TaskQuantumResult:
+        profile = str(
+            request.metadata.get("durable_execution_profile") or "agent"
+        )
+        runtime = self.profile_runtimes.get(profile, self.default_runtime)
+        return runtime.run_task_quantum(
+            request,
+            binding=binding,
+            cancel_token=cancel_token,
+        )
+
+
 def _binding_for_lease(lease: DurableTaskLease, bundle: Any, ready_step_ids: list[str]) -> TrustedTaskBinding:
     current_runs = [
         run
         for run in bundle.step_runs
         if run.plan_version == bundle.task.current_plan_version
     ]
-    approved = next(
-        (
-            item
-            for item in reversed(bundle.confirmations)
-            if item.status == "approved"
-            and item.plan_version == bundle.task.current_plan_version
-            and item.step_id in ready_step_ids
-        ),
-        None,
-    )
     return TrustedTaskBinding(
         task_id=lease.task_id,
         task_version=lease.task_version,
@@ -147,10 +177,6 @@ def _binding_for_lease(lease: DurableTaskLease, bundle: Any, ready_step_ids: lis
             for run in current_runs
             if run.step_id in ready_step_ids
         },
-        verified_confirmation_id=approved.confirmation_id if approved is not None else None,
-        verified_confirmation_step_id=approved.step_id if approved is not None else None,
-        verified_confirmation_tool_name=approved.tool_name if approved is not None else None,
-        verified_confirmation_input_digest=approved.input_digest if approved is not None else None,
     )
 
 
@@ -163,6 +189,9 @@ def _resume_request(
     metadata: dict[str, Any] = {
         "durable_task_snapshot": snapshot.model_dump(mode="json"),
         "durable_task_binding": binding.model_dump(mode="json"),
+        "durable_execution_profile": snapshot.execution_profile,
+        "durable_workflow_payload": snapshot.workflow_payload,
+        "durable_workflow_state": snapshot.workflow_state,
         "ready_tool_names": [
             step.tool_name
             for step in snapshot.plan.steps
@@ -171,17 +200,6 @@ def _resume_request(
         "_trusted_durable_execution": True,
         "conversation_history_disabled": True,
     }
-    if binding.verified_confirmation_id:
-        metadata["tool_confirmation"] = {
-            "confirmed": True,
-            "tool_name": binding.verified_confirmation_tool_name,
-            "confirmation_id": binding.verified_confirmation_id,
-        }
-        metadata["durable_confirmation"] = {
-            "confirmation_id": binding.verified_confirmation_id,
-            "tool_name": binding.verified_confirmation_tool_name,
-            "input_digest": binding.verified_confirmation_input_digest,
-        }
     return UserRequest(
         user_id=user_id,
         session_id=session_id,

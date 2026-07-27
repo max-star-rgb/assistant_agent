@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 from typing import Any
 
 from pydantic import BaseModel, Field, ValidationError
@@ -12,7 +10,9 @@ from assistant_agent.agent.state import AgentState
 from assistant_agent.schemas.assistant_output import AssistantToolCall
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.services.tool_call_boundary import build_pre_tool_call_summary
-from assistant_agent.schemas.tool_ids import TASK_PLAN_SUBMIT_TOOL_NAME
+from assistant_agent.schemas.tool_ids import (
+    DURABLE_TASK_SUBMISSION_TOOL_NAMES,
+)
 from assistant_agent.tools.base import ToolInputValidationError
 from assistant_agent.tools.input_binding import runtime_owned_input_fields
 from assistant_agent.tools.registry import ToolRegistry
@@ -132,17 +132,25 @@ def _validate_task_execution_mode(
 ) -> ActionValidationResult | None:
     mode = request.task_execution_mode
     binding = request.metadata.get("durable_task_binding")
-    if mode == "foreground" and tool_name == TASK_PLAN_SUBMIT_TOOL_NAME:
+    if mode == "foreground" and tool_name in DURABLE_TASK_SUBMISSION_TOOL_NAMES:
         return _reject(
             "durable_plan_forbidden",
             "Foreground execution does not allow durable task submission.",
         )
-    if mode == "durable" and binding is None and tool_name != TASK_PLAN_SUBMIT_TOOL_NAME:
+    if (
+        mode == "durable"
+        and binding is None
+        and tool_name not in DURABLE_TASK_SUBMISSION_TOOL_NAMES
+    ):
         return _reject(
             "durable_plan_required",
-            "Durable execution requires task_plan_submit before business tools.",
+            "Durable execution requires an approved task-submission tool before business tools.",
         )
-    if mode != "durable" or binding is None or tool_name == TASK_PLAN_SUBMIT_TOOL_NAME:
+    if (
+        mode != "durable"
+        or binding is None
+        or tool_name in DURABLE_TASK_SUBMISSION_TOOL_NAMES
+    ):
         return None
     try:
         from assistant_agent.schemas.durable_tasks import DurableTaskSnapshot, TrustedTaskBinding
@@ -158,24 +166,6 @@ def _validate_task_execution_mode(
     step = next((item for item in snapshot.plan.steps if item.step_id == decision.step_id), None)
     if step is None or step.tool_name != tool_name:
         return _reject("durable_step_tool_mismatch", "Tool call does not match the bound durable step.")
-    if trusted_binding.verified_confirmation_id is not None:
-        digest = hashlib.sha256(
-            json.dumps(
-                decision.tool_input or {},
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-                default=str,
-            ).encode("utf-8")
-        ).hexdigest()
-        if (
-            trusted_binding.verified_confirmation_tool_name != tool_name
-            or trusted_binding.verified_confirmation_input_digest != digest
-        ):
-            return _reject(
-                "durable_confirmation_binding_mismatch",
-                "Tool call does not match the user-approved durable action.",
-            )
     return None
 
 

@@ -116,13 +116,8 @@ class ToolExecutor:
             runtime_input=runtime_input,
         )
         tool_spec = self.registry.get_spec(tool_name)
-        confirmed = _tool_confirmation_granted(state.request.metadata, tool_name)
-        confirmation_pending = tool_spec.requires_confirmation and not confirmed
-        disposition = "confirmation" if confirmation_pending else "invoke"
         execution_summary = {
             "category": tool_spec.category,
-            "requires_confirmation": confirmation_pending,
-            "confirmation_granted": confirmed,
         }
         pre_tool_call = build_pre_tool_call_summary(
             tool_name=tool_name,
@@ -168,79 +163,73 @@ class ToolExecutor:
         )
 
         retry_count = 0
-        if confirmation_pending:
-            result = _confirmation_required_result(
-                tool_name=tool_name,
-                latency_ms=int((perf_counter() - started_at) * 1000),
-            )
-        else:
-            before_tool_execution = self.context_metadata.get("_before_tool_execution")
-            if callable(before_tool_execution):
-                before_tool_execution()
-            context = ToolContext(
-                run_id=state.run_id,
-                user_id=state.user_id,
-                session_id=state.session_id,
-                metadata={
-                    **{
-                        key: value
-                        for key, value in self.context_metadata.items()
-                        if key != "_before_tool_execution"
-                    },
-                    "request_text": state.request.text or "",
-                    "request_metadata": dict(state.request.metadata),
-                    "request_identity": RequestIdentity.from_user_request(
-                        state.request,
-                        agent_id=state.agent_id,
-                    ).model_dump(mode="json"),
-                    "run_tool_catalog": (
-                        state.run_tool_catalog.model_dump(mode="json")
-                        if state.run_tool_catalog is not None
-                        else None
-                    ),
+        before_tool_execution = self.context_metadata.get("_before_tool_execution")
+        if callable(before_tool_execution):
+            before_tool_execution()
+        context = ToolContext(
+            run_id=state.run_id,
+            user_id=state.user_id,
+            session_id=state.session_id,
+            metadata={
+                **{
+                    key: value
+                    for key, value in self.context_metadata.items()
+                    if key != "_before_tool_execution"
                 },
-                cancel_token=self.cancel_token,
-            )
-            invocation_input: BaseModel | dict[str, Any] = bound_input
-            if validated_input is not None and bound_input == normalized_input:
-                invocation_input = validated_input
-            elif validated_input is not None:
-                invocation_input = tool.input_schema.model_validate(bound_input)
-            try:
-                result, retry_count = self._run_with_retry(
-                    tool_name,
-                    invocation_input,
-                    context,
-                    step_id=step_id,
-                    preserve_success_after_cancel=tool_spec.category != "read",
-                    max_retries=_effective_max_retries(
-                        tool_spec=tool_spec,
-                        global_max_retries=self.execution_policy.retry.max_retries,
-                    ),
-                )
-            except AgentRunCancelled as exc:
-                self._commit_cancellation(
-                    state=state,
-                    exc=exc,
-                    tool_name=tool_name,
-                    step_id=step_id,
-                    tool_call_id=call.tool_call_id,
-                    capability=capability,
-                    started_at=started_at,
-                    tool_span_id=tool_span_id,
-                    tool_input=bound_input,
+                "request_text": state.request.text or "",
+                "request_metadata": dict(state.request.metadata),
+                "request_identity": RequestIdentity.from_user_request(
+                    state.request,
+                    agent_id=state.agent_id,
+                ).model_dump(mode="json"),
+                "run_tool_catalog": (
+                    state.run_tool_catalog.model_dump(mode="json")
+                    if state.run_tool_catalog is not None
+                    else None
+                ),
+            },
+            cancel_token=self.cancel_token,
+        )
+        invocation_input: BaseModel | dict[str, Any] = bound_input
+        if validated_input is not None and bound_input == normalized_input:
+            invocation_input = validated_input
+        elif validated_input is not None:
+            invocation_input = tool.input_schema.model_validate(bound_input)
+        try:
+            result, retry_count = self._run_with_retry(
+                tool_name,
+                invocation_input,
+                context,
+                step_id=step_id,
+                preserve_success_after_cancel=tool_spec.category != "read",
+                max_retries=_effective_max_retries(
                     tool_spec=tool_spec,
-                    trace_store=trace_store,
-                    trace_id=trace_id,
-                    node_name=effective_node_name,
-                )
-                raise AssertionError("cancellation commit must raise")
+                    global_max_retries=self.execution_policy.retry.max_retries,
+                ),
+            )
+        except AgentRunCancelled as exc:
+            self._commit_cancellation(
+                state=state,
+                exc=exc,
+                tool_name=tool_name,
+                step_id=step_id,
+                tool_call_id=call.tool_call_id,
+                capability=capability,
+                started_at=started_at,
+                tool_span_id=tool_span_id,
+                tool_input=bound_input,
+                tool_spec=tool_spec,
+                trace_store=trace_store,
+                trace_id=trace_id,
+                node_name=effective_node_name,
+            )
+            raise AssertionError("cancellation commit must raise")
 
         reported_latency_ms = result.latency_ms
         latency_ms = int((perf_counter() - started_at) * 1000)
         if result.latency_ms is None:
             result.latency_ms = latency_ms
-        tool_contract = _execution_summary(tool_spec, disposition)
+        tool_contract = _execution_summary(tool_spec)
 
         error_code = None
         recovery_action = None
@@ -296,8 +285,7 @@ class ToolExecutor:
             "retry_count": retry_count,
             "post_tool_call": post_tool_call,
         }
-        if disposition == "invoke":
-            payload["contract"] = contract_summary(result.contract)
+        payload["contract"] = contract_summary(result.contract)
         if error_code is not None:
             payload.update(
                 {
@@ -387,7 +375,7 @@ class ToolExecutor:
             latency_ms=latency_ms,
             cancel_metadata=error_details,
         )
-        tool_contract = _execution_summary(tool_spec, "invoke")
+        tool_contract = _execution_summary(tool_spec)
         post_tool_call = build_post_tool_call_summary(
             tool_name=tool_name,
             result=result,
@@ -620,12 +608,6 @@ def _append_tool_trace_event(
         "retry_count": retry_count,
         "tool_reported_latency_ms": reported_latency_ms,
         "tool_category": (tool_contract or {}).get("category"),
-        "requires_confirmation": (tool_contract or {}).get(
-            "requires_confirmation"
-        ),
-        "confirmation_pending": (tool_contract or {}).get(
-            "confirmation_pending"
-        ),
     }
     trace_store.append(
         TraceEvent(
@@ -778,36 +760,7 @@ def _effective_max_retries(
     return global_max_retries if tool_spec.category == "read" else 0
 
 
-def _tool_confirmation_granted(metadata: dict[str, Any], tool_name: str) -> bool:
-    confirmation = metadata.get("tool_confirmation")
-    return bool(
-        isinstance(confirmation, dict)
-        and confirmation.get("confirmed") is True
-        and confirmation.get("tool_name") == tool_name
-    )
-
-
-def _confirmation_required_result(*, tool_name: str, latency_ms: int) -> ToolResult:
-    return ToolResult(
-        tool_name=tool_name,
-        success=True,
-        data={
-            "status": "confirmation_required",
-            "summary": "Tool execution requires user confirmation before continuing.",
-            "requires_confirmation": True,
-        },
-        output_ref=f"local://tool-confirmations/{tool_name}",
-        latency_ms=latency_ms,
-    )
-
-
-def _execution_summary(
-    tool_spec: ToolSpec,
-    disposition: str,
-) -> dict[str, Any]:
+def _execution_summary(tool_spec: ToolSpec) -> dict[str, Any]:
     return {
         "category": tool_spec.category,
-        "requires_confirmation": disposition == "confirmation",
-        "confirmation_configured": tool_spec.requires_confirmation,
-        "confirmation_pending": disposition == "confirmation",
     }

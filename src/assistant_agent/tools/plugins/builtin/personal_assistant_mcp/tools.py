@@ -42,7 +42,6 @@ class WeatherTool(ToolBase):
     input_schema = WeatherRequest
     output_schema = WeatherResult
     category = "read"
-    requires_confirmation = False
     input_bindings = (
         ToolInputBinding(field="units", source="constant", value="metric"),
     )
@@ -78,7 +77,6 @@ class CalendarSearchTool(ToolBase):
     input_schema = CalendarSearchRequest
     output_schema = CalendarSearchResult
     category = "read"
-    requires_confirmation = False
     input_bindings = (
         ToolInputBinding(field="limit", source="constant", value=5),
     )
@@ -103,14 +101,13 @@ class CalendarSearchTool(ToolBase):
 
 
 class CalendarCreateTool(ToolBase):
-    """Create calendar events after ToolExecutor confirmation."""
+    """Create calendar events through the governed ToolExecutor path."""
 
     name = CALENDAR_CREATE_TOOL_NAME
-    description = "在获得用户明确确认后创建日历事件。"
+    description = "创建日历事件。"
     input_schema = CalendarCreateRequest
     output_schema = CalendarCreateResult
     category = "write"
-    requires_confirmation = True
     input_bindings = (
         ToolInputBinding(field="idempotency_key", source="durable_idempotency"),
     )
@@ -148,7 +145,6 @@ class ContactsSearchTool(ToolBase):
     input_schema = ContactsSearchRequest
     output_schema = ContactsSearchResult
     category = "read"
-    requires_confirmation = False
     input_bindings = (
         ToolInputBinding(field="limit", source="constant", value=5),
     )

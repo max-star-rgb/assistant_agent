@@ -26,3 +26,10 @@ CALENDAR_CREATE_TOOL_NAME = "calendar_create"
 CONTACTS_SEARCH_TOOL_NAME = "contacts_search"
 PYTHON_INTERPRETER_TOOL_NAME = "python_interpreter"
 TASK_PLAN_SUBMIT_TOOL_NAME = "task_plan_submit"
+HOTEL_PRICE_WATCH_CREATE_TOOL_NAME = "hotel_price_watch_create"
+DURABLE_TASK_SUBMISSION_TOOL_NAMES = frozenset(
+    {
+        TASK_PLAN_SUBMIT_TOOL_NAME,
+        HOTEL_PRICE_WATCH_CREATE_TOOL_NAME,
+    }
+)

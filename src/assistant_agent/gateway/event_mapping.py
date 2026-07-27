@@ -50,19 +50,6 @@ def realtime_event_to_frame(
             ),
         )
 
-    if event_type == "confirmation.required":
-        return frame(
-            type="confirmation.required",
-            session_id=session_id,
-            turn_id=turn_id,
-            run_id=run_id,
-            payload=apply_realtime_delivery_policy(
-                _confirmation_payload(payload, event.text, event.content_type),
-                event_type=event_type,
-                run_id=run_id,
-            ),
-        )
-
     if event_type in {"tool.started", "tool.finished", "tool.failed"}:
         return frame(
             type="event.tool",
@@ -139,18 +126,4 @@ def _error_payload(payload: dict[str, Any], text: str | None) -> dict[str, Any]:
     if text is not None:
         mapped["message"] = text
     mapped.setdefault("message", "assistant_agent error")
-    return mapped
-
-
-def _confirmation_payload(
-    payload: dict[str, Any],
-    text: str | None,
-    content_type: str | None,
-) -> dict[str, Any]:
-    mapped = dict(payload)
-    if text is not None:
-        mapped["text"] = text
-        mapped.setdefault("message", text)
-    mapped["content_type"] = content_type or "text"
-    mapped["expects_reply"] = True
     return mapped

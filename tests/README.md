@@ -40,7 +40,7 @@ in-memory store、scripted chat adapter 和本地 fake，但不得访问真实 P
 
 ### contract
 
-验证需要长期守住的稳定边界，例如协议 frame、事件映射、Tool schema、validation、confirmation、
+验证需要长期守住的稳定边界，例如协议 frame、事件映射、Tool schema、validation、
 身份隔离和 trace correlation。契约测试可以跨少量模块，但断言重点必须是稳定协议或状态，而不是私有
 实现调用次数。
 

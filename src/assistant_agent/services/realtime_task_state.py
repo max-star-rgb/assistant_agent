@@ -26,7 +26,6 @@ ToolSideEffectLevel = Literal[
     "none",
     "local_read",
     "external_read",
-    "pending_confirmation",
     "committed",
     "compensatable",
 ]
@@ -34,7 +33,6 @@ ToolSideEffectLevel = Literal[
 
 class _SideEffectInfo(BaseModel):
     level: ToolSideEffectLevel
-    requires_confirmation: bool = False
     description: str = ""
     compensation_hint: str | None = None
 
@@ -58,7 +56,6 @@ ContinuationStrategy = Literal[
     "restart",
     "reuse_and_replan",
     "resume_from_checkpoint",
-    "ask_confirmation",
     "compensate",
     "report_committed",
 ]
@@ -149,8 +146,6 @@ class SideEffectRecord(BaseModel):
     run_id: str | None = None
     tool_name: str = Field(min_length=1)
     effect_level: ToolSideEffectLevel
-    requires_confirmation: bool = False
-    confirmation_id: str | None = None
     compensation_hint: str | None = None
     summary: str = ""
     output_ref: str | None = None
@@ -207,7 +202,6 @@ class RealtimeTaskStateSnapshot(BaseModel):
     stale_artifact_count: int = Field(default=0, ge=0)
     side_effects: list[dict[str, Any]] = Field(default_factory=list)
     side_effect_count: int = Field(default=0, ge=0)
-    pending_confirmation_count: int = Field(default=0, ge=0)
     committed_side_effect_count: int = Field(default=0, ge=0)
     compensatable_side_effect_count: int = Field(default=0, ge=0)
     pending_tool: dict[str, Any] | None = None
@@ -471,7 +465,6 @@ def realtime_task_state_progress_payload(request: UserRequest) -> dict[str, Any]
         "reusable_artifact_count": reusable_count,
         "checkpoint_count": checkpoint_count,
         "stale_artifact_count": snapshot.get("stale_artifact_count", 0),
-        "pending_confirmation_count": snapshot.get("pending_confirmation_count", 0),
         "committed_side_effect_count": snapshot.get("committed_side_effect_count", 0),
         "compensatable_side_effect_count": snapshot.get("compensatable_side_effect_count", 0),
     }
@@ -614,9 +607,6 @@ def snapshot_from_task_state(state: RealtimeTaskState) -> RealtimeTaskStateSnaps
         stale_artifact_count=sum(1 for artifact in state.artifacts if artifact.reuse_policy == "stale"),
         side_effects=_snapshot_side_effects(state),
         side_effect_count=len(state.side_effects),
-        pending_confirmation_count=sum(
-            1 for side_effect in state.side_effects if side_effect.effect_level == "pending_confirmation"
-        ),
         committed_side_effect_count=sum(
             1 for side_effect in state.side_effects if side_effect.effect_level == "committed"
         ),
@@ -894,20 +884,14 @@ def _side_effect_record_from_result(
 ) -> SideEffectRecord | None:
     policy = _side_effect_policy_from_result(result)
     data = result.data if isinstance(result.data, dict) else {}
-    pending_confirmation = _result_requires_confirmation(data)
-    if not result.success and not pending_confirmation:
+    if not result.success:
         return None
 
-    effect_level = _effect_level_for_result(
-        result,
-        policy=policy,
-        pending_confirmation=pending_confirmation,
-    )
+    effect_level = policy.level
     if effect_level == "none":
         return None
 
     observation = observation_from_tool_result(result, request_text=request_text)
-    confirmation_id = _metadata_string(data.get("confirmation_id"))
     summary = _side_effect_summary(result, policy=policy, observation_summary=observation.summary)
     return SideEffectRecord(
         record_id=_artifact_id(
@@ -921,8 +905,6 @@ def _side_effect_record_from_result(
         run_id=run_id,
         tool_name=result.tool_name,
         effect_level=effect_level,
-        requires_confirmation=effect_level == "pending_confirmation",
-        confirmation_id=confirmation_id,
         compensation_hint=_metadata_string(data.get("compensation_hint")) or policy.compensation_hint,
         summary=summary,
         output_ref=result.output_ref,
@@ -942,38 +924,19 @@ def _side_effect_policy_from_result(result: ToolResult) -> _SideEffectInfo:
             if category == "read"
             else "compensatable"
             if category == "generate"
-            else "pending_confirmation"
+            else "committed"
         ),
-        requires_confirmation=bool(contract["requires_confirmation"]),
     )
     explicit_level = _metadata_string(data.get("side_effect_level") or data.get("effect_level"))
     if explicit_level in {
         "none",
         "local_read",
         "external_read",
-        "pending_confirmation",
         "committed",
         "compensatable",
     }:
         return policy.model_copy(update={"level": explicit_level}, deep=True)
     return policy
-
-
-def _result_requires_confirmation(data: dict[str, Any]) -> bool:
-    return data.get("requires_confirmation") is True or bool(_metadata_string(data.get("confirmation_id")))
-
-
-def _effect_level_for_result(
-    result: ToolResult,
-    *,
-    policy: _SideEffectInfo,
-    pending_confirmation: bool,
-) -> ToolSideEffectLevel:
-    if pending_confirmation:
-        return "pending_confirmation"
-    if result.success and policy.level == "pending_confirmation":
-        return "committed"
-    return policy.level
 
 
 def _side_effect_summary(
@@ -1065,8 +1028,6 @@ def _select_continuation_strategy(state: RealtimeTaskState) -> ContinuationStrat
 def _side_effect_continuation_strategy(state: RealtimeTaskState) -> ContinuationStrategy | None:
     if any(side_effect.effect_level == "committed" for side_effect in state.side_effects):
         return "report_committed"
-    if any(side_effect.effect_level == "pending_confirmation" for side_effect in state.side_effects):
-        return "ask_confirmation"
     if any(side_effect.effect_level == "compensatable" for side_effect in state.side_effects):
         return "compensate"
     return None
@@ -1099,8 +1060,6 @@ def _snapshot_side_effects(state: RealtimeTaskState) -> list[dict[str, Any]]:
                 "record_id": side_effect.record_id,
                 "tool_name": side_effect.tool_name,
                 "effect_level": side_effect.effect_level,
-                "requires_confirmation": side_effect.requires_confirmation,
-                "confirmation_id": side_effect.confirmation_id,
                 "compensation_hint": side_effect.compensation_hint,
                 "summary": side_effect.summary,
                 "output_ref": side_effect.output_ref,
@@ -1145,11 +1104,8 @@ def _pending_tool_from_event(
             result["side_effect"] = {
                 key: value
                 for key, value in side_effect.items()
-                if key in {"level", "requires_confirmation", "confirmation_kind", "compensation_hint"}
+                if key in {"level", "compensation_hint"}
             }
-        confirmation = pre_tool_call.get("confirmation")
-        if isinstance(confirmation, dict) and isinstance(confirmation.get("required"), bool):
-            result["requires_confirmation"] = confirmation["required"]
         tool_contract = pre_tool_call.get("tool_contract")
         if isinstance(tool_contract, dict):
             result["tool_contract"] = {
@@ -1158,9 +1114,6 @@ def _pending_tool_from_event(
                 if key
                 in {
                     "category",
-                    "requires_confirmation",
-                    "confirmation_configured",
-                    "confirmation_pending",
                 }
             }
         idempotency = pre_tool_call.get("idempotency")

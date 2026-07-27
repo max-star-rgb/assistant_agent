@@ -20,7 +20,7 @@ _QUIESCENT_TASK_STATUSES = {
     *TERMINAL_TASK_STATUSES,
     "outcome_unknown",
     "waiting_schedule",
-    "waiting_confirmation",
+    "waiting_external_event",
     "waiting_input",
 }
 

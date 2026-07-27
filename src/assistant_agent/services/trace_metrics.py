@@ -125,8 +125,6 @@ def _tool_metrics(events: list[TraceEvent]) -> dict[str, Any]:
         category = _event_str(event, "tool_category")
         if category:
             data["categories"][category] += 1
-        if _event_bool(event, "confirmation_required") or _event_str(event, "confirmation_state") == "required":
-            data["confirmation_required_count"] += 1
 
     by_tool: dict[str, Any] = {}
     for tool_name, data in sorted(tool_data.items()):
@@ -136,7 +134,6 @@ def _tool_metrics(events: list[TraceEvent]) -> dict[str, Any]:
             "failure_count": data["failure_count"],
             "failure_rate": _rate(data["failure_count"], call_count),
             "retry_count": data["retry_count"],
-            "confirmation_required_count": data["confirmation_required_count"],
             "categories": _counter_dict(data["categories"]),
             "latency_ms": _numeric_summary(data["latencies"]),
         }
@@ -186,7 +183,6 @@ def _empty_tool_data() -> dict[str, Any]:
         "call_count": 0,
         "failure_count": 0,
         "retry_count": 0,
-        "confirmation_required_count": 0,
         "categories": Counter(),
         "latencies": [],
     }

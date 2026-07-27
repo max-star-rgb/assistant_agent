@@ -52,7 +52,6 @@ class VideoUnderstandingBranch(ToolBase):
     input_schema = VideoUnderstandingRequest
     output_schema = VideoUnderstandingResult
     category = "read"
-    requires_confirmation = False
     requires_media = ["video"]
 
     def __init__(

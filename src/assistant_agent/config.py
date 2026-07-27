@@ -181,9 +181,13 @@ class ProviderConfig:
     max_plan_revisions: int = 2
     durable_tasks_enabled: bool = False
     durable_task_path: str = ".local/tasks/durable_tasks.sqlite3"
+    durable_notification_path: str = ".local/tasks/notifications.sqlite3"
     durable_task_worker_enabled: bool = False
+    durable_notification_worker_enabled: bool = False
     durable_task_lease_seconds: int = 30
     durable_task_poll_seconds: float = 1.0
+    durable_task_max_seconds: int = 2_592_000
+    durable_workflow_max_quanta: int = 1_000
 
     def __post_init__(self) -> None:
         self.validate_provider_mode()
@@ -375,8 +379,18 @@ class ProviderConfig:
                 source.get("MULTIMODAL_AGENT_DURABLE_TASK_PATH")
                 or ".local/tasks/durable_tasks.sqlite3"
             ),
+            durable_notification_path=(
+                source.get("MULTIMODAL_AGENT_DURABLE_NOTIFICATION_PATH")
+                or ".local/tasks/notifications.sqlite3"
+            ),
             durable_task_worker_enabled=_bool_env(
                 source.get("MULTIMODAL_AGENT_DURABLE_TASK_WORKER_ENABLED"),
+                False,
+            ),
+            durable_notification_worker_enabled=_bool_env(
+                source.get(
+                    "MULTIMODAL_AGENT_DURABLE_NOTIFICATION_WORKER_ENABLED"
+                ),
                 False,
             ),
             durable_task_lease_seconds=max(
@@ -386,6 +400,20 @@ class ProviderConfig:
             durable_task_poll_seconds=max(
                 0.1,
                 _float_env(source.get("MULTIMODAL_AGENT_DURABLE_TASK_POLL_SECONDS"), 1.0),
+            ),
+            durable_task_max_seconds=max(
+                3_600,
+                _int_env(
+                    source.get("MULTIMODAL_AGENT_DURABLE_TASK_MAX_SECONDS"),
+                    2_592_000,
+                ),
+            ),
+            durable_workflow_max_quanta=max(
+                1,
+                _int_env(
+                    source.get("MULTIMODAL_AGENT_DURABLE_WORKFLOW_MAX_QUANTA"),
+                    1_000,
+                ),
             ),
             openai_chat_base_url=source.get("OPENAI_CHAT_BASE_URL", "https://api.openai.com/v1"),
             openai_chat_model=source.get("OPENAI_CHAT_MODEL", "gpt-4o-mini"),

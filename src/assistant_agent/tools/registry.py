@@ -73,7 +73,6 @@ class ToolRegistry:
         self._registration_records[tool.name] = record
         _REGISTERED_TOOL_CONTRACTS[tool.name] = {
             "category": spec.category,
-            "requires_confirmation": spec.requires_confirmation,
         }
 
     def register_many(self, contributions: Iterable[_ToolContribution]) -> None:
@@ -235,7 +234,6 @@ def _declared_contract(tool: Tool) -> dict[str, Any]:
 
     fields = (
         "category",
-        "requires_confirmation",
         "enabled_by_default",
         "requires_media",
     )
@@ -247,6 +245,5 @@ def tool_contract_fields(tool_name: str) -> dict[str, Any]:
 
     return {
         "category": "dangerous",
-        "requires_confirmation": True,
         **_REGISTERED_TOOL_CONTRACTS.get(tool_name, {}),
     }

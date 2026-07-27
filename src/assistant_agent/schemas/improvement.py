@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 import re
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import BaseModel, Field, JsonValue, field_validator, model_validator
 

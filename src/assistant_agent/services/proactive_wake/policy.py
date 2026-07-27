@@ -41,6 +41,15 @@ class DeterministicWakeEvaluator:
                 evidence_ids=[evidence.evidence_id],
             )
         message = sanitize_error_message(f"{rule.name}：{evidence.summary}")[:500]
+        if rule.resume_target is not None:
+            return WakeDecision(
+                outcome="resume",
+                severity="normal",
+                reason_code="evidence_changed",
+                summary=evidence.summary,
+                evidence_ids=[evidence.evidence_id],
+                expires_at=now + timedelta(hours=6),
+            )
         return WakeDecision(
             outcome="notify",
             severity="normal",

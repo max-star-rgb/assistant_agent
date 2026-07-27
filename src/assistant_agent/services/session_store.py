@@ -6,13 +6,13 @@ import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Protocol
 
 from pydantic import ValidationError
 
-from assistant_agent.agent.state import new_session_id
 from assistant_agent.config import ProviderConfig
 from assistant_agent.schemas.sessions import SessionCreate, SessionRecord
+from assistant_agent.services.identifiers import new_session_id
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]

@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import hmac
-import json
 import secrets
 from datetime import datetime, timezone
 from threading import Event, RLock
@@ -18,10 +16,10 @@ from assistant_agent.schemas.durable_tasks import (
     DurableTaskSnapshot,
     TaskArtifactRef,
     TaskCheckpoint,
-    TaskConfirmation,
     TaskEvent,
     TaskPlanVersion,
     TaskRecord,
+    TaskResumeRequest,
     TaskStepRun,
     TrustedTaskBinding,
     utc_now,
@@ -74,6 +72,7 @@ class DurableTaskService:
         max_plan_revisions: int = 2,
         max_tool_calls: int = 32,
         max_model_calls: int = 40,
+        max_workflow_quanta: int = 1_000,
         max_step_attempts: int = 3,
         max_task_seconds: int = 3600,
         lease_seconds: int = 30,
@@ -85,6 +84,7 @@ class DurableTaskService:
         self.max_plan_revisions = max_plan_revisions
         self.max_tool_calls = max_tool_calls
         self.max_model_calls = max_model_calls
+        self.max_workflow_quanta = max_workflow_quanta
         self.max_step_attempts = max_step_attempts
         self.max_task_seconds = max_task_seconds
         self.lease_seconds = lease_seconds
@@ -99,10 +99,28 @@ class DurableTaskService:
         ingress_run_id: str,
         plan: TaskPlan,
         revision_reason: str,
+        execution_profile: str = "agent",
+        workflow_payload: dict[str, object] | None = None,
+        deadline_at: datetime | None = None,
     ) -> DurableTaskBundle:
         self._validate_plan(plan)
         task_id = f"task_{secrets.token_hex(16)}"
         now = utc_now()
+        maximum_deadline = now.timestamp() + self.max_task_seconds
+        if deadline_at is not None:
+            if deadline_at.tzinfo is None:
+                raise TaskTransitionRejected("task deadline must be timezone-aware")
+            if deadline_at <= now:
+                raise TaskTransitionRejected("task deadline must be in the future")
+            if deadline_at.timestamp() > maximum_deadline:
+                raise TaskTransitionRejected(
+                    "task deadline exceeds the configured duration policy"
+                )
+        deadline_epoch_s = (
+            deadline_at.timestamp()
+            if deadline_at is not None
+            else maximum_deadline
+        )
         record = TaskRecord(
             task_id=task_id,
             user_id=identity.user_id,
@@ -110,12 +128,15 @@ class DurableTaskService:
             session_id=identity.session_id or "session_unknown",
             ingress_run_id=ingress_run_id,
             objective=plan.goal,
+            execution_profile=execution_profile,
+            workflow_payload=dict(workflow_payload or {}),
             status="waiting_input" if plan.requires_followup else "queued",
             remaining_budget={
                 "tool_calls": self.max_tool_calls,
                 "model_calls": self.max_model_calls,
+                "workflow_quanta": self.max_workflow_quanta,
                 "plan_revisions": self.max_plan_revisions,
-                "deadline_epoch_s": now.timestamp() + self.max_task_seconds,
+                "deadline_epoch_s": deadline_epoch_s,
             },
             created_at=now,
             updated_at=now,
@@ -171,15 +192,6 @@ class DurableTaskService:
             and previous.plan.goal == plan.goal
             and previous_steps.get(step.step_id) == step
         ]
-        invalidated_confirmations = [
-            item
-            for item in bundle.confirmations
-            if item.plan_version == previous.plan_version
-            and item.status in {"pending", "approved"}
-        ]
-        for confirmation in invalidated_confirmations:
-            confirmation.status = "rejected"
-            confirmation.decided_at = utc_now()
         next_version = bundle.task.current_plan_version + 1
         plan_version = TaskPlanVersion(
             task_id=bundle.task.task_id,
@@ -189,9 +201,6 @@ class DurableTaskService:
             inherited_step_ids=inherited,
             replaced_step_ids=[
                 step.step_id for step in previous.plan.steps if step.step_id not in inherited
-            ],
-            invalidated_confirmation_ids=[
-                item.confirmation_id for item in invalidated_confirmations
             ],
         )
         bundle.plans.append(plan_version)
@@ -326,78 +335,75 @@ class DurableTaskService:
             events=[self._event(bundle, "task.input_received", "queued", {"text_chars": len(text)})],
         )
 
-    def confirm(
+    def resume_wait(
         self,
         *,
         identity: RequestIdentity,
-        task_id: str,
-        confirmation_id: str,
-        approved: bool,
+        request: TaskResumeRequest,
+        now: datetime | None = None,
     ) -> DurableTaskBundle:
-        bundle = self.get_task(identity=identity, task_id=task_id)
-        confirmation = next(
-            (
-                item
-                for item in bundle.confirmations
-                if item.confirmation_id == confirmation_id
-            ),
-            None,
-        )
-        if confirmation is None:
-            raise TaskNotFound(confirmation_id)
-        if confirmation.status != "pending":
+        """Validate and idempotently resume one exact external-event wait."""
+
+        resumed_at = now or utc_now()
+        bundle = self.get_task(identity=identity, task_id=request.task_id)
+        if (
+            request.user_id != identity.user_id
+            or request.agent_id != identity.agent_id
+        ):
+            raise TaskAccessDenied(request.task_id)
+        resume_key = _resume_key(request)
+        if resume_key in bundle.task.consumed_resume_keys:
             return bundle
-        if confirmation.expires_at <= utc_now():
-            confirmation.status = "expired"
-            confirmation.decided_at = utc_now()
-            run = self._step_run(bundle, confirmation.step_id)
-            if run is not None:
-                run.status = "failed"
-                run.error_code = "confirmation_expired"
-            bundle.task.status = "replanning"
-            self.store.save(
-                bundle,
-                expected_version=bundle.task.version,
-                events=[
-                    self._event(
-                        bundle,
-                        "confirmation.expired",
-                        bundle.task.status,
-                        {"confirmation_id": confirmation.confirmation_id},
-                    )
-                ],
-            )
-            raise TaskConflict("confirmation expired")
-        expected_digest = _confirmation_digest(
-            task_id=confirmation.task_id,
-            plan_version=confirmation.plan_version,
-            step_id=confirmation.step_id,
-            tool_name=confirmation.tool_name,
-            input_digest=confirmation.input_digest,
-            expires_at=confirmation.expires_at,
-        )
-        if not hmac.compare_digest(confirmation.binding_digest, expected_digest):
-            raise TaskConflict("confirmation binding is invalid")
-        confirmation.status = "approved" if approved else "rejected"
-        confirmation.decided_by_user_id = identity.user_id
-        confirmation.decided_at = utc_now()
-        run = self._step_run(bundle, confirmation.step_id)
-        if run is not None:
-            run.status = "ready" if approved else "failed"
-        bundle.task.status = "queued" if approved else "replanning"
+        if bundle.task.version != request.expected_task_version:
+            raise TaskConflict("task resume request targets a stale task version")
+        wait = bundle.task.wait
+        if (
+            bundle.task.status != "waiting_external_event"
+            or wait is None
+            or wait.kind != "external_event"
+        ):
+            raise TaskTransitionRejected("task is not waiting for an external event")
+        if wait.wait_id != request.wait_id:
+            raise TaskConflict("task resume request targets a stale wait")
+        if wait.wake_rule_id != request.wake_rule_id:
+            raise TaskAccessDenied(request.task_id)
+        if wait.expires_at is not None and wait.expires_at <= resumed_at:
+            raise TaskTransitionRejected("external-event wait has expired")
+        if wait.step_id is not None:
+            run = self._step_run(bundle, wait.step_id)
+            if run is None or run.status != "waiting_external_event":
+                raise TaskConflict("external-event wait step is not resumable")
+            run.status = "ready"
+        bundle.task.status = "queued"
+        bundle.task.wait = None
+        bundle.task.consumed_resume_keys = [
+            *bundle.task.consumed_resume_keys[-63:],
+            resume_key,
+        ]
         return self.store.save(
             bundle,
-            expected_version=bundle.task.version,
+            expected_version=request.expected_task_version,
             events=[
                 self._event(
                     bundle,
-                    "confirmation.approved" if approved else "confirmation.rejected",
-                    bundle.task.status,
+                    "task.wake_received",
+                    "queued",
                     {
-                        "confirmation_id": confirmation.confirmation_id,
-                        "step_id": confirmation.step_id,
+                        "wait_id": wait.wait_id,
+                        "wake_rule_id": wait.wake_rule_id,
+                        "evidence_ids": request.evidence_ids,
+                        "evidence_fingerprint": request.evidence_fingerprint,
                     },
-                )
+                ),
+                self._event(
+                    bundle,
+                    "task.resumed",
+                    "queued",
+                    {
+                        "step_id": wait.step_id,
+                        "resume_source": "external_event",
+                    },
+                ),
             ],
         )
 
@@ -494,7 +500,12 @@ class DurableTaskService:
         bundle: DurableTaskBundle,
         now: datetime,
     ) -> DurableTaskLease | None:
-        remaining = int(bundle.task.remaining_budget.get("model_calls", 0))
+        budget_key = (
+            "model_calls"
+            if bundle.task.execution_profile == "agent"
+            else "workflow_quanta"
+        )
+        remaining = int(bundle.task.remaining_budget.get(budget_key, 0))
         deadline = float(bundle.task.remaining_budget.get("deadline_epoch_s", 0))
         if remaining <= 0 or (deadline > 0 and now.timestamp() >= deadline):
             self.checkpoint(
@@ -502,11 +513,13 @@ class DurableTaskService:
                 TaskCheckpoint(
                     kind="failed",
                     error_code="durable_task_budget_exhausted",
-                    error_message="Durable task model-call or time budget exhausted.",
+                    error_message=(
+                        f"Durable task {budget_key} or time budget exhausted."
+                    ),
                 ),
             )
             return None
-        bundle.task.remaining_budget["model_calls"] = remaining - 1
+        bundle.task.remaining_budget[budget_key] = remaining - 1
         saved = self.store.save(
             bundle,
             expected_version=lease.task_version,
@@ -515,7 +528,10 @@ class DurableTaskService:
                     bundle,
                     "task.quantum_admitted",
                     bundle.task.status,
-                    {"remaining_model_calls": remaining - 1},
+                    {
+                        "budget_kind": budget_key,
+                        "remaining_quanta": remaining - 1,
+                    },
                 )
             ],
         )
@@ -571,6 +587,9 @@ class DurableTaskService:
         return DurableTaskSnapshot(
             task_id=bundle.task.task_id,
             objective=bundle.task.objective,
+            execution_profile=bundle.task.execution_profile,
+            workflow_payload=dict(bundle.task.workflow_payload),
+            workflow_state=dict(bundle.task.workflow_state),
             active_constraints=list(bundle.task.active_constraints),
             task_status=bundle.task.status,
             plan_version=plan.plan_version,
@@ -655,43 +674,37 @@ class DurableTaskService:
             bundle.task.lease_token = None
             bundle.task.lease_expires_at = None
             event_type = "task.wait_scheduled"
-        elif transition.kind == "waiting_confirmation":
-            if (
-                run is None
-                or not transition.tool_name
-                or not transition.tool_input_digest
-                or transition.confirmation_expires_at is None
-            ):
+        elif transition.kind == "waiting_external_event":
+            wait = transition.wait
+            if wait is None:
                 raise TaskTransitionRejected(
-                    "confirmation checkpoint requires step, tool, input digest, and expiry"
+                    "external-event wait checkpoint requires wait"
                 )
-            confirmation = TaskConfirmation(
-                confirmation_id=f"confirm_{secrets.token_hex(12)}",
-                task_id=bundle.task.task_id,
-                plan_version=bundle.task.current_plan_version,
-                step_id=run.step_id,
-                tool_name=transition.tool_name,
-                input_digest=transition.tool_input_digest,
-                binding_digest=_confirmation_digest(
-                    task_id=bundle.task.task_id,
-                    plan_version=bundle.task.current_plan_version,
-                    step_id=run.step_id,
-                    tool_name=transition.tool_name,
-                    input_digest=transition.tool_input_digest,
-                    expires_at=transition.confirmation_expires_at,
-                ),
-                summary=transition.confirmation_summary
-                or f"Approve {transition.tool_name} for durable step {run.step_id}.",
-                expires_at=transition.confirmation_expires_at,
+            if transition.step_id and wait.step_id not in {
+                None,
+                transition.step_id,
+            }:
+                raise TaskTransitionRejected(
+                    "external-event wait step does not match checkpoint step"
+                )
+            if wait.expires_at is not None and wait.expires_at <= utc_now():
+                raise TaskTransitionRejected(
+                    "external-event wait must not already be expired"
+                )
+            if run is not None:
+                if run.status not in {"ready", "leased", "running"}:
+                    raise TaskTransitionRejected(
+                        "step is not ready for external-event wait"
+                    )
+                run.status = "waiting_external_event"
+            bundle.task.wait = wait.model_copy(
+                update={"step_id": transition.step_id or wait.step_id}
             )
-            bundle.confirmations.append(confirmation)
-            run.status = "waiting_confirmation"
-            run.tool_input_digest = transition.tool_input_digest
-            bundle.task.status = "waiting_confirmation"
+            bundle.task.status = "waiting_external_event"
             bundle.task.lease_owner = None
             bundle.task.lease_token = None
             bundle.task.lease_expires_at = None
-            event_type = "confirmation.required"
+            event_type = "task.wait_external_event"
         elif transition.kind == "waiting_input":
             if run is not None:
                 run.status = "waiting_input"
@@ -701,6 +714,14 @@ class DurableTaskService:
             bundle.task.lease_expires_at = None
             event_type = "task.input_required"
         elif transition.kind == "completed":
+            if run is not None and run.status in {
+                "ready",
+                "leased",
+                "running",
+            }:
+                run.status = "succeeded"
+                run.summary = transition.summary
+                run.finished_at = utc_now()
             if any(
                 run.status not in {"succeeded", "skipped"}
                 for run in self._current_step_runs(bundle)
@@ -727,6 +748,7 @@ class DurableTaskService:
             event_type = f"task.{transition.kind}"
         else:
             bundle.task.status = transition.kind
+        bundle.task.workflow_state.update(transition.workflow_state_patch)
         notification = self._enqueue_task_notification(bundle, transition)
         events = [
             self._event(
@@ -752,6 +774,21 @@ class DurableTaskService:
                     else {
                         "step_id": transition.step_id,
                         "summary": transition.summary,
+                        **(
+                            {
+                                "wait_id": transition.wait.wait_id,
+                                "reason_code": transition.wait.reason_code,
+                                "wake_rule_id": transition.wait.wake_rule_id,
+                                "expires_at": (
+                                    transition.wait.expires_at.isoformat()
+                                    if transition.wait.expires_at is not None
+                                    else None
+                                ),
+                            }
+                            if transition.kind == "waiting_external_event"
+                            and transition.wait is not None
+                            else {}
+                        ),
                     }
                 ),
             )
@@ -858,6 +895,8 @@ class DurableTaskService:
         wait = bundle.task.wait
         if wait is None or wait.kind != "schedule":
             raise TaskConflict("claimed task does not have a scheduled wait")
+        if wait.next_eligible_at is None:
+            raise TaskConflict("scheduled task has no eligibility time")
         if wait.next_eligible_at > resumed_at:
             raise TaskConflict("scheduled task was claimed before it became due")
         if wait.step_id is not None:
@@ -1035,22 +1074,9 @@ def _notification_event_payload(
     }
 
 
-def _confirmation_digest(
-    *,
-    task_id: str,
-    plan_version: int,
-    step_id: str,
-    tool_name: str,
-    input_digest: str,
-    expires_at: datetime,
-) -> str:
-    payload = {
-        "task_id": task_id,
-        "plan_version": plan_version,
-        "step_id": step_id,
-        "tool_name": tool_name,
-        "input_digest": input_digest,
-        "expires_at": expires_at.isoformat(),
-    }
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
+def _resume_key(request: TaskResumeRequest) -> str:
+    raw = (
+        f"{request.task_id}|{request.wait_id}|{request.wake_rule_id}|"
+        f"{request.evidence_fingerprint}"
+    )
+    return hashlib.sha256(raw.encode()).hexdigest()

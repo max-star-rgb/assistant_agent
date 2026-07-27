@@ -300,6 +300,7 @@ class SQLiteTaskStore:
             (
                 task.wait.next_eligible_at.isoformat()
                 if task.wait is not None
+                and task.wait.next_eligible_at is not None
                 else None
             ),
             task.version,

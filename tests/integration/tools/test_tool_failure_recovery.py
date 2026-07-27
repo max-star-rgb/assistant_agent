@@ -28,7 +28,6 @@ class _RecoverableProbeTool(ToolBase):
     input_schema = _ProbeInput
     output_schema = _ProbeInput
     category = "read"
-    requires_confirmation = False
 
     def __init__(self) -> None:
         self.inputs: list[str] = []

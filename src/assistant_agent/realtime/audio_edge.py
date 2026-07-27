@@ -26,12 +26,6 @@ def gateway_frame_to_tts_event(frame: Mapping[str, Any]) -> TtsEdgeEvent | None:
         replaceable = bool(payload_dict.get("replaceable", True))
         default_speech_policy = "optional"
         default_persistence = "ephemeral"
-    elif frame_type == "confirmation.required":
-        event_type = "tts.confirmation"
-        display_only = False
-        replaceable = bool(payload_dict.get("replaceable", False))
-        default_speech_policy = "required"
-        default_persistence = "ephemeral"
     else:
         return None
 

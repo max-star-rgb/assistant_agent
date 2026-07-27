@@ -57,7 +57,6 @@ class ToolSpec(BaseModel):
     description: str = Field(default="")
     input_schema: dict[str, Any] = Field(default_factory=_empty_tool_input_schema)
     category: ToolCategory = "dangerous"
-    requires_confirmation: bool = True
     enabled_by_default: bool = True
     requires_media: list[ToolMediaRequirement] = Field(default_factory=list)
 

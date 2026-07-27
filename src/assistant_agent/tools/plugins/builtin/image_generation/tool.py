@@ -28,7 +28,6 @@ class ImageGenerationTool(ToolBase):
     input_schema = ImageGenerationRequest
     output_schema = ImageGenerationResult
     category = "generate"
-    requires_confirmation = False
     input_bindings = (
         ToolInputBinding(field="user_id", source="runtime_identity", key="user_id"),
         ToolInputBinding(field="session_id", source="runtime_identity", key="session_id"),

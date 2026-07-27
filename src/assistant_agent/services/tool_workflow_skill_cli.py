@@ -260,7 +260,7 @@ def _result_payload(result: WorkflowSkillRunResult) -> dict[str, Any]:
 
 
 def _exit_code_for_result(result: WorkflowSkillRunResult) -> int:
-    return 0 if result.status in {"succeeded", "waiting_confirmation"} else 1
+    return 0 if result.status == "succeeded" else 1
 
 
 def _issue_payloads(issues: list[LocalToolLoadIssue]) -> list[dict[str, Any]]:

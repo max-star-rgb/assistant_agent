@@ -158,7 +158,7 @@ class RealReadonlyCase(BaseModel):
     capability: Literal[
         "real_no_tool",
         "real_read_only_tool",
-        "real_confirmation_guard",
+        "real_write_tool",
     ]
     response_facts: list[str] = Field(default_factory=list)
 
@@ -684,7 +684,7 @@ def case_from_dataset_fields(
 
     capability = metadata.get("capability")
     response_facts = _string_list(expected_output.get("response_facts"))
-    if capability == "write_with_confirmation":
+    if capability == "write_tool":
         return CreateCalendarCase(
             id=case_id,
             required_event=CalendarEventExpectation.model_validate(
@@ -703,7 +703,7 @@ def case_from_dataset_fields(
     if capability in {
         "real_no_tool",
         "real_read_only_tool",
-        "real_confirmation_guard",
+        "real_write_tool",
     }:
         return RealReadonlyCase(
             id=case_id,
@@ -732,11 +732,6 @@ def _tool_executions(events: list[TraceEvent]) -> list[dict[str, Any]]:
                 "input": event.input_summary,
                 "status": terminal.status if terminal is not None else "missing_terminal",
                 "output": terminal.output_summary if terminal is not None else {},
-                "confirmation_pending": (
-                    terminal.attributes.get("confirmation_pending")
-                    if terminal is not None
-                    else None
-                ),
             }
         )
     return executions

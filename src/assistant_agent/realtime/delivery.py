@@ -43,10 +43,6 @@ _DELIVERY_POLICIES: dict[str, RealtimeEventDeliveryPolicy] = {
         speech_policy="never",
         persistence="ephemeral",
     ),
-    "confirmation.required": RealtimeEventDeliveryPolicy(
-        speech_policy="required",
-        persistence="ephemeral",
-    ),
 }
 
 

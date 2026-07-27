@@ -56,7 +56,6 @@ class _DeclaredValidationTool(ToolBase):
     input_schema = _DeclaredValidationInput
     output_schema = _DeclaredValidationInput
     category = "read"
-    requires_confirmation = False
     requires_media = ["image"]
 
     def validate_call(self, input: _DeclaredValidationInput) -> None:
@@ -92,7 +91,6 @@ class _ExecutionBoundaryTool(ToolBase):
     input_schema = _ExecutionBoundaryInput
     output_schema = _ExecutionBoundaryInput
     category = "read"
-    requires_confirmation = False
 
     def __init__(self) -> None:
         self.run_count = 0
@@ -115,10 +113,9 @@ class _ReportedLatencyTool(_ExecutionBoundaryTool):
         )
 
 
-class _ConfirmationBoundaryTool(_ExecutionBoundaryTool):
-    name = "confirmation_boundary_tool"
+class _WriteBoundaryTool(_ExecutionBoundaryTool):
+    name = "write_boundary_tool"
     category = "write"
-    requires_confirmation = True
 
 
 class _RuntimeBindingInput(BaseModel):
@@ -137,7 +134,6 @@ class _RuntimeBindingTool(ToolBase):
     input_schema = _RuntimeBindingInput
     output_schema = _RuntimeBindingInput
     category = "read"
-    requires_confirmation = False
     input_bindings = (
         ToolInputBinding(field="user_id", source="runtime_identity", key="user_id"),
         ToolInputBinding(field="session_id", source="runtime_identity", key="session_id"),
@@ -459,7 +455,7 @@ def test_registry_exposes_one_simple_tool_contract() -> None:
     spec = registry.get_spec(_DeclaredValidationTool.name)
 
     assert spec.category == "read"
-    assert spec.requires_confirmation is False
+    assert not hasattr(spec, "requires_confirmation")
     assert spec.requires_media == ["image"]
     assert not hasattr(spec, "redact_trace")
     assert not hasattr(spec, "policy")
@@ -645,44 +641,18 @@ def test_tool_trace_uses_executor_wall_latency_instead_of_tool_reported_latency(
     assert terminal.attributes["tool_reported_latency_ms"] == 1
 
 
-def test_tool_executor_preserves_confirmation_without_invoking_tool() -> None:
-    tool = _ConfirmationBoundaryTool()
+def test_tool_executor_runs_write_tool_without_a_confirmation_state() -> None:
+    tool = _WriteBoundaryTool()
     registry = ToolRegistry()
     registry.register(tool)
     events = ListEventSink()
-    executor = ToolExecutor(registry=registry, event_sink=events)
     request = UserRequest(
         user_id="user-1",
         session_id="session-1",
         text="write externally",
     )
-    state = AgentState.from_request(request)
 
-    result = executor.run_tool(state, "step-1", tool.name, {"value": "write"})
-
-    assert result.success is True
-    assert result.data["status"] == "confirmation_required"
-    assert tool.run_count == 0
-    assert [event.type for event in events.events] == ["tool_started", "tool_finished"]
-
-
-def test_confirmation_is_bound_to_the_declared_tool_name() -> None:
-    tool = _ConfirmationBoundaryTool()
-    registry = ToolRegistry()
-    registry.register(tool)
-    request = UserRequest(
-        user_id="user-1",
-        session_id="session-1",
-        text="write externally",
-        metadata={
-            "tool_confirmation": {
-                "confirmed": True,
-                "tool_name": tool.name,
-            }
-        },
-    )
-
-    result = ToolExecutor(registry=registry).run_tool(
+    result = ToolExecutor(registry=registry, event_sink=events).run_tool(
         AgentState.from_request(request),
         "step-1",
         tool.name,
@@ -691,6 +661,10 @@ def test_confirmation_is_bound_to_the_declared_tool_name() -> None:
 
     assert result.success is True
     assert tool.run_count == 1
+    assert [event.type for event in events.events] == [
+        "tool_started",
+        "tool_finished",
+    ]
 
 
 def test_llm_selected_tool_is_not_rejected_by_natural_language_intent_rules() -> None:

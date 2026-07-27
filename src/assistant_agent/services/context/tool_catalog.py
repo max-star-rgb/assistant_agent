@@ -9,6 +9,7 @@ from typing import Any
 from assistant_agent.schemas.context import ToolCatalogSummary
 from assistant_agent.schemas.requests import UserRequest
 from assistant_agent.schemas.tools import RunToolCatalog, ToolSpec
+from assistant_agent.schemas.tool_ids import DURABLE_TASK_SUBMISSION_TOOL_NAMES
 from assistant_agent.services.context.skill_loader import (
     SkillCatalog,
     load_repo_skill_descriptors,
@@ -76,7 +77,7 @@ def select_prompt_tool_specs(
     selection_mode = "qualified_tools"
     if request.metadata.get("_trusted_durable_execution") is True:
         ready = set(_string_list(request.metadata.get("ready_tool_names")))
-        allowed = ready | {"task_plan_submit"}
+        allowed = ready | set(DURABLE_TASK_SUBMISSION_TOOL_NAMES)
         available_specs = [
             spec for spec in available_specs if spec.name in allowed
         ]
@@ -132,9 +133,9 @@ def qualify_tool_specs(
     qualified_specs: list[ToolSpec] = []
     excluded_reasons: dict[str, list[str]] = {}
     trusted_durable_execution = request.metadata.get("_trusted_durable_execution") is True
-    durable_ready_tool_names = set(_string_list(request.metadata.get("ready_tool_names"))) | {
-        "task_plan_submit"
-    }
+    durable_ready_tool_names = set(
+        _string_list(request.metadata.get("ready_tool_names"))
+    ) | set(DURABLE_TASK_SUBMISSION_TOOL_NAMES)
     for spec in tool_specs:
         if visibility_overrides.allowed_tools and spec.name not in visibility_overrides.allowed_tools:
             excluded_reasons[spec.name] = ["entry_profile_not_allowed"]
@@ -142,7 +143,8 @@ def qualify_tool_specs(
         category = tool_exposure_category(spec)
         durable_ready = trusted_durable_execution and spec.name in durable_ready_tool_names
         durable_plan_submission = (
-            request.task_execution_mode == "durable" and spec.name == "task_plan_submit"
+            request.task_execution_mode == "durable"
+            and spec.name in DURABLE_TASK_SUBMISSION_TOOL_NAMES
         )
         configured_for_exposure = (
             _code_configured_tool_exposure(

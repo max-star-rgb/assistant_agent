@@ -4,12 +4,11 @@
 
 ## 1. 设计目标
 
-工具系统采用最小安全模式，只在公共运行时保留四个核心机制：
+工具系统采用最小安全模式，只在公共运行时保留三个核心机制：
 
 1. `ToolRegistry` 注册和查找工具；
 2. 基于 `ToolSpec.category`、profile、media、env 和显式工具配置组装本轮工具目录；
 3. 使用工具自己的 Pydantic `input_schema` 校验模型参数；
-4. 对声明 `requires_confirmation=true` 的工具执行简单、结构化的确认检查。
 
 系统不再维护独立的 `ToolPolicyMetadata`、`ToolPolicyInterpreter`、risk gate、进程内幂等 ledger 或
 ToolScheduler。工具执行顺序由 assistant loop 决定，当前 native tool calls 按模型返回顺序处理。
@@ -31,7 +30,6 @@ run-scoped 可用集合，不再另建 executable allowlist。
 name / description
 input_schema（包含模型需要理解和填写的语义参数，不含 runtime-owned 参数）
 category: read | generate | write | dangerous
-requires_confirmation
 enabled_by_default
 requires_media
 ```
@@ -78,8 +76,7 @@ Tool 注册时会检查绑定字段存在、没有重复且静态默认值符合
 主模型不看到 `memory_search`、`memory_get` 或 `memory_save`；Mem0 recall/capture 是 runtime
 生命周期。
 
-未知或未声明分类的本地工具使用保守默认值：`category="dangerous"` 且
-`requires_confirmation=true`。
+未知或未声明分类的本地工具使用保守默认值：`category="dangerous"`。
 
 Tool 系统只保留职责明确且不可互相替代的边界：
 
@@ -90,7 +87,7 @@ Tool 系统只保留职责明确且不可互相替代的边界：
 
 系统不维护独立 toolset 或业务分类树。部署级批量启停使用 Plugin，单轮暴露使用精确 Tool name
 或显式 Skill；Plugin 被装配不代表其 write/dangerous Tool 自动获得授权，Tool 自己的 category、
-确认和输入校验仍然生效。
+输入校验仍然生效。
 
 ### 2.2 RunToolCatalog
 
@@ -295,7 +292,7 @@ schema 确定性执行：
 }
 ```
 
-category、确认、profile、env 等系统字段不会发送给模型，也不需要靠“截断系统信息”从
+category、profile、env 等系统字段不会发送给模型，也不需要靠“截断系统信息”从
 一份混合 JSON 中剥离。adapter 只挑选 provider 协议需要的 name、description 和 input schema。
 
 所有仓库内置工具的模型可见参数都应提供简短、明确的中文 `description`；只写 Pydantic 类型或
@@ -353,16 +350,13 @@ native tool_calls
 直接调用 executor 的兼容入口没有已验证对象时，工具边界仍执行一次 Pydantic 兜底校验。
 
 durable step 绑定只在 durable task 已启用时生效，用于保证 worker 当前执行的仍是计划中 ready 的
-step、工具名与 step 匹配，并且已确认输入的 digest 没有在确认后被替换。普通前台调用不承担这套
-检查。
+step，且工具名与 step 匹配。普通前台调用不承担这套检查。
 
 ### 5.2 ToolExecutor
 
 `ToolExecutor` 保留运行时闭环需要的职责：
 
 - 绑定可信 `user_id`、`session_id` 和 request-scoped media；
-- 若 `ToolSpec.requires_confirmation=true`，检查
-  `request.metadata.tool_confirmation={confirmed: true, tool_name: ...}`；
 - 传播 cancel，read 工具按全局 provider retry policy 重试，非 read 工具不自动重试；
 - 写入运行态 tool call state、event 和 trace；持久化工具调用查询统一从 trace 派生；
 - 默认只向 trace 写入安全摘要；本地显式设置
@@ -370,7 +364,7 @@ step、工具名与 step 匹配，并且已确认输入的 digest 没有在确�
 - `audit_payload` 与 `raw_data_ref` 只通过同一 trace 脱敏边界保留安全投影，不再写入独立工具历史；
 - 将结构化 `ToolResult` 转成下一轮模型 observation。
 
-executor 对外只保留串行 `run_tool()`：依次绑定运行时输入、检查简单确认、创建 call record、调用
+executor 对外只保留串行 `run_tool()`：依次绑定运行时输入、创建 call record、调用
 Registry，并按同一调用栈写回 state/event/trace。系统不保留未被生产路径使用的 prepare/invoke/commit
 分段接口、PreparedToolCall 或 invocation 中间结果。
 
@@ -385,8 +379,8 @@ foreground ReAct 的重复保护使用 `tool_name + canonical tool_input` 的摘
 observation，随后用不暴露工具的 answer-only LLM 轮次形成最终回答。这样既允许修正输入，也不会用
 相同参数反复请求 Provider。成功、失败和拒绝事件继续进入 trace；LLM 已处理工具失败并返回最终文本时，
 run 终态为 `completed`，响应通过 `degraded` 和 `handled_tool_failures` 保留诊断事实。
-`write` / `dangerous` 工具失败后可能存在副作用结果不确定性，因此 foreground ReAct 不允许沿用原确认
-自动修正或重试；下一轮直接进入 answer-only，由 LLM 解释失败或要求用户重新发起并重新确认。
+`write` / `dangerous` 工具失败后可能存在副作用结果不确定性，因此 foreground ReAct 不自动修正或
+重试；下一轮直接进入 answer-only，由 LLM 解释失败或要求用户重新发起。
 
 幂等语义不再由通用 ToolSpec 治理。具体 provider 若需要 idempotency key，应在领域 schema/adapter 或
 durable task 协议中处理；通用 executor 不维护进程内重复调用 ledger。
@@ -398,32 +392,27 @@ TaskEvent，事件只记录 delivery id、channel、状态、尝试次数和安�
 `NotificationDeliveryWorker` 通过 lease、重试、过期和 dead-letter 状态机完成；订阅取消、worker
 重启或相同 idempotency key 重放都不能制造第二次发送。默认测试只使用 mock transport。
 
+`lodging_search` 属于内置 `lodging` Tool Plugin，只提供结构化酒店报价读取，明确不提供预订、占房或
+付款。mock mode 注册确定性本地 adapter；real mode 在没有显式稳定 Provider adapter 时不注册，
+不得回退到 mock。`hotel_price_watch_v1` durable workflow 可以重复调用它，但每次调用仍执行同一
+validator/executor/registry 治理，并受 task attempt、quantum、deadline、cancel 和 notification
+idempotency 约束。`hotel_price_watch_create` 只在 durable tasks 已启用且请求显式进入 durable/计划
+模式时暴露；普通 foreground 请求在 ActionValidator 边界拒绝它。
+
 工具不再各自声明 trace 脱敏策略。完整内容开关是本地运行级事实：默认关闭；开启后仍排除
 `raw_provider_payload`、`provider_raw_response` 和内联大块数据，并继续执行 secret、base64、绝对路径
 和长度清理。real 模式不应开启该变量。
 
-## 6. 确认语义
+## 6. 写工具执行语义
 
-确认是工具级布尔契约，不根据同一工具输入里的 `action` 动态切换：
-
-- `calendar_search`: `category=read`, `requires_confirmation=false`；
-- `calendar_create`: `category=write`, `requires_confirmation=true`；
-
-未确认的通用写工具不会调用 `tool.run()`，而是返回：
-
-```json
-{
-  "status": "confirmation_required",
-  "requires_confirmation": true
-}
-```
-
-确认 metadata 只能确认同名工具；模型在 tool input 中自行添加 `confirmed=true` 不构成授权。
+系统不维护第二次用户确认状态。Tool 被本轮 `RunToolCatalog` 暴露并通过 `ActionValidator` 后，
+`ToolExecutor` 直接调用 `tool.run()`。`category=write|dangerous` 仍用于暴露策略、禁用自动重试、
+Trace 和副作用分析；具体 Provider 的幂等键继续由领域 schema/adapter 或 durable task 注入。
 
 ## 7. MCP、本地工具和 workflow
 
 MCP 定义先经过 server allowlist，再转换成 namespace tool name 和简单 ToolSpec：read-only MCP 工具是
-`category=read`；其他 MCP 工具是 `category=write` 且需要确认。注册后的 MCP proxy 走相同
+`category=read`；其他 MCP 工具是 `category=write`。注册后的 MCP proxy 走相同
 `ActionValidator -> ToolExecutor -> ToolRegistry` 链路。
 
 ### 7.1 weather / calendar / email 真实 MCP 配置
@@ -467,8 +456,8 @@ weather、calendar search 和 contacts mapping 必须位于 `read_only_tools`。
 - `workspace_mcp_v1` 把稳定 `calendar_search` / `calendar_create` 分别转换为 `get_events` /
   `manage_event`，并注入本地 `calendar_user_email`；创建动作固定为 `action=create`。
 
-`calendar_create` 不应放入 `enabled_tools`；它作为写工具仍需 runtime 的同名结构化确认。真实天气与
-日历只读能力只能在用户当次明确要求后，通过 Tool system eval 执行。该命令让真实 LLM 经过 Runtime
+`calendar_create` 只有在入口 profile、host 配置或本轮 `enabled_tools` 明确暴露时才可调用；暴露并
+通过校验后直接执行。真实天气与日历能力只能在 operator 显式启用真实工具的评测中执行。该命令让真实 LLM 经过 Runtime
 和工具治理链路自主调用外部 Provider，失败时明确报告：
 
 ```bash
@@ -478,8 +467,8 @@ weather、calendar search 和 contacts mapping 必须位于 `read_only_tools`。
   --case-id weather_beijing_today
 ```
 
-本地 `@tool` decorator 直接声明 `category`、`requires_confirmation` 和
-`requires_media`，不再要求 rich policy 或 per-tool timeout/retry metadata。CLI validate 检查能否生成
+本地 `@tool` decorator 直接声明 `category` 和 `requires_media`，不再要求 rich policy 或
+per-tool timeout/retry metadata。CLI validate 检查能否生成
 合法 ToolSpec；simulate 仍通过 validator/executor 执行。
 
 workflow skill 只能调用已注册且 permission 匹配的工具。read 工具允许按 workflow retry 配置重试；
@@ -501,7 +490,7 @@ workflow skill 只能调用已注册且 permission 匹配的工具。read 工具
 - `services/context/tool_exposure.py`：category/profile/media 暴露规则；
 - `schemas/tool_spec_adapters.py`：OpenAI/MCP schema 转换；
 - `agent/action_validator.py`：run catalog、Pydantic、media、durable 校验；
-- `agent/tool_executor.py`：身份绑定、简单确认、调用和提交；
+- `agent/tool_executor.py`：身份绑定、调用和提交；
 - `tests/contract/tools/test_tool_governance.py`：工具治理稳定契约。
 
 ## 9. 不变量
@@ -511,7 +500,6 @@ workflow skill 只能调用已注册且 permission 匹配的工具。read 工具
 - category/profile/media 只基于结构化事实，不从自然语言推断；
 - Pydantic schema 是工具参数形状的权威；
 - 主模型工具调用链对同一输入只构造一次 Pydantic model；
-- 工具级确认只读可信 request metadata，不信任模型输入；
 - Memory、MCP、durable task、workflow、CLI 和 Gateway 不绕过统一工具边界；
 - 默认测试与 eval 保持 mock/local/offline，真实 provider 必须显式启用。
 - 任何普通工具执行失败都先是 ToolResult/observation；只有编排恢复策略、取消或 Runtime 自身失败可以决定

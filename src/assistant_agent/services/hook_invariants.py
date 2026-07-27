@@ -302,7 +302,7 @@ def _format_tool_call_key(key: tuple[str, str, str]) -> str:
 def _is_validation_rejection(event: TraceEvent) -> bool:
     if event.status in VALIDATION_REJECTION_STATUSES:
         return True
-    for key in ("validation_status", "confirmation_state", "decision"):
+    for key in ("validation_status", "decision"):
         value = _dict_str(event.attributes, key)
         if value in VALIDATION_REJECTION_STATUSES:
             return True

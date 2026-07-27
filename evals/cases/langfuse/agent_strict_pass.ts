@@ -76,7 +76,7 @@ function evaluate({
     ),
   };
 
-  if (capability === "write_with_confirmation") {
+  if (capability === "write_tool") {
     const added = Array.isArray(diff.added) ? diff.added : [];
     const expectedEvent = expected.required_event ?? {};
     checks.target_event_created =
@@ -95,10 +95,6 @@ function evaluate({
       (result: any) =>
         result.tool_name === "calendar_create" && result.status === "accepted",
     );
-    checks.confirmation_present =
-      actual.request_metadata?.tool_confirmation?.confirmed === true &&
-      actual.request_metadata?.tool_confirmation?.tool_name ===
-        "calendar_create";
   } else if (capability === "read_only_tool") {
     const execution = executions[0] ?? {};
     const returnedEvents = execution.output?.data?.events ?? [];
@@ -152,18 +148,13 @@ function evaluate({
       emptyArray(diff.modified) &&
       emptyArray(diff.deleted) &&
       emptyArray(diff.duplicate_groups);
-  } else if (capability === "real_confirmation_guard") {
-    checks.confirmation_required =
-      executions.length === 1 &&
-      executions[0].status === "pending_confirmation" &&
-      executions[0].confirmation_pending === true;
-    checks.state_unchanged =
-      JSON.stringify(actual.initial_state) ===
-        JSON.stringify(actual.final_state) &&
-      emptyArray(diff.added) &&
-      emptyArray(diff.modified) &&
-      emptyArray(diff.deleted) &&
-      emptyArray(diff.duplicate_groups);
+  } else if (capability === "real_write_tool") {
+    checks.tools_succeeded = requiredTools.every((name: string) =>
+      executions.some(
+        (execution: any) =>
+          execution.name === name && execution.status === "succeeded",
+      ),
+    );
   } else {
     checks.supported_capability = false;
   }
@@ -179,7 +170,6 @@ function evaluate({
     tool_behavior_valid:
       checks.tool_succeeded ??
       checks.tools_succeeded ??
-      checks.confirmation_required ??
       checks.no_tool_called ??
       false,
   };

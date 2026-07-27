@@ -57,14 +57,11 @@ class ProactiveRuleValidator:
                 code="proactive_tool_unknown",
                 message="Probe tool is not registered.",
             )
-        if spec.category != "read" or spec.requires_confirmation:
+        if spec.category != "read":
             return ProactiveRuleValidation(
                 accepted=False,
                 code="proactive_tool_not_read_only",
-                message=(
-                    "Probe tool must be auto-executable, confirmation-free, read-only, "
-                    "and declare no resource writes."
-                ),
+                message="Probe tool must be read-only and declare no resource writes.",
             )
         try:
             tool = self.registry.get(rule.probe.tool_name)

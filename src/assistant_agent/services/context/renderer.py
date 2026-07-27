@@ -104,7 +104,8 @@ def _render_request_context_lines(request: UserRequest, lines: list[str]) -> str
     if request_prefers_plan_mode(request):
         lines.append(
             "调用方计划模式提示：plan_and_solve 是历史兼容字段；"
-            "需要持久化计划时只能调用本轮显式暴露的 task_plan_submit 工具。"
+            "需要持久化通用计划时调用 task_plan_submit；创建酒店价格监控时可调用本轮显式暴露的 "
+            "hotel_price_watch_create。"
         )
     return "\n".join(lines)
 

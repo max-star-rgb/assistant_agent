@@ -15,7 +15,6 @@ from assistant_agent.schemas.tools import RunToolCatalog, ToolCallRecord, ToolRe
 from assistant_agent.schemas.agent_communication import DEFAULT_AGENT_ID
 from assistant_agent.services.identifiers import (
     new_run_id,
-    new_session_id,
     new_tool_call_id,
     new_trace_id,
 )

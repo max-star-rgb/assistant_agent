@@ -58,7 +58,6 @@ class LocalFileReadTool(ToolBase):
     input_schema = FileReadRequest
     output_schema = FileReadResult
     category = "read"
-    requires_confirmation = False
     input_bindings = (
         ToolInputBinding(field="max_chars", source="constant", value=12_000),
     )

@@ -205,8 +205,8 @@ def test_default_registry_owns_read_only_email_tools_and_hides_limits() -> None:
     assert registry.registration_record("email_read").plugin_id == "email_access"
     assert search.category == "read"
     assert read.category == "read"
-    assert search.requires_confirmation is False
-    assert read.requires_confirmation is False
+    assert not hasattr(search, "requires_confirmation")
+    assert not hasattr(read, "requires_confirmation")
     assert set(search.input_schema["properties"]) == {"query", "page_token"}
     assert set(read.input_schema["properties"]) == {"message_ids"}
     assert {

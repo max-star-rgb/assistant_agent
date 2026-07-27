@@ -42,7 +42,6 @@ class _ConfiguredRuntimeTool(ToolBase):
     input_schema = _ConfiguredInput
     output_schema = ToolResult
     category = "read"
-    requires_confirmation = False
 
     def _run(self, input: _ConfiguredInput, context: ToolContext) -> ToolResult:
         return ToolResult(

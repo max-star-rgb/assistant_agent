@@ -32,7 +32,6 @@ class _ReminderProbeTool(ToolBase):
     input_schema = _NoInput
     output_schema = ToolResult
     category = "read"
-    requires_confirmation = False
 
     def _run(self, input: _NoInput, context: ToolContext) -> ToolResult:
         return ToolResult(tool_name=self.name, success=True)

@@ -107,7 +107,7 @@ def test_default_registry_exposes_file_read_with_runtime_owned_limit(
 
     assert registry.registration_record("file_read").plugin_id == "local_file_access"
     assert spec.category == "read"
-    assert spec.requires_confirmation is False
+    assert not hasattr(spec, "requires_confirmation")
     assert set(spec.input_schema["properties"]) == {"path", "cursor"}
     assert tool.root == tmp_path.resolve()
 

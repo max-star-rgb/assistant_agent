@@ -10,7 +10,6 @@ from assistant_agent.schemas.tools import ToolResult
 ToolLifecycleStatus = Literal[
     "succeeded",
     "failed",
-    "pending_confirmation",
     "cancelled_before_commit",
     "committed",
     "interrupted_after_commit",
@@ -33,13 +32,6 @@ def build_tool_lifecycle_summary(
 
     if data.get("status") == "deferred":
         return _summary("deferred", committed=False, cancellable=False, next_action="resume_later")
-    if status == "pending_confirmation" or _requires_confirmation(data):
-        return _summary(
-            "pending_confirmation",
-            committed=False,
-            cancellable=True,
-            next_action="await_confirmation",
-        )
     if cancel_metadata:
         if result.success and committed_effect:
             return _summary(
@@ -59,10 +51,6 @@ def build_tool_lifecycle_summary(
     if committed_effect:
         return _summary("committed", committed=True, cancellable=False, next_action="report_result")
     return _summary("succeeded", committed=False, cancellable=False, next_action="report_result")
-
-
-def _requires_confirmation(data: dict[str, Any]) -> bool:
-    return data.get("requires_confirmation") is True or bool(data.get("confirmation_id"))
 
 
 def _summary(

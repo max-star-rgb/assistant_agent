@@ -11,7 +11,10 @@ from pydantic import BaseModel, Field
 
 from assistant_agent.services.provider_errors import sanitize_error_detail, sanitize_error_message
 from assistant_agent.services.hook_dispatch import HookDispatchError, build_hook_dispatch_error
-from assistant_agent.services.identifiers import new_span_id, new_trace_id
+from assistant_agent.services.identifiers import (
+    new_span_id,
+    new_trace_id as new_trace_id,
+)
 
 
 TraceEventType = Literal[

@@ -102,7 +102,6 @@ class DurableTaskResponse(BaseModel):
     task: dict[str, Any]
     plan: dict[str, Any]
     steps: list[dict[str, Any]] = Field(default_factory=list)
-    confirmations: list[dict[str, Any]] = Field(default_factory=list)
     artifacts: list[dict[str, Any]] = Field(default_factory=list)
 
 

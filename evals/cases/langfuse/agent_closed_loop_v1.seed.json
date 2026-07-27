@@ -13,14 +13,10 @@
         "user_request": {
           "user_id": "eval-calendar-user",
           "session_id": "eval-calendar-session",
-          "text": "我确认要把“洗牙”加入日历：2026-07-25 15:00 到 16:00，地点是静安牙科诊所，并备注提前十分钟到。创建后复述时间和地点。",
+          "text": "把“洗牙”加入日历：2026-07-25 15:00 到 16:00，地点是静安牙科诊所，并备注提前十分钟到。创建后复述时间和地点。",
           "metadata": {
             "tool_visibility": {
               "enabled_tools": ["calendar_create"]
-            },
-            "tool_confirmation": {
-              "confirmed": true,
-              "tool_name": "calendar_create"
             }
           }
         }
@@ -40,7 +36,7 @@
       },
       "metadata": {
         "suite": "agent_closed_loop",
-        "capability": "write_with_confirmation",
+        "capability": "write_tool",
         "domain": "personal_productivity",
         "fixture": "calendar_dentist_v1",
         "required_tools": ["calendar_create"],

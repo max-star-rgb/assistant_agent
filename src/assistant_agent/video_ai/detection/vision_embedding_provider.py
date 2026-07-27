@@ -130,7 +130,7 @@ class DashScopeVisionEmbeddingProvider:
                 code="provider_unavailable",
                 message=str(exc.reason),
             )
-        except json.JSONDecodeError as exc:
+        except json.JSONDecodeError:
             return _failed_result(
                 provider=self.provider,
                 model=self.config.model,

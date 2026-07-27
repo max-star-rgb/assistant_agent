@@ -713,8 +713,6 @@ def _task_state_progress_message(payload: dict[str, Any]) -> str:
         return "Using previous findings to revise the task."
     if strategy == "resume_from_checkpoint":
         return "Resuming from the latest task checkpoint."
-    if strategy == "ask_confirmation":
-        return "Waiting on confirmation before continuing."
     if strategy == "compensate":
         return "Preparing a safe follow-up for an already created result."
     if strategy == "report_committed":

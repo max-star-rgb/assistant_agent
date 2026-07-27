@@ -23,7 +23,6 @@ TRAJECTORY_REDACTION = {
 _SAFE_ATTRIBUTE_KEYS = {
     "budget_ratio",
     "cancel_source",
-    "confirmation_state",
     "context_usage_ratio",
     "decision_type",
     "output_type",

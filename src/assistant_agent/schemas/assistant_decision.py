@@ -3,9 +3,7 @@
 from typing import Any
 
 from assistant_agent.schemas.assistant_output import (
-    AssistantTextOutput,
     AssistantToolCall,
-    AssistantTurnOutput,
     NativeToolCall,
     native_tool_call_to_assistant_output,
     openai_tool_call_to_native_tool_call,

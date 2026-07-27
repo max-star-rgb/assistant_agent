@@ -3,7 +3,6 @@
 import asyncio
 import hashlib
 import json
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from time import perf_counter, time
 from typing import TYPE_CHECKING, Any, Literal
@@ -108,6 +107,21 @@ class AgentGraphRuntime:
             or create_long_term_memory_service(self.config)
         )
         self.durable_task_service = durable_task_service
+        self.notification_outbox_store = None
+        if (
+            self.config.durable_tasks_enabled
+            and (
+                self.durable_task_service is None
+                or self.durable_task_service.notification_outbox is None
+            )
+        ):
+            from assistant_agent.services.proactive_wake.store import (
+                SQLiteProactiveWakeStore,
+            )
+
+            self.notification_outbox_store = SQLiteProactiveWakeStore(
+                self.config.durable_notification_path
+            )
         if registry is None:
             if self.config.durable_tasks_enabled and self.durable_task_service is None:
                 bootstrap_registry = ToolRegistry()
@@ -117,6 +131,11 @@ class AgentGraphRuntime:
                     max_plan_steps=self.config.max_plan_steps,
                     max_plan_revisions=self.config.max_plan_revisions,
                     lease_seconds=self.config.durable_task_lease_seconds,
+                    max_task_seconds=self.config.durable_task_max_seconds,
+                    max_workflow_quanta=(
+                        self.config.durable_workflow_max_quanta
+                    ),
+                    notification_outbox=self.notification_outbox_store,
                 )
             self.registry = create_default_registry(
                 self.config,
@@ -135,11 +154,23 @@ class AgentGraphRuntime:
                     max_plan_steps=self.config.max_plan_steps,
                     max_plan_revisions=self.config.max_plan_revisions,
                     lease_seconds=self.config.durable_task_lease_seconds,
+                    max_task_seconds=self.config.durable_task_max_seconds,
+                    max_workflow_quanta=(
+                        self.config.durable_workflow_max_quanta
+                    ),
+                    notification_outbox=self.notification_outbox_store,
                 )
                 if "task_plan_submit" not in self.registry.list():
                     raise ValueError(
                         "A custom Registry for durable tasks must include task_plan_submit before runtime startup."
                     )
+        if (
+            self.durable_task_service is not None
+            and self.durable_task_service.notification_outbox is None
+        ):
+            self.durable_task_service.notification_outbox = (
+                self.notification_outbox_store
+            )
         registry_get = getattr(self.registry, "get", None)
         if registry is not None and callable(registry_get):
             try:
@@ -642,23 +673,6 @@ class AgentGraphRuntime:
                     TaskCheckpoint(kind="plan_revised", summary="Plan revised."),
                     state,
                 )
-            if (tool_result.data or {}).get("requires_confirmation") is True:
-                return TaskQuantumResult(
-                    TaskCheckpoint(
-                        kind="waiting_confirmation",
-                        step_id=decision.step_id,
-                        summary=str((tool_result.data or {}).get("summary") or "Confirmation required."),
-                        tool_name=decision.tool_name,
-                        tool_input_digest=_durable_tool_input_digest(decision.tool_input or {}),
-                        confirmation_expires_at=datetime.now(timezone.utc) + timedelta(minutes=15),
-                        confirmation_summary=_durable_confirmation_summary(
-                            decision.tool_name or "tool",
-                            decision.tool_input or {},
-                        ),
-                    ),
-                    state,
-                    active_binding,
-                )
             if (tool_result.data or {}).get("side_effect_state") == "unknown":
                 return TaskQuantumResult(
                     TaskCheckpoint(
@@ -1075,32 +1089,6 @@ def _durable_tool_input_digest(tool_input: dict[str, Any]) -> str:
         default=str,
     ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
-
-
-def _durable_confirmation_summary(tool_name: str, tool_input: dict[str, Any]) -> str:
-    """Render bounded final arguments while redacting credential-shaped values."""
-
-    sensitive = {"api_key", "authorization", "cookie", "password", "secret", "token"}
-
-    def scrub(value: Any, key: str = "") -> Any:
-        if any(marker in key.lower() for marker in sensitive):
-            return "[REDACTED]"
-        if isinstance(value, dict):
-            return {str(item_key): scrub(item, str(item_key)) for item_key, item in value.items()}
-        if isinstance(value, list):
-            return [scrub(item) for item in value[:20]]
-        if isinstance(value, str):
-            return value[:240]
-        return value
-
-    arguments = json.dumps(
-        scrub(tool_input),
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        default=str,
-    )
-    return f"Approve {tool_name} with final arguments: {arguments}"[:1000]
 
 
 def _durable_tool_result_summary(result: ToolResult) -> str:

@@ -6,6 +6,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field, model_validator
 
+from assistant_agent.schemas.durable_tasks import TaskResumeRequest
 from assistant_agent.schemas.notifications import (
     DeliveryResult as DeliveryResult,
     DeliveryStatus as DeliveryStatus,
@@ -15,7 +16,7 @@ from assistant_agent.schemas.notifications import (
 
 WakeSignalKind = Literal["provider_event", "reconcile_tick", "manual"]
 WakeConditionMode = Literal["changed", "semantic"]
-WakeDecisionOutcome = Literal["silent", "notify"]
+WakeDecisionOutcome = Literal["silent", "notify", "resume"]
 AttentionOutcome = Literal["allow", "defer", "suppress"]
 WakeRunStatus = Literal[
     "received",
@@ -28,6 +29,7 @@ WakeRunStatus = Literal[
     "notify_candidate",
     "suppressed",
     "enqueued",
+    "resume_requested",
     "delivered",
     "delivery_failed",
 ]
@@ -76,6 +78,12 @@ class WakeAttentionSpec(BaseModel):
     minimum_severity: Severity = "normal"
 
 
+class WakeResumeTarget(BaseModel):
+    task_id: str = Field(min_length=1)
+    expected_task_version: int = Field(ge=1)
+    wait_id: str = Field(min_length=1)
+
+
 class WakeRule(BaseModel):
     rule_id: str = Field(default_factory=lambda: _id("wake_rule"), min_length=1)
     owner: WakeOwner
@@ -86,6 +94,7 @@ class WakeRule(BaseModel):
     probe: WakeProbeSpec
     condition: WakeConditionSpec
     attention: WakeAttentionSpec = Field(default_factory=WakeAttentionSpec)
+    resume_target: WakeResumeTarget | None = None
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 
@@ -129,10 +138,12 @@ class WakeDecision(BaseModel):
 
     @model_validator(mode="after")
     def validate_outcome_payload(self) -> "WakeDecision":
-        if self.outcome == "silent" and self.user_message is not None:
-            raise ValueError("silent decision must not include user_message")
+        if self.outcome in {"silent", "resume"} and self.user_message is not None:
+            raise ValueError(f"{self.outcome} decision must not include user_message")
         if self.outcome == "notify" and (not self.user_message or not self.evidence_ids):
             raise ValueError("notify decision requires user_message and evidence_ids")
+        if self.outcome == "resume" and not self.evidence_ids:
+            raise ValueError("resume decision requires evidence_ids")
         return self
 
 
@@ -172,3 +183,4 @@ class WakeRun(BaseModel):
 class ProactiveWakeRunResult(BaseModel):
     run: WakeRun
     notification: NotificationEnvelope | None = None
+    resume_request: TaskResumeRequest | None = None

@@ -424,7 +424,15 @@ def _durable_task_context(
         "wait": (
             {
                 key: wait[key]
-                for key in ("kind", "step_id", "confirmation_id", "message", "missing_inputs")
+                for key in (
+                    "kind",
+                    "step_id",
+                    "reason_code",
+                    "summary",
+                    "next_eligible_at",
+                    "wake_rule_id",
+                    "expires_at",
+                )
                 if key in wait
             }
             if wait

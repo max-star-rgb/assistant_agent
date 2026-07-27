@@ -44,10 +44,6 @@ def build_pre_tool_call_summary(
                 "run_id": state.run_id,
             },
             "side_effect": side_effect,
-            "confirmation": {
-                "required": bool(side_effect.get("requires_confirmation")),
-                "kind": side_effect.get("confirmation_kind"),
-            },
             "tool_contract": tool_contract,
             "input_summary": _policy_safe_input_summary(tool_input),
             "realtime_task_state": _realtime_task_state_summary(request),
@@ -102,11 +98,6 @@ def build_post_tool_call_summary(
             },
             "side_effect": side_effect,
             "tool_contract": tool_contract,
-            "confirmation": {
-                "required": bool(side_effect.get("requires_confirmation")),
-                "id": _data_string(result, "confirmation_id"),
-                "kind": side_effect.get("confirmation_kind"),
-            },
             "output_ref": result.output_ref,
             "latency_ms": result.latency_ms if result.latency_ms is not None else latency_ms,
             "retry_count": retry_count,
@@ -127,8 +118,6 @@ def _post_status(result: ToolResult, *, cancel_metadata: dict[str, Any] | None) 
     idempotency = data.get("idempotency")
     if isinstance(idempotency, dict) and idempotency.get("duplicate_suppressed") is True:
         return "duplicate_suppressed"
-    if data.get("requires_confirmation") is True or data.get("confirmation_id"):
-        return "pending_confirmation"
     return "succeeded" if result.success else "failed"
 
 
@@ -140,25 +129,18 @@ def _side_effect_summary(
     tool_spec: ToolSpec | None = None,
 ) -> dict[str, Any]:
     spec = tool_spec or _tool_spec_for(tool_name, registry=registry)
-    payload = {
-        "category": spec.category,
-        "requires_confirmation": spec.requires_confirmation,
-    }
+    payload = {"category": spec.category}
     if result is not None:
         data = result.data or {}
         override = data.get("side_effect")
         if isinstance(override, dict):
-            for key in ("level", "requires_confirmation", "confirmation_kind", "compensation_hint"):
+            for key in ("level", "compensation_hint"):
                 if key in override:
                     payload[key] = override[key]
         if isinstance(data.get("side_effect_level"), str):
             payload["level"] = data["side_effect_level"]
-        if isinstance(data.get("requires_confirmation"), bool):
-            payload["requires_confirmation"] = data["requires_confirmation"]
         if isinstance(data.get("compensation_hint"), str):
             payload["compensation_hint"] = _clip(data["compensation_hint"])
-        if result.success and not _result_requires_confirmation(data):
-            payload["requires_confirmation"] = False
     return payload
 
 
@@ -197,7 +179,6 @@ def _realtime_task_state_summary(request: UserRequest) -> dict[str, Any] | None:
         "pending_tool",
         "tts_state",
         "barge_in_source",
-        "pending_confirmation_count",
         "committed_side_effect_count",
         "compensatable_side_effect_count",
     ):
@@ -280,12 +261,6 @@ def _policy_safe_input_summary(tool_input: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _data_string(result: ToolResult, key: str) -> str | None:
-    data = result.data or {}
-    value = data.get(key)
-    return value if isinstance(value, str) and value else None
-
-
 def _error_code(error: str | None) -> str | None:
     if not error:
         return None
@@ -302,17 +277,6 @@ def _safe_error_message(error: str | None) -> str | None:
     if any(marker in lowered for marker in ("secret", "token", "password", "api_key", "apikey", "authorization", "bearer")):
         return "Tool failed with a redacted sensitive error."
     return _clip(safe)
-
-
-def _result_requires_confirmation(data: dict[str, Any]) -> bool:
-    return data.get("requires_confirmation") is True or bool(_metadata_string(data.get("confirmation_id")))
-
-
-def _metadata_string(value: Any) -> str | None:
-    if value is None:
-        return None
-    text = str(value).strip()
-    return text or None
 
 
 def _clip(value: str, *, max_chars: int = _MAX_SUMMARY_CHARS) -> str:

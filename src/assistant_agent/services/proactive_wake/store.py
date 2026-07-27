@@ -134,6 +134,7 @@ class SQLiteProactiveWakeStore:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as connection:
+            connection.execute("PRAGMA journal_mode=WAL")
             self._migrate(connection)
 
     def save_rule(self, rule: WakeRule) -> WakeRule:
@@ -815,7 +816,6 @@ class SQLiteProactiveWakeStore:
         try:
             connection.row_factory = sqlite3.Row
             connection.execute("PRAGMA foreign_keys=ON")
-            connection.execute("PRAGMA journal_mode=WAL")
             connection.execute("PRAGMA synchronous=NORMAL")
             connection.execute("PRAGMA busy_timeout=5000")
             yield connection

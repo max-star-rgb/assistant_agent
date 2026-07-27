@@ -26,22 +26,15 @@ WorkflowSkillRunStatus = Literal[
     "succeeded",
     "failed",
     "rejected",
-    "waiting_confirmation",
     "validation_failed",
 ]
 WorkflowSkillAttemptStatus = Literal[
     "succeeded",
     "failed",
     "rejected",
-    "waiting_confirmation",
 ]
 
 _UNSUPPORTED_STEP_KEYS = {"command", "exec", "shell", "http", "browser"}
-_WAITING_STATUSES = {
-    "confirmation_required",
-    "idempotency_key_required",
-    "idempotency_key_required_after_confirmation",
-}
 _WORKFLOW_AUDIT_REDACTION = {
     "raw_payloads_included": False,
     "provider_raw_responses_included": False,
@@ -577,15 +570,6 @@ class WorkflowSkillRunner:
             if status == "succeeded":
                 step_results[step.id] = result
                 return None
-            if status == "waiting_confirmation":
-                step_results[step.id] = result
-                return WorkflowSkillRunResult(
-                    success=False,
-                    status="waiting_confirmation",
-                    workflow_id=manifest.name,
-                    attempts=attempts,
-                    step_results=step_results,
-                )
             if attempt_number > step.retry.max_retries or not _step_retry_allowed(
                 result,
                 tool_spec=tool_spec,
@@ -945,10 +929,6 @@ def _last_error_summary(attempts: list[WorkflowSkillAttemptRecord]) -> str | Non
 
 
 def _next_step_id(result: WorkflowSkillRunResult) -> str | None:
-    if result.status == "waiting_confirmation":
-        for attempt in reversed(result.attempts):
-            if attempt.status == "waiting_confirmation":
-                return attempt.step_id
     if result.status in {"failed", "rejected"}:
         for attempt in reversed(result.attempts):
             if attempt.status in {"failed", "rejected"}:
@@ -1057,8 +1037,6 @@ def _bind_step_idempotency(
 
 
 def _attempt_status(result: ToolResult) -> WorkflowSkillAttemptStatus:
-    if result.success and isinstance(result.data, dict) and result.data.get("status") in _WAITING_STATUSES:
-        return "waiting_confirmation"
     if result.success:
         return "succeeded"
     return "failed"

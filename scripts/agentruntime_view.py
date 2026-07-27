@@ -69,7 +69,6 @@ DETAIL_ATTRIBUTE_KEYS = (
     "iteration",
     "risk",
     "side_effect",
-    "confirmation_state",
     "recovery_action",
     "retry_count",
     "budget_ratio",
@@ -1545,7 +1544,6 @@ def _append_react_timeline_details(details: list[str], event: dict[str, Any]) ->
         if isinstance(attributes, dict):
             _append_named(details, "risk", attributes.get("risk"))
             _append_named(details, "side_effect", attributes.get("side_effect"))
-            _append_named(details, "confirmation", attributes.get("confirmation_state"))
     elif name.startswith("tool."):
         if isinstance(attributes, dict):
             _append_named(details, "tool_call_id", attributes.get("tool_call_id"))
@@ -1562,7 +1560,6 @@ def _react_remaining_attribute_keys(name: str) -> tuple[str, ...]:
         "decision_type",
         "risk",
         "side_effect",
-        "confirmation_state",
         "tool_call_id",
         "recovery_action",
     }

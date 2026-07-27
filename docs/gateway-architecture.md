@@ -445,11 +445,10 @@ The durable `task_id` is not a Gateway `run_id`, is not inserted into the Gatewa
 
 - `GET /tasks/{task_id}`
 - `GET /tasks/{task_id}/events?after=<cursor>&limit=<n>`
-- `POST /tasks/{task_id}/confirmations`
 - `POST /tasks/{task_id}/input`
 - `POST /tasks/{task_id}/cancel`
 
-The API derives identity from the authenticated context (or explicit local/offline query identity), never from write-body `user_id`. Public projections omit lease tokens, confirmation/input digests, binding digests and step idempotency keys; pending confirmations include a bounded, credential-key-redacted summary of the final tool arguments so approval is not blind. FastAPI lifespan reuses the runtime-owned service, optionally starts one cooperative worker, stops it before Gateway shutdown, and closes the SQLite store once.
+The API derives identity from the authenticated context (or explicit local/offline query identity), never from write-body `user_id`. Public projections omit lease tokens, internal input digests and step idempotency keys. FastAPI lifespan reuses the runtime-owned service, optionally starts one cooperative worker, stops it before Gateway shutdown, and closes the SQLite store once.
 
 SQLite tasks survive app restart and expired leases can be reclaimed, but this is not a distributed queue or exactly-once protocol. A step attempt is committed before the external call; expired read-only attempts may retry within budget, while possible writes with uncertain commit state stop at `outcome_unknown` for operator/user resolution. API cancellation also raises a process-local cooperative task token; cross-process cancellation is outside the single-host first-version boundary.
 
@@ -462,6 +461,50 @@ atomically clears the wait, restores the waiting step to `ready`, records
 Cancelled tasks never resume; an expired scheduled wait fails with
 `durable_wait_expired`. This is worker scheduling, not a long-lived Gateway run,
 WebSocket or coroutine.
+
+Durable tasks may also checkpoint into `waiting_external_event`. That wait
+contains an opaque wait id, one `wake_rule_id`, a bounded reason and an optional
+expiry; it is never eligible for ordinary worker claim. ProactiveWake continues
+to run only governed read probes and, after meaningful evidence changes, emits
+a `TaskResumeRequest` rather than mutating the task. `DurableTaskService`
+validates authenticated owner, current task version, wait id, rule id and
+expiry, then records the evidence fingerprint and requeues the step exactly
+once. Stale, duplicate, cross-owner, cancelled and expired requests fail closed.
+This protocol keeps event detection outside Gateway and task transition
+authority inside the durable service.
+
+`TaskRecord.execution_profile` is a persisted, explicit runtime fact rather
+than inferred user intent. The default `agent` profile continues to use
+`AgentGraphRuntime`; a `DurableTaskRuntimeRouter` may select a registered,
+deterministic workflow for another exact profile. The first such workflow is
+`hotel_price_watch_v1`: each bounded quantum validates and executes the
+read-only `lodging_search` Tool through
+`ActionValidator -> ToolExecutor -> ToolRegistry`, compares the structured
+nightly price with the persisted goal, then either schedules the next check,
+completes without action at expiry, or completes with one idempotent
+notification request. It has no booking, inventory-hold or payment operation.
+Provider failure becomes a bounded scheduled retry and remains visible in
+workflow state; cancellation and the task deadline still belong to the common
+durable state machine.
+
+The local runtime uses separate bounded budgets for LLM-backed `agent` quanta
+and deterministic workflow quanta. Hotel watch creation is exposed only as
+`hotel_price_watch_create` in explicit durable/plan mode; foreground mode
+rejects all durable task submission tools. Local deployment controls are:
+
+```text
+MULTIMODAL_AGENT_DURABLE_TASKS_ENABLED
+MULTIMODAL_AGENT_DURABLE_TASK_WORKER_ENABLED
+MULTIMODAL_AGENT_DURABLE_TASK_PATH
+MULTIMODAL_AGENT_DURABLE_TASK_MAX_SECONDS
+MULTIMODAL_AGENT_DURABLE_WORKFLOW_MAX_QUANTA
+MULTIMODAL_AGENT_DURABLE_NOTIFICATION_PATH
+MULTIMODAL_AGENT_DURABLE_NOTIFICATION_WORKER_ENABLED
+```
+
+The built-in notification delivery worker starts only when explicitly enabled
+and only uses the mock transport in mock mode. Real mode may persist the
+outbox, but no channel sender is silently substituted.
 
 ## Realtime Semantic Interrupt Arbitration
 
@@ -697,13 +740,12 @@ Realtime event projection carries stable delivery semantics without moving contr
 | `response.chunk` | `stream.chunk` | `required` | `final` | supersedes the run progress slot |
 | `run.progress` | `event.progress` | `optional` | `ephemeral` | replaceable at `<run_id>:progress` |
 | `tool.started` / `tool.finished` / `tool.failed` | `event.tool` | `never` | `ephemeral` | not replaceable |
-| `confirmation.required` | `confirmation.required` | `required` | `ephemeral` | waits for a user reply |
 
 Every `run.end` supersedes the same progress slot, including completed, failed, and cancelled runs. This lets an entry adapter remove already displayed progress after a final answer or cancellation. Progress and tool lifecycle events remain display/trace state; they are not assistant final text and must not be promoted into conversation history or long-term memory.
 
 Provider text remains provisional until the current native LLM call is known not to contain tool calls. The runtime buffers streamed text for every tool-capable iteration, discards it when that iteration returns tool calls, and flushes it only when the iteration resolves as a final answer. This commit barrier prevents tool-call preambles from becoming `stream.chunk` output while keeping streaming as an event projection rather than the assistant loop itself.
 
-The repository still does not invoke a TTS provider. `speech_policy`, `persistence`, `replaceable`, `replacement_key`, and `supersedes` are prompt-safe entry-layer facts that UI or future audio adapters can consume. Pending tool confirmation is projected as `tool.finished` followed by `confirmation.required`, not as a misleading completed progress message.
+The repository still does not invoke a TTS provider. `speech_policy`, `persistence`, `replaceable`, `replacement_key`, and `supersedes` are prompt-safe entry-layer facts that UI or future audio adapters can consume.
 
 This boundary lets Gateway preserve OpenClaw-compatible session/run semantics without making Gateway depend on `AgentGraphRuntime` internals, `AgentRouter` internals, worker agent contracts, or a legacy OpenClaw adapter. If multi-agent realtime behavior is needed, the realtime turn must enter the main `AgentGraphRuntime` / assistant loop first; that main runtime can then delegate through the tool-governed agent communication boundary. Do not teach worker agents Gateway frames such as `call.incoming`, `call.hangup`, or WebSocket payloads.
 

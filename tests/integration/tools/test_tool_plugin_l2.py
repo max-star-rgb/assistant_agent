@@ -36,7 +36,6 @@ class _ConfiguredReadTool(ToolBase):
     input_schema = _EmptyInput
     output_schema = ToolResult
     category = "read"
-    requires_confirmation = False
 
     def _run(self, input: BaseModel, context: ToolContext) -> ToolResult:
         return ToolResult(tool_name=self.name, success=True, data={"configured": True})

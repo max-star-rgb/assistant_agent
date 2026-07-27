@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Any, Literal
+from uuid import uuid4
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -15,7 +16,7 @@ TaskStatus = Literal[
     "queued",
     "running",
     "waiting_schedule",
-    "waiting_confirmation",
+    "waiting_external_event",
     "waiting_input",
     "replanning",
     "outcome_unknown",
@@ -31,7 +32,7 @@ TaskStepStatus = Literal[
     "succeeded",
     "failed",
     "waiting_schedule",
-    "waiting_confirmation",
+    "waiting_external_event",
     "waiting_input",
     "skipped",
     "cancelled",
@@ -47,23 +48,58 @@ def utc_now() -> datetime:
 class TaskWaitState(BaseModel):
     """Structured, persisted reason why a durable task is not currently claimable."""
 
-    kind: Literal["schedule"]
+    kind: Literal["schedule", "external_event"]
+    wait_id: str = Field(
+        default_factory=lambda: f"task_wait_{uuid4().hex}",
+        min_length=1,
+    )
     reason_code: str = Field(min_length=1, max_length=120)
     summary: str = Field(min_length=1, max_length=500)
     step_id: str | None = Field(default=None, min_length=1)
-    next_eligible_at: datetime
+    next_eligible_at: datetime | None = None
+    wake_rule_id: str | None = Field(default=None, min_length=1)
     expires_at: datetime | None = None
 
     @model_validator(mode="after")
-    def validate_schedule(self) -> "TaskWaitState":
-        if self.next_eligible_at.tzinfo is None:
+    def validate_wait(self) -> "TaskWaitState":
+        if self.kind == "schedule":
+            if self.next_eligible_at is None:
+                raise ValueError("scheduled wait requires next_eligible_at")
+            if self.wake_rule_id is not None:
+                raise ValueError("scheduled wait must not include wake_rule_id")
+        else:
+            if self.wake_rule_id is None:
+                raise ValueError("external-event wait requires wake_rule_id")
+            if self.next_eligible_at is not None:
+                raise ValueError("external-event wait must not include next_eligible_at")
+        if (
+            self.next_eligible_at is not None
+            and self.next_eligible_at.tzinfo is None
+        ):
             raise ValueError("next_eligible_at must be timezone-aware")
         if self.expires_at is not None:
             if self.expires_at.tzinfo is None:
                 raise ValueError("expires_at must be timezone-aware")
-            if self.expires_at <= self.next_eligible_at:
+            if (
+                self.next_eligible_at is not None
+                and self.expires_at <= self.next_eligible_at
+            ):
                 raise ValueError("expires_at must be later than next_eligible_at")
         return self
+
+
+class TaskResumeRequest(BaseModel):
+    """A ProactiveWake-produced request to resume one exact persisted wait."""
+
+    task_id: str = Field(min_length=1)
+    user_id: str = Field(min_length=1)
+    agent_id: str = Field(min_length=1)
+    expected_task_version: int = Field(ge=1)
+    wait_id: str = Field(min_length=1)
+    wake_rule_id: str = Field(min_length=1)
+    evidence_ids: list[str] = Field(min_length=1)
+    evidence_fingerprint: str = Field(min_length=1)
+    requested_at: datetime = Field(default_factory=utc_now)
 
 
 class TaskNotificationRequest(BaseModel):
@@ -93,6 +129,9 @@ class TaskRecord(BaseModel):
     session_id: str = Field(min_length=1)
     ingress_run_id: str = Field(min_length=1)
     objective: str = Field(min_length=1)
+    execution_profile: str = Field(default="agent", min_length=1)
+    workflow_payload: dict[str, Any] = Field(default_factory=dict)
+    workflow_state: dict[str, Any] = Field(default_factory=dict)
     active_constraints: list[str] = Field(default_factory=list)
     status: TaskStatus = "queued"
     current_plan_version: int = Field(default=1, ge=1)
@@ -103,6 +142,7 @@ class TaskRecord(BaseModel):
     lease_token: str | None = None
     lease_expires_at: datetime | None = None
     wait: TaskWaitState | None = None
+    consumed_resume_keys: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
     started_at: datetime | None = None
@@ -116,7 +156,6 @@ class TaskPlanVersion(BaseModel):
     revision_reason: str = Field(min_length=1)
     inherited_step_ids: list[str] = Field(default_factory=list)
     replaced_step_ids: list[str] = Field(default_factory=list)
-    invalidated_confirmation_ids: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=utc_now)
 
 
@@ -128,7 +167,7 @@ class TaskStepRun(BaseModel):
     attempt: int = Field(default=0, ge=0)
     idempotency_key: str = Field(min_length=1)
     tool_name: str | None = None
-    side_effect_level: str = "pending_confirmation"
+    side_effect_level: str = "none"
     tool_input_digest: str | None = None
     output_ref: str | None = None
     summary: str = ""
@@ -147,21 +186,6 @@ class TaskEvent(BaseModel):
     created_at: datetime = Field(default_factory=utc_now)
 
 
-class TaskConfirmation(BaseModel):
-    confirmation_id: str = Field(min_length=1)
-    task_id: str = Field(min_length=1)
-    plan_version: int = Field(ge=1)
-    step_id: str = Field(min_length=1)
-    tool_name: str = Field(min_length=1)
-    input_digest: str = Field(min_length=1)
-    binding_digest: str = Field(min_length=1)
-    summary: str = Field(min_length=1, max_length=1_000)
-    status: Literal["pending", "approved", "rejected", "expired"] = "pending"
-    expires_at: datetime
-    decided_by_user_id: str | None = None
-    decided_at: datetime | None = None
-
-
 class TaskArtifactRef(BaseModel):
     artifact_ref: str = Field(min_length=1)
     kind: str = Field(min_length=1)
@@ -175,7 +199,6 @@ class DurableTaskBundle(BaseModel):
     task: TaskRecord
     plans: list[TaskPlanVersion] = Field(min_length=1)
     step_runs: list[TaskStepRun] = Field(default_factory=list)
-    confirmations: list[TaskConfirmation] = Field(default_factory=list)
     artifacts: list[TaskArtifactRef] = Field(default_factory=list)
 
     @model_validator(mode="after")
@@ -202,6 +225,9 @@ class DurableTaskBundle(BaseModel):
 class DurableTaskSnapshot(BaseModel):
     task_id: str
     objective: str
+    execution_profile: str
+    workflow_payload: dict[str, Any]
+    workflow_state: dict[str, Any]
     active_constraints: list[str]
     task_status: TaskStatus
     plan_version: int
@@ -221,10 +247,6 @@ class TrustedTaskBinding(BaseModel):
     lease_token: str
     ready_step_ids: list[str]
     step_idempotency_keys: dict[str, str] = Field(default_factory=dict)
-    verified_confirmation_id: str | None = None
-    verified_confirmation_step_id: str | None = None
-    verified_confirmation_tool_name: str | None = None
-    verified_confirmation_input_digest: str | None = None
 
 
 class DurableTaskLease(BaseModel):
@@ -240,7 +262,7 @@ class TaskCheckpoint(BaseModel):
         "tool_succeeded",
         "tool_failed",
         "waiting_schedule",
-        "waiting_confirmation",
+        "waiting_external_event",
         "waiting_input",
         "plan_revised",
         "completed",
@@ -255,17 +277,22 @@ class TaskCheckpoint(BaseModel):
     error_message: str | None = None
     tool_name: str | None = None
     tool_input_digest: str | None = None
-    confirmation_expires_at: datetime | None = None
-    confirmation_summary: str | None = Field(default=None, max_length=1_000)
     wait: TaskWaitState | None = None
     notification: TaskNotificationRequest | None = None
+    workflow_state_patch: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def validate_wait_checkpoint(self) -> "TaskCheckpoint":
-        if self.kind == "waiting_schedule" and self.wait is None:
-            raise ValueError("waiting_schedule checkpoint requires wait")
-        if self.kind != "waiting_schedule" and self.wait is not None:
-            raise ValueError("wait is only valid for waiting_schedule checkpoint")
+        waiting_kind = {
+            "waiting_schedule": "schedule",
+            "waiting_external_event": "external_event",
+        }.get(self.kind)
+        if waiting_kind is not None and self.wait is None:
+            raise ValueError(f"{self.kind} checkpoint requires wait")
+        if waiting_kind is None and self.wait is not None:
+            raise ValueError("wait is only valid for waiting checkpoints")
+        if self.wait is not None and self.wait.kind != waiting_kind:
+            raise ValueError("checkpoint kind does not match wait kind")
         if self.notification is not None and self.kind != "completed":
             raise ValueError("notification is only valid for completed checkpoint")
         return self

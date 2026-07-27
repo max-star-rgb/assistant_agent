@@ -126,7 +126,7 @@ Score metadata 中供失败诊断，不再各自占据 UI。最终回答质量�
 LLM-as-a-Judge Evaluator 单独评估。
 
 更完整的 `assistant-agent-real-system-v1` Dataset 覆盖无工具克制、必要澄清、天气、日历读取、
-本地文件、购物、网页搜索/抓取、图片理解、图片生成、多工具组合和日历写入确认边界。它使用项目级
+本地文件、购物、网页搜索/抓取、图片理解、图片生成、多工具组合和日历写入。它使用项目级
 `assistant-agent-tool-semantic-pass-zh` 和 `assistant-agent-answer-semantic-pass-zh` 两个裁判：
 `agent.tool_semantic_pass` 判断工具选择、参数和结果在用户语境中是否正确，
 `agent.answer_semantic_pass` 判断最终回答是否忠于工具证据并满足验收标准。这样可以区分“工具机械执行
@@ -148,8 +148,9 @@ Trace 证据、失败原因和可操作的改进方向，但不复述无关 Trac
   --run-name my-real-system-eval
 ```
 
-该 profile 使用当前 Registry 中实际配置成功的能力，但不自动执行未确认写操作，也不写入真实 Memory。
-日历创建案例只验证 confirmation guard，不会制造无法清理的真实事件。
+该 profile 使用当前 Registry 中实际配置成功的能力，不写入真实 Memory。写工具被本轮 Tool Catalog
+暴露并通过 Validator 后会直接执行；日历创建案例会产生真实测试事件，运行前应使用独立测试身份，
+运行后按 Provider 能力清理。
 
 完整运行应满足：Dataset item 数量与 seed 一致，并且每个 item 都有四个分层 Score。真实 Runtime
 抛出的网络或协议异常会被评测边界转换为 `terminal_status=failed` 和
@@ -245,7 +246,7 @@ Evaluator。Score 均由 Langfuse 异步生成，不由 Python runner 回写。
 
 - 不提交 API key、token、真实 `.env`、Provider 原始响应或真实用户数据；
 - system eval 使用唯一测试身份和只读场景优先；
-- 写入型场景必须具备 confirmation、独立 namespace 和可验证 cleanup；
+- 写入型场景必须具备独立 namespace、幂等键和可验证 cleanup；
 - 缺少配置、认证失败、超时、限流或外部服务异常必须明确失败或 blocked；
 - system eval artifact 写入 `.data/evals/system/`；
 - case eval 的 Dataset、Experiment 和 Score 以 Langfuse 为权威；

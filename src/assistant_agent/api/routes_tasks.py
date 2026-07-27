@@ -31,13 +31,6 @@ from assistant_agent.services.durable_tasks.store import TaskStoreError
 router = APIRouter(prefix="/tasks", tags=["durable-tasks"])
 
 
-class TaskConfirmationRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    confirmation_id: str = Field(min_length=1, max_length=200)
-    approved: bool
-
-
 class TaskInputRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -121,27 +114,6 @@ def get_task_events(
     )
 
 
-@router.post("/{task_id}/confirmations", response_model=DurableTaskResponse)
-def confirm_task(
-    task_id: str,
-    body: TaskConfirmationRequest,
-    identity: RequestIdentity = Depends(task_request_identity),
-    service: DurableTaskService = Depends(get_durable_task_service),
-) -> DurableTaskResponse:
-    try:
-        bundle = service.confirm(
-            identity=identity,
-            task_id=task_id,
-            confirmation_id=body.confirmation_id,
-            approved=body.approved,
-        )
-        return _task_response(bundle)
-    except TaskNotFound as exc:
-        raise _http_error(409, "TASK_CONFIRMATION_INVALID", "Task confirmation is invalid.") from exc
-    except (DurableTaskError, TaskStoreError) as exc:
-        raise _map_task_error(exc) from exc
-
-
 @router.post("/{task_id}/input", response_model=DurableTaskResponse)
 def provide_task_input(
     task_id: str,
@@ -215,18 +187,6 @@ def _task_response(bundle: Any) -> DurableTaskResponse:
         },
         plan=plan.plan.model_dump(mode="json"),
         steps=steps,
-        confirmations=[
-            {
-                "confirmation_id": item.confirmation_id,
-                "step_id": item.step_id,
-                "tool_name": item.tool_name,
-                "status": item.status,
-                "summary": item.summary,
-                "expires_at": item.expires_at,
-                "decided_at": item.decided_at,
-            }
-            for item in bundle.confirmations
-        ],
         artifacts=[item.model_dump(mode="json") for item in bundle.artifacts],
     )
 

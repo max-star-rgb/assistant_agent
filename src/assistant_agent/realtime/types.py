@@ -33,7 +33,6 @@ class RealtimeAgentRequest(BaseModel):
 
 RealtimeAgentEventType = Literal[
     "run.progress",
-    "confirmation.required",
     "tool.started",
     "tool.finished",
     "tool.failed",

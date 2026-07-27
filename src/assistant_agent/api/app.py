@@ -22,8 +22,19 @@ from assistant_agent.api.routes_tasks import router as tasks_router
 from assistant_agent.api.routes_workflow_skills import router as workflow_skills_router
 from assistant_agent.schemas.api import PROTOCOL_VERSION, api_error
 from assistant_agent.services.generated_artifacts import GENERATED_ARTIFACT_DIR
-from assistant_agent.services.durable_tasks.worker import DurableTaskWorker
+from assistant_agent.services.durable_tasks.hotel_price_watch import (
+    HOTEL_PRICE_WATCH_PROFILE,
+    HotelPriceWatchRuntime,
+)
+from assistant_agent.services.durable_tasks.worker import (
+    DurableTaskRuntimeRouter,
+    DurableTaskWorker,
+)
 from assistant_agent.services.operational_logging import configure_operational_logging_from_env
+from assistant_agent.services.proactive_wake.delivery import (
+    MockProactiveNotificationTransport,
+    NotificationDeliveryWorker,
+)
 from assistant_agent.services.server_startup_summary import print_tool_registry_summary
 from assistant_agent.services.tool_workflow_skill_runtime_app import (
     create_workflow_skill_runtime_app_from_env,
@@ -98,13 +109,26 @@ async def start_durable_task_worker(app: FastAPI) -> DurableTaskWorker | None:
     app.state.durable_task_worker = None
     app.state.durable_task_stop_event = None
     app.state.durable_task_worker_task = None
+    app.state.notification_delivery_worker = None
+    app.state.notification_delivery_worker_task = None
     app.state.durable_task_store_closed = False
     if service is None or config is None or not config.durable_task_worker_enabled:
         return None
     stop_event = Event()
+    worker_runtime: Any = runtime
+    if "lodging_search" in runtime.registry.list():
+        worker_runtime = DurableTaskRuntimeRouter(
+            default_runtime=runtime,
+            profile_runtimes={
+                HOTEL_PRICE_WATCH_PROFILE: HotelPriceWatchRuntime(
+                    task_service=service,
+                    registry=runtime.registry,
+                )
+            },
+        )
     worker = DurableTaskWorker(
         service=service,
-        runtime=runtime,
+        runtime=worker_runtime,
         worker_id=f"api-worker-{os.getpid()}-{id(app)}",
         poll_seconds=config.durable_task_poll_seconds,
     )
@@ -113,6 +137,25 @@ async def start_durable_task_worker(app: FastAPI) -> DurableTaskWorker | None:
     app.state.durable_task_worker_task = asyncio.create_task(
         asyncio.to_thread(worker.run, stop_event)
     )
+    notification_store = getattr(runtime, "notification_outbox_store", None)
+    if (
+        config.provider_mode == "mock"
+        and config.durable_notification_worker_enabled
+        and notification_store is not None
+    ):
+        delivery_worker = NotificationDeliveryWorker(
+            store=notification_store,
+            transport=MockProactiveNotificationTransport(),
+            delivery_observer=service,
+        )
+        app.state.notification_delivery_worker = delivery_worker
+        app.state.notification_delivery_worker_task = asyncio.create_task(
+            _run_notification_delivery_worker(
+                delivery_worker,
+                stop_event=stop_event,
+                poll_seconds=config.durable_task_poll_seconds,
+            )
+        )
     return worker
 
 
@@ -121,6 +164,11 @@ async def shutdown_durable_task_worker(app: FastAPI) -> None:
 
     stop_event = getattr(app.state, "durable_task_stop_event", None)
     worker_task = getattr(app.state, "durable_task_worker_task", None)
+    delivery_task = getattr(
+        app.state,
+        "notification_delivery_worker_task",
+        None,
+    )
     if stop_event is not None:
         stop_event.set()
     if worker_task is not None:
@@ -128,6 +176,11 @@ async def shutdown_durable_task_worker(app: FastAPI) -> None:
             await asyncio.wait_for(asyncio.shield(worker_task), timeout=5.0)
         except asyncio.TimeoutError:
             worker_task.cancel()
+    if delivery_task is not None:
+        try:
+            await asyncio.wait_for(asyncio.shield(delivery_task), timeout=5.0)
+        except asyncio.TimeoutError:
+            delivery_task.cancel()
     service = getattr(app.state, "durable_task_service", None)
     if service is not None and not getattr(app.state, "durable_task_store_closed", False):
         close = getattr(service.store, "close", None)
@@ -137,6 +190,17 @@ async def shutdown_durable_task_worker(app: FastAPI) -> None:
     runtime: Any = getattr(app.state, "agent_runtime", None)
     if runtime is not None:
         routes_agent.release_agent_runtime(runtime)
+
+
+async def _run_notification_delivery_worker(
+    worker: NotificationDeliveryWorker,
+    *,
+    stop_event: Event,
+    poll_seconds: float,
+) -> None:
+    while not stop_event.is_set():
+        await worker.drain_once()
+        await asyncio.to_thread(stop_event.wait, poll_seconds)
 
 
 def load_repo_env_file(path: Path | None = None, *, override: bool = False) -> dict[str, str]:

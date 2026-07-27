@@ -1,6 +1,6 @@
 # 长时 Agent 总体实施计划
 
-状态：开发阶段路线图，尚未全部实现  
+状态：阶段 0—7 的 mock/local/offline 路线已完成
 创建日期：2026-07-25  
 适用项目：`assistant_agent`
 
@@ -21,7 +21,7 @@
 - 一个目标如何跨多次执行持续推进；
 - 任务暂停后如何在正确时间或正确事件发生时恢复；
 - 进程重启后如何保留任务状态；
-- 用户如何查询、取消、补充信息和确认写操作；
+- 用户如何查询、取消和补充信息；
 - 如何只在外部状态发生有意义变化时提醒用户；
 - 如何实时展示一次执行的进度，又不让连接生命周期绑住持久任务；
 - 如何保证长期运行仍有预算、期限、幂等、身份隔离和可解释终态。
@@ -40,7 +40,7 @@
   -> 持久化任务
   -> 执行一个有限 quantum
   -> checkpoint
-  -> 等待时间 / 外部事件 / 用户输入 / 用户确认
+  -> 等待时间 / 外部事件 / 用户输入
   -> 被可靠唤醒
   -> 读取可信任务快照
   -> 执行下一个有限 quantum
@@ -54,7 +54,6 @@
 - 知道任务正在等待什么；
 - 知道下一次检查时间；
 - 补充任务输入；
-- 审批或拒绝写操作；
 - 取消任务；
 - 查看最终结果和重要中间产物；
 - 在断线或进程重启后继续访问同一任务。
@@ -67,7 +66,7 @@
 - 无预算、无期限的开放式目标；
 - 让一个 `AsyncGenerator`、WebSocket 或 Python 进程挂起数天；
 - 分布式 exactly-once 执行；
-- 自动付款、预订、发送邮件或其他未确认写操作；
+- 自动付款、预订、发送邮件或其他尚未另立授权设计的写操作；
 - 用自然语言字符串代替结构化等待条件；
 - 让 LLM 决定安全、幂等、身份或 lease 规则；
 - 为长时任务建立第二套 Tool 执行链路；
@@ -80,11 +79,11 @@
 
 当前项目已经实现：
 
-- `DurableTaskService`、SQLite `TaskStore`、任务/计划/步骤/确认/事件契约；
+- `DurableTaskService`、SQLite `TaskStore`、任务/计划/步骤/事件契约；
 - `DurableTaskWorker` 的 lease、单 quantum 执行、checkpoint 和崩溃恢复；
 - read-only 步骤的有界重试；
 - 可能产生外部副作用的中断步骤进入 `outcome_unknown`；
-- 用户输入、确认、取消和 identity-scoped task API；
+- 用户输入、取消和 identity-scoped task API；
 - `TaskEvent` 的 cursor 分页读取；
 - `ProactiveWakeCoordinator`、WakeRule、WakeSignal、变化检测、注意力策略和通知 outbox；
 - `AgentRunStream`、`AgentEvent`、Realtime event 和 Gateway frame 映射；
@@ -92,18 +91,15 @@
 - `ActionValidator -> ToolExecutor -> ToolRegistry -> Tool` 治理链路；
 - mock/real Provider 边界和离线 pytest 安全网。
 
-### 4.2 主要缺口
+### 4.2 后续生产加固
 
-当前尚未形成完整闭环的部分：
+阶段 0—7 已在 mock/local/offline 边界形成闭环。尚未纳入本路线的生产工作包括：
 
-- DurableTask 已支持首版结构化 `waiting_schedule`、SQLite due-time claim 和重启恢复；
-- DurableTask 与 ProactiveWake 尚未形成明确的恢复协议；
-- 一次 durable quantum 的实时事件没有形成独立、稳定的订阅接口；
-- TaskEvent 主要支持查询，尚未形成面向客户端的实时 tail/replay 体验；
-- 通知 delivery 与 durable task 完成/等待状态之间缺少明确关联；
-- 缺少第一个真正跨时间、可恢复的垂直验收场景；
-- 缺少统一的任务状态解释字段，例如等待原因、下一次唤醒时间和终止条件；
-- 缺少 operator 级任务积压、lease、重试和 dead-letter 可观测性汇总。
+- 选择并实现真实酒店 Provider adapter 与显式 system eval；
+- 将 cursor tail/replay adapter 接到具体客户端 transport；
+- 接入真实通知渠道并完成 operator 配置；
+- 提供 operator 级任务积压、lease、重试和 dead-letter 汇总；
+- 若未来需要外部写操作，另立新的授权协议设计，不恢复旧确认机制。
 
 ## 5. 三个必须分开的概念
 
@@ -114,7 +110,7 @@
 - 用户目标、约束和计划；
 - 当前步骤和 artifact；
 - lease、attempt、预算和 deadline；
-- checkpoint、恢复、取消、确认和输入；
+- checkpoint、恢复、取消和输入；
 - 任务终态。
 
 DurableTask 是“任务进行到哪里”的事实权威。
@@ -209,7 +205,6 @@ queued
 running
 waiting_schedule
 waiting_external_event
-waiting_confirmation
 waiting_input
 replanning
 outcome_unknown
@@ -224,7 +219,6 @@ cancelled
 queued -> running
 running -> waiting_schedule
 running -> waiting_external_event
-running -> waiting_confirmation
 running -> waiting_input
 running -> replanning
 running -> completed
@@ -233,7 +227,6 @@ running -> outcome_unknown
 
 waiting_schedule -> queued
 waiting_external_event -> queued
-waiting_confirmation -> queued | replanning
 waiting_input -> queued
 replanning -> queued | failed
 
@@ -247,7 +240,6 @@ class TaskWaitState(BaseModel):
     kind: Literal[
         "schedule",
         "external_event",
-        "confirmation",
         "input",
     ]
     reason_code: str
@@ -280,9 +272,6 @@ task.wake_received
 task.resumed
 task.input_required
 task.input_received
-confirmation.required
-confirmation.approved
-confirmation.rejected
 step.started
 step.succeeded
 step.failed
@@ -459,29 +448,21 @@ WakeDecision(notify or resume)
 - 任务到期后停止；
 - 没有预订或付款写操作。
 
-### 阶段 6：确认和受控写操作
+### 阶段 6：撤销旧确认机制
 
-候选场景：
+旧的工具级确认和 durable confirmation 模型已按架构决定删除，包括
+`ToolSpec.requires_confirmation`、`TaskConfirmation`、`waiting_confirmation`、
+确认 API 及其 realtime projection。长时 Agent 当前只执行只读或本地确定性 workflow；
+不会借助 metadata、模型参数或兼容层执行受控写操作。
 
-- 生成预订链接；
-- 创建日历事件；
-- 生成邮件草稿；
-- 用户确认后执行一个明确写 Tool。
-
-目标：
-
-- 计划中的 write/dangerous Tool 必须进入 `waiting_confirmation`；
-- 确认绑定 task version、plan version、step、tool 和 input digest；
-- 确认过期、计划修订或参数变化后必须失效；
-- 写步骤在外部结果不确定时进入 `outcome_unknown`，禁止盲目重试。
+未来若引入写能力，必须另立设计门槛，先定义独立的授权主体、授权范围、幂等与
+`outcome_unknown` 协议，不能恢复或换名复制旧确认机制。
 
 退出门槛：
 
-- 未确认绝不执行；
-- 重放旧确认无效；
-- 写操作尝试在调用前持久化；
-- 崩溃恢复不会把可能已提交的写操作当作未执行；
-- API projection 提供足够但经过脱敏的确认摘要。
+- 源码和稳定协议不再暴露旧确认字段、状态或 API；
+- durable workflow 没有隐式 write/dangerous 执行入口；
+- 外部结果不确定的既有写边界仍禁止盲目重试。
 
 ### 阶段 7：第二、第三个场景与抽象验证
 
@@ -499,6 +480,11 @@ WakeDecision(notify or resume)
 - 是否可以保留在对应 Tool Plugin；
 - 是否会破坏已有任务恢复兼容性。
 
+当前验收使用通勤异常监控和邮件承诺变化监控：二者都通过 allowlisted read Tool、
+`ActionValidator -> ToolExecutor -> ToolRegistry -> Tool`、ProactiveWake change detection 与同一
+notification outbox 完成“初始基线静默、变化通知、未变化继续静默”。该验证只增加场景规则和测试工具，
+没有修改核心状态机或新增第二套 store。
+
 ## 10. 测试与评测策略
 
 ### 10.1 pytest
@@ -515,7 +501,6 @@ pytest 全部保持 mock/local/offline。
 - wait version 和 wake fingerprint 幂等；
 - 事件 cursor 顺序；
 - 取消；
-- confirmation binding；
 - notification outbox；
 - uncertain write outcome；
 - budget/deadline。
@@ -524,7 +509,7 @@ pytest 全部保持 mock/local/offline。
 
 - 单一纯状态转换可放 `tests/unit/`；
 - service/store/worker/runtime 协作放 `tests/integration/`；
-- API、schema、状态、身份和确认等稳定边界放 `tests/contract/`。
+- API、schema、状态和身份等稳定边界放 `tests/contract/`。
 
 ### 10.2 system eval
 
@@ -543,7 +528,6 @@ pytest 全部保持 mock/local/offline。
 - 是否正确询问长期目标缺失约束；
 - 是否生成有界、可执行计划；
 - 是否在无显著变化时保持克制；
-- 是否在需要确认时停止；
 - 是否给出清晰的状态解释。
 
 确定性调度、lease、幂等和状态转换不得依赖 LLM eval 证明。
@@ -571,7 +555,6 @@ pytest 全部保持 mock/local/offline。
 - 用户精确位置历史；
 - 原始 Provider response；
 - write Tool 的敏感完整参数；
-- 未脱敏的 confirmation payload。
 
 ## 12. 安全和治理不变量
 
@@ -583,7 +566,7 @@ pytest 全部保持 mock/local/offline。
 - 任务身份来自可信 runtime/API context，不来自 write body；
 - 每个任务有总 deadline、model/tool call budget 和 step attempt budget；
 - 每个 wait 有过期或受任务总 deadline 约束；
-- 每个写操作有确认和幂等边界；
+- 当前 durable workflow 不执行尚未另立授权设计的外部写操作；
 - 不确定的写结果进入 `outcome_unknown`；
 - 取消不会回滚已提交外部副作用；
 - Gateway 断线不取消 durable task；
@@ -594,8 +577,8 @@ pytest 全部保持 mock/local/offline。
 - schema 只做增量字段和显式版本迁移；
 - SQLite migration 必须可从现有版本升级；
 - 旧任务缺少 wait 字段时按非等待任务读取；
-- 新 worker 不应错误 claim 旧的 waiting_confirmation/waiting_input 任务；
-- API 继续保留现有 task/status/events/confirmation/input/cancel 入口；
+- 新 worker 不应错误 claim `waiting_input` 任务；
+- API 继续保留现有 task/status/events/input/cancel 入口；
 - 新实时订阅是增量能力，不替代 cursor 查询；
 - 不为新场景建立第二个 durable task store；
 - ProactiveWake 与 DurableTask 先通过显式协议协作，不直接共享私有表；
@@ -639,16 +622,28 @@ pytest 全部保持 mock/local/offline。
 - [x] 阶段 1：可恢复的定时等待
 - [x] 阶段 2：TaskEvent 实时订阅
 - [x] 阶段 3：通知 outbox 闭环
-- [ ] 阶段 4：DurableTask 与 ProactiveWake 恢复协议
-- [ ] 阶段 5：首个真实长时业务场景
-- [ ] 阶段 6：确认和受控写操作
-- [ ] 阶段 7：更多场景与抽象验证
+- [x] 阶段 4：DurableTask 与 ProactiveWake 恢复协议
+- [x] 阶段 5：首个真实长时业务场景
+- [x] 阶段 6：删除旧确认机制并关闭 durable 隐式写入口
+- [x] 阶段 7：更多场景与抽象验证
+
+### 完成证据
+
+- 阶段 1—3：`test_durable_task_schedule.py`、
+  `test_durable_task_event_subscription.py`、
+  `test_durable_task_notification_outbox.py`；
+- 阶段 4：`test_durable_task_proactive_resume.py`；
+- 阶段 5：`test_hotel_price_watch.py`；
+- 阶段 6：旧确认字段、状态、API、Realtime/Gateway 投影及相关 eval metadata 已删除；
+- 阶段 7：`test_long_running_scenario_reuse.py` 以通勤异常和邮件承诺变化两个场景验证复用。
 
 ### 下一步唯一建议
 
-下一次实施只做阶段 4：
+当前路线的阶段 0—7 已完成。下一次实施只做真实连通与运行加固：
 
-> 增加 `waiting_external_event` 和带 owner、task version、wake rule、期限及 evidence fingerprint
-> 的结构化恢复请求，让 ProactiveWake 只提出恢复请求，由 DurableTaskService 校验并执行幂等恢复。
+> 在用户明确选择酒店 Provider、提供未跟踪本地配置并显式启用 real mode 后，增加
+> `lodging_search` adapter 与 system eval；在此之前继续以 mock/local/offline 契约为权威，
+> 不伪造真实价格能力。
 
-在阶段 4 完成前，不新增酒店 Provider、不引入分布式调度器、不改造 Gateway 为持久任务运行器。
+当前仍不新增预订/付款写工具、不自动启用真实 Provider、不把 Gateway 改造成任务运行器。
+新的写授权协议必须由独立设计任务明确批准，不能恢复旧确认机制。

@@ -47,7 +47,6 @@ class Tool(Protocol):
     input_schema: type[BaseModel]
     output_schema: type[BaseModel]
     category: ToolCategory
-    requires_confirmation: bool
     enabled_by_default: bool
     requires_media: list[ToolMediaRequirement]
 
@@ -61,7 +60,6 @@ class ToolBase:
     input_schema: type[BaseModel]
     output_schema: type[BaseModel]
     category: ToolCategory = "dangerous"
-    requires_confirmation = True
     enabled_by_default = True
     requires_media: list[ToolMediaRequirement] = []
     model_hidden_input_fields: tuple[str, ...] = ()

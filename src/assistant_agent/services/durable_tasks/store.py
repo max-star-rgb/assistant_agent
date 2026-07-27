@@ -135,7 +135,9 @@ class InMemoryTaskStore:
                 }:
                     continue
                 if task.status == "waiting_schedule" and (
-                    task.wait is None or task.wait.next_eligible_at > now
+                    task.wait is None
+                    or task.wait.next_eligible_at is None
+                    or task.wait.next_eligible_at > now
                 ):
                     continue
                 if task.lease_expires_at is not None and task.lease_expires_at > now:

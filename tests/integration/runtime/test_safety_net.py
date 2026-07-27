@@ -64,7 +64,6 @@ class _ProbeTool(ToolBase):
     input_schema = _ProbeInput
     output_schema = _ProbeInput
     category = "read"
-    requires_confirmation = False
 
     def _run(self, input: _ProbeInput, context: ToolContext) -> ToolResult:
         return ToolResult(

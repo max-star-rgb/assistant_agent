@@ -30,7 +30,6 @@ class EmailSearchTool(ToolBase):
     input_schema = EmailSearchRequest
     output_schema = EmailSearchResult
     category = "read"
-    requires_confirmation = False
     input_bindings = (
         ToolInputBinding(field="limit", source="constant", value=10),
     )
@@ -79,7 +78,6 @@ class EmailReadTool(ToolBase):
     input_schema = EmailReadRequest
     output_schema = EmailReadResult
     category = "read"
-    requires_confirmation = False
     input_bindings = (
         ToolInputBinding(
             field="max_total_chars",

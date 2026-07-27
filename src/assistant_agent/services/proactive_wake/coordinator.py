@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
+from assistant_agent.schemas.durable_tasks import TaskResumeRequest
 from assistant_agent.schemas.proactive_wake import (
     ProactiveWakeRunResult,
     WakeOwner,
@@ -197,6 +198,48 @@ class ProactiveWakeCoordinator:
                 )
                 failure_stage = "evaluator"
                 decision = self.evaluator.evaluate(rule=rule, evidence=evidence, now=now)
+                successful_state = state.model_copy(
+                    update={
+                        "last_fingerprint": evidence.fingerprint,
+                        "last_checked_at": now,
+                        "next_reconcile_at": now
+                        + timedelta(seconds=rule.trigger.reconcile_interval_s),
+                    }
+                )
+                if decision.outcome == "resume":
+                    target = rule.resume_target
+                    if target is None:  # pragma: no cover - evaluator contract
+                        raise ProactiveWakeError(code="resume_target_missing")
+                    resume_request = TaskResumeRequest(
+                        task_id=target.task_id,
+                        user_id=owner.user_id,
+                        agent_id=owner.agent_id,
+                        expected_task_version=target.expected_task_version,
+                        wait_id=target.wait_id,
+                        wake_rule_id=rule.rule_id,
+                        evidence_ids=decision.evidence_ids,
+                        evidence_fingerprint=evidence.fingerprint,
+                        requested_at=now,
+                    )
+                    completed = probing.model_copy(
+                        update={
+                            "status": "resume_requested",
+                            "reason_code": decision.reason_code,
+                            "evidence": evidence,
+                            "decision": decision,
+                            "updated_at": now,
+                        }
+                    )
+                    failure_stage = "persistence"
+                    persisted, _ = self.store.complete_outcome(
+                        run=completed,
+                        state=successful_state,
+                        notification=None,
+                    )
+                    return ProactiveWakeRunResult(
+                        run=persisted,
+                        resume_request=resume_request,
+                    )
                 failure_stage = "activity"
                 user_active = await self.activity_reader.is_active(owner)
                 failure_stage = "attention"
@@ -207,14 +250,6 @@ class ProactiveWakeCoordinator:
                     state=state,
                     now=now,
                     user_active=user_active,
-                )
-                successful_state = state.model_copy(
-                    update={
-                        "last_fingerprint": evidence.fingerprint,
-                        "last_checked_at": now,
-                        "next_reconcile_at": now
-                        + timedelta(seconds=rule.trigger.reconcile_interval_s),
-                    }
                 )
                 outcome_run = probing.model_copy(
                     update={

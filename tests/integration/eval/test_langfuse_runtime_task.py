@@ -178,7 +178,7 @@ def test_real_system_seed_covers_production_like_capabilities() -> None:
     } == {
         "real_no_tool",
         "real_read_only_tool",
-        "real_confirmation_guard",
+        "real_write_tool",
     }
     required_tools = {
         tool
@@ -196,17 +196,14 @@ def test_real_system_seed_covers_production_like_capabilities() -> None:
         "web_fetch",
         "web_search",
     }
-    confirmation_case = next(
+    write_case = next(
         item
         for item in seed.items
-        if item.metadata["capability"] == "real_confirmation_guard"
+        if item.metadata["capability"] == "real_write_tool"
     )
-    assert confirmation_case.input["user_request"]["metadata"] == {
+    assert write_case.input["user_request"]["metadata"] == {
         "tool_visibility": {"enabled_tools": ["calendar_create"]}
     }
-    assert "tool_confirmation" not in confirmation_case.input["user_request"][
-        "metadata"
-    ]
     assert all(item.input.get("evaluation_criteria") for item in seed.items)
 
 
