@@ -227,8 +227,10 @@ Last updated: 2026-07-27
 - 超过预算只记录 `over_budget`；AgentRuntime 不在 prompt 副本中裁剪 memory、conversation 或 observations。
 - `compression_stage` 记录 `none`、`compacted` 或 `budget_trimmed`；`compression_reasons` 记录 `conversation_context_compacted`、`observation_context_compacted`、`context_usage_high`、`tool_observation_too_large`、`provider_context_overflow`、`explicit_compact`、`context_over_budget`、`context_budget_trimmed`。
 - 预算裁剪优先保留工具 observation，因为它通常是下一步工具调用和最终回答的证据来源。
-- assistant decision trace 写入 `context_schema_version="context_observability_v1"`、budget、source counts、compaction summary、tool catalog summary、`compactor_type` 和 `context_summary_present`；compaction summary 只暴露 pruning/truncation 计数，不暴露 raw payload。
-- `assistant.output` trace 的 `context.report` 事件写入 `context_report_v1`，用于检查真实发送给 provider 的 system prompt 大小、selected native tool schema、memory 注入 ID、realtime task-state 大小和压缩/裁剪状态。
+- assistant decision trace 只记录归一化决策、工具名、reason 和 plan 状态，不重复携带 context
+  summary 或 report。
+- `context.build.finished` 独占 `context_report_v1`，用于检查真实发送给 Provider 的 system prompt
+  大小、selected native tool schema、memory 注入 ID、realtime task-state 大小和压缩/裁剪状态。
 - Context pack construction emits standalone `context.build.started` /
   `context.build.finished` canonical trace events. The finished event carries the
   same redacted context summary shape used by trace/API context debugging，并额外携带

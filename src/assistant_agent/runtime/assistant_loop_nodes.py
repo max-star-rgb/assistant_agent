@@ -1727,7 +1727,6 @@ def _record_react_decision(
         "safety_notes": decision.safety_notes,
         "plan_status": state.plan_status,
     })
-    context_summary = _context_trace_summary(context)
     output_summary = {
         "output_type": decision.type,
         "reason": decision.reason,
@@ -1736,12 +1735,6 @@ def _record_react_decision(
         "step_id": decision.step_id if is_tool_call else None,
         "plan_status": state.plan_status,
     }
-    if context_summary:
-        output_summary["context"] = context_summary
-        output_summary["context_report_v1"] = _context_service(graph_state).report(
-            context,
-            state,
-        )
     _runtime_event_publisher(graph_state).publish_assistant_step(
         AssistantStepFact(
             state=state,
@@ -1767,76 +1760,12 @@ def _record_react_decision(
     )
 
 
-def _context_trace_summary(context: AssistantDecisionContext | None) -> dict[str, Any]:
-    if context is None:
-        return {}
-    pack = context.context_pack
-    return {
-        "context_schema_version": "context_observability_v1",
-        "budget": pack.budget.model_dump(mode="json"),
-        "source_counts": pack.source_counts,
-        "compaction": _context_compaction_summary(pack.observations),
-        "tool_catalog": pack.tool_catalog_summary.model_dump(mode="json"),
-        "context_sources": pack.context_source_report.model_dump(mode="json"),
-        "compactor_type": pack.compactor_type,
-        "context_summary_present": pack.context_summary is not None,
-    }
-
-
 def _selection_vector_hit_count(selection: dict[str, Any]) -> int:
     signal = selection.get("vector_shadow_signal")
     if not isinstance(signal, dict):
         return 0
     value = signal.get("hit_count")
     return value if isinstance(value, int) and value >= 0 else 0
-
-
-def _context_compaction_summary(observations: list[dict[str, Any]]) -> dict[str, int]:
-    compacted_count = 0
-    original_chars = 0
-    compacted_chars = 0
-    pruned_payload_keys = 0
-    command_outputs_truncated = 0
-    original_command_output_chars = 0
-    compacted_command_output_chars = 0
-    for observation in observations:
-        compaction = observation.get("compaction")
-        if not isinstance(compaction, dict):
-            continue
-        compacted_count += 1
-        original = compaction.get("original_chars")
-        compacted = compaction.get("compacted_chars")
-        if isinstance(original, int):
-            original_chars += original
-        if isinstance(compacted, int):
-            compacted_chars += compacted
-        pruned_keys = compaction.get("pruned_keys")
-        if isinstance(pruned_keys, list):
-            pruned_payload_keys += len(pruned_keys)
-        omitted_pruned_keys = compaction.get("omitted_pruned_keys_count")
-        if isinstance(omitted_pruned_keys, int):
-            pruned_payload_keys += omitted_pruned_keys
-        command_output_keys = compaction.get("command_output_keys")
-        if isinstance(command_output_keys, list):
-            command_outputs_truncated += len(command_output_keys)
-        omitted_command_output_keys = compaction.get("omitted_command_output_keys_count")
-        if isinstance(omitted_command_output_keys, int):
-            command_outputs_truncated += omitted_command_output_keys
-        command_original = compaction.get("original_command_output_chars")
-        command_compacted = compaction.get("compacted_command_output_chars")
-        if isinstance(command_original, int):
-            original_command_output_chars += command_original
-        if isinstance(command_compacted, int):
-            compacted_command_output_chars += command_compacted
-    return {
-        "compacted_observations": compacted_count,
-        "original_observation_chars": original_chars,
-        "compacted_observation_chars": compacted_chars,
-        "pruned_payload_keys": pruned_payload_keys,
-        "command_outputs_truncated": command_outputs_truncated,
-        "original_command_output_chars": original_command_output_chars,
-        "compacted_command_output_chars": compacted_command_output_chars,
-    }
 
 
 def _metadata_int(metadata: dict[str, Any], key: str) -> int:

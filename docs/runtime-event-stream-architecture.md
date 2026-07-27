@@ -50,6 +50,12 @@ the run-terminal fact rather than treated as the same event. Run terminal trace
 projection is recorded before `assistant.turn.summary`, while terminal delivery
 is emitted after trace finalization.
 
+Context evidence also has a single owner: `context.build` carries
+`context_report_v1`, while `llm.chat` carries the exact Provider input.
+`assistant.output` records only the normalized decision and does not duplicate
+either payload. The `assistant.runtime` root may retain the scalar
+`context_peak_ratio` as a turn-level diagnostic, but not the full context report.
+
 ## Provider Stream Boundary
 
 `AsyncStreamingChatAdapter.stream_chat()` is an optional additive interface.

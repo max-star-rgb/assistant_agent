@@ -913,7 +913,10 @@ Regression tests should enforce these invariants:
   chars/tokens、item count、included/compacted/trimmed、source，以及总预算、已选工具、
   context source、skill exposure 和 compression 状态。本地开发 overlay 还附带最终 memory
   section 的注入状态、ID 和实际渲染文本；完整 compiled `ChatRequest` 仍只放在对应
-  `llm.chat` generation input，作为 Provider 调用边界的最终事实。
+  `llm.chat` generation input，作为 Provider 调用边界的最终事实。`assistant.output`
+  只记录归一化决策，不再复制 `context` 或 `context_report_v1`。`assistant.runtime`
+  根 span 最多保留 `context_peak_ratio` 这一 turn-level 压力摘要，不携带完整 section
+  accounting 或 Provider input。
 - 未实现 request callback 的自定义 adapter 使用编译后 `ChatRequest` 的语义字段作为 fallback；
   内置 OpenAI-compatible adapter 必须以传给 SDK 的同一 payload 覆盖该 fallback。
 - Langfuse Trace 名称固定为 `assistant.turn`，observation hierarchy 固定为

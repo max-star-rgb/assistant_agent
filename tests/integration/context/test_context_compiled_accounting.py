@@ -7,6 +7,7 @@ from assistant_agent.config import ProviderConfig
 from assistant_agent.runtime.requests import UserRequest
 from assistant_agent.runtime.chat_adapter import ChatRequest, ChatResult
 from assistant_agent.runtime.session_store import InMemorySessionStore
+from assistant_agent.observability.otel_mapping import build_text_otel_span_specs
 from assistant_agent.observability.trace_store import InMemoryTraceStore
 
 
@@ -51,6 +52,11 @@ def test_context_report_accounts_for_the_compiled_chat_request() -> None:
         for event in trace_store.list_by_run(state.run_id)
         if event.canonical_event == "context.build.finished"
     )
+    assistant_event = next(
+        event
+        for event in trace_store.list_by_run(state.run_id)
+        if event.canonical_event == "assistant.output"
+    )
     report = context_event.output_summary["context_report_v1"]
     message_chars = _json_chars(request.messages)
     tool_chars = _json_chars(request.tools)
@@ -67,3 +73,17 @@ def test_context_report_accounts_for_the_compiled_chat_request() -> None:
     assert report["budget_estimated_chars"] == context_event.output_summary["context"]["budget"][
         "total_chars"
     ]
+    assert "context" not in assistant_event.output_summary
+    assert "context_report_v1" not in assistant_event.output_summary
+
+    spans = build_text_otel_span_specs(trace_store.list_by_run(state.run_id))
+    runtime_span = next(span for span in spans if span.name == "assistant.runtime")
+    context_span = next(span for span in spans if span.name == "context.build")
+    runtime_context_keys = {
+        key for key in runtime_span.attributes if "context" in key.lower()
+    }
+    assert runtime_context_keys == {"langfuse.trace.metadata.context_peak_ratio"}
+    context_output = json.loads(
+        context_span.attributes["langfuse.observation.output"]
+    )
+    assert context_output["context_report_v1"] == report

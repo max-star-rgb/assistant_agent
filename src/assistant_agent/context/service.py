@@ -19,7 +19,6 @@ from assistant_agent.context.prompt_compiler import (
     PromptCompiler,
     prompt_tool_specs_for_mode,
 )
-from assistant_agent.context.report import build_context_report
 from assistant_agent.context.token_budget import (
     ContextWindowDecision,
     ContextWindowPolicy,
@@ -339,18 +338,6 @@ class ContextService:
                 PromptCompileMode.NATIVE_TOOL,
             )
         )
-
-    def report(
-        self,
-        context: AssistantDecisionContext,
-        state: AgentState,
-    ) -> dict[str, Any]:
-        compilation = self.compile_native_request(context, state)
-        return build_context_report(
-            context.context_pack,
-            selected_tool_specs=self.selected_tool_specs(context),
-            compiled_request=compilation.chat_request,
-        ).model_dump(mode="json")
 
     def _rebuild(
         self,
