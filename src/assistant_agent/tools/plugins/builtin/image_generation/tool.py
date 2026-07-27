@@ -24,7 +24,7 @@ from assistant_agent.tools.input_binding import ToolInputBinding
 
 class ImageGenerationTool(ToolBase):
     name = IMAGE_GENERATION_TOOL_NAME
-    description = "根据文本提示或商品信息生成图片。"
+    description = "根据必填的文本提示词生成图片；其他参数仅在用户明确指定时传入，否则由工具使用默认值。"
     input_schema = ImageGenerationRequest
     output_schema = ImageGenerationResult
     category = "generate"

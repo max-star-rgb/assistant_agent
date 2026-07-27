@@ -15,11 +15,8 @@ def build_image_prompt(input: ImageGenerationRequest) -> str:
     product_context = product
     if input.product_info:
         product_context = product_context or input.product_info.get("summary")
-    if not product and not input.prompt:
-        raise ValueError("缺少生成 prompt 或商品信息，无法生成图片")
-
     return build_image_prompt_text(
-        user_query=input.prompt or "",
+        user_query=input.prompt,
         style=style,
         product_context=product_context,
         memory_context=input.memory_context,

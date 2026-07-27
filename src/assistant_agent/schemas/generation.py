@@ -2,7 +2,7 @@
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator
 
 
 GenerationStatus = Literal["pending", "running", "succeeded", "failed"]
@@ -11,8 +11,8 @@ GenerationStatus = Literal["pending", "running", "succeeded", "failed"]
 class ImageGenerationRequest(BaseModel):
     """图片生成工具和 Provider 适配器的输入。"""
 
-    prompt: str | None = Field(
-        default=None,
+    prompt: str = Field(
+        min_length=1,
         description="希望生成的图片内容、构图、风格和关键视觉要求。",
     )
     size: str | None = Field(
@@ -73,14 +73,13 @@ class ImageGenerationRequest(BaseModel):
     user_id: str | None = None
     session_id: str | None = None
 
-    @model_validator(mode="after")
-    def require_generation_source(self) -> "ImageGenerationRequest":
-        if any(
-            isinstance(value, str) and value.strip()
-            for value in (self.prompt, self.product_id, self.product_title)
-        ) or self.product_info:
-            return self
-        raise ValueError("image_generation requires prompt or product information")
+    @field_validator("prompt")
+    @classmethod
+    def require_non_blank_prompt(cls, value: str) -> str:
+        if value.strip():
+            return value
+        raise ValueError("image_generation requires a non-blank prompt")
+
 
 class ImageGenerationResult(BaseModel):
     """Result returned by an image generation adapter or tool."""
