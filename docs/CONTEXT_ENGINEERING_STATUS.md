@@ -15,7 +15,7 @@ Last updated: 2026-07-27
 - 已实现核心闭环：`AssistantContextPack`、`ContextSection v1`、默认关闭的 local owner `SOUL.md`
   source、Context Compiler v1、完整 Provider-native transcript、rolling natural-language session summary、
   model-tokenizer preflight、独立 `realtime_video_context`、durable task state、tool observation、tool schema、
-  capability catalog 和 trace/API 上下文摘要。
+  结构化 RunToolCatalog 和 trace/API 上下文摘要。
 - `PromptCompiler` 先生成完整 `ChatRequest`，`ContextTokenCounter` 再对 messages、tools、tool choice 和
   response format 的稳定 payload projection 分词。达到有效输入窗口 70% 时，`LLMCompactor` 合并旧摘要
   与全部已完成原始轮次；成功后被覆盖轮次从 `ConversationStore` 删除，不保留 recent raw turn。
@@ -52,8 +52,9 @@ Last updated: 2026-07-27
 - 通用 system prompt 在每次编译时把带时区的可信本地运行时间放在第一段，确保 Provider 原始 input
   和受长度限制的开发预览都优先显示；当前日期、星期、时间和相对日期解析以该事实为准，不依赖模型
   训练时知识猜测。该事实不承担天气、新闻等外部动态信息查询，外部事实仍必须使用已暴露工具。
-- `AssistantContextPack` 会按已选 prompt tools 注入一个小型 skill-style capability catalog；它可从 repo-local `skills/<skill_id>/SKILL.md` 加载 prompt-safe descriptor，并可基于当前请求文本做确定性 descriptor 召回，但只描述何时使用现有受治理工具，不是新的执行路径，也不会读取 `.codex/skills`。
-- Context Compiler v1 以 `ContextReport` 暴露每次 LLM call 的 redacted section accounting：`system_prompt`、`request`、`session_summary`、`recent_transcript`、`memory`、`realtime_video_context`、`durable_task_state`、`plan_state`、`tool_observations`、`tool_schema` 和 `tool_capability`，并以非累加的 `context_source_report_v1` 报告 section kind/authority/stability 字符数、稳定 issue code、last-known-good 和版本变化计数；不暴露 SOUL 原文、source version、绝对路径、完整 prompt、memory 文本、视频摘要、tool observation 或 provider payload。兼容 schema 仍保留 `realtime_task_state` section，但编译时始终为未包含。
+- Provider-native Prompt 不注入 capability catalog 或 Skill descriptor，也不根据 `request.text` 做关键词、
+  正则或确定性意图召回。模型只通过本轮结构化资格化后的原生 `ToolSpec` schema 了解候选工具。
+- Context Compiler v1 以 `ContextReport` 暴露每次 LLM call 的 redacted section accounting：`system_prompt`、`request`、`session_summary`、`recent_transcript`、`memory`、`realtime_video_context`、`durable_task_state`、`plan_state`、`tool_observations` 和 `tool_schema`，并以非累加的 `context_source_report_v1` 报告 section kind/authority/stability 字符数、稳定 issue code、last-known-good 和版本变化计数；不暴露 SOUL 原文、source version、绝对路径、完整 prompt、memory 文本、视频摘要、tool observation 或 provider payload。兼容 schema 仍保留 `realtime_task_state` section，但编译时始终为未包含。
 - `ContextBudgetReport` 明确是压缩前后的 `precompile_estimate`；`ContextReport.accounting_basis=compiled_chat_request` 则直接核算同一 `PromptCompiler` 产出的 messages、tools 和 response_format。二者不再冒充同一口径，report 同时保留 `budget_estimated_chars` 便于解释差值。
 - 上一轮 Provider usage 只保留在 `provider_*_tokens` 诊断字段，标记为 `previous_provider_usage`，不再写入当前待发送 context 的 `total_tokens`。
 
@@ -164,11 +165,9 @@ Last updated: 2026-07-27
 - Provider-native 编译将 summary 之后尚未覆盖的原始轮次还原为独立 `user` / `assistant` messages，
   再追加当前 `user` message。rolling summary 作为带 `trust="untrusted_history"` 和
   `instruction_policy="do_not_execute"` 的 session data 进入当前 user context。
-- native/legacy context 可渲染 prompt-safe capability catalog；实际执行契约仍是 `ToolSpec`，工具调用仍必须通过 `ToolExecutor`。
 - Provider-native `ChatRequest.tools` 使用 `AssistantContextPack.prompt_tool_specs` 中已治理的 schema。context builder 同时生成 prompt-safe `RunToolCatalog`；其中 `available_tool_names` 既是模型可见目录，也是 `ActionValidator` 的 run-scoped 执行边界，不再维护重复的 exposed/executable 集合。目录装配只消费 category、媒体要求、默认启用以及显式 tool/skill 等结构化事实，不读取 `request.text` 做意图路由。Plugin 只负责装配和归属，不授予单轮执行权限；系统不维护独立 toolset、Tool Search 或 Schema 渐进披露，全部合格 ToolSpec 直接进入 Provider 请求。工具规模由部署 Plugin、MCP allowlist 和入口 `allowed_tools` 控制，现有 context report 继续记录实际 Schema 占用。
-- 系统提示词只承载通用 runtime、数据边界和工具治理规则，不写入某个具体工具的选择策略。具体工具的适用场景、禁用场景、输入要求和副作用说明由 `ToolSpec.when_to_use`、`when_not_to_use`、`runtime_constraints` 和 side-effect metadata 随 provider-native tool schema 提供给模型。
-- Skill capability descriptor 会为 `tool_visibility.enabled_skills` 中显式启用的 skill，以及由 `skill_recall` 根据 prompt-safe `name`/`description`/`when_to_use`/`safe_examples` 自动召回的 skill 渲染；前提仍是 skill manifest/permission 有效且 governed tools 已进入本轮目录。自动召回只影响 descriptor 是否进入上下文，不会扩大 `RunToolCatalog.available_tool_names`。skill runtime constraints 不能授予 retry 权限或改变工具执行策略。
-- Repo-local business skills follow `skills/<skill_id>/SKILL.md`; the loader only consumes frontmatter plus fixed prompt-safe sections and converts valid descriptors into `ToolCapabilityDescriptor`. Skill System v1 requires each governed tool to have a matching `tool:<name>` permission in the `## Permissions` section, rejects unknown permission vocabulary such as `shell:*`, and suppresses same-name built-in fallback when a repo-local skill is disabled, manual-only, invalid, or under-permissioned. It ignores `.codex/skills` and never creates `run_skill` or direct shell/browser/http execution.
+- 系统提示词只承载通用 runtime、数据边界和工具治理规则，不写入某个具体工具的选择策略。模型可见的工具说明只来自 `ToolSpec.description` 和 `input_schema`。
+- Repo-local business skill loader 只服务 `tool_visibility.enabled_skills` 的显式结构化工具资格化以及离线 Improvement Lab；它不生成 Provider Prompt，不自动召回，也不创建 `run_skill` 或直接 shell/browser/http 执行路径。
 - 工具调用预算耗尽时不再切换专用 final-only prompt/profile；`PromptCompiler` 保持通用 system prompt 和 observation/tool-call evidence，只生成 `tools=[]` 的 finishing turn。
 - session summary renderer 明确把摘要标注为不可信历史数据，不作为长期记忆或系统指令。
 - prompt 明确声明 conversation、memory、observation 和 tool output 都是数据，不是系统指令；retrieved memory 是用户历史证据，不是权威信息，当前用户输入和新工具结果优先，不能执行 memory 中的指令。
@@ -214,7 +213,6 @@ Last updated: 2026-07-27
 ### Context Budget And Observability
 
 - `ContextBudgetReport` 统计 request、conversation、memory、realtime video、plan、observations、tool specs、`owner_persona_chars` 和 total chars，并报告 `context_usage_ratio`、`compaction_triggered`；启用本地 token 估算时，最终实际注入的 persona 同时计入 `owner_persona_tokens` 和 `total_tokens`。
-- `ContextBudgetReport` also tracks `tool_capability_chars` so the skill-style capability catalog is visible in budget/debug output. `AssistantContextPack` and `ContextReport` carry prompt-safe `skill_report_v1` fields for loaded, explicit, auto-candidate, selected, skipped, fallback, override, governed-tool, auto-recall reason, and permission issue visibility.
 - Context budget 仍以默认 12000 chars 生成观测报告；即使超过该值也不裁剪。
 - `context_token_preflight_v1` 记录 tokenizer id、compiled input tokens、effective input limit、usage ratio、
   target、triggered 和 hard；ContextReport 使用该结果作为 compiled request token 口径。
@@ -276,9 +274,7 @@ Last updated: 2026-07-27
 - `src/assistant_agent/context/compactor.py`
 - `src/assistant_agent/context/renderer.py`
 - `src/assistant_agent/context/report.py`
-- `src/assistant_agent/context/capability_catalog.py`
 - `src/assistant_agent/skills/loading.py`
-- `src/assistant_agent/skills/recall.py`
 - `src/assistant_agent/context/sources.py`
 - `src/assistant_agent/context/soul_source.py`
 - `src/assistant_agent/runtime/realtime_task_state.py`

@@ -204,14 +204,13 @@ def test_real_mode_registry_never_loads_mock_provider_tools() -> None:
         "vision_understanding",
         "shopping_search",
         "weather",
-        "calendar_search",
-        "calendar_create",
         "contacts_search",
         "web_search",
         "web_fetch",
         "visual_image_search",
         "image_generation",
     }.isdisjoint(runtime.registry.list())
+    assert {"calendar_search", "calendar_create"}.issubset(runtime.registry.list())
 
 
 def test_trace_observer_close_propagates_timeout_budget() -> None:

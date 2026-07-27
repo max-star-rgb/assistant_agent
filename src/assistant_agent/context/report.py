@@ -31,7 +31,6 @@ CONTEXT_REPORT_SECTION_NAMES = (
     "plan_state",
     "tool_observations",
     "tool_schema",
-    "tool_capability",
 )
 
 
@@ -138,13 +137,6 @@ def build_context_report(
         source="ChatRequest.tools",
         notes=_tool_schema_notes(pack, selected_specs, selected_tool_specs),
     )
-    sections["tool_capability"] = ContextReportSection(
-        chars=_json_chars([capability.model_dump(mode="json") for capability in pack.tool_capabilities]),
-        tokens=None,
-        item_count=len(pack.tool_capabilities),
-        included=bool(pack.tool_capabilities),
-        source="ToolCapabilityCatalog",
-    )
     compiled_message_chars = _json_chars(compiled_request.messages) if compiled_request is not None else 0
     compiled_tool_schema_chars = _json_chars(compiled_tools) if compiled_request is not None else 0
     compiled_response_format_chars = (
@@ -179,7 +171,6 @@ def build_context_report(
         max_tokens=effective_input_limit or pack.budget.max_tokens,
         selected_tool_names=[spec.name for spec in selected_specs],
         memory_item_ids=memory_item_ids,
-        skill_report=pack.skill_report,
         context_sources=pack.context_source_report,
         compression_stage=compression_stage,
         compression_reasons=compression_reasons,
@@ -349,12 +340,6 @@ def context_report_from_trace_context_summary(context: dict[str, Any]) -> Contex
         included=bool(selected_tool_names or _int_value(source_counts.get("prompt_tool_specs"))),
         source="legacy_context_summary.tool_catalog",
         notes=["fallback_visible_tool_list"] if fallback_used else [],
-    )
-    sections["tool_capability"] = ContextReportSection(
-        chars=_int_value(budget.get("tool_capability_chars")),
-        item_count=_int_value(source_counts.get("tool_capabilities")),
-        included=_int_value(source_counts.get("tool_capabilities")) > 0,
-        source="legacy_context_summary.budget",
     )
     return ContextReport(
         sections=sections,

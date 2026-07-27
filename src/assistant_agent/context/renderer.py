@@ -7,7 +7,6 @@ from typing import Any
 from assistant_agent.context.models import (
     AssistantContextPack,
     RenderedAssistantContext,
-    ToolCapabilityDescriptor,
 )
 from assistant_agent.runtime.requests import UserRequest
 from assistant_agent.tools.models import ToolSpec
@@ -30,7 +29,6 @@ def render_prompt_json_context(pack: AssistantContextPack) -> RenderedAssistantC
         render_memory_context(pack.memory_summaries, pack.memory_text),
         render_plan_mode_context(pack),
         render_observations(pack.observations),
-        render_tool_capabilities(pack.tool_capabilities),
         render_tool_specs(_prompt_tool_specs(pack)),
         render_request_context(pack.request),
         render_decision_contract(),
@@ -59,7 +57,6 @@ def render_native_tool_context(pack: AssistantContextPack) -> RenderedAssistantC
         render_durable_task_state_context(pack),
         render_memory_context(pack.memory_summaries, pack.memory_text),
         render_plan_mode_context(pack),
-        render_tool_capabilities(pack.tool_capabilities),
         render_native_request_context(
             pack.request,
             label_as_current=bool(pack.memory_text.strip()),
@@ -180,16 +177,6 @@ def render_tool_specs(tool_specs: list[ToolSpec]) -> str:
     payload = [prompt_tool_spec_payload(spec) for spec in tool_specs]
     return (
         "可用工具 ToolSpec 列表（唯一工具契约）：\n"
-        f"{json.dumps(payload, ensure_ascii=False, indent=2)}"
-    )
-
-
-def render_tool_capabilities(capabilities: list[ToolCapabilityDescriptor]) -> str:
-    if not capabilities:
-        return ""
-    payload = [descriptor.model_dump(mode="json") for descriptor in capabilities]
-    return (
-        "能力目录（skill-style，仅描述能力；执行必须通过 ToolExecutor）：\n"
         f"{json.dumps(payload, ensure_ascii=False, indent=2)}"
     )
 

@@ -73,6 +73,9 @@ def test_context_report_accounts_for_the_compiled_chat_request() -> None:
     assert report["budget_estimated_chars"] == context_event.output_summary["context"]["budget"][
         "total_chars"
     ]
+    assert "tool_capability" not in report["sections"]
+    assert "tool_capability_chars" not in context_event.output_summary["context"]["budget"]
+    assert "skill_report_v1" not in context_event.output_summary["context"]
     assert "context" not in assistant_event.output_summary
     assert "context_report_v1" not in assistant_event.output_summary
 
@@ -87,3 +90,29 @@ def test_context_report_accounts_for_the_compiled_chat_request() -> None:
         context_span.attributes["langfuse.observation.output"]
     )
     assert context_output["context_report_v1"] == report
+
+
+def test_keyword_like_request_is_not_rewritten_with_capability_context() -> None:
+    adapter = _CapturedChatAdapter()
+    runtime = AgentGraphRuntime(
+        config=ProviderConfig(langgraph_checkpointer_backend="none"),
+        chat_adapter=adapter,
+        session_store=InMemorySessionStore(),
+    )
+    request_text = "搜索 keyword-boundary-sentinel"
+
+    runtime.run_state(
+        UserRequest(
+            user_id="keyword-user",
+            session_id="keyword-session",
+            text=request_text,
+        )
+    )
+
+    compiled_request = adapter.requests[0]
+    user_messages = [
+        message
+        for message in compiled_request.messages
+        if message.get("role") == "user"
+    ]
+    assert user_messages == [{"role": "user", "content": request_text}]
