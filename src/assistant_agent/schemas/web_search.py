@@ -43,13 +43,23 @@ class WebSearchRequest(BaseModel):
 
     query: str = Field(
         min_length=1,
-        description="用于搜索当前或时效性网页信息的查询词。",
+        description="完整的网页搜索查询，包含主题和必要限定词。",
     )
     recency_days: int | None = Field(
-        default=None, ge=1, le=3650, description="可选的结果时效窗口，单位为天。"
+        default=None,
+        ge=1,
+        le=3650,
+        description=(
+            "仅在用户明确要求最近或过去若干天的信息时传入；"
+            "表示结果时效窗口，单位为天，未指定时省略。"
+        ),
     )
     site_filter: str | None = Field(
-        default=None, description="可选的网站或域名过滤条件。"
+        default=None,
+        description=(
+            "仅在用户明确指定网站或来源域名时传入，例如“openai.com”；"
+            "未指定时省略。"
+        ),
     )
     limit: int = Field(
         default=5,
