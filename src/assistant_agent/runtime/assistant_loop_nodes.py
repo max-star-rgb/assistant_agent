@@ -31,7 +31,11 @@ from assistant_agent.runtime.output_models import (
     native_tool_call_to_assistant_output,
 )
 from assistant_agent.runtime.capability_models import canonical_intent
-from assistant_agent.context.models import AssistantContextPack
+from assistant_agent.context.models import AssistantContextPack, ContextSummary
+from assistant_agent.context.compactor import (
+    context_summary_from_metadata,
+    format_context_summary,
+)
 from assistant_agent.runtime.events import AgentEvent
 from assistant_agent.runtime.planning_models import TaskPlan, TaskStep
 from assistant_agent.runtime.requests import AgentResponse, UserRequest
@@ -56,7 +60,12 @@ from assistant_agent.context.prompt_compiler import (
     prompt_tool_specs_for_mode,
 )
 from assistant_agent.context.report import build_context_report
-from assistant_agent.context.token_budget import normalize_provider_token_usage
+from assistant_agent.context.token_budget import (
+    ContextWindowDecision,
+    ContextWindowPolicy,
+    normalize_provider_token_usage,
+)
+from assistant_agent.context.token_counter import ContextTokenCounter
 from assistant_agent.observability.trace_store import (
     TraceEvent,
     TraceObservationScope,
@@ -91,6 +100,8 @@ class AssistantLoopState(TypedDict):
     chat_adapter: NotRequired[ChatAdapter]
     chat_turn: NotRequired[Any]
     context_compactor: NotRequired[Any]
+    context_token_counter: NotRequired[ContextTokenCounter]
+    context_window_policy: NotRequired[ContextWindowPolicy]
     context_projector: NotRequired[Any]
     outputs_by_step: dict[str, ToolResult]
     current_step_index: int
@@ -123,6 +134,21 @@ class AssistantDecisionContext:
     iterations: int
     max_iterations: int
     is_mock: bool
+
+
+@dataclass(frozen=True)
+class _ConversationTurnForCompaction:
+    user_text: str
+    assistant_text: str
+    run_id: str
+    trace_id: str
+
+
+@dataclass(frozen=True)
+class _ContextPreflightResult:
+    request: ChatRequest
+    context: AssistantDecisionContext
+    error: AssistantTextOutput | None = None
 
 
 class _ResponseDeltaBuffer:
@@ -366,8 +392,12 @@ def _decide_with_llm(
             ),
             context,
         )
+    preflight = _preflight_compiled_context(graph_state, context, state)
+    context = preflight.context
+    if preflight.error is not None:
+        return preflight.error, context
     request, stream_buffer = _with_buffered_response_stream(
-        _build_native_tool_chat_request(context, state),
+        preflight.request,
         graph_state,
         source="assistant_langgraph_answer",
     )
@@ -380,9 +410,17 @@ def _decide_with_llm(
     ):
         stream_buffer.discard()
         _record_provider_context_overflow(state, result)
-        retry_context = _rebuild_context_after_provider_overflow(graph_state, context)
+        retry_preflight = _preflight_compiled_context(
+            graph_state,
+            context,
+            state,
+            force_hard=True,
+        )
+        if retry_preflight.error is not None:
+            return retry_preflight.error, retry_preflight.context
+        retry_context = retry_preflight.context
         retry_request, stream_buffer = _with_buffered_response_stream(
-            _build_native_tool_chat_request(retry_context, state),
+            retry_preflight.request,
             graph_state,
             source="assistant_langgraph_answer",
         )
@@ -423,6 +461,347 @@ def _decide_with_llm(
         graph_state["pending_tool_calls"] = []
         decision = _native_final_decision(result)
     return decision, context
+
+
+def _preflight_compiled_context(
+    graph_state: AssistantLoopState,
+    context: AssistantDecisionContext,
+    state: AgentState,
+    *,
+    force_hard: bool = False,
+) -> _ContextPreflightResult:
+    request = _build_native_tool_chat_request(context, state)
+    compactor = graph_state.get("context_compactor")
+    token_counter = graph_state.get("context_token_counter")
+    policy = graph_state.get("context_window_policy")
+    if compactor is None or token_counter is None or policy is None:
+        return _ContextPreflightResult(request=request, context=context)
+
+    input_tokens = token_counter.count_chat_request(request)
+    decision = policy.evaluate(
+        input_tokens,
+        reserved_output_tokens=request.max_tokens,
+    )
+    if force_hard:
+        decision = ContextWindowDecision(
+            input_tokens=decision.input_tokens,
+            effective_input_limit=decision.effective_input_limit,
+            usage_ratio=decision.usage_ratio,
+            target_tokens=decision.target_tokens,
+            triggered=True,
+            hard=True,
+        )
+    _record_context_preflight(
+        state,
+        decision=decision,
+        tokenizer_id=token_counter.tokenizer_id,
+    )
+    if not decision.triggered:
+        return _ContextPreflightResult(request=request, context=context)
+
+    turns = _conversation_turns_for_compaction(context.request)
+    if not turns:
+        state.request.metadata["context_compaction_skipped_reason"] = (
+            "no_completed_history"
+        )
+        if decision.hard:
+            state.request.metadata["context_compaction_blocked"] = True
+            return _ContextPreflightResult(
+                request=request,
+                context=context,
+                error=_context_compaction_failed_output(
+                    "上下文已进入硬限制区，但没有可压缩的已完成历史。"
+                ),
+            )
+        return _ContextPreflightResult(request=request, context=context)
+
+    context_without_history = _context_without_raw_history(context)
+    fixed_request = _build_native_tool_chat_request(context_without_history, state)
+    fixed_tokens = token_counter.count_chat_request(fixed_request)
+    source_tokens = max(0, input_tokens - fixed_tokens)
+    existing_summary = _existing_context_summary(context.request)
+    existing_summary_tokens = (
+        token_counter.count_text(existing_summary.summary_text)
+        if existing_summary is not None
+        else 0
+    )
+    summary_budget = min(
+        policy.summary_max_tokens,
+        max(
+            512,
+            decision.target_tokens - fixed_tokens + existing_summary_tokens,
+        ),
+    )
+
+    attempts = 2 if decision.hard else 1
+    last_error = ""
+    for attempt in range(attempts):
+        attempt_budget = max(512, summary_budget // (2**attempt))
+        try:
+            compacted = compactor.compact(
+                conversation=turns,
+                current_request=context.request,
+                observations=[],
+                budget_report=context.context_pack.budget,
+                existing_summary=existing_summary,
+                source_token_count=source_tokens,
+                summary_max_tokens=attempt_budget,
+            )
+        except (RuntimeError, TypeError, ValueError) as exc:
+            _record_context_compaction_usage(
+                context.request,
+                getattr(exc, "provider_usage", None),
+            )
+            last_error = (
+                "ValueError"
+                if isinstance(exc, ValueError)
+                else type(exc).__name__
+            )
+            continue
+
+        _record_context_compaction_usage(
+            context.request,
+            compacted.provider_usage,
+        )
+        compacted_context = _rolling_summary_context(
+            context,
+            compacted.summary,
+            compactor_type=compacted.compactor_type,
+        )
+        compacted_request = _build_native_tool_chat_request(compacted_context, state)
+        compacted_tokens = token_counter.count_chat_request(compacted_request)
+        compacted_decision = policy.evaluate(
+            compacted_tokens,
+            reserved_output_tokens=compacted_request.max_tokens,
+        )
+        metadata = compacted_context.request.metadata
+        metadata["context_compaction_output_tokens"] = compacted_tokens
+        metadata["context_compaction_target_tokens"] = decision.target_tokens
+        metadata["context_compaction_target_reached"] = (
+            compacted_tokens <= decision.target_tokens
+        )
+        metadata["context_compaction_attempts"] = attempt + 1
+        if not compacted_decision.hard:
+            before_compaction = metadata.get("context_token_preflight")
+            if isinstance(before_compaction, dict):
+                metadata["context_token_preflight_before_compaction"] = dict(
+                    before_compaction
+                )
+            metadata["context_token_preflight"] = _context_preflight_payload(
+                compacted_decision,
+                tokenizer_id=token_counter.tokenizer_id,
+            )
+            compacted_context = _commit_rolling_summary(
+                graph_state,
+                compacted_context,
+                state,
+            )
+            compacted_request = _build_native_tool_chat_request(
+                compacted_context,
+                state,
+            )
+            return _ContextPreflightResult(
+                request=compacted_request,
+                context=compacted_context,
+            )
+        last_error = "compacted_context_still_hard"
+
+    metadata = state.request.metadata
+    metadata["context_compaction_failed"] = True
+    metadata["context_compaction_error_code"] = last_error or "unknown"
+    if decision.hard:
+        metadata["context_compaction_blocked"] = True
+        return _ContextPreflightResult(
+            request=request,
+            context=context,
+            error=_context_compaction_failed_output(
+                "上下文压缩失败，继续调用可能超过模型上下文限制。"
+            ),
+        )
+    return _ContextPreflightResult(request=request, context=context)
+
+
+def _record_context_preflight(
+    state: AgentState,
+    *,
+    decision: ContextWindowDecision,
+    tokenizer_id: str,
+) -> None:
+    state.request.metadata["context_token_preflight"] = _context_preflight_payload(
+        decision,
+        tokenizer_id=tokenizer_id,
+    )
+
+
+def _record_context_compaction_usage(
+    request: UserRequest,
+    usage: Any,
+) -> None:
+    if not isinstance(usage, dict) or not usage:
+        return
+    history = request.metadata.setdefault(
+        "context_compaction_provider_usage_history",
+        [],
+    )
+    if isinstance(history, list):
+        history.append(dict(usage))
+        del history[:-10]
+
+
+def _context_preflight_payload(
+    decision: ContextWindowDecision,
+    *,
+    tokenizer_id: str,
+) -> dict[str, Any]:
+    return {
+        "schema_version": "context_token_preflight_v1",
+        "tokenizer_id": tokenizer_id,
+        "input_tokens": decision.input_tokens,
+        "effective_input_limit": decision.effective_input_limit,
+        "usage_ratio": decision.usage_ratio,
+        "target_tokens": decision.target_tokens,
+        "triggered": decision.triggered,
+        "hard": decision.hard,
+    }
+
+
+def _conversation_turns_for_compaction(
+    request: UserRequest,
+) -> list[_ConversationTurnForCompaction]:
+    history = request.metadata.get("conversation_history")
+    if not isinstance(history, list):
+        return []
+    turns: list[_ConversationTurnForCompaction] = []
+    for item in history:
+        if not isinstance(item, dict):
+            continue
+        user_text = item.get("user_text")
+        assistant_text = item.get("assistant_text")
+        if not isinstance(user_text, str) or not isinstance(assistant_text, str):
+            continue
+        turns.append(
+            _ConversationTurnForCompaction(
+                user_text=user_text,
+                assistant_text=assistant_text,
+                run_id=str(item.get("run_id") or ""),
+                trace_id=str(item.get("trace_id") or ""),
+            )
+        )
+    return turns
+
+
+def _existing_context_summary(request: UserRequest) -> ContextSummary | None:
+    summary = context_summary_from_metadata(request.metadata.get("context_summary"))
+    if summary is not None:
+        return summary
+    return context_summary_from_metadata(
+        request.metadata.get("session_context_summary")
+    )
+
+
+def _context_without_raw_history(
+    context: AssistantDecisionContext,
+) -> AssistantDecisionContext:
+    metadata = dict(context.request.metadata)
+    metadata.update(
+        {
+            "conversation_history": [],
+            "conversation_context_recent_turns": 0,
+            "conversation_context_recent_tokens": 0,
+            "conversation_context_recent_token_budget": 0,
+        }
+    )
+    request = context.request.model_copy(
+        update={"metadata": metadata},
+        deep=True,
+    )
+    pack = context.context_pack.model_copy(
+        update={
+            "request": request,
+            "conversation_text": "",
+        },
+        deep=True,
+    )
+    return AssistantDecisionContext(
+        context_pack=pack,
+        request=request,
+        memory_summaries=context.memory_summaries,
+        memory_text=context.memory_text,
+        tool_specs=context.tool_specs,
+        tool_observations=context.tool_observations,
+        iterations=context.iterations,
+        max_iterations=context.max_iterations,
+        is_mock=context.is_mock,
+    )
+
+
+def _rolling_summary_context(
+    context: AssistantDecisionContext,
+    summary: ContextSummary,
+    *,
+    compactor_type: str,
+) -> AssistantDecisionContext:
+    metadata = dict(context.request.metadata)
+    rendered_summary = format_context_summary(summary)
+    metadata.update(
+        {
+            "conversation_history": [],
+            "conversation_context_text": "",
+            "conversation_context_recent_turns": 0,
+            "conversation_context_recent_tokens": 0,
+            "conversation_context_recent_token_budget": 0,
+            "conversation_context_token_aware": True,
+            "conversation_context_compacted": True,
+            "conversation_context_compacted_turns": summary.covered_turn_count,
+            "context_summary": summary.model_dump(mode="json"),
+            "session_context_summary": summary.model_dump(mode="json"),
+            "context_summary_text": rendered_summary,
+            "context_summary_present": True,
+            "context_compactor_type": compactor_type,
+            "context_compaction_applied": True,
+        }
+    )
+    request = context.request.model_copy(
+        update={"metadata": metadata},
+        deep=True,
+    )
+    return AssistantDecisionContext(
+        context_pack=context.context_pack.model_copy(
+            update={
+                "request": request,
+                "context_summary": summary,
+                "compactor_type": compactor_type,
+                "conversation_text": "",
+            },
+            deep=True,
+        ),
+        request=request,
+        memory_summaries=context.memory_summaries,
+        memory_text=context.memory_text,
+        tool_specs=context.tool_specs,
+        tool_observations=context.tool_observations,
+        iterations=context.iterations,
+        max_iterations=context.max_iterations,
+        is_mock=context.is_mock,
+    )
+
+
+def _commit_rolling_summary(
+    graph_state: AssistantLoopState,
+    context: AssistantDecisionContext,
+    state: AgentState,
+) -> AssistantDecisionContext:
+    state.request = context.request
+    graph_state["request"] = context.request
+    return _rebuild_context_after_provider_overflow(graph_state, context)
+
+
+def _context_compaction_failed_output(message: str) -> AssistantTextOutput:
+    return AssistantTextOutput(
+        text="当前会话上下文过长且压缩失败，请新建会话或缩短输入后重试。",
+        reason=message,
+        safety_notes=["context_compaction_failed"],
+    )
 
 
 def _run_chat_turn(
@@ -758,6 +1137,16 @@ def _record_chat_usage_metadata(state: AgentState, result: ChatResult) -> None:
     metadata["context_token_usage"] = dict(usage)
     metadata["provider_token_usage"] = dict(usage)
     metadata["last_chat_usage"] = dict(usage)
+    preflight = metadata.get("context_token_preflight")
+    prompt_tokens = usage.get("prompt_tokens", 0)
+    if isinstance(preflight, dict) and prompt_tokens > 0:
+        estimated = preflight.get("input_tokens")
+        if isinstance(estimated, int) and estimated >= 0:
+            preflight["provider_prompt_tokens"] = prompt_tokens
+            preflight["estimation_error_tokens"] = prompt_tokens - estimated
+            preflight["estimation_error_ratio"] = (
+                (prompt_tokens - estimated) / prompt_tokens
+            )
     history = metadata.setdefault("provider_token_usage_history", [])
     if isinstance(history, list):
         history.append(dict(usage))

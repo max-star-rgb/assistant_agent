@@ -279,8 +279,19 @@ class SessionHandoffV2(BaseModel):
 
 
 class ContextSummary(BaseModel):
-    """Session-scoped semantic summary used as current context, not long-term memory."""
+    """Session-scoped rolling summary used as context, not long-term memory."""
 
+    schema_version: str = "context_summary_v1"
+    summary_text: str = ""
+    summary_revision: int = Field(default=0, ge=0)
+    covered_turn_count: int = Field(default=0, ge=0)
+    source_token_count: int = Field(default=0, ge=0)
+    summary_token_count: int = Field(default=0, ge=0)
+    compactor_model: str = ""
+    last_summarized_run_id: str = ""
+    last_summarized_trace_id: str = ""
+    # Legacy structured fields remain readable so existing JSONL summaries can
+    # be migrated by the next rolling compaction.
     task_state: str = ""
     user_constraints: list[str] = Field(default_factory=list)
     decisions: list[str] = Field(default_factory=list)

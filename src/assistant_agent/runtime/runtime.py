@@ -45,7 +45,12 @@ from assistant_agent.automation.durable_tasks.sqlite_store import SQLiteTaskStor
 from assistant_agent.runtime.chat_adapter import ChatAdapter, ChatRequest, ChatResult, create_chat_adapter
 from assistant_agent.runtime.checkpointer import create_checkpointer
 from assistant_agent.context.observability import build_traced_assistant_context_pack
-from assistant_agent.context.compactor import ContextCompactor
+from assistant_agent.context.compactor import ContextCompactor, create_context_compactor
+from assistant_agent.context.token_counter import (
+    ContextTokenCounter,
+    create_context_token_counter,
+)
+from assistant_agent.context.token_budget import ContextWindowPolicy
 from assistant_agent.context.prompt_compiler import (
     PromptCompileMode,
     PromptCompileRequest,
@@ -91,6 +96,7 @@ class AgentGraphRuntime:
         trace_store: TraceStore | None = None,
         chat_adapter: ChatAdapter | None = None,
         context_compactor: ContextCompactor | None = None,
+        context_token_counter: ContextTokenCounter | None = None,
         video_context_store: VideoContextStore | None = None,
         realtime_video_memory_store: RealtimeVideoMemoryStore | None = None,
         checkpointer: Any | None = None,
@@ -187,10 +193,30 @@ class AgentGraphRuntime:
         self.event_sink = event_sink
         self.trace_store = trace_store or InMemoryTraceStore()
         self.chat_adapter = chat_adapter or create_chat_adapter(self.config)
-        # Runtime context compaction is intentionally disabled. Keep accepting the
-        # dependency for constructor compatibility while the compactor
-        # implementations remain available outside AgentGraphRuntime.
-        self.context_compactor: ContextCompactor | None = None
+        self.context_token_counter = (
+            context_token_counter
+            if context_token_counter is not None
+            else create_context_token_counter(self.config)
+        )
+        self.context_compactor = (
+            context_compactor
+            if context_compactor is not None
+            else create_context_compactor(
+                self.config,
+                self.chat_adapter,
+                token_counter=self.context_token_counter,
+            )
+        )
+        if self.context_compactor is not None and self.context_token_counter is None:
+            raise ValueError("context compaction requires a model tokenizer")
+        self.context_window_policy = ContextWindowPolicy(
+            input_token_limit=self.config.context_input_token_limit,
+            trigger_ratio=self.config.context_compaction_trigger_ratio,
+            target_ratio=self.config.context_compaction_target_ratio,
+            hard_ratio=self.config.context_compaction_hard_ratio,
+            safety_margin_tokens=self.config.context_compaction_safety_margin_tokens,
+            summary_max_tokens=self.config.context_summary_max_tokens,
+        )
         self.checkpointer = checkpointer if checkpointer is not None else create_checkpointer(self.config)
         self.context_source_coordinator = context_source_coordinator or ContextSourceCoordinator(
             [SoulContextSource()]
@@ -338,6 +364,8 @@ class AgentGraphRuntime:
             chat_adapter=self.chat_adapter,
             chat_turn=self._run_native_chat_turn,
             context_compactor=self.context_compactor,
+            context_token_counter=self.context_token_counter,
+            context_window_policy=self.context_window_policy,
             context_projector=self._refresh_realtime_video_context,
             trace_store=self.trace_store,
             event_sink=run_event_sink,

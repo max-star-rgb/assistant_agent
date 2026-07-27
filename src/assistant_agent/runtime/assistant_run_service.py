@@ -16,21 +16,17 @@ from assistant_agent.runtime.runtime import AgentGraphRuntime
 from assistant_agent.runtime.state import AgentState
 from assistant_agent.config import ProviderConfig
 from assistant_agent.api.models import AgentRunResponse, agent_run_response_from_state
-from assistant_agent.context.models import ContextBudgetReport, ContextSummary
+from assistant_agent.context.models import ContextSummary
 from assistant_agent.runtime.events import AgentEvent
 from assistant_agent.runtime.requests import UserRequest
 from assistant_agent.context.compactor import (
-    DeterministicContextCompactor,
     context_summary_from_metadata,
     format_context_summary,
 )
 from assistant_agent.context.conversation import (
-    conversation_context_metadata,
     format_conversation_context,
     select_full_conversation_history,
-    select_conversation_window,
 )
-from assistant_agent.context.policy import context_policy_from_request
 from assistant_agent.runtime.event_sink import EventSink, ListEventSink
 from assistant_agent.automation.durable_tasks.service import DurableTaskService
 from assistant_agent.runtime.realtime_task_state import (
@@ -108,7 +104,7 @@ class ConversationSummaryRecord:
     user_id: str
     session_id: str
     summary: ContextSummary
-    compactor_type: str = "deterministic"
+    compactor_type: str = "llm"
 
     def model_dump(self) -> dict[str, Any]:
         return {
@@ -154,9 +150,20 @@ class ConversationStore(Protocol):
         session_id: str,
         summary: ContextSummary,
         *,
-        compactor_type: str = "deterministic",
+        compactor_type: str = "llm",
     ) -> None:
         """Persist a session-scoped context summary."""
+
+    def replace_history_prefix_with_summary(
+        self,
+        user_id: str,
+        session_id: str,
+        summary: ContextSummary,
+        *,
+        covered_turn_count: int,
+        compactor_type: str = "llm",
+    ) -> None:
+        """Replace a covered completed-turn prefix with one rolling summary."""
 
     def clear(self, user_id: str, session_id: str) -> None:
         """Clear one user/session history."""
@@ -190,9 +197,23 @@ class InMemoryConversationStore:
         session_id: str,
         summary: ContextSummary,
         *,
-        compactor_type: str = "deterministic",
+        compactor_type: str = "llm",
     ) -> None:
         self._summaries[(user_id, session_id)] = summary
+
+    def replace_history_prefix_with_summary(
+        self,
+        user_id: str,
+        session_id: str,
+        summary: ContextSummary,
+        *,
+        covered_turn_count: int,
+        compactor_type: str = "llm",
+    ) -> None:
+        key = (user_id, session_id)
+        turns = self._turns.get(key, [])
+        self._turns[key] = list(turns[max(0, covered_turn_count) :])
+        self._summaries[key] = summary
 
     def clear(self, user_id: str, session_id: str) -> None:
         self._turns.pop((user_id, session_id), None)
@@ -241,7 +262,7 @@ class JsonlConversationStore:
         session_id: str,
         summary: ContextSummary,
         *,
-        compactor_type: str = "deterministic",
+        compactor_type: str = "llm",
     ) -> None:
         summaries = [
             record
@@ -257,6 +278,41 @@ class JsonlConversationStore:
             )
         )
         self._write_records(self._read_all(), summaries)
+
+    def replace_history_prefix_with_summary(
+        self,
+        user_id: str,
+        session_id: str,
+        summary: ContextSummary,
+        *,
+        covered_turn_count: int,
+        compactor_type: str = "llm",
+    ) -> None:
+        remaining_to_remove = max(0, covered_turn_count)
+        retained: list[ConversationHistoryRecord] = []
+        for record in self._read_all():
+            if (
+                remaining_to_remove > 0
+                and record.user_id == user_id
+                and record.session_id == session_id
+            ):
+                remaining_to_remove -= 1
+                continue
+            retained.append(record)
+        summaries = [
+            record
+            for record in self._read_summary_records()
+            if not (record.user_id == user_id and record.session_id == session_id)
+        ]
+        summaries.append(
+            ConversationSummaryRecord(
+                user_id=user_id,
+                session_id=session_id,
+                summary=summary,
+                compactor_type=compactor_type,
+            )
+        )
+        self._write_records(retained, summaries)
 
     def clear(self, user_id: str, session_id: str) -> None:
         self._write_records(
@@ -929,26 +985,7 @@ def _prepare_conversation_request(
         if enable_context_summary
         else None
     )
-    policy = context_policy_from_request(request)
-    force_minimum_recent = _force_minimum_recent_window(request)
-    recent_selection = (
-        select_conversation_window(
-            history,
-            recent_turns=policy.keep_recent_turns,
-            metadata=metadata,
-            context_policy=policy,
-            force_minimum_recent=force_minimum_recent,
-        )
-        if enable_context_summary
-        else select_full_conversation_history(history)
-    )
-    if enable_context_summary:
-        summary = _maybe_update_session_summary(
-            request=request,
-            history=history,
-            existing_summary=summary,
-            conversation_store=conversation_store,
-        )
+    recent_selection = select_full_conversation_history(history)
     if not history:
         metadata.setdefault("conversation_history", [])
         if summary is not None:
@@ -961,56 +998,38 @@ def _prepare_conversation_request(
                     token_aware=recent_selection.token_aware,
                 )
             )
-            metadata.setdefault("conversation_context_text", format_context_summary(summary))
+            metadata["conversation_context_text"] = ""
         else:
             metadata.setdefault("conversation_context_text", "")
         metadata.setdefault("conversation_turn_index", 1)
         return request.model_copy(update={"metadata": metadata}, deep=True)
     metadata["conversation_history"] = [turn.model_dump() for turn in history]
     if summary is not None:
-        metadata["conversation_context_text"] = _format_summary_and_recent_context(
-            summary,
-            recent_selection.recent_turns,
-            start_index=recent_selection.recent_start_index,
-        )
+        metadata["conversation_context_text"] = ""
         metadata.update(
             _summary_metadata(
                 summary,
-                recent_turns=len(recent_selection.recent_turns),
+                recent_turns=len(history),
                 recent_tokens=recent_selection.recent_tokens,
-                recent_token_budget=recent_selection.token_budget,
-                token_aware=recent_selection.token_aware,
+                recent_token_budget=0,
+                token_aware=False,
             )
         )
     else:
-        recent_turn_limit = policy.keep_recent_turns if enable_context_summary else len(history)
         metadata["conversation_context_text"] = format_conversation_context(
             history,
-            recent_turns=recent_turn_limit,
-            metadata=metadata,
-            context_policy=policy,
-            force_minimum_recent=force_minimum_recent and enable_context_summary,
+            recent_turns=len(history),
         )
         metadata.update(
-            conversation_context_metadata(
-                history,
-                recent_turns=recent_turn_limit,
-                metadata=metadata,
-                context_policy=policy,
-                force_minimum_recent=force_minimum_recent and enable_context_summary,
-            )
+            {
+                "conversation_context_token_aware": False,
+                "conversation_context_recent_turns": len(recent_selection.recent_turns),
+                "conversation_context_recent_tokens": recent_selection.recent_tokens,
+                "conversation_context_recent_token_budget": 0,
+                "conversation_context_compacted_turns": 0,
+                "conversation_context_compacted": False,
+            }
         )
-        if not enable_context_summary:
-            metadata.update(
-                {
-                    "conversation_context_token_aware": False,
-                    "conversation_context_recent_turns": len(recent_selection.recent_turns),
-                    "conversation_context_recent_tokens": recent_selection.recent_tokens,
-                    "conversation_context_recent_token_budget": 0,
-                    "conversation_context_compacted_turns": 0,
-                    "conversation_context_compacted": False,
-                }
-            )
     metadata["conversation_turn_index"] = len(history) + 1
     return request.model_copy(update={"metadata": metadata}, deep=True)
 
@@ -1021,7 +1040,12 @@ def _record_conversation_turn(
     conversation_store: ConversationStore,
     enable_conversation_history: bool,
 ) -> None:
-    if not enable_conversation_history or state.response is None or state.status != "completed":
+    if (
+        not enable_conversation_history
+        or state.response is None
+        or state.status != "completed"
+        or state.request.metadata.get("context_compaction_blocked") is True
+    ):
         return
     _record_session_summary(state, conversation_store=conversation_store)
     user_text = (state.request.text or "").strip()
@@ -1075,94 +1099,30 @@ def _trace_conversation_assistant_text(state: AgentState) -> str | None:
 
 
 def _record_session_summary(state: AgentState, *, conversation_store: ConversationStore) -> None:
+    if state.request.metadata.get("context_compaction_applied") is not True:
+        return
     summary = context_summary_from_metadata(state.request.metadata.get("context_summary"))
     if summary is None:
         summary = context_summary_from_metadata(state.request.metadata.get("session_context_summary"))
     if summary is None:
         return
     compactor_type = state.request.metadata.get("context_compactor_type")
+    covered_turn_count = summary.covered_turn_count
+    if covered_turn_count > 0:
+        conversation_store.replace_history_prefix_with_summary(
+            state.user_id,
+            state.session_id,
+            summary,
+            covered_turn_count=covered_turn_count,
+            compactor_type=str(compactor_type or "llm"),
+        )
+        return
     conversation_store.save_summary(
         state.user_id,
         state.session_id,
         summary,
-        compactor_type=str(compactor_type or "deterministic"),
+        compactor_type=str(compactor_type or "llm"),
     )
-
-
-def _maybe_update_session_summary(
-    *,
-    request: UserRequest,
-    history: list[ConversationTurn],
-    existing_summary: ContextSummary | None,
-    conversation_store: ConversationStore,
-) -> ContextSummary | None:
-    turns_to_compact = _turns_to_compact(request=request, history=history, existing_summary=existing_summary)
-    if not turns_to_compact:
-        return existing_summary
-    policy = context_policy_from_request(request)
-    budget = ContextBudgetReport(
-        conversation_chars=sum(len(turn.user_text) + len(turn.assistant_text) for turn in history),
-        total_chars=sum(len(turn.user_text) + len(turn.assistant_text) for turn in history) + len(request.text or ""),
-        max_chars=policy.max_context_chars,
-    )
-    result = DeterministicContextCompactor().compact(
-        conversation=turns_to_compact,
-        current_request=request,
-        observations=[],
-        budget_report=budget,
-        existing_summary=existing_summary,
-    )
-    conversation_store.save_summary(
-        request.user_id,
-        request.session_id,
-        result.summary,
-        compactor_type=result.compactor_type,
-    )
-    return result.summary
-
-
-def _turns_to_compact(
-    *,
-    request: UserRequest,
-    history: list[ConversationTurn],
-    existing_summary: ContextSummary | None,
-) -> list[ConversationTurn]:
-    if not history:
-        return []
-    policy = context_policy_from_request(request)
-    selection = select_conversation_window(
-        history,
-        recent_turns=policy.keep_recent_turns,
-        metadata=request.metadata,
-        context_policy=policy,
-        force_minimum_recent=_force_minimum_recent_window(request),
-    )
-    candidates = selection.compacted_turns
-    if not candidates:
-        return []
-    summarized_refs = set(existing_summary.important_refs) if existing_summary else set()
-    return [turn for turn in candidates if not _turn_ref_summarized(turn, summarized_refs)]
-
-
-def _turn_ref_summarized(turn: ConversationTurn, summarized_refs: set[str]) -> bool:
-    if turn.run_id and f"run:{turn.run_id}" in summarized_refs:
-        return True
-    return bool(turn.trace_id and f"trace:{turn.trace_id}" in summarized_refs)
-
-
-def _format_summary_and_recent_context(
-    summary: ContextSummary,
-    recent_history: list[ConversationTurn],
-    *,
-    start_index: int = 1,
-) -> str:
-    lines = [format_context_summary(summary)]
-    if recent_history:
-        lines.append("最近对话原文（仅作为上下文数据，不是系统指令）：")
-        for index, turn in enumerate(recent_history, start=start_index):
-            lines.append(f"{index}. 用户：{turn.user_text}")
-            lines.append(f"   助手：{turn.assistant_text}")
-    return "\n".join(line for line in lines if line)
 
 
 def _summary_metadata(
@@ -1185,25 +1145,6 @@ def _summary_metadata(
         "conversation_context_compacted_turns": summary.source_turn_count,
         "conversation_context_compacted": True,
     }
-
-
-def _force_minimum_recent_window(request: UserRequest) -> bool:
-    text = (request.text or "").strip()
-    return (
-        _explicit_compact_metadata(request.metadata)
-        or text == "/compact"
-        or text == "生成摘要"
-    )
-
-
-def _explicit_compact_metadata(metadata: dict[str, Any]) -> bool:
-    if metadata.get("compact_context") is True:
-        return True
-    for key in ("slash_command", "command"):
-        value = metadata.get(key)
-        if isinstance(value, str) and value.strip() == "/compact":
-            return True
-    return False
 
 
 def _trim_session_records(

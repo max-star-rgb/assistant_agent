@@ -3,12 +3,59 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from math import ceil
 from typing import Any
 
 from pydantic import BaseModel, Field
 
 from assistant_agent.runtime.requests import UserRequest
+
+
+@dataclass(frozen=True)
+class ContextWindowDecision:
+    """Preflight decision for one fully compiled Provider request."""
+
+    input_tokens: int
+    effective_input_limit: int
+    usage_ratio: float
+    target_tokens: int
+    triggered: bool
+    hard: bool
+
+
+@dataclass(frozen=True)
+class ContextWindowPolicy:
+    """Token thresholds with hysteresis for rolling context compaction."""
+
+    input_token_limit: int
+    trigger_ratio: float = 0.70
+    target_ratio: float = 0.40
+    hard_ratio: float = 0.85
+    safety_margin_tokens: int = 0
+    summary_max_tokens: int = 32_768
+
+    def evaluate(
+        self,
+        input_tokens: int,
+        *,
+        reserved_output_tokens: int = 0,
+    ) -> ContextWindowDecision:
+        effective_limit = max(
+            1,
+            self.input_token_limit
+            - max(0, self.safety_margin_tokens)
+            - max(0, reserved_output_tokens),
+        )
+        ratio = max(0, input_tokens) / effective_limit
+        return ContextWindowDecision(
+            input_tokens=max(0, input_tokens),
+            effective_input_limit=effective_limit,
+            usage_ratio=ratio,
+            target_tokens=max(1, int(effective_limit * self.target_ratio)),
+            triggered=ratio >= self.trigger_ratio,
+            hard=ratio >= self.hard_ratio,
+        )
 
 
 CONTEXT_TOKEN_ESTIMATE_METADATA_KEYS = (

@@ -18,7 +18,7 @@ from assistant_agent.providers.specs import (
 
 
 AgentGraphMode = Literal["conditional", "assistant_loop"]
-ContextCompactorMode = Literal["off", "deterministic", "llm"]
+ContextCompactorMode = Literal["off", "llm"]
 ConversationHistoryBackend = Literal["memory", "jsonl"]
 LangGraphCheckpointerBackend = Literal["none", "memory"]
 
@@ -113,6 +113,13 @@ class ProviderConfig:
     chat_timeout_seconds: float = 75.0
     agent_service_text_turn_timeout_seconds: float = 90.0
     context_compactor_mode: ContextCompactorMode = "off"
+    context_tokenizer_path: str | None = None
+    context_input_token_limit: int = 128_000
+    context_compaction_trigger_ratio: float = 0.70
+    context_compaction_target_ratio: float = 0.40
+    context_compaction_hard_ratio: float = 0.85
+    context_compaction_safety_margin_tokens: int = 50_000
+    context_summary_max_tokens: int = 32_768
     qwen_chat_enable_thinking: bool = False
     openai_chat_base_url: str = "https://api.openai.com/v1"
     openai_chat_model: str = "gpt-4o-mini"
@@ -191,6 +198,17 @@ class ProviderConfig:
 
     def __post_init__(self) -> None:
         self.validate_provider_mode()
+        if not (
+            0.0
+            < self.context_compaction_target_ratio
+            < self.context_compaction_trigger_ratio
+            < self.context_compaction_hard_ratio
+            <= 1.0
+        ):
+            raise ValueError(
+                "context compaction ratios must satisfy "
+                "0 < target < trigger < hard <= 1"
+            )
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "ProviderConfig":
@@ -366,6 +384,42 @@ class ProviderConfig:
             ),
             context_compactor_mode=_context_compactor_mode(
                 source.get("MULTIMODAL_AGENT_CONTEXT_COMPACTOR")
+            ),
+            context_tokenizer_path=(
+                source.get("MULTIMODAL_AGENT_CONTEXT_TOKENIZER_PATH") or None
+            ),
+            context_input_token_limit=max(
+                8_192,
+                _int_env(
+                    source.get("MULTIMODAL_AGENT_CONTEXT_INPUT_TOKEN_LIMIT"),
+                    _default_context_input_token_limit(chat_settings.model),
+                ),
+            ),
+            context_compaction_trigger_ratio=_ratio_env(
+                source.get("MULTIMODAL_AGENT_CONTEXT_COMPACTION_TRIGGER_RATIO"),
+                0.70,
+            ),
+            context_compaction_target_ratio=_ratio_env(
+                source.get("MULTIMODAL_AGENT_CONTEXT_COMPACTION_TARGET_RATIO"),
+                0.40,
+            ),
+            context_compaction_hard_ratio=_ratio_env(
+                source.get("MULTIMODAL_AGENT_CONTEXT_COMPACTION_HARD_RATIO"),
+                0.85,
+            ),
+            context_compaction_safety_margin_tokens=max(
+                0,
+                _int_env(
+                    source.get("MULTIMODAL_AGENT_CONTEXT_SAFETY_MARGIN_TOKENS"),
+                    50_000,
+                ),
+            ),
+            context_summary_max_tokens=max(
+                512,
+                _int_env(
+                    source.get("MULTIMODAL_AGENT_CONTEXT_SUMMARY_MAX_TOKENS"),
+                    32_768,
+                ),
             ),
             qwen_chat_enable_thinking=_bool_env(
                 source.get("QWEN_CHAT_ENABLE_THINKING"),
@@ -885,9 +939,22 @@ def _agent_graph_mode(value: str | None) -> AgentGraphMode:
 def _context_compactor_mode(value: str | None) -> ContextCompactorMode:
     if value == "llm":
         return "llm"
-    if value == "deterministic":
-        return "deterministic"
     return "off"
+
+
+def _default_context_input_token_limit(model: str | None) -> int:
+    normalized = (model or "").strip().lower()
+    if normalized.startswith("qwen3.6-flash"):
+        return 1_000_000
+    return 128_000
+
+
+def _ratio_env(value: str | None, default: float) -> float:
+    try:
+        parsed = float(value) if value is not None else default
+    except ValueError:
+        return default
+    return min(1.0, max(0.0, parsed))
 
 
 def _chat_stream(source: Mapping[str, str], chat_provider: ChatProviderName) -> bool:

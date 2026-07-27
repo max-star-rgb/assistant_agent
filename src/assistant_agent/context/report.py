@@ -153,6 +153,20 @@ def build_context_report(
         else 0
     )
     section_total = sum(section.chars for section in sections.values())
+    token_preflight = pack.request.metadata.get("context_token_preflight")
+    if not isinstance(token_preflight, dict):
+        token_preflight = {}
+    preflight_tokens = _int_value(token_preflight.get("input_tokens"))
+    effective_input_limit = _int_value(
+        token_preflight.get("effective_input_limit")
+    )
+    rolling_compacted = (
+        pack.request.metadata.get("context_compaction_applied") is True
+    )
+    compression_stage = "compacted" if rolling_compacted else pack.budget.compression_stage
+    compression_reasons = list(pack.budget.compression_reasons)
+    if rolling_compacted and "context_token_usage_high" not in compression_reasons:
+        compression_reasons.append("context_token_usage_high")
     return ContextReport(
         sections=sections,
         total_chars=(
@@ -161,15 +175,19 @@ def build_context_report(
             else section_total
         ),
         max_chars=pack.budget.max_chars,
-        total_tokens=pack.budget.total_tokens,
-        max_tokens=pack.budget.max_tokens,
+        total_tokens=preflight_tokens or pack.budget.total_tokens,
+        max_tokens=effective_input_limit or pack.budget.max_tokens,
         selected_tool_names=[spec.name for spec in selected_specs],
         memory_item_ids=memory_item_ids,
         skill_report=pack.skill_report,
         context_sources=pack.context_source_report,
-        compression_stage=pack.budget.compression_stage,
-        compression_reasons=list(pack.budget.compression_reasons),
-        was_compacted=pack.budget.compaction_triggered or pack.budget.compression_stage != "none",
+        compression_stage=compression_stage,
+        compression_reasons=compression_reasons,
+        was_compacted=(
+            rolling_compacted
+            or pack.budget.compaction_triggered
+            or pack.budget.compression_stage != "none"
+        ),
         accounting_basis="compiled_chat_request" if compiled_request is not None else "section_estimate",
         budget_estimated_chars=pack.budget.total_chars,
         compiled_message_chars=compiled_message_chars,

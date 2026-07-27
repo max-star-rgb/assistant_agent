@@ -27,7 +27,7 @@ from assistant_agent.runtime.chat_adapter import (
     OpenAICompatibleChatAdapter,
     create_chat_adapter,
 )
-from assistant_agent.context.compactor import DeterministicContextCompactor, create_context_compactor
+from assistant_agent.context.compactor import LLMCompactor, create_context_compactor
 from assistant_agent.runtime.event_sink import ListEventSink
 from assistant_agent.runtime.hooks import HookManager, HookTraceStore
 from assistant_agent.identifiers import IdFactory, new_run_id, new_session_id, new_span_id, new_trace_id
@@ -291,14 +291,18 @@ def test_interactive_provider_latency_controls_are_explicit() -> None:
 
     enabled_config = ProviderConfig.from_env(
         {
-            "MULTIMODAL_AGENT_CONTEXT_COMPACTOR": "deterministic",
+            "MULTIMODAL_AGENT_PROVIDER_MODE": "real",
+            "MULTIMODAL_AGENT_CHAT_PROVIDER": "qwen",
+            "QWEN_API_KEY": "test-key",
+            "QWEN_CHAT_MODEL": "qwen3.6-flash",
+            "MULTIMODAL_AGENT_CONTEXT_COMPACTOR": "llm",
         }
     )
     enabled_compactor = create_context_compactor(
         enabled_config,
         create_chat_adapter(enabled_config),
     )
-    assert isinstance(enabled_compactor, DeterministicContextCompactor)
+    assert isinstance(enabled_compactor, LLMCompactor)
 
 
 def test_qwen_chat_adapter_disables_thinking_in_provider_payload() -> None:

@@ -67,10 +67,13 @@ def build_assistant_context_pack(
     """Collect state and request materials for assistant prompt rendering."""
 
     active_request = request or state.request
-    compaction_enabled = context_compactor is not None
+    # Token-triggered rolling compaction runs only after PromptCompiler has
+    # produced the complete Provider request. Character trimming and
+    # precompile summary generation are intentionally disabled here.
+    compaction_enabled = False
     context_policy = context_policy_from_request(active_request)
     conversation_text = _conversation_context_text(active_request)
-    context_summary = _context_summary(active_request) if context_compactor is not None else None
+    context_summary = _context_summary(active_request)
     compactor_type = _metadata_text(active_request, "context_compactor_type") or "none"
     if memory_text is not None:
         text = memory_text
