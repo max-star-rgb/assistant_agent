@@ -36,6 +36,7 @@ from evals.cases.langfuse.experiment import (
     REAL_SYSTEM_DATASET_NAME,
     REAL_SYSTEM_DATASET_SEED,
     REAL_SYSTEM_SEMANTIC_SCORE_NAMES,
+    build_real_system_runtime,
     build_real_readonly_runtime,
     load_dataset_seed,
     run_langfuse_agent_experiment,
@@ -67,6 +68,12 @@ def main() -> int:
     )
     parser.add_argument("--run-name", default=None)
     parser.add_argument("--max-concurrency", type=int, default=1)
+    parser.add_argument(
+        "--local-calendar-path",
+        type=Path,
+        default=Path(".data/evals/langfuse/calendar.sqlite3"),
+        help="SQLite calendar used by --real-system instead of Google Calendar MCP.",
+    )
     parser.add_argument(
         "--seed-only",
         action="store_true",
@@ -183,9 +190,17 @@ def main() -> int:
                 file=sys.stderr,
             )
             return 2
-        runtime_factory = partial(
-            build_real_readonly_runtime,
-            config=runtime_config,
+        runtime_factory = (
+            partial(
+                build_real_system_runtime,
+                config=runtime_config,
+                calendar_path=args.local_calendar_path,
+            )
+            if args.real_system
+            else partial(
+                build_real_readonly_runtime,
+                config=runtime_config,
+            )
         )
     public_key, secret_key = langfuse_credentials_from_env(os.environ)
     if not public_key or not secret_key:
@@ -324,14 +339,14 @@ def _run_metadata(
             else "agent-capability-scripted-mock-v1"
         ),
         "tool_catalog_fingerprint": (
-            "configured-real-tools-v1"
+            "configured-real-tools-local-calendar-v1"
             if execution_profile == "real_system"
             else "weather-readonly-v1"
             if execution_profile == "real_readonly"
             else "calendar-read-write-v1"
         ),
         "fixture_version": (
-            "real-system-v1"
+            "real-system-local-calendar-v1"
             if execution_profile == "real_system"
             else "dynamic-readonly-v1"
             if execution_profile == "real_readonly"

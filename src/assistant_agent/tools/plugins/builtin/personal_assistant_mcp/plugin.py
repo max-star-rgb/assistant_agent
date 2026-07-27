@@ -1,4 +1,4 @@
-"""MCP-backed weather, calendar, and contacts Tool plugin."""
+"""Personal assistant tools backed by local or MCP adapters."""
 
 from assistant_agent.tools.plugins.builtin.personal_assistant_mcp.backend import (
     configured_personal_assistant_tools,
@@ -18,6 +18,12 @@ from assistant_agent.tools.plugins.builtin.personal_assistant_mcp.tools import (
     ContactsSearchTool,
     WeatherTool,
 )
+from assistant_agent.tools.plugins.builtin.personal_assistant_mcp.local_calendar import (
+    LocalSQLiteCalendarAdapter,
+)
+
+
+DEFAULT_LOCAL_CALENDAR_PATH = ".data/calendar/events.sqlite3"
 
 
 class PersonalAssistantMCPToolPlugin:
@@ -28,6 +34,10 @@ class PersonalAssistantMCPToolPlugin:
 
     def build_tools(self, context: ToolPluginContext) -> list[Tool]:
         tool_names = configured_personal_assistant_tools(context.mcp_server_configs)
+        if context.calendar_adapter is not None or not context.mock_mode:
+            tool_names.update(
+                {CALENDAR_SEARCH_TOOL_NAME, CALENDAR_CREATE_TOOL_NAME}
+            )
         if not context.mock_mode and not tool_names:
             return []
         adapters = create_personal_assistant_adapter_bundle(
@@ -38,10 +48,18 @@ class PersonalAssistantMCPToolPlugin:
         tools: list[Tool] = []
         if context.mock_mode or WEATHER_TOOL_NAME in tool_names:
             tools.append(WeatherTool(adapter=adapters.weather))
+        calendar_adapter = (
+            context.calendar_adapter
+            or (
+                LocalSQLiteCalendarAdapter(DEFAULT_LOCAL_CALENDAR_PATH)
+                if not context.mock_mode
+                else adapters.calendar
+            )
+        )
         if context.mock_mode or CALENDAR_SEARCH_TOOL_NAME in tool_names:
-            tools.append(CalendarSearchTool(adapter=adapters.calendar))
+            tools.append(CalendarSearchTool(adapter=calendar_adapter))
         if context.mock_mode or CALENDAR_CREATE_TOOL_NAME in tool_names:
-            tools.append(CalendarCreateTool(adapter=adapters.calendar))
+            tools.append(CalendarCreateTool(adapter=calendar_adapter))
         if context.mock_mode or CONTACTS_SEARCH_TOOL_NAME in tool_names:
             tools.append(ContactsSearchTool(adapter=adapters.contacts))
         return tools

@@ -17,9 +17,12 @@ from assistant_agent.runtime.legacy_tool_mapping import (
 )
 from assistant_agent.runtime.recovery import RecoveryPolicy, ToolFailureMode, classify_error
 from assistant_agent.runtime.state import AgentState
-from assistant_agent.api.models import api_error
 from assistant_agent.tools.capability_output import contract_summary
-from assistant_agent.runtime.events import AgentEvent
+from assistant_agent.runtime.event_publisher import (
+    RuntimeEventPublisher,
+    ToolStartedFact,
+    ToolTerminalFact,
+)
 from assistant_agent.identity import RequestIdentity
 from assistant_agent.runtime.planning_models import TaskStep
 from assistant_agent.gateway.cancellation_models import (
@@ -42,7 +45,6 @@ from assistant_agent.tools.tool_call_boundary import (
 )
 from assistant_agent.observability.trace_content_policy import local_trace_content_enabled
 from assistant_agent.observability.trace_store import (
-    TraceEvent,
     TraceStore,
     new_span_id,
     sanitize_trace_value,
@@ -133,32 +135,23 @@ class ToolExecutor:
         capability = _capability_name(tool_name, step)
         started_at = perf_counter()
         tool_span_id = new_span_id()
-        _append_tool_trace_event(
-            trace_store,
-            trace_id=trace_id,
-            state=state,
-            node_name=effective_node_name,
-            canonical_event="tool.started",
-            status="started",
-            capability=capability,
-            tool_name=tool_name,
-            tool_call_id=call.tool_call_id,
-            step_id=step_id,
-            span_id=tool_span_id,
-            tool_contract=execution_summary,
-            input_summary=_policy_safe_input_summary(bound_input),
+        publisher = RuntimeEventPublisher(
+            event_sink=self.event_sink,
+            trace_store=trace_store,
         )
-        self._emit(
-            AgentEvent(
-                type="tool_started",
-                session_id=state.session_id,
-                run_id=state.run_id,
+        publisher.publish_tool_started(
+            ToolStartedFact(
+                state=state,
+                trace_id=trace_id,
+                node_name=effective_node_name,
+                capability=capability,
                 tool_name=tool_name,
-                payload={
-                    "tool_call_id": call.tool_call_id,
-                    "step_id": step_id,
-                    "pre_tool_call": pre_tool_call,
-                },
+                tool_call_id=call.tool_call_id,
+                step_id=step_id,
+                span_id=tool_span_id,
+                tool_contract=execution_summary,
+                input_summary=_policy_safe_input_summary(bound_input),
+                pre_tool_call=pre_tool_call,
             )
         )
 
@@ -236,8 +229,6 @@ class ToolExecutor:
         retryable = False
         if result.success:
             state.complete_tool_call(call.tool_call_id, result)
-            event_type = "tool_finished"
-            canonical_event = "tool.finished"
             status = "succeeded"
         else:
             decision = self.recovery_policy.decide(
@@ -263,8 +254,6 @@ class ToolExecutor:
                 },
                 stop_run=decision.action == "stop_with_error",
             )
-            event_type = "tool_failed"
-            canonical_event = "tool.failed"
             status = "failed"
 
         post_tool_call = build_post_tool_call_summary(
@@ -278,68 +267,38 @@ class ToolExecutor:
             tool_contract=tool_contract,
             registry=self.registry,
         )
-        payload = {
-            "tool_call_id": call.tool_call_id,
-            "step_id": step_id,
-            "latency_ms": latency_ms,
-            "retry_count": retry_count,
-            "post_tool_call": post_tool_call,
-        }
-        payload["contract"] = contract_summary(result.contract)
-        if error_code is not None:
-            payload.update(
-                {
-                    "code": error_code,
-                    "recovery_action": recovery_action,
-                }
-            )
-        self._emit(
-            AgentEvent(
-                type=event_type,
-                session_id=state.session_id,
-                run_id=state.run_id,
+        publisher.publish_tool_terminal(
+            ToolTerminalFact(
+                state=state,
+                trace_id=trace_id,
+                node_name=effective_node_name,
+                capability=capability,
                 tool_name=tool_name,
+                tool_call_id=call.tool_call_id,
+                step_id=step_id,
+                span_id=tool_span_id,
+                success=result.success,
+                status=str(post_tool_call.get("status") or status),
+                latency_ms=latency_ms,
+                reported_latency_ms=reported_latency_ms,
+                retry_count=retry_count,
+                tool_contract=tool_contract,
+                input_summary=_policy_safe_input_summary(bound_input),
+                output_summary=_policy_safe_output_summary(result),
+                post_tool_call=post_tool_call,
+                contract_summary=contract_summary(result.contract),
                 output_ref=result.output_ref if result.success else None,
-                error=(
-                    api_error(
-                        error_code or "tool_failed",
-                        result.error or "Tool failed.",
-                        detail={
-                            "step_id": step_id,
-                            "recovery_action": recovery_action,
-                        },
-                        recoverable=retryable,
-                    ).model_dump(mode="json")
-                    if not result.success
-                    else None
+                provider=_provider_name(result.data or {}),
+                model=_model_name(result.data or {}),
+                error_code=error_code,
+                error_message=result.error if not result.success else None,
+                trace_error_message=(
+                    _policy_safe_error(result.error) if not result.success else None
                 ),
-                payload=payload,
+                recovery_action=recovery_action,
+                delivery_recovery_action=recovery_action,
+                retryable=retryable,
             )
-        )
-        _append_tool_trace_event(
-            trace_store,
-            trace_id=trace_id,
-            state=state,
-            node_name=effective_node_name,
-            event_type="observability" if result.success else "tool_failed",
-            canonical_event=canonical_event,
-            status=str(post_tool_call.get("status") or status),
-            capability=capability,
-            tool_name=tool_name,
-            tool_call_id=call.tool_call_id,
-            step_id=step_id,
-            span_id=tool_span_id,
-            latency_ms=latency_ms,
-            reported_latency_ms=reported_latency_ms,
-            retry_count=retry_count,
-            tool_contract=tool_contract,
-            input_summary=_policy_safe_input_summary(bound_input),
-            output_summary=_policy_safe_output_summary(result),
-            provider=_provider_name(result.data or {}),
-            model=_model_name(result.data or {}),
-            error_code=error_code,
-            error_message=_policy_safe_error(result.error) if not result.success else None,
-            recovery_action=recovery_action,
         )
         return result
 
@@ -395,50 +354,35 @@ class ToolExecutor:
             error_details=error_details,
             stop_run=True,
         )
-        self._emit(
-            AgentEvent(
-                type="tool_failed",
-                session_id=state.session_id,
-                run_id=state.run_id,
+        RuntimeEventPublisher(
+            event_sink=self.event_sink,
+            trace_store=trace_store,
+        ).publish_tool_terminal(
+            ToolTerminalFact(
+                state=state,
+                trace_id=trace_id,
+                node_name=node_name,
+                capability=capability,
                 tool_name=tool_name,
-                error=api_error(
-                    CANCELLATION_ERROR_CODE,
-                    DEFAULT_CANCELLATION_MESSAGE,
-                    detail={"step_id": step_id, "source": tool_name},
-                    recoverable=False,
-                ).model_dump(mode="json"),
-                payload={
-                    "tool_call_id": tool_call_id,
-                    "step_id": step_id,
-                    "latency_ms": latency_ms,
-                    "retry_count": 0,
-                    "code": CANCELLATION_ERROR_CODE,
-                    "post_tool_call": post_tool_call,
-                },
+                tool_call_id=tool_call_id,
+                step_id=step_id,
+                span_id=tool_span_id,
+                success=False,
+                status="failed",
+                latency_ms=latency_ms,
+                reported_latency_ms=result.latency_ms,
+                retry_count=0,
+                tool_contract=tool_contract,
+                input_summary=_policy_safe_input_summary(tool_input),
+                output_summary={"cancelled": True},
+                post_tool_call=post_tool_call,
+                contract_summary=None,
+                error_code=CANCELLATION_ERROR_CODE,
+                error_message=DEFAULT_CANCELLATION_MESSAGE,
+                trace_error_message=DEFAULT_CANCELLATION_MESSAGE,
+                recovery_action="cancelled",
+                agent_error_detail={"step_id": step_id, "source": tool_name},
             )
-        )
-        _append_tool_trace_event(
-            trace_store,
-            trace_id=trace_id,
-            state=state,
-            node_name=node_name,
-            event_type="tool_failed",
-            canonical_event="tool.failed",
-            status="failed",
-            capability=capability,
-            tool_name=tool_name,
-            tool_call_id=tool_call_id,
-            step_id=step_id,
-            span_id=tool_span_id,
-            latency_ms=latency_ms,
-            reported_latency_ms=result.latency_ms,
-            retry_count=0,
-            tool_contract=tool_contract,
-            input_summary=_policy_safe_input_summary(tool_input),
-            output_summary={"cancelled": True},
-            error_code=CANCELLATION_ERROR_CODE,
-            error_message=DEFAULT_CANCELLATION_MESSAGE,
-            recovery_action="cancelled",
         )
         raise AgentRunCancelled(
             DEFAULT_CANCELLATION_MESSAGE,
@@ -521,10 +465,6 @@ class ToolExecutor:
                 error=sanitize_error_message(exc),
             )
 
-    def _emit(self, event: AgentEvent) -> None:
-        if self.event_sink is not None:
-            self.event_sink.emit(event)
-
 
 def _sleep_with_cancel(
     cancel_token: Any | None,
@@ -557,87 +497,6 @@ def _sleep_with_cancel(
             source="tool_executor",
             details=details,
         )
-
-
-def _append_tool_trace_event(
-    trace_store: TraceStore | None,
-    *,
-    trace_id: str | None,
-    state: AgentState,
-    node_name: str,
-    canonical_event: str,
-    status: str,
-    capability: str,
-    tool_name: str,
-    tool_call_id: str,
-    step_id: str,
-    span_id: str,
-    event_type: str = "observability",
-    latency_ms: int | None = None,
-    reported_latency_ms: int | None = None,
-    retry_count: int | None = None,
-    tool_contract: dict[str, Any] | None = None,
-    input_summary: dict[str, Any] | None = None,
-    output_summary: dict[str, Any] | None = None,
-    provider: str | None = None,
-    model: str | None = None,
-    error_code: str | None = None,
-    error_message: str | None = None,
-    recovery_action: str | None = None,
-) -> None:
-    if trace_store is None or trace_id is None:
-        return
-    error = None
-    if error_code or error_message or recovery_action:
-        error = {
-            key: value
-            for key, value in {
-                "code": error_code,
-                "message": (
-                    sanitize_trace_value(error_message) if error_message else None
-                ),
-                "recovery_action": recovery_action,
-                "step_id": step_id,
-                "retry_count": retry_count,
-            }.items()
-            if value is not None
-        }
-    attributes = {
-        "tool_call_id": tool_call_id,
-        "step_id": step_id,
-        "retry_count": retry_count,
-        "tool_reported_latency_ms": reported_latency_ms,
-        "tool_category": (tool_contract or {}).get("category"),
-    }
-    trace_store.append(
-        TraceEvent(
-            trace_id=trace_id,
-            run_id=state.run_id,
-            user_id=state.user_id,
-            session_id=state.session_id,
-            node_name=node_name,
-            event_type=event_type,
-            canonical_event=canonical_event,
-            observation_type=(
-                "span" if canonical_event != "tool.started" else None
-            ),
-            observation_scope="iteration",
-            span_id=span_id,
-            capability=capability,
-            tool_name=tool_name,
-            provider=provider,
-            model=model,
-            status=status,
-            latency_ms=latency_ms,
-            error_code=error_code,
-            input_summary=input_summary or {},
-            output_summary=output_summary or {},
-            attributes={
-                key: value for key, value in attributes.items() if value is not None
-            },
-            error=error,
-        )
-    )
 
 
 def _capability_name(tool_name: str, step: TaskStep | None) -> str:

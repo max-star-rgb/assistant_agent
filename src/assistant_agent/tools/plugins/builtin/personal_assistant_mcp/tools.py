@@ -88,7 +88,7 @@ class CalendarSearchTool(ToolBase):
         self.adapter = adapter or MockCalendarAdapter()
 
     def _run(self, input: CalendarSearchRequest, context: ToolContext) -> ToolResult:
-        result = self.adapter.search(input)
+        result = _calendar_adapter_for_context(self.adapter, context).search(input)
         return _tool_result(
             tool_name=self.name,
             capability=self.name,
@@ -119,7 +119,7 @@ class CalendarCreateTool(ToolBase):
         self.adapter = adapter or MockCalendarAdapter()
 
     def _run(self, input: CalendarCreateRequest, context: ToolContext) -> ToolResult:
-        result = self.adapter.create(input)
+        result = _calendar_adapter_for_context(self.adapter, context).create(input)
         return _tool_result(
             tool_name=self.name,
             capability=self.name,
@@ -212,6 +212,17 @@ def _tool_result(
         latency_ms=latency_ms,
         contract=contract,
     )
+
+
+def _calendar_adapter_for_context(
+    adapter: CalendarAdapter,
+    context: ToolContext,
+) -> CalendarAdapter:
+    resolver = getattr(adapter, "for_namespace", None)
+    if not callable(resolver):
+        return adapter
+    namespace = context.user_id or context.session_id or context.run_id or "local"
+    return resolver(namespace)
 
 
 def _weather_observation(result: WeatherResult) -> dict[str, Any]:

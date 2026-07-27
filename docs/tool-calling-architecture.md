@@ -160,8 +160,9 @@ vision_understanding` 公共边界；视频 Provider、滚动语义记忆与关�
 Provider 运行只有一个全局边界：`MULTIMODAL_AGENT_PROVIDER_MODE=mock|real`。mock 模式强制主
 LLM 和所有 Provider-backed tools 使用 mock 实现，即使环境中存在真实 key；real 模式要求主 LLM
 完整配置，并且只注册配置完整的真实 Provider 工具，禁止回退到 mock。memory、Python 等纯本地能力
-不属于 Provider，不受“真实调用”伪分类。weather、calendar、contacts 等 MCP 能力在 real 模式按实际
-MCP mapping 逐个注册，未映射的能力不进入 Registry。
+不属于 Provider，不受“真实调用”伪分类。weather、contacts 等 MCP 能力在 real 模式按实际
+MCP mapping 逐个注册，未映射的能力不进入 Registry。开发阶段的稳定
+`calendar_search` / `calendar_create` 默认使用本地 SQLite，不调用日历 MCP。
 
 `web_search` 与 `web_fetch` 随 `run_server` 创建的 runtime 作为进程内 Web Tool 插件装配，不要求
 额外启动本地 relay。`MULTIMODAL_AGENT_SEARCH_PROVIDER=tavily` 时，插件使用 `TAVILY_API_KEY`
@@ -238,6 +239,13 @@ weather、calendar、contacts 的 mock adapter 和 MCP backend 是
 独立应用生命周期时，能力实现才提升为共享 Provider 能力。同样，image generation、shopping、visual image
 search、web access 和 Python execution 的单一 owner backend/sandbox 均保留在对应内置 Plugin；
 共享治理分别归属 `providers/`、`context/`、`runtime/`、`observability/`、`automation/` 和 `media/`。
+
+普通 real Runtime 使用 `LocalSQLiteCalendarAdapter` 承载稳定的
+`calendar_search` / `calendar_create`，数据库默认位于 `.data/calendar/events.sqlite3`；
+Langfuse `real_system` Eval 通过 composition root 注入独立数据库，默认位于
+`.data/evals/langfuse/calendar.sqlite3`。两者都从 `ToolContext.user_id` 派生 namespace，避免用户间
+串数据；Trace 负责执行审计，SQLite 负责可检索业务状态。Google Calendar MCP mapping 暂时不被这两个
+稳定工具调用。
 
 `visual_image_search` 与 `vision_understanding` 虽然同属视觉业务域，但 Provider 配置、readiness 和
 启停生命周期不同，因此分别归属 `VisualImageSearchPlugin` 与 `VisionUnderstandingPlugin`。原
@@ -444,9 +452,9 @@ MCP 配置模板或提交。当前 stdio 单机配置使用 `http://localhost:80
 优先；同时存在 HTTP/HTTPS proxy 与 `ALL_PROXY` 时只传递前者，避免上游客户端误选不兼容的 SOCKS
 scheme。其他环境变量仍由 MCP SDK 的安全白名单或 server `env` 控制。真实模式还要求主 Chat
 Provider 完整配置；MCP 配置不会绕过这个全局边界。
-weather、calendar 和 contacts 只有存在
-对应 `personal_assistant_tools` mapping 时才注册，映射的远端工具还必须同时位于 `allowed_tools`；
-weather、calendar search 和 contacts mapping 必须位于 `read_only_tools`。
+weather 和 contacts 只有存在对应 `personal_assistant_tools` mapping 时才注册，映射的远端工具还
+必须同时位于 `allowed_tools` 与 `read_only_tools`。本地 calendar 不要求 MCP mapping；
+`calendar_create` 仍按 write Tool 暴露规则治理。
 `email_search` 和 `email_read` 只有存在独立 `email_tools` mapping 时才注册；两个远端 Gmail 工具必须
 同时位于 `allowed_tools` 与 `read_only_tools`。推荐使用独立 `google_gmail_readonly` MCP server，并
 以 `workspace-mcp --tools gmail --read-only` 限制 OAuth scope 和远端工具集合。

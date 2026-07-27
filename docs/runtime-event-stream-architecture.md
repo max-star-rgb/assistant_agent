@@ -26,11 +26,29 @@ vendor provider chunks
 - `RealtimeAgentEvent` is the thin realtime backend boundary.
 - Gateway frames describe session, run, delivery, cancel, interrupt, and
   transport lifecycle.
+- `TraceEvent` is the independent observability projection consumed by the
+  local trace store, OTel exporter, and Langfuse; it is not part of the
+  `AgentRunStream`.
 - Vendor chunks, SDK objects, prompts, credentials, and raw provider responses
   do not cross the provider adapter boundary.
 - Gateway, UI, TTS, and public API consumers do not consume `LLMEvent`.
 - Provider streaming never bypasses tool governance. Final native tool calls
   still enter `ActionValidator -> ToolExecutor -> ToolRegistry`.
+
+`AgentEvent` and `TraceEvent` remain separate public contracts because delivery
+and observability have different payload, retention, and redaction rules. Shared
+run, governed-tool, and ReAct decision/observation lifecycle facts are published
+through `RuntimeEventPublisher`, which creates both projections with the same
+occurrence timestamp and correlation identity. Runtime and Tool code must not
+construct a second lifecycle projection by hand after publishing the fact.
+
+The projections are not one-to-one. Delivery-only facts such as committed text
+deltas remain `AgentEvent` only, while LLM, context, memory, and graph-node
+diagnostics remain `TraceEvent` only. `response.final` is the response-composition
+span; `final_response` is the delivery terminal and therefore is emitted from
+the run-terminal fact rather than treated as the same event. Run terminal trace
+projection is recorded before `assistant.turn.summary`, while terminal delivery
+is emitted after trace finalization.
 
 ## Provider Stream Boundary
 

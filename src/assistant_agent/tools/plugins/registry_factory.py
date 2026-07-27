@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from typing import TYPE_CHECKING
 
 from assistant_agent.config import ProviderConfig
 from assistant_agent.mcp.adapter import MCPToolRunner
@@ -31,6 +32,11 @@ from assistant_agent.tools.plugins.contracts import (
 from assistant_agent.tools.plugins.defaults import default_tool_plugins
 from assistant_agent.tools.registry import ToolRegistry
 
+if TYPE_CHECKING:
+    from assistant_agent.tools.plugins.builtin.personal_assistant_mcp.adapters import (
+        CalendarAdapter,
+    )
+
 
 def create_default_registry(
     config: ProviderConfig | None = None,
@@ -42,6 +48,7 @@ def create_default_registry(
     mcp_server_configs: list[MCPServerConfig] | None = None,
     mcp_config_path: str | None = None,
     mcp_runner: MCPToolRunner | None = None,
+    calendar_adapter: CalendarAdapter | None = None,
     plugin_modules: Iterable[str] | None = None,
 ) -> ToolRegistry:
     """Assemble and seal the default runtime registry."""
@@ -64,6 +71,7 @@ def create_default_registry(
         video_context_store=video_context_store,
         realtime_video_memory_store=realtime_video_memory_store,
         durable_task_service=durable_task_service,
+        calendar_adapter=calendar_adapter,
     )
     module_names = (
         configured_plugin_modules_from_env()

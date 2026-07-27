@@ -111,6 +111,30 @@ def test_plain_text_run_completes() -> None:
         assert state.response.message
         assert sink.events[0].type == "task_started"
         assert sink.events[-1].type == "final_response"
+        trace_events = runtime.trace_store.list_by_run(state.run_id)
+        run_started = next(
+            event
+            for event in trace_events
+            if event.canonical_event == "run.started"
+        )
+        run_completed = next(
+            event
+            for event in trace_events
+            if event.canonical_event == "run.completed"
+        )
+        assistant_output = next(
+            event
+            for event in trace_events
+            if event.canonical_event == "assistant.output"
+        )
+        agent_answer = next(
+            event
+            for event in sink.events
+            if event.type == "agent_trace_final_answer"
+        )
+        assert sink.events[0].created_at == run_started.created_at
+        assert sink.events[-1].created_at == run_completed.created_at
+        assert agent_answer.created_at == assistant_output.created_at
     finally:
         runtime.close()
 

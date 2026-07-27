@@ -22,8 +22,12 @@ from assistant_agent.memory.factory import create_long_term_memory_service
 from assistant_agent.memory.service import LongTermMemoryService
 from assistant_agent.config import ProviderConfig
 from assistant_agent.runtime.decision_models import native_tool_call_to_assistant_decision
-from assistant_agent.api.models import api_error_from_agent_error
 from assistant_agent.runtime.events import AgentEvent
+from assistant_agent.runtime.event_publisher import (
+    RunStartedFact,
+    RunTerminalFact,
+    RuntimeEventPublisher,
+)
 from assistant_agent.automation.durable_tasks.models import (
     DurableTaskSnapshot,
     TaskCheckpoint,
@@ -319,19 +323,20 @@ class AgentGraphRuntime:
             )
         )
         run_started_at = perf_counter()
-        self._emit(
-            AgentEvent(
-                type="task_started",
-                session_id=state.session_id,
-                run_id=state.run_id,
-                payload={
-                    "user_id": state.user_id,
-                    "agent_id": state.agent_id,
-                    "trace_id": state.trace_id,
-                },
-            ),
-            run_event_sink,
+        runtime_event_publisher = RuntimeEventPublisher(
+            event_sink=run_event_sink,
+            trace_store=self.trace_store,
         )
+        run_started_fact = RunStartedFact(
+            state=state,
+            parent_span_id=(
+                trace_context.parent_span_id
+                if trace_context is not None
+                else None
+            ),
+            execution_engine="langgraph_assistant_loop",
+        )
+        runtime_event_publisher.deliver_run_started(run_started_fact)
         if self.run_history is not None:
             self.run_history.record_start(state.run_id, state.user_id, state.session_id)
         conversation_prepare_latency_ms = request.metadata.get("conversation_prepare_latency_ms")
@@ -349,20 +354,7 @@ class AgentGraphRuntime:
                     "conversation_turn_index": request.metadata.get("conversation_turn_index"),
                 },
             )
-        self._append_observability_event(
-            state,
-            canonical_event="run.started",
-            status="started",
-            parent_span_id=(
-                trace_context.parent_span_id
-                if trace_context is not None
-                else None
-            ),
-            attributes={
-                "execution_strategy": state.execution_strategy,
-                "execution_engine": "langgraph_assistant_loop",
-            },
-        )
+        runtime_event_publisher.record_run_started(run_started_fact)
         runtime_context = GraphRuntimeContext(
             intent_detector=self.intent_detector,
             router=self.router,
@@ -458,60 +450,16 @@ class AgentGraphRuntime:
                 "session_store_updated": True,
             },
         )
-        terminal_event = {
-            "completed": "run.completed",
-            "failed": "run.failed",
-            "cancelled": "run.cancelled",
-        }[terminal_status]
-        self._append_observability_event(
-            state,
-            canonical_event=terminal_event,
-            status=terminal_status,
+        terminal_fact = RunTerminalFact(
+            state=state,
+            terminal_status=terminal_status,
             latency_ms=int((perf_counter() - run_started_at) * 1000),
-            attributes={
-                "tool_count": len(state.tool_calls),
-                "error_count": len(state.errors),
-                "response_present": state.response is not None,
-            },
-            error=_latest_state_error(state),
         )
+        runtime_event_publisher.record_run_terminal(terminal_fact)
         _record_local_trace_conversation(state)
         _append_trace_content_event(self.trace_store, state)
         append_runtime_turn_summary(self.trace_store, state=state)
-        if state.status == "failed":
-            self._emit(
-                AgentEvent(
-                    type="task_failed",
-                    session_id=state.session_id,
-                    run_id=state.run_id,
-                    error=(
-                        api_error_from_agent_error(state.errors[-1]).model_dump(mode="json")
-                        if state.errors
-                        else {"code": "TASK_FAILED", "message": "Agent run failed.", "detail": {}, "recoverable": False}
-                    ),
-                ),
-                run_event_sink,
-            )
-        elif state.status == "cancelled":
-            self._emit(
-                AgentEvent(
-                    type="task_cancelled",
-                    session_id=state.session_id,
-                    run_id=state.run_id,
-                    error=(
-                        api_error_from_agent_error(state.errors[-1]).model_dump(mode="json")
-                        if state.errors
-                        else {
-                            "code": "AGENT_RUN_CANCELLED",
-                            "message": "Agent run cancelled.",
-                            "detail": {},
-                            "recoverable": False,
-                        }
-                    ),
-                ),
-                run_event_sink,
-            )
-        else:
+        if terminal_status == "completed":
             response_text = state.response.message if state.response else ""
             if response_text and run_event_sink is not None and not run_event_sink.response_delta_emitted:
                 self._emit(
@@ -528,15 +476,8 @@ class AgentGraphRuntime:
                     ),
                     run_event_sink,
                 )
-            self._emit(
-                AgentEvent(
-                    type="final_response",
-                    session_id=state.session_id,
-                    run_id=state.run_id,
-                    text=response_text,
-                ),
-                run_event_sink,
-            )
+        runtime_event_publisher.deliver_run_terminal(terminal_fact)
+        if terminal_status == "completed":
             self.long_term_memory_service.enqueue_completed_turn(
                 trace_store=self.trace_store,
                 state=state,
@@ -947,18 +888,6 @@ def _terminal_history_status(status: str) -> Literal["completed", "failed", "can
     if status == "cancelled":
         return "cancelled"
     return "completed"
-
-
-def _latest_state_error(state: AgentState) -> dict[str, Any] | None:
-    if not state.errors:
-        return None
-    error = state.errors[-1]
-    return {
-        "code": error.details.get("code", "unknown_error"),
-        "message": error.message,
-        "source": error.source,
-        "recovery_action": error.details.get("recovery_action"),
-    }
 
 
 class _ResponseDeltaTrackingEventSink:

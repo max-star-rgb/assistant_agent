@@ -16,6 +16,9 @@ if TYPE_CHECKING:
     from assistant_agent.automation.durable_tasks.service import DurableTaskService
     from assistant_agent.media.video.realtime_video_memory import RealtimeVideoMemoryStore
     from assistant_agent.media.video.video_context import VideoContextStore
+    from assistant_agent.tools.plugins.builtin.personal_assistant_mcp.adapters import (
+        CalendarAdapter,
+    )
 
 
 @dataclass(frozen=True)
@@ -28,6 +31,7 @@ class ToolPluginContext:
     video_context_store: VideoContextStore | None = None
     realtime_video_memory_store: RealtimeVideoMemoryStore | None = None
     durable_task_service: DurableTaskService | None = None
+    calendar_adapter: CalendarAdapter | None = None
 
     @property
     def mock_mode(self) -> bool:

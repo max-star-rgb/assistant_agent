@@ -39,6 +39,10 @@ from assistant_agent.tools.ids import WEATHER_TOOL_NAME
 from assistant_agent.tools.plugins.builtin.personal_assistant_mcp.tools import (
     CalendarSearchTool,
 )
+from assistant_agent.tools.plugins.builtin.personal_assistant_mcp.local_calendar import (
+    LocalSQLiteCalendarAdapter,
+)
+from assistant_agent.tools.plugins.registry_factory import create_default_registry
 from assistant_agent.tools.registry import ToolRegistry
 from evals.cases.langfuse.calendar_fixture import (
     CalendarEvalCreateTool,
@@ -81,9 +85,9 @@ REAL_READONLY_EVALUATION_OBJECTIVE = (
 )
 REAL_SYSTEM_EVALUATION_OBJECTIVE = (
     "使用真实 Chat Provider 和当前已配置的真实能力，系统评估 Agent 的无工具克制、"
-    "必要澄清、单工具与多工具自主执行、媒体理解、内容生成和写操作确认边界。"
+    "必要澄清、单工具与多工具自主执行、媒体理解、内容生成和本地写操作。"
     "动态结果以 Tool Trace、Provider 终态、最终回答和 Langfuse 原生评分共同证明；"
-    "该 profile 不执行未确认写操作，也不写入真实 Memory。"
+    "日历写入本地 SQLite，不调用 Google Calendar MCP，也不写入真实 Memory。"
 )
 
 
@@ -120,6 +124,7 @@ class DatasetSeedResult(BaseModel):
     dataset_name: str
     seed_hash: str
     item_ids: list[str]
+    removed_item_ids: list[str] = Field(default_factory=list)
 
 
 class CalendarEventExpectation(BaseModel):
@@ -482,6 +487,21 @@ def seed_langfuse_dataset(client: Any, seed: DatasetSeed) -> DatasetSeedResult:
         description=seed.description or AGENT_EVALUATION_OBJECTIVE,
         metadata={**seed.metadata, "seed_hash": seed_hash},
     )
+    expected_item_ids = {item.id for item in seed.items}
+    dataset = client.get_dataset(seed.dataset_name)
+    obsolete_item_ids = [
+        str(item.id)
+        for item in getattr(dataset, "items", [])
+        if str(item.id) not in expected_item_ids
+        and isinstance(getattr(item, "metadata", None), dict)
+        and getattr(item, "metadata").get("seed_hash")
+        and getattr(item, "metadata").get("case_id") == str(item.id)
+    ]
+    dataset_items_api = getattr(getattr(client, "api", None), "dataset_items", None)
+    if obsolete_item_ids and dataset_items_api is None:
+        raise RuntimeError("Langfuse client cannot delete obsolete seeded items.")
+    for item_id in obsolete_item_ids:
+        dataset_items_api.delete(item_id)
     for item in seed.items:
         client.create_dataset_item(
             dataset_name=seed.dataset_name,
@@ -498,6 +518,7 @@ def seed_langfuse_dataset(client: Any, seed: DatasetSeed) -> DatasetSeedResult:
         dataset_name=seed.dataset_name,
         seed_hash=seed_hash,
         item_ids=[item.id for item in seed.items],
+        removed_item_ids=obsolete_item_ids,
     )
 
 
@@ -664,6 +685,48 @@ def build_real_readonly_runtime(
             session_store=InMemorySessionStore(),
         ),
         environment=StatelessEvalEnvironment(),
+    )
+
+
+def build_real_system_runtime(
+    request: UserRequest,
+    case: ExperimentCase,
+    *,
+    config: ProviderConfig | None = None,
+    calendar_path: str | Path = ".data/evals/langfuse/calendar.sqlite3",
+) -> RuntimeBundle:
+    """Build a real-provider Runtime whose calendar is persisted locally."""
+
+    if not isinstance(case, RealReadonlyCase):
+        raise ValueError(
+            "The real-system Runtime only accepts real Dataset items."
+        )
+    resolved = config or ProviderConfig.from_env()
+    validate_real_readonly_config(resolved)
+    isolated = replace(
+        resolved,
+        mem0_base_url=None,
+        conversation_history_backend="memory",
+        langgraph_checkpointer_backend="none",
+        durable_tasks_enabled=False,
+        durable_task_worker_enabled=False,
+    )
+    calendar = LocalSQLiteCalendarAdapter(
+        calendar_path,
+        namespace=request.user_id,
+    )
+    registry = create_default_registry(
+        isolated,
+        calendar_adapter=calendar,
+    )
+    return RuntimeBundle(
+        runtime=AgentGraphRuntime(
+            config=isolated,
+            registry=registry,
+            trace_store=InMemoryTraceStore(),
+            session_store=InMemorySessionStore(),
+        ),
+        environment=calendar,
     )
 
 

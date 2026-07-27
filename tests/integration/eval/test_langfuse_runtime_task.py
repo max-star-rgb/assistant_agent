@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from evals.cases.langfuse.experiment import (
@@ -33,6 +35,10 @@ class _FakeLangfuseClient:
         self.datasets: list[dict[str, Any]] = []
         self.items: list[dict[str, Any]] = []
         self.dataset = _FakeDataset()
+        self.deleted_item_ids: list[str] = []
+        self.api = SimpleNamespace(
+            dataset_items=SimpleNamespace(delete=self.deleted_item_ids.append)
+        )
 
     def create_dataset(self, **kwargs: Any) -> object:
         self.datasets.append(kwargs)
@@ -56,6 +62,7 @@ class _FakeLangfuseClient:
 class _FakeDataset:
     def __init__(self) -> None:
         self.name = ""
+        self.items: list[Any] = []
         self.run_kwargs: dict[str, Any] = {}
 
     def run_experiment(self, **kwargs: Any) -> object:
@@ -143,6 +150,30 @@ def test_explicit_seed_uses_stable_native_dataset_ids() -> None:
     ]
     assert client.datasets[0]["metadata"]["seed_hash"] == result.seed_hash
     assert client.items[0]["metadata"]["case_id"] == result.item_ids[0]
+
+
+def test_explicit_seed_removes_obsolete_seed_managed_items() -> None:
+    seed = load_dataset_seed()
+    client = _FakeLangfuseClient()
+    client.dataset.items = [
+        SimpleNamespace(
+            id="obsolete-confirmation-case",
+            metadata={
+                "case_id": "obsolete-confirmation-case",
+                "seed_hash": "sha256:old",
+                "capability": "real_confirmation_guard",
+            },
+        ),
+        SimpleNamespace(
+            id="ui-authored-case",
+            metadata={"case_id": "ui-authored-case"},
+        ),
+    ]
+
+    result = seed_langfuse_dataset(client, seed)
+
+    assert result.removed_item_ids == ["obsolete-confirmation-case"]
+    assert client.deleted_item_ids == ["obsolete-confirmation-case"]
 
 
 def test_real_readonly_seed_contains_only_no_tool_and_weather_cases() -> None:
@@ -300,6 +331,23 @@ def test_runtime_task_returns_compact_code_evaluator_evidence() -> None:
     root_span = build_text_otel_span_specs(observer.events)[0]
     assert root_span.trace_id == TRACE_ID
     assert root_span.parent_span_id == PARENT_SPAN_ID
+
+
+def test_code_evaluator_keeps_semantic_expectations_out_of_mechanical_score() -> None:
+    source = Path("evals/cases/langfuse/agent_strict_pass.ts").read_text(
+        encoding="utf-8"
+    )
+    tool_checks = source.split("const toolChecks = {", maxsplit=1)[1].split(
+        "\n  };", maxsplit=1
+    )[0]
+
+    assert "executed_tools_exposed:" in tool_checks
+    assert "validation_chain_accepted:" in tool_checks
+    assert "executions_succeeded:" in tool_checks
+    assert "tool_trace_complete:" in tool_checks
+    assert "required_tools" not in tool_checks
+    assert "forbidden_tools" not in tool_checks
+    assert "no_tool_called" not in tool_checks
 
 
 def test_runtime_task_covers_no_tool_and_read_only_capabilities() -> None:

@@ -1,90 +1,66 @@
-"""Gateway protocol, bridge, and session services for assistant_agent."""
+"""Lazy public exports for Gateway protocol, bridge, and session services."""
 
-from assistant_agent.gateway.bridge import GatewayBridge, GatewayConnectionPolicy
-from assistant_agent.gateway.capabilities import (
-    AGENT_SERVICE_ENTRY_CAPABILITIES,
-    GATEWAY_WEBSOCKET_CAPABILITIES,
-    EntryAdapterCapabilities,
-)
-from assistant_agent.gateway.observability import (
-    GatewayLifecycleEvent,
-    GatewayLifecycleSink,
-    emit_gateway_lifecycle_event,
-)
-from assistant_agent.gateway.protocol import (
-    CALL_HANGUP,
-    CALL_HANGUP_ACK,
-    CALL_INCOMING,
-    CALL_READY,
-    CONFIG_UPDATE,
-    RUN_QUEUED,
-    Frame,
-    RunEndReason,
-    frame,
-)
-from assistant_agent.gateway.queueing import (
-    AdmissionSnapshot,
-    GatewayQueuePolicy,
-    GatewayRunAdmissionController,
-    QueueOverflowError,
-)
-from assistant_agent.gateway.runtime_pool import (
-    GatewayRuntimePool,
-    shared_gateway_runtime_factory,
-)
-from assistant_agent.gateway.session import (
-    ActiveRun,
-    CancelToken,
-    GatewayConfigUpdateResult,
-    GatewaySessionHandle,
-    GatewaySessionManager,
-    GatewaySessionService,
-)
-from assistant_agent.gateway.transport import Closed, Endpoint, InMemoryDuplex
-from assistant_agent.gateway.turn_arbitration import (
-    GatewayTurnArbitrationController,
-    GatewayTurnArbitrationOutcome,
-    GatewayTurnArbitrationPolicy,
-)
-from assistant_agent.gateway.ws import WsEndpoint, dumps_frame, loads_frame
+from __future__ import annotations
 
-__all__ = [
-    "CALL_HANGUP",
-    "CALL_HANGUP_ACK",
-    "CALL_INCOMING",
-    "CALL_READY",
-    "CONFIG_UPDATE",
-    "RUN_QUEUED",
-    "AdmissionSnapshot",
-    "ActiveRun",
-    "AGENT_SERVICE_ENTRY_CAPABILITIES",
-    "CancelToken",
-    "Closed",
-    "Endpoint",
-    "EntryAdapterCapabilities",
-    "Frame",
-    "GATEWAY_WEBSOCKET_CAPABILITIES",
-    "GatewayBridge",
-    "GatewayConnectionPolicy",
-    "GatewayConfigUpdateResult",
-    "GatewayLifecycleEvent",
-    "GatewayLifecycleSink",
-    "GatewayQueuePolicy",
-    "GatewayRunAdmissionController",
-    "GatewayRuntimePool",
-    "GatewaySessionHandle",
-    "GatewaySessionManager",
-    "GatewaySessionService",
-    "GatewayTurnArbitrationController",
-    "GatewayTurnArbitrationOutcome",
-    "GatewayTurnArbitrationPolicy",
-    "InMemoryDuplex",
-    "QueueOverflowError",
-    "RunEndReason",
-    "WsEndpoint",
-    "dumps_frame",
-    "emit_gateway_lifecycle_event",
-    "frame",
-    "shared_gateway_runtime_factory",
-    "loads_frame",
-]
+from importlib import import_module
+from typing import Any
+
+
+_EXPORT_MODULES = {
+    "CALL_HANGUP": "protocol",
+    "CALL_HANGUP_ACK": "protocol",
+    "CALL_INCOMING": "protocol",
+    "CALL_READY": "protocol",
+    "CONFIG_UPDATE": "protocol",
+    "RUN_QUEUED": "protocol",
+    "AdmissionSnapshot": "queueing",
+    "ActiveRun": "session",
+    "AGENT_SERVICE_ENTRY_CAPABILITIES": "capabilities",
+    "CancelToken": "session",
+    "Closed": "transport",
+    "Endpoint": "transport",
+    "EntryAdapterCapabilities": "capabilities",
+    "Frame": "protocol",
+    "GATEWAY_WEBSOCKET_CAPABILITIES": "capabilities",
+    "GatewayBridge": "bridge",
+    "GatewayConnectionPolicy": "bridge",
+    "GatewayConfigUpdateResult": "session",
+    "GatewayLifecycleEvent": "observability",
+    "GatewayLifecycleSink": "observability",
+    "GatewayQueuePolicy": "queueing",
+    "GatewayRunAdmissionController": "queueing",
+    "GatewayRuntimePool": "runtime_pool",
+    "GatewaySessionHandle": "session",
+    "GatewaySessionManager": "session",
+    "GatewaySessionService": "session",
+    "GatewayTurnArbitrationController": "turn_arbitration",
+    "GatewayTurnArbitrationOutcome": "turn_arbitration",
+    "GatewayTurnArbitrationPolicy": "turn_arbitration",
+    "InMemoryDuplex": "transport",
+    "QueueOverflowError": "queueing",
+    "RunEndReason": "protocol",
+    "WsEndpoint": "ws",
+    "dumps_frame": "ws",
+    "emit_gateway_lifecycle_event": "observability",
+    "frame": "protocol",
+    "shared_gateway_runtime_factory": "runtime_pool",
+    "loads_frame": "ws",
+}
+
+__all__ = list(_EXPORT_MODULES)
+
+
+def __getattr__(name: str) -> Any:
+    module_name = _EXPORT_MODULES.get(name)
+    if module_name is None:
+        raise AttributeError(name)
+    value = getattr(
+        import_module(f"assistant_agent.gateway.{module_name}"),
+        name,
+    )
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted({*globals(), *__all__})

@@ -36,6 +36,10 @@ from assistant_agent.context.service import (
     ContextService,
 )
 from assistant_agent.runtime.events import AgentEvent
+from assistant_agent.runtime.event_publisher import (
+    AssistantStepFact,
+    RuntimeEventPublisher,
+)
 from assistant_agent.runtime.planning_models import TaskPlan, TaskStep
 from assistant_agent.runtime.requests import AgentResponse, UserRequest
 from assistant_agent.tools.observation import (
@@ -1723,7 +1727,6 @@ def _record_react_decision(
         "safety_notes": decision.safety_notes,
         "plan_status": state.plan_status,
     })
-    _emit_agent_trace_event(graph_state, trace_event)
     context_summary = _context_trace_summary(context)
     output_summary = {
         "output_type": decision.type,
@@ -1739,21 +1742,28 @@ def _record_react_decision(
             context,
             state,
         )
-    _append_trace(
-        graph_state,
-        event_type="assistant_output",
-        canonical_event="assistant.output",
-        status=decision.type,
-        tool_name=decision.tool_name if is_tool_call else None,
-        output_summary=output_summary,
-        attributes={
-            "iteration": iteration + 1,
-            "output_type": decision.type,
-            "tool_name": decision.tool_name if is_tool_call else None,
-            "step_id": decision.step_id if is_tool_call else None,
-            "plan_status": state.plan_status,
-            "safety_notes": decision.safety_notes,
-        },
+    _runtime_event_publisher(graph_state).publish_assistant_step(
+        AssistantStepFact(
+            state=state,
+            trace_id=graph_state.get("trace_id"),
+            node_name=graph_state.get("current_node_name", "assistant_loop"),
+            decision_trace=trace_event,
+            trace_event_type="assistant_output",
+            canonical_event="assistant.output",
+            observation_type=None,
+            observation_scope="runtime",
+            status=decision.type,
+            tool_name=decision.tool_name if is_tool_call else None,
+            output_summary=output_summary,
+            attributes={
+                "iteration": iteration + 1,
+                "output_type": decision.type,
+                "tool_name": decision.tool_name if is_tool_call else None,
+                "step_id": decision.step_id if is_tool_call else None,
+                "plan_status": state.plan_status,
+                "safety_notes": decision.safety_notes,
+            },
+        )
     )
 
 
@@ -1879,25 +1889,38 @@ def _record_react_observation(
                 "recovery_hint": payload.get("next_step_hint"),
             }
         )
-    _emit_agent_trace_event(graph_state, trace_event)
-    _append_trace(
-        graph_state,
-        event_type="tool_observation",
-        canonical_event="tool.observation",
-        status=payload.get("status"),
-        tool_name=payload.get("tool_name"),
-        output_summary={
-            "summary": payload.get("summary"),
-            "output_ref": payload.get("output_ref"),
-            "next_step_hint": payload.get("next_step_hint"),
-        },
-        attributes={
-            "observation_index": len(observations),
-            "summary": payload.get("summary"),
-            "output_ref": payload.get("output_ref"),
-            "next_step_hint": payload.get("next_step_hint"),
-        },
-        error={"code": payload.get("error_code"), "message": payload.get("error_message")} if payload.get("error_code") else None,
+    _runtime_event_publisher(graph_state).publish_assistant_step(
+        AssistantStepFact(
+            state=state,
+            trace_id=graph_state.get("trace_id"),
+            node_name=graph_state.get("current_node_name", "assistant_loop"),
+            decision_trace=trace_event,
+            trace_event_type="tool_observation",
+            canonical_event="tool.observation",
+            observation_type="event",
+            observation_scope="iteration",
+            status=payload.get("status"),
+            tool_name=payload.get("tool_name"),
+            output_summary={
+                "summary": payload.get("summary"),
+                "output_ref": payload.get("output_ref"),
+                "next_step_hint": payload.get("next_step_hint"),
+            },
+            attributes={
+                "observation_index": len(observations),
+                "summary": payload.get("summary"),
+                "output_ref": payload.get("output_ref"),
+                "next_step_hint": payload.get("next_step_hint"),
+            },
+            trace_error=(
+                {
+                    "code": payload.get("error_code"),
+                    "message": payload.get("error_message"),
+                }
+                if payload.get("error_code")
+                else None
+            ),
+        )
     )
     return observations
 
@@ -1940,28 +1963,13 @@ def _observation_trace_event(payload: dict[str, Any], iteration: int) -> dict[st
     return {key: value for key, value in event.items() if value is not None}
 
 
-def _emit_agent_trace_event(graph_state: AssistantLoopState, trace_event: dict[str, Any]) -> None:
+def _runtime_event_publisher(
+    graph_state: AssistantLoopState,
+) -> RuntimeEventPublisher:
     tool_executor = graph_state.get("tool_executor")
-    event_sink = getattr(tool_executor, "event_sink", None)
-    if event_sink is None:
-        return
-    state = graph_state["state"]
-    event_type = {
-        "decision": "agent_trace_decision",
-        "observation": "agent_trace_observation",
-        "final_answer": "agent_trace_final_answer",
-    }.get(str(trace_event.get("event")), "agent_trace_decision")
-    event_sink.emit(
-        AgentEvent(
-            type=cast(Any, event_type),
-            session_id=state.session_id,
-            run_id=state.run_id,
-            tool_name=trace_event.get("action") if isinstance(trace_event.get("action"), str) else None,
-            output_ref=trace_event.get("output_ref") if isinstance(trace_event.get("output_ref"), str) else None,
-            text=trace_event.get("answer") if isinstance(trace_event.get("answer"), str) else None,
-            error=trace_event.get("error"),
-            payload={"decision_trace": trace_event},
-        )
+    return RuntimeEventPublisher(
+        event_sink=getattr(tool_executor, "event_sink", None),
+        trace_store=graph_state.get("trace_store"),
     )
 
 
