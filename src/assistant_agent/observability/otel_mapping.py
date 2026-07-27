@@ -59,6 +59,7 @@ _ALLOWED_ATTRIBUTE_KEYS = frozenset(
         "runtime_call_latency_ms",
         "search_error_count",
         "session_turn",
+        "source_tool_span_id",
         "terminal_status",
         "transport_mode",
         "tool_call_id",
@@ -483,7 +484,14 @@ def _event_io_attributes(
     elif name in {"tool.finished", "tool.failed"}:
         if conversation is not None:
             input_payload = {"tool_name": event.tool_name, **event.input_summary}
-            output_payload = {"tool_name": event.tool_name, **event.output_summary}
+            output_payload = {
+                "tool_name": event.tool_name,
+                **{
+                    key: value
+                    for key, value in event.output_summary.items()
+                    if key != "model_observation"
+                },
+            }
         else:
             input_payload = {
                 "tool_name": event.tool_name,
@@ -508,7 +516,13 @@ def _event_io_attributes(
                 ),
             }
     elif name == "tool.observation":
-        input_payload = {"tool_name": event.tool_name}
+        input_payload = {
+            "tool_name": event.tool_name,
+            **_selected_payload(
+                event.attributes,
+                ("tool_call_id", "source_tool_span_id"),
+            ),
+        }
         tool_observation = _tool_observation_for_event(
             conversation,
             observation_index=_mapping_int(event.attributes, "observation_index"),

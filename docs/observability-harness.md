@@ -788,7 +788,11 @@ Langfuse 的工具链同样使用完整视图：`tool.execute` 直接显示执�
 `next_step_hint`、`redacted`、`truncated` 和 `original_chars`。因此它与 assistant loop 产生的模型观察
 是同一对象，而不是观测层再次生成的摘要。`redacted=true` 若存在，是 `ToolObservation` 自身记录的
 模型上下文投影事实，不表示 Langfuse 页面又隐藏了一层字段。完整对象也进入
-`.data/graph_trace.jsonl` 的 `trace.content` 事件。
+`.data/graph_trace.jsonl` 的 `trace.content` 事件。Langfuse 的 `tool.execute` 仍展示完整执行结果，
+但不再重复嵌入 `model_observation`；该模型可见投影只在 `tool.observation` 展示。
+成功或失败执行产生的 `tool.observation` 同时携带 executor 分配的 `tool_call_id` 和
+`source_tool_span_id`，用于与对应 `tool.execute` 建立确定关联；validation rejection 等未进入
+executor 的 observation 不伪造工具执行关联。
 
 记忆链路只保留最小生命周期事件。session 创建阶段的 `memory.session_recall` 显示状态、
 数量和错误码；turn 内不产生 memory lifecycle event，冻结 snapshot 的注入事实由

@@ -426,6 +426,10 @@ def test_langfuse_mapping_exposes_conversation_and_tool_diagnostics() -> None:
             output_summary={
                 "success": True,
                 "output_ref": "weather://beijing",
+                "model_observation": {
+                    "location": "Beijing",
+                    "forecast": [{"condition": "Clear", "high_c": 30}],
+                },
                 "data": {
                     "forecast": [{"condition": "Clear", "high_c": 30}],
                     "provider": "mcp:weather",
@@ -442,7 +446,11 @@ def test_langfuse_mapping_exposes_conversation_and_tool_diagnostics() -> None:
             observation_scope="iteration",
             status="succeeded",
             tool_name="weather",
-            attributes={"observation_index": 1},
+            attributes={
+                "observation_index": 1,
+                "tool_call_id": "call-weather",
+                "source_tool_span_id": "span-weather",
+            },
             output_summary={"summary": "北京晴，最高温 30 摄氏度。", "output_ref": "weather://beijing"},
         ),
     ]
@@ -486,13 +494,28 @@ def test_langfuse_mapping_exposes_conversation_and_tool_diagnostics() -> None:
     assert json.loads(
         by_name["tool.execute"].attributes["langfuse.observation.input"]
     ) == {"tool_name": "weather", "location": "Beijing", "days": 1}
-    assert json.loads(
+    tool_output = json.loads(
         by_name["tool.execute"].attributes["langfuse.observation.output"]
-    )["data"] == {
+    )
+    assert tool_output["data"] == {
         "forecast": [{"condition": "Clear", "high_c": 30}],
         "provider": "mcp:weather",
         "debug_value": "api_key=test-dev-value",
     }
+    assert "model_observation" not in tool_output
+    assert json.loads(
+        by_name["tool.observation"].attributes["langfuse.observation.input"]
+    ) == {
+        "tool_name": "weather",
+        "tool_call_id": "call-weather",
+        "source_tool_span_id": "span-weather",
+    }
+    assert (
+        by_name["tool.observation"].attributes[
+            "assistant_agent.source_tool_span_id"
+        ]
+        == "span-weather"
+    )
     observation_output = json.loads(
         by_name["tool.observation"].attributes["langfuse.observation.output"]
     )

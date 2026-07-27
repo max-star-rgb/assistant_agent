@@ -211,6 +211,22 @@ def test_provider_native_tool_call_completes_through_governed_runtime() -> None:
         assert len(state.tool_results) == 1
         assert state.tool_results[0].success is True
         assert state.tool_results[0].tool_name == "probe_tool"
+        trace_events = runtime.trace_store.list_by_run(state.run_id)
+        terminal = next(
+            event
+            for event in trace_events
+            if event.canonical_event == "tool.finished"
+        )
+        observation = next(
+            event
+            for event in trace_events
+            if event.canonical_event == "tool.observation"
+        )
+        assert (
+            observation.attributes["tool_call_id"]
+            == terminal.attributes["tool_call_id"]
+        )
+        assert observation.attributes["source_tool_span_id"] == terminal.span_id
     finally:
         runtime.close()
 

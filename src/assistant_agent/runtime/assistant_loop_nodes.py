@@ -1450,6 +1450,10 @@ def _execute_single_requested_tool_node(graph_state: AssistantLoopState) -> Assi
             request_text=graph_state["request"].text,
             prior_observations=tool_observations,
         )
+        tool_call_id, source_tool_span_id = _latest_tool_execution_correlation(
+            graph_state,
+            tool_name=tool_name,
+        )
         if _is_plan_mode_active(state) and not result.success:
             _mark_plan_mode_status(state, "replanning")
         tool_spec = tool_executor.registry.get_spec(tool_name)
@@ -1483,7 +1487,13 @@ def _execute_single_requested_tool_node(graph_state: AssistantLoopState) -> Assi
             _advance_plan_after_tool_result(state, outputs_by_step, result)
         return {
             **graph_state,
-            "tool_observations": _record_react_observation(graph_state, tool_observations, observation),
+            "tool_observations": _record_react_observation(
+                graph_state,
+                tool_observations,
+                observation,
+                tool_call_id=tool_call_id,
+                source_tool_span_id=source_tool_span_id,
+            ),
             "outputs_by_step": outputs_by_step,
         }
     except AgentRunCancelled:
@@ -1777,6 +1787,9 @@ def _record_react_observation(
     graph_state: AssistantLoopState,
     existing: list[dict[str, Any]],
     observation: ToolObservation | dict[str, Any],
+    *,
+    tool_call_id: str | None = None,
+    source_tool_span_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """Append a tool observation to both graph state and demo metadata."""
 
@@ -1798,7 +1811,12 @@ def _record_react_observation(
             observation=dict(payload),
         ),
     )
-    trace_event = _observation_trace_event(payload, len(observations))
+    trace_event = _observation_trace_event(
+        payload,
+        len(observations),
+        tool_call_id=tool_call_id,
+        source_tool_span_id=source_tool_span_id,
+    )
     decision_trace = state.request.metadata.setdefault("decision_trace", [])
     if isinstance(decision_trace, list):
         decision_trace.append(trace_event)
@@ -1836,10 +1854,16 @@ def _record_react_observation(
                 "next_step_hint": payload.get("next_step_hint"),
             },
             attributes={
-                "observation_index": len(observations),
-                "summary": payload.get("summary"),
-                "output_ref": payload.get("output_ref"),
-                "next_step_hint": payload.get("next_step_hint"),
+                key: value
+                for key, value in {
+                    "observation_index": len(observations),
+                    "summary": payload.get("summary"),
+                    "output_ref": payload.get("output_ref"),
+                    "next_step_hint": payload.get("next_step_hint"),
+                    "tool_call_id": tool_call_id,
+                    "source_tool_span_id": source_tool_span_id,
+                }.items()
+                if value is not None
             },
             trace_error=(
                 {
@@ -1873,7 +1897,13 @@ def _decision_trace_event(decision: AssistantTurnOutput, iteration: int) -> dict
     return payload
 
 
-def _observation_trace_event(payload: dict[str, Any], iteration: int) -> dict[str, Any]:
+def _observation_trace_event(
+    payload: dict[str, Any],
+    iteration: int,
+    *,
+    tool_call_id: str | None = None,
+    source_tool_span_id: str | None = None,
+) -> dict[str, Any]:
     event: dict[str, Any] = {
         "iteration": iteration,
         "event": "observation",
@@ -1882,6 +1912,8 @@ def _observation_trace_event(payload: dict[str, Any], iteration: int) -> dict[st
         "output_ref": payload.get("output_ref"),
         "output_preview": payload.get("summary"),
         "recovery_hint": payload.get("next_step_hint"),
+        "tool_call_id": tool_call_id,
+        "source_tool_span_id": source_tool_span_id,
     }
     if payload.get("error_message") or payload.get("error_code"):
         event["error"] = {
@@ -1890,6 +1922,39 @@ def _observation_trace_event(payload: dict[str, Any], iteration: int) -> dict[st
             "retryable": False,
         }
     return {key: value for key, value in event.items() if value is not None}
+
+
+def _latest_tool_execution_correlation(
+    graph_state: AssistantLoopState,
+    *,
+    tool_name: str,
+) -> tuple[str | None, str | None]:
+    """Resolve the canonical terminal event for the tool result just returned."""
+
+    state = graph_state["state"]
+    call = next(
+        (
+            item
+            for item in reversed(state.tool_calls)
+            if item.tool_name == tool_name and item.finished_at is not None
+        ),
+        None,
+    )
+    if call is None:
+        return None, None
+    trace_store = graph_state.get("trace_store")
+    if trace_store is None:
+        return call.tool_call_id, None
+    terminal = next(
+        (
+            event
+            for event in reversed(trace_store.list_by_run(state.run_id))
+            if event.canonical_event in {"tool.finished", "tool.failed"}
+            and event.attributes.get("tool_call_id") == call.tool_call_id
+        ),
+        None,
+    )
+    return call.tool_call_id, terminal.span_id if terminal is not None else None
 
 
 def _runtime_event_publisher(
