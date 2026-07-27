@@ -308,10 +308,11 @@ category、profile、env 等系统字段不会发送给模型，也不需要靠�
 一份混合 JSON 中剥离。adapter 只挑选 provider 协议需要的 name、description 和 input schema。
 
 所有仓库内置工具的模型可见参数都应提供简短、明确的中文 `description`；只写 Pydantic 类型或
-校验约束而不解释字段语义，不视为完整工具契约。`shopping_search` 只向模型暴露必填 `query`，
-商品、预算、平台和使用场景等完整检索要求都写入该字段；预算与平台结构化字段使用工具内部默认值，
-固定候选数量和前序视觉结果由 runtime binding 补齐。购物请求不携带未使用的身份、memory context
-或假想 Provider 兼容字段。`weather` 只暴露 `location` 和 `target_date`，日期范围解析与公制单位由
+校验约束而不解释字段语义，不视为完整工具契约。`shopping_search` 向模型暴露必填 `query` 以及
+会实质改变检索结果的可选 `budget_min`、`budget_max`、`platforms`；商品特征和使用场景写入
+`query`，用户明确给出的预算与平台写入对应结构化字段。固定候选数量和前序视觉结果由 runtime
+binding 补齐。购物请求不携带未使用的身份、memory context 或假想 Provider 兼容字段。`weather`
+只暴露 `location` 和 `target_date`，日期范围解析与公制单位由
 工具内部固定。`vision_understanding.question` 等没有必填要求但会改变任务结果的
 语义型可选参数仍应暴露；当前媒体引用、用户原始请求、身份、采样参数和 rolling context 均来自
 runtime。`web_fetch` 只暴露必填 `url`，读取上限和内容格式由 Tool 静态默认值分配。

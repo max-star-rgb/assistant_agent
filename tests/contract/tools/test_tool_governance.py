@@ -203,7 +203,12 @@ def test_provider_tools_hide_runtime_fields_and_pydantic_titles() -> None:
     assert "memory_save" not in registry.list()
 
     shopping = tool_spec_to_openai_tool(registry.get_spec(SHOPPING_SEARCH_TOOL_NAME))["function"]
-    assert set(shopping["parameters"]["properties"]) == {"query"}
+    assert set(shopping["parameters"]["properties"]) == {
+        "query",
+        "budget_min",
+        "budget_max",
+        "platforms",
+    }
     assert shopping["parameters"]["required"] == ["query"]
     assert "description" not in shopping["parameters"]
     assert not _contains_mapping_key(shopping["parameters"], "anyOf")

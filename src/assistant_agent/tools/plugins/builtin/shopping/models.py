@@ -94,8 +94,8 @@ class ProductSearchRequest(BaseModel):
     query: str = Field(
         min_length=1,
         description=(
-            "完整的商品检索需求，例如“淘宝上 300 元以内、适合通勤的电脑双肩包”；"
-            "应包含用户明确提出的商品、预算、平台和使用场景等要求。"
+            "商品名称、特征和使用场景等检索需求，例如“适合通勤的电脑双肩包”；"
+            "预算和购物平台分别填写到对应结构化字段。"
         ),
     )
     visual_summary: str | None = None
