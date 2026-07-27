@@ -21,19 +21,15 @@ class WeatherRequest(BaseModel):
 
     location: str = Field(
         min_length=1,
-        description="需要查询天气的城市或区县。",
+        description="必填的天气查询城市或区县；用户未提供时不得猜测，应先追问。",
     )
-    target_date: date | None = Field(
+    target_date: str | None = Field(
         default=None,
         description=(
-            "YYYY-MM-DD；仅在用户指定日期时传。"
+            "用户指定的日期或连续日期范围；单日使用 YYYY-MM-DD，多日使用"
+            " YYYY-MM-DD/YYYY-MM-DD（包含起止日期，最长 7 天）；"
+            "未指定时省略以查询今天。工具会返回范围内每天的天气。"
         ),
-    )
-    days: int = Field(
-        default=1,
-        ge=1,
-        le=7,
-        description="需要返回的连续预报天数；用户未指定时省略。",
     )
     units: Literal["metric"] = "metric"
 
@@ -43,6 +39,52 @@ class WeatherRequest(BaseModel):
         if isinstance(value, str):
             return value.strip()
         return value
+
+    @field_validator("target_date", mode="before")
+    @classmethod
+    def _normalize_target_date(cls, value: Any) -> Any:
+        if value is None:
+            return None
+        if isinstance(value, date):
+            return value.isoformat()
+        if not isinstance(value, str):
+            return value
+        start_date, end_date = _parse_weather_date_range(value.strip())
+        if start_date == end_date:
+            return start_date.isoformat()
+        return f"{start_date.isoformat()}/{end_date.isoformat()}"
+
+    @property
+    def date_range(self) -> tuple[date, date]:
+        if self.target_date is None:
+            today = date.today()
+            return today, today
+        return _parse_weather_date_range(self.target_date)
+
+    @property
+    def days(self) -> int:
+        start_date, end_date = self.date_range
+        return (end_date - start_date).days + 1
+
+
+def _parse_weather_date_range(value: str) -> tuple[date, date]:
+    parts = value.split("/")
+    if len(parts) not in {1, 2} or any(not part for part in parts):
+        raise ValueError(
+            "target_date must be YYYY-MM-DD or YYYY-MM-DD/YYYY-MM-DD"
+        )
+    try:
+        start_date = date.fromisoformat(parts[0])
+        end_date = date.fromisoformat(parts[-1])
+    except ValueError as exc:
+        raise ValueError(
+            "target_date must be YYYY-MM-DD or YYYY-MM-DD/YYYY-MM-DD"
+        ) from exc
+    if end_date < start_date:
+        raise ValueError("target_date range end must not be before start")
+    if (end_date - start_date).days >= 7:
+        raise ValueError("target_date range must not exceed 7 days")
+    return start_date, end_date
 
 
 class WeatherForecast(BaseModel):

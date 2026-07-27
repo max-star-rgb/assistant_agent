@@ -492,8 +492,7 @@ def _weather_tool_input(
 ) -> dict[str, Any]:
     if binding.profile != "mcp_weather_server_v1":
         return request.model_dump(mode="json", exclude_none=True)
-    start_date = request.target_date or date.today()
-    end_date = start_date + timedelta(days=request.days - 1)
+    start_date, end_date = request.date_range
     return {
         "city": request.location,
         "start_date": start_date.isoformat(),

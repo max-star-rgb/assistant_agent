@@ -65,7 +65,7 @@ class MockWeatherAdapter:
                 code="weather_location_empty",
                 message="weather requires location.",
             )
-        start_date = request.target_date or date.today()
+        start_date, _ = request.date_range
         forecast = [
             WeatherForecast(
                 date=(start_date + timedelta(days=offset)).isoformat(),

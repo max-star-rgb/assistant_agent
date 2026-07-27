@@ -101,7 +101,10 @@ def test_weather_profile_translates_date_range_and_aggregates_hourly_result() ->
     )
 
     result = adapter.lookup(
-        WeatherRequest(location="Beijing", target_date="2026-07-22", days=2)
+        WeatherRequest(
+            location="Beijing",
+            target_date="2026-07-22/2026-07-23",
+        )
     )
 
     assert runner.calls[0][2] == {
@@ -150,7 +153,7 @@ def test_weather_profile_rejects_success_envelope_without_forecast_data() -> Non
     )
 
     result = adapter.lookup(
-        WeatherRequest(location="missing-city", target_date="2026-07-22", days=1)
+        WeatherRequest(location="missing-city", target_date="2026-07-22")
     )
 
     assert result.success is False
@@ -190,7 +193,7 @@ def test_weather_profile_classifies_upstream_503_as_unavailable() -> None:
     )
 
     result = adapter.lookup(
-        WeatherRequest(location="Beijing", target_date="2026-07-22", days=1)
+        WeatherRequest(location="Beijing", target_date="2026-07-22")
     )
 
     assert result.success is False

@@ -418,8 +418,12 @@ def test_weather_declares_location_and_normalized_target_date() -> None:
     assert '"title"' not in json.dumps(parameters, ensure_ascii=False)
     assert mcp_tool["inputSchema"] == parameters
     assert parameters["required"] == ["location"]
-    assert set(parameters["properties"]) == {"location", "target_date", "days"}
+    assert set(parameters["properties"]) == {"location", "target_date"}
+    assert "必须先追问" in openai_tool["function"]["description"]
+    assert "不得猜测" in parameters["properties"]["location"]["description"]
     assert parameters["properties"]["target_date"]["type"] == "string"
+    assert "YYYY-MM-DD/YYYY-MM-DD" in parameters["properties"]["target_date"]["description"]
+    assert "每天的天气" in parameters["properties"]["target_date"]["description"]
     assert "format" not in parameters["properties"]["target_date"]
     assert "additionalProperties" not in parameters
     assert '"default"' not in json.dumps(parameters, ensure_ascii=False)
@@ -432,8 +436,7 @@ def test_weather_declares_location_and_normalized_target_date() -> None:
         WEATHER_TOOL_NAME,
         {
             "location": " 北京 ",
-            "target_date": "2026-07-22",
-            "days": 2,
+            "target_date": "2026-07-22/2026-07-23",
         },
     )
 
