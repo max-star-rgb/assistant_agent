@@ -27,14 +27,14 @@ if str(REPO_ROOT) not in sys.path:
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from assistant_agent.services.assistant_run_service import load_env_file
-from assistant_agent.services.langfuse_config import (
+from assistant_agent.runtime.assistant_run_service import load_env_file
+from assistant_agent.observability.langfuse_config import (
     langfuse_authorization_headers,
     langfuse_host_from_env,
 )
-from assistant_agent.services.trace_store import TraceEvent, trace_debug_summary
-from assistant_agent.services.turn_evaluator import build_turn_diagnostic
-from assistant_agent.services.turn_summary import (
+from assistant_agent.observability.trace_store import TraceEvent, trace_debug_summary
+from assistant_agent.observability.turn_evaluator import build_turn_diagnostic
+from assistant_agent.observability.turn_summary import (
     ASSISTANT_TURN_SUMMARY_EVENT,
     ASSISTANT_TURN_SUMMARY_KEY,
     ASSISTANT_TURN_SUMMARY_SCHEMA_VERSION,

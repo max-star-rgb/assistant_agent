@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, Request
 
 from assistant_agent.api.auth import get_auth_context, require_auth_bound_identity
 from assistant_agent.api.routes_agent import get_agent_router, get_trial_access_gate
-from assistant_agent.schemas.a2a import (
+from assistant_agent.multi_agent.a2a_protocol import (
     A2AAgentCard,
     A2A_JSONRPC_VERSION,
     A2A_SEND_MESSAGE_METHODS,
@@ -21,13 +21,13 @@ from assistant_agent.schemas.a2a import (
     JSONRPC_METHOD_NOT_FOUND,
     JSONRPC_PARSE_ERROR,
 )
-from assistant_agent.services.a2a_adapter import (
+from assistant_agent.multi_agent.a2a_adapter import (
     A2AInvalidParams,
     build_agent_card,
     route_request_from_a2a_params,
     task_from_router_response,
 )
-from assistant_agent.services.api_identity import (
+from assistant_agent.api.identity import (
     AuthContext,
     IdentityPolicyError,
     enforce_identity_policy,

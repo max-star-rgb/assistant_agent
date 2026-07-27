@@ -15,13 +15,13 @@ from evals.cases.langfuse.experiment import (
     run_langfuse_agent_experiment,
     seed_langfuse_dataset,
 )
-from assistant_agent.agent.runtime import AgentGraphRuntime
+from assistant_agent.runtime.runtime import AgentGraphRuntime
 from assistant_agent.config import ProviderConfig
-from assistant_agent.services.chat_adapter import ChatResult
-from assistant_agent.services.session_store import InMemorySessionStore
-from assistant_agent.services.trace_store import InMemoryTraceStore
+from assistant_agent.runtime.chat_adapter import ChatResult
+from assistant_agent.runtime.session_store import InMemorySessionStore
+from assistant_agent.observability.trace_store import InMemoryTraceStore
 from assistant_agent.tools.registry import ToolRegistry
-from assistant_agent.services.otel_mapping import build_text_otel_span_specs
+from assistant_agent.observability.otel_mapping import build_text_otel_span_specs
 
 
 TRACE_ID = "0123456789abcdef0123456789abcdef"

@@ -8,18 +8,18 @@ from uuid import UUID
 
 import pytest
 
-from assistant_agent.agent.runtime import AgentGraphRuntime
-from assistant_agent.agent.system_prompt_policy import render_system_instruction
+from assistant_agent.runtime.runtime import AgentGraphRuntime
+from assistant_agent.runtime.system_prompt_policy import render_system_instruction
 from assistant_agent.config import ProviderConfig
 from assistant_agent.gateway.event_mapping import realtime_event_to_frame
 from assistant_agent.memory.mem0.identity import bind_mem0_identity
-from assistant_agent.realtime.event_mapping import map_agent_event_stream
-from assistant_agent.schemas.assistant_decision import NativeToolCall
-from assistant_agent.schemas.events import AgentEvent
-from assistant_agent.schemas.llm_events import LLMEvent, LLMEventAccumulator, LLMToolCallDelta
-from assistant_agent.schemas.identity import RequestIdentity
-from assistant_agent.schemas.requests import UserRequest
-from assistant_agent.services.chat_adapter import (
+from assistant_agent.gateway.runtime_event_mapping import map_agent_event_stream
+from assistant_agent.runtime.decision_models import NativeToolCall
+from assistant_agent.runtime.events import AgentEvent
+from assistant_agent.providers.llm_events import LLMEvent, LLMEventAccumulator, LLMToolCallDelta
+from assistant_agent.identity import RequestIdentity
+from assistant_agent.runtime.requests import UserRequest
+from assistant_agent.runtime.chat_adapter import (
     ChatProviderError,
     ChatRequest,
     ChatResult,
@@ -27,26 +27,26 @@ from assistant_agent.services.chat_adapter import (
     OpenAICompatibleChatAdapter,
     create_chat_adapter,
 )
-from assistant_agent.services.context.compactor import DeterministicContextCompactor, create_context_compactor
-from assistant_agent.services.event_sink import ListEventSink
-from assistant_agent.services.hooks import HookManager, HookTraceStore
-from assistant_agent.services.identifiers import IdFactory, new_run_id, new_session_id, new_span_id, new_trace_id
-from assistant_agent.services.langfuse_scores import (
+from assistant_agent.context.compactor import DeterministicContextCompactor, create_context_compactor
+from assistant_agent.runtime.event_sink import ListEventSink
+from assistant_agent.runtime.hooks import HookManager, HookTraceStore
+from assistant_agent.identifiers import IdFactory, new_run_id, new_session_id, new_span_id, new_trace_id
+from assistant_agent.observability.langfuse_scores import (
     LangfuseScoreTraceObserver,
     LangfuseScoreWriterConfig,
 )
-from assistant_agent.services.otel_exporter import TextOtelTraceObserver
-from assistant_agent.services.otel_exporter import OtlpHttpTextExporterConfig
-from assistant_agent.services.otel_mapping import build_text_otel_span_specs, langfuse_trace_id
-from assistant_agent.services.session_store import InMemorySessionStore
-from assistant_agent.services.trace_conversation import (
+from assistant_agent.observability.otel_exporter import TextOtelTraceObserver
+from assistant_agent.observability.otel_exporter import OtlpHttpTextExporterConfig
+from assistant_agent.observability.otel_mapping import build_text_otel_span_specs, langfuse_trace_id
+from assistant_agent.runtime.session_store import InMemorySessionStore
+from assistant_agent.observability.trace_conversation import (
     TraceConversationText,
     TraceConversationView,
     TraceLlmInput,
     TraceToolObservation,
     get_default_trace_conversation_store,
 )
-from assistant_agent.services.trace_store import TraceEvent
+from assistant_agent.observability.trace_store import TraceEvent
 from scripts.run_client import chat_response_error
 
 

@@ -10,7 +10,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
-from assistant_agent.schemas.tool_ids import (
+from assistant_agent.tools.ids import (
     CALENDAR_CREATE_TOOL_NAME,
     CALENDAR_SEARCH_TOOL_NAME,
     CONTACTS_SEARCH_TOOL_NAME,

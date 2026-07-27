@@ -6,10 +6,10 @@ from collections.abc import Callable
 from threading import Condition
 from typing import Any
 
-from assistant_agent.agent.runtime import AgentGraphRuntime
-from assistant_agent.schemas.identity import RequestIdentity
-from assistant_agent.schemas.requests import UserRequest
-from assistant_agent.services.assistant_run_service import (
+from assistant_agent.runtime.runtime import AgentGraphRuntime
+from assistant_agent.identity import RequestIdentity
+from assistant_agent.runtime.requests import UserRequest
+from assistant_agent.runtime.assistant_run_service import (
     AssistantRunArtifacts,
     create_runtime,
     run_assistant_request,

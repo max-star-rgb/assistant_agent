@@ -13,7 +13,7 @@ from pathlib import Path
 from time import perf_counter
 from typing import Any
 
-from assistant_agent.schemas.python_interpreter import (
+from assistant_agent.tools.plugins.builtin.python_execution.models import (
     PYTHON_INTERPRETER_DEFAULT_TIMEOUT_S,
     PYTHON_INTERPRETER_ENABLED_ENV,
     PYTHON_INTERPRETER_MAX_INPUT_CHARS,
@@ -25,7 +25,7 @@ from assistant_agent.schemas.python_interpreter import (
     PythonInterpreterInput,
     PythonInterpreterResult,
 )
-from assistant_agent.services.provider_errors import sanitize_error_message
+from assistant_agent.providers.provider_errors import sanitize_error_message
 
 
 ALLOWED_IMPORT_ROOTS = frozenset(

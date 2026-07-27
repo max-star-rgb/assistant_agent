@@ -5,8 +5,8 @@ from __future__ import annotations
 from typing import Any
 
 from assistant_agent.gateway.protocol import Frame, frame
-from assistant_agent.realtime import RealtimeAgentEvent
-from assistant_agent.realtime.delivery import apply_realtime_delivery_policy
+from assistant_agent.gateway.runtime_types import RealtimeAgentEvent
+from assistant_agent.gateway.delivery import apply_realtime_delivery_policy
 
 
 def realtime_event_to_frame(

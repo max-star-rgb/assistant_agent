@@ -7,14 +7,14 @@ from datetime import timedelta
 
 from pydantic import BaseModel
 
-from assistant_agent.agent.state import AgentState
-from assistant_agent.schemas.durable_tasks import TaskCheckpoint, TaskWaitState, utc_now
-from assistant_agent.schemas.identity import RequestIdentity
-from assistant_agent.schemas.planning import TaskPlan, TaskStep
-from assistant_agent.schemas.tools import ToolResult
-from assistant_agent.services.durable_tasks.service import DurableTaskService
-from assistant_agent.services.durable_tasks.sqlite_store import SQLiteTaskStore
-from assistant_agent.services.durable_tasks.worker import (
+from assistant_agent.runtime.state import AgentState
+from assistant_agent.automation.durable_tasks.models import TaskCheckpoint, TaskWaitState, utc_now
+from assistant_agent.identity import RequestIdentity
+from assistant_agent.runtime.planning_models import TaskPlan, TaskStep
+from assistant_agent.tools.models import ToolResult
+from assistant_agent.automation.durable_tasks.service import DurableTaskService
+from assistant_agent.automation.durable_tasks.sqlite_store import SQLiteTaskStore
+from assistant_agent.automation.durable_tasks.worker import (
     DurableTaskWorker,
     TaskQuantumResult,
 )

@@ -4,19 +4,19 @@ from __future__ import annotations
 
 from typing import Any
 
-from assistant_agent.schemas.capability_output import build_capability_output_contract
-from assistant_agent.schemas.python_interpreter import (
+from assistant_agent.tools.capability_output import build_capability_output_contract
+from assistant_agent.tools.plugins.builtin.python_execution.models import (
     PythonInterpreterError,
     PythonInterpreterInput,
     PythonInterpreterResult,
 )
-from assistant_agent.schemas.tools import ToolResult
+from assistant_agent.tools.models import ToolResult
 from assistant_agent.tools.plugins.builtin.python_execution.sandbox import (
     PythonSandbox,
     is_python_interpreter_enabled,
     validate_python_code_safety,
 )
-from assistant_agent.schemas.tool_ids import PYTHON_INTERPRETER_TOOL_NAME
+from assistant_agent.tools.ids import PYTHON_INTERPRETER_TOOL_NAME
 from assistant_agent.tools.base import ToolBase, ToolContext, ToolInputValidationError
 from assistant_agent.tools.input_binding import ToolInputBinding
 

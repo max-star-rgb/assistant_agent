@@ -1,7 +1,7 @@
 """Regression coverage for shopping relevance and price comparability."""
 
-from assistant_agent.schemas.products import PriceCompareRequest, ProductResult, ProductSearchRequest
-from assistant_agent.utils.product_matching import compare_products, filter_products
+from assistant_agent.tools.plugins.builtin.shopping.models import PriceCompareRequest, ProductResult, ProductSearchRequest
+from assistant_agent.tools.plugins.builtin.shopping.product_matching import compare_products, filter_products
 
 
 def _product(product_id: str, title: str, price: float, *, platform: str = "taobao", score: float | None = None) -> ProductResult:

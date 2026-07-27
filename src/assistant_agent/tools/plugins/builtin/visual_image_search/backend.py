@@ -11,18 +11,18 @@ from time import perf_counter
 from typing import Any, Protocol
 
 from assistant_agent.config import ProviderConfig
-from assistant_agent.schemas.visual_image_search import (
+from assistant_agent.tools.plugins.builtin.visual_image_search.models import (
     VisualImageSearchMatch,
     VisualImageSearchProviderError,
     VisualImageSearchRequest,
     VisualImageSearchResult,
 )
-from assistant_agent.services.provider_errors import (
+from assistant_agent.providers.provider_errors import (
     build_provider_error,
     map_exception_to_provider_error,
     sanitize_error_message,
 )
-from assistant_agent.schemas.tool_ids import VISUAL_IMAGE_SEARCH_CAPABILITY
+from assistant_agent.tools.ids import VISUAL_IMAGE_SEARCH_CAPABILITY
 
 
 DEFAULT_QWEN_IMAGE_SEARCH_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"

@@ -13,9 +13,9 @@ from assistant_agent.tools.base import Tool
 if TYPE_CHECKING:
     from assistant_agent.mcp.config import MCPServerConfig
     from assistant_agent.mcp.registration import MCPToolDiscoveryRunner
-    from assistant_agent.services.durable_tasks.service import DurableTaskService
-    from assistant_agent.services.realtime_video_memory import RealtimeVideoMemoryStore
-    from assistant_agent.services.video_context import VideoContextStore
+    from assistant_agent.automation.durable_tasks.service import DurableTaskService
+    from assistant_agent.media.video.realtime_video_memory import RealtimeVideoMemoryStore
+    from assistant_agent.media.video.video_context import VideoContextStore
 
 
 @dataclass(frozen=True)

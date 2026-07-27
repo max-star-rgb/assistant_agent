@@ -9,12 +9,12 @@ from typing import Any
 # the MCP-backed service; direct leaf imports currently cross tools.__init__.
 from assistant_agent.tools.registry import ToolRegistry as _ToolRegistry  # noqa: F401
 from assistant_agent.mcp.sdk_client import _sanitize_sdk_content
-from assistant_agent.schemas.personal_assistant import (
+from assistant_agent.tools.plugins.builtin.personal_assistant_mcp.models import (
     CalendarCreateRequest,
     CalendarSearchRequest,
     WeatherRequest,
 )
-from assistant_agent.schemas.tools import ToolResult
+from assistant_agent.tools.models import ToolResult
 from assistant_agent.tools.plugins.builtin.personal_assistant_mcp.backend import (
     MCPPersonalAssistantCalendarAdapter,
     MCPPersonalAssistantToolBinding,

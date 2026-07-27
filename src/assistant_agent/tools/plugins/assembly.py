@@ -10,7 +10,7 @@ from typing import Any, Iterable, Mapping
 
 from pydantic import BaseModel
 
-from assistant_agent.services.provider_errors import sanitize_error_message
+from assistant_agent.providers.provider_errors import sanitize_error_message
 from assistant_agent.tools.base import Tool
 from assistant_agent.tools.plugins.contracts import (
     LoadedToolPlugin,

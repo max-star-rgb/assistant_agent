@@ -19,25 +19,25 @@ from assistant_agent.api import routes_agent
 from assistant_agent.api.routes_a2a import router as a2a_router
 from assistant_agent.api.routes_agent import router as agent_router, shutdown_agent_runtime
 from assistant_agent.api.routes_tasks import router as tasks_router
-from assistant_agent.api.routes_workflow_skills import router as workflow_skills_router
-from assistant_agent.schemas.api import PROTOCOL_VERSION, api_error
-from assistant_agent.services.generated_artifacts import GENERATED_ARTIFACT_DIR
-from assistant_agent.services.durable_tasks.hotel_price_watch import (
+from assistant_agent.api.routes_skills import router as skills_router
+from assistant_agent.api.models import PROTOCOL_VERSION, api_error
+from assistant_agent.runtime.generated_artifacts import GENERATED_ARTIFACT_DIR
+from assistant_agent.automation.durable_tasks.hotel_price_watch import (
     HOTEL_PRICE_WATCH_PROFILE,
     HotelPriceWatchRuntime,
 )
-from assistant_agent.services.durable_tasks.worker import (
+from assistant_agent.automation.durable_tasks.worker import (
     DurableTaskRuntimeRouter,
     DurableTaskWorker,
 )
-from assistant_agent.services.operational_logging import configure_operational_logging_from_env
-from assistant_agent.services.proactive_wake.delivery import (
+from assistant_agent.observability.operational_logging import configure_operational_logging_from_env
+from assistant_agent.automation.proactive_wake.delivery import (
     MockProactiveNotificationTransport,
     NotificationDeliveryWorker,
 )
-from assistant_agent.services.server_startup_summary import print_tool_registry_summary
-from assistant_agent.services.tool_workflow_skill_runtime_app import (
-    create_workflow_skill_runtime_app_from_env,
+from assistant_agent.runtime.server_startup_summary import print_tool_registry_summary
+from assistant_agent.skills.application import (
+    create_skill_runtime_app_from_env,
 )
 
 SKIP_DOTENV_ENV = "MULTIMODAL_AGENT_SKIP_DOTENV"
@@ -47,7 +47,7 @@ def create_app() -> FastAPI:
     load_repo_env_file()
     configure_operational_logging_from_env()
     app = FastAPI(title="Multimodal Agent", lifespan=_lifespan)
-    app.state.workflow_skill_app = create_workflow_skill_runtime_app_from_env()
+    app.state.skill_app = create_skill_runtime_app_from_env()
 
     @app.exception_handler(RequestValidationError)
     async def validation_exception_handler(request, exc: RequestValidationError) -> JSONResponse:
@@ -74,7 +74,7 @@ def create_app() -> FastAPI:
     app.mount("/artifacts/generated", StaticFiles(directory=GENERATED_ARTIFACT_DIR), name="generated_artifacts")
     app.include_router(agent_router)
     app.include_router(tasks_router)
-    app.include_router(workflow_skills_router)
+    app.include_router(skills_router)
     app.include_router(a2a_router)
     app.include_router(agent_service_websocket_router)
     app.include_router(gateway_websocket_router)

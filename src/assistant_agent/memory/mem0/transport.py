@@ -9,7 +9,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from assistant_agent.services.provider_errors import sanitize_error_message
+from assistant_agent.providers.provider_errors import sanitize_error_message
 
 
 class Mem0OperationError(RuntimeError):

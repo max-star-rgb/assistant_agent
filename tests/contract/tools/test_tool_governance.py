@@ -6,25 +6,25 @@ from typing import ClassVar
 import pytest
 from pydantic import BaseModel, Field, model_validator
 
-from assistant_agent.agent.action_validator import ActionValidator
-from assistant_agent.agent.legacy_tool_mapping import (
+from assistant_agent.runtime.action_validator import ActionValidator
+from assistant_agent.runtime.legacy_tool_mapping import (
     canonical_action_for_capability,
     canonical_capability_for_action,
     canonical_capability_for_tool,
     canonical_tool_for_capability,
 )
-from assistant_agent.agent.state import AgentState
-from assistant_agent.agent.tool_executor import ToolExecutor
+from assistant_agent.runtime.state import AgentState
+from assistant_agent.runtime.tool_executor import ToolExecutor
 from assistant_agent.mcp.adapter import MCPToolAdapter, MCPToolDefinition
 from assistant_agent.mcp.config import MCPToolAdapterConfig
 from assistant_agent.mcp.server import OfflineMCPServer
-from assistant_agent.schemas.assistant_decision import AssistantDecision
-from assistant_agent.schemas.requests import UserRequest
-from assistant_agent.schemas.tools import (
+from assistant_agent.runtime.decision_models import AssistantDecision
+from assistant_agent.runtime.requests import UserRequest
+from assistant_agent.tools.models import (
     RunToolCatalog,
     ToolResult,
 )
-from assistant_agent.schemas.tool_ids import (
+from assistant_agent.tools.ids import (
     IMAGE_GENERATION_TOOL_NAME,
     IMAGE_UNDERSTANDING_CAPABILITY,
     IMAGE_UNDERSTANDING_TOOL_NAME,
@@ -34,12 +34,12 @@ from assistant_agent.schemas.tool_ids import (
     WEATHER_TOOL_NAME,
     WEB_FETCH_CAPABILITY,
 )
-from assistant_agent.schemas.tool_spec_adapters import (
+from assistant_agent.tools.spec_adapters import (
     tool_spec_to_mcp_tool,
     tool_spec_to_openai_tool,
 )
-from assistant_agent.services.event_sink import ListEventSink
-from assistant_agent.services.trace_store import InMemoryTraceStore
+from assistant_agent.runtime.event_sink import ListEventSink
+from assistant_agent.observability.trace_store import InMemoryTraceStore
 from assistant_agent.tools.base import ToolBase, ToolContext, ToolInputValidationError
 from assistant_agent.tools.input_binding import ToolInputBinding
 from assistant_agent.tools.plugins.registry_factory import create_default_registry
@@ -615,7 +615,7 @@ def test_tool_trace_uses_executor_wall_latency_instead_of_tool_reported_latency(
     trace_store = InMemoryTraceStore()
     clock_values = iter((100.0, 107.45, 107.46))
     monkeypatch.setattr(
-        "assistant_agent.agent.tool_executor.perf_counter",
+        "assistant_agent.runtime.tool_executor.perf_counter",
         lambda: next(clock_values),
     )
     state = AgentState.from_request(

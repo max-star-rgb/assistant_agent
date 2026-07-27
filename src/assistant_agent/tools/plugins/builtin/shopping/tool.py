@@ -2,8 +2,8 @@
 
 from typing import Any
 
-from assistant_agent.schemas.capability_output import build_capability_output_contract
-from assistant_agent.schemas.products import (
+from assistant_agent.tools.capability_output import build_capability_output_contract
+from assistant_agent.tools.plugins.builtin.shopping.models import (
     PriceCompareRequest,
     PriceCompareResult,
     ProductProviderError,
@@ -11,14 +11,14 @@ from assistant_agent.schemas.products import (
     ProductSearchResult,
     ShoppingSearchResult,
 )
-from assistant_agent.schemas.tools import ToolResult
+from assistant_agent.tools.models import ToolResult
 from assistant_agent.tools.plugins.builtin.shopping.backend import (
     PriceCompareAdapter,
     ProductSearchAdapter,
     create_shopping_compare_adapter,
     create_shopping_search_adapter,
 )
-from assistant_agent.schemas.tool_ids import SHOPPING_SEARCH_CAPABILITY, SHOPPING_SEARCH_TOOL_NAME
+from assistant_agent.tools.ids import SHOPPING_SEARCH_CAPABILITY, SHOPPING_SEARCH_TOOL_NAME
 from assistant_agent.tools.base import ToolBase, ToolContext
 from assistant_agent.tools.input_binding import ToolInputBinding
 

@@ -7,14 +7,14 @@ import asyncio
 import pytest
 from pydantic import BaseModel
 
-from assistant_agent.schemas.identity import RequestIdentity
-from assistant_agent.schemas.planning import TaskPlan, TaskStep
-from assistant_agent.schemas.tools import ToolResult
-from assistant_agent.services.durable_tasks.service import (
+from assistant_agent.identity import RequestIdentity
+from assistant_agent.runtime.planning_models import TaskPlan, TaskStep
+from assistant_agent.tools.models import ToolResult
+from assistant_agent.automation.durable_tasks.service import (
     DurableTaskService,
     TaskAccessDenied,
 )
-from assistant_agent.services.durable_tasks.store import InMemoryTaskStore
+from assistant_agent.automation.durable_tasks.store import InMemoryTaskStore
 from assistant_agent.tools.base import ToolBase, ToolContext
 from assistant_agent.tools.registry import ToolRegistry
 

@@ -3,10 +3,10 @@
 from typing import Protocol
 
 from assistant_agent.config import ProviderConfig
-from assistant_agent.schemas.generation import ImageGenerationRequest, ImageGenerationResult
-from assistant_agent.services.provider_errors import build_provider_error
-from assistant_agent.schemas.tool_ids import IMAGE_GENERATION_CAPABILITY
-from assistant_agent.utils.prompting import build_image_prompt
+from assistant_agent.tools.plugins.builtin.image_generation.models import ImageGenerationRequest, ImageGenerationResult
+from assistant_agent.providers.provider_errors import build_provider_error
+from assistant_agent.tools.ids import IMAGE_GENERATION_CAPABILITY
+from assistant_agent.providers.prompting import build_image_prompt
 
 
 class ImageGenerationAdapter(Protocol):

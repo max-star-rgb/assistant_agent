@@ -13,7 +13,7 @@ from typing import Literal, Protocol
 
 from fastapi import Request, WebSocket
 
-from assistant_agent.services.api_identity import AuthContext
+from assistant_agent.api.identity import AuthContext
 
 AUTH_MODE_ENV = "MULTIMODAL_AGENT_AUTH_MODE"
 AUTH_HEADER_ENABLED_ENV = "MULTIMODAL_AGENT_AUTH_HEADER_ENABLED"

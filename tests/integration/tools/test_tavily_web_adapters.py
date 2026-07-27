@@ -3,10 +3,10 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from assistant_agent.agent.runtime import AgentGraphRuntime
+from assistant_agent.runtime.runtime import AgentGraphRuntime
 from assistant_agent.config import ProviderConfig
-from assistant_agent.schemas.web_fetch import WebFetchRequest
-from assistant_agent.schemas.web_search import WebSearchRequest
+from assistant_agent.tools.plugins.builtin.web_access.fetch_models import WebFetchRequest
+from assistant_agent.tools.plugins.builtin.web_access.search_models import WebSearchRequest
 from assistant_agent.tools.plugins.builtin.web_access.fetch_backend import (
     TavilyWebFetchAdapter,
     create_web_fetch_adapter,

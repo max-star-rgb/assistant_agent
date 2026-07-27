@@ -6,13 +6,13 @@ import sys
 import pytest
 from pydantic import BaseModel
 
-from assistant_agent.agent.runtime import AgentGraphRuntime
+from assistant_agent.runtime.runtime import AgentGraphRuntime
 from assistant_agent.config import ProviderConfig
-from assistant_agent.schemas.assistant_decision import NativeToolCall
-from assistant_agent.schemas.requests import UserRequest
-from assistant_agent.schemas.tools import ToolResult
-from assistant_agent.services.chat_adapter import ChatRequest, ChatResult
-from assistant_agent.services.session_store import InMemorySessionStore
+from assistant_agent.runtime.decision_models import NativeToolCall
+from assistant_agent.runtime.requests import UserRequest
+from assistant_agent.tools.models import ToolResult
+from assistant_agent.runtime.chat_adapter import ChatRequest, ChatResult
+from assistant_agent.runtime.session_store import InMemorySessionStore
 from assistant_agent.tools.plugins.contracts import ToolPluginContext
 from assistant_agent.tools.plugins.contracts import ToolPluginDescriptor
 from assistant_agent.tools.base import ToolBase, ToolContext

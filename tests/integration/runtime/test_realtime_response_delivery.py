@@ -5,11 +5,11 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
-from assistant_agent.realtime.agent_graph_backend import AgentGraphRealtimeBackend
-from assistant_agent.realtime.types import RealtimeAgentRequest
-from assistant_agent.schemas.events import AgentEvent
-from assistant_agent.schemas.requests import AgentResponse
-from assistant_agent.services.trace_store import InMemoryTraceStore
+from assistant_agent.gateway.runtime_adapter import GatewayRuntimeAdapter
+from assistant_agent.gateway.runtime_types import RealtimeAgentRequest
+from assistant_agent.runtime.events import AgentEvent
+from assistant_agent.runtime.requests import AgentResponse
+from assistant_agent.observability.trace_store import InMemoryTraceStore
 
 
 def test_realtime_delivers_llm_final_text_without_tool_result_override() -> None:
@@ -60,7 +60,7 @@ async def _assert_realtime_delivers_llm_final_text_without_tool_result_override(
     async def collect_event(event):
         events.append(event)
 
-    result = await AgentGraphRealtimeBackend(
+    result = await GatewayRuntimeAdapter(
         run_request=run_request,
         load_env=False,
     ).run_turn(

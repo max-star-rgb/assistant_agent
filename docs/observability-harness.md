@@ -712,7 +712,7 @@ unnecessary.
 
 ## Trajectory Debug
 
-`assistant_agent.services.trajectory_debug` provides the Phase 5 local
+`assistant_agent.observability.trajectory_debug` provides the Phase 5 local
 trajectory debug contract. It converts already-redacted `TraceEvent` records
 into `TrajectoryReplayCase` objects for debug, replay preview, and regression
 eval review.

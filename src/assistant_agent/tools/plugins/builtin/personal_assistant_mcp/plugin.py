@@ -4,7 +4,7 @@ from assistant_agent.tools.plugins.builtin.personal_assistant_mcp.backend import
     configured_personal_assistant_tools,
     create_personal_assistant_adapter_bundle,
 )
-from assistant_agent.schemas.tool_ids import (
+from assistant_agent.tools.ids import (
     CALENDAR_CREATE_TOOL_NAME,
     CALENDAR_SEARCH_TOOL_NAME,
     CONTACTS_SEARCH_TOOL_NAME,

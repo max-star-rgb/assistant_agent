@@ -4,30 +4,30 @@ import importlib
 
 from pydantic import BaseModel, Field
 
-from assistant_agent.agent.runtime import AgentGraphRuntime
+from assistant_agent.runtime.runtime import AgentGraphRuntime
 from assistant_agent.config import ProviderConfig
 from assistant_agent.gateway.event_mapping import realtime_event_to_frame
 from assistant_agent.memory.mem0.client import UnavailableMem0Client
 from assistant_agent.memory.mem0.identity import bind_mem0_identity
-from assistant_agent.realtime.event_mapping import map_agent_event_stream
-from assistant_agent.schemas.assistant_decision import NativeToolCall
-from assistant_agent.schemas.events import AgentEvent
-from assistant_agent.schemas.identity import RequestIdentity
-from assistant_agent.schemas.llm_events import (
+from assistant_agent.gateway.runtime_event_mapping import map_agent_event_stream
+from assistant_agent.runtime.decision_models import NativeToolCall
+from assistant_agent.runtime.events import AgentEvent
+from assistant_agent.identity import RequestIdentity
+from assistant_agent.providers.llm_events import (
     LLMEvent,
     LLMEventAccumulator,
     LLMToolCallDelta,
 )
-from assistant_agent.schemas.requests import UserRequest
-from assistant_agent.schemas.tools import ToolResult
-from assistant_agent.services.chat_adapter import (
+from assistant_agent.runtime.requests import UserRequest
+from assistant_agent.tools.models import ToolResult
+from assistant_agent.runtime.chat_adapter import (
     ChatProviderError,
     ChatRequest,
     ChatResult,
     MockChatAdapter,
 )
-from assistant_agent.services.event_sink import ListEventSink
-from assistant_agent.services.session_store import InMemorySessionStore
+from assistant_agent.runtime.event_sink import ListEventSink
+from assistant_agent.runtime.session_store import InMemorySessionStore
 from assistant_agent.tools.base import ToolBase, ToolContext
 from assistant_agent.tools.registry import ToolRegistry
 

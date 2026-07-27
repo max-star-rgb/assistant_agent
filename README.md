@@ -23,6 +23,32 @@ The Python package is `assistant_agent` under `src/assistant_agent/`. The local 
 
 Provider profiles and external-provider configuration are documented in [docs/tool-calling-architecture.md](docs/tool-calling-architecture.md).
 
+## Package Layout
+
+`src/assistant_agent/` 按能力所有权组织，不保留通用 `services`、全局 `schemas` 或独立 `realtime`
+收纳层：
+
+| package | responsibility |
+| --- | --- |
+| `runtime/` | assistant loop、运行状态、Provider stream、执行生命周期和应用编排 |
+| `context/` | Context 构建、预算、压缩、渲染和 Tool catalog |
+| `skills/` | Skill 加载、召回、校验、目录、执行与持久化 |
+| `tools/` | Tool 契约、Registry、治理边界和 Plugin |
+| `gateway/` | session/run/cancel/reconnect、Runtime adapter、事件映射和交付 |
+| `media/` | 音频边缘适配、视频摄取/观察以及视觉 adapter |
+| `automation/` | durable task、proactive wake 和通知 |
+| `multi_agent/` | Agent routing、delegation、transport 和 A2A |
+| `observability/` | trace、日志、metrics、OpenTelemetry 和 Langfuse |
+| `improvement/` | 离线改进证据、提案、评估和报告 |
+| `providers/` | 跨入口共享的 Provider 配置、错误治理和 adapter |
+| `memory/` | Memory 生命周期、session snapshot、ingestion 和 Mem0 |
+| `api/` | FastAPI HTTP/WebSocket 薄入口 |
+| `mcp/` | MCP 配置、client、registration 和 server adapter |
+| `config/` | 进程配置装配 |
+
+领域模型和稳定协议由所属 package 就近维护，例如 `tools/models.py`、
+`context/models.py` 和 `multi_agent/a2a_protocol.py`。
+
 可信 Python Tool 插件可通过 `MULTIMODAL_AGENT_TOOL_PLUGIN_MODULES` 显式配置，重启后生效。可用
 `python -m assistant_agent.tools.cli plugins` 查看只读装配报告；该机制会执行所配置 module 的进程内代码，
 不是不可信代码沙箱。具体协议和治理边界见 Tool calling 文档。
@@ -30,7 +56,6 @@ Provider profiles and external-provider configuration are documented in [docs/to
 Basic checks:
 
 ```bash
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/check_env.py
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q
 ```
 

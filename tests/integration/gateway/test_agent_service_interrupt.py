@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 from assistant_agent.api import agent_service_websocket as agent_service_module
 from assistant_agent.api.app import create_app
 from assistant_agent.gateway import GatewaySessionManager
-from assistant_agent.realtime import RealtimeAgentEvent, RealtimeAgentResult
+from assistant_agent.gateway.runtime_types import RealtimeAgentEvent, RealtimeAgentResult
 
 
 class _InterruptibleBackend:

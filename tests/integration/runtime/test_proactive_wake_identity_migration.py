@@ -2,7 +2,7 @@
 
 import sqlite3
 
-from assistant_agent.services.proactive_wake.store import SQLiteProactiveWakeStore
+from assistant_agent.automation.proactive_wake.store import SQLiteProactiveWakeStore
 
 
 def test_legacy_owner_columns_migrate_to_agent_identity(tmp_path) -> None:

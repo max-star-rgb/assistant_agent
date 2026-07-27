@@ -2,33 +2,33 @@
 
 from typing import Any
 
-from assistant_agent.schemas.capability_output import build_capability_output_contract
-from assistant_agent.schemas.perception import (
+from assistant_agent.tools.capability_output import build_capability_output_contract
+from assistant_agent.media.vision.models import (
     VisionUnderstandingRequest,
     VisionUnderstandingResult,
 )
-from assistant_agent.schemas.tools import ToolResult
-from assistant_agent.services.realtime_video_memory import RealtimeVideoMemoryStore
-from assistant_agent.services.video_adapter import VideoUnderstandingAdapter
-from assistant_agent.services.video_context import (
+from assistant_agent.tools.models import ToolResult
+from assistant_agent.media.video.realtime_video_memory import RealtimeVideoMemoryStore
+from assistant_agent.media.video.video_adapter import VideoUnderstandingAdapter
+from assistant_agent.media.video.video_context import (
     DEFAULT_VIDEO_CONTEXT_WINDOW_SIZE,
     VideoContextStore,
 )
-from assistant_agent.services.vision_adapter import (
+from assistant_agent.media.vision.vision_adapter import (
     MockVisionUnderstandingAdapter,
     VisionUnderstandingAdapter,
 )
-from assistant_agent.services.vision_client import (
+from assistant_agent.media.vision.vision_client import (
     AdapterVisionUnderstandingClient,
     VisionUnderstandingClient,
     video_request_from_vision_request,
     vision_request_has_video,
 )
-from assistant_agent.services.provider_errors import (
+from assistant_agent.providers.provider_errors import (
     ProviderAdapterError,
     build_provider_error,
 )
-from assistant_agent.schemas.tool_ids import IMAGE_UNDERSTANDING_CAPABILITY, IMAGE_UNDERSTANDING_TOOL_NAME
+from assistant_agent.tools.ids import IMAGE_UNDERSTANDING_CAPABILITY, IMAGE_UNDERSTANDING_TOOL_NAME
 from assistant_agent.tools.base import ToolBase, ToolContext
 from assistant_agent.tools.input_binding import ToolInputBinding
 from assistant_agent.tools.plugins.builtin.vision_understanding.video_branch import (

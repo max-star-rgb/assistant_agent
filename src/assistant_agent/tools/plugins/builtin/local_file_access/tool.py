@@ -5,12 +5,12 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Final
 
-from assistant_agent.schemas.file_access import (
+from assistant_agent.tools.plugins.builtin.local_file_access.models import (
     FileReadError,
     FileReadRequest,
     FileReadResult,
 )
-from assistant_agent.schemas.tools import ToolResult
+from assistant_agent.tools.models import ToolResult
 from assistant_agent.tools.base import (
     ToolBase,
     ToolContext,

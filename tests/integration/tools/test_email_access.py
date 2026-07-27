@@ -4,15 +4,15 @@ from typing import Any
 
 import pytest
 
-from assistant_agent.agent.runtime import AgentGraphRuntime
+from assistant_agent.runtime.runtime import AgentGraphRuntime
 from assistant_agent.config import ProviderConfig
 from assistant_agent.mcp.config import MCPServerConfig
-from assistant_agent.schemas.assistant_decision import NativeToolCall
-from assistant_agent.schemas.email import EmailReadRequest, EmailSearchRequest
-from assistant_agent.schemas.requests import UserRequest
-from assistant_agent.schemas.tools import ToolResult
-from assistant_agent.services.chat_adapter import ChatRequest, ChatResult
-from assistant_agent.services.session_store import InMemorySessionStore
+from assistant_agent.runtime.decision_models import NativeToolCall
+from assistant_agent.tools.plugins.builtin.email_access.models import EmailReadRequest, EmailSearchRequest
+from assistant_agent.runtime.requests import UserRequest
+from assistant_agent.tools.models import ToolResult
+from assistant_agent.runtime.chat_adapter import ChatRequest, ChatResult
+from assistant_agent.runtime.session_store import InMemorySessionStore
 from assistant_agent.tools.plugins.registry_factory import create_default_registry
 from assistant_agent.tools.plugins.builtin.email_access.backend import (
     EmailMCPBinding,

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 
-from assistant_agent.schemas.identity import RequestIdentity
+from assistant_agent.identity import RequestIdentity
 from assistant_agent.memory.mem0.models import Mem0Identity
 
 

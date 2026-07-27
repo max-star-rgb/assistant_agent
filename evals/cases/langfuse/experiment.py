@@ -16,26 +16,26 @@ from typing import Any, Literal, Mapping, Protocol
 
 from pydantic import BaseModel, Field
 
-from assistant_agent.agent.runtime import AgentGraphRuntime
+from assistant_agent.runtime.runtime import AgentGraphRuntime
 from assistant_agent.config import ProviderConfig
-from assistant_agent.schemas.assistant_decision import NativeToolCall
-from assistant_agent.schemas.requests import UserRequest
-from assistant_agent.schemas.trace_context import RuntimeTraceContext
-from assistant_agent.services.chat_adapter import ChatRequest, ChatResult
-from assistant_agent.services.identifiers import new_run_id
-from assistant_agent.services.otel_exporter import (
+from assistant_agent.runtime.decision_models import NativeToolCall
+from assistant_agent.runtime.requests import UserRequest
+from assistant_agent.observability.trace_context import RuntimeTraceContext
+from assistant_agent.runtime.chat_adapter import ChatRequest, ChatResult
+from assistant_agent.identifiers import new_run_id
+from assistant_agent.observability.otel_exporter import (
     OtlpHttpTextExporterConfig,
     TextOtelTraceObserver,
     create_otlp_http_text_span_exporter,
 )
-from assistant_agent.services.provider_errors import sanitize_error_message
-from assistant_agent.services.session_store import InMemorySessionStore
-from assistant_agent.services.trace_store import InMemoryTraceStore, TraceEvent
+from assistant_agent.providers.provider_errors import sanitize_error_message
+from assistant_agent.runtime.session_store import InMemorySessionStore
+from assistant_agent.observability.trace_store import InMemoryTraceStore, TraceEvent
 from assistant_agent.tools.plugins.builtin.personal_assistant_mcp.backend import (
     configured_personal_assistant_tools,
 )
 from assistant_agent.mcp.config import load_mcp_server_configs_from_env
-from assistant_agent.schemas.tool_ids import WEATHER_TOOL_NAME
+from assistant_agent.tools.ids import WEATHER_TOOL_NAME
 from assistant_agent.tools.plugins.builtin.personal_assistant_mcp.tools import (
     CalendarSearchTool,
 )

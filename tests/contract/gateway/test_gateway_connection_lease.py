@@ -8,7 +8,7 @@ from assistant_agent.gateway.bridge import GatewayBridge, GatewayConnectionPolic
 from assistant_agent.gateway.protocol import CALL_HANGUP, CALL_INCOMING, frame
 from assistant_agent.gateway.session import GatewaySessionManager
 from assistant_agent.gateway.transport import Endpoint, InMemoryDuplex
-from assistant_agent.realtime import RealtimeAgentResult
+from assistant_agent.gateway.runtime_types import RealtimeAgentResult
 
 
 async def _receive(endpoint: Endpoint, *, timeout: float = 1.0) -> dict:

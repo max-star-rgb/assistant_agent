@@ -53,9 +53,9 @@ tool observation，下一轮 LLM 消费商品、报价、链接和展示模板�
 本地 Langfuse 会按 observation index 展示 assistant loop 产生的完整 `ToolObservation`，不会再次把它
 压缩成 summary/output ref；具体开发观测边界见 `docs/observability-harness.md`。
 
-系统不维护中心 Tool manifest。`schemas/tool_ids.py` 只保存已经成为跨层协议的稳定字符串，不枚举
+系统不维护中心 Tool manifest。`tools/ids.py` 只保存已经成为跨层协议的稳定字符串，不枚举
 Tool、不参与注册或暴露，新插件内使用的 Tool 默认无需加入。旧 planner/intent 所需的 action、alias
-与 capability 映射隔离在 `agent/legacy_tool_mapping.py`，不能作为新增 Tool 的登记入口。
+与 capability 映射隔离在 `runtime/legacy_tool_mapping.py`，不能作为新增 Tool 的登记入口。
 
 工具类的 Pydantic `input_schema` 是执行期完整输入和校验的事实源；Registry 生成的
 `ToolSpec.input_schema` 保留必填参数及会实质改变业务结果的语义型可选参数，必填字段由标准
@@ -175,7 +175,7 @@ runtime constant binding 注入，长文件通过结果中的 `next_cursor` 分�
 内容理解和总结仍由主 assistant loop 完成。
 
 邮件只读能力由独立 `email_access` Plugin 装配，不归入
-`personal_assistant_mcp`，也不在顶层 `services/` 新增 Provider 专用 adapter。该 Plugin 暴露稳定
+`personal_assistant_mcp`，也不在顶层 `providers/` 新增仅供该 Plugin 使用的专用 adapter。该 Plugin 暴露稳定
 `email_search` / `email_read`，内部私有 backend 将它们映射到显式配置的 Workspace MCP
 `search_gmail_messages` / `get_gmail_messages_content_batch`。邮件正文 observation 标记为
 `untrusted_external_content` 和 `do_not_execute`，只作为主模型分析证据；首版不注册发送、草稿、
@@ -188,8 +188,8 @@ Tool 子系统统一位于 `tools/`，其中内核协议、参数绑定和 Regis
 `tools/plugins/`，内置装配单元位于
 `tools/plugins/builtin/<assembly_boundary>/`。`defaults.py` 只保留受信任内置插件的显式清单，不扫描
 目录；Tool 内核不反向拥有 Plugin，只有 composition root 知道具体内置 Plugin。
-旧 `assistant_agent.tool_plugins.contracts` 仅保留稳定外部 Plugin contract 的兼容转发，不再拥有
-assembly、默认清单、内置 Plugin 或领域实现；新增代码统一使用 `assistant_agent.tools.plugins`。
+外部 Plugin contract 只有 `assistant_agent.tools.plugins.contracts` 一个规范导入路径；旧
+`assistant_agent.tool_plugins` 兼容命名空间已删除。
 
 部署方可以通过逗号分隔的 `MULTIMODAL_AGENT_TOOL_PLUGIN_MODULES` 显式列出可信 Python module；每个
 module 必须导出单个 `__assistant_tool_plugin__`。未配置 module 不会被 import，配置错误、协议不兼容、
@@ -206,7 +206,7 @@ generation。运行期间不能继续 `register()`，配置变化需要重启生
 插件只负责基于结构化配置和已注入依赖创建 Tool；不能直接暴露或执行工具，也不能绕过
 `ActionValidator -> ToolExecutor -> ToolRegistry` 治理链路。插件加载不等于本轮授权，write/dangerous
 Tool 仍默认不暴露，必须由宿主配置或每轮结构化显式 opt-in。`tools.loader` 的 `__assistant_tools__` 保留给
-本地 workflow/CLI 兼容入口，不会自动并入默认 runtime 插件协议。
+本地 Skill/CLI 入口，不会自动并入默认 runtime 插件协议。
 
 Plugin 按共享 Provider、配置、依赖和生命周期划分，不按 Tool 数量或宽泛业务标签机械拆分。目录名与
 `plugin_id` 应表达独立装配边界，避免 `core`、`misc` 等兜底分类。共享同一 MCP mapping、runner 和
@@ -234,11 +234,10 @@ executor 读取的是同一份契约。新增或移除一个内置能力包时�
 
 weather、calendar、contacts 的 mock adapter 和 MCP backend 是
 `personal_assistant_mcp` 的私有实现，分别位于该 Plugin 的 `adapters.py`、`backend.py`；顶层
-`services/` 不再保存仅由该 Plugin 消费的 Provider adapter。只有出现跨 Plugin、跨入口的真实复用或
-独立应用生命周期时，能力实现才提升为共享 service。同样，image generation、shopping、visual image
+`providers/` 不保存仅由该 Plugin 消费的 Provider adapter。只有出现跨 Plugin、跨入口的真实复用或
+独立应用生命周期时，能力实现才提升为共享 Provider 能力。同样，image generation、shopping、visual image
 search、web access 和 Python execution 的单一 owner backend/sandbox 均保留在对应内置 Plugin；
-共享的 Provider 错误治理、Context、Session、Trace、durable task 和 realtime media 生命周期仍属于
-service。
+共享治理分别归属 `providers/`、`context/`、`runtime/`、`observability/`、`automation/` 和 `media/`。
 
 `visual_image_search` 与 `vision_understanding` 虽然同属视觉业务域，但 Provider 配置、readiness 和
 启停生命周期不同，因此分别归属 `VisualImageSearchPlugin` 与 `VisionUnderstandingPlugin`。原
@@ -278,7 +277,7 @@ LLM 决定是否调用、调用哪个已暴露工具以及参数内容。categor
 
 ## 4. Provider schema 转换
 
-`schemas/tool_spec_adapters.py` 给 provider-neutral `ToolSpec.input_schema` 包装 OpenAI-compatible
+`tools/spec_adapters.py` 给 provider-neutral `ToolSpec.input_schema` 包装 OpenAI-compatible
 与 MCP 协议外壳。两种模型可见 Schema 都以帮助模型理解和构造参数为目标，
 保留参数结构、`type`、`description`、`required` 以及必要的 `enum`；递归移除 Pydantic 自动生成的
 `title`、执行期 `default`、根 schema `description`、`additionalProperties`、空 `required`，以及
@@ -477,14 +476,14 @@ weather、calendar search 和 contacts mapping 必须位于 `read_only_tools`。
 per-tool timeout/retry metadata。CLI validate 检查能否生成
 合法 ToolSpec；simulate 仍通过 validator/executor 执行。
 
-workflow skill 只能调用已注册且 permission 匹配的工具。read 工具允许按 workflow retry 配置重试；
-非 read step 的幂等与重试语义由 workflow/领域实现显式承担，不由中心 Tool manifest 声明。
+Skill 只能调用已注册且 permission 匹配的工具。read 工具允许按 Skill retry 配置重试；
+非 read step 的幂等与重试语义由 Skill/领域实现显式承担，不由中心 Tool manifest 声明。
 
 ## 8. 代码导航
 
-- `schemas/tools.py`：`ToolSpec`、`RunToolCatalog`、`ToolResult`、`ToolCallRecord`；
-- `schemas/tool_ids.py`：仅供既有跨层协议共享的稳定 Tool/capability 字符串；
-- `agent/legacy_tool_mapping.py`：旧 planner/intent action 与 capability 兼容映射；
+- `tools/models.py`：`ToolSpec`、`RunToolCatalog`、`ToolResult`、`ToolCallRecord`；
+- `tools/ids.py`：仅供既有跨层协议共享的稳定 Tool/capability 字符串；
+- `runtime/legacy_tool_mapping.py`：旧 planner/intent action 与 capability 兼容映射；
 - `tools/plugins/contracts.py`、`assembly.py`、`defaults.py`：Plugin 协议、原子装配和可信内置清单；
 - `tools/plugins/registry_factory.py`：默认 Plugin、MCP proxy 和 realtime observer 的 Registry
   composition root；
@@ -492,11 +491,11 @@ workflow skill 只能调用已注册且 permission 匹配的工具。read 工具
   及其 Tool、私有 adapter/backend 实现；
 - `tools/base.py`：公共 Tool 协议；
 - `tools/registry.py`：工具注册、查找和 Pydantic schema 提取；
-- `services/context/tool_catalog.py`：结构化目录装配；
-- `services/context/tool_exposure.py`：category/profile/media 暴露规则；
-- `schemas/tool_spec_adapters.py`：OpenAI/MCP schema 转换；
-- `agent/action_validator.py`：run catalog、Pydantic、media、durable 校验；
-- `agent/tool_executor.py`：身份绑定、调用和提交；
+- `context/tool_catalog.py`：结构化目录装配；
+- `context/tool_exposure.py`：category/profile/media 暴露规则；
+- `tools/spec_adapters.py`：OpenAI/MCP schema 转换；
+- `runtime/action_validator.py`：run catalog、Pydantic、media、durable 校验；
+- `runtime/tool_executor.py`：身份绑定、调用和提交；
 - `tests/contract/tools/test_tool_governance.py`：工具治理稳定契约。
 
 ## 9. 不变量
@@ -506,7 +505,7 @@ workflow skill 只能调用已注册且 permission 匹配的工具。read 工具
 - category/profile/media 只基于结构化事实，不从自然语言推断；
 - Pydantic schema 是工具参数形状的权威；
 - 主模型工具调用链对同一输入只构造一次 Pydantic model；
-- Memory、MCP、durable task、workflow、CLI 和 Gateway 不绕过统一工具边界；
+- Memory、MCP、durable task、Skill、CLI 和 Gateway 不绕过统一工具边界；
 - 默认测试与 eval 保持 mock/local/offline，真实 provider 必须显式启用。
 - 任何普通工具执行失败都先是 ToolResult/observation；只有编排恢复策略、取消或 Runtime 自身失败可以决定
   Agent run 的 terminal status，Gateway 不按工具名或 Provider 错误码改写终态。

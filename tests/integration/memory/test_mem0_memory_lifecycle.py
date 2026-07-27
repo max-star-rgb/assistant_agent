@@ -6,7 +6,7 @@ from assistant_agent.memory.mem0.client import Mem0Client
 from assistant_agent.memory.mem0.identity import bind_mem0_identity
 from assistant_agent.memory.mem0.transport import Mem0HttpRequest
 from assistant_agent.memory.models import CompletedTurn
-from assistant_agent.schemas.identity import RequestIdentity
+from assistant_agent.identity import RequestIdentity
 
 
 def _identity() -> RequestIdentity:

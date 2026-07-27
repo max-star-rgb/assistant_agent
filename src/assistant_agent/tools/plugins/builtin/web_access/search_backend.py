@@ -12,17 +12,17 @@ from time import perf_counter
 from typing import Any, Protocol
 
 from assistant_agent.config import ProviderConfig
-from assistant_agent.schemas.web_search import (
+from assistant_agent.tools.plugins.builtin.web_access.search_models import (
     WebSearchProviderError,
     WebSearchRequest,
     WebSearchResult,
     WebSearchResultItem,
 )
-from assistant_agent.services.provider_errors import (
+from assistant_agent.providers.provider_errors import (
     build_provider_error,
     map_exception_to_provider_error,
 )
-from assistant_agent.schemas.tool_ids import WEB_SEARCH_CAPABILITY
+from assistant_agent.tools.ids import WEB_SEARCH_CAPABILITY
 
 
 class WebSearchAdapter(Protocol):

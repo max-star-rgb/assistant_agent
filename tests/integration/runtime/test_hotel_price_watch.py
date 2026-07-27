@@ -5,34 +5,34 @@ from __future__ import annotations
 import asyncio
 from datetime import date, timedelta
 
-from assistant_agent.agent.action_validator import ActionValidator
-from assistant_agent.agent.state import AgentState
-from assistant_agent.agent.tool_executor import ToolExecutor
+from assistant_agent.runtime.action_validator import ActionValidator
+from assistant_agent.runtime.state import AgentState
+from assistant_agent.runtime.tool_executor import ToolExecutor
 from assistant_agent.config import ProviderConfig
-from assistant_agent.schemas.assistant_decision import AssistantDecision
-from assistant_agent.schemas.durable_tasks import utc_now
-from assistant_agent.schemas.identity import RequestIdentity
-from assistant_agent.schemas.lodging import (
+from assistant_agent.runtime.decision_models import AssistantDecision
+from assistant_agent.automation.durable_tasks.models import utc_now
+from assistant_agent.identity import RequestIdentity
+from assistant_agent.tools.plugins.builtin.lodging.models import (
     HotelPriceWatchGoal,
     LodgingSearchRequest,
 )
-from assistant_agent.schemas.requests import UserRequest
-from assistant_agent.services.durable_tasks.hotel_price_watch import (
+from assistant_agent.runtime.requests import UserRequest
+from assistant_agent.automation.durable_tasks.hotel_price_watch import (
     HotelPriceWatchRuntime,
     HotelPriceWatchService,
 )
-from assistant_agent.services.durable_tasks.service import DurableTaskService
-from assistant_agent.services.durable_tasks.sqlite_store import SQLiteTaskStore
-from assistant_agent.services.durable_tasks.store import InMemoryTaskStore
-from assistant_agent.services.durable_tasks.worker import (
+from assistant_agent.automation.durable_tasks.service import DurableTaskService
+from assistant_agent.automation.durable_tasks.sqlite_store import SQLiteTaskStore
+from assistant_agent.automation.durable_tasks.store import InMemoryTaskStore
+from assistant_agent.automation.durable_tasks.worker import (
     DurableTaskRuntimeRouter,
     DurableTaskWorker,
 )
-from assistant_agent.services.proactive_wake.delivery import (
+from assistant_agent.automation.proactive_wake.delivery import (
     MockProactiveNotificationTransport,
     NotificationDeliveryWorker,
 )
-from assistant_agent.services.proactive_wake.store import SQLiteProactiveWakeStore
+from assistant_agent.automation.proactive_wake.store import SQLiteProactiveWakeStore
 from assistant_agent.tools.plugins.builtin.lodging import (
     LodgingSearchTool,
     SequenceLodgingSearchAdapter,

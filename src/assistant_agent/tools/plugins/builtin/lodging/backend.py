@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Protocol
 
-from assistant_agent.schemas.lodging import (
+from assistant_agent.tools.plugins.builtin.lodging.models import (
     LodgingOffer,
     LodgingSearchRequest,
     LodgingSearchResult,

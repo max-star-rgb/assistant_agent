@@ -7,10 +7,10 @@ from collections.abc import Iterable
 from assistant_agent.config import ProviderConfig
 from assistant_agent.mcp.adapter import MCPToolRunner
 from assistant_agent.mcp.config import MCPServerConfig
-from assistant_agent.services.durable_tasks.service import DurableTaskService
-from assistant_agent.services.provider_errors import sanitize_error_message
-from assistant_agent.services.realtime_video_memory import RealtimeVideoMemoryStore
-from assistant_agent.services.video_context import VideoContextStore
+from assistant_agent.automation.durable_tasks.service import DurableTaskService
+from assistant_agent.providers.provider_errors import sanitize_error_message
+from assistant_agent.media.video.realtime_video_memory import RealtimeVideoMemoryStore
+from assistant_agent.media.video.video_context import VideoContextStore
 from assistant_agent.tools.plugins.assembly import (
     ToolContribution,
     ToolPluginAssemblyError,

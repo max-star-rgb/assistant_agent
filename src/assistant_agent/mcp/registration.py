@@ -13,7 +13,7 @@ from assistant_agent.mcp.adapter import (
     MCPToolRunner,
 )
 from assistant_agent.mcp.config import MCPServerConfig
-from assistant_agent.services.provider_errors import sanitize_error_message
+from assistant_agent.providers.provider_errors import sanitize_error_message
 
 
 class MCPToolDiscoveryRunner(MCPToolRunner, Protocol):

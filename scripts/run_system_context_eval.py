@@ -18,7 +18,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from assistant_agent.config import ProviderConfig
-from assistant_agent.services.assistant_run_service import load_env_file
+from assistant_agent.runtime.assistant_run_service import load_env_file
 from evals.system.common.preflight import SystemEvalConfigurationError
 from evals.system.context.runner import (
     DEFAULT_OUTPUT_ROOT,

@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 
 from assistant_agent.gateway import GatewaySessionManager, frame
-from assistant_agent.realtime import RealtimeAgentResult
+from assistant_agent.gateway.runtime_types import RealtimeAgentResult
 
 
 class _ControllableBackend:

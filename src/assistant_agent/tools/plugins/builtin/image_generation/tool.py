@@ -2,22 +2,24 @@
 
 from typing import Any
 
-from assistant_agent.schemas.generation import (
+from assistant_agent.tools.plugins.builtin.image_generation.models import (
     ImageGenerationRequest,
     ImageGenerationResult,
 )
-from assistant_agent.schemas.tools import ToolResult
-from assistant_agent.schemas.capability_output import CapabilityOutputContract
-from assistant_agent.services.provider_errors import ProviderAdapterError
+from assistant_agent.tools.models import ToolResult
+from assistant_agent.tools.capability_output import (
+    CapabilityOutputContract,
+    build_text_capability_output,
+)
+from assistant_agent.providers.provider_errors import ProviderAdapterError
 from assistant_agent.tools.plugins.builtin.image_generation.backend import (
     ImageGenerationAdapter,
     MockImageGenerationAdapter,
 )
-from assistant_agent.services.generated_artifacts import (
+from assistant_agent.runtime.generated_artifacts import (
     materialize_image_generation_result,
 )
-from assistant_agent.services.prompt_builder import build_text_capability_output
-from assistant_agent.schemas.tool_ids import IMAGE_GENERATION_CAPABILITY, IMAGE_GENERATION_TOOL_NAME
+from assistant_agent.tools.ids import IMAGE_GENERATION_CAPABILITY, IMAGE_GENERATION_TOOL_NAME
 from assistant_agent.tools.base import ToolBase, ToolContext
 from assistant_agent.tools.input_binding import ToolInputBinding
 

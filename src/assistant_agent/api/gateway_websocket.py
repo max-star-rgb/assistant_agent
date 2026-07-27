@@ -20,13 +20,13 @@ from assistant_agent.gateway import (
     loads_frame,
 )
 from assistant_agent.gateway.ws import WsProtocolError
-from assistant_agent.services.api_identity import (
+from assistant_agent.api.identity import (
     IdentityPolicyError,
     ResolvedRequestIdentity,
     enforce_identity_policy,
     resolve_request_identity,
 )
-from assistant_agent.services.identifiers import new_prefixed_uuid7
+from assistant_agent.identifiers import new_prefixed_uuid7
 
 router = APIRouter()
 

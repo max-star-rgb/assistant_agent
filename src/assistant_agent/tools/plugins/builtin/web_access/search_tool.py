@@ -2,14 +2,14 @@
 
 from typing import Any
 
-from assistant_agent.schemas.capability_output import build_capability_output_contract
-from assistant_agent.schemas.tools import ToolResult
-from assistant_agent.schemas.web_search import WebSearchRequest, WebSearchResult
+from assistant_agent.tools.capability_output import build_capability_output_contract
+from assistant_agent.tools.models import ToolResult
+from assistant_agent.tools.plugins.builtin.web_access.search_models import WebSearchRequest, WebSearchResult
 from assistant_agent.tools.plugins.builtin.web_access.search_backend import (
     WebSearchAdapter,
     create_web_search_adapter,
 )
-from assistant_agent.schemas.tool_ids import WEB_SEARCH_CAPABILITY, WEB_SEARCH_TOOL_NAME
+from assistant_agent.tools.ids import WEB_SEARCH_CAPABILITY, WEB_SEARCH_TOOL_NAME
 from assistant_agent.tools.base import ToolBase, ToolContext
 from assistant_agent.tools.input_binding import ToolInputBinding
 

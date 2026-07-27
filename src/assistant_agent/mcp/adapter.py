@@ -8,8 +8,8 @@ from typing import Any, Protocol
 from pydantic import BaseModel, Field, create_model
 
 from assistant_agent.mcp.config import MCPToolAdapterConfig
-from assistant_agent.schemas.tools import ToolResult, ToolSpec
-from assistant_agent.services.provider_errors import sanitize_error_message
+from assistant_agent.tools.models import ToolResult, ToolSpec
+from assistant_agent.providers.provider_errors import sanitize_error_message
 from assistant_agent.tools.base import ToolContext
 
 

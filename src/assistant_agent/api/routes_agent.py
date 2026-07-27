@@ -8,10 +8,11 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
-from assistant_agent.agent_routing import AgentRouteRequest, AgentRouter, create_default_agent_router
+from assistant_agent.multi_agent.agent_router import AgentRouter, create_default_agent_router
+from assistant_agent.multi_agent.router_models import AgentRouteRequest
 from assistant_agent.api import gateway_runtime
 from assistant_agent.api.auth import get_auth_context, require_auth_bound_identity
-from assistant_agent.schemas.agent_control_plane import (
+from assistant_agent.multi_agent.control_plane_models import (
     AgentAuditEvent,
     AgentAuditEventList,
     AgentControlPlaneBudgetSummary,
@@ -20,17 +21,17 @@ from assistant_agent.schemas.agent_control_plane import (
     AgentControlPlaneRouteSummary,
     AgentControlPlaneRunSummary,
 )
-from assistant_agent.schemas.api import AgentRunResponse, PROTOCOL_VERSION
-from assistant_agent.schemas.identity import RequestIdentity
-from assistant_agent.schemas.requests import UserRequest
-from assistant_agent.schemas.sessions import SessionCreate, SessionDeleteResult, SessionList, SessionRecord
-from assistant_agent.services.assistant_run_service import (
+from assistant_agent.api.models import AgentRunResponse, PROTOCOL_VERSION
+from assistant_agent.identity import RequestIdentity
+from assistant_agent.runtime.requests import UserRequest
+from assistant_agent.runtime.session_models import SessionCreate, SessionDeleteResult, SessionList, SessionRecord
+from assistant_agent.runtime.assistant_run_service import (
     create_runtime,
     get_default_conversation_store as _get_default_conversation_store,
 )
-from assistant_agent.services.assistant_runtime_app import AssistantRuntimeApp
-from assistant_agent.services.agent_control_plane import AgentControlPlaneQueryService, audit_event
-from assistant_agent.services.api_identity import (
+from assistant_agent.runtime.assistant_runtime_app import AssistantRuntimeApp
+from assistant_agent.multi_agent.agent_control_plane import AgentControlPlaneQueryService, audit_event
+from assistant_agent.api.identity import (
     ApiIdentitySource,
     AuthContext,
     IdentityPolicy,
@@ -39,7 +40,7 @@ from assistant_agent.services.api_identity import (
     enforce_identity_policy,
     resolve_request_identity,
 )
-from assistant_agent.services.beta_feedback import (
+from assistant_agent.improvement.beta_feedback import (
     BetaEvaluationExport,
     BetaEvaluationItem,
     BetaFeedbackCreate,
@@ -47,32 +48,32 @@ from assistant_agent.services.beta_feedback import (
     BetaFeedbackStore,
     summarize_feedback,
 )
-from assistant_agent.services.demo_examples import get_demo_examples
-from assistant_agent.services.gateway_turn_facade import (
+from assistant_agent.runtime.demo_examples import get_demo_examples
+from assistant_agent.gateway.turn_facade import (
     GatewayTurnError,
     GatewayTurnRequest,
     GatewayTurnResult,
     GatewayTurnTimeout,
 )
-from assistant_agent.services.agent_pilot_readiness import PilotReadinessChecker, PilotReadinessReport
-from assistant_agent.services.provider_readiness import build_provider_readiness_report
-from assistant_agent.services.trace_query import (
+from assistant_agent.multi_agent.agent_pilot_readiness import PilotReadinessChecker, PilotReadinessReport
+from assistant_agent.providers.provider_readiness import build_provider_readiness_report
+from assistant_agent.observability.trace_query import (
     ContextReportQueryResult,
     RunSummary,
     ToolCallSummary,
     TraceSummary,
 )
-from assistant_agent.services.trace_persistence import (
+from assistant_agent.observability.trace_persistence import (
     close_trace_store,
     create_server_trace_store,
 )
-from assistant_agent.services.trace_conversation import (
+from assistant_agent.observability.trace_conversation import (
     TraceConversationView,
     find_trace_conversation,
     get_default_trace_conversation_store,
 )
-from assistant_agent.services.trace_content_policy import local_trace_content_enabled
-from assistant_agent.services.trial_access import (
+from assistant_agent.observability.trace_content_policy import local_trace_content_enabled
+from assistant_agent.api.trial_access import (
     TrialAccessGate,
     TrialAccessStatus,
     trial_access_gate_from_env,

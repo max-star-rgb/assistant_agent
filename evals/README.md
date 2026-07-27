@@ -150,8 +150,10 @@ Experiment 不会因规则变更自动补分或改分。
 ```
 
 该 profile 使用当前 Registry 中实际配置成功的能力，不写入真实 Memory。写工具被本轮 Tool Catalog
-暴露并通过 Validator 后会直接执行；日历创建案例会产生真实测试事件，运行前应使用独立测试身份，
-运行后按 Provider 能力清理。
+暴露并通过 Validator 后会直接执行。日历读取和创建固定使用
+`.data/evals/langfuse/calendar.sqlite3`，按 `user_id` 隔离，不调用 Google Calendar MCP；可用
+`--local-calendar-path` 指定其他未跟踪数据库。Trace 继续承担工具执行审计，SQLite 只保存可检索的
+日历业务状态。
 
 完整运行应满足：Dataset item 数量与 seed 一致，并且每个 item 都有四个分层 Score。真实 Runtime
 抛出的网络或协议异常会被评测边界转换为 `terminal_status=failed` 和
@@ -202,12 +204,15 @@ LANGFUSE_LLM_CONNECTION_WHITELISTED_HOST=api.deepseek.com
 
 ### Langfuse 运行
 
-第一次显式创建 Dataset：
+第一次显式创建或重置 Dataset：
 
 ```bash
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python \
   scripts/run_langfuse_agent_evals.py --seed-only
 ```
+
+显式 seed 会 upsert 当前 seed item，并删除带旧 `seed_hash`、但已不在当前 seed 中的历史托管
+item；这样删除 capability 后不会继续执行旧案例。没有 `seed_hash` 的 UI 手工案例不会被删除。
 
 运行 Experiment：
 

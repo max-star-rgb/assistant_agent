@@ -8,7 +8,7 @@ from time import perf_counter
 from datetime import datetime, timezone
 from typing import Any
 
-from assistant_agent.agent.state import AgentState
+from assistant_agent.runtime.state import AgentState
 from assistant_agent.memory.ingestion_queue import MemoryIngestionQueue
 from assistant_agent.memory.models import CompletedTurn, SessionMemorySnapshot
 from assistant_agent.memory.observability import (
@@ -17,12 +17,12 @@ from assistant_agent.memory.observability import (
     record_session_recall,
 )
 from assistant_agent.memory.session_snapshot import SessionMemorySnapshotStore
-from assistant_agent.schemas.identity import RequestIdentity
-from assistant_agent.services.provider_errors import (
+from assistant_agent.identity import RequestIdentity
+from assistant_agent.providers.provider_errors import (
     ProviderSafetyPolicy,
     sanitize_error_message,
 )
-from assistant_agent.services.trace_store import TraceStore
+from assistant_agent.observability.trace_store import TraceStore
 
 
 _INGESTION_TEXT_POLICY = ProviderSafetyPolicy(

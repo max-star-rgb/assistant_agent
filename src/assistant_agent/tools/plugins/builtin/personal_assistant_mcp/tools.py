@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from assistant_agent.schemas.capability_output import build_capability_output_contract
-from assistant_agent.schemas.personal_assistant import (
+from assistant_agent.tools.capability_output import build_capability_output_contract
+from assistant_agent.tools.plugins.builtin.personal_assistant_mcp.models import (
     CalendarCreateRequest,
     CalendarCreateResult,
     CalendarSearchRequest,
@@ -15,7 +15,7 @@ from assistant_agent.schemas.personal_assistant import (
     WeatherRequest,
     WeatherResult,
 )
-from assistant_agent.schemas.tools import ToolResult
+from assistant_agent.tools.models import ToolResult
 from assistant_agent.tools.plugins.builtin.personal_assistant_mcp.adapters import (
     CalendarAdapter,
     ContactsAdapter,
@@ -24,7 +24,7 @@ from assistant_agent.tools.plugins.builtin.personal_assistant_mcp.adapters impor
     MockWeatherAdapter,
     WeatherAdapter,
 )
-from assistant_agent.schemas.tool_ids import (
+from assistant_agent.tools.ids import (
     CALENDAR_CREATE_TOOL_NAME,
     CALENDAR_SEARCH_TOOL_NAME,
     CONTACTS_SEARCH_TOOL_NAME,

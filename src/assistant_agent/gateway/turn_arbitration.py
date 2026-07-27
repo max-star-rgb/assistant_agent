@@ -8,13 +8,13 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
 
-from assistant_agent.schemas.realtime_turn_arbitration import (
+from assistant_agent.gateway.turn_arbitration_models import (
     RealtimeTurnArbitrationDecision,
     RealtimeTurnArbitrationRequest,
     normalize_arbitration_decision,
     uncertain_arbitration_decision,
 )
-from assistant_agent.services.realtime_turn_arbiter import RealtimeTurnArbiter
+from assistant_agent.gateway.realtime_turn_arbiter import RealtimeTurnArbiter
 
 
 GatewayTurnArbitrationStatus = Literal[

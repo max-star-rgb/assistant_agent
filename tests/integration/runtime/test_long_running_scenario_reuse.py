@@ -6,7 +6,7 @@ import asyncio
 
 from pydantic import BaseModel, Field
 
-from assistant_agent.schemas.proactive_wake import (
+from assistant_agent.automation.proactive_wake.models import (
     WakeAttentionSpec,
     WakeConditionSpec,
     WakeOwner,
@@ -15,15 +15,15 @@ from assistant_agent.schemas.proactive_wake import (
     WakeSignal,
     WakeTriggerSpec,
 )
-from assistant_agent.schemas.tools import ToolResult
-from assistant_agent.services.proactive_wake.coordinator import (
+from assistant_agent.tools.models import ToolResult
+from assistant_agent.automation.proactive_wake.coordinator import (
     ProactiveWakeCoordinator,
 )
-from assistant_agent.services.proactive_wake.probe import (
+from assistant_agent.automation.proactive_wake.probe import (
     GovernedProbeRunner,
     ProactiveRuleValidator,
 )
-from assistant_agent.services.proactive_wake.store import SQLiteProactiveWakeStore
+from assistant_agent.automation.proactive_wake.store import SQLiteProactiveWakeStore
 from assistant_agent.tools.base import ToolBase, ToolContext
 from assistant_agent.tools.registry import ToolRegistry
 

@@ -9,15 +9,15 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from assistant_agent.api import routes_agent
 from assistant_agent.api.auth import get_auth_context, require_auth_bound_identity
-from assistant_agent.schemas.api import DurableTaskEventsResponse, DurableTaskResponse
-from assistant_agent.schemas.identity import RequestIdentity
-from assistant_agent.services.api_identity import (
+from assistant_agent.api.models import DurableTaskEventsResponse, DurableTaskResponse
+from assistant_agent.identity import RequestIdentity
+from assistant_agent.api.identity import (
     AuthContext,
     IdentityPolicyError,
     enforce_identity_policy,
     resolve_request_identity,
 )
-from assistant_agent.services.durable_tasks.service import (
+from assistant_agent.automation.durable_tasks.service import (
     DurableTaskError,
     DurableTaskService,
     TaskAccessDenied,
@@ -25,7 +25,7 @@ from assistant_agent.services.durable_tasks.service import (
     TaskNotFound,
     TaskTransitionRejected,
 )
-from assistant_agent.services.durable_tasks.store import TaskStoreError
+from assistant_agent.automation.durable_tasks.store import TaskStoreError
 
 
 router = APIRouter(prefix="/tasks", tags=["durable-tasks"])

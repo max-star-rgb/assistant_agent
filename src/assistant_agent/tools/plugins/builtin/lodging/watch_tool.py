@@ -6,16 +6,16 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
 
-from assistant_agent.schemas.identity import RequestIdentity
-from assistant_agent.schemas.lodging import HotelPriceWatchGoal
-from assistant_agent.schemas.tool_ids import (
+from assistant_agent.identity import RequestIdentity
+from assistant_agent.tools.plugins.builtin.lodging.models import HotelPriceWatchGoal
+from assistant_agent.tools.ids import (
     HOTEL_PRICE_WATCH_CREATE_TOOL_NAME,
 )
-from assistant_agent.schemas.tools import ToolResult
+from assistant_agent.tools.models import ToolResult
 from assistant_agent.tools.base import ToolBase, ToolContext
 
 if TYPE_CHECKING:
-    from assistant_agent.services.durable_tasks.service import DurableTaskService
+    from assistant_agent.automation.durable_tasks.service import DurableTaskService
 
 
 class HotelPriceWatchCreateOutput(BaseModel):
@@ -53,7 +53,7 @@ class HotelPriceWatchCreateTool(ToolBase):
                 success=False,
                 error="Trusted run identity is required for watch creation.",
             )
-        from assistant_agent.services.durable_tasks.hotel_price_watch import (
+        from assistant_agent.automation.durable_tasks.hotel_price_watch import (
             HotelPriceWatchService,
         )
 

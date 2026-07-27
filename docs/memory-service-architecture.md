@@ -101,7 +101,7 @@ mock/offline 环境使用明确的 unavailable adapter；它不是本地记忆�
 | `memory/mem0/models.py` | 仅供 Mem0 adapter 使用的身份、健康和写入结果模型 |
 | `memory/mem0/identity.py` | runtime 身份到 Mem0 原生 ID 的稳定映射 |
 | `memory/mem0/transport.py` | 薄 HTTP transport 与错误边界 |
-| `services/context/builder.py` | 每轮把冻结 snapshot 直接组装进 assistant context |
+| `context/builder.py` | 每轮把冻结 snapshot 直接组装进 assistant context |
 | `docker/mem0/` | Mem0 + Qdrant 本地开发栈 |
 
 ## 6. 不再支持

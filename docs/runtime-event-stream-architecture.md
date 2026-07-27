@@ -230,8 +230,8 @@ second agent runtime.
 
 ## Realtime And Gateway Mapping
 
-`AgentGraphRealtimeBackend` consumes the shared assistant stream, maps each
-`AgentEvent` through `assistant_agent.realtime.event_mapping`, and awaits the
+`GatewayRuntimeAdapter` consumes the shared assistant stream, maps each
+`AgentEvent` through `assistant_agent.gateway.runtime_event_mapping`, and awaits the
 realtime event sink. Mapping may produce progress, response chunks, final
 response, tool/trace display events, or errors. Final
 response chunking and duplicate streamed-delta suppression remain realtime
@@ -285,17 +285,17 @@ separate process or an upstream API that actually provides it.
 
 | source | responsibility |
 | --- | --- |
-| `src/assistant_agent/schemas/llm_events.py` | `LLMEvent`, provider error/tool delta schemas, accumulator |
-| `src/assistant_agent/services/chat_adapter.py` | sync chat compatibility, async provider adapters, vendor chunk normalization and cleanup |
-| `src/assistant_agent/agent/provider_streaming.py` | runtime-local async provider stream consumption into `ChatResult` |
-| `src/assistant_agent/agent/llm_event_mapping.py` | visible token delta to `AgentEvent(response_delta)` mapping |
-| `src/assistant_agent/schemas/events.py` | runtime `AgentEvent` contract |
-| `src/assistant_agent/agent/event_stream.py` | `AgentRunStream` and thread-safe queue sink |
-| `src/assistant_agent/agent/runtime.py` | graph lifecycle, provider-path selection, `run_state`/`run`/`run_stream` |
+| `src/assistant_agent/providers/llm_events.py` | `LLMEvent`, provider error/tool delta schemas, accumulator |
+| `src/assistant_agent/runtime/chat_adapter.py` | sync chat compatibility, async provider adapters, vendor chunk normalization and cleanup |
+| `src/assistant_agent/runtime/provider_streaming.py` | runtime-local async provider stream consumption into `ChatResult` |
+| `src/assistant_agent/runtime/llm_event_mapping.py` | visible token delta to `AgentEvent(response_delta)` mapping |
+| `src/assistant_agent/runtime/events.py` | runtime `AgentEvent` contract |
+| `src/assistant_agent/runtime/event_stream.py` | `AgentRunStream` and thread-safe queue sink |
+| `src/assistant_agent/runtime/runtime.py` | graph lifecycle, provider-path selection, `run_state`/`run`/`run_stream` |
 | `src/assistant_agent/memory/ingestion_queue.py` | bounded post-response turn-ingestion queue, per-identity ordering, drain and shutdown |
-| `src/assistant_agent/services/assistant_run_service.py` | shared sync and streaming run service, `AssistantRunArtifacts` |
-| `src/assistant_agent/realtime/agent_graph_backend.py` | assistant stream consumption and realtime terminal result |
-| `src/assistant_agent/realtime/event_mapping.py` | `AgentEvent` to `RealtimeAgentEvent` mapping |
+| `src/assistant_agent/runtime/assistant_run_service.py` | shared sync and streaming run service, `AssistantRunArtifacts` |
+| `src/assistant_agent/gateway/runtime_adapter.py` | assistant stream consumption and realtime terminal result |
+| `src/assistant_agent/gateway/runtime_event_mapping.py` | `AgentEvent` to `RealtimeAgentEvent` mapping |
 | `src/assistant_agent/gateway/event_mapping.py` | realtime event to Gateway frame mapping |
 
 Adjacent authorities remain authoritative for their domains:

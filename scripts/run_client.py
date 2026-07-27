@@ -17,7 +17,7 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from assistant_agent.services.identifiers import new_prefixed_uuid7
+from assistant_agent.identifiers import new_prefixed_uuid7
 
 JsonObject = dict[str, Any]
 

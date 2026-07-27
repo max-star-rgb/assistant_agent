@@ -2,14 +2,14 @@
 
 from typing import Any
 
-from assistant_agent.schemas.capability_output import build_capability_output_contract
-from assistant_agent.schemas.tools import ToolResult
-from assistant_agent.schemas.web_fetch import WebFetchRequest, WebFetchResult
+from assistant_agent.tools.capability_output import build_capability_output_contract
+from assistant_agent.tools.models import ToolResult
+from assistant_agent.tools.plugins.builtin.web_access.fetch_models import WebFetchRequest, WebFetchResult
 from assistant_agent.tools.plugins.builtin.web_access.fetch_backend import (
     WebFetchAdapter,
     create_web_fetch_adapter,
 )
-from assistant_agent.schemas.tool_ids import WEB_FETCH_CAPABILITY, WEB_FETCH_TOOL_NAME
+from assistant_agent.tools.ids import WEB_FETCH_CAPABILITY, WEB_FETCH_TOOL_NAME
 from assistant_agent.tools.base import ToolBase, ToolContext
 from assistant_agent.tools.input_binding import ToolInputBinding
 

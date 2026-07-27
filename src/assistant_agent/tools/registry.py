@@ -8,7 +8,7 @@ from typing import Any, Dict, Iterable, List, Protocol
 
 from pydantic import BaseModel
 
-from assistant_agent.schemas.tools import ToolResult, ToolSpec
+from assistant_agent.tools.models import ToolResult, ToolSpec
 from assistant_agent.tools.base import Tool, ToolContext
 from assistant_agent.tools.input_binding import (
     runtime_owned_input_fields,

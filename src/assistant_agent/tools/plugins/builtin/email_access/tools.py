@@ -2,16 +2,16 @@
 
 from typing import Any
 
-from assistant_agent.schemas.capability_output import (
+from assistant_agent.tools.capability_output import (
     build_capability_output_contract,
 )
-from assistant_agent.schemas.email import (
+from assistant_agent.tools.plugins.builtin.email_access.models import (
     EmailReadRequest,
     EmailReadResult,
     EmailSearchRequest,
     EmailSearchResult,
 )
-from assistant_agent.schemas.tools import ToolResult
+from assistant_agent.tools.models import ToolResult
 from assistant_agent.tools.plugins.builtin.email_access.backend import (
     EMAIL_READ_TOOL_NAME,
     EMAIL_SEARCH_TOOL_NAME,

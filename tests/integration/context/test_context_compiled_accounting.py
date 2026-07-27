@@ -2,12 +2,12 @@
 
 import json
 
-from assistant_agent.agent.runtime import AgentGraphRuntime
+from assistant_agent.runtime.runtime import AgentGraphRuntime
 from assistant_agent.config import ProviderConfig
-from assistant_agent.schemas.requests import UserRequest
-from assistant_agent.services.chat_adapter import ChatRequest, ChatResult
-from assistant_agent.services.session_store import InMemorySessionStore
-from assistant_agent.services.trace_store import InMemoryTraceStore
+from assistant_agent.runtime.requests import UserRequest
+from assistant_agent.runtime.chat_adapter import ChatRequest, ChatResult
+from assistant_agent.runtime.session_store import InMemorySessionStore
+from assistant_agent.observability.trace_store import InMemoryTraceStore
 
 
 class _CapturedChatAdapter:

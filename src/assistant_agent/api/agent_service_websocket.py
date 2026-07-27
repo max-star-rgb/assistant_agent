@@ -14,28 +14,28 @@ from anyio import CancelScope
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from assistant_agent.gateway import AGENT_SERVICE_ENTRY_CAPABILITIES, GatewaySessionManager
-from assistant_agent.realtime import GatewayAgentAdapter
-from assistant_agent.schemas.identity import RequestIdentity
-from assistant_agent.schemas.requests import UserRequest
-from assistant_agent.services.agent_service_delivery import (
+from assistant_agent.gateway.runtime_adapter import GatewayRuntimeAdapter
+from assistant_agent.identity import RequestIdentity
+from assistant_agent.runtime.requests import UserRequest
+from assistant_agent.observability.agent_service_delivery import (
     AgentServiceDelivery,
     AgentServiceDeliveryRegistry,
 )
-from assistant_agent.services.agent_service_entry import agent_service_tool_visibility
-from assistant_agent.services.agent_service_latency import (
+from assistant_agent.media.agent_service_entry import agent_service_tool_visibility
+from assistant_agent.observability.agent_service_latency import (
     AgentServiceTurnTiming,
     analyze_agent_service_turn,
     append_turn_latency_trace,
     report_turn_latency,
 )
-from assistant_agent.services.h264_video_ingestion import H264VideoIngestionService
-from assistant_agent.services.identifiers import new_prefixed_uuid7
-from assistant_agent.services.operational_logging import digest_identifier, record_gateway_lifecycle
-from assistant_agent.services.realtime_video_observer import RealtimeVideoObserver
-from assistant_agent.services.video_context import VideoFrame
-from assistant_agent.services.trace_store import TraceStore, append_observability_event
-from assistant_agent.services.turn_summary import append_agent_service_turn_summary
-from assistant_agent.services.gateway_turn_facade import (
+from assistant_agent.media.video.h264_video_ingestion import H264VideoIngestionService
+from assistant_agent.identifiers import new_prefixed_uuid7
+from assistant_agent.observability.operational_logging import digest_identifier, record_gateway_lifecycle
+from assistant_agent.media.video.realtime_video_observer import RealtimeVideoObserver
+from assistant_agent.media.video.video_context import VideoFrame
+from assistant_agent.observability.trace_store import TraceStore, append_observability_event
+from assistant_agent.observability.turn_summary import append_agent_service_turn_summary
+from assistant_agent.gateway.turn_facade import (
     GatewayStreamChunkConsumer,
     GatewayTurnCorrelation,
     GatewayTurnCorrelationObserver,
@@ -1220,7 +1220,7 @@ def _required_item_text(item: dict[str, Any], index: int, field_name: str) -> st
 
 def _create_agent_service_gateway_manager() -> GatewaySessionManager:
     return GatewaySessionManager(
-        backend_factory=lambda: GatewayAgentAdapter(
+        backend_factory=lambda: GatewayRuntimeAdapter(
             run_request=_run_assistant_request_for_agent_service,
             load_env=False,
         ),

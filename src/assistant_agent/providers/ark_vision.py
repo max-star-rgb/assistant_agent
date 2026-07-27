@@ -6,10 +6,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from assistant_agent.schemas.perception import VisualUnderstandingResult
-from assistant_agent.services.provider_errors import ProviderAdapterError, sanitize_error_message
-from assistant_agent.services.real_vision_adapter import _json_object_from_text, map_vision_result
-from assistant_agent.services.vision_adapter import VisionUnderstandingInput
+from assistant_agent.media.vision.models import VisualUnderstandingResult
+from assistant_agent.providers.provider_errors import ProviderAdapterError, sanitize_error_message
+from assistant_agent.media.vision.real_vision_adapter import _json_object_from_text, map_vision_result
+from assistant_agent.media.vision.vision_adapter import VisionUnderstandingInput
 
 
 DEFAULT_ARK_VISION_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3"

@@ -1,15 +1,15 @@
 """Regression coverage for ordinary multi-turn task objective revisions."""
 
-from assistant_agent.agent.runtime import AgentGraphRuntime
+from assistant_agent.runtime.runtime import AgentGraphRuntime
 from assistant_agent.config import ProviderConfig
-from assistant_agent.schemas.requests import RuntimeTaskUpdate, UserRequest
-from assistant_agent.services.assistant_run_service import (
+from assistant_agent.runtime.requests import RuntimeTaskUpdate, UserRequest
+from assistant_agent.runtime.assistant_run_service import (
     InMemoryConversationStore,
     run_assistant_request,
 )
-from assistant_agent.services.chat_adapter import ChatRequest, ChatResult
-from assistant_agent.services.realtime_task_state import InMemoryRealtimeTaskStateStore
-from assistant_agent.services.session_store import InMemorySessionStore
+from assistant_agent.runtime.chat_adapter import ChatRequest, ChatResult
+from assistant_agent.runtime.realtime_task_state import InMemoryRealtimeTaskStateStore
+from assistant_agent.runtime.session_store import InMemorySessionStore
 
 
 class _TaskRevisionChatAdapter:

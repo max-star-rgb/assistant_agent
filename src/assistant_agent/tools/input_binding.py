@@ -7,10 +7,10 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 
-from assistant_agent.schemas.durable_tasks import TrustedTaskBinding
+from assistant_agent.automation.durable_tasks.models import TrustedTaskBinding
 
 if TYPE_CHECKING:
-    from assistant_agent.agent.state import AgentState
+    from assistant_agent.runtime.state import AgentState
 
 
 ToolInputBindingSource = Literal[

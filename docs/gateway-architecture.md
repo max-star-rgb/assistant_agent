@@ -1,6 +1,6 @@
 # Gateway Architecture
 
-Last updated: 2026-07-23
+Last updated: 2026-07-27
 
 This document is the current canonical entry for `assistant_agent.gateway`, realtime Gateway protocol frames, entry-layer boundaries, and the Gateway-to-assistant runtime contract. Update it whenever Gateway responsibilities, realtime call behavior, Gateway WebSocket bridging, session/run/cancel semantics, or entry adapter routing changes. Media-Agent `/agent-service/v1` wire-field details, examples, and H.264 payload constraints live in `docs/media-agent-service-websocket.md`.
 
@@ -14,8 +14,8 @@ This document is the current canonical entry for `assistant_agent.gateway`, real
 - For normalized Gateway WebSocket, one live bridge owner is allowed per `user_id` in a process. A newer connection supersedes older same-user bridges, including idle bridges that have not opened a runtime endpoint yet. Superseding a bridge is not treated as client disconnect for run lifecycle: the active Gateway run is not cancelled, and later runtime frames are delivered to the newest owner.
 - A true normalized-Gateway transport disconnect moves delivery to `DETACHED` for a bounded reconnect grace period instead of immediately cancelling the active run. The session relay keeps a bounded cursor-addressable outbox; `session.resume(payload.cursor)` replays retained frames and returns `session.attached`. If no owner returns before grace expiry, Gateway cancels the then-active run with `reason=reconnect_grace_expired`.
 - Realtime media may opt into a separate bounded semantic-interrupt control plane. Explicit media control still interrupts immediately; implicit utterances are classified in parallel while the active backend continues, and only a matching `expected_run_id` decision may change Gateway lifecycle.
-- `assistant_agent.realtime` is the contract between Gateway and the current assistant runtime. The default adapter is `GatewayAgentAdapter`, a semantic alias of the compatibility class name `AgentGraphRealtimeBackend`.
-- The realtime adapter is a thin runtime bridge. It maps realtime requests/events/results and forwards cancellation; it does not own planning, tool choice, memory policy, provider policy, agent routing, or multi-agent decisions.
+- `assistant_agent.gateway.runtime_backend` and `runtime_types` define the contract between Gateway and the current assistant runtime. `GatewayRuntimeAdapter` is the default implementation.
+- The Gateway runtime adapter is a thin bridge. It maps requests/events/results and forwards cancellation; it does not own planning, tool choice, memory policy, provider policy, agent routing, or multi-agent decisions. There is no separate top-level `realtime` package.
 - `AgentGraphRuntime` and the assistant loop remain the internal agent executor. Do not add an OpenClaw-style second agent loop.
 - Product-level "Agent instance" means the connection/user-owned logical `GatewaySessionService`, not a dedicated `AgentGraphRuntime` object. A logical AgentSession owns history, queued/active turns, cancellation and media/session correlation. Runtime execution remains application-owned and pooled across sessions.
 - Durable structured tasks are a separate post-acceptance lifecycle owned by `DurableTaskService` and its worker. Gateway owns only the ingress turn that accepts and returns the task handle; it does not keep the durable task as an active Gateway run.
@@ -60,7 +60,7 @@ GatewayBridge / GatewaySessionManager / GatewaySessionService
 RealtimeAgentRequest / RealtimeAgentEvent / RealtimeAgentResult
         |
         v
-GatewayAgentAdapter / AgentGraphRealtimeBackend compatibility name
+GatewayRuntimeAdapter / GatewayRuntimeAdapter compatibility name
         |
         v
 AgentGraphRuntime / assistant loop
@@ -81,7 +81,7 @@ Gateway ingress adapter
 GatewaySessionManager / GatewaySessionService
         |
         v
-GatewayAgentAdapter
+GatewayRuntimeAdapter
         |
         v
 AssistantRuntimeApp
@@ -94,7 +94,7 @@ AgentGraphRuntime / assistant loop
 ```
 
 `AssistantRuntimeApp` remains the thin backend-to-runtime boundary used by
-`GatewayAgentAdapter`. Product entry layers should not construct or pass
+`GatewayRuntimeAdapter`. Product entry layers should not construct or pass
 `AgentGraphRuntime` directly, and their long-term target should not be direct
 `AssistantRuntimeApp` access either. Direct app callers in product paths may
 exist temporarily only as migration debt while those paths move behind
@@ -122,7 +122,7 @@ captured response after Gateway emits `run.end`. This preserves the public HTTP
 schema without exposing the full HTTP response in Gateway WebSocket frames.
 
 Local offline CLI `--text` uses the same bridge with a local
-`GatewaySessionManager(start_reaper=False)` and a `GatewayAgentAdapter` callback
+`GatewaySessionManager(start_reaper=False)` and a `GatewayRuntimeAdapter` callback
 that captures `AssistantRunArtifacts` for CLI payload formatting. CLI
 `--scenario` uses the demo matrix, and each demo scenario now runs through the
 same local Gateway turn pattern before formatting the existing scenario result
@@ -707,21 +707,21 @@ identity or system prompt. User payload metadata cannot promote a normal turn
 into another profile.
 
 TTS remains an entry-adapter concern.
-`assistant_agent.realtime.audio_edge.gateway_frame_to_tts_event()` can map
+`assistant_agent.media.audio_edge.gateway_frame_to_tts_event()` can map
 speakable Gateway frames into prompt-safe TTS edge events. It does not invoke a
 TTS provider, stream audio, or change assistant runtime behavior.
 
-## Realtime Adapter Contract
+## Runtime Adapter Contract
 
-Gateway talks to assistant execution through `assistant_agent.realtime`:
+Gateway talks to assistant execution through modules owned by `assistant_agent.gateway`:
 
 - `RealtimeAgentRequest`: normalized user turn payload from Gateway.
 - `RealtimeAgentEvent`: assistant-side stream events that can be mapped to Gateway frames.
 - `RealtimeAgentResult`: terminal backend status, response metadata, trace/run IDs, and `expects_reply`.
-- `RealtimeAgentBackend`: backend protocol implemented by `AgentGraphRealtimeBackend`.
+- `RealtimeAgentBackend`: backend protocol implemented by `GatewayRuntimeAdapter`.
 - `RealtimeCancelToken`: cooperative cancellation token passed from Gateway to the backend.
 
-`GatewayAgentAdapter` / `RealtimeAgentAdapter` are exported semantic names for the same thin adapter currently implemented by `AgentGraphRealtimeBackend`. The compatibility class name remains available to avoid churn in existing imports and tests.
+`GatewayRuntimeAdapter` is the single thin adapter implementation. Runtime request/event/result types remain realtime-oriented protocol concepts, but they do not form an independent package or execution layer.
 
 Long-running assistant turns can emit `RealtimeAgentEvent(type="run.progress", display_only=True)` for user-visible status updates such as current work, completed step, next step, blocked state, or needed user decision. The realtime adapter applies progress throttling and idle heartbeat policy before Gateway maps those updates to `event.progress` frames; entry layers decide how to display them and should not treat them as final answer content.
 
@@ -761,21 +761,26 @@ This boundary lets Gateway preserve OpenClaw-compatible session/run semantics wi
 | `src/assistant_agent/gateway/ws.py` | JSON text WebSocket adapter that presents a WebSocket as a Gateway endpoint. |
 | `src/assistant_agent/gateway/bridge.py` | External-client-to-session bridge: call lifecycle, one session-owned bounded/cursor outbox relay, per-user connection leases, detached grace, replay, disconnect-expiry cancellation, and modality gate. |
 | `src/assistant_agent/gateway/session.py` | Gateway-managed session service: `message.user`, `run.cancel`, session history, active runs, interrupt, deadline, event mapping, and session manager. |
-| `src/assistant_agent/gateway/event_mapping.py` | Realtime backend event to Gateway frame mapping. |
+| `src/assistant_agent/gateway/runtime_backend.py` | Gateway-owned backend protocol and event sink contract. |
+| `src/assistant_agent/gateway/runtime_types.py` | Gateway-to-Runtime request, event, result, capability, and cancellation types. |
+| `src/assistant_agent/gateway/runtime_adapter.py` | Thin adapter from Gateway turns to the shared assistant Runtime. |
+| `src/assistant_agent/gateway/runtime_event_mapping.py` | Runtime `AgentEvent` to Gateway-owned runtime event mapping. |
+| `src/assistant_agent/gateway/event_mapping.py` | Gateway-owned runtime event to wire-frame mapping. |
+| `src/assistant_agent/gateway/delivery.py` | Display, persistence, replacement, and supersession policy. |
+| `src/assistant_agent/gateway/progress.py` | Progress throttling and heartbeat projection. |
 | `src/assistant_agent/gateway/ws_server.py` | Optional standalone Gateway session WebSocket server entrypoint, not the main FastAPI app route. |
-| `src/assistant_agent/realtime/` | Gateway-to-assistant adapter contract, `GatewayAgentAdapter` semantic alias, and `AgentGraphRealtimeBackend` compatibility class. |
-| `src/assistant_agent/realtime/audio_edge.py` | Prompt-safe helper for entry adapters that convert speakable Gateway text frames into TTS edge events without invoking a provider. |
+| `src/assistant_agent/media/audio_edge.py` | Prompt-safe helper for entry adapters that convert speakable Gateway text frames into TTS edge events without invoking a provider. |
 | `src/assistant_agent/api/gateway_runtime.py` | Process-local FastAPI-owned `GatewaySessionManager`, `GatewayBridge`, `GatewayTurnFacade`, HTTP response capture, and shutdown cleanup. |
 | `src/assistant_agent/api/gateway_websocket.py` | FastAPI entry adapter for normalized `/ws/gateway` frames. |
 | `src/assistant_agent/api/agent_service_websocket.py` | FastAPI compatibility adapter for the vendor `/agent-service/v1` media protocol; preserves `message` / optional `sessionId` / stringified `body` envelopes, accepts media `assistantControl` / `chat` / `audio` / `video` / `interrupt`, ingests self-contained H.264 video frames, and routes chat plus stable video references through a local `GatewayTurnFacade`. |
-| `src/assistant_agent/services/h264_video_ingestion.py` | Entry-layer H.264 validation, bounded FFmpeg I-frame decode, JPEG artifact lifecycle, and registration in the runtime-owned `VideoContextStore`; never calls an understanding provider. |
-| `src/assistant_agent/services/realtime_video_observer.py` | Per-connection local adaptive selection, retained-keyframe lifecycle, latest-wins background scheduling, and governed `vision_understanding` video-branch execution. |
-| `src/assistant_agent/services/realtime_video_memory.py` | Runtime-owned bounded prompt-safe semantic video snapshots, health/failure state, and per-video isolation. |
+| `src/assistant_agent/media/video/h264_video_ingestion.py` | Entry-layer H.264 validation, bounded FFmpeg I-frame decode, JPEG artifact lifecycle, and registration in the runtime-owned `VideoContextStore`; never calls an understanding provider. |
+| `src/assistant_agent/media/video/realtime_video_observer.py` | Per-connection local adaptive selection, retained-keyframe lifecycle, latest-wins background scheduling, and governed `vision_understanding` video-branch execution. |
+| `src/assistant_agent/media/video/realtime_video_memory.py` | Runtime-owned bounded prompt-safe semantic video snapshots, health/failure state, and per-video isolation. |
 | `src/assistant_agent/api/` | FastAPI HTTP/WebSocket entry adapters and product API routes. |
-| `src/assistant_agent/services/gateway_turn_facade.py` | In-process sync-turn facade for request/response entries that need Gateway lifecycle semantics without a WebSocket transport. |
-| `src/assistant_agent/services/operational_logging.py` | Central prompt-safe console/file logging setup, Gateway lifecycle projection, identifier digesting, and write-only runtime trace projection. |
-| `src/assistant_agent/services/assistant_runtime_app.py` | Backend-to-runtime boundary used behind `GatewayAgentAdapter`; owns the internal runtime reference without becoming the target product entry boundary. |
-| `src/assistant_agent/services/assistant_run_service.py` | Shared assistant request/run service used behind `AssistantRuntimeApp`, plus eval and demo utilities. |
+| `src/assistant_agent/gateway/turn_facade.py` | In-process sync-turn facade for request/response entries that need Gateway lifecycle semantics without a WebSocket transport. |
+| `src/assistant_agent/observability/operational_logging.py` | Central prompt-safe console/file logging setup, Gateway lifecycle projection, identifier digesting, and write-only runtime trace projection. |
+| `src/assistant_agent/runtime/assistant_runtime_app.py` | Backend-to-runtime boundary used behind `GatewayRuntimeAdapter`; owns the internal runtime reference without becoming the target product entry boundary. |
+| `src/assistant_agent/runtime/assistant_run_service.py` | Shared assistant request/run service used behind `AssistantRuntimeApp`, plus eval and demo utilities. |
 | `scripts/run_demo_flows.py` | Offline demo/scenario entry adapter that runs scenarios through a local `GatewayTurnFacade` and formats the existing demo summary payload. |
 | `scripts/run_client.py` | Local Media-Agent protocol console client for `/agent-service/v1`; supports repeated `chat` sends and `/new [sessionId]`. |
 
@@ -785,9 +790,9 @@ Phase 0 treats these entry classifications as architecture contracts:
 
 | Entry | Current path | Classification |
 | --- | --- | --- |
-| HTTP `POST /agent/run` | `routes_agent.run_agent -> _run_agent_through_gateway -> GatewayTurnFacade -> GatewaySessionManager -> GatewayAgentAdapter -> AssistantRuntimeApp -> run_assistant_request -> AgentGraphRuntime` | Canonical Gateway-first product entry. |
+| HTTP `POST /agent/run` | `routes_agent.run_agent -> _run_agent_through_gateway -> GatewayTurnFacade -> GatewaySessionManager -> GatewayRuntimeAdapter -> AssistantRuntimeApp -> run_assistant_request -> AgentGraphRuntime` | Canonical Gateway-first product entry. |
 | Gateway WS `/ws/gateway` | `gateway_websocket -> get_gateway_bridge().bridge(...) -> GatewaySessionManager` | Canonical normalized Gateway entry. |
-| Local CLI `--text` | local `GatewaySessionManager + GatewayTurnFacade + GatewayAgentAdapter` | Canonical local Gateway-first entry. |
+| Local CLI `--text` | local `GatewaySessionManager + GatewayTurnFacade + GatewayRuntimeAdapter` | Canonical local Gateway-first entry. |
 | CLI `--scenario` | demo matrix through local `GatewayTurnFacade` in `scripts/run_demo_flows.py` | Offline demo adapter, Gateway-first internally. Do not expand into product behavior. |
 | Vendor `/agent-service/v1` | vendor `message` / optional `sessionId` / stringified `body` protocol; `assistantControl` is the media handshake, legacy `assistantControlStart` remains accepted, raw H.264 I-frames become a bounded local JPEG context, and `chat` uses local `GatewayTurnFacade` with the stable session video reference | Compatibility vendor surface, Gateway-first internally for chat and video references. H.264 decode stays at the entry boundary; tool choice and provider calls stay in the assistant runtime. |
 | HTTP `POST /agents/run` | explicit `AgentRouter` service call | Separate opt-in router/debug entry, not the default product path. |

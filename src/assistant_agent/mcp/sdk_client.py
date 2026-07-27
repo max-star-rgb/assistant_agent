@@ -18,8 +18,8 @@ from assistant_agent.mcp.adapter import (
     namespaced_mcp_tool_name,
 )
 from assistant_agent.mcp.config import MCPServerConfig, MCPToolAdapterConfig
-from assistant_agent.schemas.tools import ToolResult
-from assistant_agent.services.provider_errors import (
+from assistant_agent.tools.models import ToolResult
+from assistant_agent.providers.provider_errors import (
     ProviderSafetyPolicy,
     sanitize_error_detail,
     sanitize_error_message,

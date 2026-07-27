@@ -43,8 +43,8 @@ from evals.cases.langfuse.experiment import (
     validate_real_readonly_config,
 )
 from assistant_agent.config import ProviderConfig
-from assistant_agent.services.assistant_run_service import load_env_file
-from assistant_agent.services.langfuse_config import (
+from assistant_agent.runtime.assistant_run_service import load_env_file
+from assistant_agent.observability.langfuse_config import (
     langfuse_credentials_from_env,
     langfuse_host_from_env,
 )

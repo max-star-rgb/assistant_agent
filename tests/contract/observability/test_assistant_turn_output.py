@@ -1,7 +1,7 @@
 import pytest
 from pydantic import TypeAdapter, ValidationError
 
-from assistant_agent.schemas.assistant_output import (
+from assistant_agent.runtime.output_models import (
     AssistantTextOutput,
     AssistantToolCall,
     AssistantTurnOutput,

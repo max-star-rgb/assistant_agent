@@ -14,7 +14,7 @@ from assistant_agent.memory.mem0.transport import (
     urllib_mem0_transport,
 )
 from assistant_agent.memory.models import CompletedTurn, LongTermMemory
-from assistant_agent.schemas.identity import RequestIdentity
+from assistant_agent.identity import RequestIdentity
 from assistant_agent.memory.mem0.models import (
     Mem0HealthResult,
     Mem0IngestionResult,

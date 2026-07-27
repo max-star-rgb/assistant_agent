@@ -4,34 +4,34 @@ from collections.abc import Callable
 from time import time
 from typing import Any
 
-from assistant_agent.schemas.capability_output import build_capability_output_contract
-from assistant_agent.schemas.perception import (
+from assistant_agent.tools.capability_output import build_capability_output_contract
+from assistant_agent.media.vision.models import (
     VideoUnderstandingRequest,
     VideoUnderstandingResult,
 )
-from assistant_agent.schemas.tools import ToolResult
-from assistant_agent.services.agent_service_entry import (
+from assistant_agent.tools.models import ToolResult
+from assistant_agent.media.agent_service_entry import (
     is_trusted_agent_service_request,
 )
-from assistant_agent.services.video_adapter import (
+from assistant_agent.media.video.video_adapter import (
     VideoUnderstandingAdapter,
     create_video_understanding_adapter,
 )
-from assistant_agent.services.vision_client import (
+from assistant_agent.media.vision.vision_client import (
     AdapterVisionUnderstandingClient,
     VisionUnderstandingClient,
     video_result_from_vision_result,
     vision_request_from_video_request,
 )
-from assistant_agent.services.video_context import (
+from assistant_agent.media.video.video_context import (
     DEFAULT_VIDEO_CONTEXT_WINDOW_SIZE,
     VideoContextStore,
 )
-from assistant_agent.services.realtime_video_memory import (
+from assistant_agent.media.video.realtime_video_memory import (
     RealtimeVideoMemoryStore,
     RealtimeVideoSnapshot,
 )
-from assistant_agent.schemas.tool_ids import (
+from assistant_agent.tools.ids import (
     IMAGE_UNDERSTANDING_TOOL_NAME,
     VIDEO_UNDERSTANDING_CAPABILITY,
 )

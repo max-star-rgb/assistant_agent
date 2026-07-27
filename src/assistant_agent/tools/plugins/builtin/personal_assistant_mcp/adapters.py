@@ -6,7 +6,7 @@ from datetime import date, timedelta
 import re
 from typing import Literal, Protocol
 
-from assistant_agent.schemas.personal_assistant import (
+from assistant_agent.tools.plugins.builtin.personal_assistant_mcp.models import (
     CalendarCreateRequest,
     CalendarCreateResult,
     CalendarEvent,

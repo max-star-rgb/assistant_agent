@@ -1,17 +1,17 @@
 """Regression coverage for the disabled AgentGraphRuntime compaction path."""
 
-from assistant_agent.agent.runtime import AgentGraphRuntime
+from assistant_agent.runtime.runtime import AgentGraphRuntime
 from assistant_agent.config import ProviderConfig
-from assistant_agent.schemas.requests import UserRequest
-from assistant_agent.services.assistant_run_service import (
+from assistant_agent.runtime.requests import UserRequest
+from assistant_agent.runtime.assistant_run_service import (
     ConversationTurn,
     InMemoryConversationStore,
     run_assistant_request,
 )
-from assistant_agent.services.chat_adapter import ChatRequest, ChatResult
-from assistant_agent.services.context.compaction import sanitize_observations_for_context
-from assistant_agent.services.context.compactor import DeterministicContextCompactor
-from assistant_agent.services.session_store import InMemorySessionStore
+from assistant_agent.runtime.chat_adapter import ChatRequest, ChatResult
+from assistant_agent.context.compaction import sanitize_observations_for_context
+from assistant_agent.context.compactor import DeterministicContextCompactor
+from assistant_agent.runtime.session_store import InMemorySessionStore
 
 
 class _CapturingChatAdapter:

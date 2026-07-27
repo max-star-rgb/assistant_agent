@@ -3,14 +3,14 @@
 from concurrent.futures import ThreadPoolExecutor
 from threading import Event, Lock
 
-from assistant_agent.agent.runtime import AgentGraphRuntime
+from assistant_agent.runtime.runtime import AgentGraphRuntime
 from assistant_agent.config import ProviderConfig
 from assistant_agent.memory.ingestion_queue import MemoryIngestionQueue
 from assistant_agent.memory.service import LongTermMemoryService
 from assistant_agent.memory.session_snapshot import SessionMemorySnapshotStore
 from assistant_agent.memory.mem0.models import Mem0IngestionResult
-from assistant_agent.schemas.requests import UserRequest
-from assistant_agent.services.session_store import InMemorySessionStore
+from assistant_agent.runtime.requests import UserRequest
+from assistant_agent.runtime.session_store import InMemorySessionStore
 
 
 class _BlockingIngestionClient:

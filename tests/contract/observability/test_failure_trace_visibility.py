@@ -7,22 +7,22 @@ from types import SimpleNamespace
 
 import pytest
 
-from assistant_agent.realtime.event_mapping import map_agent_progress_event
-from assistant_agent.schemas.events import AgentEvent
-from assistant_agent.services.agent_service_delivery import AgentServiceDeliveryRegistry
-from assistant_agent.services.agent_service_latency import (
+from assistant_agent.gateway.runtime_event_mapping import map_agent_progress_event
+from assistant_agent.runtime.events import AgentEvent
+from assistant_agent.observability.agent_service_delivery import AgentServiceDeliveryRegistry
+from assistant_agent.observability.agent_service_latency import (
     AgentServiceTurnTiming,
     analyze_agent_service_turn,
     append_turn_latency_trace,
 )
-from assistant_agent.services.gateway_turn_facade import (
+from assistant_agent.gateway.turn_facade import (
     GatewayTurnFacade,
     GatewayTurnRequest,
     GatewayTurnTimeout,
 )
-from assistant_agent.services.trace_store import InMemoryTraceStore, TraceEvent
-from assistant_agent.services.turn_evaluator import build_turn_diagnostic
-from assistant_agent.services.turn_summary import append_agent_service_turn_summary
+from assistant_agent.observability.trace_store import InMemoryTraceStore, TraceEvent
+from assistant_agent.observability.turn_evaluator import build_turn_diagnostic
+from assistant_agent.observability.turn_summary import append_agent_service_turn_summary
 from scripts import agentruntime_view
 
 

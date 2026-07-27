@@ -9,7 +9,7 @@ from typing import Any, Protocol
 
 from assistant_agent.mcp.adapter import MCPToolRunner, namespaced_mcp_tool_name
 from assistant_agent.mcp.config import MCPServerConfig
-from assistant_agent.schemas.email import (
+from assistant_agent.tools.plugins.builtin.email_access.models import (
     EmailProviderError,
     EmailReadRequest,
     EmailReadResult,
@@ -17,8 +17,8 @@ from assistant_agent.schemas.email import (
     EmailSearchRequest,
     EmailSearchResult,
 )
-from assistant_agent.schemas.tools import ToolResult
-from assistant_agent.services.provider_errors import (
+from assistant_agent.tools.models import ToolResult
+from assistant_agent.providers.provider_errors import (
     normalize_provider_error_code,
     sanitize_error_message,
 )

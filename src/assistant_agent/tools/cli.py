@@ -6,14 +6,14 @@ import argparse
 import json
 from typing import Any
 
-from assistant_agent.agent.action_validator import ActionValidator
-from assistant_agent.agent.state import AgentState
-from assistant_agent.agent.tool_executor import ToolExecutor
+from assistant_agent.runtime.action_validator import ActionValidator
+from assistant_agent.runtime.state import AgentState
+from assistant_agent.runtime.tool_executor import ToolExecutor
 from assistant_agent.config import ProviderConfig
-from assistant_agent.schemas.assistant_decision import AssistantDecision
-from assistant_agent.schemas.requests import UserRequest
-from assistant_agent.schemas.tool_observation import observation_from_tool_result
-from assistant_agent.services.event_sink import ListEventSink
+from assistant_agent.runtime.decision_models import AssistantDecision
+from assistant_agent.runtime.requests import UserRequest
+from assistant_agent.tools.observation import observation_from_tool_result
+from assistant_agent.runtime.event_sink import ListEventSink
 from assistant_agent.tools.loader import LocalToolLoadIssue, load_local_tools
 from assistant_agent.tools.loader import register_local_tools
 from assistant_agent.tools.plugins.assembly import ToolPluginAssemblyError

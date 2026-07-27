@@ -9,11 +9,11 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from assistant_agent.agent.runtime import AgentGraphRuntime
-from assistant_agent.agent.state import AgentState
+from assistant_agent.runtime.runtime import AgentGraphRuntime
+from assistant_agent.runtime.state import AgentState
 from assistant_agent.config import ProviderConfig
-from assistant_agent.schemas.requests import UserRequest
-from assistant_agent.services.trace_store import JsonlTraceStore, TraceEvent
+from assistant_agent.runtime.requests import UserRequest
+from assistant_agent.observability.trace_store import JsonlTraceStore, TraceEvent
 from evals.system.common.preflight import (
     SystemEvalConfigurationError,
     validate_real_chat_config,

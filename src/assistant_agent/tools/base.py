@@ -4,8 +4,8 @@ from typing import Any, Protocol
 
 from pydantic import BaseModel, Field, ValidationError
 
-from assistant_agent.schemas.tools import ToolCategory, ToolMediaRequirement, ToolResult
-from assistant_agent.services.provider_errors import sanitize_error_message
+from assistant_agent.tools.models import ToolCategory, ToolMediaRequirement, ToolResult
+from assistant_agent.providers.provider_errors import sanitize_error_message
 
 
 class ToolInputValidationError(ValueError):

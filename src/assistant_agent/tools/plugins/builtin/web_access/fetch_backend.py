@@ -11,16 +11,16 @@ from typing import Any, Protocol
 from urllib.parse import urlparse, urlunparse
 
 from assistant_agent.config import ProviderConfig
-from assistant_agent.schemas.web_fetch import (
+from assistant_agent.tools.plugins.builtin.web_access.fetch_models import (
     WebFetchProviderError,
     WebFetchRequest,
     WebFetchResult,
 )
-from assistant_agent.services.provider_errors import (
+from assistant_agent.providers.provider_errors import (
     build_provider_error,
     map_exception_to_provider_error,
 )
-from assistant_agent.schemas.tool_ids import WEB_FETCH_CAPABILITY
+from assistant_agent.tools.ids import WEB_FETCH_CAPABILITY
 
 
 class WebFetchAdapter(Protocol):

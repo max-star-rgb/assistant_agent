@@ -179,7 +179,7 @@ Last updated: 2026-07-25
 - 多步 realtime run 在同一轮完成至少两个 reusable tool observations 时，会记录 bounded `checkpoint` artifact；interrupt 只有在 checkpoint 仍可复用时才选择 `resume_from_checkpoint`，用户明确重来/换一批会把 checkpoint 标为 stale。
 - Interrupt 会用简单策略选择 `restart`、`reuse_and_replan`、`report_committed` 或 `compensate`；如果用户明确要求重新搜索/换一批/不要之前结果，已有 reusable artifacts 会标记为 `stale`，不会重新注入 prompt snapshot。
 - Side-effect records 来自 Tool category 和工具结果中的 prompt-safe override（例如 `side_effect_level`）；read-only 工具不阻塞重规划，committed action 不会被描述成已取消，compensatable artifact 会倾向修正版/补偿路径。
-- `AgentGraphRealtimeBackend` 和 shared run service 会发 display-only `run.progress`，用于 App + Media 展示 `task_state/revising`、strategy、reusable artifact count 和 side-effect count。
+- `GatewayRuntimeAdapter` 和 shared run service 会发 display-only `run.progress`，用于 App + Media 展示 `task_state/revising`、strategy、reusable artifact count 和 side-effect count。
 - Realtime delivery policy 将 `run.progress` 和 tool lifecycle 标记为 `persistence=ephemeral`，只有 `response.chunk` 属于 `persistence=final`；progress 使用 run-scoped replacement key，并由 final chunk 或 `run.end` supersede，因此不会作为 assistant final text 进入 conversation history 或长期 memory。
 - 当前写工具在被 Tool Catalog 暴露并通过 Validator 后直接执行；read-only 工具无额外开销，compensatable 工具可去重。durable task 有独立 SQLite task/lease 恢复与身份隔离 API；跨进程幂等 ledger 仍未接入。
 
@@ -243,37 +243,38 @@ Last updated: 2026-07-25
 
 ## Key Files
 
-- `src/assistant_agent/services/context/builder.py`
-- `src/assistant_agent/services/context/conversation.py`
-- `src/assistant_agent/services/context/compaction.py`
-- `src/assistant_agent/services/context/policy.py`
-- `src/assistant_agent/services/context/token_budget.py`
-- `src/assistant_agent/services/context/compactor.py`
-- `src/assistant_agent/services/context/renderer.py`
-- `src/assistant_agent/services/context/report.py`
-- `src/assistant_agent/services/context/capability_catalog.py`
-- `src/assistant_agent/services/context/skill_loader.py`
-- `src/assistant_agent/services/context/sources.py`
-- `src/assistant_agent/services/context/soul_source.py`
-- `src/assistant_agent/services/realtime_task_state.py`
+- `src/assistant_agent/context/builder.py`
+- `src/assistant_agent/context/conversation.py`
+- `src/assistant_agent/context/compaction.py`
+- `src/assistant_agent/context/policy.py`
+- `src/assistant_agent/context/token_budget.py`
+- `src/assistant_agent/context/compactor.py`
+- `src/assistant_agent/context/renderer.py`
+- `src/assistant_agent/context/report.py`
+- `src/assistant_agent/context/capability_catalog.py`
+- `src/assistant_agent/skills/loading.py`
+- `src/assistant_agent/skills/recall.py`
+- `src/assistant_agent/context/sources.py`
+- `src/assistant_agent/context/soul_source.py`
+- `src/assistant_agent/runtime/realtime_task_state.py`
 - `src/assistant_agent/memory/service.py`
 - `src/assistant_agent/memory/models.py`
 - `src/assistant_agent/memory/session_snapshot.py`
-- `src/assistant_agent/services/realtime_video_memory.py`
-- `src/assistant_agent/services/realtime_video_observer.py`
-- `src/assistant_agent/services/video_context.py`
-- `src/assistant_agent/services/durable_tasks/`
-- `src/assistant_agent/services/agent_delegation_context.py`
-- `src/assistant_agent/schemas/context.py`
-- `src/assistant_agent/services/assistant_run_service.py`
-- `src/assistant_agent/services/chat_adapter.py`
-- `src/assistant_agent/services/provider_errors.py`
-- `src/assistant_agent/services/improvement/`
-- `src/assistant_agent/schemas/improvement.py`
+- `src/assistant_agent/media/video/realtime_video_memory.py`
+- `src/assistant_agent/media/video/realtime_video_observer.py`
+- `src/assistant_agent/media/video/video_context.py`
+- `src/assistant_agent/automation/durable_tasks/`
+- `src/assistant_agent/multi_agent/agent_delegation_context.py`
+- `src/assistant_agent/context/models.py`
+- `src/assistant_agent/runtime/assistant_run_service.py`
+- `src/assistant_agent/runtime/chat_adapter.py`
+- `src/assistant_agent/providers/provider_errors.py`
+- `src/assistant_agent/improvement/`
+- `src/assistant_agent/improvement/models.py`
 - `scripts/run_improvement_lab.py`
 - `src/assistant_agent/memory/mem0/client.py`
 - `src/assistant_agent/memory/ingestion_queue.py`
-- `src/assistant_agent/agent/assistant_loop_nodes.py`
+- `src/assistant_agent/runtime/assistant_loop_nodes.py`
 
 ## Validation Boundary
 

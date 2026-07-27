@@ -1,8 +1,8 @@
 """Image and video understanding plugin."""
 
 from assistant_agent.config import ProviderConfig
-from assistant_agent.services.realtime_video_memory import RealtimeVideoMemoryStore
-from assistant_agent.services.vision_client import (
+from assistant_agent.media.video.realtime_video_memory import RealtimeVideoMemoryStore
+from assistant_agent.media.vision.vision_client import (
     create_realtime_vision_understanding_client,
     create_vision_understanding_client,
 )

@@ -3,8 +3,8 @@
 import json
 from datetime import datetime, timezone
 
-from assistant_agent.services.otel_mapping import build_text_otel_span_specs
-from assistant_agent.services.trace_store import TraceEvent
+from assistant_agent.observability.otel_mapping import build_text_otel_span_specs
+from assistant_agent.observability.trace_store import TraceEvent
 
 
 def test_nested_normalized_provider_usage_reaches_langfuse_generation() -> None:

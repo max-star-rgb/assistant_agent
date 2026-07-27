@@ -3,12 +3,14 @@
 import pytest
 from pydantic import ValidationError
 
-from assistant_agent.schemas.generation import ImageGenerationRequest
-from assistant_agent.schemas.tool_spec_adapters import tool_spec_to_openai_tool
+from assistant_agent.tools.plugins.builtin.image_generation.models import (
+    ImageGenerationRequest,
+)
 from assistant_agent.tools.plugins.builtin.image_generation.tool import (
     ImageGenerationTool,
 )
 from assistant_agent.tools.registry import ToolRegistry
+from assistant_agent.tools.spec_adapters import tool_spec_to_openai_tool
 
 
 def test_image_generation_requires_only_prompt_from_model() -> None:

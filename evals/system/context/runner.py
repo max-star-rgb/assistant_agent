@@ -6,16 +6,16 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
-from assistant_agent.agent.runtime import AgentGraphRuntime
+from assistant_agent.runtime.runtime import AgentGraphRuntime
 from assistant_agent.config import ProviderConfig
-from assistant_agent.schemas.requests import UserRequest
-from assistant_agent.services.chat_adapter import (
+from assistant_agent.runtime.requests import UserRequest
+from assistant_agent.runtime.chat_adapter import (
     ChatAdapter,
     ChatRequest,
     ChatResult,
     create_chat_adapter,
 )
-from assistant_agent.services.trace_store import JsonlTraceStore
+from assistant_agent.observability.trace_store import JsonlTraceStore
 from evals.system.common.artifacts import create_run_dir, write_json
 from evals.system.common.preflight import validate_real_chat_config
 

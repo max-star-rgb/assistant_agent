@@ -14,7 +14,7 @@ from typing import Any
 from urllib.parse import urlencode, urlsplit
 from urllib.request import getproxies, proxy_bypass
 
-from assistant_agent.schemas.perception import VideoUnderstandingRequest, VideoUnderstandingResult
+from assistant_agent.media.vision.models import VideoUnderstandingRequest, VideoUnderstandingResult
 
 
 DEFAULT_QWEN_REALTIME_VISION_BASE_URL = "wss://dashscope.aliyuncs.com/api-ws/v1/realtime"

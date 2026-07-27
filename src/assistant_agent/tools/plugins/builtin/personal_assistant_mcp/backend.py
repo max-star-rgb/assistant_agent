@@ -13,7 +13,7 @@ from typing import Any
 from assistant_agent.config import ProviderConfig
 from assistant_agent.mcp.adapter import MCPToolRunner, namespaced_mcp_tool_name
 from assistant_agent.mcp.config import MCPServerConfig
-from assistant_agent.schemas.personal_assistant import (
+from assistant_agent.tools.plugins.builtin.personal_assistant_mcp.models import (
     CalendarCreateRequest,
     CalendarCreateResult,
     CalendarEvent,
@@ -26,7 +26,7 @@ from assistant_agent.schemas.personal_assistant import (
     WeatherRequest,
     WeatherResult,
 )
-from assistant_agent.schemas.tools import ToolResult
+from assistant_agent.tools.models import ToolResult
 from assistant_agent.tools.plugins.builtin.personal_assistant_mcp.adapters import (
     CalendarAdapter,
     ContactsAdapter,
@@ -34,13 +34,13 @@ from assistant_agent.tools.plugins.builtin.personal_assistant_mcp.adapters impor
     WeatherAdapter,
     WeatherLocationInputLanguage,
 )
-from assistant_agent.schemas.tool_ids import (
+from assistant_agent.tools.ids import (
     CALENDAR_CREATE_TOOL_NAME,
     CALENDAR_SEARCH_TOOL_NAME,
     CONTACTS_SEARCH_TOOL_NAME,
     WEATHER_TOOL_NAME,
 )
-from assistant_agent.services.provider_errors import (
+from assistant_agent.providers.provider_errors import (
     normalize_provider_error_code,
     sanitize_error_detail,
     sanitize_error_message,

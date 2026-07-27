@@ -7,7 +7,7 @@ from typing import Any
 import scripts.run_server as run_server
 
 from assistant_agent.config import ProviderConfig
-from assistant_agent.services.startup_dependencies import (
+from assistant_agent.runtime.startup_dependencies import (
     StartupDependencyStatus,
     collect_startup_dependency_statuses,
     format_startup_dependency_statuses,

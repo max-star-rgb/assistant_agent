@@ -2,15 +2,15 @@
 
 import json
 
-from assistant_agent.agent.runtime import AgentGraphRuntime
+from assistant_agent.runtime.runtime import AgentGraphRuntime
 from assistant_agent.config import ProviderConfig
-from assistant_agent.schemas.assistant_decision import NativeToolCall
-from assistant_agent.schemas.requests import UserRequest
-from assistant_agent.services.chat_adapter import ChatRequest, ChatResult
-from assistant_agent.services.otel_mapping import build_text_otel_span_specs
-from assistant_agent.services.session_store import InMemorySessionStore
-from assistant_agent.services.trace_content_policy import LOCAL_TRACE_CONTENT_ENV
-from assistant_agent.services.trace_conversation import get_default_trace_conversation_store
+from assistant_agent.runtime.decision_models import NativeToolCall
+from assistant_agent.runtime.requests import UserRequest
+from assistant_agent.runtime.chat_adapter import ChatRequest, ChatResult
+from assistant_agent.observability.otel_mapping import build_text_otel_span_specs
+from assistant_agent.runtime.session_store import InMemorySessionStore
+from assistant_agent.observability.trace_content_policy import LOCAL_TRACE_CONTENT_ENV
+from assistant_agent.observability.trace_conversation import get_default_trace_conversation_store
 
 
 class _ShoppingToolCallAdapter:

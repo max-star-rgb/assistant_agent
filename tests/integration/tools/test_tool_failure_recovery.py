@@ -2,18 +2,18 @@
 
 from pydantic import BaseModel, Field
 
-from assistant_agent.agent.runtime import AgentGraphRuntime
-from assistant_agent.agent.state import AgentState
-from assistant_agent.agent.tool_executor import ToolExecutor
+from assistant_agent.runtime.runtime import AgentGraphRuntime
+from assistant_agent.runtime.state import AgentState
+from assistant_agent.runtime.tool_executor import ToolExecutor
 from assistant_agent.config import ProviderConfig
 from assistant_agent.gateway.event_mapping import realtime_event_to_frame
-from assistant_agent.realtime.event_mapping import map_agent_event_stream
-from assistant_agent.schemas.assistant_decision import NativeToolCall
-from assistant_agent.schemas.requests import UserRequest
-from assistant_agent.schemas.tools import ToolResult
-from assistant_agent.services.chat_adapter import ChatRequest, ChatResult
-from assistant_agent.services.event_sink import ListEventSink
-from assistant_agent.services.session_store import InMemorySessionStore
+from assistant_agent.gateway.runtime_event_mapping import map_agent_event_stream
+from assistant_agent.runtime.decision_models import NativeToolCall
+from assistant_agent.runtime.requests import UserRequest
+from assistant_agent.tools.models import ToolResult
+from assistant_agent.runtime.chat_adapter import ChatRequest, ChatResult
+from assistant_agent.runtime.event_sink import ListEventSink
+from assistant_agent.runtime.session_store import InMemorySessionStore
 from assistant_agent.tools.base import ToolBase, ToolContext
 from assistant_agent.tools.registry import ToolRegistry
 

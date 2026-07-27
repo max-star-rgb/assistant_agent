@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from assistant_agent.config import ProviderConfig
-from assistant_agent.schemas.products import (
+from assistant_agent.tools.plugins.builtin.shopping.models import (
     PriceOffer,
     PriceCompareResult,
     PriceCompareRequest,
@@ -15,9 +15,9 @@ from assistant_agent.schemas.products import (
     ProductSearchResult,
     RankingReason,
 )
-from assistant_agent.services.provider_errors import build_provider_error
-from assistant_agent.schemas.tool_ids import SHOPPING_SEARCH_CAPABILITY
-from assistant_agent.utils.product_matching import compare_products
+from assistant_agent.providers.provider_errors import build_provider_error
+from assistant_agent.tools.ids import SHOPPING_SEARCH_CAPABILITY
+from assistant_agent.tools.plugins.builtin.shopping.product_matching import compare_products
 
 
 class ProductSearchAdapter(Protocol):
@@ -238,7 +238,7 @@ def create_shopping_search_adapter(config: ProviderConfig | None = None) -> Prod
     if resolved.shopping_search_provider == "haodanku":
         if not resolved.haodanku_api_key:
             return UnconfiguredProductSearchAdapter("haodanku", "HAODANKU_API_KEY")
-        from assistant_agent.providers.haodanku_product_search import (
+        from assistant_agent.tools.plugins.builtin.shopping.haodanku import (
             HaodankuConfig,
             HaodankuProductSearchAdapter,
         )
@@ -273,7 +273,7 @@ def create_shopping_compare_adapter(config: ProviderConfig | None = None) -> Pri
     if resolved.shopping_compare_provider == "local":
         return LocalPriceCompareAdapter()
     if resolved.shopping_compare_provider == "haodanku":
-        from assistant_agent.providers.haodanku_product_search import (
+        from assistant_agent.tools.plugins.builtin.shopping.haodanku import (
             HaodankuConfig,
             HaodankuPriceCompareAdapter,
         )

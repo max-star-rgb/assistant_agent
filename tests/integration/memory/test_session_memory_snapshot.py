@@ -4,18 +4,18 @@ from datetime import datetime, timezone
 from html import escape
 from threading import Lock
 
-from assistant_agent.agent.runtime import AgentGraphRuntime
+from assistant_agent.runtime.runtime import AgentGraphRuntime
 from assistant_agent.config import ProviderConfig
 from assistant_agent.memory.ingestion_queue import MemoryIngestionQueue
 from assistant_agent.memory.models import LongTermMemory
 from assistant_agent.memory.service import LongTermMemoryService
 from assistant_agent.memory.session_snapshot import SessionMemorySnapshotStore
-from assistant_agent.schemas.identity import RequestIdentity
-from assistant_agent.schemas.requests import UserRequest
-from assistant_agent.schemas.sessions import SessionCreate
-from assistant_agent.services.assistant_runtime_app import AssistantRuntimeApp
-from assistant_agent.services.chat_adapter import ChatRequest, ChatResult
-from assistant_agent.services.session_store import InMemorySessionStore
+from assistant_agent.identity import RequestIdentity
+from assistant_agent.runtime.requests import UserRequest
+from assistant_agent.runtime.session_models import SessionCreate
+from assistant_agent.runtime.assistant_runtime_app import AssistantRuntimeApp
+from assistant_agent.runtime.chat_adapter import ChatRequest, ChatResult
+from assistant_agent.runtime.session_store import InMemorySessionStore
 
 
 class _CountingMem0Client:

@@ -7,7 +7,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
-from assistant_agent.schemas.identity import RequestIdentity
+from assistant_agent.identity import RequestIdentity
 
 
 class LongTermMemory(BaseModel):

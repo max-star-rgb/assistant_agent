@@ -2,15 +2,15 @@ from collections.abc import AsyncIterator
 
 import pytest
 
-from assistant_agent.agent.runtime import AgentGraphRuntime
+from assistant_agent.runtime.runtime import AgentGraphRuntime
 from assistant_agent.config import ProviderConfig
-from assistant_agent.schemas.llm_events import LLMEvent
-from assistant_agent.schemas.requests import UserRequest
-from assistant_agent.services.chat_adapter import ChatRequest
-from assistant_agent.services.event_sink import ListEventSink
-from assistant_agent.services.session_store import InMemorySessionStore
-from assistant_agent.services.trace_conversation import get_default_trace_conversation_store
-from assistant_agent.services.trace_store import InMemoryTraceStore
+from assistant_agent.providers.llm_events import LLMEvent
+from assistant_agent.runtime.requests import UserRequest
+from assistant_agent.runtime.chat_adapter import ChatRequest
+from assistant_agent.runtime.event_sink import ListEventSink
+from assistant_agent.runtime.session_store import InMemorySessionStore
+from assistant_agent.observability.trace_conversation import get_default_trace_conversation_store
+from assistant_agent.observability.trace_store import InMemoryTraceStore
 
 
 class StreamingChatAdapter:

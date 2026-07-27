@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from assistant_agent.schemas.lodging import (
+from assistant_agent.tools.plugins.builtin.lodging.models import (
     LodgingSearchRequest,
     LodgingSearchResult,
 )
-from assistant_agent.schemas.tools import ToolResult
+from assistant_agent.tools.models import ToolResult
 from assistant_agent.tools.base import ToolBase, ToolContext
 from assistant_agent.tools.plugins.builtin.lodging.backend import (
     LodgingSearchAdapter,

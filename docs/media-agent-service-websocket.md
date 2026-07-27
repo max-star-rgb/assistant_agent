@@ -151,7 +151,7 @@ Agent 每个 WebSocket 连接都会分配新的内部 `agent-service-*` Gateway 
 
 - Agent 使用最新一条非空 `speechContent` 作为本轮 Gateway 输入文本。
 - 只包含 `imageContent` 的内容项可以随请求传入，但当前不单独触发图像理解。
-- `chat` 会进入 `GatewayTurnFacade -> GatewaySessionManager -> GatewayAgentAdapter -> AssistantRuntimeApp -> AgentGraphRuntime`。
+- `chat` 会进入 `GatewayTurnFacade -> GatewaySessionManager -> GatewayRuntimeAdapter -> AssistantRuntimeApp -> AgentGraphRuntime`。
 - 每个媒体 WebSocket 拥有一个连接级逻辑 AgentSession（本地
   `GatewaySessionManager/GatewaySessionService`）；连接清理会取消 turn 并销毁该
   AgentSession，但不会关闭进程共享的 `AssistantRuntimeApp/AgentGraphRuntime` 执行引擎。

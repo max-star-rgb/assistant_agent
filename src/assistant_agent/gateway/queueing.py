@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from assistant_agent.gateway.transport import Endpoint
-from assistant_agent.services.identifiers import new_prefixed_uuid7
+from assistant_agent.identifiers import new_prefixed_uuid7
 
 QueueMode = Literal["followup", "interrupt"]
 TurnMode = Literal["followup", "replace"]

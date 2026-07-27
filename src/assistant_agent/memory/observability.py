@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from assistant_agent.agent.state import AgentState
-from assistant_agent.services.trace_store import (
+from assistant_agent.runtime.state import AgentState
+from assistant_agent.observability.trace_store import (
     TraceStore,
     append_observability_event,
     new_span_id,

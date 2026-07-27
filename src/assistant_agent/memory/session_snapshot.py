@@ -9,7 +9,7 @@ from threading import Condition, Lock
 from typing import Literal
 
 from assistant_agent.memory.models import SessionMemorySnapshot
-from assistant_agent.schemas.identity import RequestIdentity
+from assistant_agent.identity import RequestIdentity
 
 
 SnapshotInitializationStatus = Literal["loaded", "reused"]

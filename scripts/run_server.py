@@ -25,8 +25,8 @@ if str(SRC_ROOT) not in sys.path:
 
 from assistant_agent.config import ProviderConfig
 from assistant_agent.gateway.observability import GatewayLifecycleEvent
-from assistant_agent.services.assistant_run_service import load_env_file
-from assistant_agent.services.operational_logging import (
+from assistant_agent.runtime.assistant_run_service import load_env_file
+from assistant_agent.observability.operational_logging import (
     DEFAULT_GATEWAY_EVENT_PATH,
     GATEWAY_EVENT_PATH_ENV,
     OPERATIONAL_CONSOLE_LEVEL_ENV,
@@ -38,23 +38,23 @@ from assistant_agent.services.operational_logging import (
     configure_operational_logging_from_env,
     record_gateway_lifecycle,
 )
-from assistant_agent.services.startup_dependencies import (
+from assistant_agent.runtime.startup_dependencies import (
     collect_startup_dependency_statuses,
     format_startup_dependency_statuses,
 )
-from assistant_agent.schemas.provider_specs import (
+from assistant_agent.providers.specs import (
     supported_chat_providers,
     supported_image_generation_providers,
 )
-from assistant_agent.services.tool_workflow_skill_runtime_app import (
-    DEFAULT_WORKFLOW_SKILL_MANIFEST_DIR,
-    DEFAULT_WORKFLOW_SKILL_RUN_STORE,
-    WORKFLOW_SKILLS_ENABLED_ENV,
-    WORKFLOW_SKILL_MANIFEST_DIR_ENV,
-    WORKFLOW_SKILL_RUN_STORE_ENV,
-    WORKFLOW_SKILL_TOOL_MODULES_ENV,
+from assistant_agent.skills.application import (
+    DEFAULT_SKILL_MANIFEST_DIR,
+    DEFAULT_SKILL_RUN_STORE,
+    SKILLS_ENABLED_ENV,
+    SKILL_MANIFEST_DIR_ENV,
+    SKILL_RUN_STORE_ENV,
+    SKILL_TOOL_MODULES_ENV,
 )
-from assistant_agent.services.trial_access import (
+from assistant_agent.api.trial_access import (
     TRIAL_USER_IDS_ENV,
     parse_trial_user_ids,
 )
@@ -146,25 +146,25 @@ def build_parser() -> argparse.ArgumentParser:
         help="Override MULTIMODAL_AGENT_IMAGE_PROVIDER for this process.",
     )
     parser.add_argument(
-        "--enable-workflow-skills",
+        "--enable-skills",
         action="store_true",
-        help="Enable explicit workflow skill HTTP APIs for this process.",
+        help="Enable explicit skill HTTP APIs for this process.",
     )
     parser.add_argument(
-        "--workflow-skill-manifest-dir",
-        default=DEFAULT_WORKFLOW_SKILL_MANIFEST_DIR,
-        help="Directory containing workflow_skill_v1 JSON manifests.",
+        "--skill-manifest-dir",
+        default=DEFAULT_SKILL_MANIFEST_DIR,
+        help="Directory containing skill_v1 JSON manifests.",
     )
     parser.add_argument(
-        "--workflow-skill-tool-module",
+        "--skill-tool-module",
         action="append",
         default=[],
-        help="Python module exposing __assistant_tools__ for workflow skills. Repeatable.",
+        help="Python module exposing __assistant_tools__ for skills. Repeatable.",
     )
     parser.add_argument(
-        "--workflow-skill-run-store",
-        default=DEFAULT_WORKFLOW_SKILL_RUN_STORE,
-        help="JSONL path used to persist workflow skill run records.",
+        "--skill-run-store",
+        default=DEFAULT_SKILL_RUN_STORE,
+        help="JSONL path used to persist skill run records.",
     )
     return parser
 
@@ -188,12 +188,12 @@ def _prepare_environment(args: argparse.Namespace) -> dict[str, str]:
         os.environ[LOCAL_TRACE_CONTENT_ENV] = "1"
     if args.allow_local_provider_protocol_capture:
         os.environ[LOCAL_PROVIDER_PROTOCOL_CAPTURE_ENV] = "1"
-    if args.enable_workflow_skills:
-        os.environ[WORKFLOW_SKILLS_ENABLED_ENV] = "1"
-    os.environ[WORKFLOW_SKILL_MANIFEST_DIR_ENV] = args.workflow_skill_manifest_dir
-    os.environ[WORKFLOW_SKILL_RUN_STORE_ENV] = args.workflow_skill_run_store
-    if args.workflow_skill_tool_module:
-        os.environ[WORKFLOW_SKILL_TOOL_MODULES_ENV] = ",".join(args.workflow_skill_tool_module)
+    if args.enable_skills:
+        os.environ[SKILLS_ENABLED_ENV] = "1"
+    os.environ[SKILL_MANIFEST_DIR_ENV] = args.skill_manifest_dir
+    os.environ[SKILL_RUN_STORE_ENV] = args.skill_run_store
+    if args.skill_tool_module:
+        os.environ[SKILL_TOOL_MODULES_ENV] = ",".join(args.skill_tool_module)
     os.environ[SERVER_TRACE_ENABLED_ENV] = "1"
     _configure_trial_user_allowlist(args)
     return loaded

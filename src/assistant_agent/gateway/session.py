@@ -28,27 +28,27 @@ from assistant_agent.gateway.queueing import (
 )
 from assistant_agent.gateway.transport import Endpoint, InMemoryDuplex
 from assistant_agent.gateway.turn_arbitration import GatewayTurnArbitrationController
-from assistant_agent.realtime import (
-    GatewayAgentAdapter,
-    RealtimeAgentBackend,
+from assistant_agent.gateway.runtime_adapter import GatewayRuntimeAdapter
+from assistant_agent.gateway.runtime_backend import RealtimeAgentBackend
+from assistant_agent.gateway.runtime_types import (
     RealtimeAgentEvent,
     RealtimeAgentRequest,
     RealtimeAgentResult,
 )
-from assistant_agent.realtime.delivery import progress_replacement_key
-from assistant_agent.schemas.realtime_cancellation import (
+from assistant_agent.gateway.delivery import progress_replacement_key
+from assistant_agent.gateway.cancellation_models import (
     build_realtime_turn_cancellation_metadata,
     realtime_turn_cancellation_from_metadata,
 )
-from assistant_agent.schemas.realtime_turn_arbitration import (
+from assistant_agent.gateway.turn_arbitration_models import (
     REALTIME_TURN_ARBITRATION_METADATA_KEY,
     RealtimeTurnArbitrationDecision,
     RealtimeTurnArbitrationRequest,
     prompt_safe_arbitration_task_state,
 )
-from assistant_agent.services.provider_errors import sanitize_error_message
-from assistant_agent.services.identifiers import new_prefixed_uuid7, new_run_id, new_turn_id
-from assistant_agent.services.realtime_task_state import (
+from assistant_agent.providers.provider_errors import sanitize_error_message
+from assistant_agent.identifiers import new_prefixed_uuid7, new_run_id, new_turn_id
+from assistant_agent.runtime.realtime_task_state import (
     RealtimeTaskStateStore,
     apply_cancel_only_arbitration_to_task_state,
     get_default_realtime_task_state_store,
@@ -113,7 +113,7 @@ class GatewaySessionService:
 
     This service owns session history, active run lifecycle, cooperative
     cancellation, and event mapping. Agent execution is delegated to a
-    RealtimeAgentBackend; by default this remains GatewayAgentAdapter.
+    RealtimeAgentBackend; by default this remains GatewayRuntimeAdapter.
     """
 
     def __init__(
@@ -1431,7 +1431,7 @@ class GatewaySessionService:
         if self._backend_factory is not None:
             self._backend = self._backend_factory()
         else:
-            self._backend = GatewayAgentAdapter()
+            self._backend = GatewayRuntimeAdapter()
         return self._backend
 
     def _start_deadline_monitor(

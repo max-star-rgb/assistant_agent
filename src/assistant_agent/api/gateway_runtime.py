@@ -20,13 +20,14 @@ from assistant_agent.gateway import (
     GatewayTurnArbitrationPolicy,
     shared_gateway_runtime_factory,
 )
-from assistant_agent.realtime import GatewayAgentAdapter, RealtimeAgentBackend
-from assistant_agent.schemas.api import AgentRunResponse
-from assistant_agent.schemas.identity import RequestIdentity
-from assistant_agent.services.gateway_turn_facade import GatewayTurnFacade
-from assistant_agent.services.identifiers import new_prefixed_uuid7
-from assistant_agent.services.operational_logging import record_gateway_lifecycle
-from assistant_agent.services.realtime_turn_arbiter import (
+from assistant_agent.gateway.runtime_adapter import GatewayRuntimeAdapter
+from assistant_agent.gateway.runtime_backend import RealtimeAgentBackend
+from assistant_agent.api.models import AgentRunResponse
+from assistant_agent.identity import RequestIdentity
+from assistant_agent.gateway.turn_facade import GatewayTurnFacade
+from assistant_agent.identifiers import new_prefixed_uuid7
+from assistant_agent.observability.operational_logging import record_gateway_lifecycle
+from assistant_agent.gateway.realtime_turn_arbiter import (
     RealtimeTurnArbiter,
     create_realtime_turn_arbiter,
 )
@@ -285,7 +286,7 @@ def _gateway_connection_policy(source: Mapping[str, str]) -> GatewayConnectionPo
 def _default_gateway_backend_factory(
     runtime_pool: GatewayRuntimePool,
 ) -> Callable[[], RealtimeAgentBackend]:
-    return lambda: GatewayAgentAdapter(run_request=runtime_pool.run_request)
+    return lambda: GatewayRuntimeAdapter(run_request=runtime_pool.run_request)
 
 
 def _default_gateway_runtime_factory() -> Callable[[], Any]:
@@ -311,7 +312,7 @@ def _run_assistant_request_with_http_runtime(request: Any, **kwargs: Any) -> Any
 
         artifacts = get_assistant_runtime_app().run_request(request, **kwargs)
     else:
-        from assistant_agent.services.assistant_run_service import run_assistant_request
+        from assistant_agent.runtime.assistant_run_service import run_assistant_request
 
         artifacts = run_assistant_request(request, **kwargs)
     capture_id = _gateway_http_response_capture_id(getattr(request, "metadata", {}))

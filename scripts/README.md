@@ -26,7 +26,6 @@ For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
 
 ## Observability and local operations
 
-- `scripts/check_env.py`: environment sanity check.
 - `scripts/gateway_view.py`: Gateway lifecycle JSONL viewer.
 - `scripts/agentruntime_view.py`: canonical runtime trace viewer.
 - `scripts/trace_metrics.py`: redacted trace metric summary.
