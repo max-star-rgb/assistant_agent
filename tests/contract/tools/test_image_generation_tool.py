@@ -22,20 +22,7 @@ def test_image_generation_requires_only_prompt_from_model() -> None:
     )["function"]
 
     assert function["parameters"]["required"] == ["prompt"]
-    assert set(function["parameters"]["properties"]) == {
-        "prompt",
-        "size",
-        "n",
-        "style",
-        "product_id",
-        "product_title",
-        "product_info",
-        "reference_image_ids",
-        "negative_prompt",
-        "seed",
-        "width",
-        "height",
-    }
+    assert set(function["parameters"]["properties"]) == {"prompt"}
 
 
 def test_image_generation_rejects_blank_prompt() -> None:

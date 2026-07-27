@@ -26,11 +26,25 @@ from assistant_agent.tools.input_binding import RuntimeInputBinding
 
 class ImageGenerationTool(ToolBase):
     name = IMAGE_GENERATION_TOOL_NAME
-    description = "根据必填的文本提示词生成图片；其他参数仅在用户明确指定时传入，否则由工具使用默认值。"
+    description = "根据必填的文本提示词生成图片；尺寸、数量和 Provider 参数由工具使用默认值。"
     input_schema = ImageGenerationRequest
     output_schema = ImageGenerationResult
     category = "generate"
-    llm_hidden_input_fields = ("prompt_extend", "watermark")
+    llm_hidden_input_fields = (
+        "size",
+        "n",
+        "prompt_extend",
+        "watermark",
+        "style",
+        "product_id",
+        "product_title",
+        "product_info",
+        "reference_image_ids",
+        "negative_prompt",
+        "seed",
+        "width",
+        "height",
+    )
     runtime_input_bindings = (
         RuntimeInputBinding(field="user_id", source="runtime_identity", key="user_id"),
         RuntimeInputBinding(field="session_id", source="runtime_identity", key="session_id"),

@@ -136,9 +136,9 @@ media、profile、默认启用或显式授权治理。
 `YYYY-MM-DD/YYYY-MM-DD` 闭区间，工具内部从该范围派生起止日期和天数，并返回范围内每天的天气。
 `web_fetch.url` 的 URL 格式和访问安全分别由其 Pydantic schema 与工具/adapter 的 URL 安全边界负责。
 
-`image_generation.prompt` 是唯一必填的模型输入，商品信息不能替代生成提示词。尺寸、数量、风格、
-负向提示词和随机种子等参数只在用户明确指定时由模型传入；未指定时由工具和 Provider adapter 使用
-各自默认值。
+`image_generation.prompt` 是唯一向 LLM 暴露的输入，商品信息不能替代生成提示词。尺寸、数量、
+风格、商品上下文、参考图、负向提示词、随机种子和 Provider 控制参数均使用工具的 Pydantic 默认值；
+用户明确提出的相关要求由 LLM 直接写入 `prompt`，不通过独立工具参数传递。
 
 模型输入遵循最小语义参数原则：
 
