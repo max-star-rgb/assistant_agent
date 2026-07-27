@@ -59,6 +59,9 @@ class ShoppingSearchTool(ToolBase):
             result_tool_name="vision_understanding",
             result_path="materials",
         ),
+        ToolInputBinding(field="budget_min", source="constant", value=None),
+        ToolInputBinding(field="budget_max", source="constant", value=None),
+        ToolInputBinding(field="platforms", source="constant", value=[]),
         ToolInputBinding(field="top_k", source="constant", value=5),
     )
 
