@@ -516,6 +516,10 @@ error
 `attributes.iteration` 声明层级。OTel mapper 只消费这些结构化字段，
 不得维护 tool、memory 或其他业务事件名 allowlist。新增 `memory.daily.append.finished` 一类
 operation 时，只需在事件生产处声明 observation 语义，不需要修改 Langfuse exporter。
+同一 `span_id` 存在配对的 canonical `*.started` / observation finished 事件时，导出 Span
+必须分别使用 started 事件和 finished 事件的真实 `created_at` 作为起止时间，不能用整数毫秒
+`latency_ms` 反推并覆盖真实起点。只有旧 trace、partial trace 或自定义埋点缺少配对 started
+事件时，才使用 `latency_ms` 反推起点作为兼容降级。
 未声明 `observation_type` 的 timeline、summary 和 bookkeeping 事件仍保留在本地 trace，
 但不会被误导出成 observation。
 
@@ -526,6 +530,33 @@ as metric labels.
 ## Developer UX
 
 The harness should optimize for a developer debugging locally.
+
+### 真实 `assistant.turn` 定位与诊断
+
+用户提供 `assistant.turn: <32 位十六进制 ID>` 时，该 ID 默认按 Langfuse
+`assistant.turn` trace 的 `trace_id` 处理，不按 observation id、run id 或自由文本搜索词处理。
+Agent 应立即使用精确 ID 查询当前环境的 Langfuse Public API，并并行检查最新 `.data/**`
+机器日志；不得等待本地 JSONL 命中后才查询 Langfuse，也不得先用 mock 复现、经验判断或旧
+trace 替代这次真实运行。
+
+精确定位流程如下：
+
+1. 从本机未跟踪配置读取 Langfuse host 和凭据；host 默认使用
+   `http://localhost:3000`，查询 `GET /api/public/traces/{trace_id}`。凭据只用于认证，
+   不得打印到命令输出、分析结果或文档。
+2. 同时用该 ID 检查 `.data/**`，并读取与问题相关的最新 Gateway、Agent-Service、
+   graph trace、eval artifact 或其他机器日志。Langfuse 精确 trace 是已持久化的机器事实；
+   `.data/**` 用于补充本地生命周期、传输和未导出事件，二者不要求互相命中后才能继续。
+3. 开始行为分析前，确认响应中的 trace `id`、名称 `assistant.turn`、timestamp，以及 metadata
+   中可用的 `assistant_trace_id`、`run_id`、`agent_session_id` / `session_id`。若用户同时提供
+   其他标识，必须先确认它们属于同一次运行。
+4. 精确 trace 命中后，以该 trace 的 observations、时间和关联 ID 为主要证据，再结合对应
+   `.data/**` 日志与源码解释。回答应注明所依据的 trace ID、时间和 run ID；存在相关本地日志时
+   同时注明文件。
+5. 当前 Langfuse 不可达、无权限或查无此 ID 时，再降级到 `.data/**` 按 trace/run/session
+   关联定位，并明确说明缺失了哪一层证据。当前环境的 Langfuse 和本地日志都无法对应时，才请求
+   用户补充环境或 Langfuse host；仅有标准 `assistant.turn: <trace_id>` 且当前 Langfuse 可查询时，
+   不要求用户额外提供 run ID、session ID 或时间。
 
 Current query surfaces:
 

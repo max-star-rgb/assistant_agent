@@ -22,7 +22,7 @@
 | context、prompt、conversation history、context budget | `docs/CONTEXT_ENGINEERING_STATUS.md` |
 | 长时 Agent、durable task 定时恢复、proactive wake、任务提醒 | 先读 `docs/gateway-architecture.md`、`docs/runtime-event-stream-architecture.md`、`docs/tool-calling-architecture.md`，再读开发路线图 `docs/development/2026-07-25-long-running-agent-plan.md`；路线图不是当前事实权威 |
 | multi-agent、A2A、delegation | `docs/agent-communication-routing.md` |
-| trace、observability、redaction | `docs/observability-harness.md` |
+| trace、observability、redaction、`assistant.turn` / Langfuse trace 定位与真实运行诊断 | `docs/observability-harness.md` |
 | pytest 分层、目录归属、默认收集和新增测试规则 | `tests/README.md` |
 | system eval、Agent task eval、Langfuse Experiment、真实 Provider 评测运行 | `evals/README.md` |
 
@@ -95,7 +95,7 @@
 - `AGENTS.md` 是当前唯一 agent 工作入口，应简短稳定；`README.md` 是人类轻导航入口。
 - 当前架构权威文档只保留在 `docs/*.md`；新增、删除或重命名 root authority 时，同步更新第 1 节路由表和 README。
 - 普通开发默认不读 `docs/development/**`、`docs/superpowers/**`、`docs/interview/**`，除非用户点名或任务明确属于历史 runbook、历史设计记录或面试资料。
-- 当用户基于真实测试、真实通话、真实 run/trace 或机器日志提问“为什么失败/为什么这样表现”时，必须先读取最新 `.data/**` 机器级日志作为第一事实源，再结合用户贴出的片段和源码回答；不要先用本地 mock 复现、经验判断或过期上下文替代真实日志。回答中应注明依据的日志文件、时间或 run/trace id；若 `.data` 日志缺失或无法对应到该问题，必须明确说明限制。
+- 当用户基于真实测试、真实通话、真实 run/trace 或机器日志提问“为什么失败/为什么这样表现”，或提供 `assistant.turn: <trace_id>` 时，先按 `docs/observability-harness.md` 的真实运行定位与诊断规则读取对应机器事实，再结合用户片段和源码回答。
 - 执行中先读相关代码和文档，保持 scope 小；搜索优先用 `rg` / `rg --files`，手工编辑默认用 `apply_patch`。
 - 新增或修改 pytest、判断代码变更的验证范围、补充回归测试或诊断确定性测试失败时，使用 `.codex/skills/assistant-agent-development-testing`；该 skill 不指导功能实现，只有窄层无法证明 wiring 时才增加离线跨层验收。
 - 不回滚用户已有改动；提交时只包含本任务相关文件；新增设计文档默认不提交，除非用户明确要求纳入版本控制。

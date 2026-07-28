@@ -123,7 +123,12 @@ def build_text_otel_span_specs(
     )
     if not safe_events:
         return []
-    root_span = _root_span(safe_events, conversation=conversation)
+    started_at_by_span_id = _started_at_by_span_id(safe_events)
+    root_span = _root_span(
+        safe_events,
+        conversation=conversation,
+        started_at_by_span_id=started_at_by_span_id,
+    )
     trace_attributes = _trace_attributes(safe_events)
     spans = [root_span]
     runtime_parent_id = root_span.span_id
@@ -133,6 +138,7 @@ def build_text_otel_span_specs(
         event_iterations=event_iterations,
         parent_span_id=runtime_parent_id,
         trace_attributes=trace_attributes,
+        started_at_by_span_id=started_at_by_span_id,
     )
     spans.extend(iteration_spans.values())
     for index, event in enumerate(safe_events):
@@ -152,6 +158,7 @@ def build_text_otel_span_specs(
                 ),
                 trace_attributes=trace_attributes,
                 conversation=conversation,
+                started_at_by_span_id=started_at_by_span_id,
             )
         )
     return spans
@@ -161,9 +168,13 @@ def _root_span(
     events: list[TraceEvent],
     *,
     conversation: "TraceConversationView | None",
+    started_at_by_span_id: Mapping[str, datetime],
 ) -> OtelSpanSpec:
     trace_attributes = _trace_attributes(events)
-    started_at = min(_span_start_time(event) for event in events)
+    started_at = min(
+        _span_start_time(event, started_at_by_span_id=started_at_by_span_id)
+        for event in events
+    )
     finished_at = max(event.created_at for event in events)
     return OtelSpanSpec(
         trace_id=events[0].trace_id,
@@ -223,6 +234,7 @@ def _iteration_spans(
     event_iterations: dict[int, int],
     parent_span_id: str,
     trace_attributes: dict[str, Any],
+    started_at_by_span_id: Mapping[str, datetime],
 ) -> dict[int, OtelSpanSpec]:
     grouped: dict[int, list[TraceEvent]] = {}
     for index, iteration in event_iterations.items():
@@ -238,7 +250,13 @@ def _iteration_spans(
             span_id=_stable_span_id(iteration_events[0].trace_id, f"react.iteration.{iteration}"),
             parent_span_id=parent_span_id,
             name="react.iteration",
-            start_time=min(_span_start_time(event) for event in iteration_events),
+            start_time=min(
+                _span_start_time(
+                    event,
+                    started_at_by_span_id=started_at_by_span_id,
+                )
+                for event in iteration_events
+            ),
             end_time=max(event.created_at for event in iteration_events),
             status=status,
             attributes={
@@ -262,6 +280,7 @@ def _operation_span(
     iteration_parent_id: str | None,
     trace_attributes: dict[str, Any],
     conversation: "TraceConversationView | None",
+    started_at_by_span_id: Mapping[str, datetime],
 ) -> OtelSpanSpec:
     span_id = event.span_id or f"{event.run_id}:{_event_name(event)}"
     return OtelSpanSpec(
@@ -274,7 +293,10 @@ def _operation_span(
             or root_span_id
         ),
         name=_span_name(event),
-        start_time=_span_start_time(event),
+        start_time=_span_start_time(
+            event,
+            started_at_by_span_id=started_at_by_span_id,
+        ),
         end_time=event.created_at,
         status=_event_status(event),
         attributes={
@@ -903,7 +925,26 @@ def _observation_type(event: TraceEvent) -> str:
     return event.observation_type or "span"
 
 
-def _span_start_time(event: TraceEvent) -> datetime:
+def _started_at_by_span_id(events: Iterable[TraceEvent]) -> dict[str, datetime]:
+    started_at: dict[str, datetime] = {}
+    for event in events:
+        if not event.span_id or not _event_name(event).endswith(".started"):
+            continue
+        previous = started_at.get(event.span_id)
+        if previous is None or event.created_at < previous:
+            started_at[event.span_id] = event.created_at
+    return started_at
+
+
+def _span_start_time(
+    event: TraceEvent,
+    *,
+    started_at_by_span_id: Mapping[str, datetime],
+) -> datetime:
+    if event.span_id:
+        explicit_started_at = started_at_by_span_id.get(event.span_id)
+        if explicit_started_at is not None:
+            return explicit_started_at
     latency_ms = event.latency_ms
     if _event_name(event) == "llm.chat.finished":
         latency_ms = _mapping_int(event.attributes, "wall_latency_ms") or latency_ms
