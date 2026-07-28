@@ -317,6 +317,64 @@ def test_behavior_seed_includes_controlled_weather_failure_recovery() -> None:
     assert "不得编造" in failure_item.input["evaluation_criteria"]
 
 
+def test_behavior_dataset_composes_legacy_and_engineered_sources() -> None:
+    composition_path = Path(
+        "evals/cases/langfuse/datasets/behavior_v2.dataset.json"
+    )
+    composition = json.loads(composition_path.read_text(encoding="utf-8"))
+    source_paths = [
+        (composition_path.parent / source).resolve()
+        for source in composition["case_sources"]
+    ]
+    collections = [
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in source_paths
+    ]
+
+    assert [collection["group"] for collection in collections] == [
+        "legacy",
+        "engineered",
+    ]
+    assert [len(collection["items"]) for collection in collections] == [18, 1]
+    assert collections[1]["items"][0]["metadata"]["capability"] == (
+        "grounded_file_synthesis"
+    )
+    assert len(load_dataset_seed(composition_path).items) == 19
+
+
+def test_dataset_composition_rejects_duplicate_case_ids(tmp_path: Path) -> None:
+    collection = {
+        "schema_version": "assistant_agent_eval_case_collection_v1",
+        "group": "engineered",
+        "items": [
+            {
+                "id": "duplicate-case",
+                "input": {},
+                "expected_output": {},
+                "metadata": {},
+            }
+        ],
+    }
+    (tmp_path / "one.json").write_text(
+        json.dumps(collection),
+        encoding="utf-8",
+    )
+    (tmp_path / "two.json").write_text(
+        json.dumps(collection),
+        encoding="utf-8",
+    )
+    composition = {
+        "schema_version": "assistant_agent_eval_dataset_composition_v1",
+        "dataset_name": "dataset-sentinel",
+        "case_sources": ["one.json", "two.json"],
+    }
+    composition_path = tmp_path / "dataset.json"
+    composition_path.write_text(json.dumps(composition), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Duplicate case_id"):
+        load_dataset_seed(composition_path)
+
+
 def test_weather_timeout_case_produces_scorable_degraded_runtime_evidence() -> None:
     output = AgentExperimentTask(
         client=_FakeLangfuseClient(),

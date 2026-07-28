@@ -41,7 +41,10 @@ For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
   和 Provider payload；要求 real 模式与 `--allow-unredacted-context`，产物写入
   `.data/evals/system/context/`。
 - `scripts/run_langfuse_agent_evals.py`: inspects, synchronizes, or runs the
-  infrastructure/behavior Datasets resolved from `eval_manifest_v2.json`.
+  infrastructure/behavior Datasets resolved from
+  `evals/cases/langfuse/datasets/eval_manifest_v2.json`. The behavior Dataset
+  is composed from separately managed `cases/legacy/` and
+  `cases/engineered/` sources.
   Use `--inspect`, `--sync-dataset-only`, or the default Experiment mode;
   scoring is
   asynchronous and owned by Langfuse-native Code and LLM-as-a-Judge

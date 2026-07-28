@@ -6,7 +6,8 @@ import hashlib
 import json
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Protocol
+from pathlib import Path
+from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, Field
 
@@ -20,6 +21,24 @@ class DatasetSeedItem(BaseModel):
     input: dict[str, Any]
     expected_output: dict[str, Any]
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class DatasetCaseCollection(BaseModel):
+    schema_version: Literal[
+        "assistant_agent_eval_case_collection_v1"
+    ] = "assistant_agent_eval_case_collection_v1"
+    group: Literal["legacy", "engineered"]
+    items: list[DatasetSeedItem] = Field(min_length=1)
+
+
+class DatasetSeedComposition(BaseModel):
+    schema_version: Literal[
+        "assistant_agent_eval_dataset_composition_v1"
+    ] = "assistant_agent_eval_dataset_composition_v1"
+    dataset_name: str = Field(min_length=1)
+    description: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    case_sources: list[Path] = Field(min_length=1)
 
 
 class DatasetSeed(BaseModel):

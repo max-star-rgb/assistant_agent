@@ -3,12 +3,12 @@
   "datasets": {
     "infrastructure": {
       "dataset_name": "assistant-agent-infrastructure-v1",
-      "seed_source": "evals/cases/langfuse/agent_infrastructure_v1.seed.json",
+      "seed_source": "evals/cases/langfuse/datasets/infrastructure_v1.seed.json",
       "kind": "infrastructure"
     },
     "behavior": {
       "dataset_name": "assistant-agent-behavior-v2",
-      "seed_source": "evals/cases/langfuse/agent_behavior_v2.seed.json",
+      "seed_source": "evals/cases/langfuse/datasets/behavior_v2.dataset.json",
       "kind": "behavior"
     }
   },

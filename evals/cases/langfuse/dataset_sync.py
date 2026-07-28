@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Collection
 from pathlib import Path
 from typing import Any
 
 from evals.cases.langfuse.contracts import (
+    DatasetCaseCollection,
     DatasetSeed,
+    DatasetSeedComposition,
     DatasetSeedResult,
 )
 
@@ -15,8 +18,34 @@ MANAGED_BY = "assistant_agent_seed_sync_v1"
 
 
 def load_dataset_seed(path: Path | str) -> DatasetSeed:
-    return DatasetSeed.model_validate_json(
-        Path(path).read_text(encoding="utf-8")
+    seed_path = Path(path)
+    payload = json.loads(seed_path.read_text(encoding="utf-8"))
+    if (
+        payload.get("schema_version")
+        != "assistant_agent_eval_dataset_composition_v1"
+    ):
+        return DatasetSeed.model_validate(payload)
+
+    composition = DatasetSeedComposition.model_validate(payload)
+    items = []
+    seen_case_ids: set[str] = set()
+    for relative_source in composition.case_sources:
+        source_path = (seed_path.parent / relative_source).resolve()
+        collection = DatasetCaseCollection.model_validate_json(
+            source_path.read_text(encoding="utf-8")
+        )
+        for item in collection.items:
+            if item.id in seen_case_ids:
+                raise ValueError(
+                    f"Duplicate case_id in Dataset composition: {item.id}."
+                )
+            seen_case_ids.add(item.id)
+            items.append(item)
+    return DatasetSeed(
+        dataset_name=composition.dataset_name,
+        description=composition.description,
+        metadata=composition.metadata,
+        items=items,
     )
 
 

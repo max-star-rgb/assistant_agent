@@ -9,7 +9,9 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, model_validator
 
 
-EVAL_MANIFEST_PATH = Path("evals/cases/langfuse/eval_manifest_v2.json")
+EVAL_MANIFEST_PATH = Path(
+    "evals/cases/langfuse/datasets/eval_manifest_v2.json"
+)
 
 
 class EvalDataset(BaseModel):

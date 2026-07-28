@@ -78,13 +78,20 @@ Langfuse 是 Dataset、Experiment、Evaluator 和 Score 的运行时权威。本
 
 结构权威入口：
 
-- `eval_manifest_v2.json`：Dataset、Profile、Suite、Capability 和归档 Dataset；
-- `agent_infrastructure_v1.seed.json`：infrastructure seed；
-- `agent_behavior_v2.seed.json`：统一 behavior seed；
+- `datasets/eval_manifest_v2.json`：Dataset、Profile、Suite、Capability 和归档 Dataset；
+- `datasets/infrastructure_v1.seed.json`：infrastructure seed；
+- `datasets/behavior_v2.dataset.json`：统一 behavior Dataset composition；
+- `cases/legacy/`：eval engineering 前的待迁移案例，可在完全迁移后整体删除；
+- `cases/engineered/`：按新 workflow 设计的独立 capability case；
 - `evaluators/evaluator_manifest_v1.json`：Evaluator、源码、Score 和 Langfuse rule 对应关系。
 
 Case metadata 记录 `capability`、`compatible_profiles`、依赖、工具和副作用事实。Profile 不拥有
 Dataset；Suite 选择 Dataset，Profile 只决定怎样运行所选 Case。
+
+behavior composition 当前依次合并 legacy collection 和 engineered case source。两类本地来源只用于
+清楚表达迁移状态，不会创建两个 Langfuse Dataset。新案例默认一个 capability 一个版本化文件；旧
+案例完成重设计、校准和真实运行审计后移入 engineered，直到 legacy source 为空并删除。具体目录规则
+见 `cases/README.md`。
 
 新案例按 `draft -> calibrated -> active -> retired` 管理。`draft` 可以同步和定向运行，但不能仅凭
 存在于 Dataset 就视为稳定质量门槛；只有用明确正确和可信但错误的样本校准对应 Judge、完成一次真实
@@ -99,12 +106,14 @@ Experiment 审计并确认 Score 完整后，才能改为 `calibrated` 或 `acti
 
 ```text
 contracts.py          # Dataset/Case/ExperimentOutput schema
-dataset_sync.py       # 本地 managed items -> Langfuse Dataset
+dataset_sync.py       # Dataset composition/case source -> Langfuse Dataset
 manifest.py           # Dataset/Profile/Suite/Capability 与选择
 runtime_profiles.py   # scripted_mock / real_readonly / real_system
 evidence.py           # Runtime Trace -> evaluator evidence
 experiment.py         # 薄 Experiment task/orchestration
 evaluators/           # Code Evaluator 与版本清单
+datasets/             # Dataset 定义、composition 与 manifest
+cases/                # legacy/engineered 案例来源
 ```
 
 ### Score
