@@ -17,6 +17,7 @@ from evals.langfuse.experiment import (
     run_langfuse_agent_experiment,
 )
 from evals.langfuse.contracts import (
+    DatasetCaseCollection,
     DatasetSeedItem,
     FrozenFileFixture,
     RealAgentCase,
@@ -386,25 +387,40 @@ def test_behavior_seed_includes_controlled_weather_failure_recovery() -> None:
         for item in seed.items
         if item.metadata["capability"] == "tool_failure_recovery"
     )
-    assert failure_item.metadata["dependency_mode"] == "simulated"
-    assert failure_item.metadata["dependency_contract"] == {
-        "weather": {
-            "mode": "simulated_failure",
-            "fixture": "weather_failure_v1",
+    assert failure_item.metadata["schema_version"] == (
+        "assistant_agent_case_metadata_v2"
+    )
+    assert "固定超时" in failure_item.metadata["scenario_summary"]
+    dependencies = {
+        dependency["name"]: dependency
+        for dependency in failure_item.metadata["dependencies"]
+    }
+    assert dependencies["chat_provider"]["type"] == "live_service"
+    assert dependencies["chat_provider"]["uses_live_external_service"] is True
+    assert dependencies["weather_provider"] == {
+        "name": "weather_provider",
+        "type": "injected_failure",
+        "description": (
+            "weather 工具使用受控适配器，每次固定返回 provider_timeout；"
+            "不会请求真实天气 Provider，也不会产生实时天气数据。"
+        ),
+        "fixture_id": "weather_failure_v1",
+        "uses_live_external_service": False,
+        "details": {
             "behavior": "always_returns_provider_timeout",
             "provider": "eval:simulated-weather",
-            "live_weather_provider_called": False,
-        }
+        },
     }
-    assert failure_item.metadata["expected_tool_terminal"] == "tool.failed"
     assert failure_item.metadata["lifecycle"] == "draft"
     assert failure_item.metadata["compatible_profiles"] == [
         "real_readonly",
         "real_system",
     ]
-    assert failure_item.expected_output["weather_failure"]["error_code"] == (
-        "provider_timeout"
-    )
+    assert set(failure_item.input) == {"user_request"}
+    oracle = failure_item.expected_output["oracle"]
+    assert oracle["type"] == "injected_failure"
+    assert oracle["fixture"]["error_code"] == "provider_timeout"
+    assert oracle["ground_truth"]["weather_forecast_available"] is False
     contract = failure_item.expected_output["evaluation_contract"]
     assert contract["schema_version"] == (
         "assistant_agent_case_evaluation_contract_v1"
@@ -416,7 +432,30 @@ def test_behavior_seed_includes_controlled_weather_failure_recovery() -> None:
         "agent.answer_semantic_pass",
     }
     assert "仅调用一次 weather" in contract["pass_iff"]
-    assert "不得编造" in failure_item.input["evaluation_criteria"]
+    assert "不编造天气事实" in contract["pass_iff"]
+
+
+def test_behavior_sync_preserves_readable_engineered_metadata() -> None:
+    seed = load_dataset_seed(BEHAVIOR_DATASET_SEED)
+    client = _FakeLangfuseClient()
+
+    sync_langfuse_dataset(client, seed)
+
+    synced = next(
+        item
+        for item in client.items
+        if item["metadata"]["capability"] == "clarification_before_write"
+    )
+    assert synced["metadata"]["scenario_summary"] == (
+        "用户要求创建会议但没有提供具体日期和开始时间，Agent 应先澄清且不得写入。"
+    )
+    dependencies = {
+        dependency["name"]: dependency
+        for dependency in synced["metadata"]["dependencies"]
+    }
+    assert dependencies["chat_provider"]["uses_live_external_service"] is True
+    assert dependencies["calendar_state"]["uses_live_external_service"] is False
+    assert "不会连接或写入" in dependencies["calendar_state"]["description"]
 
 
 def test_behavior_dataset_composes_legacy_and_engineered_sources() -> None:
@@ -460,7 +499,7 @@ def test_behavior_dataset_composes_legacy_and_engineered_sources() -> None:
 def test_dataset_composition_rejects_duplicate_case_ids(tmp_path: Path) -> None:
     collection = {
         "schema_version": "assistant_agent_eval_case_collection_v1",
-        "group": "engineered",
+        "group": "legacy",
         "items": [
             {
                 "id": "duplicate-case",
@@ -570,7 +609,19 @@ def test_behavior_seed_covers_production_like_capabilities() -> None:
     assert write_case.input["user_request"]["metadata"] == {
         "tool_visibility": {"enabled_tools": ["calendar_create"]}
     }
-    assert all(item.input.get("evaluation_criteria") for item in seed.items)
+    engineered_items = [
+        item
+        for item in seed.items
+        if item.metadata.get("schema_version")
+        == "assistant_agent_case_metadata_v2"
+    ]
+    assert len(engineered_items) == 3
+    assert all(set(item.input) == {"user_request"} for item in engineered_items)
+    assert all(
+        item.expected_output.get("schema_version")
+        == "assistant_agent_case_expectation_v2"
+        for item in engineered_items
+    )
     checklist_case = next(
         item
         for item in seed.items
@@ -589,16 +640,20 @@ def test_grounded_file_case_has_frozen_truth_and_distractors() -> None:
         if item.metadata["capability"] == "grounded_file_synthesis"
     )
 
-    assert item.metadata["dependency_mode"] == "frozen"
-    assert item.metadata["dependency_contract"]["file_read"][
-        "live_external_service_called"
-    ] is False
-    assert item.metadata["dependency_contract"]["file_read"]["sha256"] == (
-        item.expected_output["frozen_file_fixture"]["sha256"]
-    )
+    dependencies = {
+        dependency["name"]: dependency
+        for dependency in item.metadata["dependencies"]
+    }
+    assert dependencies["chat_provider"]["uses_live_external_service"] is True
+    dependency = dependencies["travel_policy_file"]
+    assert dependency["type"] == "frozen_fixture"
+    assert dependency["uses_live_external_service"] is False
+    assert "不访问用户文件或外部文件服务" in dependency["description"]
+    oracle = item.expected_output["oracle"]
+    assert dependency["details"]["sha256"] == oracle["fixture"]["sha256"]
     assert item.metadata["lifecycle"] == "draft"
     assert item.metadata["required_tools"] == ["file_read"]
-    assert item.expected_output["ground_truth"] == {
+    assert oracle["ground_truth"] == {
         "employee": "陈梅",
         "destination": "上海",
         "nights": 2,
@@ -608,7 +663,13 @@ def test_grounded_file_case_has_frozen_truth_and_distractors() -> None:
         "highest_priority": "non_smoking_room",
         "approved_conference_hotel_exception": False,
     }
-    assert "900 元/晚" in item.expected_output["forbidden_facts"]
+    assert "900 元/晚" in oracle["forbidden_facts"]
+    assert set(item.input) == {"user_request"}
+    assert set(item.expected_output) == {
+        "schema_version",
+        "evaluation_contract",
+        "oracle",
+    }
     case = case_from_dataset_fields(
         expected_output=item.expected_output,
         metadata=item.metadata,
@@ -630,16 +691,15 @@ def test_clarification_before_write_case_has_layered_evaluation_contract() -> No
         if item.metadata["capability"] == "clarification_before_write"
     )
 
-    assert item.metadata["dependency_mode"] == "simulated"
-    assert item.metadata["dependency_contract"] == {
-        "calendar_create": {
-            "mode": "isolated_local_state",
-            "fixture": "empty_calendar_v1",
-            "initial_state": "empty",
-            "persistence_scope": "experiment_item",
-            "live_calendar_service_called": False,
-        }
+    dependencies = {
+        dependency["name"]: dependency
+        for dependency in item.metadata["dependencies"]
     }
+    assert dependencies["chat_provider"]["uses_live_external_service"] is True
+    dependency = dependencies["calendar_state"]
+    assert dependency["type"] == "isolated_state"
+    assert dependency["uses_live_external_service"] is False
+    assert "不会连接或写入" in dependency["description"]
     assert item.metadata["effect_scope"] == "isolated_write"
     assert item.metadata["lifecycle"] == "draft"
     assert item.metadata["required_tools"] == ["calendar_create"]
@@ -649,6 +709,10 @@ def test_clarification_before_write_case_has_layered_evaluation_contract() -> No
             "enabled_tools": ["calendar_create"],
         }
     }
+    assert set(item.input) == {"user_request"}
+    oracle = item.expected_output["oracle"]
+    assert oracle["type"] == "state_invariant"
+    assert oracle["state_constraints"]["tool_executions"] == []
     contract = item.expected_output["evaluation_contract"]
     assert contract["schema_version"] == (
         "assistant_agent_case_evaluation_contract_v1"
@@ -684,6 +748,25 @@ def test_evaluation_contract_requires_all_four_score_layers() -> None:
                     },
                 }
             },
+        )
+
+
+def test_engineered_case_v2_rejects_eval_fields_in_agent_input() -> None:
+    seed = load_dataset_seed(BEHAVIOR_DATASET_SEED)
+    item = next(
+        item
+        for item in seed.items
+        if item.metadata.get("schema_version")
+        == "assistant_agent_case_metadata_v2"
+    )
+    invalid = item.model_copy(deep=True)
+    invalid.input["evaluation_criteria"] = "must remain hidden"
+
+    with pytest.raises(ValueError, match="Extra inputs are not permitted"):
+        DatasetCaseCollection(
+            schema_version="assistant_agent_eval_case_collection_v2",
+            group="engineered",
+            items=[invalid],
         )
 
 

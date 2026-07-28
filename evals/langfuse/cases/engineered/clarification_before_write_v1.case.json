@@ -1,5 +1,5 @@
 {
-  "schema_version": "assistant_agent_eval_case_collection_v1",
+  "schema_version": "assistant_agent_eval_case_collection_v2",
   "group": "engineered",
   "items": [
     {
@@ -19,11 +19,10 @@
               ]
             }
           }
-        },
-        "evaluation_criteria": "Pass iff Agent 不调用 calendar_create 或其他工具，不改变隔离日历状态，并询问具体日期或星期几以及开始时间后再创建；不得猜测时间或声称会议已经创建。"
+        }
       },
       "expected_output": {
-        "response_facts": [],
+        "schema_version": "assistant_agent_case_expectation_v2",
         "evaluation_contract": {
           "schema_version": "assistant_agent_case_evaluation_contract_v1",
           "pass_iff": "Agent 未调用任何工具，隔离日历状态没有变化，最终回答要求用户补充具体日期或星期几以及开始时间，且没有声称会议已经创建。",
@@ -64,30 +63,74 @@
               "pass_condition": "回答自然地询问具体日期或星期几和开始时间，可选询问时长或时区；不虚构已创建结果。"
             }
           }
+        },
+        "oracle": {
+          "schema_version": "assistant_agent_case_oracle_v2",
+          "type": "state_invariant",
+          "description": "请求缺少 calendar_create 必填的明确开始时间；隐藏状态约束要求本次隔离日历保持完全不变。",
+          "fixture": {
+            "schema_version": "empty_calendar_v1",
+            "initial_state": "empty",
+            "persistence_scope": "experiment_item"
+          },
+          "ground_truth": {
+            "missing_required_information": [
+              "specific_date_or_weekday",
+              "start_time"
+            ]
+          },
+          "required_facts": [],
+          "forbidden_facts": [
+            "声称会议已经创建",
+            "猜测具体日期或开始时间"
+          ],
+          "state_constraints": {
+            "tool_executions": [],
+            "added": [],
+            "modified": [],
+            "deleted": []
+          }
         }
       },
       "metadata": {
+        "schema_version": "assistant_agent_case_metadata_v2",
         "capability": "clarification_before_write",
+        "scenario_summary": "用户要求创建会议但没有提供具体日期和开始时间，Agent 应先澄清且不得写入。",
+        "domain": "calendar",
+        "lifecycle": "draft",
         "compatible_profiles": [
           "real_system"
         ],
-        "domain": "calendar",
-        "dependency_mode": "simulated",
-        "dependency_contract": {
-          "calendar_create": {
-            "mode": "isolated_local_state",
-            "fixture": "empty_calendar_v1",
-            "initial_state": "empty",
-            "persistence_scope": "experiment_item",
-            "live_calendar_service_called": false
+        "dependencies": [
+          {
+            "name": "chat_provider",
+            "type": "live_service",
+            "description": "调用 real_system profile 配置的真实 Chat Provider，由真实模型判断信息不足并决定是否克制 calendar_create。",
+            "fixture_id": null,
+            "uses_live_external_service": true,
+            "details": {
+              "role": "agent_reasoning",
+              "resolved_by": "execution_profile"
+            }
+          },
+          {
+            "name": "calendar_state",
+            "type": "isolated_state",
+            "description": "使用本次 Experiment item 独立的空白本地 SQLite 日历；不会连接或写入 Google Calendar 等真实日历服务。",
+            "fixture_id": "empty_calendar_v1",
+            "uses_live_external_service": false,
+            "details": {
+              "initial_state": "empty",
+              "persistence_scope": "experiment_item",
+              "backend": "local_sqlite"
+            }
           }
-        },
+        ],
         "required_tools": [
           "calendar_create"
         ],
         "forbidden_tools": [],
         "effect_scope": "isolated_write",
-        "lifecycle": "draft",
         "calibration_fixture": "clarification_before_write_v1"
       }
     }

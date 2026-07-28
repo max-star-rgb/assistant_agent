@@ -321,7 +321,12 @@ def case_from_dataset_fields(
         raw_capability.startswith("real_")
         or isinstance(compatible_profiles, list)
     )
-    response_facts = _string_list(expected_output.get("response_facts"))
+    oracle = _engineered_oracle(expected_output)
+    response_facts = _string_list(
+        oracle.get("required_facts")
+        if oracle is not None
+        else expected_output.get("response_facts")
+    )
     if profile == "scripted_mock" or raw_capability in {
         "write_tool",
         "read_only_tool",
@@ -344,18 +349,30 @@ def case_from_dataset_fields(
         if capability == "direct_response":
             return NoToolCase(id=case_id, response_facts=response_facts)
     if real_case:
+        fixture = (
+            oracle.get("fixture")
+            if oracle is not None
+            else None
+        )
         weather_failure = (
             WeatherFailureFixture.model_validate(
-                expected_output.get("weather_failure")
+                fixture
+                if oracle is not None
+                else expected_output.get("weather_failure")
             )
             if capability == "tool_failure_recovery"
             else None
         )
+        frozen_file_payload = (
+            fixture
+            if oracle is not None and oracle.get("type") == "grounded_facts"
+            else expected_output.get("frozen_file_fixture")
+        )
         frozen_file = (
             FrozenFileFixture.model_validate(
-                expected_output.get("frozen_file_fixture")
+                frozen_file_payload
             )
-            if expected_output.get("frozen_file_fixture") is not None
+            if frozen_file_payload is not None
             else None
         )
         return RealAgentCase(
@@ -369,6 +386,20 @@ def case_from_dataset_fields(
     raise ValueError(
         f"Unsupported Dataset capability/profile: {capability!r}/{profile!r}."
     )
+
+
+def _engineered_oracle(
+    expected_output: dict[str, Any],
+) -> dict[str, Any] | None:
+    if (
+        expected_output.get("schema_version")
+        != "assistant_agent_case_expectation_v2"
+    ):
+        return None
+    oracle = expected_output.get("oracle")
+    if not isinstance(oracle, dict):
+        raise ValueError("Engineered expectation v2 requires oracle.")
+    return oracle
 
 
 def _string_list(value: Any) -> list[str]:

@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from assistant_agent.runtime.requests import UserRequest
 from assistant_agent.runtime.runtime import AgentGraphRuntime
@@ -53,6 +53,91 @@ class CaseEvaluationContract(BaseModel):
         return self
 
 
+class EngineeredCaseInputV2(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    user_request: dict[str, Any]
+
+
+class CaseDependencyV2(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1)
+    type: Literal[
+        "frozen_fixture",
+        "isolated_state",
+        "injected_failure",
+        "live_service",
+    ]
+    description: str = Field(min_length=1)
+    fixture_id: str | None = None
+    uses_live_external_service: bool
+    details: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def require_fixture_for_controlled_dependency(self) -> "CaseDependencyV2":
+        if self.type != "live_service" and not self.fixture_id:
+            raise ValueError(
+                f"dependency type {self.type!r} requires fixture_id."
+            )
+        if self.type == "live_service" and not self.uses_live_external_service:
+            raise ValueError(
+                "live_service dependency must set "
+                "uses_live_external_service=true."
+            )
+        if self.type != "live_service" and self.uses_live_external_service:
+            raise ValueError(
+                f"controlled dependency type {self.type!r} must set "
+                "uses_live_external_service=false."
+            )
+        return self
+
+
+class EngineeredCaseMetadataV2(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal[
+        "assistant_agent_case_metadata_v2"
+    ] = "assistant_agent_case_metadata_v2"
+    capability: str = Field(min_length=1)
+    scenario_summary: str = Field(min_length=1)
+    domain: str = Field(min_length=1)
+    lifecycle: Literal["draft", "calibrated", "active", "retired"]
+    compatible_profiles: list[
+        Literal["real_readonly", "real_system"]
+    ] = Field(min_length=1)
+    dependencies: list[CaseDependencyV2] = Field(min_length=1)
+    required_tools: list[str] = Field(default_factory=list)
+    forbidden_tools: list[str] = Field(default_factory=list)
+    effect_scope: str = Field(min_length=1)
+    calibration_fixture: str = Field(min_length=1)
+
+
+class CaseOracleV2(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal[
+        "assistant_agent_case_oracle_v2"
+    ] = "assistant_agent_case_oracle_v2"
+    type: Literal["grounded_facts", "state_invariant", "injected_failure"]
+    description: str = Field(min_length=1)
+    fixture: dict[str, Any] | None
+    ground_truth: dict[str, Any]
+    required_facts: list[str]
+    forbidden_facts: list[str]
+    state_constraints: dict[str, Any]
+
+
+class EngineeredCaseExpectationV2(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal[
+        "assistant_agent_case_expectation_v2"
+    ] = "assistant_agent_case_expectation_v2"
+    evaluation_contract: CaseEvaluationContract
+    oracle: CaseOracleV2
+
+
 class DatasetSeedItem(BaseModel):
     id: str = Field(min_length=1)
     input: dict[str, Any]
@@ -69,10 +154,25 @@ class DatasetSeedItem(BaseModel):
 
 class DatasetCaseCollection(BaseModel):
     schema_version: Literal[
-        "assistant_agent_eval_case_collection_v1"
+        "assistant_agent_eval_case_collection_v1",
+        "assistant_agent_eval_case_collection_v2",
     ] = "assistant_agent_eval_case_collection_v1"
     group: Literal["legacy", "engineered"]
     items: list[DatasetSeedItem] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_group_schema(self) -> "DatasetCaseCollection":
+        if self.group == "legacy":
+            if self.schema_version != "assistant_agent_eval_case_collection_v1":
+                raise ValueError("legacy collections must use collection_v1.")
+            return self
+        if self.schema_version != "assistant_agent_eval_case_collection_v2":
+            raise ValueError("engineered collections must use collection_v2.")
+        for item in self.items:
+            EngineeredCaseInputV2.model_validate(item.input)
+            EngineeredCaseExpectationV2.model_validate(item.expected_output)
+            EngineeredCaseMetadataV2.model_validate(item.metadata)
+        return self
 
 
 class DatasetSeedComposition(BaseModel):

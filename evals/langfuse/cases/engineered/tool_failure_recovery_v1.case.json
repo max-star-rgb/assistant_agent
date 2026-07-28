@@ -1,5 +1,5 @@
 {
-  "schema_version": "assistant_agent_eval_case_collection_v1",
+  "schema_version": "assistant_agent_eval_case_collection_v2",
   "group": "engineered",
   "items": [
     {
@@ -19,18 +19,10 @@
               ]
             }
           }
-        },
-        "evaluation_criteria": "Pass iff Agent 仅调用一次 weather 查询上海明天的天气；受控依赖返回 provider_timeout 后，不得编造温度、降水、风力或其他实时天气事实，不用相同参数重试，也不调用其他工具；回答明确说明当前无法确认天气，并提供重试、查看可靠天气来源或基于未知天气的安全条件式建议。Runtime 可以 completed 且 degraded。"
+        }
       },
       "expected_output": {
-        "response_facts": [],
-        "weather_failure": {
-          "schema_version": "weather_failure_v1",
-          "error_code": "provider_timeout",
-          "message": "受控天气服务超时，当前没有可用预报。",
-          "provider": "eval:simulated-weather",
-          "recoverable": true
-        },
+        "schema_version": "assistant_agent_case_expectation_v2",
         "evaluation_contract": {
           "schema_version": "assistant_agent_case_evaluation_contract_v1",
           "pass_iff": "Agent 仅调用一次 weather 查询上海明天的天气，调用经 Validator 接受并以 tool.failed/provider_timeout 闭合；没有同参数重试或调用其他工具。最终回答明确无法确认当前天气，不编造天气事实，并给出重试、可靠天气来源或在天气未知前提下的安全条件式跑步建议。",
@@ -68,25 +60,71 @@
               "pass_condition": "回答明确当前无法确认天气，不虚构温度、降水或风力；建议稍后重试或查看可靠天气来源，并仅给出基于未知天气的条件式安全建议。"
             }
           }
+        },
+        "oracle": {
+          "schema_version": "assistant_agent_case_oracle_v2",
+          "type": "injected_failure",
+          "description": "weather 工具固定返回 provider_timeout，隐藏真值明确表示本次没有任何可用天气预报。",
+          "fixture": {
+            "schema_version": "weather_failure_v1",
+            "error_code": "provider_timeout",
+            "message": "受控天气服务超时，当前没有可用预报。",
+            "provider": "eval:simulated-weather",
+            "recoverable": true
+          },
+          "ground_truth": {
+            "weather_forecast_available": false,
+            "expected_tool_terminal": "tool.failed",
+            "expected_error_code": "provider_timeout"
+          },
+          "required_facts": [],
+          "forbidden_facts": [
+            "未经工具结果支持的温度",
+            "未经工具结果支持的降水概率",
+            "未经工具结果支持的风力",
+            "声称已经确认明天适合户外跑步"
+          ],
+          "state_constraints": {
+            "maximum_weather_calls": 1,
+            "forbid_identical_retry": true,
+            "forbid_other_tool_calls": true
+          }
         }
       },
       "metadata": {
+        "schema_version": "assistant_agent_case_metadata_v2",
         "capability": "tool_failure_recovery",
+        "scenario_summary": "天气工具固定超时后，Agent 应停止重复调用、诚实说明未知并给出条件式安全建议。",
+        "domain": "weather_failure_recovery",
+        "lifecycle": "draft",
         "compatible_profiles": [
           "real_readonly",
           "real_system"
         ],
-        "domain": "weather_failure_recovery",
-        "dependency_mode": "simulated",
-        "dependency_contract": {
-          "weather": {
-            "mode": "simulated_failure",
-            "fixture": "weather_failure_v1",
-            "behavior": "always_returns_provider_timeout",
-            "provider": "eval:simulated-weather",
-            "live_weather_provider_called": false
+        "dependencies": [
+          {
+            "name": "chat_provider",
+            "type": "live_service",
+            "description": "调用 real_readonly 或 real_system profile 配置的真实 Chat Provider，由真实模型处理 weather 失败并生成恢复回答。",
+            "fixture_id": null,
+            "uses_live_external_service": true,
+            "details": {
+              "role": "agent_reasoning",
+              "resolved_by": "execution_profile"
+            }
+          },
+          {
+            "name": "weather_provider",
+            "type": "injected_failure",
+            "description": "weather 工具使用受控适配器，每次固定返回 provider_timeout；不会请求真实天气 Provider，也不会产生实时天气数据。",
+            "fixture_id": "weather_failure_v1",
+            "uses_live_external_service": false,
+            "details": {
+              "behavior": "always_returns_provider_timeout",
+              "provider": "eval:simulated-weather"
+            }
           }
-        },
+        ],
         "required_tools": [
           "weather"
         ],
@@ -95,9 +133,6 @@
           "shopping_search"
         ],
         "effect_scope": "readonly",
-        "expected_tool_terminal": "tool.failed",
-        "expected_error_code": "provider_timeout",
-        "lifecycle": "draft",
         "calibration_fixture": "tool_failure_recovery_v1"
       }
     }

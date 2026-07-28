@@ -1,5 +1,5 @@
 {
-  "schema_version": "assistant_agent_eval_case_collection_v1",
+  "schema_version": "assistant_agent_eval_case_collection_v2",
   "group": "engineered",
   "items": [
     {
@@ -16,56 +16,117 @@
               ]
             }
           }
-        },
-        "evaluation_criteria": "Pass iff Agent 调用 file_read 读取指定文件，只使用陈梅上海两晚行程的条款，准确给出680元/晚、步行至地铁站不超过800米、必须无烟房，并将无烟房识别为最高优先级；不得混入李伟的900元预算、北京条款或未获批例外，也不得调用联网工具。"
+        }
       },
       "expected_output": {
-        "response_facts": [
-          "680 元/晚",
-          "步行至地铁站不超过 800 米",
-          "必须选择无烟房",
-          "无烟房是最高优先级"
-        ],
-        "ground_truth": {
-          "employee": "陈梅",
-          "destination": "上海",
-          "nights": 2,
-          "hotel_budget_max_cny_per_night": 680,
-          "metro_walk_max_meters": 800,
-          "room_requirement": "non_smoking_required",
-          "highest_priority": "non_smoking_room",
-          "approved_conference_hotel_exception": false
+        "schema_version": "assistant_agent_case_expectation_v2",
+        "evaluation_contract": {
+          "schema_version": "assistant_agent_case_evaluation_contract_v1",
+          "pass_iff": "Agent 调用 file_read 读取指定冻结文件，只使用陈梅上海两晚行程的条款，准确给出680元/晚、步行至地铁站不超过800米、必须无烟房，并将无烟房识别为最高优先级；不得混入李伟的900元预算、北京条款或未获批例外，也不得调用联网工具。",
+          "evidence_by_score": {
+            "agent.runtime_trace_pass": {
+              "evidence": [
+                "terminal_status",
+                "trace_event_names"
+              ],
+              "pass_condition": "Runtime 正常完成，response.final 与公共 Trace 闭环证据完整。"
+            },
+            "agent.tool_mechanical_pass": {
+              "evidence": [
+                "available_tools",
+                "tool_executions",
+                "validation_results"
+              ],
+              "pass_condition": "file_read 对 Agent 可用且调用经 Validator 接受，并以 tool.finished 完整闭合。"
+            },
+            "agent.tool_semantic_pass": {
+              "evidence": [
+                "user_request",
+                "available_tools",
+                "tool_executions",
+                "validation_results"
+              ],
+              "pass_condition": "Agent 读取指定 travel_policy_v1.txt，且没有调用任何联网工具。"
+            },
+            "agent.answer_semantic_pass": {
+              "evidence": [
+                "user_request",
+                "response",
+                "tool_executions"
+              ],
+              "pass_condition": "回答只使用陈梅上海两晚条款，准确给出四项必需事实，且没有混入禁止事实。"
+            }
+          }
         },
-        "forbidden_facts": [
-          "900 元/晚",
-          "北京",
-          "客户办公室驾车不超过 20 分钟",
-          "大床房优先",
-          "已获批会议酒店例外"
-        ],
-        "frozen_file_fixture": {
-          "source_path": "evals/langfuse/fixtures/grounded_file_synthesis/travel_policy_v1.txt",
-          "target_path": "grounded_file_synthesis/travel_policy_v1.txt",
-          "sha256": "sha256:ab136945edfaeb6493e37b2c819477c511ac0343834d45f3cb6be4a755b88adf"
+        "oracle": {
+          "schema_version": "assistant_agent_case_oracle_v2",
+          "type": "grounded_facts",
+          "description": "隐藏真值来自仓库内固定版本的差旅政策文件；Agent 只能看到被复制到隔离目录的文件内容。",
+          "fixture": {
+            "source_path": "evals/langfuse/fixtures/grounded_file_synthesis/travel_policy_v1.txt",
+            "target_path": "grounded_file_synthesis/travel_policy_v1.txt",
+            "sha256": "sha256:ab136945edfaeb6493e37b2c819477c511ac0343834d45f3cb6be4a755b88adf"
+          },
+          "ground_truth": {
+            "employee": "陈梅",
+            "destination": "上海",
+            "nights": 2,
+            "hotel_budget_max_cny_per_night": 680,
+            "metro_walk_max_meters": 800,
+            "room_requirement": "non_smoking_required",
+            "highest_priority": "non_smoking_room",
+            "approved_conference_hotel_exception": false
+          },
+          "required_facts": [
+            "680 元/晚",
+            "步行至地铁站不超过 800 米",
+            "必须选择无烟房",
+            "无烟房是最高优先级"
+          ],
+          "forbidden_facts": [
+            "900 元/晚",
+            "北京",
+            "客户办公室驾车不超过 20 分钟",
+            "大床房优先",
+            "已获批会议酒店例外"
+          ],
+          "state_constraints": {}
         }
       },
       "metadata": {
+        "schema_version": "assistant_agent_case_metadata_v2",
         "capability": "grounded_file_synthesis",
+        "scenario_summary": "读取隔离目录中的固定差旅政策文件，在干扰信息中提取指定员工的上海住宿约束。",
+        "domain": "local_file",
+        "lifecycle": "draft",
         "compatible_profiles": [
           "real_system"
         ],
-        "domain": "local_file",
-        "dependency_mode": "frozen",
-        "dependency_contract": {
-          "file_read": {
-            "mode": "frozen_local_fixture",
-            "fixture": "travel_policy_v1",
-            "source_path": "evals/langfuse/fixtures/grounded_file_synthesis/travel_policy_v1.txt",
-            "target_path": "grounded_file_synthesis/travel_policy_v1.txt",
-            "sha256": "sha256:ab136945edfaeb6493e37b2c819477c511ac0343834d45f3cb6be4a755b88adf",
-            "live_external_service_called": false
+        "dependencies": [
+          {
+            "name": "chat_provider",
+            "type": "live_service",
+            "description": "调用 real_system profile 配置的真实 Chat Provider，由真实模型决定是否使用 file_read 以及如何回答。",
+            "fixture_id": null,
+            "uses_live_external_service": true,
+            "details": {
+              "role": "agent_reasoning",
+              "resolved_by": "execution_profile"
+            }
+          },
+          {
+            "name": "travel_policy_file",
+            "type": "frozen_fixture",
+            "description": "使用仓库内固定且带 SHA-256 校验的 travel_policy_v1.txt，复制到本次运行的隔离文件根目录；不访问用户文件或外部文件服务。",
+            "fixture_id": "travel_policy_v1",
+            "uses_live_external_service": false,
+            "details": {
+              "source_path": "evals/langfuse/fixtures/grounded_file_synthesis/travel_policy_v1.txt",
+              "target_path": "grounded_file_synthesis/travel_policy_v1.txt",
+              "sha256": "sha256:ab136945edfaeb6493e37b2c819477c511ac0343834d45f3cb6be4a755b88adf"
+            }
           }
-        },
+        ],
         "required_tools": [
           "file_read"
         ],
@@ -75,8 +136,7 @@
           "shopping_search",
           "shopping_list_search"
         ],
-        "fixture_version": "travel_policy_v1",
-        "lifecycle": "draft",
+        "effect_scope": "readonly_isolated_fixture",
         "calibration_fixture": "grounded_file_synthesis_v1"
       }
     }

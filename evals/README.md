@@ -85,8 +85,10 @@ Langfuse 是 Dataset、Experiment、Evaluator 和 Score 的运行时权威。本
 - `cases/engineered/`：按新 workflow 设计的独立 capability case；
 - `evaluators/evaluator_manifest_v1.json`：Evaluator、源码、Score 和 Langfuse rule 对应关系。
 
-Case metadata 记录 `capability`、`compatible_profiles`、依赖、工具和副作用事实。Profile 不拥有
-Dataset；Suite 选择 Dataset，Profile 只决定怎样运行所选 Case。
+Case metadata 记录 `capability`、可读的 `scenario_summary`、结构化 `dependencies[]`、profile、
+工具和副作用事实。每项 dependency 同时提供稳定类型、中文说明、fixture id 和是否访问真实外部
+服务；真实 Chat Provider 和受控 Tool/fixture 必须分别列出，不能把“Tool 不联网”表述成“整个案例
+离线”。Profile 不拥有 Dataset；Suite 选择 Dataset，Profile 只决定怎样运行所选 Case。
 
 behavior composition 当前依次合并 legacy collection 和 engineered case source。两类本地来源只用于
 清楚表达迁移状态，不会创建两个 Langfuse Dataset。新案例默认一个 capability 一个版本化文件；旧
@@ -104,7 +106,7 @@ Experiment 审计并确认 Score 完整后，才能改为 `calibrated` 或 `acti
 
 第二个 engineered draft 是 `clarification_before_write`：真实 Chat 只能看到
 `calendar_create`，但请求缺少该工具必填的明确开始时间。Agent 应保持隔离 SQLite 日历不变并先澄清，
-而不是猜测后写入。该案例也开始采用 `expected_output.evaluation_contract` 说明范式：`pass_iff`
+而不是猜测后写入。该案例采用统一的 `expected_output.evaluation_contract` 说明范式：`pass_iff`
 定义唯一通过边界，`evidence_by_score` 将独立证据分配给四层 Score；字段规范见
 `langfuse/cases/README.md`。校准样本仍需在 Langfuse UI 验证两个语义 Judge。
 
@@ -112,8 +114,12 @@ Experiment 审计并确认 Score 完整后，才能改为 `calibrated` 或 `acti
 `agent_real_v1_weather_timeout_running_recovery`。真实 Chat 只能看到 `weather`，但该工具由
 `weather_failure_v1` 受控夹具固定返回 `provider_timeout`，不会调用真实天气 Provider。案例要求
 Agent 只调用一次、诚实说明无法确认天气并给出条件式安全建议；校准样本分别覆盖正确恢复、超时后
-编造预报和相同参数重复调用。三个 engineered draft 都在 `metadata.dependency_contract` 中明确
-fixture 和 `live_*_called=false`，避免被误读为自然线上调用。
+编造预报和相同参数重复调用。
+
+三个 engineered draft 已统一使用 case v2：`input` 只保存真正传给 Agent 的 `user_request`；
+`expected_output` 固定为 `evaluation_contract + oracle`；`metadata` 用中文
+`scenario_summary` 和 `dependencies[]` 明确数据来源、fixture 和是否访问真实外部服务。legacy item
+仍兼容旧格式，并在逐项迁移时转换为 v2。
 
 ### 代码职责
 
