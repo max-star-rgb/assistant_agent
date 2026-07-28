@@ -557,9 +557,20 @@ def _event_io_attributes(
     elif name == "context.build.finished":
         context_report = event.output_summary.get("context_report_v1")
         output_payload = {
+            "output_kind": event.output_summary.get(
+                "output_kind",
+                "prompt_safe_context_compilation_report",
+            ),
             "status": event.status or _event_status(event),
             "latency_ms": event.latency_ms,
             "iteration": event.attributes.get("iteration"),
+            "build_reason": event.attributes.get("build_reason"),
+            "compiled_request_shape": _safe_payload_value(
+                event.output_summary.get("compiled_request_shape")
+            ),
+            "compiled_request_content": _safe_payload_value(
+                event.output_summary.get("compiled_request_content")
+            ),
             "context_report_v1": _safe_payload_value(
                 context_report
             ),

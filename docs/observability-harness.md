@@ -921,18 +921,22 @@ Regression tests should enforce these invariants:
   展示 Provider 的原始语义回复，不附加 finish reason 或 usage。协议语义快照还需要独立设置
   `MULTIMODAL_AGENT_LOCAL_PROVIDER_PROTOCOL_CAPTURE=1`。JSONL 只保留 route、transport、terminal
   和 delta count 等安全摘要；这些对象都不是 vendor SDK 原始 envelope。
-- `context.build` 的 output 导出 prompt-safe `context_report_v1`：逐 section 展示
+- canonical `context.build.finished` 在 Langfuse 中展示为 `context.compile`，其 output 明确标记为
+  `prompt_safe_context_compilation_report`，并导出 message roles/count、tool count、
+  response-format presence 以及 prompt-safe `context_report_v1`：逐 section 展示
   chars/tokens、item count、included/compacted/trimmed、source，以及总预算、已选工具、
   context source、skill exposure 和 compression 状态。本地开发 overlay 还附带最终 memory
-  section 的注入状态、ID 和实际渲染文本；完整 compiled `ChatRequest` 仍只放在对应
-  `llm.chat` generation input，作为 Provider 调用边界的最终事实。`assistant.output`
+  section 的注入状态、ID 和实际渲染文本。`build_reason` 区分 iteration 初始编译、压缩后重建和
+  Provider overflow retry；同 iteration 后续 compile 会取代较早的候选报告。output 中的
+  `compiled_request_content` 会明确指向随后同 iteration 的 `llm.chat.input`；完整 compiled
+  `ChatRequest` 仍只放在那里，作为 Provider 调用边界的最终事实。`assistant.output`
   只记录归一化决策，不再复制 `context` 或 `context_report_v1`。`agent.runtime`
   根 span 最多保留 `context_peak_ratio` 这一 turn-level 压力摘要，不携带完整 section
   accounting 或 Provider input。
 - 未实现 request callback 的自定义 adapter 使用编译后 `ChatRequest` 的语义字段作为 fallback；
   内置 OpenAI-compatible adapter 必须以传给 SDK 的同一 payload 覆盖该 fallback。
 - Langfuse Trace 名称固定为 `assistant.turn`，observation hierarchy 固定为
-  `agent.runtime -> react.iteration[n] -> context/llm/decision/tool`，避免把
+  `agent.runtime -> react.iteration[n] -> context.compile/llm/decision/tool`，避免把
   Trace 名称再次导出成同名根 observation。memory、final response 和
   runtime postprocess 直接归属 `agent.runtime`。`agent_service.turn.finished`
   是入口延迟汇总事实，不再映射成一个与 root 几乎完全重叠的长 Span；其关联 ID、

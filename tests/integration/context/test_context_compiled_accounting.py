@@ -81,7 +81,7 @@ def test_context_report_accounts_for_the_compiled_chat_request() -> None:
 
     spans = build_text_otel_span_specs(trace_store.list_by_run(state.run_id))
     runtime_span = next(span for span in spans if span.name == "agent.runtime")
-    context_span = next(span for span in spans if span.name == "context.build")
+    context_span = next(span for span in spans if span.name == "context.compile")
     runtime_context_keys = {
         key for key in runtime_span.attributes if "context" in key.lower()
     }
@@ -89,6 +89,27 @@ def test_context_report_accounts_for_the_compiled_chat_request() -> None:
     context_output = json.loads(
         context_span.attributes["langfuse.observation.output"]
     )
+    assert context_span.attributes["assistant_agent.canonical_event"] == (
+        "context.build.finished"
+    )
+    assert context_output["output_kind"] == (
+        "prompt_safe_context_compilation_report"
+    )
+    assert context_output["build_reason"] == "iteration_initial"
+    assert context_output["compiled_request_shape"] == {
+        "message_count": len(request.messages),
+        "message_roles": [message["role"] for message in request.messages],
+        "tool_count": len(request.tools),
+        "response_format_present": False,
+    }
+    assert context_output["compiled_request_content"] == {
+        "exported_here": False,
+        "observation_name": "llm.chat",
+        "field": "input",
+        "match_iteration": 1,
+        "match_rule": "next_llm_chat_in_same_iteration",
+        "later_compile_in_same_iteration_supersedes": True,
+    }
     assert context_output["context_report_v1"] == report
 
 

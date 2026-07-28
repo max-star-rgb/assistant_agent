@@ -247,13 +247,17 @@ Last updated: 2026-07-28
 - 预算裁剪优先保留工具 observation，因为它通常是下一步工具调用和最终回答的证据来源。
 - assistant decision trace 只记录归一化决策、工具名、reason 和 plan 状态，不重复携带 context
   summary 或 report。
-- `context.build.finished` 独占 `context_report_v1`，用于检查真实发送给 Provider 的 system prompt
+- canonical `context.build.finished` 独占 `context_report_v1`，用于检查真实发送给 Provider 的 system prompt
   大小、selected native tool schema、memory 注入 ID、realtime task-state 大小和压缩/裁剪状态。
 - Context pack construction emits standalone `context.build.started` /
   `context.build.finished` canonical trace events. The finished event carries the
   same redacted context summary shape used by trace/API context debugging，并额外携带
-  prompt-safe `context_report_v1` section accounting，供 Langfuse `context.build` output
-  直接展示；最终 compiled `ChatRequest` 仍归属对应 `llm.chat` generation input。
+  prompt-safe `context_report_v1` section accounting。Langfuse 将该 observation 展示为
+  `context.compile`，output 明确标记为编译报告，并只附带 message roles/count、tool count 和
+  response-format presence；`build_reason` 区分 `iteration_initial`、`post_compaction` 和
+  `provider_overflow_retry`。最终 compiled `ChatRequest` 正文仍只归属同 iteration 的
+  `llm.chat` generation input；同 iteration 后续出现的 `context.compile` 会取代较早报告，
+  避免把初始候选报告误读为最终上下文本身。
 - Trace sanitization 会过滤 `raw_provider_payload`、`raw_provider_response`、base64/media/file payload key 和 secret key，作为 public API 前的额外防线。
 - `/runs/{run_id}` 与 `/traces/{trace_id}` 可查询 context 相关摘要。
 

@@ -39,6 +39,7 @@ def build_traced_assistant_context_pack(
     native_calls: list[dict[str, Any]] | None = None,
     current_location: str | None = None,
     answer_only: bool = False,
+    build_reason: str = "iteration_initial",
 ) -> AssistantContextPack:
     """Build an assistant context pack and emit redacted canonical trace events."""
 
@@ -58,6 +59,7 @@ def build_traced_assistant_context_pack(
         attributes={
             "iteration": iteration + 1,
             "max_iterations": max_iterations,
+            "build_reason": build_reason,
             "observation_count": len(observations or []),
             "tool_spec_count": len(tool_specs or []),
             "request_metadata_keys": sorted(active_request.metadata.keys()),
@@ -100,12 +102,17 @@ def build_traced_assistant_context_pack(
             session_id=state.session_id,
             canonical_event="context.build.finished",
             observation_type="span",
+            observation_name="context.compile",
             observation_scope="iteration",
             node_name=node_name,
             status="failed",
             latency_ms=_elapsed_ms(started_at),
             span_id=span_id,
-            attributes={"iteration": iteration + 1, "max_iterations": max_iterations},
+            attributes={
+                "iteration": iteration + 1,
+                "max_iterations": max_iterations,
+                "build_reason": build_reason,
+            },
             error={"code": "context_build_failed", "message": sanitize_trace_value(str(exc))},
         )
         raise
@@ -117,12 +124,24 @@ def build_traced_assistant_context_pack(
         session_id=state.session_id,
         canonical_event="context.build.finished",
         observation_type="span",
+        observation_name="context.compile",
         observation_scope="iteration",
         node_name=node_name,
         status="succeeded",
         latency_ms=_elapsed_ms(started_at),
         span_id=span_id,
         output_summary={
+            "output_kind": "prompt_safe_context_compilation_report",
+            "build_reason": build_reason,
+            "compiled_request_shape": _compiled_request_shape(compilation.chat_request),
+            "compiled_request_content": {
+                "exported_here": False,
+                "observation_name": "llm.chat",
+                "field": "input",
+                "match_iteration": iteration + 1,
+                "match_rule": "next_llm_chat_in_same_iteration",
+                "later_compile_in_same_iteration_supersedes": True,
+            },
             "context": context_trace_summary(pack),
             "context_report_v1": build_context_report(
                 pack,
@@ -133,6 +152,7 @@ def build_traced_assistant_context_pack(
         attributes={
             "iteration": iteration + 1,
             "max_iterations": max_iterations,
+            "build_reason": build_reason,
             "prompt_tool_count": len(pack.prompt_tool_specs),
             "observation_count": len(pack.observations),
             "context_usage_ratio": pack.budget.context_usage_ratio,
@@ -143,6 +163,20 @@ def build_traced_assistant_context_pack(
         },
     )
     return pack
+
+
+def _compiled_request_shape(request: Any) -> dict[str, Any]:
+    """Describe the compiled Provider request without duplicating prompt content."""
+
+    return {
+        "message_count": len(request.messages),
+        "message_roles": [
+            str(message.get("role") or "unknown")
+            for message in request.messages
+        ],
+        "tool_count": len(request.tools),
+        "response_format_present": request.response_format is not None,
+    }
 
 
 def context_trace_summary(pack: AssistantContextPack) -> dict[str, Any]:

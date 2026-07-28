@@ -312,6 +312,11 @@ class ContextService:
                     trace_id=trace_id,
                     node_name=node_name,
                     context_projector=context_projector,
+                    build_reason=(
+                        "provider_overflow_retry"
+                        if force_hard
+                        else "post_compaction"
+                    ),
                 )
                 state.request = compacted_context.request
                 return ContextPreflightResult(
@@ -357,6 +362,7 @@ class ContextService:
         trace_id: str | None,
         node_name: str,
         context_projector: Callable[[UserRequest], None] | None,
+        build_reason: str,
     ) -> AssistantDecisionContext:
         if context_projector is not None:
             context_projector(context.request)
@@ -375,6 +381,7 @@ class ContextService:
             native_calls=_native_tool_calls(state),
             current_location=self.current_location,
             answer_only=context.answer_only,
+            build_reason=build_reason,
         )
         return self._from_pack(
             pack,

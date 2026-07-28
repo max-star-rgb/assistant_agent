@@ -26,6 +26,7 @@ from assistant_agent.context.compaction import (
 from assistant_agent.context.compactor import LLMCompactor
 from assistant_agent.context.models import ContextSummary
 from assistant_agent.context.token_budget import ContextWindowPolicy
+from assistant_agent.observability.trace_store import InMemoryTraceStore
 from assistant_agent.runtime.session_store import InMemorySessionStore
 from assistant_agent.tools.base import ToolBase, ToolContext
 from assistant_agent.tools.models import ToolResult
@@ -361,6 +362,7 @@ def test_prompt_observation_projection_uses_one_error_contract() -> None:
 def test_runtime_replaces_all_covered_turns_with_natural_language_summary() -> None:
     adapter = _RollingChatAdapter()
     token_counter = _ThresholdTokenCounter(raw_history_tokens=7_000)
+    trace_store = InMemoryTraceStore()
     runtime = AgentGraphRuntime(
         config=ProviderConfig(
             langgraph_checkpointer_backend="none",
@@ -375,6 +377,7 @@ def test_runtime_replaces_all_covered_turns_with_natural_language_summary() -> N
         ),
         context_token_counter=token_counter,
         session_store=InMemorySessionStore(),
+        trace_store=trace_store,
     )
     conversation_store = InMemoryConversationStore()
     for index in range(1, 4):
@@ -434,6 +437,19 @@ def test_runtime_replaces_all_covered_turns_with_natural_language_summary() -> N
             "total_tokens": 160,
         }
     ]
+    context_events = [
+        event
+        for event in trace_store.list_by_run(artifacts.state.run_id)
+        if event.canonical_event == "context.build.finished"
+    ]
+    assert [
+        event.attributes["build_reason"]
+        for event in context_events
+    ] == ["iteration_initial", "post_compaction"]
+    assert all(
+        event.observation_name == "context.compile"
+        for event in context_events
+    )
 
 
 def test_subsequent_compaction_merges_old_summary_without_restoring_raw_turns() -> None:
