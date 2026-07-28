@@ -7,6 +7,7 @@ from assistant_agent.tools.plugins.builtin.shopping.backend import (
 )
 from assistant_agent.tools.base import Tool
 from assistant_agent.tools.plugins.contracts import ToolPluginContext, ToolPluginDescriptor
+from assistant_agent.tools.plugins.builtin.shopping.list_tool import ShoppingListSearchTool
 from assistant_agent.tools.plugins.builtin.shopping.tool import ShoppingSearchTool
 
 
@@ -16,11 +17,13 @@ class ShoppingToolPlugin:
     def build_tools(self, context: ToolPluginContext) -> list[Tool]:
         if not context.mock_mode and not shopping_provider_ready(context.config):
             return []
+        search_adapter = create_shopping_search_adapter(context.config)
         return [
             ShoppingSearchTool(
-                search_adapter=create_shopping_search_adapter(context.config),
+                search_adapter=search_adapter,
                 compare_adapter=create_shopping_compare_adapter(context.config),
-            )
+            ),
+            ShoppingListSearchTool(search_adapter=search_adapter),
         ]
 
 

@@ -65,6 +65,27 @@ class _SideEffectProbeTool(_RecoverableProbeTool):
     category = "write"
 
 
+class _NonrecoverableProbeTool(_RecoverableProbeTool):
+    def _run(self, input: _ProbeInput, context: ToolContext) -> ToolResult:
+        self.inputs.append(input.value)
+        message = "The provider cannot recover during this run."
+        return ToolResult(
+            tool_name=self.name,
+            success=False,
+            error=message,
+            model_observation={
+                "summary": message,
+                "errors": [
+                    {
+                        "code": "provider_bad_response",
+                        "message": message,
+                        "recoverable": False,
+                    }
+                ],
+            },
+        )
+
+
 class _ScriptedChatAdapter:
     provider = "scripted"
     model = "scripted-tool-recovery"
@@ -238,6 +259,29 @@ def test_identical_failed_tool_call_is_blocked_then_forces_answer_only_turn() ->
     assert len(state.tool_calls) == 1
     assert adapter.requests[2].tools == []
     assert state.request.metadata["assistant_answer_only_reason"] == "duplicate_failed_tool_call"
+    assert state.response is not None
+    assert state.response.message
+
+
+def test_nonrecoverable_failure_blocks_changed_arguments_for_same_tool() -> None:
+    tool = _NonrecoverableProbeTool()
+    adapter = _ScriptedChatAdapter(
+        [
+            _tool_call("probe-call-1", "first"),
+            _tool_call("probe-call-2", "changed"),
+            _final_answer("final-sentinel"),
+        ]
+    )
+
+    state = _runtime(tool, adapter).run_state(_request())
+
+    assert state.status == "completed"
+    assert tool.inputs == ["first"]
+    assert len(state.tool_calls) == 1
+    assert state.request.metadata["assistant_loop_guard"][
+        "nonrecoverable_failed_tools"
+    ] == ["recoverable_probe"]
+    assert adapter.requests[2].tools
     assert state.response is not None
     assert state.response.message
 

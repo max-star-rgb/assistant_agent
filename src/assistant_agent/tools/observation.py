@@ -313,6 +313,15 @@ def _next_step_hint(
         first_error = errors[0] if isinstance(errors, list) and errors else None
         if (
             isinstance(first_error, dict)
+            and first_error.get("recoverable") is False
+        ):
+            return (
+                f"Do not retry {tool_name} in this run, even with changed arguments. "
+                "Use a different available tool, answer with existing evidence, "
+                "or explain the limitation without inventing a result."
+            )
+        if (
+            isinstance(first_error, dict)
             and first_error.get("code") == "provider_unsupported_input"
         ):
             return (

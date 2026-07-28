@@ -1029,6 +1029,28 @@ def _apply_decision_guards(
     if (
         isinstance(decision, AssistantToolCall)
         and not _is_plan_mode_active(state)
+        and LoopGuard(state.request.metadata).nonrecoverable_failure_already_seen(
+            decision.tool_name
+        )
+    ):
+        guard = LoopGuardDecision(
+            True,
+            "nonrecoverable_tool_retry_blocked",
+            (
+                f"{decision.tool_name} already reported a non-recoverable failure "
+                "in this run; another call to the same tool was blocked."
+            ),
+        )
+        _record_loop_guard(graph_state, guard)
+        return decision.model_copy(
+            update={
+                "reason": guard.message,
+                "safety_notes": [*decision.safety_notes, guard.code],
+            }
+        )
+    if (
+        isinstance(decision, AssistantToolCall)
+        and not _is_plan_mode_active(state)
         and LoopGuard(state.request.metadata).failed_call_already_seen(
             tool_name=decision.tool_name,
             tool_input=decision.tool_input or {},
@@ -1436,6 +1458,29 @@ def execute_requested_tool_node(graph_state: AssistantLoopState) -> AssistantLoo
     return current
 
 
+def _tool_result_is_nonrecoverable(result: ToolResult) -> bool:
+    """Read the structured recovery contract without guessing from error text."""
+
+    if result.success:
+        return False
+    if result.contract is not None and any(
+        error.recoverable is False for error in result.contract.errors
+    ):
+        return True
+    for payload in (result.model_observation, result.data):
+        if not isinstance(payload, dict):
+            continue
+        errors = payload.get("errors")
+        if not isinstance(errors, list):
+            continue
+        if any(
+            isinstance(error, dict) and error.get("recoverable") is False
+            for error in errors
+        ):
+            return True
+    return False
+
+
 def _execute_single_requested_tool_node(graph_state: AssistantLoopState) -> AssistantLoopState:
     """
     Execute the tool requested by the assistant.
@@ -1453,6 +1498,26 @@ def _execute_single_requested_tool_node(graph_state: AssistantLoopState) -> Assi
 
     tool_name = decision.tool_name
     tool_input = decision.tool_input
+    if "nonrecoverable_tool_retry_blocked" in decision.safety_notes:
+        observation = rejected_observation(
+            tool_name=tool_name or "unknown",
+            error_code="nonrecoverable_tool_retry_blocked",
+            error_message=(
+                "This tool already reported a non-recoverable failure in this run."
+            ),
+            next_step_hint=(
+                "Do not call this tool again. Use a different available tool, "
+                "answer with the existing evidence, or explain the limitation."
+            ),
+        )
+        return {
+            **graph_state,
+            "tool_observations": _record_react_observation(
+                graph_state,
+                tool_observations,
+                observation,
+            ),
+        }
     if "duplicate_failed_tool_call" in decision.safety_notes:
         observation = rejected_observation(
             tool_name=tool_name or "unknown",
@@ -1572,14 +1637,16 @@ def _execute_single_requested_tool_node(graph_state: AssistantLoopState) -> Assi
             )
         if result.success:
             LoopGuard(state.request.metadata).record_terminal_tool_success(tool_name)
+        recorded_guard = LoopGuard(state.request.metadata).record_tool_result(
+            tool_name=tool_name,
+            tool_input=tool_input,
+            success=result.success,
+            nonrecoverable=_tool_result_is_nonrecoverable(result),
+        )
         guard = (
             LoopGuardDecision(False, "ok", "Guard not triggered for optional step.")
             if step is not None and step.optional
-            else LoopGuard(state.request.metadata).record_tool_result(
-                tool_name=tool_name,
-                tool_input=tool_input,
-                success=result.success,
-            )
+            else recorded_guard
         )
         if guard.triggered:
             _record_loop_guard(graph_state, guard)

@@ -2,12 +2,13 @@
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 ProductUrlStatus = Literal["unverified", "missing", "invalid_id", "verified", "unreachable"]
 ProductAvailability = Literal["unknown", "available", "unavailable"]
 ShoppingSearchOutcome = Literal["success", "partial", "empty", "failed"]
+ShoppingListNeedStatus = Literal["selected", "empty", "failed", "budget_excluded"]
 
 
 class ProductResult(BaseModel):
@@ -111,6 +112,127 @@ class ShoppingSearchRequest(BaseModel):
         description="用户明确指定的购物平台列表；未指定时省略。",
     )
     top_k: int = Field(default=5, ge=1)
+
+
+class ShoppingListNeed(BaseModel):
+    """购物清单中需要独立搜索的一个商品品类。"""
+
+    keyword: str = Field(
+        min_length=1,
+        description="单一商品品类及必要特征；不得拼接多个互不相干的商品品类。",
+    )
+    quantity: int = Field(
+        default=1,
+        ge=1,
+        le=20,
+        description="需要购买的数量。",
+    )
+    required: bool = Field(
+        default=True,
+        description="总预算不足时是否优先覆盖该清单项。",
+    )
+    max_unit_price: float | None = Field(
+        default=None,
+        ge=0,
+        description="该清单项的单件价格上限；不是整份清单的总预算。",
+    )
+
+
+class ShoppingEvidence(BaseModel):
+    """解释清单选择原因的结构化前序工具证据。"""
+
+    source_tool: str = Field(
+        min_length=1,
+        description="产生证据的工具名，例如 weather。",
+    )
+    output_ref: str | None = Field(
+        default=None,
+        description="前序工具输出引用；没有引用时省略。",
+    )
+    summary: str = Field(
+        min_length=1,
+        description="与当前购物决策直接相关的证据摘要。",
+    )
+
+
+class ShoppingListSearchRequest(BaseModel):
+    """多品类购物清单；工具会逐项检索并在总预算内组合。"""
+
+    scenario: str = Field(
+        min_length=1,
+        description="清单服务的具体场景，例如室内聚餐或雨天通勤。",
+    )
+    decision_reason: str = Field(
+        min_length=1,
+        description="选择这些商品品类的原因；如由天气决定，应明确说明判断。",
+    )
+    evidence: list[ShoppingEvidence] = Field(
+        default_factory=list,
+        description="支持场景判断的结构化工具证据，例如 weather 的摘要和 output_ref。",
+    )
+    total_budget: float = Field(
+        gt=0,
+        description="整份清单的总预算，工具会按数量计算并强制约束组合总价。",
+    )
+    needs: list[ShoppingListNeed] = Field(
+        min_length=1,
+        max_length=8,
+        description="需要分别搜索的商品清单项，最多八项。",
+    )
+    platforms: list[str] = Field(default_factory=list)
+    top_k_per_need: int = Field(default=3, ge=1, le=5)
+
+    @model_validator(mode="after")
+    def validate_distinct_needs(self) -> "ShoppingListSearchRequest":
+        normalized = [" ".join(need.keyword.split()).casefold() for need in self.needs]
+        if len(normalized) != len(set(normalized)):
+            raise ValueError("needs must use distinct product keywords")
+        return self
+
+
+class ShoppingListSelection(BaseModel):
+    """A product selected for one list need."""
+
+    keyword: str
+    quantity: int = Field(ge=1)
+    product: ProductResult
+    unit_price: float = Field(ge=0)
+    subtotal: float = Field(ge=0)
+
+
+class ShoppingListNeedResult(BaseModel):
+    """Search evidence and basket decision for one requested need."""
+
+    need: ShoppingListNeed
+    status: ShoppingListNeedStatus
+    query_used: str | None = None
+    candidates: list[ProductResult] = Field(default_factory=list)
+    selected: ShoppingListSelection | None = None
+    errors: list[ProductProviderError] = Field(default_factory=list)
+
+
+class ShoppingListSearchResult(BaseModel):
+    """Multi-category search results and a total-budget-constrained basket."""
+
+    outcome: ShoppingSearchOutcome
+    scenario: str
+    decision_reason: str
+    evidence: list[ShoppingEvidence] = Field(default_factory=list)
+    total_budget: float = Field(gt=0)
+    total_cost: float = Field(ge=0)
+    within_budget: bool
+    needs: list[ShoppingListNeedResult]
+    selections: list[ShoppingListSelection] = Field(default_factory=list)
+    uncovered_required_needs: list[str] = Field(default_factory=list)
+    summary: str = Field(min_length=1)
+    provider: str = Field(min_length=1)
+    errors: list[ProductProviderError] = Field(default_factory=list)
+    latency_ms: int | None = Field(default=None, ge=0)
+    output_refs: list[str] = Field(default_factory=list)
+
+    @property
+    def success(self) -> bool:
+        return self.outcome != "failed"
 
 
 class ShoppingSearchConstraints(BaseModel):

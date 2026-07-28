@@ -25,7 +25,7 @@
         "capability": "real_no_tool",
         "domain": "conversation",
         "required_tools": [],
-        "forbidden_tools": ["weather", "web_search", "shopping_search"]
+        "forbidden_tools": ["weather", "web_search", "shopping_search", "shopping_list_search"]
       }
     },
     {
@@ -46,7 +46,7 @@
         "capability": "real_no_tool",
         "domain": "planning",
         "required_tools": [],
-        "forbidden_tools": ["weather", "web_search", "shopping_search"]
+        "forbidden_tools": ["weather", "web_search", "shopping_search", "shopping_list_search"]
       }
     },
     {
@@ -88,7 +88,7 @@
         "capability": "real_read_only_tool",
         "domain": "weather",
         "required_tools": ["weather"],
-        "forbidden_tools": ["web_search", "shopping_search"]
+        "forbidden_tools": ["web_search", "shopping_search", "shopping_list_search"]
       }
     },
     {
@@ -130,7 +130,7 @@
         "capability": "real_read_only_tool",
         "domain": "local_file",
         "required_tools": ["file_read"],
-        "forbidden_tools": ["web_search", "shopping_search"]
+        "forbidden_tools": ["web_search", "shopping_search", "shopping_list_search"]
       }
     },
     {
@@ -172,7 +172,7 @@
         "capability": "real_read_only_tool",
         "domain": "web_search",
         "required_tools": ["web_search"],
-        "forbidden_tools": ["shopping_search"]
+        "forbidden_tools": ["shopping_search", "shopping_list_search"]
       }
     },
     {
@@ -193,7 +193,7 @@
         "capability": "real_read_only_tool",
         "domain": "web_fetch",
         "required_tools": ["web_fetch"],
-        "forbidden_tools": ["web_search", "shopping_search"]
+        "forbidden_tools": ["web_search", "shopping_search", "shopping_list_search"]
       }
     },
     {
@@ -217,7 +217,7 @@
         "capability": "real_read_only_tool",
         "domain": "vision",
         "required_tools": ["media_inspect"],
-        "forbidden_tools": ["web_search", "shopping_search"]
+        "forbidden_tools": ["web_search", "shopping_search", "shopping_list_search"]
       }
     },
     {
@@ -238,7 +238,7 @@
         "capability": "real_read_only_tool",
         "domain": "image_generation",
         "required_tools": ["image_generation"],
-        "forbidden_tools": ["web_search", "shopping_search"]
+        "forbidden_tools": ["web_search", "shopping_search", "shopping_list_search"]
       }
     },
     {
@@ -247,9 +247,9 @@
         "user_request": {
           "user_id": "eval-system-composite",
           "session_id": "eval-system-weather-shopping",
-          "text": "我们两个人明天想在上海野餐。先查真实天气；如果适合，再按总预算 300 元搜索必要用品；如果不适合，就改为搜索室内聚餐需要的用品。给出判断依据和预算取舍。"
+          "text": "我们两个人明天想在上海野餐。先查真实天气；如果适合，搜索一张适合两人的野餐垫，预算不超过150元；如果不适合，搜索一个室内聚餐用桌面电火锅，预算不超过300元。给出天气判断依据和选择理由。"
         },
-        "evaluation_criteria": "必须先查天气并再使用购物搜索；采购方向应根据天气结果调整，总预算不超过300元，回答需解释取舍。"
+        "evaluation_criteria": "必须先查天气，再根据实际天气只搜索正确分支中的一个单一商品品类：适合野餐时搜索双人野餐垫且单件不超过150元，不适合时搜索桌面电火锅且单件不超过300元。回答必须引用天气依据并解释分支选择。若购物工具失败，应如实披露失败；明确标注的常识性预算建议不算伪造搜索结果，但不能据此宣称已搜索到商品。"
       },
       "expected_output": {
         "response_facts": []
@@ -259,7 +259,28 @@
         "capability": "real_read_only_tool",
         "domain": "composite",
         "required_tools": ["weather", "shopping_search"],
-        "forbidden_tools": ["calendar_create"]
+        "forbidden_tools": ["calendar_create", "shopping_list_search"]
+      }
+    },
+    {
+      "id": "agent_system_v1_shopping_list_indoor_gathering",
+      "input": {
+        "user_request": {
+          "user_id": "eval-system-shopping-list",
+          "session_id": "eval-system-shopping-list-indoor",
+          "text": "为两个人的室内聚餐准备一份购物清单：桌面电火锅、两套餐具和火锅底料，总预算300元。请逐类搜索真实商品，在总预算内组合，并说明场景和预算取舍。"
+        },
+        "evaluation_criteria": "必须调用 shopping_list_search，一次提交三个独立清单项，由工具逐类搜索；组合总价不得超过300元。回答只能把工具 selections 中的候选表述为搜索结果，必须说明未覆盖项和搜索失败；预算估算不得伪装成真实商品结果。"
+      },
+      "expected_output": {
+        "response_facts": []
+      },
+      "metadata": {
+        "suite": "agent_real_system",
+        "capability": "real_read_only_tool",
+        "domain": "shopping",
+        "required_tools": ["shopping_list_search"],
+        "forbidden_tools": ["calendar_create", "shopping_search"]
       }
     },
     {
@@ -280,7 +301,7 @@
         "capability": "real_read_only_tool",
         "domain": "composite",
         "required_tools": ["web_search", "web_fetch"],
-        "forbidden_tools": ["shopping_search"]
+        "forbidden_tools": ["shopping_search", "shopping_list_search"]
       }
     },
     {

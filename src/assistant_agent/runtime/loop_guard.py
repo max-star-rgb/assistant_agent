@@ -76,12 +76,19 @@ class LoopGuard:
             and self._tool_call_signature(tool_name, tool_input) in signatures
         )
 
+    def nonrecoverable_failure_already_seen(self, tool_name: str) -> bool:
+        """Return whether this tool already reported a non-recoverable failure."""
+
+        tool_names = self.state.get("nonrecoverable_failed_tools", [])
+        return isinstance(tool_names, list) and tool_name in tool_names
+
     def record_tool_result(
         self,
         *,
         tool_name: str,
         tool_input: dict[str, Any],
         success: bool,
+        nonrecoverable: bool = False,
     ) -> LoopGuardDecision:
         signature = self._tool_call_signature(tool_name, tool_input)
         signatures = self.state.get("failed_tool_call_signatures", [])
@@ -95,6 +102,13 @@ class LoopGuard:
         if signature not in signatures:
             signatures.append(signature)
             self.state["failed_tool_call_signatures"] = signatures
+        if nonrecoverable:
+            tool_names = self.state.get("nonrecoverable_failed_tools", [])
+            if not isinstance(tool_names, list):
+                tool_names = []
+            if tool_name not in tool_names:
+                tool_names.append(tool_name)
+            self.state["nonrecoverable_failed_tools"] = tool_names
         return LoopGuardDecision(False, "ok", "Guard not triggered.")
 
     @staticmethod
