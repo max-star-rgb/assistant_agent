@@ -1,8 +1,8 @@
-"""Personal assistant tools backed by local or MCP adapters."""
+"""Calendar, weather, and contacts tools backed by local or MCP adapters."""
 
-from assistant_agent.tools.plugins.builtin.personal_assistant_mcp.backend import (
-    configured_personal_assistant_tools,
-    create_personal_assistant_adapter_bundle,
+from assistant_agent.tools.plugins.builtin.calendar_weather_contacts.backend import (
+    configured_calendar_weather_contacts_tools,
+    create_calendar_weather_contacts_adapter_bundle,
 )
 from assistant_agent.tools.ids import (
     CALENDAR_CREATE_TOOL_NAME,
@@ -12,13 +12,13 @@ from assistant_agent.tools.ids import (
 )
 from assistant_agent.tools.base import Tool
 from assistant_agent.tools.plugins.contracts import ToolPluginContext, ToolPluginDescriptor
-from assistant_agent.tools.plugins.builtin.personal_assistant_mcp.tools import (
+from assistant_agent.tools.plugins.builtin.calendar_weather_contacts.tools import (
     CalendarCreateTool,
     CalendarSearchTool,
     ContactsSearchTool,
     WeatherTool,
 )
-from assistant_agent.tools.plugins.builtin.personal_assistant_mcp.local_calendar import (
+from assistant_agent.tools.plugins.builtin.calendar_weather_contacts.local_calendar import (
     LocalSQLiteCalendarAdapter,
 )
 
@@ -26,21 +26,21 @@ from assistant_agent.tools.plugins.builtin.personal_assistant_mcp.local_calendar
 DEFAULT_LOCAL_CALENDAR_PATH = ".data/calendar/events.sqlite3"
 
 
-class PersonalAssistantMCPToolPlugin:
+class CalendarWeatherContactsPlugin:
     descriptor = ToolPluginDescriptor(
-        plugin_id="personal_assistant_mcp",
+        plugin_id="calendar_weather_contacts",
         plugin_version="1",
     )
 
     def build_tools(self, context: ToolPluginContext) -> list[Tool]:
-        tool_names = configured_personal_assistant_tools(context.mcp_server_configs)
+        tool_names = configured_calendar_weather_contacts_tools(context.mcp_server_configs)
         if context.calendar_adapter is not None or not context.mock_mode:
             tool_names.update(
                 {CALENDAR_SEARCH_TOOL_NAME, CALENDAR_CREATE_TOOL_NAME}
             )
         if not context.mock_mode and not tool_names:
             return []
-        adapters = create_personal_assistant_adapter_bundle(
+        adapters = create_calendar_weather_contacts_adapter_bundle(
             context.config,
             mcp_server_configs=context.mcp_server_configs,
             mcp_runner=context.mcp_runner,

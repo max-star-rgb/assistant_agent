@@ -9,6 +9,7 @@ from assistant_agent.runtime.system_prompt_policy import render_system_instructi
 from assistant_agent.context.models import AssistantContextPack, RenderedAssistantContext
 from assistant_agent.tools.spec_adapters import tool_specs_to_openai_tools
 from assistant_agent.tools.models import ToolSpec
+from assistant_agent.tools.observation import native_tool_observation_payload
 from assistant_agent.runtime.chat_adapter import ChatRequest, ChatStreamCallback
 from assistant_agent.context.conversation import native_conversation_messages
 from assistant_agent.context.renderer import render_native_tool_context
@@ -191,12 +192,17 @@ def _native_tool_turn_messages(
         assistant_message["reasoning_content"] = reasoning_content
     messages = [assistant_message]
     for payload, (_, _, observation) in zip(tool_call_payloads, grouped, strict=True):
+        prompt_observation = native_tool_observation_payload(observation)
         messages.append(
             {
                 "role": "tool",
                 "tool_call_id": payload["id"],
                 "name": payload["function"]["name"],
-                "content": json.dumps(observation, ensure_ascii=False),
+                "content": json.dumps(
+                    prompt_observation,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
             }
         )
     return messages

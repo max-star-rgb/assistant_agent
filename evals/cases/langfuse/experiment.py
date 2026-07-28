@@ -32,15 +32,15 @@ from assistant_agent.observability.otel_exporter import (
 from assistant_agent.providers.provider_errors import sanitize_error_message
 from assistant_agent.runtime.session_store import InMemorySessionStore
 from assistant_agent.observability.trace_store import InMemoryTraceStore, TraceEvent
-from assistant_agent.tools.plugins.builtin.personal_assistant_mcp.backend import (
-    configured_personal_assistant_tools,
+from assistant_agent.tools.plugins.builtin.calendar_weather_contacts.backend import (
+    configured_calendar_weather_contacts_tools,
 )
 from assistant_agent.mcp.config import load_mcp_server_configs_from_env
 from assistant_agent.tools.ids import WEATHER_TOOL_NAME
-from assistant_agent.tools.plugins.builtin.personal_assistant_mcp.tools import (
+from assistant_agent.tools.plugins.builtin.calendar_weather_contacts.tools import (
     CalendarSearchTool,
 )
-from assistant_agent.tools.plugins.builtin.personal_assistant_mcp.local_calendar import (
+from assistant_agent.tools.plugins.builtin.calendar_weather_contacts.local_calendar import (
     LocalSQLiteCalendarAdapter,
 )
 from assistant_agent.tools.plugins.registry_factory import create_default_registry
@@ -265,7 +265,7 @@ def validate_real_readonly_config(config: ProviderConfig) -> None:
             + ", ".join(missing)
             + "."
         )
-    configured_tools = configured_personal_assistant_tools(
+    configured_tools = configured_calendar_weather_contacts_tools(
         load_mcp_server_configs_from_env()
     )
     if WEATHER_TOOL_NAME not in configured_tools:

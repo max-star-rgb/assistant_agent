@@ -13,7 +13,7 @@ from typing import Any
 from assistant_agent.config import ProviderConfig
 from assistant_agent.mcp.adapter import MCPToolRunner, namespaced_mcp_tool_name
 from assistant_agent.mcp.config import MCPServerConfig
-from assistant_agent.tools.plugins.builtin.personal_assistant_mcp.models import (
+from assistant_agent.tools.plugins.builtin.calendar_weather_contacts.models import (
     CalendarCreateRequest,
     CalendarCreateResult,
     CalendarEvent,
@@ -27,7 +27,7 @@ from assistant_agent.tools.plugins.builtin.personal_assistant_mcp.models import 
     WeatherResult,
 )
 from assistant_agent.tools.models import ToolResult
-from assistant_agent.tools.plugins.builtin.personal_assistant_mcp.adapters import (
+from assistant_agent.tools.plugins.builtin.calendar_weather_contacts.adapters import (
     CalendarAdapter,
     ContactsAdapter,
     MockWeatherAdapter,
@@ -48,7 +48,7 @@ from assistant_agent.providers.provider_errors import (
 
 
 @dataclass(frozen=True)
-class MCPPersonalAssistantToolBinding:
+class MCPServiceToolBinding:
     """One stable personal assistant capability bound to one remote MCP tool."""
 
     server_name: str
@@ -67,7 +67,7 @@ class MCPPersonalAssistantToolBinding:
 
 
 @dataclass(frozen=True)
-class PersonalAssistantAdapterBundle:
+class CalendarWeatherContactsAdapterBundle:
     """Adapters used when registering the stable personal assistant tools."""
 
     weather: WeatherAdapter
@@ -75,7 +75,7 @@ class PersonalAssistantAdapterBundle:
     contacts: ContactsAdapter
 
 
-class UnconfiguredMCPPersonalAssistantAdapter:
+class UnconfiguredMCPServiceAdapter:
     """Structured failure adapter for missing MCP personal assistant mappings."""
 
     provider = "mcp"
@@ -136,10 +136,10 @@ class UnconfiguredMCPPersonalAssistantAdapter:
         return f"mcp personal assistant provider is missing {self.missing}."
 
 
-class MCPPersonalAssistantWeatherAdapter:
+class MCPWeatherAdapter:
     """Weather adapter backed by one explicitly mapped MCP tool."""
 
-    def __init__(self, *, binding: MCPPersonalAssistantToolBinding, runner: MCPToolRunner) -> None:
+    def __init__(self, *, binding: MCPServiceToolBinding, runner: MCPToolRunner) -> None:
         self.binding = binding
         self.runner = runner
 
@@ -196,15 +196,15 @@ class MCPPersonalAssistantWeatherAdapter:
         )
 
 
-class MCPPersonalAssistantCalendarAdapter:
+class MCPCalendarAdapter:
     """Calendar adapter backed by explicitly mapped MCP tools."""
 
     def __init__(
         self,
         *,
         runner: MCPToolRunner,
-        search_binding: MCPPersonalAssistantToolBinding | None,
-        create_binding: MCPPersonalAssistantToolBinding | None,
+        search_binding: MCPServiceToolBinding | None,
+        create_binding: MCPServiceToolBinding | None,
     ) -> None:
         self.runner = runner
         self.search_binding = search_binding
@@ -212,7 +212,7 @@ class MCPPersonalAssistantCalendarAdapter:
 
     def search(self, request: CalendarSearchRequest) -> CalendarSearchResult:
         if self.search_binding is None:
-            return UnconfiguredMCPPersonalAssistantAdapter(
+            return UnconfiguredMCPServiceAdapter(
                 "personal_assistant_tools.calendar_search"
             ).search(request)
         started = time.monotonic()
@@ -250,7 +250,7 @@ class MCPPersonalAssistantCalendarAdapter:
 
     def create(self, request: CalendarCreateRequest) -> CalendarCreateResult:
         if self.create_binding is None:
-            return UnconfiguredMCPPersonalAssistantAdapter(
+            return UnconfiguredMCPServiceAdapter(
                 "personal_assistant_tools.calendar_create"
             ).create(request)
         started = time.monotonic()
@@ -284,10 +284,10 @@ class MCPPersonalAssistantCalendarAdapter:
         )
 
 
-class MCPPersonalAssistantContactsAdapter:
+class MCPContactsAdapter:
     """Contacts adapter backed by one explicitly mapped MCP tool."""
 
-    def __init__(self, *, binding: MCPPersonalAssistantToolBinding, runner: MCPToolRunner) -> None:
+    def __init__(self, *, binding: MCPServiceToolBinding, runner: MCPToolRunner) -> None:
         self.binding = binding
         self.runner = runner
 
@@ -326,16 +326,16 @@ class MCPPersonalAssistantContactsAdapter:
         )
 
 
-def create_personal_assistant_adapter_bundle(
+def create_calendar_weather_contacts_adapter_bundle(
     config: ProviderConfig | None = None,
     *,
     mcp_server_configs: list[MCPServerConfig] | None = None,
     mcp_runner: MCPToolRunner | None = None,
-) -> PersonalAssistantAdapterBundle:
+) -> CalendarWeatherContactsAdapterBundle:
     """Return adapters for the stable personal assistant tools."""
 
     if config is None or config.provider_mode == "mock":
-        return PersonalAssistantAdapterBundle(
+        return CalendarWeatherContactsAdapterBundle(
             weather=MockWeatherAdapter(),
             calendar=_mock_calendar_adapter(),
             contacts=_mock_contacts_adapter(),
@@ -346,31 +346,31 @@ def create_personal_assistant_adapter_bundle(
         return _unconfigured_bundle("MCP server configs or runner")
     bindings = _personal_bindings(server_configs)
     calendar = (
-        MCPPersonalAssistantCalendarAdapter(
+        MCPCalendarAdapter(
             runner=runner,
             search_binding=bindings.get(CALENDAR_SEARCH_TOOL_NAME),
             create_binding=bindings.get(CALENDAR_CREATE_TOOL_NAME),
         )
         if bindings.get(CALENDAR_SEARCH_TOOL_NAME) or bindings.get(CALENDAR_CREATE_TOOL_NAME)
-        else UnconfiguredMCPPersonalAssistantAdapter("personal_assistant_tools.calendar_*")
+        else UnconfiguredMCPServiceAdapter("personal_assistant_tools.calendar_*")
     )
     contacts = (
-        MCPPersonalAssistantContactsAdapter(
+        MCPContactsAdapter(
             binding=bindings[CONTACTS_SEARCH_TOOL_NAME],
             runner=runner,
         )
         if bindings.get(CONTACTS_SEARCH_TOOL_NAME)
-        else UnconfiguredMCPPersonalAssistantAdapter("personal_assistant_tools.contacts_search")
+        else UnconfiguredMCPServiceAdapter("personal_assistant_tools.contacts_search")
     )
     weather = (
-        MCPPersonalAssistantWeatherAdapter(
+        MCPWeatherAdapter(
             binding=bindings[WEATHER_TOOL_NAME],
             runner=runner,
         )
         if bindings.get(WEATHER_TOOL_NAME)
-        else UnconfiguredMCPPersonalAssistantAdapter("personal_assistant_tools.weather")
+        else UnconfiguredMCPServiceAdapter("personal_assistant_tools.weather")
     )
-    return PersonalAssistantAdapterBundle(
+    return CalendarWeatherContactsAdapterBundle(
         weather=weather,
         calendar=calendar,
         contacts=contacts,
@@ -378,7 +378,7 @@ def create_personal_assistant_adapter_bundle(
 
 
 def _mock_calendar_adapter() -> CalendarAdapter:
-    from assistant_agent.tools.plugins.builtin.personal_assistant_mcp.adapters import (
+    from assistant_agent.tools.plugins.builtin.calendar_weather_contacts.adapters import (
         MockCalendarAdapter,
     )
 
@@ -386,16 +386,16 @@ def _mock_calendar_adapter() -> CalendarAdapter:
 
 
 def _mock_contacts_adapter() -> ContactsAdapter:
-    from assistant_agent.tools.plugins.builtin.personal_assistant_mcp.adapters import (
+    from assistant_agent.tools.plugins.builtin.calendar_weather_contacts.adapters import (
         MockContactsAdapter,
     )
 
     return MockContactsAdapter()
 
 
-def _unconfigured_bundle(missing: str) -> PersonalAssistantAdapterBundle:
-    adapter = UnconfiguredMCPPersonalAssistantAdapter(missing)
-    return PersonalAssistantAdapterBundle(
+def _unconfigured_bundle(missing: str) -> CalendarWeatherContactsAdapterBundle:
+    adapter = UnconfiguredMCPServiceAdapter(missing)
+    return CalendarWeatherContactsAdapterBundle(
         weather=adapter,
         calendar=adapter,
         contacts=adapter,
@@ -417,8 +417,8 @@ def _default_mcp_runner(server_configs: list[MCPServerConfig]) -> MCPToolRunner 
 
 def _personal_bindings(
     server_configs: list[MCPServerConfig],
-) -> dict[str, MCPPersonalAssistantToolBinding]:
-    bindings: dict[str, MCPPersonalAssistantToolBinding] = {}
+) -> dict[str, MCPServiceToolBinding]:
+    bindings: dict[str, MCPServiceToolBinding] = {}
     for server in server_configs:
         mapping = server.personal_assistant_tools
         adapter_config = server.adapter_config()
@@ -430,7 +430,7 @@ def _personal_bindings(
         ):
             if not tool_name or capability in bindings:
                 continue
-            bindings[capability] = MCPPersonalAssistantToolBinding(
+            bindings[capability] = MCPServiceToolBinding(
                 server_name=server.server_name,
                 tool_name=tool_name,
                 namespaced_tool_name=namespaced_mcp_tool_name(adapter_config, tool_name),
@@ -446,7 +446,7 @@ def _personal_bindings(
     return bindings
 
 
-def configured_personal_assistant_tools(
+def configured_calendar_weather_contacts_tools(
     server_configs: list[MCPServerConfig],
 ) -> set[str]:
     """Return stable personal tools backed by explicit real MCP mappings."""
@@ -457,7 +457,7 @@ def configured_personal_assistant_tools(
 def _run_mcp_tool(
     *,
     runner: MCPToolRunner,
-    binding: MCPPersonalAssistantToolBinding,
+    binding: MCPServiceToolBinding,
     tool_input: dict[str, Any],
 ) -> ToolResult:
     try:
@@ -488,7 +488,7 @@ def _safe_payload(result: ToolResult) -> dict[str, Any]:
 
 def _weather_tool_input(
     request: WeatherRequest,
-    binding: MCPPersonalAssistantToolBinding,
+    binding: MCPServiceToolBinding,
 ) -> dict[str, Any]:
     if binding.profile != "mcp_weather_server_v1":
         return request.model_dump(mode="json", exclude_none=True)
@@ -502,7 +502,7 @@ def _weather_tool_input(
 
 def _calendar_search_tool_input(
     request: CalendarSearchRequest,
-    binding: MCPPersonalAssistantToolBinding,
+    binding: MCPServiceToolBinding,
 ) -> dict[str, Any]:
     if binding.profile != "workspace_mcp_v1":
         return request.model_dump(mode="json", exclude_none=True)
@@ -517,7 +517,7 @@ def _calendar_search_tool_input(
 
 def _calendar_create_tool_input(
     request: CalendarCreateRequest,
-    binding: MCPPersonalAssistantToolBinding,
+    binding: MCPServiceToolBinding,
 ) -> dict[str, Any]:
     if binding.profile != "workspace_mcp_v1":
         return request.model_dump(mode="json", exclude_none=True)
@@ -537,7 +537,7 @@ def _calendar_create_tool_input(
 
 def _weather_payload(
     result: ToolResult,
-    binding: MCPPersonalAssistantToolBinding,
+    binding: MCPServiceToolBinding,
 ) -> dict[str, Any]:
     if binding.profile != "mcp_weather_server_v1":
         return _safe_payload(result)
@@ -606,7 +606,7 @@ _WORKSPACE_EVENT_RE = re.compile(
 
 def _calendar_search_payload(
     result: ToolResult,
-    binding: MCPPersonalAssistantToolBinding,
+    binding: MCPServiceToolBinding,
 ) -> dict[str, Any]:
     if binding.profile != "workspace_mcp_v1":
         return _safe_payload(result)
@@ -625,7 +625,7 @@ def _calendar_search_payload(
 
 def _calendar_create_payload(
     result: ToolResult,
-    binding: MCPPersonalAssistantToolBinding,
+    binding: MCPServiceToolBinding,
 ) -> dict[str, Any]:
     if binding.profile != "workspace_mcp_v1":
         return _safe_payload(result)

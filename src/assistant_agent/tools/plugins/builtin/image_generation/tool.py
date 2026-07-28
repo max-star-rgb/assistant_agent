@@ -26,7 +26,7 @@ from assistant_agent.tools.input_binding import RuntimeInputBinding
 
 class ImageGenerationTool(ToolBase):
     name = IMAGE_GENERATION_TOOL_NAME
-    description = "根据必填的文本提示词生成图片；尺寸、数量和 Provider 参数由工具使用默认值。"
+    description = "根据文本提示词生成图片。"
     input_schema = ImageGenerationRequest
     output_schema = ImageGenerationResult
     category = "generate"
@@ -173,14 +173,11 @@ def _image_generation_model_observation(data: dict[str, Any]) -> dict[str, Any]:
         [data["image_url"]] if data.get("image_url") else []
     )
     observation: dict[str, Any] = {
-        "status": data.get("status"),
-        "summary": _image_generation_summary(data),
-        "image_url": data.get("image_url"),
-        "image_urls": image_urls,
-        "output_ref": data.get("output_ref") or data.get("image_url"),
-        "prompt_used": data.get("prompt_used") or data.get("prompt"),
+        "images": list(dict.fromkeys(image_urls)),
         "errors": data.get("errors"),
     }
+    if not image_urls:
+        observation["summary"] = _image_generation_summary(data)
     return {
         key: value
         for key, value in observation.items()

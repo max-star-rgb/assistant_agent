@@ -16,9 +16,7 @@ from assistant_agent.tools.plugins.builtin.lodging.backend import (
 
 class LodgingSearchTool(ToolBase):
     name = "lodging_search"
-    description = (
-        "查询指定目的地和入住日期的酒店报价。仅返回候选和价格，不能预订、付款或持有库存。"
-    )
+    description = "查询酒店候选和价格，不能预订或付款。"
     input_schema = LodgingSearchRequest
     output_schema = LodgingSearchResult
     category = "read"

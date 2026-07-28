@@ -11,27 +11,27 @@ class LodgingSearchRequest(BaseModel):
     destination: str = Field(
         min_length=1,
         max_length=160,
-        description="Canonical city, district, or lodging destination.",
+        description="目的地城市或区域。",
     )
-    check_in: date = Field(description="Check-in date in YYYY-MM-DD form.")
-    check_out: date = Field(description="Check-out date in YYYY-MM-DD form.")
+    check_in: date = Field(description="入住日期 YYYY-MM-DD。")
+    check_out: date = Field(description="退房日期 YYYY-MM-DD。")
     adults: int = Field(
         default=1,
         ge=1,
         le=16,
-        description="Number of adult guests.",
+        description="成人数。",
     )
     rooms: int = Field(
         default=1,
         ge=1,
         le=8,
-        description="Number of rooms required.",
+        description="房间数。",
     )
     currency: str = Field(
         default="CNY",
         min_length=3,
         max_length=3,
-        description="Three-letter requested price currency.",
+        description="三字母币种。",
     )
 
     @model_validator(mode="after")

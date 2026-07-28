@@ -182,11 +182,11 @@ def test_package_and_runtime_initialize_offline() -> None:
     assert {"memory_search", "memory_get", "memory_save"}.isdisjoint(specs)
     assert (
         runtime.registry.registration_record("calendar_search").plugin_id
-        == "personal_assistant_mcp"
+        == "calendar_weather_contacts"
     )
     assert (
         runtime.registry.registration_record("calendar_create").plugin_id
-        == "personal_assistant_mcp"
+        == "calendar_weather_contacts"
     )
     assert (
         runtime.registry.registration_record("python_interpreter").plugin_id

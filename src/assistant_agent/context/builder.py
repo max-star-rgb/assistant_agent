@@ -23,10 +23,7 @@ from assistant_agent.context.compactor import (
     context_summary_from_metadata,
     format_context_summary,
 )
-from assistant_agent.context.compaction import (
-    compact_observations_for_context,
-    sanitize_observations_for_context,
-)
+from assistant_agent.context.compaction import project_observations_for_context
 from assistant_agent.context.conversation import select_conversation_window
 from assistant_agent.context.policy import (
     COMPRESSION_REASON_CONTEXT_BUDGET_TRIMMED,
@@ -63,9 +60,10 @@ def build_assistant_context_pack(
     """Collect state and request materials for assistant prompt rendering."""
 
     active_request = request or state.request
-    # Token-triggered rolling compaction runs only after PromptCompiler has
-    # produced the complete Provider request. Character trimming and
-    # precompile summary generation are intentionally disabled here.
+    # Token-triggered rolling history compaction runs only after PromptCompiler
+    # has produced the complete Provider request. General section trimming and
+    # precompile summary generation stay disabled; tool observations use their
+    # own deterministic prompt projection below.
     compaction_enabled = False
     context_policy = context_policy_from_request(active_request)
     conversation_text = _conversation_context_text(active_request)
@@ -106,11 +104,7 @@ def build_assistant_context_pack(
         apply_size_limits=compaction_enabled,
     )
     active_observations = observations or []
-    context_observations = (
-        compact_observations_for_context(active_observations)
-        if compaction_enabled
-        else sanitize_observations_for_context(active_observations)
-    )
+    context_observations = project_observations_for_context(active_observations)
     active_tool_specs = tool_specs or []
     tool_catalog = select_prompt_tool_specs(
         active_request,

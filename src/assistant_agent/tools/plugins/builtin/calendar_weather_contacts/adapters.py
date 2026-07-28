@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import timedelta
 import re
 from typing import Literal, Protocol
 
-from assistant_agent.tools.plugins.builtin.personal_assistant_mcp.models import (
+from assistant_agent.tools.plugins.builtin.calendar_weather_contacts.models import (
     CalendarCreateRequest,
     CalendarCreateResult,
     CalendarEvent,

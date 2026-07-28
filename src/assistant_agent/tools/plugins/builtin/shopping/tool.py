@@ -29,8 +29,7 @@ class ShoppingSearchTool(ToolBase):
 
     name = SHOPPING_SEARCH_TOOL_NAME
     description = (
-        "搜索商品、优惠、比价和购买链接。用户明确要求推荐、查价、比价或购买链接时直接调用，无需再次确认；"
-        "只表达想要某物时先询问，不要立即搜索。不能下单、结算。"
+        "搜索、推荐和比较商品及购买链接；仅表达购买意向时先追问。不能下单。"
     )
     input_schema = ShoppingSearchRequest
     output_schema = ShoppingSearchResult
@@ -270,89 +269,91 @@ def _shopping_search_model_observation(data: dict[str, Any]) -> dict[str, Any]:
         if isinstance(data.get("requested_constraints"), dict)
         else {}
     )
+    offers = [
+        _shopping_offer_model_observation(offer)
+        for offer in data.get("offers", [])[:3]
+        if isinstance(offer, dict)
+    ]
+    items = offers or [
+        _shopping_item_model_observation(item)
+        for item in search.get("items", [])[:3]
+        if isinstance(item, dict)
+    ]
     observation: dict[str, Any] = {
         "outcome": data.get("outcome"),
-        "summary": data.get("summary"),
         "query": data.get("query"),
         "requested_constraints": {
             key: value
             for key, value in requested_constraints.items()
             if value not in (None, [], {})
         },
-        "search": {
-            "query_used": search.get("query_used"),
-            "total": search.get("total"),
-            "items": [
-                _shopping_item_model_observation(item)
-                for item in search.get("items", [])
-                if isinstance(item, dict)
-            ],
-            "requested_platforms": search.get("requested_platforms"),
-            "succeeded_platforms": search.get("succeeded_platforms"),
-            "failed_platforms": search.get("failed_platforms"),
-        },
-        "offers": [
-            _shopping_offer_model_observation(offer)
-            for offer in data.get("offers", [])
-            if isinstance(offer, dict)
-        ],
-        "best_offer": (
-            _shopping_offer_model_observation(data["best_offer"])
+        "total": search.get("total"),
+        "items": items,
+        "best_item_id": (
+            data.get("best_offer", {}).get("offer_id")
+            or data.get("best_value_product_id")
             if isinstance(data.get("best_offer"), dict)
-            else None
+            else data.get("best_value_product_id")
         ),
-        "best_value_product_id": data.get("best_value_product_id"),
         "ranking_reason": data.get("ranking_reason"),
+        "response_contract": {
+            "type": "shopping_detail_v1",
+            "max_items": 3,
+            "wrapper": "{summary}\n<detail>\n{items}\n</detail>",
+            "item_template": (
+                "{index}. {platform} - {title} {total_price}元 "
+                "<link>{product_url}</link> <pic>{image_url}</pic>"
+            ),
+            "required_item_fields": ["total_price", "product_url", "image_url"],
+            "fallback": "无合格商品时仅自然语言回答，不输出 <detail>。",
+            "rules": ["仅使用 data 中的真实字段", "不得声称已下单"],
+        },
     }
+    if not items:
+        observation["summary"] = data.get("summary")
     errors = data.get("errors")
     if errors:
         observation["errors"] = errors
-    observation["search"] = {
-        key: value
-        for key, value in observation["search"].items()
-        if value not in (None, [], {})
-    }
     return {
         key: value for key, value in observation.items() if value not in (None, [], {})
     }
 
 
 def _shopping_item_model_observation(item: dict[str, Any]) -> dict[str, Any]:
-    keys = (
-        "product_id",
-        "title",
-        "brand",
-        "category",
-        "price",
-        "original_price",
-        "coupon_amount",
-        "effective_price",
-        "unconditional_price",
-        "conditional_price",
-        "conditional_price_note",
-        "currency",
-        "platform",
-        "shop",
-        "url",
-        "product_url",
-        "url_status",
-        "availability",
-        "image_url",
-        "model",
-        "specifications",
-        "similarity",
-        "similarity_score",
-        "text_match_score",
-        "text_match_score",
-        "rating",
-        "sales",
-        "material",
-        "color",
-        "style_tags",
-        "reason",
-        "ranking_reason",
+    observation = {
+        key: item[key]
+        for key in (
+            "product_id",
+            "title",
+            "platform",
+            "shop",
+            "effective_price",
+            "currency",
+            "url_status",
+            "availability",
+            "image_url",
+            "reason",
+        )
+        if item.get(key) not in (None, "", [], {})
+    }
+    product_url = item.get("product_url") or item.get("url")
+    if product_url:
+        observation["product_url"] = product_url
+    total_price = next(
+        (
+            value
+            for value in (
+                item.get("total_price"),
+                item.get("effective_price"),
+                item.get("price"),
+            )
+            if value is not None
+        ),
+        None,
     )
-    return {key: item[key] for key in keys if item.get(key) not in (None, "", [], {})}
+    if total_price is not None:
+        observation["total_price"] = total_price
+    return observation
 
 
 def _shopping_offer_model_observation(offer: dict[str, Any]) -> dict[str, Any]:
@@ -362,27 +363,31 @@ def _shopping_offer_model_observation(offer: dict[str, Any]) -> dict[str, Any]:
         "title",
         "platform",
         "shop",
-        "price",
-        "original_price",
-        "coupon_amount",
-        "effective_price",
-        "unconditional_price",
-        "conditional_price",
-        "conditional_price_note",
-        "currency",
-        "shipping_fee",
         "total_price",
+        "currency",
         "product_url",
-        "image_url",
         "url_status",
         "availability",
-        "rating",
-        "sales",
-        "similarity_score",
-        "comparison_group",
-        "same_product_confidence",
-        "data_completeness",
+        "image_url",
         "reason",
-        "ranking_reason",
     )
-    return {key: offer[key] for key in keys if offer.get(key) not in (None, "", [], {})}
+    observation = {
+        key: offer[key]
+        for key in keys
+        if offer.get(key) not in (None, "", [], {})
+    }
+    total_price = next(
+        (
+            value
+            for value in (
+                offer.get("total_price"),
+                offer.get("effective_price"),
+                offer.get("price"),
+            )
+            if value is not None
+        ),
+        None,
+    )
+    if total_price is not None:
+        observation["total_price"] = total_price
+    return observation

@@ -1,16 +1,16 @@
 """Local SQLite calendar persistence and plugin wiring."""
 
-import assistant_agent.tools.plugins.builtin.personal_assistant_mcp.plugin as calendar_plugin
+import assistant_agent.tools.plugins.builtin.calendar_weather_contacts.plugin as calendar_plugin
 
 from assistant_agent.config import ProviderConfig
-from assistant_agent.tools.plugins.builtin.personal_assistant_mcp.models import (
+from assistant_agent.tools.plugins.builtin.calendar_weather_contacts.models import (
     CalendarCreateRequest,
     CalendarSearchRequest,
 )
-from assistant_agent.tools.plugins.builtin.personal_assistant_mcp.local_calendar import (
+from assistant_agent.tools.plugins.builtin.calendar_weather_contacts.local_calendar import (
     LocalSQLiteCalendarAdapter,
 )
-from assistant_agent.tools.plugins.builtin.personal_assistant_mcp.tools import (
+from assistant_agent.tools.plugins.builtin.calendar_weather_contacts.tools import (
     CalendarCreateTool,
     CalendarSearchTool,
 )

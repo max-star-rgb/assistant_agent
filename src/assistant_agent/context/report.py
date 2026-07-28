@@ -15,6 +15,7 @@ from assistant_agent.context.models import (
 )
 from assistant_agent.tools.models import ToolSpec
 from assistant_agent.tools.spec_adapters import tool_specs_to_openai_tools
+from assistant_agent.tools.observation import native_tool_observation_payload
 from assistant_agent.runtime.chat_adapter import ChatRequest
 
 
@@ -120,7 +121,12 @@ def build_context_report(
         source="AgentState.plan_state",
     )
     sections["tool_observations"] = ContextReportSection(
-        chars=_json_chars(pack.observations),
+        chars=_json_chars(
+            [
+                native_tool_observation_payload(observation)
+                for observation in pack.observations
+            ]
+        ),
         tokens=_positive_or_none(pack.budget.observations_tokens),
         item_count=len(pack.observations),
         included=bool(pack.observations),

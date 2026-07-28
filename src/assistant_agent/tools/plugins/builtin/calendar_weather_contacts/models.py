@@ -8,8 +8,8 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, field_validator
 
 
-class PersonalAssistantProviderError(BaseModel):
-    """Provider boundary error for personal assistant adapters."""
+class CalendarWeatherContactsProviderError(BaseModel):
+    """Provider boundary error for calendar, weather, and contacts adapters."""
 
     code: str = Field(min_length=1)
     message: str = Field(min_length=1)
@@ -21,15 +21,11 @@ class WeatherRequest(BaseModel):
 
     location: str = Field(
         min_length=1,
-        description="必填的天气查询城市或区县；用户未提供时不得猜测，应先追问。",
+        description="城市或区县；用户未提供时先追问。",
     )
     target_date: str | None = Field(
         default=None,
-        description=(
-            "用户指定的日期或连续日期范围；单日使用 YYYY-MM-DD，多日使用"
-            " YYYY-MM-DD/YYYY-MM-DD（包含起止日期，最长 7 天）；"
-            "未指定时省略以查询今天。工具会返回范围内每天的天气。"
-        ),
+        description="日期 YYYY-MM-DD 或最长7天的闭区间 YYYY-MM-DD/YYYY-MM-DD。",
     )
     units: Literal["metric"] = "metric"
 
@@ -118,15 +114,15 @@ class CalendarSearchRequest(BaseModel):
     query: str = Field(
         default="today",
         min_length=1,
-        description="自然语言日历查询；省略时默认为今天。",
+        description="日历查询；默认今天。",
     )
     start_time: str | None = Field(
         default=None,
-        description="可选的查询开始时间；仅在用户指定时间范围时传。",
+        description="用户指定的查询开始时间。",
     )
     end_time: str | None = Field(
         default=None,
-        description="可选的查询结束时间；仅在用户指定时间范围时传。",
+        description="用户指定的查询结束时间。",
     )
     limit: int = Field(default=5, ge=1, le=20)
 
@@ -171,31 +167,31 @@ class CalendarCreateRequest(BaseModel):
 
     title: str = Field(
         min_length=1,
-        description="要创建的日历事件标题。",
+        description="事件标题。",
     )
     start_time: str = Field(
         min_length=1,
-        description="事件开始时间，使用用户表达中可确定的日期、时间和时区。",
+        description="事件开始日期、时间和时区。",
     )
     end_time: str | None = Field(
         default=None,
-        description="可选的事件结束时间；用户未指定时省略。",
+        description="事件结束时间。",
     )
     timezone: str | None = Field(
         default=None,
-        description="可选的事件时区；仅在用户明确指定或需要消除歧义时传。",
+        description="事件时区。",
     )
     location: str | None = Field(
         default=None,
-        description="可选的事件地点或会议位置。",
+        description="事件地点。",
     )
     attendees: list[str] = Field(
         default_factory=list,
-        description="用户明确要求邀请的联系人或邮箱列表。",
+        description="受邀联系人或邮箱。",
     )
     notes: str | None = Field(
         default=None,
-        description="可选的事件备注或补充说明。",
+        description="事件备注。",
     )
     idempotency_key: str | None = None
 
@@ -220,7 +216,7 @@ class ContactsSearchRequest(BaseModel):
 
     query: str = Field(
         min_length=1,
-        description="用于匹配联系人姓名、关系、邮箱或电话号码的查询词。",
+        description="姓名、关系、邮箱或电话查询词。",
     )
     limit: int = Field(default=5, ge=1, le=20)
 

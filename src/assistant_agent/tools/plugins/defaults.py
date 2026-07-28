@@ -8,8 +8,8 @@ from assistant_agent.tools.plugins.builtin.local_file_access.plugin import (
     LocalFileAccessPlugin,
 )
 from assistant_agent.tools.plugins.builtin.lodging.plugin import LodgingToolPlugin
-from assistant_agent.tools.plugins.builtin.personal_assistant_mcp.plugin import (
-    PersonalAssistantMCPToolPlugin,
+from assistant_agent.tools.plugins.builtin.calendar_weather_contacts.plugin import (
+    CalendarWeatherContactsPlugin,
 )
 from assistant_agent.tools.plugins.builtin.python_execution.plugin import (
     PythonExecutionPlugin,
@@ -35,7 +35,7 @@ def default_tool_plugins() -> tuple[ToolPlugin, ...]:
         MediaInspectionPlugin(),
         VisualImageSearchPlugin(),
         ShoppingToolPlugin(),
-        PersonalAssistantMCPToolPlugin(),
+        CalendarWeatherContactsPlugin(),
         WebAccessToolPlugin(),
         ImageGenerationToolPlugin(),
         DurableTaskToolPlugin(),

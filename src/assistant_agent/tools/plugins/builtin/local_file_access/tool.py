@@ -50,10 +50,7 @@ SUPPORTED_TEXT_SUFFIXES: Final = frozenset(
 
 class LocalFileReadTool(ToolBase):
     name = LOCAL_FILE_READ_TOOL_NAME
-    description = (
-        "读取已配置文件根目录内的文本文件内容；可使用 next_cursor 分页读取长文件，"
-        "适合回答、分析或总结用户指定的文件。"
-    )
+    description = "读取配置根目录内的文本文件，支持分页。"
     input_schema = FileReadRequest
     output_schema = FileReadResult
     category = "read"

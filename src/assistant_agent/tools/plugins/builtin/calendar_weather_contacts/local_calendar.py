@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from assistant_agent.tools.plugins.builtin.personal_assistant_mcp.models import (
+from assistant_agent.tools.plugins.builtin.calendar_weather_contacts.models import (
     CalendarCreateRequest,
     CalendarCreateResult,
     CalendarEvent,

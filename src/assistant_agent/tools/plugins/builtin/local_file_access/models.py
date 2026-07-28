@@ -11,12 +11,12 @@ class FileReadRequest(BaseModel):
     path: str = Field(
         min_length=1,
         max_length=1_024,
-        description="相对于已配置文件根目录的文本文件路径。",
+        description="配置根目录下的相对路径。",
     )
     cursor: int = Field(
         default=0,
         ge=0,
-        description="继续读取时使用上一次结果返回的 next_cursor；首次读取使用 0。",
+        description="续读使用上次返回的 next_cursor。",
     )
     max_chars: int = Field(default=12_000, ge=1, le=50_000)
 

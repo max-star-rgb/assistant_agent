@@ -33,7 +33,7 @@ from assistant_agent.tools.plugins.defaults import default_tool_plugins
 from assistant_agent.tools.registry import ToolRegistry
 
 if TYPE_CHECKING:
-    from assistant_agent.tools.plugins.builtin.personal_assistant_mcp.adapters import (
+    from assistant_agent.tools.plugins.builtin.calendar_weather_contacts.adapters import (
         CalendarAdapter,
     )
 

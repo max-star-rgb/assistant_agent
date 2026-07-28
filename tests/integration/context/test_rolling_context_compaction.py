@@ -19,7 +19,10 @@ from assistant_agent.runtime.chat_adapter import (
     ChatResult,
 )
 from assistant_agent.runtime.decision_models import NativeToolCall
-from assistant_agent.context.compaction import sanitize_observations_for_context
+from assistant_agent.context.compaction import (
+    project_observations_for_context,
+    sanitize_observations_for_context,
+)
 from assistant_agent.context.compactor import LLMCompactor
 from assistant_agent.context.models import ContextSummary
 from assistant_agent.context.token_budget import ContextWindowPolicy
@@ -277,6 +280,79 @@ def test_unbounded_observation_context_only_removes_unsafe_payloads() -> None:
     assert sanitized["structured_output"]["items"][-1]["description"] == long_text
     assert "api_key" not in sanitized["structured_output"]
     assert "raw_provider_response" not in sanitized["structured_output"]
+
+
+def test_prompt_observation_projection_removes_duplicate_envelope_fields() -> None:
+    observation = {
+        "tool_name": "example",
+        "status": "succeeded",
+        "summary": "duplicate summary",
+        "output_ref": "artifact://one",
+        "structured_output": {
+            "summary": "duplicate summary",
+            "items": [{"id": index} for index in range(5)],
+        },
+        "next_step_hint": "static repeated instruction",
+        "redacted": True,
+        "truncated": False,
+        "original_chars": None,
+    }
+
+    projected = project_observations_for_context([observation])[0]
+
+    assert {
+        key: value
+        for key, value in projected.items()
+        if key not in {"compacted", "compaction"}
+    } == {
+        "tool_name": "example",
+        "status": "succeeded",
+        "data": {
+            "summary": "duplicate summary",
+            "items": [{"id": 0}, {"id": 1}, {"id": 2}],
+        },
+        "ref": "artifact://one",
+    }
+    assert projected["compacted"] is True
+    assert projected["compaction"]["original_chars"] > projected["compaction"]["compacted_chars"]
+    assert project_observations_for_context([projected]) == [projected]
+
+
+def test_prompt_observation_projection_uses_one_error_contract() -> None:
+    observation = {
+        "tool_name": "example",
+        "status": "failed",
+        "summary": "duplicated failure",
+        "structured_output": {
+            "errors": [
+                {
+                    "code": "provider_timeout",
+                    "message": "timed out",
+                    "recoverable": True,
+                }
+            ]
+        },
+        "error_code": "tool_failed",
+        "error_message": "duplicated failure",
+        "next_step_hint": "retry with changed input",
+    }
+
+    projected = project_observations_for_context([observation])[0]
+
+    assert {
+        key: value
+        for key, value in projected.items()
+        if key not in {"compacted", "compaction"}
+    } == {
+        "tool_name": "example",
+        "status": "failed",
+        "error": {
+            "code": "provider_timeout",
+            "message": "timed out",
+            "recoverable": True,
+        },
+        "hint": "retry with changed input",
+    }
 
 
 def test_runtime_replaces_all_covered_turns_with_natural_language_summary() -> None:

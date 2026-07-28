@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from assistant_agent.tools.capability_output import build_capability_output_contract
-from assistant_agent.tools.plugins.builtin.personal_assistant_mcp.models import (
+from assistant_agent.tools.plugins.builtin.calendar_weather_contacts.models import (
     CalendarCreateRequest,
     CalendarCreateResult,
     CalendarSearchRequest,
@@ -16,7 +16,7 @@ from assistant_agent.tools.plugins.builtin.personal_assistant_mcp.models import 
     WeatherResult,
 )
 from assistant_agent.tools.models import ToolResult
-from assistant_agent.tools.plugins.builtin.personal_assistant_mcp.adapters import (
+from assistant_agent.tools.plugins.builtin.calendar_weather_contacts.adapters import (
     CalendarAdapter,
     ContactsAdapter,
     MockCalendarAdapter,
@@ -38,10 +38,7 @@ class WeatherTool(ToolBase):
     """Look up weather through the configured personal weather adapter."""
 
     name = WEATHER_TOOL_NAME
-    description = (
-        "查询指定地点当前、指定日期或连续日期范围内的逐日天气。"
-        "地点是必填前置条件；用户未提供地点时必须先追问，不得猜测或调用工具。"
-    )
+    description = "查询指定地点和日期范围的逐日天气。"
     input_schema = WeatherRequest
     output_schema = WeatherResult
     category = "read"
@@ -140,7 +137,7 @@ class ContactsSearchTool(ToolBase):
     """Search personal contacts through the configured contacts adapter."""
 
     name = CONTACTS_SEARCH_TOOL_NAME
-    description = "搜索用户联系人中的候选人员或联系方式。"
+    description = "搜索联系人或联系方式。"
     input_schema = ContactsSearchRequest
     output_schema = ContactsSearchResult
     category = "read"

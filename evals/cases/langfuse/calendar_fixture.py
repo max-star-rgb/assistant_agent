@@ -7,7 +7,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from assistant_agent.tools.plugins.builtin.personal_assistant_mcp.models import (
+from assistant_agent.tools.plugins.builtin.calendar_weather_contacts.models import (
     CalendarCreateRequest,
     CalendarCreateResult,
     CalendarEvent,
@@ -15,7 +15,7 @@ from assistant_agent.tools.plugins.builtin.personal_assistant_mcp.models import 
     CalendarSearchResult,
 )
 from assistant_agent.tools.input_binding import RuntimeInputBinding
-from assistant_agent.tools.plugins.builtin.personal_assistant_mcp.tools import (
+from assistant_agent.tools.plugins.builtin.calendar_weather_contacts.tools import (
     CalendarCreateTool,
 )
 

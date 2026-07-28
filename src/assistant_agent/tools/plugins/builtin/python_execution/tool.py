@@ -22,7 +22,7 @@ from assistant_agent.tools.base import ToolBase, ToolContext, ToolInputValidatio
 
 class PythonInterpreterTool(ToolBase):
     name = PYTHON_INTERPRETER_TOOL_NAME
-    description = "运行简短、受限的本地 Python 代码，用于数学、科学、数据或代码分析。"
+    description = "运行受限 Python 代码进行计算和数据分析。"
     input_schema = PythonInterpreterInput
     output_schema = PythonInterpreterResult
     category = "dangerous"

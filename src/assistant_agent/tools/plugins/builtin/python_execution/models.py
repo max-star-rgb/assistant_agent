@@ -30,10 +30,7 @@ class PythonInterpreterInput(BaseModel):
     code: str = Field(
         min_length=1,
         max_length=PYTHON_INTERPRETER_MAX_CODE_CHARS,
-        description=(
-            "用于本地分析的 Python 代码。需要结构化输出时，"
-            "请将最终可 JSON 序列化的值赋给变量 result。"
-        ),
+        description="Python 代码；结构化结果赋给 result。",
     )
     purpose: PythonInterpreterPurpose = Field(
         default="general_analysis",
@@ -41,7 +38,7 @@ class PythonInterpreterInput(BaseModel):
     )
     input_data: Any | None = Field(
         default=None,
-        description="可选的 JSON 可序列化数据，代码中通过 input_data 访问。",
+        description="代码通过 input_data 访问的 JSON 数据。",
     )
     timeout_s: int | None = Field(
         default=None,

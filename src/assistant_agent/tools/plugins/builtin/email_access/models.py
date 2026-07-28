@@ -19,15 +19,12 @@ class EmailSearchRequest(BaseModel):
     query: str = Field(
         min_length=1,
         max_length=1_000,
-        description=(
-            "邮件搜索条件；Gmail Provider 支持 from:、to:、is:unread、"
-            "after:、before:、has:attachment 等查询操作符。"
-        ),
+        description="邮件条件，支持 Gmail 查询操作符。",
     )
     page_token: str | None = Field(
         default=None,
         max_length=2_000,
-        description="仅在继续上一页搜索时传入上次结果返回的 next_page_token。",
+        description="上一页返回的 next_page_token。",
     )
     limit: int = Field(default=10, ge=1, le=20)
 
@@ -64,7 +61,7 @@ class EmailReadRequest(BaseModel):
     message_ids: list[str] = Field(
         min_length=1,
         max_length=5,
-        description="从 email_search 结果中选择的邮件 message_id 列表，一次最多 5 封。",
+        description="email_search 返回的 message_id，最多5个。",
     )
     max_total_chars: int = Field(default=20_000, ge=1, le=50_000)
 

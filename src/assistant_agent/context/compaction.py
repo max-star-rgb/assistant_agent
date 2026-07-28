@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping
 
 from assistant_agent.tools.ids import SHOPPING_SEARCH_TOOL_NAME
+from assistant_agent.tools.observation import prompt_observation_payload
 
 
 MAX_ITEMS_PER_LIST = 3
@@ -148,10 +149,12 @@ _OFFER_KEYS = (
     "platform",
     "shop",
     "price",
+    "effective_price",
     "currency",
     "shipping_fee",
     "total_price",
     "product_url",
+    "image_url",
     "url_status",
     "availability",
     "rating",
@@ -195,6 +198,39 @@ def sanitize_observations_for_context(observations: list[dict[str, Any]]) -> lis
     """Remove unsafe payload fields without applying size or item-count limits."""
 
     return [_sanitize_observation_for_context(observation) for observation in observations]
+
+
+def project_observations_for_context(
+    observations: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Build bounded minimal observation copies for Provider input."""
+
+    projected: list[dict[str, Any]] = []
+    for observation in observations:
+        sanitized = _sanitize_observation_for_context(observation)
+        compacted = (
+            sanitized
+            if "structured_output" not in sanitized
+            and any(key in sanitized for key in ("data", "error"))
+            else compact_observation_for_context(sanitized)
+        )
+        prompt_payload = prompt_observation_payload(compacted)
+        existing_metadata = sanitized.get("compaction")
+        compacted_metadata = compacted.get("compaction")
+        source_metadata = (
+            existing_metadata
+            if isinstance(existing_metadata, Mapping)
+            else compacted_metadata
+        )
+        metadata = dict(source_metadata) if isinstance(source_metadata, Mapping) else {}
+        metadata["original_chars"] = int(
+            metadata.get("original_chars") or _json_chars(sanitized)
+        )
+        metadata["compacted_chars"] = _json_chars(prompt_payload)
+        prompt_payload["compacted"] = True
+        prompt_payload["compaction"] = metadata
+        projected.append(prompt_payload)
+    return projected
 
 
 def _sanitize_observation_for_context(observation: dict[str, Any]) -> dict[str, Any]:
@@ -323,6 +359,9 @@ def _compact_shopping_search_comparison_output(data: dict[str, Any], *, stats: _
         (
             "query",
             "summary",
+            "outcome",
+            "requested_constraints",
+            "response_contract",
             "provider",
             "best_value_product_id",
             "best_offer",
@@ -367,8 +406,12 @@ def _compact_shopping_search_output(data: dict[str, Any], *, stats: _CompactionS
         (
             "query",
             "summary",
+            "outcome",
+            "requested_constraints",
+            "response_contract",
             "provider",
             "best_value_product_id",
+            "best_item_id",
             "best_offer",
             "offers",
             "items",

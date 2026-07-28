@@ -16,7 +16,7 @@ if TYPE_CHECKING:
     from assistant_agent.automation.durable_tasks.service import DurableTaskService
     from assistant_agent.media.video.realtime_video_memory import RealtimeVideoMemoryStore
     from assistant_agent.media.video.video_context import VideoContextStore
-    from assistant_agent.tools.plugins.builtin.personal_assistant_mcp.adapters import (
+    from assistant_agent.tools.plugins.builtin.calendar_weather_contacts.adapters import (
         CalendarAdapter,
     )
 

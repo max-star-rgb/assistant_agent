@@ -137,7 +137,7 @@ def test_usable_candidates_survive_comparison_failure_as_partial_result() -> Non
     assert result.data is not None and result.data["outcome"] == "partial"
     assert result.model_observation is not None
     assert result.model_observation["outcome"] == "partial"
-    assert result.model_observation["search"]["items"][0]["product_id"] == "bag-1"
+    assert result.model_observation["items"][0]["product_id"] == "bag-1"
     assert result.model_observation["errors"] == [
         comparison_error.model_dump(mode="json")
     ]

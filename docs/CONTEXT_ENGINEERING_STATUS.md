@@ -91,9 +91,9 @@ Last updated: 2026-07-27
   deterministic fallback。
 - `TokenBudgetReporter` 的旧字符估算仅保留兼容报告；压缩控制面读取最终 compiled request 的 tokenizer
   preflight。Provider `usage` 在调用后写回预检记录，用于观测本地计数与实际 input token 的误差。
-- AgentRuntime 中 tool observation 只移除 secret、raw provider/file/media payload 和 inline media
-  data URI，不限制文本长度、列表条数、嵌套深度或命令输出长度；原有 observation compaction
-  实现保留但不接入运行时。原始 observation 始终不被修改。
+- AgentRuntime 保留完整内部 tool observation 供 trace/runtime 使用；进入 Provider prompt 的副本会先移除
+  secret、raw provider/file/media payload 和 inline media data URI，再执行确定性的字符串、列表、嵌套
+  深度和命令输出压缩，最后投影为最小公共协议。原始 observation 始终不被修改。
 - Cross-agent delegation now has a separate child-context boundary in `AgentCommunicationService`: child runs receive explicit `context_refs`, child budget metadata, and redacted audit summaries, not parent history, `memory_context_*`, raw provider payloads, secrets, or raw tool results.
 - Trace/API 已暴露 versioned context debug summary，包括 context budget、source counts、tool catalog summary 和 observation compaction summary。
 - 离线 Improvement Lab 可把脱敏 trajectory 与显式结构化 eval/test 失败转换为 evidence，确定性聚类后生成 skill/runtime/code 人工评审候选；它不进入 `AgentGraphRuntime`，不放宽 context/trace redaction，也不自动修改 skill、runtime 或代码。
@@ -146,8 +146,16 @@ Last updated: 2026-07-27
 
 ### Tool Observation Compaction
 
-- AgentRuntime 只对进入 assistant prompt 的 observation 副本做安全清洗，不修改或容量压缩原始 observation。
-- `shopping_search` 字段白名单、列表条数限制、字符串裁剪和命令输出裁剪实现仍保留，但不接入 AgentRuntime。
+- AgentRuntime 只压缩进入 assistant prompt 的 observation 副本，不修改 graph state、trace 或 API 使用的
+  完整 observation。
+- Provider 侧公共协议只保留 `status`、工具自定义 `data`、可选 `ref`，失败时使用统一 `error` 和动态
+  `hint`；工具名由 native tool message 的 `name` 携带，不再在 message content 内重复。成功 observation
+  不携带公共静态 `next_step_hint`、默认布尔值、空字段或与 `data` 重复的顶层 summary。
+- 工具通过 `ToolResult.model_observation` 定义自己的 LLM 数据投影；context 层统一负责安全清洗、最多
+  3 个列表项、字符串/命令输出裁剪和嵌套深度限制，不在中心模块解释工具业务字段。
+- `shopping_search` 把候选归一为最多 3 个 `items`，不再同时发送 search items、offers 和完整
+  best_offer 镜像；其 `response_contract=shopping_detail_v1` 随购物数据提供模板、资格条件和 fallback，
+  由 LLM 使用真实结果字段生成最终回复。`image_generation` 只投影去重后的 `images`。
 - raw provider/file/media payload 字段、base64/data URI、HTML/raw body 等高风险内容会从 prompt 副本中移除。
 - image/video/file 类结果保留 `output_ref`、`artifact_ref`、`image_ref`、识别摘要、transcript 等 prompt-safe 信息。
 - compaction metadata schema 继续保留兼容字段；metadata 不记录原始 payload。
@@ -255,8 +263,9 @@ Last updated: 2026-07-27
 
 - tokenizer preflight 是 Provider payload projection，不包含 Provider 私有 chat template 的精确内部开销；
   safety margin 和调用后的 Provider usage 误差用于控制该差异。
-- 目前只压缩 conversation history；如果 system、memory、tool schema、durable state 或当前 run tool
-  observation 自身超过 hard limit，Runtime 会返回无可压缩历史或压缩后仍过大的稳定错误，不静默裁剪。
+- rolling LLM compaction 仍只压缩 conversation history；当前 run tool observation 在进入 prompt 前会做
+  确定性投影和局部容量限制，但如果 system、memory、tool schema、durable state 或投影后的当前 run
+  observation 总体仍超过 hard limit，Runtime 会返回稳定错误。
 - Context Compiler v1 是调试/审计摘要，不是 prompt replay。它刻意不返回 raw prompt、raw provider payload、完整 memory 文本或完整 tool observation；token 字段仍依赖现有估算或 provider usage metadata。
 - 显式本地 trace-content + loopback OTLP 模式是独立的 prompt 调试例外：assistant loop
   会在 Provider 调用前把最终 compiled `ChatRequest` 暂存到进程内 store，并作为对应

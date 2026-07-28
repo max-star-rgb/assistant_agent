@@ -14,8 +14,6 @@ from assistant_agent.providers.provider_errors import (
     sanitize_error_message,
 )
 from assistant_agent.tools.ids import (
-    IMAGE_GENERATION_TOOL_NAME,
-    IMAGE_UNDERSTANDING_TOOL_NAME,
     SHOPPING_SEARCH_TOOL_NAME,
     WEB_FETCH_TOOL_NAME,
     WEB_SEARCH_TOOL_NAME,
@@ -39,6 +37,99 @@ class ToolObservation(BaseModel):
     redacted: bool = True
     truncated: bool = False
     original_chars: int | None = Field(default=None, ge=0)
+
+
+def prompt_observation_payload(observation: Mapping[str, Any]) -> dict[str, Any]:
+    """Project an internal observation into the minimal LLM-facing protocol."""
+
+    tool_name = str(observation.get("tool_name") or "unknown")
+    status = str(observation.get("status") or "failed")
+    structured = observation.get("structured_output")
+    if not isinstance(structured, Mapping):
+        structured = observation.get("data")
+    data = dict(structured) if isinstance(structured, Mapping) else {}
+    payload: dict[str, Any] = {
+        "tool_name": tool_name,
+        "status": status,
+    }
+
+    if status == "succeeded":
+        if data:
+            payload["data"] = data
+        else:
+            summary = observation.get("summary")
+            if isinstance(summary, str) and summary:
+                payload["summary"] = summary
+    else:
+        error = _prompt_error_payload(observation, data)
+        if error:
+            payload["error"] = error
+        data.pop("errors", None)
+        if data:
+            payload["data"] = data
+        hint = observation.get("next_step_hint") or observation.get("hint")
+        if isinstance(hint, str) and hint:
+            payload["hint"] = hint
+
+    output_ref = observation.get("output_ref") or observation.get("ref")
+    if (
+        isinstance(output_ref, str)
+        and output_ref
+        and not _mapping_contains_value(data, output_ref)
+    ):
+        payload["ref"] = output_ref
+    return payload
+
+
+def native_tool_observation_payload(
+    observation: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return only the JSON content sent in a native role=tool message."""
+
+    return {
+        key: value
+        for key, value in prompt_observation_payload(observation).items()
+        if key != "tool_name"
+    }
+
+
+def _prompt_error_payload(
+    observation: Mapping[str, Any],
+    data: Mapping[str, Any],
+) -> dict[str, Any]:
+    existing_error = observation.get("error")
+    if isinstance(existing_error, Mapping):
+        return {
+            key: existing_error[key]
+            for key in ("code", "message", "recoverable")
+            if existing_error.get(key) not in (None, "")
+        }
+    errors = data.get("errors")
+    first_error = errors[0] if isinstance(errors, list) and errors else None
+    if isinstance(first_error, Mapping):
+        error = {
+            key: first_error[key]
+            for key in ("code", "message", "recoverable")
+            if first_error.get(key) not in (None, "")
+        }
+        if error:
+            return error
+    return {
+        key: value
+        for key, value in {
+            "code": observation.get("error_code"),
+            "message": observation.get("error_message"),
+        }.items()
+        if value not in (None, "")
+    }
+
+
+def _mapping_contains_value(value: Any, expected: str) -> bool:
+    if isinstance(value, Mapping):
+        return any(_mapping_contains_value(item, expected) for item in value.values())
+    if isinstance(value, list):
+        return any(_mapping_contains_value(item, expected) for item in value)
+    return value == expected
 
 
 def observation_from_tool_result(
@@ -216,7 +307,7 @@ def _next_step_hint(
     data: dict[str, Any],
     request_text: str | None,
     prior_observations: Sequence[Mapping[str, Any]],
-) -> str:
+) -> str | None:
     if status != "succeeded":
         errors = data.get("errors")
         first_error = errors[0] if isinstance(errors, list) and errors else None
@@ -234,25 +325,7 @@ def _next_step_hint(
                 "answer with partial results, or choose a different action instead of failing the run solely on this repeat."
             )
         return "Explain the failure, use a different action, or ask the user for clarification."
-    if tool_name == IMAGE_UNDERSTANDING_TOOL_NAME:
-        return (
-            "If the user only asked for a description, final_answer is likely enough."
-        )
-    if tool_name == SHOPPING_SEARCH_TOOL_NAME:
-        return (
-            "消费 structured_output 中的商品、报价和 URL，生成最终回复；不要调用其他工具格式化结果，"
-            "也不要声称已经下单。存在可展示商品时使用模板：{summary}\n<detail>\n"
-            "1. {platform} - {title} {total_price}元 <link>{product_url}</link> "
-            "<pic>{image_url}</pic>\n</detail>。最多列 3 项，只能使用 observation 中的真实字段；"
-            "没有具备有效链接和图片的相关商品时，只用自然语言说明，不输出 <detail>。"
-        )
-    if tool_name == WEB_SEARCH_TOOL_NAME:
-        return "Use the web search results in the final answer; include source URLs and published dates when present."
-    if tool_name == WEB_FETCH_TOOL_NAME:
-        return "Use the fetched page content in the final answer; cite the source URL when it informs the answer."
-    if tool_name == IMAGE_GENERATION_TOOL_NAME:
-        return "Return the generated image reference to the user."
-    return "Use this observation to decide whether to answer or call another action."
+    return None
 
 
 def _has_prior_successful_observation(

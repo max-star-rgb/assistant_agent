@@ -49,15 +49,15 @@ class VisualImageSearchRequest(BaseModel):
 
     image_url: str | None = Field(
         default=None,
-        description="用于发起搜索的公开 HTTP 或 HTTPS 图片 URL。",
+        description="公开 HTTP(S) 图片 URL。",
     )
     image_ids: list[str] = Field(
         default_factory=list,
-        description="公开 HTTP 或 HTTPS 图片引用；v1 使用第一张图片。",
+        description="公开图片 URL 列表，使用首项。",
     )
     query_hint: str | None = Field(
         default=None,
-        description="用于引导视觉相似搜索的可选文本提示。",
+        description="相似搜索提示。",
     )
     limit: int = Field(
         default=5,

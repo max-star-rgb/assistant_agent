@@ -13,7 +13,7 @@ class ImageGenerationRequest(BaseModel):
 
     prompt: str = Field(
         min_length=1,
-        description="希望生成的图片内容、构图、风格和关键视觉要求。",
+        description="图片内容、构图、风格和关键视觉要求。",
     )
     size: str | None = Field(
         default=None,

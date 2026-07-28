@@ -94,20 +94,17 @@ class ShoppingSearchRequest(BaseModel):
 
     query: str = Field(
         min_length=1,
-        description=(
-            "商品名称、特征、使用场景和指定购物平台等检索需求，例如"
-            "“淘宝上适合通勤的电脑双肩包”；预算填写到对应结构化字段。"
-        ),
+        description="商品、特征、场景及平台等检索需求。",
     )
     budget_min: float | None = Field(
         default=None,
         ge=0,
-        description="用户明确给出的最低预算；未指定时省略。",
+        description="用户明确给出的最低预算。",
     )
     budget_max: float | None = Field(
         default=None,
         ge=0,
-        description="用户明确给出的最高预算；未指定时省略。",
+        description="用户明确给出的最高预算。",
     )
     platforms: list[str] = Field(
         default_factory=list,

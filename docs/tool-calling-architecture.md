@@ -43,16 +43,15 @@ requires_media
 枚举值、协议标识符和代码符号保持英文。外部 MCP 与配置插件的描述属于上游契约，不由
 runtime 猜测翻译或改写。
 
-`shopping_search` 的短 description 保留三条必要边界：只表达想要某物时先询问；明确要求推荐、
-查价、比价或购买链接时调用；工具只搜索和比较，不能下单。展示模板等执行后说明只随 observation
-提供，不重复塞进每轮工具 schema。
+`shopping_search` 的短 description 只保留调用边界和不能下单的约束。展示格式不重复塞进每轮工具
+schema，而由成功 observation 中的结构化 `response_contract=shopping_detail_v1` 提供。
 购物结果以 `outcome=success | partial | empty | failed` 区分完整结果、仍有可用候选的部分结果、
 正常完成但没有候选和工具执行失败。`ToolResult.success` 对 `success`、`partial` 和 `empty` 为真，
 只有 `failed` 为假，避免把“没有匹配商品”或“比价失败但搜索候选可用”误报成整个工具执行失败。
-模型可见 observation 保留用户明确给出的预算和平台约束、可用商品/报价及结构化 Provider 错误，
-并避免在 `structured_output` 中重复顶层 `output_ref`。
+模型可见 observation 保留用户明确给出的预算和平台约束、最多 3 个归一化商品、结构化 Provider
+错误和购物响应契约，不再同时发送 search items、offers、best offer 镜像或重复 output ref。
 购物结果遵循标准 ReAct 闭环：`shopping_search` 返回结构化 `ToolResult`，runtime 将其转换为
-tool observation，下一轮 LLM 消费商品、报价、链接和展示模板后生成最终文本。系统不注册额外的展示
+tool observation，下一轮 LLM 消费 `data.items` 和 `data.response_contract` 后填充展示模板并生成最终文本。系统不注册额外的展示
 工具，也不在 Realtime/Gateway 用 presenter 覆盖模型回复；是否输出 `<detail>` 以及选择哪些合格商品
 由 LLM 根据 observation 决定，代码只负责工具治理、上下文传递和原样交付最终回答。
 本地 Langfuse 会按 observation index 展示 assistant loop 产生的完整 `ToolObservation`，不会再次把它
@@ -197,7 +196,7 @@ MCP mapping 逐个注册，未映射的能力不进入 Registry。开发阶段�
 内容理解和总结仍由主 assistant loop 完成。
 
 邮件只读能力由独立 `email_access` Plugin 装配，不归入
-`personal_assistant_mcp`，也不在顶层 `providers/` 新增仅供该 Plugin 使用的专用 adapter。该 Plugin 暴露稳定
+`calendar_weather_contacts`，也不在顶层 `providers/` 新增仅供该 Plugin 使用的专用 adapter。该 Plugin 暴露稳定
 `email_search` / `email_read`，内部私有 backend 将它们映射到显式配置的 Workspace MCP
 `search_gmail_messages` / `get_gmail_messages_content_batch`。邮件正文 observation 标记为
 `untrusted_external_content` 和 `do_not_execute`，只作为主模型分析证据；首版不注册发送、草稿、
@@ -232,8 +231,8 @@ Tool 仍默认不暴露，必须由宿主配置或每轮结构化显式 opt-in�
 
 Plugin 按共享 Provider、配置、依赖和生命周期划分，不按 Tool 数量或宽泛业务标签机械拆分。目录名与
 `plugin_id` 应表达独立装配边界，避免 `core`、`misc` 等兜底分类。共享同一 MCP mapping、runner 和
-adapter bundle 的 weather/calendar/contacts 归属 `personal_assistant_mcp`；配置与 readiness 独立的
-`email_access`、`vision_understanding`、`visual_image_search` 分别装配；本地 Python 执行独立归属
+adapter bundle 的 weather/calendar/contacts 归属 `calendar_weather_contacts`；配置与 readiness 独立的
+`email_access`、`media_inspection`、`visual_image_search` 分别装配；本地 Python 执行独立归属
 `python_execution`。新增已有 Plugin 内的普通 Tool 只修改该 Plugin 目录及其测试；
 新增内置 Plugin 额外在 `defaults.py` 可信清单登记一次；新增外部 Plugin 只增加独立 module 和部署
 配置。普通 Tool 的增删不得要求修改 Registry、Executor、Validator、assistant loop、Prompt/Context
@@ -255,7 +254,7 @@ executor 读取的是同一份契约。新增或移除一个内置能力包时�
 `tools/plugins/registry_factory.py`，避免工具内核反向导入具体内置 Plugin。
 
 weather、calendar、contacts 的 mock adapter 和 MCP backend 是
-`personal_assistant_mcp` 的私有实现，分别位于该 Plugin 的 `adapters.py`、`backend.py`；顶层
+`calendar_weather_contacts` 的私有实现，分别位于该 Plugin 的 `adapters.py`、`backend.py`；顶层
 `providers/` 不保存仅由该 Plugin 消费的 Provider adapter。只有出现跨 Plugin、跨入口的真实复用或
 独立应用生命周期时，能力实现才提升为共享 Provider 能力。同样，image generation、shopping、visual image
 search、web access 和 Python execution 的单一 owner backend/sandbox 均保留在对应内置 Plugin；

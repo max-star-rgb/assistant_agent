@@ -173,8 +173,23 @@ def test_shopping_native_tool_call_exports_provider_path(monkeypatch) -> None:
     assert adapter.requests[1].response_format is None
     second_request = json.dumps(adapter.requests[1].messages, ensure_ascii=False)
     assert '"role": "tool"' in second_request
-    assert "structured_output" in second_request
-    assert "<detail>" in second_request
+    tool_message = next(
+        message
+        for message in adapter.requests[1].messages
+        if message["role"] == "tool"
+    )
+    observation = json.loads(tool_message["content"])
+    assert {"tool_name", "compacted", "compaction"}.isdisjoint(observation)
+    assert "structured_output" not in observation
+    assert len(observation["data"]["items"]) <= 3
+    response_contract = observation["data"]["response_contract"]
+    assert response_contract["type"] == "shopping_detail_v1"
+    assert "<detail>" in response_contract["wrapper"]
+    assert response_contract["required_item_fields"] == [
+        "total_price",
+        "product_url",
+        "image_url",
+    ]
     shopping_definition = next(
         item["function"]
         for item in adapter.requests[0].tools

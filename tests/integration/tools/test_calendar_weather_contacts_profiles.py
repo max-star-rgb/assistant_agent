@@ -9,16 +9,16 @@ from typing import Any
 # the MCP-backed service; direct leaf imports currently cross tools.__init__.
 from assistant_agent.tools.registry import ToolRegistry as _ToolRegistry  # noqa: F401
 from assistant_agent.mcp.sdk_client import _sanitize_sdk_content
-from assistant_agent.tools.plugins.builtin.personal_assistant_mcp.models import (
+from assistant_agent.tools.plugins.builtin.calendar_weather_contacts.models import (
     CalendarCreateRequest,
     CalendarSearchRequest,
     WeatherRequest,
 )
 from assistant_agent.tools.models import ToolResult
-from assistant_agent.tools.plugins.builtin.personal_assistant_mcp.backend import (
-    MCPPersonalAssistantCalendarAdapter,
-    MCPPersonalAssistantToolBinding,
-    MCPPersonalAssistantWeatherAdapter,
+from assistant_agent.tools.plugins.builtin.calendar_weather_contacts.backend import (
+    MCPCalendarAdapter,
+    MCPServiceToolBinding,
+    MCPWeatherAdapter,
 )
 
 
@@ -90,8 +90,8 @@ def test_weather_profile_translates_date_range_and_aggregates_hourly_result() ->
     runner = RecordingRunner(
         {"get_weather_byDateTimeRange": _text_result("get_weather_byDateTimeRange", text)}
     )
-    adapter = MCPPersonalAssistantWeatherAdapter(
-        binding=MCPPersonalAssistantToolBinding(
+    adapter = MCPWeatherAdapter(
+        binding=MCPServiceToolBinding(
             server_name="weather",
             tool_name="get_weather_byDateTimeRange",
             namespaced_tool_name="mcp__weather__get_weather_byDateTimeRange",
@@ -142,8 +142,8 @@ def test_weather_profile_rejects_success_envelope_without_forecast_data() -> Non
             )
         }
     )
-    adapter = MCPPersonalAssistantWeatherAdapter(
-        binding=MCPPersonalAssistantToolBinding(
+    adapter = MCPWeatherAdapter(
+        binding=MCPServiceToolBinding(
             server_name="weather",
             tool_name="get_weather_byDateTimeRange",
             namespaced_tool_name="mcp__weather__get_weather_byDateTimeRange",
@@ -161,8 +161,8 @@ def test_weather_profile_rejects_success_envelope_without_forecast_data() -> Non
 
 
 def test_weather_profile_declares_english_location_input() -> None:
-    adapter = MCPPersonalAssistantWeatherAdapter(
-        binding=MCPPersonalAssistantToolBinding(
+    adapter = MCPWeatherAdapter(
+        binding=MCPServiceToolBinding(
             server_name="weather",
             tool_name="get_weather_byDateTimeRange",
             namespaced_tool_name="mcp__weather__get_weather_byDateTimeRange",
@@ -182,8 +182,8 @@ def test_weather_profile_classifies_upstream_503_as_unavailable() -> None:
             )
         }
     )
-    adapter = MCPPersonalAssistantWeatherAdapter(
-        binding=MCPPersonalAssistantToolBinding(
+    adapter = MCPWeatherAdapter(
+        binding=MCPServiceToolBinding(
             server_name="weather",
             tool_name="get_weather_byDateTimeRange",
             namespaced_tool_name="mcp__weather__get_weather_byDateTimeRange",
@@ -215,21 +215,21 @@ def test_workspace_profile_translates_calendar_search_and_create() -> None:
             ),
         }
     )
-    search_binding = MCPPersonalAssistantToolBinding(
+    search_binding = MCPServiceToolBinding(
         server_name="google_workspace",
         tool_name="get_events",
         namespaced_tool_name="mcp__google_workspace__get_events",
         profile="workspace_mcp_v1",
         calendar_user_email="user@example.com",
     )
-    create_binding = MCPPersonalAssistantToolBinding(
+    create_binding = MCPServiceToolBinding(
         server_name="google_workspace",
         tool_name="manage_event",
         namespaced_tool_name="mcp__google_workspace__manage_event",
         profile="workspace_mcp_v1",
         calendar_user_email="user@example.com",
     )
-    adapter = MCPPersonalAssistantCalendarAdapter(
+    adapter = MCPCalendarAdapter(
         runner=runner,
         search_binding=search_binding,
         create_binding=create_binding,
