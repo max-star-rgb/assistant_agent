@@ -53,7 +53,8 @@ Last updated: 2026-07-27
   `当前环境` 段，确保 Provider 原始 input 和受长度限制的开发预览都优先显示。当前日期、星期、
   时间和相对日期解析以本地时间为准；用户未指定目标地点时可把已配置的当前位置作为默认值，
   用户明确指定地点时则始终以用户输入为准。当前位置通过
-  `MULTIMODAL_AGENT_CURRENT_LOCATION` 配置，未配置时明确标记为不可用，不得猜测。这些事实不承担
+  `MULTIMODAL_AGENT_CURRENT_LOCATION` 配置，未配置时使用上海并明确标记为默认地点，不伪装成动态
+  定位；用户指定地点仍始终优先。这些事实不承担
   天气、新闻等外部动态信息查询，外部事实仍必须使用已暴露工具。
 - Provider-native Prompt 不注入 capability catalog 或 Skill descriptor，也不根据 `request.text` 做关键词、
   正则或确定性意图召回。模型只通过本轮结构化资格化后的原生 `ToolSpec` schema 了解候选工具。

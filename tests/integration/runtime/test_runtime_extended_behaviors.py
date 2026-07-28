@@ -89,6 +89,16 @@ def test_current_location_is_loaded_from_environment() -> None:
     assert config.current_location == "杭州市"
 
 
+def test_runtime_policy_uses_shanghai_as_location_fallback() -> None:
+    instruction = render_system_instruction(
+        current_time=datetime(2026, 7, 28, 9, 18, tzinfo=timezone(timedelta(hours=8))),
+        current_location=None,
+    )
+
+    assert "当前位置：上海（默认地点）。" in instruction
+    assert "当前位置：未提供。" not in instruction
+
+
 class ScriptedChatAdapter:
     """Small provider-boundary fake that returns complete public ChatResult values."""
 

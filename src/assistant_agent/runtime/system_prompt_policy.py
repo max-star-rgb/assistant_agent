@@ -3,6 +3,9 @@
 from datetime import datetime
 
 
+DEFAULT_FALLBACK_LOCATION = "上海"
+
+
 _BASE_RUNTIME_POLICY = """\
 # 角色
 
@@ -65,7 +68,7 @@ def render_system_instruction(
     location_line = (
         f"当前位置：{normalized_location}。"
         if normalized_location
-        else "当前位置：未提供。"
+        else f"当前位置：{DEFAULT_FALLBACK_LOCATION}（默认地点）。"
     )
     runtime_policy = _BASE_RUNTIME_POLICY.format(
         current_time=resolved_time.isoformat(timespec="seconds"),
