@@ -229,6 +229,26 @@ item；这样删除 capability 后不会继续执行旧案例。没有 `seed_has
   --run-name my-agent-eval
 ```
 
+只重跑某次 Experiment 中明确未通过的 Dataset item：
+
+```bash
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python \
+  scripts/run_langfuse_agent_evals.py \
+  --real-system \
+  --allow-real-tools \
+  --rerun-failed-from my-real-system-eval \
+  --run-name my-real-system-eval-retry
+```
+
+`--rerun-failed-from` 按同一 Dataset 中指定 run 的四个原生 Score 选择用例；任一 Score
+最新值明确为 `false` 时重跑该 item。异步裁判尚未产生的缺失 Score 属于评测基础设施状态，
+不会被误判为 Agent 失败。若没有明确失败项，命令直接退出，不创建新的 Experiment。显式传入
+`--rerun-failed-from none` 等同于不启用失败筛选，执行全量 Dataset。
+
+历史 run 可能引用已从当前 Dataset seed 删除的旧 item，尤其是在同一命令使用
+`--seed-dataset` 时。重跑以同步后的当前 Dataset 为执行权威：旧 item 不恢复、不执行，并在输出的
+`skipped_unavailable_item_ids` 中明确列出；仍存在的失败 item 继续进入新 Experiment。
+
 第一次创建真实只读 Dataset：
 
 ```bash

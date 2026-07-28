@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+
+import pytest
 
 from evals.cases.langfuse.experiment import (
     AgentExperimentTask,
@@ -13,7 +16,9 @@ from evals.cases.langfuse.experiment import (
     RuntimeBundle,
     StatelessEvalEnvironment,
     build_real_readonly_runtime,
+    failed_dataset_item_ids,
     load_dataset_seed,
+    partition_available_dataset_item_ids,
     run_langfuse_agent_experiment,
     seed_langfuse_dataset,
 )
@@ -24,6 +29,7 @@ from assistant_agent.runtime.session_store import InMemorySessionStore
 from assistant_agent.observability.trace_store import InMemoryTraceStore
 from assistant_agent.tools.registry import ToolRegistry
 from assistant_agent.observability.otel_mapping import build_text_otel_span_specs
+from scripts.run_langfuse_agent_evals import _optional_run_name
 
 
 TRACE_ID = "0123456789abcdef0123456789abcdef"
@@ -64,9 +70,18 @@ class _FakeDataset:
         self.name = ""
         self.items: list[Any] = []
         self.run_kwargs: dict[str, Any] = {}
+        self.run_item_ids: list[str] = []
+        self.run_records: list[dict[str, Any]] = []
 
     def run_experiment(self, **kwargs: Any) -> object:
         self.run_kwargs = kwargs
+        self.run_item_ids = [str(item.id) for item in self.items]
+        self.run_records.append(
+            {
+                "item_ids": self.run_item_ids,
+                "kwargs": kwargs,
+            }
+        )
         return object()
 
 
@@ -402,6 +417,173 @@ def test_experiment_wires_task_without_project_evaluators() -> None:
         "agent.tool_semantic_pass",
         "agent.answer_semantic_pass",
     ]
+
+
+def test_experiment_runs_only_selected_dataset_items() -> None:
+    client = _FakeLangfuseClient()
+    client.dataset.items = [
+        SimpleNamespace(id="case-pass"),
+        SimpleNamespace(id="case-fail"),
+    ]
+
+    run_langfuse_agent_experiment(
+        client,
+        dataset_name="dataset-sentinel",
+        experiment_name="experiment-sentinel",
+        trace_observer=_FakeTraceObserver(),
+        dataset_item_ids=["case-fail"],
+    )
+
+    assert client.dataset.run_records[0]["item_ids"] == ["case-fail"]
+    metadata = client.dataset.run_records[0]["kwargs"]["metadata"]
+    assert metadata["dataset_item_count"] == 1
+    assert metadata["dataset_selection_mode"] == "explicit_item_ids"
+    assert "dataset_item_ids" not in metadata
+    # 子集运行不修改 client 缓存的完整 Dataset。
+    assert [item.id for item in client.dataset.items] == [
+        "case-pass",
+        "case-fail",
+    ]
+
+
+def test_full_experiment_metadata_uses_propagation_safe_dataset_summary() -> None:
+    client = _FakeLangfuseClient()
+    client.dataset.items = [
+        SimpleNamespace(id=f"case-{index}-with-a-long-identifier")
+        for index in range(20)
+    ]
+
+    run_langfuse_agent_experiment(
+        client,
+        dataset_name="dataset-sentinel",
+        experiment_name="experiment-sentinel",
+        trace_observer=_FakeTraceObserver(),
+    )
+
+    metadata = client.dataset.run_records[0]["kwargs"]["metadata"]
+    assert metadata["dataset_item_count"] == 20
+    assert metadata["dataset_selection_mode"] == "full"
+    assert "dataset_item_ids" not in metadata
+
+
+def test_experiment_rejects_unavailable_selected_dataset_item() -> None:
+    client = _FakeLangfuseClient()
+    client.dataset.items = [SimpleNamespace(id="case-available")]
+
+    with pytest.raises(ValueError, match="case-unavailable"):
+        run_langfuse_agent_experiment(
+            client,
+            dataset_name="dataset-sentinel",
+            experiment_name="experiment-sentinel",
+            trace_observer=_FakeTraceObserver(),
+            dataset_item_ids=["case-unavailable"],
+        )
+
+    assert client.dataset.run_records == []
+
+
+def test_rerun_failed_from_none_disables_dataset_filter() -> None:
+    assert _optional_run_name("none") is None
+    assert _optional_run_name(" NONE ") is None
+    assert _optional_run_name("run-sentinel") == "run-sentinel"
+
+
+def test_historical_failed_items_missing_from_current_dataset_are_skipped() -> None:
+    dataset = SimpleNamespace(
+        items=[
+            SimpleNamespace(id="case-current-fail"),
+            SimpleNamespace(id="case-current-pass"),
+        ]
+    )
+
+    selected, unavailable = partition_available_dataset_item_ids(
+        dataset,
+        ["case-obsolete-fail", "case-current-fail"],
+    )
+
+    assert selected == ["case-current-fail"]
+    assert unavailable == ["case-obsolete-fail"]
+
+
+def test_failed_dataset_items_use_latest_explicit_boolean_scores() -> None:
+    now = datetime.now(UTC)
+    run_items = [
+        SimpleNamespace(dataset_item_id="case-fixed", trace_id="trace-fixed"),
+        SimpleNamespace(dataset_item_id="case-fail", trace_id="trace-fail"),
+        SimpleNamespace(dataset_item_id="case-missing", trace_id="trace-missing"),
+    ]
+    scores = [
+        SimpleNamespace(
+            trace_id="trace-fixed",
+            name="agent.runtime_trace_pass",
+            data_type="BOOLEAN",
+            value=0,
+            timestamp=now,
+        ),
+        SimpleNamespace(
+            trace_id="trace-fixed",
+            name="agent.runtime_trace_pass",
+            data_type="BOOLEAN",
+            value=1,
+            timestamp=now + timedelta(seconds=1),
+        ),
+        SimpleNamespace(
+            trace_id="trace-fail",
+            name="agent.answer_semantic_pass",
+            data_type="BOOLEAN",
+            value=0,
+            timestamp=now,
+        ),
+        SimpleNamespace(
+            trace_id="trace-missing",
+            name="unrelated-score",
+            data_type="BOOLEAN",
+            value=0,
+            timestamp=now,
+        ),
+    ]
+    score_queries: list[dict[str, Any]] = []
+
+    def get_scores(**kwargs: Any) -> SimpleNamespace:
+        score_queries.append(kwargs)
+        return SimpleNamespace(
+            data=[
+                score
+                for score in scores
+                if score.trace_id == kwargs["trace_id"]
+            ],
+            meta=SimpleNamespace(total_pages=1),
+        )
+
+    client = SimpleNamespace(
+        get_dataset_run=lambda **_: SimpleNamespace(
+            id="dataset-run-sentinel",
+            dataset_run_items=run_items,
+        ),
+        api=SimpleNamespace(
+            scores=SimpleNamespace(
+                get_many=get_scores
+            )
+        ),
+    )
+
+    result = failed_dataset_item_ids(
+        client,
+        dataset_name="dataset-sentinel",
+        run_name="run-sentinel",
+        score_names={
+            "agent.runtime_trace_pass",
+            "agent.answer_semantic_pass",
+        },
+    )
+
+    assert result == ["case-fail"]
+    assert [query["trace_id"] for query in score_queries] == [
+        "trace-fixed",
+        "trace-fail",
+        "trace-missing",
+    ]
+    assert all("dataset_run_id" not in query for query in score_queries)
 
 
 def test_real_experiment_metadata_is_explicit_without_running_provider() -> None:

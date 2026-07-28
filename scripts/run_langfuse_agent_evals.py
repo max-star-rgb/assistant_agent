@@ -38,7 +38,9 @@ from evals.cases.langfuse.experiment import (
     REAL_SYSTEM_SEMANTIC_SCORE_NAMES,
     build_real_system_runtime,
     build_real_readonly_runtime,
+    failed_dataset_item_ids,
     load_dataset_seed,
+    partition_available_dataset_item_ids,
     run_langfuse_agent_experiment,
     seed_langfuse_dataset,
     validate_real_readonly_config,
@@ -67,6 +69,16 @@ def main() -> int:
         default=None,
     )
     parser.add_argument("--run-name", default=None)
+    parser.add_argument(
+        "--rerun-failed-from",
+        metavar="RUN_NAME",
+        default=None,
+        type=_optional_run_name,
+        help=(
+            "Run only Dataset items whose latest native score was explicitly "
+            "false in the named Dataset run; use 'none' for a full run."
+        ),
+    )
     parser.add_argument("--max-concurrency", type=int, default=1)
     parser.add_argument(
         "--local-calendar-path",
@@ -109,6 +121,10 @@ def main() -> int:
         help="Validate the optional Dataset seed without connecting to Langfuse.",
     )
     args = parser.parse_args()
+    if args.rerun_failed_from and (args.seed_only or args.dry_run):
+        parser.error(
+            "--rerun-failed-from cannot be combined with --seed-only or --dry-run."
+        )
 
     execution_profile = (
         "real_system"
@@ -251,6 +267,47 @@ def main() -> int:
         if args.seed_only:
             print(seed_result.model_dump_json(indent=2))
             return 0
+        selected_item_ids = None
+        skipped_unavailable_item_ids: list[str] = []
+        if args.rerun_failed_from:
+            failed_item_ids = failed_dataset_item_ids(
+                client,
+                dataset_name=dataset_name,
+                run_name=args.rerun_failed_from,
+                score_names=(
+                    *DETERMINISTIC_SCORE_NAMES,
+                    *(
+                        REAL_SYSTEM_SEMANTIC_SCORE_NAMES
+                        if args.real_system
+                        else REAL_READONLY_SEMANTIC_SCORE_NAMES
+                    ),
+                ),
+            )
+            selected_item_ids, skipped_unavailable_item_ids = (
+                partition_available_dataset_item_ids(
+                    client.get_dataset(dataset_name),
+                    failed_item_ids,
+                )
+            )
+            if not selected_item_ids:
+                print(
+                    json.dumps(
+                        {
+                            "dataset_name": dataset_name,
+                            "rerun_failed_from": args.rerun_failed_from,
+                            "selected_item_ids": [],
+                            "skipped_unavailable_item_ids": (
+                                skipped_unavailable_item_ids
+                            ),
+                            "message": (
+                                "No runnable explicitly failed Dataset items found."
+                            ),
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                )
+                return 0
         result = run_langfuse_agent_experiment(
             client,
             dataset_name=dataset_name,
@@ -263,6 +320,7 @@ def main() -> int:
             ),
             runtime_factory=runtime_factory,
             execution_profile=execution_profile,
+            dataset_item_ids=selected_item_ids,
         )
         client.flush()
         print(
@@ -277,6 +335,11 @@ def main() -> int:
                     "dataset_run_id": result.dataset_run_id,
                     "dataset_run_url": result.dataset_run_url,
                     "item_count": len(result.item_results),
+                    "rerun_failed_from": args.rerun_failed_from,
+                    "selected_item_ids": selected_item_ids,
+                    "skipped_unavailable_item_ids": (
+                        skipped_unavailable_item_ids
+                    ),
                     "scoring": "langfuse_native_evaluators_async",
                     "expected_score_names": [
                         *DETERMINISTIC_SCORE_NAMES,
@@ -353,6 +416,11 @@ def _run_metadata(
             else "calendar_capabilities_v1"
         ),
     }
+
+
+def _optional_run_name(value: str) -> str | None:
+    normalized = value.strip()
+    return None if normalized.lower() == "none" else normalized
 
 
 def _git_output(*args: str) -> str:

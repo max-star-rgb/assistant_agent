@@ -9,10 +9,11 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from copy import copy
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Literal, Mapping, Protocol
+from typing import Any, Collection, Literal, Mapping, Protocol
 
 from pydantic import BaseModel, Field
 
@@ -537,10 +538,26 @@ def run_langfuse_agent_experiment(
         "real_readonly",
         "real_system",
     ] = "scripted_mock",
+    dataset_item_ids: Collection[str] | None = None,
 ) -> Any:
     """Run the Agent task; Langfuse-native rules evaluate it asynchronously."""
 
     dataset = client.get_dataset(dataset_name)
+    selected_item_ids = set(dataset_item_ids or ())
+    if dataset_item_ids is not None:
+        available_item_ids = {str(item.id) for item in dataset.items}
+        missing_item_ids = selected_item_ids - available_item_ids
+        if missing_item_ids:
+            raise ValueError(
+                "Dataset items are unavailable: "
+                + ", ".join(sorted(missing_item_ids))
+            )
+        if not selected_item_ids:
+            raise ValueError("At least one Dataset item must be selected.")
+        dataset = copy(dataset)
+        dataset.items = [
+            item for item in dataset.items if str(item.id) in selected_item_ids
+        ]
     observer = trace_observer or create_required_eval_trace_observer()
     owns_observer = trace_observer is None
     evaluation_objective = {
@@ -550,6 +567,9 @@ def run_langfuse_agent_experiment(
     }[execution_profile]
     evaluation_methods = ["code", "llm_as_a_judge"]
     semantic_score_names = list(REAL_AGENT_SEMANTIC_SCORE_NAMES)
+    dataset_selection_mode = (
+        "explicit_item_ids" if dataset_item_ids is not None else "full"
+    )
     try:
         return dataset.run_experiment(
             name=experiment_name,
@@ -580,6 +600,8 @@ def run_langfuse_agent_experiment(
                 "evaluation_methods": evaluation_methods,
                 "deterministic_score_names": list(DETERMINISTIC_SCORE_NAMES),
                 "semantic_score_names": semantic_score_names,
+                "dataset_item_count": len(dataset.items),
+                "dataset_selection_mode": dataset_selection_mode,
                 **(metadata or {}),
             },
         )
@@ -588,6 +610,73 @@ def run_langfuse_agent_experiment(
             raise RuntimeError(
                 "Langfuse Experiment Runtime trace export did not close cleanly."
             )
+
+
+def failed_dataset_item_ids(
+    client: Any,
+    *,
+    dataset_name: str,
+    run_name: str,
+    score_names: Collection[str],
+) -> list[str]:
+    """Return Dataset item ids with a latest, explicitly failed score."""
+
+    dataset_run = client.get_dataset_run(
+        dataset_name=dataset_name,
+        run_name=run_name,
+    )
+    trace_to_item_id = {
+        str(run_item.trace_id): str(run_item.dataset_item_id)
+        for run_item in dataset_run.dataset_run_items
+    }
+    latest_scores: dict[tuple[str, str], Any] = {}
+    for trace_id in trace_to_item_id:
+        page = 1
+        while True:
+            response = client.api.scores.get_many(
+                trace_id=trace_id,
+                page=page,
+                limit=100,
+            )
+            for score in response.data:
+                score_name = getattr(score, "name", None)
+                if score_name not in score_names:
+                    continue
+                key = (trace_id, str(score_name))
+                previous = latest_scores.get(key)
+                if previous is None or score.timestamp > previous.timestamp:
+                    latest_scores[key] = score
+            if page >= response.meta.total_pages:
+                break
+            page += 1
+
+    failed_trace_ids = {
+        trace_id
+        for (trace_id, _), score in latest_scores.items()
+        if getattr(score, "data_type", None) == "BOOLEAN"
+        and float(score.value) == 0.0
+    }
+    return [
+        trace_to_item_id[str(run_item.trace_id)]
+        for run_item in dataset_run.dataset_run_items
+        if str(run_item.trace_id) in failed_trace_ids
+    ]
+
+
+def partition_available_dataset_item_ids(
+    dataset: Any,
+    requested_item_ids: Collection[str],
+) -> tuple[list[str], list[str]]:
+    """Partition historical item ids by availability in the current Dataset."""
+
+    available_item_ids = {str(item.id) for item in dataset.items}
+    selected = [
+        item_id for item_id in requested_item_ids if item_id in available_item_ids
+    ]
+    unavailable = [
+        item_id for item_id in requested_item_ids if item_id not in available_item_ids
+    ]
+    return selected, unavailable
 
 
 def create_required_eval_trace_observer(

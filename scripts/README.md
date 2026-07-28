@@ -45,8 +45,11 @@ For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
   `--real-readonly --allow-real-tools` five-case real Chat Provider/weather
   profile through a Langfuse Experiment and shared Runtime trace. Scoring is
   asynchronous and owned by Langfuse-native Code and LLM-as-a-Judge
-  Evaluators; the script does not register SDK evaluators. It loads the
-  untracked `.env` by default. Case implementation lives under
+  Evaluators; the script does not register SDK evaluators. Use
+  `--rerun-failed-from <run-name>` to create a new Experiment containing only
+  items with an explicitly failed latest native Score in that Dataset run, or
+  pass `--rerun-failed-from none` for a full Dataset run. It loads the untracked
+  `.env` by default. Case implementation lives under
   `evals/cases/langfuse/`.
 - `scripts/run_improvement_lab.py`: offline, non-mutating improvement proposal runner.
 - `scripts/check_pilot_readiness.py` and `scripts/collect_pilot_evidence.py`:
