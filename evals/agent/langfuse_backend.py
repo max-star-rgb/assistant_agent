@@ -229,6 +229,7 @@ def _assertion_metadata(
     for assertion_name, assertion_result in dimension_result.assertions.items():
         prefix = f"assertion.{assertion_name}"
         metadata[f"{prefix}.passed"] = assertion_result.passed
+        metadata[f"{prefix}.label"] = assertion_result.label
         metadata[f"{prefix}.method"] = assertion_result.evaluation_method
         if assertion_result.criterion_id is not None:
             metadata[f"{prefix}.criterion_id"] = assertion_result.criterion_id

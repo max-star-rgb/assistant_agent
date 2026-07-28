@@ -25,10 +25,23 @@ DIMENSION_NAMES = (
     "response",
 )
 
+DIMENSION_LABELS = {
+    "tool_execution": "工具执行",
+    "tool_use": "工具使用",
+    "state": "状态变化",
+    "response": "最终回答",
+}
 
-def rule_assertion(passed: bool, reason: str) -> AssertionResult:
+
+def rule_assertion(
+    passed: bool,
+    reason: str,
+    *,
+    label: str,
+) -> AssertionResult:
     return AssertionResult(
         passed=passed,
+        label=label,
         reason=reason,
         evaluation_method="rule",
     )
@@ -38,9 +51,11 @@ def judge_assertion(
     verdict: JudgeVerdict,
     *,
     criterion_id: str,
+    label: str,
 ) -> AssertionResult:
     return AssertionResult(
         passed=verdict.passed,
+        label=label,
         reason=verdict.reason,
         evaluation_method="judge",
         criterion_id=criterion_id,
@@ -56,7 +71,11 @@ def dimension(
     failed = [name for name, result in resolved.items() if not result.passed]
     return DimensionResult(
         passed=not failed,
-        reason=("全部断言通过。" if not failed else "未通过：" + "、".join(failed)),
+        reason=(
+            f"全部检查通过（{len(resolved)}/{len(resolved)}）。"
+            if not failed
+            else _failed_assertion_comment(resolved, failed)
+        ),
         assertions=resolved,
     )
 
@@ -74,13 +93,17 @@ def grader_result(
         state=state,
         response=response,
     )
-    failed = [name for name in DIMENSION_NAMES if not getattr(dimensions, name).passed]
+    failed = [
+        name for name in DIMENSION_NAMES if not getattr(dimensions, name).passed
+    ]
     passed = not failed
     return GraderResult(
         passed=passed,
         reward=1.0 if passed else 0.0,
         reason=(
-            "全部必要评分维度通过。" if passed else "未通过维度：" + "、".join(failed)
+            "评测通过：4 个必要维度全部通过。"
+            if passed
+            else _failed_dimension_comment(dimensions, failed)
         ),
         dimensions=dimensions,
     )
@@ -98,7 +121,7 @@ def environment_validation(
         reason=(
             "Environment 配置与受控依赖有效。"
             if not failed
-            else "未通过：" + "、".join(failed)
+            else _failed_assertion_comment(resolved, failed)
         ),
         checks=resolved,
     )
@@ -218,4 +241,39 @@ def _tool_outcomes_match(
             if not mismatches
             else "；".join(mismatches)
         ),
+        label="工具结果符合受控环境预期",
     )
+
+
+def _failed_assertion_comment(
+    assertions: Mapping[str, AssertionResult],
+    failed_names: list[str],
+) -> str:
+    lines = [
+        f"- {assertions[name].label}：{assertions[name].reason}"
+        for name in failed_names
+    ]
+    return (
+        f"未通过 {len(failed_names)}/{len(assertions)} 项检查：\n"
+        + "\n".join(lines)
+    )
+
+
+def _failed_dimension_comment(
+    dimensions: GraderDimensions,
+    failed_names: list[str],
+) -> str:
+    lines: list[str] = []
+    for name in failed_names:
+        dimension_result = getattr(dimensions, name)
+        failed_assertions = [
+            assertion
+            for assertion in dimension_result.assertions.values()
+            if not assertion.passed
+        ]
+        details = "；".join(
+            f"{assertion.label}：{assertion.reason}"
+            for assertion in failed_assertions
+        )
+        lines.append(f"- {DIMENSION_LABELS[name]}：{details}")
+    return "评测未通过：\n" + "\n".join(lines)

@@ -112,6 +112,7 @@ class WeatherTimeoutEnvironment:
                 "isolated_tool_registry": rule_assertion(
                     registry.sealed and registry.list() == ["weather"],
                     (f"sealed={registry.sealed}, registered_tools={registry.list()}"),
+                    label="工具注册表保持隔离",
                 ),
                 "outcome_contract_matches_registry": rule_assertion(
                     {expectation.tool_name for expectation in expectations}
@@ -121,6 +122,7 @@ class WeatherTimeoutEnvironment:
                         f"{[expectation.tool_name for expectation in expectations]}, "
                         f"registered_tools={registry.list()}"
                     ),
+                    label="工具结果预期覆盖注册表",
                 ),
                 "weather_timeout_fixture": rule_assertion(
                     (
@@ -133,6 +135,7 @@ class WeatherTimeoutEnvironment:
                         f"error_codes={error_codes}, "
                         f"provider={fixture_result.provider}"
                     ),
+                    label="天气超时 Fixture 符合声明",
                 ),
                 "stateless_boundary": rule_assertion(
                     all(spec.category == "read" for spec in specs),
@@ -141,6 +144,7 @@ class WeatherTimeoutEnvironment:
                         f"{[spec.category for spec in specs]}；"
                         "运行时使用 in-memory session/trace store。"
                     ),
+                    label="任务保持无副作用且状态隔离",
                 ),
             }
         )

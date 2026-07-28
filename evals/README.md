@@ -219,8 +219,12 @@ tool_use
 Rule 结果具有确定性权威，Judge 不得覆盖 Rule。Judge Provider 超时、输出不可解析、criterion 缺失或
 未返回 verdict 属于评测基础设施失败，不得记录为 Agent assertion 失败。Judge assertion 使用稳定
 `criterion_id`；校准文件以 `judge_verdicts` 分别标注每个 criterion，不能用一个笼统语义标签代替
-多个不同判断。Langfuse Score metadata 把每条 assertion 的 `passed`、`method` 和可选
-`criterion_id` 写成独立标量字段，避免把完整 rubric、reason 或嵌套大对象传播成超长属性。
+多个不同判断。每条 assertion 还必须提供面向评测查看者的短 `label`；内部 key 只用于稳定定位，
+不能单独充当 comment。
+
+维度失败 comment 展示“检查数量 + label + 真实 reason”，主要 reward comment 展示失败维度中文名
+及其具体失败原因。Langfuse Score metadata 把每条 assertion 的 `passed`、`label`、`method` 和
+可选 `criterion_id` 写成独立标量字段，避免把完整 rubric、reason 或嵌套大对象传播成超长属性。
 
 工具业务结果预期以 Environment 的强类型声明为唯一事实源：
 

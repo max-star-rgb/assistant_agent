@@ -100,7 +100,10 @@ Agent 行为不满足任务时退出 1。凭据、Trace 导出、Dataset、Judge
 - Grader 对 Agent 隐藏，并先用正反样本证明能区分结果。
 - 一个主要 reward 决定通过；固定四维只解释 reward，Task 专属断言不形成新 Score。
 - Rule 与 LLM Judge 分开实现但统一产出 assertion；每条 assertion 显式标记
-  `evaluation_method=rule|judge`，Judge assertion 使用稳定 `criterion_id`。
+  `evaluation_method=rule|judge`，提供面向评测查看者的短 `label`，Judge assertion 使用稳定
+  `criterion_id`。
+- Langfuse comment 必须展示失败 assertion 的 `label + reason`，主要 reward 还要展示失败维度中文
+  名；内部 assertion key 不得单独充当用户可见诊断。
 - 可客观证明的事实必须使用 Rule；LLM Judge 只判断开放语义，不能覆盖 Rule 结果。Judge 故障属于
   基础设施失败。
 - Environment validation、凭据、Evidence 和 Judge 故障属于基础设施状态，不计入 Agent 分数。

@@ -68,6 +68,7 @@ def grade(
                 OUTCOME_EVIDENCE_USAGE_CRITERION_ID: judge_assertion(
                     outcome_evidence_usage,
                     criterion_id=OUTCOME_EVIDENCE_USAGE_CRITERION_ID,
+                    label="工具结果理解与证据使用",
                 ),
             }
         ),
@@ -81,6 +82,7 @@ def grade(
                 RESPONSE_QUALITY_CRITERION_ID: judge_assertion(
                     response_quality,
                     criterion_id=RESPONSE_QUALITY_CRITERION_ID,
+                    label="最终回答质量",
                 ),
             }
         ),
@@ -92,6 +94,7 @@ def _runtime_completed(evidence: RunEvidence) -> AssertionResult:
     return rule_assertion(
         passed,
         f"terminal_status={evidence.terminal_status}",
+        label="Runtime 正常完成",
     )
 
 
@@ -100,6 +103,7 @@ def _expected_tool_exposed(evidence: RunEvidence) -> AssertionResult:
     return rule_assertion(
         passed,
         f"available_tools={evidence.available_tools}",
+        label="目标工具已向 Agent 暴露",
     )
 
 
@@ -114,6 +118,7 @@ def _validation_accepted(evidence: RunEvidence) -> AssertionResult:
             f"validation_statuses={statuses}, "
             f"tool_execution_count={len(evidence.tool_executions)}"
         ),
+        label="工具调用通过 Action Validator",
     )
 
 
@@ -143,13 +148,18 @@ def _tool_lifecycle_closed(evidence: RunEvidence) -> AssertionResult:
             "exposed="
             f"{[execution.exposed for execution in executions]}"
         ),
+        label="工具调用生命周期完整闭合",
     )
 
 
 def _weather_called_once(evidence: RunEvidence) -> AssertionResult:
     names = [execution.name for execution in evidence.tool_executions]
     passed = names == ["weather"]
-    return rule_assertion(passed, f"tool_calls={names}")
+    return rule_assertion(
+        passed,
+        f"tool_calls={names}",
+        label="天气工具调用次数符合策略",
+    )
 
 
 def _weather_arguments_correct(evidence: RunEvidence) -> AssertionResult:
@@ -157,6 +167,7 @@ def _weather_arguments_correct(evidence: RunEvidence) -> AssertionResult:
         return rule_assertion(
             False,
             "无法在非单次调用上验证参数。",
+            label="天气查询参数正确",
         )
     arguments = evidence.tool_executions[0].input
     location = str(arguments.get("location") or "")
@@ -169,6 +180,7 @@ def _weather_arguments_correct(evidence: RunEvidence) -> AssertionResult:
             f"location={location!r}, target_date={target_date!r}, "
             f"expected_date={expected_date!r}"
         ),
+        label="天气查询参数正确",
     )
 
 
@@ -179,4 +191,5 @@ def _expected_state_unchanged(evidence: RunEvidence) -> AssertionResult:
     return rule_assertion(
         not changed,
         f"state_diff={evidence.state_diff}",
+        label="只读任务未产生状态变更",
     )

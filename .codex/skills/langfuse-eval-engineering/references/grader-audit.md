@@ -35,6 +35,8 @@ Rule 与 LLM Judge 是判断机制，不是顶层质量维度。两者分开实�
 - 可从 Trace、结构化 Tool result 或状态直接证明的事实使用 Rule；
 - 结果解释、证据忠实性、任务完成度等开放语义使用 LLM Judge；
 - 每条 assertion 标记 `evaluation_method=rule|judge`；
+- 每条 assertion 提供简短、面向评测查看者的 `label`；内部 assertion key 只用于稳定定位，不得
+  单独充当 Langfuse comment；
 - Judge assertion 使用稳定 `criterion_id`，校准文件为每个 criterion 单独提供
   `judge_verdicts`；
 - Rule 失败不能被 Judge 覆盖；Judge 超时、解析失败、缺少 verdict 或 criterion 不匹配属于
@@ -42,6 +44,10 @@ Rule 与 LLM Judge 是判断机制，不是顶层质量维度。两者分开实�
 
 同一行为维度可以同时包含 Rule 和 Judge。例如 `tool_use` 可以包含参数 Rule、调用策略 Rule 和
 `outcome_evidence_usage` Judge。不要因为判断机制不同而创建 `rule_score` 或 `llm_score`。
+
+维度失败 comment 必须展示失败数量、`label` 和 assertion 的真实 `reason`；主要 reward comment
+必须展示失败维度的中文名及其失败 assertion 摘要。不要只输出 `response_quality`、
+`outcome_evidence_usage` 等内部 ID。
 
 ## 工具结果单一事实源
 

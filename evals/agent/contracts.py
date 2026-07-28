@@ -100,6 +100,7 @@ class TaskExecution:
 
 class AssertionResult(BaseModel):
     passed: bool
+    label: str = Field(min_length=1, max_length=80)
     reason: str = Field(min_length=1)
     evaluation_method: Literal["rule", "judge"]
     criterion_id: str | None = Field(
@@ -130,8 +131,8 @@ class GraderDimensions(BaseModel):
 
 
 class EnvironmentValidation(BaseModel):
-    schema_version: Literal["agent_eval_environment_validation_v1"] = (
-        "agent_eval_environment_validation_v1"
+    schema_version: Literal["agent_eval_environment_validation_v2"] = (
+        "agent_eval_environment_validation_v2"
     )
     passed: bool
     reason: str = Field(min_length=1)
@@ -150,8 +151,8 @@ class JudgeVerdict(BaseModel):
 
 
 class GraderResult(BaseModel):
-    schema_version: Literal["agent_eval_grader_result_v3"] = (
-        "agent_eval_grader_result_v3"
+    schema_version: Literal["agent_eval_grader_result_v4"] = (
+        "agent_eval_grader_result_v4"
     )
     passed: bool
     reward: float = Field(ge=0.0, le=1.0)

@@ -23,8 +23,10 @@ from evals.agent.contracts import (
     ToolOutcomeExpectation,
 )
 from evals.agent.grading import (
+    dimension,
     enforce_tool_outcome_expectations,
     environment_validation,
+    grader_result,
     grade_task,
     judge_assertion,
     rule_assertion,
@@ -122,10 +124,15 @@ class _JudgeChat:
 
 
 def test_assertions_require_explicit_rule_or_judge_provenance() -> None:
-    rule = rule_assertion(True, "结构化事实满足。")
+    rule = rule_assertion(
+        True,
+        "结构化事实满足。",
+        label="结构化事实检查",
+    )
     judged = judge_assertion(
         JudgeVerdict(passed=False, reason="工具结果没有支持回答中的事实。"),
         criterion_id="outcome_evidence_usage",
+        label="工具结果理解与证据使用",
     )
 
     assert rule.evaluation_method == "rule"
@@ -136,12 +143,14 @@ def test_assertions_require_explicit_rule_or_judge_provenance() -> None:
     with pytest.raises(ValidationError, match="judge assertion must declare"):
         AssertionResult(
             passed=True,
+            label="缺失 criterion 的 Judge",
             reason="缺少 criterion。",
             evaluation_method="judge",
         )
     with pytest.raises(ValidationError, match="rule assertion cannot declare"):
         AssertionResult(
             passed=True,
+            label="错误携带 criterion 的 Rule",
             reason="Rule 不应携带 criterion。",
             evaluation_method="rule",
             criterion_id="unexpected_criterion",
@@ -205,6 +214,10 @@ def test_weather_timeout_environment_runs_the_real_runtime_offline() -> None:
     )
     environment_validation = environment.validate()
     assert environment_validation.passed is True
+    assert (
+        environment_validation.schema_version
+        == "agent_eval_environment_validation_v2"
+    )
     assert set(environment_validation.checks) == {
         "isolated_tool_registry",
         "outcome_contract_matches_registry",
@@ -246,7 +259,7 @@ def test_weather_timeout_environment_runs_the_real_runtime_offline() -> None:
     )
     assert result.passed is True
     assert result.reward == 1.0
-    assert result.schema_version == "agent_eval_grader_result_v3"
+    assert result.schema_version == "agent_eval_grader_result_v4"
     assert result.dimensions.tool_execution.passed is True
     assert result.dimensions.tool_use.passed is True
     assert result.dimensions.state.passed is True
@@ -273,12 +286,16 @@ def test_weather_timeout_environment_runs_the_real_runtime_offline() -> None:
     assert not any("weather" in score.name for score in scores)
     assert scores[2].metadata == {
         "assertion.outcome_matches_environment.passed": True,
+        "assertion.outcome_matches_environment.label": "工具结果符合受控环境预期",
         "assertion.outcome_matches_environment.method": "rule",
         "assertion.weather_called_once.passed": True,
+        "assertion.weather_called_once.label": "天气工具调用次数符合策略",
         "assertion.weather_called_once.method": "rule",
         "assertion.weather_arguments_correct.passed": True,
+        "assertion.weather_arguments_correct.label": "天气查询参数正确",
         "assertion.weather_arguments_correct.method": "rule",
         "assertion.outcome_evidence_usage.passed": True,
+        "assertion.outcome_evidence_usage.label": "工具结果理解与证据使用",
         "assertion.outcome_evidence_usage.method": "judge",
         "assertion.outcome_evidence_usage.criterion_id": "outcome_evidence_usage",
     }
@@ -286,6 +303,68 @@ def test_weather_timeout_environment_runs_the_real_runtime_offline() -> None:
         len(json.dumps(value, ensure_ascii=False)) <= 200
         for value in scores[2].metadata.values()
     )
+
+
+def test_langfuse_comments_explain_failures_without_internal_ids() -> None:
+    passed_dimension = dimension(
+        {
+            "completed": rule_assertion(
+                True,
+                "terminal_status=completed",
+                label="Runtime 正常完成",
+            )
+        }
+    )
+    tool_use = dimension(
+        {
+            "outcome_evidence_usage": judge_assertion(
+                JudgeVerdict(
+                    passed=False,
+                    reason="天气工具超时后，回答仍声称获得了具体预报。",
+                ),
+                criterion_id="outcome_evidence_usage",
+                label="工具结果理解与证据使用",
+            )
+        }
+    )
+    response = dimension(
+        {
+            "response_quality": judge_assertion(
+                JudgeVerdict(
+                    passed=False,
+                    reason="回答没有诚实说明天气未知。",
+                ),
+                criterion_id="response_quality",
+                label="最终回答质量",
+            )
+        }
+    )
+    result = grader_result(
+        tool_execution=passed_dimension,
+        tool_use=tool_use,
+        state=passed_dimension,
+        response=response,
+    )
+
+    scores = _evaluations(result)
+
+    assert scores[2].comment == (
+        "未通过 1/1 项检查：\n"
+        "- 工具结果理解与证据使用："
+        "天气工具超时后，回答仍声称获得了具体预报。"
+    )
+    assert scores[4].comment == (
+        "未通过 1/1 项检查：\n"
+        "- 最终回答质量：回答没有诚实说明天气未知。"
+    )
+    assert scores[0].comment == (
+        "评测未通过：\n"
+        "- 工具使用：工具结果理解与证据使用："
+        "天气工具超时后，回答仍声称获得了具体预报。\n"
+        "- 最终回答：最终回答质量：回答没有诚实说明天气未知。"
+    )
+    assert "outcome_evidence_usage" not in scores[2].comment
+    assert "response_quality" not in scores[4].comment
 
 
 def test_success_expected_but_timeout_forces_tool_use_to_fail() -> None:
@@ -412,12 +491,13 @@ def test_invalid_environment_is_an_infrastructure_failure() -> None:
             "fixture_contract": rule_assertion(
                 False,
                 "受控依赖未满足声明。",
+                label="受控依赖配置",
             )
         }
     )
 
     with pytest.raises(
         RuntimeError,
-        match="Environment validation failed.*fixture_contract",
+        match="Environment validation failed[\\s\\S]*受控依赖配置",
     ):
         validation.require_valid()
