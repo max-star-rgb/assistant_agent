@@ -132,6 +132,10 @@ def test_tavily_search_adapter_treats_empty_results_as_successful_outcome(
     assert tool_result.success is True
     assert tool_result.data is not None
     assert tool_result.data["outcome"] == "empty"
+    assert tool_result.model_observation is not None
+    assert tool_result.model_observation["summary"] == (
+        "网页搜索完成，但没有找到结果。"
+    )
     assert tool_result.contract is not None
     assert tool_result.contract.status == "succeeded"
 
@@ -265,6 +269,10 @@ def test_tavily_fetch_adapter_treats_clean_empty_response_as_empty_outcome(
     assert tool_result.success is True
     assert tool_result.data is not None
     assert tool_result.data["outcome"] == "empty"
+    assert tool_result.model_observation is not None
+    assert tool_result.model_observation["summary"] == (
+        "网页未返回可读正文：https://example.com/empty。"
+    )
     assert tool_result.contract is not None
     assert tool_result.contract.status == "succeeded"
 

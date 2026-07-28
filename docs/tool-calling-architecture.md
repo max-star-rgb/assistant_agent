@@ -423,6 +423,12 @@ observation 交回主 LLM，由模型修改参数、选择其他工具、追问�
 其他未显式选择恢复模式的入口默认仍使用 `stop_run`。取消始终走独立 cancellation 终态，不能作为普通
 工具失败恢复。该状态机不得按 Tool name 分支。
 
+模型侧 observation 将执行状态与业务结果分开：`status=succeeded | failed | rejected` 表示本次调用
+是否完成，`outcome=success | partial | empty` 表示成功执行后的领域结果类别。`partial` 和 `empty`
+不是执行失败；Provider 超时、输入无效和拒绝等原因通过结构化 `error` 表达，不与领域 outcome
+混在同一个枚举中。每条 observation 同时保留面向推理的 `summary` 和工具专属 `data`，并使用
+`warnings`、`is_complete` 明确结果限制；公共字段从 `data` 中提升后去重。
+
 foreground ReAct 的重复保护使用 `tool_name + canonical tool_input` 的摘要签名。相同工具使用不同参数
 属于可修正调用，可以继续执行；完全相同且已经失败的调用在执行前被阻止，并增加结构化 rejected
 observation，随后用不暴露工具的 answer-only LLM 轮次形成最终回答。这样既允许修正输入，也不会用
@@ -437,7 +443,8 @@ run 终态为 `completed`，响应通过 `degraded` 和 `handled_tool_failures` 
 
 assistant loop 显式区分 `ACT` 和 `FINALIZE`。达到工具预算或 guard 要求停止行动后，Runtime 进入
 `FINALIZE`，不再沿用 `assistant.tool_calls -> tool` 的 native action trajectory；Context 层把已有
-observation 投影为保留 status、summary、工具专属 data、error 和 ref 的 evidence，并以独立
+observation 投影为保留 status、summary、outcome、warnings、is_complete、工具专属 data、error 和
+ref 的 evidence，并以独立
 `tools=[]`、`tool_choice=none` 请求生成最终回答。FINALIZE 中出现的 tool call 是协议违规，不进入
 Validator/Executor；Runtime 最多进行一次仍无工具的严格纠正，避免恢复逻辑形成新循环。
 

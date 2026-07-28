@@ -307,8 +307,9 @@ def test_prompt_observation_projection_removes_duplicate_envelope_fields() -> No
     } == {
         "tool_name": "example",
         "status": "succeeded",
+        "summary": "duplicate summary",
+        "is_complete": True,
         "data": {
-            "summary": "duplicate summary",
             "items": [{"id": 0}, {"id": 1}, {"id": 2}],
         },
         "ref": "artifact://one",
@@ -346,6 +347,8 @@ def test_prompt_observation_projection_uses_one_error_contract() -> None:
     } == {
         "tool_name": "example",
         "status": "failed",
+        "summary": "duplicated failure",
+        "is_complete": False,
         "error": {
             "code": "provider_timeout",
             "message": "timed out",

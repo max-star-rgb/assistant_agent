@@ -68,6 +68,7 @@ class WebSearchTool(ToolBase):
 
 def _web_search_model_observation(data: dict[str, Any]) -> dict[str, Any]:
     observation: dict[str, Any] = {
+        "summary": _web_search_summary(data),
         "outcome": data.get("outcome"),
         "query_used": data.get("query_used"),
         "total": data.get("total"),
@@ -83,6 +84,19 @@ def _web_search_model_observation(data: dict[str, Any]) -> dict[str, Any]:
     return {
         key: value for key, value in observation.items() if value not in (None, [], {})
     }
+
+
+def _web_search_summary(data: dict[str, Any]) -> str:
+    explicit = data.get("summary")
+    if isinstance(explicit, str) and explicit.strip():
+        return explicit
+    results = data.get("results")
+    if isinstance(results, list) and results and isinstance(results[0], dict):
+        title = results[0].get("title") or "未命名结果"
+        return f"找到 {len(results)} 条网页结果，首条为“{title}”。"
+    if data.get("outcome") == "failed":
+        return "网页搜索执行失败。"
+    return "网页搜索完成，但没有找到结果。"
 
 
 def _web_result_model_observation(item: dict[str, Any]) -> dict[str, Any]:

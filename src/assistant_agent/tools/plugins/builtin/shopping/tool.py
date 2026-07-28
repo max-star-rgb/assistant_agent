@@ -280,6 +280,7 @@ def _shopping_search_model_observation(data: dict[str, Any]) -> dict[str, Any]:
         if isinstance(item, dict)
     ]
     observation: dict[str, Any] = {
+        "summary": data.get("summary"),
         "outcome": data.get("outcome"),
         "query": data.get("query"),
         "requested_constraints": {
@@ -309,8 +310,6 @@ def _shopping_search_model_observation(data: dict[str, Any]) -> dict[str, Any]:
             "rules": ["仅使用 data 中的真实字段", "不得声称已下单"],
         },
     }
-    if not items:
-        observation["summary"] = data.get("summary")
     errors = data.get("errors")
     if errors:
         observation["errors"] = errors

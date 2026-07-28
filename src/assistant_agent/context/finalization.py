@@ -8,7 +8,10 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from assistant_agent.tools.observation import prompt_observation_payload
+from assistant_agent.tools.observation import (
+    ObservationOutcome,
+    prompt_observation_payload,
+)
 
 
 FinalizeEvidenceStatus = Literal["succeeded", "failed", "rejected"]
@@ -20,6 +23,9 @@ class FinalizeEvidence(BaseModel):
     source: str = Field(min_length=1)
     status: FinalizeEvidenceStatus
     summary: str | None = None
+    outcome: ObservationOutcome | None = None
+    warnings: list[str] = Field(default_factory=list)
+    is_complete: bool = True
     data: dict[str, Any] = Field(default_factory=dict)
     error: dict[str, Any] | None = None
     ref: str | None = None
@@ -37,7 +43,6 @@ def build_finalize_messages(
         _finalize_evidence(observation).model_dump(
             mode="json",
             exclude_none=True,
-            exclude_defaults=True,
         )
         for observation in observations
     ]
@@ -65,11 +70,19 @@ def _finalize_evidence(observation: Mapping[str, Any]) -> FinalizeEvidence:
     status = str(payload.get("status") or "failed")
     if status not in {"succeeded", "failed", "rejected"}:
         status = "failed"
-    summary = observation.get("summary")
+    summary = payload.get("summary")
+    outcome = payload.get("outcome")
     return FinalizeEvidence(
         source=str(payload.get("tool_name") or "unknown"),
         status=status,
         summary=summary if isinstance(summary, str) and summary.strip() else None,
+        outcome=outcome if outcome in {"success", "partial", "empty"} else None,
+        warnings=[
+            warning
+            for warning in payload.get("warnings") or []
+            if isinstance(warning, str)
+        ],
+        is_complete=bool(payload.get("is_complete", status == "succeeded")),
         data=dict(payload["data"]) if isinstance(payload.get("data"), Mapping) else {},
         error=dict(payload["error"]) if isinstance(payload.get("error"), Mapping) else None,
         ref=payload.get("ref") if isinstance(payload.get("ref"), str) else None,

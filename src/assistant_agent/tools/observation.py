@@ -13,14 +13,8 @@ from assistant_agent.providers.provider_errors import (
     sanitize_error_detail,
     sanitize_error_message,
 )
-from assistant_agent.tools.ids import (
-    SHOPPING_SEARCH_TOOL_NAME,
-    WEB_FETCH_TOOL_NAME,
-    WEB_SEARCH_TOOL_NAME,
-)
-
-
 ObservationStatus = Literal["succeeded", "failed", "rejected"]
+ObservationOutcome = Literal["success", "partial", "empty"]
 
 
 class ToolObservation(BaseModel):
@@ -29,6 +23,9 @@ class ToolObservation(BaseModel):
     tool_name: str = Field(min_length=1)
     status: ObservationStatus
     summary: str = Field(min_length=1)
+    outcome: ObservationOutcome | None = None
+    warnings: list[str] = Field(default_factory=list)
+    is_complete: bool = True
     output_ref: str | None = None
     structured_output: dict[str, Any] = Field(default_factory=dict)
     error_code: str | None = None
@@ -40,7 +37,7 @@ class ToolObservation(BaseModel):
 
 
 def prompt_observation_payload(observation: Mapping[str, Any]) -> dict[str, Any]:
-    """Project an internal observation into the minimal LLM-facing protocol."""
+    """Project an internal observation into the semantic LLM-facing protocol."""
 
     tool_name = str(observation.get("tool_name") or "unknown")
     status = str(observation.get("status") or "failed")
@@ -52,14 +49,40 @@ def prompt_observation_payload(observation: Mapping[str, Any]) -> dict[str, Any]
         "tool_name": tool_name,
         "status": status,
     }
+    summary = observation.get("summary")
+    if isinstance(summary, str) and summary:
+        payload["summary"] = summary
+
+    data_outcome = data.pop("outcome", None)
+    outcome = observation.get("outcome") or data_outcome
+    if outcome in {"success", "partial", "empty"}:
+        payload["outcome"] = outcome
+
+    warnings = observation.get("warnings")
+    if not isinstance(warnings, list):
+        warnings = data.pop("warnings", None)
+    else:
+        data.pop("warnings", None)
+    normalized_warnings = [
+        warning for warning in warnings or [] if isinstance(warning, str) and warning
+    ]
+    if normalized_warnings:
+        payload["warnings"] = normalized_warnings
+
+    explicit_complete = observation.get("is_complete")
+    if not isinstance(explicit_complete, bool):
+        explicit_complete = data.pop("is_complete", None)
+    else:
+        data.pop("is_complete", None)
+    payload["is_complete"] = (
+        explicit_complete if isinstance(explicit_complete, bool) else status == "succeeded"
+    )
+
+    data.pop("summary", None)
 
     if status == "succeeded":
         if data:
             payload["data"] = data
-        else:
-            summary = observation.get("summary")
-            if isinstance(summary, str) and summary:
-                payload["summary"] = summary
     else:
         error = _prompt_error_payload(observation, data)
         if error:
@@ -154,12 +177,17 @@ def observation_from_tool_result(
     )
     data = sanitize_error_detail(data_source or {})
     error_message = sanitize_error_message(result.error or "") if result.error else None
+    structured_data = data if isinstance(data, dict) else {}
+    outcome = _observation_outcome(status, structured_data)
     observation = ToolObservation(
         tool_name=result.tool_name,
         status=status,
         summary=_summary_from_result(result, data, error_message),
+        outcome=outcome,
+        warnings=_observation_warnings(structured_data),
+        is_complete=_observation_is_complete(status, outcome, structured_data),
         output_ref=result.output_ref,
-        structured_output=data if isinstance(data, dict) else {},
+        structured_output=structured_data,
         error_code=_error_code(result.error),
         error_message=error_message,
         next_step_hint=_next_step_hint(
@@ -171,6 +199,42 @@ def observation_from_tool_result(
         ),
     )
     return _bound_observation(observation, max_result_chars=max_result_chars)
+
+
+def _observation_outcome(
+    status: ObservationStatus,
+    data: Mapping[str, Any],
+) -> ObservationOutcome | None:
+    if status != "succeeded":
+        return None
+    outcome = data.get("outcome")
+    if outcome in {"success", "partial", "empty"}:
+        return outcome
+    return "success"
+
+
+def _observation_warnings(data: Mapping[str, Any]) -> list[str]:
+    warnings = data.get("warnings")
+    if not isinstance(warnings, list):
+        return []
+    return [
+        sanitize_error_message(warning)
+        for warning in warnings
+        if isinstance(warning, str) and warning.strip()
+    ]
+
+
+def _observation_is_complete(
+    status: ObservationStatus,
+    outcome: ObservationOutcome | None,
+    data: Mapping[str, Any],
+) -> bool:
+    explicit = data.get("is_complete")
+    if isinstance(explicit, bool):
+        return explicit
+    if status != "succeeded" or outcome == "partial":
+        return False
+    return not bool(data.get("truncated"))
 
 
 def rejected_observation(
@@ -197,96 +261,19 @@ def rejected_observation(
 def _summary_from_result(
     result: ToolResult, data: Any, error_message: str | None
 ) -> str:
+    if isinstance(data, dict) and isinstance(result.model_observation, dict):
+        explicit_summary = data.get("summary") or data.get("message")
+        if isinstance(explicit_summary, str) and explicit_summary.strip():
+            return sanitize_error_message(explicit_summary)
     if not result.success:
         return error_message or "Tool execution failed."
     if isinstance(data, dict):
-        if isinstance(result.model_observation, dict):
-            explicit_summary = data.get("summary") or data.get("message")
-            if isinstance(explicit_summary, str) and explicit_summary.strip():
-                return sanitize_error_message(explicit_summary)
-        fetch_summary = _web_fetch_summary(result.tool_name, data)
-        if fetch_summary:
-            return fetch_summary
-        web_summary = _web_search_summary(result.tool_name, data)
-        if web_summary:
-            return web_summary
-        product_summary = _shopping_summary(result.tool_name, data)
-        if product_summary:
-            return product_summary
         summary = data.get("summary") or data.get("message")
         if isinstance(summary, str) and summary.strip():
             return sanitize_error_message(summary)
         if result.output_ref:
             return f"{result.tool_name} succeeded with output {result.output_ref}."
     return f"{result.tool_name} succeeded."
-
-
-def _shopping_summary(tool_name: str, data: dict[str, Any]) -> str:
-    if tool_name == SHOPPING_SEARCH_TOOL_NAME:
-        best_offer = data.get("best_offer")
-        if isinstance(best_offer, dict) and best_offer:
-            return _format_product_item_summary(
-                best_offer, prefix="Best shopping offer"
-            )
-    return ""
-
-
-def _web_search_summary(tool_name: str, data: dict[str, Any]) -> str:
-    if tool_name != WEB_SEARCH_TOOL_NAME:
-        return ""
-    results = data.get("results")
-    if not isinstance(results, list) or not results:
-        return ""
-    first = results[0]
-    if not isinstance(first, dict):
-        return ""
-    title = first.get("title") or "result"
-    url = first.get("url")
-    source = first.get("source")
-    published_at = first.get("published_at")
-    total = data.get("total")
-    total_part = f" of {total}" if total is not None else ""
-    source_part = f", source {source}" if source else ""
-    date_part = f", published_at {published_at}" if published_at else ""
-    url_part = f", url {url}" if url else ", no result url"
-    return sanitize_error_message(
-        f"Top web result{total_part}: {title}{source_part}{date_part}{url_part}."
-    )
-
-
-def _web_fetch_summary(tool_name: str, data: dict[str, Any]) -> str:
-    if tool_name != WEB_FETCH_TOOL_NAME:
-        return ""
-    url = data.get("url")
-    if not isinstance(url, str) or not url.strip():
-        return ""
-    title = data.get("title") if isinstance(data.get("title"), str) else "web page"
-    total_chars = data.get("total_chars")
-    chars_part = f", content_chars {total_chars}" if total_chars is not None else ""
-    truncated_part = ", truncated" if data.get("truncated") else ""
-    return sanitize_error_message(
-        f"Fetched web page: {title}, url {url}{chars_part}{truncated_part}."
-    )
-
-
-def _format_product_item_summary(
-    item: dict[str, Any], *, total: Any = None, prefix: str = "Top product"
-) -> str:
-    title = item.get("title") or "candidate"
-    price = item.get("total_price") or item.get("price")
-    currency = item.get("currency") or "CNY"
-    url = item.get("product_url") or item.get("url")
-    url_status = item.get("url_status")
-    total_part = f" of {total}" if total is not None else ""
-    price_part = f", price {price} {currency}" if price is not None else ""
-    if url:
-        status_part = "" if url_status == "verified" else ", url_status unverified"
-        url_part = f", url {url}{status_part}"
-    else:
-        url_part = ", no direct product url"
-    return sanitize_error_message(
-        f"{prefix}{total_part}: {title}{price_part}{url_part}."
-    )
 
 
 def _error_code(error: str | None) -> str | None:

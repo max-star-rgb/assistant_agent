@@ -48,5 +48,11 @@ def test_image_generation_projects_one_image_reference_collection() -> None:
     } == {
         "tool_name": "image_generation",
         "status": "succeeded",
+        "summary": (
+            "image_generation succeeded with output "
+            "local://generated/poster.png."
+        ),
+        "outcome": "success",
+        "is_complete": True,
         "data": {"images": ["local://generated/poster.png"]},
     }
