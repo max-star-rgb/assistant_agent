@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 
 from assistant_agent.runtime.requests import UserRequest
 from assistant_agent.runtime.runtime import AgentGraphRuntime
-from evals.cases.langfuse.weather_failure_fixture import WeatherFailureFixture
+from evals.langfuse.weather_failure_fixture import WeatherFailureFixture
 
 
 class DatasetSeedItem(BaseModel):

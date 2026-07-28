@@ -20,21 +20,21 @@ from assistant_agent.observability.otel_exporter import (
     create_otlp_http_text_span_exporter,
 )
 from assistant_agent.providers.provider_errors import sanitize_error_message
-from evals.cases.langfuse.manifest import load_eval_manifest
-from evals.cases.langfuse.contracts import (
+from evals.langfuse.manifest import load_eval_manifest
+from evals.langfuse.contracts import (
     AgentExperimentOutput,
     LangfuseExperimentClient,
     RuntimeFactory,
     RuntimeTraceObserver,
 )
-from evals.cases.langfuse.evidence import (
+from evals.langfuse.evidence import (
     available_tools as _available_tools,
     provider_result_kinds as _provider_result_kinds,
     tool_executions as _tool_executions,
     total_latency_ms as _total_latency_ms,
     validation_results as _validation_results,
 )
-from evals.cases.langfuse.runtime_profiles import (
+from evals.langfuse.runtime_profiles import (
     build_scripted_runtime,
     case_from_dataset_fields,
 )

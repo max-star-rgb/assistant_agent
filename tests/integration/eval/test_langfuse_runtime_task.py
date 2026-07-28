@@ -10,38 +10,38 @@ from typing import Any
 
 import pytest
 
-from evals.cases.langfuse.experiment import (
+from evals.langfuse.experiment import (
     AgentExperimentTask,
     BEHAVIOR_DATASET_SEED,
     DEFAULT_DATASET_SEED,
     run_langfuse_agent_experiment,
 )
-from evals.cases.langfuse.contracts import (
+from evals.langfuse.contracts import (
     FrozenFileFixture,
     RealAgentCase,
     RuntimeBundle,
     StatelessEvalEnvironment,
 )
-from evals.cases.langfuse.dataset_sync import (
+from evals.langfuse.dataset_sync import (
     failed_dataset_item_ids,
     load_dataset_seed,
     managed_dataset_item_id,
     partition_available_dataset_item_ids,
     sync_langfuse_dataset,
 )
-from evals.cases.langfuse.evidence import (
+from evals.langfuse.evidence import (
     available_tools as _available_tools,
     tool_executions as _tool_executions,
 )
-from evals.cases.langfuse.runtime_profiles import (
+from evals.langfuse.runtime_profiles import (
     build_real_readonly_runtime,
     case_from_dataset_fields,
     prepare_frozen_file_fixture,
 )
-from evals.cases.langfuse.weather_failure_fixture import (
+from evals.langfuse.weather_failure_fixture import (
     SimulatedWeatherFailureAdapter,
 )
-from evals.cases.langfuse.manifest import (
+from evals.langfuse.manifest import (
     load_eval_manifest,
     select_eval_item_ids,
 )
@@ -319,7 +319,7 @@ def test_behavior_seed_includes_controlled_weather_failure_recovery() -> None:
 
 def test_behavior_dataset_composes_legacy_and_engineered_sources() -> None:
     composition_path = Path(
-        "evals/cases/langfuse/datasets/behavior_v2.dataset.json"
+        "evals/langfuse/datasets/behavior_v2.dataset.json"
     )
     composition = json.loads(composition_path.read_text(encoding="utf-8"))
     source_paths = [
@@ -532,6 +532,36 @@ def test_frozen_file_fixture_is_hash_verified_and_staged(tmp_path: Path) -> None
             fixture.model_copy(update={"sha256": f"sha256:{'0' * 64}"}),
             repository_root=tmp_path / "repository",
         )
+
+
+def test_repository_frozen_fixture_resolves_after_eval_path_move(
+    tmp_path: Path,
+) -> None:
+    seed = load_dataset_seed(BEHAVIOR_DATASET_SEED)
+    item = next(
+        item
+        for item in seed.items
+        if item.metadata["capability"] == "grounded_file_synthesis"
+    )
+    case = case_from_dataset_fields(
+        expected_output=item.expected_output,
+        metadata=item.metadata,
+        case_id=item.id,
+    )
+    assert isinstance(case, RealAgentCase)
+    assert case.frozen_file is not None
+
+    staged = prepare_frozen_file_fixture(
+        ProviderConfig(local_file_access_root=str(tmp_path)),
+        case.frozen_file,
+    )
+
+    staged_path = (
+        Path(staged.local_file_access_root)
+        / "grounded_file_synthesis/travel_policy_v1.txt"
+    )
+    assert staged_path.is_file()
+    assert "陈梅" in staged_path.read_text(encoding="utf-8")
 
 
 def test_grounded_file_profile_does_not_require_unrelated_weather() -> None:
@@ -761,7 +791,7 @@ def test_runtime_task_returns_compact_code_evaluator_evidence() -> None:
 
 def test_code_evaluator_keeps_semantic_expectations_out_of_mechanical_score() -> None:
     source = Path(
-        "evals/cases/langfuse/evaluators/agent_strict_pass.ts"
+        "evals/langfuse/evaluators/agent_strict_pass.ts"
     ).read_text(
         encoding="utf-8"
     )
@@ -780,7 +810,7 @@ def test_code_evaluator_keeps_semantic_expectations_out_of_mechanical_score() ->
 
 def test_evaluator_manifest_covers_both_active_datasets_and_all_scores() -> None:
     manifest_path = Path(
-        "evals/cases/langfuse/evaluators/evaluator_manifest_v1.json"
+        "evals/langfuse/evaluators/evaluator_manifest_v1.json"
     )
     evaluator_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 
@@ -824,7 +854,7 @@ def test_evaluator_manifest_covers_both_active_datasets_and_all_scores() -> None
     assert calibration == {
         "capability": "grounded_file_synthesis",
         "source": (
-            "evals/cases/langfuse/evaluators/calibration/"
+            "evals/langfuse/evaluators/calibration/"
             "grounded_file_synthesis_v1.json"
         ),
         "status": "pending_ui_judge_validation",
@@ -849,7 +879,7 @@ def test_evaluator_manifest_covers_both_active_datasets_and_all_scores() -> None
 
 def test_code_evaluator_keeps_failed_tool_outcome_out_of_mechanical_score() -> None:
     source = Path(
-        "evals/cases/langfuse/evaluators/agent_strict_pass.ts"
+        "evals/langfuse/evaluators/agent_strict_pass.ts"
     ).read_text(
         encoding="utf-8"
     )

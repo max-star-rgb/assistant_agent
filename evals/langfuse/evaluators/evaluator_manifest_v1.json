@@ -7,7 +7,7 @@
   "calibration_sets": [
     {
       "capability": "grounded_file_synthesis",
-      "source": "evals/cases/langfuse/evaluators/calibration/grounded_file_synthesis_v1.json",
+      "source": "evals/langfuse/evaluators/calibration/grounded_file_synthesis_v1.json",
       "status": "pending_ui_judge_validation"
     }
   ],
@@ -16,7 +16,7 @@
       "id": "agent-strict-pass-v1",
       "version": "v1",
       "kind": "code",
-      "source": "evals/cases/langfuse/evaluators/agent_strict_pass.ts",
+      "source": "evals/langfuse/evaluators/agent_strict_pass.ts",
       "deployment": "langfuse_ui",
       "scores": [
         "agent.runtime_trace_pass",

@@ -28,12 +28,12 @@ from assistant_agent.tools.plugins.builtin.calendar_weather_contacts.tools impor
 )
 from assistant_agent.tools.plugins.registry_factory import create_default_registry
 from assistant_agent.tools.registry import ToolRegistry
-from evals.cases.langfuse.calendar_fixture import (
+from evals.langfuse.calendar_fixture import (
     CalendarEvalCreateTool,
     CalendarEvalEnvironment,
     EvalCalendarEvent,
 )
-from evals.cases.langfuse.contracts import (
+from evals.langfuse.contracts import (
     CalendarEventExpectation,
     CreateCalendarCase,
     ExperimentCase,
@@ -44,13 +44,13 @@ from evals.cases.langfuse.contracts import (
     RuntimeBundle,
     StatelessEvalEnvironment,
 )
-from evals.cases.langfuse.manifest import load_eval_manifest
-from evals.cases.langfuse.weather_failure_fixture import (
+from evals.langfuse.manifest import load_eval_manifest
+from evals.langfuse.weather_failure_fixture import (
     SimulatedWeatherFailureAdapter,
     WeatherFailureFixture,
 )
 
-REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
 
 def validate_real_readonly_config(config: ProviderConfig) -> None:

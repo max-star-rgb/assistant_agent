@@ -42,7 +42,7 @@ For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
   `.data/evals/system/context/`。
 - `scripts/run_langfuse_agent_evals.py`: inspects, synchronizes, or runs the
   infrastructure/behavior Datasets resolved from
-  `evals/cases/langfuse/datasets/eval_manifest_v2.json`. The behavior Dataset
+  `evals/langfuse/datasets/eval_manifest_v2.json`. The behavior Dataset
   is composed from separately managed `cases/legacy/` and
   `cases/engineered/` sources.
   Use `--inspect`, `--sync-dataset-only`, or the default Experiment mode;
@@ -57,7 +57,7 @@ For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
   items with an explicitly failed latest native Score in that Dataset run, or
   pass `--rerun-failed-from none` for a full Dataset run. It loads the untracked
   `.env` by default. Case implementation lives under
-  `evals/cases/langfuse/`.
+  `evals/langfuse/`.
 - `scripts/run_improvement_lab.py`: offline, non-mutating improvement proposal runner.
 - `scripts/check_pilot_readiness.py` and `scripts/collect_pilot_evidence.py`:
   multi-agent pilot operator helpers.

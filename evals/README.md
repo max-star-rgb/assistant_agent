@@ -5,7 +5,7 @@
 ```text
 evals/
   system/                  # 真实能力连通性；本地 runner/artifact 是权威
-  cases/langfuse/          # Agent 行为；Langfuse Dataset/Experiment/Score 是权威
+  langfuse/                # Agent 行为；Langfuse Dataset/Experiment/Score 是权威
 ```
 
 ## System eval

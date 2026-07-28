@@ -7,7 +7,7 @@ from collections.abc import Collection
 from pathlib import Path
 from typing import Any
 
-from evals.cases.langfuse.contracts import (
+from evals.langfuse.contracts import (
     DatasetCaseCollection,
     DatasetSeed,
     DatasetSeedComposition,

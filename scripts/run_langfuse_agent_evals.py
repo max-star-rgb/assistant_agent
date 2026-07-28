@@ -26,25 +26,25 @@ if str(SRC) not in sys.path:
 
 from langfuse import Langfuse
 
-from evals.cases.langfuse.experiment import (
+from evals.langfuse.experiment import (
     DETERMINISTIC_SCORE_NAMES,
     REAL_READONLY_SEMANTIC_SCORE_NAMES,
     REAL_SYSTEM_SEMANTIC_SCORE_NAMES,
     run_langfuse_agent_experiment,
 )
-from evals.cases.langfuse.dataset_sync import (
+from evals.langfuse.dataset_sync import (
     failed_dataset_item_ids,
     load_dataset_seed,
     partition_available_dataset_item_ids,
     sync_langfuse_dataset,
 )
-from evals.cases.langfuse.runtime_profiles import (
+from evals.langfuse.runtime_profiles import (
     build_real_readonly_runtime,
     build_real_system_runtime,
     validate_real_chat_config,
     validate_real_readonly_config,
 )
-from evals.cases.langfuse.manifest import (
+from evals.langfuse.manifest import (
     load_eval_manifest,
     select_eval_item_ids,
 )

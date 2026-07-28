@@ -80,7 +80,7 @@ pytest 中禁止：
 - 检测到本机 key 后自动启用真实调用；
 - 从 real 静默回退到 mock 并报告通过。
 
-真实系统能力验证见 `evals/system/`；Langfuse 案例评估见 `evals/cases/langfuse/`。
+真实系统能力验证见 `evals/system/`；Langfuse 案例评估见 `evals/langfuse/`。
 
 ## 测试策略
 
