@@ -22,7 +22,8 @@
       },
       "metadata": {
         "suite": "agent_real_system",
-        "capability": "real_no_tool",
+        "capability": "direct_response",
+        "profile": "real_system",
         "domain": "conversation",
         "required_tools": [],
         "forbidden_tools": ["weather", "web_search", "shopping_search", "shopping_list_search"]
@@ -43,7 +44,8 @@
       },
       "metadata": {
         "suite": "agent_real_system",
-        "capability": "real_no_tool",
+        "capability": "direct_response",
+        "profile": "real_system",
         "domain": "planning",
         "required_tools": [],
         "forbidden_tools": ["weather", "web_search", "shopping_search", "shopping_list_search"]
@@ -64,7 +66,8 @@
       },
       "metadata": {
         "suite": "agent_real_system",
-        "capability": "real_no_tool",
+        "capability": "clarification",
+        "profile": "real_system",
         "domain": "clarification",
         "required_tools": [],
         "forbidden_tools": ["weather", "web_search"]
@@ -85,7 +88,8 @@
       },
       "metadata": {
         "suite": "agent_real_system",
-        "capability": "real_read_only_tool",
+        "capability": "weather_advice",
+        "profile": "real_system",
         "domain": "weather",
         "required_tools": ["weather"],
         "forbidden_tools": ["web_search", "shopping_search", "shopping_list_search"]
@@ -106,7 +110,8 @@
       },
       "metadata": {
         "suite": "agent_real_system",
-        "capability": "real_read_only_tool",
+        "capability": "calendar_read",
+        "profile": "real_system",
         "domain": "calendar",
         "required_tools": ["calendar_search"],
         "forbidden_tools": ["calendar_create"]
@@ -127,7 +132,8 @@
       },
       "metadata": {
         "suite": "agent_real_system",
-        "capability": "real_read_only_tool",
+        "capability": "file_read",
+        "profile": "real_system",
         "domain": "local_file",
         "required_tools": ["file_read"],
         "forbidden_tools": ["web_search", "shopping_search", "shopping_list_search"]
@@ -148,7 +154,8 @@
       },
       "metadata": {
         "suite": "agent_real_system",
-        "capability": "real_read_only_tool",
+        "capability": "shopping_search",
+        "profile": "real_system",
         "domain": "shopping",
         "required_tools": ["shopping_search"],
         "forbidden_tools": ["image_generation"]
@@ -169,7 +176,8 @@
       },
       "metadata": {
         "suite": "agent_real_system",
-        "capability": "real_read_only_tool",
+        "capability": "web_search",
+        "profile": "real_system",
         "domain": "web_search",
         "required_tools": ["web_search"],
         "forbidden_tools": ["shopping_search", "shopping_list_search"]
@@ -190,7 +198,8 @@
       },
       "metadata": {
         "suite": "agent_real_system",
-        "capability": "real_read_only_tool",
+        "capability": "web_fetch",
+        "profile": "real_system",
         "domain": "web_fetch",
         "required_tools": ["web_fetch"],
         "forbidden_tools": ["web_search", "shopping_search", "shopping_list_search"]
@@ -214,7 +223,8 @@
       },
       "metadata": {
         "suite": "agent_real_system",
-        "capability": "real_read_only_tool",
+        "capability": "media_understanding",
+        "profile": "real_system",
         "domain": "vision",
         "required_tools": ["media_inspect"],
         "forbidden_tools": ["web_search", "shopping_search", "shopping_list_search"]
@@ -235,7 +245,8 @@
       },
       "metadata": {
         "suite": "agent_real_system",
-        "capability": "real_read_only_tool",
+        "capability": "image_generation",
+        "profile": "real_system",
         "domain": "image_generation",
         "required_tools": ["image_generation"],
         "forbidden_tools": ["web_search", "shopping_search", "shopping_list_search"]
@@ -256,7 +267,8 @@
       },
       "metadata": {
         "suite": "agent_real_system",
-        "capability": "real_read_only_tool",
+        "capability": "multi_tool_planning",
+        "profile": "real_system",
         "domain": "composite",
         "required_tools": ["weather", "shopping_search"],
         "forbidden_tools": ["calendar_create", "shopping_list_search"]
@@ -277,7 +289,8 @@
       },
       "metadata": {
         "suite": "agent_real_system",
-        "capability": "real_read_only_tool",
+        "capability": "shopping_list_search",
+        "profile": "real_system",
         "domain": "shopping",
         "required_tools": ["shopping_list_search"],
         "forbidden_tools": ["calendar_create", "shopping_search"]
@@ -298,7 +311,8 @@
       },
       "metadata": {
         "suite": "agent_real_system",
-        "capability": "real_read_only_tool",
+        "capability": "multi_tool_planning",
+        "profile": "real_system",
         "domain": "composite",
         "required_tools": ["web_search", "web_fetch"],
         "forbidden_tools": ["shopping_search", "shopping_list_search"]
@@ -324,7 +338,8 @@
       },
       "metadata": {
         "suite": "agent_real_system",
-        "capability": "real_write_tool",
+        "capability": "calendar_write",
+        "profile": "real_system",
         "domain": "calendar",
         "required_tools": ["calendar_create"],
         "forbidden_tools": []

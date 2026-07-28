@@ -36,7 +36,8 @@
       },
       "metadata": {
         "suite": "agent_closed_loop",
-        "capability": "write_tool",
+        "capability": "calendar_write",
+        "profile": "scripted_mock",
         "domain": "personal_productivity",
         "fixture": "calendar_dentist_v1",
         "required_tools": ["calendar_create"],
@@ -62,7 +63,8 @@
       },
       "metadata": {
         "suite": "agent_closed_loop",
-        "capability": "no_tool",
+        "capability": "direct_response",
+        "profile": "scripted_mock",
         "domain": "conversation",
         "fixture": "calendar_baseline_v1",
         "forbidden_tools": ["calendar_search", "calendar_create"]
@@ -100,7 +102,8 @@
       },
       "metadata": {
         "suite": "agent_closed_loop",
-        "capability": "read_only_tool",
+        "capability": "calendar_read",
+        "profile": "scripted_mock",
         "domain": "personal_productivity",
         "fixture": "calendar_team_sync_v1",
         "required_tools": ["calendar_search"],

@@ -41,12 +41,14 @@ For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
   和 Provider payload；要求 real 模式与 `--allow-unredacted-context`，产物写入
   `.data/evals/system/context/`。
 - `scripts/run_langfuse_agent_evals.py`: optionally seeds the first Dataset, then
-  runs either the default scripted mock baseline or the explicit
-  `--real-readonly --allow-real-tools` six-case real Chat Provider profile
+  resolves Profile and Suite from `eval_manifest_v1.json`, then runs either the
+  default scripted mock baseline or an explicit real Chat Provider profile
   (including one controlled weather-timeout recovery case) through a Langfuse
   Experiment and shared Runtime trace. Scoring is
   asynchronous and owned by Langfuse-native Code and LLM-as-a-Judge
   Evaluators; the script does not register SDK evaluators. Use
+  `--case-id`, `--capability`, or `--suite` for explicit current-Dataset
+  selection. Use
   `--rerun-failed-from <run-name>` to create a new Experiment containing only
   items with an explicitly failed latest native Score in that Dataset run, or
   pass `--rerun-failed-from none` for a full Dataset run. It loads the untracked

@@ -13,7 +13,7 @@ from evals.cases.langfuse.experiment import (
     AgentExperimentTask,
     REAL_READONLY_DATASET_SEED,
     REAL_SYSTEM_DATASET_SEED,
-    RealReadonlyCase,
+    RealAgentCase,
     RuntimeBundle,
     StatelessEvalEnvironment,
     build_real_readonly_runtime,
@@ -27,6 +27,10 @@ from evals.cases.langfuse.experiment import (
 )
 from evals.cases.langfuse.weather_failure_fixture import (
     SimulatedWeatherFailureAdapter,
+)
+from evals.cases.langfuse.manifest import (
+    load_eval_manifest,
+    select_eval_item_ids,
 )
 from assistant_agent.runtime.runtime import AgentGraphRuntime
 from assistant_agent.config import ProviderConfig
@@ -173,7 +177,7 @@ def _weather_failure_runtime_factory(
     _request: object,
     case: object,
 ) -> RuntimeBundle:
-    assert isinstance(case, RealReadonlyCase)
+    assert isinstance(case, RealAgentCase)
     assert case.weather_failure is not None
     registry = ToolRegistry()
     registry.register(
@@ -277,9 +281,12 @@ def test_real_readonly_seed_includes_controlled_weather_failure_recovery() -> No
         item.metadata["capability"]
         for item in seed.items
     } == {
-        "real_no_tool",
-        "real_read_only_tool",
-        "real_tool_failure_recovery",
+        "direct_response",
+        "weather_advice",
+        "tool_failure_recovery",
+    }
+    assert {item.metadata["profile"] for item in seed.items} == {
+        "real_readonly"
     }
     assert {
         tool
@@ -296,7 +303,7 @@ def test_real_readonly_seed_includes_controlled_weather_failure_recovery() -> No
     failure_item = next(
         item
         for item in seed.items
-        if item.metadata["capability"] == "real_tool_failure_recovery"
+        if item.metadata["capability"] == "tool_failure_recovery"
     )
     assert failure_item.metadata["dependency_mode"] == "simulated"
     assert failure_item.metadata["expected_tool_terminal"] == "tool.failed"
@@ -340,9 +347,22 @@ def test_real_system_seed_covers_production_like_capabilities() -> None:
     assert {
         item.metadata["capability"] for item in seed.items
     } == {
-        "real_no_tool",
-        "real_read_only_tool",
-        "real_write_tool",
+        "direct_response",
+        "clarification",
+        "weather_advice",
+        "calendar_read",
+        "file_read",
+        "shopping_search",
+        "shopping_list_search",
+        "web_search",
+        "web_fetch",
+        "media_understanding",
+        "image_generation",
+        "multi_tool_planning",
+        "calendar_write",
+    }
+    assert {item.metadata["profile"] for item in seed.items} == {
+        "real_system"
     }
     required_tools = {
         tool
@@ -364,12 +384,73 @@ def test_real_system_seed_covers_production_like_capabilities() -> None:
     write_case = next(
         item
         for item in seed.items
-        if item.metadata["capability"] == "real_write_tool"
+        if item.metadata["capability"] == "calendar_write"
     )
     assert write_case.input["user_request"]["metadata"] == {
         "tool_visibility": {"enabled_tools": ["calendar_create"]}
     }
     assert all(item.input.get("evaluation_criteria") for item in seed.items)
+
+
+def test_eval_manifest_indexes_profiles_suites_and_seed_capabilities() -> None:
+    manifest = load_eval_manifest()
+
+    assert set(manifest.profiles) == {
+        "scripted_mock",
+        "real_readonly",
+        "real_system",
+    }
+    assert manifest.suites["failure_recovery"].profile == "real_readonly"
+    assert manifest.suites["failure_recovery"].capabilities == [
+        "tool_failure_recovery"
+    ]
+    for profile_name, profile in manifest.profiles.items():
+        seed = load_dataset_seed(profile.seed_source)
+        assert seed.dataset_name == profile.dataset_name
+        assert all(
+            item.metadata["profile"] == profile_name
+            for item in seed.items
+        )
+        assert {
+            item.metadata["capability"] for item in seed.items
+        } <= set(manifest.capabilities)
+
+
+def test_eval_manifest_selects_suite_case_and_capability_by_intersection() -> None:
+    manifest = load_eval_manifest()
+    seed = load_dataset_seed(REAL_READONLY_DATASET_SEED)
+    failure_case_id = "agent_real_v1_weather_timeout_running_recovery"
+
+    assert select_eval_item_ids(
+        seed.items,
+        manifest=manifest,
+        suite_name="failure_recovery",
+    ) == [failure_case_id]
+    assert select_eval_item_ids(
+        [
+            SimpleNamespace(
+                id="legacy-failure-case",
+                metadata={"capability": "real_tool_failure_recovery"},
+            )
+        ],
+        manifest=manifest,
+        suite_name="failure_recovery",
+    ) == ["legacy-failure-case"]
+    assert select_eval_item_ids(
+        seed.items,
+        manifest=manifest,
+        suite_name="readonly_smoke",
+        case_ids=[failure_case_id],
+        capabilities=["tool_failure_recovery"],
+    ) == [failure_case_id]
+    with pytest.raises(ValueError, match="did not match"):
+        select_eval_item_ids(
+            seed.items,
+            manifest=manifest,
+            suite_name="readonly_smoke",
+            case_ids=[failure_case_id],
+            capabilities=["weather_advice"],
+        )
 
 
 def test_real_readonly_runtime_fails_closed_in_mock_mode() -> None:

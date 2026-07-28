@@ -55,27 +55,24 @@ from evals.cases.langfuse.weather_failure_fixture import (
     SimulatedWeatherFailureAdapter,
     WeatherFailureFixture,
 )
+from evals.cases.langfuse.manifest import load_eval_manifest
 
 
-DEFAULT_DATASET_NAME = "assistant-agent-closed-loop-v1"
-DEFAULT_DATASET_SEED = Path(
-    "evals/cases/langfuse/agent_closed_loop_v1.seed.json"
+EVAL_MANIFEST = load_eval_manifest()
+DEFAULT_PROFILE = EVAL_MANIFEST.profiles["scripted_mock"]
+REAL_READONLY_PROFILE = EVAL_MANIFEST.profiles["real_readonly"]
+REAL_SYSTEM_PROFILE = EVAL_MANIFEST.profiles["real_system"]
+DEFAULT_DATASET_NAME = DEFAULT_PROFILE.dataset_name
+DEFAULT_DATASET_SEED = DEFAULT_PROFILE.seed_source
+REAL_READONLY_DATASET_NAME = REAL_READONLY_PROFILE.dataset_name
+REAL_READONLY_DATASET_SEED = REAL_READONLY_PROFILE.seed_source
+REAL_SYSTEM_DATASET_NAME = REAL_SYSTEM_PROFILE.dataset_name
+REAL_SYSTEM_DATASET_SEED = REAL_SYSTEM_PROFILE.seed_source
+DETERMINISTIC_SCORE_NAMES = tuple(
+    EVAL_MANIFEST.score_names.deterministic
 )
-REAL_READONLY_DATASET_NAME = "assistant-agent-real-readonly-v1"
-REAL_READONLY_DATASET_SEED = Path(
-    "evals/cases/langfuse/agent_real_readonly_v1.seed.json"
-)
-REAL_SYSTEM_DATASET_NAME = "assistant-agent-real-system-v1"
-REAL_SYSTEM_DATASET_SEED = Path(
-    "evals/cases/langfuse/agent_real_system_v1.seed.json"
-)
-DETERMINISTIC_SCORE_NAMES = (
-    "agent.runtime_trace_pass",
-    "agent.tool_mechanical_pass",
-)
-REAL_AGENT_SEMANTIC_SCORE_NAMES = (
-    "agent.tool_semantic_pass",
-    "agent.answer_semantic_pass",
+REAL_AGENT_SEMANTIC_SCORE_NAMES = tuple(
+    EVAL_MANIFEST.score_names.semantic
 )
 REAL_READONLY_SEMANTIC_SCORE_NAMES = REAL_AGENT_SEMANTIC_SCORE_NAMES
 REAL_SYSTEM_SEMANTIC_SCORE_NAMES = REAL_AGENT_SEMANTIC_SCORE_NAMES
@@ -162,22 +159,17 @@ class NoToolCase(BaseModel):
     response_facts: list[str] = Field(default_factory=list)
 
 
-class RealReadonlyCase(BaseModel):
+class RealAgentCase(BaseModel):
     """Dynamic real-provider case scored from runtime evidence, not fixtures."""
 
     id: str = Field(min_length=1)
-    capability: Literal[
-        "real_no_tool",
-        "real_read_only_tool",
-        "real_tool_failure_recovery",
-        "real_write_tool",
-    ]
+    capability: str = Field(min_length=1)
     response_facts: list[str] = Field(default_factory=list)
     weather_failure: WeatherFailureFixture | None = None
 
 
 ExperimentCase = (
-    CreateCalendarCase | ReadCalendarCase | NoToolCase | RealReadonlyCase
+    CreateCalendarCase | ReadCalendarCase | NoToolCase | RealAgentCase
 )
 
 
@@ -760,17 +752,17 @@ def build_real_readonly_runtime(
 ) -> RuntimeBundle:
     """Build an isolated real-provider Runtime for no-tool/read-only cases."""
 
-    if not isinstance(case, RealReadonlyCase):
+    if not isinstance(case, RealAgentCase):
         raise ValueError(
             "The real-readonly Runtime only accepts real Dataset items."
         )
     resolved = config or ProviderConfig.from_env()
     registry = None
-    if case.capability == "real_tool_failure_recovery":
+    if case.capability == "tool_failure_recovery":
         validate_real_chat_config(resolved)
         if case.weather_failure is None:
             raise ValueError(
-                "A real_tool_failure_recovery case requires weather_failure."
+                "A tool_failure_recovery case requires weather_failure."
             )
         registry = ToolRegistry()
         registry.register(
@@ -779,6 +771,8 @@ def build_real_readonly_runtime(
             )
         )
         registry.seal()
+    elif case.capability == "direct_response":
+        validate_real_chat_config(resolved)
     else:
         validate_real_readonly_config(resolved)
 
@@ -810,7 +804,7 @@ def build_real_system_runtime(
 ) -> RuntimeBundle:
     """Build a real-provider Runtime whose calendar is persisted locally."""
 
-    if not isinstance(case, RealReadonlyCase):
+    if not isinstance(case, RealAgentCase):
         raise ValueError(
             "The real-system Runtime only accepts real Dataset items."
         )
@@ -851,44 +845,52 @@ def case_from_dataset_fields(
 ) -> ExperimentCase:
     """Build only the scripted rollout fixture; scoring stays in Langfuse."""
 
-    capability = metadata.get("capability")
+    raw_capability = metadata.get("capability")
+    if not isinstance(raw_capability, str):
+        raise ValueError("Dataset item metadata requires capability.")
+    capability = EVAL_MANIFEST.normalize_capability(raw_capability)
+    profile = metadata.get("profile")
+    if not isinstance(profile, str):
+        if raw_capability in {"write_tool", "read_only_tool", "no_tool"}:
+            profile = "scripted_mock"
+        elif raw_capability.startswith("real_"):
+            profile = "real_readonly"
     response_facts = _string_list(expected_output.get("response_facts"))
-    if capability == "write_tool":
-        return CreateCalendarCase(
-            id=case_id,
-            required_event=CalendarEventExpectation.model_validate(
-                expected_output.get("required_event")
-            ),
-            response_facts=response_facts,
+    if profile == "scripted_mock":
+        if capability == "calendar_write":
+            return CreateCalendarCase(
+                id=case_id,
+                required_event=CalendarEventExpectation.model_validate(
+                    expected_output.get("required_event")
+                ),
+                response_facts=response_facts,
+            )
+        if capability == "calendar_read":
+            return ReadCalendarCase(
+                id=case_id,
+                query=str(expected_output.get("query") or ""),
+                response_facts=response_facts,
+            )
+        if capability == "direct_response":
+            return NoToolCase(id=case_id, response_facts=response_facts)
+        raise ValueError(
+            f"Unsupported scripted Dataset capability: {capability!r}."
         )
-    if capability == "read_only_tool":
-        return ReadCalendarCase(
-            id=case_id,
-            query=str(expected_output.get("query") or ""),
-            response_facts=response_facts,
-        )
-    if capability == "no_tool":
-        return NoToolCase(id=case_id, response_facts=response_facts)
-    if capability in {
-        "real_no_tool",
-        "real_read_only_tool",
-        "real_tool_failure_recovery",
-        "real_write_tool",
-    }:
+    if profile in {"real_readonly", "real_system"}:
         weather_failure = (
             WeatherFailureFixture.model_validate(
                 expected_output.get("weather_failure")
             )
-            if capability == "real_tool_failure_recovery"
+            if capability == "tool_failure_recovery"
             else None
         )
-        return RealReadonlyCase(
+        return RealAgentCase(
             id=case_id,
             capability=capability,
             response_facts=response_facts,
             weather_failure=weather_failure,
         )
-    raise ValueError(f"Unsupported Dataset capability: {capability!r}.")
+    raise ValueError(f"Unsupported Dataset profile: {profile!r}.")
 
 
 def _tool_executions(events: list[TraceEvent]) -> list[dict[str, Any]]:

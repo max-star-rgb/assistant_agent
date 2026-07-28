@@ -26,7 +26,8 @@
       },
       "metadata": {
         "suite": "agent_real_readonly",
-        "capability": "real_no_tool",
+        "capability": "direct_response",
+        "profile": "real_readonly",
         "domain": "conversation",
         "required_tools": [],
         "forbidden_tools": ["weather"]
@@ -51,7 +52,8 @@
       },
       "metadata": {
         "suite": "agent_real_readonly",
-        "capability": "real_no_tool",
+        "capability": "direct_response",
+        "profile": "real_readonly",
         "domain": "planning",
         "required_tools": [],
         "forbidden_tools": ["weather"]
@@ -76,7 +78,8 @@
       },
       "metadata": {
         "suite": "agent_real_readonly",
-        "capability": "real_read_only_tool",
+        "capability": "weather_advice",
+        "profile": "real_readonly",
         "domain": "weather",
         "required_tools": ["weather"],
         "forbidden_tools": ["web_search", "shopping_search"]
@@ -101,7 +104,8 @@
       },
       "metadata": {
         "suite": "agent_real_readonly",
-        "capability": "real_read_only_tool",
+        "capability": "weather_advice",
+        "profile": "real_readonly",
         "domain": "weather",
         "required_tools": ["weather"],
         "forbidden_tools": ["web_search", "shopping_search"]
@@ -126,7 +130,8 @@
       },
       "metadata": {
         "suite": "agent_real_readonly",
-        "capability": "real_read_only_tool",
+        "capability": "weather_advice",
+        "profile": "real_readonly",
         "domain": "weather",
         "required_tools": ["weather"],
         "forbidden_tools": ["web_search", "shopping_search"]
@@ -160,7 +165,8 @@
       },
       "metadata": {
         "suite": "agent_real_readonly",
-        "capability": "real_tool_failure_recovery",
+        "capability": "tool_failure_recovery",
+        "profile": "real_readonly",
         "domain": "weather_failure_recovery",
         "dependency_mode": "simulated",
         "required_tools": ["weather"],

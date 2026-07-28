@@ -13,7 +13,7 @@ from argparse import ArgumentParser
 from contextlib import contextmanager, nullcontext
 from functools import partial
 from pathlib import Path
-from collections.abc import Iterator
+from collections.abc import Collection, Iterable, Iterator
 from urllib.parse import urlparse
 
 import httpx
@@ -27,14 +27,8 @@ if str(SRC) not in sys.path:
 from langfuse import Langfuse
 
 from evals.cases.langfuse.experiment import (
-    DEFAULT_DATASET_NAME,
-    DEFAULT_DATASET_SEED,
     DETERMINISTIC_SCORE_NAMES,
-    REAL_READONLY_DATASET_NAME,
-    REAL_READONLY_DATASET_SEED,
     REAL_READONLY_SEMANTIC_SCORE_NAMES,
-    REAL_SYSTEM_DATASET_NAME,
-    REAL_SYSTEM_DATASET_SEED,
     REAL_SYSTEM_SEMANTIC_SCORE_NAMES,
     build_real_system_runtime,
     build_real_readonly_runtime,
@@ -43,7 +37,12 @@ from evals.cases.langfuse.experiment import (
     partition_available_dataset_item_ids,
     run_langfuse_agent_experiment,
     seed_langfuse_dataset,
+    validate_real_chat_config,
     validate_real_readonly_config,
+)
+from evals.cases.langfuse.manifest import (
+    load_eval_manifest,
+    select_eval_item_ids,
 )
 from assistant_agent.config import ProviderConfig
 from assistant_agent.runtime.assistant_run_service import load_env_file
@@ -54,6 +53,7 @@ from assistant_agent.observability.langfuse_config import (
 
 
 def main() -> int:
+    manifest = load_eval_manifest()
     parser = ArgumentParser(
         description="Run the Langfuse-native closed-loop agent capability evaluation."
     )
@@ -79,6 +79,25 @@ def main() -> int:
             "false in the named Dataset run; use 'none' for a full run."
         ),
     )
+    parser.add_argument(
+        "--suite",
+        choices=sorted(manifest.suites),
+        default=None,
+        help="Named case selection from the eval manifest.",
+    )
+    parser.add_argument(
+        "--case-id",
+        action="append",
+        default=[],
+        help="Run one Dataset item; repeat to select multiple ids.",
+    )
+    parser.add_argument(
+        "--capability",
+        action="append",
+        choices=sorted(manifest.capabilities),
+        default=[],
+        help="Run cases with this stable capability; repeat for multiple values.",
+    )
     parser.add_argument("--max-concurrency", type=int, default=1)
     parser.add_argument(
         "--local-calendar-path",
@@ -93,21 +112,25 @@ def main() -> int:
     )
     parser.add_argument("--env-file", type=Path, default=Path(".env"))
     parser.add_argument("--no-env-file", action="store_true")
-    real_profile = parser.add_mutually_exclusive_group()
-    real_profile.add_argument(
+    profile_group = parser.add_mutually_exclusive_group()
+    profile_group.add_argument(
+        "--profile",
+        choices=sorted(manifest.profiles),
+        default=None,
+        help="Execution environment; independent from case capability.",
+    )
+    profile_group.add_argument(
         "--real-readonly",
         action="store_true",
         help=(
-            "Use the isolated real Chat Provider + read-only Tool profile and "
-            "its six-case Dataset."
+            "Compatibility alias for --profile real_readonly."
         ),
     )
-    real_profile.add_argument(
+    profile_group.add_argument(
         "--real-system",
         action="store_true",
         help=(
-            "Use the production-like real Chat Provider + configured Tool "
-            "profile and its comprehensive system Dataset."
+            "Compatibility alias for --profile real_system."
         ),
     )
     parser.add_argument(
@@ -121,49 +144,63 @@ def main() -> int:
         help="Validate the optional Dataset seed without connecting to Langfuse.",
     )
     args = parser.parse_args()
-    if args.rerun_failed_from and (args.seed_only or args.dry_run):
+    if args.rerun_failed_from and (
+        args.seed_only
+        or args.dry_run
+        or args.case_id
+        or args.capability
+        or args.suite
+    ):
         parser.error(
-            "--rerun-failed-from cannot be combined with --seed-only or --dry-run."
+            "--rerun-failed-from cannot be combined with seed/dry-run or "
+            "explicit suite/case/capability selectors."
         )
+    if args.seed_only and (args.case_id or args.capability):
+        parser.error("--seed-only always synchronizes the complete Dataset.")
 
-    execution_profile = (
+    legacy_profile = (
         "real_system"
         if args.real_system
         else "real_readonly"
         if args.real_readonly
-        else "scripted_mock"
+        else None
     )
-    dataset_name = args.dataset_name or (
-        REAL_SYSTEM_DATASET_NAME
-        if args.real_system
-        else REAL_READONLY_DATASET_NAME
-        if args.real_readonly
-        else DEFAULT_DATASET_NAME
-    )
-    seed_source = args.seed_source or (
-        REAL_SYSTEM_DATASET_SEED
-        if args.real_system
-        else REAL_READONLY_DATASET_SEED
-        if args.real_readonly
-        else DEFAULT_DATASET_SEED
-    )
-    experiment_name = args.experiment_name or (
-        "agent-real-system-v1"
-        if args.real_system
-        else "agent-real-readonly-v1"
-        if args.real_readonly
-        else "agent-capability-closed-loop-scripted-v1"
-    )
+    explicit_profile = args.profile or legacy_profile
+    if args.suite:
+        suite_profile = manifest.suites[args.suite].profile
+        if explicit_profile and explicit_profile != suite_profile:
+            parser.error(
+                f"Suite {args.suite!r} requires profile {suite_profile!r}."
+            )
+        execution_profile = suite_profile
+    else:
+        execution_profile = explicit_profile or "scripted_mock"
+    profile = manifest.profiles[execution_profile]
+    suite_name = args.suite or profile.default_suite
+    dataset_name = args.dataset_name or profile.dataset_name
+    seed_source = args.seed_source or profile.seed_source
+    experiment_name = args.experiment_name or profile.experiment_name
     seed = load_dataset_seed(seed_source)
     if args.dry_run:
+        try:
+            dry_run_item_ids = select_eval_item_ids(
+                seed.items,
+                manifest=manifest,
+                suite_name=suite_name,
+                case_ids=args.case_id,
+                capabilities=args.capability,
+            )
+        except ValueError as exc:
+            parser.error(str(exc))
         print(
             json.dumps(
                 {
                     "dry_run": True,
                     "execution_profile": execution_profile,
+                    "suite": suite_name,
                     "dataset_name": seed.dataset_name,
                     "seed_hash": seed.content_hash(),
-                    "item_ids": [item.id for item in seed.items],
+                    "item_ids": dry_run_item_ids,
                 },
                 ensure_ascii=False,
                 indent=2,
@@ -175,7 +212,7 @@ def main() -> int:
         load_env_file(args.env_file)
     runtime_factory = None
     runtime_config = None
-    if (args.real_readonly or args.real_system) and not args.seed_only:
+    if execution_profile != "scripted_mock" and not args.seed_only:
         if not args.allow_real_tools:
             print(
                 json.dumps(
@@ -192,32 +229,6 @@ def main() -> int:
             )
             return 2
         runtime_config = ProviderConfig.from_env()
-        try:
-            validate_real_readonly_config(runtime_config)
-        except RuntimeError as exc:
-            print(
-                json.dumps(
-                    {
-                            "error": "real_provider_not_configured",
-                        "message": str(exc),
-                    },
-                    ensure_ascii=False,
-                ),
-                file=sys.stderr,
-            )
-            return 2
-        runtime_factory = (
-            partial(
-                build_real_system_runtime,
-                config=runtime_config,
-                calendar_path=args.local_calendar_path,
-            )
-            if args.real_system
-            else partial(
-                build_real_readonly_runtime,
-                config=runtime_config,
-            )
-        )
     public_key, secret_key = langfuse_credentials_from_env(os.environ)
     if not public_key or not secret_key:
         print(
@@ -267,7 +278,8 @@ def main() -> int:
         if args.seed_only:
             print(seed_result.model_dump_json(indent=2))
             return 0
-        selected_item_ids = None
+        dataset = client.get_dataset(dataset_name)
+        selected_item_ids: list[str] | None = None
         skipped_unavailable_item_ids: list[str] = []
         if args.rerun_failed_from:
             failed_item_ids = failed_dataset_item_ids(
@@ -278,14 +290,14 @@ def main() -> int:
                     *DETERMINISTIC_SCORE_NAMES,
                     *(
                         REAL_SYSTEM_SEMANTIC_SCORE_NAMES
-                        if args.real_system
+                        if execution_profile == "real_system"
                         else REAL_READONLY_SEMANTIC_SCORE_NAMES
                     ),
                 ),
             )
             selected_item_ids, skipped_unavailable_item_ids = (
                 partition_available_dataset_item_ids(
-                    client.get_dataset(dataset_name),
+                    dataset,
                     failed_item_ids,
                 )
             )
@@ -308,6 +320,49 @@ def main() -> int:
                     )
                 )
                 return 0
+        else:
+            selected_item_ids = select_eval_item_ids(
+                dataset.items,
+                manifest=manifest,
+                suite_name=suite_name,
+                case_ids=args.case_id,
+                capabilities=args.capability,
+            )
+        if runtime_config is not None:
+            selected_items = _selected_dataset_items(
+                dataset.items,
+                selected_item_ids or (),
+            )
+            try:
+                _validate_real_profile_config(
+                    execution_profile,
+                    runtime_config,
+                    selected_items,
+                )
+            except RuntimeError as exc:
+                print(
+                    json.dumps(
+                        {
+                            "error": "real_provider_not_configured",
+                            "message": str(exc),
+                        },
+                        ensure_ascii=False,
+                    ),
+                    file=sys.stderr,
+                )
+                return 2
+            runtime_factory = (
+                partial(
+                    build_real_system_runtime,
+                    config=runtime_config,
+                    calendar_path=args.local_calendar_path,
+                )
+                if execution_profile == "real_system"
+                else partial(
+                    build_real_readonly_runtime,
+                    config=runtime_config,
+                )
+            )
         result = run_langfuse_agent_experiment(
             client,
             dataset_name=dataset_name,
@@ -316,6 +371,7 @@ def main() -> int:
             max_concurrency=max(1, args.max_concurrency),
             metadata=_run_metadata(
                 execution_profile=execution_profile,
+                suite_name=suite_name,
                 config=runtime_config,
             ),
             runtime_factory=runtime_factory,
@@ -329,6 +385,7 @@ def main() -> int:
                     "dataset_name": dataset_name,
                     "seeded": seed_result is not None,
                     "execution_profile": execution_profile,
+                    "suite": suite_name,
                     "experiment_name": result.name,
                     "run_name": result.run_name,
                     "experiment_id": result.experiment_id,
@@ -377,6 +434,7 @@ def main() -> int:
 def _run_metadata(
     *,
     execution_profile: str,
+    suite_name: str,
     config: ProviderConfig | None,
 ) -> dict[str, str]:
     commit = _git_output("rev-parse", "HEAD") or "unknown"
@@ -392,6 +450,7 @@ def _run_metadata(
         "dirty_worktree": str(dirty).lower(),
         "execution_strategy": "react",
         "execution_profile": execution_profile,
+        "suite": suite_name,
         "chat_provider": provider,
         "chat_model": model,
         "runtime_config_fingerprint": (
@@ -416,6 +475,38 @@ def _run_metadata(
             else "calendar_capabilities_v1"
         ),
     }
+
+
+def _selected_dataset_items(
+    items: Iterable[object],
+    selected_item_ids: Collection[str],
+) -> list[object]:
+    selected = set(selected_item_ids)
+    return [item for item in items if str(getattr(item, "id", "")) in selected]
+
+
+def _validate_real_profile_config(
+    execution_profile: str,
+    config: ProviderConfig,
+    selected_items: list[object],
+) -> None:
+    if execution_profile == "real_system":
+        validate_real_readonly_config(config)
+        return
+    needs_live_weather = any(
+        "weather" in _item_metadata(item).get("required_tools", [])
+        and _item_metadata(item).get("dependency_mode") != "simulated"
+        for item in selected_items
+    )
+    if needs_live_weather:
+        validate_real_readonly_config(config)
+    else:
+        validate_real_chat_config(config)
+
+
+def _item_metadata(item: object) -> dict[str, object]:
+    metadata = getattr(item, "metadata", None)
+    return metadata if isinstance(metadata, dict) else {}
 
 
 def _optional_run_name(value: str) -> str | None:

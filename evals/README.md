@@ -106,6 +106,21 @@ Langfuse Dataset
 Langfuse 是 Dataset、Evaluator、Score 和 Experiment 对比的运行时权威。项目只负责执行 Agent 并
 返回 Tool、policy、环境状态变化、最终回答和 trace 等结构化证据。
 
+本地 `eval_manifest_v1.json` 是评测结构索引，不是第二套结果账本。它集中定义：
+
+| concept | responsibility |
+| --- | --- |
+| Case | 一个稳定 `case_id` 对应的用户场景 |
+| Capability | 与 Provider 和环境无关的被测行为 |
+| Profile | Chat、Tool、fixture 和副作用的执行边界 |
+| Suite | 某个 Profile 下可复用的 Case 选择 |
+| Experiment | Suite × Profile × 代码版本的一次 Langfuse 运行 |
+
+当前 Profile 为 `scripted_mock`、`real_readonly` 和 `real_system`；默认 Suite 分别为
+`infrastructure_baseline`、`readonly_smoke` 和 `system_full`。`failure_recovery` 是
+`real_readonly` 下只选择 `tool_failure_recovery` capability 的窄 Suite。Case metadata 必须分别
+记录稳定 `capability` 和 `profile`，不得再用 `real_*` capability 表达执行环境。
+
 `agent_closed_loop_v1.seed.json` 只用于第一次创建 Dataset 或 operator 显式重置 seed。普通 Experiment
 直接读取 Langfuse Dataset，不会用本地文件覆盖 UI 修改。`agent_strict_pass.ts` 是需要部署到
 Langfuse Evaluators 页面的 Code Evaluator 源码。
@@ -165,7 +180,7 @@ Experiment 不会因规则变更自动补分或改分。
 ```bash
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python \
   scripts/run_langfuse_agent_evals.py \
-  --real-system \
+  --profile real_system \
   --allow-real-tools \
   --run-name my-real-system-eval
 ```
@@ -220,8 +235,38 @@ LANGFUSE_LLM_CONNECTION_WHITELISTED_HOST=api.deepseek.com
 
 ```bash
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python \
-  scripts/run_langfuse_agent_evals.py --real-readonly --dry-run
+  scripts/run_langfuse_agent_evals.py \
+  --profile real_readonly \
+  --dry-run
 ```
+
+精确校验单个 Case：
+
+```bash
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python \
+  scripts/run_langfuse_agent_evals.py \
+  --profile real_readonly \
+  --case-id agent_real_v1_weather_timeout_running_recovery \
+  --dry-run
+```
+
+按稳定 capability 或命名 Suite 选择：
+
+```bash
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python \
+  scripts/run_langfuse_agent_evals.py \
+  --profile real_readonly \
+  --capability weather_advice \
+  --dry-run
+
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python \
+  scripts/run_langfuse_agent_evals.py \
+  --suite failure_recovery \
+  --dry-run
+```
+
+同类选择器重复传入时取并集；`--case-id`、`--capability` 和 Suite 之间取交集。Suite 已固定
+Profile，因此不能与不兼容的 `--profile` 组合。
 
 ### Langfuse 运行
 
@@ -248,7 +293,7 @@ item；这样删除 capability 后不会继续执行旧案例。没有 `seed_has
 ```bash
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python \
   scripts/run_langfuse_agent_evals.py \
-  --real-system \
+  --profile real_system \
   --allow-real-tools \
   --rerun-failed-from my-real-system-eval \
   --run-name my-real-system-eval-retry
@@ -268,7 +313,7 @@ item；这样删除 capability 后不会继续执行旧案例。没有 `seed_has
 ```bash
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python \
   scripts/run_langfuse_agent_evals.py \
-  --real-readonly \
+  --profile real_readonly \
   --seed-only
 ```
 
@@ -278,14 +323,29 @@ item；这样删除 capability 后不会继续执行旧案例。没有 `seed_has
 ```bash
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python \
   scripts/run_langfuse_agent_evals.py \
-  --real-readonly \
+  --profile real_readonly \
   --allow-real-tools \
   --run-name my-first-real-readonly-eval
 ```
 
+只运行受控天气失败恢复案例，不要求真实 weather MCP：
+
+```bash
+MULTIMODAL_AGENT_PROVIDER_MODE=real \
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python \
+  scripts/run_langfuse_agent_evals.py \
+  --suite failure_recovery \
+  --allow-real-tools \
+  --run-name weather-failure-recovery
+```
+
+`--real-readonly` 和 `--real-system` 暂时保留为对应 `--profile` 的兼容别名。`--case-id` 和
+`--capability` 可以重复；它们不能与 `--rerun-failed-from` 混用，避免不明确的二次筛选。
+
 在运行前，需要在 Langfuse Evaluators 中部署最新 `agent_strict_pass.ts`，并让 Code Evaluator
-rule 匹配 `assistant-agent-real-readonly-v1` Dataset；同时启用上述项目级中文 Helpfulness
-Evaluator。Score 均由 Langfuse 异步生成，不由 Python runner 回写。
+rule 匹配 `assistant-agent-real-readonly-v1` Dataset；同时启用项目级
+`assistant-agent-tool-semantic-pass-zh` 和 `assistant-agent-answer-semantic-pass-zh`。
+Score 均由 Langfuse 异步生成，不由 Python runner 回写。
 
 命令默认从未跟踪的 `.env` 加载 Langfuse 凭据和 host。显式 Experiment 对 Dataset、Runtime OTLP trace
 和 evaluator 闭环采用 fail-fast；普通生产观测仍保持 fail-open。
