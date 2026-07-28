@@ -19,7 +19,7 @@ from assistant_agent.runtime.assistant_run_service import load_env_file
 from assistant_agent.runtime.chat_adapter import create_chat_adapter
 from evals.agent.calibration import run_calibration
 from evals.agent.contracts import TaskSpec
-from evals.agent.judge import ProviderSemanticJudge
+from evals.agent.judge import ProviderLLMJudge
 from evals.agent.langfuse_backend import (
     DEFAULT_DATASET_NAME,
     create_required_trace_observer,
@@ -112,7 +112,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             parser.error("--calibrate and --run require --allow-real-provider.")
         config = ProviderConfig.from_env()
         validate_real_chat_config(config)
-        judge = ProviderSemanticJudge(create_chat_adapter(config))
+        judge = ProviderLLMJudge(create_chat_adapter(config))
         if args.calibrate:
             results = [
                 result.model_dump(mode="json")

@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
 from datetime import date, timedelta
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
 from assistant_agent.config import ProviderConfig
 from assistant_agent.runtime.chat_adapter import ChatRequest, ChatResult
@@ -14,14 +16,21 @@ from evals.agent.calibration import (
     load_labeled_calibration_judge,
     run_calibration,
 )
-from evals.agent.contracts import ToolOutcomeExpectation
+from evals.agent.contracts import (
+    AssertionResult,
+    JudgeVerdict,
+    RunEvidence,
+    ToolOutcomeExpectation,
+)
 from evals.agent.grading import (
-    assertion,
     enforce_tool_outcome_expectations,
     environment_validation,
     grade_task,
+    judge_assertion,
+    rule_assertion,
 )
 from evals.agent.langfuse_backend import _evaluations, publish_tasks
+from evals.agent.judge import ProviderLLMJudge
 from evals.agent.loader import load_entrypoint, load_task
 from evals.agent.provider_gate import validate_real_chat_config
 
@@ -73,10 +82,12 @@ class _WeatherRecoveryChat:
 
 
 class _AlwaysPassJudge:
-    def evaluate(self, **_: Any) -> Any:
-        from evals.agent.contracts import SemanticVerdict
+    def __init__(self) -> None:
+        self.criterion_ids: list[str] = []
 
-        return SemanticVerdict(passed=True, reason="离线语义基准通过。")
+    def evaluate(self, *, criterion_id: str, **_: Any) -> JudgeVerdict:
+        self.criterion_ids.append(criterion_id)
+        return JudgeVerdict(passed=True, reason="离线 Judge 基准通过。")
 
 
 class _FakeLangfuseClient:
@@ -91,6 +102,76 @@ class _FakeLangfuseClient:
     def create_dataset_item(self, **kwargs: Any) -> object:
         self.items.append(kwargs)
         return object()
+
+
+class _JudgeChat:
+    provider = "scripted"
+    model = "judge"
+
+    def __init__(self) -> None:
+        self.requests: list[ChatRequest] = []
+
+    def chat(self, request: ChatRequest) -> ChatResult:
+        self.requests.append(request)
+        return ChatResult(
+            provider=self.provider,
+            model=self.model,
+            finish_reason="stop",
+            response_text='{"passed": false, "reason": "证据不支持回答。"}',
+        )
+
+
+def test_assertions_require_explicit_rule_or_judge_provenance() -> None:
+    rule = rule_assertion(True, "结构化事实满足。")
+    judged = judge_assertion(
+        JudgeVerdict(passed=False, reason="工具结果没有支持回答中的事实。"),
+        criterion_id="outcome_evidence_usage",
+    )
+
+    assert rule.evaluation_method == "rule"
+    assert rule.criterion_id is None
+    assert judged.evaluation_method == "judge"
+    assert judged.criterion_id == "outcome_evidence_usage"
+
+    with pytest.raises(ValidationError, match="judge assertion must declare"):
+        AssertionResult(
+            passed=True,
+            reason="缺少 criterion。",
+            evaluation_method="judge",
+        )
+    with pytest.raises(ValidationError, match="rule assertion cannot declare"):
+        AssertionResult(
+            passed=True,
+            reason="Rule 不应携带 criterion。",
+            evaluation_method="rule",
+            criterion_id="unexpected_criterion",
+        )
+
+
+def test_provider_llm_judge_receives_named_rubric() -> None:
+    adapter = _JudgeChat()
+    evidence = RunEvidence(
+        task_id="weather_timeout_recovery",
+        run_id="judge-contract-run",
+        trace_id=TRACE_ID,
+        terminal_status="completed",
+    )
+
+    verdict = ProviderLLMJudge(adapter).evaluate(
+        criterion_id="outcome_evidence_usage",
+        rubric="只判断回答是否有工具证据支持。",
+        evidence=evidence,
+    )
+
+    assert verdict == JudgeVerdict(passed=False, reason="证据不支持回答。")
+    payload = json.loads(adapter.requests[0].user_query)
+    assert payload["criterion_id"] == "outcome_evidence_usage"
+    assert payload["rubric"] == "只判断回答是否有工具证据支持。"
+    assert payload["evidence"]["task_id"] == "weather_timeout_recovery"
+    assert (
+        adapter.requests[0].response_format["json_schema"]["name"]
+        == "agent_eval_judge_verdict"
+    )
 
 
 def test_task_keeps_runtime_and_grading_out_of_dataset_fields() -> None:
@@ -157,22 +238,28 @@ def test_weather_timeout_environment_runs_the_real_runtime_offline() -> None:
         "deleted": [],
     }
 
+    judge = _AlwaysPassJudge()
     result = grade_task(
         task=task,
         evidence=execution.evidence,
-        judge=_AlwaysPassJudge(),
+        judge=judge,
     )
     assert result.passed is True
     assert result.reward == 1.0
+    assert result.schema_version == "agent_eval_grader_result_v3"
     assert result.dimensions.tool_execution.passed is True
-    assert result.dimensions.tool_semantics.passed is True
+    assert result.dimensions.tool_use.passed is True
     assert result.dimensions.state.passed is True
     assert result.dimensions.response.passed is True
+    assert judge.criterion_ids == [
+        "outcome_evidence_usage",
+        "response_quality",
+    ]
     scores = _evaluations(result)
     assert [score.name for score in scores] == [
         "agent_eval.reward",
         "agent_eval.dimension.tool_execution",
-        "agent_eval.dimension.tool_semantics",
+        "agent_eval.dimension.tool_use",
         "agent_eval.dimension.state",
         "agent_eval.dimension.response",
     ]
@@ -185,15 +272,23 @@ def test_weather_timeout_environment_runs_the_real_runtime_offline() -> None:
     ]
     assert not any("weather" in score.name for score in scores)
     assert scores[2].metadata == {
-        "assertions": {
-            "outcome_matches_environment": True,
-            "weather_called_once": True,
-            "weather_arguments_correct": True,
-        }
+        "assertion.outcome_matches_environment.passed": True,
+        "assertion.outcome_matches_environment.method": "rule",
+        "assertion.weather_called_once.passed": True,
+        "assertion.weather_called_once.method": "rule",
+        "assertion.weather_arguments_correct.passed": True,
+        "assertion.weather_arguments_correct.method": "rule",
+        "assertion.outcome_evidence_usage.passed": True,
+        "assertion.outcome_evidence_usage.method": "judge",
+        "assertion.outcome_evidence_usage.criterion_id": "outcome_evidence_usage",
     }
+    assert all(
+        len(json.dumps(value, ensure_ascii=False)) <= 200
+        for value in scores[2].metadata.values()
+    )
 
 
-def test_success_expected_but_timeout_forces_tool_semantics_to_fail() -> None:
+def test_success_expected_but_timeout_forces_tool_use_to_fail() -> None:
     task = load_task("weather_timeout_recovery")
     environment_type = load_entrypoint(task.environment)
     environment = environment_type(
@@ -219,9 +314,9 @@ def test_success_expected_but_timeout_forces_tool_semantics_to_fail() -> None:
     )
 
     assert result.dimensions.tool_execution.passed is True
-    assert result.dimensions.tool_semantics.passed is False
+    assert result.dimensions.tool_use.passed is False
     assert (
-        result.dimensions.tool_semantics.assertions[
+        result.dimensions.tool_use.assertions[
             "outcome_matches_environment"
         ].passed
         is False
@@ -239,7 +334,7 @@ def test_success_expected_but_timeout_forces_tool_semantics_to_fail() -> None:
         )
 
 
-def test_calibration_catches_semantic_and_trajectory_failures() -> None:
+def test_calibration_catches_judge_and_trajectory_failures() -> None:
     task = load_task("weather_timeout_recovery")
 
     results = run_calibration(
@@ -256,14 +351,20 @@ def test_calibration_catches_semantic_and_trajectory_failures() -> None:
     assert [result.actual_pass for result in results] == [True, False, False]
     assert results[0].dimensions == {
         "tool_execution": True,
-        "tool_semantics": True,
+        "tool_use": True,
         "state": True,
         "response": True,
     }
+    assert results[0].expected_judge_passes == {
+        "outcome_evidence_usage": True,
+        "response_quality": True,
+    }
+    assert results[0].actual_judge_passes == results[0].expected_judge_passes
+    assert results[1].dimensions["tool_use"] is False
     assert results[1].dimensions["response"] is False
     assert results[2].dimensions == {
         "tool_execution": True,
-        "tool_semantics": False,
+        "tool_use": False,
         "state": True,
         "response": True,
     }
@@ -308,7 +409,7 @@ def test_real_run_gate_rejects_the_default_mock_provider() -> None:
 def test_invalid_environment_is_an_infrastructure_failure() -> None:
     validation = environment_validation(
         {
-            "fixture_contract": assertion(
+            "fixture_contract": rule_assertion(
                 False,
                 "受控依赖未满足声明。",
             )

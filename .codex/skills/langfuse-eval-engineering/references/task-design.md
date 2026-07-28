@@ -42,3 +42,7 @@ Environment 可以模拟依赖，但不能模拟被测 Agent 决策。写操作�
 - 必要的 Provider 结果类型。
 
 不要把整条原始 Trace 或 Environment 私有配置复制进 Dataset metadata。
+
+Evidence 进入 grader 后，确定性 Rule 和 LLM Judge 必须分开：Trace、参数、错误码和状态等客观事实
+由 Rule 判断；只有结果解释、证据使用和回答质量等开放语义交给 Judge。两者统一聚合到按 Agent 行为
+命名的固定维度，不按判断手段创建 Score。

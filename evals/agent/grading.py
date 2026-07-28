@@ -10,8 +10,9 @@ from evals.agent.contracts import (
     EnvironmentValidation,
     GraderDimensions,
     GraderResult,
+    JudgeVerdict,
+    LLMJudge,
     RunEvidence,
-    SemanticJudge,
     TaskSpec,
     ToolOutcomeExpectation,
 )
@@ -19,14 +20,31 @@ from evals.agent.contracts import (
 
 DIMENSION_NAMES = (
     "tool_execution",
-    "tool_semantics",
+    "tool_use",
     "state",
     "response",
 )
 
 
-def assertion(passed: bool, reason: str) -> AssertionResult:
-    return AssertionResult(passed=passed, reason=reason)
+def rule_assertion(passed: bool, reason: str) -> AssertionResult:
+    return AssertionResult(
+        passed=passed,
+        reason=reason,
+        evaluation_method="rule",
+    )
+
+
+def judge_assertion(
+    verdict: JudgeVerdict,
+    *,
+    criterion_id: str,
+) -> AssertionResult:
+    return AssertionResult(
+        passed=verdict.passed,
+        reason=verdict.reason,
+        evaluation_method="judge",
+        criterion_id=criterion_id,
+    )
 
 
 def dimension(
@@ -46,13 +64,13 @@ def dimension(
 def grader_result(
     *,
     tool_execution: DimensionResult,
-    tool_semantics: DimensionResult,
+    tool_use: DimensionResult,
     state: DimensionResult,
     response: DimensionResult,
 ) -> GraderResult:
     dimensions = GraderDimensions(
         tool_execution=tool_execution,
-        tool_semantics=tool_semantics,
+        tool_use=tool_use,
         state=state,
         response=response,
     )
@@ -90,7 +108,7 @@ def grade_task(
     *,
     task: TaskSpec,
     evidence: RunEvidence,
-    judge: SemanticJudge,
+    judge: LLMJudge,
 ) -> GraderResult:
     from evals.agent.loader import load_entrypoint
 
@@ -114,15 +132,15 @@ def enforce_tool_outcome_expectations(
 ) -> GraderResult:
     _require_expectation_coverage(evidence, expectations)
     outcome_assertion = _tool_outcomes_match(evidence, expectations)
-    tool_semantics = dimension(
+    tool_use = dimension(
         {
             "outcome_matches_environment": outcome_assertion,
-            **result.dimensions.tool_semantics.assertions,
+            **result.dimensions.tool_use.assertions,
         }
     )
     return grader_result(
         tool_execution=result.dimensions.tool_execution,
-        tool_semantics=tool_semantics,
+        tool_use=tool_use,
         state=result.dimensions.state,
         response=result.dimensions.response,
     )
@@ -193,7 +211,7 @@ def _tool_outcomes_match(
                     f"actual={execution.terminal_event},"
                     f"error_code={execution.error_code}"
                 )
-    return assertion(
+    return rule_assertion(
         not mismatches,
         (
             "工具业务结果符合 Environment 声明。"

@@ -101,6 +101,19 @@ class TaskExecution:
 class AssertionResult(BaseModel):
     passed: bool
     reason: str = Field(min_length=1)
+    evaluation_method: Literal["rule", "judge"]
+    criterion_id: str | None = Field(
+        default=None,
+        pattern=r"^[a-z0-9][a-z0-9_]*$",
+    )
+
+    @model_validator(mode="after")
+    def validate_evaluation_provenance(self) -> AssertionResult:
+        if self.evaluation_method == "rule" and self.criterion_id is not None:
+            raise ValueError("A rule assertion cannot declare a criterion_id.")
+        if self.evaluation_method == "judge" and not self.criterion_id:
+            raise ValueError("A judge assertion must declare a criterion_id.")
+        return self
 
 
 class DimensionResult(BaseModel):
@@ -111,7 +124,7 @@ class DimensionResult(BaseModel):
 
 class GraderDimensions(BaseModel):
     tool_execution: DimensionResult
-    tool_semantics: DimensionResult
+    tool_use: DimensionResult
     state: DimensionResult
     response: DimensionResult
 
@@ -131,14 +144,14 @@ class EnvironmentValidation(BaseModel):
             )
 
 
-class SemanticVerdict(BaseModel):
+class JudgeVerdict(BaseModel):
     passed: bool
     reason: str = Field(min_length=1)
 
 
 class GraderResult(BaseModel):
-    schema_version: Literal["agent_eval_grader_result_v2"] = (
-        "agent_eval_grader_result_v2"
+    schema_version: Literal["agent_eval_grader_result_v3"] = (
+        "agent_eval_grader_result_v3"
     )
     passed: bool
     reward: float = Field(ge=0.0, le=1.0)
@@ -146,13 +159,14 @@ class GraderResult(BaseModel):
     dimensions: GraderDimensions
 
 
-class SemanticJudge(Protocol):
+class LLMJudge(Protocol):
     def evaluate(
         self,
         *,
-        criterion: str,
+        criterion_id: str,
+        rubric: str,
         evidence: RunEvidence,
-    ) -> SemanticVerdict: ...
+    ) -> JudgeVerdict: ...
 
 
 class TaskEnvironment(Protocol):

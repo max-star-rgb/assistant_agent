@@ -100,8 +100,10 @@ Dataset 当作回归定义的唯一副本。
 - 写操作必须使用每次运行可丢弃或可复位的状态；
 - grader 对 Agent 隐藏，客观事实优先用代码检查，开放语义才用 Judge；
 - 每个 Task 只有一个主要分数 `agent_eval.reward`；
-- Langfuse 固定输出 `tool_execution`、`tool_semantics`、`state`、`response` 四个诊断维度；
+- Langfuse 固定输出 `tool_execution`、`tool_use`、`state`、`response` 四个诊断维度；
 - Task 专属 assertion 只保存在维度详情中，不创建天气、日历等工具专属 Score；
+- 每条 assertion 必须标记 `evaluation_method=rule|judge`；可客观证明的事实使用 Rule，开放语义才使用
+  LLM Judge；
 - grader 必须先通过至少一个正确样本和一个可信错误样本的直接校准。
 
 首个活动 Task 是 `weather_timeout_recovery`：真实 Chat Agent 只看到 weather 工具，Environment
@@ -195,14 +197,30 @@ MULTIMODAL_AGENT_PROVIDER_MODE=real \
 ```text
 agent_eval.reward
 agent_eval.dimension.tool_execution
-agent_eval.dimension.tool_semantics
+agent_eval.dimension.tool_use
 agent_eval.dimension.state
 agent_eval.dimension.response
 ```
 
 `tool_execution` 判断 Validator、工具调用和结构化终态是否完整，不要求外部业务结果必须成功；
-`tool_semantics` 判断选择、参数、次数、顺序和结果处理；`state` 判断预期状态转换；
+`tool_use` 判断 Agent 是否正确使用工具，包括选择、参数、次数、顺序、结果消费和恢复策略；
+`state` 判断预期状态转换；
 `response` 判断最终回答。四个必要维度全部通过时，`agent_eval.reward=1.0`。
+
+Rule 与 LLM Judge 是判断机制，不是独立质量维度。它们分开实现并统一产出 assertion：
+
+```text
+tool_use
+  outcome_matches_environment  [rule]
+  arguments_correct            [rule]
+  outcome_evidence_usage       [judge]
+```
+
+Rule 结果具有确定性权威，Judge 不得覆盖 Rule。Judge Provider 超时、输出不可解析、criterion 缺失或
+未返回 verdict 属于评测基础设施失败，不得记录为 Agent assertion 失败。Judge assertion 使用稳定
+`criterion_id`；校准文件以 `judge_verdicts` 分别标注每个 criterion，不能用一个笼统语义标签代替
+多个不同判断。Langfuse Score metadata 把每条 assertion 的 `passed`、`method` 和可选
+`criterion_id` 写成独立标量字段，避免把完整 rubric、reason 或嵌套大对象传播成超长属性。
 
 工具业务结果预期以 Environment 的强类型声明为唯一事实源：
 
@@ -216,9 +234,17 @@ ToolOutcomeExpectation.must_fail_with(
 ```
 
 校准和 Langfuse Experiment 都通过通用 `grade_task()` 自动比较实际 `tool.finished/tool.failed` 与
-错误码，并把结果写入 `tool_semantics` 的 `outcome_matches_environment` assertion。预期成功但实际
-超时会保持 `tool_execution=pass`，同时确定性地产生 `tool_semantics=fail`。Task grader 不再重复
+错误码，并把结果写入 `tool_use` 的 `outcome_matches_environment` Rule assertion。预期成功但实际
+超时会保持 `tool_execution=pass`，同时确定性地产生 `tool_use=fail`。Task grader 不再重复
 硬编码工具应成功还是失败。
+
+`outcome_matches_environment` 只证明受控世界按声明运行，不证明 Agent 正确理解了结果。需要判断
+Agent 是否把失败当成功、是否编造工具未提供的事实时，Task grader 应另外定义
+`outcome_evidence_usage` Judge assertion。天气超时 Task 同时校准诚实恢复、超时后编造预报以及
+重复调用三种 Evidence。
+
+`tool_use` 是当前评分契约名；历史 Experiment 中已有的 `agent_eval.dimension.tool_semantics`
+不会被回写，新运行只生成 `agent_eval.dimension.tool_use`。
 
 Environment validation、凭据、Dataset、Trace 导出、Evidence 解析和 Judge 故障属于评测基础设施
 失败，退出 2，不生成或篡改 Agent reward。Task-local 原子断言只解释某个维度为什么通过或失败。

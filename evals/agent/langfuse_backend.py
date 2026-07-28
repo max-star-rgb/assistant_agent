@@ -17,9 +17,10 @@ from assistant_agent.observability.otel_exporter import (
     create_otlp_http_text_span_exporter,
 )
 from evals.agent.contracts import (
+    DimensionResult,
     GraderResult,
+    LLMJudge,
     RunEvidence,
-    SemanticJudge,
     TaskEnvironment,
     TaskSpec,
 )
@@ -71,7 +72,7 @@ def run_tasks(
     tasks: Collection[TaskSpec],
     *,
     config: ProviderConfig,
-    judge: SemanticJudge,
+    judge: LLMJudge,
     dataset_name: str = DEFAULT_DATASET_NAME,
     run_name: str | None = None,
     trace_observer: TextOtelTraceObserver | None = None,
@@ -213,17 +214,25 @@ def _evaluations(result: GraderResult) -> list[Evaluation]:
             value=dimension_result.passed,
             data_type="BOOLEAN",
             comment=dimension_result.reason,
-            metadata={
-                "assertions": {
-                    assertion_name: assertion_result.passed
-                    for assertion_name, assertion_result in dimension_result.assertions.items()
-                }
-            },
+            metadata=_assertion_metadata(dimension_result),
         )
         for name in DIMENSION_NAMES
         for dimension_result in [getattr(result.dimensions, name)]
     )
     return evaluations
+
+
+def _assertion_metadata(
+    dimension_result: DimensionResult,
+) -> dict[str, bool | str]:
+    metadata: dict[str, bool | str] = {}
+    for assertion_name, assertion_result in dimension_result.assertions.items():
+        prefix = f"assertion.{assertion_name}"
+        metadata[f"{prefix}.passed"] = assertion_result.passed
+        metadata[f"{prefix}.method"] = assertion_result.evaluation_method
+        if assertion_result.criterion_id is not None:
+            metadata[f"{prefix}.criterion_id"] = assertion_result.criterion_id
+    return metadata
 
 
 def _item_field(item: Any, name: str) -> Any:

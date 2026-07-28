@@ -3,15 +3,15 @@
 from __future__ import annotations
 
 from datetime import date, timedelta
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
 from evals.agent.contracts import (
     GraderResult,
+    JudgeVerdict,
+    LLMJudge,
     RunEvidence,
-    SemanticJudge,
-    SemanticVerdict,
     TaskSpec,
 )
 from evals.agent.grading import DIMENSION_NAMES, grade_task
@@ -21,12 +21,12 @@ from evals.agent.loader import TASKS_ROOT
 class CalibrationFixture(BaseModel):
     id: str = Field(min_length=1)
     expected_pass: bool
-    semantic_verdict: SemanticVerdict
+    judge_verdicts: dict[str, JudgeVerdict] = Field(min_length=1)
     evidence: dict[str, Any]
 
 
 class CalibrationSet(BaseModel):
-    schema_version: str
+    schema_version: Literal["agent_eval_calibration_v2"]
     fixtures: list[CalibrationFixture] = Field(min_length=2)
 
 
@@ -34,8 +34,8 @@ class CalibrationResult(BaseModel):
     fixture_id: str
     expected_pass: bool
     actual_pass: bool
-    expected_semantic_pass: bool
-    actual_semantic_pass: bool
+    expected_judge_passes: dict[str, bool]
+    actual_judge_passes: dict[str, bool]
     dimensions: dict[str, bool]
     matched: bool
     reason: str
@@ -43,7 +43,7 @@ class CalibrationResult(BaseModel):
 
 def run_calibration(
     task: TaskSpec,
-    judge: SemanticJudge,
+    judge: LLMJudge,
 ) -> list[CalibrationResult]:
     payload = CalibrationSet.model_validate_json(
         (TASKS_ROOT / task.id / "calibration.json").read_text(encoding="utf-8")
@@ -58,22 +58,29 @@ def run_calibration(
             evidence=evidence,
             judge=recording_judge,
         )
-        semantic = recording_judge.last_verdict
-        if semantic is None:
+        if not recording_judge.verdicts:
             raise RuntimeError(
                 f"Calibration fixture {fixture.id!r} did not invoke the judge."
             )
+        expected_judge_passes = {
+            criterion_id: verdict.passed
+            for criterion_id, verdict in fixture.judge_verdicts.items()
+        }
+        actual_judge_passes = {
+            criterion_id: verdict.passed
+            for criterion_id, verdict in recording_judge.verdicts.items()
+        }
         matched = (
             graded.passed == fixture.expected_pass
-            and semantic.passed == fixture.semantic_verdict.passed
+            and actual_judge_passes == expected_judge_passes
         )
         results.append(
             CalibrationResult(
                 fixture_id=fixture.id,
                 expected_pass=fixture.expected_pass,
                 actual_pass=graded.passed,
-                expected_semantic_pass=fixture.semantic_verdict.passed,
-                actual_semantic_pass=semantic.passed,
+                expected_judge_passes=expected_judge_passes,
+                actual_judge_passes=actual_judge_passes,
                 dimensions={
                     name: getattr(graded.dimensions, name).passed
                     for name in DIMENSION_NAMES
@@ -88,17 +95,24 @@ def run_calibration(
 class LabeledCalibrationJudge:
     """Offline test judge that replays the human label for each fixture."""
 
-    def __init__(self, verdicts: list[SemanticVerdict]) -> None:
+    def __init__(self, verdicts: list[tuple[str, JudgeVerdict]]) -> None:
         self._verdicts = iter(verdicts)
 
     def evaluate(
         self,
         *,
-        criterion: str,
+        criterion_id: str,
+        rubric: str,
         evidence: RunEvidence,
-    ) -> SemanticVerdict:
-        del criterion, evidence
-        return next(self._verdicts)
+    ) -> JudgeVerdict:
+        del rubric, evidence
+        expected_criterion_id, verdict = next(self._verdicts)
+        if criterion_id != expected_criterion_id:
+            raise RuntimeError(
+                "Calibration judge criterion order mismatch: "
+                f"expected={expected_criterion_id!r}, actual={criterion_id!r}."
+            )
+        return verdict
 
 
 def load_labeled_calibration_judge(task: TaskSpec) -> LabeledCalibrationJudge:
@@ -106,26 +120,37 @@ def load_labeled_calibration_judge(task: TaskSpec) -> LabeledCalibrationJudge:
         (TASKS_ROOT / task.id / "calibration.json").read_text(encoding="utf-8")
     )
     return LabeledCalibrationJudge(
-        [fixture.semantic_verdict for fixture in payload.fixtures]
+        [
+            (criterion_id, verdict)
+            for fixture in payload.fixtures
+            for criterion_id, verdict in fixture.judge_verdicts.items()
+        ]
     )
 
 
 class _RecordingJudge:
-    def __init__(self, delegate: SemanticJudge) -> None:
+    def __init__(self, delegate: LLMJudge) -> None:
         self.delegate = delegate
-        self.last_verdict: SemanticVerdict | None = None
+        self.verdicts: dict[str, JudgeVerdict] = {}
 
     def evaluate(
         self,
         *,
-        criterion: str,
+        criterion_id: str,
+        rubric: str,
         evidence: RunEvidence,
-    ) -> SemanticVerdict:
-        self.last_verdict = self.delegate.evaluate(
-            criterion=criterion,
+    ) -> JudgeVerdict:
+        if criterion_id in self.verdicts:
+            raise RuntimeError(
+                f"Grader invoked duplicate judge criterion {criterion_id!r}."
+            )
+        verdict = self.delegate.evaluate(
+            criterion_id=criterion_id,
+            rubric=rubric,
             evidence=evidence,
         )
-        return self.last_verdict
+        self.verdicts[criterion_id] = verdict
+        return verdict
 
 
 def _replace_tomorrow(value: Any) -> Any:

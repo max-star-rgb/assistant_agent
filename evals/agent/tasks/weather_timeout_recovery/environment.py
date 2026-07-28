@@ -35,7 +35,7 @@ from evals.agent.evidence import (
     tool_executions,
     validation_results,
 )
-from evals.agent.grading import assertion, environment_validation
+from evals.agent.grading import environment_validation, rule_assertion
 from evals.agent.provider_gate import validate_real_chat_config
 
 
@@ -109,11 +109,11 @@ class WeatherTimeoutEnvironment:
         ]
         return environment_validation(
             {
-                "isolated_tool_registry": assertion(
+                "isolated_tool_registry": rule_assertion(
                     registry.sealed and registry.list() == ["weather"],
                     (f"sealed={registry.sealed}, registered_tools={registry.list()}"),
                 ),
-                "outcome_contract_matches_registry": assertion(
+                "outcome_contract_matches_registry": rule_assertion(
                     {expectation.tool_name for expectation in expectations}
                     == set(registry.list()),
                     (
@@ -122,7 +122,7 @@ class WeatherTimeoutEnvironment:
                         f"registered_tools={registry.list()}"
                     ),
                 ),
-                "weather_timeout_fixture": assertion(
+                "weather_timeout_fixture": rule_assertion(
                     (
                         not fixture_result.success
                         and error_codes == ["provider_timeout"]
@@ -134,7 +134,7 @@ class WeatherTimeoutEnvironment:
                         f"provider={fixture_result.provider}"
                     ),
                 ),
-                "stateless_boundary": assertion(
+                "stateless_boundary": rule_assertion(
                     all(spec.category == "read" for spec in specs),
                     (
                         "tool_categories="

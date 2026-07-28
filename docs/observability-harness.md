@@ -1029,10 +1029,12 @@ TraceEvent，并在 task 内映射导出到同一条 Experiment trace。普通 A
 `RuntimeTraceContext` 时仍自行生成 trace ID，行为不变。
 
 显式 Experiment 必须生成完整 Trace、唯一主要分数 `agent_eval.reward`，以及固定的
-`agent_eval.dimension.tool_execution/tool_semantics/state/response` 四个诊断维度。Task
-专属 assertion 只进入维度 metadata，不创建工具专属 Score。Dataset 认证、Runtime OTLP export、
-Environment validation、Judge、Evidence 或 Score 失败必须 fail-fast，和普通 server
-observability 的 fail-open 语义不同。
+`agent_eval.dimension.tool_execution/tool_use/state/response` 四个诊断维度。Task 专属
+assertion 只进入维度 metadata，不创建工具专属 Score；每条 assertion 显式记录
+`evaluation_method=rule|judge`，Judge assertion 还记录稳定 `criterion_id`。Score metadata 使用
+`assertion.<name>.passed|method|criterion_id` 独立标量字段，不传播 rubric、长 reason 或嵌套大
+对象。Dataset 认证、Runtime OTLP export、Environment validation、Judge、Evidence 或 Score 失败
+必须 fail-fast，和普通 server observability 的 fail-open 语义不同。
 
 ### Phase 5: Trajectory Debug Gate
 

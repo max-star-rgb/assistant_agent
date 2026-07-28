@@ -81,7 +81,7 @@ Task 不得靠 expected answer 文本匹配通过；工具行为以 Trace 和状
 5. `--run` 执行真实 Experiment。
 
 运行后检查 Agent 输入、工具暴露、Validator/Tool Trace、依赖结果、状态变化、最终回答、grader 理由和
-`agent_eval.reward`。Langfuse 只输出固定的 `tool_execution`、`tool_semantics`、`state`、
+`agent_eval.reward`。Langfuse 只输出固定的 `tool_execution`、`tool_use`、`state`、
 `response` 四个诊断维度；Task 专属原子断言只作为维度详情，不创建专属 Score。
 
 Agent 行为不满足任务时退出 1。凭据、Trace 导出、Dataset、Judge、证据解析或 Score 缺失属于评测
@@ -99,9 +99,15 @@ Agent 行为不满足任务时退出 1。凭据、Trace 导出、Dataset、Judge
 - Environment 拥有依赖和状态，Task 输入不描述测试机关。
 - Grader 对 Agent 隐藏，并先用正反样本证明能区分结果。
 - 一个主要 reward 决定通过；固定四维只解释 reward，Task 专属断言不形成新 Score。
+- Rule 与 LLM Judge 分开实现但统一产出 assertion；每条 assertion 显式标记
+  `evaluation_method=rule|judge`，Judge assertion 使用稳定 `criterion_id`。
+- 可客观证明的事实必须使用 Rule；LLM Judge 只判断开放语义，不能覆盖 Rule 结果。Judge 故障属于
+  基础设施失败。
 - Environment validation、凭据、Evidence 和 Judge 故障属于基础设施状态，不计入 Agent 分数。
 - 工具业务结果预期只由 Environment 声明；通用评分入口自动将实际结果匹配注入
-  `tool_semantics`，Task grader 不得重复硬编码成功或错误码。
+  `tool_use`，Task grader 不得重复硬编码成功或错误码。
+- `outcome_matches_environment` 只验证工具结果符合受控世界；Task 需要时另用
+  `outcome_evidence_usage` Judge assertion 判断 Agent 是否正确消费结果。
 - Trace 用于发现问题和提供证据，不直接充当正确答案。
 - pytest 保持 mock/local/offline；真实 Provider 不得静默回退 mock。
 - 不提交凭据、原始生产 Trace、真实用户数据或评测运行生成物。

@@ -66,7 +66,9 @@ def available_tools_from_events(events: list[TraceEvent]) -> list[str]:
     for event in events:
         if event.canonical_event != "context.build.finished":
             continue
-        report = event.output_summary.get("context_report_v1")
+        report = event.output_summary.get("context_report_v2")
+        if not isinstance(report, dict):
+            report = event.output_summary.get("context_report_v1")
         selected = (
             report.get("selected_tool_names") if isinstance(report, dict) else None
         )
