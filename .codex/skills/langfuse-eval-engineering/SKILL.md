@@ -1,126 +1,102 @@
 ---
 name: langfuse-eval-engineering
-description: Design, add, revise, run, or audit assistant_agent Langfuse-native Agent evaluations from repository context and optional authorized traces. Use for Dataset case selection, trace-informed regression cases, evaluation criteria, Code Evaluator or LLM-as-a-Judge design, Experiment review, Score completeness, and distinguishing Agent failures from evaluation infrastructure failures. Do not use for ordinary pytest work or real-service connectivity checks.
+description: Design, add, revise, calibrate, run, or audit assistant_agent task-centered Agent evaluations. Use for evals/agent Task, Environment, Evidence, Grader, Langfuse Dataset publishing, Experiment review, primary reward completeness, trace-informed regressions, and distinguishing Agent failures from evaluation infrastructure failures. Do not use for ordinary pytest work or real-service connectivity checks.
 ---
 
 # Langfuse Eval Engineering
 
-把仓库事实和经授权的 Trace 转化为现有 Langfuse Dataset、Experiment、Evaluator 和 Score。保留
-Langfuse 为运行时评测权威；不要创建 Harbor task、第二套本地 case runner 或平行结果账本。
+把一个可命名的 Agent 能力做成自包含 Task，并用受控 Environment、隐藏 Grader 和正反样本证明评测
+有效。Git 中的 Task、Environment、Grader 和校准样本是回归定义权威；Langfuse 只作为 Dataset、
+Experiment、Trace 和 Score 后端。
 
-开始前完整读取 `evals/README.md`，以其中的当前目录、profile、Score、命令和安全边界为唯一事实权威。
-若它与本 skill 不一致，按该文档和当前源码执行，并修正本 skill。
+开始前完整读取 `evals/README.md`。若本 skill 与该文档或源码不一致，以文档和源码为准，并回补
+本 skill。
 
-## 1. 分类请求
+## 1. 先选正确层
 
-先判断问题属于哪一层：
+- 确定性代码契约：转到 `tests/`，使用 `$assistant-agent-development-testing`。
+- 真实 Provider、Tool、Context 或 Memory 连通性：转到 `evals/system/`。
+- 模型决策、工具语义、故障恢复、多轮约束或回答质量：使用 `evals/agent/`。
 
-- 确定性代码契约或回归测试：转到 `tests/`，并使用
-  `$assistant-agent-development-testing`；
-- 真实 Provider、Tool、Context 或 Memory 是否连通：转到 `evals/system/`；
-- 模型选择、工具语义、多轮约束、回答质量或任务完成度：继续本流程。
-
-不要把同一检查同时实现为 pytest、system eval 和 Langfuse case。
+不要用三套机制重复验证同一事实。
 
 ## 2. 映射 Agent
 
-只读检查公开入口可达的 runtime、prompt、model、routing、tools、policy、memory、外部依赖、身份、
-状态和副作用，并搜索现有 Dataset、Evaluator、测试、fixture 和已知失败。
-
-在对话中总结：
+只读检查公开入口、runtime、prompt、model、tools、policy、memory、依赖、状态和副作用，并搜索现有
+Task、测试和已知失败。总结：
 
 ```text
-Agent: 目标与公开入口
-Purpose: 用户和任务
-Abilities: 预期能力
-Tools and data: 工具、数据和依赖
-Effects: 读取、写入和状态变化
-Evidence: 测试、现有案例、失败或 Trace
+Agent: 公开入口与目标
+Capability: 本次唯一被测能力
+Dependencies: Agent 能看到和不能看到的依赖
+Effects: 读取、写入、隔离与复位
+Evidence: 可独立观察的轨迹、终态和回答
 ```
 
-映射期间不要启动真实服务、安装依赖或使用凭据。基于真实 run、通话或机器日志诊断时，先按
-`AGENTS.md` 读取可对应问题的最新 `.data/**` 日志。
+映射时不调用真实 Provider、不安装依赖、不读取凭据。只有用户提供 Trace 来源或明确要求使用 Trace
+时，才读取 [references/trace-sourcing.md](references/trace-sourcing.md)。
 
-只有用户提供 Trace 来源或明确要求使用 Trace 时，才读取
-[references/trace-sourcing.md](references/trace-sourcing.md)。
+## 3. 选择一个 capability
 
-## 3. 提出评测方向
+如果用户尚未指定，提出二到三个彼此不同的 capability。每个方向给出真实用户请求、它能区分的
+Agent 行为和所需环境。推荐一个并等待用户选择；不要把文案变化当成新能力。
 
-基于映射提出二到三个不同 capability：
+## 4. 先批准 Environment
+
+选择后完整读取 [references/task-design.md](references/task-design.md) 和
+[references/grader-audit.md](references/grader-audit.md)。实施前用不超过 150 字说明：
 
 ```text
-Name
-Example request: 真实用户会提出的请求
-Tests: 能区分的 Agent 行为
-Needs: 主要数据、环境或评判证据
+Task: 用户请求与唯一 capability
+Environment: active runtime、真实/冻结/模拟依赖、可见工具
+Effects: 状态位置、隔离、复位和真实调用
+Evidence: grader 可独立检查的轨迹、终态和回答
 ```
 
-推荐一个方向并等待用户选择。不要在用户选择前修改 Dataset、Evaluator、runner 或运行真实评测。
+等待用户批准。真实 Provider、真实工具和写操作仍必须通过仓库规定的显式开关。
 
-## 4. 确认场景和运行边界
+## 5. 实现自包含 Task
 
-用户选择后读取 [references/case-design.md](references/case-design.md) 和
-[references/verifier-audit.md](references/verifier-audit.md)，设计一个必须使用所选能力才能完成的
-场景。优先调用现有 `AgentGraphRuntime` 和现有 Experiment 入口；只有既有入口无法表达时才提出薄适配，
-且不得把工具选择、重试、推理或最终回答移入适配层。
+每次只实现一个 `evals/agent/tasks/<task_id>/`：
 
-实施前用不超过 150 字给出：
+1. `task.json` 只保存用户请求、capability、environment/grader 入口和短 tags；
+2. `environment.py` 使用活动 `AgentGraphRuntime`，控制依赖、工具可见性、初始状态、隔离和复位；
+3. `grader.py` 不向 Agent 暴露 rubric 或 oracle，基于结构化 Evidence 做任务局部判断；
+4. `calibration.json` 至少含一个正确样本和一个可信但错误的样本；
+5. Suite 只做 Task ID 选择，不拥有 Environment 或评分逻辑；
+6. Langfuse Dataset item 只发布 `task_id + request + 短 metadata`，不复制 grader、依赖契约或长 oracle；
+7. 若活动 runtime 无法表达 Environment，只增加薄适配，不把工具选择、重试或最终回答移出 Agent。
 
-```text
-Case: 请求与 capability
-Dataset/profile: 目标 Dataset 与执行 profile
-Dependencies: live、frozen 或 simulated；凭据、影响和数据来源
-Success: 独立证据和对应评分层
-Recommendation: 推荐边界及原因
-```
+Task 不得靠 expected answer 文本匹配通过；工具行为以 Trace 和状态证据为准。
 
-等待用户批准或修订。真实 Provider、真实工具和写操作仍需遵守 `AGENTS.md` 与 `evals/README.md`
-规定的显式开关；不得写入生产状态。
+## 6. 校准、运行、审计
 
-## 5. 实现一个 capability
+顺序固定：
 
-每次只实现一个独立 capability：
+1. `--inspect` 检查 Task 和 Environment，不联网；
+2. pytest 验证 loader、Environment、Evidence、Grader 和薄 Langfuse backend；
+3. `--calibrate` 直接把 grader 跑在人工标注的正反证据上；
+4. `--publish` 显式发布所选 Task；
+5. `--run` 执行真实 Experiment。
 
-1. 扩展现有 Langfuse Dataset seed、Experiment task、环境 fixture 或 Evaluator；不要新增第二套
-   Dataset runner；
-2. Dataset seed 只承担显式初始化或重置，Langfuse 中的 Dataset、Experiment、Evaluator 和 Score
-   继续作为运行时权威；
-3. 只把任务输入和目标运行需要的环境事实暴露给 Agent；不要暴露 Judge rubric、隐藏证据、裁判凭据
-   或期望结论；
-4. 对写操作使用可丢弃、可复位且可观察的本地状态；对动态只读数据记录来源和时间；
-5. 让 Experiment 输出足以证明终态、Tool/Validator 链路、初始/最终状态和回答依据的结构化证据；
-6. 若修改确定性代码或 pytest，使用 `$assistant-agent-development-testing` 选择最小充分验证；
-7. 行为、命令或权威边界变化时，同步维护 `evals/README.md` 及直接相关文档。
+运行后检查 Agent 输入、工具暴露、Validator/Tool Trace、依赖结果、状态变化、最终回答、grader 理由和
+`agent_eval.reward`。每个 Task 只有一个主要门槛分数；`agent_eval.check.*` 只用于定位失败。
 
-不要通过关键词、正则或预设话术替 Agent 决定工具候选、工具选择或参数。
-
-## 6. 校准、运行和审计
-
-先用一个明确正确结果和一个可信但错误结果校准新增或修改的评判逻辑。随后执行
-`evals/README.md` 指定的离线契约验证和 dry-run。只有用户批准且真实配置完整时，才运行真实
-Experiment。
-
-运行后同时检查：
-
-- Agent 的输入、响应、Tool/Validator Trace、状态变化和终态；
-- Code Evaluator 的客观检查与证据；
-- LLM Judge 的输入证据、判定、理由、结构化输出和缺失情况；
-- 每个 Dataset item 所需 Score 是否完整；
-- resolved profile、Provider、工具暴露和隔离边界是否符合批准方案。
-
-任务错误应得到明确不通过；Judge 超时、凭据错误、缺少证据、解析失败、Evaluator 崩溃或 Score
-尚未生成属于评测基础设施状态，不得伪装成 Agent 通过或失败。
+Agent 行为不满足任务时退出 1。凭据、Trace 导出、Dataset、Judge、证据解析或 Score 缺失属于评测
+基础设施错误，退出 2，不能伪装成 Agent 通过或失败。
 
 ## 7. 复盘
 
-向用户说明 case 路径、Dataset/profile、运行命令、能力边界、依赖策略、Agent 行为、评分结果、
-基础设施状态和限制。请用户批准、修订、删除或选择下一个不同 capability。
+报告 Task 路径、Environment 边界、校准结果、运行命令、主要 reward、诊断检查、基础设施状态和
+限制。请用户批准、修订、删除或选择下一个 capability。
 
 ## 不变量
 
-- Langfuse 是 Agent case eval 的运行时权威。
-- 一个 case 只验证一个可命名 capability；文案变化不构成新能力。
-- Trace 用于发现请求和失败模式，不是正确答案。
-- 工具行为以 Runtime/Trace/状态证据为准，不以 Agent 自述为准。
+- Git 定义回归任务；Langfuse 保存协作数据和运行结果。
+- 一个 Task 只验证一个可命名 capability。
+- Environment 拥有依赖和状态，Task 输入不描述测试机关。
+- Grader 对 Agent 隐藏，并先用正反样本证明能区分结果。
+- 一个主要 reward 决定通过；诊断分数不形成另一套通过规则。
+- Trace 用于发现问题和提供证据，不直接充当正确答案。
 - pytest 保持 mock/local/offline；真实 Provider 不得静默回退 mock。
 - 不提交凭据、原始生产 Trace、真实用户数据或评测运行生成物。

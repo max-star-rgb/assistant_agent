@@ -7,10 +7,9 @@
 项目名、发行名和 Python 包名均为 `assistant_agent`，源码在 `src/assistant_agent/`。默认 Python 使用本机 conda 环境 `hello_agent`，除非用户明确要求，不要重命名环境路径。
 
 本项目是本地优先的助理 Agent。默认运行和 pytest 使用
-`MULTIMODAL_AGENT_PROVIDER_MODE=mock`；`evals/langfuse` 当前 scripted
-基础设施实验同样保持 mock。只有 `evals/system` 或明确的真实 case eval 可以使用真实
-Provider，并且必须通过 `MULTIMODAL_AGENT_PROVIDER_MODE=real`、本机未跟踪配置和对应
-operator 确认开关显式启用。
+`MULTIMODAL_AGENT_PROVIDER_MODE=mock`。只有 `evals/system` 或明确的 `evals/agent`
+真实 Task eval 可以使用真实 Provider，并且必须通过
+`MULTIMODAL_AGENT_PROVIDER_MODE=real`、本机未跟踪配置和对应 operator 确认开关显式启用。
 
 开始任务时，先按任务类型读取对应 `docs/*.md` 权威文档；如果文档与当前源码不一致，以源码和测试为准，并在本次变更中回补文档。项目 skill 只作为 workflow 检查清单或脚本入口，不作为事实权威。
 
@@ -25,7 +24,7 @@ operator 确认开关显式启用。
 | multi-agent、A2A、delegation | `docs/agent-communication-routing.md` |
 | trace、observability、redaction | `docs/observability-harness.md` |
 | pytest 分层、目录归属、默认收集和新增测试规则 | `tests/README.md` |
-| system eval、Langfuse case eval、真实 Provider 评测运行 | `evals/README.md` |
+| system eval、Agent task eval、Langfuse Experiment、真实 Provider 评测运行 | `evals/README.md` |
 
 - 遇到 Provider 相关实现/调试时，优先联网核对官方文档，重点包括 DeepSeek tool calls（`https://api-docs.deepseek.com/zh-cn/guides/tool_calls`）、阿里百炼模型文档（`https://bailian.console.aliyun.com/cn-beijing/?spm=a2c4g.11186623.0.0.60393ba2UI7e5t&tab=doc#/doc/?type=model&url=2963787`）和火山引擎模型文档（`https://docs.volcengine.com/docs/82379/1099455?lang=zh`）。
 
@@ -75,8 +74,8 @@ operator 确认开关显式启用。
 | `src/assistant_agent/` | 主源码；具体归属先看第 1 节任务路由和对应架构文档 |
 | `tests/` | 全部离线 pytest；按 `unit/integration/contract` 和稳定故障域组织，规则以 `tests/README.md` 为唯一权威 |
 | `evals/system/` | operator 显式触发的真实能力验证；手写 Python runner、结构化硬断言和 `.data/evals/system/` artifact 是结果权威 |
-| `evals/langfuse/` | 端到端 Agent 案例评估；Langfuse Dataset、Experiment、Evaluator 和 Score 是运行时权威 |
-| `scripts/` | 服务、demo、system eval 和 Langfuse case eval 的稳定命令入口；索引见 `scripts/README.md` |
+| `evals/agent/` | Task 中心的端到端 Agent 行为评估；Git 定义 Task/Environment/Grader，Langfuse 保存 Dataset、Experiment、Trace 和 Score |
+| `scripts/` | 服务、demo、system eval 和 Agent task eval 的稳定命令入口；索引见 `scripts/README.md` |
 | `docs/*.md` | 当前架构、接口和状态权威文档 |
 | `docs/development/`, `docs/superpowers/`, `docs/interview/` | 非默认材料：开发阶段记录、历史计划/spec、面试资料；不作为当前规则入口 |
 | `.codex/skills/` | 少量项目 workflow、检查清单和脚本；不作为事实权威 |
@@ -107,8 +106,8 @@ operator 确认开关显式启用。
 
 本项目采用风险驱动测试。是否新增测试、测试文件如何组织、最小充分验证范围和任务结束时的
 `Tests:` 汇报格式，统一以 `tests/README.md` 为准。pytest 只回答确定性代码契约是否正确；
-`evals/system` 回答真实 Tool、Context 或 Memory 能力是否连通；`evals/langfuse`
-回答 Agent 在端到端案例上的行为质量。三者不得用 mock fallback、路径混放或重复 runner
+`evals/system` 回答真实 Tool、Context 或 Memory 能力是否连通；`evals/agent`
+回答 Agent 在端到端 Task 上的行为质量。三者不得用 mock fallback、路径混放或重复 runner
 伪装成彼此。`AGENTS.md` 只提供入口，不复制具体测试与评分规则。
 
 ## 9. 业务专项

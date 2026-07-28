@@ -1,4 +1,4 @@
 interface:
   display_name: "Langfuse Eval Engineering"
-  short_description: "Design and audit assistant_agent Langfuse evals"
-  default_prompt: "Use $langfuse-eval-engineering to inspect this agent, propose two or three Langfuse eval capabilities, recommend one, and wait for my choice."
+  short_description: "设计、校准并审计任务中心的 assistant_agent 行为评测"
+  default_prompt: "Use $langfuse-eval-engineering to map this agent, propose one task-centered eval capability, define its environment and grader, and wait for my approval."

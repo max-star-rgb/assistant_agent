@@ -274,11 +274,10 @@ search、web access 和 Python execution 的单一 owner backend/sandbox 均保�
 共享治理分别归属 `providers/`、`context/`、`runtime/`、`observability/`、`automation/` 和 `media/`。
 
 普通 real Runtime 使用 `LocalSQLiteCalendarAdapter` 承载稳定的
-`calendar_search` / `calendar_create`，数据库默认位于 `.data/calendar/events.sqlite3`；
-Langfuse `real_system` Eval 通过 composition root 注入独立数据库，默认位于
-`.data/evals/langfuse/calendar.sqlite3`。两者都从 `ToolContext.user_id` 派生 namespace，避免用户间
-串数据；Trace 负责执行审计，SQLite 负责可检索业务状态。Google Calendar MCP mapping 暂时不被这两个
-稳定工具调用。
+`calendar_search` / `calendar_create`，数据库默认位于 `.data/calendar/events.sqlite3`。
+需要 Calendar 写入的 Agent Task 必须由自己的 Environment 注入一次运行专用的隔离数据库，并在
+运行后丢弃或复位。两者都从 `ToolContext.user_id` 派生 namespace，避免用户间串数据；Trace 负责
+执行审计，SQLite 负责可检索业务状态。Google Calendar MCP mapping 暂时不被这两个稳定工具调用。
 
 `visual_image_search` 与 `media_inspect` / `live_view_inspect` 虽然同属视觉业务域，但 Provider 配置、readiness 和
 启停生命周期不同，因此分别归属 `VisualImageSearchPlugin` 与 `MediaInspectionPlugin`。原

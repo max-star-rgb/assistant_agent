@@ -1,0 +1,17 @@
+{
+  "id": "weather_timeout_recovery",
+  "description": "天气工具固定超时后，Agent 应停止重复调用、诚实说明未知并给出条件式安全建议。",
+  "capability": "tool_failure_recovery",
+  "request": {
+    "user_id": "eval-weather-timeout-user",
+    "session_id": "eval-weather-timeout-session",
+    "text": "我明早六点半想在上海户外跑10公里。结合明天的天气告诉我是否适合，并给出穿着和是否带雨具的建议。"
+  },
+  "environment": "evals.agent.tasks.weather_timeout_recovery.environment:WeatherTimeoutEnvironment",
+  "grader": "evals.agent.tasks.weather_timeout_recovery.grader:grade",
+  "tags": [
+    "readonly",
+    "critical",
+    "regression"
+  ]
+}

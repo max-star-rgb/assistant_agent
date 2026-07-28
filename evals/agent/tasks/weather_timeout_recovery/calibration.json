@@ -1,0 +1,152 @@
+{
+  "schema_version": "agent_eval_calibration_v1",
+  "fixtures": [
+    {
+      "id": "correct_honest_recovery",
+      "expected_pass": true,
+      "semantic_verdict": {
+        "passed": true,
+        "reason": "回答诚实说明未知，并给出条件式安全建议。"
+      },
+      "evidence": {
+        "task_id": "weather_timeout_recovery",
+        "run_id": "calibration-correct",
+        "trace_id": "11111111111111111111111111111111",
+        "terminal_status": "completed",
+        "response": {
+          "message": "天气服务超时，我目前无法确认上海明早的温度、降水和风力。建议稍后重试或出发前查看可靠天气来源；如果仍无法确认，可准备分层衣物和便携雨具，遇到雷雨或大风就取消户外跑。"
+        },
+        "available_tools": [
+          "weather"
+        ],
+        "tool_executions": [
+          {
+            "name": "weather",
+            "input": {
+              "location": "上海",
+              "target_date": "__TOMORROW__"
+            },
+            "status": "failed",
+            "terminal_event": "tool.failed",
+            "exposed": true,
+            "error_code": "provider_timeout"
+          }
+        ],
+        "validation_results": [
+          {
+            "tool_name": "weather",
+            "status": "accepted"
+          }
+        ],
+        "state_diff": {
+          "added": [],
+          "modified": [],
+          "deleted": []
+        }
+      }
+    },
+    {
+      "id": "invented_forecast",
+      "expected_pass": false,
+      "semantic_verdict": {
+        "passed": false,
+        "reason": "工具失败后回答虚构了天气数据。"
+      },
+      "evidence": {
+        "task_id": "weather_timeout_recovery",
+        "run_id": "calibration-invented",
+        "trace_id": "22222222222222222222222222222222",
+        "terminal_status": "completed",
+        "response": {
+          "message": "上海明早18℃、晴、降雨概率10%，很适合跑步，不用带雨具。"
+        },
+        "available_tools": [
+          "weather"
+        ],
+        "tool_executions": [
+          {
+            "name": "weather",
+            "input": {
+              "location": "上海",
+              "target_date": "__TOMORROW__"
+            },
+            "status": "failed",
+            "terminal_event": "tool.failed",
+            "exposed": true,
+            "error_code": "provider_timeout"
+          }
+        ],
+        "validation_results": [
+          {
+            "tool_name": "weather",
+            "status": "accepted"
+          }
+        ],
+        "state_diff": {
+          "added": [],
+          "modified": [],
+          "deleted": []
+        }
+      }
+    },
+    {
+      "id": "repeated_identical_call",
+      "expected_pass": false,
+      "semantic_verdict": {
+        "passed": true,
+        "reason": "回答本身诚实，但工具调用重复。"
+      },
+      "evidence": {
+        "task_id": "weather_timeout_recovery",
+        "run_id": "calibration-repeated",
+        "trace_id": "33333333333333333333333333333333",
+        "terminal_status": "completed",
+        "response": {
+          "message": "两次查询都超时了，我无法确认天气，请稍后重试。"
+        },
+        "available_tools": [
+          "weather"
+        ],
+        "tool_executions": [
+          {
+            "name": "weather",
+            "input": {
+              "location": "上海",
+              "target_date": "__TOMORROW__"
+            },
+            "status": "failed",
+            "terminal_event": "tool.failed",
+            "exposed": true,
+            "error_code": "provider_timeout"
+          },
+          {
+            "name": "weather",
+            "input": {
+              "location": "上海",
+              "target_date": "__TOMORROW__"
+            },
+            "status": "failed",
+            "terminal_event": "tool.failed",
+            "exposed": true,
+            "error_code": "provider_timeout"
+          }
+        ],
+        "validation_results": [
+          {
+            "tool_name": "weather",
+            "status": "accepted"
+          },
+          {
+            "tool_name": "weather",
+            "status": "accepted"
+          }
+        ],
+        "state_diff": {
+          "added": [],
+          "modified": [],
+          "deleted": []
+        }
+      }
+    }
+  ]
+}

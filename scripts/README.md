@@ -40,27 +40,12 @@ For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
 - `scripts/run_system_context_eval.py`: 捕获真实 Runtime 编译的 `ChatRequest`
   和 Provider payload；要求 real 模式与 `--allow-unredacted-context`，产物写入
   `.data/evals/system/context/`。
-- `scripts/run_langfuse_agent_evals.py`: inspects, synchronizes, or runs the
-  infrastructure/behavior Datasets resolved from
-  `evals/langfuse/datasets/eval_manifest_v2.json`. The behavior Dataset
-  is composed from separately managed `cases/legacy/` and
-  `cases/engineered/` sources.
-  Use `--inspect`, `--sync-dataset-only`,
-  `--sync-evaluator-rules-only`, or the default Experiment mode. Scoring is
-  owned by Langfuse-native Code and LLM-as-a-Judge Evaluators; before a run the
-  script fails closed unless every managed hosted rule targets the active
-  Datasets, and after a run it waits for all four required Scores per item.
-  `--sync-evaluator-rules` explicitly updates existing hosted rule filters; the
-  script does not register SDK evaluators. Use
-  `--case-id`, `--capability`, or `--suite` for explicit current-Dataset
-  selection. Stable case IDs are stored in metadata while synchronized native
-  Dataset item IDs are namespaced by Dataset because Langfuse requires
-  project-wide uniqueness. Use
-  `--rerun-failed-from <run-name>` to create a new Experiment containing only
-  items with an explicitly failed latest native Score in that Dataset run, or
-  pass `--rerun-failed-from none` for a full Dataset run. It loads the untracked
-  `.env` by default. Case implementation lives under
-  `evals/langfuse/`.
+- `scripts/run_agent_evals.py`: Task 中心的 Agent eval 稳定入口。`--inspect`
+  只读显示 Task 和 Environment；`--calibrate` 直接校准隐藏 grader；
+  `--publish` 把所选 Task 薄发布到统一 Langfuse Dataset；`--run` 通过活动
+  `AgentGraphRuntime` 创建 Experiment、Trace 和 `agent_eval.*` Score。用可重复
+  `--task` 精确选择，或用 `--suite` 选择集合。真实 Chat 调用同时要求 real 模式、
+  完整 Provider 配置和 `--allow-real-provider`。实现位于 `evals/agent/`。
 - `scripts/run_improvement_lab.py`: offline, non-mutating improvement proposal runner.
 - `scripts/check_pilot_readiness.py` and `scripts/collect_pilot_evidence.py`:
   multi-agent pilot operator helpers.

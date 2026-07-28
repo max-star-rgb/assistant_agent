@@ -987,23 +987,19 @@ turn delivery.
 
 ### Langfuse Agent Experiments
 
-有 ground truth 的离线 Agent 评测使用独立 optional dependency
-`assistant_agent[eval]` 和 `scripts/run_langfuse_agent_evals.py`，不复用生产
-`TurnDiagnostic` score。版本控制中的 Dataset 源先同步到 Langfuse Dataset，再由原生
-Experiment SDK 创建 Dataset Run、item `Evaluation` 和 run-level `Evaluation`。
+Task 中心的 Agent 评测使用独立 optional dependency `assistant_agent[eval]` 和
+`scripts/run_agent_evals.py`，不复用生产 `TurnDiagnostic` score。Git 中的 Task、
+Environment、Grader 和校准样本定义回归行为；Langfuse Dataset 只保存已发布请求，Experiment
+保存 Dataset Run、Trace 和 item `Evaluation`。
 
 Experiment task 从 Langfuse 当前 observation 读取 W3C trace ID 和 parent span ID，通过
-`RuntimeTraceContext` 传入 `AgentGraphRuntime.run_state()`。Runtime 仍产生自己的 canonical
-TraceEvent；显式 Experiment 在 task 内把这批事件同步映射并导出为
-`experiment-item-task -> agent.runtime -> react.iteration/tool/llm/...`。因此
-DatasetRunItem、Runtime observations 和 `agent.*` item scores 位于同一条 trace。普通 API、
-Gateway、CLI 未传 `RuntimeTraceContext` 时仍自行生成 trace ID，行为不变。
+`RuntimeTraceContext` 传入 `AgentGraphRuntime.run_state()`。Runtime 仍产生 canonical
+TraceEvent，并在 task 内映射导出到同一条 Experiment trace。普通 API、Gateway、CLI 未传
+`RuntimeTraceContext` 时仍自行生成 trace ID，行为不变。
 
-显式 Experiment 的目标是生成完整 Dataset、Trace 和 Score，因此 Dataset 同步、认证、Runtime
-OTLP export 或 Score 失败必须 fail-fast。它与普通 server observability 的 fail-open 语义不同。
-当前基础设施实验固定使用 scripted mock，Dataset 覆盖 Calendar 写入、`no_tool` 和 Calendar
-只读查询。能力类型由版本化 `evaluator_version` 显式分派，三个案例共享同一组 `agent.*`
-item scores 和 run-level 聚合；真实 Provider 实验仍需独立显式入口。
+显式 Experiment 必须生成完整 Trace 和唯一主要分数 `agent_eval.reward`；任务局部的
+`agent_eval.check.*` 只用于诊断。Dataset 认证、Runtime OTLP export、Environment、Judge、
+Evidence 或 Score 失败必须 fail-fast，和普通 server observability 的 fail-open 语义不同。
 
 ### Phase 5: Trajectory Debug Gate
 

@@ -1,18 +1,28 @@
-# Agent Eval 体系
+# Eval 体系
 
-`evals/` 只保存真实系统能力验证或 Agent 行为评分，不属于 pytest。
+`evals/` 回答真实能力是否连通、以及 Agent 在完整任务中的行为是否合格。确定性代码契约仍属于
+`tests/`。
 
 ```text
 evals/
-  system/                  # 真实能力连通性；本地 runner/artifact 是权威
-  langfuse/                # Agent 行为；Langfuse Dataset/Experiment/Score 是权威
+  system/   # 真实 Provider/Tool/Context/Memory 连通性
+  agent/    # Task 中心的端到端 Agent 行为评测
 ```
+
+## 边界
+
+| 层 | 回答的问题 | 结果权威 |
+| --- | --- | --- |
+| pytest | 确定性代码契约是否正确 | 测试代码与 pytest 结果 |
+| `evals/system` | 真实外部能力是否连通并经过治理链路 | 本地 runner 与 artifact |
+| `evals/agent` | Agent 能否在受控任务中作出正确决策并完成目标 | Git Task/Grader 与 Langfuse Experiment/Score |
+
+不要用 mock fallback、目录混放或重复 runner 让一层伪装成另一层。
 
 ## System eval
 
-System eval 回答“真实 Provider、Tool、Context 或 Memory 是否连通并经过治理链路”。所有真实运行必须
-显式设置 `MULTIMODAL_AGENT_PROVIDER_MODE=real`，完整配置所需 Provider，并由 operator 传入对应
-确认参数；不能检测到 key 后自动运行，也不能从 real 静默回退 mock。
+所有真实运行必须显式设置 `MULTIMODAL_AGENT_PROVIDER_MODE=real`，完整配置所需 Provider，并由
+operator 传入对应确认参数；不能因检测到 key 自动运行，也不能从 real 静默回退 mock。
 
 Tool 连通性：
 
@@ -36,312 +46,142 @@ Context 捕获：
   --allow-unredacted-context
 ```
 
-仅允许合成输入，结果写入 `.data/evals/system/context/<run>/`，不得提交。
-
-Memory 当前没有完整 delete/reset 公共契约，因此不提供会写入真实 Mem0 的自动 runner；详见
+仅允许合成输入，结果写入 `.data/evals/system/context/<run>/`，不得提交。Memory 当前没有完整
+delete/reset 公共契约，因此不提供会写入真实 Mem0 的自动 runner；详见
 `evals/system/memory/README.md`。
 
-## Langfuse case eval
+## Agent eval
+
+Agent eval 采用四个分离概念：
 
 ```text
-Langfuse Dataset
-  -> Experiment
+Task (用户挑战)
+  + Environment (runtime、工具、依赖、状态与隔离)
   -> AgentGraphRuntime
-  -> AgentExperimentOutput
-  -> Code Evaluator + LLM-as-a-Judge
-  -> Score
+  -> Evidence (轨迹、终态、状态与回答)
+  -> Task-local Grader
+  -> agent_eval.reward + agent_eval.check.*
+  -> Langfuse Experiment
 ```
 
-Langfuse 是 Dataset、Experiment、Evaluator 和 Score 的运行时权威。本地 JSON 只负责受版本控制的
-结构索引与显式 Dataset 同步，不是第二套结果账本。
-
-### 核心模型
-
-| concept | responsibility |
-| --- | --- |
-| Case | 稳定 `case_id` 对应的用户场景 |
-| Capability | 与 Provider/环境无关的被测行为 |
-| Dataset | 稳定案例集合 |
-| Suite | 从 Dataset 选择一组 Case |
-| Profile | Chat、Tool、fixture 和副作用执行边界 |
-| Experiment | Dataset × Suite × Profile × 代码版本的一次运行 |
-
-活动 Dataset 只有两个：
-
-| key | Langfuse Dataset | purpose |
-| --- | --- | --- |
-| `infrastructure` | `assistant-agent-infrastructure-v1` | scripted Runtime、Trace、Evaluator 闭环 |
-| `behavior` | `assistant-agent-behavior-v2` | 全部真实 Agent 行为案例 |
-
-旧 `assistant-agent-closed-loop-v1`、`assistant-agent-real-readonly-v1` 和
-`assistant-agent-real-system-v1` 只保留历史 Experiment，不再由本地 seed 管理，也不会自动删除。
-
-结构权威入口：
-
-- `datasets/eval_manifest_v2.json`：Dataset、Profile、Suite、Capability 和归档 Dataset；
-- `datasets/infrastructure_v1.seed.json`：infrastructure seed；
-- `datasets/behavior_v2.dataset.json`：统一 behavior Dataset composition；
-- `cases/legacy/`：eval engineering 前的待迁移案例，可在完全迁移后整体删除；
-- `cases/engineered/`：按新 workflow 设计的独立 capability case；
-- `evaluators/evaluator_manifest_v1.json`：Evaluator、源码、Score 和 Langfuse rule 对应关系。
-
-Case metadata 记录 `capability`、可读的 `scenario_summary`、短
-`dependency_summary`、`dependency_types`、fixture id、profile、工具和副作用事实。
-`uses_live_chat_provider` 与 `uses_live_external_tool_service` 分别说明真实 Chat 和 Tool 调用，
-不能把“Tool 不联网”表述成“整个案例离线”。为满足 Langfuse Trace attribute 单值 200 字符限制，
-metadata 不保存嵌套依赖详情；路径、SHA、故障载荷和状态约束放在 `expected_output.oracle`。Profile
-不拥有 Dataset；Suite 选择 Dataset，Profile 只决定怎样运行所选 Case。
-
-behavior composition 当前依次合并 legacy collection 和 engineered case source。两类本地来源只用于
-清楚表达迁移状态，不会创建两个 Langfuse Dataset。新案例默认一个 capability 一个版本化文件；旧
-案例完成重设计、校准和真实运行审计后移入 engineered，直到 legacy source 为空并删除。具体目录规则
-见 `cases/README.md`。
-
-新案例按 `draft -> calibrated -> active -> retired` 管理。`draft` 可以同步和定向运行，但不能仅凭
-存在于 Dataset 就视为稳定质量门槛；只有用明确正确和可信但错误的样本校准对应 Judge、完成一次真实
-Experiment 审计并确认 Score 完整后，才能改为 `calibrated` 或 `active`。
-
-当前按 eval engineering workflow 新增的首个 draft 是
-`grounded_file_synthesis`。它使用受版本控制且带 SHA-256 的冻结文件，运行时只把文件复制到
-`file_read` 的受治理根目录；Agent 看不到 ground truth、Judge rubric 或校准样本。校准样本位于
-`evaluators/calibration/grounded_file_synthesis_v1.json`，仍需在 Langfuse UI 中验证两个语义 Judge。
-
-第二个 engineered draft 是 `clarification_before_write`：真实 Chat 只能看到
-`calendar_create`，但请求缺少该工具必填的明确开始时间。Agent 应保持隔离 SQLite 日历不变并先澄清，
-而不是猜测后写入。该案例采用统一的 `expected_output.evaluation_contract` 说明范式：`pass_iff`
-定义唯一通过边界，`evidence_by_score` 将独立证据分配给四层 Score；字段规范见
-`langfuse/cases/README.md`。校准样本仍需在 Langfuse UI 验证两个语义 Judge。
-
-第三个 engineered draft 是 `tool_failure_recovery`，沿用稳定 case id
-`agent_real_v1_weather_timeout_running_recovery`。真实 Chat 只能看到 `weather`，但该工具由
-`weather_failure_v1` 受控夹具固定返回 `provider_timeout`，不会调用真实天气 Provider。案例要求
-Agent 只调用一次、诚实说明无法确认天气并给出条件式安全建议；校准样本分别覆盖正确恢复、超时后
-编造预报和相同参数重复调用。
-
-三个 engineered draft 已统一使用 case v2：`input` 只保存真正传给 Agent 的 `user_request`；
-`expected_output` 固定为 `evaluation_contract + oracle`；`metadata` 用中文
-`scenario_summary`、短依赖摘要、稳定枚举和 live-call 布尔字段明确数据来源及真实调用边界。legacy
-item 仍兼容旧格式，并在逐项迁移时转换为 v2。
-
-### 代码职责
+Git 是回归定义权威：
 
 ```text
-contracts.py          # Dataset/Case/ExperimentOutput schema
-dataset_sync.py       # Dataset composition/case source -> Langfuse Dataset
-evaluator_rules.py    # hosted Evaluator rule 的 Dataset 绑定审计与显式同步
-manifest.py           # Dataset/Profile/Suite/Capability 与选择
-runtime_profiles.py   # scripted_mock / real_readonly / real_system
-evidence.py           # Runtime Trace -> evaluator evidence
-experiment.py         # 薄 Experiment task/orchestration
-score_audit.py        # Dataset Run 四层 Score 完整性等待与审计
-evaluators/           # Code Evaluator 与版本清单
-datasets/             # Dataset 定义、composition 与 manifest
-cases/                # legacy/engineered 案例来源
+evals/agent/
+  contracts.py          # Task、Evidence、Grader 契约
+  loader.py             # Task、Suite 和入口加载
+  evidence.py           # Runtime Trace 的稳定投影
+  judge.py              # 真实 Provider 语义 Judge 边界
+  provider_gate.py      # real 模式与 Provider 完整性闸门
+  calibration.py        # 正反 Evidence 直接校准
+  langfuse_backend.py   # Dataset 发布与 Experiment 薄适配
+  cli.py                # 稳定命令入口
+  suites.json           # Task ID 集合
+  tasks/<task_id>/
+    task.json           # 用户请求、capability 与代码入口
+    environment.py      # 依赖、工具、状态、隔离与执行
+    grader.py           # 隐藏评分逻辑
+    calibration.json    # 人工标注的正反证据
 ```
 
-### Score
+Langfuse 是协作和运行后端：Dataset 保存已发布请求，Experiment 保存 Trace、输出和 Score。不要把
+Environment、grader rubric、长依赖说明或 oracle 塞进 Dataset metadata，也不要把 Langfuse
+Dataset 当作回归定义的唯一副本。
 
-每个 Experiment item 应获得四个分层 Score：
+### Task 规则
 
-- `agent.runtime_trace_pass`：Runtime 终态与 Trace 闭环；
-- `agent.tool_mechanical_pass`：工具暴露、Validator、执行与终态；
-- `agent.tool_semantic_pass`：工具选择、参数、结果使用和状态语义；
-- `agent.answer_semantic_pass`：最终回答忠于证据并满足任务。
+- 一个 Task 只验证一个可命名 capability；
+- `task.json` 的请求必须像自然用户请求，不描述测试机关；
+- Environment 使用活动 `AgentGraphRuntime`，可以模拟依赖，不能模拟 Agent 决策；
+- 写操作必须使用每次运行可丢弃或可复位的状态；
+- grader 对 Agent 隐藏，客观事实优先用代码检查，开放语义才用 Judge；
+- 每个 Task 只有一个主要分数 `agent_eval.reward`；
+- `agent_eval.check.<name>` 只解释失败，不形成另一套通过规则；
+- grader 必须先通过至少一个正确样本和一个可信错误样本的直接校准。
 
-`tool.finished` 和携带结构化错误的 `tool.failed` 都可以证明机械链路闭合；业务结果成功、失败、empty
-及 Agent 恢复行为由语义 Score 判断。Judge 超时、解析失败或缺失 Score 属于评测基础设施状态，不得
-伪装成 Agent 通过或失败。
+首个活动 Task 是 `weather_timeout_recovery`：真实 Chat Agent 只看到 weather 工具，Environment
+固定让天气依赖返回 `provider_timeout`。Agent 必须只调用一次，诚实说明天气未知，并给出条件式安全
+建议。它不调用真实天气服务，也不写状态。
 
-Experiment 运行前会 fail-closed 审计三个 hosted Evaluator rule 是否启用、是否为 Experiment target，
-以及 Dataset filter 是否精确绑定 evaluator manifest 中的活动 Dataset。运行完成后默认等待最多
-180 秒，并逐 item 验证四个 Score 齐全；超时或缺失时命令以评测基础设施错误退出，不再把只有 Trace
-但没有 Score 的 Dataset Run 报告为成功。四项齐全但任一 Score 为 `false` 时，结果明确记录
-`agent_outcome=failed` 并使用退出码 4；这与 Score 缺失的基础设施错误不同。可用
-`--score-wait-timeout` 调整等待时间。
+### 运行顺序
 
-Code Evaluator 源码在 `evaluators/agent_strict_pass.ts`。两个 LLM Judge
-`assistant-agent-tool-semantic-pass-zh` 和 `assistant-agent-answer-semantic-pass-zh` 在 Langfuse
-UI 部署，版本对应关系记录在 Evaluator manifest；凭据不进入仓库。使用 DeepSeek Anthropic
-connection 时，Model parameters 必须设置
-`providerOptions.anthropic.thinking.type=disabled`，避免只返回 reasoning block 而缺少 Langfuse
-所需的最终结构化对象；该要求同时记录在 Evaluator manifest。
+1. 检查 Task 和 Environment，不联网：
 
-## 命令
+```bash
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python \
+  scripts/run_agent_evals.py \
+  --inspect \
+  --task weather_timeout_recovery
+```
 
-### 离线检查
+2. 跑离线框架契约：
 
 ```bash
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q \
   tests/integration/eval
 ```
 
-检查默认 infrastructure 选择：
-
-```bash
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python \
-  scripts/run_langfuse_agent_evals.py --inspect
-```
-
-检查 behavior Suite：
-
-```bash
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python \
-  scripts/run_langfuse_agent_evals.py \
-  --profile real_readonly \
-  --inspect
-
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python \
-  scripts/run_langfuse_agent_evals.py \
-  --suite failure_recovery \
-  --inspect
-```
-
-检查新的冻结文件综合案例：
-
-```bash
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python \
-  scripts/run_langfuse_agent_evals.py \
-  --profile real_system \
-  --capability grounded_file_synthesis \
-  --inspect
-```
-
-检查写入前澄清案例：
-
-```bash
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python \
-  scripts/run_langfuse_agent_evals.py \
-  --profile real_system \
-  --capability clarification_before_write \
-  --inspect
-```
-
-检查受控天气超时恢复案例：
-
-```bash
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python \
-  scripts/run_langfuse_agent_evals.py \
-  --profile real_readonly \
-  --capability tool_failure_recovery \
-  --inspect
-```
-
-`--case-id` 和 `--capability` 可重复；同类值取并集，不同选择维度取交集：
-
-```bash
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python \
-  scripts/run_langfuse_agent_evals.py \
-  --profile real_system \
-  --capability shopping_list_search \
-  --inspect
-```
-
-### 同步 Dataset
-
-同步完整 managed Dataset 后退出：
-
-```bash
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python \
-  scripts/run_langfuse_agent_evals.py \
-  --profile real_readonly \
-  --sync-dataset-only
-```
-
-同步会 upsert 本地 managed items，删除同一 Dataset 中带旧 `seed_hash` 且已不在当前 seed 的 managed
-items，但保留没有 `seed_hash` 的 Langfuse UI 手工案例。它不运行 Agent、Provider、Evaluator。
-由于 Langfuse 要求 Dataset item ID 在整个 project 内唯一，同步器会使用
-`<dataset_name>__<case_id>` 作为原生 `dataset_item_id`；稳定 `case_id` 保存在 item metadata，
-因此统一 Dataset 不会与归档 Dataset 的历史 item 冲突。
-
-`--seed-only` 是 `--sync-dataset-only` 的兼容别名；`--seed-dataset` 是 `--sync-dataset` 的兼容
-别名；`--dry-run` 是 `--inspect` 的兼容别名。
-
-### 同步 Evaluator rule
-
-当活动 Dataset 新建或替换后，显式同步三个 hosted Evaluator rule 的 Dataset filter：
-
-```bash
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python \
-  scripts/run_langfuse_agent_evals.py \
-  --sync-evaluator-rules-only
-```
-
-该命令只修改 Langfuse 中已有的受管 rule 绑定，不创建 Evaluator、不运行 Agent，也不回填历史
-Dataset Run。普通 Experiment 会先只读审计；绑定缺失时提示使用
-`--sync-evaluator-rules`，不会继续产生无 Score 的新 Run。
-
-### 运行 Experiment
-
-真实 profile 需要 `MULTIMODAL_AGENT_PROVIDER_MODE=real`、完整配置和显式
-`--allow-real-tools`：
+3. 使用真实 Judge 校准人工标注 Evidence：
 
 ```bash
 MULTIMODAL_AGENT_PROVIDER_MODE=real \
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python \
-  scripts/run_langfuse_agent_evals.py \
-  --profile real_readonly \
-  --allow-real-tools \
-  --run-name behavior-readonly-smoke
+  scripts/run_agent_evals.py \
+  --calibrate \
+  --task weather_timeout_recovery \
+  --allow-real-provider
 ```
 
-只运行受控失败恢复，不调用真实 weather：
+4. 显式发布 Task 到统一 Dataset：
+
+```bash
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python \
+  scripts/run_agent_evals.py \
+  --publish \
+  --task weather_timeout_recovery
+```
+
+默认 Dataset 为 `assistant-agent-regression`。发布只 upsert 所选 Task，不运行 Agent 或 Judge。
+原生 item ID 使用 `<dataset_name>__<task_id>`，避免与同一 Langfuse project 的历史 Dataset item
+冲突。
+
+5. 运行一个 Task：
 
 ```bash
 MULTIMODAL_AGENT_PROVIDER_MODE=real \
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python \
-  scripts/run_langfuse_agent_evals.py \
-  --suite failure_recovery \
-  --allow-real-tools \
-  --run-name weather-failure-recovery
+  scripts/run_agent_evals.py \
+  --run \
+  --task weather_timeout_recovery \
+  --allow-real-provider \
+  --run-name weather-timeout-recovery
 ```
 
-完整 system Suite 可能执行隔离写操作，日历固定使用
-`.data/evals/langfuse/calendar.sqlite3`：
+6. 运行 Suite：
 
 ```bash
 MULTIMODAL_AGENT_PROVIDER_MODE=real \
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python \
-  scripts/run_langfuse_agent_evals.py \
-  --profile real_system \
-  --allow-real-tools \
-  --allow-writes \
-  --run-name behavior-system-full
+  scripts/run_agent_evals.py \
+  --run \
+  --suite release \
+  --allow-real-provider \
+  --run-name agent-release
 ```
 
-运行前同步统一 behavior Dataset：
+`--task` 可重复，用于精确运行多个 Task；`--task` 与 `--suite` 互斥。当前 `smoke`、`readonly` 和
+`release` 都只含首个纵向 Task，后续 Task 必须逐个完成设计、校准和审计后才加入。
 
-```bash
-MULTIMODAL_AGENT_PROVIDER_MODE=real \
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python \
-  scripts/run_langfuse_agent_evals.py \
-  --profile real_readonly \
-  --sync-dataset \
-  --sync-evaluator-rules \
-  --allow-real-tools \
-  --run-name behavior-readonly-after-sync
-```
+### 安全和退出码
 
-只重跑某个 run 中最新四个 Score 任一明确为 `false` 的当前 Dataset items：
+- `--inspect` 不读取 `.env`，不联网；
+- `--publish` 需要 Langfuse 凭据，但不调用 Chat Provider；
+- `--calibrate` 和 `--run` 同时要求 `--allow-real-provider`、
+  `MULTIMODAL_AGENT_PROVIDER_MODE=real` 和完整真实 Chat 配置；
+- `--run` 还要求 Langfuse 凭据与可用的 OTLP Trace 导出；
+- Agent 不通过返回 1；
+- 凭据、Environment、Dataset、Trace、Judge、Evidence 或 Score 故障返回 2；
+- 通过返回 0。
 
-```bash
-MULTIMODAL_AGENT_PROVIDER_MODE=real \
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python \
-  scripts/run_langfuse_agent_evals.py \
-  --profile real_system \
-  --allow-real-tools \
-  --allow-writes \
-  --rerun-failed-from behavior-system-full \
-  --run-name behavior-system-retry
-```
-
-缺失异步 Score 不视为明确失败。历史 run 中已不在当前 Dataset 的 item 会列入
-`skipped_unavailable_item_ids`，不会恢复执行。
-
-## 统一安全要求
-
-- 不提交 API key、token、真实 `.env`、Provider 原始响应或真实用户数据；
-- pytest 只使用 mock/local/offline；
-- system eval 真实调用必须显式授权；
-- Langfuse behavior 写场景只使用隔离、可复位和可观察状态；
-- case eval 的 Dataset、Experiment 和 Score 以 Langfuse 为权威；
-- 本轮调用真实 Provider 时，最终报告必须说明范围和结果。
+真实运行生成的数据只保存在 Langfuse 和未跟踪 `.data/**`；不得提交凭据、原始生产 Trace、真实
+用户数据或 Provider 原始响应。

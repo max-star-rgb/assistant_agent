@@ -1,0 +1,11 @@
+{
+  "smoke": [
+    "weather_timeout_recovery"
+  ],
+  "readonly": [
+    "weather_timeout_recovery"
+  ],
+  "release": [
+    "weather_timeout_recovery"
+  ]
+}
