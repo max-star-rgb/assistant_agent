@@ -21,6 +21,7 @@ from assistant_agent.runtime.llm_event_mapping import stream_delta_to_agent_even
 from assistant_agent.runtime.loop_guard import LoopGuard, LoopGuardDecision
 from assistant_agent.runtime.prompt_builder import build_direct_chat_request, build_text_capability_output
 from assistant_agent.runtime.router import ToolRouter
+from assistant_agent.runtime.run_phase import RunPhase
 from assistant_agent.runtime.state import AgentError, AgentState
 from assistant_agent.runtime.tool_executor import ToolExecutor
 from assistant_agent.runtime.output_models import (
@@ -99,6 +100,7 @@ class AssistantLoopState(TypedDict):
     pending_tool_calls: NotRequired[list[AssistantToolCall]]
     assistant_iterations: NotRequired[int]
     tool_calls_used: NotRequired[int]
+    run_phase: NotRequired[RunPhase]
     tool_observations: NotRequired[list[dict[str, Any]]]
     current_node_name: NotRequired[str]
     max_tool_iterations: NotRequired[int]
@@ -153,6 +155,25 @@ class _ResponseDeltaBuffer:
 
     def discard(self) -> None:
         self._events.clear()
+
+
+def _run_phase(graph_state: AssistantLoopState) -> RunPhase:
+    value = graph_state.get("run_phase", RunPhase.ACT)
+    try:
+        return RunPhase(value)
+    except ValueError:
+        return RunPhase.ACT
+
+
+def _enter_finalize_phase(
+    graph_state: AssistantLoopState,
+    *,
+    reason: str,
+) -> None:
+    graph_state["run_phase"] = RunPhase.FINALIZE
+    metadata = graph_state["state"].request.metadata
+    metadata["assistant_run_phase"] = RunPhase.FINALIZE.value
+    metadata.setdefault("assistant_finalize_reason", reason)
 
 
 def assistant_node(graph_state: AssistantLoopState) -> AssistantLoopState:
@@ -236,7 +257,12 @@ def _build_decision_context(
     tool_calls_used = int(graph_state.get("tool_calls_used", len(tool_observations)))
     answer_only_reason = request.metadata.pop("assistant_answer_only_next_turn", None)
     answer_only = isinstance(answer_only_reason, str) and bool(answer_only_reason)
-    if tool_calls_used >= max_iterations or answer_only:
+    if tool_calls_used >= max_iterations:
+        _enter_finalize_phase(graph_state, reason="tool_call_budget_exhausted")
+    elif answer_only:
+        _enter_finalize_phase(graph_state, reason=answer_only_reason)
+    run_phase = _run_phase(graph_state)
+    if run_phase is RunPhase.FINALIZE:
         tool_specs = []
         if tool_calls_used >= max_iterations:
             request.metadata["tool_call_budget_exhausted"] = True
@@ -257,7 +283,7 @@ def _build_decision_context(
         iteration=iterations,
         max_iterations=max_iterations,
         is_mock=is_mock,
-        answer_only=tool_calls_used >= max_iterations or answer_only,
+        answer_only=run_phase is RunPhase.FINALIZE,
         trace_store=graph_state.get("trace_store"),
         trace_id=graph_state.get("trace_id"),
         node_name=graph_state.get("current_node_name", "assistant"),
@@ -366,7 +392,12 @@ def _decide_with_llm(
         graph_state,
         source="assistant_langgraph_answer",
     )
-    result = _run_chat_turn(graph_state, chat_adapter, request, attempt_kind="primary")
+    result = _run_chat_turn(
+        graph_state,
+        chat_adapter,
+        request,
+        attempt_kind="finalize" if context.answer_only else "primary",
+    )
     _record_chat_usage_metadata(state, result)
     if (
         _is_provider_context_overflow_result(result)
@@ -413,8 +444,10 @@ def _decide_with_llm(
         stream_buffer.discard()
         if not context_service.selected_tool_specs(context):
             state.request.metadata["tool_call_returned_after_budget_exhaustion"] = True
+            state.request.metadata["finalization_protocol_violation"] = True
+            state.request.metadata["finalization_protocol_violation_count"] = 1
             retry_request, retry_stream_buffer = _with_buffered_response_stream(
-                _with_answer_only_retry_guidance(answer_only_base_request),
+                _with_finalize_protocol_retry_guidance(answer_only_base_request),
                 graph_state,
                 source="assistant_langgraph_answer",
             )
@@ -422,7 +455,7 @@ def _decide_with_llm(
                 graph_state,
                 chat_adapter,
                 retry_request,
-                attempt_kind="answer_only_retry",
+                attempt_kind="finalize_protocol_retry",
             )
             _record_chat_usage_metadata(state, result)
             if result.success and not result.tool_calls:
@@ -432,7 +465,8 @@ def _decide_with_llm(
                 return decision, context
             retry_stream_buffer.discard()
             state.request.metadata["answer_only_retry_failed"] = True
-            return _answer_only_fallback(context), context
+            state.request.metadata["finalization_protocol_violation_count"] = 2
+            return _finalize_fallback(context), context
         pending_decisions = [
             native_tool_call_to_assistant_output(call)
             for call in result.tool_calls
@@ -527,6 +561,7 @@ def _run_chat_turn(
             "max_iterations": int(graph_state.get("max_tool_iterations", _get_max_tool_iterations())),
             "tool_spec_count": len(request.tools),
             "attempt_kind": attempt_kind,
+            "run_phase": _run_phase(graph_state).value,
         },
     )
     runner = graph_state.get("chat_turn")
@@ -549,7 +584,12 @@ def _run_chat_turn(
             model=model,
             latency_ms=wall_latency_ms,
             span_id=span_id,
-            attributes={"iteration": iteration, "wall_latency_ms": wall_latency_ms},
+            attributes={
+                "iteration": iteration,
+                "wall_latency_ms": wall_latency_ms,
+                "attempt_kind": attempt_kind,
+                "run_phase": _run_phase(graph_state).value,
+            },
             error={"code": "provider_call_failed", "message": sanitize_trace_value(str(exc))},
         )
         raise
@@ -616,6 +656,7 @@ def _run_chat_turn(
             "wall_latency_ms": wall_latency_ms,
             "usage": normalize_provider_token_usage(result.usage),
             "attempt_kind": attempt_kind,
+            "run_phase": _run_phase(graph_state).value,
         },
         error=_chat_result_trace_error(result),
     )
@@ -1073,24 +1114,28 @@ def _ensure_rule_plan(graph_state: AssistantLoopState) -> None:
     state.selected_tools = _select_tools_with_optional_request(router, state.intent, request)
 
 
-def _with_answer_only_retry_guidance(request: ChatRequest) -> ChatRequest:
-    guidance = "你刚才返回了不可执行的工具调用；本次必须返回自然语言最终答复。"
+def _with_finalize_protocol_retry_guidance(request: ChatRequest) -> ChatRequest:
+    guidance = (
+        "# Finalization protocol violation\n\n"
+        "上一次输出违反了最终回答协议。本次只能输出面向用户的自然语言答案；"
+        "任何工具调用、工具参数或继续执行计划都将被 Runtime 拒绝。"
+    )
     messages = [dict(message) for message in request.messages]
     if messages and messages[0].get("role") == "system":
         content = str(messages[0].get("content") or "")
-        messages[0]["content"] = f"{content}\n\n# 本轮回答重试\n\n{guidance}"
+        messages[0]["content"] = f"{content}\n\n{guidance}"
     else:
         messages.insert(0, {"role": "system", "content": guidance})
     return request.model_copy(
         update={
             "messages": messages,
             "tools": [],
-            "tool_choice": None,
+            "tool_choice": "none",
         }
     )
 
 
-def _answer_only_fallback(context: AssistantDecisionContext) -> AssistantTextOutput:
+def _finalize_fallback(context: AssistantDecisionContext) -> AssistantTextOutput:
     statuses = {
         str(observation.get("status"))
         for observation in context.tool_observations
@@ -1362,6 +1407,10 @@ def execute_requested_tool_node(graph_state: AssistantLoopState) -> AssistantLoo
         if tool_calls_used >= max_tool_calls:
             skipped = len(pending) - index
             metadata = current["state"].request.metadata
+            _enter_finalize_phase(
+                current,
+                reason="tool_call_budget_exhausted",
+            )
             metadata["tool_call_budget_exhausted"] = True
             metadata["tool_calls_skipped_for_budget"] = (
                 int(metadata.get("tool_calls_skipped_for_budget", 0)) + skipped
@@ -1375,6 +1424,11 @@ def execute_requested_tool_node(graph_state: AssistantLoopState) -> AssistantLoo
         )
         tool_calls_used += 1
         current["tool_calls_used"] = tool_calls_used
+        if tool_calls_used >= max_tool_calls:
+            _enter_finalize_phase(
+                current,
+                reason="tool_call_budget_exhausted",
+            )
         if current["state"].status in {"failed", "cancelled"}:
             break
 
@@ -1791,6 +1845,7 @@ def _record_react_decision(
         "reason": decision.reason,
         "safety_notes": decision.safety_notes,
         "plan_status": state.plan_status,
+        "run_phase": _run_phase(graph_state).value,
     })
     output_summary = {
         "output_type": decision.type,
@@ -1799,6 +1854,7 @@ def _record_react_decision(
         "message_present": isinstance(decision, AssistantTextOutput),
         "step_id": decision.step_id if is_tool_call else None,
         "plan_status": state.plan_status,
+        "run_phase": _run_phase(graph_state).value,
     }
     _runtime_event_publisher(graph_state).publish_assistant_step(
         AssistantStepFact(
@@ -1820,6 +1876,7 @@ def _record_react_decision(
                 "step_id": decision.step_id if is_tool_call else None,
                 "plan_status": state.plan_status,
                 "safety_notes": decision.safety_notes,
+                "run_phase": _run_phase(graph_state).value,
             },
         )
     )

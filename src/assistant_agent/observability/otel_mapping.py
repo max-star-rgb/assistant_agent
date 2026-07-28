@@ -53,6 +53,7 @@ _ALLOWED_ATTRIBUTE_KEYS = frozenset(
         "output_tokens",
         "provider_latency_ms",
         "response_present",
+        "run_phase",
         "run_id",
         "route_branch",
         "runtime_action",

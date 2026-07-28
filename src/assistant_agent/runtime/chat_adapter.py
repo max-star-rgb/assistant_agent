@@ -451,6 +451,9 @@ def _build_chat_completions_payload(
         payload["tools"] = request.tools
         if capabilities.supports_tool_choice:
             payload["tool_choice"] = request.tool_choice or "auto"
+    elif request.tool_choice == "none" and capabilities.supports_tool_choice:
+        payload["tools"] = []
+        payload["tool_choice"] = "none"
     if request.response_format and capabilities.supports_response_format:
         payload["response_format"] = request.response_format
     if extra_body:

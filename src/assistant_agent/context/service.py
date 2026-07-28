@@ -158,7 +158,7 @@ class ContextService:
             return compilation
         return PromptCompileResult(
             chat_request=compilation.chat_request.model_copy(
-                update={"tool_choice": None}
+                update={"tool_choice": "none" if context.answer_only else None}
             ),
             system_instruction=compilation.system_instruction,
             rendered_context=compilation.rendered_context,

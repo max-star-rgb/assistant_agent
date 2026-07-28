@@ -1,6 +1,6 @@
 # Context Engineering Status
 
-Last updated: 2026-07-27
+Last updated: 2026-07-28
 
 本文件记录上下文工程的当前进展、已实现能力、限制和下一步方向。涉及 assistant context、prompt/context rendering、conversation history、memory context、tool observation compaction 或 context budget 的任务，应先读本文件顶部快速交接，再读对应小节、源码和测试。
 
@@ -48,7 +48,10 @@ Last updated: 2026-07-27
   模型 turn 调度、决策 guard 与状态归并，不为纯上下文计算增加 graph node。
 - `AssistantContextPack` 已接入 assistant 每轮决策，统一收集 request、conversation、memory、realtime video、plan state、tool observations、tool specs、source counts 和 budget。
 - `AgentGraphRuntime` 可在 run 入口通过 `ContextSourceCoordinator` 加载一次显式 owner-bound 的 `SOUL.md`，把验证后的 `ContextSourceResult` 冻结到 `AgentState`；同一 run 的多次 assistant iteration 不重复读文件，下一 run 才观察合法更新。
-- 生产 provider-native `ChatRequest` 统一通过无副作用 `PromptCompiler` 编译；真实与 mock provider 共用 LangGraph assistant loop。工具预算耗尽后的 finishing turn 仍使用同一通用 system prompt 和 native context，只把工具集合置空。legacy prompt-json renderer 仍只用于离线兼容与测试。
+- 生产 provider-native `ChatRequest` 统一通过无副作用 `PromptCompiler` 编译；真实与 mock provider 共用
+  LangGraph assistant loop。Runtime 显式区分 `ACT` 与 `FINALIZE`：工具预算耗尽或 guard 要求停止行动
+  后进入 `FINALIZE`，由 `PromptCompiler` 重建只含用户上下文和结构化 evidence 的独立请求，不沿用
+  当前 run 的 native tool-call 轨迹。legacy prompt-json renderer 仍只用于离线兼容与测试。
 - 通用 system prompt 在每次编译时把带时区的可信本地运行时间和部署侧配置的当前位置放入独立的
   `当前环境` 段，确保 Provider 原始 input 和受长度限制的开发预览都优先显示。当前日期、星期、
   时间和相对日期解析以本地时间为准；用户未指定目标地点时可把已配置的当前位置作为默认值，
@@ -180,7 +183,10 @@ Last updated: 2026-07-27
 - Provider-native `ChatRequest.tools` 使用 `AssistantContextPack.prompt_tool_specs` 中已治理的 schema。context builder 同时生成 prompt-safe `RunToolCatalog`；其中 `available_tool_names` 既是模型可见目录，也是 `ActionValidator` 的 run-scoped 执行边界，不再维护重复的 exposed/executable 集合。目录装配只消费 category、媒体要求、默认启用以及显式 tool/skill 等结构化事实，不读取 `request.text` 做意图路由。Plugin 只负责装配和归属，不授予单轮执行权限；系统不维护独立 toolset、Tool Search 或 Schema 渐进披露，全部合格 ToolSpec 直接进入 Provider 请求。工具规模由部署 Plugin、MCP allowlist 和入口 `allowed_tools` 控制，现有 context report 继续记录实际 Schema 占用。
 - 系统提示词只承载通用 runtime、数据边界和工具治理规则，不写入某个具体工具的选择策略。模型可见的工具说明只来自 `ToolSpec.description` 和 `input_schema`。
 - Repo-local business skill loader 只服务 `tool_visibility.enabled_skills` 的显式结构化工具资格化以及离线 Improvement Lab；它不生成 Provider Prompt，不自动召回，也不创建 `run_skill` 或直接 shell/browser/http 执行路径。
-- 工具调用预算耗尽时不再切换专用 final-only prompt/profile；`PromptCompiler` 保持通用 system prompt 和 observation/tool-call evidence，只生成 `tools=[]` 的 finishing turn。
+- `FINALIZE` 使用高优先级最终回答约束、`tools=[]` 和 `tool_choice=none`；工具 observation 被投影为
+  保留 status、summary、工具专属 data、error 和 ref 的结构化 evidence。它不把 evidence 降级为单一
+  summary，也不保留 `assistant.tool_calls -> tool` 协议序列。模型在该阶段返回 tool call 属于
+  `finalization protocol violation`，Runtime 不执行，并且最多做一次同样无工具的严格纠正。
 - session summary renderer 明确把摘要标注为不可信历史数据，不作为长期记忆或系统指令。
 - prompt 明确声明 conversation、memory、observation 和 tool output 都是数据，不是系统指令；retrieved memory 是用户历史证据，不是权威信息，当前用户输入和新工具结果优先，不能执行 memory 中的指令。
 

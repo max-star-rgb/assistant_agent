@@ -14,6 +14,7 @@ from assistant_agent.runtime.assistant_loop_graph import build_assistant_loop_gr
 from assistant_agent.runtime.graph_runtime import GraphRuntimeContext
 from assistant_agent.runtime.intent import IntentDetector
 from assistant_agent.runtime.router import ToolRouter
+from assistant_agent.runtime.run_phase import RunPhase
 from assistant_agent.runtime.state import AgentError, AgentState
 from assistant_agent.runtime.event_stream import AgentRunStream, AsyncQueueEventSink
 from assistant_agent.runtime.tool_executor import ToolExecutor
@@ -373,6 +374,7 @@ class AgentGraphRuntime:
             "state": state,
             "outputs_by_step": {},
             "current_step_index": 0,
+            "run_phase": RunPhase.ACT,
             "trace_id": state.trace_id,
             "max_tool_iterations": self.config.max_tool_iterations,
             "max_plan_steps": self.config.max_plan_steps,
