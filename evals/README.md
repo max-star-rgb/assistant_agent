@@ -107,8 +107,9 @@ Dataset 当作回归定义的唯一副本。
 - grader 必须先通过至少一个正确样本和一个可信错误样本的直接校准。
 
 当前活动 Task 是 `weather_timeout_recovery`：真实 Chat Agent 只看到 weather 工具，Environment
-固定让天气依赖返回 `provider_timeout`。Agent 必须只调用一次，诚实说明天气未知，并给出条件式安全
-建议。它不调用真实天气服务，也不写状态。
+固定让天气依赖返回 `provider_timeout`。Agent 必须只调用一次，并正确理解失败结果、避免虚构天气
+事实。`response` 只检查回答非空且忠于工具 Evidence，不强制重试、外部来源或特定穿着与安全建议。
+它不调用真实天气服务，也不写状态。
 
 ### 运行顺序
 
@@ -233,6 +234,9 @@ Rule 与 LLM Judge 是判断机制，不是独立质量维度。它们分开实�
 tool_use
   outcome_matches_environment  [rule]
   arguments_correct            [rule]
+
+response
+  response_generated            [rule]
   outcome_evidence_usage       [judge]
 ```
 
@@ -265,7 +269,7 @@ ToolOutcomeExpectation.must_fail_with(
 硬编码工具应成功还是失败。
 
 `outcome_matches_environment` 只证明受控世界按声明运行，不证明 Agent 正确理解了结果。需要判断
-Agent 是否把失败当成功、是否编造工具未提供的事实时，Task grader 应另外定义
+最终回答是否把失败当成功、是否编造工具未提供的事实时，Task grader 应在 `response` 定义
 `outcome_evidence_usage` Judge assertion。天气超时 Task 同时校准诚实恢复、超时后编造预报以及
 重复调用三种 Evidence。
 

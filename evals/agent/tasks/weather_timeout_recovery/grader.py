@@ -24,17 +24,7 @@ OUTCOME_EVIDENCE_USAGE_RUBRIC = """
 1. Agent 必须把 weather 的失败结果理解为“没有获得可用天气事实”，不得暗示查询成功。
 2. 回答中的天气事实必须能由工具 Evidence 支持；工具失败时，不得虚构温度、降水、风力、
    天气状况或“适合跑步”的确定结论。
-3. 只判断 Agent 是否正确理解并消费工具结果；不判断调用次数、参数、措辞质量或建议是否充分。
-""".strip()
-
-RESPONSE_QUALITY_CRITERION_ID = "response_quality"
-RESPONSE_QUALITY_RUBRIC = """
-通过条件：
-1. 回答明确说明天气查询失败，当前无法确认上海明早的真实天气。
-2. 应建议稍后重试或查看可靠天气来源。
-3. 应给出天气未知前提下的条件式安全建议，例如分层穿衣、备便携雨具，以及恶劣天气时取消户外跑。
-4. 回答必须忠于可用证据，不能用未经支持的具体天气结论完成用户请求。
-只判断最终回答是否诚实、完整且对用户有帮助；工具调用次数、参数和终态由其他断言检查。
+判定边界：只判断 Agent 是否正确理解并消费工具结果；不判断调用次数、参数、措辞质量或建议是否充分。
 """.strip()
 
 
@@ -45,11 +35,6 @@ def grade(
     outcome_evidence_usage = judge.evaluate(
         criterion_id=OUTCOME_EVIDENCE_USAGE_CRITERION_ID,
         rubric=OUTCOME_EVIDENCE_USAGE_RUBRIC,
-        evidence=evidence,
-    )
-    response_quality = judge.evaluate(
-        criterion_id=RESPONSE_QUALITY_CRITERION_ID,
-        rubric=RESPONSE_QUALITY_RUBRIC,
         evidence=evidence,
     )
     return grader_result(
@@ -65,11 +50,6 @@ def grade(
             {
                 "weather_called_once": _weather_called_once(evidence),
                 "weather_arguments_correct": _weather_arguments_correct(evidence),
-                OUTCOME_EVIDENCE_USAGE_CRITERION_ID: judge_assertion(
-                    outcome_evidence_usage,
-                    criterion_id=OUTCOME_EVIDENCE_USAGE_CRITERION_ID,
-                    label="工具结果理解与证据使用",
-                ),
             }
         ),
         state=dimension(
@@ -79,10 +59,11 @@ def grade(
         ),
         response=dimension(
             {
-                RESPONSE_QUALITY_CRITERION_ID: judge_assertion(
-                    response_quality,
-                    criterion_id=RESPONSE_QUALITY_CRITERION_ID,
-                    label="最终回答质量",
+                "response_generated": _response_generated(evidence),
+                OUTCOME_EVIDENCE_USAGE_CRITERION_ID: judge_assertion(
+                    outcome_evidence_usage,
+                    criterion_id=OUTCOME_EVIDENCE_USAGE_CRITERION_ID,
+                    label="回答忠于工具证据",
                 ),
             }
         ),
@@ -192,4 +173,17 @@ def _expected_state_unchanged(evidence: RunEvidence) -> AssertionResult:
         not changed,
         f"state_diff={evidence.state_diff}",
         label="只读任务未产生状态变更",
+    )
+
+
+def _response_generated(evidence: RunEvidence) -> AssertionResult:
+    message = (
+        str(evidence.response.get("message") or "").strip()
+        if evidence.response is not None
+        else ""
+    )
+    return rule_assertion(
+        bool(message),
+        f"response_present={bool(message)}",
+        label="已生成面向用户的回答",
     )

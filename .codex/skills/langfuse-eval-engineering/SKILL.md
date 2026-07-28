@@ -115,7 +115,8 @@ Agent 行为不满足任务时退出 1。凭据、Trace 导出、Dataset、Judge
 - 工具业务结果预期只由 Environment 声明；通用评分入口自动将实际结果匹配注入
   `tool_use`，Task grader 不得重复硬编码成功或错误码。
 - `outcome_matches_environment` 只验证工具结果符合受控世界；Task 需要时另用
-  `outcome_evidence_usage` Judge assertion 判断 Agent 是否正确消费结果。
+  `outcome_evidence_usage` Judge assertion 判断 Agent 是否正确消费结果，并按实际被检查的行为归入
+  `tool_use` 或 `response`。
 - Trace 用于发现问题和提供证据，不直接充当正确答案。
 - pytest 保持 mock/local/offline；真实 Provider 不得静默回退 mock。
 - 不提交凭据、原始生产 Trace、真实用户数据或评测运行生成物。

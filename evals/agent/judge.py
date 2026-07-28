@@ -99,6 +99,7 @@ class ProviderLLMJudge:
                 as_type="evaluator",
                 input={
                     "criterion_id": criterion_id,
+                    "rubric": rubric,
                     "task_id": evidence.task_id,
                     "run_id": evidence.run_id,
                 },

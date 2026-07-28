@@ -72,7 +72,7 @@ def dimension(
     return DimensionResult(
         passed=not failed,
         reason=(
-            f"全部检查通过（{len(resolved)}/{len(resolved)}）。"
+            _passed_assertion_comment(resolved)
             if not failed
             else _failed_assertion_comment(resolved, failed)
         ),
@@ -101,7 +101,7 @@ def grader_result(
         passed=passed,
         reward=1.0 if passed else 0.0,
         reason=(
-            "评测通过：4 个必要维度全部通过。"
+            _passed_dimension_comment()
             if passed
             else _failed_dimension_comment(dimensions, failed)
         ),
@@ -256,6 +256,24 @@ def _failed_assertion_comment(
     return (
         f"未通过 {len(failed_names)}/{len(assertions)} 项检查：\n"
         + "\n".join(lines)
+    )
+
+
+def _passed_assertion_comment(
+    assertions: Mapping[str, AssertionResult],
+) -> str:
+    labels = [assertion.label for assertion in assertions.values()]
+    return (
+        f"全部检查通过（{len(labels)}/{len(labels)}）：\n"
+        + "\n".join(f"- {label}" for label in labels)
+    )
+
+
+def _passed_dimension_comment() -> str:
+    labels = [DIMENSION_LABELS[name] for name in DIMENSION_NAMES]
+    return (
+        f"评测通过：{len(labels)} 个必要维度全部通过：\n"
+        + "\n".join(f"- {label}" for label in labels)
     )
 
 

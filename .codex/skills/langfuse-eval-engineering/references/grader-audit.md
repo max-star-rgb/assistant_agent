@@ -42,8 +42,9 @@ Rule 与 LLM Judge 是判断机制，不是顶层质量维度。两者分开实�
 - Rule 失败不能被 Judge 覆盖；Judge 超时、解析失败、缺少 verdict 或 criterion 不匹配属于
   infrastructure failure。
 
-同一行为维度可以同时包含 Rule 和 Judge。例如 `tool_use` 可以包含参数 Rule、调用策略 Rule 和
-`outcome_evidence_usage` Judge。不要因为判断机制不同而创建 `rule_score` 或 `llm_score`。
+同一行为维度可以同时包含 Rule 和 Judge。例如，判断 Agent 后续工具行为是否正确消费结果时，
+`outcome_evidence_usage` 属于 `tool_use`；判断最终回答是否忠于工具结果时，它属于 `response`。
+不要因为判断机制不同而创建 `rule_score` 或 `llm_score`。
 
 维度失败 comment 必须展示失败数量、`label` 和 assertion 的真实 `reason`；主要 reward comment
 必须展示失败维度的中文名及其失败 assertion 摘要。不要只输出 `response_quality`、
@@ -69,8 +70,8 @@ ToolOutcomeExpectation.must_fail_with(
 判断。
 
 `outcome_matches_environment` 不证明 Agent 理解了工具结果。Task 若要求结果消费或 grounding，应
-增加独立的 `outcome_evidence_usage` Judge assertion；它只判断 Agent 是否把可用工具 Evidence
-正确用于后续行为，不代替最终回答质量判断。
+增加独立的 `outcome_evidence_usage` Judge assertion，并按照它实际检查后续工具行为还是最终回答，
+分别聚合到 `tool_use` 或 `response`；它不能同时在两个维度重复评分同一缺陷。
 
 Environment outcome 与可见工具覆盖不完整、重复或不一致属于评测配置错误，必须 fail closed。Task
 grader 只描述调用策略、状态和回答，不重复声明成功、失败或错误码。

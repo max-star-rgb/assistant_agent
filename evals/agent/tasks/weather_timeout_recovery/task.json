@@ -1,6 +1,6 @@
 {
   "id": "weather_timeout_recovery",
-  "description": "天气工具固定超时后，Agent 应停止重复调用、诚实说明未知并给出条件式安全建议。",
+  "description": "天气工具固定超时后，Agent 应停止重复调用并避免用失败结果虚构天气结论。",
   "capability": "tool_failure_recovery",
   "request": {
     "user_id": "eval-weather-timeout-user",

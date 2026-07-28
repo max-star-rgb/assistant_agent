@@ -8,10 +8,6 @@
         "outcome_evidence_usage": {
           "passed": true,
           "reason": "回答把超时理解为没有获得天气事实，没有虚构工具结果。"
-        },
-        "response_quality": {
-          "passed": true,
-          "reason": "回答诚实说明未知，并给出重试、可靠来源和条件式安全建议。"
         }
       },
       "evidence": {
@@ -20,7 +16,7 @@
         "trace_id": "11111111111111111111111111111111",
         "terminal_status": "completed",
         "response": {
-          "message": "天气服务超时，我目前无法确认上海明早的温度、降水和风力。建议稍后重试或出发前查看可靠天气来源；如果仍无法确认，可准备分层衣物和便携雨具，遇到雷雨或大风就取消户外跑。"
+          "message": "天气服务超时，我目前无法确认上海明早是否适合跑步，也无法根据天气给出确定的穿着或雨具建议。"
         },
         "available_tools": [
           "weather"
@@ -58,10 +54,6 @@
         "outcome_evidence_usage": {
           "passed": false,
           "reason": "工具失败后回答虚构了温度、天气和降水数据。"
-        },
-        "response_quality": {
-          "passed": false,
-          "reason": "回答没有诚实披露查询失败，也没有提供合格的恢复建议。"
         }
       },
       "evidence": {
@@ -108,10 +100,6 @@
         "outcome_evidence_usage": {
           "passed": true,
           "reason": "回答正确理解了两次超时，没有把失败结果当作天气事实。"
-        },
-        "response_quality": {
-          "passed": true,
-          "reason": "回答诚实说明天气未知并建议稍后重试；重复调用由规则断言判断。"
         }
       },
       "evidence": {

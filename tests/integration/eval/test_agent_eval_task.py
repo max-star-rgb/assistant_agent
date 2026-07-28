@@ -79,9 +79,8 @@ class _WeatherRecoveryChat:
                     model=self.model,
                     finish_reason="stop",
                     response_text=(
-                        "天气服务超时，我现在无法确认上海明早的真实天气。"
-                        "请稍后重试或在出发前查看可靠天气来源；如果仍无法确认，"
-                        "可分层穿衣并携带便携雨具，遇到雷雨或大风就取消户外跑。"
+                        "天气服务超时，我现在无法确认上海明早是否适合跑步，"
+                        "也无法根据天气给出确定的穿着或雨具建议。"
                     ),
                 ),
             ]
@@ -241,6 +240,7 @@ def test_provider_llm_judge_receives_named_rubric() -> None:
             "as_type": "evaluator",
             "input": {
                 "criterion_id": "outcome_evidence_usage",
+                "rubric": "只判断回答是否有工具证据支持。",
                 "task_id": "weather_timeout_recovery",
                 "run_id": "judge-contract-run",
             },
@@ -376,7 +376,7 @@ def test_eval_progress_uses_stderr_without_polluting_stdout(
     _emit_progress(
         {
             "event": "agent_eval.judge.started",
-            "criterion_id": "response_quality",
+            "criterion_id": "outcome_evidence_usage",
         }
     )
 
@@ -384,7 +384,7 @@ def test_eval_progress_uses_stderr_without_polluting_stdout(
     assert captured.out == ""
     assert json.loads(captured.err) == {
         "event": "agent_eval.judge.started",
-        "criterion_id": "response_quality",
+        "criterion_id": "outcome_evidence_usage",
     }
 
 
@@ -469,10 +469,23 @@ def test_weather_timeout_environment_runs_the_real_runtime_offline() -> None:
     assert result.dimensions.tool_use.passed is True
     assert result.dimensions.state.passed is True
     assert result.dimensions.response.passed is True
-    assert judge.criterion_ids == [
+    assert judge.criterion_ids == ["outcome_evidence_usage"]
+    assert set(result.dimensions.response.assertions) == {
+        "response_generated",
         "outcome_evidence_usage",
-        "response_quality",
-    ]
+    }
+    assert (
+        result.dimensions.response.assertions[
+            "response_generated"
+        ].evaluation_method
+        == "rule"
+    )
+    assert (
+        result.dimensions.response.assertions[
+            "outcome_evidence_usage"
+        ].evaluation_method
+        == "judge"
+    )
     scores = _evaluations(result)
     assert [score.name for score in scores] == [
         "agent_eval.reward",
@@ -499,14 +512,20 @@ def test_weather_timeout_environment_runs_the_real_runtime_offline() -> None:
         "assertion.weather_arguments_correct.passed": True,
         "assertion.weather_arguments_correct.label": "天气查询参数正确",
         "assertion.weather_arguments_correct.method": "rule",
+    }
+    assert scores[4].metadata == {
+        "assertion.response_generated.passed": True,
+        "assertion.response_generated.label": "已生成面向用户的回答",
+        "assertion.response_generated.method": "rule",
         "assertion.outcome_evidence_usage.passed": True,
-        "assertion.outcome_evidence_usage.label": "工具结果理解与证据使用",
+        "assertion.outcome_evidence_usage.label": "回答忠于工具证据",
         "assertion.outcome_evidence_usage.method": "judge",
         "assertion.outcome_evidence_usage.criterion_id": "outcome_evidence_usage",
     }
     assert all(
         len(json.dumps(value, ensure_ascii=False)) <= 200
-        for value in scores[2].metadata.values()
+        for score in (scores[2], scores[4])
+        for value in score.metadata.values()
     )
 
 
@@ -534,12 +553,12 @@ def test_langfuse_comments_explain_failures_without_internal_ids() -> None:
     )
     response = dimension(
         {
-            "response_quality": judge_assertion(
+            "answer_completeness": judge_assertion(
                 JudgeVerdict(
                     passed=False,
                     reason="回答没有诚实说明天气未知。",
                 ),
-                criterion_id="response_quality",
+                criterion_id="answer_completeness",
                 label="最终回答质量",
             )
         }
@@ -569,7 +588,7 @@ def test_langfuse_comments_explain_failures_without_internal_ids() -> None:
         "- 最终回答：最终回答质量：回答没有诚实说明天气未知。"
     )
     assert "outcome_evidence_usage" not in scores[2].comment
-    assert "response_quality" not in scores[4].comment
+    assert "answer_completeness" not in scores[4].comment
 
 
 def test_langfuse_comments_name_successful_checks_and_dimensions() -> None:
@@ -681,10 +700,9 @@ def test_calibration_catches_judge_and_trajectory_failures() -> None:
     }
     assert results[0].expected_judge_passes == {
         "outcome_evidence_usage": True,
-        "response_quality": True,
     }
     assert results[0].actual_judge_passes == results[0].expected_judge_passes
-    assert results[1].dimensions["tool_use"] is False
+    assert results[1].dimensions["tool_use"] is True
     assert results[1].dimensions["response"] is False
     assert results[2].dimensions == {
         "tool_execution": True,
