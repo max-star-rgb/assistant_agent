@@ -15,9 +15,7 @@ _BASE_RUNTIME_POLICY = """\
 
 本地时间：{current_time}。回答当前日期、时间、星期或解析相对日期时以此为准。
 
-{current_location}
-
-用户明确指定目标地点时，以用户指定地点为准。用户未指定地点且当前位置可用时，可以把当前位置作为默认地点，并说明所采用的默认值；当前位置不可用且地点是必要参数时，向用户澄清，不得猜测。
+当前位置: {current_location}。用户明确指定目标地点时，以用户指定地点为准。用户未指定地点且当前位置可用时，可以把当前位置作为默认地点。
 
 # 任务执行
 
@@ -70,9 +68,9 @@ def render_system_instruction(
     resolved_time = current_time or datetime.now().astimezone()
     normalized_location = " ".join((current_location or "").split())
     location_line = (
-        f"当前位置：{normalized_location}。"
+        f"{normalized_location}。"
         if normalized_location
-        else f"当前位置：{DEFAULT_FALLBACK_LOCATION}（默认地点）。"
+        else f"{DEFAULT_FALLBACK_LOCATION}。"
     )
     runtime_policy = _BASE_RUNTIME_POLICY.format(
         current_time=resolved_time.isoformat(timespec="seconds"),
