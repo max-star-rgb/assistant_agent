@@ -345,10 +345,6 @@ pytest 通过 scripted adapter 和 fake tokenizer 保护 rolling summary 的稳�
 call/result 配对。真实 Qwen tokenizer 误差和摘要语义质量属于 system/case eval，不得在 pytest 调用真实
 Provider。
 
-`evals/agent/tasks/conversation_style_quality` 使用固定合成上一轮、`conversation` 模式和空 Tool
-Registry，通过隐藏 Judge 评估自然承接、避免复述和不必要结构化。pytest 只验证 Environment wiring、
-空工具边界与人工标注校准样本，不断言真实模型一定不用标题。
-
 ## Next Steps
 
 - 使用真实 `qwen3.6-flash` system eval 校准 tokenizer projection 与 Provider `input_tokens` 的误差，再决定
