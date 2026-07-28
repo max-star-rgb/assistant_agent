@@ -17,6 +17,7 @@ from evals.langfuse.experiment import (
     run_langfuse_agent_experiment,
 )
 from evals.langfuse.contracts import (
+    DatasetSeedItem,
     FrozenFileFixture,
     RealAgentCase,
     RuntimeBundle,
@@ -299,7 +300,7 @@ def test_behavior_seed_includes_controlled_weather_failure_recovery() -> None:
     seed = load_dataset_seed(BEHAVIOR_DATASET_SEED)
 
     assert seed.dataset_name == "assistant-agent-behavior-v2"
-    assert len(seed.items) == 19
+    assert len(seed.items) == 20
     failure_item = next(
         item
         for item in seed.items
@@ -334,12 +335,20 @@ def test_behavior_dataset_composes_legacy_and_engineered_sources() -> None:
     assert [collection["group"] for collection in collections] == [
         "legacy",
         "engineered",
+        "engineered",
     ]
-    assert [len(collection["items"]) for collection in collections] == [18, 1]
+    assert [len(collection["items"]) for collection in collections] == [
+        18,
+        1,
+        1,
+    ]
     assert collections[1]["items"][0]["metadata"]["capability"] == (
         "grounded_file_synthesis"
     )
-    assert len(load_dataset_seed(composition_path).items) == 19
+    assert collections[2]["items"][0]["metadata"]["capability"] == (
+        "clarification_before_write"
+    )
+    assert len(load_dataset_seed(composition_path).items) == 20
 
 
 def test_dataset_composition_rejects_duplicate_case_ids(tmp_path: Path) -> None:
@@ -405,12 +414,13 @@ def test_behavior_seed_covers_production_like_capabilities() -> None:
     seed = load_dataset_seed(BEHAVIOR_DATASET_SEED)
 
     assert seed.dataset_name == "assistant-agent-behavior-v2"
-    assert len(seed.items) == 19
+    assert len(seed.items) == 20
     assert {
         item.metadata["capability"] for item in seed.items
     } == {
         "direct_response",
         "clarification",
+        "clarification_before_write",
         "weather_advice",
         "tool_failure_recovery",
         "calendar_read",
@@ -498,6 +508,59 @@ def test_grounded_file_case_has_frozen_truth_and_distractors() -> None:
     assert case.frozen_file.target_path == (
         "grounded_file_synthesis/travel_policy_v1.txt"
     )
+
+
+def test_clarification_before_write_case_has_layered_evaluation_contract() -> None:
+    seed = load_dataset_seed(BEHAVIOR_DATASET_SEED)
+    item = next(
+        item
+        for item in seed.items
+        if item.metadata["capability"] == "clarification_before_write"
+    )
+
+    assert item.metadata["dependency_mode"] == "simulated"
+    assert item.metadata["effect_scope"] == "isolated_write"
+    assert item.metadata["lifecycle"] == "draft"
+    assert item.metadata["required_tools"] == ["calendar_create"]
+    assert item.input["user_request"]["metadata"] == {
+        "tool_visibility": {"enabled_tools": ["calendar_create"]}
+    }
+    contract = item.expected_output["evaluation_contract"]
+    assert contract["schema_version"] == (
+        "assistant_agent_case_evaluation_contract_v1"
+    )
+    assert set(contract["evidence_by_score"]) == {
+        "agent.runtime_trace_pass",
+        "agent.tool_mechanical_pass",
+        "agent.tool_semantic_pass",
+        "agent.answer_semantic_pass",
+    }
+    assert "未调用任何工具" in contract["pass_iff"]
+    assert "state_diff" in contract["evidence_by_score"][
+        "agent.tool_semantic_pass"
+    ]["evidence"]
+
+
+def test_evaluation_contract_requires_all_four_score_layers() -> None:
+    with pytest.raises(
+        ValueError,
+        match="must define exactly the four score layers",
+    ):
+        DatasetSeedItem(
+            id="incomplete-evaluation-contract",
+            input={},
+            expected_output={
+                "evaluation_contract": {
+                    "pass_iff": "sentinel",
+                    "evidence_by_score": {
+                        "agent.runtime_trace_pass": {
+                            "evidence": ["terminal_status"],
+                            "pass_condition": "sentinel",
+                        }
+                    },
+                }
+            },
+        )
 
 
 def test_frozen_file_fixture_is_hash_verified_and_staged(tmp_path: Path) -> None:
@@ -850,15 +913,15 @@ def test_evaluator_manifest_covers_both_active_datasets_and_all_scores() -> None
         }
         for evaluator in semantic_evaluators
     )
-    calibration = evaluator_manifest["calibration_sets"][0]
-    assert calibration == {
-        "capability": "grounded_file_synthesis",
-        "source": (
-            "evals/langfuse/evaluators/calibration/"
-            "grounded_file_synthesis_v1.json"
-        ),
-        "status": "pending_ui_judge_validation",
+    calibrations = {
+        calibration["capability"]: calibration
+        for calibration in evaluator_manifest["calibration_sets"]
     }
+    assert set(calibrations) == {
+        "grounded_file_synthesis",
+        "clarification_before_write",
+    }
+    calibration = calibrations["grounded_file_synthesis"]
     calibration_payload = json.loads(
         Path(calibration["source"]).read_text(encoding="utf-8")
     )
@@ -872,6 +935,24 @@ def test_evaluator_manifest_covers_both_active_datasets_and_all_scores() -> None
         },
         {
             "agent.tool_semantic_pass": True,
+            "agent.answer_semantic_pass": False,
+        },
+    ]
+    clarification_payload = json.loads(
+        Path(
+            calibrations["clarification_before_write"]["source"]
+        ).read_text(encoding="utf-8")
+    )
+    assert [
+        fixture["expected_scores"]
+        for fixture in clarification_payload["fixtures"]
+    ] == [
+        {
+            "agent.tool_semantic_pass": True,
+            "agent.answer_semantic_pass": True,
+        },
+        {
+            "agent.tool_semantic_pass": False,
             "agent.answer_semantic_pass": False,
         },
     ]

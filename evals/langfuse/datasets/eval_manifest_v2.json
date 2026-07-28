@@ -87,6 +87,7 @@
   "capabilities": {
     "direct_response": "不调用不必要工具，直接完成改写、规划或常识任务。",
     "clarification": "缺少执行所需信息时先澄清，不猜测关键参数。",
+    "clarification_before_write": "写操作缺少必要参数时保持状态不变，先向用户澄清。",
     "calendar_read": "使用日历读取能力并忠实回答。",
     "calendar_write": "经过治理链路创建日历状态。",
     "weather_advice": "使用天气证据形成与用户情境一致的建议。",

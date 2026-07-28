@@ -21,3 +21,21 @@ cases/
 
 `draft -> calibrated -> active -> retired` 是 engineered case 的生命周期，不是目录层级。Fixture 放在
 `../fixtures/<capability>/`，Judge 校准样本放在 `../evaluators/calibration/`。
+
+## Engineered case 说明范式
+
+新案例按“场景契约 + 评判契约”说明，不用关键词或完整参考回答代替成功边界：
+
+| concern | field | meaning |
+| --- | --- | --- |
+| Capability | `metadata.capability` | 一个可命名、可区分的被测行为 |
+| Request | `input.user_request` | 实际发送给 Agent 的请求和可见环境 |
+| Dependencies | `metadata.compatible_profiles`、`dependency_mode`、`required_tools`、`effect_scope` | profile、live/frozen/simulated 依赖、运行所需工具和副作用边界；`required_tools` 不表示 Agent 必须调用 |
+| Success | `expected_output.evaluation_contract.pass_iff` | 由独立证据观察到的唯一通过边界 |
+| Evidence | `expected_output.evaluation_contract.evidence_by_score` | 四层 Score 各自读取的证据字段和通过条件 |
+| Recommendation | `metadata.lifecycle`、`calibration_fixture` | draft/calibrated/active/retired 状态与校准来源 |
+
+`evaluation_contract` 使用
+`assistant_agent_case_evaluation_contract_v1`。四个 `evidence_by_score` 条目必须齐全，避免机械层、
+工具语义层和回答语义层重复判断同一事实。该契约供 Evaluator/Judge 使用，不会由 Experiment task
+传入 `UserRequest`；Judge rubric、隐藏证据和校准样本也不得放进 `input.user_request`。

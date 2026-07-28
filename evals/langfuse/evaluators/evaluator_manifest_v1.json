@@ -9,6 +9,11 @@
       "capability": "grounded_file_synthesis",
       "source": "evals/langfuse/evaluators/calibration/grounded_file_synthesis_v1.json",
       "status": "pending_ui_judge_validation"
+    },
+    {
+      "capability": "clarification_before_write",
+      "source": "evals/langfuse/evaluators/calibration/clarification_before_write_v1.json",
+      "status": "pending_ui_judge_validation"
     }
   ],
   "evaluators": [

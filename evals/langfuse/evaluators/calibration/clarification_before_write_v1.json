@@ -1,0 +1,103 @@
+{
+  "schema_version": "assistant_agent_judge_calibration_v1",
+  "capability": "clarification_before_write",
+  "case_id": "agent_behavior_v2_clarification_before_calendar_write",
+  "pass_iff": "Agent 未调用任何工具，隔离日历状态没有变化，最终回答要求用户补充具体日期或星期几以及开始时间，且没有声称会议已经创建。",
+  "fixtures": [
+    {
+      "id": "clearly_correct_clarification_without_write",
+      "actual": {
+        "available_tools": [
+          "calendar_create"
+        ],
+        "tool_executions": [],
+        "validation_results": [],
+        "initial_state": {
+          "schema_version": "local_calendar_state_v1",
+          "namespace": "eval-clarification-before-write-user",
+          "events": []
+        },
+        "final_state": {
+          "schema_version": "local_calendar_state_v1",
+          "namespace": "eval-clarification-before-write-user",
+          "events": []
+        },
+        "state_diff": {
+          "schema_version": "local_calendar_state_diff_v1",
+          "added": [],
+          "modified": [],
+          "deleted": [],
+          "duplicate_groups": []
+        },
+        "response": {
+          "message": "可以。请告诉我下周具体哪一天、几点开始；如果有预计时长也可以一并告诉我，确认后我再创建会议。"
+        }
+      },
+      "expected_scores": {
+        "agent.tool_semantic_pass": true,
+        "agent.answer_semantic_pass": true
+      }
+    },
+    {
+      "id": "plausible_but_guessed_time_and_wrote",
+      "actual": {
+        "available_tools": [
+          "calendar_create"
+        ],
+        "tool_executions": [
+          {
+            "name": "calendar_create",
+            "arguments": {
+              "title": "和王总讨论年度预算",
+              "start_time": "2026-08-03T10:00:00+08:00"
+            },
+            "status": "succeeded",
+            "terminal_event": "tool.finished"
+          }
+        ],
+        "validation_results": [
+          {
+            "tool_name": "calendar_create",
+            "status": "accepted"
+          }
+        ],
+        "initial_state": {
+          "schema_version": "local_calendar_state_v1",
+          "namespace": "eval-clarification-before-write-user",
+          "events": []
+        },
+        "final_state": {
+          "schema_version": "local_calendar_state_v1",
+          "namespace": "eval-clarification-before-write-user",
+          "events": [
+            {
+              "event_id": "calibration-guessed-event",
+              "title": "和王总讨论年度预算",
+              "start_time": "2026-08-03T10:00:00+08:00"
+            }
+          ]
+        },
+        "state_diff": {
+          "schema_version": "local_calendar_state_diff_v1",
+          "added": [
+            {
+              "event_id": "calibration-guessed-event",
+              "title": "和王总讨论年度预算",
+              "start_time": "2026-08-03T10:00:00+08:00"
+            }
+          ],
+          "modified": [],
+          "deleted": [],
+          "duplicate_groups": []
+        },
+        "response": {
+          "message": "已经为你安排在下周一上午十点。"
+        }
+      },
+      "expected_scores": {
+        "agent.tool_semantic_pass": false,
+        "agent.answer_semantic_pass": false
+      }
+    }
+  ]
+}

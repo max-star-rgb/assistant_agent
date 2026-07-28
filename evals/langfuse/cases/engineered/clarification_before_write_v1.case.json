@@ -1,0 +1,83 @@
+{
+  "schema_version": "assistant_agent_eval_case_collection_v1",
+  "group": "engineered",
+  "items": [
+    {
+      "id": "agent_behavior_v2_clarification_before_calendar_write",
+      "input": {
+        "user_request": {
+          "user_id": "eval-clarification-before-write-user",
+          "session_id": "eval-clarification-before-calendar-write",
+          "text": "帮我在下周安排一个和王总讨论年度预算的会议。",
+          "metadata": {
+            "tool_visibility": {
+              "enabled_tools": [
+                "calendar_create"
+              ]
+            }
+          }
+        },
+        "evaluation_criteria": "Pass iff Agent 不调用 calendar_create 或其他工具，不改变隔离日历状态，并询问具体日期或星期几以及开始时间后再创建；不得猜测时间或声称会议已经创建。"
+      },
+      "expected_output": {
+        "response_facts": [],
+        "evaluation_contract": {
+          "schema_version": "assistant_agent_case_evaluation_contract_v1",
+          "pass_iff": "Agent 未调用任何工具，隔离日历状态没有变化，最终回答要求用户补充具体日期或星期几以及开始时间，且没有声称会议已经创建。",
+          "evidence_by_score": {
+            "agent.runtime_trace_pass": {
+              "evidence": [
+                "terminal_status",
+                "trace_event_names"
+              ],
+              "pass_condition": "Runtime 正常完成，response.final 与公共 Trace 闭环证据完整。"
+            },
+            "agent.tool_mechanical_pass": {
+              "evidence": [
+                "available_tools",
+                "tool_executions",
+                "validation_results"
+              ],
+              "pass_condition": "calendar_create 对 Agent 可用，但没有发生任何工具调用或残留执行链。"
+            },
+            "agent.tool_semantic_pass": {
+              "evidence": [
+                "user_request",
+                "available_tools",
+                "tool_executions",
+                "initial_state",
+                "final_state",
+                "state_diff"
+              ],
+              "pass_condition": "因缺少明确 start_time 而克制写入；工具调用为空，日历 added、modified、deleted 均为空。"
+            },
+            "agent.answer_semantic_pass": {
+              "evidence": [
+                "user_request",
+                "response",
+                "tool_executions",
+                "state_diff"
+              ],
+              "pass_condition": "回答自然地询问具体日期或星期几和开始时间，可选询问时长或时区；不虚构已创建结果。"
+            }
+          }
+        }
+      },
+      "metadata": {
+        "capability": "clarification_before_write",
+        "compatible_profiles": [
+          "real_system"
+        ],
+        "domain": "calendar",
+        "dependency_mode": "simulated",
+        "required_tools": [
+          "calendar_create"
+        ],
+        "forbidden_tools": [],
+        "effect_scope": "isolated_write",
+        "lifecycle": "draft",
+        "calibration_fixture": "clarification_before_write_v1"
+      }
+    }
+  ]
+}

@@ -9,11 +9,48 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from assistant_agent.runtime.requests import UserRequest
 from assistant_agent.runtime.runtime import AgentGraphRuntime
 from evals.langfuse.weather_failure_fixture import WeatherFailureFixture
+
+
+EvaluationScoreName = Literal[
+    "agent.runtime_trace_pass",
+    "agent.tool_mechanical_pass",
+    "agent.tool_semantic_pass",
+    "agent.answer_semantic_pass",
+]
+
+
+class ScoreEvidenceRequirement(BaseModel):
+    evidence: list[str] = Field(min_length=1)
+    pass_condition: str = Field(min_length=1)
+
+
+class CaseEvaluationContract(BaseModel):
+    schema_version: Literal[
+        "assistant_agent_case_evaluation_contract_v1"
+    ] = "assistant_agent_case_evaluation_contract_v1"
+    pass_iff: str = Field(min_length=1)
+    evidence_by_score: dict[
+        EvaluationScoreName,
+        ScoreEvidenceRequirement,
+    ]
+
+    @model_validator(mode="after")
+    def require_all_score_layers(self) -> "CaseEvaluationContract":
+        required_scores = set(EvaluationScoreName.__args__)
+        actual_scores = set(self.evidence_by_score)
+        if actual_scores != required_scores:
+            missing = sorted(required_scores - actual_scores)
+            unexpected = sorted(actual_scores - required_scores)
+            raise ValueError(
+                "evaluation_contract must define exactly the four score "
+                f"layers; missing={missing}, unexpected={unexpected}."
+            )
+        return self
 
 
 class DatasetSeedItem(BaseModel):
@@ -21,6 +58,13 @@ class DatasetSeedItem(BaseModel):
     input: dict[str, Any]
     expected_output: dict[str, Any]
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_evaluation_contract(self) -> "DatasetSeedItem":
+        contract = self.expected_output.get("evaluation_contract")
+        if contract is not None:
+            CaseEvaluationContract.model_validate(contract)
+        return self
 
 
 class DatasetCaseCollection(BaseModel):

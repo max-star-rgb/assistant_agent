@@ -102,6 +102,12 @@ Experiment 审计并确认 Score 完整后，才能改为 `calibrated` 或 `acti
 `file_read` 的受治理根目录；Agent 看不到 ground truth、Judge rubric 或校准样本。校准样本位于
 `evaluators/calibration/grounded_file_synthesis_v1.json`，仍需在 Langfuse UI 中验证两个语义 Judge。
 
+第二个 engineered draft 是 `clarification_before_write`：真实 Chat 只能看到
+`calendar_create`，但请求缺少该工具必填的明确开始时间。Agent 应保持隔离 SQLite 日历不变并先澄清，
+而不是猜测后写入。该案例也开始采用 `expected_output.evaluation_contract` 说明范式：`pass_iff`
+定义唯一通过边界，`evidence_by_score` 将独立证据分配给四层 Score；字段规范见
+`langfuse/cases/README.md`。校准样本仍需在 Langfuse UI 验证两个语义 Judge。
+
 ### 代码职责
 
 ```text
@@ -173,6 +179,16 @@ connection 时，Model parameters 必须设置
   scripts/run_langfuse_agent_evals.py \
   --profile real_system \
   --capability grounded_file_synthesis \
+  --inspect
+```
+
+检查写入前澄清案例：
+
+```bash
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python \
+  scripts/run_langfuse_agent_evals.py \
+  --profile real_system \
+  --capability clarification_before_write \
   --inspect
 ```
 
