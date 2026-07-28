@@ -23,7 +23,7 @@ from evals.agent.contracts import (
     TaskEnvironment,
     TaskSpec,
 )
-from evals.agent.grading import DIMENSION_NAMES
+from evals.agent.grading import DIMENSION_NAMES, grade_task
 from evals.agent.loader import load_entrypoint, load_task
 
 
@@ -131,10 +131,10 @@ def run_tasks(
         if task_id not in task_by_id:
             raise RuntimeError(f"Evaluator received unknown task_id: {task_id!r}.")
         task = load_task(str(task_id))
-        grader = load_entrypoint(task.grader)
-        result: GraderResult = grader(
-            RunEvidence.model_validate(output),
-            judge,
+        result: GraderResult = grade_task(
+            task=task,
+            evidence=RunEvidence.model_validate(output),
+            judge=judge,
         )
         return _evaluations(result)
 

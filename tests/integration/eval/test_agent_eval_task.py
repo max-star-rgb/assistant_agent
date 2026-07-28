@@ -14,9 +14,15 @@ from evals.agent.calibration import (
     load_labeled_calibration_judge,
     run_calibration,
 )
+from evals.agent.contracts import ToolOutcomeExpectation
+from evals.agent.grading import (
+    assertion,
+    enforce_tool_outcome_expectations,
+    environment_validation,
+    grade_task,
+)
 from evals.agent.langfuse_backend import _evaluations, publish_tasks
 from evals.agent.loader import load_entrypoint, load_task
-from evals.agent.grading import assertion, environment_validation
 from evals.agent.provider_gate import validate_real_chat_config
 
 
@@ -120,9 +126,16 @@ def test_weather_timeout_environment_runs_the_real_runtime_offline() -> None:
     assert environment_validation.passed is True
     assert set(environment_validation.checks) == {
         "isolated_tool_registry",
+        "outcome_contract_matches_registry",
         "weather_timeout_fixture",
         "stateless_boundary",
     }
+    assert environment.tool_outcome_expectations() == [
+        ToolOutcomeExpectation.must_fail_with(
+            "weather",
+            error_code="provider_timeout",
+        )
+    ]
 
     execution = environment.execute(
         task=task,
@@ -144,8 +157,11 @@ def test_weather_timeout_environment_runs_the_real_runtime_offline() -> None:
         "deleted": [],
     }
 
-    grader = load_entrypoint(task.grader)
-    result = grader(execution.evidence, _AlwaysPassJudge())
+    result = grade_task(
+        task=task,
+        evidence=execution.evidence,
+        judge=_AlwaysPassJudge(),
+    )
     assert result.passed is True
     assert result.reward == 1.0
     assert result.dimensions.tool_execution.passed is True
@@ -168,6 +184,59 @@ def test_weather_timeout_environment_runs_the_real_runtime_offline() -> None:
         True,
     ]
     assert not any("weather" in score.name for score in scores)
+    assert scores[2].metadata == {
+        "assertions": {
+            "outcome_matches_environment": True,
+            "weather_called_once": True,
+            "weather_arguments_correct": True,
+        }
+    }
+
+
+def test_success_expected_but_timeout_forces_tool_semantics_to_fail() -> None:
+    task = load_task("weather_timeout_recovery")
+    environment_type = load_entrypoint(task.environment)
+    environment = environment_type(
+        config=ProviderConfig(
+            provider_mode="mock",
+            langgraph_checkpointer_backend="none",
+        ),
+        chat_adapter=_WeatherRecoveryChat(),
+    )
+    execution = environment.execute(
+        task=task,
+        request=task.request,
+        trace_id=TRACE_ID,
+        parent_span_id=PARENT_SPAN_ID,
+    )
+    grader = load_entrypoint(task.grader)
+    task_local_result = grader(execution.evidence, _AlwaysPassJudge())
+
+    result = enforce_tool_outcome_expectations(
+        task_local_result,
+        evidence=execution.evidence,
+        expectations=[ToolOutcomeExpectation.must_succeed("weather")],
+    )
+
+    assert result.dimensions.tool_execution.passed is True
+    assert result.dimensions.tool_semantics.passed is False
+    assert (
+        result.dimensions.tool_semantics.assertions[
+            "outcome_matches_environment"
+        ].passed
+        is False
+    )
+    assert result.reward == 0.0
+
+    with pytest.raises(
+        RuntimeError,
+        match="outcome expectations do not cover the available tools",
+    ):
+        enforce_tool_outcome_expectations(
+            task_local_result,
+            evidence=execution.evidence,
+            expectations=[],
+        )
 
 
 def test_calibration_catches_semantic_and_trajectory_failures() -> None:

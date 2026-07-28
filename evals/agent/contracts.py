@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from assistant_agent.observability.trace_store import TraceEvent
 from assistant_agent.runtime.requests import UserRequest
@@ -36,6 +36,43 @@ class ValidationResult(BaseModel):
     tool_name: str | None = None
     status: str | None = None
     tool_call_id: str | None = None
+
+
+class ToolOutcomeExpectation(BaseModel):
+    tool_name: str = Field(min_length=1)
+    required: bool = True
+    expected_result: Literal["success", "failure"]
+    error_code: str | None = None
+
+    @model_validator(mode="after")
+    def validate_expected_result(self) -> ToolOutcomeExpectation:
+        if self.expected_result == "success" and self.error_code is not None:
+            raise ValueError("A successful tool outcome cannot declare an error_code.")
+        if self.expected_result == "failure" and not self.error_code:
+            raise ValueError(
+                "A failed tool outcome must declare the expected error_code."
+            )
+        return self
+
+    @classmethod
+    def must_succeed(cls, tool_name: str) -> ToolOutcomeExpectation:
+        return cls(
+            tool_name=tool_name,
+            expected_result="success",
+        )
+
+    @classmethod
+    def must_fail_with(
+        cls,
+        tool_name: str,
+        *,
+        error_code: str,
+    ) -> ToolOutcomeExpectation:
+        return cls(
+            tool_name=tool_name,
+            expected_result="failure",
+            error_code=error_code,
+        )
 
 
 class RunEvidence(BaseModel):
@@ -122,6 +159,8 @@ class TaskEnvironment(Protocol):
     def describe(self) -> dict[str, Any]: ...
 
     def validate(self) -> EnvironmentValidation: ...
+
+    def tool_outcome_expectations(self) -> list[ToolOutcomeExpectation]: ...
 
     def execute(
         self,

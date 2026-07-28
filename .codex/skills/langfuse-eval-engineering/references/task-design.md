@@ -25,7 +25,9 @@ Environment 定义 Agent 在什么世界中运行：
 
 Environment 可以模拟依赖，但不能模拟被测 Agent 决策。写操作必须在每个 Task run 使用可丢弃或可
 恢复状态。只读动态数据应记录来源和时间。每个 Environment 应提供不运行 Agent 的 `validate()`，
-检查受控依赖、Tool Registry、隔离和复位前提；验证失败时不得生成 Agent Score。
+检查受控依赖、Tool Registry、隔离和复位前提；验证失败时不得生成 Agent Score。每个可见工具还
+必须通过 `tool_outcome_expectations()` 声明 `must_succeed` 或带明确错误码的
+`must_fail_with`；该声明是工具业务结果预期的唯一事实源。
 
 ## Evidence
 

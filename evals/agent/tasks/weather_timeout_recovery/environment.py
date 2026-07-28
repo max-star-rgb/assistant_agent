@@ -27,6 +27,7 @@ from evals.agent.contracts import (
     RunEvidence,
     TaskExecution,
     TaskSpec,
+    ToolOutcomeExpectation,
 )
 from evals.agent.evidence import (
     available_tools,
@@ -97,6 +98,7 @@ class WeatherTimeoutEnvironment:
     def validate(self) -> EnvironmentValidation:
         registry = self._build_registry()
         specs = registry.list_specs()
+        expectations = self.tool_outcome_expectations()
         fixture_result = AlwaysTimeoutWeatherAdapter().lookup(
             WeatherRequest(location="上海")
         )
@@ -110,6 +112,15 @@ class WeatherTimeoutEnvironment:
                 "isolated_tool_registry": assertion(
                     registry.sealed and registry.list() == ["weather"],
                     (f"sealed={registry.sealed}, registered_tools={registry.list()}"),
+                ),
+                "outcome_contract_matches_registry": assertion(
+                    {expectation.tool_name for expectation in expectations}
+                    == set(registry.list()),
+                    (
+                        "expectation_tools="
+                        f"{[expectation.tool_name for expectation in expectations]}, "
+                        f"registered_tools={registry.list()}"
+                    ),
                 ),
                 "weather_timeout_fixture": assertion(
                     (
@@ -133,6 +144,14 @@ class WeatherTimeoutEnvironment:
                 ),
             }
         )
+
+    def tool_outcome_expectations(self) -> list[ToolOutcomeExpectation]:
+        return [
+            ToolOutcomeExpectation.must_fail_with(
+                "weather",
+                error_code="provider_timeout",
+            )
+        ]
 
     def execute(
         self,

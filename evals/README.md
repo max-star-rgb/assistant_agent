@@ -71,7 +71,7 @@ evals/agent/
   contracts.py          # Task、Evidence、Grader 契约
   loader.py             # Task、Suite 和入口加载
   evidence.py           # Runtime Trace 的稳定投影
-  grading.py            # 固定四维与 reward 聚合
+  grading.py            # 固定四维、Environment outcome 匹配与 reward 聚合
   judge.py              # 真实 Provider 语义 Judge 边界
   provider_gate.py      # real 模式与 Provider 完整性闸门
   calibration.py        # 正反 Evidence 直接校准
@@ -95,6 +95,8 @@ Dataset 当作回归定义的唯一副本。
 - `task.json` 的请求必须像自然用户请求，不描述测试机关；
 - Environment 使用活动 `AgentGraphRuntime`，可以模拟依赖，不能模拟 Agent 决策，并在运行前验证
   Tool Registry、受控依赖、隔离和复位前提；
+- Environment 为每个可见工具声明 `must_succeed` 或 `must_fail_with(error_code)`；该声明不会进入
+  Agent input 或 Dataset metadata；
 - 写操作必须使用每次运行可丢弃或可复位的状态；
 - grader 对 Agent 隐藏，客观事实优先用代码检查，开放语义才用 Judge；
 - 每个 Task 只有一个主要分数 `agent_eval.reward`；
@@ -201,6 +203,22 @@ agent_eval.dimension.response
 `tool_execution` 判断 Validator、工具调用和结构化终态是否完整，不要求外部业务结果必须成功；
 `tool_semantics` 判断选择、参数、次数、顺序和结果处理；`state` 判断预期状态转换；
 `response` 判断最终回答。四个必要维度全部通过时，`agent_eval.reward=1.0`。
+
+工具业务结果预期以 Environment 的强类型声明为唯一事实源：
+
+```python
+ToolOutcomeExpectation.must_succeed("weather")
+
+ToolOutcomeExpectation.must_fail_with(
+    "weather",
+    error_code="provider_timeout",
+)
+```
+
+校准和 Langfuse Experiment 都通过通用 `grade_task()` 自动比较实际 `tool.finished/tool.failed` 与
+错误码，并把结果写入 `tool_semantics` 的 `outcome_matches_environment` assertion。预期成功但实际
+超时会保持 `tool_execution=pass`，同时确定性地产生 `tool_semantics=fail`。Task grader 不再重复
+硬编码工具应成功还是失败。
 
 Environment validation、凭据、Dataset、Trace 导出、Evidence 解析和 Judge 故障属于评测基础设施
 失败，退出 2，不生成或篡改 Agent reward。Task-local 原子断言只解释某个维度为什么通过或失败。

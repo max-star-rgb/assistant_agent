@@ -95,10 +95,17 @@ def _validation_accepted(evidence: RunEvidence) -> AssertionResult:
 def _tool_lifecycle_closed(evidence: RunEvidence) -> AssertionResult:
     executions = evidence.tool_executions
     passed = bool(executions) and all(
-        execution.name == "weather"
-        and execution.exposed
-        and execution.terminal_event == "tool.failed"
-        and execution.error_code == "provider_timeout"
+        execution.exposed
+        and (
+            (
+                execution.terminal_event == "tool.finished"
+                and execution.error_code is None
+            )
+            or (
+                execution.terminal_event == "tool.failed"
+                and execution.error_code is not None
+            )
+        )
         for execution in executions
     )
     return assertion(

@@ -14,8 +14,8 @@ from evals.agent.contracts import (
     SemanticVerdict,
     TaskSpec,
 )
-from evals.agent.grading import DIMENSION_NAMES
-from evals.agent.loader import TASKS_ROOT, load_entrypoint
+from evals.agent.grading import DIMENSION_NAMES, grade_task
+from evals.agent.loader import TASKS_ROOT
 
 
 class CalibrationFixture(BaseModel):
@@ -48,13 +48,16 @@ def run_calibration(
     payload = CalibrationSet.model_validate_json(
         (TASKS_ROOT / task.id / "calibration.json").read_text(encoding="utf-8")
     )
-    grader = load_entrypoint(task.grader)
     results: list[CalibrationResult] = []
     for fixture in payload.fixtures:
         evidence_payload = _replace_tomorrow(fixture.evidence)
         evidence = RunEvidence.model_validate(evidence_payload)
         recording_judge = _RecordingJudge(judge)
-        graded: GraderResult = grader(evidence, recording_judge)
+        graded: GraderResult = grade_task(
+            task=task,
+            evidence=evidence,
+            judge=recording_judge,
+        )
         semantic = recording_judge.last_verdict
         if semantic is None:
             raise RuntimeError(

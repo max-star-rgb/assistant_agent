@@ -188,4 +188,8 @@ def _inspect_task(task: TaskSpec) -> dict[str, object]:
         "task": task.model_dump(mode="json"),
         "environment": environment.describe(),
         "environment_validation": environment.validate().model_dump(mode="json"),
+        "tool_outcome_expectations": [
+            expectation.model_dump(mode="json")
+            for expectation in environment.tool_outcome_expectations()
+        ],
     }

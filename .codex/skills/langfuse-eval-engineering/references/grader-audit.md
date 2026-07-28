@@ -27,6 +27,29 @@ agent_eval.dimension.response
 不要把“工具业务结果成功”误写成 `tool_execution`。例如天气依赖按 Environment 固定超时时，只要
 Validator、执行和 `tool.failed/provider_timeout` 结构化闭合，`tool_execution` 可以通过；是否正确
 停止重试和恢复由 `tool_semantics`、`response` 判断。
+
+## 工具结果单一事实源
+
+Environment 必须为每个可见工具声明一个强类型结果预期：
+
+```python
+ToolOutcomeExpectation.must_succeed("weather")
+
+ToolOutcomeExpectation.must_fail_with(
+    "weather",
+    error_code="provider_timeout",
+)
+```
+
+该预期不进入 Agent input 或 Dataset metadata。所有正式评分入口必须通过通用 `grade_task()`，由它
+确定性比较 `tool.finished/tool.failed/error_code`，并自动增加
+`tool_semantics.outcome_matches_environment`。预期成功但实际超时必须使 `tool_semantics` 失败；
+预期超时且错误码匹配只说明业务结果符合场景，Agent 的调用次数、参数、恢复和回答仍由其他 assertion
+判断。
+
+Environment outcome 与可见工具覆盖不完整、重复或不一致属于评测配置错误，必须 fail closed。Task
+grader 只描述调用策略、状态和回答，不重复声明成功、失败或错误码。
+
 ## 隐藏与独立性
 
 - Agent 输入不得包含 rubric、oracle、校准标签或预期结论；
