@@ -391,26 +391,18 @@ def test_behavior_seed_includes_controlled_weather_failure_recovery() -> None:
         "assistant_agent_case_metadata_v2"
     )
     assert "固定超时" in failure_item.metadata["scenario_summary"]
-    dependencies = {
-        dependency["name"]: dependency
-        for dependency in failure_item.metadata["dependencies"]
-    }
-    assert dependencies["chat_provider"]["type"] == "live_service"
-    assert dependencies["chat_provider"]["uses_live_external_service"] is True
-    assert dependencies["weather_provider"] == {
-        "name": "weather_provider",
-        "type": "injected_failure",
-        "description": (
-            "weather 工具使用受控适配器，每次固定返回 provider_timeout；"
-            "不会请求真实天气 Provider，也不会产生实时天气数据。"
-        ),
-        "fixture_id": "weather_failure_v1",
-        "uses_live_external_service": False,
-        "details": {
-            "behavior": "always_returns_provider_timeout",
-            "provider": "eval:simulated-weather",
-        },
-    }
+    assert failure_item.metadata["dependency_types"] == [
+        "live_chat_provider",
+        "injected_tool_failure",
+    ]
+    assert failure_item.metadata["fixture_ids"] == ["weather_failure_v1"]
+    assert failure_item.metadata["uses_live_chat_provider"] is True
+    assert (
+        failure_item.metadata["uses_live_external_tool_service"] is False
+    )
+    assert "不调用真实天气服务" in failure_item.metadata[
+        "dependency_summary"
+    ]
     assert failure_item.metadata["lifecycle"] == "draft"
     assert failure_item.metadata["compatible_profiles"] == [
         "real_readonly",
@@ -449,13 +441,21 @@ def test_behavior_sync_preserves_readable_engineered_metadata() -> None:
     assert synced["metadata"]["scenario_summary"] == (
         "用户要求创建会议但没有提供具体日期和开始时间，Agent 应先澄清且不得写入。"
     )
-    dependencies = {
-        dependency["name"]: dependency
-        for dependency in synced["metadata"]["dependencies"]
-    }
-    assert dependencies["chat_provider"]["uses_live_external_service"] is True
-    assert dependencies["calendar_state"]["uses_live_external_service"] is False
-    assert "不会连接或写入" in dependencies["calendar_state"]["description"]
+    assert synced["metadata"]["uses_live_chat_provider"] is True
+    assert synced["metadata"]["uses_live_external_tool_service"] is False
+    assert "不连接或写入真实日历服务" in synced["metadata"][
+        "dependency_summary"
+    ]
+    assert "dependencies" not in synced["metadata"]
+    assert all(
+        len(
+            json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+            if isinstance(value, (list, dict))
+            else str(value)
+        )
+        <= 200
+        for value in synced["metadata"].values()
+    )
 
 
 def test_behavior_dataset_composes_legacy_and_engineered_sources() -> None:
@@ -640,17 +640,18 @@ def test_grounded_file_case_has_frozen_truth_and_distractors() -> None:
         if item.metadata["capability"] == "grounded_file_synthesis"
     )
 
-    dependencies = {
-        dependency["name"]: dependency
-        for dependency in item.metadata["dependencies"]
-    }
-    assert dependencies["chat_provider"]["uses_live_external_service"] is True
-    dependency = dependencies["travel_policy_file"]
-    assert dependency["type"] == "frozen_fixture"
-    assert dependency["uses_live_external_service"] is False
-    assert "不访问用户文件或外部文件服务" in dependency["description"]
+    assert item.metadata["dependency_types"] == [
+        "live_chat_provider",
+        "frozen_file_fixture",
+    ]
+    assert item.metadata["uses_live_chat_provider"] is True
+    assert item.metadata["uses_live_external_tool_service"] is False
+    assert "不访问用户文件或外部文件服务" in item.metadata[
+        "dependency_summary"
+    ]
     oracle = item.expected_output["oracle"]
-    assert dependency["details"]["sha256"] == oracle["fixture"]["sha256"]
+    assert item.metadata["fixture_ids"] == ["travel_policy_v1"]
+    assert oracle["fixture"]["sha256"].startswith("sha256:")
     assert item.metadata["lifecycle"] == "draft"
     assert item.metadata["required_tools"] == ["file_read"]
     assert oracle["ground_truth"] == {
@@ -691,15 +692,15 @@ def test_clarification_before_write_case_has_layered_evaluation_contract() -> No
         if item.metadata["capability"] == "clarification_before_write"
     )
 
-    dependencies = {
-        dependency["name"]: dependency
-        for dependency in item.metadata["dependencies"]
-    }
-    assert dependencies["chat_provider"]["uses_live_external_service"] is True
-    dependency = dependencies["calendar_state"]
-    assert dependency["type"] == "isolated_state"
-    assert dependency["uses_live_external_service"] is False
-    assert "不会连接或写入" in dependency["description"]
+    assert item.metadata["dependency_types"] == [
+        "live_chat_provider",
+        "isolated_local_state",
+    ]
+    assert item.metadata["uses_live_chat_provider"] is True
+    assert item.metadata["uses_live_external_tool_service"] is False
+    assert "不连接或写入真实日历服务" in item.metadata[
+        "dependency_summary"
+    ]
     assert item.metadata["effect_scope"] == "isolated_write"
     assert item.metadata["lifecycle"] == "draft"
     assert item.metadata["required_tools"] == ["calendar_create"]
@@ -763,6 +764,28 @@ def test_engineered_case_v2_rejects_eval_fields_in_agent_input() -> None:
     invalid.input["evaluation_criteria"] = "must remain hidden"
 
     with pytest.raises(ValueError, match="Extra inputs are not permitted"):
+        DatasetCaseCollection(
+            schema_version="assistant_agent_eval_case_collection_v2",
+            group="engineered",
+            items=[invalid],
+        )
+
+
+def test_engineered_case_v2_rejects_oversized_propagated_metadata() -> None:
+    seed = load_dataset_seed(BEHAVIOR_DATASET_SEED)
+    item = next(
+        item
+        for item in seed.items
+        if item.metadata.get("schema_version")
+        == "assistant_agent_case_metadata_v2"
+    )
+    invalid = item.model_copy(deep=True)
+    invalid.metadata["dependency_summary"] = "x" * 201
+
+    with pytest.raises(
+        ValueError,
+        match="String should have at most 180 characters",
+    ):
         DatasetCaseCollection(
             schema_version="assistant_agent_eval_case_collection_v2",
             group="engineered",

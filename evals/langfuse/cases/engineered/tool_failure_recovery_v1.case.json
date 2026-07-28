@@ -101,30 +101,16 @@
           "real_readonly",
           "real_system"
         ],
-        "dependencies": [
-          {
-            "name": "chat_provider",
-            "type": "live_service",
-            "description": "调用 real_readonly 或 real_system profile 配置的真实 Chat Provider，由真实模型处理 weather 失败并生成恢复回答。",
-            "fixture_id": null,
-            "uses_live_external_service": true,
-            "details": {
-              "role": "agent_reasoning",
-              "resolved_by": "execution_profile"
-            }
-          },
-          {
-            "name": "weather_provider",
-            "type": "injected_failure",
-            "description": "weather 工具使用受控适配器，每次固定返回 provider_timeout；不会请求真实天气 Provider，也不会产生实时天气数据。",
-            "fixture_id": "weather_failure_v1",
-            "uses_live_external_service": false,
-            "details": {
-              "behavior": "always_returns_provider_timeout",
-              "provider": "eval:simulated-weather"
-            }
-          }
+        "dependency_summary": "真实 Chat Provider；weather 使用 weather_failure_v1 固定返回 provider_timeout；不调用真实天气服务。",
+        "dependency_types": [
+          "live_chat_provider",
+          "injected_tool_failure"
         ],
+        "fixture_ids": [
+          "weather_failure_v1"
+        ],
+        "uses_live_chat_provider": true,
+        "uses_live_external_tool_service": false,
         "required_tools": [
           "weather"
         ],

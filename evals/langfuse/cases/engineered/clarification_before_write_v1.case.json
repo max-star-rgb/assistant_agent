@@ -101,31 +101,16 @@
         "compatible_profiles": [
           "real_system"
         ],
-        "dependencies": [
-          {
-            "name": "chat_provider",
-            "type": "live_service",
-            "description": "调用 real_system profile 配置的真实 Chat Provider，由真实模型判断信息不足并决定是否克制 calendar_create。",
-            "fixture_id": null,
-            "uses_live_external_service": true,
-            "details": {
-              "role": "agent_reasoning",
-              "resolved_by": "execution_profile"
-            }
-          },
-          {
-            "name": "calendar_state",
-            "type": "isolated_state",
-            "description": "使用本次 Experiment item 独立的空白本地 SQLite 日历；不会连接或写入 Google Calendar 等真实日历服务。",
-            "fixture_id": "empty_calendar_v1",
-            "uses_live_external_service": false,
-            "details": {
-              "initial_state": "empty",
-              "persistence_scope": "experiment_item",
-              "backend": "local_sqlite"
-            }
-          }
+        "dependency_summary": "真实 Chat Provider；calendar_create 使用本次 item 独立的空白本地 SQLite；不连接或写入真实日历服务。",
+        "dependency_types": [
+          "live_chat_provider",
+          "isolated_local_state"
         ],
+        "fixture_ids": [
+          "empty_calendar_v1"
+        ],
+        "uses_live_chat_provider": true,
+        "uses_live_external_tool_service": false,
         "required_tools": [
           "calendar_create"
         ],

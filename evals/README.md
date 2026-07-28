@@ -85,10 +85,12 @@ Langfuse 是 Dataset、Experiment、Evaluator 和 Score 的运行时权威。本
 - `cases/engineered/`：按新 workflow 设计的独立 capability case；
 - `evaluators/evaluator_manifest_v1.json`：Evaluator、源码、Score 和 Langfuse rule 对应关系。
 
-Case metadata 记录 `capability`、可读的 `scenario_summary`、结构化 `dependencies[]`、profile、
-工具和副作用事实。每项 dependency 同时提供稳定类型、中文说明、fixture id 和是否访问真实外部
-服务；真实 Chat Provider 和受控 Tool/fixture 必须分别列出，不能把“Tool 不联网”表述成“整个案例
-离线”。Profile 不拥有 Dataset；Suite 选择 Dataset，Profile 只决定怎样运行所选 Case。
+Case metadata 记录 `capability`、可读的 `scenario_summary`、短
+`dependency_summary`、`dependency_types`、fixture id、profile、工具和副作用事实。
+`uses_live_chat_provider` 与 `uses_live_external_tool_service` 分别说明真实 Chat 和 Tool 调用，
+不能把“Tool 不联网”表述成“整个案例离线”。为满足 Langfuse Trace attribute 单值 200 字符限制，
+metadata 不保存嵌套依赖详情；路径、SHA、故障载荷和状态约束放在 `expected_output.oracle`。Profile
+不拥有 Dataset；Suite 选择 Dataset，Profile 只决定怎样运行所选 Case。
 
 behavior composition 当前依次合并 legacy collection 和 engineered case source。两类本地来源只用于
 清楚表达迁移状态，不会创建两个 Langfuse Dataset。新案例默认一个 capability 一个版本化文件；旧
@@ -118,8 +120,8 @@ Agent 只调用一次、诚实说明无法确认天气并给出条件式安全�
 
 三个 engineered draft 已统一使用 case v2：`input` 只保存真正传给 Agent 的 `user_request`；
 `expected_output` 固定为 `evaluation_contract + oracle`；`metadata` 用中文
-`scenario_summary` 和 `dependencies[]` 明确数据来源、fixture 和是否访问真实外部服务。legacy item
-仍兼容旧格式，并在逐项迁移时转换为 v2。
+`scenario_summary`、短依赖摘要、稳定枚举和 live-call 布尔字段明确数据来源及真实调用边界。legacy
+item 仍兼容旧格式，并在逐项迁移时转换为 v2。
 
 ### 代码职责
 

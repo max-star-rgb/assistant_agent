@@ -102,31 +102,16 @@
         "compatible_profiles": [
           "real_system"
         ],
-        "dependencies": [
-          {
-            "name": "chat_provider",
-            "type": "live_service",
-            "description": "调用 real_system profile 配置的真实 Chat Provider，由真实模型决定是否使用 file_read 以及如何回答。",
-            "fixture_id": null,
-            "uses_live_external_service": true,
-            "details": {
-              "role": "agent_reasoning",
-              "resolved_by": "execution_profile"
-            }
-          },
-          {
-            "name": "travel_policy_file",
-            "type": "frozen_fixture",
-            "description": "使用仓库内固定且带 SHA-256 校验的 travel_policy_v1.txt，复制到本次运行的隔离文件根目录；不访问用户文件或外部文件服务。",
-            "fixture_id": "travel_policy_v1",
-            "uses_live_external_service": false,
-            "details": {
-              "source_path": "evals/langfuse/fixtures/grounded_file_synthesis/travel_policy_v1.txt",
-              "target_path": "grounded_file_synthesis/travel_policy_v1.txt",
-              "sha256": "sha256:ab136945edfaeb6493e37b2c819477c511ac0343834d45f3cb6be4a755b88adf"
-            }
-          }
+        "dependency_summary": "真实 Chat Provider；file_read 读取带 SHA-256 校验的仓库固定文件；不访问用户文件或外部文件服务。",
+        "dependency_types": [
+          "live_chat_provider",
+          "frozen_file_fixture"
         ],
+        "fixture_ids": [
+          "travel_policy_v1"
+        ],
+        "uses_live_chat_provider": true,
+        "uses_live_external_tool_service": false,
         "required_tools": [
           "file_read"
         ],

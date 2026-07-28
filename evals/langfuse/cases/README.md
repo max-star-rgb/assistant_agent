@@ -33,7 +33,8 @@ engineered source 必须使用 `assistant_agent_eval_case_collection_v2`，并�
 | Capability | `metadata.capability` | 一个可命名、可区分的被测行为 |
 | Summary | `metadata.scenario_summary` | 在 Langfuse 列表中可直接理解的中文场景说明 |
 | Request | `input.user_request` | 实际发送给 Agent 的请求和可见环境 |
-| Dependencies | `metadata.dependencies[]` | 完整列出真实 Chat/Tool 服务和受控环境依赖；每项都必须给出 `type`、中文 `description`、`fixture_id` 和 `uses_live_external_service` |
+| Dependencies | `metadata.dependency_summary`、`dependency_types`、`fixture_ids` | 以短中文摘要和稳定枚举说明真实 Chat、Tool 服务及受控 fixture |
+| Live calls | `metadata.uses_live_chat_provider`、`uses_live_external_tool_service` | 分别明确是否调用真实 Chat Provider 和真实外部 Tool 服务 |
 | Execution | `metadata.compatible_profiles`、`required_tools`、`forbidden_tools`、`effect_scope` | profile、工具候选和副作用边界；`required_tools` 不表示 Agent 必须调用 |
 | Success | `expected_output.evaluation_contract.pass_iff` | 由独立证据观察到的唯一通过边界 |
 | Evidence | `expected_output.evaluation_contract.evidence_by_score` | 四层 Score 各自读取的证据字段和通过条件 |
@@ -51,8 +52,13 @@ engineered item 的 `input` 只允许 `user_request`，不得包含 `evaluation_
 工具语义层和回答语义层重复判断同一事实。该契约供 Evaluator/Judge 使用，不会由 Experiment task
 传入 `UserRequest`；Judge rubric、隐藏证据和校准样本也不得放进 `input.user_request`。
 
-`dependencies[].type` 当前允许 `frozen_fixture`、`isolated_state`、`injected_failure` 和
-`live_service`。稳定枚举用于筛选，中文 `description` 用于阅读；
-`uses_live_external_service` 必须直接回答该项是否访问真实外部服务。真实 behavior case 必须把
-Chat Provider 单独列为 `live_service`，不能因为 Tool 数据使用 fixture 就把整个案例描述成离线。
-legacy collection 暂时保留 v1 自由格式，迁移到 engineered 时必须一次性转换成上述 v2 结构。
+`dependency_types` 当前允许 `live_chat_provider`、`frozen_file_fixture`、
+`isolated_local_state`、`injected_tool_failure` 和 `live_tool_service`。真实 behavior case 必须通过
+两个 `uses_live_*` 布尔字段分别说明 Chat 和 Tool 的真实调用边界，不能因为 Tool 数据使用 fixture
+就把整个案例描述成离线。
+
+Langfuse 会把 Dataset item metadata 传播成 Trace attribute，单个值超过 200 字符时会丢弃。因此
+metadata 禁止嵌套详细依赖对象，`scenario_summary` 和 `dependency_summary` 最长 180 字符，其他
+字段只使用短标量或短列表；路径、SHA、故障载荷和状态约束放在 `expected_output.oracle`。v2 schema
+会逐字段验证传播后的长度。legacy collection 暂时保留 v1 自由格式，迁移到 engineered 时必须
+一次性转换成上述 v2 结构。

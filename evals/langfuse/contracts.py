@@ -59,40 +59,6 @@ class EngineeredCaseInputV2(BaseModel):
     user_request: dict[str, Any]
 
 
-class CaseDependencyV2(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    name: str = Field(min_length=1)
-    type: Literal[
-        "frozen_fixture",
-        "isolated_state",
-        "injected_failure",
-        "live_service",
-    ]
-    description: str = Field(min_length=1)
-    fixture_id: str | None = None
-    uses_live_external_service: bool
-    details: dict[str, Any] = Field(default_factory=dict)
-
-    @model_validator(mode="after")
-    def require_fixture_for_controlled_dependency(self) -> "CaseDependencyV2":
-        if self.type != "live_service" and not self.fixture_id:
-            raise ValueError(
-                f"dependency type {self.type!r} requires fixture_id."
-            )
-        if self.type == "live_service" and not self.uses_live_external_service:
-            raise ValueError(
-                "live_service dependency must set "
-                "uses_live_external_service=true."
-            )
-        if self.type != "live_service" and self.uses_live_external_service:
-            raise ValueError(
-                f"controlled dependency type {self.type!r} must set "
-                "uses_live_external_service=false."
-            )
-        return self
-
-
 class EngineeredCaseMetadataV2(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -100,17 +66,44 @@ class EngineeredCaseMetadataV2(BaseModel):
         "assistant_agent_case_metadata_v2"
     ] = "assistant_agent_case_metadata_v2"
     capability: str = Field(min_length=1)
-    scenario_summary: str = Field(min_length=1)
+    scenario_summary: str = Field(min_length=1, max_length=180)
     domain: str = Field(min_length=1)
     lifecycle: Literal["draft", "calibrated", "active", "retired"]
     compatible_profiles: list[
         Literal["real_readonly", "real_system"]
     ] = Field(min_length=1)
-    dependencies: list[CaseDependencyV2] = Field(min_length=1)
+    dependency_summary: str = Field(min_length=1, max_length=180)
+    dependency_types: list[
+        Literal[
+            "live_chat_provider",
+            "frozen_file_fixture",
+            "isolated_local_state",
+            "injected_tool_failure",
+            "live_tool_service",
+        ]
+    ] = Field(min_length=1)
+    fixture_ids: list[str] = Field(default_factory=list)
+    uses_live_chat_provider: bool
+    uses_live_external_tool_service: bool
     required_tools: list[str] = Field(default_factory=list)
     forbidden_tools: list[str] = Field(default_factory=list)
     effect_scope: str = Field(min_length=1)
     calibration_fixture: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def keep_propagated_attributes_small(self) -> "EngineeredCaseMetadataV2":
+        for field_name, value in self.model_dump(mode="json").items():
+            rendered = (
+                json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+                if isinstance(value, (list, dict))
+                else str(value)
+            )
+            if len(rendered) > 200:
+                raise ValueError(
+                    f"metadata field {field_name!r} exceeds the Langfuse "
+                    "propagated attribute limit of 200 characters."
+                )
+        return self
 
 
 class CaseOracleV2(BaseModel):
