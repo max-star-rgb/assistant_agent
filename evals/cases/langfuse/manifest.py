@@ -135,14 +135,19 @@ def select_eval_item_ids(
     requested_capabilities = {
         manifest.normalize_capability(value) for value in capabilities
     }
-    records = [
-        (
-            str(_item_value(item, "id")),
-            _metadata(item),
+    records = []
+    for item in items:
+        item_id = str(_item_value(item, "id"))
+        metadata = _metadata(item)
+        case_id = metadata.get("case_id")
+        records.append(
+            (
+                item_id,
+                case_id if isinstance(case_id, str) and case_id else item_id,
+                metadata,
+            )
         )
-        for item in items
-    ]
-    available_case_ids = {case_id for case_id, _ in records}
+    available_case_ids = {case_id for _, case_id, _ in records}
     missing_case_ids = requested_case_ids - available_case_ids
     if missing_case_ids:
         raise ValueError(
@@ -152,7 +157,7 @@ def select_eval_item_ids(
         )
     available_capabilities = {
         manifest.normalize_capability(str(metadata.get("capability", "")))
-        for _, metadata in records
+        for _, _, metadata in records
     }
     missing_capabilities = requested_capabilities - available_capabilities
     if missing_capabilities:
@@ -164,8 +169,8 @@ def select_eval_item_ids(
 
     suite_case_ids = set(suite.case_ids)
     suite_capabilities = set(suite.capabilities)
-    matched: list[tuple[str, dict[str, Any]]] = []
-    for case_id, metadata in records:
+    matched: list[tuple[str, str, dict[str, Any]]] = []
+    for item_id, case_id, metadata in records:
         capability = manifest.normalize_capability(
             str(metadata.get("capability", ""))
         )
@@ -182,12 +187,12 @@ def select_eval_item_ids(
                 or capability in requested_capabilities
             )
         ):
-            matched.append((case_id, metadata))
+            matched.append((item_id, case_id, metadata))
     if not matched:
         raise ValueError("Eval selectors did not match any Dataset items.")
     incompatible = [
         case_id
-        for case_id, metadata in matched
+        for _, case_id, metadata in matched
         if profile_name is not None
         and isinstance(
             compatible_profiles := metadata.get("compatible_profiles"),
@@ -201,7 +206,7 @@ def select_eval_item_ids(
             + ", ".join(incompatible)
             + "."
         )
-    return [case_id for case_id, _ in matched]
+    return [item_id for item_id, _, _ in matched]
 
 
 def _metadata(item: Any) -> dict[str, Any]:

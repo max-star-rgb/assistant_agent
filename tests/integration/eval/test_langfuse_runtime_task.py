@@ -24,6 +24,7 @@ from evals.cases.langfuse.contracts import (
 from evals.cases.langfuse.dataset_sync import (
     failed_dataset_item_ids,
     load_dataset_seed,
+    managed_dataset_item_id,
     partition_available_dataset_item_ids,
     sync_langfuse_dataset,
 )
@@ -240,7 +241,7 @@ def _seed_item(case_id: str) -> dict[str, Any]:
     )
 
 
-def test_explicit_seed_uses_stable_native_dataset_ids() -> None:
+def test_explicit_seed_namespaces_native_ids_and_preserves_case_ids() -> None:
     seed = load_dataset_seed(DEFAULT_DATASET_SEED)
     client = _FakeLangfuseClient()
 
@@ -249,12 +250,19 @@ def test_explicit_seed_uses_stable_native_dataset_ids() -> None:
     assert result.dataset_name == "assistant-agent-infrastructure-v1"
     assert result.seed_hash.startswith("sha256:")
     assert result.item_ids == [
-        "agent_v1_daily_simple_015_create_dentist_event",
-        "agent_v1_daily_simple_017_polite_message_no_tool",
-        "agent_v1_daily_simple_002_calendar_read_team_sync",
+        managed_dataset_item_id(seed.dataset_name, item.id)
+        for item in seed.items
     ]
     assert client.datasets[0]["metadata"]["seed_hash"] == result.seed_hash
-    assert client.items[0]["metadata"]["case_id"] == result.item_ids[0]
+    assert client.items[0]["id"] == (
+        "assistant-agent-infrastructure-v1__"
+        "agent_v1_daily_simple_015_create_dentist_event"
+    )
+    assert client.items[0]["metadata"]["case_id"] == seed.items[0].id
+    assert (
+        client.items[0]["metadata"]["managed_by"]
+        == "assistant_agent_seed_sync_v1"
+    )
 
 
 def test_explicit_seed_removes_obsolete_seed_managed_items() -> None:
@@ -473,6 +481,30 @@ def test_eval_manifest_selects_suite_case_and_capability_by_intersection() -> No
             suite_name="system_full",
             profile_name="real_readonly",
         )
+
+
+def test_eval_manifest_selects_native_item_id_by_stable_case_id() -> None:
+    manifest = load_eval_manifest()
+    native_item_id = (
+        "assistant-agent-behavior-v2__agent_system_v1_weather_commute"
+    )
+
+    assert select_eval_item_ids(
+        [
+            SimpleNamespace(
+                id=native_item_id,
+                metadata={
+                    "case_id": "agent_system_v1_weather_commute",
+                    "capability": "weather_advice",
+                    "compatible_profiles": ["real_readonly", "real_system"],
+                },
+            )
+        ],
+        manifest=manifest,
+        suite_name="readonly_smoke",
+        profile_name="real_readonly",
+        case_ids=["agent_real_v1_daily_simple_001_commute_weather"],
+    ) == [native_item_id]
 
 
 def test_real_readonly_runtime_fails_closed_in_mock_mode() -> None:

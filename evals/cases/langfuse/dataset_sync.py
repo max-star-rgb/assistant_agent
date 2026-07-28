@@ -11,6 +11,8 @@ from evals.cases.langfuse.contracts import (
     DatasetSeedResult,
 )
 
+MANAGED_BY = "assistant_agent_seed_sync_v1"
+
 
 def load_dataset_seed(path: Path | str) -> DatasetSeed:
     return DatasetSeed.model_validate_json(
@@ -22,7 +24,12 @@ def sync_langfuse_dataset(
     client: Any,
     seed: DatasetSeed,
 ) -> DatasetSeedResult:
-    """Synchronize locally managed items without deleting UI-authored items."""
+    """Synchronize locally managed items without deleting UI-authored items.
+
+    Langfuse requires Dataset item IDs to be unique across the whole project,
+    not merely within one Dataset. Stable case IDs therefore live in metadata,
+    while the native item IDs are namespaced by the target Dataset.
+    """
 
     seed_hash = seed.content_hash()
     client.create_dataset(
@@ -30,15 +37,16 @@ def sync_langfuse_dataset(
         description=seed.description,
         metadata={**seed.metadata, "seed_hash": seed_hash},
     )
-    expected_item_ids = {item.id for item in seed.items}
+    expected_item_ids = {
+        managed_dataset_item_id(seed.dataset_name, item.id)
+        for item in seed.items
+    }
     dataset = client.get_dataset(seed.dataset_name)
     obsolete_item_ids = [
         str(item.id)
         for item in getattr(dataset, "items", [])
         if str(item.id) not in expected_item_ids
-        and isinstance(getattr(item, "metadata", None), dict)
-        and getattr(item, "metadata").get("seed_hash")
-        and getattr(item, "metadata").get("case_id") == str(item.id)
+        and _is_seed_managed_item(item)
     ]
     dataset_items_api = getattr(
         getattr(client, "api", None), "dataset_items", None
@@ -48,23 +56,44 @@ def sync_langfuse_dataset(
     for item_id in obsolete_item_ids:
         dataset_items_api.delete(item_id)
     for item in seed.items:
+        dataset_item_id = managed_dataset_item_id(seed.dataset_name, item.id)
         client.create_dataset_item(
             dataset_name=seed.dataset_name,
-            id=item.id,
+            id=dataset_item_id,
             input=item.input,
             expected_output=item.expected_output,
             metadata={
                 **item.metadata,
                 "case_id": item.id,
                 "seed_hash": seed_hash,
+                "managed_by": MANAGED_BY,
             },
         )
     return DatasetSeedResult(
         dataset_name=seed.dataset_name,
         seed_hash=seed_hash,
-        item_ids=[item.id for item in seed.items],
+        item_ids=[
+            managed_dataset_item_id(seed.dataset_name, item.id)
+            for item in seed.items
+        ],
         removed_item_ids=obsolete_item_ids,
     )
+
+
+def managed_dataset_item_id(dataset_name: str, case_id: str) -> str:
+    """Return a readable project-unique Langfuse Dataset item ID."""
+
+    return f"{dataset_name}__{case_id}"
+
+
+def _is_seed_managed_item(item: Any) -> bool:
+    metadata = getattr(item, "metadata", None)
+    if not isinstance(metadata, dict) or not metadata.get("seed_hash"):
+        return False
+    if metadata.get("managed_by") == MANAGED_BY:
+        return True
+    # Compatibility with items created by the pre-namespace synchronizer.
+    return metadata.get("case_id") == str(getattr(item, "id", ""))
 
 
 def failed_dataset_item_ids(

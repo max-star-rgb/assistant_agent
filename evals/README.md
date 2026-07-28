@@ -171,6 +171,9 @@ connection 时，Model parameters 必须设置
 
 同步会 upsert 本地 managed items，删除同一 Dataset 中带旧 `seed_hash` 且已不在当前 seed 的 managed
 items，但保留没有 `seed_hash` 的 Langfuse UI 手工案例。它不运行 Agent、Provider、Evaluator。
+由于 Langfuse 要求 Dataset item ID 在整个 project 内唯一，同步器会使用
+`<dataset_name>__<case_id>` 作为原生 `dataset_item_id`；稳定 `case_id` 保存在 item metadata，
+因此统一 Dataset 不会与归档 Dataset 的历史 item 冲突。
 
 `--seed-only` 是 `--sync-dataset-only` 的兼容别名；`--seed-dataset` 是 `--sync-dataset` 的兼容
 别名；`--dry-run` 是 `--inspect` 的兼容别名。

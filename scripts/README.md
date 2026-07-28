@@ -47,7 +47,9 @@ For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
   asynchronous and owned by Langfuse-native Code and LLM-as-a-Judge
   Evaluators; the script does not register SDK evaluators. Use
   `--case-id`, `--capability`, or `--suite` for explicit current-Dataset
-  selection. Use
+  selection. Stable case IDs are stored in metadata while synchronized native
+  Dataset item IDs are namespaced by Dataset because Langfuse requires
+  project-wide uniqueness. Use
   `--rerun-failed-from <run-name>` to create a new Experiment containing only
   items with an explicitly failed latest native Score in that Dataset run, or
   pass `--rerun-failed-from none` for a full Dataset run. It loads the untracked
