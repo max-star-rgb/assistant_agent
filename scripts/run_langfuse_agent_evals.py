@@ -99,7 +99,7 @@ def main() -> int:
         action="store_true",
         help=(
             "Use the isolated real Chat Provider + read-only Tool profile and "
-            "its five-case Dataset."
+            "its six-case Dataset."
         ),
     )
     real_profile.add_argument(
@@ -404,14 +404,14 @@ def _run_metadata(
         "tool_catalog_fingerprint": (
             "configured-real-tools-local-calendar-v1"
             if execution_profile == "real_system"
-            else "weather-readonly-v1"
+            else "weather-live-and-controlled-failure-v2"
             if execution_profile == "real_readonly"
             else "calendar-read-write-v1"
         ),
         "fixture_version": (
             "real-system-local-calendar-v1"
             if execution_profile == "real_system"
-            else "dynamic-readonly-v1"
+            else "dynamic-readonly-v2"
             if execution_profile == "real_readonly"
             else "calendar_capabilities_v1"
         ),

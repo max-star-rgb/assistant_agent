@@ -13,6 +13,7 @@ from evals.cases.langfuse.experiment import (
     AgentExperimentTask,
     REAL_READONLY_DATASET_SEED,
     REAL_SYSTEM_DATASET_SEED,
+    RealReadonlyCase,
     RuntimeBundle,
     StatelessEvalEnvironment,
     build_real_readonly_runtime,
@@ -24,11 +25,18 @@ from evals.cases.langfuse.experiment import (
     run_langfuse_agent_experiment,
     seed_langfuse_dataset,
 )
+from evals.cases.langfuse.weather_failure_fixture import (
+    SimulatedWeatherFailureAdapter,
+)
 from assistant_agent.runtime.runtime import AgentGraphRuntime
 from assistant_agent.config import ProviderConfig
 from assistant_agent.runtime.chat_adapter import ChatResult
+from assistant_agent.runtime.decision_models import NativeToolCall
 from assistant_agent.runtime.session_store import InMemorySessionStore
 from assistant_agent.observability.trace_store import InMemoryTraceStore, TraceEvent
+from assistant_agent.tools.plugins.builtin.calendar_weather_contacts.tools import (
+    WeatherTool,
+)
 from assistant_agent.tools.registry import ToolRegistry
 from assistant_agent.observability.otel_mapping import build_text_otel_span_specs
 from scripts.run_langfuse_agent_evals import _optional_run_name
@@ -111,6 +119,41 @@ class _TruncatedChat:
         )
 
 
+class _WeatherFailureRecoveryChat:
+    provider = "scripted"
+    model = "weather-failure-recovery-sentinel"
+
+    def __init__(self) -> None:
+        self._results = iter(
+            [
+                ChatResult(
+                    provider=self.provider,
+                    model=self.model,
+                    finish_reason="tool_calls",
+                    tool_calls=[
+                        NativeToolCall(
+                            id="weather-timeout-eval-call",
+                            name="weather",
+                            arguments={"location": "上海"},
+                        )
+                    ],
+                ),
+                ChatResult(
+                    provider=self.provider,
+                    model=self.model,
+                    finish_reason="stop",
+                    response_text=(
+                        "天气服务暂时超时，我无法确认明早的温度、降水或风力。"
+                        "请出发前查看可靠天气来源；若仍无法确认，缩短路线并携带轻便雨具。"
+                    ),
+                ),
+            ]
+        )
+
+    def chat(self, _request: object) -> ChatResult:
+        return next(self._results)
+
+
 def _truncated_runtime_factory(_request: object, _case: object) -> RuntimeBundle:
     registry = ToolRegistry()
     registry.seal()
@@ -119,6 +162,31 @@ def _truncated_runtime_factory(_request: object, _case: object) -> RuntimeBundle
             registry=registry,
             config=ProviderConfig(langgraph_checkpointer_backend="none"),
             chat_adapter=_TruncatedChat(),
+            trace_store=InMemoryTraceStore(),
+            session_store=InMemorySessionStore(),
+        ),
+        environment=StatelessEvalEnvironment(),
+    )
+
+
+def _weather_failure_runtime_factory(
+    _request: object,
+    case: object,
+) -> RuntimeBundle:
+    assert isinstance(case, RealReadonlyCase)
+    assert case.weather_failure is not None
+    registry = ToolRegistry()
+    registry.register(
+        WeatherTool(
+            adapter=SimulatedWeatherFailureAdapter(case.weather_failure)
+        )
+    )
+    registry.seal()
+    return RuntimeBundle(
+        runtime=AgentGraphRuntime(
+            registry=registry,
+            config=ProviderConfig(langgraph_checkpointer_backend="none"),
+            chat_adapter=_WeatherFailureRecoveryChat(),
             trace_store=InMemoryTraceStore(),
             session_store=InMemorySessionStore(),
         ),
@@ -141,8 +209,8 @@ def _exploding_runtime_factory(_request: object, _case: object) -> RuntimeBundle
     )
 
 
-def _seed_item(case_id: str) -> dict[str, Any]:
-    seed = load_dataset_seed()
+def _seed_item_from(seed_path: Path, case_id: str) -> dict[str, Any]:
+    seed = load_dataset_seed(seed_path)
     item = next(item for item in seed.items if item.id == case_id)
     return {
         "id": item.id,
@@ -150,6 +218,13 @@ def _seed_item(case_id: str) -> dict[str, Any]:
         "expected_output": item.expected_output,
         "metadata": {**item.metadata, "case_id": item.id},
     }
+
+
+def _seed_item(case_id: str) -> dict[str, Any]:
+    return _seed_item_from(
+        Path("evals/cases/langfuse/agent_closed_loop_v1.seed.json"),
+        case_id,
+    )
 
 
 def test_explicit_seed_uses_stable_native_dataset_ids() -> None:
@@ -193,15 +268,19 @@ def test_explicit_seed_removes_obsolete_seed_managed_items() -> None:
     assert client.deleted_item_ids == ["obsolete-confirmation-case"]
 
 
-def test_real_readonly_seed_contains_only_no_tool_and_weather_cases() -> None:
+def test_real_readonly_seed_includes_controlled_weather_failure_recovery() -> None:
     seed = load_dataset_seed(REAL_READONLY_DATASET_SEED)
 
     assert seed.dataset_name == "assistant-agent-real-readonly-v1"
-    assert len(seed.items) == 5
+    assert len(seed.items) == 6
     assert {
         item.metadata["capability"]
         for item in seed.items
-    } == {"real_no_tool", "real_read_only_tool"}
+    } == {
+        "real_no_tool",
+        "real_read_only_tool",
+        "real_tool_failure_recovery",
+    }
     assert {
         tool
         for item in seed.items
@@ -214,6 +293,43 @@ def test_real_readonly_seed_contains_only_no_tool_and_weather_cases() -> None:
         == ["weather"]
         for item in seed.items
     )
+    failure_item = next(
+        item
+        for item in seed.items
+        if item.metadata["capability"] == "real_tool_failure_recovery"
+    )
+    assert failure_item.metadata["dependency_mode"] == "simulated"
+    assert failure_item.metadata["expected_tool_terminal"] == "tool.failed"
+    assert failure_item.expected_output["weather_failure"]["error_code"] == (
+        "provider_timeout"
+    )
+    assert "不得编造" in failure_item.input["evaluation_criteria"]
+
+
+def test_weather_timeout_case_produces_scorable_degraded_runtime_evidence() -> None:
+    output = AgentExperimentTask(
+        client=_FakeLangfuseClient(),
+        runtime_factory=_weather_failure_runtime_factory,
+    )(
+        item=_seed_item_from(
+            REAL_READONLY_DATASET_SEED,
+            "agent_real_v1_weather_timeout_running_recovery",
+        )
+    )
+
+    assert output.terminal_status == "completed"
+    assert output.available_tools == ["weather"]
+    assert len(output.tool_executions) == 1
+    execution = output.tool_executions[0]
+    assert execution["name"] == "weather"
+    assert execution["status"] == "failed"
+    assert execution["terminal_event"] == "tool.failed"
+    assert execution["error_code"] == "provider_timeout"
+    assert execution["retry_count"] >= 0
+    assert output.response is not None
+    assert output.response["data"]["degraded"] is True
+    assert output.response["data"]["handled_tool_failures"] == 1
+    assert "无法确认" in output.response["message"]
 
 
 def test_real_system_seed_covers_production_like_capabilities() -> None:

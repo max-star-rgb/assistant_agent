@@ -39,6 +39,7 @@ from assistant_agent.mcp.config import load_mcp_server_configs_from_env
 from assistant_agent.tools.ids import WEATHER_TOOL_NAME
 from assistant_agent.tools.plugins.builtin.calendar_weather_contacts.tools import (
     CalendarSearchTool,
+    WeatherTool,
 )
 from assistant_agent.tools.plugins.builtin.calendar_weather_contacts.local_calendar import (
     LocalSQLiteCalendarAdapter,
@@ -49,6 +50,10 @@ from evals.cases.langfuse.calendar_fixture import (
     CalendarEvalCreateTool,
     CalendarEvalEnvironment,
     EvalCalendarEvent,
+)
+from evals.cases.langfuse.weather_failure_fixture import (
+    SimulatedWeatherFailureAdapter,
+    WeatherFailureFixture,
 )
 
 
@@ -80,9 +85,9 @@ AGENT_EVALUATION_OBJECTIVE = (
     "基础设施，不代表真实模型的泛化能力。"
 )
 REAL_READONLY_EVALUATION_OBJECTIVE = (
-    "验证真实 Chat Provider 是否在受治理的 Runtime 中正确克制或调用真实只读 Tool，"
-    "并由 Tool Trace、Policy、Provider 终态和最终回答共同证明结果。该 profile 不执行"
-    "写操作，不接入真实 Memory。"
+    "验证真实 Chat Provider 是否在受治理的 Runtime 中正确克制、调用真实只读 Tool，"
+    "或在受控只读依赖失败后诚实降级，并由 Tool Trace、Policy、Provider 终态和最终回答"
+    "共同证明结果。该 profile 不执行写操作，不接入真实 Memory。"
 )
 REAL_SYSTEM_EVALUATION_OBJECTIVE = (
     "使用真实 Chat Provider 和当前已配置的真实能力，系统评估 Agent 的无工具克制、"
@@ -164,9 +169,11 @@ class RealReadonlyCase(BaseModel):
     capability: Literal[
         "real_no_tool",
         "real_read_only_tool",
+        "real_tool_failure_recovery",
         "real_write_tool",
     ]
     response_facts: list[str] = Field(default_factory=list)
+    weather_failure: WeatherFailureFixture | None = None
 
 
 ExperimentCase = (
@@ -249,6 +256,19 @@ class StatelessEvalEnvironment:
 def validate_real_readonly_config(config: ProviderConfig) -> None:
     """Fail before an Experiment unless real chat and weather are configured."""
 
+    validate_real_chat_config(config)
+    configured_tools = configured_calendar_weather_contacts_tools(
+        load_mcp_server_configs_from_env()
+    )
+    if WEATHER_TOOL_NAME not in configured_tools:
+        raise RuntimeError(
+            "Real-readonly Dataset requires a configured MCP weather mapping."
+        )
+
+
+def validate_real_chat_config(config: ProviderConfig) -> None:
+    """Fail before an Experiment unless the main chat Provider is real."""
+
     if config.provider_mode != "real":
         raise RuntimeError(
             "Real Langfuse eval requires "
@@ -264,13 +284,6 @@ def validate_real_readonly_config(config: ProviderConfig) -> None:
             "Real Langfuse eval chat Provider is missing: "
             + ", ".join(missing)
             + "."
-        )
-    configured_tools = configured_calendar_weather_contacts_tools(
-        load_mcp_server_configs_from_env()
-    )
-    if WEATHER_TOOL_NAME not in configured_tools:
-        raise RuntimeError(
-            "Real-readonly Dataset requires a configured MCP weather mapping."
         )
 
 
@@ -749,11 +762,25 @@ def build_real_readonly_runtime(
 
     if not isinstance(case, RealReadonlyCase):
         raise ValueError(
-            "The real-readonly Runtime only accepts real_no_tool or "
-            "real_read_only_tool Dataset items."
+            "The real-readonly Runtime only accepts real Dataset items."
         )
     resolved = config or ProviderConfig.from_env()
-    validate_real_readonly_config(resolved)
+    registry = None
+    if case.capability == "real_tool_failure_recovery":
+        validate_real_chat_config(resolved)
+        if case.weather_failure is None:
+            raise ValueError(
+                "A real_tool_failure_recovery case requires weather_failure."
+            )
+        registry = ToolRegistry()
+        registry.register(
+            WeatherTool(
+                adapter=SimulatedWeatherFailureAdapter(case.weather_failure)
+            )
+        )
+        registry.seal()
+    else:
+        validate_real_readonly_config(resolved)
 
     isolated = replace(
         resolved,
@@ -766,6 +793,7 @@ def build_real_readonly_runtime(
     return RuntimeBundle(
         runtime=AgentGraphRuntime(
             config=isolated,
+            registry=registry,
             trace_store=InMemoryTraceStore(),
             session_store=InMemorySessionStore(),
         ),
@@ -844,12 +872,21 @@ def case_from_dataset_fields(
     if capability in {
         "real_no_tool",
         "real_read_only_tool",
+        "real_tool_failure_recovery",
         "real_write_tool",
     }:
+        weather_failure = (
+            WeatherFailureFixture.model_validate(
+                expected_output.get("weather_failure")
+            )
+            if capability == "real_tool_failure_recovery"
+            else None
+        )
         return RealReadonlyCase(
             id=case_id,
             capability=capability,
             response_facts=response_facts,
+            weather_failure=weather_failure,
         )
     raise ValueError(f"Unsupported Dataset capability: {capability!r}.")
 
@@ -887,6 +924,15 @@ def _tool_executions(events: list[TraceEvent]) -> list[dict[str, Any]]:
                 "exposed_tools": list(exposed_tools),
                 "outcome": _tool_outcome(output),
                 "output": output,
+                "error_code": (
+                    terminal.error_code if terminal is not None else None
+                ),
+                "error": terminal.error if terminal is not None else None,
+                "retry_count": (
+                    terminal.attributes.get("retry_count")
+                    if terminal is not None
+                    else None
+                ),
             }
         )
     return executions

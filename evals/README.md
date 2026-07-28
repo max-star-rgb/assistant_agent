@@ -115,9 +115,12 @@ Dataset 的候选 catalog；当前 Experiment 不会自动执行它，也不存�
 
 当前 Experiment 默认使用 scripted mock，只验证 Langfuse 闭环基础设施，不代表真实模型泛化能力。
 `agent_real_readonly_v1.seed.json` 是第一批真实模型 Dataset seed，包含 2 个 no-tool 和 3 个真实天气
-案例。它仍通过同一个 Langfuse Dataset/Experiment 入口注入 real Runtime，不恢复独立本地 case
-runner。真实 profile 强制关闭 Mem0、持久化会话、checkpointer 和 durable task，并要求
-`--allow-real-tools`，避免把 scripted 日历写入 Dataset 误用于真实环境。
+案例，以及 1 个受控天气超时恢复案例。恢复案例仍使用真实 Chat Provider，但只在该 Dataset item
+内通过生产 `WeatherAdapter` 接口注入确定性的 `provider_timeout`，不会调用真实天气服务；它必须
+产生完整 `tool.failed` 证据并由 Agent 诚实降级。整个 Dataset 仍通过同一个 Langfuse
+Dataset/Experiment 入口注入 real Runtime，不恢复独立本地 case runner。真实 profile 强制关闭
+Mem0、持久化会话、checkpointer 和 durable task，并要求 `--allow-real-tools`，避免把 scripted
+日历写入 Dataset 误用于真实环境。
 
 `agent_strict_pass.ts` 同时支持 scripted baseline 和 real-readonly Dataset，并为每个 Dataset item
 产生两个 Langfuse 原生确定性 Score：`agent.runtime_trace_pass` 检查运行终态和 Trace 完整性，
@@ -269,7 +272,8 @@ item；这样删除 capability 后不会继续执行旧案例。没有 `seed_has
   --seed-only
 ```
 
-真实运行会调用已配置的 Chat Provider 和 weather MCP，必须由 operator 显式确认：
+真实运行会调用已配置的 Chat Provider；其中 3 个天气成功案例还会调用 weather MCP，受控失败案例
+不会调用真实天气服务。整个 Experiment 必须由 operator 显式确认：
 
 ```bash
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python \

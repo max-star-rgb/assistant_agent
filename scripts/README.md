@@ -42,8 +42,9 @@ For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
   `.data/evals/system/context/`。
 - `scripts/run_langfuse_agent_evals.py`: optionally seeds the first Dataset, then
   runs either the default scripted mock baseline or the explicit
-  `--real-readonly --allow-real-tools` five-case real Chat Provider/weather
-  profile through a Langfuse Experiment and shared Runtime trace. Scoring is
+  `--real-readonly --allow-real-tools` six-case real Chat Provider profile
+  (including one controlled weather-timeout recovery case) through a Langfuse
+  Experiment and shared Runtime trace. Scoring is
   asynchronous and owned by Langfuse-native Code and LLM-as-a-Judge
   Evaluators; the script does not register SDK evaluators. Use
   `--rerun-failed-from <run-name>` to create a new Experiment containing only
