@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import date, timedelta
 from typing import Any
 
+import pytest
+
 from assistant_agent.config import ProviderConfig
 from assistant_agent.runtime.chat_adapter import ChatRequest, ChatResult
 from assistant_agent.runtime.decision_models import NativeToolCall
@@ -14,6 +16,7 @@ from evals.agent.calibration import (
 )
 from evals.agent.langfuse_backend import _evaluations, publish_tasks
 from evals.agent.loader import load_entrypoint, load_task
+from evals.agent.grading import assertion, environment_validation
 from evals.agent.provider_gate import validate_real_chat_config
 
 
@@ -113,6 +116,13 @@ def test_weather_timeout_environment_runs_the_real_runtime_offline() -> None:
         ),
         chat_adapter=_WeatherRecoveryChat(),
     )
+    environment_validation = environment.validate()
+    assert environment_validation.passed is True
+    assert set(environment_validation.checks) == {
+        "isolated_tool_registry",
+        "weather_timeout_fixture",
+        "stateless_boundary",
+    }
 
     execution = environment.execute(
         task=task,
@@ -138,10 +148,26 @@ def test_weather_timeout_environment_runs_the_real_runtime_offline() -> None:
     result = grader(execution.evidence, _AlwaysPassJudge())
     assert result.passed is True
     assert result.reward == 1.0
+    assert result.dimensions.tool_execution.passed is True
+    assert result.dimensions.tool_semantics.passed is True
+    assert result.dimensions.state.passed is True
+    assert result.dimensions.response.passed is True
     scores = _evaluations(result)
-    assert scores[0].name == "agent_eval.reward"
-    assert scores[0].value == 1.0
-    assert all(score.name.startswith("agent_eval.check.") for score in scores[1:])
+    assert [score.name for score in scores] == [
+        "agent_eval.reward",
+        "agent_eval.dimension.tool_execution",
+        "agent_eval.dimension.tool_semantics",
+        "agent_eval.dimension.state",
+        "agent_eval.dimension.response",
+    ]
+    assert [score.value for score in scores] == [
+        1.0,
+        True,
+        True,
+        True,
+        True,
+    ]
+    assert not any("weather" in score.name for score in scores)
 
 
 def test_calibration_catches_semantic_and_trajectory_failures() -> None:
@@ -159,6 +185,19 @@ def test_calibration_catches_semantic_and_trajectory_failures() -> None:
     ]
     assert all(result.matched for result in results)
     assert [result.actual_pass for result in results] == [True, False, False]
+    assert results[0].dimensions == {
+        "tool_execution": True,
+        "tool_semantics": True,
+        "state": True,
+        "response": True,
+    }
+    assert results[1].dimensions["response"] is False
+    assert results[2].dimensions == {
+        "tool_execution": True,
+        "tool_semantics": False,
+        "state": True,
+        "response": True,
+    }
 
 
 def test_publish_uses_langfuse_as_a_thin_backend() -> None:
@@ -195,3 +234,20 @@ def test_real_run_gate_rejects_the_default_mock_provider() -> None:
         assert "MULTIMODAL_AGENT_PROVIDER_MODE=real" in str(exc)
     else:
         raise AssertionError("default mock Provider must not enter Agent eval")
+
+
+def test_invalid_environment_is_an_infrastructure_failure() -> None:
+    validation = environment_validation(
+        {
+            "fixture_contract": assertion(
+                False,
+                "受控依赖未满足声明。",
+            )
+        }
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="Environment validation failed.*fixture_contract",
+    ):
+        validation.require_valid()

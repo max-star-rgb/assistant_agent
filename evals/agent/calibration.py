@@ -14,6 +14,7 @@ from evals.agent.contracts import (
     SemanticVerdict,
     TaskSpec,
 )
+from evals.agent.grading import DIMENSION_NAMES
 from evals.agent.loader import TASKS_ROOT, load_entrypoint
 
 
@@ -35,6 +36,7 @@ class CalibrationResult(BaseModel):
     actual_pass: bool
     expected_semantic_pass: bool
     actual_semantic_pass: bool
+    dimensions: dict[str, bool]
     matched: bool
     reason: str
 
@@ -69,6 +71,10 @@ def run_calibration(
                 actual_pass=graded.passed,
                 expected_semantic_pass=fixture.semantic_verdict.passed,
                 actual_semantic_pass=semantic.passed,
+                dimensions={
+                    name: getattr(graded.dimensions, name).passed
+                    for name in DIMENSION_NAMES
+                },
                 matched=matched,
                 reason=graded.reason,
             )

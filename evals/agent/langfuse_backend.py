@@ -23,6 +23,7 @@ from evals.agent.contracts import (
     TaskEnvironment,
     TaskSpec,
 )
+from evals.agent.grading import DIMENSION_NAMES
 from evals.agent.loader import load_entrypoint, load_task
 
 
@@ -198,16 +199,29 @@ def _evaluations(result: GraderResult) -> list[Evaluation]:
             name=PRIMARY_REWARD_NAME,
             value=result.reward,
             comment=result.reason,
+            metadata={
+                "dimensions": {
+                    name: getattr(result.dimensions, name).passed
+                    for name in DIMENSION_NAMES
+                }
+            },
         )
     ]
     evaluations.extend(
         Evaluation(
-            name=f"agent_eval.check.{name}",
-            value=check.passed,
+            name=f"agent_eval.dimension.{name}",
+            value=dimension_result.passed,
             data_type="BOOLEAN",
-            comment=check.reason,
+            comment=dimension_result.reason,
+            metadata={
+                "assertions": {
+                    assertion_name: assertion_result.passed
+                    for assertion_name, assertion_result in dimension_result.assertions.items()
+                }
+            },
         )
-        for name, check in result.checks.items()
+        for name in DIMENSION_NAMES
+        for dimension_result in [getattr(result.dimensions, name)]
     )
     return evaluations
 

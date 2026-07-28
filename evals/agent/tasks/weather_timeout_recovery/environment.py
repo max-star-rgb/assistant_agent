@@ -22,13 +22,19 @@ from assistant_agent.tools.plugins.builtin.calendar_weather_contacts.tools impor
     WeatherTool,
 )
 from assistant_agent.tools.registry import ToolRegistry
-from evals.agent.contracts import RunEvidence, TaskExecution, TaskSpec
+from evals.agent.contracts import (
+    EnvironmentValidation,
+    RunEvidence,
+    TaskExecution,
+    TaskSpec,
+)
 from evals.agent.evidence import (
     available_tools,
     provider_result_kinds,
     tool_executions,
     validation_results,
 )
+from evals.agent.grading import assertion, environment_validation
 from evals.agent.provider_gate import validate_real_chat_config
 
 
@@ -88,6 +94,46 @@ class WeatherTimeoutEnvironment:
             "state_reset": "per_task_run",
         }
 
+    def validate(self) -> EnvironmentValidation:
+        registry = self._build_registry()
+        specs = registry.list_specs()
+        fixture_result = AlwaysTimeoutWeatherAdapter().lookup(
+            WeatherRequest(location="上海")
+        )
+        error_codes = [
+            str(error.get("code"))
+            for error in fixture_result.errors
+            if isinstance(error, dict)
+        ]
+        return environment_validation(
+            {
+                "isolated_tool_registry": assertion(
+                    registry.sealed and registry.list() == ["weather"],
+                    (f"sealed={registry.sealed}, registered_tools={registry.list()}"),
+                ),
+                "weather_timeout_fixture": assertion(
+                    (
+                        not fixture_result.success
+                        and error_codes == ["provider_timeout"]
+                        and fixture_result.provider == "eval:weather-timeout-v1"
+                    ),
+                    (
+                        f"success={fixture_result.success}, "
+                        f"error_codes={error_codes}, "
+                        f"provider={fixture_result.provider}"
+                    ),
+                ),
+                "stateless_boundary": assertion(
+                    all(spec.category == "read" for spec in specs),
+                    (
+                        "tool_categories="
+                        f"{[spec.category for spec in specs]}；"
+                        "运行时使用 in-memory session/trace store。"
+                    ),
+                ),
+            }
+        )
+
     def execute(
         self,
         *,
@@ -96,6 +142,7 @@ class WeatherTimeoutEnvironment:
         trace_id: str,
         parent_span_id: str,
     ) -> TaskExecution:
+        self.validate().require_valid()
         resolved_request = UserRequest.model_validate(request)
         config = self.config or ProviderConfig.from_env()
         if self.chat_adapter is None:
@@ -108,9 +155,7 @@ class WeatherTimeoutEnvironment:
             durable_tasks_enabled=False,
             durable_task_worker_enabled=False,
         )
-        registry = ToolRegistry()
-        registry.register(WeatherTool(adapter=AlwaysTimeoutWeatherAdapter()))
-        registry.seal()
+        registry = self._build_registry()
         runtime = AgentGraphRuntime(
             config=isolated,
             registry=registry,
@@ -157,3 +202,10 @@ class WeatherTimeoutEnvironment:
             provider_result_kinds=provider_result_kinds(events),
         )
         return TaskExecution(evidence=evidence, trace_events=events)
+
+    @staticmethod
+    def _build_registry() -> ToolRegistry:
+        registry = ToolRegistry()
+        registry.register(WeatherTool(adapter=AlwaysTimeoutWeatherAdapter()))
+        registry.seal()
+        return registry

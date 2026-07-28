@@ -61,9 +61,37 @@ class TaskExecution:
     trace_events: list[TraceEvent]
 
 
-class CheckResult(BaseModel):
+class AssertionResult(BaseModel):
     passed: bool
     reason: str = Field(min_length=1)
+
+
+class DimensionResult(BaseModel):
+    passed: bool
+    reason: str = Field(min_length=1)
+    assertions: dict[str, AssertionResult] = Field(min_length=1)
+
+
+class GraderDimensions(BaseModel):
+    tool_execution: DimensionResult
+    tool_semantics: DimensionResult
+    state: DimensionResult
+    response: DimensionResult
+
+
+class EnvironmentValidation(BaseModel):
+    schema_version: Literal["agent_eval_environment_validation_v1"] = (
+        "agent_eval_environment_validation_v1"
+    )
+    passed: bool
+    reason: str = Field(min_length=1)
+    checks: dict[str, AssertionResult] = Field(min_length=1)
+
+    def require_valid(self) -> None:
+        if not self.passed:
+            raise RuntimeError(
+                "Agent eval Environment validation failed: " + self.reason
+            )
 
 
 class SemanticVerdict(BaseModel):
@@ -72,13 +100,13 @@ class SemanticVerdict(BaseModel):
 
 
 class GraderResult(BaseModel):
-    schema_version: Literal["agent_eval_grader_result_v1"] = (
-        "agent_eval_grader_result_v1"
+    schema_version: Literal["agent_eval_grader_result_v2"] = (
+        "agent_eval_grader_result_v2"
     )
     passed: bool
     reward: float = Field(ge=0.0, le=1.0)
     reason: str = Field(min_length=1)
-    checks: dict[str, CheckResult]
+    dimensions: GraderDimensions
 
 
 class SemanticJudge(Protocol):
@@ -92,6 +120,8 @@ class SemanticJudge(Protocol):
 
 class TaskEnvironment(Protocol):
     def describe(self) -> dict[str, Any]: ...
+
+    def validate(self) -> EnvironmentValidation: ...
 
     def execute(
         self,

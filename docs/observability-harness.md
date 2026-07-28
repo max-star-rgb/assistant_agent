@@ -997,9 +997,11 @@ Experiment task 从 Langfuse 当前 observation 读取 W3C trace ID 和 parent s
 TraceEvent，并在 task 内映射导出到同一条 Experiment trace。普通 API、Gateway、CLI 未传
 `RuntimeTraceContext` 时仍自行生成 trace ID，行为不变。
 
-显式 Experiment 必须生成完整 Trace 和唯一主要分数 `agent_eval.reward`；任务局部的
-`agent_eval.check.*` 只用于诊断。Dataset 认证、Runtime OTLP export、Environment、Judge、
-Evidence 或 Score 失败必须 fail-fast，和普通 server observability 的 fail-open 语义不同。
+显式 Experiment 必须生成完整 Trace、唯一主要分数 `agent_eval.reward`，以及固定的
+`agent_eval.dimension.tool_execution/tool_semantics/state/response` 四个诊断维度。Task
+专属 assertion 只进入维度 metadata，不创建工具专属 Score。Dataset 认证、Runtime OTLP export、
+Environment validation、Judge、Evidence 或 Score 失败必须 fail-fast，和普通 server
+observability 的 fail-open 语义不同。
 
 ### Phase 5: Trajectory Debug Gate
 

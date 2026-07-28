@@ -60,8 +60,9 @@ Evidence: grader 可独立检查的轨迹、终态和回答
 每次只实现一个 `evals/agent/tasks/<task_id>/`：
 
 1. `task.json` 只保存用户请求、capability、environment/grader 入口和短 tags；
-2. `environment.py` 使用活动 `AgentGraphRuntime`，控制依赖、工具可见性、初始状态、隔离和复位；
-3. `grader.py` 不向 Agent 暴露 rubric 或 oracle，基于结构化 Evidence 做任务局部判断；
+2. `environment.py` 使用活动 `AgentGraphRuntime`，控制依赖、工具可见性、初始状态、隔离和复位，并
+   提供不调用 Agent 的 `validate()`；
+3. `grader.py` 不向 Agent 暴露 rubric 或 oracle，基于结构化 Evidence 组合 Task-local assertions；
 4. `calibration.json` 至少含一个正确样本和一个可信但错误的样本；
 5. Suite 只做 Task ID 选择，不拥有 Environment 或评分逻辑；
 6. Langfuse Dataset item 只发布 `task_id + request + 短 metadata`，不复制 grader、依赖契约或长 oracle；
@@ -80,7 +81,8 @@ Task 不得靠 expected answer 文本匹配通过；工具行为以 Trace 和状
 5. `--run` 执行真实 Experiment。
 
 运行后检查 Agent 输入、工具暴露、Validator/Tool Trace、依赖结果、状态变化、最终回答、grader 理由和
-`agent_eval.reward`。每个 Task 只有一个主要门槛分数；`agent_eval.check.*` 只用于定位失败。
+`agent_eval.reward`。Langfuse 只输出固定的 `tool_execution`、`tool_semantics`、`state`、
+`response` 四个诊断维度；Task 专属原子断言只作为维度详情，不创建专属 Score。
 
 Agent 行为不满足任务时退出 1。凭据、Trace 导出、Dataset、Judge、证据解析或 Score 缺失属于评测
 基础设施错误，退出 2，不能伪装成 Agent 通过或失败。
@@ -96,7 +98,8 @@ Agent 行为不满足任务时退出 1。凭据、Trace 导出、Dataset、Judge
 - 一个 Task 只验证一个可命名 capability。
 - Environment 拥有依赖和状态，Task 输入不描述测试机关。
 - Grader 对 Agent 隐藏，并先用正反样本证明能区分结果。
-- 一个主要 reward 决定通过；诊断分数不形成另一套通过规则。
+- 一个主要 reward 决定通过；固定四维只解释 reward，Task 专属断言不形成新 Score。
+- Environment validation、凭据、Evidence 和 Judge 故障属于基础设施状态，不计入 Agent 分数。
 - Trace 用于发现问题和提供证据，不直接充当正确答案。
 - pytest 保持 mock/local/offline；真实 Provider 不得静默回退 mock。
 - 不提交凭据、原始生产 Trace、真实用户数据或评测运行生成物。

@@ -18,6 +18,7 @@ from assistant_agent.observability.langfuse_config import (
 from assistant_agent.runtime.assistant_run_service import load_env_file
 from assistant_agent.runtime.chat_adapter import create_chat_adapter
 from evals.agent.calibration import run_calibration
+from evals.agent.contracts import TaskSpec
 from evals.agent.judge import ProviderSemanticJudge
 from evals.agent.langfuse_backend import (
     DEFAULT_DATASET_NAME,
@@ -75,15 +76,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             json.dumps(
                 {
                     "action": "inspect",
-                    "tasks": [
-                        {
-                            "task": task.model_dump(mode="json"),
-                            "environment": load_entrypoint(
-                                task.environment
-                            )().describe(),
-                        }
-                        for task in tasks
-                    ],
+                    "tasks": [_inspect_task(task) for task in tasks],
                 },
                 ensure_ascii=False,
                 indent=2,
@@ -187,3 +180,12 @@ def _langfuse_client() -> Langfuse:
         secret_key=secret_key,
         host=langfuse_host_from_env(os.environ),
     )
+
+
+def _inspect_task(task: TaskSpec) -> dict[str, object]:
+    environment = load_entrypoint(task.environment)()
+    return {
+        "task": task.model_dump(mode="json"),
+        "environment": environment.describe(),
+        "environment_validation": environment.validate().model_dump(mode="json"),
+    }
