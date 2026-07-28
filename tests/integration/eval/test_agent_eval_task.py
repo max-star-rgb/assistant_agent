@@ -247,7 +247,7 @@ def test_provider_llm_judge_receives_named_rubric() -> None:
             "metadata": {
                 "timeout_seconds": 12.0,
                 "max_retries": 0,
-                "network_mode": "environment",
+                "network_mode": "ipv4_direct",
                 "stream": False,
             },
         }
@@ -303,6 +303,7 @@ def test_judge_provider_uses_independent_timeout_retry_and_stream_settings(
         env={
             JUDGE_TIMEOUT_ENV: "18",
             JUDGE_MAX_RETRIES_ENV: "0",
+            JUDGE_NETWORK_MODE_ENV: "environment",
         },
     )
 
@@ -349,14 +350,15 @@ def test_judge_ipv4_direct_network_bypasses_proxy_environment(
     monkeypatch.setattr("evals.agent.judge.httpx.HTTPTransport", fake_transport)
     monkeypatch.setattr("evals.agent.judge.httpx.Client", fake_client)
 
-    result = _judge_http_client(
-        JudgeProviderSettings(
-            timeout_seconds=18.0,
-            max_retries=0,
-            network_mode=JUDGE_NETWORK_MODE_IPV4_DIRECT,
-        )
+    settings = JudgeProviderSettings.from_env(
+        {
+            JUDGE_TIMEOUT_ENV: "18",
+            JUDGE_MAX_RETRIES_ENV: "0",
+        }
     )
+    result = _judge_http_client(settings)
 
+    assert settings.network_mode == JUDGE_NETWORK_MODE_IPV4_DIRECT
     assert result is client
     assert captured == {
         "transport": {"local_address": "0.0.0.0"},

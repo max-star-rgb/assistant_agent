@@ -98,7 +98,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         help=(
             "Select Judge networking: environment honors proxy settings; "
             "ipv4_direct bypasses proxies and forces IPv4. Defaults to "
-            f"{JUDGE_NETWORK_MODE_ENV} or environment."
+            f"{JUDGE_NETWORK_MODE_ENV} or ipv4_direct."
         ),
     )
     args = parser.parse_args(argv)

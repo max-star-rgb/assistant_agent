@@ -40,7 +40,7 @@ ProgressCallback = Callable[[dict[str, object]], None]
 class JudgeProviderSettings:
     timeout_seconds: float = 30.0
     max_retries: int = 0
-    network_mode: str = JUDGE_NETWORK_MODE_ENVIRONMENT
+    network_mode: str = JUDGE_NETWORK_MODE_IPV4_DIRECT
 
     @classmethod
     def from_env(
@@ -314,7 +314,7 @@ def _nonnegative_int(
 
 
 def _network_mode(value: str | None) -> str:
-    normalized = (value or JUDGE_NETWORK_MODE_ENVIRONMENT).strip().lower()
+    normalized = (value or JUDGE_NETWORK_MODE_IPV4_DIRECT).strip().lower()
     if normalized not in JUDGE_NETWORK_MODES:
         choices = ", ".join(JUDGE_NETWORK_MODES)
         raise RuntimeError(f"{JUDGE_NETWORK_MODE_ENV} must be one of: {choices}.")

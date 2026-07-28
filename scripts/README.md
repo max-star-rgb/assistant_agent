@@ -46,8 +46,9 @@ For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
   `AgentGraphRuntime` 创建 Experiment、Trace 和 `agent_eval.*` Score。用可重复
   `--task` 精确选择，或用 `--suite` 选择集合。真实 Chat 调用同时要求 real 模式、
   完整 Provider 配置和 `--allow-real-provider`。Judge 默认非流式、30 秒 timeout、0 次 SDK
-  retry，可用 `--judge-timeout-seconds` 和 `--judge-max-retries` 覆盖；发生 IPv6 或代理地址族
-  问题时可用 `--judge-network-mode ipv4_direct` 绕过代理并强制 IPv4；阶段进度写 stderr。
+  retry，并通过 `ipv4_direct` 绕过代理、强制 IPv4；可用 `--judge-timeout-seconds`、
+  `--judge-max-retries` 覆盖传输边界，或用 `--judge-network-mode environment` 恢复环境代理和
+  DNS；阶段进度写 stderr。
   实现位于 `evals/agent/`。
 - `scripts/run_improvement_lab.py`: offline, non-mutating improvement proposal runner.
 - `scripts/check_pilot_readiness.py` and `scripts/collect_pilot_evidence.py`:
