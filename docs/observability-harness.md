@@ -954,14 +954,16 @@ Regression tests should enforce these invariants:
   和 delta count 等安全摘要；这些对象都不是 vendor SDK 原始 envelope。
 - canonical `context.build.finished` 在 Langfuse 中展示为 `context.compile`，其 output 明确标记为
   `prompt_safe_context_compilation_report`，并导出 message roles/count、tool count、
-  response-format presence 以及 prompt-safe `context_report_v1`：逐 section 展示
-  chars/tokens、item count、included/compacted/trimmed、source，以及总预算、已选工具、
-  context source、skill exposure 和 compression 状态。本地开发 overlay 还附带最终 memory
+  response-format presence 以及 prompt-safe `context_report_v2`：只输出实际出现或发生转换的
+  section，并展示 chars、可选 estimated tokens、item count、明确的 compaction kind、trimmed
+  和 source。报告分离 precompile estimate、compiled request 和 tokenizer preflight 三种口径；
+  token 不可用时标记 `unavailable`，不输出伪造的零值。非空时还展示已选工具、memory ID、
+  context source 和 compression 状态。本地开发 overlay 还附带最终 memory
   section 的注入状态、ID 和实际渲染文本。`build_reason` 区分 iteration 初始编译、压缩后重建和
   Provider overflow retry；同 iteration 后续 compile 会取代较早的候选报告。output 中的
-  `compiled_request_content` 会明确指向随后同 iteration 的 `llm.chat.input`；完整 compiled
+  `compiled_request_ref` 以 observation、field 和 iteration 指向对应 `llm.chat.input`；完整 compiled
   `ChatRequest` 仍只放在那里，作为 Provider 调用边界的最终事实。`assistant.output`
-  只记录归一化决策，不再复制 `context` 或 `context_report_v1`。`agent.runtime`
+  只记录归一化决策，不再复制 `context` 或 `context_report_v2`。`agent.runtime`
   根 span 最多保留 `context_peak_ratio` 这一 turn-level 压力摘要，不携带完整 section
   accounting 或 Provider input。
 - 未实现 request callback 的自定义 adapter 使用编译后 `ChatRequest` 的语义字段作为 fallback；

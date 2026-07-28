@@ -7,7 +7,10 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from assistant_agent.context.models import ContextReport
-from assistant_agent.context.report import context_report_from_trace_context_summary
+from assistant_agent.context.report import (
+    context_report_from_trace_context_summary,
+    context_report_v2_from_v1,
+)
 from assistant_agent.observability.trace_store import TraceEvent, TraceStore, trace_debug_summary, trace_event_summary
 from assistant_agent.observability.turn_summary import latest_turn_summary_from_events
 
@@ -60,7 +63,7 @@ class ContextReportQueryResult(BaseModel):
 
     run_id: str | None = None
     trace_id: str | None = None
-    context_report_v1: ContextReport
+    context_report_v2: ContextReport
 
 
 class TraceQueryService:
@@ -128,7 +131,7 @@ class TraceQueryService:
         return ContextReportQueryResult(
             run_id=run_id,
             trace_id=events[0].trace_id,
-            context_report_v1=_latest_context_report(events),
+            context_report_v2=_latest_context_report(events),
         )
 
     def context_by_trace(self, trace_id: str) -> ContextReportQueryResult | None:
@@ -138,7 +141,7 @@ class TraceQueryService:
         return ContextReportQueryResult(
             run_id=events[0].run_id,
             trace_id=trace_id,
-            context_report_v1=_latest_context_report(events),
+            context_report_v2=_latest_context_report(events),
         )
 
 
@@ -189,12 +192,18 @@ def _latest_context_report(events: list[TraceEvent]) -> ContextReport:
     for event in reversed(events):
         if not isinstance(event.output_summary, dict):
             continue
-        report = event.output_summary.get("context_report_v1")
+        report = event.output_summary.get("context_report_v2")
         if isinstance(report, dict):
             return ContextReport.model_validate(report)
+        report = event.output_summary.get("context_report_v1")
+        if isinstance(report, dict):
+            return context_report_v2_from_v1(report)
         context = event.output_summary.get("context")
         if isinstance(context, dict):
-            nested_report = context.get("context_report_v1")
+            nested_report = context.get("context_report_v2")
             if isinstance(nested_report, dict):
                 return ContextReport.model_validate(nested_report)
+            nested_report = context.get("context_report_v1")
+            if isinstance(nested_report, dict):
+                return context_report_v2_from_v1(nested_report)
     return context_report_from_trace_context_summary(_latest_context_summary(events))

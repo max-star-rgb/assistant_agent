@@ -357,7 +357,12 @@ def get_run_summary(run_id: str) -> RunSummary:
     return summary
 
 
-@router.get("/runs/{run_id}/context", response_model=ContextReportQueryResult)
+@router.get(
+    "/runs/{run_id}/context",
+    response_model=ContextReportQueryResult,
+    response_model_exclude_none=True,
+    response_model_exclude_defaults=True,
+)
 def get_run_context(run_id: str) -> ContextReportQueryResult:
     summary = get_assistant_runtime_app().trace_query().context_by_run(run_id)
     if summary is None:
@@ -418,7 +423,12 @@ def get_trace_conversation(trace_id: str, request: Request) -> TraceConversation
     return conversation
 
 
-@router.get("/traces/{trace_id}/context", response_model=ContextReportQueryResult)
+@router.get(
+    "/traces/{trace_id}/context",
+    response_model=ContextReportQueryResult,
+    response_model_exclude_none=True,
+    response_model_exclude_defaults=True,
+)
 def get_trace_context(trace_id: str) -> ContextReportQueryResult:
     summary = get_assistant_runtime_app().trace_query().context_by_trace(trace_id)
     if summary is None:

@@ -138,7 +138,6 @@ class ContextSourceReport(BaseModel):
     used_last_known_good: bool = False
     source_versions_changed: int = Field(default=0, ge=0)
     omitted_section_count: int = Field(default=0, ge=0)
-    cache_layout_version: str = "editable_context_v1"
 
 
 class AssistantPlanContext(BaseModel):
@@ -193,38 +192,37 @@ class ContextBudgetReport(BaseModel):
 
 
 class ContextReportSection(BaseModel):
-    """Prompt-safe context compiler section accounting."""
+    """Prompt-safe accounting for one included or transformed context section."""
 
-    chars: int = Field(default=0, ge=0)
-    tokens: int | None = Field(default=None, ge=0)
-    item_count: int = Field(default=0, ge=0)
-    included: bool = False
-    compacted: bool = False
+    chars: int = Field(ge=0)
+    estimated_tokens: int | None = Field(default=None, ge=0)
+    item_count: int | None = Field(default=None, ge=0)
+    compaction: Literal["rolling_summary", "prompt_projection"] | None = None
     trimmed: bool = False
-    source: str = ""
+    source: str | None = None
     notes: list[str] = Field(default_factory=list)
 
 
 class ContextReport(BaseModel):
-    """Prompt-safe v1 context compiler report for one LLM call."""
+    """Prompt-safe v2 context compiler report for one LLM call."""
 
-    schema_version: str = "context_report_v1"
+    schema_version: Literal["context_report_v2"]
     sections: dict[str, ContextReportSection] = Field(default_factory=dict)
-    total_chars: int = Field(default=0, ge=0)
-    max_chars: int = Field(default=0, ge=0)
-    total_tokens: int = Field(default=0, ge=0)
-    max_tokens: int = Field(default=0, ge=0)
+    compiled_accounting_status: Literal["available", "unavailable"]
+    compiled_request_chars: int | None = Field(default=None, ge=0)
+    compiled_message_chars: int | None = Field(default=None, ge=0)
+    compiled_tool_schema_chars: int | None = Field(default=None, ge=0)
+    compiled_response_format_chars: int | None = Field(default=None, ge=0)
+    token_accounting_status: Literal["available", "unavailable"]
+    compiled_input_tokens: int | None = Field(default=None, ge=0)
+    effective_input_limit: int | None = Field(default=None, ge=0)
     selected_tool_names: list[str] = Field(default_factory=list)
     memory_item_ids: list[str] = Field(default_factory=list)
-    context_sources: ContextSourceReport = Field(default_factory=ContextSourceReport)
+    context_sources: ContextSourceReport | None = None
     compression_stage: str = "none"
     compression_reasons: list[str] = Field(default_factory=list)
-    was_compacted: bool = False
-    accounting_basis: str = "section_estimate"
-    budget_estimated_chars: int = Field(default=0, ge=0)
-    compiled_message_chars: int = Field(default=0, ge=0)
-    compiled_tool_schema_chars: int = Field(default=0, ge=0)
-    compiled_response_format_chars: int = Field(default=0, ge=0)
+    precompile_estimated_chars: int = Field(ge=0)
+    precompile_max_chars: int = Field(ge=0)
 
 
 class ContextPolicy(BaseModel):

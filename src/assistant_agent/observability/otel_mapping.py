@@ -10,6 +10,10 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, Field
 
+from assistant_agent.context.report import (
+    context_report_trace_payload,
+    context_report_v2_from_v1,
+)
 from assistant_agent.observability.trace_store import TraceEvent, redact_trace_event, sanitize_trace_value
 from assistant_agent.observability.turn_evaluator import build_turn_diagnostic
 from assistant_agent.observability.turn_summary import latest_turn_summary_from_events
@@ -577,7 +581,16 @@ def _event_io_attributes(
             )
         )
     elif name == "context.build.finished":
-        context_report = event.output_summary.get("context_report_v1")
+        context_report = event.output_summary.get("context_report_v2")
+        if not isinstance(context_report, Mapping):
+            legacy_report = event.output_summary.get("context_report_v1")
+            context_report = (
+                context_report_trace_payload(
+                    context_report_v2_from_v1(dict(legacy_report))
+                )
+                if isinstance(legacy_report, Mapping)
+                else None
+            )
         output_payload = {
             "output_kind": event.output_summary.get(
                 "output_kind",
@@ -590,10 +603,11 @@ def _event_io_attributes(
             "compiled_request_shape": _safe_payload_value(
                 event.output_summary.get("compiled_request_shape")
             ),
-            "compiled_request_content": _safe_payload_value(
-                event.output_summary.get("compiled_request_content")
+            "compiled_request_ref": _safe_payload_value(
+                event.output_summary.get("compiled_request_ref")
+                or event.output_summary.get("compiled_request_content")
             ),
-            "context_report_v1": _safe_payload_value(
+            "context_report_v2": _safe_payload_value(
                 context_report
             ),
         }

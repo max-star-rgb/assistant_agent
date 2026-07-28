@@ -57,27 +57,36 @@ def test_context_report_accounts_for_the_compiled_chat_request() -> None:
         for event in trace_store.list_by_run(state.run_id)
         if event.canonical_event == "assistant.output"
     )
-    report = context_event.output_summary["context_report_v1"]
+    report = context_event.output_summary["context_report_v2"]
     message_chars = _json_chars(request.messages)
     tool_chars = _json_chars(request.tools)
     response_format_chars = 0
 
-    assert report["accounting_basis"] == "compiled_chat_request"
+    assert report["schema_version"] == "context_report_v2"
+    assert report["compiled_accounting_status"] == "available"
     assert report["sections"]["system_prompt"]["chars"] == len(request.messages[0]["content"])
     assert report["sections"]["tool_schema"]["chars"] == tool_chars
     assert report["compiled_message_chars"] == message_chars
     assert report["compiled_tool_schema_chars"] == tool_chars
     assert request.response_format is None
     assert report["compiled_response_format_chars"] == response_format_chars
-    assert report["total_chars"] == message_chars + tool_chars + response_format_chars
-    assert report["budget_estimated_chars"] == context_event.output_summary["context"]["budget"][
-        "total_chars"
-    ]
+    assert report["compiled_request_chars"] == (
+        message_chars + tool_chars + response_format_chars
+    )
+    assert report["precompile_estimated_chars"] == (
+        context_event.output_summary["context"]["budget"]["total_chars"]
+    )
+    assert report["token_accounting_status"] == "unavailable"
+    assert "compiled_input_tokens" not in report
+    assert "effective_input_limit" not in report
+    assert "realtime_task_state" not in report["sections"]
+    assert "context_sources" not in report
     assert "tool_capability" not in report["sections"]
     assert "tool_capability_chars" not in context_event.output_summary["context"]["budget"]
     assert "skill_report_v1" not in context_event.output_summary["context"]
     assert "context" not in assistant_event.output_summary
     assert "context_report_v1" not in assistant_event.output_summary
+    assert "context_report_v2" not in assistant_event.output_summary
 
     spans = build_text_otel_span_specs(trace_store.list_by_run(state.run_id))
     runtime_span = next(span for span in spans if span.name == "agent.runtime")
@@ -102,15 +111,12 @@ def test_context_report_accounts_for_the_compiled_chat_request() -> None:
         "tool_count": len(request.tools),
         "response_format_present": False,
     }
-    assert context_output["compiled_request_content"] == {
-        "exported_here": False,
+    assert context_output["compiled_request_ref"] == {
         "observation_name": "llm.chat",
         "field": "input",
-        "match_iteration": 1,
-        "match_rule": "next_llm_chat_in_same_iteration",
-        "later_compile_in_same_iteration_supersedes": True,
+        "iteration": 1,
     }
-    assert context_output["context_report_v1"] == report
+    assert context_output["context_report_v2"] == report
 
 
 def test_keyword_like_request_is_not_rewritten_with_capability_context() -> None:

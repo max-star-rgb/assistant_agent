@@ -845,7 +845,10 @@ def test_langfuse_mapping_builds_runtime_iteration_hierarchy_and_exact_local_llm
     context_output = json.loads(
         context.attributes["langfuse.observation.output"]
     )
-    assert context_output["context_report_v1"]["selected_tool_names"] == [
+    assert context_output["context_report_v2"]["schema_version"] == (
+        "context_report_v2"
+    )
+    assert context_output["context_report_v2"]["selected_tool_names"] == [
         "image_generation"
     ]
     assert runtime.attributes["assistant_agent.session_scope"] == "agent_service_connection"
@@ -987,8 +990,8 @@ def test_provider_request_fallback_is_captured_without_content_switch() -> None:
         for event in runtime.trace_store.list_by_run(state.run_id)
         if event.canonical_event == "context.build.finished"
     )
-    report = context_event.output_summary["context_report_v1"]
-    assert report["schema_version"] == "context_report_v1"
+    report = context_event.output_summary["context_report_v2"]
+    assert report["schema_version"] == "context_report_v2"
     assert report["sections"]["request"]["chars"] == len(state.request.text)
 
 

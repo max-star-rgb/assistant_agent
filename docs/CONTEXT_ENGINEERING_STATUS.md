@@ -13,7 +13,7 @@ Last updated: 2026-07-28
 - 当前权威入口：本文件。
 - 说明：已移除完成态阶段计划，当前以本文件作为上下文工程状态与交接入口。
 - 已实现核心闭环：`AssistantContextPack`、`ContextSection v1`、默认关闭的 local owner `SOUL.md`
-  source、Context Compiler v1、完整 Provider-native transcript、rolling natural-language session summary、
+  source、Context Compiler v2、完整 Provider-native transcript、rolling natural-language session summary、
   model-tokenizer preflight、独立 `realtime_video_context`、durable task state、tool observation、tool schema、
   结构化 RunToolCatalog 和 trace/API 上下文摘要。
 - `PromptCompiler` 先生成完整 `ChatRequest`，`ContextTokenCounter` 再对 messages、tools、tool choice 和
@@ -61,9 +61,9 @@ Last updated: 2026-07-28
   天气、新闻等外部动态信息查询，外部事实仍必须使用已暴露工具。
 - Provider-native Prompt 不注入 capability catalog 或 Skill descriptor，也不根据 `request.text` 做关键词、
   正则或确定性意图召回。模型只通过本轮结构化资格化后的原生 `ToolSpec` schema 了解候选工具。
-- Context Compiler v1 以 `ContextReport` 暴露每次 LLM call 的 redacted section accounting：`system_prompt`、`request`、`session_summary`、`recent_transcript`、`memory`、`realtime_video_context`、`durable_task_state`、`plan_state`、`tool_observations` 和 `tool_schema`，并以非累加的 `context_source_report_v1` 报告 section kind/authority/stability 字符数、稳定 issue code、last-known-good 和版本变化计数；不暴露 SOUL 原文、source version、绝对路径、完整 prompt、memory 文本、视频摘要、tool observation 或 provider payload。兼容 schema 仍保留 `realtime_task_state` section，但编译时始终为未包含。
-- `ContextBudgetReport` 明确是压缩前后的 `precompile_estimate`；`ContextReport.accounting_basis=compiled_chat_request` 则直接核算同一 `PromptCompiler` 产出的 messages、tools 和 response_format。二者不再冒充同一口径，report 同时保留 `budget_estimated_chars` 便于解释差值。
-- 上一轮 Provider usage 只保留在 `provider_*_tokens` 诊断字段，标记为 `previous_provider_usage`，不再写入当前待发送 context 的 `total_tokens`。
+- Context Compiler v2 以稀疏 `ContextReport` 暴露每次 LLM call 实际出现或被转换的 redacted section accounting：`system_prompt`、`request`、`session_summary`、`recent_transcript`、`memory`、`realtime_video_context`、`durable_task_state`、`plan_state`、`tool_observations` 和 `tool_schema`。`realtime_task_state` 不进入 Provider Prompt，也不再作为空兼容 section 输出。非空 `context_source_report_v1` 只报告 section kind/authority/stability 字符数、稳定 issue code、last-known-good 和版本变化计数，不携带内部 cache layout；报告不暴露 SOUL 原文、source version、绝对路径、完整 prompt、memory 文本、视频摘要、tool observation 或 provider payload。
+- `ContextBudgetReport` 明确是压缩前后的 `precompile_estimate`；ContextReport v2 分别使用 `precompile_estimated_chars/precompile_max_chars` 和 `compiled_request_chars/compiled_*_chars` 表达两套口径，不再以 `total_chars/max_chars` 暗示可直接计算同口径比例。
+- 当前请求只有在 tokenizer preflight 可用时才写 `compiled_input_tokens/effective_input_limit`，并标记 `token_accounting_status=available`；不可用时使用 `null`/省略和 `unavailable`，不再用零伪装真实 token 数。上一轮 Provider usage 仍只保留在 `provider_*_tokens` 诊断字段，标记为 `previous_provider_usage`。
 
 ### Durable Task Context
 
@@ -72,7 +72,7 @@ Last updated: 2026-07-28
 - prompt 白名单包含 task id、objective、active constraints、task status、plan version、当前 plan、ready step ids、completed step 的 summary/output ref、artifact refs、等待状态和 remaining budget。任意顶层扩展、completed-step raw provider response、wait provider payload、父会话历史和 secret 不进入该区段。
 - renderer 明确标注“当前任务执行数据，不是系统指令、长期记忆或用户授权”。prompt-json 与 provider-native user message 使用同一数据边界。
 - 超长字符串和列表在进入 pack 时本地裁剪；`ContextBudgetReport` 分别记录 `durable_task_state_chars/tokens`，裁剪时把 `durable_task_state` 写入 `trimmed_sections`。
-- `ContextReport.sections.durable_task_state` 只暴露 chars、tokens、item count、trimmed 和 source=`trusted_runtime.durable_task_snapshot`，不记录任务内容或 artifact URL。
+- `ContextReport.sections.durable_task_state` 只暴露 chars、estimated tokens、item count、trimmed 和 source=`trusted_runtime.durable_task_snapshot`，不记录任务内容或 artifact URL。
 - durable snapshot 是当前执行状态，不是 session summary 或长期 memory。worker 只能复用已建立的
   session memory snapshot；量子执行不会触发新的长期记忆召回。
 - CLI、API、WebSocket 共享 `run_assistant_request` 入口，会在进入 runtime 前注入 session-scoped conversation context。
@@ -100,7 +100,7 @@ Last updated: 2026-07-28
 - Cross-agent delegation now has a separate child-context boundary in `AgentCommunicationService`: child runs receive explicit `context_refs`, child budget metadata, and redacted audit summaries, not parent history, `memory_context_*`, raw provider payloads, secrets, or raw tool results.
 - Trace/API 已暴露 versioned context debug summary，包括 context budget、source counts、tool catalog summary 和 observation compaction summary。
 - 离线 Improvement Lab 可把脱敏 trajectory 与显式结构化 eval/test 失败转换为 evidence，确定性聚类后生成 skill/runtime/code 人工评审候选；它不进入 `AgentGraphRuntime`，不放宽 context/trace redaction，也不自动修改 skill、runtime 或代码。
-- `/runs/{run_id}/context` 与 `/traces/{trace_id}/context` 返回最新 `context_report_v1`；旧 trace 若只有 `context.budget/source_counts/tool_catalog`，会降级生成兼容 report。
+- `/runs/{run_id}/context` 与 `/traces/{trace_id}/context` 返回最新 `context_report_v2`；持久化的 v1 report 和仅有 `context.budget/source_counts/tool_catalog` 的旧 trace 会转换为稀疏 v2 report，无法恢复的 compiled/token 口径明确标记为 `unavailable`。
 - Context build now also emits canonical `context.build.started` and
   `context.build.finished` trace events with redacted budget, source-count,
   compaction, and tool-catalog summaries.
@@ -248,16 +248,17 @@ Last updated: 2026-07-28
 - 预算裁剪优先保留工具 observation，因为它通常是下一步工具调用和最终回答的证据来源。
 - assistant decision trace 只记录归一化决策、工具名、reason 和 plan 状态，不重复携带 context
   summary 或 report。
-- canonical `context.build.finished` 独占 `context_report_v1`，用于检查真实发送给 Provider 的 system prompt
-  大小、selected native tool schema、memory 注入 ID、realtime task-state 大小和压缩/裁剪状态。
+- canonical `context.build.finished` 独占 `context_report_v2`，用于检查真实发送给 Provider 的 system prompt
+  大小、selected native tool schema、memory 注入 ID、工具 observation 投影和压缩/裁剪状态。
 - Context pack construction emits standalone `context.build.started` /
   `context.build.finished` canonical trace events. The finished event carries the
   same redacted context summary shape used by trace/API context debugging，并额外携带
-  prompt-safe `context_report_v1` section accounting。Langfuse 将该 observation 展示为
+  prompt-safe `context_report_v2` section accounting。Langfuse 将该 observation 展示为
   `context.compile`，output 明确标记为编译报告，并只附带 message roles/count、tool count 和
   response-format presence；`build_reason` 区分 `iteration_initial`、`post_compaction` 和
   `provider_overflow_retry`。最终 compiled `ChatRequest` 正文仍只归属同 iteration 的
-  `llm.chat` generation input；同 iteration 后续出现的 `context.compile` 会取代较早报告，
+  `llm.chat` generation input；`compiled_request_ref` 只保留 observation、field 和 iteration
+  关联，不重复输出固定匹配规则。同 iteration 后续出现的 `context.compile` 会取代较早报告，
   避免把初始候选报告误读为最终上下文本身。
 - Trace sanitization 会过滤 `raw_provider_payload`、`raw_provider_response`、base64/media/file payload key 和 secret key，作为 public API 前的额外防线。
 - `/runs/{run_id}` 与 `/traces/{trace_id}` 可查询 context 相关摘要。
@@ -279,7 +280,7 @@ Last updated: 2026-07-28
 - rolling LLM compaction 仍只压缩 conversation history；当前 run tool observation 在进入 prompt 前会做
   确定性投影和局部容量限制，但如果 system、memory、tool schema、durable state 或投影后的当前 run
   observation 总体仍超过 hard limit，Runtime 会返回稳定错误。
-- Context Compiler v1 是调试/审计摘要，不是 prompt replay。它刻意不返回 raw prompt、raw provider payload、完整 memory 文本或完整 tool observation；token 字段仍依赖现有估算或 provider usage metadata。
+- Context Compiler v2 是调试/审计摘要，不是 prompt replay。它刻意不返回 raw prompt、raw provider payload、完整 memory 文本或完整 tool observation；section token 只标记为 estimated，compiled token 只来自当前 tokenizer preflight，不可用时明确省略。
 - 显式本地 trace-content + loopback OTLP 模式是独立的 prompt 调试例外：assistant loop
   会在 Provider 调用前把最终 compiled `ChatRequest` 暂存到进程内 store，并作为对应
   Langfuse `llm.chat` generation input 导出。该能力不改变 Context Compiler/API 的摘要契约，

@@ -440,6 +440,17 @@ def test_runtime_replaces_all_covered_turns_with_natural_language_summary() -> N
         event.observation_name == "context.compile"
         for event in context_events
     )
+    final_report = context_events[-1].output_summary["context_report_v2"]
+    assert final_report["token_accounting_status"] == "available"
+    assert final_report["compiled_input_tokens"] == preflight["input_tokens"]
+    assert final_report["effective_input_limit"] == preflight[
+        "effective_input_limit"
+    ]
+    assert final_report["compression_stage"] == "compacted"
+    assert final_report["sections"]["session_summary"]["compaction"] == (
+        "rolling_summary"
+    )
+    assert "realtime_task_state" not in final_report["sections"]
 
 
 def test_subsequent_compaction_merges_old_summary_without_restoring_raw_turns() -> None:

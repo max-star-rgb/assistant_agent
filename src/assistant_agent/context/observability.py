@@ -11,7 +11,12 @@ from assistant_agent.runtime.requests import UserRequest
 from assistant_agent.tools.models import ToolSpec
 from assistant_agent.context.builder import build_assistant_context_pack
 from assistant_agent.context.compactor import ContextCompactor
-from assistant_agent.context.report import build_context_report
+from assistant_agent.context.token_budget import ContextWindowPolicy
+from assistant_agent.context.token_counter import ContextTokenCounter
+from assistant_agent.context.report import (
+    build_context_report,
+    context_report_trace_payload,
+)
 from assistant_agent.context.prompt_compiler import (
     PromptCompileMode,
     PromptCompileRequest,
@@ -34,6 +39,8 @@ def build_traced_assistant_context_pack(
     memory_summaries: list[str] | None = None,
     memory_text: str | None = None,
     context_compactor: ContextCompactor | None = None,
+    context_token_counter: ContextTokenCounter | None = None,
+    context_window_policy: ContextWindowPolicy | None = None,
     registry_generation: str | None = None,
     host_configured_tool_names: set[str] | None = None,
     native_calls: list[dict[str, Any]] | None = None,
@@ -116,6 +123,23 @@ def build_traced_assistant_context_pack(
             error={"code": "context_build_failed", "message": sanitize_trace_value(str(exc))},
         )
         raise
+    compiled_input_tokens = None
+    effective_input_limit = None
+    if context_token_counter is not None and context_window_policy is not None:
+        compiled_input_tokens = context_token_counter.count_chat_request(
+            compilation.chat_request
+        )
+        effective_input_limit = context_window_policy.evaluate(
+            compiled_input_tokens,
+            reserved_output_tokens=compilation.chat_request.max_tokens,
+        ).effective_input_limit
+    context_report = build_context_report(
+        pack,
+        selected_tool_specs=pack.prompt_tool_specs,
+        compiled_request=compilation.chat_request,
+        compiled_input_tokens=compiled_input_tokens,
+        effective_input_limit=effective_input_limit,
+    )
     append_observability_event(
         trace_store,
         trace_id=trace_id or state.trace_id,
@@ -134,20 +158,13 @@ def build_traced_assistant_context_pack(
             "output_kind": "prompt_safe_context_compilation_report",
             "build_reason": build_reason,
             "compiled_request_shape": _compiled_request_shape(compilation.chat_request),
-            "compiled_request_content": {
-                "exported_here": False,
+            "compiled_request_ref": {
                 "observation_name": "llm.chat",
                 "field": "input",
-                "match_iteration": iteration + 1,
-                "match_rule": "next_llm_chat_in_same_iteration",
-                "later_compile_in_same_iteration_supersedes": True,
+                "iteration": iteration + 1,
             },
             "context": context_trace_summary(pack),
-            "context_report_v1": build_context_report(
-                pack,
-                selected_tool_specs=pack.prompt_tool_specs,
-                compiled_request=compilation.chat_request,
-            ).model_dump(mode="json"),
+            "context_report_v2": context_report_trace_payload(context_report),
         },
         attributes={
             "iteration": iteration + 1,

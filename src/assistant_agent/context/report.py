@@ -1,9 +1,9 @@
-"""Prompt-safe Context Compiler v1 reporting."""
+"""Prompt-safe Context Compiler v2 reporting and legacy conversion."""
 
 from __future__ import annotations
 
 import json
-from typing import Any, Iterable
+from typing import Any, Iterable, Literal
 
 from assistant_agent.context.models import (
     AssistantContextPack,
@@ -19,14 +19,13 @@ from assistant_agent.tools.observation import native_tool_observation_payload
 from assistant_agent.runtime.chat_adapter import ChatRequest
 
 
-CONTEXT_REPORT_VERSION = "context_report_v1"
+CONTEXT_REPORT_VERSION = "context_report_v2"
 CONTEXT_REPORT_SECTION_NAMES = (
     "system_prompt",
     "request",
     "session_summary",
     "recent_transcript",
     "memory",
-    "realtime_task_state",
     "realtime_video_context",
     "durable_task_state",
     "plan_state",
@@ -41,122 +40,148 @@ def build_context_report(
     system_prompt: str | None = None,
     selected_tool_specs: Iterable[ToolSpec] | None = None,
     compiled_request: ChatRequest | None = None,
+    compiled_input_tokens: int | None = None,
+    effective_input_limit: int | None = None,
 ) -> ContextReport:
     """Build a redacted context report for the material sent to a provider."""
 
     selected_specs = _selected_tool_specs(pack, selected_tool_specs)
-    sections = _empty_sections()
+    sections: dict[str, ContextReportSection] = {}
     compiled_system_prompt = _compiled_system_prompt(compiled_request) or system_prompt or ""
-    sections["system_prompt"] = ContextReportSection(
-        chars=len(compiled_system_prompt),
-        tokens=None,
-        item_count=1 if compiled_system_prompt else 0,
-        included=bool(compiled_system_prompt),
-        source="ChatRequest.messages[0]" if compiled_request is not None else ("system_prompt_policy" if system_prompt else "not_available"),
-    )
-    sections["request"] = ContextReportSection(
-        chars=len(pack.request.text or ""),
-        tokens=_positive_or_none(pack.budget.request_tokens),
-        item_count=1 if pack.request.text else 0,
-        included=bool(pack.request.text),
-        source="UserRequest.text",
-    )
-    sections["session_summary"] = ContextReportSection(
-        chars=_json_chars(pack.context_summary.model_dump(mode="json")) if pack.context_summary is not None else 0,
-        tokens=None,
-        item_count=pack.context_summary.source_turn_count if pack.context_summary is not None else 0,
-        included=pack.context_summary is not None,
-        compacted=pack.context_summary is not None,
-        source="context_summary" if pack.context_summary is not None else "not_available",
-    )
-    sections["recent_transcript"] = ContextReportSection(
-        chars=len(pack.conversation_text),
-        tokens=_positive_or_none(pack.budget.conversation_tokens),
-        item_count=_source_count(pack, "conversation_recent_turns") or _source_count(pack, "conversation_turns"),
-        included=bool(pack.conversation_text),
-        compacted="conversation_context_compacted" in pack.budget.compression_reasons,
-        trimmed="conversation" in pack.budget.trimmed_sections,
-        source="conversation_context_text",
-    )
+    if compiled_system_prompt:
+        sections["system_prompt"] = ContextReportSection(
+            chars=len(compiled_system_prompt),
+            source=(
+                "ChatRequest.messages[0]"
+                if compiled_request is not None
+                else "system_prompt_policy"
+            ),
+        )
+    if pack.request.text:
+        sections["request"] = ContextReportSection(
+            chars=len(pack.request.text),
+            estimated_tokens=_positive_or_none(pack.budget.request_tokens),
+            source="UserRequest.text",
+        )
+    if pack.context_summary is not None:
+        sections["session_summary"] = ContextReportSection(
+            chars=_json_chars(pack.context_summary.model_dump(mode="json")),
+            item_count=pack.context_summary.source_turn_count,
+            compaction="rolling_summary",
+            source="context_summary",
+        )
+    if pack.conversation_text or "conversation" in pack.budget.trimmed_sections:
+        sections["recent_transcript"] = ContextReportSection(
+            chars=len(pack.conversation_text),
+            estimated_tokens=_positive_or_none(pack.budget.conversation_tokens),
+            item_count=_positive_or_none(
+                _source_count(pack, "conversation_recent_turns")
+                or _source_count(pack, "conversation_turns")
+            ),
+            compaction=(
+                "rolling_summary"
+                if "conversation_context_compacted" in pack.budget.compression_reasons
+                else None
+            ),
+            trimmed="conversation" in pack.budget.trimmed_sections,
+            source="conversation_context_text",
+        )
     memory_item_ids = _memory_item_ids(pack)
-    sections["memory"] = ContextReportSection(
-        chars=len(pack.memory_text),
-        tokens=_positive_or_none(pack.budget.memory_tokens),
-        item_count=_source_count(pack, "memory_items") or len(memory_item_ids),
-        included=bool(pack.memory_text or memory_item_ids),
-        trimmed="memory" in pack.budget.trimmed_sections,
-        source="ContextBuilder.session_memory_snapshot",
-    )
-    sections["realtime_task_state"] = ContextReportSection(
-        chars=_json_chars(pack.realtime_task_state) if pack.realtime_task_state else 0,
-        tokens=None,
-        item_count=len(pack.realtime_task_state) if isinstance(pack.realtime_task_state, dict) else 0,
-        included=pack.realtime_task_state is not None,
-        source="request.metadata.realtime_task_state",
-    )
-    sections["realtime_video_context"] = ContextReportSection(
-        chars=(
-            _json_chars(pack.realtime_video_context.model_dump(mode="json"))
-            if pack.realtime_video_context is not None
-            else 0
-        ),
-        tokens=_positive_or_none(pack.budget.realtime_video_context_tokens),
-        item_count=1 if pack.realtime_video_context is not None else 0,
-        included=pack.realtime_video_context is not None,
-        source="RealtimeVideoMemoryStore",
-    )
-    sections["durable_task_state"] = ContextReportSection(
-        chars=_json_chars(pack.durable_task_state) if pack.durable_task_state else 0,
-        tokens=_positive_or_none(pack.budget.durable_task_state_tokens),
-        item_count=1 if pack.durable_task_state is not None else 0,
-        included=pack.durable_task_state is not None,
-        trimmed="durable_task_state" in pack.budget.trimmed_sections,
-        source="trusted_runtime.durable_task_snapshot",
-    )
-    sections["plan_state"] = ContextReportSection(
-        chars=_plan_chars(pack),
-        tokens=_positive_or_none(pack.budget.plan_tokens),
-        item_count=1 if _plan_chars(pack) > 0 else 0,
-        included=_plan_chars(pack) > 0,
-        source="AgentState.plan_state",
-    )
-    sections["tool_observations"] = ContextReportSection(
-        chars=_json_chars(
-            [
-                native_tool_observation_payload(observation)
-                for observation in pack.observations
-            ]
-        ),
-        tokens=_positive_or_none(pack.budget.observations_tokens),
-        item_count=len(pack.observations),
-        included=bool(pack.observations),
-        compacted=any(observation.get("compacted") is True for observation in pack.observations),
-        trimmed="observations" in pack.budget.trimmed_sections,
-        source="ToolObservation.prompt_copy",
-    )
+    if pack.memory_text or memory_item_ids or "memory" in pack.budget.trimmed_sections:
+        sections["memory"] = ContextReportSection(
+            chars=len(pack.memory_text),
+            estimated_tokens=_positive_or_none(pack.budget.memory_tokens),
+            item_count=_positive_or_none(
+                _source_count(pack, "memory_items") or len(memory_item_ids)
+            ),
+            trimmed="memory" in pack.budget.trimmed_sections,
+            source="ContextBuilder.session_memory_snapshot",
+        )
+    if pack.realtime_video_context is not None:
+        sections["realtime_video_context"] = ContextReportSection(
+            chars=_json_chars(pack.realtime_video_context.model_dump(mode="json")),
+            estimated_tokens=_positive_or_none(
+                pack.budget.realtime_video_context_tokens
+            ),
+            item_count=1,
+            source="RealtimeVideoMemoryStore",
+        )
+    if (
+        pack.durable_task_state is not None
+        or "durable_task_state" in pack.budget.trimmed_sections
+    ):
+        sections["durable_task_state"] = ContextReportSection(
+            chars=_json_chars(pack.durable_task_state) if pack.durable_task_state else 0,
+            estimated_tokens=_positive_or_none(
+                pack.budget.durable_task_state_tokens
+            ),
+            item_count=1 if pack.durable_task_state is not None else None,
+            trimmed="durable_task_state" in pack.budget.trimmed_sections,
+            source="trusted_runtime.durable_task_snapshot",
+        )
+    plan_chars = _plan_chars(pack)
+    if plan_chars:
+        sections["plan_state"] = ContextReportSection(
+            chars=plan_chars,
+            estimated_tokens=_positive_or_none(pack.budget.plan_tokens),
+            item_count=1,
+            source="AgentState.plan_state",
+        )
+    if pack.observations or "observations" in pack.budget.trimmed_sections:
+        sections["tool_observations"] = ContextReportSection(
+            chars=_json_chars(
+                [
+                    native_tool_observation_payload(observation)
+                    for observation in pack.observations
+                ]
+            ),
+            estimated_tokens=_positive_or_none(pack.budget.observations_tokens),
+            item_count=len(pack.observations),
+            compaction=(
+                "prompt_projection"
+                if any(
+                    observation.get("compacted") is True
+                    for observation in pack.observations
+                )
+                else None
+            ),
+            trimmed="observations" in pack.budget.trimmed_sections,
+            source="ToolObservation.prompt_copy",
+        )
     compiled_tools = compiled_request.tools if compiled_request is not None else tool_specs_to_openai_tools(selected_specs)
-    sections["tool_schema"] = ContextReportSection(
-        chars=_json_chars(compiled_tools),
-        tokens=_positive_or_none(pack.budget.tool_spec_tokens),
-        item_count=len(selected_specs),
-        included=bool(selected_specs),
-        source="ChatRequest.tools",
-        notes=_tool_schema_notes(pack, selected_specs, selected_tool_specs),
+    if selected_specs:
+        sections["tool_schema"] = ContextReportSection(
+            chars=_json_chars(compiled_tools),
+            estimated_tokens=_positive_or_none(pack.budget.tool_spec_tokens),
+            item_count=len(selected_specs),
+            source="ChatRequest.tools",
+            notes=_tool_schema_notes(pack, selected_specs, selected_tool_specs),
+        )
+    compiled_message_chars = (
+        _json_chars(compiled_request.messages)
+        if compiled_request is not None
+        else None
     )
-    compiled_message_chars = _json_chars(compiled_request.messages) if compiled_request is not None else 0
-    compiled_tool_schema_chars = _json_chars(compiled_tools) if compiled_request is not None else 0
+    compiled_tool_schema_chars = (
+        _json_chars(compiled_tools) if compiled_request is not None else None
+    )
     compiled_response_format_chars = (
         _json_chars(compiled_request.response_format)
         if compiled_request is not None and compiled_request.response_format is not None
-        else 0
+        else (0 if compiled_request is not None else None)
     )
-    section_total = sum(section.chars for section in sections.values())
     token_preflight = pack.request.metadata.get("context_token_preflight")
     if not isinstance(token_preflight, dict):
         token_preflight = {}
-    preflight_tokens = _int_value(token_preflight.get("input_tokens"))
-    effective_input_limit = _int_value(
-        token_preflight.get("effective_input_limit")
+    preflight_tokens = (
+        _optional_nonnegative_int(compiled_input_tokens)
+        if compiled_input_tokens is not None
+        else _optional_nonnegative_int(token_preflight.get("input_tokens"))
+    )
+    resolved_input_limit = (
+        _optional_positive_int(effective_input_limit)
+        if effective_input_limit is not None
+        else _optional_positive_int(token_preflight.get("effective_input_limit"))
     )
     rolling_compacted = (
         pack.request.metadata.get("context_compaction_applied") is True
@@ -165,31 +190,46 @@ def build_context_report(
     compression_reasons = list(pack.budget.compression_reasons)
     if rolling_compacted and "context_token_usage_high" not in compression_reasons:
         compression_reasons.append("context_token_usage_high")
+    compiled_request_chars = (
+        compiled_message_chars
+        + compiled_tool_schema_chars
+        + compiled_response_format_chars
+        if (
+            compiled_message_chars is not None
+            and compiled_tool_schema_chars is not None
+            and compiled_response_format_chars is not None
+        )
+        else None
+    )
+    context_sources = (
+        pack.context_source_report
+        if _has_context_source_evidence(pack.context_source_report)
+        else None
+    )
     return ContextReport(
+        schema_version=CONTEXT_REPORT_VERSION,
         sections=sections,
-        total_chars=(
-            compiled_message_chars + compiled_tool_schema_chars + compiled_response_format_chars
-            if compiled_request is not None
-            else section_total
+        compiled_accounting_status=(
+            "available" if compiled_request is not None else "unavailable"
         ),
-        max_chars=pack.budget.max_chars,
-        total_tokens=preflight_tokens or pack.budget.total_tokens,
-        max_tokens=effective_input_limit or pack.budget.max_tokens,
-        selected_tool_names=[spec.name for spec in selected_specs],
-        memory_item_ids=memory_item_ids,
-        context_sources=pack.context_source_report,
-        compression_stage=compression_stage,
-        compression_reasons=compression_reasons,
-        was_compacted=(
-            rolling_compacted
-            or pack.budget.compaction_triggered
-            or pack.budget.compression_stage != "none"
-        ),
-        accounting_basis="compiled_chat_request" if compiled_request is not None else "section_estimate",
-        budget_estimated_chars=pack.budget.total_chars,
+        compiled_request_chars=compiled_request_chars,
         compiled_message_chars=compiled_message_chars,
         compiled_tool_schema_chars=compiled_tool_schema_chars,
         compiled_response_format_chars=compiled_response_format_chars,
+        token_accounting_status=(
+            "available"
+            if preflight_tokens is not None and resolved_input_limit is not None
+            else "unavailable"
+        ),
+        compiled_input_tokens=preflight_tokens,
+        effective_input_limit=resolved_input_limit,
+        selected_tool_names=[spec.name for spec in selected_specs],
+        memory_item_ids=memory_item_ids,
+        context_sources=context_sources,
+        compression_stage=compression_stage,
+        compression_reasons=compression_reasons,
+        precompile_estimated_chars=pack.budget.total_chars,
+        precompile_max_chars=pack.budget.max_chars,
     )
 
 
@@ -254,7 +294,7 @@ def build_context_source_report(
 
 
 def context_report_from_trace_context_summary(context: dict[str, Any]) -> ContextReport:
-    """Return a best-effort report for older traces that only have context summaries."""
+    """Return a v2 best-effort report for traces with only legacy summaries."""
 
     budget = context.get("budget") if isinstance(context.get("budget"), dict) else {}
     source_counts = context.get("source_counts") if isinstance(context.get("source_counts"), dict) else {}
@@ -264,110 +304,229 @@ def context_report_from_trace_context_summary(context: dict[str, Any]) -> Contex
     compression_reasons = _string_list(budget.get("compression_reasons"))
     compression_stage = _string_value(budget.get("compression_stage")) or "none"
     trimmed_sections = set(_string_list(budget.get("trimmed_sections")))
-    sections = _empty_sections()
-    sections["system_prompt"] = ContextReportSection(
-        source="legacy_context_summary",
-        notes=["legacy_context_summary_no_system_prompt"],
-    )
-    sections["request"] = ContextReportSection(
+    sections: dict[str, ContextReportSection] = {
+        "system_prompt": ContextReportSection(
+            chars=0,
+            source="legacy_context_summary",
+            notes=["legacy_context_summary_no_system_prompt"],
+        )
+    }
+    _add_legacy_summary_section(
+        sections,
+        "request",
         chars=_int_value(budget.get("request_chars")),
-        tokens=_positive_or_none(_int_value(budget.get("request_tokens"))),
-        item_count=1 if _int_value(budget.get("request_chars")) > 0 else 0,
-        included=_int_value(budget.get("request_chars")) > 0,
+        estimated_tokens=_positive_or_none(_int_value(budget.get("request_tokens"))),
         source="legacy_context_summary.budget",
     )
-    sections["session_summary"] = ContextReportSection(
-        included=context.get("context_summary_present") is True,
-        compacted=context.get("context_summary_present") is True,
-        item_count=1 if context.get("context_summary_present") is True else 0,
-        source="legacy_context_summary.context_summary_present",
-    )
-    sections["recent_transcript"] = ContextReportSection(
+    if context.get("context_summary_present") is True:
+        sections["session_summary"] = ContextReportSection(
+            chars=0,
+            item_count=1,
+            compaction="rolling_summary",
+            source="legacy_context_summary.context_summary_present",
+        )
+    _add_legacy_summary_section(
+        sections,
+        "recent_transcript",
         chars=_int_value(budget.get("conversation_chars")),
-        tokens=_positive_or_none(_int_value(budget.get("conversation_tokens"))),
-        item_count=_int_value(source_counts.get("conversation_recent_turns"))
-        or _int_value(source_counts.get("conversation_turns")),
-        included=_int_value(budget.get("conversation_chars")) > 0,
-        compacted="conversation_context_compacted" in compression_reasons,
+        estimated_tokens=_positive_or_none(_int_value(budget.get("conversation_tokens"))),
+        item_count=_positive_or_none(
+            _int_value(source_counts.get("conversation_recent_turns"))
+            or _int_value(source_counts.get("conversation_turns"))
+        ),
+        compaction=(
+            "rolling_summary"
+            if "conversation_context_compacted" in compression_reasons
+            else None
+        ),
         trimmed="conversation" in trimmed_sections,
         source="legacy_context_summary.budget",
     )
-    sections["memory"] = ContextReportSection(
+    _add_legacy_summary_section(
+        sections,
+        "memory",
         chars=_int_value(budget.get("memory_chars")),
-        tokens=_positive_or_none(_int_value(budget.get("memory_tokens"))),
-        item_count=_int_value(source_counts.get("memory_items")),
-        included=_int_value(budget.get("memory_chars")) > 0 or _int_value(source_counts.get("memory_items")) > 0,
+        estimated_tokens=_positive_or_none(_int_value(budget.get("memory_tokens"))),
+        item_count=_positive_or_none(_int_value(source_counts.get("memory_items"))),
         trimmed="memory" in trimmed_sections,
         source="legacy_context_summary.budget",
     )
-    sections["realtime_task_state"] = ContextReportSection(
-        chars=_int_value(budget.get("realtime_task_state_chars")),
-        item_count=_int_value(source_counts.get("realtime_task_state")),
-        included=_int_value(source_counts.get("realtime_task_state")) > 0,
-        source="legacy_context_summary.budget",
-    )
-    sections["realtime_video_context"] = ContextReportSection(
+    _add_legacy_summary_section(
+        sections,
+        "realtime_video_context",
         chars=_int_value(budget.get("realtime_video_context_chars")),
-        tokens=_positive_or_none(_int_value(budget.get("realtime_video_context_tokens"))),
-        item_count=_int_value(source_counts.get("realtime_video_context")),
-        included=_int_value(source_counts.get("realtime_video_context")) > 0,
+        estimated_tokens=_positive_or_none(
+            _int_value(budget.get("realtime_video_context_tokens"))
+        ),
+        item_count=_positive_or_none(
+            _int_value(source_counts.get("realtime_video_context"))
+        ),
         source="legacy_context_summary.budget",
     )
-    sections["durable_task_state"] = ContextReportSection(
+    _add_legacy_summary_section(
+        sections,
+        "durable_task_state",
         chars=_int_value(budget.get("durable_task_state_chars")),
-        tokens=_positive_or_none(_int_value(budget.get("durable_task_state_tokens"))),
-        item_count=_int_value(source_counts.get("durable_task_state")),
-        included=_int_value(source_counts.get("durable_task_state")) > 0,
+        estimated_tokens=_positive_or_none(
+            _int_value(budget.get("durable_task_state_tokens"))
+        ),
+        item_count=_positive_or_none(
+            _int_value(source_counts.get("durable_task_state"))
+        ),
         trimmed="durable_task_state" in trimmed_sections,
         source="trusted_runtime.durable_task_snapshot",
     )
-    sections["plan_state"] = ContextReportSection(
+    _add_legacy_summary_section(
+        sections,
+        "plan_state",
         chars=_int_value(budget.get("plan_chars")),
-        tokens=_positive_or_none(_int_value(budget.get("plan_tokens"))),
-        item_count=1 if _int_value(budget.get("plan_chars")) > 0 else 0,
-        included=_int_value(budget.get("plan_chars")) > 0,
+        estimated_tokens=_positive_or_none(_int_value(budget.get("plan_tokens"))),
         source="legacy_context_summary.budget",
     )
-    sections["tool_observations"] = ContextReportSection(
-        chars=_int_value(budget.get("observations_chars")),
-        tokens=_positive_or_none(_int_value(budget.get("observations_tokens"))),
-        item_count=_int_value(source_counts.get("observations")),
-        included=_int_value(source_counts.get("observations")) > 0,
-        compacted=_int_value((context.get("compaction") or {}).get("compacted_observations")) > 0
+    compacted_observations = (
+        _int_value((context.get("compaction") or {}).get("compacted_observations"))
         if isinstance(context.get("compaction"), dict)
-        else False,
+        else 0
+    )
+    _add_legacy_summary_section(
+        sections,
+        "tool_observations",
+        chars=_int_value(budget.get("observations_chars")),
+        estimated_tokens=_positive_or_none(
+            _int_value(budget.get("observations_tokens"))
+        ),
+        item_count=_positive_or_none(_int_value(source_counts.get("observations"))),
+        compaction="prompt_projection" if compacted_observations > 0 else None,
         trimmed="observations" in trimmed_sections,
         source="legacy_context_summary.budget",
     )
-    sections["tool_schema"] = ContextReportSection(
+    _add_legacy_summary_section(
+        sections,
+        "tool_schema",
         chars=_int_value(budget.get("tool_spec_chars")),
-        tokens=_positive_or_none(_int_value(budget.get("tool_spec_tokens"))),
-        item_count=_int_value(source_counts.get("prompt_tool_specs")) or len(selected_tool_names),
-        included=bool(selected_tool_names or _int_value(source_counts.get("prompt_tool_specs"))),
+        estimated_tokens=_positive_or_none(_int_value(budget.get("tool_spec_tokens"))),
+        item_count=_positive_or_none(
+            _int_value(source_counts.get("prompt_tool_specs"))
+            or len(selected_tool_names)
+        ),
         source="legacy_context_summary.tool_catalog",
         notes=["fallback_visible_tool_list"] if fallback_used else [],
     )
+    context_sources = _context_source_report(context.get("context_sources"))
     return ContextReport(
+        schema_version=CONTEXT_REPORT_VERSION,
         sections=sections,
-        total_chars=_int_value(budget.get("total_chars")) or sum(section.chars for section in sections.values()),
-        max_chars=_int_value(budget.get("max_chars")),
-        total_tokens=_int_value(budget.get("total_tokens")),
-        max_tokens=_int_value(budget.get("max_tokens")),
+        compiled_accounting_status="unavailable",
+        compiled_request_chars=None,
+        compiled_message_chars=None,
+        compiled_tool_schema_chars=None,
+        compiled_response_format_chars=None,
+        token_accounting_status="unavailable",
+        compiled_input_tokens=None,
+        effective_input_limit=None,
         selected_tool_names=selected_tool_names,
         memory_item_ids=_string_list(context.get("memory_item_ids")),
-        context_sources=_context_source_report(context.get("context_sources")),
+        context_sources=(
+            context_sources if _has_context_source_evidence(context_sources) else None
+        ),
         compression_stage=compression_stage,
         compression_reasons=compression_reasons,
-        was_compacted=bool(
-            budget.get("compaction_triggered") is True
-            or compression_stage != "none"
-            or compression_reasons
-        ),
+        precompile_estimated_chars=_int_value(budget.get("total_chars")),
+        precompile_max_chars=_int_value(budget.get("max_chars")),
     )
 
 
-def _empty_sections() -> dict[str, ContextReportSection]:
-    return {name: ContextReportSection() for name in CONTEXT_REPORT_SECTION_NAMES}
+def context_report_v2_from_v1(report: dict[str, Any]) -> ContextReport:
+    """Convert one persisted v1 compilation report into the v2 query contract."""
+
+    raw_sections = report.get("sections")
+    sections: dict[str, ContextReportSection] = {}
+    if isinstance(raw_sections, dict):
+        for name in CONTEXT_REPORT_SECTION_NAMES:
+            raw = raw_sections.get(name)
+            if not isinstance(raw, dict):
+                continue
+            chars = _int_value(raw.get("chars"))
+            item_count = _positive_or_none(_int_value(raw.get("item_count")))
+            notes = _string_list(raw.get("notes"))
+            included = raw.get("included") is True
+            trimmed = raw.get("trimmed") is True
+            compacted = raw.get("compacted") is True
+            if not (included or chars or item_count or trimmed or compacted or notes):
+                continue
+            sections[name] = ContextReportSection(
+                chars=chars,
+                estimated_tokens=_positive_or_none(_int_value(raw.get("tokens"))),
+                item_count=item_count,
+                compaction=(
+                    "prompt_projection"
+                    if compacted and name == "tool_observations"
+                    else ("rolling_summary" if compacted else None)
+                ),
+                trimmed=trimmed,
+                source=_string_value(raw.get("source")) or None,
+                notes=notes,
+            )
+    compiled_available = report.get("accounting_basis") == "compiled_chat_request"
+    total_tokens = _optional_positive_int(report.get("total_tokens"))
+    max_tokens = _optional_positive_int(report.get("max_tokens"))
+    context_sources = _context_source_report(report.get("context_sources"))
+    return ContextReport(
+        schema_version=CONTEXT_REPORT_VERSION,
+        sections=sections,
+        compiled_accounting_status=(
+            "available" if compiled_available else "unavailable"
+        ),
+        compiled_request_chars=(
+            _int_value(report.get("total_chars")) if compiled_available else None
+        ),
+        compiled_message_chars=(
+            _int_value(report.get("compiled_message_chars"))
+            if compiled_available
+            else None
+        ),
+        compiled_tool_schema_chars=(
+            _int_value(report.get("compiled_tool_schema_chars"))
+            if compiled_available
+            else None
+        ),
+        compiled_response_format_chars=(
+            _int_value(report.get("compiled_response_format_chars"))
+            if compiled_available
+            else None
+        ),
+        token_accounting_status=(
+            "available"
+            if total_tokens is not None and max_tokens is not None
+            else "unavailable"
+        ),
+        compiled_input_tokens=total_tokens,
+        effective_input_limit=max_tokens,
+        selected_tool_names=_string_list(report.get("selected_tool_names")),
+        memory_item_ids=_string_list(report.get("memory_item_ids")),
+        context_sources=(
+            context_sources if _has_context_source_evidence(context_sources) else None
+        ),
+        compression_stage=_string_value(report.get("compression_stage")) or "none",
+        compression_reasons=_string_list(report.get("compression_reasons")),
+        precompile_estimated_chars=_int_value(report.get("budget_estimated_chars")),
+        precompile_max_chars=_int_value(report.get("max_chars")),
+    )
+
+
+def context_report_trace_payload(report: ContextReport) -> dict[str, Any]:
+    """Serialize a compact trace payload without dropping nested schema identity."""
+
+    payload = report.model_dump(
+        mode="json",
+        exclude_none=True,
+        exclude_defaults=True,
+    )
+    if report.context_sources is not None:
+        source_payload = payload.get("context_sources")
+        if isinstance(source_payload, dict):
+            source_payload["schema_version"] = report.context_sources.schema_version
+    return payload
 
 
 def _selected_tool_specs(
@@ -437,6 +596,39 @@ def _positive_or_none(value: int) -> int | None:
     return value if isinstance(value, int) and value > 0 else None
 
 
+def _optional_nonnegative_int(value: Any) -> int | None:
+    return value if isinstance(value, int) and value >= 0 else None
+
+
+def _optional_positive_int(value: Any) -> int | None:
+    return value if isinstance(value, int) and value > 0 else None
+
+
+def _add_legacy_summary_section(
+    sections: dict[str, ContextReportSection],
+    name: str,
+    *,
+    chars: int,
+    estimated_tokens: int | None = None,
+    item_count: int | None = None,
+    compaction: Literal["rolling_summary", "prompt_projection"] | None = None,
+    trimmed: bool = False,
+    source: str | None = None,
+    notes: list[str] | None = None,
+) -> None:
+    if not (chars or item_count or compaction or trimmed or notes):
+        return
+    sections[name] = ContextReportSection(
+        chars=chars,
+        estimated_tokens=estimated_tokens,
+        item_count=item_count,
+        compaction=compaction,
+        trimmed=trimmed,
+        source=source,
+        notes=notes or [],
+    )
+
+
 def _context_source_report(value: Any) -> ContextSourceReport:
     if not isinstance(value, dict):
         return ContextSourceReport()
@@ -444,6 +636,19 @@ def _context_source_report(value: Any) -> ContextSourceReport:
         return ContextSourceReport.model_validate(value)
     except Exception:
         return ContextSourceReport()
+
+
+def _has_context_source_evidence(report: ContextSourceReport) -> bool:
+    return bool(
+        report.count_by_kind
+        or report.chars_by_authority
+        or report.chars_by_stability
+        or report.source_issue_count
+        or report.source_issue_codes
+        or report.used_last_known_good
+        or report.source_versions_changed
+        or report.omitted_section_count
+    )
 
 
 def _int_value(value: Any) -> int:

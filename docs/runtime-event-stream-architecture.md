@@ -51,7 +51,7 @@ projection is recorded before `assistant.turn.summary`, while terminal delivery
 is emitted after trace finalization.
 
 Context evidence also has a single owner: `context.build` carries
-`context_report_v1`, while `llm.chat` carries the exact Provider input.
+`context_report_v2`, while `llm.chat` carries the exact Provider input.
 `assistant.output` records only the normalized decision and does not duplicate
 either payload. The `agent.runtime` root may retain the scalar
 `context_peak_ratio` as a turn-level diagnostic, but not the full context report.
