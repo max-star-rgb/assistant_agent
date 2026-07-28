@@ -814,13 +814,20 @@ def _trim_observations_to_chars(
 
 
 def _summarize_observation_for_budget(observation: dict[str, Any]) -> dict[str, Any]:
+    error = observation.get("error")
+    summarized_error = None
+    if isinstance(error, dict):
+        summarized_error = {
+            "code": error.get("code"),
+            "message": _clip_text_to_chars(str(error.get("message") or ""), 160),
+            "retryable": bool(error.get("retryable", False)),
+        }
     return {
         "tool_name": observation.get("tool_name"),
         "status": observation.get("status"),
         "summary": _clip_text_to_chars(str(observation.get("summary") or ""), 160),
         "output_ref": observation.get("output_ref"),
-        "error_code": observation.get("error_code"),
-        "error_message": _clip_text_to_chars(str(observation.get("error_message") or ""), 160),
+        "error": summarized_error,
         "budget_trimmed": True,
     }
 

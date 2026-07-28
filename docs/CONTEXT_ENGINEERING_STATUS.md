@@ -152,9 +152,10 @@ Last updated: 2026-07-28
 - AgentRuntime 只压缩进入 assistant prompt 的 observation 副本，不修改 graph state、trace 或 API 使用的
   完整 observation。
 - Provider 侧公共协议保留执行 `status`、面向推理的 `summary`、工具自定义 `data`、
-  `is_complete`，并在适用时携带 `outcome`、`warnings`、可选 `ref`；失败时使用统一 `error` 和动态
-  `hint`。工具名由 native tool message 的 `name` 携带，不再在 message content 内重复。公共语义字段
-  从工具自定义 `data` 中提升并去重，成功 observation 不携带公共静态 `next_step_hint` 或空字段。
+  `is_complete`，并在适用时携带 `outcome`、`warnings`、可选 `output_ref`；失败或部分成功时使用统一
+  `error` 记录结构化错误事实。工具名由 native tool message 的 `name` 携带，不再在 message content 内重复。公共语义字段
+  从工具自定义 `data` 中提升并去重；Runtime 根据结构化错误和 guard 状态实施恢复，不向模型注入
+  `next_step_hint`、`recovery_hint` 等命令式兼容字段。
 - 工具通过 `ToolResult.model_observation` 定义自己的 LLM 数据投影；context 层统一负责安全清洗、最多
   3 个列表项、字符串/命令输出裁剪和嵌套深度限制，不在中心模块解释工具业务字段。
 - `shopping_search` 把候选归一为最多 3 个 `items`，不再同时发送 search items、offers 和完整
@@ -185,7 +186,7 @@ Last updated: 2026-07-28
 - 系统提示词只承载通用 runtime、数据边界和工具治理规则，不写入某个具体工具的选择策略。模型可见的工具说明只来自 `ToolSpec.description` 和 `input_schema`。
 - Repo-local business skill loader 只服务 `tool_visibility.enabled_skills` 的显式结构化工具资格化以及离线 Improvement Lab；它不生成 Provider Prompt，不自动召回，也不创建 `run_skill` 或直接 shell/browser/http 执行路径。
 - `FINALIZE` 使用高优先级最终回答约束、`tools=[]` 和 `tool_choice=none`；工具 observation 被投影为
-  保留 status、summary、outcome、warnings、is_complete、工具专属 data、error 和 ref 的结构化
+  保留 status、summary、outcome、warnings、is_complete、工具专属 data、error 和 output_ref 的结构化
   evidence。它不把 evidence 降级为单一 summary，也不保留 `assistant.tool_calls -> tool`
   协议序列。模型在该阶段返回 tool call 属于
   `finalization protocol violation`，Runtime 不执行，并且最多做一次同样无工具的严格纠正。

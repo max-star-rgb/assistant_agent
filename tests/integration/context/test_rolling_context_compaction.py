@@ -266,7 +266,7 @@ def test_unbounded_observation_context_only_removes_unsafe_payloads() -> None:
         {
             "tool_name": "example",
             "summary": long_text,
-            "structured_output": {
+            "data": {
                 "items": [{"index": index, "description": long_text} for index in range(6)],
                 "api_key": "secret-value",
                 "raw_provider_response": {"hidden": True},
@@ -277,26 +277,22 @@ def test_unbounded_observation_context_only_removes_unsafe_payloads() -> None:
     sanitized = sanitize_observations_for_context(observations)[0]
 
     assert sanitized["summary"] == long_text
-    assert len(sanitized["structured_output"]["items"]) == 6
-    assert sanitized["structured_output"]["items"][-1]["description"] == long_text
-    assert "api_key" not in sanitized["structured_output"]
-    assert "raw_provider_response" not in sanitized["structured_output"]
+    assert len(sanitized["data"]["items"]) == 6
+    assert sanitized["data"]["items"][-1]["description"] == long_text
+    assert "api_key" not in sanitized["data"]
+    assert "raw_provider_response" not in sanitized["data"]
 
 
-def test_prompt_observation_projection_removes_duplicate_envelope_fields() -> None:
+def test_prompt_observation_projection_compacts_domain_data() -> None:
     observation = {
         "tool_name": "example",
         "status": "succeeded",
         "summary": "duplicate summary",
+        "is_complete": True,
         "output_ref": "artifact://one",
-        "structured_output": {
-            "summary": "duplicate summary",
+        "data": {
             "items": [{"id": index} for index in range(5)],
         },
-        "next_step_hint": "static repeated instruction",
-        "redacted": True,
-        "truncated": False,
-        "original_chars": None,
     }
 
     projected = project_observations_for_context([observation])[0]
@@ -313,7 +309,7 @@ def test_prompt_observation_projection_removes_duplicate_envelope_fields() -> No
         "data": {
             "items": [{"id": 0}, {"id": 1}, {"id": 2}],
         },
-        "ref": "artifact://one",
+        "output_ref": "artifact://one",
     }
     assert projected["compacted"] is True
     assert projected["compaction"]["original_chars"] > projected["compaction"]["compacted_chars"]
@@ -325,18 +321,13 @@ def test_prompt_observation_projection_uses_one_error_contract() -> None:
         "tool_name": "example",
         "status": "failed",
         "summary": "duplicated failure",
-        "structured_output": {
-            "errors": [
-                {
-                    "code": "provider_timeout",
-                    "message": "timed out",
-                    "recoverable": True,
-                }
-            ]
+        "is_complete": False,
+        "data": {},
+        "error": {
+            "code": "provider_timeout",
+            "message": "timed out",
+            "retryable": True,
         },
-        "error_code": "tool_failed",
-        "error_message": "duplicated failure",
-        "next_step_hint": "retry with changed input",
     }
 
     projected = project_observations_for_context([observation])[0]
@@ -353,9 +344,8 @@ def test_prompt_observation_projection_uses_one_error_contract() -> None:
         "error": {
             "code": "provider_timeout",
             "message": "timed out",
-            "recoverable": True,
+            "retryable": True,
         },
-        "hint": "retry with changed input",
     }
 
 

@@ -27,23 +27,8 @@ _TOP_LEVEL_KEYS = (
     "warnings",
     "is_complete",
     "output_ref",
-    "artifact_ref",
-    "artifact_refs",
-    "file_ref",
-    "file_refs",
-    "image_ref",
-    "image_refs",
-    "video_ref",
-    "video_refs",
-    "media_ref",
-    "media_refs",
-    "structured_output",
-    "error_code",
-    "error_message",
-    "next_step_hint",
-    "redacted",
-    "truncated",
-    "original_chars",
+    "data",
+    "error",
 )
 
 _RAW_PAYLOAD_KEYS = {
@@ -211,12 +196,7 @@ def project_observations_for_context(
     projected: list[dict[str, Any]] = []
     for observation in observations:
         sanitized = _sanitize_observation_for_context(observation)
-        compacted = (
-            sanitized
-            if "structured_output" not in sanitized
-            and any(key in sanitized for key in ("data", "error"))
-            else compact_observation_for_context(sanitized)
-        )
+        compacted = compact_observation_for_context(sanitized)
         prompt_payload = prompt_observation_payload(compacted)
         existing_metadata = sanitized.get("compaction")
         compacted_metadata = compacted.get("compaction")
@@ -281,8 +261,8 @@ def compact_observation_for_context(observation: dict[str, Any]) -> dict[str, An
         if key not in observation:
             continue
         value = observation[key]
-        if key == "structured_output":
-            compacted[key] = _compact_structured_output(
+        if key == "data":
+            compacted[key] = _compact_data(
                 str(observation.get("tool_name") or ""),
                 value,
                 stats=stats,
@@ -321,13 +301,13 @@ def compact_observation_for_context(observation: dict[str, Any]) -> dict[str, An
     return compacted
 
 
-def _compact_structured_output(tool_name: str, value: Any, *, stats: _CompactionStats) -> dict[str, Any]:
+def _compact_data(tool_name: str, value: Any, *, stats: _CompactionStats) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         return {}
     data = dict(value)
     if tool_name == SHOPPING_SEARCH_TOOL_NAME:
         return _compact_shopping_search_output(data, stats=stats)
-    return _compact_generic_mapping(data, stats=stats, key_path=("structured_output",))
+    return _compact_generic_mapping(data, stats=stats, key_path=("data",))
 
 
 def _compact_shopping_search_search_output(data: dict[str, Any], *, stats: _CompactionStats) -> dict[str, Any]:
@@ -347,13 +327,13 @@ def _compact_shopping_search_search_output(data: dict[str, Any], *, stats: _Comp
     items = data.get("items")
     if isinstance(items, list):
         output["items"] = [
-            _compact_product_item(item, stats=stats, key_path=("structured_output", "items", f"[{index}]"))
+            _compact_product_item(item, stats=stats, key_path=("data", "items", f"[{index}]"))
             for index, item in enumerate(items[:MAX_ITEMS_PER_LIST])
             if isinstance(item, Mapping)
         ]
         if len(items) > MAX_ITEMS_PER_LIST:
             output["omitted_items_count"] = len(items) - MAX_ITEMS_PER_LIST
-    return _compact_generic_mapping(output, stats=stats, key_path=("structured_output",))
+    return _compact_generic_mapping(output, stats=stats, key_path=("data",))
 
 
 def _compact_shopping_search_comparison_output(data: dict[str, Any], *, stats: _CompactionStats) -> dict[str, Any]:
@@ -380,12 +360,12 @@ def _compact_shopping_search_comparison_output(data: dict[str, Any], *, stats: _
         output["best_offer"] = _compact_offer(
             output["best_offer"],
             stats=stats,
-            key_path=("structured_output", "best_offer"),
+            key_path=("data", "best_offer"),
         )
     offers = output.get("offers")
     if isinstance(offers, list):
         output["offers"] = [
-            _compact_offer(offer, stats=stats, key_path=("structured_output", "offers", f"[{index}]"))
+            _compact_offer(offer, stats=stats, key_path=("data", "offers", f"[{index}]"))
             for index, offer in enumerate(offers[:MAX_ITEMS_PER_LIST])
             if isinstance(offer, Mapping)
         ]
@@ -394,13 +374,13 @@ def _compact_shopping_search_comparison_output(data: dict[str, Any], *, stats: _
     items = output.get("items")
     if isinstance(items, list):
         output["items"] = [
-            _compact_product_item(item, stats=stats, key_path=("structured_output", "items", f"[{index}]"))
+            _compact_product_item(item, stats=stats, key_path=("data", "items", f"[{index}]"))
             for index, item in enumerate(items[:MAX_ITEMS_PER_LIST])
             if isinstance(item, Mapping)
         ]
         if len(items) > MAX_ITEMS_PER_LIST:
             output["omitted_items_count"] = len(items) - MAX_ITEMS_PER_LIST
-    return _compact_generic_mapping(output, stats=stats, key_path=("structured_output",))
+    return _compact_generic_mapping(output, stats=stats, key_path=("data",))
 
 
 def _compact_shopping_search_output(data: dict[str, Any], *, stats: _CompactionStats) -> dict[str, Any]:
@@ -434,12 +414,12 @@ def _compact_shopping_search_output(data: dict[str, Any], *, stats: _CompactionS
         output["best_offer"] = _compact_offer(
             output["best_offer"],
             stats=stats,
-            key_path=("structured_output", "best_offer"),
+            key_path=("data", "best_offer"),
         )
     offers = output.get("offers")
     if isinstance(offers, list):
         output["offers"] = [
-            _compact_offer(offer, stats=stats, key_path=("structured_output", "offers", f"[{index}]"))
+            _compact_offer(offer, stats=stats, key_path=("data", "offers", f"[{index}]"))
             for index, offer in enumerate(offers[:MAX_ITEMS_PER_LIST])
             if isinstance(offer, Mapping)
         ]
@@ -448,13 +428,13 @@ def _compact_shopping_search_output(data: dict[str, Any], *, stats: _CompactionS
     items = output.get("items")
     if isinstance(items, list):
         output["items"] = [
-            _compact_product_item(item, stats=stats, key_path=("structured_output", "items", f"[{index}]"))
+            _compact_product_item(item, stats=stats, key_path=("data", "items", f"[{index}]"))
             for index, item in enumerate(items[:MAX_ITEMS_PER_LIST])
             if isinstance(item, Mapping)
         ]
         if len(items) > MAX_ITEMS_PER_LIST:
             output["omitted_items_count"] = len(items) - MAX_ITEMS_PER_LIST
-    return _compact_generic_mapping(output, stats=stats, key_path=("structured_output",))
+    return _compact_generic_mapping(output, stats=stats, key_path=("data",))
 
 
 def _compact_product_item(

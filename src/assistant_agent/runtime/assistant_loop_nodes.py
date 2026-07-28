@@ -1501,13 +1501,9 @@ def _execute_single_requested_tool_node(graph_state: AssistantLoopState) -> Assi
     if "nonrecoverable_tool_retry_blocked" in decision.safety_notes:
         observation = rejected_observation(
             tool_name=tool_name or "unknown",
-            error_code="nonrecoverable_tool_retry_blocked",
-            error_message=(
+            code="nonrecoverable_tool_retry_blocked",
+            message=(
                 "This tool already reported a non-recoverable failure in this run."
-            ),
-            next_step_hint=(
-                "Do not call this tool again. Use a different available tool, "
-                "answer with the existing evidence, or explain the limitation."
             ),
         )
         return {
@@ -1521,9 +1517,8 @@ def _execute_single_requested_tool_node(graph_state: AssistantLoopState) -> Assi
     if "duplicate_failed_tool_call" in decision.safety_notes:
         observation = rejected_observation(
             tool_name=tool_name or "unknown",
-            error_code="duplicate_failed_tool_call",
-            error_message="An identical failed tool call was blocked before execution.",
-            next_step_hint="Answer from the existing observations without repeating the same tool call.",
+            code="duplicate_failed_tool_call",
+            message="An identical failed tool call was blocked before execution.",
         )
         state.request.metadata["assistant_answer_only_next_turn"] = (
             "duplicate_failed_tool_call"
@@ -1538,11 +1533,23 @@ def _execute_single_requested_tool_node(graph_state: AssistantLoopState) -> Assi
         }
     step, plan_rejection = _current_plan_step(state, decision, graph_state["outputs_by_step"])
     if plan_rejection is not None:
+        rejection_error = plan_rejection.error
         state.errors.append(
             AgentError(
-                message=plan_rejection.error_message or plan_rejection.summary,
+                message=(
+                    rejection_error.message
+                    if rejection_error is not None
+                    else plan_rejection.summary
+                ),
                 source=tool_name or "plan_mode",
-                details={"code": plan_rejection.error_code or "plan_step_rejected", "recovery_action": "revise_plan"},
+                details={
+                    "code": (
+                        rejection_error.code
+                        if rejection_error is not None
+                        else "plan_step_rejected"
+                    ),
+                    "recovery_action": "revise_plan",
+                },
             )
         )
         return {
@@ -1581,8 +1588,8 @@ def _execute_single_requested_tool_node(graph_state: AssistantLoopState) -> Assi
         state.errors.append(error)
         observation = rejected_observation(
             tool_name=tool_name or "unknown",
-            error_code=validation.code,
-            error_message=validation.message,
+            code=validation.code,
+            message=validation.message,
         )
         _record_action_rejection(graph_state, observation, validation.model_dump(mode="json"))
         guard = LoopGuard(state.request.metadata).record_validation_rejection(validation.code, tool_name)
@@ -1621,8 +1628,6 @@ def _execute_single_requested_tool_node(graph_state: AssistantLoopState) -> Assi
 
         observation = observation_from_tool_result(
             result,
-            request_text=graph_state["request"].text,
-            prior_observations=tool_observations,
         )
         tool_call_id, source_tool_span_id = _latest_tool_execution_correlation(
             graph_state,
@@ -1683,8 +1688,8 @@ def _execute_single_requested_tool_node(graph_state: AssistantLoopState) -> Assi
         state.errors.append(error)
         observation = rejected_observation(
             tool_name=tool_name or "unknown",
-            error_code="tool_exception",
-            error_message=str(e),
+            code="tool_exception",
+            message=str(e),
         )
         return {
             **graph_state,
@@ -1707,41 +1712,36 @@ def _current_plan_step(
         if step is None:
             return None, rejected_observation(
                 tool_name=decision.tool_name or "unknown",
-                error_code="unknown_step",
-                error_message=f"Unknown plan step: {decision.step_id}.",
-                next_step_hint="Use an existing bound plan step id.",
+                code="unknown_step",
+                message=f"Unknown plan step: {decision.step_id}.",
             )
     else:
         step = _next_matching_plan_step(state.plan, decision.tool_name, outputs_by_step)
         if step is None:
             return None, rejected_observation(
                 tool_name=decision.tool_name or "unknown",
-                error_code="plan_step_not_found",
-                error_message=f"Tool {decision.tool_name or 'unknown'} is not part of the active plan.",
-                next_step_hint="Revise the plan before calling a tool that is not in it.",
+                code="plan_step_not_found",
+                message=f"Tool {decision.tool_name or 'unknown'} is not part of the active plan.",
             )
 
     if step.tool_name is None:
         return None, rejected_observation(
             tool_name=decision.tool_name or "unknown",
-            error_code="non_executable_step",
-            error_message=f"Plan step {step.step_id} has no executable tool.",
-            next_step_hint="Revise the plan or answer directly.",
+            code="non_executable_step",
+            message=f"Plan step {step.step_id} has no executable tool.",
         )
     if step.tool_name != decision.tool_name:
         return None, rejected_observation(
             tool_name=decision.tool_name or "unknown",
-            error_code="plan_tool_mismatch",
-            error_message=f"Plan step {step.step_id} requires {step.tool_name}, not {decision.tool_name}.",
-            next_step_hint="Call the planned tool or revise the plan.",
+            code="plan_tool_mismatch",
+            message=f"Plan step {step.step_id} requires {step.tool_name}, not {decision.tool_name}.",
         )
     dependency_error = _dependency_error(step, outputs_by_step)
     if dependency_error is not None:
         return None, rejected_observation(
             tool_name=step.tool_name,
-            error_code="dependency_not_satisfied",
-            error_message=dependency_error,
-            next_step_hint="Execute dependency steps first or revise the plan.",
+            code="dependency_not_satisfied",
+            message=dependency_error,
         )
     return step, None
 
@@ -1975,6 +1975,9 @@ def _record_react_observation(
     state = graph_state["state"]
     payload = observation.model_dump(mode="json") if isinstance(observation, ToolObservation) else observation
     observations = existing + [payload]
+    observation_error = payload.get("error")
+    if not isinstance(observation_error, dict):
+        observation_error = None
     from assistant_agent.observability.trace_conversation import (
         TraceToolObservation,
         get_default_trace_conversation_store,
@@ -2009,10 +2012,7 @@ def _record_react_observation(
                 "success": payload.get("status") == "succeeded",
                 "summary": payload.get("summary"),
                 "output_ref": payload.get("output_ref"),
-                "error_code": payload.get("error_code"),
-                "error": payload.get("error_message"),
-                "next_step_hint": payload.get("next_step_hint"),
-                "recovery_hint": payload.get("next_step_hint"),
+                "error": observation_error,
             }
         )
     _runtime_event_publisher(graph_state).publish_assistant_step(
@@ -2030,7 +2030,6 @@ def _record_react_observation(
             output_summary={
                 "summary": payload.get("summary"),
                 "output_ref": payload.get("output_ref"),
-                "next_step_hint": payload.get("next_step_hint"),
             },
             attributes={
                 key: value
@@ -2038,20 +2037,12 @@ def _record_react_observation(
                     "observation_index": len(observations),
                     "summary": payload.get("summary"),
                     "output_ref": payload.get("output_ref"),
-                    "next_step_hint": payload.get("next_step_hint"),
                     "tool_call_id": tool_call_id,
                     "source_tool_span_id": source_tool_span_id,
                 }.items()
                 if value is not None
             },
-            trace_error=(
-                {
-                    "code": payload.get("error_code"),
-                    "message": payload.get("error_message"),
-                }
-                if payload.get("error_code")
-                else None
-            ),
+            trace_error=observation_error,
         )
     )
     return observations
@@ -2090,16 +2081,12 @@ def _observation_trace_event(
         "success": payload.get("status") == "succeeded",
         "output_ref": payload.get("output_ref"),
         "output_preview": payload.get("summary"),
-        "recovery_hint": payload.get("next_step_hint"),
         "tool_call_id": tool_call_id,
         "source_tool_span_id": source_tool_span_id,
     }
-    if payload.get("error_message") or payload.get("error_code"):
-        event["error"] = {
-            "code": payload.get("error_code"),
-            "message": payload.get("error_message") or "Tool failed.",
-            "retryable": False,
-        }
+    error = payload.get("error")
+    if isinstance(error, dict):
+        event["error"] = dict(error)
     return {key: value for key, value in event.items() if value is not None}
 
 
@@ -2165,7 +2152,11 @@ def _record_action_rejection(
         status="rejected",
         tool_name=observation.tool_name,
         output_summary={"validator_result": validator_result, "observation_summary": observation.summary},
-        error={"code": observation.error_code, "message": observation.error_message},
+        error=(
+            observation.error.model_dump(mode="json")
+            if observation.error is not None
+            else None
+        ),
     )
 
 

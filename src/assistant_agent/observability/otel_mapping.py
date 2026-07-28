@@ -558,7 +558,7 @@ def _event_io_attributes(
                 "tool_name": event.tool_name,
                 **_selected_payload(
                     {**event.output_summary, **event.attributes},
-                    ("summary", "output_ref", "next_step_hint"),
+                    ("summary", "output_ref"),
                 ),
             }
         )

@@ -565,12 +565,10 @@ def test_langfuse_mapping_exposes_conversation_and_tool_diagnostics() -> None:
                     "status": "succeeded",
                     "summary": "北京晴，最高温 30 摄氏度。",
                     "output_ref": "weather://beijing",
-                    "structured_output": {
+                    "data": {
                         "location": "Beijing",
                         "forecast": [{"condition": "Clear", "high_c": 30}],
                     },
-                    "redacted": True,
-                    "truncated": False,
                 },
             )
         ],
@@ -617,11 +615,10 @@ def test_langfuse_mapping_exposes_conversation_and_tool_diagnostics() -> None:
     observation_output = json.loads(
         by_name["tool.observation"].attributes["langfuse.observation.output"]
     )
-    assert observation_output["structured_output"] == {
+    assert observation_output["data"] == {
         "location": "Beijing",
         "forecast": [{"condition": "Clear", "high_c": 30}],
     }
-    assert observation_output["redacted"] is True
 
 
 def test_langfuse_root_uses_delivered_response_without_rewriting_runtime_final() -> None:

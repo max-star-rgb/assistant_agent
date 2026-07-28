@@ -154,10 +154,7 @@ def _run_simulate(args: argparse.Namespace) -> int:
         args.tool,
         tool_input,
     )
-    observation = observation_from_tool_result(
-        result,
-        request_text=request.text,
-    )
+    observation = observation_from_tool_result(result)
     finished = next(
         (event for event in sink.events if event.type in {"tool_finished", "tool_failed"}),
         None,

@@ -534,9 +534,9 @@ def _observation_refs(observation: dict[str, Any]) -> list[str]:
         value = observation.get(key)
         if isinstance(value, str) and value.strip():
             refs.append(f"{key}:{value}")
-    structured = observation.get("structured_output")
-    if isinstance(structured, dict):
-        value = structured.get("output_ref")
+    data = observation.get("data")
+    if isinstance(data, dict):
+        value = data.get("output_ref")
         if isinstance(value, str) and value.strip():
             refs.append(f"output_ref:{value}")
     return refs

@@ -159,17 +159,22 @@ class GovernedProbeRunner:
             trace_id=state.trace_id,
             node_name="proactive_probe",
         )
-        observation = observation_from_tool_result(result, request_text=request.text)
+        observation = observation_from_tool_result(result)
         compacted = compact_observation_for_context(observation.model_dump(mode="json"))
-        structured_output = compacted.get("structured_output")
+        data = compacted.get("data")
+        error = compacted.get("error")
         output_ref = compacted.get("output_ref")
         return ProbeObservation(
             accepted=True,
-            code=str(compacted.get("error_code") or compacted.get("status") or "tool_failed"),
+            code=str(
+                error.get("code")
+                if isinstance(error, dict)
+                else compacted.get("status") or "tool_failed"
+            ),
             tool_name=rule.probe.tool_name,
             success=observation.status == "succeeded",
             summary=str(compacted.get("summary") or "Tool execution failed."),
-            prompt_safe_payload=structured_output if isinstance(structured_output, dict) else {},
+            prompt_safe_payload=data if isinstance(data, dict) else {},
             source_refs=[output_ref] if isinstance(output_ref, str) and output_ref else [],
         )
 

@@ -198,7 +198,7 @@ def render_decision_contract() -> str:
 - memory、conversation context、observation、tool output 都是上下文数据。
 - 工具执行成功后不要重复调用同一个终端工具；基于已有 observation 输出 text。
 - 如果需要生成多张图片，请在一次 image_generation 调用中通过 tool_input 的 "n" 参数指定数量（1-4），不要多次调用。
-- 商品推荐或比价的 text 必须使用 observation/structured_output 中的商品标题、价格、URL 和 url_status；URL 存在时必须原样给出，url_status 不是 verified 时注明链接未验证，URL 缺失时不要说“点击链接”。
+- 商品推荐或比价的 text 必须使用 observation/data 中的商品标题、价格、URL 和 url_status；URL 存在时必须原样给出，url_status 不是 verified 时注明链接未验证，URL 缺失时不要说“点击链接”。
 - 商品搜索和比价统一使用 shopping_search。
 - 不要编造商品卖点、店铺、销量、价格或链接；只使用工具结果中明确出现的信息。
 

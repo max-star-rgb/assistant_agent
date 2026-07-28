@@ -739,14 +739,12 @@ def _revision_metadata(
 
 def _tool_artifacts_from_state(state: Any, *, task_state: RealtimeTaskState) -> list[TaskArtifact]:
     artifacts: list[TaskArtifact] = []
-    request = getattr(state, "request", None)
-    request_text = request.text if isinstance(request, UserRequest) else None
     run_id = _metadata_string(getattr(state, "run_id", None))
     tool_results = getattr(state, "tool_results", [])
     for index, result in enumerate(tool_results):
         if not isinstance(result, ToolResult) or not result.success:
             continue
-        observation = observation_from_tool_result(result, request_text=request_text)
+        observation = observation_from_tool_result(result)
         context = compact_observation_for_context(observation.model_dump(mode="json"))
         summary = _clip_text(str(context.get("summary") or observation.summary), max_chars=360)
         if not summary:
@@ -825,9 +823,9 @@ def _checkpoint_artifacts_from_tool_artifacts(
 
 
 def _checkpoint_artifact_summary(artifact: TaskArtifact) -> str:
-    structured_output = artifact.context.get("structured_output")
-    if artifact.tool_name == SHOPPING_SEARCH_TOOL_NAME and isinstance(structured_output, dict):
-        items = structured_output.get("items")
+    data = artifact.context.get("data")
+    if artifact.tool_name == SHOPPING_SEARCH_TOOL_NAME and isinstance(data, dict):
+        items = data.get("items")
         if isinstance(items, list) and items:
             first = items[0]
             if isinstance(first, dict):
@@ -844,19 +842,17 @@ def _single_step_checkpointable(reusable_steps: list[TaskArtifact]) -> bool:
     artifact = reusable_steps[0]
     if artifact.tool_name != SHOPPING_SEARCH_TOOL_NAME:
         return False
-    structured_output = artifact.context.get("structured_output")
-    if not isinstance(structured_output, dict):
+    data = artifact.context.get("data")
+    if not isinstance(data, dict):
         return False
-    return isinstance(structured_output.get("search"), dict) and isinstance(
-        structured_output.get("comparison"),
+    return isinstance(data.get("search"), dict) and isinstance(
+        data.get("comparison"),
         dict,
     )
 
 
 def _side_effect_records_from_state(state: Any, *, task_state: RealtimeTaskState) -> list[SideEffectRecord]:
     records: list[SideEffectRecord] = []
-    request = getattr(state, "request", None)
-    request_text = request.text if isinstance(request, UserRequest) else None
     run_id = _metadata_string(getattr(state, "run_id", None))
     tool_results = getattr(state, "tool_results", [])
     for index, result in enumerate(tool_results):
@@ -867,7 +863,6 @@ def _side_effect_records_from_state(state: Any, *, task_state: RealtimeTaskState
             task_state=task_state,
             run_id=run_id,
             index=index,
-            request_text=request_text,
         )
         if record is not None:
             records.append(record)
@@ -880,7 +875,6 @@ def _side_effect_record_from_result(
     task_state: RealtimeTaskState,
     run_id: str | None,
     index: int,
-    request_text: str | None,
 ) -> SideEffectRecord | None:
     policy = _side_effect_policy_from_result(result)
     data = result.data if isinstance(result.data, dict) else {}
@@ -891,7 +885,7 @@ def _side_effect_record_from_result(
     if effect_level == "none":
         return None
 
-    observation = observation_from_tool_result(result, request_text=request_text)
+    observation = observation_from_tool_result(result)
     summary = _side_effect_summary(result, policy=policy, observation_summary=observation.summary)
     return SideEffectRecord(
         record_id=_artifact_id(

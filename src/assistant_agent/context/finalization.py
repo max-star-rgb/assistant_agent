@@ -28,7 +28,7 @@ class FinalizeEvidence(BaseModel):
     is_complete: bool = True
     data: dict[str, Any] = Field(default_factory=dict)
     error: dict[str, Any] | None = None
-    ref: str | None = None
+    output_ref: str | None = None
 
 
 def build_finalize_messages(
@@ -85,5 +85,9 @@ def _finalize_evidence(observation: Mapping[str, Any]) -> FinalizeEvidence:
         is_complete=bool(payload.get("is_complete", status == "succeeded")),
         data=dict(payload["data"]) if isinstance(payload.get("data"), Mapping) else {},
         error=dict(payload["error"]) if isinstance(payload.get("error"), Mapping) else None,
-        ref=payload.get("ref") if isinstance(payload.get("ref"), str) else None,
+        output_ref=(
+            payload.get("output_ref")
+            if isinstance(payload.get("output_ref"), str)
+            else None
+        ),
     )

@@ -823,10 +823,10 @@ Langfuse 的工具链同样使用完整视图：`tool.execute` 直接显示执�
 完整 input/output summary，不再只挑 field count、result count 和 output ref，也不在 OTLP observer
 或 mapping 层再次执行 sanitizer；每个
 `tool.observation` 还会在独立的进程内 store 保存完整 `ToolObservation`，Langfuse 按
-`observation_index` 投影该对象，原样展示 `status`、`structured_output`、error 字段、
-`next_step_hint`、`redacted`、`truncated` 和 `original_chars`。因此它与 assistant loop 产生的模型观察
-是同一对象，而不是观测层再次生成的摘要。`redacted=true` 若存在，是 `ToolObservation` 自身记录的
-模型上下文投影事实，不表示 Langfuse 页面又隐藏了一层字段。完整对象也进入
+`observation_index` 投影该对象，原样展示 `status`、`summary`、`outcome`、`warnings`、
+`is_complete`、工具专属 `data`、结构化 `error` 和 `output_ref`。因此它与 assistant loop 产生的
+模型观察是同一对象，而不是观测层再次生成的摘要；观测对象不保留 `structured_output`、拆分错误、
+命令式恢复提示或恒定 redaction 标记。完整对象也进入
 `.data/graph_trace.jsonl` 的 `trace.content` 事件。Langfuse 的 `tool.execute` 仍展示完整执行结果，
 但不再重复嵌入 `model_observation`；该模型可见投影只在 `tool.observation` 展示。
 成功或失败执行产生的 `tool.observation` 同时携带 executor 分配的 `tool_call_id` 和
