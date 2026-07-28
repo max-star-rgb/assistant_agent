@@ -59,6 +59,7 @@ class PromptCompiler:
         system_instruction = render_system_instruction(
             agent_personalization=owner_persona_for_pack(request.context_pack),
             current_location=request.current_location,
+            response_style=request.context_pack.response_style,
             answer_only=request.answer_only,
         )
         rendered_context = _render_context(request)

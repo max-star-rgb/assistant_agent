@@ -65,7 +65,11 @@ def _contains_mapping_key(value: object, key: str) -> bool:
 
 
 def test_default_runtime_policy_requires_missing_tool_inputs_to_be_clarified() -> None:
-    assert "工具缺少地点、对象、时间等必要参数时，先向用户澄清" in render_system_instruction()
+    instruction = render_system_instruction()
+
+    assert "工具缺少地点、对象、时间等必要参数时，先向用户澄清" in instruction
+    assert "当前回复模式：conversation。" in instruction
+    assert "标题和列表是按需启用的表达工具，不是默认回答模板。" in instruction
 
 
 def test_runtime_policy_groups_dynamic_time_and_location_as_current_environment() -> None:
@@ -112,6 +116,37 @@ class ScriptedChatAdapter:
     def chat(self, request: ChatRequest) -> ChatResult:
         self.requests.append(request)
         return next(self._results)
+
+
+def test_response_style_policy_is_compiled_from_explicit_request() -> None:
+    adapter = ScriptedChatAdapter(
+        [
+            ChatResult(
+                provider="scripted",
+                model="scripted-model",
+                finish_reason="stop",
+                response_text="完成。",
+            )
+        ]
+    )
+    runtime = AgentGraphRuntime(
+        config=_offline_config(),
+        chat_adapter=adapter,
+        session_store=InMemorySessionStore(),
+    )
+
+    runtime.run_state(
+        UserRequest(
+            user_id="style-user",
+            session_id="style-session",
+            text="给我一个方案",
+            response_style="structured",
+        )
+    )
+
+    system_message = adapter.requests[0].messages[0]["content"]
+    assert "当前回复模式：structured。" in system_message
+    assert "根据内容使用清晰的小标题、列表、表格或步骤" in system_message
 
 
 def test_runtime_injects_configured_location_into_system_prompt() -> None:

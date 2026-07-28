@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 
 
 TaskExecutionMode = Literal["auto", "durable", "foreground"]
+ResponseStyle = Literal["conversation", "concise", "structured", "voice"]
 
 
 class RuntimeTaskUpdate(BaseModel):
@@ -27,8 +28,19 @@ class UserRequest(BaseModel):
     audio_id: str | None = None
     execution_strategy: Literal["react", "plan_and_solve"] = "react"
     task_execution_mode: TaskExecutionMode = "auto"
+    response_style: ResponseStyle | None = None
     runtime_task_update: RuntimeTaskUpdate | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+def resolve_response_style(request: UserRequest) -> ResponseStyle:
+    """Resolve style only from explicit request or structured entry facts."""
+
+    if request.response_style is not None:
+        return request.response_style
+    if request.metadata.get("interaction_mode") == "realtime":
+        return "voice"
+    return "conversation"
 
 
 def normalize_task_execution_mode(

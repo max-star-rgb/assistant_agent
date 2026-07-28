@@ -5,11 +5,26 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
-from assistant_agent.gateway.runtime_adapter import GatewayRuntimeAdapter
+from assistant_agent.gateway.runtime_adapter import (
+    GatewayRuntimeAdapter,
+    realtime_request_to_user_request,
+)
 from assistant_agent.gateway.runtime_types import RealtimeAgentRequest
 from assistant_agent.runtime.events import AgentEvent
 from assistant_agent.runtime.requests import AgentResponse
 from assistant_agent.observability.trace_store import InMemoryTraceStore
+
+
+def test_realtime_entry_defaults_to_voice_response_style() -> None:
+    request = realtime_request_to_user_request(
+        RealtimeAgentRequest(
+            user_id="voice-user",
+            session_id="voice-session",
+            text="继续说",
+        )
+    )
+
+    assert request.response_style == "voice"
 
 
 def test_realtime_delivers_llm_final_text_without_tool_result_override() -> None:

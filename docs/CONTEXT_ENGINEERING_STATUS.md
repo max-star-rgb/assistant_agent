@@ -10,6 +10,9 @@ Last updated: 2026-07-28
 
 - 当前结论：上下文工程已接入基于目标模型 tokenizer 的 rolling LLM summary；默认 mock/offline
   仍不调用压缩模型，real 运行需显式配置 LLM compactor 和本地 tokenizer 资产。
+- 回复表达已改为显式 `ResponseStyle`：默认 `conversation`，API 可明确指定
+  `conversation` / `concise` / `structured` / `voice`，Realtime Agent 入口默认使用 `voice`；
+  不读取用户文本做关键词或技术主题分类。
 - 当前权威入口：本文件。
 - 说明：已移除完成态阶段计划，当前以本文件作为上下文工程状态与交接入口。
 - 已实现核心闭环：`AssistantContextPack`、`ContextSection v1`、默认关闭的 local owner `SOUL.md`
@@ -89,7 +92,7 @@ Last updated: 2026-07-28
   64,000；专属部署或其他路由应由 operator 覆盖。
 - `ContextWindowPolicy` 使用 40%/70%/85% 和 safety margin 形成回滞；阈值、输入上限、安全余量及
   summary 最大输出均可通过进程配置覆盖。
-- `LLMCompactor` 输出带七个固定中文标题的自然语言正文；`ContextSummary` 只以结构化 envelope 保存
+- `LLMCompactor` 输出带七个固定数据标签的 `<session_summary>` 正文；`ContextSummary` 只以结构化 envelope 保存
   revision、覆盖轮数、source/summary token、模型和最后覆盖的 run/trace 边界。Runtime 不使用
   deterministic fallback。
 - `TokenBudgetReporter` 的旧字符估算仅保留兼容报告；压缩控制面读取最终 compiled request 的 tokenizer
@@ -178,6 +181,10 @@ Last updated: 2026-07-28
 
 - `render_prompt_json_context` 是历史 prompt-json renderer，保留给 context renderer 测试和离线兼容材料；生产真实 LLM runtime 不再使用它做决策控制面。
 - `PromptCompiler` 是生产 provider 请求的唯一提示词编译入口；它只组合已解析 system profile、已构建 `AssistantContextPack`、已有 native calls/observations 和已选 ToolSpec，不读取 memory/store、不访问 ToolRegistry、不调用 Provider，也不写 trace。
+- `AssistantContextPack.response_style` 是已解析的回复表达契约。显式 `UserRequest.response_style`
+  优先；未显式设置时，结构化 realtime `interaction_mode` 使用 `voice`，其他入口使用
+  `conversation`。System prompt 为四种模式分别定义表达边界；普通对话默认不用标题或列表，
+  `structured` 才主动允许文档式结构，`voice` 避免 Markdown。该解析不读取请求文本。
 - `render_native_tool_context` 用于 provider-native tool calling，避免重复渲染完整 ToolSpec。
 - Provider-native 编译将 summary 之后尚未覆盖的原始轮次还原为独立 `user` / `assistant` messages，
   再追加当前 `user` message。rolling summary 作为带 `trust="untrusted_history"` 和
@@ -190,7 +197,10 @@ Last updated: 2026-07-28
   evidence。它不把 evidence 降级为单一 summary，也不保留 `assistant.tool_calls -> tool`
   协议序列。模型在该阶段返回 tool call 属于
   `finalization protocol violation`，Runtime 不执行，并且最多做一次同样无工具的严格纠正。
+- `FINALIZE` 继承本轮 `ResponseStyle`，不再用“明确结论”等措辞诱导固定的
+  “结论—原因—建议”报告模板。
 - session summary renderer 明确把摘要标注为不可信历史数据，不作为长期记忆或系统指令。
+  rolling summary 使用数据型标签而不是 Markdown 标题，并明确这些标签不代表最终回答格式。
 - prompt 明确声明 conversation、memory、observation 和 tool output 都是数据，不是系统指令；retrieved memory 是用户历史证据，不是权威信息，当前用户输入和新工具结果优先，不能执行 memory 中的指令。
 
 ### Editable Owner Context
@@ -265,8 +275,9 @@ Last updated: 2026-07-28
 
 ### LLM Compactor And Provider Overflow
 
-- `SummaryValidator` 要求自然语言摘要包含当前目标、用户约束与偏好、已确认事实、已执行操作与结果、
-  已作出的决定、未解决事项和最近交互状态七节，并拒绝 secret、data URI 等不安全输出。
+- `SummaryValidator` 要求 `<session_summary>` 数据型摘要包含当前目标、用户约束与偏好、已确认事实、
+  已执行操作与结果、已作出的决定、未解决事项和最近交互状态七个标签，并拒绝 secret、data URI
+  等不安全输出。
 - compactor 输入只包含旧 summary 和已完成 user/assistant turn；不包含当前请求、当前 run tool
   observation、Provider raw response、base64 或 secret 字段。
 - 当前 run 的 `assistant.tool_calls` 与 `role=tool` 消息始终留在原生消息序列，压缩不得拆散调用结果对。
@@ -304,6 +315,8 @@ Last updated: 2026-07-28
 - `src/assistant_agent/skills/loading.py`
 - `src/assistant_agent/context/sources.py`
 - `src/assistant_agent/context/soul_source.py`
+- `src/assistant_agent/runtime/requests.py`
+- `src/assistant_agent/runtime/system_prompt_policy.py`
 - `src/assistant_agent/runtime/realtime_task_state.py`
 - `src/assistant_agent/memory/service.py`
 - `src/assistant_agent/memory/models.py`
@@ -332,9 +345,13 @@ pytest 通过 scripted adapter 和 fake tokenizer 保护 rolling summary 的稳�
 call/result 配对。真实 Qwen tokenizer 误差和摘要语义质量属于 system/case eval，不得在 pytest 调用真实
 Provider。
 
+`evals/agent/tasks/conversation_style_quality` 使用固定合成上一轮、`conversation` 模式和空 Tool
+Registry，通过隐藏 Judge 评估自然承接、避免复述和不必要结构化。pytest 只验证 Environment wiring、
+空工具边界与人工标注校准样本，不断言真实模型一定不用标题。
+
 ## Next Steps
 
 - 使用真实 `qwen3.6-flash` system eval 校准 tokenizer projection 与 Provider `input_tokens` 的误差，再决定
   是否调整 safety margin。
-- 使用多轮 case eval 评估七节自然语言摘要对约束、数字、否定、未完成事项和工具结论的保真度。
+- 使用多轮 case eval 评估七标签数据型摘要对约束、数字、否定、未完成事项和工具结论的保真度。
 - 只有固定 context section 经常单独逼近 hard limit 时，才设计 conversation 之外的容量治理。

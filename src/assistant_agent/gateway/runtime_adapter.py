@@ -371,6 +371,7 @@ def realtime_request_to_user_request(request: RealtimeAgentRequest) -> UserReque
         video_ids=list(request.video_ids),
         audio_id=request.audio_id,
         execution_strategy=_execution_strategy_from_metadata(metadata),
+        response_style=request.response_style,
         metadata=metadata,
     )
 

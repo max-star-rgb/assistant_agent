@@ -15,7 +15,7 @@ from assistant_agent.context.models import (
     RealtimeVideoContext,
 )
 from assistant_agent.automation.durable_tasks.models import DurableTaskSnapshot
-from assistant_agent.runtime.requests import UserRequest
+from assistant_agent.runtime.requests import UserRequest, resolve_response_style
 from assistant_agent.tools.models import ToolSpec
 from assistant_agent.tools.spec_adapters import tool_specs_to_openai_tools
 from assistant_agent.context.compactor import (
@@ -279,6 +279,7 @@ def build_assistant_context_pack(
     )
     return AssistantContextPack(
         request=active_request,
+        response_style=resolve_response_style(active_request),
         context_summary=context_summary,
         compactor_type=compactor_type,
         conversation_text=budgeted.conversation_text,

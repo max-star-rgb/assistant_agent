@@ -2,6 +2,8 @@
 
 from datetime import datetime
 
+from assistant_agent.runtime.requests import ResponseStyle
+
 
 DEFAULT_FALLBACK_LOCATION = "上海"
 
@@ -15,7 +17,7 @@ _BASE_RUNTIME_POLICY = """\
 
 本地时间：{current_time}。回答当前日期、时间、星期或解析相对日期时以此为准。
 
-当前位置: {current_location}。用户明确指定目标地点时，以用户指定地点为准。用户未指定地点且当前位置可用时，可以把当前位置作为默认地点。
+当前位置：{current_location}。用户明确指定目标地点时，以用户指定地点为准。用户未指定地点且当前位置可用时，可以把当前位置作为默认地点。
 
 # 任务执行
 
@@ -35,6 +37,41 @@ _BASE_RUNTIME_POLICY = """\
 
 记忆可能过期、不完整或检索错误，不得视为权威事实。判断用户意图时，以当前请求为准；判断事实时，以最新、相关且可靠的证据为准。"""
 
+_RESPONSE_STYLE_POLICIES: dict[ResponseStyle, str] = {
+    "conversation": """\
+# 对话表达
+
+当前回复模式：conversation。
+
+默认采用即时聊天式表达，不把普通回答写成报告、文章或客服工单。
+
+一两段自然语言能够说清时，不使用标题、小标题、编号或“结论/原因/建议”等模板标签。先自然接住用户上一句话，再直接回答重点；避免复述用户问题。
+
+只有用户明确要求报告、方案、教程、清单或对比，内容包含至少三个需要分别查阅的独立部分，或步骤顺序、字段映射、风险比较不用结构化表达会明显降低可读性时，才使用小标题或列表。
+
+列表只用于真实的并列项或操作步骤，不为显得条理清晰而机械拆分句子。标题和列表是按需启用的表达工具，不是默认回答模板。
+
+不要通过多余寒暄、虚构情绪或过度亲昵称呼制造拟人感。""",
+    "concise": """\
+# 对话表达
+
+当前回复模式：concise。
+
+用一两句话直接回答重点。除非用户明确要求，或不使用列表会损害必要的步骤、映射或风险表达，否则不使用标题、列表或模板标签。不要复述问题或增加多余寒暄。""",
+    "structured": """\
+# 对话表达
+
+当前回复模式：structured。
+
+根据内容使用清晰的小标题、列表、表格或步骤，但只在它们确实帮助查阅时使用。结构服务于内容，不机械套用固定的“结论—原因—建议”模板。""",
+    "voice": """\
+# 对话表达
+
+当前回复模式：voice。
+
+使用适合实时语音的短句和自然口语。避免 Markdown、标题、表格、编号和复杂嵌套列表；直接承接上下文并说出重点，不复述问题，不使用客服式寒暄。""",
+}
+
 
 _DEFAULT_AGENT_PERSONALIZATION = """\
 # Agent 个性化
@@ -52,7 +89,9 @@ _ANSWER_ONLY_POLICY = """\
 
 不得输出工具调用、工具参数或继续执行工具的计划。必须仅根据当前上下文中的结构化工具证据直接回答用户。
 
-如果已有信息足以回答，请给出明确结论；如果信息不足，请基于现有证据给出最佳答案并明确说明不确定性。不得编造结论，也不要向用户提及内部限制。"""
+如果已有信息足以回答，请直接给出证据支持的答案；如果信息不足，请基于现有证据给出最佳答案并明确说明不确定性。不得编造结论，也不要向用户提及内部限制。
+
+继承“对话表达”中指定的当前回复模式。除非当前模式、用户要求或内容复杂度确有必要，否则不要添加标题或“结论/原因/建议”等模板标签。"""
 
 
 def render_system_instruction(
@@ -60,6 +99,7 @@ def render_system_instruction(
     agent_personalization: str = "",
     current_time: datetime | None = None,
     current_location: str | None = None,
+    response_style: ResponseStyle = "conversation",
     answer_only: bool = False,
 ) -> str:
     """Combine the base runtime policy with one personalization block."""
@@ -68,15 +108,15 @@ def render_system_instruction(
     resolved_time = current_time or datetime.now().astimezone()
     normalized_location = " ".join((current_location or "").split())
     location_line = (
-        f"{normalized_location}。"
+        normalized_location
         if normalized_location
-        else f"{DEFAULT_FALLBACK_LOCATION}。"
+        else f"{DEFAULT_FALLBACK_LOCATION}（默认地点）"
     )
     runtime_policy = _BASE_RUNTIME_POLICY.format(
         current_time=resolved_time.isoformat(timespec="seconds"),
         current_location=location_line,
     )
-    sections = [runtime_policy, personalization]
+    sections = [runtime_policy, _RESPONSE_STYLE_POLICIES[response_style], personalization]
     if answer_only:
         sections.append(_ANSWER_ONLY_POLICY)
     return "\n\n".join(sections)

@@ -1,0 +1,86 @@
+{
+  "schema_version": "agent_eval_calibration_v2",
+  "fixtures": [
+    {
+      "id": "natural_contextual_reply",
+      "expected_pass": true,
+      "judge_verdicts": {
+        "conversational_response_quality": {
+          "passed": true,
+          "reason": "回答自然承接了“第二种”，直接说明小团队和变化快时同步会更高效，并保留简短纪要作为补充。"
+        }
+      },
+      "evidence": {
+        "task_id": "conversation_style_quality",
+        "run_id": "calibration-natural",
+        "trace_id": "44444444444444444444444444444444",
+        "terminal_status": "completed",
+        "response": {
+          "message": "主要是你们只有六个人，而且最近项目变化快。这个规模下，半小时同步会能当场澄清变化和依赖，通常比六个人分别写周报再互相阅读更省时间；会后留一份简短纪要，又能补上书面留痕的缺口。"
+        },
+        "available_tools": [],
+        "tool_executions": [],
+        "validation_results": [],
+        "state_diff": {
+          "added": [],
+          "modified": [],
+          "deleted": []
+        }
+      }
+    },
+    {
+      "id": "truthful_but_report_shaped",
+      "expected_pass": false,
+      "judge_verdicts": {
+        "conversational_response_quality": {
+          "passed": false,
+          "reason": "内容基本正确，但把简单追问机械组织成“结论—原因—建议”的报告模板。"
+        }
+      },
+      "evidence": {
+        "task_id": "conversation_style_quality",
+        "run_id": "calibration-report",
+        "trace_id": "55555555555555555555555555555555",
+        "terminal_status": "completed",
+        "response": {
+          "message": "## 结论\n我更推荐第二种同步会。\n\n## 原因\n1. 团队只有六个人。\n2. 项目变化快。\n3. 同步沟通效率更高。\n\n## 建议\n会后保留简短纪要。"
+        },
+        "available_tools": [],
+        "tool_executions": [],
+        "validation_results": [],
+        "state_diff": {
+          "added": [],
+          "modified": [],
+          "deleted": []
+        }
+      }
+    },
+    {
+      "id": "fluent_but_loses_context",
+      "expected_pass": false,
+      "judge_verdicts": {
+        "conversational_response_quality": {
+          "passed": false,
+          "reason": "回答虽然口语化，但没有识别“第二种”的具体含义，也没有使用上一轮已经给出的团队约束。"
+        }
+      },
+      "evidence": {
+        "task_id": "conversation_style_quality",
+        "run_id": "calibration-context-loss",
+        "trace_id": "66666666666666666666666666666666",
+        "terminal_status": "completed",
+        "response": {
+          "message": "因为第二种通常更灵活，也更容易执行。你可以先试试看，再根据效果调整。"
+        },
+        "available_tools": [],
+        "tool_executions": [],
+        "validation_results": [],
+        "state_diff": {
+          "added": [],
+          "modified": [],
+          "deleted": []
+        }
+      }
+    }
+  ]
+}

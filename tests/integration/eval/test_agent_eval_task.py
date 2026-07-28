@@ -90,6 +90,26 @@ class _WeatherRecoveryChat:
         return next(self._results)
 
 
+class _ConversationStyleChat:
+    provider = "scripted"
+    model = "conversation-style-quality"
+
+    def __init__(self) -> None:
+        self.requests: list[ChatRequest] = []
+
+    def chat(self, request: ChatRequest) -> ChatResult:
+        self.requests.append(request)
+        return ChatResult(
+            provider=self.provider,
+            model=self.model,
+            finish_reason="stop",
+            response_text=(
+                "主要是你们只有六个人，而且最近项目变化快。半小时同步会能当场"
+                "澄清变化和依赖，会后再留一份简短纪要，也不会丢掉书面留痕。"
+            ),
+        )
+
+
 class _AlwaysPassJudge:
     def __init__(self) -> None:
         self.criterion_ids: list[str] = []
@@ -453,6 +473,67 @@ def test_weather_timeout_environment_runs_the_real_runtime_offline() -> None:
     )
 
 
+def test_conversation_style_environment_runs_with_fixed_history_offline() -> None:
+    task = load_task("conversation_style_quality")
+    environment_type = load_entrypoint(task.environment)
+    adapter = _ConversationStyleChat()
+    environment = environment_type(
+        config=ProviderConfig(
+            provider_mode="mock",
+            langgraph_checkpointer_backend="none",
+        ),
+        chat_adapter=adapter,
+    )
+
+    validation = environment.validate()
+    assert validation.passed is True
+    assert set(validation.checks) == {
+        "isolated_empty_tool_registry",
+        "outcome_contract_matches_registry",
+        "fixed_conversation_context",
+        "stateless_boundary",
+    }
+    assert environment.tool_outcome_expectations() == []
+
+    execution = environment.execute(
+        task=task,
+        request=task.request,
+        trace_id=TRACE_ID,
+        parent_span_id=PARENT_SPAN_ID,
+    )
+
+    assert execution.evidence.terminal_status == "completed"
+    assert execution.evidence.available_tools == []
+    assert execution.evidence.tool_executions == []
+    assert execution.evidence.validation_results == []
+    assert execution.evidence.state_diff == {
+        "added": [],
+        "modified": [],
+        "deleted": [],
+    }
+    request = adapter.requests[0]
+    assert [message["role"] for message in request.messages] == [
+        "system",
+        "user",
+        "assistant",
+        "user",
+    ]
+    assert request.messages[1]["content"].startswith("我在考虑把团队周报")
+    assert request.messages[2]["content"].startswith("两种方式各有取舍")
+    assert "当前回复模式：conversation。" in request.messages[0]["content"]
+    assert request.tools == []
+
+    judge = _AlwaysPassJudge()
+    result = grade_task(
+        task=task,
+        evidence=execution.evidence,
+        judge=judge,
+    )
+    assert result.passed is True
+    assert result.reward == 1.0
+    assert judge.criterion_ids == ["conversational_response_quality"]
+
+
 def test_langfuse_comments_explain_failures_without_internal_ids() -> None:
     passed_dimension = dimension(
         {
@@ -634,6 +715,34 @@ def test_calibration_catches_judge_and_trajectory_failures() -> None:
         "tool_use": False,
         "state": True,
         "response": True,
+    }
+
+
+def test_conversation_style_calibration_distinguishes_quality_failures() -> None:
+    task = load_task("conversation_style_quality")
+
+    results = run_calibration(
+        task,
+        load_labeled_calibration_judge(task),
+    )
+
+    assert [result.fixture_id for result in results] == [
+        "natural_contextual_reply",
+        "truthful_but_report_shaped",
+        "fluent_but_loses_context",
+    ]
+    assert all(result.matched for result in results)
+    assert [result.actual_pass for result in results] == [True, False, False]
+    assert results[0].dimensions == {
+        "tool_execution": True,
+        "tool_use": True,
+        "state": True,
+        "response": True,
+    }
+    assert results[1].dimensions["response"] is False
+    assert results[2].dimensions["response"] is False
+    assert results[0].expected_judge_passes == {
+        "conversational_response_quality": True,
     }
 
 

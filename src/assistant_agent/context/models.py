@@ -4,7 +4,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from assistant_agent.runtime.requests import UserRequest
+from assistant_agent.runtime.requests import ResponseStyle, UserRequest
 from assistant_agent.tools.models import RunToolCatalog, ToolSpec
 
 
@@ -287,6 +287,7 @@ class AssistantContextPack(BaseModel):
     """All materials needed to render one assistant loop context."""
 
     request: UserRequest
+    response_style: ResponseStyle = "conversation"
     context_summary: ContextSummary | None = None
     compactor_type: str = "none"
     conversation_text: str = ""

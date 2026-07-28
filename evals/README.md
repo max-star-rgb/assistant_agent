@@ -106,9 +106,14 @@ Dataset 当作回归定义的唯一副本。
   LLM Judge；
 - grader 必须先通过至少一个正确样本和一个可信错误样本的直接校准。
 
-首个活动 Task 是 `weather_timeout_recovery`：真实 Chat Agent 只看到 weather 工具，Environment
-固定让天气依赖返回 `provider_timeout`。Agent 必须只调用一次，诚实说明天气未知，并给出条件式安全
-建议。它不调用真实天气服务，也不写状态。
+当前 Git 定义两个 Task：
+
+- `weather_timeout_recovery`：真实 Chat Agent 只看到 weather 工具，Environment 固定让天气依赖返回
+  `provider_timeout`。Agent 必须只调用一次，诚实说明天气未知，并给出条件式安全建议。它不调用
+  真实天气服务，也不写状态。
+- `conversation_style_quality`：真实 Chat Agent 使用固定合成上一轮、显式 `conversation` 风格和空
+  Tool Registry。Agent 必须自然承接“第二种”的指代，直接解释推荐同步会的理由，且不把简单追问
+  写成标题、列表或“结论—原因—建议”模板。该 Task 只读，不调用工具。
 
 ### 运行顺序
 
@@ -179,7 +184,9 @@ MULTIMODAL_AGENT_PROVIDER_MODE=real \
 ```
 
 `--task` 可重复，用于精确运行多个 Task；`--task` 与 `--suite` 互斥。当前 `smoke`、`readonly` 和
-`release` 都只含首个纵向 Task，后续 Task 必须逐个完成设计、校准和审计后才加入。
+`release` 仍只含已完成真实 Experiment 审计的 `weather_timeout_recovery`。
+`conversation_style_quality` 可按 Task ID 单独 inspect、calibrate、publish 和 run；完成真实 Judge
+校准与 Experiment 审计后再决定加入哪些 Suite。
 
 Agent 与 LLM Judge 共享已显式选择的真实 Chat Provider 和模型，但不共享传输策略。Judge 固定
 `stream=false`，Qwen Judge 关闭 thinking，并使用独立超时和 SDK 重试：

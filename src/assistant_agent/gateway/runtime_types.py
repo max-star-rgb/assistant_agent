@@ -6,6 +6,8 @@ from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, Field
 
+from assistant_agent.runtime.requests import ResponseStyle
+
 
 class RealtimeCancelToken(Protocol):
     """Cooperative cancellation boundary supplied by an outer runtime."""
@@ -28,6 +30,7 @@ class RealtimeAgentRequest(BaseModel):
     image_ids: list[str] = Field(default_factory=list)
     video_ids: list[str] = Field(default_factory=list)
     audio_id: str | None = None
+    response_style: ResponseStyle = "voice"
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 

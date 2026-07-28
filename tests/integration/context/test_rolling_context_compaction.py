@@ -23,7 +23,7 @@ from assistant_agent.context.compaction import (
     project_observations_for_context,
     sanitize_observations_for_context,
 )
-from assistant_agent.context.compactor import LLMCompactor
+from assistant_agent.context.compactor import LLMCompactor, format_context_summary
 from assistant_agent.context.models import ContextSummary
 from assistant_agent.context.token_budget import ContextWindowPolicy
 from assistant_agent.observability.trace_store import InMemoryTraceStore
@@ -50,20 +50,32 @@ class _CapturingChatAdapter:
         )
 
 
-_SUMMARY_TEXT = """## 当前目标
-继续处理当前会话。
+_SUMMARY_TEXT = """<session_summary>
+当前目标：继续处理当前会话。
+用户约束与偏好：保留用户明确约束。
+已确认事实：历史事实哨兵。
+已执行操作与结果：无。
+已作出的决定：沿用已确认方案。
+未解决事项：无。
+最近交互状态：上一轮已经完成。
+</session_summary>"""
+
+
+def test_legacy_markdown_summary_renders_as_data_labels() -> None:
+    rendered = format_context_summary(
+        ContextSummary(
+            schema_version="rolling_context_summary_v1",
+            summary_text="""## 当前目标
+继续任务。
 ## 用户约束与偏好
-保留用户明确约束。
-## 已确认事实
-历史事实哨兵。
-## 已执行操作与结果
-无。
-## 已作出的决定
-沿用已确认方案。
-## 未解决事项
-无。
-## 最近交互状态
-上一轮已经完成。"""
+保持简洁。""",
+        )
+    )
+
+    assert "当前目标：继续任务。" in rendered
+    assert "用户约束与偏好：保持简洁。" in rendered
+    assert "未解决事项：无" in rendered
+    assert "## " not in rendered
 
 
 class _ThresholdTokenCounter:
@@ -406,8 +418,10 @@ def test_runtime_replaces_all_covered_turns_with_natural_language_summary() -> N
     assert "历史问题 1" in adapter.requests[0].messages[1]["content"]
     messages = adapter.requests[1].messages
     assert [message["role"] for message in messages] == ["system", "user"]
-    assert _SUMMARY_TEXT in messages[-1]["content"]
+    assert "当前目标：继续处理当前会话。" in messages[-1]["content"]
     assert messages[-1]["content"].count("<session_summary") == 1
+    assert "这些标签只用于上下文组织，不代表最终回答格式。" in messages[-1]["content"]
+    assert "## 当前目标" not in messages[-1]["content"]
     assert "历史问题 1" not in str(messages)
     assert artifacts.state.request.metadata["context_compaction_applied"] is True
     assert artifacts.state.request.metadata["context_compaction_target_reached"] is True
@@ -487,7 +501,8 @@ def test_subsequent_compaction_merges_old_summary_without_restoring_raw_turns() 
     ]
     assert len(summary_requests) == 2
     source = json.loads(summary_requests[-1].messages[-1]["content"].split("\n", 1)[1])
-    assert _SUMMARY_TEXT in source["existing_summary"]
+    assert "当前目标：继续处理当前会话。" in source["existing_summary"]
+    assert source["existing_summary"].count("<session_summary") == 1
     assert [turn["user"] for turn in source["completed_turns"]] == ["第二轮"]
 
     summary = conversation_store.get_summary("rolling-user", "rolling-session")
