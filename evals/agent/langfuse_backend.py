@@ -6,6 +6,7 @@ import os
 from collections.abc import Collection, Mapping
 from copy import copy
 from dataclasses import replace
+import time
 from typing import Any
 
 from langfuse import Evaluation, Langfuse
@@ -25,6 +26,7 @@ from evals.agent.contracts import (
     TaskSpec,
 )
 from evals.agent.grading import DIMENSION_NAMES, grade_task
+from evals.agent.judge import ProgressCallback
 from evals.agent.loader import load_entrypoint, load_task
 
 
@@ -76,6 +78,7 @@ def run_tasks(
     dataset_name: str = DEFAULT_DATASET_NAME,
     run_name: str | None = None,
     trace_observer: TextOtelTraceObserver | None = None,
+    progress: ProgressCallback | None = None,
 ) -> Any:
     task_by_id = {task.id: task for task in tasks}
     dataset = client.get_dataset(dataset_name)
@@ -105,21 +108,43 @@ def run_tasks(
         task = task_by_id.get(task_id)
         if task is None:
             raise RuntimeError(f"Unexpected Dataset task_id: {task_id!r}.")
+        started_at = time.perf_counter()
+        _report_progress(
+            progress,
+            "agent_eval.task.started",
+            task_id=str(task_id),
+        )
         trace_id = client.get_current_trace_id()
         parent_span_id = client.get_current_observation_id()
         if not trace_id or not parent_span_id:
             raise RuntimeError("Langfuse Experiment trace context is unavailable.")
         environment_type = load_entrypoint(task.environment)
         environment: TaskEnvironment = environment_type(config=config)
-        execution = environment.execute(
-            task=task,
-            request=item_input.get("request"),
-            trace_id=trace_id,
-            parent_span_id=parent_span_id,
-        )
+        try:
+            execution = environment.execute(
+                task=task,
+                request=item_input.get("request"),
+                trace_id=trace_id,
+                parent_span_id=parent_span_id,
+            )
+        except Exception as exc:
+            _report_progress(
+                progress,
+                "agent_eval.task.failed",
+                task_id=str(task_id),
+                elapsed_ms=int((time.perf_counter() - started_at) * 1000),
+                error_type=type(exc).__name__,
+            )
+            raise
         if trace_observer is not None:
             for event in execution.trace_events:
                 trace_observer.on_trace_event(event)
+        _report_progress(
+            progress,
+            "agent_eval.task.completed",
+            task_id=str(task_id),
+            elapsed_ms=int((time.perf_counter() - started_at) * 1000),
+        )
         return execution.evidence.model_dump(mode="json")
 
     def evaluate_item(
@@ -132,10 +157,33 @@ def run_tasks(
         if task_id not in task_by_id:
             raise RuntimeError(f"Evaluator received unknown task_id: {task_id!r}.")
         task = load_task(str(task_id))
-        result: GraderResult = grade_task(
-            task=task,
-            evidence=RunEvidence.model_validate(output),
-            judge=judge,
+        started_at = time.perf_counter()
+        _report_progress(
+            progress,
+            "agent_eval.evaluation.started",
+            task_id=str(task_id),
+        )
+        try:
+            result: GraderResult = grade_task(
+                task=task,
+                evidence=RunEvidence.model_validate(output),
+                judge=judge,
+            )
+        except Exception as exc:
+            _report_progress(
+                progress,
+                "agent_eval.evaluation.failed",
+                task_id=str(task_id),
+                elapsed_ms=int((time.perf_counter() - started_at) * 1000),
+                error_type=type(exc).__name__,
+            )
+            raise
+        _report_progress(
+            progress,
+            "agent_eval.evaluation.completed",
+            task_id=str(task_id),
+            elapsed_ms=int((time.perf_counter() - started_at) * 1000),
+            passed=result.passed,
         )
         return _evaluations(result)
 
@@ -240,3 +288,12 @@ def _item_field(item: Any, name: str) -> Any:
     if isinstance(item, dict):
         return item.get(name)
     return getattr(item, name, None)
+
+
+def _report_progress(
+    callback: ProgressCallback | None,
+    event: str,
+    **details: object,
+) -> None:
+    if callback is not None:
+        callback({"event": event, **details})

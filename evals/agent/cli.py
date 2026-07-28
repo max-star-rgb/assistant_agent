@@ -6,6 +6,7 @@ import json
 import os
 from argparse import ArgumentParser
 from pathlib import Path
+import sys
 from typing import Sequence
 
 from langfuse import Langfuse
@@ -16,10 +17,13 @@ from assistant_agent.observability.langfuse_config import (
     langfuse_host_from_env,
 )
 from assistant_agent.runtime.assistant_run_service import load_env_file
-from assistant_agent.runtime.chat_adapter import create_chat_adapter
 from evals.agent.calibration import run_calibration
 from evals.agent.contracts import TaskSpec
-from evals.agent.judge import ProviderLLMJudge
+from evals.agent.judge import (
+    JUDGE_MAX_RETRIES_ENV,
+    JUDGE_TIMEOUT_ENV,
+    create_provider_judge,
+)
 from evals.agent.langfuse_backend import (
     DEFAULT_DATASET_NAME,
     create_required_trace_observer,
@@ -67,6 +71,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="store_true",
         help="Required for calibration or Agent runs using a real Chat Provider.",
     )
+    parser.add_argument(
+        "--judge-timeout-seconds",
+        type=float,
+        default=None,
+        help=(
+            "Override the LLM Judge timeout; defaults to "
+            f"{JUDGE_TIMEOUT_ENV} or 30 seconds."
+        ),
+    )
+    parser.add_argument(
+        "--judge-max-retries",
+        type=int,
+        default=None,
+        help=(
+            "Override LLM Judge SDK retries; defaults to "
+            f"{JUDGE_MAX_RETRIES_ENV} or 0."
+        ),
+    )
     args = parser.parse_args(argv)
     task_ids = args.task or load_suite(args.suite or "smoke")
     tasks = [load_task(task_id) for task_id in task_ids]
@@ -112,13 +134,34 @@ def main(argv: Sequence[str] | None = None) -> int:
             parser.error("--calibrate and --run require --allow-real-provider.")
         config = ProviderConfig.from_env()
         validate_real_chat_config(config)
-        judge = ProviderLLMJudge(create_chat_adapter(config))
+        judge_env = dict(os.environ)
+        if args.judge_timeout_seconds is not None:
+            judge_env[JUDGE_TIMEOUT_ENV] = str(args.judge_timeout_seconds)
+        if args.judge_max_retries is not None:
+            judge_env[JUDGE_MAX_RETRIES_ENV] = str(args.judge_max_retries)
         if args.calibrate:
+            _emit_progress(
+                {
+                    "event": "agent_eval.calibration.started",
+                    "task_count": len(tasks),
+                }
+            )
+            judge = create_provider_judge(
+                config,
+                env=judge_env,
+                progress=_emit_progress,
+            )
             results = [
                 result.model_dump(mode="json")
                 for task in tasks
                 for result in run_calibration(task, judge)
             ]
+            _emit_progress(
+                {
+                    "event": "agent_eval.calibration.completed",
+                    "fixture_count": len(results),
+                }
+            )
             print(
                 json.dumps(
                     {"action": "calibrate", "results": results},
@@ -129,7 +172,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0 if all(result["matched"] for result in results) else 1
 
         client = _langfuse_client()
+        judge = create_provider_judge(
+            config,
+            env=judge_env,
+            langfuse=client,
+            progress=_emit_progress,
+        )
         observer = create_required_trace_observer()
+        _emit_progress(
+            {
+                "event": "agent_eval.run.started",
+                "run_name": args.run_name,
+                "task_count": len(tasks),
+            }
+        )
         try:
             result = run_tasks(
                 client,
@@ -139,6 +195,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 dataset_name=args.dataset_name,
                 run_name=args.run_name,
                 trace_observer=observer,
+                progress=_emit_progress,
             )
         finally:
             if not observer.close(timeout=10.0):
@@ -146,6 +203,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "Langfuse Runtime trace export did not close cleanly."
                 )
         rewards = primary_rewards(result)
+        _emit_progress(
+            {
+                "event": "agent_eval.run.completed",
+                "run_name": result.run_name,
+                "reward_count": len(rewards),
+            }
+        )
         print(
             json.dumps(
                 {
@@ -179,6 +243,14 @@ def _langfuse_client() -> Langfuse:
         public_key=public_key,
         secret_key=secret_key,
         host=langfuse_host_from_env(os.environ),
+    )
+
+
+def _emit_progress(payload: dict[str, object]) -> None:
+    print(
+        json.dumps(payload, ensure_ascii=False),
+        file=sys.stderr,
+        flush=True,
     )
 
 

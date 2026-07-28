@@ -16,6 +16,7 @@ from evals.agent.calibration import (
     load_labeled_calibration_judge,
     run_calibration,
 )
+from evals.agent.cli import _emit_progress
 from evals.agent.contracts import (
     AssertionResult,
     JudgeVerdict,
@@ -32,7 +33,13 @@ from evals.agent.grading import (
     rule_assertion,
 )
 from evals.agent.langfuse_backend import _evaluations, publish_tasks
-from evals.agent.judge import ProviderLLMJudge
+from evals.agent.judge import (
+    JUDGE_MAX_RETRIES_ENV,
+    JUDGE_TIMEOUT_ENV,
+    JudgeProviderSettings,
+    ProviderLLMJudge,
+    create_provider_judge,
+)
 from evals.agent.loader import load_entrypoint, load_task
 from evals.agent.provider_gate import validate_real_chat_config
 
@@ -123,6 +130,40 @@ class _JudgeChat:
         )
 
 
+class _FakeJudgeObservation:
+    def __init__(self) -> None:
+        self.updates: list[dict[str, Any]] = []
+
+    def update(self, **kwargs: Any) -> None:
+        self.updates.append(kwargs)
+
+
+class _FakeJudgeObservationContext:
+    def __init__(self, observation: _FakeJudgeObservation) -> None:
+        self.observation = observation
+
+    def __enter__(self) -> _FakeJudgeObservation:
+        return self.observation
+
+    def __exit__(self, *_: Any) -> None:
+        return None
+
+
+class _FakeJudgeLangfuse:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+        self.observations: list[_FakeJudgeObservation] = []
+
+    def start_as_current_observation(
+        self,
+        **kwargs: Any,
+    ) -> _FakeJudgeObservationContext:
+        observation = _FakeJudgeObservation()
+        self.calls.append(kwargs)
+        self.observations.append(observation)
+        return _FakeJudgeObservationContext(observation)
+
+
 def test_assertions_require_explicit_rule_or_judge_provenance() -> None:
     rule = rule_assertion(
         True,
@@ -159,6 +200,8 @@ def test_assertions_require_explicit_rule_or_judge_provenance() -> None:
 
 def test_provider_llm_judge_receives_named_rubric() -> None:
     adapter = _JudgeChat()
+    langfuse = _FakeJudgeLangfuse()
+    progress: list[dict[str, object]] = []
     evidence = RunEvidence(
         task_id="weather_timeout_recovery",
         run_id="judge-contract-run",
@@ -166,7 +209,15 @@ def test_provider_llm_judge_receives_named_rubric() -> None:
         terminal_status="completed",
     )
 
-    verdict = ProviderLLMJudge(adapter).evaluate(
+    verdict = ProviderLLMJudge(
+        adapter,
+        settings=JudgeProviderSettings(
+            timeout_seconds=12.0,
+            max_retries=0,
+        ),
+        langfuse=langfuse,
+        progress=progress.append,
+    ).evaluate(
         criterion_id="outcome_evidence_usage",
         rubric="只判断回答是否有工具证据支持。",
         evidence=evidence,
@@ -181,6 +232,103 @@ def test_provider_llm_judge_receives_named_rubric() -> None:
         adapter.requests[0].response_format["json_schema"]["name"]
         == "agent_eval_judge_verdict"
     )
+    assert langfuse.calls == [
+        {
+            "name": "judge.outcome_evidence_usage",
+            "as_type": "evaluator",
+            "input": {
+                "criterion_id": "outcome_evidence_usage",
+                "task_id": "weather_timeout_recovery",
+                "run_id": "judge-contract-run",
+            },
+            "metadata": {
+                "timeout_seconds": 12.0,
+                "max_retries": 0,
+                "stream": False,
+            },
+        }
+    ]
+    assert langfuse.observations[0].updates == [
+        {
+            "output": {
+                "passed": False,
+                "reason": "证据不支持回答。",
+            }
+        }
+    ]
+    assert [event["event"] for event in progress] == [
+        "agent_eval.judge.started",
+        "agent_eval.judge.completed",
+    ]
+    assert progress[1]["passed"] is False
+    assert isinstance(progress[1]["elapsed_ms"], int)
+
+
+def test_judge_provider_uses_independent_timeout_retry_and_stream_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_openai(**kwargs: Any) -> object:
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr("evals.agent.judge.OpenAI", fake_openai)
+    config = ProviderConfig(
+        provider_mode="real",
+        chat_provider="qwen",
+        qwen_api_key="judge-key",
+        qwen_chat_base_url="https://judge.example/v1",
+        qwen_chat_model="judge-model",
+        qwen_chat_enable_thinking=True,
+        chat_stream=True,
+        chat_timeout_seconds=75.0,
+    )
+
+    judge = create_provider_judge(
+        config,
+        env={
+            JUDGE_TIMEOUT_ENV: "18",
+            JUDGE_MAX_RETRIES_ENV: "0",
+        },
+    )
+
+    assert captured == {
+        "api_key": "judge-key",
+        "base_url": "https://judge.example/v1",
+        "timeout": 18.0,
+        "max_retries": 0,
+    }
+    assert judge.settings == JudgeProviderSettings(
+        timeout_seconds=18.0,
+        max_retries=0,
+    )
+    assert judge.adapter.timeout_seconds == 18.0
+    assert judge.adapter.stream is False
+    assert judge.adapter.enable_thinking is False
+
+    with pytest.raises(RuntimeError, match=JUDGE_TIMEOUT_ENV):
+        JudgeProviderSettings.from_env({JUDGE_TIMEOUT_ENV: "0"})
+    with pytest.raises(RuntimeError, match=JUDGE_MAX_RETRIES_ENV):
+        JudgeProviderSettings.from_env({JUDGE_MAX_RETRIES_ENV: "-1"})
+
+
+def test_eval_progress_uses_stderr_without_polluting_stdout(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _emit_progress(
+        {
+            "event": "agent_eval.judge.started",
+            "criterion_id": "response_quality",
+        }
+    )
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert json.loads(captured.err) == {
+        "event": "agent_eval.judge.started",
+        "criterion_id": "response_quality",
+    }
 
 
 def test_task_keeps_runtime_and_grading_out_of_dataset_fields() -> None:
@@ -365,6 +513,46 @@ def test_langfuse_comments_explain_failures_without_internal_ids() -> None:
     )
     assert "outcome_evidence_usage" not in scores[2].comment
     assert "response_quality" not in scores[4].comment
+
+
+def test_langfuse_comments_name_successful_checks_and_dimensions() -> None:
+    passed_dimension = dimension(
+        {
+            "completed": rule_assertion(
+                True,
+                "terminal_status=completed",
+                label="Runtime 正常完成",
+            ),
+            "trace_complete": rule_assertion(
+                True,
+                "trace is complete",
+                label="Trace 事件完整",
+            ),
+        }
+    )
+    result = grader_result(
+        tool_execution=passed_dimension,
+        tool_use=passed_dimension,
+        state=passed_dimension,
+        response=passed_dimension,
+    )
+
+    scores = _evaluations(result)
+
+    assert scores[1].comment == (
+        "全部检查通过（2/2）：\n"
+        "- Runtime 正常完成\n"
+        "- Trace 事件完整"
+    )
+    assert scores[0].comment == (
+        "评测通过：4 个必要维度全部通过：\n"
+        "- 工具执行\n"
+        "- 工具使用\n"
+        "- 状态变化\n"
+        "- 最终回答"
+    )
+    assert "completed" not in scores[1].comment
+    assert "trace_complete" not in scores[1].comment
 
 
 def test_success_expected_but_timeout_forces_tool_use_to_fail() -> None:

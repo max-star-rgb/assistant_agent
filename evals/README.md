@@ -161,6 +161,8 @@ MULTIMODAL_AGENT_PROVIDER_MODE=real \
   --run \
   --task weather_timeout_recovery \
   --allow-real-provider \
+  --judge-timeout-seconds 30 \
+  --judge-max-retries 0 \
   --run-name weather-timeout-recovery
 ```
 
@@ -178,6 +180,19 @@ MULTIMODAL_AGENT_PROVIDER_MODE=real \
 
 `--task` 可重复，用于精确运行多个 Task；`--task` 与 `--suite` 互斥。当前 `smoke`、`readonly` 和
 `release` 都只含首个纵向 Task，后续 Task 必须逐个完成设计、校准和审计后才加入。
+
+Agent 与 LLM Judge 共享已显式选择的真实 Chat Provider 和模型，但不共享传输策略。Judge 固定
+`stream=false`，Qwen Judge 关闭 thinking，并使用独立超时和 SDK 重试：
+
+```text
+AGENT_EVAL_JUDGE_TIMEOUT_SECONDS=30
+AGENT_EVAL_JUDGE_MAX_RETRIES=0
+```
+
+命令行 `--judge-timeout-seconds`、`--judge-max-retries` 优先于同名环境变量。运行进度以逐行 JSON
+写入 stderr，最终结果仍只写 stdout；每个 criterion 在 Langfuse 中生成
+`judge.<criterion_id>` evaluator observation。Judge 超时或连接失败仍属于评测基础设施失败，退出
+2，不生成 Agent 失败分数。
 
 ### 安全和退出码
 
@@ -222,9 +237,11 @@ Rule 结果具有确定性权威，Judge 不得覆盖 Rule。Judge Provider 超�
 多个不同判断。每条 assertion 还必须提供面向评测查看者的短 `label`；内部 key 只用于稳定定位，
 不能单独充当 comment。
 
-维度失败 comment 展示“检查数量 + label + 真实 reason”，主要 reward comment 展示失败维度中文名
-及其具体失败原因。Langfuse Score metadata 把每条 assertion 的 `passed`、`label`、`method` 和
-可选 `criterion_id` 写成独立标量字段，避免把完整 rubric、reason 或嵌套大对象传播成超长属性。
+维度 comment 在通过时展示“检查数量 + 全部 assertion label”，失败时展示“检查数量 + 失败
+assertion 的 label + 真实 reason”；主要 reward comment 在通过时列出全部必要维度中文名，失败时
+列出失败维度中文名及其具体失败原因。Langfuse Score metadata 把每条 assertion 的 `passed`、
+`label`、`method` 和可选 `criterion_id` 写成独立标量字段，避免把完整 rubric、reason 或嵌套大对象
+传播成超长属性。
 
 工具业务结果预期以 Environment 的强类型声明为唯一事实源：
 

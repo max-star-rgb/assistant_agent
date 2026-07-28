@@ -83,6 +83,8 @@ Task 不得靠 expected answer 文本匹配通过；工具行为以 Trace 和状
 运行后检查 Agent 输入、工具暴露、Validator/Tool Trace、依赖结果、状态变化、最终回答、grader 理由和
 `agent_eval.reward`。Langfuse 只输出固定的 `tool_execution`、`tool_use`、`state`、
 `response` 四个诊断维度；Task 专属原子断言只作为维度详情，不创建专属 Score。
+检查每个 `judge.<criterion_id>` evaluator observation 的耗时和状态；Judge 必须使用独立非流式
+timeout/retry 配置，不能继承 Agent 的长 timeout、stream 或 SDK 默认重试。
 
 Agent 行为不满足任务时退出 1。凭据、Trace 导出、Dataset、Judge、证据解析或 Score 缺失属于评测
 基础设施错误，退出 2，不能伪装成 Agent 通过或失败。
@@ -102,10 +104,13 @@ Agent 行为不满足任务时退出 1。凭据、Trace 导出、Dataset、Judge
 - Rule 与 LLM Judge 分开实现但统一产出 assertion；每条 assertion 显式标记
   `evaluation_method=rule|judge`，提供面向评测查看者的短 `label`，Judge assertion 使用稳定
   `criterion_id`。
-- Langfuse comment 必须展示失败 assertion 的 `label + reason`，主要 reward 还要展示失败维度中文
-  名；内部 assertion key 不得单独充当用户可见诊断。
+- Langfuse comment 通过时必须列出 assertion 的 `label`，失败时展示失败 assertion 的
+  `label + reason`；主要 reward 通过时列出全部必要维度中文名，失败时列出失败维度中文名；内部
+  assertion key 不得单独充当用户可见诊断。
 - 可客观证明的事实必须使用 Rule；LLM Judge 只判断开放语义，不能覆盖 Rule 结果。Judge 故障属于
   基础设施失败。
+- Judge 固定非流式，默认 timeout 30 秒、SDK retry 0 次；每个 criterion 产生独立 evaluator
+  observation，CLI 进度写 stderr、最终 JSON 写 stdout。
 - Environment validation、凭据、Evidence 和 Judge 故障属于基础设施状态，不计入 Agent 分数。
 - 工具业务结果预期只由 Environment 声明；通用评分入口自动将实际结果匹配注入
   `tool_use`，Task grader 不得重复硬编码成功或错误码。
