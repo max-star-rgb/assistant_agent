@@ -1,10 +1,10 @@
 {
-  "dataset_name": "assistant-agent-closed-loop-v1",
+  "dataset_name": "assistant-agent-infrastructure-v1",
   "description": "验证 Agent 是否在受治理的 Runtime 中正确完成、克制或只读执行任务，并由 Tool Trace、Policy、环境状态变化和最终回答共同证明结果。当前 scripted mock 实验用于验证闭环评测基础设施，不代表真实模型的泛化能力。",
   "metadata": {
-    "suite": "agent_closed_loop",
+    "dataset_kind": "infrastructure",
     "evaluation_scope": "scripted_mock_infrastructure_baseline",
-    "fixture_version": "calendar_capabilities_v1"
+    "fixture_version": "infrastructure_calendar_v1"
   },
   "items": [
     {
@@ -35,7 +35,6 @@
         ]
       },
       "metadata": {
-        "suite": "agent_closed_loop",
         "capability": "calendar_write",
         "profile": "scripted_mock",
         "domain": "personal_productivity",
@@ -62,7 +61,6 @@
         "response_facts": ["已收到"]
       },
       "metadata": {
-        "suite": "agent_closed_loop",
         "capability": "direct_response",
         "profile": "scripted_mock",
         "domain": "conversation",
@@ -101,7 +99,6 @@
         ]
       },
       "metadata": {
-        "suite": "agent_closed_loop",
         "capability": "calendar_read",
         "profile": "scripted_mock",
         "domain": "personal_productivity",

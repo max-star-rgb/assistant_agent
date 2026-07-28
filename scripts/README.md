@@ -40,11 +40,10 @@ For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
 - `scripts/run_system_context_eval.py`: 捕获真实 Runtime 编译的 `ChatRequest`
   和 Provider payload；要求 real 模式与 `--allow-unredacted-context`，产物写入
   `.data/evals/system/context/`。
-- `scripts/run_langfuse_agent_evals.py`: optionally seeds the first Dataset, then
-  resolves Profile and Suite from `eval_manifest_v1.json`, then runs either the
-  default scripted mock baseline or an explicit real Chat Provider profile
-  (including one controlled weather-timeout recovery case) through a Langfuse
-  Experiment and shared Runtime trace. Scoring is
+- `scripts/run_langfuse_agent_evals.py`: inspects, synchronizes, or runs the
+  infrastructure/behavior Datasets resolved from `eval_manifest_v2.json`.
+  Use `--inspect`, `--sync-dataset-only`, or the default Experiment mode;
+  scoring is
   asynchronous and owned by Langfuse-native Code and LLM-as-a-Judge
   Evaluators; the script does not register SDK evaluators. Use
   `--case-id`, `--capability`, or `--suite` for explicit current-Dataset

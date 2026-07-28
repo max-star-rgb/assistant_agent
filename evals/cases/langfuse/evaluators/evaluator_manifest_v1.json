@@ -1,0 +1,62 @@
+{
+  "schema_version": "assistant_agent_evaluator_manifest_v1",
+  "dataset_rules": [
+    "assistant-agent-infrastructure-v1",
+    "assistant-agent-behavior-v2"
+  ],
+  "evaluators": [
+    {
+      "id": "agent-strict-pass-v1",
+      "version": "v1",
+      "kind": "code",
+      "source": "evals/cases/langfuse/evaluators/agent_strict_pass.ts",
+      "deployment": "langfuse_ui",
+      "scores": [
+        "agent.runtime_trace_pass",
+        "agent.tool_mechanical_pass"
+      ]
+    },
+    {
+      "id": "assistant-agent-tool-semantic-pass-zh",
+      "version": "ui-managed-v1",
+      "kind": "llm_as_a_judge",
+      "source": "langfuse_ui",
+      "deployment": "langfuse_ui",
+      "connection": "deepseek-judge",
+      "model_requirements": {
+        "structured_output": true,
+        "model_params": {
+          "providerOptions": {
+            "anthropic": {
+              "thinking": {
+                "type": "disabled"
+              }
+            }
+          }
+        }
+      },
+      "scores": ["agent.tool_semantic_pass"]
+    },
+    {
+      "id": "assistant-agent-answer-semantic-pass-zh",
+      "version": "ui-managed-v1",
+      "kind": "llm_as_a_judge",
+      "source": "langfuse_ui",
+      "deployment": "langfuse_ui",
+      "connection": "deepseek-judge",
+      "model_requirements": {
+        "structured_output": true,
+        "model_params": {
+          "providerOptions": {
+            "anthropic": {
+              "thinking": {
+                "type": "disabled"
+              }
+            }
+          }
+        }
+      },
+      "scores": ["agent.answer_semantic_pass"]
+    }
+  ]
+}

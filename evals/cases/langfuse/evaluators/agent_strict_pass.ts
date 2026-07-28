@@ -1,5 +1,5 @@
 /**
- * Langfuse Code Evaluator for assistant_agent Agent Experiment outputs.
+ * Langfuse Code Evaluator v1 for assistant_agent Agent Experiment outputs.
  *
  * Create an Experiment-targeted TypeScript Code Evaluator in Langfuse and paste
  * this source into it. The code executes inside Langfuse, not in assistant_agent.

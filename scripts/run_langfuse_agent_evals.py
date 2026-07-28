@@ -30,13 +30,17 @@ from evals.cases.langfuse.experiment import (
     DETERMINISTIC_SCORE_NAMES,
     REAL_READONLY_SEMANTIC_SCORE_NAMES,
     REAL_SYSTEM_SEMANTIC_SCORE_NAMES,
-    build_real_system_runtime,
-    build_real_readonly_runtime,
+    run_langfuse_agent_experiment,
+)
+from evals.cases.langfuse.dataset_sync import (
     failed_dataset_item_ids,
     load_dataset_seed,
     partition_available_dataset_item_ids,
-    run_langfuse_agent_experiment,
-    seed_langfuse_dataset,
+    sync_langfuse_dataset,
+)
+from evals.cases.langfuse.runtime_profiles import (
+    build_real_readonly_runtime,
+    build_real_system_runtime,
     validate_real_chat_config,
     validate_real_readonly_config,
 )
@@ -60,9 +64,14 @@ def main() -> int:
     parser.add_argument("--dataset-name", default=None)
     parser.add_argument("--seed-source", type=Path, default=None)
     parser.add_argument(
+        "--sync-dataset",
+        action="store_true",
+        help="Synchronize the complete managed Dataset before the Experiment.",
+    )
+    parser.add_argument(
         "--seed-dataset",
         action="store_true",
-        help="Explicitly upsert the local bootstrap seed before the run.",
+        help="Deprecated compatibility alias for --sync-dataset.",
     )
     parser.add_argument(
         "--experiment-name",
@@ -106,9 +115,14 @@ def main() -> int:
         help="SQLite calendar used by --real-system instead of Google Calendar MCP.",
     )
     parser.add_argument(
+        "--sync-dataset-only",
+        action="store_true",
+        help="Synchronize the complete managed Dataset and exit.",
+    )
+    parser.add_argument(
         "--seed-only",
         action="store_true",
-        help="Seed the Dataset and exit without creating an Experiment run.",
+        help="Deprecated compatibility alias for --sync-dataset-only.",
     )
     parser.add_argument("--env-file", type=Path, default=Path(".env"))
     parser.add_argument("--no-env-file", action="store_true")
@@ -139,14 +153,29 @@ def main() -> int:
         help="Operator confirmation required before any real-provider Experiment.",
     )
     parser.add_argument(
+        "--allow-writes",
+        action="store_true",
+        help="Additional confirmation required when selected cases can write state.",
+    )
+    parser.add_argument(
+        "--inspect",
+        action="store_true",
+        help="Inspect manifest resolution and selected local cases without network.",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Validate the optional Dataset seed without connecting to Langfuse.",
+        help="Deprecated compatibility alias for --inspect.",
     )
     args = parser.parse_args()
+    inspect_only = args.inspect or args.dry_run
+    sync_dataset = args.sync_dataset or args.seed_dataset
+    sync_dataset_only = args.sync_dataset_only or args.seed_only
+    if inspect_only and (sync_dataset or sync_dataset_only):
+        parser.error("--inspect cannot be combined with Dataset synchronization.")
     if args.rerun_failed_from and (
-        args.seed_only
-        or args.dry_run
+        sync_dataset_only
+        or inspect_only
         or args.case_id
         or args.capability
         or args.suite
@@ -155,8 +184,10 @@ def main() -> int:
             "--rerun-failed-from cannot be combined with seed/dry-run or "
             "explicit suite/case/capability selectors."
         )
-    if args.seed_only and (args.case_id or args.capability):
-        parser.error("--seed-only always synchronizes the complete Dataset.")
+    if sync_dataset_only and (args.case_id or args.capability):
+        parser.error(
+            "--sync-dataset-only always synchronizes the complete Dataset."
+        )
 
     legacy_profile = (
         "real_system"
@@ -167,26 +198,30 @@ def main() -> int:
     )
     explicit_profile = args.profile or legacy_profile
     if args.suite:
-        suite_profile = manifest.suites[args.suite].profile
-        if explicit_profile and explicit_profile != suite_profile:
-            parser.error(
-                f"Suite {args.suite!r} requires profile {suite_profile!r}."
-            )
-        execution_profile = suite_profile
+        execution_profile = (
+            explicit_profile or manifest.suites[args.suite].default_profile
+        )
     else:
         execution_profile = explicit_profile or "scripted_mock"
     profile = manifest.profiles[execution_profile]
     suite_name = args.suite or profile.default_suite
-    dataset_name = args.dataset_name or profile.dataset_name
-    seed_source = args.seed_source or profile.seed_source
+    suite = manifest.suites[suite_name]
+    dataset = manifest.datasets[suite.dataset]
+    if dataset.kind == "infrastructure" and execution_profile != "scripted_mock":
+        parser.error("Infrastructure suites require profile 'scripted_mock'.")
+    if dataset.kind == "behavior" and execution_profile == "scripted_mock":
+        parser.error("Behavior suites require a real execution profile.")
+    dataset_name = args.dataset_name or dataset.dataset_name
+    seed_source = args.seed_source or dataset.seed_source
     experiment_name = args.experiment_name or profile.experiment_name
     seed = load_dataset_seed(seed_source)
-    if args.dry_run:
+    if inspect_only:
         try:
             dry_run_item_ids = select_eval_item_ids(
                 seed.items,
                 manifest=manifest,
                 suite_name=suite_name,
+                profile_name=execution_profile,
                 case_ids=args.case_id,
                 capabilities=args.capability,
             )
@@ -195,7 +230,7 @@ def main() -> int:
         print(
             json.dumps(
                 {
-                    "dry_run": True,
+                    "inspect": True,
                     "execution_profile": execution_profile,
                     "suite": suite_name,
                     "dataset_name": seed.dataset_name,
@@ -212,7 +247,7 @@ def main() -> int:
         load_env_file(args.env_file)
     runtime_factory = None
     runtime_config = None
-    if execution_profile != "scripted_mock" and not args.seed_only:
+    if execution_profile != "scripted_mock" and not sync_dataset_only:
         if not args.allow_real_tools:
             print(
                 json.dumps(
@@ -273,9 +308,9 @@ def main() -> int:
             )
             return 2
         seed_result = None
-        if args.seed_dataset or args.seed_only:
-            seed_result = seed_langfuse_dataset(client, seed)
-        if args.seed_only:
+        if sync_dataset or sync_dataset_only:
+            seed_result = sync_langfuse_dataset(client, seed)
+        if sync_dataset_only:
             print(seed_result.model_dump_json(indent=2))
             return 0
         dataset = client.get_dataset(dataset_name)
@@ -325,6 +360,7 @@ def main() -> int:
                 dataset.items,
                 manifest=manifest,
                 suite_name=suite_name,
+                profile_name=execution_profile,
                 case_ids=args.case_id,
                 capabilities=args.capability,
             )
@@ -333,6 +369,27 @@ def main() -> int:
                 dataset.items,
                 selected_item_ids or (),
             )
+            if (
+                any(
+                    "calendar_create"
+                    in _item_metadata(item).get("required_tools", [])
+                    for item in selected_items
+                )
+                and not args.allow_writes
+            ):
+                print(
+                    json.dumps(
+                        {
+                            "error": "writes_not_authorized",
+                            "message": (
+                                "Selected Dataset items require --allow-writes."
+                            ),
+                        },
+                        ensure_ascii=False,
+                    ),
+                    file=sys.stderr,
+                )
+                return 2
             try:
                 _validate_real_profile_config(
                     execution_profile,
@@ -402,7 +459,7 @@ def main() -> int:
                         *DETERMINISTIC_SCORE_NAMES,
                         *(
                             REAL_SYSTEM_SEMANTIC_SCORE_NAMES
-                            if args.real_system
+                            if execution_profile == "real_system"
                             else REAL_READONLY_SEMANTIC_SCORE_NAMES
                         ),
                     ],
@@ -454,11 +511,11 @@ def _run_metadata(
         "chat_provider": provider,
         "chat_model": model,
         "runtime_config_fingerprint": (
-            "agent-real-system-v1"
+            "agent-behavior-system-v2"
             if execution_profile == "real_system"
-            else "agent-real-readonly-v1"
+            else "agent-behavior-readonly-v2"
             if execution_profile == "real_readonly"
-            else "agent-capability-scripted-mock-v1"
+            else "agent-infrastructure-scripted-v1"
         ),
         "tool_catalog_fingerprint": (
             "configured-real-tools-local-calendar-v1"
@@ -490,6 +547,13 @@ def _validate_real_profile_config(
     config: ProviderConfig,
     selected_items: list[object],
 ) -> None:
+    if selected_items and all(
+        _item_metadata(item).get("capability")
+        == "tool_failure_recovery"
+        for item in selected_items
+    ):
+        validate_real_chat_config(config)
+        return
     if execution_profile == "real_system":
         validate_real_readonly_config(config)
         return

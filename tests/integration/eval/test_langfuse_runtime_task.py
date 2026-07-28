@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,19 +12,27 @@ import pytest
 
 from evals.cases.langfuse.experiment import (
     AgentExperimentTask,
-    REAL_READONLY_DATASET_SEED,
-    REAL_SYSTEM_DATASET_SEED,
+    BEHAVIOR_DATASET_SEED,
+    DEFAULT_DATASET_SEED,
+    run_langfuse_agent_experiment,
+)
+from evals.cases.langfuse.contracts import (
     RealAgentCase,
     RuntimeBundle,
     StatelessEvalEnvironment,
-    build_real_readonly_runtime,
-    _available_tools,
-    _tool_executions,
+)
+from evals.cases.langfuse.dataset_sync import (
     failed_dataset_item_ids,
     load_dataset_seed,
     partition_available_dataset_item_ids,
-    run_langfuse_agent_experiment,
-    seed_langfuse_dataset,
+    sync_langfuse_dataset,
+)
+from evals.cases.langfuse.evidence import (
+    available_tools as _available_tools,
+    tool_executions as _tool_executions,
+)
+from evals.cases.langfuse.runtime_profiles import (
+    build_real_readonly_runtime,
 )
 from evals.cases.langfuse.weather_failure_fixture import (
     SimulatedWeatherFailureAdapter,
@@ -226,18 +235,18 @@ def _seed_item_from(seed_path: Path, case_id: str) -> dict[str, Any]:
 
 def _seed_item(case_id: str) -> dict[str, Any]:
     return _seed_item_from(
-        Path("evals/cases/langfuse/agent_closed_loop_v1.seed.json"),
+        DEFAULT_DATASET_SEED,
         case_id,
     )
 
 
 def test_explicit_seed_uses_stable_native_dataset_ids() -> None:
-    seed = load_dataset_seed()
+    seed = load_dataset_seed(DEFAULT_DATASET_SEED)
     client = _FakeLangfuseClient()
 
-    result = seed_langfuse_dataset(client, seed)
+    result = sync_langfuse_dataset(client, seed)
 
-    assert result.dataset_name == "assistant-agent-closed-loop-v1"
+    assert result.dataset_name == "assistant-agent-infrastructure-v1"
     assert result.seed_hash.startswith("sha256:")
     assert result.item_ids == [
         "agent_v1_daily_simple_015_create_dentist_event",
@@ -249,7 +258,7 @@ def test_explicit_seed_uses_stable_native_dataset_ids() -> None:
 
 
 def test_explicit_seed_removes_obsolete_seed_managed_items() -> None:
-    seed = load_dataset_seed()
+    seed = load_dataset_seed(DEFAULT_DATASET_SEED)
     client = _FakeLangfuseClient()
     client.dataset.items = [
         SimpleNamespace(
@@ -266,40 +275,17 @@ def test_explicit_seed_removes_obsolete_seed_managed_items() -> None:
         ),
     ]
 
-    result = seed_langfuse_dataset(client, seed)
+    result = sync_langfuse_dataset(client, seed)
 
     assert result.removed_item_ids == ["obsolete-confirmation-case"]
     assert client.deleted_item_ids == ["obsolete-confirmation-case"]
 
 
-def test_real_readonly_seed_includes_controlled_weather_failure_recovery() -> None:
-    seed = load_dataset_seed(REAL_READONLY_DATASET_SEED)
+def test_behavior_seed_includes_controlled_weather_failure_recovery() -> None:
+    seed = load_dataset_seed(BEHAVIOR_DATASET_SEED)
 
-    assert seed.dataset_name == "assistant-agent-real-readonly-v1"
-    assert len(seed.items) == 6
-    assert {
-        item.metadata["capability"]
-        for item in seed.items
-    } == {
-        "direct_response",
-        "weather_advice",
-        "tool_failure_recovery",
-    }
-    assert {item.metadata["profile"] for item in seed.items} == {
-        "real_readonly"
-    }
-    assert {
-        tool
-        for item in seed.items
-        for tool in item.metadata.get("required_tools", [])
-    } == {"weather"}
-    assert all(
-        item.input["user_request"]["metadata"]["tool_visibility"][
-            "enabled_tools"
-        ]
-        == ["weather"]
-        for item in seed.items
-    )
+    assert seed.dataset_name == "assistant-agent-behavior-v2"
+    assert len(seed.items) == 18
     failure_item = next(
         item
         for item in seed.items
@@ -307,6 +293,10 @@ def test_real_readonly_seed_includes_controlled_weather_failure_recovery() -> No
     )
     assert failure_item.metadata["dependency_mode"] == "simulated"
     assert failure_item.metadata["expected_tool_terminal"] == "tool.failed"
+    assert failure_item.metadata["compatible_profiles"] == [
+        "real_readonly",
+        "real_system",
+    ]
     assert failure_item.expected_output["weather_failure"]["error_code"] == (
         "provider_timeout"
     )
@@ -319,7 +309,7 @@ def test_weather_timeout_case_produces_scorable_degraded_runtime_evidence() -> N
         runtime_factory=_weather_failure_runtime_factory,
     )(
         item=_seed_item_from(
-            REAL_READONLY_DATASET_SEED,
+            BEHAVIOR_DATASET_SEED,
             "agent_real_v1_weather_timeout_running_recovery",
         )
     )
@@ -339,17 +329,18 @@ def test_weather_timeout_case_produces_scorable_degraded_runtime_evidence() -> N
     assert "无法确认" in output.response["message"]
 
 
-def test_real_system_seed_covers_production_like_capabilities() -> None:
-    seed = load_dataset_seed(REAL_SYSTEM_DATASET_SEED)
+def test_behavior_seed_covers_production_like_capabilities() -> None:
+    seed = load_dataset_seed(BEHAVIOR_DATASET_SEED)
 
-    assert seed.dataset_name == "assistant-agent-real-system-v1"
-    assert len(seed.items) == 15
+    assert seed.dataset_name == "assistant-agent-behavior-v2"
+    assert len(seed.items) == 18
     assert {
         item.metadata["capability"] for item in seed.items
     } == {
         "direct_response",
         "clarification",
         "weather_advice",
+        "tool_failure_recovery",
         "calendar_read",
         "file_read",
         "shopping_search",
@@ -361,9 +352,10 @@ def test_real_system_seed_covers_production_like_capabilities() -> None:
         "multi_tool_planning",
         "calendar_write",
     }
-    assert {item.metadata["profile"] for item in seed.items} == {
-        "real_system"
-    }
+    assert all(
+        "real_system" in item.metadata["compatible_profiles"]
+        for item in seed.items
+    )
     required_tools = {
         tool
         for item in seed.items
@@ -390,6 +382,14 @@ def test_real_system_seed_covers_production_like_capabilities() -> None:
         "tool_visibility": {"enabled_tools": ["calendar_create"]}
     }
     assert all(item.input.get("evaluation_criteria") for item in seed.items)
+    checklist_case = next(
+        item
+        for item in seed.items
+        if item.id == "agent_system_v1_no_tool_trip_checklist"
+    )
+    assert "不得假设用户未提供的地点、日期、天气" in (
+        checklist_case.input["evaluation_criteria"]
+    )
 
 
 def test_eval_manifest_indexes_profiles_suites_and_seed_capabilities() -> None:
@@ -400,32 +400,44 @@ def test_eval_manifest_indexes_profiles_suites_and_seed_capabilities() -> None:
         "real_readonly",
         "real_system",
     }
-    assert manifest.suites["failure_recovery"].profile == "real_readonly"
+    assert (
+        manifest.suites["failure_recovery"].default_profile
+        == "real_readonly"
+    )
     assert manifest.suites["failure_recovery"].capabilities == [
         "tool_failure_recovery"
     ]
-    for profile_name, profile in manifest.profiles.items():
-        seed = load_dataset_seed(profile.seed_source)
-        assert seed.dataset_name == profile.dataset_name
-        assert all(
-            item.metadata["profile"] == profile_name
-            for item in seed.items
-        )
+    for dataset in manifest.datasets.values():
+        seed = load_dataset_seed(dataset.seed_source)
+        assert seed.dataset_name == dataset.dataset_name
         assert {
             item.metadata["capability"] for item in seed.items
         } <= set(manifest.capabilities)
+    behavior_ids = {
+        item.id for item in load_dataset_seed(BEHAVIOR_DATASET_SEED).items
+    }
+    assert set(manifest.case_id_aliases.values()) <= behavior_ids
+    assert not set(manifest.case_id_aliases) & behavior_ids
 
 
 def test_eval_manifest_selects_suite_case_and_capability_by_intersection() -> None:
     manifest = load_eval_manifest()
-    seed = load_dataset_seed(REAL_READONLY_DATASET_SEED)
+    seed = load_dataset_seed(BEHAVIOR_DATASET_SEED)
     failure_case_id = "agent_real_v1_weather_timeout_running_recovery"
 
     assert select_eval_item_ids(
         seed.items,
         manifest=manifest,
         suite_name="failure_recovery",
+        profile_name="real_readonly",
     ) == [failure_case_id]
+    assert select_eval_item_ids(
+        seed.items,
+        manifest=manifest,
+        suite_name="readonly_smoke",
+        profile_name="real_readonly",
+        case_ids=["agent_real_v1_daily_simple_001_commute_weather"],
+    ) == ["agent_system_v1_weather_commute"]
     assert select_eval_item_ids(
         [
             SimpleNamespace(
@@ -435,11 +447,13 @@ def test_eval_manifest_selects_suite_case_and_capability_by_intersection() -> No
         ],
         manifest=manifest,
         suite_name="failure_recovery",
+        profile_name="real_readonly",
     ) == ["legacy-failure-case"]
     assert select_eval_item_ids(
         seed.items,
         manifest=manifest,
         suite_name="readonly_smoke",
+        profile_name="real_readonly",
         case_ids=[failure_case_id],
         capabilities=["tool_failure_recovery"],
     ) == [failure_case_id]
@@ -448,13 +462,21 @@ def test_eval_manifest_selects_suite_case_and_capability_by_intersection() -> No
             seed.items,
             manifest=manifest,
             suite_name="readonly_smoke",
+            profile_name="real_readonly",
             case_ids=[failure_case_id],
             capabilities=["weather_advice"],
+        )
+    with pytest.raises(ValueError, match="incompatible"):
+        select_eval_item_ids(
+            seed.items,
+            manifest=manifest,
+            suite_name="system_full",
+            profile_name="real_readonly",
         )
 
 
 def test_real_readonly_runtime_fails_closed_in_mock_mode() -> None:
-    seed = load_dataset_seed(REAL_READONLY_DATASET_SEED)
+    seed = load_dataset_seed(BEHAVIOR_DATASET_SEED)
     item = seed.items[0]
 
     try:
@@ -480,7 +502,7 @@ def test_real_readonly_runtime_fails_closed_in_mock_mode() -> None:
 
 
 def test_runtime_task_exposes_truncated_provider_result_for_native_score() -> None:
-    seed = load_dataset_seed(REAL_READONLY_DATASET_SEED)
+    seed = load_dataset_seed(BEHAVIOR_DATASET_SEED)
     item = seed.items[0]
 
     output = AgentExperimentTask(
@@ -500,7 +522,7 @@ def test_runtime_task_exposes_truncated_provider_result_for_native_score() -> No
 
 
 def test_real_runtime_exception_becomes_scorable_failed_output() -> None:
-    seed = load_dataset_seed(REAL_SYSTEM_DATASET_SEED)
+    seed = load_dataset_seed(BEHAVIOR_DATASET_SEED)
     item = seed.items[0]
 
     output = AgentExperimentTask(
@@ -550,7 +572,9 @@ def test_runtime_task_returns_compact_code_evaluator_evidence() -> None:
 
 
 def test_code_evaluator_keeps_semantic_expectations_out_of_mechanical_score() -> None:
-    source = Path("evals/cases/langfuse/agent_strict_pass.ts").read_text(
+    source = Path(
+        "evals/cases/langfuse/evaluators/agent_strict_pass.ts"
+    ).read_text(
         encoding="utf-8"
     )
     tool_checks = source.split("const toolChecks = {", maxsplit=1)[1].split(
@@ -566,8 +590,54 @@ def test_code_evaluator_keeps_semantic_expectations_out_of_mechanical_score() ->
     assert "no_tool_called" not in tool_checks
 
 
+def test_evaluator_manifest_covers_both_active_datasets_and_all_scores() -> None:
+    manifest_path = Path(
+        "evals/cases/langfuse/evaluators/evaluator_manifest_v1.json"
+    )
+    evaluator_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    assert evaluator_manifest["dataset_rules"] == [
+        "assistant-agent-infrastructure-v1",
+        "assistant-agent-behavior-v2",
+    ]
+    scores = {
+        score
+        for evaluator in evaluator_manifest["evaluators"]
+        for score in evaluator["scores"]
+    }
+    assert scores == {
+        "agent.runtime_trace_pass",
+        "agent.tool_mechanical_pass",
+        "agent.tool_semantic_pass",
+        "agent.answer_semantic_pass",
+    }
+    code_evaluator = evaluator_manifest["evaluators"][0]
+    assert Path(code_evaluator["source"]).is_file()
+    semantic_evaluators = [
+        evaluator
+        for evaluator in evaluator_manifest["evaluators"]
+        if evaluator["kind"] == "llm_as_a_judge"
+    ]
+    assert len(semantic_evaluators) == 2
+    assert all(
+        evaluator["model_requirements"] == {
+            "structured_output": True,
+            "model_params": {
+                "providerOptions": {
+                    "anthropic": {
+                        "thinking": {"type": "disabled"},
+                    }
+                }
+            },
+        }
+        for evaluator in semantic_evaluators
+    )
+
+
 def test_code_evaluator_keeps_failed_tool_outcome_out_of_mechanical_score() -> None:
-    source = Path("evals/cases/langfuse/agent_strict_pass.ts").read_text(
+    source = Path(
+        "evals/cases/langfuse/evaluators/agent_strict_pass.ts"
+    ).read_text(
         encoding="utf-8"
     )
     tool_checks = source.split("const toolChecks = {", maxsplit=1)[1].split(
