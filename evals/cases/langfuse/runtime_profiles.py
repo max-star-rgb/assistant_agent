@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -36,6 +37,7 @@ from evals.cases.langfuse.contracts import (
     CalendarEventExpectation,
     CreateCalendarCase,
     ExperimentCase,
+    FrozenFileFixture,
     NoToolCase,
     ReadCalendarCase,
     RealAgentCase,
@@ -47,6 +49,8 @@ from evals.cases.langfuse.weather_failure_fixture import (
     SimulatedWeatherFailureAdapter,
     WeatherFailureFixture,
 )
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 
 
 def validate_real_readonly_config(config: ProviderConfig) -> None:
@@ -267,7 +271,10 @@ def build_real_system_runtime(
             case,
             config=resolved,
         )
-    validate_real_readonly_config(resolved)
+    if WEATHER_TOOL_NAME in case.required_tools:
+        validate_real_readonly_config(resolved)
+    else:
+        validate_real_chat_config(resolved)
     isolated = replace(
         resolved,
         mem0_base_url=None,
@@ -276,6 +283,11 @@ def build_real_system_runtime(
         durable_tasks_enabled=False,
         durable_task_worker_enabled=False,
     )
+    if case.frozen_file is not None:
+        isolated = prepare_frozen_file_fixture(
+            isolated,
+            case.frozen_file,
+        )
     calendar = LocalSQLiteCalendarAdapter(
         calendar_path,
         namespace=request.user_id,
@@ -339,11 +351,20 @@ def case_from_dataset_fields(
             if capability == "tool_failure_recovery"
             else None
         )
+        frozen_file = (
+            FrozenFileFixture.model_validate(
+                expected_output.get("frozen_file_fixture")
+            )
+            if expected_output.get("frozen_file_fixture") is not None
+            else None
+        )
         return RealAgentCase(
             id=case_id,
             capability=capability,
+            required_tools=_string_list(metadata.get("required_tools")),
             response_facts=response_facts,
             weather_failure=weather_failure,
+            frozen_file=frozen_file,
         )
     raise ValueError(
         f"Unsupported Dataset capability/profile: {capability!r}/{profile!r}."
@@ -354,3 +375,43 @@ def _string_list(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
     return [item for item in value if isinstance(item, str) and item]
+
+
+def prepare_frozen_file_fixture(
+    config: ProviderConfig,
+    fixture: FrozenFileFixture,
+    *,
+    repository_root: Path = REPOSITORY_ROOT,
+) -> ProviderConfig:
+    """Verify and stage one tracked fixture inside the governed file root."""
+
+    repository_root = repository_root.resolve()
+    source_path = _resolve_relative_path(
+        repository_root,
+        fixture.source_path,
+    )
+    content = source_path.read_bytes()
+    actual_hash = f"sha256:{hashlib.sha256(content).hexdigest()}"
+    if actual_hash != fixture.sha256:
+        raise RuntimeError(
+            f"Frozen eval fixture hash mismatch: {fixture.source_path}."
+        )
+
+    file_root = Path(config.local_file_access_root).expanduser()
+    if not file_root.is_absolute():
+        file_root = repository_root / file_root
+    file_root = file_root.resolve()
+    target_path = _resolve_relative_path(file_root, fixture.target_path)
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    if not target_path.exists() or target_path.read_bytes() != content:
+        target_path.write_bytes(content)
+    return replace(config, local_file_access_root=str(file_root))
+
+
+def _resolve_relative_path(root: Path, relative_value: str) -> Path:
+    relative_path = Path(relative_value)
+    if relative_path.is_absolute() or ".." in relative_path.parts:
+        raise ValueError("Frozen eval fixture paths must be relative and contained.")
+    resolved = (root / relative_path).resolve()
+    resolved.relative_to(root)
+    return resolved

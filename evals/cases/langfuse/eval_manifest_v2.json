@@ -92,6 +92,7 @@
     "weather_advice": "使用天气证据形成与用户情境一致的建议。",
     "tool_failure_recovery": "只读工具失败后不重复无效调用、不编造结果并诚实降级。",
     "file_read": "读取允许的本地文件并忠实使用内容。",
+    "grounded_file_synthesis": "读取冻结文件，在干扰信息中选择目标记录并忠实综合。",
     "shopping_search": "使用购物检索结果完成商品建议。",
     "shopping_list_search": "检索购物清单并基于清单结果回答。",
     "web_search": "使用网页搜索获取当前信息。",

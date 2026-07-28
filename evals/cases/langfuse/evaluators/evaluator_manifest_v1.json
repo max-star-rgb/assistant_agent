@@ -4,6 +4,13 @@
     "assistant-agent-infrastructure-v1",
     "assistant-agent-behavior-v2"
   ],
+  "calibration_sets": [
+    {
+      "capability": "grounded_file_synthesis",
+      "source": "evals/cases/langfuse/evaluators/calibration/grounded_file_synthesis_v1.json",
+      "status": "pending_ui_judge_validation"
+    }
+  ],
   "evaluators": [
     {
       "id": "agent-strict-pass-v1",

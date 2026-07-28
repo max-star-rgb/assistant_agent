@@ -17,6 +17,7 @@ from evals.cases.langfuse.experiment import (
     run_langfuse_agent_experiment,
 )
 from evals.cases.langfuse.contracts import (
+    FrozenFileFixture,
     RealAgentCase,
     RuntimeBundle,
     StatelessEvalEnvironment,
@@ -34,6 +35,8 @@ from evals.cases.langfuse.evidence import (
 )
 from evals.cases.langfuse.runtime_profiles import (
     build_real_readonly_runtime,
+    case_from_dataset_fields,
+    prepare_frozen_file_fixture,
 )
 from evals.cases.langfuse.weather_failure_fixture import (
     SimulatedWeatherFailureAdapter,
@@ -53,7 +56,10 @@ from assistant_agent.tools.plugins.builtin.calendar_weather_contacts.tools impor
 )
 from assistant_agent.tools.registry import ToolRegistry
 from assistant_agent.observability.otel_mapping import build_text_otel_span_specs
-from scripts.run_langfuse_agent_evals import _optional_run_name
+from scripts.run_langfuse_agent_evals import (
+    _optional_run_name,
+    _validate_real_profile_config,
+)
 
 
 TRACE_ID = "0123456789abcdef0123456789abcdef"
@@ -293,7 +299,7 @@ def test_behavior_seed_includes_controlled_weather_failure_recovery() -> None:
     seed = load_dataset_seed(BEHAVIOR_DATASET_SEED)
 
     assert seed.dataset_name == "assistant-agent-behavior-v2"
-    assert len(seed.items) == 18
+    assert len(seed.items) == 19
     failure_item = next(
         item
         for item in seed.items
@@ -341,7 +347,7 @@ def test_behavior_seed_covers_production_like_capabilities() -> None:
     seed = load_dataset_seed(BEHAVIOR_DATASET_SEED)
 
     assert seed.dataset_name == "assistant-agent-behavior-v2"
-    assert len(seed.items) == 18
+    assert len(seed.items) == 19
     assert {
         item.metadata["capability"] for item in seed.items
     } == {
@@ -351,6 +357,7 @@ def test_behavior_seed_covers_production_like_capabilities() -> None:
         "tool_failure_recovery",
         "calendar_read",
         "file_read",
+        "grounded_file_synthesis",
         "shopping_search",
         "shopping_list_search",
         "web_search",
@@ -397,6 +404,97 @@ def test_behavior_seed_covers_production_like_capabilities() -> None:
     )
     assert "不得假设用户未提供的地点、日期、天气" in (
         checklist_case.input["evaluation_criteria"]
+    )
+
+
+def test_grounded_file_case_has_frozen_truth_and_distractors() -> None:
+    seed = load_dataset_seed(BEHAVIOR_DATASET_SEED)
+    item = next(
+        item
+        for item in seed.items
+        if item.metadata["capability"] == "grounded_file_synthesis"
+    )
+
+    assert item.metadata["dependency_mode"] == "frozen"
+    assert item.metadata["lifecycle"] == "draft"
+    assert item.metadata["required_tools"] == ["file_read"]
+    assert item.expected_output["ground_truth"] == {
+        "employee": "陈梅",
+        "destination": "上海",
+        "nights": 2,
+        "hotel_budget_max_cny_per_night": 680,
+        "metro_walk_max_meters": 800,
+        "room_requirement": "non_smoking_required",
+        "highest_priority": "non_smoking_room",
+        "approved_conference_hotel_exception": False,
+    }
+    assert "900 元/晚" in item.expected_output["forbidden_facts"]
+    case = case_from_dataset_fields(
+        expected_output=item.expected_output,
+        metadata=item.metadata,
+        case_id=item.id,
+    )
+    assert isinstance(case, RealAgentCase)
+    assert case.required_tools == ["file_read"]
+    assert case.frozen_file is not None
+    assert case.frozen_file.target_path == (
+        "grounded_file_synthesis/travel_policy_v1.txt"
+    )
+
+
+def test_frozen_file_fixture_is_hash_verified_and_staged(tmp_path: Path) -> None:
+    source = tmp_path / "repository" / "fixtures" / "policy.txt"
+    source.parent.mkdir(parents=True)
+    source.write_text("frozen-policy-sentinel", encoding="utf-8")
+    fixture = FrozenFileFixture(
+        source_path="fixtures/policy.txt",
+        target_path="eval/policy.txt",
+        sha256=(
+            "sha256:"
+            "a660bdb80f0ae49067b9df8bef965b5a"
+            "a2c398726c405c0817959d9b3fd9ebaf"
+        ),
+    )
+    config = ProviderConfig(local_file_access_root=".data/files")
+
+    staged = prepare_frozen_file_fixture(
+        config,
+        fixture,
+        repository_root=tmp_path / "repository",
+    )
+
+    assert Path(staged.local_file_access_root).is_absolute()
+    assert (
+        Path(staged.local_file_access_root) / "eval/policy.txt"
+    ).read_text(encoding="utf-8") == "frozen-policy-sentinel"
+
+    with pytest.raises(RuntimeError, match="hash mismatch"):
+        prepare_frozen_file_fixture(
+            config,
+            fixture.model_copy(update={"sha256": f"sha256:{'0' * 64}"}),
+            repository_root=tmp_path / "repository",
+        )
+
+
+def test_grounded_file_profile_does_not_require_unrelated_weather() -> None:
+    config = ProviderConfig(
+        provider_mode="real",
+        chat_provider="openai",
+        chat_adapter_kind="openai",
+        openai_api_key="test-only",
+    )
+
+    _validate_real_profile_config(
+        "real_system",
+        config,
+        [
+            SimpleNamespace(
+                metadata={
+                    "capability": "grounded_file_synthesis",
+                    "required_tools": ["file_read"],
+                }
+            )
+        ],
     )
 
 
@@ -664,6 +762,31 @@ def test_evaluator_manifest_covers_both_active_datasets_and_all_scores() -> None
         }
         for evaluator in semantic_evaluators
     )
+    calibration = evaluator_manifest["calibration_sets"][0]
+    assert calibration == {
+        "capability": "grounded_file_synthesis",
+        "source": (
+            "evals/cases/langfuse/evaluators/calibration/"
+            "grounded_file_synthesis_v1.json"
+        ),
+        "status": "pending_ui_judge_validation",
+    }
+    calibration_payload = json.loads(
+        Path(calibration["source"]).read_text(encoding="utf-8")
+    )
+    assert [
+        fixture["expected_scores"]
+        for fixture in calibration_payload["fixtures"]
+    ] == [
+        {
+            "agent.tool_semantic_pass": True,
+            "agent.answer_semantic_pass": True,
+        },
+        {
+            "agent.tool_semantic_pass": True,
+            "agent.answer_semantic_pass": False,
+        },
+    ]
 
 
 def test_code_evaluator_keeps_failed_tool_outcome_out_of_mechanical_score() -> None:

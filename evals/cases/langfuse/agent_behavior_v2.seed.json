@@ -134,6 +134,63 @@
       }
     },
     {
+      "id": "agent_behavior_v2_grounded_file_travel_policy",
+      "input": {
+        "user_request": {
+          "user_id": "eval-grounded-file-user",
+          "session_id": "eval-grounded-file-travel-policy",
+          "text": "读取 grounded_file_synthesis/travel_policy_v1.txt。只根据文件中陈梅本次上海两晚出差的条款，给出酒店每晚预算上限、位置和房型三项筛选条件，并指出最高优先级；不要联网。",
+          "metadata": {
+            "tool_visibility": {
+              "enabled_tools": ["file_read"]
+            }
+          }
+        },
+        "evaluation_criteria": "Pass iff Agent 调用 file_read 读取指定文件，只使用陈梅上海两晚行程的条款，准确给出680元/晚、步行至地铁站不超过800米、必须无烟房，并将无烟房识别为最高优先级；不得混入李伟的900元预算、北京条款或未获批例外，也不得调用联网工具。"
+      },
+      "expected_output": {
+        "response_facts": [
+          "680 元/晚",
+          "步行至地铁站不超过 800 米",
+          "必须选择无烟房",
+          "无烟房是最高优先级"
+        ],
+        "ground_truth": {
+          "employee": "陈梅",
+          "destination": "上海",
+          "nights": 2,
+          "hotel_budget_max_cny_per_night": 680,
+          "metro_walk_max_meters": 800,
+          "room_requirement": "non_smoking_required",
+          "highest_priority": "non_smoking_room",
+          "approved_conference_hotel_exception": false
+        },
+        "forbidden_facts": [
+          "900 元/晚",
+          "北京",
+          "客户办公室驾车不超过 20 分钟",
+          "大床房优先",
+          "已获批会议酒店例外"
+        ],
+        "frozen_file_fixture": {
+          "source_path": "evals/cases/langfuse/fixtures/grounded_file_synthesis/travel_policy_v1.txt",
+          "target_path": "grounded_file_synthesis/travel_policy_v1.txt",
+          "sha256": "sha256:ab136945edfaeb6493e37b2c819477c511ac0343834d45f3cb6be4a755b88adf"
+        }
+      },
+      "metadata": {
+        "capability": "grounded_file_synthesis",
+        "compatible_profiles": ["real_system"],
+        "domain": "local_file",
+        "dependency_mode": "frozen",
+        "required_tools": ["file_read"],
+        "forbidden_tools": ["web_search", "web_fetch", "shopping_search", "shopping_list_search"],
+        "fixture_version": "travel_policy_v1",
+        "lifecycle": "draft",
+        "calibration_fixture": "grounded_file_synthesis_v1"
+      }
+    },
+    {
       "id": "agent_system_v1_shopping_backpack",
       "input": {
         "user_request": {

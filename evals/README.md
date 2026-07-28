@@ -86,6 +86,15 @@ Langfuse 是 Dataset、Experiment、Evaluator 和 Score 的运行时权威。本
 Case metadata 记录 `capability`、`compatible_profiles`、依赖、工具和副作用事实。Profile 不拥有
 Dataset；Suite 选择 Dataset，Profile 只决定怎样运行所选 Case。
 
+新案例按 `draft -> calibrated -> active -> retired` 管理。`draft` 可以同步和定向运行，但不能仅凭
+存在于 Dataset 就视为稳定质量门槛；只有用明确正确和可信但错误的样本校准对应 Judge、完成一次真实
+Experiment 审计并确认 Score 完整后，才能改为 `calibrated` 或 `active`。
+
+当前按 eval engineering workflow 新增的首个 draft 是
+`grounded_file_synthesis`。它使用受版本控制且带 SHA-256 的冻结文件，运行时只把文件复制到
+`file_read` 的受治理根目录；Agent 看不到 ground truth、Judge rubric 或校准样本。校准样本位于
+`evaluators/calibration/grounded_file_synthesis_v1.json`，仍需在 Langfuse UI 中验证两个语义 Judge。
+
 ### 代码职责
 
 ```text
@@ -145,6 +154,16 @@ connection 时，Model parameters 必须设置
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python \
   scripts/run_langfuse_agent_evals.py \
   --suite failure_recovery \
+  --inspect
+```
+
+检查新的冻结文件综合案例：
+
+```bash
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python \
+  scripts/run_langfuse_agent_evals.py \
+  --profile real_system \
+  --capability grounded_file_synthesis \
   --inspect
 ```
 

@@ -555,7 +555,15 @@ def _validate_real_profile_config(
         validate_real_chat_config(config)
         return
     if execution_profile == "real_system":
-        validate_real_readonly_config(config)
+        needs_live_weather = any(
+            "weather" in _item_metadata(item).get("required_tools", [])
+            and _item_metadata(item).get("dependency_mode") != "simulated"
+            for item in selected_items
+        )
+        if needs_live_weather:
+            validate_real_readonly_config(config)
+        else:
+            validate_real_chat_config(config)
         return
     needs_live_weather = any(
         "weather" in _item_metadata(item).get("required_tools", [])

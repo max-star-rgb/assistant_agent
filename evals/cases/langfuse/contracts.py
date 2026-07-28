@@ -72,11 +72,19 @@ class NoToolCase(BaseModel):
     response_facts: list[str] = Field(default_factory=list)
 
 
+class FrozenFileFixture(BaseModel):
+    source_path: str = Field(min_length=1)
+    target_path: str = Field(min_length=1)
+    sha256: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+
+
 class RealAgentCase(BaseModel):
     id: str = Field(min_length=1)
     capability: str = Field(min_length=1)
+    required_tools: list[str] = Field(default_factory=list)
     response_facts: list[str] = Field(default_factory=list)
     weather_failure: WeatherFailureFixture | None = None
+    frozen_file: FrozenFileFixture | None = None
 
 
 ExperimentCase = (
