@@ -21,6 +21,7 @@
       "id": "agent-strict-pass-v1",
       "version": "v1",
       "kind": "code",
+      "langfuse_evaluator_name": "assistant_agent.agent.strict_pass",
       "source": "evals/langfuse/evaluators/agent_strict_pass.ts",
       "deployment": "langfuse_ui",
       "scores": [
@@ -32,6 +33,7 @@
       "id": "assistant-agent-tool-semantic-pass-zh",
       "version": "ui-managed-v1",
       "kind": "llm_as_a_judge",
+      "langfuse_evaluator_name": "assistant-agent-tool-semantic-pass-zh",
       "source": "langfuse_ui",
       "deployment": "langfuse_ui",
       "connection": "deepseek-judge",
@@ -53,6 +55,7 @@
       "id": "assistant-agent-answer-semantic-pass-zh",
       "version": "ui-managed-v1",
       "kind": "llm_as_a_judge",
+      "langfuse_evaluator_name": "assistant-agent-answer-semantic-pass-zh",
       "source": "langfuse_ui",
       "deployment": "langfuse_ui",
       "connection": "deepseek-judge",

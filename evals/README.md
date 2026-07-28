@@ -113,10 +113,12 @@ Experiment 审计并确认 Score 完整后，才能改为 `calibrated` 或 `acti
 ```text
 contracts.py          # Dataset/Case/ExperimentOutput schema
 dataset_sync.py       # Dataset composition/case source -> Langfuse Dataset
+evaluator_rules.py    # hosted Evaluator rule 的 Dataset 绑定审计与显式同步
 manifest.py           # Dataset/Profile/Suite/Capability 与选择
 runtime_profiles.py   # scripted_mock / real_readonly / real_system
 evidence.py           # Runtime Trace -> evaluator evidence
 experiment.py         # 薄 Experiment task/orchestration
+score_audit.py        # Dataset Run 四层 Score 完整性等待与审计
 evaluators/           # Code Evaluator 与版本清单
 datasets/             # Dataset 定义、composition 与 manifest
 cases/                # legacy/engineered 案例来源
@@ -134,6 +136,13 @@ cases/                # legacy/engineered 案例来源
 `tool.finished` 和携带结构化错误的 `tool.failed` 都可以证明机械链路闭合；业务结果成功、失败、empty
 及 Agent 恢复行为由语义 Score 判断。Judge 超时、解析失败或缺失 Score 属于评测基础设施状态，不得
 伪装成 Agent 通过或失败。
+
+Experiment 运行前会 fail-closed 审计三个 hosted Evaluator rule 是否启用、是否为 Experiment target，
+以及 Dataset filter 是否精确绑定 evaluator manifest 中的活动 Dataset。运行完成后默认等待最多
+180 秒，并逐 item 验证四个 Score 齐全；超时或缺失时命令以评测基础设施错误退出，不再把只有 Trace
+但没有 Score 的 Dataset Run 报告为成功。四项齐全但任一 Score 为 `false` 时，结果明确记录
+`agent_outcome=failed` 并使用退出码 4；这与 Score 缺失的基础设施错误不同。可用
+`--score-wait-timeout` 调整等待时间。
 
 Code Evaluator 源码在 `evaluators/agent_strict_pass.ts`。两个 LLM Judge
 `assistant-agent-tool-semantic-pass-zh` 和 `assistant-agent-answer-semantic-pass-zh` 在 Langfuse
@@ -222,6 +231,20 @@ items，但保留没有 `seed_hash` 的 Langfuse UI 手工案例。它不运行 
 `--seed-only` 是 `--sync-dataset-only` 的兼容别名；`--seed-dataset` 是 `--sync-dataset` 的兼容
 别名；`--dry-run` 是 `--inspect` 的兼容别名。
 
+### 同步 Evaluator rule
+
+当活动 Dataset 新建或替换后，显式同步三个 hosted Evaluator rule 的 Dataset filter：
+
+```bash
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python \
+  scripts/run_langfuse_agent_evals.py \
+  --sync-evaluator-rules-only
+```
+
+该命令只修改 Langfuse 中已有的受管 rule 绑定，不创建 Evaluator、不运行 Agent，也不回填历史
+Dataset Run。普通 Experiment 会先只读审计；绑定缺失时提示使用
+`--sync-evaluator-rules`，不会继续产生无 Score 的新 Run。
+
 ### 运行 Experiment
 
 真实 profile 需要 `MULTIMODAL_AGENT_PROVIDER_MODE=real`、完整配置和显式
@@ -268,6 +291,7 @@ MULTIMODAL_AGENT_PROVIDER_MODE=real \
   scripts/run_langfuse_agent_evals.py \
   --profile real_readonly \
   --sync-dataset \
+  --sync-evaluator-rules \
   --allow-real-tools \
   --run-name behavior-readonly-after-sync
 ```

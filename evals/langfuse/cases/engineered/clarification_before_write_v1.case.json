@@ -11,6 +11,9 @@
           "text": "帮我在下周安排一个和王总讨论年度预算的会议。",
           "metadata": {
             "tool_visibility": {
+              "allowed_tools": [
+                "calendar_create"
+              ],
               "enabled_tools": [
                 "calendar_create"
               ]

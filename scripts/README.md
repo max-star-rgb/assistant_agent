@@ -45,10 +45,13 @@ For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
   `evals/langfuse/datasets/eval_manifest_v2.json`. The behavior Dataset
   is composed from separately managed `cases/legacy/` and
   `cases/engineered/` sources.
-  Use `--inspect`, `--sync-dataset-only`, or the default Experiment mode;
-  scoring is
-  asynchronous and owned by Langfuse-native Code and LLM-as-a-Judge
-  Evaluators; the script does not register SDK evaluators. Use
+  Use `--inspect`, `--sync-dataset-only`,
+  `--sync-evaluator-rules-only`, or the default Experiment mode. Scoring is
+  owned by Langfuse-native Code and LLM-as-a-Judge Evaluators; before a run the
+  script fails closed unless every managed hosted rule targets the active
+  Datasets, and after a run it waits for all four required Scores per item.
+  `--sync-evaluator-rules` explicitly updates existing hosted rule filters; the
+  script does not register SDK evaluators. Use
   `--case-id`, `--capability`, or `--suite` for explicit current-Dataset
   selection. Stable case IDs are stored in metadata while synchronized native
   Dataset item IDs are namespaced by Dataset because Langfuse requires

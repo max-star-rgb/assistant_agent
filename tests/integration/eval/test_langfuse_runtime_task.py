@@ -34,11 +34,17 @@ from evals.langfuse.evidence import (
     available_tools as _available_tools,
     tool_executions as _tool_executions,
 )
+from evals.langfuse.evaluator_rules import (
+    audit_evaluator_rules,
+    load_evaluator_manifest,
+    sync_evaluator_rule_datasets,
+)
 from evals.langfuse.runtime_profiles import (
     build_real_readonly_runtime,
     case_from_dataset_fields,
     prepare_frozen_file_fixture,
 )
+from evals.langfuse.score_audit import audit_dataset_run_scores
 from evals.langfuse.weather_failure_fixture import (
     SimulatedWeatherFailureAdapter,
 )
@@ -94,6 +100,80 @@ class _FakeLangfuseClient:
 
     def get_current_observation_id(self) -> str:
         return PARENT_SPAN_ID
+
+
+class _FakeEvaluationRuleFilter:
+    def __init__(self, dataset_ids: list[str]) -> None:
+        self.dataset_ids = dataset_ids
+
+    def model_dump(self, **_: Any) -> dict[str, Any]:
+        return {
+            "type": "stringOptions",
+            "column": "datasetId",
+            "operator": "any of",
+            "value": self.dataset_ids,
+        }
+
+
+class _FakeEvaluationRulesApi:
+    def __init__(self, rules: list[SimpleNamespace]) -> None:
+        self.rules = rules
+        self.updated_rule_ids: list[str] = []
+        self.updated_targets: list[Any] = []
+
+    def list(self, **_: Any) -> SimpleNamespace:
+        return SimpleNamespace(
+            data=self.rules,
+            meta=SimpleNamespace(total_pages=1),
+        )
+
+    def update(
+        self,
+        rule_id: str,
+        *,
+        target: Any,
+        filter: list[Any],
+    ) -> SimpleNamespace:
+        rule = next(rule for rule in self.rules if rule.id == rule_id)
+        rule.filter = filter
+        self.updated_rule_ids.append(rule_id)
+        self.updated_targets.append(target)
+        return rule
+
+
+class _FakeEvaluatorRuleClient:
+    def __init__(
+        self,
+        *,
+        bound_dataset_ids: list[str],
+    ) -> None:
+        manifest = load_evaluator_manifest()
+        self.datasets = {
+            name: SimpleNamespace(id=f"id-{index}")
+            for index, name in enumerate(manifest.dataset_rules)
+        }
+        rules = [
+            SimpleNamespace(
+                id=f"rule-{index}",
+                evaluator=SimpleNamespace(
+                    name=evaluator.langfuse_evaluator_name
+                ),
+                enabled=True,
+                status="active",
+                target="experiment",
+                filter=[_FakeEvaluationRuleFilter(bound_dataset_ids)],
+            )
+            for index, evaluator in enumerate(manifest.evaluators)
+        ]
+        self.evaluation_rules = _FakeEvaluationRulesApi(rules)
+        self.api = SimpleNamespace(
+            unstable=SimpleNamespace(
+                evaluation_rules=self.evaluation_rules,
+            )
+        )
+
+    def get_dataset(self, name: str) -> SimpleNamespace:
+        return self.datasets[name]
 
 
 class _FakeDataset:
@@ -523,7 +603,10 @@ def test_clarification_before_write_case_has_layered_evaluation_contract() -> No
     assert item.metadata["lifecycle"] == "draft"
     assert item.metadata["required_tools"] == ["calendar_create"]
     assert item.input["user_request"]["metadata"] == {
-        "tool_visibility": {"enabled_tools": ["calendar_create"]}
+        "tool_visibility": {
+            "allowed_tools": ["calendar_create"],
+            "enabled_tools": ["calendar_create"],
+        }
     }
     contract = item.expected_output["evaluation_contract"]
     assert contract["schema_version"] == (
@@ -955,6 +1038,148 @@ def test_evaluator_manifest_covers_both_active_datasets_and_all_scores() -> None
             "agent.tool_semantic_pass": False,
             "agent.answer_semantic_pass": False,
         },
+    ]
+
+
+def test_evaluator_rule_audit_fails_closed_on_stale_dataset_filters() -> None:
+    client = _FakeEvaluatorRuleClient(
+        bound_dataset_ids=["archived-dataset-id"]
+    )
+
+    audit = audit_evaluator_rules(client)
+
+    assert audit.ready is False
+    assert all(
+        binding.issues == ["dataset_filter_mismatch"]
+        for binding in audit.bindings
+    )
+
+
+def test_evaluator_rule_sync_binds_all_managed_rules_to_active_datasets() -> None:
+    client = _FakeEvaluatorRuleClient(
+        bound_dataset_ids=["archived-dataset-id"]
+    )
+
+    result = sync_evaluator_rule_datasets(client)
+
+    assert result.audit.ready is True
+    assert result.updated_rule_ids == ["rule-0", "rule-1", "rule-2"]
+    assert all(
+        str(getattr(target, "value", target)) == "experiment"
+        for target in client.evaluation_rules.updated_targets
+    )
+    expected_dataset_ids = sorted(
+        dataset.id for dataset in client.datasets.values()
+    )
+    assert all(
+        binding.bound_dataset_ids == expected_dataset_ids
+        for binding in result.audit.bindings
+    )
+
+
+def test_dataset_run_score_audit_requires_all_four_scores_per_item() -> None:
+    score_names = [
+        "agent.runtime_trace_pass",
+        "agent.tool_mechanical_pass",
+        "agent.tool_semantic_pass",
+        "agent.answer_semantic_pass",
+    ]
+    scores = [
+        SimpleNamespace(
+            name=name,
+            value=True,
+            data_type="BOOLEAN",
+            subject=SimpleNamespace(
+                kind="observation",
+                trace_id="trace-score-sentinel",
+            ),
+        )
+        for name in score_names[:-1]
+    ]
+    client = SimpleNamespace(
+        get_dataset_run=lambda **_: SimpleNamespace(
+            id="dataset-run-sentinel",
+            dataset_run_items=[
+                SimpleNamespace(
+                    dataset_item_id="dataset-item-sentinel",
+                    trace_id="trace-score-sentinel",
+                )
+            ],
+        ),
+        api=SimpleNamespace(
+            scores_v3=SimpleNamespace(
+                get_many_v3=lambda **_: SimpleNamespace(
+                    data=scores,
+                    meta=SimpleNamespace(cursor=None),
+                )
+            )
+        ),
+    )
+
+    audit = audit_dataset_run_scores(
+        client,
+        dataset_name="dataset-sentinel",
+        run_name="run-sentinel",
+        required_score_names=score_names,
+    )
+
+    assert audit.status == "incomplete"
+    assert audit.agent_outcome == "unknown"
+    assert audit.items[0].missing_score_names == [
+        "agent.answer_semantic_pass"
+    ]
+
+
+def test_dataset_run_score_audit_reports_complete_agent_failure() -> None:
+    score_names = [
+        "agent.runtime_trace_pass",
+        "agent.tool_mechanical_pass",
+        "agent.tool_semantic_pass",
+        "agent.answer_semantic_pass",
+    ]
+    scores = [
+        SimpleNamespace(
+            name=name,
+            value=name != "agent.answer_semantic_pass",
+            data_type="BOOLEAN",
+            subject=SimpleNamespace(
+                kind="trace",
+                id="trace-failed-score-sentinel",
+            ),
+        )
+        for name in score_names
+    ]
+    client = SimpleNamespace(
+        get_dataset_run=lambda **_: SimpleNamespace(
+            id="dataset-run-failed-score",
+            dataset_run_items=[
+                SimpleNamespace(
+                    dataset_item_id="dataset-item-failed-score",
+                    trace_id="trace-failed-score-sentinel",
+                )
+            ],
+        ),
+        api=SimpleNamespace(
+            scores_v3=SimpleNamespace(
+                get_many_v3=lambda **_: SimpleNamespace(
+                    data=scores,
+                    meta=SimpleNamespace(cursor=None),
+                )
+            )
+        ),
+    )
+
+    audit = audit_dataset_run_scores(
+        client,
+        dataset_name="dataset-sentinel",
+        run_name="run-sentinel",
+        required_score_names=score_names,
+    )
+
+    assert audit.status == "complete"
+    assert audit.agent_outcome == "failed"
+    assert audit.items[0].failed_score_names == [
+        "agent.answer_semantic_pass"
     ]
 
 

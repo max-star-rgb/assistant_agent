@@ -38,6 +38,10 @@ from evals.langfuse.dataset_sync import (
     partition_available_dataset_item_ids,
     sync_langfuse_dataset,
 )
+from evals.langfuse.evaluator_rules import (
+    audit_evaluator_rules,
+    sync_evaluator_rule_datasets,
+)
 from evals.langfuse.runtime_profiles import (
     build_real_readonly_runtime,
     build_real_system_runtime,
@@ -48,6 +52,7 @@ from evals.langfuse.manifest import (
     load_eval_manifest,
     select_eval_item_ids,
 )
+from evals.langfuse.score_audit import wait_for_dataset_run_scores
 from assistant_agent.config import ProviderConfig
 from assistant_agent.runtime.assistant_run_service import load_env_file
 from assistant_agent.observability.langfuse_config import (
@@ -124,6 +129,29 @@ def main() -> int:
         action="store_true",
         help="Deprecated compatibility alias for --sync-dataset-only.",
     )
+    parser.add_argument(
+        "--sync-evaluator-rules",
+        action="store_true",
+        help=(
+            "Synchronize managed Langfuse Experiment evaluator rules to the "
+            "active Datasets before running."
+        ),
+    )
+    parser.add_argument(
+        "--sync-evaluator-rules-only",
+        action="store_true",
+        help=(
+            "Synchronize managed Langfuse Experiment evaluator rules and exit."
+        ),
+    )
+    parser.add_argument(
+        "--score-wait-timeout",
+        type=float,
+        default=180.0,
+        help=(
+            "Seconds to wait for all four native Scores after an Experiment."
+        ),
+    )
     parser.add_argument("--env-file", type=Path, default=Path(".env"))
     parser.add_argument("--no-env-file", action="store_true")
     profile_group = parser.add_mutually_exclusive_group()
@@ -171,8 +199,18 @@ def main() -> int:
     inspect_only = args.inspect or args.dry_run
     sync_dataset = args.sync_dataset or args.seed_dataset
     sync_dataset_only = args.sync_dataset_only or args.seed_only
-    if inspect_only and (sync_dataset or sync_dataset_only):
-        parser.error("--inspect cannot be combined with Dataset synchronization.")
+    sync_evaluator_rules = (
+        args.sync_evaluator_rules or args.sync_evaluator_rules_only
+    )
+    if args.score_wait_timeout < 0:
+        parser.error("--score-wait-timeout must be non-negative.")
+    if inspect_only and (
+        sync_dataset or sync_dataset_only or sync_evaluator_rules
+    ):
+        parser.error(
+            "--inspect cannot be combined with Dataset or evaluator-rule "
+            "synchronization."
+        )
     if args.rerun_failed_from and (
         sync_dataset_only
         or inspect_only
@@ -184,9 +222,11 @@ def main() -> int:
             "--rerun-failed-from cannot be combined with seed/dry-run or "
             "explicit suite/case/capability selectors."
         )
-    if sync_dataset_only and (args.case_id or args.capability):
+    if (
+        sync_dataset_only or args.sync_evaluator_rules_only
+    ) and (args.case_id or args.capability):
         parser.error(
-            "--sync-dataset-only always synchronizes the complete Dataset."
+            "Sync-only commands do not accept case or capability selectors."
         )
 
     legacy_profile = (
@@ -247,7 +287,8 @@ def main() -> int:
         load_env_file(args.env_file)
     runtime_factory = None
     runtime_config = None
-    if execution_profile != "scripted_mock" and not sync_dataset_only:
+    sync_only = sync_dataset_only or args.sync_evaluator_rules_only
+    if execution_profile != "scripted_mock" and not sync_only:
         if not args.allow_real_tools:
             print(
                 json.dumps(
@@ -310,9 +351,55 @@ def main() -> int:
         seed_result = None
         if sync_dataset or sync_dataset_only:
             seed_result = sync_langfuse_dataset(client, seed)
-        if sync_dataset_only:
-            print(seed_result.model_dump_json(indent=2))
+        evaluator_rule_sync_result = None
+        if sync_evaluator_rules:
+            evaluator_rule_sync_result = sync_evaluator_rule_datasets(client)
+        if sync_only:
+            if (
+                seed_result is not None
+                and evaluator_rule_sync_result is None
+            ):
+                print(seed_result.model_dump_json(indent=2))
+            elif (
+                evaluator_rule_sync_result is not None
+                and seed_result is None
+            ):
+                print(evaluator_rule_sync_result.model_dump_json(indent=2))
+            else:
+                print(
+                    json.dumps(
+                        {
+                            "dataset_sync": seed_result.model_dump(mode="json"),
+                            "evaluator_rule_sync": (
+                                evaluator_rule_sync_result.model_dump(
+                                    mode="json"
+                                )
+                            ),
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                )
             return 0
+        evaluator_rule_audit = audit_evaluator_rules(client)
+        if not evaluator_rule_audit.ready:
+            print(
+                json.dumps(
+                    {
+                        "error": "evaluator_rules_not_ready",
+                        "message": (
+                            "Langfuse Experiment evaluator rules do not cover "
+                            "the active managed Datasets. Run with "
+                            "--sync-evaluator-rules."
+                        ),
+                        "audit": evaluator_rule_audit.model_dump(mode="json"),
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                file=sys.stderr,
+            )
+            return 2
         dataset = client.get_dataset(dataset_name)
         selected_item_ids: list[str] | None = None
         skipped_unavailable_item_ids: list[str] = []
@@ -436,6 +523,38 @@ def main() -> int:
             dataset_item_ids=selected_item_ids,
         )
         client.flush()
+        expected_score_names = [
+            *DETERMINISTIC_SCORE_NAMES,
+            *(
+                REAL_SYSTEM_SEMANTIC_SCORE_NAMES
+                if execution_profile == "real_system"
+                else REAL_READONLY_SEMANTIC_SCORE_NAMES
+            ),
+        ]
+        score_audit = wait_for_dataset_run_scores(
+            client,
+            dataset_name=dataset_name,
+            run_name=str(result.run_name),
+            required_score_names=expected_score_names,
+            timeout_seconds=args.score_wait_timeout,
+        )
+        if score_audit.status != "complete":
+            print(
+                json.dumps(
+                    {
+                        "error": "langfuse_scores_incomplete",
+                        "message": (
+                            "Experiment finished, but required native Scores "
+                            "were not complete before the timeout."
+                        ),
+                        "score_audit": score_audit.model_dump(mode="json"),
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                file=sys.stderr,
+            )
+            return 3
         print(
             json.dumps(
                 {
@@ -454,21 +573,15 @@ def main() -> int:
                     "skipped_unavailable_item_ids": (
                         skipped_unavailable_item_ids
                     ),
-                    "scoring": "langfuse_native_evaluators_async",
-                    "expected_score_names": [
-                        *DETERMINISTIC_SCORE_NAMES,
-                        *(
-                            REAL_SYSTEM_SEMANTIC_SCORE_NAMES
-                            if execution_profile == "real_system"
-                            else REAL_READONLY_SEMANTIC_SCORE_NAMES
-                        ),
-                    ],
+                    "scoring": "langfuse_native_evaluators_complete",
+                    "expected_score_names": expected_score_names,
+                    "score_audit": score_audit.model_dump(mode="json"),
                 },
                 ensure_ascii=False,
                 indent=2,
             )
         )
-        return 0
+        return 0 if score_audit.agent_outcome == "passed" else 4
     except Exception as exc:  # noqa: BLE001 - operator command must fail explicitly.
         print(
             json.dumps(
