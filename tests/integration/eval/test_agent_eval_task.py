@@ -35,9 +35,12 @@ from evals.agent.grading import (
 from evals.agent.langfuse_backend import _evaluations, publish_tasks
 from evals.agent.judge import (
     JUDGE_MAX_RETRIES_ENV,
+    JUDGE_NETWORK_MODE_ENV,
+    JUDGE_NETWORK_MODE_IPV4_DIRECT,
     JUDGE_TIMEOUT_ENV,
     JudgeProviderSettings,
     ProviderLLMJudge,
+    _judge_http_client,
     create_provider_judge,
 )
 from evals.agent.loader import load_entrypoint, load_task
@@ -264,6 +267,7 @@ def test_provider_llm_judge_receives_named_rubric() -> None:
             "metadata": {
                 "timeout_seconds": 12.0,
                 "max_retries": 0,
+                "network_mode": "environment",
                 "stream": False,
             },
         }
@@ -289,9 +293,18 @@ def test_judge_provider_uses_independent_timeout_retry_and_stream_settings(
 ) -> None:
     captured: dict[str, Any] = {}
 
-    def fake_openai(**kwargs: Any) -> object:
+    class _FakeOpenAIClient:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    fake_client = _FakeOpenAIClient()
+
+    def fake_openai(**kwargs: Any) -> _FakeOpenAIClient:
         captured.update(kwargs)
-        return object()
+        return fake_client
 
     monkeypatch.setattr("evals.agent.judge.OpenAI", fake_openai)
     config = ProviderConfig(
@@ -322,15 +335,57 @@ def test_judge_provider_uses_independent_timeout_retry_and_stream_settings(
     assert judge.settings == JudgeProviderSettings(
         timeout_seconds=18.0,
         max_retries=0,
+        network_mode="environment",
     )
     assert judge.adapter.timeout_seconds == 18.0
     assert judge.adapter.stream is False
     assert judge.adapter.enable_thinking is False
+    judge.close()
+    assert fake_client.closed is True
 
     with pytest.raises(RuntimeError, match=JUDGE_TIMEOUT_ENV):
         JudgeProviderSettings.from_env({JUDGE_TIMEOUT_ENV: "0"})
     with pytest.raises(RuntimeError, match=JUDGE_MAX_RETRIES_ENV):
         JudgeProviderSettings.from_env({JUDGE_MAX_RETRIES_ENV: "-1"})
+    with pytest.raises(RuntimeError, match=JUDGE_NETWORK_MODE_ENV):
+        JudgeProviderSettings.from_env({JUDGE_NETWORK_MODE_ENV: "automatic"})
+
+
+def test_judge_ipv4_direct_network_bypasses_proxy_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, dict[str, Any]] = {}
+    transport = object()
+    client = object()
+
+    def fake_transport(**kwargs: Any) -> object:
+        captured["transport"] = kwargs
+        return transport
+
+    def fake_client(**kwargs: Any) -> object:
+        captured["client"] = kwargs
+        return client
+
+    monkeypatch.setattr("evals.agent.judge.httpx.HTTPTransport", fake_transport)
+    monkeypatch.setattr("evals.agent.judge.httpx.Client", fake_client)
+
+    result = _judge_http_client(
+        JudgeProviderSettings(
+            timeout_seconds=18.0,
+            max_retries=0,
+            network_mode=JUDGE_NETWORK_MODE_IPV4_DIRECT,
+        )
+    )
+
+    assert result is client
+    assert captured == {
+        "transport": {"local_address": "0.0.0.0"},
+        "client": {
+            "transport": transport,
+            "timeout": 18.0,
+            "trust_env": False,
+        },
+    }
 
 
 def test_eval_progress_uses_stderr_without_polluting_stdout(

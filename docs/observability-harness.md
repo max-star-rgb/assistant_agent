@@ -1041,7 +1041,9 @@ assertion 只进入维度 metadata，不创建工具专属 Score；每条 assert
 Score 失败必须 fail-fast，和普通 server observability 的 fail-open 语义不同。
 
 LLM Judge 不复用 Agent 的 stream、timeout 和 SDK retry 传输策略：Judge 固定非流式，默认 timeout
-30 秒、SDK retry 0 次，并可由 Agent eval 专属环境变量或 CLI 参数覆盖。每个 Judge criterion 必须
+30 秒、SDK retry 0 次，并可由 Agent eval 专属环境变量或 CLI 参数覆盖。Judge 网络默认沿用环境
+proxy 和 DNS；已确认本机 IPv6 或代理上游地址族选择异常时，可显式使用 `ipv4_direct` 绕过代理并
+强制 IPv4。每个 Judge criterion 必须
 生成 `judge.<criterion_id>` evaluator observation，记录 timeout、retry、耗时、通过状态或基础设施
 错误；CLI 同时把 Task、evaluation 和 Judge 阶段进度以逐行 JSON 写入 stderr，最终机器结果保留在
 stdout。这样长时间运行可以区分 Agent 执行、Judge 判定和外部 Provider 建连等待。

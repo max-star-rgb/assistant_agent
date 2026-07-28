@@ -168,6 +168,7 @@ MULTIMODAL_AGENT_PROVIDER_MODE=real \
   --allow-real-provider \
   --judge-timeout-seconds 30 \
   --judge-max-retries 0 \
+  --judge-network-mode ipv4_direct \
   --run-name weather-timeout-recovery
 ```
 
@@ -194,12 +195,17 @@ Agent 与 LLM Judge 共享已显式选择的真实 Chat Provider 和模型，但
 ```text
 AGENT_EVAL_JUDGE_TIMEOUT_SECONDS=30
 AGENT_EVAL_JUDGE_MAX_RETRIES=0
+AGENT_EVAL_JUDGE_NETWORK_MODE=environment
 ```
 
-命令行 `--judge-timeout-seconds`、`--judge-max-retries` 优先于同名环境变量。运行进度以逐行 JSON
-写入 stderr，最终结果仍只写 stdout；每个 criterion 在 Langfuse 中生成
-`judge.<criterion_id>` evaluator observation。Judge 超时或连接失败仍属于评测基础设施失败，退出
-2，不生成 Agent 失败分数。
+命令行 `--judge-timeout-seconds`、`--judge-max-retries`、`--judge-network-mode` 优先于同名
+环境变量。网络模式默认 `environment`，沿用系统 HTTP(S) proxy 和 DNS；当机器存在不可用 IPv6
+路由或代理上游地址族选择不稳定、且目标 Provider 可直接访问时，使用 `ipv4_direct` 绕过环境代理并
+把 Judge HTTP transport 绑定到 IPv4。该开关只改变 Judge 网络链路，不改变 Agent Provider 链路。
+运行进度以逐行 JSON 写入 stderr，最终结果仍只写 stdout；每个 criterion 在 Langfuse 中生成
+`judge.<criterion_id>` evaluator observation，其 input 保存当次实际使用的 `criterion_id`、
+`rubric`、`task_id` 和 `run_id`。Judge 超时或连接失败仍属于评测基础设施失败，退出 2，不生成
+Agent 失败分数。
 
 ### 安全和退出码
 

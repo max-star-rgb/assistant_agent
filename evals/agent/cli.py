@@ -21,6 +21,8 @@ from evals.agent.calibration import run_calibration
 from evals.agent.contracts import TaskSpec
 from evals.agent.judge import (
     JUDGE_MAX_RETRIES_ENV,
+    JUDGE_NETWORK_MODES,
+    JUDGE_NETWORK_MODE_ENV,
     JUDGE_TIMEOUT_ENV,
     create_provider_judge,
 )
@@ -89,6 +91,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             f"{JUDGE_MAX_RETRIES_ENV} or 0."
         ),
     )
+    parser.add_argument(
+        "--judge-network-mode",
+        choices=JUDGE_NETWORK_MODES,
+        default=None,
+        help=(
+            "Select Judge networking: environment honors proxy settings; "
+            "ipv4_direct bypasses proxies and forces IPv4. Defaults to "
+            f"{JUDGE_NETWORK_MODE_ENV} or environment."
+        ),
+    )
     args = parser.parse_args(argv)
     task_ids = args.task or load_suite(args.suite or "smoke")
     tasks = [load_task(task_id) for task_id in task_ids]
@@ -139,6 +151,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             judge_env[JUDGE_TIMEOUT_ENV] = str(args.judge_timeout_seconds)
         if args.judge_max_retries is not None:
             judge_env[JUDGE_MAX_RETRIES_ENV] = str(args.judge_max_retries)
+        if args.judge_network_mode is not None:
+            judge_env[JUDGE_NETWORK_MODE_ENV] = args.judge_network_mode
         if args.calibrate:
             _emit_progress(
                 {
@@ -151,11 +165,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 env=judge_env,
                 progress=_emit_progress,
             )
-            results = [
-                result.model_dump(mode="json")
-                for task in tasks
-                for result in run_calibration(task, judge)
-            ]
+            try:
+                results = [
+                    result.model_dump(mode="json")
+                    for task in tasks
+                    for result in run_calibration(task, judge)
+                ]
+            finally:
+                judge.close()
             _emit_progress(
                 {
                     "event": "agent_eval.calibration.completed",
@@ -198,6 +215,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 progress=_emit_progress,
             )
         finally:
+            judge.close()
             if not observer.close(timeout=10.0):
                 raise RuntimeError(
                     "Langfuse Runtime trace export did not close cleanly."

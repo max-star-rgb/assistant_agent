@@ -9,6 +9,7 @@ import json
 import time
 from typing import Any
 
+import httpx
 from openai import OpenAI
 
 from assistant_agent.config import ProviderConfig
@@ -25,6 +26,13 @@ from evals.agent.contracts import JudgeVerdict, RunEvidence
 
 JUDGE_TIMEOUT_ENV = "AGENT_EVAL_JUDGE_TIMEOUT_SECONDS"
 JUDGE_MAX_RETRIES_ENV = "AGENT_EVAL_JUDGE_MAX_RETRIES"
+JUDGE_NETWORK_MODE_ENV = "AGENT_EVAL_JUDGE_NETWORK_MODE"
+JUDGE_NETWORK_MODE_ENVIRONMENT = "environment"
+JUDGE_NETWORK_MODE_IPV4_DIRECT = "ipv4_direct"
+JUDGE_NETWORK_MODES = (
+    JUDGE_NETWORK_MODE_ENVIRONMENT,
+    JUDGE_NETWORK_MODE_IPV4_DIRECT,
+)
 ProgressCallback = Callable[[dict[str, object]], None]
 
 
@@ -32,6 +40,7 @@ ProgressCallback = Callable[[dict[str, object]], None]
 class JudgeProviderSettings:
     timeout_seconds: float = 30.0
     max_retries: int = 0
+    network_mode: str = JUDGE_NETWORK_MODE_ENVIRONMENT
 
     @classmethod
     def from_env(
@@ -49,6 +58,7 @@ class JudgeProviderSettings:
                 default=0,
                 name=JUDGE_MAX_RETRIES_ENV,
             ),
+            network_mode=_network_mode(env.get(JUDGE_NETWORK_MODE_ENV)),
         )
 
 
@@ -62,11 +72,13 @@ class ProviderLLMJudge:
         settings: JudgeProviderSettings | None = None,
         langfuse: Any | None = None,
         progress: ProgressCallback | None = None,
+        close_callback: Callable[[], None] | None = None,
     ) -> None:
         self.adapter = adapter
         self.settings = settings or JudgeProviderSettings()
         self.langfuse = langfuse
         self.progress = progress
+        self._close_callback = close_callback
 
     def evaluate(
         self,
@@ -93,6 +105,7 @@ class ProviderLLMJudge:
                 metadata={
                     "timeout_seconds": self.settings.timeout_seconds,
                     "max_retries": self.settings.max_retries,
+                    "network_mode": self.settings.network_mode,
                     "stream": False,
                 },
             )
@@ -138,6 +151,11 @@ class ProviderLLMJudge:
                 passed=verdict.passed,
             )
             return verdict
+
+    def close(self) -> None:
+        if self._close_callback is not None:
+            self._close_callback()
+            self._close_callback = None
 
     def _evaluate(
         self,
@@ -214,13 +232,22 @@ def create_provider_judge(
         raise RuntimeError(
             "Agent eval Judge requires an OpenAI-compatible real Chat Provider."
         )
-    with without_unsupported_socks_proxy_env():
-        client = OpenAI(
-            api_key=provider.api_key or "",
-            base_url=provider.base_url or "",
-            timeout=settings.timeout_seconds,
-            max_retries=settings.max_retries,
-        )
+    http_client = _judge_http_client(settings)
+    client_kwargs: dict[str, Any] = {
+        "api_key": provider.api_key or "",
+        "base_url": provider.base_url or "",
+        "timeout": settings.timeout_seconds,
+        "max_retries": settings.max_retries,
+    }
+    if http_client is not None:
+        client_kwargs["http_client"] = http_client
+    try:
+        with without_unsupported_socks_proxy_env():
+            client = OpenAI(**client_kwargs)
+    except Exception:
+        if http_client is not None:
+            http_client.close()
+        raise
     adapter = OpenAICompatibleChatAdapter(
         provider=provider.provider,
         api_key=provider.api_key or "",
@@ -236,6 +263,19 @@ def create_provider_judge(
         settings=settings,
         langfuse=langfuse,
         progress=progress,
+        close_callback=client.close,
+    )
+
+
+def _judge_http_client(
+    settings: JudgeProviderSettings,
+) -> httpx.Client | None:
+    if settings.network_mode == JUDGE_NETWORK_MODE_ENVIRONMENT:
+        return None
+    return httpx.Client(
+        transport=httpx.HTTPTransport(local_address="0.0.0.0"),
+        timeout=settings.timeout_seconds,
+        trust_env=False,
     )
 
 
@@ -271,3 +311,11 @@ def _nonnegative_int(
     if parsed < 0:
         raise RuntimeError(f"{name} must be a non-negative integer.")
     return parsed
+
+
+def _network_mode(value: str | None) -> str:
+    normalized = (value or JUDGE_NETWORK_MODE_ENVIRONMENT).strip().lower()
+    if normalized not in JUDGE_NETWORK_MODES:
+        choices = ", ".join(JUDGE_NETWORK_MODES)
+        raise RuntimeError(f"{JUDGE_NETWORK_MODE_ENV} must be one of: {choices}.")
+    return normalized
