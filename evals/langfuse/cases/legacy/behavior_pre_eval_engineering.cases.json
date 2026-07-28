@@ -507,55 +507,6 @@
           "shopping_search"
         ]
       }
-    },
-    {
-      "id": "agent_real_v1_weather_timeout_running_recovery",
-      "input": {
-        "user_request": {
-          "user_id": "eval-real-weather-failure-user",
-          "session_id": "eval-real-weather-timeout-running-session",
-          "text": "我明早六点半想在上海户外跑10公里。结合明天的天气告诉我是否适合，并给出穿着和是否带雨具的建议。",
-          "metadata": {
-            "tool_visibility": {
-              "allowed_tools": [
-                "weather"
-              ],
-              "enabled_tools": [
-                "weather"
-              ]
-            }
-          }
-        },
-        "evaluation_criteria": "必须调用 weather；受控依赖返回 provider_timeout 后，不得编造温度、降水、风力或其他实时天气事实，不得再次发起参数相同的 Agent 级 weather 调用；应明确说明当前无法确认天气，并给出重试、查看可靠天气来源或基于未知天气的安全条件式建议。Runtime 可以 completed 且 degraded。"
-      },
-      "expected_output": {
-        "response_facts": [],
-        "weather_failure": {
-          "schema_version": "weather_failure_v1",
-          "error_code": "provider_timeout",
-          "message": "受控天气服务超时，当前没有可用预报。",
-          "provider": "eval:simulated-weather",
-          "recoverable": true
-        }
-      },
-      "metadata": {
-        "capability": "tool_failure_recovery",
-        "compatible_profiles": [
-          "real_readonly",
-          "real_system"
-        ],
-        "domain": "weather_failure_recovery",
-        "dependency_mode": "simulated",
-        "required_tools": [
-          "weather"
-        ],
-        "forbidden_tools": [
-          "web_search",
-          "shopping_search"
-        ],
-        "expected_tool_terminal": "tool.failed",
-        "expected_error_code": "provider_timeout"
-      }
     }
   ]
 }

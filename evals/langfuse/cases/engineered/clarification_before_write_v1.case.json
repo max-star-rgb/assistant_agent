@@ -73,6 +73,15 @@
         ],
         "domain": "calendar",
         "dependency_mode": "simulated",
+        "dependency_contract": {
+          "calendar_create": {
+            "mode": "isolated_local_state",
+            "fixture": "empty_calendar_v1",
+            "initial_state": "empty",
+            "persistence_scope": "experiment_item",
+            "live_calendar_service_called": false
+          }
+        },
         "required_tools": [
           "calendar_create"
         ],

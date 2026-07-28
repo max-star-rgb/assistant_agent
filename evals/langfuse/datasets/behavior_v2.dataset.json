@@ -10,6 +10,7 @@
   "case_sources": [
     "../cases/legacy/behavior_pre_eval_engineering.cases.json",
     "../cases/engineered/grounded_file_synthesis_v1.case.json",
-    "../cases/engineered/clarification_before_write_v1.case.json"
+    "../cases/engineered/clarification_before_write_v1.case.json",
+    "../cases/engineered/tool_failure_recovery_v1.case.json"
   ]
 }

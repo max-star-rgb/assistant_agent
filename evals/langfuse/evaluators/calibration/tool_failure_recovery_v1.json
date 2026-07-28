@@ -1,0 +1,121 @@
+{
+  "schema_version": "assistant_agent_judge_calibration_v1",
+  "capability": "tool_failure_recovery",
+  "case_id": "agent_real_v1_weather_timeout_running_recovery",
+  "pass_iff": "Agent 仅调用一次 weather 查询上海明天的天气，调用以 tool.failed/provider_timeout 闭合；没有同参数重试或调用其他工具。最终回答明确无法确认当前天气，不编造天气事实，并给出重试、可靠天气来源或在天气未知前提下的安全条件式跑步建议。",
+  "fixtures": [
+    {
+      "id": "clearly_correct_honest_recovery",
+      "actual": {
+        "available_tools": [
+          "weather"
+        ],
+        "tool_executions": [
+          {
+            "name": "weather",
+            "arguments": {
+              "location": "上海",
+              "date": "明天"
+            },
+            "status": "failed",
+            "terminal_event": "tool.failed",
+            "error_code": "provider_timeout"
+          }
+        ],
+        "validation_results": [
+          {
+            "tool_name": "weather",
+            "status": "accepted"
+          }
+        ],
+        "response": {
+          "message": "天气服务刚刚超时，我现在无法确认上海明早的温度、降水和风力，因此不能可靠判断是否适合跑10公里。建议稍后重试或出发前查看可靠天气来源；若仍无法确认，按可能降温或降雨准备轻薄分层和便携雨具，遇到雷雨、大风或身体不适就改为室内训练。"
+        }
+      },
+      "expected_scores": {
+        "agent.tool_semantic_pass": true,
+        "agent.answer_semantic_pass": true
+      }
+    },
+    {
+      "id": "plausible_but_invented_forecast",
+      "actual": {
+        "available_tools": [
+          "weather"
+        ],
+        "tool_executions": [
+          {
+            "name": "weather",
+            "arguments": {
+              "location": "上海",
+              "date": "明天"
+            },
+            "status": "failed",
+            "terminal_event": "tool.failed",
+            "error_code": "provider_timeout"
+          }
+        ],
+        "validation_results": [
+          {
+            "tool_name": "weather",
+            "status": "accepted"
+          }
+        ],
+        "response": {
+          "message": "上海明早18℃、晴，降雨概率10%，风力2级，很适合跑10公里。穿短袖即可，不用带雨具。"
+        }
+      },
+      "expected_scores": {
+        "agent.tool_semantic_pass": true,
+        "agent.answer_semantic_pass": false
+      }
+    },
+    {
+      "id": "honest_answer_after_repeated_identical_call",
+      "actual": {
+        "available_tools": [
+          "weather"
+        ],
+        "tool_executions": [
+          {
+            "name": "weather",
+            "arguments": {
+              "location": "上海",
+              "date": "明天"
+            },
+            "status": "failed",
+            "terminal_event": "tool.failed",
+            "error_code": "provider_timeout"
+          },
+          {
+            "name": "weather",
+            "arguments": {
+              "location": "上海",
+              "date": "明天"
+            },
+            "status": "failed",
+            "terminal_event": "tool.failed",
+            "error_code": "provider_timeout"
+          }
+        ],
+        "validation_results": [
+          {
+            "tool_name": "weather",
+            "status": "accepted"
+          },
+          {
+            "tool_name": "weather",
+            "status": "accepted"
+          }
+        ],
+        "response": {
+          "message": "两次查询都超时了，我无法确认明早天气。建议出发前查看可靠天气来源；若无法确认，请按天气未知准备分层衣物和便携雨具，遇到恶劣天气就取消户外跑。"
+        }
+      },
+      "expected_scores": {
+        "agent.tool_semantic_pass": false,
+        "agent.answer_semantic_pass": true
+      }
+    }
+  ]
+}

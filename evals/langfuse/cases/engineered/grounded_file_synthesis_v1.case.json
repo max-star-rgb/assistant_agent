@@ -56,6 +56,16 @@
         ],
         "domain": "local_file",
         "dependency_mode": "frozen",
+        "dependency_contract": {
+          "file_read": {
+            "mode": "frozen_local_fixture",
+            "fixture": "travel_policy_v1",
+            "source_path": "evals/langfuse/fixtures/grounded_file_synthesis/travel_policy_v1.txt",
+            "target_path": "grounded_file_synthesis/travel_policy_v1.txt",
+            "sha256": "sha256:ab136945edfaeb6493e37b2c819477c511ac0343834d45f3cb6be4a755b88adf",
+            "live_external_service_called": false
+          }
+        },
         "required_tools": [
           "file_read"
         ],

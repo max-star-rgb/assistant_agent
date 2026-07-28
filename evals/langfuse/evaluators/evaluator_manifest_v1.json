@@ -14,6 +14,11 @@
       "capability": "clarification_before_write",
       "source": "evals/langfuse/evaluators/calibration/clarification_before_write_v1.json",
       "status": "pending_ui_judge_validation"
+    },
+    {
+      "capability": "tool_failure_recovery",
+      "source": "evals/langfuse/evaluators/calibration/tool_failure_recovery_v1.json",
+      "status": "pending_ui_judge_validation"
     }
   ],
   "evaluators": [

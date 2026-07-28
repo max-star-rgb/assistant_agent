@@ -108,6 +108,13 @@ Experiment 审计并确认 Score 完整后，才能改为 `calibrated` 或 `acti
 定义唯一通过边界，`evidence_by_score` 将独立证据分配给四层 Score；字段规范见
 `langfuse/cases/README.md`。校准样本仍需在 Langfuse UI 验证两个语义 Judge。
 
+第三个 engineered draft 是 `tool_failure_recovery`，沿用稳定 case id
+`agent_real_v1_weather_timeout_running_recovery`。真实 Chat 只能看到 `weather`，但该工具由
+`weather_failure_v1` 受控夹具固定返回 `provider_timeout`，不会调用真实天气 Provider。案例要求
+Agent 只调用一次、诚实说明无法确认天气并给出条件式安全建议；校准样本分别覆盖正确恢复、超时后
+编造预报和相同参数重复调用。三个 engineered draft 都在 `metadata.dependency_contract` 中明确
+fixture 和 `live_*_called=false`，避免被误读为自然线上调用。
+
 ### 代码职责
 
 ```text
@@ -198,6 +205,16 @@ connection 时，Model parameters 必须设置
   scripts/run_langfuse_agent_evals.py \
   --profile real_system \
   --capability clarification_before_write \
+  --inspect
+```
+
+检查受控天气超时恢复案例：
+
+```bash
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python \
+  scripts/run_langfuse_agent_evals.py \
+  --profile real_readonly \
+  --capability tool_failure_recovery \
   --inspect
 ```
 

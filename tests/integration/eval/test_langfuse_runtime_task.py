@@ -387,7 +387,17 @@ def test_behavior_seed_includes_controlled_weather_failure_recovery() -> None:
         if item.metadata["capability"] == "tool_failure_recovery"
     )
     assert failure_item.metadata["dependency_mode"] == "simulated"
+    assert failure_item.metadata["dependency_contract"] == {
+        "weather": {
+            "mode": "simulated_failure",
+            "fixture": "weather_failure_v1",
+            "behavior": "always_returns_provider_timeout",
+            "provider": "eval:simulated-weather",
+            "live_weather_provider_called": False,
+        }
+    }
     assert failure_item.metadata["expected_tool_terminal"] == "tool.failed"
+    assert failure_item.metadata["lifecycle"] == "draft"
     assert failure_item.metadata["compatible_profiles"] == [
         "real_readonly",
         "real_system",
@@ -395,6 +405,17 @@ def test_behavior_seed_includes_controlled_weather_failure_recovery() -> None:
     assert failure_item.expected_output["weather_failure"]["error_code"] == (
         "provider_timeout"
     )
+    contract = failure_item.expected_output["evaluation_contract"]
+    assert contract["schema_version"] == (
+        "assistant_agent_case_evaluation_contract_v1"
+    )
+    assert set(contract["evidence_by_score"]) == {
+        "agent.runtime_trace_pass",
+        "agent.tool_mechanical_pass",
+        "agent.tool_semantic_pass",
+        "agent.answer_semantic_pass",
+    }
+    assert "仅调用一次 weather" in contract["pass_iff"]
     assert "不得编造" in failure_item.input["evaluation_criteria"]
 
 
@@ -416,9 +437,11 @@ def test_behavior_dataset_composes_legacy_and_engineered_sources() -> None:
         "legacy",
         "engineered",
         "engineered",
+        "engineered",
     ]
     assert [len(collection["items"]) for collection in collections] == [
-        18,
+        17,
+        1,
         1,
         1,
     ]
@@ -427,6 +450,9 @@ def test_behavior_dataset_composes_legacy_and_engineered_sources() -> None:
     )
     assert collections[2]["items"][0]["metadata"]["capability"] == (
         "clarification_before_write"
+    )
+    assert collections[3]["items"][0]["metadata"]["capability"] == (
+        "tool_failure_recovery"
     )
     assert len(load_dataset_seed(composition_path).items) == 20
 
@@ -564,6 +590,12 @@ def test_grounded_file_case_has_frozen_truth_and_distractors() -> None:
     )
 
     assert item.metadata["dependency_mode"] == "frozen"
+    assert item.metadata["dependency_contract"]["file_read"][
+        "live_external_service_called"
+    ] is False
+    assert item.metadata["dependency_contract"]["file_read"]["sha256"] == (
+        item.expected_output["frozen_file_fixture"]["sha256"]
+    )
     assert item.metadata["lifecycle"] == "draft"
     assert item.metadata["required_tools"] == ["file_read"]
     assert item.expected_output["ground_truth"] == {
@@ -599,6 +631,15 @@ def test_clarification_before_write_case_has_layered_evaluation_contract() -> No
     )
 
     assert item.metadata["dependency_mode"] == "simulated"
+    assert item.metadata["dependency_contract"] == {
+        "calendar_create": {
+            "mode": "isolated_local_state",
+            "fixture": "empty_calendar_v1",
+            "initial_state": "empty",
+            "persistence_scope": "experiment_item",
+            "live_calendar_service_called": False,
+        }
+    }
     assert item.metadata["effect_scope"] == "isolated_write"
     assert item.metadata["lifecycle"] == "draft"
     assert item.metadata["required_tools"] == ["calendar_create"]
@@ -1003,6 +1044,7 @@ def test_evaluator_manifest_covers_both_active_datasets_and_all_scores() -> None
     assert set(calibrations) == {
         "grounded_file_synthesis",
         "clarification_before_write",
+        "tool_failure_recovery",
     }
     calibration = calibrations["grounded_file_synthesis"]
     calibration_payload = json.loads(
@@ -1037,6 +1079,28 @@ def test_evaluator_manifest_covers_both_active_datasets_and_all_scores() -> None
         {
             "agent.tool_semantic_pass": False,
             "agent.answer_semantic_pass": False,
+        },
+    ]
+    failure_recovery_payload = json.loads(
+        Path(
+            calibrations["tool_failure_recovery"]["source"]
+        ).read_text(encoding="utf-8")
+    )
+    assert [
+        fixture["expected_scores"]
+        for fixture in failure_recovery_payload["fixtures"]
+    ] == [
+        {
+            "agent.tool_semantic_pass": True,
+            "agent.answer_semantic_pass": True,
+        },
+        {
+            "agent.tool_semantic_pass": True,
+            "agent.answer_semantic_pass": False,
+        },
+        {
+            "agent.tool_semantic_pass": False,
+            "agent.answer_semantic_pass": True,
         },
     ]
 

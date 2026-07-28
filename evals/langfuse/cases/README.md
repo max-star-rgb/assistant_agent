@@ -30,7 +30,7 @@ cases/
 | --- | --- | --- |
 | Capability | `metadata.capability` | 一个可命名、可区分的被测行为 |
 | Request | `input.user_request` | 实际发送给 Agent 的请求和可见环境 |
-| Dependencies | `metadata.compatible_profiles`、`dependency_mode`、`required_tools`、`effect_scope` | profile、live/frozen/simulated 依赖、运行所需工具和副作用边界；`required_tools` 不表示 Agent 必须调用 |
+| Dependencies | `metadata.compatible_profiles`、`dependency_mode`、`dependency_contract`、`required_tools`、`effect_scope` | profile、live/frozen/simulated 依赖、具体夹具与是否调用真实外部服务、运行所需工具和副作用边界；`required_tools` 不表示 Agent 必须调用 |
 | Success | `expected_output.evaluation_contract.pass_iff` | 由独立证据观察到的唯一通过边界 |
 | Evidence | `expected_output.evaluation_contract.evidence_by_score` | 四层 Score 各自读取的证据字段和通过条件 |
 | Recommendation | `metadata.lifecycle`、`calibration_fixture` | draft/calibrated/active/retired 状态与校准来源 |
@@ -39,3 +39,9 @@ cases/
 `assistant_agent_case_evaluation_contract_v1`。四个 `evidence_by_score` 条目必须齐全，避免机械层、
 工具语义层和回答语义层重复判断同一事实。该契约供 Evaluator/Judge 使用，不会由 Experiment task
 传入 `UserRequest`；Judge rubric、隐藏证据和校准样本也不得放进 `input.user_request`。
+
+`input.user_request` 是唯一传给 Agent 的案例请求。`input.evaluation_criteria`、整个
+`expected_output` 和 `metadata` 都是评测侧字段；其中 `expected_output` 保存隐藏真值、冻结夹具或
+受控故障，`metadata.dependency_contract` 必须明确依赖模式、fixture 标识和
+`live_*_called` 布尔值。这样查看本地案例或 Langfuse Dataset item 时，可以直接区分自然的真实依赖
+调用、冻结本地输入、隔离本地状态和受控故障注入。
