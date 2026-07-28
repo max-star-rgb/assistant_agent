@@ -2,10 +2,11 @@
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, computed_field
 
 
 WebFetchContentFormat = Literal["markdown", "text"]
+WebFetchOutcome = Literal["success", "partial", "empty", "failed"]
 
 
 class WebFetchProviderError(BaseModel):
@@ -30,9 +31,16 @@ class WebFetchResult(BaseModel):
     latency_ms: int | None = Field(default=None, ge=0)
     output_ref: str | None = None
 
+    @computed_field
+    @property
+    def outcome(self) -> WebFetchOutcome:
+        if self.content.strip():
+            return "partial" if self.errors else "success"
+        return "failed" if self.errors else "empty"
+
     @property
     def success(self) -> bool:
-        return not self.errors
+        return self.outcome != "failed"
 
 
 class WebFetchRequest(BaseModel):

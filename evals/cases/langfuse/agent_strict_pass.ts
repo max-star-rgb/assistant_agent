@@ -37,12 +37,15 @@ function evaluate({
   const toolTraceEvents = [
     "action.validation.finished",
     "tool.started",
-    "tool.finished",
     "tool.observation",
   ];
   const toolChecks = {
-    executed_tools_exposed: executions.every((execution: any) =>
-      availableTools.includes(execution.name),
+    executed_tools_exposed: executions.every(
+      (execution: any) =>
+        execution.exposed === true &&
+        Array.isArray(execution.exposed_tools) &&
+        execution.exposed_tools.includes(execution.name) &&
+        availableTools.includes(execution.name),
     ),
     validation_chain_accepted:
       validationResults.length === executions.length &&
@@ -53,8 +56,10 @@ function evaluate({
             result.tool_name === execution.name && result.status === "accepted",
         ),
       ),
-    executions_succeeded: executions.every(
-      (execution: any) => execution.status === "succeeded",
+    executions_reached_terminal: executions.every(
+      (execution: any) =>
+        ["tool.finished", "tool.failed"].includes(execution.terminal_event) &&
+        ["succeeded", "failed"].includes(execution.status),
     ),
     tool_trace_complete:
       executions.length === 0 ||
@@ -74,8 +79,8 @@ function evaluate({
         "agent.tool_mechanical_pass",
         toolChainPassed,
         executions.length === 0
-          ? "本次没有工具调用，也没有失败的工具链路"
-          : "已发生工具调用的暴露、Validator、Trace 与执行终态均正常",
+          ? "本次没有工具调用，治理链路保持闭合"
+          : "已发生工具调用的暴露、Validator、Trace 与结构化终态均正常",
         toolChecks,
         {
           capability,
@@ -117,7 +122,7 @@ function checkFailureDescription(name: string): string {
     required_trace_present: "Trace 闭环证据不完整",
     executed_tools_exposed: "实际调用的工具未正确暴露",
     validation_chain_accepted: "工具调用未通过 Validator 或证据数量不一致",
-    executions_succeeded: "至少一个工具执行未成功",
+    executions_reached_terminal: "至少一个工具调用缺少结构化执行终态",
     tool_trace_complete: "工具执行 Trace 证据不完整",
   };
   return descriptions[name] ?? `${name} 检查失败`;

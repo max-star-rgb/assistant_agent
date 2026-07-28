@@ -452,11 +452,7 @@ class AgentExperimentTask:
                 if state.response is not None
                 else None
             ),
-            available_tools=(
-                list(state.run_tool_catalog.available_tool_names)
-                if state.run_tool_catalog is not None
-                else []
-            ),
+            available_tools=_available_tools(state, trace_events),
             request_metadata=dict(state.request.metadata),
             tool_executions=_tool_executions(trace_events),
             validation_results=_validation_results(trace_events),
@@ -865,21 +861,76 @@ def _tool_executions(events: list[TraceEvent]) -> list[dict[str, Any]]:
         if event.canonical_event in {"tool.finished", "tool.failed"}
     }
     executions: list[dict[str, Any]] = []
+    exposed_tools: list[str] = []
     for event in events:
+        if event.canonical_event == "context.build.finished":
+            exposed_tools = _context_event_available_tools(event)
+            continue
         if event.canonical_event != "tool.started":
             continue
         tool_call_id = event.attributes.get("tool_call_id")
         terminal = terminals.get(tool_call_id)
+        output = terminal.output_summary if terminal is not None else {}
         executions.append(
             {
                 "tool_call_id": tool_call_id,
                 "name": event.tool_name,
                 "input": event.input_summary,
                 "status": terminal.status if terminal is not None else "missing_terminal",
-                "output": terminal.output_summary if terminal is not None else {},
+                "terminal_event": (
+                    terminal.canonical_event if terminal is not None else None
+                ),
+                "exposed": (
+                    isinstance(event.tool_name, str)
+                    and event.tool_name in exposed_tools
+                ),
+                "exposed_tools": list(exposed_tools),
+                "outcome": _tool_outcome(output),
+                "output": output,
             }
         )
     return executions
+
+
+def _available_tools(state: Any, events: list[TraceEvent]) -> list[str]:
+    available: list[str] = []
+    run_tool_catalog = getattr(state, "run_tool_catalog", None)
+    available_tool_names = getattr(run_tool_catalog, "available_tool_names", None)
+    if isinstance(available_tool_names, list):
+        _extend_unique_strings(available, available_tool_names)
+    for event in events:
+        _extend_unique_strings(available, _context_event_available_tools(event))
+    return available
+
+
+def _context_event_available_tools(event: TraceEvent) -> list[str]:
+    if event.canonical_event != "context.build.finished":
+        return []
+    report = event.output_summary.get("context_report_v1")
+    if not isinstance(report, dict):
+        return []
+    selected = report.get("selected_tool_names")
+    return (
+        [name for name in selected if isinstance(name, str)]
+        if isinstance(selected, list)
+        else []
+    )
+
+
+def _extend_unique_strings(target: list[str], values: list[Any]) -> None:
+    for value in values:
+        if isinstance(value, str) and value not in target:
+            target.append(value)
+
+
+def _tool_outcome(output: Mapping[str, Any]) -> str | None:
+    direct = output.get("outcome")
+    if isinstance(direct, str):
+        return direct
+    data = output.get("data")
+    if isinstance(data, Mapping) and isinstance(data.get("outcome"), str):
+        return str(data["outcome"])
+    return None
 
 
 def _validation_results(events: list[TraceEvent]) -> list[dict[str, Any]]:

@@ -121,7 +121,12 @@ runner。真实 profile 强制关闭 Mem0、持久化会话、checkpointer 和 d
 
 `agent_strict_pass.ts` 同时支持 scripted baseline 和 real-readonly Dataset，并为每个 Dataset item
 产生两个 Langfuse 原生确定性 Score：`agent.runtime_trace_pass` 检查运行终态和 Trace 完整性，
-`agent.tool_mechanical_pass` 只检查已发生工具调用的暴露、Validator、工具 Trace 和执行终态；
+`agent.tool_mechanical_pass` 只检查已发生工具调用的暴露、Validator、工具 Trace 和结构化执行终态；
+`tool.finished` 与携带结构化错误的 `tool.failed` 都能证明机械调用链闭合，外部 Provider 或业务结果
+是否命中不在该分数重复判断；
+工具暴露证据按每次 `tool.started` 之前最近一次 `context.build.finished` 的
+`selected_tool_names` 记录，最终 answer-only / FINALIZE 轮次的空 catalog 不会覆盖前面执行轮次的
+真实暴露事实；`available_tools` 仅汇总整次 run 曾暴露的工具，供诊断和兼容检查。
 没有工具调用且没有失败链路时也记为通过。它不比较 Dataset 的必需/禁止工具，也不判断是否应该调用、
 工具选择、参数或结果语义，这些由 `agent.tool_semantic_pass` 负责。底层细分检查保留在
 Score metadata 中供失败诊断，不再各自占据 UI。最终回答质量由 Langfuse 原生
@@ -134,6 +139,12 @@ LLM-as-a-Judge Evaluator 单独评估。
 `agent.answer_semantic_pass` 判断最终回答是否忠于工具证据并满足验收标准。这样可以区分“工具机械执行
 成功但语义错误”和“工具语义正确但最终回答错误”。裁判理由不限制为固定字数，应说明判定、关键
 Trace 证据、失败原因和可操作的改进方向，但不复述无关 Trace 内容。
+
+检索类 Tool 的 `outcome=empty` 表示 Provider 正常完成但没有命中，机械分应通过；语义裁判应继续检查
+调用是否必要、URL/查询词/时间窗是否合理，以及 Agent 是否如实使用空结果。合理查询得到空结果可以
+通过 `agent.tool_semantic_pass`，错误 URL 或会排除目标结果的筛选参数不能仅因调用已完成而通过。
+`outcome=failed` 也不反向破坏机械链路分，但其外部依赖状态、Agent 恢复行为和最终回答必须由语义
+证据分别判断。
 
 四个 Score 的字段按 Langfuse 原生语义分工：项目级 Score Config 的 `description` 固定说明
 “该分数评估什么”，单次 Score 的 `value` 保存布尔结论，`comment` 只说明本次通过或失败的原因。

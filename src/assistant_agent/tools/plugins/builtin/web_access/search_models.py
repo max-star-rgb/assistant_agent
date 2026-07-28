@@ -1,6 +1,11 @@
 """Web search tool schemas."""
 
-from pydantic import BaseModel, Field
+from typing import Literal
+
+from pydantic import BaseModel, Field, computed_field
+
+
+WebSearchOutcome = Literal["success", "partial", "empty", "failed"]
 
 
 class WebSearchResultItem(BaseModel):
@@ -33,9 +38,16 @@ class WebSearchResult(BaseModel):
     latency_ms: int | None = Field(default=None, ge=0)
     output_ref: str | None = None
 
+    @computed_field
+    @property
+    def outcome(self) -> WebSearchOutcome:
+        if self.results:
+            return "partial" if self.errors else "success"
+        return "failed" if self.errors else "empty"
+
     @property
     def success(self) -> bool:
-        return not self.errors
+        return self.outcome != "failed"
 
 
 class WebSearchRequest(BaseModel):

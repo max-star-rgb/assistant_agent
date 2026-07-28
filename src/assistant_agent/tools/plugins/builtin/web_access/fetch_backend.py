@@ -315,18 +315,19 @@ def _normalize_tavily_extract_payload(
         return payload
     raw_results = payload.get("results")
     if not isinstance(raw_results, list) or not raw_results:
-        return {
+        failed_results = payload.get("failed_results")
+        normalized: dict[str, Any] = {
             "provider": "tavily",
             "url": request.url,
+            "content": "",
             "content_format": request.content_format,
-            "errors": [
-                {
-                    "code": "provider_empty_response",
-                    "message": "tavily extract returned no usable results.",
-                    "recoverable": True,
-                }
-            ],
         }
+        errors = _tavily_failed_result_errors(failed_results)
+        if errors:
+            normalized["errors"] = errors
+        if isinstance(payload.get("request_id"), str):
+            normalized["output_ref"] = f"tavily://extract/{payload['request_id']}"
+        return normalized
     first = raw_results[0]
     if not isinstance(first, dict):
         return payload
@@ -342,6 +343,34 @@ def _normalize_tavily_extract_payload(
     if isinstance(payload.get("request_id"), str):
         normalized["output_ref"] = f"tavily://extract/{payload['request_id']}"
     return normalized
+
+
+def _tavily_failed_result_errors(payload: Any) -> list[dict[str, Any]]:
+    if not isinstance(payload, list):
+        return []
+    errors: list[dict[str, Any]] = []
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        raw_message = item.get("error")
+        message = (
+            raw_message.strip()
+            if isinstance(raw_message, str) and raw_message.strip()
+            else "Tavily could not process the requested URL."
+        )
+        not_found = "404" in message or "not found" in message.lower()
+        errors.append(
+            {
+                "code": (
+                    "provider_request_invalid"
+                    if not_found
+                    else "provider_execution_failed"
+                ),
+                "message": message,
+                "recoverable": not not_found,
+            }
+        )
+    return errors
 
 
 def _provider_endpoint(base_url: str, endpoint: str) -> str:
@@ -410,14 +439,15 @@ def _web_fetch_result_from_payload(
             errors=backend_errors,
         )
     if not bounded_content.strip():
-        return _failed_web_fetch_result(
+        return WebFetchResult(
             provider=provider,
             url=url,
-            code="provider_empty_response",
-            message="http web fetch provider returned no usable content.",
-            recoverable=True,
             content_format=content_format,
+            content="",
+            total_chars=total_chars,
+            truncated=truncated,
             latency_ms=latency_ms,
+            output_ref=output_ref,
         )
     return WebFetchResult(
         url=url,

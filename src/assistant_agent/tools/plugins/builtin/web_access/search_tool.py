@@ -30,9 +30,10 @@ class WebSearchTool(ToolBase):
         model_observation = _web_search_model_observation(data)
         contract = build_capability_output_contract(
             capability=WEB_SEARCH_CAPABILITY,
-            status="failed" if result.errors else "succeeded",
+            status="failed" if not result.success else "succeeded",
             output_ref=result.output_ref,
             data={
+                "outcome": result.outcome,
                 "query_used": result.query_used,
                 "results": data.get("results", []),
                 "summary": result.summary,
@@ -41,7 +42,7 @@ class WebSearchTool(ToolBase):
             errors=[error.model_dump(mode="json") for error in result.errors],
             metadata={"provider": result.provider, "latency_ms": result.latency_ms},
         )
-        if result.errors:
+        if not result.success:
             first_error = result.errors[0]
             return ToolResult(
                 tool_name=self.name,
@@ -67,6 +68,7 @@ class WebSearchTool(ToolBase):
 
 def _web_search_model_observation(data: dict[str, Any]) -> dict[str, Any]:
     observation: dict[str, Any] = {
+        "outcome": data.get("outcome"),
         "query_used": data.get("query_used"),
         "total": data.get("total"),
         "results": [

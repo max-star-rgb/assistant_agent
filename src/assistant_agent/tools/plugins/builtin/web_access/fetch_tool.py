@@ -30,9 +30,10 @@ class WebFetchTool(ToolBase):
         model_observation = _web_fetch_model_observation(data)
         contract = build_capability_output_contract(
             capability=WEB_FETCH_CAPABILITY,
-            status="failed" if result.errors else "succeeded",
+            status="failed" if not result.success else "succeeded",
             output_ref=result.output_ref,
             data={
+                "outcome": result.outcome,
                 "url": result.url,
                 "title": result.title,
                 "content": result.content,
@@ -43,7 +44,7 @@ class WebFetchTool(ToolBase):
             errors=[error.model_dump(mode="json") for error in result.errors],
             metadata={"provider": result.provider, "latency_ms": result.latency_ms},
         )
-        if result.errors:
+        if not result.success:
             first_error = result.errors[0]
             return ToolResult(
                 tool_name=self.name,
@@ -69,6 +70,7 @@ class WebFetchTool(ToolBase):
 
 def _web_fetch_model_observation(data: dict[str, Any]) -> dict[str, Any]:
     observation: dict[str, Any] = {
+        "outcome": data.get("outcome"),
         "url": data.get("url"),
         "title": data.get("title"),
         "content": data.get("content"),

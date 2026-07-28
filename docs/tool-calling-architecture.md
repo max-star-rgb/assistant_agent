@@ -45,6 +45,11 @@ runtime 猜测翻译或改写。
 
 `shopping_search` 的短 description 只保留调用边界和不能下单的约束。展示格式不重复塞进每轮工具
 schema，而由成功 observation 中的结构化 `response_contract=shopping_detail_v1` 提供。
+`shopping_search` 只处理一个商品品类，其 `budget_max` 是单件价格上限。多个互不相同的商品品类使用
+`shopping_list_search`：输入必须包含场景、选择原因、整份清单的 `total_budget` 和逐项 `needs`；
+若场景由天气等前序工具决定，还可附带结构化 `evidence`。该工具对每个 need 分别调用一次商品搜索
+adapter，不把多品类拼成好单库的单个 `keyword`，再按数量和有效单价在总预算内组合候选。逐项
+Provider 错误、预算排除项和未覆盖的必需项均保留在结果中，预算估算不能伪装成真实搜索结果。
 购物结果以 `outcome=success | partial | empty | failed` 区分完整结果、仍有可用候选的部分结果、
 正常完成但没有候选和工具执行失败。`ToolResult.success` 对 `success`、`partial` 和 `empty` 为真，
 只有 `failed` 为假，避免把“没有匹配商品”或“比价失败但搜索候选可用”误报成整个工具执行失败。
@@ -188,6 +193,14 @@ MCP mapping 逐个注册，未映射的能力不进入 Registry。开发阶段�
 额外启动本地 relay。`MULTIMODAL_AGENT_SEARCH_PROVIDER=tavily` 时，插件使用 `TAVILY_API_KEY`
 直接构造 Tavily Search/Extract adapter；配置不完整则两个 Tool 都不注册。`http` 仍保留为部署方显式
 提供通用 HTTP backend 的兼容 Provider，两种真实 Provider 都不得互相静默 fallback。
+
+网页检索结果使用 `outcome=success | partial | empty | failed`，网页抓取结果使用同一组终态：
+有可用结果但同时存在 Provider 问题为 `partial`，正常完成但没有结果或可读正文为 `empty`，
+网络、协议、鉴权或 Provider 明确报告 URL 处理失败才是 `failed`。`ToolResult.success` 对
+`success`、`partial` 和 `empty` 为真，只有 `failed` 为假；因此零搜索结果不会被伪装成
+`provider_empty_response`。Tavily Extract 的 `failed_results` 必须保留为结构化错误和可关联的
+`output_ref`，不能丢弃具体失败后统一改写成空响应。工具机械执行终态与 URL、查询参数及结果是否满足
+用户目标是两层事实：前者由 Validator/Executor/Trace 证明，后者由 Agent case 的语义评分判断。
 
 本地文本文件通过内置 `local_file_access` Plugin 的 `file_read` 工具读取。该工具只接受相对于
 `MULTIMODAL_AGENT_FILE_ACCESS_ROOT` 的白名单文本文件路径，默认根目录为 `.data/files`；绝对路径、
@@ -415,8 +428,18 @@ foreground ReAct 的重复保护使用 `tool_name + canonical tool_input` 的摘
 observation，随后用不暴露工具的 answer-only LLM 轮次形成最终回答。这样既允许修正输入，也不会用
 相同参数反复请求 Provider。成功、失败和拒绝事件继续进入 trace；LLM 已处理工具失败并返回最终文本时，
 run 终态为 `completed`，响应通过 `degraded` 和 `handled_tool_failures` 保留诊断事实。
+若失败结果的结构化错误明确声明 `recoverable=false`，guard 会按工具名阻止该 run 内对同一工具的
+后续调用，即使参数不同；拒绝 observation 会要求模型改用其他已暴露工具、利用已有证据回答或诚实说明
+限制。该判断只读取 `ToolResult` / capability contract 的 `recoverable` 字段，不解析 Provider 文案，
+也不阻止其他工具。
 `write` / `dangerous` 工具失败后可能存在副作用结果不确定性，因此 foreground ReAct 不自动修正或
 重试；下一轮直接进入 answer-only，由 LLM 解释失败或要求用户重新发起。
+
+assistant loop 显式区分 `ACT` 和 `FINALIZE`。达到工具预算或 guard 要求停止行动后，Runtime 进入
+`FINALIZE`，不再沿用 `assistant.tool_calls -> tool` 的 native action trajectory；Context 层把已有
+observation 投影为保留 status、summary、工具专属 data、error 和 ref 的 evidence，并以独立
+`tools=[]`、`tool_choice=none` 请求生成最终回答。FINALIZE 中出现的 tool call 是协议违规，不进入
+Validator/Executor；Runtime 最多进行一次仍无工具的严格纠正，避免恢复逻辑形成新循环。
 
 幂等语义不再由通用 ToolSpec 治理。具体 provider 若需要 idempotency key，应在领域 schema/adapter 或
 durable task 协议中处理；通用 executor 不维护进程内重复调用 ledger。

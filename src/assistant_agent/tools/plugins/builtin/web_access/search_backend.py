@@ -432,13 +432,15 @@ def _web_search_result_from_payload(
     results = [_result_item_from_payload(item) for item in raw_results]
     results = [item for item in results if item is not None][: request.limit]
     if not results:
-        return _failed_web_search_result(
+        return WebSearchResult(
             provider=provider,
             query_used=query_used,
-            code="provider_empty_response",
-            message="http web search provider returned no usable results.",
-            recoverable=True,
+            results=[],
+            total=0,
             latency_ms=latency_ms,
+            output_ref=payload.get("output_ref")
+            if isinstance(payload.get("output_ref"), str)
+            else None,
         )
     return WebSearchResult(
         query_used=query_used,

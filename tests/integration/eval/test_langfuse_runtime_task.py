@@ -16,6 +16,8 @@ from evals.cases.langfuse.experiment import (
     RuntimeBundle,
     StatelessEvalEnvironment,
     build_real_readonly_runtime,
+    _available_tools,
+    _tool_executions,
     failed_dataset_item_ids,
     load_dataset_seed,
     partition_available_dataset_item_ids,
@@ -26,7 +28,7 @@ from assistant_agent.runtime.runtime import AgentGraphRuntime
 from assistant_agent.config import ProviderConfig
 from assistant_agent.runtime.chat_adapter import ChatResult
 from assistant_agent.runtime.session_store import InMemorySessionStore
-from assistant_agent.observability.trace_store import InMemoryTraceStore
+from assistant_agent.observability.trace_store import InMemoryTraceStore, TraceEvent
 from assistant_agent.tools.registry import ToolRegistry
 from assistant_agent.observability.otel_mapping import build_text_otel_span_specs
 from scripts.run_langfuse_agent_evals import _optional_run_name
@@ -218,7 +220,7 @@ def test_real_system_seed_covers_production_like_capabilities() -> None:
     seed = load_dataset_seed(REAL_SYSTEM_DATASET_SEED)
 
     assert seed.dataset_name == "assistant-agent-real-system-v1"
-    assert len(seed.items) == 14
+    assert len(seed.items) == 15
     assert {
         item.metadata["capability"] for item in seed.items
     } == {
@@ -237,6 +239,7 @@ def test_real_system_seed_covers_production_like_capabilities() -> None:
         "file_read",
         "image_generation",
         "shopping_search",
+        "shopping_list_search",
         "media_inspect",
         "weather",
         "web_fetch",
@@ -338,6 +341,7 @@ def test_runtime_task_returns_compact_code_evaluator_evidence() -> None:
     assert output.state_diff["added"][0]["title"] == "洗牙"
     assert output.tool_executions[0]["name"] == "calendar_create"
     assert output.tool_executions[0]["status"] == "succeeded"
+    assert output.tool_executions[0]["terminal_event"] == "tool.finished"
     assert output.validation_results[0]["status"] == "accepted"
     assert output.response is not None
     assert "静安牙科诊所" in output.response["message"]
@@ -358,11 +362,106 @@ def test_code_evaluator_keeps_semantic_expectations_out_of_mechanical_score() ->
 
     assert "executed_tools_exposed:" in tool_checks
     assert "validation_chain_accepted:" in tool_checks
-    assert "executions_succeeded:" in tool_checks
+    assert "executions_reached_terminal:" in tool_checks
     assert "tool_trace_complete:" in tool_checks
     assert "required_tools" not in tool_checks
     assert "forbidden_tools" not in tool_checks
     assert "no_tool_called" not in tool_checks
+
+
+def test_code_evaluator_keeps_failed_tool_outcome_out_of_mechanical_score() -> None:
+    source = Path("evals/cases/langfuse/agent_strict_pass.ts").read_text(
+        encoding="utf-8"
+    )
+    tool_checks = source.split("const toolChecks = {", maxsplit=1)[1].split(
+        "\n  };", maxsplit=1
+    )[0]
+
+    assert '"tool.finished", "tool.failed"' in tool_checks
+    assert 'execution.status === "succeeded"' not in tool_checks
+    assert "execution.outcome" not in tool_checks
+
+
+def test_eval_available_tools_falls_back_to_context_report() -> None:
+    event = TraceEvent(
+        trace_id=TRACE_ID,
+        run_id="run-context-catalog",
+        node_name="assistant",
+        event_type="observability",
+        canonical_event="context.build.finished",
+        output_summary={
+            "context_report_v1": {
+                "selected_tool_names": ["web_search", "web_fetch"],
+            }
+        },
+    )
+
+    assert _available_tools(
+        SimpleNamespace(
+            run_tool_catalog=SimpleNamespace(available_tool_names=[]),
+        ),
+        [event],
+    ) == ["web_search", "web_fetch"]
+
+
+def test_eval_tool_exposure_uses_the_context_for_each_execution() -> None:
+    events = [
+        TraceEvent(
+            trace_id=TRACE_ID,
+            run_id="run-per-call-catalog",
+            node_name="assistant",
+            event_type="observability",
+            canonical_event="context.build.finished",
+            output_summary={
+                "context_report_v1": {
+                    "selected_tool_names": ["weather", "shopping_search"],
+                }
+            },
+        ),
+        TraceEvent(
+            trace_id=TRACE_ID,
+            run_id="run-per-call-catalog",
+            node_name="execute_tool",
+            event_type="observability",
+            canonical_event="tool.started",
+            tool_name="weather",
+            status="started",
+            attributes={"tool_call_id": "call-weather"},
+        ),
+        TraceEvent(
+            trace_id=TRACE_ID,
+            run_id="run-per-call-catalog",
+            node_name="execute_tool",
+            event_type="observability",
+            canonical_event="tool.finished",
+            tool_name="weather",
+            status="succeeded",
+            attributes={"tool_call_id": "call-weather"},
+        ),
+        TraceEvent(
+            trace_id=TRACE_ID,
+            run_id="run-per-call-catalog",
+            node_name="assistant",
+            event_type="observability",
+            canonical_event="context.build.finished",
+            output_summary={
+                "context_report_v1": {
+                    "selected_tool_names": [],
+                }
+            },
+        ),
+    ]
+
+    executions = _tool_executions(events)
+
+    assert executions[0]["exposed"] is True
+    assert executions[0]["exposed_tools"] == ["weather", "shopping_search"]
+    assert _available_tools(
+        SimpleNamespace(
+            run_tool_catalog=SimpleNamespace(available_tool_names=[]),
+        ),
+        events,
+    ) == ["weather", "shopping_search"]
 
 
 def test_runtime_task_covers_no_tool_and_read_only_capabilities() -> None:

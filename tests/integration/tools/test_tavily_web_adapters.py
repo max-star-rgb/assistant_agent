@@ -11,10 +11,12 @@ from assistant_agent.tools.plugins.builtin.web_access.fetch_backend import (
     TavilyWebFetchAdapter,
     create_web_fetch_adapter,
 )
+from assistant_agent.tools.plugins.builtin.web_access.fetch_tool import WebFetchTool
 from assistant_agent.tools.plugins.builtin.web_access.search_backend import (
     TavilyWebSearchAdapter,
     create_web_search_adapter,
 )
+from assistant_agent.tools.plugins.builtin.web_access.search_tool import WebSearchTool
 from assistant_agent.tools.plugins.builtin.web_access.plugin import web_provider_ready
 
 
@@ -94,6 +96,46 @@ def test_tavily_search_adapter_maps_request_and_normalizes_response(
     assert result.output_ref == "tavily://search/search-request"
 
 
+def test_tavily_search_adapter_treats_empty_results_as_successful_outcome(
+    monkeypatch,
+) -> None:
+    def urlopen(_request, *, timeout: float):
+        assert timeout == 3.0
+        return _FakeResponse(
+            {
+                "query": "no matching result",
+                "request_id": "empty-search-request",
+                "results": [],
+            }
+        )
+
+    monkeypatch.setattr(
+        "assistant_agent.tools.plugins.builtin.web_access."
+        "search_backend.urllib.request.urlopen",
+        urlopen,
+    )
+    adapter = TavilyWebSearchAdapter(
+        base_url="https://api.tavily.test",
+        api_key="test-key",
+        timeout_seconds=3.0,
+    )
+    result = adapter.search(WebSearchRequest(query="no matching result"))
+
+    assert result.success is True
+    assert result.outcome == "empty"
+    assert result.results == []
+    assert result.errors == []
+    assert result.output_ref == "tavily://search/empty-search-request"
+    tool_result = WebSearchTool(adapter=adapter).run(
+        WebSearchRequest(query="no matching result")
+    )
+    assert tool_result.success is True
+    assert tool_result.data is not None
+    assert tool_result.data["outcome"] == "empty"
+    assert tool_result.contract is not None
+    assert tool_result.contract.status == "succeeded"
+
+
 def test_tavily_fetch_adapter_maps_extract_and_normalizes_response(
     monkeypatch,
 ) -> None:
@@ -148,6 +190,83 @@ def test_tavily_fetch_adapter_maps_extract_and_normalizes_response(
     assert result.provider == "tavily"
     assert result.content == "# Article\n\nReadable content."
     assert result.output_ref == "tavily://extract/extract-request"
+
+
+def test_tavily_fetch_adapter_preserves_failed_result_detail(
+    monkeypatch,
+) -> None:
+    def urlopen(_request, *, timeout: float):
+        assert timeout == 4.0
+        return _FakeResponse(
+            {
+                "request_id": "failed-extract-request",
+                "results": [],
+                "failed_results": [
+                    {
+                        "url": "https://example.com/missing",
+                        "error": "HTTP 404: page not found",
+                    }
+                ],
+            }
+        )
+
+    monkeypatch.setattr(
+        "assistant_agent.tools.plugins.builtin.web_access."
+        "fetch_backend.urllib.request.urlopen",
+        urlopen,
+    )
+    result = TavilyWebFetchAdapter(
+        base_url="https://api.tavily.test",
+        api_key="test-key",
+        timeout_seconds=4.0,
+    ).fetch(WebFetchRequest(url="https://example.com/missing"))
+
+    assert result.success is False
+    assert result.outcome == "failed"
+    assert result.errors[0].code == "provider_request_invalid"
+    assert result.errors[0].message == "HTTP 404: page not found"
+    assert result.errors[0].recoverable is False
+    assert result.output_ref == "tavily://extract/failed-extract-request"
+
+
+def test_tavily_fetch_adapter_treats_clean_empty_response_as_empty_outcome(
+    monkeypatch,
+) -> None:
+    def urlopen(_request, *, timeout: float):
+        assert timeout == 4.0
+        return _FakeResponse(
+            {
+                "request_id": "empty-extract-request",
+                "results": [],
+                "failed_results": [],
+            }
+        )
+
+    monkeypatch.setattr(
+        "assistant_agent.tools.plugins.builtin.web_access."
+        "fetch_backend.urllib.request.urlopen",
+        urlopen,
+    )
+    adapter = TavilyWebFetchAdapter(
+        base_url="https://api.tavily.test",
+        api_key="test-key",
+        timeout_seconds=4.0,
+    )
+    result = adapter.fetch(WebFetchRequest(url="https://example.com/empty"))
+
+    assert result.success is True
+    assert result.outcome == "empty"
+    assert result.content == ""
+    assert result.errors == []
+    assert result.output_ref == "tavily://extract/empty-extract-request"
+    tool_result = WebFetchTool(adapter=adapter).run(
+        WebFetchRequest(url="https://example.com/empty")
+    )
+    assert tool_result.success is True
+    assert tool_result.data is not None
+    assert tool_result.data["outcome"] == "empty"
+    assert tool_result.contract is not None
+    assert tool_result.contract.status == "succeeded"
 
 
 def test_tavily_provider_is_built_in_process_when_explicitly_configured() -> None:
