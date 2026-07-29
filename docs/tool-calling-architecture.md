@@ -405,7 +405,7 @@ step，且工具名与 step 匹配。普通前台调用不承担这套检查。
 `ToolExecutor` 保留运行时闭环需要的职责：
 
 - 绑定可信 `user_id`、`session_id` 和 request-scoped media；
-- 传播 cancel，read 工具按全局 provider retry policy 重试，非 read 工具不自动重试；
+- 传播 cancel，read 工具按全局 provider retry policy 在同一个逻辑 Tool call 内重试，非 read 工具不自动重试；
 - 写入运行态 tool call state、event 和 trace；持久化工具调用查询统一从 trace 派生；
 - 默认只向 trace 写入安全摘要；本地显式设置
   `MULTIMODAL_AGENT_LOCAL_TRACE_CONTENT=1` 时，统一记录经过 secret sanitizer 的工具输入输出；
@@ -432,7 +432,8 @@ observation 交回主 LLM，由模型修改参数、选择其他工具、追问�
 
 foreground ReAct 的重复保护使用 `tool_name + canonical tool_input` 的摘要签名。相同工具使用不同参数
 属于可修正调用，可以继续执行；完全相同且已经失败的调用在执行前被阻止，并增加结构化 rejected
-observation，随后用不暴露工具的 answer-only LLM 轮次形成最终回答。这样既允许修正输入，也不会用
+observation，同时立即把 Runtime phase 从 `ACT` 切换到 `FINALIZE`。下一次 ReAct iteration 仍正常记录，
+但其中的 Provider request 不再暴露工具。这样既允许修正输入，也不会用
 相同参数反复请求 Provider。成功、失败和拒绝事件继续进入 trace；LLM 已处理工具失败并返回最终文本时，
 run 终态为 `completed`，响应通过 `degraded` 和 `handled_tool_failures` 保留诊断事实。
 若失败结果的结构化错误明确声明 `recoverable=false`，guard 会按工具名阻止该 run 内对同一工具的
@@ -440,7 +441,7 @@ run 终态为 `completed`，响应通过 `degraded` 和 `handled_tool_failures` 
 限制。该判断只读取 `ToolResult` / capability contract 的 `recoverable` 字段，不解析 Provider 文案，
 也不阻止其他工具。
 `write` / `dangerous` 工具失败后可能存在副作用结果不确定性，因此 foreground ReAct 不自动修正或
-重试；下一轮直接进入 answer-only，由 LLM 解释失败或要求用户重新发起。
+重试；Runtime 立即进入 `FINALIZE`，下一轮由 LLM 解释失败或要求用户重新发起。
 
 assistant loop 显式区分 `ACT` 和 `FINALIZE`。达到工具预算或 guard 要求停止行动后，Runtime 进入
 `FINALIZE`，不再沿用 `assistant.tool_calls -> tool` 的 native action trajectory；Context 层把已有
@@ -448,6 +449,18 @@ observation 投影为保留 status、summary、outcome、warnings、is_complete�
 output_ref 的 evidence，并以独立
 `tools=[]`、`tool_choice=none` 请求生成最终回答。FINALIZE 中出现的 tool call 是协议违规，不进入
 Validator/Executor；Runtime 最多进行一次仍无工具的严格纠正，避免恢复逻辑形成新循环。
+
+`run_phase` 是 phase 控制的唯一事实；Runtime 不再通过
+`assistant_answer_only_next_turn` 之类的 request metadata 把“下一轮只回答”作为延迟控制信号。
+`loop_guard.triggered` 是通用 guard 事件，不等同于固定进入 `FINALIZE`：事件通过
+`disposition=block_action | finalize | terminate` 明确本次处置，并记录 `from_phase` / `to_phase`。
+例如重复失败的完全相同调用使用 `finalize`，不可恢复工具的再次调用使用 `block_action`，从而仍可在
+`ACT` 中改用其他工具。
+
+Executor 自动重试与 Agent 的新一轮工具决策是两个契约。自动重试保持相同的 `tool_call_id` 和输入，
+不产生新的 `react.iteration`，并用 `tool.attempt.failed`、`tool.retry.scheduled` 以及 Tool terminal
+上的 `attempt_count`、`execution_retry_count`、`retry_exhausted` 记录。模型看到失败 observation 后修改
+参数再次调用属于新的 ReAct action 和新的 `tool_call_id`，不计入 `execution_retry_count`。
 
 幂等语义不再由通用 ToolSpec 治理。具体 provider 若需要 idempotency key，应在领域 schema/adapter 或
 durable task 协议中处理；通用 executor 不维护进程内重复调用 ledger。

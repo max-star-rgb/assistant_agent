@@ -75,6 +75,25 @@ class ToolStartedFact:
 
 
 @dataclass(frozen=True)
+class ToolRetryFact:
+    """One retry scheduled inside a governed logical tool invocation."""
+
+    state: AgentState
+    trace_id: str | None
+    node_name: str
+    capability: str
+    tool_name: str
+    tool_call_id: str
+    step_id: str
+    parent_span_id: str
+    failed_attempt: int
+    next_attempt: int
+    max_attempts: int
+    error_code: str
+    occurred_at: datetime = field(default_factory=_now)
+
+
+@dataclass(frozen=True)
 class RunTerminalFact:
     """One run terminal committed before trace summary and delivery."""
 
@@ -116,6 +135,9 @@ class ToolTerminalFact:
     delivery_recovery_action: str | None = None
     retryable: bool = False
     agent_error_detail: dict[str, Any] | None = None
+    attempt_count: int | None = None
+    execution_retry_count: int | None = None
+    retry_exhausted: bool = False
     occurred_at: datetime = field(default_factory=_now)
 
 
@@ -309,6 +331,63 @@ class RuntimeEventPublisher:
             )
         )
 
+    def record_tool_retry(self, fact: ToolRetryFact) -> None:
+        """Record a failed execution attempt and the retry it scheduled."""
+
+        if fact.trace_id is None:
+            return
+        common = {
+            "tool_call_id": fact.tool_call_id,
+            "step_id": fact.step_id,
+            "failed_attempt": fact.failed_attempt,
+            "next_attempt": fact.next_attempt,
+            "max_attempts": fact.max_attempts,
+            "execution_retry_count": fact.next_attempt - 1,
+        }
+        self._append_trace(
+            TraceEvent(
+                trace_id=fact.trace_id,
+                run_id=fact.state.run_id,
+                user_id=fact.state.user_id,
+                session_id=fact.state.session_id,
+                node_name=fact.node_name,
+                event_type="observability",
+                canonical_event="tool.attempt.failed",
+                observation_type="event",
+                observation_scope="iteration",
+                span_id=new_span_id(),
+                parent_span_id=fact.parent_span_id,
+                capability=fact.capability,
+                tool_name=fact.tool_name,
+                status="failed",
+                error_code=fact.error_code,
+                attributes=common,
+                error={"code": fact.error_code, "message": "Tool execution attempt failed."},
+                created_at=fact.occurred_at,
+            )
+        )
+        self._append_trace(
+            TraceEvent(
+                trace_id=fact.trace_id,
+                run_id=fact.state.run_id,
+                user_id=fact.state.user_id,
+                session_id=fact.state.session_id,
+                node_name=fact.node_name,
+                event_type="observability",
+                canonical_event="tool.retry.scheduled",
+                observation_type="event",
+                observation_scope="iteration",
+                span_id=new_span_id(),
+                parent_span_id=fact.parent_span_id,
+                capability=fact.capability,
+                tool_name=fact.tool_name,
+                status="scheduled",
+                error_code=fact.error_code,
+                attributes=common,
+                created_at=fact.occurred_at,
+            )
+        )
+
     def publish_assistant_step(self, fact: AssistantStepFact) -> None:
         """Publish one ReAct step without reconstructing either projection."""
 
@@ -397,6 +476,17 @@ class RuntimeEventPublisher:
                             "tool_call_id": fact.tool_call_id,
                             "step_id": fact.step_id,
                             "retry_count": fact.retry_count,
+                            "execution_retry_count": (
+                                fact.execution_retry_count
+                                if fact.execution_retry_count is not None
+                                else fact.retry_count
+                            ),
+                            "attempt_count": (
+                                fact.attempt_count
+                                if fact.attempt_count is not None
+                                else fact.retry_count + 1
+                            ),
+                            "retry_exhausted": fact.retry_exhausted,
                             "tool_reported_latency_ms": fact.reported_latency_ms,
                             "tool_category": fact.tool_contract.get("category"),
                         }

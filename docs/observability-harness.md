@@ -112,6 +112,18 @@ call，Runtime 将其记录为 `finalization protocol violation`，不执行工�
 `finalize_protocol_retry`；再次失败时使用不包含内部限制数值的诚实降级答复。具体预算、跳过数量和
 guard 原因只保留在 trace/metadata。
 
+`run_phase` 是 phase 控制的唯一事实；`runtime.phase.changed` 明确记录 `from_phase`、`to_phase`、
+`reason` 和 `source`。`react.iteration` 继续表示一次模型决策循环，因此 FINALIZE 请求仍位于新的
+`react.iteration` 内，其实际阶段以内部 `llm.chat.run_phase` 为准。
+`loop_guard.triggered` 是通用 guard 事实，通过
+`disposition=block_action | finalize | terminate` 表明阻止当前动作、进入最终回答或直接终止，
+不能仅凭事件名推断一定进入哪一个 phase。
+
+read Tool 的 Provider 自动重试发生在同一个 Tool span 和 `tool_call_id` 内，不产生新的
+`react.iteration`。每次可重试失败记录 `tool.attempt.failed` 和 `tool.retry.scheduled`，最终
+`tool.finished` / `tool.failed` 记录 `attempt_count`、`execution_retry_count` 和
+`retry_exhausted`；模型修改参数后发起的新 Tool call 是独立的 ReAct action。
+
 The versioned `agent_service_turn_latency_v2` summary also exposes only bounded
 stream facts: `stream_requested`, `provider_token_stream_seen`,
 `stream_chunk_count`, `first_stream_chunk_latency_ms`, and
@@ -442,8 +454,10 @@ public names, but they should map to this vocabulary.
 | `tool.started` | Tool execution lifecycle began through `ToolExecutor`. |
 | `tool.finished` | Tool returned successfully, including duplicate suppression. |
 | `tool.failed` | Tool failed, budget was blocked, or cancellation interrupted execution. |
+| `tool.attempt.failed` / `tool.retry.scheduled` | One execution attempt failed and a retry was scheduled inside the same logical Tool call. |
 | `tool.observation` | Tool result was converted into assistant-facing observation data. |
-| `loop_guard.triggered` | ReAct guard stopped or redirected the loop. |
+| `loop_guard.triggered` | ReAct guard blocked, finalized, or terminated according to its explicit disposition. |
+| `runtime.phase.changed` | Runtime changed between explicit foreground phases, currently `ACT -> FINALIZE`. |
 | `response.delta` | User-visible response text chunk was emitted. |
 | `response.final` | Final response was set. |
 | `response.delivered` | Realtime/entry recorded the final text actually delivered to the client. |

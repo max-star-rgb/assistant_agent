@@ -197,6 +197,9 @@ Last updated: 2026-07-28
   evidence。它不把 evidence 降级为单一 summary，也不保留 `assistant.tool_calls -> tool`
   协议序列。模型在该阶段返回 tool call 属于
   `finalization protocol violation`，Runtime 不执行，并且最多做一次同样无工具的严格纠正。
+- `FINALIZE` 的 system message 独占回答控制策略；user message 只包含带 `current_request` 和
+  `tool_evidence` 的 JSON 数据，不再使用 `<finalize_input>` 或重复追加回答指令。
+  `duplicate_failed_tool_call` 等仅供 Runtime 诊断的 guard observation 不进入最终回答 evidence。
 - `FINALIZE` 继承本轮 `ResponseStyle`，不再用“明确结论”等措辞诱导固定的
   “结论—原因—建议”报告模板。
 - session summary renderer 明确把摘要标注为不可信历史数据，不作为长期记忆或系统指令。

@@ -6,6 +6,7 @@ from assistant_agent.runtime.event_publisher import (
     RunStartedFact,
     RunTerminalFact,
     RuntimeEventPublisher,
+    ToolRetryFact,
     ToolStartedFact,
     ToolTerminalFact,
 )
@@ -90,6 +91,22 @@ def test_tool_facts_project_once_with_shared_span_and_timestamp() -> None:
     )
 
     publisher.publish_tool_started(started)
+    publisher.record_tool_retry(
+        ToolRetryFact(
+            state=state,
+            trace_id=state.trace_id,
+            node_name="tool-node",
+            capability="capability-sentinel",
+            tool_name="tool-sentinel",
+            tool_call_id=call.tool_call_id,
+            step_id="step-sentinel",
+            parent_span_id="span-sentinel",
+            failed_attempt=1,
+            next_attempt=2,
+            max_attempts=2,
+            error_code="provider_timeout",
+        )
+    )
     publisher.publish_tool_terminal(
         ToolTerminalFact(
             state=state,
@@ -104,13 +121,15 @@ def test_tool_facts_project_once_with_shared_span_and_timestamp() -> None:
             status="succeeded",
             latency_ms=17,
             reported_latency_ms=11,
-            retry_count=0,
+            retry_count=1,
             tool_contract={"category": "read"},
             input_summary={"field_names": ["value"]},
             output_summary={"success": True},
             post_tool_call={"status": "succeeded"},
             contract_summary={},
             output_ref="output-sentinel",
+            attempt_count=2,
+            execution_retry_count=1,
         )
     )
 
@@ -121,12 +140,18 @@ def test_tool_facts_project_once_with_shared_span_and_timestamp() -> None:
     trace_events = trace_store.list_by_run(state.run_id)
     assert [event.canonical_event for event in trace_events] == [
         "tool.started",
+        "tool.attempt.failed",
+        "tool.retry.scheduled",
         "tool.finished",
     ]
-    assert {event.span_id for event in trace_events} == {"span-sentinel"}
+    assert trace_events[1].parent_span_id == "span-sentinel"
+    assert trace_events[2].parent_span_id == "span-sentinel"
+    assert trace_events[3].span_id == "span-sentinel"
     assert event_sink.events[0].created_at == trace_events[0].created_at
-    assert event_sink.events[1].created_at == trace_events[1].created_at
+    assert event_sink.events[1].created_at == trace_events[3].created_at
     assert event_sink.events[1].output_ref == "output-sentinel"
+    assert trace_events[3].attributes["attempt_count"] == 2
+    assert trace_events[3].attributes["execution_retry_count"] == 1
 
 
 def test_tool_failure_keeps_delivery_error_separate_from_trace_summary() -> None:

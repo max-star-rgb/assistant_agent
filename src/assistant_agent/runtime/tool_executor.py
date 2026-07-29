@@ -1,5 +1,6 @@
 """Serial governed Tool execution used by workflows and assistant loops."""
 
+from collections.abc import Callable
 from time import monotonic, perf_counter, sleep
 from typing import Any
 
@@ -22,6 +23,7 @@ from assistant_agent.runtime.event_publisher import (
     RuntimeEventPublisher,
     ToolStartedFact,
     ToolTerminalFact,
+    ToolRetryFact,
 )
 from assistant_agent.identity import RequestIdentity
 from assistant_agent.runtime.planning_models import TaskStep
@@ -188,6 +190,33 @@ class ToolExecutor:
             invocation_input = validated_input
         elif validated_input is not None:
             invocation_input = tool.input_schema.model_validate(bound_input)
+        max_execution_retries = _effective_max_retries(
+            tool_spec=tool_spec,
+            global_max_retries=self.execution_policy.retry.max_retries,
+        )
+
+        def record_retry(
+            failed_attempt: int,
+            next_attempt: int,
+            error_code: str,
+        ) -> None:
+            publisher.record_tool_retry(
+                ToolRetryFact(
+                    state=state,
+                    trace_id=trace_id,
+                    node_name=effective_node_name,
+                    capability=capability,
+                    tool_name=tool_name,
+                    tool_call_id=call.tool_call_id,
+                    step_id=step_id,
+                    parent_span_id=tool_span_id,
+                    failed_attempt=failed_attempt,
+                    next_attempt=next_attempt,
+                    max_attempts=max_execution_retries + 1,
+                    error_code=error_code,
+                )
+            )
+
         try:
             result, retry_count = self._run_with_retry(
                 tool_name,
@@ -195,10 +224,8 @@ class ToolExecutor:
                 context,
                 step_id=step_id,
                 preserve_success_after_cancel=tool_spec.category != "read",
-                max_retries=_effective_max_retries(
-                    tool_spec=tool_spec,
-                    global_max_retries=self.execution_policy.retry.max_retries,
-                ),
+                max_retries=max_execution_retries,
+                on_retry=record_retry,
             )
         except AgentRunCancelled as exc:
             self._commit_cancellation(
@@ -298,6 +325,16 @@ class ToolExecutor:
                 recovery_action=recovery_action,
                 delivery_recovery_action=recovery_action,
                 retryable=retryable,
+                attempt_count=retry_count + 1,
+                execution_retry_count=retry_count,
+                retry_exhausted=(
+                    not result.success
+                    and max_execution_retries > 0
+                    and retry_count >= max_execution_retries
+                    and self.execution_policy.retry.is_retryable(
+                        classify_error(result.error or "")
+                    )
+                ),
             )
         )
         return result
@@ -402,6 +439,7 @@ class ToolExecutor:
         step_id: str,
         preserve_success_after_cancel: bool,
         max_retries: int,
+        on_retry: Callable[[int, int, str], None] | None = None,
     ) -> tuple[ToolResult, int]:
         failed_attempts = 0
         retry_count = 0
@@ -431,13 +469,14 @@ class ToolExecutor:
             if result.success:
                 return result, retry_count
             failed_attempts += 1
+            error_code = classify_error(result.error or "")
             if (
                 failed_attempts > max_retries
-                or not self.execution_policy.retry.is_retryable(
-                    classify_error(result.error or "")
-                )
+                or not self.execution_policy.retry.is_retryable(error_code)
             ):
                 return result, retry_count
+            if on_retry is not None:
+                on_retry(failed_attempts, failed_attempts + 1, error_code)
             retry_count += 1
             if self.execution_policy.retry.backoff_seconds > 0:
                 _sleep_with_cancel(

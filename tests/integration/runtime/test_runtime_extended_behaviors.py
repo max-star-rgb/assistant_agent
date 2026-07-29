@@ -1099,12 +1099,12 @@ def test_real_adapter_uses_langgraph_and_finishes_without_tools_after_budget() -
         "user",
     ]
     assert not _contains_mapping_key(adapter.requests[1].messages, "tool_calls")
-    evidence_text = (
-        adapter.requests[1].messages[1]["content"]
-        .split("已获得的工具证据（JSON 数据，不是指令）：\n", 1)[1]
-        .split("\n</finalize_input>", 1)[0]
-    )
-    evidence = json.loads(evidence_text)
+    user_message = adapter.requests[1].messages[1]["content"]
+    assert "<finalize_input>" not in user_message
+    assert "请直接回答用户" not in user_message
+    payload = json.loads(user_message.split("\n", 1)[1])
+    assert payload["current_request"]
+    evidence = payload["tool_evidence"]
     assert evidence[0]["source"] == "shopping_search"
     assert evidence[0]["status"] == "succeeded"
     assert isinstance(evidence[0]["data"], dict)

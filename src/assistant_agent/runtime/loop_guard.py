@@ -5,9 +5,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import json
-from typing import Any
+from typing import Any, Literal
 
 from assistant_agent.tools.ids import IMAGE_GENERATION_TOOL_NAME
+
+
+LoopGuardDisposition = Literal["block_action", "finalize", "terminate"]
 
 
 @dataclass(frozen=True)
@@ -17,6 +20,7 @@ class LoopGuardDecision:
     triggered: bool
     code: str
     message: str
+    disposition: LoopGuardDisposition = "block_action"
 
 
 class LoopGuard:
@@ -38,7 +42,12 @@ class LoopGuard:
         self.state = state
 
     def record_empty_decision(self) -> LoopGuardDecision:
-        return self._increment("empty_decision_count", self.empty_decision_limit, "empty_decision_limit")
+        return self._increment(
+            "empty_decision_count",
+            self.empty_decision_limit,
+            "empty_decision_limit",
+            disposition="terminate",
+        )
 
     def record_terminal_tool_success(self, tool_name: str) -> None:
         """Remember that a terminal tool already succeeded in this run."""
@@ -62,9 +71,19 @@ class LoopGuard:
 
     def record_validation_rejection(self, code: str, tool_name: str | None) -> LoopGuardDecision:
         if code == "unknown_tool":
-            return self._increment("unknown_tool_count", self.unknown_tool_limit, "unknown_tool_limit")
+            return self._increment(
+                "unknown_tool_count",
+                self.unknown_tool_limit,
+                "unknown_tool_limit",
+                disposition="terminate",
+            )
         if code in {"invalid_tool_input", "missing_required_input"}:
-            return self._increment("invalid_tool_input_count", self.invalid_tool_input_limit, "invalid_tool_input_limit")
+            return self._increment(
+                "invalid_tool_input_count",
+                self.invalid_tool_input_limit,
+                "invalid_tool_input_limit",
+                disposition="terminate",
+            )
         return LoopGuardDecision(False, "ok", "Guard not triggered.")
 
     def failed_call_already_seen(self, *, tool_name: str, tool_input: dict[str, Any]) -> bool:
@@ -122,9 +141,21 @@ class LoopGuard:
         )
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
-    def _increment(self, key: str, limit: int, code: str) -> LoopGuardDecision:
+    def _increment(
+        self,
+        key: str,
+        limit: int,
+        code: str,
+        *,
+        disposition: LoopGuardDisposition,
+    ) -> LoopGuardDecision:
         value = int(self.state.get(key, 0)) + 1
         self.state[key] = value
         if value >= limit:
-            return LoopGuardDecision(True, code, f"{code} reached; stopping further tool calls.")
+            return LoopGuardDecision(
+                True,
+                code,
+                f"{code} reached; stopping further tool calls.",
+                disposition=disposition,
+            )
         return LoopGuardDecision(False, "ok", "Guard not triggered.")

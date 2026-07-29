@@ -1,5 +1,7 @@
 """Regressions for generic foreground ReAct tool-failure recovery."""
 
+import json
+
 from pydantic import BaseModel, Field
 
 from assistant_agent.runtime.runtime import AgentGraphRuntime
@@ -14,6 +16,8 @@ from assistant_agent.tools.models import ToolResult
 from assistant_agent.runtime.chat_adapter import ChatRequest, ChatResult
 from assistant_agent.runtime.event_sink import ListEventSink
 from assistant_agent.runtime.session_store import InMemorySessionStore
+from assistant_agent.observability.trace_store import InMemoryTraceStore
+from assistant_agent.providers.provider_policy import ProviderExecutionPolicy, RetryPolicy
 from assistant_agent.tools.base import ToolBase, ToolContext
 from assistant_agent.tools.registry import ToolRegistry
 
@@ -63,6 +67,22 @@ class _RecoverableProbeTool(ToolBase):
 
 class _SideEffectProbeTool(_RecoverableProbeTool):
     category = "write"
+
+
+class _TransientProbeTool(_RecoverableProbeTool):
+    def _run(self, input: _ProbeInput, context: ToolContext) -> ToolResult:
+        self.inputs.append(input.value)
+        if len(self.inputs) == 1:
+            return ToolResult(
+                tool_name=self.name,
+                success=False,
+                error="provider_timeout: transient-sentinel",
+            )
+        return ToolResult(
+            tool_name=self.name,
+            success=True,
+            data={"value": input.value},
+        )
 
 
 class _NonrecoverableProbeTool(_RecoverableProbeTool):
@@ -127,6 +147,7 @@ def _runtime(
     tool: _RecoverableProbeTool,
     adapter: _ScriptedChatAdapter,
     sink: ListEventSink | None = None,
+    trace_store: InMemoryTraceStore | None = None,
 ) -> AgentGraphRuntime:
     registry = ToolRegistry()
     registry.register(tool)
@@ -136,6 +157,7 @@ def _runtime(
         chat_adapter=adapter,
         session_store=InMemorySessionStore(),
         event_sink=sink,
+        trace_store=trace_store,
     )
 
 
@@ -172,6 +194,48 @@ def test_tool_executor_failure_mode_controls_run_state_without_tool_specific_rul
     assert strict_state.errors[0].details["recovery_action"] == "stop_with_error"
     assert react_state.status == "running"
     assert react_state.errors[0].details["recovery_action"] == "continue_to_model"
+
+
+def test_read_tool_execution_retry_is_observable_inside_one_logical_call() -> None:
+    registry = ToolRegistry()
+    tool = _TransientProbeTool()
+    registry.register(tool)
+    trace_store = InMemoryTraceStore()
+    state = AgentState.from_request(_request())
+    executor = ToolExecutor(
+        registry=registry,
+        execution_policy=ProviderExecutionPolicy(
+            retry=RetryPolicy(max_retries=1),
+        ),
+    )
+
+    result = executor.run_tool(
+        state,
+        "retry-step",
+        "recoverable_probe",
+        {"value": "same-input"},
+        trace_store=trace_store,
+        trace_id=state.trace_id,
+    )
+
+    assert result.success is True
+    assert tool.inputs == ["same-input", "same-input"]
+    assert len(state.tool_calls) == 1
+    events = trace_store.list_by_trace(state.trace_id)
+    assert [event.canonical_event for event in events] == [
+        "tool.started",
+        "tool.attempt.failed",
+        "tool.retry.scheduled",
+        "tool.finished",
+    ]
+    retry_event = events[2]
+    assert retry_event.attributes["failed_attempt"] == 1
+    assert retry_event.attributes["next_attempt"] == 2
+    assert retry_event.attributes["max_attempts"] == 2
+    terminal = events[-1]
+    assert terminal.attributes["attempt_count"] == 2
+    assert terminal.attributes["execution_retry_count"] == 1
+    assert terminal.attributes["retry_exhausted"] is False
 
 
 def test_failed_tool_result_returns_to_llm_and_completes_with_degraded_answer() -> None:
@@ -242,7 +306,7 @@ def test_failed_tool_call_allows_retry_with_changed_arguments() -> None:
     assert state.response.message
 
 
-def test_identical_failed_tool_call_is_blocked_then_forces_answer_only_turn() -> None:
+def test_identical_failed_tool_call_is_blocked_then_enters_finalize() -> None:
     tool = _RecoverableProbeTool()
     adapter = _ScriptedChatAdapter(
         [
@@ -252,13 +316,41 @@ def test_identical_failed_tool_call_is_blocked_then_forces_answer_only_turn() ->
         ]
     )
 
-    state = _runtime(tool, adapter).run_state(_request())
+    trace_store = InMemoryTraceStore()
+    state = _runtime(tool, adapter, trace_store=trace_store).run_state(_request())
 
     assert state.status == "completed"
     assert tool.inputs == ["bad"]
     assert len(state.tool_calls) == 1
     assert adapter.requests[2].tools == []
-    assert state.request.metadata["assistant_answer_only_reason"] == "duplicate_failed_tool_call"
+    assert state.request.metadata["assistant_run_phase"] == "finalize"
+    assert state.request.metadata["assistant_finalize_reason"] == "duplicate_failed_tool_call"
+    assert "assistant_answer_only_next_turn" not in state.request.metadata
+    assert "assistant_answer_only_reason" not in state.request.metadata
+    trace_events = trace_store.list_by_trace(state.trace_id)
+    guard_index = next(
+        index
+        for index, event in enumerate(trace_events)
+        if event.canonical_event == "loop_guard.triggered"
+    )
+    phase_index = next(
+        index
+        for index, event in enumerate(trace_events)
+        if event.canonical_event == "runtime.phase.changed"
+        and event.attributes.get("reason") == "duplicate_failed_tool_call"
+    )
+    assert guard_index < phase_index
+    guard = trace_events[guard_index]
+    assert guard.attributes["disposition"] == "finalize"
+    assert guard.attributes["from_phase"] == "act"
+    assert guard.attributes["to_phase"] == "finalize"
+    payload = json.loads(
+        adapter.requests[2].messages[1]["content"].split("\n", 1)[1]
+    )
+    assert [
+        item.get("error", {}).get("code")
+        for item in payload["tool_evidence"]
+    ] == ["provider_unsupported_input"]
     assert state.response is not None
     assert state.response.message
 
@@ -273,7 +365,8 @@ def test_nonrecoverable_failure_blocks_changed_arguments_for_same_tool() -> None
         ]
     )
 
-    state = _runtime(tool, adapter).run_state(_request())
+    trace_store = InMemoryTraceStore()
+    state = _runtime(tool, adapter, trace_store=trace_store).run_state(_request())
 
     assert state.status == "completed"
     assert tool.inputs == ["first"]
@@ -282,11 +375,24 @@ def test_nonrecoverable_failure_blocks_changed_arguments_for_same_tool() -> None
         "nonrecoverable_failed_tools"
     ] == ["recoverable_probe"]
     assert adapter.requests[2].tools
+    guard = next(
+        event
+        for event in trace_store.list_by_trace(state.trace_id)
+        if event.canonical_event == "loop_guard.triggered"
+    )
+    assert guard.attributes["guard_code"] == "nonrecoverable_tool_retry_blocked"
+    assert guard.attributes["disposition"] == "block_action"
+    assert guard.attributes["from_phase"] == "act"
+    assert guard.attributes["to_phase"] == "act"
+    assert not any(
+        event.canonical_event == "runtime.phase.changed"
+        for event in trace_store.list_by_trace(state.trace_id)
+    )
     assert state.response is not None
     assert state.response.message
 
 
-def test_failed_side_effect_tool_forces_answer_only_without_retry() -> None:
+def test_failed_side_effect_tool_enters_finalize_without_retry() -> None:
     tool = _SideEffectProbeTool()
     adapter = _ScriptedChatAdapter(
         [
@@ -305,4 +411,5 @@ def test_failed_side_effect_tool_forces_answer_only_without_retry() -> None:
     assert state.status == "completed"
     assert tool.inputs == ["bad"]
     assert adapter.requests[1].tools == []
-    assert state.request.metadata["assistant_answer_only_reason"] == "failed_side_effect_tool"
+    assert state.request.metadata["assistant_run_phase"] == "finalize"
+    assert state.request.metadata["assistant_finalize_reason"] == "failed_side_effect_tool"

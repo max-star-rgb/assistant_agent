@@ -169,11 +169,29 @@ def _enter_finalize_phase(
     graph_state: AssistantLoopState,
     *,
     reason: str,
+    source: str,
 ) -> None:
+    previous_phase = _run_phase(graph_state)
+    if previous_phase is RunPhase.FINALIZE:
+        return
     graph_state["run_phase"] = RunPhase.FINALIZE
     metadata = graph_state["state"].request.metadata
     metadata["assistant_run_phase"] = RunPhase.FINALIZE.value
     metadata.setdefault("assistant_finalize_reason", reason)
+    _append_trace(
+        graph_state,
+        event_type="observability",
+        canonical_event="runtime.phase.changed",
+        observation_type="event",
+        observation_scope="runtime",
+        status="transitioned",
+        attributes={
+            "from_phase": previous_phase.value,
+            "to_phase": RunPhase.FINALIZE.value,
+            "reason": reason,
+            "source": source,
+        },
+    )
 
 
 def assistant_node(graph_state: AssistantLoopState) -> AssistantLoopState:
@@ -255,19 +273,17 @@ def _build_decision_context(
     is_mock: bool,
 ) -> AssistantDecisionContext:
     tool_calls_used = int(graph_state.get("tool_calls_used", len(tool_observations)))
-    answer_only_reason = request.metadata.pop("assistant_answer_only_next_turn", None)
-    answer_only = isinstance(answer_only_reason, str) and bool(answer_only_reason)
     if tool_calls_used >= max_iterations:
-        _enter_finalize_phase(graph_state, reason="tool_call_budget_exhausted")
-    elif answer_only:
-        _enter_finalize_phase(graph_state, reason=answer_only_reason)
+        _enter_finalize_phase(
+            graph_state,
+            reason="tool_call_budget_exhausted",
+            source="tool_budget",
+        )
     run_phase = _run_phase(graph_state)
     if run_phase is RunPhase.FINALIZE:
         tool_specs = []
         if tool_calls_used >= max_iterations:
             request.metadata["tool_call_budget_exhausted"] = True
-        if answer_only:
-            request.metadata["assistant_answer_only_reason"] = answer_only_reason
     else:
         try:
             tool_specs = _list_tool_specs(graph_state["tool_executor"].registry)
@@ -1019,6 +1035,7 @@ def _apply_decision_guards(
             True,
             "duplicate_terminal_tool",
             f"{decision.tool_name} already succeeded in this run; answering with the existing result instead of calling it again.",
+            disposition="terminate",
         )
         _record_loop_guard(graph_state, guard)
         return AssistantTextOutput(
@@ -1040,6 +1057,7 @@ def _apply_decision_guards(
                 f"{decision.tool_name} already reported a non-recoverable failure "
                 "in this run; another call to the same tool was blocked."
             ),
+            disposition="block_action",
         )
         _record_loop_guard(graph_state, guard)
         return decision.model_copy(
@@ -1060,6 +1078,7 @@ def _apply_decision_guards(
             True,
             "duplicate_failed_tool_call",
             f"An identical failed {decision.tool_name} call was blocked before execution.",
+            disposition="finalize",
         )
         _record_loop_guard(graph_state, guard)
         return decision.model_copy(
@@ -1432,6 +1451,7 @@ def execute_requested_tool_node(graph_state: AssistantLoopState) -> AssistantLoo
             _enter_finalize_phase(
                 current,
                 reason="tool_call_budget_exhausted",
+                source="tool_budget",
             )
             metadata["tool_call_budget_exhausted"] = True
             metadata["tool_calls_skipped_for_budget"] = (
@@ -1450,6 +1470,7 @@ def execute_requested_tool_node(graph_state: AssistantLoopState) -> AssistantLoo
             _enter_finalize_phase(
                 current,
                 reason="tool_call_budget_exhausted",
+                source="tool_budget",
             )
         if current["state"].status in {"failed", "cancelled"}:
             break
@@ -1520,8 +1541,10 @@ def _execute_single_requested_tool_node(graph_state: AssistantLoopState) -> Assi
             code="duplicate_failed_tool_call",
             message="An identical failed tool call was blocked before execution.",
         )
-        state.request.metadata["assistant_answer_only_next_turn"] = (
-            "duplicate_failed_tool_call"
+        _enter_finalize_phase(
+            graph_state,
+            reason="duplicate_failed_tool_call",
+            source="loop_guard",
         )
         return {
             **graph_state,
@@ -1637,8 +1660,10 @@ def _execute_single_requested_tool_node(graph_state: AssistantLoopState) -> Assi
             _mark_plan_mode_status(state, "replanning")
         tool_spec = tool_executor.registry.get_spec(tool_name)
         if not result.success and tool_spec.category in {"write", "dangerous"}:
-            state.request.metadata["assistant_answer_only_next_turn"] = (
-                "failed_side_effect_tool"
+            _enter_finalize_phase(
+                graph_state,
+                reason="failed_side_effect_tool",
+                source="tool_failure",
             )
         if result.success:
             LoopGuard(state.request.metadata).record_terminal_tool_success(tool_name)
@@ -1655,10 +1680,15 @@ def _execute_single_requested_tool_node(graph_state: AssistantLoopState) -> Assi
         )
         if guard.triggered:
             _record_loop_guard(graph_state, guard)
-            if _is_plan_mode_active(state):
-                pass
-            else:
-                state.request.metadata["assistant_answer_only_next_turn"] = guard.code
+            if (
+                not _is_plan_mode_active(state)
+                and guard.disposition == "finalize"
+            ):
+                _enter_finalize_phase(
+                    graph_state,
+                    reason=guard.code,
+                    source="loop_guard",
+                )
 
         outputs_by_step = {
             **graph_state["outputs_by_step"],
@@ -2161,11 +2191,22 @@ def _record_action_rejection(
 
 
 def _record_loop_guard(graph_state: AssistantLoopState, guard: LoopGuardDecision) -> None:
+    current_phase = _run_phase(graph_state)
     _append_trace(
         graph_state,
         event_type="loop_guard_triggered",
         canonical_event="loop_guard.triggered",
         status="triggered",
+        attributes={
+            "guard_code": guard.code,
+            "disposition": guard.disposition,
+            "from_phase": current_phase.value,
+            "to_phase": (
+                RunPhase.FINALIZE.value
+                if guard.disposition == "finalize"
+                else current_phase.value
+            ),
+        },
         error={"code": guard.code, "message": guard.message},
     )
 
