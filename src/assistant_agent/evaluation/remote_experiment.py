@@ -1,0 +1,438 @@
+"""Launch the repository Agent eval CLI from a signed Langfuse webhook."""
+
+from __future__ import annotations
+
+import hashlib
+import hmac
+import json
+import os
+import subprocess
+import sys
+import threading
+import time
+from collections.abc import Callable, Mapping
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any, Literal
+
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, ValidationError, model_validator
+
+
+REMOTE_EXPERIMENT_ENABLED_ENV = (
+    "ASSISTANT_AGENT_LANGFUSE_REMOTE_EXPERIMENT_ENABLED"
+)
+REMOTE_EXPERIMENT_SIGNING_SECRET_ENV = (
+    "ASSISTANT_AGENT_LANGFUSE_REMOTE_EXPERIMENT_SIGNING_SECRET"
+)
+REMOTE_EXPERIMENT_DATASET_ENV = (
+    "ASSISTANT_AGENT_LANGFUSE_REMOTE_EXPERIMENT_DATASET"
+)
+DEFAULT_REMOTE_EXPERIMENT_DATASET = "assistant-agent-regression"
+REMOTE_EXPERIMENT_SIGNATURE_MAX_AGE_SECONDS = 300
+_SAFE_IDENTIFIER_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$"
+
+
+class RemoteExperimentConfig(BaseModel):
+    """Operator-editable fields accepted from the Langfuse setup form."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    task: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=120,
+        pattern=_SAFE_IDENTIFIER_PATTERN,
+    )
+    suite: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=120,
+        pattern=_SAFE_IDENTIFIER_PATTERN,
+    )
+    run_name: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=120,
+        pattern=_SAFE_IDENTIFIER_PATTERN,
+        validation_alias=AliasChoices("runName", "run_name"),
+    )
+
+    @model_validator(mode="after")
+    def require_one_selector(self) -> RemoteExperimentConfig:
+        if (self.task is None) == (self.suite is None):
+            raise ValueError("Exactly one of config.task or config.suite is required.")
+        return self
+
+
+class RemoteExperimentRequest(BaseModel):
+    """Subset of the Langfuse remote experiment payload used by this runner."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    dataset_id: str = Field(
+        min_length=1,
+        max_length=200,
+        validation_alias=AliasChoices("datasetId", "dataset_id"),
+    )
+    dataset_name: str = Field(
+        min_length=1,
+        max_length=200,
+        validation_alias=AliasChoices("datasetName", "dataset_name"),
+    )
+    config: RemoteExperimentConfig
+
+
+class RemoteExperimentAccepted(BaseModel):
+    status: Literal["accepted"] = "accepted"
+    trigger_id: str
+    duplicate: bool = False
+    dataset_name: str
+    selector_kind: Literal["task", "suite"]
+    selector_id: str
+    run_name: str
+
+
+class RemoteExperimentSettings(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    enabled: bool = False
+    signing_secret: str | None = None
+    dataset_name: str = DEFAULT_REMOTE_EXPERIMENT_DATASET
+    repository_root: Path
+    artifact_root: Path
+    signature_max_age_seconds: int = REMOTE_EXPERIMENT_SIGNATURE_MAX_AGE_SECONDS
+
+    @classmethod
+    def from_env(
+        cls,
+        env: Mapping[str, str],
+        *,
+        repository_root: Path | None = None,
+    ) -> RemoteExperimentSettings:
+        root = repository_root or Path(__file__).resolve().parents[3]
+        return cls(
+            enabled=_truthy(env.get(REMOTE_EXPERIMENT_ENABLED_ENV)),
+            signing_secret=_nonempty(
+                env.get(REMOTE_EXPERIMENT_SIGNING_SECRET_ENV)
+            ),
+            dataset_name=(
+                _nonempty(env.get(REMOTE_EXPERIMENT_DATASET_ENV))
+                or DEFAULT_REMOTE_EXPERIMENT_DATASET
+            ),
+            repository_root=root,
+            artifact_root=root / ".data" / "evals" / "remote",
+        )
+
+
+class RemoteExperimentError(RuntimeError):
+    """Base error for safe HTTP mapping."""
+
+
+class RemoteExperimentDisabled(RemoteExperimentError):
+    pass
+
+
+class RemoteExperimentUnauthorized(RemoteExperimentError):
+    pass
+
+
+class RemoteExperimentInvalid(RemoteExperimentError):
+    pass
+
+
+class RemoteExperimentLaunchFailed(RemoteExperimentError):
+    pass
+
+
+PopenFactory = Callable[..., subprocess.Popen[bytes]]
+Reaper = Callable[[subprocess.Popen[bytes], Path, dict[str, Any]], None]
+
+
+class RemoteExperimentLauncher:
+    """Validate one signed request and start the fixed eval CLI asynchronously."""
+
+    def __init__(
+        self,
+        settings: RemoteExperimentSettings,
+        *,
+        env: Mapping[str, str] | None = None,
+        popen_factory: PopenFactory = subprocess.Popen,
+        now: Callable[[], float] = time.time,
+        reaper: Reaper | None = None,
+    ) -> None:
+        self.settings = settings
+        self._env = dict(env if env is not None else os.environ)
+        self._popen_factory = popen_factory
+        self._now = now
+        self._reaper = reaper or _start_process_reaper
+        self._lock = threading.Lock()
+
+    def launch(
+        self,
+        *,
+        raw_body: bytes,
+        signature_header: str | None,
+    ) -> RemoteExperimentAccepted:
+        self._require_ready()
+        if not _verify_signature(
+            raw_body=raw_body,
+            signature_header=signature_header,
+            secret=self.settings.signing_secret or "",
+            now=self._now(),
+            max_age_seconds=self.settings.signature_max_age_seconds,
+        ):
+            raise RemoteExperimentUnauthorized(
+                "Langfuse remote experiment signature is invalid or expired."
+            )
+        try:
+            request = RemoteExperimentRequest.model_validate_json(raw_body)
+        except ValidationError as exc:
+            raise RemoteExperimentInvalid(
+                "Langfuse remote experiment payload is invalid."
+            ) from exc
+        if request.dataset_name != self.settings.dataset_name:
+            raise RemoteExperimentInvalid(
+                f"Dataset {request.dataset_name!r} is not allowed."
+            )
+
+        selector_kind, selector_id = self._validate_selector(request.config)
+        trigger_id = _trigger_id(signature_header or "", raw_body)
+        run_name = request.config.run_name or (
+            f"langfuse-ui-{selector_id}-{trigger_id[:8]}"
+        )
+        accepted = RemoteExperimentAccepted(
+            trigger_id=trigger_id,
+            dataset_name=request.dataset_name,
+            selector_kind=selector_kind,
+            selector_id=selector_id,
+            run_name=run_name,
+        )
+        return self._launch_once(accepted)
+
+    def _require_ready(self) -> None:
+        if not self.settings.enabled:
+            raise RemoteExperimentDisabled(
+                "Langfuse remote experiments are disabled."
+            )
+        if not self.settings.signing_secret:
+            raise RemoteExperimentDisabled(
+                "Langfuse remote experiment signing secret is not configured."
+            )
+        if self._env.get("MULTIMODAL_AGENT_PROVIDER_MODE") != "real":
+            raise RemoteExperimentDisabled(
+                "Langfuse remote experiments require real Provider mode."
+            )
+
+    def _validate_selector(
+        self,
+        config: RemoteExperimentConfig,
+    ) -> tuple[Literal["task", "suite"], str]:
+        if config.task is not None:
+            task_path = (
+                self.settings.repository_root
+                / "evals"
+                / "agent"
+                / "tasks"
+                / config.task
+                / "task.json"
+            )
+            if not task_path.is_file():
+                raise RemoteExperimentInvalid(
+                    f"Unknown Agent eval task: {config.task}."
+                )
+            return "task", config.task
+
+        suites_path = (
+            self.settings.repository_root
+            / "evals"
+            / "agent"
+            / "suites.json"
+        )
+        try:
+            suites = json.loads(suites_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise RemoteExperimentDisabled(
+                "Agent eval suite registry is unavailable."
+            ) from exc
+        if config.suite not in suites:
+            raise RemoteExperimentInvalid(
+                f"Unknown Agent eval suite: {config.suite}."
+            )
+        return "suite", str(config.suite)
+
+    def _launch_once(
+        self,
+        accepted: RemoteExperimentAccepted,
+    ) -> RemoteExperimentAccepted:
+        command = self._command(accepted)
+        self.settings.artifact_root.mkdir(parents=True, exist_ok=True)
+        receipt_path = (
+            self.settings.artifact_root / f"{accepted.trigger_id}.json"
+        )
+        with self._lock:
+            try:
+                receipt_fd = os.open(
+                    receipt_path,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                    0o600,
+                )
+            except FileExistsError:
+                return accepted.model_copy(update={"duplicate": True})
+
+            stdout_path = (
+                self.settings.artifact_root
+                / f"{accepted.trigger_id}.stdout.log"
+            )
+            stderr_path = (
+                self.settings.artifact_root
+                / f"{accepted.trigger_id}.stderr.log"
+            )
+            stdout_file = None
+            stderr_file = None
+            try:
+                stdout_file = stdout_path.open("ab")
+                stderr_file = stderr_path.open("ab")
+                process = self._popen_factory(
+                    command,
+                    cwd=self.settings.repository_root,
+                    env=self._env,
+                    stdin=subprocess.DEVNULL,
+                    stdout=stdout_file,
+                    stderr=stderr_file,
+                    start_new_session=True,
+                    shell=False,
+                    close_fds=True,
+                )
+                receipt = {
+                    **accepted.model_dump(mode="json"),
+                    "pid": process.pid,
+                    "created_at": datetime.now(UTC).isoformat(),
+                    "stdout_log": str(stdout_path),
+                    "stderr_log": str(stderr_path),
+                }
+                with os.fdopen(receipt_fd, "w", encoding="utf-8") as receipt_file:
+                    json.dump(receipt, receipt_file, ensure_ascii=False)
+                    receipt_file.write("\n")
+                receipt_fd = -1
+                self._reaper(process, receipt_path, receipt)
+                return accepted
+            except RemoteExperimentLaunchFailed:
+                if receipt_fd >= 0:
+                    os.close(receipt_fd)
+                receipt_path.unlink(missing_ok=True)
+                raise
+            except (OSError, ValueError) as exc:
+                if receipt_fd >= 0:
+                    os.close(receipt_fd)
+                receipt_path.unlink(missing_ok=True)
+                raise RemoteExperimentLaunchFailed(
+                    "Failed to start the Agent eval CLI."
+                ) from exc
+            finally:
+                if stdout_file is not None:
+                    stdout_file.close()
+                if stderr_file is not None:
+                    stderr_file.close()
+
+    def _command(self, accepted: RemoteExperimentAccepted) -> list[str]:
+        script_path = (
+            self.settings.repository_root / "scripts" / "run_agent_evals.py"
+        )
+        if not script_path.is_file():
+            raise RemoteExperimentLaunchFailed(
+                "Agent eval CLI entrypoint is unavailable."
+            )
+        return [
+            sys.executable,
+            str(script_path),
+            "--run",
+            f"--{accepted.selector_kind}",
+            accepted.selector_id,
+            "--dataset-name",
+            accepted.dataset_name,
+            "--allow-real-provider",
+            "--run-name",
+            accepted.run_name,
+        ]
+
+
+def _verify_signature(
+    *,
+    raw_body: bytes,
+    signature_header: str | None,
+    secret: str,
+    now: float,
+    max_age_seconds: int,
+) -> bool:
+    if not signature_header or not secret:
+        return False
+    parts: dict[str, str] = {}
+    for item in signature_header.split(","):
+        key, separator, value = item.strip().partition("=")
+        if separator and key and value:
+            parts[key] = value
+    timestamp = parts.get("t")
+    signature = parts.get("s")
+    if timestamp is None or signature is None:
+        return False
+    try:
+        timestamp_seconds = int(timestamp)
+        received = bytes.fromhex(signature)
+    except ValueError:
+        return False
+    if abs(now - timestamp_seconds) > max_age_seconds:
+        return False
+    message = timestamp.encode("utf-8") + b"." + raw_body
+    expected = hmac.new(
+        secret.encode("utf-8"),
+        message,
+        hashlib.sha256,
+    ).digest()
+    return hmac.compare_digest(received, expected)
+
+
+def _trigger_id(signature_header: str, raw_body: bytes) -> str:
+    digest = hashlib.sha256()
+    digest.update(signature_header.encode("utf-8"))
+    digest.update(b"\0")
+    digest.update(raw_body)
+    return digest.hexdigest()[:24]
+
+
+def _start_process_reaper(
+    process: subprocess.Popen[bytes],
+    receipt_path: Path,
+    receipt: dict[str, Any],
+) -> None:
+    def reap() -> None:
+        exit_code = process.wait()
+        completed = {
+            **receipt,
+            "status": "completed" if exit_code == 0 else "failed",
+            "exit_code": exit_code,
+            "finished_at": datetime.now(UTC).isoformat(),
+        }
+        temporary_path = receipt_path.with_suffix(".json.tmp")
+        try:
+            temporary_path.write_text(
+                json.dumps(completed, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+            os.replace(temporary_path, receipt_path)
+        except OSError:
+            temporary_path.unlink(missing_ok=True)
+
+    threading.Thread(
+        target=reap,
+        name=f"agent-eval-reaper-{process.pid}",
+        daemon=True,
+    ).start()
+
+
+def _truthy(value: str | None) -> bool:
+    return (value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _nonempty(value: str | None) -> str | None:
+    normalized = (value or "").strip()
+    return normalized or None

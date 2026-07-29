@@ -279,5 +279,43 @@ ToolOutcomeExpectation.must_fail_with(
 Environment validation、凭据、Dataset、Trace 导出、Evidence 解析和 Judge 故障属于评测基础设施
 失败，退出 2，不生成或篡改 Agent reward。Task-local 原子断言只解释某个维度为什么通过或失败。
 
+### 从 Langfuse UI 触发 CLI
+
+Assistant Server 提供默认关闭的 Remote Custom Experiment webhook：
+
+```text
+POST /internal/evals/langfuse/remote-experiment
+```
+
+它只负责验签、校验统一 Dataset 和 Git 中已有的 Task/Suite，然后在后台以固定 argv 启动
+`scripts/run_agent_evals.py --run`。请求不能传入 shell、环境变量、env file、写权限或其他 CLI
+参数；Task、Environment、Grader 和 reward 仍完全使用仓库中的定义。CLI stdout、stderr 和状态回执
+写入 `.data/evals/remote/<trigger_id>.*`，不提交。
+
+先在 Assistant Server 的本机未跟踪环境中配置：
+
+```text
+MULTIMODAL_AGENT_PROVIDER_MODE=real
+ASSISTANT_AGENT_LANGFUSE_REMOTE_EXPERIMENT_ENABLED=true
+ASSISTANT_AGENT_LANGFUSE_REMOTE_EXPERIMENT_SIGNING_SECRET=<Langfuse-setup-secret>
+ASSISTANT_AGENT_LANGFUSE_REMOTE_EXPERIMENT_DATASET=assistant-agent-regression
+```
+
+然后在 Langfuse Dataset 页面选择 `Start Experiment -> Custom Experiment`：
+
+1. URL 填
+   `http://host.docker.internal:8089/internal/evals/langfuse/remote-experiment`；
+2. 开启 request signing，把生成的 signing secret 写入上述服务端环境；
+3. 单 Task 的 default config 使用
+   `{"task":"weather_timeout_recovery","runName":"ui-weather-timeout"}`；
+4. Suite 使用 `{"suite":"release","runName":"ui-release"}`；
+5. 先通过 `--publish` 确保所选 Task 已存在于统一 Dataset，再从 UI 点击 `Run`。
+
+本机自托管 Langfuse 在 Docker 中运行时，需要给 `langfuse-web` 和 `langfuse-worker` 配置
+`host.docker.internal:host-gateway`；Assistant Server 必须绑定容器可达的 `0.0.0.0:8089`。
+webhook 校验 `x-langfuse-signature` 的 HMAC SHA-256 和五分钟时效，对相同签名与 body 的重投递只
+启动一次；收到请求后立即返回 `202 Accepted`，CLI 继续异步执行。只有显式启用 webhook、配置签名
+secret 且 Server 运行于 real Provider mode 时才接受触发。
+
 真实运行生成的数据只保存在 Langfuse 和未跟踪 `.data/**`；不得提交凭据、原始生产 Trace、真实
 用户数据或 Provider 原始响应。

@@ -18,6 +18,9 @@ from assistant_agent.api.gateway_websocket import router as gateway_websocket_ro
 from assistant_agent.api import routes_agent
 from assistant_agent.api.routes_a2a import router as a2a_router
 from assistant_agent.api.routes_agent import router as agent_router, shutdown_agent_runtime
+from assistant_agent.api.routes_eval_experiments import (
+    router as eval_experiments_router,
+)
 from assistant_agent.api.routes_tasks import router as tasks_router
 from assistant_agent.api.routes_skills import router as skills_router
 from assistant_agent.api.models import PROTOCOL_VERSION, api_error
@@ -73,6 +76,7 @@ def create_app() -> FastAPI:
     GENERATED_ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
     app.mount("/artifacts/generated", StaticFiles(directory=GENERATED_ARTIFACT_DIR), name="generated_artifacts")
     app.include_router(agent_router)
+    app.include_router(eval_experiments_router)
     app.include_router(tasks_router)
     app.include_router(skills_router)
     app.include_router(a2a_router)

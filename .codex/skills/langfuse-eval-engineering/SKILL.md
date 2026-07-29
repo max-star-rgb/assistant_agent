@@ -80,6 +80,10 @@ Task 不得靠 expected answer 文本匹配通过；工具行为以 Trace 和状
 4. `--publish` 显式发布所选 Task；
 5. `--run` 执行真实 Experiment。
 
+Langfuse Remote Custom Experiment 只允许通过签名 webhook 触发同一个 `--run` CLI；UI payload
+只能选择 Git 已定义且已发布的 Task/Suite 和 run name，不能创建案例、传环境变量、扩大副作用权限或
+替代本地校准/审计。
+
 运行后检查 Agent 输入、工具暴露、Validator/Tool Trace、依赖结果、状态变化、最终回答、grader 理由和
 `agent_eval.reward`。Langfuse 只输出固定的 `tool_execution`、`tool_use`、`state`、
 `response` 四个诊断维度；Task 专属原子断言只作为维度详情，不创建专属 Score。
@@ -97,6 +101,7 @@ Agent 行为不满足任务时退出 1。凭据、Trace 导出、Dataset、Judge
 ## 不变量
 
 - Git 定义回归任务；Langfuse 保存协作数据和运行结果。
+- Langfuse UI 可以触发 CLI，但不能成为 Task、Environment、Grader 或权限的事实源。
 - 一个 Task 只验证一个可命名 capability。
 - Environment 拥有依赖和状态，Task 输入不描述测试机关。
 - Grader 对 Agent 隐藏，并先用正反样本证明能区分结果。

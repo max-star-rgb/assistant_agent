@@ -50,6 +50,10 @@ For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
   `--judge-max-retries` 覆盖传输边界，或用 `--judge-network-mode environment` 恢复环境代理和
   DNS；阶段进度写 stderr。
   实现位于 `evals/agent/`。
+- Langfuse Remote Custom Experiment 可调用 Assistant Server 的
+  `POST /internal/evals/langfuse/remote-experiment`；该默认关闭的 HMAC webhook 只把已校验的
+  Task/Suite 映射为上述 CLI 的固定后台 argv，运行回执和 stdout/stderr 写入
+  `.data/evals/remote/`。配置与操作步骤见 `evals/README.md`。
 - `scripts/run_improvement_lab.py`: offline, non-mutating improvement proposal runner.
 - `scripts/check_pilot_readiness.py` and `scripts/collect_pilot_evidence.py`:
   multi-agent pilot operator helpers.
