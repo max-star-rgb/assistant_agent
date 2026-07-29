@@ -330,20 +330,41 @@ ASSISTANT_AGENT_LANGFUSE_REMOTE_EXPERIMENT_SIGNING_SECRET=<Langfuse-setup-secret
 ASSISTANT_AGENT_LANGFUSE_REMOTE_EXPERIMENT_DATASET=assistant-agent-regression
 ```
 
-然后在 Langfuse Dataset 页面选择 `Start Experiment -> Custom Experiment`：
+本机固定使用 Langfuse `3.224.2`。该版本发送的请求体为：
+
+```json
+{
+  "projectId": "<project-id>",
+  "datasetId": "<dataset-id>",
+  "datasetName": "assistant-agent-regression",
+  "payload": "{\"task\":\"weather_timeout_recovery\",\"runName\":\"ui-weather-timeout\"}"
+}
+```
+
+`payload` 是 UI 中 Default config 的原始 JSON 字符串，不是顶层 `config` 对象。
+Assistant Server 对其二次解析并只接受 `task|suite + runName` 白名单字段。
+
+`3.224.2` 尚未把 Remote Experiment 原生签名功能发布到自托管镜像，因此内部 80 端口代理会在
+请求没有 `x-langfuse-signature` 时使用同一个 secret 补充
+`t=<timestamp>,v1=<hmac-sha256>`；未来 Langfuse 原生携带签名时，代理保持原值、不重复签名。
+同一个 secret 必须同时配置到仓库根 `.env`（Assistant Server）与
+`.data/langfuse/.env`（Compose 代理），两处文件都不得提交。
+
+然后在 Langfuse Dataset 页面选择 `Run Experiment -> via Webhook -> Configure`：
 
 1. URL 填
    `http://assistant-agent-eval-webhook/internal/evals/langfuse/remote-experiment`；
-2. 开启 request signing，把生成的 signing secret 写入上述服务端环境；
-3. 单 Task 的 default config 使用
+2. 单 Task 的 Default config 使用
    `{"task":"weather_timeout_recovery","runName":"ui-weather-timeout"}`；
-4. Suite 使用 `{"suite":"release","runName":"ui-release"}`；
+3. Suite 使用 `{"suite":"release","runName":"ui-release"}`；
+4. 打开 Enabled，保存配置；
 5. 先通过 `--publish` 确保所选 Task 已存在于统一 Dataset，再从 UI 点击 `Run`。
 
-Langfuse `3.221.1` 的 webhook SSRF 校验只允许 URL 使用 80 或 443，host/IP whitelist 不会放行
+Langfuse `3.224.2` 的 webhook SSRF 校验只允许 URL 使用 80 或 443，host/IP whitelist 不会放行
 8089。因此本机 Docker Compose 使用 `assistant-agent-eval-webhook` 在内部 80 端口提供单路径代理，
 并设置 `LANGFUSE_WEBHOOK_WHITELISTED_HOST=assistant-agent-eval-webhook`；代理原样转发 body 和
-`x-langfuse-signature` 到绑定 `0.0.0.0:8089` 的 Assistant Server。不要在 UI URL 中填写
+已有的 `x-langfuse-signature`，或为 3.224.2 的未签名请求补签后，转发到绑定
+`0.0.0.0:8089` 的 Assistant Server。不要在 UI URL 中填写
 `host.docker.internal:8089`。
 
 webhook 校验 HMAC SHA-256 和五分钟时效，对相同签名与 body 的重投递只启动一次；收到请求后立即

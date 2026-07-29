@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
 from contextlib import contextmanager
 from http.client import HTTPConnection, RemoteDisconnected
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -68,14 +70,17 @@ def test_proxy_preserves_signed_remote_experiment_request() -> None:
 
     with _running_server(upstream), _running_server(proxy):
         connection = HTTPConnection("127.0.0.1", proxy.server_address[1], timeout=2)
-        body = '{"datasetName":"回归集","payload":{"task":"weather_timeout_recovery"}}'.encode()
+        body = (
+            '{"datasetName":"回归集",'
+            '"payload":"{\\"task\\":\\"weather_timeout_recovery\\"}"}'
+        ).encode()
         connection.request(
             "POST",
             "/internal/evals/langfuse/remote-experiment",
             body=body,
             headers={
                 "Content-Type": "application/json",
-                "x-langfuse-signature": "t=1722222222,s=abc123",
+                "x-langfuse-signature": "t=1722222222,v1=abc123",
             },
         )
         response = connection.getresponse()
@@ -90,9 +95,62 @@ def test_proxy_preserves_signed_remote_experiment_request() -> None:
             "path": "/internal/evals/langfuse/remote-experiment",
             "body": body,
             "content_type": "application/json",
-            "signature": "t=1722222222,s=abc123",
+            "signature": "t=1722222222,v1=abc123",
         }
     ]
+
+
+def test_proxy_signs_unsigned_langfuse_32242_request() -> None:
+    from deploy.langfuse_eval_webhook.webhook_proxy import (
+        WebhookProxyConfig,
+        create_server,
+    )
+
+    _RecordingUpstreamHandler.requests = []
+    upstream = ThreadingHTTPServer(
+        ("127.0.0.1", 0),
+        _RecordingUpstreamHandler,
+    )
+    body = (
+        b'{"projectId":"project-test-id","datasetId":"dataset-test-id",'
+        b'"datasetName":"assistant-agent-regression",'
+        b'"payload":"{\\"suite\\":\\"release\\"}"}'
+    )
+    timestamp = 1_800_000_000
+    secret = "proxy-signing-secret"
+    expected_signature = hmac.new(
+        secret.encode(),
+        str(timestamp).encode() + b"." + body,
+        hashlib.sha256,
+    ).hexdigest()
+    proxy = create_server(
+        WebhookProxyConfig(
+            bind_host="127.0.0.1",
+            bind_port=0,
+            upstream_host="127.0.0.1",
+            upstream_port=int(upstream.server_address[1]),
+            signing_secret=secret,
+            now=lambda: timestamp,
+        )
+    )
+
+    with _running_server(upstream), _running_server(proxy):
+        connection = HTTPConnection("127.0.0.1", proxy.server_address[1], timeout=2)
+        connection.request(
+            "POST",
+            "/internal/evals/langfuse/remote-experiment",
+            body=body,
+            headers={"Content-Type": "application/json"},
+        )
+        response = connection.getresponse()
+        response.read()
+        connection.close()
+
+    assert response.status == 202
+    assert _RecordingUpstreamHandler.requests[0]["body"] == body
+    assert _RecordingUpstreamHandler.requests[0]["signature"] == (
+        f"t={timestamp},v1={expected_signature}"
+    )
 
 
 def test_proxy_rejects_non_webhook_paths_without_contacting_upstream() -> None:

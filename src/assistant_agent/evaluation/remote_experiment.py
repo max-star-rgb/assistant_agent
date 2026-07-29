@@ -32,8 +32,8 @@ REMOTE_EXPERIMENT_SIGNATURE_MAX_AGE_SECONDS = 300
 _SAFE_IDENTIFIER_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$"
 
 
-class RemoteExperimentConfig(BaseModel):
-    """Operator-editable fields accepted from the Langfuse setup form."""
+class RemoteExperimentPayload(BaseModel):
+    """Operator-editable JSON encoded in Langfuse's top-level payload string."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -58,17 +58,24 @@ class RemoteExperimentConfig(BaseModel):
     )
 
     @model_validator(mode="after")
-    def require_one_selector(self) -> RemoteExperimentConfig:
+    def require_one_selector(self) -> RemoteExperimentPayload:
         if (self.task is None) == (self.suite is None):
-            raise ValueError("Exactly one of config.task or config.suite is required.")
+            raise ValueError(
+                "Exactly one of payload.task or payload.suite is required."
+            )
         return self
 
 
 class RemoteExperimentRequest(BaseModel):
-    """Subset of the Langfuse remote experiment payload used by this runner."""
+    """Langfuse Remote Experiment trigger envelope used by this runner."""
 
     model_config = ConfigDict(extra="ignore")
 
+    project_id: str = Field(
+        min_length=1,
+        max_length=200,
+        validation_alias=AliasChoices("projectId", "project_id"),
+    )
     dataset_id: str = Field(
         min_length=1,
         max_length=200,
@@ -79,7 +86,7 @@ class RemoteExperimentRequest(BaseModel):
         max_length=200,
         validation_alias=AliasChoices("datasetName", "dataset_name"),
     )
-    config: RemoteExperimentConfig
+    payload: str = Field(min_length=2, max_length=4096)
 
 
 class RemoteExperimentAccepted(BaseModel):
@@ -195,9 +202,18 @@ class RemoteExperimentLauncher:
                 f"Dataset {request.dataset_name!r} is not allowed."
             )
 
-        selector_kind, selector_id = self._validate_selector(request.config)
+        try:
+            payload = RemoteExperimentPayload.model_validate_json(
+                request.payload
+            )
+        except ValidationError as exc:
+            raise RemoteExperimentInvalid(
+                "Langfuse remote experiment payload is invalid."
+            ) from exc
+
+        selector_kind, selector_id = self._validate_selector(payload)
         trigger_id = _trigger_id(signature_header or "", raw_body)
-        run_name = request.config.run_name or (
+        run_name = payload.run_name or (
             f"langfuse-ui-{selector_id}-{trigger_id[:8]}"
         )
         accepted = RemoteExperimentAccepted(
@@ -225,22 +241,22 @@ class RemoteExperimentLauncher:
 
     def _validate_selector(
         self,
-        config: RemoteExperimentConfig,
+        payload: RemoteExperimentPayload,
     ) -> tuple[Literal["task", "suite"], str]:
-        if config.task is not None:
+        if payload.task is not None:
             task_path = (
                 self.settings.repository_root
                 / "evals"
                 / "agent"
                 / "tasks"
-                / config.task
+                / payload.task
                 / "task.json"
             )
             if not task_path.is_file():
                 raise RemoteExperimentInvalid(
-                    f"Unknown Agent eval task: {config.task}."
+                    f"Unknown Agent eval task: {payload.task}."
                 )
-            return "task", config.task
+            return "task", payload.task
 
         suites_path = (
             self.settings.repository_root
@@ -254,11 +270,11 @@ class RemoteExperimentLauncher:
             raise RemoteExperimentDisabled(
                 "Agent eval suite registry is unavailable."
             ) from exc
-        if config.suite not in suites:
+        if payload.suite not in suites:
             raise RemoteExperimentInvalid(
-                f"Unknown Agent eval suite: {config.suite}."
+                f"Unknown Agent eval suite: {payload.suite}."
             )
-        return "suite", str(config.suite)
+        return "suite", str(payload.suite)
 
     def _launch_once(
         self,
@@ -372,7 +388,7 @@ def _verify_signature(
         if separator and key and value:
             parts[key] = value
     timestamp = parts.get("t")
-    signature = parts.get("s")
+    signature = parts.get("v1") or parts.get("s")
     if timestamp is None or signature is None:
         return False
     try:

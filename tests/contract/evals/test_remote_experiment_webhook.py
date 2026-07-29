@@ -63,7 +63,7 @@ def test_signed_webhook_launches_fixed_cli_once_and_returns_202(
     app.state.remote_experiment_launcher = launcher
     app.include_router(router)
     body = _payload(
-        config={
+        payload_config={
             "task": "weather_timeout_recovery",
             "runName": "ui-weather-timeout",
         }
@@ -135,7 +135,7 @@ def test_signed_webhook_launches_fixed_cli_once_and_returns_202(
 
 def test_webhook_rejects_invalid_or_expired_signatures(tmp_path: Path) -> None:
     launcher = _launcher(tmp_path, _PopenRecorder())
-    body = _payload(config={"suite": "release"})
+    body = _payload(payload_config={"suite": "release"})
 
     with pytest.raises(RemoteExperimentUnauthorized):
         launcher.launch(
@@ -150,7 +150,7 @@ def test_webhook_rejects_invalid_or_expired_signatures(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    ("dataset_name", "config", "message"),
+    ("dataset_name", "payload_config", "message"),
     [
         (
             "another-dataset",
@@ -175,12 +175,15 @@ def test_webhook_rejects_invalid_or_expired_signatures(tmp_path: Path) -> None:
 def test_webhook_rejects_untrusted_dataset_selector_and_options(
     tmp_path: Path,
     dataset_name: str,
-    config: dict[str, Any],
+    payload_config: dict[str, Any],
     message: str,
 ) -> None:
     recorder = _PopenRecorder()
     launcher = _launcher(tmp_path, recorder)
-    payload = _payload(dataset_name=dataset_name, config=config)
+    payload = _payload(
+        dataset_name=dataset_name,
+        payload_config=payload_config,
+    )
 
     with pytest.raises(RemoteExperimentInvalid, match=message):
         launcher.launch(
@@ -205,7 +208,7 @@ def test_webhook_returns_503_until_operator_enables_real_mode(
     app = FastAPI()
     app.state.remote_experiment_launcher = launcher
     app.include_router(router)
-    body = _payload(config={"suite": "release"})
+    body = _payload(payload_config={"suite": "release"})
 
     with TestClient(app) as client:
         response = client.post(
@@ -233,7 +236,7 @@ def test_cli_launch_failure_removes_idempotency_reservation(
         now=lambda: NOW,
         reaper=lambda *_: None,
     )
-    body = _payload(config={"suite": "release"})
+    body = _payload(payload_config={"suite": "release"})
 
     with pytest.raises(RemoteExperimentLaunchFailed):
         launcher.launch(
@@ -328,14 +331,19 @@ def _write_repository_contract(repository_root: Path) -> None:
 
 def _payload(
     *,
-    config: dict[str, Any],
+    payload_config: dict[str, Any],
     dataset_name: str = DEFAULT_REMOTE_EXPERIMENT_DATASET,
 ) -> bytes:
     return json.dumps(
         {
+            "projectId": "project-test-id",
             "datasetId": "dataset-test-id",
             "datasetName": dataset_name,
-            "config": config,
+            "payload": json.dumps(
+                payload_config,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ),
         },
         ensure_ascii=False,
         separators=(",", ":"),
@@ -348,4 +356,4 @@ def _signature(body: bytes, *, timestamp: int = NOW) -> str:
         str(timestamp).encode("utf-8") + b"." + body,
         hashlib.sha256,
     ).hexdigest()
-    return f"t={timestamp},s={signature}"
+    return f"t={timestamp},v1={signature}"
