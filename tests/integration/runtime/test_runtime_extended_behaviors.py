@@ -43,6 +43,7 @@ from assistant_agent.observability.trace_conversation import (
     TraceConversationText,
     TraceConversationView,
     TraceLlmInput,
+    TraceLlmOutput,
     TraceToolObservation,
     get_default_trace_conversation_store,
 )
@@ -663,7 +664,23 @@ def test_langfuse_root_uses_delivered_response_without_rewriting_runtime_final()
         "user_id": "user-delivered",
         "session_id": "session-delivered",
     }
+    provider_text = "provider heading\n\n- provider item\n" + "P" * 320
+    runtime_text = "runtime heading\n\n- runtime item\n" + "R" * 3970
+    runtime_preview = runtime_text[:4000]
+    delivered_text = "delivered heading\n\n- delivered item\n" + "D" * 320
+    user_text = "user heading\n\nuser body"
     events = [
+        TraceEvent(
+            **common,
+            node_name="assistant",
+            event_type="observability",
+            canonical_event="llm.chat.finished",
+            observation_type="generation",
+            observation_scope="iteration",
+            span_id="span-llm-output-preview",
+            status="succeeded",
+            attributes={"iteration": 1},
+        ),
         TraceEvent(
             **common,
             node_name="compose_response",
@@ -684,16 +701,41 @@ def test_langfuse_root_uses_delivered_response_without_rewriting_runtime_final()
     ]
     conversation = TraceConversationView(
         trace_id=common["trace_id"],
-        user=TraceConversationText(text="上海", chars=2),
-        assistant=TraceConversationText(text="模型最终回复", chars=6),
-        delivered=TraceConversationText(text="购物详情", chars=4),
+        user=TraceConversationText(text=user_text, chars=len(user_text)),
+        assistant=TraceConversationText(
+            text=runtime_preview,
+            chars=len(runtime_text),
+            truncated=True,
+        ),
+        delivered=TraceConversationText(
+            text=delivered_text,
+            chars=len(delivered_text),
+        ),
+        llm_outputs=[
+            TraceLlmOutput(
+                iteration=1,
+                span_id="span-llm-output-preview",
+                normalized_result={"response_text": provider_text, "tool_calls": []},
+                provider_protocol_response={
+                    "content": provider_text,
+                    "tool_calls": [],
+                    "refusal": None,
+                },
+            )
+        ],
     )
 
     spans = build_text_otel_span_specs(events, conversation=conversation)
     by_name = {span.name: span for span in spans}
 
+    runtime_input = json.loads(
+        by_name["agent.runtime"].attributes["langfuse.trace.input"]
+    )
     runtime_output = json.loads(
         by_name["agent.runtime"].attributes["langfuse.trace.output"]
+    )
+    generation_output = json.loads(
+        by_name["llm.chat"].attributes["langfuse.observation.output"]
     )
     final_output = json.loads(
         by_name["response.final"].attributes["langfuse.observation.output"]
@@ -701,9 +743,19 @@ def test_langfuse_root_uses_delivered_response_without_rewriting_runtime_final()
     delivered_output = json.loads(
         by_name["response.delivered"].attributes["langfuse.observation.output"]
     )
-    assert runtime_output["content"] == "购物详情"
-    assert final_output["content"] == "模型最终回复"
-    assert delivered_output["content"] == "购物详情"
+
+    assert runtime_input["content"] == user_text
+    assert generation_output["content"] == provider_text
+    assert runtime_output["content"] == delivered_text
+    assert final_output == {
+        "role": "assistant",
+        "content": runtime_preview,
+        "chars": len(runtime_text),
+        "truncated": True,
+    }
+    assert delivered_output["content"] == delivered_text
+    assert delivered_output["chars"] == len(delivered_text)
+    assert delivered_output["truncated"] is False
     assert delivered_output["source"] == "shopping_detail_v1"
 
 

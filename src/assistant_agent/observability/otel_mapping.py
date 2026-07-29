@@ -451,14 +451,14 @@ def _root_io_attributes(
     if conversation is not None:
         input_payload: dict[str, Any] = {
             "role": "user",
-            "content": sanitize_trace_value(conversation.user.text),
+            "content": conversation.user.text,
             "chars": conversation.user.chars,
             "truncated": conversation.user.truncated,
         }
         delivered = conversation.delivered or conversation.assistant
         output_payload: dict[str, Any] = {
             "role": "assistant",
-            "content": sanitize_trace_value(delivered.text),
+            "content": delivered.text,
             "chars": delivered.chars,
             "truncated": delivered.truncated,
             "terminal_status": summary.get("terminal_status", "unknown"),
@@ -641,7 +641,7 @@ def _event_io_attributes(
     elif name == "response.final" and conversation is not None:
         output_payload = {
             "role": "assistant",
-            "content": sanitize_trace_value(conversation.assistant.text),
+            "content": conversation.assistant.text,
             "chars": conversation.assistant.chars,
             "truncated": conversation.assistant.truncated,
         }
@@ -649,7 +649,7 @@ def _event_io_attributes(
         delivered = conversation.delivered or conversation.assistant
         output_payload = {
             "role": "assistant",
-            "content": sanitize_trace_value(delivered.text),
+            "content": delivered.text,
             "chars": delivered.chars,
             "truncated": delivered.truncated,
             "source": event.attributes.get("source"),

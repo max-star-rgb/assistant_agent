@@ -832,6 +832,10 @@ stream callback 不进入该 store。protocol snapshot 优先用于生成精确
 output preview；缺失时从归一化 `ChatResult` 重建完整语义回复。`runtime_route` 记录归一化结果触发的
 实际 `fallback | tool_governance | text` 动作并留在 metadata。上述正文同时进入
 `.data/graph_trace.jsonl` 的 `trace.content` 事件。
+普通 user/assistant content 经 `TraceConversationStore` 完成正文限长后，由 OTel mapping
+逐字符导出，不得复用 error sanitizer 压平空白或再次按 300 字截断。`llm.chat`、
+`response.final`、`response.delivered` 和 root 分别保留 Provider、Runtime final、
+实际 delivered 和 turn output 的事实来源。
 
 Langfuse 的工具链同样使用完整视图：`tool.execute` 直接显示执行 trace event 当前持有的
 完整 input/output summary，不再只挑 field count、result count 和 output ref，也不在 OTLP observer
