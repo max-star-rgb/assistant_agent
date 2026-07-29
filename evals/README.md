@@ -304,18 +304,22 @@ ASSISTANT_AGENT_LANGFUSE_REMOTE_EXPERIMENT_DATASET=assistant-agent-regression
 然后在 Langfuse Dataset 页面选择 `Start Experiment -> Custom Experiment`：
 
 1. URL 填
-   `http://host.docker.internal:8089/internal/evals/langfuse/remote-experiment`；
+   `http://assistant-agent-eval-webhook/internal/evals/langfuse/remote-experiment`；
 2. 开启 request signing，把生成的 signing secret 写入上述服务端环境；
 3. 单 Task 的 default config 使用
    `{"task":"weather_timeout_recovery","runName":"ui-weather-timeout"}`；
 4. Suite 使用 `{"suite":"release","runName":"ui-release"}`；
 5. 先通过 `--publish` 确保所选 Task 已存在于统一 Dataset，再从 UI 点击 `Run`。
 
-本机自托管 Langfuse 在 Docker 中运行时，需要给 `langfuse-web` 和 `langfuse-worker` 配置
-`host.docker.internal:host-gateway`；Assistant Server 必须绑定容器可达的 `0.0.0.0:8089`。
-webhook 校验 `x-langfuse-signature` 的 HMAC SHA-256 和五分钟时效，对相同签名与 body 的重投递只
-启动一次；收到请求后立即返回 `202 Accepted`，CLI 继续异步执行。只有显式启用 webhook、配置签名
-secret 且 Server 运行于 real Provider mode 时才接受触发。
+Langfuse `3.221.1` 的 webhook SSRF 校验只允许 URL 使用 80 或 443，host/IP whitelist 不会放行
+8089。因此本机 Docker Compose 使用 `assistant-agent-eval-webhook` 在内部 80 端口提供单路径代理，
+并设置 `LANGFUSE_WEBHOOK_WHITELISTED_HOST=assistant-agent-eval-webhook`；代理原样转发 body 和
+`x-langfuse-signature` 到绑定 `0.0.0.0:8089` 的 Assistant Server。不要在 UI URL 中填写
+`host.docker.internal:8089`。
+
+webhook 校验 HMAC SHA-256 和五分钟时效，对相同签名与 body 的重投递只启动一次；收到请求后立即
+返回 `202 Accepted`，CLI 继续异步执行。只有显式启用 webhook、配置签名 secret 且 Server 运行于
+real Provider mode 时才接受触发。
 
 真实运行生成的数据只保存在 Langfuse 和未跟踪 `.data/**`；不得提交凭据、原始生产 Trace、真实
 用户数据或 Provider 原始响应。

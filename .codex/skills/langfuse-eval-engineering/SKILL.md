@@ -83,6 +83,9 @@ Task 不得靠 expected answer 文本匹配通过；工具行为以 Trace 和状
 Langfuse Remote Custom Experiment 只允许通过签名 webhook 触发同一个 `--run` CLI；UI payload
 只能选择 Git 已定义且已发布的 Task/Suite 和 run name，不能创建案例、传环境变量、扩大副作用权限或
 替代本地校准/审计。
+自托管 Langfuse 的 Remote Experiment URL 先按当前运行版本验证：`3.221.1` 只接受 80/443，host/IP
+whitelist 不会放行其他端口。本项目必须使用 Compose 中白名单的内部 80 端口
+`assistant-agent-eval-webhook`，不能直接填写 Assistant Server 的 `:8089`。
 
 运行后检查 Agent 输入、工具暴露、Validator/Tool Trace、依赖结果、状态变化、最终回答、grader 理由和
 `agent_eval.reward`。Langfuse 只输出固定的 `tool_execution`、`tool_use`、`state`、
