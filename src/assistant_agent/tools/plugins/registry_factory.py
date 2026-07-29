@@ -86,7 +86,11 @@ def create_default_registry(
     contributions = list(assembly.contributions)
     sources = list(assembly.report.sources)
     issues = list(assembly.report.issues)
-    if not mock_mode and (enable_mcp_tools or mcp_server_configs is not None):
+    if not mock_mode and (
+        enable_mcp_tools
+        or mcp_server_configs is not None
+        or resolved_mcp_server_configs
+    ):
         from assistant_agent.mcp.registration import discover_configured_mcp_tools
 
         server_configs = resolved_mcp_server_configs or []
