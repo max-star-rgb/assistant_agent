@@ -1,0 +1,13 @@
+{
+  "id": "weather_shopping_evidence_chain",
+  "description": "Agent 应先查天气，再把天气证据传给多品类购物清单工具。",
+  "capability": "cross_tool_evidence_use",
+  "request": {
+    "user_id": "eval-weather-shopping-user",
+    "session_id": "eval-weather-shopping-session",
+    "text": "我明天要在上海步行通勤。先查天气，再按总预算500元帮我找雨伞和防水鞋套，并说明为什么需要它们。"
+  },
+  "environment": "evals.agent.tasks.weather_shopping_evidence_chain.environment:WeatherShoppingEnvironment",
+  "grader": "evals.agent.tasks.weather_shopping_evidence_chain.grader:grade",
+  "tags": ["readonly", "shopping", "multi-tool"]
+}

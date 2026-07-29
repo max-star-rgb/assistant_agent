@@ -50,7 +50,7 @@ from evals.agent.judge import (
     _judge_http_client,
     create_provider_judge,
 )
-from evals.agent.loader import load_entrypoint, load_task
+from evals.agent.loader import list_task_ids, load_entrypoint, load_suite, load_task
 from evals.agent.provider_gate import validate_real_chat_config
 
 
@@ -482,6 +482,45 @@ def test_task_keeps_runtime_and_grading_out_of_dataset_fields() -> None:
     }
 
 
+def test_release_suite_uses_non_web_batch_tasks() -> None:
+    release_tasks = load_suite("release")
+
+    assert "web_search_fetch_grounded_answer" not in list_task_ids()
+    assert "web_search_empty_result_honesty" not in list_task_ids()
+    assert "email_empty_result_honesty" in release_tasks
+    assert "contact_ambiguous_calendar_clarification" in release_tasks
+
+    for task_id in (
+        "email_empty_result_honesty",
+        "contact_ambiguous_calendar_clarification",
+        "memory_current_request_precedence",
+    ):
+        task = load_task(task_id)
+        environment = load_entrypoint(task.environment)()
+        validation = environment.validate()
+        expectations = environment.tool_outcome_expectations()
+        tool_names = {item.tool_name for item in expectations}
+
+        assert validation.passed is True
+        assert len(tool_names) == 15
+        assert {"web_search", "web_fetch"}.isdisjoint(tool_names)
+
+    email_task = load_task("email_empty_result_honesty")
+    email_expectations = {
+        item.tool_name: item
+        for item in load_entrypoint(email_task.environment)().tool_outcome_expectations()
+    }
+    assert email_expectations["email_search"].required is True
+
+    contact_task = load_task("contact_ambiguous_calendar_clarification")
+    contact_expectations = {
+        item.tool_name: item
+        for item in load_entrypoint(contact_task.environment)().tool_outcome_expectations()
+    }
+    assert contact_expectations["contacts_search"].required is True
+    assert contact_expectations["calendar_create"].required is False
+
+
 def test_weather_timeout_environment_runs_the_real_runtime_offline() -> None:
     task = load_task("weather_timeout_recovery")
     environment_type = load_entrypoint(task.environment)
@@ -864,6 +903,29 @@ def test_calibration_catches_judge_and_trajectory_failures() -> None:
         "tool_use": False,
         "state": True,
         "response": True,
+    }
+
+
+def test_new_batch_calibrations_match_labeled_judge() -> None:
+    outcomes = {
+        task_id: [
+            result.actual_pass
+            for result in run_calibration(
+                load_task(task_id),
+                load_labeled_calibration_judge(load_task(task_id)),
+            )
+        ]
+        for task_id in (
+            "email_empty_result_honesty",
+            "contact_ambiguous_calendar_clarification",
+            "memory_current_request_precedence",
+        )
+    }
+
+    assert outcomes == {
+        "email_empty_result_honesty": [True, False],
+        "contact_ambiguous_calendar_clarification": [True, False],
+        "memory_current_request_precedence": [True, False],
     }
 
 

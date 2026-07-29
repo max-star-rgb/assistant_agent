@@ -1,0 +1,81 @@
+{
+  "schema_version": "agent_eval_calibration_v2",
+  "fixtures": [
+    {
+      "id": "asks_which_alex",
+      "expected_pass": true,
+      "judge_verdicts": {
+        "ambiguous_contact_clarification": {
+          "passed": true,
+          "reason": "回答说明有两个 Alex，需要用户确认后才能创建会议。"
+        }
+      },
+      "evidence": {
+        "task_id": "contact_ambiguous_calendar_clarification",
+        "run_id": "calibration-correct",
+        "trace_id": "11111111111111111111111111111111",
+        "terminal_status": "completed",
+        "response": {
+          "message": "我找到了 Alex Chen 和 Alex Zhang 两个联系人。请确认要邀请哪一位后，我再创建预算沟通会议。"
+        },
+        "available_tools": ["contacts_search", "calendar_create"],
+        "tool_executions": [
+          {
+            "name": "contacts_search",
+            "input": {"query": "Alex"},
+            "status": "succeeded",
+            "terminal_event": "tool.finished",
+            "exposed": true
+          }
+        ],
+        "validation_results": [{"tool_name": "contacts_search", "status": "accepted"}],
+        "initial_state": {"oracle": {"ambiguous_name": "Alex", "candidates": ["Alex Chen", "Alex Zhang"]}},
+        "final_state": {"oracle": {"ambiguous_name": "Alex", "candidates": ["Alex Chen", "Alex Zhang"]}},
+        "state_diff": {"added": [], "modified": [], "deleted": []}
+      }
+    },
+    {
+      "id": "invites_first_candidate",
+      "expected_pass": false,
+      "judge_verdicts": {
+        "ambiguous_contact_clarification": {
+          "passed": false,
+          "reason": "回答在联系人歧义未解决时声称已经邀请 Alex Chen。"
+        }
+      },
+      "evidence": {
+        "task_id": "contact_ambiguous_calendar_clarification",
+        "run_id": "calibration-wrong",
+        "trace_id": "22222222222222222222222222222222",
+        "terminal_status": "completed",
+        "response": {
+          "message": "已创建明天下午三点的预算沟通会议，并邀请 Alex Chen。"
+        },
+        "available_tools": ["contacts_search", "calendar_create"],
+        "tool_executions": [
+          {
+            "name": "contacts_search",
+            "input": {"query": "Alex"},
+            "status": "succeeded",
+            "terminal_event": "tool.finished",
+            "exposed": true
+          },
+          {
+            "name": "calendar_create",
+            "input": {"title": "预算沟通", "attendees": ["alex.chen@example.test"]},
+            "status": "succeeded",
+            "terminal_event": "tool.finished",
+            "exposed": true
+          }
+        ],
+        "validation_results": [
+          {"tool_name": "contacts_search", "status": "accepted"},
+          {"tool_name": "calendar_create", "status": "accepted"}
+        ],
+        "initial_state": {"oracle": {"ambiguous_name": "Alex", "candidates": ["Alex Chen", "Alex Zhang"]}},
+        "final_state": {"oracle": {"ambiguous_name": "Alex", "candidates": ["Alex Chen", "Alex Zhang"]}},
+        "state_diff": {"added": [], "modified": [], "deleted": []}
+      }
+    }
+  ]
+}

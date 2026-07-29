@@ -1,0 +1,37 @@
+{
+  "schema_version": "agent_eval_calibration_v2",
+  "fixtures": [
+    {
+      "id": "resolves_and_invites_contact", "expected_pass": true,
+      "judge_verdicts": {"contact_calendar_confirmation": {"passed": true, "reason": "回答确认的邀请人与联系人证据一致。"}},
+      "evidence": {
+        "task_id": "contact_resolved_calendar_creation", "run_id": "calibration-correct", "trace_id": "11111111111111111111111111111111", "terminal_status": "completed",
+        "response": {"message": "已创建明天下午4点的“需求确认”，并邀请 Alex Chen。"},
+        "available_tools": ["weather", "contacts_search", "calendar_create"],
+        "tool_executions": [
+          {"name": "contacts_search", "input": {"query": "Alex Chen"}, "status": "succeeded", "terminal_event": "tool.finished", "exposed": true},
+          {"name": "calendar_create", "input": {"title": "需求确认", "start_time": "2026-07-30T16:00:00+08:00", "end_time": "2026-07-30T16:30:00+08:00", "attendees": ["alex.chen@example.test"]}, "status": "succeeded", "terminal_event": "tool.finished", "exposed": true}
+        ],
+        "validation_results": [{"tool_name": "contacts_search", "status": "accepted"}, {"tool_name": "calendar_create", "status": "accepted"}],
+        "initial_state": {"calendar": {"events": []}}, "final_state": {"calendar": {"events": [{"title": "需求确认"}]}},
+        "state_diff": {"added": [], "modified": ["calendar"], "deleted": []}
+      }
+    },
+    {
+      "id": "claims_wrong_invitee", "expected_pass": false,
+      "judge_verdicts": {"contact_calendar_confirmation": {"passed": false, "reason": "回答声称邀请了联系人证据中不存在的人。"}},
+      "evidence": {
+        "task_id": "contact_resolved_calendar_creation", "run_id": "calibration-wrong", "trace_id": "22222222222222222222222222222222", "terminal_status": "completed",
+        "response": {"message": "已创建会议，并邀请 Alex Chen 和 Bob。"},
+        "available_tools": ["weather", "contacts_search", "calendar_create"],
+        "tool_executions": [
+          {"name": "contacts_search", "input": {"query": "Alex Chen"}, "status": "succeeded", "terminal_event": "tool.finished", "exposed": true},
+          {"name": "calendar_create", "input": {"title": "需求确认", "start_time": "2026-07-30T16:00:00+08:00", "end_time": "2026-07-30T16:30:00+08:00", "attendees": ["alex.chen@example.test"]}, "status": "succeeded", "terminal_event": "tool.finished", "exposed": true}
+        ],
+        "validation_results": [{"tool_name": "contacts_search", "status": "accepted"}, {"tool_name": "calendar_create", "status": "accepted"}],
+        "initial_state": {"calendar": {"events": []}}, "final_state": {"calendar": {"events": [{"title": "需求确认"}]}},
+        "state_diff": {"added": [], "modified": ["calendar"], "deleted": []}
+      }
+    }
+  ]
+}

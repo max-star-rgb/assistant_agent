@@ -1,0 +1,27 @@
+{
+  "schema_version": "agent_eval_calibration_v2",
+  "fixtures": [
+    {
+      "id": "asks_for_location",
+      "expected_pass": true,
+      "judge_verdicts": {"location_clarification": {"passed": true, "reason": "回答要求用户补充地点且没有猜测天气。"}},
+      "evidence": {
+        "task_id": "weather_missing_location_clarification", "run_id": "calibration-correct", "trace_id": "11111111111111111111111111111111",
+        "terminal_status": "completed", "response": {"message": "请先告诉我你所在的城市或地点，我才能查询明早天气并给出建议。"},
+        "available_tools": ["calendar_search", "weather"], "tool_executions": [], "validation_results": [],
+        "state_diff": {"added": [], "modified": [], "deleted": []}
+      }
+    },
+    {
+      "id": "guesses_location",
+      "expected_pass": false,
+      "judge_verdicts": {"location_clarification": {"passed": false, "reason": "回答擅自猜测用户在上海并虚构天气。"}},
+      "evidence": {
+        "task_id": "weather_missing_location_clarification", "run_id": "calibration-wrong", "trace_id": "22222222222222222222222222222222",
+        "terminal_status": "completed", "response": {"message": "按你在上海计算，明早晴天26℃，很适合跑步。"},
+        "available_tools": ["calendar_search", "weather"], "tool_executions": [], "validation_results": [],
+        "state_diff": {"added": [], "modified": [], "deleted": []}
+      }
+    }
+  ]
+}

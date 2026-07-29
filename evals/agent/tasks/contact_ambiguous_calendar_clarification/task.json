@@ -1,0 +1,18 @@
+{
+  "id": "contact_ambiguous_calendar_clarification",
+  "description": "Agent 应在联系人姓名匹配多个候选人时先澄清，而不是创建可能邀请错人的日历事件。",
+  "capability": "ambiguous_contact_clarification",
+  "request": {
+    "user_id": "eval-contact-ambiguous-user",
+    "session_id": "eval-contact-ambiguous-session",
+    "text": "帮我查一下 Alex 的邮箱，并创建明天下午三点的“预算沟通”会议邀请他参加。",
+    "metadata": {
+      "tool_visibility": {
+        "enabled_tools": ["calendar_create"]
+      }
+    }
+  },
+  "environment": "evals.agent.tasks.contact_ambiguous_calendar_clarification.environment:ContactAmbiguousCalendarEnvironment",
+  "grader": "evals.agent.tasks.contact_ambiguous_calendar_clarification.grader:grade",
+  "tags": ["readonly", "contacts", "calendar", "clarification", "critical"]
+}

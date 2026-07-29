@@ -194,6 +194,7 @@ class WeatherLiveEnvironment:
         adapter = self.weather_adapter
         config = self.config or ProviderConfig(provider_mode="mock")
         registry = create_default_registry(config)
+        registry = _without_local_web_tools(registry)
         if adapter is None:
             return registry
         return _replace_weather_tool(registry, WeatherTool(adapter=adapter))
@@ -221,5 +222,15 @@ def _replace_weather_tool(
             weather_tool if name == "weather" else source.get(name),
             source.registration_record(name),
         )
+    registry.seal(assembly_report=source.assembly_report)
+    return registry
+
+
+def _without_local_web_tools(source: ToolRegistry) -> ToolRegistry:
+    registry = ToolRegistry()
+    for name in source.list():
+        if name in {"web_search", "web_fetch"}:
+            continue
+        registry.register(source.get(name), source.registration_record(name))
     registry.seal(assembly_report=source.assembly_report)
     return registry

@@ -303,7 +303,7 @@ ToolOutcomeExpectation.must_fail_with(
 )
 
 ToolOutcomeExpectation(
-    tool_name="web_search",
+    tool_name="calendar_search",
     required=False,
     expected_result="success",
 )

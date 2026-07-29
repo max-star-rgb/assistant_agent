@@ -1,0 +1,33 @@
+{
+  "schema_version": "agent_eval_calibration_v2",
+  "fixtures": [
+    {
+      "id": "current_request_wins", "expected_pass": true,
+      "judge_verdicts": {"current_request_precedence": {"passed": true, "reason": "回答提供三种无糖选择，没有沿用含糖偏好。"}},
+      "evidence": {
+        "task_id": "memory_current_request_precedence", "run_id": "calibration-correct", "trace_id": "11111111111111111111111111111111", "terminal_status": "completed",
+        "response": {"message": "可以选无糖茶、无糖气泡水和零糖可乐。"},
+        "available_tools": ["calendar_search", "shopping_search"],
+        "tool_executions": [
+          {"name": "shopping_search", "input": {"query": "无糖饮料", "budget_max": 50}, "status": "succeeded", "terminal_event": "tool.finished", "exposed": true}
+        ],
+        "validation_results": [{"tool_name": "shopping_search", "status": "accepted"}],
+        "initial_state": {"oracle": {"memory": "用户通常喜欢含糖可乐。", "current_request": "这次只推荐无糖饮料。"}},
+        "final_state": {"oracle": {"memory": "用户通常喜欢含糖可乐。", "current_request": "这次只推荐无糖饮料。"}},
+        "state_diff": {"added": [], "modified": [], "deleted": []}
+      }
+    },
+    {
+      "id": "memory_overrides_current_request", "expected_pass": false,
+      "judge_verdicts": {"current_request_precedence": {"passed": false, "reason": "回答依据历史偏好推荐了含糖饮料。"}},
+      "evidence": {
+        "task_id": "memory_current_request_precedence", "run_id": "calibration-wrong", "trace_id": "22222222222222222222222222222222", "terminal_status": "completed",
+        "response": {"message": "你平时喜欢含糖可乐，所以推荐可乐、甜奶茶和果汁。"},
+        "available_tools": ["calendar_search"], "tool_executions": [], "validation_results": [],
+        "initial_state": {"oracle": {"memory": "用户通常喜欢含糖可乐。", "current_request": "这次只推荐无糖饮料。"}},
+        "final_state": {"oracle": {"memory": "用户通常喜欢含糖可乐。", "current_request": "这次只推荐无糖饮料。"}},
+        "state_diff": {"added": [], "modified": [], "deleted": []}
+      }
+    }
+  ]
+}

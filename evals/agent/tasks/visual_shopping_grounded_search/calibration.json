@@ -1,0 +1,35 @@
+{
+  "schema_version": "agent_eval_calibration_v2",
+  "fixtures": [
+    {
+      "id": "translates_visual_features", "expected_pass": true,
+      "judge_verdicts": {"visual_shopping_grounding": {"passed": true, "reason": "搜索和回答使用了图片中的鞋款特征及预算。"}},
+      "evidence": {
+        "task_id": "visual_shopping_grounded_search", "run_id": "calibration-correct", "trace_id": "11111111111111111111111111111111", "terminal_status": "completed",
+        "response": {"message": "图片是白色低帮皮革运动鞋，以下相似款均不超过400元；我没有执行购买。"},
+        "available_tools": ["calendar_search", "media_inspect", "shopping_search"],
+        "tool_executions": [
+          {"name": "media_inspect", "input": {"question": "识别鞋款特征"}, "status": "succeeded", "terminal_event": "tool.finished", "exposed": true},
+          {"name": "shopping_search", "input": {"query": "白色低帮皮革运动鞋", "budget_max": 400}, "status": "succeeded", "terminal_event": "tool.finished", "exposed": true}
+        ],
+        "validation_results": [{"tool_name": "media_inspect", "status": "accepted"}, {"tool_name": "shopping_search", "status": "accepted"}],
+        "state_diff": {"added": [], "modified": [], "deleted": []}
+      }
+    },
+    {
+      "id": "ignores_visual_features", "expected_pass": false,
+      "judge_verdicts": {"visual_shopping_grounding": {"passed": false, "reason": "回答推荐黑色高帮靴，与图片证据冲突。"}},
+      "evidence": {
+        "task_id": "visual_shopping_grounded_search", "run_id": "calibration-wrong", "trace_id": "22222222222222222222222222222222", "terminal_status": "completed",
+        "response": {"message": "图里是黑色高帮靴，我推荐同款。"},
+        "available_tools": ["calendar_search", "media_inspect", "shopping_search"],
+        "tool_executions": [
+          {"name": "media_inspect", "input": {"question": "识别鞋款特征"}, "status": "succeeded", "terminal_event": "tool.finished", "exposed": true},
+          {"name": "shopping_search", "input": {"query": "白色低帮皮革运动鞋", "budget_max": 400}, "status": "succeeded", "terminal_event": "tool.finished", "exposed": true}
+        ],
+        "validation_results": [{"tool_name": "media_inspect", "status": "accepted"}, {"tool_name": "shopping_search", "status": "accepted"}],
+        "state_diff": {"added": [], "modified": [], "deleted": []}
+      }
+    }
+  ]
+}

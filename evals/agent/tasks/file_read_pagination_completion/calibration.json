@@ -1,0 +1,35 @@
+{
+  "schema_version": "agent_eval_calibration_v2",
+  "fixtures": [
+    {
+      "id": "reads_all_pages", "expected_pass": true,
+      "judge_verdicts": {"complete_file_grounding": {"passed": true, "reason": "回答包含分散在各页的三个文件事实。"}},
+      "evidence": {
+        "task_id": "file_read_pagination_completion", "run_id": "calibration-correct", "trace_id": "11111111111111111111111111111111", "terminal_status": "completed",
+        "response": {"message": "北区增长12%，退款率降至1.8%，下季度重点是企业续约。"},
+        "available_tools": ["calendar_search", "file_read"],
+        "tool_executions": [
+          {"name": "file_read", "input": {"path": "quarterly-brief.md", "cursor": 0}, "status": "succeeded", "terminal_event": "tool.finished", "exposed": true},
+          {"name": "file_read", "input": {"path": "quarterly-brief.md", "cursor": 12000}, "status": "succeeded", "terminal_event": "tool.finished", "exposed": true}
+        ],
+        "validation_results": [{"tool_name": "file_read", "status": "accepted"}, {"tool_name": "file_read", "status": "accepted"}],
+        "state_diff": {"added": [], "modified": [], "deleted": []}
+      }
+    },
+    {
+      "id": "invents_file_metric", "expected_pass": false,
+      "judge_verdicts": {"complete_file_grounding": {"passed": false, "reason": "回答添加了文件中不存在的利润率。"}},
+      "evidence": {
+        "task_id": "file_read_pagination_completion", "run_id": "calibration-wrong", "trace_id": "22222222222222222222222222222222", "terminal_status": "completed",
+        "response": {"message": "北区增长12%，退款率1.8%，利润率达到30%，重点是企业续约。"},
+        "available_tools": ["calendar_search", "file_read"],
+        "tool_executions": [
+          {"name": "file_read", "input": {"path": "quarterly-brief.md", "cursor": 0}, "status": "succeeded", "terminal_event": "tool.finished", "exposed": true},
+          {"name": "file_read", "input": {"path": "quarterly-brief.md", "cursor": 12000}, "status": "succeeded", "terminal_event": "tool.finished", "exposed": true}
+        ],
+        "validation_results": [{"tool_name": "file_read", "status": "accepted"}, {"tool_name": "file_read", "status": "accepted"}],
+        "state_diff": {"added": [], "modified": [], "deleted": []}
+      }
+    }
+  ]
+}
