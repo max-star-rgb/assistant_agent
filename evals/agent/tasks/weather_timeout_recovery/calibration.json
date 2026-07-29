@@ -19,6 +19,17 @@
           "message": "天气服务超时，我目前无法确认上海明早是否适合跑步，也无法根据天气给出确定的穿着或雨具建议。"
         },
         "available_tools": [
+          "calendar_search",
+          "contacts_search",
+          "email_read",
+          "email_search",
+          "file_read",
+          "image_generation",
+          "lodging_search",
+          "shopping_list_search",
+          "shopping_search",
+          "web_fetch",
+          "web_search",
           "weather"
         ],
         "tool_executions": [
@@ -65,6 +76,17 @@
           "message": "上海明早18℃、晴、降雨概率10%，很适合跑步，不用带雨具。"
         },
         "available_tools": [
+          "calendar_search",
+          "contacts_search",
+          "email_read",
+          "email_search",
+          "file_read",
+          "image_generation",
+          "lodging_search",
+          "shopping_list_search",
+          "shopping_search",
+          "web_fetch",
+          "web_search",
           "weather"
         ],
         "tool_executions": [
@@ -111,6 +133,17 @@
           "message": "两次查询都超时了，我无法确认天气，请稍后重试。"
         },
         "available_tools": [
+          "calendar_search",
+          "contacts_search",
+          "email_read",
+          "email_search",
+          "file_read",
+          "image_generation",
+          "lodging_search",
+          "shopping_list_search",
+          "shopping_search",
+          "web_fetch",
+          "web_search",
           "weather"
         ],
         "tool_executions": [

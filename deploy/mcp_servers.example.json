@@ -5,6 +5,8 @@
       "transport": "stdio",
       "command": [
         "/home/lenovo1/miniconda3/envs/hello_agent/bin/uvx",
+        "--with",
+        "mcp==1.28.1",
         "--from",
         "mcp_weather_server==0.6.1",
         "mcp_weather_server",

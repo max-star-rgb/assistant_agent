@@ -16,7 +16,7 @@ from evals.agent.calibration import (
     load_labeled_calibration_judge,
     run_calibration,
 )
-from evals.agent.cli import _emit_progress
+from evals.agent.cli import _emit_progress, _langfuse_client
 from evals.agent.contracts import (
     AssertionResult,
     JudgeVerdict,
@@ -32,7 +32,11 @@ from evals.agent.grading import (
     judge_assertion,
     rule_assertion,
 )
-from evals.agent.langfuse_backend import _evaluations, publish_tasks
+from evals.agent.langfuse_backend import (
+    _evaluations,
+    _run_experiment_preserving_evaluator_errors,
+    publish_tasks,
+)
 from evals.agent.judge import (
     JUDGE_MAX_RETRIES_ENV,
     JUDGE_NETWORK_MODE_ENV,
@@ -388,6 +392,74 @@ def test_eval_progress_uses_stderr_without_polluting_stdout(
     }
 
 
+def test_langfuse_cannot_hide_judge_infrastructure_failure() -> None:
+    original = RuntimeError(
+        "LLM judge Provider failed: provider_network_error"
+    )
+
+    def failing_evaluator(**_: Any) -> list[object]:
+        raise original
+
+    def swallowing_run_experiment(
+        *,
+        evaluators: list[Any],
+        **_: Any,
+    ) -> object:
+        with pytest.raises(RuntimeError):
+            evaluators[0](output={}, metadata={})
+        return object()
+
+    with pytest.raises(
+        RuntimeError,
+        match="LLM judge Provider failed: provider_network_error",
+    ) as captured:
+        _run_experiment_preserving_evaluator_errors(
+            swallowing_run_experiment,
+            evaluator=failing_evaluator,
+        )
+
+    assert captured.value.__cause__ is original
+
+
+def test_langfuse_client_ignores_unsupported_socks_proxy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_langfuse(**kwargs: Any) -> object:
+        captured["kwargs"] = kwargs
+        captured["all_proxy_during_init"] = __import__("os").environ.get(
+            "ALL_PROXY"
+        )
+        captured["https_proxy_during_init"] = __import__("os").environ.get(
+            "HTTPS_PROXY"
+        )
+        return object()
+
+    monkeypatch.setattr("evals.agent.cli.Langfuse", fake_langfuse)
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-test")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-test")
+    monkeypatch.setenv("LANGFUSE_HOST", "http://localhost:3000")
+    monkeypatch.setenv("ALL_PROXY", "socks://127.0.0.1:7888")
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:8080")
+
+    client = _langfuse_client()
+
+    assert client is not None
+    assert captured == {
+        "kwargs": {
+            "public_key": "pk-test",
+            "secret_key": "sk-test",
+            "host": "http://localhost:3000",
+        },
+        "all_proxy_during_init": None,
+        "https_proxy_during_init": "http://127.0.0.1:8080",
+    }
+    assert __import__("os").environ["ALL_PROXY"] == (
+        "socks://127.0.0.1:7888"
+    )
+
+
 def test_task_keeps_runtime_and_grading_out_of_dataset_fields() -> None:
     task = load_task("weather_timeout_recovery")
 
@@ -424,17 +496,25 @@ def test_weather_timeout_environment_runs_the_real_runtime_offline() -> None:
         == "agent_eval_environment_validation_v2"
     )
     assert set(environment_validation.checks) == {
-        "isolated_tool_registry",
+        "full_tool_registry",
         "outcome_contract_matches_registry",
         "weather_timeout_fixture",
-        "stateless_boundary",
+        "isolated_state_boundary",
     }
-    assert environment.tool_outcome_expectations() == [
+    expectations = environment.tool_outcome_expectations()
+    expectations_by_name = {item.tool_name: item for item in expectations}
+    assert len(expectations) > 1
+    assert expectations_by_name["weather"] == (
         ToolOutcomeExpectation.must_fail_with(
             "weather",
             error_code="provider_timeout",
         )
-    ]
+    )
+    assert all(
+        not item.required and item.expected_result == "success"
+        for name, item in expectations_by_name.items()
+        if name != "weather"
+    )
 
     execution = environment.execute(
         task=task,
@@ -444,7 +524,9 @@ def test_weather_timeout_environment_runs_the_real_runtime_offline() -> None:
     )
 
     assert execution.evidence.terminal_status == "completed"
-    assert execution.evidence.available_tools == ["weather"]
+    assert "weather" in execution.evidence.available_tools
+    assert len(execution.evidence.available_tools) > 1
+    assert len(environment.chat_adapter.requests[0].tools) > 1
     assert len(execution.evidence.tool_executions) == 1
     tool = execution.evidence.tool_executions[0]
     assert tool.name == "weather"
@@ -650,10 +732,20 @@ def test_success_expected_but_timeout_forces_tool_use_to_fail() -> None:
     grader = load_entrypoint(task.grader)
     task_local_result = grader(execution.evidence, _AlwaysPassJudge())
 
+    success_expectations = [
+        (
+            ToolOutcomeExpectation.must_succeed("weather")
+            if item.tool_name == "weather"
+            else item
+        )
+        for item in environment.tool_outcome_expectations(
+            execution.evidence.available_tools
+        )
+    ]
     result = enforce_tool_outcome_expectations(
         task_local_result,
         evidence=execution.evidence,
-        expectations=[ToolOutcomeExpectation.must_succeed("weather")],
+        expectations=success_expectations,
     )
 
     assert result.dimensions.tool_execution.passed is True

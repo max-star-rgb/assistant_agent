@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Collection, Mapping
+from collections.abc import Callable, Collection, Mapping
 from copy import copy
 from dataclasses import replace
 import time
@@ -187,7 +187,9 @@ def run_tasks(
         )
         return _evaluations(result)
 
-    return selected_dataset.run_experiment(
+    return _run_experiment_preserving_evaluator_errors(
+        selected_dataset.run_experiment,
+        evaluator=evaluate_item,
         name="assistant-agent-regression",
         run_name=run_name,
         description=(
@@ -195,13 +197,41 @@ def run_tasks(
             "score them with task-local graders."
         ),
         task=execute_item,
-        evaluators=[evaluate_item],
         max_concurrency=1,
         metadata={
             "framework": "evals/agent",
             "task_count": len(task_by_id),
         },
     )
+
+
+def _run_experiment_preserving_evaluator_errors(
+    run_experiment: Callable[..., Any],
+    *,
+    evaluator: Callable[..., list[Evaluation]],
+    **kwargs: Any,
+) -> Any:
+    """Restore evaluator failures that the Langfuse SDK records but swallows."""
+
+    failures: list[Exception] = []
+
+    def monitored_evaluator(**evaluator_kwargs: Any) -> list[Evaluation]:
+        try:
+            return evaluator(**evaluator_kwargs)
+        except Exception as exc:
+            failures.append(exc)
+            raise
+
+    result = run_experiment(
+        evaluators=[monitored_evaluator],
+        **kwargs,
+    )
+    if failures:
+        failure = failures[0]
+        raise RuntimeError(
+            f"Agent eval evaluator failed: {failure}"
+        ) from failure
+    return result
 
 
 def primary_rewards(result: Any) -> list[float]:

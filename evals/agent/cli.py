@@ -16,6 +16,9 @@ from assistant_agent.observability.langfuse_config import (
     langfuse_credentials_from_env,
     langfuse_host_from_env,
 )
+from assistant_agent.providers.provider_http import (
+    without_unsupported_socks_proxy_env,
+)
 from assistant_agent.runtime.assistant_run_service import load_env_file
 from evals.agent.calibration import run_calibration
 from evals.agent.contracts import TaskSpec
@@ -257,11 +260,12 @@ def _langfuse_client() -> Langfuse:
     public_key, secret_key = langfuse_credentials_from_env(os.environ)
     if not public_key or not secret_key:
         raise RuntimeError("Langfuse credentials are required.")
-    return Langfuse(
-        public_key=public_key,
-        secret_key=secret_key,
-        host=langfuse_host_from_env(os.environ),
-    )
+    with without_unsupported_socks_proxy_env():
+        return Langfuse(
+            public_key=public_key,
+            secret_key=secret_key,
+            host=langfuse_host_from_env(os.environ),
+        )
 
 
 def _emit_progress(payload: dict[str, object]) -> None:

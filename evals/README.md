@@ -95,8 +95,9 @@ Dataset 当作回归定义的唯一副本。
 - `task.json` 的请求必须像自然用户请求，不描述测试机关；
 - Environment 使用活动 `AgentGraphRuntime`，可以模拟依赖，不能模拟 Agent 决策，并在运行前验证
   Tool Registry、受控依赖、隔离和复位前提；
-- Environment 为每个可见工具声明 `must_succeed` 或 `must_fail_with(error_code)`；该声明不会进入
-  Agent input 或 Dataset metadata；
+- Environment 为每个可见工具声明结果预期；目标工具可以是必调的 `must_succeed` 或
+  `must_fail_with(error_code)`，其余正常目录工具可以声明为非必调、但一旦调用就必须成功。该声明
+  不会进入 Agent input 或 Dataset metadata；
 - 写操作必须使用每次运行可丢弃或可复位的状态；
 - grader 对 Agent 隐藏，客观事实优先用代码检查，开放语义才用 Judge；
 - 每个 Task 只有一个主要分数 `agent_eval.reward`；
@@ -106,10 +107,16 @@ Dataset 当作回归定义的唯一副本。
   LLM Judge；
 - grader 必须先通过至少一个正确样本和一个可信错误样本的直接校准。
 
-当前活动 Task 是 `weather_timeout_recovery`：真实 Chat Agent 只看到 weather 工具，Environment
-固定让天气依赖返回 `provider_timeout`。Agent 必须只调用一次，并正确理解失败结果、避免虚构天气
-事实。`response` 只检查回答非空且忠于工具 Evidence，不强制重试、外部来源或特定穿着与安全建议。
-它不调用真实天气服务，也不写状态。
+当前天气 Task：
+
+- `weather_timeout_recovery`：真实 Chat Agent 看到默认运行时完整工具目录并自行选择 weather；
+  Environment 只把 weather 后端替换为固定 `provider_timeout`，验证单次调用和失败结果消费，不调用
+  真实天气服务。
+- `weather_live_outdoor_run`：真实 Chat Agent 同样看到默认运行时完整工具目录并自行选择显式配置的
+  weather MCP；Environment 要求 weather 成功，验证上海次日参数和回答是否忠于动态天气 Evidence，
+  会调用真实天气服务。
+
+两者都只读并使用每次运行隔离的 in-memory 状态。
 
 ### 运行顺序
 
@@ -167,6 +174,18 @@ MULTIMODAL_AGENT_PROVIDER_MODE=real \
   --run-name weather-timeout-recovery
 ```
 
+真实天气成功路径使用同一入口显式选择：
+
+```bash
+MULTIMODAL_AGENT_PROVIDER_MODE=real \
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python \
+  scripts/run_agent_evals.py \
+  --run \
+  --task weather_live_outdoor_run \
+  --allow-real-provider \
+  --run-name weather-live-outdoor-run
+```
+
 6. 运行 Suite：
 
 ```bash
@@ -180,7 +199,8 @@ MULTIMODAL_AGENT_PROVIDER_MODE=real \
 ```
 
 `--task` 可重复，用于精确运行多个 Task；`--task` 与 `--suite` 互斥。当前 `smoke`、`readonly` 和
-`release` 都只含 `weather_timeout_recovery`；后续 Task 必须逐个完成设计、校准和审计后才加入。
+`release` 都只含 `weather_timeout_recovery`。`weather_live_outdoor_run` 必须按 Task ID 单独运行，
+并在真实 Judge 校准和 Experiment 审计通过后才能加入 Suite。
 
 Agent 与 LLM Judge 共享已显式选择的真实 Chat Provider 和模型，但不共享传输策略。Judge 固定
 `stream=false`，Qwen Judge 关闭 thinking，并使用独立超时和 SDK 重试：
@@ -198,7 +218,9 @@ Provider 只能通过代理访问时，可显式改用 `environment`，沿用系
 运行进度以逐行 JSON 写入 stderr，最终结果仍只写 stdout；每个 criterion 在 Langfuse 中生成
 `judge.<criterion_id>` evaluator observation，其 input 保存当次实际使用的 `criterion_id`、
 `rubric`、`task_id` 和 `run_id`。Judge 超时或连接失败仍属于评测基础设施失败，退出 2，不生成
-Agent 失败分数。
+Agent 失败分数。Langfuse SDK 即使内部捕获 evaluator 异常，CLI 也会重新抛出原始 Judge 故障，
+不会再用“缺少 `agent_eval.reward`”覆盖根因。`max_retries=0` 不会重试瞬时连接失败；需要由
+operator 显式接受重试时，可把 `--judge-max-retries` 调为正数。
 
 ### 安全和退出码
 
@@ -261,12 +283,19 @@ ToolOutcomeExpectation.must_fail_with(
     "weather",
     error_code="provider_timeout",
 )
+
+ToolOutcomeExpectation(
+    tool_name="web_search",
+    required=False,
+    expected_result="success",
+)
 ```
 
 校准和 Langfuse Experiment 都通过通用 `grade_task()` 自动比较实际 `tool.finished/tool.failed` 与
 错误码，并把结果写入 `tool_use` 的 `outcome_matches_environment` Rule assertion。预期成功但实际
 超时会保持 `tool_execution=pass`，同时确定性地产生 `tool_use=fail`。Task grader 不再重复
-硬编码工具应成功还是失败。
+硬编码工具应成功还是失败。评分时 Environment 按本次 Evidence 的实际 `available_tools` 生成完整
+预期集合，因此真实配置与离线配置的正常工具数量不同也不会造成覆盖漂移。
 
 `outcome_matches_environment` 只证明受控世界按声明运行，不证明 Agent 正确理解了结果。需要判断
 最终回答是否把失败当成功、是否编造工具未提供的事实时，Task grader 应在 `response` 定义

@@ -137,7 +137,7 @@ def grade_task(
 
     environment = load_entrypoint(task.environment)()
     environment.validate().require_valid()
-    expectations = environment.tool_outcome_expectations()
+    expectations = environment.tool_outcome_expectations(evidence.available_tools)
     grader = load_entrypoint(task.grader)
     task_result: GraderResult = grader(evidence, judge)
     return enforce_tool_outcome_expectations(

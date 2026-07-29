@@ -495,8 +495,10 @@ export MULTIMODAL_AGENT_MCP_CONFIG_PATH=.local/mcp_servers.json
 ```
 
 当前模板固定使用 `mcp_weather_server==0.6.1` 和 `workspace-mcp==1.22.0`，通过
-`hello_agent` 环境中的 `uvx` 隔离运行，不把它们加入项目运行依赖。Calendar 命令显式附加
-`PySocks`，使上游 `httplib2` 能在代理网络中访问 Google API。首次启动仍会由 `uvx` 下载对应环境；
+`hello_agent` 环境中的 `uvx` 隔离运行，不把它们加入项目运行依赖。Weather 命令额外固定
+`mcp==1.28.1`：上游 0.6.1 仍导入 `McpError`，而其过宽的 `mcp>=1.12.0` 依赖会解析到已移除该名称的
+MCP 2.x，导致 stdio 子进程在 initialize 前退出。Calendar 命令显式附加 `PySocks`，使上游
+`httplib2` 能在代理网络中访问 Google API。首次启动仍会由 `uvx` 下载对应环境；
 本机必须先显式安装 `uv`。模板中的 `calendar_user_email` 必须替换为完成 Google OAuth 的账号，
 `GOOGLE_OAUTH_CLIENT_ID` 和 `GOOGLE_OAUTH_CLIENT_SECRET` 只从本地 shell 或未跟踪 `.env` 注入，不能写入
 MCP 配置模板或提交。当前 stdio 单机配置使用 `http://localhost:8000/oauth2callback`，因此本地 OAuth

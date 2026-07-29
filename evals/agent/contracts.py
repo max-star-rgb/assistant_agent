@@ -175,7 +175,10 @@ class TaskEnvironment(Protocol):
 
     def validate(self) -> EnvironmentValidation: ...
 
-    def tool_outcome_expectations(self) -> list[ToolOutcomeExpectation]: ...
+    def tool_outcome_expectations(
+        self,
+        available_tools: list[str] | None = None,
+    ) -> list[ToolOutcomeExpectation]: ...
 
     def execute(
         self,
