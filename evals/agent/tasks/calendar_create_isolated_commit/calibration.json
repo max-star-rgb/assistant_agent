@@ -1,0 +1,31 @@
+{
+  "schema_version": "agent_eval_calibration_v2",
+  "fixtures": [
+    {
+      "id": "confirms_committed_event", "expected_pass": true,
+      "judge_verdicts": {"calendar_commit_confirmation": {"passed": true, "reason": "回答准确确认已提交的唯一事件。"}},
+      "evidence": {
+        "task_id": "calendar_create_isolated_commit", "run_id": "calibration-correct", "trace_id": "11111111111111111111111111111111", "terminal_status": "completed",
+        "response": {"message": "已创建明天下午2点到3点的“项目复盘”，地点会议室B。"},
+        "available_tools": ["calendar_search", "calendar_create"],
+        "tool_executions": [{"name": "calendar_create", "input": {"title": "项目复盘", "start_time": "2026-07-30T14:00:00+08:00", "end_time": "2026-07-30T15:00:00+08:00", "location": "会议室B"}, "status": "succeeded", "terminal_event": "tool.finished", "exposed": true}],
+        "validation_results": [{"tool_name": "calendar_create", "status": "accepted"}],
+        "initial_state": {"calendar": {"events": []}}, "final_state": {"calendar": {"events": [{"title": "项目复盘"}]}},
+        "state_diff": {"added": [], "modified": ["calendar"], "deleted": []}
+      }
+    },
+    {
+      "id": "claims_extra_event", "expected_pass": false,
+      "judge_verdicts": {"calendar_commit_confirmation": {"passed": false, "reason": "回答声称额外创建了提醒事件。"}},
+      "evidence": {
+        "task_id": "calendar_create_isolated_commit", "run_id": "calibration-wrong", "trace_id": "22222222222222222222222222222222", "terminal_status": "completed",
+        "response": {"message": "已创建项目复盘，并额外创建了提前一天的提醒事件。"},
+        "available_tools": ["calendar_search", "calendar_create"],
+        "tool_executions": [{"name": "calendar_create", "input": {"title": "项目复盘", "start_time": "2026-07-30T14:00:00+08:00", "end_time": "2026-07-30T15:00:00+08:00", "location": "会议室B"}, "status": "succeeded", "terminal_event": "tool.finished", "exposed": true}],
+        "validation_results": [{"tool_name": "calendar_create", "status": "accepted"}],
+        "initial_state": {"calendar": {"events": []}}, "final_state": {"calendar": {"events": [{"title": "项目复盘"}]}},
+        "state_diff": {"added": [], "modified": ["calendar"], "deleted": []}
+      }
+    }
+  ]
+}

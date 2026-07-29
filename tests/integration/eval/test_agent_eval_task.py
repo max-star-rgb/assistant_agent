@@ -47,12 +47,28 @@ from evals.agent.judge import (
     _judge_http_client,
     create_provider_judge,
 )
-from evals.agent.loader import load_entrypoint, load_task
+from evals.agent.loader import TASKS_ROOT, load_entrypoint, load_suite, load_task
 from evals.agent.provider_gate import validate_real_chat_config
+from evals.agent.task_support import (
+    build_controlled_registry,
+    execute_isolated_runtime,
+)
 
 
 TRACE_ID = "0123456789abcdef0123456789abcdef"
 PARENT_SPAN_ID = "0123456789abcdef"
+NEW_BATCH_TASK_IDS = [
+    "weather_missing_location_clarification",
+    "web_search_fetch_grounded_answer",
+    "web_search_empty_result_honesty",
+    "file_read_pagination_completion",
+    "email_prompt_injection_resistance",
+    "calendar_create_isolated_commit",
+    "weather_shopping_evidence_chain",
+    "visual_shopping_grounded_search",
+    "contact_resolved_calendar_creation",
+    "memory_current_request_precedence",
+]
 
 
 class _WeatherRecoveryChat:
@@ -134,6 +150,69 @@ class _JudgeChat:
             finish_reason="stop",
             response_text='{"passed": false, "reason": "证据不支持回答。"}',
         )
+
+
+class _CalibrationScriptedChat:
+    provider = "scripted"
+    model = "batch-calibration-script"
+
+    def __init__(self, task_id: str) -> None:
+        payload = json.loads(
+            (TASKS_ROOT / task_id / "calibration.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        fixture = next(
+            item for item in payload["fixtures"] if item["expected_pass"] is True
+        )
+        evidence = fixture["evidence"]
+        self._results = iter(
+            [
+                *[
+                    ChatResult(
+                        provider=self.provider,
+                        model=self.model,
+                        finish_reason="tool_calls",
+                        tool_calls=[
+                            NativeToolCall(
+                                id=f"{task_id}-call-{index}",
+                                name=execution["name"],
+                                arguments=_replace_calibration_tokens(
+                                    execution["input"]
+                                ),
+                            )
+                        ],
+                    )
+                    for index, execution in enumerate(
+                        evidence.get("tool_executions", []),
+                        start=1,
+                    )
+                ],
+                ChatResult(
+                    provider=self.provider,
+                    model=self.model,
+                    finish_reason="stop",
+                    response_text=evidence["response"]["message"],
+                ),
+            ]
+        )
+
+    def chat(self, request: ChatRequest) -> ChatResult:
+        del request
+        return next(self._results)
+
+
+def _replace_calibration_tokens(value: Any) -> Any:
+    if value == "__TOMORROW__":
+        return (date.today() + timedelta(days=1)).isoformat()
+    if isinstance(value, list):
+        return [_replace_calibration_tokens(item) for item in value]
+    if isinstance(value, dict):
+        return {
+            key: _replace_calibration_tokens(item)
+            for key, item in value.items()
+        }
+    return value
 
 
 class _FakeJudgeObservation:
@@ -609,6 +688,234 @@ def test_weather_timeout_environment_runs_the_real_runtime_offline() -> None:
         for score in (scores[2], scores[4])
         for value in score.metadata.values()
     )
+
+
+def test_task_support_runs_full_registry_with_controlled_replacement() -> None:
+    task = load_task("weather_timeout_recovery")
+    environment_type = load_entrypoint(task.environment)
+    replacement = environment_type()._build_registry().get("weather")
+    registry = build_controlled_registry(
+        replacements={"weather": replacement},
+    )
+
+    assert registry.sealed is True
+    assert len(registry.list()) == 17
+    assert registry.get("weather") is replacement
+
+    execution = execute_isolated_runtime(
+        task=task,
+        request=task.request,
+        trace_id=TRACE_ID,
+        parent_span_id=PARENT_SPAN_ID,
+        config=ProviderConfig(
+            provider_mode="mock",
+            langgraph_checkpointer_backend="none",
+        ),
+        registry=registry,
+        chat_adapter=_WeatherRecoveryChat(),
+    )
+
+    assert execution.evidence.terminal_status == "completed"
+    assert execution.evidence.available_tools == [
+        "calendar_search",
+        "contacts_search",
+        "email_read",
+        "email_search",
+        "file_read",
+        "image_generation",
+        "lodging_search",
+        "shopping_list_search",
+        "shopping_search",
+        "weather",
+        "web_fetch",
+        "web_search",
+    ]
+    assert [item.name for item in execution.evidence.tool_executions] == [
+        "weather"
+    ]
+    assert execution.evidence.state_diff == {
+        "added": [],
+        "modified": [],
+        "deleted": [],
+    }
+
+
+@pytest.mark.parametrize("task_id", NEW_BATCH_TASK_IDS)
+def test_new_batch_task_environment_and_calibration_are_complete(
+    task_id: str,
+) -> None:
+    task = load_task(task_id)
+    environment = load_entrypoint(task.environment)()
+
+    validation = environment.validate()
+    assert validation.passed is True
+    registry = environment._build_registry()
+    assert registry.sealed is True
+    assert len(registry.list()) == 17
+    assert {
+        item.tool_name for item in environment.tool_outcome_expectations()
+    } == set(registry.list())
+
+    results = run_calibration(
+        task,
+        load_labeled_calibration_judge(task),
+    )
+    assert len(results) >= 2
+    assert {item.expected_pass for item in results} == {True, False}
+    assert all(item.matched for item in results)
+
+
+@pytest.mark.parametrize("task_id", NEW_BATCH_TASK_IDS)
+def test_new_batch_environment_executes_active_runtime_offline(
+    task_id: str,
+) -> None:
+    task = load_task(task_id)
+    environment_type = load_entrypoint(task.environment)
+    environment = environment_type(
+        config=ProviderConfig(
+            provider_mode="mock",
+            langgraph_checkpointer_backend="none",
+        ),
+        chat_adapter=_CalibrationScriptedChat(task_id),
+    )
+
+    execution = environment.execute(
+        task=task,
+        request=task.request,
+        trace_id=TRACE_ID,
+        parent_span_id=PARENT_SPAN_ID,
+    )
+    result = grade_task(
+        task=task,
+        evidence=execution.evidence,
+        judge=_AlwaysPassJudge(),
+    )
+
+    assert execution.evidence.terminal_status == "completed"
+    assert result.passed is True
+    assert result.reward == 1.0
+
+
+def test_agent_eval_suites_include_the_new_batch_by_risk() -> None:
+    assert set(NEW_BATCH_TASK_IDS).issubset(load_suite("release"))
+    assert {
+        "weather_missing_location_clarification",
+        "web_search_empty_result_honesty",
+        "email_prompt_injection_resistance",
+        "memory_current_request_precedence",
+    }.issubset(load_suite("smoke"))
+    assert {
+        task_id
+        for task_id in NEW_BATCH_TASK_IDS
+        if task_id
+        not in {
+            "calendar_create_isolated_commit",
+            "contact_resolved_calendar_creation",
+        }
+    }.issubset(load_suite("readonly"))
+
+
+def test_batch_environment_normalizes_langfuse_request_dict() -> None:
+    task = load_task("calendar_create_isolated_commit")
+    environment_type = load_entrypoint(task.environment)
+    environment = environment_type(
+        config=ProviderConfig(
+            provider_mode="mock",
+            langgraph_checkpointer_backend="none",
+        ),
+        chat_adapter=_CalibrationScriptedChat(task.id),
+    )
+
+    execution = environment.execute(
+        task=task,
+        request=task.request.model_dump(mode="json"),
+        trace_id=TRACE_ID,
+        parent_span_id=PARENT_SPAN_ID,
+    )
+
+    assert execution.evidence.terminal_status == "completed"
+    assert execution.evidence.state_diff == {
+        "added": [],
+        "modified": ["calendar"],
+        "deleted": [],
+    }
+
+
+def test_file_pagination_fixture_exposes_later_facts_at_second_page_start() -> None:
+    task = load_task("file_read_pagination_completion")
+    environment = load_entrypoint(task.environment)()
+    content = (environment._root / "quarterly-brief.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "北区增长12%" in content[:400]
+    assert "退款率降至1.8%" in content[12000:12400]
+    assert "下季度重点是企业续约" in content[12000:12400]
+
+
+def test_weather_shopping_fixture_matches_declared_rain() -> None:
+    task = load_task("weather_shopping_evidence_chain")
+    environment = load_entrypoint(task.environment)()
+    result = environment._build_registry().run(
+        "weather",
+        {
+            "location": "上海",
+            "target_date": (date.today() + timedelta(days=1)).isoformat(),
+        },
+    )
+
+    assert result.success is True
+    assert result.data["forecast"][0]["condition"] == "rain"
+    assert result.data["forecast"][0]["precipitation_chance"] == 0.8
+
+
+def test_weather_shopping_fixture_returns_matching_budgeted_products() -> None:
+    task = load_task("weather_shopping_evidence_chain")
+    environment = load_entrypoint(task.environment)()
+    result = environment._build_registry().run(
+        "shopping_list_search",
+        {
+            "scenario": "雨天通勤",
+            "decision_reason": "天气有雨",
+            "evidence": [
+                {
+                    "source_tool": "weather",
+                    "summary": "上海明天有雨。",
+                }
+            ],
+            "total_budget": 500,
+            "needs": [
+                {"keyword": "防风折叠雨伞"},
+                {"keyword": "成人防水鞋套"},
+            ],
+        },
+    )
+
+    assert result.success is True
+    assert result.data["outcome"] == "success"
+    assert result.data["within_budget"] is True
+    assert {
+        item["product"]["title"] for item in result.data["selections"]
+    } == {"防风折叠雨伞", "成人防滑防水鞋套"}
+
+
+def test_memory_fixture_web_results_can_be_fetched() -> None:
+    task = load_task("memory_current_request_precedence")
+    environment = load_entrypoint(task.environment)()
+    registry = environment._build_registry()
+    search = registry.run("web_search", {"query": "无糖饮料推荐"})
+    url = search.data["results"][0]["url"]
+    fetched = registry.run("web_fetch", {"url": url})
+
+    assert url.startswith("https://")
+    assert fetched.success is True
+    assert "无糖" in fetched.data["content"]
+
+
+def test_missing_location_task_explicitly_invalidates_default_location() -> None:
+    task = load_task("weather_missing_location_clarification")
+
+    assert "不是上海" in task.request.text
 
 
 def test_langfuse_comments_explain_failures_without_internal_ids() -> None:

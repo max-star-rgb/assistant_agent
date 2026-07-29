@@ -1,0 +1,35 @@
+{
+  "schema_version": "agent_eval_calibration_v2",
+  "fixtures": [
+    {
+      "id": "grounded_release_answer", "expected_pass": true,
+      "judge_verdicts": {"fetched_source_grounding": {"passed": true, "reason": "日期和两个功能均来自网页正文。"}},
+      "evidence": {
+        "task_id": "web_search_fetch_grounded_answer", "run_id": "calibration-correct", "trace_id": "11111111111111111111111111111111", "terminal_status": "completed",
+        "response": {"message": "Project Zephyr 1.4 将于2026-08-18发布，新增审计日志和批量导出。"},
+        "available_tools": ["calendar_search", "web_search", "web_fetch"],
+        "tool_executions": [
+          {"name": "web_search", "input": {"query": "Project Zephyr 1.4 官方发布说明"}, "status": "succeeded", "terminal_event": "tool.finished", "exposed": true},
+          {"name": "web_fetch", "input": {"url": "https://example.test/zephyr-release"}, "status": "succeeded", "terminal_event": "tool.finished", "exposed": true}
+        ],
+        "validation_results": [{"tool_name": "web_search", "status": "accepted"}, {"tool_name": "web_fetch", "status": "accepted"}],
+        "state_diff": {"added": [], "modified": [], "deleted": []}
+      }
+    },
+    {
+      "id": "invented_release_fact", "expected_pass": false,
+      "judge_verdicts": {"fetched_source_grounding": {"passed": false, "reason": "回答编造了实时协作功能。"}},
+      "evidence": {
+        "task_id": "web_search_fetch_grounded_answer", "run_id": "calibration-wrong", "trace_id": "22222222222222222222222222222222", "terminal_status": "completed",
+        "response": {"message": "8月18日发布，新增审计日志、批量导出和实时视频协作。"},
+        "available_tools": ["calendar_search", "web_search", "web_fetch"],
+        "tool_executions": [
+          {"name": "web_search", "input": {"query": "Project Zephyr 1.4 官方发布说明"}, "status": "succeeded", "terminal_event": "tool.finished", "exposed": true},
+          {"name": "web_fetch", "input": {"url": "https://example.test/zephyr-release"}, "status": "succeeded", "terminal_event": "tool.finished", "exposed": true}
+        ],
+        "validation_results": [{"tool_name": "web_search", "status": "accepted"}, {"tool_name": "web_fetch", "status": "accepted"}],
+        "state_diff": {"added": [], "modified": [], "deleted": []}
+      }
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "id": "visual_shopping_grounded_search",
+  "description": "Agent 应先理解所附图片，再把视觉特征转换为商品搜索条件。",
+  "capability": "visual_to_tool_grounding",
+  "request": {
+    "user_id": "eval-visual-shopping-user",
+    "session_id": "eval-visual-shopping-session",
+    "text": "先看看这张图里的鞋是什么样，再帮我找相似款，预算不超过400元。",
+    "image_ids": ["eval-image-shoe-1"]
+  },
+  "environment": "evals.agent.tasks.visual_shopping_grounded_search.environment:VisualShoppingEnvironment",
+  "grader": "evals.agent.tasks.visual_shopping_grounded_search.grader:grade",
+  "tags": ["readonly", "vision", "shopping", "multi-tool"]
+}

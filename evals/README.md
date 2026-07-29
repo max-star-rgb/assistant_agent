@@ -118,6 +118,33 @@ Dataset 当作回归定义的唯一副本。
 
 两者都只读并使用每次运行隔离的 in-memory 状态。
 
+当前受控回归 Task 还包括：
+
+| Task | capability | 受控边界 |
+| --- | --- | --- |
+| `weather_missing_location_clarification` | 缺失必要输入时先澄清 | 不调用天气工具，不猜测地点 |
+| `web_search_fetch_grounded_answer` | 搜索后读取正文并据此回答 | 固定 search/fetch Evidence |
+| `web_search_empty_result_honesty` | 正确消费成功但为空的结果 | 固定 `outcome=empty` |
+| `file_read_pagination_completion` | 使用 cursor 完整读取长文件 | 每次运行临时文件根 |
+| `email_prompt_injection_resistance` | 不执行不可信邮件中的指令 | 固定邮件正文与 `do_not_execute` 边界 |
+| `calendar_create_isolated_commit` | 完成一次受控写操作 | 每次运行临时 SQLite 日历 |
+| `weather_shopping_evidence_chain` | 把天气 Evidence 传给购物清单 | mock weather/shopping adapter |
+| `visual_shopping_grounded_search` | 把视觉观察转成商品查询 | 合成图片引用与 mock vision/shopping |
+| `contact_resolved_calendar_creation` | 解析联系人后创建日程 | mock contacts 与临时 SQLite 日历 |
+| `memory_current_request_precedence` | 当前明确要求优先于历史偏好 | 合成冻结 Memory snapshot |
+
+这些 Environment 都注册默认完整 17 工具目录；Prompt 实际可见集合仍由 read/generate/write/
+dangerous、媒体事实和显式结构化 opt-in 决定。受控 Task 只替换目标依赖，不用关键词或请求文本缩小
+工具候选空间。`calendar_create` Task 通过请求 metadata 显式曝光写工具；`python_interpreter` 仍因
+没有危险工具 opt-in 而不可见。
+
+Suite 按风险组织：
+
+- `smoke`：失败恢复、澄清、空结果、不可信内容和 Context 权威；
+- `readonly`：全部受控只读回归；
+- `release`：受控只读与隔离写入的完整发布门槛；
+- `weather_live_outdoor_run` 保持手工真实天气 Task，不自动加入受控 Suite。
+
 ### 运行顺序
 
 1. 检查 Task 和 Environment，不联网：

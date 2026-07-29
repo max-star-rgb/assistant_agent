@@ -1,0 +1,13 @@
+{
+  "id": "web_search_fetch_grounded_answer",
+  "description": "Agent 应搜索并阅读 Project Zephyr 发布说明，再基于正文回答。",
+  "capability": "multi_tool_research_grounding",
+  "request": {
+    "user_id": "eval-web-research-user",
+    "session_id": "eval-web-research-session",
+    "text": "请搜索 Project Zephyr 1.4 的官方发布说明，打开结果阅读全文，然后告诉我发布日期和两个新增功能。"
+  },
+  "environment": "evals.agent.tasks.web_search_fetch_grounded_answer.environment:WebSearchFetchEnvironment",
+  "grader": "evals.agent.tasks.web_search_fetch_grounded_answer.grader:grade",
+  "tags": ["readonly", "web", "multi-tool"]
+}
