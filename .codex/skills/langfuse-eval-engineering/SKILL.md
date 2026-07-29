@@ -80,9 +80,9 @@ Task 不得靠 expected answer 文本匹配通过；工具行为以 Trace 和状
 4. `--publish` 显式发布所选 Task；
 5. `--run` 执行真实 Experiment。
 
-Langfuse Remote Custom Experiment 只允许通过签名 webhook 触发同一个 `--run` CLI；UI payload
-只能选择 Git 已定义且已发布的 Task/Suite 和 run name，不能创建案例、传环境变量、扩大副作用权限或
-替代本地校准/审计。
+Langfuse Remote Custom Experiment 只允许通过签名 webhook 触发同一个 `--run` CLI。默认空 payload
+运行当前 Dataset 中全部 ACTIVE 且能映射到 Git 的 Task；`task`、`suite` 和 `runName` 仅作为高级
+覆盖项。UI 不能创建案例、传环境变量、扩大副作用权限或替代本地校准/审计。
 自托管 Langfuse 的 Remote Experiment URL 先按当前运行版本验证：`3.224.2` 只接受 80/443，host/IP
 whitelist 不会放行其他端口。本项目必须使用 Compose 中白名单的内部 80 端口
 `assistant-agent-eval-webhook`，不能直接填写 Assistant Server 的 `:8089`。
@@ -107,6 +107,8 @@ Agent 行为不满足任务时退出 1。凭据、Trace 导出、Dataset、Judge
 
 - Git 定义回归任务；Langfuse 保存协作数据和运行结果。
 - Langfuse UI 可以触发 CLI，但不能成为 Task、Environment、Grader 或权限的事实源。
+- Dataset item 的 ACTIVE/ARCHIVED 状态可以选择本次是否运行，但 ACTIVE item 必须完整映射到 Git
+  Task；未知、重复或契约不一致的 item 属于基础设施错误，不能静默跳过。
 - 一个 Task 只验证一个可命名 capability。
 - Environment 拥有依赖和状态，Task 输入不描述测试机关。
 - Grader 对 Agent 隐藏，并先用正反样本证明能区分结果。

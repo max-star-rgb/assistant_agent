@@ -31,6 +31,7 @@ from evals.agent.judge import (
 )
 from evals.agent.langfuse_backend import (
     DEFAULT_DATASET_NAME,
+    active_dataset_task_ids,
     create_required_trace_observer,
     primary_rewards,
     publish_tasks,
@@ -61,6 +62,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--suite",
         choices=list_suites(),
         help="Select a named task suite; defaults to smoke.",
+    )
+    selector.add_argument(
+        "--dataset-active",
+        action="store_true",
+        help="Select all ACTIVE Git-owned tasks published in the Dataset.",
     )
     action = parser.add_mutually_exclusive_group(required=True)
     action.add_argument("--inspect", action="store_true")
@@ -105,8 +111,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
     )
     args = parser.parse_args(argv)
-    task_ids = args.task or load_suite(args.suite or "smoke")
-    tasks = [load_task(task_id) for task_id in task_ids]
+    if args.dataset_active and not args.run:
+        parser.error("--dataset-active is only supported with --run.")
+    tasks: list[TaskSpec] = []
+    if not args.dataset_active:
+        task_ids = args.task or load_suite(args.suite or "smoke")
+        tasks = [load_task(task_id) for task_id in task_ids]
 
     if args.inspect:
         print(
@@ -123,8 +133,22 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if not args.no_env_file:
         load_env_file(args.env_file)
+    if not args.publish and not args.allow_real_provider:
+        parser.error("--calibrate and --run require --allow-real-provider.")
 
     try:
+        client = None
+        if args.dataset_active:
+            client = _langfuse_client()
+            task_ids = active_dataset_task_ids(
+                client,
+                dataset_name=args.dataset_name,
+            )
+            if not task_ids:
+                raise RuntimeError(
+                    "Dataset has no ACTIVE Agent eval tasks."
+                )
+            tasks = [load_task(task_id) for task_id in task_ids]
         if args.publish:
             client = _langfuse_client()
             item_ids = publish_tasks(
@@ -145,8 +169,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             return 0
 
-        if not args.allow_real_provider:
-            parser.error("--calibrate and --run require --allow-real-provider.")
         config = ProviderConfig.from_env()
         validate_real_chat_config(config)
         judge_env = dict(os.environ)
@@ -191,7 +213,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             return 0 if all(result["matched"] for result in results) else 1
 
-        client = _langfuse_client()
+        client = client or _langfuse_client()
         judge = create_provider_judge(
             config,
             env=judge_env,
@@ -216,6 +238,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 run_name=args.run_name,
                 trace_observer=observer,
                 progress=_emit_progress,
+                active_only=args.dataset_active,
             )
         finally:
             judge.close()

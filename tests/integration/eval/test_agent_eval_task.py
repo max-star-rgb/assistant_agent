@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 from datetime import date, timedelta
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 from pydantic import ValidationError
 
+import evals.agent.langfuse_backend as langfuse_backend
 from assistant_agent.config import ProviderConfig
 from assistant_agent.runtime.chat_adapter import ChatRequest, ChatResult
 from assistant_agent.runtime.decision_models import NativeToolCall
@@ -16,7 +18,7 @@ from evals.agent.calibration import (
     load_labeled_calibration_judge,
     run_calibration,
 )
-from evals.agent.cli import _emit_progress, _langfuse_client
+from evals.agent.cli import _emit_progress, _langfuse_client, main
 from evals.agent.contracts import (
     AssertionResult,
     JudgeVerdict,
@@ -36,6 +38,7 @@ from evals.agent.langfuse_backend import (
     _evaluations,
     _run_experiment_preserving_evaluator_errors,
     publish_tasks,
+    run_tasks,
 )
 from evals.agent.judge import (
     JUDGE_MAX_RETRIES_ENV,
@@ -829,6 +832,194 @@ def test_publish_uses_langfuse_as_a_thin_backend() -> None:
     ]
     assert "environment" not in client.items[0]["metadata"]
     assert "grader" not in client.items[0]["metadata"]
+
+
+def test_active_dataset_task_ids_excludes_archived_items() -> None:
+    class _Dataset:
+        items = [
+            {
+                "status": "ACTIVE",
+                "input": {"task_id": "weather_timeout_recovery"},
+                "metadata": {"task_id": "weather_timeout_recovery"},
+            },
+            {
+                "status": "ARCHIVED",
+                "input": {"task_id": "weather_live_outdoor_run"},
+                "metadata": {"task_id": "weather_live_outdoor_run"},
+            },
+        ]
+
+    class _DatasetClient:
+        def get_dataset(self, name: str) -> _Dataset:
+            assert name == "assistant-agent-regression"
+            return _Dataset()
+
+    assert langfuse_backend.active_dataset_task_ids(
+        _DatasetClient(),  # type: ignore[arg-type]
+        dataset_name="assistant-agent-regression",
+    ) == ["weather_timeout_recovery"]
+
+
+def test_active_dataset_task_ids_rejects_duplicate_task_mapping() -> None:
+    duplicate_item = {
+        "status": "ACTIVE",
+        "input": {"task_id": "weather_timeout_recovery"},
+        "metadata": {"task_id": "weather_timeout_recovery"},
+    }
+
+    class _DatasetClient:
+        def get_dataset(self, _: str) -> SimpleNamespace:
+            return SimpleNamespace(items=[duplicate_item, duplicate_item])
+
+    with pytest.raises(RuntimeError, match="duplicate task_id"):
+        langfuse_backend.active_dataset_task_ids(
+            _DatasetClient(),  # type: ignore[arg-type]
+        )
+
+
+def test_run_tasks_dataset_mode_excludes_archived_items() -> None:
+    captured_item_ids: list[str] = []
+
+    class _Dataset:
+        items = [
+            SimpleNamespace(
+                id="active-item",
+                status="ACTIVE",
+                metadata={"task_id": "weather_timeout_recovery"},
+            ),
+            SimpleNamespace(
+                id="archived-item",
+                status="ARCHIVED",
+                metadata={"task_id": "weather_timeout_recovery"},
+            ),
+        ]
+
+        def run_experiment(self, **_: Any) -> object:
+            captured_item_ids.extend(str(item.id) for item in self.items)
+            return object()
+
+    class _Client:
+        def get_dataset(self, _: str) -> _Dataset:
+            return _Dataset()
+
+    run_tasks(
+        _Client(),  # type: ignore[arg-type]
+        [load_task("weather_timeout_recovery")],
+        config=ProviderConfig(),
+        judge=_AlwaysPassJudge(),
+        active_only=True,
+    )
+
+    assert captured_item_ids == ["active-item"]
+
+
+def test_cli_dataset_active_runs_selected_git_tasks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Dataset:
+        items = [
+            {
+                "status": "ACTIVE",
+                "input": {"task_id": "weather_timeout_recovery"},
+                "metadata": {"task_id": "weather_timeout_recovery"},
+            },
+            {
+                "status": "ARCHIVED",
+                "input": {"task_id": "weather_live_outdoor_run"},
+                "metadata": {"task_id": "weather_live_outdoor_run"},
+            },
+        ]
+
+    class _Client:
+        def get_dataset(self, _: str) -> _Dataset:
+            return _Dataset()
+
+    class _Judge:
+        def close(self) -> None:
+            pass
+
+    class _Observer:
+        def close(self, *, timeout: float) -> bool:
+            assert timeout == 10.0
+            return True
+
+    client = _Client()
+    selected_task_ids: list[str] = []
+
+    def fake_run_tasks(
+        received_client: object,
+        tasks: list[object],
+        **_: Any,
+    ) -> SimpleNamespace:
+        assert received_client is client
+        selected_task_ids.extend(str(task.id) for task in tasks)
+        return SimpleNamespace(
+            run_name="ui-dataset-active",
+            dataset_run_url="http://langfuse.test/experiment",
+        )
+
+    monkeypatch.setenv("MULTIMODAL_AGENT_PROVIDER_MODE", "real")
+    monkeypatch.setattr("evals.agent.cli._langfuse_client", lambda: client)
+    monkeypatch.setattr(
+        "evals.agent.cli.ProviderConfig.from_env",
+        lambda: ProviderConfig(),
+    )
+    monkeypatch.setattr(
+        "evals.agent.cli.validate_real_chat_config",
+        lambda _: None,
+    )
+    monkeypatch.setattr(
+        "evals.agent.cli.create_provider_judge",
+        lambda *_args, **_kwargs: _Judge(),
+    )
+    monkeypatch.setattr(
+        "evals.agent.cli.create_required_trace_observer",
+        lambda: _Observer(),
+    )
+    monkeypatch.setattr("evals.agent.cli.run_tasks", fake_run_tasks)
+    monkeypatch.setattr(
+        "evals.agent.cli.primary_rewards",
+        lambda _: [1.0],
+    )
+
+    exit_code = main(
+        [
+            "--run",
+            "--dataset-active",
+            "--dataset-name",
+            "assistant-agent-regression",
+            "--allow-real-provider",
+            "--no-env-file",
+            "--run-name",
+            "ui-dataset-active",
+        ]
+    )
+
+    assert exit_code == 0
+    assert selected_task_ids == ["weather_timeout_recovery"]
+
+
+def test_cli_dataset_active_requires_confirmation_before_langfuse_access(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_if_accessed() -> object:
+        raise AssertionError("Langfuse must not be accessed before confirmation.")
+
+    monkeypatch.setattr(
+        "evals.agent.cli._langfuse_client",
+        fail_if_accessed,
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "--run",
+                "--dataset-active",
+                "--no-env-file",
+            ]
+        )
+
+    assert exc_info.value.code == 2
 
 
 def test_real_run_gate_rejects_the_default_mock_provider() -> None:

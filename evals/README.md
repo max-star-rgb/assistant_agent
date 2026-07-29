@@ -202,6 +202,22 @@ MULTIMODAL_AGENT_PROVIDER_MODE=real \
 `release` 都只含 `weather_timeout_recovery`。`weather_live_outdoor_run` 必须按 Task ID 单独运行，
 并在真实 Judge 校准和 Experiment 审计通过后才能加入 Suite。
 
+运行统一 Dataset 中全部 ACTIVE Task：
+
+```bash
+MULTIMODAL_AGENT_PROVIDER_MODE=real \
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python \
+  scripts/run_agent_evals.py \
+  --run \
+  --dataset-active \
+  --allow-real-provider \
+  --run-name dataset-active
+```
+
+`--dataset-active` 只用于 `--run`：它读取 Langfuse Dataset，忽略 ARCHIVED items，并要求每个 ACTIVE
+item 的 `input.task_id`、`metadata.task_id` 与 Git Task 一致。空集合、未知 Task 或契约不一致都属于
+评测基础设施错误，不会静默跳过。
+
 Agent 与 LLM Judge 共享已显式选择的真实 Chat Provider 和模型，但不共享传输策略。Judge 固定
 `stream=false`，Qwen Judge 关闭 thinking，并使用独立超时和 SDK 重试：
 
@@ -337,12 +353,13 @@ ASSISTANT_AGENT_LANGFUSE_REMOTE_EXPERIMENT_DATASET=assistant-agent-regression
   "projectId": "<project-id>",
   "datasetId": "<dataset-id>",
   "datasetName": "assistant-agent-regression",
-  "payload": "{\"task\":\"weather_timeout_recovery\",\"runName\":\"ui-weather-timeout\"}"
+  "payload": "{}"
 }
 ```
 
 `payload` 是 UI 中 Default config 的原始 JSON 字符串，不是顶层 `config` 对象。
-Assistant Server 对其二次解析并只接受 `task|suite + runName` 白名单字段。
+Assistant Server 对其二次解析。空对象默认运行 Dataset 中全部 ACTIVE 且能映射到 Git 的 Task；
+`task|suite + runName` 只作为精确调试时的高级白名单字段。
 
 `3.224.2` 尚未把 Remote Experiment 原生签名功能发布到自托管镜像，因此内部 80 端口代理会在
 请求没有 `x-langfuse-signature` 时使用同一个 secret 补充
@@ -354,11 +371,22 @@ Assistant Server 对其二次解析并只接受 `task|suite + runName` 白名单
 
 1. URL 填
    `http://assistant-agent-eval-webhook/internal/evals/langfuse/remote-experiment`；
-2. 单 Task 的 Default config 使用
-   `{"task":"weather_timeout_recovery","runName":"ui-weather-timeout"}`；
-3. Suite 使用 `{"suite":"release","runName":"ui-release"}`；
-4. 打开 Enabled，保存配置；
-5. 先通过 `--publish` 确保所选 Task 已存在于统一 Dataset，再从 UI 点击 `Run`。
+2. Default config 保持 `{}`；
+3. 打开 Enabled，保存配置；
+4. 通过 `--publish` 确保 Task 已存在于统一 Dataset；
+5. 在 Dataset Items 中用 ACTIVE/ARCHIVED 控制是否参与运行，然后点击 `Run`。
+
+日常使用不需要记忆字段。只有精确调试时才临时覆盖 config：
+
+```json
+{"task":"weather_timeout_recovery","runName":"ui-weather-timeout"}
+```
+
+或：
+
+```json
+{"suite":"release","runName":"ui-release"}
+```
 
 Langfuse `3.224.2` 的 webhook SSRF 校验只允许 URL 使用 80 或 443，host/IP whitelist 不会放行
 8089。因此本机 Docker Compose 使用 `assistant-agent-eval-webhook` 在内部 80 端口提供单路径代理，

@@ -58,10 +58,10 @@ class RemoteExperimentPayload(BaseModel):
     )
 
     @model_validator(mode="after")
-    def require_one_selector(self) -> RemoteExperimentPayload:
-        if (self.task is None) == (self.suite is None):
+    def allow_at_most_one_selector(self) -> RemoteExperimentPayload:
+        if self.task is not None and self.suite is not None:
             raise ValueError(
-                "Exactly one of payload.task or payload.suite is required."
+                "At most one of payload.task or payload.suite is allowed."
             )
         return self
 
@@ -94,7 +94,7 @@ class RemoteExperimentAccepted(BaseModel):
     trigger_id: str
     duplicate: bool = False
     dataset_name: str
-    selector_kind: Literal["task", "suite"]
+    selector_kind: Literal["dataset", "task", "suite"]
     selector_id: str
     run_name: str
 
@@ -211,7 +211,10 @@ class RemoteExperimentLauncher:
                 "Langfuse remote experiment payload is invalid."
             ) from exc
 
-        selector_kind, selector_id = self._validate_selector(payload)
+        selector_kind, selector_id = self._validate_selector(
+            payload,
+            dataset_name=request.dataset_name,
+        )
         trigger_id = _trigger_id(signature_header or "", raw_body)
         run_name = payload.run_name or (
             f"langfuse-ui-{selector_id}-{trigger_id[:8]}"
@@ -242,7 +245,9 @@ class RemoteExperimentLauncher:
     def _validate_selector(
         self,
         payload: RemoteExperimentPayload,
-    ) -> tuple[Literal["task", "suite"], str]:
+        *,
+        dataset_name: str,
+    ) -> tuple[Literal["dataset", "task", "suite"], str]:
         if payload.task is not None:
             task_path = (
                 self.settings.repository_root
@@ -257,6 +262,8 @@ class RemoteExperimentLauncher:
                     f"Unknown Agent eval task: {payload.task}."
                 )
             return "task", payload.task
+        if payload.suite is None:
+            return "dataset", dataset_name
 
         suites_path = (
             self.settings.repository_root
@@ -358,12 +365,19 @@ class RemoteExperimentLauncher:
             raise RemoteExperimentLaunchFailed(
                 "Agent eval CLI entrypoint is unavailable."
             )
+        selector_args = (
+            ["--dataset-active"]
+            if accepted.selector_kind == "dataset"
+            else [
+                f"--{accepted.selector_kind}",
+                accepted.selector_id,
+            ]
+        )
         return [
             sys.executable,
             str(script_path),
             "--run",
-            f"--{accepted.selector_kind}",
-            accepted.selector_id,
+            *selector_args,
             "--dataset-name",
             accepted.dataset_name,
             "--allow-real-provider",

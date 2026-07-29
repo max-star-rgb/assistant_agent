@@ -133,6 +133,44 @@ def test_signed_webhook_launches_fixed_cli_once_and_returns_202(
     assert receipt["selector_id"] == "weather_timeout_recovery"
 
 
+def test_empty_default_config_runs_active_dataset_items(
+    tmp_path: Path,
+) -> None:
+    recorder = _PopenRecorder()
+    launcher = _launcher(tmp_path, recorder)
+    body = _payload(payload_config={})
+
+    accepted = launcher.launch(
+        raw_body=body,
+        signature_header=_signature(body),
+    )
+
+    assert accepted.model_dump(mode="json") == {
+        "status": "accepted",
+        "trigger_id": accepted.trigger_id,
+        "duplicate": False,
+        "dataset_name": DEFAULT_REMOTE_EXPERIMENT_DATASET,
+        "selector_kind": "dataset",
+        "selector_id": DEFAULT_REMOTE_EXPERIMENT_DATASET,
+        "run_name": (
+            f"langfuse-ui-{DEFAULT_REMOTE_EXPERIMENT_DATASET}-"
+            f"{accepted.trigger_id[:8]}"
+        ),
+    }
+    command, _ = recorder.calls[0]
+    assert command == [
+        sys.executable,
+        str(tmp_path / "scripts" / "run_agent_evals.py"),
+        "--run",
+        "--dataset-active",
+        "--dataset-name",
+        DEFAULT_REMOTE_EXPERIMENT_DATASET,
+        "--allow-real-provider",
+        "--run-name",
+        accepted.run_name,
+    ]
+
+
 def test_webhook_rejects_invalid_or_expired_signatures(tmp_path: Path) -> None:
     launcher = _launcher(tmp_path, _PopenRecorder())
     body = _payload(payload_config={"suite": "release"})

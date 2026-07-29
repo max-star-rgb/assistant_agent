@@ -34,6 +34,39 @@ DEFAULT_DATASET_NAME = "assistant-agent-regression"
 PRIMARY_REWARD_NAME = "agent_eval.reward"
 
 
+def active_dataset_task_ids(
+    client: Langfuse,
+    *,
+    dataset_name: str = DEFAULT_DATASET_NAME,
+) -> list[str]:
+    dataset = client.get_dataset(dataset_name)
+    task_ids: list[str] = []
+    for item in dataset.items:
+        if _item_status(item) != "ACTIVE":
+            continue
+        item_input = _item_field(item, "input")
+        metadata = _item_field(item, "metadata")
+        if not isinstance(item_input, dict) or not isinstance(metadata, dict):
+            raise RuntimeError(
+                "Active Dataset items must use the Agent eval item contract."
+            )
+        task_id = item_input.get("task_id")
+        if (
+            not isinstance(task_id, str)
+            or not task_id
+            or metadata.get("task_id") != task_id
+        ):
+            raise RuntimeError(
+                "Active Dataset item task_id is missing or inconsistent."
+            )
+        if task_id in task_ids:
+            raise RuntimeError(
+                f"Active Dataset contains duplicate task_id: {task_id}."
+            )
+        task_ids.append(task_id)
+    return task_ids
+
+
 def publish_tasks(
     client: Langfuse,
     tasks: Collection[TaskSpec],
@@ -79,6 +112,7 @@ def run_tasks(
     run_name: str | None = None,
     trace_observer: TextOtelTraceObserver | None = None,
     progress: ProgressCallback | None = None,
+    active_only: bool = False,
 ) -> Any:
     task_by_id = {task.id: task for task in tasks}
     dataset = client.get_dataset(dataset_name)
@@ -87,6 +121,7 @@ def run_tasks(
         for item in dataset.items
         if isinstance(item.metadata, dict)
         and item.metadata.get("task_id") in task_by_id
+        and (not active_only or _item_status(item) == "ACTIVE")
     ]
     missing = set(task_by_id) - {
         str(item.metadata["task_id"])
@@ -318,6 +353,11 @@ def _item_field(item: Any, name: str) -> Any:
     if isinstance(item, dict):
         return item.get(name)
     return getattr(item, name, None)
+
+
+def _item_status(item: Any) -> Any:
+    status = _item_field(item, "status")
+    return getattr(status, "value", status)
 
 
 def _report_progress(
