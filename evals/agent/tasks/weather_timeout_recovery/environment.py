@@ -75,7 +75,7 @@ class AlwaysTimeoutWeatherAdapter:
 
 
 class WeatherTimeoutEnvironment:
-    """Real Chat Provider plus the normal catalog with weather forced to timeout."""
+    """Real Chat Provider plus the normal non-web catalog with weather forced to timeout."""
 
     def __init__(
         self,
@@ -91,7 +91,7 @@ class WeatherTimeoutEnvironment:
             "runtime": "AgentGraphRuntime",
             "chat_provider": "configured_real",
             "weather_provider": "simulated:weather_timeout_v1",
-            "tool_catalog": "default_runtime_catalog_with_normal_visibility",
+            "tool_catalog": "default_runtime_catalog_without_local_web_access",
             "writes": False,
             "state_reset": "per_task_run",
         }
@@ -260,6 +260,8 @@ def _replace_weather_tool(
 ) -> ToolRegistry:
     registry = ToolRegistry()
     for name in source.list():
+        if name in {"web_search", "web_fetch"}:
+            continue
         registry.register(
             weather_tool if name == "weather" else source.get(name),
             source.registration_record(name),

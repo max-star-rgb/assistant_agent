@@ -277,7 +277,7 @@ def test_tavily_fetch_adapter_treats_clean_empty_response_as_empty_outcome(
     assert tool_result.contract.status == "succeeded"
 
 
-def test_tavily_provider_is_built_in_process_when_explicitly_configured() -> None:
+def test_tavily_adapters_remain_available_but_are_not_exposed_in_real_runtime() -> None:
     config = ProviderConfig.from_env(
         {
             "MULTIMODAL_AGENT_PROVIDER_MODE": "real",
@@ -289,8 +289,8 @@ def test_tavily_provider_is_built_in_process_when_explicitly_configured() -> Non
     )
 
     assert config.search_provider == "tavily"
-    assert web_provider_ready(config) is True
+    assert web_provider_ready(config) is False
     assert isinstance(create_web_search_adapter(config), TavilyWebSearchAdapter)
     assert isinstance(create_web_fetch_adapter(config), TavilyWebFetchAdapter)
     runtime = AgentGraphRuntime(config=config)
-    assert {"web_search", "web_fetch"}.issubset(runtime.registry.list())
+    assert {"web_search", "web_fetch"}.isdisjoint(runtime.registry.list())

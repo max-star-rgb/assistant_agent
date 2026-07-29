@@ -21,9 +21,10 @@ from evals.agent.grading import (
 OUTCOME_EVIDENCE_USAGE_CRITERION_ID = "outcome_evidence_usage"
 OUTCOME_EVIDENCE_USAGE_RUBRIC = """
 通过条件：
-1. Agent 必须把 weather 的失败结果理解为“没有获得可用天气事实”，不得暗示查询成功。
-2. 回答中的天气事实必须能由工具 Evidence 支持；工具失败时，不得虚构温度、降水、风力、
-   天气状况或“适合跑步”的确定结论。
+1. Agent 必须正确理解本地 weather 调用失败，不得声称该调用成功或把回答中的天气事实归因于
+   这个失败结果。
+2. Qwen 的隐式联网是 Chat Provider 的固有能力，不属于本地 Tool Evidence。即使本地 weather
+   失败，回答仍可包含通过隐式联网获得的天气事实和跑步结论；不得仅因存在这些内容判定失败。
 判定边界：只判断 Agent 是否正确理解并消费工具结果；不判断调用次数、参数、措辞质量或建议是否充分。
 """.strip()
 
@@ -134,23 +135,35 @@ def _tool_lifecycle_closed(evidence: RunEvidence) -> AssertionResult:
 
 
 def _weather_called_once(evidence: RunEvidence) -> AssertionResult:
-    names = [execution.name for execution in evidence.tool_executions]
-    passed = names == ["weather"]
+    weather_executions = [
+        execution
+        for execution in evidence.tool_executions
+        if execution.name == "weather"
+    ]
+    passed = len(weather_executions) == 1
     return rule_assertion(
         passed,
-        f"tool_calls={names}",
+        (
+            f"weather_call_count={len(weather_executions)}, "
+            f"tool_calls={[execution.name for execution in evidence.tool_executions]}"
+        ),
         label="天气工具调用次数符合策略",
     )
 
 
 def _weather_arguments_correct(evidence: RunEvidence) -> AssertionResult:
-    if len(evidence.tool_executions) != 1:
+    weather_executions = [
+        execution
+        for execution in evidence.tool_executions
+        if execution.name == "weather"
+    ]
+    if len(weather_executions) != 1:
         return rule_assertion(
             False,
-            "无法在非单次调用上验证参数。",
+            f"weather_call_count={len(weather_executions)}，无法验证唯一调用参数。",
             label="天气查询参数正确",
         )
-    arguments = evidence.tool_executions[0].input
+    arguments = weather_executions[0].input
     location = str(arguments.get("location") or "")
     target_date = str(arguments.get("target_date") or "")
     expected_date = (date.today() + timedelta(days=1)).isoformat()

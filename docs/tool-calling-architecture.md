@@ -189,18 +189,17 @@ LLM 和所有 Provider-backed tools 使用 mock 实现，即使环境中存在�
 MCP mapping 逐个注册，未映射的能力不进入 Registry。开发阶段的稳定
 `calendar_search` / `calendar_create` 默认使用本地 SQLite，不调用日历 MCP。
 
-`web_search` 与 `web_fetch` 随 `run_server` 创建的 runtime 作为进程内 Web Tool 插件装配，不要求
-额外启动本地 relay。`MULTIMODAL_AGENT_SEARCH_PROVIDER=tavily` 时，插件使用 `TAVILY_API_KEY`
-直接构造 Tavily Search/Extract adapter；配置不完整则两个 Tool 都不注册。`http` 仍保留为部署方显式
-提供通用 HTTP backend 的兼容 Provider，两种真实 Provider 都不得互相静默 fallback。
+真实 Qwen Chat Completions 把联网作为 Provider-native 生成能力：每次主 Agent 请求固定携带
+`enable_search=true`、`search_strategy=agent_max`，并强制使用思考与流式协议。搜索、来源选择和网页
+抓取都由 Qwen 在一次 `llm.chat` 内部完成；它们不进入本地 Tool catalog，不产生 `web_search` /
+`web_fetch` Tool call、ToolResult 或 Tool span，也不计入工具预算。本地 `web_access` Plugin 只在
+mock 模式注册离线 `web_search` / `web_fetch`，用于确定性测试；Tavily 与通用 HTTP adapter 暂时保留
+为未装配兼容代码，real runtime 不读取其 readiness，也不静默回退调用。根据百炼当前
+Chat Completions 契约，`agent_max` 只支持 `qwen3-max` 与 `qwen3-max-2026-01-23` 的思考模式；
+默认模型因此固定为 `qwen3-max`，配置其他 Qwen Chat 模型时启动校验直接报错，不降级搜索策略。
 
-网页检索结果使用 `outcome=success | partial | empty | failed`，网页抓取结果使用同一组终态：
-有可用结果但同时存在 Provider 问题为 `partial`，正常完成但没有结果或可读正文为 `empty`，
-网络、协议、鉴权或 Provider 明确报告 URL 处理失败才是 `failed`。`ToolResult.success` 对
-`success`、`partial` 和 `empty` 为真，只有 `failed` 为假；因此零搜索结果不会被伪装成
-`provider_empty_response`。Tavily Extract 的 `failed_results` 必须保留为结构化错误和可关联的
-`output_ref`，不能丢弃具体失败后统一改写成空响应。工具机械执行终态与 URL、查询参数及结果是否满足
-用户目标是两层事实：前者由 Validator/Executor/Trace 证明，后者由 Agent case 的语义评分判断。
+该边界只适用于 Qwen Provider 内部的只读检索。模型通过 OpenAI-compatible `tools` 返回的自定义
+function call 仍是本地显式工具调用，必须进入 `ActionValidator -> ToolExecutor -> ToolRegistry`。
 
 本地文本文件通过内置 `local_file_access` Plugin 的 `file_read` 工具读取。该工具只接受相对于
 `MULTIMODAL_AGENT_FILE_ACCESS_ROOT` 的白名单文本文件路径，默认根目录为 `.data/files`；绝对路径、
@@ -349,7 +348,7 @@ category、profile、env 等系统字段不会发送给模型，也不需要靠�
 只暴露 `location` 和 `target_date`，日期范围解析与公制单位由
 工具内部固定。`media_inspect.question` / `live_view_inspect.question` 等没有必填要求但会改变任务结果的
 语义型可选参数仍应暴露；当前媒体引用、用户原始请求、身份、采样参数和 rolling context 均来自
-runtime。`web_fetch` 只暴露必填 `url`，读取上限和内容格式由 Tool 静态默认值分配。
+runtime。mock 兼容路径的 `web_fetch` 只暴露必填 `url`，读取上限和内容格式由 Tool 静态默认值分配。
 
 目录不做 Tool Search、Schema 预算触发的渐进披露或基于请求文本的工具预选。所有通过 category、
 media、profile、默认启用和显式 Tool/Skill 治理的 ToolSpec 都直接发送给 Provider；工具规模由部署时
@@ -361,10 +360,10 @@ assistant turn 的内部输出只允许非空 `AssistantTextOutput` 或 `Assista
 `task_plan_submit` 工具完成，不再扩展 assistant 输出协议。
 
 OpenAI-compatible Chat adapter 从 `ProviderConfig` 读取主调用超时；默认
-`MULTIMODAL_AGENT_CHAT_TIMEOUT_SECONDS=75`，应小于入口 turn 总预算。Qwen 混合思考模型默认由
-runtime 显式发送 `extra_body.enable_thinking=false`，避免简单工具轮次把大部分延迟消耗在隐藏思考；
-只有明确设置 `QWEN_CHAT_ENABLE_THINKING=true` 才启用。该参数只发送给 Qwen，不改变其他 Provider
-payload。
+`MULTIMODAL_AGENT_CHAT_TIMEOUT_SECONDS=75`，应小于入口 turn 总预算。真实 Qwen 主 Agent 因固定
+使用 `agent_max`，adapter 始终发送 `extra_body.enable_thinking=true`；旧
+`QWEN_CHAT_ENABLE_THINKING=false` 不会关闭它。未开启 `native_web_search` 的辅助 Qwen adapter
+仍可单独配置思考模式。该参数只发送给 Qwen，不改变其他 Provider payload。
 
 ## 5. 校验与执行
 
@@ -582,7 +581,9 @@ Skill 只能调用已注册且 permission 匹配的工具。read 工具允许按
 
 ## 9. 不变量
 
-- 所有模型驱动工具调用必须经过 `ActionValidator -> ToolExecutor -> ToolRegistry -> tool`；
+- 所有模型驱动的本地显式 function call 必须经过
+  `ActionValidator -> ToolExecutor -> ToolRegistry -> tool`；Qwen Provider-native 只读联网属于
+  `llm.chat` 内部生成能力，不伪造成本地 Tool lifecycle；
 - 暴露给模型的工具一定可进入执行链路，未暴露工具一定被 validator 拒绝；
 - category/profile/media 只基于结构化事实，不从自然语言推断；
 - Pydantic schema 是工具参数形状的权威；

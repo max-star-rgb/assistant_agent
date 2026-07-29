@@ -17,7 +17,7 @@ class WebAccessToolPlugin:
     descriptor = ToolPluginDescriptor(plugin_id="web_access", plugin_version="1")
 
     def build_tools(self, context: ToolPluginContext) -> list[Tool]:
-        if not context.mock_mode and not web_provider_ready(context.config):
+        if not context.mock_mode:
             return []
         return [
             WebSearchTool(adapter=create_web_search_adapter(context.config)),
@@ -26,10 +26,4 @@ class WebAccessToolPlugin:
 
 
 def web_provider_ready(config: ProviderConfig) -> bool:
-    if config.search_provider == "tavily":
-        return bool(config.tavily_api_key and config.tavily_base_url)
-    return bool(
-        config.search_provider == "http"
-        and config.web_search_base_url
-        and config.web_search_api_key
-    )
+    return config.provider_mode == "mock"

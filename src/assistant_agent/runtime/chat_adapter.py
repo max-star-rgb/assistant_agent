@@ -262,6 +262,7 @@ class OpenAICompatibleChatAdapter:
         timeout_seconds: float = 30.0,
         stream: bool = False,
         enable_thinking: bool | None = None,
+        native_web_search: bool = False,
         client: Any | None = None,
         async_client: Any | None = None,
     ) -> None:
@@ -270,8 +271,11 @@ class OpenAICompatibleChatAdapter:
         self.base_url = base_url
         self.model = model
         self.timeout_seconds = timeout_seconds
-        self.stream = stream
-        self.enable_thinking = enable_thinking
+        self.native_web_search = provider == "qwen" and native_web_search
+        self.stream = True if self.native_web_search else stream
+        self.enable_thinking = (
+            True if self.native_web_search else enable_thinking
+        )
         self.capabilities = chat_capabilities_for_provider(provider)
         self._client = client
         if self._client is None and async_client is None:
@@ -383,9 +387,19 @@ class OpenAICompatibleChatAdapter:
                 await _close_provider_stream(stream)
 
     def _extra_body(self) -> dict[str, Any] | None:
-        if self.provider != "qwen" or self.enable_thinking is None:
+        if self.provider != "qwen":
             return None
-        return {"enable_thinking": self.enable_thinking}
+        extra_body: dict[str, Any] = {}
+        if self.enable_thinking is not None:
+            extra_body["enable_thinking"] = self.enable_thinking
+        if self.native_web_search:
+            extra_body.update(
+                {
+                    "enable_search": True,
+                    "search_options": {"search_strategy": "agent_max"},
+                }
+            )
+        return extra_body or None
 
 
 def create_chat_adapter(config: ProviderConfig | None = None) -> ChatAdapter:
@@ -407,6 +421,7 @@ def create_chat_adapter(config: ProviderConfig | None = None) -> ChatAdapter:
             enable_thinking=(
                 resolved.qwen_chat_enable_thinking if settings.provider == "qwen" else None
             ),
+            native_web_search=settings.provider == "qwen",
         )
     return MockChatAdapter()
 

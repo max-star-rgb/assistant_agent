@@ -13,6 +13,9 @@ from urllib.request import urlopen
 from assistant_agent.config import ProviderConfig
 from assistant_agent.observability.langfuse_config import langfuse_host_from_env
 from assistant_agent.observability.otel_exporter import OtlpHttpTextExporterConfig
+from assistant_agent.providers.provider_config_validation import (
+    qwen_native_web_search_issues,
+)
 
 
 DEFAULT_STARTUP_DEPENDENCY_TIMEOUT_SECONDS = 0.75
@@ -166,16 +169,16 @@ def _web_search_status(config: ProviderConfig) -> StartupDependencyStatus:
             state="ready",
             detail="mock",
         )
-    if config.search_provider == "tavily":
-        ready = bool(config.tavily_api_key and config.tavily_base_url)
-    elif config.search_provider == "http":
-        ready = bool(config.web_search_base_url and config.web_search_api_key)
-    else:
+    if config.chat_provider != "qwen":
         return StartupDependencyStatus(name="Web search", state="disabled")
+    ready = not (
+        config.resolved_chat_provider().missing_required_env()
+        or qwen_native_web_search_issues(config)
+    )
     return StartupDependencyStatus(
         name="Web search",
         state="ready" if ready else "unavailable",
-        detail=config.search_provider,
+        detail="qwen native agent_max",
     )
 
 

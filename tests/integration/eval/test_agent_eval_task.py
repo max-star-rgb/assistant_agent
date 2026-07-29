@@ -507,6 +507,7 @@ def test_weather_timeout_environment_runs_the_real_runtime_offline() -> None:
     expectations = environment.tool_outcome_expectations()
     expectations_by_name = {item.tool_name: item for item in expectations}
     assert len(expectations) > 1
+    assert {"web_search", "web_fetch"}.isdisjoint(expectations_by_name)
     assert expectations_by_name["weather"] == (
         ToolOutcomeExpectation.must_fail_with(
             "weather",
@@ -528,6 +529,9 @@ def test_weather_timeout_environment_runs_the_real_runtime_offline() -> None:
 
     assert execution.evidence.terminal_status == "completed"
     assert "weather" in execution.evidence.available_tools
+    assert {"web_search", "web_fetch"}.isdisjoint(
+        execution.evidence.available_tools
+    )
     assert len(execution.evidence.available_tools) > 1
     assert len(environment.chat_adapter.requests[0].tools) > 1
     assert len(execution.evidence.tool_executions) == 1
@@ -716,6 +720,55 @@ def test_langfuse_comments_name_successful_checks_and_dimensions() -> None:
     assert "trace_complete" not in scores[1].comment
 
 
+def test_weather_grader_checks_weather_independently_of_other_tool_calls() -> None:
+    tomorrow = (date.today() + timedelta(days=1)).isoformat()
+    evidence = RunEvidence(
+        task_id="weather_timeout_recovery",
+        run_id="run-weather-with-native-fallback",
+        trace_id=TRACE_ID,
+        terminal_status="completed",
+        response={
+            "message": (
+                "本地天气服务超时；我通过模型的联网能力补充查询后，"
+                "给出了明早跑步建议。"
+            )
+        },
+        available_tools=["calendar_search", "weather"],
+        tool_executions=[
+            {
+                "name": "weather",
+                "input": {"location": "上海", "target_date": tomorrow},
+                "status": "failed",
+                "terminal_event": "tool.failed",
+                "exposed": True,
+                "error_code": "provider_timeout",
+            },
+            {
+                "name": "calendar_search",
+                "input": {"query": "tomorrow"},
+                "status": "succeeded",
+                "terminal_event": "tool.finished",
+                "exposed": True,
+            },
+        ],
+        validation_results=[
+            {"tool_name": "weather", "status": "accepted"},
+            {"tool_name": "calendar_search", "status": "accepted"},
+        ],
+        state_diff={"added": [], "modified": [], "deleted": []},
+    )
+
+    result = load_entrypoint(
+        load_task("weather_timeout_recovery").grader
+    )(evidence, _AlwaysPassJudge())
+
+    assert result.dimensions.tool_use.assertions["weather_called_once"].passed is True
+    assert (
+        result.dimensions.tool_use.assertions["weather_arguments_correct"].passed
+        is True
+    )
+
+
 def test_success_expected_but_timeout_forces_tool_use_to_fail() -> None:
     task = load_task("weather_timeout_recovery")
     environment_type = load_entrypoint(task.environment)
@@ -782,11 +835,12 @@ def test_calibration_catches_judge_and_trajectory_failures() -> None:
 
     assert [result.fixture_id for result in results] == [
         "correct_honest_recovery",
-        "invented_forecast",
+        "correct_native_search_fallback",
+        "misattributes_failed_weather",
         "repeated_identical_call",
     ]
     assert all(result.matched for result in results)
-    assert [result.actual_pass for result in results] == [True, False, False]
+    assert [result.actual_pass for result in results] == [True, True, False, False]
     assert results[0].dimensions == {
         "tool_execution": True,
         "tool_use": True,
@@ -797,9 +851,15 @@ def test_calibration_catches_judge_and_trajectory_failures() -> None:
         "outcome_evidence_usage": True,
     }
     assert results[0].actual_judge_passes == results[0].expected_judge_passes
-    assert results[1].dimensions["tool_use"] is True
-    assert results[1].dimensions["response"] is False
-    assert results[2].dimensions == {
+    assert results[1].dimensions == {
+        "tool_execution": True,
+        "tool_use": True,
+        "state": True,
+        "response": True,
+    }
+    assert results[2].dimensions["tool_use"] is True
+    assert results[2].dimensions["response"] is False
+    assert results[3].dimensions == {
         "tool_execution": True,
         "tool_use": False,
         "state": True,

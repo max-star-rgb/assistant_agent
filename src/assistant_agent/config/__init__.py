@@ -126,7 +126,7 @@ class ProviderConfig:
     openai_chat_model: str = "gpt-4o-mini"
     qwen_chat_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     qwen_chat_workspace_id: str | None = None
-    qwen_chat_model: str = "qwen-plus"
+    qwen_chat_model: str = "qwen3-max"
     deepseek_api_key: str | None = None
     deepseek_chat_base_url: str = "https://api.deepseek.com/v1"
     deepseek_chat_model: str = "deepseek-chat"
@@ -477,7 +477,7 @@ class ProviderConfig:
             openai_chat_model=source.get("OPENAI_CHAT_MODEL", "gpt-4o-mini"),
             qwen_chat_base_url=source.get("QWEN_CHAT_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
             qwen_chat_workspace_id=qwen_chat_workspace_id,
-            qwen_chat_model=source.get("QWEN_CHAT_MODEL", "qwen-plus"),
+            qwen_chat_model=source.get("QWEN_CHAT_MODEL", "qwen3-max"),
             deepseek_chat_base_url=source.get("DEEPSEEK_CHAT_BASE_URL", "https://api.deepseek.com/v1"),
             deepseek_chat_model=source.get("DEEPSEEK_CHAT_MODEL", "deepseek-chat"),
             ark_chat_base_url=source.get("ARK_CHAT_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3"),

@@ -98,10 +98,12 @@ Tool providers, vision/search providers, durable-task provider calls, and
 cancellation paths do not use this fallback.
 
 Foreground provider turns are consumed inside the shared LangGraph assistant
-loop. Qwen chat defaults to Provider token streaming. Set both
-`CHAT_STREAM=false` and `MULTIMODAL_AGENT_NATIVE_PROVIDER_STREAMING=false` to
-opt out unambiguously: the first controls synchronous SDK stream aggregation,
-while the second controls the runtime's async-native stream consumer. Other providers remain opt-in through
+loop. 主 Agent 的 Qwen Chat Completions 固定启用 Provider-native 联网：
+`enable_search=true`、`search_options.search_strategy=agent_max`、思考模式与 SDK streaming
+均由 adapter 强制设置，旧 `CHAT_STREAM=false` 不再把这条 Provider 请求降级为非流式。
+`MULTIMODAL_AGENT_NATIVE_PROVIDER_STREAMING` 只控制 Runtime 是否使用 async-native stream
+consumer；关闭时仍由同步 adapter 聚合 Qwen 的流式响应。Judge 等显式直接构造且未开启
+`native_web_search` 的辅助 adapter 保持独立的非联网、非流式策略。Other providers remain opt-in through
 `ProviderConfig.native_provider_streaming`. When enabled and the adapter exposes
 `stream_chat()`, `ProviderStreamingTurnRunner` consumes the async stream for one
 runtime turn. Visible token deltas pass through the existing stream callback and
@@ -130,6 +132,8 @@ generation input 保留 SDK 调用的原始 messages/tools/生成参数、stream
 usage、route 与 transport 保留在诊断字段，都不拼接到 output 文本。默认 trace event
 和 `.data/graph_trace.jsonl` 仍只保存安全摘要，vendor SDK response envelope、HTTP header、stream
 chunk body 与 hidden reasoning 不进入 debug store。
+Qwen 的隐式搜索与网页抓取只表现为该 generation input 中的 `enable_search/search_options` 以及
+Provider 最终语义回复；Runtime 不为其制造 `tool.started/tool.finished`，也不增加 `tool_count`。
 普通前台调用不设置 `response_format`，系统提示词也不要求终态 JSON；因此一次非工具终态只对应
 一次 `llm.chat`。主 assistant loop 只接受严格的 `AssistantTextOutput | AssistantToolCall`：
 普通回答和自然语言追问都作为非空 `text` 交付，native tool call 归一化为 `tool_call` 后进入工具

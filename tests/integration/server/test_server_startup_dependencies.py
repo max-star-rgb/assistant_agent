@@ -42,7 +42,11 @@ def test_startup_dependencies_report_ready_services_and_export_state() -> None:
     assert statuses == (
         StartupDependencyStatus(name="Mem0", state="ready", detail="mem0 2.0.11"),
         StartupDependencyStatus(name="Langfuse", state="ready", detail="export enabled"),
-        StartupDependencyStatus(name="Web search", state="ready", detail="tavily"),
+        StartupDependencyStatus(
+            name="Web search",
+            state="ready",
+            detail="qwen native agent_max",
+        ),
     )
     assert sorted(requested_urls) == [
         "http://127.0.0.1:3000/api/public/health",
@@ -52,7 +56,7 @@ def test_startup_dependencies_report_ready_services_and_export_state() -> None:
         "Dependencies:",
         "  Mem0: ready (mem0 2.0.11)",
         "  Langfuse: ready (export enabled)",
-        "  Web search: ready (tavily)",
+        "  Web search: ready (qwen native agent_max)",
     ]
 
 
@@ -106,7 +110,32 @@ def test_startup_dependencies_fail_open_when_enabled_services_are_unavailable() 
     assert statuses == (
         StartupDependencyStatus(name="Mem0", state="unavailable"),
         StartupDependencyStatus(name="Langfuse", state="unavailable", detail="export enabled"),
-        StartupDependencyStatus(name="Web search", state="unavailable", detail="tavily"),
+        StartupDependencyStatus(
+            name="Web search",
+            state="ready",
+            detail="qwen native agent_max",
+        ),
+    )
+
+
+def test_startup_dependencies_reject_unsupported_qwen_agent_max_model() -> None:
+    statuses = collect_startup_dependency_statuses(
+        ProviderConfig(
+            provider_mode="real",
+            chat_provider="qwen",
+            qwen_api_key="test-chat-key",
+            qwen_chat_model="deepseek-v4-flash",
+        ),
+        env={"ASSISTANT_AGENT_OTEL_EXPORT_ENABLED": "false"},
+        probe=lambda _url, _timeout: {"status": "OK"},
+    )
+
+    web_search = next(status for status in statuses if status.name == "Web search")
+
+    assert web_search == StartupDependencyStatus(
+        name="Web search",
+        state="unavailable",
+        detail="qwen native agent_max",
     )
 
 

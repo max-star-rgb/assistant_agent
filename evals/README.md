@@ -110,8 +110,10 @@ Dataset 当作回归定义的唯一副本。
 当前天气 Task：
 
 - `weather_timeout_recovery`：真实 Chat Agent 看到默认运行时完整工具目录并自行选择 weather；
-  Environment 只把 weather 后端替换为固定 `provider_timeout`，验证单次调用和失败结果消费，不调用
-  真实天气服务。
+  Environment 只把 weather 后端替换为固定 `provider_timeout`，验证指定 weather 的单次调用、
+  参数和失败结果消费，不调用真实天气服务。Qwen 固有联网仍可在 `llm.chat` 内部补充天气事实，
+  不计为本地 Tool；grader 不因其他工具调用而误判 weather 的次数或参数，也不因本地 weather
+  失败就禁止回答使用隐式联网结果。
 - `weather_live_outdoor_run`：真实 Chat Agent 同样看到默认运行时完整工具目录并自行选择显式配置的
   weather MCP；Environment 要求 weather 成功，验证上海次日参数和回答是否忠于动态天气 Evidence，
   会调用真实天气服务。

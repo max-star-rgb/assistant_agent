@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 from assistant_agent.config import ProviderConfig
 from assistant_agent.providers.provider_config_validation import (
     ProviderConfigIssue,
+    qwen_native_web_search_issues,
     validate_provider_config,
 )
 from assistant_agent.tools.ids import (
@@ -69,7 +70,7 @@ def build_provider_readiness_report(config: ProviderConfig) -> ProviderReadiness
         _check(IMAGE_GENERATION_CAPABILITY, config.image_generation_provider, config, issues_by_key),
         _check(SHOPPING_SEARCH_CAPABILITY, config.shopping_search_provider, config, issues_by_key),
         _check(SHOPPING_SEARCH_CAPABILITY, config.shopping_compare_provider, config, issues_by_key),
-        _check(WEB_SEARCH_CAPABILITY, config.search_provider, config, issues_by_key),
+        _native_web_search_check(config),
         _check(VIDEO_UNDERSTANDING_CAPABILITY, config.vision_provider, config, issues_by_key),
     ]
 
@@ -163,6 +164,43 @@ def _readiness_for(config: ProviderConfig, capability: str, provider: str) -> Pr
         provider=provider,
         status=status,
         real_provider_allowed=config.provider_mode == "real",
+    )
+
+
+def _native_web_search_check(config: ProviderConfig) -> ProviderReadinessCheck:
+    if config.provider_mode == "mock":
+        return ProviderReadinessCheck(
+            capability=WEB_SEARCH_CAPABILITY,
+            provider="mock",
+            status="ready",
+            real_provider_allowed=False,
+        )
+    if config.chat_provider != "qwen":
+        return ProviderReadinessCheck(
+            capability=WEB_SEARCH_CAPABILITY,
+            provider=config.chat_provider,
+            status="disabled",
+            real_provider_allowed=True,
+        )
+    missing = config.resolved_chat_provider().missing_required_env()
+    issues = qwen_native_web_search_issues(config)
+    if missing:
+        issues = [
+            ProviderConfigIssue(
+                capability=WEB_SEARCH_CAPABILITY,
+                provider="qwen",
+                code="provider_unconfigured",
+                message="qwen native web search requires a configured Qwen Chat Provider.",
+                missing=missing,
+            ),
+            *issues,
+        ]
+    return ProviderReadinessCheck(
+        capability=WEB_SEARCH_CAPABILITY,
+        provider="qwen",
+        status="not_ready" if issues else "ready",
+        real_provider_allowed=True,
+        issues=issues,
     )
 
 
