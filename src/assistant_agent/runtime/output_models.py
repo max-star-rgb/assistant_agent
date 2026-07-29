@@ -35,6 +35,10 @@ class AssistantToolCall(BaseModel):
     type: Literal["tool_call"] = "tool_call"
     tool_name: str = Field(min_length=1)
     tool_input: dict[str, Any] = Field(default_factory=dict)
+    provider_tool_call_id: str | None = Field(
+        default=None,
+        description="Provider-native call identity retained for transcript correlation.",
+    )
     step_id: str | None = Field(default=None, description="Bound plan step id.")
     reason: str | None = Field(
         default=None,
@@ -72,6 +76,7 @@ class NativeToolCall(BaseModel):
         return AssistantToolCall(
             tool_name=self.name,
             tool_input=self.arguments,
+            provider_tool_call_id=self.id,
             reason=f"Provider-native tool call ({self.provider_format}).",
             safety_notes=["native_tool_call"],
         )

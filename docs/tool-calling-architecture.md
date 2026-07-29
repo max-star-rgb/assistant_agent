@@ -444,11 +444,16 @@ run 终态为 `completed`，响应通过 `degraded` 和 `handled_tool_failures` 
 重试；Runtime 立即进入 `FINALIZE`，下一轮由 LLM 解释失败或要求用户重新发起。
 
 assistant loop 显式区分 `ACT` 和 `FINALIZE`。达到工具预算或 guard 要求停止行动后，Runtime 进入
-`FINALIZE`，不再沿用 `assistant.tool_calls -> tool` 的 native action trajectory；Context 层把已有
-observation 投影为保留 status、summary、outcome、warnings、is_complete、工具专属 data、error 和
-output_ref 的 evidence，并以独立
-`tools=[]`、`tool_choice=none` 请求生成最终回答。FINALIZE 中出现的 tool call 是协议违规，不进入
-Validator/Executor；Runtime 最多进行一次仍无工具的严格纠正，避免恢复逻辑形成新循环。
+`FINALIZE`。Context 层保留当前 run 已发生的 `assistant.tool_calls -> tool` native action trajectory，
+其中 tool content 继续使用保留 status、summary、outcome、warnings、is_complete、工具专属 data、
+error 和 output_ref 的 prompt-safe observation 投影；随后追加单一无工具续答消息，并以
+`tools=[]`、`tool_choice=none` 请求生成最终回答。仅供 Runtime 诊断且没有真实 Provider call 的 guard
+observation 不进入该轨迹。执行链在内部 observation 投影中保留原始 Provider tool call ID；
+FINALIZE 只按该 ID 关联实际 call/result，缺失、重复或孤立项 fail closed 跳过，不按位置猜测或合成
+Provider call。FINALIZE 中出现的 tool call 是协议违规，不进入 Validator/Executor；Runtime 最多进行
+一次仍无工具的严格纠正，避免恢复逻辑形成新循环。
+连续违规或最终模型返回 error、truncated、empty 时，确定性降级答复优先引用已有结构化失败事实，
+不因其他工具 `status=succeeded` 就宣称证据充分。
 
 `run_phase` 是 phase 控制的唯一事实；Runtime 不再通过
 `assistant_answer_only_next_turn` 之类的 request metadata 把“下一轮只回答”作为延迟控制信号。

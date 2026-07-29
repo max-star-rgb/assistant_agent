@@ -106,11 +106,13 @@ Langfuse generation 的 `usage_details.input/output/total`，并同步写入 OTe
 `gen_ai.usage.input_tokens/output_tokens`；usage 嵌套结构不能被当作普通标量属性而丢弃。
 
 工具调用预算耗尽或 runtime guard 要求停止行动时，Runtime 从 `ACT` 切换到 `FINALIZE`。下一次
-Provider request 使用重建后的 evidence-only 上下文，只保留用户目标以及 observation 的结构化事实，
-移除 native action trajectory，并显式发送 `tools=[]`、`tool_choice=none`。若 Provider 仍返回 tool
-call，Runtime 将其记录为 `finalization protocol violation`，不执行工具，最多进行一次
-`finalize_protocol_retry`；再次失败时使用不包含内部限制数值的诚实降级答复。具体预算、跳过数量和
-guard 原因只保留在 trace/metadata。
+Provider request 保留原始用户目标和已经发生的成对 native action trajectory；每个 tool result 仍是
+prompt-safe 的结构化 observation，末尾追加无工具续答消息，并显式发送 `tools=[]`、
+`tool_choice=none`。若 Provider 仍返回 tool call，Runtime 将其记录为
+`finalization protocol violation`，不执行工具，最多进行一次 `finalize_protocol_retry`；再次失败时
+从结构化失败事实生成不包含内部限制数值的诚实降级答复。FINALIZE 直接返回 error、truncated 或
+empty 时也使用同一降级，而不丢弃已经取得的工具事实。仅供 Runtime 诊断的 guard observation、具体
+预算、跳过数量和 guard 原因只保留在 trace/metadata。
 
 `run_phase` 是 phase 控制的唯一事实；`runtime.phase.changed` 明确记录 `from_phase`、`to_phase`、
 `reason` 和 `source`。`react.iteration` 继续表示一次模型决策循环，因此 FINALIZE 请求仍位于新的

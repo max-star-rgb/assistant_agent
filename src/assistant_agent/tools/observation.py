@@ -16,6 +16,7 @@ from assistant_agent.providers.provider_errors import (
 
 ObservationStatus = Literal["succeeded", "failed", "rejected"]
 ObservationOutcome = Literal["success", "partial", "empty"]
+PROVIDER_TOOL_CALL_ID_KEY = "_provider_tool_call_id"
 
 
 class ToolObservationError(BaseModel):

@@ -8,7 +8,10 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping
 
 from assistant_agent.tools.ids import SHOPPING_SEARCH_TOOL_NAME
-from assistant_agent.tools.observation import prompt_observation_payload
+from assistant_agent.tools.observation import (
+    PROVIDER_TOOL_CALL_ID_KEY,
+    prompt_observation_payload,
+)
 
 
 MAX_ITEMS_PER_LIST = 3
@@ -198,6 +201,9 @@ def project_observations_for_context(
         sanitized = _sanitize_observation_for_context(observation)
         compacted = compact_observation_for_context(sanitized)
         prompt_payload = prompt_observation_payload(compacted)
+        provider_tool_call_id = sanitized.get(PROVIDER_TOOL_CALL_ID_KEY)
+        if isinstance(provider_tool_call_id, str) and provider_tool_call_id:
+            prompt_payload[PROVIDER_TOOL_CALL_ID_KEY] = provider_tool_call_id
         existing_metadata = sanitized.get("compaction")
         compacted_metadata = compacted.get("compaction")
         source_metadata = (

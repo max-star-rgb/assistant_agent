@@ -344,13 +344,18 @@ def test_identical_failed_tool_call_is_blocked_then_enters_finalize() -> None:
     assert guard.attributes["disposition"] == "finalize"
     assert guard.attributes["from_phase"] == "act"
     assert guard.attributes["to_phase"] == "finalize"
-    payload = json.loads(
-        adapter.requests[2].messages[1]["content"].split("\n", 1)[1]
-    )
-    assert [
-        item.get("error", {}).get("code")
-        for item in payload["tool_evidence"]
-    ] == ["provider_unsupported_input"]
+    finalize_messages = adapter.requests[2].messages
+    assert [message["role"] for message in finalize_messages] == [
+        "system",
+        "user",
+        "assistant",
+        "tool",
+        "user",
+    ]
+    assert finalize_messages[2]["tool_calls"][0]["id"] == "probe-call-1"
+    assert finalize_messages[3]["tool_call_id"] == "probe-call-1"
+    payload = json.loads(finalize_messages[3]["content"])
+    assert payload["error"]["code"] == "provider_unsupported_input"
     assert state.response is not None
     assert state.response.message
 

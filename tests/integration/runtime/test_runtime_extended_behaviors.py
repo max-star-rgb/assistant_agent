@@ -73,6 +73,16 @@ def test_default_runtime_policy_requires_missing_tool_inputs_to_be_clarified() -
     assert "标题和列表是按需启用的表达工具，不是默认回答模板。" in instruction
 
 
+def test_finalize_policy_distinguishes_execution_success_from_answer_evidence() -> None:
+    instruction = render_system_instruction(answer_only=True)
+
+    assert "工具执行成功不等于证据足以回答用户问题" in instruction
+    assert "只使用与当前请求直接相关" in instruction
+    assert "搜索结果摘要只能作为线索" in instruction
+    assert "失败、不完整或被截断" in instruction
+    assert "给出条件化的安全建议" in instruction
+
+
 def test_runtime_policy_groups_dynamic_time_and_location_as_current_environment() -> None:
     instruction = render_system_instruction(
         current_time=datetime(2026, 7, 27, 15, 30, tzinfo=timezone(timedelta(hours=8))),
@@ -1149,20 +1159,161 @@ def test_real_adapter_uses_langgraph_and_finishes_without_tools_after_budget() -
     assert [message["role"] for message in adapter.requests[1].messages] == [
         "system",
         "user",
+        "assistant",
+        "tool",
+        "user",
     ]
-    assert not _contains_mapping_key(adapter.requests[1].messages, "tool_calls")
-    user_message = adapter.requests[1].messages[1]["content"]
-    assert "<finalize_input>" not in user_message
-    assert "请直接回答用户" not in user_message
-    payload = json.loads(user_message.split("\n", 1)[1])
-    assert payload["current_request"]
-    evidence = payload["tool_evidence"]
-    assert evidence[0]["source"] == "shopping_search"
-    assert evidence[0]["status"] == "succeeded"
-    assert isinstance(evidence[0]["data"], dict)
+    assert adapter.requests[1].messages[1]["content"]
+    assistant_message = adapter.requests[1].messages[2]
+    tool_message = adapter.requests[1].messages[3]
+    assert assistant_message["tool_calls"][0]["id"] == "call-budget-1"
+    assert tool_message["tool_call_id"] == "call-budget-1"
+    assert tool_message["name"] == "shopping_search"
+    observation = json.loads(tool_message["content"])
+    assert observation["status"] == "succeeded"
+    assert isinstance(observation["data"], dict)
+    assert "tool_evidence" not in adapter.requests[1].messages[-1]["content"]
     assert state.request.metadata["assistant_run_phase"] == "finalize"
     graph_nodes = [event.node_name for event in sink.events if event.type == "graph_node_started"]
     assert "agent_graph" in graph_nodes
+
+
+def test_finalize_preserves_multiple_native_tool_turns_in_execution_order() -> None:
+    first_tool_call = ChatResult(
+        provider="scripted",
+        model="scripted-model",
+        finish_reason="tool_calls",
+        tool_calls=[
+            NativeToolCall(
+                id="call-first",
+                name="shopping_search",
+                arguments={"query": "通勤耳机"},
+            )
+        ],
+    )
+    second_tool_call = ChatResult(
+        provider="scripted",
+        model="scripted-model",
+        finish_reason="tool_calls",
+        tool_calls=[
+            NativeToolCall(
+                id="call-second",
+                name="shopping_search",
+                arguments={"query": "降噪耳机"},
+            )
+        ],
+    )
+    adapter = ScriptedChatAdapter(
+        [
+            first_tool_call,
+            second_tool_call,
+            ChatResult(
+                provider="scripted",
+                model="scripted-model",
+                finish_reason="stop",
+                response_text="已根据两次搜索结果完成回答。",
+            ),
+        ]
+    )
+    runtime = AgentGraphRuntime(
+        config=ProviderConfig(
+            agent_graph_mode="assistant_loop",
+            max_tool_iterations=2,
+            langgraph_checkpointer_backend="none",
+        ),
+        chat_adapter=adapter,
+        session_store=InMemorySessionStore(),
+    )
+
+    state = runtime.run_state(
+        UserRequest(
+            user_id="multi-tool-user",
+            session_id="multi-tool-session",
+            text="分别搜索两类耳机后给我建议",
+        )
+    )
+
+    assert state.status == "completed"
+    finalize_messages = adapter.requests[2].messages
+    assert [message["role"] for message in finalize_messages] == [
+        "system",
+        "user",
+        "assistant",
+        "tool",
+        "assistant",
+        "tool",
+        "user",
+    ]
+    assert [
+        finalize_messages[index]["tool_call_id"]
+        for index in (3, 5)
+    ] == ["call-first", "call-second"]
+
+
+def test_finalize_preserves_same_turn_native_tool_call_batch() -> None:
+    adapter = ScriptedChatAdapter(
+        [
+            ChatResult(
+                provider="scripted",
+                model="scripted-model",
+                finish_reason="tool_calls",
+                tool_calls=[
+                    NativeToolCall(
+                        id="call-batch-first",
+                        name="shopping_search",
+                        arguments={"query": "通勤耳机"},
+                    ),
+                    NativeToolCall(
+                        id="call-batch-second",
+                        name="shopping_search",
+                        arguments={"query": "降噪耳机"},
+                    ),
+                ],
+            ),
+            ChatResult(
+                provider="scripted",
+                model="scripted-model",
+                finish_reason="stop",
+                response_text="已合并两项搜索结果。",
+            ),
+        ]
+    )
+    runtime = AgentGraphRuntime(
+        config=ProviderConfig(
+            agent_graph_mode="assistant_loop",
+            max_tool_iterations=2,
+            langgraph_checkpointer_backend="none",
+        ),
+        chat_adapter=adapter,
+        session_store=InMemorySessionStore(),
+    )
+
+    state = runtime.run_state(
+        UserRequest(
+            user_id="batch-tool-user",
+            session_id="batch-tool-session",
+            text="同时搜索两类耳机后给我建议",
+        )
+    )
+
+    assert state.status == "completed"
+    finalize_messages = adapter.requests[1].messages
+    assert [message["role"] for message in finalize_messages] == [
+        "system",
+        "user",
+        "assistant",
+        "tool",
+        "tool",
+        "user",
+    ]
+    assert [
+        call["id"]
+        for call in finalize_messages[2]["tool_calls"]
+    ] == ["call-batch-first", "call-batch-second"]
+    assert [
+        finalize_messages[index]["tool_call_id"]
+        for index in (3, 4)
+    ] == ["call-batch-first", "call-batch-second"]
 
 
 def test_finalize_protocol_retry_synthesizes_existing_evidence() -> None:
@@ -1226,8 +1377,10 @@ def test_finalize_protocol_retry_synthesizes_existing_evidence() -> None:
     assert adapter.requests[1].tool_choice == "none"
     assert adapter.requests[2].tool_choice == "none"
     assert all(
-        [message["role"] for message in request.messages] == ["system", "user"]
-        and not _contains_mapping_key(request.messages, "tool_calls")
+        [message["role"] for message in request.messages]
+        == ["system", "user", "assistant", "tool", "user"]
+        and request.messages[2]["tool_calls"][0]["id"] == "call-budget-1"
+        and request.messages[3]["tool_call_id"] == "call-budget-1"
         for request in adapter.requests[1:]
     )
     assert "最大工具调用次数" not in state.response.message
@@ -1299,6 +1452,142 @@ def test_finalize_protocol_retry_uses_truthful_fallback_for_repeated_violation()
     assert state.request.metadata["answer_only_retry_failed"] is True
     assert state.request.metadata["finalization_protocol_violation_count"] == 2
     assert len(adapter.requests) == 3
+
+
+@pytest.mark.parametrize("finish_reason", ["stop", "length"])
+def test_finalize_protocol_retry_uses_fallback_for_unusable_text(
+    finish_reason: str,
+) -> None:
+    adapter = ScriptedChatAdapter(
+        [
+            ChatResult(
+                provider="scripted",
+                model="scripted-model",
+                finish_reason="tool_calls",
+                tool_calls=[
+                    NativeToolCall(
+                        id="call-before-retry",
+                        name="shopping_search",
+                        arguments={"query": "通勤背包"},
+                    )
+                ],
+            ),
+            ChatResult(
+                provider="scripted",
+                model="scripted-model",
+                finish_reason="tool_calls",
+                tool_calls=[
+                    NativeToolCall(
+                        id="call-protocol-violation",
+                        name="web_search",
+                        arguments={"query": "通勤背包"},
+                    )
+                ],
+            ),
+            ChatResult(
+                provider="scripted",
+                model="scripted-model",
+                finish_reason=finish_reason,
+            ),
+        ]
+    )
+    runtime = AgentGraphRuntime(
+        config=ProviderConfig(
+            agent_graph_mode="assistant_loop",
+            max_tool_iterations=1,
+            langgraph_checkpointer_backend="none",
+        ),
+        chat_adapter=adapter,
+        session_store=InMemorySessionStore(),
+    )
+
+    state = runtime.run_state(
+        UserRequest(
+            user_id="user-finalize-retry-no-answer",
+            session_id="session-finalize-retry-no-answer",
+            text="帮我找通勤背包",
+        )
+    )
+
+    assert state.status == "completed"
+    assert state.response is not None
+    assert state.response.message == (
+        "我已经取得部分工具结果，但现有证据仍不足以可靠完成你的请求。"
+        "我不会据此编造结论，请稍后重试。"
+    )
+    assert state.request.metadata["answer_only_retry_failed"] is True
+
+
+@pytest.mark.parametrize(
+    "finalizer_result",
+    [
+        ChatResult(
+            provider="scripted",
+            model="scripted-model",
+            errors=[
+                ChatProviderError(
+                    code="provider_timeout",
+                    message="provider timed out",
+                    recoverable=True,
+                )
+            ],
+        ),
+        ChatResult(
+            provider="scripted",
+            model="scripted-model",
+            finish_reason="stop",
+        ),
+        ChatResult(
+            provider="scripted",
+            model="scripted-model",
+            finish_reason="length",
+        ),
+    ],
+)
+def test_finalize_uses_evidence_fallback_for_provider_no_answer(
+    finalizer_result: ChatResult,
+) -> None:
+    adapter = ScriptedChatAdapter(
+        [
+            ChatResult(
+                provider="scripted",
+                model="scripted-model",
+                finish_reason="tool_calls",
+                tool_calls=[
+                    NativeToolCall(
+                        id="call-finalizer-failure",
+                        name="shopping_search",
+                        arguments={"query": "通勤背包"},
+                    )
+                ],
+            ),
+            finalizer_result,
+        ]
+    )
+    runtime = AgentGraphRuntime(
+        config=ProviderConfig(
+            agent_graph_mode="assistant_loop",
+            max_tool_iterations=1,
+            langgraph_checkpointer_backend="none",
+        ),
+        chat_adapter=adapter,
+        session_store=InMemorySessionStore(),
+    )
+
+    state = runtime.run_state(
+        UserRequest(
+            user_id="user-finalizer-no-answer",
+            session_id="session-finalizer-no-answer",
+            text="帮我找通勤背包",
+        )
+    )
+
+    assert state.status == "completed"
+    assert state.response is not None
+    assert state.response.message == (
+        "我已经取得部分工具结果，但现有证据仍不足以可靠完成你的请求。"
+        "我不会据此编造结论，请稍后重试。"
+    )
 
 
 def test_provider_timeout_returns_terminal_retry_response() -> None:

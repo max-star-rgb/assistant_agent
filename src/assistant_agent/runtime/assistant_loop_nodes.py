@@ -36,6 +36,7 @@ from assistant_agent.context.service import (
     ContextPreflightFailure,
     ContextService,
 )
+from assistant_agent.context.finalization import finalize_fallback_text
 from assistant_agent.runtime.events import AgentEvent
 from assistant_agent.runtime.event_publisher import (
     AssistantStepFact,
@@ -44,6 +45,7 @@ from assistant_agent.runtime.event_publisher import (
 from assistant_agent.runtime.planning_models import TaskPlan, TaskStep
 from assistant_agent.runtime.requests import AgentResponse, UserRequest
 from assistant_agent.tools.observation import (
+    PROVIDER_TOOL_CALL_ID_KEY,
     ToolObservation,
     observation_from_tool_result,
     rejected_observation,
@@ -474,7 +476,11 @@ def _decide_with_llm(
                 attempt_kind="finalize_protocol_retry",
             )
             _record_chat_usage_metadata(state, result)
-            if result.success and not result.tool_calls:
+            if (
+                result.success
+                and not result.tool_calls
+                and chat_result_kind(result) in {"text", "refusal"}
+            ):
                 decision = _native_final_decision(result)
                 retry_stream_buffer.flush_answer(decision.text)
                 graph_state["pending_tool_calls"] = []
@@ -494,6 +500,14 @@ def _decide_with_llm(
         )
         graph_state["pending_tool_calls"] = pending_decisions
         decision = pending_decisions[0]
+    elif (
+        context.answer_only
+        and chat_result_kind(result) in {"error", "truncated", "empty"}
+    ):
+        stream_buffer.discard()
+        graph_state["pending_tool_calls"] = []
+        state.request.metadata["finalization_synthesis_failed"] = True
+        decision = _finalize_fallback(context)
     elif result.success:
         graph_state["pending_tool_calls"] = []
         decision = _native_final_decision(result)
@@ -1177,25 +1191,10 @@ def _with_finalize_protocol_retry_guidance(request: ChatRequest) -> ChatRequest:
 
 
 def _finalize_fallback(context: AssistantDecisionContext) -> AssistantTextOutput:
-    statuses = {
-        str(observation.get("status"))
-        for observation in context.tool_observations
-        if isinstance(observation, dict)
-    }
-    if "succeeded" in statuses:
-        text = (
-            "我已经取得部分工具结果，但现有证据仍不足以可靠完成你的请求。"
-            "我不会据此编造结论，请稍后重试。"
-        )
-    else:
-        text = (
-            "本次工具未能返回足以完成请求的可靠结果。"
-            "我不会据此编造结论，请稍后重试。"
-        )
     return AssistantTextOutput(
-        text=text,
+        text=finalize_fallback_text(context.tool_observations),
         reason="Answer-only synthesis did not produce a usable final response.",
-        safety_notes=["answer_only_retry_failed"],
+        safety_notes=["finalization_synthesis_failed"],
     )
 
 
@@ -2003,7 +2002,17 @@ def _record_react_observation(
     """Append a tool observation to both graph state and demo metadata."""
 
     state = graph_state["state"]
-    payload = observation.model_dump(mode="json") if isinstance(observation, ToolObservation) else observation
+    payload = dict(
+        observation.model_dump(mode="json")
+        if isinstance(observation, ToolObservation)
+        else observation
+    )
+    decision = graph_state.get("assistant_output")
+    if (
+        isinstance(decision, AssistantToolCall)
+        and decision.provider_tool_call_id
+    ):
+        payload[PROVIDER_TOOL_CALL_ID_KEY] = decision.provider_tool_call_id
     observations = existing + [payload]
     observation_error = payload.get("error")
     if not isinstance(observation_error, dict):
