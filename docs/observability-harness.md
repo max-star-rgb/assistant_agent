@@ -250,7 +250,7 @@ validator 和 tool 证据在 Decision Trace 中按 iteration 聚合，Raw events
 real mode 且配置 `MEM0_BASE_URL` 时探测，状态为 `disabled / ready / unavailable`；
 Langfuse 同时显示服务可达性与 `export enabled/disabled`；Web search 显示随 runtime
 进程使用的联网能力 readiness：mock 模式为 `ready (mock)`；real Qwen 模式复用完整 Chat
-Provider 配置并显示 `ready / unavailable (qwen native agent_max)`。真实 runtime 不再装配
+Provider 配置并显示 `ready / unavailable (bailian native turbo)`。真实 runtime 不再装配
 Tavily/HTTP `web_search` 或 `web_fetch` Tool，因此旧搜索 Provider key 不参与启动 readiness。
 Mem0 与 Langfuse 的 HTTP 探活并行执行且使用亚秒级超时，失败只改变启动摘要，不阻断 Server，
 也不改变 Memory 降级、Qwen Chat 或 OpenTelemetry fail-open 语义。控制台不输出依赖 URL、

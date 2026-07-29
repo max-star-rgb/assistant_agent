@@ -345,7 +345,7 @@ def test_qwen_native_search_readiness_ignores_legacy_tavily_configuration() -> N
     assert web_search.issues == []
 
 
-def test_qwen_native_agent_max_rejects_unsupported_chat_model() -> None:
+def test_bailian_native_turbo_search_accepts_deepseek_chat_model() -> None:
     config = ProviderConfig.from_env(
         {
             "MULTIMODAL_AGENT_PROVIDER_MODE": "real",
@@ -361,20 +361,17 @@ def test_qwen_native_agent_max_rejects_unsupported_chat_model() -> None:
         check for check in readiness.checks if check.capability == "web_search"
     )
 
-    assert validation.valid is False
-    assert [
-        (issue.capability, issue.code, issue.missing)
+    assert validation.valid is True
+    assert all(
+        issue.capability != "web_search"
         for issue in validation.issues
-        if issue.capability == "web_search"
-    ] == [("web_search", "provider_unsupported_model", ["QWEN_CHAT_MODEL"])]
+    )
     assert web_search.provider == "qwen"
-    assert web_search.status == "not_ready"
-    assert [issue.code for issue in web_search.issues] == [
-        "provider_unsupported_model"
-    ]
+    assert web_search.status == "ready"
+    assert web_search.issues == []
 
 
-def test_qwen_default_model_supports_native_agent_max() -> None:
+def test_qwen_default_model_uses_general_chat_model() -> None:
     config = ProviderConfig.from_env(
         {
             "MULTIMODAL_AGENT_PROVIDER_MODE": "real",
@@ -383,7 +380,7 @@ def test_qwen_default_model_supports_native_agent_max() -> None:
         }
     )
 
-    assert config.qwen_chat_model == "qwen3-max"
+    assert config.qwen_chat_model == "qwen-plus"
 
 
 def test_trace_observer_close_propagates_timeout_budget() -> None:
@@ -445,7 +442,7 @@ def test_interactive_provider_latency_controls_are_explicit() -> None:
             "MULTIMODAL_AGENT_PROVIDER_MODE": "real",
             "MULTIMODAL_AGENT_CHAT_PROVIDER": "qwen",
             "QWEN_API_KEY": "test-key",
-            "QWEN_CHAT_MODEL": "qwen3-max",
+            "QWEN_CHAT_MODEL": "deepseek-v4-flash",
         }
     )
 
@@ -458,7 +455,7 @@ def test_interactive_provider_latency_controls_are_explicit() -> None:
     assert config.qwen_chat_enable_thinking is False
     assert isinstance(adapter, OpenAICompatibleChatAdapter)
     assert adapter.timeout_seconds == 75.0
-    assert adapter.enable_thinking is True
+    assert adapter.enable_thinking is False
     assert adapter.stream is True
     assert adapter.native_web_search is True
     assert compactor is None
@@ -468,7 +465,7 @@ def test_interactive_provider_latency_controls_are_explicit() -> None:
             "MULTIMODAL_AGENT_PROVIDER_MODE": "real",
             "MULTIMODAL_AGENT_CHAT_PROVIDER": "qwen",
             "QWEN_API_KEY": "test-key",
-            "QWEN_CHAT_MODEL": "qwen3-max",
+            "QWEN_CHAT_MODEL": "deepseek-v4-flash",
             "MULTIMODAL_AGENT_CONTEXT_COMPACTOR": "llm",
         }
     )
@@ -479,7 +476,7 @@ def test_interactive_provider_latency_controls_are_explicit() -> None:
     assert isinstance(enabled_compactor, LLMCompactor)
 
 
-def test_qwen_chat_adapter_enables_native_agent_max_search_in_provider_payload() -> None:
+def test_bailian_chat_adapter_enables_native_turbo_search_in_provider_payload() -> None:
     captured: dict[str, object] = {}
     observed: list[dict[str, object]] = []
 
@@ -488,7 +485,7 @@ def test_qwen_chat_adapter_enables_native_agent_max_search_in_provider_payload()
             captured.update(payload)
             return [
                 {
-                    "model": "qwen3-max",
+                    "model": "deepseek-v4-flash",
                     "choices": [
                         {"delta": {"content": "完成"}, "finish_reason": "stop"}
                     ],
@@ -501,7 +498,7 @@ def test_qwen_chat_adapter_enables_native_agent_max_search_in_provider_payload()
         provider="qwen",
         api_key="test-key",
         base_url="https://example.invalid/v1",
-        model="qwen3-max",
+        model="deepseek-v4-flash",
         enable_thinking=False,
         native_web_search=True,
         client=client,
@@ -518,9 +515,14 @@ def test_qwen_chat_adapter_enables_native_agent_max_search_in_provider_payload()
 
     assert result.response_text == "完成"
     assert captured["extra_body"] == {
-        "enable_thinking": True,
+        "enable_thinking": False,
         "enable_search": True,
-        "search_options": {"search_strategy": "agent_max"},
+        "search_options": {
+            "search_strategy": "turbo",
+            "forced_search": False,
+            "enable_search_extension": True,
+            "freshness": 7,
+        },
     }
     assert observed == [captured]
 

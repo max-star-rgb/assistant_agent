@@ -45,7 +45,7 @@ def test_startup_dependencies_report_ready_services_and_export_state() -> None:
         StartupDependencyStatus(
             name="Web search",
             state="ready",
-            detail="qwen native agent_max",
+            detail="bailian native turbo",
         ),
     )
     assert sorted(requested_urls) == [
@@ -56,7 +56,7 @@ def test_startup_dependencies_report_ready_services_and_export_state() -> None:
         "Dependencies:",
         "  Mem0: ready (mem0 2.0.11)",
         "  Langfuse: ready (export enabled)",
-        "  Web search: ready (qwen native agent_max)",
+        "  Web search: ready (bailian native turbo)",
     ]
 
 
@@ -113,12 +113,12 @@ def test_startup_dependencies_fail_open_when_enabled_services_are_unavailable() 
         StartupDependencyStatus(
             name="Web search",
             state="ready",
-            detail="qwen native agent_max",
+            detail="bailian native turbo",
         ),
     )
 
 
-def test_startup_dependencies_reject_unsupported_qwen_agent_max_model() -> None:
+def test_startup_dependencies_accept_deepseek_model_for_bailian_search() -> None:
     statuses = collect_startup_dependency_statuses(
         ProviderConfig(
             provider_mode="real",
@@ -134,8 +134,8 @@ def test_startup_dependencies_reject_unsupported_qwen_agent_max_model() -> None:
 
     assert web_search == StartupDependencyStatus(
         name="Web search",
-        state="unavailable",
-        detail="qwen native agent_max",
+        state="ready",
+        detail="bailian native turbo",
     )
 
 

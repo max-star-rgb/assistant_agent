@@ -9,7 +9,6 @@ from pydantic import BaseModel, Field
 from assistant_agent.config import ProviderConfig
 from assistant_agent.providers.provider_config_validation import (
     ProviderConfigIssue,
-    qwen_native_web_search_issues,
     validate_provider_config,
 )
 from assistant_agent.tools.ids import (
@@ -183,17 +182,19 @@ def _native_web_search_check(config: ProviderConfig) -> ProviderReadinessCheck:
             real_provider_allowed=True,
         )
     missing = config.resolved_chat_provider().missing_required_env()
-    issues = qwen_native_web_search_issues(config)
+    issues: list[ProviderConfigIssue] = []
     if missing:
         issues = [
             ProviderConfigIssue(
                 capability=WEB_SEARCH_CAPABILITY,
                 provider="qwen",
                 code="provider_unconfigured",
-                message="qwen native web search requires a configured Qwen Chat Provider.",
+                message=(
+                    "Bailian native web search requires a configured "
+                    "qwen-provider Chat endpoint."
+                ),
                 missing=missing,
             ),
-            *issues,
         ]
     return ProviderReadinessCheck(
         capability=WEB_SEARCH_CAPABILITY,

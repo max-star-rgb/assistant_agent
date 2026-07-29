@@ -189,16 +189,17 @@ LLM 和所有 Provider-backed tools 使用 mock 实现，即使环境中存在�
 MCP mapping 逐个注册，未映射的能力不进入 Registry。开发阶段的稳定
 `calendar_search` / `calendar_create` 默认使用本地 SQLite，不调用日历 MCP。
 
-真实 Qwen Chat Completions 把联网作为 Provider-native 生成能力：每次主 Agent 请求固定携带
-`enable_search=true`、`search_strategy=agent_max`，并强制使用思考与流式协议。搜索、来源选择和网页
-抓取都由 Qwen 在一次 `llm.chat` 内部完成；它们不进入本地 Tool catalog，不产生 `web_search` /
+配置为 `qwen` provider 的真实百炼兼容 Chat Completions 把联网作为 Provider-native 生成能力：
+每次主 Agent 请求固定携带 `enable_search=true`、`enable_thinking=false` 和
+`search_options={search_strategy: turbo, forced_search: false, enable_search_extension: true,
+freshness: 7}`，并强制使用 SDK 流式协议。是否实际搜索由 Provider 判断；搜索、来源选择和内容整合
+都在一次 `llm.chat` 内部完成，不进入本地 Tool catalog，不产生 `web_search` /
 `web_fetch` Tool call、ToolResult 或 Tool span，也不计入工具预算。本地 `web_access` Plugin 只在
 mock 模式注册离线 `web_search` / `web_fetch`，用于确定性测试；Tavily 与通用 HTTP adapter 暂时保留
-为未装配兼容代码，real runtime 不读取其 readiness，也不静默回退调用。根据百炼当前
-Chat Completions 契约，`agent_max` 只支持 `qwen3-max` 与 `qwen3-max-2026-01-23` 的思考模式；
-默认模型因此固定为 `qwen3-max`，配置其他 Qwen Chat 模型时启动校验直接报错，不降级搜索策略。
+为未装配兼容代码，real runtime 不读取其 readiness，也不静默回退调用。百炼 endpoint 可按配置调用
+千问或受支持的第三方模型；当前真实环境使用 `deepseek-v4-flash`，不做千问模型族限定。
 
-该边界只适用于 Qwen Provider 内部的只读检索。模型通过 OpenAI-compatible `tools` 返回的自定义
+该边界只适用于百炼 Provider 内部的只读检索。模型通过 OpenAI-compatible `tools` 返回的自定义
 function call 仍是本地显式工具调用，必须进入 `ActionValidator -> ToolExecutor -> ToolRegistry`。
 
 本地文本文件通过内置 `local_file_access` Plugin 的 `file_read` 工具读取。该工具只接受相对于
@@ -360,10 +361,10 @@ assistant turn 的内部输出只允许非空 `AssistantTextOutput` 或 `Assista
 `task_plan_submit` 工具完成，不再扩展 assistant 输出协议。
 
 OpenAI-compatible Chat adapter 从 `ProviderConfig` 读取主调用超时；默认
-`MULTIMODAL_AGENT_CHAT_TIMEOUT_SECONDS=75`，应小于入口 turn 总预算。真实 Qwen 主 Agent 因固定
-使用 `agent_max`，adapter 始终发送 `extra_body.enable_thinking=true`；旧
-`QWEN_CHAT_ENABLE_THINKING=false` 不会关闭它。未开启 `native_web_search` 的辅助 Qwen adapter
-仍可单独配置思考模式。该参数只发送给 Qwen，不改变其他 Provider payload。
+`MULTIMODAL_AGENT_CHAT_TIMEOUT_SECONDS=75`，应小于入口 turn 总预算。真实百炼主 Agent 的
+Provider-native 搜索固定使用非思考模式，adapter 始终发送
+`extra_body.enable_thinking=false`。未开启 `native_web_search` 的辅助 Qwen adapter 仍可单独配置
+思考模式。该参数只发送给配置为 `qwen` 的百炼兼容请求，不改变其他 Provider payload。
 
 ## 5. 校验与执行
 

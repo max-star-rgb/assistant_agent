@@ -274,7 +274,7 @@ class OpenAICompatibleChatAdapter:
         self.native_web_search = provider == "qwen" and native_web_search
         self.stream = True if self.native_web_search else stream
         self.enable_thinking = (
-            True if self.native_web_search else enable_thinking
+            False if self.native_web_search else enable_thinking
         )
         self.capabilities = chat_capabilities_for_provider(provider)
         self._client = client
@@ -396,7 +396,12 @@ class OpenAICompatibleChatAdapter:
             extra_body.update(
                 {
                     "enable_search": True,
-                    "search_options": {"search_strategy": "agent_max"},
+                    "search_options": {
+                        "search_strategy": "turbo",
+                        "forced_search": False,
+                        "enable_search_extension": True,
+                        "freshness": 7,
+                    },
                 }
             )
         return extra_body or None

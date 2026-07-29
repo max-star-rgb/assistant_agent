@@ -98,9 +98,10 @@ Tool providers, vision/search providers, durable-task provider calls, and
 cancellation paths do not use this fallback.
 
 Foreground provider turns are consumed inside the shared LangGraph assistant
-loop. 主 Agent 的 Qwen Chat Completions 固定启用 Provider-native 联网：
-`enable_search=true`、`search_options.search_strategy=agent_max`、思考模式与 SDK streaming
-均由 adapter 强制设置，旧 `CHAT_STREAM=false` 不再把这条 Provider 请求降级为非流式。
+loop. 配置为 `qwen` provider 的主 Agent 百炼兼容 Chat Completions 固定启用 Provider-native 联网：
+`enable_search=true`、`enable_thinking=false`、`search_strategy=turbo`、
+`forced_search=false`、`enable_search_extension=true`、`freshness=7` 与 SDK streaming
+均由 adapter 固定设置，旧 `CHAT_STREAM=false` 不再把这条 Provider 请求降级为非流式。
 `MULTIMODAL_AGENT_NATIVE_PROVIDER_STREAMING` 只控制 Runtime 是否使用 async-native stream
 consumer；关闭时仍由同步 adapter 聚合 Qwen 的流式响应。Judge 等显式直接构造且未开启
 `native_web_search` 的辅助 adapter 保持独立的非联网、非流式策略。Other providers remain opt-in through

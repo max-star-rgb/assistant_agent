@@ -15,10 +15,7 @@ from assistant_agent.tools.ids import (
     IMAGE_UNDERSTANDING_CAPABILITY,
     SHOPPING_SEARCH_CAPABILITY,
     VIDEO_UNDERSTANDING_CAPABILITY,
-    WEB_SEARCH_CAPABILITY,
 )
-
-QWEN_AGENT_MAX_MODELS = frozenset({"qwen3-max", "qwen3-max-2026-01-23"})
 
 
 ValidationSeverity = Literal["error", "warning"]
@@ -66,7 +63,6 @@ def validate_provider_config(config: ProviderConfig) -> ProviderConfigValidation
         provider=config.chat_provider,
         missing=_chat_missing(config),
     )
-    issues.extend(qwen_native_web_search_issues(config))
     _add_issue_if_missing(
         issues,
         capability=IMAGE_GENERATION_CAPABILITY,
@@ -139,30 +135,6 @@ def _vision_missing(config: ProviderConfig) -> list[str]:
 
 def _chat_missing(config: ProviderConfig) -> list[str]:
     return config.resolved_chat_provider().missing_required_env()
-
-
-def qwen_native_web_search_issues(
-    config: ProviderConfig,
-) -> list[ProviderConfigIssue]:
-    """Validate the fixed Qwen Chat Completions ``agent_max`` contract."""
-
-    if config.provider_mode != "real" or config.chat_provider != "qwen":
-        return []
-    model = (config.resolved_chat_provider().model or "").strip().lower()
-    if not model or model in QWEN_AGENT_MAX_MODELS:
-        return []
-    return [
-        ProviderConfigIssue(
-            capability=WEB_SEARCH_CAPABILITY,
-            provider="qwen",
-            code="provider_unsupported_model",
-            message=(
-                "qwen native web search uses the fixed agent_max strategy, "
-                "which requires qwen3-max or qwen3-max-2026-01-23."
-            ),
-            missing=["QWEN_CHAT_MODEL"],
-        )
-    ]
 
 
 def _image_generation_missing(config: ProviderConfig) -> list[str]:
