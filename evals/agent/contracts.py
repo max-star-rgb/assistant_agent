@@ -217,3 +217,10 @@ class TaskEnvironment(Protocol):
         trace_id: str,
         parent_span_id: str,
     ) -> TaskExecution: ...
+
+
+class MissionTaskEnvironment(TaskEnvironment, Protocol):
+    def objective_state_assertions(
+        self,
+        evidence: RunEvidence,
+    ) -> dict[str, AssertionResult]: ...

@@ -128,18 +128,54 @@ def grade_task(
     evidence: RunEvidence,
     judge: LLMJudge,
 ) -> GraderResult:
-    from evals.agent.loader import load_entrypoint
+    from evals.agent.loader import load_case_source, load_entrypoint
 
     environment = load_entrypoint(task.environment)()
     environment.validate().require_valid()
     expectations = environment.tool_outcome_expectations(evidence.available_tools)
     grader = load_entrypoint(task.grader)
     task_result: TaskJudgeResult = grader(evidence, judge)
+    source = load_case_source(task.id)
+    objective_assertions = None
+    if source.level == "mission":
+        objective_method = getattr(environment, "objective_state_assertions", None)
+        if not callable(objective_method):
+            raise RuntimeError(
+                f"Mission {task.id!r} must define objective_state_assertions()."
+            )
+        objective_assertions = objective_method(evidence)
     return enforce_tool_outcome_expectations(
         task_result,
         evidence=evidence,
         expectations=expectations,
+        objective_assertions=objective_assertions,
     )
+
+
+def validate_mission_objective_assertions(
+    assertions: Mapping[str, AssertionResult],
+) -> dict[str, AssertionResult]:
+    if not isinstance(assertions, Mapping):
+        raise RuntimeError(
+            "Mission objective_state_assertions() must return a mapping."
+        )
+    resolved = dict(assertions)
+    if not resolved:
+        raise RuntimeError(
+            "Mission objective_state_assertions() must return at least one Rule."
+        )
+    invalid = [
+        key
+        for key, assertion in resolved.items()
+        if assertion.evaluation_method != "rule"
+        or assertion.criterion_id is not None
+    ]
+    if invalid:
+        raise RuntimeError(
+            "Mission objective assertions must use Rule evaluation: "
+            + ", ".join(sorted(invalid))
+        )
+    return resolved
 
 
 def enforce_tool_outcome_expectations(
@@ -147,6 +183,7 @@ def enforce_tool_outcome_expectations(
     *,
     evidence: RunEvidence,
     expectations: list[ToolOutcomeExpectation],
+    objective_assertions: Mapping[str, AssertionResult] | None = None,
 ) -> GraderResult:
     _require_expectation_coverage(evidence, expectations)
     tool_execution_assertions = {
@@ -155,6 +192,11 @@ def enforce_tool_outcome_expectations(
             expectations,
         )
     }
+    if objective_assertions is not None:
+        for key, assertion in validate_mission_objective_assertions(
+            objective_assertions
+        ).items():
+            tool_execution_assertions[f"mission_state.{key}"] = assertion
     return grader_result(
         tool_execution=dimension(tool_execution_assertions),
         tool_semantics=result.tool_semantics,
