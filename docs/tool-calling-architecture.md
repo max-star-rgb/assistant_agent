@@ -540,10 +540,10 @@ export MULTIMODAL_AGENT_MCP_ENABLED=1
 export MULTIMODAL_AGENT_MCP_CONFIG_PATH=.local/mcp_servers.json
 ```
 
-当前模板固定使用 `workspace-mcp==1.22.0`，通过 `hello_agent` 环境中的 `uvx` 隔离运行，
-不把它加入项目运行依赖。Calendar 命令显式附加 `PySocks`，使上游
+当前模板的 Gmail 只读实例固定使用 `workspace-mcp==1.22.0`，通过 `hello_agent` 环境中的 `uvx`
+隔离运行，不把它加入项目运行依赖。命令显式附加 `PySocks`，使上游
 `httplib2` 能在代理网络中访问 Google API。首次启动仍会由 `uvx` 下载对应环境；
-本机必须先显式安装 `uv`。模板中的 `calendar_user_email` 必须替换为完成 Google OAuth 的账号，
+本机必须先显式安装 `uv`。模板中的 `email_tools.user_email` 必须替换为完成 Google OAuth 的账号，
 `GOOGLE_OAUTH_CLIENT_ID` 和 `GOOGLE_OAUTH_CLIENT_SECRET` 只从本地 shell 或未跟踪 `.env` 注入，不能写入
 MCP 配置模板或提交。当前 stdio 单机配置使用 `http://localhost:8000/oauth2callback`，因此本地 OAuth
 需要 `OAUTHLIB_INSECURE_TRANSPORT=1`；该开关不得用于公开或非 loopback 部署，公开部署必须改用 HTTPS
@@ -553,10 +553,10 @@ MCP 配置模板或提交。当前 stdio 单机配置使用 `http://localhost:80
 scheme。其他环境变量仍由 MCP SDK 的安全白名单或 server `env` 控制。真实模式还要求主 Chat
 Provider 完整配置；MCP 配置不会绕过这个全局边界。
 
-`workspace-mcp` 是 Google Workspace 多产品适配器，不等于 Calendar。当前模板将 Calendar-only
-实例命名为 `google_calendar`，通过 `--tools calendar` 暴露事件查询/管理；Gmail 则由独立的
-`google_gmail_readonly` 实例通过 `--tools gmail --read-only` 提供。server name 只决定 MCP
-namespace，不代表整个 Google Workspace 产品集都已启用。
+`workspace-mcp` 是 Google Workspace 多产品适配器，不等于 Calendar。当前部署只保留
+`google_gmail_readonly` 实例，通过 `--tools gmail --read-only` 提供邮件查询/读取。日历的唯一事实源
+是本地 `.data/calendar/events.sqlite3`，稳定 `calendar_search` / `calendar_create` 不连接 Google
+Calendar；默认 MCP 配置不注册 `get_events` / `manage_event`，避免本地与云端形成两套日历。
 
 中国大陆地点与通勤使用模板中的官方 `@amap/amap-maps-mcp-server`。部署者先复制模板到已忽略的
 `.local/mcp_servers.json`，再只在该本地文件替换 `AMAP_MAPS_API_KEY` 占位符；仓库模板和 `.env`
@@ -587,8 +587,8 @@ namespace，不代表整个 Google Workspace 产品集都已启用。
 
 - `mcp_weather_server_v1` 及稳定 `weather` wrapper 只保留待废弃兼容代码，不参与 mock/real
   runtime 的天气 Tool 注册或暴露。
-- `workspace_mcp_v1` 把稳定 `calendar_search` / `calendar_create` 分别转换为 `get_events` /
-  `manage_event`，并注入本地 `calendar_user_email`；创建动作固定为 `action=create`。
+- `workspace_mcp_v1` Calendar mapping 只作为兼容 adapter 保留，不进入默认部署配置；如未来切换到
+  Google Calendar 作为唯一事实源，应显式替换本地 adapter，而不是与 SQLite 双写。
 
 `calendar_create` 注册并满足本轮结构化运行条件后即可由模型调用，通过校验后直接执行。真实天气与
 日历能力只能在 operator 显式启用真实工具的评测中执行。该命令让真实 LLM 经过 Runtime

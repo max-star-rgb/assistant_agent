@@ -36,33 +36,6 @@
       "timeout_seconds": 30
     },
     {
-      "server_name": "google_calendar",
-      "transport": "stdio",
-      "command": [
-        "/home/lenovo1/miniconda3/envs/hello_agent/bin/uvx",
-        "--with",
-        "PySocks",
-        "--from",
-        "workspace-mcp==1.22.0",
-        "workspace-mcp",
-        "--tools",
-        "calendar"
-      ],
-      "allowed_tools": ["get_events", "manage_event"],
-      "read_only_tools": ["get_events"],
-      "env": {
-        "GOOGLE_OAUTH_CLIENT_ID": "${GOOGLE_OAUTH_CLIENT_ID}",
-        "GOOGLE_OAUTH_CLIENT_SECRET": "${GOOGLE_OAUTH_CLIENT_SECRET}"
-      },
-      "personal_assistant_tools": {
-        "calendar_search": "get_events",
-        "calendar_create": "manage_event",
-        "calendar_profile": "workspace_mcp_v1",
-        "calendar_user_email": "<your-google-account@example.com>"
-      },
-      "timeout_seconds": 60
-    },
-    {
       "server_name": "google_gmail_readonly",
       "transport": "stdio",
       "command": [

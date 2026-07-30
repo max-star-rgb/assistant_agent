@@ -30,8 +30,10 @@ def test_mcp_example_allowlists_only_read_only_amap_tools() -> None:
     servers = [MCPServerConfig.model_validate(item) for item in payload["servers"]]
 
     amap = next(server for server in servers if server.server_name == "amap_maps")
-    calendar = next(
-        server for server in servers if server.server_name == "google_calendar"
+    server_names = {server.server_name for server in servers}
+    gmail = next(
+        server for server in servers
+        if server.server_name == "google_gmail_readonly"
     )
 
     assert all(
@@ -49,4 +51,5 @@ def test_mcp_example_allowlists_only_read_only_amap_tools() -> None:
     assert amap.env == {
         "AMAP_MAPS_API_KEY": "<set-in-ignored-local-config>",
     }
-    assert calendar.command[-2:] == ["--tools", "calendar"]
+    assert "google_calendar" not in server_names
+    assert gmail.command[-3:] == ["--tools", "gmail", "--read-only"]
