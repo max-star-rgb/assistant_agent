@@ -1,0 +1,276 @@
+{
+  "schema_version": "agent_eval_calibration_v3",
+  "fixtures": [
+    {
+      "id": "applies_constraints_and_explains_prices",
+      "judge_verdicts": {
+        "tool_semantics": {
+          "passed": true,
+          "reason": "人工标注：三个酒店候选、价格、晚数估算和 Provider 提示完整自洽。"
+        },
+        "grounding": {
+          "passed": true,
+          "reason": "人工标注：酒店名称、每晚价、三晚总价及估算说明均忠于工具 Evidence。"
+        },
+        "response_quality": {
+          "passed": true,
+          "reason": "人工标注：回答完整落实预算、位置、数量和价格口径要求。"
+        }
+      },
+      "evidence": {
+        "task_id": "travel_lodging_constraint_grounding",
+        "run_id": "calibration-lodging-correct",
+        "trace_id": "77777777777777777777777777777777",
+        "terminal_status": "completed",
+        "response": {
+          "message": "按距离排序的三晚候选：西湖清居酒店每晚568元、估算总价1704元；南山艺舍每晚598元、估算总价1794元；湖滨精选酒店每晚528元、估算总价1584元。都不超过每晚600元。总价按展示每晚价乘3晚估算，并非已锁定的含税成交价；库存、税费和退改以OTA页面为准。"
+        },
+        "available_tools": [
+          "lodging_search"
+        ],
+        "tool_executions": [
+          {
+            "name": "lodging_search",
+            "input": {
+              "destination": "杭州",
+              "check_in": "2026-08-14",
+              "check_out": "2026-08-17",
+              "adults": 2,
+              "rooms": 1,
+              "nearby_poi": "中国丝绸博物馆",
+              "max_nightly_price": 600,
+              "sort": "distance_asc"
+            },
+            "status": "succeeded",
+            "terminal_event": "tool.finished",
+            "exposed": true,
+            "output": {
+              "success": true,
+              "model_observation": {
+                "status": "succeeded",
+                "offers": [
+                  {
+                    "property_name": "西湖清居酒店",
+                    "nightly_price": 568.0,
+                    "total_price": 1704.0,
+                    "currency": "CNY",
+                    "price_basis": "nightly_estimate",
+                    "review": "距中国丝绸博物馆约0.6公里"
+                  },
+                  {
+                    "property_name": "南山艺舍",
+                    "nightly_price": 598.0,
+                    "total_price": 1794.0,
+                    "currency": "CNY",
+                    "price_basis": "nightly_estimate",
+                    "review": "距中国丝绸博物馆约1.1公里"
+                  },
+                  {
+                    "property_name": "湖滨精选酒店",
+                    "nightly_price": 528.0,
+                    "total_price": 1584.0,
+                    "currency": "CNY",
+                    "price_basis": "nightly_estimate",
+                    "review": "距中国丝绸博物馆约1.8公里"
+                  }
+                ],
+                "provider_notice": "总价按展示每晚价乘入住晚数估算；税费、库存和退改条件以跳转后的 OTA 页面为准。"
+              }
+            }
+          }
+        ],
+        "validation_results": [
+          {
+            "tool_name": "lodging_search",
+            "status": "accepted"
+          }
+        ],
+        "initial_state": {},
+        "final_state": {},
+        "state_diff": {
+          "added": [],
+          "modified": [],
+          "deleted": []
+        }
+      },
+      "expected_dimensions": {
+        "tool_execution": true,
+        "tool_semantics": true,
+        "grounding": true,
+        "response_quality": true
+      }
+    },
+    {
+      "id": "misstates_estimate_as_final_total",
+      "judge_verdicts": {
+        "tool_semantics": {
+          "passed": true,
+          "reason": "人工标注：酒店搜索返回完整且明确标记 nightly_estimate。"
+        },
+        "grounding": {
+          "passed": false,
+          "reason": "人工标注：回答把估算总价错误声称为已含税、已锁定的最终成交价。"
+        },
+        "response_quality": {
+          "passed": false,
+          "reason": "人工标注：回答误导用户理解报价口径，没有完成风险提示。"
+        }
+      },
+      "evidence": {
+        "task_id": "travel_lodging_constraint_grounding",
+        "run_id": "calibration-lodging-final-price",
+        "trace_id": "88888888888888888888888888888888",
+        "terminal_status": "completed",
+        "response": {
+          "message": "西湖清居酒店三晚最终成交价1704元，已经含税并锁定，不会再变。"
+        },
+        "available_tools": [
+          "lodging_search"
+        ],
+        "tool_executions": [
+          {
+            "name": "lodging_search",
+            "input": {
+              "destination": "杭州",
+              "check_in": "2026-08-14",
+              "check_out": "2026-08-17",
+              "adults": 2,
+              "rooms": 1,
+              "nearby_poi": "中国丝绸博物馆",
+              "max_nightly_price": 600,
+              "sort": "distance_asc"
+            },
+            "status": "succeeded",
+            "terminal_event": "tool.finished",
+            "exposed": true,
+            "output": {
+              "success": true,
+              "model_observation": {
+                "offers": [
+                  {
+                    "property_name": "西湖清居酒店",
+                    "nightly_price": 568.0,
+                    "total_price": 1704.0,
+                    "price_basis": "nightly_estimate"
+                  }
+                ],
+                "provider_notice": "总价按展示每晚价乘入住晚数估算；税费、库存和退改条件以跳转后的 OTA 页面为准。"
+              }
+            }
+          }
+        ],
+        "validation_results": [
+          {
+            "tool_name": "lodging_search",
+            "status": "accepted"
+          }
+        ],
+        "initial_state": {},
+        "final_state": {},
+        "state_diff": {
+          "added": [],
+          "modified": [],
+          "deleted": []
+        }
+      },
+      "expected_dimensions": {
+        "tool_execution": true,
+        "tool_semantics": true,
+        "grounding": false,
+        "response_quality": false
+      }
+    },
+    {
+      "id": "omits_price_basis_caveat",
+      "judge_verdicts": {
+        "tool_semantics": {
+          "passed": true,
+          "reason": "人工标注：酒店工具结果完整可用。"
+        },
+        "grounding": {
+          "passed": true,
+          "reason": "人工标注：回答中的酒店和价格忠于 Evidence；省略提示不构成事实冲突。"
+        },
+        "response_quality": {
+          "passed": false,
+          "reason": "人工标注：回答没有说明总价为估算，也没有提醒库存、税费和退改以 OTA 为准。"
+        }
+      },
+      "evidence": {
+        "task_id": "travel_lodging_constraint_grounding",
+        "run_id": "calibration-lodging-incomplete",
+        "trace_id": "99999999999999999999999999999999",
+        "terminal_status": "completed",
+        "response": {
+          "message": "西湖清居酒店每晚568元、三晚1704元；南山艺舍每晚598元、三晚1794元；湖滨精选酒店每晚528元、三晚1584元。"
+        },
+        "available_tools": [
+          "lodging_search"
+        ],
+        "tool_executions": [
+          {
+            "name": "lodging_search",
+            "input": {
+              "destination": "杭州",
+              "check_in": "2026-08-14",
+              "check_out": "2026-08-17",
+              "adults": 2,
+              "rooms": 1,
+              "nearby_poi": "中国丝绸博物馆",
+              "max_nightly_price": 600,
+              "sort": "distance_asc"
+            },
+            "status": "succeeded",
+            "terminal_event": "tool.finished",
+            "exposed": true,
+            "output": {
+              "success": true,
+              "model_observation": {
+                "offers": [
+                  {
+                    "property_name": "西湖清居酒店",
+                    "nightly_price": 568.0,
+                    "total_price": 1704.0,
+                    "price_basis": "nightly_estimate"
+                  },
+                  {
+                    "property_name": "南山艺舍",
+                    "nightly_price": 598.0,
+                    "total_price": 1794.0,
+                    "price_basis": "nightly_estimate"
+                  },
+                  {
+                    "property_name": "湖滨精选酒店",
+                    "nightly_price": 528.0,
+                    "total_price": 1584.0,
+                    "price_basis": "nightly_estimate"
+                  }
+                ],
+                "provider_notice": "总价按展示每晚价乘入住晚数估算；税费、库存和退改条件以跳转后的 OTA 页面为准。"
+              }
+            }
+          }
+        ],
+        "validation_results": [
+          {
+            "tool_name": "lodging_search",
+            "status": "accepted"
+          }
+        ],
+        "initial_state": {},
+        "final_state": {},
+        "state_diff": {
+          "added": [],
+          "modified": [],
+          "deleted": []
+        }
+      },
+      "expected_dimensions": {
+        "tool_execution": true,
+        "tool_semantics": true,
+        "grounding": true,
+        "response_quality": false
+      }
+    }
+  ]
+}

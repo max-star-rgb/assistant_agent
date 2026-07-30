@@ -28,7 +28,6 @@ from assistant_agent.runtime.output_models import (
     AssistantTextOutput,
     AssistantToolCall,
     AssistantTurnOutput,
-    native_tool_call_to_assistant_output,
 )
 from assistant_agent.runtime.capability_models import canonical_intent
 from assistant_agent.context.service import (
@@ -479,9 +478,12 @@ def _decide_with_llm(
             state.request.metadata["answer_only_retry_failed"] = True
             state.request.metadata["finalization_protocol_violation_count"] = 2
             return _finalize_fallback(context), context
+        progress_message = result.response_text.strip() or None
         pending_decisions = [
-            native_tool_call_to_assistant_output(call)
-            for call in result.tool_calls
+            call.to_assistant_tool_call(
+                progress_message=progress_message if index == 0 else None,
+            )
+            for index, call in enumerate(result.tool_calls)
         ]
         _record_native_tool_calls(
             state,
@@ -1073,6 +1075,30 @@ def _apply_decision_guards(
     if (
         isinstance(decision, AssistantToolCall)
         and not _is_plan_mode_active(state)
+        and LoopGuard(state.request.metadata).complete_call_already_seen(
+            tool_name=decision.tool_name,
+            tool_input=decision.tool_input or {},
+        )
+    ):
+        guard = LoopGuardDecision(
+            True,
+            "duplicate_complete_tool_call",
+            (
+                f"An identical complete {decision.tool_name} call already succeeded; "
+                "answering from the existing result."
+            ),
+            disposition="finalize",
+        )
+        _record_loop_guard(graph_state, guard)
+        return decision.model_copy(
+            update={
+                "reason": guard.message,
+                "safety_notes": [*decision.safety_notes, guard.code],
+            }
+        )
+    if (
+        isinstance(decision, AssistantToolCall)
+        and not _is_plan_mode_active(state)
         and LoopGuard(state.request.metadata).failed_call_already_seen(
             tool_name=decision.tool_name,
             tool_input=decision.tool_input or {},
@@ -1543,6 +1569,25 @@ def _execute_single_requested_tool_node(graph_state: AssistantLoopState) -> Assi
                 observation,
             ),
         }
+    if "duplicate_complete_tool_call" in decision.safety_notes:
+        observation = rejected_observation(
+            tool_name=tool_name or "unknown",
+            code="duplicate_complete_tool_call",
+            message="An identical complete tool call was blocked before execution.",
+        )
+        _enter_finalize_phase(
+            graph_state,
+            reason="duplicate_complete_tool_call",
+            source="loop_guard",
+        )
+        return {
+            **graph_state,
+            "tool_observations": _record_react_observation(
+                graph_state,
+                tool_observations,
+                observation,
+            ),
+        }
     step, plan_rejection = _current_plan_step(state, decision, graph_state["outputs_by_step"])
     if plan_rejection is not None:
         rejection_error = plan_rejection.error
@@ -1636,6 +1681,7 @@ def _execute_single_requested_tool_node(graph_state: AssistantLoopState) -> Assi
             node_name=graph_state.get("current_node_name", "execute_tool"),
             validated_input=validation.validated_input,
             failure_mode="continue_to_model",
+            progress_message=decision.progress_message,
         )
 
         observation = observation_from_tool_result(
@@ -1656,6 +1702,11 @@ def _execute_single_requested_tool_node(graph_state: AssistantLoopState) -> Assi
             )
         if result.success:
             LoopGuard(state.request.metadata).record_terminal_tool_success(tool_name)
+            if tool_spec.category == "read" and observation.is_complete:
+                LoopGuard(state.request.metadata).record_complete_tool_success(
+                    tool_name=tool_name,
+                    tool_input=tool_input,
+                )
         recorded_guard = LoopGuard(state.request.metadata).record_tool_result(
             tool_name=tool_name,
             tool_input=tool_input,

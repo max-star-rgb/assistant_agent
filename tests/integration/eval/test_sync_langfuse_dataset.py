@@ -28,9 +28,9 @@ def test_deletes_only_stale_git_owned_dataset_items() -> None:
     client = _FakeLangfuseClient()
     client.dataset_items = [
         {
-            "id": "assistant-agent-regression__weather_timeout_recovery",
-            "input": {"task_id": "weather_timeout_recovery"},
-            "metadata": {"task_id": "weather_timeout_recovery"},
+            "id": "assistant-agent-regression__email_empty_result_honesty",
+            "input": {"task_id": "email_empty_result_honesty"},
+            "metadata": {"task_id": "email_empty_result_honesty"},
         },
         {
             "id": "assistant-agent-regression__removed_task",
@@ -47,7 +47,7 @@ def test_deletes_only_stale_git_owned_dataset_items() -> None:
     deleted = delete_stale_git_owned_items(
         client,
         dataset_name="assistant-agent-regression",
-        local_task_ids={"weather_timeout_recovery"},
+        local_task_ids={"email_empty_result_honesty"},
     )
 
     assert deleted == ["assistant-agent-regression__removed_task"]

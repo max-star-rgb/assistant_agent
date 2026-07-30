@@ -114,11 +114,18 @@ _PRODUCT_KEYS = (
     "brand",
     "category",
     "price",
+    "original_price",
+    "coupon_amount",
+    "effective_price",
+    "unconditional_price",
+    "conditional_price",
+    "conditional_price_note",
     "currency",
     "platform",
     "shop",
     "url",
     "product_url",
+    "image_url",
     "url_status",
     "availability",
     "similarity",
@@ -131,27 +138,6 @@ _PRODUCT_KEYS = (
     "style_tags",
     "reason",
     "source",
-)
-
-_OFFER_KEYS = (
-    "offer_id",
-    "product_id",
-    "title",
-    "platform",
-    "shop",
-    "price",
-    "effective_price",
-    "currency",
-    "shipping_fee",
-    "total_price",
-    "product_url",
-    "image_url",
-    "url_status",
-    "availability",
-    "rating",
-    "sales",
-    "similarity_score",
-    "reason",
 )
 
 
@@ -316,131 +302,112 @@ def _compact_data(tool_name: str, value: Any, *, stats: _CompactionStats) -> dic
     return _compact_generic_mapping(data, stats=stats, key_path=("data",))
 
 
-def _compact_shopping_search_search_output(data: dict[str, Any], *, stats: _CompactionStats) -> dict[str, Any]:
-    output = _copy_keys(
-        data,
-        (
-            "provider",
-            "query_used",
-            "total",
-            "filters_used",
-            "summary",
-            "output_ref",
-            "errors",
-            "latency_ms",
-        ),
-    )
-    items = data.get("items")
-    if isinstance(items, list):
-        output["items"] = [
-            _compact_product_item(item, stats=stats, key_path=("data", "items", f"[{index}]"))
-            for index, item in enumerate(items[:MAX_ITEMS_PER_LIST])
-            if isinstance(item, Mapping)
-        ]
-        if len(items) > MAX_ITEMS_PER_LIST:
-            output["omitted_items_count"] = len(items) - MAX_ITEMS_PER_LIST
-    return _compact_generic_mapping(output, stats=stats, key_path=("data",))
-
-
-def _compact_shopping_search_comparison_output(data: dict[str, Any], *, stats: _CompactionStats) -> dict[str, Any]:
-    output = _copy_keys(
-        data,
-        (
-            "query",
-            "summary",
-            "outcome",
-            "requested_constraints",
-            "response_contract",
-            "provider",
-            "best_value_product_id",
-            "best_offer",
-            "offers",
-            "items",
-            "ranking_reason",
-            "errors",
-            "latency_ms",
-            "output_ref",
-        ),
-    )
-    if isinstance(output.get("best_offer"), Mapping):
-        output["best_offer"] = _compact_offer(
-            output["best_offer"],
-            stats=stats,
-            key_path=("data", "best_offer"),
-        )
-    offers = output.get("offers")
-    if isinstance(offers, list):
-        output["offers"] = [
-            _compact_offer(offer, stats=stats, key_path=("data", "offers", f"[{index}]"))
-            for index, offer in enumerate(offers[:MAX_ITEMS_PER_LIST])
-            if isinstance(offer, Mapping)
-        ]
-        if len(offers) > MAX_ITEMS_PER_LIST:
-            output["omitted_offers_count"] = len(offers) - MAX_ITEMS_PER_LIST
-    items = output.get("items")
-    if isinstance(items, list):
-        output["items"] = [
-            _compact_product_item(item, stats=stats, key_path=("data", "items", f"[{index}]"))
-            for index, item in enumerate(items[:MAX_ITEMS_PER_LIST])
-            if isinstance(item, Mapping)
-        ]
-        if len(items) > MAX_ITEMS_PER_LIST:
-            output["omitted_items_count"] = len(items) - MAX_ITEMS_PER_LIST
-    return _compact_generic_mapping(output, stats=stats, key_path=("data",))
-
-
 def _compact_shopping_search_output(data: dict[str, Any], *, stats: _CompactionStats) -> dict[str, Any]:
     output = _copy_keys(
         data,
         (
-            "query",
-            "summary",
             "outcome",
-            "requested_constraints",
-            "response_contract",
+            "scenario",
+            "decision_reason",
+            "evidence",
+            "total_budget",
+            "total_cost",
+            "within_budget",
+            "uncovered_required_needs",
+            "summary",
             "provider",
-            "best_value_product_id",
-            "best_item_id",
-            "best_offer",
-            "offers",
-            "items",
-            "ranking_reason",
             "errors",
             "latency_ms",
-            "output_ref",
+            "output_refs",
+            "response_contract",
+            "rules",
         ),
     )
-    search = data.get("search")
-    if isinstance(search, Mapping):
-        output["search"] = _compact_shopping_search_search_output(dict(search), stats=stats)
-    comparison = data.get("comparison")
-    if isinstance(comparison, Mapping):
-        output["comparison"] = _compact_shopping_search_comparison_output(dict(comparison), stats=stats)
-    if isinstance(output.get("best_offer"), Mapping):
-        output["best_offer"] = _compact_offer(
-            output["best_offer"],
-            stats=stats,
-            key_path=("data", "best_offer"),
-        )
-    offers = output.get("offers")
-    if isinstance(offers, list):
-        output["offers"] = [
-            _compact_offer(offer, stats=stats, key_path=("data", "offers", f"[{index}]"))
-            for index, offer in enumerate(offers[:MAX_ITEMS_PER_LIST])
-            if isinstance(offer, Mapping)
+    needs = data.get("needs")
+    if isinstance(needs, list):
+        output["needs"] = [
+            _compact_shopping_need(item, stats=stats, index=index)
+            for index, item in enumerate(needs)
+            if isinstance(item, Mapping)
         ]
-        if len(offers) > MAX_ITEMS_PER_LIST:
-            output["omitted_offers_count"] = len(offers) - MAX_ITEMS_PER_LIST
-    items = output.get("items")
+    selections = data.get("selections")
+    if isinstance(selections, list):
+        output["selections"] = [
+            _compact_shopping_selection(
+                item,
+                stats=stats,
+                key_path=("data", "selections", f"[{index}]"),
+            )
+            for index, item in enumerate(selections[:MAX_ITEMS_PER_LIST])
+            if isinstance(item, Mapping)
+        ]
+        if len(selections) > MAX_ITEMS_PER_LIST:
+            output["omitted_selections_count"] = len(selections) - MAX_ITEMS_PER_LIST
+    items = data.get("items")
     if isinstance(items, list):
         output["items"] = [
-            _compact_product_item(item, stats=stats, key_path=("data", "items", f"[{index}]"))
+            _compact_generic_mapping(
+                item,
+                stats=stats,
+                key_path=("data", "items", f"[{index}]"),
+            )
             for index, item in enumerate(items[:MAX_ITEMS_PER_LIST])
             if isinstance(item, Mapping)
         ]
         if len(items) > MAX_ITEMS_PER_LIST:
             output["omitted_items_count"] = len(items) - MAX_ITEMS_PER_LIST
     return _compact_generic_mapping(output, stats=stats, key_path=("data",))
+
+
+def _compact_shopping_need(
+    value: Mapping[str, Any],
+    *,
+    stats: _CompactionStats,
+    index: int,
+) -> dict[str, Any]:
+    key_path = ("data", "needs", f"[{index}]")
+    output = _copy_keys(
+        value,
+        ("need", "status", "query_used", "selected", "errors"),
+    )
+    candidates = value.get("candidates")
+    if isinstance(candidates, list):
+        output["candidates"] = [
+            _compact_product_item(
+                item,
+                stats=stats,
+                key_path=(*key_path, "candidates", f"[{candidate_index}]"),
+            )
+            for candidate_index, item in enumerate(candidates[:MAX_ITEMS_PER_LIST])
+            if isinstance(item, Mapping)
+        ]
+        if len(candidates) > MAX_ITEMS_PER_LIST:
+            output["omitted_candidates_count"] = len(candidates) - MAX_ITEMS_PER_LIST
+    selected = output.get("selected")
+    if isinstance(selected, Mapping):
+        output["selected"] = _compact_shopping_selection(
+            selected,
+            stats=stats,
+            key_path=(*key_path, "selected"),
+        )
+    return output
+
+
+def _compact_shopping_selection(
+    value: Mapping[str, Any],
+    *,
+    stats: _CompactionStats,
+    key_path: tuple[str, ...],
+) -> dict[str, Any]:
+    output = _copy_keys(value, ("keyword", "quantity", "unit_price", "subtotal"))
+    product = value.get("product")
+    if isinstance(product, Mapping):
+        output["product"] = _compact_product_item(
+            product,
+            stats=stats,
+            key_path=(*key_path, "product"),
+        )
+    return output
 
 
 def _compact_product_item(
@@ -451,11 +418,6 @@ def _compact_product_item(
 ) -> dict[str, Any]:
     _record_pruned_payload_keys(item, stats=stats, key_path=key_path)
     return _compact_generic_mapping(_copy_keys(item, _PRODUCT_KEYS), stats=stats, key_path=key_path)
-
-
-def _compact_offer(item: Mapping[str, Any], *, stats: _CompactionStats, key_path: tuple[str, ...]) -> dict[str, Any]:
-    _record_pruned_payload_keys(item, stats=stats, key_path=key_path)
-    return _compact_generic_mapping(_copy_keys(item, _OFFER_KEYS), stats=stats, key_path=key_path)
 
 
 def _copy_keys(data: Mapping[str, Any], keys: tuple[str, ...]) -> dict[str, Any]:

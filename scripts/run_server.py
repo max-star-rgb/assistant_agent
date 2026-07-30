@@ -25,6 +25,9 @@ if str(SRC_ROOT) not in sys.path:
 
 from assistant_agent.config import ProviderConfig
 from assistant_agent.gateway.observability import GatewayLifecycleEvent
+from assistant_agent.evaluation.remote_run_control import (
+    start_remote_eval_console,
+)
 from assistant_agent.runtime.assistant_run_service import load_env_file
 from assistant_agent.observability.operational_logging import (
     DEFAULT_GATEWAY_EVENT_PATH,
@@ -295,6 +298,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     import uvicorn
 
     _print_startup_summary(args, config)
+    start_remote_eval_console()
     uvicorn.run(
         "assistant_agent.api.app:create_app",
         factory=True,

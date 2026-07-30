@@ -89,6 +89,7 @@ class ToolExecutor:
         validated_input: BaseModel | None = None,
         runtime_input: dict[str, Any] | None = None,
         failure_mode: ToolFailureMode = "stop_run",
+        progress_message: str | None = None,
     ) -> ToolResult:
         """Bind, confirm, invoke and commit one governed Tool call."""
 
@@ -154,6 +155,7 @@ class ToolExecutor:
                 tool_contract=execution_summary,
                 input_summary=_policy_safe_input_summary(bound_input),
                 pre_tool_call=pre_tool_call,
+                progress_message=progress_message,
             )
         )
 

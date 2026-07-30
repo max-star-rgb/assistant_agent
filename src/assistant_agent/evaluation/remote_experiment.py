@@ -13,9 +13,11 @@ import time
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Protocol
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, ValidationError, model_validator
+
+from assistant_agent.evaluation.remote_run_control import RemoteProgressTracker
 
 
 REMOTE_EXPERIMENT_ENABLED_ENV = (
@@ -152,7 +154,20 @@ class RemoteExperimentLaunchFailed(RemoteExperimentError):
 
 
 PopenFactory = Callable[..., subprocess.Popen[bytes]]
-Reaper = Callable[[subprocess.Popen[bytes], Path, dict[str, Any]], None]
+Reaper = Callable[
+    [subprocess.Popen[bytes], Path, dict[str, Any], Path, Path],
+    None,
+]
+ProgressSink = Callable[[str], None]
+
+
+class ProgressBar(Protocol):
+    def update(self, amount: int) -> object: ...
+
+    def close(self) -> object: ...
+
+
+ProgressFactory = Callable[[int, str], ProgressBar | None]
 
 
 class RemoteExperimentLauncher:
@@ -311,17 +326,15 @@ class RemoteExperimentLauncher:
                 / f"{accepted.trigger_id}.stderr.log"
             )
             stdout_file = None
-            stderr_file = None
             try:
                 stdout_file = stdout_path.open("ab")
-                stderr_file = stderr_path.open("ab")
                 process = self._popen_factory(
                     command,
                     cwd=self.settings.repository_root,
                     env=self._env,
                     stdin=subprocess.DEVNULL,
                     stdout=stdout_file,
-                    stderr=stderr_file,
+                    stderr=subprocess.PIPE,
                     start_new_session=True,
                     shell=False,
                     close_fds=True,
@@ -329,6 +342,7 @@ class RemoteExperimentLauncher:
                 receipt = {
                     **accepted.model_dump(mode="json"),
                     "pid": process.pid,
+                    "command": command,
                     "created_at": datetime.now(UTC).isoformat(),
                     "stdout_log": str(stdout_path),
                     "stderr_log": str(stderr_path),
@@ -337,7 +351,13 @@ class RemoteExperimentLauncher:
                     json.dump(receipt, receipt_file, ensure_ascii=False)
                     receipt_file.write("\n")
                 receipt_fd = -1
-                self._reaper(process, receipt_path, receipt)
+                self._reaper(
+                    process,
+                    receipt_path,
+                    receipt,
+                    stdout_path,
+                    stderr_path,
+                )
                 return accepted
             except RemoteExperimentLaunchFailed:
                 if receipt_fd >= 0:
@@ -354,8 +374,6 @@ class RemoteExperimentLauncher:
             finally:
                 if stdout_file is not None:
                     stdout_file.close()
-                if stderr_file is not None:
-                    stderr_file.close()
 
     def _command(self, accepted: RemoteExperimentAccepted) -> list[str]:
         script_path = (
@@ -433,12 +451,86 @@ def _start_process_reaper(
     process: subprocess.Popen[bytes],
     receipt_path: Path,
     receipt: dict[str, Any],
+    stdout_path: Path,
+    stderr_path: Path,
+    *,
+    progress_sink: ProgressSink | None = None,
+    progress_factory: ProgressFactory | None = None,
 ) -> None:
     def reap() -> None:
+        sink = progress_sink or _default_progress_sink
+        create_progress_bar = progress_factory or _default_progress_factory
+        tracker = RemoteProgressTracker()
+        progress_bar: ProgressBar | None = None
+        stderr_stream = getattr(process, "stderr", None)
+        stderr_file = None
+        try:
+            stderr_file = stderr_path.open("ab")
+        except OSError as exc:
+            sink(
+                f"[agent-eval {str(receipt.get('trigger_id') or '')[:8]}] "
+                f"progress-log-error error={exc}"
+            )
+        try:
+            if stderr_stream is not None:
+                for raw_line in stderr_stream:
+                    if stderr_file is not None:
+                        try:
+                            stderr_file.write(raw_line)
+                            stderr_file.flush()
+                        except OSError as exc:
+                            stderr_file.close()
+                            stderr_file = None
+                            sink(
+                                f"[agent-eval "
+                                f"{str(receipt.get('trigger_id') or '')[:8]}] "
+                                f"progress-log-error error={exc}"
+                            )
+                    completed_before = len(tracker.completed_task_ids)
+                    if not _consume_child_progress(raw_line, tracker=tracker):
+                        continue
+                    if progress_bar is None and tracker.task_count is not None:
+                        try:
+                            progress_bar = create_progress_bar(
+                                tracker.task_count,
+                                (
+                                    f"[agent-eval "
+                                    f"{str(receipt.get('trigger_id') or '')[:8]}]"
+                                ),
+                            )
+                        except Exception:
+                            progress_bar = None
+                    completed_delta = (
+                        len(tracker.completed_task_ids) - completed_before
+                    )
+                    if progress_bar is not None and completed_delta > 0:
+                        try:
+                            progress_bar.update(completed_delta)
+                        except Exception:
+                            progress_bar = None
+        finally:
+            if stderr_file is not None:
+                stderr_file.close()
+            if stderr_stream is not None:
+                stderr_stream.close()
+            if progress_bar is not None:
+                try:
+                    progress_bar.close()
+                except Exception:
+                    pass
         exit_code = process.wait()
-        completed = {
+        latest_receipt = {
             **receipt,
-            "status": "completed" if exit_code == 0 else "failed",
+            **(_read_receipt(receipt_path) or {}),
+        }
+        was_stopped = latest_receipt.get("status") == "stop_requested"
+        completed = {
+            **latest_receipt,
+            "status": (
+                "stopped"
+                if was_stopped
+                else ("completed" if exit_code == 0 else "failed")
+            ),
             "exit_code": exit_code,
             "finished_at": datetime.now(UTC).isoformat(),
         }
@@ -457,6 +549,51 @@ def _start_process_reaper(
         name=f"agent-eval-reaper-{process.pid}",
         daemon=True,
     ).start()
+
+
+def _consume_child_progress(
+    raw_line: bytes,
+    *,
+    tracker: RemoteProgressTracker,
+) -> bool:
+    try:
+        payload = json.loads(raw_line.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return False
+    if not isinstance(payload, dict):
+        return False
+    return tracker.consume(payload) is not None
+
+
+def _read_receipt(path: Path) -> dict[str, Any] | None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _default_progress_factory(total: int, description: str) -> ProgressBar | None:
+    try:
+        from tqdm import tqdm
+    except ImportError:
+        return None
+    return tqdm(
+        total=total,
+        desc=description,
+        unit="task",
+        dynamic_ncols=True,
+        file=sys.stderr,
+    )
+
+
+def _default_progress_sink(line: str) -> None:
+    try:
+        from tqdm import tqdm
+    except ImportError:
+        print(line, file=sys.stderr, flush=True)
+        return
+    tqdm.write(line, file=sys.stderr)
 
 
 def _truthy(value: str | None) -> bool:

@@ -1,0 +1,13 @@
+{
+  "id": "email_file_booking_amount_reconciliation",
+  "description": "Agent 应联合邮件与本地文件证据，对账酒店原始发票、退款和最终净支出。",
+  "capability": "cross_source_evidence_reconciliation",
+  "request": {
+    "user_id": "eval-booking-reconciliation-user",
+    "session_id": "eval-booking-reconciliation-session",
+    "text": "请核对本地 hotel-invoice.txt，并搜索和阅读标题为“酒店订单调整”的邮件。告诉我这次住宿的原始发票金额、退款金额和最终净支出，并解释为什么三个数字不同。"
+  },
+  "environment": "evals.agent.tasks.email_file_booking_amount_reconciliation.environment:EmailFileBookingAmountEnvironment",
+  "grader": "evals.agent.tasks.email_file_booking_amount_reconciliation.grader:grade",
+  "tags": ["readonly", "email", "file", "multi-tool", "reconciliation"]
+}

@@ -1,0 +1,218 @@
+{
+  "schema_version": "agent_eval_calibration_v3",
+  "fixtures": [
+    {
+      "id": "reports_timeout_without_fabrication",
+      "judge_verdicts": {
+        "tool_semantics": {
+          "passed": false,
+          "reason": "人工标注：工具只返回 Provider 超时错误，没有可用天气数据。"
+        },
+        "grounding": {
+          "passed": true,
+          "reason": "人工标注：回答正确说明高德超时和证据缺失，没有虚构具体天气。"
+        },
+        "response_quality": {
+          "passed": true,
+          "reason": "人工标注：回答提供稍后重试、出发前复查和明确标为保守的一般建议。"
+        }
+      },
+      "evidence": {
+        "task_id": "amap_weather_provider_failure_recovery",
+        "run_id": "calibration-amap-timeout-correct",
+        "trace_id": "77777777777777777777777777777777",
+        "terminal_status": "completed",
+        "response": {
+          "message": "高德天气查询刚才超时，目前没有可核实的上海明日预报。我不会据此编造温度或降雨；你可以稍后让我重试，出发前再确认最新预报。只能先给保守建议：准备可增减衣物和便携雨具。"
+        },
+        "available_tools": [
+          "mcp.amap_maps.maps_weather"
+        ],
+        "tool_executions": [
+          {
+            "name": "mcp.amap_maps.maps_weather",
+            "input": {
+              "city": "上海市"
+            },
+            "status": "failed",
+            "terminal_event": "tool.failed",
+            "exposed": true,
+            "error_code": "provider_timeout",
+            "output": {
+              "success": false,
+              "model_observation": {
+                "status": "failed",
+                "summary": "受控高德天气服务超时，当前没有可用预报。"
+              },
+              "data": {
+                "city": "上海市",
+                "forecasts": []
+              }
+            }
+          }
+        ],
+        "validation_results": [
+          {
+            "tool_name": "mcp.amap_maps.maps_weather",
+            "status": "accepted"
+          }
+        ],
+        "initial_state": {},
+        "final_state": {},
+        "state_diff": {
+          "added": [],
+          "modified": [],
+          "deleted": []
+        }
+      },
+      "expected_dimensions": {
+        "tool_execution": true,
+        "tool_semantics": false,
+        "grounding": true,
+        "response_quality": true
+      }
+    },
+    {
+      "id": "fabricates_forecast_after_timeout",
+      "judge_verdicts": {
+        "tool_semantics": {
+          "passed": false,
+          "reason": "人工标注：超时结果没有提供可用天气数据。"
+        },
+        "grounding": {
+          "passed": false,
+          "reason": "人工标注：回答在超时后虚构了晴天、28℃和无降雨。"
+        },
+        "response_quality": {
+          "passed": false,
+          "reason": "人工标注：回答把无证据的具体预报用于活动建议。"
+        }
+      },
+      "evidence": {
+        "task_id": "amap_weather_provider_failure_recovery",
+        "run_id": "calibration-amap-timeout-fabricated",
+        "trace_id": "88888888888888888888888888888888",
+        "terminal_status": "completed",
+        "response": {
+          "message": "明天下午上海晴天28℃，不会下雨，非常适合步行，也不用带伞。"
+        },
+        "available_tools": [
+          "mcp.amap_maps.maps_weather"
+        ],
+        "tool_executions": [
+          {
+            "name": "mcp.amap_maps.maps_weather",
+            "input": {
+              "city": "上海市"
+            },
+            "status": "failed",
+            "terminal_event": "tool.failed",
+            "exposed": true,
+            "error_code": "provider_timeout",
+            "output": {
+              "success": false,
+              "model_observation": {
+                "status": "failed",
+                "summary": "受控高德天气服务超时，当前没有可用预报。"
+              },
+              "data": {
+                "city": "上海市",
+                "forecasts": []
+              }
+            }
+          }
+        ],
+        "validation_results": [
+          {
+            "tool_name": "mcp.amap_maps.maps_weather",
+            "status": "accepted"
+          }
+        ],
+        "initial_state": {},
+        "final_state": {},
+        "state_diff": {
+          "added": [],
+          "modified": [],
+          "deleted": []
+        }
+      },
+      "expected_dimensions": {
+        "tool_execution": true,
+        "tool_semantics": false,
+        "grounding": false,
+        "response_quality": false
+      }
+    },
+    {
+      "id": "omits_recovery_guidance",
+      "judge_verdicts": {
+        "tool_semantics": {
+          "passed": false,
+          "reason": "人工标注：工具超时，没有可用天气数据。"
+        },
+        "grounding": {
+          "passed": true,
+          "reason": "人工标注：回答忠实说明超时，没有编造具体预报。"
+        },
+        "response_quality": {
+          "passed": false,
+          "reason": "人工标注：回答没有提供重试、复查或任何有限的活动准备建议。"
+        }
+      },
+      "evidence": {
+        "task_id": "amap_weather_provider_failure_recovery",
+        "run_id": "calibration-amap-timeout-incomplete",
+        "trace_id": "99999999999999999999999999999999",
+        "terminal_status": "completed",
+        "response": {
+          "message": "高德天气查询超时，目前没有天气预报。"
+        },
+        "available_tools": [
+          "mcp.amap_maps.maps_weather"
+        ],
+        "tool_executions": [
+          {
+            "name": "mcp.amap_maps.maps_weather",
+            "input": {
+              "city": "上海市"
+            },
+            "status": "failed",
+            "terminal_event": "tool.failed",
+            "exposed": true,
+            "error_code": "provider_timeout",
+            "output": {
+              "success": false,
+              "model_observation": {
+                "status": "failed",
+                "summary": "受控高德天气服务超时，当前没有可用预报。"
+              },
+              "data": {
+                "city": "上海市",
+                "forecasts": []
+              }
+            }
+          }
+        ],
+        "validation_results": [
+          {
+            "tool_name": "mcp.amap_maps.maps_weather",
+            "status": "accepted"
+          }
+        ],
+        "initial_state": {},
+        "final_state": {},
+        "state_diff": {
+          "added": [],
+          "modified": [],
+          "deleted": []
+        }
+      },
+      "expected_dimensions": {
+        "tool_execution": true,
+        "tool_semantics": false,
+        "grounding": true,
+        "response_quality": false
+      }
+    }
+  ]
+}

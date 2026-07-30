@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import io
 import json
+import subprocess
 import sys
 import threading
 import time
@@ -64,7 +66,7 @@ def test_signed_webhook_launches_fixed_cli_once_and_returns_202(
     app.include_router(router)
     body = _payload(
         payload_config={
-            "task": "weather_timeout_recovery",
+            "task": "email_empty_result_honesty",
             "runName": "ui-weather-timeout",
         }
     )
@@ -95,7 +97,7 @@ def test_signed_webhook_launches_fixed_cli_once_and_returns_202(
         "duplicate": False,
         "dataset_name": DEFAULT_REMOTE_EXPERIMENT_DATASET,
         "selector_kind": "task",
-        "selector_id": "weather_timeout_recovery",
+        "selector_id": "email_empty_result_honesty",
         "run_name": "ui-weather-timeout",
     }
     assert duplicate.status_code == 202
@@ -109,7 +111,7 @@ def test_signed_webhook_launches_fixed_cli_once_and_returns_202(
         str(tmp_path / "scripts" / "run_agent_evals.py"),
         "--run",
         "--task",
-        "weather_timeout_recovery",
+        "email_empty_result_honesty",
         "--dataset-name",
         DEFAULT_REMOTE_EXPERIMENT_DATASET,
         "--allow-real-provider",
@@ -119,6 +121,7 @@ def test_signed_webhook_launches_fixed_cli_once_and_returns_202(
     assert kwargs["cwd"] == tmp_path
     assert kwargs["shell"] is False
     assert kwargs["start_new_session"] is True
+    assert kwargs["stderr"] is subprocess.PIPE
     assert kwargs["env"]["MULTIMODAL_AGENT_PROVIDER_MODE"] == "real"
     receipt = json.loads(
         (
@@ -130,7 +133,8 @@ def test_signed_webhook_launches_fixed_cli_once_and_returns_202(
         ).read_text(encoding="utf-8")
     )
     assert receipt["pid"] == 43210
-    assert receipt["selector_id"] == "weather_timeout_recovery"
+    assert receipt["selector_id"] == "email_empty_result_honesty"
+    assert receipt["command"] == command
 
 
 def test_empty_default_config_runs_active_dataset_items(
@@ -301,6 +305,8 @@ def test_process_reaper_persists_failed_terminal_status(tmp_path: Path) -> None:
         _BlockingProcess(),  # type: ignore[arg-type]
         receipt_path,
         {"status": "accepted", "trigger_id": "trigger"},
+        tmp_path / "trigger.stdout.log",
+        tmp_path / "trigger.stderr.log",
     )
 
     released.set()
@@ -314,6 +320,135 @@ def test_process_reaper_persists_failed_terminal_status(tmp_path: Path) -> None:
     assert receipt["status"] == "failed"
     assert receipt["exit_code"] == 2
     assert receipt["trigger_id"] == "trigger"
+
+
+def test_process_reaper_shows_only_overall_progress_and_persists_stopped_status(
+    tmp_path: Path,
+) -> None:
+    class _StoppedProcess:
+        pid = 54322
+        stderr = io.BytesIO(
+            b'{"event":"agent_eval.run.started","task_count":2}\n'
+            b'{"event":"agent_eval.task.started","task_id":"weather"}\n'
+            b'{"event":"agent_eval.task.completed","task_id":"weather"}\n'
+            b'{"event":"agent_eval.evaluation.started","task_id":"weather"}\n'
+            b'{"event":"agent_eval.judge.started","task_id":"weather",'
+            b'"criterion_id":"grounding"}\n'
+            b'{"event":"agent_eval.judge.completed","task_id":"weather",'
+            b'"criterion_id":"grounding"}\n'
+            b'{"event":"agent_eval.evaluation.completed","task_id":"weather"}\n'
+        )
+
+        def wait(self) -> int:
+            return -15
+
+    class _ProgressBar:
+        def __init__(self, total: int, description: str) -> None:
+            self.total = total
+            self.description = description
+            self.updates: list[int] = []
+            self.closed = False
+
+        def update(self, amount: int) -> None:
+            self.updates.append(amount)
+
+        def close(self) -> None:
+            self.closed = True
+
+    receipt_path = tmp_path / "trigger.json"
+    receipt = {
+        "status": "stop_requested",
+        "trigger_id": "trigger",
+        "run_name": "ui-run",
+        "pid": 54322,
+    }
+    receipt_path.write_text(
+        json.dumps(receipt) + "\n",
+        encoding="utf-8",
+    )
+    progress_lines: list[str] = []
+    progress_bars: list[_ProgressBar] = []
+
+    def create_progress_bar(total: int, description: str) -> _ProgressBar:
+        progress_bar = _ProgressBar(total, description)
+        progress_bars.append(progress_bar)
+        return progress_bar
+
+    _start_process_reaper(
+        _StoppedProcess(),  # type: ignore[arg-type]
+        receipt_path,
+        receipt,
+        tmp_path / "trigger.stdout.log",
+        tmp_path / "trigger.stderr.log",
+        progress_sink=progress_lines.append,
+        progress_factory=create_progress_bar,
+    )
+
+    deadline = time.monotonic() + 1.0
+    while time.monotonic() < deadline:
+        persisted = json.loads(receipt_path.read_text(encoding="utf-8"))
+        if persisted.get("status") == "stopped":
+            break
+        time.sleep(0.01)
+
+    assert persisted["status"] == "stopped"
+    assert persisted["exit_code"] == -15
+    assert progress_lines == []
+    assert len(progress_bars) == 1
+    assert progress_bars[0].total == 2
+    assert progress_bars[0].description == "[agent-eval trigger]"
+    assert progress_bars[0].updates == [1]
+    assert progress_bars[0].closed is True
+    assert (
+        tmp_path / "trigger.stderr.log"
+    ).read_text(encoding="utf-8").endswith(
+        '{"event":"agent_eval.evaluation.completed","task_id":"weather"}\n'
+    )
+
+
+def test_process_reaper_keeps_draining_progress_when_log_file_cannot_open(
+    tmp_path: Path,
+) -> None:
+    class _CompletedProcess:
+        pid = 54323
+        stderr = io.BytesIO(
+            b'{"event":"agent_eval.task.started","task_id":"weather"}\n'
+        )
+
+        def wait(self) -> int:
+            return 0
+
+    receipt_path = tmp_path / "trigger.json"
+    receipt = {
+        "status": "accepted",
+        "trigger_id": "trigger",
+        "run_name": "ui-run",
+        "pid": 54323,
+    }
+    receipt_path.write_text(json.dumps(receipt) + "\n", encoding="utf-8")
+    progress_lines: list[str] = []
+
+    _start_process_reaper(
+        _CompletedProcess(),  # type: ignore[arg-type]
+        receipt_path,
+        receipt,
+        tmp_path / "trigger.stdout.log",
+        tmp_path,
+        progress_sink=progress_lines.append,
+        progress_factory=lambda _total, _description: None,
+    )
+
+    deadline = time.monotonic() + 1.0
+    while time.monotonic() < deadline:
+        persisted = json.loads(receipt_path.read_text(encoding="utf-8"))
+        if persisted.get("status") == "completed":
+            break
+        time.sleep(0.01)
+
+    assert persisted["status"] == "completed"
+    assert "progress-log-error" in "\n".join(progress_lines)
+    assert "weather" not in "\n".join(progress_lines)
+    assert "completed" not in "\n".join(progress_lines)
 
 
 def _launcher(
@@ -350,13 +485,13 @@ def _write_repository_contract(repository_root: Path) -> None:
         / "evals"
         / "agent"
         / "tasks"
-        / "weather_timeout_recovery"
+        / "email_empty_result_honesty"
     )
     task_root.mkdir(parents=True, exist_ok=True)
     (task_root / "task.json").write_text("{}\n", encoding="utf-8")
     suites_path = repository_root / "evals" / "agent" / "suites.json"
     suites_path.write_text(
-        json.dumps({"release": ["weather_timeout_recovery"]}),
+        json.dumps({"release": ["email_empty_result_honesty"]}),
         encoding="utf-8",
     )
     scripts_root = repository_root / "scripts"

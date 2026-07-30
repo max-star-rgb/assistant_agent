@@ -111,18 +111,25 @@ def _web_search_summary(data: dict[str, Any]) -> str:
 
 
 def _shopping_search_summary(data: dict[str, Any]) -> str:
-    best_offer = data.get("best_offer") or {}
-    if not best_offer:
-        summary = data.get("summary")
-        return f"已尝试比价：{summary}。" if summary else "已尝试比价，但没有可用报价。"
-    title = best_offer.get("title") or "推荐商品"
-    total = best_offer.get("total_price") or best_offer.get("price")
-    currency = best_offer.get("currency") or "CNY"
-    platform = best_offer.get("platform") or "mock 平台"
-    url_text = _product_link_text(best_offer)
+    selections = data.get("selections") or []
+    summary = data.get("summary")
+    if not selections:
+        return summary or "已完成真实商品搜索，但没有可用候选。"
+    selection = selections[0]
+    product = selection.get("product") or {}
+    title = product.get("title") or selection.get("keyword") or "推荐商品"
+    total = selection.get("subtotal")
+    currency = product.get("currency") or "CNY"
+    platform = product.get("platform")
+    platform_text = f"，来源为 {platform}" if platform else ""
+    url_text = _product_link_text(product)
+    count = len(selections)
     if total is not None:
-        return f"已找到匹配商品并完成比价，当前推荐 {title}，最低价格为 {total} {currency}，来源为 {platform}{url_text}。"
-    return f"已找到匹配商品并完成比价，当前推荐 {title}，来源为 {platform}{url_text}。"
+        return (
+            f"已从真实搜索结果中选出 {count} 项，首项为 {title}，"
+            f"小计 {total} {currency}{platform_text}{url_text}。"
+        )
+    return f"已从真实搜索结果中选出 {count} 项，首项为 {title}{platform_text}{url_text}。"
 
 
 def _product_link_text(item: dict[str, Any]) -> str:

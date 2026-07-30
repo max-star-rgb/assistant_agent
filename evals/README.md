@@ -34,9 +34,23 @@ Tool 连通性：
   scripts/run_system_tool_evals.py \
   --allow-real-tools \
   --case-id weather_beijing_today
+
+MULTIMODAL_AGENT_SHOPPING_PROVIDER=haodanku \
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python \
+  scripts/run_system_tool_evals.py \
+  --allow-real-tools \
+  --case-id shopping_search_real_single_need
+
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python \
+  scripts/run_system_shopping_eval.py \
+  --allow-real-tools \
+  --keyword 纸巾
 ```
 
-结果写入 `.data/evals/system/tools/<run>/`。
+通用 Tool eval 结果写入 `.data/evals/system/tools/<run>/`。最后一个命令不经过 LLM，
+直接通过 `ActionValidator -> ToolExecutor -> ToolRegistry -> shopping_search` 验证好单库；
+它要求至少一个 `source=haodanku` 的真实候选、正价格和 HTTP(S) 购买链接，结果写入
+`.data/evals/system/shopping/<run>/`。
 
 Context 捕获：
 
@@ -60,7 +74,7 @@ Task (用户挑战)
   -> AgentGraphRuntime
   -> Evidence (轨迹、终态、状态与回答)
   -> Task-local Grader
-  -> 固定四维 + agent_eval.reward
+  -> 四个独立 Score
   -> Langfuse Experiment
 ```
 
@@ -71,7 +85,7 @@ evals/agent/
   contracts.py          # Task、Evidence、Grader 契约
   loader.py             # Task、Suite 和入口加载
   evidence.py           # Runtime Trace 的稳定投影
-  grading.py            # 固定四维、Environment outcome 匹配与 reward 聚合
+  grading.py            # 固定四维与 Environment outcome 匹配
   judge.py              # 真实 Provider 语义 Judge 边界
   provider_gate.py      # real 模式与 Provider 完整性闸门
   calibration.py        # 正反 Evidence 直接校准
@@ -95,30 +109,43 @@ Dataset 当作回归定义的唯一副本。
 - `task.json` 的请求必须像自然用户请求，不描述测试机关；
 - Environment 使用活动 `AgentGraphRuntime`，可以模拟依赖，不能模拟 Agent 决策，并在运行前验证
   Tool Registry、受控依赖、隔离和复位前提；
+- 所有 Task 的默认 Environment 使用同一份完整 Agent eval Tool Registry，不按 Task、capability、
+  用户话术或目标工具裁剪目录；它包含 Agent 在相同结构化运行条件下会暴露的全部工具。媒体、
+  entry profile 和 durable ready-step 等运行时结构化条件仍可在具体 run 中收窄可见集合；
+- 特殊场景需要改变目录时，Environment 或受信入口可以通过结构化
+  `metadata.tool_visibility.profile + allowed_tools` 精确收窄工具集合。override 必须声明可读的
+  profile，`allowed_tools` 必须是已注册受控工具的子集，`validate()` 必须检查该配置，最终可见集合
+  仍须完整声明 outcome expectation；不得把 override 放入自然语言、grader、Dataset metadata，
+  也不得借此启用未配置或未授权的真实工具；
 - Environment 为每个可见工具声明结果预期；目标工具可以是必调的 `must_succeed` 或
   `must_fail_with(error_code)`，其余正常目录工具可以声明为非必调、但一旦调用就必须成功。该声明
   不会进入 Agent input 或 Dataset metadata；
 - 写操作必须使用每次运行可丢弃或可复位的状态；
 - grader 对 Agent 隐藏，客观事实优先用代码检查，开放语义才用 Judge；
-- 每个 Task 只有一个主要分数 `agent_eval.reward`；
-- Langfuse 固定输出 `tool_execution`、`tool_use`、`state`、`response` 四个诊断维度；
-- Task 专属 assertion 只保存在维度详情中，不创建天气、日历等工具专属 Score；
+- Langfuse 固定输出 `tool_execution`、`tool_semantics`、`grounding`、`response_quality`
+  四个彼此独立的 BOOLEAN Score，不生成 reward 或总通过分；
+- `tool_execution` 由 Environment oracle 做 Rule 判定；其余三项分别由独立 LLM Judge 判定；
+- Task 专属要求只进入 `response_quality` rubric，不创建天气、日历等工具专属 Score；
 - 每条 assertion 必须标记 `evaluation_method=rule|judge`；可客观证明的事实使用 Rule，开放语义才使用
   LLM Judge；
 - grader 必须先通过至少一个正确样本和一个可信错误样本的直接校准。
 
 当前天气 Task：
 
-- `weather_timeout_recovery`：真实 Chat Agent 看到默认运行时完整工具目录并自行选择 weather；
-  Environment 只把 weather 后端替换为固定 `provider_timeout`，验证指定 weather 的单次调用、
-  参数和失败结果消费，不调用真实天气服务。Qwen 固有联网仍可在 `llm.chat` 内部补充天气事实，
-  不计为本地 Tool；grader 不因其他工具调用而误判 weather 的次数或参数，也不因本地 weather
-  失败就禁止回答使用隐式联网结果。
-- `weather_live_outdoor_run`：真实 Chat Agent 同样看到默认运行时完整工具目录并自行选择显式配置的
-  weather MCP；Environment 要求 weather 成功，验证上海次日参数和回答是否忠于动态天气 Evidence，
-  会调用真实天气服务。
+- `amap_weather_forecast_date_grounding`：调用
+  `mcp.amap_maps.maps_weather(city="上海市")`，根据返回项的明确 `date` 选择明天白天预报，
+  区分昼夜字段，并避免把日级预报说成精确小时预报；
+- `amap_weather_missing_city_clarification`：用户没有提供城市或区县时先澄清，不猜测地点，也不提前
+  调用天气工具；
+- `amap_weather_provider_failure_recovery`：高德天气固定返回 `provider_timeout` 后，诚实说明当前
+  没有可核实预报，不编造天气，并给出重试、出发前复查和有限的保守建议。此时
+  `tool_execution=true`、`tool_semantics=false` 是合法组合。
 
-两者都只读并使用每次运行隔离的 in-memory 状态。
+每个 Agent Task Environment 的默认完整目录由共享 `build_controlled_registry()` 装配，包含 Agent
+默认内置工具和与部署 allowlist 一致的 9 个高德 MCP namespaced 只读工具，不按 Task 选择子集。
+目标工具连接该 Task 的确定性 runner，其余工具连接受控的本地或 mock 实现；整个 pytest/校准
+Environment 都不连接真实高德服务，并使用每次运行隔离的 in-memory 状态。三个天气 Task 的目标
+工具均为 `mcp.amap_maps.maps_weather`，输入使用真实 `city` schema。
 
 ### 运行顺序
 
@@ -128,7 +155,7 @@ Dataset 当作回归定义的唯一副本。
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python \
   scripts/run_agent_evals.py \
   --inspect \
-  --task weather_timeout_recovery
+  --task amap_weather_provider_failure_recovery
 ```
 
 2. 跑离线框架契约：
@@ -145,7 +172,7 @@ MULTIMODAL_AGENT_PROVIDER_MODE=real \
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python \
   scripts/run_agent_evals.py \
   --calibrate \
-  --task weather_timeout_recovery \
+  --task amap_weather_provider_failure_recovery \
   --allow-real-provider
 ```
 
@@ -155,7 +182,7 @@ MULTIMODAL_AGENT_PROVIDER_MODE=real \
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python \
   scripts/run_agent_evals.py \
   --publish \
-  --task weather_timeout_recovery
+  --task amap_weather_provider_failure_recovery
 ```
 
 默认 Dataset 为 `assistant-agent-regression`。发布只 upsert 所选 Task，不运行 Agent 或 Judge。
@@ -169,23 +196,23 @@ MULTIMODAL_AGENT_PROVIDER_MODE=real \
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python \
   scripts/run_agent_evals.py \
   --run \
-  --task weather_timeout_recovery \
+  --task amap_weather_provider_failure_recovery \
   --allow-real-provider \
   --judge-timeout-seconds 30 \
   --judge-max-retries 0 \
-  --run-name weather-timeout-recovery
+  --run-name amap-weather-provider-failure-recovery
 ```
 
-真实天气成功路径使用同一入口显式选择：
+受控天气成功路径使用同一入口显式选择：
 
 ```bash
 MULTIMODAL_AGENT_PROVIDER_MODE=real \
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python \
   scripts/run_agent_evals.py \
   --run \
-  --task weather_live_outdoor_run \
+  --task amap_weather_forecast_date_grounding \
   --allow-real-provider \
-  --run-name weather-live-outdoor-run
+  --run-name amap-weather-forecast-date-grounding
 ```
 
 6. 运行 Suite：
@@ -200,9 +227,9 @@ MULTIMODAL_AGENT_PROVIDER_MODE=real \
   --run-name agent-release
 ```
 
-`--task` 可重复，用于精确运行多个 Task；`--task` 与 `--suite` 互斥。当前 `smoke`、`readonly` 和
-`release` 都只含 `weather_timeout_recovery`。`weather_live_outdoor_run` 必须按 Task ID 单独运行，
-并在真实 Judge 校准和 Experiment 审计通过后才能加入 Suite。
+`--task` 可重复，用于精确运行多个 Task；`--task` 与 `--suite` 互斥。三个高德天气基础 Task 已加入
+`readonly` 和 `release`；`smoke` 仍保持最小快速案例。加入 suite 只表示 Git 定义和离线校准完整，
+首次真实 Experiment 仍应先按 Task ID 运行并审计 Judge 与 Trace。
 
 运行统一 Dataset 中全部 ACTIVE Task：
 
@@ -237,7 +264,7 @@ Provider 只能通过代理访问时，可显式改用 `environment`，沿用系
 `judge.<criterion_id>` evaluator observation，其 input 保存当次实际使用的 `criterion_id`、
 `rubric`、`task_id` 和 `run_id`。Judge 超时或连接失败仍属于评测基础设施失败，退出 2，不生成
 Agent 失败分数。Langfuse SDK 即使内部捕获 evaluator 异常，CLI 也会重新抛出原始 Judge 故障，
-不会再用“缺少 `agent_eval.reward`”覆盖根因。`max_retries=0` 不会重试瞬时连接失败；需要由
+不会用缺少 Score 等二次错误覆盖根因。`max_retries=0` 不会重试瞬时连接失败；需要由
 operator 显式接受重试时，可把 `--judge-max-retries` 调为正数。
 
 ### 安全和退出码
@@ -247,7 +274,8 @@ operator 显式接受重试时，可把 `--judge-max-retries` 调为正数。
 - `--calibrate` 和 `--run` 同时要求 `--allow-real-provider`、
   `MULTIMODAL_AGENT_PROVIDER_MODE=real` 和完整真实 Chat 配置；
 - `--run` 还要求 Langfuse 凭据与可用的 OTLP Trace 导出；
-- Agent 不通过返回 1；
+- `--run` 在完整产出四项 Score 后返回 0，不再根据分数组合返回 Agent 失败码；
+- `--calibrate` 的人工标注与实际四项 Score 不一致时返回 1；
 - 凭据、Environment、Dataset、Trace、Judge、Evidence 或 Score 故障返回 2；
 - 通过返回 0。
 
@@ -256,41 +284,44 @@ operator 显式接受重试时，可把 `--judge-max-retries` 调为正数。
 固定 Score：
 
 ```text
-agent_eval.reward
 agent_eval.dimension.tool_execution
-agent_eval.dimension.tool_use
-agent_eval.dimension.state
-agent_eval.dimension.response
+agent_eval.dimension.tool_semantics
+agent_eval.dimension.grounding
+agent_eval.dimension.response_quality
 ```
 
-`tool_execution` 判断 Validator、工具调用和结构化终态是否完整，不要求外部业务结果必须成功；
-`tool_use` 判断 Agent 是否正确使用工具，包括选择、参数、次数、顺序、结果消费和恢复策略；
-`state` 判断预期状态转换；
-`response` 判断最终回答。四个必要维度全部通过时，`agent_eval.reward=1.0`。
+四项全部采用阳性语义，但不聚合：
 
-Rule 与 LLM Judge 是判断机制，不是独立质量维度。它们分开实现并统一产出 assertion：
+- `tool_execution`：实际工具终态是否符合 Environment 为该案例声明的结果 oracle。预期
+  `provider_timeout` 且实际错误码相同仍为 `true`；
+- `tool_semantics`：工具是否返回语义正确、内部一致且可用的数据。超时或其他 Provider 错误为
+  `false`，合法空结果可以为 `true`；
+- `grounding`：Agent 最终回答是否忠于工具结果，包括正确理解成功、失败和空结果；
+- `response_quality`：回答是否真正回应当前用户请求，并且表达清晰、完整、有用。
+
+因此天气超时恢复案例可以产生：
 
 ```text
-tool_use
-  outcome_matches_environment  [rule]
-  arguments_correct            [rule]
-
-response
-  response_generated            [rule]
-  outcome_evidence_usage       [judge]
+tool_execution=true
+tool_semantics=false
+grounding=true
+response_quality=true|false
 ```
 
-Rule 结果具有确定性权威，Judge 不得覆盖 Rule。Judge Provider 超时、输出不可解析、criterion 缺失或
-未返回 verdict 属于评测基础设施失败，不得记录为 Agent assertion 失败。Judge assertion 使用稳定
-`criterion_id`；校准文件以 `judge_verdicts` 分别标注每个 criterion，不能用一个笼统语义标签代替
-多个不同判断。每条 assertion 还必须提供面向评测查看者的短 `label`；内部 key 只用于稳定定位，
-不能单独充当 comment。
+`tool_execution` 的 Rule 结果具有确定性权威，Judge 不得覆盖。Judge Provider 超时、输出不可解析、
+criterion 缺失或未返回 verdict 属于评测基础设施失败，不得记录为 Agent Score 失败。三个 Judge
+固定使用 `tool_semantics`、`grounding`、`response_quality` criterion；每个 criterion 在
+`experiment-item-evaluation` 下形成独立 `judge.<criterion_id>` observation。
 
-维度 comment 在通过时展示“检查数量 + 全部 assertion label”，失败时展示“检查数量 + 失败
-assertion 的 label + 真实 reason”；主要 reward comment 在通过时列出全部必要维度中文名，失败时
-列出失败维度中文名及其具体失败原因。Langfuse Score metadata 把每条 assertion 的 `passed`、
+Score comment 在通过时展示 assertion label，失败时展示 label 与真实 reason。Langfuse Score
+metadata 把每条 assertion 的 `passed`、
 `label`、`method` 和可选 `criterion_id` 写成独立标量字段，避免把完整 rubric、reason 或嵌套大对象
 传播成超长属性。
+
+Experiment 完成后，CLI 先检查 SDK 返回的每个 item 都包含四项 BOOLEAN Evaluation，再
+`flush()` 并通过 Langfuse Scores v3 API 回查。四项 Score 必须实际落库、名称无缺失或重复，并且
+全部挂在该 item 的同一个 `experiment-item-task` observation 上；否则按评测基础设施失败退出 2，
+不能因为 SDK 吞掉 Score 写入异常而报告运行成功。
 
 工具业务结果预期以 Environment 的强类型声明为唯一事实源：
 
@@ -310,21 +341,15 @@ ToolOutcomeExpectation(
 ```
 
 校准和 Langfuse Experiment 都通过通用 `grade_task()` 自动比较实际 `tool.finished/tool.failed` 与
-错误码，并把结果写入 `tool_use` 的 `outcome_matches_environment` Rule assertion。预期成功但实际
-超时会保持 `tool_execution=pass`，同时确定性地产生 `tool_use=fail`。Task grader 不再重复
-硬编码工具应成功还是失败。评分时 Environment 按本次 Evidence 的实际 `available_tools` 生成完整
-预期集合，因此真实配置与离线配置的正常工具数量不同也不会造成覆盖漂移。
+Environment 的成功/失败及错误码 oracle，并把结果写入 `tool_execution`。Task grader 不再硬编码
+调用次数、顺序、参数、状态或总通过逻辑，只提供 Task 专属 `response_quality` rubric；通用入口
+固定执行另外两个语义 Judge。
 
-`outcome_matches_environment` 只证明受控世界按声明运行，不证明 Agent 正确理解了结果。需要判断
-最终回答是否把失败当成功、是否编造工具未提供的事实时，Task grader 应在 `response` 定义
-`outcome_evidence_usage` Judge assertion。天气超时 Task 同时校准诚实恢复、超时后编造预报以及
-重复调用三种 Evidence。
-
-`tool_use` 是当前评分契约名；历史 Experiment 中已有的 `agent_eval.dimension.tool_semantics`
-不会被回写，新运行只生成 `agent_eval.dimension.tool_use`。
+Calibration v3 为每个 Evidence 显式保存四项 `expected_dimensions`，以及三个 Judge criterion 的
+人工 `judge_verdicts`。校准逐项比较，不计算聚合通过标记。
 
 Environment validation、凭据、Dataset、Trace 导出、Evidence 解析和 Judge 故障属于评测基础设施
-失败，退出 2，不生成或篡改 Agent reward。Task-local 原子断言只解释某个维度为什么通过或失败。
+失败，退出 2，不生成或篡改 Agent Score。Task-local rubric 只解释 `response_quality`。
 
 ### 从 Langfuse UI 触发 CLI
 
@@ -336,7 +361,7 @@ POST /internal/evals/langfuse/remote-experiment
 
 它只负责验签、校验统一 Dataset 和 Git 中已有的 Task/Suite，然后在后台以固定 argv 启动
 `scripts/run_agent_evals.py --run`。请求不能传入 shell、环境变量、env file、写权限或其他 CLI
-参数；Task、Environment、Grader 和 reward 仍完全使用仓库中的定义。CLI stdout、stderr 和状态回执
+参数；Task、Environment、Grader 和四项 Score 仍完全使用仓库中的定义。CLI stdout、stderr 和状态回执
 写入 `.data/evals/remote/<trigger_id>.*`，不提交。
 
 先在 Assistant Server 的本机未跟踪环境中配置：
@@ -381,7 +406,7 @@ Assistant Server 对其二次解析。空对象默认运行 Dataset 中全部 AC
 日常使用不需要记忆字段。只有精确调试时才临时覆盖 config：
 
 ```json
-{"task":"weather_timeout_recovery","runName":"ui-weather-timeout"}
+{"task":"amap_weather_provider_failure_recovery","runName":"ui-amap-weather-timeout"}
 ```
 
 或：

@@ -5,6 +5,8 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from assistant_agent.identifiers import new_tool_call_id
+
 
 class AssistantTextOutput(BaseModel):
     """A non-empty text response selected for delivery."""
@@ -39,6 +41,10 @@ class AssistantToolCall(BaseModel):
         default=None,
         description="Provider-native call identity retained for transcript correlation.",
     )
+    progress_message: str | None = Field(
+        default=None,
+        description="Visible model text emitted with this tool-call turn.",
+    )
     step_id: str | None = Field(default=None, description="Bound plan step id.")
     reason: str | None = Field(
         default=None,
@@ -70,13 +76,18 @@ class NativeToolCall(BaseModel):
     provider_format: str = "openai_compatible"
     raw: dict[str, Any] = Field(default_factory=dict)
 
-    def to_assistant_tool_call(self) -> AssistantToolCall:
+    def to_assistant_tool_call(
+        self,
+        *,
+        progress_message: str | None = None,
+    ) -> AssistantToolCall:
         """Convert to the governed internal tool-call contract."""
 
         return AssistantToolCall(
             tool_name=self.name,
             tool_input=self.arguments,
             provider_tool_call_id=self.id,
+            progress_message=progress_message,
             reason=f"Provider-native tool call ({self.provider_format}).",
             safety_notes=["native_tool_call"],
         )
@@ -95,8 +106,10 @@ def openai_tool_call_to_native_tool_call(payload: dict[str, Any]) -> NativeToolC
     name = function.get("name") or payload.get("name")
     if not isinstance(name, str) or not name.strip():
         raise ValueError("native tool call missing function name")
+    raw_id = payload.get("id")
+    provider_id = str(raw_id).strip() if raw_id is not None else ""
     return NativeToolCall(
-        id=str(payload.get("id")) if payload.get("id") is not None else None,
+        id=provider_id or new_tool_call_id(),
         name=name,
         arguments=_parse_native_arguments(
             function.get("arguments", payload.get("arguments"))

@@ -1,0 +1,168 @@
+{
+  "schema_version": "agent_eval_calibration_v3",
+  "fixtures": [
+    {
+      "id": "asks_for_city_without_calling",
+      "judge_verdicts": {
+        "tool_semantics": {
+          "passed": true,
+          "reason": "人工标注：没有调用工具，因此不存在错误或损坏的工具返回。"
+        },
+        "grounding": {
+          "passed": true,
+          "reason": "人工标注：回答没有虚构已获得天气证据。"
+        },
+        "response_quality": {
+          "passed": true,
+          "reason": "人工标注：回答具体追问城市或区县，并说明补充后才能查询。"
+        }
+      },
+      "evidence": {
+        "task_id": "amap_weather_missing_city_clarification",
+        "run_id": "calibration-amap-missing-city-correct",
+        "trace_id": "44444444444444444444444444444444",
+        "terminal_status": "completed",
+        "response": {
+          "message": "请先告诉我你目前所在的城市或区县；没有地点，我无法查询当地天气并给出针对性的户外建议。"
+        },
+        "available_tools": [
+          "mcp.amap_maps.maps_weather",
+          "calendar_search"
+        ],
+        "tool_executions": [],
+        "validation_results": [],
+        "initial_state": {},
+        "final_state": {},
+        "state_diff": {
+          "added": [],
+          "modified": [],
+          "deleted": []
+        }
+      },
+      "expected_dimensions": {
+        "tool_execution": true,
+        "tool_semantics": true,
+        "grounding": true,
+        "response_quality": true
+      }
+    },
+    {
+      "id": "guesses_city_and_calls_weather",
+      "judge_verdicts": {
+        "tool_semantics": {
+          "passed": true,
+          "reason": "人工标注：实际天气工具返回上海市明日晴天预报，结构完整可用。"
+        },
+        "grounding": {
+          "passed": true,
+          "reason": "人工标注：回答中的上海晴天和29℃忠于实际工具结果。"
+        },
+        "response_quality": {
+          "passed": false,
+          "reason": "人工标注：用户没有提供城市，Agent 擅自猜测上海并调用天气工具。"
+        }
+      },
+      "evidence": {
+        "task_id": "amap_weather_missing_city_clarification",
+        "run_id": "calibration-amap-missing-city-guessed",
+        "trace_id": "55555555555555555555555555555555",
+        "terminal_status": "completed",
+        "response": {
+          "message": "我按上海查询：明天晴、29℃，适合户外步行。"
+        },
+        "available_tools": [
+          "mcp.amap_maps.maps_weather"
+        ],
+        "tool_executions": [
+          {
+            "name": "mcp.amap_maps.maps_weather",
+            "input": {
+              "city": "上海市"
+            },
+            "status": "succeeded",
+            "terminal_event": "tool.finished",
+            "exposed": true,
+            "output": {
+              "success": true,
+              "model_observation": {
+                "city": "上海市",
+                "forecasts": [
+                  {
+                    "date": "__TOMORROW__",
+                    "dayweather": "晴",
+                    "nightweather": "多云",
+                    "daytemp": "29",
+                    "nighttemp": "23"
+                  }
+                ]
+              }
+            }
+          }
+        ],
+        "validation_results": [
+          {
+            "tool_name": "mcp.amap_maps.maps_weather",
+            "status": "accepted"
+          }
+        ],
+        "initial_state": {},
+        "final_state": {},
+        "state_diff": {
+          "added": [],
+          "modified": [],
+          "deleted": []
+        }
+      },
+      "expected_dimensions": {
+        "tool_execution": true,
+        "tool_semantics": true,
+        "grounding": true,
+        "response_quality": false
+      }
+    },
+    {
+      "id": "asks_vague_followup",
+      "judge_verdicts": {
+        "tool_semantics": {
+          "passed": true,
+          "reason": "人工标注：没有工具返回需要判断。"
+        },
+        "grounding": {
+          "passed": true,
+          "reason": "人工标注：回答没有虚构天气事实。"
+        },
+        "response_quality": {
+          "passed": false,
+          "reason": "人工标注：只说信息不足，没有明确指出需要城市或区县，用户无法有效继续。"
+        }
+      },
+      "evidence": {
+        "task_id": "amap_weather_missing_city_clarification",
+        "run_id": "calibration-amap-missing-city-vague",
+        "trace_id": "66666666666666666666666666666666",
+        "terminal_status": "completed",
+        "response": {
+          "message": "信息不足，请补充更多内容。"
+        },
+        "available_tools": [
+          "mcp.amap_maps.maps_weather"
+        ],
+        "tool_executions": [],
+        "validation_results": [],
+        "initial_state": {},
+        "final_state": {},
+        "state_diff": {
+          "added": [],
+          "modified": [],
+          "deleted": []
+        }
+      },
+      "expected_dimensions": {
+        "tool_execution": true,
+        "tool_semantics": true,
+        "grounding": true,
+        "response_quality": false
+      }
+    }
+  ]
+}

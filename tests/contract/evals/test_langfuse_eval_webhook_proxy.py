@@ -72,7 +72,7 @@ def test_proxy_preserves_signed_remote_experiment_request() -> None:
         connection = HTTPConnection("127.0.0.1", proxy.server_address[1], timeout=2)
         body = (
             '{"datasetName":"回归集",'
-            '"payload":"{\\"task\\":\\"weather_timeout_recovery\\"}"}'
+            '"payload":"{\\"task\\":\\"email_empty_result_honesty\\"}"}'
         ).encode()
         connection.request(
             "POST",

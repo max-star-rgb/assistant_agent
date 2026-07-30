@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+import sys
 from types import SimpleNamespace
 from typing import Any
 
@@ -166,3 +167,43 @@ def test_server_launcher_prints_compact_dependency_summary(monkeypatch, capsys) 
         "Services:",
         "  media_agent: ws://127.0.0.1:8089/agent-service/v1",
     ]
+
+
+def test_server_launcher_starts_eval_console_before_uvicorn(monkeypatch) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(run_server, "_prepare_environment", lambda _args: {})
+    monkeypatch.setattr(
+        run_server.ProviderConfig,
+        "from_env",
+        lambda: ProviderConfig(),
+    )
+    monkeypatch.setattr(
+        run_server,
+        "configure_operational_logging_from_env",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        run_server,
+        "_log_gateway_server_starting",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        run_server,
+        "_print_startup_summary",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        run_server,
+        "start_remote_eval_console",
+        lambda: calls.append("eval-console"),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "uvicorn",
+        SimpleNamespace(run=lambda *_args, **_kwargs: calls.append("uvicorn")),
+    )
+
+    exit_code = run_server.main(["--no-env-file"])
+
+    assert exit_code == 0
+    assert calls == ["eval-console", "uvicorn"]

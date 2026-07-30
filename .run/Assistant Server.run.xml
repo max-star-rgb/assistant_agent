@@ -5,8 +5,6 @@
     <option name="INTERPRETER_OPTIONS" value="" />
     <option name="PARENT_ENVS" value="true" />
     <envs>
-      <env name="HTTP_PROXY" value="http://127.0.0.1:17891" />
-      <env name="HTTPS_PROXY" value="http://127.0.0.1:17891" />
       <env name="PYTHONUNBUFFERED" value="1" />
       <env name="NO_PROXY" value="localhost,127.0.0.1,127.0.0.0/8,::1" />
       <env name="MULTIMODAL_AGENT_OPERATIONAL_CONSOLE_LEVEL" value="WARNING" />

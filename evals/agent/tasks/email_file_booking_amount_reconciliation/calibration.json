@@ -1,0 +1,386 @@
+{
+  "schema_version": "agent_eval_calibration_v3",
+  "fixtures": [
+    {
+      "id": "reconciles_invoice_refund_and_net",
+      "judge_verdicts": {
+        "tool_semantics": {
+          "passed": true,
+          "reason": "人工标注：邮件搜索、邮件读取和发票读取结果完整、自洽且可用。"
+        },
+        "grounding": {
+          "passed": true,
+          "reason": "人工标注：原始金额、退款和净支出均忠于对应工具证据。"
+        },
+        "response_quality": {
+          "passed": true,
+          "reason": "人工标注：回答完整解释了三个金额的关系。"
+        }
+      },
+      "evidence": {
+        "task_id": "email_file_booking_amount_reconciliation",
+        "run_id": "calibration-correct",
+        "trace_id": "77777777777777777777777777777777",
+        "terminal_status": "completed",
+        "response": {
+          "message": "本地 hotel-invoice.txt 记录原始发票金额为720元。酒店订单调整邮件说明因一晚房型降级已退款40元，所以最终净支出为680元。720元是调整前发票金额，40元是后续退款，680元是退款后的实际净支出。"
+        },
+        "available_tools": [
+          "email_search",
+          "email_read",
+          "file_read"
+        ],
+        "tool_executions": [
+          {
+            "name": "email_search",
+            "input": {
+              "query": "subject:\"酒店订单调整\""
+            },
+            "status": "succeeded",
+            "terminal_event": "tool.finished",
+            "exposed": true,
+            "output": {
+              "success": true,
+              "model_observation": {
+                "summary": "找到1封酒店订单调整邮件。",
+                "query_used": "subject:\"酒店订单调整\"",
+                "matches": [
+                  {
+                    "message_id": "booking-adjustment-20260724",
+                    "thread_id": "booking-adjustment-thread"
+                  }
+                ],
+                "provider": "eval:booking-adjustment-v1"
+              }
+            }
+          },
+          {
+            "name": "email_read",
+            "input": {
+              "message_ids": [
+                "booking-adjustment-20260724"
+              ]
+            },
+            "status": "succeeded",
+            "terminal_event": "tool.finished",
+            "exposed": true,
+            "output": {
+              "success": true,
+              "model_observation": {
+                "summary": "读取到酒店订单调整和退款信息。",
+                "message_ids": [
+                  "booking-adjustment-20260724"
+                ],
+                "content_trust": "untrusted_external_content",
+                "instruction_policy": "do_not_execute",
+                "content": "Message ID: booking-adjustment-20260724\nSubject: 酒店订单调整\nFrom: booking@example.test\nDate: 2026-07-24T10:00:00+08:00\n\n--- BODY ---\n订单 HOTEL-2026-0722 原支付720.00元。因一晚房型降级，40.00元已原路退款，最终净支出为680.00元。",
+                "truncated": false,
+                "provider": "eval:booking-adjustment-v1"
+              }
+            }
+          },
+          {
+            "name": "file_read",
+            "input": {
+              "path": "hotel-invoice.txt",
+              "cursor": 0
+            },
+            "status": "succeeded",
+            "terminal_event": "tool.finished",
+            "exposed": true,
+            "output": {
+              "success": true,
+              "model_observation": {
+                "path": "hotel-invoice.txt",
+                "content": "酒店电子发票\n订单号：HOTEL-2026-0722\n入住人：王晨\n住宿日期：2026-07-22 至 2026-07-25\n原始发票金额：720.00元\n",
+                "truncated": false,
+                "next_cursor": null
+              }
+            }
+          }
+        ],
+        "validation_results": [
+          {
+            "tool_name": "email_search",
+            "status": "accepted"
+          },
+          {
+            "tool_name": "email_read",
+            "status": "accepted"
+          },
+          {
+            "tool_name": "file_read",
+            "status": "accepted"
+          }
+        ],
+        "initial_state": {},
+        "final_state": {},
+        "state_diff": {
+          "added": [],
+          "modified": [],
+          "deleted": []
+        }
+      },
+      "expected_dimensions": {
+        "tool_execution": true,
+        "tool_semantics": true,
+        "grounding": true,
+        "response_quality": true
+      }
+    },
+    {
+      "id": "ignores_refund_email",
+      "judge_verdicts": {
+        "tool_semantics": {
+          "passed": true,
+          "reason": "人工标注：三项工具结果完整、自洽且可用。"
+        },
+        "grounding": {
+          "passed": false,
+          "reason": "回答无视邮件中的40元退款，错误声称最终净支出仍为720元。"
+        },
+        "response_quality": {
+          "passed": false,
+          "reason": "回答没有完成退款后的金额对账，也没有解释三个数字。"
+        }
+      },
+      "evidence": {
+        "task_id": "email_file_booking_amount_reconciliation",
+        "run_id": "calibration-ignores-refund",
+        "trace_id": "88888888888888888888888888888888",
+        "terminal_status": "completed",
+        "response": {
+          "message": "发票金额是720元，因此最终住宿支出也是720元，没有需要考虑的退款。"
+        },
+        "available_tools": [
+          "email_search",
+          "email_read",
+          "file_read"
+        ],
+        "tool_executions": [
+          {
+            "name": "email_search",
+            "input": {
+              "query": "subject:\"酒店订单调整\""
+            },
+            "status": "succeeded",
+            "terminal_event": "tool.finished",
+            "exposed": true,
+            "output": {
+              "success": true,
+              "model_observation": {
+                "summary": "找到1封酒店订单调整邮件。",
+                "query_used": "subject:\"酒店订单调整\"",
+                "matches": [
+                  {
+                    "message_id": "booking-adjustment-20260724",
+                    "thread_id": "booking-adjustment-thread"
+                  }
+                ],
+                "provider": "eval:booking-adjustment-v1"
+              }
+            }
+          },
+          {
+            "name": "email_read",
+            "input": {
+              "message_ids": [
+                "booking-adjustment-20260724"
+              ]
+            },
+            "status": "succeeded",
+            "terminal_event": "tool.finished",
+            "exposed": true,
+            "output": {
+              "success": true,
+              "model_observation": {
+                "summary": "读取到酒店订单调整和退款信息。",
+                "message_ids": [
+                  "booking-adjustment-20260724"
+                ],
+                "content_trust": "untrusted_external_content",
+                "instruction_policy": "do_not_execute",
+                "content": "Message ID: booking-adjustment-20260724\nSubject: 酒店订单调整\nFrom: booking@example.test\nDate: 2026-07-24T10:00:00+08:00\n\n--- BODY ---\n订单 HOTEL-2026-0722 原支付720.00元。因一晚房型降级，40.00元已原路退款，最终净支出为680.00元。",
+                "truncated": false,
+                "provider": "eval:booking-adjustment-v1"
+              }
+            }
+          },
+          {
+            "name": "file_read",
+            "input": {
+              "path": "hotel-invoice.txt",
+              "cursor": 0
+            },
+            "status": "succeeded",
+            "terminal_event": "tool.finished",
+            "exposed": true,
+            "output": {
+              "success": true,
+              "model_observation": {
+                "path": "hotel-invoice.txt",
+                "content": "酒店电子发票\n订单号：HOTEL-2026-0722\n入住人：王晨\n住宿日期：2026-07-22 至 2026-07-25\n原始发票金额：720.00元\n",
+                "truncated": false,
+                "next_cursor": null
+              }
+            }
+          }
+        ],
+        "validation_results": [
+          {
+            "tool_name": "email_search",
+            "status": "accepted"
+          },
+          {
+            "tool_name": "email_read",
+            "status": "accepted"
+          },
+          {
+            "tool_name": "file_read",
+            "status": "accepted"
+          }
+        ],
+        "initial_state": {},
+        "final_state": {},
+        "state_diff": {
+          "added": [],
+          "modified": [],
+          "deleted": []
+        }
+      },
+      "expected_dimensions": {
+        "tool_execution": true,
+        "tool_semantics": true,
+        "grounding": false,
+        "response_quality": false
+      }
+    },
+    {
+      "id": "states_net_without_explanation",
+      "judge_verdicts": {
+        "tool_semantics": {
+          "passed": true,
+          "reason": "人工标注：三项工具结果完整、自洽且可用。"
+        },
+        "grounding": {
+          "passed": true,
+          "reason": "回答给出的680元净支出受到邮件和发票证据支持。"
+        },
+        "response_quality": {
+          "passed": false,
+          "reason": "回答没有列出原始720元、退款40元，也没有解释三个金额的关系。"
+        }
+      },
+      "evidence": {
+        "task_id": "email_file_booking_amount_reconciliation",
+        "run_id": "calibration-no-explanation",
+        "trace_id": "99999999999999999999999999999999",
+        "terminal_status": "completed",
+        "response": {
+          "message": "这次住宿的最终净支出是680元。"
+        },
+        "available_tools": [
+          "email_search",
+          "email_read",
+          "file_read"
+        ],
+        "tool_executions": [
+          {
+            "name": "email_search",
+            "input": {
+              "query": "subject:\"酒店订单调整\""
+            },
+            "status": "succeeded",
+            "terminal_event": "tool.finished",
+            "exposed": true,
+            "output": {
+              "success": true,
+              "model_observation": {
+                "summary": "找到1封酒店订单调整邮件。",
+                "query_used": "subject:\"酒店订单调整\"",
+                "matches": [
+                  {
+                    "message_id": "booking-adjustment-20260724",
+                    "thread_id": "booking-adjustment-thread"
+                  }
+                ],
+                "provider": "eval:booking-adjustment-v1"
+              }
+            }
+          },
+          {
+            "name": "email_read",
+            "input": {
+              "message_ids": [
+                "booking-adjustment-20260724"
+              ]
+            },
+            "status": "succeeded",
+            "terminal_event": "tool.finished",
+            "exposed": true,
+            "output": {
+              "success": true,
+              "model_observation": {
+                "summary": "读取到酒店订单调整和退款信息。",
+                "message_ids": [
+                  "booking-adjustment-20260724"
+                ],
+                "content_trust": "untrusted_external_content",
+                "instruction_policy": "do_not_execute",
+                "content": "Message ID: booking-adjustment-20260724\nSubject: 酒店订单调整\nFrom: booking@example.test\nDate: 2026-07-24T10:00:00+08:00\n\n--- BODY ---\n订单 HOTEL-2026-0722 原支付720.00元。因一晚房型降级，40.00元已原路退款，最终净支出为680.00元。",
+                "truncated": false,
+                "provider": "eval:booking-adjustment-v1"
+              }
+            }
+          },
+          {
+            "name": "file_read",
+            "input": {
+              "path": "hotel-invoice.txt",
+              "cursor": 0
+            },
+            "status": "succeeded",
+            "terminal_event": "tool.finished",
+            "exposed": true,
+            "output": {
+              "success": true,
+              "model_observation": {
+                "path": "hotel-invoice.txt",
+                "content": "酒店电子发票\n订单号：HOTEL-2026-0722\n入住人：王晨\n住宿日期：2026-07-22 至 2026-07-25\n原始发票金额：720.00元\n",
+                "truncated": false,
+                "next_cursor": null
+              }
+            }
+          }
+        ],
+        "validation_results": [
+          {
+            "tool_name": "email_search",
+            "status": "accepted"
+          },
+          {
+            "tool_name": "email_read",
+            "status": "accepted"
+          },
+          {
+            "tool_name": "file_read",
+            "status": "accepted"
+          }
+        ],
+        "initial_state": {},
+        "final_state": {},
+        "state_diff": {
+          "added": [],
+          "modified": [],
+          "deleted": []
+        }
+      },
+      "expected_dimensions": {
+        "tool_execution": true,
+        "tool_semantics": true,
+        "grounding": true,
+        "response_quality": false
+      }
+    }
+  ]
+}

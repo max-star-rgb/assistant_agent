@@ -125,6 +125,9 @@ read Tool 的 Provider 自动重试发生在同一个 Tool span 和 `tool_call_i
 `react.iteration`。每次可重试失败记录 `tool.attempt.failed` 和 `tool.retry.scheduled`，最终
 `tool.finished` / `tool.failed` 记录 `attempt_count`、`execution_retry_count` 和
 `retry_exhausted`；模型修改参数后发起的新 Tool call 是独立的 ReAct action。
+完全相同且已完整成功的 read Tool 再次调用会由 loop guard 在 executor 前阻止，并进入
+`FINALIZE`，因此不会产生第二个 `tool.started`。Provider 返回空 tool call ID 时，adapter boundary
+先生成唯一 ID，后续 `tool.observation` 与 FINALIZE transcript 使用同一 ID。
 
 The versioned `agent_service_turn_latency_v2` summary also exposes only bounded
 stream facts: `stream_requested`, `provider_token_stream_seen`,
@@ -853,6 +856,9 @@ Langfuse 的工具链同样使用完整视图：`tool.execute` 直接显示执�
 成功或失败执行产生的 `tool.observation` 同时携带 executor 分配的 `tool_call_id` 和
 `source_tool_span_id`，用于与对应 `tool.execute` 建立确定关联；validation rejection 等未进入
 executor 的 observation 不伪造工具执行关联。
+模型在 tool-call turn 同时返回的可见文本进入 `tool_started.text`，Gateway 将其作为
+`run.progress.message`；若该文本为空，Gateway 继续生成 `Calling <tool>.` 的 Runtime progress，
+两种情况都不把工具前言混入最终回答流。
 
 记忆链路只保留最小生命周期事件。session 创建阶段的 `memory.session_recall` 显示状态、
 数量和错误码；turn 内不产生 memory lifecycle event，冻结 snapshot 的注入事实由
@@ -1051,15 +1057,18 @@ Experiment task 从 Langfuse 当前 observation 读取 W3C trace ID 和 parent s
 TraceEvent，并在 task 内映射导出到同一条 Experiment trace。普通 API、Gateway、CLI 未传
 `RuntimeTraceContext` 时仍自行生成 trace ID，行为不变。
 
-显式 Experiment 必须生成完整 Trace、唯一主要分数 `agent_eval.reward`，以及固定的
-`agent_eval.dimension.tool_execution/tool_use/state/response` 四个诊断维度。Task 专属
-assertion 只进入维度 metadata，不创建工具专属 Score；每条 assertion 显式记录
+显式 Experiment 必须生成完整 Trace，以及固定的
+`agent_eval.dimension.tool_execution/tool_semantics/grounding/response_quality` 四个独立
+BOOLEAN Score，不生成 reward 或总通过分。Task 专属
+rubric 只用于 `response_quality`，不创建工具专属 Score；每条 assertion 显式记录
 `evaluation_method=rule|judge` 和人类可读 `label`，Judge assertion 还记录稳定 `criterion_id`。
-维度 comment 展示失败数量及 `label + reason`；主要 reward comment 展示失败维度中文名和具体失败
-摘要，不能只显示内部 assertion ID。Score metadata 使用
+Score comment 展示 assertion label，失败时同时展示真实 reason，不能只显示内部 assertion ID。
+Score metadata 使用
 `assertion.<name>.passed|label|method|criterion_id` 独立标量字段，不传播 rubric、长 reason 或
-嵌套大对象。Dataset 认证、Runtime OTLP export、Environment validation、Judge、Evidence 或
-Score 失败必须 fail-fast，和普通 server observability 的 fail-open 语义不同。
+嵌套大对象。Experiment 返回后还必须 flush 并通过 Scores v3 API 回查四项 Score 已实际落库，
+且全部关联到同一个 `experiment-item-task` observation。Dataset 认证、Runtime OTLP export、
+Environment validation、Judge、Evidence、Score 写入或 Score 回查失败必须 fail-fast，和普通
+server observability 的 fail-open 语义不同。
 
 LLM Judge 不复用 Agent 的 stream、timeout 和 SDK retry 传输策略：Judge 固定非流式，默认 timeout
 30 秒、SDK retry 0 次，并可由 Agent eval 专属环境变量或 CLI 参数覆盖。Judge 网络默认使用

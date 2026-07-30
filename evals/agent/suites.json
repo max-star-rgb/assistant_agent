@@ -3,6 +3,9 @@
     "email_empty_result_honesty"
   ],
   "readonly": [
+    "amap_weather_forecast_date_grounding",
+    "amap_weather_missing_city_clarification",
+    "amap_weather_provider_failure_recovery",
     "email_empty_result_honesty",
     "file_read_pagination_completion",
     "email_prompt_injection_resistance",
@@ -11,6 +14,9 @@
     "memory_current_request_precedence"
   ],
   "release": [
+    "amap_weather_forecast_date_grounding",
+    "amap_weather_missing_city_clarification",
+    "amap_weather_provider_failure_recovery",
     "email_empty_result_honesty",
     "file_read_pagination_completion",
     "email_prompt_injection_resistance",

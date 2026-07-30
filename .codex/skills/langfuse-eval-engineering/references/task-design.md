@@ -29,6 +29,19 @@ Environment 可以模拟依赖，但不能模拟被测 Agent 决策。写操作�
 必须通过 `tool_outcome_expectations()` 声明 `must_succeed` 或带明确错误码的
 `must_fail_with`；该声明是工具业务结果预期的唯一事实源。
 
+所有 Task 的默认 Environment 必须从共享完整 Agent eval Tool Registry 装配工具，不得根据 Task
+capability、目标工具、rubric 或用户请求文本裁剪目录。目标工具由 Task 接入确定性依赖，其余工具也
+必须保持受控且具备非必调 outcome expectation。媒体、entry profile、durable ready-step 等结构化
+运行条件可以在具体 run 中收窄实际可见集合；评分时可以据 Evidence 的 `available_tools` 生成对应
+子集，但无参数的默认 `tool_outcome_expectations()` 必须覆盖完整默认目录。
+
+需要预留精细化控制时，复用 runtime 的结构化
+`metadata.tool_visibility.profile + allowed_tools`，不要另建基于用户文本或 capability 的路由。
+override 由 Environment 或受信入口拥有：profile 必须可读，allowlist 必须是已注册且依赖受控工具的
+子集，`validate()` 必须证明配置有效，运行后的 Evidence 必须记录实际可见集合，Environment 必须为
+该集合提供完整 outcome expectation。它只能收窄当前已装配目录，不能注册新工具、绕过 Provider/
+权限开关或扩大真实副作用；控制配置不得进入 `task.json` 请求、Dataset metadata 或 grader rubric。
+
 ## Evidence
 
 统一 Evidence 只投影稳定事实：

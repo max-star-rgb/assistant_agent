@@ -15,6 +15,9 @@ from assistant_agent.gateway.event_mapping import realtime_event_to_frame
 from assistant_agent.memory.mem0.identity import bind_mem0_identity
 from assistant_agent.gateway.runtime_event_mapping import map_agent_event_stream
 from assistant_agent.runtime.decision_models import NativeToolCall
+from assistant_agent.runtime.output_models import (
+    openai_tool_call_to_native_tool_call,
+)
 from assistant_agent.runtime.events import AgentEvent
 from assistant_agent.providers.llm_events import LLMEvent, LLMEventAccumulator, LLMToolCallDelta
 from assistant_agent.providers.provider_config_validation import validate_provider_config
@@ -30,6 +33,7 @@ from assistant_agent.runtime.chat_adapter import (
     create_chat_adapter,
 )
 from assistant_agent.context.compactor import LLMCompactor, create_context_compactor
+from assistant_agent.context.finalization import correlated_native_tool_pairs
 from assistant_agent.runtime.event_sink import ListEventSink
 from assistant_agent.runtime.hooks import HookManager, HookTraceStore
 from assistant_agent.identifiers import IdFactory, new_run_id, new_session_id, new_span_id, new_trace_id
@@ -50,6 +54,13 @@ from assistant_agent.observability.trace_conversation import (
     get_default_trace_conversation_store,
 )
 from assistant_agent.observability.trace_store import TraceEvent
+from assistant_agent.tools.plugins.builtin.shopping.models import (
+    PriceCompareResult,
+    ProductResult,
+    ProductSearchResult,
+)
+from assistant_agent.tools.plugins.builtin.shopping.tool import ShoppingSearchTool
+from assistant_agent.tools.registry import ToolRegistry
 from scripts.run_client import chat_response_error
 
 
@@ -129,6 +140,45 @@ class ScriptedChatAdapter:
     def chat(self, request: ChatRequest) -> ChatResult:
         self.requests.append(request)
         return next(self._results)
+
+
+class _RuntimeSearchAdapter:
+    def search(self, request) -> ProductSearchResult:
+        product = ProductResult(
+            product_id="runtime-test-product",
+            title=request.query,
+            price=99,
+            platform="test",
+            source="test",
+        )
+        return ProductSearchResult(
+            items=[product],
+            provider="test",
+            query_used=request.query,
+            total=1,
+        )
+
+
+class _RuntimeCompareAdapter:
+    def compare(self, request) -> PriceCompareResult:
+        return PriceCompareResult(
+            query=request.query,
+            items=list(request.items),
+            summary="deterministic runtime test result",
+            provider="test",
+        )
+
+
+def _registry_with_test_shopping() -> ToolRegistry:
+    registry = ToolRegistry()
+    registry.register(
+        ShoppingSearchTool(
+            search_adapter=_RuntimeSearchAdapter(),
+            compare_adapter=_RuntimeCompareAdapter(),
+        )
+    )
+    registry.seal()
+    return registry
 
 
 def test_response_style_policy_is_compiled_from_explicit_request() -> None:
@@ -216,7 +266,7 @@ def test_package_and_runtime_initialize_offline() -> None:
     specs = {spec.name: spec for spec in runtime.registry.list_specs()}
 
     assert package is not None
-    assert "shopping_search" in runtime.registry.list()
+    assert "shopping_search" not in runtime.registry.list()
     assert "reminder_create" not in runtime.registry.list()
     assert "render_3d" not in runtime.registry.list()
     assert {"media_inspect", "live_view_inspect"}.issubset(
@@ -265,7 +315,6 @@ def test_shopping_config_uses_unified_provider() -> None:
     )
 
     assert config.shopping_search_provider == "haodanku"
-    assert config.shopping_search_local_path is None
     assert config.shopping_compare_provider == "haodanku"
     assert not hasattr(config, "shopping_provider")
     assert not hasattr(config, "product_search_provider")
@@ -525,6 +574,56 @@ def test_bailian_chat_adapter_enables_native_turbo_search_in_provider_payload() 
         },
     }
     assert observed == [captured]
+
+
+def test_empty_provider_tool_call_ids_are_normalized_to_unique_ids() -> None:
+    first = openai_tool_call_to_native_tool_call(
+        {
+            "id": "",
+            "type": "function",
+            "function": {"name": "weather", "arguments": '{"location":"上海"}'},
+        }
+    )
+    second = openai_tool_call_to_native_tool_call(
+        {
+            "id": "",
+            "type": "function",
+            "function": {"name": "weather", "arguments": '{"location":"上海"}'},
+        }
+    )
+    accumulator = LLMEventAccumulator()
+    accumulator.apply(
+        LLMEvent(
+            event_type="tool_call_delta",
+            provider="qwen",
+            tool_call_delta=LLMToolCallDelta(
+                index=0,
+                id="",
+                name_delta="weather",
+                arguments_delta='{"location":"上海"}',
+            ),
+        )
+    )
+    streamed = accumulator.finalize_tool_calls()
+
+    assert first.id and first.id.startswith("call_")
+    assert second.id and second.id.startswith("call_")
+    assert first.id != second.id
+    assert streamed[0].id and streamed[0].id.startswith("call_")
+    pairs = correlated_native_tool_pairs(
+        [first.model_dump(mode="json")],
+        [
+            {
+                "tool_name": "weather",
+                "status": "succeeded",
+                "summary": "天气已返回。",
+                "is_complete": True,
+                "_provider_tool_call_id": first.id,
+            }
+        ],
+    )
+    assert len(pairs) == 1
+    assert pairs[0][1]["id"] == first.id
 
 
 def test_qwen_chat_adapter_sends_explicit_no_tool_policy() -> None:
@@ -1179,26 +1278,26 @@ def test_real_adapter_uses_langgraph_and_finishes_without_tools_after_budget() -
             NativeToolCall(
                 id="call-budget-1",
                 name="shopping_search",
-                arguments={"query": "通勤耳机"},
+                arguments={"needs": [{"keyword": "通勤耳机"}]},
                 raw={
                     "id": "call-budget-1",
                     "type": "function",
                     "function": {
                         "name": "shopping_search",
-                        "arguments": '{"query":"通勤耳机"}',
+                        "arguments": '{"needs":[{"keyword":"通勤耳机"}]}',
                     },
                 },
             ),
             NativeToolCall(
                 id="call-budget-2",
                 name="shopping_search",
-                arguments={"query": "降噪耳机"},
+                arguments={"needs": [{"keyword": "降噪耳机"}]},
                 raw={
                     "id": "call-budget-2",
                     "type": "function",
                     "function": {
                         "name": "shopping_search",
-                        "arguments": '{"query":"降噪耳机"}',
+                        "arguments": '{"needs":[{"keyword":"降噪耳机"}]}',
                     },
                 },
             ),
@@ -1220,6 +1319,7 @@ def test_real_adapter_uses_langgraph_and_finishes_without_tools_after_budget() -
         ),
         chat_adapter=adapter,
         session_store=InMemorySessionStore(),
+        registry=_registry_with_test_shopping(),
     )
 
     state = runtime.run_state(
@@ -1265,7 +1365,7 @@ def test_finalize_preserves_multiple_native_tool_turns_in_execution_order() -> N
             NativeToolCall(
                 id="call-first",
                 name="shopping_search",
-                arguments={"query": "通勤耳机"},
+                arguments={"needs": [{"keyword": "通勤耳机"}]},
             )
         ],
     )
@@ -1277,7 +1377,7 @@ def test_finalize_preserves_multiple_native_tool_turns_in_execution_order() -> N
             NativeToolCall(
                 id="call-second",
                 name="shopping_search",
-                arguments={"query": "降噪耳机"},
+                arguments={"needs": [{"keyword": "降噪耳机"}]},
             )
         ],
     )
@@ -1301,6 +1401,7 @@ def test_finalize_preserves_multiple_native_tool_turns_in_execution_order() -> N
         ),
         chat_adapter=adapter,
         session_store=InMemorySessionStore(),
+        registry=_registry_with_test_shopping(),
     )
 
     state = runtime.run_state(
@@ -1339,12 +1440,12 @@ def test_finalize_preserves_same_turn_native_tool_call_batch() -> None:
                     NativeToolCall(
                         id="call-batch-first",
                         name="shopping_search",
-                        arguments={"query": "通勤耳机"},
+                        arguments={"needs": [{"keyword": "通勤耳机"}]},
                     ),
                     NativeToolCall(
                         id="call-batch-second",
                         name="shopping_search",
-                        arguments={"query": "降噪耳机"},
+                        arguments={"needs": [{"keyword": "降噪耳机"}]},
                     ),
                 ],
             ),
@@ -1364,6 +1465,7 @@ def test_finalize_preserves_same_turn_native_tool_call_batch() -> None:
         ),
         chat_adapter=adapter,
         session_store=InMemorySessionStore(),
+        registry=_registry_with_test_shopping(),
     )
 
     state = runtime.run_state(
@@ -1403,7 +1505,7 @@ def test_finalize_protocol_retry_synthesizes_existing_evidence() -> None:
             NativeToolCall(
                 id="call-budget-1",
                 name="shopping_search",
-                arguments={"query": "通勤背包"},
+                arguments={"needs": [{"keyword": "通勤背包"}]},
             )
         ],
     )
@@ -1436,6 +1538,7 @@ def test_finalize_protocol_retry_synthesizes_existing_evidence() -> None:
         ),
         chat_adapter=adapter,
         session_store=InMemorySessionStore(),
+        registry=_registry_with_test_shopping(),
     )
 
     state = runtime.run_state(
@@ -1501,7 +1604,7 @@ def test_finalize_protocol_retry_uses_truthful_fallback_for_repeated_violation()
             NativeToolCall(
                 id="call-repeated",
                 name="shopping_search",
-                arguments={"query": "通勤背包"},
+                arguments={"needs": [{"keyword": "通勤背包"}]},
             )
         ],
     )
@@ -1514,6 +1617,7 @@ def test_finalize_protocol_retry_uses_truthful_fallback_for_repeated_violation()
         ),
         chat_adapter=adapter,
         session_store=InMemorySessionStore(),
+        registry=_registry_with_test_shopping(),
     )
 
     state = runtime.run_state(
@@ -1546,7 +1650,7 @@ def test_finalize_protocol_retry_uses_fallback_for_unusable_text(
                     NativeToolCall(
                         id="call-before-retry",
                         name="shopping_search",
-                        arguments={"query": "通勤背包"},
+                        arguments={"needs": [{"keyword": "通勤背包"}]},
                     )
                 ],
             ),
@@ -1577,6 +1681,7 @@ def test_finalize_protocol_retry_uses_fallback_for_unusable_text(
         ),
         chat_adapter=adapter,
         session_store=InMemorySessionStore(),
+        registry=_registry_with_test_shopping(),
     )
 
     state = runtime.run_state(
@@ -1635,7 +1740,7 @@ def test_finalize_uses_evidence_fallback_for_provider_no_answer(
                     NativeToolCall(
                         id="call-finalizer-failure",
                         name="shopping_search",
-                        arguments={"query": "通勤背包"},
+                        arguments={"needs": [{"keyword": "通勤背包"}]},
                     )
                 ],
             ),
@@ -1650,6 +1755,7 @@ def test_finalize_uses_evidence_fallback_for_provider_no_answer(
         ),
         chat_adapter=adapter,
         session_store=InMemorySessionStore(),
+        registry=_registry_with_test_shopping(),
     )
 
     state = runtime.run_state(
@@ -1718,11 +1824,13 @@ def test_core_event_contract_reaches_gateway_frame() -> None:
                 index=0,
                 id="call-1",
                 name_delta="shopping_search",
-                arguments_delta='{"query":"耳机"}',
+                arguments_delta='{"needs":[{"keyword":"耳机"}]}',
             ),
         )
     )
-    assert accumulator.finalize_tool_calls()[0].arguments == {"query": "耳机"}
+    assert accumulator.finalize_tool_calls()[0].arguments == {
+        "needs": [{"keyword": "耳机"}]
+    }
 
     realtime_events = map_agent_event_stream(
         AgentEvent(

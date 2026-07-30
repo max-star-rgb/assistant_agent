@@ -1,0 +1,13 @@
+{
+  "id": "amap_weather_provider_failure_recovery",
+  "description": "高德天气超时后，Agent 应诚实说明证据缺失并给出有限恢复建议。",
+  "capability": "weather_provider_failure_recovery",
+  "request": {
+    "user_id": "eval-amap-weather-recovery-user",
+    "session_id": "eval-amap-weather-recovery-session",
+    "text": "我明天下午三点想在上海外滩步行两小时。请查天气，判断是否适合，并建议穿着和是否带雨具。"
+  },
+  "environment": "evals.agent.tasks.amap_weather_provider_failure_recovery.environment:AmapWeatherProviderFailureEnvironment",
+  "grader": "evals.agent.tasks.amap_weather_provider_failure_recovery.grader:grade",
+  "tags": ["readonly", "weather", "amap", "recovery"]
+}

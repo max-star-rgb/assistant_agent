@@ -25,7 +25,8 @@ def is_runtime_only_observation(observation: Mapping[str, Any]) -> bool:
     return (
         payload.get("status") == "rejected"
         and isinstance(error, Mapping)
-        and error.get("code") == "duplicate_failed_tool_call"
+        and error.get("code")
+        in {"duplicate_failed_tool_call", "duplicate_complete_tool_call"}
     )
 
 

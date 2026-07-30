@@ -36,7 +36,12 @@ For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
 - `scripts/run_evals.py`: offline eval harness for lower-layer behavior checks.
 - `scripts/run_system_tool_evals.py`: 真实 LLM + 真实 Tool 的 system eval；
   要求 `MULTIMODAL_AGENT_PROVIDER_MODE=real` 和 `--allow-real-tools`，产物写入
-  `.data/evals/system/tools/`。
+  `.data/evals/system/tools/`。好单库购物链路可显式设置
+  `MULTIMODAL_AGENT_SHOPPING_PROVIDER=haodanku` 并运行
+  `shopping_search_real_single_need`。
+- `scripts/run_system_shopping_eval.py`: 不经过 LLM，直接通过本地 Tool 治理链路调用真实
+  `shopping_search`；要求 `--allow-real-tools`、real 模式、好单库 Provider 和 key，
+  并硬断言真实候选、来源、正价格与 HTTP(S) 购买链接。
 - `scripts/run_system_context_eval.py`: 捕获真实 Runtime 编译的 `ChatRequest`
   和 Provider payload；要求 real 模式与 `--allow-unredacted-context`，产物写入
   `.data/evals/system/context/`。
@@ -56,7 +61,19 @@ For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
   `.data/evals/remote/`。本机固定的 Langfuse `3.224.2` 通过内部 80 端口
   `assistant-agent-eval-webhook` 转发到 Assistant Server 8089；代理为该版本尚未签名的
   Remote Experiment 请求补充共享 HMAC。空 `payload` 通过 `--dataset-active` 运行统一 Dataset
-  中全部 ACTIVE Git Task；请求契约、secret 配置与操作步骤见 `evals/README.md`。
+  中全部 ACTIVE Git Task；请求契约、secret 配置与操作步骤见 `evals/README.md`。UI 触发的新运行
+  只在 Assistant Server 控制台显示单个 `tqdm` 整体任务进度条，不打印 Task、evaluation、Judge
+  阶段明细或结束状态。状态查询和停止命令仍可直接输入，但服务器启动时不额外打印命令提示：
+
+  ```bash
+  eval status
+  eval stop
+  eval status <trigger_id>
+  eval stop <trigger_id>
+  ```
+
+  不传 `trigger_id` 时默认操作最新运行。`eval stop` 发送 `SIGTERM` 前会核对回执中的完整启动命令
+  和独立进程组，旧版无 `command` 回执不会被停止。
 - `scripts/run_improvement_lab.py`: offline, non-mutating improvement proposal runner.
 - `scripts/check_pilot_readiness.py` and `scripts/collect_pilot_evidence.py`:
   multi-agent pilot operator helpers.

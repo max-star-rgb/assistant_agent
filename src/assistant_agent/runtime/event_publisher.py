@@ -71,6 +71,7 @@ class ToolStartedFact:
     tool_contract: dict[str, Any]
     input_summary: dict[str, Any]
     pre_tool_call: dict[str, Any]
+    progress_message: str | None = None
     occurred_at: datetime = field(default_factory=_now)
 
 
@@ -322,11 +323,15 @@ class RuntimeEventPublisher:
                 session_id=fact.state.session_id,
                 run_id=fact.state.run_id,
                 tool_name=fact.tool_name,
-                payload={
-                    "tool_call_id": fact.tool_call_id,
-                    "step_id": fact.step_id,
-                    "pre_tool_call": fact.pre_tool_call,
-                },
+                text=fact.progress_message,
+                payload=_compact(
+                    {
+                        "tool_call_id": fact.tool_call_id,
+                        "step_id": fact.step_id,
+                        "pre_tool_call": fact.pre_tool_call,
+                        "message": fact.progress_message,
+                    }
+                ),
                 created_at=fact.occurred_at,
             )
         )

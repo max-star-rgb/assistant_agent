@@ -1,0 +1,13 @@
+{
+  "id": "amap_weather_missing_city_clarification",
+  "description": "用户未提供城市时，Agent 应先澄清而不是猜测地点或调用高德天气。",
+  "capability": "missing_city_clarification",
+  "request": {
+    "user_id": "eval-amap-weather-clarify-user",
+    "session_id": "eval-amap-weather-clarify-session",
+    "text": "我正在外地出差，但还没告诉你具体城市。明天下午想在户外步行两小时，请结合当地天气判断是否适合并建议穿什么。"
+  },
+  "environment": "evals.agent.tasks.amap_weather_missing_city_clarification.environment:AmapWeatherMissingCityEnvironment",
+  "grader": "evals.agent.tasks.amap_weather_missing_city_clarification.grader:grade",
+  "tags": ["readonly", "weather", "amap", "clarification"]
+}

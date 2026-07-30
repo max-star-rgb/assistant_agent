@@ -306,6 +306,27 @@ def test_failed_tool_call_allows_retry_with_changed_arguments() -> None:
     assert state.response.message
 
 
+def test_identical_complete_read_tool_success_is_not_executed_twice() -> None:
+    tool = _RecoverableProbeTool()
+    adapter = _ScriptedChatAdapter(
+        [
+            _tool_call("probe-call-1", "fixed"),
+            _tool_call("probe-call-2", "fixed"),
+            _final_answer("final-sentinel"),
+        ]
+    )
+
+    state = _runtime(tool, adapter).run_state(_request())
+
+    assert state.status == "completed"
+    assert tool.inputs == ["fixed"]
+    assert len(state.tool_calls) == 1
+    assert adapter.requests[2].tools == []
+    assert state.request.metadata["assistant_finalize_reason"] == (
+        "duplicate_complete_tool_call"
+    )
+
+
 def test_identical_failed_tool_call_is_blocked_then_enters_finalize() -> None:
     tool = _RecoverableProbeTool()
     adapter = _ScriptedChatAdapter(
@@ -358,6 +379,55 @@ def test_identical_failed_tool_call_is_blocked_then_enters_finalize() -> None:
     assert payload["error"]["code"] == "provider_unsupported_input"
     assert state.response is not None
     assert state.response.message
+
+
+def test_tool_call_content_is_used_as_tool_progress_message() -> None:
+    tool = _RecoverableProbeTool()
+    adapter = _ScriptedChatAdapter(
+        [
+            ChatResult(
+                provider="scripted",
+                model="scripted-tool-recovery",
+                finish_reason="tool_calls",
+                response_text="我先读取最新数据。",
+                tool_calls=[
+                    NativeToolCall(
+                        id="probe-call-progress",
+                        name="recoverable_probe",
+                        arguments={"value": "fixed"},
+                    )
+                ],
+            ),
+            _final_answer("final-sentinel"),
+        ]
+    )
+    sink = ListEventSink()
+
+    _runtime(tool, adapter, sink).run_state(_request())
+
+    started = next(event for event in sink.events if event.type == "tool_started")
+    assert started.text == "我先读取最新数据。"
+    progress = map_agent_event_stream(started)[0]
+    assert progress.type == "run.progress"
+    assert progress.payload["message"] == "我先读取最新数据。"
+
+
+def test_tool_call_without_content_uses_runtime_tool_progress_message() -> None:
+    tool = _RecoverableProbeTool()
+    adapter = _ScriptedChatAdapter(
+        [
+            _tool_call("probe-call-progress-fallback", "fixed"),
+            _final_answer("final-sentinel"),
+        ]
+    )
+    sink = ListEventSink()
+
+    _runtime(tool, adapter, sink).run_state(_request())
+
+    started = next(event for event in sink.events if event.type == "tool_started")
+    assert started.text is None
+    progress = map_agent_event_stream(started)[0]
+    assert progress.payload["message"] == "Calling recoverable_probe."
 
 
 def test_nonrecoverable_failure_blocks_changed_arguments_for_same_tool() -> None:

@@ -8,6 +8,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from assistant_agent.identifiers import new_tool_call_id
 from assistant_agent.runtime.output_models import NativeToolCall
 
 
@@ -135,8 +136,9 @@ class LLMEventAccumulator:
         for _, current in sorted(self._tool_calls.items()):
             if not current.name:
                 continue
+            effective_id = (current.id or "").strip() or new_tool_call_id()
             raw = {
-                "id": current.id,
+                "id": effective_id,
                 "type": current.type or "function",
                 "function": {
                     "name": current.name,
@@ -145,7 +147,7 @@ class LLMEventAccumulator:
             }
             calls.append(
                 NativeToolCall(
-                    id=current.id,
+                    id=effective_id,
                     name=current.name,
                     arguments=_parse_arguments(current.arguments),
                     provider_format=provider_format,

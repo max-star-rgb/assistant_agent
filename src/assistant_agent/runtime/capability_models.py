@@ -132,7 +132,7 @@ CAPABILITY_CONTRACTS: dict[CapabilityName, CapabilityContract] = {
     ),
     "shopping_search": CapabilityContract(
         name="shopping_search",
-        input_requirements=["query"],
+        input_requirements=["needs"],
         output_contract="ShoppingSearchResult",
         tool_name=SHOPPING_SEARCH_TOOL_NAME,
         text_required=False,

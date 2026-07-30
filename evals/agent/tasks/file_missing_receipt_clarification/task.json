@@ -1,0 +1,13 @@
+{
+  "id": "file_missing_receipt_clarification",
+  "description": "Agent 应核对已有报销材料，区分已获凭证支持的费用与仍需补充的证据。",
+  "capability": "missing_document_evidence_clarification",
+  "request": {
+    "user_id": "eval-missing-receipt-user",
+    "session_id": "eval-missing-receipt-session",
+    "text": "请核对 expense-summary.txt 和 taxi-receipt.txt，告诉我这份报销材料是否完整、目前有凭证支持多少金额，以及还需要补什么。不要把费用汇总本身当成发票。"
+  },
+  "environment": "evals.agent.tasks.file_missing_receipt_clarification.environment:FileMissingReceiptEnvironment",
+  "grader": "evals.agent.tasks.file_missing_receipt_clarification.grader:grade",
+  "tags": ["readonly", "file", "multi-document", "clarification"]
+}

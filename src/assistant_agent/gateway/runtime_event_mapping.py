@@ -239,6 +239,8 @@ def _progress_message(event: AgentEvent, *, status: str) -> str:
             fallback="Finished the assistant workflow; preparing the response.",
         )
     if event.type == "tool_started":
+        if isinstance(event.text, str) and event.text.strip():
+            return event.text.strip()
         return _named_message("Calling", event.tool_name, fallback="Calling a tool.")
     if event.type == "tool_progress":
         return _named_message(

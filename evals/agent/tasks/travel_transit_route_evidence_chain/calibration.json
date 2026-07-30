@@ -1,0 +1,335 @@
+{
+  "schema_version": "agent_eval_calibration_v3",
+  "fixtures": [
+    {
+      "id": "geocodes_then_uses_transit_route",
+      "judge_verdicts": {
+        "tool_semantics": {
+          "passed": true,
+          "reason": "人工标注：两次地理编码和公交路线返回均完整、自洽且可用。"
+        },
+        "grounding": {
+          "passed": true,
+          "reason": "人工标注：坐标、线路、时间、步行量和换乘次数均忠于工具 Evidence。"
+        },
+        "response_quality": {
+          "passed": true,
+          "reason": "人工标注：回答完整说明了从地点解析到路线规划的证据链。"
+        }
+      },
+      "evidence": {
+        "task_id": "travel_transit_route_evidence_chain",
+        "run_id": "calibration-transit-correct",
+        "trace_id": "44444444444444444444444444444444",
+        "terminal_status": "completed",
+        "response": {
+          "message": "杭州东站坐标120.212010,30.290870，中国丝绸博物馆坐标120.139527,30.225315。以这两个坐标规划公共交通后，推荐地铁1号线换乘公交12路，预计52分钟，步行780米，换乘1次。"
+        },
+        "available_tools": [
+          "mcp.amap_maps.maps_geo",
+          "mcp.amap_maps.maps_direction_transit_integrated"
+        ],
+        "tool_executions": [
+          {
+            "name": "mcp.amap_maps.maps_geo",
+            "input": {
+              "address": "杭州东站",
+              "city": "杭州"
+            },
+            "status": "succeeded",
+            "terminal_event": "tool.finished",
+            "exposed": true,
+            "output": {
+              "success": true,
+              "model_observation": {
+                "geocodes": [
+                  {
+                    "name": "杭州东站",
+                    "address": "杭州市上城区全福桥路2号",
+                    "location": "120.212010,30.290870"
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "name": "mcp.amap_maps.maps_geo",
+            "input": {
+              "address": "中国丝绸博物馆",
+              "city": "杭州"
+            },
+            "status": "succeeded",
+            "terminal_event": "tool.finished",
+            "exposed": true,
+            "output": {
+              "success": true,
+              "model_observation": {
+                "geocodes": [
+                  {
+                    "name": "中国丝绸博物馆",
+                    "address": "杭州市西湖区玉皇山路73-1号",
+                    "location": "120.139527,30.225315"
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "name": "mcp.amap_maps.maps_direction_transit_integrated",
+            "input": {
+              "origin": "120.212010,30.290870",
+              "destination": "120.139527,30.225315",
+              "city": "杭州",
+              "cityd": "杭州"
+            },
+            "status": "succeeded",
+            "terminal_event": "tool.finished",
+            "exposed": true,
+            "output": {
+              "success": true,
+              "model_observation": {
+                "routes": [
+                  {
+                    "summary": "地铁1号线换乘公交12路",
+                    "duration_minutes": 52,
+                    "walking_distance_meters": 780,
+                    "transfers": 1
+                  }
+                ]
+              }
+            }
+          }
+        ],
+        "validation_results": [
+          {
+            "tool_name": "mcp.amap_maps.maps_geo",
+            "status": "accepted"
+          },
+          {
+            "tool_name": "mcp.amap_maps.maps_geo",
+            "status": "accepted"
+          },
+          {
+            "tool_name": "mcp.amap_maps.maps_direction_transit_integrated",
+            "status": "accepted"
+          }
+        ],
+        "initial_state": {},
+        "final_state": {},
+        "state_diff": {
+          "added": [],
+          "modified": [],
+          "deleted": []
+        }
+      },
+      "expected_dimensions": {
+        "tool_execution": true,
+        "tool_semantics": true,
+        "grounding": true,
+        "response_quality": true
+      }
+    },
+    {
+      "id": "skips_required_geocoding",
+      "judge_verdicts": {
+        "tool_semantics": {
+          "passed": true,
+          "reason": "人工标注：实际调用的公交路线工具返回完整可用。"
+        },
+        "grounding": {
+          "passed": true,
+          "reason": "人工标注：回答中的路线数据忠于实际路线 Evidence。"
+        },
+        "response_quality": {
+          "passed": false,
+          "reason": "人工标注：回答没有先确认两个自然语言地点的坐标，也没有交代路线坐标来源。"
+        }
+      },
+      "evidence": {
+        "task_id": "travel_transit_route_evidence_chain",
+        "run_id": "calibration-transit-skips-geo",
+        "trace_id": "55555555555555555555555555555555",
+        "terminal_status": "completed",
+        "response": {
+          "message": "推荐地铁1号线换乘公交12路，预计52分钟，步行780米，换乘1次。"
+        },
+        "available_tools": [
+          "mcp.amap_maps.maps_geo",
+          "mcp.amap_maps.maps_direction_transit_integrated"
+        ],
+        "tool_executions": [
+          {
+            "name": "mcp.amap_maps.maps_direction_transit_integrated",
+            "input": {
+              "origin": "120.212010,30.290870",
+              "destination": "120.139527,30.225315",
+              "city": "杭州",
+              "cityd": "杭州"
+            },
+            "status": "succeeded",
+            "terminal_event": "tool.finished",
+            "exposed": true,
+            "output": {
+              "success": true,
+              "model_observation": {
+                "routes": [
+                  {
+                    "summary": "地铁1号线换乘公交12路",
+                    "duration_minutes": 52,
+                    "walking_distance_meters": 780,
+                    "transfers": 1
+                  }
+                ]
+              }
+            }
+          }
+        ],
+        "validation_results": [
+          {
+            "tool_name": "mcp.amap_maps.maps_direction_transit_integrated",
+            "status": "accepted"
+          }
+        ],
+        "initial_state": {},
+        "final_state": {},
+        "state_diff": {
+          "added": [],
+          "modified": [],
+          "deleted": []
+        }
+      },
+      "expected_dimensions": {
+        "tool_execution": false,
+        "tool_semantics": true,
+        "grounding": true,
+        "response_quality": false
+      }
+    },
+    {
+      "id": "omits_route_tradeoffs",
+      "judge_verdicts": {
+        "tool_semantics": {
+          "passed": true,
+          "reason": "人工标注：地理编码和公交路线返回完整可用。"
+        },
+        "grounding": {
+          "passed": true,
+          "reason": "人工标注：回答给出的52分钟忠于路线 Evidence，省略其他字段不构成编造。"
+        },
+        "response_quality": {
+          "passed": false,
+          "reason": "人工标注：回答没有给出用户要求的步行量、换乘次数和坐标证据链。"
+        }
+      },
+      "evidence": {
+        "task_id": "travel_transit_route_evidence_chain",
+        "run_id": "calibration-transit-incomplete",
+        "trace_id": "66666666666666666666666666666666",
+        "terminal_status": "completed",
+        "response": {
+          "message": "公共交通预计需要52分钟。"
+        },
+        "available_tools": [
+          "mcp.amap_maps.maps_geo",
+          "mcp.amap_maps.maps_direction_transit_integrated"
+        ],
+        "tool_executions": [
+          {
+            "name": "mcp.amap_maps.maps_geo",
+            "input": {
+              "address": "杭州东站",
+              "city": "杭州"
+            },
+            "status": "succeeded",
+            "terminal_event": "tool.finished",
+            "exposed": true,
+            "output": {
+              "success": true,
+              "model_observation": {
+                "geocodes": [
+                  {
+                    "name": "杭州东站",
+                    "location": "120.212010,30.290870"
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "name": "mcp.amap_maps.maps_geo",
+            "input": {
+              "address": "中国丝绸博物馆",
+              "city": "杭州"
+            },
+            "status": "succeeded",
+            "terminal_event": "tool.finished",
+            "exposed": true,
+            "output": {
+              "success": true,
+              "model_observation": {
+                "geocodes": [
+                  {
+                    "name": "中国丝绸博物馆",
+                    "location": "120.139527,30.225315"
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "name": "mcp.amap_maps.maps_direction_transit_integrated",
+            "input": {
+              "origin": "120.212010,30.290870",
+              "destination": "120.139527,30.225315",
+              "city": "杭州",
+              "cityd": "杭州"
+            },
+            "status": "succeeded",
+            "terminal_event": "tool.finished",
+            "exposed": true,
+            "output": {
+              "success": true,
+              "model_observation": {
+                "routes": [
+                  {
+                    "summary": "地铁1号线换乘公交12路",
+                    "duration_minutes": 52,
+                    "walking_distance_meters": 780,
+                    "transfers": 1
+                  }
+                ]
+              }
+            }
+          }
+        ],
+        "validation_results": [
+          {
+            "tool_name": "mcp.amap_maps.maps_geo",
+            "status": "accepted"
+          },
+          {
+            "tool_name": "mcp.amap_maps.maps_geo",
+            "status": "accepted"
+          },
+          {
+            "tool_name": "mcp.amap_maps.maps_direction_transit_integrated",
+            "status": "accepted"
+          }
+        ],
+        "initial_state": {},
+        "final_state": {},
+        "state_diff": {
+          "added": [],
+          "modified": [],
+          "deleted": []
+        }
+      },
+      "expected_dimensions": {
+        "tool_execution": true,
+        "tool_semantics": true,
+        "grounding": true,
+        "response_quality": false
+      }
+    }
+  ]
+}

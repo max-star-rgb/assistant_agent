@@ -37,20 +37,18 @@ StateReader = Callable[[AgentGraphRuntime, Any], dict[str, Any]]
 BeforeRun = Callable[[AgentGraphRuntime], None]
 
 
-def build_controlled_registry(
+def build_controlled_base_registry(
     *,
     replacements: Mapping[str, Tool] | None = None,
     config: ProviderConfig | None = None,
 ) -> ToolRegistry:
-    """Build the complete offline-safe catalog and replace selected dependencies."""
+    """Build the local offline-safe catalog and replace selected dependencies."""
 
     source = create_default_registry(
         config or ProviderConfig(provider_mode="mock"),
         plugin_modules=[],
     )
-    local_tool_names = [
-        name for name in source.list() if name not in {"web_search", "web_fetch"}
-    ]
+    local_tool_names = source.list()
     replacement_by_name = dict(replacements or {})
     unknown = set(replacement_by_name) - set(local_tool_names)
     if unknown:
@@ -65,6 +63,22 @@ def build_controlled_registry(
         )
     registry.seal(assembly_report=source.assembly_report)
     return registry
+
+
+def build_controlled_registry(
+    *,
+    replacements: Mapping[str, Tool] | None = None,
+    config: ProviderConfig | None = None,
+) -> ToolRegistry:
+    """Build the complete offline-safe catalog with default AMap tools."""
+
+    from evals.agent.travel_support import add_controlled_amap_tools
+
+    base = build_controlled_base_registry(
+        replacements=replacements,
+        config=config,
+    )
+    return add_controlled_amap_tools(base)
 
 
 def outcome_expectations(

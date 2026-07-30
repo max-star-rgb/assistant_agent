@@ -1,6 +1,6 @@
 ---
 name: langfuse-eval-engineering
-description: Design, add, revise, calibrate, run, or audit assistant_agent task-centered Agent evaluations. Use for evals/agent Task, Environment, Evidence, Grader, Langfuse Dataset publishing, Experiment review, primary reward completeness, trace-informed regressions, and distinguishing Agent failures from evaluation infrastructure failures. Do not use for ordinary pytest work or real-service connectivity checks.
+description: Design, add, revise, calibrate, run, or audit assistant_agent task-centered Agent evaluations. Use for evals/agent Task, Environment, Evidence, Grader, Langfuse Dataset publishing, Experiment review, four-score completeness, trace-informed regressions, and distinguishing Agent failures from evaluation infrastructure failures. Do not use for ordinary pytest work or real-service connectivity checks.
 ---
 
 # Langfuse Eval Engineering
@@ -61,7 +61,9 @@ Evidence: grader 可独立检查的轨迹、终态和回答
 
 1. `task.json` 只保存用户请求、capability、environment/grader 入口和短 tags；
 2. `environment.py` 使用活动 `AgentGraphRuntime`，控制依赖、工具可见性、初始状态、隔离和复位，并
-   提供不调用 Agent 的 `validate()`，为每个可见工具声明可读的 `ToolOutcomeExpectation`；
+   默认装配 Agent 在相同结构化运行条件下暴露的完整工具目录，不按 Task 或目标工具裁剪；提供不调用
+   Agent 的 `validate()`，并为每个可见工具声明可读的 `ToolOutcomeExpectation`。确有特殊运行边界
+   时，可由 Environment 使用带可读 profile 的结构化 allowlist 精确收窄目录；
 3. `grader.py` 不向 Agent 暴露 rubric 或 oracle，基于结构化 Evidence 组合 Task-local assertions；
 4. `calibration.json` 至少含一个正确样本和一个可信但错误的样本；
 5. Suite 只做 Task ID 选择，不拥有 Environment 或评分逻辑；
@@ -89,19 +91,21 @@ whitelist 不会放行其他端口。本项目必须使用 Compose 中白名单�
 该版本把 UI Default config 作为顶层 `payload` JSON 字符串发送，尚不原生签名 Remote Experiment；
 内部代理只为缺少签名的请求补充与 Assistant Server 共享的 HMAC，已有签名必须原样保留。
 
-运行后检查 Agent 输入、工具暴露、Validator/Tool Trace、依赖结果、状态变化、最终回答、grader 理由和
-`agent_eval.reward`。Langfuse 只输出固定的 `tool_execution`、`tool_use`、`state`、
-`response` 四个诊断维度；Task 专属原子断言只作为维度详情，不创建专属 Score。
+运行后检查 Agent 输入、工具 Trace、依赖结果、最终回答和 grader 理由。Langfuse 只输出固定的
+`tool_execution`、`tool_semantics`、`grounding`、`response_quality` 四个独立 BOOLEAN Score，
+不生成 reward 或总通过分；Task 专属 rubric 只用于 `response_quality`。
+Experiment 完成后必须通过 Scores v3 API 回查四项 Score 已实际落库，并确认它们挂在同一个
+`experiment-item-task` observation；SDK 内存结果不能单独证明 Score 写入成功。
 检查每个 `judge.<criterion_id>` evaluator observation 的耗时和状态；Judge 必须使用独立非流式
 timeout/retry 配置，不能继承 Agent 的长 timeout、stream 或 SDK 默认重试。
 
-Agent 行为不满足任务时退出 1。凭据、Trace 导出、Dataset、Judge、证据解析或 Score 缺失属于评测
-基础设施错误，退出 2，不能伪装成 Agent 通过或失败。
+`--run` 完整产出四项 Score 后退出 0；`--calibrate` 的人工标注不匹配时退出 1。凭据、Trace 导出、
+Dataset、Judge、证据解析或 Score 缺失属于评测基础设施错误，退出 2。
 
 ## 7. 复盘
 
-报告 Task 路径、Environment 边界、校准结果、运行命令、主要 reward、诊断检查、基础设施状态和
-限制。请用户批准、修订、删除或选择下一个 capability。
+报告 Task 路径、Environment 边界、校准结果、运行命令、四项 Score、基础设施状态和限制。请用户
+批准、修订、删除或选择下一个 capability。
 
 ## 不变量
 
@@ -110,25 +114,30 @@ Agent 行为不满足任务时退出 1。凭据、Trace 导出、Dataset、Judge
 - Dataset item 的 ACTIVE/ARCHIVED 状态可以选择本次是否运行，但 ACTIVE item 必须完整映射到 Git
   Task；未知、重复或契约不一致的 item 属于基础设施错误，不能静默跳过。
 - 一个 Task 只验证一个可命名 capability。
+- 所有 Task 的默认 Environment 暴露完整 Agent eval 工具目录；只允许媒体、entry profile、
+  durable ready-step 等运行时结构化事实收窄具体 run 的可见集合，不按 Task capability 或用户话术
+  预选工具。
+- 精细化 override 必须由 Environment 或受信入口通过结构化
+  `metadata.tool_visibility.profile + allowed_tools` 声明，限制在已注册受控工具内，由
+  `validate()` 检查并为最终可见集合声明 outcome expectation；不得写进自然语言、grader 或
+  Dataset metadata，也不能扩大真实调用权限。
 - Environment 拥有依赖和状态，Task 输入不描述测试机关。
 - Grader 对 Agent 隐藏，并先用正反样本证明能区分结果。
-- 一个主要 reward 决定通过；固定四维只解释 reward，Task 专属断言不形成新 Score。
+- 四项 Score 保持阳性语义和相互独立，不计算 reward 或总通过状态。
 - Rule 与 LLM Judge 分开实现但统一产出 assertion；每条 assertion 显式标记
   `evaluation_method=rule|judge`，提供面向评测查看者的短 `label`，Judge assertion 使用稳定
   `criterion_id`。
 - Langfuse comment 通过时必须列出 assertion 的 `label`，失败时展示失败 assertion 的
-  `label + reason`；主要 reward 通过时列出全部必要维度中文名，失败时列出失败维度中文名；内部
-  assertion key 不得单独充当用户可见诊断。
+  `label + reason`；内部 assertion key 不得单独充当用户可见诊断。
 - 可客观证明的事实必须使用 Rule；LLM Judge 只判断开放语义，不能覆盖 Rule 结果。Judge 故障属于
   基础设施失败。
 - Judge 固定非流式，默认 timeout 30 秒、SDK retry 0 次；每个 criterion 产生独立 evaluator
   observation，CLI 进度写 stderr、最终 JSON 写 stdout。
 - Environment validation、凭据、Evidence 和 Judge 故障属于基础设施状态，不计入 Agent 分数。
-- 工具业务结果预期只由 Environment 声明；通用评分入口自动将实际结果匹配注入
-  `tool_use`，Task grader 不得重复硬编码成功或错误码。
-- `outcome_matches_environment` 只验证工具结果符合受控世界；Task 需要时另用
-  `outcome_evidence_usage` Judge assertion 判断 Agent 是否正确消费结果，并按实际被检查的行为归入
-  `tool_use` 或 `response`。
+- 工具业务结果预期只由 Environment 声明；通用评分入口把实际终态与 oracle 的匹配写入
+  `tool_execution`，Task grader 不得重复硬编码成功或错误码。
+- `tool_semantics` 判断工具数据本身是否语义正确可用；`grounding` 判断回答是否忠于工具结果；
+  `response_quality` 使用 Task 专属 rubric 判断回答是否清晰完整地回应用户。
 - Trace 用于发现问题和提供证据，不直接充当正确答案。
 - pytest 保持 mock/local/offline；真实 Provider 不得静默回退 mock。
 - 不提交凭据、原始生产 Trace、真实用户数据或评测运行生成物。

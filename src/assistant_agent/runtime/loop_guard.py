@@ -95,6 +95,36 @@ class LoopGuard:
             and self._tool_call_signature(tool_name, tool_input) in signatures
         )
 
+    def complete_call_already_seen(
+        self,
+        *,
+        tool_name: str,
+        tool_input: dict[str, Any],
+    ) -> bool:
+        """Return whether the same read invocation already completed successfully."""
+
+        signatures = self.state.get("complete_tool_call_signatures", [])
+        return (
+            isinstance(signatures, list)
+            and self._tool_call_signature(tool_name, tool_input) in signatures
+        )
+
+    def record_complete_tool_success(
+        self,
+        *,
+        tool_name: str,
+        tool_input: dict[str, Any],
+    ) -> None:
+        """Remember a complete successful read invocation for this run."""
+
+        signatures = self.state.get("complete_tool_call_signatures", [])
+        if not isinstance(signatures, list):
+            signatures = []
+        signature = self._tool_call_signature(tool_name, tool_input)
+        if signature not in signatures:
+            signatures.append(signature)
+        self.state["complete_tool_call_signatures"] = signatures
+
     def nonrecoverable_failure_already_seen(self, tool_name: str) -> bool:
         """Return whether this tool already reported a non-recoverable failure."""
 
