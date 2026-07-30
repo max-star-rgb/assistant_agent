@@ -63,8 +63,8 @@
             "name": "calendar_create",
             "input": {
               "title": "需求确认",
-              "start_time": "2026-07-30T16:00:00+08:00",
-              "end_time": "2026-07-30T16:30:00+08:00",
+              "start_time": "__TOMORROW__T16:00:00+08:00",
+              "end_time": "__TOMORROW__T16:30:00+08:00",
               "attendees": [
                 "alex.chen@example.test"
               ]
@@ -77,8 +77,8 @@
               "model_observation": {
                 "event": {
                   "title": "需求确认",
-                  "start_time": "2026-07-30T16:00:00+08:00",
-                  "end_time": "2026-07-30T16:30:00+08:00",
+                  "start_time": "__TOMORROW__T16:00:00+08:00",
+                  "end_time": "__TOMORROW__T16:30:00+08:00",
                   "location": null,
                   "attendees": [
                     "alex.chen@example.test"
@@ -190,8 +190,8 @@
             "name": "calendar_create",
             "input": {
               "title": "需求确认",
-              "start_time": "2026-07-30T16:00:00+08:00",
-              "end_time": "2026-07-30T16:30:00+08:00",
+              "start_time": "__TOMORROW__T16:00:00+08:00",
+              "end_time": "__TOMORROW__T16:30:00+08:00",
               "attendees": [
                 "alex.chen@example.test"
               ]
@@ -204,8 +204,8 @@
               "model_observation": {
                 "event": {
                   "title": "需求确认",
-                  "start_time": "2026-07-30T16:00:00+08:00",
-                  "end_time": "2026-07-30T16:30:00+08:00",
+                  "start_time": "__TOMORROW__T16:00:00+08:00",
+                  "end_time": "__TOMORROW__T16:30:00+08:00",
                   "location": null,
                   "attendees": [
                     "alex.chen@example.test"

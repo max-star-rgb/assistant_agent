@@ -34,8 +34,8 @@
             "name": "calendar_create",
             "input": {
               "title": "项目复盘",
-              "start_time": "2026-07-30T14:00:00+08:00",
-              "end_time": "2026-07-30T15:00:00+08:00",
+              "start_time": "__TOMORROW__T14:00:00+08:00",
+              "end_time": "__TOMORROW__T15:00:00+08:00",
               "location": "会议室B"
             },
             "status": "succeeded",
@@ -46,8 +46,8 @@
               "model_observation": {
                 "event": {
                   "title": "项目复盘",
-                  "start_time": "2026-07-30T14:00:00+08:00",
-                  "end_time": "2026-07-30T15:00:00+08:00",
+                  "start_time": "__TOMORROW__T14:00:00+08:00",
+                  "end_time": "__TOMORROW__T15:00:00+08:00",
                   "location": "会议室B",
                   "attendees": []
                 },
@@ -124,8 +124,8 @@
             "name": "calendar_create",
             "input": {
               "title": "项目复盘",
-              "start_time": "2026-07-30T14:00:00+08:00",
-              "end_time": "2026-07-30T15:00:00+08:00",
+              "start_time": "__TOMORROW__T14:00:00+08:00",
+              "end_time": "__TOMORROW__T15:00:00+08:00",
               "location": "会议室B"
             },
             "status": "succeeded",
@@ -136,8 +136,8 @@
               "model_observation": {
                 "event": {
                   "title": "项目复盘",
-                  "start_time": "2026-07-30T14:00:00+08:00",
-                  "end_time": "2026-07-30T15:00:00+08:00",
+                  "start_time": "__TOMORROW__T14:00:00+08:00",
+                  "end_time": "__TOMORROW__T15:00:00+08:00",
                   "location": "会议室B",
                   "attendees": []
                 },

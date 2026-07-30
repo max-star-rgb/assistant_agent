@@ -191,8 +191,9 @@ class _RecordingJudge:
 
 
 def _replace_tomorrow(value: Any) -> Any:
-    if value == "__TOMORROW__":
-        return (date.today() + timedelta(days=1)).isoformat()
+    if isinstance(value, str) and value.startswith("__TOMORROW__"):
+        tomorrow = (date.today() + timedelta(days=1)).isoformat()
+        return tomorrow + value.removeprefix("__TOMORROW__")
     if isinstance(value, list):
         return [_replace_tomorrow(item) for item in value]
     if isinstance(value, dict):

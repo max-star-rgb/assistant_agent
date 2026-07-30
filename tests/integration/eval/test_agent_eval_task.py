@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import date, timedelta
 from types import SimpleNamespace
 from typing import Any
 
@@ -15,12 +16,15 @@ from assistant_agent.runtime.chat_adapter import ChatRequest, ChatResult
 from evals.agent.calibration import (
     CalibrationDimensions,
     CalibrationJudgeVerdicts,
+    CalibrationSet,
+    _replace_tomorrow,
     load_labeled_calibration_judge,
     run_calibration,
 )
 from evals.agent.cli import _emit_progress, _langfuse_client, main
 from evals.agent.contracts import (
     AssertionResult,
+    DimensionResult,
     JudgeVerdict,
     RunEvidence,
     TaskJudgeResult,
@@ -50,7 +54,13 @@ from evals.agent.judge import (
     _judge_http_client,
     create_provider_judge,
 )
-from evals.agent.loader import list_task_ids, load_entrypoint, load_suite, load_task
+from evals.agent.loader import (
+    calibration_path,
+    list_task_ids,
+    load_entrypoint,
+    load_suite,
+    load_task,
+)
 from evals.agent.provider_gate import validate_real_chat_config
 
 
@@ -684,6 +694,9 @@ def test_persisted_dimension_verification_requires_four_observation_scores() -> 
     class _ScoresV3:
         def __init__(self) -> None:
             self.names = list(score_names)
+            self.data_types = {
+                name: "BOOLEAN" for name in score_names
+            }
             self.observation_ids = {
                 name: "task-observation-id" for name in score_names
             }
@@ -695,7 +708,7 @@ def test_persisted_dimension_verification_requires_four_observation_scores() -> 
                 data=[
                     SimpleNamespace(
                         name=name,
-                        data_type="BOOLEAN",
+                        data_type=self.data_types[name],
                         subject=SimpleNamespace(
                             id=self.observation_ids[name],
                             kind="observation",
@@ -706,9 +719,28 @@ def test_persisted_dimension_verification_requires_four_observation_scores() -> 
                 ]
             )
 
+    class _Observations:
+        def __init__(self) -> None:
+            self.ids = ["task-observation-id"]
+
+        def get_many(self, **kwargs: Any) -> SimpleNamespace:
+            assert kwargs == {
+                "trace_id": TRACE_ID,
+                "name": "experiment-item-task",
+                "type": "SPAN",
+                "limit": 2,
+            }
+            return SimpleNamespace(
+                data=[SimpleNamespace(id=observation_id) for observation_id in self.ids]
+            )
+
     scores_v3 = _ScoresV3()
+    observations = _Observations()
     client = SimpleNamespace(
-        api=SimpleNamespace(scores_v3=scores_v3),
+        api=SimpleNamespace(
+            observations=observations,
+            scores_v3=scores_v3,
+        ),
         flush=lambda: None,
     )
     result = SimpleNamespace(
@@ -725,6 +757,107 @@ def test_persisted_dimension_verification_requires_four_observation_scores() -> 
     scores_v3.names.pop()
     with pytest.raises(RuntimeError, match="persisted Agent eval dimensions"):
         verify_persisted_dimension_scores(client, result, attempts=1)
+
+
+@pytest.mark.parametrize(
+    ("mutation", "error_pattern"),
+    [
+        ("wrong_observation_identity", "experiment-item-task observation"),
+        ("same_name_bad_type_duplicate", "duplicates"),
+        ("non_boolean", "data_type"),
+    ],
+)
+def test_persisted_dimension_verification_rejects_invalid_score_records(
+    mutation: str,
+    error_pattern: str,
+) -> None:
+    score_names = [
+        f"agent_eval.dimension.{name}"
+        for name in (
+            "tool_execution",
+            "tool_semantics",
+            "grounding",
+            "response_quality",
+        )
+    ]
+    records = [
+        SimpleNamespace(
+            name=name,
+            data_type="BOOLEAN",
+            subject=SimpleNamespace(
+                id="task-observation-id",
+                kind="observation",
+                trace_id=TRACE_ID,
+            ),
+        )
+        for name in score_names
+    ]
+    if mutation == "wrong_observation_identity":
+        records[-1].subject.id = "other-observation-id"
+    elif mutation == "same_name_bad_type_duplicate":
+        records.append(
+            SimpleNamespace(
+                name=score_names[-1],
+                data_type="NUMERIC",
+                subject=SimpleNamespace(
+                    id="task-observation-id",
+                    kind="observation",
+                    trace_id=TRACE_ID,
+                ),
+            )
+        )
+    else:
+        records[-1].data_type = "NUMERIC"
+
+    client = SimpleNamespace(
+        api=SimpleNamespace(
+            observations=SimpleNamespace(
+                get_many=lambda **_: SimpleNamespace(
+                    data=[SimpleNamespace(id="task-observation-id")]
+                )
+            ),
+            scores_v3=SimpleNamespace(
+                get_many_v3=lambda **_: SimpleNamespace(data=records)
+            ),
+        ),
+        flush=lambda: None,
+    )
+
+    with pytest.raises(RuntimeError, match=error_pattern):
+        verify_persisted_dimension_scores(
+            client,
+            SimpleNamespace(item_results=[SimpleNamespace(trace_id=TRACE_ID)]),
+            attempts=1,
+        )
+
+
+@pytest.mark.parametrize("observation_ids", [[], ["first-id", "second-id"]])
+def test_persisted_dimension_verification_requires_one_task_observation(
+    observation_ids: list[str],
+) -> None:
+    client = SimpleNamespace(
+        api=SimpleNamespace(
+            observations=SimpleNamespace(
+                get_many=lambda **_: SimpleNamespace(
+                    data=[
+                        SimpleNamespace(id=observation_id)
+                        for observation_id in observation_ids
+                    ]
+                )
+            ),
+            scores_v3=SimpleNamespace(
+                get_many_v3=lambda **_: SimpleNamespace(data=[])
+            ),
+        ),
+        flush=lambda: None,
+    )
+
+    with pytest.raises(RuntimeError, match="exactly one experiment-item-task"):
+        verify_persisted_dimension_scores(
+            client,
+            SimpleNamespace(item_results=[SimpleNamespace(trace_id=TRACE_ID)]),
+            attempts=1,
+        )
 
 
 def test_calibration_schema_requires_exact_four_dimensions_and_three_judges() -> None:
@@ -756,54 +889,188 @@ def test_calibration_schema_requires_exact_four_dimensions_and_three_judges() ->
 
 
 def test_task_judge_contract_rejects_removed_reward_field() -> None:
-    passed_dimension = dimension(
-        {
-            "judge": judge_assertion(
-                JudgeVerdict(passed=True, reason="通过。"),
-                criterion_id="grounding",
-                label="Judge 通过",
-            )
-        }
-    )
+    passed_dimensions = {
+        criterion_id: dimension(
+            {
+                "judge": judge_assertion(
+                    JudgeVerdict(passed=True, reason="通过。"),
+                    criterion_id=criterion_id,
+                    label="Judge 通过",
+                )
+            }
+        )
+        for criterion_id in (
+            "tool_semantics",
+            "grounding",
+            "response_quality",
+        )
+    }
 
     with pytest.raises(ValidationError):
         TaskJudgeResult.model_validate(
             {
-                "tool_semantics": passed_dimension,
-                "grounding": passed_dimension,
-                "response_quality": passed_dimension,
+                **passed_dimensions,
                 "reward": True,
             }
         )
 
 
-def test_all_task_calibrations_match_four_dimension_labels() -> None:
-    outcomes = {
-        task_id: run_calibration(
-            load_task(task_id),
-            load_labeled_calibration_judge(load_task(task_id)),
+@pytest.mark.parametrize(
+    ("field_name", "assertion"),
+    [
+        (
+            "tool_semantics",
+            rule_assertion(
+                True,
+                "规则通过。",
+                label="错误的 Rule assertion",
+            ),
+        ),
+        (
+            "grounding",
+            AssertionResult.model_construct(
+                passed=True,
+                label="缺失 criterion",
+                reason="Judge assertion 缺少 criterion。",
+                evaluation_method="judge",
+                criterion_id=None,
+            ),
+        ),
+        (
+            "response_quality",
+            judge_assertion(
+                JudgeVerdict(passed=True, reason="通过。"),
+                criterion_id="grounding",
+                label="错误 criterion",
+            ),
+        ),
+    ],
+)
+def test_task_judge_contract_rejects_invalid_field_assertions(
+    field_name: str,
+    assertion: AssertionResult,
+) -> None:
+    dimensions = {
+        criterion_id: dimension(
+            {
+                "judge": judge_assertion(
+                    JudgeVerdict(passed=True, reason="通过。"),
+                    criterion_id=criterion_id,
+                    label="Judge 通过",
+                )
+            }
         )
-        for task_id in list_task_ids()
+        for criterion_id in (
+            "tool_semantics",
+            "grounding",
+            "response_quality",
+        )
     }
+    dimensions[field_name] = DimensionResult.model_construct(
+        passed=assertion.passed,
+        reason=assertion.reason,
+        assertions={"invalid": assertion},
+    )
+
+    with pytest.raises(ValidationError, match=field_name):
+        TaskJudgeResult.model_validate(dimensions)
+
+
+def test_calendar_calibrations_resolve_tomorrow_iso_prefix() -> None:
+    expected_date = (date.today() + timedelta(days=1)).isoformat()
+    expected_times = {
+        "calendar_create_isolated_commit": (
+            f"{expected_date}T14:00:00+08:00",
+            f"{expected_date}T15:00:00+08:00",
+        ),
+        "contact_resolved_calendar_creation": (
+            f"{expected_date}T16:00:00+08:00",
+            f"{expected_date}T16:30:00+08:00",
+        ),
+    }
+
+    for task_id, (expected_start, expected_end) in expected_times.items():
+        calibration = CalibrationSet.model_validate_json(
+            calibration_path(task_id).read_text(encoding="utf-8")
+        )
+        evidence = _replace_tomorrow(calibration.fixtures[0].evidence)
+        calendar_call = next(
+            call
+            for call in evidence["tool_executions"]
+            if call["name"] == "calendar_create"
+        )
+
+        assert calendar_call["input"]["start_time"] == expected_start
+        assert calendar_call["input"]["end_time"] == expected_end
+        assert (
+            calendar_call["output"]["model_observation"]["event"]["start_time"]
+            == expected_start
+        )
+        assert (
+            calendar_call["output"]["model_observation"]["event"]["end_time"]
+            == expected_end
+        )
+
+
+def test_positive_calibration_responses_meet_their_labeled_rubrics() -> None:
+    email_calibration = CalibrationSet.model_validate_json(
+        calibration_path("email_empty_result_honesty").read_text(encoding="utf-8")
+    )
+    email_message = email_calibration.fixtures[0].evidence["response"]["message"]
+    assert any(
+        clue in email_message
+        for clue in ("供应商名称", "发票号", "日期范围")
+    )
+
+    shopping_calibration = CalibrationSet.model_validate_json(
+        calibration_path("visual_shopping_grounded_search").read_text(
+            encoding="utf-8"
+        )
+    )
+    shopping_message = shopping_calibration.fixtures[0].evidence["response"]["message"]
+    assert "白色低帮皮革运动鞋" in shopping_message
+    assert "399" in shopping_message
+    assert "400" in shopping_message
+
+
+@pytest.mark.parametrize("task_id", list_task_ids())
+def test_task_calibration_matches_four_dimension_labels(task_id: str) -> None:
+    task = load_task(task_id)
+    outcomes = run_calibration(
+        task,
+        load_labeled_calibration_judge(task),
+    )
 
     assert all(
         result.matched
-        for task_results in outcomes.values()
-        for result in task_results
+        for result in outcomes
     )
     assert all(
         set(result.expected_judge_passes)
         == {"tool_semantics", "grounding", "response_quality"}
-        for task_results in outcomes.values()
-        for result in task_results
+        for result in outcomes
     )
-    assert outcomes["email_empty_result_honesty"][1].dimensions == {
+
+
+def test_calibration_preserves_labeled_dimension_examples() -> None:
+    email_task = load_task("email_empty_result_honesty")
+    email_outcomes = run_calibration(
+        email_task,
+        load_labeled_calibration_judge(email_task),
+    )
+    assert email_outcomes[1].dimensions == {
         "tool_execution": True,
         "tool_semantics": True,
         "grounding": False,
         "response_quality": True,
     }
-    assert outcomes["memory_current_request_precedence"][1].dimensions == {
+
+    memory_task = load_task("memory_current_request_precedence")
+    memory_outcomes = run_calibration(
+        memory_task,
+        load_labeled_calibration_judge(memory_task),
+    )
+    assert memory_outcomes[1].dimensions == {
         "tool_execution": True,
         "tool_semantics": True,
         "grounding": True,

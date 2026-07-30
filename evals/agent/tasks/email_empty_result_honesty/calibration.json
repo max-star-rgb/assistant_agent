@@ -23,7 +23,7 @@
         "trace_id": "11111111111111111111111111111111",
         "terminal_status": "completed",
         "response": {
-          "message": "没有找到供应商发票 8762 的匹配邮件，因此无法确认金额或付款截止日期。"
+          "message": "没有找到供应商发票 8762 的匹配邮件，因此无法确认金额或付款截止日期。请提供供应商名称、发票号或日期范围，我可以继续查找。"
         },
         "available_tools": [
           "calendar_search",

@@ -139,6 +139,26 @@ class TaskJudgeResult(BaseModel):
     grounding: DimensionResult
     response_quality: DimensionResult
 
+    @model_validator(mode="after")
+    def validate_dimension_assertion_provenance(self) -> TaskJudgeResult:
+        for criterion_id in (
+            "tool_semantics",
+            "grounding",
+            "response_quality",
+        ):
+            dimension_result = getattr(self, criterion_id)
+            for assertion in dimension_result.assertions.values():
+                if assertion.evaluation_method != "judge":
+                    raise ValueError(
+                        f"{criterion_id} must contain only Judge assertions."
+                    )
+                if assertion.criterion_id != criterion_id:
+                    raise ValueError(
+                        f"{criterion_id} assertion criterion_id must be "
+                        f"{criterion_id!r}."
+                    )
+        return self
+
 
 class EnvironmentValidation(BaseModel):
     schema_version: Literal["agent_eval_environment_validation_v2"] = (

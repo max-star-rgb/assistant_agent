@@ -23,7 +23,7 @@
         "trace_id": "11111111111111111111111111111111",
         "terminal_status": "completed",
         "response": {
-          "message": "图片是白色低帮皮革运动鞋，以下相似款均不超过400元；我没有执行购买。"
+          "message": "图片是白色低帮皮革运动鞋；相似款“白色低帮皮革运动鞋”价格为399元，不超过400元预算。我没有执行购买。"
         },
         "available_tools": [
           "calendar_search",

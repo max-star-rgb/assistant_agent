@@ -326,6 +326,32 @@ def verify_persisted_dimension_scores(
             )
         failure_detail = ""
         for attempt in range(attempts):
+            observations_response = client.api.observations.get_many(
+                trace_id=trace_id,
+                name="experiment-item-task",
+                type="SPAN",
+                limit=2,
+            )
+            observations = observations_response.data
+            if len(observations) != 1:
+                failure_detail = (
+                    f"trace_id={trace_id}, expected exactly one "
+                    "experiment-item-task observation, "
+                    f"actual={len(observations)}"
+                )
+                if attempt + 1 < attempts and retry_delay_seconds > 0:
+                    time.sleep(retry_delay_seconds)
+                continue
+            task_observation_id = getattr(observations[0], "id", None)
+            if not isinstance(task_observation_id, str) or not task_observation_id:
+                failure_detail = (
+                    f"trace_id={trace_id}, experiment-item-task observation "
+                    "is missing id"
+                )
+                if attempt + 1 < attempts and retry_delay_seconds > 0:
+                    time.sleep(retry_delay_seconds)
+                continue
+
             response = client.api.scores_v3.get_many_v3(
                 limit=100,
                 fields="subject",
@@ -336,31 +362,48 @@ def verify_persisted_dimension_scores(
                 score
                 for score in response.data
                 if score.name in expected_names
-                and score.data_type == "BOOLEAN"
-                and getattr(score, "subject", None) is not None
-                and score.subject.kind == "observation"
-                and isinstance(score.subject.id, str)
-                and bool(score.subject.id)
-                and score.subject.trace_id == trace_id
             ]
             names = [score.name for score in scores]
-            subject_ids = {
-                getattr(score.subject, "id", None) for score in scores
-            }
             missing = sorted(expected_names - set(names))
             duplicates = sorted(
                 name for name in expected_names if names.count(name) > 1
             )
-            if (
-                not missing
-                and not duplicates
-                and len(subject_ids) == 1
-            ):
-                break
-            failure_detail = (
-                f"trace_id={trace_id}, missing={missing}, "
-                f"duplicates={duplicates}, task_observations={len(subject_ids)}"
-            )
+            if missing or duplicates:
+                failure_detail = (
+                    f"trace_id={trace_id}, missing={missing}, "
+                    f"duplicates={duplicates}"
+                )
+            else:
+                invalid_records: list[str] = []
+                for score in scores:
+                    subject = getattr(score, "subject", None)
+                    if getattr(score, "data_type", None) != "BOOLEAN":
+                        invalid_records.append(
+                            f"{score.name}: data_type="
+                            f"{getattr(score, 'data_type', None)!r}"
+                        )
+                    elif subject is None:
+                        invalid_records.append(f"{score.name}: missing subject")
+                    elif getattr(subject, "kind", None) != "observation":
+                        invalid_records.append(
+                            f"{score.name}: subject.kind="
+                            f"{getattr(subject, 'kind', None)!r}"
+                        )
+                    elif getattr(subject, "trace_id", None) != trace_id:
+                        invalid_records.append(
+                            f"{score.name}: subject.trace_id="
+                            f"{getattr(subject, 'trace_id', None)!r}"
+                        )
+                    elif getattr(subject, "id", None) != task_observation_id:
+                        invalid_records.append(
+                            f"{score.name}: subject.id does not match "
+                            "experiment-item-task observation"
+                        )
+                if not invalid_records:
+                    break
+                failure_detail = (
+                    f"trace_id={trace_id}, invalid={invalid_records}"
+                )
             if attempt + 1 < attempts and retry_delay_seconds > 0:
                 time.sleep(retry_delay_seconds)
         else:
