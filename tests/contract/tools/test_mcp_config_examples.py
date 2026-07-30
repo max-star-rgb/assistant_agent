@@ -30,6 +30,9 @@ def test_mcp_example_allowlists_only_read_only_amap_tools() -> None:
     servers = [MCPServerConfig.model_validate(item) for item in payload["servers"]]
 
     amap = next(server for server in servers if server.server_name == "amap_maps")
+    calendar = next(
+        server for server in servers if server.server_name == "google_calendar"
+    )
 
     assert all(
         server.personal_assistant_tools.weather_lookup is None
@@ -46,3 +49,4 @@ def test_mcp_example_allowlists_only_read_only_amap_tools() -> None:
     assert amap.env == {
         "AMAP_MAPS_API_KEY": "<set-in-ignored-local-config>",
     }
+    assert calendar.command[-2:] == ["--tools", "calendar"]

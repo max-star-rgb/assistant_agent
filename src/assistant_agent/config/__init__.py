@@ -172,6 +172,7 @@ class ProviderConfig:
     shopping_compare_timeout_seconds: float = 10.0
     lodging_provider: LodgingProviderName = "mock"
     flyai_cli_path: str | None = None
+    flyai_api_key: str | None = None
     flyai_timeout_seconds: float = 30.0
     haodanku_api_key: str | None = None
     haodanku_base_url: str = "https://v3.api.haodanku.com"
@@ -558,6 +559,7 @@ class ProviderConfig:
                 allow_real=allow_real_providers,
             ),
             flyai_cli_path=source.get("FLYAI_CLI_PATH"),
+            flyai_api_key=source.get("FLYAI_API_KEY"),
             flyai_timeout_seconds=_float_env(
                 source.get("FLYAI_TIMEOUT_SECONDS"),
                 30.0,

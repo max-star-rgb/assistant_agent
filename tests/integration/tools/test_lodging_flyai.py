@@ -63,9 +63,14 @@ def _success_payload() -> dict[str, object]:
 
 def test_flyai_adapter_normalizes_official_hotel_result_and_booking_link() -> None:
     commands: list[list[str]] = []
+    environments: list[dict[str, str]] = []
 
-    def runner(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+    def runner(
+        command: list[str],
+        **kwargs: object,
+    ) -> subprocess.CompletedProcess[str]:
         commands.append(command)
+        environments.append(kwargs["env"])
         return subprocess.CompletedProcess(
             command,
             0,
@@ -75,6 +80,7 @@ def test_flyai_adapter_normalizes_official_hotel_result_and_booking_link() -> No
 
     result = FlyAILodgingSearchAdapter(
         cli_path="/opt/flyai/bin/flyai",
+        api_key="flyai-key-sentinel",
         timeout_seconds=12,
         runner=runner,
     ).search(_request())
@@ -117,14 +123,16 @@ def test_flyai_adapter_normalizes_official_hotel_result_and_booking_link() -> No
             "rate_desc",
         ]
     ]
+    assert environments[0]["FLYAI_API_KEY"] == "flyai-key-sentinel"
 
 
-def test_flyai_adapter_normalizes_masked_experience_price_to_lower_bound() -> None:
+def test_flyai_adapter_rejects_masked_experience_price() -> None:
     payload = _success_payload()
     payload["data"]["itemList"][0]["price"] = "¥4xx"
 
     result = FlyAILodgingSearchAdapter(
         cli_path="/opt/flyai/bin/flyai",
+        api_key="flyai-key-sentinel",
         runner=lambda command, **_kwargs: subprocess.CompletedProcess(
             command,
             0,
@@ -133,9 +141,9 @@ def test_flyai_adapter_normalizes_masked_experience_price_to_lower_bound() -> No
         ),
     ).search(_request())
 
-    assert result.success is True
-    assert result.offers[0].nightly_price == 400
-    assert result.offers[0].total_price == 800
+    assert result.success is False
+    assert result.error_code == "provider_bad_response"
+    assert result.offers == []
 
 
 @pytest.mark.parametrize(
@@ -178,6 +186,7 @@ def test_flyai_adapter_returns_structured_failures(
 ) -> None:
     result = FlyAILodgingSearchAdapter(
         cli_path="/opt/flyai/bin/flyai",
+        api_key="flyai-key-sentinel",
         runner=lambda *_args, **_kwargs: runner_result,
     ).search(_request())
 
@@ -195,6 +204,7 @@ def test_flyai_adapter_normalizes_timeout() -> None:
 
     result = FlyAILodgingSearchAdapter(
         cli_path="/opt/flyai/bin/flyai",
+        api_key="flyai-key-sentinel",
         timeout_seconds=5,
         runner=timeout_runner,
     ).search(_request())
@@ -209,6 +219,7 @@ def test_flyai_adapter_rejects_non_http_booking_links() -> None:
 
     result = FlyAILodgingSearchAdapter(
         cli_path="/opt/flyai/bin/flyai",
+        api_key="flyai-key-sentinel",
         runner=lambda command, **_kwargs: subprocess.CompletedProcess(
             command,
             0,
@@ -236,6 +247,7 @@ def test_real_lodging_plugin_registers_only_complete_flyai_configuration(
                 openai_api_key="test-only",
                 lodging_provider="flyai",
                 flyai_cli_path=str(cli_path),
+                flyai_api_key="flyai-key-sentinel",
             ),
             mcp_server_configs=[],
         )
@@ -249,6 +261,7 @@ def test_real_lodging_plugin_registers_only_complete_flyai_configuration(
                 openai_api_key="test-only",
                 lodging_provider="flyai",
                 flyai_cli_path=None,
+                flyai_api_key="flyai-key-sentinel",
             ),
             mcp_server_configs=[],
         )
@@ -262,6 +275,21 @@ def test_real_lodging_plugin_registers_only_complete_flyai_configuration(
                 openai_api_key="test-only",
                 lodging_provider="flyai",
                 flyai_cli_path="/missing/flyai",
+                flyai_api_key="flyai-key-sentinel",
+            ),
+            mcp_server_configs=[],
+        )
+    )
+    missing_api_key = LodgingToolPlugin().build_tools(
+        ToolPluginContext(
+            config=ProviderConfig(
+                provider_mode="real",
+                chat_provider="openai",
+                chat_adapter_kind="openai",
+                openai_api_key="test-only",
+                lodging_provider="flyai",
+                flyai_cli_path=str(cli_path),
+                flyai_api_key=None,
             ),
             mcp_server_configs=[],
         )
@@ -270,6 +298,7 @@ def test_real_lodging_plugin_registers_only_complete_flyai_configuration(
     assert [tool.name for tool in configured] == ["lodging_search"]
     assert unconfigured == []
     assert missing_executable == []
+    assert missing_api_key == []
 
 
 def test_lodging_provider_environment_is_real_only_and_explicit() -> None:
@@ -280,6 +309,7 @@ def test_lodging_provider_environment_is_real_only_and_explicit() -> None:
             "OPENAI_API_KEY": "test-only",
             "MULTIMODAL_AGENT_LODGING_PROVIDER": "flyai",
             "FLYAI_CLI_PATH": "/opt/flyai/bin/flyai",
+            "FLYAI_API_KEY": "flyai-key-sentinel",
             "FLYAI_TIMEOUT_SECONDS": "15",
         }
     )
@@ -293,5 +323,6 @@ def test_lodging_provider_environment_is_real_only_and_explicit() -> None:
 
     assert real.lodging_provider == "flyai"
     assert real.flyai_cli_path == "/opt/flyai/bin/flyai"
+    assert real.flyai_api_key == "flyai-key-sentinel"
     assert real.flyai_timeout_seconds == 15
     assert mock.lodging_provider == "mock"

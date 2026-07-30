@@ -36,7 +36,7 @@
       "timeout_seconds": 30
     },
     {
-      "server_name": "google_workspace",
+      "server_name": "google_calendar",
       "transport": "stdio",
       "command": [
         "/home/lenovo1/miniconda3/envs/hello_agent/bin/uvx",

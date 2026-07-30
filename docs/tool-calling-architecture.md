@@ -496,10 +496,12 @@ TaskEvent，事件只记录 delivery id、channel、状态、尝试次数和安�
 `price_basis=nightly_estimate` 明确标记为估算，不能表述为含税成交总价。
 
 mock mode 注册确定性本地 adapter。real mode 目前只支持显式
-`MULTIMODAL_AGENT_LODGING_PROVIDER=flyai`，并要求配置 `FLYAI_CLI_PATH`；adapter 使用参数数组调用
-官方 `flyai search-hotel`，不经过 shell，只读取 stdout 的单个 JSON object。CLI 缺失、超时、非零
-退出、非法 JSON 和 Provider 拒绝都转换为结构化失败；配置不完整时整个 Tool 不注册，不得回退到
-mock。FlyAI 上游 Skill 自带的关键词/正则激活逻辑不进入本项目，Tool 是否调用仍由主 LLM 根据本轮
+`MULTIMODAL_AGENT_LODGING_PROVIDER=flyai`，并要求同时配置 `FLYAI_CLI_PATH` 和正式
+`FLYAI_API_KEY`；adapter 只把 key 注入 FlyAI 子进程环境，不写入参数、结果或 Trace。缺少正式 key
+时整个 Tool 不注册，不得借用 CLI 内置体验凭据或回退到 mock。adapter 使用参数数组调用官方
+`flyai search-hotel`，不经过 shell，只读取 stdout 的单个 JSON object。CLI 缺失、超时、非零退出、
+非法 JSON、Provider 拒绝，以及 `¥4xx` 这类体验模式遮罩价格都转换为结构化失败，不能伪装成真实
+报价。FlyAI 上游 Skill 自带的关键词/正则激活逻辑不进入本项目，Tool 是否调用仍由主 LLM 根据本轮
 原生 schema 判断。
 
 `hotel_price_watch_v1` durable workflow 可以重复调用 `lodging_search`，但每次调用仍执行同一
@@ -551,6 +553,11 @@ MCP 配置模板或提交。当前 stdio 单机配置使用 `http://localhost:80
 scheme。其他环境变量仍由 MCP SDK 的安全白名单或 server `env` 控制。真实模式还要求主 Chat
 Provider 完整配置；MCP 配置不会绕过这个全局边界。
 
+`workspace-mcp` 是 Google Workspace 多产品适配器，不等于 Calendar。当前模板将 Calendar-only
+实例命名为 `google_calendar`，通过 `--tools calendar` 暴露事件查询/管理；Gmail 则由独立的
+`google_gmail_readonly` 实例通过 `--tools gmail --read-only` 提供。server name 只决定 MCP
+namespace，不代表整个 Google Workspace 产品集都已启用。
+
 中国大陆地点与通勤使用模板中的官方 `@amap/amap-maps-mcp-server`。部署者先复制模板到已忽略的
 `.local/mcp_servers.json`，再只在该本地文件替换 `AMAP_MAPS_API_KEY` 占位符；仓库模板和 `.env`
 示例都不保存真实 Key。该 server 通过
@@ -564,7 +571,8 @@ Provider 完整配置；MCP 配置不会绕过这个全局边界。
 `lodging_search`。
 
 当前 FlyAI adapter 按 `@fly-ai/flyai-cli==1.0.16` 的 `search-hotel` 命令与单行 JSON 契约实现；
-项目不自动安装 CLI，升级前必须用离线 contract fake 和 operator 显式真实 smoke 重新核对字段。
+项目不自动安装 CLI。正式 key 从飞猪 AI 开放平台控制台获取，并仅在未跟踪 `.env` 或本地 shell
+配置为 `FLYAI_API_KEY`；升级前必须用离线 contract fake 和 operator 显式真实 smoke 重新核对字段。
 
 真实天气固定使用高德 `mcp.amap_maps.maps_weather`；`personal_assistant_tools.weather_lookup`
 及其稳定 `weather` wrapper 不进入任何默认 Registry。contacts 只有存在对应

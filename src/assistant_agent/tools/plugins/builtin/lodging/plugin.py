@@ -25,11 +25,12 @@ class LodgingToolPlugin:
             tools: list[Tool] = [LodgingSearchTool()]
         elif context.config.lodging_provider == "flyai" and _is_executable_file(
             context.config.flyai_cli_path
-        ):
+        ) and context.config.flyai_api_key:
             tools = [
                 LodgingSearchTool(
                     FlyAILodgingSearchAdapter(
                         cli_path=context.config.flyai_cli_path,
+                        api_key=context.config.flyai_api_key,
                         timeout_seconds=context.config.flyai_timeout_seconds,
                     )
                 )

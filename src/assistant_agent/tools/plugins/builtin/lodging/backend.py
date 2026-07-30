@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 from datetime import datetime, timezone
@@ -33,10 +34,12 @@ class FlyAILodgingSearchAdapter:
         self,
         *,
         cli_path: str,
+        api_key: str,
         timeout_seconds: float = 30.0,
         runner: CommandRunner = subprocess.run,
     ) -> None:
         self.cli_path = cli_path
+        self.api_key = api_key
         self.timeout_seconds = timeout_seconds
         self.runner = runner
 
@@ -49,6 +52,7 @@ class FlyAILodgingSearchAdapter:
                 shell=False,
                 capture_output=True,
                 text=True,
+                env={**os.environ, "FLYAI_API_KEY": self.api_key},
                 timeout=self.timeout_seconds,
                 check=False,
             )
@@ -282,10 +286,8 @@ def _price_value(value: Any) -> float | None:
         return float(value) if value > 0 else None
     if not isinstance(value, str):
         return None
-    masked_match = re.search(r"(\d[\d,]*)\s*[xX]{2}", value)
-    if masked_match:
-        lower_bound = float(masked_match.group(1).replace(",", "")) * 100
-        return lower_bound if lower_bound > 0 else None
+    if re.search(r"\d[\d,]*\s*[xX]{2}", value):
+        return None
     match = re.search(r"\d[\d,]*(?:\.\d+)?", value)
     if not match:
         return None
