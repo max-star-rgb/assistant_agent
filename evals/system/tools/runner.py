@@ -9,11 +9,18 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from assistant_agent.runtime.runtime import AgentGraphRuntime
+from assistant_agent.runtime.action_validator import ActionValidator
+from assistant_agent.runtime.output_models import AssistantToolCall
 from assistant_agent.runtime.state import AgentState
+from assistant_agent.runtime.tool_executor import ToolExecutor
+from assistant_agent.runtime.runtime import AgentGraphRuntime
 from assistant_agent.config import ProviderConfig
 from assistant_agent.runtime.requests import UserRequest
 from assistant_agent.observability.trace_store import JsonlTraceStore, TraceEvent
+from assistant_agent.tools.plugins.builtin.shopping.plugin import ShoppingToolPlugin
+from assistant_agent.tools.plugins.contracts import ToolPluginContext
+from assistant_agent.tools.registry import ToolRegistry
+from evals.system.common.artifacts import create_run_dir, write_json
 from evals.system.common.preflight import (
     SystemEvalConfigurationError,
     validate_real_chat_config,
@@ -103,6 +110,208 @@ class SystemToolEvalRun(BaseModel):
     artifact: SystemToolEvalArtifact
     summary: dict[str, Any]
     details: list[SystemToolEvalCaseResult]
+
+
+class DirectShoppingEvalArtifact(BaseModel):
+    """Machine-readable artifact paths for one direct shopping eval."""
+
+    run_dir: Path
+    summary_path: Path
+    result_path: Path
+
+
+class DirectShoppingEvalResult(BaseModel):
+    """Result of one governed direct call to the real shopping Tool."""
+
+    schema_version: Literal["direct_shopping_system_eval_v1"] = (
+        "direct_shopping_system_eval_v1"
+    )
+    passed: bool
+    checks: dict[str, bool]
+    failures: list[str]
+    action_validation_code: str
+    tool_call_status: str
+    provider: str | None = None
+    outcome: str | None = None
+    selection_count: int = 0
+    product_titles: list[str] = Field(default_factory=list)
+    product_sources: list[str] = Field(default_factory=list)
+    product_links: list[str] = Field(default_factory=list)
+    product_prices: list[float] = Field(default_factory=list)
+    run_id: str
+    artifact: DirectShoppingEvalArtifact
+
+
+def run_direct_shopping_system_eval(
+    *,
+    config: ProviderConfig,
+    allow_real_tools: bool,
+    keyword: str,
+    output_root: Path | str,
+    registry: ToolRegistry | None = None,
+) -> DirectShoppingEvalResult:
+    """Call shopping_search through validation and execution, then assert real output."""
+
+    _validate_direct_shopping_config(
+        config,
+        allow_real_tools=allow_real_tools,
+    )
+    resolved_registry = registry or _direct_shopping_registry(config)
+    request = UserRequest(
+        user_id="system_shopping_eval_user",
+        session_id="system_shopping_eval_session",
+        text=f"直接验证真实购物搜索：{keyword}",
+        task_execution_mode="foreground",
+    )
+    state = AgentState.from_request(request)
+    decision = AssistantToolCall(
+        tool_name="shopping_search",
+        tool_input={"needs": [{"keyword": keyword}]},
+        step_id="direct-shopping-search",
+        reason="operator-authorized direct shopping system eval",
+    )
+    validation = ActionValidator().validate(
+        decision=decision,
+        registry=resolved_registry,
+        request=request,
+        state=state,
+    )
+    tool_result = None
+    if validation.accepted:
+        tool_result = ToolExecutor(registry=resolved_registry).run_tool(
+            state,
+            decision.step_id or "direct-shopping-search",
+            decision.tool_name,
+            decision.tool_input,
+            validated_input=validation.validated_input,
+        )
+
+    data = tool_result.data if tool_result is not None and tool_result.data else {}
+    selections = data.get("selections")
+    if not isinstance(selections, list):
+        selections = []
+    products = [
+        selection.get("product")
+        for selection in selections
+        if isinstance(selection, dict)
+        and isinstance(selection.get("product"), dict)
+    ]
+    product_titles = [str(product.get("title") or "") for product in products]
+    product_sources = [str(product.get("source") or "") for product in products]
+    product_links = [
+        str(product.get("product_url") or product.get("url") or "")
+        for product in products
+    ]
+    product_prices = [_product_price(product) for product in products]
+    tool_call_status = (
+        state.tool_calls[0].status if len(state.tool_calls) == 1 else "not_executed"
+    )
+    checks = {
+        "shopping_tool_registered": "shopping_search" in resolved_registry.list(),
+        "action_accepted": validation.accepted,
+        "single_governed_tool_call": (
+            len(state.tool_calls) == 1
+            and state.tool_calls[0].tool_name == "shopping_search"
+        ),
+        "tool_succeeded": bool(tool_result is not None and tool_result.success),
+        "provider_is_haodanku": data.get("provider") == "haodanku",
+        "successful_outcome": data.get("outcome") == "success",
+        "has_selections": bool(products),
+        "real_product_sources": bool(products)
+        and all(source == "haodanku" for source in product_sources),
+        "http_product_links": bool(products)
+        and all(link.startswith(("http://", "https://")) for link in product_links),
+        "positive_prices": bool(products)
+        and all(price > 0 for price in product_prices),
+    }
+    failures = [name for name, passed in checks.items() if not passed]
+    run_dir = create_run_dir(
+        Path(output_root),
+        domain="shopping",
+        case_id=f"direct-real-{state.run_id}",
+    )
+    artifact = DirectShoppingEvalArtifact(
+        run_dir=run_dir,
+        summary_path=run_dir / "summary.json",
+        result_path=run_dir / "result.json",
+    )
+    result = DirectShoppingEvalResult(
+        passed=not failures,
+        checks=checks,
+        failures=failures,
+        action_validation_code=validation.code,
+        tool_call_status=tool_call_status,
+        provider=str(data.get("provider")) if data.get("provider") else None,
+        outcome=str(data.get("outcome")) if data.get("outcome") else None,
+        selection_count=len(products),
+        product_titles=product_titles,
+        product_sources=product_sources,
+        product_links=product_links,
+        product_prices=product_prices,
+        run_id=state.run_id,
+        artifact=artifact,
+    )
+    write_json(
+        artifact.summary_path,
+        {
+            "schema_version": result.schema_version,
+            "passed": result.passed,
+            "checks": result.checks,
+            "failures": result.failures,
+            "run_id": result.run_id,
+        },
+    )
+    write_json(
+        artifact.result_path,
+        result.model_dump(mode="json", exclude={"artifact"}),
+    )
+    return result
+
+
+def _validate_direct_shopping_config(
+    config: ProviderConfig,
+    *,
+    allow_real_tools: bool,
+) -> None:
+    if not allow_real_tools:
+        raise EvalConfigurationError(
+            "Direct shopping system eval requires --allow-real-tools."
+        )
+    if config.provider_mode != "real":
+        raise EvalConfigurationError(
+            "Direct shopping system eval requires "
+            "MULTIMODAL_AGENT_PROVIDER_MODE=real."
+        )
+    if (
+        config.shopping_search_provider != "haodanku"
+        or config.shopping_compare_provider != "haodanku"
+        or not config.haodanku_api_key
+    ):
+        raise EvalConfigurationError(
+            "Direct shopping system eval requires "
+            "MULTIMODAL_AGENT_SHOPPING_PROVIDER=haodanku and HAODANKU_API_KEY."
+        )
+
+
+def _direct_shopping_registry(config: ProviderConfig) -> ToolRegistry:
+    tools = ShoppingToolPlugin().build_tools(
+        ToolPluginContext(config=config, mcp_server_configs=[])
+    )
+    registry = ToolRegistry()
+    for tool in tools:
+        registry.register(tool)
+    registry.seal()
+    return registry
+
+
+def _product_price(product: dict[str, Any]) -> float:
+    value = product.get("effective_price")
+    if value is None:
+        value = product.get("price")
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def load_system_tool_eval_cases(path: Path | str = DEFAULT_CASES_PATH) -> list[SystemToolEvalCase]:

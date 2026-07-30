@@ -5,12 +5,7 @@
   "request": {
     "user_id": "eval-contact-ambiguous-user",
     "session_id": "eval-contact-ambiguous-session",
-    "text": "帮我查一下 Alex 的邮箱，并创建明天下午三点的“预算沟通”会议邀请他参加。",
-    "metadata": {
-      "tool_visibility": {
-        "enabled_tools": ["calendar_create"]
-      }
-    }
+    "text": "帮我查一下 Alex 的邮箱，并创建明天下午三点的“预算沟通”会议邀请他参加。"
   },
   "environment": "evals.agent.tasks.contact_ambiguous_calendar_clarification.environment:ContactAmbiguousCalendarEnvironment",
   "grader": "evals.agent.tasks.contact_ambiguous_calendar_clarification.grader:grade",

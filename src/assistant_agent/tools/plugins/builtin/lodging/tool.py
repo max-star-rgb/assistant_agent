@@ -16,10 +16,11 @@ from assistant_agent.tools.plugins.builtin.lodging.backend import (
 
 class LodgingSearchTool(ToolBase):
     name = "lodging_search"
-    description = "查询酒店候选和价格，不能预订或付款。"
+    description = "查询酒店候选、价格和 OTA 跳转链接，不能预订或付款。"
     input_schema = LodgingSearchRequest
     output_schema = LodgingSearchResult
     category = "read"
+    llm_hidden_input_fields = ("limit",)
 
     def __init__(self, adapter: LodgingSearchAdapter | None = None) -> None:
         self.adapter = adapter or MockLodgingSearchAdapter()
@@ -50,8 +51,9 @@ class LodgingSearchTool(ToolBase):
             data=data,
             model_observation={
                 "status": "succeeded",
-                "offers": data["offers"],
+                "offers": data["offers"][:3],
                 "observed_at": data["observed_at"],
+                "provider_notice": data["provider_notice"],
             },
             output_ref=result.output_ref,
             trace_summary={

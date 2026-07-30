@@ -5,12 +5,7 @@
   "request": {
     "user_id": "eval-calendar-write-user",
     "session_id": "eval-calendar-write-session",
-    "text": "请在我的日历里创建明天下午两点到三点的“项目复盘”，地点是会议室B。",
-    "metadata": {
-      "tool_visibility": {
-        "enabled_tools": ["calendar_create"]
-      }
-    }
+    "text": "请在我的日历里创建明天下午两点到三点的“项目复盘”，地点是会议室B。"
   },
   "environment": "evals.agent.tasks.calendar_create_isolated_commit.environment:CalendarCreateEnvironment",
   "grader": "evals.agent.tasks.calendar_create_isolated_commit.grader:grade",

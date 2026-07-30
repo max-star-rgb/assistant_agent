@@ -294,7 +294,7 @@ def test_failed_tool_call_allows_retry_with_changed_arguments() -> None:
 
     request = _request()
     request.metadata["tool_visibility"] = {
-        "enabled_tools": ["recoverable_probe"]
+        "allowed_tools": ["recoverable_probe"]
     }
 
     state = _runtime(tool, adapter).run_state(request)
@@ -408,7 +408,7 @@ def test_failed_side_effect_tool_enters_finalize_without_retry() -> None:
 
     request = _request()
     request.metadata["tool_visibility"] = {
-        "enabled_tools": ["recoverable_probe"]
+        "allowed_tools": ["recoverable_probe"]
     }
 
     state = _runtime(tool, adapter).run_state(request)

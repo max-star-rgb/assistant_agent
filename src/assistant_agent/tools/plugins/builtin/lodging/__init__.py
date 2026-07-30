@@ -1,6 +1,7 @@
 """Lodging search Tool plugin."""
 
 from assistant_agent.tools.plugins.builtin.lodging.backend import (
+    FlyAILodgingSearchAdapter,
     LodgingSearchAdapter,
     MockLodgingSearchAdapter,
     SequenceLodgingSearchAdapter,
@@ -12,6 +13,7 @@ from assistant_agent.tools.plugins.builtin.lodging.watch_tool import (
 )
 
 __all__ = [
+    "FlyAILodgingSearchAdapter",
     "LodgingSearchAdapter",
     "LodgingSearchTool",
     "LodgingToolPlugin",

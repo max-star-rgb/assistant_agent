@@ -1,4 +1,4 @@
-"""Calendar, weather, and contacts tools backed by local or MCP adapters."""
+"""Calendar and contacts tools backed by local or MCP adapters."""
 
 from assistant_agent.tools.plugins.builtin.calendar_weather_contacts.backend import (
     configured_calendar_weather_contacts_tools,
@@ -8,7 +8,6 @@ from assistant_agent.tools.ids import (
     CALENDAR_CREATE_TOOL_NAME,
     CALENDAR_SEARCH_TOOL_NAME,
     CONTACTS_SEARCH_TOOL_NAME,
-    WEATHER_TOOL_NAME,
 )
 from assistant_agent.tools.base import Tool
 from assistant_agent.tools.plugins.contracts import ToolPluginContext, ToolPluginDescriptor
@@ -16,7 +15,6 @@ from assistant_agent.tools.plugins.builtin.calendar_weather_contacts.tools impor
     CalendarCreateTool,
     CalendarSearchTool,
     ContactsSearchTool,
-    WeatherTool,
 )
 from assistant_agent.tools.plugins.builtin.calendar_weather_contacts.local_calendar import (
     LocalSQLiteCalendarAdapter,
@@ -46,8 +44,6 @@ class CalendarWeatherContactsPlugin:
             mcp_runner=context.mcp_runner,
         )
         tools: list[Tool] = []
-        if context.mock_mode or WEATHER_TOOL_NAME in tool_names:
-            tools.append(WeatherTool(adapter=adapters.weather))
         calendar_adapter = (
             context.calendar_adapter
             or (

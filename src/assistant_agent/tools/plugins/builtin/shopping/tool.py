@@ -1,302 +1,414 @@
-"""Unified shopping Tool that searches products and compares prices."""
+"""Unified real-provider shopping search for one or more product needs."""
 
+from itertools import product
 from typing import Any
 
+from assistant_agent.tools.base import ToolBase, ToolContext
 from assistant_agent.tools.capability_output import build_capability_output_contract
-from assistant_agent.tools.plugins.builtin.shopping.models import (
-    PriceCompareRequest,
-    PriceCompareResult,
-    ProductProviderError,
-    ShoppingSearchConstraints,
-    ShoppingSearchOutcome,
-    ShoppingSearchRequest,
-    ProductSearchResult,
-    ShoppingSearchResult,
-)
+from assistant_agent.tools.ids import SHOPPING_SEARCH_CAPABILITY, SHOPPING_SEARCH_TOOL_NAME
 from assistant_agent.tools.models import ToolResult
 from assistant_agent.tools.plugins.builtin.shopping.backend import (
     PriceCompareAdapter,
     ProductSearchAdapter,
-    create_shopping_compare_adapter,
-    create_shopping_search_adapter,
 )
-from assistant_agent.tools.ids import SHOPPING_SEARCH_CAPABILITY, SHOPPING_SEARCH_TOOL_NAME
-from assistant_agent.tools.base import ToolBase, ToolContext
+from assistant_agent.tools.plugins.builtin.shopping.models import (
+    PriceCompareRequest,
+    PriceCompareResult,
+    ProductProviderError,
+    ProductResult,
+    ProductSearchRequest,
+    ProductSearchResult,
+    ShoppingListNeed,
+    ShoppingListNeedResult,
+    ShoppingListSelection,
+    ShoppingSearchRequest,
+    ShoppingSearchResult,
+)
 
 
 class ShoppingSearchTool(ToolBase):
-    """Search current product candidates and compare their offers in one call."""
+    """Search, compare, and budget one or more product needs."""
 
     name = SHOPPING_SEARCH_TOOL_NAME
     description = (
-        "搜索、推荐和比较商品及购买链接；仅表达购买意向时先追问。不能下单。"
+        "搜索、推荐和比较一个或多个商品需求及购买链接；按单价、数量和总预算组合。"
+        "仅表达购买意向时先追问。不能下单。"
     )
     input_schema = ShoppingSearchRequest
     output_schema = ShoppingSearchResult
     category = "read"
-    llm_hidden_input_fields = ("platforms", "top_k")
+    llm_hidden_input_fields = ("top_k_per_need",)
 
     def __init__(
         self,
         *,
-        search_adapter: ProductSearchAdapter | None = None,
-        compare_adapter: PriceCompareAdapter | None = None,
+        search_adapter: ProductSearchAdapter,
+        compare_adapter: PriceCompareAdapter,
     ) -> None:
-        self.search_adapter = search_adapter or create_shopping_search_adapter()
-        self.compare_adapter = compare_adapter or create_shopping_compare_adapter()
+        self.search_adapter = search_adapter
+        self.compare_adapter = compare_adapter
 
     def _run(self, input: ShoppingSearchRequest, context: ToolContext) -> ToolResult:
-        search_result = self.search_adapter.search(input)
-        comparison_result: PriceCompareResult | None = None
-        if search_result.items:
-            comparison_result = self.compare_adapter.compare(
-                _compare_input_from_search(input, search_result)
+        searches: list[ProductSearchResult] = []
+        comparisons: list[PriceCompareResult | None] = []
+        for need in input.needs:
+            search = self.search_adapter.search(
+                ProductSearchRequest(
+                    query=need.keyword,
+                    budget_max=need.max_unit_price,
+                    platforms=input.platforms,
+                    top_k=input.top_k_per_need,
+                )
+            )
+            searches.append(search)
+            comparisons.append(
+                self.compare_adapter.compare(
+                    PriceCompareRequest(
+                        items=search.items,
+                        query=search.query_used or need.keyword,
+                        budget_max=need.max_unit_price,
+                        platforms=search.succeeded_platforms or input.platforms,
+                        sort_by="value",
+                        top_k=input.top_k_per_need,
+                    )
+                )
+                if search.items
+                else None
             )
 
-        result = _shopping_result(input, search_result, comparison_result)
+        result = _build_result(input, searches, comparisons)
         data = result.model_dump(mode="json")
         errors = [error.model_dump(mode="json") for error in result.errors]
-        model_observation = _shopping_search_model_observation(data)
+        output_ref = result.output_refs[0] if result.output_refs else None
         contract = build_capability_output_contract(
             capability=SHOPPING_SEARCH_CAPABILITY,
             status="succeeded" if result.success else "failed",
-            output_ref=result.output_ref,
-            data={
-                "outcome": result.outcome,
-                "query": result.query,
-                "requested_constraints": result.requested_constraints.model_dump(
-                    mode="json"
-                ),
-                "search": {
-                    "items": data.get("search", {}).get("items", []),
-                    "query_used": data.get("search", {}).get("query_used"),
-                    "total": data.get("search", {}).get("total"),
-                    "requested_platforms": data.get("search", {}).get(
-                        "requested_platforms", []
-                    ),
-                    "succeeded_platforms": data.get("search", {}).get(
-                        "succeeded_platforms", []
-                    ),
-                    "failed_platforms": data.get("search", {}).get(
-                        "failed_platforms", []
-                    ),
-                },
-                "comparison": data.get("comparison"),
-                "offers": data.get("offers", []),
-                "best_offer": data.get("best_offer"),
-                "ranking_reason": data.get("ranking_reason"),
-                "summary": result.summary,
-            },
+            output_ref=output_ref,
+            data=data,
             errors=errors,
-            metadata={"provider": result.provider, "latency_ms": result.latency_ms},
+            metadata={
+                "provider": result.provider,
+                "latency_ms": result.latency_ms,
+                "query_count": len(input.needs),
+            },
         )
+        observation = _model_observation(data)
         if not result.success:
-            first_error = result.errors[0].message if result.errors else result.summary
             return ToolResult(
                 tool_name=self.name,
                 success=False,
                 data=data,
-                model_observation=model_observation,
-                error=first_error,
-                output_ref=result.output_ref,
+                model_observation=observation,
+                error=errors[0]["message"] if errors else result.summary,
+                output_ref=output_ref,
                 latency_ms=result.latency_ms,
                 contract=contract,
             )
-
         return ToolResult(
             tool_name=self.name,
             success=True,
             data=data,
-            model_observation=model_observation,
-            output_ref=result.output_ref,
+            model_observation=observation,
+            output_ref=output_ref,
             latency_ms=result.latency_ms,
             contract=contract,
         )
 
 
-def _compare_input_from_search(
-    input: ShoppingSearchRequest,
-    search_result: ProductSearchResult,
-) -> PriceCompareRequest:
-    platforms = search_result.succeeded_platforms or input.platforms
-    return PriceCompareRequest(
-        items=search_result.items,
-        query=search_result.query_used or _query_text(input) or SHOPPING_SEARCH_CAPABILITY,
-        budget_min=input.budget_min,
-        budget_max=input.budget_max,
-        platforms=platforms,
-        sort_by="value",
-        top_k=input.top_k,
-    )
-
-
-def _shopping_result(
-    input: ShoppingSearchRequest,
-    search_result: ProductSearchResult,
-    comparison_result: PriceCompareResult | None,
+def _build_result(
+    request: ShoppingSearchRequest,
+    searches: list[ProductSearchResult],
+    comparisons: list[PriceCompareResult | None],
 ) -> ShoppingSearchResult:
-    errors = _combined_errors(search_result, comparison_result)
-    query = (
-        search_result.query_used
-        or (comparison_result.query if comparison_result is not None else None)
-        or _query_text(input)
-        or SHOPPING_SEARCH_CAPABILITY
+    candidate_groups = [
+        _eligible_candidates(
+            need,
+            search,
+            comparison,
+            request.top_k_per_need,
+        )
+        for need, search, comparison in zip(
+            request.needs,
+            searches,
+            comparisons,
+            strict=True,
+        )
+    ]
+    chosen = _choose_basket(
+        request.needs,
+        candidate_groups,
+        request.total_budget,
     )
-    items = (
-        comparison_result.items
-        if comparison_result is not None
-        else search_result.items
-    )
-    offers = comparison_result.offers if comparison_result is not None else []
-    provider = _combined_provider(search_result, comparison_result)
-    latency_ms = _combined_latency(search_result, comparison_result)
-    output_ref = (
-        comparison_result.output_ref
-        if comparison_result is not None and comparison_result.output_ref
-        else search_result.output_ref
-    )
-    summary = _shopping_summary(search_result, comparison_result, errors)
-    return ShoppingSearchResult(
-        outcome=_shopping_outcome(search_result, comparison_result),
-        query=query,
-        requested_constraints=ShoppingSearchConstraints(
-            budget_min=input.budget_min,
-            budget_max=input.budget_max,
-            platforms=input.platforms,
-        ),
-        search=search_result,
-        comparison=comparison_result,
-        items=items,
-        offers=offers,
-        best_offer=comparison_result.best_offer
-        if comparison_result is not None
-        else None,
-        best_value_product_id=(
-            comparison_result.best_value_product_id
-            if comparison_result is not None
+    selections: list[ShoppingListSelection] = []
+    need_results: list[ShoppingListNeedResult] = []
+    errors: list[ProductProviderError] = []
+    for need, search, comparison, candidates, selected_product in zip(
+        request.needs,
+        searches,
+        comparisons,
+        candidate_groups,
+        chosen,
+        strict=True,
+    ):
+        need_errors = [
+            *search.errors,
+            *(comparison.errors if comparison is not None else []),
+        ]
+        errors.extend(need_errors)
+        selection = (
+            _selection(need, selected_product)
+            if selected_product is not None
             else None
+        )
+        if selection is not None:
+            selections.append(selection)
+            status = "selected"
+        elif need_errors and not candidates:
+            status = "failed"
+        elif candidates:
+            status = "budget_excluded"
+        else:
+            status = "empty"
+        need_results.append(
+            ShoppingListNeedResult(
+                need=need,
+                status=status,
+                query_used=search.query_used,
+                candidates=candidates,
+                selected=selection,
+                errors=need_errors,
+            )
+        )
+
+    total_cost = round(sum(item.subtotal for item in selections), 2)
+    uncovered = [
+        item.need.keyword
+        for item in need_results
+        if item.need.required and item.selected is None
+    ]
+    all_searches_failed = bool(searches) and all(
+        search.errors and not search.items for search in searches
+    )
+    if all_searches_failed:
+        outcome = "failed"
+    elif not selections:
+        outcome = "empty"
+    elif uncovered or errors:
+        outcome = "partial"
+    else:
+        outcome = "success"
+    providers = [
+        provider
+        for search, comparison in zip(searches, comparisons, strict=True)
+        for provider in (
+            search.provider,
+            comparison.provider if comparison is not None else None,
+        )
+        if provider
+    ]
+    latencies = [
+        latency
+        for search, comparison in zip(searches, comparisons, strict=True)
+        for latency in (
+            search.latency_ms,
+            comparison.latency_ms if comparison is not None else None,
+        )
+        if latency is not None
+    ]
+    output_refs = [
+        output_ref
+        for search, comparison in zip(searches, comparisons, strict=True)
+        for output_ref in (
+            search.output_ref,
+            comparison.output_ref if comparison is not None else None,
+        )
+        if output_ref
+    ]
+    within_budget = (
+        request.total_budget is None or total_cost <= request.total_budget
+    )
+    return ShoppingSearchResult(
+        outcome=outcome,
+        scenario=request.scenario,
+        decision_reason=request.decision_reason,
+        evidence=request.evidence,
+        total_budget=request.total_budget,
+        total_cost=total_cost,
+        within_budget=within_budget,
+        needs=need_results,
+        selections=selections,
+        uncovered_required_needs=uncovered,
+        summary=_summary(
+            outcome,
+            selections,
+            uncovered,
+            request.total_budget,
         ),
-        ranking_reason=comparison_result.ranking_reason
-        if comparison_result is not None
-        else None,
-        summary=summary,
-        provider=provider,
+        provider="+".join(dict.fromkeys(providers)),
         errors=errors,
-        latency_ms=latency_ms,
-        output_ref=output_ref,
+        latency_ms=sum(latencies) if latencies else None,
+        output_refs=list(dict.fromkeys(output_refs)),
     )
 
 
-def _combined_errors(
-    search_result: ProductSearchResult,
-    comparison_result: PriceCompareResult | None,
-) -> list[ProductProviderError]:
-    errors = [*search_result.errors]
-    if comparison_result is not None:
-        errors.extend(comparison_result.errors)
-    return errors
+def _eligible_candidates(
+    need: ShoppingListNeed,
+    search: ProductSearchResult,
+    comparison: PriceCompareResult | None,
+    limit: int,
+) -> list[ProductResult]:
+    candidates = _comparison_enriched_products(search.items, comparison)
+    return [
+        item
+        for item in candidates
+        if need.max_unit_price is None or _unit_price(item) <= need.max_unit_price
+    ][:limit]
 
 
-def _shopping_outcome(
-    search_result: ProductSearchResult,
-    comparison_result: PriceCompareResult | None,
-) -> ShoppingSearchOutcome:
-    if not search_result.items:
-        return "failed" if search_result.errors else "empty"
-    if (
-        search_result.errors
-        or comparison_result is None
-        or not comparison_result.success
-    ):
-        return "partial"
-    return "success"
+def _comparison_enriched_products(
+    items: list[ProductResult],
+    comparison: PriceCompareResult | None,
+) -> list[ProductResult]:
+    if comparison is None:
+        return list(items)
+    offers = {offer.product_id: offer for offer in comparison.offers}
+    enriched = [
+        item.model_copy(
+            update={
+                "product_url": offer.product_url or item.product_url,
+                "image_url": offer.image_url or item.image_url,
+                "url_status": offer.url_status or item.url_status,
+                "availability": offer.availability or item.availability,
+                "effective_price": (
+                    offer.effective_price
+                    if offer.effective_price is not None
+                    else item.effective_price
+                ),
+            }
+        )
+        if (offer := offers.get(item.product_id)) is not None
+        else item
+        for item in (comparison.items or items)
+    ]
+    best_product_id = (
+        comparison.best_offer.product_id
+        if comparison.best_offer is not None
+        else comparison.best_value_product_id
+    )
+    if best_product_id is None:
+        return enriched
+    return sorted(
+        enriched,
+        key=lambda item: item.product_id != best_product_id,
+    )
 
 
-def _shopping_summary(
-    search_result: ProductSearchResult,
-    comparison_result: PriceCompareResult | None,
-    errors: list[ProductProviderError],
+def _choose_basket(
+    needs: list[ShoppingListNeed],
+    candidate_groups: list[list[ProductResult]],
+    total_budget: float | None,
+) -> tuple[ProductResult | None, ...]:
+    choices = [(*candidates, None) for candidates in candidate_groups]
+    best: tuple[ProductResult | None, ...] = tuple(None for _ in needs)
+    best_score: tuple[int, int, int, float] = (-1, -1, -10**9, float("-inf"))
+    for combination in product(*choices):
+        total = sum(
+            _unit_price(item) * need.quantity
+            for need, item in zip(needs, combination, strict=True)
+            if item is not None
+        )
+        if total_budget is not None and total > total_budget:
+            continue
+        required_coverage = sum(
+            item is not None
+            for need, item in zip(needs, combination, strict=True)
+            if need.required
+        )
+        total_coverage = sum(item is not None for item in combination)
+        rank_cost = sum(
+            candidate_groups[index].index(item)
+            for index, item in enumerate(combination)
+            if item is not None
+        )
+        score = (required_coverage, total_coverage, -rank_cost, -total)
+        if score > best_score:
+            best = combination
+            best_score = score
+    return best
+
+
+def _selection(
+    need: ShoppingListNeed,
+    selected: ProductResult,
+) -> ShoppingListSelection:
+    unit_price = _unit_price(selected)
+    return ShoppingListSelection(
+        keyword=need.keyword,
+        quantity=need.quantity,
+        product=selected,
+        unit_price=unit_price,
+        subtotal=round(unit_price * need.quantity, 2),
+    )
+
+
+def _unit_price(item: ProductResult) -> float:
+    return item.effective_price if item.effective_price is not None else item.price
+
+
+def _summary(
+    outcome: str,
+    selections: list[ShoppingListSelection],
+    uncovered: list[str],
+    total_budget: float | None,
 ) -> str:
-    if comparison_result is not None and comparison_result.best_offer is not None:
-        return comparison_result.summary
-    if search_result.items and errors:
+    if outcome == "failed":
+        return "所有商品需求的真实 Provider 搜索均失败，未生成购物组合。"
+    if not selections:
+        if total_budget is None:
+            return "未找到符合条件的商品。"
+        return f"没有候选商品能组成不超过 {total_budget:.2f} 元的购物组合。"
+    total = sum(item.subtotal for item in selections)
+    if uncovered:
+        prefix = (
+            f"已在 {total_budget:.2f} 元总预算内"
+            if total_budget is not None
+            else "已"
+        )
         return (
-            f"已取得 {len(search_result.items)} 个商品候选，"
-            f"但部分搜索或比价失败：{errors[0].message}"
+            f"{prefix}选出 {len(selections)} 项，合计 {total:.2f} 元；"
+            f"仍缺少：{'、'.join(uncovered)}。"
         )
-    if errors:
-        return errors[0].message
-    if not search_result.items:
-        return "未找到符合条件的商品。"
-    return f"已搜索到 {search_result.total} 个商品候选，但没有可比价报价。"
-
-
-def _combined_provider(
-    search_result: ProductSearchResult,
-    comparison_result: PriceCompareResult | None,
-) -> str:
-    if (
-        comparison_result is None
-        or comparison_result.provider == search_result.provider
-    ):
-        return search_result.provider
-    return f"{search_result.provider}+{comparison_result.provider}"
-
-
-def _combined_latency(
-    search_result: ProductSearchResult,
-    comparison_result: PriceCompareResult | None,
-) -> int | None:
-    values = [
-        value
-        for value in (
-            search_result.latency_ms,
-            comparison_result.latency_ms if comparison_result is not None else None,
-        )
-        if value is not None
-    ]
-    return sum(values) if values else None
-
-
-def _query_text(input: ShoppingSearchRequest) -> str:
-    return input.query.strip()
-
-
-def _shopping_search_model_observation(data: dict[str, Any]) -> dict[str, Any]:
-    search = data.get("search") if isinstance(data.get("search"), dict) else {}
-    requested_constraints = (
-        data.get("requested_constraints")
-        if isinstance(data.get("requested_constraints"), dict)
-        else {}
+    if total_budget is None:
+        return f"已选出 {len(selections)} 项商品候选，合计 {total:.2f} 元。"
+    return (
+        f"已在 {total_budget:.2f} 元总预算内覆盖全部必需品类，"
+        f"共 {len(selections)} 项，合计 {total:.2f} 元。"
     )
-    offers = [
-        _shopping_offer_model_observation(offer)
-        for offer in data.get("offers", [])[:3]
-        if isinstance(offer, dict)
-    ]
-    items = offers or [
-        _shopping_item_model_observation(item)
-        for item in search.get("items", [])[:3]
-        if isinstance(item, dict)
+
+
+def _model_observation(data: dict[str, Any]) -> dict[str, Any]:
+    selections = data.get("selections")
+    if not isinstance(selections, list):
+        selections = []
+    items = [
+        _selection_observation(selection)
+        for selection in selections[:3]
+        if isinstance(selection, dict)
     ]
     observation: dict[str, Any] = {
-        "summary": data.get("summary"),
         "outcome": data.get("outcome"),
-        "query": data.get("query"),
-        "requested_constraints": {
-            key: value
-            for key, value in requested_constraints.items()
-            if value not in (None, [], {})
-        },
-        "total": search.get("total"),
+        "scenario": data.get("scenario"),
+        "decision_reason": data.get("decision_reason"),
+        "evidence": data.get("evidence", []),
+        "total_budget": data.get("total_budget"),
+        "total_cost": data.get("total_cost"),
+        "within_budget": data.get("within_budget"),
+        "needs": data.get("needs", []),
+        "selections": selections,
         "items": items,
-        "best_item_id": (
-            data.get("best_offer", {}).get("offer_id")
-            or data.get("best_value_product_id")
-            if isinstance(data.get("best_offer"), dict)
-            else data.get("best_value_product_id")
-        ),
-        "ranking_reason": data.get("ranking_reason"),
+        "uncovered_required_needs": data.get("uncovered_required_needs", []),
+        "summary": data.get("summary"),
+        "errors": data.get("errors", []),
         "response_contract": {
             "type": "shopping_detail_v1",
             "max_items": 3,
@@ -309,84 +421,40 @@ def _shopping_search_model_observation(data: dict[str, Any]) -> dict[str, Any]:
             "fallback": "无合格商品时仅自然语言回答，不输出 <detail>。",
             "rules": ["仅使用 data 中的真实字段", "不得声称已下单"],
         },
+        "rules": [
+            "仅把 selections 中的商品表述为已搜索到的候选",
+            "不得把预算估算伪装成搜索结果",
+            "不得声称已下单",
+        ],
     }
-    errors = data.get("errors")
-    if errors:
-        observation["errors"] = errors
     return {
-        key: value for key, value in observation.items() if value not in (None, [], {})
+        key: value
+        for key, value in observation.items()
+        if value not in (None, [], {})
     }
 
 
-def _shopping_item_model_observation(item: dict[str, Any]) -> dict[str, Any]:
-    observation = {
-        key: item[key]
-        for key in (
-            "product_id",
-            "title",
-            "platform",
-            "shop",
-            "effective_price",
-            "currency",
-            "url_status",
-            "availability",
-            "image_url",
-            "reason",
-        )
-        if item.get(key) not in (None, "", [], {})
-    }
+def _selection_observation(selection: dict[str, Any]) -> dict[str, Any]:
+    item = (
+        selection.get("product")
+        if isinstance(selection.get("product"), dict)
+        else {}
+    )
     product_url = item.get("product_url") or item.get("url")
-    if product_url:
-        observation["product_url"] = product_url
-    total_price = next(
-        (
-            value
-            for value in (
-                item.get("total_price"),
-                item.get("effective_price"),
-                item.get("price"),
-            )
-            if value is not None
-        ),
-        None,
-    )
-    if total_price is not None:
-        observation["total_price"] = total_price
-    return observation
-
-
-def _shopping_offer_model_observation(offer: dict[str, Any]) -> dict[str, Any]:
-    keys = (
-        "offer_id",
-        "product_id",
-        "title",
-        "platform",
-        "shop",
-        "total_price",
-        "currency",
-        "product_url",
-        "url_status",
-        "availability",
-        "image_url",
-        "reason",
-    )
-    observation = {
-        key: offer[key]
-        for key in keys
-        if offer.get(key) not in (None, "", [], {})
+    return {
+        key: value
+        for key, value in {
+            "product_id": item.get("product_id"),
+            "title": item.get("title"),
+            "platform": item.get("platform"),
+            "shop": item.get("shop"),
+            "total_price": selection.get("subtotal"),
+            "quantity": selection.get("quantity"),
+            "product_url": product_url,
+            "url_status": item.get("url_status"),
+            "availability": item.get("availability"),
+            "image_url": item.get("image_url"),
+            "reason": item.get("reason"),
+        }.items()
+        if value not in (None, "", [], {})
     }
-    total_price = next(
-        (
-            value
-            for value in (
-                offer.get("total_price"),
-                offer.get("effective_price"),
-                offer.get("price"),
-            )
-            if value is not None
-        ),
-        None,
-    )
-    if total_price is not None:
-        observation["total_price"] = total_price
-    return observation

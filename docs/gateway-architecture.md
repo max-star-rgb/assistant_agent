@@ -488,6 +488,12 @@ Provider failure becomes a bounded scheduled retry and remains visible in
 workflow state; cancellation and the task deadline still belong to the common
 durable state machine.
 
+普通前台旅行规划不在 Gateway 增加独立 planner。API、CLI 与 WebSocket 入口都复用同一个
+`AgentGraphRuntime`：高德 MCP 提供地点、距离和通勤路线证据，内置
+`lodging_search` 提供 FlyAI 酒店候选及 OTA 跳转链接，主 assistant loop 负责比较位置、预算与
+路线后生成行程。Gateway 不读取“旅游”“酒店”“通勤”等文本关键词决定工具，也不接收酒店预订、
+支付或入住人身份信息。
+
 The local runtime uses separate bounded budgets for LLM-backed `agent` quanta
 and deterministic workflow quanta. Hotel watch creation is exposed only as
 `hotel_price_watch_create` in explicit durable/plan mode; foreground mode

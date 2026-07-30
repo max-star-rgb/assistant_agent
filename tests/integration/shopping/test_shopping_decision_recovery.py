@@ -11,6 +11,63 @@ from assistant_agent.observability.otel_mapping import build_text_otel_span_spec
 from assistant_agent.runtime.session_store import InMemorySessionStore
 from assistant_agent.observability.trace_content_policy import LOCAL_TRACE_CONTENT_ENV
 from assistant_agent.observability.trace_conversation import get_default_trace_conversation_store
+from assistant_agent.tools.plugins.builtin.shopping.models import (
+    PriceCompareResult,
+    ProductResult,
+    ProductSearchResult,
+)
+from assistant_agent.tools.plugins.builtin.shopping.tool import ShoppingSearchTool
+from assistant_agent.tools.plugins.registry_factory import create_default_registry
+from assistant_agent.tools.registry import ToolRegistry
+
+
+class _SearchAdapter:
+    def search(self, request) -> ProductSearchResult:
+        product = ProductResult(
+            product_id="milk-1",
+            title="牛奶",
+            price=12,
+            effective_price=12,
+            platform="淘宝",
+            product_url="https://example.com/milk",
+            image_url="https://example.com/milk.png",
+            source="test",
+        )
+        return ProductSearchResult(
+            items=[product],
+            provider="test",
+            query_used=request.query,
+            total=1,
+            output_ref="test://shopping/milk",
+        )
+
+
+class _CompareAdapter:
+    def compare(self, request) -> PriceCompareResult:
+        return PriceCompareResult(
+            query=request.query,
+            items=list(request.items),
+            summary="已取得真实契约测试候选。",
+            provider="test",
+        )
+
+
+def _registry_with_test_shopping() -> ToolRegistry:
+    base = create_default_registry(
+        ProviderConfig(langgraph_checkpointer_backend="none"),
+        plugin_modules=[],
+    )
+    registry = ToolRegistry()
+    for name in base.list():
+        registry.register(base.get(name))
+    registry.register(
+        ShoppingSearchTool(
+            search_adapter=_SearchAdapter(),
+            compare_adapter=_CompareAdapter(),
+        )
+    )
+    registry.seal()
+    return registry
 
 
 class _ShoppingToolCallAdapter:
@@ -29,7 +86,7 @@ class _ShoppingToolCallAdapter:
                         NativeToolCall(
                             id="call-shopping-1",
                             name="shopping_search",
-                            arguments={"query": "牛奶"},
+                            arguments={"needs": [{"keyword": "牛奶"}]},
                         )
                     ],
                 ),
@@ -79,7 +136,13 @@ class _VisualShoppingToolCallAdapter:
                         NativeToolCall(
                             id="call-shopping-1",
                             name="shopping_search",
-                            arguments={"query": "白色低帮皮革运动鞋，简约日系风格"},
+                            arguments={
+                                "needs": [
+                                    {
+                                        "keyword": "白色低帮皮革运动鞋，简约日系风格"
+                                    }
+                                ]
+                            },
                         )
                     ],
                 ),
@@ -103,6 +166,7 @@ def test_visual_shopping_requires_model_to_translate_observation_into_query() ->
         config=ProviderConfig(langgraph_checkpointer_backend="none"),
         chat_adapter=adapter,
         session_store=InMemorySessionStore(),
+        registry=_registry_with_test_shopping(),
     )
 
     state = runtime.run_state(
@@ -123,7 +187,14 @@ def test_visual_shopping_requires_model_to_translate_observation_into_query() ->
     second_request = json.dumps(adapter.requests[1].messages, ensure_ascii=False)
     assert "图片中展示了一双白色低帮运动鞋" in second_request
     shopping_input = state.tool_calls[1].input
-    assert shopping_input["query"] == "白色低帮皮革运动鞋，简约日系风格"
+    assert shopping_input["needs"] == [
+        {
+            "keyword": "白色低帮皮革运动鞋，简约日系风格",
+            "quantity": 1,
+            "required": True,
+            "max_unit_price": None,
+        }
+    ]
     assert {
         "visual_summary",
         "objects",
@@ -139,6 +210,7 @@ def test_shopping_native_tool_call_exports_provider_path(monkeypatch) -> None:
         config=ProviderConfig(langgraph_checkpointer_backend="none"),
         chat_adapter=adapter,
         session_store=InMemorySessionStore(),
+        registry=_registry_with_test_shopping(),
     )
     request = UserRequest(
         user_id="shopping-user",
@@ -241,7 +313,7 @@ def test_shopping_native_tool_call_exports_provider_path(monkeypatch) -> None:
     assert generation_outputs[0]["tool_calls"][0]["type"] == "function"
     assert generation_outputs[0]["tool_calls"][0]["function"] == {
         "name": "shopping_search",
-        "arguments": '{"query":"牛奶"}',
+        "arguments": '{"needs":[{"keyword":"牛奶"}]}',
     }
     assert generation_outputs[1]["role"] == "assistant"
     assert generation_outputs[1]["content"].startswith("已找到牛奶购买链接。\n<detail>")

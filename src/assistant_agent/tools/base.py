@@ -52,7 +52,6 @@ class Tool(Protocol):
     input_schema: type[BaseModel]
     output_schema: type[BaseModel]
     category: ToolCategory
-    enabled_by_default: bool
     requires_media: list[ToolMediaRequirement]
     media_scope: ToolMediaScope
     llm_hidden_input_fields: tuple[str, ...]
@@ -68,13 +67,10 @@ class ToolBase:
     input_schema: type[BaseModel]
     output_schema: type[BaseModel]
     category: ToolCategory = "dangerous"
-    enabled_by_default = True
     requires_media: list[ToolMediaRequirement] = []
     media_scope: ToolMediaScope = "any"
     llm_hidden_input_fields: tuple[str, ...] = ()
     runtime_input_bindings: tuple[Any, ...] = ()
-    host_configured_exposure: bool = False
-
     def run(self, input: BaseModel | dict[str, Any], context: ToolContext | None = None) -> ToolResult:
         try:
             payload = self._validate_input(input)

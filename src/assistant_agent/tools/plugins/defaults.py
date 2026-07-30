@@ -21,7 +21,6 @@ from assistant_agent.tools.plugins.builtin.media_inspection.plugin import (
 from assistant_agent.tools.plugins.builtin.visual_image_search.plugin import (
     VisualImageSearchPlugin,
 )
-from assistant_agent.tools.plugins.builtin.web_access.plugin import WebAccessToolPlugin
 
 
 def default_tool_plugins() -> tuple[ToolPlugin, ...]:
@@ -36,7 +35,6 @@ def default_tool_plugins() -> tuple[ToolPlugin, ...]:
         VisualImageSearchPlugin(),
         ShoppingToolPlugin(),
         CalendarWeatherContactsPlugin(),
-        WebAccessToolPlugin(),
         ImageGenerationToolPlugin(),
         DurableTaskToolPlugin(),
     )

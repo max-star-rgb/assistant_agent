@@ -13,7 +13,7 @@
       "text": "查询北京今天的天气，并根据真实查询结果给我一句简短的出行建议。",
       "metadata": {
         "tool_visibility": {
-          "enabled_tools": ["weather"]
+          "allowed_tools": ["weather"]
         }
       },
       "expected_tools": ["weather"],
@@ -27,12 +27,26 @@
       "text": "查询我今天的日历安排，只读取并总结，不要创建或修改任何事件。",
       "metadata": {
         "tool_visibility": {
-          "enabled_tools": ["calendar_search"]
+          "allowed_tools": ["calendar_search"]
         }
       },
       "expected_tools": ["calendar_search"],
       "expected_exposed_tools": ["calendar_search"],
       "must_not_call": ["calendar_create"],
+      "min_tool_calls": 1,
+      "max_tool_calls": 2
+    },
+    {
+      "id": "shopping_search_real_single_need",
+      "text": "搜索“纸巾”商品，给我真实商品候选和可打开的购买链接，不要下单。",
+      "metadata": {
+        "tool_visibility": {
+          "allowed_tools": ["shopping_search"]
+        }
+      },
+      "expected_tools": ["shopping_search"],
+      "expected_exposed_tools": ["shopping_search"],
+      "must_not_call": ["web_search"],
       "min_tool_calls": 1,
       "max_tool_calls": 2
     }

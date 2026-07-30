@@ -42,7 +42,6 @@ def build_traced_assistant_context_pack(
     context_token_counter: ContextTokenCounter | None = None,
     context_window_policy: ContextWindowPolicy | None = None,
     registry_generation: str | None = None,
-    host_configured_tool_names: set[str] | None = None,
     native_calls: list[dict[str, Any]] | None = None,
     current_location: str | None = None,
     answer_only: bool = False,
@@ -84,7 +83,6 @@ def build_traced_assistant_context_pack(
             memory_text=memory_text,
             context_compactor=context_compactor,
             registry_generation=registry_generation,
-            host_configured_tool_names=host_configured_tool_names,
         )
         compilation = PromptCompiler().compile(
             PromptCompileRequest(

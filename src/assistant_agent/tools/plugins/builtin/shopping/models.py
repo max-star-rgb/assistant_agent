@@ -50,7 +50,7 @@ class ProductResult(BaseModel):
     style_tags: list[str] = Field(default_factory=list)
     reason: str | None = None
     ranking_reason: "RankingReason | None" = None
-    source: str = "mock"
+    source: str = Field(default="unknown", min_length=1)
 
 
 class RankingReason(BaseModel):
@@ -90,8 +90,8 @@ class ProductSearchResult(BaseModel):
         return bool(self.items) or not self.errors
 
 
-class ShoppingSearchRequest(BaseModel):
-    """购物搜索工具的模型语义输入。"""
+class ProductSearchRequest(BaseModel):
+    """Plugin-private single-keyword request passed to Provider adapters."""
 
     query: str = Field(
         min_length=1,
@@ -155,14 +155,16 @@ class ShoppingEvidence(BaseModel):
     )
 
 
-class ShoppingListSearchRequest(BaseModel):
-    """多品类购物清单；工具会逐项检索并在总预算内组合。"""
+class ShoppingSearchRequest(BaseModel):
+    """统一购物请求；单品和多品类都通过 needs 表达。"""
 
-    scenario: str = Field(
+    scenario: str | None = Field(
+        default=None,
         min_length=1,
         description="清单服务的具体场景，例如室内聚餐或雨天通勤。",
     )
-    decision_reason: str = Field(
+    decision_reason: str | None = Field(
+        default=None,
         min_length=1,
         description="选择这些商品品类的原因；如由天气决定，应明确说明判断。",
     )
@@ -170,23 +172,29 @@ class ShoppingListSearchRequest(BaseModel):
         default_factory=list,
         description="支持场景判断的结构化工具证据，例如 weather 的摘要和 output_ref。",
     )
-    total_budget: float = Field(
+    total_budget: float | None = Field(
+        default=None,
         gt=0,
-        description="整份清单的总预算，工具会按数量计算并强制约束组合总价。",
+        description="整份清单的总预算；多于一个 need 时必填。",
     )
     needs: list[ShoppingListNeed] = Field(
         min_length=1,
         max_length=8,
         description="需要分别搜索的商品清单项，最多八项。",
     )
-    platforms: list[str] = Field(default_factory=list)
+    platforms: list[str] = Field(
+        default_factory=list,
+        description="用户明确指定的购物平台列表；未指定时省略。",
+    )
     top_k_per_need: int = Field(default=3, ge=1, le=5)
 
     @model_validator(mode="after")
-    def validate_distinct_needs(self) -> "ShoppingListSearchRequest":
+    def validate_request(self) -> "ShoppingSearchRequest":
         normalized = [" ".join(need.keyword.split()).casefold() for need in self.needs]
         if len(normalized) != len(set(normalized)):
             raise ValueError("needs must use distinct product keywords")
+        if len(self.needs) > 1 and self.total_budget is None:
+            raise ValueError("total_budget is required when needs contains multiple items")
         return self
 
 
@@ -211,14 +219,14 @@ class ShoppingListNeedResult(BaseModel):
     errors: list[ProductProviderError] = Field(default_factory=list)
 
 
-class ShoppingListSearchResult(BaseModel):
-    """Multi-category search results and a total-budget-constrained basket."""
+class ShoppingSearchResult(BaseModel):
+    """Unified single- and multi-need shopping result."""
 
     outcome: ShoppingSearchOutcome
-    scenario: str
-    decision_reason: str
+    scenario: str | None = None
+    decision_reason: str | None = None
     evidence: list[ShoppingEvidence] = Field(default_factory=list)
-    total_budget: float = Field(gt=0)
+    total_budget: float | None = Field(default=None, gt=0)
     total_cost: float = Field(ge=0)
     within_budget: bool
     needs: list[ShoppingListNeedResult]
@@ -233,14 +241,6 @@ class ShoppingListSearchResult(BaseModel):
     @property
     def success(self) -> bool:
         return self.outcome != "failed"
-
-
-class ShoppingSearchConstraints(BaseModel):
-    """User-provided filters retained as recommendation evidence."""
-
-    budget_min: float | None = Field(default=None, ge=0)
-    budget_max: float | None = Field(default=None, ge=0)
-    platforms: list[str] = Field(default_factory=list)
 
 
 class PriceOffer(BaseModel):
@@ -287,7 +287,7 @@ class PriceCompareResult(BaseModel):
     best_offer: PriceOffer | None = None
     ranking_reason: RankingReason | None = None
     comparison_status: Literal["comparable", "candidates_only"] = "candidates_only"
-    provider: str = "mock"
+    provider: str = Field(min_length=1)
     errors: list[ProductProviderError] = Field(default_factory=list)
     latency_ms: int | None = Field(default=None, ge=0)
     output_ref: str | None = None
@@ -308,29 +308,3 @@ class PriceCompareRequest(BaseModel):
     sort_by: Literal["price", "similarity", "rating", "value"] = "value"
     currency: str = "CNY"
     top_k: int = Field(default=5, ge=1)
-
-
-class ShoppingSearchResult(BaseModel):
-    """Combined shopping search and price comparison result."""
-
-    outcome: ShoppingSearchOutcome
-    query: str = Field(min_length=1)
-    requested_constraints: ShoppingSearchConstraints = Field(
-        default_factory=ShoppingSearchConstraints
-    )
-    search: ProductSearchResult
-    comparison: PriceCompareResult | None = None
-    items: list[ProductResult] = Field(default_factory=list)
-    offers: list[PriceOffer] = Field(default_factory=list)
-    best_offer: PriceOffer | None = None
-    best_value_product_id: str | None = None
-    ranking_reason: RankingReason | None = None
-    summary: str = Field(min_length=1)
-    provider: str = "mock"
-    errors: list[ProductProviderError] = Field(default_factory=list)
-    latency_ms: int | None = Field(default=None, ge=0)
-    output_ref: str | None = None
-
-    @property
-    def success(self) -> bool:
-        return self.outcome != "failed"

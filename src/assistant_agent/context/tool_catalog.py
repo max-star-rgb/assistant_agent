@@ -15,9 +15,7 @@ from assistant_agent.skills.loading import (
     load_repo_skill_descriptors,
 )
 from assistant_agent.context.tool_exposure import (
-    ToolExposureCategory,
     evaluate_tool_exposure,
-    tool_exposure_category,
 )
 _DEFAULT_REPO_ROOT = Path(__file__).resolve().parents[4]
 
@@ -45,9 +43,7 @@ class ToolQualificationSelection:
 class ToolVisibilityOverrides:
     """Structured per-run tool exposure overrides."""
 
-    explicit_tools: set[str]
     explicit_skills: set[str]
-    configured_tools: set[str]
     allowed_tools: set[str]
     profile: str | None
 
@@ -58,7 +54,6 @@ def select_prompt_tool_specs(
     *,
     skill_catalog: SkillCatalog | None = None,
     registry_generation: str | None = None,
-    host_configured_tool_names: set[str] | None = None,
 ) -> ToolCatalogSelection:
     """Return the complete run-qualified ToolSpec catalog."""
 
@@ -71,7 +66,6 @@ def select_prompt_tool_specs(
         request,
         tool_specs,
         catalog=catalog,
-        host_configured_tool_names=host_configured_tool_names,
     )
     available_specs = list(qualification.qualified_tool_specs)
     selection_mode = "qualified_tools"
@@ -120,57 +114,21 @@ def qualify_tool_specs(
     tool_specs: list[ToolSpec],
     *,
     catalog: SkillCatalog | None = None,
-    host_configured_tool_names: set[str] | None = None,
 ) -> ToolQualificationSelection:
-    """Return tools allowed by environment, visibility policy, and exposure class."""
+    """Return registered tools allowed by structured run constraints."""
 
     visibility_overrides = _visibility_overrides(request)
-    host_configured = host_configured_tool_names or set()
-    active_skill_ids, active_skill_tools = _explicit_skill_activation(
+    active_skill_ids, _active_skill_tools = _explicit_skill_activation(
         catalog or SkillCatalog(),
         visibility_overrides.explicit_skills,
     )
     qualified_specs: list[ToolSpec] = []
     excluded_reasons: dict[str, list[str]] = {}
-    trusted_durable_execution = request.metadata.get("_trusted_durable_execution") is True
-    durable_ready_tool_names = set(
-        _string_list(request.metadata.get("ready_tool_names"))
-    ) | set(DURABLE_TASK_SUBMISSION_TOOL_NAMES)
     for spec in tool_specs:
         if visibility_overrides.allowed_tools and spec.name not in visibility_overrides.allowed_tools:
             excluded_reasons[spec.name] = ["entry_profile_not_allowed"]
             continue
-        category = tool_exposure_category(spec)
-        durable_ready = trusted_durable_execution and spec.name in durable_ready_tool_names
-        durable_plan_submission = (
-            request.task_execution_mode == "durable"
-            and spec.name in DURABLE_TASK_SUBMISSION_TOOL_NAMES
-        )
-        configured_for_exposure = (
-            _code_configured_tool_exposure(
-                category=category,
-                tool_name=spec.name,
-                host_configured_tool_names=host_configured,
-            )
-            or durable_ready
-            or durable_plan_submission
-            or spec.name in visibility_overrides.configured_tools
-        )
-        explicitly_enabled = (
-            spec.name in visibility_overrides.explicit_tools
-            or spec.name in active_skill_tools
-        )
-        if not spec.enabled_by_default and not (
-            configured_for_exposure or explicitly_enabled
-        ):
-            excluded_reasons[spec.name] = ["disabled_by_default"]
-            continue
-        exposure = evaluate_tool_exposure(
-            request,
-            spec,
-            configured_for_exposure=configured_for_exposure,
-            explicitly_enabled=explicitly_enabled,
-        )
+        exposure = evaluate_tool_exposure(request, spec)
         if not exposure.exposed:
             excluded_reasons[spec.name] = list(exposure.excluded_reasons)
             if not excluded_reasons[spec.name]:
@@ -188,25 +146,10 @@ def _visibility_overrides(request: UserRequest) -> ToolVisibilityOverrides:
     payload = request.metadata.get("tool_visibility")
     payload = payload if isinstance(payload, dict) else {}
     return ToolVisibilityOverrides(
-        explicit_tools=set(_string_list(payload.get("enabled_tools"))),
         explicit_skills=set(_string_list(payload.get("enabled_skills"))),
-        configured_tools=set(_string_list(payload.get("configured_tools"))),
         allowed_tools=set(_string_list(payload.get("allowed_tools"))),
         profile=_string_value(payload.get("profile")),
     )
-
-
-def _code_configured_tool_exposure(
-    *,
-    category: ToolExposureCategory,
-    tool_name: str,
-    host_configured_tool_names: set[str],
-) -> bool:
-    if category == "generate":
-        return True
-    if category == "write" and tool_name in host_configured_tool_names:
-        return True
-    return False
 
 
 def _explicit_skill_activation(

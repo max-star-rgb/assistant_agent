@@ -1,24 +1,20 @@
 """Structured per-turn tool exposure rules.
 
-This module keeps hard exposure decisions on structured runtime facts such as
-entry profile, attached media references, tool policy category, code-configured
-visibility, and explicit structured opt-in. It never infers user intent from
-natural-language request text; the LLM decides whether to call one of the
-already exposed tools.
+Registered tools are exposed by default. This module only applies structured
+runtime constraints such as attached or trusted live media; it never infers
+user intent from natural-language request text.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any
 
 from assistant_agent.media.agent_service_entry import (
     is_trusted_agent_service_request,
 )
 from assistant_agent.runtime.requests import UserRequest
 from assistant_agent.tools.models import ToolMediaScope, ToolSpec
-
-ToolExposureCategory = Literal["read", "generate", "write", "dangerous"]
 
 
 @dataclass(frozen=True)
@@ -80,9 +76,6 @@ def tool_exposure_facts(request: UserRequest) -> ToolExposureFacts:
 def evaluate_tool_exposure(
     request: UserRequest,
     spec: ToolSpec,
-    *,
-    configured_for_exposure: bool = False,
-    explicitly_enabled: bool = False,
 ) -> ToolExposureDecision:
     """Return whether one tool is exposed for the current turn."""
 
@@ -93,78 +86,11 @@ def evaluate_tool_exposure(
             excluded_reasons=(_media_exclusion_reason(spec.media_scope),),
             facts=facts,
         )
-    category = tool_exposure_category(spec)
-    if category == "read":
-        return ToolExposureDecision(
-            exposed=True,
-            reasons=("tool_category:read",),
-            facts=facts,
-        )
-    if category == "generate":
-        if configured_for_exposure or explicitly_enabled:
-            return ToolExposureDecision(
-                exposed=True,
-                reasons=(
-                    "tool_category:generate",
-                    _exposure_source_reason(
-                        configured_for_exposure=configured_for_exposure,
-                        explicitly_enabled=explicitly_enabled,
-                    ),
-                ),
-                facts=facts,
-            )
-        return ToolExposureDecision(
-            exposed=False,
-            excluded_reasons=("generate_not_enabled_by_visibility",),
-            facts=facts,
-        )
-    if category == "write":
-        if configured_for_exposure or explicitly_enabled:
-            return ToolExposureDecision(
-                exposed=True,
-                reasons=(
-                    "tool_category:write",
-                    _exposure_source_reason(
-                        configured_for_exposure=configured_for_exposure,
-                        explicitly_enabled=explicitly_enabled,
-                    ),
-                ),
-                facts=facts,
-            )
-        return ToolExposureDecision(
-            exposed=False,
-            excluded_reasons=("write_not_enabled_by_visibility",),
-            facts=facts,
-        )
-    if explicitly_enabled:
-        return ToolExposureDecision(
-            exposed=True,
-            reasons=("tool_category:dangerous", "explicit_tool_exposure"),
-            facts=facts,
-        )
     return ToolExposureDecision(
-        exposed=False,
-        excluded_reasons=("dangerous_not_explicitly_enabled",),
+        exposed=True,
+        reasons=(f"tool_category:{spec.category}",),
         facts=facts,
     )
-
-
-def tool_exposure_category(spec: ToolSpec) -> ToolExposureCategory:
-    """Return the explicit category declared by the tool contract."""
-
-    return spec.category
-
-
-def _exposure_source_reason(
-    *,
-    configured_for_exposure: bool,
-    explicitly_enabled: bool,
-) -> str:
-    if explicitly_enabled:
-        return "explicit_tool_exposure"
-    if configured_for_exposure:
-        return "configured_tool_exposure"
-    return "default_tool_exposure"
 
 
 def tool_media_requirements_satisfied(

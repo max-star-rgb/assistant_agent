@@ -5,12 +5,7 @@
   "request": {
     "user_id": "eval-contact-calendar-user",
     "session_id": "eval-contact-calendar-session",
-    "text": "先查一下 Alex Chen 的工作邮箱，然后创建明天下午四点到四点半的“需求确认”，邀请他参加。",
-    "metadata": {
-      "tool_visibility": {
-        "enabled_tools": ["calendar_create"]
-      }
-    }
+    "text": "先查一下 Alex Chen 的工作邮箱，然后创建明天下午四点到四点半的“需求确认”，邀请他参加。"
   },
   "environment": "evals.agent.tasks.contact_resolved_calendar_creation.environment:ContactCalendarEnvironment",
   "grader": "evals.agent.tasks.contact_resolved_calendar_creation.grader:grade",

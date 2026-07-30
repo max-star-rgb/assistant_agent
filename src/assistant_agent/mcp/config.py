@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Literal
@@ -28,6 +29,7 @@ MCPPersonalAssistantAdapterProfile = Literal[
     "workspace_mcp_v1",
 ]
 MCPEmailAdapterProfile = Literal["passthrough", "workspace_mcp_v1"]
+_PARENT_ENV_REFERENCE = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$")
 
 
 class MCPPersonalAssistantToolMapping(BaseModel):
@@ -139,7 +141,6 @@ class MCPToolAdapterConfig(BaseModel):
     server_name: str = Field(min_length=1)
     allowed_tools: list[str] = Field(default_factory=list)
     read_only_tools: list[str] = Field(default_factory=list)
-    enabled_tools: list[str] = Field(default_factory=list)
     namespace_prefix: str = "mcp"
 
     def is_allowed(self, tool_name: str) -> bool:
@@ -147,10 +148,6 @@ class MCPToolAdapterConfig(BaseModel):
 
     def is_read_only(self, tool_name: str) -> bool:
         return tool_name in set(self.read_only_tools)
-
-    def is_enabled_by_default(self, tool_name: str) -> bool:
-        return tool_name in set(self.enabled_tools)
-
 
 class MCPServerConfig(BaseModel):
     """Explicit configuration for one external MCP server."""
@@ -163,7 +160,6 @@ class MCPServerConfig(BaseModel):
     env: dict[str, str] = Field(default_factory=dict)
     allowed_tools: list[str] = Field(default_factory=list)
     read_only_tools: list[str] = Field(default_factory=list)
-    enabled_tools: list[str] = Field(default_factory=list)
     personal_assistant_tools: MCPPersonalAssistantToolMapping = Field(
         default_factory=MCPPersonalAssistantToolMapping
     )
@@ -204,15 +200,13 @@ class MCPServerConfig(BaseModel):
     def validate_tool_sets(self) -> "MCPServerConfig":
         self.allowed_tools = _dedupe(self.allowed_tools)
         self.read_only_tools = _dedupe(self.read_only_tools)
-        self.enabled_tools = _dedupe(self.enabled_tools)
         allowed = set(self.allowed_tools)
-        for field_name, values in (
-            ("read_only_tools", self.read_only_tools),
-            ("enabled_tools", self.enabled_tools),
-        ):
-            unknown = sorted(set(values) - allowed)
-            if unknown:
-                raise ValueError(f"{field_name} contains tools outside allowed_tools: {unknown}")
+        unknown = sorted(set(self.read_only_tools) - allowed)
+        if unknown:
+            raise ValueError(
+                "read_only_tools contains tools outside allowed_tools: "
+                f"{unknown}"
+            )
         mapped_tools = set(self.personal_assistant_tools.mapped_tool_names())
         email_mapped_tools = set(self.email_tools.mapped_tool_names())
         for mapping_name, mapped in (
@@ -249,7 +243,6 @@ class MCPServerConfig(BaseModel):
             server_name=self.server_name,
             allowed_tools=list(self.allowed_tools),
             read_only_tools=list(self.read_only_tools),
-            enabled_tools=list(self.enabled_tools),
             namespace_prefix=self.namespace_prefix,
         )
 
@@ -285,6 +278,28 @@ def load_mcp_server_configs_from_env(
     return configs
 
 
+def resolve_mcp_server_env(
+    server_env: Mapping[str, str],
+    *,
+    parent_env: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    """Resolve only explicit whole-value parent environment references."""
+
+    parent = os.environ if parent_env is None else parent_env
+    resolved: dict[str, str] = {}
+    for key, value in server_env.items():
+        normalized_key = str(key)
+        normalized_value = str(value)
+        reference = _PARENT_ENV_REFERENCE.fullmatch(normalized_value)
+        if reference is None:
+            resolved[normalized_key] = normalized_value
+            continue
+        inherited = parent.get(reference.group(1))
+        if inherited is not None:
+            resolved[normalized_key] = inherited
+    return resolved
+
+
 def _dedupe(values: list[str]) -> list[str]:
     deduped: list[str] = []
     for value in values:
@@ -313,7 +328,6 @@ _MCP_SERVER_PRESETS: dict[str, dict[str, object]] = {
             "search_files",
         ],
         "read_only_tools": ["search_events", "search_contacts", "search_files"],
-        "enabled_tools": ["search_events", "search_contacts", "search_files"],
         "personal_assistant_tools": {
             CALENDAR_SEARCH_TOOL_NAME: "search_events",
             CALENDAR_CREATE_TOOL_NAME: "create_event",
@@ -323,16 +337,13 @@ _MCP_SERVER_PRESETS: dict[str, dict[str, object]] = {
     "todoist": {
         "allowed_tools": ["search_tasks", "create_task"],
         "read_only_tools": ["search_tasks"],
-        "enabled_tools": ["search_tasks"],
     },
     "notion": {
         "allowed_tools": ["search_pages", "fetch_page", "create_page"],
         "read_only_tools": ["search_pages", "fetch_page"],
-        "enabled_tools": ["search_pages", "fetch_page"],
     },
     "slack": {
         "allowed_tools": ["search_messages", "list_channels", "post_message"],
         "read_only_tools": ["search_messages", "list_channels"],
-        "enabled_tools": ["search_messages", "list_channels"],
     },
 }

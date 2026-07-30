@@ -25,8 +25,7 @@ class PythonInterpreterTool(ToolBase):
     description = "运行受限 Python 代码进行计算和数据分析。"
     input_schema = PythonInterpreterInput
     output_schema = PythonInterpreterResult
-    category = "dangerous"
-    enabled_by_default = False
+    category = "write"
     llm_hidden_input_fields = ("purpose", "timeout_s")
 
     def __init__(

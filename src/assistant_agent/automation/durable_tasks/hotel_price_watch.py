@@ -124,7 +124,7 @@ class HotelPriceWatchRuntime:
             )
 
         step_id = _ready_probe_step(snapshot, binding)
-        tool_input = goal.search.model_dump(mode="json")
+        tool_input = goal.search.model_dump(mode="json", exclude={"limit"})
         decision = AssistantDecision(
             type="tool_call",
             tool_name=LODGING_SEARCH_TOOL_NAME,

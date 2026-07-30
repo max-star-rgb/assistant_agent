@@ -15,7 +15,11 @@ from assistant_agent.mcp.adapter import (
     MCPToolRunner,
     namespaced_mcp_tool_name,
 )
-from assistant_agent.mcp.config import MCPServerConfig, MCPToolAdapterConfig
+from assistant_agent.mcp.config import (
+    MCPServerConfig,
+    MCPToolAdapterConfig,
+    resolve_mcp_server_env,
+)
 from assistant_agent.tools.models import ToolResult
 from assistant_agent.providers.provider_errors import sanitize_error_detail, sanitize_error_message
 
@@ -175,7 +179,7 @@ def _start_process(server: MCPServerConfig) -> subprocess.Popen[bytes]:
 
 def _process_env(server_env: Mapping[str, str]) -> dict[str, str]:
     env = dict(os.environ)
-    env.update({str(key): str(value) for key, value in server_env.items()})
+    env.update(resolve_mcp_server_env(server_env))
     return env
 
 
@@ -328,6 +332,14 @@ def _summary_from_tool_result(*, content: Any, structured: Any) -> str:
 def _observation_from_tool_result(*, summary: str, structured: Any) -> dict[str, Any]:
     if isinstance(structured, dict):
         sanitized = sanitize_error_detail(structured)
+        if isinstance(sanitized, dict):
+            return sanitized
+    try:
+        decoded = json.loads(summary)
+    except (json.JSONDecodeError, TypeError):
+        decoded = None
+    if isinstance(decoded, dict):
+        sanitized = sanitize_error_detail(decoded)
         if isinstance(sanitized, dict):
             return sanitized
     return {"summary": sanitize_error_message(summary or "MCP tool completed.")}

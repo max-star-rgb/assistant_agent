@@ -75,10 +75,6 @@ def _email_server_config() -> MCPServerConfig:
             "search_gmail_messages",
             "get_gmail_messages_content_batch",
         ],
-        enabled_tools=[
-            "search_gmail_messages",
-            "get_gmail_messages_content_batch",
-        ],
         email_tools={
             "search": "search_gmail_messages",
             "read_batch": "get_gmail_messages_content_batch",
@@ -297,7 +293,7 @@ def test_runtime_searches_reads_then_analyzes_untrusted_email() -> None:
             text="总结未读邮件",
             metadata={
                 "tool_visibility": {
-                    "enabled_tools": ["email_search", "email_read"],
+                    "allowed_tools": ["email_search", "email_read"],
                 }
             },
         )

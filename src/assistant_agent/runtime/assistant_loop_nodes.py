@@ -310,9 +310,6 @@ def _build_decision_context(
             "generation",
             None,
         ),
-        host_configured_tool_names=_host_configured_tool_names(
-            graph_state["tool_executor"].registry
-        ),
         context_projector=graph_state.get("context_projector"),
         native_calls=_native_tool_calls_from_metadata(graph_state["state"]),
     )
@@ -333,13 +330,6 @@ def _list_tool_specs(registry: Any) -> list[ToolSpec]:
         return [spec if isinstance(spec, ToolSpec) else ToolSpec.model_validate(spec) for spec in specs]
     descriptions = registry.describe_tools()
     return [ToolSpec.model_validate(item) for item in descriptions]
-
-
-def _host_configured_tool_names(registry: Any) -> set[str]:
-    provider = getattr(registry, "host_configured_tool_names", None)
-    if not callable(provider):
-        return set()
-    return set(provider())
 
 
 def _decide_next_action(

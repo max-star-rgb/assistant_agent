@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from typing import Literal
+from urllib.parse import urlsplit
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class LodgingSearchRequest(BaseModel):
@@ -33,11 +35,63 @@ class LodgingSearchRequest(BaseModel):
         max_length=3,
         description="三字母币种。",
     )
+    keywords: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=120,
+        description="酒店名称、品牌或偏好关键词。",
+    )
+    nearby_poi: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=160,
+        description="希望靠近的景点、车站或其他地点。",
+    )
+    hotel_types: list[Literal["酒店", "民宿", "客栈"]] = Field(
+        default_factory=list,
+        max_length=3,
+        description="住宿类型筛选。",
+    )
+    star_ratings: list[int] = Field(
+        default_factory=list,
+        max_length=5,
+        description="酒店星级筛选，取值为 1 到 5。",
+    )
+    bed_types: list[Literal["大床房", "双床房", "多床房"]] = Field(
+        default_factory=list,
+        max_length=3,
+        description="床型筛选。",
+    )
+    max_nightly_price: float | None = Field(
+        default=None,
+        gt=0,
+        description="每晚最高预算。",
+    )
+    sort: Literal[
+        "distance_asc",
+        "rate_desc",
+        "price_asc",
+        "price_desc",
+        "no_rank",
+    ] = Field(
+        default="no_rank",
+        description="候选排序方式。",
+    )
+    limit: int = Field(
+        default=5,
+        ge=1,
+        le=10,
+        description="内部候选数量上限。",
+    )
 
     @model_validator(mode="after")
     def validate_dates(self) -> "LodgingSearchRequest":
         if self.check_out <= self.check_in:
             raise ValueError("check_out must be later than check_in")
+        if any(star < 1 or star > 5 for star in self.star_ratings):
+            raise ValueError("star_ratings must contain values from 1 to 5")
+        if len(self.star_ratings) != len(set(self.star_ratings)):
+            raise ValueError("star_ratings must not contain duplicates")
         return self
 
 
@@ -47,8 +101,27 @@ class LodgingOffer(BaseModel):
     nightly_price: float = Field(gt=0)
     total_price: float = Field(gt=0)
     currency: str = Field(min_length=3, max_length=3)
-    refundable: bool = False
+    price_basis: Literal["quoted_total", "nightly_estimate"] = "quoted_total"
+    refundable: bool | None = None
     source_ref: str = Field(min_length=1)
+    address: str | None = Field(default=None, max_length=300)
+    latitude: float | None = Field(default=None, ge=-90, le=90)
+    longitude: float | None = Field(default=None, ge=-180, le=180)
+    star: str | None = Field(default=None, max_length=80)
+    score: float | None = Field(default=None, ge=0, le=5)
+    review: str | None = Field(default=None, max_length=500)
+    image_url: str | None = Field(default=None, max_length=2_000)
+    booking_url: str | None = Field(default=None, max_length=2_000)
+
+    @field_validator("image_url", "booking_url")
+    @classmethod
+    def validate_external_url(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        parsed = urlsplit(value)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            raise ValueError("external hotel URLs must use http or https")
+        return value
 
 
 class LodgingSearchResult(BaseModel):
@@ -57,6 +130,7 @@ class LodgingSearchResult(BaseModel):
     offers: list[LodgingOffer] = Field(default_factory=list)
     observed_at: datetime
     output_ref: str | None = None
+    provider_notice: str | None = Field(default=None, max_length=1_000)
     error_code: str | None = None
     error_message: str | None = None
 

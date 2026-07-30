@@ -44,11 +44,26 @@ class _ConfiguredWriteTool(_ConfiguredReadTool):
     category = "write"
 
 
+class _ConfiguredGenerateTool(_ConfiguredReadTool):
+    name = "configured_generate"
+    category = "generate"
+
+
+class _ConfiguredDangerousTool(_ConfiguredReadTool):
+    name = "configured_dangerous"
+    category = "dangerous"
+
+
 class _ConfiguredPlugin:
     descriptor = ToolPluginDescriptor(plugin_id="tests.configured", plugin_version="1.0")
 
     def build_tools(self, context):
-        return [_ConfiguredReadTool(), _ConfiguredWriteTool()]
+        return [
+            _ConfiguredReadTool(),
+            _ConfiguredGenerateTool(),
+            _ConfiguredWriteTool(),
+            _ConfiguredDangerousTool(),
+        ]
 
 
 def _install_plugin_module(monkeypatch: pytest.MonkeyPatch, name: str, plugin: object) -> None:
@@ -77,7 +92,7 @@ def test_configured_plugin_is_owned_and_default_registry_is_sealed(
         first.register(_ConfiguredReadTool())
 
 
-def test_configured_write_tool_is_not_host_enabled_by_plugin_declaration(
+def test_registered_tools_are_exposed_without_category_or_default_opt_in(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     module_name = "tests_fake_write_plugin"
@@ -88,15 +103,18 @@ def test_configured_write_tool_is_not_host_enabled_by_plugin_declaration(
         UserRequest(user_id="u", session_id="s", text="write"),
         registry.list_specs(),
         registry_generation=registry.generation,
-        host_configured_tool_names=registry.host_configured_tool_names(),
     )
 
-    assert "configured_read" in selection.run_tool_catalog.available_tool_names
-    assert "configured_write" not in selection.run_tool_catalog.available_tool_names
+    assert {
+        "configured_read",
+        "configured_generate",
+        "configured_write",
+        "configured_dangerous",
+    }.issubset(selection.run_tool_catalog.available_tool_names)
     assert selection.summary.registry_generation == registry.generation
 
 
-def test_explicit_tool_activation_exposes_only_named_governed_tools() -> None:
+def test_entry_allowed_tools_still_narrows_registered_tools() -> None:
     registry = create_default_registry()
     request = UserRequest(
         user_id="u",
@@ -104,7 +122,7 @@ def test_explicit_tool_activation_exposes_only_named_governed_tools() -> None:
         text="manage calendar",
         metadata={
             "tool_visibility": {
-                "enabled_tools": ["calendar_search", "calendar_create"],
+                "allowed_tools": ["calendar_search", "calendar_create"],
             }
         },
     )
@@ -113,15 +131,18 @@ def test_explicit_tool_activation_exposes_only_named_governed_tools() -> None:
         request,
         registry.list_specs(),
         registry_generation=registry.generation,
-        host_configured_tool_names=registry.host_configured_tool_names(),
     )
 
     assert {"calendar_search", "calendar_create"}.issubset(
         selection.run_tool_catalog.available_tool_names
     )
+    assert set(selection.run_tool_catalog.available_tool_names) == {
+        "calendar_search",
+        "calendar_create",
+    }
 
 
-def test_agent_service_entry_profile_exposes_registered_read_tools_by_policy(
+def test_agent_service_entry_profile_exposes_all_structurally_eligible_tools(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     module_name = "tests_fake_agent_service_read_plugin"
@@ -138,20 +159,24 @@ def test_agent_service_entry_profile_exposes_registered_read_tools_by_policy(
         request,
         registry.list_specs(),
         registry_generation=registry.generation,
-        host_configured_tool_names=registry.host_configured_tool_names(),
     )
 
     assert {
         "calendar_search",
         "contacts_search",
-        "shopping_search",
-        "weather",
-        "web_fetch",
-        "web_search",
     }.issubset(selection.run_tool_catalog.available_tool_names)
-    assert "configured_read" in selection.run_tool_catalog.available_tool_names
-    assert "configured_write" not in selection.run_tool_catalog.available_tool_names
-    assert "calendar_create" not in selection.run_tool_catalog.available_tool_names
+    assert {"weather", "web_fetch", "web_search"}.isdisjoint(registry.list())
+    assert {"weather", "web_fetch", "web_search"}.isdisjoint(
+        selection.run_tool_catalog.available_tool_names
+    )
+    assert "shopping_search" not in selection.run_tool_catalog.available_tool_names
+    assert {
+        "configured_read",
+        "configured_generate",
+        "configured_write",
+        "configured_dangerous",
+        "calendar_create",
+    }.issubset(selection.run_tool_catalog.available_tool_names)
     assert "entry_profile_not_allowed" not in {
         reason
         for reasons in selection.run_tool_catalog.excluded_reasons.values()
@@ -169,7 +194,6 @@ def test_agent_service_entry_profile_exposes_registered_read_tools_by_policy(
         request.model_copy(update={"image_ids": ["https://example.com/image.jpg"]}),
         registry.list_specs(),
         registry_generation=registry.generation,
-        host_configured_tool_names=registry.host_configured_tool_names(),
     )
     assert "media_inspect" in image_selection.run_tool_catalog.available_tool_names
     assert (
@@ -192,7 +216,6 @@ def test_agent_service_entry_profile_exposes_registered_read_tools_by_policy(
         ),
         registry.list_specs(),
         registry_generation=registry.generation,
-        host_configured_tool_names=registry.host_configured_tool_names(),
     )
     assert "live_view_inspect" in (
         video_selection.run_tool_catalog.available_tool_names

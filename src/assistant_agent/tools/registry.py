@@ -157,16 +157,6 @@ class ToolRegistry:
 
         return [self._tool_spec(self._tools[name]) for name in sorted(self._tools)]
 
-    def host_configured_tool_names(self) -> set[str]:
-        """Return built-in Tool exposure exceptions approved by the host."""
-
-        return {
-            name
-            for name, tool in self._tools.items()
-            if self._registration_records[name].source_type == "builtin"
-            and getattr(tool, "host_configured_exposure", False) is True
-        }
-
     @staticmethod
     def _tool_spec(tool: Tool) -> ToolSpec:
         validate_tool_input_contract(tool)
@@ -234,7 +224,6 @@ def _declared_contract(tool: Tool) -> dict[str, Any]:
 
     fields = (
         "category",
-        "enabled_by_default",
         "requires_media",
         "media_scope",
     )

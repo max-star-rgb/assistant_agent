@@ -61,16 +61,21 @@ def test_shopping_provider_failure_is_explicit_and_omits_internal_output_ref() -
     )
 
     result = tool.run(
-        {"query": "通勤电脑双肩包", "budget_max": 500}
+        {
+            "needs": [
+                {
+                    "keyword": "通勤电脑双肩包",
+                    "max_unit_price": 500,
+                }
+            ]
+        }
     )
 
     assert result.success is False
     assert result.data is not None and result.data["outcome"] == "failed"
     assert result.model_observation is not None
     assert result.model_observation["outcome"] == "failed"
-    assert result.model_observation["requested_constraints"] == {
-        "budget_max": 500.0
-    }
+    assert result.model_observation["needs"][0]["need"]["max_unit_price"] == 500.0
     assert result.model_observation["errors"] == [
         failure.model_dump(mode="json")
     ]
@@ -94,7 +99,7 @@ def test_empty_shopping_search_is_a_completed_empty_result() -> None:
         ),
     )
 
-    result = tool.run({"query": "不存在的商品"})
+    result = tool.run({"needs": [{"keyword": "不存在的商品"}]})
 
     assert result.success is True
     assert result.data is not None and result.data["outcome"] == "empty"
@@ -131,13 +136,22 @@ def test_usable_candidates_survive_comparison_failure_as_partial_result() -> Non
         ),
     )
 
-    result = tool.run({"query": "通勤电脑双肩包", "budget_max": 500})
+    result = tool.run(
+        {
+            "needs": [
+                {
+                    "keyword": "通勤电脑双肩包",
+                    "max_unit_price": 500,
+                }
+            ]
+        }
+    )
 
     assert result.success is True
     assert result.data is not None and result.data["outcome"] == "partial"
     assert result.model_observation is not None
     assert result.model_observation["outcome"] == "partial"
-    assert result.model_observation["items"][0]["product_id"] == "bag-1"
+    assert result.model_observation["selections"][0]["product"]["product_id"] == "bag-1"
     assert result.model_observation["errors"] == [
         comparison_error.model_dump(mode="json")
     ]

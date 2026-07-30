@@ -6,7 +6,7 @@ from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
 from assistant_agent.config import ProviderConfig
-from assistant_agent.mcp.adapter import MCPToolRunner
+from assistant_agent.mcp.adapter import MCPToolRunner, namespaced_mcp_tool_name
 from assistant_agent.mcp.config import MCPServerConfig
 from assistant_agent.automation.durable_tasks.service import DurableTaskService
 from assistant_agent.providers.provider_errors import sanitize_error_message
@@ -98,6 +98,15 @@ def create_default_registry(
             server_configs,
             runner=mcp_runner,
         )
+        suppressed_adapter_tools = {
+            namespaced_mcp_tool_name(server.adapter_config(), remote_name)
+            for server in server_configs
+            for remote_name in (
+                server.personal_assistant_tools.weather_lookup,
+                *server.email_tools.mapped_tool_names(),
+            )
+            if remote_name
+        }
         for server in server_configs:
             sources.append(
                 ToolPluginSourceRecord(
@@ -107,6 +116,8 @@ def create_default_registry(
                 )
             )
         for item in discovered:
+            if item.tool.name in suppressed_adapter_tools:
+                continue
             contributions.append(
                 ToolContribution(
                     tool=item.tool,

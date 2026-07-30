@@ -9,7 +9,7 @@ from assistant_agent.tools.plugins.builtin.shopping.models import (
     PriceOffer,
     ProductProviderError,
     ProductResult,
-    ShoppingSearchRequest,
+    ProductSearchRequest,
     ProductSearchResult,
     RankingReason,
 )
@@ -56,7 +56,7 @@ def normalize_provider_limit(
     )
 
 
-def filter_products(items: list[ProductResult], request: ShoppingSearchRequest) -> list[ProductResult]:
+def filter_products(items: list[ProductResult], request: ProductSearchRequest) -> list[ProductResult]:
     """Filter and rank product candidates for a search request."""
 
     filtered = items
@@ -81,20 +81,20 @@ def filter_products(items: list[ProductResult], request: ShoppingSearchRequest) 
     return [item for _, item in indexed[: request.top_k]]
 
 
-def query_text(request: ShoppingSearchRequest) -> str:
+def query_text(request: ProductSearchRequest) -> str:
     """Build a provider-neutral product query string."""
 
     return request.query.strip()
 
 
-def query_tokens(request: ShoppingSearchRequest) -> list[str]:
+def query_tokens(request: ProductSearchRequest) -> list[str]:
     """Tokenize a product query for deterministic local matching."""
 
     text = query_text(request).lower()
     return [token for token in text.replace("/", " ").split() if len(token) >= 2]
 
 
-def filters_used(request: ShoppingSearchRequest) -> dict[str, object]:
+def filters_used(request: ProductSearchRequest) -> dict[str, object]:
     """Return non-empty filters applied to a product search."""
 
     filters: dict[str, object] = {}
@@ -352,7 +352,7 @@ def _largest_comparable_group(offers: list[PriceOffer]) -> list[PriceOffer]:
     )
 
 
-def _product_relevance(product: ProductResult, request: ShoppingSearchRequest) -> float:
+def _product_relevance(product: ProductResult, request: ProductSearchRequest) -> float:
     if product.text_match_score is not None:
         return product.text_match_score
     query = _normalized_identity_text(query_text(request))

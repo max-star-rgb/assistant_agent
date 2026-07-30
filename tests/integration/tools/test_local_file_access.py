@@ -162,7 +162,7 @@ def test_runtime_reads_file_then_exposes_content_for_summary(tmp_path: Path) -> 
             user_id="file-user",
             session_id="file-session",
             text="请总结 brief.md",
-            metadata={"tool_visibility": {"enabled_tools": ["file_read"]}},
+            metadata={"tool_visibility": {"allowed_tools": ["file_read"]}},
         )
     )
 

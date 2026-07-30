@@ -34,8 +34,9 @@ VisionProviderName = str
 VisionEmbeddingProviderName = Literal["mock", "dashscope"]
 ChatProviderName = str
 ImageGenerationProviderName = str
-ShoppingSearchProviderName = Literal["mock", "local_json", "http", "haodanku"]
-ShoppingCompareProviderName = Literal["mock", "local", "http", "haodanku"]
+ShoppingSearchProviderName = Literal["mock", "http", "haodanku"]
+ShoppingCompareProviderName = Literal["mock", "http", "haodanku"]
+LodgingProviderName = Literal["mock", "flyai"]
 IntentRouterName = Literal["rule", "mock_llm", "hybrid", "llm"]
 SearchProviderName = Literal["mock", "http", "tavily"]
 VisualImageSearchProviderName = Literal["mock", "qwen"]
@@ -162,7 +163,6 @@ class ProviderConfig:
     qwen_image_search_model: str = DEFAULT_QWEN_IMAGE_SEARCH_MODEL
     qwen_image_search_timeout_seconds: float = 30.0
     shopping_search_provider: ShoppingSearchProviderName = "mock"
-    shopping_search_local_path: str | None = None
     shopping_search_base_url: str | None = None
     shopping_search_api_key: str | None = None
     shopping_search_timeout_seconds: float = 10.0
@@ -170,6 +170,9 @@ class ProviderConfig:
     shopping_compare_base_url: str | None = None
     shopping_compare_api_key: str | None = None
     shopping_compare_timeout_seconds: float = 10.0
+    lodging_provider: LodgingProviderName = "mock"
+    flyai_cli_path: str | None = None
+    flyai_timeout_seconds: float = 30.0
     haodanku_api_key: str | None = None
     haodanku_base_url: str = "https://v3.api.haodanku.com"
     haodanku_timeout_seconds: float = 10.0
@@ -531,7 +534,6 @@ class ProviderConfig:
                 source.get("MULTIMODAL_AGENT_SHOPPING_PROVIDER"),
                 allow_real=allow_real_providers,
             ),
-            shopping_search_local_path=source.get("SHOPPING_SEARCH_LOCAL_PATH"),
             shopping_search_base_url=(
                 source.get("SHOPPING_SEARCH_BASE_URL")
                 or source.get("SEARCH_API_BASE_URL")
@@ -550,6 +552,15 @@ class ProviderConfig:
             shopping_compare_timeout_seconds=_float_env(
                 source.get("SHOPPING_COMPARE_TIMEOUT_SECONDS"),
                 10.0,
+            ),
+            lodging_provider=_lodging_provider(
+                source.get("MULTIMODAL_AGENT_LODGING_PROVIDER"),
+                allow_real=allow_real_providers,
+            ),
+            flyai_cli_path=source.get("FLYAI_CLI_PATH"),
+            flyai_timeout_seconds=_float_env(
+                source.get("FLYAI_TIMEOUT_SECONDS"),
+                30.0,
             ),
             haodanku_api_key=source.get("HAODANKU_API_KEY"),
             haodanku_base_url=source.get("HAODANKU_BASE_URL") or "https://v3.api.haodanku.com",
@@ -903,6 +914,12 @@ def _shopping_compare_provider(value: str | None, *, allow_real: bool = True) ->
         return "mock"
     if value in {"http", "haodanku"}:
         return value
+    return "mock"
+
+
+def _lodging_provider(value: str | None, *, allow_real: bool = True) -> LodgingProviderName:
+    if allow_real and value == "flyai":
+        return "flyai"
     return "mock"
 
 

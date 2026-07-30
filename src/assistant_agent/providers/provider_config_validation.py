@@ -142,8 +142,6 @@ def _image_generation_missing(config: ProviderConfig) -> list[str]:
 
 
 def _shopping_search_missing(config: ProviderConfig) -> list[str]:
-    if config.shopping_search_provider == "local_json":
-        return _missing(("SHOPPING_SEARCH_LOCAL_PATH", config.shopping_search_local_path))
     if config.shopping_search_provider == "http":
         return _missing(
             ("SHOPPING_SEARCH_BASE_URL", config.shopping_search_base_url),

@@ -1,14 +1,17 @@
-"""Offline contracts for multi-category shopping-list composition."""
+"""Offline contracts for the unified single- and multi-need shopping search."""
+
+import pytest
+from pydantic import ValidationError
 
 from assistant_agent.tools.base import ToolContext
-from assistant_agent.tools.plugins.builtin.shopping.list_tool import (
-    ShoppingListSearchTool,
-)
 from assistant_agent.tools.plugins.builtin.shopping.models import (
+    PriceCompareResult,
     ProductProviderError,
     ProductResult,
     ProductSearchResult,
+    ShoppingSearchRequest,
 )
+from assistant_agent.tools.plugins.builtin.shopping.tool import ShoppingSearchTool
 
 
 class _RecordingSearchAdapter:
@@ -22,6 +25,16 @@ class _RecordingSearchAdapter:
         query = str(getattr(request, "query"))
         self.queries.append(query)
         return self.results[query]
+
+
+class _PassthroughCompareAdapter:
+    def compare(self, request) -> PriceCompareResult:
+        return PriceCompareResult(
+            query=request.query,
+            items=list(request.items),
+            summary="已保留搜索候选。",
+            provider="recording",
+        )
 
 
 def _product(product_id: str, title: str, price: float) -> ProductResult:
@@ -45,7 +58,7 @@ def _result(query: str, *items: ProductResult) -> ProductSearchResult:
     )
 
 
-def test_shopping_list_search_queries_each_category_and_enforces_total_budget() -> None:
+def test_shopping_search_queries_each_category_and_enforces_total_budget() -> None:
     adapter = _RecordingSearchAdapter(
         {
             "桌面电火锅": _result(
@@ -63,7 +76,10 @@ def test_shopping_list_search_queries_each_category_and_enforces_total_budget() 
             ),
         }
     )
-    tool = ShoppingListSearchTool(search_adapter=adapter)
+    tool = ShoppingSearchTool(
+        search_adapter=adapter,
+        compare_adapter=_PassthroughCompareAdapter(),
+    )
 
     result = tool.run(
         {
@@ -99,7 +115,7 @@ def test_shopping_list_search_queries_each_category_and_enforces_total_budget() 
     assert result.data["evidence"][0]["source_tool"] == "weather"
 
 
-def test_shopping_list_search_reports_partial_when_budget_cannot_cover_required_need() -> None:
+def test_shopping_search_reports_partial_when_budget_cannot_cover_required_need() -> None:
     adapter = _RecordingSearchAdapter(
         {
             "电火锅": _result("电火锅", _product("pot", "电火锅", 180)),
@@ -107,7 +123,10 @@ def test_shopping_list_search_reports_partial_when_budget_cannot_cover_required_
         }
     )
 
-    result = ShoppingListSearchTool(search_adapter=adapter).run(
+    result = ShoppingSearchTool(
+        search_adapter=adapter,
+        compare_adapter=_PassthroughCompareAdapter(),
+    ).run(
         {
             "scenario": "室内聚餐",
             "decision_reason": "准备两类用品",
@@ -127,7 +146,7 @@ def test_shopping_list_search_reports_partial_when_budget_cannot_cover_required_
     ]
 
 
-def test_shopping_list_search_fails_only_when_all_item_searches_fail() -> None:
+def test_shopping_search_fails_only_when_all_item_searches_fail() -> None:
     error = ProductProviderError(
         code="provider_bad_response",
         message="provider failed",
@@ -148,7 +167,10 @@ def test_shopping_list_search_fails_only_when_all_item_searches_fail() -> None:
         }
     )
 
-    result = ShoppingListSearchTool(search_adapter=adapter).run(
+    result = ShoppingSearchTool(
+        search_adapter=adapter,
+        compare_adapter=_PassthroughCompareAdapter(),
+    ).run(
         {
             "scenario": "室内聚餐",
             "decision_reason": "准备用品",
@@ -162,3 +184,32 @@ def test_shopping_list_search_fails_only_when_all_item_searches_fail() -> None:
     assert result.data["outcome"] == "failed"
     assert result.contract is not None
     assert all(error.recoverable is False for error in result.contract.errors)
+
+
+def test_single_need_search_does_not_require_total_budget() -> None:
+    adapter = _RecordingSearchAdapter(
+        {"通勤电脑包": _result("通勤电脑包", _product("bag", "通勤电脑包", 299))}
+    )
+
+    result = ShoppingSearchTool(
+        search_adapter=adapter,
+        compare_adapter=_PassthroughCompareAdapter(),
+    ).run({"needs": [{"keyword": "通勤电脑包"}]})
+
+    assert result.success is True
+    assert result.data is not None
+    assert result.data["total_budget"] is None
+    assert result.data["total_cost"] == 299
+    assert result.data["within_budget"] is True
+
+
+def test_multiple_needs_require_total_budget() -> None:
+    with pytest.raises(ValidationError, match="total_budget"):
+        ShoppingSearchRequest.model_validate(
+            {
+                "needs": [
+                    {"keyword": "电火锅"},
+                    {"keyword": "餐具"},
+                ]
+            }
+        )

@@ -31,7 +31,6 @@ from assistant_agent.tools.ids import (
     PYTHON_INTERPRETER_TOOL_NAME,
     SHOPPING_SEARCH_TOOL_NAME,
     VIDEO_UNDERSTANDING_CAPABILITY,
-    WEATHER_TOOL_NAME,
     WEB_FETCH_CAPABILITY,
 )
 from assistant_agent.tools.spec_adapters import (
@@ -47,6 +46,7 @@ from assistant_agent.tools.input_binding import (
     runtime_bound_input_fields,
 )
 from assistant_agent.tools.plugins.registry_factory import create_default_registry
+from assistant_agent.tools.plugins.builtin.shopping.tool import ShoppingSearchTool
 from assistant_agent.tools.registry import ToolRegistry
 
 
@@ -58,6 +58,28 @@ def _contains_mapping_key(value: object, key: str) -> bool:
     if isinstance(value, list):
         return any(_contains_mapping_key(item, key) for item in value)
     return False
+
+
+class _UnusedShoppingSearchAdapter:
+    def search(self, request):
+        raise AssertionError("schema governance test must not execute shopping search")
+
+
+class _UnusedShoppingCompareAdapter:
+    def compare(self, request):
+        raise AssertionError("schema governance test must not execute shopping compare")
+
+
+def _shopping_contract_registry() -> ToolRegistry:
+    registry = ToolRegistry()
+    registry.register(
+        ShoppingSearchTool(
+            search_adapter=_UnusedShoppingSearchAdapter(),
+            compare_adapter=_UnusedShoppingCompareAdapter(),
+        )
+    )
+    registry.seal()
+    return registry
 
 
 class _DeclaredValidationInput(BaseModel):
@@ -264,6 +286,7 @@ def test_tool_input_ownership_separates_required_optional_default_and_runtime() 
 
 def test_provider_tools_hide_runtime_fields_and_pydantic_titles() -> None:
     registry = create_default_registry()
+    shopping_registry = _shopping_contract_registry()
     execution_only_schema_keys = {
         "additionalProperties",
         "exclusiveMaximum",
@@ -282,8 +305,10 @@ def test_provider_tools_hide_runtime_fields_and_pydantic_titles() -> None:
         "uniqueItems",
     }
 
-    for tool_name in (IMAGE_GENERATION_TOOL_NAME, SHOPPING_SEARCH_TOOL_NAME):
-        spec = registry.get_spec(tool_name)
+    for spec in (
+        registry.get_spec(IMAGE_GENERATION_TOOL_NAME),
+        shopping_registry.get_spec(SHOPPING_SEARCH_TOOL_NAME),
+    ):
         properties = spec.input_schema["properties"]
         assert "user_id" not in properties
         assert "session_id" not in properties
@@ -304,13 +329,18 @@ def test_provider_tools_hide_runtime_fields_and_pydantic_titles() -> None:
     assert "memory_get" not in registry.list()
     assert "memory_save" not in registry.list()
 
-    shopping = tool_spec_to_openai_tool(registry.get_spec(SHOPPING_SEARCH_TOOL_NAME))["function"]
+    shopping = tool_spec_to_openai_tool(
+        shopping_registry.get_spec(SHOPPING_SEARCH_TOOL_NAME)
+    )["function"]
     assert set(shopping["parameters"]["properties"]) == {
-        "query",
-        "budget_min",
-        "budget_max",
+        "scenario",
+        "decision_reason",
+        "evidence",
+        "total_budget",
+        "needs",
+        "platforms",
     }
-    assert shopping["parameters"]["required"] == ["query"]
+    assert shopping["parameters"]["required"] == ["needs"]
     assert "description" not in shopping["parameters"]
     assert not _contains_mapping_key(shopping["parameters"], "anyOf")
     assert not _contains_mapping_key(shopping["parameters"], "default")
@@ -325,10 +355,6 @@ def test_provider_tools_hide_runtime_fields_and_pydantic_titles() -> None:
     assert set(live_view_inspect["parameters"]["properties"]) == {"question"}
     assert registry.get_spec(MEDIA_INSPECT_TOOL_NAME).media_scope == "attached"
     assert registry.get_spec(LIVE_VIEW_INSPECT_TOOL_NAME).media_scope == "live"
-
-    web_fetch = tool_spec_to_openai_tool(registry.get_spec("web_fetch"))["function"]
-    assert set(web_fetch["parameters"]["properties"]) == {"url"}
-    assert web_fetch["parameters"]["required"] == ["url"]
 
     calendar_create = tool_spec_to_openai_tool(
         registry.get_spec("calendar_create")
@@ -565,59 +591,6 @@ def test_offline_mcp_server_lists_standard_json_schemas() -> None:
     assert tool_run["inputSchema"]["required"] == ["tool_name"]
 
 
-def test_weather_declares_location_and_normalized_target_date() -> None:
-    registry = create_default_registry()
-    spec = registry.get_spec(WEATHER_TOOL_NAME)
-    openai_tool = tool_spec_to_openai_tool(spec)
-    mcp_tool = tool_spec_to_mcp_tool(spec)
-    request = UserRequest(
-        user_id="user-1",
-        session_id="session-1",
-        text="查一下天气",
-    )
-
-    result = ActionValidator().validate(
-        decision=AssistantDecision(
-            type="tool_call",
-            tool_name=WEATHER_TOOL_NAME,
-            tool_input={"location": "   "},
-        ),
-        registry=registry,
-        request=request,
-        state=AgentState.from_request(request),
-    )
-
-    parameters = openai_tool["function"]["parameters"]
-    assert "required_inputs" not in spec.model_dump(mode="json")
-    assert "fields" not in spec.input_schema
-    assert not _contains_mapping_key(parameters, "title")
-    assert mcp_tool["inputSchema"] == parameters
-    assert parameters["required"] == ["location"]
-    assert set(parameters["properties"]) == {"location", "target_date"}
-    assert parameters["properties"]["target_date"]["type"] == "string"
-    assert "format" not in parameters["properties"]["target_date"]
-    assert "additionalProperties" not in parameters
-    assert not _contains_mapping_key(parameters, "default")
-    assert result.accepted is False
-    assert result.code == "invalid_tool_input"
-
-    dated_result = ToolExecutor(registry=registry).run_tool(
-        AgentState.from_request(request),
-        "step-weather",
-        WEATHER_TOOL_NAME,
-        {
-            "location": " 北京 ",
-            "target_date": "2026-07-22/2026-07-23",
-        },
-    )
-
-    assert dated_result.success is True
-    assert [item["date"] for item in dated_result.data["forecast"]] == [
-        "2026-07-22",
-        "2026-07-23",
-    ]
-
-
 def test_registry_exposes_one_simple_tool_contract() -> None:
     registry = ToolRegistry()
     registry.register(_DeclaredValidationTool())
@@ -625,6 +598,7 @@ def test_registry_exposes_one_simple_tool_contract() -> None:
     spec = registry.get_spec(_DeclaredValidationTool.name)
 
     assert spec.category == "read"
+    assert not hasattr(spec, "enabled_by_default")
     assert not hasattr(spec, "requires_confirmation")
     assert spec.requires_media == ["image"]
     assert not hasattr(spec, "redact_trace")
@@ -635,7 +609,13 @@ def test_registry_exposes_one_simple_tool_contract() -> None:
     assert not hasattr(spec, "requires_env")
     assert not hasattr(spec, "skill_only")
     assert not hasattr(spec, "progress_message")
-    assert spec.enabled_by_default is True
+
+
+def test_default_registry_keeps_category_for_execution_without_exposure_metadata() -> None:
+    registry = create_default_registry()
+
+    assert registry.get_spec(PYTHON_INTERPRETER_TOOL_NAME).category == "write"
+    assert not hasattr(registry, "host_configured_tool_names")
 
 
 def test_legacy_tool_mapping_remains_compatible_without_a_tool_manifest() -> None:
@@ -848,9 +828,9 @@ def test_llm_selected_tool_is_not_rejected_by_natural_language_intent_rules() ->
         decision=AssistantDecision(
             type="tool_call",
             tool_name=SHOPPING_SEARCH_TOOL_NAME,
-            tool_input={"query": "牛奶"},
+            tool_input={"needs": [{"keyword": "牛奶"}]},
         ),
-        registry=create_default_registry(),
+        registry=_shopping_contract_registry(),
         request=request,
         state=AgentState.from_request(request),
     )

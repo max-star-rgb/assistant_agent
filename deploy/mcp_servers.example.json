@@ -1,25 +1,38 @@
 {
   "servers": [
     {
-      "server_name": "weather",
+      "server_name": "amap_maps",
       "transport": "stdio",
       "command": [
-        "/home/lenovo1/miniconda3/envs/hello_agent/bin/uvx",
-        "--with",
-        "mcp==1.28.1",
-        "--from",
-        "mcp_weather_server==0.6.1",
-        "mcp_weather_server",
-        "--mode",
-        "stdio"
+        "/usr/bin/npx",
+        "-y",
+        "@amap/amap-maps-mcp-server@0.0.8"
       ],
-      "allowed_tools": ["get_weather_byDateTimeRange"],
-      "read_only_tools": ["get_weather_byDateTimeRange"],
-      "enabled_tools": ["get_weather_byDateTimeRange"],
-      "personal_assistant_tools": {
-        "weather_lookup": "get_weather_byDateTimeRange",
-        "weather_profile": "mcp_weather_server_v1"
+      "env": {
+        "AMAP_MAPS_API_KEY": "<set-in-ignored-local-config>"
       },
+      "allowed_tools": [
+        "maps_geo",
+        "maps_ip_location",
+        "maps_weather",
+        "maps_bicycling",
+        "maps_direction_walking",
+        "maps_direction_driving",
+        "maps_direction_transit_integrated",
+        "maps_text_search",
+        "maps_around_search"
+      ],
+      "read_only_tools": [
+        "maps_geo",
+        "maps_ip_location",
+        "maps_weather",
+        "maps_bicycling",
+        "maps_direction_walking",
+        "maps_direction_driving",
+        "maps_direction_transit_integrated",
+        "maps_text_search",
+        "maps_around_search"
+      ],
       "timeout_seconds": 30
     },
     {
@@ -37,7 +50,10 @@
       ],
       "allowed_tools": ["get_events", "manage_event"],
       "read_only_tools": ["get_events"],
-      "enabled_tools": ["get_events"],
+      "env": {
+        "GOOGLE_OAUTH_CLIENT_ID": "${GOOGLE_OAUTH_CLIENT_ID}",
+        "GOOGLE_OAUTH_CLIENT_SECRET": "${GOOGLE_OAUTH_CLIENT_SECRET}"
+      },
       "personal_assistant_tools": {
         "calendar_search": "get_events",
         "calendar_create": "manage_event",
@@ -68,10 +84,10 @@
         "search_gmail_messages",
         "get_gmail_messages_content_batch"
       ],
-      "enabled_tools": [
-        "search_gmail_messages",
-        "get_gmail_messages_content_batch"
-      ],
+      "env": {
+        "GOOGLE_OAUTH_CLIENT_ID": "${GOOGLE_OAUTH_CLIENT_ID}",
+        "GOOGLE_OAUTH_CLIENT_SECRET": "${GOOGLE_OAUTH_CLIENT_SECRET}"
+      },
       "email_tools": {
         "search": "search_gmail_messages",
         "read_batch": "get_gmail_messages_content_batch",

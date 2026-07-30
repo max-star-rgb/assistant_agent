@@ -17,7 +17,11 @@ from assistant_agent.mcp.adapter import (
     MCPToolRunner,
     namespaced_mcp_tool_name,
 )
-from assistant_agent.mcp.config import MCPServerConfig, MCPToolAdapterConfig
+from assistant_agent.mcp.config import (
+    MCPServerConfig,
+    MCPToolAdapterConfig,
+    resolve_mcp_server_env,
+)
 from assistant_agent.tools.models import ToolResult
 from assistant_agent.providers.provider_errors import (
     ProviderSafetyPolicy,
@@ -202,7 +206,7 @@ def _mcp_subprocess_environment(server_env: dict[str, str]) -> dict[str, str] | 
         if not (has_protocol_proxy and key in {"ALL_PROXY", "all_proxy"})
         if (value := os.environ.get(key)) is not None
     }
-    environment.update(server_env)
+    environment.update(resolve_mcp_server_env(server_env))
     return environment or None
 
 
@@ -265,6 +269,14 @@ def _summary_from_sdk_payload(*, content: Any, structured: Any) -> str:
 def _observation_from_sdk_payload(*, summary: str, structured: Any) -> dict[str, Any]:
     if isinstance(structured, dict):
         sanitized = sanitize_error_detail(structured)
+        if isinstance(sanitized, dict):
+            return sanitized
+    try:
+        decoded = json.loads(summary)
+    except (json.JSONDecodeError, TypeError):
+        decoded = None
+    if isinstance(decoded, dict):
+        sanitized = sanitize_error_detail(decoded, _MCP_CONTENT_POLICY)
         if isinstance(sanitized, dict):
             return sanitized
     return {"summary": sanitize_error_message(summary or "MCP tool completed.")}
