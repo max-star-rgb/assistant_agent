@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -11,6 +12,7 @@ from evals.agent.contracts import (
     JudgeVerdict,
     RunEvidence,
     TaskJudgeResult,
+    TaskSpec,
 )
 from evals.agent.grading import (
     dimension,
@@ -22,6 +24,19 @@ from evals.agent.grading import (
     validate_mission_objective_assertions,
 )
 from evals.agent.loader import AgentEvalCaseSource, load_task
+from evals.agent.langfuse_backend import publish_tasks
+
+
+class _FakeLangfuseClient:
+    def __init__(self) -> None:
+        self.items: list[dict[str, Any]] = []
+
+    def create_dataset(self, **_: Any) -> object:
+        return object()
+
+    def create_dataset_item(self, **kwargs: Any) -> object:
+        self.items.append(kwargs)
+        return object()
 
 
 def _write_task(root: Path, task_id: str) -> None:
@@ -72,6 +87,40 @@ def test_loader_discovers_tasks_and_missions_with_source_level(
     ]
     assert loader.list_task_ids() == ["basic_case", "mission_case"]
     assert loader.load_task("mission_case").id == "mission_case"
+
+
+def test_publish_mission_keeps_langfuse_dataset_item_thin() -> None:
+    mission = TaskSpec(
+        id="mission_case",
+        description="Mission dataset contract.",
+        capability="mission_capability",
+        request={
+            "user_id": "eval-user",
+            "session_id": "eval-session",
+            "text": "完成受控任务。",
+        },
+        environment="example.mission:Environment",
+        grader="example.mission:grade",
+        tags=["offline", "mission"],
+    )
+    client = _FakeLangfuseClient()
+
+    publish_tasks(client, [mission])
+
+    item = client.items[0]
+    assert item["input"] == {
+        "task_id": mission.id,
+        "request": mission.request.model_dump(mode="json"),
+    }
+    assert item["metadata"] == {
+        "task_id": mission.id,
+        "capability": mission.capability,
+        "tags": mission.tags,
+    }
+    assert "case_level" not in item["metadata"]
+    assert "environment" not in item["metadata"]
+    assert "objective_state" not in item["metadata"]
+    assert "grader" not in item["metadata"]
 
 
 def test_loader_rejects_duplicate_ids_across_case_roots(

@@ -12,7 +12,8 @@ agent_eval.dimension.grounding
 agent_eval.dimension.response_quality
 ```
 
-- `tool_execution`：实际工具终态是否符合 Environment 为该案例声明的 oracle，使用 Rule；
+- `tool_execution`：基础 Task 的实际工具终态是否符合 Environment 为该案例声明的 oracle，使用 Rule；
+  Mission 还合入 Environment 的 objective state Rule；
 - `tool_semantics`：工具返回内容是否语义正确、内部一致且可用，使用 LLM Judge；
 - `grounding`：最终回答是否忠于工具结果，使用 LLM Judge；
 - `response_quality`：回答是否真正回应当前请求并且清晰完整，使用 LLM Judge。
@@ -39,7 +40,8 @@ ToolOutcomeExpectation.must_fail_with(
 不完整、重复或与可见工具不一致属于 infrastructure failure。
 
 `tool_execution` 只回答“受控案例是否按 oracle 发生”，不回答工具数据是否有用。不要在 Task grader
-重复判断次数、顺序、参数、状态、成功或错误码。
+重复判断次数、顺序、参数、状态、成功或错误码。Mission objective Rule 由 Environment 的非空
+`objective_state_assertions()` 独占；Task grader 不得拥有或重复 state oracle。
 
 ## 三个 Judge
 
@@ -92,3 +94,5 @@ judge_verdicts:
 - Judge 只接收完成判定所需的 Evidence；
 - Agent 的自述不能证明工具终态；
 - Trace 用于提供证据，不直接充当正确答案。
+- Langfuse Dataset item 只保存 `task_id + request + 短 metadata`，不复制 case level、state oracle 或
+  rubric。

@@ -41,6 +41,10 @@ Evidence: 可独立观察的轨迹、终态和回答
 如果用户尚未指定，提出二到三个彼此不同的 capability。每个方向给出真实用户请求、它能区分的
 Agent 行为和所需环境。推荐一个并等待用户选择；不要把文案变化当成新能力。
 
+若案例需要证明跨工具或写操作后的客观终态，先确认该终态能由结构化 state Evidence 独立证明；只有
+满足时才选择 `missions/<mission_id>/`，否则使用 `tasks/<task_id>/`。两个目录共用运行协议且 ID 全局
+唯一；Mission 的差异是 Environment 必须拥有非空、Rule-only 的 `objective_state_assertions()`。
+
 ## 4. 先批准 Environment
 
 选择后完整读取 [references/task-design.md](references/task-design.md) 和
@@ -57,17 +61,20 @@ Evidence: grader 可独立检查的轨迹、终态和回答
 
 ## 5. 实现自包含 Task
 
-每次只实现一个 `evals/agent/tasks/<task_id>/`：
+每次只实现一个 `evals/agent/tasks/<task_id>/` 或有结构化目标终态的
+`evals/agent/missions/<mission_id>/`：
 
 1. `task.json` 只保存用户请求、capability、environment/grader 入口和短 tags；
 2. `environment.py` 使用活动 `AgentGraphRuntime`，控制依赖、工具可见性、初始状态、隔离和复位，并
    默认装配 Agent 在相同结构化运行条件下暴露的完整工具目录，不按 Task 或目标工具裁剪；提供不调用
    Agent 的 `validate()`，并为每个可见工具声明可读的 `ToolOutcomeExpectation`。确有特殊运行边界
    时，可由 Environment 使用带可读 profile 的结构化 allowlist 精确收窄目录；
-3. `grader.py` 不向 Agent 暴露 rubric 或 oracle，基于结构化 Evidence 组合 Task-local assertions；
+3. `grader.py` 不向 Agent 暴露 rubric 或 oracle，且不拥有 Mission objective Rule 或 state oracle；它
+   只组合 Task-local `response_quality` assertions；
 4. `calibration.json` 至少含一个正确样本和一个可信但错误的样本；
 5. Suite 只做 Task ID 选择，不拥有 Environment 或评分逻辑；
-6. Langfuse Dataset item 只发布 `task_id + request + 短 metadata`，不复制 grader、依赖契约或长 oracle；
+6. Langfuse Dataset item 只发布 `task_id + request + 短 metadata`，不复制 case level、grader、state
+   oracle、rubric、依赖契约或长 oracle；
 7. 若活动 runtime 无法表达 Environment，只增加薄适配，不把工具选择、重试或最终回答移出 Agent。
 
 Task 不得靠 expected answer 文本匹配通过；工具行为以 Trace 和状态证据为准。
@@ -76,7 +83,7 @@ Task 不得靠 expected answer 文本匹配通过；工具行为以 Trace 和状
 
 顺序固定：
 
-1. `--inspect` 检查 Task 和 Environment，不联网；
+1. `--inspect` 检查 Task/Mission 和 Environment，不联网，并确认案例层级及 Mission Rule 是否实现；
 2. pytest 验证 loader、Environment、Evidence、Grader 和薄 Langfuse backend；
 3. `--calibrate` 直接把 grader 跑在人工标注的正反证据上；
 4. `--publish` 显式发布所选 Task；
@@ -135,7 +142,8 @@ Dataset、Judge、证据解析或 Score 缺失属于评测基础设施错误，�
   observation，CLI 进度写 stderr、最终 JSON 写 stdout。
 - Environment validation、凭据、Evidence 和 Judge 故障属于基础设施状态，不计入 Agent 分数。
 - 工具业务结果预期只由 Environment 声明；通用评分入口把实际终态与 oracle 的匹配写入
-  `tool_execution`，Task grader 不得重复硬编码成功或错误码。
+  `tool_execution`；Mission 还把 Environment 的 objective state Rule 合入该维度。Task grader 不得重复
+  硬编码成功、错误码或 objective Rule。
 - `tool_semantics` 判断工具数据本身是否语义正确可用；`grounding` 判断回答是否忠于工具结果；
   `response_quality` 使用 Task 专属 rubric 判断回答是否清晰完整地回应用户。
 - Trace 用于发现问题和提供证据，不直接充当正确答案。

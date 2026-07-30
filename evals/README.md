@@ -97,11 +97,17 @@ evals/agent/
     environment.py      # 依赖、工具、状态、隔离与执行
     grader.py           # 隐藏评分逻辑
     calibration.json    # 人工标注的正反证据
+  missions/<mission_id>/ # 与 Task 相同的运行协议；额外验证目标终态
 ```
 
-Langfuse 是协作和运行后端：Dataset 保存已发布请求，Experiment 保存 Trace、输出和 Score。不要把
-Environment、grader rubric、长依赖说明或 oracle 塞进 Dataset metadata，也不要把 Langfuse
-Dataset 当作回归定义的唯一副本。
+`tasks/` 与 `missions/` 只是案例组织层级，共用 loader、Environment、Evidence、校准、发布和运行
+协议；loader 会拒绝两个目录之间重复的 ID。基础 Task 只验证受控工具 outcome；Mission 适用于还必须
+由结构化状态 Evidence 证明客观终态的案例。Mission Environment 必须实现非空、只含 Rule assertion 的
+`objective_state_assertions()`；目标状态 Rule 由 Environment 拥有，Task-local grader 不拥有该 Rule。
+
+Langfuse 是协作和运行后端：Dataset 保存已发布请求，Experiment 保存 Trace、输出和 Score。Dataset
+item 只包含 `task_id + request + 短 metadata`，不复制 case level、Environment、state oracle、grader
+rubric、长依赖说明或其他 oracle，也不能把 Langfuse Dataset 当作回归定义的唯一副本。
 
 ### Task 规则
 
@@ -125,6 +131,8 @@ Dataset 当作回归定义的唯一副本。
 - Langfuse 固定输出 `tool_execution`、`tool_semantics`、`grounding`、`response_quality`
   四个彼此独立的 BOOLEAN Score，不生成 reward 或总通过分；
 - `tool_execution` 由 Environment oracle 做 Rule 判定；其余三项分别由独立 LLM Judge 判定；
+- 对基础 Task，`tool_execution` 只表示工具 outcome 与 Environment oracle 匹配；对 Mission，它还必须
+  合入 `objective_state_assertions()` 的终态 Rule；
 - Task 专属要求只进入 `response_quality` rubric，不创建天气、日历等工具专属 Score；
 - 每条 assertion 必须标记 `evaluation_method=rule|judge`；可客观证明的事实使用 Rule，开放语义才使用
   LLM Judge；
@@ -157,6 +165,9 @@ Environment 都不连接真实高德服务，并使用每次运行隔离的 in-m
   --inspect \
   --task amap_weather_provider_failure_recovery
 ```
+
+`--inspect` 会显示 `case_source.level`，并显示 `mission_objective_rule.required/implemented`，以便在
+校准前发现 Mission 缺少目标状态 Rule。inspect、calibrate、publish、run 和 Scores v3 审计顺序保持不变。
 
 2. 跑离线框架契约：
 
@@ -276,7 +287,7 @@ operator 显式接受重试时，可把 `--judge-max-retries` 调为正数。
 - `--run` 还要求 Langfuse 凭据与可用的 OTLP Trace 导出；
 - `--run` 在完整产出四项 Score 后返回 0，不再根据分数组合返回 Agent 失败码；
 - `--calibrate` 的人工标注与实际四项 Score 不一致时返回 1；
-- 凭据、Environment、Dataset、Trace、Judge、Evidence 或 Score 故障返回 2；
+- 凭据、Environment、Mission Rule、Dataset、Trace、Judge、Evidence 或 Score 故障返回 2；
 - 通过返回 0。
 
 ### 评分与基础设施
@@ -292,8 +303,8 @@ agent_eval.dimension.response_quality
 
 四项全部采用阳性语义，但不聚合：
 
-- `tool_execution`：实际工具终态是否符合 Environment 为该案例声明的结果 oracle。预期
-  `provider_timeout` 且实际错误码相同仍为 `true`；
+- `tool_execution`：基础 Task 的实际工具终态是否符合 Environment 为该案例声明的结果 oracle；Mission
+  还要求目标状态 Rule 通过。预期 `provider_timeout` 且实际错误码相同仍为 `true`；
 - `tool_semantics`：工具是否返回语义正确、内部一致且可用的数据。超时或其他 Provider 错误为
   `false`，合法空结果可以为 `true`；
 - `grounding`：Agent 最终回答是否忠于工具结果，包括正确理解成功、失败和空结果；
@@ -341,9 +352,9 @@ ToolOutcomeExpectation(
 ```
 
 校准和 Langfuse Experiment 都通过通用 `grade_task()` 自动比较实际 `tool.finished/tool.failed` 与
-Environment 的成功/失败及错误码 oracle，并把结果写入 `tool_execution`。Task grader 不再硬编码
-调用次数、顺序、参数、状态或总通过逻辑，只提供 Task 专属 `response_quality` rubric；通用入口
-固定执行另外两个语义 Judge。
+Environment 的成功/失败及错误码 oracle，并把结果写入 `tool_execution`；Mission 还在同一维度合入
+Environment 的目标状态 Rule。Task grader 不再硬编码调用次数、顺序、参数、状态、objective Rule 或总
+通过逻辑，只提供 Task 专属 `response_quality` rubric；通用入口固定执行另外两个语义 Judge。
 
 Calibration v3 为每个 Evidence 显式保存四项 `expected_dimensions`，以及三个 Judge criterion 的
 人工 `judge_verdicts`。校准逐项比较，不计算聚合通过标记。

@@ -12,6 +12,13 @@ Task 是一个用户可理解、结果可判断的能力挑战。它只包含真
 - 一次只改变一个主要能力变量；
 - 请求像真实用户，而不是测试指令。
 
+## 选择 Task 或 Mission
+
+`tasks/` 与 `missions/` 共用 loader、Environment、Evidence、校准、发布和运行协议，ID 跨目录唯一。
+只有当成功还要求由结构化 state Evidence 证明客观终态时才选择 Mission；否则使用基础 Task。Mission
+Environment 必须拥有非空、只含 Rule assertion 的 `objective_state_assertions()`，并以其声明目标状态
+oracle；grader 不拥有该 oracle。
+
 ## Environment 是什么
 
 Environment 定义 Agent 在什么世界中运行：
@@ -28,6 +35,10 @@ Environment 可以模拟依赖，但不能模拟被测 Agent 决策。写操作�
 检查受控依赖、Tool Registry、隔离和复位前提；验证失败时不得生成 Agent Score。每个可见工具还
 必须通过 `tool_outcome_expectations()` 声明 `must_succeed` 或带明确错误码的
 `must_fail_with`；该声明是工具业务结果预期的唯一事实源。
+
+Mission Environment 还必须把结构化 `initial_state`、`final_state` 或 `state_diff` 转成非空、Rule-only 的
+`objective_state_assertions()`。基础 Task 不要求该方法；Mission 缺少该方法、返回空结果或混入 Judge
+assertion 都是 infrastructure failure。
 
 所有 Task 的默认 Environment 必须从共享完整 Agent eval Tool Registry 装配工具，不得根据 Task
 capability、目标工具、rubric 或用户请求文本裁剪目录。目标工具由 Task 接入确定性依赖，其余工具也
@@ -54,7 +65,8 @@ override 由 Environment 或受信入口拥有：profile 必须可读，allowlis
 - 最终回答；
 - 必要的 Provider 结果类型。
 
-不要把整条原始 Trace 或 Environment 私有配置复制进 Dataset metadata。
+不要把整条原始 Trace 或 Environment 私有配置复制进 Dataset metadata。Langfuse Dataset item 只保存
+`task_id + request + 短 metadata`；不要复制 case level、state oracle 或 grader rubric。
 
 Evidence 进入 grader 后，确定性 Rule 和 LLM Judge 必须分开：Trace、参数、错误码和状态等客观事实
 由 Rule 判断；只有结果解释、证据使用和回答质量等开放语义交给 Judge。两者统一聚合到按 Agent 行为
