@@ -4,26 +4,78 @@ from __future__ import annotations
 
 import importlib
 import json
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from evals.agent.contracts import TaskSpec
 
 
+CaseLevel = Literal["task", "mission"]
 TASKS_ROOT = Path(__file__).resolve().parent / "tasks"
+MISSIONS_ROOT = Path(__file__).resolve().parent / "missions"
+CASE_ROOTS: tuple[tuple[CaseLevel, str], ...] = (
+    ("task", "tasks"),
+    ("mission", "missions"),
+)
 SUITES_PATH = Path(__file__).resolve().parent / "suites.json"
 
 
+@dataclass(frozen=True)
+class AgentEvalCaseSource:
+    task_id: str
+    level: CaseLevel
+    directory: Path
+    relative_path: str
+
+
+def list_case_sources() -> list[AgentEvalCaseSource]:
+    roots = {
+        "task": TASKS_ROOT,
+        "mission": MISSIONS_ROOT,
+    }
+    by_id: dict[str, AgentEvalCaseSource] = {}
+    duplicates: set[str] = set()
+    for level, relative_root in CASE_ROOTS:
+        root = roots[level]
+        for path in sorted(root.glob("*/task.json")):
+            if not path.is_file():
+                continue
+            task_id = path.parent.name
+            source = AgentEvalCaseSource(
+                task_id=task_id,
+                level=level,
+                directory=path.parent,
+                relative_path=f"evals/agent/{relative_root}/{task_id}",
+            )
+            if task_id in by_id:
+                duplicates.add(task_id)
+            else:
+                by_id[task_id] = source
+    if duplicates:
+        raise ValueError(
+            "Duplicate Agent eval task_id across tasks/missions: "
+            + ", ".join(sorted(duplicates))
+        )
+    return [by_id[task_id] for task_id in sorted(by_id)]
+
+
+def load_case_source(task_id: str) -> AgentEvalCaseSource:
+    by_id = {item.task_id: item for item in list_case_sources()}
+    try:
+        return by_id[task_id]
+    except KeyError as exc:
+        raise ValueError(f"Unknown Agent eval task: {task_id}.") from exc
+
+
 def list_task_ids() -> list[str]:
-    return sorted(
-        path.parent.name for path in TASKS_ROOT.glob("*/task.json") if path.is_file()
-    )
+    return [source.task_id for source in list_case_sources()]
 
 
 def load_task(task_id: str) -> TaskSpec:
     if task_id not in list_task_ids():
         raise ValueError(f"Unknown Agent eval task: {task_id}.")
-    task_path = TASKS_ROOT / task_id / "task.json"
+    task_path = load_case_source(task_id).directory / "task.json"
     task = TaskSpec.model_validate_json(task_path.read_text(encoding="utf-8"))
     if task.id != task_id:
         raise ValueError(
