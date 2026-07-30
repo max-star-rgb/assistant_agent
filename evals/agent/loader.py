@@ -68,6 +68,10 @@ def load_case_source(task_id: str) -> AgentEvalCaseSource:
         raise ValueError(f"Unknown Agent eval task: {task_id}.") from exc
 
 
+def calibration_path(task_id: str) -> Path:
+    return load_case_source(task_id).directory / "calibration.json"
+
+
 def list_task_ids() -> list[str]:
     return [source.task_id for source in list_case_sources()]
 

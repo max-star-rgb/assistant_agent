@@ -15,7 +15,7 @@ from evals.agent.contracts import (
     TaskSpec,
 )
 from evals.agent.grading import DIMENSION_NAMES, grade_task
-from evals.agent.loader import TASKS_ROOT
+from evals.agent.loader import calibration_path
 
 
 class CalibrationFixture(BaseModel):
@@ -46,7 +46,7 @@ def run_calibration(
     judge: LLMJudge,
 ) -> list[CalibrationResult]:
     payload = CalibrationSet.model_validate_json(
-        (TASKS_ROOT / task.id / "calibration.json").read_text(encoding="utf-8")
+        calibration_path(task.id).read_text(encoding="utf-8")
     )
     results: list[CalibrationResult] = []
     for fixture in payload.fixtures:
@@ -117,7 +117,7 @@ class LabeledCalibrationJudge:
 
 def load_labeled_calibration_judge(task: TaskSpec) -> LabeledCalibrationJudge:
     payload = CalibrationSet.model_validate_json(
-        (TASKS_ROOT / task.id / "calibration.json").read_text(encoding="utf-8")
+        calibration_path(task.id).read_text(encoding="utf-8")
     )
     return LabeledCalibrationJudge(
         [

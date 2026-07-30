@@ -41,6 +41,7 @@ from evals.agent.loader import (
     list_suites,
     list_task_ids,
     load_entrypoint,
+    load_case_source,
     load_suite,
     load_task,
 )
@@ -300,8 +301,22 @@ def _emit_progress(payload: dict[str, object]) -> None:
 
 
 def _inspect_task(task: TaskSpec) -> dict[str, object]:
+    source = load_case_source(task.id)
     environment = load_entrypoint(task.environment)()
+    objective_method = getattr(environment, "objective_state_assertions", None)
+    if source.level == "mission" and not callable(objective_method):
+        raise RuntimeError(
+            f"Mission {task.id!r} must define objective_state_assertions()."
+        )
     return {
+        "case_source": {
+            "level": source.level,
+            "path": source.relative_path,
+        },
+        "mission_objective_rule": {
+            "required": source.level == "mission",
+            "implemented": callable(objective_method),
+        },
         "task": task.model_dump(mode="json"),
         "environment": environment.describe(),
         "environment_validation": environment.validate().model_dump(mode="json"),
