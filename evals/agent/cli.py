@@ -33,9 +33,10 @@ from evals.agent.langfuse_backend import (
     DEFAULT_DATASET_NAME,
     active_dataset_task_ids,
     create_required_trace_observer,
-    primary_rewards,
+    experiment_dimension_scores,
     publish_tasks,
     run_tasks,
+    verify_persisted_dimension_scores,
 )
 from evals.agent.loader import (
     list_suites,
@@ -247,12 +248,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 raise RuntimeError(
                     "Langfuse Runtime trace export did not close cleanly."
                 )
-        rewards = primary_rewards(result)
+        dimension_scores = experiment_dimension_scores(result)
+        verify_persisted_dimension_scores(client, result)
         _emit_progress(
             {
                 "event": "agent_eval.run.completed",
                 "run_name": result.run_name,
-                "reward_count": len(rewards),
+                "item_count": len(dimension_scores),
             }
         )
         print(
@@ -261,12 +263,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "action": "run",
                     "run_name": result.run_name,
                     "dataset_run_url": result.dataset_run_url,
-                    "rewards": rewards,
+                    "dimension_scores": dimension_scores,
                 },
                 ensure_ascii=False,
             )
         )
-        return 0 if rewards and all(reward == 1.0 for reward in rewards) else 1
+        return 0
     except Exception as exc:
         print(
             json.dumps(

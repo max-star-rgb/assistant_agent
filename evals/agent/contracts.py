@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from assistant_agent.observability.trace_store import TraceEvent
 from assistant_agent.runtime.requests import UserRequest
@@ -124,10 +124,20 @@ class DimensionResult(BaseModel):
 
 
 class GraderDimensions(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     tool_execution: DimensionResult
-    tool_use: DimensionResult
-    state: DimensionResult
-    response: DimensionResult
+    tool_semantics: DimensionResult
+    grounding: DimensionResult
+    response_quality: DimensionResult
+
+
+class TaskJudgeResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    tool_semantics: DimensionResult
+    grounding: DimensionResult
+    response_quality: DimensionResult
 
 
 class EnvironmentValidation(BaseModel):
@@ -151,12 +161,11 @@ class JudgeVerdict(BaseModel):
 
 
 class GraderResult(BaseModel):
-    schema_version: Literal["agent_eval_grader_result_v4"] = (
-        "agent_eval_grader_result_v4"
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["agent_eval_grader_result_v5"] = (
+        "agent_eval_grader_result_v5"
     )
-    passed: bool
-    reward: float = Field(ge=0.0, le=1.0)
-    reason: str = Field(min_length=1)
     dimensions: GraderDimensions
 
 

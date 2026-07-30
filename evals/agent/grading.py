@@ -1,4 +1,4 @@
-"""Stable Agent eval dimensions and deterministic aggregation."""
+"""Stable independent Agent eval scores and deterministic oracle matching."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from evals.agent.contracts import (
     JudgeVerdict,
     LLMJudge,
     RunEvidence,
+    TaskJudgeResult,
     TaskSpec,
     ToolOutcomeExpectation,
 )
@@ -20,17 +21,10 @@ from evals.agent.contracts import (
 
 DIMENSION_NAMES = (
     "tool_execution",
-    "tool_use",
-    "state",
-    "response",
+    "tool_semantics",
+    "grounding",
+    "response_quality",
 )
-
-DIMENSION_LABELS = {
-    "tool_execution": "工具执行",
-    "tool_use": "工具使用",
-    "state": "状态变化",
-    "response": "最终回答",
-}
 
 
 def rule_assertion(
@@ -80,32 +74,33 @@ def dimension(
     )
 
 
+def task_judge_result(
+    *,
+    tool_semantics: DimensionResult,
+    grounding: DimensionResult,
+    response_quality: DimensionResult,
+) -> TaskJudgeResult:
+    return TaskJudgeResult(
+        tool_semantics=tool_semantics,
+        grounding=grounding,
+        response_quality=response_quality,
+    )
+
+
 def grader_result(
     *,
     tool_execution: DimensionResult,
-    tool_use: DimensionResult,
-    state: DimensionResult,
-    response: DimensionResult,
+    tool_semantics: DimensionResult,
+    grounding: DimensionResult,
+    response_quality: DimensionResult,
 ) -> GraderResult:
-    dimensions = GraderDimensions(
-        tool_execution=tool_execution,
-        tool_use=tool_use,
-        state=state,
-        response=response,
-    )
-    failed = [
-        name for name in DIMENSION_NAMES if not getattr(dimensions, name).passed
-    ]
-    passed = not failed
     return GraderResult(
-        passed=passed,
-        reward=1.0 if passed else 0.0,
-        reason=(
-            _passed_dimension_comment()
-            if passed
-            else _failed_dimension_comment(dimensions, failed)
+        dimensions=GraderDimensions(
+            tool_execution=tool_execution,
+            tool_semantics=tool_semantics,
+            grounding=grounding,
+            response_quality=response_quality,
         ),
-        dimensions=dimensions,
     )
 
 
@@ -139,7 +134,7 @@ def grade_task(
     environment.validate().require_valid()
     expectations = environment.tool_outcome_expectations(evidence.available_tools)
     grader = load_entrypoint(task.grader)
-    task_result: GraderResult = grader(evidence, judge)
+    task_result: TaskJudgeResult = grader(evidence, judge)
     return enforce_tool_outcome_expectations(
         task_result,
         evidence=evidence,
@@ -148,24 +143,23 @@ def grade_task(
 
 
 def enforce_tool_outcome_expectations(
-    result: GraderResult,
+    result: TaskJudgeResult,
     *,
     evidence: RunEvidence,
     expectations: list[ToolOutcomeExpectation],
 ) -> GraderResult:
     _require_expectation_coverage(evidence, expectations)
-    outcome_assertion = _tool_outcomes_match(evidence, expectations)
-    tool_use = dimension(
-        {
-            "outcome_matches_environment": outcome_assertion,
-            **result.dimensions.tool_use.assertions,
-        }
-    )
+    tool_execution_assertions = {
+        "outcome_matches_environment": _tool_outcomes_match(
+            evidence,
+            expectations,
+        )
+    }
     return grader_result(
-        tool_execution=result.dimensions.tool_execution,
-        tool_use=tool_use,
-        state=result.dimensions.state,
-        response=result.dimensions.response,
+        tool_execution=dimension(tool_execution_assertions),
+        tool_semantics=result.tool_semantics,
+        grounding=result.grounding,
+        response_quality=result.response_quality,
     )
 
 
@@ -178,11 +172,20 @@ def _require_expectation_coverage(
         raise RuntimeError(
             "Agent eval Environment declares duplicate tool outcome expectations."
         )
-    if set(expected_names) != set(evidence.available_tools):
+    expected_name_set = set(expected_names)
+    available_name_set = set(evidence.available_tools)
+    missing_expectations = available_name_set - expected_name_set
+    unexpected_optional = {
+        expectation.tool_name
+        for expectation in expectations
+        if expectation.tool_name not in available_name_set
+        and not expectation.required
+    }
+    if missing_expectations or unexpected_optional:
         raise RuntimeError(
             "Agent eval Environment outcome expectations do not cover the "
-            f"available tools: expected={sorted(expected_names)}, "
-            f"available={sorted(evidence.available_tools)}."
+            f"available tools: expected={sorted(expected_name_set)}, "
+            f"available={sorted(available_name_set)}."
         )
 
 
@@ -267,31 +270,3 @@ def _passed_assertion_comment(
         f"全部检查通过（{len(labels)}/{len(labels)}）：\n"
         + "\n".join(f"- {label}" for label in labels)
     )
-
-
-def _passed_dimension_comment() -> str:
-    labels = [DIMENSION_LABELS[name] for name in DIMENSION_NAMES]
-    return (
-        f"评测通过：{len(labels)} 个必要维度全部通过：\n"
-        + "\n".join(f"- {label}" for label in labels)
-    )
-
-
-def _failed_dimension_comment(
-    dimensions: GraderDimensions,
-    failed_names: list[str],
-) -> str:
-    lines: list[str] = []
-    for name in failed_names:
-        dimension_result = getattr(dimensions, name)
-        failed_assertions = [
-            assertion
-            for assertion in dimension_result.assertions.values()
-            if not assertion.passed
-        ]
-        details = "；".join(
-            f"{assertion.label}：{assertion.reason}"
-            for assertion in failed_assertions
-        )
-        lines.append(f"- {DIMENSION_LABELS[name]}：{details}")
-    return "评测未通过：\n" + "\n".join(lines)

@@ -1,36 +1,258 @@
 {
-  "schema_version": "agent_eval_calibration_v2",
+  "schema_version": "agent_eval_calibration_v3",
   "fixtures": [
     {
-      "id": "resolves_and_invites_contact", "expected_pass": true,
-      "judge_verdicts": {"contact_calendar_confirmation": {"passed": true, "reason": "回答确认的邀请人与联系人证据一致。"}},
+      "id": "resolves_and_invites_contact",
+      "judge_verdicts": {
+        "tool_semantics": {
+          "passed": true,
+          "reason": "人工标注：工具返回内容语义正确且可用。"
+        },
+        "grounding": {
+          "passed": true,
+          "reason": "人工标注：回答没有歪曲或虚构工具结果。"
+        },
+        "response_quality": {
+          "passed": true,
+          "reason": "人工标注：回答清晰完整地回应了当前用户请求。"
+        }
+      },
       "evidence": {
-        "task_id": "contact_resolved_calendar_creation", "run_id": "calibration-correct", "trace_id": "11111111111111111111111111111111", "terminal_status": "completed",
-        "response": {"message": "已创建明天下午4点的“需求确认”，并邀请 Alex Chen。"},
-        "available_tools": ["weather", "contacts_search", "calendar_create"],
-        "tool_executions": [
-          {"name": "contacts_search", "input": {"query": "Alex Chen"}, "status": "succeeded", "terminal_event": "tool.finished", "exposed": true},
-          {"name": "calendar_create", "input": {"title": "需求确认", "start_time": "2026-07-30T16:00:00+08:00", "end_time": "2026-07-30T16:30:00+08:00", "attendees": ["alex.chen@example.test"]}, "status": "succeeded", "terminal_event": "tool.finished", "exposed": true}
+        "task_id": "contact_resolved_calendar_creation",
+        "run_id": "calibration-correct",
+        "trace_id": "11111111111111111111111111111111",
+        "terminal_status": "completed",
+        "response": {
+          "message": "已创建明天下午4点的“需求确认”，并邀请 Alex Chen。"
+        },
+        "available_tools": [
+          "contacts_search",
+          "calendar_create"
         ],
-        "validation_results": [{"tool_name": "contacts_search", "status": "accepted"}, {"tool_name": "calendar_create", "status": "accepted"}],
-        "initial_state": {"calendar": {"events": []}}, "final_state": {"calendar": {"events": [{"title": "需求确认"}]}},
-        "state_diff": {"added": [], "modified": ["calendar"], "deleted": []}
+        "tool_executions": [
+          {
+            "name": "contacts_search",
+            "input": {
+              "query": "Alex Chen"
+            },
+            "status": "succeeded",
+            "terminal_event": "tool.finished",
+            "exposed": true,
+            "output": {
+              "success": true,
+              "model_observation": {
+                "contacts": [
+                  {
+                    "display_name": "Alex Chen",
+                    "emails": [
+                      "alex.chen@example.test"
+                    ]
+                  },
+                  {
+                    "display_name": "Alex Zhang",
+                    "emails": [
+                      "alex.zhang@example.test"
+                    ]
+                  }
+                ],
+                "summary": "找到两个名为 Alex 的联系人。"
+              }
+            }
+          },
+          {
+            "name": "calendar_create",
+            "input": {
+              "title": "需求确认",
+              "start_time": "2026-07-30T16:00:00+08:00",
+              "end_time": "2026-07-30T16:30:00+08:00",
+              "attendees": [
+                "alex.chen@example.test"
+              ]
+            },
+            "status": "succeeded",
+            "terminal_event": "tool.finished",
+            "exposed": true,
+            "output": {
+              "success": true,
+              "model_observation": {
+                "event": {
+                  "title": "需求确认",
+                  "start_time": "2026-07-30T16:00:00+08:00",
+                  "end_time": "2026-07-30T16:30:00+08:00",
+                  "location": null,
+                  "attendees": [
+                    "alex.chen@example.test"
+                  ]
+                },
+                "summary": "日历事件已创建。"
+              }
+            }
+          }
+        ],
+        "validation_results": [
+          {
+            "tool_name": "contacts_search",
+            "status": "accepted"
+          },
+          {
+            "tool_name": "calendar_create",
+            "status": "accepted"
+          }
+        ],
+        "initial_state": {
+          "calendar": {
+            "events": []
+          }
+        },
+        "final_state": {
+          "calendar": {
+            "events": [
+              {
+                "title": "需求确认"
+              }
+            ]
+          }
+        },
+        "state_diff": {
+          "added": [],
+          "modified": [
+            "calendar"
+          ],
+          "deleted": []
+        }
+      },
+      "expected_dimensions": {
+        "tool_execution": true,
+        "tool_semantics": true,
+        "grounding": true,
+        "response_quality": true
       }
     },
     {
-      "id": "claims_wrong_invitee", "expected_pass": false,
-      "judge_verdicts": {"contact_calendar_confirmation": {"passed": false, "reason": "回答声称邀请了联系人证据中不存在的人。"}},
+      "id": "claims_wrong_invitee",
+      "judge_verdicts": {
+        "tool_semantics": {
+          "passed": true,
+          "reason": "人工标注：工具返回内容语义正确且可用。"
+        },
+        "grounding": {
+          "passed": false,
+          "reason": "回答声称邀请了联系人证据中不存在的人。"
+        },
+        "response_quality": {
+          "passed": true,
+          "reason": "回答完整说明了联系人查询、会议时间和邀请结果；错误参会人只影响 grounding。"
+        }
+      },
       "evidence": {
-        "task_id": "contact_resolved_calendar_creation", "run_id": "calibration-wrong", "trace_id": "22222222222222222222222222222222", "terminal_status": "completed",
-        "response": {"message": "已创建会议，并邀请 Alex Chen 和 Bob。"},
-        "available_tools": ["weather", "contacts_search", "calendar_create"],
-        "tool_executions": [
-          {"name": "contacts_search", "input": {"query": "Alex Chen"}, "status": "succeeded", "terminal_event": "tool.finished", "exposed": true},
-          {"name": "calendar_create", "input": {"title": "需求确认", "start_time": "2026-07-30T16:00:00+08:00", "end_time": "2026-07-30T16:30:00+08:00", "attendees": ["alex.chen@example.test"]}, "status": "succeeded", "terminal_event": "tool.finished", "exposed": true}
+        "task_id": "contact_resolved_calendar_creation",
+        "run_id": "calibration-wrong",
+        "trace_id": "22222222222222222222222222222222",
+        "terminal_status": "completed",
+        "response": {
+          "message": "已查到 Alex Chen 的工作邮箱，并创建明天下午4点到4点半的“需求确认”，邀请了 Alex Chen 和 Bob。"
+        },
+        "available_tools": [
+          "contacts_search",
+          "calendar_create"
         ],
-        "validation_results": [{"tool_name": "contacts_search", "status": "accepted"}, {"tool_name": "calendar_create", "status": "accepted"}],
-        "initial_state": {"calendar": {"events": []}}, "final_state": {"calendar": {"events": [{"title": "需求确认"}]}},
-        "state_diff": {"added": [], "modified": ["calendar"], "deleted": []}
+        "tool_executions": [
+          {
+            "name": "contacts_search",
+            "input": {
+              "query": "Alex Chen"
+            },
+            "status": "succeeded",
+            "terminal_event": "tool.finished",
+            "exposed": true,
+            "output": {
+              "success": true,
+              "model_observation": {
+                "contacts": [
+                  {
+                    "display_name": "Alex Chen",
+                    "emails": [
+                      "alex.chen@example.test"
+                    ]
+                  },
+                  {
+                    "display_name": "Alex Zhang",
+                    "emails": [
+                      "alex.zhang@example.test"
+                    ]
+                  }
+                ],
+                "summary": "找到两个名为 Alex 的联系人。"
+              }
+            }
+          },
+          {
+            "name": "calendar_create",
+            "input": {
+              "title": "需求确认",
+              "start_time": "2026-07-30T16:00:00+08:00",
+              "end_time": "2026-07-30T16:30:00+08:00",
+              "attendees": [
+                "alex.chen@example.test"
+              ]
+            },
+            "status": "succeeded",
+            "terminal_event": "tool.finished",
+            "exposed": true,
+            "output": {
+              "success": true,
+              "model_observation": {
+                "event": {
+                  "title": "需求确认",
+                  "start_time": "2026-07-30T16:00:00+08:00",
+                  "end_time": "2026-07-30T16:30:00+08:00",
+                  "location": null,
+                  "attendees": [
+                    "alex.chen@example.test"
+                  ]
+                },
+                "summary": "日历事件已创建。"
+              }
+            }
+          }
+        ],
+        "validation_results": [
+          {
+            "tool_name": "contacts_search",
+            "status": "accepted"
+          },
+          {
+            "tool_name": "calendar_create",
+            "status": "accepted"
+          }
+        ],
+        "initial_state": {
+          "calendar": {
+            "events": []
+          }
+        },
+        "final_state": {
+          "calendar": {
+            "events": [
+              {
+                "title": "需求确认"
+              }
+            ]
+          }
+        },
+        "state_diff": {
+          "added": [],
+          "modified": [
+            "calendar"
+          ],
+          "deleted": []
+        }
+      },
+      "expected_dimensions": {
+        "tool_execution": true,
+        "tool_semantics": true,
+        "grounding": false,
+        "response_quality": true
       }
     }
   ]

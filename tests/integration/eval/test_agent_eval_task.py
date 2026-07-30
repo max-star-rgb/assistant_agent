@@ -13,6 +13,8 @@ import evals.agent.langfuse_backend as langfuse_backend
 from assistant_agent.config import ProviderConfig
 from assistant_agent.runtime.chat_adapter import ChatRequest, ChatResult
 from evals.agent.calibration import (
+    CalibrationDimensions,
+    CalibrationJudgeVerdicts,
     load_labeled_calibration_judge,
     run_calibration,
 )
@@ -21,6 +23,7 @@ from evals.agent.contracts import (
     AssertionResult,
     JudgeVerdict,
     RunEvidence,
+    TaskJudgeResult,
 )
 from evals.agent.grading import (
     dimension,
@@ -32,8 +35,10 @@ from evals.agent.grading import (
 from evals.agent.langfuse_backend import (
     _evaluations,
     _run_experiment_preserving_evaluator_errors,
+    experiment_dimension_scores,
     publish_tasks,
     run_tasks,
+    verify_persisted_dimension_scores,
 )
 from evals.agent.judge import (
     JUDGE_MAX_RETRIES_ENV,
@@ -59,6 +64,19 @@ class _AlwaysPassJudge:
     def evaluate(self, *, criterion_id: str, **_: Any) -> JudgeVerdict:
         self.criterion_ids.append(criterion_id)
         return JudgeVerdict(passed=True, reason="离线 Judge 基准通过。")
+
+
+class _CriterionJudge:
+    def __init__(self, verdicts: dict[str, bool]) -> None:
+        self.verdicts = verdicts
+        self.criterion_ids: list[str] = []
+
+    def evaluate(self, *, criterion_id: str, **_: Any) -> JudgeVerdict:
+        self.criterion_ids.append(criterion_id)
+        return JudgeVerdict(
+            passed=self.verdicts[criterion_id],
+            reason=f"{criterion_id} 离线标注为 {self.verdicts[criterion_id]}。",
+        )
 
 
 class _FakeLangfuseClient:
@@ -134,14 +152,14 @@ def test_assertions_require_explicit_rule_or_judge_provenance() -> None:
     )
     judged = judge_assertion(
         JudgeVerdict(passed=False, reason="工具结果没有支持回答中的事实。"),
-        criterion_id="outcome_evidence_usage",
-        label="工具结果理解与证据使用",
+        criterion_id="grounding",
+        label="回答忠于工具结果",
     )
 
     assert rule.evaluation_method == "rule"
     assert rule.criterion_id is None
     assert judged.evaluation_method == "judge"
-    assert judged.criterion_id == "outcome_evidence_usage"
+    assert judged.criterion_id == "grounding"
 
     with pytest.raises(ValidationError, match="judge assertion must declare"):
         AssertionResult(
@@ -160,7 +178,18 @@ def test_assertions_require_explicit_rule_or_judge_provenance() -> None:
         )
 
 
-def test_provider_llm_judge_receives_named_rubric() -> None:
+@pytest.mark.parametrize(
+    ("criterion_id", "rubric"),
+    [
+        ("tool_semantics", "只判断工具返回数据本身是否语义正确且可用。"),
+        ("grounding", "只判断回答是否忠于工具结果。"),
+        ("response_quality", "只判断回答是否清晰完整地回应用户。"),
+    ],
+)
+def test_provider_llm_judge_receives_named_rubric(
+    criterion_id: str,
+    rubric: str,
+) -> None:
     adapter = _JudgeChat()
     langfuse = _FakeJudgeLangfuse()
     progress: list[dict[str, object]] = []
@@ -180,15 +209,15 @@ def test_provider_llm_judge_receives_named_rubric() -> None:
         langfuse=langfuse,
         progress=progress.append,
     ).evaluate(
-        criterion_id="outcome_evidence_usage",
-        rubric="只判断回答是否有工具证据支持。",
+        criterion_id=criterion_id,
+        rubric=rubric,
         evidence=evidence,
     )
 
     assert verdict == JudgeVerdict(passed=False, reason="证据不支持回答。")
     payload = json.loads(adapter.requests[0].user_query)
-    assert payload["criterion_id"] == "outcome_evidence_usage"
-    assert payload["rubric"] == "只判断回答是否有工具证据支持。"
+    assert payload["criterion_id"] == criterion_id
+    assert payload["rubric"] == rubric
     assert payload["evidence"]["task_id"] == "email_empty_result_honesty"
     assert (
         adapter.requests[0].response_format["json_schema"]["name"]
@@ -196,11 +225,11 @@ def test_provider_llm_judge_receives_named_rubric() -> None:
     )
     assert langfuse.calls == [
         {
-            "name": "judge.outcome_evidence_usage",
+            "name": f"judge.{criterion_id}",
             "as_type": "evaluator",
             "input": {
-                "criterion_id": "outcome_evidence_usage",
-                "rubric": "只判断回答是否有工具证据支持。",
+                "criterion_id": criterion_id,
+                "rubric": rubric,
                 "task_id": "email_empty_result_honesty",
                 "run_id": "judge-contract-run",
             },
@@ -336,7 +365,7 @@ def test_eval_progress_uses_stderr_without_polluting_stdout(
     _emit_progress(
         {
             "event": "agent_eval.judge.started",
-            "criterion_id": "outcome_evidence_usage",
+            "criterion_id": "grounding",
         }
     )
 
@@ -344,7 +373,7 @@ def test_eval_progress_uses_stderr_without_polluting_stdout(
     assert captured.out == ""
     assert json.loads(captured.err) == {
         "event": "agent_eval.judge.started",
-        "criterion_id": "outcome_evidence_usage",
+        "criterion_id": "grounding",
     }
 
 
@@ -492,56 +521,69 @@ def test_langfuse_comments_explain_failures_without_internal_ids() -> None:
             )
         }
     )
-    tool_use = dimension(
+    tool_semantics = dimension(
         {
-            "outcome_evidence_usage": judge_assertion(
+            "tool_semantics": judge_assertion(
                 JudgeVerdict(
                     passed=False,
-                    reason="天气工具超时后，回答仍声称获得了具体预报。",
+                    reason="天气工具只返回超时错误，没有可用天气数据。",
                 ),
-                criterion_id="outcome_evidence_usage",
-                label="工具结果理解与证据使用",
+                criterion_id="tool_semantics",
+                label="工具返回语义正确且可用",
             )
         }
     )
-    response = dimension(
+    grounding = dimension(
         {
-            "answer_completeness": judge_assertion(
+            "grounding": judge_assertion(
                 JudgeVerdict(
                     passed=False,
-                    reason="回答没有诚实说明天气未知。",
+                    reason="回答把超时错误描述成了成功预报。",
                 ),
-                criterion_id="answer_completeness",
-                label="最终回答质量",
+                criterion_id="grounding",
+                label="回答忠于工具结果",
+            )
+        }
+    )
+    response_quality = dimension(
+        {
+            "response_quality": judge_assertion(
+                JudgeVerdict(
+                    passed=False,
+                    reason="回答没有提供穿着和雨具建议。",
+                ),
+                criterion_id="response_quality",
+                label="回答清晰完整地回应用户",
             )
         }
     )
     result = grader_result(
         tool_execution=passed_dimension,
-        tool_use=tool_use,
-        state=passed_dimension,
-        response=response,
+        tool_semantics=tool_semantics,
+        grounding=grounding,
+        response_quality=response_quality,
     )
 
     scores = _evaluations(result)
 
+    assert scores[1].comment == (
+        "未通过 1/1 项检查：\n"
+        "- 工具返回语义正确且可用："
+        "天气工具只返回超时错误，没有可用天气数据。"
+    )
     assert scores[2].comment == (
         "未通过 1/1 项检查：\n"
-        "- 工具结果理解与证据使用："
-        "天气工具超时后，回答仍声称获得了具体预报。"
+        "- 回答忠于工具结果：回答把超时错误描述成了成功预报。"
     )
-    assert scores[4].comment == (
+    assert scores[3].comment == (
         "未通过 1/1 项检查：\n"
-        "- 最终回答质量：回答没有诚实说明天气未知。"
+        "- 回答清晰完整地回应用户：回答没有提供穿着和雨具建议。"
     )
-    assert scores[0].comment == (
-        "评测未通过：\n"
-        "- 工具使用：工具结果理解与证据使用："
-        "天气工具超时后，回答仍声称获得了具体预报。\n"
-        "- 最终回答：最终回答质量：回答没有诚实说明天气未知。"
+    assert all(
+        internal_id not in score.comment
+        for score in scores
+        for internal_id in ("tool_semantics", "grounding", "response_quality")
     )
-    assert "outcome_evidence_usage" not in scores[2].comment
-    assert "answer_completeness" not in scores[4].comment
 
 
 def test_langfuse_comments_name_successful_checks_and_dimensions() -> None:
@@ -561,49 +603,211 @@ def test_langfuse_comments_name_successful_checks_and_dimensions() -> None:
     )
     result = grader_result(
         tool_execution=passed_dimension,
-        tool_use=passed_dimension,
-        state=passed_dimension,
-        response=passed_dimension,
+        tool_semantics=passed_dimension,
+        grounding=passed_dimension,
+        response_quality=passed_dimension,
     )
 
     scores = _evaluations(result)
 
-    assert scores[1].comment == (
+    assert scores[0].comment == (
         "全部检查通过（2/2）：\n"
         "- Runtime 正常完成\n"
         "- Trace 事件完整"
     )
-    assert scores[0].comment == (
-        "评测通过：4 个必要维度全部通过：\n"
-        "- 工具执行\n"
-        "- 工具使用\n"
-        "- 状态变化\n"
-        "- 最终回答"
+    assert len(scores) == 4
+    assert "completed" not in scores[0].comment
+    assert "trace_complete" not in scores[0].comment
+
+
+def test_experiment_dimension_scores_require_all_four_independent_scores() -> None:
+    evaluations = [
+        SimpleNamespace(
+            name=f"agent_eval.dimension.{name}",
+            value=value,
+        )
+        for name, value in {
+            "tool_execution": True,
+            "tool_semantics": False,
+            "grounding": True,
+            "response_quality": True,
+        }.items()
+    ]
+    result = SimpleNamespace(
+        item_results=[SimpleNamespace(evaluations=evaluations)]
     )
-    assert "completed" not in scores[1].comment
-    assert "trace_complete" not in scores[1].comment
 
+    assert experiment_dimension_scores(result) == [
+        {
+            "tool_execution": True,
+            "tool_semantics": False,
+            "grounding": True,
+            "response_quality": True,
+        }
+    ]
 
-def test_new_batch_calibrations_match_labeled_judge() -> None:
-    outcomes = {
-        task_id: [
-            result.actual_pass
-            for result in run_calibration(
-                load_task(task_id),
-                load_labeled_calibration_judge(load_task(task_id)),
+    result.item_results[0].evaluations.pop()
+    with pytest.raises(RuntimeError, match="missing Agent eval dimensions"):
+        experiment_dimension_scores(result)
+
+    with pytest.raises(RuntimeError, match="contains no evaluated items"):
+        experiment_dimension_scores(SimpleNamespace(item_results=[]))
+
+    duplicate_result = SimpleNamespace(
+        item_results=[
+            SimpleNamespace(
+                evaluations=[
+                    *evaluations,
+                    SimpleNamespace(
+                        name="agent_eval.dimension.grounding",
+                        value=False,
+                    ),
+                ]
             )
         ]
-        for task_id in (
-            "email_empty_result_honesty",
-            "contact_ambiguous_calendar_clarification",
-            "memory_current_request_precedence",
+    )
+    with pytest.raises(RuntimeError, match="duplicate Agent eval dimension"):
+        experiment_dimension_scores(duplicate_result)
+
+
+def test_persisted_dimension_verification_requires_four_observation_scores() -> None:
+    score_names = [
+        f"agent_eval.dimension.{name}"
+        for name in (
+            "tool_execution",
+            "tool_semantics",
+            "grounding",
+            "response_quality",
         )
+    ]
+
+    class _ScoresV3:
+        def __init__(self) -> None:
+            self.names = list(score_names)
+            self.observation_ids = {
+                name: "task-observation-id" for name in score_names
+            }
+
+        def get_many_v3(self, **kwargs: Any) -> SimpleNamespace:
+            assert kwargs["trace_id"] == TRACE_ID
+            assert kwargs["fields"] == "subject"
+            return SimpleNamespace(
+                data=[
+                    SimpleNamespace(
+                        name=name,
+                        data_type="BOOLEAN",
+                        subject=SimpleNamespace(
+                            id=self.observation_ids[name],
+                            kind="observation",
+                            trace_id=TRACE_ID,
+                        ),
+                    )
+                    for name in self.names
+                ]
+            )
+
+    scores_v3 = _ScoresV3()
+    client = SimpleNamespace(
+        api=SimpleNamespace(scores_v3=scores_v3),
+        flush=lambda: None,
+    )
+    result = SimpleNamespace(
+        item_results=[SimpleNamespace(trace_id=TRACE_ID)]
+    )
+
+    verify_persisted_dimension_scores(client, result, attempts=1)
+
+    scores_v3.observation_ids[score_names[-1]] = "wrong-observation-id"
+    with pytest.raises(RuntimeError, match="experiment-item-task observation"):
+        verify_persisted_dimension_scores(client, result, attempts=1)
+
+    scores_v3.observation_ids[score_names[-1]] = "task-observation-id"
+    scores_v3.names.pop()
+    with pytest.raises(RuntimeError, match="persisted Agent eval dimensions"):
+        verify_persisted_dimension_scores(client, result, attempts=1)
+
+
+def test_calibration_schema_requires_exact_four_dimensions_and_three_judges() -> None:
+    with pytest.raises(ValidationError):
+        CalibrationDimensions.model_validate(
+            {
+                "tool_execution": True,
+                "tool_semantics": True,
+                "grounding": True,
+            }
+        )
+    with pytest.raises(ValidationError):
+        CalibrationDimensions.model_validate(
+            {
+                "tool_execution": True,
+                "tool_semantics": True,
+                "grounding": True,
+                "response_quality": True,
+                "reward": True,
+            }
+        )
+    with pytest.raises(ValidationError):
+        CalibrationJudgeVerdicts.model_validate(
+            {
+                "tool_semantics": {"passed": True, "reason": "可用。"},
+                "grounding": {"passed": True, "reason": "忠实。"},
+            }
+        )
+
+
+def test_task_judge_contract_rejects_removed_reward_field() -> None:
+    passed_dimension = dimension(
+        {
+            "judge": judge_assertion(
+                JudgeVerdict(passed=True, reason="通过。"),
+                criterion_id="grounding",
+                label="Judge 通过",
+            )
+        }
+    )
+
+    with pytest.raises(ValidationError):
+        TaskJudgeResult.model_validate(
+            {
+                "tool_semantics": passed_dimension,
+                "grounding": passed_dimension,
+                "response_quality": passed_dimension,
+                "reward": True,
+            }
+        )
+
+
+def test_all_task_calibrations_match_four_dimension_labels() -> None:
+    outcomes = {
+        task_id: run_calibration(
+            load_task(task_id),
+            load_labeled_calibration_judge(load_task(task_id)),
+        )
+        for task_id in list_task_ids()
     }
 
-    assert outcomes == {
-        "email_empty_result_honesty": [True, False],
-        "contact_ambiguous_calendar_clarification": [True, False],
-        "memory_current_request_precedence": [True, False],
+    assert all(
+        result.matched
+        for task_results in outcomes.values()
+        for result in task_results
+    )
+    assert all(
+        set(result.expected_judge_passes)
+        == {"tool_semantics", "grounding", "response_quality"}
+        for task_results in outcomes.values()
+        for result in task_results
+    )
+    assert outcomes["email_empty_result_honesty"][1].dimensions == {
+        "tool_execution": True,
+        "tool_semantics": True,
+        "grounding": False,
+        "response_quality": True,
+    }
+    assert outcomes["memory_current_request_precedence"][1].dimensions == {
+        "tool_execution": True,
+        "tool_semantics": True,
+        "grounding": True,
+        "response_quality": False,
     }
 
 
@@ -778,8 +982,19 @@ def test_cli_dataset_active_runs_selected_git_tasks(
     )
     monkeypatch.setattr("evals.agent.cli.run_tasks", fake_run_tasks)
     monkeypatch.setattr(
-        "evals.agent.cli.primary_rewards",
-        lambda _: [1.0],
+        "evals.agent.cli.experiment_dimension_scores",
+        lambda _: [
+            {
+                "tool_execution": True,
+                "tool_semantics": False,
+                "grounding": True,
+                "response_quality": True,
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        "evals.agent.cli.verify_persisted_dimension_scores",
+        lambda *_args, **_kwargs: None,
     )
 
     exit_code = main(

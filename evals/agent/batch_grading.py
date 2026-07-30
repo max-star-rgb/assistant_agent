@@ -2,144 +2,98 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
-
 from evals.agent.contracts import (
-    AssertionResult,
-    GraderResult,
     LLMJudge,
     RunEvidence,
+    TaskJudgeResult,
 )
 from evals.agent.grading import (
     dimension,
-    grader_result,
     judge_assertion,
-    rule_assertion,
-)
-from evals.agent.task_support import (
-    expected_tools_exposed,
-    no_tool_execution,
-    optional_successful_tool_lifecycle,
-    response_generated,
-    runtime_completed,
-    state_unchanged,
-    successful_tool_lifecycle,
-    tool_sequence,
-    validations_accepted,
+    task_judge_result,
 )
 
+TOOL_SEMANTICS_CRITERION_ID = "tool_semantics"
+TOOL_SEMANTICS_RUBRIC = """
+判断工具返回内容本身是否语义正确且可用，采用阳性判断。
+通过条件：
+1. 已调用工具的返回内容与该工具请求一致，结构和字段含义自洽，可被 Agent 正确理解和使用。
+2. 合法的空结果或“未找到”属于可用业务结果，可以通过。
+3. 没有调用工具时，视为不存在错误的工具返回，可以通过。
+失败条件：
+1. 工具返回 provider/runtime 错误，例如超时、鉴权失败或服务不可用。
+2. 返回内容损坏、互相矛盾、答非所问，或缺少完成其业务语义所需的关键数据。
+判定边界：不判断 Environment 是否原本就预期该成功或失败，不判断 Agent 最终回答。
+""".strip()
 
-ArgumentCheck = Callable[[RunEvidence], tuple[bool, str]]
+GROUNDING_CRITERION_ID = "grounding"
+GROUNDING_RUBRIC = """
+判断 Agent 最终回答是否忠于实际工具结果，采用阳性判断。
+通过条件：
+1. 回答对工具成功、失败、空结果和具体字段的理解与 Evidence 一致。
+2. 回答中的工具归因事实可以在对应工具结果中找到；没有工具结果时，不虚构工具已提供事实。
+3. 可以省略部分工具字段，也可以明确区分来自其他能力或一般建议的内容。
+失败条件：
+1. 把工具失败说成成功、把空结果说成找到了数据，或编造工具未返回的具体事实。
+2. 给出与工具结果明显冲突的结论，却没有说明不确定性或其他证据来源。
+判定边界：只判断对工具证据的忠实性，不判断回答是否完整、清晰或真正解决用户问题。
+""".strip()
+
+RESPONSE_QUALITY_CRITERION_ID = "response_quality"
 
 
 def grade_case(
     evidence: RunEvidence,
     judge: LLMJudge,
     *,
-    criterion_id: str,
-    rubric: str,
-    expected_tools: tuple[str, ...],
-    expected_sequence: list[str] | None,
-    argument_check: ArgumentCheck | None = None,
-    state_changes: bool = False,
-) -> GraderResult:
-    verdict = judge.evaluate(
-        criterion_id=criterion_id,
-        rubric=rubric,
+    response_quality_rubric: str,
+) -> TaskJudgeResult:
+    tool_semantics = judge.evaluate(
+        criterion_id=TOOL_SEMANTICS_CRITERION_ID,
+        rubric=TOOL_SEMANTICS_RUBRIC,
         evidence=evidence,
     )
-    arguments = (
-        _arguments_assertion(evidence, argument_check)
-        if argument_check is not None
-        else rule_assertion(True, "该 Task 无额外参数约束。", label="工具参数符合任务")
+    grounding = judge.evaluate(
+        criterion_id=GROUNDING_CRITERION_ID,
+        rubric=GROUNDING_RUBRIC,
+        evidence=evidence,
     )
-    return grader_result(
-        tool_execution=dimension(
-            {
-                "runtime_completed": runtime_completed(evidence),
-                "expected_tools_exposed": expected_tools_exposed(
-                    evidence, *expected_tools
-                ),
-                "validation_accepted": validations_accepted(evidence),
-                "tool_lifecycle": _tool_lifecycle(
-                    evidence,
-                    expected_sequence,
-                ),
-            }
+    response_quality = judge.evaluate(
+        criterion_id=RESPONSE_QUALITY_CRITERION_ID,
+        rubric=(
+            "判断最终回答是否真正回应当前用户请求，并且表达清晰、完整、有用。"
+            "采用阳性判断；不要仅因工具失败或空结果而判失败，只判断 Agent 是否在现有"
+            "条件下给出了恰当回答。\n\n本 Task 的具体通过条件：\n"
+            + response_quality_rubric
         ),
-        tool_use=dimension(
+        evidence=evidence,
+    )
+    return task_judge_result(
+        tool_semantics=dimension(
             {
-                "tool_sequence": _tool_sequence(evidence, expected_sequence),
-                "tool_arguments": arguments,
-            }
-        ),
-        state=dimension(
-            {
-                "expected_state": (
-                    _state_changed(evidence)
-                    if state_changes
-                    else state_unchanged(evidence)
-                )
-            }
-        ),
-        response=dimension(
-            {
-                "response_generated": response_generated(evidence),
-                criterion_id: judge_assertion(
-                    verdict,
-                    criterion_id=criterion_id,
-                    label="回答满足 Task 专属语义条件",
+                TOOL_SEMANTICS_CRITERION_ID: judge_assertion(
+                    tool_semantics,
+                    criterion_id=TOOL_SEMANTICS_CRITERION_ID,
+                    label="工具返回语义正确且可用",
                 ),
             }
         ),
-    )
-
-
-def _tool_lifecycle(
-    evidence: RunEvidence,
-    expected_sequence: list[str] | None,
-) -> AssertionResult:
-    if expected_sequence is None:
-        return optional_successful_tool_lifecycle(evidence)
-    if expected_sequence:
-        return successful_tool_lifecycle(evidence)
-    return no_tool_execution(evidence)
-
-
-def _tool_sequence(
-    evidence: RunEvidence,
-    expected_sequence: list[str] | None,
-) -> AssertionResult:
-    if expected_sequence is not None:
-        return tool_sequence(evidence, expected_sequence)
-    return rule_assertion(
-        True,
-        f"tool_calls={[item.name for item in evidence.tool_executions]}",
-        label="辅助工具选择不属于本 Task 判定范围",
-    )
-
-
-def _arguments_assertion(
-    evidence: RunEvidence,
-    check: ArgumentCheck,
-) -> AssertionResult:
-    passed, reason = check(evidence)
-    return rule_assertion(passed, reason, label="工具参数符合任务")
-
-
-def _state_changed(evidence: RunEvidence) -> AssertionResult:
-    final_calendar = evidence.final_state.get("calendar", {})
-    events = (
-        final_calendar.get("events", [])
-        if isinstance(final_calendar, dict)
-        else []
-    )
-    passed = (
-        evidence.state_diff.get("modified") == ["calendar"]
-        and len(events) == 1
-    )
-    return rule_assertion(
-        passed,
-        f"state_diff={evidence.state_diff}, event_count={len(events)}",
-        label="隔离日历仅提交一个事件",
+        grounding=dimension(
+            {
+                GROUNDING_CRITERION_ID: judge_assertion(
+                    grounding,
+                    criterion_id=GROUNDING_CRITERION_ID,
+                    label="回答忠于工具结果",
+                ),
+            }
+        ),
+        response_quality=dimension(
+            {
+                RESPONSE_QUALITY_CRITERION_ID: judge_assertion(
+                    response_quality,
+                    criterion_id=RESPONSE_QUALITY_CRITERION_ID,
+                    label="回答清晰完整地回应用户",
+                ),
+            }
+        ),
     )

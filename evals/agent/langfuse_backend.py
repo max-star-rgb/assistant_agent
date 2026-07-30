@@ -31,7 +31,6 @@ from evals.agent.loader import load_entrypoint, load_task
 
 
 DEFAULT_DATASET_NAME = "assistant-agent-regression"
-PRIMARY_REWARD_NAME = "agent_eval.reward"
 
 
 def active_dataset_task_ids(
@@ -218,7 +217,10 @@ def run_tasks(
             "agent_eval.evaluation.completed",
             task_id=str(task_id),
             elapsed_ms=int((time.perf_counter() - started_at) * 1000),
-            passed=result.passed,
+            dimensions={
+                name: getattr(result.dimensions, name).passed
+                for name in DIMENSION_NAMES
+            },
         )
         return _evaluations(result)
 
@@ -269,21 +271,103 @@ def _run_experiment_preserving_evaluator_errors(
     return result
 
 
-def primary_rewards(result: Any) -> list[float]:
-    rewards: list[float] = []
+def experiment_dimension_scores(result: Any) -> list[dict[str, bool]]:
+    expected_names = {
+        f"agent_eval.dimension.{name}": name for name in DIMENSION_NAMES
+    }
+    item_scores: list[dict[str, bool]] = []
     for item_result in result.item_results:
-        match = next(
-            (
-                evaluation
-                for evaluation in item_result.evaluations
-                if evaluation.name == PRIMARY_REWARD_NAME
-            ),
-            None,
-        )
-        if match is None or not isinstance(match.value, (int, float)):
-            raise RuntimeError("Experiment result is missing agent_eval.reward.")
-        rewards.append(float(match.value))
-    return rewards
+        resolved: dict[str, bool] = {}
+        for evaluation in item_result.evaluations:
+            dimension_name = expected_names.get(evaluation.name)
+            if dimension_name is None:
+                continue
+            if not isinstance(evaluation.value, bool):
+                raise RuntimeError(
+                    f"Experiment dimension {evaluation.name} is not BOOLEAN."
+                )
+            if dimension_name in resolved:
+                raise RuntimeError(
+                    "Experiment result contains duplicate Agent eval dimension: "
+                    f"{evaluation.name}."
+                )
+            resolved[dimension_name] = evaluation.value
+        if set(resolved) != set(DIMENSION_NAMES):
+            raise RuntimeError(
+                "Experiment result is missing Agent eval dimensions: "
+                f"expected={list(DIMENSION_NAMES)}, actual={sorted(resolved)}."
+            )
+        item_scores.append(resolved)
+    if not item_scores:
+        raise RuntimeError("Experiment result contains no evaluated items.")
+    return item_scores
+
+
+def verify_persisted_dimension_scores(
+    client: Langfuse,
+    result: Any,
+    *,
+    attempts: int = 10,
+    retry_delay_seconds: float = 0.5,
+) -> None:
+    """Verify that every Experiment item persisted all four task-level Scores."""
+
+    if attempts < 1:
+        raise ValueError("attempts must be at least 1.")
+    expected_names = {
+        f"agent_eval.dimension.{name}" for name in DIMENSION_NAMES
+    }
+    client.flush()
+    for item_result in result.item_results:
+        trace_id = getattr(item_result, "trace_id", None)
+        if not isinstance(trace_id, str) or not trace_id:
+            raise RuntimeError(
+                "Experiment item is missing trace_id for persisted Score verification."
+            )
+        failure_detail = ""
+        for attempt in range(attempts):
+            response = client.api.scores_v3.get_many_v3(
+                limit=100,
+                fields="subject",
+                name=",".join(sorted(expected_names)),
+                trace_id=trace_id,
+            )
+            scores = [
+                score
+                for score in response.data
+                if score.name in expected_names
+                and score.data_type == "BOOLEAN"
+                and getattr(score, "subject", None) is not None
+                and score.subject.kind == "observation"
+                and isinstance(score.subject.id, str)
+                and bool(score.subject.id)
+                and score.subject.trace_id == trace_id
+            ]
+            names = [score.name for score in scores]
+            subject_ids = {
+                getattr(score.subject, "id", None) for score in scores
+            }
+            missing = sorted(expected_names - set(names))
+            duplicates = sorted(
+                name for name in expected_names if names.count(name) > 1
+            )
+            if (
+                not missing
+                and not duplicates
+                and len(subject_ids) == 1
+            ):
+                break
+            failure_detail = (
+                f"trace_id={trace_id}, missing={missing}, "
+                f"duplicates={duplicates}, task_observations={len(subject_ids)}"
+            )
+            if attempt + 1 < attempts and retry_delay_seconds > 0:
+                time.sleep(retry_delay_seconds)
+        else:
+            raise RuntimeError(
+                "Experiment is missing persisted Agent eval dimensions on one "
+                f"experiment-item-task observation: {failure_detail}."
+            )
 
 
 def create_required_trace_observer(
@@ -308,20 +392,7 @@ def create_required_trace_observer(
 
 
 def _evaluations(result: GraderResult) -> list[Evaluation]:
-    evaluations = [
-        Evaluation(
-            name=PRIMARY_REWARD_NAME,
-            value=result.reward,
-            comment=result.reason,
-            metadata={
-                "dimensions": {
-                    name: getattr(result.dimensions, name).passed
-                    for name in DIMENSION_NAMES
-                }
-            },
-        )
-    ]
-    evaluations.extend(
+    return [
         Evaluation(
             name=f"agent_eval.dimension.{name}",
             value=dimension_result.passed,
@@ -331,8 +402,7 @@ def _evaluations(result: GraderResult) -> list[Evaluation]:
         )
         for name in DIMENSION_NAMES
         for dimension_result in [getattr(result.dimensions, name)]
-    )
-    return evaluations
+    ]
 
 
 def _assertion_metadata(

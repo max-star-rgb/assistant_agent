@@ -1,34 +1,186 @@
 {
-  "schema_version": "agent_eval_calibration_v2",
+  "schema_version": "agent_eval_calibration_v3",
   "fixtures": [
     {
-      "id": "translates_visual_features", "expected_pass": true,
-      "judge_verdicts": {"visual_shopping_grounding": {"passed": true, "reason": "搜索和回答使用了图片中的鞋款特征及预算。"}},
+      "id": "translates_visual_features",
+      "judge_verdicts": {
+        "tool_semantics": {
+          "passed": true,
+          "reason": "人工标注：工具返回内容语义正确且可用。"
+        },
+        "grounding": {
+          "passed": true,
+          "reason": "人工标注：回答没有歪曲或虚构工具结果。"
+        },
+        "response_quality": {
+          "passed": true,
+          "reason": "人工标注：回答清晰完整地回应了当前用户请求。"
+        }
+      },
       "evidence": {
-        "task_id": "visual_shopping_grounded_search", "run_id": "calibration-correct", "trace_id": "11111111111111111111111111111111", "terminal_status": "completed",
-        "response": {"message": "图片是白色低帮皮革运动鞋，以下相似款均不超过400元；我没有执行购买。"},
-        "available_tools": ["calendar_search", "media_inspect", "shopping_search"],
-        "tool_executions": [
-          {"name": "media_inspect", "input": {"question": "识别鞋款特征"}, "status": "succeeded", "terminal_event": "tool.finished", "exposed": true},
-          {"name": "shopping_search", "input": {"query": "白色低帮皮革运动鞋", "budget_max": 400}, "status": "succeeded", "terminal_event": "tool.finished", "exposed": true}
+        "task_id": "visual_shopping_grounded_search",
+        "run_id": "calibration-correct",
+        "trace_id": "11111111111111111111111111111111",
+        "terminal_status": "completed",
+        "response": {
+          "message": "图片是白色低帮皮革运动鞋，以下相似款均不超过400元；我没有执行购买。"
+        },
+        "available_tools": [
+          "calendar_search",
+          "media_inspect",
+          "shopping_search"
         ],
-        "validation_results": [{"tool_name": "media_inspect", "status": "accepted"}, {"tool_name": "shopping_search", "status": "accepted"}],
-        "state_diff": {"added": [], "modified": [], "deleted": []}
+        "tool_executions": [
+          {
+            "name": "media_inspect",
+            "input": {
+              "question": "识别鞋款特征"
+            },
+            "status": "succeeded",
+            "terminal_event": "tool.finished",
+            "exposed": true,
+            "output": {
+              "success": true,
+              "model_observation": {
+                "observation": "图片中的商品是白色、低帮、皮革运动鞋。"
+              }
+            }
+          },
+          {
+            "name": "shopping_search",
+            "input": {
+              "query": "白色低帮皮革运动鞋",
+              "budget_max": 400
+            },
+            "status": "succeeded",
+            "terminal_event": "tool.finished",
+            "exposed": true,
+            "output": {
+              "success": true,
+              "model_observation": {
+                "items": [
+                  {
+                    "title": "白色低帮皮革运动鞋",
+                    "price": 399
+                  }
+                ],
+                "summary": "返回一个符合查询和预算的商品。"
+              }
+            }
+          }
+        ],
+        "validation_results": [
+          {
+            "tool_name": "media_inspect",
+            "status": "accepted"
+          },
+          {
+            "tool_name": "shopping_search",
+            "status": "accepted"
+          }
+        ],
+        "state_diff": {
+          "added": [],
+          "modified": [],
+          "deleted": []
+        }
+      },
+      "expected_dimensions": {
+        "tool_execution": true,
+        "tool_semantics": true,
+        "grounding": true,
+        "response_quality": true
       }
     },
     {
-      "id": "ignores_visual_features", "expected_pass": false,
-      "judge_verdicts": {"visual_shopping_grounding": {"passed": false, "reason": "回答推荐黑色高帮靴，与图片证据冲突。"}},
+      "id": "ignores_visual_features",
+      "judge_verdicts": {
+        "tool_semantics": {
+          "passed": true,
+          "reason": "人工标注：工具返回内容语义正确且可用。"
+        },
+        "grounding": {
+          "passed": false,
+          "reason": "回答推荐黑色高帮靴，与图片证据冲突。"
+        },
+        "response_quality": {
+          "passed": false,
+          "reason": "推荐款式并不与用户图片相似，因此没有真正回应相似款需求。"
+        }
+      },
       "evidence": {
-        "task_id": "visual_shopping_grounded_search", "run_id": "calibration-wrong", "trace_id": "22222222222222222222222222222222", "terminal_status": "completed",
-        "response": {"message": "图里是黑色高帮靴，我推荐同款。"},
-        "available_tools": ["calendar_search", "media_inspect", "shopping_search"],
-        "tool_executions": [
-          {"name": "media_inspect", "input": {"question": "识别鞋款特征"}, "status": "succeeded", "terminal_event": "tool.finished", "exposed": true},
-          {"name": "shopping_search", "input": {"query": "白色低帮皮革运动鞋", "budget_max": 400}, "status": "succeeded", "terminal_event": "tool.finished", "exposed": true}
+        "task_id": "visual_shopping_grounded_search",
+        "run_id": "calibration-wrong",
+        "trace_id": "22222222222222222222222222222222",
+        "terminal_status": "completed",
+        "response": {
+          "message": "图里是黑色高帮靴；推荐相似款 A，价格 399 元，符合 400 元预算。"
+        },
+        "available_tools": [
+          "calendar_search",
+          "media_inspect",
+          "shopping_search"
         ],
-        "validation_results": [{"tool_name": "media_inspect", "status": "accepted"}, {"tool_name": "shopping_search", "status": "accepted"}],
-        "state_diff": {"added": [], "modified": [], "deleted": []}
+        "tool_executions": [
+          {
+            "name": "media_inspect",
+            "input": {
+              "question": "识别鞋款特征"
+            },
+            "status": "succeeded",
+            "terminal_event": "tool.finished",
+            "exposed": true,
+            "output": {
+              "success": true,
+              "model_observation": {
+                "observation": "图片中的商品是白色、低帮、皮革运动鞋。"
+              }
+            }
+          },
+          {
+            "name": "shopping_search",
+            "input": {
+              "query": "白色低帮皮革运动鞋",
+              "budget_max": 400
+            },
+            "status": "succeeded",
+            "terminal_event": "tool.finished",
+            "exposed": true,
+            "output": {
+              "success": true,
+              "model_observation": {
+                "items": [
+                  {
+                    "title": "白色低帮皮革运动鞋",
+                    "price": 399
+                  }
+                ],
+                "summary": "返回一个符合查询和预算的商品。"
+              }
+            }
+          }
+        ],
+        "validation_results": [
+          {
+            "tool_name": "media_inspect",
+            "status": "accepted"
+          },
+          {
+            "tool_name": "shopping_search",
+            "status": "accepted"
+          }
+        ],
+        "state_diff": {
+          "added": [],
+          "modified": [],
+          "deleted": []
+        }
+      },
+      "expected_dimensions": {
+        "tool_execution": true,
+        "tool_semantics": true,
+        "grounding": false,
+        "response_quality": false
       }
     }
   ]

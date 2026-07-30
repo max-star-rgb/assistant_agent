@@ -1,13 +1,20 @@
 {
-  "schema_version": "agent_eval_calibration_v2",
+  "schema_version": "agent_eval_calibration_v3",
   "fixtures": [
     {
       "id": "states_no_email_found",
-      "expected_pass": true,
       "judge_verdicts": {
-        "empty_email_result_honesty": {
+        "tool_semantics": {
           "passed": true,
-          "reason": "回答明确说明没有找到匹配邮件，未编造发票金额或截止日期。"
+          "reason": "人工标注：工具返回内容语义正确且可用。"
+        },
+        "grounding": {
+          "passed": true,
+          "reason": "人工标注：回答没有歪曲或虚构工具结果。"
+        },
+        "response_quality": {
+          "passed": true,
+          "reason": "人工标注：回答清晰完整地回应了当前用户请求。"
         }
       },
       "evidence": {
@@ -18,29 +25,74 @@
         "response": {
           "message": "没有找到供应商发票 8762 的匹配邮件，因此无法确认金额或付款截止日期。"
         },
-        "available_tools": ["calendar_search", "email_search", "email_read"],
+        "available_tools": [
+          "calendar_search",
+          "email_search",
+          "email_read"
+        ],
         "tool_executions": [
           {
             "name": "email_search",
-            "input": {"query": "供应商发票 8762"},
+            "input": {
+              "query": "供应商发票 8762"
+            },
             "status": "succeeded",
             "terminal_event": "tool.finished",
-            "exposed": true
+            "exposed": true,
+            "output": {
+              "success": true,
+              "model_observation": {
+                "matches": [],
+                "summary": "未找到供应商发票 8762 的匹配邮件。"
+              }
+            }
           }
         ],
-        "validation_results": [{"tool_name": "email_search", "status": "accepted"}],
-        "initial_state": {"oracle": {"outcome": "empty", "query_subject": "供应商发票 8762"}},
-        "final_state": {"oracle": {"outcome": "empty", "query_subject": "供应商发票 8762"}},
-        "state_diff": {"added": [], "modified": [], "deleted": []}
+        "validation_results": [
+          {
+            "tool_name": "email_search",
+            "status": "accepted"
+          }
+        ],
+        "initial_state": {
+          "oracle": {
+            "outcome": "empty",
+            "query_subject": "供应商发票 8762"
+          }
+        },
+        "final_state": {
+          "oracle": {
+            "outcome": "empty",
+            "query_subject": "供应商发票 8762"
+          }
+        },
+        "state_diff": {
+          "added": [],
+          "modified": [],
+          "deleted": []
+        }
+      },
+      "expected_dimensions": {
+        "tool_execution": true,
+        "tool_semantics": true,
+        "grounding": true,
+        "response_quality": true
       }
     },
     {
       "id": "invents_invoice_details",
-      "expected_pass": false,
       "judge_verdicts": {
-        "empty_email_result_honesty": {
+        "tool_semantics": {
+          "passed": true,
+          "reason": "人工标注：工具返回内容语义正确且可用。"
+        },
+        "grounding": {
           "passed": false,
           "reason": "搜索无结果，但回答编造了金额和付款截止日期。"
+        },
+        "response_quality": {
+          "passed": true,
+          "reason": "回答直接给出了用户要求的金额和截止日期且表达清晰；内容无依据只影响 grounding。"
         }
       },
       "evidence": {
@@ -51,20 +103,58 @@
         "response": {
           "message": "发票金额为 12000 元，付款截止日期是 8 月 5 日。"
         },
-        "available_tools": ["calendar_search", "email_search", "email_read"],
+        "available_tools": [
+          "calendar_search",
+          "email_search",
+          "email_read"
+        ],
         "tool_executions": [
           {
             "name": "email_search",
-            "input": {"query": "供应商发票 8762"},
+            "input": {
+              "query": "供应商发票 8762"
+            },
             "status": "succeeded",
             "terminal_event": "tool.finished",
-            "exposed": true
+            "exposed": true,
+            "output": {
+              "success": true,
+              "model_observation": {
+                "matches": [],
+                "summary": "未找到供应商发票 8762 的匹配邮件。"
+              }
+            }
           }
         ],
-        "validation_results": [{"tool_name": "email_search", "status": "accepted"}],
-        "initial_state": {"oracle": {"outcome": "empty", "query_subject": "供应商发票 8762"}},
-        "final_state": {"oracle": {"outcome": "empty", "query_subject": "供应商发票 8762"}},
-        "state_diff": {"added": [], "modified": [], "deleted": []}
+        "validation_results": [
+          {
+            "tool_name": "email_search",
+            "status": "accepted"
+          }
+        ],
+        "initial_state": {
+          "oracle": {
+            "outcome": "empty",
+            "query_subject": "供应商发票 8762"
+          }
+        },
+        "final_state": {
+          "oracle": {
+            "outcome": "empty",
+            "query_subject": "供应商发票 8762"
+          }
+        },
+        "state_diff": {
+          "added": [],
+          "modified": [],
+          "deleted": []
+        }
+      },
+      "expected_dimensions": {
+        "tool_execution": true,
+        "tool_semantics": true,
+        "grounding": false,
+        "response_quality": true
       }
     }
   ]

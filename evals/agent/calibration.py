@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import date, timedelta
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from evals.agent.contracts import (
     GraderResult,
@@ -18,27 +18,56 @@ from evals.agent.grading import DIMENSION_NAMES, grade_task
 from evals.agent.loader import calibration_path
 
 
+class CalibrationDimensions(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    tool_execution: bool
+    tool_semantics: bool
+    grounding: bool
+    response_quality: bool
+
+
+class CalibrationJudgeVerdicts(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    tool_semantics: JudgeVerdict
+    grounding: JudgeVerdict
+    response_quality: JudgeVerdict
+
+
 class CalibrationFixture(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     id: str = Field(min_length=1)
-    expected_pass: bool
-    judge_verdicts: dict[str, JudgeVerdict] = Field(min_length=1)
+    expected_dimensions: CalibrationDimensions
+    judge_verdicts: CalibrationJudgeVerdicts
     evidence: dict[str, Any]
 
 
 class CalibrationSet(BaseModel):
-    schema_version: Literal["agent_eval_calibration_v2"]
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["agent_eval_calibration_v3"]
     fixtures: list[CalibrationFixture] = Field(min_length=2)
 
 
 class CalibrationResult(BaseModel):
     fixture_id: str
-    expected_pass: bool
-    actual_pass: bool
+    expected_dimensions: dict[str, bool]
     expected_judge_passes: dict[str, bool]
     actual_judge_passes: dict[str, bool]
     dimensions: dict[str, bool]
     matched: bool
     reason: str
+
+
+def _calibration_judge_verdicts(
+    verdicts: CalibrationJudgeVerdicts,
+) -> list[tuple[str, JudgeVerdict]]:
+    return [
+        (criterion_id, getattr(verdicts, criterion_id))
+        for criterion_id in ("tool_semantics", "grounding", "response_quality")
+    ]
 
 
 def run_calibration(
@@ -64,29 +93,35 @@ def run_calibration(
             )
         expected_judge_passes = {
             criterion_id: verdict.passed
-            for criterion_id, verdict in fixture.judge_verdicts.items()
+            for criterion_id, verdict in _calibration_judge_verdicts(
+                fixture.judge_verdicts
+            )
         }
         actual_judge_passes = {
             criterion_id: verdict.passed
             for criterion_id, verdict in recording_judge.verdicts.items()
         }
+        dimensions = {
+            name: getattr(graded.dimensions, name).passed
+            for name in DIMENSION_NAMES
+        }
         matched = (
-            graded.passed == fixture.expected_pass
+            dimensions == fixture.expected_dimensions.model_dump()
             and actual_judge_passes == expected_judge_passes
         )
         results.append(
             CalibrationResult(
                 fixture_id=fixture.id,
-                expected_pass=fixture.expected_pass,
-                actual_pass=graded.passed,
+                expected_dimensions=fixture.expected_dimensions.model_dump(),
                 expected_judge_passes=expected_judge_passes,
                 actual_judge_passes=actual_judge_passes,
-                dimensions={
-                    name: getattr(graded.dimensions, name).passed
-                    for name in DIMENSION_NAMES
-                },
+                dimensions=dimensions,
                 matched=matched,
-                reason=graded.reason,
+                reason=(
+                    "四个独立 Score 与人工标注一致。"
+                    if matched
+                    else "Score 与人工标注不一致。"
+                ),
             )
         )
     return results
@@ -123,7 +158,9 @@ def load_labeled_calibration_judge(task: TaskSpec) -> LabeledCalibrationJudge:
         [
             (criterion_id, verdict)
             for fixture in payload.fixtures
-            for criterion_id, verdict in fixture.judge_verdicts.items()
+            for criterion_id, verdict in _calibration_judge_verdicts(
+                fixture.judge_verdicts
+            )
         ]
     )
 
