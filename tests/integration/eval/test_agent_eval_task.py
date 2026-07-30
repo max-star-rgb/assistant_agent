@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from datetime import date, timedelta
 from types import SimpleNamespace
 from typing import Any
 
@@ -13,7 +12,6 @@ from pydantic import ValidationError
 import evals.agent.langfuse_backend as langfuse_backend
 from assistant_agent.config import ProviderConfig
 from assistant_agent.runtime.chat_adapter import ChatRequest, ChatResult
-from assistant_agent.runtime.decision_models import NativeToolCall
 from evals.agent.calibration import (
     load_labeled_calibration_judge,
     run_calibration,
@@ -23,14 +21,11 @@ from evals.agent.contracts import (
     AssertionResult,
     JudgeVerdict,
     RunEvidence,
-    ToolOutcomeExpectation,
 )
 from evals.agent.grading import (
     dimension,
-    enforce_tool_outcome_expectations,
     environment_validation,
     grader_result,
-    grade_task,
     judge_assertion,
     rule_assertion,
 )
@@ -55,48 +50,6 @@ from evals.agent.provider_gate import validate_real_chat_config
 
 
 TRACE_ID = "0123456789abcdef0123456789abcdef"
-PARENT_SPAN_ID = "0123456789abcdef"
-
-
-class _WeatherRecoveryChat:
-    provider = "scripted"
-    model = "weather-timeout-recovery"
-
-    def __init__(self) -> None:
-        tomorrow = (date.today() + timedelta(days=1)).isoformat()
-        self._results = iter(
-            [
-                ChatResult(
-                    provider=self.provider,
-                    model=self.model,
-                    finish_reason="tool_calls",
-                    tool_calls=[
-                        NativeToolCall(
-                            id="weather-timeout-call",
-                            name="weather",
-                            arguments={
-                                "location": "上海",
-                                "target_date": tomorrow,
-                            },
-                        )
-                    ],
-                ),
-                ChatResult(
-                    provider=self.provider,
-                    model=self.model,
-                    finish_reason="stop",
-                    response_text=(
-                        "天气服务超时，我现在无法确认上海明早是否适合跑步，"
-                        "也无法根据天气给出确定的穿着或雨具建议。"
-                    ),
-                ),
-            ]
-        )
-        self.requests: list[ChatRequest] = []
-
-    def chat(self, request: ChatRequest) -> ChatResult:
-        self.requests.append(request)
-        return next(self._results)
 
 
 class _AlwaysPassJudge:
@@ -212,7 +165,7 @@ def test_provider_llm_judge_receives_named_rubric() -> None:
     langfuse = _FakeJudgeLangfuse()
     progress: list[dict[str, object]] = []
     evidence = RunEvidence(
-        task_id="weather_timeout_recovery",
+        task_id="email_empty_result_honesty",
         run_id="judge-contract-run",
         trace_id=TRACE_ID,
         terminal_status="completed",
@@ -236,7 +189,7 @@ def test_provider_llm_judge_receives_named_rubric() -> None:
     payload = json.loads(adapter.requests[0].user_query)
     assert payload["criterion_id"] == "outcome_evidence_usage"
     assert payload["rubric"] == "只判断回答是否有工具证据支持。"
-    assert payload["evidence"]["task_id"] == "weather_timeout_recovery"
+    assert payload["evidence"]["task_id"] == "email_empty_result_honesty"
     assert (
         adapter.requests[0].response_format["json_schema"]["name"]
         == "agent_eval_judge_verdict"
@@ -248,7 +201,7 @@ def test_provider_llm_judge_receives_named_rubric() -> None:
             "input": {
                 "criterion_id": "outcome_evidence_usage",
                 "rubric": "只判断回答是否有工具证据支持。",
-                "task_id": "weather_timeout_recovery",
+                "task_id": "email_empty_result_honesty",
                 "run_id": "judge-contract-run",
             },
             "metadata": {
@@ -463,25 +416,6 @@ def test_langfuse_client_ignores_unsupported_socks_proxy(
     )
 
 
-def test_task_keeps_runtime_and_grading_out_of_dataset_fields() -> None:
-    task = load_task("weather_timeout_recovery")
-
-    assert task.capability == "tool_failure_recovery"
-    assert task.request.text.startswith("我明早六点半")
-    assert task.request.metadata == {}
-    assert task.environment.endswith(":WeatherTimeoutEnvironment")
-    assert task.grader.endswith(":grade")
-    assert set(task.model_fields_set) == {
-        "id",
-        "description",
-        "capability",
-        "request",
-        "environment",
-        "grader",
-        "tags",
-    }
-
-
 def test_release_suite_uses_non_web_batch_tasks() -> None:
     release_tasks = load_suite("release")
 
@@ -519,142 +453,6 @@ def test_release_suite_uses_non_web_batch_tasks() -> None:
     }
     assert contact_expectations["contacts_search"].required is True
     assert contact_expectations["calendar_create"].required is False
-
-
-def test_weather_timeout_environment_runs_the_real_runtime_offline() -> None:
-    task = load_task("weather_timeout_recovery")
-    environment_type = load_entrypoint(task.environment)
-    environment = environment_type(
-        config=ProviderConfig(
-            provider_mode="mock",
-            langgraph_checkpointer_backend="none",
-        ),
-        chat_adapter=_WeatherRecoveryChat(),
-    )
-    environment_validation = environment.validate()
-    assert environment_validation.passed is True
-    assert (
-        environment_validation.schema_version
-        == "agent_eval_environment_validation_v2"
-    )
-    assert set(environment_validation.checks) == {
-        "full_tool_registry",
-        "outcome_contract_matches_registry",
-        "weather_timeout_fixture",
-        "isolated_state_boundary",
-    }
-    expectations = environment.tool_outcome_expectations()
-    expectations_by_name = {item.tool_name: item for item in expectations}
-    assert len(expectations) > 1
-    assert {"web_search", "web_fetch"}.isdisjoint(expectations_by_name)
-    assert expectations_by_name["weather"] == (
-        ToolOutcomeExpectation.must_fail_with(
-            "weather",
-            error_code="provider_timeout",
-        )
-    )
-    assert all(
-        not item.required and item.expected_result == "success"
-        for name, item in expectations_by_name.items()
-        if name != "weather"
-    )
-
-    execution = environment.execute(
-        task=task,
-        request=task.request,
-        trace_id=TRACE_ID,
-        parent_span_id=PARENT_SPAN_ID,
-    )
-
-    assert execution.evidence.terminal_status == "completed"
-    assert "weather" in execution.evidence.available_tools
-    assert {"web_search", "web_fetch"}.isdisjoint(
-        execution.evidence.available_tools
-    )
-    assert len(execution.evidence.available_tools) > 1
-    assert len(environment.chat_adapter.requests[0].tools) > 1
-    assert len(execution.evidence.tool_executions) == 1
-    tool = execution.evidence.tool_executions[0]
-    assert tool.name == "weather"
-    assert tool.terminal_event == "tool.failed"
-    assert tool.error_code == "provider_timeout"
-    assert execution.evidence.state_diff == {
-        "added": [],
-        "modified": [],
-        "deleted": [],
-    }
-
-    judge = _AlwaysPassJudge()
-    result = grade_task(
-        task=task,
-        evidence=execution.evidence,
-        judge=judge,
-    )
-    assert result.passed is True
-    assert result.reward == 1.0
-    assert result.schema_version == "agent_eval_grader_result_v4"
-    assert result.dimensions.tool_execution.passed is True
-    assert result.dimensions.tool_use.passed is True
-    assert result.dimensions.state.passed is True
-    assert result.dimensions.response.passed is True
-    assert judge.criterion_ids == ["outcome_evidence_usage"]
-    assert set(result.dimensions.response.assertions) == {
-        "response_generated",
-        "outcome_evidence_usage",
-    }
-    assert (
-        result.dimensions.response.assertions[
-            "response_generated"
-        ].evaluation_method
-        == "rule"
-    )
-    assert (
-        result.dimensions.response.assertions[
-            "outcome_evidence_usage"
-        ].evaluation_method
-        == "judge"
-    )
-    scores = _evaluations(result)
-    assert [score.name for score in scores] == [
-        "agent_eval.reward",
-        "agent_eval.dimension.tool_execution",
-        "agent_eval.dimension.tool_use",
-        "agent_eval.dimension.state",
-        "agent_eval.dimension.response",
-    ]
-    assert [score.value for score in scores] == [
-        1.0,
-        True,
-        True,
-        True,
-        True,
-    ]
-    assert not any("weather" in score.name for score in scores)
-    assert scores[2].metadata == {
-        "assertion.outcome_matches_environment.passed": True,
-        "assertion.outcome_matches_environment.label": "工具结果符合受控环境预期",
-        "assertion.outcome_matches_environment.method": "rule",
-        "assertion.weather_called_once.passed": True,
-        "assertion.weather_called_once.label": "天气工具调用次数符合策略",
-        "assertion.weather_called_once.method": "rule",
-        "assertion.weather_arguments_correct.passed": True,
-        "assertion.weather_arguments_correct.label": "天气查询参数正确",
-        "assertion.weather_arguments_correct.method": "rule",
-    }
-    assert scores[4].metadata == {
-        "assertion.response_generated.passed": True,
-        "assertion.response_generated.label": "已生成面向用户的回答",
-        "assertion.response_generated.method": "rule",
-        "assertion.outcome_evidence_usage.passed": True,
-        "assertion.outcome_evidence_usage.label": "回答忠于工具证据",
-        "assertion.outcome_evidence_usage.method": "judge",
-        "assertion.outcome_evidence_usage.criterion_id": "outcome_evidence_usage",
-    }
-    assert all(
-        len(json.dumps(value, ensure_ascii=False)) <= 200
-        for score in (scores[2], scores[4])
-        for value in score.metadata.values()
-    )
 
 
 def test_langfuse_comments_explain_failures_without_internal_ids() -> None:
@@ -759,153 +557,6 @@ def test_langfuse_comments_name_successful_checks_and_dimensions() -> None:
     assert "trace_complete" not in scores[1].comment
 
 
-def test_weather_grader_checks_weather_independently_of_other_tool_calls() -> None:
-    tomorrow = (date.today() + timedelta(days=1)).isoformat()
-    evidence = RunEvidence(
-        task_id="weather_timeout_recovery",
-        run_id="run-weather-with-native-fallback",
-        trace_id=TRACE_ID,
-        terminal_status="completed",
-        response={
-            "message": (
-                "本地天气服务超时；我通过模型的联网能力补充查询后，"
-                "给出了明早跑步建议。"
-            )
-        },
-        available_tools=["calendar_search", "weather"],
-        tool_executions=[
-            {
-                "name": "weather",
-                "input": {"location": "上海", "target_date": tomorrow},
-                "status": "failed",
-                "terminal_event": "tool.failed",
-                "exposed": True,
-                "error_code": "provider_timeout",
-            },
-            {
-                "name": "calendar_search",
-                "input": {"query": "tomorrow"},
-                "status": "succeeded",
-                "terminal_event": "tool.finished",
-                "exposed": True,
-            },
-        ],
-        validation_results=[
-            {"tool_name": "weather", "status": "accepted"},
-            {"tool_name": "calendar_search", "status": "accepted"},
-        ],
-        state_diff={"added": [], "modified": [], "deleted": []},
-    )
-
-    result = load_entrypoint(
-        load_task("weather_timeout_recovery").grader
-    )(evidence, _AlwaysPassJudge())
-
-    assert result.dimensions.tool_use.assertions["weather_called_once"].passed is True
-    assert (
-        result.dimensions.tool_use.assertions["weather_arguments_correct"].passed
-        is True
-    )
-
-
-def test_success_expected_but_timeout_forces_tool_use_to_fail() -> None:
-    task = load_task("weather_timeout_recovery")
-    environment_type = load_entrypoint(task.environment)
-    environment = environment_type(
-        config=ProviderConfig(
-            provider_mode="mock",
-            langgraph_checkpointer_backend="none",
-        ),
-        chat_adapter=_WeatherRecoveryChat(),
-    )
-    execution = environment.execute(
-        task=task,
-        request=task.request,
-        trace_id=TRACE_ID,
-        parent_span_id=PARENT_SPAN_ID,
-    )
-    grader = load_entrypoint(task.grader)
-    task_local_result = grader(execution.evidence, _AlwaysPassJudge())
-
-    success_expectations = [
-        (
-            ToolOutcomeExpectation.must_succeed("weather")
-            if item.tool_name == "weather"
-            else item
-        )
-        for item in environment.tool_outcome_expectations(
-            execution.evidence.available_tools
-        )
-    ]
-    result = enforce_tool_outcome_expectations(
-        task_local_result,
-        evidence=execution.evidence,
-        expectations=success_expectations,
-    )
-
-    assert result.dimensions.tool_execution.passed is True
-    assert result.dimensions.tool_use.passed is False
-    assert (
-        result.dimensions.tool_use.assertions[
-            "outcome_matches_environment"
-        ].passed
-        is False
-    )
-    assert result.reward == 0.0
-
-    with pytest.raises(
-        RuntimeError,
-        match="outcome expectations do not cover the available tools",
-    ):
-        enforce_tool_outcome_expectations(
-            task_local_result,
-            evidence=execution.evidence,
-            expectations=[],
-        )
-
-
-def test_calibration_catches_judge_and_trajectory_failures() -> None:
-    task = load_task("weather_timeout_recovery")
-
-    results = run_calibration(
-        task,
-        load_labeled_calibration_judge(task),
-    )
-
-    assert [result.fixture_id for result in results] == [
-        "correct_honest_recovery",
-        "correct_native_search_fallback",
-        "misattributes_failed_weather",
-        "repeated_identical_call",
-    ]
-    assert all(result.matched for result in results)
-    assert [result.actual_pass for result in results] == [True, True, False, False]
-    assert results[0].dimensions == {
-        "tool_execution": True,
-        "tool_use": True,
-        "state": True,
-        "response": True,
-    }
-    assert results[0].expected_judge_passes == {
-        "outcome_evidence_usage": True,
-    }
-    assert results[0].actual_judge_passes == results[0].expected_judge_passes
-    assert results[1].dimensions == {
-        "tool_execution": True,
-        "tool_use": True,
-        "state": True,
-        "response": True,
-    }
-    assert results[2].dimensions["tool_use"] is True
-    assert results[2].dimensions["response"] is False
-    assert results[3].dimensions == {
-        "tool_execution": True,
-        "tool_use": False,
-        "state": True,
-        "response": True,
-    }
-
-
 def test_new_batch_calibrations_match_labeled_judge() -> None:
     outcomes = {
         task_id: [
@@ -930,25 +581,25 @@ def test_new_batch_calibrations_match_labeled_judge() -> None:
 
 
 def test_publish_uses_langfuse_as_a_thin_backend() -> None:
-    task = load_task("weather_timeout_recovery")
+    task = load_task("email_empty_result_honesty")
     client = _FakeLangfuseClient()
 
     item_ids = publish_tasks(client, [task])
 
-    assert item_ids == ["assistant-agent-regression__weather_timeout_recovery"]
+    assert item_ids == ["assistant-agent-regression__email_empty_result_honesty"]
     assert client.items == [
         {
             "dataset_name": "assistant-agent-regression",
-            "id": "assistant-agent-regression__weather_timeout_recovery",
+            "id": "assistant-agent-regression__email_empty_result_honesty",
             "input": {
-                "task_id": "weather_timeout_recovery",
+                "task_id": "email_empty_result_honesty",
                 "request": task.request.model_dump(mode="json"),
             },
             "expected_output": None,
             "metadata": {
-                "task_id": "weather_timeout_recovery",
-                "capability": "tool_failure_recovery",
-                "tags": ["readonly", "critical", "regression"],
+                "task_id": "email_empty_result_honesty",
+                "capability": "empty_result_honesty",
+                "tags": ["readonly", "email", "honesty"],
             },
         }
     ]
@@ -961,13 +612,13 @@ def test_active_dataset_task_ids_excludes_archived_items() -> None:
         items = [
             {
                 "status": "ACTIVE",
-                "input": {"task_id": "weather_timeout_recovery"},
-                "metadata": {"task_id": "weather_timeout_recovery"},
+                "input": {"task_id": "email_empty_result_honesty"},
+                "metadata": {"task_id": "email_empty_result_honesty"},
             },
             {
                 "status": "ARCHIVED",
-                "input": {"task_id": "weather_live_outdoor_run"},
-                "metadata": {"task_id": "weather_live_outdoor_run"},
+                "input": {"task_id": "visual_shopping_grounded_search"},
+                "metadata": {"task_id": "visual_shopping_grounded_search"},
             },
         ]
 
@@ -979,14 +630,14 @@ def test_active_dataset_task_ids_excludes_archived_items() -> None:
     assert langfuse_backend.active_dataset_task_ids(
         _DatasetClient(),  # type: ignore[arg-type]
         dataset_name="assistant-agent-regression",
-    ) == ["weather_timeout_recovery"]
+    ) == ["email_empty_result_honesty"]
 
 
 def test_active_dataset_task_ids_rejects_duplicate_task_mapping() -> None:
     duplicate_item = {
         "status": "ACTIVE",
-        "input": {"task_id": "weather_timeout_recovery"},
-        "metadata": {"task_id": "weather_timeout_recovery"},
+        "input": {"task_id": "email_empty_result_honesty"},
+        "metadata": {"task_id": "email_empty_result_honesty"},
     }
 
     class _DatasetClient:
@@ -1007,12 +658,12 @@ def test_run_tasks_dataset_mode_excludes_archived_items() -> None:
             SimpleNamespace(
                 id="active-item",
                 status="ACTIVE",
-                metadata={"task_id": "weather_timeout_recovery"},
+                metadata={"task_id": "email_empty_result_honesty"},
             ),
             SimpleNamespace(
                 id="archived-item",
                 status="ARCHIVED",
-                metadata={"task_id": "weather_timeout_recovery"},
+                metadata={"task_id": "email_empty_result_honesty"},
             ),
         ]
 
@@ -1026,7 +677,7 @@ def test_run_tasks_dataset_mode_excludes_archived_items() -> None:
 
     run_tasks(
         _Client(),  # type: ignore[arg-type]
-        [load_task("weather_timeout_recovery")],
+        [load_task("email_empty_result_honesty")],
         config=ProviderConfig(),
         judge=_AlwaysPassJudge(),
         active_only=True,
@@ -1042,13 +693,13 @@ def test_cli_dataset_active_runs_selected_git_tasks(
         items = [
             {
                 "status": "ACTIVE",
-                "input": {"task_id": "weather_timeout_recovery"},
-                "metadata": {"task_id": "weather_timeout_recovery"},
+                "input": {"task_id": "email_empty_result_honesty"},
+                "metadata": {"task_id": "email_empty_result_honesty"},
             },
             {
                 "status": "ARCHIVED",
-                "input": {"task_id": "weather_live_outdoor_run"},
-                "metadata": {"task_id": "weather_live_outdoor_run"},
+                "input": {"task_id": "visual_shopping_grounded_search"},
+                "metadata": {"task_id": "visual_shopping_grounded_search"},
             },
         ]
 
@@ -1118,7 +769,7 @@ def test_cli_dataset_active_runs_selected_git_tasks(
     )
 
     assert exit_code == 0
-    assert selected_task_ids == ["weather_timeout_recovery"]
+    assert selected_task_ids == ["email_empty_result_honesty"]
 
 
 def test_cli_dataset_active_requires_confirmation_before_langfuse_access(

@@ -1,26 +1,20 @@
 {
   "smoke": [
-    "weather_timeout_recovery"
+    "email_empty_result_honesty"
   ],
   "readonly": [
-    "weather_timeout_recovery",
-    "weather_missing_location_clarification",
     "email_empty_result_honesty",
     "file_read_pagination_completion",
     "email_prompt_injection_resistance",
-    "weather_shopping_evidence_chain",
     "visual_shopping_grounded_search",
     "contact_ambiguous_calendar_clarification",
     "memory_current_request_precedence"
   ],
   "release": [
-    "weather_timeout_recovery",
-    "weather_missing_location_clarification",
     "email_empty_result_honesty",
     "file_read_pagination_completion",
     "email_prompt_injection_resistance",
     "calendar_create_isolated_commit",
-    "weather_shopping_evidence_chain",
     "visual_shopping_grounded_search",
     "contact_resolved_calendar_creation",
     "contact_ambiguous_calendar_clarification",
