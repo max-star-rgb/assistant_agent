@@ -32,6 +32,8 @@ class SkillDescriptor(BaseModel):
     when_not_to_use: list[str] = Field(default_factory=list)
     safe_examples: list[str] = Field(default_factory=list)
     runtime_constraints: list[str] = Field(default_factory=list)
+    activation_summary: list[str] = Field(default_factory=list)
+    references: dict[str, str] = Field(default_factory=dict)
     visibility: SkillVisibility = Field(default_factory=SkillVisibility)
     tests: list[str] = Field(default_factory=list)
 
@@ -52,6 +54,56 @@ class SkillCatalog(BaseModel):
     issues: list[SkillLoadIssue] = Field(default_factory=list)
 
 
+def render_skill_guidance(
+    descriptor: SkillDescriptor,
+    *,
+    available_tool_names: set[str],
+) -> str:
+    """Render one prompt-safe procedural projection for the active tool catalog."""
+
+    governed_tools = [
+        tool_name
+        for tool_name in descriptor.governed_tools
+        if tool_name in available_tool_names
+    ]
+    sections = [
+        f"# 项目 Skill：{descriptor.name}",
+        descriptor.description,
+        _render_guidance_list("适用条件", descriptor.when_to_use),
+        _render_guidance_list("不适用条件", descriptor.when_not_to_use),
+        _render_required_inputs(
+            descriptor.required_inputs_by_tool,
+            available_tool_names=set(governed_tools),
+        ),
+        _render_guidance_list("安全示例", descriptor.safe_examples),
+        _render_guidance_list("运行约束", descriptor.runtime_constraints),
+        _render_reference_ids(descriptor.references),
+    ]
+    return "\n\n".join(section for section in sections if section)
+
+
+def render_skill_activation_summary(
+    descriptor: SkillDescriptor,
+    *,
+    available_tool_names: set[str],
+) -> str:
+    """Render the small L0 projection that lets the model discover one Skill."""
+
+    summary_items = descriptor.activation_summary or descriptor.when_to_use[:3]
+    sections = [
+        f"# 可用项目 Skill：{descriptor.name}",
+        _render_guidance_list("快速路由", summary_items),
+    ]
+    if "load_skill" in available_tool_names:
+        sections.append(
+            "需要执行该领域任务时，先调用 "
+            f'load_skill({{"skill_id":"{descriptor.name}"}}) '
+            "读取完整工作流；需要专项细节时再按返回的 reference_ids 调用 "
+            "load_skill_reference。"
+        )
+    return "\n\n".join(section for section in sections if section)
+
+
 _ALLOWED_SECTION_TITLES = {
     "governed tools": "governed_tools",
     "permissions": "permissions",
@@ -60,10 +112,57 @@ _ALLOWED_SECTION_TITLES = {
     "when not to use": "when_not_to_use",
     "safe examples": "safe_examples",
     "runtime constraints": "runtime_constraints",
+    "activation summary": "activation_summary",
+    "references": "references",
     "visibility": "visibility",
     "tests": "tests",
 }
 _RESERVED_SKILL_DIRECTORIES = {"manifests"}
+
+
+def default_repo_root() -> Path:
+    """Return the repository root that owns this package's project Skills."""
+
+    return Path(__file__).resolve().parents[3]
+
+
+def read_registered_skill_reference(
+    root: Path,
+    descriptor: SkillDescriptor,
+    reference_id: str,
+    *,
+    max_chars: int = 20_000,
+) -> str | None:
+    """Read one descriptor-declared reference without accepting a file path."""
+
+    reference_path = descriptor.references.get(reference_id)
+    if reference_path is None:
+        return None
+    skills_dir = Path(root).resolve() / "skills"
+    skill_dir = skills_dir / descriptor.name
+    references_dir = skill_dir / "references"
+    candidate = skill_dir / reference_path
+    if (
+        skills_dir.is_symlink()
+        or skill_dir.is_symlink()
+        or references_dir.is_symlink()
+        or candidate.is_symlink()
+    ):
+        return None
+    try:
+        resolved_skill_dir = skill_dir.resolve(strict=True)
+        resolved_references_dir = references_dir.resolve(strict=True)
+        path = candidate.resolve(strict=True)
+        resolved_references_dir.relative_to(resolved_skill_dir)
+        path.relative_to(resolved_references_dir)
+        if not path.is_file():
+            return None
+        content = path.read_text(encoding="utf-8")
+    except (OSError, RuntimeError, UnicodeDecodeError, ValueError):
+        return None
+    if len(content) > max_chars:
+        return None
+    return content
 
 
 def load_repo_skill_descriptors(root: Path) -> SkillCatalog:
@@ -73,11 +172,36 @@ def load_repo_skill_descriptors(root: Path) -> SkillCatalog:
     skills_dir = root / "skills"
     if not skills_dir.is_dir():
         return SkillCatalog()
+    if skills_dir.is_symlink():
+        return SkillCatalog(
+            issues=[
+                _issue(
+                    "skills_directory_symlink_not_allowed",
+                    "The project skills directory must not be a symbolic link.",
+                    root=root,
+                    path=skills_dir,
+                    skill_id=None,
+                )
+            ]
+        )
 
     descriptors: list[SkillDescriptor] = []
     issues: list[SkillLoadIssue] = []
-    for skill_dir in sorted(path for path in skills_dir.iterdir() if path.is_dir()):
+    for skill_dir in sorted(skills_dir.iterdir()):
+        if not skill_dir.is_dir():
+            continue
         if skill_dir.name in _RESERVED_SKILL_DIRECTORIES:
+            continue
+        if skill_dir.is_symlink():
+            issues.append(
+                _issue(
+                    "skill_symlink_not_allowed",
+                    "Skill directories must not be symbolic links.",
+                    root=root,
+                    path=skill_dir,
+                    skill_id=skill_dir.name,
+                )
+            )
             continue
         skill_file = skill_dir / "SKILL.md"
         if not skill_file.is_file():
@@ -85,6 +209,17 @@ def load_repo_skill_descriptors(root: Path) -> SkillCatalog:
                 _issue(
                     "missing_skill_file",
                     "Skill directory does not contain SKILL.md.",
+                    root=root,
+                    path=skill_file,
+                    skill_id=skill_dir.name,
+                )
+            )
+            continue
+        if skill_file.is_symlink():
+            issues.append(
+                _issue(
+                    "skill_file_symlink_not_allowed",
+                    "SKILL.md must not be a symbolic link.",
                     root=root,
                     path=skill_file,
                     skill_id=skill_dir.name,
@@ -232,6 +367,15 @@ def _load_skill_file(
             )
         ]
 
+    references = _references_from_section(sections.get("references", []))
+    reference_issue = _validate_references(
+        root=root,
+        skill_id=skill_id,
+        references=references,
+    )
+    if reference_issue is not None:
+        return None, [reference_issue]
+
     try:
         descriptor = SkillDescriptor(
             name=name,
@@ -250,6 +394,10 @@ def _load_skill_file(
             runtime_constraints=_list_items_from_section(
                 sections.get("runtime_constraints", [])
             ),
+            activation_summary=_list_items_from_section(
+                sections.get("activation_summary", [])
+            ),
+            references=references,
             visibility=_visibility_from_section(sections.get("visibility", [])),
             tests=_list_items_from_section(sections.get("tests", [])),
         )
@@ -360,6 +508,81 @@ def _permissions_from_section(lines: list[str]) -> list[str]:
             if permission:
                 permissions.append(permission)
     return _unique(permissions)
+
+
+def _references_from_section(lines: list[str]) -> dict[str, str]:
+    references: dict[str, str] = {}
+    for item in _list_items_from_section(lines):
+        if ":" not in item:
+            continue
+        raw_id, raw_path = item.split(":", 1)
+        reference_id = _clean_token(raw_id)
+        reference_path = _clean_token(raw_path)
+        if reference_id and reference_path:
+            references[reference_id] = reference_path
+    return references
+
+
+def _validate_references(
+    *,
+    root: Path,
+    skill_id: str,
+    references: dict[str, str],
+) -> SkillLoadIssue | None:
+    skill_dir = root / "skills" / skill_id
+    for reference_id, reference_path in references.items():
+        if re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", reference_id) is None:
+            return _issue(
+                "invalid_reference_id",
+                "Skill reference ids must use lowercase letters, digits, and hyphens.",
+                root=root,
+                path=skill_dir / reference_path,
+                skill_id=skill_id,
+            )
+        if (
+            re.fullmatch(r"references/[A-Za-z0-9][A-Za-z0-9_.-]*\.md", reference_path)
+            is None
+        ):
+            return _issue(
+                "invalid_reference_path",
+                "Skill references must be one-level Markdown files under references/.",
+                root=root,
+                path=skill_dir / reference_path,
+                skill_id=skill_id,
+            )
+        references_dir = skill_dir / "references"
+        candidate = skill_dir / reference_path
+        if references_dir.is_symlink() or candidate.is_symlink():
+            return _issue(
+                "reference_symlink_not_allowed",
+                "Skill reference directories and files must not be symbolic links.",
+                root=root,
+                path=candidate,
+                skill_id=skill_id,
+            )
+        try:
+            resolved_skill_dir = skill_dir.resolve(strict=True)
+            resolved_references_dir = references_dir.resolve(strict=True)
+            resolved = candidate.resolve(strict=True)
+            resolved_references_dir.relative_to(resolved_skill_dir)
+            resolved.relative_to(resolved_references_dir)
+        except (FileNotFoundError, OSError, RuntimeError, ValueError):
+            return _issue(
+                "invalid_reference_path",
+                "Skill reference is missing or outside the registered Skill directory.",
+                root=root,
+                path=skill_dir / reference_path,
+                skill_id=skill_id,
+            )
+        if not resolved.is_file():
+            return _issue(
+                "invalid_reference_path",
+                "Skill reference must be a regular Markdown file.",
+                root=root,
+                path=resolved,
+                skill_id=skill_id,
+            )
+    return None
 
 
 def _visibility_from_section(lines: list[str]) -> SkillVisibility:
@@ -481,3 +704,32 @@ def _unique(values: list[str]) -> list[str]:
         seen.add(value)
         result.append(value)
     return result
+
+
+def _render_guidance_list(title: str, items: list[str]) -> str:
+    if not items:
+        return ""
+    return "\n".join([f"## {title}", *(f"- {item}" for item in items)])
+
+
+def _render_required_inputs(
+    required_inputs_by_tool: dict[str, list[str]],
+    *,
+    available_tool_names: set[str],
+) -> str:
+    items = [
+        f"- {tool_name}: {', '.join(inputs)}"
+        for tool_name, inputs in required_inputs_by_tool.items()
+        if tool_name in available_tool_names
+    ]
+    if not items:
+        return ""
+    return "\n".join(["## 必填输入", *items])
+
+
+def _render_reference_ids(references: dict[str, str]) -> str:
+    if not references:
+        return ""
+    return "\n".join(
+        ["## 按需参考", *(f"- {reference_id}" for reference_id in references)]
+    )

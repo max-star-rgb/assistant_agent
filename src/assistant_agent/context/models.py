@@ -23,6 +23,7 @@ ContextSectionKind = Literal[
     "soul",
     "user_profile",
     "skill_index",
+    "skill_summary",
     "skill_body",
     "skill_reference",
     "session_summary",
@@ -163,6 +164,7 @@ class ContextBudgetReport(BaseModel):
     observations_chars: int = Field(default=0, ge=0)
     tool_spec_chars: int = Field(default=0, ge=0)
     owner_persona_chars: int = Field(default=0, ge=0)
+    procedural_guidance_chars: int = Field(default=0, ge=0)
     total_chars: int = Field(default=0, ge=0)
     max_chars: int = Field(default=0, ge=0)
     over_budget: bool = False
@@ -181,6 +183,7 @@ class ContextBudgetReport(BaseModel):
     observations_tokens: int = Field(default=0, ge=0)
     tool_spec_tokens: int = Field(default=0, ge=0)
     owner_persona_tokens: int = Field(default=0, ge=0)
+    procedural_guidance_tokens: int = Field(default=0, ge=0)
     total_tokens: int = Field(default=0, ge=0)
     max_tokens: int = Field(default=0, ge=0)
     token_usage_ratio: float = Field(default=0.0, ge=0.0)
@@ -304,6 +307,7 @@ class AssistantContextPack(BaseModel):
     prompt_tool_specs: list[ToolSpec] = Field(default_factory=list)
     run_tool_catalog: RunToolCatalog = Field(default_factory=RunToolCatalog)
     tool_catalog_summary: ToolCatalogSummary = Field(default_factory=ToolCatalogSummary)
+    active_skill_ids: list[str] = Field(default_factory=list)
     context_sections: list[ContextSection] = Field(default_factory=list)
     context_source_report: ContextSourceReport = Field(default_factory=ContextSourceReport)
     iteration: int = Field(default=0, ge=0)

@@ -14,6 +14,14 @@ from assistant_agent.runtime.requests import UserRequest
 from assistant_agent.runtime.runtime import AgentGraphRuntime
 from assistant_agent.runtime.session_store import InMemorySessionStore
 from assistant_agent.tools.base import Tool
+from assistant_agent.tools.plugins.builtin.shopping.models import (
+    PriceCompareRequest,
+    PriceCompareResult,
+    ProductSearchRequest,
+    ProductSearchResult,
+)
+from assistant_agent.tools.plugins.builtin.shopping.tool import ShoppingSearchTool
+from assistant_agent.tools.plugins.contracts import ToolRegistrationRecord
 from assistant_agent.tools.plugins.registry_factory import create_default_registry
 from assistant_agent.tools.registry import ToolRegistry
 from evals.agent.contracts import (
@@ -37,6 +45,33 @@ StateReader = Callable[[AgentGraphRuntime, Any], dict[str, Any]]
 BeforeRun = Callable[[AgentGraphRuntime], None]
 
 
+class _ControlledShoppingSearchAdapter:
+    def search(self, request: ProductSearchRequest) -> ProductSearchResult:
+        return ProductSearchResult(
+            provider="eval:controlled-shopping",
+            query_used=request.query,
+            output_ref="eval://shopping/search/empty",
+        )
+
+
+class _ControlledShoppingCompareAdapter:
+    def compare(self, request: PriceCompareRequest) -> PriceCompareResult:
+        return PriceCompareResult(
+            query=request.query,
+            items=list(request.items),
+            summary="受控评测环境没有更多比价结果。",
+            provider="eval:controlled-shopping",
+            output_ref="eval://shopping/compare/empty",
+        )
+
+
+def _controlled_shopping_tool() -> ShoppingSearchTool:
+    return ShoppingSearchTool(
+        search_adapter=_ControlledShoppingSearchAdapter(),
+        compare_adapter=_ControlledShoppingCompareAdapter(),
+    )
+
+
 def build_controlled_base_registry(
     *,
     replacements: Mapping[str, Tool] | None = None,
@@ -48,7 +83,10 @@ def build_controlled_base_registry(
         config or ProviderConfig(provider_mode="mock"),
         plugin_modules=[],
     )
-    local_tool_names = source.list()
+    controlled_tools: dict[str, Tool] = {
+        "shopping_search": _controlled_shopping_tool(),
+    }
+    local_tool_names = sorted({*source.list(), *controlled_tools})
     replacement_by_name = dict(replacements or {})
     unknown = set(replacement_by_name) - set(local_tool_names)
     if unknown:
@@ -57,11 +95,24 @@ def build_controlled_base_registry(
         )
     registry = ToolRegistry()
     for name in local_tool_names:
-        registry.register(
-            replacement_by_name.get(name, source.get(name)),
-            source.registration_record(name),
+        if name in source.list():
+            registration = source.registration_record(name)
+        else:
+            registration = ToolRegistrationRecord(
+                tool_name=name,
+                plugin_id="eval.controlled",
+                plugin_version="1",
+                source_type="manual",
+                source_ref="evals.agent.task_support",
+            )
+        default_tool = (
+            controlled_tools[name] if name in controlled_tools else source.get(name)
         )
-    registry.seal(assembly_report=source.assembly_report)
+        registry.register(
+            replacement_by_name.get(name, default_tool),
+            registration,
+        )
+    registry.seal()
     return registry
 
 
@@ -93,7 +144,9 @@ def outcome_expectations(
     failures = dict(required_failures or {})
     unknown = (successes | set(failures)) - set(registry.list())
     if unknown:
-        raise ValueError(f"Outcome expectations reference unknown tools: {sorted(unknown)}")
+        raise ValueError(
+            f"Outcome expectations reference unknown tools: {sorted(unknown)}"
+        )
     return [
         (
             ToolOutcomeExpectation.must_fail_with(name, error_code=failures[name])
@@ -106,6 +159,22 @@ def outcome_expectations(
         )
         for name in registry.list()
     ]
+
+
+def subset_registry(
+    registry: ToolRegistry,
+    tool_names: list[str],
+) -> ToolRegistry:
+    """Copy an ordered controlled subset from one sealed registry."""
+
+    selected = ToolRegistry()
+    for name in dict.fromkeys(tool_names):
+        selected.register(
+            registry.get(name),
+            registry.registration_record(name),
+        )
+    selected.seal()
+    return selected
 
 
 def execute_isolated_runtime(
@@ -243,15 +312,12 @@ def successful_tool_lifecycle(evidence: RunEvidence) -> AssertionResult:
 
 def optional_successful_tool_lifecycle(evidence: RunEvidence) -> AssertionResult:
     executions = evidence.tool_executions
-    passed = (
-        all(
-            item.exposed
-            and item.terminal_event == "tool.finished"
-            and item.error_code is None
-            for item in executions
-        )
-        and len(evidence.validation_results) == len(executions)
-    )
+    passed = all(
+        item.exposed
+        and item.terminal_event == "tool.finished"
+        and item.error_code is None
+        for item in executions
+    ) and len(evidence.validation_results) == len(executions)
     return rule_assertion(
         passed,
         (
@@ -321,9 +387,7 @@ def _state_diff(
     return {
         "added": sorted(final_keys - initial_keys),
         "modified": sorted(
-            key
-            for key in initial_keys & final_keys
-            if initial[key] != final[key]
+            key for key in initial_keys & final_keys if initial[key] != final[key]
         ),
         "deleted": sorted(initial_keys - final_keys),
     }

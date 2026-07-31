@@ -15,7 +15,8 @@ Core project docs:
 - Context engineering status: [docs/CONTEXT_ENGINEERING_STATUS.md](docs/CONTEXT_ENGINEERING_STATUS.md)
 - Multi-agent routing: [docs/agent-communication-routing.md](docs/agent-communication-routing.md)
 - Media-Agent WebSocket contract: [docs/media-agent-service-websocket.md](docs/media-agent-service-websocket.md)
-- Test scopes and markers: [tests/README.md](tests/README.md)
+- Core pytest、临时 TDD 与 incubating 边界: [tests/README.md](tests/README.md)
+- System/Agent eval 与 incubating 运行规则: [evals/README.md](evals/README.md)
 
 ## Local Environment
 
@@ -53,11 +54,16 @@ Provider profiles and external-provider configuration are documented in [docs/to
 `python -m assistant_agent.tools.cli plugins` 查看只读装配报告；该机制会执行所配置 module 的进程内代码，
 不是不可信代码沙箱。具体协议和治理边界见 Tool calling 文档。
 
-Basic checks:
+Basic check（只运行稳定的 `tests/core` 核心框架安全网）：
 
 ```bash
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q
 ```
+
+功能实现期间的临时 RED/GREEN 放在 `tests/tdd/*/` 下独立的 feature 目录，必须显式运行，可由用户
+手动整目录删除。
+有风险证据的节点专项检查放在 `evals/system/incubating/<feature>/`，也不进入默认 pytest。具体命令和
+准入规则见 [tests/README.md](tests/README.md)。
 
 Additional deterministic offline checks:
 

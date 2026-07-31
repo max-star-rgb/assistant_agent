@@ -7,8 +7,6 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
 
-from assistant_agent.config import ProviderConfig
-from assistant_agent.runtime.chat_adapter import ChatAdapter
 from assistant_agent.tools.models import ToolResult
 from assistant_agent.tools.plugins.builtin.calendar_weather_contacts.local_calendar import (
     LocalSQLiteCalendarAdapter,
@@ -23,16 +21,15 @@ from assistant_agent.tools.plugins.builtin.lodging.models import (
     LodgingSearchResult,
 )
 from assistant_agent.tools.plugins.builtin.lodging.tool import LodgingSearchTool
-from assistant_agent.tools.plugins.builtin.python_execution.tool import (
-    PythonInterpreterTool,
-)
 from assistant_agent.tools.registry import ToolRegistry
 from evals.agent.contracts import (
-    EnvironmentValidation,
-    ToolOutcomeExpectation,
+    AssertionResult,
 )
-from evals.agent.grading import environment_validation, rule_assertion
-from evals.agent.task_support import outcome_expectations
+from evals.agent.environment_base import (
+    ControlledTaskEnvironment,
+    EnvironmentToolVisibility,
+)
+from evals.agent.grading import rule_assertion
 from evals.agent.travel_support import (
     AMAP_SERVER_NAME,
     GEO_TOOL,
@@ -190,17 +187,15 @@ class _MeetingLodgingAdapter:
         )
 
 
-class MeetingLogisticsEnvironment:
+class MeetingLogisticsEnvironment(ControlledTaskEnvironment):
     """Frozen maps/lodging dependencies with an isolated local calendar."""
 
-    def __init__(
-        self,
-        *,
-        config: ProviderConfig | None = None,
-        chat_adapter: ChatAdapter | None = None,
-    ) -> None:
-        self.config = config
-        self.chat_adapter = chat_adapter
+    dependency_label = "controlled:meeting-maps-lodging-local-calendar-v1"
+    tool_catalog_label = "complete_controlled_registry_minus_python"
+    writes = True
+    state_reset = "temporary_sqlite_per_environment"
+
+    def setup(self) -> None:
         self._tempdir = TemporaryDirectory(
             prefix="agent-eval-meeting-logistics-"
         )
@@ -212,25 +207,25 @@ class MeetingLogisticsEnvironment:
         self._maps_runner = _MeetingMapsRunner()
         self._lodging_adapter = _MeetingLodgingAdapter()
 
-    def describe(self) -> dict[str, Any]:
-        registry = self._build_registry()
-        return {
-            "runtime": "AgentGraphRuntime",
-            "chat_provider": "configured_real",
-            "dependencies": (
-                "controlled:meeting-maps-lodging-local-calendar-v1"
-            ),
-            "tool_catalog": (
-                "default_complete_registry_plus_controlled_meeting_tools"
-            ),
-            "registered_tool_count": len(registry.list()),
-            "writes": True,
-            "state_reset": "temporary_sqlite_per_environment",
-        }
+    def required_successes(self) -> tuple[str, ...]:
+        return _REQUIRED_TOOLS
 
-    def validate(self) -> EnvironmentValidation:
-        registry = self._build_registry()
+    def visibility_override(self) -> EnvironmentToolVisibility:
+        return EnvironmentToolVisibility(
+            profile="meeting_logistics",
+            allowed_tools=tuple(
+                name
+                for name in self.registry.list()
+                if name != "python_interpreter"
+            ),
+        )
+
+    def task_validation_checks(
+        self,
+        registry: ToolRegistry,
+    ) -> dict[str, AssertionResult]:
         expectations = self.tool_outcome_expectations()
+        visible_names = set(self.visible_tool_names())
         venue = self._maps_runner.run_tool(
             server_name=AMAP_SERVER_NAME,
             tool_name="maps_text_search",
@@ -266,107 +261,98 @@ class MeetingLogisticsEnvironment:
         registered = set(registry.list())
         dangerous_tools = [
             spec.name
-            for spec in registry.list_specs()
+            for spec in (
+                registry.get_spec(name)
+                for name in self.visible_tool_names()
+            )
             if spec.category == "dangerous"
         ]
-        return environment_validation(
-            {
-                "full_tool_registry": rule_assertion(
-                    registry.sealed
-                    and set(_REQUIRED_TOOLS).issubset(registered)
-                    and {"web_search", "web_fetch"}.isdisjoint(registered),
-                    f"registered_tools={registry.list()}",
-                    label="完整目录包含会议物流目标工具",
+        side_effect_visible = sorted(
+            name
+            for name in self.visible_tool_names()
+            if registry.get_spec(name).category in {"write", "dangerous"}
+        )
+        return {
+            "full_tool_registry": rule_assertion(
+                registry.sealed
+                and set(_REQUIRED_TOOLS).issubset(registered)
+                and {"web_search", "web_fetch"}.isdisjoint(registered),
+                f"registered_tools={registry.list()}",
+                label="完整目录包含会议物流目标工具",
+            ),
+            "outcome_contract_matches_registry": rule_assertion(
+                {item.tool_name for item in expectations}
+                == visible_names
+                == registered - {"python_interpreter"},
+                (
+                    f"expectation_count={len(expectations)}, "
+                    f"visible_tools={sorted(visible_names)}"
                 ),
-                "outcome_contract_matches_registry": rule_assertion(
-                    {item.tool_name for item in expectations} == registered,
-                    f"expectation_count={len(expectations)}",
-                    label="工具结果预期覆盖注册表",
-                ),
-                "controlled_maps_fixture": rule_assertion(
-                    venue.success
-                    and venue.data == {"pois": [VENUE], "count": 1}
-                    and origin.success
-                    and origin.data == {"geocodes": [ORIGIN]}
-                    and route.success
-                    and route.data == {"routes": [ROUTE]},
-                    f"venue={venue.data}, origin={origin.data}, route={route.data}",
-                    label="受控会场与交通数据完整",
-                ),
-                "controlled_lodging_fixture": rule_assertion(
-                    lodging.success
-                    and [
-                        (
-                            offer.offer_id,
-                            offer.property_name,
-                            offer.nightly_price,
-                            offer.review,
-                        )
-                        for offer in lodging.offers
-                    ]
-                    == list(AVAILABLE_LODGING)
-                    and all(
-                        offer.total_price == offer.nightly_price * 2
-                        and offer.price_basis == "nightly_estimate"
-                        and offer.refundable is None
-                        for offer in lodging.offers
+                label="工具结果预期覆盖注册表",
+            ),
+            "controlled_maps_fixture": rule_assertion(
+                venue.success
+                and venue.data == {"pois": [VENUE], "count": 1}
+                and origin.success
+                and origin.data == {"geocodes": [ORIGIN]}
+                and route.success
+                and route.data == {"routes": [ROUTE]},
+                f"venue={venue.data}, origin={origin.data}, route={route.data}",
+                label="受控会场与交通数据完整",
+            ),
+            "controlled_lodging_fixture": rule_assertion(
+                lodging.success
+                and [
+                    (
+                        offer.offer_id,
+                        offer.property_name,
+                        offer.nightly_price,
+                        offer.review,
                     )
-                    and UNAVAILABLE_LODGING_NAME
-                    not in {
-                        offer.property_name for offer in lodging.offers
-                    }
-                    and UNAVAILABLE_LODGING_NAME
-                    in (lodging.provider_notice or ""),
-                    (
-                        "offers="
-                        f"{[offer.model_dump(mode='json') for offer in lodging.offers]}, "
-                        f"provider_notice={lodging.provider_notice}"
-                    ),
-                    label="最近无房与可订住宿候选一致",
-                ),
-                "isolated_calendar": rule_assertion(
-                    self._root.is_dir()
-                    and self._calendar_adapter.path.parent == self._root
-                    and self._calendar_adapter.snapshot()["events"] == [],
-                    (
-                        f"calendar_root={self._root.name}, "
-                        f"namespace={self._calendar_adapter.namespace}"
-                    ),
-                    label="SQLite 日历按运行隔离",
-                ),
-                "side_effect_boundary": rule_assertion(
-                    registry.get_spec("calendar_create").category == "write"
-                    and not dangerous_tools,
-                    (
-                        "calendar_create_category="
-                        f"{registry.get_spec('calendar_create').category}, "
-                        f"dangerous_tools={dangerous_tools}"
-                    ),
-                    label="邀请预订付款能力未暴露",
-                ),
-            }
-        )
-
-    def tool_outcome_expectations(
-        self,
-        available_tools: list[str] | None = None,
-    ) -> list[ToolOutcomeExpectation]:
-        registry = self._build_registry()
-        if available_tools is not None:
-            subset = ToolRegistry()
-            for name in dict.fromkeys([*available_tools, *_REQUIRED_TOOLS]):
-                subset.register(
-                    registry.get(name),
-                    registry.registration_record(name),
+                    for offer in lodging.offers
+                ]
+                == list(AVAILABLE_LODGING)
+                and all(
+                    offer.total_price == offer.nightly_price * 2
+                    and offer.price_basis == "nightly_estimate"
+                    and offer.refundable is None
+                    for offer in lodging.offers
                 )
-            subset.seal()
-            registry = subset
-        return outcome_expectations(
-            registry,
-            required_successes=_REQUIRED_TOOLS,
-        )
+                and UNAVAILABLE_LODGING_NAME
+                not in {
+                    offer.property_name for offer in lodging.offers
+                }
+                and UNAVAILABLE_LODGING_NAME
+                in (lodging.provider_notice or ""),
+                (
+                    "offers="
+                    f"{[offer.model_dump(mode='json') for offer in lodging.offers]}, "
+                    f"provider_notice={lodging.provider_notice}"
+                ),
+                label="最近无房与可订住宿候选一致",
+            ),
+            "isolated_calendar": rule_assertion(
+                self._root.is_dir()
+                and self._calendar_adapter.path.parent == self._root
+                and self._calendar_adapter.snapshot()["events"] == [],
+                (
+                    f"calendar_root={self._root.name}, "
+                    f"namespace={self._calendar_adapter.namespace}"
+                ),
+                label="SQLite 日历按运行隔离",
+            ),
+            "side_effect_boundary": rule_assertion(
+                side_effect_visible == ["calendar_create"]
+                and not dangerous_tools,
+                (
+                    f"side_effect_visible={side_effect_visible}, "
+                    f"dangerous_tools={dangerous_tools}"
+                ),
+                label="邀请预订付款能力未暴露",
+            ),
+        }
 
-    def _build_registry(self) -> ToolRegistry:
+    def build_registry(self) -> ToolRegistry:
         return build_travel_registry(
             definitions=[
                 maps_text_search_definition(),
@@ -381,9 +367,6 @@ class MeetingLogisticsEnvironment:
                 ),
                 "calendar_create": CalendarCreateTool(
                     self._calendar_adapter
-                ),
-                "python_interpreter": PythonInterpreterTool(
-                    require_enable_env=False
                 ),
             },
         )

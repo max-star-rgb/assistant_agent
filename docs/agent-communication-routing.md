@@ -316,7 +316,7 @@ The inbound MVP exposes this repository as an agent without changing default `/a
 
 ## Validation
 
-Default pytest safety net:
+Default stable core pytest safety net (bare pytest collects only `tests/core`):
 
 ```bash
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q

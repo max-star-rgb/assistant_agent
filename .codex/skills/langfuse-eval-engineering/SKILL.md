@@ -65,13 +65,14 @@ Evidence: grader 可独立检查的轨迹、终态和回答
 `evals/agent/missions/<mission_id>/`：
 
 1. `task.json` 只保存用户请求、capability、environment/grader 入口和短 tags；
-2. `environment.py` 使用活动 `AgentGraphRuntime`，控制依赖、工具可见性、初始状态、隔离和复位，并
-   默认装配 Agent 在相同结构化运行条件下暴露的完整工具目录，不按 Task 或目标工具裁剪；提供不调用
-   Agent 的 `validate()`，并为每个可见工具声明可读的 `ToolOutcomeExpectation`。确有特殊运行边界
-   时，可由 Environment 使用带可读 profile 的结构化 allowlist 精确收窄目录；
+2. `environment.py` 继承共享 `ControlledTaskEnvironment`，只实现受控依赖、registry replacement、
+   必需 outcome、Task 专属 Rule 和状态 hook；共享模板使用活动 `AgentGraphRuntime`，默认装配 Agent
+   在相同结构化运行条件下暴露的完整工具目录，并统一提供 `validate()` 与
+   `ToolOutcomeExpectation`。特殊边界用带可读 profile 的结构化 allowlist 精确收窄目录；
 3. `grader.py` 不向 Agent 暴露 rubric 或 oracle，且不拥有 Mission objective Rule 或 state oracle；它
-   只组合 Task-local `response_quality` assertions；
-4. `calibration.json` 至少含一个正确样本和一个可信但错误的样本；
+   只保留 Task-local `RESPONSE_QUALITY_RUBRIC`，并用 `grader_for_response_quality()` 绑定共享 grader；
+4. `calibration.json` 至少含一个正确样本和一个可信但错误的样本，并由
+   `load_calibration_set()` 按 `schema_version` 统一加载；
 5. Suite 只做 Task ID 选择，不拥有 Environment 或评分逻辑；
 6. Langfuse Dataset item 只发布 `task_id + request + 短 metadata`，不复制 case level、grader、state
    oracle、rubric、依赖契约或长 oracle；

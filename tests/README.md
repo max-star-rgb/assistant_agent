@@ -1,138 +1,182 @@
-# pytest 测试体系
+# 核心 pytest 测试体系
 
-本文件是 pytest 目录归属、默认收集、测试决策和任务汇报的唯一权威。真实 Provider、真实外部服务和
-模型行为质量不属于 pytest，统一进入根目录 `evals/`。
+本文件是 pytest 目录归属、核心准入、验证范围和任务汇报的唯一事实权威。
 
-## 目录
+**默认决定：不新增永久 pytest。** 永久、默认 pytest 只有 `tests/core/**`。只有已登记的 core
+invariant 发生变化，或真实框架 bug 证明现有核心安全网存在缺口时，才修改已有 core 测试；没有
+invariant ID 时禁止修改 `tests/core`。
+
+具体 node、builtin Tool、Provider、Agent Task、配置、文案、prompt、description、console、wrapper
+和覆盖率请求都不得进入 core。功能实现需要 TDD 时使用可手动删除的临时区；有风险证据才保留独立的
+incubating 专项检查。
+
+## 三个位置
 
 ```text
 tests/
-  unit/          # 单一纯逻辑边界；当前没有需要独立保留的用例时可以不存在
-  integration/   # 多个项目模块协作，使用 mock/fake/in-memory/local adapter
-  contract/      # schema、协议、事件、治理和稳定外部契约
+  core/                         # 永久核心安全网；裸 pytest 默认只收集这里
+    INVARIANTS.md               # 核心不变量 ID、结构化契约和负责文件
+    unit/                       # 窄纯逻辑核心契约
+    contract/                   # 稳定协议与治理契约
+    integration/                # 核心模块生命周期与协作
+  tdd/
+    <feature>/                  # 功能实现期间的临时 RED/GREEN pytest
+
+evals/system/incubating/
+  <feature>/
+    README.md
+    checks_*.py                 # 有风险证据才保留的显式专项检查
 ```
 
-目录第一层表达测试性质，第二层表达故障域，例如：
+### `tests/core/`
 
-```text
-tests/integration/context/
-tests/integration/memory/
-tests/integration/runtime/
-tests/integration/tools/
-tests/contract/gateway/
-tests/contract/observability/
-tests/contract/tools/
+`tests/core` 只保护与具体业务能力无关、预期长期稳定的框架不变量。每个 pytest item 都必须标记：
+
+```python
+@pytest.mark.core_invariant("TOOL-001")
+def test_probe_tool_runs_through_governed_chain() -> None:
+    ...
 ```
 
-不要按源码文件机械镜像目录，也不要为单个测试创建一层目录。
+ID 必须先登记在 [`tests/core/INVARIANTS.md`](core/INVARIANTS.md)，测试文件也必须与登记的负责文件
+一致。相同 invariant 优先扩展已有文件，不为一次功能或单个 bug 新建永久测试文件。
 
-## 三层边界
+核心套件只能使用通用 Probe Tool、scripted adapter、in-memory/local store 和无语义 sentinel，必须
+mock/local/offline，不读取真实 `.env`，不访问网络、真实 Provider、外部服务或付费 API。正常开发机器
+目标运行时间小于 60 秒。新增 node、Tool、Provider 或 Task 默认不改变核心测试数量和结果。
 
-### unit
+### `tests/tdd/<feature>/`
 
-只验证一个窄逻辑单元，不启动 Runtime，不访问数据库、网络或进程。外部依赖应当不存在或完全替换。
+这里仅保存功能实现期间的 RED/GREEN 临时 pytest：
 
-### integration
+- 每个功能必须使用自己的 `<feature>` 子目录，不得把测试放在 `tests/tdd/` 根目录；
+- 只能显式运行，并由 `tests/tdd/conftest.py` 强制 mock/offline；
+- 不需要 invariant ID，不进入默认收集，也不会自动晋升为 core；
+- Codex 不得擅自删除；功能完成后用户可以手动删除整个 feature 目录，只有用户明确要求时 Codex
+  才可代删。
 
-验证多个项目模块的协作和可观察行为。允许启动 `AgentGraphRuntime`、Gateway、FastAPI TestClient、
-in-memory store、scripted chat adapter 和本地 fake，但不得访问真实 Provider、付费 API、真实 MCP
-或真实 Memory 服务。
+临时 TDD 测试存在多久或有多少用例，都不构成晋升 core 的理由。
 
-### contract
+### `evals/system/incubating/<feature>/`
 
-验证需要长期守住的稳定边界，例如协议 frame、事件映射、Tool schema、validation、
-身份隔离和 trace correlation。契约测试可以跨少量模块，但断言重点必须是稳定协议或状态，而不是私有
-实现调用次数。
+这里保存有明确风险证据、但不属于核心框架的 node、Provider adapter 或实现专项检查。每个 feature
+目录必须自包含，使用 `checks_*.py` 和 README 说明 scope、mode、命令、副作用门禁、删除条件与晋升
+路径。它们只能显式运行，不属于默认 pytest 或发布门禁。
 
-## 验证范围与命令
+incubating 不是正式真实 system eval。`checks_*.py` 必须保持 offline；真实 Tool、Context、Memory
+或 Provider 连通性必须使用 `evals/system` 的正式 runner、real mode、完整配置和 operator 显式确认。
+当正式 system eval、Agent eval Experiment 或生产证据已稳定覆盖对应事实后，incubating feature
+可以整目录删除，不应修改 core。
 
-所有 pytest 都必须离线安全。裸 pytest 会收集整个 `tests/`，属于全量测试命令，不是每个开发任务的
-默认动作：
+## Core 准入决策
+
+按以下顺序决定，不得从“这次改了代码”直接推导出“需要永久测试”：
+
+1. 本次变更是否改变 [`tests/core/INVARIANTS.md`](core/INVARIANTS.md) 中已登记的稳定、结构化框架
+   契约？
+2. 如果没有 invariant ID，禁止修改 `tests/core`。
+3. 如果是具体 node、builtin Tool、Provider、Task、配置或实现细节，永久测试默认不新增。功能实现
+   需要 RED/GREEN 时只放入 `tests/tdd/<feature>/`。
+4. 如果有真实 bug，先证明它是框架 bug，并说明现有 core 安全网为何漏检；明确关联 invariant ID 后，
+   才扩展该 invariant 已有的 core 测试。
+5. 如果只是 node/provider 专项风险，且有持续观察价值，放入独立
+   `evals/system/incubating/<feature>/`；模型选择、参数语义和回答质量放入 `evals/agent`。
+6. 新增 core invariant 属于明确的框架契约决策：先登记 ID 和负责文件，再添加最小测试。覆盖率、
+   文件变动或评审要求本身不是准入证据。
+
+禁止为完整自然语言文案、prompt、Tool description、console 输出、简单 wrapper、配置常量、第三方
+框架自身行为、私有实现调用次数或假设性边缘场景增加永久测试。
+
+## 断言边界
+
+core 断言必须指向稳定、可观察的结构化行为。
+
+允许：
+
+- 协议 token、invariant ID、枚举、状态和终态；
+- schema 字段、结构化 result、error code 和恢复动作；
+- 事件因果关系、身份隔离、持久化结果和可观察副作用；
+- `*-sentinel` 等无语义透传值。
+
+禁止：
+
+- 完整自然语言回复、整段 prompt、description、渲染标签或控制台提示语；
+- 用配置常量、序列化字段顺序或全文字符串包含证明行为；
+- 导入具体 builtin Tool、具体 Provider 实现、Agent Task、grader 或 feature implementation；
+- 以私有方法调用次数或 mock 调用次数作为主要正确性证据。
+
+JSON 字符串先解析后断言结构化字段。敏感信息检查递归检查 key，不以序列化文本搜索作为主要证据。
+
+## 验证命令
+
+默认核心安全网；裸 pytest 只收集 `tests/core`：
 
 ```bash
+MULTIMODAL_AGENT_PROVIDER_MODE=mock \
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q
 ```
 
-验证范围遵循“能够证明本次变更的最小充分集合”：
-
-- 单个 Tool schema、参数说明、校验规则或窄模块行为变更，只运行对应契约/模块的测试文件或测试用例；
-- 同一故障域内涉及多个模块 wiring 时，运行该故障域对应的测试目录；
-- 只有跨多个故障域的共享基础设施或主链路变更、大规模重构/迁移、发布前验证、用户明确要求，或者
-  定向测试暴露出影响范围无法界定时，才运行全量 pytest；
-- 不得仅因为“任务结束”或 skill 被触发而机械运行全量 pytest。工作区存在已知无关失败、并行迁移或
-  全量测试明显耗时时，应保持定向验证并在结果中说明限制。
-
-定向运行示例：
+定向核心 invariant：
 
 ```bash
+MULTIMODAL_AGENT_PROVIDER_MODE=mock \
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q \
-  tests/integration/memory
-
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q \
-  tests/contract/tools
+  tests/core/contract/test_tool_contract.py
 ```
 
-pytest 中禁止：
+临时 TDD feature：
 
-- 真实 chat Provider；
-- 真实 MCP、Mem0、Google Calendar、天气或搜索服务；
-- 仅因未配置外部能力而 `skip`；
-- 检测到本机 key 后自动启用真实调用；
-- 从 real 静默回退到 mock 并报告通过。
+```bash
+MULTIMODAL_AGENT_PROVIDER_MODE=mock \
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q \
+  tests/tdd/<feature>
+```
 
-真实系统能力验证见 `evals/system/`；端到端 Agent Task 评估见 `evals/agent/`。
+incubating feature：
 
-## 测试策略
+```bash
+MULTIMODAL_AGENT_PROVIDER_MODE=mock \
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q \
+  evals/system/incubating/<feature>/checks_*.py
+```
 
-项目采用风险驱动测试，而不是覆盖率驱动测试。只有出现以下情况时才新增或修改测试：
+普通 feature 只运行对应 TDD/incubating 的最小显式集合。只有发布前、共享核心基础设施或已登记
+invariant 发生变化、用户明确要求，或者定向验证暴露出无法界定的核心影响时，才运行裸 pytest。
+不得仅因任务结束或 skill 被触发而机械运行裸 pytest。
 
-1. 发现真实 bug，需要最小回归测试；
-2. 新增或修改稳定、可观察的外部行为或协议契约；
-3. 修改并发、取消、超时、重试、状态机、持久化、事件顺序或身份隔离等高风险机制；
-4. 修改关键主链路，且现有测试无法发现其严重故障。
-
-文档、日志、注释、行为不变的移动或重命名、简单 wrapper、第三方框架自身行为和没有风险证据的
-假设性边缘场景，默认不新增测试。
-
-新增用例前先搜索现有测试。相同入口、fixture 和失败语义应扩展现有文件；独立契约或故障域应创建
-聚焦命名的文件。一个文件混合多个无关领域时应拆分。
-
-## 断言原则
-
-优先断言：
-
-- 结构化状态和终态；
-- schema、协议字段和事件类型；
-- Tool validation/execution 结果；
-- 持久化结果和副作用；
-- 身份隔离、调用顺序和错误分类。
-
-普通 pytest 不断言完整自然语言回复、整段 prompt、Tool description 或控制台输出。验证内容透传时
-使用无语义 sentinel；只有文本本身是稳定外部契约时才做聚焦文本断言。
-
-- 属性值是 JSON 字符串时，先解析为结构化对象再断言字段、类型和值；不得用序列化片段或字段顺序做
-  字符串包含断言。
-- Tool description 默认只验证字段存在且非空，不通过本地化文案关键字证明工具行为；调用前置条件、
-  必填参数和拒绝语义应由 schema、validator 或执行结果断言。
-- 检查敏感字段缺失时递归检查结构化 key，不把序列化 JSON 的关键字搜索当作主要证据。
-
-外部边界优先使用 reusable fake、scripted adapter 或 in-memory implementation，不以私有方法调用次数
-作为主要正确性证据。
-
-## 与 Eval 的转换
-
-- system eval 发现确定性代码缺陷后，应补充最小 pytest regression；
-- pytest 通过但真实模型选择或任务质量不稳定时，问题留在 eval，不写成随机 pytest；
-- 真实 Provider/MCP 直调 smoke 也属于 `evals/system/`，不得重新放回 `tests/`。
+真实 Provider 永不进入 pytest。正式 system eval 和 Agent eval 的命令、安全门禁及结果权威见
+[`evals/README.md`](../evals/README.md)。
 
 ## 任务汇报
 
-每次开发任务结束时明确写出以下之一：
+每次开发任务结束时同时汇报 `Core invariant:` 和 `Tests:`，并列出实际执行命令。
 
-- `Tests: existing tests were sufficient.`
-- `Tests: updated <test name> because <observable behavior changed>.`
-- `Tests: added <test name> as a regression for <specific bug>.`
-- `Tests: not added because the change does not affect observable behavior or a high-risk boundary.`
+未改变核心不变量：
 
-同时列出实际执行的 pytest 命令。若本轮调用真实 Provider，还必须另外报告 system/case eval 的范围和
-结果。
+```text
+Core invariant: unchanged.
+Tests: not added because this is a node-level or implementation-only change.
+```
+
+临时 TDD：
+
+```text
+Core invariant: unchanged.
+Tests: added/updated tests/tdd/<feature> for temporary RED/GREEN; user may delete the directory manually.
+```
+
+修改核心安全网：
+
+```text
+Core invariant: TOOL-001 changed because <stable framework behavior>.
+Tests: updated <existing core test>.
+```
+
+不影响可观察行为时也可写：
+
+```text
+Core invariant: unchanged.
+Tests: not added because the change does not affect a stable framework contract.
+```
+
+若调用了真实 Provider，必须在 pytest 汇报之外另列 system/Agent eval 的范围、门禁和结果。

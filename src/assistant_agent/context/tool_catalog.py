@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 from assistant_agent.context.models import ToolCatalogSummary
@@ -12,12 +11,14 @@ from assistant_agent.tools.models import RunToolCatalog, ToolSpec
 from assistant_agent.tools.ids import DURABLE_TASK_SUBMISSION_TOOL_NAMES
 from assistant_agent.skills.loading import (
     SkillCatalog,
+    SkillDescriptor,
+    default_repo_root,
     load_repo_skill_descriptors,
 )
 from assistant_agent.context.tool_exposure import (
     evaluate_tool_exposure,
 )
-_DEFAULT_REPO_ROOT = Path(__file__).resolve().parents[4]
+_DEFAULT_REPO_ROOT = default_repo_root()
 
 
 @dataclass(frozen=True)
@@ -28,6 +29,8 @@ class ToolCatalogSelection:
     run_tool_catalog: RunToolCatalog
     summary: ToolCatalogSummary
     active_skill_ids: list[str]
+    active_skill_descriptors: list[SkillDescriptor]
+    skill_descriptors: list[SkillDescriptor]
 
 
 @dataclass(frozen=True)
@@ -36,6 +39,7 @@ class ToolQualificationSelection:
 
     qualified_tool_specs: list[ToolSpec]
     active_skill_ids: list[str]
+    active_skill_descriptors: list[SkillDescriptor]
     excluded_reasons: dict[str, list[str]]
 
 
@@ -78,9 +82,18 @@ def select_prompt_tool_specs(
         selection_mode = "durable_ready_tools"
     registered_names = [spec.name for spec in tool_specs]
     available_names = [spec.name for spec in available_specs]
-    entry_profile = _visibility_overrides(request).profile
+    visibility_overrides = _visibility_overrides(request)
+    active_skill_descriptors = _active_skills(
+        catalog,
+        visibility_overrides.explicit_skills,
+        available_tool_names=set(available_names),
+    )
+    active_skill_ids = [
+        descriptor.name for descriptor in active_skill_descriptors
+    ]
+    entry_profile = visibility_overrides.profile
     reasons = [
-        *(f"explicit_skill_activated:{skill_id}" for skill_id in qualification.active_skill_ids),
+        *(f"skill_activated:{skill_id}" for skill_id in active_skill_ids),
         *([f"entry_profile:{entry_profile}"] if entry_profile else []),
         selection_mode,
     ]
@@ -105,7 +118,9 @@ def select_prompt_tool_specs(
             fallback_used=False,
             registry_generation=registry_generation,
         ),
-        active_skill_ids=qualification.active_skill_ids,
+        active_skill_ids=active_skill_ids,
+        active_skill_descriptors=active_skill_descriptors,
+        skill_descriptors=list(catalog.descriptors),
     )
 
 
@@ -118,10 +133,6 @@ def qualify_tool_specs(
     """Return registered tools allowed by structured run constraints."""
 
     visibility_overrides = _visibility_overrides(request)
-    active_skill_ids, _active_skill_tools = _explicit_skill_activation(
-        catalog or SkillCatalog(),
-        visibility_overrides.explicit_skills,
-    )
     qualified_specs: list[ToolSpec] = []
     excluded_reasons: dict[str, list[str]] = {}
     for spec in tool_specs:
@@ -135,9 +146,16 @@ def qualify_tool_specs(
                 excluded_reasons[spec.name] = ["tool_not_exposed"]
             continue
         qualified_specs.append(spec)
+    active_skill_descriptors = _active_skills(
+        catalog or SkillCatalog(),
+        visibility_overrides.explicit_skills,
+        available_tool_names={spec.name for spec in qualified_specs},
+    )
+    active_skill_ids = [descriptor.name for descriptor in active_skill_descriptors]
     return ToolQualificationSelection(
         qualified_tool_specs=qualified_specs,
         active_skill_ids=active_skill_ids,
+        active_skill_descriptors=active_skill_descriptors,
         excluded_reasons=excluded_reasons,
     )
 
@@ -152,15 +170,14 @@ def _visibility_overrides(request: UserRequest) -> ToolVisibilityOverrides:
     )
 
 
-def _explicit_skill_activation(
+def _active_skills(
     catalog: SkillCatalog,
     explicit_skill_ids: set[str],
-) -> tuple[list[str], set[str]]:
-    active_skill_ids: list[str] = []
-    active_tools: set[str] = set()
+    *,
+    available_tool_names: set[str],
+) -> list[SkillDescriptor]:
+    active_skills: list[SkillDescriptor] = []
     for descriptor in catalog.descriptors:
-        if descriptor.name not in explicit_skill_ids:
-            continue
         if not descriptor.enabled or descriptor.disable_model_invocation:
             continue
         permitted_tools = {
@@ -168,11 +185,16 @@ def _explicit_skill_activation(
             for tool_name in descriptor.governed_tools
             if f"tool:{tool_name}" in descriptor.permissions
         }
-        if not permitted_tools:
+        if not permitted_tools.intersection(available_tool_names):
             continue
-        active_skill_ids.append(descriptor.name)
-        active_tools.update(permitted_tools)
-    return active_skill_ids, active_tools
+        explicitly_enabled = descriptor.name in explicit_skill_ids
+        enabled_by_default = (
+            descriptor.visibility.enabled_by_default
+            and not descriptor.visibility.skill_only
+        )
+        if explicitly_enabled or enabled_by_default:
+            active_skills.append(descriptor)
+    return active_skills
 
 
 def _string_list(value: Any) -> list[str]:

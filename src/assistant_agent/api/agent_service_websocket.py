@@ -16,6 +16,10 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from assistant_agent.gateway import AGENT_SERVICE_ENTRY_CAPABILITIES, GatewaySessionManager
 from assistant_agent.gateway.runtime_adapter import GatewayRuntimeAdapter
 from assistant_agent.identity import RequestIdentity
+from assistant_agent.runtime.generated_artifacts import (
+    MAX_DELIVERED_IMAGE_COUNT,
+    generated_artifact_data_url,
+)
 from assistant_agent.runtime.requests import UserRequest
 from assistant_agent.observability.agent_service_delivery import (
     AgentServiceDelivery,
@@ -1138,10 +1142,17 @@ def _prepared_chat_response(
     if state.media_protocol or "stream" in prepared.body or prepared.response_session_id is None:
         state.media_protocol = True
         response_text = _remaining_stream_text(turn.response_text, streamed_text)
+        intent_result: dict[str, Any] = {
+            "description": response_text,
+            "status": "SUCCESS",
+        }
+        image_details = _generated_image_details(turn.payload.get("output_refs"))
+        if image_details:
+            intent_result["detail"] = image_details
         body = {
             "message": {
                 "chatIndex": prepared.chat_index,
-                "content": {"intentResult": {"description": response_text, "status": "SUCCESS"}},
+                "content": {"intentResult": intent_result},
             },
             **_display_flags(sequence > 1),
             "sequence": sequence,
@@ -1162,6 +1173,19 @@ def _prepared_chat_response(
             "message": {"chatIndex": prepared.chat_index, "content": turn.response_text},
         },
     )
+
+
+def _generated_image_details(output_refs: Any) -> list[dict[str, str]]:
+    if not isinstance(output_refs, list):
+        return []
+    details: list[dict[str, str]] = []
+    for output_ref in output_refs[:MAX_DELIVERED_IMAGE_COUNT]:
+        if not isinstance(output_ref, str):
+            continue
+        image = generated_artifact_data_url(output_ref)
+        if image is not None:
+            details.append({"type": "IMAGE", "image": image})
+    return details
 
 
 def _remaining_stream_text(full_text: str, streamed_text: str) -> str:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import date, timedelta
 from typing import Any, Literal
 
@@ -61,6 +62,25 @@ class CalibrationResult(BaseModel):
     reason: str
 
 
+def load_calibration_set(task_id: str) -> CalibrationSet:
+    """Load a calibration fixture through its declared schema version."""
+
+    raw = json.loads(calibration_path(task_id).read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise ValueError("Calibration payload must be a JSON object.")
+    schema_version = raw.get("schema_version")
+    loaders = {
+        "agent_eval_calibration_v3": CalibrationSet.model_validate,
+    }
+    try:
+        loader = loaders[schema_version]
+    except (KeyError, TypeError) as exc:
+        raise ValueError(
+            f"Unsupported calibration schema_version: {schema_version!r}."
+        ) from exc
+    return loader(raw)
+
+
 def _calibration_judge_verdicts(
     verdicts: CalibrationJudgeVerdicts,
 ) -> list[tuple[str, JudgeVerdict]]:
@@ -74,9 +94,7 @@ def run_calibration(
     task: TaskSpec,
     judge: LLMJudge,
 ) -> list[CalibrationResult]:
-    payload = CalibrationSet.model_validate_json(
-        calibration_path(task.id).read_text(encoding="utf-8")
-    )
+    payload = load_calibration_set(task.id)
     results: list[CalibrationResult] = []
     for fixture in payload.fixtures:
         evidence_payload = _replace_tomorrow(fixture.evidence)
@@ -102,8 +120,7 @@ def run_calibration(
             for criterion_id, verdict in recording_judge.verdicts.items()
         }
         dimensions = {
-            name: getattr(graded.dimensions, name).passed
-            for name in DIMENSION_NAMES
+            name: getattr(graded.dimensions, name).passed for name in DIMENSION_NAMES
         }
         matched = (
             dimensions == fixture.expected_dimensions.model_dump()
@@ -151,9 +168,7 @@ class LabeledCalibrationJudge:
 
 
 def load_labeled_calibration_judge(task: TaskSpec) -> LabeledCalibrationJudge:
-    payload = CalibrationSet.model_validate_json(
-        calibration_path(task.id).read_text(encoding="utf-8")
-    )
+    payload = load_calibration_set(task.id)
     return LabeledCalibrationJudge(
         [
             (criterion_id, verdict)

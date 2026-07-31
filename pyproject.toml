@@ -25,5 +25,8 @@ observability = [
 ]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests/core"]
 pythonpath = ["src"]
+markers = [
+    "core_invariant(id): stable core-framework invariant identifier",
+]

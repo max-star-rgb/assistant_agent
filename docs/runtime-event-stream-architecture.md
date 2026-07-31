@@ -142,6 +142,12 @@ Provider 最终语义回复；Runtime 不为其制造 `tool.started/tool.finishe
 输出类型。未知类型、空文本和跨变体字段直接校验失败，不静默改写为成功文本。session task-state
 更新由 `UserRequest.runtime_task_update` 的 Pydantic 契约承担，不从 Provider 文本推断。
 
+购物展示协议属于终态交付投影，不属于 assistant loop 文本生成。支持
+`supports_shopping_detail_v1` 的 Gateway adapter 在 run 完成后从完整 shopping ToolResult 追加
+`<detail>`；`AgentResponse.message` 和 conversation history 保留自然语言。若自然语言 token delta
+已经提交，Gateway 额外发出一个 `token_streaming=false`、`content_type=detail` 的补充
+`response.chunk`，并以包含自然语言和 detail 的 `response.final` 收口。
+
 The compatibility contracts remain supported:
 
 - `ChatAdapter.chat(request) -> ChatResult` remains valid.
@@ -352,7 +358,7 @@ development records, not current architecture authority.
 
 ## Offline Validation
 
-Run the minimal risk-driven safety net:
+Run the stable core safety net (bare pytest collects only `tests/core`):
 
 ```bash
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q

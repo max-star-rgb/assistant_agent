@@ -7,6 +7,9 @@ from assistant_agent.tools.plugins.builtin.image_generation.plugin import ImageG
 from assistant_agent.tools.plugins.builtin.local_file_access.plugin import (
     LocalFileAccessPlugin,
 )
+from assistant_agent.tools.plugins.builtin.skill_loading.plugin import (
+    SkillLoadingPlugin,
+)
 from assistant_agent.tools.plugins.builtin.lodging.plugin import LodgingToolPlugin
 from assistant_agent.tools.plugins.builtin.calendar_weather_contacts.plugin import (
     CalendarWeatherContactsPlugin,
@@ -29,6 +32,7 @@ def default_tool_plugins() -> tuple[ToolPlugin, ...]:
     return (
         EmailAccessPlugin(),
         LocalFileAccessPlugin(),
+        SkillLoadingPlugin(),
         LodgingToolPlugin(),
         PythonExecutionPlugin(),
         MediaInspectionPlugin(),

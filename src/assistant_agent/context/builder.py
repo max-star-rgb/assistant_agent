@@ -17,6 +17,10 @@ from assistant_agent.context.models import (
 from assistant_agent.automation.durable_tasks.models import DurableTaskSnapshot
 from assistant_agent.runtime.requests import UserRequest, resolve_response_style
 from assistant_agent.tools.models import ToolSpec
+from assistant_agent.tools.ids import (
+    LOAD_SKILL_REFERENCE_TOOL_NAME,
+    LOAD_SKILL_TOOL_NAME,
+)
 from assistant_agent.tools.spec_adapters import tool_specs_to_openai_tools
 from assistant_agent.context.compactor import (
     ContextCompactor,
@@ -41,6 +45,13 @@ from assistant_agent.context.policy import (
 from assistant_agent.context.report import build_context_source_report
 from assistant_agent.context.token_budget import token_budget_reporter_from_request
 from assistant_agent.context.tool_catalog import select_prompt_tool_specs
+from assistant_agent.skills.loading import (
+    SkillDescriptor,
+    default_repo_root,
+    read_registered_skill_reference,
+    render_skill_activation_summary,
+    render_skill_guidance,
+)
 
 
 def build_assistant_context_pack(
@@ -118,11 +129,41 @@ def build_assistant_context_pack(
         tool_specs=prompt_tool_specs,
     )
     plan_state = build_assistant_plan_context(state)
+    skill_context_sections = [
+        ContextSection(
+            section_id=f"project_skill:{descriptor.name}",
+            kind="skill_summary",
+            title=descriptor.name,
+            content=render_skill_activation_summary(
+                descriptor,
+                available_tool_names=set(
+                    tool_catalog.run_tool_catalog.available_tool_names
+                ),
+            ),
+            authority="procedural_guidance",
+            stability="semi_stable",
+            source_type="skill_loader",
+            source_ref=f"skills/{descriptor.name}/SKILL.md",
+            source_version=str(descriptor.manifest_version),
+            identity_scope="project",
+            priority=30,
+        )
+        for descriptor in tool_catalog.active_skill_descriptors
+    ]
+    skill_context_sections.extend(
+        _loaded_skill_context_sections(
+            observations=active_observations,
+            descriptors=tool_catalog.skill_descriptors,
+            available_tool_names=set(
+                tool_catalog.run_tool_catalog.available_tool_names
+            ),
+        )
+    )
     unbudgeted_context_sections = [
         section
         for section in state.context_source_result.sections
         if section.kind == "soul" and not section.sensitive
-    ]
+    ] + skill_context_sections
     unbudgeted_report = _budget_report(
         request=active_request,
         conversation_text=conversation_text,
@@ -142,7 +183,10 @@ def build_assistant_context_pack(
             available_chars=max(
                 0,
                 budget_limit
-                - (unbudgeted_report.total_chars - unbudgeted_report.owner_persona_chars),
+                - (
+                    unbudgeted_report.total_chars
+                    - _context_section_chars(unbudgeted_context_sections)
+                ),
             ),
         )
     else:
@@ -294,6 +338,7 @@ def build_assistant_context_pack(
         prompt_tool_specs=prompt_tool_specs,
         run_tool_catalog=tool_catalog.run_tool_catalog,
         tool_catalog_summary=tool_catalog.summary,
+        active_skill_ids=tool_catalog.active_skill_ids,
         context_sections=context_sections,
         context_source_report=build_context_source_report(
             state.context_source_result,
@@ -443,6 +488,94 @@ def _clip_durable_prompt_value(value: Any) -> tuple[Any, bool]:
     return value, False
 
 
+def _loaded_skill_context_sections(
+    *,
+    observations: list[dict[str, Any]],
+    descriptors: list[SkillDescriptor],
+    available_tool_names: set[str],
+) -> list[ContextSection]:
+    """Promote successful Skill loads from registered sources, never tool text."""
+
+    descriptors_by_id = {
+        descriptor.name: descriptor for descriptor in descriptors
+    }
+    sections: list[ContextSection] = []
+    loaded_keys: set[tuple[str, str, str | None]] = set()
+    for observation in observations:
+        if (
+            observation.get("status") != "succeeded"
+            or observation.get("is_complete") is not True
+        ):
+            continue
+        tool_name = observation.get("tool_name")
+        data = observation.get("data")
+        if not isinstance(data, dict):
+            continue
+        skill_id = data.get("skill_id")
+        if not isinstance(skill_id, str):
+            continue
+        descriptor = descriptors_by_id.get(skill_id)
+        if descriptor is None:
+            continue
+        if tool_name == LOAD_SKILL_TOOL_NAME:
+            key = (tool_name, skill_id, None)
+            if key in loaded_keys:
+                continue
+            loaded_keys.add(key)
+            sections.append(
+                ContextSection(
+                    section_id=f"project_skill_body:{skill_id}",
+                    kind="skill_body",
+                    title=skill_id,
+                    content=render_skill_guidance(
+                        descriptor,
+                        available_tool_names=available_tool_names,
+                    ),
+                    authority="procedural_guidance",
+                    stability="semi_stable",
+                    source_type="skill_loader",
+                    source_ref=f"skills/{skill_id}/SKILL.md",
+                    source_version=str(descriptor.manifest_version),
+                    identity_scope="project",
+                    priority=31,
+                )
+            )
+            continue
+        if tool_name != LOAD_SKILL_REFERENCE_TOOL_NAME:
+            continue
+        reference_id = data.get("reference_id")
+        if not isinstance(reference_id, str):
+            continue
+        key = (tool_name, skill_id, reference_id)
+        if key in loaded_keys:
+            continue
+        content = read_registered_skill_reference(
+            default_repo_root(),
+            descriptor,
+            reference_id,
+        )
+        reference_path = descriptor.references.get(reference_id)
+        if content is None or reference_path is None:
+            continue
+        loaded_keys.add(key)
+        sections.append(
+            ContextSection(
+                section_id=f"project_skill_reference:{skill_id}:{reference_id}",
+                kind="skill_reference",
+                title=f"{skill_id}:{reference_id}",
+                content=content,
+                authority="procedural_guidance",
+                stability="semi_stable",
+                source_type="skill_loader",
+                source_ref=f"skills/{skill_id}/{reference_path}",
+                source_version=str(descriptor.manifest_version),
+                identity_scope="project",
+                priority=32,
+            )
+        )
+    return sections
+
+
 def _source_counts(
     *,
     request: UserRequest,
@@ -471,6 +604,15 @@ def _source_counts(
         "observations": len(observations),
         "tool_specs": len(tool_specs),
         "prompt_tool_specs": len(prompt_tool_specs),
+        "active_skills": sum(
+            1 for section in context_sections if section.kind == "skill_summary"
+        ),
+        "loaded_skill_bodies": sum(
+            1 for section in context_sections if section.kind == "skill_body"
+        ),
+        "loaded_skill_references": sum(
+            1 for section in context_sections if section.kind == "skill_reference"
+        ),
         "context_sections": len(context_sections),
         "context_source_issues": context_source_issue_count,
     }
@@ -510,6 +652,9 @@ def _budget_report(
     observations_chars = _json_chars(observations)
     tool_spec_chars = _json_chars(tool_specs_to_openai_tools(tool_specs))
     owner_persona_chars = _owner_persona_chars(context_sections or [])
+    procedural_guidance_chars = _procedural_guidance_chars(
+        context_sections or []
+    )
     total_chars = (
         request_chars
         + conversation_chars
@@ -521,6 +666,7 @@ def _budget_report(
         + observations_chars
         + tool_spec_chars
         + owner_persona_chars
+        + procedural_guidance_chars
     )
     context_usage_ratio = total_chars / max_chars if max_chars > 0 else 0.0
     token_reporter = token_budget_reporter_from_request(request)
@@ -546,6 +692,11 @@ def _budget_report(
                     for section in context_sections or []
                     if section.kind == "soul"
                 ),
+                "procedural_guidance": "\n\n".join(
+                    section.content
+                    for section in context_sections or []
+                    if section.authority == "procedural_guidance"
+                ),
             },
         )
         if token_reporter is not None
@@ -562,6 +713,7 @@ def _budget_report(
         observations_chars=observations_chars,
         tool_spec_chars=tool_spec_chars,
         owner_persona_chars=owner_persona_chars,
+        procedural_guidance_chars=procedural_guidance_chars,
         total_chars=total_chars,
         max_chars=max_chars,
         over_budget=over_budget,
@@ -632,6 +784,18 @@ def _metadata_int(request: UserRequest, key: str) -> int:
 
 def _owner_persona_chars(sections: list[ContextSection]) -> int:
     return sum(len(section.content) for section in sections if section.kind == "soul")
+
+
+def _procedural_guidance_chars(sections: list[ContextSection]) -> int:
+    return sum(
+        len(section.content)
+        for section in sections
+        if section.authority == "procedural_guidance"
+    )
+
+
+def _context_section_chars(sections: list[ContextSection]) -> int:
+    return sum(len(section.content) for section in sections)
 
 
 def _fit_context_sections_to_budget(

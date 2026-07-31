@@ -1,6 +1,6 @@
 # Media-Agent WebSocket 接口权威文档
 
-Last updated: 2026-07-21
+Last updated: 2026-07-31
 
 本文档是媒体服务与 `assistant_agent` 之间 `/agent-service/v1` WebSocket 传输层协议的唯一权威文档，合并了旧临时 Mock Agent 协议说明和旧 H.264 视频传输专项说明。媒体侧协议为外部对接基准；Agent 侧负责兼容该协议，并在内部把 `chat` 文本请求转入 Gateway 和 assistant runtime。
 
@@ -51,7 +51,7 @@ Agent 兼容说明：
 | message 类型 | 说明 | body 结构 |
 | --- | --- | --- |
 | `assistantControl` | 连接响应 | 参见 4.1 |
-| `chatResponse` | 文本响应 | 参见 4.2 |
+| `chatResponse` | 文本响应及可选的生成图片展示数据 | 参见 4.2 |
 | `audioResponse` | 音频响应 | 参见 4.3 |
 | `videoResponse` | 视频响应 | 参见 4.4 |
 | `interrupt` | 打断响应 | 参见 4.5 |
@@ -172,9 +172,23 @@ Agent 每个 WebSocket 连接都会分配新的内部 `agent-service-*` Gateway 
 - 若本轮正文已经全部通过中间包发送，成功终包的 `description` 为空字符串。媒体/App 可以继续按增量追加处理，不会重复追加完整答案。
 - 若本轮已经发送过中间包，成功终包仍会同时携带 `display_only=true` 和 camelCase 兼容字段 `displayOnly=true`，供支持该标记的客户端识别终包。
 - 只有真实 Provider token delta 产生中间包；Provider 不支持或未产生 token delta 时，即使 `stream=true` 也只发送一个完整终包，不伪造流式能力。
-- 购物推荐/比价遵循 ReAct：`shopping_search` 返回结构化结果，下一轮 LLM 消费 observation 中的商品、报价、链接和模板，生成自然语言摘要及可选的唯一 `<detail>...</detail>` 块。Realtime 和媒体侧只透传 LLM 最终文本，不使用代码 presenter 覆盖。`AgentResponse.message`、Realtime result、`response.final` 和客户端正文保持一致；`response.delivered` 记录实际交付来源与形状，本地原文模式下可展示完整交付文本。
+- 购物推荐/比价遵循 ReAct：`shopping_search` 返回结构化结果，下一轮 LLM 消费不含链接和展示模板的精简 observation，生成正常自然语言。由于 Agent-Service 声明 `supports_shopping_detail_v1=true`，Gateway Runtime adapter 会从完整成功 ToolResult 抽取标题、平台、价格、商品链接和图片链接，把唯一 `<detail>...</detail>` 追加到最终交付正文；不覆盖 `AgentResponse.message` 或 conversation history，也不增加 LLM 调用。若自然语言已通过 Provider token delta 发送，终包 `description` 只携带尚未发送的换行和协议块。
 - `deliveryId` 和 `chatResponseAck` 只属于成功终包；中间包和失败终包都不进入应用层 ACK 状态。
 - Provider 的工具调用前导文本受 runtime commit barrier 保护；会被工具调用取代的 provisional 文本不会发送给 Media/App。
+- 媒体侧已经支持在成功终包的
+  `message.content.intentResult.detail[]` 中接收图片。图片项使用
+  `{"type":"IMAGE","image":"<Base64 或 data:image/...;base64,...>"}`；
+  `AgentClient` 将展示信息经 `AGENT_SRC_DISPLAY` 推送给 `WebRTCClient`，
+  再由 `PC_SINK_DC_AIFINFO` 交付。媒体实现会移除可选的 Data URL 前缀并
+  Base64 解码图片数据。
+- Agent 图片生成成功后，Gateway `run.end.payload.output_refs` 保留最多 4 个去重后的输出引用。
+  Agent-Service 只读取本 Agent 托管的 `/artifacts/generated/` 图片，并在成功终包中投影为
+  `intentResult.detail`；不会把 Provider 临时 URL、本地绝对路径或任意外部引用直接发送给媒体。
+- 图片原始文件必须不超过 25 MiB，并且内容可识别为 JPEG、PNG、GIF 或 WebP。
+  Agent 发送带真实 MIME 类型的 Data URL；找不到、超限、越界或无法识别的引用会被忽略，
+  不得让已有文本响应失败。
+- `detail` 只出现在成功终包；流式 `PROCESSING` 中间包、`chatProgress` 和失败终包不携带图片，
+  避免 Base64 重复发送。协商 `chatResponseAck` 时，终包 `deliveryId` 同时确认文本和图片展示数据。
 
 协商 `chatProgress` 后，Agent 立即并每 15 秒发送一次：
 
@@ -216,6 +230,33 @@ ACK 耗时通过独立事件记录，`ACK pending` 表示仍缺媒体侧应用�
   "display_only": true,
   "displayOnly": true,
   "sequence": 2,
+  "final": true,
+  "deliveryId": "delivery_xxx"
+}
+```
+
+生成图片成功时，终包在 `intentResult` 中增加 `detail`。以下 Base64 仅为占位示例：
+
+```json
+{
+  "message": {
+    "chatIndex": "对话索引",
+    "content": {
+      "intentResult": {
+        "description": "图片已生成",
+        "status": "SUCCESS",
+        "detail": [
+          {
+            "type": "IMAGE",
+            "image": "data:image/jpeg;base64,<图片Base64数据>"
+          }
+        ]
+      }
+    }
+  },
+  "display_only": false,
+  "displayOnly": false,
+  "sequence": 1,
   "final": true,
   "deliveryId": "delivery_xxx"
 }

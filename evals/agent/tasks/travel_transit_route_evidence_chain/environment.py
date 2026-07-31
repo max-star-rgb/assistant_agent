@@ -4,22 +4,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from assistant_agent.config import ProviderConfig
-from assistant_agent.runtime.chat_adapter import ChatAdapter
-from assistant_agent.runtime.requests import UserRequest
 from assistant_agent.tools.models import ToolResult
 from assistant_agent.tools.registry import ToolRegistry
-from evals.agent.contracts import (
-    EnvironmentValidation,
-    TaskExecution,
-    TaskSpec,
-    ToolOutcomeExpectation,
-)
-from evals.agent.grading import environment_validation, rule_assertion
-from evals.agent.task_support import (
-    execute_isolated_runtime,
-    outcome_expectations,
-)
+from evals.agent.contracts import AssertionResult
+from evals.agent.environment_base import ControlledTaskEnvironment
+from evals.agent.grading import rule_assertion
 from evals.agent.travel_support import (
     AMAP_SERVER_NAME,
     GEO_TOOL,
@@ -98,33 +87,21 @@ class _TransitRunner:
         raise ValueError("unsupported controlled AMap tool")
 
 
-class TravelTransitRouteEnvironment:
+class TravelTransitRouteEnvironment(ControlledTaskEnvironment):
     """Read-only route fixture requiring geocoded endpoints."""
 
-    def __init__(
-        self,
-        *,
-        config: ProviderConfig | None = None,
-        chat_adapter: ChatAdapter | None = None,
-    ) -> None:
-        self.config = config
-        self.chat_adapter = chat_adapter
+    dependency_label = "controlled:amap-geocode-transit-v1"
+    tool_catalog_label = "default_complete_registry_plus_controlled_amap"
+
+    def setup(self) -> None:
         self._runner = _TransitRunner()
 
-    def describe(self) -> dict[str, Any]:
-        return {
-            "runtime": "AgentGraphRuntime",
-            "chat_provider": "configured_real",
-            "dependencies": "controlled:amap-geocode-transit-v1",
-            "tool_catalog": "default_complete_registry_plus_controlled_amap",
-            "registered_tool_count": len(self._build_registry().list()),
-            "writes": False,
-            "state_reset": "per_task_run",
-        }
+    def required_successes(self) -> tuple[str, ...]:
+        return (GEO_TOOL, TRANSIT_TOOL)
 
-    def validate(self) -> EnvironmentValidation:
-        registry = self._build_registry()
-        expectations = self.tool_outcome_expectations()
+    def task_validation_checks(
+        self, registry: ToolRegistry
+    ) -> dict[str, AssertionResult]:
         origin = self._runner.run_tool(
             server_name=AMAP_SERVER_NAME,
             tool_name="maps_geo",
@@ -145,88 +122,36 @@ class TravelTransitRouteEnvironment:
                 "cityd": "杭州",
             },
         )
-        return environment_validation(
-            {
-                "full_tool_registry": rule_assertion(
-                    registry.sealed
-                    and {GEO_TOOL, TRANSIT_TOOL} <= set(registry.list())
-                    and {"web_search", "web_fetch"}.isdisjoint(
-                        registry.list()
-                    ),
-                    f"registered_tools={registry.list()}",
-                    label="完整目录包含受控地理编码和公交工具",
+        return {
+            "full_tool_registry": rule_assertion(
+                {GEO_TOOL, TRANSIT_TOOL} <= set(registry.list())
+                and {"web_search", "web_fetch"}.isdisjoint(registry.list()),
+                f"registered_tools={registry.list()}",
+                label="完整目录包含受控地理编码和公交工具",
+            ),
+            "controlled_route_fixture": rule_assertion(
+                origin.success
+                and destination.success
+                and route.success
+                and origin.data["geocodes"][0]["location"]
+                == GEOCODES["杭州东站"]["location"]
+                and destination.data["geocodes"][0]["location"]
+                == GEOCODES["中国丝绸博物馆"]["location"]
+                and route.data["routes"] == [ROUTE],
+                f"geocodes={GEOCODES}, route={ROUTE}",
+                label="受控坐标与公交路线完整",
+            ),
+            "isolated_state_boundary": rule_assertion(
+                all(
+                    registry.get_spec(name).category == "read"
+                    for name in (GEO_TOOL, TRANSIT_TOOL)
                 ),
-                "outcome_contract_matches_registry": rule_assertion(
-                    {item.tool_name for item in expectations}
-                    == set(registry.list()),
-                    f"expectation_count={len(expectations)}",
-                    label="工具结果预期覆盖注册表",
-                ),
-                "controlled_route_fixture": rule_assertion(
-                    origin.success
-                    and destination.success
-                    and route.success
-                    and origin.data["geocodes"][0]["location"]
-                    == GEOCODES["杭州东站"]["location"]
-                    and destination.data["geocodes"][0]["location"]
-                    == GEOCODES["中国丝绸博物馆"]["location"]
-                    and route.data["routes"] == [ROUTE],
-                    f"geocodes={GEOCODES}, route={ROUTE}",
-                    label="受控坐标与公交路线完整",
-                ),
-                "isolated_state_boundary": rule_assertion(
-                    all(
-                        registry.get_spec(name).category == "read"
-                        for name in (GEO_TOOL, TRANSIT_TOOL)
-                    ),
-                    "writes=False, state=in-memory-per-run",
-                    label="地图工具只读且任务状态隔离",
-                ),
-            }
-        )
+                "writes=False, state=in-memory-per-run",
+                label="地图工具只读且任务状态隔离",
+            ),
+        }
 
-    def tool_outcome_expectations(
-        self,
-        available_tools: list[str] | None = None,
-    ) -> list[ToolOutcomeExpectation]:
-        registry = self._build_registry()
-        if available_tools is not None:
-            subset = ToolRegistry()
-            for name in dict.fromkeys(
-                [*available_tools, GEO_TOOL, TRANSIT_TOOL]
-            ):
-                subset.register(
-                    registry.get(name),
-                    registry.registration_record(name),
-                )
-            subset.seal()
-            registry = subset
-        return outcome_expectations(
-            registry,
-            required_successes=(GEO_TOOL, TRANSIT_TOOL),
-        )
-
-    def execute(
-        self,
-        *,
-        task: TaskSpec,
-        request: UserRequest | dict[str, Any],
-        trace_id: str,
-        parent_span_id: str,
-    ) -> TaskExecution:
-        self.validate().require_valid()
-        return execute_isolated_runtime(
-            task=task,
-            request=UserRequest.model_validate(request),
-            trace_id=trace_id,
-            parent_span_id=parent_span_id,
-            config=self.config,
-            registry=self._build_registry(),
-            chat_adapter=self.chat_adapter,
-            initial_state={},
-        )
-
-    def _build_registry(self) -> ToolRegistry:
+    def build_registry(self) -> ToolRegistry:
         return build_travel_registry(
             definitions=[
                 maps_geo_definition(),

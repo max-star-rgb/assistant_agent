@@ -133,7 +133,7 @@ def build_traced_assistant_context_pack(
         ).effective_input_limit
     context_report = build_context_report(
         pack,
-        selected_tool_specs=pack.prompt_tool_specs,
+        selected_tool_specs=compilation.selected_tool_specs,
         compiled_request=compilation.chat_request,
         compiled_input_tokens=compiled_input_tokens,
         effective_input_limit=effective_input_limit,
@@ -204,6 +204,7 @@ def context_trace_summary(pack: AssistantContextPack) -> dict[str, Any]:
         "compaction": _context_compaction_summary(pack.observations),
         "tool_catalog": pack.tool_catalog_summary.model_dump(mode="json"),
         "run_tool_catalog": pack.run_tool_catalog.model_dump(mode="json"),
+        "active_skill_ids": list(pack.active_skill_ids),
         "context_sources": pack.context_source_report.model_dump(mode="json"),
         "compactor_type": pack.compactor_type,
         "context_summary_present": pack.context_summary is not None,

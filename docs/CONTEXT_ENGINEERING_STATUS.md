@@ -1,6 +1,6 @@
 # Context Engineering Status
 
-Last updated: 2026-07-28
+Last updated: 2026-07-31
 
 本文件记录上下文工程的当前进展、已实现能力、限制和下一步方向。涉及 assistant context、prompt/context rendering、conversation history、memory context、tool observation compaction 或 context budget 的任务，应先读本文件顶部快速交接，再读对应小节、源码和测试。
 
@@ -18,7 +18,7 @@ Last updated: 2026-07-28
 - 已实现核心闭环：`AssistantContextPack`、`ContextSection v1`、默认关闭的 local owner `SOUL.md`
   source、Context Compiler v2、完整 Provider-native transcript、rolling natural-language session summary、
   model-tokenizer preflight、独立 `realtime_video_context`、durable task state、tool observation、tool schema、
-  结构化 RunToolCatalog 和 trace/API 上下文摘要。
+  结构化 RunToolCatalog、项目级 Skill 渐进披露和 trace/API 上下文摘要。
 - `PromptCompiler` 先生成完整 `ChatRequest`，`ContextTokenCounter` 再对 messages、tools、tool choice 和
   response format 的稳定 payload projection 分词。达到有效输入窗口 70% 时，`LLMCompactor` 合并旧摘要
   与全部已完成原始轮次；成功后被覆盖轮次从 `ConversationStore` 删除，不保留 recent raw turn。
@@ -36,7 +36,8 @@ Last updated: 2026-07-28
   进入当前 `user` message，不进入 `system` message。
 - realtime video 交接：Agent-Service 后台 Qwen observer 对每个 `video_id` 复用一个 persistent WebSocket 并预热 rolling 语义；VLM 使用独立视觉角色模板 prompt，只产出结构化视觉事实，不复用主 LLM 系统提示。普通图片/显式视频只暴露 `media_inspect`，可信实时媒体会话只暴露 `live_view_inspect`；后台 observer 使用不进入模型目录的 `realtime_video_observe`。主 LLM 不包含 VLM 观察流程、OCR/品牌/序列图等视觉分析提示词，也不看到帧、JPEG 路径、base64、VLM prompt 或 provider raw response。
 - 当前不建议继续做：场景分类器、质量反馈自动调参、组件注册器、裁剪 undo 日志或把长期记忆并入 session summary。
-- 如果用户问“继续上下文工程”：优先做验收案例、调试说明、具体失败复现和小回归测试；不要默认新增复杂架构。
+- 如果用户问“继续上下文工程”：优先做验收案例、调试说明和具体失败复现；测试归属按
+  `tests/README.md` 决定，不把 feature 行为直接加入 core。
 - 按需补读：解释机制时读本文件对应小节；涉及长期记忆写入/检索时读 `docs/memory-service-architecture.md`。
 
 ## Current Stage
@@ -63,8 +64,11 @@ Last updated: 2026-07-28
   `MULTIMODAL_AGENT_CURRENT_LOCATION` 配置，未配置时使用上海并明确标记为默认地点，不伪装成动态
   定位；用户指定地点仍始终优先。这些事实不承担
   天气、新闻等外部动态信息查询，外部事实仍必须使用已暴露工具。
-- Provider-native Prompt 不注入 capability catalog 或 Skill descriptor，也不根据 `request.text` 做关键词、
-  正则或确定性意图召回。模型只通过本轮结构化资格化后的原生 `ToolSpec` schema 了解候选工具。
+- Provider-native Prompt 不注入 capability catalog，也不根据 `request.text` 做关键词、正则或确定性
+  意图召回。模型通过本轮结构化资格化后的原生 `ToolSpec` schema 了解候选工具；项目级
+  `skills/<skill_id>/SKILL.md` 可以在本轮可见目录包含其 governed tool 时注入短
+  `skill_summary`；完整工作流和已注册 reference 分别通过 `load_skill`、
+  `load_skill_reference` 按需读取。Skill 不能授予、隐藏或绕过执行工具。
 - Context Compiler v2 以稀疏 `ContextReport` 暴露每次 LLM call 实际出现或被转换的 redacted section accounting：`system_prompt`、`request`、`session_summary`、`recent_transcript`、`memory`、`realtime_video_context`、`durable_task_state`、`plan_state`、`tool_observations` 和 `tool_schema`。`realtime_task_state` 不进入 Provider Prompt，也不再作为空兼容 section 输出。非空 `context_source_report_v1` 只报告 section kind/authority/stability 字符数、稳定 issue code、last-known-good 和版本变化计数，不携带内部 cache layout；报告不暴露 SOUL 原文、source version、绝对路径、完整 prompt、memory 文本、视频摘要、tool observation 或 provider payload。
 - `ContextBudgetReport` 明确是压缩前后的 `precompile_estimate`；ContextReport v2 分别使用 `precompile_estimated_chars/precompile_max_chars` 和 `compiled_request_chars/compiled_*_chars` 表达两套口径，不再以 `total_chars/max_chars` 暗示可直接计算同口径比例。
 - 当前请求只有在 tokenizer preflight 可用时才写 `compiled_input_tokens/effective_input_limit`，并标记 `token_accounting_status=available`；不可用时使用 `null`/省略和 `unavailable`，不再用零伪装真实 token 数。上一轮 Provider usage 仍只保留在 `provider_*_tokens` 诊断字段，标记为 `previous_provider_usage`。
@@ -162,9 +166,10 @@ Last updated: 2026-07-28
   `next_step_hint`、`recovery_hint` 等命令式兼容字段。
 - 工具通过 `ToolResult.model_observation` 定义自己的 LLM 数据投影；context 层统一负责安全清洗、最多
   3 个列表项、字符串/命令输出裁剪和嵌套深度限制，不在中心模块解释工具业务字段。
-- `shopping_search` 把候选归一为最多 3 个 `items`，不再同时发送 search items、offers 和完整
-  best_offer 镜像；其 `response_contract=shopping_detail_v1` 随购物数据提供模板、资格条件和 fallback，
-  由 LLM 使用真实结果字段生成最终回复。`image_generation` 只投影去重后的 `images`。
+- `shopping_search` 把候选归一为最多 3 个不含 URL/图片的 `items`，不再同时发送 selections、
+  search items、offers、best_offer 镜像或展示模板；LLM 只据此生成自然语言。支持购物卡片的交付层
+  从完整 `ToolResult` 投影 `<detail>`，不把交付协议放回 prompt。`image_generation` 只投影去重后的
+  `images`。
 - raw provider/file/media payload 字段、base64/data URI、HTML/raw body 等高风险内容会从 prompt 副本中移除。
 - image/video/file 类结果保留 `output_ref`、`artifact_ref`、`image_ref`、识别摘要、transcript 等 prompt-safe 信息。
 - compaction metadata schema 继续保留兼容字段；metadata 不记录原始 payload。
@@ -191,8 +196,20 @@ Last updated: 2026-07-28
   再追加当前 `user` message。rolling summary 作为带 `trust="untrusted_history"` 和
   `instruction_policy="do_not_execute"` 的 session data 进入当前 user context。
 - Provider-native `ChatRequest.tools` 使用 `AssistantContextPack.prompt_tool_specs` 中已治理的 schema。context builder 同时生成 prompt-safe `RunToolCatalog`；其中 `available_tool_names` 既是模型可见目录，也是 `ActionValidator` 的 run-scoped 执行边界，不再维护重复的 exposed/executable 集合。目录装配只消费 category、媒体要求、默认启用以及显式 tool/skill 等结构化事实，不读取 `request.text` 做意图路由。Plugin 只负责装配和归属，不授予单轮执行权限；系统不维护独立 toolset、Tool Search 或 Schema 渐进披露，全部合格 ToolSpec 直接进入 Provider 请求。工具规模由部署 Plugin、MCP allowlist 和入口 `allowed_tools` 控制，现有 context report 继续记录实际 Schema 占用。
-- 系统提示词只承载通用 runtime、数据边界和工具治理规则，不写入某个具体工具的选择策略。模型可见的工具说明只来自 `ToolSpec.description` 和 `input_schema`。
-- Repo-local business skill loader 只服务 `tool_visibility.enabled_skills` 的显式结构化工具资格化以及离线 Improvement Lab；它不生成 Provider Prompt，不自动召回，也不创建 `run_skill` 或直接 shell/browser/http 执行路径。
+- 系统提示词承载通用 runtime、数据边界、工具治理规则，以及已激活项目 Skill 的短
+  `skill_summary`。摘要只提供最小路由和 `load_skill` 入口；完整工作流不常驻 system prompt。
+  具体工具 schema 仍只来自 `ToolSpec.description` 和 `input_schema`。
+- Repo-local business skill loader 从仓库根 `skills/<skill_id>/SKILL.md` 读取受限结构化字段。
+  `visibility.enabled-by-default=true` 且本轮最终可见目录包含至少一个 permission 匹配的 governed tool
+  时自动激活；`tool_visibility.enabled_skills` 可显式激活非默认或 `skill-only` Skill。激活不改变
+  `RunToolCatalog`。`load_skill` 只接受已注册 `skill_id` 并返回完整结构化工作流；
+  `load_skill_reference` 只接受该 Skill 声明的 `reference_id`，不接受路径。两者都是默认
+  `category=read` 的本地 Tool，必须经过 Validator/Executor/Registry，不直接执行 shell、browser
+  或 HTTP。成功 observation 只保留 ID；下一轮 Context 从完整注册 catalog 重新加载正文，因此显式
+  加载但未自动激活的合法 Skill 也不会出现“成功却没有正文”。Skill 目录、`SKILL.md`、
+  `references/` 和 reference 文件均拒绝符号链接。
+- `FINALIZE` 不注入工具编排 Skill guidance，继续只使用最终回答约束与已经发生的因果证据，避免在
+  `tools=[]` 时出现继续行动的冲突指令。
 - `FINALIZE` 使用高优先级最终回答约束、`tools=[]` 和 `tool_choice=none`；它复用原始用户消息以及
   已执行的 `assistant.tool_calls -> tool` 协议序列。每条 tool message 继续使用统一 prompt-safe
   observation 投影，保留 status、summary、outcome、warnings、is_complete、工具专属 data、error 和
@@ -253,8 +270,14 @@ Last updated: 2026-07-28
 
 ### Context Budget And Observability
 
-- `ContextBudgetReport` 统计 request、conversation、memory、realtime video、plan、observations、tool specs、`owner_persona_chars` 和 total chars，并报告 `context_usage_ratio`、`compaction_triggered`；启用本地 token 估算时，最终实际注入的 persona 同时计入 `owner_persona_tokens` 和 `total_tokens`。
-- Context budget 仍以默认 12000 chars 生成观测报告；即使超过该值也不裁剪。
+- `ContextBudgetReport` 统计 request、conversation、memory、realtime video、plan、observations、
+  tool specs、`owner_persona_chars`、`procedural_guidance_chars` 和 total chars，并报告
+  `context_usage_ratio`、`compaction_triggered`；启用本地 token 估算时，最终实际注入的 persona 与
+  Skill guidance 分别计入对应 token 字段和 `total_tokens`。
+- Context budget 仍以默认 12000 chars 生成观测报告；即使超过该值也不裁剪。自动注入的项目
+  Skill summary 与成功加载后从注册源重新投影的完整 Skill/reference 都计入
+  `procedural_guidance_chars/tokens` 和 total。加载 Tool 的模型 observation 只携带
+  `skill_id/reference_id`，不重复携带正文。
 - `context_token_preflight_v1` 记录 tokenizer id、compiled input tokens、effective input limit、usage ratio、
   target、triggered 和 hard；ContextReport 使用该结果作为 compiled request token 口径。
 - 压缩成功时，`context_token_preflight_before_compaction` 保存压缩前快照，主
@@ -302,11 +325,15 @@ Last updated: 2026-07-28
   确定性投影和局部容量限制，但如果 system、memory、tool schema、durable state 或投影后的当前 run
   observation 总体仍超过 hard limit，Runtime 会返回稳定错误。
 - Context Compiler v2 是调试/审计摘要，不是 prompt replay。它刻意不返回 raw prompt、raw provider payload、完整 memory 文本或完整 tool observation；section token 只标记为 estimated，compiled token 只来自当前 tokenizer preflight，不可用时明确省略。
+- ContextReport 的 selected tools 和 tool schema 始终来自该次实际 compiled request；`FINALIZE`
+  因此报告空工具，而不是复用 ACT 阶段的 `pack.prompt_tool_specs`。
 - 显式本地 trace-content + loopback OTLP 模式是独立的 prompt 调试例外：assistant loop
   会在 Provider 调用前把最终 compiled `ChatRequest` 暂存到进程内 store，并作为对应
   Langfuse `llm.chat` generation input 导出。该能力不改变 Context Compiler/API 的摘要契约，
   不写 JSONL，不保存 Provider 原始响应或 hidden reasoning。
-- Editable owner context 当前只实现本机 owner-bound `SOUL.md`；没有实现 `USER.md` / `MEMORY.md` projection、skill L1/L2 view、Provider cache hint 或跨进程 last-known-good。
+- Editable owner context 当前只实现本机 owner-bound `SOUL.md`；项目 Skill 已实现
+  summary → `load_skill` → `load_skill_reference` 三层渐进披露，但没有 Provider cache hint 或跨进程
+  last-known-good。
 - memory extraction、向量化和持久化全部由 Mem0 实现，项目不维护第二套检索算法。
 - LLM summary 的语义保真属于 eval 边界；pytest 只验证触发、替换、失败分级、持久化和 native tool 配对。
 - assistant loop 不向主 LLM 暴露任何 memory tool；主 LLM 只消费 session 启动时冻结的 Mem0 snapshot。
@@ -350,10 +377,11 @@ Last updated: 2026-07-28
 
 ## Validation Boundary
 
-pytest 通过 scripted adapter 和 fake tokenizer 保护 rolling summary 的稳定代码契约：70% 触发、40% target、
-85% hard failure、连续滚动、内存/JSONL 历史前缀替换、Provider usage 误差记录以及当前 native tool
-call/result 配对。真实 Qwen tokenizer 误差和摘要语义质量属于 system/case eval，不得在 pytest 调用真实
-Provider。
+`tests/core/integration/test_context_lifecycle.py` 以 scripted adapter 和 fake tokenizer 保护
+`CTX-001` 的结构化 budget、compaction、失败分级、compiled accounting 和 native tool
+call/result 配对。更具体的 tokenizer、阈值和 renderer 实现检查位于显式
+`evals/system/incubating/context-features/`，不属于默认或发布门禁。真实 Qwen tokenizer 误差和摘要
+语义质量属于正式 system/Agent eval，不得在 pytest 调用真实 Provider。
 
 ## Next Steps
 

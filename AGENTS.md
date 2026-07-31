@@ -75,8 +75,9 @@
 | path | responsibility |
 | --- | --- |
 | `src/assistant_agent/` | 主源码；具体归属先看第 1 节任务路由和对应架构文档 |
-| `tests/` | 全部离线 pytest；按 `unit/integration/contract` 和稳定故障域组织，规则以 `tests/README.md` 为唯一权威 |
-| `evals/system/` | operator 显式触发的真实能力验证；手写 Python runner、结构化硬断言和 `.data/evals/system/` artifact 是结果权威 |
+| `tests/core/` | 永久、默认收集的离线核心 pytest；只保护已登记 core invariant |
+| `tests/tdd/*/` | 每个 feature 独立、显式运行且可由用户手动删除的临时 RED/GREEN pytest；不自动晋升 core |
+| `evals/system/` | 正式真实能力验证，以及 `incubating/<feature>/` 中可删除的节点专项检查；边界与结果权威见 `evals/README.md` |
 | `evals/agent/` | Task 中心的端到端 Agent 行为评估；Git 定义 Task/Environment/Grader，Langfuse 保存 Dataset、Experiment、Trace 和 Score |
 | `scripts/` | 服务、demo、system eval 和 Agent task eval 的稳定命令入口；索引见 `scripts/README.md` |
 | `docs/*.md` | 当前架构、接口和状态权威文档 |
@@ -100,18 +101,18 @@
 - 普通开发默认不读 `docs/development/**`、`docs/superpowers/**`、`docs/interview/**`，除非用户点名或任务明确属于历史 runbook、历史设计记录或面试资料。
 - 当用户基于真实测试、真实通话、真实 run/trace 或机器日志提问“为什么失败/为什么这样表现”，或提供 `assistant.turn: <trace_id>` 时，先按 `docs/observability-harness.md` 的真实运行定位与诊断规则读取对应机器事实，再结合用户片段和源码回答。
 - 执行中先读相关代码和文档，保持 scope 小；搜索优先用 `rg` / `rg --files`，手工编辑默认用 `apply_patch`。
-- 新增或修改 pytest、判断代码变更的验证范围、补充回归测试或诊断确定性测试失败时，使用 `.codex/skills/assistant-agent-development-testing`；该 skill 不指导功能实现，只有窄层无法证明 wiring 时才增加离线跨层验收。
+- 新增或修改 pytest、判断代码变更的验证范围、补充回归测试或诊断确定性测试失败时，使用 `.codex/skills/assistant-agent-development-testing`；该 skill 不指导功能实现。不得为小功能机械增加永久测试。
 - 不回滚用户已有改动；提交时只包含本任务相关文件；新增设计文档默认不提交，除非用户明确要求纳入版本控制。
 - 完成修改后需要判断是否应该提交本任务改动；Codex 处于计划模式时，完成后直接提交本任务改动；除非用户明确要求，否则不 push、不合并、不创建 PR。
 - 结束任务时报告完成内容、验证结果、未完成/限制和下一步建议。
 
 ## 8. 测试导航
 
-本项目采用风险驱动测试。是否新增测试、测试文件如何组织、最小充分验证范围和任务结束时的
-`Tests:` 汇报格式，统一以 `tests/README.md` 为准。pytest 只回答确定性代码契约是否正确；
-`evals/system` 回答真实 Tool、Context 或 Memory 能力是否连通；`evals/agent`
-回答 Agent 在端到端 Task 上的行为质量。三者不得用 mock fallback、路径混放或重复 runner
-伪装成彼此。`AGENTS.md` 只提供入口，不复制具体测试与评分规则。
+永久、默认 pytest 只有 `tests/core`；`tests/tdd/*/` 下的 feature 仅用于显式临时 RED/GREEN；
+`evals/system/incubating/<feature>` 是可删除的节点专项区。是否新增测试、目录归属、最小验证范围和
+`Core invariant:` / `Tests:` 汇报格式统一以 `tests/README.md` 为准。正式真实能力验证见
+`evals/system`，端到端 Agent 行为质量见 `evals/agent`；不得用 mock fallback、路径混放或重复
+runner 伪装成彼此。`AGENTS.md` 只提供入口，不复制具体规则。
 
 ## 9. 业务专项
 

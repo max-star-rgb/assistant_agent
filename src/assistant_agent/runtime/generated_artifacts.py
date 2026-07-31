@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import mimetypes
 import urllib.error
@@ -18,6 +19,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 GENERATED_ARTIFACT_DIR = REPO_ROOT / ".local" / "generated"
 GENERATED_ARTIFACT_PUBLIC_PREFIX = "/artifacts/generated"
 MAX_ARTIFACT_BYTES = 25 * 1024 * 1024
+MAX_DELIVERED_IMAGE_COUNT = 4
 
 
 @dataclass(frozen=True)
@@ -66,6 +68,49 @@ def materialize_image_generation_result(
     )
 
 
+def generated_artifact_data_url(
+    output_ref: str,
+    *,
+    artifact_dir: Path | None = None,
+    max_bytes: int = MAX_ARTIFACT_BYTES,
+) -> str | None:
+    """Read one backend-owned generated image as a bounded data URL."""
+
+    if max_bytes <= 0:
+        raise ValueError("max_bytes must be positive")
+    parsed = urlparse(output_ref)
+    prefix = GENERATED_ARTIFACT_PUBLIC_PREFIX.rstrip("/") + "/"
+    if (
+        parsed.scheme
+        or parsed.netloc
+        or parsed.query
+        or parsed.fragment
+        or not parsed.path.startswith(prefix)
+    ):
+        return None
+    filename = parsed.path.removeprefix(prefix)
+    if not filename or Path(filename).name != filename:
+        return None
+
+    root = (artifact_dir or GENERATED_ARTIFACT_DIR).resolve()
+    path = (root / filename).resolve()
+    if path.parent != root:
+        return None
+    try:
+        if not path.is_file() or path.stat().st_size > max_bytes:
+            return None
+        payload = path.read_bytes()
+    except OSError:
+        return None
+    if not payload or len(payload) > max_bytes:
+        return None
+    media_type = _image_media_type(payload)
+    if media_type is None:
+        return None
+    encoded = base64.b64encode(payload).decode("ascii")
+    return f"data:{media_type};base64,{encoded}"
+
+
 def store_remote_artifact(
     url: str,
     *,
@@ -108,6 +153,18 @@ def store_remote_artifact(
 def _is_remote_http_url(value: str) -> bool:
     parsed = urlparse(value)
     return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+
+def _image_media_type(payload: bytes) -> str | None:
+    if payload.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if payload.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if payload.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if len(payload) >= 12 and payload.startswith(b"RIFF") and payload[8:12] == b"WEBP":
+        return "image/webp"
+    return None
 
 
 def _extension_from_url_or_content_type(url: str, content_type: str) -> str:

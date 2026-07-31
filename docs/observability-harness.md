@@ -910,9 +910,10 @@ Regression tests should enforce these invariants:
   invariant set in-process: run terminal events, tool terminal events,
   `tool.observation` provenance, failed-tool error detail, and hook dispatch
   error redaction.
-- The default pytest safety net does not enumerate trace internals. Add a minimal regression only for a
-  concrete redaction, terminal-event or public trace-contract defect. Broader evidence comes from local
-  trace smoke scripts and machine logs.
+- The default pytest safety net protects the registered `OBS-001` structured contract and does not enumerate
+  trace internals. Extend its existing core file only for a concrete framework defect that exposes an
+  `OBS-001` gap. Provider/exporter implementation evidence belongs in an explicit incubating check; broader
+  evidence comes from local trace smoke scripts and machine logs.
 - Future work should be driven by a concrete debugging gap rather than adding more event types, dashboards,
   exporters, debug endpoints or assertion matrices preemptively.
 

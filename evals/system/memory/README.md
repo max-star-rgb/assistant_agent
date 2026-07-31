@@ -16,5 +16,24 @@ preflight -> unique identity -> capture -> recall -> runtime session recall
           -> delete/reset -> verify empty -> cleanup report
 ```
 
-在此之前，Memory 的确定性生命周期由 `tests/integration/memory/` 验证，真实 Mem0 只允许通过专用
-operator runbook 在可丢弃实例中人工检查。
+在此之前，通用后台 ingestion queue 与 runtime lifecycle 由默认核心安全网
+`tests/core/integration/test_memory_lifecycle.py` 保护：
+
+```bash
+MULTIMODAL_AGENT_PROVIDER_MODE=mock \
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q \
+  tests/core/integration/test_memory_lifecycle.py
+```
+
+Mem0 lifecycle、session snapshot 和具体 Provider 实现检查位于非默认、非发布门禁的 incubating
+feature，只能显式离线运行：
+
+```bash
+MULTIMODAL_AGENT_PROVIDER_MODE=mock \
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q \
+  evals/system/incubating/memory-provider/checks_*.py
+```
+
+真实 Memory 连通性仍属于正式 system eval 边界。当前缺少 delete/reset 契约，因此没有安全的自动
+runner，只允许通过专用 operator runbook 在可丢弃实例中人工检查；未来增加正式 runner 时，必须使用
+real mode、完整配置、operator 显式确认和可审计 cleanup artifact，不得从 real 静默回退 mock。

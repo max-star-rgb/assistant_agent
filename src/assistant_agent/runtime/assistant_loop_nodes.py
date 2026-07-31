@@ -50,6 +50,7 @@ from assistant_agent.tools.observation import (
     rejected_observation,
 )
 from assistant_agent.tools.models import ToolResult, ToolSpec
+from assistant_agent.tools.ids import SHOPPING_SEARCH_TOOL_NAME
 from assistant_agent.runtime.chat_adapter import (
     ChatAdapter,
     ChatRequest,
@@ -1034,6 +1035,30 @@ def _apply_decision_guards(
             return _guard_final_answer(guard)
     if (
         isinstance(decision, AssistantToolCall)
+        and decision.tool_name == SHOPPING_SEARCH_TOOL_NAME
+        and any(
+            record.tool_name == SHOPPING_SEARCH_TOOL_NAME
+            for record in state.tool_calls
+        )
+    ):
+        guard = LoopGuardDecision(
+            True,
+            "run_tool_call_limit_reached",
+            (
+                "shopping_search may execute at most once in one run; "
+                "the additional call was blocked."
+            ),
+            disposition="block_action",
+        )
+        _record_loop_guard(graph_state, guard)
+        return decision.model_copy(
+            update={
+                "reason": guard.message,
+                "safety_notes": [*decision.safety_notes, guard.code],
+            }
+        )
+    if (
+        isinstance(decision, AssistantToolCall)
         and not _is_plan_mode_active(state)
         and LoopGuard(state.request.metadata).terminal_tool_already_succeeded(decision.tool_name)
     ):
@@ -1534,6 +1559,20 @@ def _execute_single_requested_tool_node(graph_state: AssistantLoopState) -> Assi
 
     tool_name = decision.tool_name
     tool_input = decision.tool_input
+    if "run_tool_call_limit_reached" in decision.safety_notes:
+        observation = rejected_observation(
+            tool_name=tool_name or "unknown",
+            code="run_tool_call_limit_reached",
+            message="shopping_search may execute at most once in one run.",
+        )
+        return {
+            **graph_state,
+            "tool_observations": _record_react_observation(
+                graph_state,
+                tool_observations,
+                observation,
+            ),
+        }
     if "nonrecoverable_tool_retry_blocked" in decision.safety_notes:
         observation = rejected_observation(
             tool_name=tool_name or "unknown",

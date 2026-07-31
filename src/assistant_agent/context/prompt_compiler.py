@@ -62,6 +62,11 @@ class PromptCompiler:
     def compile(self, request: PromptCompileRequest) -> PromptCompileResult:
         system_instruction = render_system_instruction(
             agent_personalization=owner_persona_for_pack(request.context_pack),
+            procedural_guidance=(
+                ""
+                if request.answer_only
+                else procedural_guidance_for_pack(request.context_pack)
+            ),
             current_location=request.current_location,
             response_style=request.context_pack.response_style,
             answer_only=request.answer_only,
@@ -82,9 +87,13 @@ class PromptCompiler:
                 {"role": "user", "content": FINALIZE_CONTINUATION_MESSAGE}
             )
 
-        selected_tool_specs = prompt_tool_specs_for_mode(
-            request.context_pack,
-            request.mode,
+        selected_tool_specs = (
+            ()
+            if request.answer_only
+            else prompt_tool_specs_for_mode(
+                request.context_pack,
+                request.mode,
+            )
         )
         user_query = request.context_pack.request.text or request.user_query_fallback
         chat_request = ChatRequest(
@@ -116,9 +125,8 @@ def prompt_tool_specs_for_mode(
 ) -> tuple[ToolSpec, ...]:
     """Return the already-governed tool subset exposed for this mode."""
 
-    if pack.run_tool_catalog.available_tool_names:
-        return tuple(pack.prompt_tool_specs)
-    return tuple(pack.prompt_tool_specs or pack.tool_specs)
+    del mode
+    return tuple(pack.prompt_tool_specs)
 
 
 def owner_persona_for_pack(pack: AssistantContextPack) -> str:
@@ -132,6 +140,22 @@ def owner_persona_for_pack(pack: AssistantContextPack) -> str:
     if len(sections) != 1:
         return ""
     return sections[0].content
+
+
+def procedural_guidance_for_pack(pack: AssistantContextPack) -> str:
+    """Return active project Skill guidance in deterministic section order."""
+
+    sections = [
+        section
+        for section in pack.context_sections
+        if section.kind in {"skill_summary", "skill_body", "skill_reference"}
+        and section.authority == "procedural_guidance"
+        and not section.sensitive
+    ]
+    return "\n\n".join(
+        section.content
+        for section in sorted(sections, key=lambda item: item.priority)
+    )
 
 
 def _render_context(request: PromptCompileRequest) -> RenderedAssistantContext:

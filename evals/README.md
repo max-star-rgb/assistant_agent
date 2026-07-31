@@ -1,23 +1,38 @@
 # Eval 体系
 
-`evals/` 回答真实能力是否连通、以及 Agent 在完整任务中的行为是否合格。确定性代码契约仍属于
-`tests/`。
+`evals/` 回答真实能力是否连通、具体实现专项风险是否仍可复现，以及 Agent 在完整任务中的行为是否
+合格。永久核心代码契约属于 `tests/core`；临时功能 TDD 属于 `tests/tdd/<feature>`。
 
 ```text
 evals/
-  system/   # 真实 Provider/Tool/Context/Memory 连通性
-  agent/    # Task 中心的端到端 Agent 行为评测
+  system/
+    <domain>/              # 正式真实 Provider/Tool/Context/Memory 连通性
+    incubating/<feature>/  # 显式运行、可整目录删除的节点/实现专项检查
+  agent/                   # Task 中心的端到端 Agent 行为评测
 ```
 
 ## 边界
 
 | 层 | 回答的问题 | 结果权威 |
 | --- | --- | --- |
-| pytest | 确定性代码契约是否正确 | 测试代码与 pytest 结果 |
-| `evals/system` | 真实外部能力是否连通并经过治理链路 | 本地 runner 与 artifact |
+| `tests/core` | 已登记的稳定核心不变量是否正确 | 核心测试代码与默认 pytest 结果 |
+| `tests/tdd/<feature>` | 功能实现期间的临时 RED/GREEN 是否成立 | feature 测试代码与显式 pytest 结果 |
+| `evals/system/incubating` | 有风险证据的节点或实现专项事实是否仍成立 | feature README、`checks_*.py` 与显式运行结果 |
+| 正式 `evals/system` | 真实外部能力是否连通并经过治理链路 | 本地 runner 与 `.data/evals/system/` artifact |
 | `evals/agent` | Agent 能否在受控任务中作出正确决策并完成目标 | Git Task/Grader 与 Langfuse Experiment/Score |
 
 不要用 mock fallback、目录混放或重复 runner 让一层伪装成另一层。
+
+## Incubating system checks
+
+`evals/system/incubating/<feature>/` 只在存在明确风险证据和持续观察价值时，保存具体 node、
+Provider adapter 或实现专项检查。它不属于默认 pytest、发布门禁或正式真实 system eval。每个目录
+必须自包含，并说明 scope、mode、显式命令、副作用门禁、删除条件和晋升路径。
+
+`checks_*.py` 保持 mock/local/offline，不读取真实 `.env` 或调用真实 Provider。对应事实由正式
+system runner、Agent eval Experiment 或生产证据稳定覆盖后，可以手动删除整个 feature 目录，不得
+因此修改 `tests/core`。真实连通性必须晋升到下述正式 system eval，使用 runner、artifact、real mode、
+完整配置和 operator 显式确认。
 
 ## System eval
 
@@ -83,6 +98,8 @@ Git 是回归定义权威：
 ```text
 evals/agent/
   contracts.py          # Task、Evidence、Grader 契约
+  environment_base.py   # 受控 Environment 的共享生命周期与工具可见性
+  batch_grading.py      # 固定三项 Judge 与 Task rubric 工厂
   loader.py             # Task、Suite 和入口加载
   evidence.py           # Runtime Trace 的稳定投影
   grading.py            # 固定四维与 Environment outcome 匹配
@@ -115,6 +132,9 @@ rubric、长依赖说明或其他 oracle，也不能把 Langfuse Dataset 当作�
 - `task.json` 的请求必须像自然用户请求，不描述测试机关；
 - Environment 使用活动 `AgentGraphRuntime`，可以模拟依赖，不能模拟 Agent 决策，并在运行前验证
   Tool Registry、受控依赖、隔离和复位前提；
+- 基础 Task Environment 继承 `ControlledTaskEnvironment`：公共
+  `describe/validate/tool_outcome_expectations/execute` 由共享模板拥有；任务文件只实现受控依赖、
+  registry replacement、必需成功/失败、Task 专属 Rule 和状态 hook；
 - 所有 Task 的默认 Environment 使用同一份完整 Agent eval Tool Registry，不按 Task、capability、
   用户话术或目标工具裁剪目录；它包含 Agent 在相同结构化运行条件下会暴露的全部工具。媒体、
   entry profile 和 durable ready-step 等运行时结构化条件仍可在具体 run 中收窄可见集合；
@@ -133,10 +153,12 @@ rubric、长依赖说明或其他 oracle，也不能把 Langfuse Dataset 当作�
 - `tool_execution` 由 Environment oracle 做 Rule 判定；其余三项分别由独立 LLM Judge 判定；
 - 对基础 Task，`tool_execution` 只表示工具 outcome 与 Environment oracle 匹配；对 Mission，它还必须
   合入 `objective_state_assertions()` 的终态 Rule；
-- Task 专属要求只进入 `response_quality` rubric，不创建天气、日历等工具专属 Score；
+- Task 专属要求只进入 `response_quality` rubric，并通过
+  `grader_for_response_quality()` 绑定共享评分管线，不创建天气、日历等工具专属 Score；
 - 每条 assertion 必须标记 `evaluation_method=rule|judge`；可客观证明的事实使用 Rule，开放语义才使用
   LLM Judge；
-- grader 必须先通过至少一个正确样本和一个可信错误样本的直接校准。
+- grader 必须先通过至少一个正确样本和一个可信错误样本的直接校准；校准文件统一经
+  `load_calibration_set()` 按 `schema_version` 分派解析。
 
 当前天气 Task：
 
@@ -169,11 +191,11 @@ Environment 都不连接真实高德服务，并使用每次运行隔离的 in-m
 `--inspect` 会显示 `case_source.level`，并显示 `mission_objective_rule.required/implemented`，以便在
 校准前发现 Mission 缺少目标状态 Rule。inspect、calibrate、publish、run 和 Scores v3 审计顺序保持不变。
 
-2. 跑离线框架契约：
+2. 显式运行迁移后的 Agent eval infrastructure 专项检查（非 core、非发布门禁）：
 
 ```bash
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q \
-  tests/integration/eval
+  evals/system/incubating/agent-eval-infrastructure/checks_*.py
 ```
 
 3. 使用真实 Judge 校准人工标注 Evidence：

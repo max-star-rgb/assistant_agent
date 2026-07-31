@@ -1,6 +1,6 @@
 # Gateway Architecture
 
-Last updated: 2026-07-27
+Last updated: 2026-07-31
 
 This document is the current canonical entry for `assistant_agent.gateway`, realtime Gateway protocol frames, entry-layer boundaries, and the Gateway-to-assistant runtime contract. Update it whenever Gateway responsibilities, realtime call behavior, Gateway WebSocket bridging, session/run/cancel semantics, or entry adapter routing changes. Media-Agent `/agent-service/v1` wire-field details, examples, and H.264 payload constraints live in `docs/media-agent-service-websocket.md`.
 
@@ -151,8 +151,9 @@ other structured conditions are then applied, so `live_view_inspect` appears
 only when active media makes it valid. Provider-backed tools such as `weather`
 只有在当前运行模式已经正确注册对应 adapter 时才进入目录；
 真实模式缺少 MCP mapping 或配置时仍然 fail closed。`shopping_search` performs product
-search plus price comparison；其结构化结果作为 tool observation 回到下一轮 LLM，由 LLM 生成最终
-购物文本。Realtime/Gateway 不执行购物展示决策，也不覆盖模型最终正文。Tool qualification is derived from trusted session
+search plus price comparison；其精简结构化结果作为 tool observation 回到下一轮 LLM，由 LLM 生成
+自然语言购物文本。支持购物卡片的 Gateway 交付投影只从完整 ToolResult 追加协议块，不覆盖模型正文。
+Tool qualification is derived from trusted session
 config and structured request media, never user text. `assistantControl`
 validates and records media control state,
 and the legacy `assistantControlStart` handshake remains accepted for older
@@ -174,7 +175,14 @@ apply only to a successful terminal packet. A streamed failure closes with
 ACK-negotiated; after a successful socket send its delivery state remains
 `failed`. The safe `final_response_sent` diagnostic means either a `SUCCESS` or
 `FAIL` terminal was handed to the WebSocket, not that the business turn
-succeeded. `audio` and `interrupt` are accepted as transport
+succeeded. A completed backend result may carry up to four deduplicated
+`output_refs` in the Gateway `run.end` payload. The Agent-Service entry adapter
+only resolves backend-owned `/artifacts/generated/` image refs and projects
+them into the successful terminal packet as
+`intentResult.detail=[{"type":"IMAGE","image":"data:image/...;base64,..."}]`;
+streaming deltas and failures never carry image bytes. The exact media display
+and size contract remains owned by `docs/media-agent-service-websocket.md`.
+`audio` and `interrupt` are accepted as transport
 compatibility messages and acknowledged at the entry layer. `video` accepts
 independently decodable H.264 Annex-B frames, decodes them to a three-frame
 JPEG window plus a bounded local grayscale fingerprint, and attaches the stable
@@ -672,10 +680,12 @@ Gateway entry adapters must bind identity before a user turn reaches the assista
 
 Entry adapters may attach prompt-safe `entry_capabilities` metadata so downstream code can distinguish text streaming, interrupt support, TTS state support, realtime task-state support, media reference support, raw media support, TTS edge event support, and App shopping-detail presentation without inferring behavior from transport names. These capability declarations are informational; they do not authorize tool calls, provider selection, memory access, or new modalities.
 
-`supports_shopping_detail_v1=true` 只表示客户端能够渲染 App shopping card protocol，不授权入口层
-重写回答。`shopping_search` 的结构化 observation 携带展示模板，下一轮 LLM 可在最终文本中生成唯一
-`<detail>...</detail>` 块。Realtime 将 Provider/Runtime 最终文本按普通 response delta/final 语义原样
-交付；conversation history、`AgentResponse.message`、Gateway result 与客户端看到的正文保持一致。
+`supports_shopping_detail_v1=true` 只表示客户端能够渲染 App shopping card protocol，不授权工具调用。
+LLM 仍生成普通自然语言；Gateway Runtime adapter 在 run 成功结束后，从本 run 最后一次成功的
+`shopping_search` 完整结果中确定性抽取合格商品，并把唯一 `<detail>...</detail>` 追加到交付文本。
+`AgentResponse.message` 与 conversation history 保持自然文本，Gateway result、`response.final` 和
+`response.delivered` 记录追加后的实际交付文本。已有 Provider token delta 时，协议块作为非 token
+补充 chunk 发送，终态仍携带完整交付文本。
 
 Realtime task-state is opt-in at the request/capability level. Ordinary Gateway metadata, `source=gateway_*`, or a `realtime.run_id`/`turn_id` pair does not by itself enable phone/realtime task semantics. `/agent-service/v1` declares `supports_realtime_task_state=true`; ordinary request/response chat facades should leave that capability false unless they explicitly want realtime interruption, pending-tool, TTS/display, and artifact-reuse behavior.
 
@@ -807,10 +817,11 @@ Phase 0 treats these entry classifications as architecture contracts:
 | MCP `tool_run` | `ActionValidator -> ToolExecutor -> ToolRegistry` | Tool adapter path, not assistant entry. |
 | Removed legacy Web Chat | `/demo/console`, `/static/index.html`, and `/ws/agent/{session_id}` are not registered or shipped | Ordinary browser chat is out of scope until the realtime assistant runtime is stable. |
 
-The default pytest safety net protects cancellation termination, the core realtime-event to Gateway-frame
-conversion contract, Media-Agent explicit interrupt behavior, explicit followup/replace behavior, same-user
-connection takeover without false disconnect cancellation, and cursor replay within detached grace. Add more
-pytest only for a concrete regression or changed stable protocol contract.
+The default pytest safety net protects the registered `GATE-001` lifecycle and frame contract: structured turn
+mode validation, followup/replace ordering, same-user connection takeover, detached cursor replay, hangup
+destruction, and the core runtime event-to-frame boundary. Feature-specific Media-Agent and vendor-adapter
+checks belong in an explicit TDD or incubating feature. Extend the existing core Gateway file only when a
+concrete framework bug exposes a `GATE-001` gap or that stable contract changes.
 
 ## OpenClaw Reference Boundary
 

@@ -97,6 +97,7 @@ _ANSWER_ONLY_POLICY = """\
 def render_system_instruction(
     *,
     agent_personalization: str = "",
+    procedural_guidance: str = "",
     current_time: datetime | None = None,
     current_location: str | None = None,
     response_style: ResponseStyle = "conversation",
@@ -116,7 +117,10 @@ def render_system_instruction(
         current_time=resolved_time.isoformat(timespec="seconds"),
         current_location=location_line,
     )
-    sections = [runtime_policy, _RESPONSE_STYLE_POLICIES[response_style], personalization]
+    sections = [runtime_policy]
+    if procedural_guidance.strip():
+        sections.append(procedural_guidance.strip())
+    sections.extend([_RESPONSE_STYLE_POLICIES[response_style], personalization])
     if answer_only:
         sections.append(_ANSWER_ONLY_POLICY)
     return "\n\n".join(sections)

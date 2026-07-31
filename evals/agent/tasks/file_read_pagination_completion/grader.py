@@ -1,7 +1,6 @@
 """Grader for complete cursor-based file reading."""
 
-from evals.agent.batch_grading import grade_case
-from evals.agent.contracts import LLMJudge, RunEvidence, TaskJudgeResult
+from evals.agent.batch_grading import grader_for_response_quality
 
 RESPONSE_QUALITY_RUBRIC = """
 通过条件：
@@ -11,9 +10,4 @@ RESPONSE_QUALITY_RUBRIC = """
 """.strip()
 
 
-def grade(evidence: RunEvidence, judge: LLMJudge) -> TaskJudgeResult:
-    return grade_case(
-        evidence,
-        judge,
-        response_quality_rubric=RESPONSE_QUALITY_RUBRIC,
-    )
+grade = grader_for_response_quality(RESPONSE_QUALITY_RUBRIC)

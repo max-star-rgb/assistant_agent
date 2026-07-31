@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from evals.agent.contracts import (
     LLMJudge,
     RunEvidence,
@@ -40,6 +42,33 @@ GROUNDING_RUBRIC = """
 """.strip()
 
 RESPONSE_QUALITY_CRITERION_ID = "response_quality"
+
+
+@dataclass(frozen=True)
+class ResponseQualityGrader:
+    """Callable Task grader binding one local response-quality rubric."""
+
+    response_quality_rubric: str
+
+    def __call__(
+        self,
+        evidence: RunEvidence,
+        judge: LLMJudge,
+    ) -> TaskJudgeResult:
+        return grade_case(
+            evidence,
+            judge,
+            response_quality_rubric=self.response_quality_rubric,
+        )
+
+
+def grader_for_response_quality(rubric: str) -> ResponseQualityGrader:
+    """Create the standard three-dimension grader for one Task rubric."""
+
+    normalized = rubric.strip()
+    if not normalized:
+        raise ValueError("Response-quality rubric must not be empty.")
+    return ResponseQualityGrader(response_quality_rubric=normalized)
 
 
 def grade_case(

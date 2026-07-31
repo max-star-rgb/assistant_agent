@@ -1557,6 +1557,9 @@ def _run_end_payload(
     }
     if result.trace_id:
         payload["trace_id"] = result.trace_id
+    output_refs = list(dict.fromkeys(result.output_refs))[:4]
+    if output_refs:
+        payload["output_refs"] = output_refs
     if result.status == "cancelled":
         cancel_payload = _run_end_cancel_payload(result.metadata)
         if cancel_payload:

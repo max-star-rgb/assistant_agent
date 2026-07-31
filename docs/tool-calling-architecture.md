@@ -42,8 +42,9 @@ requires_media
 枚举值、协议标识符和代码符号保持英文。外部 MCP 与配置插件的描述属于上游契约，不由
 runtime 猜测翻译或改写。
 
-`shopping_search` 的短 description 只保留调用边界和不能下单的约束。展示格式不重复塞进每轮工具
-schema，而由成功 observation 中的结构化 `response_contract=shopping_detail_v1` 提供。
+`shopping_search` 的短 description 只保留调用边界和不能下单的约束；调用次数不写进 description，
+而由 Runtime 按 run 治理。每个 run 最多实际执行一次 `shopping_search`，Provider adapter 内部重试仍
+属于同一次执行；新的 user turn 创建新 run 后可以再次调用。
 系统只注册一个 `shopping_search`：单品和多品类清单都通过 `needs` 表达，单品是一个 need，
 多品类是多个 need。每个 need 可以携带数量、是否必需和单价上限；多于一个 need 时整份清单的
 `total_budget` 必填。场景、选择原因和前序结构化 `evidence` 均为可选语义输入。工具对每个 need
@@ -55,12 +56,13 @@ mock mode 不注册购物工具；real mode 只有好单库或 HTTP 搜索与比
 购物结果以 `outcome=success | partial | empty | failed` 区分完整结果、仍有可用候选的部分结果、
 正常完成但没有候选和工具执行失败。`ToolResult.success` 对 `success`、`partial` 和 `empty` 为真，
 只有 `failed` 为假，避免把“没有匹配商品”或“比价失败但搜索候选可用”误报成整个工具执行失败。
-模型可见 observation 保留用户明确给出的预算和平台约束、最多 3 个归一化商品、结构化 Provider
-错误和购物响应契约，不再同时发送 search items、offers、best offer 镜像或重复 output ref。
-购物结果遵循标准 ReAct 闭环：`shopping_search` 返回结构化 `ToolResult`，runtime 将其转换为
-tool observation，下一轮 LLM 消费 `data.items` 和 `data.response_contract` 后填充展示模板并生成最终文本。系统不注册额外的展示
-工具，也不在 Realtime/Gateway 用 presenter 覆盖模型回复；是否输出 `<detail>` 以及选择哪些合格商品
-由 LLM 根据 observation 决定，代码只负责工具治理、上下文传递和原样交付最终回答。
+模型可见 observation 只保留 `outcome`、`total_cost`、`within_budget`、`summary`、最多 3 个
+归一化 `items`，以及非空的 `uncovered_required_needs`；不包含商品链接、图片链接、展示模板，也不再
+重复发送 selections、search items、offers、best offer 或 output ref。
+购物结果仍遵循标准 ReAct 闭环：下一轮 LLM 根据精简 observation 生成正常自然语言答案。
+支持 `shopping_detail_v1` 的交付入口随后从本 run 的完整成功 `ToolResult` 确定性抽取最多 3 个
+标题、平台、价格、HTTP(S) 商品链接和图片链接，并把唯一 `<detail>...</detail>` 块追加在自然语言后。
+该投影不注册额外工具、不增加 LLM 调用，也不覆盖 `AgentResponse.message` 或 conversation history。
 本地 Langfuse 会按 observation index 展示 assistant loop 产生的完整 `ToolObservation`，不会再次把它
 压缩成 summary/output ref；具体开发观测边界见 `docs/observability-harness.md`。
 
@@ -252,7 +254,9 @@ Plugin 按共享 Provider、配置、依赖和生命周期划分，不按 Tool �
 adapter bundle 的 weather/calendar/contacts 兼容代码归属 `calendar_weather_contacts`，但该 Plugin
 只注册 calendar/contacts；配置与 readiness 独立的
 `email_access`、`media_inspection`、`visual_image_search` 分别装配；本地 Python 执行独立归属
-`python_execution`。新增已有 Plugin 内的普通 Tool 只修改该 Plugin 目录及其测试；
+`python_execution`。新增已有 Plugin 内的普通 Tool 只修改该 Plugin 目录；验证遵循
+`tests/README.md`，默认不修改 core，开发期 RED/GREEN 使用独立 TDD feature，有风险证据的长期专项
+进入独立 incubating feature。
 新增内置 Plugin 额外在 `defaults.py` 可信清单登记一次；新增外部 Plugin 只增加独立 module 和部署
 配置。普通 Tool 的增删不得要求修改 Registry、Executor、Validator、assistant loop、Prompt/Context
 编译或中心 Tool name 表。只有引入新的宿主级共享基础设施时，才扩展 `ToolPluginContext` 和
@@ -315,7 +319,10 @@ readiness：real 模式的 Provider-backed 工具配置不完整时不会注册�
 - `requires_media` 可以基于入口携带的结构化媒体事实排除工具；
 - durable worker 只暴露当前 ready step 对应工具和 task submission 工具；
 - 入口 `allowed_tools` 可以进一步收窄本轮候选集合；
-- `enabled_skills` 只激活 Skill prompt/workflow，不负责授予 Tool 执行权限。
+- 项目级 Skill 在本轮最终可见目录包含其 permission 匹配的 governed tool 时，可以按
+  `visibility.enabled-by-default` 自动激活；`enabled_skills` 负责显式激活非默认或 `skill-only`
+  Skill。两种方式都只注入短 `skill_summary`，不授予 Tool 执行权限，也不裁剪目录；完整工作流和
+  reference 由模型通过受治理的 `load_skill` / `load_skill_reference` 按需读取。
 
 LLM 决定是否调用、调用哪个已暴露工具以及参数内容。目录策略不替模型猜测用户意图。
 
@@ -570,6 +577,17 @@ Calendar；默认 MCP 配置不注册 `get_events` / `manage_event`，避免本�
 入住日期查询的实时房价、房型、库存或 OTA 跳转链接；需要可预订候选时仍使用独立
 `lodging_search`。
 
+项目级 `skills/travel-tool-orchestration/SKILL.md` 统一说明这组工具的模型决策顺序：先确定唯一
+终点工具，只在缺少终点工具必填输入时调用前置工具。用户明确只要地图酒店地点时可使用高德 POI；
+涉及入住日期、价格、预算、房型、可订候选或 OTA 时使用 `lodging_search`；已有住宿候选后需要
+通勤证据时再调用高德路线工具。Skill 按本轮最终可见的 governed ToolSpec 自动激活，只把短路由
+摘要放入 system prompt；模型先调用 `load_skill` 读取完整工作流，遇到复杂歧义、空结果或恢复时再
+调用 `load_skill_reference(skill_id, reference_id)`。两个加载 Tool 只接受 Loader 已注册的 ID，
+reference 路径必须是 Skill `references/` 下的一层 Markdown 文件，不能由模型传入任意路径。
+Skill 目录、`SKILL.md`、`references/` 目录和 reference 文件都禁止符号链接；成功 observation 仅保留
+ID，下一轮 Context 再从完整项目注册 catalog 加载可信正文并提升为 procedural guidance。
+该流程不读取 `request.text` 做代码路由，不改变 `RunToolCatalog` 或 validator/executor 权限。
+
 当前 FlyAI adapter 按 `@fly-ai/flyai-cli==1.0.16` 的 `search-hotel` 命令与单行 JSON 契约实现；
 项目不自动安装 CLI。正式 key 从飞猪 AI 开放平台控制台获取，并仅在未跟踪 `.env` 或本地 shell
 配置为 `FLYAI_API_KEY`；升级前必须用离线 contract fake 和 operator 显式真实 smoke 重新核对字段。
@@ -618,6 +636,7 @@ Skill 只能调用已注册且 permission 匹配的工具。read 工具允许按
   composition root；
 - `tools/plugins/builtin/<assembly_boundary>/`：按共享 Provider、配置、依赖和生命周期组织的内置 Plugin
   及其 Tool、私有 adapter/backend 实现；
+- `tools/plugins/builtin/skill_loading/`：项目 Skill 主工作流和已注册 reference 的受治理只读加载；
 - `tools/base.py`：公共 Tool 协议；
 - `tools/registry.py`：工具注册、查找和 Pydantic schema 提取；
 - `context/tool_catalog.py`：结构化目录装配；
@@ -625,7 +644,7 @@ Skill 只能调用已注册且 permission 匹配的工具。read 工具允许按
 - `tools/spec_adapters.py`：OpenAI/MCP schema 转换；
 - `runtime/action_validator.py`：run catalog、Pydantic、media、durable 校验；
 - `runtime/tool_executor.py`：身份绑定、调用和提交；
-- `tests/contract/tools/test_tool_governance.py`：工具治理稳定契约。
+- `tests/core/contract/test_tool_contract.py`：`TOOL-001` 工具治理稳定契约。
 
 ## 9. 不变量
 

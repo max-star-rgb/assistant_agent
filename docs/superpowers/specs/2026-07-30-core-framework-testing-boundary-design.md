@@ -7,7 +7,8 @@ Provider adapter、Agent eval 基础设施和逐 Task 资产。新增节点或�
 导致默认套件持续增长、与实现细节和自然语言文案耦合，并使无关节点改动影响框架验证结果。
 
 本设计将默认 pytest 收敛为稳定的核心框架安全网。具体节点、业务能力、真实 Provider 和模型行为
-不再进入默认 pytest；确有验证价值的节点专项检查进入可独立删除的 system eval 目录。
+不再进入默认 pytest；功能开发期间允许在可手动删除的 `tests/tdd/<feature>/` 做临时 RED/GREEN，
+确有长期验证价值的节点专项检查进入可独立删除的 system eval 目录。
 
 ## 2. 目标
 
@@ -15,6 +16,7 @@ Provider adapter、Agent eval 基础设施和逐 Task 资产。新增节点或�
 - 新增 Tool、Provider、业务节点或 Agent Task 时，不需要修改核心测试。
 - 核心测试只断言稳定、结构化、与业务无关的框架行为。
 - 默认阻止 Codex 为小功能、wrapper、配置字段、文案或覆盖率随意增加 pytest。
+- 允许用户在 `tests/tdd/<feature>/` 保留显式运行、默认不收集的临时 RED/GREEN pytest。
 - 功能开发阶段确有必要的专项检查能够独立运行，并可在项目稳定后整目录删除。
 - 真实外部能力和模型行为继续通过 system eval 与 Agent eval 验证。
 
@@ -37,6 +39,11 @@ tests/
     unit/
     contract/
     integration/
+  tdd/
+    README.md
+    conftest.py
+    <feature>/
+      test_*.py
 
 evals/
   system/
@@ -47,8 +54,8 @@ evals/
         cases.json        # 可选
 ```
 
-`pyproject.toml` 的 `testpaths` 固定为 `tests/core`。裸 `pytest` 不收集
-`evals/system/incubating`。incubating 检查只能通过显式路径或该目录自己的 runner 运行。
+`pyproject.toml` 的 `testpaths` 固定为 `tests/core`。裸 `pytest` 不收集 `tests/tdd` 或
+`evals/system/incubating`。TDD 与 incubating 检查只能通过显式路径或对应目录自己的 runner 运行。
 
 `unit`、`contract` 和 `integration` 仍表达测试形态，但只有位于 `tests/core/` 内、能够映射到已登记
 框架不变量的测试才属于默认 pytest。
@@ -97,7 +104,7 @@ GATE-001  Gateway frame 映射
 IDENT-001 身份隔离
 ```
 
-每个 pytest item 必须通过 marker 关联已登记 ID：
+每个 core pytest item 必须通过 marker 关联已登记 ID：
 
 ```python
 @pytest.mark.core_invariant("TOOL-001")
@@ -117,8 +124,10 @@ def test_probe_tool_runs_through_governed_chain() -> None:
 testpaths = ["tests/core"]
 ```
 
-核心策略检查拒绝 `tests/` 下位于 `tests/core/` 之外的 Python 测试文件，避免重新形成
-`tests/feature`、`tests/legacy` 或其他旁路目录。
+核心策略检查只允许永久 pytest 位于 `tests/core/`，并允许临时 pytest 位于
+`tests/tdd/<feature>/`。它拒绝 `tests/tdd/` 根目录测试，以及 `tests/feature`、`tests/legacy`
+等其他旁路目录。只有 core 测试需要登记 invariant ID 和 marker；TDD 测试不进入默认收集，也不会
+自动晋升为 core。
 
 ### 6.3 文案和实现耦合门禁
 
@@ -130,6 +139,13 @@ testpaths = ["tests/core"]
 - 以私有方法调用次数作为主要正确性证据。
 
 允许精确断言稳定协议 token、结构化字段、error code、枚举值和 `*-sentinel`。
+
+### 6.4 临时 TDD 区
+
+`tests/tdd/<feature>/` 只服务功能开发期间的 RED/GREEN，必须显式运行
+`python -m pytest -q tests/tdd/<feature>`，并由 `tests/tdd/conftest.py` 强制 mock/offline。
+Codex 不得擅自删除这些 feature 目录；功能完成后用户可手动整目录删除，或明确要求 Codex 删除。
+临时 TDD 不是核心测试候选池，不会因存在时间或测试数量自动晋升。
 
 ## 7. System eval 与可删除检查
 
@@ -191,9 +207,10 @@ incubating 检查不属于发布默认门禁，不要求永久维护。功能稳
 
 1. 本次变更是否修改已登记核心不变量？
 2. 如果没有，禁止向 `tests/core` 添加测试。
-3. 如果只是具体节点、Provider、业务逻辑或文案变更，默认不新增 pytest。
-4. 存在真实 bug 或高风险专项验证需求时，优先扩展对应 system/Agent eval；开发期临时检查进入独立
-   incubating 目录。
+3. 如果只是具体节点、Provider、业务逻辑或文案变更，永久测试默认不新增；确需 TDD 时只进入
+   `tests/tdd/<feature>/`，显式运行并保持可整目录删除。
+4. 存在真实 bug 或高风险专项验证需求时，优先扩展对应 system/Agent eval；需要长期保留的开发期
+   专项检查进入独立 incubating 目录。
 5. 真实外部连通性进入正式 system eval；模型决策和回答质量进入 Agent eval。
 6. 新增核心测试必须说明 invariant ID、稳定行为变化，以及现有核心测试为何无法发现严重回归。
 7. 无法给出上述理由时，任务报告必须写：
@@ -230,7 +247,8 @@ Tests: not added because this is a node-level or implementation-only change.
 ## 12. 验收标准
 
 - `pyproject.toml` 默认只收集 `tests/core`。
-- `tests/` 中不存在 core 之外的 Python 测试。
+- `tests/` 中永久 Python 测试只位于 core；临时测试只位于 `tests/tdd/<feature>/`，根目录无测试。
+- 显式运行 TDD feature 时强制 mock/offline，裸 pytest 不收集 TDD。
 - 每个核心用例都关联有效 invariant ID。
 - 核心策略检查能够阻止未知 ID、旁路测试文件和自然语言文案断言。
 - 核心测试不导入具体业务节点或 Agent Task。

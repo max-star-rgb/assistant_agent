@@ -3,11 +3,6 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timezone
-from typing import Any
-
-from assistant_agent.config import ProviderConfig
-from assistant_agent.runtime.chat_adapter import ChatAdapter
-from assistant_agent.runtime.requests import UserRequest
 from assistant_agent.tools.plugins.builtin.lodging.models import (
     LodgingOffer,
     LodgingSearchRequest,
@@ -15,18 +10,10 @@ from assistant_agent.tools.plugins.builtin.lodging.models import (
 )
 from assistant_agent.tools.plugins.builtin.lodging.tool import LodgingSearchTool
 from assistant_agent.tools.registry import ToolRegistry
-from evals.agent.contracts import (
-    EnvironmentValidation,
-    TaskExecution,
-    TaskSpec,
-    ToolOutcomeExpectation,
-)
-from evals.agent.grading import environment_validation, rule_assertion
-from evals.agent.task_support import (
-    build_controlled_registry,
-    execute_isolated_runtime,
-    outcome_expectations,
-)
+from evals.agent.contracts import AssertionResult
+from evals.agent.environment_base import ControlledTaskEnvironment
+from evals.agent.grading import rule_assertion
+from evals.agent.task_support import build_controlled_registry
 
 
 OBSERVED_AT = datetime(2026, 7, 29, 10, 0, tzinfo=timezone.utc)
@@ -126,33 +113,21 @@ class _ConstrainedLodgingAdapter:
         )
 
 
-class TravelLodgingConstraintEnvironment:
+class TravelLodgingConstraintEnvironment(ControlledTaskEnvironment):
     """Read-only lodging fixture exposing estimate and budget semantics."""
 
-    def __init__(
-        self,
-        *,
-        config: ProviderConfig | None = None,
-        chat_adapter: ChatAdapter | None = None,
-    ) -> None:
-        self.config = config
-        self.chat_adapter = chat_adapter
+    dependency_label = "controlled:lodging-constraints-v1"
+    tool_catalog_label = "default_complete_registry_without_local_web_access"
+
+    def setup(self) -> None:
         self._adapter = _ConstrainedLodgingAdapter()
 
-    def describe(self) -> dict[str, Any]:
-        return {
-            "runtime": "AgentGraphRuntime",
-            "chat_provider": "configured_real",
-            "dependencies": "controlled:lodging-constraints-v1",
-            "tool_catalog": "default_complete_registry_without_local_web_access",
-            "registered_tool_count": len(self._build_registry().list()),
-            "writes": False,
-            "state_reset": "per_task_run",
-        }
+    def required_successes(self) -> tuple[str, ...]:
+        return ("lodging_search",)
 
-    def validate(self) -> EnvironmentValidation:
-        registry = self._build_registry()
-        expectations = self.tool_outcome_expectations()
+    def task_validation_checks(
+        self, registry: ToolRegistry
+    ) -> dict[str, AssertionResult]:
         fixture = self._adapter.search(
             LodgingSearchRequest(
                 destination="杭州",
@@ -165,89 +140,33 @@ class TravelLodgingConstraintEnvironment:
                 sort="distance_asc",
             )
         )
-        return environment_validation(
-            {
-                "full_tool_registry": rule_assertion(
-                    registry.sealed
-                    and "lodging_search" in registry.list()
-                    and {"web_search", "web_fetch"}.isdisjoint(
-                        registry.list()
-                    ),
-                    f"registered_tools={registry.list()}",
-                    label="完整目录包含受控酒店搜索工具",
+        return {
+            "full_tool_registry": rule_assertion(
+                "lodging_search" in registry.list()
+                and {"web_search", "web_fetch"}.isdisjoint(registry.list()),
+                f"registered_tools={registry.list()}",
+                label="完整目录包含受控酒店搜索工具",
+            ),
+            "controlled_lodging_fixture": rule_assertion(
+                fixture.success
+                and [item.nightly_price for item in fixture.offers]
+                == [568.0, 598.0, 528.0]
+                and [item.total_price for item in fixture.offers]
+                == [1704.0, 1794.0, 1584.0]
+                and all(
+                    item.price_basis == "nightly_estimate" for item in fixture.offers
                 ),
-                "outcome_contract_matches_registry": rule_assertion(
-                    {item.tool_name for item in expectations}
-                    == set(registry.list()),
-                    f"expectation_count={len(expectations)}",
-                    label="工具结果预期覆盖注册表",
-                ),
-                "controlled_lodging_fixture": rule_assertion(
-                    fixture.success
-                    and [item.nightly_price for item in fixture.offers]
-                    == [568.0, 598.0, 528.0]
-                    and [item.total_price for item in fixture.offers]
-                    == [1704.0, 1794.0, 1584.0]
-                    and all(
-                        item.price_basis == "nightly_estimate"
-                        for item in fixture.offers
-                    ),
-                    (
-                        "offers="
-                        f"{[item.model_dump(mode='json') for item in fixture.offers]}"
-                    ),
-                    label="受控酒店候选与估算口径完整",
-                ),
-                "isolated_state_boundary": rule_assertion(
-                    registry.get_spec("lodging_search").category == "read",
-                    "writes=False, state=in-memory-per-run",
-                    label="酒店工具只读且任务状态隔离",
-                ),
-            }
-        )
+                (f"offers={[item.model_dump(mode='json') for item in fixture.offers]}"),
+                label="受控酒店候选与估算口径完整",
+            ),
+            "isolated_state_boundary": rule_assertion(
+                registry.get_spec("lodging_search").category == "read",
+                "writes=False, state=in-memory-per-run",
+                label="酒店工具只读且任务状态隔离",
+            ),
+        }
 
-    def tool_outcome_expectations(
-        self,
-        available_tools: list[str] | None = None,
-    ) -> list[ToolOutcomeExpectation]:
-        registry = self._build_registry()
-        if available_tools is not None:
-            subset = ToolRegistry()
-            for name in dict.fromkeys(
-                [*available_tools, "lodging_search"]
-            ):
-                subset.register(
-                    registry.get(name),
-                    registry.registration_record(name),
-                )
-            subset.seal()
-            registry = subset
-        return outcome_expectations(
-            registry,
-            required_successes=("lodging_search",),
-        )
-
-    def execute(
-        self,
-        *,
-        task: TaskSpec,
-        request: UserRequest | dict[str, Any],
-        trace_id: str,
-        parent_span_id: str,
-    ) -> TaskExecution:
-        self.validate().require_valid()
-        return execute_isolated_runtime(
-            task=task,
-            request=UserRequest.model_validate(request),
-            trace_id=trace_id,
-            parent_span_id=parent_span_id,
-            config=self.config,
-            registry=self._build_registry(),
-            chat_adapter=self.chat_adapter,
-            initial_state={},
-        )
-
-    def _build_registry(self) -> ToolRegistry:
+    def build_registry(self) -> ToolRegistry:
         return build_controlled_registry(
             replacements={
                 "lodging_search": LodgingSearchTool(self._adapter),

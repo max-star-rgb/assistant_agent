@@ -36,6 +36,11 @@ Environment 可以模拟依赖，但不能模拟被测 Agent 决策。写操作�
 必须通过 `tool_outcome_expectations()` 声明 `must_succeed` 或带明确错误码的
 `must_fail_with`；该声明是工具业务结果预期的唯一事实源。
 
+基础 Task 默认继承 `ControlledTaskEnvironment`。共享模板唯一拥有
+`describe/validate/tool_outcome_expectations/execute`，Task-local Environment 只通过 hook 声明受控
+依赖、registry replacement、必需成功/失败、Task 专属 Rule、初始/最终状态与 runtime override。
+不要在每个任务中复制公共生命周期；需要改变工具暴露时实现结构化 `visibility_override()`。
+
 Mission Environment 还必须把结构化 `initial_state`、`final_state` 或 `state_diff` 转成非空、Rule-only 的
 `objective_state_assertions()`。基础 Task 不要求该方法；Mission 缺少该方法、返回空结果或混入 Judge
 assertion 都是 infrastructure failure。

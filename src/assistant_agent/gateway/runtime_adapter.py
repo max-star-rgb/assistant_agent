@@ -17,6 +17,7 @@ from assistant_agent.gateway.runtime_event_mapping import (
     map_agent_event_with_final_response_chunks,
 )
 from assistant_agent.gateway.progress import ProgressPolicy, ProgressTracker
+from assistant_agent.gateway.shopping_detail import project_shopping_delivery_text
 from assistant_agent.gateway.runtime_types import (
     RealtimeAgentEvent,
     RealtimeAgentRequest,
@@ -194,13 +195,36 @@ class GatewayRuntimeAdapter:
             response = state.response
             response_text = response.message if response is not None else ""
             status = "error" if state.status == "failed" else "completed"
+            delivered_text = response_text
+            shopping_detail = ""
+            if status == "completed":
+                delivered_text, shopping_detail = project_shopping_delivery_text(
+                    response_text,
+                    state.tool_results,
+                    metadata=user_request.metadata,
+                )
+            delivery_source = (
+                "shopping_detail_v1" if shopping_detail else "assistant_response"
+            )
 
             if status == "completed" and event_sink is not None:
+                if shopping_detail and forwarder.response_delta_seen:
+                    await forwarder.forward_realtime_event(
+                        RealtimeAgentEvent(
+                            type="response.chunk",
+                            text=f"\n{shopping_detail}",
+                            payload={
+                                "shopping_detail_version": "v1",
+                                "token_streaming": False,
+                            },
+                            content_type="detail",
+                        )
+                    )
                 await _emit_final_response_events(
                     forwarder,
                     session_id=state.session_id,
                     run_id=state.run_id,
-                    response_text=response_text,
+                    response_text=delivered_text,
                     emit_chunks=not forwarder.response_delta_seen,
                 )
 
@@ -208,14 +232,14 @@ class GatewayRuntimeAdapter:
                 _append_response_delivered_event(
                     artifacts=artifacts,
                     state=state,
-                    delivered_text=response_text,
-                    source="assistant_response",
+                    delivered_text=delivered_text,
+                    source=delivery_source,
                 )
             result_metadata["realtime_progress"] = forwarder.progress_summary()
-            result_metadata["response_delivery_source"] = "assistant_response"
+            result_metadata["response_delivery_source"] = delivery_source
             return RealtimeAgentResult(
                 status=status,
-                response_text=response_text,
+                response_text=delivered_text,
                 expects_reply=bool(response.followup_question) if response is not None else False,
                 run_id=result_run_id,
                 trace_id=state.trace_id,

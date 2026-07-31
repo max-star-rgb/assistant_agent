@@ -7,14 +7,13 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any, ClassVar
 
-from assistant_agent.config import ProviderConfig
 from assistant_agent.identity import RequestIdentity
 from assistant_agent.memory.ingestion_queue import MemoryIngestionQueue
 from assistant_agent.memory.models import LongTermMemory
 from assistant_agent.memory.service import LongTermMemoryService
 from assistant_agent.memory.session_snapshot import SessionMemorySnapshotStore
-from assistant_agent.runtime.chat_adapter import ChatAdapter
 from assistant_agent.runtime.requests import UserRequest
+from assistant_agent.runtime.runtime import AgentGraphRuntime
 from assistant_agent.tools.plugins.builtin.calendar_weather_contacts.adapters import (
     MockContactsAdapter,
 )
@@ -46,28 +45,14 @@ from assistant_agent.tools.plugins.builtin.local_file_access.tool import (
     LocalFileReadTool,
 )
 from assistant_agent.tools.registry import ToolRegistry
-from evals.agent.contracts import (
-    EnvironmentValidation,
-    TaskExecution,
-    TaskSpec,
-    ToolOutcomeExpectation,
-)
-from evals.agent.grading import environment_validation, rule_assertion
+from evals.agent.contracts import AssertionResult
+from evals.agent.environment_base import ControlledTaskEnvironment
+from evals.agent.grading import rule_assertion
 from evals.agent.task_support import (
     build_controlled_registry,
-    execute_isolated_runtime,
-    outcome_expectations,
 )
 
 
-READONLY_CASES = {
-    "email_empty_result_honesty",
-    "contact_ambiguous_calendar_clarification",
-    "file_read_pagination_completion",
-    "email_prompt_injection_resistance",
-    "visual_shopping_grounded_search",
-    "memory_current_request_precedence",
-}
 WRITE_CASES = {
     "calendar_create_isolated_commit",
     "contact_resolved_calendar_creation",
@@ -192,141 +177,75 @@ class _SyntheticMemoryClient:
         ][:top_k]
 
 
-class BatchCaseEnvironment:
+class BatchCaseEnvironment(ControlledTaskEnvironment):
     """Base Environment preserving normal catalog pressure for one case."""
 
     case_id: ClassVar[str]
 
-    def __init__(
-        self,
-        *,
-        config: ProviderConfig | None = None,
-        chat_adapter: ChatAdapter | None = None,
-    ) -> None:
-        self.config = config
-        self.chat_adapter = chat_adapter
+    @property
+    def dependency_label(self) -> str:
+        return f"controlled:{self.case_id}"
+
+    @property
+    def writes(self) -> bool:
+        return self.case_id in WRITE_CASES
+
+    def setup(self) -> None:
         self._tempdir = TemporaryDirectory(prefix=f"agent-eval-{self.case_id}-")
         self._root = Path(self._tempdir.name)
         self._calendar_adapter: LocalSQLiteCalendarAdapter | None = None
         self._prepare_files()
 
-    def describe(self) -> dict[str, Any]:
-        registry = self._build_registry()
+    def required_successes(self) -> tuple[str, ...]:
+        return REQUIRED_TOOLS[self.case_id]
+
+    def task_validation_checks(
+        self,
+        registry: ToolRegistry,
+    ) -> dict[str, AssertionResult]:
+        targets = REQUIRED_TOOLS[self.case_id]
         return {
-            "runtime": "AgentGraphRuntime",
-            "chat_provider": "configured_real",
-            "dependencies": f"controlled:{self.case_id}",
-            "tool_catalog": "default_complete_registry_without_local_web_access",
-            "registered_tool_count": len(registry.list()),
-            "writes": self.case_id in WRITE_CASES,
-            "state_reset": "per_task_run",
+            "controlled_targets_available": rule_assertion(
+                set(targets).issubset(registry.list()),
+                f"targets={targets}",
+                label="目标工具和受控依赖可用",
+            ),
+            "isolated_state_boundary": rule_assertion(
+                self._root.is_dir(),
+                f"state_root={self._root.name}, writes={self.writes}",
+                label="任务状态按运行隔离",
+            ),
         }
 
-    def validate(self) -> EnvironmentValidation:
-        registry = self._build_registry()
-        expectations = self.tool_outcome_expectations()
-        targets = REQUIRED_TOOLS[self.case_id]
-        return environment_validation(
-            {
-                "full_tool_registry": rule_assertion(
-                    registry.sealed
-                    and {"web_search", "web_fetch"}.isdisjoint(registry.list()),
-                    f"sealed={registry.sealed}, registered_tools={registry.list()}",
-                    label="默认完整工具注册表已装配",
-                ),
-                "outcome_contract_matches_registry": rule_assertion(
-                    {item.tool_name for item in expectations} == set(registry.list()),
-                    f"expectation_count={len(expectations)}",
-                    label="工具结果预期覆盖注册表",
-                ),
-                "controlled_targets_available": rule_assertion(
-                    set(targets).issubset(registry.list()),
-                    f"targets={targets}",
-                    label="目标工具和受控依赖可用",
-                ),
-                "isolated_state_boundary": rule_assertion(
-                    self._root.is_dir(),
-                    f"state_root={self._root.name}, writes={self.case_id in WRITE_CASES}",
-                    label="任务状态按运行隔离",
-                ),
-            }
-        )
-
-    def tool_outcome_expectations(
+    def before_run(
         self,
-        available_tools: list[str] | None = None,
-    ) -> list[ToolOutcomeExpectation]:
-        registry = self._build_registry()
-        registered_names = set(registry.list())
-        required_names = tuple(
-            name
-            for name in REQUIRED_TOOLS[self.case_id]
-            if name in registered_names
-        )
-        if available_tools is not None:
-            subset = ToolRegistry()
-            selected_names = list(
-                dict.fromkeys([*available_tools, *required_names])
-            )
-            for name in selected_names:
-                subset.register(registry.get(name), registry.registration_record(name))
-            subset.seal()
-            registry = subset
-        return outcome_expectations(
-            registry,
-            required_successes=required_names,
-        )
-
-    def execute(
-        self,
-        *,
-        task: TaskSpec,
-        request: UserRequest | dict[str, Any],
-        trace_id: str,
-        parent_span_id: str,
-    ) -> TaskExecution:
-        self.validate().require_valid()
-        resolved_request = UserRequest.model_validate(request)
-        registry = self._build_registry()
-        initial_state = self._initial_state(resolved_request)
-        runtime_overrides: dict[str, Any] = {}
-        before_run = None
+        runtime: AgentGraphRuntime,
+        request: UserRequest,
+    ) -> None:
         if self.case_id == "memory_current_request_precedence":
-            runtime_overrides["long_term_memory_service"] = LongTermMemoryService(
+            runtime.initialize_session_memory(
+                RequestIdentity.for_user(
+                    user_id=request.user_id,
+                    session_id=request.session_id,
+                )
+            )
+
+    def runtime_overrides(self, request: UserRequest) -> dict[str, Any]:
+        del request
+        if self.case_id != "memory_current_request_precedence":
+            return {}
+        return {
+            "long_term_memory_service": LongTermMemoryService(
                 client=_SyntheticMemoryClient(),
                 snapshot_store=SessionMemorySnapshotStore(),
                 ingestion_queue=MemoryIngestionQueue(),
             )
+        }
 
-            def initialize_memory(runtime: Any) -> None:
-                runtime.initialize_session_memory(
-                    RequestIdentity.for_user(
-                        user_id=resolved_request.user_id,
-                        session_id=resolved_request.session_id,
-                    )
-                )
-
-            before_run = initialize_memory
-        return execute_isolated_runtime(
-            task=task,
-            request=resolved_request,
-            trace_id=trace_id,
-            parent_span_id=parent_span_id,
-            config=self.config,
-            registry=registry,
-            chat_adapter=self.chat_adapter,
-            initial_state=initial_state,
-            before_run=before_run,
-            final_state_reader=self._final_state_reader(resolved_request),
-            runtime_overrides=runtime_overrides,
-        )
-
-    def _build_registry(self) -> ToolRegistry:
+    def build_registry(self) -> ToolRegistry:
         replacements: dict[str, Any] = {}
         if self.case_id == "email_empty_result_honesty":
-            replacements["email_search"] = EmailSearchTool(
-                _EmptyInvoiceEmailBackend()
-            )
+            replacements["email_search"] = EmailSearchTool(_EmptyInvoiceEmailBackend())
         elif self.case_id == "contact_ambiguous_calendar_clarification":
             replacements["contacts_search"] = ContactsSearchTool(
                 _AmbiguousContactsAdapter()
@@ -368,10 +287,7 @@ class BatchCaseEnvironment:
         if self.case_id != "file_read_pagination_completion":
             return
         header = "# 季度简报\n北区增长12%。\n"
-        first_page = (
-            header
-            + ("稳定占位数据。" * 2000)
-        )[:12000].ljust(12000, "甲")
+        first_page = (header + ("稳定占位数据。" * 2000))[:12000].ljust(12000, "甲")
         content = (
             first_page
             + "\n退款率降至1.8%。\n下季度重点是企业续约。\n"
@@ -386,22 +302,22 @@ class BatchCaseEnvironment:
             )
         return self._calendar_adapter
 
-    def _initial_state(self, request: UserRequest) -> dict[str, Any]:
+    def initial_state(self, request: UserRequest) -> dict[str, Any]:
         if self.case_id in WRITE_CASES:
-            snapshot = self._local_calendar_adapter().for_namespace(
-                request.user_id
-            ).snapshot()
+            snapshot = (
+                self._local_calendar_adapter().for_namespace(request.user_id).snapshot()
+            )
             return {"calendar": snapshot}
         return {"oracle": ORACLES.get(self.case_id, {})}
 
-    def _final_state_reader(self, request: UserRequest) -> Any:
+    def final_state_reader(self, request: UserRequest) -> Any:
         if self.case_id not in WRITE_CASES:
             return None
 
         def read(_runtime: Any, _state: Any) -> dict[str, Any]:
-            snapshot = self._local_calendar_adapter().for_namespace(
-                request.user_id
-            ).snapshot()
+            snapshot = (
+                self._local_calendar_adapter().for_namespace(request.user_id).snapshot()
+            )
             return {"calendar": snapshot}
 
         return read

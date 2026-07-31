@@ -397,36 +397,14 @@ def _model_observation(data: dict[str, Any]) -> dict[str, Any]:
     ]
     observation: dict[str, Any] = {
         "outcome": data.get("outcome"),
-        "scenario": data.get("scenario"),
-        "decision_reason": data.get("decision_reason"),
-        "evidence": data.get("evidence", []),
-        "total_budget": data.get("total_budget"),
         "total_cost": data.get("total_cost"),
         "within_budget": data.get("within_budget"),
-        "needs": data.get("needs", []),
-        "selections": selections,
-        "items": items,
-        "uncovered_required_needs": data.get("uncovered_required_needs", []),
         "summary": data.get("summary"),
-        "errors": data.get("errors", []),
-        "response_contract": {
-            "type": "shopping_detail_v1",
-            "max_items": 3,
-            "wrapper": "{summary}\n<detail>\n{items}\n</detail>",
-            "item_template": (
-                "{index}. {platform} - {title} {total_price}元 "
-                "<link>{product_url}</link> <pic>{image_url}</pic>"
-            ),
-            "required_item_fields": ["total_price", "product_url", "image_url"],
-            "fallback": "无合格商品时仅自然语言回答，不输出 <detail>。",
-            "rules": ["仅使用 data 中的真实字段", "不得声称已下单"],
-        },
-        "rules": [
-            "仅把 selections 中的商品表述为已搜索到的候选",
-            "不得把预算估算伪装成搜索结果",
-            "不得声称已下单",
-        ],
+        "items": items,
     }
+    uncovered_required_needs = data.get("uncovered_required_needs")
+    if uncovered_required_needs:
+        observation["uncovered_required_needs"] = uncovered_required_needs
     return {
         key: value
         for key, value in observation.items()
@@ -440,21 +418,19 @@ def _selection_observation(selection: dict[str, Any]) -> dict[str, Any]:
         if isinstance(selection.get("product"), dict)
         else {}
     )
-    product_url = item.get("product_url") or item.get("url")
     return {
         key: value
         for key, value in {
             "product_id": item.get("product_id"),
+            "need": selection.get("keyword"),
             "title": item.get("title"),
             "platform": item.get("platform"),
             "shop": item.get("shop"),
-            "total_price": selection.get("subtotal"),
             "quantity": selection.get("quantity"),
-            "product_url": product_url,
+            "total_price": selection.get("subtotal"),
+            "currency": item.get("currency"),
             "url_status": item.get("url_status"),
             "availability": item.get("availability"),
-            "image_url": item.get("image_url"),
-            "reason": item.get("reason"),
         }.items()
         if value not in (None, "", [], {})
     }
