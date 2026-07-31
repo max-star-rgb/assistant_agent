@@ -1189,11 +1189,27 @@ def _generated_image_details(output_refs: Any) -> list[dict[str, str]]:
 
 
 def _remaining_stream_text(full_text: str, streamed_text: str) -> str:
-    if not streamed_text:
+    if not full_text or not streamed_text:
         return full_text
-    if full_text.startswith(streamed_text):
-        return full_text[len(streamed_text):]
-    return ""
+    overlap_text = streamed_text.rstrip()
+    prefix_lengths = [0] * len(full_text)
+    prefix_length = 0
+    for index in range(1, len(full_text)):
+        while prefix_length and full_text[index] != full_text[prefix_length]:
+            prefix_length = prefix_lengths[prefix_length - 1]
+        if full_text[index] == full_text[prefix_length]:
+            prefix_length += 1
+        prefix_lengths[index] = prefix_length
+
+    overlap = 0
+    for character in overlap_text:
+        if overlap == len(full_text):
+            overlap = prefix_lengths[overlap - 1]
+        while overlap and character != full_text[overlap]:
+            overlap = prefix_lengths[overlap - 1]
+        if character == full_text[overlap]:
+            overlap += 1
+    return full_text[overlap:]
 
 
 def _delivery_capabilities(value: Any) -> dict[str, bool]:

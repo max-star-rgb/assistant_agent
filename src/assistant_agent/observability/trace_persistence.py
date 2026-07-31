@@ -206,7 +206,11 @@ def create_server_trace_store(
     score_observer = create_langfuse_score_trace_observer_from_env()
     if score_observer is not None:
         secondaries.append(HookTraceStore(HookManager([score_observer])))
-    return CompositeTraceStore(primary, secondaries)
+    return CompositeTraceStore(
+        primary,
+        secondaries,
+        read_fallbacks=[secondary],
+    )
 
 
 def close_trace_store(

@@ -183,17 +183,19 @@ class JsonlTraceStore:
         return deleted
 
 class CompositeTraceStore:
-    """Fan out trace writes while keeping reads deterministic from primary."""
+    """Fan out writes and read through explicitly configured fallback stores."""
 
     def __init__(
         self,
         primary: TraceStore,
         secondaries: Iterable[TraceStore] = (),
         *,
+        read_fallbacks: Iterable[TraceStore] = (),
         continue_on_error: bool = True,
     ) -> None:
         self.primary = primary
         self.secondaries = list(secondaries)
+        self.read_fallbacks = list(read_fallbacks)
         self.continue_on_error = continue_on_error
         self._errors: list[HookDispatchError] = []
 
@@ -217,16 +219,16 @@ class CompositeTraceStore:
                     raise
 
     def list_by_run(self, run_id: str) -> list[TraceEvent]:
-        return self.primary.list_by_run(run_id)
+        return self._read_list("list_by_run", run_id)
 
     def list_by_trace(self, trace_id: str) -> list[TraceEvent]:
-        return self.primary.list_by_trace(trace_id)
+        return self._read_list("list_by_trace", trace_id)
 
     def node_path(self, run_id: str) -> list[str]:
-        return self.primary.node_path(run_id)
+        return self._read_list("node_path", run_id)
 
     def list_by_user(self, user_id: str) -> list[TraceEvent]:
-        return self.primary.list_by_user(user_id)
+        return self._read_list("list_by_user", user_id)
 
     def delete_by_user(self, user_id: str) -> int:
         deleted = 0
@@ -277,6 +279,30 @@ class CompositeTraceStore:
 
     def _stores(self) -> list[TraceStore]:
         return [self.primary, *self.secondaries]
+
+    def _read_list(self, operation: str, identifier: str) -> list[Any]:
+        primary_method = getattr(self.primary, operation)
+        result = primary_method(identifier)
+        if result:
+            return result
+        for index, store in enumerate(self.read_fallbacks, start=1):
+            method = getattr(store, operation)
+            try:
+                result = method(identifier)
+            except Exception as exc:
+                self._record_error(
+                    target=store,
+                    target_index=index,
+                    operation=operation,
+                    event=None,
+                    exc=exc,
+                )
+                if not self.continue_on_error:
+                    raise
+                continue
+            if result:
+                return result
+        return []
 
     def _record_error(
         self,
@@ -512,6 +538,7 @@ def trace_debug_summary(events: list[TraceEvent]) -> dict[str, Any]:
         "tools": tools,
         "providers": providers,
         "error_count": len(errors),
+        "budget_exceeded": _budget_exceeded(events),
         "retry_count": sum(_retry_count(event) for event in events),
         "events": [trace_event_summary(event) for event in events],
     }
@@ -555,3 +582,23 @@ def _retry_count(event: TraceEvent) -> int:
     error = event.error or {}
     value = error.get("retry_count")
     return value if isinstance(value, int) else 0
+
+
+def _budget_exceeded(events: list[TraceEvent]) -> bool:
+    for event in events:
+        if event.attributes.get("budget_exceeded") is True:
+            return True
+        context = (
+            event.output_summary.get("context")
+            if isinstance(event.output_summary, dict)
+            else None
+        )
+        if not isinstance(context, dict):
+            continue
+        budget = context.get("budget")
+        if isinstance(budget, dict) and (
+            budget.get("over_budget") is True
+            or budget.get("budget_exceeded") is True
+        ):
+            return True
+    return False

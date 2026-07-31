@@ -144,8 +144,12 @@ def test_native_streaming_chat_emits_llm_span_and_final_answer() -> None:
         "stream_options": {"include_usage": True},
     }
     deltas = [event for event in event_sink.events if event.type == "response_delta"]
-    assert [event.text for event in deltas] == ["你好，我是你的助理。"]
-    assert deltas[0].payload["chunking_strategy"] == "provider_final_text"
+    assert [event.text for event in deltas] == ["你好，", "我是你的助理。"]
+    assert all(event.payload["token_streaming"] is True for event in deltas)
+    assert all(
+        event.payload["chunking_strategy"] == "provider_token_delta"
+        for event in deltas
+    )
 
 
 class ReasoningStreamingChatAdapter:

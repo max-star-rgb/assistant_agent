@@ -7,8 +7,9 @@ import pytest
 from assistant_agent.gateway import GatewaySessionManager, frame
 from assistant_agent.gateway.bridge import GatewayBridge, GatewayConnectionPolicy
 from assistant_agent.gateway.protocol import CALL_HANGUP, CALL_INCOMING
-from assistant_agent.gateway.runtime_types import RealtimeAgentResult
+from assistant_agent.gateway.runtime_types import RealtimeAgentEvent, RealtimeAgentResult
 from assistant_agent.gateway.transport import Endpoint, InMemoryDuplex
+from assistant_agent.gateway.turn_facade import GatewayTurnFacade, GatewayTurnRequest
 
 
 class ControllableBackend:
@@ -62,6 +63,23 @@ class HangupBackend:
         )
 
 
+class ProvisionalTextBackend:
+    async def run_turn(self, request, *, event_sink=None, cancel_token=None):
+        assert event_sink is not None
+        await event_sink(
+            RealtimeAgentEvent(
+                type="response.chunk",
+                text="provisional-sentinel",
+                payload={"token_streaming": True},
+            )
+        )
+        return RealtimeAgentResult(
+            status="completed",
+            run_id=request.run_id,
+            response_text="final-sentinel",
+        )
+
+
 async def _receive(
     endpoint: Endpoint,
     *,
@@ -85,6 +103,41 @@ async def _receive_until(
         ):
             return received
     raise AssertionError("endpoint-closed")
+
+
+@pytest.mark.core_invariant("GATE-001")
+def test_turn_facade_uses_terminal_response_instead_of_provisional_chunks() -> None:
+    asyncio.run(_assert_turn_facade_uses_terminal_response_instead_of_provisional_chunks())
+
+
+async def _assert_turn_facade_uses_terminal_response_instead_of_provisional_chunks() -> None:
+    backend = ProvisionalTextBackend()
+    manager = GatewaySessionManager(
+        backend_factory=lambda: backend,
+        start_reaper=False,
+    )
+    facade = GatewayTurnFacade(manager=manager)
+    delivered_chunks: list[str] = []
+
+    async def collect_chunk(text: str, _frame: dict) -> None:
+        delivered_chunks.append(text)
+
+    try:
+        result = await facade.run_turn(
+            GatewayTurnRequest(
+                user_id="user-sentinel",
+                session_id="session-sentinel",
+                text="input-sentinel",
+            ),
+            on_stream_chunk=collect_chunk,
+        )
+    finally:
+        await facade.close()
+        await manager.close()
+
+    assert delivered_chunks == ["provisional-sentinel"]
+    assert result.response_text == "final-sentinel"
+    assert result.payload["response_text"] == "final-sentinel"
 
 
 @pytest.mark.core_invariant("GATE-001")

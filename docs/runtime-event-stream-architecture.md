@@ -82,10 +82,13 @@ paths share the same empty-output contract.
 enters the public answer or conversation history. Runtime routing uses the
 normalized Provider result directly: non-empty `tool_calls` enter tool
 governance; otherwise refusal is returned as refusal text, `finish_reason=length`
-is treated as an incomplete response, and non-empty `response_text` is committed
-as the final answer. If both content and tool calls are present, tool calls win
-and the content is not committed. Buffered text is emitted only after the
-terminal result is known, so a later tool-call delta cannot leak a draft answer.
+is treated as an incomplete response, and non-empty `response_text` becomes the
+terminal answer. 前台 chat Provider 的 `token_delta` 到达后立即映射为公开
+`AgentEvent(type="response_delta")`，不再等待当前 Provider turn 的终态；同一 turn
+后来出现的 `tool_call_delta` 仍只在内部累积，参数完整后进入工具治理。因而 content 与
+tool call 可以共存：已经交付的 text 是不可撤回的 provisional 文本，工具执行后下一轮
+Provider text 继续追加到用户流。conversation history、memory 和 `AgentResponse.message`
+仍只保存 Runtime 归一化的终态回答，不机械拼接这些 provisional 前导文本。
 
 For the main foreground chat LLM only, `provider_timeout` and
 `provider_empty_response` with no usable text/tool/refusal are treated as a
@@ -282,8 +285,8 @@ Qwen realtime vision 的 Provider delta 与用户可见 Agent stream 是两条�
 `QwenRealtimeVisionAdapter` 在 persistent WebSocket 内累积 `response.text.delta`，直到
 收到 completed `response.done` 后才发布一个结构化 `VideoUnderstandingResult`；这些 delta
 不会映射为 `LLMEvent`、`AgentEvent(response_delta)`、`RealtimeAgentEvent(response.chunk)`
-或 Gateway `stream.chunk`。最终 Agent stream 仍只来自前台 chat Provider，经现有
-commit barrier 与 `AgentRunStream` 进入 realtime/Gateway。视觉 Provider 的首 delta 与总耗时
+或 Gateway `stream.chunk`。最终 Agent stream 仍只来自前台 chat Provider，其公开
+`token_delta` 经 `AgentRunStream` 实时进入 realtime/Gateway；视觉 Provider 的首 delta 与总耗时
 只作为 prompt-safe scalar diagnostics，不携带 Qwen 原文或 raw event。
 
 ## Cancellation And Failure Semantics

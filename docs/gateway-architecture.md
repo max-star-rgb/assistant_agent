@@ -158,7 +158,7 @@ config and structured request media, never user text. `assistantControl`
 validates and records media control state,
 and the legacy `assistantControlStart` handshake remains accepted for older
 clients. `chat` maps the latest `speechContent` to a Gateway turn. With
-`stream=true`, committed provider-token `stream.chunk` frames become media
+`stream=true`, provider-token `stream.chunk` frames become media
 `chatResponse` delta packets (`PROCESSING`, increasing sequence,
 `final=false`), followed by one terminal packet (`SUCCESS`, `final=true`) whose
 `description` contains only text not already delivered by prior deltas. When all
@@ -234,8 +234,10 @@ acknowledged. Optional `clientCapabilities` negotiate prompt-free
 `chatProgress` and application-level `chatResponseAck`. Media `chat.stream`
 independently selects delta delivery; clients that send `stream=false` or omit
 it retain single-final-response behavior. Provider-token streaming is enabled
-for `stream=true`, while the runtime commit barrier continues to suppress
-tool-call preambles. If the media WebSocket disconnects while a detached chat
+for `stream=true`. Provider text is append-only provisional delivery: text emitted
+before a later native tool call remains visible, while tool-call deltas stay internal
+until their arguments are complete and governed execution begins. If the media WebSocket
+disconnects while a detached chat
 turn is active, the entry cleanup cancels that task and the facade sends
 `run.cancel` with `source=gateway_disconnect` and
 `reason=client_disconnected` for the current Gateway run. Abnormal WebSocket
@@ -257,6 +259,10 @@ Gateway owns the protocol and lifecycle boundary for realtime or Gateway-normali
 - Maintain per-session user text history for Gateway turns.
 - Register active runs and emit `run.started`, user-visible `event.progress`, `stream.chunk`, and `run.end`.
 - Include the assistant backend `trace_id` in `run.end.payload.trace_id` when available so developer/debug entry layers can load trace summaries without exposing raw provider payloads.
+- Completed runs include the backend-owned normalized final delivery text in
+  `run.end.payload.response_text`. `GatewayTurnFacade.response_text` uses this
+  terminal field rather than reconstructing final state from provisional
+  `stream.chunk` frames.
 - For cancelled turns, include prompt-safe cancel metadata in `run.end.payload.cancel` (`source`, optional `reason`, `phase`, `best_effort`, and `deadline_ms` when applicable). If Gateway ends the turn before a backend trace is available, include `run.end.payload.trace.status=not_available` with reason `cancelled_before_backend_result` instead of inventing a trace id.
 - Convert realtime backend events into Gateway wire frames.
 - Convert backend failures into protocol-level `run.end` or `error` frames.
@@ -760,7 +766,11 @@ Realtime event projection carries stable delivery semantics without moving contr
 
 Every `run.end` supersedes the same progress slot, including completed, failed, and cancelled runs. This lets an entry adapter remove already displayed progress after a final answer or cancellation. Progress and tool lifecycle events remain display/trace state; they are not assistant final text and must not be promoted into conversation history or long-term memory.
 
-Provider text remains provisional until the current native LLM call is known not to contain tool calls. The runtime buffers streamed text for every tool-capable iteration, discards it when that iteration returns tool calls, and flushes it only when the iteration resolves as a final answer. This commit barrier prevents tool-call preambles from becoming `stream.chunk` output while keeping streaming as an event projection rather than the assistant loop itself.
+前台 chat Provider 的 text delta 会立即成为 `response.chunk`，即使同一 Provider turn
+随后返回 native tool call。tool-call name/argument delta 仍只在 Runtime 内部累积，
+完整后才经过治理执行；已经发送的 text 不回滚，作为 append-only provisional 输出保留。
+后续工具迭代产生的 Provider text 继续追加。Runtime 终态、conversation history 和 memory
+仍以规范化最终 `AgentResponse` 为准，不从这些 delivery chunk 重建业务状态。
 
 The repository still does not invoke a TTS provider. `speech_policy`, `persistence`, `replaceable`, `replacement_key`, and `supersedes` are prompt-safe entry-layer facts that UI or future audio adapters can consume.
 

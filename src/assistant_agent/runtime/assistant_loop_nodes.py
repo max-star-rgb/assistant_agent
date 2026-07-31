@@ -112,53 +112,6 @@ class AssistantLoopState(TypedDict):
     last_llm_attempt_kind: NotRequired[str]
 
 
-class _ResponseDeltaBuffer:
-    """Hold streamed text until the model response is known to be terminal text."""
-
-    def __init__(self, graph_state: AssistantLoopState, *, source: str) -> None:
-        self._event_sink = graph_state.get("event_sink")
-        self._state = graph_state["state"]
-        self._source = source
-        self._events: list[AgentEvent] = []
-
-    @property
-    def enabled(self) -> bool:
-        return self._event_sink is not None
-
-    def emit_delta(self, text: str, payload: dict[str, Any]) -> None:
-        event = stream_delta_to_agent_event(
-            text,
-            payload,
-            session_id=self._state.session_id,
-            run_id=self._state.run_id,
-            source=self._source,
-        )
-        if event is not None:
-            self._events.append(event)
-
-    def flush(self) -> None:
-        if self._event_sink is not None:
-            for event in self._events:
-                self._event_sink.emit(event)
-        self._events.clear()
-
-    def flush_answer(self, text: str) -> None:
-        """Replace raw provider deltas with one validated public-answer delta."""
-
-        self._events.clear()
-        self.emit_delta(
-            text,
-            {
-                "token_streaming": False,
-                "chunking_strategy": "provider_final_text",
-            },
-        )
-        self.flush()
-
-    def discard(self) -> None:
-        self._events.clear()
-
-
 def _run_phase(graph_state: AssistantLoopState) -> RunPhase:
     value = graph_state.get("run_phase", RunPhase.ACT)
     try:
@@ -395,7 +348,7 @@ def _decide_with_llm(
     if preflight.failure is not None:
         return _context_compaction_failed_output(preflight.failure), context
     answer_only_base_request = preflight.request
-    request, stream_buffer = _with_buffered_response_stream(
+    request = _with_response_stream_callback(
         preflight.request,
         graph_state,
         source="assistant_langgraph_answer",
@@ -412,7 +365,6 @@ def _decide_with_llm(
         and context_service.compactor is not None
         and _can_retry_provider_context_overflow(state)
     ):
-        stream_buffer.discard()
         _record_provider_context_overflow(state, result)
         retry_preflight = context_service.preflight(
             context,
@@ -431,7 +383,7 @@ def _decide_with_llm(
             )
         retry_context = retry_preflight.context
         answer_only_base_request = retry_preflight.request
-        retry_request, stream_buffer = _with_buffered_response_stream(
+        retry_request = _with_response_stream_callback(
             retry_preflight.request,
             graph_state,
             source="assistant_langgraph_answer",
@@ -445,16 +397,14 @@ def _decide_with_llm(
         _record_chat_usage_metadata(state, result)
         context = retry_context
         if _is_provider_context_overflow_result(result):
-            stream_buffer.discard()
             _record_provider_context_overflow(state, result, retry_failed=True)
             return _provider_context_overflow_final_answer(result), context
     if result.success and result.tool_calls:
-        stream_buffer.discard()
         if not context_service.selected_tool_specs(context):
             state.request.metadata["tool_call_returned_after_budget_exhaustion"] = True
             state.request.metadata["finalization_protocol_violation"] = True
             state.request.metadata["finalization_protocol_violation_count"] = 1
-            retry_request, retry_stream_buffer = _with_buffered_response_stream(
+            retry_request = _with_response_stream_callback(
                 _with_finalize_protocol_retry_guidance(answer_only_base_request),
                 graph_state,
                 source="assistant_langgraph_answer",
@@ -472,10 +422,8 @@ def _decide_with_llm(
                 and chat_result_kind(result) in {"text", "refusal"}
             ):
                 decision = _native_final_decision(result)
-                retry_stream_buffer.flush_answer(decision.text)
                 graph_state["pending_tool_calls"] = []
                 return decision, context
-            retry_stream_buffer.discard()
             state.request.metadata["answer_only_retry_failed"] = True
             state.request.metadata["finalization_protocol_violation_count"] = 2
             return _finalize_fallback(context), context
@@ -491,16 +439,13 @@ def _decide_with_llm(
         context.answer_only
         and chat_result_kind(result) in {"error", "truncated", "empty"}
     ):
-        stream_buffer.discard()
         graph_state["pending_tool_calls"] = []
         state.request.metadata["finalization_synthesis_failed"] = True
         decision = _finalize_fallback(context)
     elif result.success:
         graph_state["pending_tool_calls"] = []
         decision = _native_final_decision(result)
-        stream_buffer.flush_answer(decision.text)
     else:
-        stream_buffer.discard()
         graph_state["pending_tool_calls"] = []
         decision = _native_final_decision(result)
     return decision, context
@@ -1428,18 +1373,6 @@ def _with_response_stream_callback(
     if callback is None:
         return request
     return request.model_copy(update={"stream_callback": callback})
-
-
-def _with_buffered_response_stream(
-    request: ChatRequest,
-    graph_state: AssistantLoopState,
-    *,
-    source: str,
-) -> tuple[ChatRequest, _ResponseDeltaBuffer]:
-    buffer = _ResponseDeltaBuffer(graph_state, source=source)
-    if not buffer.enabled:
-        return request, buffer
-    return request.model_copy(update={"stream_callback": buffer.emit_delta}), buffer
 
 
 def _response_stream_callback(

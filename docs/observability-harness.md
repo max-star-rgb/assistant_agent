@@ -220,12 +220,19 @@ session、queue、admission、run、cancel、interrupt 和 terminal 边界。它
 query key、session 摘要和聚合计数，不记录 query value、原始 session ID 或媒体内容。
 
 Assistant runtime 不再投影到 operational text log，也不再创建 `.data/logs/runtime.log`。
-server `CompositeTraceStore` 默认只保留进程内 primary 与后台 JSONL persistence；
+server `CompositeTraceStore` 默认保留进程内 primary 与后台 JSONL persistence；
 `.data/graph_trace.jsonl` 和 trace query API 是机器查询与调试重建权威，
 `scripts/agentruntime_view.py last --follow` 是唯一 runtime 开发观察视图。显式设置
 `ASSISTANT_AGENT_OTEL_EXPORT_ENABLED=true` 且提供 Langfuse 凭据时，server 会追加
 一个 optional text OpenTelemetry observer secondary；依赖缺失、endpoint 缺失或导出失败必须
 fail-open，不影响 primary trace store、JSONL persistence 或 turn 响应。
+
+Langfuse 是跨进程人工分析和可视化的主要入口，但不是 Runtime 关键路径中的唯一事实存储。
+`TraceEvent` 是统一事实模型：当前进程查询先读内存 primary，未命中指定 run/trace 时回读后台
+JSONL；Server 重启后 `/runs/{run_id}` 与 `/traces/{trace_id}` 因而仍可查询已经落盘的本地事实。
+Langfuse/OTel 继续异步 fail-open，导出失败不能阻断响应；本地 JSONL 保留离线测试、导出缺失和
+更完整 timeline 的兜底证据。所有 API/CLI summary 都复用 `trace_debug_summary` 的同一结构化契约，
+可选诊断字段缺失时使用 schema 默认值，不得升级为 HTTP 500。
 
 `scripts/run_server.py` 提供 `--console-level`、`--file-log-level`、
 `--console-mode {concise,verbose}`、`--log-dir PATH` 与 `--gateway-event-path PATH`，
@@ -374,9 +381,11 @@ CLI, or Gateway transport adapters.
 
 For local composition, `CompositeEventSink` can fan out one runtime event stream
 to several sinks, and `CompositeTraceStore` can fan out trace writes to a
-primary store plus secondary stores while keeping reads primary-only. These are
-observer composition primitives, not a generic HookManager and not interception
-points for changing assistant behavior.
+primary store plus secondary stores. Reads prefer the in-memory primary and
+only fall through to explicitly configured readable stores when primary has no
+matching facts; observer-only OTel/Langfuse stores never participate in that
+read path. These are observer composition primitives, not a generic HookManager
+and not interception points for changing assistant behavior.
 `HookManager` builds on those composition primitives as an observer-only
 vocabulary layer. `HookEventSink` forwards `AgentEvent` records to observers,
 and `HookTraceStore` forwards trace writes to observers when used as a secondary

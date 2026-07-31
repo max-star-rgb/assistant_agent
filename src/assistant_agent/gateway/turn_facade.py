@@ -389,10 +389,15 @@ def _turn_result(
 ) -> GatewayTurnResult:
     payload = _payload_dict(terminal)
     reason = str(terminal.get("reason") or "")
+    terminal_response_text = payload.get("response_text")
     return GatewayTurnResult(
         frames=list(frames),
         terminal_frame=dict(terminal),
-        response_text="".join(chunks),
+        response_text=(
+            terminal_response_text
+            if isinstance(terminal_response_text, str)
+            else "".join(chunks)
+        ),
         status=_status_from_terminal(terminal),
         reason=reason,
         run_id=terminal.get("run_id"),

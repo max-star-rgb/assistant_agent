@@ -172,9 +172,15 @@ Agent 每个 WebSocket 连接都会分配新的内部 `agent-service-*` Gateway 
 - 若本轮正文已经全部通过中间包发送，成功终包的 `description` 为空字符串。媒体/App 可以继续按增量追加处理，不会重复追加完整答案。
 - 若本轮已经发送过中间包，成功终包仍会同时携带 `display_only=true` 和 camelCase 兼容字段 `displayOnly=true`，供支持该标记的客户端识别终包。
 - 只有真实 Provider token delta 产生中间包；Provider 不支持或未产生 token delta 时，即使 `stream=true` 也只发送一个完整终包，不伪造流式能力。
+- Provider text delta 是 append-only provisional 输出：即使同一 Provider turn 后续出现
+  native tool call，已经发送的 text 也不会撤回；tool-call name/argument delta 不发送给媒体，
+  只在 Runtime 内部累积完整后进入工具治理。工具执行后的下一轮 Provider text 继续按 sequence
+  追加。媒体侧不得把 `PROCESSING` 中间包视为可回滚内容。
+- Gateway `run.end.payload.response_text` 携带 Runtime 归一化最终正文。Agent-Service
+  使用该终态字段计算成功终包，而不是把 provisional `stream.chunk` 拼接成最终答案；
+  因此 `stream=false` 仍只返回规范化终态正文，截断、错误恢复文案和购物 detail 也可在终包补齐。
 - 购物推荐/比价遵循 ReAct：`shopping_search` 返回结构化结果，下一轮 LLM 消费不含链接和展示模板的精简 observation，生成正常自然语言。由于 Agent-Service 声明 `supports_shopping_detail_v1=true`，Gateway Runtime adapter 会从完整成功 ToolResult 抽取标题、平台、价格、商品链接和图片链接，把唯一 `<detail>...</detail>` 追加到最终交付正文；不覆盖 `AgentResponse.message` 或 conversation history，也不增加 LLM 调用。若自然语言已通过 Provider token delta 发送，终包 `description` 只携带尚未发送的换行和协议块。
 - `deliveryId` 和 `chatResponseAck` 只属于成功终包；中间包和失败终包都不进入应用层 ACK 状态。
-- Provider 的工具调用前导文本受 runtime commit barrier 保护；会被工具调用取代的 provisional 文本不会发送给 Media/App。
 - 媒体侧已经支持在成功终包的
   `message.content.intentResult.detail[]` 中接收图片。图片项使用
   `{"type":"IMAGE","image":"<Base64 或 data:image/...;base64,...>"}`；

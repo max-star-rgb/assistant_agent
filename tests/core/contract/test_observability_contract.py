@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -17,6 +18,11 @@ from assistant_agent.observability.agent_service_delivery import (
     AgentServiceDeliveryRegistry,
 )
 from assistant_agent.observability.otel_mapping import build_text_otel_span_specs
+from assistant_agent.observability.trace_persistence import (
+    close_trace_store,
+    create_server_trace_store,
+)
+from assistant_agent.observability.trace_query import TraceQueryService
 from assistant_agent.observability.trace_store import (
     InMemoryTraceStore,
     TraceEvent,
@@ -307,6 +313,62 @@ def test_trace_correlation_exists_before_work() -> None:
     assert mapped.type == "run.progress"
     assert mapped.payload["run_id"] == "run-sentinel"
     assert mapped.payload["trace_id"] == "trace-sentinel"
+
+
+@pytest.mark.core_invariant("OBS-001")
+def test_non_empty_trace_summary_keeps_optional_diagnostics_serializable() -> None:
+    trace_store = InMemoryTraceStore()
+    trace_store.append(
+        TraceEvent(
+            trace_id="trace-sentinel",
+            run_id="run-sentinel",
+            user_id="user-sentinel",
+            session_id="session-sentinel",
+            node_name="runtime",
+            event_type="observability",
+            canonical_event="run.completed",
+            status="completed",
+        )
+    )
+
+    summary = TraceQueryService(trace_store).trace_summary("trace-sentinel")
+
+    assert summary is not None
+    assert summary.budget_exceeded is False
+    assert summary.retry_count == 0
+    assert summary.model_dump(mode="json")["trace_id"] == "trace-sentinel"
+
+
+@pytest.mark.core_invariant("OBS-001")
+def test_server_trace_store_reads_persisted_trace_after_recreation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ASSISTANT_AGENT_OTEL_EXPORT_ENABLED", "false")
+    monkeypatch.setenv("ASSISTANT_AGENT_LANGFUSE_SCORE_ENABLED", "false")
+    trace_path = tmp_path / "trace.jsonl"
+    first_store = create_server_trace_store(path=trace_path)
+    first_store.append(
+        TraceEvent(
+            trace_id="trace-sentinel",
+            run_id="run-sentinel",
+            user_id="user-sentinel",
+            session_id="session-sentinel",
+            node_name="runtime",
+            event_type="observability",
+            canonical_event="run.completed",
+            status="completed",
+        )
+    )
+    assert close_trace_store(first_store, timeout=2.0) is True
+
+    recreated_store = create_server_trace_store(path=trace_path)
+    try:
+        events = recreated_store.list_by_trace("trace-sentinel")
+    finally:
+        close_trace_store(recreated_store, timeout=2.0)
+
+    assert [event.canonical_event for event in events] == ["run.completed"]
 
 
 @pytest.mark.core_invariant("OBS-001")
