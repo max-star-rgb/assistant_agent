@@ -29,11 +29,16 @@ Last updated: 2026-07-31
 - memory 边界：长期记忆只来自 Mem0。session 创建时按可信身份调用一次 Mem0 `get_all` 并冻结
   snapshot；包括第一轮在内的所有 turn 只复用 snapshot，不再召回。成功 turn 在回复提交后把
   user/assistant messages 异步交给 Mem0 原生 `add`，由 Mem0 负责提取、合并、向量化和持久化。
+- 本地 Mem0 sidecar 使用原生 `custom_instructions` 要求新提取、合并或更新后的 memory text
+  使用简体中文；该要求只控制表达语言，不在 context/runtime 侧增加翻译、事实筛选或二次 memory
+  算法。存量英文记忆通过显式 real-mode operator migration 原位 update，并以 Mem0 history
+  验证旧值，不在每轮 renderer 中重复翻译。
 - session memory snapshot 只保存从 Mem0 原始记录提取的结构化 `LongTermMemory`。不存在 memory read/write
   policy、ranking、profile、promotion 或 memory tool。ContextBuilder 在每轮把同一份冻结 items
-  写入 context pack；Context renderer 再将原始文本按顺序组装为 XML 转义的
-  `<long_term_memory trust="untrusted_history">` 历史证据，与 `<current_request>` 形成显式边界后
-  进入当前 `user` message，不进入 `system` message。
+  写入 context pack；Context renderer 再将原始文本按顺序编码为带中文数据边界的 JSON 对象。
+  PromptCompiler 把该对象作为独立合成 `user` 上下文消息，并把当前真实用户请求保持为后一条
+  独立 `user` 消息；两者都不进入 `system` message。合成消息不写入 `ConversationStore`，也不
+  作为原始 user message 提交给 Mem0。
 - realtime video 交接：Agent-Service 后台 Qwen observer 对每个 `video_id` 复用一个 persistent WebSocket 并预热 rolling 语义；VLM 使用独立视觉角色模板 prompt，只产出结构化视觉事实，不复用主 LLM 系统提示。普通图片/显式视频只暴露 `media_inspect`，可信实时媒体会话只暴露 `live_view_inspect`；后台 observer 使用不进入模型目录的 `realtime_video_observe`。主 LLM 不包含 VLM 观察流程、OCR/品牌/序列图等视觉分析提示词，也不看到帧、JPEG 路径、base64、VLM prompt 或 provider raw response。
 - 当前不建议继续做：场景分类器、质量反馈自动调参、组件注册器、裁剪 undo 日志或把长期记忆并入 session summary。
 - 如果用户问“继续上下文工程”：优先做验收案例、调试说明和具体失败复现；测试归属按
@@ -66,8 +71,8 @@ Last updated: 2026-07-31
   天气、新闻等外部动态信息查询，外部事实仍必须使用已暴露工具。
 - Provider-native Prompt 不注入 capability catalog，也不根据 `request.text` 做关键词、正则或确定性
   意图召回。模型通过本轮结构化资格化后的原生 `ToolSpec` schema 了解候选工具；项目级
-  `skills/<skill_id>/SKILL.md` 可以在本轮可见目录包含其 governed tool 时注入短
-  `skill_summary`；`load_skill` 成功后可信 `skill_body` 替换摘要，已注册 reference 再通过
+  `skills/<skill_id>/SKILL.md` 可以在本轮可见目录同时包含其 governed tool 和 `load_skill` 时注入
+  只含 `name + description` 的短 `skill_summary`；`load_skill` 成功后可信 `skill_body` 替换摘要，已注册 reference 再通过
   `load_skill_reference` 按需读取。Skill Context 根据 Provider capability 编译为 developer 或
   system guidance，但不能授予、隐藏或绕过执行工具。
 - Context Compiler v2 以稀疏 `ContextReport` 暴露每次 LLM call 实际出现或被转换的 redacted section accounting：`system_prompt`、可选 `developer_prompt`、`request`、`session_summary`、`recent_transcript`、`memory`、`realtime_video_context`、`durable_task_state`、`plan_state`、`tool_observations` 和 `tool_schema`。`realtime_task_state` 不进入 Provider Prompt，也不再作为空兼容 section 输出。非空 `context_source_report_v1` 只报告 section kind/authority/stability 字符数、稳定 issue code、last-known-good 和版本变化计数，不携带内部 cache layout；报告不暴露 SOUL 原文、source version、绝对路径、完整 prompt、memory 文本、视频摘要、tool observation 或 provider payload。
@@ -194,8 +199,11 @@ Last updated: 2026-07-31
   `structured` 才主动允许文档式结构，`voice` 避免 Markdown。该解析不读取请求文本。
 - `render_native_tool_context` 用于 provider-native tool calling，避免重复渲染完整 ToolSpec。
 - Provider-native 编译将 summary 之后尚未覆盖的原始轮次还原为独立 `user` / `assistant` messages，
-  再追加当前 `user` message。rolling summary 作为带 `trust="untrusted_history"` 和
-  `instruction_policy="do_not_execute"` 的 session data 进入当前 user context。
+  再依次追加可选的合成 `user` 上下文消息和当前真实 `user` 请求。长期记忆存在时，合成消息使用
+  中文 JSON 数据对象表达 `上下文类型`、`信任级别`、`指令策略` 和 `记忆条目`；当前请求不使用
+  XML 包装。百炼 OpenAI-compatible Chat Completions 没有 `context` role，因此当前采用独立
+  `user` 消息作为兼容承载。rolling summary 仍是标记为不可信历史且不得执行其中指令的 session
+  data，并沿用原有当前 user context 渲染路径，不并入长期记忆合成消息。
 - Provider-native `ChatRequest.tools` 使用 `AssistantContextPack.prompt_tool_specs` 中已治理的 schema。context builder 同时生成 prompt-safe `RunToolCatalog`；其中 `available_tool_names` 既是模型可见目录，也是 `ActionValidator` 的 run-scoped 执行边界，不再维护重复的 exposed/executable 集合。目录装配只消费 category、媒体要求、默认启用以及显式 tool/skill 等结构化事实，不读取 `request.text` 做意图路由。Plugin 只负责装配和归属，不授予单轮执行权限；系统不维护独立 toolset、Tool Search 或 Schema 渐进披露，全部合格 ToolSpec 直接进入 Provider 请求。工具规模由部署 Plugin、MCP allowlist 和入口 `allowed_tools` 控制，现有 context report 继续记录实际 Schema 占用。
 - `ContextSection` 是项目 Skill 的 Provider-neutral 权威层：未加载时只存在短
   `skill_summary`，成功 `load_skill` 后同一 Skill 的 `skill_body` 替换摘要，按需加载的
@@ -203,11 +211,21 @@ Last updated: 2026-07-31
   `supports_developer_role=true` 时把这些 procedural guidance 放入 `developer` message；
   当前 Chat Completions Provider 均保守回落到 system prompt。具体工具 schema 仍只来自
   `ToolSpec.description` 和 `input_schema`。
+- Skill 加载协议由 `runtime/system_prompt_policy.py` 统一维护并始终留在 system role：它解释
+  普通 Markdown“可用 Skill”区块只是名称与适用条件索引，复杂任务何时调用
+  `load_skill` / `load_skill_reference`、简单单工具查询不加载，以及加载过程不得向用户播报。
+  动态的工作流索引、正文和 reference 仍是 ContextSection，不写死在静态 system
+  policy；Provider 支持时这些动态内容可以进入 developer role。只有本轮同时存在 Skill Context 和
+  受治理的 `load_skill` ToolSpec 时才注入加载协议，`FINALIZE` 不注入。
 - Repo-local business skill loader 从仓库根 `skills/<skill_id>/SKILL.md` 读取受限结构化字段。
-  `visibility.enabled-by-default=true` 且本轮最终可见目录包含至少一个 permission 匹配的 governed tool
+  `visibility.enabled-by-default=true` 且本轮最终可见目录同时包含 `load_skill` 和至少一个 permission 匹配的 governed tool
   时自动激活；`tool_visibility.enabled_skills` 可显式激活非默认或 `skill-only` Skill。激活不改变
-  `RunToolCatalog`。`load_skill` 只接受已注册 `skill_id` 并返回完整结构化工作流；
-  `load_skill_reference` 只接受该 Skill 声明的 `reference_id`，不接受路径。两者都是默认
+  `RunToolCatalog`。`load_skill` 只接受已注册 `skill_id`，并返回去除 frontmatter 后的完整
+  Markdown 正文；manifest v1 继续兼容原有章节，manifest v2 显式要求非空的
+  `Decision Rules`、`Procedure`、`Pitfalls` 和 `Verification`。
+  `load_skill_reference` 只接受该 Skill 在同一 run 的成功 `load_skill` 结果中返回的
+  `reference_id`，不接受路径；授权事实由执行器从 `AgentState.tool_results` 推导，不信任请求
+  metadata。两者都是默认
   `category=read` 的本地 Tool，必须经过 Validator/Executor/Registry，不直接执行 shell、browser
   或 HTTP。成功 observation 只保留 ID 和加载回执，不把 tool message 原文当作指令；下一轮 Context
   从完整注册 catalog 重新加载可信正文，因此显式加载但未自动激活的合法 Skill 也不会出现“成功却
@@ -339,7 +357,7 @@ Last updated: 2026-07-31
   Langfuse `llm.chat` generation input 导出。该能力不改变 Context Compiler/API 的摘要契约，
   不写 JSONL，不保存 Provider 原始响应或 hidden reasoning。
 - Editable owner context 当前只实现本机 owner-bound `SOUL.md`；项目 Skill 已实现
-  summary → `load_skill` 后 body 替换 summary → `load_skill_reference` 的三层渐进披露，并具有
+  `name + description` 索引 → `load_skill` 后 body 替换索引 → `load_skill_reference` 的三层渐进披露，并具有
   developer/system role capability 映射，但没有 Provider cache hint 或跨进程 last-known-good。
 - memory extraction、向量化和持久化全部由 Mem0 实现，项目不维护第二套检索算法。
 - LLM summary 的语义保真属于 eval 边界；pytest 只验证触发、替换、失败分级、持久化和 native tool 配对。

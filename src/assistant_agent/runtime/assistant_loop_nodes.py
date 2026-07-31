@@ -110,6 +110,9 @@ class AssistantLoopState(TypedDict):
     max_plan_revisions: NotRequired[int]
     last_llm_span_id: NotRequired[str]
     last_llm_attempt_kind: NotRequired[str]
+    response_stream_current_call_emitted: NotRequired[bool]
+    response_stream_ends_with_newline: NotRequired[bool]
+    response_stream_separator_pending: NotRequired[bool]
 
 
 def _run_phase(graph_state: AssistantLoopState) -> RunPhase:
@@ -400,6 +403,7 @@ def _decide_with_llm(
             _record_provider_context_overflow(state, result, retry_failed=True)
             return _provider_context_overflow_final_answer(result), context
     if result.success and result.tool_calls:
+        _mark_response_stream_tool_boundary(graph_state)
         if not context_service.selected_tool_specs(context):
             state.request.metadata["tool_call_returned_after_budget_exhaustion"] = True
             state.request.metadata["finalization_protocol_violation"] = True
@@ -1372,6 +1376,7 @@ def _with_response_stream_callback(
     callback = _response_stream_callback(graph_state, source=source)
     if callback is None:
         return request
+    graph_state["response_stream_current_call_emitted"] = False
     return request.model_copy(update={"stream_callback": callback})
 
 
@@ -1386,9 +1391,26 @@ def _response_stream_callback(
     state = graph_state["state"]
 
     def emit_delta(text: str, payload: dict[str, Any]) -> None:
+        if not text:
+            return
+        emitted_text = text
+        emitted_payload = payload
+        if graph_state.get("response_stream_separator_pending", False):
+            graph_state["response_stream_separator_pending"] = False
+            previous_has_newline = graph_state.get(
+                "response_stream_ends_with_newline",
+                False,
+            )
+            next_has_newline = text.startswith(("\n", "\r"))
+            if not previous_has_newline and not next_has_newline:
+                emitted_text = f"\n{text}"
+                emitted_payload = {
+                    **payload,
+                    "runtime_separator_inserted": True,
+                }
         event = stream_delta_to_agent_event(
-            text,
-            payload,
+            emitted_text,
+            emitted_payload,
             session_id=state.session_id,
             run_id=state.run_id,
             source=source,
@@ -1396,8 +1418,19 @@ def _response_stream_callback(
         if event is None:
             return
         event_sink.emit(event)
+        graph_state["response_stream_current_call_emitted"] = True
+        graph_state["response_stream_ends_with_newline"] = emitted_text.endswith(
+            ("\n", "\r")
+        )
 
     return emit_delta
+
+
+def _mark_response_stream_tool_boundary(
+    graph_state: AssistantLoopState,
+) -> None:
+    if graph_state.get("response_stream_current_call_emitted", False):
+        graph_state["response_stream_separator_pending"] = True
 
 
 def _is_mock_chat_adapter(chat_adapter: ChatAdapter) -> bool:

@@ -12,7 +12,10 @@ from qdrant_client import QdrantClient
 os.environ.setdefault("MEM0_TELEMETRY", "False")
 
 from mem0 import Memory
-from mem0_env import resolve_mem0_provider_environment
+from mem0_env import (
+    CHINESE_MEMORY_CUSTOM_INSTRUCTIONS,
+    resolve_mem0_provider_environment,
+)
 
 
 app = FastAPI(title="assistant_agent Mem0 sidecar", version="2.0.11")
@@ -58,6 +61,7 @@ def _build_memory() -> Memory:
                     "embedding_model_dims": 1024,
                 },
             },
+            "custom_instructions": CHINESE_MEMORY_CUSTOM_INSTRUCTIONS,
             "history_db_path": os.getenv("HISTORY_DB_PATH", "/data/history/history.db"),
         }
     )

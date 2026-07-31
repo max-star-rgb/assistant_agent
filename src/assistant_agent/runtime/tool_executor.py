@@ -33,6 +33,7 @@ from assistant_agent.gateway.cancellation_models import (
 from assistant_agent.tools.ids import (
     IMAGE_GENERATION_CAPABILITY,
     IMAGE_GENERATION_TOOL_NAME,
+    LOAD_SKILL_TOOL_NAME,
 )
 from assistant_agent.tools.models import ToolResult, ToolSpec
 from assistant_agent.runtime.event_sink import EventSink
@@ -167,6 +168,7 @@ class ToolExecutor:
             run_id=state.run_id,
             user_id=state.user_id,
             session_id=state.session_id,
+            skill_reference_grants=_loaded_skill_reference_grants(state),
             metadata={
                 **{
                     key: value
@@ -576,6 +578,30 @@ def _cancelled_tool_result(
         },
         latency_ms=latency_ms,
     )
+
+
+def _loaded_skill_reference_grants(
+    state: AgentState,
+) -> dict[str, list[str]]:
+    """Derive same-run reference grants from successful load_skill results."""
+
+    grants: dict[str, list[str]] = {}
+    for result in state.tool_results:
+        if (
+            not result.success
+            or result.tool_name != LOAD_SKILL_TOOL_NAME
+            or not isinstance(result.data, dict)
+        ):
+            continue
+        skill_id = result.data.get("skill_id")
+        reference_ids = result.data.get("reference_ids")
+        if not isinstance(skill_id, str) or not isinstance(reference_ids, list):
+            continue
+        allowed = grants.setdefault(skill_id, [])
+        for reference_id in reference_ids:
+            if isinstance(reference_id, str) and reference_id not in allowed:
+                allowed.append(reference_id)
+    return grants
 
 
 def _policy_safe_input_summary(payload: dict[str, Any]) -> dict[str, Any]:

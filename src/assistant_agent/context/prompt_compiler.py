@@ -66,16 +66,26 @@ class PromptCompiler:
             if request.answer_only
             else procedural_guidance_for_pack(request.context_pack)
         )
+        selected_tool_specs = (
+            ()
+            if request.answer_only
+            else prompt_tool_specs_for_mode(
+                request.context_pack,
+                request.mode,
+            )
+        )
         system_instruction = render_system_instruction(
-            agent_personalization=owner_persona_for_pack(request.context_pack),
             procedural_guidance=(
                 ""
                 if request.supports_developer_role
                 else procedural_guidance
             ),
             current_location=request.current_location,
-            response_style=request.context_pack.response_style,
             answer_only=request.answer_only,
+            skill_loading_enabled=_skill_loading_enabled(
+                request.context_pack,
+                selected_tool_specs,
+            ),
         )
         rendered_context = _render_context(request)
         user_content = _rendered_user_content(rendered_context, request.mode)
@@ -85,6 +95,13 @@ class PromptCompiler:
                 {"role": "developer", "content": procedural_guidance}
             )
         messages.extend(native_conversation_messages(request.context_pack.request.metadata))
+        if rendered_context.native_context_message:
+            messages.append(
+                {
+                    "role": "user",
+                    "content": rendered_context.native_context_message,
+                }
+            )
         messages.append({"role": "user", "content": user_content})
         messages.extend(
             _native_tool_messages(
@@ -97,14 +114,6 @@ class PromptCompiler:
                 {"role": "user", "content": FINALIZE_CONTINUATION_MESSAGE}
             )
 
-        selected_tool_specs = (
-            ()
-            if request.answer_only
-            else prompt_tool_specs_for_mode(
-                request.context_pack,
-                request.mode,
-            )
-        )
         user_query = request.context_pack.request.text or request.user_query_fallback
         chat_request = ChatRequest(
             user_id=request.user_id,
@@ -166,6 +175,20 @@ def procedural_guidance_for_pack(pack: AssistantContextPack) -> str:
         section.content
         for section in sorted(sections, key=lambda item: item.priority)
     )
+
+
+def _skill_loading_enabled(
+    pack: AssistantContextPack,
+    selected_tool_specs: tuple[ToolSpec, ...],
+) -> bool:
+    has_skill_context = any(
+        section.kind in {"skill_summary", "skill_body", "skill_reference"}
+        and section.authority == "procedural_guidance"
+        and not section.sensitive
+        for section in pack.context_sections
+    )
+    available_tool_names = {spec.name for spec in selected_tool_specs}
+    return has_skill_context and "load_skill" in available_tool_names
 
 
 def _render_context(request: PromptCompileRequest) -> RenderedAssistantContext:

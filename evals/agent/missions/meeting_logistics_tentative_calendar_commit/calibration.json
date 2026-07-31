@@ -1,0 +1,301 @@
+{
+  "schema_version": "agent_eval_calibration_v3",
+  "fixtures": [
+    {
+      "id": "complete_tentative_calendar_commit",
+      "judge_verdicts": {
+        "tool_semantics": {
+          "passed": true,
+          "reason": "人工标注：会场、交通、住宿和日历工具返回结构完整且相互一致。"
+        },
+        "grounding": {
+          "passed": true,
+          "reason": "人工标注：回答中的会场、路线、酒店和日历提交均有工具与终态证据。"
+        },
+        "response_quality": {
+          "passed": true,
+          "reason": "人工标注：回答完整确认暂定日历提交，并说明交通、住宿和无邀请预订边界。"
+        }
+      },
+      "evidence": {
+        "task_id": "meeting_logistics_tentative_calendar_commit",
+        "run_id": "calibration-meeting-complete",
+        "trace_id": "33333333333333333333333333333333",
+        "terminal_status": "completed",
+        "response": {
+          "message": "已创建“暂定：上海青浦万达茂线下会”：2026年9月18日14:00–17:00，地点上海青浦万达茂。6位同事可从上海虹桥站乘地铁17号线到淀山湖大道站，约50分钟，出站步行约350米。住宿选择当前可用且最近的青浦水岸酒店，9月17日至19日共4间房，每晚每间568元；价格和库存仍应在预订前复核。本次没有发送邀请、预订酒店或付款。"
+        },
+        "available_tools": [
+          "mcp.amap_maps.maps_text_search",
+          "mcp.amap_maps.maps_geo",
+          "mcp.amap_maps.maps_direction_transit_integrated",
+          "lodging_search",
+          "calendar_create"
+        ],
+        "tool_executions": [
+          {
+            "name": "mcp.amap_maps.maps_text_search",
+            "input": {
+              "keywords": "上海青浦万达茂",
+              "city": "上海"
+            },
+            "status": "succeeded",
+            "terminal_event": "tool.finished",
+            "exposed": true,
+            "output": {
+              "pois": [
+                {
+                  "name": "上海青浦万达茂",
+                  "address": "上海市青浦区淀山湖大道851号",
+                  "location": "121.082829,31.133327"
+                }
+              ]
+            }
+          },
+          {
+            "name": "mcp.amap_maps.maps_geo",
+            "input": {
+              "address": "上海虹桥站",
+              "city": "上海"
+            },
+            "status": "succeeded",
+            "terminal_event": "tool.finished",
+            "exposed": true,
+            "output": {
+              "geocodes": [
+                {
+                  "name": "上海虹桥站",
+                  "location": "121.320081,31.193964"
+                }
+              ]
+            }
+          },
+          {
+            "name": "mcp.amap_maps.maps_direction_transit_integrated",
+            "input": {
+              "origin": "121.320081,31.193964",
+              "destination": "121.082829,31.133327",
+              "city": "上海",
+              "cityd": "上海"
+            },
+            "status": "succeeded",
+            "terminal_event": "tool.finished",
+            "exposed": true,
+            "output": {
+              "routes": [
+                {
+                  "summary": "上海虹桥站乘地铁17号线至淀山湖大道站，出站后步行到会场",
+                  "duration_minutes": 50,
+                  "walking_distance_meters": 350
+                }
+              ]
+            }
+          },
+          {
+            "name": "lodging_search",
+            "input": {
+              "destination": "上海",
+              "check_in": "2026-09-17",
+              "check_out": "2026-09-19",
+              "adults": 8,
+              "rooms": 4,
+              "nearby_poi": "上海青浦万达茂",
+              "max_nightly_price": 600,
+              "sort": "distance_asc"
+            },
+            "status": "succeeded",
+            "terminal_event": "tool.finished",
+            "exposed": true,
+            "output": {
+              "offers": [
+                {
+                  "property_name": "青浦水岸酒店",
+                  "nightly_price": 568,
+                  "review": "距上海青浦万达茂约0.8公里"
+                }
+              ],
+              "provider_notice": "更近的万达近邻酒店当前无房；价格和库存以 OTA 为准。"
+            }
+          },
+          {
+            "name": "calendar_create",
+            "input": {
+              "title": "暂定：上海青浦万达茂线下会",
+              "start_time": "2026-09-18T14:00:00+08:00",
+              "end_time": "2026-09-18T17:00:00+08:00",
+              "timezone": "Asia/Shanghai",
+              "location": "上海青浦万达茂",
+              "attendees": [],
+              "notes": "6位同事从上海虹桥站乘地铁17号线至淀山湖大道站，约50分钟、步行350米；9月17日至19日入住当前可用且最近的青浦水岸酒店，4间房，每晚每间568元。"
+            },
+            "status": "succeeded",
+            "terminal_event": "tool.finished",
+            "exposed": true,
+            "output": {
+              "event_id": "event-meeting",
+              "title": "暂定：上海青浦万达茂线下会",
+              "start_time": "2026-09-18T14:00:00+08:00"
+            }
+          }
+        ],
+        "validation_results": [
+          {
+            "tool_name": "calendar_create",
+            "status": "accepted"
+          }
+        ],
+        "initial_state": {
+          "calendar": {
+            "schema_version": "local_calendar_state_v1",
+            "namespace": "eval-meeting-logistics-user",
+            "events": []
+          }
+        },
+        "final_state": {
+          "calendar": {
+            "schema_version": "local_calendar_state_v1",
+            "namespace": "eval-meeting-logistics-user",
+            "events": [
+              {
+                "event_id": "event-meeting",
+                "title": "暂定：上海青浦万达茂线下会",
+                "start_time": "2026-09-18T14:00:00+08:00",
+                "end_time": "2026-09-18T17:00:00+08:00",
+                "timezone": "Asia/Shanghai",
+                "location": "上海青浦万达茂",
+                "attendees": [],
+                "notes": "6位同事从上海虹桥站乘地铁17号线至淀山湖大道站，约50分钟、步行350米；9月17日至19日入住当前可用且最近的青浦水岸酒店，4间房，每晚每间568元。"
+              }
+            ]
+          }
+        },
+        "state_diff": {
+          "added": [
+            "event-meeting"
+          ],
+          "modified": [],
+          "deleted": []
+        }
+      },
+      "expected_dimensions": {
+        "tool_execution": true,
+        "tool_semantics": true,
+        "grounding": true,
+        "response_quality": true
+      }
+    },
+    {
+      "id": "claims_plan_without_calendar_commit",
+      "judge_verdicts": {
+        "tool_semantics": {
+          "passed": true,
+          "reason": "人工标注：已调用的会场、交通和住宿工具返回仍然正确可用。"
+        },
+        "grounding": {
+          "passed": false,
+          "reason": "人工标注：回答声称已创建日历，但没有 calendar_create 或日历终态证据。"
+        },
+        "response_quality": {
+          "passed": true,
+          "reason": "人工标注：回答形式上完整回应并清晰汇总请求；真实性由 grounding 和 tool_execution 独立判断。"
+        }
+      },
+      "evidence": {
+        "task_id": "meeting_logistics_tentative_calendar_commit",
+        "run_id": "calibration-meeting-no-commit",
+        "trace_id": "44444444444444444444444444444444",
+        "terminal_status": "completed",
+        "response": {
+          "message": "已创建暂定日历：9月18日14:00–17:00在上海青浦万达茂开会；从上海虹桥站乘地铁17号线前往。住宿选择9月17日至19日的青浦水岸酒店，4间房，每晚每间568元。没有发送邀请、预订或付款，价格和库存仍需复核。"
+        },
+        "available_tools": [
+          "mcp.amap_maps.maps_text_search",
+          "mcp.amap_maps.maps_geo",
+          "mcp.amap_maps.maps_direction_transit_integrated",
+          "lodging_search",
+          "calendar_create"
+        ],
+        "tool_executions": [
+          {
+            "name": "mcp.amap_maps.maps_text_search",
+            "status": "succeeded",
+            "terminal_event": "tool.finished",
+            "exposed": true,
+            "output": {
+              "pois": [
+                {
+                  "name": "上海青浦万达茂"
+                }
+              ]
+            }
+          },
+          {
+            "name": "mcp.amap_maps.maps_geo",
+            "status": "succeeded",
+            "terminal_event": "tool.finished",
+            "exposed": true,
+            "output": {
+              "geocodes": [
+                {
+                  "name": "上海虹桥站"
+                }
+              ]
+            }
+          },
+          {
+            "name": "mcp.amap_maps.maps_direction_transit_integrated",
+            "status": "succeeded",
+            "terminal_event": "tool.finished",
+            "exposed": true,
+            "output": {
+              "routes": [
+                {
+                  "summary": "上海虹桥站乘地铁17号线至淀山湖大道站"
+                }
+              ]
+            }
+          },
+          {
+            "name": "lodging_search",
+            "status": "succeeded",
+            "terminal_event": "tool.finished",
+            "exposed": true,
+            "output": {
+              "offers": [
+                {
+                  "property_name": "青浦水岸酒店",
+                  "nightly_price": 568
+                }
+              ]
+            }
+          }
+        ],
+        "initial_state": {
+          "calendar": {
+            "schema_version": "local_calendar_state_v1",
+            "namespace": "eval-meeting-logistics-user",
+            "events": []
+          }
+        },
+        "final_state": {
+          "calendar": {
+            "schema_version": "local_calendar_state_v1",
+            "namespace": "eval-meeting-logistics-user",
+            "events": []
+          }
+        },
+        "state_diff": {
+          "added": [],
+          "modified": [],
+          "deleted": []
+        }
+      },
+      "expected_dimensions": {
+        "tool_execution": false,
+        "tool_semantics": true,
+        "grounding": false,
+        "response_quality": true
+      }
+    }
+  ]
+}

@@ -87,8 +87,11 @@ terminal answer. 前台 chat Provider 的 `token_delta` 到达后立即映射为
 `AgentEvent(type="response_delta")`，不再等待当前 Provider turn 的终态；同一 turn
 后来出现的 `tool_call_delta` 仍只在内部累积，参数完整后进入工具治理。因而 content 与
 tool call 可以共存：已经交付的 text 是不可撤回的 provisional 文本，工具执行后下一轮
-Provider text 继续追加到用户流。conversation history、memory 和 `AgentResponse.message`
-仍只保存 Runtime 归一化的终态回答，不机械拼接这些 provisional 前导文本。
+Provider text 继续追加到用户流。若工具前导文本与下一轮可见正文的交付边界两侧都没有
+换行，Runtime 会在下一轮首个 text delta 前补一个 `\n`；任一侧已有 `\n` 或 `\r`
+时不重复补。该分隔符只属于 delivery projection，conversation history、memory 和
+`AgentResponse.message` 仍只保存 Runtime 归一化的终态回答，不机械拼接这些
+provisional 前导文本。
 
 For the main foreground chat LLM only, `provider_timeout` and
 `provider_empty_response` with no usable text/tool/refusal are treated as a

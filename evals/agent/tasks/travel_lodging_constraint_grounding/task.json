@@ -5,7 +5,7 @@
   "request": {
     "user_id": "eval-travel-lodging-user",
     "session_id": "eval-travel-lodging-session",
-    "text": "2026年8月14日到17日我和另一位成人在杭州住3晚，1间房，每晚不超过600元，优先中国丝绸博物馆附近并按距离排序。给我最多3个候选，区分每晚价和总价，附上可用的 OTA 跳转链接，并说明报价是不是最终成交价。"
+    "text": "2026年8月14日到17日我和朋友在杭州住3晚，1间房，每晚不超过600元，优先中国丝绸博物馆附近并按距离排序。给我最多3个候选，区分每晚价和总价，附上可用的 OTA 跳转链接，并说明报价是不是最终成交价。"
   },
   "environment": "evals.agent.tasks.travel_lodging_constraint_grounding.environment:TravelLodgingConstraintEnvironment",
   "grader": "evals.agent.tasks.travel_lodging_constraint_grounding.grader:grade",

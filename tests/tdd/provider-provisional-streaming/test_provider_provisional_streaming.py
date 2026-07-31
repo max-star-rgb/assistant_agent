@@ -72,8 +72,15 @@ class _TextThenToolStreamingAdapter:
     provider = "scripted"
     model = "streaming-model"
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        preamble: str = "checking-",
+        answer: str = "answer-sentinel",
+    ) -> None:
         self.turn = 0
+        self.preamble = preamble
+        self.answer = answer
 
     async def stream_chat(self, _request: ChatRequest) -> AsyncIterator[LLMEvent]:
         self.turn += 1
@@ -82,7 +89,7 @@ class _TextThenToolStreamingAdapter:
                 event_type="token_delta",
                 provider=self.provider,
                 model=self.model,
-                text="checking-",
+                text=self.preamble,
             )
             yield LLMEvent(
                 event_type="tool_call_delta",
@@ -116,7 +123,7 @@ class _TextThenToolStreamingAdapter:
             event_type="token_delta",
             provider=self.provider,
             model=self.model,
-            text="answer-sentinel",
+            text=self.answer,
         )
         yield LLMEvent(
             event_type="completed",
@@ -190,7 +197,64 @@ def test_text_before_tool_call_is_delivered_before_governed_tool_execution() -> 
     assert visible[0] == ("response_delta", "checking-")
     assert [event.text for event in sink.events if event.type == "response_delta"] == [
         "checking-",
+        "\nanswer-sentinel",
+    ]
+    assert [
+        event.payload.get("runtime_separator_inserted")
+        for event in sink.events
+        if event.type == "response_delta"
+    ] == [None, True]
+
+
+def test_tool_boundary_does_not_duplicate_existing_trailing_newline() -> None:
+    sink = ListEventSink()
+    runtime = _runtime(
+        _TextThenToolStreamingAdapter(
+            preamble="checking-\n",
+            answer="answer-sentinel",
+        )
+    )
+    try:
+        runtime.run_state(
+            UserRequest(
+                user_id="user-sentinel",
+                session_id="session-sentinel",
+                text="input-sentinel",
+            ),
+            event_sink=sink,
+        )
+    finally:
+        runtime.close()
+
+    assert [event.text for event in sink.events if event.type == "response_delta"] == [
+        "checking-\n",
         "answer-sentinel",
+    ]
+
+
+def test_tool_boundary_does_not_duplicate_existing_leading_newline() -> None:
+    sink = ListEventSink()
+    runtime = _runtime(
+        _TextThenToolStreamingAdapter(
+            preamble="checking-",
+            answer="\nanswer-sentinel",
+        )
+    )
+    try:
+        runtime.run_state(
+            UserRequest(
+                user_id="user-sentinel",
+                session_id="session-sentinel",
+                text="input-sentinel",
+            ),
+            event_sink=sink,
+        )
+    finally:
+        runtime.close()
+
+    assert [event.text for event in sink.events if event.type == "response_delta"] == [
+        "checking-",
+        "\nanswer-sentinel",
     ]
 
 
@@ -210,3 +274,10 @@ def test_terminal_sends_full_fallback_when_provisional_text_is_not_its_prefix() 
 
 def test_terminal_does_not_repeat_answer_normalized_from_stream_whitespace() -> None:
     assert _remaining_stream_text("answer-sentinel", " checking-answer-sentinel \n") == ""
+
+
+def test_terminal_does_not_repeat_answer_after_runtime_tool_separator() -> None:
+    assert _remaining_stream_text(
+        "answer-sentinel",
+        "checking-\nanswer-sentinel",
+    ) == ""

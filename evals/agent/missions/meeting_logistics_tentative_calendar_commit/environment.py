@@ -22,14 +22,17 @@ from assistant_agent.tools.plugins.builtin.lodging.models import (
 )
 from assistant_agent.tools.plugins.builtin.lodging.tool import LodgingSearchTool
 from assistant_agent.tools.registry import ToolRegistry
+from assistant_agent.runtime.requests import UserRequest
 from evals.agent.contracts import (
     AssertionResult,
+    RunEvidence,
 )
 from evals.agent.environment_base import (
     ControlledTaskEnvironment,
     EnvironmentToolVisibility,
 )
 from evals.agent.grading import rule_assertion
+from evals.agent.task_support import StateReader
 from evals.agent.travel_support import (
     AMAP_SERVER_NAME,
     GEO_TOOL,
@@ -219,6 +222,90 @@ class MeetingLogisticsEnvironment(ControlledTaskEnvironment):
                 if name != "python_interpreter"
             ),
         )
+
+    def initial_state(self, request: UserRequest) -> dict[str, Any]:
+        del request
+        return {"calendar": self._calendar_adapter.snapshot()}
+
+    def final_state_reader(
+        self,
+        request: UserRequest,
+    ) -> StateReader:
+        del request
+
+        def read(_runtime: Any, _state: Any) -> dict[str, Any]:
+            return {"calendar": self._calendar_adapter.snapshot()}
+
+        return read
+
+    def objective_state_assertions(
+        self,
+        evidence: RunEvidence,
+    ) -> dict[str, AssertionResult]:
+        calendar = evidence.final_state.get("calendar")
+        events = (
+            calendar.get("events")
+            if isinstance(calendar, dict)
+            and isinstance(calendar.get("events"), list)
+            else []
+        )
+        event = events[0] if len(events) == 1 and isinstance(events[0], dict) else {}
+        title = str(event.get("title") or "")
+        notes = str(event.get("notes") or "")
+        compact_notes = "".join(notes.split())
+        attendees = event.get("attendees")
+        return {
+            "single_tentative_event": rule_assertion(
+                len(events) == 1 and "暂定" in title,
+                f"event_count={len(events)}, tentative={'暂定' in title}",
+                label="新增唯一暂定会议事件",
+            ),
+            "meeting_time_and_venue": rule_assertion(
+                event.get("start_time") == "2026-09-18T14:00:00+08:00"
+                and event.get("end_time") == "2026-09-18T17:00:00+08:00"
+                and event.get("timezone") in {None, "", "Asia/Shanghai"}
+                and "上海青浦万达茂" in str(event.get("location") or ""),
+                (
+                    f"start={event.get('start_time')}, "
+                    f"end={event.get('end_time')}, "
+                    f"timezone={event.get('timezone')}, "
+                    f"location={event.get('location')}"
+                ),
+                label="会议时间与会场已落盘",
+            ),
+            "transit_and_lodging_recorded": rule_assertion(
+                all(
+                    token in compact_notes
+                    for token in (
+                        "上海虹桥站",
+                        "地铁17号线",
+                        "淀山湖大道",
+                        "青浦水岸酒店",
+                        "4间房",
+                        "568",
+                    )
+                )
+                and (
+                    ("9月17日" in compact_notes and "19日" in compact_notes)
+                    or (
+                        "2026-09-17" in compact_notes
+                        and "2026-09-19" in compact_notes
+                    )
+                ),
+                (
+                    "transit="
+                    f"{all(token in compact_notes for token in ('上海虹桥站', '地铁17号线', '淀山湖大道'))}, "
+                    "lodging="
+                    f"{all(token in compact_notes for token in ('青浦水岸酒店', '4间房', '568'))}"
+                ),
+                label="交通与最近可用住宿已落盘",
+            ),
+            "no_invitations": rule_assertion(
+                attendees == [],
+                f"attendee_count={len(attendees) if isinstance(attendees, list) else 'invalid'}",
+                label="未发送或登记参会邀请",
+            ),
+        }
 
     def task_validation_checks(
         self,

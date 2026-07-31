@@ -8,7 +8,10 @@ from typing import Any
 from assistant_agent.context.models import ToolCatalogSummary
 from assistant_agent.runtime.requests import UserRequest
 from assistant_agent.tools.models import RunToolCatalog, ToolSpec
-from assistant_agent.tools.ids import DURABLE_TASK_SUBMISSION_TOOL_NAMES
+from assistant_agent.tools.ids import (
+    DURABLE_TASK_SUBMISSION_TOOL_NAMES,
+    LOAD_SKILL_TOOL_NAME,
+)
 from assistant_agent.skills.loading import (
     SkillCatalog,
     SkillDescriptor,
@@ -176,6 +179,8 @@ def _active_skills(
     *,
     available_tool_names: set[str],
 ) -> list[SkillDescriptor]:
+    if LOAD_SKILL_TOOL_NAME not in available_tool_names:
+        return []
     active_skills: list[SkillDescriptor] = []
     for descriptor in catalog.descriptors:
         if not descriptor.enabled or descriptor.disable_model_invocation:

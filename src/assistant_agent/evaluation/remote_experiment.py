@@ -264,15 +264,16 @@ class RemoteExperimentLauncher:
         dataset_name: str,
     ) -> tuple[Literal["dataset", "task", "suite"], str]:
         if payload.task is not None:
-            task_path = (
+            cases_root = (
                 self.settings.repository_root
                 / "evals"
                 / "agent"
-                / "tasks"
-                / payload.task
-                / "task.json"
             )
-            if not task_path.is_file():
+            task_paths = (
+                cases_root / level / payload.task / "task.json"
+                for level in ("tasks", "missions")
+            )
+            if not any(path.is_file() for path in task_paths):
                 raise RemoteExperimentInvalid(
                     f"Unknown Agent eval task: {payload.task}."
                 )

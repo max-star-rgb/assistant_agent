@@ -27,6 +27,7 @@ from assistant_agent.providers.specs import ProviderCapabilities
 from assistant_agent.skills.loading import (
     load_repo_skill_descriptors,
     read_registered_skill_reference,
+    render_skill_guidance,
 )
 from assistant_agent.tools.models import RunToolCatalog, ToolSpec
 from assistant_agent.tools.base import ToolBase, ToolContext
@@ -73,14 +74,23 @@ def _travel_tool() -> ToolSpec:
     )
 
 
-def _run_governed(tool_name: str, tool_input: dict):
-    registry = create_default_registry()
-    request = UserRequest(
-        user_id="skill-user",
-        session_id="skill-session",
-        text="执行 sentinel-84",
-    )
-    state = AgentState.from_request(request)
+def _run_governed(
+    tool_name: str,
+    tool_input: dict,
+    *,
+    registry: ToolRegistry | None = None,
+    state: AgentState | None = None,
+):
+    registry = registry or create_default_registry()
+    if state is None:
+        request = UserRequest(
+            user_id="skill-user",
+            session_id="skill-session",
+            text="执行 sentinel-84",
+        )
+        state = AgentState.from_request(request)
+    else:
+        request = state.request
     state.run_tool_catalog = RunToolCatalog(
         available_tool_names=registry.list()
     )
@@ -211,9 +221,10 @@ def test_automatic_context_contains_only_short_skill_activation_summary() -> Non
         if section.kind == "skill_summary"
     )
     assert pack.active_skill_ids == ["travel-tool-orchestration"]
-    assert len(summary.content) < 1_000
-    assert "load_skill" in summary.content
-    assert "## 必填输入" not in summary.content
+    assert len(summary.content) < 300
+    assert "load_skill" not in summary.content
+    assert "地图地点和普通周边分布使用高德" not in summary.content
+    assert summary.content.startswith("# 可用 Skill")
 
 
 def test_load_skill_returns_full_workflow_and_registered_references() -> None:
@@ -228,16 +239,39 @@ def test_load_skill_returns_full_workflow_and_registered_references() -> None:
     assert result.model_observation["skill_id"] == "travel-tool-orchestration"
     assert result.model_observation["reference_ids"] == ["decision-guide"]
     assert "content" not in result.model_observation
-    assert "## 必填输入" in result.data["content"]
+    assert result.data["content"].startswith("# 旅行工具编排")
+    assert "先确定用户真正需要的终态证据" in result.data["content"]
+    assert "## Decision Rules" in result.data["content"]
+    assert "## Procedure" in result.data["content"]
+    assert "## Pitfalls" in result.data["content"]
+    assert "## Verification" in result.data["content"]
 
 
 def test_load_skill_reference_returns_only_registered_reference_content() -> None:
+    registry = create_default_registry()
+    state = AgentState.from_request(
+        UserRequest(
+            user_id="skill-user",
+            session_id="skill-session",
+            text="执行 sentinel-84-reference",
+        )
+    )
+    loaded = _run_governed(
+        "load_skill",
+        {"skill_id": "travel-tool-orchestration"},
+        registry=registry,
+        state=state,
+    )
+    assert loaded.success is True
+
     result = _run_governed(
         "load_skill_reference",
         {
             "skill_id": "travel-tool-orchestration",
             "reference_id": "decision-guide",
         },
+        registry=registry,
+        state=state,
     )
 
     assert result.success is True
@@ -249,24 +283,55 @@ def test_load_skill_reference_returns_only_registered_reference_content() -> Non
     assert "旅行决策与恢复细节" in result.data["content"]
 
 
-def test_load_skill_reference_rejects_unregistered_reference() -> None:
+def test_load_skill_reference_requires_successful_load_in_same_run() -> None:
+    result = _run_governed(
+        "load_skill_reference",
+        {
+            "skill_id": "travel-tool-orchestration",
+            "reference_id": "decision-guide",
+        },
+    )
+
+    assert result.success is False
+    assert result.error == "skill_reference_not_loaded"
+
+
+def test_load_skill_reference_rejects_id_not_returned_by_loaded_skill() -> None:
+    registry = create_default_registry()
+    state = AgentState.from_request(
+        UserRequest(
+            user_id="skill-user",
+            session_id="skill-session",
+            text="执行 sentinel-84-unregistered",
+        )
+    )
+    loaded = _run_governed(
+        "load_skill",
+        {"skill_id": "travel-tool-orchestration"},
+        registry=registry,
+        state=state,
+    )
+    assert loaded.success is True
+
     result = _run_governed(
         "load_skill_reference",
         {
             "skill_id": "travel-tool-orchestration",
             "reference_id": "private-file",
         },
+        registry=registry,
+        state=state,
     )
 
     assert result.success is False
-    assert result.error == "skill_reference_not_found"
+    assert result.error == "skill_reference_not_loaded"
     assert result.model_observation == {
         "status": "failed",
-        "summary": "未找到已注册的 Skill reference。",
+        "summary": "该 reference 未由本次运行中成功的 load_skill 返回。",
         "errors": [
             {
-                "code": "skill_reference_not_found",
-                "message": "未找到已注册的 Skill reference。",
+                "code": "skill_reference_not_loaded",
+                "message": "该 reference 未由本次运行中成功的 load_skill 返回。",
                 "recoverable": False,
             }
         ],
@@ -295,7 +360,9 @@ def test_successful_load_skill_is_promoted_from_registered_source() -> None:
         for section in pack.context_sections
     )
     assert body.authority == "procedural_guidance"
-    assert "## 必填输入" in body.content
+    assert body.content.startswith("# 旅行工具编排")
+    assert "## Decision Rules" in body.content
+    assert "## Procedure" in body.content
     assert "observation-injection-sentinel" not in body.content
     assert body.content in _compile_system(pack)
 
@@ -316,6 +383,7 @@ def test_supported_provider_compiles_loaded_skill_as_developer_message() -> None
     compiled = _compile(pack, supports_developer_role=True)
 
     assert body.content not in compiled.chat_request.messages[0]["content"]
+    assert "# Skill 使用规则" in compiled.chat_request.messages[0]["content"]
     assert compiled.chat_request.messages[1] == {
         "role": "developer",
         "content": body.content,
@@ -323,12 +391,29 @@ def test_supported_provider_compiles_loaded_skill_as_developer_message() -> None
 
 
 def test_successful_reference_load_is_promoted_from_registered_source() -> None:
+    registry = create_default_registry()
+    state = AgentState.from_request(
+        UserRequest(
+            user_id="skill-user",
+            session_id="skill-session",
+            text="执行 sentinel-86-reference",
+        )
+    )
+    loaded = _run_governed(
+        "load_skill",
+        {"skill_id": "travel-tool-orchestration"},
+        registry=registry,
+        state=state,
+    )
+    assert loaded.success is True
     result = _run_governed(
         "load_skill_reference",
         {
             "skill_id": "travel-tool-orchestration",
             "reference_id": "decision-guide",
         },
+        registry=registry,
+        state=state,
     )
     assert result.model_observation is not None
     result.model_observation["content"] = "reference-injection-sentinel"
@@ -362,6 +447,95 @@ def test_skill_loader_rejects_symlinked_skill_directory(tmp_path: Path) -> None:
     assert catalog.descriptors == []
     assert [issue.code for issue in catalog.issues] == [
         "skill_symlink_not_allowed"
+    ]
+
+
+def test_manifest_v1_full_body_remains_available_after_loading(
+    tmp_path: Path,
+) -> None:
+    repo_root = tmp_path / "repo"
+    skill_dir = _write_skill(repo_root, "legacy-skill")
+    skill_file = skill_dir / "SKILL.md"
+    skill_file.write_text(
+        skill_file.read_text(encoding="utf-8")
+        + "\n## Activation Summary\n\nlegacy-activation-sentinel\n"
+        + "\n## Required Inputs\n\n- sentinel_tool: query\n"
+        + "\n## Safe Examples\n\n- legacy-safe-example-sentinel\n"
+        + "\n## Runtime Constraints\n\n- legacy-runtime-sentinel\n",
+        encoding="utf-8",
+    )
+
+    catalog = load_repo_skill_descriptors(repo_root)
+
+    assert catalog.issues == []
+    assert len(catalog.descriptors) == 1
+    content = render_skill_guidance(catalog.descriptors[0])
+    assert "legacy-activation-sentinel" in content
+    assert "legacy-safe-example-sentinel" in content
+    assert "legacy-runtime-sentinel" in content
+
+
+def test_manifest_v2_requires_complete_workflow_sections(tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    skill_dir = _write_skill(repo_root, "incomplete-v2-skill")
+    skill_file = skill_dir / "SKILL.md"
+    content = skill_file.read_text(encoding="utf-8").replace(
+        "description: Use when running a sentinel capability.\n",
+        "description: Use when running a sentinel capability.\n"
+        "metadata:\n"
+        "  manifest-version: 2\n",
+    )
+    skill_file.write_text(content, encoding="utf-8")
+
+    catalog = load_repo_skill_descriptors(repo_root)
+
+    assert catalog.descriptors == []
+    assert [issue.code for issue in catalog.issues] == [
+        "missing_v2_workflow_sections"
+    ]
+
+
+def test_skill_loader_rejects_malformed_manifest_version(
+    tmp_path: Path,
+) -> None:
+    repo_root = tmp_path / "repo"
+    skill_dir = _write_skill(repo_root, "malformed-version-skill")
+    skill_file = skill_dir / "SKILL.md"
+    content = skill_file.read_text(encoding="utf-8").replace(
+        "description: Use when running a sentinel capability.\n",
+        "description: Use when running a sentinel capability.\n"
+        "metadata:\n"
+        "  manifest-version: two\n",
+    )
+    skill_file.write_text(content, encoding="utf-8")
+
+    catalog = load_repo_skill_descriptors(repo_root)
+
+    assert catalog.descriptors == []
+    assert [issue.code for issue in catalog.issues] == [
+        "invalid_manifest_version"
+    ]
+
+
+def test_skill_loader_rejects_unsupported_manifest_version(
+    tmp_path: Path,
+) -> None:
+    repo_root = tmp_path / "repo"
+    skill_dir = _write_skill(repo_root, "future-version-skill")
+    skill_file = skill_dir / "SKILL.md"
+    content = skill_file.read_text(encoding="utf-8").replace(
+        "description: Use when running a sentinel capability.\n",
+        "description: Use when running a sentinel capability.\n"
+        "metadata:\n"
+        "  manifest-version: 3\n",
+    )
+    skill_file.write_text(content, encoding="utf-8")
+
+    catalog = load_repo_skill_descriptors(repo_root)
+
+    assert catalog.descriptors == []
+    assert [issue.code for issue in catalog.issues] == [
+        "unsupported_manifest_version"
     ]
 
 
@@ -511,7 +685,14 @@ def test_traced_context_build_reports_developer_skill_guidance() -> None:
         trace_id=state.trace_id,
         node_name="assistant",
         state=state,
-        tool_specs=[_travel_tool()],
+        tool_specs=[
+            _travel_tool(),
+            *[
+                spec
+                for spec in create_default_registry().list_specs()
+                if spec.name in {"load_skill", "load_skill_reference"}
+            ],
+        ],
         iteration=0,
         max_iterations=5,
         supports_developer_role=True,
@@ -529,6 +710,9 @@ def test_traced_context_build_reports_developer_skill_guidance() -> None:
 def test_durable_quantum_preserves_developer_role_capability() -> None:
     registry = ToolRegistry()
     registry.register(_LodgingProbeTool())
+    default_registry = create_default_registry()
+    registry.register(default_registry.get("load_skill"))
+    registry.register(default_registry.get("load_skill_reference"))
     registry.seal()
     runtime = AgentGraphRuntime(
         registry=registry,

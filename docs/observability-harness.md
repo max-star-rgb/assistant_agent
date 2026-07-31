@@ -1079,6 +1079,8 @@ Score metadata 使用
 且全部关联到同一个 `experiment-item-task` observation。Dataset 认证、Runtime OTLP export、
 Environment validation、Judge、Evidence、Score 写入或 Score 回查失败必须 fail-fast，和普通
 server observability 的 fail-open 语义不同。
+本机 Langfuse `3.224.2` 的 task observation 定位使用兼容的 Observations v1 API；该版本只有切换到
+v4 write mode 后才开放 Observations v2。Score 记录仍通过 Scores v3 API 回查。
 
 LLM Judge 不复用 Agent 的 stream、timeout 和 SDK retry 传输策略：Judge 固定非流式，默认 timeout
 30 秒、SDK retry 0 次，并可由 Agent eval 专属环境变量或 CLI 参数覆盖。Judge 网络默认使用

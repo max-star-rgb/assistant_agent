@@ -135,12 +135,7 @@ def build_assistant_context_pack(
             section_id=f"project_skill:{descriptor.name}",
             kind="skill_summary",
             title=descriptor.name,
-            content=render_skill_activation_summary(
-                descriptor,
-                available_tool_names=set(
-                    tool_catalog.run_tool_catalog.available_tool_names
-                ),
-            ),
+            content=render_skill_activation_summary(descriptor),
             authority="procedural_guidance",
             stability="semi_stable",
             source_type="skill_loader",
@@ -156,9 +151,6 @@ def build_assistant_context_pack(
         _loaded_skill_context_sections(
             observations=active_observations,
             descriptors=tool_catalog.skill_descriptors,
-            available_tool_names=set(
-                tool_catalog.run_tool_catalog.available_tool_names
-            ),
         )
     )
     unbudgeted_context_sections = [
@@ -494,7 +486,6 @@ def _loaded_skill_context_sections(
     *,
     observations: list[dict[str, Any]],
     descriptors: list[SkillDescriptor],
-    available_tool_names: set[str],
 ) -> list[ContextSection]:
     """Promote successful Skill loads from registered sources, never tool text."""
 
@@ -529,10 +520,7 @@ def _loaded_skill_context_sections(
                     section_id=f"project_skill_body:{skill_id}",
                     kind="skill_body",
                     title=skill_id,
-                    content=render_skill_guidance(
-                        descriptor,
-                        available_tool_names=available_tool_names,
-                    ),
+                    content=render_skill_guidance(descriptor),
                     authority="procedural_guidance",
                     stability="semi_stable",
                     source_type="skill_loader",

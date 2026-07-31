@@ -31,7 +31,8 @@ MAX_SKILL_REFERENCE_CHARS = 20_000
 class LoadSkillTool(ToolBase):
     name = LOAD_SKILL_TOOL_NAME
     description = (
-        "读取已注册的内部工作流；当上下文中的工作流索引匹配当前任务时调用。"
+        "读取“可用 Skill”索引对应的完整项目工作流；仅在适用条件与当前任务相符且"
+        "任务需要组合多种能力时调用，结果会列出可按需读取的 reference_ids。"
     )
     input_schema = LoadSkillRequest
     output_schema = LoadSkillResult
@@ -48,10 +49,7 @@ class LoadSkillTool(ToolBase):
                 "skill_not_found",
                 "未找到已注册的内部工作流。",
             )
-        content = render_skill_guidance(
-            descriptor,
-            available_tool_names=set(descriptor.governed_tools),
-        )
+        content = render_skill_guidance(descriptor)
         result = LoadSkillResult(
             status="succeeded",
             skill_id=descriptor.name,
@@ -81,7 +79,8 @@ class LoadSkillTool(ToolBase):
 class LoadSkillReferenceTool(ToolBase):
     name = LOAD_SKILL_REFERENCE_TOOL_NAME
     description = (
-        "按 skill_id 和 reference_id 读取内部工作流注册的专项参考；不接受文件路径。"
+        "读取 load_skill 已返回的专项参考；仅使用其 reference_ids 中的标识，"
+        "且只在完整工作流需要额外细节时调用，不接受文件路径。"
     )
     input_schema = LoadSkillReferenceRequest
     output_schema = LoadSkillReferenceResult
@@ -101,6 +100,16 @@ class LoadSkillReferenceTool(ToolBase):
                 self.name,
                 "skill_not_found",
                 "未找到已注册的内部工作流。",
+            )
+        allowed_reference_ids = context.skill_reference_grants.get(
+            descriptor.name,
+            [],
+        )
+        if input.reference_id not in allowed_reference_ids:
+            return _failure(
+                self.name,
+                "skill_reference_not_loaded",
+                "该 reference 未由本次运行中成功的 load_skill 返回。",
             )
         reference_path = descriptor.references.get(input.reference_id)
         if reference_path is None:

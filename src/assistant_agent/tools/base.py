@@ -29,6 +29,10 @@ class ToolContext(BaseModel):
     user_id: str | None = None
     session_id: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+    skill_reference_grants: dict[str, list[str]] = Field(
+        default_factory=dict,
+        exclude=True,
+    )
     cancel_token: Any | None = Field(default=None, exclude=True)
 
     def is_cancelled(self) -> bool:

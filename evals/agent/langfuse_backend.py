@@ -17,6 +17,7 @@ from assistant_agent.observability.otel_exporter import (
     TextOtelTraceObserver,
     create_otlp_http_text_span_exporter,
 )
+from evals.agent.calibration import load_calibration_set
 from evals.agent.contracts import (
     DimensionResult,
     GraderResult,
@@ -25,9 +26,13 @@ from evals.agent.contracts import (
     TaskEnvironment,
     TaskSpec,
 )
-from evals.agent.grading import DIMENSION_NAMES, grade_task
+from evals.agent.grading import (
+    DIMENSION_NAMES,
+    grade_task,
+    validate_mission_objective_assertions,
+)
 from evals.agent.judge import ProgressCallback
-from evals.agent.loader import load_entrypoint, load_task
+from evals.agent.loader import load_case_source, load_entrypoint, load_task
 
 
 DEFAULT_DATASET_NAME = "assistant-agent-regression"
@@ -72,6 +77,8 @@ def publish_tasks(
     *,
     dataset_name: str = DEFAULT_DATASET_NAME,
 ) -> list[str]:
+    for task in tasks:
+        _validate_task_definition_for_publish(task)
     client.create_dataset(
         name=dataset_name,
         description=(
@@ -101,6 +108,38 @@ def publish_tasks(
     return item_ids
 
 
+def _validate_task_definition_for_publish(task: TaskSpec) -> None:
+    source = load_case_source(task.id)
+    environment_type = load_entrypoint(task.environment)
+    environment: TaskEnvironment = environment_type()
+    environment.validate().require_valid()
+    grader = load_entrypoint(task.grader)
+    if not callable(grader):
+        raise RuntimeError(f"Agent eval grader is not callable: {task.grader}.")
+    load_calibration_set(task.id)
+    if source.level != "mission":
+        return
+    objective_method = getattr(
+        environment,
+        "objective_state_assertions",
+        None,
+    )
+    if not callable(objective_method):
+        raise RuntimeError(
+            f"Mission {task.id!r} must define objective_state_assertions()."
+        )
+    validate_mission_objective_assertions(
+        objective_method(
+            RunEvidence(
+                task_id=task.id,
+                run_id="publish-validation",
+                trace_id="0" * 32,
+                terminal_status="not_run",
+            )
+        )
+    )
+
+
 def run_tasks(
     client: Langfuse,
     tasks: Collection[TaskSpec],
@@ -120,13 +159,24 @@ def run_tasks(
         for item in dataset.items
         if isinstance(item.metadata, dict)
         and item.metadata.get("task_id") in task_by_id
-        and (not active_only or _item_status(item) == "ACTIVE")
+        and _item_status(item) == "ACTIVE"
     ]
-    missing = set(task_by_id) - {
+    selected_task_ids = [
         str(item.metadata["task_id"])
         for item in selected_items
         if isinstance(item.metadata, dict)
-    }
+    ]
+    duplicates = sorted(
+        task_id
+        for task_id in set(selected_task_ids)
+        if selected_task_ids.count(task_id) > 1
+    )
+    if duplicates:
+        raise RuntimeError(
+            "Published Dataset contains duplicate ACTIVE Dataset items for: "
+            + ", ".join(duplicates)
+        )
+    missing = set(task_by_id) - set(selected_task_ids)
     if missing:
         raise RuntimeError(
             "Published Dataset is missing tasks: " + ", ".join(sorted(missing))
@@ -307,7 +357,7 @@ def verify_persisted_dimension_scores(
     client: Langfuse,
     result: Any,
     *,
-    attempts: int = 10,
+    attempts: int = 30,
     retry_delay_seconds: float = 0.5,
 ) -> None:
     """Verify that every Experiment item persisted all four task-level Scores."""
@@ -326,7 +376,7 @@ def verify_persisted_dimension_scores(
             )
         failure_detail = ""
         for attempt in range(attempts):
-            observations_response = client.api.observations.get_many(
+            observations_response = client.api.legacy.observations_v1.get_many(
                 trace_id=trace_id,
                 name="experiment-item-task",
                 type="SPAN",

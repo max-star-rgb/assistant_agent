@@ -22,6 +22,7 @@ class SkillDescriptor(BaseModel):
 
     name: str = Field(min_length=1)
     description: str = Field(min_length=1)
+    body: str = Field(min_length=1, exclude=True)
     manifest_version: int = Field(default=1, ge=1)
     enabled: bool = True
     disable_model_invocation: bool = False
@@ -33,6 +34,10 @@ class SkillDescriptor(BaseModel):
     safe_examples: list[str] = Field(default_factory=list)
     runtime_constraints: list[str] = Field(default_factory=list)
     activation_summary: list[str] = Field(default_factory=list)
+    decision_rules: list[str] = Field(default_factory=list)
+    procedure: list[str] = Field(default_factory=list)
+    pitfalls: list[str] = Field(default_factory=list)
+    verification: list[str] = Field(default_factory=list)
     references: dict[str, str] = Field(default_factory=dict)
     visibility: SkillVisibility = Field(default_factory=SkillVisibility)
     tests: list[str] = Field(default_factory=list)
@@ -56,53 +61,21 @@ class SkillCatalog(BaseModel):
 
 def render_skill_guidance(
     descriptor: SkillDescriptor,
-    *,
-    available_tool_names: set[str],
 ) -> str:
-    """Render one prompt-safe procedural projection for the active tool catalog."""
+    """Return the complete trusted Skill body after frontmatter."""
 
-    governed_tools = [
-        tool_name
-        for tool_name in descriptor.governed_tools
-        if tool_name in available_tool_names
-    ]
-    sections = [
-        f"# 内部工作流：{descriptor.name}",
-        descriptor.description,
-        _render_guidance_list("适用条件", descriptor.when_to_use),
-        _render_guidance_list("不适用条件", descriptor.when_not_to_use),
-        _render_required_inputs(
-            descriptor.required_inputs_by_tool,
-            available_tool_names=set(governed_tools),
-        ),
-        _render_guidance_list("安全示例", descriptor.safe_examples),
-        _render_guidance_list("运行约束", descriptor.runtime_constraints),
-        _render_reference_ids(descriptor.references),
-    ]
-    return "\n\n".join(section for section in sections if section)
+    return descriptor.body
 
 
 def render_skill_activation_summary(
     descriptor: SkillDescriptor,
-    *,
-    available_tool_names: set[str],
 ) -> str:
     """Render the small L0 projection that lets the model discover one Skill."""
 
-    summary_items = descriptor.activation_summary or descriptor.when_to_use[:3]
-    sections = [
-        f"# 内部工作流索引：{descriptor.name}",
-        _render_guidance_list("路由摘要", summary_items),
-    ]
-    if "load_skill" in available_tool_names:
-        sections.append(
-            "执行该领域任务时，直接调用 "
-            f'load_skill({{"skill_id":"{descriptor.name}"}}) '
-            "读取完整工作流；专项细节仅按返回的 reference_ids 调用 "
-            "load_skill_reference。加载属于内部动作，产生 tool call 的消息只承载"
-            "调用，不向用户说明 Skill 名称、加载过程或工具名。"
-        )
-    return "\n\n".join(section for section in sections if section)
+    return (
+        "# 可用 Skill\n\n"
+        f"- `{descriptor.name}`：{descriptor.description}"
+    )
 
 
 _ALLOWED_SECTION_TITLES = {
@@ -114,6 +87,10 @@ _ALLOWED_SECTION_TITLES = {
     "safe examples": "safe_examples",
     "runtime constraints": "runtime_constraints",
     "activation summary": "activation_summary",
+    "decision rules": "decision_rules",
+    "procedure": "procedure",
+    "pitfalls": "pitfalls",
+    "verification": "verification",
     "references": "references",
     "visibility": "visibility",
     "tests": "tests",
@@ -328,7 +305,57 @@ def _load_skill_file(
             )
         ]
 
-    sections = _parse_sections(body)
+    normalized_body = body.strip()
+    sections = _parse_sections(normalized_body)
+    raw_manifest_version = metadata.get("manifest-version")
+    if raw_manifest_version is None:
+        manifest_version = 1
+    else:
+        try:
+            manifest_version = int(str(raw_manifest_version).strip())
+        except (TypeError, ValueError):
+            return None, [
+                _issue(
+                    "invalid_manifest_version",
+                    "Skill manifest version must be an integer.",
+                    root=root,
+                    path=skill_file,
+                    skill_id=skill_id,
+                )
+            ]
+        if manifest_version not in {1, 2}:
+            return None, [
+                _issue(
+                    "unsupported_manifest_version",
+                    "Only Skill manifest versions 1 and 2 are supported.",
+                    root=root,
+                    path=skill_file,
+                    skill_id=skill_id,
+                )
+            ]
+    if manifest_version == 2:
+        required_v2_sections = (
+            "decision_rules",
+            "procedure",
+            "pitfalls",
+            "verification",
+        )
+        if any(
+            not _list_items_from_section(sections.get(section_name, []))
+            for section_name in required_v2_sections
+        ):
+            return None, [
+                _issue(
+                    "missing_v2_workflow_sections",
+                    (
+                        "Manifest v2 Skills must include non-empty Decision Rules, "
+                        "Procedure, Pitfalls, and Verification sections."
+                    ),
+                    root=root,
+                    path=skill_file,
+                    skill_id=skill_id,
+                )
+            ]
     governed_tools = _tool_names_from_section(sections.get("governed_tools", []))
     if not governed_tools:
         return None, [
@@ -381,7 +408,8 @@ def _load_skill_file(
         descriptor = SkillDescriptor(
             name=name,
             description=description,
-            manifest_version=_metadata_int(metadata, "manifest-version", default=1),
+            body=normalized_body,
+            manifest_version=manifest_version,
             enabled=enabled,
             disable_model_invocation=disable_model_invocation,
             governed_tools=governed_tools,
@@ -397,6 +425,14 @@ def _load_skill_file(
             ),
             activation_summary=_list_items_from_section(
                 sections.get("activation_summary", [])
+            ),
+            decision_rules=_list_items_from_section(
+                sections.get("decision_rules", [])
+            ),
+            procedure=_list_items_from_section(sections.get("procedure", [])),
+            pitfalls=_list_items_from_section(sections.get("pitfalls", [])),
+            verification=_list_items_from_section(
+                sections.get("verification", [])
             ),
             references=references,
             visibility=_visibility_from_section(sections.get("visibility", [])),
@@ -654,14 +690,6 @@ def _metadata_bool(metadata: dict[str, Any], key: str, *, default: bool) -> bool
         if normalized in {"false", "no", "0"}:
             return False
     return default
-
-
-def _metadata_int(metadata: dict[str, Any], key: str, *, default: int) -> int:
-    value = metadata.get(key)
-    try:
-        return int(str(value).strip())
-    except (TypeError, ValueError):
-        return default
 
 
 def _bool_from_text(value: str, *, default: bool) -> bool:

@@ -321,10 +321,17 @@ readiness：real 模式的 Provider-backed 工具配置不完整时不会注册�
 - 入口 `allowed_tools` 可以进一步收窄本轮候选集合；
 - 项目级 Skill 在本轮最终可见目录包含其 permission 匹配的 governed tool 时，可以按
   `visibility.enabled-by-default` 自动激活；`enabled_skills` 负责显式激活非默认或 `skill-only`
-  Skill。两种方式都只注入短 `skill_summary`，不授予 Tool 执行权限，也不裁剪目录；完整工作流和
+  Skill。只有 `load_skill` 也在最终目录中时才生成动态 Skill 索引；索引使用普通 Markdown，
+  只包含 Skill 名称与适用条件，不复制业务流程或加载教程。索引只是给 LLM 阅读的上下文，
+  Runtime 不反向解析，因此不使用 XML 或 JSON 包装。
+  两种方式都不授予 Tool 执行权限，也不裁剪目录；完整工作流和
   reference 由模型通过受治理的 `load_skill` / `load_skill_reference` 按需读取。成功加载正文后，
   同一 Skill 的 `skill_body` 替换摘要；tool result 只保留加载回执，正文由 ContextBuilder 从注册源
   重建，不能把普通 tool message 提升为指令。
+- “复杂任务符合适用条件时先加载正文、简单单工具查询不加载、reference 只能使用返回 ID、加载不向用户播报”的通用协议集中定义在
+  `runtime/system_prompt_policy.py`，并根据本轮结构化 Skill Context 与 loader ToolSpec 条件注入
+  system role。动态索引/正文属于 ContextSection：Provider 支持时进入 developer，否则与 system
+  合并；静态 policy 不枚举项目 Skill。
 
 LLM 决定是否调用、调用哪个已暴露工具以及参数内容。目录策略不替模型猜测用户意图。
 
@@ -585,9 +592,13 @@ Calendar；默认 MCP 配置不注册 `get_events` / `manage_event`，避免本�
 项目级 `skills/travel-tool-orchestration/SKILL.md` 统一说明这组工具的模型决策顺序：先确定唯一
 终点工具，只在缺少终点工具必填输入时调用前置工具。用户明确只要地图酒店地点时可使用高德 POI；
 涉及入住日期、价格、预算、房型、可订候选或 OTA 时使用 `lodging_search`；已有住宿候选后需要
-通勤证据时再调用高德路线工具。Skill 按本轮最终可见的 governed ToolSpec 自动激活，只注入短路由
-摘要；模型先调用 `load_skill` 读取完整工作流，成功后正文替换摘要，遇到复杂歧义、空结果或恢复时再
-调用 `load_skill_reference(skill_id, reference_id)`。两个加载 Tool 只接受 Loader 已注册的 ID，
+通勤证据时再调用高德路线工具。Skill 按本轮最终可见的 governed ToolSpec 和 `load_skill` 自动激活，
+只注入名称与触发描述；统一 system policy 要求模型先调用 `load_skill` 读取完整工作流，成功后正文
+替换索引，遇到复杂歧义、空结果或恢复时再
+调用 `load_skill_reference(skill_id, reference_id)`。`load_skill` 返回去除 frontmatter 后的完整
+Markdown 正文；当前旅行 Skill 使用 manifest v2，必须包含完整的 Decision Rules、Procedure、
+Pitfalls 和 Verification，loader 仍兼容 v1 旧章节。reference Tool 只接受同一 run 内成功
+`load_skill` 实际返回的 ID，该授权由执行器从已提交 ToolResult 推导，不接受请求 metadata。
 reference 路径必须是 Skill `references/` 下的一层 Markdown 文件，不能由模型传入任意路径。
 Skill 目录、`SKILL.md`、`references/` 目录和 reference 文件都禁止符号链接；成功 observation 仅保留
 ID，下一轮 Context 再从完整项目注册 catalog 加载可信正文并提升为 procedural guidance。

@@ -25,6 +25,10 @@ def _tool(name: str) -> ToolSpec:
     )
 
 
+def _skill_loader_tools() -> list[ToolSpec]:
+    return [_tool("load_skill"), _tool("load_skill_reference")]
+
+
 def _pack(
     *,
     text: str,
@@ -79,6 +83,7 @@ def test_project_travel_skill_activates_from_available_tools_without_filtering()
         _tool("lodging_search"),
         _tool("mcp.amap_maps.maps_text_search"),
         _tool("calendar_search"),
+        *_skill_loader_tools(),
     ]
 
     pack = _pack(text="执行 sentinel-42", tools=tools)
@@ -88,6 +93,8 @@ def test_project_travel_skill_activates_from_available_tools_without_filtering()
         "lodging_search",
         "mcp.amap_maps.maps_text_search",
         "calendar_search",
+        "load_skill",
+        "load_skill_reference",
     ]
     skill_sections = [
         section
@@ -109,12 +116,22 @@ def test_project_travel_skill_activates_from_available_tools_without_filtering()
     assert pack.source_counts["active_skills"] == 1
     assert pack.context_source_report.count_by_kind["skill_summary"] == 1
     assert skill_sections[0].content in _compile_system(pack)
+    assert skill_sections[0].content == (
+        "# 可用 Skill\n\n"
+        "- `travel-tool-orchestration`："
+        "用于需要组合两种或以上地点、住宿、路线、定位或天气能力的复杂旅行任务；"
+        "单工具查询不使用。"
+    )
+    assert "load_skill" not in skill_sections[0].content
+    assert "地图地点和普通周边分布使用高德" not in skill_sections[0].content
+    assert "# Skill 使用规则" in _compile_system(pack)
+    assert "load_skill" in _compile_system(pack)
 
 
 def test_supported_provider_compiles_skill_summary_as_developer_message() -> None:
     pack = _pack(
         text="执行 sentinel-developer-role",
-        tools=[_tool("lodging_search")],
+        tools=[_tool("lodging_search"), *_skill_loader_tools()],
     )
     skill_section = next(
         section
@@ -125,6 +142,10 @@ def test_supported_provider_compiles_skill_summary_as_developer_message() -> Non
     compiled = _compile(pack, supports_developer_role=True)
 
     assert skill_section.content not in compiled.chat_request.messages[0][
+        "content"
+    ]
+    assert "# Skill 使用规则" in compiled.chat_request.messages[0]["content"]
+    assert "load_skill_reference" in compiled.chat_request.messages[0][
         "content"
     ]
     assert compiled.chat_request.messages[1] == {
@@ -148,13 +169,28 @@ def test_supported_provider_compiles_skill_summary_as_developer_message() -> Non
 
 
 def test_project_travel_skill_is_not_activated_without_governed_tools() -> None:
-    pack = _pack(text="查询日历", tools=[_tool("calendar_search")])
+    pack = _pack(
+        text="查询日历",
+        tools=[_tool("calendar_search"), *_skill_loader_tools()],
+    )
 
     assert pack.active_skill_ids == []
     assert all(
         section.kind != "skill_summary"
         for section in pack.context_sections
     )
+    assert "# Skill 使用规则" not in _compile_system(pack)
+
+
+def test_project_travel_skill_is_not_activated_without_loader_tool() -> None:
+    pack = _pack(text="查询住宿", tools=[_tool("lodging_search")])
+
+    assert pack.active_skill_ids == []
+    assert all(
+        section.kind != "skill_summary"
+        for section in pack.context_sections
+    )
+    assert "# Skill 使用规则" not in _compile_system(pack)
 
 
 def test_project_travel_skill_uses_run_visible_tools_after_entry_filtering() -> None:
@@ -213,7 +249,7 @@ def test_project_travel_skill_uses_final_tools_after_durable_filtering() -> None
 def test_project_travel_skill_does_not_compete_with_finalize_policy() -> None:
     pack = _pack(
         text="查询住宿",
-        tools=[_tool("lodging_search")],
+        tools=[_tool("lodging_search"), *_skill_loader_tools()],
     )
     skill_section = next(
         section
@@ -225,7 +261,8 @@ def test_project_travel_skill_does_not_compete_with_finalize_policy() -> None:
     system_prompt = compiled.chat_request.messages[0]["content"]
 
     assert skill_section.content not in system_prompt
-    assert "所有工具均不可用" in system_prompt
+    assert "# 最终回答阶段" in system_prompt
+    assert "# Skill 使用规则" not in system_prompt
     assert compiled.selected_tool_specs == ()
     assert compiled.chat_request.tools == []
     assert compiled.chat_request.tool_choice == "none"

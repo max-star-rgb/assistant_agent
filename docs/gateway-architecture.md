@@ -769,8 +769,10 @@ Every `run.end` supersedes the same progress slot, including completed, failed, 
 前台 chat Provider 的 text delta 会立即成为 `response.chunk`，即使同一 Provider turn
 随后返回 native tool call。tool-call name/argument delta 仍只在 Runtime 内部累积，
 完整后才经过治理执行；已经发送的 text 不回滚，作为 append-only provisional 输出保留。
-后续工具迭代产生的 Provider text 继续追加。Runtime 终态、conversation history 和 memory
-仍以规范化最终 `AgentResponse` 为准，不从这些 delivery chunk 重建业务状态。
+后续工具迭代产生的 Provider text 继续追加；如果工具前导文本与下一轮正文的边界没有现成
+换行，Runtime 在下一轮首个 chunk 前补一个 `\n`，任一侧已有换行则不重复补。
+Runtime 终态、conversation history 和 memory 仍以规范化最终 `AgentResponse` 为准，
+不从这些 delivery chunk 重建业务状态。
 
 The repository still does not invoke a TTS provider. `speech_policy`, `persistence`, `replaceable`, `replacement_key`, and `supersedes` are prompt-safe entry-layer facts that UI or future audio adapters can consume.
 

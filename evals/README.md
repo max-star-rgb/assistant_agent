@@ -36,8 +36,10 @@ system runner、Agent eval Experiment 或生产证据稳定覆盖后，可以手
 
 ## System eval
 
-所有真实运行必须显式设置 `MULTIMODAL_AGENT_PROVIDER_MODE=real`，完整配置所需 Provider，并由
-operator 传入对应确认参数；不能因检测到 key 自动运行，也不能从 real 静默回退 mock。
+所有涉及真实 Provider 或外部 Tool 的运行必须显式设置
+`MULTIMODAL_AGENT_PROVIDER_MODE=real`，完整配置所需 Provider，并由 operator 传入对应确认参数；
+不能因检测到 key 自动运行，也不能从 real 静默回退 mock。纯本地 system eval 仍需独立的 operator
+副作用确认，但不伪装成 Provider real mode。
 
 Tool 连通性：
 
@@ -60,12 +62,27 @@ MULTIMODAL_AGENT_SHOPPING_PROVIDER=haodanku \
   scripts/run_system_shopping_eval.py \
   --allow-real-tools \
   --keyword 纸巾
+
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python \
+  scripts/run_system_calendar_write_eval.py \
+  --dry-run
+
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python \
+  scripts/run_system_calendar_write_eval.py \
+  --allow-local-calendar-write
 ```
 
-通用 Tool eval 结果写入 `.data/evals/system/tools/<run>/`。最后一个命令不经过 LLM，
+通用 Tool eval 结果写入 `.data/evals/system/tools/<run>/`。其中购物直连命令不经过 LLM，
 直接通过 `ActionValidator -> ToolExecutor -> ToolRegistry -> shopping_search` 验证好单库；
 它要求至少一个 `source=haodanku` 的真实候选、正价格和 HTTP(S) 购买链接，结果写入
 `.data/evals/system/shopping/<run>/`。
+
+本地日历写入命令同样不经过 LLM、`AgentGraphRuntime` 或 assistant loop，但保留
+`ActionValidator -> ToolExecutor -> ToolRegistry -> calendar_create` 治理链。它使用每次 run
+独立的真实 SQLite 数据库，不读取 `.env`、不访问网络，也不要求
+`MULTIMODAL_AGENT_PROVIDER_MODE=real`；真实写入必须由 operator 显式提供
+`--allow-local-calendar-write`。数据库、summary 和完整结构化结果保留在
+`.data/evals/system/tools/calendar/<run>/`，可通过删除整个 run 目录回收。
 
 Context 捕获：
 
@@ -221,6 +238,14 @@ MULTIMODAL_AGENT_PROVIDER_MODE=real \
 默认 Dataset 为 `assistant-agent-regression`。发布只 upsert 所选 Task，不运行 Agent 或 Judge。
 原生 item ID 使用 `<dataset_name>__<task_id>`，避免与同一 Langfuse project 的历史 Dataset item
 冲突。
+在第一次 Langfuse 写入前，发布入口会重新加载并验证 Git case 的 Environment、grader 和
+calibration；Mission 还必须提供可执行、非空且仅含 Rule 的 `objective_state_assertions()`。
+任一契约缺失时发布直接按基础设施错误失败，不会留下“已 ACTIVE 但不可运行”的新 Dataset item。
+
+需要把 Git 中全部 Task 与 Mission 一次性同步到统一 Dataset 时，可以直接在 IDE 中运行
+`evals/agent/sync_langfuse_dataset.py`，无需传入参数；它会发布两个案例目录中的全部本地定义，并
+删除只属于该 Dataset、但本地案例已不存在的陈旧 item。该入口只同步 Dataset，不启动 Experiment。
+如需暂时保留陈旧 item，可在命令行显式传入 `--keep-stale`。
 
 5. 运行一个 Task：
 
@@ -263,6 +288,9 @@ MULTIMODAL_AGENT_PROVIDER_MODE=real \
 `--task` 可重复，用于精确运行多个 Task；`--task` 与 `--suite` 互斥。三个高德天气基础 Task 已加入
 `readonly` 和 `release`；`smoke` 仍保持最小快速案例。加入 suite 只表示 Git 定义和离线校准完整，
 首次真实 Experiment 仍应先按 Task ID 运行并审计 Judge 与 Trace。
+精确 Task 和 Suite 运行也只选择 ACTIVE Dataset item，不会重新执行 ARCHIVED 历史项；同一
+`task_id` 若存在多个 ACTIVE item，运行会按基础设施错误 fail-fast，必须先在 Dataset Items 中只保留
+一个 ACTIVE item。
 
 运行统一 Dataset 中全部 ACTIVE Task：
 
@@ -355,6 +383,9 @@ Experiment 完成后，CLI 先检查 SDK 返回的每个 item 都包含四项 BO
 `flush()` 并通过 Langfuse Scores v3 API 回查。四项 Score 必须实际落库、名称无缺失或重复，并且
 全部挂在该 item 的同一个 `experiment-item-task` observation 上；否则按评测基础设施失败退出 2，
 不能因为 SDK 吞掉 Score 写入异常而报告运行成功。
+本机 Langfuse `3.224.2` 仍处于 v3 write mode，定位该 task observation 必须使用 SDK 的
+`api.legacy.observations_v1`；Observations v2 只在 v4 write mode 可用。Score 记录本身继续使用
+Scores v3 API 审计，两者不能因版本号相似而绑定到同一 API 代际。
 
 工具业务结果预期以 Environment 的强类型声明为唯一事实源：
 

@@ -11,6 +11,11 @@ Mem0 拥有记忆算法，包括对话事实提取、合并、更新、向量化
 `assistant_agent` 不实现检索排序、关键词规则、冲突消解、TTL、用户画像、promotion、
 读写策略或 fallback。
 
+仓库本地 Mem0 sidecar 通过 Mem0 原生 `custom_instructions` 固定记忆文本的表达语言：
+所有新提取、合并或更新后的 memory text 使用简体中文；英文输入也翻译为中文，同时保留日期、
+金额、数字、URL、型号和必要的专有名词或缩写。该配置只约束表达语言，不接管 Mem0 的事实选择、
+合并、更新或检索算法。
+
 项目侧只保留三项职责：
 
 1. 将可信的 runtime `user_id`、`agent_id` 映射为不透明 Mem0 `user_id`、`agent_id`；
@@ -23,10 +28,12 @@ Mem0 拥有记忆算法，包括对话事实提取、合并、更新、向量化
 `memory_save`，API 也不提供项目自建的记忆 CRUD/control-plane。
 
 Memory 服务不生成 prompt 文本。ContextBuilder 在每轮构建上下文时从本轮 `AgentState` 中读取同一份
-冻结 items；Context renderer 将 Mem0 返回的原始记忆文本按顺序进行 XML 转义，组装为
-`<long_term_memory trust="untrusted_history">` 低权限历史证据，并与 `<current_request>` 形成
-显式边界后放入当前 `user` message，不进入 `system` message。固定 system policy 负责声明记忆
-可能过期、不完整或检索错误，禁止执行记忆中的指令，并规定当前请求和最新可靠证据优先。
+冻结 items；Context renderer 将 Mem0 返回的原始记忆文本按顺序编码为带中文数据边界的 JSON
+对象，明确标记为不可信历史且不得执行其中指令。PromptCompiler 将该对象放入独立的合成
+`user` 上下文消息，随后再放入保持独立的当前真实 `user` 请求；两者都不进入 `system`
+message。合成上下文消息只存在于 Provider 请求，不写入 `ConversationStore`，也不作为原始
+user message 提交给 Mem0。固定 system policy 负责声明记忆可能过期、不完整或检索错误，并规定
+当前请求和最新可靠证据优先。
 
 ## 2. 生命周期
 
@@ -87,6 +94,25 @@ mock/offline 环境使用明确的 unavailable adapter；它不是本地记忆�
 ```bash
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_mem0.py
 ```
+
+已有英文记忆不会因 `custom_instructions` 自动改写。当前用户的存量迁移使用专用 operator
+命令，先按 runtime `user_id + agent_id` 映射不透明 Mem0 身份；默认只 inspect，不调用
+Provider 或更新数据。真实迁移必须显式启用 real mode、Qwen、`--apply` 和
+`--allow-real-provider`：
+
+```bash
+MULTIMODAL_AGENT_PROVIDER_MODE=real \
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python \
+  scripts/migrate_mem0_memories_to_chinese.py \
+  --user-id <runtime-user-id> \
+  --apply \
+  --allow-real-provider
+```
+
+迁移使用现有 Qwen `ChatAdapter` 翻译，但关闭与纯翻译无关的 Provider-native 联网搜索；
+通过 Mem0 原生 update 原位写回，随后 GET 并读取 history 验证新值与旧值；不把记忆正文或
+Provider 原始响应写入日志/文件。失败时停止，可幂等重跑；已有 session snapshot 仍保持冻结，
+必须创建新 session 才能看到迁移结果。
 
 ## 5. 代码归属
 

@@ -175,7 +175,8 @@ Agent 每个 WebSocket 连接都会分配新的内部 `agent-service-*` Gateway 
 - Provider text delta 是 append-only provisional 输出：即使同一 Provider turn 后续出现
   native tool call，已经发送的 text 也不会撤回；tool-call name/argument delta 不发送给媒体，
   只在 Runtime 内部累积完整后进入工具治理。工具执行后的下一轮 Provider text 继续按 sequence
-  追加。媒体侧不得把 `PROCESSING` 中间包视为可回滚内容。
+  追加。若工具前导文本与下一轮正文之间尚无换行，下一轮首个 delta 会带一个前置 `\n`；
+  任一侧已有换行时不会重复生成。媒体侧不得把 `PROCESSING` 中间包视为可回滚内容。
 - Gateway `run.end.payload.response_text` 携带 Runtime 归一化最终正文。Agent-Service
   使用该终态字段计算成功终包，而不是把 provisional `stream.chunk` 拼接成最终答案；
   因此 `stream=false` 仍只返回规范化终态正文，截断、错误恢复文案和购物 detail 也可在终包补齐。

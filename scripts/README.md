@@ -14,6 +14,10 @@ eval、Gateway 主链路覆盖的 probe 不应继续沉积到本目录。
   waits until Mem0 is healthy, and then exits while leaving both containers
   running. It reuses local images and persistent Compose volumes without building,
   pulling, or clearing stored memory.
+- `scripts/migrate_mem0_memories_to_chinese.py`：检查或迁移一个 runtime 用户已有的
+  Mem0 记忆为简体中文。默认命令只读；更新要求 real Provider mode、已配置的 Qwen 和
+  Mem0，并同时传入 `--apply` 与 `--allow-real-provider`。输出只包含数量、memory ID、
+  状态和稳定错误码，不持久化记忆正文或 Provider 响应。
 - `scripts/run_client.py`: server-backed Media-Agent protocol console client for
   `/agent-service/v1`; type text repeatedly, or use `/new [sessionId]` to open a
   new media session. Agent chat responses print only the reply text, not the
@@ -42,6 +46,10 @@ For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
 - `scripts/run_system_shopping_eval.py`: 不经过 LLM，直接通过本地 Tool 治理链路调用真实
   `shopping_search`；要求 `--allow-real-tools`、real 模式、好单库 Provider 和 key，
   并硬断言真实候选、来源、正价格与 HTTP(S) 购买链接。
+- `scripts/run_system_calendar_write_eval.py`: 不经过 LLM、`AgentGraphRuntime` 或 assistant
+  loop，通过完整本地 Tool 治理链把合成事件写入 run-scoped 真实 SQLite 日历，并验证幂等回放
+  和数据库终态。`--dry-run` 无副作用；真实写入要求 `--allow-local-calendar-write`，产物写入
+  `.data/evals/system/tools/calendar/<run>/`，不要求 real Provider mode。
 - `scripts/run_system_context_eval.py`: 捕获真实 Runtime 编译的 `ChatRequest`
   和 Provider payload；要求 real 模式与 `--allow-unredacted-context`，产物写入
   `.data/evals/system/context/`。

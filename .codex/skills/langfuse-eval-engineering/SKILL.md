@@ -104,6 +104,8 @@ whitelist 不会放行其他端口。本项目必须使用 Compose 中白名单�
 不生成 reward 或总通过分；Task 专属 rubric 只用于 `response_quality`。
 Experiment 完成后必须通过 Scores v3 API 回查四项 Score 已实际落库，并确认它们挂在同一个
 `experiment-item-task` observation；SDK 内存结果不能单独证明 Score 写入成功。
+本机 Langfuse `3.224.2` 的 observation 定位使用 `api.legacy.observations_v1`；Observations v2
+要求 v4 write mode，不能用于当前自托管配置。Score 记录仍使用 Scores v3 API。
 检查每个 `judge.<criterion_id>` evaluator observation 的耗时和状态；Judge 必须使用独立非流式
 timeout/retry 配置，不能继承 Agent 的长 timeout、stream 或 SDK 默认重试。
 
