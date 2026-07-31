@@ -1,6 +1,6 @@
 ---
 name: travel-tool-orchestration
-description: Use when the available tool catalog includes travel place, lodging, route, IP location, or weather capabilities.
+description: 用于本轮工具目录包含旅行地点、住宿报价、路线、IP 定位或天气能力时的内部编排。
 ---
 
 # 旅行工具编排
@@ -78,6 +78,7 @@ description: Use when the available tool catalog includes travel place, lodging,
 - 辅助查询为空时最多进行一次有实质差异的修正；若终点工具不依赖该结果，继续调用终点工具。
 - 不连续更换近义关键词消耗工具预算；终点工具证据充分后立即回答。
 - 只用工具证据支持具体地点、价格、距离、库存和路线事实；高德空结果不能证明住宿 Provider 没有候选。
+- lodging_search 返回候选后，回答按“酒店与价格信息 + OTA 跳转”交付：booking_url 非空时，把对应酒店名或“查看 OTA 报价”渲染为可点击链接，并说明跳转不代表锁价、预订或最终成交；booking_url 为空时明确当前没有跳转链接，不生成“点击链接”等悬空指代。
 - 遇到地图酒店与住宿报价边界不清、空结果或证据恢复时，调用 load_skill_reference 读取 decision-guide。
 
 ## References

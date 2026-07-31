@@ -76,7 +76,7 @@ def _answer(message: str) -> ChatResult:
         ),
         (
             "travel_lodging_constraint_grounding",
-            "lodging_constraint_grounding",
+            "lodging_offer_delivery_grounding",
             {"lodging_search"},
             {"readonly", "travel", "lodging", "budget"},
         ),
@@ -398,6 +398,8 @@ def test_travel_environment_does_not_reward_wrong_constraints(
                 "applies_constraints_and_explains_prices",
                 "misstates_estimate_as_final_total",
                 "omits_price_basis_caveat",
+                "omits_available_booking_links",
+                "suggests_click_without_booking_url",
             ],
             "grounding",
         ),

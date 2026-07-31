@@ -22,6 +22,7 @@ from assistant_agent.runtime.chat_adapter import ChatRequest
 CONTEXT_REPORT_VERSION = "context_report_v2"
 CONTEXT_REPORT_SECTION_NAMES = (
     "system_prompt",
+    "developer_prompt",
     "request",
     "session_summary",
     "recent_transcript",
@@ -56,6 +57,15 @@ def build_context_report(
                 if compiled_request is not None
                 else "system_prompt_policy"
             ),
+        )
+    compiled_developer_prompt, developer_message_index = _compiled_role_prompt(
+        compiled_request,
+        "developer",
+    )
+    if compiled_developer_prompt:
+        sections["developer_prompt"] = ContextReportSection(
+            chars=len(compiled_developer_prompt),
+            source=f"ChatRequest.messages[{developer_message_index}]",
         )
     if pack.request.text:
         sections["request"] = ContextReportSection(
@@ -234,12 +244,23 @@ def build_context_report(
 
 
 def _compiled_system_prompt(request: ChatRequest | None) -> str:
+    content, _ = _compiled_role_prompt(request, "system")
+    return content
+
+
+def _compiled_role_prompt(
+    request: ChatRequest | None,
+    role: str,
+) -> tuple[str, int | None]:
     if request is None:
-        return ""
-    for message in request.messages:
-        if message.get("role") == "system" and isinstance(message.get("content"), str):
-            return message["content"]
-    return ""
+        return "", None
+    for index, message in enumerate(request.messages):
+        if message.get("role") == role and isinstance(
+            message.get("content"),
+            str,
+        ):
+            return message["content"], index
+    return "", None
 
 
 def build_context_source_report(

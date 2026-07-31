@@ -8,7 +8,7 @@ class LoadSkillRequest(BaseModel):
         min_length=1,
         max_length=64,
         pattern=r"^[a-z0-9][a-z0-9-]*$",
-        description="已注册的项目 Skill 标识。",
+        description="已注册的内部工作流标识。",
     )
 
 

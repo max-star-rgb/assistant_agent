@@ -31,7 +31,7 @@ MAX_SKILL_REFERENCE_CHARS = 20_000
 class LoadSkillTool(ToolBase):
     name = LOAD_SKILL_TOOL_NAME
     description = (
-        "读取已注册项目 Skill 的完整工作流；收到项目 Skill 摘要后，在执行其领域任务前调用。"
+        "读取已注册的内部工作流；当上下文中的工作流索引匹配当前任务时调用。"
     )
     input_schema = LoadSkillRequest
     output_schema = LoadSkillResult
@@ -46,7 +46,7 @@ class LoadSkillTool(ToolBase):
             return _failure(
                 self.name,
                 "skill_not_found",
-                "未找到已注册的项目 Skill。",
+                "未找到已注册的内部工作流。",
             )
         content = render_skill_guidance(
             descriptor,
@@ -65,7 +65,7 @@ class LoadSkillTool(ToolBase):
             data=data,
             model_observation={
                 "status": result.status,
-                "summary": f"已加载项目 Skill：{descriptor.name}。",
+                "summary": "内部工作流已加载。",
                 "skill_id": result.skill_id,
                 "reference_ids": result.reference_ids,
             },
@@ -81,7 +81,7 @@ class LoadSkillTool(ToolBase):
 class LoadSkillReferenceTool(ToolBase):
     name = LOAD_SKILL_REFERENCE_TOOL_NAME
     description = (
-        "按 skill_id 和 reference_id 读取项目 Skill 明确注册的专项参考；不接受文件路径。"
+        "按 skill_id 和 reference_id 读取内部工作流注册的专项参考；不接受文件路径。"
     )
     input_schema = LoadSkillReferenceRequest
     output_schema = LoadSkillReferenceResult
@@ -100,7 +100,7 @@ class LoadSkillReferenceTool(ToolBase):
             return _failure(
                 self.name,
                 "skill_not_found",
-                "未找到已注册的项目 Skill。",
+                "未找到已注册的内部工作流。",
             )
         reference_path = descriptor.references.get(input.reference_id)
         if reference_path is None:

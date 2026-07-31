@@ -81,6 +81,7 @@ class ContextService:
         token_counter: ContextTokenCounter | None = None,
         window_policy: ContextWindowPolicy | None = None,
         current_location: str | None = None,
+        supports_developer_role: bool = False,
     ) -> None:
         if compactor is not None and token_counter is None:
             raise ValueError("context compaction requires a model tokenizer")
@@ -88,6 +89,7 @@ class ContextService:
         self.token_counter = token_counter
         self.window_policy = window_policy
         self.current_location = current_location
+        self.supports_developer_role = supports_developer_role
 
     def build(
         self,
@@ -126,6 +128,7 @@ class ContextService:
             native_calls=native_calls,
             current_location=self.current_location,
             answer_only=answer_only,
+            supports_developer_role=self.supports_developer_role,
         )
         return self._from_pack(
             pack,
@@ -152,6 +155,7 @@ class ContextService:
                 tool_call_id_prefix="call_",
                 current_location=self.current_location,
                 answer_only=context.answer_only,
+                supports_developer_role=self.supports_developer_role,
             )
         )
         if compilation.selected_tool_specs:
@@ -383,6 +387,7 @@ class ContextService:
             native_calls=_native_tool_calls(state),
             current_location=self.current_location,
             answer_only=context.answer_only,
+            supports_developer_role=self.supports_developer_role,
             build_reason=build_reason,
         )
         return self._from_pack(

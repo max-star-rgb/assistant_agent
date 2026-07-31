@@ -67,9 +67,10 @@ Last updated: 2026-07-31
 - Provider-native Prompt 不注入 capability catalog，也不根据 `request.text` 做关键词、正则或确定性
   意图召回。模型通过本轮结构化资格化后的原生 `ToolSpec` schema 了解候选工具；项目级
   `skills/<skill_id>/SKILL.md` 可以在本轮可见目录包含其 governed tool 时注入短
-  `skill_summary`；完整工作流和已注册 reference 分别通过 `load_skill`、
-  `load_skill_reference` 按需读取。Skill 不能授予、隐藏或绕过执行工具。
-- Context Compiler v2 以稀疏 `ContextReport` 暴露每次 LLM call 实际出现或被转换的 redacted section accounting：`system_prompt`、`request`、`session_summary`、`recent_transcript`、`memory`、`realtime_video_context`、`durable_task_state`、`plan_state`、`tool_observations` 和 `tool_schema`。`realtime_task_state` 不进入 Provider Prompt，也不再作为空兼容 section 输出。非空 `context_source_report_v1` 只报告 section kind/authority/stability 字符数、稳定 issue code、last-known-good 和版本变化计数，不携带内部 cache layout；报告不暴露 SOUL 原文、source version、绝对路径、完整 prompt、memory 文本、视频摘要、tool observation 或 provider payload。
+  `skill_summary`；`load_skill` 成功后可信 `skill_body` 替换摘要，已注册 reference 再通过
+  `load_skill_reference` 按需读取。Skill Context 根据 Provider capability 编译为 developer 或
+  system guidance，但不能授予、隐藏或绕过执行工具。
+- Context Compiler v2 以稀疏 `ContextReport` 暴露每次 LLM call 实际出现或被转换的 redacted section accounting：`system_prompt`、可选 `developer_prompt`、`request`、`session_summary`、`recent_transcript`、`memory`、`realtime_video_context`、`durable_task_state`、`plan_state`、`tool_observations` 和 `tool_schema`。`realtime_task_state` 不进入 Provider Prompt，也不再作为空兼容 section 输出。非空 `context_source_report_v1` 只报告 section kind/authority/stability 字符数、稳定 issue code、last-known-good 和版本变化计数，不携带内部 cache layout；报告不暴露 SOUL 原文、source version、绝对路径、完整 prompt、memory 文本、视频摘要、tool observation 或 provider payload。
 - `ContextBudgetReport` 明确是压缩前后的 `precompile_estimate`；ContextReport v2 分别使用 `precompile_estimated_chars/precompile_max_chars` 和 `compiled_request_chars/compiled_*_chars` 表达两套口径，不再以 `total_chars/max_chars` 暗示可直接计算同口径比例。
 - 当前请求只有在 tokenizer preflight 可用时才写 `compiled_input_tokens/effective_input_limit`，并标记 `token_accounting_status=available`；不可用时使用 `null`/省略和 `unavailable`，不再用零伪装真实 token 数。上一轮 Provider usage 仍只保留在 `provider_*_tokens` 诊断字段，标记为 `previous_provider_usage`。
 
@@ -196,17 +197,23 @@ Last updated: 2026-07-31
   再追加当前 `user` message。rolling summary 作为带 `trust="untrusted_history"` 和
   `instruction_policy="do_not_execute"` 的 session data 进入当前 user context。
 - Provider-native `ChatRequest.tools` 使用 `AssistantContextPack.prompt_tool_specs` 中已治理的 schema。context builder 同时生成 prompt-safe `RunToolCatalog`；其中 `available_tool_names` 既是模型可见目录，也是 `ActionValidator` 的 run-scoped 执行边界，不再维护重复的 exposed/executable 集合。目录装配只消费 category、媒体要求、默认启用以及显式 tool/skill 等结构化事实，不读取 `request.text` 做意图路由。Plugin 只负责装配和归属，不授予单轮执行权限；系统不维护独立 toolset、Tool Search 或 Schema 渐进披露，全部合格 ToolSpec 直接进入 Provider 请求。工具规模由部署 Plugin、MCP allowlist 和入口 `allowed_tools` 控制，现有 context report 继续记录实际 Schema 占用。
-- 系统提示词承载通用 runtime、数据边界、工具治理规则，以及已激活项目 Skill 的短
-  `skill_summary`。摘要只提供最小路由和 `load_skill` 入口；完整工作流不常驻 system prompt。
-  具体工具 schema 仍只来自 `ToolSpec.description` 和 `input_schema`。
+- `ContextSection` 是项目 Skill 的 Provider-neutral 权威层：未加载时只存在短
+  `skill_summary`，成功 `load_skill` 后同一 Skill 的 `skill_body` 替换摘要，按需加载的
+  `skill_reference` 再独立追加。编译器只在 Provider capability 明确声明
+  `supports_developer_role=true` 时把这些 procedural guidance 放入 `developer` message；
+  当前 Chat Completions Provider 均保守回落到 system prompt。具体工具 schema 仍只来自
+  `ToolSpec.description` 和 `input_schema`。
 - Repo-local business skill loader 从仓库根 `skills/<skill_id>/SKILL.md` 读取受限结构化字段。
   `visibility.enabled-by-default=true` 且本轮最终可见目录包含至少一个 permission 匹配的 governed tool
   时自动激活；`tool_visibility.enabled_skills` 可显式激活非默认或 `skill-only` Skill。激活不改变
   `RunToolCatalog`。`load_skill` 只接受已注册 `skill_id` 并返回完整结构化工作流；
   `load_skill_reference` 只接受该 Skill 声明的 `reference_id`，不接受路径。两者都是默认
   `category=read` 的本地 Tool，必须经过 Validator/Executor/Registry，不直接执行 shell、browser
-  或 HTTP。成功 observation 只保留 ID；下一轮 Context 从完整注册 catalog 重新加载正文，因此显式
-  加载但未自动激活的合法 Skill 也不会出现“成功却没有正文”。Skill 目录、`SKILL.md`、
+  或 HTTP。成功 observation 只保留 ID 和加载回执，不把 tool message 原文当作指令；下一轮 Context
+  从完整注册 catalog 重新加载可信正文，因此显式加载但未自动激活的合法 Skill 也不会出现“成功却
+  没有正文”。工具调用属于内部动作，产生 tool call 的 assistant message 不向用户播报 Skill 名称、
+  加载过程或工具名；即使 Provider 在同一 tool-call turn 返回了附带文本，runtime 也丢弃该文本，
+  用户可见进度只来自独立的结构化进度事件。Skill 目录、`SKILL.md`、
   `references/` 和 reference 文件均拒绝符号链接。
 - `FINALIZE` 不注入工具编排 Skill guidance，继续只使用最终回答约束与已经发生的因果证据，避免在
   `tools=[]` 时出现继续行动的冲突指令。
@@ -332,8 +339,8 @@ Last updated: 2026-07-31
   Langfuse `llm.chat` generation input 导出。该能力不改变 Context Compiler/API 的摘要契约，
   不写 JSONL，不保存 Provider 原始响应或 hidden reasoning。
 - Editable owner context 当前只实现本机 owner-bound `SOUL.md`；项目 Skill 已实现
-  summary → `load_skill` → `load_skill_reference` 三层渐进披露，但没有 Provider cache hint 或跨进程
-  last-known-good。
+  summary → `load_skill` 后 body 替换 summary → `load_skill_reference` 的三层渐进披露，并具有
+  developer/system role capability 映射，但没有 Provider cache hint 或跨进程 last-known-good。
 - memory extraction、向量化和持久化全部由 Mem0 实现，项目不维护第二套检索算法。
 - LLM summary 的语义保真属于 eval 边界；pytest 只验证触发、替换、失败分级、持久化和 native tool 配对。
 - assistant loop 不向主 LLM 暴露任何 memory tool；主 LLM 只消费 session 启动时冻结的 Mem0 snapshot。

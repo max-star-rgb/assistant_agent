@@ -6,6 +6,7 @@ from assistant_agent.context.prompt_compiler import (
     PromptCompileRequest,
     PromptCompiler,
 )
+from assistant_agent.context.report import build_context_report
 from assistant_agent.runtime.requests import UserRequest
 from assistant_agent.runtime.state import AgentState
 from assistant_agent.tools.models import ToolSpec
@@ -51,7 +52,12 @@ def _compile_system(pack, *, answer_only: bool = False) -> str:
     ]
 
 
-def _compile(pack, *, answer_only: bool = False):
+def _compile(
+    pack,
+    *,
+    answer_only: bool = False,
+    supports_developer_role: bool = False,
+):
     return PromptCompiler().compile(
         PromptCompileRequest(
             user_id=pack.request.user_id,
@@ -63,6 +69,7 @@ def _compile(pack, *, answer_only: bool = False):
             native_calls=(),
             tool_call_id_prefix="call_",
             answer_only=answer_only,
+            supports_developer_role=supports_developer_role,
         )
     )
 
@@ -102,6 +109,42 @@ def test_project_travel_skill_activates_from_available_tools_without_filtering()
     assert pack.source_counts["active_skills"] == 1
     assert pack.context_source_report.count_by_kind["skill_summary"] == 1
     assert skill_sections[0].content in _compile_system(pack)
+
+
+def test_supported_provider_compiles_skill_summary_as_developer_message() -> None:
+    pack = _pack(
+        text="执行 sentinel-developer-role",
+        tools=[_tool("lodging_search")],
+    )
+    skill_section = next(
+        section
+        for section in pack.context_sections
+        if section.kind == "skill_summary"
+    )
+
+    compiled = _compile(pack, supports_developer_role=True)
+
+    assert skill_section.content not in compiled.chat_request.messages[0][
+        "content"
+    ]
+    assert compiled.chat_request.messages[1] == {
+        "role": "developer",
+        "content": skill_section.content,
+    }
+    assert compiled.chat_request.messages[2]["role"] == "user"
+
+    report = build_context_report(
+        pack,
+        system_prompt=compiled.system_instruction,
+        selected_tool_specs=compiled.selected_tool_specs,
+        compiled_request=compiled.chat_request,
+    )
+    assert report.sections["developer_prompt"].chars == len(
+        skill_section.content
+    )
+    assert report.sections["developer_prompt"].source == (
+        "ChatRequest.messages[1]"
+    )
 
 
 def test_project_travel_skill_is_not_activated_without_governed_tools() -> None:

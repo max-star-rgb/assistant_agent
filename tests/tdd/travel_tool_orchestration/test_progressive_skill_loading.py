@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from pydantic import BaseModel
+
+from assistant_agent.config import ProviderConfig
 from assistant_agent.context.builder import build_assistant_context_pack
 from assistant_agent.context.observability import (
     build_traced_assistant_context_pack,
@@ -12,18 +15,49 @@ from assistant_agent.context.prompt_compiler import (
     PromptCompiler,
 )
 from assistant_agent.runtime.action_validator import ActionValidator
+from assistant_agent.runtime.chat_adapter import ChatRequest, ChatResult
 from assistant_agent.runtime.output_models import AssistantToolCall
 from assistant_agent.runtime.requests import UserRequest
+from assistant_agent.runtime.runtime import AgentGraphRuntime
+from assistant_agent.runtime.session_store import InMemorySessionStore
 from assistant_agent.runtime.state import AgentState
 from assistant_agent.runtime.tool_executor import ToolExecutor
 from assistant_agent.observability.trace_store import InMemoryTraceStore
+from assistant_agent.providers.specs import ProviderCapabilities
 from assistant_agent.skills.loading import (
     load_repo_skill_descriptors,
     read_registered_skill_reference,
 )
 from assistant_agent.tools.models import RunToolCatalog, ToolSpec
+from assistant_agent.tools.base import ToolBase, ToolContext
+from assistant_agent.tools.models import ToolResult
 from assistant_agent.tools.observation import observation_from_tool_result
 from assistant_agent.tools.plugins.registry_factory import create_default_registry
+from assistant_agent.tools.registry import ToolRegistry
+
+
+class _EmptyInput(BaseModel):
+    pass
+
+
+class _LodgingProbeTool(ToolBase):
+    name = "lodging_search"
+    description = "lodging sentinel"
+    input_schema = _EmptyInput
+    output_schema = _EmptyInput
+    category = "read"
+
+    def _run(self, input: _EmptyInput, context: ToolContext) -> ToolResult:
+        return ToolResult(tool_name=self.name, success=True, data={})
+
+
+class _DeveloperRoleAdapter:
+    provider = "test"
+    model = "test"
+    capabilities = ProviderCapabilities(supports_developer_role=True)
+
+    def chat(self, request: ChatRequest) -> ChatResult:
+        return ChatResult(provider=self.provider, response_text="unused")
 
 
 def _travel_tool() -> ToolSpec:
@@ -94,8 +128,8 @@ def _pack_with_observation(observation: dict):
     )
 
 
-def _compile_system(pack) -> str:
-    compiled = PromptCompiler().compile(
+def _compile(pack, *, supports_developer_role: bool = False):
+    return PromptCompiler().compile(
         PromptCompileRequest(
             user_id=pack.request.user_id,
             session_id=pack.request.session_id,
@@ -105,9 +139,13 @@ def _compile_system(pack) -> str:
             observations=tuple(pack.observations),
             native_calls=(),
             tool_call_id_prefix="call_",
+            supports_developer_role=supports_developer_role,
         )
     )
-    return compiled.chat_request.messages[0]["content"]
+
+
+def _compile_system(pack) -> str:
+    return _compile(pack).chat_request.messages[0]["content"]
 
 
 def _write_skill(
@@ -251,10 +289,37 @@ def test_successful_load_skill_is_promoted_from_registered_source() -> None:
         for section in pack.context_sections
         if section.kind == "skill_body"
     )
+    assert all(
+        section.kind != "skill_summary"
+        or section.title != "travel-tool-orchestration"
+        for section in pack.context_sections
+    )
     assert body.authority == "procedural_guidance"
     assert "## 必填输入" in body.content
     assert "observation-injection-sentinel" not in body.content
     assert body.content in _compile_system(pack)
+
+
+def test_supported_provider_compiles_loaded_skill_as_developer_message() -> None:
+    result = _run_governed(
+        "load_skill",
+        {"skill_id": "travel-tool-orchestration"},
+    )
+    observation = observation_from_tool_result(result).model_dump(mode="json")
+    pack = _pack_with_observation(observation)
+    body = next(
+        section
+        for section in pack.context_sections
+        if section.kind == "skill_body"
+    )
+
+    compiled = _compile(pack, supports_developer_role=True)
+
+    assert body.content not in compiled.chat_request.messages[0]["content"]
+    assert compiled.chat_request.messages[1] == {
+        "role": "developer",
+        "content": body.content,
+    }
 
 
 def test_successful_reference_load_is_promoted_from_registered_source() -> None:
@@ -430,3 +495,63 @@ def test_finalize_context_report_uses_actual_empty_tool_request() -> None:
     report = event.output_summary["context_report_v2"]
     assert report.get("selected_tool_names", []) == []
     assert "tool_schema" not in report["sections"]
+
+
+def test_traced_context_build_reports_developer_skill_guidance() -> None:
+    trace_store = InMemoryTraceStore()
+    request = UserRequest(
+        user_id="skill-user",
+        session_id="skill-session",
+        text="执行 sentinel-developer-trace",
+    )
+    state = AgentState.from_request(request)
+
+    build_traced_assistant_context_pack(
+        trace_store=trace_store,
+        trace_id=state.trace_id,
+        node_name="assistant",
+        state=state,
+        tool_specs=[_travel_tool()],
+        iteration=0,
+        max_iterations=5,
+        supports_developer_role=True,
+    )
+
+    event = next(
+        item
+        for item in trace_store.list_by_run(state.run_id)
+        if item.canonical_event == "context.build.finished"
+    )
+    report = event.output_summary["context_report_v2"]
+    assert report["sections"]["developer_prompt"]["chars"] > 0
+
+
+def test_durable_quantum_preserves_developer_role_capability() -> None:
+    registry = ToolRegistry()
+    registry.register(_LodgingProbeTool())
+    registry.seal()
+    runtime = AgentGraphRuntime(
+        registry=registry,
+        config=ProviderConfig(langgraph_checkpointer_backend="none"),
+        chat_adapter=_DeveloperRoleAdapter(),
+        session_store=InMemorySessionStore(),
+    )
+    request = UserRequest(
+        user_id="skill-user",
+        session_id="skill-session",
+        text="执行 sentinel-durable-developer",
+        task_execution_mode="durable",
+    )
+    state = AgentState.from_request(request)
+
+    try:
+        compiled = runtime._durable_quantum_chat_request(request, state=state)
+    finally:
+        runtime.close()
+
+    assert compiled is not None
+    assert any(
+        message["role"] == "developer"
+        and "travel-tool-orchestration" in message["content"]
+        for message in compiled.messages
+    )

@@ -44,6 +44,7 @@ class PromptCompileRequest:
     max_tokens: int = 1024
     current_location: str | None = None
     answer_only: bool = False
+    supports_developer_role: bool = False
 
 
 @dataclass(frozen=True)
@@ -60,12 +61,17 @@ class PromptCompiler:
     """Deterministically assemble an existing context pack for a provider."""
 
     def compile(self, request: PromptCompileRequest) -> PromptCompileResult:
+        procedural_guidance = (
+            ""
+            if request.answer_only
+            else procedural_guidance_for_pack(request.context_pack)
+        )
         system_instruction = render_system_instruction(
             agent_personalization=owner_persona_for_pack(request.context_pack),
             procedural_guidance=(
                 ""
-                if request.answer_only
-                else procedural_guidance_for_pack(request.context_pack)
+                if request.supports_developer_role
+                else procedural_guidance
             ),
             current_location=request.current_location,
             response_style=request.context_pack.response_style,
@@ -74,6 +80,10 @@ class PromptCompiler:
         rendered_context = _render_context(request)
         user_content = _rendered_user_content(rendered_context, request.mode)
         messages = [{"role": "system", "content": system_instruction}]
+        if procedural_guidance and request.supports_developer_role:
+            messages.append(
+                {"role": "developer", "content": procedural_guidance}
+            )
         messages.extend(native_conversation_messages(request.context_pack.request.metadata))
         messages.append({"role": "user", "content": user_content})
         messages.extend(

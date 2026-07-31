@@ -479,13 +479,7 @@ def _decide_with_llm(
             state.request.metadata["answer_only_retry_failed"] = True
             state.request.metadata["finalization_protocol_violation_count"] = 2
             return _finalize_fallback(context), context
-        progress_message = result.response_text.strip() or None
-        pending_decisions = [
-            call.to_assistant_tool_call(
-                progress_message=progress_message if index == 0 else None,
-            )
-            for index, call in enumerate(result.tool_calls)
-        ]
+        pending_decisions = _native_tool_call_decisions(result)
         _record_native_tool_calls(
             state,
             result,
@@ -989,6 +983,12 @@ def _native_final_decision(result: ChatResult) -> AssistantTextOutput:
         reason=_native_finish_reason(result, fallback="Provider finished without content or tool calls."),
         safety_notes=["empty_native_final_answer"],
     )
+
+
+def _native_tool_call_decisions(result: ChatResult) -> list[AssistantToolCall]:
+    """Convert native calls without exposing same-turn model narration."""
+
+    return [call.to_assistant_tool_call() for call in result.tool_calls]
 
 
 def _native_finish_reason(result: ChatResult, *, fallback: str) -> str:

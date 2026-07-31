@@ -129,6 +129,7 @@ def build_assistant_context_pack(
         tool_specs=prompt_tool_specs,
     )
     plan_state = build_assistant_plan_context(state)
+    loaded_skill_ids = _successfully_loaded_skill_ids(active_observations)
     skill_context_sections = [
         ContextSection(
             section_id=f"project_skill:{descriptor.name}",
@@ -149,6 +150,7 @@ def build_assistant_context_pack(
             priority=30,
         )
         for descriptor in tool_catalog.active_skill_descriptors
+        if descriptor.name not in loaded_skill_ids
     ]
     skill_context_sections.extend(
         _loaded_skill_context_sections(
@@ -574,6 +576,28 @@ def _loaded_skill_context_sections(
             )
         )
     return sections
+
+
+def _successfully_loaded_skill_ids(
+    observations: list[dict[str, Any]],
+) -> set[str]:
+    """Return governed Skill IDs whose complete body was loaded successfully."""
+
+    loaded: set[str] = set()
+    for observation in observations:
+        if (
+            observation.get("tool_name") != LOAD_SKILL_TOOL_NAME
+            or observation.get("status") != "succeeded"
+            or observation.get("is_complete") is not True
+        ):
+            continue
+        data = observation.get("data")
+        if not isinstance(data, dict):
+            continue
+        skill_id = data.get("skill_id")
+        if isinstance(skill_id, str) and skill_id:
+            loaded.add(skill_id)
+    return loaded
 
 
 def _source_counts(

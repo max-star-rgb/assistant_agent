@@ -228,6 +228,13 @@ class AgentGraphRuntime:
             token_counter=self.context_token_counter,
             window_policy=self.context_window_policy,
             current_location=self.config.current_location,
+            supports_developer_role=bool(
+                getattr(
+                    getattr(self.chat_adapter, "capabilities", None),
+                    "supports_developer_role",
+                    False,
+                )
+            ),
         )
         self.checkpointer = checkpointer if checkpointer is not None else create_checkpointer(self.config)
         self.context_source_coordinator = context_source_coordinator or ContextSourceCoordinator(
@@ -717,6 +724,7 @@ class AgentGraphRuntime:
             iteration=0,
             max_iterations=1,
             context_compactor=None,
+            supports_developer_role=self.context_service.supports_developer_role,
         )
         compilation = PromptCompiler().compile(
             PromptCompileRequest(
@@ -729,6 +737,7 @@ class AgentGraphRuntime:
                 native_calls=(),
                 tool_call_id_prefix="durable_task_call_",
                 current_location=self.config.current_location,
+                supports_developer_role=self.context_service.supports_developer_role,
             )
         )
         return compilation.chat_request

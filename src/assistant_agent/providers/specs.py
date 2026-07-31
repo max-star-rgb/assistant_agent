@@ -18,6 +18,7 @@ AdapterKind = str
 class ProviderCapabilities:
     """Provider capability facts used by runtime adapters and docs."""
 
+    supports_developer_role: bool = False
     supports_response_format: bool = True
     supports_native_tools: bool = True
     supports_tool_choice: bool = True

@@ -45,6 +45,7 @@ def build_traced_assistant_context_pack(
     native_calls: list[dict[str, Any]] | None = None,
     current_location: str | None = None,
     answer_only: bool = False,
+    supports_developer_role: bool = False,
     build_reason: str = "iteration_initial",
 ) -> AssistantContextPack:
     """Build an assistant context pack and emit redacted canonical trace events."""
@@ -96,6 +97,7 @@ def build_traced_assistant_context_pack(
                 tool_call_id_prefix="call_",
                 current_location=current_location,
                 answer_only=answer_only,
+                supports_developer_role=supports_developer_role,
             )
         )
     except Exception as exc:

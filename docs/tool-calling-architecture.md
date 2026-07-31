@@ -322,7 +322,9 @@ readiness：real 模式的 Provider-backed 工具配置不完整时不会注册�
 - 项目级 Skill 在本轮最终可见目录包含其 permission 匹配的 governed tool 时，可以按
   `visibility.enabled-by-default` 自动激活；`enabled_skills` 负责显式激活非默认或 `skill-only`
   Skill。两种方式都只注入短 `skill_summary`，不授予 Tool 执行权限，也不裁剪目录；完整工作流和
-  reference 由模型通过受治理的 `load_skill` / `load_skill_reference` 按需读取。
+  reference 由模型通过受治理的 `load_skill` / `load_skill_reference` 按需读取。成功加载正文后，
+  同一 Skill 的 `skill_body` 替换摘要；tool result 只保留加载回执，正文由 ContextBuilder 从注册源
+  重建，不能把普通 tool message 提升为指令。
 
 LLM 决定是否调用、调用哪个已暴露工具以及参数内容。目录策略不替模型猜测用户意图。
 
@@ -500,7 +502,10 @@ TaskEvent，事件只记录 delivery id、channel、状态、尝试次数和安�
 星级、床型、每晚预算和排序；成功 observation 最多向模型提供 3 个归一化候选，包含适用的地址、
 坐标、评分、图片、价格、查询时间和 `booking_url`。价格、库存与退改条件以跳转后的 OTA 页面为准，
 未知退改属性保持 `null`，不能默认为不可退或可退。FlyAI 展示价按入住晚数推导的总额使用
-`price_basis=nightly_estimate` 明确标记为估算，不能表述为含税成交总价。
+`price_basis=nightly_estimate` 明确标记为估算，不能表述为含税成交总价。回答候选时，
+`booking_url` 非空则提供对应的可点击 OTA 跳转链接，并说明链接不代表锁价、预订成功或最终成交；
+字段为空时明确当前没有跳转链接，不能生成“点击链接”等悬空指代。adapter 不验证页面可达性、
+登录状态、有效期或跳转后的当前报价。
 
 mock mode 注册确定性本地 adapter。real mode 目前只支持显式
 `MULTIMODAL_AGENT_LODGING_PROVIDER=flyai`，并要求同时配置 `FLYAI_CLI_PATH` 和正式
@@ -580,12 +585,16 @@ Calendar；默认 MCP 配置不注册 `get_events` / `manage_event`，避免本�
 项目级 `skills/travel-tool-orchestration/SKILL.md` 统一说明这组工具的模型决策顺序：先确定唯一
 终点工具，只在缺少终点工具必填输入时调用前置工具。用户明确只要地图酒店地点时可使用高德 POI；
 涉及入住日期、价格、预算、房型、可订候选或 OTA 时使用 `lodging_search`；已有住宿候选后需要
-通勤证据时再调用高德路线工具。Skill 按本轮最终可见的 governed ToolSpec 自动激活，只把短路由
-摘要放入 system prompt；模型先调用 `load_skill` 读取完整工作流，遇到复杂歧义、空结果或恢复时再
+通勤证据时再调用高德路线工具。Skill 按本轮最终可见的 governed ToolSpec 自动激活，只注入短路由
+摘要；模型先调用 `load_skill` 读取完整工作流，成功后正文替换摘要，遇到复杂歧义、空结果或恢复时再
 调用 `load_skill_reference(skill_id, reference_id)`。两个加载 Tool 只接受 Loader 已注册的 ID，
 reference 路径必须是 Skill `references/` 下的一层 Markdown 文件，不能由模型传入任意路径。
 Skill 目录、`SKILL.md`、`references/` 目录和 reference 文件都禁止符号链接；成功 observation 仅保留
 ID，下一轮 Context 再从完整项目注册 catalog 加载可信正文并提升为 procedural guidance。
+Provider capability 明确支持时 guidance 使用 `developer` role，否则并入 system；当前
+qwen/deepseek 等 Chat Completions 接口保守使用 system。加载工具的 tool message 不承载正文，也不
+向用户播报 Skill 名称或加载过程。Provider 在原生 tool-call turn 附带的 `response_text` 不映射为
+`progress_message`；需要展示的工具进度由 runtime 独立结构化发布。
 该流程不读取 `request.text` 做代码路由，不改变 `RunToolCatalog` 或 validator/executor 权限。
 
 当前 FlyAI adapter 按 `@fly-ai/flyai-cli==1.0.16` 的 `search-hotel` 命令与单行 JSON 契约实现；

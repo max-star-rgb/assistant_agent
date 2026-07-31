@@ -67,7 +67,7 @@ def render_skill_guidance(
         if tool_name in available_tool_names
     ]
     sections = [
-        f"# 项目 Skill：{descriptor.name}",
+        f"# 内部工作流：{descriptor.name}",
         descriptor.description,
         _render_guidance_list("适用条件", descriptor.when_to_use),
         _render_guidance_list("不适用条件", descriptor.when_not_to_use),
@@ -91,15 +91,16 @@ def render_skill_activation_summary(
 
     summary_items = descriptor.activation_summary or descriptor.when_to_use[:3]
     sections = [
-        f"# 可用项目 Skill：{descriptor.name}",
-        _render_guidance_list("快速路由", summary_items),
+        f"# 内部工作流索引：{descriptor.name}",
+        _render_guidance_list("路由摘要", summary_items),
     ]
     if "load_skill" in available_tool_names:
         sections.append(
-            "需要执行该领域任务时，先调用 "
+            "执行该领域任务时，直接调用 "
             f'load_skill({{"skill_id":"{descriptor.name}"}}) '
-            "读取完整工作流；需要专项细节时再按返回的 reference_ids 调用 "
-            "load_skill_reference。"
+            "读取完整工作流；专项细节仅按返回的 reference_ids 调用 "
+            "load_skill_reference。加载属于内部动作，产生 tool call 的消息只承载"
+            "调用，不向用户说明 Skill 名称、加载过程或工具名。"
         )
     return "\n\n".join(section for section in sections if section)
 
