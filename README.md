@@ -9,6 +9,7 @@ Core project docs:
 - Gateway and realtime lifecycle: [docs/gateway-architecture.md](docs/gateway-architecture.md)
 - Runtime and provider event streaming: [docs/runtime-event-stream-architecture.md](docs/runtime-event-stream-architecture.md)
 - Tool calling governance: [docs/tool-calling-architecture.md](docs/tool-calling-architecture.md)
+- Website guidance（Qwen 候选 URL、Playwright 只读浏览与安全边界）: [docs/tool-calling-architecture.md](docs/tool-calling-architecture.md)
 - Observability and trace harness: [docs/observability-harness.md](docs/observability-harness.md)
 - Mem0 memory architecture: [docs/memory-service-architecture.md](docs/memory-service-architecture.md)
 - Mem0 HTTP integration subset: [docs/memory_server_api_spec.md](docs/memory_server_api_spec.md)

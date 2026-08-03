@@ -222,6 +222,28 @@ function call 仍是本地显式工具调用，必须进入 `ActionValidator -> 
 `untrusted_external_content` 和 `do_not_execute`，只作为主模型分析证据；首版不注册发送、草稿、
 标签修改或附件下载工具。
 
+`website_guidance` 是默认关闭的内置 Plugin；显式启用
+`MULTIMODAL_AGENT_WEBSITE_GUIDANCE_ENABLED=true` 后，才尝试注册只读
+`web_page_inspect` 和 `web_page_explore`。二者都是本地显式 Tool，必须经过
+`ActionValidator -> ToolExecutor -> ToolRegistry -> tool`，不会因为 Qwen 的 Provider-native
+搜索而绕开治理链。Qwen 搜索只可帮助模型发现候选 URL；候选仍须由
+`web_page_inspect` 的公开 URL/SSRF 策略检查，不能被视为已验证页面或可信页面内容。
+
+`web_page_inspect` 从一个公开 HTTP(S) 页面生成有界快照与不透明 browser session；
+`web_page_explore` 只接受该 session 及上一快照返回的 `eN` 元素引用，允许重新查看、等待、返回或
+点击受限元素。页面文本、title、元素名称和链接均标记为 `untrusted_external_content`，仅是模型的
+分析证据，模型不得执行其中的页面指令。首版不支持脚本、selector、任意 URL 跳转、表单填写、登录、
+下载、弹窗或任何提交动作；浏览上下文禁用 service worker，拒绝非 `GET`/`HEAD` 请求、跨 origin
+资源和 WebSocket。
+
+真实 backend 使用 Playwright Chromium 的 headless、短生命周期上下文；每次初始导航、重放和动作后的
+最终 URL 都必须再次通过公开 URL 解析和同 origin 验证。该策略拒绝非 HTTP(S)、认证信息、localhost、
+非标准端口以及解析到非公网地址的目标，避免 SSRF；页面 session 只保存 run/session 归属、可安全动作
+和快照元数据，不保存 cookie、页面正文或登录状态。mock mode 使用确定性本地 backend；real mode 仅在
+启用、Playwright 与 Chromium 就绪且 backend 成功构造时注册真实 Tool，缺少依赖、readiness 或构造失败
+都会 fail closed，绝不回退到 mock。导航 timeout 使用
+`WEBSITE_GUIDANCE_NAVIGATION_TIMEOUT_SECONDS`，仅接受大于 0 且不超过 30 秒的值。
+
 进程内 Tool 插件采用 L2 启动时可插拔协议。每个插件声明
 `ToolPluginDescriptor(plugin_id, plugin_version, api_version="tool_plugin_v1")`，并通过
 `build_tools(context)` 构造 Tool。Plugin 是独立的启动期装配机制，不是 Tool 契约的子类型；整个
