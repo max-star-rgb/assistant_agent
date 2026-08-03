@@ -8,6 +8,7 @@ import struct
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
 from assistant_agent.providers.provider_errors import ProviderAdapterError, build_provider_error, sanitize_error_message
@@ -209,6 +210,22 @@ def create_vision_embedding_provider(config: ProviderConfig | None = None) -> Vi
                 model=config.vision_embedding_model,
                 dimension=config.vision_embedding_dimension,
                 timeout_seconds=config.vision_embedding_timeout_seconds,
+            )
+        )
+    if config.vision_embedding_provider == "local_siglip2":
+        from assistant_agent.media.video.detection.local_siglip2_provider import (
+            LocalSiglip2VisionConfig,
+            LocalSiglip2VisionProvider,
+        )
+
+        return LocalSiglip2VisionProvider(
+            LocalSiglip2VisionConfig(
+                model_dir=(
+                    Path(config.siglip2_vision_model_dir)
+                    if config.siglip2_vision_model_dir
+                    else None
+                ),
+                cuda_device_id=config.siglip2_cuda_device_id,
             )
         )
     return MockVisionEmbeddingProvider()

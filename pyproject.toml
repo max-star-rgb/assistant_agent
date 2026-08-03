@@ -24,6 +24,11 @@ observability = [
     "opentelemetry-sdk>=1.25,<2",
     "opentelemetry-exporter-otlp-proto-http>=1.25,<2",
 ]
+local-vision-embedding = [
+    "numpy>=2.0,<3",
+    "Pillow>=10,<12",
+    "onnxruntime-gpu>=1.20,<2",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests/core"]
