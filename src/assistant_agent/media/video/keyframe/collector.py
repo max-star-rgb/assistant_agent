@@ -34,6 +34,7 @@ class AdaptiveKeyframeCollector:
         frame_difference_detector: FrameDifferenceDetector | None = None,
         ssim_detector: SSIMChangeDetector | None = None,
         semantic_detector: SemanticChangeDetector | None = None,
+        semantic_probe_fps: float | None = None,
         config: ProviderConfig | None = None,
     ) -> None:
         self.sampler = AdaptiveFrameSampler(sampler_config)
@@ -43,16 +44,26 @@ class AdaptiveKeyframeCollector:
         self.semantic_detector = semantic_detector or (
             create_semantic_change_detector(config) if config is not None else SemanticChangeDetector()
         )
+        self.semantic_probe_fps = (
+            semantic_probe_fps
+            if semantic_probe_fps is not None
+            else config.keyframe_semantic_probe_fps
+            if config is not None
+            else 2.0
+        )
+        if self.semantic_probe_fps <= 0:
+            raise ValueError("semantic probe FPS must be positive")
         self.log_records: list[dict[str, Any]] = []
         self._last_keyframe: VideoFrame | None = None
         self._last_keyframe_at: float | None = None
+        self._last_semantic_probe_at: float | None = None
 
     def collect(self, frame: VideoFrame) -> KeyframeCollectionResult:
         """Evaluate one frame and return immediately without MLLM work."""
 
         started_at = time.perf_counter()
-        metrics, errors = self._change_metrics(frame)
         force = self.selector.force_due(frame.timestamp_seconds, self._last_keyframe_at)
+        metrics, errors = self._change_metrics(frame, force=force)
         sampling = self.sampler.should_sample(
             timestamp_seconds=frame.timestamp_seconds,
             change_score=0.0 if self._last_keyframe is None else metrics.change_score,
@@ -84,14 +95,29 @@ class AdaptiveKeyframeCollector:
         self.log_records.append(_log_record(processing))
         return KeyframeCollectionResult(processing=processing, selected_frame=selected_frame)
 
-    def _change_metrics(self, frame: VideoFrame) -> tuple[KeyframeChangeMetrics, list[dict[str, Any]]]:
+    def _change_metrics(
+        self,
+        frame: VideoFrame,
+        *,
+        force: bool,
+    ) -> tuple[KeyframeChangeMetrics, list[dict[str, Any]]]:
         pixel = self.frame_difference_detector.compare(frame, self._last_keyframe)
         structural = self.ssim_detector.compare(frame, self._last_keyframe)
+        probe_interval = 1.0 / self.semantic_probe_fps
+        probe_due = (
+            self._last_semantic_probe_at is None
+            or frame.timestamp_seconds - self._last_semantic_probe_at + 1e-9
+            >= probe_interval
+        )
         semantic_candidate = (
             self._last_keyframe is None
-            or pixel.pixel_change_score >= self.selector.config.threshold
-            or structural.structural_change_score >= self.selector.config.threshold
+            or structural.structural_change_score
+            >= self.selector.config.structural_threshold
+            or probe_due
+            or force
         )
+        if semantic_candidate:
+            self._last_semantic_probe_at = frame.timestamp_seconds
         semantic = self.semantic_detector.compare(
             frame,
             self._last_keyframe,

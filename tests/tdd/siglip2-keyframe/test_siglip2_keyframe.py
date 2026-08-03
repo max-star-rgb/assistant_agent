@@ -14,7 +14,16 @@ from assistant_agent.media.video.detection.local_siglip2_provider import (
     LocalSiglip2VisionConfig,
     LocalSiglip2VisionProvider,
 )
+from assistant_agent.media.video.detection.semantic_detector import (
+    SemanticChangeDetector,
+)
+from assistant_agent.media.video.keyframe.collector import AdaptiveKeyframeCollector
+from assistant_agent.media.video.keyframe.selector import (
+    KeyframeSelectorConfig,
+    SemanticKeyframeSelector,
+)
 from assistant_agent.media.video.types import VideoFrame
+from assistant_agent.media.video.types import KeyframeChangeMetrics
 
 
 def test_real_mode_explicitly_configures_local_siglip2_image_embeddings() -> None:
@@ -195,6 +204,160 @@ def test_local_siglip2_provider_rejects_model_checksum_mismatch(tmp_path) -> Non
 
     assert result.embedding == []
     assert result.errors[0]["code"] == "local_model_integrity_failed"
+
+
+def _frame_at(timestamp_seconds: float) -> VideoFrame:
+    return VideoFrame(
+        frame_id=f"frame-{timestamp_seconds}",
+        timestamp_seconds=timestamp_seconds,
+    )
+
+
+@pytest.mark.parametrize(
+    ("metrics", "reason"),
+    [
+        (
+            KeyframeChangeMetrics(structural_change_score=0.36),
+            "structural_change",
+        ),
+        (
+            KeyframeChangeMetrics(semantic_change_score=0.19),
+            "semantic_change",
+        ),
+        (
+            KeyframeChangeMetrics(
+                structural_change_score=0.20,
+                semantic_change_score=0.30,
+            ),
+            "combined_change",
+        ),
+    ],
+)
+def test_selector_allows_structural_semantic_and_combined_triggers(
+    metrics: KeyframeChangeMetrics,
+    reason: str,
+) -> None:
+    selector = SemanticKeyframeSelector(
+        KeyframeSelectorConfig(min_interval_seconds=0.0)
+    )
+
+    decision = selector.select(
+        _frame_at(1.0),
+        selector.with_score(metrics),
+        last_keyframe_at=0.0,
+    )
+
+    assert decision.selected is True
+    assert decision.reason == reason
+
+
+def test_selector_forces_static_keyframe_at_ten_seconds_not_before() -> None:
+    selector = SemanticKeyframeSelector(
+        KeyframeSelectorConfig(min_interval_seconds=0.0)
+    )
+
+    before = selector.select(
+        _frame_at(9.999),
+        KeyframeChangeMetrics(),
+        last_keyframe_at=0.0,
+    )
+    due = selector.select(
+        _frame_at(10.0),
+        KeyframeChangeMetrics(),
+        last_keyframe_at=0.0,
+    )
+
+    assert before.selected is False
+    assert due.selected is True
+    assert due.reason == "max_interval"
+
+
+def test_pixel_difference_is_not_part_of_final_keyframe_score() -> None:
+    selector = SemanticKeyframeSelector()
+
+    scored = selector.with_score(
+        KeyframeChangeMetrics(
+            pixel_change_score=1.0,
+            structural_change_score=0.2,
+            semantic_change_score=0.1,
+        )
+    )
+
+    assert scored.keyframe_score == pytest.approx(0.14)
+
+
+class _SequenceImageEmbeddingModel:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def embed_image(self, frame: VideoFrame) -> VisionEmbeddingResult:
+        self.calls.append(frame.frame_id)
+        embedding = [1.0, 0.0] if len(self.calls) == 1 else [0.0, 1.0]
+        return VisionEmbeddingResult(
+            embedding=embedding,
+            provider="local_siglip2",
+            model="google/siglip2-base-patch16-224",
+            embedding_space_id="space-sentinel",
+            normalized=True,
+        )
+
+
+def _static_frame(frame_id: str, timestamp_seconds: float) -> VideoFrame:
+    return VideoFrame(
+        frame_id=frame_id,
+        timestamp_seconds=timestamp_seconds,
+        pixels=[[128, 128], [128, 128]],
+    )
+
+
+def test_collector_probes_semantics_at_two_fps_without_reembedding_early() -> None:
+    model = _SequenceImageEmbeddingModel()
+    detector = SemanticChangeDetector(model, requires_visual_gate=True)
+    collector = AdaptiveKeyframeCollector(
+        keyframe_config=KeyframeSelectorConfig(min_interval_seconds=0.0),
+        semantic_detector=detector,
+        semantic_probe_fps=2.0,
+    )
+
+    initial = collector.collect(_static_frame("frame-0", 0.0))
+    early = collector.collect(_static_frame("frame-025", 0.25))
+    due = collector.collect(_static_frame("frame-050", 0.50))
+
+    assert initial.processing.keyframe_selected is True
+    assert early.processing.keyframe_selected is False
+    assert due.processing.keyframe_selected is True
+    assert due.processing.decision_reason == "semantic_change"
+    assert model.calls == ["frame-0", "frame-050"]
+
+
+class _FailedImageEmbeddingModel:
+    def embed_image(self, frame: VideoFrame) -> VisionEmbeddingResult:
+        return VisionEmbeddingResult(
+            provider="local_siglip2",
+            model="google/siglip2-base-patch16-224",
+            errors=[
+                {
+                    "code": "local_model_unavailable",
+                    "message": "local model unavailable",
+                }
+            ],
+        )
+
+
+def test_failed_siglip2_embedding_does_not_create_fake_semantic_change() -> None:
+    detector = SemanticChangeDetector(
+        _FailedImageEmbeddingModel(),
+        requires_visual_gate=True,
+    )
+
+    result = detector.compare(
+        _static_frame("current", 1.0),
+        _static_frame("reference", 0.0),
+        semantic_candidate=True,
+    )
+
+    assert result.semantic_change_score == 0.0
+    assert result.errors[0]["code"] == "local_model_unavailable"
 
 
 @pytest.mark.parametrize(

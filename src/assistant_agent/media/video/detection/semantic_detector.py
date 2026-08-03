@@ -18,27 +18,32 @@ from assistant_agent.media.video.types import VideoFrame
 class ImageEmbeddingModel(Protocol):
     """Embedding interface used by the semantic detector."""
 
-    def embed(self, frame: VideoFrame) -> list[float] | VisionEmbeddingResult:
+    def embed_image(self, frame: VideoFrame) -> list[float] | VisionEmbeddingResult:
         """Return an image embedding for a frame."""
 
 
 class MetadataEmbeddingModel:
     """Read test or upstream-provided embeddings from frame metadata."""
 
-    def embed(self, frame: VideoFrame) -> list[float]:
+    def embed_image(self, frame: VideoFrame) -> list[float]:
         value = frame.metadata.get("embedding")
         if isinstance(value, list | tuple) and all(isinstance(item, int | float) for item in value):
             return [float(item) for item in value]
-        return HistogramEmbeddingModel().embed(frame)
+        return []
+
+    def embed(self, frame: VideoFrame) -> list[float]:
+        """Compatibility alias for older direct callers."""
+
+        return self.embed_image(frame)
 
 
 class HistogramEmbeddingModel:
-    """Cheap local grayscale histogram embedding used when no model is configured."""
+    """Explicit grayscale test utility; never a semantic fallback."""
 
     def __init__(self, *, bins: int = 16) -> None:
         self.bins = bins
 
-    def embed(self, frame: VideoFrame) -> list[float]:
+    def embed_image(self, frame: VideoFrame) -> list[float]:
         values = grayscale_fingerprint(frame, (32, 18))
         if not values:
             return []
@@ -48,6 +53,11 @@ class HistogramEmbeddingModel:
             histogram[index] += 1.0
         total = sum(histogram) or 1.0
         return [value / total for value in histogram]
+
+    def embed(self, frame: VideoFrame) -> list[float]:
+        """Compatibility alias for explicit legacy callers."""
+
+        return self.embed_image(frame)
 
 
 @dataclass(frozen=True)
@@ -83,9 +93,9 @@ class SemanticChangeDetector:
         *,
         semantic_candidate: bool = True,
     ) -> SemanticChangeResult:
-        if reference is None:
-            return SemanticChangeResult(similarity=0.0, semantic_change_score=1.0)
         if self.requires_visual_gate and not semantic_candidate:
+            self._last_current_key = None
+            self._last_current_embedding = None
             return SemanticChangeResult(similarity=1.0, semantic_change_score=0.0)
 
         current_result = self._embed_current_candidate(current)
@@ -94,6 +104,13 @@ class SemanticChangeDetector:
                 similarity=1.0,
                 semantic_change_score=0.0,
                 errors=current_result.errors,
+                provider=current_result.provider,
+                model=current_result.model,
+            )
+        if reference is None:
+            return SemanticChangeResult(
+                similarity=0.0,
+                semantic_change_score=1.0,
                 provider=current_result.provider,
                 model=current_result.model,
             )
@@ -128,7 +145,7 @@ class SemanticChangeDetector:
         self._last_current_embedding = None
 
     def _embed_current_candidate(self, frame: VideoFrame) -> VisionEmbeddingResult:
-        result = _embedding_result(self.embedding_model.embed(frame))
+        result = _embedding_result(self.embedding_model.embed_image(frame))
         key = _frame_embedding_key(frame)
         self._last_current_key = key
         self._last_current_embedding = result.embedding or None
@@ -139,7 +156,7 @@ class SemanticChangeDetector:
         cached = self._keyframe_embeddings.get(key)
         if cached:
             return VisionEmbeddingResult(embedding=cached)
-        result = _embedding_result(self.embedding_model.embed(frame))
+        result = _embedding_result(self.embedding_model.embed_image(frame))
         if result.embedding:
             self._keyframe_embeddings[key] = result.embedding
         return result
@@ -149,7 +166,10 @@ def create_semantic_change_detector(config: Any | None = None) -> SemanticChange
     """Create a semantic detector from provider config while keeping mock default behavior local."""
 
     provider = create_vision_embedding_provider(config)
-    requires_visual_gate = getattr(config, "vision_embedding_provider", "mock") == "dashscope"
+    requires_visual_gate = getattr(config, "vision_embedding_provider", "mock") in {
+        "dashscope",
+        "local_siglip2",
+    }
     if not requires_visual_gate:
         return SemanticChangeDetector(MetadataEmbeddingModel())
     return SemanticChangeDetector(provider, requires_visual_gate=True)
