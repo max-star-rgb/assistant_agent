@@ -59,9 +59,9 @@ class WebsiteGuidancePlugin:
         if context.mock_mode:
             try:
                 backend = self._mock_backend_factory()
+                return _tools_for(backend)
             except Exception:
                 return []
-            return _tools_for(backend)
 
         try:
             if not self._readiness_probe():
@@ -69,9 +69,9 @@ class WebsiteGuidancePlugin:
             backend = self._real_backend_factory(
                 config.website_guidance_navigation_timeout_seconds
             )
+            return _tools_for(backend)
         except Exception:
             return []
-        return _tools_for(backend)
 
 
 def _tools_for(backend: WebsiteGuidanceBackend) -> list[Tool]:

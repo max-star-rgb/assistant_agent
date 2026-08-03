@@ -9,6 +9,7 @@ from assistant_agent.tools.plugins.builtin.website_guidance.backend import (
 from assistant_agent.tools.plugins.builtin.website_guidance.plugin import (
     WebsiteGuidancePlugin,
 )
+from assistant_agent.tools.plugins.builtin.website_guidance import plugin as website_guidance_plugin
 from assistant_agent.tools.plugins.contracts import ToolPluginContext
 from assistant_agent.tools.plugins.defaults import default_tool_plugins
 
@@ -115,6 +116,40 @@ def test_enabled_real_readiness_or_backend_failure_is_fail_closed() -> None:
 
     assert probe_failure.build_tools(context) == []
     assert backend_failure.build_tools(context) == []
+
+
+@pytest.mark.parametrize("provider_mode", ["mock", "real"])
+def test_tool_construction_failure_is_fail_closed_without_backend_fallback(
+    provider_mode: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FailingInspectTool:
+        def __init__(self, backend: object) -> None:
+            raise RuntimeError("tool construction failed")
+
+    unexpected_backend_calls: list[str] = []
+    monkeypatch.setattr(website_guidance_plugin, "WebPageInspectTool", FailingInspectTool)
+    if provider_mode == "mock":
+        plugin = WebsiteGuidancePlugin(
+            mock_backend_factory=MockWebsiteGuidanceBackend,
+            readiness_probe=lambda: True,
+            real_backend_factory=lambda _timeout: (
+                unexpected_backend_calls.append("real")
+                or MockWebsiteGuidanceBackend()
+            ),
+        )
+    else:
+        plugin = WebsiteGuidancePlugin(
+            mock_backend_factory=lambda: (
+                unexpected_backend_calls.append("mock")
+                or MockWebsiteGuidanceBackend()
+            ),
+            readiness_probe=lambda: True,
+            real_backend_factory=lambda _timeout: MockWebsiteGuidanceBackend(),
+        )
+
+    assert plugin.build_tools(_context(_config(provider_mode=provider_mode))) == []
+    assert unexpected_backend_calls == []
 
 
 @pytest.mark.parametrize("timeout", ["0", "-1", "30.1", "not-a-number"])
