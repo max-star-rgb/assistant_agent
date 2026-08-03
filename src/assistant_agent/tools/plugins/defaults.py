@@ -24,6 +24,9 @@ from assistant_agent.tools.plugins.builtin.media_inspection.plugin import (
 from assistant_agent.tools.plugins.builtin.visual_image_search.plugin import (
     VisualImageSearchPlugin,
 )
+from assistant_agent.tools.plugins.builtin.website_guidance.plugin import (
+    WebsiteGuidancePlugin,
+)
 
 
 def default_tool_plugins() -> tuple[ToolPlugin, ...]:
@@ -37,6 +40,7 @@ def default_tool_plugins() -> tuple[ToolPlugin, ...]:
         PythonExecutionPlugin(),
         MediaInspectionPlugin(),
         VisualImageSearchPlugin(),
+        WebsiteGuidancePlugin(),
         ShoppingToolPlugin(),
         CalendarWeatherContactsPlugin(),
         ImageGenerationToolPlugin(),
