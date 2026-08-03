@@ -93,6 +93,34 @@ For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
 
 ## Specialized integrations
 
+### SigLIP2 realtime keyframe model
+
+Runtime 不下载关键帧模型。先在 operator 明确允许联网和安装 export-only 依赖的环境中，把批准的
+`google/siglip2-base-patch16-224` image encoder + `visual_projection` 导出为 FP16 ONNX：
+
+```bash
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/export_siglip2_vision_onnx.py \
+  --model-id google/siglip2-base-patch16-224 \
+  --revision main \
+  --output-dir .local/models/siglip2-base-patch16-224
+```
+
+脚本把 `main` 解析为不可变 Hugging Face commit SHA，并将 revision、预处理、输出维度、
+`visual_projection`、`embedding_space_id` 与 ONNX checksum 写入 manifest；目标目录已存在时拒绝
+覆盖。导出过程可下载完整 checkpoint，但产出的 Runtime ONNX 不含 text forward，服务进程也不加载
+tokenizer/text tower。模型资产留在未跟踪的 `.local/`，禁止提交。
+
+服务启用时同时显式设置 real provider mode、主 Chat/Vision 配置以及：
+
+```bash
+MULTIMODAL_AGENT_VISION_EMBEDDING_PROVIDER=local_siglip2
+SIGLIP2_VISION_MODEL_DIR=.local/models/siglip2-base-patch16-224
+SIGLIP2_CUDA_DEVICE_ID=0
+```
+
+安装 Runtime 可选依赖使用 `.[local-vision-embedding]`；`torch`、`transformers` 和 ONNX 导出工具
+只属于模型准备环境，不是线上 Runtime 依赖。
+
 ### Website guidance local verification
 
 `website_guidance` 的 real backend 需要安装 browser extra 和对应的 Playwright Chromium；该能力默认关闭，

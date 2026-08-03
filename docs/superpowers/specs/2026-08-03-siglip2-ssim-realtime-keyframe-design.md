@@ -20,14 +20,16 @@
 
 ## 2. 模型与部署
 
-采用 `google/siglip2-base-patch16-224` 的 vision tower。运行时模型导出为本地 ONNX 图，使用
-ONNX Runtime CUDA FP16 推理；输出取模型的 pooled image embedding，并在比较前做 L2
-归一化。预处理参数必须随模型资产清单固定，不能由调用方自行猜测。
+采用 `google/siglip2-base-patch16-224` 的 image encoder 与 `visual_projection`。运行时模型导出为
+本地 ONNX 图，使用 ONNX Runtime CUDA FP16 推理；输出取 `get_image_features()` 对应的投影后
+image embedding，并在比较前做 L2 归一化。投影层保证当前 image embedding 与未来同 checkpoint
+的 text projection 处于同一向量空间；Runtime 仍不包含 text forward。预处理参数必须随模型资产
+清单固定，不能由调用方自行猜测。
 
 模型权重、ONNX 文件和缓存不进入 Git。Runtime 只读取显式配置的本地模型目录，不在服务启动或
 请求过程中联网下载。模型目录包含：
 
-- vision ONNX 文件；
+- image encoder + `visual_projection` ONNX 文件；
 - 预处理配置；
 - 原始 Hugging Face model id/revision；
 - 输出维度和资产 checksum；

@@ -51,6 +51,8 @@ class Siglip2VisionManifest:
     image_size: int
     mean: tuple[float, float, float]
     std: tuple[float, float, float]
+    projection: str
+    input_dtype: str
     input_name: str = "pixel_values"
     output_name: str = "image_embeds"
 
@@ -100,14 +102,14 @@ class PillowSiglip2ImagePreprocessor:
                     (manifest.image_size, manifest.image_size),
                     Image.Resampling.BICUBIC,
                 )
-                values = np.asarray(image, dtype=np.float32) / np.float32(255.0)
+                values = np.asarray(image, dtype=np.float16) / np.float16(255.0)
         except Exception as exc:
             raise LocalSiglip2Error(
                 "local_model_unsupported_input",
                 "local SigLIP2 could not read the image frame",
             ) from exc
-        mean = np.asarray(manifest.mean, dtype=np.float32)
-        std = np.asarray(manifest.std, dtype=np.float32)
+        mean = np.asarray(manifest.mean, dtype=np.float16)
+        std = np.asarray(manifest.std, dtype=np.float16)
         values = (values - mean) / std
         return np.transpose(values, (2, 0, 1))[None, ...]
 
@@ -243,6 +245,8 @@ def load_siglip2_manifest(model_dir: Path | None) -> Siglip2VisionManifest:
         model_sha256 = str(raw["model_sha256"])
         dimension = int(raw["dimension"])
         embedding_space_id = str(raw["embedding_space_id"])
+        projection = str(raw["projection"])
+        input_dtype = str(raw["input_dtype"])
         preprocessing = raw["preprocessing"]
         image_size = int(preprocessing["size"])
         mean = _three_floats(preprocessing["mean"])
@@ -262,6 +266,9 @@ def load_siglip2_manifest(model_dir: Path | None) -> Siglip2VisionManifest:
         or dimension <= 0
         or image_size <= 0
         or not embedding_space_id
+        or not embedding_space_id.endswith(":image-projection-v1")
+        or projection != "visual_projection"
+        or input_dtype != "float16"
         or not input_name
         or not output_name
         or any(value == 0.0 for value in std)
@@ -293,6 +300,8 @@ def load_siglip2_manifest(model_dir: Path | None) -> Siglip2VisionManifest:
         image_size=image_size,
         mean=mean,
         std=std,
+        projection=projection,
+        input_dtype=input_dtype,
         input_name=input_name,
         output_name=output_name,
     )

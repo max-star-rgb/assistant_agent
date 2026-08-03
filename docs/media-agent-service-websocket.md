@@ -355,7 +355,7 @@ ACK 耗时通过独立事件记录，`ACK pending` 表示仍缺媒体侧应用�
 - `videoContent` 必须是无 `0x` 前缀的 H.264 Annex-B Hex 字符串，并以三字节或四字节 NAL 起始码开头。
 - 媒体服务必须让每条消息可独立解码：每帧包含 SPS、PPS 和 I-Frame，不依赖前后消息。
 - Agent 使用本机 FFmpeg 在一次解码中同时生成 JPEG 和 `32x18` 灰度指纹；指纹只用于本地变化检测，不进入 prompt、trace 或 Provider 请求。
-- 每个连接维护一个本地自适应观察器：首帧必选，使用像素差、SSIM 结构差和本地 embedding 变化分数选择关键帧，明显变化立即成为候选，静态画面最长 2 秒产生一次候选；Qwen 视觉文本只在选帧之后生成，不反向参与本轮关键帧判定。收到 `chat` 时，以此前最新原始帧为时间边界，选择 `sequence <= 边界` 的最近已选关键帧作为本轮视觉目标；只有此前不存在成功、执行中或待处理关键帧时，才把最新原始帧提升为目标。
+- 每个连接维护一个本地自适应观察器：首帧必选，最终选帧信号为 SSIM 结构差与本地 `google/siglip2-base-patch16-224` image projection embedding 变化，二者可以独立触发，也保留 0.4/0.6 组合分数；固定 2 FPS semantic probe 使 SSIM 未越阈值时仍能发现语义变化，静态画面最长 10 秒产生一次候选。低分辨率像素差只用于采样调度和诊断，不计入最终关键帧分数，也不称为 semantic。Qwen 视觉文本只在选帧之后生成，不反向参与本轮关键帧判定。收到 `chat` 时，以此前最新原始帧为时间边界，选择 `sequence <= 边界` 的最近已选关键帧作为本轮视觉目标；只有此前不存在成功、执行中或待处理关键帧时，才把最新原始帧提升为目标。
 - 原始视频上下文只保留最近 3 帧；成功理解的语义关键帧独立保留最多 8 帧。它们是本地 fallback/语义记忆，不作为 Qwen 多帧历史发送。每轮 Qwen 请求只含当前选中的一张 JPEG 和最多 2,000 字符的上一成功语义摘要。后台队列最多包含 1 个执行中帧和 1 个待处理帧，积压时用最新候选替换旧候选。
 - 解码后的帧注册到当前 `AgentGraphRuntime.video_context_store`；原始 H.264 不落盘，也不进入 prompt、trace 或 Provider 请求。
 - 选中关键帧的后台视觉理解经过 `ActionValidator -> ToolExecutor -> ToolRegistry -> realtime_video_observe`；该内部 ToolSpec 不进入主 LLM catalog，WebSocket 入口也不直接调用 Provider。这里的成功分三层：`ToolResult.success is True` 只表示工具执行完成；内部 `VideoUnderstandingResult` 可验证且 `errors` 为空才算 VLM 语义成功；还必须 `source=background_keyframe_observation` 才允许发布为 rolling semantic snapshot。失败、partial、harness 说明性结果或 query-time `realtime_video_memory_unavailable` 结果只记录失败/可解释状态，不能写入 `current_state`。mock 模式不联网，真实连续 MLLM 只允许 `MULTIMODAL_AGENT_PROVIDER_MODE=real` 配置。
@@ -567,6 +567,17 @@ Agent 生成图片后构造 `IMAGE` detail，包含稳定 `imageId` 和纯 Base6
 WebSocket。Agent 不把图片发往音视频媒体流接口，也不直接 POST `/torender`；由媒体服务的
 `RenderingClient` 完成后续 HTTP 转发。
 
+整体链路联调期间，生图插件内的开发常量 `DEVELOPMENT_IMAGE_FIXTURE_ID` 固定指向
+`.local/generated/349cc6c272f4ec7a88800f0f.png`。启用该常量时，`image_generation` 保留模型
+传入的 prompt，但直接返回该本地 artifact，不初始化或调用真实生图 Provider；主 LLM、媒体
+WebSocket、媒体到渲染的转发以及后续 3D 服务调用仍按 real profile 工作。文件不存在、超限或内容
+不是受支持图片时立即失败，不回退到付费 Provider。开发联调结束后将该常量设为 `None`，即可恢复
+原有真实生图 Provider 路径；该临时开关不属于部署环境配置。
+
+fixture 返回的 `imageId` 取文件名去掉扩展名。发给媒体的 `IMAGE.image` 仍在投递时从
+`.local/generated` 读取；`image_to_3d` 也按同一 `imageId` 从该目录读取原文件，因此两条下游链路
+使用的是同一份本地图片，不创建额外镜像。
+
 #### 4.6.2 图片转 3D 与回调
 
 `image_to_3d` 是模型可调用的受治理 Tool，必须经过
@@ -705,6 +716,19 @@ Qwen/DashScope API key 统一使用 `QWEN_API_KEY`（兼容 `DASHSCOPE_API_KEY`�
 `video_provider` selector，实时视频和视频工具都以 `MULTIMODAL_AGENT_VISION_PROVIDER` 为唯一
 provider 选择入口。启动前应确认 chat readiness 和视觉插件的 vision provider
 配置；显式选择 Qwen 失败时不会静默回退到 Ark、Doubao 或 mock。
+
+本地关键帧 embedding 只有在 real mode 下显式设置
+`MULTIMODAL_AGENT_VISION_EMBEDDING_PROVIDER=local_siglip2` 与
+`SIGLIP2_VISION_MODEL_DIR` 时启用。该目录必须由 operator 预先导出，Runtime 不联网下载；可选
+`SIGLIP2_CUDA_DEVICE_ID` 默认是 `0`。选帧参数可通过
+`REALTIME_KEYFRAME_MAX_INTERVAL_SECONDS`（默认 `10`）、
+`REALTIME_KEYFRAME_SEMANTIC_PROBE_FPS`（默认 `2`）、
+`REALTIME_KEYFRAME_STRUCTURAL_THRESHOLD`（默认 `0.35`）、
+`REALTIME_KEYFRAME_SEMANTIC_THRESHOLD`（默认 `0.18`）和
+`REALTIME_KEYFRAME_COMBINED_THRESHOLD`（默认 `0.25`）调整。当前 ONNX 仅包含 image encoder 与
+`visual_projection`，不加载 tokenizer/text tower；manifest 的 `embedding_space_id` 为后续同模型
+text projection 检索预留，但当前不启用视觉关注或文本检索。模型资产、依赖、checksum 或 CUDA
+不可用时 semantic 分数 fail closed 为 0，observer 继续使用 SSIM，不以灰度直方图冒充 semantic。
 
 真实联调只记录脱敏证据：provider mode、chat/video provider、Qwen model、
 后台观察状态和 latency、工具结果的 `source`、用户可见最终回复、

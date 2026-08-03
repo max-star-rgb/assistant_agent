@@ -12,6 +12,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from assistant_agent.config import ProviderConfig
 from assistant_agent.runtime.action_validator import ActionValidator
 from assistant_agent.runtime.state import AgentState
 from assistant_agent.runtime.tool_executor import ToolExecutor
@@ -42,7 +43,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_KEYFRAME_ROOT = REPO_ROOT / ".data" / "agent_service_video_keyframes"
 DEFAULT_CLOSE_WAIT_SECONDS = 1.0
 REALTIME_PREVIOUS_SUMMARY_MAX_CHARS = 2_000
-REALTIME_KEYFRAME_MAX_INTERVAL_SECONDS = 2.0
+REALTIME_KEYFRAME_MAX_INTERVAL_SECONDS = 10.0
 
 
 @dataclass(frozen=True)
@@ -64,6 +65,7 @@ class RealtimeVideoObserver:
         session_id: str,
         registry: ToolRegistry,
         memory_store: RealtimeVideoMemoryStore,
+        provider_config: ProviderConfig | None = None,
         keyframe_root: Path | str = DEFAULT_KEYFRAME_ROOT,
         collector: AdaptiveKeyframeCollector | None = None,
         validator: ActionValidator | None = None,
@@ -78,12 +80,32 @@ class RealtimeVideoObserver:
         self.registry = registry
         self.memory_store = memory_store
         self.keyframe_root = Path(keyframe_root)
+        resolved_provider_config = provider_config or ProviderConfig()
         self.collector = collector or AdaptiveKeyframeCollector(
-            sampler_config=AdaptiveSamplerConfig(immediate_change_threshold=0.35),
+            sampler_config=AdaptiveSamplerConfig(
+                immediate_change_threshold=(
+                    resolved_provider_config.keyframe_structural_threshold
+                )
+            ),
             keyframe_config=KeyframeSelectorConfig(
                 min_interval_seconds=0.0,
-                max_interval_seconds=REALTIME_KEYFRAME_MAX_INTERVAL_SECONDS,
-            )
+                max_interval_seconds=(
+                    resolved_provider_config.keyframe_max_interval_seconds
+                ),
+                structural_threshold=(
+                    resolved_provider_config.keyframe_structural_threshold
+                ),
+                semantic_threshold=(
+                    resolved_provider_config.keyframe_semantic_threshold
+                ),
+                combined_threshold=(
+                    resolved_provider_config.keyframe_combined_threshold
+                ),
+            ),
+            semantic_probe_fps=(
+                resolved_provider_config.keyframe_semantic_probe_fps
+            ),
+            config=resolved_provider_config,
         )
         self.validator = validator or ActionValidator()
         self.close_wait_seconds = close_wait_seconds

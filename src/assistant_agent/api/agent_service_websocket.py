@@ -20,7 +20,6 @@ from assistant_agent.runtime.generated_artifacts import (
     MAX_DELIVERED_IMAGE_COUNT,
     generated_artifact_payload,
 )
-from assistant_agent.media.media_relay_delivery import media_relay_connection_registry
 from assistant_agent.runtime.requests import UserRequest
 from assistant_agent.observability.agent_service_delivery import (
     AgentServiceDelivery,
@@ -580,7 +579,6 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
                     await _send_response(websocket, prepared_or_error, state=state)
                     continue
                 prepared = prepared_or_error
-                _bind_media_relay_connection(websocket, state)
                 expects_ack = state.client_capabilities.get("chatResponseAck", False)
                 delivery = state.delivery_registry.accept(
                     prepared.session_id,
@@ -631,7 +629,6 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
                 )
                 continue
             response = await _handle_raw_message(raw, state=state)
-            _bind_media_relay_connection(websocket, state)
             await _send_response(websocket, response, state=state)
     except WebSocketDisconnect as exc:
         close_code, close_reason = exc.code, exc.reason
@@ -715,7 +712,6 @@ async def _cleanup_agent_service_connection(
     close_reason: str | None,
 ) -> None:
     state.closed = True
-    media_relay_connection_registry.unregister(state.connection_id)
     for delivery in state.delivery_registry.pending():
         timing = state.turn_timings.get(delivery.delivery_id)
         if timing is not None:
@@ -1311,23 +1307,6 @@ def _generated_image_details(output_refs: Any) -> list[dict[str, str]]:
     return details
 
 
-def _bind_media_relay_connection(websocket: WebSocket, state: AgentServiceConnectionState) -> None:
-    number = _optional_text(state.session_id)
-    runtime_session_id = _optional_text(state.runtime_session_id)
-    if number is None or runtime_session_id is None:
-        return
-
-    async def send(response: dict[str, Any]) -> None:
-        await _send_response(websocket, response, state=state)
-
-    media_relay_connection_registry.register(
-        connection_id=state.connection_id,
-        session_ids=[runtime_session_id, number],
-        number=number,
-        send=send,
-    )
-
-
 def _remaining_stream_text(full_text: str, streamed_text: str) -> str:
     if not full_text or not streamed_text:
         return full_text
@@ -1541,6 +1520,7 @@ def _create_realtime_video_observer(*, user_id: str, session_id: str) -> Realtim
             realtime_video_memory_store=runtime.realtime_video_memory_store,
         ),
         memory_store=runtime.realtime_video_memory_store,
+        provider_config=runtime.config,
     )
 
 

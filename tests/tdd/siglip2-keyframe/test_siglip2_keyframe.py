@@ -1,6 +1,10 @@
 import hashlib
+import importlib.util
 import json
 from pathlib import Path
+import subprocess
+import sys
+from types import ModuleType
 
 import pytest
 
@@ -13,17 +17,21 @@ from assistant_agent.media.video.detection.vision_embedding_provider import (
 from assistant_agent.media.video.detection.local_siglip2_provider import (
     LocalSiglip2VisionConfig,
     LocalSiglip2VisionProvider,
+    load_siglip2_manifest,
 )
 from assistant_agent.media.video.detection.semantic_detector import (
     SemanticChangeDetector,
 )
 from assistant_agent.media.video.keyframe.collector import AdaptiveKeyframeCollector
+from assistant_agent.media.video.realtime_video_memory import RealtimeVideoMemoryStore
+from assistant_agent.media.video.realtime_video_observer import RealtimeVideoObserver
 from assistant_agent.media.video.keyframe.selector import (
     KeyframeSelectorConfig,
     SemanticKeyframeSelector,
 )
 from assistant_agent.media.video.types import VideoFrame
 from assistant_agent.media.video.types import KeyframeChangeMetrics
+from assistant_agent.tools.registry import ToolRegistry
 
 
 def test_real_mode_explicitly_configures_local_siglip2_image_embeddings() -> None:
@@ -135,8 +143,10 @@ def _write_siglip2_assets(model_dir: Path, *, checksum: str | None = None) -> No
                 "model_sha256": checksum or hashlib.sha256(model_bytes).hexdigest(),
                 "dimension": 3,
                 "embedding_space_id": (
-                    "siglip2-base-p16-224@revision-sentinel:vision-pool-v1"
+                    "siglip2-base-p16-224@revision-sentinel:image-projection-v1"
                 ),
+                "projection": "visual_projection",
+                "input_dtype": "float16",
                 "preprocessing": {
                     "size": 224,
                     "mean": [0.5, 0.5, 0.5],
@@ -173,7 +183,7 @@ def test_local_siglip2_provider_returns_normalized_image_embedding(tmp_path) -> 
     assert result.model_family == "siglip2"
     assert result.model_revision == "revision-sentinel"
     assert result.embedding_space_id == (
-        "siglip2-base-p16-224@revision-sentinel:vision-pool-v1"
+        "siglip2-base-p16-224@revision-sentinel:image-projection-v1"
     )
     assert result.dimension == 3
     assert result.normalized is True
@@ -204,6 +214,16 @@ def test_local_siglip2_provider_rejects_model_checksum_mismatch(tmp_path) -> Non
 
     assert result.embedding == []
     assert result.errors[0]["code"] == "local_model_integrity_failed"
+
+
+def test_runtime_manifest_requires_cross_modal_projection_contract(tmp_path) -> None:
+    model_dir = tmp_path / "model"
+    _write_siglip2_assets(model_dir)
+
+    manifest = load_siglip2_manifest(model_dir)
+
+    assert manifest.projection == "visual_projection"
+    assert manifest.input_dtype == "float16"
 
 
 def _frame_at(timestamp_seconds: float) -> VideoFrame:
@@ -358,6 +378,95 @@ def test_failed_siglip2_embedding_does_not_create_fake_semantic_change() -> None
 
     assert result.semantic_change_score == 0.0
     assert result.errors[0]["code"] == "local_model_unavailable"
+
+
+def test_realtime_observer_uses_configured_siglip2_ssim_policy() -> None:
+    config = ProviderConfig(
+        vision_embedding_provider="local_siglip2",
+        siglip2_vision_model_dir="/model-sentinel",
+    )
+
+    observer = RealtimeVideoObserver(
+        user_id="user-sentinel",
+        session_id="session-sentinel",
+        registry=ToolRegistry(),
+        memory_store=RealtimeVideoMemoryStore(),
+        provider_config=config,
+    )
+
+    policy = observer.collector.selector.config
+    assert policy.max_interval_seconds == 10.0
+    assert policy.structural_threshold == 0.35
+    assert policy.semantic_threshold == 0.18
+    assert policy.combined_threshold == 0.25
+    assert policy.structural_weight == 0.4
+    assert policy.semantic_weight == 0.6
+    assert observer.collector.semantic_probe_fps == 2.0
+    assert observer.collector.semantic_detector.embedding_model.provider == (
+        "local_siglip2"
+    )
+
+
+def _load_siglip2_export_script() -> ModuleType:
+    path = (
+        Path(__file__).resolve().parents[3]
+        / "scripts"
+        / "export_siglip2_vision_onnx.py"
+    )
+    spec = importlib.util.spec_from_file_location("siglip2_export_script", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_export_manifest_preserves_cross_modal_projection_identity() -> None:
+    module = _load_siglip2_export_script()
+
+    manifest = module.build_manifest(
+        model_id="google/siglip2-base-patch16-224",
+        model_revision="revision-sentinel",
+        model_file="vision_model.onnx",
+        model_sha256="a" * 64,
+        dimension=768,
+        image_size=224,
+        mean=(0.5, 0.5, 0.5),
+        std=(0.5, 0.5, 0.5),
+    )
+
+    assert manifest["input_name"] == "pixel_values"
+    assert manifest["output_name"] == "image_embeds"
+    assert manifest["projection"] == "visual_projection"
+    assert manifest["embedding_space_id"] == (
+        "siglip2-base-p16-224@revision-sentinel:image-projection-v1"
+    )
+
+
+def test_export_script_rejects_an_unapproved_model_id() -> None:
+    module = _load_siglip2_export_script()
+
+    with pytest.raises(ValueError, match="google/siglip2-base-patch16-224"):
+        module.validate_export_request("other/model", "revision-sentinel")
+
+
+def test_export_script_has_an_offline_help_boundary() -> None:
+    script = (
+        Path(__file__).resolve().parents[3]
+        / "scripts"
+        / "export_siglip2_vision_onnx.py"
+    )
+
+    completed = subprocess.run(
+        [sys.executable, str(script), "--help"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0
+    assert "--revision" in completed.stdout
+    assert "--output-dir" in completed.stdout
 
 
 @pytest.mark.parametrize(
