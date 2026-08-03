@@ -157,7 +157,45 @@ module 等同于执行受信任代码，不是不可信插件沙箱。不可信�
 增加普通 Tool 时只修改其所属 Plugin，不应要求修改 Registry、Validator、Executor、assistant loop
 或中心 Tool name 表。只有新的宿主级共享依赖才扩展 Plugin context 和 composition root。
 
-### 4.3 MCP
+### 4.3 Website guidance
+
+`website_guidance` 是默认关闭的内置 Plugin。显式启用
+`MULTIMODAL_AGENT_WEBSITE_GUIDANCE_ENABLED=true` 后，才尝试注册 `web_page_inspect` 与
+`web_page_explore`。前者归类为 `read`；后者会触发受限页面事件，归类为 `dangerous`，不进入只读
+自动重试。两者都是本地显式 Tool，必须经过
+`ActionValidator -> ToolExecutor -> ToolRegistry -> tool`。Qwen Provider-native 搜索只帮助模型发现
+候选 URL；候选仍须通过 `web_page_inspect` 的公开 URL 与 SSRF 策略验证，不能视为已打开页面或可信
+页面证据。
+
+`web_page_inspect` 为公开 HTTP(S) 页面生成有界快照和不透明 browser session。结果携带
+`requested_url`、已验证的 `final_url`、带时区的 `checked_at` 和 `is_complete`。只有未重定向且证据
+完整的页面可返回 `success`；同 origin 重定向为 `partial`，缺少最终证据时只能返回 `blocked` 或
+`failed`。`web_page_explore` 必须使用 inspect 发放并绑定 `run_id + session_id` 的 session；只有
+`click` 动作需要上一快照中的 `eN` 引用。
+
+页面 title、正文、元素名称和链接均是 `untrusted_external_content`，只能作为分析证据。首版不支持
+脚本、selector、任意 URL 跳转、表单填写、登录、下载、弹窗或提交动作。链接动作只按已验证的
+`href` 导航，不执行 anchor `onclick`。可展开按钮必须具有唯一稳定 DOM `id`，并在重放、点击前后
+绑定和复核同一个 `ElementHandle`；展开期间启用 network-silent guard，即使同 origin `GET` 也会在
+离开浏览器前被拒绝。
+
+真实 backend 使用 Playwright Chromium 的 headless 短生命周期上下文，禁用 service worker，并拒绝
+非 `GET`/`HEAD`、跨 origin 资源和 WebSocket。每次导航、重放和动作后的最终 URL 都重新执行公网解析
+与同 origin 校验；策略拒绝非 HTTP(S)、认证信息、localhost、非标准端口和非公网地址。document
+`Response` 还必须通过状态码、headers、redirect chain、HTML/XHTML MIME、attachment、认证挑战及
+Response/page URL 一致性校验，否则 fail closed。
+
+session store 只保留 owner、可安全动作和有界快照元数据，不保存 cookie、正文或登录状态，并施加
+TTL、每 run、全局和单快照容量限制。浏览器操作在启动、导航、重放、等待、快照和提交元数据边界
+协作检查 cancellation；Runtime 在 completed、failed、cancelled 终态通过 Registry 的 best-effort
+lifecycle hook 清理该 run 的 session 元数据。
+
+mock mode 只对声明的 fixture URL 返回确定性证据，其他 URL 返回 `mock_url_unverified`；mock session
+也只在成功 inspect 后发放并绑定 owner。real mode 仅在功能启用、Playwright/Chromium ready 且 backend
+构造成功时注册真实 Tool，缺依赖、readiness 或构造失败都 fail closed，不回退到 mock。导航 timeout
+使用 `WEBSITE_GUIDANCE_NAVIGATION_TIMEOUT_SECONDS`，只接受大于 0 且不超过 30 秒的值。
+
+### 4.4 MCP
 
 MCP 是外部 Tool source。远端定义先经过 server 配置、allowlist、read/write 分类和 namespacing，
 再作为 proxy Tool 参与同一批注册。注册完成后，MCP Tool 与进程内 Tool 使用相同的 ToolSpec、

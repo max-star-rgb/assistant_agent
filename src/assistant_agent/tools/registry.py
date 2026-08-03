@@ -139,6 +139,24 @@ class ToolRegistry:
     def list(self) -> list[str]:
         return sorted(self._tools)
 
+    def notify_run_terminal(self, run_id: str, status: str) -> list[str]:
+        """Best-effort notify optional Tool lifecycle owners after one run ends."""
+
+        if not isinstance(run_id, str) or not run_id:
+            raise ValueError("run_id must be a non-empty string")
+        if status not in {"completed", "failed", "cancelled"}:
+            raise ValueError("invalid run terminal status")
+        issues: list[str] = []
+        for name in sorted(self._tools):
+            callback = getattr(self._tools[name], "on_run_terminal", None)
+            if not callable(callback):
+                continue
+            try:
+                callback(run_id, status)
+            except Exception:
+                issues.append(name)
+        return issues
+
     def run(
         self,
         name: str,

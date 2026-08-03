@@ -441,6 +441,10 @@ class AgentGraphRuntime:
         else:
             postprocess_started_at = perf_counter()
             terminal_status = _terminal_history_status(state.status)
+        tool_lifecycle_cleanup_issues = self.registry.notify_run_terminal(
+            state.run_id,
+            terminal_status,
+        )
         self.session_store.touch_run(
             user_id=state.user_id,
             session_id=state.session_id,
@@ -458,6 +462,9 @@ class AgentGraphRuntime:
                 "terminal_status": terminal_status,
                 "run_history_present": self.run_history is not None,
                 "session_store_updated": True,
+                "tool_lifecycle_cleanup_issue_count": len(
+                    tool_lifecycle_cleanup_issues
+                ),
             },
         )
         terminal_fact = RunTerminalFact(

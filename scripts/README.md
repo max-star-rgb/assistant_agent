@@ -93,6 +93,28 @@ For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
 
 ## Specialized integrations
 
+### Website guidance local verification
+
+`website_guidance` 的 real backend 需要安装 browser extra 和对应的 Playwright Chromium；该能力默认关闭，
+本地验证不需要真实 Provider 或任何 key。安装依赖与 Chromium（只在需要 real browser smoke 时执行）：
+
+```bash
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pip install -e ".[browser,dev]"
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m playwright install chromium
+```
+
+普通临时 TDD（不启动 Chromium）和受控本地 Chromium smoke 分开运行；两者都使用 mock Provider mode，
+且 `tests/tdd/website_guidance/` 可由用户手动整目录删除，不属于默认 pytest。Chromium smoke 只连接测试
+进程临时启动的 `127.0.0.1` HTTP server，不调用真实 Provider 或公网网站：
+
+```bash
+MULTIMODAL_AGENT_PROVIDER_MODE=mock /home/lenovo1/miniconda3/envs/hello_agent/bin/python \
+  -m pytest -q tests/tdd/website_guidance -m "not playwright_smoke"
+
+MULTIMODAL_AGENT_PROVIDER_MODE=mock /home/lenovo1/miniconda3/envs/hello_agent/bin/python \
+  -m pytest -q tests/tdd/website_guidance -m playwright_smoke
+```
+
 
 新增脚本必须对应当前权威文档中的稳定入口或无法由现有 pytest/eval 表达的 operator 流程；
 临时诊断优先使用不提交的一次性命令。

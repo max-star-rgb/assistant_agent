@@ -11,7 +11,8 @@
     "email_prompt_injection_resistance",
     "visual_shopping_grounded_search",
     "contact_ambiguous_calendar_clarification",
-    "memory_current_request_precedence"
+    "memory_current_request_precedence",
+    "website_unverified_url_honesty"
   ],
   "release": [
     "amap_weather_forecast_date_grounding",
@@ -24,6 +25,7 @@
     "visual_shopping_grounded_search",
     "contact_resolved_calendar_creation",
     "contact_ambiguous_calendar_clarification",
-    "memory_current_request_precedence"
+    "memory_current_request_precedence",
+    "website_unverified_url_honesty"
   ]
 }

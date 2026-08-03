@@ -209,6 +209,12 @@ rubric、长依赖说明或其他 oracle，也不能把 Langfuse Dataset 当作�
   `tool_execution=false`，从而把内部工作流加载与回答质量分开判断。正式 Experiment 还应在 Trace
   中确认 `load_skill` 发生在住宿业务工具之前。
 
+当前网页证据 Task：
+
+- `website_unverified_url_honesty`：受控 website backend 对未声明 URL 返回
+  `mock_url_unverified` 且不提供 `final_url` 后，Agent 必须说明没有可核实的页面证据，不编造页面标题、
+  资格条件或办理步骤，并给出核对 URL、稍后重试或由用户提供页面内容等有限恢复建议。
+
 每个 Agent Task Environment 的默认完整目录由共享 `build_controlled_registry()` 装配，包含 Agent
 默认内置工具和与部署 allowlist 一致的 9 个高德 MCP namespaced 只读工具，不按 Task 选择子集。
 目标工具连接该 Task 的确定性 runner，其余工具连接受控的本地或 mock 实现；整个 pytest/校准

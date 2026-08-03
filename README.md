@@ -11,6 +11,7 @@ Core project docs:
 - Tool calling governance: [docs/tool-calling-architecture.md](docs/tool-calling-architecture.md)
 - Observability architecture and trace contract: [docs/observability-harness.md](docs/observability-harness.md)
 - Real-run diagnosis runbook: [docs/observability-diagnosis-runbook.md](docs/observability-diagnosis-runbook.md)
+- Website guidance（Qwen 候选 URL、Playwright 只读浏览与安全边界）: [docs/tool-calling-architecture.md](docs/tool-calling-architecture.md)
 - Mem0 memory architecture: [docs/memory-service-architecture.md](docs/memory-service-architecture.md)
 - Mem0 HTTP integration subset: [docs/memory_server_api_spec.md](docs/memory_server_api_spec.md)
 - Context engineering architecture: [docs/context_engineering_status.md](docs/context_engineering_status.md)
