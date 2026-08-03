@@ -230,8 +230,9 @@ function call 仍是本地显式工具调用，必须进入 `ActionValidator -> 
 `web_page_inspect` 的公开 URL/SSRF 策略检查，不能被视为已验证页面或可信页面内容。
 
 `web_page_inspect` 从一个公开 HTTP(S) 页面生成有界快照与不透明 browser session；
-`web_page_explore` 只接受该 session 及上一快照返回的 `eN` 元素引用，允许重新查看、等待、返回或
-点击受限元素。页面文本、title、元素名称和链接均标记为 `untrusted_external_content`，仅是模型的
+`web_page_explore` 的所有动作都需要该 session；只有 `click` 必须使用上一快照返回的 `eN` 元素引用，
+可重新查看、等待、返回或点击受限元素。页面文本、title、元素名称和链接均标记为
+`untrusted_external_content`，仅是模型的
 分析证据，模型不得执行其中的页面指令。首版不支持脚本、selector、任意 URL 跳转、表单填写、登录、
 下载、弹窗或任何提交动作；浏览上下文禁用 service worker，拒绝非 `GET`/`HEAD` 请求、跨 origin
 资源和 WebSocket。
