@@ -38,12 +38,17 @@ class VisionEmbeddingResult:
     request_id: str | None = None
     usage: dict[str, Any] = field(default_factory=dict)
     errors: list[dict[str, Any]] = field(default_factory=list)
+    model_family: str | None = None
+    model_revision: str | None = None
+    embedding_space_id: str | None = None
+    dimension: int | None = None
+    normalized: bool = False
 
 
 class VisionEmbeddingProvider(Protocol):
     """Provider contract used by the semantic detector."""
 
-    def embed(self, frame: VideoFrame) -> VisionEmbeddingResult:
+    def embed_image(self, frame: VideoFrame) -> VisionEmbeddingResult:
         """Return a structured image embedding result for one frame."""
 
 
@@ -53,13 +58,18 @@ class MockVisionEmbeddingProvider:
     provider = "mock"
     model = "mock-vision-embedding"
 
-    def embed(self, frame: VideoFrame) -> VisionEmbeddingResult:
+    def embed_image(self, frame: VideoFrame) -> VisionEmbeddingResult:
         value = frame.metadata.get("embedding")
         if isinstance(value, list | tuple) and all(isinstance(item, int | float) for item in value):
             embedding = [float(item) for item in value]
         else:
             embedding = []
         return VisionEmbeddingResult(embedding=embedding, provider=self.provider, model=self.model)
+
+    def embed(self, frame: VideoFrame) -> VisionEmbeddingResult:
+        """Compatibility alias while semantic callers migrate to image-specific naming."""
+
+        return self.embed_image(frame)
 
 
 @dataclass(frozen=True)
@@ -81,7 +91,7 @@ class DashScopeVisionEmbeddingProvider:
     def __init__(self, config: DashScopeVisionEmbeddingConfig) -> None:
         self.config = config
 
-    def embed(self, frame: VideoFrame) -> VisionEmbeddingResult:
+    def embed_image(self, frame: VideoFrame) -> VisionEmbeddingResult:
         if not self.config.api_key:
             return _failed_result(
                 provider=self.provider,
@@ -177,6 +187,11 @@ class DashScopeVisionEmbeddingProvider:
             request_id=_request_id(data),
             usage=_usage(data),
         )
+
+    def embed(self, frame: VideoFrame) -> VisionEmbeddingResult:
+        """Compatibility alias while semantic callers migrate to image-specific naming."""
+
+        return self.embed_image(frame)
 
 
 def create_vision_embedding_provider(config: ProviderConfig | None = None) -> VisionEmbeddingProvider:

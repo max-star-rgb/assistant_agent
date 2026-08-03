@@ -31,7 +31,7 @@ SUPPORTED_QWEN_REALTIME_VISION_REGIONS = {"cn-beijing", "ap-southeast-1"}
 
 
 VisionProviderName = str
-VisionEmbeddingProviderName = Literal["mock", "dashscope"]
+VisionEmbeddingProviderName = Literal["mock", "dashscope", "local_siglip2"]
 ChatProviderName = str
 ImageGenerationProviderName = str
 ShoppingSearchProviderName = Literal["mock", "http", "haodanku"]
@@ -77,6 +77,13 @@ class ProviderConfig:
     vision_embedding_model: str = "tongyi-embedding-vision-flash-2026-03-06"
     vision_embedding_dimension: int = 768
     vision_embedding_timeout_seconds: float = 30.0
+    siglip2_vision_model_dir: str | None = None
+    siglip2_cuda_device_id: int = 0
+    keyframe_max_interval_seconds: float = 10.0
+    keyframe_semantic_probe_fps: float = 2.0
+    keyframe_structural_threshold: float = 0.35
+    keyframe_semantic_threshold: float = 0.18
+    keyframe_combined_threshold: float = 0.25
     openai_vision_base_url: str = "https://api.openai.com/v1"
     openai_vision_model: str = "gpt-4o-mini"
     qwen_vision_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
@@ -141,6 +148,7 @@ class ProviderConfig:
     image_generation_base_url: str | None = None
     image_generation_model: str | None = None
     image_generation_adapter_kind: str = "mock"
+    image_generation_fixture_id: str | None = None
     openai_image_model: str = "gpt-image-1"
     qwen_image_base_url: str = "https://dashscope.aliyuncs.com/api/v1"
     qwen_image_model: str = "qwen-image-2.0-pro"
@@ -210,6 +218,19 @@ class ProviderConfig:
 
     def __post_init__(self) -> None:
         self.validate_provider_mode()
+        if self.siglip2_cuda_device_id < 0:
+            raise ValueError("siglip2 CUDA device id must be non-negative")
+        if self.keyframe_max_interval_seconds <= 0:
+            raise ValueError("keyframe max interval must be positive")
+        if self.keyframe_semantic_probe_fps <= 0:
+            raise ValueError("keyframe semantic probe FPS must be positive")
+        for name, value in (
+            ("structural", self.keyframe_structural_threshold),
+            ("semantic", self.keyframe_semantic_threshold),
+            ("combined", self.keyframe_combined_threshold),
+        ):
+            if not 0.0 <= value <= 1.0:
+                raise ValueError(f"keyframe {name} threshold must be between 0 and 1")
         if not (
             0.0
             < self.context_compaction_target_ratio
@@ -304,6 +325,31 @@ class ProviderConfig:
             vision_embedding_timeout_seconds=_float_env(
                 source.get("DASHSCOPE_VISION_EMBEDDING_TIMEOUT_SECONDS"),
                 30.0,
+            ),
+            siglip2_vision_model_dir=source.get("SIGLIP2_VISION_MODEL_DIR"),
+            siglip2_cuda_device_id=_int_env(
+                source.get("SIGLIP2_CUDA_DEVICE_ID"),
+                0,
+            ),
+            keyframe_max_interval_seconds=_float_env(
+                source.get("REALTIME_KEYFRAME_MAX_INTERVAL_SECONDS"),
+                10.0,
+            ),
+            keyframe_semantic_probe_fps=_float_env(
+                source.get("REALTIME_KEYFRAME_SEMANTIC_PROBE_FPS"),
+                2.0,
+            ),
+            keyframe_structural_threshold=_float_env(
+                source.get("REALTIME_KEYFRAME_STRUCTURAL_THRESHOLD"),
+                0.35,
+            ),
+            keyframe_semantic_threshold=_float_env(
+                source.get("REALTIME_KEYFRAME_SEMANTIC_THRESHOLD"),
+                0.18,
+            ),
+            keyframe_combined_threshold=_float_env(
+                source.get("REALTIME_KEYFRAME_COMBINED_THRESHOLD"),
+                0.25,
             ),
             openai_vision_base_url=source.get("OPENAI_VISION_BASE_URL", "https://api.openai.com/v1"),
             openai_vision_model=source.get("OPENAI_VISION_MODEL", "gpt-4o-mini"),
@@ -503,6 +549,7 @@ class ProviderConfig:
             image_generation_base_url=image_generation_settings.base_url,
             image_generation_model=image_generation_settings.model,
             image_generation_adapter_kind=image_generation_settings.adapter_kind,
+            image_generation_fixture_id=source.get("IMAGE_GENERATION_FIXTURE_ID"),
             openai_image_model=source.get("OPENAI_IMAGE_MODEL", "gpt-image-1"),
             qwen_image_base_url=source.get("QWEN_IMAGE_BASE_URL", "https://dashscope.aliyuncs.com/api/v1"),
             qwen_image_model=source.get("QWEN_IMAGE_MODEL", "qwen-image-2.0-pro"),
@@ -816,8 +863,8 @@ def _vision_provider(value: str | None, *, allow_real: bool = True) -> VisionPro
 
 
 def _vision_embedding_provider(value: str | None, *, allow_real: bool = True) -> VisionEmbeddingProviderName:
-    if allow_real and value == "dashscope":
-        return "dashscope"
+    if allow_real and value in {"dashscope", "local_siglip2"}:
+        return value
     return "mock"
 
 
