@@ -2,11 +2,13 @@
 
 from typing import Literal
 
-from pydantic import BaseModel, Field, HttpUrl, model_validator
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, model_validator
 
 
 class WebPageInspectRequest(BaseModel):
     """Request a bounded observation of a public web page."""
+
+    model_config = ConfigDict(extra="forbid")
 
     url: HttpUrl
     goal: str = Field(min_length=1, max_length=500)
@@ -14,6 +16,8 @@ class WebPageInspectRequest(BaseModel):
 
 class WebPageExploreRequest(BaseModel):
     """Navigate an existing opaque browser session by element reference only."""
+
+    model_config = ConfigDict(extra="forbid")
 
     browser_session_id: str = Field(min_length=16, max_length=128)
     action: Literal["inspect", "click", "back", "wait"]
