@@ -45,6 +45,7 @@ def test_validate_public_web_url_accepts_https_url_with_global_resolution() -> N
         ("https://user:password@public.example/", "unsafe_url"),
         ("https://localhost/", "unsafe_url"),
         ("ftp://public.example/", "unsafe_url"),
+        ("https://public.example:0/", "unsafe_url"),
         ("https://public.example:8443/", "unsafe_url"),
     ],
 )

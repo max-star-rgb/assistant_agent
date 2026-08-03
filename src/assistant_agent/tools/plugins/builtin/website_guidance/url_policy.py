@@ -56,7 +56,7 @@ def validate_public_web_url(
         port = parsed.port
     except ValueError as error:
         raise WebUrlValidationError("unsafe_url") from error
-    effective_port = port or _default_port(parsed)
+    effective_port = _default_port(parsed) if port is None else port
     if effective_port not in _ALLOWED_PORTS:
         raise WebUrlValidationError("unsafe_url")
     if _is_ip_literal(host) and not _is_public_address(host):
