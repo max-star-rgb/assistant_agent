@@ -16,6 +16,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+browser = ["playwright>=1.62,<2"]
 dev = ["pytest>=8.0"]
 eval = ["langfuse>=4.10,<5"]
 observability = [
@@ -29,4 +30,5 @@ testpaths = ["tests/core"]
 pythonpath = ["src"]
 markers = [
     "core_invariant(id): stable core-framework invariant identifier",
+    "playwright_smoke: controlled local Chromium integration test",
 ]
