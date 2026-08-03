@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+import socket
 import threading
 import time
 from typing import Callable
@@ -29,6 +30,7 @@ from assistant_agent.tools.plugins.builtin.website_guidance.url_policy import (
 PUBLIC_IP = "93.184.216.34"
 START_URL = "https://public.example/start"
 NEXT_URL = "https://public.example/next"
+CHANGED_URL = "https://public.example/changed"
 
 
 def _context() -> ToolContext:
@@ -64,6 +66,7 @@ class _Element:
     attrs: dict[str, str] = field(default_factory=dict)
     inside_form: bool = False
     click_effect: str | None = None
+    access_delay_seconds: float = 0.0
 
 
 @dataclass
@@ -73,6 +76,7 @@ class _PageState:
     elements: list[_Element] = field(default_factory=list)
     final_url: str | None = None
     timeout: bool = False
+    websocket_url: str | None = None
 
 
 class _FakeTimeoutError(Exception):
@@ -101,6 +105,14 @@ class _FakeRoute:
         pass
 
 
+class _FakeWebSocketRoute:
+    def __init__(self) -> None:
+        self.closed = False
+
+    def close(self, **_kwargs: object) -> None:
+        self.closed = True
+
+
 class _FakeLocator:
     def __init__(
         self,
@@ -116,15 +128,33 @@ class _FakeLocator:
         return len(self.elements)
 
     def nth(self, index: int) -> "_FakeLocator":
+        if self.selector in {"a[href]", "button[aria-expanded]"}:
+            self.page.driver.candidate_scans += 1
         return _FakeLocator(self.page, self.selector, [self.elements[index]])
 
-    def get_attribute(self, name: str) -> str | None:
+    def get_attribute(self, name: str, **_kwargs: object) -> str | None:
+        if self.elements and self.elements[0].access_delay_seconds:
+            time.sleep(self.elements[0].access_delay_seconds)
         return self.elements[0].attrs.get(name)
 
     def inner_text(self, **_kwargs: object) -> str:
+        self.page.driver.inner_text_calls += 1
         if self.selector == "body":
             return self.page.state.body
         return self.elements[0].text
+
+    def evaluate(
+        self,
+        _expression: str,
+        arg: object = None,
+        **_kwargs: object,
+    ) -> str:
+        self.page.driver.browser_evaluations += 1
+        limit = int(arg)
+        if self.selector == "body":
+            return self.page.state.body[:limit]
+        element = self.elements[0]
+        return (element.attrs.get("aria-label") or element.text)[:limit]
 
     def locator(self, selector: str) -> "_FakeLocator":
         self.page.driver.selectors.append(selector)
@@ -146,6 +176,7 @@ class _FakePage:
         self.closed = False
         self.goto_urls: list[str] = []
         self.history: list[str] = []
+        self.pending_effect: str | None = None
         self._events: dict[str, list[Callable[[object], None]]] = {}
 
     def on(self, event: str, callback: Callable[[object], None]) -> None:
@@ -162,6 +193,8 @@ class _FakePage:
             self.history.append(self.url)
         self.url = state.final_url or url
         self.state = state
+        if state.websocket_url is not None:
+            self.context.dispatch_websocket(state.websocket_url)
 
     def go_back(self, **_kwargs: object) -> None:
         if not self.history:
@@ -170,6 +203,10 @@ class _FakePage:
 
     def wait_for_timeout(self, milliseconds: int) -> None:
         self.driver.waits.append(milliseconds)
+        if self.pending_effect is not None:
+            effect = self.pending_effect
+            self.pending_effect = None
+            self._apply_effect(effect)
 
     def title(self) -> str:
         return self.state.title
@@ -192,6 +229,12 @@ class _FakePage:
 
     def apply_click(self, element: _Element) -> None:
         effect = element.click_effect
+        if effect is not None and effect.startswith("async_"):
+            self.pending_effect = effect.removeprefix("async_")
+            return
+        self._apply_effect(effect)
+
+    def _apply_effect(self, effect: str | None) -> None:
         if effect == "download":
             for callback in self._events.get("download", []):
                 callback(_FakeDownload())
@@ -232,11 +275,24 @@ class _FakeBrowserContext:
         self.closed = False
         self.pages: list[_FakePage] = []
         self._route_handler: Callable[[_FakeRoute], None] | None = None
+        self._websocket_handler: Callable[[_FakeWebSocketRoute], None] | None = None
         self._events: dict[str, list[Callable[[object], None]]] = {}
+        self.init_scripts: list[str] = []
 
     def route(self, pattern: str, handler: Callable[[_FakeRoute], None]) -> None:
         assert pattern == "**/*"
         self._route_handler = handler
+
+    def route_web_socket(
+        self,
+        pattern: str,
+        handler: Callable[[_FakeWebSocketRoute], None],
+    ) -> None:
+        assert pattern == "**/*"
+        self._websocket_handler = handler
+
+    def add_init_script(self, *, script: str) -> None:
+        self.init_scripts.append(script)
 
     def on(self, event: str, callback: Callable[[object], None]) -> None:
         self._events.setdefault(event, []).append(callback)
@@ -251,6 +307,13 @@ class _FakeBrowserContext:
         assert self._route_handler is not None
         self._route_handler(route)
         return not route.aborted
+
+    def dispatch_websocket(self, _url: str) -> None:
+        route = _FakeWebSocketRoute()
+        if self._websocket_handler is not None:
+            self._websocket_handler(route)
+        else:
+            self.driver.websocket_connections += 1
 
     def emit_page(self) -> None:
         popup = _FakePage(self, self.driver)
@@ -314,6 +377,10 @@ class _FakeDriver:
         self.playwrights: list[_FakePlaywright] = []
         self.selectors: list[str] = []
         self.waits: list[int] = []
+        self.websocket_connections = 0
+        self.candidate_scans = 0
+        self.inner_text_calls = 0
+        self.browser_evaluations = 0
 
     def factory(self) -> _FakePlaywrightManager:
         return _FakePlaywrightManager(self)
@@ -378,10 +445,14 @@ def test_inspect_uses_fixed_browser_controls_bounds_output_and_closes_resources(
     )
     assert f"MAP public.example {PUBLIC_IP}" in resolver_rules
     assert "MAP * ~NOTFOUND" in resolver_rules
+    launch_args = set(driver.browsers[0].launch_kwargs["args"])
+    assert "--disable-quic" in launch_args
+    assert "--force-webrtc-ip-handling-policy=disable_non_proxied_udp" in launch_args
     assert driver.browsers[0].contexts[0].kwargs == {
         "accept_downloads": False,
         "service_workers": "block",
     }
+    assert len(driver.browsers[0].contexts[0].init_scripts) == 1
     assert set(driver.selectors) <= {
         "body",
         "a[href]",
@@ -429,6 +500,87 @@ def test_inspect_extracts_only_same_origin_links_and_non_submit_expand_buttons()
         ("link", "Safe link", NEXT_URL),
         ("button", "Expand", None),
     ]
+
+
+def test_snapshot_bounds_body_in_browser_and_caps_filtered_candidate_scan() -> None:
+    driver = _FakeDriver(
+        {
+            START_URL: _PageState(
+                title="Large",
+                body="B" * 100_000,
+                elements=[
+                    _Element("a", f"External {index}", {"href": "https://other.example/"})
+                    for index in range(500)
+                ],
+            )
+        }
+    )
+    backend = _backend(
+        driver,
+        limits=BrowserGuidanceLimits(max_visible_chars=10, max_elements=40),
+    )
+
+    result = backend.inspect(
+        WebPageInspectRequest(url=START_URL, goal="inspect"),
+        _context(),
+    )
+
+    assert result.outcome == "success"
+    assert result.content == "B" * 10
+    assert result.elements == []
+    assert driver.inner_text_calls == 0
+    assert driver.browser_evaluations >= 1
+    assert driver.candidate_scans <= 160
+
+
+def test_snapshot_total_deadline_maps_slow_candidate_to_page_timeout() -> None:
+    driver = _FakeDriver(
+        {
+            START_URL: _PageState(
+                title="Slow",
+                body="body",
+                elements=[
+                    _Element(
+                        "a",
+                        "Slow",
+                        {"href": "/next"},
+                        access_delay_seconds=0.02,
+                    )
+                ],
+            )
+        }
+    )
+    backend = _backend(driver, limits=BrowserGuidanceLimits(navigation_timeout_ms=5))
+
+    result = backend.inspect(
+        WebPageInspectRequest(url=START_URL, goal="inspect"),
+        _context(),
+    )
+
+    assert result.outcome == "failed"
+    assert result.errors[0].code == "page_timeout"
+    assert result.errors[0].recoverable is True
+
+
+def test_inspect_blocks_literal_ip_cross_port_websocket_before_connect() -> None:
+    driver = _FakeDriver(
+        {
+            START_URL: _PageState(
+                title="Socket page",
+                body="body",
+                websocket_url="ws://127.0.0.1:9234/socket",
+            )
+        }
+    )
+
+    result = _backend(driver).inspect(
+        WebPageInspectRequest(url=START_URL, goal="inspect"),
+        _context(),
+    )
+
+    assert result.outcome == "blocked"
+    assert result.errors[0].code == "websocket_blocked"
+    assert driver.websocket_connections == 0
 
 
 def test_explore_replays_prior_actions_in_a_new_context_and_rejects_unknown_ref() -> None:
@@ -481,6 +633,79 @@ def test_explore_replays_prior_actions_in_a_new_context_and_rejects_unknown_ref(
     _assert_all_resources_closed(driver)
 
 
+def test_explore_rejects_ref_when_fresh_dom_changes_its_safe_descriptor() -> None:
+    driver = _FakeDriver(
+        {
+            START_URL: _PageState(
+                title="Start",
+                body="start",
+                elements=[_Element("a", "First", {"href": "/next"})],
+            ),
+            NEXT_URL: _PageState(title="Next", body="next"),
+            CHANGED_URL: _PageState(title="Changed", body="changed"),
+        }
+    )
+    backend = _backend(driver)
+    initial = backend.inspect(
+        WebPageInspectRequest(url=START_URL, goal="next"),
+        _context(),
+    )
+    driver.states[START_URL] = _PageState(
+        title="Start",
+        body="start",
+        elements=[_Element("a", "Changed", {"href": "/changed"})],
+    )
+
+    result = backend.explore(
+        WebPageExploreRequest(
+            browser_session_id=initial.browser_session_id,
+            action="click",
+            element_ref="e1",
+        ),
+        _context(),
+    )
+
+    assert result.outcome == "blocked"
+    assert result.errors[0].code == "stale_page_snapshot"
+    assert driver.browsers[1].contexts[0].pages[0].goto_urls == [START_URL]
+
+
+def test_explore_rejects_fresh_replay_when_displayed_url_changes() -> None:
+    stable_elements = [_Element("a", "Next", {"href": "/next"})]
+    driver = _FakeDriver(
+        {
+            START_URL: _PageState(
+                title="Start",
+                body="start",
+                elements=stable_elements,
+                final_url=NEXT_URL,
+            )
+        }
+    )
+    backend = _backend(driver)
+    initial = backend.inspect(
+        WebPageInspectRequest(url=START_URL, goal="inspect"),
+        _context(),
+    )
+    driver.states[START_URL] = _PageState(
+        title="Start",
+        body="start",
+        elements=stable_elements,
+        final_url=CHANGED_URL,
+    )
+
+    result = backend.explore(
+        WebPageExploreRequest(
+            browser_session_id=initial.browser_session_id,
+            action="inspect",
+        ),
+        _context(),
+    )
+
+    assert result.outcome == "blocked"
+    assert result.errors[0].code == "stale_page_snapshot"
+
+
 @pytest.mark.parametrize(
     ("effect", "expected_code"),
     [
@@ -510,6 +735,54 @@ def test_expand_click_rejects_download_submit_new_window_and_document_navigation
                 ],
             ),
             NEXT_URL: _PageState(title="Next", body="next"),
+        }
+    )
+    backend = _backend(driver)
+    initial = backend.inspect(
+        WebPageInspectRequest(url=START_URL, goal="expand"),
+        _context(),
+    )
+
+    result = backend.explore(
+        WebPageExploreRequest(
+            browser_session_id=initial.browser_session_id,
+            action="click",
+            element_ref="e1",
+        ),
+        _context(),
+    )
+
+    assert result.outcome == "blocked"
+    assert result.errors[0].code == expected_code
+    _assert_all_resources_closed(driver)
+
+
+@pytest.mark.parametrize(
+    ("effect", "expected_code"),
+    [
+        ("async_download", "download_blocked"),
+        ("async_popup", "new_window_blocked"),
+        ("async_submit", "unsafe_request_method"),
+    ],
+)
+def test_expand_click_drains_and_rejects_late_side_effects(
+    effect: str,
+    expected_code: str,
+) -> None:
+    driver = _FakeDriver(
+        {
+            START_URL: _PageState(
+                title="Start",
+                body="start",
+                elements=[
+                    _Element(
+                        "button",
+                        "Expand",
+                        {"aria-expanded": "false", "type": "button"},
+                        click_effect=effect,
+                    )
+                ],
+            )
         }
     )
     backend = _backend(driver)
@@ -598,9 +871,65 @@ def test_explore_enforces_action_limit_before_launching_browser() -> None:
 
 
 class _SmokeHandler(BaseHTTPRequestHandler):
+    websocket_port = 0
+    drift_requests = 0
+    post_requests = 0
+    state_lock = threading.Lock()
+
     def do_GET(self) -> None:
-        if self.path == "/next":
+        path = urlsplit(self.path).path
+        if path == "/next":
             body = b"<html><title>Next</title><body>local next page</body></html>"
+        elif path == "/socket-page":
+            body = (
+                "<html><title>Socket</title><body>socket"
+                f"<script>new WebSocket('ws://127.0.0.1:{type(self).websocket_port}/socket')</script>"
+                "</body></html>"
+            ).encode()
+        elif path.startswith("/async-"):
+            kind = path.removeprefix("/async-")
+            effect = {
+                "popup": "window.open('/next')",
+                "download": "(() => { const a = document.createElement('a'); "
+                "a.href = '/download'; a.download = 'fixture.txt'; a.click(); })()",
+                "post": "fetch('/post', {method: 'POST', body: 'fixture'})",
+            }[kind]
+            body = (
+                "<html><title>Async</title><body>async"
+                "<button type='button' aria-expanded='false' "
+                f"onclick=\"setTimeout(() => {effect}, 20)\">Trigger</button>"
+                "</body></html>"
+            ).encode()
+        elif path == "/drift":
+            with type(self).state_lock:
+                type(self).drift_requests += 1
+                changed = type(self).drift_requests > 1
+            href = "/changed" if changed else "/first"
+            name = "Changed" if changed else "First"
+            body = (
+                "<html><title>Drift</title><body>drift "
+                f"<a href='{href}'>{name}</a></body></html>"
+            ).encode()
+        elif path == "/large":
+            links = "".join(
+                f"<a href='https://other.example/{index}'>External {index}</a>"
+                for index in range(500)
+            )
+            body = (
+                "<html><title>Large</title><body>"
+                + "B" * 100_000
+                + links
+                + "</body></html>"
+            ).encode()
+        elif path == "/download":
+            body = b"fixture download"
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Disposition", "attachment; filename=fixture.txt")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         else:
             body = (
                 b"<html><title>Start</title><body>local start "
@@ -613,6 +942,12 @@ class _SmokeHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def do_POST(self) -> None:
+        with type(self).state_lock:
+            type(self).post_requests += 1
+        self.send_response(204)
+        self.end_headers()
 
     def log_message(self, _format: str, *args: object) -> None:
         pass
@@ -630,24 +965,46 @@ def _chromium_processes() -> set[int]:
     return processes
 
 
+def _start_smoke_server() -> tuple[ThreadingHTTPServer, threading.Thread]:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _SmokeHandler)
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+    return server, server_thread
+
+
+def _stop_smoke_server(
+    server: ThreadingHTTPServer,
+    server_thread: threading.Thread,
+) -> None:
+    server.shutdown()
+    server.server_close()
+    server_thread.join(timeout=2)
+
+
+def _local_policy(port: int) -> Callable[[str], ValidatedWebTarget]:
+    def validate(url: str) -> ValidatedWebTarget:
+        parsed = urlsplit(url)
+        if (
+            parsed.scheme != "http"
+            or parsed.hostname != "127.0.0.1"
+            or parsed.port != port
+        ):
+            raise WebUrlValidationError("unsafe_url")
+        return _target(url, address="127.0.0.1")
+
+    return validate
+
+
 @pytest.mark.playwright_smoke
 def test_local_chromium_smoke_inspects_and_explores_without_process_leak() -> None:
     assert playwright_browser_ready()
     before = _chromium_processes()
-    server = ThreadingHTTPServer(("127.0.0.1", 0), _SmokeHandler)
-    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
-    server_thread.start()
+    server, server_thread = _start_smoke_server()
     port = server.server_address[1]
     start_url = f"http://127.0.0.1:{port}/"
 
-    def local_policy(url: str) -> ValidatedWebTarget:
-        parsed = urlsplit(url)
-        if parsed.scheme != "http" or parsed.hostname != "127.0.0.1" or parsed.port != port:
-            raise WebUrlValidationError("unsafe_url")
-        return _target(url, address="127.0.0.1")
-
     try:
-        backend = PlaywrightWebsiteGuidanceBackend(url_policy=local_policy)
+        backend = PlaywrightWebsiteGuidanceBackend(url_policy=_local_policy(port))
         inspected = backend.inspect(
             WebPageInspectRequest(url=start_url, goal="find next page"),
             _context(),
@@ -661,9 +1018,7 @@ def test_local_chromium_smoke_inspects_and_explores_without_process_leak() -> No
             _context(),
         )
     finally:
-        server.shutdown()
-        server.server_close()
-        server_thread.join(timeout=2)
+        _stop_smoke_server(server, server_thread)
 
     assert inspected.outcome == "success"
     assert inspected.title == "Start"
@@ -674,3 +1029,147 @@ def test_local_chromium_smoke_inspects_and_explores_without_process_leak() -> No
     while time.monotonic() < deadline and (_chromium_processes() - before):
         time.sleep(0.05)
     assert _chromium_processes() - before == set()
+
+
+@pytest.mark.playwright_smoke
+def test_local_chromium_blocks_cross_port_literal_ip_websocket_before_tcp() -> None:
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen()
+    listener.settimeout(0.1)
+    websocket_port = listener.getsockname()[1]
+    accepted = threading.Event()
+    stopped = threading.Event()
+
+    def accept_connections() -> None:
+        while not stopped.is_set():
+            try:
+                connection, _address = listener.accept()
+            except TimeoutError:
+                continue
+            except OSError:
+                return
+            accepted.set()
+            connection.close()
+
+    listener_thread = threading.Thread(target=accept_connections, daemon=True)
+    listener_thread.start()
+    _SmokeHandler.websocket_port = websocket_port
+    server, server_thread = _start_smoke_server()
+    port = server.server_address[1]
+    try:
+        result = PlaywrightWebsiteGuidanceBackend(
+            url_policy=_local_policy(port)
+        ).inspect(
+            WebPageInspectRequest(
+                url=f"http://127.0.0.1:{port}/socket-page",
+                goal="inspect",
+            ),
+            _context(),
+        )
+        time.sleep(0.1)
+    finally:
+        _stop_smoke_server(server, server_thread)
+        stopped.set()
+        listener.close()
+        listener_thread.join(timeout=2)
+
+    assert result.outcome == "blocked"
+    assert result.errors[0].code == "websocket_blocked"
+    assert not accepted.is_set()
+
+
+@pytest.mark.playwright_smoke
+@pytest.mark.parametrize(
+    ("kind", "expected_code"),
+    [
+        ("popup", "unexpected_navigation"),
+        ("download", "download_blocked"),
+        ("post", "unsafe_request_method"),
+    ],
+)
+def test_local_chromium_drains_late_side_effects(
+    kind: str,
+    expected_code: str,
+) -> None:
+    _SmokeHandler.post_requests = 0
+    server, server_thread = _start_smoke_server()
+    port = server.server_address[1]
+    backend = PlaywrightWebsiteGuidanceBackend(url_policy=_local_policy(port))
+    try:
+        inspected = backend.inspect(
+            WebPageInspectRequest(
+                url=f"http://127.0.0.1:{port}/async-{kind}",
+                goal="inspect",
+            ),
+            _context(),
+        )
+        result = backend.explore(
+            WebPageExploreRequest(
+                browser_session_id=inspected.browser_session_id,
+                action="click",
+                element_ref="e1",
+            ),
+            _context(),
+        )
+    finally:
+        _stop_smoke_server(server, server_thread)
+
+    assert result.outcome == "blocked"
+    assert result.errors[0].code == expected_code
+    if kind == "post":
+        assert _SmokeHandler.post_requests == 0
+
+
+@pytest.mark.playwright_smoke
+def test_local_chromium_rejects_dynamic_dom_ref_drift() -> None:
+    _SmokeHandler.drift_requests = 0
+    server, server_thread = _start_smoke_server()
+    port = server.server_address[1]
+    backend = PlaywrightWebsiteGuidanceBackend(url_policy=_local_policy(port))
+    try:
+        inspected = backend.inspect(
+            WebPageInspectRequest(
+                url=f"http://127.0.0.1:{port}/drift",
+                goal="inspect",
+            ),
+            _context(),
+        )
+        result = backend.explore(
+            WebPageExploreRequest(
+                browser_session_id=inspected.browser_session_id,
+                action="click",
+                element_ref="e1",
+            ),
+            _context(),
+        )
+    finally:
+        _stop_smoke_server(server, server_thread)
+
+    assert result.outcome == "blocked"
+    assert result.errors[0].code == "stale_page_snapshot"
+    assert _SmokeHandler.drift_requests >= 2
+
+
+@pytest.mark.playwright_smoke
+def test_local_chromium_bounds_large_filtered_dom() -> None:
+    server, server_thread = _start_smoke_server()
+    port = server.server_address[1]
+    try:
+        result = PlaywrightWebsiteGuidanceBackend(
+            url_policy=_local_policy(port),
+            limits=BrowserGuidanceLimits(max_visible_chars=64),
+        ).inspect(
+            WebPageInspectRequest(
+                url=f"http://127.0.0.1:{port}/large",
+                goal="inspect",
+            ),
+            _context(),
+        )
+    finally:
+        _stop_smoke_server(server, server_thread)
+
+    assert result.outcome == "success"
+    assert len(result.content) == 64
+    assert result.elements == []

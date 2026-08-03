@@ -8,6 +8,7 @@ import ipaddress
 from pathlib import Path
 import re
 import threading
+import time
 from typing import Any
 from urllib.parse import urljoin, urlsplit
 
@@ -20,6 +21,7 @@ from assistant_agent.tools.plugins.builtin.website_guidance.models import (
     WebPageInspectRequest,
 )
 from assistant_agent.tools.plugins.builtin.website_guidance.session_store import (
+    BrowserElementDescriptor,
     BrowserExplorationAction,
     BrowserExplorationStore,
 )
@@ -34,6 +36,29 @@ _UNAVAILABLE_SESSION_ID = "unavailable-session"
 _UNAVAILABLE_URL = "https://unavailable.invalid/"
 _SAFE_HOST_PATTERN = re.compile(r"^[A-Za-z0-9.-]+$")
 _READ_ONLY_METHODS = frozenset({"GET", "HEAD"})
+_ASYNC_GUARD_DRAIN_MS = 100
+_MAX_CANDIDATES_SCANNED = 160
+_BOUNDED_INNER_TEXT_SCRIPT = (
+    "(element, limit) => (element.innerText || '').slice(0, limit)"
+)
+_BOUNDED_ELEMENT_NAME_SCRIPT = """(element, limit) => {
+    const value = element.getAttribute('aria-label') || element.innerText || '';
+    return value.trim().slice(0, limit);
+}"""
+_NETWORK_LOCKDOWN_SCRIPT = """(() => {
+    const blocked = class {
+        constructor() { throw new DOMException('Blocked', 'SecurityError'); }
+    };
+    for (const name of ['WebTransport', 'RTCPeerConnection', 'webkitRTCPeerConnection']) {
+        if (name in globalThis) {
+            Object.defineProperty(globalThis, name, {
+                value: blocked,
+                configurable: false,
+                writable: false,
+            });
+        }
+    }
+})();"""
 
 
 UrlPolicy = Callable[[str], ValidatedWebTarget]
@@ -136,6 +161,28 @@ class _GuidanceBlocked(RuntimeError):
         super().__init__(code)
 
 
+class _SnapshotDeadlineExceeded(TimeoutError):
+    pass
+
+
+@dataclass(frozen=True)
+class _SnapshotDeadline:
+    expires_at: float
+
+    @classmethod
+    def start(cls, timeout_ms: int) -> "_SnapshotDeadline":
+        return cls(expires_at=time.monotonic() + timeout_ms / 1_000)
+
+    def remaining_ms(self) -> int:
+        remaining = self.expires_at - time.monotonic()
+        if remaining <= 0:
+            raise _SnapshotDeadlineExceeded("snapshot deadline exceeded")
+        return max(1, int(remaining * 1_000))
+
+    def check(self) -> None:
+        self.remaining_ms()
+
+
 def playwright_browser_ready() -> bool:
     """Return whether Playwright and its matching Chromium executable are present."""
 
@@ -210,7 +257,9 @@ class PlaywrightWebsiteGuidanceBackend:
                     run_id=owner[0],
                     session_id=owner[1],
                     start_url=start_url,
+                    snapshot_url=snapshot.url,
                     snapshot_version=1,
+                    snapshot_elements=_snapshot_descriptors(snapshot),
                 )
                 return _success_result(
                     snapshot,
@@ -232,6 +281,14 @@ class PlaywrightWebsiteGuidanceBackend:
                     code=error.code,
                 )
             except self._timeout_error_types:
+                return _error_result(
+                    outcome="failed",
+                    url=start_url,
+                    browser_session_id=_UNAVAILABLE_SESSION_ID,
+                    code="page_timeout",
+                    recoverable=True,
+                )
+            except _SnapshotDeadlineExceeded:
                 return _error_result(
                     outcome="failed",
                     url=start_url,
@@ -285,13 +342,15 @@ class PlaywrightWebsiteGuidanceBackend:
 
             try:
                 target = _validated_target(record.start_url, self._url_policy)
-                snapshot = self._run_browser(
+                snapshot, selected_element = self._run_browser(
                     target=target,
                     runner=lambda page, guard: self._replay_and_apply(
                         page,
                         guard,
                         start_url=record.start_url,
                         replay_actions=record.actions,
+                        expected_snapshot_url=record.snapshot_url,
+                        expected_snapshot_elements=record.snapshot_elements,
                         requested_action=request.action,
                         requested_ref=request.element_ref,
                     ),
@@ -304,6 +363,9 @@ class PlaywrightWebsiteGuidanceBackend:
                     action=request.action,
                     element_ref=request.element_ref,
                     snapshot_version=next_version,
+                    selected_element=selected_element,
+                    snapshot_url=snapshot.url,
+                    snapshot_elements=_snapshot_descriptors(snapshot),
                 )
                 if updated is None:
                     raise _GuidanceBlocked("browser_session_unavailable")
@@ -335,6 +397,14 @@ class PlaywrightWebsiteGuidanceBackend:
                     code="page_timeout",
                     recoverable=True,
                 )
+            except _SnapshotDeadlineExceeded:
+                return _error_result(
+                    outcome="failed",
+                    url=record.start_url,
+                    browser_session_id=request.browser_session_id,
+                    code="page_timeout",
+                    recoverable=True,
+                )
             except Exception:
                 return _error_result(
                     outcome="failed",
@@ -347,13 +417,15 @@ class PlaywrightWebsiteGuidanceBackend:
         self,
         *,
         target: ValidatedWebTarget,
-        runner: Callable[[Any, _RequestGuard], _PageSnapshot],
-    ) -> _PageSnapshot:
+        runner: Callable[[Any, _RequestGuard], Any],
+    ) -> Any:
         manager = None
         playwright = None
         browser = None
         browser_context = None
         page = None
+        guard = None
+        result = None
         try:
             manager = self._playwright_factory()
             playwright = manager.start()
@@ -369,7 +441,13 @@ class PlaywrightWebsiteGuidanceBackend:
                 origin=_origin(target.url),
                 url_policy=self._url_policy,
             )
+
+            def reject_websocket(_websocket_route: Any) -> None:
+                guard.note("websocket_blocked")
+
+            browser_context.add_init_script(script=_NETWORK_LOCKDOWN_SCRIPT)
             browser_context.route("**/*", guard.handle)
+            browser_context.route_web_socket("**/*", reject_websocket)
             page = browser_context.new_page()
 
             def reject_download(download: Any) -> None:
@@ -389,7 +467,7 @@ class PlaywrightWebsiteGuidanceBackend:
             page.on("download", reject_download)
             page.on("popup", reject_popup)
             browser_context.on("page", reject_popup)
-            return runner(page, guard)
+            result = runner(page, guard)
         finally:
             _close_quietly(page)
             _close_quietly(browser_context)
@@ -399,6 +477,9 @@ class PlaywrightWebsiteGuidanceBackend:
                     playwright.stop()
                 except Exception:
                     pass
+        if guard is not None:
+            guard.raise_if_violated()
+        return result
 
     def _inspect_page(
         self,
@@ -407,7 +488,7 @@ class PlaywrightWebsiteGuidanceBackend:
         start_url: str,
     ) -> _PageSnapshot:
         self._goto(page, guard, start_url)
-        return self._snapshot(page, guard)
+        return self._settled_snapshot(page, guard)
 
     def _replay_and_apply(
         self,
@@ -416,12 +497,20 @@ class PlaywrightWebsiteGuidanceBackend:
         *,
         start_url: str,
         replay_actions: tuple[BrowserExplorationAction, ...],
+        expected_snapshot_url: str,
+        expected_snapshot_elements: tuple[BrowserElementDescriptor, ...],
         requested_action: str,
         requested_ref: str | None,
-    ) -> _PageSnapshot:
+    ) -> tuple[_PageSnapshot, BrowserElementDescriptor | None]:
         self._goto(page, guard, start_url)
-        snapshot = self._snapshot(page, guard)
+        snapshot = self._settled_snapshot(page, guard)
         for action in replay_actions:
+            if action.action == "click":
+                _assert_selected_descriptor(
+                    snapshot,
+                    action.element_ref,
+                    action.selected_element,
+                )
             self._apply_action(
                 page,
                 guard,
@@ -429,7 +518,15 @@ class PlaywrightWebsiteGuidanceBackend:
                 element_ref=action.element_ref,
                 snapshot=snapshot,
             )
-            snapshot = self._snapshot(page, guard)
+            snapshot = self._settled_snapshot(page, guard)
+        if (
+            snapshot.url != expected_snapshot_url
+            or _snapshot_descriptors(snapshot) != expected_snapshot_elements
+        ):
+            raise _GuidanceBlocked("stale_page_snapshot", url=snapshot.url)
+        selected_element = None
+        if requested_action == "click":
+            selected_element = _selected_descriptor(snapshot, requested_ref)
         self._apply_action(
             page,
             guard,
@@ -437,7 +534,18 @@ class PlaywrightWebsiteGuidanceBackend:
             element_ref=requested_ref,
             snapshot=snapshot,
         )
-        return self._snapshot(page, guard)
+        return self._settled_snapshot(page, guard), selected_element
+
+    def _settled_snapshot(
+        self,
+        page: Any,
+        guard: _RequestGuard,
+    ) -> _PageSnapshot:
+        snapshot = self._snapshot(page, guard)
+        page.wait_for_timeout(min(self._limits.wait_timeout_ms, _ASYNC_GUARD_DRAIN_MS))
+        guard.raise_if_violated()
+        self._validate_final_url(str(page.url), guard.origin)
+        return snapshot
 
     def _apply_action(
         self,
@@ -528,13 +636,21 @@ class PlaywrightWebsiteGuidanceBackend:
             raise _GuidanceBlocked("unsafe_final_url", url=url) from error
 
     def _snapshot(self, page: Any, guard: _RequestGuard) -> _PageSnapshot:
+        deadline = _SnapshotDeadline.start(self._limits.navigation_timeout_ms)
         guard.raise_if_violated()
         current_url = str(page.url)
         self._validate_final_url(current_url, guard.origin)
         title = str(page.title())[:1_000]
-        body = page.locator("body").inner_text(timeout=self._limits.wait_timeout_ms)
-        content = str(body)[: self._limits.max_visible_chars]
-        elements = self._safe_elements(page, current_url, guard.origin)
+        deadline.check()
+        body = page.locator("body").evaluate(
+            _BOUNDED_INNER_TEXT_SCRIPT,
+            self._limits.max_visible_chars,
+            timeout=deadline.remaining_ms(),
+        )
+        deadline.check()
+        content = body if isinstance(body, str) else ""
+        elements = self._safe_elements(page, current_url, guard.origin, deadline)
+        deadline.check()
         return _PageSnapshot(
             url=current_url,
             title=title,
@@ -547,14 +663,19 @@ class PlaywrightWebsiteGuidanceBackend:
         page: Any,
         current_url: str,
         allowed_origin: tuple[str, str, int],
+        deadline: _SnapshotDeadline,
     ) -> list[_SafeElement]:
         elements: list[_SafeElement] = []
+        candidates_scanned = 0
         links = page.locator("a[href]")
-        for index in range(links.count()):
+        link_count = min(links.count(), _MAX_CANDIDATES_SCANNED)
+        deadline.check()
+        for index in range(link_count):
             if len(elements) >= self._limits.max_elements:
                 return elements
+            candidates_scanned += 1
             locator = links.nth(index)
-            href = locator.get_attribute("href")
+            href = _get_attribute(locator, "href", deadline)
             if href is None:
                 continue
             normalized_href = urljoin(current_url, href)
@@ -563,12 +684,12 @@ class PlaywrightWebsiteGuidanceBackend:
                 allowed_origin,
             ):
                 continue
-            if locator.get_attribute("download") is not None:
+            if _get_attribute(locator, "download", deadline) is not None:
                 continue
-            target = (locator.get_attribute("target") or "").strip().lower()
+            target = (_get_attribute(locator, "target", deadline) or "").strip().lower()
             if target not in {"", "_self"}:
                 continue
-            name = _element_name(locator, self._limits.wait_timeout_ms)
+            name = _element_name(locator, deadline)
             if not name:
                 continue
             public = WebPageElement(
@@ -583,20 +704,28 @@ class PlaywrightWebsiteGuidanceBackend:
             )
 
         buttons = page.locator("button[aria-expanded]")
-        for index in range(buttons.count()):
+        button_count = min(
+            buttons.count(),
+            _MAX_CANDIDATES_SCANNED - candidates_scanned,
+        )
+        deadline.check()
+        for index in range(button_count):
             if len(elements) >= self._limits.max_elements:
                 break
             locator = buttons.nth(index)
-            button_type = (locator.get_attribute("type") or "button").strip().lower()
+            button_type = (
+                _get_attribute(locator, "type", deadline) or "button"
+            ).strip().lower()
             if button_type in {"submit", "image"}:
                 continue
-            if locator.get_attribute("form") is not None:
+            if _get_attribute(locator, "form", deadline) is not None:
                 continue
-            if locator.get_attribute("formaction") is not None:
+            if _get_attribute(locator, "formaction", deadline) is not None:
                 continue
             if locator.locator("xpath=ancestor::form").count() != 0:
                 continue
-            name = _element_name(locator, self._limits.wait_timeout_ms)
+            deadline.check()
+            name = _element_name(locator, deadline)
             if not name:
                 continue
             public = WebPageElement(
@@ -698,16 +827,80 @@ def _chromium_launch_args(target: ValidatedWebTarget) -> list[str]:
     mapped_address = f"[{address}]" if parsed_address.version == 6 else address
     return [
         "--disable-background-networking",
+        "--disable-quic",
         "--disable-sync",
+        "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
         "--metrics-recording-only",
         f"--host-resolver-rules=MAP {host} {mapped_address},MAP * ~NOTFOUND",
     ]
 
 
-def _element_name(locator: Any, timeout_ms: int) -> str:
-    aria_label = (locator.get_attribute("aria-label") or "").strip()
-    raw_name = aria_label or str(locator.inner_text(timeout=timeout_ms)).strip()
+def _get_attribute(
+    locator: Any,
+    name: str,
+    deadline: _SnapshotDeadline,
+) -> str | None:
+    value = locator.get_attribute(name, timeout=deadline.remaining_ms())
+    deadline.check()
+    return value
+
+
+def _element_name(locator: Any, deadline: _SnapshotDeadline) -> str:
+    raw_name = locator.evaluate(
+        _BOUNDED_ELEMENT_NAME_SCRIPT,
+        1_000,
+        timeout=deadline.remaining_ms(),
+    )
+    deadline.check()
+    if not isinstance(raw_name, str):
+        return ""
     return " ".join(raw_name.split())[:1_000]
+
+
+def _snapshot_descriptors(
+    snapshot: _PageSnapshot,
+) -> tuple[BrowserElementDescriptor, ...]:
+    return tuple(_safe_element_descriptor(element) for element in snapshot.elements)
+
+
+def _safe_element_descriptor(element: _SafeElement) -> BrowserElementDescriptor:
+    return BrowserElementDescriptor(
+        ref=element.public.ref,
+        kind=element.kind,
+        role=element.public.role,
+        name=element.public.name,
+        href=element.href,
+    )
+
+
+def _selected_descriptor(
+    snapshot: _PageSnapshot,
+    element_ref: str | None,
+) -> BrowserElementDescriptor:
+    selected = next(
+        (
+            element
+            for element in snapshot.elements
+            if element.public.ref == element_ref
+        ),
+        None,
+    )
+    if selected is None:
+        raise _GuidanceBlocked("invalid_element_ref", url=snapshot.url)
+    return _safe_element_descriptor(selected)
+
+
+def _assert_selected_descriptor(
+    snapshot: _PageSnapshot,
+    element_ref: str | None,
+    expected: BrowserElementDescriptor | None,
+) -> None:
+    try:
+        actual = _selected_descriptor(snapshot, element_ref)
+    except _GuidanceBlocked as error:
+        raise _GuidanceBlocked("stale_page_snapshot", url=snapshot.url) from error
+    if expected is None or actual != expected:
+        raise _GuidanceBlocked("stale_page_snapshot", url=snapshot.url)
 
 
 def _close_quietly(resource: Any | None) -> None:
