@@ -30,9 +30,10 @@ For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
 
 ## Observability and local operations
 
-- `scripts/gateway_view.py`: Gateway lifecycle JSONL viewer.
 - `scripts/agentruntime_view.py`: canonical runtime trace viewer.
 - `scripts/trace_metrics.py`: redacted trace metric summary.
+- Gateway lifecycle 由 `scripts/run_server.py` 写入 `.data/gateway_events.jsonl`；仓库当前没有
+  独立 viewer，按 `run_id`、`turn_id` 或 `trace_id` 使用标准 JSONL/文本工具检索。
 
 ## Eval and evidence
 
@@ -46,10 +47,14 @@ For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
 - `scripts/run_system_shopping_eval.py`: 不经过 LLM，直接通过本地 Tool 治理链路调用真实
   `shopping_search`；要求 `--allow-real-tools`、real 模式、好单库 Provider 和 key，
   并硬断言真实候选、来源、正价格与 HTTP(S) 购买链接。
-- `scripts/run_system_calendar_write_eval.py`: 不经过 LLM、`AgentGraphRuntime` 或 assistant
-  loop，通过完整本地 Tool 治理链把合成事件写入 run-scoped 真实 SQLite 日历，并验证幂等回放
-  和数据库终态。`--dry-run` 无副作用；真实写入要求 `--allow-local-calendar-write`，产物写入
-  `.data/evals/system/tools/calendar/<run>/`，不要求 real Provider mode。
+- `scripts/run_system_calendar_create_eval.py`: 不经过 LLM、`AgentGraphRuntime` 或 assistant
+  loop，通过完整本地 Tool 治理链执行 `calendar_create`，验证首次提交、幂等回放和真实 SQLite
+  终态。无参数默认执行，`--dry-run` 无副作用；产物写入
+  `.data/evals/system/tools/calendar/create/<run>/`，不要求 real Provider mode。
+- `scripts/run_system_calendar_search_eval.py`: 在 run-scoped SQLite 中通过 adapter 预置合成事件，
+  再只通过完整本地 Tool 治理链执行一次 `calendar_search`，验证返回事件和只读终态。无参数默认
+  执行，产物写入
+  `.data/evals/system/tools/calendar/search/<run>/`。
 - `scripts/run_system_context_eval.py`: 捕获真实 Runtime 编译的 `ChatRequest`
   和 Provider payload；要求 real 模式与 `--allow-unredacted-context`，产物写入
   `.data/evals/system/context/`。

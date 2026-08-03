@@ -919,7 +919,7 @@ Modify：
 - `tests/test_assistant_context_renderer.py`：SOUL 与动态数据的 authority/预算顺序；
 - `tests/test_prompt_compiler.py`：SOUL block、关闭时等价行为；
 - `tests/test_provider_config_validation.py`：默认关闭和绑定 identity；
-- `docs/CONTEXT_ENGINEERING_STATUS.md`：实现后更新当前状态；
+- `docs/context_engineering_status.md`：实现后更新当前状态；
 - `docs/memory-service-architecture.md`：只补文件投影仍必须经过 MemoryManager 的边界说明，不宣称 USER/MEMORY 已实现；
 - 若 `docs/prompt-engineering-architecture.md` 已落地，则同步记录 persona source/PromptCompiler 边界。
 
@@ -995,7 +995,7 @@ Modify：
 
 git diff --check -- \
   AGENTS.md \
-  docs/CONTEXT_ENGINEERING_STATUS.md \
+  docs/context_engineering_status.md \
   docs/memory-service-architecture.md \
   docs/prompt-engineering-architecture.md \
   docs/superpowers/specs \

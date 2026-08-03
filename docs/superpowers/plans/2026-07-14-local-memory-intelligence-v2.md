@@ -833,7 +833,7 @@ git commit -m "feat(memory): rank local FTS and keyword recall"
 
 **Files:**
 - Modify: `docs/memory-service-architecture.md`
-- Modify: `docs/CONTEXT_ENGINEERING_STATUS.md` only if the injected-memory status contract changed
+- Modify: `docs/context_engineering_status.md` only if the injected-memory status contract changed
 - Test: existing memory, API, tool, runtime, and eval suites
 
 **Interfaces:**
@@ -879,7 +879,7 @@ Expected: PASS with no unexpected skips or network/provider calls.
 Run:
 
 ```bash
-git diff --check -- docs/memory-service-architecture.md docs/CONTEXT_ENGINEERING_STATUS.md \
+git diff --check -- docs/memory-service-architecture.md docs/context_engineering_status.md \
   src/assistant_agent/memory src/assistant_agent/schemas src/assistant_agent/services \
   src/assistant_agent/tools/memory_tool.py tests
 git status --short
@@ -890,7 +890,7 @@ Expected: `git diff --check` exits 0; status contains only files named by this p
 - [ ] **Step 5: Commit code, tests, and authority docs together for the final stage**
 
 ```bash
-git add docs/memory-service-architecture.md docs/CONTEXT_ENGINEERING_STATUS.md \
+git add docs/memory-service-architecture.md docs/context_engineering_status.md \
   src/assistant_agent/memory src/assistant_agent/schemas src/assistant_agent/services \
   src/assistant_agent/tools/memory_tool.py tests
 git commit -m "docs(memory): define local intelligence v2 boundaries"

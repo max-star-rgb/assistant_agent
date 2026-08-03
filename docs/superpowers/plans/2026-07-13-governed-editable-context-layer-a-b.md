@@ -51,7 +51,7 @@
 - `tests/test_prompt_compiler.py`：三种 compile mode 的 persona 和工具契约。
 - `tests/test_assistant_context_renderer.py`：pack/budget/report source accounting。
 - `tests/test_native_runtime_system_prompt_policy.py`：真实 runtime load-once 与跨 user fail-closed。
-- `docs/CONTEXT_ENGINEERING_STATUS.md`：记录已实现边界、配置、限制和关键文件。
+- `docs/context_engineering_status.md`：记录已实现边界、配置、限制和关键文件。
 - `docs/memory-service-architecture.md`：补充 USER/MEMORY 文件仍只是未来 projection，不是 durable truth。
 
 ### Explicitly not created
@@ -708,7 +708,7 @@ Run the Step 4 command. Expected: all tests pass, including unchanged hashes and
 
 **Files:**
 
-- Modify: `docs/CONTEXT_ENGINEERING_STATUS.md`
+- Modify: `docs/context_engineering_status.md`
 - Modify: `docs/memory-service-architecture.md`
 - Verify: every source and test file from Tasks 1–4
 
@@ -774,7 +774,7 @@ Expected: zero failures. If an unrelated dirty-worktree test fails, record the e
 
 ```bash
 git diff --check -- \
-  docs/CONTEXT_ENGINEERING_STATUS.md \
+  docs/context_engineering_status.md \
   docs/memory-service-architecture.md \
   docs/superpowers/plans \
   docs/superpowers/specs \

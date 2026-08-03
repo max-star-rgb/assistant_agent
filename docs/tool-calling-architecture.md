@@ -2,122 +2,106 @@
 
 本文是 `assistant_agent` 工具注册、暴露、调用和执行边界的当前权威说明。源码和测试优先于本文。
 
-## 1. 设计目标
+## 1. 文档边界
 
-工具系统采用最小治理模式，只在公共运行时保留三个核心机制：
+本文只记录跨工具稳定成立的架构：
 
-1. `ToolRegistry` 注册和查找工具；
-2. 基于 Registry、入口 `allowed_tools`、media、durable ready step 等结构化事实组装本轮工具目录；
-3. 使用工具自己的 Pydantic `input_schema` 校验模型参数；
+- 公共数据契约及输入所有权；
+- Tool 注册、单轮暴露、Provider schema 转换和执行链路；
+- Plugin、MCP、Skill、durable task 与 Provider-native 能力的边界；
+- 失败、重试、取消、审计和安全不变量；
+- 权威源码与测试入口。
 
-系统不再维护独立的 `ToolPolicyMetadata`、`ToolPolicyInterpreter`、risk gate、进程内幂等 ledger 或
-ToolScheduler。工具执行顺序由 assistant loop 决定，当前 native tool calls 按模型返回顺序处理。
+本文不记录单个 Tool、Provider 或部署实例的字段、参数、环境变量、命令、业务流程、返回样例和兼容
+历史。具体能力以其 Tool schema、Plugin、adapter、配置、专项文档和测试为准。开发计划、历史 spec
+和 eval case 也不作为本文的当前架构事实。
 
-工具目录遵守一个核心不变量：
+## 2. 总体模型
+
+工具系统把“已安装能力”“本轮可见能力”和“一次实际执行”分成三个边界：
+
+```text
+Plugin / MCP source
+  -> ToolRegistry（启动期注册并 seal）
+  -> ToolSpec（Provider-neutral 契约）
+  -> RunToolCatalog（单轮可见且可执行的集合）
+  -> Provider 返回的 native function/tool call
+  -> ActionValidator
+  -> ToolExecutor
+  -> ToolRegistry
+  -> tool.run()
+  -> ToolResult / ToolObservation
+  -> assistant loop
+```
+
+核心不变量是：
 
 > 本轮暴露给模型的工具，就是本轮允许模型调用的工具。
 
-因此 `RunToolCatalog.available_tool_names` 是唯一的 run-scoped 可用集合，不再另建 executable
-allowlist。`category` 不控制默认暴露，只保留副作用、重试、失败恢复和审计语义。
+`RunToolCatalog.available_tool_names` 是唯一的 run-scoped 可用集合，不再维护另一份 executable
+allowlist。Registry inventory 与单轮 catalog 含义不同，不能互相替代。
 
-## 2. 核心数据契约
+公共运行时不根据请求关键词、正则或手写业务规则选择工具。候选集合只能由 Registry、入口显式限制、
+媒体状态、可信 durable step 等结构化事实确定；是否调用、调用哪个候选工具以及如何填写模型拥有的
+参数由 LLM 决定。
 
-### 2.1 ToolSpec
+## 3. 公共契约
 
-`ToolSpec` 是注册、暴露、provider schema 和执行阶段共同读取的单一工具契约：
+### 3.1 Tool 与 ToolSpec
+
+Tool 实现统一声明：
+
+```text
+name
+description
+input_schema / output_schema
+category: read | generate | write | dangerous
+requires_media
+media_scope: any | attached | live
+llm_hidden_input_fields
+runtime_input_bindings
+run(input, context) -> ToolResult
+```
+
+`ToolSpec` 是 Registry 从 Tool 构造的 Provider-neutral 模型可见契约：
 
 ```text
 name / description
-input_schema（从完整执行输入投影出的 LLM 可见参数）
-category: read | generate | write | dangerous
+input_schema
+category
 requires_media
+media_scope
 ```
 
-工具类直接声明这些字段；Registry 不再维护按工具名索引的 `_TOOL_CONTRACTS` 或
-`_ACTION_USAGE` 副本。`description` 同时承担 provider 可见的简短使用说明，避免再造一套
-`when_to_use/when_not_to_use/runtime_constraints` 元数据。
-仓库自有工具直接引用唯一的规范 `*Request` / `*Result` 契约，不为同一 Pydantic 模型保留
-`*Input = *Request` 或旧 Tool 类名等无转换兼容别名。
-仓库自有的内置 ToolSpec 及其模型可见参数 `description` 统一使用中文；工具名、字段名、
-枚举值、协议标识符和代码符号保持英文。外部 MCP 与配置插件的描述属于上游契约，不由
-runtime 猜测翻译或改写。
+Registry 的 `get_spec()` 与 `list_specs()` 使用同一个 builder，Provider adapter、catalog、validator
+和 executor 因而读取同一份静态声明。系统不维护按工具名复制 schema、category 或调用说明的中心
+manifest；`tools/ids.py` 只保存已经成为跨层协议的稳定字符串。
 
-`shopping_search` 的短 description 只保留调用边界和不能下单的约束；调用次数不写进 description，
-而由 Runtime 按 run 治理。每个 run 最多实际执行一次 `shopping_search`，Provider adapter 内部重试仍
-属于同一次执行；新的 user turn 创建新 run 后可以再次调用。
-系统只注册一个 `shopping_search`：单品和多品类清单都通过 `needs` 表达，单品是一个 need，
-多品类是多个 need。每个 need 可以携带数量、是否必需和单价上限；多于一个 need 时整份清单的
-`total_budget` 必填。场景、选择原因和前序结构化 `evidence` 均为可选语义输入。工具对每个 need
-分别调用一次真实商品搜索与比价 adapter，不把多品类拼成好单库的单个 `keyword`，再按数量、单价
-上限和总预算组合候选。逐项
-Provider 错误、预算排除项和未覆盖的必需项均保留在结果中，预算估算不能伪装成真实搜索结果。
-mock mode 不注册购物工具；real mode 只有好单库或 HTTP 搜索与比价 Provider 配置完整时才注册
-`shopping_search`，禁止回退到 mock/local 商品。
-购物结果以 `outcome=success | partial | empty | failed` 区分完整结果、仍有可用候选的部分结果、
-正常完成但没有候选和工具执行失败。`ToolResult.success` 对 `success`、`partial` 和 `empty` 为真，
-只有 `failed` 为假，避免把“没有匹配商品”或“比价失败但搜索候选可用”误报成整个工具执行失败。
-模型可见 observation 只保留 `outcome`、`total_cost`、`within_budget`、`summary`、最多 3 个
-归一化 `items`，以及非空的 `uncovered_required_needs`；不包含商品链接、图片链接、展示模板，也不再
-重复发送 selections、search items、offers、best offer 或 output ref。
-购物结果仍遵循标准 ReAct 闭环：下一轮 LLM 根据精简 observation 生成正常自然语言答案。
-支持 `shopping_detail_v1` 的交付入口随后从本 run 的完整成功 `ToolResult` 确定性抽取最多 3 个
-标题、平台、价格、HTTP(S) 商品链接和图片链接，并把唯一 `<detail>...</detail>` 块追加在自然语言后。
-该投影不注册额外工具、不增加 LLM 调用，也不覆盖 `AgentResponse.message` 或 conversation history。
-本地 Langfuse 会按 observation index 展示 assistant loop 产生的完整 `ToolObservation`，不会再次把它
-压缩成 summary/output ref；具体开发观测边界见 `docs/observability-harness.md`。
+`category` 表达副作用、自动重试、失败恢复和审计语义，不负责推断用户意图，也不控制默认暴露。
+未声明分类的 Tool 使用 `dangerous` 作为保守默认值。
 
-系统不维护中心 Tool manifest。`tools/ids.py` 只保存已经成为跨层协议的稳定字符串，不枚举
-Tool、不参与注册或暴露，新插件内使用的 Tool 默认无需加入。旧 planner/intent 所需的 action、alias
-与 capability 映射隔离在 `runtime/legacy_tool_mapping.py`，不能作为新增 Tool 的登记入口。
+### 3.2 输入所有权
 
-工具类的 Pydantic `input_schema` 是执行期完整输入和校验的事实源；Registry 生成的
-`ToolSpec.input_schema` 是它的 LLM 可见投影视图。参数值只有三种来源：
+Tool 的 Pydantic `input_schema` 是完整执行输入和校验的事实源。`ToolSpec.input_schema` 是从该模型
+投影出的 LLM 可见视图。字段只有三种所有权：
 
-- Runtime 参数通过 `runtime_input_bindings` 声明，不进入 LLM schema，由可信运行态注入；
-- 工具预定义参数直接使用 Pydantic 默认值；默认向 LLM 暴露并允许覆盖，加入
-  `llm_hidden_input_fields` 后则隐藏并固定使用工具默认值；
-- LLM 必填参数不声明 Pydantic 默认值，进入 LLM schema 的 `properties` 和 `required`。
+- **模型输入**：出现在 ToolSpec schema 中，由 LLM 提交；无默认值的字段按 Pydantic 规则进入
+  `required`；
+- **工具默认输入**：具有 Pydantic 默认值；默认仍可由 LLM 覆盖，只有列入
+  `llm_hidden_input_fields` 后才从模型 schema 隐藏并禁止覆盖；
+- **运行时输入**：通过 `runtime_input_bindings` 声明，由可信运行态按次注入，不发送给模型。
 
-因此“有默认值”只决定参数是否必填，不自动决定可见性；工具作者通过
-`llm_hidden_input_fields` 显式控制默认参数能否由 LLM 覆盖。
-`ToolSpec` 不再维护独立的 `required_inputs` 或自定义 `fields` 视图；prompt 若需要压缩，只在渲染时
-临时移除 title、截短 description，不改变原始 schema。工具通过 `runtime_input_bindings` 声明
-runtime-owned 输入；绑定字段不进入
-`ToolSpec.input_schema`，因此不会发送给模型。绑定来源只使用结构化执行事实：
-`runtime_identity`、`request`、`memory_context`、`latest_tool_result`、
-`durable_idempotency` 和显式可信 `runtime_input`。有 Pydantic 默认值、但不应由 LLM 填写的
-工具内部参数使用 `llm_hidden_input_fields`；它们不需要 runtime binding，执行时由 Pydantic
-补齐默认值。
+注册时必须验证绑定字段和隐藏字段真实存在、互不重叠、没有重复绑定，并且隐藏字段具有默认值。
+运行时输入只能来自声明过的结构化来源；内部 worker 或 observer 提供的显式 `runtime_input` 也只能
+覆盖已声明为 runtime-owned 的字段。
 
-Tool 注册时会检查绑定字段和隐藏字段存在、两者不重叠，并要求隐藏字段具有 Pydantic 默认值。
-LLM 若提交 runtime-owned 字段，`ActionValidator` 返回 `runtime_owned_tool_input`；若尝试覆盖隐藏的
-工具默认参数，则返回 `tool_default_input_override`；未在完整输入模型声明的字段返回
-`invalid_tool_input`，不得被 Pydantic 静默忽略。ActionValidator 先注入可解析的 Runtime 参数，再使用
-完整 Pydantic schema 校验；ToolExecutor 在执行边界重新绑定并完成最终校验。内部 observer/worker
-如需提供帧引用等可信动态值，必须使用 `ToolExecutor.runtime_input`，该通道也只能覆盖已声明的
-runtime-owned 字段。
+模型提交未知字段、runtime-owned 字段或隐藏默认字段时必须被确定性拒绝，不能依赖 Pydantic
+静默忽略。正常模型调用路径由 `ActionValidator` 完成绑定和 Pydantic 构造，
+`ToolExecutor` 复用 `validated_input`；只有执行边界新增可信 runtime 输入时才重新校验。
 
-这些字段都是工具级静态事实，不根据输入中的 `action` 动态改变安全语义。长期记忆不是工具：
-主模型不看到 `memory_search`、`memory_get` 或 `memory_save`；Mem0 recall/capture 是 runtime
-生命周期。
+### 3.3 RunToolCatalog
 
-未知或未声明分类的本地工具使用 `category="dangerous"`，以保留非自动重试、副作用失败恢复和审计
-语义；该默认值不阻止工具进入 catalog。
-
-Tool 系统只保留职责明确且不可互相替代的边界：
-
-- `category` 只表达副作用与安全等级；
-- Plugin 只表达代码所有权、Provider、依赖和生命周期；
-- Tool name 用于入口 `allowed_tools` 收窄、执行定位和审计关联；
-- Skill 只表达如何组合已治理工具的工作流。
-
-系统不维护独立 toolset 或业务分类树。部署级批量启停使用 Plugin；Plugin 中成功注册的
-read/generate/write/dangerous Tool 默认都进入本轮候选集合，入口仍可通过 `allowed_tools` 收窄。
-Tool 自己的输入和领域安全校验始终生效。
-
-### 2.2 RunToolCatalog
-
-`RunToolCatalog` 是每个 assistant turn 的工具目录快照：
+`RunToolCatalog` 是一个 assistant turn 的工具目录快照：
 
 ```text
 schema_version: run_tool_catalog_v1
@@ -128,554 +112,178 @@ excluded_reasons
 
 `available_tool_names` 同时用于：
 
-- 选择要转换成 OpenAI-compatible schema 的 ToolSpec；
-- 记录 context/trace 中本轮可用工具；
-- 由 `ActionValidator` 拒绝模型猜测出的未暴露工具名。
-
-目录中不存在 registered、qualified、exposed、executable 四份重复集合。registry inventory 仍可通过
-`ToolRegistry.list_specs()` 独立获得；排除原因只用于解释为什么某个已注册工具没有通过入口
-`allowed_tools`、media 或 durable ready-step 等结构化运行条件。
-
-### 2.3 工具前置输入
-
-工具需要的业务前置信息属于该工具的输入契约，不进入通用治理分支：
-
-- 必填字段、类型、范围和非空规则由工具自己的 Pydantic schema 表达；
-- OpenAI/MCP adapter 会把 schema 的 required 字段原样转换给 provider；
-- 跨字段或领域安全规则由工具自己的 `validate_call()` 表达；
-- 缺少前置信息时，模型应先向用户询问，而不是用空值或猜测值调用工具。
-
-例如 `mcp.amap_maps.maps_weather.city` 是必填城市名称或行政区编码；缺少城市或区县时模型必须先
-追问，不得猜测或调用工具。高德返回的日级 forecast 由模型根据明确日期选择，不把它表述成精确
-小时预报。
-
-`image_generation.prompt` 是唯一向 LLM 暴露的输入，商品信息不能替代生成提示词。尺寸、数量、
-风格、商品上下文、参考图、负向提示词、随机种子和 Provider 控制参数均使用工具的 Pydantic 默认值；
-用户明确提出的相关要求由 LLM 直接写入 `prompt`，不通过独立工具参数传递。
-
-模型输入遵循最小语义参数原则：
-
-- 用户目标中不可可靠推导的业务语义，例如地点、搜索词、URL、代码、事件标题和开始时间，仍由模型
-  按用户输入填写；
-- provider、adapter、units、limit、timeout、输出格式等静态技术参数使用 Pydantic 默认值，并通过
-  `llm_hidden_input_fields` 禁止模型覆盖；
-- user/session identity、请求媒体、memory context、前序工具结果和 durable 幂等键只在每次执行时
-  绑定，不能固化到进程级复用的 Tool 实例，避免并发请求串数据；
-- runtime binding 后再次通过工具 Pydantic schema 校验，再进入 `tool.run()`。
-
-### 2.4 静态媒体与实时画面
-
-模型可见视觉能力按媒体生命周期拆成两个工具，二者都只向 LLM 暴露可选 `question`：
-
-```text
-普通图片或显式视频 -> media_inspect
-可信实时媒体会话   -> live_view_inspect
-后台关键帧观察     -> realtime_video_observe（内部工具）
-```
-
-`media_inspect` 的 `media_scope=attached`，只处理当前请求附带的图片或显式视频；图片 URL、上传引用
-和视频引用由 runtime binding 注入。`live_view_inspect` 的 `media_scope=live`，只在可信
-Agent-Service 请求同时携带 active video 时暴露，并且只读取后台已经发布的滚动语义快照，不在查询时
-发送原始帧。`realtime_video_observe` 不进入普通 Runtime 的 Tool Registry 或模型工具目录，只供后台
-observer 经过 `ActionValidator -> ToolExecutor -> ToolRegistry` 执行关键帧分析。
-
-`ToolSpec.media_scope` 与 `requires_media` 共同形成结构化暴露和执行约束，静态媒体工具与实时画面工具
-不能跨作用域调用。`image_understanding` / `video_understanding` 仍可作为内部 capability/result 标签，
-但不作为公共 Tool 名。视觉结果使用 `source`、`media_kind` 和 `media_refs` 标明证据来源；显式视频
-直接走普通视频 Provider，不读取实时滚动内存。
-
-## 3. 注册与暴露
-
-Provider 运行只有一个全局边界：`MULTIMODAL_AGENT_PROVIDER_MODE=mock|real`。mock 模式强制主
-LLM 和所有 Provider-backed tools 使用 mock 实现，即使环境中存在真实 key；real 模式要求主 LLM
-完整配置，并且只注册配置完整的真实 Provider 工具，禁止回退到 mock。memory、Python 等纯本地能力
-不属于 Provider，不受“真实调用”伪分类。高德 MCP 配置完整时，allowlist 中 9 个只读工具全部注册
-且默认暴露，不由 Environment 或请求文本挑选子集；天气使用其中的
-`mcp.amap_maps.maps_weather`。旧 `weather`、`web_search`、`web_fetch` 处于待废弃状态，任何
-mock/real 默认 Registry 都不再注册。contacts 等 MCP 能力在 real 模式按实际 mapping 逐个注册，
-未映射的能力不进入 Registry。开发阶段的稳定
-`calendar_search` / `calendar_create` 默认使用本地 SQLite，不调用日历 MCP。
-
-配置为 `qwen` provider 的真实百炼兼容 Chat Completions 把联网作为 Provider-native 生成能力：
-每次主 Agent 请求固定携带 `enable_search=true`、`enable_thinking=false` 和
-`search_options={search_strategy: turbo, forced_search: false, enable_search_extension: true,
-freshness: 7}`，并强制使用 SDK 流式协议。是否实际搜索由 Provider 判断；搜索、来源选择和内容整合
-都在一次 `llm.chat` 内部完成，不进入本地 Tool catalog，不产生 `web_search` /
-`web_fetch` Tool call、ToolResult 或 Tool span，也不计入工具预算。本地 `web_access` Plugin、
-Tavily 与通用 HTTP adapter 暂时只保留为未装配的待废弃兼容代码，mock/real runtime 均不注册或
-调用。百炼 endpoint 可按配置调用
-千问或受支持的第三方模型；当前真实环境使用 `deepseek-v4-flash`，不做千问模型族限定。
-
-该边界只适用于百炼 Provider 内部的只读检索。模型通过 OpenAI-compatible `tools` 返回的自定义
-function call 仍是本地显式工具调用，必须进入 `ActionValidator -> ToolExecutor -> ToolRegistry`。
-
-本地文本文件通过内置 `local_file_access` Plugin 的 `file_read` 工具读取。该工具只接受相对于
-`MULTIMODAL_AGENT_FILE_ACCESS_ROOT` 的白名单文本文件路径，默认根目录为 `.data/files`；绝对路径、
-隐藏路径、目录穿越、越界 symlink、非普通文件、超限文件和非 UTF-8 内容均拒绝。单次读取上限使用
-隐藏的 Pydantic 默认值，长文件通过结果中的 `next_cursor` 分页；工具只返回受控文本，
-内容理解和总结仍由主 assistant loop 完成。
-
-邮件只读能力由独立 `email_access` Plugin 装配，不归入
-`calendar_weather_contacts`，也不在顶层 `providers/` 新增仅供该 Plugin 使用的专用 adapter。该 Plugin 暴露稳定
-`email_search` / `email_read`，内部私有 backend 将它们映射到显式配置的 Workspace MCP
-`search_gmail_messages` / `get_gmail_messages_content_batch`。邮件正文 observation 标记为
-`untrusted_external_content` 和 `do_not_execute`，只作为主模型分析证据；首版不注册发送、草稿、
-标签修改或附件下载工具。
-
-进程内 Tool 插件采用 L2 启动时可插拔协议。每个插件声明
-`ToolPluginDescriptor(plugin_id, plugin_version, api_version="tool_plugin_v1")`，并通过
-`build_tools(context)` 构造 Tool。Plugin 是独立的启动期装配机制，不是 Tool 契约的子类型；整个
-Tool 子系统统一位于 `tools/`，其中内核协议、参数绑定和 Registry 保留在根层，Plugin 框架位于
-`tools/plugins/`，内置装配单元位于
-`tools/plugins/builtin/<assembly_boundary>/`。`defaults.py` 只保留受信任内置插件的显式清单，不扫描
-目录；Tool 内核不反向拥有 Plugin，只有 composition root 知道具体内置 Plugin。
-外部 Plugin contract 只有 `assistant_agent.tools.plugins.contracts` 一个规范导入路径；旧
-`assistant_agent.tool_plugins` 兼容命名空间已删除。
-
-部署方可以通过逗号分隔的 `MULTIMODAL_AGENT_TOOL_PLUGIN_MODULES` 显式列出可信 Python module；每个
-module 必须导出单个 `__assistant_tool_plugin__`。未配置 module 不会被 import，配置错误、协议不兼容、
-重复 plugin id、重复 Tool name 或构造失败都会使启动 fail closed。import Python module 等同于执行进程内
-代码，因此该入口只适用于 operator 信任的部署代码，不是不可信插件沙箱；不可信或跨进程能力应使用
-MCP/独立服务边界。
-
-内置和配置插件经过相同的“发现、构造、全量校验、原子提交”流程。`ToolRegistry` 保存每个 Tool 的
-plugin/source/version ownership；默认 runtime 装配结束后 Registry 会 seal，并根据安全契约生成稳定
-generation。运行期间不能继续 `register()`，配置变化需要重启生效；当前不支持 unload、replace、drain
-或热更新。MCP 仍是外部 Tool source，但其 allowlist proxy 与进程内 Tool 一起在最终 Registry seal 前
-提交。
-
-插件只负责基于结构化配置和已注入依赖创建 Tool；不能直接执行工具，也不能绕过
-`ActionValidator -> ToolExecutor -> ToolRegistry` 治理链路。插件工具成功注册后默认暴露；
-`tools.loader` 的 `__assistant_tools__` 保留给本地 Skill/CLI 入口，不会自动并入默认 runtime
-插件协议。
-
-Plugin 按共享 Provider、配置、依赖和生命周期划分，不按 Tool 数量或宽泛业务标签机械拆分。目录名与
-`plugin_id` 应表达独立装配边界，避免 `core`、`misc` 等兜底分类。共享同一 MCP mapping、runner 和
-adapter bundle 的 weather/calendar/contacts 兼容代码归属 `calendar_weather_contacts`，但该 Plugin
-只注册 calendar/contacts；配置与 readiness 独立的
-`email_access`、`media_inspection`、`visual_image_search` 分别装配；本地 Python 执行独立归属
-`python_execution`。新增已有 Plugin 内的普通 Tool 只修改该 Plugin 目录；验证遵循
-`tests/README.md`，默认不修改 core，开发期 RED/GREEN 使用独立 TDD feature，有风险证据的长期专项
-进入独立 incubating feature。
-新增内置 Plugin 额外在 `defaults.py` 可信清单登记一次；新增外部 Plugin 只增加独立 module 和部署
-配置。普通 Tool 的增删不得要求修改 Registry、Executor、Validator、assistant loop、Prompt/Context
-编译或中心 Tool name 表。只有引入新的宿主级共享基础设施时，才扩展 `ToolPluginContext` 和
-composition root。
-
-可用 `python -m assistant_agent.tools.cli plugins` 只读查看启动装配结果、ownership、issue、seal 状态和
-generation；该命令不会执行 Tool。`--module` 可重复传入并覆盖环境 module 列表用于部署前验证。
-`scripts/run_server.py` 则在服务 lifespan 初始化真实 runtime 后，按 Registry 已保存的 `plugin_id`
-输出该 runtime 最终 Registry 的工具名；该展示不修改 ToolSpec 或工具暴露语义，不输出 description、
-source、seal 状态或 generation，也不会为了展示而重复装配插件。
-
-`ToolRegistry.list_specs()` 和 `get_spec(name)` 复用同一个 builder，因此 provider schema、validator 和
-executor 读取的是同一份契约。新增或移除一个内置能力包时，只增删对应插件目录及 `defaults.py`
-可信清单；新增普通外部插件只需提供 module 导出并修改部署配置，无需修改 Registry、Executor、
-`tool_ids.py` 或中心 Tool name 表。修改已有插件内的 Tool 时只改该插件目录，不再向
-`create_default_registry()` 添加领域工具的实现、实例化或 Provider readiness 分支。`ToolRegistry`
-本身只保留在 `tools/registry.py`；默认 Plugin、MCP proxy 和 realtime observer 的启动装配位于
-`tools/plugins/registry_factory.py`，避免工具内核反向导入具体内置 Plugin。
-
-weather、calendar、contacts 的 mock adapter 和 MCP backend 兼容代码是
-`calendar_weather_contacts` 的私有实现，分别位于该 Plugin 的 `adapters.py`、`backend.py`；其中
-旧 weather wrapper 不再由默认 Plugin 注册。顶层
-`providers/` 不保存仅由该 Plugin 消费的 Provider adapter。只有出现跨 Plugin、跨入口的真实复用或
-独立应用生命周期时，能力实现才提升为共享 Provider 能力。同样，image generation、shopping、visual image
-search、web access 和 Python execution 的单一 owner backend/sandbox 均保留在对应内置 Plugin；
-共享治理分别归属 `providers/`、`context/`、`runtime/`、`observability/`、`automation/` 和 `media/`。
-
-普通 real Runtime 使用 `LocalSQLiteCalendarAdapter` 承载稳定的
-`calendar_search` / `calendar_create`，数据库默认位于 `.data/calendar/events.sqlite3`。
-需要 Calendar 写入的 Agent Task 必须由自己的 Environment 注入一次运行专用的隔离数据库，并在
-运行后丢弃或复位。两者都从 `ToolContext.user_id` 派生 namespace，避免用户间串数据；Trace 负责
-执行审计，SQLite 负责可检索业务状态。Google Calendar MCP mapping 暂时不被这两个稳定工具调用。
-
-`visual_image_search` 与 `media_inspect` / `live_view_inspect` 虽然同属视觉业务域，但 Provider 配置、readiness 和
-启停生命周期不同，因此分别归属 `VisualImageSearchPlugin` 与 `MediaInspectionPlugin`。原
-`delegate_to_agent` 工具已暂时删除；multi-agent 路由与通信服务保留，但不会向任何 Registry 暴露
-delegation tool。
-
-本轮目录由以下链路生成：
-
-```text
-ToolRegistry.list_specs()
-    -> select_prompt_tool_specs()
-    -> RunToolCatalog.available_tool_names
-    -> OpenAI-compatible tools schema
-    -> ChatAdapter.chat(tool_choice="auto")
-```
-
-`tool_choice="auto"` 是 provider API 参数：允许模型在回答文本和调用已提供工具之间选择。它不授予
-额外权限；模型只能看到 `RunToolCatalog` 对应的 schema。
-
-可信 Agent-Service profile 不维护业务工具名 allowlist，只证明请求来自该入口。所有已注册的
-read、generate、write 与 dangerous 工具按统一 exposure policy 默认进入候选集合，再应用
-`allowed_tools`、`requires_media` 和 durable ready-step 等结构化条件。profile 不替代插件
-readiness：real 模式的 Provider-backed 工具配置不完整时不会注册，禁止回退 mock。
-
-目录装配只读取结构化事实，不读取 `request.text` 做关键词/正则意图路由：
-
-- 所有已注册 category 默认可暴露，`category` 不参与目录放行；
-- `requires_media` 可以基于入口携带的结构化媒体事实排除工具；
-- durable worker 只暴露当前 ready step 对应工具和 task submission 工具；
-- 入口 `allowed_tools` 可以进一步收窄本轮候选集合；
-- 项目级 Skill 在本轮最终可见目录包含其 permission 匹配的 governed tool 时，可以按
-  `visibility.enabled-by-default` 自动激活；`enabled_skills` 负责显式激活非默认或 `skill-only`
-  Skill。只有 `load_skill` 也在最终目录中时才生成动态 Skill 索引；索引使用普通 Markdown，
-  只包含 Skill 名称与适用条件，不复制业务流程或加载教程。索引只是给 LLM 阅读的上下文，
-  Runtime 不反向解析，因此不使用 XML 或 JSON 包装。
-  两种方式都不授予 Tool 执行权限，也不裁剪目录；完整工作流和
-  reference 由模型通过受治理的 `load_skill` / `load_skill_reference` 按需读取。成功加载正文后，
-  同一 Skill 的 `skill_body` 替换摘要；tool result 只保留加载回执，正文由 ContextBuilder 从注册源
-  重建，不能把普通 tool message 提升为指令。
-- “复杂任务符合适用条件时先加载正文、简单单工具查询不加载、reference 只能使用返回 ID、加载不向用户播报”的通用协议集中定义在
-  `runtime/system_prompt_policy.py`，并根据本轮结构化 Skill Context 与 loader ToolSpec 条件注入
-  system role。动态索引/正文属于 ContextSection：Provider 支持时进入 developer，否则与 system
-  合并；静态 policy 不枚举项目 Skill。
-
-LLM 决定是否调用、调用哪个已暴露工具以及参数内容。目录策略不替模型猜测用户意图。
-
-## 4. Provider schema 转换
-
-`tools/spec_adapters.py` 给 provider-neutral `ToolSpec.input_schema` 包装 OpenAI-compatible
-与 MCP 协议外壳。两种模型可见 Schema 都以帮助模型理解和构造参数为目标，
-保留参数结构、`type`、`description`、`required` 以及必要的 `enum`；递归移除 Pydantic 自动生成的
-`title`、执行期 `default`、根 schema `description`、`additionalProperties`、空 `required`，以及
-`minLength`、`minimum`、`maximum`、`pattern`、`format` 等执行期校验约束。模型不会被视为可靠的
-Schema 校验器，所有非空、长度、范围、格式和跨字段规则仍由 `ActionValidator` 与工具 Pydantic
-schema 确定性执行：
-
-```json
-{
-  "type": "function",
-  "function": {
-    "name": "mcp.amap_maps.maps_weather",
-    "description": "根据城市名称或行政区编码查询当前及短期天气预报。",
-    "parameters": {
-      "type": "object",
-      "properties": {"city": {"type": "string"}},
-      "required": ["city"]
-    }
-  }
-}
-```
-
-category、profile、env 等系统字段不会发送给模型，也不需要靠“截断系统信息”从
-一份混合 JSON 中剥离。adapter 只挑选 provider 协议需要的 name、description 和 input schema。
-
-所有仓库内置工具的模型可见参数都应提供简短、明确的中文 `description`；只写 Pydantic 类型或
-校验约束而不解释字段语义，不视为完整工具契约。`shopping_search` 向模型暴露必填 `needs`，以及
-会实质改变组合结果的可选 `total_budget`、`scenario`、`decision_reason`、`evidence` 和
-`platforms`；商品特征与单件预算分别写入 need 的 `keyword` 和 `max_unit_price`。候选数量由
-Pydantic 默认值补齐并隐藏。
-购物工具不读取前序视觉结果；需要看图购物时，LLM 先调用
-`media_inspect`，消费其 observation 后自行构造一个 `shopping_search.needs` 元素。购物请求不携带
-未使用的身份、memory context 或假想 Provider 兼容字段。`media_inspect.question` /
-`live_view_inspect.question` 等没有必填要求但会改变任务结果的
-语义型可选参数仍应暴露；当前媒体引用、用户原始请求、身份、采样参数和 rolling context 均来自
-runtime。
-
-目录不做 Tool Search、Schema 预算触发的渐进披露或基于请求文本的工具预选。所有通过入口
-`allowed_tools`、media 和 durable ready-step 条件的已注册 ToolSpec 都直接发送给 Provider；工具规模
-由部署时安装的 Plugin、MCP allowlist 和入口 `allowed_tools` 控制。Context report 继续记录 Tool
-Schema 的实际字符和 token 占用，只有真实 Provider 失败、延迟或选择质量证据出现后才重新设计大目录
-方案。
-
-模型返回的 native `tool_calls` 会归一化为严格的内部 `AssistantToolCall`，然后进入统一执行链路。
-assistant turn 的内部输出只允许非空 `AssistantTextOutput` 或 `AssistantToolCall`；计划提交通过显式
-`task_plan_submit` 工具完成，不再扩展 assistant 输出协议。
-
-OpenAI-compatible Chat adapter 从 `ProviderConfig` 读取主调用超时；默认
-`MULTIMODAL_AGENT_CHAT_TIMEOUT_SECONDS=75`，应小于入口 turn 总预算。真实百炼主 Agent 的
-Provider-native 搜索固定使用非思考模式，adapter 始终发送
-`extra_body.enable_thinking=false`。未开启 `native_web_search` 的辅助 Qwen adapter 仍可单独配置
-思考模式。该参数只发送给配置为 `qwen` 的百炼兼容请求，不改变其他 Provider payload。
-
-## 5. 校验与执行
-
-固定主链路：
-
-```text
-native tool_calls
-    -> AssistantToolCall
-    -> ActionValidator
-    -> ToolExecutor
-    -> ToolRegistry
-    -> tool.run()
-    -> ToolResult
-    -> model observation
-    -> 下一轮 LLM
-```
-
-### 5.1 ActionValidator
-
-`ActionValidator` 负责执行前的确定性校验：
-
-- 工具已注册；
-- 当 state 存在 `RunToolCatalog` 时，工具属于 `available_tool_names`；
-- 输入是 JSON object，且通过工具 Pydantic schema；
-- `requires_media` 对应的媒体输入存在；
-- 工具自己的 `validate_call()` 通过，例如 Python 安全代码检查；
-- durable mode 的计划和可信 step 绑定有效。
-
-校验成功时 validator 会保留已构造的 Pydantic input model。主 assistant loop 和 workflow runner 把它
-交给 executor，executor 只在该对象上补充可信运行时字段，`tool.run()` 不再重复解析同一份模型输入。
-直接调用 executor 的兼容入口没有已验证对象时，工具边界仍执行一次 Pydantic 兜底校验。
-
-durable step 绑定只在 durable task 已启用时生效，用于保证 worker 当前执行的仍是计划中 ready 的
-step，且工具名与 step 匹配。普通前台调用不承担这套检查。
-
-### 5.2 ToolExecutor
-
-`ToolExecutor` 保留运行时闭环需要的职责：
-
-- 绑定可信 `user_id`、`session_id` 和 request-scoped media；
-- 传播 cancel，read 工具按全局 provider retry policy 在同一个逻辑 Tool call 内重试，非 read 工具不自动重试；
-- 写入运行态 tool call state、event 和 trace；持久化工具调用查询统一从 trace 派生；
-- 默认只向 trace 写入安全摘要；本地显式设置
-  `MULTIMODAL_AGENT_LOCAL_TRACE_CONTENT=1` 时，统一记录经过 secret sanitizer 的工具输入输出；
-- `audit_payload` 与 `raw_data_ref` 只通过同一 trace 脱敏边界保留安全投影，不再写入独立工具历史；
-- 将结构化 `ToolResult` 转成下一轮模型 observation。
-
-executor 对外只保留串行 `run_tool()`：依次绑定运行时输入、创建 call record、调用
-Registry，并按同一调用栈写回 state/event/trace。系统不保留未被生产路径使用的 prepare/invoke/commit
-分段接口、PreparedToolCall 或 invocation 中间结果。
-
-`ToolResult.success=false` 只表示一次工具执行失败，不天然等于整个 Agent run 失败。Executor 通过通用、
-结构化的 `failure_mode` 接收编排层决策：普通 foreground ReAct 使用 `continue_to_model`，把失败结果作为
-observation 交回主 LLM，由模型修改参数、选择其他工具、追问或诚实解释失败；传统计划、durable task 和
-其他未显式选择恢复模式的入口默认仍使用 `stop_run`。取消始终走独立 cancellation 终态，不能作为普通
-工具失败恢复。该状态机不得按 Tool name 分支。
-
-模型侧 observation 将执行状态与业务结果分开：`status=succeeded | failed | rejected` 表示本次调用
-是否完成，`outcome=success | partial | empty` 表示成功执行后的领域结果类别。`partial` 和 `empty`
-不是执行失败；Provider 超时、输入无效和拒绝等原因通过结构化 `error` 表达，不与领域 outcome
-混在同一个枚举中。每条 observation 同时保留面向推理的 `summary` 和工具专属 `data`，并使用
-`warnings`、`is_complete` 明确结果限制；公共字段从 `data` 中提升后去重。内部和模型侧共用这一套
-规范字段，不保留 `structured_output`、拆分的 `error_code/error_message` 或命令式
-`next_step_hint` 兼容镜像。
-
-foreground ReAct 的重复保护使用 `tool_name + canonical tool_input` 的摘要签名。相同工具使用不同参数
-属于可修正调用，可以继续执行；完全相同且已经失败，或完全相同且已由 read Tool 返回
-`status=succeeded, is_complete=true` 的调用，会在执行前被阻止，并增加结构化 rejected
-observation，同时立即把 Runtime phase 从 `ACT` 切换到 `FINALIZE`。下一次 ReAct iteration 仍正常记录，
-但其中的 Provider request 不再暴露工具。这样既允许修正输入，也不会用
-相同参数反复请求 Provider。成功、失败和拒绝事件继续进入 trace；LLM 已处理工具失败并返回最终文本时，
-run 终态为 `completed`，响应通过 `degraded` 和 `handled_tool_failures` 保留诊断事实。
-若失败结果的结构化错误明确声明 `recoverable=false`，guard 会按工具名阻止该 run 内对同一工具的
-后续调用，即使参数不同；拒绝 observation 会要求模型改用其他已暴露工具、利用已有证据回答或诚实说明
-限制。该判断只读取 `ToolResult` / capability contract 的 `recoverable` 字段，不解析 Provider 文案，
-也不阻止其他工具。
-`write` / `dangerous` 工具失败后可能存在副作用结果不确定性，因此 foreground ReAct 不自动修正或
-重试；Runtime 立即进入 `FINALIZE`，下一轮由 LLM 解释失败或要求用户重新发起。
-
-assistant loop 显式区分 `ACT` 和 `FINALIZE`。达到工具预算或 guard 要求停止行动后，Runtime 进入
-`FINALIZE`。Context 层保留当前 run 已发生的 `assistant.tool_calls -> tool` native action trajectory，
-其中 tool content 继续使用保留 status、summary、outcome、warnings、is_complete、工具专属 data、
-error 和 output_ref 的 prompt-safe observation 投影；随后追加单一无工具续答消息，并以
-`tools=[]`、`tool_choice=none` 请求生成最终回答。仅供 Runtime 诊断且没有真实 Provider call 的 guard
-observation 不进入该轨迹。Adapter boundary 会为 Provider 返回的空 tool call ID 生成 run 内唯一 ID，
-并贯穿 native call、执行 observation 和 FINALIZE transcript；边界之后仍缺失、重复或孤立的 ID
-会 fail closed 跳过，不按位置猜测。FINALIZE 中出现的 tool call 是协议违规，不进入
-Validator/Executor；Runtime 最多进行
-一次仍无工具的严格纠正，避免恢复逻辑形成新循环。
-连续违规或最终模型返回 error、truncated、empty 时，确定性降级答复优先引用已有结构化失败事实，
-不因其他工具 `status=succeeded` 就宣称证据充分。
-
-`run_phase` 是 phase 控制的唯一事实；Runtime 不再通过
-`assistant_answer_only_next_turn` 之类的 request metadata 把“下一轮只回答”作为延迟控制信号。
-`loop_guard.triggered` 是通用 guard 事件，不等同于固定进入 `FINALIZE`：事件通过
-`disposition=block_action | finalize | terminate` 明确本次处置，并记录 `from_phase` / `to_phase`。
-例如重复失败或重复完整成功的完全相同调用使用 `finalize`，不可恢复工具的再次调用使用
-`block_action`，从而仍可在 `ACT` 中改用其他工具。
-
-Executor 自动重试与 Agent 的新一轮工具决策是两个契约。自动重试保持相同的 `tool_call_id` 和输入，
-不产生新的 `react.iteration`，并用 `tool.attempt.failed`、`tool.retry.scheduled` 以及 Tool terminal
-上的 `attempt_count`、`execution_retry_count`、`retry_exhausted` 记录。模型看到失败 observation 后修改
-参数再次调用属于新的 ReAct action 和新的 `tool_call_id`，不计入 `execution_retry_count`。
-
-幂等语义不再由通用 ToolSpec 治理。具体 provider 若需要 idempotency key，应在领域 schema/adapter 或
-durable task 协议中处理；通用 executor 不维护进程内重复调用 ledger。
-
-durable task 的通知同样不属于 ToolExecutor 的渠道副作用。一个 quantum 只能在 terminal checkpoint
-中提交 `TaskNotificationRequest`；`DurableTaskService` 使用任务的可信 `user_id` / `agent_id`
-绑定 owner 和 `destination_ref`，再写入共享 `NotificationEnvelope` outbox。通知正文和目的地址不进入
-TaskEvent，事件只记录 delivery id、channel、状态、尝试次数和安全 reason code。实际发送由
-`NotificationDeliveryWorker` 通过 lease、重试、过期和 dead-letter 状态机完成；订阅取消、worker
-重启或相同 idempotency key 重放都不能制造第二次发送。默认测试只使用 mock transport。
-
-`lodging_search` 属于内置 `lodging` Tool Plugin，只提供结构化酒店报价读取和 OTA 页面跳转链接，
-明确不提供预订、占房、付款或入住人信息提交。请求可携带目的地、入住日期、附近 POI、酒店类型、
-星级、床型、每晚预算和排序；成功 observation 最多向模型提供 3 个归一化候选，包含适用的地址、
-坐标、评分、图片、价格、查询时间和 `booking_url`。价格、库存与退改条件以跳转后的 OTA 页面为准，
-未知退改属性保持 `null`，不能默认为不可退或可退。FlyAI 展示价按入住晚数推导的总额使用
-`price_basis=nightly_estimate` 明确标记为估算，不能表述为含税成交总价。回答候选时，
-`booking_url` 非空则提供对应的可点击 OTA 跳转链接，并说明链接不代表锁价、预订成功或最终成交；
-字段为空时明确当前没有跳转链接，不能生成“点击链接”等悬空指代。adapter 不验证页面可达性、
-登录状态、有效期或跳转后的当前报价。
-
-mock mode 注册确定性本地 adapter。real mode 目前只支持显式
-`MULTIMODAL_AGENT_LODGING_PROVIDER=flyai`，并要求同时配置 `FLYAI_CLI_PATH` 和正式
-`FLYAI_API_KEY`；adapter 只把 key 注入 FlyAI 子进程环境，不写入参数、结果或 Trace。缺少正式 key
-时整个 Tool 不注册，不得借用 CLI 内置体验凭据或回退到 mock。adapter 使用参数数组调用官方
-`flyai search-hotel`，不经过 shell，只读取 stdout 的单个 JSON object。CLI 缺失、超时、非零退出、
-非法 JSON、Provider 拒绝，以及 `¥4xx` 这类体验模式遮罩价格都转换为结构化失败，不能伪装成真实
-报价。FlyAI 上游 Skill 自带的关键词/正则激活逻辑不进入本项目，Tool 是否调用仍由主 LLM 根据本轮
-原生 schema 判断。
-
-`hotel_price_watch_v1` durable workflow 可以重复调用 `lodging_search`，但每次调用仍执行同一
-validator/executor/registry 治理，并受 task attempt、quantum、deadline、cancel 和 notification
-idempotency 约束。`hotel_price_watch_create` 只在 durable tasks 已启用且请求显式进入 durable/计划
-模式时暴露；普通 foreground 请求在 ActionValidator 边界拒绝它。
-
-工具不再各自声明 trace 脱敏策略。完整内容开关是本地运行级事实：默认关闭；开启后仍排除
-`raw_provider_payload`、`provider_raw_response` 和内联大块数据，并继续执行 secret、base64、绝对路径
-和长度清理。real 模式不应开启该变量。
-
-## 6. 写工具执行语义
-
-系统不维护第二次用户确认状态。Tool 被本轮 `RunToolCatalog` 暴露并通过 `ActionValidator` 后，
-`ToolExecutor` 直接调用 `tool.run()`。所有已注册 category 默认暴露且不做二次确认；
-`category=write|dangerous` 仍用于禁用自动重试、Trace、副作用分析和失败恢复；具体 Provider 的
-幂等键继续由领域 schema/adapter 或 durable task 注入。
-`python_interpreter` 归类为 `write`：它不会修改外部业务系统，但会启动受限本地执行并产生计算输出，
-因此采用与其他非只读工具相同的不自动重试和失败恢复语义。
-
-## 7. MCP、本地工具和 workflow
-
-MCP 定义先经过 server allowlist，再转换成 namespace tool name 和简单 ToolSpec：read-only MCP 工具是
-`category=read`；其他 MCP 工具是 `category=write`。注册后的 MCP proxy 走相同
-`ActionValidator -> ToolExecutor -> ToolRegistry` 链路。
-
-### 7.1 高德 / weather / calendar / email 真实 MCP 配置
-
-仓库提供 `deploy/mcp_servers.example.json` 作为无凭据模板。部署时复制到默认忽略的
-`.local/mcp_servers.json`，并只在本地配置实际 MCP Server 命令、参数和认证环境：
-
-```bash
-cp deploy/mcp_servers.example.json .local/mcp_servers.json
-export MULTIMODAL_AGENT_PROVIDER_MODE=real
-export MULTIMODAL_AGENT_MCP_ENABLED=1
-export MULTIMODAL_AGENT_MCP_CONFIG_PATH=.local/mcp_servers.json
-```
-
-当前模板的 Gmail 只读实例固定使用 `workspace-mcp==1.22.0`，通过 `hello_agent` 环境中的 `uvx`
-隔离运行，不把它加入项目运行依赖。命令显式附加 `PySocks`，使上游
-`httplib2` 能在代理网络中访问 Google API。首次启动仍会由 `uvx` 下载对应环境；
-本机必须先显式安装 `uv`。模板中的 `email_tools.user_email` 必须替换为完成 Google OAuth 的账号，
-`GOOGLE_OAUTH_CLIENT_ID` 和 `GOOGLE_OAUTH_CLIENT_SECRET` 只从本地 shell 或未跟踪 `.env` 注入，不能写入
-MCP 配置模板或提交。当前 stdio 单机配置使用 `http://localhost:8000/oauth2callback`，因此本地 OAuth
-需要 `OAUTHLIB_INSECURE_TRANSPORT=1`；该开关不得用于公开或非 loopback 部署，公开部署必须改用 HTTPS
-并在 Google Cloud 中登记完全一致的 redirect URI。stdio MCP 子进程继承宿主的标准
-`HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY` 和 `NO_PROXY`（含小写形式），同名 server `env` 显式配置
-优先；同时存在 HTTP/HTTPS proxy 与 `ALL_PROXY` 时只传递前者，避免上游客户端误选不兼容的 SOCKS
-scheme。其他环境变量仍由 MCP SDK 的安全白名单或 server `env` 控制。真实模式还要求主 Chat
-Provider 完整配置；MCP 配置不会绕过这个全局边界。
-
-`workspace-mcp` 是 Google Workspace 多产品适配器，不等于 Calendar。当前部署只保留
-`google_gmail_readonly` 实例，通过 `--tools gmail --read-only` 提供邮件查询/读取。日历的唯一事实源
-是本地 `.data/calendar/events.sqlite3`，稳定 `calendar_search` / `calendar_create` 不连接 Google
-Calendar；默认 MCP 配置不注册 `get_events` / `manage_event`，避免本地与云端形成两套日历。
-
-中国大陆地点与通勤使用模板中的官方 `@amap/amap-maps-mcp-server`。部署者先复制模板到已忽略的
-`.local/mcp_servers.json`，再只在该本地文件替换 `AMAP_MAPS_API_KEY` 占位符；仓库模板和 `.env`
-示例都不保存真实 Key。该 server 通过
-`/usr/bin/npx -y @amap/amap-maps-mcp-server@0.0.8` 启动，首次真实运行可能下载上游 npm 包，
-因此必须由 operator 明确执行。模板只 allowlist 9 个只读工具：地理编码、IP 定位、
-天气、POI 关键词/周边搜索，以及骑行/步行/驾车/公交路线。逆地理编码、POI 详情和直线距离默认不
-注册，需要时再由部署配置显式加入。它们以 MCP namespaced Tool 进入同一 run-scoped catalog；
-入口不根据“旅游”“通勤”等请求文本做路由，LLM 可在一次 assistant loop 中组合地点、周边 POI、
-路线与 `lodging_search` 证据生成行程。高德 POI 搜索可以返回酒店名称、地址和坐标，但不提供按
-入住日期查询的实时房价、房型、库存或 OTA 跳转链接；需要可预订候选时仍使用独立
-`lodging_search`。
-
-项目级 `skills/travel-tool-orchestration/SKILL.md` 统一说明这组工具的模型决策顺序：先确定唯一
-终点工具，只在缺少终点工具必填输入时调用前置工具。用户明确只要地图酒店地点时可使用高德 POI；
-涉及入住日期、价格、预算、房型、可订候选或 OTA 时使用 `lodging_search`；已有住宿候选后需要
-通勤证据时再调用高德路线工具。Skill 按本轮最终可见的 governed ToolSpec 和 `load_skill` 自动激活，
-只注入名称与触发描述；统一 system policy 要求模型先调用 `load_skill` 读取完整工作流，成功后正文
-替换索引，遇到复杂歧义、空结果或恢复时再
-调用 `load_skill_reference(skill_id, reference_id)`。`load_skill` 返回去除 frontmatter 后的完整
-Markdown 正文；当前旅行 Skill 使用 manifest v2，必须包含完整的 Decision Rules、Procedure、
-Pitfalls 和 Verification，loader 仍兼容 v1 旧章节。reference Tool 只接受同一 run 内成功
-`load_skill` 实际返回的 ID，该授权由执行器从已提交 ToolResult 推导，不接受请求 metadata。
-reference 路径必须是 Skill `references/` 下的一层 Markdown 文件，不能由模型传入任意路径。
-Skill 目录、`SKILL.md`、`references/` 目录和 reference 文件都禁止符号链接；成功 observation 仅保留
-ID，下一轮 Context 再从完整项目注册 catalog 加载可信正文并提升为 procedural guidance。
-Provider capability 明确支持时 guidance 使用 `developer` role，否则并入 system；当前
-qwen/deepseek 等 Chat Completions 接口保守使用 system。加载工具的 tool message 不承载正文，也不
-向用户播报 Skill 名称或加载过程。Provider 在原生 tool-call turn 附带的 `response_text` 不映射为
-`progress_message`；需要展示的工具进度由 runtime 独立结构化发布。
-该流程不读取 `request.text` 做代码路由，不改变 `RunToolCatalog` 或 validator/executor 权限。
-
-当前 FlyAI adapter 按 `@fly-ai/flyai-cli==1.0.16` 的 `search-hotel` 命令与单行 JSON 契约实现；
-项目不自动安装 CLI。正式 key 从飞猪 AI 开放平台控制台获取，并仅在未跟踪 `.env` 或本地 shell
-配置为 `FLYAI_API_KEY`；升级前必须用离线 contract fake 和 operator 显式真实 smoke 重新核对字段。
-
-真实天气固定使用高德 `mcp.amap_maps.maps_weather`；`personal_assistant_tools.weather_lookup`
-及其稳定 `weather` wrapper 不进入任何默认 Registry。contacts 只有存在对应
-`personal_assistant_tools` mapping 时才注册，映射的远端工具还必须同时位于 `allowed_tools` 与
-`read_only_tools`。本地 calendar 不要求 MCP mapping；
-`calendar_create` 注册后与其他 category 一样默认暴露。
-`email_search` 和 `email_read` 只有存在独立 `email_tools` mapping 时才注册；两个远端 Gmail 工具必须
-同时位于 `allowed_tools` 与 `read_only_tools`。推荐使用独立 `google_gmail_readonly` MCP server，并
-以 `workspace-mcp --tools gmail --read-only` 限制 OAuth scope 和远端工具集合。
-
-仍保留的兼容 profile 不根据工具名猜测 Provider：
-
-- `mcp_weather_server_v1` 及稳定 `weather` wrapper 只保留待废弃兼容代码，不参与 mock/real
-  runtime 的天气 Tool 注册或暴露。
-- `workspace_mcp_v1` Calendar mapping 只作为兼容 adapter 保留，不进入默认部署配置；如未来切换到
-  Google Calendar 作为唯一事实源，应显式替换本地 adapter，而不是与 SQLite 双写。
-
-`calendar_create` 注册并满足本轮结构化运行条件后即可由模型调用，通过校验后直接执行。真实天气与
-日历能力只能在 operator 显式启用真实工具的评测中执行。该命令让真实 LLM 经过 Runtime
-和工具治理链路自主调用外部 Provider，失败时明确报告：
-
-```bash
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python \
-  scripts/run_system_tool_evals.py \
-  --allow-real-tools \
-  --case-id weather_beijing_today
-```
-
-本地 `@tool` decorator 直接声明 `category` 和 `requires_media`，不再要求 rich policy 或
-per-tool timeout/retry metadata。CLI validate 检查能否生成
-合法 ToolSpec；simulate 仍通过 validator/executor 执行。
-
-Skill 只能调用已注册且 permission 匹配的工具。read 工具允许按 Skill retry 配置重试；
-非 read step 的幂等与重试语义由 Skill/领域实现显式承担，不由中心 Tool manifest 声明。
-
-## 8. 代码导航
+- 选择发送给 Provider 的 ToolSpec；
+- 记录本轮 context 与 trace 中的工具集合；
+- 拒绝模型猜测出的未暴露工具名。
 
+`selection_reasons` 和 `excluded_reasons` 只解释结构化选择结果，不授予额外权限。已注册工具的完整
+清单仍由 Registry 提供。
+
+### 3.4 ToolResult 与模型观察
+
+Tool 必须返回结构化 `ToolResult`。其中：
+
+- `success` 表示执行契约是否成功完成；
+- `data` 保存完整的 runtime、API 或 trace 结果；
+- `model_observation` 是 Tool 拥有的模型视图，进入 prompt 前仍由通用 observation 边界清理；
+- `trace_summary`、`audit_payload` 和引用字段服务于各自边界；
+- `error` 保存经过清理、可解释的失败信息。
+
+完整结果、模型观察、Trace 摘要和最终用户交付是不同投影，不能把某一投影当作其他边界的规范事实
+源。未提供 `model_observation` 的旧 Tool 允许从 `data` 构造兼容观察；新 Tool 应显式提供最小模型
+视图。assistant loop 把模型可见 observation 交回 LLM，使其能够继续调用其他工具、修正参数、追问
+或基于已有证据作答。
+
+## 4. 注册与装配
+
+### 4.1 ToolRegistry
+
+`ToolRegistry` 负责注册、查找、生成 ToolSpec 和调用 Tool。默认 runtime 在启动期完成装配后 seal
+Registry，并基于注册记录与 ToolSpec 生成稳定 generation。seal 后不能继续注册；配置变化通过重启
+生效。
+
+批量注册先验证整批贡献，再原子提交。重复 Tool name、无效输入契约、Plugin 协议错误或装配失败
+必须 fail closed，不能留下半装配 Registry。
+
+### 4.2 Plugin
+
+Plugin 是启动期代码装配和所有权边界，不是 Tool 的执行协议，也不授予单轮执行权限。Plugin 按共享
+Provider、配置、依赖和生命周期组织，通过 `build_tools(context)` 构造 Tool；composition root 统一
+完成发现、验证、注册和 seal。
+
+内置 Plugin 使用显式可信清单，不扫描目录。外部进程内 Plugin 只从部署配置显式导入；导入 Python
+module 等同于执行受信任代码，不是不可信插件沙箱。不可信或跨进程能力应放在 MCP 或独立服务边界。
+
+增加普通 Tool 时只修改其所属 Plugin，不应要求修改 Registry、Validator、Executor、assistant loop
+或中心 Tool name 表。只有新的宿主级共享依赖才扩展 Plugin context 和 composition root。
+
+### 4.3 MCP
+
+MCP 是外部 Tool source。远端定义先经过 server 配置、allowlist、read/write 分类和 namespacing，
+再作为 proxy Tool 参与同一批注册。注册完成后，MCP Tool 与进程内 Tool 使用相同的 ToolSpec、
+RunToolCatalog、Validator、Executor、结果和审计边界。
+
+MCP server、认证、远端方法映射和部署命令属于配置或对应集成文档，不进入本文。
+
+## 5. 单轮暴露与 Provider 转换
+
+注册成功的 Tool 默认是候选能力；入口 `allowed_tools`、媒体要求和可信 durable ready step 可以继续
+收窄当前 turn 的集合。Tool `category`、Plugin 归属和 Skill 激活不自动赋予或扩大权限。
+
+媒体约束由 `requires_media` 与 `media_scope` 基于结构化请求事实判断。模型看不到不满足当前媒体
+条件的 Tool，Validator 仍会在执行前重复检查，防止状态漂移或伪造调用。
+
+ToolSpec 转换成 OpenAI-compatible 或 MCP schema 时，应保留名称、简短描述、Pydantic
+`properties`、`required` 和可表达的约束。为减少 prompt 体积，可以在渲染时移除标题或截短描述，
+但不能改变规范 ToolSpec 或削弱执行期校验。
+
+系统不维护基于自然语言意图的 tool preselection、独立 toolset 或 Tool Search。工具规模由部署时
+安装的 Plugin、MCP allowlist 和入口显式限制控制。
+
+## 6. 校验与执行
+
+### 6.1 ActionValidator
+
+模型提出 tool call 后，`ActionValidator` 依次校验：
+
+1. Tool 已注册；
+2. 当前 task execution mode 和可信 durable binding 允许该调用；
+3. Tool 位于当前 `RunToolCatalog`；
+4. 当前媒体类型和作用域满足 ToolSpec；
+5. 模型没有提交未知字段、runtime-owned 字段或隐藏默认字段；
+6. runtime binding 后的完整输入通过 Pydantic schema；
+7. Tool 自有 `validate_call()` 领域规则通过。
+
+Validator 返回稳定 code、可解释 message、prompt-safe metadata 和仅供进程内复用的
+`validated_input`。校验拒绝不会进入 Executor。
+
+### 6.2 ToolExecutor
+
+`ToolExecutor` 是统一执行和生命周期提交边界，负责：
+
+- 检查协作式取消；
+- 绑定每次调用的身份、请求状态和显式可信 runtime 输入；
+- 创建 Tool call record，发布 `tool.started`；
+- 按 `category` 和执行策略处理有限自动重试；
+- 通过 Registry 调用 `tool.run()`；
+- 记录真实墙钟延迟、结果、恢复决策与 terminal event；
+- 把成功或失败提交回 `AgentState`。
+
+一次 Executor 自动重试保持相同 tool call 和输入；模型看到 observation 后修改参数再次调用属于新的
+assistant action。通用 Executor 不维护跨进程幂等 ledger；外部写入需要的幂等键由领域 adapter、
+协议或 durable task 提供。
+
+取消可能发生在执行前、重试等待期间或 Tool 返回之后。读操作成功后发现取消时不能继续发布为有效
+结果；非只读操作则必须保留已经发生的副作用事实，并以结构化取消状态结束，不能伪装为未执行。
+
+### 6.3 失败与编排
+
+普通 Tool 失败首先是结构化 `ToolResult` 和 observation，不自动等于整个 Agent run 失败。assistant
+loop 或上层 workflow 根据恢复策略决定修改输入、改用其他工具、追问、基于已有证据回答或终止。
+Gateway 不按 Tool name 或 Provider 错误码改写运行终态。
+
+`category=read` 才允许通用自动重试；其他 category 默认不自动重试。写入和危险操作在进入 catalog
+并通过 Validator 后由 Executor 直接执行，公共运行时不维护第二次用户确认状态。需要确认、授权或
+幂等的能力必须把这些要求放进入口授权、Tool schema、领域 adapter 或 durable protocol。
+
+## 7. 相邻系统边界
+
+- **Provider-native 能力**：发生在一次 `llm.chat` 内部的 Provider 生成能力不投影为本地 Tool，
+  不产生本地 ToolResult 或 Tool lifecycle；Provider 返回的自定义 function call 仍进入统一链路。
+- **Skill**：只描述如何组合已治理 Tool，不注册业务实现、不扩大 catalog，也不绕过校验和执行。
+  Skill 正文与 reference 的加载、上下文权威和渐进披露见
+  `docs/context_engineering_status.md`。
+- **Durable task**：只通过可信 task mode、ready step、binding 和幂等输入收窄或约束执行；
+  worker 调用仍走统一工具链。任务恢复、lease、notification 和 checkpoint 属于 durable/runtime
+  权威，不由通用 Executor 代管。
+- **Memory**：记忆读写遵循 `MemoryManager` 与 memory policy；默认长期记忆不是主模型可调用 Tool。
+- **Gateway、CLI、API、demo、eval**：都是入口或观察形态，不能直接调用 Tool 实现来复制 Agent
+  逻辑。
+- **内部 Tool**：后台 observer 或 worker 可以使用独立 Registry/catalog，但仍必须经过 Validator
+  和 Executor；内部身份不等于绕过治理。
+
+## 8. Provider 模式与安全
+
+Provider 运行只分 `mock` 和 `real`：
+
+- mock 模式强制主 LLM 与 Provider-backed Tool 使用 mock/local/offline 实现；
+- real 模式要求主 LLM 完整配置，只注册 readiness 完整的真实 Provider Tool；
+- 缺少真实配置时 fail closed，禁止静默回退到 mock；
+- 检测到 key 不会自动开启真实调用。
+
+Tool description、输入、结果、error、event 和 trace 都必须经过各自的内容与脱敏策略。原始 Provider
+payload、凭据、绝对路径和大块内联数据不能因 ToolResult 或调试开关越过安全边界。详细观测契约见
+`docs/observability-harness.md`。
+
+## 9. 代码导航
+
+- `tools/base.py`：`Tool`、`ToolBase`、`ToolContext` 和 Tool 自有校验错误；
 - `tools/models.py`：`ToolSpec`、`RunToolCatalog`、`ToolResult`、`ToolCallRecord`；
-- `tools/ids.py`：仅供既有跨层协议共享的稳定 Tool/capability 字符串；
-- `runtime/legacy_tool_mapping.py`：旧 planner/intent action 与 capability 兼容映射；
-- `tools/plugins/contracts.py`、`assembly.py`、`defaults.py`：Plugin 协议、原子装配和可信内置清单；
-- `tools/plugins/registry_factory.py`：默认 Plugin、MCP proxy 和 realtime observer 的 Registry
-  composition root；
-- `tools/plugins/builtin/<assembly_boundary>/`：按共享 Provider、配置、依赖和生命周期组织的内置 Plugin
-  及其 Tool、私有 adapter/backend 实现；
-- `tools/plugins/builtin/skill_loading/`：项目 Skill 主工作流和已注册 reference 的受治理只读加载；
-- `tools/base.py`：公共 Tool 协议；
-- `tools/registry.py`：工具注册、查找和 Pydantic schema 提取；
-- `context/tool_catalog.py`：结构化目录装配；
-- `context/tool_exposure.py`：media 等结构化暴露条件；
-- `tools/spec_adapters.py`：OpenAI/MCP schema 转换；
-- `runtime/action_validator.py`：run catalog、Pydantic、media、durable 校验；
-- `runtime/tool_executor.py`：身份绑定、调用和提交；
-- `tests/core/contract/test_tool_contract.py`：`TOOL-001` 工具治理稳定契约。
+- `tools/input_binding.py`：输入所有权声明、启动校验和 runtime binding；
+- `tools/registry.py`：注册、seal、查找和 ToolSpec 投影；
+- `tools/plugins/contracts.py`：Plugin descriptor、context、registration 与 assembly report；
+- `tools/plugins/assembly.py`：Plugin 发现、全量校验和原子装配；
+- `tools/plugins/defaults.py`：可信内置 Plugin 清单；
+- `tools/plugins/registry_factory.py`：默认、MCP 和内部 Registry composition root；
+- `tools/plugins/builtin/`：具体 Tool、Plugin 与私有 adapter/backend；
+- `context/tool_catalog.py`：结构化单轮 catalog 装配；
+- `context/tool_exposure.py`：媒体等结构化暴露条件；
+- `tools/spec_adapters.py`：Provider schema 转换；
+- `runtime/action_validator.py`：run catalog、输入、媒体与 durable 校验；
+- `runtime/tool_executor.py`：调用、重试、取消、状态提交和生命周期事件；
+- `tools/observation.py`：ToolResult 到模型观察的通用投影；
+- `tests/core/contract/test_tool_contract.py`：`TOOL-001` 核心治理契约。
 
-## 9. 不变量
+## 10. 不变量
 
-- 所有模型驱动的本地显式 function call 必须经过
-  `ActionValidator -> ToolExecutor -> ToolRegistry -> tool`；Qwen Provider-native 只读联网属于
-  `llm.chat` 内部生成能力，不伪造成本地 Tool lifecycle；
-- 暴露给模型的工具一定可进入执行链路，未暴露工具一定被 validator 拒绝；
-- Tool catalog 只基于 Registry、入口限制、media 和 durable 等结构化事实，不从自然语言推断；
-- Pydantic schema 是工具参数形状的权威；
-- 主模型工具调用链对同一输入只构造一次 Pydantic model；
-- Memory、MCP、durable task、Skill、CLI 和 Gateway 不绕过统一工具边界；
-- 默认测试与 eval 保持 mock/local/offline，真实 provider 必须显式启用。
-- 任何普通工具执行失败都先是 ToolResult/observation；只有编排恢复策略、取消或 Runtime 自身失败可以决定
-  Agent run 的 terminal status，Gateway 不按工具名或 Provider 错误码改写终态。
+- 所有模型驱动的本地显式 Tool call 必须经过
+  `ActionValidator -> ToolExecutor -> ToolRegistry -> tool`；
+- 暴露给模型的 Tool 一定可进入执行链路，未暴露 Tool 一定被 Validator 拒绝；
+- catalog 只读取结构化运行事实，不从自然语言推断用户意图；
+- Pydantic schema 是完整输入形状和校验的权威，ToolSpec 是其模型可见投影；
+- 模型不能提交或覆盖 runtime-owned 输入与隐藏默认输入；
+- Registry、catalog、Provider schema、Validator 和 Executor 都从 Tool/ToolSpec 派生当前契约；
+  兼容投影不能成为注册或暴露的事实源；
+- Plugin、MCP、Skill、durable task、Memory、Gateway 和内部 worker 不绕过统一工具边界；
+- 普通 Tool 失败先形成 ToolResult/observation，再由编排层决定 Agent run 的后续状态；
+- 默认测试与 eval 保持 mock/local/offline，真实 Provider 必须显式启用。

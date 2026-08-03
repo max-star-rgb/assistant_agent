@@ -237,10 +237,12 @@ def test_load_skill_returns_full_workflow_and_registered_references() -> None:
     assert result.data is not None
     assert result.model_observation is not None
     assert result.model_observation["skill_id"] == "travel-tool-orchestration"
-    assert result.model_observation["reference_ids"] == ["decision-guide"]
+    assert result.model_observation["reference_ids"] == [
+        "recovery-and-edge-cases"
+    ]
     assert "content" not in result.model_observation
-    assert result.data["content"].startswith("# 旅行工具编排")
-    assert "先确定用户真正需要的终态证据" in result.data["content"]
+    assert result.data["content"].startswith("# 旅行问题解决与工具编排")
+    assert "把请求拆成独立的证据目标" in result.data["content"]
     assert "## Decision Rules" in result.data["content"]
     assert "## Procedure" in result.data["content"]
     assert "## Pitfalls" in result.data["content"]
@@ -268,7 +270,7 @@ def test_load_skill_reference_returns_only_registered_reference_content() -> Non
         "load_skill_reference",
         {
             "skill_id": "travel-tool-orchestration",
-            "reference_id": "decision-guide",
+            "reference_id": "recovery-and-edge-cases",
         },
         registry=registry,
         state=state,
@@ -278,9 +280,12 @@ def test_load_skill_reference_returns_only_registered_reference_content() -> Non
     assert result.data is not None
     assert result.model_observation is not None
     assert result.model_observation["skill_id"] == "travel-tool-orchestration"
-    assert result.model_observation["reference_id"] == "decision-guide"
+    assert (
+        result.model_observation["reference_id"]
+        == "recovery-and-edge-cases"
+    )
     assert "content" not in result.model_observation
-    assert "旅行决策与恢复细节" in result.data["content"]
+    assert "旅行编排恢复与边界" in result.data["content"]
 
 
 def test_load_skill_reference_requires_successful_load_in_same_run() -> None:
@@ -288,7 +293,7 @@ def test_load_skill_reference_requires_successful_load_in_same_run() -> None:
         "load_skill_reference",
         {
             "skill_id": "travel-tool-orchestration",
-            "reference_id": "decision-guide",
+            "reference_id": "recovery-and-edge-cases",
         },
     )
 
@@ -360,7 +365,7 @@ def test_successful_load_skill_is_promoted_from_registered_source() -> None:
         for section in pack.context_sections
     )
     assert body.authority == "procedural_guidance"
-    assert body.content.startswith("# 旅行工具编排")
+    assert body.content.startswith("# 旅行问题解决与工具编排")
     assert "## Decision Rules" in body.content
     assert "## Procedure" in body.content
     assert "observation-injection-sentinel" not in body.content
@@ -410,7 +415,7 @@ def test_successful_reference_load_is_promoted_from_registered_source() -> None:
         "load_skill_reference",
         {
             "skill_id": "travel-tool-orchestration",
-            "reference_id": "decision-guide",
+            "reference_id": "recovery-and-edge-cases",
         },
         registry=registry,
         state=state,
@@ -427,7 +432,7 @@ def test_successful_reference_load_is_promoted_from_registered_source() -> None:
         if section.kind == "skill_reference"
     )
     assert reference.authority == "procedural_guidance"
-    assert "旅行决策与恢复细节" in reference.content
+    assert "旅行编排恢复与边界" in reference.content
     assert "reference-injection-sentinel" not in reference.content
     assert reference.content in _compile_system(pack)
 

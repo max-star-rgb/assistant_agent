@@ -32,7 +32,7 @@
 - `tests/test_phase3_skill_system_gate.py`: explicit skill activation tests.
 - `tests/test_native_tool_call_handoff.py`: provider sees all qualified tools and LLM may choose among them.
 - Other affected tests: update old semantic prompt-subset and field-name expectations.
-- `docs/tool-calling-architecture.md` and `docs/CONTEXT_ENGINEERING_STATUS.md`: authoritative behavior.
+- `docs/tool-calling-architecture.md` and `docs/context_engineering_status.md`: authoritative behavior.
 
 ---
 
@@ -442,7 +442,7 @@ Expected: all selected tests pass.
 
 **Files:**
 - Modify: `docs/tool-calling-architecture.md`
-- Modify: `docs/CONTEXT_ENGINEERING_STATUS.md`
+- Modify: `docs/context_engineering_status.md`
 - Keep: `docs/superpowers/specs/2026-07-13-tool-qualification-identity-recall-design.md`
 - Keep: `docs/superpowers/plans/2026-07-13-tool-qualification-identity-recall.md`
 

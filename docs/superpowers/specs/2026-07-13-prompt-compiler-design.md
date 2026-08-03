@@ -336,7 +336,7 @@ tests/test_prompt_compiler.py
 - 相关现有 targeted tests 通过；
 - `/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -m fast -q` 通过；
 - `git diff --check -- AGENTS.md docs src tests .codex/skills` 通过；
-- `docs/CONTEXT_ENGINEERING_STATUS.md` 更新为生产 native `ChatRequest` 已统一经 `PromptCompiler` 编译。
+- `docs/context_engineering_status.md` 更新为生产 native `ChatRequest` 已统一经 `PromptCompiler` 编译。
 
 ## 14. 预计修改范围
 
@@ -350,7 +350,7 @@ tests/test_prompt_compiler.py
 - `src/assistant_agent/agent/assistant_loop_nodes.py`
 - `src/assistant_agent/agent/runtime.py`
 - 与 native request characterization、system prompt policy、final-only handoff 相关的现有测试
-- `docs/CONTEXT_ENGINEERING_STATUS.md`
+- `docs/context_engineering_status.md`
 
 第一阶段不修改 `system_prompt_policy.py` 和 legacy renderer 的模型可见内容。若为了导入 compiler 需要调整 import，只允许无行为变化的机械调整。
 

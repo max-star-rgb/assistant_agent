@@ -344,7 +344,7 @@ Adjacent authorities remain authoritative for their domains:
 - `docs/gateway-architecture.md`: Gateway frames and lifecycle.
 - `docs/tool-calling-architecture.md`: tool validation/execution governance.
 - `docs/observability-harness.md`: trace events, persistence, and redaction.
-- `docs/CONTEXT_ENGINEERING_STATUS.md`: prompt/context assembly and budgets.
+- `docs/context_engineering_status.md`: prompt/context assembly and budgets.
 
 ## Update Rules
 

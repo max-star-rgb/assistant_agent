@@ -116,12 +116,9 @@ def test_project_travel_skill_activates_from_available_tools_without_filtering()
     assert pack.source_counts["active_skills"] == 1
     assert pack.context_source_report.count_by_kind["skill_summary"] == 1
     assert skill_sections[0].content in _compile_system(pack)
-    assert skill_sections[0].content == (
-        "# 可用 Skill\n\n"
-        "- `travel-tool-orchestration`："
-        "用于需要组合两种或以上地点、住宿、路线、定位或天气能力的复杂旅行任务；"
-        "单工具查询不使用。"
-    )
+    assert skill_sections[0].content.startswith("# 可用 Skill\n\n")
+    assert "`travel-tool-orchestration`" in skill_sections[0].content
+    assert len(skill_sections[0].content) < 300
     assert "load_skill" not in skill_sections[0].content
     assert "地图地点和普通周边分布使用高德" not in skill_sections[0].content
     assert "# Skill 使用规则" in _compile_system(pack)

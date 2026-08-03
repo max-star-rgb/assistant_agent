@@ -561,6 +561,6 @@ Expected implementation is small and conservative:
 - Add a structured skill exposure report to the existing context/capability schema.
 - Thread that report through context pack or context report without changing runtime ownership.
 - Add tests listed above.
-- Update `docs/CONTEXT_ENGINEERING_STATUS.md`, `docs/tool-calling-architecture.md` and `docs/roadmaps/personal-realtime-ai-assistant-roadmap.md` only where current behavior changes.
+- Update `docs/context_engineering_status.md`, `docs/tool-calling-architecture.md` and `docs/roadmaps/personal-realtime-ai-assistant-roadmap.md` only where current behavior changes.
 
 Do not modify Gateway, Realtime orchestration, MemoryManager, ToolExecutor behavior or provider adapters unless a contract test proves Phase 3 cannot be validated without a narrow change.

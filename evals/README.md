@@ -64,12 +64,18 @@ MULTIMODAL_AGENT_SHOPPING_PROVIDER=haodanku \
   --keyword 纸巾
 
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python \
-  scripts/run_system_calendar_write_eval.py \
+  scripts/run_system_calendar_create_eval.py \
   --dry-run
 
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python \
-  scripts/run_system_calendar_write_eval.py \
-  --allow-local-calendar-write
+  scripts/run_system_calendar_create_eval.py
+
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python \
+  scripts/run_system_calendar_search_eval.py \
+  --dry-run
+
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python \
+  scripts/run_system_calendar_search_eval.py
 ```
 
 通用 Tool eval 结果写入 `.data/evals/system/tools/<run>/`。其中购物直连命令不经过 LLM，
@@ -77,12 +83,19 @@ MULTIMODAL_AGENT_SHOPPING_PROVIDER=haodanku \
 它要求至少一个 `source=haodanku` 的真实候选、正价格和 HTTP(S) 购买链接，结果写入
 `.data/evals/system/shopping/<run>/`。
 
-本地日历写入命令同样不经过 LLM、`AgentGraphRuntime` 或 assistant loop，但保留
-`ActionValidator -> ToolExecutor -> ToolRegistry -> calendar_create` 治理链。它使用每次 run
-独立的真实 SQLite 数据库，不读取 `.env`、不访问网络，也不要求
-`MULTIMODAL_AGENT_PROVIDER_MODE=real`；真实写入必须由 operator 显式提供
-`--allow-local-calendar-write`。数据库、summary 和完整结构化结果保留在
-`.data/evals/system/tools/calendar/<run>/`，可通过删除整个 run 目录回收。
+两个本地日历命令都不经过 LLM、`AgentGraphRuntime` 或 assistant loop，分别保留
+`ActionValidator -> ToolExecutor -> ToolRegistry -> calendar_create|calendar_search` 治理链。
+它们使用 operation-scoped 真实 SQLite，不读取 `.env`、不访问网络，也不要求
+`MULTIMODAL_AGENT_PROVIDER_MODE=real`。`calendar_create` 验证首次提交、幂等回放和数据库终态；
+`calendar_search` 先通过 adapter 向隔离数据库预置一条合成事件，再只执行一次搜索 Tool，并验证
+搜索前后 snapshot 不变。预置动作不计作被测 Tool call。
+
+数据库、summary 和完整结构化结果分别保留在
+`.data/evals/system/tools/calendar/create/<run>/` 和
+`.data/evals/system/tools/calendar/search/<run>/`。IDE 可以直接运行
+`evals/system/tools/calendar_create.py` 或 `calendar_search.py`，不需要配置参数；无参数默认执行
+隔离的真实 SQLite eval，并先输出 `status=running`，结束时再输出完整检查结果。需要只查看输入和
+目标路径时显式使用 `--dry-run`。
 
 Context 捕获：
 
@@ -187,6 +200,14 @@ rubric、长依赖说明或其他 oracle，也不能把 Langfuse Dataset 当作�
 - `amap_weather_provider_failure_recovery`：高德天气固定返回 `provider_timeout` 后，诚实说明当前
   没有可核实预报，不编造天气，并给出重试、出发前复查和有限的保守建议。此时
   `tool_execution=true`、`tool_semantics=false` 是合法组合。
+
+当前旅行 Skill Task：
+
+- `travel_skill_proactive_loading`：面对一个只需住宿搜索即可完成的简单旅行请求，Agent 仍须成功
+  调用 `load_skill` 加载 `travel-tool-orchestration`，并调用 `lodging_search`。Environment 使用完整
+  受控工具目录和确定性住宿依赖；校准反例保留正确住宿回答但省略 Skill 加载，使
+  `tool_execution=false`，从而把内部工作流加载与回答质量分开判断。正式 Experiment 还应在 Trace
+  中确认 `load_skill` 发生在住宿业务工具之前。
 
 每个 Agent Task Environment 的默认完整目录由共享 `build_controlled_registry()` 装配，包含 Agent
 默认内置工具和与部署 allowlist 一致的 9 个高德 MCP namespaced 只读工具，不按 Task 选择子集。

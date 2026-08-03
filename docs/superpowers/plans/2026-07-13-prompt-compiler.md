@@ -350,7 +350,7 @@ Expected: all tests pass.
 ### Task 4: Document and verify the completed phase
 
 **Files:**
-- Modify: `docs/CONTEXT_ENGINEERING_STATUS.md:10-35,105-120,140-155`
+- Modify: `docs/context_engineering_status.md:10-35,105-120,140-155`
 - Modify: `docs/superpowers/specs/2026-07-13-prompt-compiler-design.md`
 - Modify: `docs/superpowers/plans/2026-07-13-prompt-compiler.md`
 
@@ -409,7 +409,7 @@ git add src/assistant_agent/services/context/prompt_compiler.py \
   tests/test_prompt_compiler.py \
   tests/test_native_runtime_system_prompt_policy.py \
   tests/test_native_tool_call_handoff.py \
-  docs/CONTEXT_ENGINEERING_STATUS.md \
+  docs/context_engineering_status.md \
   docs/superpowers/specs/2026-07-13-prompt-compiler-design.md \
   docs/superpowers/plans/2026-07-13-prompt-compiler.md
 git commit -m "Unify production prompt compilation"

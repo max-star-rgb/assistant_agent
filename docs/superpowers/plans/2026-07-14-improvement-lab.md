@@ -312,7 +312,7 @@ Run the Task 6 command. Expected: all tests pass.
 - Create: `tests/test_improvement_lab.py`
 - Create: `tests/test_improvement_cli.py`
 - Modify: `docs/observability-harness.md`
-- Modify: `docs/CONTEXT_ENGINEERING_STATUS.md`
+- Modify: `docs/context_engineering_status.md`
 - Modify: `docs/tool-calling-architecture.md`
 
 **Interfaces:**

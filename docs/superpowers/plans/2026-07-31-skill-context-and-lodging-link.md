@@ -132,7 +132,7 @@
 ### Task 4: 权威文档与完成审计
 
 **Files:**
-- Modify: `docs/CONTEXT_ENGINEERING_STATUS.md`
+- Modify: `docs/context_engineering_status.md`
 - Modify: `docs/tool-calling-architecture.md`
 
 **Interfaces:**

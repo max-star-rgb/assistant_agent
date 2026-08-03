@@ -1,0 +1,13 @@
+{
+  "id": "travel_skill_proactive_loading",
+  "description": "Agent 应在简单住宿请求中主动加载适用的旅行 Skill，并调用住宿工具完成查询。",
+  "capability": "proactive_travel_skill_loading",
+  "request": {
+    "user_id": "eval-travel-skill-user",
+    "session_id": "eval-travel-skill-session",
+    "text": "我计划2026年8月14日至16日去苏州，帮我查每晚600元以内的可订酒店，先给我一个合适候选。"
+  },
+  "environment": "evals.agent.tasks.travel_skill_proactive_loading.environment:TravelSkillProactiveLoadingEnvironment",
+  "grader": "evals.agent.tasks.travel_skill_proactive_loading.grader:grade",
+  "tags": ["readonly", "travel", "skill", "lodging"]
+}

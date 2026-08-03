@@ -176,7 +176,7 @@ Expected: FAIL，因为 presenter 和追加投影尚不存在。
 - Modify: `docs/runtime-event-stream-architecture.md`
 - Modify: `docs/gateway-architecture.md`
 - Modify: `docs/media-agent-service-websocket.md`
-- Modify: `docs/CONTEXT_ENGINEERING_STATUS.md`
+- Modify: `docs/context_engineering_status.md`
 
 **Interfaces:**
 - Consumes: `RealtimeAgentResult.response_text`
@@ -211,7 +211,7 @@ Expected: PASS，且无网络访问。
 - [ ] **Step 5: 静态检查**
 
 ```bash
-git diff --check -- src/assistant_agent/runtime/assistant_loop_nodes.py src/assistant_agent/tools/plugins/builtin/shopping/tool.py src/assistant_agent/gateway/shopping_detail.py src/assistant_agent/gateway/runtime_adapter.py tests/tdd/shopping-detail-runtime-projection docs/tool-calling-architecture.md docs/runtime-event-stream-architecture.md docs/gateway-architecture.md docs/media-agent-service-websocket.md docs/CONTEXT_ENGINEERING_STATUS.md
+git diff --check -- src/assistant_agent/runtime/assistant_loop_nodes.py src/assistant_agent/tools/plugins/builtin/shopping/tool.py src/assistant_agent/gateway/shopping_detail.py src/assistant_agent/gateway/runtime_adapter.py tests/tdd/shopping-detail-runtime-projection docs/tool-calling-architecture.md docs/runtime-event-stream-architecture.md docs/gateway-architecture.md docs/media-agent-service-websocket.md docs/context_engineering_status.md
 ```
 
 Expected: 无输出、退出码 0。

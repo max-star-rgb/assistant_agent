@@ -37,7 +37,7 @@ Do not reduce the interview to framework trivia. Questions should cover design, 
    - Do not inspect project source, tests, or implementation docs merely to choose the next question.
    - Do not reveal project-specific implementation details in the question.
 6. If feedback will reference project implementation details, read the relevant authority document first:
-   - Context engineering: `docs/CONTEXT_ENGINEERING_STATUS.md`.
+   - Context engineering: `docs/context_engineering_status.md`.
    - Tool calling: `docs/tool-calling-architecture.md`.
    - Memory service: `docs/memory-service-architecture.md`.
    - Agent communication: `docs/agent-communication-routing.md`.

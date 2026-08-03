@@ -577,7 +577,7 @@ Expected: 所有迁移文件可导入和收集；不运行真实 Provider。
   - `docs/runtime-event-stream-architecture.md`
   - `docs/tool-calling-architecture.md`
   - `docs/observability-harness.md`
-  - `docs/CONTEXT_ENGINEERING_STATUS.md`
+  - `docs/context_engineering_status.md`
   - `docs/agent-communication-routing.md`
 
 **Interfaces:**

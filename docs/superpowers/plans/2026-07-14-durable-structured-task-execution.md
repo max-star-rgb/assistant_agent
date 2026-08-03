@@ -59,7 +59,7 @@
 - `src/assistant_agent/services/assistant_run_service.py`: task service/runtime injection and trusted request preparation.
 - `src/assistant_agent/api/routes_agent.py`: reserved metadata stripping and effective mode propagation.
 - `src/assistant_agent/api/app.py`: route registration and worker lifespan.
-- `docs/tool-calling-architecture.md`, `docs/CONTEXT_ENGINEERING_STATUS.md`, `docs/gateway-architecture.md`: authority updates.
+- `docs/tool-calling-architecture.md`, `docs/context_engineering_status.md`, `docs/gateway-architecture.md`: authority updates.
 - `tests/evals/eval_cases.json`, `tests/test_eval_suite_layering.py`: offline durable-task eval coverage.
 
 ---
@@ -835,7 +835,7 @@ git commit -m "feat(tasks): run local durable task worker"
 - Modify: `tests/evals/eval_cases.json`
 - Modify: `tests/test_eval_suite_layering.py`
 - Modify: `docs/tool-calling-architecture.md`
-- Modify: `docs/CONTEXT_ENGINEERING_STATUS.md`
+- Modify: `docs/context_engineering_status.md`
 - Modify: `docs/gateway-architecture.md`
 - Modify: `README.md` only if its human navigation requires a durable-task API link.
 
@@ -882,7 +882,7 @@ Expected: no whitespace errors; status contains only intentional durable-task co
 - [ ] **Step 6: Commit the verified feature slice**
 
 ```bash
-git add docs/tool-calling-architecture.md docs/CONTEXT_ENGINEERING_STATUS.md docs/gateway-architecture.md tests/evals/eval_cases.json tests/test_eval_suite_layering.py
+git add docs/tool-calling-architecture.md docs/context_engineering_status.md docs/gateway-architecture.md tests/evals/eval_cases.json tests/test_eval_suite_layering.py
 git commit -m "docs(tasks): document durable structured execution"
 ```
 

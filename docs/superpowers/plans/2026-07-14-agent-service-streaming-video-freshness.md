@@ -366,7 +366,7 @@ Expected: all selected tests PASS and existing one-in-flight/latest-wins asserti
 - Modify: `tests/test_assistant_context_renderer.py`
 - Modify: `docs/media-agent-service-websocket.md`
 - Modify: `docs/gateway-architecture.md`
-- Modify: `docs/CONTEXT_ENGINEERING_STATUS.md`
+- Modify: `docs/context_engineering_status.md`
 - Modify: `docs/observability-harness.md`
 
 **Interfaces:**
@@ -444,7 +444,7 @@ Review only task files, exclude `tests/test_phase0_service_boundary_contracts.py
 git status --short
 git diff --stat
 git diff --check
-git add docs/superpowers/specs/2026-07-14-agent-service-streaming-video-freshness-design.md docs/superpowers/plans/2026-07-14-agent-service-streaming-video-freshness.md src/assistant_agent/services/gateway_turn_facade.py src/assistant_agent/api/agent_service_websocket.py src/assistant_agent/agent/system_prompt_policy.py src/assistant_agent/services/context/renderer.py src/assistant_agent/schemas/context.py src/assistant_agent/services/realtime_video_memory.py src/assistant_agent/services/realtime_video_observer.py src/assistant_agent/services/agent_service_latency.py src/assistant_agent/services/context/observability.py tests/test_gateway_turn_facade.py tests/test_agent_service_websocket.py tests/test_system_prompt_policy.py tests/test_assistant_context_renderer.py tests/test_native_tool_call_handoff.py tests/test_realtime_video_memory.py tests/test_realtime_video_observer.py tests/test_agent_service_latency.py docs/media-agent-service-websocket.md docs/gateway-architecture.md docs/CONTEXT_ENGINEERING_STATUS.md docs/observability-harness.md
+git add docs/superpowers/specs/2026-07-14-agent-service-streaming-video-freshness-design.md docs/superpowers/plans/2026-07-14-agent-service-streaming-video-freshness.md src/assistant_agent/services/gateway_turn_facade.py src/assistant_agent/api/agent_service_websocket.py src/assistant_agent/agent/system_prompt_policy.py src/assistant_agent/services/context/renderer.py src/assistant_agent/schemas/context.py src/assistant_agent/services/realtime_video_memory.py src/assistant_agent/services/realtime_video_observer.py src/assistant_agent/services/agent_service_latency.py src/assistant_agent/services/context/observability.py tests/test_gateway_turn_facade.py tests/test_agent_service_websocket.py tests/test_system_prompt_policy.py tests/test_assistant_context_renderer.py tests/test_native_tool_call_handoff.py tests/test_realtime_video_memory.py tests/test_realtime_video_observer.py tests/test_agent_service_latency.py docs/media-agent-service-websocket.md docs/gateway-architecture.md docs/context_engineering_status.md docs/observability-harness.md
 git commit -m "fix: stream realtime replies with fresh video context"
 ```
 

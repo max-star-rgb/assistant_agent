@@ -108,7 +108,7 @@ Expected: 全部 PASS。
 
 **Files:**
 - Modify: `docs/memory-service-architecture.md`
-- Modify: `docs/CONTEXT_ENGINEERING_STATUS.md`
+- Modify: `docs/context_engineering_status.md`
 - Modify: `scripts/README.md`
 
 **Interfaces:**

@@ -16,17 +16,17 @@ The change will:
 - keep a shared routing entry for prompt and context work;
 - add explicit conditional routing so prompt work reads the prompt authority and context work reads the context authority;
 - split the prompt-engineering scope from the context-engineering scope in `AGENTS.md`;
-- reduce `docs/CONTEXT_ENGINEERING_STATUS.md` to a concise cross-boundary pointer for prompt compilation instead of duplicating prompt architecture.
+- reduce `docs/context_engineering_status.md` to a concise cross-boundary pointer for prompt compilation instead of duplicating prompt architecture.
 
 This is an information-architecture and agent-routing change. It does not change runtime prompt text, Provider requests, tool permissions, memory policy, context budgets, or user-visible behavior.
 
 ## 2. Current Problem
 
-The repository previously routed `prompt/context rendering` work through a context-engineering workflow skill, and `docs/CONTEXT_ENGINEERING_STATUS.md` contains a short Prompt Rendering section. The production request path now also has a concrete `PromptCompiler` boundary.
+The repository previously routed `prompt/context rendering` work through a context-engineering workflow skill, and `docs/context_engineering_status.md` contains a short Prompt Rendering section. The production request path now also has a concrete `PromptCompiler` boundary.
 
 However, the current arrangement has three weaknesses:
 
-1. `docs/CONTEXT_ENGINEERING_STATUS.md` owns conversation history, memory injection, compaction, context budgets, observability, and prompt rendering. Prompt engineering is becoming a distinct concern inside an already broad authority document.
+1. `docs/context_engineering_status.md` owns conversation history, memory injection, compaction, context budgets, observability, and prompt rendering. Prompt engineering is becoming a distinct concern inside an already broad authority document.
 2. `docs/superpowers/specs/2026-07-13-prompt-compiler-design.md` records the implementation-stage design, but a dated design spec is not the long-lived repository authority for future prompt changes.
 3. `AGENTS.md` and the old context-engineering workflow could trigger the correct broad workflow, but they did not tell Codex when it must read a prompt-specific authority covering profiles, compilation modes, message layout, final-only behavior, and future prompt modules.
 
@@ -68,7 +68,7 @@ This remains a future option if prompt work gains its own sustained experiment, 
 
 ### 3.3 Expand Context Engineering Status Only
 
-Keep all prompt architecture in `docs/CONTEXT_ENGINEERING_STATUS.md`.
+Keep all prompt architecture in `docs/context_engineering_status.md`.
 
 Benefit:
 
@@ -89,7 +89,7 @@ The repository will use the following ownership model:
 | Concern | Long-lived authority |
 | --- | --- |
 | System prompt profiles, prompt options, PromptCompiler, compilation modes, renderers, provider message layout, final-only behavior, prompt modules, prompt tests and eval gates | `docs/prompt-engineering-architecture.md` |
-| Conversation history, session summary, memory context injection, realtime task state as context data, compaction, context budgets and context reports | `docs/CONTEXT_ENGINEERING_STATUS.md` |
+| Conversation history, session summary, memory context injection, realtime task state as context data, compaction, context budgets and context reports | `docs/context_engineering_status.md` |
 | Tool visibility, ToolSpec, ActionValidator, ToolExecutor, registry, execution allowlists, side-effect policy and tool retry/budget | `docs/tool-calling-architecture.md` |
 | Long-term memory retrieval, ranking, read/write policy, retention and audit | `docs/memory-service-architecture.md` |
 | Gateway protocol frames, run/session lifecycle, cancel/interrupt and transport behavior | `docs/gateway-architecture.md` |
@@ -260,7 +260,7 @@ The routing layer must read `docs/prompt-engineering-architecture.md` for tasks 
 
 ### 6.2 Context Route
 
-The routing layer must read `docs/CONTEXT_ENGINEERING_STATUS.md` for tasks involving:
+The routing layer must read `docs/context_engineering_status.md` for tasks involving:
 
 - conversation history or session summaries;
 - memory context injection as prompt data;
@@ -295,7 +295,7 @@ Split the current combined context/prompt row into direct authority rows:
 | scope | entry |
 | --- | --- |
 | prompt engineering, `PromptCompiler`, system prompt profiles/options, prompt renderers, persona/spoken style, final-only behavior, Provider `ChatRequest` message/tool assembly | `docs/prompt-engineering-architecture.md` |
-| context engineering, conversation history, memory context injection, realtime task-state context, compaction, context budget and report | `docs/CONTEXT_ENGINEERING_STATUS.md` |
+| context engineering, conversation history, memory context injection, realtime task-state context, compaction, context budget and report | `docs/context_engineering_status.md` |
 
 Also add `docs/prompt-engineering-architecture.md` to the repository's authority-document list in the documentation section.
 
@@ -303,7 +303,7 @@ Also add `docs/prompt-engineering-architecture.md` to the repository's authority
 
 ## 8. Context Authority Migration
 
-Update `docs/CONTEXT_ENGINEERING_STATUS.md` only enough to establish the new ownership boundary:
+Update `docs/context_engineering_status.md` only enough to establish the new ownership boundary:
 
 - keep the statement that `AssistantContextPack` supplies production prompt inputs;
 - keep context trust labeling, compaction, budget, and context-report behavior;
@@ -330,11 +330,11 @@ Implementation validation will include:
 ```bash
 rg -n "prompt-engineering-architecture|PromptCompiler|prompt engineering" \
   AGENTS.md \
-  docs/CONTEXT_ENGINEERING_STATUS.md docs/prompt-engineering-architecture.md
+  docs/context_engineering_status.md docs/prompt-engineering-architecture.md
 
 git diff --check -- \
   AGENTS.md \
-  docs/CONTEXT_ENGINEERING_STATUS.md \
+  docs/context_engineering_status.md \
   docs/prompt-engineering-architecture.md \
   docs/superpowers/specs/2026-07-13-prompt-engineering-authority-routing-design.md
 ```
@@ -363,7 +363,7 @@ Create:
 Modify:
 
 - `AGENTS.md`
-- `docs/CONTEXT_ENGINEERING_STATUS.md`
+- `docs/context_engineering_status.md`
 
 Retain as design evidence:
 

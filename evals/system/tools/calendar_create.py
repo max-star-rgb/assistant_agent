@@ -1,12 +1,22 @@
-"""Governed system eval for a real, isolated local calendar write."""
+"""Governed system eval for the real, isolated local calendar_create Tool."""
+
+# ruff: noqa: E402
 
 from __future__ import annotations
 
 from pathlib import Path
+import sys
 from typing import Any, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
+
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+SRC = PROJECT_ROOT / "src"
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
 
 from assistant_agent.runtime.action_validator import ActionValidator
 from assistant_agent.runtime.output_models import AssistantToolCall
@@ -24,23 +34,24 @@ from assistant_agent.tools.registry import ToolRegistry
 from evals.system.common.artifacts import create_run_dir, write_json
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_OUTPUT_ROOT = (
-    PROJECT_ROOT / ".data" / "evals" / "system" / "tools" / "calendar"
+    PROJECT_ROOT
+    / ".data"
+    / "evals"
+    / "system"
+    / "tools"
+    / "calendar"
+    / "create"
 )
 _CALENDAR_TOOL_NAME = "calendar_create"
-_EVAL_USER_ID = "system-calendar-write-eval"
+_EVAL_USER_ID = "system-calendar-create-eval"
 
 
-class CalendarWriteEvalAuthorizationError(ValueError):
-    """The operator did not explicitly authorize the local write."""
-
-
-class CalendarWriteEvalInput(BaseModel):
+class CalendarCreateEvalInput(BaseModel):
     """Synthetic calendar event fields controlled by the eval operator."""
 
     title: str = Field(
-        default="assistant_agent 本地日历写入评测",
+        default="assistant_agent 本地日历创建评测",
         min_length=1,
     )
     start_time: str = Field(
@@ -54,8 +65,8 @@ class CalendarWriteEvalInput(BaseModel):
     notes: str | None = "synthetic system eval event"
 
 
-class CalendarWriteEvalArtifact(BaseModel):
-    """Paths retained as evidence for one local calendar write run."""
+class CalendarCreateEvalArtifact(BaseModel):
+    """Paths retained as evidence for one local calendar_create run."""
 
     run_dir: Path
     database_path: Path
@@ -63,11 +74,11 @@ class CalendarWriteEvalArtifact(BaseModel):
     result_path: Path
 
 
-class CalendarWriteEvalResult(BaseModel):
-    """Machine-readable result of the governed local calendar write."""
+class CalendarCreateEvalResult(BaseModel):
+    """Machine-readable result of the governed calendar_create execution."""
 
-    schema_version: Literal["local_calendar_write_system_eval_v1"] = (
-        "local_calendar_write_system_eval_v1"
+    schema_version: Literal["local_calendar_create_system_eval_v1"] = (
+        "local_calendar_create_system_eval_v1"
     )
     passed: bool
     checks: dict[str, bool]
@@ -76,31 +87,26 @@ class CalendarWriteEvalResult(BaseModel):
     event_id: str | None = None
     validation_codes: list[str] = Field(default_factory=list)
     tool_call_statuses: list[str] = Field(default_factory=list)
-    artifact: CalendarWriteEvalArtifact
+    artifact: CalendarCreateEvalArtifact
 
 
-def run_local_calendar_write_eval(
+def run_local_calendar_create_eval(
     *,
-    allow_local_calendar_write: bool,
-    eval_input: CalendarWriteEvalInput | None = None,
+    eval_input: CalendarCreateEvalInput | None = None,
     output_root: Path | str = DEFAULT_OUTPUT_ROOT,
-) -> CalendarWriteEvalResult:
+) -> CalendarCreateEvalResult:
     """Create and replay one event through the governed Tool execution chain."""
 
-    if not allow_local_calendar_write:
-        raise CalendarWriteEvalAuthorizationError(
-            "Local calendar write eval requires --allow-local-calendar-write."
-        )
-    resolved_output_root = validate_calendar_write_output_root(
+    resolved_output_root = validate_calendar_create_output_root(
         Path(output_root)
     )
-    supplied_input = eval_input or CalendarWriteEvalInput()
+    supplied_input = eval_input or CalendarCreateEvalInput()
 
-    run_id = f"calendar-eval-{uuid4().hex}"
+    run_id = f"calendar-create-eval-{uuid4().hex}"
     request = UserRequest(
         user_id=_EVAL_USER_ID,
         session_id=run_id,
-        text="执行隔离的本地日历写入 system eval。",
+        text="执行隔离的本地 calendar_create system eval。",
         task_execution_mode="foreground",
     )
     state = AgentState.from_request(request, run_id=run_id)
@@ -114,7 +120,7 @@ def run_local_calendar_write_eval(
         domain="calendar",
         case_id=run_id,
     )
-    artifact = CalendarWriteEvalArtifact(
+    artifact = CalendarCreateEvalArtifact(
         run_dir=run_dir,
         database_path=run_dir / "calendar.sqlite3",
         summary_path=run_dir / "summary.json",
@@ -138,8 +144,8 @@ def run_local_calendar_write_eval(
         decision = AssistantToolCall(
             tool_name=_CALENDAR_TOOL_NAME,
             tool_input=resolved_input.model_dump(mode="python"),
-            step_id=f"calendar-write-{attempt}",
-            reason="operator-authorized isolated local calendar system eval",
+            step_id=f"calendar-create-{attempt}",
+            reason="isolated local calendar system eval",
         )
         validation = validator.validate(
             decision=decision,
@@ -153,7 +159,7 @@ def run_local_calendar_write_eval(
         tool_results.append(
             executor.run_tool(
                 state,
-                decision.step_id or f"calendar-write-{attempt}",
+                decision.step_id or f"calendar-create-{attempt}",
                 decision.tool_name,
                 decision.tool_input,
                 validated_input=validation.validated_input,
@@ -207,6 +213,11 @@ def run_local_calendar_write_eval(
             event_id is not None and event_id == second_data.get("event_id")
         ),
         "single_persisted_event": persisted_event is not None,
+        "persisted_event_id_matches_result": (
+            isinstance(persisted_event, dict)
+            and event_id is not None
+            and persisted_event.get("event_id") == event_id
+        ),
         "persisted_event_matches_input": _persisted_event_matches(
             persisted_event,
             resolved_input,
@@ -223,7 +234,7 @@ def run_local_calendar_write_eval(
         "no_duplicate_groups": state_diff.get("duplicate_groups") == [],
     }
     failures = [name for name, passed in checks.items() if not passed]
-    result = CalendarWriteEvalResult(
+    result = CalendarCreateEvalResult(
         passed=not failures,
         checks=checks,
         failures=failures,
@@ -261,19 +272,35 @@ def run_local_calendar_write_eval(
     return result
 
 
-def validate_calendar_write_output_root(output_root: Path) -> Path:
+def validate_calendar_create_output_root(output_root: Path) -> Path:
     """Resolve an output root confined to the calendar system-eval tree."""
 
+    _reject_symlinked_default_output_root()
     resolved = output_root.expanduser().resolve()
     allowed_root = DEFAULT_OUTPUT_ROOT.resolve()
     if resolved != allowed_root and not resolved.is_relative_to(allowed_root):
         raise ValueError(
-            "Calendar write eval output root must stay within "
+            "calendar_create eval output root must stay within "
             f"{allowed_root}."
         )
     if resolved.exists() and not resolved.is_dir():
-        raise ValueError("Calendar write eval output root must be a directory.")
+        raise ValueError("calendar_create eval output root must be a directory.")
     return resolved
+
+
+def _reject_symlinked_default_output_root() -> None:
+    current = DEFAULT_OUTPUT_ROOT.expanduser().absolute()
+    while current != PROJECT_ROOT:
+        if current.is_symlink():
+            raise ValueError(
+                "calendar_create eval default output root must not contain symlinks."
+            )
+        parent = current.parent
+        if parent == current:
+            raise ValueError(
+                "calendar_create eval default output root must stay inside the project."
+            )
+        current = parent
 
 
 def _result_data(result: ToolResult | None) -> dict[str, Any]:
@@ -288,7 +315,7 @@ def _non_empty_string(value: Any) -> str | None:
 
 def _persisted_event_matches(
     persisted_event: Any,
-    expected: CalendarWriteEvalInput,
+    expected: CalendarCreateEvalInput,
 ) -> bool:
     if not isinstance(persisted_event, dict):
         return False
@@ -297,3 +324,9 @@ def _persisted_event_matches(
         persisted_event.get(field_name) == field_value
         for field_name, field_value in expected_fields.items()
     )
+
+
+if __name__ == "__main__":
+    from scripts.run_system_calendar_create_eval import main
+
+    raise SystemExit(main())

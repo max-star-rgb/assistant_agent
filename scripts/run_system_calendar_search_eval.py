@@ -1,4 +1,4 @@
-"""Run one operator-authorized local SQLite calendar write system eval."""
+"""Run one isolated local SQLite calendar_search system eval."""
 
 # ruff: noqa: E402
 
@@ -17,66 +17,63 @@ if str(ROOT) not in sys.path:
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from evals.system.tools.calendar_write import (
+from evals.system.tools.calendar_search import (
     DEFAULT_OUTPUT_ROOT,
-    CalendarWriteEvalAuthorizationError,
-    CalendarWriteEvalInput,
-    run_local_calendar_write_eval,
-    validate_calendar_write_output_root,
+    CalendarSearchEvalInput,
+    run_local_calendar_search_eval,
+    validate_calendar_search_output_root,
 )
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = ArgumentParser(
         description=(
-            "Write one synthetic event to an isolated real SQLite calendar "
-            "through ActionValidator and ToolExecutor, then verify idempotency."
+            "Execute calendar_search against an isolated seeded real SQLite "
+            "calendar through ActionValidator and ToolExecutor."
         )
     )
     parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
     parser.add_argument(
-        "--title",
-        default="assistant_agent 本地日历写入评测",
+        "--query",
+        default="assistant_agent 本地日历搜索评测",
+    )
+    parser.add_argument(
+        "--seed-title",
+        default="assistant_agent 本地日历搜索评测",
     )
     parser.add_argument(
         "--start-time",
-        default="2030-01-15T09:00:00+08:00",
+        default="2030-01-16T10:00:00+08:00",
     )
     parser.add_argument(
         "--end-time",
-        default="2030-01-15T09:30:00+08:00",
+        default="2030-01-16T10:30:00+08:00",
     )
     parser.add_argument("--timezone", default="Asia/Shanghai")
     parser.add_argument("--location", default="system-eval")
-    parser.add_argument("--notes", default="synthetic system eval event")
-    parser.add_argument(
-        "--allow-local-calendar-write",
-        action="store_true",
-        help="Required operator confirmation before creating the isolated SQLite database.",
-    )
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Show the synthetic event and output root without creating files.",
+        help="Show the search and seed event without creating files.",
     )
     args = parser.parse_args(argv)
 
-    eval_input = CalendarWriteEvalInput(
-        title=args.title,
+    eval_input = CalendarSearchEvalInput(
+        query=args.query,
+        seed_title=args.seed_title,
         start_time=args.start_time,
         end_time=args.end_time,
         timezone=args.timezone,
         location=args.location,
-        notes=args.notes,
     )
     if args.dry_run:
         try:
-            output_root = validate_calendar_write_output_root(args.output_root)
+            output_root = validate_calendar_search_output_root(args.output_root)
         except ValueError as exc:
             print(
                 json.dumps(
                     {
-                        "error": "local_calendar_write_eval_invalid_configuration",
+                        "error": "local_calendar_search_eval_invalid_configuration",
                         "message": str(exc),
                     },
                     ensure_ascii=False,
@@ -90,13 +87,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "output_root": str(output_root),
                     "input": {
                         **eval_input.model_dump(mode="json"),
-                        "title": f"{eval_input.title} <run_id>",
+                        "seed_title": f"{eval_input.seed_title} <run_id>",
                     },
+                    "setup": "seed one synthetic event through the local SQLite adapter",
                     "governance_chain": [
                         "ActionValidator",
                         "ToolExecutor",
                         "ToolRegistry",
-                        "CalendarCreateTool",
+                        "CalendarSearchTool",
                     ],
                 },
                 ensure_ascii=False,
@@ -105,28 +103,32 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return 0
 
+    print(
+        json.dumps(
+            {
+                "status": "running",
+                "phase": "calendar_search",
+                "message": (
+                    "正在预置隔离事件并执行真实 SQLite 日历搜索检查。"
+                ),
+                "output_root": str(args.output_root),
+            },
+            ensure_ascii=False,
+        ),
+        file=sys.stderr,
+        flush=True,
+    )
+
     try:
-        result = run_local_calendar_write_eval(
-            allow_local_calendar_write=args.allow_local_calendar_write,
+        result = run_local_calendar_search_eval(
             eval_input=eval_input,
             output_root=args.output_root,
         )
-    except CalendarWriteEvalAuthorizationError as exc:
-        print(
-            json.dumps(
-                {
-                    "error": "local_calendar_write_eval_not_authorized",
-                    "message": str(exc),
-                },
-                ensure_ascii=False,
-            )
-        )
-        return 2
     except ValueError as exc:
         print(
             json.dumps(
                 {
-                    "error": "local_calendar_write_eval_invalid_configuration",
+                    "error": "local_calendar_search_eval_invalid_configuration",
                     "message": str(exc),
                 },
                 ensure_ascii=False,

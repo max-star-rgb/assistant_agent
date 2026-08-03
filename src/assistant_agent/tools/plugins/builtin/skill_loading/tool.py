@@ -31,8 +31,8 @@ MAX_SKILL_REFERENCE_CHARS = 20_000
 class LoadSkillTool(ToolBase):
     name = LOAD_SKILL_TOOL_NAME
     description = (
-        "读取“可用 Skill”索引对应的完整项目工作流；仅在适用条件与当前任务相符且"
-        "任务需要组合多种能力时调用，结果会列出可按需读取的 reference_ids。"
+        "读取“可用 Skill”索引对应的完整项目工作流；适用条件与当前任务相符时调用，"
+        "即使任务简单或预计只需一个业务工具也不跳过。结果会列出可按需读取的 reference_ids。"
     )
     input_schema = LoadSkillRequest
     output_schema = LoadSkillResult

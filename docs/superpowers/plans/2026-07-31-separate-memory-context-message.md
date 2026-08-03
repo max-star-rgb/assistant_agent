@@ -166,7 +166,7 @@ Expected: 2 passed。
 
 **Files:**
 - Modify: `docs/memory-service-architecture.md`
-- Modify: `docs/CONTEXT_ENGINEERING_STATUS.md`
+- Modify: `docs/context_engineering_status.md`
 
 **Interfaces:**
 - Consumes: Task 1 的 Provider 消息顺序

@@ -53,7 +53,7 @@ git diff --check -- src/assistant_agent/services/context/skill_loader.py src/ass
 
 **Files:**
 - Create: `tests/test_phase3_skill_system_gate.py`
-- Modify: `docs/CONTEXT_ENGINEERING_STATUS.md`
+- Modify: `docs/context_engineering_status.md`
 - Modify: `docs/tool-calling-architecture.md`
 - Modify: `docs/roadmaps/personal-realtime-ai-assistant-roadmap.md`
 
