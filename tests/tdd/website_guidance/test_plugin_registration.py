@@ -12,6 +12,7 @@ from assistant_agent.tools.plugins.builtin.website_guidance.plugin import (
 from assistant_agent.tools.plugins.builtin.website_guidance import plugin as website_guidance_plugin
 from assistant_agent.tools.plugins.contracts import ToolPluginContext
 from assistant_agent.tools.plugins.defaults import default_tool_plugins
+from assistant_agent.tools.plugins.registry_factory import create_default_registry
 
 
 def _config(*, provider_mode: str, enabled: bool = True, timeout: float = 2.5) -> ProviderConfig:
@@ -173,6 +174,63 @@ def test_invalid_direct_timeout_is_fail_closed_even_when_enabled() -> None:
     )
 
     assert plugin.build_tools(_context(_config(provider_mode="mock", timeout=0.0))) == []
+
+
+def test_direct_non_boolean_enablement_is_fail_closed() -> None:
+    plugin = WebsiteGuidancePlugin(
+        mock_backend_factory=lambda: (_ for _ in ()).throw(
+            AssertionError("string enablement must not construct backend")
+        )
+    )
+    config = ProviderConfig(website_guidance_enabled="false")  # type: ignore[arg-type]
+
+    assert plugin.build_tools(_context(config)) == []
+
+
+@pytest.mark.parametrize(
+    ("provider_mode", "extra_env"),
+    [
+        ("mock", {}),
+        (
+            "real",
+            {
+                "MULTIMODAL_AGENT_CHAT_PROVIDER": "qwen",
+                "QWEN_API_KEY": "test-key",
+                "QWEN_CHAT_MODEL": "test-model",
+            },
+        ),
+    ],
+)
+def test_valid_from_env_enablement_is_retained_for_mock_and_real(
+    provider_mode: str,
+    extra_env: dict[str, str],
+) -> None:
+    config = ProviderConfig.from_env(
+        {
+            "MULTIMODAL_AGENT_PROVIDER_MODE": provider_mode,
+            "MULTIMODAL_AGENT_WEBSITE_GUIDANCE_ENABLED": "true",
+            "WEBSITE_GUIDANCE_NAVIGATION_TIMEOUT_SECONDS": "2.5",
+            **extra_env,
+        }
+    )
+
+    assert config.website_guidance_enabled is True
+    assert config.website_guidance_navigation_timeout_seconds == 2.5
+
+
+def test_enabled_mock_default_registry_registers_governed_website_tools() -> None:
+    config = ProviderConfig.from_env(
+        {
+            "MULTIMODAL_AGENT_PROVIDER_MODE": "mock",
+            "MULTIMODAL_AGENT_WEBSITE_GUIDANCE_ENABLED": "true",
+        }
+    )
+
+    registry = create_default_registry(config)
+
+    assert registry.sealed is True
+    assert registry.get_spec("web_page_inspect").category == "read"
+    assert registry.get_spec("web_page_explore").category == "dangerous"
 
 
 def test_default_plugin_list_declares_website_guidance_plugin() -> None:

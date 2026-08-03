@@ -23,6 +23,16 @@ from tests.core.support import (
 )
 
 
+class _RunLifecycleProbeTool(ProbeTool):
+    name = "run_lifecycle_probe_tool"
+
+    def __init__(self) -> None:
+        self.terminals: list[tuple[str, str]] = []
+
+    def on_run_terminal(self, run_id: str, status: str) -> None:
+        self.terminals.append((run_id, status))
+
+
 @pytest.fixture(autouse=True)
 def default_registry_assembly_is_forbidden(
     monkeypatch: pytest.MonkeyPatch,
@@ -269,6 +279,61 @@ def test_cancelled_run_emits_no_final_response() -> None:
         assert "final_response" not in [event.type for event in sink.events]
     finally:
         runtime.close()
+
+
+@pytest.mark.core_invariant("RUN-001")
+@pytest.mark.parametrize("expected_status", ["completed", "failed", "cancelled"])
+def test_runtime_notifies_optional_tool_lifecycle_at_every_run_terminal(
+    expected_status: str,
+) -> None:
+    tool = _RunLifecycleProbeTool()
+    registry = sealed_registry(tool)
+    runtime = AgentGraphRuntime(
+        registry=registry,
+        config=offline_config(),
+        chat_adapter=ScriptedChatAdapter(
+            [
+                ChatResult(
+                    provider="scripted",
+                    model="scripted-model",
+                    finish_reason="stop",
+                    response_text="final-sentinel",
+                )
+            ]
+        ),
+        session_store=InMemorySessionStore(),
+    )
+    try:
+        state = runtime.run_state(
+            UserRequest(
+                user_id="user-sentinel",
+                session_id="session-sentinel",
+                text="input-sentinel",
+                task_execution_mode=(
+                    "durable" if expected_status == "failed" else "auto"
+                ),
+            ),
+            run_id="run-terminal-sentinel",
+            cancel_token=(
+                CancelledToken() if expected_status == "cancelled" else None
+            ),
+        )
+
+        assert state.status == expected_status
+        assert tool.terminals == [("run-terminal-sentinel", expected_status)]
+    finally:
+        runtime.close()
+
+
+@pytest.mark.core_invariant("RUN-001")
+def test_registry_terminal_lifecycle_accepts_failed_terminal_status() -> None:
+    tool = _RunLifecycleProbeTool()
+    registry = sealed_registry(tool)
+
+    issues = registry.notify_run_terminal("run-failed-sentinel", "failed")
+
+    assert issues == []
+    assert tool.terminals == [("run-failed-sentinel", "failed")]
 
 
 @pytest.mark.core_invariant("OBS-001")

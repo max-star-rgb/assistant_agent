@@ -80,9 +80,9 @@ def _tools_for(backend: WebsiteGuidanceBackend) -> list[Tool]:
     return [WebPageInspectTool(backend=backend), WebPageExploreTool(backend=backend)]
 
 
-def _website_guidance_enabled(enabled: bool, navigation_timeout_seconds: object) -> bool:
+def _website_guidance_enabled(enabled: object, navigation_timeout_seconds: object) -> bool:
     return (
-        enabled
+        enabled is True
         and isinstance(navigation_timeout_seconds, (int, float))
         and not isinstance(navigation_timeout_seconds, bool)
         and math.isfinite(navigation_timeout_seconds)

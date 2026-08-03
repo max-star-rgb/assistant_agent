@@ -99,7 +99,8 @@ For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
 ```
 
 普通临时 TDD（不启动 Chromium）和受控本地 Chromium smoke 分开运行；两者都使用 mock Provider mode，
-且 `tests/tdd/website_guidance/` 可由用户手动整目录删除，不属于默认 pytest：
+且 `tests/tdd/website_guidance/` 可由用户手动整目录删除，不属于默认 pytest。Chromium smoke 只连接测试
+进程临时启动的 `127.0.0.1` HTTP server，不调用真实 Provider 或公网网站：
 
 ```bash
 MULTIMODAL_AGENT_PROVIDER_MODE=mock /home/lenovo1/miniconda3/envs/hello_agent/bin/python \

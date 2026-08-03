@@ -224,23 +224,37 @@ function call 仍是本地显式工具调用，必须进入 `ActionValidator -> 
 
 `website_guidance` 是默认关闭的内置 Plugin；显式启用
 `MULTIMODAL_AGENT_WEBSITE_GUIDANCE_ENABLED=true` 后，才尝试注册只读
-`web_page_inspect` 和 `web_page_explore`。二者都是本地显式 Tool，必须经过
+`web_page_inspect` 与受限探索 `web_page_explore`。前者归类为 `read`，后者由于会触发页面事件归类为
+`dangerous`，不会进入只读自动重试；二者都是本地显式 Tool，必须经过
 `ActionValidator -> ToolExecutor -> ToolRegistry -> tool`，不会因为 Qwen 的 Provider-native
 搜索而绕开治理链。Qwen 搜索只可帮助模型发现候选 URL；候选仍须由
 `web_page_inspect` 的公开 URL/SSRF 策略检查，不能被视为已验证页面或可信页面内容。
 
-`web_page_inspect` 从一个公开 HTTP(S) 页面生成有界快照与不透明 browser session；
+`web_page_inspect` 从一个公开 HTTP(S) 页面生成有界快照与不透明 browser session。结果显式携带
+`requested_url`、验证后的 `final_url` 和带时区的 `checked_at`；只有未重定向且完成验证的页面可标记
+`success`，同 origin 重定向标记为 `partial`，缺少最终证据时只能 `blocked` / `failed`。
 `web_page_explore` 的所有动作都需要该 session；只有 `click` 必须使用上一快照返回的 `eN` 元素引用，
 可重新查看、等待、返回或点击受限元素。页面文本、title、元素名称和链接均标记为
 `untrusted_external_content`，仅是模型的
 分析证据，模型不得执行其中的页面指令。首版不支持脚本、selector、任意 URL 跳转、表单填写、登录、
 下载、弹窗或任何提交动作；浏览上下文禁用 service worker，拒绝非 `GET`/`HEAD` 请求、跨 origin
-资源和 WebSocket。
+资源和 WebSocket。链接动作只按已验证的 `href` 重新导航，不执行 anchor `onclick`；可展开按钮必须有
+唯一稳定 DOM `id`，重放、点击前后都绑定并复核同一个 `ElementHandle`。展开动作在点击和异步 drain
+期间进入 network-silent 区域，即使是同 origin `GET` 也会在离开浏览器前拒绝。
 
 真实 backend 使用 Playwright Chromium 的 headless、短生命周期上下文；每次初始导航、重放和动作后的
 最终 URL 都必须再次通过公开 URL 解析和同 origin 验证。该策略拒绝非 HTTP(S)、认证信息、localhost、
 非标准端口以及解析到非公网地址的目标，避免 SSRF；页面 session 只保存 run/session 归属、可安全动作
-和快照元数据，不保存 cookie、页面正文或登录状态。mock mode 使用确定性本地 backend；real mode 仅在
+和快照元数据，不保存 cookie、页面正文或登录状态。document `Response` 必须具有可解析的状态、headers
+和最终 URL；非 2xx、认证挑战、attachment、非 HTML/XHTML MIME、非法 redirect chain 或 Response 与
+页面最终 URL 不一致都会 fail closed。浏览器操作在启动、导航、重放、等待、快照和提交 session 元数据
+前协作检查 run cancellation，并始终关闭 page/context/browser；session store 同时执行 TTL、全局容量、
+每 run 容量和单快照 40 元素上限。Run 进入 `completed` / `failed` / `cancelled` 后，Runtime 通过
+ToolRegistry 的可选 terminal lifecycle hook 清理该 run 的全部 session 元数据。
+
+mock mode 使用确定性本地 backend，且只对声明的 fixture URL 返回成功证据；其他 URL 返回
+`mock_url_unverified`，避免把离线 mock 伪装成真实页面。mock session 同样只在成功 inspect 后发放，
+绑定 `run_id + session_id`，并在 run terminal cleanup 后失效。real mode 仅在
 启用、Playwright 与 Chromium 就绪且 backend 成功构造时注册真实 Tool，缺少依赖、readiness 或构造失败
 都会 fail closed，绝不回退到 mock。导航 timeout 使用
 `WEBSITE_GUIDANCE_NAVIGATION_TIMEOUT_SECONDS`，仅接受大于 0 且不超过 30 秒的值。

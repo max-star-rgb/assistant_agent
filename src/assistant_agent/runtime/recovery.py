@@ -88,6 +88,8 @@ def classify_error(error: str) -> str:
 
     normalized = error.strip().lower()
     prefix = normalized.split(":", maxsplit=1)[0]
+    if prefix == "page_timeout":
+        return "page_timeout"
     provider_code = normalize_provider_error_code(prefix)
     if provider_code.startswith("provider_") and provider_code != "provider_unknown_error":
         return provider_code

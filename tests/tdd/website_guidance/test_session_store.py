@@ -118,6 +118,90 @@ def test_records_expire_after_the_configured_ttl() -> None:
     )
 
 
+def test_create_get_and_append_prune_expired_records_globally() -> None:
+    clock = _Clock()
+    store = BrowserExplorationStore(
+        ttl_seconds=10,
+        clock=clock,
+        max_records=2,
+        max_records_per_run=2,
+    )
+    first = store.create(
+        run_id="run-a",
+        session_id="session-a",
+        start_url="https://public.example/one",
+    )
+    second = store.create(
+        run_id="run-b",
+        session_id="session-b",
+        start_url="https://public.example/two",
+    )
+    clock.advance(10)
+
+    assert store.get_owned(
+        first.browser_session_id,
+        run_id="run-a",
+        session_id="session-a",
+    ) is None
+    third = store.create(
+        run_id="run-c",
+        session_id="session-c",
+        start_url="https://public.example/three",
+    )
+    fourth = store.create(
+        run_id="run-d",
+        session_id="session-d",
+        start_url="https://public.example/four",
+    )
+
+    assert store.get_owned(
+        second.browser_session_id,
+        run_id="run-b",
+        session_id="session-b",
+    ) is None
+    assert store.get_owned(
+        third.browser_session_id,
+        run_id="run-c",
+        session_id="session-c",
+    ) == third
+    assert store.append_action(
+        fourth.browser_session_id,
+        run_id="run-d",
+        session_id="session-d",
+        action="inspect",
+        element_ref=None,
+        snapshot_version=1,
+    ) is not None
+
+
+def test_store_rejects_global_and_per_run_capacity_overflow() -> None:
+    per_run = BrowserExplorationStore(max_records=2, max_records_per_run=1)
+    per_run.create(
+        run_id="run-a",
+        session_id="session-a",
+        start_url="https://public.example/one",
+    )
+    with pytest.raises(ValueError, match="run_session_limit_exceeded"):
+        per_run.create(
+            run_id="run-a",
+            session_id="session-b",
+            start_url="https://public.example/two",
+        )
+
+    global_store = BrowserExplorationStore(max_records=1, max_records_per_run=1)
+    global_store.create(
+        run_id="run-a",
+        session_id="session-a",
+        start_url="https://public.example/one",
+    )
+    with pytest.raises(ValueError, match="global_session_limit_exceeded"):
+        global_store.create(
+            run_id="run-b",
+            session_id="session-b",
+            start_url="https://public.example/two",
+        )
+
+
 def test_append_action_returns_new_snapshot_with_only_safe_navigation_facts() -> None:
     store = BrowserExplorationStore()
     record = store.create(
@@ -243,4 +327,13 @@ def test_store_binds_click_ref_to_displayed_safe_descriptor_and_next_snapshot() 
             role="button",
             name="Mismatch",
             href="https://public.example/not-allowed",
+            node_id="details-toggle",
+        )
+
+    with pytest.raises(ValueError, match="stable node_id"):
+        BrowserElementDescriptor(
+            ref="e1",
+            kind="expand",
+            role="button",
+            name="Unbound",
         )

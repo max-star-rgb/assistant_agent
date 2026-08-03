@@ -67,6 +67,7 @@ class _Element:
     inside_form: bool = False
     click_effect: str | None = None
     access_delay_seconds: float = 0.0
+    connected: bool = True
 
 
 @dataclass
@@ -77,6 +78,9 @@ class _PageState:
     final_url: str | None = None
     timeout: bool = False
     websocket_url: str | None = None
+    status: int = 200
+    content_type: str = "text/html; charset=utf-8"
+    content_disposition: str | None = None
 
 
 class _FakeTimeoutError(Exception):
@@ -84,13 +88,44 @@ class _FakeTimeoutError(Exception):
 
 
 class _FakeRequest:
-    def __init__(self, url: str, *, method: str = "GET", resource_type: str = "document") -> None:
+    def __init__(
+        self,
+        url: str,
+        *,
+        method: str = "GET",
+        resource_type: str = "document",
+        redirected_from: "_FakeRequest | None" = None,
+    ) -> None:
         self.url = url
         self.method = method
         self.resource_type = resource_type
+        self.redirected_from = redirected_from
+        self._response: _FakeResponse | None = None
 
     def is_navigation_request(self) -> bool:
         return self.resource_type == "document"
+
+    def response(self) -> "_FakeResponse | None":
+        return self._response
+
+
+class _FakeResponse:
+    def __init__(
+        self,
+        *,
+        url: str,
+        status: int,
+        content_type: str,
+        content_disposition: str | None = None,
+        request: _FakeRequest | None = None,
+    ) -> None:
+        self.url = url
+        self.status = status
+        self.headers = {"content-type": content_type}
+        if content_disposition is not None:
+            self.headers["content-disposition"] = content_disposition
+        self.request = request or _FakeRequest(url)
+        self.request._response = self
 
 
 class _FakeRoute:
@@ -133,6 +168,8 @@ class _FakeLocator:
         return _FakeLocator(self.page, self.selector, [self.elements[index]])
 
     def get_attribute(self, name: str, **_kwargs: object) -> str | None:
+        if self.page.driver.on_candidate_access is not None:
+            self.page.driver.on_candidate_access()
         if self.elements and self.elements[0].access_delay_seconds:
             time.sleep(self.elements[0].access_delay_seconds)
         return self.elements[0].attrs.get(name)
@@ -145,15 +182,17 @@ class _FakeLocator:
 
     def evaluate(
         self,
-        _expression: str,
+        expression: str,
         arg: object = None,
         **_kwargs: object,
-    ) -> str:
+    ) -> object:
         self.page.driver.browser_evaluations += 1
         limit = int(arg)
         if self.selector == "body":
             return self.page.state.body[:limit]
         element = self.elements[0]
+        if "stableNodeId" in expression:
+            return self.page.expand_identity(element, limit=limit)
         return (element.attrs.get("aria-label") or element.text)[:limit]
 
     def locator(self, selector: str) -> "_FakeLocator":
@@ -165,6 +204,27 @@ class _FakeLocator:
 
     def click(self, **_kwargs: object) -> None:
         self.page.apply_click(self.elements[0])
+
+    def element_handle(self, **_kwargs: object) -> "_FakeElementHandle | None":
+        if not self.elements:
+            return None
+        return _FakeElementHandle(self.page, self.elements[0])
+
+
+class _FakeElementHandle:
+    def __init__(self, page: "_FakePage", element: _Element) -> None:
+        self.page = page
+        self.element = element
+
+    def evaluate(self, expression: str, arg: object = None) -> object:
+        if "stableNodeId" not in expression:
+            raise AssertionError("unexpected element-handle evaluation")
+        return self.page.expand_identity(self.element, limit=int(arg))
+
+    def click(self, **_kwargs: object) -> None:
+        if not self.element.connected:
+            raise RuntimeError("element is detached")
+        self.page.apply_click(self.element)
 
 
 class _FakePage:
@@ -182,7 +242,7 @@ class _FakePage:
     def on(self, event: str, callback: Callable[[object], None]) -> None:
         self._events.setdefault(event, []).append(callback)
 
-    def goto(self, url: str, **_kwargs: object) -> None:
+    def goto(self, url: str, **_kwargs: object) -> _FakeResponse:
         self.goto_urls.append(url)
         state = self.driver.states[url]
         if state.timeout:
@@ -196,10 +256,32 @@ class _FakePage:
         if state.websocket_url is not None:
             self.context.dispatch_websocket(state.websocket_url)
 
-    def go_back(self, **_kwargs: object) -> None:
+        if state.final_url is not None and state.final_url != url:
+            redirected_from = _FakeRequest(url)
+            _FakeResponse(
+                url=url,
+                status=302,
+                content_type="text/html; charset=utf-8",
+                request=redirected_from,
+            )
+            request = _FakeRequest(self.url, redirected_from=redirected_from)
+        else:
+            request = _FakeRequest(self.url)
+        response = _FakeResponse(
+            url=self.url,
+            status=state.status,
+            content_type=state.content_type,
+            content_disposition=state.content_disposition,
+            request=request,
+        )
+        if self.driver.on_goto is not None:
+            self.driver.on_goto()
+        return response
+
+    def go_back(self, **_kwargs: object) -> _FakeResponse | None:
         if not self.history:
-            return
-        self.goto(self.history.pop())
+            return None
+        return self.goto(self.history.pop())
 
     def wait_for_timeout(self, milliseconds: int) -> None:
         self.driver.waits.append(milliseconds)
@@ -248,12 +330,53 @@ class _FakePage:
             self.context.dispatch(NEXT_URL)
             self.url = NEXT_URL
             self.state = self.driver.states[NEXT_URL]
+        elif effect == "same_origin_get":
+            self.context.dispatch(
+                f"{START_URL}/mutation",
+                method="GET",
+                resource_type="fetch",
+            )
+        elif effect == "replace":
+            self._replace_element()
         elif effect == "expand":
             self.state = _PageState(
                 title=self.state.title,
                 body=self.state.body + " expanded",
                 elements=self.state.elements,
             )
+
+    def _replace_element(self) -> None:
+        for index, item in enumerate(self.state.elements):
+            if item.connected:
+                item.connected = False
+                self.state.elements[index] = _Element(
+                    item.tag,
+                    item.text,
+                    dict(item.attrs),
+                    inside_form=item.inside_form,
+                    click_effect=item.click_effect,
+                )
+                return
+
+    def expand_identity(self, element: _Element, *, limit: int) -> dict[str, object]:
+        node_id = element.attrs.get("id", "").strip()
+        same_id_count = sum(
+            1
+            for item in self.state.elements
+            if item.connected and item.attrs.get("id", "").strip() == node_id
+        )
+        return {
+            "connected": element.connected,
+            "tagName": element.tag.upper(),
+            "stableNodeId": node_id[:limit],
+            "stableNodeIdUnique": bool(node_id) and same_id_count == 1,
+            "name": (element.attrs.get("aria-label") or element.text).strip()[:limit],
+            "type": (element.attrs.get("type") or "button").strip().lower(),
+            "hasFormAttribute": "form" in element.attrs,
+            "hasFormAction": "formaction" in element.attrs,
+            "insideForm": element.inside_form,
+            "hasAriaExpanded": "aria-expanded" in element.attrs,
+        }
 
     def close(self) -> None:
         self.closed = True
@@ -306,6 +429,8 @@ class _FakeBrowserContext:
         route = _FakeRoute(_FakeRequest(url, method=method, resource_type=resource_type))
         assert self._route_handler is not None
         self._route_handler(route)
+        if not route.aborted and resource_type != "document":
+            self.driver.allowed_subrequests += 1
         return not route.aborted
 
     def dispatch_websocket(self, _url: str) -> None:
@@ -371,8 +496,16 @@ class _FakePlaywrightManager:
 
 
 class _FakeDriver:
-    def __init__(self, states: dict[str, _PageState]) -> None:
+    def __init__(
+        self,
+        states: dict[str, _PageState],
+        *,
+        on_goto: Callable[[], None] | None = None,
+        on_candidate_access: Callable[[], None] | None = None,
+    ) -> None:
         self.states = states
+        self.on_goto = on_goto
+        self.on_candidate_access = on_candidate_access
         self.browsers: list[_FakeBrowser] = []
         self.playwrights: list[_FakePlaywright] = []
         self.selectors: list[str] = []
@@ -381,6 +514,7 @@ class _FakeDriver:
         self.candidate_scans = 0
         self.inner_text_calls = 0
         self.browser_evaluations = 0
+        self.allowed_subrequests = 0
 
     def factory(self) -> _FakePlaywrightManager:
         return _FakePlaywrightManager(self)
@@ -474,7 +608,11 @@ def test_inspect_extracts_only_same_origin_links_and_non_submit_expand_buttons()
                     _Element("a", "Download", {"href": "/file", "download": "file.txt"}),
                     _Element("a", "Popup", {"href": "/next", "target": "_blank"}),
                     _Element("a", "Script", {"href": "javascript:alert(1)"}),
-                    _Element("button", "Expand", {"aria-expanded": "false"}),
+                    _Element(
+                        "button",
+                        "Expand",
+                        {"aria-expanded": "false", "id": "details-toggle"},
+                    ),
                     _Element(
                         "button",
                         "Submit",
@@ -483,7 +621,11 @@ def test_inspect_extracts_only_same_origin_links_and_non_submit_expand_buttons()
                     _Element(
                         "button",
                         "In form",
-                        {"aria-expanded": "false", "type": "button"},
+                        {
+                            "aria-expanded": "false",
+                            "type": "button",
+                            "id": "form-toggle",
+                        },
                         inside_form=True,
                     ),
                 ],
@@ -500,6 +642,42 @@ def test_inspect_extracts_only_same_origin_links_and_non_submit_expand_buttons()
         ("link", "Safe link", NEXT_URL),
         ("button", "Expand", None),
     ]
+
+
+def test_expand_is_exposed_only_for_a_unique_stable_node_id() -> None:
+    driver = _FakeDriver(
+        {
+            START_URL: _PageState(
+                title="Stable nodes",
+                body="body",
+                elements=[
+                    _Element("button", "No id", {"aria-expanded": "false"}),
+                    _Element(
+                        "button",
+                        "Duplicate one",
+                        {"aria-expanded": "false", "id": "duplicate"},
+                    ),
+                    _Element(
+                        "button",
+                        "Duplicate two",
+                        {"aria-expanded": "false", "id": "duplicate"},
+                    ),
+                    _Element(
+                        "button",
+                        "Stable",
+                        {"aria-expanded": "false", "id": "stable-toggle"},
+                    ),
+                ],
+            )
+        }
+    )
+
+    result = _backend(driver).inspect(
+        WebPageInspectRequest(url=START_URL, goal="safe actions"),
+        _context(),
+    )
+
+    assert [(item.ref, item.name) for item in result.elements] == [("e1", "Stable")]
 
 
 def test_snapshot_bounds_body_in_browser_and_caps_filtered_candidate_scan() -> None:
@@ -729,7 +907,11 @@ def test_expand_click_rejects_download_submit_new_window_and_document_navigation
                     _Element(
                         "button",
                         "Expand",
-                        {"aria-expanded": "false", "type": "button"},
+                        {
+                            "aria-expanded": "false",
+                            "type": "button",
+                            "id": "details-toggle",
+                        },
                         click_effect=effect,
                     )
                 ],
@@ -778,7 +960,11 @@ def test_expand_click_drains_and_rejects_late_side_effects(
                     _Element(
                         "button",
                         "Expand",
-                        {"aria-expanded": "false", "type": "button"},
+                        {
+                            "aria-expanded": "false",
+                            "type": "button",
+                            "id": "details-toggle",
+                        },
                         click_effect=effect,
                     )
                 ],
@@ -803,6 +989,130 @@ def test_expand_click_drains_and_rejects_late_side_effects(
     assert result.outcome == "blocked"
     assert result.errors[0].code == expected_code
     _assert_all_resources_closed(driver)
+
+
+def test_expand_blocks_same_origin_get_network_before_it_leaves_browser() -> None:
+    driver = _FakeDriver(
+        {
+            START_URL: _PageState(
+                title="Start",
+                body="start",
+                elements=[
+                    _Element(
+                        "button",
+                        "Expand",
+                        {
+                            "aria-expanded": "false",
+                            "type": "button",
+                            "id": "details-toggle",
+                        },
+                        click_effect="same_origin_get",
+                    )
+                ],
+            )
+        }
+    )
+    backend = _backend(driver)
+    initial = backend.inspect(
+        WebPageInspectRequest(url=START_URL, goal="expand"),
+        _context(),
+    )
+
+    result = backend.explore(
+        WebPageExploreRequest(
+            browser_session_id=initial.browser_session_id,
+            action="click",
+            element_ref="e1",
+        ),
+        _context(),
+    )
+
+    assert result.outcome == "blocked"
+    assert result.errors[0].code == "network_activity_blocked"
+    assert driver.allowed_subrequests == 0
+    _assert_all_resources_closed(driver)
+
+
+@pytest.mark.parametrize("effect", ["replace", "async_replace"])
+def test_expand_fails_closed_when_bound_node_is_replaced_during_action(
+    effect: str,
+) -> None:
+    driver = _FakeDriver(
+        {
+            START_URL: _PageState(
+                title="Start",
+                body="start",
+                elements=[
+                    _Element(
+                        "button",
+                        "Expand",
+                        {
+                            "aria-expanded": "false",
+                            "type": "button",
+                            "id": "details-toggle",
+                        },
+                        click_effect=effect,
+                    )
+                ],
+            )
+        }
+    )
+    backend = _backend(driver)
+    initial = backend.inspect(
+        WebPageInspectRequest(url=START_URL, goal="expand"),
+        _context(),
+    )
+
+    result = backend.explore(
+        WebPageExploreRequest(
+            browser_session_id=initial.browser_session_id,
+            action="click",
+            element_ref="e1",
+        ),
+        _context(),
+    )
+
+    assert result.outcome == "blocked"
+    assert result.errors[0].code == "stale_page_snapshot"
+    _assert_all_resources_closed(driver)
+
+
+def test_navigate_uses_verified_href_without_executing_dom_click_handler() -> None:
+    driver = _FakeDriver(
+        {
+            START_URL: _PageState(
+                title="Start",
+                body="start",
+                elements=[
+                    _Element(
+                        "a",
+                        "Next",
+                        {"href": "/next"},
+                        click_effect="same_origin_get",
+                    )
+                ],
+            ),
+            NEXT_URL: _PageState(title="Next", body="next"),
+        }
+    )
+    backend = _backend(driver)
+    initial = backend.inspect(
+        WebPageInspectRequest(url=START_URL, goal="next"),
+        _context(),
+    )
+
+    result = backend.explore(
+        WebPageExploreRequest(
+            browser_session_id=initial.browser_session_id,
+            action="click",
+            element_ref="e1",
+        ),
+        _context(),
+    )
+
+    assert result.outcome == "success"
+    assert str(result.final_url) == NEXT_URL
+    assert driver.allowed_subrequests == 0
 
 
 def test_final_url_is_revalidated_and_timeout_has_stable_error_code() -> None:
@@ -833,12 +1143,151 @@ def test_final_url_is_revalidated_and_timeout_has_stable_error_code() -> None:
 
     assert final_result.outcome == "blocked"
     assert final_result.errors[0].code == "unsafe_final_url"
+    assert str(final_result.requested_url) == START_URL
+    assert final_result.final_url is None
     assert policy.calls == [START_URL, START_URL, unsafe_final]
     assert timeout_result.outcome == "failed"
     assert timeout_result.errors[0].code == "page_timeout"
     assert timeout_result.errors[0].recoverable is True
     _assert_all_resources_closed(final_driver)
     _assert_all_resources_closed(timeout_driver)
+
+
+@pytest.mark.parametrize(
+    ("state", "expected_outcome", "expected_code"),
+    [
+        (_PageState(title="Missing", body="missing", status=404), "failed", "http_status_error"),
+        (_PageState(title="Broken", body="broken", status=500), "failed", "http_status_error"),
+        (
+            _PageState(
+                title="JSON",
+                body='{"ok": true}',
+                content_type="application/json",
+            ),
+            "blocked",
+            "unsupported_page_type",
+        ),
+        (
+            _PageState(
+                title="Download",
+                body="bytes",
+                content_type="application/octet-stream",
+                content_disposition="attachment; filename=fixture.bin",
+            ),
+            "blocked",
+            "attachment_response_blocked",
+        ),
+        (
+            _PageState(title="Login", body="login", status=401),
+            "blocked",
+            "authentication_required",
+        ),
+    ],
+)
+def test_navigation_response_status_mime_attachment_and_login_are_fail_closed(
+    state: _PageState,
+    expected_outcome: str,
+    expected_code: str,
+) -> None:
+    driver = _FakeDriver({START_URL: state})
+
+    result = _backend(driver).inspect(
+        WebPageInspectRequest(url=START_URL, goal="inspect"),
+        _context(),
+    )
+
+    assert result.outcome == expected_outcome
+    assert result.errors[0].code == expected_code
+    assert str(result.final_url) == START_URL
+    _assert_all_resources_closed(driver)
+
+
+def test_same_origin_redirect_is_partial_and_records_requested_final_evidence() -> None:
+    driver = _FakeDriver(
+        {
+            START_URL: _PageState(
+                title="Redirected",
+                body="redirected",
+                final_url=NEXT_URL,
+            )
+        }
+    )
+
+    result = _backend(driver).inspect(
+        WebPageInspectRequest(url=START_URL, goal="inspect"),
+        _context(),
+    )
+
+    assert result.outcome == "partial"
+    assert str(result.requested_url) == START_URL
+    assert str(result.final_url) == NEXT_URL
+    assert result.checked_at.tzinfo is not None
+    assert "redirected_page" in result.warnings
+
+
+class _CancelToken:
+    def __init__(self) -> None:
+        self.cancelled = False
+
+    def is_cancelled(self) -> bool:
+        return self.cancelled
+
+
+def test_cancellation_after_navigation_stops_snapshot_and_closes_resources() -> None:
+    token = _CancelToken()
+    driver = _FakeDriver(
+        {START_URL: _PageState(title="Start", body="start")},
+        on_goto=lambda: setattr(token, "cancelled", True),
+    )
+
+    result = _backend(driver).inspect(
+        WebPageInspectRequest(url=START_URL, goal="inspect"),
+        ToolContext(
+            run_id="run-a",
+            session_id="session-a",
+            cancel_token=token,
+        ),
+    )
+
+    assert result.outcome == "failed"
+    assert result.errors[0].code == "agent_run_cancelled"
+    assert driver.browser_evaluations == 0
+    _assert_all_resources_closed(driver)
+
+
+def test_cancellation_during_candidate_scan_stops_before_more_dom_work() -> None:
+    token = _CancelToken()
+    driver = _FakeDriver(
+        {
+            START_URL: _PageState(
+                title="Start",
+                body="start",
+                elements=[_Element("a", "Next", {"href": "/next"})],
+            )
+        },
+        on_candidate_access=lambda: setattr(token, "cancelled", True),
+    )
+    backend = _backend(driver)
+
+    result = backend.inspect(
+        WebPageInspectRequest(url=START_URL, goal="inspect"),
+        ToolContext(
+            run_id="run-a",
+            session_id="session-a",
+            cancel_token=token,
+        ),
+    )
+
+    assert result.outcome == "failed"
+    assert result.errors[0].code == "agent_run_cancelled"
+    assert driver.candidate_scans == 1
+    assert backend.cleanup_run("run-a") == 0
+    _assert_all_resources_closed(driver)
+
+
+def test_limits_reject_snapshot_element_count_above_store_contract() -> None:
+    with pytest.raises(ValueError, match="max_elements"):
+        BrowserGuidanceLimits(max_elements=41)
 
 
 def test_explore_enforces_action_limit_before_launching_browser() -> None:
@@ -874,12 +1323,67 @@ class _SmokeHandler(BaseHTTPRequestHandler):
     websocket_port = 0
     drift_requests = 0
     post_requests = 0
+    get_mutation_requests = 0
     state_lock = threading.Lock()
 
     def do_GET(self) -> None:
         path = urlsplit(self.path).path
-        if path == "/next":
+        if path == "/get-mutation":
+            with type(self).state_lock:
+                type(self).get_mutation_requests += 1
+            body = b"mutation"
+        elif path == "/next":
             body = b"<html><title>Next</title><body>local next page</body></html>"
+        elif path == "/expand-get":
+            body = (
+                b"<html><title>Expand GET</title><body>expand get "
+                b"<button id='expand-get' type='button' aria-expanded='false' "
+                b"onclick=\"fetch('/get-mutation')\">Expand</button>"
+                b"</body></html>"
+            )
+        elif path == "/replace-node":
+            body = (
+                b"<html><title>Replace</title><body>replace "
+                b"<button id='replace-toggle' type='button' aria-expanded='false' "
+                b"onclick=\"this.replaceWith(this.cloneNode(true))\">Replace</button>"
+                b"</body></html>"
+            )
+        elif path == "/navigate-onclick":
+            body = (
+                b"<html><title>Navigate</title><body>navigate "
+                b"<a href='/next' onclick=\"fetch('/get-mutation')\">Next</a>"
+                b"</body></html>"
+            )
+        elif path == "/missing":
+            body = b"<html><title>Missing</title><body>missing</body></html>"
+            self.send_response(404)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        elif path == "/json":
+            body = b'{"ok": true}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        elif path == "/auth":
+            body = b"<html><title>Login</title><body>login</body></html>"
+            self.send_response(401)
+            self.send_header("WWW-Authenticate", 'Basic realm="fixture"')
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        elif path == "/redirect":
+            self.send_response(302)
+            self.send_header("Location", "/next")
+            self.end_headers()
+            return
         elif path == "/socket-page":
             body = (
                 "<html><title>Socket</title><body>socket"
@@ -896,7 +1400,7 @@ class _SmokeHandler(BaseHTTPRequestHandler):
             }[kind]
             body = (
                 "<html><title>Async</title><body>async"
-                "<button type='button' aria-expanded='false' "
+                "<button id='async-trigger' type='button' aria-expanded='false' "
                 f"onclick=\"setTimeout(() => {effect}, 20)\">Trigger</button>"
                 "</body></html>"
             ).encode()
@@ -934,7 +1438,7 @@ class _SmokeHandler(BaseHTTPRequestHandler):
             body = (
                 b"<html><title>Start</title><body>local start "
                 b"<a href='/next'>Next page</a>"
-                b"<button type='button' aria-expanded='false'>Details</button>"
+                b"<button id='details-toggle' type='button' aria-expanded='false'>Details</button>"
                 b"</body></html>"
             )
         self.send_response(200)
@@ -1150,6 +1654,151 @@ def test_local_chromium_rejects_dynamic_dom_ref_drift() -> None:
     assert result.outcome == "blocked"
     assert result.errors[0].code == "stale_page_snapshot"
     assert _SmokeHandler.drift_requests >= 2
+
+
+@pytest.mark.playwright_smoke
+def test_local_chromium_expand_is_network_silent_and_server_get_count_stays_zero() -> None:
+    _SmokeHandler.get_mutation_requests = 0
+    server, server_thread = _start_smoke_server()
+    port = server.server_address[1]
+    backend = PlaywrightWebsiteGuidanceBackend(url_policy=_local_policy(port))
+    try:
+        inspected = backend.inspect(
+            WebPageInspectRequest(
+                url=f"http://127.0.0.1:{port}/expand-get",
+                goal="inspect",
+            ),
+            _context(),
+        )
+        result = backend.explore(
+            WebPageExploreRequest(
+                browser_session_id=inspected.browser_session_id,
+                action="click",
+                element_ref="e1",
+            ),
+            _context(),
+        )
+        time.sleep(0.1)
+    finally:
+        _stop_smoke_server(server, server_thread)
+
+    assert result.outcome == "blocked"
+    assert result.errors[0].code == "network_activity_blocked"
+    assert _SmokeHandler.get_mutation_requests == 0
+
+
+@pytest.mark.playwright_smoke
+def test_local_chromium_expand_rejects_same_descriptor_node_replacement() -> None:
+    server, server_thread = _start_smoke_server()
+    port = server.server_address[1]
+    backend = PlaywrightWebsiteGuidanceBackend(url_policy=_local_policy(port))
+    try:
+        inspected = backend.inspect(
+            WebPageInspectRequest(
+                url=f"http://127.0.0.1:{port}/replace-node",
+                goal="inspect",
+            ),
+            _context(),
+        )
+        result = backend.explore(
+            WebPageExploreRequest(
+                browser_session_id=inspected.browser_session_id,
+                action="click",
+                element_ref="e1",
+            ),
+            _context(),
+        )
+    finally:
+        _stop_smoke_server(server, server_thread)
+
+    assert result.outcome == "blocked"
+    assert result.errors[0].code == "stale_page_snapshot"
+
+
+@pytest.mark.playwright_smoke
+def test_local_chromium_navigate_does_not_execute_anchor_onclick() -> None:
+    _SmokeHandler.get_mutation_requests = 0
+    server, server_thread = _start_smoke_server()
+    port = server.server_address[1]
+    backend = PlaywrightWebsiteGuidanceBackend(url_policy=_local_policy(port))
+    try:
+        inspected = backend.inspect(
+            WebPageInspectRequest(
+                url=f"http://127.0.0.1:{port}/navigate-onclick",
+                goal="inspect",
+            ),
+            _context(),
+        )
+        result = backend.explore(
+            WebPageExploreRequest(
+                browser_session_id=inspected.browser_session_id,
+                action="click",
+                element_ref="e1",
+            ),
+            _context(),
+        )
+        time.sleep(0.1)
+    finally:
+        _stop_smoke_server(server, server_thread)
+
+    assert result.outcome == "success"
+    assert str(result.final_url) == f"http://127.0.0.1:{port}/next"
+    assert _SmokeHandler.get_mutation_requests == 0
+
+
+@pytest.mark.playwright_smoke
+@pytest.mark.parametrize(
+    ("path", "expected_outcome", "expected_code"),
+    [
+        ("missing", "failed", "http_status_error"),
+        ("json", "blocked", "unsupported_page_type"),
+        ("download", "blocked", "attachment_response_blocked"),
+        ("auth", "blocked", "authentication_required"),
+    ],
+)
+def test_local_chromium_navigation_response_fail_closed_probes(
+    path: str,
+    expected_outcome: str,
+    expected_code: str,
+) -> None:
+    server, server_thread = _start_smoke_server()
+    port = server.server_address[1]
+    try:
+        result = PlaywrightWebsiteGuidanceBackend(
+            url_policy=_local_policy(port)
+        ).inspect(
+            WebPageInspectRequest(
+                url=f"http://127.0.0.1:{port}/{path}",
+                goal="inspect",
+            ),
+            _context(),
+        )
+    finally:
+        _stop_smoke_server(server, server_thread)
+
+    assert result.outcome == expected_outcome
+    assert result.errors[0].code == expected_code
+
+
+@pytest.mark.playwright_smoke
+def test_local_chromium_same_origin_redirect_is_partial_with_evidence() -> None:
+    server, server_thread = _start_smoke_server()
+    port = server.server_address[1]
+    requested_url = f"http://127.0.0.1:{port}/redirect"
+    try:
+        result = PlaywrightWebsiteGuidanceBackend(
+            url_policy=_local_policy(port)
+        ).inspect(
+            WebPageInspectRequest(url=requested_url, goal="inspect"),
+            _context(),
+        )
+    finally:
+        _stop_smoke_server(server, server_thread)
+
+    assert result.outcome == "partial"
+    assert str(result.requested_url) == requested_url
+    assert str(result.final_url) == f"http://127.0.0.1:{port}/next"
+    assert result.checked_at.tzinfo is not None
 
 
 @pytest.mark.playwright_smoke
