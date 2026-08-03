@@ -1,6 +1,6 @@
 # Gateway Architecture
 
-Last updated: 2026-07-31
+Last updated: 2026-08-03
 
 ## 1. 文档边界
 
@@ -256,6 +256,13 @@ ACK、流式交付和 H.264 解码，并把 chat、interrupt 和稳定媒体引�
 主 LLM。完整 wire contract 只维护在
 [media-agent-service-websocket.md](media-agent-service-websocket.md)。
 
+生成图片、3D 模型和视频结果先复用媒体服务已建立的 `/agent-service/v1` WebSocket 发送标准
+`chatResponse`。媒体服务是中继而非渲染服务：其 `RenderingClient` 再通过 HTTP POST 把完整响应
+转发到渲染服务 `/rendering/v1/torender`。Agent 与渲染服务没有任何 HTTP 或 WebSocket 直连。
+模型驱动的 3D 生成仍从主 runtime 经受治理 `image_to_3d` Tool 发起；回调 route 只负责校验、定位
+媒体中继连接和 wire 投影，不进入 Gateway run、不复制 Agent 规划。完整边界以
+[media-agent-service-websocket.md](media-agent-service-websocket.md) 为准。
+
 ### 7.2 Durable task
 
 Gateway 只拥有“接受并提交长期任务”的前台 ingress run。提交成功后，该 Gateway run 正常终结；
@@ -290,7 +297,7 @@ Gateway 记录 prompt-safe 的 session、queue、admission、run、cancel、deli
 | Cancel 与 semantic arbitration | `cancellation_models.py`、`turn_arbitration*.py`、`realtime_turn_arbiter.py` |
 | Runtime contract 与映射 | `runtime_types.py`、`runtime_backend.py`、`runtime_adapter.py`、`*_mapping.py` |
 | Delivery、progress 与 facade | `delivery.py`、`progress.py`、`turn_facade.py` |
-| FastAPI entry adapters | `src/assistant_agent/api/gateway_runtime.py`、`gateway_websocket.py`、`agent_service_websocket.py` |
+| FastAPI entry adapters | `src/assistant_agent/api/gateway_runtime.py`、`gateway_websocket.py`、`agent_service_websocket.py`、`rendering_3d_callback.py` |
 
 核心 Gateway 生命周期和 frame contract 由 `tests/core/contract/test_gateway_contract.py` 保护。
 只有稳定 core invariant 改变或确认存在保护缺口时才扩展永久 core 测试；Media-Agent 等具体功能

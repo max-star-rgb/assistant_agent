@@ -151,6 +151,11 @@ class ProviderConfig:
     ark_image_output_format: str = "png"
     local_image_base_url: str | None = None
     local_image_model: str = "local-image"
+    td_gen_ip: str | None = None
+    td_gen_port: int | None = None
+    public_ip: str | None = None
+    public_port: int | None = None
+    image_to_3d_timeout_seconds: float = 30.0
     search_provider: SearchProviderName = "mock"
     web_search_base_url: str | None = None
     web_search_api_key: str | None = None
@@ -508,6 +513,14 @@ class ProviderConfig:
             ark_image_output_format="png",
             local_image_base_url=source.get("LOCAL_IMAGE_BASE_URL"),
             local_image_model=source.get("LOCAL_IMAGE_MODEL", "local-image"),
+            td_gen_ip=source.get("TD_GEN_IP"),
+            td_gen_port=_optional_int_env(source.get("TD_GEN_PORT")),
+            public_ip=source.get("PUBLIC_IP"),
+            public_port=_optional_int_env(source.get("PUBLIC_PORT")),
+            image_to_3d_timeout_seconds=_float_env(
+                source.get("IMAGE_TO_3D_TIMEOUT_SECONDS"),
+                30.0,
+            ),
             search_provider=_search_provider(
                 source.get("MULTIMODAL_AGENT_SEARCH_PROVIDER"),
                 allow_real=allow_real_providers,
@@ -1047,6 +1060,16 @@ def _int_env(value: str | None, default: int) -> int:
         return int(value)
     except ValueError:
         return default
+
+
+def _optional_int_env(value: str | None) -> int | None:
+    if value is None or not value.strip():
+        return None
+    try:
+        parsed = int(value)
+    except ValueError:
+        return None
+    return parsed if parsed > 0 else None
 
 
 def should_run_integration_tests(env: Mapping[str, str] | None = None) -> bool:

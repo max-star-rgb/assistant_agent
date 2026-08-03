@@ -90,6 +90,7 @@ class ImageGenerationResult(BaseModel):
     image_urls: list[str] = Field(default_factory=list)
     download_url: str | None = None
     download_urls: list[str] = Field(default_factory=list)
+    image_id: list[str] = Field(default_factory=list)
     provider_image_urls: list[str] = Field(default_factory=list)
     request_id: str | None = None
     prompt: str = Field(min_length=1)

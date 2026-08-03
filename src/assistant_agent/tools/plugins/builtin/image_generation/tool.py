@@ -17,6 +17,7 @@ from assistant_agent.tools.plugins.builtin.image_generation.backend import (
     MockImageGenerationAdapter,
 )
 from assistant_agent.runtime.generated_artifacts import (
+    generated_artifact_payload,
     materialize_image_generation_result,
 )
 from assistant_agent.tools.ids import IMAGE_GENERATION_CAPABILITY, IMAGE_GENERATION_TOOL_NAME
@@ -59,6 +60,7 @@ class ImageGenerationTool(ToolBase):
             result = self.adapter.generate(input)
             if result.status == "succeeded":
                 result = materialize_image_generation_result(result)
+                result = _publish_image_ids(result)
         except ProviderAdapterError as exc:
             data, contract = _image_generation_provider_error_contract(exc)
             return ToolResult(
@@ -113,6 +115,7 @@ def _image_generation_output_contract(
         or ([result.image_url] if result.image_url else []),
         "download_url": result.download_url,
         "download_urls": result.download_urls,
+        "image_id": result.image_id,
         "request_id": result.request_id,
         "prompt": result.prompt,
         "prompt_used": result.prompt_used or result.prompt,
@@ -174,6 +177,7 @@ def _image_generation_model_observation(data: dict[str, Any]) -> dict[str, Any]:
     )
     observation: dict[str, Any] = {
         "images": list(dict.fromkeys(image_urls)),
+        "image_id": data.get("image_id"),
         "errors": data.get("errors"),
     }
     if not image_urls:
@@ -192,3 +196,23 @@ def _image_generation_summary(data: dict[str, Any]) -> str:
     if isinstance(errors, list) and errors and isinstance(errors[0], dict):
         return str(errors[0].get("message") or "Image generation failed.")
     return "Image generation failed."
+
+
+def _publish_image_ids(
+    result: ImageGenerationResult,
+) -> ImageGenerationResult:
+    refs = result.download_urls or (
+        [result.download_url] if result.download_url else []
+    )
+    if not refs and result.output_ref:
+        refs = [result.output_ref]
+    image_ids: list[str] = []
+    for ref in refs:
+        payload = generated_artifact_payload(ref)
+        if payload is None:
+            continue
+        image_id = payload.image_id.rsplit(".", 1)[0]
+        if not image_id:
+            continue
+        image_ids.append(image_id)
+    return result.model_copy(update={"image_id": list(dict.fromkeys(image_ids))})

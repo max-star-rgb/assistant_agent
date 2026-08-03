@@ -31,6 +31,15 @@ class StoredArtifact:
     source_url: str
 
 
+@dataclass(frozen=True)
+class GeneratedArtifactPayload:
+    """Bounded image payload safe for the rendering WebSocket contract."""
+
+    image_id: str
+    media_type: str
+    base64_data: str
+
+
 def materialize_image_generation_result(
     result: ImageGenerationResult,
     *,
@@ -109,6 +118,32 @@ def generated_artifact_data_url(
         return None
     encoded = base64.b64encode(payload).decode("ascii")
     return f"data:{media_type};base64,{encoded}"
+
+
+def generated_artifact_payload(
+    output_ref: str,
+    *,
+    artifact_dir: Path | None = None,
+    max_bytes: int = MAX_ARTIFACT_BYTES,
+) -> GeneratedArtifactPayload | None:
+    """Read one backend-owned image for the IMAGE rendering detail."""
+
+    data_url = generated_artifact_data_url(
+        output_ref,
+        artifact_dir=artifact_dir,
+        max_bytes=max_bytes,
+    )
+    if data_url is None:
+        return None
+    parsed = urlparse(output_ref)
+    image_id = Path(parsed.path).name
+    header, base64_data = data_url.split(",", 1)
+    media_type = header.removeprefix("data:").removesuffix(";base64")
+    return GeneratedArtifactPayload(
+        image_id=image_id,
+        media_type=media_type,
+        base64_data=base64_data,
+    )
 
 
 def store_remote_artifact(

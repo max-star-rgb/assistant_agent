@@ -38,6 +38,9 @@ from assistant_agent.tools.ids import (
 from assistant_agent.tools.base import ToolBase, ToolContext
 
 
+LIVE_VIEW_SNAPSHOT_WAIT_SECONDS = 10.0
+
+
 class VideoUnderstandingBranch(ToolBase):
     """Shared explicit-video and governed live-view execution branch."""
 
@@ -84,12 +87,20 @@ class VideoUnderstandingBranch(ToolBase):
             not observation_mode and _is_agent_service_realtime_video_tool_call(context)
         )
         snapshot = None
+        status_snapshot = None
+        visual_target_sequence = self._live_target_sequence(context)
         if (
             video_ref
             and agent_service_text_only
             and self.memory_store is not None
         ):
-            snapshot = self.memory_store.snapshot(video_ref)
+            snapshot = self._live_snapshot_for_request(
+                video_ref,
+                context=context,
+            )
+            status_snapshot = snapshot
+            if snapshot is None and visual_target_sequence is not None:
+                status_snapshot = self.memory_store.snapshot(video_ref)
             if snapshot is not None and (
                 snapshot.healthy
                 or (
@@ -97,10 +108,31 @@ class VideoUnderstandingBranch(ToolBase):
                     and snapshot.last_success_sequence is not None
                 )
             ):
-                return self._memory_result(snapshot)
+                return self._memory_result(
+                    snapshot,
+                    target_sequence=visual_target_sequence,
+                )
         if agent_service_text_only:
+            status_override = None
+            if (
+                video_ref
+                and visual_target_sequence is not None
+                and snapshot is None
+                and self.memory_store is not None
+            ):
+                status_override = (
+                    "failed"
+                    if self.memory_store.sequence_failed(
+                        video_ref,
+                        target_sequence=visual_target_sequence,
+                    )
+                    else "pending"
+                )
             return self._memory_unavailable_result(
-                video_ref=video_ref, snapshot=snapshot
+                video_ref=video_ref,
+                snapshot=status_snapshot,
+                target_sequence=visual_target_sequence,
+                status_override=status_override,
             )
 
         input = self._with_context_frames(input)
@@ -170,6 +202,44 @@ class VideoUnderstandingBranch(ToolBase):
             ),
         )
 
+    def _live_snapshot_for_request(
+        self,
+        video_ref: str,
+        *,
+        context: ToolContext,
+    ) -> RealtimeVideoSnapshot | None:
+        if self.memory_store is None:
+            return None
+        target_sequence = self._live_target_sequence(context)
+        if target_sequence is not None:
+            return self.memory_store.wait_for_snapshot_sequence(
+                video_ref,
+                target_sequence=target_sequence,
+                timeout_seconds=LIVE_VIEW_SNAPSHOT_WAIT_SECONDS,
+            )
+        return self.memory_store.snapshot(video_ref)
+
+    @staticmethod
+    def _live_target_sequence(context: ToolContext) -> int | None:
+        request_metadata = context.metadata.get("request_metadata")
+        agent_service = (
+            request_metadata.get("agent_service")
+            if isinstance(request_metadata, dict)
+            else None
+        )
+        target_sequence = (
+            agent_service.get("visual_target_sequence")
+            if isinstance(agent_service, dict)
+            else None
+        )
+        if (
+            not isinstance(target_sequence, bool)
+            and isinstance(target_sequence, int)
+            and target_sequence >= 0
+        ):
+            return target_sequence
+        return None
+
     def _sync_client_video_adapter(self) -> None:
         if (
             isinstance(self.client, AdapterVisionUnderstandingClient)
@@ -177,10 +247,16 @@ class VideoUnderstandingBranch(ToolBase):
         ):
             self.client.video_adapter = self.adapter
 
-    def _memory_result(self, snapshot: RealtimeVideoSnapshot) -> ToolResult:
+    def _memory_result(
+        self,
+        snapshot: RealtimeVideoSnapshot,
+        *,
+        target_sequence: int | None = None,
+    ) -> ToolResult:
         output_ref = f"memory://realtime-video/{_safe_ref(snapshot.video_id)}"
-        status = _snapshot_status(snapshot)
+        status = _snapshot_status(snapshot, target_sequence=target_sequence)
         description = _memory_description(snapshot, status=status)
+        sequence_gap = _sequence_gap(snapshot, target_sequence=target_sequence)
         payload = {
             "status": status,
             "summary": snapshot.current_state,
@@ -207,6 +283,9 @@ class VideoUnderstandingBranch(ToolBase):
             "media_kind": "live_view",
             "media_refs": [snapshot.video_id],
             "snapshot_sequence": snapshot.last_success_sequence,
+            "target_sequence": target_sequence,
+            "sequence_gap": sequence_gap,
+            "fallback_used": sequence_gap > 0,
             "observed_timestamp_ms": snapshot.last_success_timestamp_ms,
             "keyframe_count": len(snapshot.keyframes),
         }
@@ -221,6 +300,8 @@ class VideoUnderstandingBranch(ToolBase):
                 "latency_ms": 0,
                 "source": "rolling_video_memory",
                 "snapshot_sequence": snapshot.last_success_sequence,
+                "target_sequence": target_sequence,
+                "sequence_gap": sequence_gap,
                 "keyframe_count": len(snapshot.keyframes),
             },
         )
@@ -237,6 +318,7 @@ class VideoUnderstandingBranch(ToolBase):
                 snapshot=snapshot,
                 provider=snapshot.provider or "rolling_video_memory",
                 model=snapshot.model,
+                target_sequence=target_sequence,
             ),
         )
 
@@ -245,11 +327,17 @@ class VideoUnderstandingBranch(ToolBase):
         *,
         video_ref: str | None,
         snapshot: RealtimeVideoSnapshot | None,
+        target_sequence: int | None = None,
+        status_override: str | None = None,
     ) -> ToolResult:
         output_ref = (
             f"memory://realtime-video/{_safe_ref(video_ref or 'video')}/pending"
         )
-        status = _snapshot_status(snapshot)
+        status = status_override or _snapshot_status(
+            snapshot,
+            target_sequence=target_sequence,
+        )
+        sequence_gap = _sequence_gap(snapshot, target_sequence=target_sequence)
         pending_count = snapshot.pending_count if snapshot is not None else 0
         in_flight = snapshot.in_flight if snapshot is not None else False
         error_code = _snapshot_error_code(snapshot)
@@ -287,6 +375,9 @@ class VideoUnderstandingBranch(ToolBase):
             "snapshot_sequence": (
                 snapshot.last_success_sequence if snapshot is not None else None
             ),
+            "target_sequence": target_sequence,
+            "sequence_gap": sequence_gap,
+            "fallback_used": sequence_gap > 0,
             "observed_timestamp_ms": (
                 snapshot.last_success_timestamp_ms if snapshot is not None else None
             ),
@@ -302,7 +393,10 @@ class VideoUnderstandingBranch(ToolBase):
             "source": "realtime_video_memory_unavailable",
             "media_kind": "live_view",
             "media_refs": [video_ref] if video_ref else [],
-            "snapshot_sequence": payload["snapshot_sequence"],
+                "snapshot_sequence": payload["snapshot_sequence"],
+                "target_sequence": target_sequence,
+                "sequence_gap": sequence_gap,
+                "fallback_used": sequence_gap > 0,
             "pending_count": pending_count,
             "in_flight": in_flight,
             "error_code": error_code,
@@ -337,6 +431,7 @@ class VideoUnderstandingBranch(ToolBase):
                 snapshot=snapshot,
                 provider="rolling_video_memory",
                 model=None,
+                target_sequence=target_sequence,
             ),
         )
 
@@ -347,6 +442,7 @@ class VideoUnderstandingBranch(ToolBase):
         snapshot: RealtimeVideoSnapshot | None,
         provider: str | None,
         model: str | None,
+        target_sequence: int | None = None,
     ) -> dict[str, object]:
         diagnostics = snapshot.observation_diagnostics if snapshot is not None else None
         published_at_ms = (
@@ -357,15 +453,21 @@ class VideoUnderstandingBranch(ToolBase):
             if published_at_ms is not None
             else None
         )
+        sequence_gap = _sequence_gap(snapshot, target_sequence=target_sequence)
         return {
             "source": source,
             "snapshot_age_ms": snapshot_age_ms,
             "observation_latency_ms": (
                 diagnostics.observation_latency_ms if diagnostics is not None else None
             ),
+            "semantic_publish_latency_ms": (
+                diagnostics.semantic_publish_latency_ms if diagnostics is not None else None
+            ),
             "pending_count": snapshot.pending_count if snapshot is not None else 0,
             "in_flight": snapshot.in_flight if snapshot is not None else False,
-            "fallback_used": False,
+            "fallback_used": sequence_gap > 0,
+            "target_sequence": target_sequence,
+            "sequence_gap": sequence_gap,
             "snapshot_sequence": snapshot.last_success_sequence
             if snapshot is not None
             else None,
@@ -414,11 +516,32 @@ def _is_agent_service_realtime_video_tool_call(context: ToolContext) -> bool:
     return is_trusted_agent_service_request(request_metadata)
 
 
-def _snapshot_status(snapshot: RealtimeVideoSnapshot | None) -> str:
+def _sequence_gap(
+    snapshot: RealtimeVideoSnapshot | None,
+    *,
+    target_sequence: int | None,
+) -> int:
+    if target_sequence is None:
+        return 0
+    snapshot_sequence = (
+        snapshot.last_success_sequence if snapshot is not None else None
+    )
+    if snapshot_sequence is None:
+        return target_sequence
+    return max(0, target_sequence - snapshot_sequence)
+
+
+def _snapshot_status(
+    snapshot: RealtimeVideoSnapshot | None,
+    *,
+    target_sequence: int | None = None,
+) -> str:
     if snapshot is None:
         return "unavailable"
     has_success = snapshot.last_success_sequence is not None
     pending = snapshot.in_flight or snapshot.pending_count > 0
+    if has_success and _sequence_gap(snapshot, target_sequence=target_sequence) > 0:
+        return "stale"
     if has_success and pending:
         return "refreshing"
     if has_success and snapshot.last_observation_status == "failed":
@@ -518,6 +641,9 @@ def _video_model_observation(payload: dict[str, Any]) -> dict[str, Any]:
         "brands",
         "colors",
         "materials",
+        "target_sequence",
+        "sequence_gap",
+        "fallback_used",
         "text_in_video",
         "timestamps",
         "style_tags",

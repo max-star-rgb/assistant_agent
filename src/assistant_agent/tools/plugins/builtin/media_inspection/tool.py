@@ -196,7 +196,7 @@ class LiveViewInspectTool(MediaInspectTool):
     """Inspect the latest governed snapshot from a trusted live media session."""
 
     name = LIVE_VIEW_INSPECT_TOOL_NAME
-    description = "查询可信实时媒体会话的最新画面。"
+    description = "在用户询问视频内容时获取实时画面的文本描述"
     requires_media = ["video"]
     media_scope = "live"
 

@@ -260,6 +260,7 @@ def _realtime_video_trace(pack: AssistantContextPack) -> dict[str, Any]:
         "completed_sequence": context.completed_sequence,
         "first_delta_latency_ms": context.first_delta_latency_ms,
         "total_observation_latency_ms": context.total_observation_latency_ms,
+        "semantic_publish_latency_ms": context.semantic_publish_latency_ms,
     }
     trace.update({key: value for key, value in optional_values.items() if value is not None})
     return trace

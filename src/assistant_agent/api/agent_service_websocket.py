@@ -18,8 +18,9 @@ from assistant_agent.gateway.runtime_adapter import GatewayRuntimeAdapter
 from assistant_agent.identity import RequestIdentity
 from assistant_agent.runtime.generated_artifacts import (
     MAX_DELIVERED_IMAGE_COUNT,
-    generated_artifact_data_url,
+    generated_artifact_payload,
 )
+from assistant_agent.media.media_relay_delivery import media_relay_connection_registry
 from assistant_agent.runtime.requests import UserRequest
 from assistant_agent.observability.agent_service_delivery import (
     AgentServiceDelivery,
@@ -98,6 +99,23 @@ class AgentServiceConnectionState:
     sent_bytes: int = 0
     failure_count: int = 0
     closed: bool = False
+    message_received_ns: int | None = None
+    connection_id: str = field(
+        default_factory=lambda: new_prefixed_uuid7("media-relay-connection", separator="-")
+    )
+
+
+@dataclass
+class _VisualTargetLease:
+    observer: RealtimeVideoObserver
+    sequence: int
+    released: bool = False
+
+    def release(self) -> None:
+        if self.released:
+            return
+        self.observer.release_sequence(self.sequence)
+        self.released = True
 
 
 @dataclass(frozen=True)
@@ -113,6 +131,8 @@ class PreparedChat:
     received_ns: int
     accepted_ns: int | None
     session_turn: int
+    video_target_frame: VideoFrame | None = None
+    visual_target_lease: _VisualTargetLease | None = None
 
 
 class AgentServiceProtocolError(ValueError):
@@ -405,6 +425,11 @@ class VideoHandler(BaseHandler):
                 frame,
                 metadata={
                     **(frame.metadata if isinstance(frame.metadata, dict) else {}),
+                    "video_ingress_ns": (
+                        state.message_received_ns
+                        if state.message_received_ns is not None
+                        else decode_started_ns
+                    ),
                     "h264_decode_latency_ms": _elapsed_ms(
                         decode_started_ns,
                         decode_finished_ns,
@@ -534,6 +559,7 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
         while True:
             raw = await websocket.receive_text()
             received_ns = state.clock_ns()
+            state.message_received_ns = received_ns
             inbound_message = _inbound_message_type(raw)
             state.received_message_count += 1
             state.received_bytes += len(raw.encode("utf-8"))
@@ -554,6 +580,7 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
                     await _send_response(websocket, prepared_or_error, state=state)
                     continue
                 prepared = prepared_or_error
+                _bind_media_relay_connection(websocket, state)
                 expects_ack = state.client_capabilities.get("chatResponseAck", False)
                 delivery = state.delivery_registry.accept(
                     prepared.session_id,
@@ -562,6 +589,10 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
                 )
                 accepted_ns = state.clock_ns()
                 prepared = replace(prepared, accepted_ns=accepted_ns)
+                prepared = await _protect_chat_visual_target(
+                    state=state,
+                    prepared=prepared,
+                )
                 timing = AgentServiceTurnTiming(
                     delivery_id=delivery.delivery_id,
                     session_turn=prepared.session_turn,
@@ -588,14 +619,19 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
                 )
                 state.chat_tasks.add(task)
                 state.chat_task_deliveries[task] = delivery.delivery_id
+                visual_target_lease = prepared.visual_target_lease
                 task.add_done_callback(
-                    lambda completed, connection_state=state: _discard_chat_task(
+                    lambda completed,
+                    connection_state=state,
+                    visual_lease=visual_target_lease: _discard_chat_task(
                         connection_state,
                         completed,
+                        visual_target_lease=visual_lease,
                     )
                 )
                 continue
             response = await _handle_raw_message(raw, state=state)
+            _bind_media_relay_connection(websocket, state)
             await _send_response(websocket, response, state=state)
     except WebSocketDisconnect as exc:
         close_code, close_reason = exc.code, exc.reason
@@ -679,6 +715,7 @@ async def _cleanup_agent_service_connection(
     close_reason: str | None,
 ) -> None:
     state.closed = True
+    media_relay_connection_registry.unregister(state.connection_id)
     for delivery in state.delivery_registry.pending():
         timing = state.turn_timings.get(delivery.delivery_id)
         if timing is not None:
@@ -712,7 +749,14 @@ async def _cleanup_agent_service_connection(
     await gateway_manager.close()
 
 
-def _discard_chat_task(state: AgentServiceConnectionState, task: asyncio.Task) -> None:
+def _discard_chat_task(
+    state: AgentServiceConnectionState,
+    task: asyncio.Task,
+    *,
+    visual_target_lease: _VisualTargetLease | None = None,
+) -> None:
+    if visual_target_lease is not None:
+        visual_target_lease.release()
     state.chat_tasks.discard(task)
     delivery_id = state.chat_task_deliveries.pop(task, None)
     if delivery_id is not None:
@@ -876,6 +920,20 @@ def _prepare_chat_raw_message(
         state.session_turn_counter += 1
         state.session_id = protocol_session_id
         state.chats.append(dict(body))
+        active_video_ids = list(state.video_ids)
+        latest_video_frame = (
+            state.latest_video_frames.get(active_video_ids[-1])
+            if active_video_ids
+            else None
+        )
+        video_target_frame = latest_video_frame
+        if latest_video_frame is not None and state.video_observer is not None:
+            nearest_keyframe = state.video_observer.latest_keyframe_at_or_before(
+                latest_video_frame.video_id,
+                target_sequence=latest_video_frame.sequence,
+            )
+            if nearest_keyframe is not None:
+                video_target_frame = nearest_keyframe
         return PreparedChat(
             session_id=session_id,
             response_session_id=response_session_id,
@@ -884,7 +942,8 @@ def _prepare_chat_raw_message(
             user_number=user_number,
             latest_speech=latest_speech,
             contents=contents,
-            video_ids=list(state.video_ids),
+            video_ids=active_video_ids,
+            video_target_frame=video_target_frame,
             received_ns=received_ns,
             accepted_ns=None,
             session_turn=state.session_turn_counter,
@@ -950,18 +1009,48 @@ async def _run_chat_delivery(
             if timing is not None:
                 timing.mark("queue_acquired", at_ns=state.clock_ns())
                 timing.mark("gateway_started", at_ns=state.clock_ns())
-            turn = await _run_agent_service_chat_turn(
-                state=state,
-                session_id=prepared.session_id,
-                user_number=prepared.user_number,
-                chat_index=prepared.chat_index,
-                latest_speech=prepared.latest_speech,
-                contents=prepared.contents,
-                video_ids=prepared.video_ids,
-                stream_requested=prepared_stream_requested,
-                on_stream_chunk=send_delta if prepared_stream_requested else None,
-                on_correlation=bind_correlation,
-            )
+            target_frame = prepared.video_target_frame
+            observer = state.video_observer
+            visual_target_lease = prepared.visual_target_lease
+            if target_frame is not None and observer is not None:
+                if (
+                    visual_target_lease is None
+                    or visual_target_lease.observer is not observer
+                ):
+                    observer.pin_sequence(target_frame.sequence)
+                    visual_target_lease = _VisualTargetLease(
+                        observer=observer,
+                        sequence=target_frame.sequence,
+                    )
+                try:
+                    await observer.promote(target_frame)
+                except Exception as exc:  # noqa: BLE001 - tool can fall back to older text.
+                    logger.warning(
+                        "realtime visual target promotion failed session_digest=%s "
+                        "sequence=%s error_type=%s",
+                        digest_identifier(prepared.session_id),
+                        target_frame.sequence,
+                        type(exc).__name__,
+                    )
+            try:
+                turn = await _run_agent_service_chat_turn(
+                    state=state,
+                    session_id=prepared.session_id,
+                    user_number=prepared.user_number,
+                    chat_index=prepared.chat_index,
+                    latest_speech=prepared.latest_speech,
+                    contents=prepared.contents,
+                    video_ids=prepared.video_ids,
+                    visual_target_sequence=(
+                        target_frame.sequence if target_frame is not None else None
+                    ),
+                    stream_requested=prepared_stream_requested,
+                    on_stream_chunk=send_delta if prepared_stream_requested else None,
+                    on_correlation=bind_correlation,
+                )
+            finally:
+                if visual_target_lease is not None:
+                    visual_target_lease.release()
             if timing is not None:
                 timing.mark("gateway_finished", at_ns=state.clock_ns())
                 timing.bind_turn(
@@ -1100,6 +1189,32 @@ async def _run_chat_delivery(
             await asyncio.gather(progress_task, return_exceptions=True)
 
 
+async def _protect_chat_visual_target(
+    *,
+    state: AgentServiceConnectionState,
+    prepared: PreparedChat,
+) -> PreparedChat:
+    """Protect the keyframe chosen at chat arrival from later queue replacement."""
+
+    target_frame = prepared.video_target_frame
+    observer = state.video_observer
+    if target_frame is None or observer is None:
+        return prepared
+    observer.pin_sequence(target_frame.sequence)
+    lease = _VisualTargetLease(observer=observer, sequence=target_frame.sequence)
+    try:
+        await observer.promote(target_frame)
+    except Exception as exc:  # noqa: BLE001 - turn can still use an earlier snapshot.
+        logger.warning(
+            "realtime visual target early promotion failed session_digest=%s "
+            "sequence=%s error_type=%s",
+            digest_identifier(prepared.session_id),
+            target_frame.sequence,
+            type(exc).__name__,
+        )
+    return replace(prepared, visual_target_lease=lease)
+
+
 async def _emit_periodic_chat_progress(
     websocket: WebSocket,
     *,
@@ -1150,7 +1265,9 @@ def _prepared_chat_response(
         if image_details:
             intent_result["detail"] = image_details
         body = {
+            "number": prepared.user_number,
             "message": {
+                "type": "BRIEF",
                 "chatIndex": prepared.chat_index,
                 "content": {"intentResult": intent_result},
             },
@@ -1182,10 +1299,33 @@ def _generated_image_details(output_refs: Any) -> list[dict[str, str]]:
     for output_ref in output_refs[:MAX_DELIVERED_IMAGE_COUNT]:
         if not isinstance(output_ref, str):
             continue
-        image = generated_artifact_data_url(output_ref)
-        if image is not None:
-            details.append({"type": "IMAGE", "image": image})
+        artifact = generated_artifact_payload(output_ref)
+        if artifact is not None:
+            details.append(
+                {
+                    "type": "IMAGE",
+                    "imageId": artifact.image_id,
+                    "image": artifact.base64_data,
+                }
+            )
     return details
+
+
+def _bind_media_relay_connection(websocket: WebSocket, state: AgentServiceConnectionState) -> None:
+    number = _optional_text(state.session_id)
+    runtime_session_id = _optional_text(state.runtime_session_id)
+    if number is None or runtime_session_id is None:
+        return
+
+    async def send(response: dict[str, Any]) -> None:
+        await _send_response(websocket, response, state=state)
+
+    media_relay_connection_registry.register(
+        connection_id=state.connection_id,
+        session_ids=[runtime_session_id, number],
+        number=number,
+        send=send,
+    )
 
 
 def _remaining_stream_text(full_text: str, streamed_text: str) -> str:
@@ -1473,6 +1613,7 @@ async def _run_agent_service_chat_turn(
     latest_speech: str,
     contents: list[Any],
     video_ids: list[str] | None = None,
+    visual_target_sequence: int | None = None,
     stream_requested: bool = False,
     on_stream_chunk: GatewayStreamChunkConsumer | None = None,
     on_correlation: GatewayTurnCorrelationObserver | None = None,
@@ -1496,6 +1637,7 @@ async def _run_agent_service_chat_turn(
                 user_number=user_number,
                 chat_index=chat_index,
                 content_count=len(contents),
+                visual_target_sequence=visual_target_sequence,
             ),
             config={
                 "system_prompt_profile": "text_default",
@@ -1559,6 +1701,7 @@ def _agent_service_gateway_metadata(
     user_number: str,
     chat_index: Any,
     content_count: int,
+    visual_target_sequence: int | None = None,
 ) -> dict[str, Any]:
     metadata = {
         "transport": "agent_service_websocket",
@@ -1575,6 +1718,9 @@ def _agent_service_gateway_metadata(
             "entry_capabilities": AGENT_SERVICE_ENTRY_CAPABILITIES.to_metadata(),
         },
     }
+    if visual_target_sequence is not None:
+        metadata["agent_service"]["visual_target_sequence"] = visual_target_sequence
+        metadata["realtime_video_target_sequence"] = visual_target_sequence
     return metadata
 
 

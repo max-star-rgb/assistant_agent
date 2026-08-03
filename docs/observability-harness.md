@@ -152,6 +152,8 @@ wrapper 和 WebSocket send 组合为尽可能不重叠的 critical path：
 
 Provider/Tool 自报 latency、ACK latency 和视频 freshness 是嵌套或次级诊断，不再次计入 critical path。
 最大 critical-path stage 是 bottleneck；`unattributed` 为正时也是合法候选，而不是自动归因给 Provider。
+实时视频的 `semantic_publish_latency_ms` 使用进程单调时钟计算从 Agent-Service WebSocket 收到视频消息
+到成功语义发布的端到端耗时；它是后台视频诊断，不与 chat critical path 重复相加。
 
 超时或取消中的摘要可以同时表达 entry failure、runtime pending cancel 和 terminal unknown。
 这类摘要是截止某一时刻的事实，不得替代之后出现的 `run.cancelled` 或 `run.failed`。

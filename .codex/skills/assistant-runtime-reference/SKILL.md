@@ -15,6 +15,8 @@ Read `docs/gateway-architecture.md` first for current `assistant_agent` Gateway 
 
 When the task touches `/agent-service/v1`, media `assistantControl` / `chat` / `audio` / `video` / `interrupt`, `chatResponse`, `chatResponseAck`, H.264 Hex video, Media-Agent streaming semantics, or media-side compatibility examples, also read `docs/media-agent-service-websocket.md`. That file is the single authority for the Media-Agent wire protocol and replaces ad hoc temporary protocol notes.
 
+IMAGE、TD_MODEL、VIDEO 渲染投递、`/torender`、图片转 3D 及其回调也统一以 `docs/media-agent-service-websocket.md` 为准。媒体服务是转发代理；Agent 与渲染服务没有直连，不要虚构 Agent 到渲染服务的 HTTP 或 WebSocket 接口。
+
 Use the legacy `runTime` files only after that current project entry, and only when protocol compatibility or behavior comparison is needed.
 
 ## When To Read runTime

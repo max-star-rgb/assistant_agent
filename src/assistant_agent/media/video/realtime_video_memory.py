@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from threading import Lock
+from threading import Condition, Lock
+from time import monotonic
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -32,6 +33,8 @@ class RealtimeVideoObservationDiagnostics(BaseModel):
     queue_wait_latency_ms: int | None = Field(default=None, ge=0)
     observation_latency_ms: int | None = Field(default=None, ge=0)
     published_at_ms: int | None = Field(default=None, ge=0)
+    published_at_ns: int | None = Field(default=None, ge=0)
+    semantic_publish_latency_ms: int | None = Field(default=None, ge=0)
     transport: str | None = Field(default=None, max_length=40)
     session_generation: int | None = Field(default=None, ge=1)
     connection_reused: bool | None = None
@@ -81,15 +84,27 @@ class RealtimeVideoSnapshot(BaseModel):
 class RealtimeVideoMemoryStore:
     """Thread-safe rolling semantic snapshots keyed by opaque video id."""
 
-    def __init__(self, *, max_keyframes: int = 8, max_events: int = 50) -> None:
+    def __init__(
+        self,
+        *,
+        max_keyframes: int = 8,
+        max_events: int = 50,
+        max_snapshots: int = 64,
+    ) -> None:
         if max_keyframes <= 0:
             raise ValueError("max_keyframes must be positive")
         if max_events <= 0:
             raise ValueError("max_events must be positive")
+        if max_snapshots <= 0:
+            raise ValueError("max_snapshots must be positive")
         self.max_keyframes = max_keyframes
         self.max_events = max_events
+        self.max_snapshots = max_snapshots
         self._snapshots: dict[str, RealtimeVideoSnapshot] = {}
+        self._successful_history: dict[str, list[RealtimeVideoSnapshot]] = {}
+        self._failed_sequences: dict[str, list[int]] = {}
         self._lock = Lock()
+        self._condition = Condition(self._lock)
 
     def record_success(
         self,
@@ -103,11 +118,21 @@ class RealtimeVideoMemoryStore:
 
         with self._lock:
             current = self._snapshots.get(video_id) or RealtimeVideoSnapshot(video_id=video_id)
-            all_keyframes = [*current.keyframes, frame]
+            current_sequence = current.last_success_sequence
+            out_of_order = current_sequence is not None and frame.sequence < current_sequence
+            base = (
+                self._snapshot_at_or_before_sequence_locked(
+                    video_id,
+                    target_sequence=max(0, frame.sequence - 1),
+                )
+                if out_of_order
+                else current
+            ) or RealtimeVideoSnapshot(video_id=video_id)
+            all_keyframes = [*base.keyframes, frame]
             evicted = all_keyframes[: max(0, len(all_keyframes) - self.max_keyframes)]
             retained = all_keyframes[-self.max_keyframes :]
-            events = _bounded_unique([*current.events, *result.events], self.max_events)
-            self._snapshots[video_id] = current.model_copy(
+            events = _bounded_unique([*base.events, *result.events], self.max_events)
+            updated = base.model_copy(
                 update={
                     "current_state": result.summary,
                     "objects": list(result.objects),
@@ -135,7 +160,19 @@ class RealtimeVideoMemoryStore:
                 },
                 deep=True,
             )
-            return list(evicted)
+            if not out_of_order:
+                self._snapshots[video_id] = updated
+            history = [*self._successful_history.get(video_id, []), updated]
+            self._successful_history[video_id] = history[-self.max_snapshots :]
+            failed_sequences = self._failed_sequences.get(video_id, [])
+            if frame.sequence in failed_sequences:
+                self._failed_sequences[video_id] = [
+                    sequence
+                    for sequence in failed_sequences
+                    if sequence != frame.sequence
+                ]
+            self._condition.notify_all()
+            return [] if out_of_order else list(evicted)
 
     def record_failure(
         self,
@@ -150,6 +187,19 @@ class RealtimeVideoMemoryStore:
         _ = frame
         with self._lock:
             current = self._snapshots.get(video_id) or RealtimeVideoSnapshot(video_id=video_id)
+            if (
+                current.last_success_sequence is not None
+                and frame.sequence < current.last_success_sequence
+            ):
+                failed_sequences = [
+                    *self._failed_sequences.get(video_id, []),
+                    frame.sequence,
+                ]
+                self._failed_sequences[video_id] = list(
+                    dict.fromkeys(failed_sequences)
+                )[-self.max_snapshots :]
+                self._condition.notify_all()
+                return
             update: dict[str, Any] = {
                 "last_observation_status": "failed",
                 "last_error": dict(error),
@@ -170,6 +220,14 @@ class RealtimeVideoMemoryStore:
                 update=update,
                 deep=True,
             )
+            failed_sequences = [
+                *self._failed_sequences.get(video_id, []),
+                frame.sequence,
+            ]
+            self._failed_sequences[video_id] = list(
+                dict.fromkeys(failed_sequences)
+            )[-self.max_snapshots :]
+            self._condition.notify_all()
 
     def mark_pending(self, video_id: str, *, pending_count: int, in_flight: bool) -> None:
         """Update bounded queue state without changing observation health."""
@@ -191,11 +249,113 @@ class RealtimeVideoMemoryStore:
             snapshot = self._snapshots.get(video_id)
             return snapshot.model_copy(deep=True) if snapshot is not None else None
 
+    def snapshot_at_or_before_sequence(
+        self,
+        video_id: str,
+        *,
+        target_sequence: int,
+    ) -> RealtimeVideoSnapshot | None:
+        """Return the newest successful snapshot that cannot follow the target frame."""
+
+        if isinstance(target_sequence, bool) or target_sequence < 0:
+            return None
+        with self._lock:
+            return self._snapshot_at_or_before_sequence_locked(
+                video_id,
+                target_sequence=target_sequence,
+            )
+
+    def snapshot_for_sequence(
+        self,
+        video_id: str,
+        *,
+        target_sequence: int,
+    ) -> RealtimeVideoSnapshot | None:
+        """Return the successful semantic snapshot for one exact frame sequence."""
+
+        if isinstance(target_sequence, bool) or target_sequence < 0:
+            return None
+        with self._lock:
+            return self._snapshot_for_sequence_locked(
+                video_id,
+                target_sequence=target_sequence,
+            )
+
+    def sequence_failed(self, video_id: str, *, target_sequence: int) -> bool:
+        """Return whether one target sequence has an explicit terminal failure."""
+
+        if isinstance(target_sequence, bool) or target_sequence < 0:
+            return False
+        with self._lock:
+            return target_sequence in self._failed_sequences.get(video_id, [])
+
+    def wait_for_snapshot_sequence(
+        self,
+        video_id: str,
+        *,
+        target_sequence: int,
+        timeout_seconds: float,
+    ) -> RealtimeVideoSnapshot | None:
+        """Wait for the target frame, then fall back only to an earlier snapshot."""
+
+        if (
+            isinstance(target_sequence, bool)
+            or target_sequence < 0
+            or timeout_seconds < 0
+        ):
+            return None
+        deadline = monotonic() + timeout_seconds
+        with self._condition:
+            while True:
+                snapshot = self._snapshot_for_sequence_locked(
+                    video_id,
+                    target_sequence=target_sequence,
+                )
+                if snapshot is not None:
+                    return snapshot
+                remaining = deadline - monotonic()
+                if remaining <= 0:
+                    return self._snapshot_at_or_before_sequence_locked(
+                        video_id,
+                        target_sequence=target_sequence,
+                    )
+                self._condition.wait(remaining)
+
+    def _snapshot_for_sequence_locked(
+        self,
+        video_id: str,
+        *,
+        target_sequence: int,
+    ) -> RealtimeVideoSnapshot | None:
+        for snapshot in reversed(self._successful_history.get(video_id, [])):
+            if snapshot.last_success_sequence == target_sequence:
+                return snapshot.model_copy(deep=True)
+        return None
+
+    def _snapshot_at_or_before_sequence_locked(
+        self,
+        video_id: str,
+        *,
+        target_sequence: int,
+    ) -> RealtimeVideoSnapshot | None:
+        candidates = [
+            snapshot
+            for snapshot in self._successful_history.get(video_id, [])
+            if snapshot.last_success_sequence is not None
+            and snapshot.last_success_sequence <= target_sequence
+        ]
+        if not candidates:
+            return None
+        selected = max(candidates, key=lambda snapshot: snapshot.last_success_sequence or 0)
+        return selected.model_copy(deep=True)
+
     def remove_video(self, video_id: str) -> RealtimeVideoSnapshot | None:
         """Remove and return one video's semantic state."""
 
         with self._lock:
             snapshot = self._snapshots.pop(video_id, None)
+            self._successful_history.pop(video_id, None)
+            self._failed_sequences.pop(video_id, None)
             return snapshot.model_copy(deep=True) if snapshot is not None else None
 
 
@@ -262,6 +422,9 @@ def project_realtime_video_context(
         frame_capture_age_ms=capture_age,
         snapshot_publish_age_ms=publish_age,
         observation_latency_ms=(diagnostics.observation_latency_ms if diagnostics is not None else None),
+        semantic_publish_latency_ms=(
+            diagnostics.semantic_publish_latency_ms if diagnostics is not None else None
+        ),
         provider=_clip_text(snapshot.provider or "", 80) or None,
         model=_clip_text(snapshot.model or "", 120) or None,
         pending_count=snapshot.pending_count,

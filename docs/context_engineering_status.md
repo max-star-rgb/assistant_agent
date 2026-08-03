@@ -51,7 +51,7 @@ Context engineering 不负责：
 - 当前真实用户请求；
 - session summary 及其后尚未覆盖的已完成原始轮次；
 - session-scoped 长期记忆快照；
-- realtime video、durable task、plan state 等显式可信上下文；
+- realtime video 等只供 runtime/观测使用的可信状态，以及 durable task、plan state 等可编译上下文；
 - 当前 run 的 prompt-safe tool observations；
 - 本轮已治理的 `ToolSpec` 与 `RunToolCatalog`；
 - owner persona 和项目 Skill 等具有明确 authority/stability 的 `ContextSection`；
@@ -153,9 +153,15 @@ Provider prompt。普通请求不能因携带类似 Gateway 的 metadata 而隐�
 
 ### Realtime video
 
-后台 observer、共享语义快照和主 LLM 是三个边界。主 LLM 只接收有界、prompt-safe、带新鲜度状态的
-视觉语义，不接收帧、媒体路径、VLM prompt 或 raw response。实时观察结果必须独立记账，不并入
-conversation、memory、task state 或普通 tool observation。完整媒体协议见
+后台 observer、共享语义快照和主 LLM 是三个边界。Runtime 只根据可信入口 profile 和结构化
+`video_ids` 判断是否向主 LLM 暴露 `live_view_inspect`；不得把镜头能力状态、共享语义快照、
+新鲜度、帧、媒体路径、VLM prompt 或 raw response 被动编译进 Provider prompt。主 LLM 只有自主调用
+`live_view_inspect` 后，才能通过该次受治理的 Tool observation 消费视觉语义。Agent-Service 在用户
+请求到达时以此前最新原始帧为边界，冻结不晚于该边界的最近已选关键帧；若没有关键帧才提升最新原始
+帧。工具对已缓存文本立即返回，对识别中的目标最多等待 10 秒，但不得消费请求到达后视频帧的语义。
+超时但 observer 尚未明确失败时保持 `pending`，不得把正常识别耗时
+误报为 `unavailable` 或 `failed`。实时观察结果必须独立
+记账，不并入 conversation、memory 或 task state。完整媒体协议见
 `docs/media-agent-service-websocket.md`。
 
 ### Editable owner context

@@ -56,7 +56,7 @@ RealtimeVideoContextStatus = Literal[
 
 
 class RealtimeVideoContext(BaseModel):
-    """Bounded provider-facing projection of one rolling video snapshot."""
+    """Bounded runtime and observability projection of one rolling video snapshot."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -74,6 +74,7 @@ class RealtimeVideoContext(BaseModel):
     frame_capture_age_ms: int | None = Field(default=None, ge=0)
     snapshot_publish_age_ms: int | None = Field(default=None, ge=0)
     observation_latency_ms: int | None = Field(default=None, ge=0)
+    semantic_publish_latency_ms: int | None = Field(default=None, ge=0)
     provider: str | None = None
     model: str | None = None
     pending_count: int = Field(default=0, ge=0)

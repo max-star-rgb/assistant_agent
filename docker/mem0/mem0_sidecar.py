@@ -13,7 +13,7 @@ os.environ.setdefault("MEM0_TELEMETRY", "False")
 
 from mem0 import Memory
 from mem0_env import (
-    CHINESE_MEMORY_CUSTOM_INSTRUCTIONS,
+    LONG_TERM_MEMORY_CUSTOM_INSTRUCTIONS,
     resolve_mem0_provider_environment,
 )
 
@@ -61,7 +61,7 @@ def _build_memory() -> Memory:
                     "embedding_model_dims": 1024,
                 },
             },
-            "custom_instructions": CHINESE_MEMORY_CUSTOM_INSTRUCTIONS,
+            "custom_instructions": LONG_TERM_MEMORY_CUSTOM_INSTRUCTIONS,
             "history_db_path": os.getenv("HISTORY_DB_PATH", "/data/history/history.db"),
         }
     )

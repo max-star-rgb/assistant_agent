@@ -120,10 +120,8 @@ def test_agent_service_success_terminal_embeds_generated_image_detail(
     assert intent["detail"] == [
         {
             "type": "IMAGE",
-            "image": (
-                "data:image/jpeg;base64,"
-                + base64.b64encode(jpeg_bytes).decode("ascii")
-            ),
+            "imageId": "image-sentinel.jpg",
+            "image": base64.b64encode(jpeg_bytes).decode("ascii"),
         }
     ]
     assert body["final"] is True

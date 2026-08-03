@@ -49,6 +49,7 @@ REALTIME_KEYFRAME_MAX_INTERVAL_SECONDS = 2.0
 class _QueuedObservation:
     record: SemanticKeyframeRecord
     enqueued_ns: int
+    video_ingress_ns: int
     h264_decode_latency_ms: int | None
     keyframe_selection_latency_ms: int
 
@@ -102,6 +103,7 @@ class RealtimeVideoObserver:
         self._snapshot_updated = asyncio.Event()
         self._enqueue_lock = asyncio.Lock()
         self._promotion_tasks: set[asyncio.Task[FrameProcessingResult]] = set()
+        self._pinned_sequences: dict[int, int] = {}
         self._close_task: asyncio.Task[None] | None = None
 
     async def submit(self, frame: VideoFrame) -> FrameProcessingResult:
@@ -138,6 +140,21 @@ class RealtimeVideoObserver:
             raise RuntimeError("realtime video observer is closed")
         return await self._run_owned_retention(self._promote(frame))
 
+    def pin_sequence(self, sequence: int) -> None:
+        """Protect one chat-arrival frame from latest-wins queue replacement."""
+
+        if sequence >= 0:
+            self._pinned_sequences[sequence] = self._pinned_sequences.get(sequence, 0) + 1
+
+    def release_sequence(self, sequence: int) -> None:
+        """Release a previously protected chat-arrival frame."""
+
+        count = self._pinned_sequences.get(sequence, 0)
+        if count <= 1:
+            self._pinned_sequences.pop(sequence, None)
+        else:
+            self._pinned_sequences[sequence] = count - 1
+
     async def _run_owned_retention(
         self,
         operation,
@@ -159,7 +176,11 @@ class RealtimeVideoObserver:
         self._accept_video_id(frame)
         started_ns = self.clock_ns()
         represented = self._represented_sequence()
-        if represented is None or represented < frame.sequence:
+        if (
+            represented is None
+            or represented < frame.sequence
+            or self._needs_exact_sequence(frame.sequence)
+        ):
             enqueued_ns = self.clock_ns()
             enqueued = await self._enqueue(
                 frame,
@@ -209,7 +230,11 @@ class RealtimeVideoObserver:
         if self.closed:
             raise RuntimeError("realtime video observer is closed")
         represented = self._represented_sequence()
-        if represented is not None and represented >= frame.sequence:
+        if (
+            represented is not None
+            and represented >= frame.sequence
+            and not self._needs_exact_sequence(frame.sequence)
+        ):
             return False
         retained = await asyncio.to_thread(self._retain_keyframe, frame)
         self._owned_paths.add(Path(retained.uri))
@@ -217,19 +242,31 @@ class RealtimeVideoObserver:
             self._delete_record(retained)
             raise RuntimeError("realtime video observer is closed")
         represented = self._represented_sequence()
-        if represented is not None and represented >= frame.sequence:
+        if (
+            represented is not None
+            and represented >= frame.sequence
+            and not self._needs_exact_sequence(frame.sequence)
+        ):
             self._delete_record(retained)
             return False
         snapshot = self.memory_store.snapshot(frame.video_id)
         if snapshot is None or snapshot.last_success_sequence is None:
             self._first_terminal_snapshot.clear()
+        video_ingress_ns = _frame_timestamp_ns(frame, "video_ingress_ns")
         queued = _QueuedObservation(
             record=retained,
             enqueued_ns=enqueued_ns,
+            video_ingress_ns=(
+                video_ingress_ns if video_ingress_ns is not None else enqueued_ns
+            ),
             h264_decode_latency_ms=_frame_latency_ms(frame, "h264_decode_latency_ms"),
             keyframe_selection_latency_ms=keyframe_selection_latency_ms,
         )
         if self._queue.full():
+            pending = self._pending_item
+            if pending is not None and pending.record.sequence in self._pinned_sequences:
+                self._delete_record(retained)
+                return False
             replaced = self._queue.get_nowait()
             self._queue.task_done()
             self._delete_record(replaced)
@@ -275,6 +312,42 @@ class RealtimeVideoObserver:
         """Return the newest successful, in-flight, or pending sequence."""
 
         return self._represented_sequence()
+
+    def latest_keyframe_at_or_before(
+        self,
+        video_id: str,
+        *,
+        target_sequence: int,
+    ) -> VideoFrame | None:
+        """Return the nearest selected keyframe that cannot follow a chat boundary."""
+
+        if isinstance(target_sequence, bool) or target_sequence < 0:
+            return None
+        candidates: list[SemanticKeyframeRecord] = []
+        snapshot = self.memory_store.snapshot_at_or_before_sequence(
+            video_id,
+            target_sequence=target_sequence,
+        )
+        if snapshot is not None:
+            candidates.extend(
+                record
+                for record in snapshot.keyframes
+                if record.sequence <= target_sequence
+            )
+        for item in (self._inflight_item, self._pending_item):
+            if item is not None and item.record.sequence <= target_sequence:
+                candidates.append(item.record)
+        if not candidates:
+            return None
+        selected = max(candidates, key=lambda record: record.sequence)
+        return VideoFrame(
+            video_id=video_id,
+            frame_id=selected.frame_id,
+            uri=selected.uri,
+            sequence=selected.sequence,
+            timestamp_ms=selected.timestamp_ms,
+            metadata={"source": "realtime_video_keyframe"},
+        )
 
     async def close(self) -> None:
         """Stop work, reject late results, and remove owned semantic artifacts."""
@@ -340,12 +413,14 @@ class RealtimeVideoObserver:
                     continue
                 observation = _snapshot_publishable_observation(result)
                 if observation is not None:
+                    semantic_published_ns = self.clock_ns()
                     diagnostics = self._observation_diagnostics(
                         item=item,
                         dequeued_ns=dequeued_ns,
                         observation_started_ns=observation_started_ns,
                         observation_finished_ns=observation_finished_ns,
                         succeeded=True,
+                        semantic_published_ns=semantic_published_ns,
                     ).model_copy(
                         update={"published_at_ms": self.wall_clock_ms()}
                     )
@@ -470,6 +545,7 @@ class RealtimeVideoObserver:
         observation_started_ns: int,
         observation_finished_ns: int,
         succeeded: bool,
+        semantic_published_ns: int | None = None,
     ) -> RealtimeVideoObservationDiagnostics:
         provider = self._provider_diagnostics()
         return RealtimeVideoObservationDiagnostics(
@@ -479,6 +555,12 @@ class RealtimeVideoObserver:
             observation_latency_ms=_elapsed_ms(
                 observation_started_ns,
                 observation_finished_ns,
+            ),
+            published_at_ns=semantic_published_ns,
+            semantic_publish_latency_ms=(
+                _elapsed_ms(item.video_ingress_ns, semantic_published_ns)
+                if semantic_published_ns is not None
+                else None
             ),
             transport=provider.get("transport"),
             session_generation=provider.get("session_generation"),
@@ -569,6 +651,24 @@ class RealtimeVideoObserver:
         represented = [sequence for sequence in sequences if sequence is not None]
         return max(represented) if represented else None
 
+    def _needs_exact_sequence(self, sequence: int) -> bool:
+        return (
+            sequence in self._pinned_sequences
+            and self.memory_store.snapshot_for_sequence(
+                self.video_id or "",
+                target_sequence=sequence,
+            )
+            is None
+            and (
+                self._inflight_item is None
+                or self._inflight_item.record.sequence != sequence
+            )
+            and (
+                self._pending_item is None
+                or self._pending_item.record.sequence != sequence
+            )
+        )
+
 
 def _to_ai_frame(frame: VideoFrame) -> AIVideoFrame:
     timestamp_ms = frame.timestamp_ms if frame.timestamp_ms is not None else frame.sequence * 1000
@@ -591,6 +691,16 @@ def _frame_latency_ms(frame: VideoFrame, key: str) -> int | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     return max(0, int(value))
+
+
+def _frame_timestamp_ns(frame: VideoFrame, key: str) -> int | None:
+    metadata = frame.metadata
+    if not isinstance(metadata, dict):
+        return None
+    value = metadata.get(key)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
 
 
 def _elapsed_ms(start_ns: int, end_ns: int) -> int:

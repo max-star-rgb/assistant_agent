@@ -1,6 +1,6 @@
 # Media-Agent WebSocket 接口权威文档
 
-Last updated: 2026-07-31
+Last updated: 2026-08-03
 
 本文档是媒体服务与 `assistant_agent` 之间 `/agent-service/v1` WebSocket 传输层协议的唯一权威文档，合并了旧临时 Mock Agent 协议说明和旧 H.264 视频传输专项说明。媒体侧协议为外部对接基准；Agent 侧负责兼容该协议，并在内部把 `chat` 文本请求转入 Gateway 和 assistant runtime。
 
@@ -51,7 +51,7 @@ Agent 兼容说明：
 | message 类型 | 说明 | body 结构 |
 | --- | --- | --- |
 | `assistantControl` | 连接响应 | 参见 4.1 |
-| `chatResponse` | 文本响应及可选的生成图片展示数据 | 参见 4.2 |
+| `chatResponse` | 文本响应及 IMAGE、TD_MODEL、VIDEO 渲染数据 | 参见 4.2、4.6 |
 | `audioResponse` | 音频响应 | 参见 4.3 |
 | `videoResponse` | 视频响应 | 参见 4.4 |
 | `interrupt` | 打断响应 | 参见 4.5 |
@@ -182,17 +182,15 @@ Agent 每个 WebSocket 连接都会分配新的内部 `agent-service-*` Gateway 
   因此 `stream=false` 仍只返回规范化终态正文，截断、错误恢复文案和购物 detail 也可在终包补齐。
 - 购物推荐/比价遵循 ReAct：`shopping_search` 返回结构化结果，下一轮 LLM 消费不含链接和展示模板的精简 observation，生成正常自然语言。由于 Agent-Service 声明 `supports_shopping_detail_v1=true`，Gateway Runtime adapter 会从完整成功 ToolResult 抽取标题、平台、价格、商品链接和图片链接，把唯一 `<detail>...</detail>` 追加到最终交付正文；不覆盖 `AgentResponse.message` 或 conversation history，也不增加 LLM 调用。若自然语言已通过 Provider token delta 发送，终包 `description` 只携带尚未发送的换行和协议块。
 - `deliveryId` 和 `chatResponseAck` 只属于成功终包；中间包和失败终包都不进入应用层 ACK 状态。
-- 媒体侧已经支持在成功终包的
-  `message.content.intentResult.detail[]` 中接收图片。图片项使用
-  `{"type":"IMAGE","image":"<Base64 或 data:image/...;base64,...>"}`；
-  `AgentClient` 将展示信息经 `AGENT_SRC_DISPLAY` 推送给 `WebRTCClient`，
-  再由 `PC_SINK_DC_AIFINFO` 交付。媒体实现会移除可选的 Data URL 前缀并
-  Base64 解码图片数据。
+- 生成图片不走独立媒体上传接口。媒体服务建立 `/agent-service/v1` 连接后，Agent 复用同一
+  WebSocket 发送 `chatResponse`；媒体服务再将 `message.content.intentResult.detail[]` 转发给
+  渲染服务。图片项固定为
+  `{"type":"IMAGE","imageId":"<图片ID>","image":"<纯Base64>"}`，不携带 Data URL 前缀。
 - Agent 图片生成成功后，Gateway `run.end.payload.output_refs` 保留最多 4 个去重后的输出引用。
   Agent-Service 只读取本 Agent 托管的 `/artifacts/generated/` 图片，并在成功终包中投影为
   `intentResult.detail`；不会把 Provider 临时 URL、本地绝对路径或任意外部引用直接发送给媒体。
 - 图片原始文件必须不超过 25 MiB，并且内容可识别为 JPEG、PNG、GIF 或 WebP。
-  Agent 发送带真实 MIME 类型的 Data URL；找不到、超限、越界或无法识别的引用会被忽略，
+  `imageId` 使用 Agent 托管 artifact 的文件名；找不到、超限、越界或无法识别的引用会被忽略，
   不得让已有文本响应失败。
 - `detail` 只出现在成功终包；流式 `PROCESSING` 中间包、`chatProgress` 和失败终包不携带图片，
   避免 Base64 重复发送。协商 `chatResponseAck` 时，终包 `deliveryId` 同时确认文本和图片展示数据。
@@ -246,7 +244,9 @@ ACK 耗时通过独立事件记录，`ACK pending` 表示仍缺媒体侧应用�
 
 ```json
 {
+  "number": "13800138000",
   "message": {
+    "type": "BRIEF",
     "chatIndex": "对话索引",
     "content": {
       "intentResult": {
@@ -255,7 +255,8 @@ ACK 耗时通过独立事件记录，`ACK pending` 表示仍缺媒体侧应用�
         "detail": [
           {
             "type": "IMAGE",
-            "image": "data:image/jpeg;base64,<图片Base64数据>"
+            "imageId": "generated-image.jpg",
+            "image": "<纯Base64图片数据>"
           }
         ]
       }
@@ -354,16 +355,16 @@ ACK 耗时通过独立事件记录，`ACK pending` 表示仍缺媒体侧应用�
 - `videoContent` 必须是无 `0x` 前缀的 H.264 Annex-B Hex 字符串，并以三字节或四字节 NAL 起始码开头。
 - 媒体服务必须让每条消息可独立解码：每帧包含 SPS、PPS 和 I-Frame，不依赖前后消息。
 - Agent 使用本机 FFmpeg 在一次解码中同时生成 JPEG 和 `32x18` 灰度指纹；指纹只用于本地变化检测，不进入 prompt、trace 或 Provider 请求。
-- 每个连接维护一个本地自适应观察器：首帧必选，明显变化立即成为候选，静态画面最长 2 秒产生一次候选；再把选中帧交给后台串行任务，不退化为固定 2 秒轮询。
+- 每个连接维护一个本地自适应观察器：首帧必选，使用像素差、SSIM 结构差和本地 embedding 变化分数选择关键帧，明显变化立即成为候选，静态画面最长 2 秒产生一次候选；Qwen 视觉文本只在选帧之后生成，不反向参与本轮关键帧判定。收到 `chat` 时，以此前最新原始帧为时间边界，选择 `sequence <= 边界` 的最近已选关键帧作为本轮视觉目标；只有此前不存在成功、执行中或待处理关键帧时，才把最新原始帧提升为目标。
 - 原始视频上下文只保留最近 3 帧；成功理解的语义关键帧独立保留最多 8 帧。它们是本地 fallback/语义记忆，不作为 Qwen 多帧历史发送。每轮 Qwen 请求只含当前选中的一张 JPEG 和最多 2,000 字符的上一成功语义摘要。后台队列最多包含 1 个执行中帧和 1 个待处理帧，积压时用最新候选替换旧候选。
 - 解码后的帧注册到当前 `AgentGraphRuntime.video_context_store`；原始 H.264 不落盘，也不进入 prompt、trace 或 Provider 请求。
 - 选中关键帧的后台视觉理解经过 `ActionValidator -> ToolExecutor -> ToolRegistry -> realtime_video_observe`；该内部 ToolSpec 不进入主 LLM catalog，WebSocket 入口也不直接调用 Provider。这里的成功分三层：`ToolResult.success is True` 只表示工具执行完成；内部 `VideoUnderstandingResult` 可验证且 `errors` 为空才算 VLM 语义成功；还必须 `source=background_keyframe_observation` 才允许发布为 rolling semantic snapshot。失败、partial、harness 说明性结果或 query-time `realtime_video_memory_unavailable` 结果只记录失败/可解释状态，不能写入 `current_state`。mock 模式不联网，真实连续 MLLM 只允许 `MULTIMODAL_AGENT_PROVIDER_MODE=real` 配置。
-- 同一连接后续 `chat` 会携带该 session 的 `video_id` 进入 Gateway。有 active video 时，AgentRuntime 可基于可信 entry profile 和结构化媒体引用动态暴露 `live_view_inspect`，不根据用户文本关键词暴露或调用工具。DeepSeek 只看到实时镜头工具、实时镜头可用状态和被动 `realtime_video_context` 文本 snapshot；它看不到视频帧、JPEG 路径、base64、VLM 角色模板、Qwen 原文或 provider raw response。
-- 可信 Agent-Service 请求把它表述为双方共享的当前实时镜头，不把 opaque `video_id` 渲染成上传视频，也不应向用户说“你刚发送的视频”、快照、后台观察或 Provider。
-- 后台观察器仍作为预热缓存运行；需要当前画面事实时，由 AgentRuntime 主 LLM 通过动态暴露的 `live_view_inspect` 表达需求。该查询时工具只读取后台已经产出的滚动语义文本；若文本尚未就绪或最新观察失败，工具返回一段可直接转述给用户的说明，并附带 `pending` / `failed` / `unavailable` 状态，不临时发送原始帧给视觉 Provider。普通问候不应主动提及视觉。
-- 每个连接始终最多一个 Qwen observation in-flight 和一个 latest-wins pending 帧；只有后台 observer 负责提交帧到 Qwen，不能绕开 observer 启动第二个 Qwen。
+- 同一连接后续 `chat` 会携带该 session 的 `video_id` 进入 Gateway。有 active video 时，AgentRuntime 可基于可信 entry profile 和结构化媒体引用动态暴露 `live_view_inspect`，不根据用户文本关键词暴露或调用工具。DeepSeek 只看到该工具的 schema；它看不到实时镜头可用状态、被动 `realtime_video_context`、视频帧、JPEG 路径、base64、VLM 角色模板、Qwen 原文或 provider raw response。
+- 可信 Agent-Service 请求不会把 opaque `video_id`、镜头连接状态或后台语义快照渲染进主 LLM prompt。只有主 LLM 自主调用 `live_view_inspect` 后，工具 observation 才把当前实时镜头的有界视觉语义返回给它；最终回答不应向用户说“你刚发送的视频”、快照、后台观察或 Provider。
+- 后台观察器仍作为预热缓存运行，并按 sequence 有界缓存从通话开始到当前时刻已经成功发布的视觉文本；需要当前画面事实时，由 AgentRuntime 主 LLM 通过动态暴露的 `live_view_inspect` 表达需求。若本轮最近关键帧的文本已缓存，工具立即返回；若该关键帧仍在识别，工具最多等待 10 秒。等待期间提问之后到达的新帧不能替换该目标。达到等待上限后才退回到 `sequence <= 目标 sequence` 的最近成功文本；若此前仍无任何成功文本，才返回 unavailable，绝不消费提问之后画面的文本。普通问候不应主动提及视觉。
+- 每个连接始终最多一个 Qwen observation in-flight 和一个 latest-wins pending 帧；冻结的 chat 目标 sequence 在本轮期间受保护，不适用 pending latest-wins 替换。只有后台 observer 负责提交帧到 Qwen，不能绕开 observer 启动第二个 Qwen。
 - 每个 `video_id` 只维护一个 persistent Qwen WebSocket；20 次成功观察或 60 秒后主动轮换，断线使用 0.25/0.5/1/2/5 秒封顶退避重连。失败保留最后成功快照并投影 `refreshing`/`stale`；切换 video id、连接关闭或 observer close 会关闭 Provider session 并清理 pending、快照、retained/raw JPEG 和临时文件。
-- 新鲜度以成功语义对应帧的采集时间为主：`frame_capture_age_ms` 表示采集年龄，`snapshot_publish_age_ms` 表示 Qwen 结果发布年龄；采集时间缺失或在未来时不伪造采集年龄。
+- 新鲜度以成功语义对应帧的采集时间为主：`frame_capture_age_ms` 表示采集年龄，`snapshot_publish_age_ms` 表示 Qwen 结果发布年龄；`semantic_publish_latency_ms` 表示 Agent-Service 收到该视频消息到成功语义写入滚动记忆的端到端时延。采集时间缺失或在未来时不伪造年龄或时延。
 - 普通上传/API（非 Agent-Service）调用 `media_inspect`：图片进入 image branch，明确上传的视频进入显式视频 Provider 路径；它不读取实时会话的滚动语义记忆。
 - Agent-Service 携带视频引用的 chat turn 保留 90 秒 facade 总预算，用于覆盖 Gateway、AgentRuntime 主 LLM 执行、动态视觉工具调用以及可能较慢的上下文刷新。普通文本 chat 默认同样使用 90 秒，
   可通过 `ASSISTANT_AGENT_TEXT_TURN_TIMEOUT_SECONDS` 调整；主 Chat Provider 默认 75 秒，
@@ -471,7 +472,7 @@ ffprobe -show_streams -select_streams v sample.h264
 | `request_image` | `media_inspect` 解析明确图片引用 |
 | `explicit_video` | `media_inspect` 解析明确上传的视频引用并调用 Provider |
 | `rolling_video_memory` | `live_view_inspect` 读取受信 Agent-Service 会话的滚动语义记忆，不发生查询时视觉 Provider 调用 |
-| `realtime_video_memory_unavailable` | Agent-Service 查询时没有可用语义文本；工具把可转述说明和待就绪/失败/不可用状态返回给 LLM，不调用视觉 Provider |
+| `realtime_video_memory_unavailable` | Agent-Service 查询等待最多 10 秒后仍没有 A 之前可用的语义文本；目标仍在 observer 中时返回 `pending`，只有明确终态错误才返回 `failed`，并把可转述说明交给 LLM，不调用查询时视觉 Provider |
 | `background_keyframe_observation` | 内部 `realtime_video_observe` 对选中关键帧执行的受治理后台分析 |
 
 ### 4.5 interrupt
@@ -502,6 +503,132 @@ provider/tool 前后的 cooperative cancellation checkpoint 实际停止执行�
 `chatResponse` delta 或终包。没有活动 turn 时该操作保持幂等成功，连接不会关闭，媒体可以继续
 发送下一轮 `chat`。
 
+### 4.6 渲染结果的媒体中继
+
+媒体服务是 `/agent-service/v1` 的 WebSocket client，Agent 是被动监听方。连接由媒体服务发送
+`assistantControl` 建立。Agent 生成的图片以及 3D 服务回调产生的模型或视频结果，都先以标准
+`chatResponse` 复用这条连接发送给媒体服务：
+
+```text
+媒体服务 -- WebSocket /agent-service/v1 --> Agent
+媒体服务 <-- chatResponse IMAGE/TD_MODEL/VIDEO -- Agent
+```
+
+这不表示媒体服务就是渲染服务。媒体服务内部将 `AGENT_SRC_RESPONSE` 链接到
+`RenderingClient.RENDERING_SINK_DISPLAY`，再把完整 `chatResponse` JSON 通过 HTTP POST 转发到
+渲染服务的 `/rendering/v1/torender`。Agent 不直连 `/torender`，也不建立独立的渲染 WebSocket。
+媒体到渲染的 HTTP 转发属于媒体服务内部实现，Agent 不持有 `/torender` 连接。
+
+媒体服务内部的数据流为：
+
+```text
+AgentClient
+  ↓ AGENT_SRC_RESPONSE
+RenderingClient.processDisplayInfo()
+  ↓ HTTP POST application/json（完整 chatResponse JSON）
+渲染服务 /rendering/v1/torender
+```
+
+外部媒体服务代码中的 `callLeg.js` 将 `AGENT_SRC_RESPONSE` 链接到
+`RENDERING_SINK_DISPLAY`；`RenderingClient.js` 把原始 `chatResponse` JSON 转发到其部署配置的
+`url1`、`url2`、`url3`。示例地址分别为 `8102`、`8202`、`8302` 端口下的
+`/rendering/v1/torender`。这些地址不属于 Agent 配置。
+
+`chatResponse.body` 仍是 JSON 字符串。公共结构为：
+
+```json
+{
+  "number": "13800138000",
+  "message": {
+    "type": "BRIEF",
+    "chatIndex": "uuid",
+    "content": {
+      "intentResult": {
+        "description": "渲染结果描述",
+        "status": "SUCCESS",
+        "detail": []
+      }
+    }
+  }
+}
+```
+
+`detail` 支持以下稳定投影：
+
+| 结果 | detail |
+| --- | --- |
+| 图片 | `{"type":"IMAGE","imageId":"<图片ID>","image":"<纯Base64>"}` |
+| PLY/GLB | `{"type":"TD_MODEL","modelUrl":"http://..."}` |
+| MP4 | `{"type":"VIDEO","videoUrl":"http://..."}` |
+
+#### 4.6.1 图片投递
+
+Agent 生成图片后构造 `IMAGE` detail，包含稳定 `imageId` 和纯 Base64 `image`，再发送给媒体
+WebSocket。Agent 不把图片发往音视频媒体流接口，也不直接 POST `/torender`；由媒体服务的
+`RenderingClient` 完成后续 HTTP 转发。
+
+#### 4.6.2 图片转 3D 与回调
+
+`image_to_3d` 是模型可调用的受治理 Tool，必须经过
+`ActionValidator -> ToolExecutor -> ToolRegistry -> tool`。典型请求“生成3D蛋糕”先由 LLM 调用
+`image_generation`；成功图片只保存为 Agent 的 `.local/generated` 受管 artifact，Tool observation
+从本地文件名提取并返回 `{"image_id":["<图片ID>"]}`。LLM 再调用
+`image_to_3d(src_image="<图片ID>")`。Agent 与渲染服务
+之间没有任何直连；`image_to_3d` 在同一 `.local/generated` 根目录内按 ID 安全解析 JPEG、PNG、
+WebP 或 GIF 原文件，读取为纯 Base64 后调用 3D 服务：
+
+```text
+POST http://{TD_GEN_IP}:{TD_GEN_PORT}/3dgen/v1/openapi/img-to-3d
+Content-Type: application/json
+User-Agent: AgentService/1.0
+```
+
+```json
+{
+  "sessionId": "内部会话ID",
+  "image": "图片Base64",
+  "pre_cb_url": "http://{PUBLIC_IP}:{PUBLIC_PORT}/calling-agent-service/v1/{session_id}/0/3d-gen-back",
+  "cb_url": "http://{PUBLIC_IP}:{PUBLIC_PORT}/calling-agent-service/v1/{session_id}/0/3d-gen-back",
+  "format": "mp4"
+}
+```
+
+3D 服务异步回调：
+
+```text
+POST /calling-agent-service/v1/{session_id}/{chat_index}/3d-gen-back
+```
+
+```json
+{
+  "mediaType": "ply/glb/mp4",
+  "mediaUrl": "http://example/model.glb",
+  "image": "可选Base64预览图"
+}
+```
+
+Agent 将 `ply`、`glb` 投影为 `TD_MODEL.modelUrl`，将 `mp4` 投影为 `VIDEO.videoUrl`，再通过当前
+媒体 WebSocket 发送；媒体服务继续按同一 `RenderingClient` 路径转发。找不到媒体中继连接时返回
+`{"errCode":0,"errMessage":"failed","data":{"result":"未找到可用的媒体中继连接"}}`，不缓存或
+向其他连接重投。
+
+`src_image` 是模型可见的必填 string，只表示图片 ID，不得包含目录或图片后缀。Tool 不猜测
+全局最新文件、不查询渲染服务，也不读取 `.local/generated` 之外的路径。发给媒体的 `IMAGE.image`
+同样通过受管 `output_ref` 从该本地目录读取，不使用 Provider 临时 URL，也不写第二份镜像。
+配置和错误语义如下：
+
+| 参数 | 说明 | 示例 |
+| --- | --- | --- |
+| `TD_GEN_IP` / `TD_GEN_PORT` | 3D 生成服务地址 | `10.243.227.110:8000` |
+| `PUBLIC_IP` / `PUBLIC_PORT` | 3D 服务可回调的 Agent 地址 | 部署可达地址 |
+| `IMAGE_TO_3D_TIMEOUT_SECONDS` | HTTP 请求单次超时 | `30` |
+
+图片不存在返回 `图片不存在：<path>`，HTTP 网络失败返回 `无法生成，请检查网络~`，3D 响应无法
+解析返回 `3D生成服务响应解析失败`。日志不得记录 Base64、真实用户内容或服务原始响应。
+
+要证明一次真实渲染完整成功，必须分别确认 Agent WebSocket send、媒体 `RenderingClient` POST、
+渲染服务接收/处理；Agent 日志中的 send 成功只能证明第一跳写入媒体连接。
+
 ## 5. 错误处理
 
 | 场景 | 响应 |
@@ -515,6 +642,7 @@ provider/tool 前后的 cooperative cancellation checkpoint 实际停止执行�
 | `videoContent` 非法、超过大小限制或无法解码 | 返回 `videoResponse`，`body.code=\"FAIL\"`；连接保持可用 |
 | 未知 `message` 类型 | 返回 `error` |
 | Gateway 超时或后端错误 | 返回 `chatResponse`，`body.code=\"FAIL\"`；本地 `run_client.py` 会在 stderr 显示失败原因并以非零状态结束。若 runtime 已启动，失败 delivery audit 与 trace terminal summary 保留统一的 `run_id` 与独立的 `trace_id`；超时时 runtime 状态先记为 `pending_cancel`，以后续真实取消/失败事件为准。 |
+| 3D 回调找不到活动媒体中继连接 | HTTP 200，`errMessage=failed`；不缓存、不转投其他用户连接 |
 | WebSocket 异常断开 | 记录 ERROR 级安全日志；取消当前 session 的活动 Gateway run |
 
 通用 `error` 示例：
@@ -617,7 +745,8 @@ pytest。只有同时选择 real provider mode、显式配置 Qwen vision provid
 | `ACK pending` | 最终响应已发送，但媒体应用确认尚未到达。 |
 | `frame_capture_age_ms` 较高 | 本轮消费的语义对应 Media 帧采集时间较早，是画面陈旧度主指标。 |
 | `snapshot_publish_age_ms` 较高 | Qwen 结果发布后已过去较长时间。 |
-| `sequence_gap` 大于 0 | 1.5 秒目标序号屏障未满足；回答必须保留画面可能滞后的不确定性。 |
+| `sequence_gap` 大于 0 | 10 秒目标序号等待仍未取得精确目标；回答只能使用目标 sequence 之前的最近成功文本，并保留画面可能滞后的不确定性。 |
+| `semantic_publish_latency_ms` 较高 | 从 WebSocket 收到目标视频消息到成功语义发布较慢；该值包含解码、选帧、排队和视觉 observation。 |
 | `unattributed` | 端到端耗时中尚未被叶子阶段解释的剩余部分。 |
 
 视频诊断中的后台观察 latency 不直接计入 chat 关键路径。普通上传/API 的显式视频
@@ -706,4 +835,6 @@ if __name__ == "__main__":
   turn 和尚未进入 Gateway 的排队 chat turn 后返回 ACK。
 - `video` 在入口层完成严格校验和 H.264 I-Frame 到 JPEG 的受控解码，后续 `chat` 只把稳定 `video_id` 送入 Gateway；入口层不直接调用视频 Provider。
 - 默认 mock/local/offline 运行不会调用真实外部 Provider；真实 Provider 只在显式 profile 和本机安全配置允许时启用。
+- `image_to_3d` 是受治理生成 Tool；只消费同一 run 的受管图片 artifact，3D POST 只在 real 模式且配置完整时执行。
+- 3D 回调 route 是薄入口，只校验回调、按 session 定位当前连接并投影 `TD_MODEL`/`VIDEO`，不承担 Agent 规划。
 - 不要在该接口中传输 API key、token、provider 原始响应或未脱敏敏感数据；原始音视频大 payload 不进入 prompt。

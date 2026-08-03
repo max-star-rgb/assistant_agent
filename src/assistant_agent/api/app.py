@@ -15,6 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from assistant_agent.api.agent_service_websocket import router as agent_service_websocket_router
 from assistant_agent.api.gateway_runtime import shutdown_gateway_runtime
 from assistant_agent.api.gateway_websocket import router as gateway_websocket_router
+from assistant_agent.api.rendering_3d_callback import router as rendering_3d_callback_router
 from assistant_agent.api import routes_agent
 from assistant_agent.api.routes_a2a import router as a2a_router
 from assistant_agent.api.routes_agent import router as agent_router, shutdown_agent_runtime
@@ -82,6 +83,7 @@ def create_app() -> FastAPI:
     app.include_router(a2a_router)
     app.include_router(agent_service_websocket_router)
     app.include_router(gateway_websocket_router)
+    app.include_router(rendering_3d_callback_router)
     return app
 
 

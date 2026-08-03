@@ -1409,6 +1409,7 @@ def _format_video_latency(video: dict[str, Any]) -> str:
         ("source", "source", False),
         ("snapshot_age_ms", "snapshot_age", True),
         ("observation_latency_ms", "observation_latency", True),
+        ("semantic_publish_latency_ms", "semantic_publish_latency", True),
         ("pending_count", "pending", False),
         ("in_flight", "in_flight", False),
         ("fallback_used", "fallback", False),

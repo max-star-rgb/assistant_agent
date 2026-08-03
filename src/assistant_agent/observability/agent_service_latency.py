@@ -129,6 +129,7 @@ class VideoLatencyContext(BaseModel):
     snapshot_status: str | None = None
     snapshot_age_ms: int | None = Field(default=None, ge=0)
     observation_latency_ms: int | None = Field(default=None, ge=0)
+    semantic_publish_latency_ms: int | None = Field(default=None, ge=0)
     pending_count: int | None = Field(default=None, ge=0)
     in_flight: bool | None = None
     fallback_used: bool = False
@@ -442,6 +443,9 @@ def _video_context(events: list[TraceEvent]) -> VideoLatencyContext | None:
             snapshot_status=_safe_text(video.get("status")),
             snapshot_age_ms=_safe_int(video.get("snapshot_age_ms")),
             observation_latency_ms=_safe_int(video.get("observation_latency_ms")),
+            semantic_publish_latency_ms=_safe_int(
+                video.get("semantic_publish_latency_ms")
+            ),
             pending_count=_safe_int(video.get("pending_count")),
             in_flight=video.get("in_flight") if isinstance(video.get("in_flight"), bool) else None,
             snapshot_sequence=_safe_int(video.get("snapshot_sequence")),
@@ -466,6 +470,9 @@ def _video_context(events: list[TraceEvent]) -> VideoLatencyContext | None:
             source=_safe_text(payload.get("source")),
             snapshot_age_ms=_safe_int(payload.get("snapshot_age_ms")),
             observation_latency_ms=_safe_int(payload.get("observation_latency_ms")),
+            semantic_publish_latency_ms=_safe_int(
+                payload.get("semantic_publish_latency_ms")
+            ),
             pending_count=_safe_int(payload.get("pending_count")),
             in_flight=payload.get("in_flight") if isinstance(payload.get("in_flight"), bool) else None,
             fallback_used=payload.get("fallback_used") is True,
