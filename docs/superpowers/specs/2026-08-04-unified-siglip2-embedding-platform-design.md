@@ -38,6 +38,20 @@ projection space 和同一推理结果。ASR 不构成第三种模态：语音�
 - 不允许视觉关注消费者绕过 runtime 主动向用户发送消息。
 - 不在 Runtime 中联网下载模型、tokenizer 或其他资产。
 
+### 2.3 本期产品与工具交付边界
+
+本期新增的用户可见产品能力只有两组：
+
+1. **短期视觉回忆**：查询当前 session 过去的画面、场景和事件；同 session 媒体重连后仍可使用。
+2. **历史找物**：查询目标是否出现、最后出现时间和当时场景，并区分已确认、候选、不确定与未找到。
+
+文本—画面对齐、共享语义关键帧和视觉关注候选属于内部能力，不作为独立用户功能宣传。当前画面理解
+仍由既有 `live_view_inspect` 提供；后台语义观察仍由既有内部 `realtime_video_observe` 提供。
+
+本期只新增一个面向主 LLM 的 Tool：`visual_memory_search`。不新增可由主 LLM 直接调用的 embedding、
+相似度、关键帧、自动入库、清理或跨模态对齐 Tool。`VisualAttentionConsumer` 本期只定义并产出内部
+候选信号，不新增关注任务管理 Tool，也不交付“看到目标后主动提醒”的产品能力。
+
 ## 3. 核心原则
 
 1. **统一空间**：只有 manifest 明确声明为同一 `embedding_space_id` 的结果才允许比较。
@@ -264,11 +278,30 @@ query text embedding
 面向主 LLM 的入口是受治理 `visual_memory_search` Tool。Tool 是否暴露只依据可信 session/media
 capability；是否调用由主 LLM 决定，入口不得用关键词或正则路由。
 
+Tool 的模型可见输入保持面向任务：
+
+```text
+query
+time_window（可选）
+search_mode: auto | object | scene | event
+```
+
+`session_id`、as-of frame boundary、video generation 和可信 media capability 由 Runtime 注入，不允许
+模型构造或覆盖。结果至少包含 `status`、有界 `summary`、匹配 observation 的时间与场景、置信信息和
+VLM verification 状态；不得向模型返回 vector、JPEG、内部路径或原始 Provider 数据。
+
+“寻找物体”“历史场景查询”和“事件回忆”共享同一个 temporal index、as-of 过滤和 VLM 复核链，因此
+不拆成 `find_object`、`visual_history_search`、`scene_recall` 等重复工具。
+
 ### 7.5 `VisualAttentionConsumer`
 
 保存当前已明确启用的关注目标 text embedding，并对新 image event 计算相关性和变化，只产出结构化
 候选事件。它不能直接发送消息、创建 durable task 或修改 conversation。任何 proactive 行为必须进入
 现有 runtime/durable task/interrupt 治理并获得相应授权。
+
+本期没有设置、停止或列出关注任务的 Agent Tool。若后续产品明确交付持续关注和主动提醒，应另行设计
+类似 `visual_attention_manage` 的有副作用工具，以及 start/stop/list、过期、通知策略、授权、恢复和
+interrupt/proactive wake 生命周期；这些内容不属于本次实现计划。
 
 ## 8. 生命周期与 as-of 语义
 
@@ -449,3 +482,5 @@ session cleanup 残留向量/JPEG 数 = 0
 7. 视觉关注只产生候选事件，不绕过 runtime 主动产生副作用。
 8. mock/real、Tool、context、memory 和 observability 治理边界没有旁路。
 9. 临时 pytest、system eval 和 Agent eval 分别验证代码契约、真实本地能力与 Agent 行为质量。
+10. 用户可见新增功能仅为短期视觉回忆和历史找物；新增主 LLM Tool 仅为
+    `visual_memory_search`，视觉关注不产生用户可见主动行为。
