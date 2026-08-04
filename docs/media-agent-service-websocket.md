@@ -112,6 +112,9 @@ Agent 兼容说明：
 Agent 每个 WebSocket 连接都会分配新的内部 `agent-service-*` Gateway session。
 外层 `sessionId` 只作为媒体协议关联值原样回传，不用于恢复旧通话历史。
 `clientInfo` 不参与 profile、provider、tool visibility 或安全策略选择。
+成功处理 `callType=VIDEO` 时，Agent 同时按 `number + 内部 runtime session` 创建连接级视觉提醒
+manager；`AUDIO` 不创建。该结构化 call type 会进入后续 turn 的可信 metadata，不根据用户文本或是否
+已经收到视频帧推断。
 
 旧兼容握手 `assistantControlStart` 的最小 body 为：
 
@@ -235,6 +238,33 @@ Agent 每个 WebSocket 连接都会分配新的内部 `agent-service-*` Gateway 
   不得让已有文本响应失败。
 - `detail` 只在运行成功后发送；流式 `PROCESSING` 中间包、`chatProgress` 和失败包不携带图片，
   避免 Base64 重复发送。图片使用媒体 legacy 完整结构，不加入 `deliveryId` ACK 扩展。
+
+#### 4.2.1 连接级视觉提醒 chatResponse
+
+在可信 VIDEO 连接中，主 LLM 可通过受治理的 `visual_reminder_manage` 创建、查看或取消多条一次性
+视觉提醒。创建时只对视觉条件 `target` 计算一次 SigLIP2 text embedding；每个最终已选关键帧复用
+选帧阶段已有的 image embedding 做 cosine 匹配，不重新计算 image embedding，也不调用 VLM 复核。
+
+首次达到服务端阈值后，Agent 主动发送独立 `chatResponse`：
+
+```json
+{
+  "message": "chatResponse",
+  "body": "{\"message\":{\"chatIndex\":\"visual-reminder:visual-reminder-abc\",\"content\":{\"intentResult\":{\"description\":\"水烧开了\",\"status\":\"SUCCESS\"}}},\"display_only\":false,\"displayOnly\":false}"
+}
+```
+
+规则：
+
+- `chatIndex` 固定为 `visual-reminder:<reminder_id>`，不占用或续接普通 chat turn 的 sequence；
+- 正文是创建时保存的 `message`，不发送 target、向量、相似度、关键帧路径或 Provider payload；
+- reminder response 与普通 chat、video ACK、3D callback 投递共用同一连接 `send_lock`，不会并发写
+  WebSocket；
+- `_send_response()` 成功后提醒进入 `triggered` 并停止匹配；发送失败且连接仍活动时恢复 pending，
+  等待后续关键帧，不对当前帧同步重试；
+- reminder response 不带 `deliveryId`，不进入普通 chat 的 `chatResponseAck` registry，也不持久化重试；
+- 同一连接切换 `video_id` 时保留 manager；WebSocket close 时先关闭并清空 manager，再关闭 observer
+  和注销 owner/session，旧连接不可恢复提醒。
 
 协商 `chatProgress` 后，Agent 立即并每 15 秒发送一次：
 
@@ -416,6 +446,7 @@ ACK 耗时通过独立事件记录，`ACK pending` 表示仍缺媒体侧应用�
 - 媒体服务必须让每条消息可独立解码：每帧包含 SPS、PPS 和 I-Frame，不依赖前后消息。
 - Agent 使用本机 FFmpeg 把每条独立 H.264 消息解码为 JPEG；不再生成灰度指纹，也不运行像素差或 SSIM。
 - 每个 session 复用统一 embedding coordinator。视频帧按固定 5 FPS 时间准入，每个准入帧只执行一次共享 SigLIP2 image embedding，并只根据 embedding cosine distance、首帧、交互提升和最长 10 秒间隔选帧。旧 2 FPS semantic probe 仅作为新输入 FPS 配置的迁移 alias，不再代表独立 probe。Qwen 视觉文本只在选帧之后生成，不反向参与本轮判定。收到 `chat` 时，冻结此前最新原始帧 sequence；需要时将该帧交互式提升并保护，工具只消费不晚于该边界的语义。
+- 连接级视觉提醒只消费最终已选关键帧回调携带的同一个 image `EmbeddingEvent`；5 FPS 已准入但未选中的帧不匹配。embedding 失败后因 interactive/max interval 降级选出的关键帧没有 event，因此跳过提醒但仍可进入 Qwen。提醒投递任务与 Qwen 队列隔离，单条比较或发送失败不能阻断原有视觉语义发布。
 - 原始视频上下文只保留最近 3 帧；成功 VLM 结果发布到同 user/session 的 `SessionVisualSemanticStore`，同时保留 canonical text search embedding 和受限 evidence。它们不作为 Qwen 多帧历史发送。每轮 Qwen 请求只含当前选中的一张 JPEG 和最多 2,000 字符的上一成功语义摘要。semantic embedding 与 Qwen observation 各自最多 1 个执行中帧和 1 个 latest-wins pending，交互式目标不被替换，从而优先保证实时且无积压。
 - 解码后的帧注册到当前 `AgentGraphRuntime.video_context_store`；原始 H.264 不落盘，也不进入 prompt、trace 或 Provider 请求。
 - 选中关键帧的后台视觉理解经过 `ActionValidator -> ToolExecutor -> ToolRegistry -> realtime_video_observe`；该内部 ToolSpec 不进入主 LLM catalog，WebSocket 入口也不直接调用 Provider。这里的成功分三层：`ToolResult.success is True` 只表示工具执行完成；内部 `VideoUnderstandingResult` 可验证且 `errors` 为空才算 VLM 语义成功；还必须 `source=background_keyframe_observation` 才允许发布为 rolling semantic snapshot。失败、partial、harness 说明性结果或 query-time `realtime_video_memory_unavailable` 结果只记录失败/可解释状态，不能写入 `current_state`。mock 模式不联网，真实连续 MLLM 只允许 `MULTIMODAL_AGENT_PROVIDER_MODE=real` 配置。

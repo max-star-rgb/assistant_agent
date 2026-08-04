@@ -2,20 +2,24 @@
 
 Last updated: 2026-08-04
 
-本文档是 `assistant_agent` 当前 image/text embedding 平台、session 短期视觉时间线和历史找物能力的
+本文档是 `assistant_agent` 当前 image/text embedding 平台、session 短期视觉时间线、历史找物和连接级视觉提醒能力的
 事实权威。媒体接入与关键帧生命周期见 `media-agent-service-websocket.md`，显式 Tool 治理见
 `tool-calling-architecture.md`；源码和测试与本文冲突时，以源码和测试为准并回补本文。
 
 ## 产品与工具边界
 
-本期新增的用户功能只有两个：
+当前用户能力包括：
 
 - 会话内短期视觉回忆：把选中的语义关键帧交给 VLM 文本化，并在 session 内保留成功结果；
 - 历史找物：把用户查询与这些 VLM 文本放入同一 text embedding 空间排序，不在查询阶段再次调用 VLM。
+- 连接级视觉提醒：把用户提交的视觉条件计算一次 text embedding，与每个已选关键帧的现有 image
+  embedding 匹配，首次命中后通过当前 Agent-Service VIDEO 连接即时通知。
 
-新增给主 LLM 的 Tool 只有 `visual_memory_search`。`live_view_inspect` 继续回答当前实时画面，内部
+给主 LLM 的视觉语义 Tool 包括 `visual_memory_search` 和 `visual_reminder_manage`。后者只管理当前
+可信 VIDEO 连接中的 `create/list/cancel`，不是 embedding Tool。`live_view_inspect` 继续回答当前实时画面，内部
 `realtime_video_observe` 继续生成 rolling VLM snapshot。`siglip2_embed*`、`find_object`、
-`visual_attention_manage` 都不是注册 Tool。Attention 只产生内部候选，不发消息、不创建任务、不触发工具。
+`visual_attention_manage` 都不是注册 Tool。Attention 仍只产生内部候选；连接级 reminder manager 是独立的
+一次性状态机，不复用 Attention consumer。
 
 ## 分层与数据流
 
@@ -30,7 +34,9 @@ Realtime frame
         -> 5 FPS fixed admission
         -> one image embedding per admitted frame
         -> SemanticKeyframeSelector
-        -> realtime_video_observe（只对选中帧调用 VLM）
+        -> selected image EmbeddingEvent
+             ├─ VisualReminderManager（只比较 pending target，命中后即时 chatResponse）
+             └─ realtime_video_observe（只对选中帧调用 VLM）
         -> VLM result -> canonical text -> text embedding
         -> SessionVisualSemanticStore
              ├─ live_view_inspect（当前/as-of 语义）
@@ -61,6 +67,11 @@ mock 模式使用确定性离线共同空间，不加载真实模型。
 `SIGLIP2_VISION_MODEL_DIR` 是迁移 alias；新旧值冲突时启动失败。alias 计划不早于 `0.3.0` 删除，
 删除前必须更新部署文档与迁移测试。
 
+连接级视觉提醒使用 `REALTIME_VISUAL_REMINDER_SIMILARITY_THRESHOLD`（默认 `0.82`）、
+`REALTIME_VISUAL_REMINDER_MAX_ACTIVE`（默认 `16`）和
+`REALTIME_VISUAL_REMINDER_TERMINAL_HISTORY_LIMIT`（默认 `64`）。阈值只允许服务端配置，模型和用户
+不能逐条覆盖；两个 limit 必须为正整数。
+
 ## 全语义实时选帧
 
 `semantic_input_fps` 默认是 5 FPS。固定时间准入后，每个准入帧只执行一次共享 SigLIP2 image
@@ -74,6 +85,10 @@ latest-wins；因此不会积压，但高于处理能力的准入帧可以被更
 和最长 10 秒间隔选帧。semantic change 比较当前帧与上一已选 VLM 关键帧，使缓慢但累计明显的场景
 变化仍能产生新记录；Provider 失败时只允许交互目标或最长间隔走降级 VLM，不伪造 semantic score。
 
+提醒匹配只发生在 Selector 最终选中的帧上。`SemanticFramePipeline` 把同一次 image inference 产生的
+`EmbeddingEvent` 交给 `RealtimeVideoObserver`，observer 不再计算 image embedding。embedding 失败后
+因 interactive/max interval 降级选出的关键帧没有 event，因此跳过提醒匹配，但原有 VLM 流程仍可继续。
+
 ## 文本、ASR 与跨模态消费者
 
 平台不直接处理语音。音频在上游转为稳定文本后，与键盘输入一样成为 `TextObservation`；`source`
@@ -84,6 +99,11 @@ session visual search index。
 Alignment 按 similarity 降序、时间距离升序关联同空间事件。Attention 只有设置内部 text target 后才
 比较 image event 并保存 `visual_attention_candidate`；候选不会自动转为 Agent 行为。
 
+创建提醒时，`visual_reminder_manage` 只把模型提交的视觉条件 `target` 编码一次；通知文案 `message`
+不参与相似度计算。Manager 通过统一 `EmbeddingComparator` 校验图文 space、dimension、normalization、
+有限值和非零 norm。一个关键帧可同时命中多条提醒，每条通过 `pending -> reserved -> triggered` 状态机
+最多通知一次；单条 comparison failure 不影响其他提醒或 VLM。
+
 ## Session retention、as-of 与清理
 
 `SessionVisualSemanticStore` 只发布通过校验的 VLM 成功结果，并把其 canonical text 编码为
@@ -93,6 +113,10 @@ Alignment 按 similarity 降序、时间距离升序关联同空间事件。Atte
 活跃实时 observer 同时持有 embedding coordinator 与 visual store lease；idle TTL 和 LRU 只淘汰无
 lease 条目，避免长连接在持续处理期间被关闭。observer close 会幂等释放 lease；显式 session/user clear
 和 runtime close 仍可立即终止并清理对应状态。
+
+视觉提醒与上述 session retention 不同：它在成功 `assistantControl.callType=VIDEO` 后按内部
+`runtime_session_id` 创建，切换同一连接的 `video_id` 时保留，WebSocket close 时立即关闭、清空和注销。
+提醒不写 `SessionVisualSemanticStore`、Mem0、durable task 或 notification outbox，不能跨连接恢复。
 
 查询时 Runtime 绑定 user/session，ToolContext 提供可信 as-of sequence/time；模型只能提交
 `query/time_window/search_mode`。Tool 只编码一次查询文本，并与同 embedding space 的记录文本向量做
@@ -106,6 +130,12 @@ query。不读取 evidence、不调用 VLM，也不输出路径、向量或坐�
 在 catalog 构建前删除调用方传入的 `_trusted_visual_memory_available`，再根据现有 coordinator 的
 `SessionVisualSemanticStore.has_searchable_history()` 覆盖；exposure 不检查请求关键词。执行仍经过
 `ActionValidator -> ToolExecutor -> ToolRegistry -> tool`。
+
+`visual_reminder_manage` 是 `category=write`、`requires_media=[]`。Runtime 在 catalog 构建前删除调用方
+传入的 `_trusted_visual_reminder_available`，只有请求来自可信 Agent-Service entry profile、结构化
+`call_type=VIDEO` 且 owner/session registry 中存在活动 manager 时才覆盖为 true。Tool 的 session 由
+runtime identity 注入；模型不能提交 owner、manager、embedding 或阈值。create/list/cancel 均经过同一
+Validator、Executor 和 Registry 链路，exposure 不检查用户话术。
 
 向量、owned evidence 路径和原始 VLM payload 不进入模型 schema、Tool data、trace、日志或 system eval artifact。
 session evidence 不是长期记忆，不写 Mem0，也不跨 user/session 搜索。
@@ -130,6 +160,7 @@ pytest、dry-run 或检测到凭据都不得自动触发这些调用。
 
 ## 非目标
 
-本期不提供语音 embedding、跨 session/长期视觉记忆、全局图库搜索、目标检测坐标、主动提醒、自动任务、
-attention 管理 Tool、query-time VLM 复核，也不把 SigLIP2 当成完整 VLM。视觉塔做 semantic keyframe 只是统一 embedding
-平台的一个消费者，不是平台本身。
+本期不提供语音 embedding、跨 session/长期视觉记忆、全局图库搜索、目标检测坐标、跨连接或重复视觉提醒、
+离线提醒、自动任务、attention 管理 Tool、query-time VLM 复核，也不把 SigLIP2 当成完整 VLM。视觉提醒
+命中只表示共同空间 cosine 达到服务端阈值，不升级为经 VLM 确认的事实。视觉塔做 semantic keyframe
+只是统一 embedding 平台的一个消费者，不是平台本身。

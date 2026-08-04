@@ -52,6 +52,12 @@ Validator、Executor 和 Registry。查询只比较 query text 与已索引 VLM 
 VLM。Attention、alignment、keyframe 与 embedding Provider 都是内部组件，
 不注册为 Tool。专项事实见 `multimodal-embedding-architecture.md`。
 
+`visual_reminder_manage` 是连接级视觉提醒的有状态 `write` Tool，支持 `create/list/cancel`。它只在
+可信 Agent-Service VIDEO entry、结构化 call type 和活动 owner/session manager 同时成立时暴露；
+session 由 runtime identity 注入，模型不能提交 manager、owner、embedding 或阈值。`create` 只编码
+一次视觉条件 target，`list/cancel` 不调用 embedding Provider。关键帧匹配和主动 `chatResponse` 是
+observer/入口的后续内部行为，但创建、查看和取消仍完整经过 Tool 治理链。
+
 ## 3. 公共契约
 
 ### 3.1 Tool 与 ToolSpec
@@ -97,6 +103,11 @@ capability 决定是否做 WebSocket、通知等入口特定投影。callback �
 `image_to_3d` 是当前具体实现：Tool 创建 owner-bound job，3D callback 保存 artifact；只有可信
 Agent-Service capability 允许媒体投递，HTTP client 通过 owner-bound API 查询。具体 wire 字段、
 兼容路径和当前进程内存限制见 `media-agent-service-websocket.md`。
+
+连接级视觉提醒不是 durable notification。`visual_reminder_manage(create)` 成功只表示提醒已写入当前
+活动连接 manager；后续已选关键帧命中后，observer 预留一次性状态并由 Agent-Service 复用当前
+WebSocket 串行发送。发送成功转为 triggered；失败且连接仍活动时恢复 pending。连接关闭时直接清空，
+不写 notification outbox、不跨连接重放，也不使用 `chatResponseAck` 持久化确认。
 
 ### 3.2 输入所有权
 
@@ -228,6 +239,11 @@ MCP server、认证、远端方法映射和部署命令属于配置或对应集�
 
 媒体约束由 `requires_media` 与 `media_scope` 基于结构化请求事实判断。模型看不到不满足当前媒体
 条件的 Tool，Validator 仍会在执行前重复检查，防止状态漂移或伪造调用。
+
+`visual_reminder_manage` 本身声明 `requires_media=[]`，使用户可以在 VIDEO handshake 后、第一帧到达
+前创建提醒；它另有更严格的 runtime exposure fact。Runtime 会先删除调用方伪造的
+`_trusted_visual_reminder_available`，只有可信 Agent-Service session config、`call_type=VIDEO` 和
+registry 中活动 manager 同时成立时才重建该 fact。该规则只使用结构化连接状态，不读取请求文本。
 
 ToolSpec 转换成 OpenAI-compatible 或 MCP schema 时，应保留名称、简短描述、Pydantic
 `properties`、`required` 和可表达的约束。为减少 prompt 体积，可以在渲染时移除标题或截短描述，
