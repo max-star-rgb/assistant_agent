@@ -9,11 +9,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from time import perf_counter_ns, time
 from typing import Any
+from uuid import uuid4
 
 from pydantic import ValidationError
 
 from assistant_agent.config import ProviderConfig
 from assistant_agent.media.embedding.coordinator import SessionEmbeddingCoordinator
+from assistant_agent.media.embedding.models import EmbeddingEvent, TextObservation
 from assistant_agent.runtime.action_validator import ActionValidator
 from assistant_agent.runtime.state import AgentState
 from assistant_agent.runtime.tool_executor import ToolExecutor
@@ -29,9 +31,21 @@ from assistant_agent.media.video.realtime_video_memory import (
 )
 from assistant_agent.tools.ids import REALTIME_VIDEO_OBSERVE_TOOL_NAME
 from assistant_agent.media.video.video_context import VideoFrame
+from assistant_agent.media.video.semantic_pipeline import (
+    FixedIntervalSemanticSampler,
+    SemanticFramePipeline,
+)
+from assistant_agent.media.video.semantic_store import (
+    SessionVisualSemanticStore,
+    VisualSemanticRecord,
+)
 from assistant_agent.tools.registry import ToolRegistry
 from assistant_agent.media.video.keyframe.collector import AdaptiveKeyframeCollector
-from assistant_agent.media.video.keyframe.selector import KeyframeSelectorConfig
+from assistant_agent.media.video.keyframe.selector import (
+    KeyframeSelectorConfig,
+    SemanticKeyframeConfig,
+    SemanticKeyframeSelector,
+)
 from assistant_agent.media.video.sampling.adaptive_sampler import AdaptiveSamplerConfig
 from assistant_agent.media.video.types import (
     FrameProcessingResult,
@@ -66,6 +80,7 @@ class RealtimeVideoObserver:
         session_id: str,
         registry: ToolRegistry,
         memory_store: RealtimeVideoMemoryStore,
+        semantic_store: SessionVisualSemanticStore | None = None,
         embedding_coordinator: SessionEmbeddingCoordinator,
         provider_config: ProviderConfig | None = None,
         keyframe_root: Path | str = DEFAULT_KEYFRAME_ROOT,
@@ -83,6 +98,11 @@ class RealtimeVideoObserver:
         self.memory_store = memory_store
         self.embedding_coordinator = embedding_coordinator
         self.keyframe_root = Path(keyframe_root)
+        self.semantic_store = semantic_store or SessionVisualSemanticStore(
+            root=self.keyframe_root / "semantic-store",
+            session_id=session_id,
+        )
+        self._owns_semantic_store = semantic_store is None
         resolved_provider_config = provider_config or ProviderConfig()
         self.collector = collector or AdaptiveKeyframeCollector(
             sampler_config=AdaptiveSamplerConfig(
@@ -131,9 +151,33 @@ class RealtimeVideoObserver:
         self._promotion_tasks: set[asyncio.Task[FrameProcessingResult]] = set()
         self._pinned_sequences: dict[int, int] = {}
         self._close_task: asyncio.Task[None] | None = None
+        self._semantic_pending_count = 0
+        self._semantic_in_flight = False
+        self.semantic_pipeline = SemanticFramePipeline(
+            coordinator=embedding_coordinator,
+            selector=SemanticKeyframeSelector(
+                SemanticKeyframeConfig(
+                    min_interval_seconds=(
+                        resolved_provider_config.keyframe_min_interval_seconds
+                    ),
+                    max_interval_seconds=(
+                        resolved_provider_config.keyframe_max_interval_seconds
+                    ),
+                    semantic_threshold=(
+                        resolved_provider_config.keyframe_semantic_threshold
+                    ),
+                )
+            ),
+            sampler=FixedIntervalSemanticSampler(
+                fps=resolved_provider_config.semantic_input_fps
+            ),
+            retention_root=self.keyframe_root / "semantic-input",
+            on_selected=self._enqueue_semantic_selection,
+            on_state_change=self._update_semantic_pipeline_state,
+        )
 
     async def submit(self, frame: VideoFrame) -> FrameProcessingResult:
-        """Run local selection and enqueue a selected frame for background analysis."""
+        """Admit a frame for background semantic processing without waiting."""
 
         if self.closed:
             raise RuntimeError("realtime video observer is closed")
@@ -141,21 +185,20 @@ class RealtimeVideoObserver:
 
     async def _submit(self, frame: VideoFrame) -> FrameProcessingResult:
         self._accept_video_id(frame)
-
-        selection_started_ns = self.clock_ns()
-        ai_frame = _to_ai_frame(frame)
-        collection = await asyncio.to_thread(self.collector.collect, ai_frame)
-        if collection.selected_frame is None:
-            return collection.processing
-
-        selection_finished_ns = self.clock_ns()
-        await self._enqueue(
-            frame,
-            enqueued_ns=selection_finished_ns,
-            keyframe_selection_latency_ms=_elapsed_ms(
-                selection_started_ns,
-                selection_finished_ns,
-            ),
+        started_ns = self.clock_ns()
+        admission = await self.semantic_pipeline.submit(frame)
+        finished_ns = self.clock_ns()
+        return FrameProcessingResult(
+            frame_id=frame.frame_id,
+            timestamp_seconds=_to_ai_frame(frame).timestamp_seconds,
+            sampled=admission.admitted,
+            sampling_rate=self.semantic_pipeline.sampler.fps,
+            metrics=KeyframeChangeMetrics(),
+            keyframe_selected=False,
+            qwen_called=False,
+            latency_ms=_elapsed_ms(started_ns, finished_ns),
+            decision_reason=admission.reason,
+            semantic_admission=admission.reason,
         )
         return collection.processing
 
@@ -201,25 +244,7 @@ class RealtimeVideoObserver:
     async def _promote(self, frame: VideoFrame) -> FrameProcessingResult:
         self._accept_video_id(frame)
         started_ns = self.clock_ns()
-        represented = self._represented_sequence()
-        if (
-            represented is None
-            or represented < frame.sequence
-            or self._needs_exact_sequence(frame.sequence)
-        ):
-            enqueued_ns = self.clock_ns()
-            enqueued = await self._enqueue(
-                frame,
-                enqueued_ns=enqueued_ns,
-                keyframe_selection_latency_ms=_elapsed_ms(started_ns, enqueued_ns),
-            )
-            reason = (
-                "promoted_for_realtime_visual_freshness"
-                if enqueued
-                else "realtime_visual_sequence_already_represented"
-            )
-        else:
-            reason = "realtime_visual_sequence_already_represented"
+        admission = await self.semantic_pipeline.promote(frame)
         return FrameProcessingResult(
             frame_id=frame.frame_id,
             timestamp_seconds=_to_ai_frame(frame).timestamp_seconds,
@@ -229,7 +254,25 @@ class RealtimeVideoObserver:
             keyframe_selected=True,
             qwen_called=False,
             latency_ms=_elapsed_ms(started_ns, self.clock_ns()),
-            decision_reason=reason,
+            decision_reason=admission.reason,
+            semantic_admission=admission.reason,
+        )
+
+    async def _enqueue_semantic_selection(
+        self,
+        frame: VideoFrame,
+        event: EmbeddingEvent | None,
+        reason: str,
+    ) -> None:
+        _ = event
+        if self.closed:
+            raise RuntimeError("realtime video observer is closed")
+        enqueued_ns = self.clock_ns()
+        await self._enqueue(
+            frame,
+            enqueued_ns=enqueued_ns,
+            keyframe_selection_latency_ms=0,
+            already_retained=True,
         )
 
     async def _enqueue(
@@ -238,12 +281,14 @@ class RealtimeVideoObserver:
         *,
         enqueued_ns: int,
         keyframe_selection_latency_ms: int,
+        already_retained: bool = False,
     ) -> bool:
         async with self._enqueue_lock:
             return await self._enqueue_serialized(
                 frame,
                 enqueued_ns=enqueued_ns,
                 keyframe_selection_latency_ms=keyframe_selection_latency_ms,
+                already_retained=already_retained,
             )
 
     async def _enqueue_serialized(
@@ -252,6 +297,7 @@ class RealtimeVideoObserver:
         *,
         enqueued_ns: int,
         keyframe_selection_latency_ms: int,
+        already_retained: bool,
     ) -> bool:
         if self.closed:
             raise RuntimeError("realtime video observer is closed")
@@ -262,7 +308,16 @@ class RealtimeVideoObserver:
             and not self._needs_exact_sequence(frame.sequence)
         ):
             return False
-        retained = await asyncio.to_thread(self._retain_keyframe, frame)
+        retained = (
+            SemanticKeyframeRecord(
+                frame_id=frame.frame_id,
+                uri=frame.uri,
+                sequence=frame.sequence,
+                timestamp_ms=frame.timestamp_ms,
+            )
+            if already_retained
+            else await asyncio.to_thread(self._retain_keyframe, frame)
+        )
         self._owned_paths.add(Path(retained.uri))
         if self.closed:
             self._delete_record(retained)
@@ -304,8 +359,9 @@ class RealtimeVideoObserver:
         return True
 
     async def wait_idle(self) -> None:
-        """Wait until the bounded queue and current observation are finished."""
+        """Wait until both semantic embedding and VLM stages are idle."""
 
+        await self.semantic_pipeline.wait_idle()
         await self._queue.join()
         await self._idle.wait()
 
@@ -388,6 +444,7 @@ class RealtimeVideoObserver:
         if self.closed:
             return
         self.closed = True
+        await self.semantic_pipeline.close()
         self._drop_pending()
         await self.wait_for_promotions()
 
@@ -408,6 +465,8 @@ class RealtimeVideoObserver:
         await self._close_video_adapter()
         if self.video_id is not None:
             self.memory_store.remove_video(self.video_id)
+        if self._owns_semantic_store:
+            self.semantic_store.close()
         for path in list(self._owned_paths):
             path.unlink(missing_ok=True)
         self._owned_paths.clear()
@@ -450,8 +509,15 @@ class RealtimeVideoObserver:
                     ).model_copy(
                         update={"published_at_ms": self.wall_clock_ms()}
                     )
+                    video_id = item_video_id(item.record, self.video_id)
+                    await asyncio.to_thread(
+                        self._publish_visual_semantic_record,
+                        video_id,
+                        item.record,
+                        observation,
+                    )
                     evicted = self.memory_store.record_success(
-                        item_video_id(item.record, self.video_id),
+                        video_id,
                         item.record,
                         observation,
                         diagnostics=diagnostics,
@@ -459,10 +525,17 @@ class RealtimeVideoObserver:
                     for record in evicted:
                         self._delete_record(record)
                 else:
+                    video_id = item_video_id(item.record, self.video_id)
+                    error = _result_error(result)
+                    self.semantic_store.record_failure(
+                        video_id,
+                        sequence=item.record.sequence,
+                        error=error,
+                    )
                     self.memory_store.record_failure(
-                        item_video_id(item.record, self.video_id),
+                        video_id,
                         item.record,
-                        _result_error(result),
+                        error,
                         diagnostics=self._observation_diagnostics(
                             item=item,
                             dequeued_ns=dequeued_ns,
@@ -476,14 +549,21 @@ class RealtimeVideoObserver:
                 raise
             except Exception as exc:  # noqa: BLE001 - background boundary.
                 if not self.closed:
+                    video_id = item_video_id(item.record, self.video_id)
+                    error = {
+                        "code": "video_observation_failed",
+                        "message": sanitize_error_message(exc),
+                        "recoverable": True,
+                    }
+                    self.semantic_store.record_failure(
+                        video_id,
+                        sequence=item.record.sequence,
+                        error=error,
+                    )
                     self.memory_store.record_failure(
-                        item_video_id(item.record, self.video_id),
+                        video_id,
                         item.record,
-                        {
-                            "code": "video_observation_failed",
-                            "message": sanitize_error_message(exc),
-                            "recoverable": True,
-                        },
+                        error,
                     )
                 self._delete_record(item)
             finally:
@@ -495,6 +575,57 @@ class RealtimeVideoObserver:
                 self._snapshot_updated.set()
                 if self._queue.empty():
                     self._idle.set()
+
+    def _publish_visual_semantic_record(
+        self,
+        video_id: str,
+        frame: SemanticKeyframeRecord,
+        result: VideoUnderstandingResult,
+    ) -> VisualSemanticRecord:
+        text_outcome = self.embedding_coordinator.embed_text(
+            TextObservation(
+                session_id=self.session_id,
+                observation_id=f"visual-record:{video_id}:{frame.sequence}",
+                text=_build_visual_search_text(result),
+                source="visual_semantic_record",
+                occurred_at_ms=frame.timestamp_ms,
+            ),
+            priority="background",
+        )
+        text_event = text_outcome if isinstance(text_outcome, EmbeddingEvent) else None
+        evidence_bytes = Path(frame.uri).stat().st_size
+        record = VisualSemanticRecord(
+            record_id=f"visual-{uuid4().hex}",
+            session_id=self.session_id,
+            video_id=video_id,
+            frame_sequence=frame.sequence,
+            captured_at_ms=frame.timestamp_ms,
+            summary=result.summary,
+            scene=result.scene,
+            objects=list(result.objects),
+            people=list(result.people),
+            actions=list(result.actions),
+            events=list(result.events),
+            text_in_video=list(result.text_in_video),
+            products=list(result.products),
+            brands=list(result.brands),
+            colors=list(result.colors),
+            materials=list(result.materials),
+            timestamps=[dict(item) for item in result.timestamps],
+            style_tags=list(result.style_tags),
+            confidence=result.confidence,
+            provider=result.provider,
+            model=result.model,
+            search_embedding=(list(text_event.vector) if text_event else None),
+            embedding_space_id=(
+                text_event.embedding_space_id if text_event else None
+            ),
+            index_status=("ready" if text_event else "unavailable"),
+            evidence_ref=frame.uri,
+            evidence_bytes=evidence_bytes,
+            created_at_ms=self.wall_clock_ms(),
+        )
+        return self.semantic_store.record_success(record)
 
     def _execute_observation(self, item: SemanticKeyframeRecord) -> ToolResult:
         video_id = item_video_id(item, self.video_id)
@@ -652,12 +783,31 @@ class RealtimeVideoObserver:
         _remove_empty_tree(self.keyframe_root)
 
     def _update_pending_state(self) -> None:
+        self._publish_pending_state()
+
+    def _update_semantic_pipeline_state(
+        self,
+        pending_count: int,
+        in_flight: bool,
+    ) -> None:
+        self._semantic_pending_count = pending_count
+        self._semantic_in_flight = in_flight
+        self._publish_pending_state()
+
+    def _publish_pending_state(self) -> None:
         if self.video_id is None or self.closed:
             return
+        pending_count = self._semantic_pending_count + self._queue.qsize()
+        in_flight = self._semantic_in_flight or self._inflight_item is not None
         self.memory_store.mark_pending(
             self.video_id,
-            pending_count=self._queue.qsize(),
-            in_flight=self._inflight_item is not None,
+            pending_count=pending_count,
+            in_flight=in_flight,
+        )
+        self.semantic_store.mark_pending(
+            self.video_id,
+            pending_count=pending_count,
+            in_flight=in_flight,
         )
         self._snapshot_updated.set()
 
@@ -787,6 +937,24 @@ def _snapshot_publishable_observation(result: ToolResult) -> VideoUnderstandingR
     if result.data.get("source") != "background_keyframe_observation":
         return None
     return observation
+
+
+def _build_visual_search_text(result: VideoUnderstandingResult) -> str:
+    sections = [
+        ("场景", [result.scene] if result.scene else []),
+        ("物体", result.objects),
+        ("人物", result.people),
+        ("动作", result.actions),
+        ("事件", result.events),
+        ("文字", result.text_in_video),
+        ("摘要", [result.summary]),
+    ]
+    text = "\n".join(
+        f"{label}：{'、'.join(value for value in values if value)}"
+        for label, values in sections
+        if any(values)
+    )
+    return text[:4_000] or "视觉记录"
 
 
 def _safe_name(value: str) -> str:

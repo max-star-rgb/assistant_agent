@@ -30,6 +30,7 @@ SelectedCallback = Callable[
     [VideoFrame, EmbeddingEvent | None, str],
     Awaitable[None],
 ]
+StateCallback = Callable[[int, bool], None]
 
 
 class ImageEmbeddingCoordinator(Protocol):
@@ -96,6 +97,7 @@ class SemanticFramePipeline:
         sampler: FixedIntervalSemanticSampler,
         retention_root: Path | str,
         on_selected: SelectedCallback,
+        on_state_change: StateCallback | None = None,
         clock: Callable[[], float] = monotonic,
     ) -> None:
         self.coordinator = coordinator
@@ -103,6 +105,7 @@ class SemanticFramePipeline:
         self.sampler = sampler
         self.retention_root = Path(retention_root)
         self.on_selected = on_selected
+        self.on_state_change = on_state_change
         self.clock = clock
         self._pending: _SemanticFrameJob | None = None
         self._inflight: _SemanticFrameJob | None = None
@@ -183,6 +186,7 @@ class SemanticFramePipeline:
                 if self._pending is not None:
                     self._delete_owned(self._pending.frame)
                     self._pending = None
+                self._notify_state()
                 self._wake.set()
                 worker = self._worker
         if worker is not None:
@@ -224,6 +228,7 @@ class SemanticFramePipeline:
             self._idle.clear()
             self._wake.set()
             self._ensure_worker()
+            self._notify_state()
             return SemanticAdmission(
                 admitted=True,
                 reason=("interactive" if job.pinned else "admitted"),
@@ -243,6 +248,7 @@ class SemanticFramePipeline:
                     job = self._pending
                     self._pending = None
                     self._inflight = job
+                    self._notify_state()
                 else:
                     self._wake.clear()
                     if self._closed:
@@ -258,6 +264,7 @@ class SemanticFramePipeline:
             finally:
                 async with self._lock:
                     self._inflight = None
+                    self._notify_state()
                     if self._pending is None:
                         self._idle.set()
 
@@ -356,6 +363,13 @@ class SemanticFramePipeline:
         path = Path(frame.uri)
         path.unlink(missing_ok=True)
         self._owned_paths.discard(path)
+
+    def _notify_state(self) -> None:
+        if self.on_state_change is not None:
+            self.on_state_change(
+                1 if self._pending is not None else 0,
+                self._inflight is not None,
+            )
 
 
 def _frame_timestamp_seconds(frame: VideoFrame, clock: Callable[[], float]) -> float:

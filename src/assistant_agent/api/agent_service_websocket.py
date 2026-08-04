@@ -953,13 +953,6 @@ def _prepare_chat_raw_message(
             else None
         )
         video_target_frame = latest_video_frame
-        if latest_video_frame is not None and state.video_observer is not None:
-            nearest_keyframe = state.video_observer.latest_keyframe_at_or_before(
-                latest_video_frame.video_id,
-                target_sequence=latest_video_frame.sequence,
-            )
-            if nearest_keyframe is not None:
-                video_target_frame = nearest_keyframe
         return PreparedChat(
             session_id=session_id,
             response_session_id=response_session_id,

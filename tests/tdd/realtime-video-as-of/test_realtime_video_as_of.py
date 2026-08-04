@@ -312,7 +312,7 @@ def test_chat_arrival_freezes_the_latest_received_video_frame() -> None:
     assert prepared.video_target_frame == frame
 
 
-def test_chat_arrival_prefers_the_latest_selected_keyframe_over_the_latest_raw_frame() -> None:
+def test_chat_arrival_freezes_the_latest_raw_frame_for_interactive_semantics() -> None:
     store = RealtimeVideoMemoryStore()
     _record_success(store, sequence=3, summary="keyframe-at-a", published_at_ns=100)
     observer = RealtimeVideoObserver(
@@ -362,7 +362,7 @@ def test_chat_arrival_prefers_the_latest_selected_keyframe_over_the_latest_raw_f
 
     assert isinstance(prepared, PreparedChat)
     assert prepared.video_target_frame is not None
-    assert prepared.video_target_frame.sequence == 3
+    assert prepared.video_target_frame.sequence == 7
 
 
 def test_gateway_metadata_carries_the_frozen_visual_target_sequence() -> None:
