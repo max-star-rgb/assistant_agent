@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from time import perf_counter_ns
@@ -38,6 +38,10 @@ from assistant_agent.identifiers import new_prefixed_uuid7
 from assistant_agent.observability.operational_logging import digest_identifier, record_gateway_lifecycle
 from assistant_agent.media.video.realtime_video_observer import RealtimeVideoObserver
 from assistant_agent.media.video.video_context import VideoFrame
+from assistant_agent.media.video.visual_reminder import (
+    VisualReminderManager,
+    VisualReminderReservation,
+)
 from assistant_agent.media.rendering_3d_relay import get_rendering_3d_relay_registry
 from assistant_agent.observability.trace_store import TraceStore, append_observability_event
 from assistant_agent.observability.turn_summary import append_agent_service_turn_summary
@@ -75,6 +79,12 @@ class AgentServiceConnectionState:
     gateway_manager: GatewaySessionManager | None = None
     gateway_facade: GatewayTurnFacade | None = None
     assistant_control_start: dict[str, Any] | None = None
+    assistant_control_call_type: str | None = None
+    visual_reminder_manager: VisualReminderManager | None = None
+    visual_reminder_owner_id: str | None = None
+    visual_reminder_sender: Callable[
+        [VisualReminderReservation], Awaitable[None]
+    ] | None = None
     chats: list[dict[str, Any]] = field(default_factory=list)
     video_ids: list[str] = field(default_factory=list)
     latest_video_frames: dict[str, VideoFrame] = field(default_factory=dict)
@@ -262,6 +272,7 @@ class AssistantControlHandler(BaseHandler):
             raise AgentServiceProtocolError("callType must be AUDIO or VIDEO")
         state.media_protocol = True
         state.assistant_control_start = dict(body)
+        state.assistant_control_call_type = call_type
         state.client_capabilities = _delivery_capabilities(body.get("clientCapabilities"))
         state.client_info = _client_info(body.get("clientInfo"))
         state.language = _callback_language(body)
@@ -274,6 +285,11 @@ class AssistantControlHandler(BaseHandler):
                     "entry_profile": "agent_service",
                 },
             )
+        await _configure_visual_reminder_connection(
+            state=state,
+            user_id=number,
+            call_type=call_type,
+        )
         return _response_envelope(
             message=self.response_message,
             session_id=state.response_session_id,
@@ -444,7 +460,8 @@ class VideoHandler(BaseHandler):
             if state.video_observer is None:
                 state.video_observer = _create_realtime_video_observer(
                     user_id=user_number,
-                    session_id=session_id,
+                    session_id=state.runtime_session_id or session_id,
+                    state=state,
                 )
             current_video_id = getattr(state.video_observer, "video_id", None)
             if current_video_id is None and state.video_ids:
@@ -453,7 +470,8 @@ class VideoHandler(BaseHandler):
                 await state.video_observer.close()
                 state.video_observer = _create_realtime_video_observer(
                     user_id=user_number,
-                    session_id=session_id,
+                    session_id=state.runtime_session_id or session_id,
+                    state=state,
                 )
             await state.video_observer.submit(frame)
             state.latest_video_frames[frame.video_id] = frame
@@ -534,6 +552,16 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
         trace_store=_get_agent_service_trace_store(),
         text_turn_timeout_seconds=_agent_service_text_turn_timeout_seconds(),
     )
+    async def visual_reminder_sender(
+        reservation: VisualReminderReservation,
+    ) -> None:
+        await _send_response(
+            websocket,
+            _visual_reminder_chat_response(state, reservation),
+            state=state,
+        )
+
+    state.visual_reminder_sender = visual_reminder_sender
     logger.info(
         "agent-service websocket connected version=%s session_digest=%s query_keys=%s",
         version,
@@ -723,6 +751,17 @@ async def _cleanup_agent_service_connection(
     close_reason: str | None,
 ) -> None:
     state.closed = True
+    reminder_manager = state.visual_reminder_manager
+    reminder_owner_id = state.visual_reminder_owner_id
+    if reminder_manager is not None:
+        reminder_manager.close()
+        if state.runtime_session_id is not None and reminder_owner_id is not None:
+            _get_shared_agent_runtime().visual_reminder_registry.unregister(
+                reminder_owner_id,
+                state.runtime_session_id,
+                manager=reminder_manager,
+            )
+        state.visual_reminder_manager = None
     if state.runtime_session_id is not None:
         await get_rendering_3d_relay_registry().unregister(
             session_id=state.runtime_session_id,
@@ -1567,7 +1606,53 @@ def _create_video_ingestion_service() -> H264VideoIngestionService:
     return H264VideoIngestionService(store=store)
 
 
-def _create_realtime_video_observer(*, user_id: str, session_id: str) -> RealtimeVideoObserver:
+def _get_shared_agent_runtime():
+    from assistant_agent.api import routes_agent
+
+    return routes_agent.get_assistant_runtime_app().runtime
+
+
+async def _configure_visual_reminder_connection(
+    *,
+    state: AgentServiceConnectionState,
+    user_id: str,
+    call_type: str,
+) -> None:
+    runtime = _get_shared_agent_runtime()
+    previous = state.visual_reminder_manager
+    previous_owner = state.visual_reminder_owner_id
+    if previous is not None:
+        previous.close()
+        if state.runtime_session_id is not None and previous_owner is not None:
+            runtime.visual_reminder_registry.unregister(
+                previous_owner,
+                state.runtime_session_id,
+                manager=previous,
+            )
+        state.visual_reminder_manager = None
+        state.visual_reminder_owner_id = None
+    if call_type != "VIDEO":
+        return
+    if state.runtime_session_id is None:
+        raise RuntimeError("visual reminder connection requires runtime session")
+    manager = VisualReminderManager(
+        user_id=user_id,
+        session_id=state.runtime_session_id,
+        similarity_threshold=runtime.config.visual_reminder_similarity_threshold,
+        max_active=runtime.config.visual_reminder_max_active,
+        terminal_history_limit=runtime.config.visual_reminder_terminal_history_limit,
+    )
+    runtime.visual_reminder_registry.register(manager)
+    state.visual_reminder_manager = manager
+    state.visual_reminder_owner_id = user_id
+
+
+def _create_realtime_video_observer(
+    *,
+    user_id: str,
+    session_id: str,
+    state: AgentServiceConnectionState,
+) -> RealtimeVideoObserver:
     from assistant_agent.api import routes_agent
     from assistant_agent.tools.plugins.registry_factory import (
         create_realtime_video_observation_registry,
@@ -1601,6 +1686,8 @@ def _create_realtime_video_observer(*, user_id: str, session_id: str) -> Realtim
             semantic_store=semantic_lease.store,
             resource_release=release_resources,
             provider_config=runtime.config,
+            visual_reminder_manager=state.visual_reminder_manager,
+            visual_reminder_sender=state.visual_reminder_sender,
         )
     except Exception:
         release_resources()
@@ -1621,6 +1708,28 @@ def _failure_chat_response(
         message="chatResponse",
         session_id=prepared.response_session_id,
         body=body,
+    )
+
+
+def _visual_reminder_chat_response(
+    state: AgentServiceConnectionState,
+    reservation: VisualReminderReservation,
+) -> dict[str, Any]:
+    return _response_envelope(
+        message="chatResponse",
+        session_id=state.response_session_id,
+        body={
+            "message": {
+                "chatIndex": f"visual-reminder:{reservation.reminder_id}",
+                "content": {
+                    "intentResult": {
+                        "description": reservation.message,
+                        "status": "SUCCESS",
+                    }
+                },
+            },
+            **_display_flags(False),
+        },
     )
 
 
@@ -1775,6 +1884,7 @@ def _agent_service_gateway_metadata(
             "content_count": content_count,
             "control_started": state.assistant_control_start is not None,
             "client": dict(state.client_info),
+            "call_type": state.assistant_control_call_type,
         },
         "gateway": {
             "suppress_realtime_backend_source": True,
