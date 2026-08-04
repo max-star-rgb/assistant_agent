@@ -86,6 +86,9 @@ from assistant_agent.media.embedding.consumers.temporal_memory import (
     TemporalMemoryConsumer,
     TemporalVisualMemory,
 )
+from assistant_agent.media.embedding.consumers.alignment import CrossModalAlignmentConsumer
+from assistant_agent.media.embedding.consumers.attention import VisualAttentionConsumer
+from assistant_agent.media.embedding.models import TextObservation
 from assistant_agent.tools.plugins.registry_factory import create_default_registry
 from assistant_agent.tools.registry import ToolRegistry
 
@@ -94,6 +97,28 @@ if TYPE_CHECKING:
 
 
 TEMPORAL_VISUAL_MEMORY_ROOT = Path(__file__).resolve().parents[3] / ".data" / "temporal_visual_memory"
+
+
+def _stable_text_observation(
+    session_id: str,
+    run_id: str,
+    text_value: str | None,
+    *,
+    now_ms: int | None = None,
+) -> TextObservation | None:
+    """Normalize already-final request text; audio/ASR remains upstream of this boundary."""
+
+    normalized = (text_value or "").strip()
+    if not normalized:
+        return None
+    return TextObservation(
+        session_id=session_id,
+        observation_id=run_id,
+        text=normalized[:4_000],
+        source="user_request",
+        occurred_at_ms=now_ms if now_ms is not None else int(time() * 1000),
+        final=True,
+    )
 
 
 class AgentGraphRuntime:
@@ -278,10 +303,22 @@ class AgentGraphRuntime:
         memory = TemporalVisualMemory(root=TEMPORAL_VISUAL_MEMORY_ROOT / owner)
         coordinator = SessionEmbeddingCoordinator(session_id, self.embedding_provider)
         coordinator.temporal_visual_memory = memory
+        coordinator.cross_modal_alignment_consumer = CrossModalAlignmentConsumer()
+        coordinator.visual_attention_consumer = VisualAttentionConsumer()
         coordinator.register_consumer(
             TemporalMemoryConsumer(memory),
             queue_size=128,
             overflow_policy="drop_oldest",
+        )
+        coordinator.register_consumer(
+            coordinator.cross_modal_alignment_consumer,
+            queue_size=128,
+            overflow_policy="drop_oldest",
+        )
+        coordinator.register_consumer(
+            coordinator.visual_attention_consumer,
+            queue_size=64,
+            overflow_policy="latest_wins",
         )
         return coordinator
 
@@ -353,6 +390,7 @@ class AgentGraphRuntime:
             trace_id=trace_context.trace_id if trace_context is not None else None,
             agent_id=self.agent_id,
         )
+        self._embed_stable_request_text(state, request)
         self._attach_session_memory_snapshot(state)
         state.context_source_result = self.context_source_coordinator.load_once(
             ContextSourceRequest(
@@ -534,6 +572,25 @@ class AgentGraphRuntime:
                 state=state,
             )
         return state
+
+    def _embed_stable_request_text(
+        self,
+        state: AgentState,
+        request: UserRequest,
+    ) -> None:
+        observation = _stable_text_observation(
+            state.session_id,
+            state.run_id,
+            request.text,
+        )
+        if observation is None:
+            return
+        coordinator = self.embedding_coordinator_store.resolve(
+            state.user_id,
+            state.session_id,
+        )
+        if coordinator.has_consumer_for("text"):
+            coordinator.embed_text(observation)
 
     def drain_memory_ingestions(self, *, timeout: float | None = None) -> bool:
         """Wait for accepted memory ingestions."""

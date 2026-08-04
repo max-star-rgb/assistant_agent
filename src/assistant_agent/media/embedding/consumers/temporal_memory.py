@@ -69,6 +69,7 @@ class TemporalVisualMemory:
     """Own a bounded vector timeline and evidence hard links for one session."""
 
     consumer_id = "temporal-visual-memory"
+    modalities = frozenset({"image"})
 
     def __init__(
         self,
@@ -214,6 +215,7 @@ class TemporalMemoryConsumer:
     """Named adapter retained for composition and observability."""
 
     consumer_id = "temporal-visual-memory"
+    modalities = frozenset({"image"})
 
     def __init__(self, memory: TemporalVisualMemory) -> None:
         self.memory = memory

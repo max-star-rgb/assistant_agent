@@ -198,6 +198,17 @@ class SessionEmbeddingCoordinator:
         with self._lock:
             return self._closed
 
+    def has_consumer_for(self, modality: str) -> bool:
+        """Report structured modality interest without inferring user intent."""
+
+        if modality not in {"image", "text"}:
+            raise ValueError("unsupported embedding modality")
+        with self._lock:
+            return any(
+                modality in getattr(worker.consumer, "modalities", {"image", "text"})
+                for worker in self._workers.values()
+            )
+
     def _compute_and_dispatch(
         self, observation: Observation, *, priority: EmbeddingPriority
     ) -> EmbeddingOutcome:
