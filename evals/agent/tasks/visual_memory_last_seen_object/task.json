@@ -1,0 +1,13 @@
+{
+  "id": "visual_memory_last_seen_object",
+  "description": "用户询问刚才看到的物体时，Agent 应检索会话视觉历史并按证据说明最后出现的时间与场景。",
+  "capability": "visual_memory_last_seen_object",
+  "request": {
+    "user_id": "eval-visual-memory-user",
+    "session_id": "eval-visual-memory-session",
+    "text": "我刚才把钥匙放哪了？"
+  },
+  "environment": "evals.agent.tasks.visual_memory_last_seen_object.environment:VisualMemoryLastSeenObjectEnvironment",
+  "grader": "evals.agent.tasks.visual_memory_last_seen_object.grader:grade",
+  "tags": ["readonly", "visual-memory", "tool-grounding"]
+}

@@ -322,6 +322,15 @@ Timeouts, bounded calls, adapter cleanup, structured errors, and cooperative
 checks are the supported controls. Do not claim hard preemption without a
 separate process or an upstream API that actually provides it.
 
+## Session embedding side stream
+
+稳定的 `request.text` 在建立 `AgentState` 后可进入 session embedding coordinator；音频已在上游转成
+文本，Runtime 不处理语音 embedding。只有 coordinator 声明 text consumer 时才编码。Image/text
+embedding、consumer dispatch 和 temporal retention 是独立的内部 side stream，不替代 LLM/provider
+stream，不把向量或媒体证据写入 `AgentEvent`、conversation history 或主 prompt。Runtime pool 实例共享
+同一个 coordinator store；session/user 删除和 pool close 清理它，WebSocket reconnect 不清理。
+完整契约见 `docs/multimodal-embedding-architecture.md`。
+
 ## Source Ownership
 
 | source | responsibility |

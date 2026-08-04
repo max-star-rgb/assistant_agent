@@ -20,6 +20,7 @@
 | tool calling、MCP、durable task、provider 调用治理 | `docs/tool-calling-architecture.md` |
 | memory、本地/外部记忆服务、记忆读写策略 | `docs/memory-service-architecture.md`；`docs/memory_server_api_spec.md` |
 | context、prompt、conversation history、context budget | `docs/context_engineering_status.md` |
+| SigLIP2、image/text embedding、语义关键帧、短期视觉回忆、历史找物 | `docs/multimodal-embedding-architecture.md`；涉及实时入口时再读 `docs/media-agent-service-websocket.md` |
 | 长时 Agent、durable task 定时恢复、proactive wake、任务提醒 | 先读 `docs/gateway-architecture.md`、`docs/runtime-event-stream-architecture.md`、`docs/tool-calling-architecture.md`，再读开发路线图 `docs/development/2026-07-25-long-running-agent-plan.md`；路线图不是当前事实权威 |
 | multi-agent、A2A、delegation | `docs/agent-communication-routing.md` |
 | trace、observability、redaction、事件与日志契约 | `docs/observability-harness.md` |

@@ -207,7 +207,11 @@ def create_semantic_change_detector(
     *,
     coordinator: SessionEmbeddingCoordinator | None = None,
 ) -> SemanticChangeDetector:
-    """Create a semantic detector from provider config while keeping mock default behavior local."""
+    """Create a semantic detector, retaining the legacy image-only path for compatibility.
+
+    Runtime callers pass a session coordinator.  The direct provider construction below
+    exists only for older standalone callers and migration tests.
+    """
 
     requires_visual_gate = getattr(config, "vision_embedding_provider", "mock") in {
         "dashscope",

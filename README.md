@@ -17,6 +17,7 @@ Core project docs:
 - Context engineering architecture: [docs/context_engineering_status.md](docs/context_engineering_status.md)
 - Multi-agent routing: [docs/agent-communication-routing.md](docs/agent-communication-routing.md)
 - Media-Agent WebSocket contract: [docs/media-agent-service-websocket.md](docs/media-agent-service-websocket.md)
+- 统一 SigLIP2 image/text embedding、短期视觉回忆与历史找物: [docs/multimodal-embedding-architecture.md](docs/multimodal-embedding-architecture.md)
 - Core pytest、临时 TDD 与 incubating 边界: [tests/README.md](tests/README.md)
 - System/Agent eval 与 incubating 运行规则: [evals/README.md](evals/README.md)
 
@@ -38,7 +39,7 @@ Provider profiles and external-provider configuration are documented in [docs/to
 | `skills/` | Skill 加载、召回、校验、目录、执行与持久化 |
 | `tools/` | Tool 契约、Registry、治理边界和 Plugin |
 | `gateway/` | session/run/cancel/reconnect、Runtime adapter、事件映射和交付 |
-| `media/` | 音频边缘适配、视频摄取/观察以及视觉 adapter |
+| `media/` | 音频边缘适配、视频摄取/观察、统一 image/text embedding 及视觉 adapter |
 | `automation/` | durable task、proactive wake 和通知 |
 | `multi_agent/` | Agent routing、delegation、transport 和 A2A |
 | `observability/` | trace、日志、metrics、OpenTelemetry 和 Langfuse |

@@ -55,6 +55,8 @@ class VisualMemorySearchResult(BaseModel):
     status: VisualMemorySearchStatus
     verification_status: VerificationStatus = "skipped"
     matches: list[VisualMemoryMatch] = Field(default_factory=list)
+    verified_scene: str | None = None
+    verified_objects: list[str] = Field(default_factory=list)
     errors: list[dict[str, object]] = Field(default_factory=list)
 
 
@@ -176,6 +178,8 @@ class VisualMemorySearchService:
             status="confirmed" if confirmed else "uncertain",
             verification_status="succeeded",
             matches=matches,
+            verified_scene=verification.scene,
+            verified_objects=list(verification.objects),
         )
 
 

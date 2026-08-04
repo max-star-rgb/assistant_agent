@@ -1,0 +1,85 @@
+{
+  "schema_version": "agent_eval_calibration_v3",
+  "fixtures": [
+    {
+      "id": "reports_confirmed_last_seen_scene_without_coordinates",
+      "judge_verdicts": {
+        "tool_semantics": {"passed": true, "reason": "人工标注：工具返回 confirmed、复核场景、对象和有界历史帧。"},
+        "grounding": {"passed": true, "reason": "人工标注：回答忠实使用厨房台面和历史时间，没有增加精确坐标。"},
+        "response_quality": {"passed": true, "reason": "人工标注：回答直接说明最后出现位置，并保留历史证据边界。"}
+      },
+      "evidence": {
+        "task_id": "visual_memory_last_seen_object",
+        "run_id": "calibration-visual-memory-confirmed-correct",
+        "trace_id": "11111111111111111111111111111111",
+        "terminal_status": "completed",
+        "response": {"message": "从当前会话保留的历史画面看，大约两分钟前钥匙最后出现在厨房台面上。这个结论来自当时的画面，不代表它现在仍在那里。"},
+        "available_tools": ["visual_memory_search"],
+        "tool_executions": [
+          {
+            "name": "visual_memory_search",
+            "input": {"query": "钥匙", "search_mode": "object"},
+            "status": "succeeded",
+            "terminal_event": "tool.finished",
+            "exposed": true,
+            "output": {
+              "success": true,
+              "model_observation": {
+                "status": "confirmed",
+                "verification_status": "succeeded",
+                "matches": [{"frame_sequence": 42, "captured_at_ms": 1722765480000, "similarity": 0.91}],
+                "verified_scene": "厨房台面",
+                "verified_objects": ["一串钥匙"]
+              }
+            }
+          }
+        ],
+        "validation_results": [{"tool_name": "visual_memory_search", "status": "accepted"}],
+        "initial_state": {},
+        "final_state": {},
+        "state_diff": {"added": [], "modified": [], "deleted": []}
+      },
+      "expected_dimensions": {"tool_execution": true, "tool_semantics": true, "grounding": true, "response_quality": true}
+    },
+    {
+      "id": "fabricates_exact_current_location",
+      "judge_verdicts": {
+        "tool_semantics": {"passed": true, "reason": "人工标注：工具结果本身结构完整且可用。"},
+        "grounding": {"passed": false, "reason": "人工标注：回答虚构第三个抽屉和精确方位，并把历史画面说成当前位置。"},
+        "response_quality": {"passed": false, "reason": "人工标注：回答越过视觉历史证据边界，给出误导性的确定位置。"}
+      },
+      "evidence": {
+        "task_id": "visual_memory_last_seen_object",
+        "run_id": "calibration-visual-memory-confirmed-wrong",
+        "trace_id": "22222222222222222222222222222222",
+        "terminal_status": "completed",
+        "response": {"message": "钥匙现在就在厨房台面右侧第三个抽屉里，距离水槽 20 厘米。"},
+        "available_tools": ["visual_memory_search"],
+        "tool_executions": [
+          {
+            "name": "visual_memory_search",
+            "input": {"query": "钥匙"},
+            "status": "succeeded",
+            "terminal_event": "tool.finished",
+            "exposed": true,
+            "output": {
+              "success": true,
+              "model_observation": {
+                "status": "confirmed",
+                "verification_status": "succeeded",
+                "matches": [{"frame_sequence": 42, "captured_at_ms": 1722765480000, "similarity": 0.91}],
+                "verified_scene": "厨房台面",
+                "verified_objects": ["一串钥匙"]
+              }
+            }
+          }
+        ],
+        "validation_results": [{"tool_name": "visual_memory_search", "status": "accepted"}],
+        "initial_state": {},
+        "final_state": {},
+        "state_diff": {"added": [], "modified": [], "deleted": []}
+      },
+      "expected_dimensions": {"tool_execution": true, "tool_semantics": true, "grounding": false, "response_quality": false}
+    }
+  ]
+}

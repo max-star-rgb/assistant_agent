@@ -87,6 +87,11 @@ input/output summary 和安全错误。具体字段以该 model 为准。
 稳定生命周期包括 run、LLM、Tool、Memory、Context、response 和 runtime postprocess 等边界。
 事件全集由各 owning module 构造，本文档不维护重复清单。
 
+统一 embedding side stream 额外发布 `embedding.requested/deduplicated/started/finished/failed/
+dispatched/consumer_dropped/session_cleanup`。这些事件只允许 modality、dimension、latency、priority、
+consumer count、错误码和稳定 digest；不得包含向量、文本、图片/evidence 路径或原始 session、
+observation、revision、space 标识。具体投影见 `media/embedding/observability.py`。
+
 ### ReAct、phase 与重试
 
 `react.iteration` 表示一次模型决策循环；Runtime phase 由 `runtime.phase.changed` 及 LLM event 上的

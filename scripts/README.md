@@ -96,29 +96,27 @@ For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
 
 ## Specialized integrations
 
-### SigLIP2 realtime keyframe model
+### SigLIP2 unified image/text embedding model
 
-Runtime 不下载关键帧模型。先在 operator 明确允许联网和安装 export-only 依赖的环境中，把批准的
-`google/siglip2-base-patch16-224` image encoder + `visual_projection` 导出为 FP16 ONNX：
+Runtime 不下载模型。先在 operator 明确允许联网和安装 export-only 依赖的环境中，把批准的
+`google/siglip2-base-patch16-224` image/text projection 从同一 revision 导出为 FP16 ONNX：
 
 ```bash
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/export_siglip2_vision_onnx.py \
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/export_siglip2_embedding_onnx.py \
   --model-id google/siglip2-base-patch16-224 \
   --revision main \
   --output-dir .local/models/siglip2-base-patch16-224
 ```
 
-脚本把 `main` 解析为不可变 Hugging Face commit SHA，并将 revision、预处理、输出维度、
-`visual_projection`、`embedding_space_id`、ONNX 主文件及 external-data 文件的 checksum 写入
-manifest；目标目录已存在时拒绝覆盖。导出过程可下载完整 checkpoint，但产出的 Runtime ONNX
-不含 text forward，服务进程也不加载 tokenizer/text tower。模型资产留在未跟踪的 `.local/`，
-禁止提交。
+脚本把 `main` 解析为不可变 Hugging Face commit SHA，并将共同 revision/space、图文预处理、输出维度、
+两个 ONNX graph、tokenizer 及 checksum 写入 schema v2 manifest；目标目录已存在时拒绝覆盖。旧
+`export_siglip2_vision_onnx.py` 只保留 deprecated 兼容入口。模型资产留在未跟踪的 `.local/`，禁止提交。
 
 服务启用时同时显式设置 real provider mode、主 Chat/Vision 配置以及：
 
 ```bash
-MULTIMODAL_AGENT_VISION_EMBEDDING_PROVIDER=local_siglip2
-SIGLIP2_VISION_MODEL_DIR=.local/models/siglip2-base-patch16-224
+MULTIMODAL_AGENT_EMBEDDING_PROVIDER=local_siglip2
+SIGLIP2_MODEL_DIR=.local/models/siglip2-base-patch16-224
 SIGLIP2_CUDA_DEVICE_ID=0
 ```
 
@@ -126,6 +124,8 @@ SIGLIP2_CUDA_DEVICE_ID=0
 CUDA 12.8 对应的 `1.21 <= version < 1.27`，启动时还会验证实际 session 未回退到 CPU。
 Runtime 使用 `onnx` 解析图中真实 external-data 引用并核对 manifest；`torch`、`transformers`
 和 `onnxscript` 只属于模型准备环境，不是线上 Runtime 依赖。
+旧 provider/model-dir 环境变量是迁移 alias，计划不早于 `0.3.0` 删除。完整平台边界见
+`docs/multimodal-embedding-architecture.md`。
 
 ### Website guidance local verification
 

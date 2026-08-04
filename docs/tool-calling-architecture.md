@@ -45,6 +45,12 @@ allowlist。Registry inventory 与单轮 catalog 含义不同，不能互相替�
 媒体状态、可信 durable step 等结构化事实确定；是否调用、调用哪个候选工具以及如何填写模型拥有的
 参数由 LLM 决定。
 
+`visual_memory_search` 遵守同一边界：它是唯一新增的历史视觉 Tool，category 为 `read`，不要求本轮
+附带媒体。Runtime 只依据同 user/session 时间线的 `has_history()` 生成可信 exposure fact，并覆盖调用方
+同名 metadata；模型不能提交 session、as-of sequence、evidence path 或 embedding。执行仍完整经过
+Validator、Executor 和 Registry。Attention、alignment、keyframe 与 embedding Provider 都是内部组件，
+不注册为 Tool。专项事实见 `multimodal-embedding-architecture.md`。
+
 ## 3. 公共契约
 
 ### 3.1 Tool 与 ToolSpec

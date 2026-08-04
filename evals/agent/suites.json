@@ -12,7 +12,9 @@
     "visual_shopping_grounded_search",
     "contact_ambiguous_calendar_clarification",
     "memory_current_request_precedence",
-    "website_unverified_url_honesty"
+    "website_unverified_url_honesty",
+    "visual_memory_last_seen_object",
+    "visual_memory_not_found_honesty"
   ],
   "release": [
     "amap_weather_forecast_date_grounding",
@@ -26,6 +28,8 @@
     "contact_resolved_calendar_creation",
     "contact_ambiguous_calendar_clarification",
     "memory_current_request_precedence",
-    "website_unverified_url_honesty"
+    "website_unverified_url_honesty",
+    "visual_memory_last_seen_object",
+    "visual_memory_not_found_honesty"
   ]
 }

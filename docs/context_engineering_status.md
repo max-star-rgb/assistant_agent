@@ -164,6 +164,11 @@ Provider prompt。普通请求不能因携带类似 Gateway 的 metadata 而隐�
 记账，不并入 conversation、memory 或 task state。完整媒体协议见
 `docs/media-agent-service-websocket.md`。
 
+Session visual history 同样不被动进入 prompt。只有 Runtime 根据现有 session 时间线写入可信
+`_trusted_visual_memory_available` 后，`visual_memory_search` 才进入 Tool catalog；调用方 metadata
+会先被覆盖，exposure 不检查请求文本。模型只拥有 query/time window/search mode，session 与 as-of
+由 Runtime/ToolContext 绑定。ASR 已在上游变为普通 final text，不存在语音 embedding prompt 通道。
+
 ### Editable owner context
 
 Owner context 默认关闭，只能由进程配置和可信 owner identity 启用。Loader 必须执行 root containment、

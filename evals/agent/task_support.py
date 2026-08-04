@@ -14,6 +14,13 @@ from assistant_agent.runtime.requests import UserRequest
 from assistant_agent.runtime.runtime import AgentGraphRuntime
 from assistant_agent.runtime.session_store import InMemorySessionStore
 from assistant_agent.tools.base import Tool
+from assistant_agent.tools.base import ToolBase, ToolContext
+from assistant_agent.tools.models import ToolResult
+from assistant_agent.tools.ids import VISUAL_MEMORY_SEARCH_TOOL_NAME
+from assistant_agent.tools.plugins.builtin.media_inspection.visual_memory_tool import (
+    VisualMemorySearchInput,
+)
+from assistant_agent.media.embedding.consumers.object_search import VisualMemorySearchResult
 from assistant_agent.tools.plugins.builtin.shopping.models import (
     PriceCompareRequest,
     PriceCompareResult,
@@ -72,6 +79,35 @@ def _controlled_shopping_tool() -> ShoppingSearchTool:
     )
 
 
+class ControlledVisualMemorySearchTool(ToolBase):
+    """Deterministic visual-history outcome for active-runtime Agent Tasks."""
+
+    name = VISUAL_MEMORY_SEARCH_TOOL_NAME
+    description = "在当前会话已保留的历史画面中查找物体、场景或事件。"
+    input_schema = VisualMemorySearchInput
+    output_schema = VisualMemorySearchResult
+    category = "read"
+    requires_media = []
+    llm_hidden_input_fields = ("session_id",)
+
+    def __init__(self, result: dict[str, Any] | None = None) -> None:
+        self.result = result or {
+            "status": "not_found",
+            "verification_status": "skipped",
+            "matches": [],
+            "errors": [],
+        }
+
+    def _run(self, input: VisualMemorySearchInput, context: ToolContext) -> ToolResult:
+        del input, context
+        return ToolResult(
+            tool_name=self.name,
+            success=True,
+            data=dict(self.result),
+            model_observation=dict(self.result),
+        )
+
+
 def build_controlled_base_registry(
     *,
     replacements: Mapping[str, Tool] | None = None,
@@ -85,6 +121,7 @@ def build_controlled_base_registry(
     )
     controlled_tools: dict[str, Tool] = {
         "shopping_search": _controlled_shopping_tool(),
+        VISUAL_MEMORY_SEARCH_TOOL_NAME: ControlledVisualMemorySearchTool(),
     }
     local_tool_names = sorted({*source.list(), *controlled_tools})
     replacement_by_name = dict(replacements or {})
