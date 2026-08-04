@@ -58,7 +58,8 @@ def test_real_mode_explicitly_configures_local_siglip2_image_embeddings() -> Non
     assert config.siglip2_vision_model_dir == "/models/siglip2"
     assert config.siglip2_cuda_device_id == 0
     assert config.keyframe_max_interval_seconds == 10.0
-    assert config.keyframe_semantic_probe_fps == 2.0
+    assert config.semantic_input_fps == 5.0
+    assert config.keyframe_semantic_probe_fps == 5.0
     assert config.keyframe_structural_threshold == 0.35
     assert config.keyframe_semantic_threshold == 0.18
     assert config.keyframe_combined_threshold == 0.25
@@ -511,7 +512,7 @@ def test_selector_forces_static_keyframe_at_ten_seconds_not_before() -> None:
 
 
 def test_pixel_difference_is_not_part_of_final_keyframe_score() -> None:
-    selector = SemanticKeyframeSelector()
+    selector = SemanticKeyframeSelector(KeyframeSelectorConfig())
 
     scored = selector.with_score(
         KeyframeChangeMetrics(
@@ -650,7 +651,7 @@ def test_realtime_observer_uses_configured_siglip2_ssim_policy() -> None:
     assert policy.combined_threshold == 0.25
     assert policy.structural_weight == 0.4
     assert policy.semantic_weight == 0.6
-    assert observer.collector.semantic_probe_fps == 2.0
+    assert observer.collector.semantic_probe_fps == 5.0
     assert observer.collector.semantic_detector.embedding_model.provider == (
         "local_siglip2"
     )

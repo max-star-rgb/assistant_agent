@@ -83,8 +83,10 @@ class ProviderConfig:
     siglip2_cuda_device_id: int = 0
     siglip2_model_dir: str | None = None
     embedding_cuda_device_id: int = 0
+    semantic_input_fps: float = 5.0
+    keyframe_min_interval_seconds: float = 0.5
     keyframe_max_interval_seconds: float = 10.0
-    keyframe_semantic_probe_fps: float = 2.0
+    keyframe_semantic_probe_fps: float = 5.0
     keyframe_structural_threshold: float = 0.35
     keyframe_semantic_threshold: float = 0.18
     keyframe_combined_threshold: float = 0.25
@@ -227,6 +229,12 @@ class ProviderConfig:
             raise ValueError("embedding CUDA device id must be non-negative")
         if self.keyframe_max_interval_seconds <= 0:
             raise ValueError("keyframe max interval must be positive")
+        if self.keyframe_min_interval_seconds < 0:
+            raise ValueError("keyframe min interval must be non-negative")
+        if self.keyframe_min_interval_seconds > self.keyframe_max_interval_seconds:
+            raise ValueError("keyframe min interval must not exceed max interval")
+        if self.semantic_input_fps <= 0:
+            raise ValueError("semantic input FPS must be positive")
         if self.keyframe_semantic_probe_fps <= 0:
             raise ValueError("keyframe semantic probe FPS must be positive")
         for name, value in (
@@ -286,6 +294,20 @@ class ProviderConfig:
             legacy="SIGLIP2_VISION_MODEL_DIR",
             conflict_code="conflicting_siglip2_model_dir",
         )
+        semantic_input_fps_value = _compatible_env_value(
+            source,
+            canonical="REALTIME_SEMANTIC_INPUT_FPS",
+            legacy="REALTIME_KEYFRAME_SEMANTIC_PROBE_FPS",
+            conflict_code="conflicting_semantic_input_fps",
+        )
+        if any(
+            name in source
+            for name in (
+                "REALTIME_KEYFRAME_STRUCTURAL_THRESHOLD",
+                "REALTIME_KEYFRAME_COMBINED_THRESHOLD",
+            )
+        ):
+            raise ValueError("removed_realtime_keyframe_config")
         embedding_cuda_device_id = _int_env(
             source.get("SIGLIP2_CUDA_DEVICE_ID"),
             0,
@@ -352,13 +374,18 @@ class ProviderConfig:
             siglip2_cuda_device_id=embedding_cuda_device_id,
             siglip2_model_dir=siglip2_model_dir,
             embedding_cuda_device_id=embedding_cuda_device_id,
+            semantic_input_fps=_float_env(semantic_input_fps_value, 5.0),
+            keyframe_min_interval_seconds=_float_env(
+                source.get("REALTIME_KEYFRAME_MIN_INTERVAL_SECONDS"),
+                0.5,
+            ),
             keyframe_max_interval_seconds=_float_env(
                 source.get("REALTIME_KEYFRAME_MAX_INTERVAL_SECONDS"),
                 10.0,
             ),
             keyframe_semantic_probe_fps=_float_env(
-                source.get("REALTIME_KEYFRAME_SEMANTIC_PROBE_FPS"),
-                2.0,
+                semantic_input_fps_value,
+                5.0,
             ),
             keyframe_structural_threshold=_float_env(
                 source.get("REALTIME_KEYFRAME_STRUCTURAL_THRESHOLD"),

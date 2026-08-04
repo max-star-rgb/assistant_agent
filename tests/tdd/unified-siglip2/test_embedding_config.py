@@ -91,3 +91,83 @@ def test_mock_mode_cannot_enable_real_embedding_provider() -> None:
     )
 
     assert config.embedding_provider == "mock"
+
+
+def test_semantic_input_defaults_to_five_fps() -> None:
+    config = ProviderConfig.from_env(
+        {"MULTIMODAL_AGENT_PROVIDER_MODE": "mock"}
+    )
+
+    assert config.semantic_input_fps == 5.0
+    assert config.keyframe_min_interval_seconds == 0.5
+
+
+def test_legacy_semantic_probe_fps_populates_canonical_config() -> None:
+    config = ProviderConfig.from_env(
+        {
+            "MULTIMODAL_AGENT_PROVIDER_MODE": "mock",
+            "REALTIME_KEYFRAME_SEMANTIC_PROBE_FPS": "4",
+        }
+    )
+
+    assert config.semantic_input_fps == 4.0
+
+
+def test_conflicting_semantic_input_alias_fails() -> None:
+    with pytest.raises(ValueError, match="conflicting_semantic_input_fps"):
+        ProviderConfig.from_env(
+            {
+                "MULTIMODAL_AGENT_PROVIDER_MODE": "mock",
+                "REALTIME_SEMANTIC_INPUT_FPS": "5",
+                "REALTIME_KEYFRAME_SEMANTIC_PROBE_FPS": "2",
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    "removed_name",
+    [
+        "REALTIME_KEYFRAME_STRUCTURAL_THRESHOLD",
+        "REALTIME_KEYFRAME_COMBINED_THRESHOLD",
+    ],
+)
+def test_removed_structural_keyframe_config_is_rejected(removed_name: str) -> None:
+    with pytest.raises(ValueError, match="removed_realtime_keyframe_config"):
+        ProviderConfig.from_env(
+            {
+                "MULTIMODAL_AGENT_PROVIDER_MODE": "mock",
+                removed_name: "0.25",
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("REALTIME_SEMANTIC_INPUT_FPS", "0"),
+        ("REALTIME_KEYFRAME_MIN_INTERVAL_SECONDS", "-0.1"),
+        ("REALTIME_KEYFRAME_SEMANTIC_THRESHOLD", "1.1"),
+    ],
+)
+def test_invalid_semantic_keyframe_config_is_rejected(
+    name: str,
+    value: str,
+) -> None:
+    with pytest.raises(ValueError):
+        ProviderConfig.from_env(
+            {
+                "MULTIMODAL_AGENT_PROVIDER_MODE": "mock",
+                name: value,
+            }
+        )
+
+
+def test_keyframe_min_interval_cannot_exceed_max_interval() -> None:
+    with pytest.raises(ValueError, match="keyframe min interval"):
+        ProviderConfig.from_env(
+            {
+                "MULTIMODAL_AGENT_PROVIDER_MODE": "mock",
+                "REALTIME_KEYFRAME_MIN_INTERVAL_SECONDS": "2",
+                "REALTIME_KEYFRAME_MAX_INTERVAL_SECONDS": "1",
+            }
+        )
