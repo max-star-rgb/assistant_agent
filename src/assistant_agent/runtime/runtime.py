@@ -53,6 +53,7 @@ from assistant_agent.context.compactor import ContextCompactor, create_context_c
 from assistant_agent.context.token_counter import (
     ContextTokenCounter,
     create_context_token_counter,
+    create_visual_context_token_counter,
 )
 from assistant_agent.context.token_budget import ContextWindowPolicy
 from assistant_agent.context.service import ContextService
@@ -62,6 +63,9 @@ from assistant_agent.context.prompt_compiler import (
     PromptCompiler,
 )
 from assistant_agent.media.video.realtime_video_memory import project_realtime_video_context
+from assistant_agent.media.video.visual_context_compactor import (
+    create_visual_context_compactor,
+)
 from assistant_agent.context.soul_source import (
     SOUL_COMPILED_MAX_CHARS,
     SOUL_SOURCE_ID,
@@ -255,6 +259,24 @@ class AgentGraphRuntime:
         self.event_sink = event_sink
         self.trace_store = trace_store or InMemoryTraceStore()
         self.chat_adapter = chat_adapter or create_chat_adapter(self.config)
+        self.visual_context_token_counter = create_visual_context_token_counter(
+            self.config
+        )
+        self.visual_context_compactor = create_visual_context_compactor(
+            self.config,
+            self.chat_adapter,
+            token_counter=self.visual_context_token_counter,
+        )
+        self.visual_context_window_policy = ContextWindowPolicy(
+            input_token_limit=self.config.visual_context_input_token_limit,
+            trigger_ratio=self.config.visual_context_compaction_trigger_ratio,
+            target_ratio=self.config.visual_context_compaction_target_ratio,
+            hard_ratio=self.config.visual_context_compaction_hard_ratio,
+            safety_margin_tokens=(
+                self.config.visual_context_compaction_safety_margin_tokens
+            ),
+            summary_max_tokens=self.config.visual_context_summary_max_tokens,
+        )
         self.context_token_counter = (
             context_token_counter
             if context_token_counter is not None

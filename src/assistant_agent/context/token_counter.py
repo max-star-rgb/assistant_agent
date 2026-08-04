@@ -86,6 +86,27 @@ def create_context_token_counter(
     )
 
 
+def create_visual_context_token_counter(
+    config: ProviderConfig,
+) -> TokenizerJsonTokenCounter | None:
+    """Create the independently configured offline visual-context tokenizer."""
+
+    if (
+        config.visual_context_compactor_mode != "llm"
+        or config.provider_mode != "real"
+    ):
+        return None
+    if not config.visual_context_tokenizer_path:
+        raise ValueError(
+            "LLM visual context compaction requires "
+            "REALTIME_VISUAL_CONTEXT_TOKENIZER_PATH"
+        )
+    return TokenizerJsonTokenCounter(
+        config.visual_context_tokenizer_path,
+        tokenizer_id=str(config.chat_model or config.chat_provider),
+    )
+
+
 def _without_none(value: Any) -> Any:
     if isinstance(value, dict):
         return {

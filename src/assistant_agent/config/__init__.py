@@ -134,6 +134,18 @@ class ProviderConfig:
     context_compaction_hard_ratio: float = 0.85
     context_compaction_safety_margin_tokens: int = 50_000
     context_summary_max_tokens: int = 32_768
+    visual_context_compactor_mode: ContextCompactorMode = "off"
+    visual_context_tokenizer_path: str | None = None
+    visual_context_input_token_limit: int = 32_768
+    visual_context_compaction_target_ratio: float = 0.40
+    visual_context_compaction_trigger_ratio: float = 0.70
+    visual_context_compaction_hard_ratio: float = 0.85
+    visual_context_compaction_safety_margin_tokens: int = 2_048
+    visual_context_summary_max_tokens: int = 2_048
+    visual_context_keep_recent_records: int = 4
+    visual_context_instruction_reserve_tokens: int = 1_024
+    visual_context_image_reserve_tokens: int = 2_048
+    visual_context_output_reserve_tokens: int = 2_048
     qwen_chat_enable_thinking: bool = False
     openai_chat_base_url: str = "https://api.openai.com/v1"
     openai_chat_model: str = "gpt-4o-mini"
@@ -254,6 +266,17 @@ class ProviderConfig:
         ):
             raise ValueError(
                 "context compaction ratios must satisfy "
+                "0 < target < trigger < hard <= 1"
+            )
+        if not (
+            0.0
+            < self.visual_context_compaction_target_ratio
+            < self.visual_context_compaction_trigger_ratio
+            < self.visual_context_compaction_hard_ratio
+            <= 1.0
+        ):
+            raise ValueError(
+                "visual context compaction ratios must satisfy "
                 "0 < target < trigger < hard <= 1"
             )
 
@@ -528,6 +551,73 @@ class ProviderConfig:
                 _int_env(
                     source.get("MULTIMODAL_AGENT_CONTEXT_SUMMARY_MAX_TOKENS"),
                     32_768,
+                ),
+            ),
+            visual_context_compactor_mode=_context_compactor_mode(
+                source.get("REALTIME_VISUAL_CONTEXT_COMPACTOR")
+            ),
+            visual_context_tokenizer_path=(
+                source.get("REALTIME_VISUAL_CONTEXT_TOKENIZER_PATH") or None
+            ),
+            visual_context_input_token_limit=max(
+                1,
+                _int_env(
+                    source.get("REALTIME_VISUAL_CONTEXT_INPUT_TOKEN_LIMIT"),
+                    32_768,
+                ),
+            ),
+            visual_context_compaction_target_ratio=_ratio_env(
+                source.get("REALTIME_VISUAL_CONTEXT_COMPACTION_TARGET_RATIO"),
+                0.40,
+            ),
+            visual_context_compaction_trigger_ratio=_ratio_env(
+                source.get("REALTIME_VISUAL_CONTEXT_COMPACTION_TRIGGER_RATIO"),
+                0.70,
+            ),
+            visual_context_compaction_hard_ratio=_ratio_env(
+                source.get("REALTIME_VISUAL_CONTEXT_COMPACTION_HARD_RATIO"),
+                0.85,
+            ),
+            visual_context_compaction_safety_margin_tokens=max(
+                0,
+                _int_env(
+                    source.get("REALTIME_VISUAL_CONTEXT_SAFETY_MARGIN_TOKENS"),
+                    2_048,
+                ),
+            ),
+            visual_context_summary_max_tokens=max(
+                1,
+                _int_env(
+                    source.get("REALTIME_VISUAL_CONTEXT_SUMMARY_MAX_TOKENS"),
+                    2_048,
+                ),
+            ),
+            visual_context_keep_recent_records=max(
+                0,
+                _int_env(
+                    source.get("REALTIME_VISUAL_CONTEXT_KEEP_RECENT_RECORDS"),
+                    4,
+                ),
+            ),
+            visual_context_instruction_reserve_tokens=max(
+                0,
+                _int_env(
+                    source.get("REALTIME_VISUAL_CONTEXT_INSTRUCTION_RESERVE_TOKENS"),
+                    1_024,
+                ),
+            ),
+            visual_context_image_reserve_tokens=max(
+                0,
+                _int_env(
+                    source.get("REALTIME_VISUAL_CONTEXT_IMAGE_RESERVE_TOKENS"),
+                    2_048,
+                ),
+            ),
+            visual_context_output_reserve_tokens=max(
+                0,
+                _int_env(
+                    source.get("REALTIME_VISUAL_CONTEXT_OUTPUT_RESERVE_TOKENS"),
+                    2_048,
                 ),
             ),
             qwen_chat_enable_thinking=_bool_env(
