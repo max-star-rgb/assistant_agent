@@ -49,6 +49,7 @@ def create_default_registry(
     mcp_config_path: str | None = None,
     mcp_runner: MCPToolRunner | None = None,
     calendar_adapter: CalendarAdapter | None = None,
+    embedding_coordinator_store=None,
     plugin_modules: Iterable[str] | None = None,
 ) -> ToolRegistry:
     """Assemble and seal the default runtime registry."""
@@ -72,6 +73,7 @@ def create_default_registry(
         realtime_video_memory_store=realtime_video_memory_store,
         durable_task_service=durable_task_service,
         calendar_adapter=calendar_adapter,
+        embedding_coordinator_store=embedding_coordinator_store,
     )
     module_names = (
         configured_plugin_modules_from_env()

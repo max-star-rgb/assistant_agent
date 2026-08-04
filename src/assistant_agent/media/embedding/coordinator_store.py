@@ -77,6 +77,24 @@ class SessionEmbeddingCoordinatorStore(Generic[CoordinatorT]):
         self._close_all([entry.coordinator])
         return True
 
+    def peek(self, user_id: str, session_id: str) -> CoordinatorT | None:
+        """Return an existing live coordinator without creating session state."""
+
+        now = self._clock()
+        with self._lock:
+            if self._closed:
+                return None
+            expired = self._evict_expired(now)
+            entry = self._entries.get((user_id, session_id))
+            if entry is not None:
+                entry.touched_at = now
+                self._entries.move_to_end((user_id, session_id))
+                coordinator = entry.coordinator
+            else:
+                coordinator = None
+        self._close_all(expired)
+        return coordinator
+
     def clear_user(self, user_id: str) -> int:
         with self._lock:
             keys = [key for key in self._entries if key[0] == user_id]

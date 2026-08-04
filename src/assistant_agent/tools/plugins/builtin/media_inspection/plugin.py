@@ -12,6 +12,9 @@ from assistant_agent.tools.plugins.builtin.media_inspection.tool import (
     MediaInspectTool,
     RealtimeVideoObserveTool,
 )
+from assistant_agent.tools.plugins.builtin.media_inspection.visual_memory_tool import (
+    VisualMemorySearchTool,
+)
 from assistant_agent.tools.plugins.contracts import (
     ToolPluginContext,
     ToolPluginDescriptor,
@@ -27,7 +30,7 @@ class MediaInspectionPlugin:
     def build_tools(self, context: ToolPluginContext) -> list[Tool]:
         if not context.mock_mode and not vision_provider_ready(context.config):
             return []
-        return [
+        tools = [
             MediaInspectTool(
                 client=create_vision_understanding_client(context.config),
                 context_store=context.video_context_store,
@@ -39,6 +42,14 @@ class MediaInspectionPlugin:
                 memory_store=context.realtime_video_memory_store,
             ),
         ]
+        if context.embedding_coordinator_store is not None:
+            tools.append(
+                VisualMemorySearchTool(
+                    coordinator_store=context.embedding_coordinator_store,
+                    vision_client=create_vision_understanding_client(context.config),
+                )
+            )
+        return tools
 
 
 def build_realtime_video_observation_tool(

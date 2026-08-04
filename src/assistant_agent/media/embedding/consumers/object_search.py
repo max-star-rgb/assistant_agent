@@ -134,7 +134,7 @@ class VisualMemorySearchService:
         try:
             verification = self.vision_client.understand(
                 VisionUnderstandingRequest(
-                    frame_refs=verification_refs,
+                    image_ids=verification_refs,
                     question=(
                         "请只判断这些历史画面是否包含用户寻找的物体，并描述可确认的画面。"
                     ),

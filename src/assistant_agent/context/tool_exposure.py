@@ -15,6 +15,7 @@ from assistant_agent.media.agent_service_entry import (
 )
 from assistant_agent.runtime.requests import UserRequest
 from assistant_agent.tools.models import ToolMediaScope, ToolSpec
+from assistant_agent.tools.ids import VISUAL_MEMORY_SEARCH_TOOL_NAME
 
 
 @dataclass(frozen=True)
@@ -25,6 +26,7 @@ class ToolExposureFacts:
     active_video_ids: tuple[str, ...] = ()
     active_audio_id: str | None = None
     trusted_live_video: bool = False
+    visual_memory_available: bool = False
 
     @property
     def has_active_video(self) -> bool:
@@ -70,6 +72,9 @@ def tool_exposure_facts(request: UserRequest) -> ToolExposureFacts:
             bool(_string_list(request.video_ids))
             and is_trusted_agent_service_request(request)
         ),
+        visual_memory_available=request.metadata.get(
+            "_trusted_visual_memory_available"
+        ) is True,
     )
 
 
@@ -80,6 +85,12 @@ def evaluate_tool_exposure(
     """Return whether one tool is exposed for the current turn."""
 
     facts = tool_exposure_facts(request)
+    if spec.name == VISUAL_MEMORY_SEARCH_TOOL_NAME and not facts.visual_memory_available:
+        return ToolExposureDecision(
+            exposed=False,
+            excluded_reasons=("visual_memory_history_not_available",),
+            facts=facts,
+        )
     if not tool_media_requirements_satisfied(spec, facts):
         return ToolExposureDecision(
             exposed=False,

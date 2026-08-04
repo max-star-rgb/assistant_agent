@@ -196,6 +196,7 @@ class AgentGraphRuntime:
                 self.config,
                 video_context_store=self.video_context_store,
                 realtime_video_memory_store=self.realtime_video_memory_store,
+                embedding_coordinator_store=self.embedding_coordinator_store,
                 durable_task_service=self.durable_task_service,
             )
             if self.durable_task_service is not None:
@@ -368,6 +369,7 @@ class AgentGraphRuntime:
             request,
             durable_tasks_enabled=self.config.durable_tasks_enabled,
         )
+        self._refresh_visual_memory_capability(request)
         base_event_sink = event_sink or self.event_sink
         run_event_sink = (
             _ResponseDeltaTrackingEventSink(base_event_sink)
@@ -591,6 +593,28 @@ class AgentGraphRuntime:
         )
         if coordinator.has_consumer_for("text"):
             coordinator.embed_text(observation)
+
+    def _refresh_visual_memory_capability(self, request: UserRequest) -> None:
+        """Overwrite caller metadata with runtime-owned visual-history facts."""
+
+        request.metadata.pop("_trusted_visual_memory_available", None)
+        request.metadata.pop("_trusted_visual_memory_as_of_sequence", None)
+        request.metadata.pop("_trusted_visual_memory_as_of_ms", None)
+        coordinator = self.embedding_coordinator_store.peek(
+            request.user_id,
+            request.session_id,
+        )
+        memory = getattr(coordinator, "temporal_visual_memory", None) if coordinator else None
+        if memory is not None and memory.has_history():
+            request.metadata["_trusted_visual_memory_available"] = True
+        if is_trusted_agent_service_request(request):
+            target_sequence = request.metadata.get("realtime_video_target_sequence")
+            if (
+                isinstance(target_sequence, int)
+                and not isinstance(target_sequence, bool)
+                and target_sequence >= 0
+            ):
+                request.metadata["_trusted_visual_memory_as_of_sequence"] = target_sequence
 
     def drain_memory_ingestions(self, *, timeout: float | None = None) -> bool:
         """Wait for accepted memory ingestions."""
