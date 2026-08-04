@@ -89,6 +89,9 @@ class ProviderConfig:
     keyframe_semantic_threshold: float = 0.18
     visual_memory_candidate_similarity: float = 0.20
     visual_memory_confirmed_similarity: float = 0.30
+    visual_reminder_similarity_threshold: float = 0.82
+    visual_reminder_max_active: int = 16
+    visual_reminder_terminal_history_limit: int = 64
     openai_vision_base_url: str = "https://api.openai.com/v1"
     openai_vision_model: str = "gpt-4o-mini"
     qwen_vision_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
@@ -245,6 +248,12 @@ class ProviderConfig:
             raise ValueError(
                 "visual memory thresholds must satisfy candidate < confirmed"
             )
+        if not 0.0 <= self.visual_reminder_similarity_threshold <= 1.0:
+            raise ValueError("visual reminder similarity threshold must be within [0, 1]")
+        if self.visual_reminder_max_active <= 0:
+            raise ValueError("visual reminder active limit must be positive")
+        if self.visual_reminder_terminal_history_limit <= 0:
+            raise ValueError("visual reminder terminal history limit must be positive")
         if not (
             0.0
             < self.context_compaction_target_ratio
@@ -395,6 +404,18 @@ class ProviderConfig:
             visual_memory_confirmed_similarity=_float_env(
                 source.get("REALTIME_VISUAL_MEMORY_CONFIRMED_SIMILARITY"),
                 0.30,
+            ),
+            visual_reminder_similarity_threshold=_float_env(
+                source.get("REALTIME_VISUAL_REMINDER_SIMILARITY_THRESHOLD"),
+                0.82,
+            ),
+            visual_reminder_max_active=_int_env(
+                source.get("REALTIME_VISUAL_REMINDER_MAX_ACTIVE"),
+                16,
+            ),
+            visual_reminder_terminal_history_limit=_int_env(
+                source.get("REALTIME_VISUAL_REMINDER_TERMINAL_HISTORY_LIMIT"),
+                64,
             ),
             openai_vision_base_url=source.get("OPENAI_VISION_BASE_URL", "https://api.openai.com/v1"),
             openai_vision_model=source.get("OPENAI_VISION_MODEL", "gpt-4o-mini"),
