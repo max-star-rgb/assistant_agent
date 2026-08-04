@@ -6,6 +6,7 @@ from assistant_agent.media.embedding.coordinator import SessionEmbeddingCoordina
 from assistant_agent.media.embedding.coordinator_store import (
     SessionEmbeddingCoordinatorStore,
 )
+from assistant_agent.media.embedding.models import EmbeddingReadiness
 from assistant_agent.media.embedding.provider import MockMultimodalEmbeddingProvider
 from assistant_agent.media.video.visual_reminder import (
     VisualReminderManager,
@@ -21,8 +22,10 @@ from assistant_agent.tools.plugins.builtin.media_inspection.visual_reminder_tool
 from assistant_agent.tools.registry import ToolRegistry
 
 
-def _coordinator_store() -> SessionEmbeddingCoordinatorStore:
-    provider = MockMultimodalEmbeddingProvider()
+def _coordinator_store(
+    provider: MockMultimodalEmbeddingProvider | None = None,
+) -> SessionEmbeddingCoordinatorStore:
+    provider = provider or MockMultimodalEmbeddingProvider()
     return SessionEmbeddingCoordinatorStore(
         factory=lambda _user_id, session_id: SessionEmbeddingCoordinator(
             session_id,
@@ -148,3 +151,68 @@ def test_default_runtime_registers_visual_reminder_manage_tool() -> None:
     assert VISUAL_REMINDER_MANAGE_TOOL_NAME in runtime.registry.list()
 
     runtime.close()
+
+
+class _TextOnlyReadyProvider(MockMultimodalEmbeddingProvider):
+    def readiness(self) -> EmbeddingReadiness:
+        readiness = super().readiness()
+        return readiness.model_copy(update={"image_ready": False})
+
+
+class _MismatchedSpaceProvider(MockMultimodalEmbeddingProvider):
+    def embed_text(self, observation):
+        outcome = super().embed_text(observation)
+        return outcome.model_copy(update={"embedding_space_id": "unexpected-space"})
+
+
+def test_tool_rejects_create_when_joint_embedding_space_is_not_ready() -> None:
+    reminders = VisualReminderRegistry()
+    manager = VisualReminderManager(user_id="u1", session_id="s1")
+    reminders.register(manager)
+    coordinators = _coordinator_store(_TextOnlyReadyProvider())
+    tool = VisualReminderManageTool(
+        coordinator_store=coordinators,
+        reminder_registry=reminders,
+    )
+
+    result = tool.run(
+        {
+            "action": "create",
+            "target": "水已经烧开",
+            "message": "水烧开了",
+            "session_id": "s1",
+        },
+        ToolContext(user_id="u1", session_id="s1", run_id="r1"),
+    )
+
+    assert result.success is False
+    assert result.data["status"] == "unavailable"
+    assert result.error == "visual reminder joint embedding space is unavailable"
+    assert manager.list_records() == []
+    coordinators.close()
+
+
+def test_tool_rejects_text_embedding_outside_ready_joint_space() -> None:
+    reminders = VisualReminderRegistry()
+    manager = VisualReminderManager(user_id="u1", session_id="s1")
+    reminders.register(manager)
+    coordinators = _coordinator_store(_MismatchedSpaceProvider())
+    tool = VisualReminderManageTool(
+        coordinator_store=coordinators,
+        reminder_registry=reminders,
+    )
+
+    result = tool.run(
+        {
+            "action": "create",
+            "target": "水已经烧开",
+            "message": "水烧开了",
+            "session_id": "s1",
+        },
+        ToolContext(user_id="u1", session_id="s1", run_id="r1"),
+    )
+
+    assert result.success is False
+    assert result.error == "visual reminder text embedding is incompatible"
+    assert manager.list_records() == []
+    coordinators.close()

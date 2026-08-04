@@ -266,6 +266,8 @@ class AssistantControlHandler(BaseHandler):
         state: AgentServiceConnectionState,
     ) -> dict[str, Any]:
         _ = session_id
+        if state.assistant_control_start is not None:
+            raise AgentServiceProtocolError("assistantControl already received")
         number = self.required_text(body, "number")
         call_type = self.required_text(body, "callType").upper()
         if call_type not in {"AUDIO", "VIDEO"}:
@@ -423,6 +425,13 @@ class VideoHandler(BaseHandler):
         state: AgentServiceConnectionState,
     ) -> dict[str, Any]:
         user_number = self.required_text(body, "userNumber")
+        if (
+            state.visual_reminder_owner_id is not None
+            and user_number != state.visual_reminder_owner_id
+        ):
+            raise AgentServiceProtocolError(
+                "video userNumber does not match assistantControl number"
+            )
         video_index = self.require_present(body, "videoIndex")
         _validate_media_contents(body=body, content_field="videoContent")
         video_config = body.get("videoConfig")

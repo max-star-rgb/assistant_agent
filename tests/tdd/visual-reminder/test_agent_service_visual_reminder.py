@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import json
 
+import pytest
+
 from assistant_agent.api import agent_service_websocket as agent_service
 from assistant_agent.config import ProviderConfig
 from assistant_agent.media.video.visual_reminder import VisualReminderReservation
@@ -89,6 +91,67 @@ def test_audio_control_does_not_register_visual_reminder_manager(monkeypatch) ->
 
         assert state.visual_reminder_manager is None
         assert runtime.visual_reminder_registry.peek("u1", "runtime-session") is None
+        runtime.close()
+
+    asyncio.run(run())
+
+
+def test_repeated_assistant_control_is_rejected_without_replacing_manager(monkeypatch) -> None:
+    async def run() -> None:
+        runtime = AgentGraphRuntime(registry=ToolRegistry(), config=ProviderConfig())
+        gateway = _GatewayManager()
+        state = _state(gateway)
+        monkeypatch.setattr(agent_service, "_get_shared_agent_runtime", lambda: runtime)
+
+        handler = agent_service.AssistantControlHandler()
+        await handler.handle(
+            session_id="vendor-session",
+            body={"number": "u1", "callType": "VIDEO"},
+            state=state,
+        )
+        original = state.visual_reminder_manager
+
+        with pytest.raises(
+            agent_service.AgentServiceProtocolError,
+            match="assistantControl already received",
+        ):
+            await handler.handle(
+                session_id="vendor-session",
+                body={"number": "u1", "callType": "VIDEO"},
+                state=state,
+            )
+
+        assert state.visual_reminder_manager is original
+        assert runtime.visual_reminder_registry.peek("u1", "runtime-session") is original
+        runtime.close()
+
+    asyncio.run(run())
+
+
+def test_video_user_must_match_visual_reminder_connection_owner(monkeypatch) -> None:
+    async def run() -> None:
+        runtime = AgentGraphRuntime(registry=ToolRegistry(), config=ProviderConfig())
+        gateway = _GatewayManager()
+        state = _state(gateway)
+        monkeypatch.setattr(agent_service, "_get_shared_agent_runtime", lambda: runtime)
+
+        await agent_service.AssistantControlHandler().handle(
+            session_id="vendor-session",
+            body={"number": "u1", "callType": "VIDEO"},
+            state=state,
+        )
+
+        with pytest.raises(
+            agent_service.AgentServiceProtocolError,
+            match="video userNumber does not match assistantControl number",
+        ):
+            await agent_service.VideoHandler().handle(
+                session_id="vendor-session",
+                body={"userNumber": "u2"},
+                state=state,
+            )
+
+        assert state.video_ingestion is None
         runtime.close()
 
     asyncio.run(run())

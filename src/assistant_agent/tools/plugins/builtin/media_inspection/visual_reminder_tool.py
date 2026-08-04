@@ -11,7 +11,10 @@ from assistant_agent.media.embedding.coordinator_store import (
     SessionEmbeddingCoordinatorStore,
 )
 from assistant_agent.media.embedding.models import EmbeddingEvent, TextObservation
-from assistant_agent.media.video.visual_reminder import VisualReminderRegistry
+from assistant_agent.media.video.visual_reminder import (
+    VisualReminderRegistry,
+    validate_visual_reminder_target_embedding,
+)
 from assistant_agent.tools.base import ToolBase, ToolContext
 from assistant_agent.tools.ids import VISUAL_REMINDER_MANAGE_TOOL_NAME
 from assistant_agent.tools.input_binding import RuntimeInputBinding
@@ -111,6 +114,18 @@ class VisualReminderManageTool(ToolBase):
     def _create(self, input, context, manager) -> ToolResult:
         lease = self.coordinator_store.acquire(context.user_id or "", input.session_id)
         try:
+            readiness = lease.coordinator.provider.readiness()
+            if not (
+                readiness.image_ready
+                and readiness.text_ready
+                and readiness.embedding_space_id
+                and readiness.dimension
+            ):
+                return self._result(
+                    {"status": "unavailable", "count": 0, "reminders": []},
+                    success=False,
+                    error="visual reminder joint embedding space is unavailable",
+                )
             observation_id = (
                 f"visual-reminder:{context.run_id or 'run'}:{uuid4().hex}"
             )
@@ -129,6 +144,31 @@ class VisualReminderManageTool(ToolBase):
                 {"status": "unavailable", "count": 0, "reminders": []},
                 success=False,
                 error="visual reminder text embedding is unavailable",
+            )
+        if (
+            outcome.embedding_space_id != readiness.embedding_space_id
+            or outcome.dimension != readiness.dimension
+            or outcome.model_id != readiness.model_id
+            or (
+                readiness.model_revision is not None
+                and outcome.model_revision != readiness.model_revision
+            )
+        ):
+            return self._result(
+                {"status": "unavailable", "count": 0, "reminders": []},
+                success=False,
+                error="visual reminder text embedding is incompatible",
+            )
+        try:
+            validate_visual_reminder_target_embedding(
+                outcome,
+                session_id=input.session_id,
+            )
+        except ValueError:
+            return self._result(
+                {"status": "unavailable", "count": 0, "reminders": []},
+                success=False,
+                error="visual reminder text embedding is incompatible",
             )
         record = manager.create(
             target=input.target or "",

@@ -17,6 +17,7 @@ def _event(
     vector: list[float],
     *,
     space: str = "joint-v1",
+    normalized: bool = True,
 ) -> EmbeddingEvent:
     return EmbeddingEvent(
         event_id=f"event-{observation_id}",
@@ -26,7 +27,7 @@ def _event(
         model_id="siglip2-test",
         model_revision="rev-test",
         dimension=len(vector),
-        normalized=True,
+        normalized=normalized,
         session_id="s1",
         source_observation_id=observation_id,
         latency_ms=1,
@@ -148,6 +149,19 @@ def test_incompatible_target_isolated_from_other_reminders() -> None:
     matches = manager.reserve_matches(_event("frame", "image", [1.0, 0.0]))
 
     assert [match.reminder_id for match in matches] == [compatible.reminder_id]
+
+
+@pytest.mark.parametrize(
+    "event",
+    [
+        _event("not-normalized", "text", [1.0, 0.0], normalized=False),
+        _event("non-finite", "text", [float("nan"), 0.0]),
+        _event("zero", "text", [0.0, 0.0]),
+    ],
+)
+def test_manager_rejects_unusable_target_embedding(event: EmbeddingEvent) -> None:
+    with pytest.raises(ValueError, match="visual reminder target embedding is unusable"):
+        _manager().create(target="target", message="message", target_embedding=event)
 
 
 def test_close_rejects_new_records_and_registry_unregister_is_identity_safe() -> None:

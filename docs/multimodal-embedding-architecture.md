@@ -116,7 +116,10 @@ lease 条目，避免长连接在持续处理期间被关闭。observer close �
 
 视觉提醒与上述 session retention 不同：它在成功 `assistantControl.callType=VIDEO` 后按内部
 `runtime_session_id` 创建，切换同一连接的 `video_id` 时保留，WebSocket close 时立即关闭、清空和注销。
-提醒不写 `SessionVisualSemanticStore`、Mem0、durable task 或 notification outbox，不能跨连接恢复。
+同一连接不允许重复 `assistantControl`，视频帧 `userNumber` 必须与握手 owner 一致。提醒创建还要求
+SigLIP2 image/text 双模态 readiness 和 text event 的 model/revision/space/dimension 契约一致；不可用、
+非归一化、非有限或零范数向量不会登记为 pending。提醒不写 `SessionVisualSemanticStore`、Mem0、
+durable task 或 notification outbox，不能跨连接恢复。
 
 查询时 Runtime 绑定 user/session，ToolContext 提供可信 as-of sequence/time；模型只能提交
 `query/time_window/search_mode`。Tool 只编码一次查询文本，并与同 embedding space 的记录文本向量做

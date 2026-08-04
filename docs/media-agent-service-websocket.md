@@ -114,7 +114,9 @@ Agent 每个 WebSocket 连接都会分配新的内部 `agent-service-*` Gateway 
 `clientInfo` 不参与 profile、provider、tool visibility 或安全策略选择。
 成功处理 `callType=VIDEO` 时，Agent 同时按 `number + 内部 runtime session` 创建连接级视觉提醒
 manager；`AUDIO` 不创建。该结构化 call type 会进入后续 turn 的可信 metadata，不根据用户文本或是否
-已经收到视频帧推断。
+已经收到视频帧推断。每条连接只接受一次 `assistantControl`；重复握手按协议错误拒绝，不替换现有
+manager 或 observer。VIDEO 消息的 `userNumber` 必须等于握手 `number`，不一致时在 H.264 解码和
+observer 提交前拒绝，避免其他用户的帧参与该连接的提醒匹配。
 
 旧兼容握手 `assistantControlStart` 的最小 body 为：
 
@@ -244,6 +246,8 @@ manager；`AUDIO` 不创建。该结构化 call type 会进入后续 turn 的可
 在可信 VIDEO 连接中，主 LLM 可通过受治理的 `visual_reminder_manage` 创建、查看或取消多条一次性
 视觉提醒。创建时只对视觉条件 `target` 计算一次 SigLIP2 text embedding；每个最终已选关键帧复用
 选帧阶段已有的 image embedding 做 cosine 匹配，不重新计算 image embedding，也不调用 VLM 复核。
+创建前要求 Provider 的 image/text 双模态 readiness 同时可用；产出的 text embedding 必须与 readiness
+声明的 model、revision、embedding space 和 dimension 一致，并且是有限、非零的归一化向量。
 
 首次达到服务端阈值后，Agent 主动发送独立 `chatResponse`：
 

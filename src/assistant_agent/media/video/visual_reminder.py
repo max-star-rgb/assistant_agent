@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from dataclasses import dataclass
+from math import isfinite
 from threading import Lock
 from time import time
 from typing import Callable, Literal
@@ -30,6 +31,25 @@ VisualReminderOperationStatus = Literal[
 
 class VisualReminderClosedError(RuntimeError):
     """Raised when an operation tries to create state after connection close."""
+
+
+def validate_visual_reminder_target_embedding(
+    event: EmbeddingEvent,
+    *,
+    session_id: str,
+) -> None:
+    """Reject text vectors that cannot safely participate in frame matching."""
+
+    if event.modality != "text":
+        raise ValueError("visual reminder target embedding must be text")
+    if event.session_id != session_id:
+        raise ValueError("visual reminder target embedding session mismatch")
+    if (
+        not event.normalized
+        or not all(isfinite(value) for value in event.vector)
+        or sum(value * value for value in event.vector) == 0.0
+    ):
+        raise ValueError("visual reminder target embedding is unusable")
 
 
 class VisualReminderPublicRecord(BaseModel):
@@ -121,10 +141,10 @@ class VisualReminderManager:
         normalized_message = message.strip()
         if not normalized_target or not normalized_message:
             raise ValueError("visual reminder target and message must be non-empty")
-        if target_embedding.modality != "text":
-            raise ValueError("visual reminder target embedding must be text")
-        if target_embedding.session_id != self.session_id:
-            raise ValueError("visual reminder target embedding session mismatch")
+        validate_visual_reminder_target_embedding(
+            target_embedding,
+            session_id=self.session_id,
+        )
         with self._lock:
             self._ensure_active_locked()
             duplicate = next(
