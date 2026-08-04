@@ -121,6 +121,8 @@ async def _successful_vlm_publishes_indexed_record(tmp_path: Path) -> None:
         record = semantic_store.latest("video-1")
         assert record is not None
         assert record.objects == ["fake realtime object"]
+        assert record.changes == ["fake realtime change"]
+        assert record.uncertainties == ["fake realtime uncertainty"]
         assert record.index_status == "ready"
         assert Path(record.evidence_ref).exists()
     finally:

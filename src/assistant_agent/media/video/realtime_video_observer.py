@@ -614,6 +614,8 @@ class RealtimeVideoObserver:
             people=list(result.people),
             actions=list(result.actions),
             events=list(result.events),
+            changes=list(result.changes),
+            uncertainties=list(result.uncertainties),
             text_in_video=list(result.text_in_video),
             products=list(result.products),
             brands=list(result.brands),
@@ -957,6 +959,8 @@ def _snapshot_publishable_observation(result: ToolResult) -> VideoUnderstandingR
 
 
 def _build_visual_search_text(result: VideoUnderstandingResult) -> str:
+    # Only current-frame facts belong in the search embedding. Historical
+    # comparisons and uncertain candidates must remain result metadata.
     sections = [
         ("场景", [result.scene] if result.scene else []),
         ("物体", result.objects),

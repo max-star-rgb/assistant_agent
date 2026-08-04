@@ -19,6 +19,7 @@ from assistant_agent.media.embedding.observability import (
     EmbeddingObserver,
     emit_visual_semantic_observation,
 )
+from assistant_agent.media.vision.models import MAX_VISUAL_GROUNDING_ITEMS
 from assistant_agent.media.video.visual_context_models import (
     VisualContextSnapshot,
     VisualContextSummary,
@@ -30,7 +31,7 @@ VisualObservationStatus = Literal["succeeded", "failed"]
 
 
 class VisualSemanticRecord(BaseModel):
-    """One validated VLM result and its optional text-search embedding."""
+    """One validated current-frame VLM result and its optional search embedding."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -45,6 +46,12 @@ class VisualSemanticRecord(BaseModel):
     people: list[str] = Field(default_factory=list)
     actions: list[str] = Field(default_factory=list)
     events: list[str] = Field(default_factory=list)
+    changes: list[str] = Field(
+        default_factory=list, max_length=MAX_VISUAL_GROUNDING_ITEMS
+    )
+    uncertainties: list[str] = Field(
+        default_factory=list, max_length=MAX_VISUAL_GROUNDING_ITEMS
+    )
     text_in_video: list[str] = Field(default_factory=list)
     products: list[str] = Field(default_factory=list)
     brands: list[str] = Field(default_factory=list)

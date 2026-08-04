@@ -265,8 +265,8 @@ def _record_projection(record: VisualSemanticRecord) -> dict[str, object]:
         "events": record.events,
         "text_in_video": record.text_in_video,
         "summary": record.summary,
-        "changes": [],
-        "uncertainties": [],
+        "changes": record.changes,
+        "uncertainties": record.uncertainties,
     }
 
 
