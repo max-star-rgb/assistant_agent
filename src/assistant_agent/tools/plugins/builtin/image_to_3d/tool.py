@@ -24,6 +24,7 @@ class ImageTo3DStarter(Protocol):
         self,
         *,
         session_id: str,
+        chat_index: str,
         src_image: str,
         output_format: str,
     ) -> ImageTo3DSubmission: ...
@@ -34,10 +35,11 @@ class MockImageTo3DAdapter:
         self,
         *,
         session_id: str,
+        chat_index: str,
         src_image: str,
         output_format: str,
     ) -> ImageTo3DSubmission:
-        _ = (session_id, output_format)
+        _ = (session_id, chat_index, output_format)
         return ImageTo3DSubmission(
             status="generating",
             source_image_id=src_image,
@@ -46,7 +48,7 @@ class MockImageTo3DAdapter:
 
 class ImageTo3DTool(ToolBase):
     name = IMAGE_TO_3D_TOOL_NAME
-    description = "将本地生成图片提交给3D服务；3D产物由服务通过其他渠道交付。"
+    description = "将本地生成图片提交给3D服务；完成结果通过当前媒体连接异步投递。"
     input_schema = ImageTo3DRequest
     output_schema = ImageTo3DResult
     category = "generate"
@@ -75,8 +77,10 @@ class ImageTo3DTool(ToolBase):
                 },
             )
         try:
+            chat_index = _agent_service_chat_index(context)
             submission = self.adapter.start(
                 session_id=context.session_id,
+                chat_index=chat_index,
                 src_image=src_image,
                 output_format="mp4",
             )
@@ -112,3 +116,19 @@ class ImageTo3DTool(ToolBase):
                 "message": "3D生成任务已接收，正在生成。",
             },
         )
+
+
+def _agent_service_chat_index(context: ToolContext) -> str:
+    request_metadata = context.metadata.get("request_metadata")
+    agent_service = (
+        request_metadata.get("agent_service")
+        if isinstance(request_metadata, dict)
+        else None
+    )
+    chat_index = (
+        agent_service.get("chat_index")
+        if isinstance(agent_service, dict)
+        else None
+    )
+    normalized = str(chat_index).strip() if chat_index is not None else ""
+    return normalized or "0"

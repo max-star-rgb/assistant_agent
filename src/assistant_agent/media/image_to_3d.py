@@ -51,6 +51,7 @@ class ImageTo3DAdapter:
         self,
         *,
         session_id: str,
+        chat_index: str = "0",
         src_image: str,
         output_format: str = "mp4",
     ) -> ImageTo3DSubmission:
@@ -60,7 +61,8 @@ class ImageTo3DAdapter:
         artifact = self._resolve_artifact(image_id)
         callback_url = (
             f"{self.settings.public_base_url.rstrip('/')}/calling-agent-service/v1/"
-            f"{urllib.parse.quote(session_id, safe='')}/0/3d-gen-back"
+            f"{urllib.parse.quote(session_id, safe='')}/"
+            f"{urllib.parse.quote(chat_index, safe='')}/3d-gen-back"
         )
         payload = {
             "sessionId": session_id,

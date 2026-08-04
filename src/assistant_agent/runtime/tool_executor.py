@@ -186,7 +186,10 @@ class ToolExecutor:
                     if state.run_tool_catalog is not None
                     else None
                 ),
-                "latest_generated_image_id": _latest_generated_image_id(state),
+                "latest_generated_image_id": (
+                    _latest_generated_image_id(state)
+                    or _agent_service_latest_generated_image_id(state)
+                ),
             },
             cancel_token=self.cancel_token,
         )
@@ -621,6 +624,16 @@ def _latest_generated_image_id(state: AgentState) -> str | None:
                 if isinstance(image_id, str) and image_id.strip():
                     return image_id.strip()
     return None
+
+
+def _agent_service_latest_generated_image_id(state: AgentState) -> str | None:
+    agent_service = state.request.metadata.get("agent_service")
+    if not isinstance(agent_service, dict):
+        return None
+    image_id = agent_service.get("latest_generated_image_id")
+    if not isinstance(image_id, str) or not image_id.strip():
+        return None
+    return image_id.strip()
 
 
 def _policy_safe_input_summary(payload: dict[str, Any]) -> dict[str, Any]:

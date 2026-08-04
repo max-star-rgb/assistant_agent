@@ -1,6 +1,6 @@
 ---
 name: travel-tool-orchestration
-description: 用于处理涉及住宿、酒店价格或库存、地点、景点、周边、路线、通勤、定位或旅行天气的旅行与出行请求，包括单工具查询和多目标任务。
+description: 用于处理涉及住宿、酒店价格或库存、地点、景点、周边、路线、通勤、定位或旅行天气的旅行与出行请求
 metadata:
   manifest-version: "2"
 ---

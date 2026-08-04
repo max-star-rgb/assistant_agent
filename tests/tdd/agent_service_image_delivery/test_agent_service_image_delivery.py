@@ -76,6 +76,11 @@ def test_agent_service_success_terminal_embeds_generated_image_detail(
         artifact_dir,
     )
 
+    state = AgentServiceConnectionState(
+        session_id="session-sentinel",
+        query_params={},
+        media_protocol=True,
+    )
     response = _prepared_chat_response(
         PreparedChat(
             session_id="session-sentinel",
@@ -90,11 +95,7 @@ def test_agent_service_success_terminal_embeds_generated_image_detail(
             accepted_ns=2,
             session_turn=1,
         ),
-        state=AgentServiceConnectionState(
-            session_id="session-sentinel",
-            query_params={},
-            media_protocol=True,
-        ),
+        state=state,
         turn=SimpleNamespace(
             status="completed",
             response_text="image-ready-sentinel",
@@ -151,3 +152,25 @@ def test_agent_service_success_terminal_embeds_generated_image_detail(
             },
         },
     }
+    assert state.latest_generated_image_id == "image-sentinel"
+
+
+def test_agent_service_metadata_carries_latest_generated_image_id() -> None:
+    from assistant_agent.api.agent_service_websocket import (
+        _agent_service_gateway_metadata,
+    )
+
+    state = AgentServiceConnectionState(
+        session_id="session-sentinel",
+        query_params={},
+        latest_generated_image_id="image-sentinel",
+    )
+
+    metadata = _agent_service_gateway_metadata(
+        state=state,
+        user_number="user-sentinel",
+        chat_index="chat-sentinel",
+        content_count=1,
+    )
+
+    assert metadata["agent_service"]["latest_generated_image_id"] == "image-sentinel"

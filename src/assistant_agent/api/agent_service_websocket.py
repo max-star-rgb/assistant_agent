@@ -38,6 +38,7 @@ from assistant_agent.identifiers import new_prefixed_uuid7
 from assistant_agent.observability.operational_logging import digest_identifier, record_gateway_lifecycle
 from assistant_agent.media.video.realtime_video_observer import RealtimeVideoObserver
 from assistant_agent.media.video.video_context import VideoFrame
+from assistant_agent.media.rendering_3d_relay import get_rendering_3d_relay_registry
 from assistant_agent.observability.trace_store import TraceStore, append_observability_event
 from assistant_agent.observability.turn_summary import append_agent_service_turn_summary
 from assistant_agent.gateway.turn_facade import (
@@ -77,6 +78,7 @@ class AgentServiceConnectionState:
     chats: list[dict[str, Any]] = field(default_factory=list)
     video_ids: list[str] = field(default_factory=list)
     latest_video_frames: dict[str, VideoFrame] = field(default_factory=dict)
+    latest_generated_image_id: str | None = None
     video_ingestion: H264VideoIngestionService | None = None
     video_observer: RealtimeVideoObserver | None = None
     send_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -588,6 +590,11 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
                 )
                 accepted_ns = state.clock_ns()
                 prepared = replace(prepared, accepted_ns=accepted_ns)
+                await _register_rendering_3d_relay(
+                    websocket,
+                    state=state,
+                    prepared=prepared,
+                )
                 prepared = await _protect_chat_visual_target(
                     state=state,
                     prepared=prepared,
@@ -713,6 +720,11 @@ async def _cleanup_agent_service_connection(
     close_reason: str | None,
 ) -> None:
     state.closed = True
+    if state.runtime_session_id is not None:
+        await get_rendering_3d_relay_registry().unregister(
+            session_id=state.runtime_session_id,
+            connection_id=state.connection_id,
+        )
     for delivery in state.delivery_registry.pending():
         timing = state.turn_timings.get(delivery.delivery_id)
         if timing is not None:
@@ -744,6 +756,23 @@ async def _cleanup_agent_service_connection(
     if state.gateway_facade is not None:
         await state.gateway_facade.close()
     await gateway_manager.close()
+
+
+async def _register_rendering_3d_relay(
+    websocket: WebSocket,
+    *,
+    state: AgentServiceConnectionState,
+    prepared: PreparedChat,
+) -> None:
+    async def sender(response: dict[str, Any]) -> None:
+        await _send_response(websocket, response, state=state)
+
+    await get_rendering_3d_relay_registry().register(
+        session_id=prepared.session_id,
+        connection_id=state.connection_id,
+        number=prepared.user_number,
+        sender=sender,
+    )
 
 
 def _discard_chat_task(
@@ -1260,6 +1289,7 @@ def _prepared_chat_response(
         }
         image_details = _generated_image_details(turn.payload.get("output_refs"))
         if image_details:
+            state.latest_generated_image_id = image_details[-1]["imageId"]
             body = {
                 "chatIndex": prepared.chat_index,
                 "number": prepared.user_number,
@@ -1730,6 +1760,10 @@ def _agent_service_gateway_metadata(
     if visual_target_sequence is not None:
         metadata["agent_service"]["visual_target_sequence"] = visual_target_sequence
         metadata["realtime_video_target_sequence"] = visual_target_sequence
+    if state.latest_generated_image_id is not None:
+        metadata["agent_service"]["latest_generated_image_id"] = (
+            state.latest_generated_image_id
+        )
     return metadata
 
 

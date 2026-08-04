@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import base64
+import asyncio
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from fastapi import FastAPI
@@ -133,6 +135,7 @@ def test_image_to_3d_adapter_reads_src_image_id_and_submits_base64(
 
     result = adapter.start(
         session_id="session-sentinel",
+        chat_index="chat-sentinel",
         src_image="cake_001",
     )
 
@@ -147,11 +150,11 @@ def test_image_to_3d_adapter_reads_src_image_id_and_submits_base64(
         "image": base64.b64encode(image.read_bytes()).decode("ascii"),
         "pre_cb_url": (
             "http://agent:8000/calling-agent-service/v1/"
-            "session-sentinel/0/3d-gen-back"
+            "session-sentinel/chat-sentinel/3d-gen-back"
         ),
         "cb_url": (
             "http://agent:8000/calling-agent-service/v1/"
-            "session-sentinel/0/3d-gen-back"
+            "session-sentinel/chat-sentinel/3d-gen-back"
         ),
         "format": "mp4",
     }
@@ -392,23 +395,224 @@ def test_image_to_3d_adapter_accepts_current_queued_response(
     assert result.status == "queued"
 
 
-def test_3d_callback_acknowledges_result_without_relaying_artifact() -> None:
+@pytest.mark.parametrize(
+    ("media_type", "media_url", "expected_detail"),
+    [
+        (
+            "ply",
+            "http://renderer/model.ply",
+            {"type": "TD_MODEL", "modelUrl": "http://renderer/model.ply"},
+        ),
+        (
+            "glb",
+            "http://renderer/model.glb",
+            {"type": "TD_MODEL", "modelUrl": "http://renderer/model.glb"},
+        ),
+        (
+            "mp4",
+            "http://renderer/model.mp4",
+            {"type": "VIDEO", "videoUrl": "http://renderer/model.mp4"},
+        ),
+    ],
+)
+def test_3d_callback_relays_media_result(
+    media_type: str,
+    media_url: str,
+    expected_detail: dict[str, str],
+) -> None:
     from assistant_agent.api.rendering_3d_callback import create_rendering_3d_callback_router
+    from assistant_agent.media.rendering_3d_relay import Rendering3DRelayRegistry
+
+    sent: list[dict[str, Any]] = []
+
+    async def sender(frame: dict[str, Any]) -> None:
+        sent.append(frame)
+
+    registry = Rendering3DRelayRegistry()
+    asyncio.run(
+        registry.register(
+            session_id="session-sentinel",
+            connection_id="connection-sentinel",
+            number="13800138000",
+            sender=sender,
+        )
+    )
     app = FastAPI()
-    app.include_router(create_rendering_3d_callback_router())
+    app.include_router(create_rendering_3d_callback_router(registry))
 
     with TestClient(app) as client:
         response = client.post(
             "/calling-agent-service/v1/session-sentinel/chat-sentinel/3d-gen-back",
             json={
-                "mediaType": "glb",
-                "mediaUrl": "http://renderer/model.glb",
+                "mediaType": media_type,
+                "mediaUrl": media_url,
+                "image": None,
             },
         )
 
     assert response.status_code == 200
     assert response.json()["errMessage"] == "success"
     assert response.json()["data"] == {"result": "SUCCESS"}
+    assert len(sent) == 1
+    assert sent[0]["message"] == "chatResponse"
+    assert set(sent[0]) == {"message", "body"}
+    body = json.loads(sent[0]["body"])
+    assert body["chatIndex"] == "chat-sentinel"
+    assert body["number"] == "13800138000"
+    assert body["messageType"] == "ANSWER"
+    assert body["display_only"] is False
+    assert body["message"]["type"] == "BRIEF"
+    assert body["message"]["chatIndex"] == "chat-sentinel"
+    content = body["message"]["content"]
+    assert content["intentExecution"] == {
+        "description": "",
+        "plans": [],
+        "messageType": "ANSWER",
+    }
+    assert content["intentResult"]["status"] == "SUCCESS"
+    assert content["intentResult"]["plan"] == []
+    assert content["intentResult"]["messageType"] == "ANSWER"
+    assert content["intentResult"]["detail"] == [expected_detail]
+    assert content["intentWeb"] == {
+        "description": "",
+        "resourceType": "",
+        "resourceUrl": "",
+    }
+
+
+def test_3d_callback_without_active_connection_does_not_ack_success() -> None:
+    from assistant_agent.api.rendering_3d_callback import create_rendering_3d_callback_router
+    from assistant_agent.media.rendering_3d_relay import Rendering3DRelayRegistry
+
+    app = FastAPI()
+    app.include_router(create_rendering_3d_callback_router(Rendering3DRelayRegistry()))
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/calling-agent-service/v1/missing-session/chat-sentinel/3d-gen-back",
+            json={
+                "mediaType": "glb",
+                "mediaUrl": "http://renderer/model.glb",
+            },
+        )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["errCode"] == 1
+
+
+def test_3d_callback_send_failure_does_not_ack_success() -> None:
+    from assistant_agent.api.rendering_3d_callback import create_rendering_3d_callback_router
+    from assistant_agent.media.rendering_3d_relay import Rendering3DRelayRegistry
+
+    async def sender(frame: dict[str, Any]) -> None:
+        _ = frame
+        raise RuntimeError("socket-sentinel")
+
+    registry = Rendering3DRelayRegistry()
+    asyncio.run(
+        registry.register(
+            session_id="session-sentinel",
+            connection_id="connection-sentinel",
+            number="13800138000",
+            sender=sender,
+        )
+    )
+    app = FastAPI()
+    app.include_router(create_rendering_3d_callback_router(registry))
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.post(
+            "/calling-agent-service/v1/session-sentinel/chat-sentinel/3d-gen-back",
+            json={
+                "mediaType": "mp4",
+                "mediaUrl": "http://renderer/model.mp4",
+            },
+        )
+
+    assert response.status_code == 503
+    assert response.json()["detail"]["errCode"] == 1
+
+
+def test_3d_callback_rejects_unsupported_media_type() -> None:
+    from assistant_agent.api.rendering_3d_callback import create_rendering_3d_callback_router
+    from assistant_agent.media.rendering_3d_relay import Rendering3DRelayRegistry
+
+    app = FastAPI()
+    app.include_router(create_rendering_3d_callback_router(Rendering3DRelayRegistry()))
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/calling-agent-service/v1/session-sentinel/chat-sentinel/3d-gen-back",
+            json={
+                "mediaType": "image",
+                "mediaUrl": "http://renderer/preview.png",
+            },
+        )
+
+    assert response.status_code == 422
+
+
+def test_rendering_3d_relay_registry_tracks_current_connection() -> None:
+    from assistant_agent.media.rendering_3d_relay import (
+        Rendering3DRelayRegistry,
+        Rendering3DRelayUnavailable,
+    )
+
+    async def scenario() -> None:
+        first_sent: list[dict[str, Any]] = []
+        second_sent: list[dict[str, Any]] = []
+
+        async def first_sender(frame: dict[str, Any]) -> None:
+            first_sent.append(frame)
+
+        async def second_sender(frame: dict[str, Any]) -> None:
+            second_sent.append(frame)
+
+        registry = Rendering3DRelayRegistry()
+        await registry.register(
+            session_id="session-sentinel",
+            connection_id="connection-1",
+            number="13800138000",
+            sender=first_sender,
+        )
+        first_binding = await registry.send(
+            "session-sentinel",
+            lambda active: {
+                "message": "chatResponse",
+                "body": json.dumps({"number": active.number}),
+            },
+        )
+        assert first_binding.connection_id == "connection-1"
+        assert json.loads(first_sent[0]["body"]) == {"number": "13800138000"}
+
+        await registry.register(
+            session_id="session-sentinel",
+            connection_id="connection-2",
+            number="13900139000",
+            sender=second_sender,
+        )
+        await registry.unregister(
+            session_id="session-sentinel",
+            connection_id="connection-1",
+        )
+        second_binding = await registry.send(
+            "session-sentinel",
+            lambda active: {
+                "message": "chatResponse",
+                "body": json.dumps({"number": active.number}),
+            },
+        )
+        assert second_binding.connection_id == "connection-2"
+        assert json.loads(second_sent[0]["body"]) == {"number": "13900139000"}
+
+        await registry.unregister(
+            session_id="session-sentinel",
+            connection_id="connection-2",
+        )
+        with pytest.raises(Rendering3DRelayUnavailable):
+            await registry.send("session-sentinel", lambda active: {})
+
+    asyncio.run(scenario())
 
 
 def test_image_to_3d_tool_uses_runtime_owned_identity() -> None:
@@ -418,10 +622,18 @@ def test_image_to_3d_tool_uses_runtime_owned_identity() -> None:
     calls: list[dict[str, str]] = []
 
     class Adapter:
-        def start(self, *, session_id: str, src_image: str, output_format: str):
+        def start(
+            self,
+            *,
+            session_id: str,
+            chat_index: str,
+            src_image: str,
+            output_format: str,
+        ):
             calls.append(
                 {
                     "session_id": session_id,
+                    "chat_index": chat_index,
                     "src_image": src_image,
                     "output_format": output_format,
                 }
@@ -438,7 +650,10 @@ def test_image_to_3d_tool_uses_runtime_owned_identity() -> None:
             session_id="session-sentinel",
             run_id="run-sentinel",
             metadata={
-                "request_metadata": {"transport": "agent_service_websocket"}
+                "request_metadata": {
+                    "transport": "agent_service_websocket",
+                    "agent_service": {"chat_index": "chat-sentinel"},
+                }
             },
         ),
     )
@@ -451,6 +666,7 @@ def test_image_to_3d_tool_uses_runtime_owned_identity() -> None:
     assert calls == [
         {
             "session_id": "session-sentinel",
+            "chat_index": "chat-sentinel",
             "src_image": "cake_001",
             "output_format": "mp4",
         }
@@ -485,7 +701,15 @@ def test_image_to_3d_defaults_to_latest_generated_image() -> None:
     calls: list[dict[str, str]] = []
 
     class Adapter:
-        def start(self, *, session_id: str, src_image: str, output_format: str):
+        def start(
+            self,
+            *,
+            session_id: str,
+            chat_index: str,
+            src_image: str,
+            output_format: str,
+        ):
+            _ = chat_index
             calls.append(
                 {
                     "session_id": session_id,
@@ -533,6 +757,60 @@ def test_image_to_3d_defaults_to_latest_generated_image() -> None:
             "output_format": "mp4",
         }
     ]
+
+
+def test_image_to_3d_defaults_to_previous_agent_service_turn_image() -> None:
+    from assistant_agent.runtime.state import AgentState
+    from assistant_agent.runtime.tool_executor import ToolExecutor
+    from assistant_agent.runtime.requests import UserRequest
+    from assistant_agent.media.image_to_3d import ImageTo3DSubmission
+    from assistant_agent.tools.plugins.builtin.image_to_3d.tool import ImageTo3DTool
+    from assistant_agent.tools.registry import ToolRegistry
+
+    calls: list[str] = []
+
+    class Adapter:
+        def start(
+            self,
+            *,
+            session_id: str,
+            chat_index: str,
+            src_image: str,
+            output_format: str,
+        ):
+            _ = (session_id, chat_index, output_format)
+            calls.append(src_image)
+            return ImageTo3DSubmission(
+                status="queued",
+                source_image_id=src_image,
+            )
+
+    registry = ToolRegistry()
+    registry.register(ImageTo3DTool(adapter=Adapter()))
+    registry.seal()
+    state = AgentState.from_request(
+        UserRequest(
+            user_id="user-sentinel",
+            session_id="session-sentinel",
+            text="继续生成3D",
+            metadata={
+                "agent_service": {
+                    "latest_generated_image_id": "previous-turn-cake",
+                }
+            },
+        )
+    )
+
+    result = ToolExecutor(registry=registry).run_tool(
+        state,
+        "step-sentinel",
+        "image_to_3d",
+        {},
+        failure_mode="continue_to_model",
+    )
+
+    assert result.success is True
+    assert calls == ["previous-turn-cake"]
 
 
 def test_real_image_to_3d_plugin_requires_no_renderer_configuration() -> None:
@@ -585,8 +863,15 @@ def test_image_to_3d_tool_treats_failed_service_status_as_failure() -> None:
     from assistant_agent.tools.plugins.builtin.image_to_3d.tool import ImageTo3DTool
 
     class Adapter:
-        def start(self, *, session_id: str, src_image: str, output_format: str):
-            _ = (session_id, src_image, output_format)
+        def start(
+            self,
+            *,
+            session_id: str,
+            chat_index: str,
+            src_image: str,
+            output_format: str,
+        ):
+            _ = (session_id, chat_index, src_image, output_format)
             return ImageTo3DSubmission(
                 status="failed",
                 source_image_id="cake_001",

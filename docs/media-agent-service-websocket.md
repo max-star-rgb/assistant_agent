@@ -51,7 +51,7 @@ Agent 兼容说明：
 | message 类型 | 说明 | body 结构 |
 | --- | --- | --- |
 | `assistantControl` | 连接响应 | 参见 4.1 |
-| `chatResponse` | 文本响应及 IMAGE 渲染数据 | 参见 4.2、4.6 |
+| `chatResponse` | 文本响应及 IMAGE、TD_MODEL、VIDEO 渲染数据 | 参见 4.2、4.6 |
 | `audioResponse` | 音频响应 | 参见 4.3 |
 | `videoResponse` | 视频响应 | 参见 4.4 |
 | `interrupt` | 打断响应 | 参见 4.5 |
@@ -573,6 +573,8 @@ Agent 当前发送的渲染 detail 为：
 | 结果 | detail |
 | --- | --- |
 | 图片 | `{"type":"IMAGE","imageId":"<图片ID>","image":"<纯Base64>"}` |
+| 3D 模型 | `{"type":"TD_MODEL","modelUrl":"<模型URL>"}` |
+| 3D 视频 | `{"type":"VIDEO","videoUrl":"<视频URL>"}` |
 
 #### 4.6.1 图片投递
 
@@ -601,8 +603,9 @@ fixture 返回的 `imageId` 取文件名去掉扩展名。发给媒体的 `IMAGE
 `ActionValidator -> ToolExecutor -> ToolRegistry -> tool`。典型请求“生成3D蛋糕”先由 LLM 调用
 `image_generation`；成功图片只保存为 Agent 的 `.local/generated` 受管 artifact，Tool observation
 从本地文件名提取并返回 `{"image_id":["<图片ID>"]}`。LLM 随后调用 `image_to_3d` 时可以省略
-`src_image`；运行时从同一 run 已成功的 `image_generation` 结果中绑定最近一个图片 ID。显式提供
-`src_image` 仍用于转换已有受管图片。Agent 与渲染服务
+`src_image`；运行时优先从同一 run 已成功的 `image_generation` 结果中绑定最近一个图片 ID。如果
+用户在同一媒体 WebSocket 连接的后续 turn 说“继续生成3D”，则使用该连接上一 turn 最近成功生成的
+图片 ID。显式提供 `src_image` 仍用于转换已有受管图片。Agent 与渲染服务
 之间没有任何直连；`image_to_3d` 在同一 `.local/generated` 根目录内按 ID 安全解析 JPEG、PNG、
 WebP 或 GIF 原文件，读取为纯 Base64 后调用 3D 服务：
 
@@ -616,13 +619,14 @@ User-Agent: AgentService/1.0
 {
   "sessionId": "内部会话ID",
   "image": "图片Base64",
-  "pre_cb_url": "http://{PUBLIC_IP}:{PUBLIC_PORT}/calling-agent-service/v1/{session_id}/0/3d-gen-back",
-  "cb_url": "http://{PUBLIC_IP}:{PUBLIC_PORT}/calling-agent-service/v1/{session_id}/0/3d-gen-back",
+  "pre_cb_url": "http://{PUBLIC_IP}:{PUBLIC_PORT}/calling-agent-service/v1/{session_id}/{chat_index}/3d-gen-back",
+  "cb_url": "http://{PUBLIC_IP}:{PUBLIC_PORT}/calling-agent-service/v1/{session_id}/{chat_index}/3d-gen-back",
   "format": "mp4"
 }
 ```
 
-3D 服务完成后仍向 Agent 发送成功通知：
+其中 `session_id` 是 runtime-owned session ID，`chat_index` 来自当前媒体请求的可信
+`agent_service` metadata。3D 服务完成后向 Agent 回传产物：
 
 ```text
 POST /calling-agent-service/v1/{session_id}/{chat_index}/3d-gen-back
@@ -636,16 +640,37 @@ POST /calling-agent-service/v1/{session_id}/{chat_index}/3d-gen-back
 }
 ```
 
-回调请求必须包含非空 `mediaType` 和合法 HTTP(S) `mediaUrl`，`image` 可省略。Agent 只校验并
-确认收到通知，返回
-`{"errCode":0,"errMessage":"success","data":{"result":"SUCCESS"}}`。Agent 不下载、保存、
-缓存或解析 `mediaUrl` 指向的产物，不处理可选 `image`，也不向媒体 WebSocket 投影或转发
-`TD_MODEL`/`VIDEO`。3D 模型或视频由 3D 服务通过 Agent 之外的渠道交付 App。
+回调请求必须包含合法的 `mediaType` 和 HTTP(S) `mediaUrl`，`image` 可省略且当前不处理。
+`mediaType` 映射如下：
 
-`src_image` 是模型可见的可选 string，只表示图片 ID，不得包含目录或图片后缀。省略时只读取同一
-run 最近一次成功 `image_generation` 的结构化 `image_id`；不存在该结果时明确要求先生成图片，
-不会猜测全局最新文件。产物 `format` 不暴露给 LLM，Agent 固定向 3D 服务提交 `mp4`。Tool 不查询
-渲染服务，也不读取 `.local/generated` 之外的路径。发给媒体的 `IMAGE.image` 同样通过受管
+| 3D 服务 `mediaType` | 媒体 detail |
+| --- | --- |
+| `ply` | `{"type":"TD_MODEL","modelUrl":"<mediaUrl>"}` |
+| `glb` | `{"type":"TD_MODEL","modelUrl":"<mediaUrl>"}` |
+| `mp4` | `{"type":"VIDEO","videoUrl":"<mediaUrl>"}` |
+
+Agent 通过 runtime session ID 找到发起任务的活动媒体 WebSocket，并发送：
+
+```json
+{
+  "message": "chatResponse",
+  "body": "{\"chatIndex\":\"uuid\",\"number\":\"手机号码\",\"messageType\":\"ANSWER\",\"display_only\":false,\"message\":{\"type\":\"BRIEF\",\"chatIndex\":\"uuid\",\"content\":{\"intentExecution\":{\"description\":\"\",\"plans\":[],\"messageType\":\"ANSWER\"},\"intentResult\":{\"description\":\"小艺已经为您生成3D蛋糕模型\",\"status\":\"SUCCESS\",\"plan\":[],\"messageType\":\"ANSWER\",\"detail\":[{\"type\":\"TD_MODEL\",\"modelUrl\":\"http://TD_GEN_IP:PORT/models/xxx.ply\"}]},\"intentWeb\":{\"description\":\"\",\"resourceType\":\"\",\"resourceUrl\":\"\"}}}}"
+}
+```
+
+回调复用媒体连接既有的发送锁，避免与普通 `chatResponse` 并发写入。WebSocket 发送成功后才返回
+`{"errCode":0,"errMessage":"success","data":{"result":"SUCCESS"}}`；没有活动 session 时返回
+HTTP 409，发送失败返回 HTTP 503，均不得返回成功 ACK。连接关闭时按 connection ID 注销绑定，
+旧连接的清理不能删除同 session 的新绑定。
+
+Agent 不下载、保存、缓存或解析 `mediaUrl` 指向的产物。回调中继不创建新 Agent turn、不调用 LLM，
+也不把产物 URL 写入 conversation history。
+
+`src_image` 是模型可见的可选 string，只表示图片 ID，不得包含目录或图片后缀。省略时先读取同一
+run 最近一次成功 `image_generation` 的结构化 `image_id`，再读取当前媒体连接上一 turn 保存的
+最近图片 ID；两者都不存在时明确要求先生成图片，不会猜测全局最新文件。连接关闭后该引用随连接
+状态清除，不跨用户或跨进程恢复。产物 `format` 不暴露给 LLM，Agent 固定向 3D 服务提交 `mp4`。
+Tool 不查询渲染服务，也不读取 `.local/generated` 之外的路径。发给媒体的 `IMAGE.image` 同样通过受管
 `output_ref` 从该本地目录读取，不使用 Provider 临时 URL，也不写第二份镜像。3D 服务受理状态兼容
 当前顶层 `{"status":"queued","queue_position":...}` 响应，以及旧协议的 `data.status` 或
 `data.json.status`；只有明确的排队、生成中、已受理、处理中或成功状态才视为提交成功。
@@ -883,5 +908,6 @@ if __name__ == "__main__":
 - `video` 在入口层完成严格校验和 H.264 I-Frame 到 JPEG 的受控解码，后续 `chat` 只把稳定 `video_id` 送入 Gateway；入口层不直接调用视频 Provider。
 - 默认 mock/local/offline 运行不会调用真实外部 Provider；真实 Provider 只在显式 profile 和本机安全配置允许时启用。
 - `image_to_3d` 是受治理生成 Tool；只消费同一 run 的受管图片 artifact，3D POST 只在 real 模式且配置完整时执行。
-- 3D 回调 route 是薄入口，只校验并确认成功通知；不管理、存储或转发 3D 产物，也不承担 Agent 规划。
+- 3D 回调 route 是薄入口，只校验、映射并向活动媒体 WebSocket 转发产物 URL；不下载、存储或解析
+  3D 产物，也不进入 Agent 规划。
 - 不要在该接口中传输 API key、token、provider 原始响应或未脱敏敏感数据；原始音视频大 payload 不进入 prompt。

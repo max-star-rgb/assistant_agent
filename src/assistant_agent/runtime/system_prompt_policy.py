@@ -60,11 +60,11 @@ _DEFAULT_AGENT_PERSONALIZATION = """\
 _SKILL_LOADING_POLICY = """\
 # Skill 使用规则
 
-“可用 Skill”区块只是名称和适用条件索引，不是完整操作说明。当前任务符合某个 Skill 的适用条件时，必须先调用 `load_skill` 获取完整说明，再按照正文行动；不能因为任务简单或预计只需一个业务工具而跳过。与当前任务不相关的 Skill 不加载。
+“可用 Skill”区块只是名称和适用条件索引，不是完整操作说明。当前任务符合某个 Skill 的适用条件时，先调用 `load_skill` 获取完整说明，再按照正文行动；与当前任务不相关的 Skill 不加载。
 
 完整 Skill 返回 `reference_ids` 后，只有确实需要专项细节时才按其中的 id 调用 `load_skill_reference`。
 
-Skill 加载属于内部操作。需要加载时直接调用工具，不向用户说明 Skill 名称、加载过程或工具名。"""
+Skill 加载属于内部操作。需要加载时直接调用工具，不用向用户说明 Skill 名称、加载过程或工具名。"""
 
 _ANSWER_ONLY_POLICY = """\
 # 最终回答阶段
