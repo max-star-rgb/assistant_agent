@@ -19,6 +19,10 @@ from assistant_agent.media.embedding.observability import (
     EmbeddingObserver,
     emit_visual_semantic_observation,
 )
+from assistant_agent.media.video.visual_context_models import (
+    VisualContextSnapshot,
+    VisualContextSummary,
+)
 
 
 VisualIndexStatus = Literal["ready", "unavailable"]
@@ -120,6 +124,7 @@ class SessionVisualSemanticStore:
         self._records: OrderedDict[str, VisualSemanticRecord] = OrderedDict()
         self._video_records: dict[str, list[str]] = {}
         self._snapshots: dict[str, VisualSemanticSnapshot] = {}
+        self._visual_context_summaries: dict[str, VisualContextSummary] = {}
         self._failed_sequences: dict[str, set[int]] = {}
         self._evidence_bytes = 0
         self._lock = Lock()
@@ -378,12 +383,72 @@ class SessionVisualSemanticStore:
                 for record in self._records.values()
             )
 
+    def records_for_context(
+        self,
+        video_id: str,
+        *,
+        before_sequence: int,
+    ) -> list[VisualSemanticRecord]:
+        """Return independent raw records strictly before a frozen sequence."""
+
+        with self._lock:
+            self._ensure_open()
+            records = sorted(
+                (
+                    record
+                    for record in self._records_for_video_locked(video_id)
+                    if record.frame_sequence < before_sequence
+                ),
+                key=lambda record: (record.frame_sequence, record.created_at_ms),
+            )
+            return [record.model_copy(deep=True) for record in records]
+
+    def visual_context_snapshot(self, video_id: str) -> VisualContextSnapshot:
+        """Return a defensive snapshot of the video-specific compacted context."""
+
+        with self._lock:
+            self._ensure_open()
+            summary = self._visual_context_summaries.get(video_id)
+            return VisualContextSnapshot(
+                video_id=video_id,
+                summary=(summary.model_copy(deep=True) if summary else None),
+            )
+
+    def replace_visual_context_summary(
+        self,
+        video_id: str,
+        summary: VisualContextSummary,
+        *,
+        expected_revision: int,
+    ) -> VisualContextSnapshot:
+        """CAS-publish a summary without altering retained searchable records."""
+
+        with self._lock:
+            self._ensure_open()
+            if summary.video_id != video_id:
+                raise ValueError("visual_context_non_contiguous_prefix")
+            current = self._visual_context_summaries.get(video_id)
+            current_revision = current.summary_revision if current else 0
+            if (
+                expected_revision != current_revision
+                or summary.summary_revision != current_revision + 1
+            ):
+                raise ValueError("visual_context_revision_conflict")
+            self._validate_context_coverage_locked(video_id, summary, current)
+            stored = summary.model_copy(deep=True)
+            self._visual_context_summaries[video_id] = stored
+            return VisualContextSnapshot(
+                video_id=video_id,
+                summary=stored.model_copy(deep=True),
+            )
+
     def clear(self) -> None:
         with self._lock:
             records = list(self._records.values())
             self._records.clear()
             self._video_records.clear()
             self._snapshots.clear()
+            self._visual_context_summaries.clear()
             self._failed_sequences.clear()
             self._evidence_bytes = 0
             self._condition.notify_all()
@@ -398,6 +463,7 @@ class SessionVisualSemanticStore:
             self._records.clear()
             self._video_records.clear()
             self._snapshots.clear()
+            self._visual_context_summaries.clear()
             self._failed_sequences.clear()
             self._evidence_bytes = 0
             self._condition.notify_all()
@@ -473,6 +539,77 @@ class SessionVisualSemanticStore:
             for record_id in self._video_records.get(video_id, [])
             if record_id in self._records
         ]
+
+    def _validate_context_coverage_locked(
+        self,
+        video_id: str,
+        summary: VisualContextSummary,
+        current: VisualContextSummary | None,
+    ) -> None:
+        existing_ids = current.covered_record_ids if current else []
+        candidate_ids = summary.covered_record_ids
+        existing_id_set = set(existing_ids)
+        candidate_id_set = set(candidate_ids)
+        if not existing_id_set.issubset(candidate_id_set):
+            raise ValueError("visual_context_non_contiguous_prefix")
+        if candidate_id_set == existing_id_set:
+            raise ValueError("visual_context_non_contiguous_prefix")
+        records = sorted(
+            self._records_for_video_locked(video_id),
+            key=lambda record: (record.frame_sequence, record.created_at_ms),
+        )
+        records_by_id = {record.record_id: record for record in records}
+        missing_ids = candidate_id_set.difference(records_by_id)
+        if not missing_ids.issubset(existing_id_set):
+            raise ValueError("visual_context_non_contiguous_prefix")
+        covered_records = [
+            records_by_id[record_id]
+            for record_id in candidate_ids
+            if record_id in records_by_id
+        ]
+        expected_ids = [record.record_id for record in records[: len(covered_records)]]
+        if [record.record_id for record in covered_records] != expected_ids:
+            raise ValueError("visual_context_non_contiguous_prefix")
+        self._validate_context_range_metadata(
+            summary,
+            covered_records,
+            current=(current if missing_ids else None),
+        )
+
+    @staticmethod
+    def _validate_context_range_metadata(
+        summary: VisualContextSummary,
+        records: list[VisualSemanticRecord],
+        *,
+        current: VisualContextSummary | None,
+    ) -> None:
+        sequences = [record.frame_sequence for record in records]
+        captured_at_ms = [
+            record.captured_at_ms
+            for record in records
+            if record.captured_at_ms is not None
+        ]
+        if current is not None:
+            sequences.extend([current.first_sequence, current.last_sequence])
+            if current.first_captured_at_ms is not None:
+                captured_at_ms.append(current.first_captured_at_ms)
+            if current.last_captured_at_ms is not None:
+                captured_at_ms.append(current.last_captured_at_ms)
+        if not sequences or (
+            summary.first_sequence != min(sequences)
+            or summary.last_sequence != max(sequences)
+        ):
+            raise ValueError("visual_context_non_contiguous_prefix")
+        if summary.first_captured_at_ms is not None and (
+            not captured_at_ms
+            or summary.first_captured_at_ms != min(captured_at_ms)
+        ):
+            raise ValueError("visual_context_non_contiguous_prefix")
+        if summary.last_captured_at_ms is not None and (
+            not captured_at_ms
+            or summary.last_captured_at_ms != max(captured_at_ms)
+        ):
+            raise ValueError("visual_context_non_contiguous_prefix")
 
     def _validate_session(self, session_id: str) -> None:
         if self._session_id is None:
