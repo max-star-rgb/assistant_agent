@@ -168,10 +168,22 @@ class SemanticChangeDetector:
         return self.keyframe_consumer.compare(current_outcome, reference_outcome)
 
     def _observation(self, frame: VideoFrame) -> ImageObservation:
+        video_id = frame.metadata.get("video_id")
+        if not isinstance(video_id, str) or not video_id:
+            video_id = None
+        frame_sequence = frame.metadata.get("sequence")
+        if (
+            isinstance(frame_sequence, bool)
+            or not isinstance(frame_sequence, int)
+            or frame_sequence < 0
+        ):
+            frame_sequence = None
         return ImageObservation(
             session_id=self.coordinator.session_id,
             observation_id=_frame_embedding_key(frame),
             image_ref=frame.uri or f"memory://frame/{_frame_embedding_key(frame)}",
+            video_id=video_id,
+            frame_sequence=frame_sequence,
             captured_at_ms=max(0, int(frame.timestamp_seconds * 1000)),
         )
 

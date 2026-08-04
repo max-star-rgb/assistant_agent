@@ -1,14 +1,20 @@
+import time
 from pathlib import Path
 
 from assistant_agent.media.embedding.consumers.object_search import (
     VisualMemorySearchRequest,
     VisualMemorySearchService,
 )
-from assistant_agent.media.embedding.consumers.temporal_memory import TemporalVisualMemory
+from assistant_agent.media.embedding.consumers.temporal_memory import (
+    TemporalMemoryConsumer,
+    TemporalVisualMemory,
+)
 from assistant_agent.media.embedding.coordinator import SessionEmbeddingCoordinator
 from assistant_agent.media.embedding.models import EmbeddingEvent, ImageObservation
 from assistant_agent.media.embedding.provider import MockMultimodalEmbeddingProvider
 from assistant_agent.media.vision.models import VisionUnderstandingResult
+from assistant_agent.media.video.detection.semantic_detector import SemanticChangeDetector
+from assistant_agent.media.video.types import VideoFrame
 
 
 def _populate(memory: TemporalVisualMemory, tmp_path: Path) -> None:
@@ -58,6 +64,52 @@ class _VisionClient:
             provider="fake",
             output_ref="fake://verification",
         )
+
+
+def test_semantic_probe_history_remains_searchable_at_chat_sequence(tmp_path) -> None:
+    source = tmp_path / "frame-7.jpg"
+    source.write_bytes(b"jpeg")
+    memory = TemporalVisualMemory(root=tmp_path / "evidence")
+    coordinator = SessionEmbeddingCoordinator(
+        "session-1", MockMultimodalEmbeddingProvider(dimension=2)
+    )
+    coordinator.register_consumer(TemporalMemoryConsumer(memory))
+    detector = SemanticChangeDetector(coordinator=coordinator)
+
+    detector.compare(
+        VideoFrame(
+            frame_id="frame-7",
+            timestamp_seconds=7.0,
+            uri=str(source),
+            metadata={"video_id": "video-1", "sequence": 7},
+        ),
+        None,
+    )
+    for _ in range(50):
+        if memory.has_history():
+            break
+        time.sleep(0.01)
+
+    service = VisualMemorySearchService(
+        coordinator=coordinator,
+        temporal_memory=memory,
+        vision_client=_VisionClient(),
+    )
+    result = service.search(
+        VisualMemorySearchRequest(
+            session_id="session-1",
+            request_id="request-1",
+            query="钥匙",
+            as_of_sequence=7,
+        )
+    )
+
+    assert result.status == "confirmed"
+    assert [(match.video_id, match.frame_sequence) for match in result.matches] == [
+        ("video-1", 7)
+    ]
+    coordinator.close()
+    memory.close()
 
 
 def _service(tmp_path, *, client=None):
