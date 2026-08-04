@@ -613,12 +613,14 @@ class AgentGraphRuntime:
         request.metadata.pop("_trusted_visual_memory_available", None)
         request.metadata.pop("_trusted_visual_memory_as_of_sequence", None)
         request.metadata.pop("_trusted_visual_memory_as_of_ms", None)
-        coordinator = self.embedding_coordinator_store.peek(
+        semantic_store = self.visual_semantic_store_pool.peek(
             request.user_id,
             request.session_id,
         )
-        memory = getattr(coordinator, "temporal_visual_memory", None) if coordinator else None
-        if memory is not None and memory.has_history():
+        if (
+            semantic_store is not None
+            and semantic_store.has_searchable_history()
+        ):
             request.metadata["_trusted_visual_memory_available"] = True
         if is_trusted_agent_service_request(request):
             target_sequence = request.metadata.get("realtime_video_target_sequence")

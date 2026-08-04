@@ -171,3 +171,27 @@ def test_keyframe_min_interval_cannot_exceed_max_interval() -> None:
                 "REALTIME_KEYFRAME_MAX_INTERVAL_SECONDS": "1",
             }
         )
+
+
+def test_visual_memory_similarity_thresholds_are_configurable() -> None:
+    config = ProviderConfig.from_env(
+        {
+            "MULTIMODAL_AGENT_PROVIDER_MODE": "mock",
+            "REALTIME_VISUAL_MEMORY_CANDIDATE_SIMILARITY": "0.22",
+            "REALTIME_VISUAL_MEMORY_CONFIRMED_SIMILARITY": "0.34",
+        }
+    )
+
+    assert config.visual_memory_candidate_similarity == 0.22
+    assert config.visual_memory_confirmed_similarity == 0.34
+
+
+def test_visual_memory_similarity_threshold_order_is_validated() -> None:
+    with pytest.raises(ValueError, match="candidate < confirmed"):
+        ProviderConfig.from_env(
+            {
+                "MULTIMODAL_AGENT_PROVIDER_MODE": "mock",
+                "REALTIME_VISUAL_MEMORY_CANDIDATE_SIMILARITY": "0.4",
+                "REALTIME_VISUAL_MEMORY_CONFIRMED_SIMILARITY": "0.3",
+            }
+        )

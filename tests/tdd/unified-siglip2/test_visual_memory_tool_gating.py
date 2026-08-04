@@ -1,5 +1,3 @@
-from types import SimpleNamespace
-
 from assistant_agent.context.tool_catalog import select_prompt_tool_specs
 from assistant_agent.runtime.requests import UserRequest
 from assistant_agent.runtime.runtime import AgentGraphRuntime
@@ -14,26 +12,26 @@ SPEC = ToolSpec(
 )
 
 
-class _Memory:
-    def __init__(self, available):
+class _SemanticStore:
+    def __init__(self, available: bool) -> None:
         self.available = available
 
-    def has_history(self):
+    def has_searchable_history(self) -> bool:
         return self.available
 
 
-class _Store:
-    def __init__(self, coordinator):
-        self.coordinator = coordinator
+class _Pool:
+    def __init__(self, store):
+        self.store = store
 
     def peek(self, _user_id, _session_id):
-        return self.coordinator
+        return self.store
 
 
-def _runtime(available):
+def _runtime(available: bool | None) -> AgentGraphRuntime:
     runtime = object.__new__(AgentGraphRuntime)
-    runtime.embedding_coordinator_store = _Store(
-        SimpleNamespace(temporal_visual_memory=_Memory(available)) if available is not None else None
+    runtime.visual_semantic_store_pool = _Pool(
+        _SemanticStore(available) if available is not None else None
     )
     return runtime
 

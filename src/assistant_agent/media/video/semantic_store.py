@@ -295,6 +295,7 @@ class SessionVisualSemanticStore:
         *,
         video_id: str | None = None,
         as_of_sequence: int | None = None,
+        since_ms: int | None = None,
         as_of_ms: int | None = None,
         min_similarity: float = -1.0,
         limit: int = 5,
@@ -315,6 +316,12 @@ class SessionVisualSemanticStore:
             if video_id is not None and record.video_id != video_id:
                 continue
             if as_of_sequence is not None and record.frame_sequence > as_of_sequence:
+                continue
+            if (
+                since_ms is not None
+                and record.captured_at_ms is not None
+                and record.captured_at_ms < since_ms
+            ):
                 continue
             if (
                 as_of_ms is not None
@@ -340,6 +347,15 @@ class SessionVisualSemanticStore:
             reverse=True,
         )
         return candidates[:limit]
+
+    def has_searchable_history(self) -> bool:
+        with self._lock:
+            self._ensure_open()
+            return any(
+                record.index_status == "ready"
+                and record.search_embedding is not None
+                for record in self._records.values()
+            )
 
     def clear(self) -> None:
         with self._lock:

@@ -90,6 +90,8 @@ class ProviderConfig:
     keyframe_structural_threshold: float = 0.35
     keyframe_semantic_threshold: float = 0.18
     keyframe_combined_threshold: float = 0.25
+    visual_memory_candidate_similarity: float = 0.20
+    visual_memory_confirmed_similarity: float = 0.30
     openai_vision_base_url: str = "https://api.openai.com/v1"
     openai_vision_model: str = "gpt-4o-mini"
     qwen_vision_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
@@ -245,6 +247,15 @@ class ProviderConfig:
             if not 0.0 <= value <= 1.0:
                 raise ValueError(f"keyframe {name} threshold must be between 0 and 1")
         if not (
+            -1.0
+            <= self.visual_memory_candidate_similarity
+            < self.visual_memory_confirmed_similarity
+            <= 1.0
+        ):
+            raise ValueError(
+                "visual memory thresholds must satisfy candidate < confirmed"
+            )
+        if not (
             0.0
             < self.context_compaction_target_ratio
             < self.context_compaction_trigger_ratio
@@ -398,6 +409,14 @@ class ProviderConfig:
             keyframe_combined_threshold=_float_env(
                 source.get("REALTIME_KEYFRAME_COMBINED_THRESHOLD"),
                 0.25,
+            ),
+            visual_memory_candidate_similarity=_float_env(
+                source.get("REALTIME_VISUAL_MEMORY_CANDIDATE_SIMILARITY"),
+                0.20,
+            ),
+            visual_memory_confirmed_similarity=_float_env(
+                source.get("REALTIME_VISUAL_MEMORY_CONFIRMED_SIMILARITY"),
+                0.30,
             ),
             openai_vision_base_url=source.get("OPENAI_VISION_BASE_URL", "https://api.openai.com/v1"),
             openai_vision_model=source.get("OPENAI_VISION_MODEL", "gpt-4o-mini"),

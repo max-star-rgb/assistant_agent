@@ -13,7 +13,9 @@ from assistant_agent.media.embedding.consumers.object_search import (
     VisualMemorySearchService,
 )
 from assistant_agent.media.embedding.coordinator_store import SessionEmbeddingCoordinatorStore
-from assistant_agent.media.vision.vision_client import VisionUnderstandingClient
+from assistant_agent.media.video.semantic_store_pool import (
+    SessionVisualSemanticStorePool,
+)
 from assistant_agent.tools.base import ToolBase, ToolContext
 from assistant_agent.tools.ids import VISUAL_MEMORY_SEARCH_TOOL_NAME
 from assistant_agent.tools.input_binding import RuntimeInputBinding
@@ -54,16 +56,20 @@ class VisualMemorySearchTool(ToolBase):
         self,
         *,
         coordinator_store: SessionEmbeddingCoordinatorStore,
-        vision_client: VisionUnderstandingClient,
+        semantic_store_pool: SessionVisualSemanticStorePool,
+        candidate_similarity: float = 0.20,
+        confirmed_similarity: float = 0.30,
     ) -> None:
         self.coordinator_store = coordinator_store
-        self.vision_client = vision_client
+        self.semantic_store_pool = semantic_store_pool
+        self.candidate_similarity = candidate_similarity
+        self.confirmed_similarity = confirmed_similarity
 
     def _run(self, input: VisualMemorySearchInput, context: ToolContext) -> ToolResult:
         user_id = context.user_id or ""
         coordinator = self.coordinator_store.peek(user_id, input.session_id)
-        memory = getattr(coordinator, "temporal_visual_memory", None) if coordinator else None
-        if coordinator is None or memory is None:
+        semantic_store = self.semantic_store_pool.peek(user_id, input.session_id)
+        if coordinator is None or semantic_store is None:
             result = VisualMemorySearchResult(status="not_found")
         else:
             request_metadata = context.metadata.get("request_metadata")
@@ -74,8 +80,9 @@ class VisualMemorySearchTool(ToolBase):
             since_ms, until_ms = _time_bounds(input.time_window, request_metadata)
             service = VisualMemorySearchService(
                 coordinator=coordinator,
-                temporal_memory=memory,
-                vision_client=self.vision_client,
+                semantic_store=semantic_store,
+                candidate_similarity=self.candidate_similarity,
+                confirmed_similarity=self.confirmed_similarity,
             )
             result = service.search(
                 VisualMemorySearchRequest(
@@ -121,8 +128,8 @@ def _non_negative_int(value) -> int | None:
 
 def _voice_summary(result: VisualMemorySearchResult) -> str:
     if result.status == "confirmed":
-        return "在会话历史画面中找到了经复核的相关记录。"
-    if result.status in {"candidate", "uncertain"}:
+        return "在会话历史的视觉语义记录中找到了高度相关内容。"
+    if result.status == "candidate":
         return "找到了相关历史画面，但目前只能作为候选。"
     if result.status == "not_found":
         return "当前会话历史中没有找到相关画面。"
