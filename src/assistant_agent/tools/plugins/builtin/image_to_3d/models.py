@@ -17,3 +17,4 @@ class ImageTo3DRequest(BaseModel):
 class ImageTo3DResult(BaseModel):
     status: str
     source_image_id: str | None = None
+    job_id: str | None = None

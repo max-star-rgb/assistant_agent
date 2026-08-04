@@ -55,6 +55,12 @@ from assistant_agent.gateway.turn_facade import (
     GatewayTurnResult,
     GatewayTurnTimeout,
 )
+from assistant_agent.gateway.capabilities import HTTP_AGENT_ENTRY_CAPABILITIES
+from assistant_agent.media.image_to_3d_completion import (
+    ImageTo3DJob,
+    ImageTo3DJobRegistry,
+    get_image_to_3d_job_registry,
+)
 from assistant_agent.multi_agent.agent_pilot_readiness import PilotReadinessChecker, PilotReadinessReport
 from assistant_agent.providers.provider_readiness import build_provider_readiness_report
 from assistant_agent.observability.trace_query import (
@@ -209,6 +215,7 @@ def _gateway_http_metadata(request: UserRequest, capture_id: str) -> dict[str, A
     gateway_payload = dict(gateway_metadata) if isinstance(gateway_metadata, dict) else {}
     gateway_payload.update(gateway_runtime.gateway_http_capture_metadata(capture_id)["gateway"])
     gateway_payload["suppress_realtime_backend_source"] = True
+    gateway_payload["entry_capabilities"] = HTTP_AGENT_ENTRY_CAPABILITIES.to_metadata()
     metadata["gateway"] = gateway_payload
     metadata["execution_strategy"] = request.execution_strategy
     return metadata
@@ -245,6 +252,35 @@ async def run_agent(request: UserRequest, auth_context: AuthContext = Depends(ge
     _require_trial_access_for_identity(identity_resolution)
     request = _with_identity_metadata(request, identity_resolution)
     return await _run_agent_through_gateway(request)
+
+
+@router.get(
+    "/agent/image-to-3d/jobs/{job_id}",
+    response_model=ImageTo3DJob,
+)
+def get_image_to_3d_job(
+    job_id: str,
+    user_id: str = Query(...),
+    session_id: str = Query(...),
+    auth_context: AuthContext = Depends(get_auth_context),
+    jobs: ImageTo3DJobRegistry = Depends(get_image_to_3d_job_registry),
+) -> ImageTo3DJob:
+    identity = _require_trial_access_for_identity(
+        _identity_from_user_id(
+            user_id,
+            session_id=session_id,
+            source="query",
+            auth_context=auth_context,
+        )
+    )
+    job = jobs.get_for_owner(
+        job_id,
+        user_id=identity.user_id,
+        session_id=identity.session_id or session_id,
+    )
+    if job is None:
+        raise HTTPException(status_code=404, detail="image-to-3d job not found")
+    return job
 
 
 @router.post("/agents/run", response_model=AgentRunResponse)

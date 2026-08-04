@@ -167,7 +167,7 @@ class ProviderConfig:
     td_gen_port: int | None = None
     public_ip: str | None = None
     public_port: int | None = None
-    image_to_3d_timeout_seconds: float = 30.0
+    image_to_3d_timeout_seconds: float = 5.0
     search_provider: SearchProviderName = "mock"
     web_search_base_url: str | None = None
     web_search_api_key: str | None = None
@@ -610,7 +610,7 @@ class ProviderConfig:
             public_port=_optional_int_env(source.get("PUBLIC_PORT")),
             image_to_3d_timeout_seconds=_float_env(
                 source.get("IMAGE_TO_3D_TIMEOUT_SECONDS"),
-                30.0,
+                5.0,
             ),
             search_provider=_search_provider(
                 source.get("MULTIMODAL_AGENT_SEARCH_PROVIDER"),

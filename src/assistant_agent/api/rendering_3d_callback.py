@@ -3,35 +3,58 @@
 from __future__ import annotations
 
 import json
-import logging
-from typing import Literal
+import random
+from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, HttpUrl
+from fastapi import APIRouter
+from pydantic import BaseModel
 
+from assistant_agent.media.image_to_3d_completion import (
+    ImageTo3DArtifact,
+    ImageTo3DJobRegistry,
+    get_image_to_3d_job_registry,
+)
 from assistant_agent.media.rendering_3d_relay import (
     Rendering3DRelayBinding,
     Rendering3DRelayRegistry,
-    Rendering3DRelayUnavailable,
     get_rendering_3d_relay_registry,
 )
-from assistant_agent.observability.operational_logging import digest_identifier
 
 
-logger = logging.getLogger("assistant_agent.api.rendering_3d_callback")
+TD_GEN_CALLBACK_RESPONSES = {
+    "mp4": {
+        "zh": ["已为您生成预览视频，请查看", "预览视频已生成，请查看"],
+        "en": ["I've generated a preview video for you, please check out"],
+    },
+    "glb": {
+        "zh": ["已为您生成3d模型，请查看", "3d模型已生成，请查看"],
+        "en": ["I've generated a 3d model for you, please check out"],
+    },
+    "ply": {
+        "zh": ["已为您生成3d模型，请查看", "3d模型已生成，请查看"],
+        "en": ["I've generated a 3d model for you, please check out"],
+    },
+    "image": {
+        "zh": ["已为您生成图片，请查看", "图片已生成，请查看"],
+        "en": ["I've generated an image for you, please check out"],
+    },
+}
 
 
 class Rendering3DCallback(BaseModel):
-    mediaType: Literal["ply", "glb", "mp4"]
-    mediaUrl: HttpUrl
+    mediaType: str
+    mediaUrl: str | None = None
     image: str | None = None
 
 
 def create_rendering_3d_callback_router(
     relay_registry: Rendering3DRelayRegistry | None = None,
+    *,
+    job_registry: ImageTo3DJobRegistry | None = None,
 ) -> APIRouter:
     router = APIRouter()
     registry = relay_registry or get_rendering_3d_relay_registry()
+    jobs = job_registry or get_image_to_3d_job_registry()
 
     @router.post(
         "/calling-agent-service/v1/{session_id}/{chat_index}/3d-gen-back"
@@ -41,40 +64,32 @@ def create_rendering_3d_callback_router(
         chat_index: str,
         callback: Rendering3DCallback,
     ) -> dict:
-        try:
-            await registry.send(
-                session_id,
-                lambda binding: _chat_response(
-                    binding=binding,
-                    chat_index=chat_index,
-                    callback=callback,
-                ),
-            )
-        except Rendering3DRelayUnavailable as exc:
-            logger.warning(
-                "3d callback relay unavailable session_digest=%s media_type=%s",
-                digest_identifier(session_id),
-                callback.mediaType,
-            )
-            raise HTTPException(
-                status_code=409,
-                detail={"errCode": 1, "errMessage": "media session unavailable"},
-            ) from exc
-        except Exception as exc:  # noqa: BLE001 - HTTP/WebSocket delivery boundary.
-            logger.warning(
-                "3d callback relay failed session_digest=%s media_type=%s",
-                digest_identifier(session_id),
-                callback.mediaType,
-            )
-            raise HTTPException(
-                status_code=503,
-                detail={"errCode": 1, "errMessage": "media delivery failed"},
-            ) from exc
-        return {
-            "errCode": 0,
-            "errMessage": "success",
-            "data": {"result": "SUCCESS"},
-        }
+        _ = chat_index
+        job = jobs.complete(
+            session_id,
+            artifact=ImageTo3DArtifact(
+                media_type=callback.mediaType,
+                media_url=callback.mediaUrl,
+                image=callback.image,
+            ),
+        )
+        if callback.mediaType not in TD_GEN_CALLBACK_RESPONSES:
+            return {"code": "success"}
+        if job is not None:
+            if job.delivery_target != "agent_service":
+                return {"code": "success"}
+            delivery_session_id = job.session_id
+        else:
+            # Compatibility for submissions created before callback job IDs existed.
+            delivery_session_id = session_id
+        await registry.send(
+            delivery_session_id,
+            lambda binding: _chat_response(
+                binding=binding,
+                callback=callback,
+            ),
+        )
+        return {"code": "success"}
 
     return router
 
@@ -82,23 +97,22 @@ def create_rendering_3d_callback_router(
 def _chat_response(
     *,
     binding: Rendering3DRelayBinding,
-    chat_index: str,
     callback: Rendering3DCallback,
 ) -> dict[str, str]:
-    media_url = str(callback.mediaUrl)
-    detail = (
-        {"type": "VIDEO", "videoUrl": media_url}
-        if callback.mediaType == "mp4"
-        else {"type": "TD_MODEL", "modelUrl": media_url}
+    if callback.mediaType in {"ply", "glb"}:
+        detail = {"type": "TD_MODEL", "modelUrl": callback.mediaUrl}
+    elif callback.mediaType == "mp4":
+        detail = {"type": "VIDEO", "videoUrl": callback.mediaUrl}
+    else:
+        detail = {"type": "IMAGE", "image": callback.image}
+    response = random.choice(
+        TD_GEN_CALLBACK_RESPONSES[callback.mediaType][binding.language]
     )
     body = {
-        "chatIndex": chat_index,
         "number": binding.number,
-        "messageType": "ANSWER",
-        "display_only": False,
         "message": {
             "type": "BRIEF",
-            "chatIndex": chat_index,
+            "chatIndex": str(uuid4()),
             "content": {
                 "intentExecution": {
                     "description": "",
@@ -106,10 +120,10 @@ def _chat_response(
                     "messageType": "ANSWER",
                 },
                 "intentResult": {
-                    "description": "小艺已经为您生成3D蛋糕模型",
+                    "description": response,
                     "status": "SUCCESS",
                     "plan": [],
-                    "messageType": "ANSWER",
+                    "messageType": "END",
                     "detail": [detail],
                 },
                 "intentWeb": {

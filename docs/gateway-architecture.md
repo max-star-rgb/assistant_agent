@@ -256,13 +256,21 @@ ACK、流式交付和 H.264 解码，并把 chat、interrupt 和稳定媒体引�
 主 LLM。完整 wire contract 只维护在
 [media-agent-service-websocket.md](media-agent-service-websocket.md)。
 
-生成图片复用媒体服务已建立的 `/agent-service/v1` WebSocket 发送标准 `chatResponse`。媒体服务是
+`image_generation` runtime 结果保持为受管 artifact/output ref；只有 Agent-Service entry adapter
+把它投影为 `IMAGE` 并复用媒体服务已建立的 `/agent-service/v1` WebSocket 发送标准
+`chatResponse`。HTTP Agent client 和通用 Gateway WebSocket 不做该媒体投影。媒体服务是
 中继而非渲染服务：其 `RenderingClient` 再通过 HTTP POST 把完整响应转发到渲染服务
 `/rendering/v1/torender`。Agent 与渲染服务没有任何 HTTP 或 WebSocket 直连。模型驱动的 3D 生成
-仍从主 runtime 经受治理 `image_to_3d` Tool 发起；该 Tool 只把本地图片提交给 3D 服务。3D 成功
-回调 route 校验产物 URL，并通过当前进程中与 runtime session 关联的活动媒体 WebSocket 转发
-`TD_MODEL` 或 `VIDEO` detail；该中继不进入 Gateway run、不调用 LLM，也不复制 Agent 规划。
-Agent 不下载、保存或解析模型/视频产物；活动媒体连接不存在或发送失败时不能确认投递成功。完整边界以
+仍从主 runtime 经受治理 `image_to_3d` Tool 发起；该 Tool 创建独立 3D job、把本地图片提交给 3D
+服务，并返回 `job_id`。Gateway entry capability 决定任务是否允许生成媒体投递：只有可信
+Agent-Service 入口声明 `supports_generated_media_delivery=true`；HTTP Agent client 和通用 Gateway
+WebSocket 固定为 false，调用方 metadata 不能提升该能力。
+
+3D callback route 先按 `job_id` 保存中性 artifact，再按任务的 delivery target 可选投影为
+`TD_MODEL`、`VIDEO` 或 `IMAGE` 并发送到与 runtime session 关联的活动媒体 WebSocket。该 callback
+不进入 Gateway run、不调用 LLM，也不复制 Agent 规划。非媒体入口通过 owner-bound
+`GET /agent/image-to-3d/jobs/{job_id}` 查询结果，不要求媒体连接。当前 job registry 是单进程内存状态；
+Agent 不下载或解析模型/视频 URL 指向的产物。完整边界以
 [media-agent-service-websocket.md](media-agent-service-websocket.md) 为准。
 
 ### 7.2 Durable task

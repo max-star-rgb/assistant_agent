@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Protocol
 
+from assistant_agent.identifiers import new_prefixed_uuid7
+from assistant_agent.media.agent_service_entry import is_trusted_agent_service_request
 from assistant_agent.media.image_to_3d import (
     ImageTo3DError,
     ImageTo3DSubmission,
 )
+from assistant_agent.media.image_to_3d_completion import ImageTo3DDeliveryTarget
 from assistant_agent.tools.base import ToolBase, ToolContext
 from assistant_agent.tools.models import ToolResult
 from assistant_agent.tools.plugins.builtin.image_to_3d.models import (
@@ -23,10 +27,11 @@ class ImageTo3DStarter(Protocol):
     def start(
         self,
         *,
+        user_id: str,
         session_id: str,
-        chat_index: str,
         src_image: str,
         output_format: str,
+        delivery_target: ImageTo3DDeliveryTarget,
     ) -> ImageTo3DSubmission: ...
 
 
@@ -34,21 +39,40 @@ class MockImageTo3DAdapter:
     def start(
         self,
         *,
+        user_id: str,
         session_id: str,
-        chat_index: str,
         src_image: str,
         output_format: str,
+        delivery_target: ImageTo3DDeliveryTarget,
     ) -> ImageTo3DSubmission:
-        _ = (session_id, chat_index, output_format)
+        _ = (user_id, session_id, output_format, delivery_target)
         return ImageTo3DSubmission(
             status="generating",
             source_image_id=src_image,
+            job_id=new_prefixed_uuid7("image-to-3d", separator="-"),
         )
+
+
+def _delivery_target_from_context(context: ToolContext) -> ImageTo3DDeliveryTarget:
+    request_metadata = context.metadata.get("request_metadata")
+    if not isinstance(request_metadata, Mapping):
+        return "none"
+    gateway = request_metadata.get("gateway")
+    capabilities = gateway.get("entry_capabilities") if isinstance(gateway, Mapping) else None
+    supports_delivery = bool(
+        isinstance(capabilities, Mapping)
+        and capabilities.get("supports_generated_media_delivery") is True
+    )
+    if supports_delivery and is_trusted_agent_service_request(
+        request_metadata  # type: ignore[arg-type]
+    ):
+        return "agent_service"
+    return "none"
 
 
 class ImageTo3DTool(ToolBase):
     name = IMAGE_TO_3D_TOOL_NAME
-    description = "将本地生成图片提交给3D服务；完成结果通过当前媒体连接异步投递。"
+    description = "将本地生成图片提交给3D服务；完成结果可通过任务ID查询。"
     input_schema = ImageTo3DRequest
     output_schema = ImageTo3DResult
     category = "generate"
@@ -77,12 +101,12 @@ class ImageTo3DTool(ToolBase):
                 },
             )
         try:
-            chat_index = _agent_service_chat_index(context)
             submission = self.adapter.start(
+                user_id=context.user_id or context.session_id,
                 session_id=context.session_id,
-                chat_index=chat_index,
                 src_image=src_image,
                 output_format="mp4",
+                delivery_target=_delivery_target_from_context(context),
             )
         except ImageTo3DError as exc:
             return ToolResult(
@@ -96,6 +120,8 @@ class ImageTo3DTool(ToolBase):
             "status": submission.status,
             "source_image_id": submission.source_image_id,
         }
+        if submission.job_id:
+            data["job_id"] = submission.job_id
         if submission.status == "failed":
             return ToolResult(
                 tool_name=self.name,
@@ -116,19 +142,3 @@ class ImageTo3DTool(ToolBase):
                 "message": "3D生成任务已接收，正在生成。",
             },
         )
-
-
-def _agent_service_chat_index(context: ToolContext) -> str:
-    request_metadata = context.metadata.get("request_metadata")
-    agent_service = (
-        request_metadata.get("agent_service")
-        if isinstance(request_metadata, dict)
-        else None
-    )
-    chat_index = (
-        agent_service.get("chat_index")
-        if isinstance(agent_service, dict)
-        else None
-    )
-    normalized = str(chat_index).strip() if chat_index is not None else ""
-    return normalized or "0"

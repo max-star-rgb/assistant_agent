@@ -20,6 +20,7 @@ class EntryAdapterCapabilities:
     supports_tts_edge_events: bool = False
     supports_semantic_interrupt: bool = False
     supports_shopping_detail_v1: bool = False
+    supports_generated_media_delivery: bool = False
 
     def to_metadata(self) -> dict[str, bool]:
         return {
@@ -34,6 +35,7 @@ class EntryAdapterCapabilities:
             "supports_tts_edge_events": self.supports_tts_edge_events,
             "supports_semantic_interrupt": self.supports_semantic_interrupt,
             "supports_shopping_detail_v1": self.supports_shopping_detail_v1,
+            "supports_generated_media_delivery": self.supports_generated_media_delivery,
         }
 
 
@@ -44,9 +46,16 @@ GATEWAY_WEBSOCKET_CAPABILITIES = EntryAdapterCapabilities(
     supports_shopping_detail_v1=True,
 )
 
+HTTP_AGENT_ENTRY_CAPABILITIES = EntryAdapterCapabilities(
+    supports_image_refs=True,
+    supports_video_refs=True,
+    supports_shopping_detail_v1=True,
+)
+
 AGENT_SERVICE_ENTRY_CAPABILITIES = EntryAdapterCapabilities(
     supports_realtime_task_state=True,
     supports_video_refs=True,
     supports_raw_media=True,
     supports_shopping_detail_v1=True,
+    supports_generated_media_delivery=True,
 )

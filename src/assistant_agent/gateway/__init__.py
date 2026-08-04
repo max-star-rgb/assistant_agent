@@ -22,6 +22,7 @@ _EXPORT_MODULES = {
     "EntryAdapterCapabilities": "capabilities",
     "Frame": "protocol",
     "GATEWAY_WEBSOCKET_CAPABILITIES": "capabilities",
+    "HTTP_AGENT_ENTRY_CAPABILITIES": "capabilities",
     "GatewayBridge": "bridge",
     "GatewayConnectionPolicy": "bridge",
     "GatewayConfigUpdateResult": "session",

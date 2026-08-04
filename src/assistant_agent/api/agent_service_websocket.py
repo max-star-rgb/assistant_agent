@@ -93,6 +93,7 @@ class AgentServiceConnectionState:
     clock_ns: Callable[[], int] = perf_counter_ns
     client_capabilities: dict[str, bool] = field(default_factory=dict)
     client_info: dict[str, str] = field(default_factory=lambda: {"client_type": "media_agent"})
+    language: str = "zh"
     text_turn_timeout_seconds: float = 90.0
     received_message_count: int = 0
     sent_message_count: int = 0
@@ -226,6 +227,7 @@ class AssistantControlStartHandler(BaseHandler):
         number = self.required_text(body, "userInfo.number")
         self.required_text(body, "agentInfo.agentNumber")
         state.assistant_control_start = dict(body)
+        state.language = _callback_language(body)
         if state.gateway_manager is not None and state.runtime_session_id:
             await state.gateway_manager.initialize_session(
                 user_id=number,
@@ -262,6 +264,7 @@ class AssistantControlHandler(BaseHandler):
         state.assistant_control_start = dict(body)
         state.client_capabilities = _delivery_capabilities(body.get("clientCapabilities"))
         state.client_info = _client_info(body.get("clientInfo"))
+        state.language = _callback_language(body)
         if state.gateway_manager is not None and state.runtime_session_id:
             await state.gateway_manager.initialize_session(
                 user_id=number,
@@ -771,6 +774,7 @@ async def _register_rendering_3d_relay(
         session_id=prepared.session_id,
         connection_id=state.connection_id,
         number=prepared.user_number,
+        language=state.language,
         sender=sender,
     )
 
@@ -1404,6 +1408,12 @@ def _client_info(value: Any) -> dict[str, str]:
             "client_name": "scripts/run_client.py",
         }
     return {"client_type": "media_agent"}
+
+
+def _callback_language(body: dict[str, Any]) -> str:
+    language = _optional_text(body.get("language") or body.get("locale"))
+    normalized = (language or "zh").lower().split("-", 1)[0]
+    return normalized if normalized in {"zh", "en"} else "zh"
 
 
 def _client_info_token(value: Any) -> str | None:

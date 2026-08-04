@@ -87,6 +87,17 @@ manifest；`tools/ids.py` 只保存已经成为跨层协议的稳定字符串。
 `category` 表达副作用、自动重试、失败恢复和审计语义，不负责推断用户意图，也不控制默认暴露。
 未声明分类的 Tool 使用 `dangerous` 作为保守默认值。
 
+### 3.1.1 异步生成任务与入口投递
+
+异步 Provider-backed Tool 的“提交成功”“任务完成”和“入口投递成功”是三个不同状态。Tool 可以在
+提交阶段返回中性 `job_id/status`，外部 callback 先更新由 runtime/tool 侧拥有的任务结果，再由入口
+capability 决定是否做 WebSocket、通知等入口特定投影。callback 不应把“存在某种入口连接”当作任务
+完成的前置条件，也不应重新进入 LLM 规划。
+
+`image_to_3d` 是当前具体实现：Tool 创建 owner-bound job，3D callback 保存 artifact；只有可信
+Agent-Service capability 允许媒体投递，HTTP client 通过 owner-bound API 查询。具体 wire 字段、
+兼容路径和当前进程内存限制见 `media-agent-service-websocket.md`。
+
 ### 3.2 输入所有权
 
 Tool 的 Pydantic `input_schema` 是完整执行输入和校验的事实源。`ToolSpec.input_schema` 是从该模型

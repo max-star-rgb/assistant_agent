@@ -16,6 +16,7 @@ RelayFrameFactory = Callable[["Rendering3DRelayBinding"], dict[str, Any]]
 class Rendering3DRelayBinding:
     connection_id: str
     number: str
+    language: str
     sender: RelaySender
 
 
@@ -34,11 +35,13 @@ class Rendering3DRelayRegistry:
         session_id: str,
         connection_id: str,
         number: str,
+        language: str,
         sender: RelaySender,
     ) -> None:
         binding = Rendering3DRelayBinding(
             connection_id=connection_id,
             number=number,
+            language=language,
             sender=sender,
         )
         async with self._lock:
