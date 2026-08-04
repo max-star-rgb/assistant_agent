@@ -14,6 +14,7 @@ os.environ.setdefault("MEM0_TELEMETRY", "False")
 from mem0 import Memory
 from mem0_env import (
     LONG_TERM_MEMORY_CUSTOM_INSTRUCTIONS,
+    collect_all_memories,
     resolve_mem0_provider_environment,
 )
 
@@ -116,12 +117,21 @@ def list_memories(
     user_id: str | None = Query(None),
     agent_id: str | None = Query(None),
     run_id: str | None = Query(None),
-    limit: int = Query(5, ge=1, le=50),
+    limit: int | None = Query(None, ge=1, le=50),
 ) -> dict[str, Any]:
-    results = _result(
-        memory().get_all(filters=_entity_filters(locals()))
-    ).get("results", [])
-    return {"results": results[:limit]}
+    filters = _entity_filters(locals())
+    if limit is not None:
+        results = _result(
+            memory().get_all(filters=filters, top_k=limit)
+        ).get("results", [])
+        return {"results": results}
+    return {
+        "results": collect_all_memories(
+            lambda top_k: _result(
+                memory().get_all(filters=filters, top_k=top_k)
+            ).get("results", [])
+        )
+    }
 
 
 @app.get("/memories/{memory_id}")

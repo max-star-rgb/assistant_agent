@@ -53,7 +53,6 @@ class LongTermMemoryService:
         state: AgentState,
         trace_store: TraceStore | None,
         reset: bool = False,
-        top_k: int = 5,
     ) -> SessionMemorySnapshot:
         """Recall once and freeze the original Mem0 records for a session."""
 
@@ -61,7 +60,7 @@ class LongTermMemoryService:
         try:
             initialization = self.snapshot_store.resolve(
                 identity,
-                loader=lambda: self._recall_snapshot(identity, top_k=top_k),
+                loader=lambda: self._recall_snapshot(identity),
                 reset=reset,
             )
         except Exception as exc:
@@ -162,14 +161,9 @@ class LongTermMemoryService:
     def _recall_snapshot(
         self,
         identity: RequestIdentity,
-        *,
-        top_k: int,
     ) -> SessionMemorySnapshot:
         try:
-            memories = self.client.recall_long_term_memory(
-                identity,
-                top_k=top_k,
-            )
+            memories = self.client.recall_long_term_memory(identity)
         except Exception:
             return SessionMemorySnapshot(
                 status="degraded",

@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from typing import Any
 
 
 DEFAULT_QWEN_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
@@ -53,6 +54,32 @@ LONG_TERM_MEMORY_CUSTOM_INSTRUCTIONS = """\
   结果：提取“2026-08-03：用户开始迁移 Gateway，计划在 2026-08-31 前完成”。
 - 输入：请记住，我的项目生产环境固定使用 Python 3.12。
   结果：提取“用户的项目生产环境固定使用 Python 3.12”。"""
+
+
+def collect_all_memories(
+    fetch: Callable[[int], list[Mapping[str, Any]]],
+    *,
+    initial_top_k: int = 100,
+) -> list[dict[str, Any]]:
+    """Expand Mem0 get-all until the complete identity-scoped result is loaded."""
+
+    if (
+        isinstance(initial_top_k, bool)
+        or not isinstance(initial_top_k, int)
+        or initial_top_k <= 0
+    ):
+        raise ValueError("initial_top_k must be a positive integer")
+    top_k = initial_top_k
+    previous_ids: tuple[str, ...] | None = None
+    while True:
+        memories = [dict(item) for item in fetch(top_k)]
+        if len(memories) < top_k:
+            return memories
+        memory_ids = tuple(str(item.get("id") or "") for item in memories)
+        if memory_ids == previous_ids:
+            return memories
+        previous_ids = memory_ids
+        top_k *= 2
 
 
 def resolve_mem0_provider_environment(
