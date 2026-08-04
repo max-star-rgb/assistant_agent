@@ -1,7 +1,6 @@
 """Default LangGraph runtime for agent execution."""
 
 import asyncio
-import hashlib
 import json
 from pathlib import Path
 from time import perf_counter, time
@@ -85,10 +84,6 @@ from assistant_agent.media.video.semantic_store_pool import (
 from assistant_agent.media.embedding.coordinator import SessionEmbeddingCoordinator
 from assistant_agent.media.embedding.coordinator_store import SessionEmbeddingCoordinatorStore
 from assistant_agent.media.embedding.provider import create_multimodal_embedding_provider
-from assistant_agent.media.embedding.consumers.temporal_memory import (
-    TemporalMemoryConsumer,
-    TemporalVisualMemory,
-)
 from assistant_agent.media.embedding.consumers.alignment import CrossModalAlignmentConsumer
 from assistant_agent.media.embedding.consumers.attention import VisualAttentionConsumer
 from assistant_agent.media.embedding.models import TextObservation
@@ -97,9 +92,6 @@ from assistant_agent.tools.registry import ToolRegistry
 
 if TYPE_CHECKING:
     from assistant_agent.automation.durable_tasks.worker import TaskQuantumResult
-
-
-TEMPORAL_VISUAL_MEMORY_ROOT = Path(__file__).resolve().parents[3] / ".data" / "temporal_visual_memory"
 
 
 def _stable_text_observation(
@@ -313,17 +305,10 @@ class AgentGraphRuntime:
         user_id: str,
         session_id: str,
     ) -> SessionEmbeddingCoordinator:
-        owner = hashlib.sha256(f"{user_id}\0{session_id}".encode("utf-8")).hexdigest()
-        memory = TemporalVisualMemory(root=TEMPORAL_VISUAL_MEMORY_ROOT / owner)
+        _ = user_id
         coordinator = SessionEmbeddingCoordinator(session_id, self.embedding_provider)
-        coordinator.temporal_visual_memory = memory
         coordinator.cross_modal_alignment_consumer = CrossModalAlignmentConsumer()
         coordinator.visual_attention_consumer = VisualAttentionConsumer()
-        coordinator.register_consumer(
-            TemporalMemoryConsumer(memory),
-            queue_size=128,
-            overflow_policy="drop_oldest",
-        )
         coordinator.register_consumer(
             coordinator.cross_modal_alignment_consumer,
             queue_size=128,

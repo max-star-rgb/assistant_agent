@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from assistant_agent.providers.provider_errors import ProviderAdapterError, build_provider_error, sanitize_error_message
 from assistant_agent.media.vision.real_vision_adapter import image_to_data_url
-from assistant_agent.media.video.detection.frame_difference import grayscale_fingerprint
+from assistant_agent.media.video.detection.image_fingerprint import grayscale_fingerprint
 from assistant_agent.media.video.types import VideoFrame
 
 if TYPE_CHECKING:

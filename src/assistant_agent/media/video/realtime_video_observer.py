@@ -40,13 +40,10 @@ from assistant_agent.media.video.semantic_store import (
     VisualSemanticRecord,
 )
 from assistant_agent.tools.registry import ToolRegistry
-from assistant_agent.media.video.keyframe.collector import AdaptiveKeyframeCollector
 from assistant_agent.media.video.keyframe.selector import (
-    KeyframeSelectorConfig,
     SemanticKeyframeConfig,
     SemanticKeyframeSelector,
 )
-from assistant_agent.media.video.sampling.adaptive_sampler import AdaptiveSamplerConfig
 from assistant_agent.media.video.types import (
     FrameProcessingResult,
     KeyframeChangeMetrics,
@@ -84,7 +81,6 @@ class RealtimeVideoObserver:
         embedding_coordinator: SessionEmbeddingCoordinator,
         provider_config: ProviderConfig | None = None,
         keyframe_root: Path | str = DEFAULT_KEYFRAME_ROOT,
-        collector: AdaptiveKeyframeCollector | None = None,
         validator: ActionValidator | None = None,
         close_wait_seconds: float = DEFAULT_CLOSE_WAIT_SECONDS,
         clock_ns: Callable[[], int] = perf_counter_ns,
@@ -104,33 +100,6 @@ class RealtimeVideoObserver:
         )
         self._owns_semantic_store = semantic_store is None
         resolved_provider_config = provider_config or ProviderConfig()
-        self.collector = collector or AdaptiveKeyframeCollector(
-            sampler_config=AdaptiveSamplerConfig(
-                immediate_change_threshold=(
-                    resolved_provider_config.keyframe_structural_threshold
-                )
-            ),
-            keyframe_config=KeyframeSelectorConfig(
-                min_interval_seconds=0.0,
-                max_interval_seconds=(
-                    resolved_provider_config.keyframe_max_interval_seconds
-                ),
-                structural_threshold=(
-                    resolved_provider_config.keyframe_structural_threshold
-                ),
-                semantic_threshold=(
-                    resolved_provider_config.keyframe_semantic_threshold
-                ),
-                combined_threshold=(
-                    resolved_provider_config.keyframe_combined_threshold
-                ),
-            ),
-            semantic_probe_fps=(
-                resolved_provider_config.keyframe_semantic_probe_fps
-            ),
-            embedding_coordinator=embedding_coordinator,
-            config=resolved_provider_config,
-        )
         self.validator = validator or ActionValidator()
         self.close_wait_seconds = close_wait_seconds
         self.clock_ns = clock_ns

@@ -86,10 +86,7 @@ class ProviderConfig:
     semantic_input_fps: float = 5.0
     keyframe_min_interval_seconds: float = 0.5
     keyframe_max_interval_seconds: float = 10.0
-    keyframe_semantic_probe_fps: float = 5.0
-    keyframe_structural_threshold: float = 0.35
     keyframe_semantic_threshold: float = 0.18
-    keyframe_combined_threshold: float = 0.25
     visual_memory_candidate_similarity: float = 0.20
     visual_memory_confirmed_similarity: float = 0.30
     openai_vision_base_url: str = "https://api.openai.com/v1"
@@ -237,15 +234,8 @@ class ProviderConfig:
             raise ValueError("keyframe min interval must not exceed max interval")
         if self.semantic_input_fps <= 0:
             raise ValueError("semantic input FPS must be positive")
-        if self.keyframe_semantic_probe_fps <= 0:
-            raise ValueError("keyframe semantic probe FPS must be positive")
-        for name, value in (
-            ("structural", self.keyframe_structural_threshold),
-            ("semantic", self.keyframe_semantic_threshold),
-            ("combined", self.keyframe_combined_threshold),
-        ):
-            if not 0.0 <= value <= 1.0:
-                raise ValueError(f"keyframe {name} threshold must be between 0 and 1")
+        if not 0.0 <= self.keyframe_semantic_threshold <= 1.0:
+            raise ValueError("keyframe semantic threshold must be between 0 and 1")
         if not (
             -1.0
             <= self.visual_memory_candidate_similarity
@@ -394,21 +384,9 @@ class ProviderConfig:
                 source.get("REALTIME_KEYFRAME_MAX_INTERVAL_SECONDS"),
                 10.0,
             ),
-            keyframe_semantic_probe_fps=_float_env(
-                semantic_input_fps_value,
-                5.0,
-            ),
-            keyframe_structural_threshold=_float_env(
-                source.get("REALTIME_KEYFRAME_STRUCTURAL_THRESHOLD"),
-                0.35,
-            ),
             keyframe_semantic_threshold=_float_env(
                 source.get("REALTIME_KEYFRAME_SEMANTIC_THRESHOLD"),
                 0.18,
-            ),
-            keyframe_combined_threshold=_float_env(
-                source.get("REALTIME_KEYFRAME_COMBINED_THRESHOLD"),
-                0.25,
             ),
             visual_memory_candidate_similarity=_float_env(
                 source.get("REALTIME_VISUAL_MEMORY_CANDIDATE_SIMILARITY"),

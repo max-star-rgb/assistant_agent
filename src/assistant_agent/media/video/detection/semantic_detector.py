@@ -13,7 +13,7 @@ from assistant_agent.media.embedding.models import (
     EmbeddingFailureEvent,
     ImageObservation,
 )
-from assistant_agent.media.video.detection.frame_difference import grayscale_fingerprint
+from assistant_agent.media.video.detection.image_fingerprint import grayscale_fingerprint
 from assistant_agent.media.video.detection.vision_embedding_provider import (
     VisionEmbeddingResult,
     VisionEmbeddingProvider,

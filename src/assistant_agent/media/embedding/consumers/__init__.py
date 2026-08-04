@@ -9,12 +9,6 @@ from assistant_agent.media.embedding.consumers.attention import (
     VisualAttentionCandidate,
     VisualAttentionConsumer,
 )
-from assistant_agent.media.embedding.consumers.temporal_memory import (
-    TemporalMemoryConsumer,
-    TemporalVisualCandidate,
-    TemporalVisualMemory,
-    TemporalVisualRecord,
-)
 from assistant_agent.media.embedding.consumers.object_search import (
     VisualMemoryMatch,
     VisualMemorySearchRequest,
@@ -26,10 +20,6 @@ __all__ = [
     "KeyframeChangeConsumer",
     "CrossModalAlignment",
     "CrossModalAlignmentConsumer",
-    "TemporalMemoryConsumer",
-    "TemporalVisualCandidate",
-    "TemporalVisualMemory",
-    "TemporalVisualRecord",
     "VisualAttentionCandidate",
     "VisualAttentionConsumer",
     "VisualMemoryMatch",
