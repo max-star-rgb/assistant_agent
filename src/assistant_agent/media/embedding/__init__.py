@@ -13,6 +13,7 @@ from assistant_agent.media.embedding.models import (
     TextObservation,
 )
 from assistant_agent.media.embedding.provider import (
+    DashScopeImageOnlyEmbeddingProvider,
     MockMultimodalEmbeddingProvider,
     MultimodalEmbeddingProvider,
     create_multimodal_embedding_provider,
@@ -27,6 +28,7 @@ __all__ = [
     "EmbeddingReadiness",
     "ImageObservation",
     "MockMultimodalEmbeddingProvider",
+    "DashScopeImageOnlyEmbeddingProvider",
     "MultimodalEmbeddingProvider",
     "TextObservation",
     "create_multimodal_embedding_provider",

@@ -1,4 +1,9 @@
-"""Local image-only SigLIP2 embeddings backed by explicit ONNX assets."""
+"""Deprecated image-only SigLIP2 compatibility API.
+
+New runtime composition uses ``assistant_agent.media.embedding.local_siglip2``.
+This module remains temporarily for callers that still consume ``VideoFrame`` and
+``VisionEmbeddingResult`` while the semantic-keyframe consumer is migrated.
+"""
 
 from __future__ import annotations
 

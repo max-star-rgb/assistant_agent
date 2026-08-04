@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import hashlib
 from math import sqrt
+from pathlib import Path
 from time import perf_counter
 from typing import Protocol
 
 from assistant_agent.media.embedding.models import (
     EmbeddingEvent,
+    EmbeddingFailureEvent,
     EmbeddingOutcome,
     EmbeddingReadiness,
     ImageObservation,
@@ -112,6 +114,91 @@ class MockMultimodalEmbeddingProvider:
         )
 
 
+class DashScopeImageOnlyEmbeddingProvider:
+    """Compatibility adapter: DashScope has no proven matching text space here."""
+
+    provider = "dashscope"
+
+    def __init__(self, delegate) -> None:
+        self._delegate = delegate
+        self.model_id = delegate.config.model
+        self.dimension = delegate.config.dimension
+        self.embedding_space_id = f"dashscope:{self.model_id}:image-only"
+
+    def embed_image(self, observation: ImageObservation) -> EmbeddingOutcome:
+        from assistant_agent.media.video.types import VideoFrame
+
+        started = perf_counter()
+        result = self._delegate.embed_image(
+            VideoFrame(
+                frame_id=observation.observation_id,
+                timestamp_seconds=(observation.captured_at_ms or 0) / 1000,
+                uri=observation.image_ref,
+            )
+        )
+        if result.errors or not result.embedding:
+            error = result.errors[0] if result.errors else {}
+            return EmbeddingFailureEvent(
+                modality="image",
+                session_id=observation.session_id,
+                source_observation_id=observation.observation_id,
+                code=str(error.get("code") or "provider_empty_response"),
+                safe_message=str(error.get("message") or "DashScope image embedding failed"),
+                recoverable=bool(error.get("recoverable", True)),
+                latency_ms=max(0, int((perf_counter() - started) * 1000)),
+                model_id=self.model_id,
+                model_revision="provider-managed",
+                embedding_space_id=self.embedding_space_id,
+            )
+        vector = _normalize(result.embedding)
+        event_id = hashlib.sha256(
+            f"{observation.session_id}:{observation.observation_id}:image".encode()
+        ).hexdigest()[:24]
+        return EmbeddingEvent(
+            event_id=f"embedding-{event_id}",
+            modality="image",
+            vector=vector,
+            embedding_space_id=self.embedding_space_id,
+            model_id=self.model_id,
+            model_revision="provider-managed",
+            dimension=len(vector),
+            normalized=True,
+            session_id=observation.session_id,
+            source_observation_id=observation.observation_id,
+            video_id=observation.video_id,
+            frame_sequence=observation.frame_sequence,
+            captured_at_ms=observation.captured_at_ms,
+            latency_ms=max(0, int((perf_counter() - started) * 1000)),
+        )
+
+    def embed_text(self, observation: TextObservation) -> EmbeddingOutcome:
+        return EmbeddingFailureEvent(
+            modality="text",
+            session_id=observation.session_id,
+            source_observation_id=observation.observation_id,
+            code="modality_unavailable",
+            safe_message="DashScope text embedding is not enabled for this image space",
+            recoverable=False,
+            latency_ms=0,
+            model_id=self.model_id,
+            model_revision="provider-managed",
+            embedding_space_id=self.embedding_space_id,
+        )
+
+    def readiness(self) -> EmbeddingReadiness:
+        configured = bool(self._delegate.config.api_key)
+        return EmbeddingReadiness(
+            provider=self.provider,
+            model_id=self.model_id,
+            model_revision="provider-managed",
+            embedding_space_id=self.embedding_space_id,
+            dimension=self.dimension,
+            image_ready=configured,
+            text_ready=False,
+            issues=[] if configured else ["provider_unconfigured"],
+        )
+
+
 def create_multimodal_embedding_provider(config=None) -> MultimodalEmbeddingProvider:
     """Create the configured Provider while keeping mock mode offline."""
 
@@ -123,9 +210,35 @@ def create_multimodal_embedding_provider(config=None) -> MultimodalEmbeddingProv
         return MockMultimodalEmbeddingProvider()
     provider = getattr(config, "embedding_provider", "mock")
     if provider == "local_siglip2":
-        raise RuntimeError("local_siglip2_joint_provider_not_implemented")
+        from assistant_agent.media.embedding.local_siglip2 import (
+            LocalSiglip2EmbeddingConfig,
+            LocalSiglip2EmbeddingProvider,
+        )
+
+        model_dir = getattr(config, "siglip2_model_dir", None)
+        return LocalSiglip2EmbeddingProvider(
+            LocalSiglip2EmbeddingConfig(
+                model_dir=Path(model_dir) if model_dir else None,
+                cuda_device_id=getattr(config, "embedding_cuda_device_id", 0),
+            )
+        )
     if provider == "dashscope":
-        raise RuntimeError("dashscope_unified_provider_not_implemented")
+        from assistant_agent.media.video.detection.vision_embedding_provider import (
+            DashScopeVisionEmbeddingConfig,
+            DashScopeVisionEmbeddingProvider,
+        )
+
+        return DashScopeImageOnlyEmbeddingProvider(
+            DashScopeVisionEmbeddingProvider(
+                DashScopeVisionEmbeddingConfig(
+                    api_key=config.vision_embedding_api_key,
+                    base_url=config.vision_embedding_base_url,
+                    model=config.vision_embedding_model,
+                    dimension=config.vision_embedding_dimension,
+                    timeout_seconds=config.vision_embedding_timeout_seconds,
+                )
+            )
+        )
     return MockMultimodalEmbeddingProvider()
 
 
@@ -140,3 +253,10 @@ def _deterministic_unit_vector(seed: str, dimension: int) -> list[float]:
         values[0] = 1.0
         norm = 1.0
     return [value / norm for value in values]
+
+
+def _normalize(values: list[float]) -> list[float]:
+    norm = sqrt(sum(float(value) ** 2 for value in values))
+    if norm <= 0:
+        raise ValueError("embedding vector norm must be positive")
+    return [float(value) / norm for value in values]

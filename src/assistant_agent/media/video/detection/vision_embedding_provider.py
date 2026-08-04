@@ -53,6 +53,63 @@ class VisionEmbeddingProvider(Protocol):
         """Return a structured image embedding result for one frame."""
 
 
+class UnifiedImageEmbeddingCompatibilityAdapter:
+    """Translate the legacy VideoFrame API to the canonical image observation API."""
+
+    def __init__(self, delegate) -> None:
+        self._delegate = delegate
+        self.provider = getattr(delegate, "provider", "embedding")
+        self.model = getattr(delegate, "model_id", "multimodal-embedding")
+
+    def embed_image(self, frame: VideoFrame) -> VisionEmbeddingResult:
+        from assistant_agent.media.embedding.models import (
+            EmbeddingEvent,
+            ImageObservation,
+        )
+
+        image_ref = frame.uri or ""
+        if not image_ref:
+            return _failed_result(
+                provider=self.provider,
+                model=self.model,
+                code="provider_unsupported_input",
+                message="legacy frame does not contain a readable image reference",
+            )
+        outcome = self._delegate.embed_image(
+            ImageObservation(
+                session_id="legacy-video-session",
+                observation_id=frame.frame_id,
+                image_ref=image_ref,
+                captured_at_ms=max(0, int(frame.timestamp_seconds * 1000)),
+            )
+        )
+        if isinstance(outcome, EmbeddingEvent):
+            return VisionEmbeddingResult(
+                embedding=outcome.vector,
+                provider=self.provider,
+                model=outcome.model_id,
+                model_family="siglip2" if self.provider == "local_siglip2" else None,
+                model_revision=outcome.model_revision,
+                embedding_space_id=outcome.embedding_space_id,
+                dimension=outcome.dimension,
+                normalized=outcome.normalized,
+            )
+        return VisionEmbeddingResult(
+            provider=self.provider,
+            model=outcome.model_id or self.model,
+            model_family="siglip2" if self.provider == "local_siglip2" else None,
+            model_revision=outcome.model_revision,
+            embedding_space_id=outcome.embedding_space_id,
+            errors=[
+                {
+                    "code": outcome.code,
+                    "message": outcome.safe_message,
+                    "recoverable": outcome.recoverable,
+                }
+            ],
+        )
+
+
 class MockVisionEmbeddingProvider:
     """Deterministic local embedding provider for config-selected mock paths."""
 
@@ -215,19 +272,21 @@ def create_vision_embedding_provider(config: ProviderConfig | None = None) -> Vi
             )
         )
     if config.vision_embedding_provider == "local_siglip2":
-        from assistant_agent.media.video.detection.local_siglip2_provider import (
-            LocalSiglip2VisionConfig,
-            LocalSiglip2VisionProvider,
+        from assistant_agent.media.embedding.local_siglip2 import (
+            LocalSiglip2EmbeddingConfig,
+            LocalSiglip2EmbeddingProvider,
         )
 
-        return LocalSiglip2VisionProvider(
-            LocalSiglip2VisionConfig(
-                model_dir=(
-                    Path(config.siglip2_vision_model_dir)
-                    if config.siglip2_vision_model_dir
-                    else None
-                ),
-                cuda_device_id=config.siglip2_cuda_device_id,
+        return UnifiedImageEmbeddingCompatibilityAdapter(
+            LocalSiglip2EmbeddingProvider(
+                LocalSiglip2EmbeddingConfig(
+                    model_dir=(
+                        Path(config.siglip2_model_dir)
+                        if config.siglip2_model_dir
+                        else None
+                    ),
+                    cuda_device_id=config.embedding_cuda_device_id,
+                )
             )
         )
     return MockVisionEmbeddingProvider()
