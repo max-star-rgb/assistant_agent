@@ -139,6 +139,7 @@ class SessionEmbeddingCoordinator:
             raise ValueError("success cache size must be positive")
         self.session_id = session_id
         self.provider = provider
+        self.temporal_visual_memory = None
         self.success_cache_size = success_cache_size
         self._cache: OrderedDict[tuple[str, str], EmbeddingEvent] = OrderedDict()
         self._inflight: dict[tuple[str, str], Future[EmbeddingOutcome]] = {}

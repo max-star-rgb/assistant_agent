@@ -82,11 +82,18 @@ from assistant_agent.media.video.realtime_video_memory import RealtimeVideoMemor
 from assistant_agent.media.embedding.coordinator import SessionEmbeddingCoordinator
 from assistant_agent.media.embedding.coordinator_store import SessionEmbeddingCoordinatorStore
 from assistant_agent.media.embedding.provider import create_multimodal_embedding_provider
+from assistant_agent.media.embedding.consumers.temporal_memory import (
+    TemporalMemoryConsumer,
+    TemporalVisualMemory,
+)
 from assistant_agent.tools.plugins.registry_factory import create_default_registry
 from assistant_agent.tools.registry import ToolRegistry
 
 if TYPE_CHECKING:
     from assistant_agent.automation.durable_tasks.worker import TaskQuantumResult
+
+
+TEMPORAL_VISUAL_MEMORY_ROOT = Path(__file__).resolve().parents[3] / ".data" / "temporal_visual_memory"
 
 
 class AgentGraphRuntime:
@@ -122,10 +129,7 @@ class AgentGraphRuntime:
         self.embedding_coordinator_store = (
             embedding_coordinator_store
             or SessionEmbeddingCoordinatorStore(
-                factory=lambda _user_id, session_id: SessionEmbeddingCoordinator(
-                    session_id,
-                    self.embedding_provider,
-                )
+                factory=self._create_session_embedding_coordinator
             )
         )
         self.long_term_memory_service = (
@@ -264,6 +268,22 @@ class AgentGraphRuntime:
         self._conditional_graph = build_conditional_agent_graph()
         self._react_graph = build_assistant_loop_graph()
         self._graph = self._react_graph if self.config.agent_graph_mode == "assistant_loop" else self._conditional_graph
+
+    def _create_session_embedding_coordinator(
+        self,
+        user_id: str,
+        session_id: str,
+    ) -> SessionEmbeddingCoordinator:
+        owner = hashlib.sha256(f"{user_id}\0{session_id}".encode("utf-8")).hexdigest()
+        memory = TemporalVisualMemory(root=TEMPORAL_VISUAL_MEMORY_ROOT / owner)
+        coordinator = SessionEmbeddingCoordinator(session_id, self.embedding_provider)
+        coordinator.temporal_visual_memory = memory
+        coordinator.register_consumer(
+            TemporalMemoryConsumer(memory),
+            queue_size=128,
+            overflow_policy="drop_oldest",
+        )
+        return coordinator
 
     def initialize_session_memory(
         self,

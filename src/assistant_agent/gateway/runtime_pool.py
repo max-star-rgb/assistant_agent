@@ -131,6 +131,7 @@ def shared_gateway_runtime_factory(primary_factory: RuntimeFactory) -> RuntimeFa
             trace_store=primary_runtime.trace_store,
             video_context_store=primary_runtime.video_context_store,
             realtime_video_memory_store=primary_runtime.realtime_video_memory_store,
+            embedding_coordinator_store=primary_runtime.embedding_coordinator_store,
             durable_task_service=primary_runtime.durable_task_service,
         )
 

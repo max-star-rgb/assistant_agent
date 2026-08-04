@@ -99,6 +99,7 @@ class AssistantRuntimeApp:
             user_id=user_id,
             session_id=session_id,
         )
+        runtime.embedding_coordinator_store.clear_session(user_id, session_id)
         if deleted:
             clear_conversation_history(user_id, session_id, config=runtime.config)
         return deleted
@@ -110,6 +111,7 @@ class AssistantRuntimeApp:
         conversation_sessions_deleted = clear_user_conversation_history(user_id, config=runtime.config)
         session_records_deleted = runtime.session_store.delete_by_user(user_id)
         runtime.long_term_memory_service.clear_user(user_id=user_id)
+        runtime.embedding_coordinator_store.clear_user(user_id)
         return {
             "run_history_records": run_history_deleted,
             "trace_events": trace_deleted,
