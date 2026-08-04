@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import shutil
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from time import perf_counter_ns, time
@@ -52,6 +52,10 @@ from assistant_agent.media.video.types import (
     KeyframeChangeMetrics,
     VideoFrame as AIVideoFrame,
 )
+from assistant_agent.media.video.visual_reminder import (
+    VisualReminderManager,
+    VisualReminderReservation,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -59,6 +63,7 @@ DEFAULT_KEYFRAME_ROOT = REPO_ROOT / ".data" / "agent_service_video_keyframes"
 DEFAULT_CLOSE_WAIT_SECONDS = 1.0
 REALTIME_PREVIOUS_SUMMARY_MAX_CHARS = 2_000
 REALTIME_KEYFRAME_MAX_INTERVAL_SECONDS = 10.0
+VisualReminderSender = Callable[[VisualReminderReservation], Awaitable[None]]
 
 
 @dataclass(frozen=True)
@@ -82,6 +87,8 @@ class RealtimeVideoObserver:
         memory_store: RealtimeVideoMemoryStore,
         semantic_store: SessionVisualSemanticStore | None = None,
         embedding_coordinator: SessionEmbeddingCoordinator,
+        visual_reminder_manager: VisualReminderManager | None = None,
+        visual_reminder_sender: VisualReminderSender | None = None,
         provider_config: ProviderConfig | None = None,
         keyframe_root: Path | str = DEFAULT_KEYFRAME_ROOT,
         validator: ActionValidator | None = None,
@@ -97,6 +104,8 @@ class RealtimeVideoObserver:
         self.registry = registry
         self.memory_store = memory_store
         self.embedding_coordinator = embedding_coordinator
+        self.visual_reminder_manager = visual_reminder_manager
+        self.visual_reminder_sender = visual_reminder_sender
         self.keyframe_root = Path(keyframe_root)
         self.semantic_store = semantic_store or SessionVisualSemanticStore(
             root=self.keyframe_root / "semantic-store",
@@ -125,6 +134,7 @@ class RealtimeVideoObserver:
         self._snapshot_updated = asyncio.Event()
         self._enqueue_lock = asyncio.Lock()
         self._promotion_tasks: set[asyncio.Task[FrameProcessingResult]] = set()
+        self._visual_reminder_tasks: set[asyncio.Task[None]] = set()
         self._pinned_sequences: dict[int, int] = {}
         self._close_task: asyncio.Task[None] | None = None
         self._semantic_pending_count = 0
@@ -257,10 +267,10 @@ class RealtimeVideoObserver:
         event: EmbeddingEvent | None,
         reason: str,
     ) -> None:
-        _ = event
         if self.closed:
             raise RuntimeError("realtime video observer is closed")
         enqueued_ns = self.clock_ns()
+        self._match_visual_reminders(event)
         await self._enqueue(
             frame,
             enqueued_ns=enqueued_ns,
@@ -352,11 +362,15 @@ class RealtimeVideoObserver:
         return True
 
     async def wait_idle(self) -> None:
-        """Wait until both semantic embedding and VLM stages are idle."""
+        """Wait until semantic embedding, VLM, and reminder delivery are idle."""
 
         await self.semantic_pipeline.wait_idle()
         await self._queue.join()
         await self._idle.wait()
+        while self._visual_reminder_tasks:
+            tasks = tuple(self._visual_reminder_tasks)
+            await asyncio.gather(*tasks, return_exceptions=True)
+            self._visual_reminder_tasks.difference_update(tasks)
 
     async def wait_for_first_terminal_snapshot(self) -> None:
         """Wait for the pending first observation, not later queued refreshes."""
@@ -439,6 +453,7 @@ class RealtimeVideoObserver:
         self.closed = True
         try:
             await self.semantic_pipeline.close(timeout_seconds=self.close_wait_seconds)
+            await self._cancel_visual_reminder_deliveries()
             self._drop_pending()
             await self.wait_for_promotions()
 
@@ -474,6 +489,69 @@ class RealtimeVideoObserver:
             self._snapshot_updated.set()
         finally:
             self._release_external_resources()
+
+    def _match_visual_reminders(self, event: EmbeddingEvent | None) -> None:
+        manager = self.visual_reminder_manager
+        sender = self.visual_reminder_sender
+        if event is None or manager is None or sender is None or self.closed:
+            return
+        try:
+            reservations = manager.reserve_matches(event)
+        except Exception:
+            return
+        for reservation in reservations:
+            try:
+                task = asyncio.create_task(
+                    self._deliver_visual_reminder(reservation, sender)
+                )
+            except Exception:
+                manager.release(
+                    reservation.reminder_id,
+                    reservation_id=reservation.reservation_id,
+                )
+                continue
+            self._visual_reminder_tasks.add(task)
+            task.add_done_callback(self._settle_visual_reminder_task)
+
+    async def _deliver_visual_reminder(
+        self,
+        reservation: VisualReminderReservation,
+        sender: VisualReminderSender,
+    ) -> None:
+        manager = self.visual_reminder_manager
+        if manager is None:
+            return
+        try:
+            await sender(reservation)
+        except asyncio.CancelledError:
+            manager.release(
+                reservation.reminder_id,
+                reservation_id=reservation.reservation_id,
+            )
+            raise
+        except Exception:
+            manager.release(
+                reservation.reminder_id,
+                reservation_id=reservation.reservation_id,
+            )
+        else:
+            manager.confirm(
+                reservation.reminder_id,
+                reservation_id=reservation.reservation_id,
+            )
+
+    def _settle_visual_reminder_task(self, task: asyncio.Task[None]) -> None:
+        self._visual_reminder_tasks.discard(task)
+        if not task.cancelled():
+            task.exception()
+
+    async def _cancel_visual_reminder_deliveries(self) -> None:
+        tasks = tuple(self._visual_reminder_tasks)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._visual_reminder_tasks.difference_update(tasks)
 
     def _release_external_resources(self) -> None:
         if self._resources_released:
