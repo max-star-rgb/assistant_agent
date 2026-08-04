@@ -58,6 +58,9 @@ For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
 - `scripts/run_system_context_eval.py`: 捕获真实 Runtime 编译的 `ChatRequest`
   和 Provider payload；要求 real 模式与 `--allow-unredacted-context`，产物写入
   `.data/evals/system/context/`。
+- `scripts/run_system_multimodal_embedding_eval.py`: 验证本地 SigLIP2 联合 image/text ONNX
+  资产。`--dry-run` 不加载模型；真实 CUDA session 必须显式传入 `--allow-local-model`，结果写入
+  `.data/evals/system/multimodal_embedding/`，不保存向量、文本、图片内容或媒体路径。
 - `scripts/run_agent_evals.py`: Task 中心的 Agent eval 稳定入口。`--inspect`
   只读显示 Task 和 Environment；`--calibrate` 直接校准隐藏 grader；
   `--publish` 把所选 Task 薄发布到统一 Langfuse Dataset；`--run` 通过活动

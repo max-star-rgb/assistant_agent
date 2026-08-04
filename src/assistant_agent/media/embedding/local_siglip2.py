@@ -174,6 +174,7 @@ class OnnxSiglip2EmbeddingBackend:
     """CUDA-only ONNX sessions; CPU execution fallback is explicitly disabled."""
 
     def __init__(self, manifest: Siglip2EmbeddingManifest, *, cuda_device_id: int) -> None:
+        self.cpu_fallback_disabled = True
         try:
             import onnxruntime as ort
         except ImportError as exc:
@@ -282,6 +283,7 @@ class LocalSiglip2EmbeddingProvider:
                     manifest, cuda_device_id=self.config.cuda_device_id
                 )
                 _BACKEND_CACHE[key] = backend
+            self._backend = backend
             return backend
 
     def embed_image(self, observation: ImageObservation) -> EmbeddingOutcome:

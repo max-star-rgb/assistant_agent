@@ -19,6 +19,10 @@ from assistant_agent.media.embedding.models import (
     TextObservation,
 )
 from assistant_agent.media.embedding.provider import MultimodalEmbeddingProvider
+from assistant_agent.media.embedding.observability import (
+    EmbeddingObserver,
+    emit_embedding_observation,
+)
 
 
 OverflowPolicy = Literal["latest_wins", "drop_oldest", "reject_new"]
@@ -132,6 +136,7 @@ class SessionEmbeddingCoordinator:
         provider: MultimodalEmbeddingProvider,
         *,
         success_cache_size: int = 128,
+        observer: EmbeddingObserver | None = None,
     ) -> None:
         if not session_id:
             raise ValueError("session id must be non-empty")
@@ -141,6 +146,7 @@ class SessionEmbeddingCoordinator:
         self.provider = provider
         self.temporal_visual_memory = None
         self.success_cache_size = success_cache_size
+        self.observer = observer
         self._cache: OrderedDict[tuple[str, str], EmbeddingEvent] = OrderedDict()
         self._inflight: dict[tuple[str, str], Future[EmbeddingOutcome]] = {}
         self._workers: dict[str, _ConsumerWorker] = {}
@@ -192,6 +198,7 @@ class SessionEmbeddingCoordinator:
             self._cache.clear()
         for worker in workers:
             worker.close()
+        emit_embedding_observation(self.observer, "embedding.session_cleanup")
 
     @property
     def closed(self) -> bool:
@@ -212,16 +219,29 @@ class SessionEmbeddingCoordinator:
     def _compute_and_dispatch(
         self, observation: Observation, *, priority: EmbeddingPriority
     ) -> EmbeddingOutcome:
-        del priority  # Reserved for the bounded scheduler introduced at composition time.
         if observation.session_id != self.session_id:
             raise ValueError("embedding_observation_session_mismatch")
         modality = "image" if isinstance(observation, ImageObservation) else "text"
+        emit_embedding_observation(
+            self.observer,
+            "embedding.requested",
+            observation=observation,
+            priority=priority,
+        )
         key = (modality, observation.observation_id)
         with self._lock:
             self._ensure_open()
             cached = self._cache.get(key)
             if cached is not None:
                 self._cache.move_to_end(key)
+                emit_embedding_observation(
+                    self.observer,
+                    "embedding.deduplicated",
+                    outcome=cached,
+                    observation=observation,
+                    priority=priority,
+                    cache_hit=True,
+                )
                 return cached
             future = self._inflight.get(key)
             owner = future is None
@@ -230,9 +250,22 @@ class SessionEmbeddingCoordinator:
                 self._inflight[key] = future
         assert future is not None
         if not owner:
+            emit_embedding_observation(
+                self.observer,
+                "embedding.deduplicated",
+                observation=observation,
+                priority=priority,
+                cache_hit=False,
+            )
             return future.result()
 
         started = perf_counter()
+        emit_embedding_observation(
+            self.observer,
+            "embedding.started",
+            observation=observation,
+            priority=priority,
+        )
         try:
             if modality == "image":
                 outcome = self.provider.embed_image(observation)
@@ -259,7 +292,28 @@ class SessionEmbeddingCoordinator:
             future.set_result(outcome)
             workers = list(self._workers.values())
         for worker in workers:
-            worker.enqueue(outcome, observation)
+            if not worker.enqueue(outcome, observation):
+                emit_embedding_observation(
+                    self.observer,
+                    "embedding.consumer_dropped",
+                    outcome=outcome,
+                    observation=observation,
+                    consumer_id=worker.consumer.consumer_id,
+                )
+        emit_embedding_observation(
+            self.observer,
+            "embedding.failed" if isinstance(outcome, EmbeddingFailureEvent) else "embedding.finished",
+            outcome=outcome,
+            observation=observation,
+            priority=priority,
+        )
+        emit_embedding_observation(
+            self.observer,
+            "embedding.dispatched",
+            outcome=outcome,
+            observation=observation,
+            consumer_count=len(workers),
+        )
         return outcome
 
     def _ensure_open(self) -> None:
