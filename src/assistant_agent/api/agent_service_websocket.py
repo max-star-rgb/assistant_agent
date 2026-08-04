@@ -7,6 +7,7 @@ import json
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
+from pathlib import Path
 from time import perf_counter_ns
 from typing import Any, ClassVar
 
@@ -1259,23 +1260,51 @@ def _prepared_chat_response(
         }
         image_details = _generated_image_details(turn.payload.get("output_refs"))
         if image_details:
-            intent_result["detail"] = image_details
-        body = {
-            "number": prepared.user_number,
-            "message": {
-                "type": "BRIEF",
+            body = {
                 "chatIndex": prepared.chat_index,
-                "content": {"intentResult": intent_result},
-            },
-            **_display_flags(sequence > 1),
-            "sequence": sequence,
-            "final": True,
-        }
-        if delivery.expects_ack:
-            body["deliveryId"] = delivery.delivery_id
+                "number": prepared.user_number,
+                "messageType": "ANSWER",
+                "display_only": False,
+                "message": {
+                    "type": "BRIEF",
+                    "chatIndex": prepared.chat_index,
+                    "content": {
+                        "intentExecution": {
+                            "description": "",
+                            "plans": [],
+                            "messageType": "ANSWER",
+                        },
+                        "intentResult": {
+                            **intent_result,
+                            "plan": [],
+                            "messageType": "ANSWER",
+                            "detail": image_details,
+                        },
+                        "intentWeb": {
+                            "description": "",
+                            "resourceType": "",
+                            "resourceUrl": "",
+                        },
+                    },
+                },
+            }
+        else:
+            body = {
+                "number": prepared.user_number,
+                "message": {
+                    "type": "BRIEF",
+                    "chatIndex": prepared.chat_index,
+                    "content": {"intentResult": intent_result},
+                },
+                **_display_flags(sequence > 1),
+                "sequence": sequence,
+                "final": True,
+            }
+            if delivery.expects_ack:
+                body["deliveryId"] = delivery.delivery_id
         return _response_envelope(
             message="chatResponse",
-            session_id=prepared.response_session_id,
+            session_id=None if image_details else prepared.response_session_id,
             body=body,
         )
     return _response_envelope(
@@ -1300,7 +1329,7 @@ def _generated_image_details(output_refs: Any) -> list[dict[str, str]]:
             details.append(
                 {
                     "type": "IMAGE",
-                    "imageId": artifact.image_id,
+                    "imageId": Path(artifact.image_id).stem,
                     "image": artifact.base64_data,
                 }
             )

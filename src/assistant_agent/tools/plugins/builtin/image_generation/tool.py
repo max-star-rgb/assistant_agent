@@ -206,7 +206,7 @@ def _publish_image_ids(
     )
     if not refs and result.output_ref:
         refs = [result.output_ref]
-    image_ids: list[str] = []
+    image_ids: list[str] = list(result.image_id)
     for ref in refs:
         payload = generated_artifact_payload(ref)
         if payload is None:

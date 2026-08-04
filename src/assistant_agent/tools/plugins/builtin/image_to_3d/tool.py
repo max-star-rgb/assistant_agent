@@ -37,21 +37,16 @@ class MockImageTo3DAdapter:
         src_image: str,
         output_format: str,
     ) -> ImageTo3DSubmission:
-        _ = (src_image, output_format)
+        _ = (session_id, output_format)
         return ImageTo3DSubmission(
             status="generating",
-            media_id="mock-generated-image.png",
-            response={
-                "errCode": 0,
-                "errMessage": "success",
-                "data": {"status": "generating", "sessionId": session_id},
-            },
+            source_image_id=src_image,
         )
 
 
 class ImageTo3DTool(ToolBase):
     name = IMAGE_TO_3D_TOOL_NAME
-    description = "将当前媒体图片提交为3D模型或视频生成任务。"
+    description = "将本地生成图片提交给3D服务；3D产物由服务通过其他渠道交付。"
     input_schema = ImageTo3DRequest
     output_schema = ImageTo3DResult
     category = "generate"
@@ -60,20 +55,6 @@ class ImageTo3DTool(ToolBase):
         self.adapter = adapter
 
     def _run(self, input: ImageTo3DRequest, context: ToolContext) -> ToolResult:
-        request_metadata = context.metadata.get("request_metadata")
-        if (
-            not isinstance(request_metadata, dict)
-            or request_metadata.get("transport") != "agent_service_websocket"
-        ):
-            return ToolResult(
-                tool_name=self.name,
-                success=False,
-                error="image_to_3d requires Agent-Service WebSocket entry",
-                model_observation={
-                    "status": "failed",
-                    "message": "当前入口没有可用的媒体中继连接。",
-                },
-            )
         if not context.session_id:
             return ToolResult(
                 tool_name=self.name,
@@ -81,11 +62,23 @@ class ImageTo3DTool(ToolBase):
                 error="image_to_3d requires runtime session identity",
                 model_observation={"status": "failed", "message": "缺少会话身份，无法生成3D模型。"},
             )
+        src_image = input.src_image or context.metadata.get("latest_generated_image_id")
+        if not isinstance(src_image, str) or not src_image.strip():
+            return ToolResult(
+                tool_name=self.name,
+                success=False,
+                error="image_to_3d requires a generated image",
+                data={"status": "failed", "result": "请先生成图片，再生成3D。"},
+                model_observation={
+                    "status": "failed",
+                    "message": "请先调用 image_generation 生成图片，再调用 image_to_3d。",
+                },
+            )
         try:
             submission = self.adapter.start(
                 session_id=context.session_id,
-                src_image=input.src_image,
-                output_format=input.format,
+                src_image=src_image,
+                output_format="mp4",
             )
         except ImageTo3DError as exc:
             return ToolResult(
@@ -97,7 +90,7 @@ class ImageTo3DTool(ToolBase):
             )
         data = {
             "status": submission.status,
-            "media_id": submission.media_id,
+            "source_image_id": submission.source_image_id,
         }
         if submission.status == "failed":
             return ToolResult(

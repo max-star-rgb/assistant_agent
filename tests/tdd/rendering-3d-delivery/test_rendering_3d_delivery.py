@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import base64
 import json
 from pathlib import Path
@@ -63,21 +62,44 @@ def test_generated_image_uses_rendering_brief_contract(
             session_digest="session-digest",
             chat_index_digest="chat-digest",
             chat_index="chat-sentinel",
-            expects_ack=False,
+            expects_ack=True,
         ),
         sequence=1,
     )
 
     body = json.loads(response["body"])
+    assert body["chatIndex"] == "chat-sentinel"
     assert body["number"] == "13800138000"
-    assert body["message"]["type"] == "BRIEF"
-    assert body["message"]["content"]["intentResult"]["detail"] == [
-        {
-            "type": "IMAGE",
-            "imageId": "rendering-sentinel.jpg",
-            "image": base64.b64encode(jpeg_bytes).decode("ascii"),
-        }
-    ]
+    assert body["messageType"] == "ANSWER"
+    assert body["display_only"] is False
+    assert "displayOnly" not in body
+    assert "sequence" not in body
+    assert "final" not in body
+    assert "deliveryId" not in body
+    content = body["message"]["content"]
+    assert content["intentExecution"] == {
+        "description": "",
+        "plans": [],
+        "messageType": "ANSWER",
+    }
+    assert content["intentResult"] == {
+        "description": "图片已生成",
+        "status": "SUCCESS",
+        "plan": [],
+        "messageType": "ANSWER",
+        "detail": [
+            {
+                "type": "IMAGE",
+                "imageId": "rendering-sentinel",
+                "image": base64.b64encode(jpeg_bytes).decode("ascii"),
+            }
+        ],
+    }
+    assert content["intentWeb"] == {
+        "description": "",
+        "resourceType": "",
+        "resourceUrl": "",
+    }
 
 
 def test_image_to_3d_adapter_reads_src_image_id_and_submits_base64(
@@ -115,7 +137,7 @@ def test_image_to_3d_adapter_reads_src_image_id_and_submits_base64(
     )
 
     assert result.status == "generating"
-    assert result.media_id == "cake_001"
+    assert result.source_image_id == "cake_001"
     assert len(requests) == 1
     assert requests[0][0] == "POST"
     assert requests[0][1] == "http://3dgen/3dgen/v1/openapi/img-to-3d"
@@ -178,6 +200,86 @@ def test_image_generation_exposes_id_without_mirroring_local_artifact(
     assert list(artifact_dir.iterdir()) == [artifact_dir / "cake_001.png"]
 
 
+def test_local_image_fixture_returns_managed_artifact(tmp_path: Path) -> None:
+    from assistant_agent.tools.plugins.builtin.image_generation.backend import (
+        LocalFixtureImageGenerationAdapter,
+    )
+    from assistant_agent.tools.plugins.builtin.image_generation.models import (
+        ImageGenerationRequest,
+    )
+
+    (tmp_path / "cake.png").write_bytes(b"\x89PNG\r\n\x1a\nfixture")
+    result = LocalFixtureImageGenerationAdapter(
+        "cake.png",
+        artifact_dir=tmp_path,
+    ).generate(ImageGenerationRequest(prompt="蛋糕"))
+
+    assert result.status == "succeeded"
+    assert result.output_ref == "/artifacts/generated/cake.png"
+    assert result.provider == "local_fixture"
+
+
+@pytest.mark.parametrize("fixture_id", ["../cake.png", "/tmp/cake.png", "missing.png"])
+def test_local_image_fixture_fails_closed(
+    tmp_path: Path,
+    fixture_id: str,
+) -> None:
+    from assistant_agent.providers.provider_errors import ProviderAdapterError
+    from assistant_agent.tools.plugins.builtin.image_generation.backend import (
+        LocalFixtureImageGenerationAdapter,
+    )
+    from assistant_agent.tools.plugins.builtin.image_generation.models import (
+        ImageGenerationRequest,
+    )
+
+    adapter = LocalFixtureImageGenerationAdapter(fixture_id, artifact_dir=tmp_path)
+
+    with pytest.raises(ProviderAdapterError) as captured:
+        adapter.generate(ImageGenerationRequest(prompt="蛋糕"))
+
+    assert captured.value.code == "provider_unavailable"
+
+
+def test_real_image_plugin_fixture_does_not_build_real_provider(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from assistant_agent.config import ProviderConfig
+    from assistant_agent.tools.plugins.builtin.image_generation import plugin as plugin_module
+    from assistant_agent.tools.plugins.contracts import ToolPluginContext
+
+    (tmp_path / "cake.png").write_bytes(b"\x89PNG\r\n\x1a\nfixture")
+    monkeypatch.setattr(plugin_module, "GENERATED_ARTIFACT_DIR", tmp_path)
+    monkeypatch.setattr(plugin_module, "DEVELOPMENT_IMAGE_FIXTURE_ID", "cake.png")
+
+    def reject_real_provider(config):
+        _ = config
+        raise AssertionError("real image provider must not be constructed")
+
+    monkeypatch.setattr(
+        plugin_module,
+        "create_image_generation_adapter",
+        reject_real_provider,
+    )
+    config = ProviderConfig(
+        provider_mode="real",
+        chat_provider="qwen",
+        qwen_api_key="test-only-key",
+    )
+
+    tools = plugin_module.ImageGenerationToolPlugin().build_tools(
+        ToolPluginContext(config=config, mcp_server_configs=[])
+    )
+    result = tools[0].run(
+        {"prompt": "蛋糕"},
+        ToolContext(user_id="user-sentinel", session_id="session-sentinel"),
+    )
+
+    assert result.success is True
+    assert result.output_ref == "/artifacts/generated/cake.png"
+    assert result.data["image_id"] == ["cake"]
+
+
 def test_image_to_3d_adapter_rejects_unsafe_src_image_id(
     tmp_path: Path,
 ) -> None:
@@ -234,24 +336,66 @@ def test_image_to_3d_adapter_normalizes_malformed_service_response(
         )
 
 
-def test_3d_callback_delivers_td_model_on_registered_connection() -> None:
-    from assistant_agent.api.rendering_3d_callback import create_rendering_3d_callback_router
-    from assistant_agent.media.media_relay_delivery import MediaRelayConnectionRegistry
-
-    registry = MediaRelayConnectionRegistry()
-    delivered: list[dict] = []
-
-    async def send(response: dict) -> None:
-        delivered.append(response)
-
-    registry.register(
-        connection_id="connection-sentinel",
-        session_ids=["session-sentinel"],
-        number="13800138000",
-        send=send,
+def test_image_to_3d_adapter_accepts_nested_generating_status(
+    tmp_path: Path,
+) -> None:
+    from assistant_agent.media.image_to_3d import (
+        ImageTo3DAdapter,
+        ImageTo3DSettings,
     )
+
+    (tmp_path / "cake_001.png").write_bytes(b"\x89PNG\r\n\x1a\nrendering-sentinel")
+
+    def request_json(method: str, url: str, body: bytes | None, headers: dict[str, str]):
+        _ = (method, url, body, headers)
+        return {
+            "errCode": 0,
+            "errMessage": "success",
+            "data": {"json": {"status": "generating"}},
+        }
+
+    result = ImageTo3DAdapter(
+        ImageTo3DSettings(
+            td_gen_url="http://3dgen/img-to-3d",
+            public_base_url="http://agent:8000",
+            generated_artifact_path=tmp_path,
+        ),
+        request_json=request_json,
+    ).start(session_id="session-sentinel", src_image="cake_001")
+
+    assert result.status == "generating"
+
+
+def test_image_to_3d_adapter_accepts_current_queued_response(
+    tmp_path: Path,
+) -> None:
+    from assistant_agent.media.image_to_3d import (
+        ImageTo3DAdapter,
+        ImageTo3DSettings,
+    )
+
+    (tmp_path / "cake_001.png").write_bytes(b"\x89PNG\r\n\x1a\nrendering-sentinel")
+
+    def request_json(method: str, url: str, body: bytes | None, headers: dict[str, str]):
+        _ = (method, url, body, headers)
+        return {"status": "queued", "queue_position": 1}
+
+    result = ImageTo3DAdapter(
+        ImageTo3DSettings(
+            td_gen_url="http://3dgen/img-to-3d",
+            public_base_url="http://agent:8000",
+            generated_artifact_path=tmp_path,
+        ),
+        request_json=request_json,
+    ).start(session_id="session-sentinel", src_image="cake_001")
+
+    assert result.status == "queued"
+
+
+def test_3d_callback_acknowledges_result_without_relaying_artifact() -> None:
+    from assistant_agent.api.rendering_3d_callback import create_rendering_3d_callback_router
     app = FastAPI()
-    app.include_router(create_rendering_3d_callback_router(registry))
+    app.include_router(create_rendering_3d_callback_router())
 
     with TestClient(app) as client:
         response = client.post(
@@ -264,13 +408,7 @@ def test_3d_callback_delivers_td_model_on_registered_connection() -> None:
 
     assert response.status_code == 200
     assert response.json()["errMessage"] == "success"
-    body = json.loads(delivered[0]["body"])
-    assert body["number"] == "13800138000"
-    assert body["message"]["type"] == "BRIEF"
-    assert body["message"]["chatIndex"] == "chat-sentinel"
-    assert body["message"]["content"]["intentResult"]["detail"] == [
-        {"type": "TD_MODEL", "modelUrl": "http://renderer/model.glb"}
-    ]
+    assert response.json()["data"] == {"result": "SUCCESS"}
 
 
 def test_image_to_3d_tool_uses_runtime_owned_identity() -> None:
@@ -290,12 +428,11 @@ def test_image_to_3d_tool_uses_runtime_owned_identity() -> None:
             )
             return ImageTo3DSubmission(
                 status="generating",
-                media_id="media-sentinel.png",
-                response={"errCode": 0, "errMessage": "success"},
+                source_image_id="cake_001",
             )
 
     result = ImageTo3DTool(adapter=Adapter()).run(
-        {"format": "glb", "src_image": "cake_001"},
+        {"src_image": "cake_001"},
         ToolContext(
             user_id="13800138000",
             session_id="session-sentinel",
@@ -309,18 +446,18 @@ def test_image_to_3d_tool_uses_runtime_owned_identity() -> None:
     assert result.success is True
     assert result.data == {
         "status": "generating",
-        "media_id": "media-sentinel.png",
+        "source_image_id": "cake_001",
     }
     assert calls == [
         {
             "session_id": "session-sentinel",
             "src_image": "cake_001",
-            "output_format": "glb",
+            "output_format": "mp4",
         }
     ]
 
 
-def test_image_to_3d_exposes_required_src_image_parameter() -> None:
+def test_image_to_3d_exposes_optional_src_image_parameter() -> None:
     from assistant_agent.tools.plugins.builtin.image_to_3d.tool import (
         ImageTo3DTool,
         MockImageTo3DAdapter,
@@ -328,8 +465,74 @@ def test_image_to_3d_exposes_required_src_image_parameter() -> None:
 
     schema = ImageTo3DTool(adapter=MockImageTo3DAdapter()).input_schema.model_json_schema()
 
-    assert "src_image" in schema["required"]
-    assert schema["properties"]["src_image"]["type"] == "string"
+    assert "src_image" not in schema.get("required", [])
+    assert any(
+        option.get("type") == "string"
+        for option in schema["properties"]["src_image"]["anyOf"]
+    )
+    assert "format" not in schema["properties"]
+
+
+def test_image_to_3d_defaults_to_latest_generated_image() -> None:
+    from assistant_agent.runtime.state import AgentState
+    from assistant_agent.runtime.tool_executor import ToolExecutor
+    from assistant_agent.runtime.requests import UserRequest
+    from assistant_agent.media.image_to_3d import ImageTo3DSubmission
+    from assistant_agent.tools.models import ToolResult
+    from assistant_agent.tools.plugins.builtin.image_to_3d.tool import ImageTo3DTool
+    from assistant_agent.tools.registry import ToolRegistry
+
+    calls: list[dict[str, str]] = []
+
+    class Adapter:
+        def start(self, *, session_id: str, src_image: str, output_format: str):
+            calls.append(
+                {
+                    "session_id": session_id,
+                    "src_image": src_image,
+                    "output_format": output_format,
+                }
+            )
+            return ImageTo3DSubmission(
+                status="generating",
+                source_image_id=src_image,
+            )
+
+    registry = ToolRegistry()
+    registry.register(ImageTo3DTool(adapter=Adapter()))
+    registry.seal()
+    state = AgentState.from_request(
+        UserRequest(
+            user_id="user-sentinel",
+            session_id="session-sentinel",
+            text="生成3D",
+        )
+    )
+    state.tool_results.append(
+        ToolResult(
+            tool_name="image_generation",
+            success=True,
+            data={"image_id": ["generated-cake"]},
+            output_ref="/artifacts/generated/generated-cake.png",
+        )
+    )
+
+    result = ToolExecutor(registry=registry).run_tool(
+        state,
+        "step-sentinel",
+        "image_to_3d",
+        {},
+        failure_mode="continue_to_model",
+    )
+
+    assert result.success is True
+    assert calls == [
+        {
+            "session_id": "session-sentinel",
+            "src_image": "generated-cake",
+            "output_format": "mp4",
+        }
+    ]
 
 
 def test_real_image_to_3d_plugin_requires_no_renderer_configuration() -> None:
@@ -358,14 +561,14 @@ def test_real_image_to_3d_plugin_requires_no_renderer_configuration() -> None:
     assert not hasattr(config, "image_storage_path")
 
 
-def test_image_to_3d_tool_rejects_non_agent_service_entry() -> None:
+def test_image_to_3d_tool_does_not_require_media_relay_entry() -> None:
     from assistant_agent.tools.plugins.builtin.image_to_3d.tool import (
         ImageTo3DTool,
         MockImageTo3DAdapter,
     )
 
     result = ImageTo3DTool(adapter=MockImageTo3DAdapter()).run(
-        {"format": "mp4", "src_image": "cake_001"},
+        {"src_image": "cake_001"},
         ToolContext(
             user_id="13800138000",
             session_id="session-sentinel",
@@ -373,8 +576,8 @@ def test_image_to_3d_tool_rejects_non_agent_service_entry() -> None:
         ),
     )
 
-    assert result.success is False
-    assert result.error == "image_to_3d requires Agent-Service WebSocket entry"
+    assert result.success is True
+    assert result.data["status"] == "generating"
 
 
 def test_image_to_3d_tool_treats_failed_service_status_as_failure() -> None:
@@ -386,12 +589,11 @@ def test_image_to_3d_tool_treats_failed_service_status_as_failure() -> None:
             _ = (session_id, src_image, output_format)
             return ImageTo3DSubmission(
                 status="failed",
-                media_id="media-sentinel.png",
-                response={"errCode": 0, "errMessage": "success"},
+                source_image_id="cake_001",
             )
 
     result = ImageTo3DTool(adapter=Adapter()).run(
-        {"format": "mp4", "src_image": "cake_001"},
+        {"src_image": "cake_001"},
         ToolContext(
             user_id="13800138000",
             session_id="session-sentinel",
@@ -404,68 +606,19 @@ def test_image_to_3d_tool_treats_failed_service_status_as_failure() -> None:
     assert result.success is False
     assert result.data == {
         "status": "failed",
-        "media_id": "media-sentinel.png",
+        "source_image_id": "cake_001",
     }
 
 
-def test_3d_callback_projects_mp4_as_video_detail() -> None:
+def test_3d_callback_requires_media_type_and_url() -> None:
     from assistant_agent.api.rendering_3d_callback import create_rendering_3d_callback_router
-    from assistant_agent.media.media_relay_delivery import MediaRelayConnectionRegistry
-
-    registry = MediaRelayConnectionRegistry()
-    delivered: list[dict] = []
-
-    async def send(response: dict) -> None:
-        delivered.append(response)
-
-    registry.register(
-        connection_id="connection-video-sentinel",
-        session_ids=["session-video-sentinel"],
-        number="13800138000",
-        send=send,
-    )
     app = FastAPI()
-    app.include_router(create_rendering_3d_callback_router(registry))
+    app.include_router(create_rendering_3d_callback_router())
 
     with TestClient(app) as client:
         response = client.post(
             "/calling-agent-service/v1/session-video-sentinel/0/3d-gen-back",
-            json={
-                "mediaType": "mp4",
-                "mediaUrl": "http://renderer/model.mp4",
-            },
+            json={"mediaType": "mp4"},
         )
 
-    assert response.status_code == 200
-    body = json.loads(delivered[0]["body"])
-    assert body["message"]["content"]["intentResult"]["detail"] == [
-        {"type": "VIDEO", "videoUrl": "http://renderer/model.mp4"}
-    ]
-
-
-def test_media_relay_registry_reports_closed_connection_as_not_delivered() -> None:
-    from assistant_agent.media.media_relay_delivery import MediaRelayConnectionRegistry
-
-    registry = MediaRelayConnectionRegistry()
-
-    async def send(response: dict) -> None:
-        _ = response
-        raise RuntimeError("connection closed")
-
-    registry.register(
-        connection_id="closed-connection-sentinel",
-        session_ids=["closed-session-sentinel"],
-        number="13800138000",
-        send=send,
-    )
-
-    delivered = asyncio.run(
-        registry.deliver_3d_result(
-            session_id="closed-session-sentinel",
-            chat_index="0",
-            media_type="glb",
-            model_url="http://renderer/model.glb",
-        )
-    )
-
-    assert delivered is False
+    assert response.status_code == 422

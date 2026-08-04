@@ -1,12 +1,18 @@
 """Plugin-private image generation adapter interface and implementations."""
 
+from pathlib import Path
 from typing import Protocol
 
 from assistant_agent.config import ProviderConfig
-from assistant_agent.tools.plugins.builtin.image_generation.models import ImageGenerationRequest, ImageGenerationResult
-from assistant_agent.providers.provider_errors import build_provider_error
-from assistant_agent.tools.ids import IMAGE_GENERATION_CAPABILITY
+from assistant_agent.providers.provider_errors import ProviderAdapterError, build_provider_error
 from assistant_agent.providers.prompting import build_image_prompt
+from assistant_agent.runtime.generated_artifacts import (
+    GENERATED_ARTIFACT_DIR,
+    GENERATED_ARTIFACT_PUBLIC_PREFIX,
+    generated_artifact_payload,
+)
+from assistant_agent.tools.plugins.builtin.image_generation.models import ImageGenerationRequest, ImageGenerationResult
+from assistant_agent.tools.ids import IMAGE_GENERATION_CAPABILITY
 
 
 class ImageGenerationAdapter(Protocol):
@@ -35,6 +41,53 @@ class MockImageGenerationAdapter:
             model=self.model,
             output_ref="local://generated/poster.png",
             prompt_used=prompt,
+        )
+
+
+class LocalFixtureImageGenerationAdapter:
+    """Return one existing managed image without invoking a Provider."""
+
+    provider = "local_fixture"
+    model = "local-managed-artifact"
+
+    def __init__(
+        self,
+        fixture_id: str,
+        *,
+        artifact_dir: Path = GENERATED_ARTIFACT_DIR,
+    ) -> None:
+        self.fixture_id = fixture_id.strip()
+        self.artifact_dir = artifact_dir
+
+    def generate(self, input: ImageGenerationRequest) -> ImageGenerationResult:
+        fixture_path = Path(self.fixture_id)
+        if not self.fixture_id or fixture_path.name != self.fixture_id:
+            raise ProviderAdapterError(
+                "provider_unavailable",
+                "configured local image fixture is invalid",
+            )
+
+        output_ref = f"{GENERATED_ARTIFACT_PUBLIC_PREFIX.rstrip('/')}/{self.fixture_id}"
+        if generated_artifact_payload(output_ref, artifact_dir=self.artifact_dir) is None:
+            raise ProviderAdapterError(
+                "provider_unavailable",
+                "configured local image fixture is unavailable",
+            )
+
+        return ImageGenerationResult(
+            task_id=f"local_fixture:{fixture_path.stem}",
+            status="succeeded",
+            image_url=output_ref,
+            image_urls=[output_ref],
+            download_url=output_ref,
+            download_urls=[output_ref],
+            image_id=[fixture_path.stem],
+            request_id=f"local_fixture:{fixture_path.stem}",
+            prompt=input.prompt,
+            provider=self.provider,
+            model=self.model,
+            output_ref=output_ref,
+            prompt_used=input.prompt,
         )
 
 

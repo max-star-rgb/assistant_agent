@@ -1,18 +1,19 @@
 """Image-to-3D tool schemas."""
 
-from typing import Literal
-
 from pydantic import BaseModel, Field
 
 
 class ImageTo3DRequest(BaseModel):
-    src_image: str = Field(
+    src_image: str | None = Field(
+        default=None,
         min_length=1,
-        description="原始图片ID，例如 cake_001；不包含目录和 .jpg 后缀。",
+        description=(
+            "原始图片ID，例如 cake_001；不包含目录和图片后缀。"
+            "同一轮已调用 image_generation 时应省略，运行时会自动使用最近生成的图片。"
+        ),
     )
-    format: Literal["ply", "glb", "mp4"] = "mp4"
 
 
 class ImageTo3DResult(BaseModel):
     status: str
-    media_id: str | None = None
+    source_image_id: str | None = None

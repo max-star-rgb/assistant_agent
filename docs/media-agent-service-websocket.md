@@ -51,7 +51,7 @@ Agent 兼容说明：
 | message 类型 | 说明 | body 结构 |
 | --- | --- | --- |
 | `assistantControl` | 连接响应 | 参见 4.1 |
-| `chatResponse` | 文本响应及 IMAGE、TD_MODEL、VIDEO 渲染数据 | 参见 4.2、4.6 |
+| `chatResponse` | 文本响应及 IMAGE 渲染数据 | 参见 4.2、4.6 |
 | `audioResponse` | 音频响应 | 参见 4.3 |
 | `videoResponse` | 视频响应 | 参见 4.4 |
 | `interrupt` | 打断响应 | 参见 4.5 |
@@ -170,7 +170,10 @@ Agent 每个 WebSocket 连接都会分配新的内部 `agent-service-*` Gateway 
   因而不能把旧媒体连接的内部 session 或 chat 输出自动转移到新连接。
 - `stream=true` 的中间包只携带本包新增文本，`status=PROCESSING`、`sequence>=1`、`final=false`；终包只携带尚未发送过的剩余文本，`status=SUCCESS`、最后一个 `sequence`、`final=true`。
 - 若本轮正文已经全部通过中间包发送，成功终包的 `description` 为空字符串。媒体/App 可以继续按增量追加处理，不会重复追加完整答案。
-- 若本轮已经发送过中间包，成功终包仍会同时携带 `display_only=true` 和 camelCase 兼容字段 `displayOnly=true`，供支持该标记的客户端识别终包。
+- 若本轮已经发送过中间包且终包不含渲染 `detail`，成功终包仍会同时携带
+  `display_only=true` 和 camelCase 兼容字段 `displayOnly=true`，供支持该标记的客户端识别纯文本
+  终包。含 `IMAGE detail` 时改用媒体 legacy 完整结构，只携带 `display_only=false`，不携带
+  `displayOnly/sequence/final/deliveryId`。
 - 只有真实 Provider token delta 产生中间包；Provider 不支持或未产生 token delta 时，即使 `stream=true` 也只发送一个完整终包，不伪造流式能力。
 - Provider text delta 是 append-only provisional 输出：即使同一 Provider turn 后续出现
   native tool call，已经发送的 text 也不会撤回；tool-call name/argument delta 不发送给媒体，
@@ -186,14 +189,17 @@ Agent 每个 WebSocket 连接都会分配新的内部 `agent-service-*` Gateway 
   WebSocket 发送 `chatResponse`；媒体服务再将 `message.content.intentResult.detail[]` 转发给
   渲染服务。图片项固定为
   `{"type":"IMAGE","imageId":"<图片ID>","image":"<纯Base64>"}`，不携带 Data URL 前缀。
+  媒体/渲染侧通过 `intentResult.detail[].type="IMAGE"` 识别图片渲染数据；这是渲染内容的业务
+  判别字段。图片包设置 `display_only=false` 作为展示兼容标志，但该标志不是媒体到渲染的类型路由
+  依据。
 - Agent 图片生成成功后，Gateway `run.end.payload.output_refs` 保留最多 4 个去重后的输出引用。
   Agent-Service 只读取本 Agent 托管的 `/artifacts/generated/` 图片，并在成功终包中投影为
   `intentResult.detail`；不会把 Provider 临时 URL、本地绝对路径或任意外部引用直接发送给媒体。
 - 图片原始文件必须不超过 25 MiB，并且内容可识别为 JPEG、PNG、GIF 或 WebP。
-  `imageId` 使用 Agent 托管 artifact 的文件名；找不到、超限、越界或无法识别的引用会被忽略，
+  `imageId` 使用 Agent 托管 artifact 文件名去掉扩展名后的图片 ID；找不到、超限、越界或无法识别的引用会被忽略，
   不得让已有文本响应失败。
-- `detail` 只出现在成功终包；流式 `PROCESSING` 中间包、`chatProgress` 和失败终包不携带图片，
-  避免 Base64 重复发送。协商 `chatResponseAck` 时，终包 `deliveryId` 同时确认文本和图片展示数据。
+- `detail` 只在运行成功后发送；流式 `PROCESSING` 中间包、`chatProgress` 和失败包不携带图片，
+  避免 Base64 重复发送。图片使用媒体 legacy 完整结构，不加入 `deliveryId` ACK 扩展。
 
 协商 `chatProgress` 后，Agent 立即并每 15 秒发送一次：
 
@@ -244,14 +250,24 @@ ACK 耗时通过独立事件记录，`ACK pending` 表示仍缺媒体侧应用�
 
 ```json
 {
+  "chatIndex": "对话索引",
   "number": "13800138000",
+  "messageType": "ANSWER",
+  "display_only": false,
   "message": {
     "type": "BRIEF",
     "chatIndex": "对话索引",
     "content": {
+      "intentExecution": {
+        "description": "",
+        "plans": [],
+        "messageType": "ANSWER"
+      },
       "intentResult": {
         "description": "图片已生成",
         "status": "SUCCESS",
+        "plan": [],
+        "messageType": "ANSWER",
         "detail": [
           {
             "type": "IMAGE",
@@ -259,14 +275,14 @@ ACK 耗时通过独立事件记录，`ACK pending` 表示仍缺媒体侧应用�
             "image": "<纯Base64图片数据>"
           }
         ]
+      },
+      "intentWeb": {
+        "description": "",
+        "resourceType": "",
+        "resourceUrl": ""
       }
     }
-  },
-  "display_only": false,
-  "displayOnly": false,
-  "sequence": 1,
-  "final": true,
-  "deliveryId": "delivery_xxx"
+  }
 }
 ```
 
@@ -503,15 +519,14 @@ provider/tool 前后的 cooperative cancellation checkpoint 实际停止执行�
 `chatResponse` delta 或终包。没有活动 turn 时该操作保持幂等成功，连接不会关闭，媒体可以继续
 发送下一轮 `chat`。
 
-### 4.6 渲染结果的媒体中继
+### 4.6 图片的媒体中继
 
 媒体服务是 `/agent-service/v1` 的 WebSocket client，Agent 是被动监听方。连接由媒体服务发送
-`assistantControl` 建立。Agent 生成的图片以及 3D 服务回调产生的模型或视频结果，都先以标准
-`chatResponse` 复用这条连接发送给媒体服务：
+`assistantControl` 建立。Agent 生成的图片以标准 `chatResponse` 复用这条连接发送给媒体服务：
 
 ```text
 媒体服务 -- WebSocket /agent-service/v1 --> Agent
-媒体服务 <-- chatResponse IMAGE/TD_MODEL/VIDEO -- Agent
+媒体服务 <-- chatResponse IMAGE -- Agent
 ```
 
 这不表示媒体服务就是渲染服务。媒体服务内部将 `AGENT_SRC_RESPONSE` 链接到
@@ -553,19 +568,21 @@ RenderingClient.processDisplayInfo()
 }
 ```
 
-`detail` 支持以下稳定投影：
+Agent 当前发送的渲染 detail 为：
 
 | 结果 | detail |
 | --- | --- |
 | 图片 | `{"type":"IMAGE","imageId":"<图片ID>","image":"<纯Base64>"}` |
-| PLY/GLB | `{"type":"TD_MODEL","modelUrl":"http://..."}` |
-| MP4 | `{"type":"VIDEO","videoUrl":"http://..."}` |
 
 #### 4.6.1 图片投递
 
 Agent 生成图片后构造 `IMAGE` detail，包含稳定 `imageId` 和纯 Base64 `image`，再发送给媒体
 WebSocket。Agent 不把图片发往音视频媒体流接口，也不直接 POST `/torender`；由媒体服务的
-`RenderingClient` 完成后续 HTTP 转发。
+`RenderingClient` 完成后续 HTTP 转发。该图片 `chatResponse.body` 必须明确携带
+`display_only=false`；渲染服务实际依据
+`message.content.intentResult.detail[].type="IMAGE"` 识别并处理图片，`display_only` 不替代
+`detail[].type`。图片包使用媒体 legacy 完整结构，不携带纯文本流式协议的 camelCase display、
+sequence、final 或 delivery ACK 扩展字段。
 
 整体链路联调期间，生图插件内的开发常量 `DEVELOPMENT_IMAGE_FIXTURE_ID` 固定指向
 `.local/generated/349cc6c272f4ec7a88800f0f.png`。启用该常量时，`image_generation` 保留模型
@@ -583,8 +600,9 @@ fixture 返回的 `imageId` 取文件名去掉扩展名。发给媒体的 `IMAGE
 `image_to_3d` 是模型可调用的受治理 Tool，必须经过
 `ActionValidator -> ToolExecutor -> ToolRegistry -> tool`。典型请求“生成3D蛋糕”先由 LLM 调用
 `image_generation`；成功图片只保存为 Agent 的 `.local/generated` 受管 artifact，Tool observation
-从本地文件名提取并返回 `{"image_id":["<图片ID>"]}`。LLM 再调用
-`image_to_3d(src_image="<图片ID>")`。Agent 与渲染服务
+从本地文件名提取并返回 `{"image_id":["<图片ID>"]}`。LLM 随后调用 `image_to_3d` 时可以省略
+`src_image`；运行时从同一 run 已成功的 `image_generation` 结果中绑定最近一个图片 ID。显式提供
+`src_image` 仍用于转换已有受管图片。Agent 与渲染服务
 之间没有任何直连；`image_to_3d` 在同一 `.local/generated` 根目录内按 ID 安全解析 JPEG、PNG、
 WebP 或 GIF 原文件，读取为纯 Base64 后调用 3D 服务：
 
@@ -604,7 +622,7 @@ User-Agent: AgentService/1.0
 }
 ```
 
-3D 服务异步回调：
+3D 服务完成后仍向 Agent 发送成功通知：
 
 ```text
 POST /calling-agent-service/v1/{session_id}/{chat_index}/3d-gen-back
@@ -612,20 +630,25 @@ POST /calling-agent-service/v1/{session_id}/{chat_index}/3d-gen-back
 
 ```json
 {
-  "mediaType": "ply/glb/mp4",
-  "mediaUrl": "http://example/model.glb",
+  "mediaType": "ply",
+  "mediaUrl": "http://10.243.227.110:8000/3dgen/v1/models/xxx.ply",
   "image": "可选Base64预览图"
 }
 ```
 
-Agent 将 `ply`、`glb` 投影为 `TD_MODEL.modelUrl`，将 `mp4` 投影为 `VIDEO.videoUrl`，再通过当前
-媒体 WebSocket 发送；媒体服务继续按同一 `RenderingClient` 路径转发。找不到媒体中继连接时返回
-`{"errCode":0,"errMessage":"failed","data":{"result":"未找到可用的媒体中继连接"}}`，不缓存或
-向其他连接重投。
+回调请求必须包含非空 `mediaType` 和合法 HTTP(S) `mediaUrl`，`image` 可省略。Agent 只校验并
+确认收到通知，返回
+`{"errCode":0,"errMessage":"success","data":{"result":"SUCCESS"}}`。Agent 不下载、保存、
+缓存或解析 `mediaUrl` 指向的产物，不处理可选 `image`，也不向媒体 WebSocket 投影或转发
+`TD_MODEL`/`VIDEO`。3D 模型或视频由 3D 服务通过 Agent 之外的渠道交付 App。
 
-`src_image` 是模型可见的必填 string，只表示图片 ID，不得包含目录或图片后缀。Tool 不猜测
-全局最新文件、不查询渲染服务，也不读取 `.local/generated` 之外的路径。发给媒体的 `IMAGE.image`
-同样通过受管 `output_ref` 从该本地目录读取，不使用 Provider 临时 URL，也不写第二份镜像。
+`src_image` 是模型可见的可选 string，只表示图片 ID，不得包含目录或图片后缀。省略时只读取同一
+run 最近一次成功 `image_generation` 的结构化 `image_id`；不存在该结果时明确要求先生成图片，
+不会猜测全局最新文件。产物 `format` 不暴露给 LLM，Agent 固定向 3D 服务提交 `mp4`。Tool 不查询
+渲染服务，也不读取 `.local/generated` 之外的路径。发给媒体的 `IMAGE.image` 同样通过受管
+`output_ref` 从该本地目录读取，不使用 Provider 临时 URL，也不写第二份镜像。3D 服务受理状态兼容
+当前顶层 `{"status":"queued","queue_position":...}` 响应，以及旧协议的 `data.status` 或
+`data.json.status`；只有明确的排队、生成中、已受理、处理中或成功状态才视为提交成功。
 配置和错误语义如下：
 
 | 参数 | 说明 | 示例 |
@@ -653,7 +676,7 @@ Agent 将 `ply`、`glb` 投影为 `TD_MODEL.modelUrl`，将 `mp4` 投影为 `VID
 | `videoContent` 非法、超过大小限制或无法解码 | 返回 `videoResponse`，`body.code=\"FAIL\"`；连接保持可用 |
 | 未知 `message` 类型 | 返回 `error` |
 | Gateway 超时或后端错误 | 返回 `chatResponse`，`body.code=\"FAIL\"`；本地 `run_client.py` 会在 stderr 显示失败原因并以非零状态结束。若 runtime 已启动，失败 delivery audit 与 trace terminal summary 保留统一的 `run_id` 与独立的 `trace_id`；超时时 runtime 状态先记为 `pending_cancel`，以后续真实取消/失败事件为准。 |
-| 3D 回调找不到活动媒体中继连接 | HTTP 200，`errMessage=failed`；不缓存、不转投其他用户连接 |
+| 3D 回调缺少 `mediaType` / `mediaUrl` 或 URL 非法 | HTTP 422；不保存、不转发部分请求 |
 | WebSocket 异常断开 | 记录 ERROR 级安全日志；取消当前 session 的活动 Gateway run |
 
 通用 `error` 示例：
@@ -860,5 +883,5 @@ if __name__ == "__main__":
 - `video` 在入口层完成严格校验和 H.264 I-Frame 到 JPEG 的受控解码，后续 `chat` 只把稳定 `video_id` 送入 Gateway；入口层不直接调用视频 Provider。
 - 默认 mock/local/offline 运行不会调用真实外部 Provider；真实 Provider 只在显式 profile 和本机安全配置允许时启用。
 - `image_to_3d` 是受治理生成 Tool；只消费同一 run 的受管图片 artifact，3D POST 只在 real 模式且配置完整时执行。
-- 3D 回调 route 是薄入口，只校验回调、按 session 定位当前连接并投影 `TD_MODEL`/`VIDEO`，不承担 Agent 规划。
+- 3D 回调 route 是薄入口，只校验并确认成功通知；不管理、存储或转发 3D 产物，也不承担 Agent 规划。
 - 不要在该接口中传输 API key、token、provider 原始响应或未脱敏敏感数据；原始音视频大 payload 不进入 prompt。

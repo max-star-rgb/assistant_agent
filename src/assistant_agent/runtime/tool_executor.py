@@ -186,6 +186,7 @@ class ToolExecutor:
                     if state.run_tool_catalog is not None
                     else None
                 ),
+                "latest_generated_image_id": _latest_generated_image_id(state),
             },
             cancel_token=self.cancel_token,
         )
@@ -602,6 +603,24 @@ def _loaded_skill_reference_grants(
             if isinstance(reference_id, str) and reference_id not in allowed:
                 allowed.append(reference_id)
     return grants
+
+
+def _latest_generated_image_id(state: AgentState) -> str | None:
+    """Return the latest successful same-run image generation ID."""
+
+    for result in reversed(state.tool_results):
+        if not result.success or result.tool_name != IMAGE_GENERATION_TOOL_NAME:
+            continue
+        for payload in (result.model_observation, result.data):
+            if not isinstance(payload, dict):
+                continue
+            image_ids = payload.get("image_id")
+            if not isinstance(image_ids, list):
+                continue
+            for image_id in reversed(image_ids):
+                if isinstance(image_id, str) and image_id.strip():
+                    return image_id.strip()
+    return None
 
 
 def _policy_safe_input_summary(payload: dict[str, Any]) -> dict[str, Any]:

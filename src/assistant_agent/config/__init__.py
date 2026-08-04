@@ -148,7 +148,6 @@ class ProviderConfig:
     image_generation_base_url: str | None = None
     image_generation_model: str | None = None
     image_generation_adapter_kind: str = "mock"
-    image_generation_fixture_id: str | None = None
     openai_image_model: str = "gpt-image-1"
     qwen_image_base_url: str = "https://dashscope.aliyuncs.com/api/v1"
     qwen_image_model: str = "qwen-image-2.0-pro"
@@ -549,7 +548,6 @@ class ProviderConfig:
             image_generation_base_url=image_generation_settings.base_url,
             image_generation_model=image_generation_settings.model,
             image_generation_adapter_kind=image_generation_settings.adapter_kind,
-            image_generation_fixture_id=source.get("IMAGE_GENERATION_FIXTURE_ID"),
             openai_image_model=source.get("OPENAI_IMAGE_MODEL", "gpt-image-1"),
             qwen_image_base_url=source.get("QWEN_IMAGE_BASE_URL", "https://dashscope.aliyuncs.com/api/v1"),
             qwen_image_model=source.get("QWEN_IMAGE_MODEL", "qwen-image-2.0-pro"),

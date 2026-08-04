@@ -79,7 +79,7 @@ def test_agent_service_success_terminal_embeds_generated_image_detail(
     response = _prepared_chat_response(
         PreparedChat(
             session_id="session-sentinel",
-            response_session_id=None,
+            response_session_id="legacy-session-sentinel",
             body={"stream": True},
             chat_index="chat-sentinel",
             user_number="user-sentinel",
@@ -114,15 +114,40 @@ def test_agent_service_success_terminal_embeds_generated_image_detail(
     )
 
     body = json.loads(response["body"])
-    intent = body["message"]["content"]["intentResult"]
-    assert intent["description"] == ""
-    assert intent["status"] == "SUCCESS"
-    assert intent["detail"] == [
-        {
-            "type": "IMAGE",
-            "imageId": "image-sentinel.jpg",
-            "image": base64.b64encode(jpeg_bytes).decode("ascii"),
-        }
-    ]
-    assert body["final"] is True
-    assert body["display_only"] is True
+    assert set(response) == {"message", "body"}
+    assert response["message"] == "chatResponse"
+    assert body == {
+        "chatIndex": "chat-sentinel",
+        "number": "user-sentinel",
+        "messageType": "ANSWER",
+        "display_only": False,
+        "message": {
+            "type": "BRIEF",
+            "chatIndex": "chat-sentinel",
+            "content": {
+                "intentExecution": {
+                    "description": "",
+                    "plans": [],
+                    "messageType": "ANSWER",
+                },
+                "intentResult": {
+                    "description": "",
+                    "status": "SUCCESS",
+                    "plan": [],
+                    "messageType": "ANSWER",
+                    "detail": [
+                        {
+                            "type": "IMAGE",
+                            "imageId": "image-sentinel",
+                            "image": base64.b64encode(jpeg_bytes).decode("ascii"),
+                        }
+                    ],
+                },
+                "intentWeb": {
+                    "description": "",
+                    "resourceType": "",
+                    "resourceUrl": "",
+                },
+            },
+        },
+    }

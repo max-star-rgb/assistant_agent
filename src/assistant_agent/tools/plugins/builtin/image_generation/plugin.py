@@ -1,7 +1,9 @@
 """Image generation tool plugin."""
 
 from assistant_agent.config import ProviderConfig
+from assistant_agent.runtime.generated_artifacts import GENERATED_ARTIFACT_DIR
 from assistant_agent.tools.plugins.builtin.image_generation.backend import (
+    LocalFixtureImageGenerationAdapter,
     create_image_generation_adapter,
 )
 from assistant_agent.tools.base import Tool
@@ -9,10 +11,23 @@ from assistant_agent.tools.plugins.contracts import ToolPluginContext, ToolPlugi
 from assistant_agent.tools.plugins.builtin.image_generation.tool import ImageGenerationTool
 
 
+# Development-only whole-chain fixture. Set to None to restore the real image Provider.
+DEVELOPMENT_IMAGE_FIXTURE_ID: str | None = "349cc6c272f4ec7a88800f0f.png"
+
+
 class ImageGenerationToolPlugin:
     descriptor = ToolPluginDescriptor(plugin_id="image_generation", plugin_version="1")
 
     def build_tools(self, context: ToolPluginContext) -> list[Tool]:
+        if DEVELOPMENT_IMAGE_FIXTURE_ID:
+            return [
+                ImageGenerationTool(
+                    adapter=LocalFixtureImageGenerationAdapter(
+                        DEVELOPMENT_IMAGE_FIXTURE_ID,
+                        artifact_dir=GENERATED_ARTIFACT_DIR,
+                    )
+                )
+            ]
         if not context.mock_mode and not image_generation_provider_ready(context.config):
             return []
         return [ImageGenerationTool(adapter=create_image_generation_adapter(context.config))]

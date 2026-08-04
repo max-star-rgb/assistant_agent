@@ -256,11 +256,12 @@ ACK、流式交付和 H.264 解码，并把 chat、interrupt 和稳定媒体引�
 主 LLM。完整 wire contract 只维护在
 [media-agent-service-websocket.md](media-agent-service-websocket.md)。
 
-生成图片、3D 模型和视频结果先复用媒体服务已建立的 `/agent-service/v1` WebSocket 发送标准
-`chatResponse`。媒体服务是中继而非渲染服务：其 `RenderingClient` 再通过 HTTP POST 把完整响应
-转发到渲染服务 `/rendering/v1/torender`。Agent 与渲染服务没有任何 HTTP 或 WebSocket 直连。
-模型驱动的 3D 生成仍从主 runtime 经受治理 `image_to_3d` Tool 发起；回调 route 只负责校验、定位
-媒体中继连接和 wire 投影，不进入 Gateway run、不复制 Agent 规划。完整边界以
+生成图片复用媒体服务已建立的 `/agent-service/v1` WebSocket 发送标准 `chatResponse`。媒体服务是
+中继而非渲染服务：其 `RenderingClient` 再通过 HTTP POST 把完整响应转发到渲染服务
+`/rendering/v1/torender`。Agent 与渲染服务没有任何 HTTP 或 WebSocket 直连。模型驱动的 3D 生成
+仍从主 runtime 经受治理 `image_to_3d` Tool 发起；该 Tool 只把本地图片提交给 3D 服务。3D 成功
+回调 route 只校验并确认通知，不管理或转发模型/视频产物，也不进入 Gateway run、不复制 Agent
+规划；3D 产物由服务通过 Agent 之外的渠道交付 App。完整边界以
 [media-agent-service-websocket.md](media-agent-service-websocket.md) 为准。
 
 ### 7.2 Durable task

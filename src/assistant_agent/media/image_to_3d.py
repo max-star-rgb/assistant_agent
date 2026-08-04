@@ -30,8 +30,7 @@ class ImageTo3DSettings:
 @dataclass(frozen=True)
 class ImageTo3DSubmission:
     status: str
-    media_id: str
-    response: dict[str, Any]
+    source_image_id: str
 
 
 class ImageTo3DError(RuntimeError):
@@ -79,18 +78,12 @@ class ImageTo3DAdapter:
                 "User-Agent": "AgentService/1.0",
             },
         )
-        response_data = response.get("data")
-        status = (
-            str(response_data.get("status") or "").strip()
-            if isinstance(response_data, dict)
-            else ""
-        )
-        if response.get("errCode") != 0 or response.get("errMessage") != "success" or not status:
+        status = _submission_status(response)
+        if not _response_accepts_submission(response, status=status):
             raise ImageTo3DError("3D生成服务响应解析失败")
         return ImageTo3DSubmission(
             status=status,
-            media_id=image_id,
-            response=response,
+            source_image_id=image_id,
         )
 
     def _resolve_artifact(self, image_id: str):
@@ -129,3 +122,40 @@ class ImageTo3DAdapter:
         if not isinstance(decoded, dict):
             raise ImageTo3DError("3D生成服务响应解析失败")
         return decoded
+
+
+def _submission_status(response: dict[str, Any]) -> str:
+    response_data = response.get("data")
+    candidates: list[Any] = [response.get("status")]
+    if isinstance(response_data, dict):
+        candidates.append(response_data.get("status"))
+        nested = response_data.get("json")
+        if isinstance(nested, dict):
+            candidates.append(nested.get("status"))
+    for candidate in candidates:
+        status = str(candidate or "").strip()
+        if status:
+            return status
+    return ""
+
+
+def _response_accepts_submission(
+    response: dict[str, Any],
+    *,
+    status: str,
+) -> bool:
+    if not status:
+        return False
+    if "errCode" in response or "errMessage" in response:
+        return (
+            str(response.get("errCode")) == "0"
+            and str(response.get("errMessage") or "").strip().lower() == "success"
+        )
+    return status.lower() in {
+        "queued",
+        "generating",
+        "accepted",
+        "processing",
+        "success",
+        "succeeded",
+    }
