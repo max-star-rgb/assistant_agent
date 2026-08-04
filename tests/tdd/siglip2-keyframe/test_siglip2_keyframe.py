@@ -10,6 +10,8 @@ from types import SimpleNamespace
 import pytest
 
 from assistant_agent.config import ProviderConfig
+from assistant_agent.media.embedding.coordinator import SessionEmbeddingCoordinator
+from assistant_agent.media.embedding.provider import create_multimodal_embedding_provider
 from assistant_agent.media.video.detection.vision_embedding_provider import (
     MockVisionEmbeddingProvider,
     VisionEmbeddingResult,
@@ -634,6 +636,10 @@ def test_realtime_observer_uses_configured_siglip2_ssim_policy() -> None:
         session_id="session-sentinel",
         registry=ToolRegistry(),
         memory_store=RealtimeVideoMemoryStore(),
+        embedding_coordinator=SessionEmbeddingCoordinator(
+            "session-sentinel",
+            create_multimodal_embedding_provider(config),
+        ),
         provider_config=config,
     )
 

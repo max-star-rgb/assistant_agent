@@ -1579,6 +1579,10 @@ def _create_realtime_video_observer(*, user_id: str, session_id: str) -> Realtim
             realtime_video_memory_store=runtime.realtime_video_memory_store,
         ),
         memory_store=runtime.realtime_video_memory_store,
+        embedding_coordinator=runtime.embedding_coordinator_store.resolve(
+            user_id,
+            session_id,
+        ),
         provider_config=runtime.config,
     )
 

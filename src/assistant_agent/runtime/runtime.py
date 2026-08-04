@@ -79,6 +79,9 @@ from assistant_agent.observability.trace_store import InMemoryTraceStore, TraceS
 from assistant_agent.observability.turn_summary import append_runtime_turn_summary
 from assistant_agent.media.video.video_context import InMemoryVideoContextStore, VideoContextStore
 from assistant_agent.media.video.realtime_video_memory import RealtimeVideoMemoryStore
+from assistant_agent.media.embedding.coordinator import SessionEmbeddingCoordinator
+from assistant_agent.media.embedding.coordinator_store import SessionEmbeddingCoordinatorStore
+from assistant_agent.media.embedding.provider import create_multimodal_embedding_provider
 from assistant_agent.tools.plugins.registry_factory import create_default_registry
 from assistant_agent.tools.registry import ToolRegistry
 
@@ -105,6 +108,7 @@ class AgentGraphRuntime:
         context_token_counter: ContextTokenCounter | None = None,
         video_context_store: VideoContextStore | None = None,
         realtime_video_memory_store: RealtimeVideoMemoryStore | None = None,
+        embedding_coordinator_store: SessionEmbeddingCoordinatorStore | None = None,
         checkpointer: Any | None = None,
         context_source_coordinator: ContextSourceCoordinator | None = None,
         durable_task_service: DurableTaskService | None = None,
@@ -114,6 +118,16 @@ class AgentGraphRuntime:
         self.config = config or ProviderConfig.from_env()
         self.video_context_store = video_context_store or InMemoryVideoContextStore()
         self.realtime_video_memory_store = realtime_video_memory_store or RealtimeVideoMemoryStore()
+        self.embedding_provider = create_multimodal_embedding_provider(self.config)
+        self.embedding_coordinator_store = (
+            embedding_coordinator_store
+            or SessionEmbeddingCoordinatorStore(
+                factory=lambda _user_id, session_id: SessionEmbeddingCoordinator(
+                    session_id,
+                    self.embedding_provider,
+                )
+            )
+        )
         self.long_term_memory_service = (
             long_term_memory_service
             or create_long_term_memory_service(self.config)
@@ -514,6 +528,7 @@ class AgentGraphRuntime:
     def close(self) -> bool:
         """Drain and close runtime-owned background lifecycle services."""
 
+        self.embedding_coordinator_store.close()
         return self.long_term_memory_service.close(
             timeout=self.config.memory_ingestion_shutdown_timeout_seconds,
         )

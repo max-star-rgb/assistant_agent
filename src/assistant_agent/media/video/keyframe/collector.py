@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from assistant_agent.config import ProviderConfig
+from assistant_agent.media.embedding.coordinator import SessionEmbeddingCoordinator
 from assistant_agent.media.video.detection.frame_difference import FrameDifferenceDetector
 from assistant_agent.media.video.detection.semantic_detector import SemanticChangeDetector, create_semantic_change_detector
 from assistant_agent.media.video.detection.ssim_detector import SSIMChangeDetector
@@ -35,6 +36,7 @@ class AdaptiveKeyframeCollector:
         ssim_detector: SSIMChangeDetector | None = None,
         semantic_detector: SemanticChangeDetector | None = None,
         semantic_probe_fps: float | None = None,
+        embedding_coordinator: SessionEmbeddingCoordinator | None = None,
         config: ProviderConfig | None = None,
     ) -> None:
         self.sampler = AdaptiveFrameSampler(sampler_config)
@@ -42,7 +44,12 @@ class AdaptiveKeyframeCollector:
         self.frame_difference_detector = frame_difference_detector or FrameDifferenceDetector()
         self.ssim_detector = ssim_detector or SSIMChangeDetector()
         self.semantic_detector = semantic_detector or (
-            create_semantic_change_detector(config) if config is not None else SemanticChangeDetector()
+            create_semantic_change_detector(
+                config,
+                coordinator=embedding_coordinator,
+            )
+            if config is not None or embedding_coordinator is not None
+            else SemanticChangeDetector()
         )
         self.semantic_probe_fps = (
             semantic_probe_fps

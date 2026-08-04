@@ -13,6 +13,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from assistant_agent.config import ProviderConfig
+from assistant_agent.media.embedding.coordinator import SessionEmbeddingCoordinator
 from assistant_agent.runtime.action_validator import ActionValidator
 from assistant_agent.runtime.state import AgentState
 from assistant_agent.runtime.tool_executor import ToolExecutor
@@ -65,6 +66,7 @@ class RealtimeVideoObserver:
         session_id: str,
         registry: ToolRegistry,
         memory_store: RealtimeVideoMemoryStore,
+        embedding_coordinator: SessionEmbeddingCoordinator,
         provider_config: ProviderConfig | None = None,
         keyframe_root: Path | str = DEFAULT_KEYFRAME_ROOT,
         collector: AdaptiveKeyframeCollector | None = None,
@@ -79,6 +81,7 @@ class RealtimeVideoObserver:
         self.session_id = session_id
         self.registry = registry
         self.memory_store = memory_store
+        self.embedding_coordinator = embedding_coordinator
         self.keyframe_root = Path(keyframe_root)
         resolved_provider_config = provider_config or ProviderConfig()
         self.collector = collector or AdaptiveKeyframeCollector(
@@ -105,6 +108,7 @@ class RealtimeVideoObserver:
             semantic_probe_fps=(
                 resolved_provider_config.keyframe_semantic_probe_fps
             ),
+            embedding_coordinator=embedding_coordinator,
             config=resolved_provider_config,
         )
         self.validator = validator or ActionValidator()

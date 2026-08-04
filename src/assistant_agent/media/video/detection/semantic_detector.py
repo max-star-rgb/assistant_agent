@@ -6,6 +6,13 @@ from dataclasses import dataclass, field
 from math import sqrt
 from typing import Any, Protocol
 
+from assistant_agent.media.embedding.consumers.keyframe import KeyframeChangeConsumer
+from assistant_agent.media.embedding.coordinator import SessionEmbeddingCoordinator
+from assistant_agent.media.embedding.models import (
+    EmbeddingEvent,
+    EmbeddingFailureEvent,
+    ImageObservation,
+)
 from assistant_agent.media.video.detection.frame_difference import grayscale_fingerprint
 from assistant_agent.media.video.detection.vision_embedding_provider import (
     VisionEmbeddingResult,
@@ -78,9 +85,15 @@ class SemanticChangeDetector:
         self,
         embedding_model: ImageEmbeddingModel | VisionEmbeddingProvider | None = None,
         *,
+        coordinator: SessionEmbeddingCoordinator | None = None,
         requires_visual_gate: bool = False,
     ) -> None:
-        self.embedding_model = embedding_model or MetadataEmbeddingModel()
+        self.coordinator = coordinator
+        self.embedding_model = (
+            embedding_model
+            or (coordinator.provider if coordinator is not None else MetadataEmbeddingModel())
+        )
+        self.keyframe_consumer = KeyframeChangeConsumer()
         self.requires_visual_gate = requires_visual_gate
         self._keyframe_embeddings: dict[str, list[float]] = {}
         self._last_current_key: str | None = None
@@ -97,6 +110,9 @@ class SemanticChangeDetector:
             self._last_current_key = None
             self._last_current_embedding = None
             return SemanticChangeResult(similarity=1.0, semantic_change_score=0.0)
+
+        if self.coordinator is not None:
+            return self._compare_coordinated(current, reference)
 
         current_result = self._embed_current_candidate(current)
         if current_result.errors or not current_result.embedding:
@@ -135,6 +151,30 @@ class SemanticChangeDetector:
             model=current_result.model,
         )
 
+    def _compare_coordinated(
+        self,
+        current: VideoFrame,
+        reference: VideoFrame | None,
+    ) -> SemanticChangeResult:
+        current_outcome = self.coordinator.embed_image(self._observation(current))
+        if isinstance(current_outcome, EmbeddingFailureEvent):
+            return _failure_semantic_result(current_outcome)
+        reference_outcome: EmbeddingEvent | None = None
+        if reference is not None:
+            outcome = self.coordinator.embed_image(self._observation(reference))
+            if isinstance(outcome, EmbeddingFailureEvent):
+                return _failure_semantic_result(outcome)
+            reference_outcome = outcome
+        return self.keyframe_consumer.compare(current_outcome, reference_outcome)
+
+    def _observation(self, frame: VideoFrame) -> ImageObservation:
+        return ImageObservation(
+            session_id=self.coordinator.session_id,
+            observation_id=_frame_embedding_key(frame),
+            image_ref=frame.uri or f"memory://frame/{_frame_embedding_key(frame)}",
+            captured_at_ms=max(0, int(frame.timestamp_seconds * 1000)),
+        )
+
     def commit_current_embedding_as_keyframe(self, frame: VideoFrame) -> None:
         """Keep the current frame embedding only after the frame becomes a keyframe."""
 
@@ -162,14 +202,23 @@ class SemanticChangeDetector:
         return result
 
 
-def create_semantic_change_detector(config: Any | None = None) -> SemanticChangeDetector:
+def create_semantic_change_detector(
+    config: Any | None = None,
+    *,
+    coordinator: SessionEmbeddingCoordinator | None = None,
+) -> SemanticChangeDetector:
     """Create a semantic detector from provider config while keeping mock default behavior local."""
 
-    provider = create_vision_embedding_provider(config)
     requires_visual_gate = getattr(config, "vision_embedding_provider", "mock") in {
         "dashscope",
         "local_siglip2",
     }
+    if coordinator is not None:
+        return SemanticChangeDetector(
+            coordinator=coordinator,
+            requires_visual_gate=requires_visual_gate,
+        )
+    provider = create_vision_embedding_provider(config)
     if not requires_visual_gate:
         return SemanticChangeDetector(MetadataEmbeddingModel())
     return SemanticChangeDetector(provider, requires_visual_gate=True)
@@ -208,3 +257,19 @@ def _embedding_result(value: list[float] | VisionEmbeddingResult) -> VisionEmbed
 
 def _frame_embedding_key(frame: VideoFrame) -> str:
     return frame.frame_id or frame.uri or str(frame.timestamp_seconds)
+
+
+def _failure_semantic_result(outcome: EmbeddingFailureEvent) -> SemanticChangeResult:
+    return SemanticChangeResult(
+        similarity=1.0,
+        semantic_change_score=0.0,
+        errors=[
+            {
+                "code": outcome.code,
+                "message": outcome.safe_message,
+                "recoverable": outcome.recoverable,
+            }
+        ],
+        provider=outcome.model_id or "embedding",
+        model=outcome.model_id or "embedding",
+    )

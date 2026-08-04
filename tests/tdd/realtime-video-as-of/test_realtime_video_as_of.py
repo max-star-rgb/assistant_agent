@@ -3,6 +3,8 @@ import json
 from threading import Thread
 from time import perf_counter, perf_counter_ns, sleep
 
+from assistant_agent.media.embedding.coordinator import SessionEmbeddingCoordinator
+from assistant_agent.media.embedding.provider import MockMultimodalEmbeddingProvider
 from assistant_agent.media.video.video_adapter import FakeRealtimeVisionAdapter
 from assistant_agent.media.video.realtime_video_memory import (
     RealtimeVideoMemoryStore,
@@ -318,6 +320,9 @@ def test_chat_arrival_prefers_the_latest_selected_keyframe_over_the_latest_raw_f
         session_id="session-sentinel",
         registry=ToolRegistry(),
         memory_store=store,
+        embedding_coordinator=SessionEmbeddingCoordinator(
+            "session-sentinel", MockMultimodalEmbeddingProvider()
+        ),
     )
     latest_raw_frame = VideoFrame(
         video_id="video-sentinel",
@@ -426,6 +431,9 @@ async def _assert_observer_latency(tmp_path) -> None:
         session_id="session-sentinel",
         registry=registry,
         memory_store=memory_store,
+        embedding_coordinator=SessionEmbeddingCoordinator(
+            "session-sentinel", MockMultimodalEmbeddingProvider()
+        ),
         keyframe_root=tmp_path / "keyframes",
     )
     ingress_ns = perf_counter_ns()
