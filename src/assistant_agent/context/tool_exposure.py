@@ -15,7 +15,10 @@ from assistant_agent.media.agent_service_entry import (
 )
 from assistant_agent.runtime.requests import UserRequest
 from assistant_agent.tools.models import ToolMediaScope, ToolSpec
-from assistant_agent.tools.ids import VISUAL_MEMORY_SEARCH_TOOL_NAME
+from assistant_agent.tools.ids import (
+    VISUAL_MEMORY_SEARCH_TOOL_NAME,
+    VISUAL_REMINDER_MANAGE_TOOL_NAME,
+)
 
 
 @dataclass(frozen=True)
@@ -27,6 +30,7 @@ class ToolExposureFacts:
     active_audio_id: str | None = None
     trusted_live_video: bool = False
     visual_memory_available: bool = False
+    visual_reminder_available: bool = False
 
     @property
     def has_active_video(self) -> bool:
@@ -75,6 +79,9 @@ def tool_exposure_facts(request: UserRequest) -> ToolExposureFacts:
         visual_memory_available=request.metadata.get(
             "_trusted_visual_memory_available"
         ) is True,
+        visual_reminder_available=request.metadata.get(
+            "_trusted_visual_reminder_available"
+        ) is True,
     )
 
 
@@ -89,6 +96,15 @@ def evaluate_tool_exposure(
         return ToolExposureDecision(
             exposed=False,
             excluded_reasons=("visual_memory_history_not_available",),
+            facts=facts,
+        )
+    if (
+        spec.name == VISUAL_REMINDER_MANAGE_TOOL_NAME
+        and not facts.visual_reminder_available
+    ):
+        return ToolExposureDecision(
+            exposed=False,
+            excluded_reasons=("visual_reminder_connection_not_available",),
             facts=facts,
         )
     if not tool_media_requirements_satisfied(spec, facts):

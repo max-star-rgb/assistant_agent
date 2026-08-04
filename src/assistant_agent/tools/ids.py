@@ -13,6 +13,7 @@ MEDIA_INSPECT_TOOL_NAME = "media_inspect"
 LIVE_VIEW_INSPECT_TOOL_NAME = "live_view_inspect"
 REALTIME_VIDEO_OBSERVE_TOOL_NAME = "realtime_video_observe"
 VISUAL_MEMORY_SEARCH_TOOL_NAME = "visual_memory_search"
+VISUAL_REMINDER_MANAGE_TOOL_NAME = "visual_reminder_manage"
 # Deprecated import compatibility only; no tool is registered under the legacy name.
 IMAGE_UNDERSTANDING_TOOL_NAME = MEDIA_INSPECT_TOOL_NAME
 IMAGE_GENERATION_CAPABILITY = "image_generation"

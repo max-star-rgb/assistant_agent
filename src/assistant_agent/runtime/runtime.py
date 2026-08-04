@@ -78,6 +78,7 @@ from assistant_agent.observability.trace_store import InMemoryTraceStore, TraceS
 from assistant_agent.observability.turn_summary import append_runtime_turn_summary
 from assistant_agent.media.video.video_context import InMemoryVideoContextStore, VideoContextStore
 from assistant_agent.media.video.realtime_video_memory import RealtimeVideoMemoryStore
+from assistant_agent.media.video.visual_reminder import VisualReminderRegistry
 from assistant_agent.media.video.semantic_store_pool import (
     SessionVisualSemanticStorePool,
 )
@@ -142,6 +143,7 @@ class AgentGraphRuntime:
         embedding_coordinator_store: SessionEmbeddingCoordinatorStore | None = None,
         embedding_observer: EmbeddingObserver | None = None,
         visual_semantic_store_pool: SessionVisualSemanticStorePool | None = None,
+        visual_reminder_registry: VisualReminderRegistry | None = None,
         checkpointer: Any | None = None,
         context_source_coordinator: ContextSourceCoordinator | None = None,
         durable_task_service: DurableTaskService | None = None,
@@ -165,6 +167,9 @@ class AgentGraphRuntime:
                 root=Path(".data") / "visual_semantic_memory",
                 observer=self.embedding_observer,
             )
+        )
+        self.visual_reminder_registry = (
+            visual_reminder_registry or VisualReminderRegistry()
         )
         self.long_term_memory_service = (
             long_term_memory_service
@@ -207,6 +212,7 @@ class AgentGraphRuntime:
                 realtime_video_memory_store=self.realtime_video_memory_store,
                 embedding_coordinator_store=self.embedding_coordinator_store,
                 visual_semantic_store_pool=self.visual_semantic_store_pool,
+                visual_reminder_registry=self.visual_reminder_registry,
                 durable_task_service=self.durable_task_service,
             )
             if self.durable_task_service is not None:
@@ -379,6 +385,7 @@ class AgentGraphRuntime:
             durable_tasks_enabled=self.config.durable_tasks_enabled,
         )
         self._refresh_visual_memory_capability(request)
+        self._refresh_visual_reminder_capability(request)
         base_event_sink = event_sink or self.event_sink
         run_event_sink = (
             _ResponseDeltaTrackingEventSink(base_event_sink)
@@ -626,6 +633,25 @@ class AgentGraphRuntime:
                 and target_sequence >= 0
             ):
                 request.metadata["_trusted_visual_memory_as_of_sequence"] = target_sequence
+
+    def _refresh_visual_reminder_capability(self, request: UserRequest) -> None:
+        """Overwrite caller metadata with a live trusted VIDEO connection fact."""
+
+        request.metadata.pop("_trusted_visual_reminder_available", None)
+        agent_service = request.metadata.get("agent_service")
+        call_type = (
+            agent_service.get("call_type")
+            if isinstance(agent_service, dict)
+            else None
+        )
+        if not is_trusted_agent_service_request(request) or call_type != "VIDEO":
+            return
+        manager = self.visual_reminder_registry.peek(
+            request.user_id,
+            request.session_id,
+        )
+        if manager is not None:
+            request.metadata["_trusted_visual_reminder_available"] = True
 
     def drain_memory_ingestions(self, *, timeout: float | None = None) -> bool:
         """Wait for accepted memory ingestions."""
