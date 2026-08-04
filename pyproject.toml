@@ -26,8 +26,9 @@ observability = [
 ]
 local-vision-embedding = [
     "numpy>=2.0,<3",
+    "onnx>=1.17,<2",
     "Pillow>=10,<12",
-    "onnxruntime-gpu>=1.20,<2",
+    "onnxruntime-gpu>=1.21,<1.27",
 ]
 
 [tool.pytest.ini_options]

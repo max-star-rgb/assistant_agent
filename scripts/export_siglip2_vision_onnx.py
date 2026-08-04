@@ -50,6 +50,7 @@ def build_manifest(
     image_size: int,
     mean: tuple[float, float, float],
     std: tuple[float, float, float],
+    external_data: dict[str, str],
 ) -> dict[str, Any]:
     """Build the runtime identity contract for the image-projection graph."""
 
@@ -68,6 +69,7 @@ def build_manifest(
         "input_name": "pixel_values",
         "output_name": "image_embeds",
         "input_dtype": "float16",
+        "external_data": dict(sorted(external_data.items())),
         "preprocessing": {
             "size": image_size,
             "mean": list(mean),
@@ -183,6 +185,14 @@ def run_export(args: argparse.Namespace) -> dict[str, Any]:
             device_id=args.device_id,
         )
         model_sha256 = sha256_file(model_path)
+        external_data: dict[str, str] = {}
+        for location in onnx_external_data_locations(model_path):
+            external_path = (temporary / location).resolve()
+            if temporary not in external_path.parents or not external_path.is_file():
+                raise RuntimeError(
+                    "exported ONNX external data location is invalid or missing"
+                )
+            external_data[location] = sha256_file(external_path)
         manifest = build_manifest(
             model_id=args.model_id,
             model_revision=resolved_revision,
@@ -192,6 +202,7 @@ def run_export(args: argparse.Namespace) -> dict[str, Any]:
             image_size=image_size,
             mean=mean,
             std=std,
+            external_data=external_data,
         )
         (temporary / MANIFEST_FILENAME).write_text(
             json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
@@ -216,6 +227,23 @@ def sha256_file(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def onnx_external_data_locations(model_path: Path) -> set[str]:
+    """Read the authoritative external initializer locations from ONNX."""
+
+    try:
+        import onnx
+    except ImportError as exc:
+        raise RuntimeError("export requires onnx") from exc
+    model = onnx.load_model(str(model_path), load_external_data=False)
+    locations: set[str] = set()
+    for tensor in model.graph.initializer:
+        entries = {entry.key: entry.value for entry in tensor.external_data}
+        location = entries.get("location")
+        if location:
+            locations.add(str(location))
+    return locations
 
 
 def main(argv: Sequence[str] | None = None) -> int:

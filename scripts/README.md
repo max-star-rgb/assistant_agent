@@ -106,9 +106,10 @@ Runtime 不下载关键帧模型。先在 operator 明确允许联网和安装 e
 ```
 
 脚本把 `main` 解析为不可变 Hugging Face commit SHA，并将 revision、预处理、输出维度、
-`visual_projection`、`embedding_space_id` 与 ONNX checksum 写入 manifest；目标目录已存在时拒绝
-覆盖。导出过程可下载完整 checkpoint，但产出的 Runtime ONNX 不含 text forward，服务进程也不加载
-tokenizer/text tower。模型资产留在未跟踪的 `.local/`，禁止提交。
+`visual_projection`、`embedding_space_id`、ONNX 主文件及 external-data 文件的 checksum 写入
+manifest；目标目录已存在时拒绝覆盖。导出过程可下载完整 checkpoint，但产出的 Runtime ONNX
+不含 text forward，服务进程也不加载 tokenizer/text tower。模型资产留在未跟踪的 `.local/`，
+禁止提交。
 
 服务启用时同时显式设置 real provider mode、主 Chat/Vision 配置以及：
 
@@ -118,8 +119,10 @@ SIGLIP2_VISION_MODEL_DIR=.local/models/siglip2-base-patch16-224
 SIGLIP2_CUDA_DEVICE_ID=0
 ```
 
-安装 Runtime 可选依赖使用 `.[local-vision-embedding]`；`torch`、`transformers` 和 ONNX 导出工具
-只属于模型准备环境，不是线上 Runtime 依赖。
+安装 Runtime 可选依赖使用 `.[local-vision-embedding]`；该 extra 将 ONNX Runtime GPU 限定为
+CUDA 12.8 对应的 `1.21 <= version < 1.27`，启动时还会验证实际 session 未回退到 CPU。
+Runtime 使用 `onnx` 解析图中真实 external-data 引用并核对 manifest；`torch`、`transformers`
+和 `onnxscript` 只属于模型准备环境，不是线上 Runtime 依赖。
 
 ### Website guidance local verification
 

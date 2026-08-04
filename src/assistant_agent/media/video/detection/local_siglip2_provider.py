@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
-from math import sqrt
+from math import isfinite, sqrt
 from pathlib import Path
 from threading import Lock
 from typing import Any, Protocol
@@ -53,6 +53,7 @@ class Siglip2VisionManifest:
     std: tuple[float, float, float]
     projection: str
     input_dtype: str
+    external_data: tuple[tuple[str, str], ...]
     input_name: str = "pixel_values"
     output_name: str = "image_embeds"
 
@@ -131,8 +132,17 @@ class OnnxSiglip2ImageBackend:
                 "local SigLIP2 CUDA execution provider is unavailable",
             )
         try:
+            preload_dlls = getattr(ort, "preload_dlls", None)
+            if preload_dlls is not None:
+                preload_dlls(directory="")
+            session_options = ort.SessionOptions()
+            session_options.add_session_config_entry(
+                "session.disable_cpu_ep_fallback",
+                "1",
+            )
             self._session = ort.InferenceSession(
                 str(manifest.model_path),
+                sess_options=session_options,
                 providers=[
                     (
                         "CUDAExecutionProvider",
@@ -140,6 +150,17 @@ class OnnxSiglip2ImageBackend:
                     )
                 ],
             )
+            active_providers = self._session.get_providers()
+            if (
+                not active_providers
+                or active_providers[0] != "CUDAExecutionProvider"
+            ):
+                raise LocalSiglip2Error(
+                    "local_model_unavailable",
+                    "local SigLIP2 CUDA session initialization failed",
+                )
+        except LocalSiglip2Error:
+            raise
         except Exception as exc:
             raise LocalSiglip2Error(
                 "local_model_unavailable",
@@ -183,11 +204,24 @@ class LocalSiglip2VisionProvider:
         self.config = config
         self._backend = backend
         self._preprocessor = preprocessor or PillowSiglip2ImagePreprocessor()
+        self._manifest: Siglip2VisionManifest | None = None
+        self._manifest_lock = Lock()
+
+    def _validated_manifest(self) -> Siglip2VisionManifest:
+        manifest = self._manifest
+        if manifest is not None:
+            return manifest
+        with self._manifest_lock:
+            manifest = self._manifest
+            if manifest is None:
+                manifest = load_siglip2_manifest(self.config.model_dir)
+                self._manifest = manifest
+            return manifest
 
     def embed_image(self, frame: VideoFrame) -> VisionEmbeddingResult:
         manifest: Siglip2VisionManifest | None = None
         try:
-            manifest = load_siglip2_manifest(self.config.model_dir)
+            manifest = self._validated_manifest()
             pixel_values = self._preprocessor.to_pixel_values(frame, manifest)
             backend = self._backend or shared_onnx_backend(
                 manifest,
@@ -254,6 +288,7 @@ def load_siglip2_manifest(model_dir: Path | None) -> Siglip2VisionManifest:
         model_path = (root / str(raw["model_file"])).resolve()
         input_name = str(raw.get("input_name") or "pixel_values")
         output_name = str(raw.get("output_name") or "image_embeds")
+        external_data = _external_data_entries(raw.get("external_data") or {})
     except (KeyError, TypeError, ValueError) as exc:
         raise LocalSiglip2Error(
             "local_model_integrity_failed",
@@ -262,15 +297,18 @@ def load_siglip2_manifest(model_dir: Path | None) -> Siglip2VisionManifest:
     if (
         schema_version != SIGLIP2_MANIFEST_SCHEMA_VERSION
         or model_id != SIGLIP2_MODEL_ID
-        or not model_revision
+        or not _is_lower_hex(model_revision, length=40)
+        or not _is_lower_hex(model_sha256, length=64)
         or dimension <= 0
         or image_size <= 0
-        or not embedding_space_id
-        or not embedding_space_id.endswith(":image-projection-v1")
+        or embedding_space_id
+        != f"siglip2-base-p16-224@{model_revision}:image-projection-v1"
         or projection != "visual_projection"
         or input_dtype != "float16"
         or not input_name
         or not output_name
+        or "external_data" not in raw
+        or any(not isfinite(value) for value in (*mean, *std))
         or any(value == 0.0 for value in std)
         or root not in model_path.parents
     ):
@@ -290,6 +328,31 @@ def load_siglip2_manifest(model_dir: Path | None) -> Siglip2VisionManifest:
             "local_model_integrity_failed",
             "local SigLIP2 vision model checksum does not match its manifest",
         )
+    referenced_external_data = onnx_external_data_locations(model_path)
+    if referenced_external_data != {name for name, _checksum in external_data}:
+        raise LocalSiglip2Error(
+            "local_model_integrity_failed",
+            "local SigLIP2 external data manifest does not match the ONNX graph",
+        )
+    for relative_name, expected_sha256 in external_data:
+        external_path = (root / relative_name).resolve()
+        if root not in external_path.parents:
+            raise LocalSiglip2Error(
+                "local_model_integrity_failed",
+                "local SigLIP2 external data manifest is invalid",
+            )
+        try:
+            external_sha256 = _sha256_file(external_path)
+        except OSError as exc:
+            raise LocalSiglip2Error(
+                "local_model_unavailable",
+                "local SigLIP2 external model data is unavailable",
+            ) from exc
+        if external_sha256 != expected_sha256:
+            raise LocalSiglip2Error(
+                "local_model_integrity_failed",
+                "local SigLIP2 external data checksum does not match its manifest",
+            )
     return Siglip2VisionManifest(
         model_dir=root,
         model_path=model_path,
@@ -302,6 +365,7 @@ def load_siglip2_manifest(model_dir: Path | None) -> Siglip2VisionManifest:
         std=std,
         projection=projection,
         input_dtype=input_dtype,
+        external_data=external_data,
         input_name=input_name,
         output_name=output_name,
     )
@@ -329,8 +393,13 @@ def shared_onnx_backend(
 def l2_normalize(values: list[float]) -> list[float]:
     """Return a unit vector or fail instead of publishing a fake embedding."""
 
+    if not values or any(not isfinite(float(value)) for value in values):
+        raise LocalSiglip2Error(
+            "local_model_inference_failed",
+            "local SigLIP2 returned an unusable image embedding",
+        )
     norm = sqrt(sum(float(value) ** 2 for value in values))
-    if norm <= 0.0:
+    if not isfinite(norm) or norm <= 0.0:
         raise LocalSiglip2Error(
             "local_model_inference_failed",
             "local SigLIP2 returned an unusable image embedding",
@@ -361,6 +430,56 @@ def _three_floats(value: Any) -> tuple[float, float, float]:
         raise ValueError("expected three numeric values")
     converted = tuple(float(item) for item in value)
     return converted[0], converted[1], converted[2]
+
+
+def _external_data_entries(value: Any) -> tuple[tuple[str, str], ...]:
+    if not isinstance(value, dict):
+        raise ValueError("external_data must be an object")
+    entries: list[tuple[str, str]] = []
+    for name, checksum in value.items():
+        normalized_name = str(name)
+        normalized_checksum = str(checksum).lower()
+        if (
+            not normalized_name
+            or Path(normalized_name).is_absolute()
+            or len(normalized_checksum) != 64
+            or any(character not in "0123456789abcdef" for character in normalized_checksum)
+        ):
+            raise ValueError("external_data entry is invalid")
+        entries.append((normalized_name, normalized_checksum))
+    return tuple(sorted(entries))
+
+
+def onnx_external_data_locations(model_path: Path) -> set[str]:
+    """Return external initializer locations referenced by the ONNX graph."""
+
+    try:
+        import onnx
+    except ImportError as exc:
+        raise LocalSiglip2Error(
+            "local_model_unavailable",
+            "local SigLIP2 ONNX validation dependency is unavailable",
+        ) from exc
+    try:
+        model = onnx.load_model(str(model_path), load_external_data=False)
+    except Exception as exc:
+        raise LocalSiglip2Error(
+            "local_model_integrity_failed",
+            "local SigLIP2 ONNX graph is invalid",
+        ) from exc
+    locations: set[str] = set()
+    for tensor in model.graph.initializer:
+        entries = {entry.key: entry.value for entry in tensor.external_data}
+        location = entries.get("location")
+        if location:
+            locations.add(str(location))
+    return locations
+
+
+def _is_lower_hex(value: str, *, length: int) -> bool:
+    return len(value) == length and all(
+        character in "0123456789abcdef" for character in value
+    )
 
 
 def _sha256_file(path: Path) -> str:

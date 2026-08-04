@@ -5,6 +5,7 @@ from pathlib import Path
 import subprocess
 import sys
 from types import ModuleType
+from types import SimpleNamespace
 
 import pytest
 
@@ -15,8 +16,11 @@ from assistant_agent.media.video.detection.vision_embedding_provider import (
     create_vision_embedding_provider,
 )
 from assistant_agent.media.video.detection.local_siglip2_provider import (
+    LocalSiglip2Error,
     LocalSiglip2VisionConfig,
     LocalSiglip2VisionProvider,
+    OnnxSiglip2ImageBackend,
+    l2_normalize,
     load_siglip2_manifest,
 )
 from assistant_agent.media.video.detection.semantic_detector import (
@@ -32,6 +36,9 @@ from assistant_agent.media.video.keyframe.selector import (
 from assistant_agent.media.video.types import VideoFrame
 from assistant_agent.media.video.types import KeyframeChangeMetrics
 from assistant_agent.tools.registry import ToolRegistry
+
+
+_REVISION_SENTINEL = "a" * 40
 
 
 def test_real_mode_explicitly_configures_local_siglip2_image_embeddings() -> None:
@@ -73,16 +80,16 @@ def test_image_embedding_result_identifies_future_cross_modal_space() -> None:
         provider="local_siglip2",
         model="google/siglip2-base-patch16-224",
         model_family="siglip2",
-        model_revision="revision-sentinel",
+        model_revision=_REVISION_SENTINEL,
         embedding_space_id=(
-            "siglip2-base-p16-224@revision-sentinel:vision-pool-v1"
+            f"siglip2-base-p16-224@{_REVISION_SENTINEL}:image-projection-v1"
         ),
         dimension=2,
         normalized=True,
     )
 
     assert result.embedding_space_id == (
-        "siglip2-base-p16-224@revision-sentinel:vision-pool-v1"
+        f"siglip2-base-p16-224@{_REVISION_SENTINEL}:image-projection-v1"
     )
     assert result.model_family == "siglip2"
     assert result.dimension == 2
@@ -103,16 +110,33 @@ def test_embedding_provider_contract_is_image_specific() -> None:
 
 
 def test_provider_factory_builds_explicit_local_siglip2_image_provider() -> None:
-    config = ProviderConfig(
-        vision_embedding_provider="local_siglip2",
-        siglip2_vision_model_dir="/model-sentinel",
-        siglip2_cuda_device_id=2,
+    config = ProviderConfig.from_env(
+        {
+            "MULTIMODAL_AGENT_PROVIDER_MODE": "real",
+            "MULTIMODAL_AGENT_CHAT_PROVIDER": "deepseek",
+            "DEEPSEEK_API_KEY": "test-key-sentinel",
+            "MULTIMODAL_AGENT_VISION_EMBEDDING_PROVIDER": "local_siglip2",
+            "SIGLIP2_VISION_MODEL_DIR": "/model-sentinel",
+            "SIGLIP2_CUDA_DEVICE_ID": "2",
+        }
     )
 
     provider = create_vision_embedding_provider(config)
 
     assert provider.provider == "local_siglip2"
     assert provider.model == "google/siglip2-base-patch16-224"
+
+
+def test_provider_factory_cannot_bypass_mock_mode_with_direct_config() -> None:
+    config = ProviderConfig(
+        provider_mode="mock",
+        vision_embedding_provider="local_siglip2",
+        siglip2_vision_model_dir="/model-sentinel",
+    )
+
+    provider = create_vision_embedding_provider(config)
+
+    assert isinstance(provider, MockVisionEmbeddingProvider)
 
 
 class _SentinelPreprocessor:
@@ -130,23 +154,43 @@ class _SentinelBackend:
 
 
 def _write_siglip2_assets(model_dir: Path, *, checksum: str | None = None) -> None:
+    import onnx
+    from onnx import TensorProto, helper
+
     model_dir.mkdir()
-    model_bytes = b"onnx-model-sentinel"
+    input_info = helper.make_tensor_value_info(
+        "pixel_values",
+        TensorProto.FLOAT16,
+        [1, 3, 224, 224],
+    )
+    output_info = helper.make_tensor_value_info(
+        "image_embeds",
+        TensorProto.FLOAT16,
+        [1, 3],
+    )
+    graph = helper.make_graph(
+        [helper.make_node("Identity", ["pixel_values"], ["image_embeds"])],
+        "siglip2-test-graph",
+        [input_info],
+        [output_info],
+    )
+    model_bytes = helper.make_model(graph).SerializeToString()
     (model_dir / "vision_model.onnx").write_bytes(model_bytes)
     (model_dir / "manifest.json").write_text(
         json.dumps(
             {
                 "schema_version": 1,
                 "model_id": "google/siglip2-base-patch16-224",
-                "model_revision": "revision-sentinel",
+                "model_revision": _REVISION_SENTINEL,
                 "model_file": "vision_model.onnx",
                 "model_sha256": checksum or hashlib.sha256(model_bytes).hexdigest(),
                 "dimension": 3,
                 "embedding_space_id": (
-                    "siglip2-base-p16-224@revision-sentinel:image-projection-v1"
+                    f"siglip2-base-p16-224@{_REVISION_SENTINEL}:image-projection-v1"
                 ),
                 "projection": "visual_projection",
                 "input_dtype": "float16",
+                "external_data": {},
                 "preprocessing": {
                     "size": 224,
                     "mean": [0.5, 0.5, 0.5],
@@ -181,13 +225,43 @@ def test_local_siglip2_provider_returns_normalized_image_embedding(tmp_path) -> 
     assert result.embedding == pytest.approx([0.6, 0.8, 0.0])
     assert result.provider == "local_siglip2"
     assert result.model_family == "siglip2"
-    assert result.model_revision == "revision-sentinel"
+    assert result.model_revision == _REVISION_SENTINEL
     assert result.embedding_space_id == (
-        "siglip2-base-p16-224@revision-sentinel:image-projection-v1"
+        f"siglip2-base-p16-224@{_REVISION_SENTINEL}:image-projection-v1"
     )
     assert result.dimension == 3
     assert result.normalized is True
     assert result.errors == []
+
+
+def test_local_siglip2_provider_validates_immutable_assets_only_once(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    model_dir = tmp_path / "model"
+    _write_siglip2_assets(model_dir)
+    provider = LocalSiglip2VisionProvider(
+        LocalSiglip2VisionConfig(model_dir=model_dir),
+        backend=_SentinelBackend(),
+        preprocessor=_SentinelPreprocessor(),
+    )
+    provider_module = sys.modules[LocalSiglip2VisionProvider.__module__]
+    real_sha256_file = provider_module._sha256_file
+    checked_paths: list[Path] = []
+
+    def _counted_sha256_file(path: Path) -> str:
+        checked_paths.append(path)
+        return real_sha256_file(path)
+
+    monkeypatch.setattr(provider_module, "_sha256_file", _counted_sha256_file)
+    frame = _write_frame(tmp_path / "frame.jpg")
+
+    first = provider.embed_image(frame)
+    second = provider.embed_image(frame)
+
+    assert first.errors == []
+    assert second.errors == []
+    assert checked_paths == [model_dir.resolve() / "vision_model.onnx"]
 
 
 def test_local_siglip2_provider_fails_closed_when_assets_are_missing(tmp_path) -> None:
@@ -216,6 +290,12 @@ def test_local_siglip2_provider_rejects_model_checksum_mismatch(tmp_path) -> Non
     assert result.errors[0]["code"] == "local_model_integrity_failed"
 
 
+@pytest.mark.parametrize("values", [[float("nan"), 1.0], [float("inf"), 1.0]])
+def test_local_siglip2_rejects_non_finite_embeddings(values: list[float]) -> None:
+    with pytest.raises(LocalSiglip2Error, match="unusable"):
+        l2_normalize(values)
+
+
 def test_runtime_manifest_requires_cross_modal_projection_contract(tmp_path) -> None:
     model_dir = tmp_path / "model"
     _write_siglip2_assets(model_dir)
@@ -224,6 +304,142 @@ def test_runtime_manifest_requires_cross_modal_projection_contract(tmp_path) -> 
 
     assert manifest.projection == "visual_projection"
     assert manifest.input_dtype == "float16"
+
+
+@pytest.mark.parametrize(
+    ("model_revision", "embedding_space_id"),
+    [
+        ("main", "siglip2-base-p16-224@main:image-projection-v1"),
+        (
+            _REVISION_SENTINEL,
+            f"siglip2-base-p16-224@{'b' * 40}:image-projection-v1",
+        ),
+    ],
+)
+def test_runtime_manifest_requires_immutable_matching_embedding_identity(
+    tmp_path,
+    model_revision: str,
+    embedding_space_id: str,
+) -> None:
+    model_dir = tmp_path / "model"
+    _write_siglip2_assets(model_dir)
+    manifest_path = model_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["model_revision"] = model_revision
+    manifest["embedding_space_id"] = embedding_space_id
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(LocalSiglip2Error, match="manifest is invalid"):
+        load_siglip2_manifest(model_dir)
+
+
+def test_runtime_manifest_validates_onnx_external_data_checksums(tmp_path) -> None:
+    model_dir = tmp_path / "model"
+    _write_siglip2_assets(model_dir)
+    external_path = model_dir / "vision_model.onnx.data"
+    external_path.write_bytes(b"external-weight-sentinel")
+    manifest_path = model_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["external_data"] = {
+        external_path.name: "0" * 64,
+    }
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    provider_module = sys.modules[LocalSiglip2VisionProvider.__module__]
+    original_locations = provider_module.onnx_external_data_locations
+
+    def _locations(_model_path: Path) -> set[str]:
+        return {external_path.name}
+
+    provider_module.onnx_external_data_locations = _locations
+    try:
+        with pytest.raises(Exception, match="checksum"):
+            load_siglip2_manifest(model_dir)
+    finally:
+        provider_module.onnx_external_data_locations = original_locations
+
+
+def test_runtime_manifest_rejects_unlisted_onnx_external_data(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    model_dir = tmp_path / "model"
+    _write_siglip2_assets(model_dir)
+    provider_module = sys.modules[LocalSiglip2VisionProvider.__module__]
+    monkeypatch.setattr(
+        provider_module,
+        "onnx_external_data_locations",
+        lambda _model_path: {"vision_model.onnx.data"},
+        raising=False,
+    )
+
+    with pytest.raises(LocalSiglip2Error, match="external data manifest"):
+        load_siglip2_manifest(model_dir)
+
+
+def test_onnx_backend_rejects_silent_cpu_provider_fallback(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    model_dir = tmp_path / "model"
+    _write_siglip2_assets(model_dir)
+    manifest = load_siglip2_manifest(model_dir)
+
+    class _CpuOnlySession:
+        def get_providers(self) -> list[str]:
+            return ["CPUExecutionProvider"]
+
+    class _SessionOptions:
+        def add_session_config_entry(self, _key: str, _value: str) -> None:
+            return None
+
+    fake_ort = SimpleNamespace(
+        get_available_providers=lambda: [
+            "CUDAExecutionProvider",
+            "CPUExecutionProvider",
+        ],
+        preload_dlls=lambda **_kwargs: None,
+        SessionOptions=_SessionOptions,
+        InferenceSession=lambda *_args, **_kwargs: _CpuOnlySession(),
+    )
+    monkeypatch.setitem(sys.modules, "onnxruntime", fake_ort)
+
+    with pytest.raises(LocalSiglip2Error, match="CUDA"):
+        OnnxSiglip2ImageBackend(manifest, cuda_device_id=0)
+
+
+def test_onnx_backend_disables_operator_level_cpu_fallback(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    model_dir = tmp_path / "model"
+    _write_siglip2_assets(model_dir)
+    manifest = load_siglip2_manifest(model_dir)
+    captured: dict[str, object] = {}
+
+    class _SessionOptions:
+        def add_session_config_entry(self, key: str, value: str) -> None:
+            captured[key] = value
+
+    class _CudaSession:
+        def get_providers(self) -> list[str]:
+            return ["CUDAExecutionProvider", "CPUExecutionProvider"]
+
+    def _session(*_args, **kwargs):
+        captured["sess_options"] = kwargs.get("sess_options")
+        return _CudaSession()
+
+    fake_ort = SimpleNamespace(
+        get_available_providers=lambda: ["CUDAExecutionProvider"],
+        preload_dlls=lambda **_kwargs: None,
+        SessionOptions=_SessionOptions,
+        InferenceSession=_session,
+    )
+    monkeypatch.setitem(sys.modules, "onnxruntime", fake_ort)
+
+    OnnxSiglip2ImageBackend(manifest, cuda_device_id=0)
+
+    assert captured["session.disable_cpu_ep_fallback"] == "1"
+    assert isinstance(captured["sess_options"], _SessionOptions)
 
 
 def _frame_at(timestamp_seconds: float) -> VideoFrame:
@@ -350,6 +566,28 @@ def test_collector_probes_semantics_at_two_fps_without_reembedding_early() -> No
     assert model.calls == ["frame-0", "frame-050"]
 
 
+def test_two_fps_semantic_threshold_trigger_bypasses_slower_sampler() -> None:
+    collector = AdaptiveKeyframeCollector(
+        keyframe_config=KeyframeSelectorConfig(min_interval_seconds=0.0),
+        semantic_probe_fps=2.0,
+    )
+    initial = _static_frame("frame-0", 0.0)
+    initial.metadata["embedding"] = [1.0, 0.0]
+    boundary = _static_frame("frame-050", 0.5)
+    boundary.metadata["embedding"] = [0.81, 0.586429876]
+
+    collector.collect(initial)
+    due = collector.collect(boundary)
+
+    assert due.processing.metrics.semantic_change_score == pytest.approx(
+        0.19,
+        abs=1e-6,
+    )
+    assert due.processing.sampled is True
+    assert due.processing.keyframe_selected is True
+    assert due.processing.decision_reason == "semantic_change"
+
+
 class _FailedImageEmbeddingModel:
     def embed_image(self, frame: VideoFrame) -> VisionEmbeddingResult:
         return VisionEmbeddingResult(
@@ -381,9 +619,14 @@ def test_failed_siglip2_embedding_does_not_create_fake_semantic_change() -> None
 
 
 def test_realtime_observer_uses_configured_siglip2_ssim_policy() -> None:
-    config = ProviderConfig(
-        vision_embedding_provider="local_siglip2",
-        siglip2_vision_model_dir="/model-sentinel",
+    config = ProviderConfig.from_env(
+        {
+            "MULTIMODAL_AGENT_PROVIDER_MODE": "real",
+            "MULTIMODAL_AGENT_CHAT_PROVIDER": "deepseek",
+            "DEEPSEEK_API_KEY": "test-key-sentinel",
+            "MULTIMODAL_AGENT_VISION_EMBEDDING_PROVIDER": "local_siglip2",
+            "SIGLIP2_VISION_MODEL_DIR": "/model-sentinel",
+        }
     )
 
     observer = RealtimeVideoObserver(
@@ -426,21 +669,47 @@ def test_export_manifest_preserves_cross_modal_projection_identity() -> None:
 
     manifest = module.build_manifest(
         model_id="google/siglip2-base-patch16-224",
-        model_revision="revision-sentinel",
+        model_revision=_REVISION_SENTINEL,
         model_file="vision_model.onnx",
         model_sha256="a" * 64,
         dimension=768,
         image_size=224,
         mean=(0.5, 0.5, 0.5),
         std=(0.5, 0.5, 0.5),
+        external_data={"vision_model.onnx.data": "b" * 64},
     )
 
     assert manifest["input_name"] == "pixel_values"
     assert manifest["output_name"] == "image_embeds"
     assert manifest["projection"] == "visual_projection"
+    assert manifest["external_data"] == {
+        "vision_model.onnx.data": "b" * 64,
+    }
     assert manifest["embedding_space_id"] == (
-        "siglip2-base-p16-224@revision-sentinel:image-projection-v1"
+        f"siglip2-base-p16-224@{_REVISION_SENTINEL}:image-projection-v1"
     )
+
+
+def test_export_reads_external_data_locations_from_onnx_graph(monkeypatch) -> None:
+    module = _load_siglip2_export_script()
+    external_entry = SimpleNamespace(
+        key="location",
+        value="vision_model.onnx.data",
+    )
+    model = SimpleNamespace(
+        graph=SimpleNamespace(
+            initializer=[SimpleNamespace(external_data=[external_entry])]
+        )
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "onnx",
+        SimpleNamespace(load_model=lambda *_args, **_kwargs: model),
+    )
+
+    locations = module.onnx_external_data_locations(Path("vision_model.onnx"))
+
+    assert locations == {"vision_model.onnx.data"}
 
 
 def test_export_script_rejects_an_unapproved_model_id() -> None:

@@ -202,6 +202,8 @@ def create_vision_embedding_provider(config: ProviderConfig | None = None) -> Vi
         from assistant_agent.config import ProviderConfig
 
         config = ProviderConfig.from_env()
+    if config.provider_mode != "real":
+        return MockVisionEmbeddingProvider()
     if config.vision_embedding_provider == "dashscope":
         return DashScopeVisionEmbeddingProvider(
             DashScopeVisionEmbeddingConfig(

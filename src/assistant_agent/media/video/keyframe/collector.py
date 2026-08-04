@@ -64,15 +64,19 @@ class AdaptiveKeyframeCollector:
         started_at = time.perf_counter()
         force = self.selector.force_due(frame.timestamp_seconds, self._last_keyframe_at)
         metrics, errors = self._change_metrics(frame, force=force)
+        decision = self.selector.select(
+            frame,
+            metrics,
+            last_keyframe_at=self._last_keyframe_at,
+        )
         sampling = self.sampler.should_sample(
             timestamp_seconds=frame.timestamp_seconds,
             change_score=0.0 if self._last_keyframe is None else metrics.change_score,
-            force=force,
+            force=force or decision.selected,
         )
         selected_frame: VideoFrame | None = None
         reason = sampling.reason
         if sampling.sampled:
-            decision = self.selector.select(frame, metrics, last_keyframe_at=self._last_keyframe_at)
             reason = decision.reason
             if decision.selected:
                 selected_frame = frame
