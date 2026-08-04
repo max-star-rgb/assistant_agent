@@ -19,6 +19,7 @@ from assistant_agent.observability.turn_evaluator import build_turn_diagnostic
 from assistant_agent.observability.turn_summary import latest_turn_summary_from_events
 
 if TYPE_CHECKING:
+    from assistant_agent.memory.trace_content import MemoryIngestionTraceContent
     from assistant_agent.observability.trace_conversation import (
         TraceConversationView,
         TraceLlmInput,
@@ -127,6 +128,7 @@ def build_text_otel_span_specs(
     events: Iterable[TraceEvent],
     *,
     conversation: "TraceConversationView | None" = None,
+    memory_content: "MemoryIngestionTraceContent | None" = None,
 ) -> list[OtelSpanSpec]:
     """Map redacted text-run trace events into dependency-free OTel span specs."""
 
@@ -173,9 +175,31 @@ def build_text_otel_span_specs(
                 trace_attributes=trace_attributes,
                 conversation=conversation,
                 started_at_by_span_id=started_at_by_span_id,
+                memory_content=memory_content,
             )
         )
     return spans
+
+
+def build_late_text_otel_span_spec(
+    event: TraceEvent,
+    *,
+    memory_content: "MemoryIngestionTraceContent | None" = None,
+) -> OtelSpanSpec:
+    """Map one post-summary event without re-exporting the runtime root span."""
+
+    safe_event = event if memory_content is not None else redact_trace_event(event)
+    root_span_id = _root_span_id([safe_event])
+    return _operation_span(
+        safe_event,
+        root_span_id=root_span_id,
+        runtime_parent_id=root_span_id,
+        iteration_parent_id=None,
+        trace_attributes=_trace_attributes([safe_event]),
+        conversation=None,
+        started_at_by_span_id={},
+        memory_content=memory_content,
+    )
 
 
 def _root_span(
@@ -295,6 +319,7 @@ def _operation_span(
     trace_attributes: dict[str, Any],
     conversation: "TraceConversationView | None",
     started_at_by_span_id: Mapping[str, datetime],
+    memory_content: "MemoryIngestionTraceContent | None" = None,
 ) -> OtelSpanSpec:
     span_id = event.span_id or f"{event.run_id}:{_event_name(event)}"
     return OtelSpanSpec(
@@ -316,7 +341,11 @@ def _operation_span(
         attributes={
             **trace_attributes,
             **_event_attributes(event),
-            **_event_io_attributes(event, conversation=conversation),
+            **_event_io_attributes(
+                event,
+                conversation=conversation,
+                memory_content=memory_content,
+            ),
         },
     )
 
@@ -485,6 +514,7 @@ def _event_io_attributes(
     event: TraceEvent,
     *,
     conversation: "TraceConversationView | None",
+    memory_content: "MemoryIngestionTraceContent | None" = None,
 ) -> dict[str, str]:
     name = _event_name(event)
     input_payload: Any = {"operation": _span_name(event)}
@@ -585,11 +615,22 @@ def _event_io_attributes(
                 {**event.output_summary, **event.attributes},
                 (
                     "memory_count",
+                    "change_counts",
+                    "memory_ids",
+                    "source_turn",
+                    "content_capture_status",
                     "error_codes",
                     "pending_count",
                 ),
             )
         )
+        if name == "memory.ingestion.finished":
+            output_payload["content_exported"] = memory_content is not None
+            if memory_content is not None:
+                output_payload["changes"] = [
+                    change.model_dump(mode="json")
+                    for change in memory_content.changes
+                ]
     elif name == "context.build.finished":
         context_report = event.output_summary.get("context_report_v2")
         if not isinstance(context_report, Mapping):

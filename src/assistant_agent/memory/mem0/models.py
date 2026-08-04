@@ -27,9 +27,18 @@ class Mem0Identity(BaseModel):
         return {"user_id": self.user_id, "agent_id": self.agent_id}
 
 
+class Mem0MemoryChange(BaseModel):
+    """One native memory mutation reported by Mem0 ``add``."""
+
+    memory_id: str = Field(min_length=1)
+    memory: str | None = None
+    event: Literal["ADD", "UPDATE", "DELETE"]
+
+
 class Mem0IngestionResult(BaseModel):
     accepted: bool
     memory_ids: list[str] = Field(default_factory=list)
+    changes: list[Mem0MemoryChange] | None = None
     errors: list[dict[str, Any]] = Field(default_factory=list)
 
 

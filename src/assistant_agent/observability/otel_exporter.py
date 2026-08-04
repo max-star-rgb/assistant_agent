@@ -5,9 +5,12 @@ from __future__ import annotations
 import importlib
 import os
 import re
+import secrets
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import timezone
+from hashlib import sha256
 from inspect import Parameter, signature
 from queue import Empty, Full, Queue
 from threading import Event, Lock, Thread
@@ -17,8 +20,12 @@ from urllib.parse import urlparse
 
 from assistant_agent.observability.otel_mapping import (
     OtelSpanSpec,
+    build_late_text_otel_span_spec,
     build_text_otel_span_specs,
     langfuse_trace_id,
+)
+from assistant_agent.observability.trace_content_policy import (
+    local_memory_trace_content_enabled,
 )
 from assistant_agent.observability.langfuse_config import (
     default_langfuse_trace_endpoint,
@@ -66,6 +73,7 @@ class OtlpHttpTextExporterConfig:
     service_name: str = DEFAULT_OTEL_SERVICE_NAME
     queue_capacity: int = DEFAULT_EXPORT_QUEUE_CAPACITY
     include_content: bool = True
+    include_memory_content: bool = False
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "OtlpHttpTextExporterConfig":
@@ -104,6 +112,11 @@ class OtlpHttpTextExporterConfig:
             )
             or DEFAULT_EXPORT_QUEUE_CAPACITY,
             include_content=enabled,
+            include_memory_content=(
+                enabled
+                and local_memory_trace_content_enabled(values)
+                and _is_loopback_endpoint(endpoint)
+            ),
         )
 
 
@@ -205,6 +218,7 @@ def create_text_otel_trace_observer_from_env() -> TextOtelTraceObserver | None:
         BufferedTextOtelSpanExporter(setup.exporter, capacity=config.queue_capacity),
         enabled=True,
         include_content=config.include_content,
+        include_memory_content=config.include_memory_content,
     )
 
 
@@ -224,7 +238,11 @@ class _OtelSdkSpanBridge:
         otlp_export_module = import_module("opentelemetry.exporter.otlp.proto.http.trace_exporter")
 
         resource = resource_module.Resource.create({"service.name": config.service_name})
-        provider = sdk_trace_module.TracerProvider(resource=resource)
+        self._id_generator = _SpecSpanIdGenerator()
+        provider = sdk_trace_module.TracerProvider(
+            resource=resource,
+            id_generator=self._id_generator,
+        )
         exporter_kwargs: dict[str, Any] = {
             "endpoint": config.endpoint,
             "headers": config.headers,
@@ -255,12 +273,13 @@ class _OtelSdkSpanBridge:
                     spec.parent_span_id or "",
                     root_context,
                 )
-            span = self._tracer.start_span(
-                spec.name,
-                context=parent_context,
-                start_time=_datetime_to_epoch_ns(spec.start_time),
-                attributes=_otel_attribute_values(spec.attributes),
-            )
+            with self._id_generator.use_span_id(_otel_spec_span_id(spec.span_id)):
+                span = self._tracer.start_span(
+                    spec.name,
+                    context=parent_context,
+                    start_time=_datetime_to_epoch_ns(spec.start_time),
+                    attributes=_otel_attribute_values(spec.attributes),
+                )
             _set_otel_status(self._trace_module, span, spec.status)
             contexts_by_span_id[spec.span_id] = self._trace_module.set_span_in_context(span)
             if root_context is None:
@@ -276,6 +295,31 @@ class _OtelSdkSpanBridge:
     def shutdown(self) -> bool:
         result = self._provider.shutdown()
         return result is not False
+
+
+class _SpecSpanIdGenerator:
+    """Give the OTel SDK the stable span ID declared by each span spec."""
+
+    def __init__(self) -> None:
+        self._lock = Lock()
+        self._next_span_id: int | None = None
+
+    @contextmanager
+    def use_span_id(self, span_id: int):
+        with self._lock:
+            self._next_span_id = span_id
+            try:
+                yield
+            finally:
+                self._next_span_id = None
+
+    def generate_span_id(self) -> int:
+        span_id = self._next_span_id
+        self._next_span_id = None
+        return span_id or _random_nonzero_id(bits=64)
+
+    def generate_trace_id(self) -> int:
+        return _random_nonzero_id(bits=128)
 
 
 class BufferedTextOtelSpanExporter:
@@ -437,6 +481,7 @@ class TextOtelTraceObserver:
         max_events_per_run: int = DEFAULT_MAX_EVENTS_PER_RUN,
         continue_on_error: bool = True,
         include_content: bool = False,
+        include_memory_content: bool = False,
     ) -> None:
         if max_buffered_runs <= 0:
             raise ValueError("max_buffered_runs must be positive")
@@ -448,10 +493,13 @@ class TextOtelTraceObserver:
         self.max_events_per_run = max_events_per_run
         self.continue_on_error = continue_on_error
         self.include_content = include_content
+        self.include_memory_content = include_memory_content
         self._lock = Lock()
         self._events_by_run: dict[str, list[TraceEvent]] = {}
+        self._exporting_run_ids: set[str] = set()
         self._exported_run_ids: set[str] = set()
         self._dropped_run_ids: set[str] = set()
+        self._pending_late_memory_events: dict[str, TraceEvent] = {}
         self._errors: list[str] = []
         self._exported_run_count = 0
         self._dropped_run_count = 0
@@ -498,10 +546,36 @@ class TextOtelTraceObserver:
         if not self.enabled:
             return
         exported_event = event if self.include_content else redact_trace_event(event)
-        events_to_export = self._buffer_event(exported_event)
-        if events_to_export is None:
-            return
-        self._export_events(events_to_export)
+        route, events_to_export = self._buffer_event(exported_event)
+        if route == "late_memory":
+            self._export_late_memory_event(exported_event)
+        elif route == "batch" and events_to_export is not None:
+            self._export_events(events_to_export)
+            pending_memory = self._complete_run_export(exported_event.run_id)
+            if pending_memory is not None:
+                self._export_late_memory_event(pending_memory)
+
+    def _export_late_memory_event(self, event: TraceEvent) -> None:
+        try:
+            memory_content = None
+            if self.include_memory_content:
+                from assistant_agent.memory.trace_content import (
+                    get_default_memory_trace_content_store,
+                )
+
+                memory_content = get_default_memory_trace_content_store().get(
+                    trace_id=event.trace_id,
+                    run_id=event.run_id,
+                )
+            span = build_late_text_otel_span_spec(
+                event,
+                memory_content=memory_content,
+            )
+            self.exporter.export([span])
+        except Exception as exc:
+            self._record_error(exc)
+            if not self.continue_on_error:
+                raise
 
     def flush(self, *, timeout: float = DEFAULT_EXPORT_CLOSE_TIMEOUT_SECONDS) -> bool:
         """Flush the underlying exporter when it supports flush."""
@@ -515,11 +589,22 @@ class TextOtelTraceObserver:
             return self._call_exporter_lifecycle("shutdown", timeout=timeout)
         return self._call_exporter_lifecycle("close", timeout=timeout)
 
-    def _buffer_event(self, event: TraceEvent) -> list[TraceEvent] | None:
+    def _buffer_event(
+        self,
+        event: TraceEvent,
+    ) -> tuple[Literal["buffered", "batch", "late_memory", "ignored"], list[TraceEvent] | None]:
         with self._lock:
             run_id = event.run_id
-            if run_id in self._exported_run_ids or run_id in self._dropped_run_ids:
-                return None
+            if run_id in self._dropped_run_ids:
+                return "ignored", None
+            if run_id in self._exporting_run_ids:
+                if event.canonical_event == "memory.ingestion.finished":
+                    self._pending_late_memory_events[run_id] = event
+                return "buffered", None
+            if run_id in self._exported_run_ids:
+                if event.canonical_event == "memory.ingestion.finished":
+                    return "late_memory", None
+                return "ignored", None
             if run_id not in self._events_by_run:
                 self._ensure_run_capacity_locked()
                 self._events_by_run[run_id] = []
@@ -529,11 +614,17 @@ class TextOtelTraceObserver:
                 self._dropped_event_count += 1
             events.append(event)
             if event.canonical_event != ASSISTANT_TURN_SUMMARY_EVENT:
-                return None
+                return "buffered", None
             events_to_export = list(events)
             del self._events_by_run[run_id]
+            self._exporting_run_ids.add(run_id)
+            return "batch", events_to_export
+
+    def _complete_run_export(self, run_id: str) -> TraceEvent | None:
+        with self._lock:
+            self._exporting_run_ids.discard(run_id)
             self._exported_run_ids.add(run_id)
-            return events_to_export
+            return self._pending_late_memory_events.pop(run_id, None)
 
     def _ensure_run_capacity_locked(self) -> None:
         while len(self._events_by_run) >= self.max_buffered_runs:
@@ -545,7 +636,16 @@ class TextOtelTraceObserver:
     def _export_events(self, events: list[TraceEvent]) -> None:
         try:
             conversation = self._trace_conversation(events) if self.include_content else None
-            spans = build_text_otel_span_specs(events, conversation=conversation)
+            memory_content = (
+                self._memory_content(events)
+                if self.include_memory_content
+                else None
+            )
+            spans = build_text_otel_span_specs(
+                events,
+                conversation=conversation,
+                memory_content=memory_content,
+            )
             if spans:
                 self.exporter.export(spans)
         except Exception as exc:
@@ -574,6 +674,27 @@ class TextOtelTraceObserver:
             include_llm_inputs=True,
             include_llm_outputs=True,
             include_tool_observations=True,
+        )
+
+    @staticmethod
+    def _memory_content(events: list[TraceEvent]):
+        event = next(
+            (
+                item
+                for item in events
+                if item.canonical_event == "memory.ingestion.finished"
+            ),
+            None,
+        )
+        if event is None:
+            return None
+        from assistant_agent.memory.trace_content import (
+            get_default_memory_trace_content_store,
+        )
+
+        return get_default_memory_trace_content_store().get(
+            trace_id=event.trace_id,
+            run_id=event.run_id,
         )
 
     def _call_exporter_lifecycle(self, method_name: str, *, timeout: float) -> bool:
@@ -679,6 +800,25 @@ def _datetime_to_epoch_ns(value: Any) -> int:
     if getattr(value, "tzinfo", None) is None:
         value = value.replace(tzinfo=timezone.utc)
     return int(value.timestamp() * 1_000_000_000)
+
+
+def _otel_spec_span_id(value: str) -> int:
+    if len(value) == 16 and value == value.lower():
+        try:
+            parsed = int(value, 16)
+        except ValueError:
+            parsed = 0
+        if parsed != 0:
+            return parsed
+    parsed = int.from_bytes(sha256(value.encode("utf-8")).digest()[:8], "big")
+    return parsed or 1
+
+
+def _random_nonzero_id(*, bits: int) -> int:
+    value = 0
+    while value == 0:
+        value = secrets.randbits(bits)
+    return value
 
 
 def _otel_attribute_values(attributes: Mapping[str, Any]) -> dict[str, Any]:

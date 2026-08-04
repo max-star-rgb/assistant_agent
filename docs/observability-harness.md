@@ -36,7 +36,7 @@ Observability 是运行时行为的只读投影，不是另一套执行状态机
 | Gateway lifecycle JSONL | 记录 session、queue、admission、run、cancel、interrupt 和 terminal 入口边界 | 承载 Assistant loop 内部推理或 Provider payload |
 | Agent-Service delivery audit | 记录媒体响应从 accepted 到 sent/acked/failed/disconnected 的交付状态 | 表示 Assistant 任务本身成功或失败 |
 | Operational console/text log | 提供低噪声、prompt-safe 的运行提示和兼容文本投影 | 作为 runtime 详细开发 timeline |
-| Local trace-content overlay | 在明确边界内保存当前 turn 的 request/response、Provider 语义证据和 tool observation | 写入 conversation history 或公开 trace summary |
+| Local trace-content overlay | 在明确边界内保存当前 turn 的 request/response、Provider 语义证据、tool observation，以及显式启用的 Mem0 change text | 写入 conversation history 或公开 trace summary |
 | OTel/Langfuse projection | 把 canonical events 映射为 trace/span/generation、usage 和安全 metadata | 改写 canonical event 的含义 |
 | Metrics、scores、eval views | 从 canonical facts 派生统计、诊断和质量分数 | 反向控制 runtime 行为 |
 
@@ -204,6 +204,10 @@ Combined console 默认只显示关键 Gateway lifecycle 和普通应用 WARNING
 本项目本地 trace content 默认启用；设置 `MULTIMODAL_AGENT_LOCAL_TRACE_CONTENT=0` 可进入减少内容的兼容模式。
 Provider protocol 语义捕获还受 `MULTIMODAL_AGENT_LOCAL_PROVIDER_PROTOCOL_CAPTURE` 控制。开关语义以
 `src/assistant_agent/observability/trace_content_policy.py` 为准。
+Mem0 change text 额外要求显式设置 `MULTIMODAL_AGENT_LOCAL_MEMORY_TRACE_CONTENT=1`，并且只允许
+投影到 loopback OTLP endpoint；默认 canonical event 仅记录数量、event 计数和 memory ID。
+该开关独立于普通 trace/provider 内容权限，不得隐式启用 request/response、Tool observation 或
+Provider protocol capture。overlay 写入失败时 canonical event 仍须保留，并用安全状态承认证据缺口。
 
 内容捕获与 prompt-safe trace 必须分层：
 
@@ -227,6 +231,11 @@ Provider protocol 语义捕获还受 `MULTIMODAL_AGENT_LOCAL_PROVIDER_PROTOCOL_C
 - operation 的 parent、start/end、status 来自 canonical span 关系和 started/terminal event；
 - usage 映射到 generation/OTel token attributes，不能因嵌套结构而丢失；
 - only-allowlisted metadata 和 output reference 可以进入公开 projection。
+
+`assistant.turn.summary` 到达时主 trace 可以先导出；后续后台 `memory.ingestion.finished` 不得被
+静默丢弃。OTel observer 将它作为单独的 late `memory.turn_ingestion` span 追加到同一 trace，
+parent 使用稳定的 `agent.runtime` root span ID。已有 `langfuse.session.id` 负责在 Session 页面聚合
+同一会话的多个 turn；Langfuse 不创建第二套 session 或 memory 数据库。
 
 Langfuse 的 trace、observation、score 和 Dataset/Experiment 是远端投影与评估记录。面板如何折叠或展示
 长 JSON 不属于架构契约；需要完整证据时查询 observation 数据或回到 canonical trace。

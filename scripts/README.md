@@ -7,6 +7,10 @@ eval、Gateway 主链路覆盖的 probe 不应继续沉积到本目录。
 
 - `scripts/run_server.py`: starts the FastAPI backend with Gateway, media, HTTP,
   memory, trace, and tool-governed runtime routes.
+  本机 Langfuse 需要查看 Mem0 具体 change text 时，显式增加
+  `--allow-local-memory-trace-content`；它只对 loopback OTLP endpoint 生效，canonical JSONL
+  仍只保留数量、event 计数和 memory ID。在 Langfuse Session 中打开各 turn 的
+  `memory.turn_ingestion` 查看结果，单条演化用 Mem0 原生 history API 钻取。
 - `scripts/run_langfuse.py`: PyCharm-friendly local Langfuse supervisor. It starts
   the ignored `.data/langfuse` Compose stack, waits for health, stays attached as
   one Run process, and stops the containers without deleting data when terminated.

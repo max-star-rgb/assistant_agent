@@ -65,6 +65,11 @@ snapshot，turn 使用空记忆继续运行。Mem0 召回失败也冻结为空�
 turn ingestion 不等待 Mem0。后台队列按身份串行、不同身份可并行；队列已满或 Mem0 失败只写
 结构化 trace，不把失败升级为前台 run 错误。
 
+Mem0 `add` 返回的 `results` 会在 adapter 边界收窄为 `id`、最终 `memory` 文本和原生
+`event`（`ADD` / `UPDATE` / `DELETE`）。其中数量、event 计数和 memory ID 可以进入
+prompt-safe canonical event；memory text 不进入 JSONL、公开 trace query 或普通日志。无
+`results` 表示该 turn 没有形成长期记忆，不伪造成失败。
+
 `MEM0_TIMEOUT_SECONDS` 约束 session-start recall 等前台请求，默认 5 秒。后台 `add` 不占用回复
 关键路径，`Mem0Client` 在实例化时自动为它分配至少 30 秒的超时，避免为了容纳提取与 embedding
 耗时而扩大 session 启动的失败等待时间。
@@ -92,6 +97,7 @@ Python API 暴露为 HTTP，不实现第二套记忆策略。
 - `MULTIMODAL_AGENT_MEMORY_INGESTION_MAX_WORKERS`（默认 `2`）
 - `MULTIMODAL_AGENT_MEMORY_INGESTION_MAX_PENDING`（默认 `64`）
 - `MULTIMODAL_AGENT_MEMORY_INGESTION_SHUTDOWN_TIMEOUT_SECONDS`（默认 `10`）
+- `MULTIMODAL_AGENT_LOCAL_MEMORY_TRACE_CONTENT`（默认关闭；仅控制本机 Langfuse 记忆正文观测）
 
 只有 `MULTIMODAL_AGENT_PROVIDER_MODE=real` 且配置了 `MEM0_BASE_URL` 时才连接真实 Mem0。
 mock/offline 环境使用明确的 unavailable adapter；它不是本地记忆实现，也不会保存或召回。
@@ -101,6 +107,33 @@ mock/offline 环境使用明确的 unavailable adapter；它不是本地记忆�
 ```bash
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_mem0.py
 ```
+
+### 本机 Langfuse 查看记忆提炼结果
+
+Assistant 的每个 completed turn 仍独立异步提交给 Mem0；同一 runtime session 通过稳定的
+Mem0 `run_id` 提供会话上下文，并不是等 session 结束后一次性提交全文。Langfuse 已使用
+runtime `session_id` 作为 `langfuse.session.id`，因此在 Langfuse 的 Session 页面选择目标
+session，再打开各个 `assistant.turn` trace 中的 `memory.turn_ingestion`，即可按 turn 查看：
+
+- `memory_count`、`change_counts`、`memory_ids`：始终为 prompt-safe 结构化摘要；
+- `content_capture_status`：正文 overlay 为 `disabled`、`skipped`、`captured` 或 `failed`；
+- `content_exported=false`：正文权限未启用，或 OTLP endpoint 不是 loopback；
+- `content_exported=true` 与 `changes`：本次 Mem0 返回的具体 ADD/UPDATE/DELETE 及最终记忆文本；
+- `changes=[]`：Mem0 成功处理，但该 turn 没有提炼出长期记忆。
+
+记忆正文含用户长期事实，必须在本机 Assistant Server 显式启动：
+
+```bash
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_server.py \
+  --allow-local-memory-trace-content
+```
+
+该开关只有在 OTLP export 已启用且 endpoint host 为 `localhost`、`127.0.0.1` 或 `::1` 时才会
+把正文从有界进程内 overlay 投影到 Langfuse。turn summary 先于后台 Mem0 完成时，observer 会在
+同一 trace 的稳定 `agent.runtime` root 下追加一个 late `memory.turn_ingestion` span，不重复创建
+root。需要检查单条记忆的演化时，复制 `memory_id` 并读取 Mem0 原生
+`GET /memories/{memory_id}/history`；Langfuse 只是派生视图，不反写 Mem0。
+该窄开关不启用普通 request/response、Tool observation 或 Provider protocol 内容捕获。
 
 已有英文记忆不会因 `custom_instructions` 自动改写。当前用户的存量迁移使用专用 operator
 命令，先按 runtime `user_id + agent_id` 映射不透明 Mem0 身份；默认只 inspect，不调用
@@ -130,6 +163,7 @@ Provider 原始响应写入日志/文件。失败时停止，可幂等重跑；�
 | `memory/session_snapshot.py` | session 内冻结并复用结构化 snapshot |
 | `memory/ingestion_queue.py` | 有界后台队列、同身份有序与关闭排空 |
 | `memory/observability.py` | recall/ingestion 的最小结构化 trace |
+| `memory/trace_content.py` | 显式启用时保存有界、进程内的 Mem0 change text overlay |
 | `memory/mem0/client.py` | Mem0 原生 `get_all` / `add` 客户端 |
 | `memory/mem0/models.py` | 仅供 Mem0 adapter 使用的身份、健康和写入结果模型 |
 | `memory/mem0/identity.py` | runtime 身份到 Mem0 原生 ID 的稳定映射 |

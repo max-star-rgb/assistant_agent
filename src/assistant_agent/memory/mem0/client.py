@@ -18,6 +18,7 @@ from assistant_agent.identity import RequestIdentity
 from assistant_agent.memory.mem0.models import (
     Mem0HealthResult,
     Mem0IngestionResult,
+    Mem0MemoryChange,
 )
 
 
@@ -129,12 +130,15 @@ class Mem0Client:
                 accepted=False,
                 errors=[{"code": "mem0_ingestion_failed"}],
             )
-        results = _mapping_list(payload.get("results"))
+        changes = [
+            change
+            for item in _mapping_list(payload.get("results"))
+            if (change := _memory_change(item)) is not None
+        ]
         return Mem0IngestionResult(
             accepted=True,
-            memory_ids=[
-                str(item["id"]) for item in results if item.get("id")
-            ],
+            memory_ids=[change.memory_id for change in changes],
+            changes=changes,
         )
 
     def _request(
@@ -174,6 +178,30 @@ def _long_term_memory(value: Mapping[str, Any]) -> LongTermMemory:
             or datetime.now().astimezone()
         ),
         relevance=_score(value.get("score")),
+    )
+
+
+def _memory_change(value: Mapping[str, Any]) -> Mem0MemoryChange | None:
+    memory_id = value.get("id")
+    raw_event = value.get("event")
+    if (
+        not isinstance(memory_id, str)
+        or not memory_id.strip()
+        or not isinstance(raw_event, str)
+    ):
+        return None
+    event = raw_event.upper()
+    if event not in {"ADD", "UPDATE", "DELETE"}:
+        return None
+    memory = value.get("memory")
+    if memory is not None and not isinstance(memory, str):
+        return None
+    if event != "DELETE" and (memory is None or not memory):
+        return None
+    return Mem0MemoryChange(
+        memory_id=memory_id,
+        memory=memory or None,
+        event=event,
     )
 
 

@@ -44,6 +44,10 @@ Content-Type: application/json
 项目不设置 `infer=false`，不发送自定义 extraction prompt，不创建 core/daily 双记录。
 该后台请求由 adapter 自动使用至少 30 秒超时；不复用 session-start recall 的 5 秒前台超时。
 
+响应只消费原生 `results` 中每条合法记录的 `id`、`memory` 和 `event`。支持的 event 为
+`ADD`、`UPDATE`、`DELETE`；空数组表示没有提炼出长期记忆。memory text 只可进入显式启用的
+本机观测 overlay，不进入 canonical trace 或普通日志。
+
 ## 错误语义
 
 - recall 失败：session snapshot 为空并标记 `mem0_recall_failed`，session/turn 继续。

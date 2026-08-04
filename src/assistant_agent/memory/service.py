@@ -241,6 +241,9 @@ class LongTermMemoryService:
             status=status,
             latency_ms=_elapsed_ms(started),
             memory_count=len(result.memory_ids),
+            memory_ids=result.memory_ids,
+            changes=getattr(result, "changes", None),
+            source_turn=turn.source_turn,
             errors=result.errors,
         )
 
