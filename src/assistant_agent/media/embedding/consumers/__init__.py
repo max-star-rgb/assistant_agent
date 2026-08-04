@@ -15,6 +15,12 @@ from assistant_agent.media.embedding.consumers.temporal_memory import (
     TemporalVisualMemory,
     TemporalVisualRecord,
 )
+from assistant_agent.media.embedding.consumers.object_search import (
+    VisualMemoryMatch,
+    VisualMemorySearchRequest,
+    VisualMemorySearchResult,
+    VisualMemorySearchService,
+)
 
 __all__ = [
     "KeyframeChangeConsumer",
@@ -26,4 +32,8 @@ __all__ = [
     "TemporalVisualRecord",
     "VisualAttentionCandidate",
     "VisualAttentionConsumer",
+    "VisualMemoryMatch",
+    "VisualMemorySearchRequest",
+    "VisualMemorySearchResult",
+    "VisualMemorySearchService",
 ]
