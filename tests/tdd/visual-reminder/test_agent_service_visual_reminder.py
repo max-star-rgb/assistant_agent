@@ -157,6 +157,26 @@ def test_video_user_must_match_visual_reminder_connection_owner(monkeypatch) -> 
     asyncio.run(run())
 
 
+def test_video_is_rejected_before_connection_control_handshake() -> None:
+    async def run() -> None:
+        state = _state(_GatewayManager())
+
+        with pytest.raises(
+            agent_service.AgentServiceProtocolError,
+            match="video requires assistantControl handshake",
+        ):
+            await agent_service.VideoHandler().handle(
+                session_id="vendor-session",
+                body={"userNumber": "u1"},
+                state=state,
+            )
+
+        assert state.video_ingestion is None
+        assert state.video_observer is None
+
+    asyncio.run(run())
+
+
 def test_gateway_metadata_carries_structured_video_call_type() -> None:
     gateway = _GatewayManager()
     state = _state(gateway)

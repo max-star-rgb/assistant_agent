@@ -424,6 +424,8 @@ class VideoHandler(BaseHandler):
         body: dict[str, Any],
         state: AgentServiceConnectionState,
     ) -> dict[str, Any]:
+        if state.assistant_control_start is None:
+            raise AgentServiceProtocolError("video requires assistantControl handshake")
         user_number = self.required_text(body, "userNumber")
         if (
             state.visual_reminder_owner_id is not None

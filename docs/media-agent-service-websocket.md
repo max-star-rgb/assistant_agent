@@ -114,9 +114,10 @@ Agent 每个 WebSocket 连接都会分配新的内部 `agent-service-*` Gateway 
 `clientInfo` 不参与 profile、provider、tool visibility 或安全策略选择。
 成功处理 `callType=VIDEO` 时，Agent 同时按 `number + 内部 runtime session` 创建连接级视觉提醒
 manager；`AUDIO` 不创建。该结构化 call type 会进入后续 turn 的可信 metadata，不根据用户文本或是否
-已经收到视频帧推断。每条连接只接受一次 `assistantControl`；重复握手按协议错误拒绝，不替换现有
-manager 或 observer。VIDEO 消息的 `userNumber` 必须等于握手 `number`，不一致时在 H.264 解码和
-observer 提交前拒绝，避免其他用户的帧参与该连接的提醒匹配。
+已经收到视频帧推断。视频消息必须在控制握手之后发送；握手前的视频按协议错误拒绝，不创建 ingestion
+或 observer。每条连接只接受一次 `assistantControl`；重复握手按协议错误拒绝，不替换现有 manager 或
+observer。VIDEO 消息的 `userNumber` 必须等于握手 `number`，不一致时在 H.264 解码和 observer 提交前
+拒绝，避免其他用户的帧参与该连接的提醒匹配。
 
 旧兼容握手 `assistantControlStart` 的最小 body 为：
 
