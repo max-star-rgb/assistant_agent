@@ -9,6 +9,9 @@ from assistant_agent.media.vision.models import (
 )
 from assistant_agent.tools.models import ToolResult
 from assistant_agent.media.video.realtime_video_memory import RealtimeVideoMemoryStore
+from assistant_agent.media.video.semantic_store_pool import (
+    SessionVisualSemanticStorePool,
+)
 from assistant_agent.media.video.video_adapter import VideoUnderstandingAdapter
 from assistant_agent.media.video.video_context import (
     DEFAULT_VIDEO_CONTEXT_WINDOW_SIZE,
@@ -74,6 +77,7 @@ class MediaInspectTool(ToolBase):
         video_adapter: VideoUnderstandingAdapter | None = None,
         context_store: VideoContextStore | None = None,
         memory_store: RealtimeVideoMemoryStore | None = None,
+        semantic_store_pool: SessionVisualSemanticStorePool | None = None,
         context_window_size: int = DEFAULT_VIDEO_CONTEXT_WINDOW_SIZE,
     ) -> None:
         self.adapter = (
@@ -90,6 +94,7 @@ class MediaInspectTool(ToolBase):
             adapter=video_adapter,
             context_store=context_store,
             memory_store=memory_store,
+            semantic_store_pool=semantic_store_pool,
             context_window_size=context_window_size,
         )
 
@@ -104,6 +109,17 @@ class MediaInspectTool(ToolBase):
     @memory_store.setter
     def memory_store(self, value: RealtimeVideoMemoryStore | None) -> None:
         self._video_branch.memory_store = value
+
+    @property
+    def semantic_store_pool(self) -> SessionVisualSemanticStorePool | None:
+        return self._video_branch.semantic_store_pool
+
+    @semantic_store_pool.setter
+    def semantic_store_pool(
+        self,
+        value: SessionVisualSemanticStorePool | None,
+    ) -> None:
+        self._video_branch.semantic_store_pool = value
 
     def _run(self, input: VisionUnderstandingRequest, context: ToolContext) -> ToolResult:
         if vision_request_has_video(input):

@@ -79,6 +79,9 @@ from assistant_agent.observability.trace_store import InMemoryTraceStore, TraceS
 from assistant_agent.observability.turn_summary import append_runtime_turn_summary
 from assistant_agent.media.video.video_context import InMemoryVideoContextStore, VideoContextStore
 from assistant_agent.media.video.realtime_video_memory import RealtimeVideoMemoryStore
+from assistant_agent.media.video.semantic_store_pool import (
+    SessionVisualSemanticStorePool,
+)
 from assistant_agent.media.embedding.coordinator import SessionEmbeddingCoordinator
 from assistant_agent.media.embedding.coordinator_store import SessionEmbeddingCoordinatorStore
 from assistant_agent.media.embedding.provider import create_multimodal_embedding_provider
@@ -141,6 +144,7 @@ class AgentGraphRuntime:
         video_context_store: VideoContextStore | None = None,
         realtime_video_memory_store: RealtimeVideoMemoryStore | None = None,
         embedding_coordinator_store: SessionEmbeddingCoordinatorStore | None = None,
+        visual_semantic_store_pool: SessionVisualSemanticStorePool | None = None,
         checkpointer: Any | None = None,
         context_source_coordinator: ContextSourceCoordinator | None = None,
         durable_task_service: DurableTaskService | None = None,
@@ -155,6 +159,12 @@ class AgentGraphRuntime:
             embedding_coordinator_store
             or SessionEmbeddingCoordinatorStore(
                 factory=self._create_session_embedding_coordinator
+            )
+        )
+        self.visual_semantic_store_pool = (
+            visual_semantic_store_pool
+            or SessionVisualSemanticStorePool(
+                root=Path(".data") / "visual_semantic_memory"
             )
         )
         self.long_term_memory_service = (
@@ -197,6 +207,7 @@ class AgentGraphRuntime:
                 video_context_store=self.video_context_store,
                 realtime_video_memory_store=self.realtime_video_memory_store,
                 embedding_coordinator_store=self.embedding_coordinator_store,
+                visual_semantic_store_pool=self.visual_semantic_store_pool,
                 durable_task_service=self.durable_task_service,
             )
             if self.durable_task_service is not None:
@@ -236,6 +247,8 @@ class AgentGraphRuntime:
             else:
                 if getattr(vision_tool, "memory_store", None) is None:
                     vision_tool.memory_store = self.realtime_video_memory_store
+                if getattr(vision_tool, "semantic_store_pool", None) is None:
+                    vision_tool.semantic_store_pool = self.visual_semantic_store_pool
         self.intent_detector = intent_detector or IntentDetector()
         self.router = router or ToolRouter()
         self.run_history = run_history
@@ -630,6 +643,7 @@ class AgentGraphRuntime:
         """Drain and close runtime-owned background lifecycle services."""
 
         self.embedding_coordinator_store.close()
+        self.visual_semantic_store_pool.close()
         return self.long_term_memory_service.close(
             timeout=self.config.memory_ingestion_shutdown_timeout_seconds,
         )

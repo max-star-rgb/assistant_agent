@@ -1576,6 +1576,10 @@ def _create_realtime_video_observer(*, user_id: str, session_id: str) -> Realtim
             user_id,
             session_id,
         ),
+        semantic_store=runtime.visual_semantic_store_pool.resolve(
+            user_id,
+            session_id,
+        ),
         provider_config=runtime.config,
     )
 

@@ -274,10 +274,9 @@ class SessionVisualSemanticStore:
             while True:
                 self._ensure_open()
                 snapshot = self._snapshots.get(video_id)
-                if (
-                    snapshot is not None
-                    and snapshot.last_success_sequence is not None
-                    and snapshot.last_success_sequence >= sequence
+                if any(
+                    record.frame_sequence == sequence
+                    for record in self._records_for_video_locked(video_id)
                 ):
                     return snapshot
                 if sequence in self._failed_sequences.get(video_id, set()):

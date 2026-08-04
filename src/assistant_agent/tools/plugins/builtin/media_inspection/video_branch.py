@@ -29,7 +29,16 @@ from assistant_agent.media.video.video_context import (
 )
 from assistant_agent.media.video.realtime_video_memory import (
     RealtimeVideoMemoryStore,
+    RealtimeVideoObservationDiagnostics,
     RealtimeVideoSnapshot,
+    SemanticKeyframeRecord,
+)
+from assistant_agent.media.video.semantic_store import (
+    VisualSemanticRecord,
+    VisualSemanticSnapshot,
+)
+from assistant_agent.media.video.semantic_store_pool import (
+    SessionVisualSemanticStorePool,
 )
 from assistant_agent.tools.ids import (
     MEDIA_INSPECT_TOOL_NAME,
@@ -64,6 +73,7 @@ class VideoUnderstandingBranch(ToolBase):
         client: VisionUnderstandingClient | None = None,
         context_store: VideoContextStore | None = None,
         memory_store: RealtimeVideoMemoryStore | None = None,
+        semantic_store_pool: SessionVisualSemanticStorePool | None = None,
         context_window_size: int = DEFAULT_VIDEO_CONTEXT_WINDOW_SIZE,
         wall_clock_ms: Callable[[], int] | None = None,
     ) -> None:
@@ -75,6 +85,7 @@ class VideoUnderstandingBranch(ToolBase):
         self.client = client or AdapterVisionUnderstandingClient(video_adapter=self.adapter)
         self.context_store = context_store
         self.memory_store = memory_store
+        self.semantic_store_pool = semantic_store_pool
         self.context_window_size = context_window_size
         self.wall_clock_ms = wall_clock_ms or (lambda: int(time() * 1000))
 
@@ -92,7 +103,10 @@ class VideoUnderstandingBranch(ToolBase):
         if (
             video_ref
             and agent_service_text_only
-            and self.memory_store is not None
+            and (
+                self.semantic_store_pool is not None
+                or self.memory_store is not None
+            )
         ):
             snapshot = self._live_snapshot_for_request(
                 video_ref,
@@ -208,9 +222,29 @@ class VideoUnderstandingBranch(ToolBase):
         *,
         context: ToolContext,
     ) -> RealtimeVideoSnapshot | None:
+        semantic_store = self._semantic_store(context)
+        target_sequence = self._live_target_sequence(context)
+        if semantic_store is not None:
+            if target_sequence is not None:
+                semantic_store.wait_for_sequence(
+                    video_ref,
+                    sequence=target_sequence,
+                    timeout_seconds=LIVE_VIEW_SNAPSHOT_WAIT_SECONDS,
+                )
+                record = semantic_store.at_or_before(
+                    video_ref,
+                    sequence=target_sequence,
+                )
+            else:
+                record = semantic_store.latest(video_ref)
+            visual_snapshot = semantic_store.snapshot(video_ref)
+            return _project_visual_semantic_snapshot(
+                video_ref,
+                visual_snapshot,
+                record,
+            )
         if self.memory_store is None:
             return None
-        target_sequence = self._live_target_sequence(context)
         if target_sequence is not None:
             return self.memory_store.wait_for_snapshot_sequence(
                 video_ref,
@@ -218,6 +252,15 @@ class VideoUnderstandingBranch(ToolBase):
                 timeout_seconds=LIVE_VIEW_SNAPSHOT_WAIT_SECONDS,
             )
         return self.memory_store.snapshot(video_ref)
+
+    def _semantic_store(self, context: ToolContext):
+        if (
+            self.semantic_store_pool is None
+            or not context.user_id
+            or not context.session_id
+        ):
+            return None
+        return self.semantic_store_pool.peek(context.user_id, context.session_id)
 
     @staticmethod
     def _live_target_sequence(context: ToolContext) -> int | None:
@@ -514,6 +557,65 @@ def _is_agent_service_realtime_video_tool_call(context: ToolContext) -> bool:
     if not isinstance(request_metadata, dict):
         return False
     return is_trusted_agent_service_request(request_metadata)
+
+
+def _project_visual_semantic_snapshot(
+    video_id: str,
+    snapshot: VisualSemanticSnapshot | None,
+    record: VisualSemanticRecord | None,
+) -> RealtimeVideoSnapshot | None:
+    if snapshot is None and record is None:
+        return None
+    return RealtimeVideoSnapshot(
+        video_id=video_id,
+        current_state=record.summary if record is not None else "",
+        objects=list(record.objects) if record is not None else [],
+        people=list(record.people) if record is not None else [],
+        actions=list(record.actions) if record is not None else [],
+        events=list(record.events) if record is not None else [],
+        scene=record.scene if record is not None else None,
+        products=list(record.products) if record is not None else [],
+        brands=list(record.brands) if record is not None else [],
+        colors=list(record.colors) if record is not None else [],
+        materials=list(record.materials) if record is not None else [],
+        text_in_video=list(record.text_in_video) if record is not None else [],
+        timestamps=(
+            [dict(item) for item in record.timestamps]
+            if record is not None
+            else []
+        ),
+        style_tags=list(record.style_tags) if record is not None else [],
+        confidence=record.confidence if record is not None else None,
+        provider=record.provider if record is not None else None,
+        model=record.model if record is not None else None,
+        keyframes=(
+            [
+                SemanticKeyframeRecord(
+                    frame_id=record.record_id,
+                    uri=record.evidence_ref,
+                    sequence=record.frame_sequence,
+                    timestamp_ms=record.captured_at_ms,
+                )
+            ]
+            if record is not None
+            else []
+        ),
+        last_success_sequence=(record.frame_sequence if record is not None else None),
+        last_success_timestamp_ms=(
+            record.captured_at_ms if record is not None else None
+        ),
+        last_observation_status=(
+            snapshot.last_observation_status if snapshot is not None else "succeeded"
+        ),
+        last_error=snapshot.last_error if snapshot is not None else None,
+        pending_count=snapshot.pending_count if snapshot is not None else 0,
+        in_flight=snapshot.in_flight if snapshot is not None else False,
+        observation_diagnostics=(
+            RealtimeVideoObservationDiagnostics(published_at_ms=record.created_at_ms)
+            if record is not None
+            else None
+        ),
+    )
 
 
 def _sequence_gap(

@@ -40,6 +40,7 @@ class MediaInspectionPlugin:
                 client=create_vision_understanding_client(context.config),
                 context_store=context.video_context_store,
                 memory_store=context.realtime_video_memory_store,
+                semantic_store_pool=context.visual_semantic_store_pool,
             ),
         ]
         if context.embedding_coordinator_store is not None:

@@ -33,9 +33,10 @@ class _Memory:
         return None
 
 
-def _runtime(store):
+def _runtime(store, visual_store):
     return SimpleNamespace(
         embedding_coordinator_store=store,
+        visual_semantic_store_pool=visual_store,
         session_store=_SessionStore(),
         long_term_memory_service=_Memory(),
         run_history=None,
@@ -46,7 +47,8 @@ def _runtime(store):
 
 def test_runtime_app_delete_boundaries_clear_temporal_session_and_user(monkeypatch) -> None:
     store = _CoordinatorStore()
-    app = AssistantRuntimeApp(lambda: _runtime(store))
+    visual_store = _CoordinatorStore()
+    app = AssistantRuntimeApp(lambda: _runtime(store, visual_store))
     monkeypatch.setattr(
         "assistant_agent.runtime.assistant_runtime_app.clear_conversation_history",
         lambda *_args, **_kwargs: True,
@@ -63,10 +65,15 @@ def test_runtime_app_delete_boundaries_clear_temporal_session_and_user(monkeypat
         ("session", "user-1", "session-1"),
         ("user", "user-1"),
     ]
+    assert visual_store.calls == [
+        ("session", "user-1", "session-1"),
+        ("user", "user-1"),
+    ]
 
 
 def test_shared_gateway_runtime_factory_passes_one_embedding_store(monkeypatch) -> None:
     store = object()
+    visual_store = object()
     primary = SimpleNamespace(
         config=object(),
         agent_id="agent",
@@ -77,6 +84,7 @@ def test_shared_gateway_runtime_factory_passes_one_embedding_store(monkeypatch) 
         realtime_video_memory_store=object(),
         durable_task_service=object(),
         embedding_coordinator_store=store,
+        visual_semantic_store_pool=visual_store,
     )
     captured = {}
     monkeypatch.setattr(
@@ -90,3 +98,4 @@ def test_shared_gateway_runtime_factory_passes_one_embedding_store(monkeypatch) 
     factory()
 
     assert captured["embedding_coordinator_store"] is store
+    assert captured["visual_semantic_store_pool"] is visual_store
