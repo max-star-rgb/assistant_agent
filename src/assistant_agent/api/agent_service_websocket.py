@@ -1564,24 +1564,37 @@ def _create_realtime_video_observer(*, user_id: str, session_id: str) -> Realtim
     )
 
     runtime = routes_agent.get_assistant_runtime_app().runtime
-    return RealtimeVideoObserver(
-        user_id=user_id,
-        session_id=session_id,
-        registry=create_realtime_video_observation_registry(
-            runtime.config,
-            realtime_video_memory_store=runtime.realtime_video_memory_store,
-        ),
-        memory_store=runtime.realtime_video_memory_store,
-        embedding_coordinator=runtime.embedding_coordinator_store.resolve(
+    semantic_lease = runtime.visual_semantic_store_pool.acquire(user_id, session_id)
+    try:
+        embedding_lease = runtime.embedding_coordinator_store.acquire(
             user_id,
             session_id,
-        ),
-        semantic_store=runtime.visual_semantic_store_pool.resolve(
-            user_id,
-            session_id,
-        ),
-        provider_config=runtime.config,
-    )
+        )
+    except Exception:
+        semantic_lease.release()
+        raise
+
+    def release_resources() -> None:
+        embedding_lease.release()
+        semantic_lease.release()
+
+    try:
+        return RealtimeVideoObserver(
+            user_id=user_id,
+            session_id=session_id,
+            registry=create_realtime_video_observation_registry(
+                runtime.config,
+                realtime_video_memory_store=runtime.realtime_video_memory_store,
+            ),
+            memory_store=runtime.realtime_video_memory_store,
+            embedding_coordinator=embedding_lease.coordinator,
+            semantic_store=semantic_lease.store,
+            resource_release=release_resources,
+            provider_config=runtime.config,
+        )
+    except Exception:
+        release_resources()
+        raise
 
 
 def _failure_chat_response(

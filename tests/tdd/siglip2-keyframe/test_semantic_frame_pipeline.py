@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from time import monotonic
 
 from assistant_agent.media.embedding.models import (
     EmbeddingEvent,
     EmbeddingFailureEvent,
     ImageObservation,
 )
+from assistant_agent.media.embedding.observability import InMemoryEmbeddingObserver
 from assistant_agent.media.video.keyframe.selector import (
     SemanticKeyframeConfig,
     SemanticKeyframeSelector,
@@ -109,6 +111,7 @@ def test_pending_is_latest_wins(tmp_path: Path) -> None:
 async def _pending_is_latest_wins(tmp_path: Path) -> None:
     loop = asyncio.get_running_loop()
     coordinator = _BlockingCoordinator(loop)
+    observer = InMemoryEmbeddingObserver()
     selected: list[int] = []
 
     async def on_selected(frame: VideoFrame, event: EmbeddingEvent | None, reason: str) -> None:
@@ -121,6 +124,7 @@ async def _pending_is_latest_wins(tmp_path: Path) -> None:
         sampler=FixedIntervalSemanticSampler(fps=5.0),
         retention_root=tmp_path / "retained",
         on_selected=on_selected,
+        observer=observer,
         clock=_StepClock(),
     )
     await pipeline.submit(_frame(tmp_path, 1))
@@ -134,6 +138,15 @@ async def _pending_is_latest_wins(tmp_path: Path) -> None:
     await pipeline.wait_idle()
     assert coordinator.sequences == [1, 3]
     assert selected == [1, 3]
+    assert "semantic_frame.replaced" in {
+        event.event_name for event in observer.events
+    }
+    assert sum(
+        event.event_name == "semantic_frame.selected" for event in observer.events
+    ) == 2
+    assert "session-test" not in str(
+        [event.model_dump() for event in observer.events]
+    )
     assert list((tmp_path / "retained").rglob("*.jpg")) == []
     await pipeline.close()
 
@@ -207,6 +220,43 @@ async def _promoting_inflight_sequence_does_not_duplicate_embedding(tmp_path: Pa
 
 def test_embedding_failure_still_allows_due_vlm_refresh(tmp_path: Path) -> None:
     asyncio.run(_embedding_failure_still_allows_due_vlm_refresh(tmp_path))
+
+
+def test_close_is_bounded_while_embedding_thread_is_blocked(tmp_path: Path) -> None:
+    asyncio.run(_close_is_bounded_while_embedding_thread_is_blocked(tmp_path))
+
+
+async def _close_is_bounded_while_embedding_thread_is_blocked(
+    tmp_path: Path,
+) -> None:
+    loop = asyncio.get_running_loop()
+    coordinator = _BlockingCoordinator(loop)
+
+    async def discard_selected(
+        frame: VideoFrame,
+        event: EmbeddingEvent | None,
+        reason: str,
+    ) -> None:
+        Path(frame.uri).unlink(missing_ok=True)
+
+    pipeline = SemanticFramePipeline(
+        coordinator=coordinator,
+        selector=SemanticKeyframeSelector(SemanticKeyframeConfig()),
+        sampler=FixedIntervalSemanticSampler(fps=5.0),
+        retention_root=tmp_path / "retained",
+        on_selected=discard_selected,
+        clock=_StepClock(),
+    )
+    await pipeline.submit(_frame(tmp_path, 1))
+    await coordinator.started.wait()
+
+    started = monotonic()
+    await pipeline.close(timeout_seconds=0.01)
+
+    assert monotonic() - started < 0.5
+    assert list((tmp_path / "retained").rglob("*.jpg")) == []
+    coordinator.release.set()
+    await pipeline.close(timeout_seconds=1.0)
 
 
 async def _embedding_failure_still_allows_due_vlm_refresh(tmp_path: Path) -> None:

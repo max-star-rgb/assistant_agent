@@ -92,6 +92,15 @@ dispatched/consumer_dropped/session_cleanup`。这些事件只允许 modality、
 consumer count、错误码和稳定 digest；不得包含向量、文本、图片/evidence 路径或原始 session、
 observation、revision、space 标识。具体投影见 `media/embedding/observability.py`。
 
+实时全语义流水线额外发布 `semantic_frame.admitted/skipped/replaced/selected`。只允许哈希化 session、
+frame sequence、替换 sequence 和稳定 reason；不得包含 JPEG/evidence 路径、图像内容、VLM 文本、向量
+或原始身份。`replaced` 用于证明 latest-wins 生效，不表示发生错误或积压。
+默认 Runtime 为 session embedding coordinator 注入结构化 logging observer，因此后台视频没有活动
+Agent turn 时仍会产生这些 content-safe side-stream 事件；测试也可注入内存 observer。未知 reason 统一
+投影为 `other`，不能借 reason 字段旁路脱敏。
+同一 observer 还发布 `visual_semantic.retained/evicted/index_failed` 与 `visual_memory.query`；只记录
+哈希化 session、sequence、稳定 status、数量和 latency，不记录 VLM 文本、用户 query、向量或 evidence。
+
 ### ReAct、phase 与重试
 
 `react.iteration` 表示一次模型决策循环；Runtime phase 由 `runtime.phase.changed` 及 LLM event 上的

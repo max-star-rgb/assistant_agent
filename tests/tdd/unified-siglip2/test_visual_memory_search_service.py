@@ -13,6 +13,7 @@ from assistant_agent.media.embedding.models import (
     EmbeddingFailureEvent,
 )
 from assistant_agent.media.embedding.provider import MockMultimodalEmbeddingProvider
+from assistant_agent.media.embedding.observability import InMemoryEmbeddingObserver
 from assistant_agent.media.video.semantic_store import (
     SessionVisualSemanticStore,
     VisualSemanticRecord,
@@ -50,6 +51,15 @@ class _FailingTextProvider(_FixedTextProvider):
         )
 
 
+class _RecordingTextProvider(_FixedTextProvider):
+    def __init__(self) -> None:
+        self.texts: list[str] = []
+
+    def embed_text(self, observation):
+        self.texts.append(observation.text)
+        return super().embed_text(observation)
+
+
 def _record(
     tmp_path: Path,
     *,
@@ -84,6 +94,7 @@ def _service(
     *,
     similarity: float,
     failing_text: bool = False,
+    observer: InMemoryEmbeddingObserver | None = None,
 ) -> VisualMemorySearchService:
     store = SessionVisualSemanticStore(
         root=tmp_path / "semantic",
@@ -92,7 +103,11 @@ def _service(
     store.record_success(_record(tmp_path, sequence=7, similarity=similarity))
     provider = _FailingTextProvider() if failing_text else _FixedTextProvider()
     return VisualMemorySearchService(
-        coordinator=SessionEmbeddingCoordinator("session-1", provider),
+        coordinator=SessionEmbeddingCoordinator(
+            "session-1",
+            provider,
+            observer=observer,
+        ),
         semantic_store=store,
     )
 
@@ -148,3 +163,46 @@ def test_text_embedding_failure_is_unavailable(tmp_path: Path) -> None:
 
     assert result.status == "unavailable"
     assert result.errors[0]["code"] == "text_unavailable"
+
+
+def test_search_emits_query_status_without_query_content(tmp_path: Path) -> None:
+    observer = InMemoryEmbeddingObserver()
+
+    result = _service(
+        tmp_path,
+        similarity=0.35,
+        observer=observer,
+    ).search(_request())
+
+    query_events = [
+        event for event in observer.events if event.event_name == "visual_memory.query"
+    ]
+    assert result.status == "confirmed"
+    assert query_events[0].payload["status"] == "confirmed"
+    assert "钥匙" not in str(query_events[0].model_dump())
+
+
+def test_search_mode_guides_text_embedding_without_changing_store_schema(
+    tmp_path: Path,
+) -> None:
+    store = SessionVisualSemanticStore(
+        root=tmp_path / "semantic",
+        session_id="session-1",
+    )
+    store.record_success(_record(tmp_path, sequence=7, similarity=0.35))
+    provider = _RecordingTextProvider()
+    service = VisualMemorySearchService(
+        coordinator=SessionEmbeddingCoordinator("session-1", provider),
+        semantic_store=store,
+    )
+
+    service.search(
+        VisualMemorySearchRequest(
+            session_id="session-1",
+            request_id="request-mode",
+            query="钥匙",
+            search_mode="object",
+        )
+    )
+
+    assert provider.texts == ["物体：钥匙"]

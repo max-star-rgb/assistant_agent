@@ -291,6 +291,8 @@ Qwen realtime vision 的 Provider delta 与用户可见 Agent stream 是两条�
 或 Gateway `stream.chunk`。最终 Agent stream 仍只来自前台 chat Provider，其公开
 `token_delta` 经 `AgentRunStream` 实时进入 realtime/Gateway；视觉 Provider 的首 delta 与总耗时
 只作为 prompt-safe scalar diagnostics，不携带 Qwen 原文或 raw event。
+全语义选帧的 `semantic_frame.*` 是独立的内容安全 side stream，不映射为用户可见 delta 或 Gateway
+frame；其事件只描述固定准入、latest-wins 替换和选帧结果。
 
 ## Cancellation And Failure Semantics
 

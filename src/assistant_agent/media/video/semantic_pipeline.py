@@ -18,6 +18,10 @@ from assistant_agent.media.embedding.models import (
     EmbeddingOutcome,
     ImageObservation,
 )
+from assistant_agent.media.embedding.observability import (
+    EmbeddingObserver,
+    emit_semantic_frame_observation,
+)
 from assistant_agent.media.video.keyframe.selector import (
     SemanticKeyframeDecision,
     SemanticKeyframeSelector,
@@ -98,6 +102,7 @@ class SemanticFramePipeline:
         retention_root: Path | str,
         on_selected: SelectedCallback,
         on_state_change: StateCallback | None = None,
+        observer: EmbeddingObserver | None = None,
         clock: Callable[[], float] = monotonic,
     ) -> None:
         self.coordinator = coordinator
@@ -106,6 +111,7 @@ class SemanticFramePipeline:
         self.retention_root = Path(retention_root)
         self.on_selected = on_selected
         self.on_state_change = on_state_change
+        self.observer = observer
         self.clock = clock
         self._pending: _SemanticFrameJob | None = None
         self._inflight: _SemanticFrameJob | None = None
@@ -124,6 +130,7 @@ class SemanticFramePipeline:
         if self._closed:
             raise RuntimeError("semantic frame pipeline is closed")
         if not self.sampler.admit(sequence=frame.sequence, now=self.clock()):
+            self._emit("semantic_frame.skipped", frame.sequence, "fixed_interval")
             return SemanticAdmission(
                 admitted=False,
                 reason="fixed_interval",
@@ -149,6 +156,11 @@ class SemanticFramePipeline:
                 and self._inflight.frame.sequence == frame.sequence
             ):
                 self._interactive_sequences.add(frame.sequence)
+                self._emit(
+                    "semantic_frame.admitted",
+                    frame.sequence,
+                    "interactive_inflight",
+                )
                 return SemanticAdmission(
                     admitted=True,
                     reason="interactive_inflight",
@@ -159,6 +171,11 @@ class SemanticFramePipeline:
                     self._pending,
                     priority="interactive",
                     pinned=True,
+                )
+                self._emit(
+                    "semantic_frame.admitted",
+                    frame.sequence,
+                    "interactive_pending",
                 )
                 return SemanticAdmission(
                     admitted=True,
@@ -177,7 +194,9 @@ class SemanticFramePipeline:
     async def wait_idle(self) -> None:
         await self._idle.wait()
 
-    async def close(self) -> None:
+    async def close(self, *, timeout_seconds: float | None = None) -> None:
+        if timeout_seconds is not None and timeout_seconds <= 0:
+            raise ValueError("semantic pipeline close timeout must be positive")
         async with self._lock:
             if self._closed:
                 worker = self._worker
@@ -190,7 +209,16 @@ class SemanticFramePipeline:
                 self._wake.set()
                 worker = self._worker
         if worker is not None:
-            await worker
+            if timeout_seconds is None:
+                await worker
+            else:
+                try:
+                    await asyncio.wait_for(
+                        asyncio.shield(worker),
+                        timeout=timeout_seconds,
+                    )
+                except TimeoutError:
+                    pass
         for path in list(self._owned_paths):
             path.unlink(missing_ok=True)
             self._owned_paths.discard(path)
@@ -208,6 +236,11 @@ class SemanticFramePipeline:
             ):
                 self._interactive_sequences.add(job.frame.sequence)
                 self._delete_owned(job.frame)
+                self._emit(
+                    "semantic_frame.admitted",
+                    job.frame.sequence,
+                    "interactive_inflight",
+                )
                 return SemanticAdmission(
                     admitted=True,
                     reason="interactive_inflight",
@@ -217,6 +250,11 @@ class SemanticFramePipeline:
             if self._pending is not None:
                 if self._pending.pinned:
                     self._delete_owned(job.frame)
+                    self._emit(
+                        "semantic_frame.skipped",
+                        job.frame.sequence,
+                        "interactive_pending",
+                    )
                     return SemanticAdmission(
                         admitted=False,
                         reason="interactive_pending",
@@ -229,6 +267,18 @@ class SemanticFramePipeline:
             self._wake.set()
             self._ensure_worker()
             self._notify_state()
+            if replaced_sequence is not None:
+                self._emit(
+                    "semantic_frame.replaced",
+                    job.frame.sequence,
+                    "latest_wins",
+                    replaced_sequence=replaced_sequence,
+                )
+            self._emit(
+                "semantic_frame.admitted",
+                job.frame.sequence,
+                "interactive" if job.pinned else "admitted",
+            )
             return SemanticAdmission(
                 admitted=True,
                 reason=("interactive" if job.pinned else "admitted"),
@@ -283,6 +333,9 @@ class SemanticFramePipeline:
                 observation,
                 priority=job.priority,
             )
+            if self._closed:
+                self._delete_owned(job.frame)
+                return
             if isinstance(outcome, EmbeddingFailureEvent):
                 await self._process_failure(
                     job,
@@ -306,11 +359,21 @@ class SemanticFramePipeline:
             if decision.selected:
                 await self._transfer_selected(job.frame, outcome, decision.reason)
             else:
+                self._emit(
+                    "semantic_frame.skipped",
+                    job.frame.sequence,
+                    decision.reason,
+                )
                 self._delete_owned(job.frame)
         except asyncio.CancelledError:
             self._delete_owned(job.frame)
             raise
         except Exception:
+            self._emit(
+                "semantic_frame.skipped",
+                job.frame.sequence,
+                "processing_error",
+            )
             self._delete_owned(job.frame)
         finally:
             self._interactive_sequences.discard(job.frame.sequence)
@@ -327,6 +390,11 @@ class SemanticFramePipeline:
         elif self.selector.force_due(timestamp_seconds):
             await self._transfer_selected(job.frame, None, "max_interval")
         else:
+            self._emit(
+                "semantic_frame.skipped",
+                job.frame.sequence,
+                "embedding_failed",
+            )
             self._delete_owned(job.frame)
 
     async def _transfer_selected(
@@ -341,6 +409,7 @@ class SemanticFramePipeline:
             self._delete_owned(frame)
             raise
         self._owned_paths.discard(Path(frame.uri))
+        self._emit("semantic_frame.selected", frame.sequence, reason)
 
     def _retain_frame(self, frame: VideoFrame) -> VideoFrame:
         directory = self.retention_root / _safe_component(frame.video_id)
@@ -370,6 +439,23 @@ class SemanticFramePipeline:
                 1 if self._pending is not None else 0,
                 self._inflight is not None,
             )
+
+    def _emit(
+        self,
+        event_name: str,
+        sequence: int,
+        reason: str,
+        *,
+        replaced_sequence: int | None = None,
+    ) -> None:
+        emit_semantic_frame_observation(
+            self.observer,
+            event_name,
+            session_id=self.coordinator.session_id,
+            sequence=sequence,
+            reason=reason,
+            replaced_sequence=replaced_sequence,
+        )
 
 
 def _frame_timestamp_seconds(frame: VideoFrame, clock: Callable[[], float]) -> float:

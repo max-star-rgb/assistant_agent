@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import inspect
 from pathlib import Path
+from threading import Event, Thread
 
 from assistant_agent.config import ProviderConfig
 from assistant_agent.media.embedding.coordinator import SessionEmbeddingCoordinator
@@ -20,8 +21,10 @@ from assistant_agent.runtime.tool_executor import ToolExecutor
 from assistant_agent.tools.ids import VISUAL_MEMORY_SEARCH_TOOL_NAME
 from assistant_agent.tools.models import RunToolCatalog
 from assistant_agent.tools.plugins.builtin.media_inspection.visual_memory_tool import (
+    VisualMemorySearchInput,
     VisualMemorySearchTool,
 )
+from assistant_agent.tools.base import ToolContext
 from assistant_agent.tools.plugins.registry_factory import create_default_registry
 
 
@@ -41,6 +44,17 @@ class _FixedTextProvider(MockMultimodalEmbeddingProvider):
             text_source=observation.source,
             latency_ms=0,
         )
+
+
+class _BlockingTextProvider(_FixedTextProvider):
+    def __init__(self) -> None:
+        self.started = Event()
+        self.release = Event()
+
+    def embed_text(self, observation):
+        self.started.set()
+        self.release.wait(timeout=2.0)
+        return super().embed_text(observation)
 
 
 def _stores_with_history(tmp_path: Path):
@@ -133,5 +147,78 @@ def test_visual_memory_tool_runs_through_validator_executor_registry(tmp_path: P
     assert result.data["status"] == "confirmed"
     assert "evidence_ref" not in str(result.data)
     assert "search_embedding" not in str(result.data)
+    coordinator_store.close()
+    semantic_pool.close()
+
+
+def test_query_leases_prevent_capacity_eviction_while_embedding_blocks(
+    tmp_path: Path,
+) -> None:
+    provider = _BlockingTextProvider()
+    coordinator_store = SessionEmbeddingCoordinatorStore(
+        factory=lambda _user_id, session_id: SessionEmbeddingCoordinator(
+            session_id,
+            provider if session_id == "session-1" else _FixedTextProvider(),
+        ),
+        max_sessions=1,
+    )
+    first_coordinator = coordinator_store.resolve("user-1", "session-1")
+    semantic_pool = SessionVisualSemanticStorePool(
+        root=tmp_path / "pool",
+        max_sessions=1,
+    )
+    evidence = tmp_path / "frame.jpg"
+    evidence.write_bytes(b"jpeg")
+    first_store = semantic_pool.resolve("user-1", "session-1")
+    first_store.record_success(
+        VisualSemanticRecord(
+            record_id="record-1",
+            session_id="session-1",
+            video_id="video-1",
+            frame_sequence=1,
+            summary="桌面上有钥匙",
+            search_embedding=[1.0, 0.0],
+            embedding_space_id="visual-text-test",
+            index_status="ready",
+            evidence_ref=str(evidence),
+            evidence_bytes=evidence.stat().st_size,
+            created_at_ms=1,
+        )
+    )
+    tool = VisualMemorySearchTool(
+        coordinator_store=coordinator_store,
+        semantic_store_pool=semantic_pool,
+    )
+    outcomes = []
+    errors: list[BaseException] = []
+
+    def run_query() -> None:
+        try:
+            outcomes.append(
+                tool.run(
+                    VisualMemorySearchInput(
+                        query="钥匙",
+                        session_id="session-1",
+                    ),
+                    ToolContext(user_id="user-1", session_id="session-1"),
+                )
+            )
+        except BaseException as exc:  # noqa: BLE001 - thread test boundary.
+            errors.append(exc)
+
+    query_thread = Thread(target=run_query)
+    query_thread.start()
+    assert provider.started.wait(timeout=1.0)
+
+    coordinator_store.resolve("user-2", "session-2")
+    semantic_pool.resolve("user-2", "session-2")
+
+    assert first_coordinator._closed is False
+    assert first_store.closed is False
+    provider.release.set()
+    query_thread.join(timeout=2.0)
+
+    assert errors == []
+    assert outcomes[0].success is True
     coordinator_store.close()
     semantic_pool.close()

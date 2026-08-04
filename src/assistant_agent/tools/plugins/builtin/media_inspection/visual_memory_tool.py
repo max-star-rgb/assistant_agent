@@ -72,28 +72,50 @@ class VisualMemorySearchTool(ToolBase):
         if coordinator is None or semantic_store is None:
             result = VisualMemorySearchResult(status="not_found")
         else:
-            request_metadata = context.metadata.get("request_metadata")
-            request_metadata = request_metadata if isinstance(request_metadata, dict) else {}
-            as_of_sequence = _non_negative_int(
-                request_metadata.get("_trusted_visual_memory_as_of_sequence")
+            semantic_lease = self.semantic_store_pool.acquire(
+                user_id,
+                input.session_id,
             )
-            since_ms, until_ms = _time_bounds(input.time_window, request_metadata)
-            service = VisualMemorySearchService(
-                coordinator=coordinator,
-                semantic_store=semantic_store,
-                candidate_similarity=self.candidate_similarity,
-                confirmed_similarity=self.confirmed_similarity,
-            )
-            result = service.search(
-                VisualMemorySearchRequest(
-                    session_id=input.session_id,
-                    request_id=context.run_id or f"visual-memory-{int(time() * 1000)}",
-                    query=input.query,
-                    as_of_sequence=as_of_sequence,
-                    since_ms=since_ms,
-                    until_ms=until_ms,
+            try:
+                coordinator_lease = self.coordinator_store.acquire(
+                    user_id,
+                    input.session_id,
                 )
-            )
+            except Exception:
+                semantic_lease.release()
+                raise
+            try:
+                request_metadata = context.metadata.get("request_metadata")
+                request_metadata = (
+                    request_metadata if isinstance(request_metadata, dict) else {}
+                )
+                as_of_sequence = _non_negative_int(
+                    request_metadata.get("_trusted_visual_memory_as_of_sequence")
+                )
+                since_ms, until_ms = _time_bounds(input.time_window, request_metadata)
+                service = VisualMemorySearchService(
+                    coordinator=coordinator_lease.coordinator,
+                    semantic_store=semantic_lease.store,
+                    candidate_similarity=self.candidate_similarity,
+                    confirmed_similarity=self.confirmed_similarity,
+                )
+                result = service.search(
+                    VisualMemorySearchRequest(
+                        session_id=input.session_id,
+                        request_id=(
+                            context.run_id
+                            or f"visual-memory-{int(time() * 1000)}"
+                        ),
+                        query=input.query,
+                        search_mode=input.search_mode,
+                        as_of_sequence=as_of_sequence,
+                        since_ms=since_ms,
+                        until_ms=until_ms,
+                    )
+                )
+            finally:
+                coordinator_lease.release()
+                semantic_lease.release()
         data = result.model_dump(mode="json")
         return ToolResult(
             tool_name=self.name,

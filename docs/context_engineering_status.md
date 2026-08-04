@@ -157,14 +157,15 @@ Provider prompt。普通请求不能因携带类似 Gateway 的 metadata 而隐�
 `video_ids` 判断是否向主 LLM 暴露 `live_view_inspect`；不得把镜头能力状态、共享语义快照、
 新鲜度、帧、媒体路径、VLM prompt 或 raw response 被动编译进 Provider prompt。主 LLM 只有自主调用
 `live_view_inspect` 后，才能通过该次受治理的 Tool observation 消费视觉语义。Agent-Service 在用户
-请求到达时以此前最新原始帧为边界，冻结不晚于该边界的最近已选关键帧；若没有关键帧才提升最新原始
-帧。工具对已缓存文本立即返回，对识别中的目标最多等待 10 秒，但不得消费请求到达后视频帧的语义。
+请求到达时以前一刻最新原始帧为边界并冻结目标 sequence；目标尚未进入语义流水线时将其交互式提升。
+工具从统一 `SessionVisualSemanticStore` 读取不晚于该边界的 VLM 文本，对处理中目标最多等待 10 秒，
+但不得消费请求到达后视频帧的语义。
 超时但 observer 尚未明确失败时保持 `pending`，不得把正常识别耗时
 误报为 `unavailable` 或 `failed`。实时观察结果必须独立
 记账，不并入 conversation、memory 或 task state。完整媒体协议见
 `docs/media-agent-service-websocket.md`。
 
-Session visual history 同样不被动进入 prompt。只有 Runtime 根据现有 session 时间线写入可信
+Session visual history 同样不被动进入 prompt。只有 Runtime 根据同 user/session 语义存储写入可信
 `_trusted_visual_memory_available` 后，`visual_memory_search` 才进入 Tool catalog；调用方 metadata
 会先被覆盖，exposure 不检查请求文本。模型只拥有 query/time window/search mode，session 与 as-of
 由 Runtime/ToolContext 绑定。ASR 已在上游变为普通 final text，不存在语音 embedding prompt 通道。

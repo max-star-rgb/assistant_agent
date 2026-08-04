@@ -20,6 +20,28 @@ CoordinatorT = TypeVar("CoordinatorT", bound=ClosableCoordinator)
 class _Entry(Generic[CoordinatorT]):
     coordinator: CoordinatorT
     touched_at: float
+    active_leases: int = 0
+
+
+class SessionEmbeddingCoordinatorLease(Generic[CoordinatorT]):
+    """Idempotent active-use lease preventing idle/LRU eviction."""
+
+    def __init__(
+        self,
+        coordinator: CoordinatorT,
+        release: Callable[[], None],
+    ) -> None:
+        self.coordinator = coordinator
+        self._release = release
+        self._lock = Lock()
+        self._released = False
+
+    def release(self) -> None:
+        with self._lock:
+            if self._released:
+                return
+            self._released = True
+        self._release()
 
 
 class SessionEmbeddingCoordinatorStore(Generic[CoordinatorT]):
@@ -62,12 +84,40 @@ class SessionEmbeddingCoordinatorStore(Generic[CoordinatorT]):
             else:
                 entry.touched_at = now
                 self._entries.move_to_end(key)
-            while len(self._entries) > self._max_sessions:
-                _, evicted = self._entries.popitem(last=False)
-                to_close.append(evicted.coordinator)
+            to_close.extend(self._evict_over_capacity(protected_key=key))
             result = entry.coordinator
         self._close_all(to_close)
         return result
+
+    def acquire(
+        self,
+        user_id: str,
+        session_id: str,
+    ) -> SessionEmbeddingCoordinatorLease[CoordinatorT]:
+        if not user_id or not session_id:
+            raise ValueError("user and session ids must be non-empty")
+        now = self._clock()
+        key = (user_id, session_id)
+        to_close: list[CoordinatorT] = []
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("embedding_coordinator_store_closed")
+            to_close.extend(self._evict_expired(now))
+            entry = self._entries.get(key)
+            if entry is None:
+                entry = _Entry(self._factory(user_id, session_id), now)
+                self._entries[key] = entry
+            else:
+                entry.touched_at = now
+                self._entries.move_to_end(key)
+            entry.active_leases += 1
+            to_close.extend(self._evict_over_capacity(protected_key=key))
+            coordinator = entry.coordinator
+        self._close_all(to_close)
+        return SessionEmbeddingCoordinatorLease(
+            coordinator,
+            lambda: self._release_lease(key, coordinator),
+        )
 
     def clear_session(self, user_id: str, session_id: str) -> bool:
         with self._lock:
@@ -115,9 +165,43 @@ class SessionEmbeddingCoordinatorStore(Generic[CoordinatorT]):
         expired = [
             key
             for key, entry in self._entries.items()
-            if now - entry.touched_at >= self._ttl_seconds
+            if entry.active_leases == 0
+            and now - entry.touched_at >= self._ttl_seconds
         ]
         return [self._entries.pop(key).coordinator for key in expired]
+
+    def _evict_over_capacity(
+        self,
+        *,
+        protected_key: tuple[str, str],
+    ) -> list[CoordinatorT]:
+        evicted: list[CoordinatorT] = []
+        while len(self._entries) > self._max_sessions:
+            candidate = next(
+                (
+                    key
+                    for key, entry in self._entries.items()
+                    if key != protected_key and entry.active_leases == 0
+                ),
+                None,
+            )
+            if candidate is None:
+                break
+            evicted.append(self._entries.pop(candidate).coordinator)
+        return evicted
+
+    def _release_lease(
+        self,
+        key: tuple[str, str],
+        coordinator: CoordinatorT,
+    ) -> None:
+        with self._lock:
+            entry = self._entries.get(key)
+            if entry is None or entry.coordinator is not coordinator:
+                return
+            if entry.active_leases > 0:
+                entry.active_leases -= 1
+            entry.touched_at = self._clock()
 
     @staticmethod
     def _close_all(coordinators: list[CoordinatorT]) -> None:

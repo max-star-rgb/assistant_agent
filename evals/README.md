@@ -112,7 +112,8 @@ delete/reset 公共契约，因此不提供会写入真实 Mem0 的自动 runner
 本地 SigLIP2 联合 image/text system eval 先用
 `scripts/run_system_multimodal_embedding_eval.py --dry-run` 检查配置；只有 operator 显式传入
 `--allow-local-model` 才创建 CUDA session。artifact 不保存向量、文本、图片内容或媒体路径，具体见
-`evals/system/multimodal_embedding/README.md`。
+`evals/system/multimodal_embedding/README.md`。dry-run 会声明固定 5 FPS、latest-wins、纯语义选帧、
+VLM 文本索引与查询阶段不调用 VLM 等检查面；它不等于真实 CUDA 或端到端流水线执行结果。
 
 ## Agent eval
 

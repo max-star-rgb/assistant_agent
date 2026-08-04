@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 from collections import OrderedDict
 from math import isfinite, sqrt
 from pathlib import Path
@@ -14,6 +15,10 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from assistant_agent.media.embedding.models import EmbeddingEvent
+from assistant_agent.media.embedding.observability import (
+    EmbeddingObserver,
+    emit_visual_semantic_observation,
+)
 
 
 VisualIndexStatus = Literal["ready", "unavailable"]
@@ -99,6 +104,7 @@ class SessionVisualSemanticStore:
         session_id: str | None = None,
         max_records: int = 256,
         max_evidence_bytes: int = 256 * 1024 * 1024,
+        observer: EmbeddingObserver | None = None,
     ) -> None:
         if session_id is not None and not session_id:
             raise ValueError("session id must be non-empty")
@@ -110,6 +116,7 @@ class SessionVisualSemanticStore:
         self._session_id = session_id
         self.max_records = max_records
         self.max_evidence_bytes = max_evidence_bytes
+        self.observer = observer
         self._records: OrderedDict[str, VisualSemanticRecord] = OrderedDict()
         self._video_records: dict[str, list[str]] = {}
         self._snapshots: dict[str, VisualSemanticSnapshot] = {}
@@ -168,6 +175,20 @@ class SessionVisualSemanticStore:
             retained_path.unlink(missing_ok=True)
             raise
         self._delete_evidence(evicted)
+        emit_visual_semantic_observation(
+            self.observer,
+            "visual_semantic.retained",
+            session_id=stored.session_id,
+            sequence=stored.frame_sequence,
+            status=stored.index_status,
+        )
+        if evicted:
+            emit_visual_semantic_observation(
+                self.observer,
+                "visual_semantic.evicted",
+                session_id=stored.session_id,
+                count=len(evicted),
+            )
         return stored
 
     def record_failure(
@@ -399,8 +420,11 @@ class SessionVisualSemanticStore:
         try:
             os.link(source, destination)
         except OSError:
-            destination.unlink(missing_ok=True)
-            raise
+            try:
+                shutil.copy2(source, destination)
+            except OSError:
+                destination.unlink(missing_ok=True)
+                raise
         return destination.resolve(), evidence_bytes
 
     def _evict_over_budget_locked(self) -> list[VisualSemanticRecord]:

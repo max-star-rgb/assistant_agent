@@ -11,6 +11,7 @@ from evals.agent.grading import rule_assertion
 from evals.agent.task_support import (
     ControlledVisualMemorySearchTool,
     build_controlled_registry,
+    install_controlled_visual_semantic_history,
 )
 
 
@@ -32,13 +33,8 @@ RESULT = {
 }
 
 
-class _HistoryAvailable:
-    def has_history(self) -> bool:
-        return True
-
-
 class VisualMemoryLastSeenObjectEnvironment(ControlledTaskEnvironment):
-    dependency_label = "controlled:visual-memory-confirmed-v1"
+    dependency_label = "controlled:visual-semantic-memory-confirmed-v2"
     tool_catalog_label = "complete-controlled-catalog-with-visual-memory"
 
     def build_registry(self) -> ToolRegistry:
@@ -53,10 +49,11 @@ class VisualMemoryLastSeenObjectEnvironment(ControlledTaskEnvironment):
         return (VISUAL_MEMORY_SEARCH_TOOL_NAME,)
 
     def before_run(self, runtime, request) -> None:
-        coordinator = runtime.embedding_coordinator_store.resolve(
-            request.user_id, request.session_id
+        install_controlled_visual_semantic_history(
+            runtime,
+            request,
+            summary="厨房台面上有一串钥匙。",
         )
-        coordinator.temporal_visual_memory = _HistoryAvailable()
 
     def task_validation_checks(self, registry: ToolRegistry) -> dict[str, AssertionResult]:
         result = registry.get(VISUAL_MEMORY_SEARCH_TOOL_NAME).run(

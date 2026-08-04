@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 from typing import Any, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -13,6 +14,9 @@ from assistant_agent.media.embedding.models import (
     ImageObservation,
     TextObservation,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 EMBEDDING_EVENT_NAMES = (
@@ -26,6 +30,35 @@ EMBEDDING_EVENT_NAMES = (
     "embedding.session_cleanup",
 )
 
+SEMANTIC_FRAME_EVENT_NAMES = (
+    "semantic_frame.admitted",
+    "semantic_frame.skipped",
+    "semantic_frame.replaced",
+    "semantic_frame.selected",
+)
+VISUAL_SEMANTIC_EVENT_NAMES = (
+    "visual_semantic.retained",
+    "visual_semantic.evicted",
+    "visual_semantic.index_failed",
+    "visual_memory.query",
+)
+SEMANTIC_FRAME_REASONS = frozenset(
+    {
+        "admitted",
+        "below_threshold",
+        "embedding_failed",
+        "fixed_interval",
+        "initial",
+        "interactive",
+        "interactive_inflight",
+        "interactive_pending",
+        "latest_wins",
+        "max_interval",
+        "processing_error",
+        "semantic",
+    }
+)
+
 
 class EmbeddingTraceEvent(BaseModel):
     model_config = ConfigDict(frozen=True)
@@ -34,16 +67,40 @@ class EmbeddingTraceEvent(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
+class SemanticFrameTraceEvent(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    event_name: str = Field(pattern=r"^semantic_frame\.")
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class VisualSemanticTraceEvent(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    event_name: str = Field(pattern=r"^(visual_semantic|visual_memory)\.")
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+TraceEvent = EmbeddingTraceEvent | SemanticFrameTraceEvent | VisualSemanticTraceEvent
+
+
 class EmbeddingObserver(Protocol):
-    def record(self, event: EmbeddingTraceEvent) -> None: ...
+    def record(self, event: TraceEvent) -> None: ...
 
 
 class InMemoryEmbeddingObserver:
     def __init__(self) -> None:
-        self.events: list[EmbeddingTraceEvent] = []
+        self.events: list[TraceEvent] = []
 
-    def record(self, event: EmbeddingTraceEvent) -> None:
+    def record(self, event: TraceEvent) -> None:
         self.events.append(event.model_copy(deep=True))
+
+
+class LoggingEmbeddingObserver:
+    """Production sink for already projected content-safe lifecycle events."""
+
+    def record(self, event: TraceEvent) -> None:
+        logger.info("multimodal_observation %s", event.model_dump_json())
 
 
 def embedding_trace_payload(
@@ -135,6 +192,99 @@ def emit_embedding_observation(
             EmbeddingTraceEvent(
                 event_name=event_name,
                 payload=embedding_trace_payload(**facts),
+            )
+        )
+    except Exception:
+        pass
+
+
+def semantic_frame_trace_payload(
+    *,
+    session_id: str,
+    sequence: int,
+    reason: str | None = None,
+    replaced_sequence: int | None = None,
+    **_content: Any,
+) -> dict[str, Any]:
+    """Project scheduling facts without frame content or raw identities."""
+
+    payload: dict[str, Any] = {
+        "session_id_digest": _digest(session_id),
+        "sequence": sequence,
+    }
+    if reason is not None:
+        payload["reason"] = reason if reason in SEMANTIC_FRAME_REASONS else "other"
+    if replaced_sequence is not None:
+        payload["replaced_sequence"] = replaced_sequence
+    return payload
+
+
+def emit_semantic_frame_observation(
+    observer: EmbeddingObserver | None,
+    event_name: str,
+    **facts: Any,
+) -> None:
+    """Best-effort semantic scheduling event with content-safe projection."""
+
+    if observer is None or event_name not in SEMANTIC_FRAME_EVENT_NAMES:
+        return
+    try:
+        observer.record(
+            SemanticFrameTraceEvent(
+                event_name=event_name,
+                payload=semantic_frame_trace_payload(**facts),
+            )
+        )
+    except Exception:
+        pass
+
+
+def visual_semantic_trace_payload(
+    *,
+    session_id: str,
+    sequence: int | None = None,
+    status: str | None = None,
+    count: int | None = None,
+    latency_ms: int | None = None,
+    **_content: Any,
+) -> dict[str, Any]:
+    """Project record/query facts without visual or query content."""
+
+    payload: dict[str, Any] = {"session_id_digest": _digest(session_id)}
+    if sequence is not None:
+        payload["sequence"] = max(0, sequence)
+    if status is not None:
+        payload["status"] = (
+            status
+            if status
+            in {
+                "candidate",
+                "confirmed",
+                "not_found",
+                "ready",
+                "unavailable",
+            }
+            else "other"
+        )
+    if count is not None:
+        payload["count"] = max(0, count)
+    if latency_ms is not None:
+        payload["latency_ms"] = max(0, latency_ms)
+    return payload
+
+
+def emit_visual_semantic_observation(
+    observer: EmbeddingObserver | None,
+    event_name: str,
+    **facts: Any,
+) -> None:
+    if observer is None or event_name not in VISUAL_SEMANTIC_EVENT_NAMES:
+        return
+    try:
+        observer.record(
+            VisualSemanticTraceEvent(
+                event_name=event_name,
+                payload=visual_semantic_trace_payload(**facts),
             )
         )
     except Exception:

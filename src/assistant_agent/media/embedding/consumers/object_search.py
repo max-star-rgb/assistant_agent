@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from time import perf_counter_ns
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -12,6 +13,9 @@ from assistant_agent.media.embedding.models import (
     EmbeddingFailureEvent,
     TextObservation,
 )
+from assistant_agent.media.embedding.observability import (
+    emit_visual_semantic_observation,
+)
 from assistant_agent.media.video.semantic_store import SessionVisualSemanticStore
 
 
@@ -21,6 +25,7 @@ VisualMemorySearchStatus = Literal[
     "not_found",
     "unavailable",
 ]
+VisualMemorySearchMode = Literal["auto", "object", "scene", "event"]
 
 
 class VisualMemorySearchRequest(BaseModel):
@@ -29,6 +34,7 @@ class VisualMemorySearchRequest(BaseModel):
     session_id: str = Field(min_length=1)
     request_id: str = Field(min_length=1)
     query: str = Field(min_length=1, max_length=4_000)
+    search_mode: VisualMemorySearchMode = "auto"
     top_k: int = Field(default=5, ge=1, le=20)
     as_of_sequence: int | None = Field(default=None, ge=0)
     since_ms: int | None = Field(default=None, ge=0)
@@ -74,33 +80,43 @@ class VisualMemorySearchService:
         self.confirmed_similarity = confirmed_similarity
 
     def search(self, request: VisualMemorySearchRequest) -> VisualMemorySearchResult:
+        started_ns = perf_counter_ns()
         if request.session_id != self.coordinator.session_id:
             raise ValueError("visual_memory_search_session_mismatch")
         if not self.semantic_store.has_searchable_history():
-            return VisualMemorySearchResult(status="not_found")
+            return self._finish(
+                VisualMemorySearchResult(status="not_found"),
+                started_ns,
+            )
 
         query = self.coordinator.embed_text(
             TextObservation(
                 session_id=request.session_id,
                 observation_id=request.request_id,
-                text=request.query.strip(),
+                text=_mode_query(request.query, request.search_mode),
                 source="visual_memory_search",
             ),
             priority="interactive",
         )
         if isinstance(query, EmbeddingFailureEvent):
-            return VisualMemorySearchResult(
-                status="unavailable",
-                errors=[
-                    {
-                        "code": query.code,
-                        "message": query.safe_message,
-                        "recoverable": query.recoverable,
-                    }
-                ],
+            return self._finish(
+                VisualMemorySearchResult(
+                    status="unavailable",
+                    errors=[
+                        {
+                            "code": query.code,
+                            "message": query.safe_message,
+                            "recoverable": query.recoverable,
+                        }
+                    ],
+                ),
+                started_ns,
             )
         if not isinstance(query, EmbeddingEvent):
-            return VisualMemorySearchResult(status="unavailable")
+            return self._finish(
+                VisualMemorySearchResult(status="unavailable"),
+                started_ns,
+            )
 
         candidates = self.semantic_store.search(
             query,
@@ -111,7 +127,10 @@ class VisualMemorySearchService:
             limit=request.top_k,
         )
         if not candidates:
-            return VisualMemorySearchResult(status="not_found")
+            return self._finish(
+                VisualMemorySearchResult(status="not_found"),
+                started_ns,
+            )
         matches = [
             VisualMemoryMatch(
                 frame_sequence=item.record.frame_sequence,
@@ -129,4 +148,33 @@ class VisualMemorySearchService:
             if candidates[0].score >= self.confirmed_similarity
             else "candidate"
         )
-        return VisualMemorySearchResult(status=status, matches=matches)
+        return self._finish(
+            VisualMemorySearchResult(status=status, matches=matches),
+            started_ns,
+        )
+
+    def _finish(
+        self,
+        result: VisualMemorySearchResult,
+        started_ns: int,
+    ) -> VisualMemorySearchResult:
+        emit_visual_semantic_observation(
+            self.coordinator.observer,
+            "visual_memory.query",
+            session_id=self.coordinator.session_id,
+            status=result.status,
+            count=len(result.matches),
+            latency_ms=max(0, (perf_counter_ns() - started_ns) // 1_000_000),
+        )
+        return result
+
+
+def _mode_query(query: str, mode: VisualMemorySearchMode) -> str:
+    normalized = query.strip()
+    prefix = {
+        "auto": "",
+        "object": "物体：",
+        "scene": "场景：",
+        "event": "事件：",
+    }[mode]
+    return f"{prefix}{normalized}"

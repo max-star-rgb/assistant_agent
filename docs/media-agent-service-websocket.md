@@ -370,14 +370,14 @@ ACK 耗时通过独立事件记录，`ACK pending` 表示仍缺媒体侧应用�
 - 本次后台观察实现变化不修改 Media wire：`video` / `videoResponse` 的外层 envelope、`body` 字符串、字段名、H.264 Hex 编码和 ACK 语义保持不变。
 - `videoContent` 必须是无 `0x` 前缀的 H.264 Annex-B Hex 字符串，并以三字节或四字节 NAL 起始码开头。
 - 媒体服务必须让每条消息可独立解码：每帧包含 SPS、PPS 和 I-Frame，不依赖前后消息。
-- Agent 使用本机 FFmpeg 在一次解码中同时生成 JPEG 和 `32x18` 灰度指纹；指纹只用于本地变化检测，不进入 prompt、trace 或 Provider 请求。
-- 每个 session 复用统一 embedding coordinator。首帧必选，最终选帧信号为 SSIM 结构差与共享 SigLIP2 image embedding 变化，二者可以独立触发，也保留 0.4/0.6 组合分数；2 FPS semantic probe 是 SSIM 未越阈值时每 0.5 秒一次的保底探测，不是推理上限，SSIM/首帧/强制间隔等仍可在其间触发。静态画面最长 10 秒产生一次候选。低分辨率像素差只用于采样调度和诊断，不计入最终关键帧分数，也不称为 semantic。Qwen 视觉文本只在选帧之后生成，不反向参与本轮关键帧判定。收到 `chat` 时，以此前最新原始帧为时间边界，选择 `sequence <= 边界` 的最近已选关键帧作为本轮视觉目标；只有此前不存在成功、执行中或待处理关键帧时，才把最新原始帧提升为目标。
-- 原始视频上下文只保留最近 3 帧；成功理解的语义关键帧独立保留最多 8 帧。它们是本地 fallback/语义记忆，不作为 Qwen 多帧历史发送。每轮 Qwen 请求只含当前选中的一张 JPEG 和最多 2,000 字符的上一成功语义摘要。后台队列最多包含 1 个执行中帧和 1 个待处理帧，积压时用最新候选替换旧候选。
+- Agent 使用本机 FFmpeg 把每条独立 H.264 消息解码为 JPEG；不再生成灰度指纹，也不运行像素差或 SSIM。
+- 每个 session 复用统一 embedding coordinator。视频帧按固定 5 FPS 时间准入，每个准入帧只执行一次共享 SigLIP2 image embedding，并只根据 embedding cosine distance、首帧、交互提升和最长 10 秒间隔选帧。旧 2 FPS semantic probe 仅作为新输入 FPS 配置的迁移 alias，不再代表独立 probe。Qwen 视觉文本只在选帧之后生成，不反向参与本轮判定。收到 `chat` 时，冻结此前最新原始帧 sequence；需要时将该帧交互式提升并保护，工具只消费不晚于该边界的语义。
+- 原始视频上下文只保留最近 3 帧；成功 VLM 结果发布到同 user/session 的 `SessionVisualSemanticStore`，同时保留 canonical text search embedding 和受限 evidence。它们不作为 Qwen 多帧历史发送。每轮 Qwen 请求只含当前选中的一张 JPEG 和最多 2,000 字符的上一成功语义摘要。semantic embedding 与 Qwen observation 各自最多 1 个执行中帧和 1 个 latest-wins pending，交互式目标不被替换，从而优先保证实时且无积压。
 - 解码后的帧注册到当前 `AgentGraphRuntime.video_context_store`；原始 H.264 不落盘，也不进入 prompt、trace 或 Provider 请求。
 - 选中关键帧的后台视觉理解经过 `ActionValidator -> ToolExecutor -> ToolRegistry -> realtime_video_observe`；该内部 ToolSpec 不进入主 LLM catalog，WebSocket 入口也不直接调用 Provider。这里的成功分三层：`ToolResult.success is True` 只表示工具执行完成；内部 `VideoUnderstandingResult` 可验证且 `errors` 为空才算 VLM 语义成功；还必须 `source=background_keyframe_observation` 才允许发布为 rolling semantic snapshot。失败、partial、harness 说明性结果或 query-time `realtime_video_memory_unavailable` 结果只记录失败/可解释状态，不能写入 `current_state`。mock 模式不联网，真实连续 MLLM 只允许 `MULTIMODAL_AGENT_PROVIDER_MODE=real` 配置。
 - 同一连接后续 `chat` 会携带该 session 的 `video_id` 进入 Gateway。有 active video 时，AgentRuntime 可基于可信 entry profile 和结构化媒体引用动态暴露 `live_view_inspect`，不根据用户文本关键词暴露或调用工具。DeepSeek 只看到该工具的 schema；它看不到实时镜头可用状态、被动 `realtime_video_context`、视频帧、JPEG 路径、base64、VLM 角色模板、Qwen 原文或 provider raw response。
 - 可信 Agent-Service 请求不会把 opaque `video_id`、镜头连接状态或后台语义快照渲染进主 LLM prompt。只有主 LLM 自主调用 `live_view_inspect` 后，工具 observation 才把当前实时镜头的有界视觉语义返回给它；最终回答不应向用户说“你刚发送的视频”、快照、后台观察或 Provider。
-- 后台观察器仍作为预热缓存运行，并按 sequence 有界缓存从通话开始到当前时刻已经成功发布的视觉文本；需要当前画面事实时，由 AgentRuntime 主 LLM 通过动态暴露的 `live_view_inspect` 表达需求。若本轮最近关键帧的文本已缓存，工具立即返回；若该关键帧仍在识别，工具最多等待 10 秒。等待期间提问之后到达的新帧不能替换该目标。达到等待上限后才退回到 `sequence <= 目标 sequence` 的最近成功文本；若此前仍无任何成功文本，才返回 unavailable，绝不消费提问之后画面的文本。普通问候不应主动提及视觉。
+- 后台观察器持续把成功视觉文本发布到统一 `SessionVisualSemanticStore`；需要当前画面事实时，由 AgentRuntime 主 LLM 通过动态暴露的 `live_view_inspect` 表达需求。目标 sequence 已有记录时立即返回，仍在识别时最多等待 10 秒；等待期间提问之后到达的新帧不能替换该目标。达到等待上限后才退回到 `sequence <= 目标 sequence` 的最近成功记录；若此前仍无成功记录，才返回 unavailable。普通问候不应主动提及视觉。
 - 每个连接始终最多一个 Qwen observation in-flight 和一个 latest-wins pending 帧；冻结的 chat 目标 sequence 在本轮期间受保护，不适用 pending latest-wins 替换。只有后台 observer 负责提交帧到 Qwen，不能绕开 observer 启动第二个 Qwen。
 - 每个 `video_id` 只维护一个 persistent Qwen WebSocket；20 次成功观察或 60 秒后主动轮换，断线使用 0.25/0.5/1/2/5 秒封顶退避重连。失败保留最后成功快照并投影 `refreshing`/`stale`；切换 video id、连接关闭或 observer close 会关闭 Provider session 并清理 pending、快照、retained/raw JPEG 和临时文件。
 - 新鲜度以成功语义对应帧的采集时间为主：`frame_capture_age_ms` 表示采集年龄，`snapshot_publish_age_ms` 表示 Qwen 结果发布年龄；`semantic_publish_latency_ms` 表示 Agent-Service 收到该视频消息到成功语义写入滚动记忆的端到端时延。采集时间缺失或在未来时不伪造年龄或时延。
@@ -385,7 +385,7 @@ ACK 耗时通过独立事件记录，`ACK pending` 表示仍缺媒体侧应用�
 - Agent-Service 携带视频引用的 chat turn 保留 90 秒 facade 总预算，用于覆盖 Gateway、AgentRuntime 主 LLM 执行、动态视觉工具调用以及可能较慢的上下文刷新。普通文本 chat 默认同样使用 90 秒，
   可通过 `ASSISTANT_AGENT_TEXT_TURN_TIMEOUT_SECONDS` 调整；主 Chat Provider 默认 75 秒，
   可通过 `MULTIMODAL_AGENT_CHAT_TIMEOUT_SECONDS` 调整，并应小于 facade 总预算。
-- 连接关闭时先停止观察器、丢弃待处理帧并拒绝晚到结果，再移除滚动语义记忆、关键帧、原始帧上下文和 JPEG 运行时文件。
+- 连接建立 observer 时会持有 embedding coordinator 与视觉语义 store lease，idle TTL/LRU 不关闭活跃实例。连接关闭时先停止观察器、丢弃待处理帧并拒绝晚到结果；semantic embedding 或 Qwen 阻塞时分别受 `close_wait_seconds` 约束，不能无限卡住连接清理。随后释放 lease，并移除原始帧上下文和临时 JPEG。统一视觉语义存储不随 transport close 清理；它在 session/user clear、TTL eviction 或 runtime pool close 时连同 owned evidence 删除，使同 session 重连仍可查询。
 
 成功响应中的 `video received` 表示该帧已经通过校验、成功解码、注册到视频上下文并完成本地选帧调度，不再只是传输层收到；它不表示后台视觉 MLLM 已完成。Hex、codec、NAL 起始码、大小或解码失败时返回 `videoResponse` 且 `body.code="FAIL"`；连接保持可用，失败帧不会附加到后续 chat。
 
@@ -400,8 +400,8 @@ ACK 耗时通过独立事件记录，`ACK pending` 表示仍缺媒体侧应用�
   -> video.body.contents[].videoContent
   -> Agent bytes.fromhex()
   -> H.264 解码为视频帧
-  -> JPEG + 灰度指纹
-  -> 本地视频上下文和后台观察器
+  -> JPEG
+  -> 本地视频上下文和全语义后台观察器
 ```
 
 媒体侧 FFmpeg 编码参数应满足：
@@ -770,13 +770,14 @@ provider 选择入口。启动前应确认 chat readiness 和视觉插件的 vis
 `SIGLIP2_MODEL_DIR` 时启用。旧 vision-prefixed 名称是迁移 alias。该目录必须由 operator 预先导出，Runtime 不联网下载；可选
 `SIGLIP2_CUDA_DEVICE_ID` 默认是 `0`。选帧参数可通过
 `REALTIME_KEYFRAME_MAX_INTERVAL_SECONDS`（默认 `10`）、
-`REALTIME_KEYFRAME_SEMANTIC_PROBE_FPS`（默认 `2`）、
-`REALTIME_KEYFRAME_STRUCTURAL_THRESHOLD`（默认 `0.35`）、
-`REALTIME_KEYFRAME_SEMANTIC_THRESHOLD`（默认 `0.18`）和
-`REALTIME_KEYFRAME_COMBINED_THRESHOLD`（默认 `0.25`）调整。schema v2 ONNX 资产同时包含 image
+`REALTIME_SEMANTIC_INPUT_FPS`（默认 `5`）、
+`REALTIME_KEYFRAME_MIN_INTERVAL_SECONDS`（默认 `0.5`）和
+`REALTIME_KEYFRAME_SEMANTIC_THRESHOLD`（默认 `0.18`）调整。旧
+`REALTIME_KEYFRAME_SEMANTIC_PROBE_FPS` 是输入 FPS 的迁移 alias；structural/combined 配置已拒绝。
+schema v2 ONNX 资产同时包含 image
 `visual_projection`、text projection 和 tokenizer，并由同一 revision/space 约束；schema v1 image-only
 资产只能报告 `text_ready=false`。模型资产、依赖、checksum 或 CUDA
-不可用时 semantic 分数 fail closed 为 0，observer 继续使用 SSIM，不以灰度直方图冒充 semantic。
+不可用时不会回退到像素或 SSIM；只有交互 pin 或最长间隔可继续触发降级 VLM observation。
 短期视觉时间线、历史找物、session cleanup 和 as-of 规则以
 `docs/multimodal-embedding-architecture.md` 为准。
 

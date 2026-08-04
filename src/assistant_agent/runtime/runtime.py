@@ -87,6 +87,10 @@ from assistant_agent.media.embedding.provider import create_multimodal_embedding
 from assistant_agent.media.embedding.consumers.alignment import CrossModalAlignmentConsumer
 from assistant_agent.media.embedding.consumers.attention import VisualAttentionConsumer
 from assistant_agent.media.embedding.models import TextObservation
+from assistant_agent.media.embedding.observability import (
+    EmbeddingObserver,
+    LoggingEmbeddingObserver,
+)
 from assistant_agent.tools.plugins.registry_factory import create_default_registry
 from assistant_agent.tools.registry import ToolRegistry
 
@@ -136,6 +140,7 @@ class AgentGraphRuntime:
         video_context_store: VideoContextStore | None = None,
         realtime_video_memory_store: RealtimeVideoMemoryStore | None = None,
         embedding_coordinator_store: SessionEmbeddingCoordinatorStore | None = None,
+        embedding_observer: EmbeddingObserver | None = None,
         visual_semantic_store_pool: SessionVisualSemanticStorePool | None = None,
         checkpointer: Any | None = None,
         context_source_coordinator: ContextSourceCoordinator | None = None,
@@ -147,6 +152,7 @@ class AgentGraphRuntime:
         self.video_context_store = video_context_store or InMemoryVideoContextStore()
         self.realtime_video_memory_store = realtime_video_memory_store or RealtimeVideoMemoryStore()
         self.embedding_provider = create_multimodal_embedding_provider(self.config)
+        self.embedding_observer = embedding_observer or LoggingEmbeddingObserver()
         self.embedding_coordinator_store = (
             embedding_coordinator_store
             or SessionEmbeddingCoordinatorStore(
@@ -156,7 +162,8 @@ class AgentGraphRuntime:
         self.visual_semantic_store_pool = (
             visual_semantic_store_pool
             or SessionVisualSemanticStorePool(
-                root=Path(".data") / "visual_semantic_memory"
+                root=Path(".data") / "visual_semantic_memory",
+                observer=self.embedding_observer,
             )
         )
         self.long_term_memory_service = (
@@ -306,7 +313,11 @@ class AgentGraphRuntime:
         session_id: str,
     ) -> SessionEmbeddingCoordinator:
         _ = user_id
-        coordinator = SessionEmbeddingCoordinator(session_id, self.embedding_provider)
+        coordinator = SessionEmbeddingCoordinator(
+            session_id,
+            self.embedding_provider,
+            observer=self.embedding_observer,
+        )
         coordinator.cross_modal_alignment_consumer = CrossModalAlignmentConsumer()
         coordinator.visual_attention_consumer = VisualAttentionConsumer()
         coordinator.register_consumer(

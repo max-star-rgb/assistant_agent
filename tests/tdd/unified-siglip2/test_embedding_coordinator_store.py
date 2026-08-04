@@ -36,6 +36,27 @@ def test_store_ttl_evicts_and_closes_expired_coordinator() -> None:
     assert first.closed is True
 
 
+def test_store_lease_prevents_active_coordinator_ttl_eviction() -> None:
+    now = [10.0]
+    store = SessionEmbeddingCoordinatorStore(
+        factory=_Coordinator,
+        ttl_seconds=5.0,
+        clock=lambda: now[0],
+    )
+    lease = store.acquire("user-1", "session-1")
+    first = lease.coordinator
+    now[0] = 16.0
+
+    store.resolve("user-2", "session-2")
+
+    assert first.closed is False
+    lease.release()
+    now[0] = 22.0
+    replacement = store.resolve("user-1", "session-1")
+    assert replacement is not first
+    assert first.closed is True
+
+
 def test_clear_user_and_close_only_close_owned_entries() -> None:
     store = SessionEmbeddingCoordinatorStore(factory=_Coordinator)
     first = store.resolve("user-1", "session-1")

@@ -10,8 +10,8 @@ Last updated: 2026-08-04
 
 本期新增的用户功能只有两个：
 
-- 会话内短期视觉回忆：保留经过 semantic probe 的历史画面向量和 owned evidence，不要求它已被选为关键帧；
-- 历史找物：用文本召回同 session 的历史画面，再由 VLM 对有界 top-k evidence 复核。
+- 会话内短期视觉回忆：把选中的语义关键帧交给 VLM 文本化，并在 session 内保留成功结果；
+- 历史找物：把用户查询与这些 VLM 文本放入同一 text embedding 空间排序，不在查询阶段再次调用 VLM。
 
 新增给主 LLM 的 Tool 只有 `visual_memory_search`。`live_view_inspect` 继续回答当前实时画面，内部
 `realtime_video_observe` 继续生成 rolling VLM snapshot。`siglip2_embed*`、`find_object`、
@@ -24,12 +24,17 @@ ImageObservation / TextObservation
         -> SessionEmbeddingCoordinator
         -> MultimodalEmbeddingProvider
         -> EmbeddingEvent | EmbeddingFailureEvent
-        -> 独立有界 consumer queues
-             ├─ KeyframeChangeConsumer
-             ├─ TemporalMemoryConsumer
-             ├─ CrossModalAlignmentConsumer
-             ├─ VisualAttentionConsumer
-             └─ VisualMemorySearchService（查询时读取时间线并复核）
+        -> 独立有界 consumer queues（alignment / attention 等可选消费者）
+
+Realtime frame
+        -> 5 FPS fixed admission
+        -> one image embedding per admitted frame
+        -> SemanticKeyframeSelector
+        -> realtime_video_observe（只对选中帧调用 VLM）
+        -> VLM result -> canonical text -> text embedding
+        -> SessionVisualSemanticStore
+             ├─ live_view_inspect（当前/as-of 语义）
+             └─ visual_memory_search（query text-to-record text 排序）
 ```
 
 Provider 发布模型、revision、dimension、normalization 和 `embedding_space_id`。Comparator 只有在
@@ -56,45 +61,53 @@ mock 模式使用确定性离线共同空间，不加载真实模型。
 `SIGLIP2_VISION_MODEL_DIR` 是迁移 alias；新旧值冲突时启动失败。alias 计划不早于 `0.3.0` 删除，
 删除前必须更新部署文档与迁移测试。
 
-## Semantic probe 与关键帧
+## 全语义实时选帧
 
-`REALTIME_KEYFRAME_SEMANTIC_PROBE_FPS=2` 表示：当 SSIM 没有越过结构阈值时，每 0.5 秒至少安排一次
-semantic probe。它不是 embedding 推理的 2 FPS 上限；首帧、SSIM 触发、强制最大间隔及其他消费者
-需要时都可在两个保底 probe 之间产生共享推理。最终选帧保留 SSIM 与 semantic 各自触发、0.4/0.6
-组合分数和最长 10 秒候选；像素差只用于采样与诊断。
+`semantic_input_fps` 默认是 5 FPS。固定时间准入后，每个准入帧只执行一次共享 SigLIP2 image
+embedding；不再运行像素差、灰度指纹、SSIM、结构阈值或 combined score。旧
+`REALTIME_KEYFRAME_SEMANTIC_PROBE_FPS` 仅作为 `REALTIME_SEMANTIC_INPUT_FPS` 的迁移 alias，显式配置
+旧 structural/combined 参数会启动失败，防止部署误以为像素路径仍然生效。
 
-语义关键帧不再自行创建视觉塔，而从 session coordinator 取得共享结果。Provider 失败时 semantic
-score fail closed 为 0，SSIM 路径继续工作。
+实时性优先于逐帧完整处理：流水线最多一个 embedding in-flight 和一个 pending，pending 使用
+latest-wins；因此不会积压，但高于处理能力的准入帧可以被更新帧替换。交互式 chat 目标可被 pin，
+不能被后台帧替换。Selector 只根据当前 image embedding 与上一已选关键帧的 cosine distance、首次事件、交互提升
+和最长 10 秒间隔选帧。semantic change 比较当前帧与上一已选 VLM 关键帧，使缓慢但累计明显的场景
+变化仍能产生新记录；Provider 失败时只允许交互目标或最长间隔走降级 VLM，不伪造 semantic score。
 
 ## 文本、ASR 与跨模态消费者
 
 平台不直接处理语音。音频在上游转为稳定文本后，与键盘输入一样成为 `TextObservation`；`source`
 只说明来源。Runtime 只对非空 final `request.text` 编码，且 session 必须存在 text consumer。文本
-embedding 不写入 `TemporalVisualMemory` 或 Mem0。
+Runtime 的一般文本 embedding 不写入视觉语义存储或 Mem0；只有成功 VLM 结果的 canonical text 才建立
+session visual search index。
 
 Alignment 按 similarity 降序、时间距离升序关联同空间事件。Attention 只有设置内部 text target 后才
 比较 image event 并保存 `visual_attention_candidate`；候选不会自动转为 Agent 行为。
 
 ## Session retention、as-of 与清理
 
-`TemporalVisualMemory` 同时受记录数和总字节限制。Image consumer 只用同文件系统 hard-link 把 live
-JPEG 变为 session-owned evidence；失败就记录 retention failure 且不索引，不复制媒体字节。淘汰、
-session/user 删除、TTL eviction 和 runtime pool close 都删除向量记录与 owned link。普通 WebSocket
-transport close 不清理，因此同 session 重连仍能复用历史。
+`SessionVisualSemanticStore` 只发布通过校验的 VLM 成功结果，并把其 canonical text 编码为
+`search_embedding`。Store 同时受记录数和 owned evidence 总字节限制；关键帧 evidence 通过 hard-link，
+必要时退回 copy。淘汰、session/user 删除、TTL eviction 和 runtime pool close 都删除记录与 evidence。
+普通 WebSocket transport close 不清理，因此同 user/session 重连仍能复用历史。
+活跃实时 observer 同时持有 embedding coordinator 与 visual store lease；idle TTL 和 LRU 只淘汰无
+lease 条目，避免长连接在持续处理期间被关闭。observer close 会幂等释放 lease；显式 session/user clear
+和 runtime close 仍可立即终止并清理对应状态。
 
-查询时 Runtime 绑定 session，ToolContext 提供可信 as-of sequence；模型只能提交
-`query/time_window/search_mode`。未来帧不能进入结果。Embedding 只召回，不输出坐标；VLM 只接收有界
-top-k owned refs。VLM raw response 不进入结果，只投影复核后的 scene/objects。状态固定为
-`confirmed|candidate|uncertain|not_found|unavailable`；复核失败保留候选，text embedding 失败返回 unavailable。
+查询时 Runtime 绑定 user/session，ToolContext 提供可信 as-of sequence/time；模型只能提交
+`query/time_window/search_mode`。Tool 只编码一次查询文本，并与同 embedding space 的记录文本向量做
+cosine 排序；`object|scene|event` mode 会添加与 canonical VLM 文本字段一致的短前缀，`auto` 保留原
+query。不读取 evidence、不调用 VLM，也不输出路径、向量或坐标。未来记录不能进入结果。状态固定为
+`confirmed|candidate|not_found|unavailable`；query text embedding 失败返回 unavailable。
 
 ## Tool 暴露与安全
 
 `visual_memory_search` 是 `category=read`、`requires_media=[]`，视频断线后仍可查询已有历史。Runtime
 在 catalog 构建前删除调用方传入的 `_trusted_visual_memory_available`，再根据现有 coordinator 的
-`has_history()` 覆盖；exposure 不检查请求关键词。执行仍经过
+`SessionVisualSemanticStore.has_searchable_history()` 覆盖；exposure 不检查请求关键词。执行仍经过
 `ActionValidator -> ToolExecutor -> ToolRegistry -> tool`。
 
-向量、文本、owned evidence 路径不进入模型 schema、Tool data、trace、日志或 system eval artifact。
+向量、owned evidence 路径和原始 VLM payload 不进入模型 schema、Tool data、trace、日志或 system eval artifact。
 session evidence 不是长期记忆，不写 Mem0，也不跨 user/session 搜索。
 
 ## 验证入口
@@ -118,5 +131,5 @@ pytest、dry-run 或检测到凭据都不得自动触发这些调用。
 ## 非目标
 
 本期不提供语音 embedding、跨 session/长期视觉记忆、全局图库搜索、目标检测坐标、主动提醒、自动任务、
-attention 管理 Tool，也不把 SigLIP2 当成完整 VLM。视觉塔做 semantic keyframe 只是统一 embedding
+attention 管理 Tool、query-time VLM 复核，也不把 SigLIP2 当成完整 VLM。视觉塔做 semantic keyframe 只是统一 embedding
 平台的一个消费者，不是平台本身。

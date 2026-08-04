@@ -426,6 +426,7 @@ async def _assert_observer_latency(tmp_path) -> None:
         )
     )
     registry.seal()
+    released: list[bool] = []
     observer = RealtimeVideoObserver(
         user_id="user-sentinel",
         session_id="session-sentinel",
@@ -435,6 +436,7 @@ async def _assert_observer_latency(tmp_path) -> None:
             "session-sentinel", MockMultimodalEmbeddingProvider()
         ),
         keyframe_root=tmp_path / "keyframes",
+        resource_release=lambda: released.append(True),
     )
     ingress_ns = perf_counter_ns()
     frame = VideoFrame(
@@ -455,5 +457,15 @@ async def _assert_observer_latency(tmp_path) -> None:
         assert snapshot.observation_diagnostics is not None
         assert snapshot.observation_diagnostics.semantic_publish_latency_ms >= 0
         assert snapshot.observation_diagnostics.published_at_ns >= ingress_ns
+
+        first_record = observer.semantic_store.latest("video-sentinel")
+        assert first_record is not None
+        repeated = await observer.promote(frame)
+        await observer.wait_idle()
+
+        assert repeated.decision_reason == "already_represented"
+        assert observer.semantic_store.latest("video-sentinel") == first_record
     finally:
         await observer.close()
+        await observer.close()
+    assert released == [True]

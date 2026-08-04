@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import errno
 from pathlib import Path
 
 import pytest
 
 from assistant_agent.media.embedding.models import EmbeddingEvent
+from assistant_agent.media.embedding.observability import InMemoryEmbeddingObserver
 from assistant_agent.media.video.semantic_store import (
     SessionVisualSemanticStore,
     VisualSemanticRecord,
@@ -111,6 +113,26 @@ def test_eviction_deletes_owned_evidence(tmp_path: Path) -> None:
     assert store.latest("video-1").frame_sequence == 2
 
 
+def test_store_emits_content_safe_retention_and_eviction_events(
+    tmp_path: Path,
+) -> None:
+    observer = InMemoryEmbeddingObserver()
+    store = SessionVisualSemanticStore(
+        root=tmp_path / "visual",
+        max_records=1,
+        observer=observer,
+    )
+
+    store.record_success(_record(tmp_path, sequence=1))
+    store.record_success(_record(tmp_path, sequence=2))
+
+    assert [event.event_name for event in observer.events] == [
+        "visual_semantic.retained",
+        "visual_semantic.retained",
+        "visual_semantic.evicted",
+    ]
+
+
 def test_retention_failure_does_not_change_latest(tmp_path: Path) -> None:
     store = SessionVisualSemanticStore(root=tmp_path / "visual")
     first = store.record_success(_record(tmp_path, sequence=1))
@@ -122,6 +144,25 @@ def test_retention_failure_does_not_change_latest(tmp_path: Path) -> None:
         store.record_success(missing)
 
     assert store.latest("video-1") == first
+
+
+def test_retention_falls_back_to_copy_across_filesystems(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    store = SessionVisualSemanticStore(root=tmp_path / "visual")
+
+    def cross_device_link(_source, _destination) -> None:
+        raise OSError(errno.EXDEV, "cross-device link")
+
+    monkeypatch.setattr(
+        "assistant_agent.media.video.semantic_store.os.link",
+        cross_device_link,
+    )
+
+    stored = store.record_success(_record(tmp_path, sequence=3))
+
+    assert Path(stored.evidence_ref).read_bytes() == b"jpeg-3"
 
 
 def test_failure_keeps_prior_success_and_updates_snapshot(tmp_path: Path) -> None:
@@ -161,6 +202,30 @@ def test_pool_ttl_eviction_closes_store_and_deletes_evidence(tmp_path: Path) -> 
     evidence = Path(stored.evidence_ref)
 
     clock.value = 31.0
+
+    assert pool.peek("user-1", "session-1") is None
+    assert evidence.exists() is False
+
+
+def test_pool_does_not_evict_an_active_store_lease(tmp_path: Path) -> None:
+    clock = _MutableClock(0.0)
+    pool = SessionVisualSemanticStorePool(
+        root=tmp_path / "pool",
+        ttl_seconds=30.0,
+        clock=clock,
+    )
+    lease = pool.acquire("user-1", "session-1")
+    stored = lease.store.record_success(_record(tmp_path, sequence=1))
+    evidence = Path(stored.evidence_ref)
+
+    clock.value = 31.0
+    pool.resolve("user-2", "session-2")
+
+    assert lease.store.closed is False
+    assert evidence.exists() is True
+
+    lease.release()
+    clock.value = 62.0
 
     assert pool.peek("user-1", "session-1") is None
     assert evidence.exists() is False

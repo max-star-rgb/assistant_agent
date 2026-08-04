@@ -16,6 +16,9 @@ from pydantic import ValidationError
 from assistant_agent.config import ProviderConfig
 from assistant_agent.media.embedding.coordinator import SessionEmbeddingCoordinator
 from assistant_agent.media.embedding.models import EmbeddingEvent, TextObservation
+from assistant_agent.media.embedding.observability import (
+    emit_visual_semantic_observation,
+)
 from assistant_agent.runtime.action_validator import ActionValidator
 from assistant_agent.runtime.state import AgentState
 from assistant_agent.runtime.tool_executor import ToolExecutor
@@ -83,6 +86,7 @@ class RealtimeVideoObserver:
         keyframe_root: Path | str = DEFAULT_KEYFRAME_ROOT,
         validator: ActionValidator | None = None,
         close_wait_seconds: float = DEFAULT_CLOSE_WAIT_SECONDS,
+        resource_release: Callable[[], None] | None = None,
         clock_ns: Callable[[], int] = perf_counter_ns,
         wall_clock_ms: Callable[[], int] | None = None,
     ) -> None:
@@ -97,8 +101,11 @@ class RealtimeVideoObserver:
         self.semantic_store = semantic_store or SessionVisualSemanticStore(
             root=self.keyframe_root / "semantic-store",
             session_id=session_id,
+            observer=embedding_coordinator.observer,
         )
         self._owns_semantic_store = semantic_store is None
+        self._resource_release = resource_release
+        self._resources_released = False
         resolved_provider_config = provider_config or ProviderConfig()
         self.validator = validator or ActionValidator()
         self.close_wait_seconds = close_wait_seconds
@@ -143,6 +150,7 @@ class RealtimeVideoObserver:
             retention_root=self.keyframe_root / "semantic-input",
             on_selected=self._enqueue_semantic_selection,
             on_state_change=self._update_semantic_pipeline_state,
+            observer=embedding_coordinator.observer,
         )
 
     async def submit(self, frame: VideoFrame) -> FrameProcessingResult:
@@ -169,7 +177,6 @@ class RealtimeVideoObserver:
             decision_reason=admission.reason,
             semantic_admission=admission.reason,
         )
-        return collection.processing
 
     async def promote(self, frame: VideoFrame) -> FrameProcessingResult:
         """Enqueue a decoded frame without adaptive selection."""
@@ -213,6 +220,23 @@ class RealtimeVideoObserver:
     async def _promote(self, frame: VideoFrame) -> FrameProcessingResult:
         self._accept_video_id(frame)
         started_ns = self.clock_ns()
+        represented = self.semantic_store.at_or_before(
+            frame.video_id,
+            sequence=frame.sequence,
+        )
+        if represented is not None and represented.frame_sequence == frame.sequence:
+            return FrameProcessingResult(
+                frame_id=frame.frame_id,
+                timestamp_seconds=_to_ai_frame(frame).timestamp_seconds,
+                sampled=True,
+                sampling_rate=0.0,
+                metrics=KeyframeChangeMetrics(),
+                keyframe_selected=True,
+                qwen_called=False,
+                latency_ms=_elapsed_ms(started_ns, self.clock_ns()),
+                decision_reason="already_represented",
+                semantic_admission="already_represented",
+            )
         admission = await self.semantic_pipeline.promote(frame)
         return FrameProcessingResult(
             frame_id=frame.frame_id,
@@ -413,35 +437,50 @@ class RealtimeVideoObserver:
         if self.closed:
             return
         self.closed = True
-        await self.semantic_pipeline.close()
-        self._drop_pending()
-        await self.wait_for_promotions()
+        try:
+            await self.semantic_pipeline.close(timeout_seconds=self.close_wait_seconds)
+            self._drop_pending()
+            await self.wait_for_promotions()
 
-        execution = self._execution_task
-        if execution is not None and not execution.done():
-            try:
-                await asyncio.wait_for(asyncio.shield(execution), timeout=self.close_wait_seconds)
-            except TimeoutError:
-                inflight = self._inflight_item
-                if inflight is not None:
-                    path = Path(inflight.record.uri)
-                    self._delete_record(inflight)
-                    execution.add_done_callback(lambda _task, owned=path: self._delete_late_path(owned))
+            execution = self._execution_task
+            if execution is not None and not execution.done():
+                try:
+                    await asyncio.wait_for(
+                        asyncio.shield(execution),
+                        timeout=self.close_wait_seconds,
+                    )
+                except TimeoutError:
+                    inflight = self._inflight_item
+                    if inflight is not None:
+                        path = Path(inflight.record.uri)
+                        self._delete_record(inflight)
+                        execution.add_done_callback(
+                            lambda _task, owned=path: self._delete_late_path(owned)
+                        )
 
-        if self._worker is not None:
-            self._worker.cancel()
-            await asyncio.gather(self._worker, return_exceptions=True)
-        await self._close_video_adapter()
-        if self.video_id is not None:
-            self.memory_store.remove_video(self.video_id)
-        if self._owns_semantic_store:
-            self.semantic_store.close()
-        for path in list(self._owned_paths):
-            path.unlink(missing_ok=True)
-        self._owned_paths.clear()
-        _remove_empty_tree(self.keyframe_root)
-        self._idle.set()
-        self._snapshot_updated.set()
+            if self._worker is not None:
+                self._worker.cancel()
+                await asyncio.gather(self._worker, return_exceptions=True)
+            await self._close_video_adapter()
+            if self.video_id is not None:
+                self.memory_store.remove_video(self.video_id)
+            if self._owns_semantic_store:
+                self.semantic_store.close()
+            for path in list(self._owned_paths):
+                path.unlink(missing_ok=True)
+            self._owned_paths.clear()
+            _remove_empty_tree(self.keyframe_root)
+            self._idle.set()
+            self._snapshot_updated.set()
+        finally:
+            self._release_external_resources()
+
+    def _release_external_resources(self) -> None:
+        if self._resources_released:
+            return
+        self._resources_released = True
+        if self._resource_release is not None:
+            self._resource_release()
 
     def _ensure_worker(self) -> None:
         if self._worker is None or self._worker.done():
@@ -594,7 +633,16 @@ class RealtimeVideoObserver:
             evidence_bytes=evidence_bytes,
             created_at_ms=self.wall_clock_ms(),
         )
-        return self.semantic_store.record_success(record)
+        stored = self.semantic_store.record_success(record)
+        if text_event is None:
+            emit_visual_semantic_observation(
+                self.embedding_coordinator.observer,
+                "visual_semantic.index_failed",
+                session_id=self.session_id,
+                sequence=frame.sequence,
+                status="unavailable",
+            )
+        return stored
 
     def _execute_observation(self, item: SemanticKeyframeRecord) -> ToolResult:
         video_id = item_video_id(item, self.video_id)

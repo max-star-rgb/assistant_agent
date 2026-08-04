@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import replace
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any
 
 from assistant_agent.config import ProviderConfig
@@ -21,6 +23,7 @@ from assistant_agent.tools.plugins.builtin.media_inspection.visual_memory_tool i
     VisualMemorySearchInput,
 )
 from assistant_agent.media.embedding.consumers.object_search import VisualMemorySearchResult
+from assistant_agent.media.video.semantic_store import VisualSemanticRecord
 from assistant_agent.tools.plugins.builtin.shopping.models import (
     PriceCompareRequest,
     PriceCompareResult,
@@ -105,6 +108,40 @@ class ControlledVisualMemorySearchTool(ToolBase):
             success=True,
             data=dict(self.result),
             model_observation=dict(self.result),
+        )
+
+
+def install_controlled_visual_semantic_history(
+    runtime: AgentGraphRuntime,
+    request: UserRequest,
+    *,
+    summary: str,
+) -> None:
+    """Publish one searchable record so runtime capability gating uses real state."""
+
+    store = runtime.visual_semantic_store_pool.resolve(
+        request.user_id,
+        request.session_id,
+    )
+    with TemporaryDirectory(prefix="visual-semantic-agent-eval-") as temporary:
+        evidence = Path(temporary) / "frame.jpg"
+        evidence.write_bytes(b"controlled-agent-eval-evidence")
+        store.record_success(
+            VisualSemanticRecord(
+                record_id="controlled-record-42",
+                session_id=request.session_id,
+                video_id="session-video",
+                frame_sequence=42,
+                captured_at_ms=1722765480000,
+                summary=summary,
+                scene="受控评测场景",
+                search_embedding=[1.0, 0.0],
+                embedding_space_id="controlled-eval-space",
+                index_status="ready",
+                evidence_ref=str(evidence),
+                evidence_bytes=0,
+                created_at_ms=1722765480000,
+            )
         )
 
 
