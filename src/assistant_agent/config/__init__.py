@@ -32,6 +32,7 @@ SUPPORTED_QWEN_REALTIME_VISION_REGIONS = {"cn-beijing", "ap-southeast-1"}
 
 VisionProviderName = str
 VisionEmbeddingProviderName = Literal["mock", "dashscope", "local_siglip2"]
+EmbeddingProviderName = Literal["mock", "dashscope", "local_siglip2"]
 ChatProviderName = str
 ImageGenerationProviderName = str
 ShoppingSearchProviderName = Literal["mock", "http", "haodanku"]
@@ -69,6 +70,7 @@ class ProviderConfig:
     vision_model: str | None = None
     vision_adapter_kind: str = "mock"
     vision_embedding_provider: VisionEmbeddingProviderName = "mock"
+    embedding_provider: EmbeddingProviderName = "mock"
     vision_embedding_api_key: str | None = None
     vision_embedding_base_url: str = (
         "https://dashscope.aliyuncs.com/api/v1/services/embeddings/"
@@ -79,6 +81,8 @@ class ProviderConfig:
     vision_embedding_timeout_seconds: float = 30.0
     siglip2_vision_model_dir: str | None = None
     siglip2_cuda_device_id: int = 0
+    siglip2_model_dir: str | None = None
+    embedding_cuda_device_id: int = 0
     keyframe_max_interval_seconds: float = 10.0
     keyframe_semantic_probe_fps: float = 2.0
     keyframe_structural_threshold: float = 0.35
@@ -219,6 +223,8 @@ class ProviderConfig:
         self.validate_provider_mode()
         if self.siglip2_cuda_device_id < 0:
             raise ValueError("siglip2 CUDA device id must be non-negative")
+        if self.embedding_cuda_device_id < 0:
+            raise ValueError("embedding CUDA device id must be non-negative")
         if self.keyframe_max_interval_seconds <= 0:
             raise ValueError("keyframe max interval must be positive")
         if self.keyframe_semantic_probe_fps <= 0:
@@ -264,9 +270,25 @@ class ProviderConfig:
             allow_real=allow_real_providers,
         )
         vision_settings = resolve_vision_provider(vision_provider, source)
+        embedding_provider_value = _compatible_env_value(
+            source,
+            canonical="MULTIMODAL_AGENT_EMBEDDING_PROVIDER",
+            legacy="MULTIMODAL_AGENT_VISION_EMBEDDING_PROVIDER",
+            conflict_code="conflicting_embedding_provider",
+        )
         vision_embedding_provider = _vision_embedding_provider(
-            source.get("MULTIMODAL_AGENT_VISION_EMBEDDING_PROVIDER"),
+            embedding_provider_value,
             allow_real=allow_real_providers,
+        )
+        siglip2_model_dir = _compatible_env_value(
+            source,
+            canonical="SIGLIP2_MODEL_DIR",
+            legacy="SIGLIP2_VISION_MODEL_DIR",
+            conflict_code="conflicting_siglip2_model_dir",
+        )
+        embedding_cuda_device_id = _int_env(
+            source.get("SIGLIP2_CUDA_DEVICE_ID"),
+            0,
         )
         image_generation_provider = _image_generation_provider(
             source.get("MULTIMODAL_AGENT_IMAGE_PROVIDER"),
@@ -308,6 +330,7 @@ class ProviderConfig:
             vision_model=vision_settings.model,
             vision_adapter_kind=vision_settings.adapter_kind,
             vision_embedding_provider=vision_embedding_provider,
+            embedding_provider=vision_embedding_provider,
             vision_embedding_api_key=(
                 _vision_embedding_api_key(source) if vision_embedding_provider == "dashscope" else None
             ),
@@ -325,11 +348,10 @@ class ProviderConfig:
                 source.get("DASHSCOPE_VISION_EMBEDDING_TIMEOUT_SECONDS"),
                 30.0,
             ),
-            siglip2_vision_model_dir=source.get("SIGLIP2_VISION_MODEL_DIR"),
-            siglip2_cuda_device_id=_int_env(
-                source.get("SIGLIP2_CUDA_DEVICE_ID"),
-                0,
-            ),
+            siglip2_vision_model_dir=siglip2_model_dir,
+            siglip2_cuda_device_id=embedding_cuda_device_id,
+            siglip2_model_dir=siglip2_model_dir,
+            embedding_cuda_device_id=embedding_cuda_device_id,
             keyframe_max_interval_seconds=_float_env(
                 source.get("REALTIME_KEYFRAME_MAX_INTERVAL_SECONDS"),
                 10.0,
@@ -864,6 +886,24 @@ def _vision_embedding_provider(value: str | None, *, allow_real: bool = True) ->
     if allow_real and value in {"dashscope", "local_siglip2"}:
         return value
     return "mock"
+
+
+def _compatible_env_value(
+    source: Mapping[str, str],
+    *,
+    canonical: str,
+    legacy: str,
+    conflict_code: str,
+) -> str | None:
+    canonical_value = source.get(canonical)
+    legacy_value = source.get(legacy)
+    if (
+        canonical_value is not None
+        and legacy_value is not None
+        and canonical_value != legacy_value
+    ):
+        raise ValueError(conflict_code)
+    return canonical_value if canonical_value is not None else legacy_value
 
 
 def _vision_embedding_api_key(source: Mapping[str, str]) -> str | None:
