@@ -363,10 +363,7 @@ def _score_requirements(
     for observation in observations:
         name = observation.name.lower()
         is_span = observation.type.upper() != "EVENT"
-        if is_span and (name in {"tool", "tool.execute"} or (
-            name.startswith("tool.")
-            and name not in {"tool.attempt.failed", "tool.retry.scheduled"}
-        )):
+        if _is_tool_execution_observation(observation):
             requirements.append((TOOL_RESULT_QUALITY, observation.observation_id))
         elif (
             is_span
@@ -434,8 +431,7 @@ def _observation_findings(trace: LangfuseTraceSnapshot) -> list[AuditFinding]:
             category = (
                 "memory"
                 if observation.name.startswith("memory.")
-                else "tool"
-                if observation.name.startswith("tool.")
+                else "tool" if _is_tool_execution_observation(observation)
                 else "infrastructure"
             )
             findings.append(
@@ -492,6 +488,31 @@ def _observation_metadata_attr(
     if isinstance(attributes, dict) and key in attributes:
         return attributes[key]
     return observation.metadata.get(key)
+
+
+def _is_tool_execution_observation(
+    observation: LangfuseObservationSnapshot,
+) -> bool:
+    if observation.type.upper() == "EVENT":
+        return False
+    if (
+        _observation_metadata_attr(
+            observation,
+            "assistant_agent.observation_kind",
+        )
+        == "tool_execution"
+    ):
+        return True
+    if _observation_metadata_attr(
+        observation,
+        "assistant_agent.canonical_event",
+    ) in {"tool.finished", "tool.failed"}:
+        return True
+    name = observation.name.lower()
+    return name in {"tool", "tool.execute"} or (
+        name.startswith("tool.")
+        and name not in {"tool.attempt.failed", "tool.retry.scheduled"}
+    )
 
 
 def _is_low_score(value: object, *, threshold: float) -> bool:

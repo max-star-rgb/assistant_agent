@@ -439,6 +439,11 @@ def _event_attributes(event: TraceEvent) -> dict[str, Any]:
         "assistant_agent.canonical_event": canonical_event,
         "assistant_agent.node_name": event.node_name,
     }
+    if canonical_event in {"tool.finished", "tool.failed"}:
+        attrs["assistant_agent.observation_kind"] = "tool_execution"
+        attrs[
+            "langfuse.observation.metadata.assistant_agent.observation_kind"
+        ] = "tool_execution"
     if event.latency_ms is not None:
         attrs["assistant_agent.latency_ms"] = event.latency_ms
     if event.provider:

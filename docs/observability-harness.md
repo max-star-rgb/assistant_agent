@@ -290,7 +290,11 @@ metadata。terminal、Tool 调用成败、event count、latency 等已知运行�
 不伪装成质量 Score。跨多个 observation 的 `tool_use` 轨迹判断第一阶段只进入 Codex 报告。
 
 Langfuse 日常 evaluator 使用原生 **Live Observations**、100% sampling 和 observation name/type filter；
-不要新建 deprecated trace-level evaluator。`tool_result_quality` 过滤 SPAN `tool.execute`，
+不要新建 deprecated trace-level evaluator。Langfuse 可按 `gen_ai.tool.name` 将 Tool execution SPAN 显示为
+`shopping_search` 等具体工具名，因此 `tool_result_quality` 不依赖 observation name，而过滤 SPAN 且
+metadata `assistant_agent.observation_kind=tool_execution`；该稳定标记由 canonical
+`tool.finished/tool.failed` 在 OTel 投影边界生成。runtime audit 使用同一标记，并为迁移前 trace 兼容读取
+nested `assistant_agent.canonical_event`，不枚举内置、MCP 或 Plugin 工具名。
 `memory_extraction` 过滤 SPAN `memory.turn_ingestion`，回答、grounding 与 memory recall 过滤
 GENERATION `llm.chat` 且 metadata `assistant_agent.runtime_action=text`；该 generation 的 input 同时包含
 当前请求、上下文、可用工具结果和长期记忆，比只看根 SPAN 更适合 observation-level 语义判断。

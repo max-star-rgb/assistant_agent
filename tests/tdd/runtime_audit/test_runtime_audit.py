@@ -280,6 +280,59 @@ def test_old_trace_reports_missing_duplicate_and_low_quality_scores() -> None:
     )
 
 
+def test_specific_tool_names_still_require_tool_result_quality_scores() -> None:
+    """Would fail if audit coverage guessed tool execution from observation names."""
+
+    now = datetime(2026, 8, 5, 4, 0, tzinfo=UTC)
+    trace = LangfuseTraceSnapshot(
+        trace_id="trace-specific-tool-names",
+        name="assistant.turn",
+        timestamp=now - timedelta(hours=1),
+        observations=[
+            {
+                "observation_id": "response-1",
+                "name": "assistant.response",
+                "type": "SPAN",
+            },
+            {
+                "observation_id": "tool-marker",
+                "name": "shopping_search",
+                "type": "SPAN",
+                "metadata": {
+                    "assistant_agent.observation_kind": "tool_execution",
+                },
+            },
+            {
+                "observation_id": "tool-legacy",
+                "name": "image_generation",
+                "type": "SPAN",
+                "metadata": {
+                    "attributes": {
+                        "assistant_agent.canonical_event": "tool.finished",
+                    }
+                },
+            },
+        ],
+        scores=[],
+    )
+
+    bundle = collect_runtime_audit(
+        source=FakeLangfuseSource([trace]),
+        local_trace_path=None,
+        window_start=now - timedelta(hours=2),
+        window_end=now,
+        collected_at=now,
+    )
+
+    missing_tool_scores = {
+        item.observation_id
+        for item in bundle.findings
+        if item.code == "score_missing"
+        and item.score_name == "assistant_agent.quality.tool_result_quality"
+    }
+    assert missing_tool_scores == {"tool-marker", "tool-legacy"}
+
+
 def test_codex_runner_uses_read_only_ephemeral_mode_and_removes_credentials(
     tmp_path: Path,
 ) -> None:
@@ -678,6 +731,20 @@ def test_native_online_evaluator_configuration_uses_canonical_names_and_full_sam
         "assistant_agent.quality.memory_recall",
     ]
     assert all(item.enabled is True and item.sampling == 1.0 for item in rules.created)
+    tool_rule = next(
+        item
+        for item in rules.created
+        if item.name == "assistant_agent.quality.tool_result_quality"
+    )
+    tool_filters = [item.model_dump(mode="json") for item in tool_rule.filter]
+    assert not any(item["column"] == "name" for item in tool_filters)
+    assert {
+        "column": "metadata",
+        "key": "assistant_agent.observation_kind",
+        "operator": "=",
+        "type": "stringObject",
+        "value": "tool_execution",
+    } in tool_filters
     assert result.applied is True
     assert result.created_evaluators == 5
     assert result.created_rules == 5
@@ -750,11 +817,98 @@ def test_native_online_evaluator_configuration_renames_legacy_rules_in_place() -
     )
 
     assert rules.created == []
-    assert rules.updated == [
-        (f"legacy-rule-{index}", {"name": name})
-        for index, name in enumerate(canonical_names)
+    assert len(rules.updated) == 5
+    assert [item[0] for item in rules.updated] == [
+        f"legacy-rule-{index}" for index in range(5)
     ]
+    assert [item[1]["name"] for item in rules.updated] == canonical_names
+    migrated_tool_filters = [
+        item.model_dump(mode="json")
+        for item in rules.updated[2][1]["filter"]
+    ]
+    assert not any(item["column"] == "name" for item in migrated_tool_filters)
+    assert {
+        "column": "metadata",
+        "key": "assistant_agent.observation_kind",
+        "operator": "=",
+        "type": "stringObject",
+        "value": "tool_execution",
+    } in migrated_tool_filters
     assert result.rule_names == canonical_names
     assert result.existing_evaluators == 5
     assert result.existing_rules == 5
     assert result.updated_rules == 5
+
+
+def test_native_online_evaluator_configuration_reconciles_existing_tool_rule() -> None:
+    """Would fail if an existing name-based tool rule never received the metadata filter."""
+
+    canonical_names = [
+        "assistant_agent.quality.response_quality",
+        "assistant_agent.quality.grounding",
+        "assistant_agent.quality.tool_result_quality",
+        "assistant_agent.quality.memory_extraction",
+        "assistant_agent.quality.memory_recall",
+    ]
+
+    class EvaluatorResource:
+        def list(self):
+            return SimpleNamespace(
+                data=[
+                    SimpleNamespace(name=name, scope="project")
+                    for name in canonical_names
+                ]
+            )
+
+        def create(self, *, request):
+            raise AssertionError(f"unexpected evaluator create: {request.name}")
+
+    class RuleResource:
+        def __init__(self) -> None:
+            self.updated = []
+
+        def list(self):
+            return SimpleNamespace(
+                data=[
+                    SimpleNamespace(id=f"rule-{index}", name=name)
+                    for index, name in enumerate(canonical_names)
+                ]
+            )
+
+        def create(self, *, request):
+            raise AssertionError(f"unexpected rule create: {request.name}")
+
+        def update(self, rule_id, **changes):
+            self.updated.append((rule_id, changes))
+
+    rules = RuleResource()
+    client = SimpleNamespace(
+        api=SimpleNamespace(
+            unstable=SimpleNamespace(
+                evaluators=EvaluatorResource(),
+                evaluation_rules=rules,
+            )
+        )
+    )
+
+    result = configure_native_online_evaluators(
+        client,
+        apply=True,
+        model_provider="qwen",
+        model="qwen3.6-flash",
+    )
+
+    assert len(rules.updated) == 1
+    rule_id, changes = rules.updated[0]
+    assert rule_id == "rule-2"
+    filters = [item.model_dump(mode="json") for item in changes["filter"]]
+    assert not any(item["column"] == "name" for item in filters)
+    assert {
+        "column": "metadata",
+        "key": "assistant_agent.observation_kind",
+        "operator": "=",
+        "type": "stringObject",
+        "value": "tool_execution",
+    } in filters
+    assert result.existing_rules == 5
+    assert result.updated_rules == 1

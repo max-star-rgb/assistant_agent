@@ -64,9 +64,10 @@ class _EvaluatorSpec:
     name: str
     legacy_rule_name: str
     prompt: str
-    observation_name: str
+    observation_name: str | None
     observation_type: str
     metadata_filters: tuple[tuple[str, str], ...] = ()
+    reconcile_existing_rule: bool = False
 
 
 def configure_native_online_evaluators(
@@ -127,7 +128,10 @@ def configure_native_online_evaluators(
                     raise RuntimeError(
                         f"Langfuse evaluation rule {spec.legacy_rule_name!r} has no id."
                     )
-                rule_resource.update(rule_id, name=spec.name)
+                changes: dict[str, Any] = {"name": spec.name}
+                if spec.reconcile_existing_rule:
+                    changes.update(_rule_update_fields(rule_request))
+                rule_resource.update(rule_id, **changes)
                 existing_rule_count += 1
                 updated_rules += 1
         else:
@@ -135,6 +139,9 @@ def configure_native_online_evaluators(
             if not isinstance(rule_id, str) or not rule_id:
                 raise RuntimeError(f"Langfuse evaluation rule {spec.name!r} has no id.")
             existing_rule_count += 1
+            if spec.reconcile_existing_rule:
+                rule_resource.update(rule_id, **_rule_update_fields(rule_request))
+                updated_rules += 1
     return result.model_copy(
         update={
             "created_evaluators": created_evaluators,
@@ -175,16 +182,19 @@ def _rule_request(spec: _EvaluatorSpec) -> CreateLlmAsJudgeEvaluationRuleRequest
             value=[spec.observation_type],
         ),
         EvaluationRuleFilter_StringOptions(
-            column="name",
-            operator=EvaluationRuleOptionsFilterOperator.ANY_OF,
-            value=[spec.observation_name],
-        ),
-        EvaluationRuleFilter_StringOptions(
             column="traceName",
             operator=EvaluationRuleOptionsFilterOperator.ANY_OF,
             value=["assistant.turn"],
         ),
     ]
+    if spec.observation_name is not None:
+        filters.append(
+            EvaluationRuleFilter_StringOptions(
+                column="name",
+                operator=EvaluationRuleOptionsFilterOperator.ANY_OF,
+                value=[spec.observation_name],
+            )
+        )
     filters.extend(
         EvaluationRuleFilter_StringObject(
             column="metadata",
@@ -218,6 +228,19 @@ def _rule_request(spec: _EvaluatorSpec) -> CreateLlmAsJudgeEvaluationRuleRequest
     )
 
 
+def _rule_update_fields(
+    request: CreateLlmAsJudgeEvaluationRuleRequest,
+) -> dict[str, Any]:
+    return {
+        "evaluator": request.evaluator,
+        "target": request.target,
+        "enabled": request.enabled,
+        "sampling": request.sampling,
+        "filter": request.filter,
+        "mapping": request.mapping,
+    }
+
+
 def _specs() -> tuple[_EvaluatorSpec, ...]:
     final_text_filter = (("assistant_agent.runtime_action", "text"),)
     return (
@@ -248,8 +271,10 @@ def _specs() -> tuple[_EvaluatorSpec, ...]:
         _EvaluatorSpec(
             name="assistant_agent.quality.tool_result_quality",
             legacy_rule_name="assistant-agent-live-tool-result-quality",
-            observation_name="tool.execute",
+            observation_name=None,
             observation_type="SPAN",
+            metadata_filters=(("assistant_agent.observation_kind", "tool_execution"),),
+            reconcile_existing_rule=True,
             prompt=(
                 "判断单次工具输出相对于工具输入是否语义正确、内部一致且可供后续 Agent 使用。"
                 "Provider 超时、损坏数据或不可解释错误判 false；合法且明确的空结果可判 true。\n\n"

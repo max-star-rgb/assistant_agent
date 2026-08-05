@@ -85,3 +85,36 @@ def test_memory_evidence_is_filterable_langfuse_observation_metadata() -> None:
         ]
         == "available"
     )
+
+
+def test_tool_execution_is_filterable_without_normalizing_the_tool_name() -> None:
+    """Would fail if live tool evaluators depended on each concrete tool name."""
+
+    event = TraceEvent(
+        trace_id="trace-sentinel",
+        run_id="run-sentinel",
+        node_name="execute_tool",
+        event_type="observability",
+        canonical_event="tool.finished",
+        observation_type="span",
+        observation_scope="iteration",
+        span_id="tool-span-sentinel",
+        tool_name="shopping_search",
+        status="succeeded",
+        created_at=datetime(2026, 8, 5, 7, 2, 1, tzinfo=UTC),
+    )
+
+    tool_span = next(
+        span
+        for span in build_text_otel_span_specs([event])
+        if span.attributes.get("assistant_agent.tool_name") == "shopping_search"
+    )
+
+    assert tool_span.name == "tool.execute"
+    assert tool_span.attributes["assistant_agent.observation_kind"] == "tool_execution"
+    assert (
+        tool_span.attributes[
+            "langfuse.observation.metadata.assistant_agent.observation_kind"
+        ]
+        == "tool_execution"
+    )
