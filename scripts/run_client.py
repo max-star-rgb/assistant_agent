@@ -17,7 +17,17 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from assistant_agent.identifiers import new_prefixed_uuid7
+from assistant_agent.identifiers import new_prefixed_uuid7  # noqa: E402
+from assistant_agent.runtime.generated_artifacts import (  # noqa: E402
+    MAX_ARTIFACT_BYTES,
+    MAX_DELIVERED_IMAGE_COUNT,
+)
+
+
+AGENT_SERVICE_MAX_MESSAGE_BYTES = (
+    ((MAX_ARTIFACT_BYTES + 2) // 3) * 4 * MAX_DELIVERED_IMAGE_COUNT
+    + 1024 * 1024
+)
 
 JsonObject = dict[str, Any]
 
@@ -134,7 +144,10 @@ async def _open_media_session(
     chat_response_ack: bool,
 ) -> Any:
     url = agent_service_ws_url(server, session_id=session_id)
-    websocket = await websockets_module.connect(url)
+    websocket = await websockets_module.connect(
+        url,
+        max_size=AGENT_SERVICE_MAX_MESSAGE_BYTES,
+    )
     await websocket.send(
         json.dumps(
             media_envelope(

@@ -1,6 +1,6 @@
 # Gateway Architecture
 
-Last updated: 2026-08-03
+Last updated: 2026-08-04
 
 ## 1. 文档边界
 
@@ -150,6 +150,10 @@ Gateway 为每个开始的 run 发出稳定的 started/stream/progress/terminal 
 上下文或可信 session config。普通用户文本和任意 message metadata 不能提升权限、改变 profile，
 或决定工具候选空间。
 
+`gateway.capabilities` 只定义通用 `EntryAdapterCapabilities` 数据类型；HTTP、规范化 Gateway WebSocket
+和 Agent-Service 的具体 capability 实例分别由各自 API entry adapter 定义。Gateway package 不导出
+也不命名 Media-Agent profile。
+
 Gateway 的 queue、dedupe、admission、session、connection relay 和默认 runtime pool 状态均为
 进程内状态。它们不提供跨进程一致性、重启恢复或 durable delivery。
 
@@ -262,15 +266,17 @@ ACK、流式交付和 H.264 解码，并把 chat、interrupt 和稳定媒体引�
 中继而非渲染服务：其 `RenderingClient` 再通过 HTTP POST 把完整响应转发到渲染服务
 `/rendering/v1/torender`。Agent 与渲染服务没有任何 HTTP 或 WebSocket 直连。模型驱动的 3D 生成
 仍从主 runtime 经受治理 `image_to_3d` Tool 发起；该 Tool 创建独立 3D job、把本地图片提交给 3D
-服务，并返回 `job_id`。Gateway entry capability 决定任务是否允许生成媒体投递：只有可信
-Agent-Service 入口声明 `supports_generated_media_delivery=true`；HTTP Agent client 和通用 Gateway
-WebSocket 固定为 false，调用方 metadata 不能提升该能力。
+服务，并返回 `job_id`。Runtime、Tool 和 job 不接收入口类型或投递策略；Gateway Core 也不认识
+Media-Agent wire schema、工具名称或 3D callback payload。
 
-3D callback route 先按 `job_id` 保存中性 artifact，再按任务的 delivery target 可选投影为
-`TD_MODEL`、`VIDEO` 或 `IMAGE` 并发送到与 runtime session 关联的活动媒体 WebSocket。该 callback
-不进入 Gateway run、不调用 LLM，也不复制 Agent 规划。非媒体入口通过 owner-bound
+Gateway 拥有媒体无关的 `GatewayArtifactDeliveryHub`：完成适配器保存中性 artifact 后，只发布
+`artifact.completed(artifact_id,user_id,session_id,media_type,uri,inline_data)`。入口 adapter 自主决定
+是否按 runtime session 注册 subscriber。Agent-Service 在活动媒体连接上注册 subscriber，并在订阅者
+内部投影为 `TD_MODEL`、`VIDEO` 或 `IMAGE`；HTTP Agent client、CLI、UI 和通用 Gateway WebSocket
+不注册媒体 subscriber，因此只通过 owner-bound
 `GET /agent/image-to-3d/jobs/{job_id}` 查询结果，不要求媒体连接。当前 job registry 是单进程内存状态；
-Agent 不下载或解析模型/视频 URL 指向的产物。完整边界以
+callback 不进入 Gateway run、不调用 LLM，也不复制 Agent 规划。Agent 不下载或解析模型/视频 URL
+指向的产物。完整边界以
 [media-agent-service-websocket.md](media-agent-service-websocket.md) 为准。
 
 ### 7.2 Durable task

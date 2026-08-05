@@ -15,6 +15,7 @@ from mem0 import Memory
 from mem0_env import (
     LONG_TERM_MEMORY_CUSTOM_INSTRUCTIONS,
     collect_all_memories,
+    list_unfiltered_memories,
     resolve_mem0_provider_environment,
 )
 
@@ -120,6 +121,10 @@ def list_memories(
     limit: int | None = Query(None, ge=1, le=50),
 ) -> dict[str, Any]:
     filters = _entity_filters(locals())
+    if not filters:
+        return {
+            "results": list_unfiltered_memories(memory(), limit=limit),
+        }
     if limit is not None:
         results = _result(
             memory().get_all(filters=filters, top_k=limit)

@@ -2,16 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from typing import Protocol
 
 from assistant_agent.identifiers import new_prefixed_uuid7
-from assistant_agent.media.agent_service_entry import is_trusted_agent_service_request
 from assistant_agent.media.image_to_3d import (
     ImageTo3DError,
     ImageTo3DSubmission,
 )
-from assistant_agent.media.image_to_3d_completion import ImageTo3DDeliveryTarget
 from assistant_agent.tools.base import ToolBase, ToolContext
 from assistant_agent.tools.models import ToolResult
 from assistant_agent.tools.plugins.builtin.image_to_3d.models import (
@@ -31,7 +28,6 @@ class ImageTo3DStarter(Protocol):
         session_id: str,
         src_image: str,
         output_format: str,
-        delivery_target: ImageTo3DDeliveryTarget,
     ) -> ImageTo3DSubmission: ...
 
 
@@ -43,31 +39,13 @@ class MockImageTo3DAdapter:
         session_id: str,
         src_image: str,
         output_format: str,
-        delivery_target: ImageTo3DDeliveryTarget,
     ) -> ImageTo3DSubmission:
-        _ = (user_id, session_id, output_format, delivery_target)
+        _ = (user_id, session_id, output_format)
         return ImageTo3DSubmission(
             status="generating",
             source_image_id=src_image,
             job_id=new_prefixed_uuid7("image-to-3d", separator="-"),
         )
-
-
-def _delivery_target_from_context(context: ToolContext) -> ImageTo3DDeliveryTarget:
-    request_metadata = context.metadata.get("request_metadata")
-    if not isinstance(request_metadata, Mapping):
-        return "none"
-    gateway = request_metadata.get("gateway")
-    capabilities = gateway.get("entry_capabilities") if isinstance(gateway, Mapping) else None
-    supports_delivery = bool(
-        isinstance(capabilities, Mapping)
-        and capabilities.get("supports_generated_media_delivery") is True
-    )
-    if supports_delivery and is_trusted_agent_service_request(
-        request_metadata  # type: ignore[arg-type]
-    ):
-        return "agent_service"
-    return "none"
 
 
 class ImageTo3DTool(ToolBase):
@@ -106,7 +84,6 @@ class ImageTo3DTool(ToolBase):
                 session_id=context.session_id,
                 src_image=src_image,
                 output_format="mp4",
-                delivery_target=_delivery_target_from_context(context),
             )
         except ImageTo3DError as exc:
             return ToolResult(

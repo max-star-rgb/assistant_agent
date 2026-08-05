@@ -24,7 +24,7 @@ class _GatewayManager:
         self.closed = True
 
 
-class _RenderingRegistry:
+class _ArtifactDeliveryHub:
     async def unregister(self, **_kwargs) -> bool:
         return True
 
@@ -49,8 +49,8 @@ async def _video_control_registers_manager_and_disconnect_clears_it(monkeypatch)
     monkeypatch.setattr(agent_service, "_get_shared_agent_runtime", lambda: runtime)
     monkeypatch.setattr(
         agent_service,
-        "get_rendering_3d_relay_registry",
-        lambda: _RenderingRegistry(),
+        "get_gateway_artifact_delivery_hub",
+        lambda: _ArtifactDeliveryHub(),
     )
 
     response = await agent_service.AssistantControlHandler().handle(

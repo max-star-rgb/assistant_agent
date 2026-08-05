@@ -55,8 +55,8 @@ from assistant_agent.gateway.turn_facade import (
     GatewayTurnResult,
     GatewayTurnTimeout,
 )
-from assistant_agent.gateway.capabilities import HTTP_AGENT_ENTRY_CAPABILITIES
-from assistant_agent.media.image_to_3d_completion import (
+from assistant_agent.gateway.capabilities import EntryAdapterCapabilities
+from assistant_agent.runtime.image_to_3d_jobs import (
     ImageTo3DJob,
     ImageTo3DJobRegistry,
     get_image_to_3d_job_registry,
@@ -93,6 +93,12 @@ _FEEDBACK_STORE: BetaFeedbackStore | None = None
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _SCENARIO_PATH = _REPO_ROOT / "demo_data" / "scenarios" / "e2e_demo_scenarios.json"
 SERVER_TRACE_ENABLED_ENV = "MULTIMODAL_AGENT_SERVER_TRACE_ENABLED"
+
+HTTP_AGENT_ENTRY_CAPABILITIES = EntryAdapterCapabilities(
+    supports_image_refs=True,
+    supports_video_refs=True,
+    supports_shopping_detail_v1=True,
+)
 
 
 def get_agent_runtime() -> Any:
@@ -216,6 +222,7 @@ def _gateway_http_metadata(request: UserRequest, capture_id: str) -> dict[str, A
     gateway_payload.update(gateway_runtime.gateway_http_capture_metadata(capture_id)["gateway"])
     gateway_payload["suppress_realtime_backend_source"] = True
     gateway_payload["entry_capabilities"] = HTTP_AGENT_ENTRY_CAPABILITIES.to_metadata()
+    gateway_payload.pop("artifact_delivery", None)
     metadata["gateway"] = gateway_payload
     metadata["execution_strategy"] = request.execution_strategy
     return metadata

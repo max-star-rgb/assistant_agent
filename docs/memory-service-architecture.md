@@ -114,6 +114,17 @@ mock/offline 环境使用明确的 unavailable adapter；它不是本地记忆�
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_mem0.py
 ```
 
+该入口在 Mem0 健康后保持前台运行并显示 `mem0> ` 提示符，适合直接作为 PyCharm Run
+Configuration 使用。输入 `help` 可查看 `status`、`list`、`get`、`history`、`add`、
+`update`、`delete` 和 `exit` 等命令；缺少必要参数时会进入逐项提示。`list` 不添加身份过滤，
+因此会显示 Mem0 中所有用户的原始身份和记录。人工 `add` 默认使用 `infer=false` 原文保存，只有
+`add --infer` 才启用 Mem0 原生提取与合并；单条 `delete` 默认要求明确确认，控制台不提供批量清空
+命令。退出控制台不会停止 Mem0、Qdrant 或清理持久化数据。
+
+这是本地 operator 控制台，直接使用 Mem0 sidecar 的原生 API，不是 Assistant 可调用的 memory
+tool，也没有为 runtime 新增 CRUD/control-plane API。已创建的 session snapshot 仍保持冻结；通过
+控制台增删改后，需要创建新 session 才能在 Assistant 上下文中看到新的全量 snapshot。
+
 ### 本机 Langfuse 查看记忆提炼结果
 
 Assistant 的每个 completed turn 仍独立异步提交给 Mem0；同一 runtime session 通过稳定的

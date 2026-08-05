@@ -5,16 +5,22 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import random
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from time import perf_counter_ns
 from typing import Any, ClassVar
+from uuid import uuid4
 
 from anyio import CancelScope
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from assistant_agent.gateway import AGENT_SERVICE_ENTRY_CAPABILITIES, GatewaySessionManager
+from assistant_agent.gateway import EntryAdapterCapabilities, GatewaySessionManager
+from assistant_agent.gateway.artifact_delivery import (
+    ArtifactCompleted,
+    get_gateway_artifact_delivery_hub,
+)
 from assistant_agent.gateway.runtime_adapter import GatewayRuntimeAdapter
 from assistant_agent.identity import RequestIdentity
 from assistant_agent.runtime.generated_artifacts import (
@@ -42,7 +48,6 @@ from assistant_agent.media.video.visual_reminder import (
     VisualReminderManager,
     VisualReminderReservation,
 )
-from assistant_agent.media.rendering_3d_relay import get_rendering_3d_relay_registry
 from assistant_agent.observability.trace_store import TraceStore, append_observability_event
 from assistant_agent.observability.turn_summary import append_agent_service_turn_summary
 from assistant_agent.gateway.turn_facade import (
@@ -59,12 +64,38 @@ router = APIRouter()
 logger = logging.getLogger("assistant_agent.api.agent_service_websocket")
 log_gateway_lifecycle = record_gateway_lifecycle
 
+AGENT_SERVICE_ENTRY_CAPABILITIES = EntryAdapterCapabilities(
+    supports_realtime_task_state=True,
+    supports_video_refs=True,
+    supports_raw_media=True,
+    supports_shopping_detail_v1=True,
+)
+
 SUCCESS_CODE = "OK"
 FAIL_CODE = "FAIL"
 POLICY_VIOLATION_CLOSE_CODE = 1008
 VIDEO_TURN_TIMEOUT_SECONDS = 90.0
 CHAT_PROGRESS_INTERVAL_SECONDS = 15.0
 NORMAL_WEBSOCKET_CLOSE_CODES = frozenset({1000, 1001})
+
+ARTIFACT_COMPLETION_RESPONSES = {
+    "mp4": {
+        "zh": ["已为您生成预览视频，请查看", "预览视频已生成，请查看"],
+        "en": ["I've generated a preview video for you, please check out"],
+    },
+    "glb": {
+        "zh": ["已为您生成3d模型，请查看", "3d模型已生成，请查看"],
+        "en": ["I've generated a 3d model for you, please check out"],
+    },
+    "ply": {
+        "zh": ["已为您生成3d模型，请查看", "3d模型已生成，请查看"],
+        "en": ["I've generated a 3d model for you, please check out"],
+    },
+    "image": {
+        "zh": ["已为您生成图片，请查看", "图片已生成，请查看"],
+        "en": ["I've generated an image for you, please check out"],
+    },
+}
 
 
 @dataclass
@@ -632,7 +663,7 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
                 )
                 accepted_ns = state.clock_ns()
                 prepared = replace(prepared, accepted_ns=accepted_ns)
-                await _register_rendering_3d_relay(
+                await _register_artifact_delivery_subscriber(
                     websocket,
                     state=state,
                     prepared=prepared,
@@ -774,9 +805,9 @@ async def _cleanup_agent_service_connection(
             )
         state.visual_reminder_manager = None
     if state.runtime_session_id is not None:
-        await get_rendering_3d_relay_registry().unregister(
+        await get_gateway_artifact_delivery_hub().unregister(
             session_id=state.runtime_session_id,
-            connection_id=state.connection_id,
+            subscriber_id=state.connection_id,
         )
     for delivery in state.delivery_registry.pending():
         timing = state.turn_timings.get(delivery.delivery_id)
@@ -811,22 +842,73 @@ async def _cleanup_agent_service_connection(
     await gateway_manager.close()
 
 
-async def _register_rendering_3d_relay(
+async def _register_artifact_delivery_subscriber(
     websocket: WebSocket,
     *,
     state: AgentServiceConnectionState,
     prepared: PreparedChat,
 ) -> None:
-    async def sender(response: dict[str, Any]) -> None:
-        await _send_response(websocket, response, state=state)
+    async def sender(event: ArtifactCompleted) -> None:
+        await _send_response(
+            websocket,
+            _agent_service_artifact_response(
+                event,
+                number=prepared.user_number,
+                language=state.language,
+            ),
+            state=state,
+        )
 
-    await get_rendering_3d_relay_registry().register(
+    await get_gateway_artifact_delivery_hub().register(
         session_id=prepared.session_id,
-        connection_id=state.connection_id,
-        number=prepared.user_number,
-        language=state.language,
+        subscriber_id=state.connection_id,
         sender=sender,
     )
+
+
+def _agent_service_artifact_response(
+    event: ArtifactCompleted,
+    *,
+    number: str,
+    language: str,
+) -> dict[str, str]:
+    if event.media_type in {"ply", "glb"}:
+        detail = {"type": "TD_MODEL", "modelUrl": event.uri}
+    elif event.media_type == "mp4":
+        detail = {"type": "VIDEO", "videoUrl": event.uri}
+    else:
+        detail = {"type": "IMAGE", "image": event.inline_data}
+    response = random.choice(ARTIFACT_COMPLETION_RESPONSES[event.media_type][language])
+    body = {
+        "number": number,
+        "message": {
+            "type": "BRIEF",
+            "chatIndex": str(uuid4()),
+            "content": {
+                "intentExecution": {
+                    "description": "",
+                    "plans": [],
+                    "messageType": "ANSWER",
+                },
+                "intentResult": {
+                    "description": response,
+                    "status": "SUCCESS",
+                    "plan": [],
+                    "messageType": "END",
+                    "detail": [detail],
+                },
+                "intentWeb": {
+                    "description": "",
+                    "resourceType": "",
+                    "resourceUrl": "",
+                },
+            },
+        },
+    }
+    return {
+        "message": "chatResponse",
+        "body": json.dumps(body, ensure_ascii=False, separators=(",", ":")),
+    }
 
 
 def _discard_chat_task(

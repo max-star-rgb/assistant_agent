@@ -24,6 +24,8 @@ services:
       HISTORY_DB_PATH: /data/history/history.db
     volumes:
       - mem0_history:/data/history
+      - ./mem0_sidecar.py:/app/mem0_sidecar.py:ro
+      - ./mem0_env.py:/app/mem0_env.py:ro
     depends_on:
       qdrant:
         condition: service_healthy

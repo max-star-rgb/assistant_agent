@@ -7,7 +7,7 @@ Last updated: 2026-08-04
 - Media-Agent 与 `assistant_agent` 之间的 `/agent-service/v1` WebSocket；
 - Agent 生成图片经 Media-Agent 转交渲染服务的 `chatResponse` 数据契约；
 - `image_to_3d` 向 3D 服务提交图片的 HTTP 接口；
-- 3D 服务回调 Agent、Agent 保存中性任务结果以及按入口能力选择媒体投递的 HTTP/WebSocket 接口。
+- 3D 服务回调 Agent、Agent 保存中性任务结果、Gateway 发布完成事件以及入口订阅投影的 HTTP/WebSocket 接口。
 
 本文合并了旧临时 Mock Agent 协议说明和旧 H.264 视频传输专项说明。媒体侧协议为外部对接基准；
 Agent 侧负责兼容该协议，并在内部把 `chat` 文本请求转入 Gateway 和 assistant runtime。
@@ -608,11 +608,12 @@ provider/tool 前后的 cooperative cancellation checkpoint 实际停止执行�
 | A | Agent -> Media-Agent | `/agent-service/v1` WebSocket `chatResponse` | 交付文本、IMAGE、TD_MODEL、VIDEO | Agent 实现发送端 |
 | B | Media-Agent -> Rendering Service | HTTP POST `/rendering/v1/torender` | 转发完整渲染消息 | 仓库外媒体服务约定 |
 | C | `image_to_3d` -> 3D Service | HTTP POST `/3dgen/v1/openapi/img-to-3d` | 提交本地受管图片 | Agent 实现调用端 |
-| D | 3D Service -> Agent | HTTP POST `/calling-agent-service/v1/{job_id}/{chat_index}/3d-gen-back` | 回传并保存模型、视频或图片；按任务投递策略可选转发媒体 | Agent 实现 callback 入口 |
+| D | 3D Service -> Agent | HTTP POST `/calling-agent-service/v1/{job_id}/{chat_index}/3d-gen-back` | 回传并保存模型、视频或图片；发布中性完成事件 | Agent 实现 callback 入口 |
 
-新任务的 D 不再以媒体连接为完成前提：callback 先按独立 `job_id` 保存中性结果，只有任务提交时由
-可信入口能力确定 `delivery_target=agent_service`，才继续通过 A 投递到活动媒体连接。HTTP Agent client
-和通用 Gateway WebSocket 的默认 `delivery_target=none`，不会查询或写入媒体连接。
+新任务的 D 不以媒体连接为完成前提：callback 先按独立 `job_id` 保存中性结果，再向 Gateway 的
+`GatewayArtifactDeliveryHub` 发布 `artifact.completed`。`image_to_3d` Tool、adapter 和 job 不识别
+`agent_service`、媒体入口或任何 delivery sink。Media-Agent adapter 为活动 runtime session 注册
+subscriber 并完成 A 投递；普通 HTTP、CLI、UI 和通用 Gateway WebSocket 不注册媒体 subscriber。
 
 #### 4.6.1 Agent -> Media-Agent 与 Media-Agent -> Rendering Service
 
@@ -757,17 +758,17 @@ User-Agent: AgentService/1.0
 `.local/generated` 下按 `.jpg`、`.jpeg`、`.png`、`.webp`、`.gif` 顺序解析文件，并重新验证
 文件内容确实是受支持的图片。绝对路径、相对目录和目录穿越均不允许。
 
-Adapter 在调用 3D 服务前创建进程内 `ImageTo3DJob`，记录 owner `user_id/session_id`、源图片 ID、
-状态和 `delivery_target`。`image_to_3d` Tool 的结果包含该任务 ID：
+Adapter 在调用 3D 服务前通过 runtime-owned `image_to_3d_jobs` 创建进程内 `ImageTo3DJob`，记录
+owner `user_id/session_id`、源图片 ID、状态和完成 artifact。该 job 不记录入口类型、媒体连接或投递
+策略。`image_to_3d` Tool 的结果包含该任务 ID：
 
 ```json
 {"job_id":"image-to-3d-...","status":"generating","source_image_id":"<图片ID>"}
 ```
 
-`delivery_target` 不是 LLM 或 HTTP caller 可写参数。Tool 只在 request metadata 同时满足可信
-`agent_service_websocket + entry_profile=agent_service` 且 Gateway 声明
-`supports_generated_media_delivery=true` 时设为 `agent_service`，否则固定为 `none`。HTTP `/agent/run`
-会用自己的可信 capability 覆盖调用方伪造的同名 metadata。
+Tool 不读取 request metadata 中的 delivery 字段，也不根据入口 capability 改变提交或 job 内容。
+Agent-Service 是否接收完成产物只由 Gateway Hub 中当前 session subscriber 的存在决定；HTTP
+`/agent/run`、CLI、UI 和 `/ws/gateway` 不通过 metadata 模拟该订阅关系。
 
 为兼容当前 3D 服务契约，提交请求中的回调路径固定使用 `chat_index=0`。HTTP client 使用
 `IMAGE_TO_3D_TIMEOUT_SECONDS` 作为单次 timeout，任何
@@ -808,7 +809,21 @@ callback 字段与当前校验如下：
 | `mediaUrl` | string/null | 否 | `ply`、`glb`、`mp4` 投影时原样使用；当前不做 URL、scheme 或非空校验 |
 | `image` | string/null | 否 | `mediaType=image` 时原样作为纯 Base64 使用；当前不解码、不保存、不校验大小 |
 
-`mediaType` 映射如下：
+callback 发布的中性事件字段如下；它不包含 `chatResponse` 或媒体 vendor detail：
+
+```json
+{
+  "type": "artifact.completed",
+  "artifact_id": "image-to-3d-...",
+  "user_id": "<owner>",
+  "session_id": "<runtime session>",
+  "media_type": "glb",
+  "uri": "http://3d-service/model.glb",
+  "inline_data": null
+}
+```
+
+只有 Agent-Service subscriber 会把中性事件映射为以下媒体 detail：
 
 | 3D 服务 `mediaType` | 媒体 detail |
 | --- | --- |
@@ -821,7 +836,8 @@ callback 字段与当前校验如下：
 更新为 `completed`。不支持的 `mediaType` 也会保存到已登记任务，但直接返回 HTTP 200
 `{"code":"success"}`，不查询媒体连接、不发送 frame。缺少 `mediaType` 由 FastAPI/Pydantic 返回统一
 HTTP 422 API error envelope。当前代码不会因
-`mediaType=ply|glb|mp4` 缺少 `mediaUrl` 而返回 422，而会把 JSON `null` 投影给媒体；这是需要后续
+`mediaType=ply|glb|mp4` 缺少 `mediaUrl` 而返回 422，而会在中性事件中保留 `uri=null`；若当前存在
+媒体 subscriber，其 adapter 会把 JSON `null` 投影给媒体。这是需要后续
 收紧的现状，不应被客户端依赖。
 
 HTTP client 使用 owner-bound 查询读取任务及结果：
@@ -834,7 +850,7 @@ GET /agent/image-to-3d/jobs/{job_id}?user_id={user_id}&session_id={session_id}
 `user_id/session_id`；不存在或 owner 不匹配均返回 404。当前 registry 是单进程内存状态，不支持服务
 重启恢复、多 worker 共享、过期清理或持久化；这些属于下一阶段 durable job store，而不是当前保证。
 
-#### 4.6.4 Agent callback -> 活动 Media-Agent WebSocket
+#### 4.6.4 Gateway Artifact Delivery Hub -> 活动 Media-Agent WebSocket
 
 Agent 通过 runtime session ID 找到发起任务的活动媒体 WebSocket，并发送：
 
@@ -845,18 +861,20 @@ Agent 通过 runtime session ID 找到发起任务的活动媒体 WebSocket，�
 }
 ```
 
-回调 route 不重新进入 Gateway run。它先保存中性 3D job/artifact；仅当任务的
-`delivery_target=agent_service` 时，才按任务记录的 runtime `session_id` 查找
-`Rendering3DRelayRegistry` 中的活动媒体连接，并复用该连接既有的发送锁，避免与普通
-`chatResponse` 并发写入。回调会按连接语言从对应
+回调 route 不重新进入 Gateway run。它先保存中性 3D job/artifact，再把通用
+`artifact.completed` 发布给 `GatewayArtifactDeliveryHub`。Hub 只按任务记录的 runtime `session_id`
+寻找当前 subscriber，不知道 Tool 名称、3D callback schema、`chatResponse`、`TD_MODEL` 或
+`/torender`。Agent-Service adapter 在接受 chat 后以 connection ID 注册 session subscriber；subscriber
+复用该连接既有的发送锁，避免与普通 `chatResponse` 并发写入，并按连接语言从对应
 `mediaType` 的配置文案中随机选择一条描述，并为消息生成新的 UUID；`intentExecution.messageType`
 保持 `ANSWER`，`intentResult.messageType` 设置为 `END`。WebSocket 发送成功后返回
-`{"code":"success"}`；非媒体任务保存后直接返回同一成功响应，不要求媒体连接。需要媒体投递但没有
-活动 session 或发送失败时异常向上转为 HTTP 500，任务的中性 completion 仍已保存。连接关闭时按
-connection ID 注销绑定，旧连接的清理不能删除同 session 的新绑定。
+`{"code":"success"}`；新 job 没有 subscriber 时也返回成功，因为 completion 已保存并可查询。若有
+subscriber 但发送失败，则异常向上转为 HTTP 500，任务的中性 completion 仍已保存。连接关闭时按
+connection ID 注销订阅，旧连接的清理不能删除同 session 的新订阅。
 
 迁移兼容：若 callback 路径第一段找不到已登记 `job_id`，route 仍把它当作旧 `session_id` 并沿用
-直接媒体转发；新提交一律生成 `job_id` URL，不再产生这种旧格式。
+Hub 发布；旧请求没有可轮询 job，因此没有活动 subscriber 时返回 HTTP 500，促使上游重试。新提交
+一律生成 `job_id` URL，不再产生这种旧格式。
 
 Agent 不下载、保存、缓存或解析 `mediaUrl` 指向的产物。回调中继不创建新 Agent turn、不调用 LLM，
 也不把产物 URL 写入 conversation history。
@@ -899,9 +917,10 @@ Base64、真实用户内容或服务原始响应。当前 adapter 不记录 3D �
 | 未知 `message` 类型 | 返回 `error` |
 | Gateway 超时或后端错误 | 返回 `chatResponse`，`body.code=\"FAIL\"`；本地 `run_client.py` 会在 stderr 显示失败原因并以非零状态结束。若 runtime 已启动，失败 delivery audit 与 trace terminal summary 保留统一的 `run_id` 与独立的 `trace_id`；超时时 runtime 状态先记为 `pending_cancel`，以后续真实取消/失败事件为准。 |
 | 3D 回调缺少 `mediaType` | FastAPI/Pydantic HTTP 422 API error envelope；不转发 |
-| 3D 回调 `mediaType` 不支持 | HTTP 200 `{"code":"success"}`；不查 relay、不转发 |
-| 3D 回调缺少对应 `mediaUrl` / `image` | 当前仍尝试转发 JSON `null`；不会因该字段缺失返回 422 |
-| 3D 回调没有活动媒体 session 或 WebSocket send 失败 | 未处理异常转为 HTTP 500；不返回成功 ACK |
+| 3D 回调 `mediaType` 不支持 | HTTP 200 `{"code":"success"}`；已登记 job 保存结果，但不发布事件 |
+| 3D 回调缺少对应 `mediaUrl` / `image` | 当前事件保留 JSON `null`；若有 subscriber 仍尝试投影，不会因该字段缺失返回 422 |
+| 新 job 回调没有活动 subscriber | HTTP 200 `{"code":"success"}`；结果已保存，可通过 job API 查询 |
+| 旧 session callback 没有 subscriber，或 subscriber WebSocket send 失败 | 未处理异常转为 HTTP 500；不返回成功 ACK |
 | WebSocket 异常断开 | 记录 ERROR 级安全日志；取消当前 session 的活动 Gateway run |
 
 通用 `error` 示例：
@@ -1069,7 +1088,10 @@ def envelope(message: str, body: dict) -> str:
 
 
 async def main() -> None:
-    async with websockets.connect("ws://127.0.0.1:8089/agent-service/v1") as websocket:
+    async with websockets.connect(
+        "ws://127.0.0.1:8089/agent-service/v1",
+        max_size=144 * 1024 * 1024,
+    ) as websocket:
         await websocket.send(
             envelope(
                 "assistantControl",
@@ -1105,6 +1127,9 @@ if __name__ == "__main__":
 ## 8. 实现边界
 
 - `/agent-service/v1` 是唯一 Media Service WebSocket 入口，不是新的 Agent 主循环。
+- `scripts/run_client.py` 是该媒体入口的协议模拟器，不是通用 Assistant/Gateway client。由于 IMAGE
+  detail 内联 Base64，它显式使用由单图 25 MiB、最多 4 图的当前 artifact 上限推导出的有界
+  WebSocket receive limit；不能依赖 `websockets` 默认 1 MiB。
 - `assistantControl` 建立媒体连接上下文，不绕过 provider/runtime policy。
 - `chat` 进入 Gateway 和 assistant runtime；`audio` 返回传输层 ACK；`interrupt` 取消活动 Gateway
   turn 和尚未进入 Gateway 的排队 chat turn 后返回 ACK。
@@ -1113,7 +1138,8 @@ if __name__ == "__main__":
 - `image_to_3d` 是受治理生成 Tool；只消费 Agent 受管图片 artifact。省略 `src_image` 时可使用同一
   run 最近的生图结果，Agent-Service 入口还兼容本连接上一 turn 的最近图片。真实 3D POST 只在
   real 模式且配置完整时执行。
-- 3D callback route 当前只强制 `mediaType`，按 `mediaType` 映射并向活动媒体 WebSocket 转发
-  `mediaUrl` 或 `image`；它不下载、存储或解析 3D 产物，也不进入 Agent 规划。该 route 当前尚未
-  与媒体投递解耦，不能作为非媒体入口的完成结果存储。
+- 3D callback route 当前只强制 `mediaType`，先把 `mediaUrl` 或 `image` 保存到 runtime-owned job；
+  随后只发布中性 `artifact.completed`。Runtime/Tool/job 不知道入口是否为媒体；Agent-Service adapter
+  通过 Gateway Hub 的 session subscriber 完成媒体映射。它不下载或解析 3D 产物，也不进入 Agent
+  规划；非媒体入口可以通过 owner-bound job API 读取完成结果。
 - 不要在该接口中传输 API key、token、provider 原始响应或未脱敏敏感数据；原始音视频大 payload 不进入 prompt。

@@ -13,7 +13,7 @@ from assistant_agent.api.auth import get_websocket_auth_context, require_auth_bo
 from assistant_agent.api.gateway_runtime import get_gateway_bridge
 from assistant_agent.api.routes_agent import get_trial_access_gate
 from assistant_agent.gateway import (
-    GATEWAY_WEBSOCKET_CAPABILITIES,
+    EntryAdapterCapabilities,
     Frame,
     dumps_frame,
     frame,
@@ -29,6 +29,13 @@ from assistant_agent.api.identity import (
 from assistant_agent.identifiers import new_prefixed_uuid7
 
 router = APIRouter()
+
+GATEWAY_WEBSOCKET_CAPABILITIES = EntryAdapterCapabilities(
+    supports_audio_refs=True,
+    supports_image_refs=True,
+    supports_video_refs=True,
+    supports_shopping_detail_v1=True,
+)
 
 GatewayFrameMapper = Callable[[str], list[Frame]]
 
@@ -257,6 +264,7 @@ def _message_payload_with_metadata(
     if source == "gateway_websocket":
         gateway_metadata = dict(metadata.get("gateway") or {})
         gateway_metadata["entry_capabilities"] = GATEWAY_WEBSOCKET_CAPABILITIES.to_metadata()
+        gateway_metadata.pop("artifact_delivery", None)
         metadata["gateway"] = gateway_metadata
     normalized["metadata"] = metadata
     return normalized

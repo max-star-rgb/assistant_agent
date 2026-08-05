@@ -1,44 +1,23 @@
-"""Relay image-to-3D completion notifications to the active media socket."""
+"""Receive image-to-3D completions and publish neutral artifact events."""
 
 from __future__ import annotations
-
-import json
-import random
-from uuid import uuid4
 
 from fastapi import APIRouter
 from pydantic import BaseModel
 
-from assistant_agent.media.image_to_3d_completion import (
+from assistant_agent.gateway.artifact_delivery import (
+    ArtifactCompleted,
+    GatewayArtifactDeliveryHub,
+    get_gateway_artifact_delivery_hub,
+)
+from assistant_agent.runtime.image_to_3d_jobs import (
     ImageTo3DArtifact,
     ImageTo3DJobRegistry,
     get_image_to_3d_job_registry,
 )
-from assistant_agent.media.rendering_3d_relay import (
-    Rendering3DRelayBinding,
-    Rendering3DRelayRegistry,
-    get_rendering_3d_relay_registry,
-)
 
 
-TD_GEN_CALLBACK_RESPONSES = {
-    "mp4": {
-        "zh": ["已为您生成预览视频，请查看", "预览视频已生成，请查看"],
-        "en": ["I've generated a preview video for you, please check out"],
-    },
-    "glb": {
-        "zh": ["已为您生成3d模型，请查看", "3d模型已生成，请查看"],
-        "en": ["I've generated a 3d model for you, please check out"],
-    },
-    "ply": {
-        "zh": ["已为您生成3d模型，请查看", "3d模型已生成，请查看"],
-        "en": ["I've generated a 3d model for you, please check out"],
-    },
-    "image": {
-        "zh": ["已为您生成图片，请查看", "图片已生成，请查看"],
-        "en": ["I've generated an image for you, please check out"],
-    },
-}
+DELIVERABLE_MEDIA_TYPES = frozenset({"mp4", "glb", "ply", "image"})
 
 
 class Rendering3DCallback(BaseModel):
@@ -47,97 +26,54 @@ class Rendering3DCallback(BaseModel):
     image: str | None = None
 
 
+class ArtifactDeliveryUnavailable(RuntimeError):
+    """Legacy callback could not be associated with an active subscriber."""
+
+
 def create_rendering_3d_callback_router(
-    relay_registry: Rendering3DRelayRegistry | None = None,
+    delivery_hub: GatewayArtifactDeliveryHub | None = None,
     *,
     job_registry: ImageTo3DJobRegistry | None = None,
 ) -> APIRouter:
     router = APIRouter()
-    registry = relay_registry or get_rendering_3d_relay_registry()
+    hub = delivery_hub or get_gateway_artifact_delivery_hub()
     jobs = job_registry or get_image_to_3d_job_registry()
 
     @router.post(
-        "/calling-agent-service/v1/{session_id}/{chat_index}/3d-gen-back"
+        "/calling-agent-service/v1/{job_or_session_id}/{chat_index}/3d-gen-back"
     )
     async def rendering_3d_callback(
-        session_id: str,
+        job_or_session_id: str,
         chat_index: str,
         callback: Rendering3DCallback,
-    ) -> dict:
+    ) -> dict[str, str]:
         _ = chat_index
         job = jobs.complete(
-            session_id,
+            job_or_session_id,
             artifact=ImageTo3DArtifact(
                 media_type=callback.mediaType,
                 media_url=callback.mediaUrl,
                 image=callback.image,
             ),
         )
-        if callback.mediaType not in TD_GEN_CALLBACK_RESPONSES:
+        if callback.mediaType not in DELIVERABLE_MEDIA_TYPES:
             return {"code": "success"}
-        if job is not None:
-            if job.delivery_target != "agent_service":
-                return {"code": "success"}
-            delivery_session_id = job.session_id
-        else:
-            # Compatibility for submissions created before callback job IDs existed.
-            delivery_session_id = session_id
-        await registry.send(
-            delivery_session_id,
-            lambda binding: _chat_response(
-                binding=binding,
-                callback=callback,
-            ),
+
+        event = ArtifactCompleted(
+            artifact_id=job.job_id if job is not None else job_or_session_id,
+            user_id=job.user_id if job is not None else None,
+            session_id=job.session_id if job is not None else job_or_session_id,
+            media_type=callback.mediaType,
+            uri=callback.mediaUrl,
+            inline_data=callback.image,
         )
+        delivered = await hub.publish(event)
+        if job is None and not delivered:
+            # 老请求没有 job 可供轮询，必须让上游重试，不能虚假确认成功。
+            raise ArtifactDeliveryUnavailable(event.session_id)
         return {"code": "success"}
 
     return router
-
-
-def _chat_response(
-    *,
-    binding: Rendering3DRelayBinding,
-    callback: Rendering3DCallback,
-) -> dict[str, str]:
-    if callback.mediaType in {"ply", "glb"}:
-        detail = {"type": "TD_MODEL", "modelUrl": callback.mediaUrl}
-    elif callback.mediaType == "mp4":
-        detail = {"type": "VIDEO", "videoUrl": callback.mediaUrl}
-    else:
-        detail = {"type": "IMAGE", "image": callback.image}
-    response = random.choice(
-        TD_GEN_CALLBACK_RESPONSES[callback.mediaType][binding.language]
-    )
-    body = {
-        "number": binding.number,
-        "message": {
-            "type": "BRIEF",
-            "chatIndex": str(uuid4()),
-            "content": {
-                "intentExecution": {
-                    "description": "",
-                    "plans": [],
-                    "messageType": "ANSWER",
-                },
-                "intentResult": {
-                    "description": response,
-                    "status": "SUCCESS",
-                    "plan": [],
-                    "messageType": "END",
-                    "detail": [detail],
-                },
-                "intentWeb": {
-                    "description": "",
-                    "resourceType": "",
-                    "resourceUrl": "",
-                },
-            },
-        },
-    }
-    return {
-        "message": "chatResponse",
-        "body": json.dumps(body, ensure_ascii=False, separators=(",", ":")),
-    }
 
 
 router = create_rendering_3d_callback_router()

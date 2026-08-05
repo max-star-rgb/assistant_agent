@@ -1,4 +1,4 @@
-"""Process-local image-to-3D job and completion contracts."""
+"""Runtime-owned image-to-3D job and completion contracts."""
 
 from __future__ import annotations
 
@@ -10,7 +10,6 @@ from pydantic import BaseModel, ConfigDict, Field
 from assistant_agent.identifiers import new_prefixed_uuid7
 
 
-ImageTo3DDeliveryTarget = Literal["none", "agent_service"]
 ImageTo3DJobStatus = Literal["generating", "completed", "failed"]
 
 
@@ -33,7 +32,6 @@ class ImageTo3DJob(BaseModel):
     user_id: str = Field(min_length=1)
     session_id: str = Field(min_length=1)
     source_image_id: str = Field(min_length=1)
-    delivery_target: ImageTo3DDeliveryTarget = "none"
     status: ImageTo3DJobStatus = "generating"
     artifact: ImageTo3DArtifact | None = None
     error: str | None = None
@@ -52,14 +50,12 @@ class ImageTo3DJobRegistry:
         user_id: str,
         session_id: str,
         source_image_id: str,
-        delivery_target: ImageTo3DDeliveryTarget = "none",
     ) -> ImageTo3DJob:
         job = ImageTo3DJob(
             job_id=new_prefixed_uuid7("image-to-3d", separator="-"),
             user_id=user_id,
             session_id=session_id,
             source_image_id=source_image_id,
-            delivery_target=delivery_target,
         )
         with self._lock:
             self._jobs[job.job_id] = job

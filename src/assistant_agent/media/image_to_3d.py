@@ -15,8 +15,7 @@ from assistant_agent.runtime.generated_artifacts import (
     GENERATED_ARTIFACT_PUBLIC_PREFIX,
     generated_artifact_payload,
 )
-from assistant_agent.media.image_to_3d_completion import (
-    ImageTo3DDeliveryTarget,
+from assistant_agent.runtime.image_to_3d_jobs import (
     ImageTo3DJobRegistry,
     get_image_to_3d_job_registry,
 )
@@ -62,7 +61,6 @@ class ImageTo3DAdapter:
         session_id: str,
         src_image: str,
         output_format: str = "mp4",
-        delivery_target: ImageTo3DDeliveryTarget = "none",
     ) -> ImageTo3DSubmission:
         image_id = src_image.strip()
         if not image_id or Path(image_id).name != image_id:
@@ -72,7 +70,6 @@ class ImageTo3DAdapter:
             user_id=user_id or session_id,
             session_id=session_id,
             source_image_id=image_id,
-            delivery_target=delivery_target,
         )
         callback_url = (
             f"{self.settings.public_base_url.rstrip('/')}/calling-agent-service/v1/"

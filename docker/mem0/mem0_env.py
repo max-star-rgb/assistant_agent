@@ -82,6 +82,26 @@ def collect_all_memories(
         top_k *= 2
 
 
+def list_unfiltered_memories(
+    mem0_memory: Any,
+    *,
+    limit: int | None = None,
+) -> list[dict[str, Any]]:
+    """List raw records across identities through Mem0's vector-store formatter."""
+
+    def fetch(top_k: int) -> list[Mapping[str, Any]]:
+        return mem0_memory._get_all_from_vector_store(
+            {},
+            top_k,
+            show_expired=True,
+            output_limit=top_k,
+        )
+
+    if limit is not None:
+        return [dict(item) for item in fetch(limit)]
+    return collect_all_memories(fetch)
+
+
 def resolve_mem0_provider_environment(
     source: Mapping[str, str] | None = None,
 ) -> dict[str, str]:

@@ -3,20 +3,19 @@ import importlib.util
 import json
 from pathlib import Path
 
-import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 
 def test_completion_registry_module_exists() -> None:
     assert importlib.util.find_spec(
-        "assistant_agent.media.image_to_3d_completion"
+        "assistant_agent.runtime.image_to_3d_jobs"
     ) is not None
 
 
 def test_submission_uses_independent_job_id_for_callback(tmp_path: Path) -> None:
     from assistant_agent.media.image_to_3d import ImageTo3DAdapter, ImageTo3DSettings
-    from assistant_agent.media.image_to_3d_completion import ImageTo3DJobRegistry
+    from assistant_agent.runtime.image_to_3d_jobs import ImageTo3DJobRegistry
 
     image = tmp_path / "cake.png"
     image.write_bytes(b"\x89PNG\r\n\x1a\nimage-sentinel")
@@ -41,7 +40,6 @@ def test_submission_uses_independent_job_id_for_callback(tmp_path: Path) -> None
         user_id="user-sentinel",
         session_id="runtime-session-sentinel",
         src_image="cake",
-        delivery_target="none",
     )
 
     assert result.job_id.startswith("image-to-3d-")
@@ -64,19 +62,18 @@ def test_submission_uses_independent_job_id_for_callback(tmp_path: Path) -> None
     assert job is not None
     assert job.user_id == "user-sentinel"
     assert job.session_id == "runtime-session-sentinel"
-    assert job.delivery_target == "none"
+    assert "delivery_sink_id" not in type(job).model_fields
     assert job.status == "generating"
 
 
 def test_job_lookup_is_owner_bound() -> None:
-    from assistant_agent.media.image_to_3d_completion import ImageTo3DJobRegistry
+    from assistant_agent.runtime.image_to_3d_jobs import ImageTo3DJobRegistry
 
     jobs = ImageTo3DJobRegistry()
     job = jobs.register(
         user_id="user-sentinel",
         session_id="session-sentinel",
         source_image_id="cake",
-        delivery_target="none",
     )
 
     assert jobs.get_for_owner(
@@ -95,7 +92,7 @@ def test_http_client_can_query_only_its_completed_job() -> None:
     from assistant_agent.api.auth import get_auth_context
     from assistant_agent.api.identity import AuthContext
     from assistant_agent.api import routes_agent
-    from assistant_agent.media.image_to_3d_completion import (
+    from assistant_agent.runtime.image_to_3d_jobs import (
         ImageTo3DArtifact,
         ImageTo3DJobRegistry,
     )
@@ -105,7 +102,6 @@ def test_http_client_can_query_only_its_completed_job() -> None:
         user_id="user-sentinel",
         session_id="session-sentinel",
         source_image_id="cake",
-        delivery_target="none",
     )
     jobs.complete(
         job.job_id,
@@ -149,40 +145,12 @@ def test_http_client_can_query_only_its_completed_job() -> None:
         assert hidden.status_code == 404
 
 
-@pytest.mark.parametrize(
-    ("request_metadata", "expected_target"),
-    [
-        (
-            {
-                "transport": "http",
-                "gateway": {
-                    "entry_capabilities": {
-                        "supports_generated_media_delivery": True,
-                    }
-                },
-            },
-            "none",
-        ),
-        (
-            {
-                "transport": "agent_service_websocket",
-                "gateway": {
-                    "session_config": {"entry_profile": "agent_service"},
-                    "entry_capabilities": {
-                        "supports_generated_media_delivery": True,
-                    },
-                },
-            },
-            "agent_service",
-        ),
-    ],
-)
-def test_tool_uses_only_trusted_entry_delivery_target(
-    request_metadata: dict,
-    expected_target: str,
-) -> None:
+def test_tool_does_not_consume_entry_delivery_metadata() -> None:
+    import inspect
+
     from assistant_agent.media.image_to_3d import ImageTo3DSubmission
     from assistant_agent.tools.base import ToolContext
+    from assistant_agent.tools.plugins.builtin.image_to_3d import tool as tool_module
     from assistant_agent.tools.plugins.builtin.image_to_3d.tool import ImageTo3DTool
 
     calls: list[dict] = []
@@ -195,7 +163,6 @@ def test_tool_uses_only_trusted_entry_delivery_target(
             session_id: str,
             src_image: str,
             output_format: str,
-            delivery_target: str,
         ) -> ImageTo3DSubmission:
             calls.append(
                 {
@@ -203,7 +170,6 @@ def test_tool_uses_only_trusted_entry_delivery_target(
                     "session_id": session_id,
                     "src_image": src_image,
                     "output_format": output_format,
-                    "delivery_target": delivery_target,
                 }
             )
             return ImageTo3DSubmission(
@@ -217,7 +183,19 @@ def test_tool_uses_only_trusted_entry_delivery_target(
         ToolContext(
             user_id="user-sentinel",
             session_id="session-sentinel",
-            metadata={"request_metadata": request_metadata},
+            metadata={
+                "request_metadata": {
+                    "gateway": {
+                        "entry_capabilities": {
+                            "supports_async_artifact_delivery": True,
+                        },
+                        "artifact_delivery": {
+                            "mode": "push",
+                            "sink_id": "must-not-reach-tool",
+                        },
+                    },
+                }
+            },
         ),
     )
 
@@ -227,4 +205,11 @@ def test_tool_uses_only_trusted_entry_delivery_target(
         "status": "generating",
         "source_image_id": "cake",
     }
-    assert calls[0]["delivery_target"] == expected_target
+    assert set(calls[0]) == {
+        "user_id",
+        "session_id",
+        "src_image",
+        "output_format",
+    }
+    assert "agent_service" not in inspect.getsource(tool_module)
+    assert "artifact_delivery" not in inspect.getsource(tool_module)
