@@ -1607,6 +1607,7 @@ def _create_realtime_video_observer(*, user_id: str, session_id: str) -> Realtim
                 output_reserve_tokens=(
                     runtime.config.visual_context_output_reserve_tokens
                 ),
+                observer=runtime.embedding_observer,
             )
         return RealtimeVideoObserver(
             user_id=user_id,

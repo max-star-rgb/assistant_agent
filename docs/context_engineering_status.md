@@ -169,12 +169,16 @@ Provider prompt。普通请求不能因携带类似 Gateway 的 metadata 而隐�
 `VisualContextPack`。启用视觉压缩时，VLM 只接收旧的 revisioned summary、其后未覆盖的最近逐条
 `VisualSemanticRecord` 文本以及当前一张 JPEG；历史文本按独立 VLM tokenizer 对实际投影做 token
 preflight，不再由 Provider 施加 4,000 字符截断。target/trigger/hard 与主 Context 共用同一心智模型：
-target 是压缩后的收敛目标，trigger 启动压缩，hard 是 Provider 调用前的拒绝边界；但视觉上下文使用
-独立的 tokenizer、input limit、safety margin、summary/output/image/instruction reserve 和配置。
+target 指导最旧连续 prefix 的选择并表示期望预算，trigger 启动压缩，hard 是最终 Qwen/VLM observation
+调用前的拒绝边界。每次成功压缩后都会重建并重新计数；只要低于 hard 即可继续，即使最近原文或
+summary 使结果仍高于 target，也不会为追逐 target 无限压缩。视觉上下文使用独立的 tokenizer、
+input limit、safety margin、summary/output/image/instruction reserve 和配置。
 
 视觉压缩只覆盖最旧的连续 record prefix，并保留配置数量的最近逐条文本。只有压缩成功、coverage 与
 revision 校验通过后才原子替换 summary；soft failure 保留旧 summary 和所有原始记录，hard failure
-跳过本次后台 VLM 调用。未启用 compaction 时才使用旧 rolling summary 的 2,000 字符兼容路径，并把
+在无法收敛时跳过本次最终 Qwen/VLM observation。为收敛预算，独立 LLM visual compactor 可以先按
+现有状态机最多调用两次；因此 hard 拒绝不表示此前没有 compactor Provider 调用。未启用 compaction
+时才使用旧 rolling summary 的 2,000 字符兼容路径，并把
 `visual_context_compaction.status` 记录为 `unavailable`。这两条路径都不改变 observer 的
 one-inflight/one-latest-pending 调度。
 

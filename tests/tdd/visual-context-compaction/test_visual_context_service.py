@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from assistant_agent.context.token_budget import ContextWindowPolicy
+from assistant_agent.media.embedding.observability import InMemoryEmbeddingObserver
 from assistant_agent.media.video.semantic_store import (
     SessionVisualSemanticStore,
     VisualSemanticRecord,
@@ -88,6 +89,7 @@ def _service(
     policy: ContextWindowPolicy,
     compactor: object | None = None,
     keep_recent_records: int = 2,
+    observer: InMemoryEmbeddingObserver | None = None,
 ) -> VisualContextService:
     return VisualContextService(
         store=store,
@@ -98,6 +100,116 @@ def _service(
         instruction_reserve_tokens=10,
         image_reserve_tokens=10,
         output_reserve_tokens=10,
+        observer=observer,
+    )
+
+
+def test_prepare_emits_preflight_from_real_service(
+    store: SessionVisualSemanticStore,
+    tmp_path: Path,
+) -> None:
+    _add_records(store, tmp_path, count=1)
+    observer = InMemoryEmbeddingObserver()
+
+    pack = _service(store, policy=_policy(), observer=observer).prepare(
+        "video-1", before_sequence=2, user_query="状态"
+    )
+
+    assert pack.decision.triggered is False
+    event = observer.events[-1]
+    assert event.event_name == "visual_context.preflight"
+    assert event.payload["sequence"] == 2
+    assert event.payload["input_tokens"] == pack.input_tokens
+    assert event.payload["effective_input_limit"] == 90
+    assert event.payload["target_tokens"] == 36
+    assert event.payload["recent_count"] == 1
+    assert event.payload["revision"] == 0
+    assert event.payload["status"] == "below_trigger"
+    assert event.payload["compacted"] is False
+
+
+def test_prepare_emits_compacted_after_successful_replace_and_rebuild(
+    store: SessionVisualSemanticStore,
+    tmp_path: Path,
+) -> None:
+    _add_records(store, tmp_path, count=3, summary="word " * 10)
+    observer = InMemoryEmbeddingObserver()
+
+    class SuccessfulCompactor:
+        def compact(
+            self,
+            *,
+            video_id: str,
+            existing_summary: VisualContextSummary | None,
+            records: list[VisualSemanticRecord],
+            source_token_count: int,
+            summary_max_tokens: int,
+        ) -> VisualContextSummary:
+            assert existing_summary is None
+            assert summary_max_tokens == 20
+            return VisualContextSummary(
+                video_id=video_id,
+                summary_revision=1,
+                covered_record_ids=[record.record_id for record in records],
+                first_sequence=records[0].frame_sequence,
+                last_sequence=records[-1].frame_sequence,
+                source_token_count=source_token_count,
+                summary_token_count=1,
+            )
+
+    pack = _service(
+        store,
+        policy=_policy(trigger=.50, hard=.95),
+        compactor=SuccessfulCompactor(),
+        observer=observer,
+    ).prepare("video-1", before_sequence=4, user_query="状态")
+
+    assert pack.compacted is True
+    event = observer.events[-1]
+    assert event.event_name == "visual_context.compacted"
+    assert event.payload["sequence"] == 4
+    assert event.payload["covered_count"] == 1
+    assert event.payload["recent_count"] == 2
+    assert event.payload["revision"] == 1
+    assert event.payload["status"] == "succeeded"
+    assert event.payload["compacted"] is True
+
+
+def test_prepare_emits_compaction_failed_and_hard_limit(
+    store: SessionVisualSemanticStore,
+    tmp_path: Path,
+) -> None:
+    _add_records(store, tmp_path, count=3, summary="word " * 10)
+    observer = InMemoryEmbeddingObserver()
+
+    class FailingCompactor:
+        def compact(self, **_: object) -> VisualContextSummary:
+            raise RuntimeError("secret-compactor-error")
+
+    with pytest.raises(VisualContextHardLimitError):
+        _service(
+            store,
+            policy=ContextWindowPolicy(
+                input_token_limit=70,
+                target_ratio=.40,
+                trigger_ratio=.50,
+                hard_ratio=.80,
+                summary_max_tokens=20,
+            ),
+            compactor=FailingCompactor(),
+            observer=observer,
+        ).prepare("video-1", before_sequence=4, user_query="secret-query")
+
+    assert [event.event_name for event in observer.events] == [
+        "visual_context.preflight",
+        "visual_context.compaction_failed",
+        "visual_context.hard_limit",
+    ]
+    assert observer.events[-2].payload["status"] == "failed"
+    assert observer.events[-1].payload["status"] == "hard_limit"
+    assert all(
+        not ({"text", "summary", "query", "record_ids", "path", "vector"} & event.payload.keys())
+        for event in observer.events
     )
 
 

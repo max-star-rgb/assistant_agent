@@ -138,6 +138,10 @@ class SessionVisualSemanticStore:
         self._condition = Condition(self._lock)
         self._closed = False
 
+    @property
+    def session_id(self) -> str | None:
+        return self._session_id
+
     def record_success(self, record: VisualSemanticRecord) -> VisualSemanticRecord:
         """Retain evidence, then atomically publish one successful record."""
 

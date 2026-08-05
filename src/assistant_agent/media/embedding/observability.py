@@ -323,6 +323,7 @@ def visual_context_trace_payload(
     revision: int | None = None,
     latency_ms: int | None = None,
     status: str | None = None,
+    compacted: bool | None = None,
     **_content: Any,
 ) -> dict[str, Any]:
     """Project visual-context budget facts without retained visual content."""
@@ -362,6 +363,8 @@ def visual_context_trace_payload(
             }
             else "other"
         )
+    if isinstance(compacted, bool):
+        payload["compacted"] = compacted
     return payload
 
 

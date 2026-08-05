@@ -5,11 +5,16 @@ from __future__ import annotations
 import html
 import json
 from dataclasses import dataclass
+from time import perf_counter_ns
 from typing import Protocol
 
 from assistant_agent.context.token_budget import (
     ContextWindowDecision,
     ContextWindowPolicy,
+)
+from assistant_agent.media.embedding.observability import (
+    EmbeddingObserver,
+    emit_visual_context_observation,
 )
 from assistant_agent.media.video.semantic_store import (
     SessionVisualSemanticStore,
@@ -70,6 +75,7 @@ class VisualContextService:
         instruction_reserve_tokens: int,
         image_reserve_tokens: int,
         output_reserve_tokens: int,
+        observer: EmbeddingObserver | None = None,
     ) -> None:
         if keep_recent_records < 0:
             raise ValueError("keep_recent_records must be non-negative")
@@ -81,6 +87,7 @@ class VisualContextService:
         self._instruction_reserve_tokens = max(0, instruction_reserve_tokens)
         self._image_reserve_tokens = max(0, image_reserve_tokens)
         self._output_reserve_tokens = max(0, output_reserve_tokens)
+        self._observer = observer
 
     def prepare(
         self,
@@ -90,22 +97,45 @@ class VisualContextService:
     ) -> VisualContextPack:
         """Return prompt-safe history at a fixed pre-request sequence boundary."""
 
+        preflight_started_ns = perf_counter_ns()
         initial = self._build_pack(
             video_id=video_id,
             before_sequence=before_sequence,
             user_query=user_query,
             compacted=False,
         )
+        self._emit_budget_observation(
+            "visual_context.preflight",
+            pack=initial,
+            sequence=before_sequence,
+            status=self._preflight_status(initial.decision),
+            latency_ms=self._elapsed_ms(preflight_started_ns),
+        )
         if not initial.decision.triggered:
             return initial
         if self._compactor is None:
-            return self._failure_or_pack(initial)
+            self._emit_budget_observation(
+                "visual_context.compaction_failed",
+                pack=initial,
+                sequence=before_sequence,
+                status="unavailable",
+                latency_ms=0,
+            )
+            return self._failure_or_pack(initial, sequence=before_sequence)
 
         current = initial
         for attempt in range(2):
             records_to_compact = self._oldest_uncovered_prefix(current.recent_records)
             if not records_to_compact:
-                return self._failure_or_pack(current)
+                self._emit_budget_observation(
+                    "visual_context.compaction_failed",
+                    pack=current,
+                    sequence=before_sequence,
+                    status="unavailable",
+                    latency_ms=0,
+                )
+                return self._failure_or_pack(current, sequence=before_sequence)
+            compaction_started_ns = perf_counter_ns()
             try:
                 summary = self._compactor.compact(
                     video_id=video_id,
@@ -129,7 +159,14 @@ class VisualContextService:
                     ),
                 )
             except Exception:
-                return self._failure_or_pack(current)
+                self._emit_budget_observation(
+                    "visual_context.compaction_failed",
+                    pack=current,
+                    sequence=before_sequence,
+                    status="failed",
+                    latency_ms=self._elapsed_ms(compaction_started_ns),
+                )
+                return self._failure_or_pack(current, sequence=before_sequence)
 
             current = self._build_pack(
                 video_id=video_id,
@@ -137,11 +174,18 @@ class VisualContextService:
                 user_query=user_query,
                 compacted=True,
             )
+            self._emit_budget_observation(
+                "visual_context.compacted",
+                pack=current,
+                sequence=before_sequence,
+                status="succeeded",
+                latency_ms=self._elapsed_ms(compaction_started_ns),
+            )
             if not current.decision.hard:
                 return current
             if attempt == 1:
                 break
-        raise VisualContextHardLimitError("visual context exceeds the hard input limit")
+        return self._raise_hard_limit(current, sequence=before_sequence)
 
     def _build_pack(
         self,
@@ -228,11 +272,69 @@ class VisualContextService:
         ):
             raise ValueError("visual_context_compactor_coverage_mismatch")
 
-    @staticmethod
-    def _failure_or_pack(pack: VisualContextPack) -> VisualContextPack:
+    def _failure_or_pack(
+        self,
+        pack: VisualContextPack,
+        *,
+        sequence: int,
+    ) -> VisualContextPack:
         if pack.decision.hard:
-            raise VisualContextHardLimitError("visual context exceeds the hard input limit")
+            return self._raise_hard_limit(pack, sequence=sequence)
         return pack
+
+    def _raise_hard_limit(
+        self,
+        pack: VisualContextPack,
+        *,
+        sequence: int,
+    ) -> VisualContextPack:
+        self._emit_budget_observation(
+            "visual_context.hard_limit",
+            pack=pack,
+            sequence=sequence,
+            status="hard_limit",
+        )
+        raise VisualContextHardLimitError("visual context exceeds the hard input limit")
+
+    def _emit_budget_observation(
+        self,
+        event_name: str,
+        *,
+        pack: VisualContextPack,
+        sequence: int,
+        status: str,
+        latency_ms: int | None = None,
+    ) -> None:
+        emit_visual_context_observation(
+            self._observer,
+            event_name,
+            session_id=self._store.session_id or "",
+            sequence=sequence,
+            input_tokens=pack.decision.input_tokens,
+            effective_input_limit=pack.decision.effective_input_limit,
+            target_tokens=pack.decision.target_tokens,
+            usage_ratio=pack.decision.usage_ratio,
+            covered_count=(
+                len(pack.summary.covered_record_ids) if pack.summary is not None else 0
+            ),
+            recent_count=len(pack.recent_records),
+            revision=(pack.summary.summary_revision if pack.summary is not None else 0),
+            latency_ms=latency_ms,
+            status=status,
+            compacted=pack.compacted,
+        )
+
+    @staticmethod
+    def _preflight_status(decision: ContextWindowDecision) -> str:
+        if decision.hard:
+            return "hard_limit"
+        if decision.triggered:
+            return "triggered"
+        return "below_trigger"
+
+    @staticmethod
+    def _elapsed_ms(started_ns: int) -> int:
+        return max(0, (perf_counter_ns() - started_ns) // 1_000_000)
 
 
 def _render_visual_history(

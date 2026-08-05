@@ -24,6 +24,7 @@ def test_visual_context_events_only_expose_budget_facts() -> None:
         revision=3,
         latency_ms=12,
         status="succeeded",
+        compacted=False,
         text="secret-text",
         summary="secret-summary",
         query="secret-query",
@@ -48,5 +49,6 @@ def test_visual_context_events_only_expose_budget_facts() -> None:
         "revision": 3,
         "latency_ms": 12,
         "status": "succeeded",
+        "compacted": False,
     }
     assert payload["session_id_digest"] != "secret-session"

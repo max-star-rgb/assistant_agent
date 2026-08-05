@@ -17,6 +17,7 @@ from assistant_agent.config import ProviderConfig
 from assistant_agent.media.embedding.coordinator import SessionEmbeddingCoordinator
 from assistant_agent.media.embedding.models import EmbeddingEvent, TextObservation
 from assistant_agent.media.embedding.observability import (
+    emit_visual_context_observation,
     emit_visual_semantic_observation,
 )
 from assistant_agent.runtime.action_validator import ActionValidator
@@ -674,6 +675,14 @@ class RealtimeVideoObserver:
                 "status": "unavailable",
                 "compacted": False,
             }
+            emit_visual_context_observation(
+                self.embedding_coordinator.observer,
+                "visual_context.preflight",
+                session_id=self.session_id,
+                sequence=item.sequence,
+                status="unavailable",
+                compacted=False,
+            )
         else:
             try:
                 pack = self.visual_context_service.prepare(

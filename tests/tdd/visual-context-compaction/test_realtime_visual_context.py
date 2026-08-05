@@ -18,6 +18,7 @@ from assistant_agent.media.embedding.coordinator import SessionEmbeddingCoordina
 from assistant_agent.media.embedding.coordinator_store import (
     SessionEmbeddingCoordinatorStore,
 )
+from assistant_agent.media.embedding.observability import InMemoryEmbeddingObserver
 from assistant_agent.media.embedding.provider import MockMultimodalEmbeddingProvider
 from assistant_agent.media.video.realtime_video_memory import (
     RealtimeVideoMemoryStore,
@@ -362,11 +363,13 @@ def test_production_factory_enables_visual_context_only_with_token_counter(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
+    embedding_observer = InMemoryEmbeddingObserver()
     semantic_pool = SessionVisualSemanticStorePool(root=tmp_path / "semantic-pool")
     embedding_store = SessionEmbeddingCoordinatorStore(
         factory=lambda _user_id, session_id: SessionEmbeddingCoordinator(
             session_id,
             MockMultimodalEmbeddingProvider(),
+            observer=embedding_observer,
         )
     )
     runtime = SimpleNamespace(
@@ -383,6 +386,7 @@ def test_production_factory_enables_visual_context_only_with_token_counter(
             hard_ratio=0.85,
             summary_max_tokens=10_000,
         ),
+        embedding_observer=embedding_observer,
     )
     monkeypatch.setattr(
         routes_agent,
@@ -419,6 +423,8 @@ def test_production_factory_enables_visual_context_only_with_token_counter(
             )
             history = _decode_visual_history(pack.memory_context)
             assert [item["frame_sequence"] for item in history["recent_records"]] == [1]
+            assert embedding_observer.events[-1].event_name == "visual_context.preflight"
+            assert embedding_observer.events[-1].payload["sequence"] == 2
         finally:
             asyncio.run(observer.close())
 
@@ -429,8 +435,34 @@ def test_production_factory_enables_visual_context_only_with_token_counter(
         )
         try:
             assert disabled_observer.visual_context_service is None
+            asyncio.run(
+                _submit_wait_and_close(
+                    disabled_observer,
+                    _frame(tmp_path, sequence=1),
+                )
+            )
+            visual_context_events = [
+                event
+                for event in embedding_observer.events
+                if event.event_name.startswith("visual_context.")
+            ]
+            assert visual_context_events[-1].event_name == "visual_context.preflight"
+            assert visual_context_events[-1].payload["status"] == "unavailable"
+            assert visual_context_events[-1].payload["compacted"] is False
         finally:
-            asyncio.run(disabled_observer.close())
+            if not disabled_observer.closed:
+                asyncio.run(disabled_observer.close())
     finally:
         embedding_store.close()
         semantic_pool.close()
+
+
+async def _submit_wait_and_close(
+    observer: RealtimeVideoObserver,
+    frame: VideoFrame,
+) -> None:
+    try:
+        await observer.promote(frame)
+        await observer.wait_idle()
+    finally:
+        await observer.close()

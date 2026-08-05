@@ -85,10 +85,13 @@ summary 加其后未覆盖的最近逐条 record 文本。summary 是带 revisio
 
 视觉预算复用 `ContextWindowPolicy` 的 target/trigger/hard 心智模型，但不复用主 Chat 模型的绝对
 预算。独立 VLM tokenizer 对最终视觉历史、当前 query 以及 instruction/image/output reserve 做
-preflight；target 是压缩收敛目标，trigger 启动 LLM compactor，hard 是视觉 Provider 调用前的拒绝
-边界。Provider 不再对该历史施加 4,000 字符截断。trigger 到 hard 之间压缩失败时保持旧 summary 和
-raw records；hard 仍不收敛时跳过本帧 VLM，不阻塞视频 ACK，也不破坏 one-inflight/
-one-latest-pending 调度。
+preflight；target 指导要压缩的最旧连续 prefix 并表示期望预算，trigger 启动 LLM compactor，hard 是
+最终 Qwen/VLM observation 调用前的拒绝边界。每次成功压缩后重建并重新计数，低于 hard 即可继续；
+最近 raw records 或 summary 使结果仍高于 target 时，不为追逐 target 无限压缩。Provider 不再对该
+历史施加 4,000 字符截断。trigger 到 hard 之间压缩失败时保持旧 summary 和 raw records；hard 仍无法
+收敛时跳过最终 Qwen/VLM observation，不阻塞视频 ACK，也不破坏 one-inflight/
+one-latest-pending 调度。预算收敛期间独立 LLM visual compactor 可按现有状态机最多调用两次，不能把
+“跳过最终 observation Provider”解释为此前绝无 compactor Provider 调用。
 
 未启用 visual compaction 时，observer 才读取旧 rolling semantic snapshot 并使用最多 2,000 字符的
 兼容输入，同时记录 compaction `unavailable`。该兼容 snapshot 不是 revisioned summary，不能被描述为
