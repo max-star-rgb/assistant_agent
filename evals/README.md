@@ -117,7 +117,8 @@ VLM 文本索引与查询阶段不调用 VLM 等检查面；它不等于真实 C
 
 ## Agent eval
 
-Agent eval 采用四个分离概念：
+Agent eval 内部 grader 采用四个分离维度；Langfuse 对外只写三个 task-level canonical Score，单工具
+语义质量交给对应 observation evaluator：
 
 ```text
 Task (用户挑战)
@@ -125,7 +126,7 @@ Task (用户挑战)
   -> AgentGraphRuntime
   -> Evidence (轨迹、终态、状态与回答)
   -> Task-local Grader
-  -> 四个独立 Score
+  -> 三个 task-level Score + 可选 observation Score
   -> Langfuse Experiment
 ```
 
@@ -138,7 +139,7 @@ evals/agent/
   batch_grading.py      # 固定三项 Judge 与 Task rubric 工厂
   loader.py             # Task、Suite 和入口加载
   evidence.py           # Runtime Trace 的稳定投影
-  grading.py            # 固定四维与 Environment outcome 匹配
+  grading.py            # 内部四维与 Environment outcome 匹配
   judge.py              # 真实 Provider 语义 Judge 边界
   provider_gate.py      # real 模式与 Provider 完整性闸门
   calibration.py        # 正反 Evidence 直接校准
@@ -184,9 +185,12 @@ rubric、长依赖说明或其他 oracle，也不能把 Langfuse Dataset 当作�
   不会进入 Agent input 或 Dataset metadata；
 - 写操作必须使用每次运行可丢弃或可复位的状态；
 - grader 对 Agent 隐藏，客观事实优先用代码检查，开放语义才用 Judge；
-- Langfuse 固定输出 `tool_execution`、`tool_semantics`、`grounding`、`response_quality`
-  四个彼此独立的 BOOLEAN Score，不生成 reward 或总通过分；
-- `tool_execution` 由 Environment oracle 做 Rule 判定；其余三项分别由独立 LLM Judge 判定；
+- Experiment runner 固定输出 `assistant_agent.quality.task_conformance`、
+  `assistant_agent.quality.grounding`、`assistant_agent.quality.response_quality` 三个彼此独立的 BOOLEAN
+  task-level Score，不生成 reward 或总通过分；
+- 内部 `tool_execution` 由 Environment oracle 做 Rule 判定并映射为 `task_conformance`；内部
+  `tool_semantics` 继续用于 grader 校准，但不写成 task-level Score；单个工具结果质量由
+  `assistant_agent.quality.tool_result_quality` observation evaluator 负责；
 - 对基础 Task，`tool_execution` 只表示工具 outcome 与 Environment oracle 匹配；对 Mission，它还必须
   合入 `objective_state_assertions()` 的终态 Rule；
 - Task 专属要求只进入 `response_quality` rubric，并通过
@@ -205,7 +209,8 @@ rubric、长依赖说明或其他 oracle，也不能把 Langfuse Dataset 当作�
   调用天气工具；
 - `amap_weather_provider_failure_recovery`：高德天气固定返回 `provider_timeout` 后，诚实说明当前
   没有可核实预报，不编造天气，并给出重试、出发前复查和有限的保守建议。此时
-  `tool_execution=true`、`tool_semantics=false` 是合法组合。
+  内部 grader 的 `tool_execution=true`、`tool_semantics=false` 是合法组合；持久化时前者映射为
+  `task_conformance=true`，后者不再写成 task-level Score。
 
 当前旅行 Skill Task：
 
@@ -368,36 +373,35 @@ operator 显式接受重试时，可把 `--judge-max-retries` 调为正数。
 - `--calibrate` 和 `--run` 同时要求 `--allow-real-provider`、
   `MULTIMODAL_AGENT_PROVIDER_MODE=real` 和完整真实 Chat 配置；
 - `--run` 还要求 Langfuse 凭据与可用的 OTLP Trace 导出；
-- `--run` 在完整产出四项 Score 后返回 0，不再根据分数组合返回 Agent 失败码；
-- `--calibrate` 的人工标注与实际四项 Score 不一致时返回 1；
+- `--run` 在完整产出三个 task-level Score 后返回 0，不再根据分数组合返回 Agent 失败码；
+- `--calibrate` 仍校准内部四维，人工标注与实际内部维度不一致时返回 1；
 - 凭据、Environment、Mission Rule、Dataset、Trace、Judge、Evidence 或 Score 故障返回 2；
 - 通过返回 0。
 
 ### 评分与基础设施
 
-固定 Score：
+固定 task-level Score：
 
 ```text
-agent_eval.dimension.tool_execution
-agent_eval.dimension.tool_semantics
-agent_eval.dimension.grounding
-agent_eval.dimension.response_quality
+assistant_agent.quality.task_conformance
+assistant_agent.quality.grounding
+assistant_agent.quality.response_quality
 ```
 
-四项全部采用阳性语义，但不聚合：
+三个持久化 Score 全部采用阳性语义且不聚合；内部 grader 仍保留四维以便校准：
 
-- `tool_execution`：基础 Task 的实际工具终态是否符合 Environment 为该案例声明的结果 oracle；Mission
-  还要求目标状态 Rule 通过。预期 `provider_timeout` 且实际错误码相同仍为 `true`；
-- `tool_semantics`：工具是否返回语义正确、内部一致且可用的数据。超时或其他 Provider 错误为
-  `false`，合法空结果可以为 `true`；
+- `task_conformance`：由内部 `tool_execution` 映射；基础 Task 的实际工具终态是否符合 Environment
+  oracle，Mission 还要求目标状态 Rule 通过。预期 `provider_timeout` 且实际错误码相同仍为 `true`；
+- 内部 `tool_semantics`：继续判断整项 Evidence 中工具数据是否可用，用于校准和诊断，但不持久化为
+  task-level Score。正式单工具质量使用 observation-level `tool_result_quality`；
 - `grounding`：Agent 最终回答是否忠于工具结果，包括正确理解成功、失败和空结果；
 - `response_quality`：回答是否真正回应当前用户请求，并且表达清晰、完整、有用。
 
 因此天气超时恢复案例可以产生：
 
 ```text
-tool_execution=true
-tool_semantics=false
+task_conformance=true
+tool_result_quality=false  # 由 tool.execute observation evaluator 产生时
 grounding=true
 response_quality=true|false
 ```
@@ -412,8 +416,8 @@ metadata 把每条 assertion 的 `passed`、
 `label`、`method` 和可选 `criterion_id` 写成独立标量字段，避免把完整 rubric、reason 或嵌套大对象
 传播成超长属性。
 
-Experiment 完成后，CLI 先检查 SDK 返回的每个 item 都包含四项 BOOLEAN Evaluation，再
-`flush()` 并通过 Langfuse Scores v3 API 回查。四项 Score 必须实际落库、名称无缺失或重复，并且
+Experiment 完成后，CLI 先检查 SDK 返回的每个 item 都包含三个 canonical BOOLEAN Evaluation，再
+`flush()` 并通过 Langfuse Scores v3 API 回查。三个 task-level Score 必须实际落库、名称无缺失或重复，并且
 全部挂在该 item 的同一个 `experiment-item-task` observation 上；否则按评测基础设施失败退出 2，
 不能因为 SDK 吞掉 Score 写入异常而报告运行成功。
 本机 Langfuse `3.224.2` 仍处于 v3 write mode，定位该 task observation 必须使用 SDK 的
@@ -458,7 +462,7 @@ POST /internal/evals/langfuse/remote-experiment
 
 它只负责验签、校验统一 Dataset 和 Git 中已有的 Task/Suite，然后在后台以固定 argv 启动
 `scripts/run_agent_evals.py --run`。请求不能传入 shell、环境变量、env file、写权限或其他 CLI
-参数；Task、Environment、Grader 和四项 Score 仍完全使用仓库中的定义。CLI stdout、stderr 和状态回执
+参数；Task、Environment、Grader 和三个 task-level Score 仍完全使用仓库中的定义。CLI stdout、stderr 和状态回执
 写入 `.data/evals/remote/<trigger_id>.*`，不提交。
 
 先在 Assistant Server 的本机未跟踪环境中配置：

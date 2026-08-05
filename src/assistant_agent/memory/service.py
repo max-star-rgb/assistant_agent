@@ -238,6 +238,8 @@ class LongTermMemoryService:
             memory_ids=result.memory_ids,
             changes=getattr(result, "changes", None),
             source_turn=turn.source_turn,
+            source_user_text=turn.user_text,
+            source_assistant_text=turn.assistant_text,
             errors=result.errors,
         )
 

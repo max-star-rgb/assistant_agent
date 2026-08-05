@@ -116,6 +116,8 @@ def test_late_memory_span_includes_overlay_when_explicitly_allowed() -> None:
             user_id="user-sentinel",
             session_id="session-sentinel",
             source_turn="source-turn-sentinel",
+            user_text="我更喜欢用中文交流。",
+            assistant_text="好的，我会优先使用中文。",
             changes=[
                 Mem0MemoryChange(
                     memory_id="memory-sentinel",
@@ -138,6 +140,13 @@ def test_late_memory_span_includes_overlay_when_explicitly_allowed() -> None:
     output = json.loads(
         exporter.batches[1][0].attributes["langfuse.observation.output"]
     )
+    input_payload = json.loads(
+        exporter.batches[1][0].attributes["langfuse.observation.input"]
+    )
+    assert input_payload["messages"] == [
+        {"role": "user", "content": "我更喜欢用中文交流。"},
+        {"role": "assistant", "content": "好的，我会优先使用中文。"},
+    ]
     assert output["content_exported"] is True
     assert output["changes"] == [
         {

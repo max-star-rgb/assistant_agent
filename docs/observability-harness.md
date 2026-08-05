@@ -240,6 +240,86 @@ parent 使用稳定的 `agent.runtime` root span ID。已有 `langfuse.session.i
 Langfuse 的 trace、observation、score 和 Dataset/Experiment 是远端投影与评估记录。面板如何折叠或展示
 长 JSON 不属于架构契约；需要完整证据时查询 observation 数据或回到 canonical trace。
 
+### Langfuse-first Runtime 审计
+
+`scripts/run_runtime_audit.py` 提供只读的日常审计入口。它默认重扫最近两小时的全部
+`assistant.turn`，从 Langfuse 读取完整 trace、observation 和 Score；本地
+`.data/graph_trace.jsonl` 只生成 trace/run、时间、terminal 与 event count 完整性 manifest。只有
+Langfuse API 可读但缺少对应 trace 时，才把该 trace 的有界、redacted local timeline 放入 fallback
+evidence。Langfuse 本身不可读时只记录 infrastructure unknown，不能把全部本地 trace 误报为导出缺失。
+
+产物固定写入 `.data/runtime_audit/`：
+
+- `state/watermark.json`：最近窗口与 bundle 路径；
+- `inbox/<audit_run_id>.json`：版本化、只读 audit bundle；
+- `reports/<audit_run_id>.json`：可选 Codex 结构化报告；
+- `reports/<audit_run_id>.md`：确定性基线或经 schema 校验的 Codex 人工审阅报告。
+
+Codex 通过 `--ephemeral --sandbox read-only` 运行；子进程环境移除 Langfuse 和 Provider credentials，
+强制 mock Provider mode，只允许生成报告，不允许修改代码、Langfuse 或 Memory。Langfuse 读取失败、
+Judge pending 和 evaluator 基础设施失败都不属于质量失败。
+
+统一质量 Score 名称为：
+
+| Score | 目标与来源 |
+| --- | --- |
+| `assistant_agent.quality.response_quality` | 最终文本 `llm.chat` generation 的回答质量；日常使用原生 observation LLM-as-a-Judge，Experiment 可由受控 grader 写入 |
+| `assistant_agent.quality.grounding` | 最终文本 generation 对工具/上下文证据的忠实度；日常 observation evaluator，Experiment 可由受控 grader 写入 |
+| `assistant_agent.quality.tool_result_quality` | 单个 `tool.execute` observation 的结果语义质量；只使用 observation evaluator |
+| `assistant_agent.quality.memory_extraction` | 单个 `memory.turn_ingestion` observation 的长期记忆提取质量 |
+| `assistant_agent.quality.memory_recall` | 具有实际召回证据的 memory/LLM observation 的召回质量；证据不足时保持 missing/unsupported，不伪造失败 |
+| `assistant_agent.quality.task_conformance` | 仅 Experiment；Environment oracle 与 Mission objective Rule 的任务符合度 |
+
+Score name 只表达测量对象；`source`、judge/model、evaluator version、live/experiment mode 放 Score
+metadata。terminal、Tool 调用成败、event count、latency 等已知运行事实保留为 observation/metadata，
+不伪装成质量 Score。跨多个 observation 的 `tool_use` 轨迹判断第一阶段只进入 Codex 报告。
+
+Langfuse 日常 evaluator 使用原生 **Live Observations**、100% sampling 和 observation name/type filter；
+不要新建 deprecated trace-level evaluator。`tool_result_quality` 过滤 SPAN `tool.execute`，
+`memory_extraction` 过滤 SPAN `memory.turn_ingestion`，回答、grounding 与 memory recall 过滤
+GENERATION `llm.chat` 且 metadata `assistant_agent.runtime_action=text`；该 generation 的 input 同时包含
+当前请求、上下文、可用工具结果和长期记忆，比只看根 SPAN 更适合 observation-level 语义判断。
+必须先在 UI preview 核对 input/output mapping；Mem0 change text 还要求 operator 显式允许本机 memory
+trace content。Evaluator/rule 公共 API 当前仍标为 unstable，因此仓库不自动改写 Langfuse 配置，避免
+定时审计获得管理权限或随版本漂移破坏现有 evaluator。配置依据见 Langfuse 官方的
+[LLM-as-a-Judge](https://langfuse.com/docs/evaluation/evaluation-methods/llm-as-a-judge) 与
+[observation evaluator 排障](https://langfuse.com/faq/all/observation-eval-not-executing)。
+
+本机当前版本已暴露 unstable evaluator/rule API，因此仓库提供带双重 apply gate 的一次性配置入口：
+
+```bash
+# 只读查看将创建的 canonical evaluator/rule
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_runtime_audit.py \
+  configure-evaluators --model-provider deepseek-judge --model deepseek-v4-flash
+
+# operator 确认该 LLM connection、100% sampling 与费用后才执行
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_runtime_audit.py \
+  configure-evaluators --model-provider deepseek-judge --model deepseek-v4-flash \
+  --apply --allow-online-judge
+```
+
+入口只创建缺失的 project evaluator/rule，已存在项保持不动；不会删除或隐式升级历史 evaluator
+或 Score。`memory_extraction` rule 额外过滤 `assistant_agent.memory_semantic_evidence=available`，因此只有
+显式启用本地 memory trace content 且 observation 同时包含原对话和 Mem0 changes 时才调用 Judge。
+
+每小时调度使用仓库提供的 user unit 模板；安装/启用属于 operator 动作，不由审计器自行修改：
+
+```bash
+systemctl --user link "$PWD/deploy/systemd/user/assistant-agent-runtime-audit.service"
+systemctl --user link "$PWD/deploy/systemd/user/assistant-agent-runtime-audit.timer"
+systemctl --user daemon-reload
+systemctl --user enable --now assistant-agent-runtime-audit.timer
+systemctl --user start assistant-agent-runtime-audit.service
+```
+
+用 `systemctl --user list-timers assistant-agent-runtime-audit.timer` 查看下次运行，用
+`journalctl --user -u assistant-agent-runtime-audit.service` 查看状态和 artifact path。unit 默认工作目录为
+`%h/pycharm_project/assistant_agent`、Python 为 `%h/miniconda3/envs/hello_agent/bin/python`；路径不同
+必须先复制模板并显式修改。
+
+历史 `agent_eval.dimension.*` 和默认关闭的 legacy runtime Score 不做破坏性清理；它们仅作为历史数据
+保留。新 Experiment 与日常 evaluator 必须使用上述 canonical 名称，迁移后的完整性检查也只认新名称。
+
 text turn score、trajectory diagnostic 和 Agent Experiment 都必须从已记录事实派生。grader 的真实调用、
 Dataset 发布和 Experiment 运行由 [`../evals/README.md`](../evals/README.md) 管理；不得因 observability
 默认开启而自动调用真实 Provider 或 judge。

@@ -1,26 +1,28 @@
 # Grader 设计与审计
 
-## 四个独立 Score
+## 内部四维与持久化 Score
 
 先验证 Environment、受控依赖、隔离和评测输入；失败属于 infrastructure failure，不生成 Agent
-Score。正式评分固定输出四个 BOOLEAN Score，不生成 reward 或总通过分：
+内部 grader 仍计算四个维度用于校准；正式 Experiment 固定写入三个 BOOLEAN task-level Score，不生成
+reward 或总通过分：
 
 ```text
-agent_eval.dimension.tool_execution
-agent_eval.dimension.tool_semantics
-agent_eval.dimension.grounding
-agent_eval.dimension.response_quality
+assistant_agent.quality.task_conformance
+assistant_agent.quality.grounding
+assistant_agent.quality.response_quality
 ```
 
-- `tool_execution`：基础 Task 的实际工具终态是否符合 Environment 为该案例声明的 oracle，使用 Rule；
+- `task_conformance`：由内部 `tool_execution` 映射，判断实际工具终态与 Mission objective 是否符合
+  Environment oracle，使用 Rule；
   Mission 还合入 Environment 的 objective state Rule；
-- `tool_semantics`：工具返回内容是否语义正确、内部一致且可用，使用 LLM Judge；
+- 内部 `tool_semantics`：用于 grader 校准和诊断，不再写为 task-level Score；单个工具 observation 的
+  语义质量由 `assistant_agent.quality.tool_result_quality` 原生 evaluator 负责；
 - `grounding`：最终回答是否忠于工具结果，使用 LLM Judge；
 - `response_quality`：回答是否真正回应当前请求并且清晰完整，使用 LLM Judge。
 
-四项都采用阳性语义。预期天气超时且实际错误码匹配时，`tool_execution=true`；
-超时没有产生可用天气数据，因此 `tool_semantics=false`；Agent 正确理解超时时，
-`grounding=true`。不要把四项聚合成 pass 或 reward。
+各项都采用阳性语义。预期天气超时且实际错误码匹配时，`task_conformance=true`；
+超时没有产生可用天气数据时，对应 `tool.execute` 可得到 `tool_result_quality=false`；Agent 正确理解超时时，
+`grounding=true`。不要把这些维度聚合成 pass 或 reward。
 
 ## Environment oracle
 

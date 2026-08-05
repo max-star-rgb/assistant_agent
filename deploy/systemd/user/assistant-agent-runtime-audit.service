@@ -1,0 +1,15 @@
+[Unit]
+Description=Read-only Langfuse-first Assistant Agent runtime audit
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/pycharm_project/assistant_agent
+EnvironmentFile=-%h/.config/assistant_agent/runtime-audit.env
+Environment=MULTIMODAL_AGENT_PROVIDER_MODE=mock
+ExecStart=%h/miniconda3/envs/hello_agent/bin/python scripts/run_runtime_audit.py run
+NoNewPrivileges=true
+PrivateTmp=true
+UMask=0077
+TimeoutStartSec=20min

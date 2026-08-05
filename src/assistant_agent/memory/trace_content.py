@@ -19,6 +19,8 @@ class MemoryIngestionTraceContent(BaseModel):
     user_id: str = Field(min_length=1)
     session_id: str = Field(min_length=1)
     source_turn: str = Field(min_length=1)
+    user_text: str | None = None
+    assistant_text: str | None = None
     changes: list[Mem0MemoryChange] = Field(default_factory=list)
 
 

@@ -36,6 +36,12 @@ from evals.agent.loader import load_case_source, load_entrypoint, load_task
 
 
 DEFAULT_DATASET_NAME = "assistant-agent-regression"
+QUALITY_SCORE_PREFIX = "assistant_agent.quality."
+EXPERIMENT_SCORE_DIMENSIONS = (
+    ("task_conformance", "tool_execution"),
+    ("grounding", "grounding"),
+    ("response_quality", "response_quality"),
+)
 
 
 def active_dataset_task_ids(
@@ -323,7 +329,8 @@ def _run_experiment_preserving_evaluator_errors(
 
 def experiment_dimension_scores(result: Any) -> list[dict[str, bool]]:
     expected_names = {
-        f"agent_eval.dimension.{name}": name for name in DIMENSION_NAMES
+        f"{QUALITY_SCORE_PREFIX}{score_name}": score_name
+        for score_name, _ in EXPERIMENT_SCORE_DIMENSIONS
     }
     item_scores: list[dict[str, bool]] = []
     for item_result in result.item_results:
@@ -342,10 +349,11 @@ def experiment_dimension_scores(result: Any) -> list[dict[str, bool]]:
                     f"{evaluation.name}."
                 )
             resolved[dimension_name] = evaluation.value
-        if set(resolved) != set(DIMENSION_NAMES):
+        expected_dimensions = {name for name, _ in EXPERIMENT_SCORE_DIMENSIONS}
+        if set(resolved) != expected_dimensions:
             raise RuntimeError(
                 "Experiment result is missing Agent eval dimensions: "
-                f"expected={list(DIMENSION_NAMES)}, actual={sorted(resolved)}."
+                f"expected={sorted(expected_dimensions)}, actual={sorted(resolved)}."
             )
         item_scores.append(resolved)
     if not item_scores:
@@ -360,12 +368,13 @@ def verify_persisted_dimension_scores(
     attempts: int = 30,
     retry_delay_seconds: float = 0.5,
 ) -> None:
-    """Verify that every Experiment item persisted all four task-level Scores."""
+    """Verify every Experiment item persisted the canonical task-level Scores."""
 
     if attempts < 1:
         raise ValueError("attempts must be at least 1.")
     expected_names = {
-        f"agent_eval.dimension.{name}" for name in DIMENSION_NAMES
+        f"{QUALITY_SCORE_PREFIX}{score_name}"
+        for score_name, _ in EXPERIMENT_SCORE_DIMENSIONS
     }
     client.flush()
     for item_result in result.item_results:
@@ -487,14 +496,14 @@ def create_required_trace_observer(
 def _evaluations(result: GraderResult) -> list[Evaluation]:
     return [
         Evaluation(
-            name=f"agent_eval.dimension.{name}",
+            name=f"{QUALITY_SCORE_PREFIX}{score_name}",
             value=dimension_result.passed,
             data_type="BOOLEAN",
             comment=dimension_result.reason,
             metadata=_assertion_metadata(dimension_result),
         )
-        for name in DIMENSION_NAMES
-        for dimension_result in [getattr(result.dimensions, name)]
+        for score_name, dimension_name in EXPERIMENT_SCORE_DIMENSIONS
+        for dimension_result in [getattr(result.dimensions, dimension_name)]
     ]
 
 

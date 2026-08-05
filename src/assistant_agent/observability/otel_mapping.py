@@ -610,6 +610,19 @@ def _event_io_attributes(
         "memory.session_recall.finished",
         "memory.ingestion.finished",
     }:
+        if (
+            name == "memory.ingestion.finished"
+            and memory_content is not None
+            and memory_content.user_text
+            and memory_content.assistant_text
+        ):
+            input_payload = {
+                "source_turn": memory_content.source_turn,
+                "messages": [
+                    {"role": "user", "content": memory_content.user_text},
+                    {"role": "assistant", "content": memory_content.assistant_text},
+                ],
+            }
         output_payload.update(
             _selected_payload(
                 {**event.output_summary, **event.attributes},
@@ -697,6 +710,14 @@ def _event_io_attributes(
         }
 
     attributes = {"langfuse.observation.input": _json_value(_drop_none_if_mapping(input_payload))}
+    if name == "memory.ingestion.finished":
+        attributes["assistant_agent.memory_semantic_evidence"] = (
+            "available"
+            if memory_content is not None
+            and memory_content.user_text
+            and memory_content.assistant_text
+            else "unavailable"
+        )
     if include_output:
         serialized_output = (
             output_payload

@@ -19,12 +19,12 @@
 ```
 
 Mission 使用活动 `AgentGraphRuntime`、现有 `TaskSpec` / `RunEvidence` 契约、Environment 隔离、
-隐藏 Grader、校准样本、统一 Langfuse Dataset 和固定四项 Score。
+隐藏 Grader、校准样本、统一 Langfuse Dataset 和固定三个 task-level canonical Score。
 
 ## 当前状态
 
 - `evals.agent.loader` 同时发现 `tasks/` 与 `missions/`，并拒绝跨目录重复 ID；
-- Task 与 Mission 共用 `--inspect`、`--calibrate`、`--publish`、`--run` 和固定四项 Score；
+- Task 与 Mission 共用 `--inspect`、`--calibrate`、`--publish`、`--run` 和固定三个 task-level Score；
 - Mission Environment 必须提供非空、只含 Rule assertion 的
   `objective_state_assertions()`；工具 outcome 与 objective state 共同合入 `tool_execution`；
 - Langfuse Dataset item 保持 `task_id + request + 短 metadata`，不复制 case level、state oracle

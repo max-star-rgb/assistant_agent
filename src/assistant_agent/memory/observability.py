@@ -78,7 +78,7 @@ def record_ingestion_queued(
         session_id=state.session_id,
         canonical_event="memory.ingestion.queued",
         observation_type="event",
-        observation_name="memory.turn_ingestion",
+        observation_name="memory.ingestion.queued",
         observation_scope="runtime",
         node_name="post_response_memory_ingestion",
         status="queued",
@@ -96,6 +96,8 @@ def record_ingestion_finished(
     memory_ids: list[str] | None = None,
     changes: list[Mem0MemoryChange] | None = None,
     source_turn: str | None = None,
+    source_user_text: str | None = None,
+    source_assistant_text: str | None = None,
     content_store: MemoryTraceContentStore | None = None,
     errors: list[dict[str, Any]] | None = None,
     error: Exception | None = None,
@@ -128,6 +130,8 @@ def record_ingestion_finished(
                     user_id=state.user_id,
                     session_id=state.session_id,
                     source_turn=source_turn,
+                    user_text=source_user_text,
+                    assistant_text=source_assistant_text,
                     changes=resolved_changes,
                 )
             )

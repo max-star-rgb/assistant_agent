@@ -1,6 +1,6 @@
 ---
 name: langfuse-eval-engineering
-description: Design, add, revise, calibrate, run, or audit assistant_agent task-centered Agent evaluations. Use for evals/agent Task, Environment, Evidence, Grader, Langfuse Dataset publishing, Experiment review, four-score completeness, trace-informed regressions, and distinguishing Agent failures from evaluation infrastructure failures. Do not use for ordinary pytest work or real-service connectivity checks.
+description: Use when designing, revising, calibrating, running, or auditing assistant_agent Task-centered Agent evaluations, Langfuse Experiments, Score completeness, trace-informed regressions, or evaluation infrastructure failures.
 ---
 
 # Langfuse Eval Engineering
@@ -99,22 +99,24 @@ whitelist 不会放行其他端口。本项目必须使用 Compose 中白名单�
 该版本把 UI Default config 作为顶层 `payload` JSON 字符串发送，尚不原生签名 Remote Experiment；
 内部代理只为缺少签名的请求补充与 Assistant Server 共享的 HMAC，已有签名必须原样保留。
 
-运行后检查 Agent 输入、工具 Trace、依赖结果、最终回答和 grader 理由。Langfuse 只输出固定的
-`tool_execution`、`tool_semantics`、`grounding`、`response_quality` 四个独立 BOOLEAN Score，
-不生成 reward 或总通过分；Task 专属 rubric 只用于 `response_quality`。
-Experiment 完成后必须通过 Scores v3 API 回查四项 Score 已实际落库，并确认它们挂在同一个
+运行后检查 Agent 输入、工具 Trace、依赖结果、最终回答和 grader 理由。Experiment runner 只输出
+`assistant_agent.quality.task_conformance`、`assistant_agent.quality.grounding`、
+`assistant_agent.quality.response_quality` 三个独立 BOOLEAN task-level Score，不生成 reward 或总通过分；
+Task 专属 rubric 只用于 `response_quality`。内部 `tool_semantics` 保留用于校准，单工具语义质量由
+`assistant_agent.quality.tool_result_quality` observation evaluator 负责。
+Experiment 完成后必须通过 Scores v3 API 回查三个 task-level Score 已实际落库，并确认它们挂在同一个
 `experiment-item-task` observation；SDK 内存结果不能单独证明 Score 写入成功。
 本机 Langfuse `3.224.2` 的 observation 定位使用 `api.legacy.observations_v1`；Observations v2
 要求 v4 write mode，不能用于当前自托管配置。Score 记录仍使用 Scores v3 API。
 检查每个 `judge.<criterion_id>` evaluator observation 的耗时和状态；Judge 必须使用独立非流式
 timeout/retry 配置，不能继承 Agent 的长 timeout、stream 或 SDK 默认重试。
 
-`--run` 完整产出四项 Score 后退出 0；`--calibrate` 的人工标注不匹配时退出 1。凭据、Trace 导出、
+`--run` 完整产出三个 task-level Score 后退出 0；`--calibrate` 的内部四维人工标注不匹配时退出 1。凭据、Trace 导出、
 Dataset、Judge、证据解析或 Score 缺失属于评测基础设施错误，退出 2。
 
 ## 7. 复盘
 
-报告 Task 路径、Environment 边界、校准结果、运行命令、四项 Score、基础设施状态和限制。请用户
+报告 Task 路径、Environment 边界、校准结果、运行命令、三个 task-level Score、可用的 observation Score、基础设施状态和限制。请用户
 批准、修订、删除或选择下一个 capability。
 
 ## 不变量
@@ -133,7 +135,7 @@ Dataset、Judge、证据解析或 Score 缺失属于评测基础设施错误，�
   Dataset metadata，也不能扩大真实调用权限。
 - Environment 拥有依赖和状态，Task 输入不描述测试机关。
 - Grader 对 Agent 隐藏，并先用正反样本证明能区分结果。
-- 四项 Score 保持阳性语义和相互独立，不计算 reward 或总通过状态。
+- 三个 task-level Score 保持阳性语义和相互独立，不计算 reward 或总通过状态。
 - Rule 与 LLM Judge 分开实现但统一产出 assertion；每条 assertion 显式标记
   `evaluation_method=rule|judge`，提供面向评测查看者的短 `label`，Judge assertion 使用稳定
   `criterion_id`。
@@ -144,10 +146,11 @@ Dataset、Judge、证据解析或 Score 缺失属于评测基础设施错误，�
 - Judge 固定非流式，默认 timeout 30 秒、SDK retry 0 次；每个 criterion 产生独立 evaluator
   observation，CLI 进度写 stderr、最终 JSON 写 stdout。
 - Environment validation、凭据、Evidence 和 Judge 故障属于基础设施状态，不计入 Agent 分数。
-- 工具业务结果预期只由 Environment 声明；通用评分入口把实际终态与 oracle 的匹配写入
-  `tool_execution`；Mission 还把 Environment 的 objective state Rule 合入该维度。Task grader 不得重复
+- 工具业务结果预期只由 Environment 声明；通用评分入口把实际终态与 oracle 的匹配写入内部
+  `tool_execution` 并持久化为 `task_conformance`；Mission 还把 Environment 的 objective state Rule 合入该维度。Task grader 不得重复
   硬编码成功、错误码或 objective Rule。
-- `tool_semantics` 判断工具数据本身是否语义正确可用；`grounding` 判断回答是否忠于工具结果；
+- 内部 `tool_semantics` 用于 grader 校准；持久化的单工具语义质量使用 observation-level
+  `tool_result_quality`。`grounding` 判断回答是否忠于工具结果；
   `response_quality` 使用 Task 专属 rubric 判断回答是否清晰完整地回应用户。
 - Trace 用于发现问题和提供证据，不直接充当正确答案。
 - pytest 保持 mock/local/offline；真实 Provider 不得静默回退 mock。
