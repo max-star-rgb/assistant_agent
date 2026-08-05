@@ -670,7 +670,91 @@ def test_native_online_evaluator_configuration_uses_canonical_names_and_full_sam
         "assistant_agent.quality.memory_recall",
     ]
     assert len(rules.created) == 5
+    assert [item.name for item in rules.created] == [
+        "assistant_agent.quality.response_quality",
+        "assistant_agent.quality.grounding",
+        "assistant_agent.quality.tool_result_quality",
+        "assistant_agent.quality.memory_extraction",
+        "assistant_agent.quality.memory_recall",
+    ]
     assert all(item.enabled is True and item.sampling == 1.0 for item in rules.created)
     assert result.applied is True
     assert result.created_evaluators == 5
     assert result.created_rules == 5
+
+
+def test_native_online_evaluator_configuration_renames_legacy_rules_in_place() -> None:
+    """Would fail if migration created duplicate judges or kept legacy Score names."""
+
+    canonical_names = [
+        "assistant_agent.quality.response_quality",
+        "assistant_agent.quality.grounding",
+        "assistant_agent.quality.tool_result_quality",
+        "assistant_agent.quality.memory_extraction",
+        "assistant_agent.quality.memory_recall",
+    ]
+    legacy_names = [
+        "assistant-agent-live-response-quality",
+        "assistant-agent-live-grounding",
+        "assistant-agent-live-tool-result-quality",
+        "assistant-agent-live-memory-extraction",
+        "assistant-agent-live-memory-recall",
+    ]
+
+    class EvaluatorResource:
+        def list(self):
+            return SimpleNamespace(
+                data=[
+                    SimpleNamespace(name=name, scope="project")
+                    for name in canonical_names
+                ]
+            )
+
+        def create(self, *, request):
+            raise AssertionError(f"unexpected evaluator create: {request.name}")
+
+    class RuleResource:
+        def __init__(self) -> None:
+            self.created = []
+            self.updated = []
+
+        def list(self):
+            return SimpleNamespace(
+                data=[
+                    SimpleNamespace(id=f"legacy-rule-{index}", name=name)
+                    for index, name in enumerate(legacy_names)
+                ]
+            )
+
+        def create(self, *, request):
+            self.created.append(request)
+
+        def update(self, rule_id, **changes):
+            self.updated.append((rule_id, changes))
+
+    rules = RuleResource()
+    client = SimpleNamespace(
+        api=SimpleNamespace(
+            unstable=SimpleNamespace(
+                evaluators=EvaluatorResource(),
+                evaluation_rules=rules,
+            )
+        )
+    )
+
+    result = configure_native_online_evaluators(
+        client,
+        apply=True,
+        model_provider="qwen",
+        model="qwen3.6-flash",
+    )
+
+    assert rules.created == []
+    assert rules.updated == [
+        (f"legacy-rule-{index}", {"name": name})
+        for index, name in enumerate(canonical_names)
+    ]
+    assert result.rule_names == canonical_names
+    assert result.existing_evaluators == 5
+    assert result.existing_rules == 5
+    assert result.updated_rules == 5

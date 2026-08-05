@@ -317,8 +317,10 @@ trace content。Evaluator/rule 公共 API 当前仍标为 unstable，因此仓�
   --apply --allow-online-judge
 ```
 
-入口只创建缺失的 project evaluator/rule，已存在项保持不动；不会删除或隐式升级历史 evaluator
-或 Score。`memory_extraction` rule 额外过滤 `assistant_agent.memory_semantic_evidence=available`，因此只有
+Langfuse 原生 live evaluator 使用 evaluation rule name 作为落库 Score name，因此 rule 与 evaluator
+统一使用同一个 `assistant_agent.quality.*` canonical 名称。入口创建缺失项；若检测到本项目早期的
+`assistant-agent-live-*` rule，则通过同一 rule ID 原地重命名，不创建并行 Judge、不删除或回写历史
+Score。`memory_extraction` rule 额外过滤 `assistant_agent.memory_semantic_evidence=available`，因此只有
 显式启用本地 memory trace content 且 observation 同时包含原对话和 Mem0 changes 时才调用 Judge。
 
 每小时调度使用仓库提供的 user unit 模板；安装/启用属于 operator 动作，不由审计器自行修改：

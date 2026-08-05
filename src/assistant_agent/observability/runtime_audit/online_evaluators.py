@@ -62,7 +62,7 @@ class OnlineEvaluatorConfigurationResult(BaseModel):
 @dataclass(frozen=True)
 class _EvaluatorSpec:
     name: str
-    rule_name: str
+    legacy_rule_name: str
     prompt: str
     observation_name: str
     observation_type: str
@@ -92,7 +92,7 @@ def configure_native_online_evaluators(
     result = OnlineEvaluatorConfigurationResult(
         applied=apply,
         evaluator_names=[item.name for item in specs],
-        rule_names=[item.rule_name for item in specs],
+        rule_names=[item.name for item in specs],
     )
     if not apply:
         return result
@@ -115,14 +115,25 @@ def configure_native_online_evaluators(
         else:
             existing_evaluator_count += 1
         rule_request = _rule_request(spec)
-        existing_rule = existing_rules.get(spec.rule_name)
+        existing_rule = existing_rules.get(spec.name)
+        legacy_rule = existing_rules.get(spec.legacy_rule_name)
         if existing_rule is None:
-            rule_resource.create(request=rule_request)
-            created_rules += 1
+            if legacy_rule is None:
+                rule_resource.create(request=rule_request)
+                created_rules += 1
+            else:
+                rule_id = _field(legacy_rule, "id")
+                if not isinstance(rule_id, str) or not rule_id:
+                    raise RuntimeError(
+                        f"Langfuse evaluation rule {spec.legacy_rule_name!r} has no id."
+                    )
+                rule_resource.update(rule_id, name=spec.name)
+                existing_rule_count += 1
+                updated_rules += 1
         else:
             rule_id = _field(existing_rule, "id")
             if not isinstance(rule_id, str) or not rule_id:
-                raise RuntimeError(f"Langfuse evaluation rule {spec.rule_name!r} has no id.")
+                raise RuntimeError(f"Langfuse evaluation rule {spec.name!r} has no id.")
             existing_rule_count += 1
     return result.model_copy(
         update={
@@ -184,7 +195,7 @@ def _rule_request(spec: _EvaluatorSpec) -> CreateLlmAsJudgeEvaluationRuleRequest
         for key, value in spec.metadata_filters
     )
     return CreateLlmAsJudgeEvaluationRuleRequest(
-        name=spec.rule_name,
+        name=spec.name,
         evaluator=LlmAsJudgeEvaluationRuleEvaluatorReference(
             name=spec.name,
             scope=EvaluatorScope.PROJECT,
@@ -212,7 +223,7 @@ def _specs() -> tuple[_EvaluatorSpec, ...]:
     return (
         _EvaluatorSpec(
             name="assistant_agent.quality.response_quality",
-            rule_name="assistant-agent-live-response-quality",
+            legacy_rule_name="assistant-agent-live-response-quality",
             observation_name="llm.chat",
             observation_type="GENERATION",
             metadata_filters=final_text_filter,
@@ -224,7 +235,7 @@ def _specs() -> tuple[_EvaluatorSpec, ...]:
         ),
         _EvaluatorSpec(
             name="assistant_agent.quality.grounding",
-            rule_name="assistant-agent-live-grounding",
+            legacy_rule_name="assistant-agent-live-grounding",
             observation_name="llm.chat",
             observation_type="GENERATION",
             metadata_filters=final_text_filter,
@@ -236,7 +247,7 @@ def _specs() -> tuple[_EvaluatorSpec, ...]:
         ),
         _EvaluatorSpec(
             name="assistant_agent.quality.tool_result_quality",
-            rule_name="assistant-agent-live-tool-result-quality",
+            legacy_rule_name="assistant-agent-live-tool-result-quality",
             observation_name="tool.execute",
             observation_type="SPAN",
             prompt=(
@@ -247,7 +258,7 @@ def _specs() -> tuple[_EvaluatorSpec, ...]:
         ),
         _EvaluatorSpec(
             name="assistant_agent.quality.memory_extraction",
-            rule_name="assistant-agent-live-memory-extraction",
+            legacy_rule_name="assistant-agent-live-memory-extraction",
             observation_name="memory.turn_ingestion",
             observation_type="SPAN",
             metadata_filters=(("assistant_agent.memory_semantic_evidence", "available"),),
@@ -259,7 +270,7 @@ def _specs() -> tuple[_EvaluatorSpec, ...]:
         ),
         _EvaluatorSpec(
             name="assistant_agent.quality.memory_recall",
-            rule_name="assistant-agent-live-memory-recall",
+            legacy_rule_name="assistant-agent-live-memory-recall",
             observation_name="llm.chat",
             observation_type="GENERATION",
             metadata_filters=final_text_filter,
