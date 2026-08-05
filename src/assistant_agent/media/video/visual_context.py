@@ -265,11 +265,7 @@ class VisualContextService:
         eligible_count = max(0, len(pack.recent_records) - self._keep_recent_records)
         if eligible_count == 0:
             return None
-        required_reduction = max(
-            0,
-            pack.input_tokens - pack.decision.target_tokens,
-        )
-        minimum_summary_tokens = max(
+        minimum_compactor_output_tokens = max(
             1,
             self._token_counter.count_text(
                 json.dumps(
@@ -288,28 +284,87 @@ class VisualContextService:
         for prefix_length in range(1, eligible_count + 1):
             records = list(pack.recent_records[:prefix_length])
             remaining_records = pack.recent_records[prefix_length:]
-            base_input_tokens = self._projected_input_tokens(
-                summary=None,
+            minimum_summary = self._minimum_rebuilt_summary(
+                video_id=pack.video_id,
+                existing_summary=pack.summary,
+                records=records,
+            )
+            minimum_rebuilt_input_tokens = self._projected_input_tokens(
+                summary=minimum_summary,
                 recent_records=remaining_records,
                 as_of_sequence=pack.as_of_sequence,
                 user_query=user_query,
             )
-            freed_tokens = max(0, pack.input_tokens - base_input_tokens)
-            available_summary_tokens = freed_tokens - required_reduction
+            semantic_headroom = max(
+                0,
+                pack.decision.target_tokens - minimum_rebuilt_input_tokens,
+            )
             summary_max_tokens = max(
                 1,
                 min(
                     self._window_policy.summary_max_tokens,
-                    max(minimum_summary_tokens, available_summary_tokens),
+                    minimum_compactor_output_tokens + semantic_headroom,
                 ),
             )
             fallback = _VisualCompactionPlan(
                 records=records,
                 summary_max_tokens=summary_max_tokens,
             )
-            if available_summary_tokens >= minimum_summary_tokens:
+            if minimum_rebuilt_input_tokens <= pack.decision.target_tokens:
                 return fallback
         return fallback
+
+    @staticmethod
+    def _minimum_rebuilt_summary(
+        *,
+        video_id: str,
+        existing_summary: VisualContextSummary | None,
+        records: list[VisualSemanticRecord],
+    ) -> VisualContextSummary:
+        """Build the exact fixed-cost summary projection for one candidate prefix."""
+
+        sequences = [record.frame_sequence for record in records]
+        captured_at_ms = [
+            record.captured_at_ms
+            for record in records
+            if record.captured_at_ms is not None
+        ]
+        if existing_summary is not None:
+            sequences.extend(
+                [
+                    existing_summary.first_sequence,
+                    existing_summary.covered_through_sequence,
+                ]
+            )
+            if existing_summary.first_captured_at_ms is not None:
+                captured_at_ms.append(existing_summary.first_captured_at_ms)
+            if existing_summary.last_captured_at_ms is not None:
+                captured_at_ms.append(existing_summary.last_captured_at_ms)
+        return VisualContextSummary(
+            video_id=video_id,
+            summary_revision=(
+                existing_summary.summary_revision + 1
+                if existing_summary is not None
+                else 1
+            ),
+            covered_record_count=(
+                (existing_summary.covered_record_count if existing_summary else 0)
+                + len(records)
+            ),
+            covered_through_sequence=max(sequences),
+            coverage_digest=extend_visual_context_coverage_digest(
+                existing_summary.coverage_digest if existing_summary else None,
+                [
+                    (record.record_id, record.frame_sequence, record.created_at_ms)
+                    for record in records
+                ],
+            ),
+            first_sequence=min(sequences),
+            first_captured_at_ms=(min(captured_at_ms) if captured_at_ms else None),
+            last_captured_at_ms=(max(captured_at_ms) if captured_at_ms else None),
+            source_token_count=0,
+            summary_token_count=0,
+        )
 
     def _projected_input_tokens(
         self,
