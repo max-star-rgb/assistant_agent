@@ -15,6 +15,10 @@ from assistant_agent.media.video.semantic_store_pool import (
     SessionVisualSemanticStorePool,
 )
 from assistant_agent.media.video.types import FrameProcessingResult, KeyframeChangeMetrics, VideoFrame
+from assistant_agent.media.video.visual_context_models import (
+    VisualContextSnapshot,
+    VisualContextSummary,
+)
 
 __all__ = [
     "FixedIntervalSemanticSampler",
@@ -28,4 +32,6 @@ __all__ = [
     "VisualSemanticCandidate",
     "VisualSemanticRecord",
     "VisualSemanticSnapshot",
+    "VisualContextSnapshot",
+    "VisualContextSummary",
 ]

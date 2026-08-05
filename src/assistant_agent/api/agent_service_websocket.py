@@ -43,6 +43,7 @@ from assistant_agent.media.video.h264_video_ingestion import H264VideoIngestionS
 from assistant_agent.identifiers import new_prefixed_uuid7
 from assistant_agent.observability.operational_logging import digest_identifier, record_gateway_lifecycle
 from assistant_agent.media.video.realtime_video_observer import RealtimeVideoObserver
+from assistant_agent.media.video.visual_context import VisualContextService
 from assistant_agent.media.video.video_context import VideoFrame
 from assistant_agent.media.video.visual_reminder import (
     VisualReminderManager,
@@ -1767,6 +1768,25 @@ def _create_realtime_video_observer(
         semantic_lease.release()
 
     try:
+        visual_context_service = None
+        if runtime.visual_context_token_counter is not None:
+            visual_context_service = VisualContextService(
+                store=semantic_lease.store,
+                token_counter=runtime.visual_context_token_counter,
+                window_policy=runtime.visual_context_window_policy,
+                compactor=runtime.visual_context_compactor,
+                keep_recent_records=runtime.config.visual_context_keep_recent_records,
+                instruction_reserve_tokens=(
+                    runtime.config.visual_context_instruction_reserve_tokens
+                ),
+                image_reserve_tokens=(
+                    runtime.config.visual_context_image_reserve_tokens
+                ),
+                output_reserve_tokens=(
+                    runtime.config.visual_context_output_reserve_tokens
+                ),
+                observer=runtime.embedding_observer,
+            )
         return RealtimeVideoObserver(
             user_id=user_id,
             session_id=session_id,
@@ -1777,6 +1797,7 @@ def _create_realtime_video_observer(
             memory_store=runtime.realtime_video_memory_store,
             embedding_coordinator=embedding_lease.coordinator,
             semantic_store=semantic_lease.store,
+            visual_context_service=visual_context_service,
             resource_release=release_resources,
             provider_config=runtime.config,
             visual_reminder_manager=state.visual_reminder_manager,

@@ -1,6 +1,6 @@
 # 统一多模态 Embedding 架构
 
-Last updated: 2026-08-04
+Last updated: 2026-08-05
 
 本文档是 `assistant_agent` 当前 image/text embedding 平台、session 短期视觉时间线、历史找物和连接级视觉提醒能力的
 事实权威。媒体接入与关键帧生命周期见 `media-agent-service-websocket.md`，显式 Tool 治理见
@@ -36,8 +36,11 @@ Realtime frame
         -> SemanticKeyframeSelector
         -> selected image EmbeddingEvent
              ├─ VisualReminderManager（只比较 pending target，命中后即时 chatResponse）
-             └─ realtime_video_observe（只对选中帧调用 VLM）
-        -> VLM result -> canonical text -> text embedding
+             └─ current JPEG + VisualContextPack
+                  -> realtime_video_observe（只对选中帧调用 VLM）
+                  -> VLM current facts / changes / uncertainties
+                  -> VisualSemanticRecord + canonical text embedding
+                  -> raw-record search + next-call context projection
         -> SessionVisualSemanticStore
              ├─ live_view_inspect（当前/as-of 语义）
              └─ visual_memory_search（query text-to-record text 排序）
@@ -89,6 +92,36 @@ latest-wins；因此不会积压，但高于处理能力的准入帧可以被更
 `EmbeddingEvent` 交给 `RealtimeVideoObserver`，observer 不再计算 image embedding。embedding 失败后
 因 interactive/max interval 降级选出的关键帧没有 event，因此跳过提醒匹配，但原有 VLM 流程仍可继续。
 
+## 视觉上下文预检与压缩
+
+后台 `realtime_video_observe` 只对选中关键帧调用 VLM，且每次请求始终只有当前一张 JPEG。启用
+`VisualContextService` 时，请求的文本历史是一个固定 as-of 边界的 `VisualContextPack`：已有的旧
+summary 加其后未覆盖的最近逐条 record 文本。每次 observation 新建独立 Qwen WebSocket
+conversation，并在成功、失败或不完整响应后关闭，避免 Provider 隐式历史绕过本地预算。summary 是
+带 revision 的最旧连续 record prefix；LLM schema 和语义投影不含 record ID，代码用有界 count、
+sequence frontier 与固定 digest 计算 coverage。Store 只保存当前 raw retention 内的精确 covered ID，
+所以迟到/同 sequence 新记录仍保持 uncovered，raw eviction 也不阻止 digest/frontier 后续扩展。压缩
+只在成功、coverage 连续且 revision 未冲突时更新它，原始 `VisualSemanticRecord` 始终保留。
+
+视觉预算复用 `ContextWindowPolicy` 的 target/trigger/hard 心智模型，但不复用主 Chat 模型的绝对
+预算。独立 VLM tokenizer 对最终视觉历史、当前 query 以及 instruction/image/output reserve 做
+preflight；target 选择预计使重建请求降到目标所需的最小最旧连续 prefix，并据目标剩余空间约束本轮
+summary budget；配置的最近 records 始终保留。trigger 启动 LLM compactor，hard 是最终 Qwen/VLM
+observation 调用前的拒绝边界。summary budget 以最终结构化 summary 经真实 JSON projection/HTML
+escaping 后的 token 数计量；Provider raw generation 复用该 cap 作为前置上限，compactor 和 Service
+仍分别验证实际 summary projection 与完整 rebuilt pack，所以不假设 raw/escaped token 存在固定比例。
+每次成功压缩后重建并重新计数，低于 hard 即可继续；最近 raw records
+或 summary 使结果仍高于 target 时，不为追逐 target 无限压缩。CAS revision conflict 会重读同一
+video/as-of 的 winning summary 并重建一次 pack，不使用 stale pack 决定 observation。Provider 不再对
+该历史施加 4,000 字符截断。trigger 到 hard 之间压缩失败时保持旧 summary 和 raw records；hard 仍
+无法收敛时跳过最终 Qwen/VLM observation，不阻塞视频 ACK，也不破坏 one-inflight/
+one-latest-pending 调度。预算收敛期间独立 LLM visual compactor 可按现有状态机最多调用两次，不能把
+“跳过最终 observation Provider”解释为此前绝无 compactor Provider 调用。
+
+未启用 visual compaction 时，observer 才读取旧 rolling semantic snapshot 并使用最多 2,000 字符的
+兼容输入，同时记录 compaction `unavailable`。该兼容 snapshot 不是 revisioned summary，不能被描述为
+已启用的 VisualContextPack。
+
 ## 文本、ASR 与跨模态消费者
 
 平台不直接处理语音。音频在上游转为稳定文本后，与键盘输入一样成为 `TextObservation`；`source`
@@ -126,6 +159,10 @@ durable task 或 notification outbox，不能跨连接恢复。
 cosine 排序；`object|scene|event` mode 会添加与 canonical VLM 文本字段一致的短前缀，`auto` 保留原
 query。不读取 evidence、不调用 VLM，也不输出路径、向量或坐标。未来记录不能进入结果。状态固定为
 `confirmed|candidate|not_found|unavailable`；query text embedding 失败返回 unavailable。
+
+`visual_memory_search` 只索引和检索原始 `VisualSemanticRecord`。VisualContext summary 不进入 search
+embedding、候选、排序或 as-of 过滤，也不进入主 Agent prompt、conversation 或 Mem0；它只在下一次
+后台 VLM 调用前参与视觉历史投影。
 
 ## Tool 暴露与安全
 

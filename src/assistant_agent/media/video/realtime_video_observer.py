@@ -17,6 +17,7 @@ from assistant_agent.config import ProviderConfig
 from assistant_agent.media.embedding.coordinator import SessionEmbeddingCoordinator
 from assistant_agent.media.embedding.models import EmbeddingEvent, TextObservation
 from assistant_agent.media.embedding.observability import (
+    emit_visual_context_observation,
     emit_visual_semantic_observation,
 )
 from assistant_agent.runtime.action_validator import ActionValidator
@@ -41,6 +42,10 @@ from assistant_agent.media.video.semantic_pipeline import (
 from assistant_agent.media.video.semantic_store import (
     SessionVisualSemanticStore,
     VisualSemanticRecord,
+)
+from assistant_agent.media.video.visual_context import (
+    VisualContextHardLimitError,
+    VisualContextService,
 )
 from assistant_agent.tools.registry import ToolRegistry
 from assistant_agent.media.video.keyframe.selector import (
@@ -86,6 +91,7 @@ class RealtimeVideoObserver:
         registry: ToolRegistry,
         memory_store: RealtimeVideoMemoryStore,
         semantic_store: SessionVisualSemanticStore | None = None,
+        visual_context_service: VisualContextService | None = None,
         embedding_coordinator: SessionEmbeddingCoordinator,
         visual_reminder_manager: VisualReminderManager | None = None,
         visual_reminder_sender: VisualReminderSender | None = None,
@@ -112,6 +118,7 @@ class RealtimeVideoObserver:
             session_id=session_id,
             observer=embedding_coordinator.observer,
         )
+        self.visual_context_service = visual_context_service
         self._owns_semantic_store = semantic_store is None
         self._resource_release = resource_release
         self._resources_released = False
@@ -692,6 +699,8 @@ class RealtimeVideoObserver:
             people=list(result.people),
             actions=list(result.actions),
             events=list(result.events),
+            changes=list(result.changes),
+            uncertainties=list(result.uncertainties),
             text_in_video=list(result.text_in_video),
             products=list(result.products),
             brands=list(result.brands),
@@ -724,6 +733,7 @@ class RealtimeVideoObserver:
 
     def _execute_observation(self, item: SemanticKeyframeRecord) -> ToolResult:
         video_id = item_video_id(item, self.video_id)
+        user_query = "更新当前场景、物体、人物、动作和重要变化。"
         request = UserRequest(
             user_id=self.user_id,
             session_id=self.session_id,
@@ -732,21 +742,60 @@ class RealtimeVideoObserver:
             metadata={"source": "realtime_video_observer"},
         )
         state = AgentState.from_request(request)
-        snapshot = self.memory_store.snapshot(video_id)
+        if self.visual_context_service is None:
+            snapshot = self.memory_store.snapshot(video_id)
+            memory_context = (
+                snapshot.current_state[:REALTIME_PREVIOUS_SUMMARY_MAX_CHARS]
+                if snapshot is not None and snapshot.current_state
+                else None
+            )
+            visual_context_compaction = {
+                "status": "unavailable",
+                "compacted": False,
+            }
+            emit_visual_context_observation(
+                self.embedding_coordinator.observer,
+                "visual_context.preflight",
+                session_id=self.session_id,
+                sequence=item.sequence,
+                status="unavailable",
+                compacted=False,
+            )
+        else:
+            try:
+                pack = self.visual_context_service.prepare(
+                    video_id,
+                    before_sequence=item.sequence,
+                    user_query=user_query,
+                )
+            except VisualContextHardLimitError as exc:
+                error = {
+                    "code": exc.code,
+                    "message": sanitize_error_message(exc),
+                    "recoverable": True,
+                }
+                return ToolResult(
+                    tool_name=REALTIME_VIDEO_OBSERVE_TOOL_NAME,
+                    success=False,
+                    data={"errors": [error]},
+                    error=f"{exc.code}: {error['message']}",
+                )
+            memory_context = pack.memory_context
+            visual_context_compaction = {
+                "status": "ready",
+                "compacted": pack.compacted,
+            }
         tool_input: dict[str, Any] = {
             "video_ref": video_id,
             "frame_refs": [item.uri],
-            "user_query": "更新当前场景、物体、人物、动作和重要变化。",
+            "user_query": user_query,
             "metadata": {
                 "frame_id": item.frame_id,
                 "frame_sequence": item.sequence,
                 "frame_timestamp_ms": item.timestamp_ms,
+                "visual_context_compaction": visual_context_compaction,
             },
-            "memory_context": (
-                snapshot.current_state[:REALTIME_PREVIOUS_SUMMARY_MAX_CHARS]
-                if snapshot is not None and snapshot.current_state
-                else None
-            ),
+            "memory_context": memory_context,
         }
         decision = AssistantDecision(
             type="tool_call",
@@ -1035,6 +1084,8 @@ def _snapshot_publishable_observation(result: ToolResult) -> VideoUnderstandingR
 
 
 def _build_visual_search_text(result: VideoUnderstandingResult) -> str:
+    # Only current-frame facts belong in the search embedding. Historical
+    # comparisons and uncertain candidates must remain result metadata.
     sections = [
         ("场景", [result.scene] if result.scene else []),
         ("物体", result.objects),

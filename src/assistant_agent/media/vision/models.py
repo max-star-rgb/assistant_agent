@@ -5,6 +5,9 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 
+MAX_VISUAL_GROUNDING_ITEMS = 20
+
+
 class VisualUnderstandingResult(BaseModel):
     """Structured result from image or video understanding."""
 
@@ -39,13 +42,19 @@ class VisionUnderstandingRequest(BaseModel):
 
 
 class VisionUnderstandingResult(BaseModel):
-    """Unified structured result returned by visual understanding clients."""
+    """Unified result whose scene/object/action fields describe current visual facts."""
 
     summary: str = Field(min_length=1)
     objects: list[str] = Field(default_factory=list)
     people: list[str] = Field(default_factory=list)
     actions: list[str] = Field(default_factory=list)
     events: list[str] = Field(default_factory=list)
+    changes: list[str] = Field(
+        default_factory=list, max_length=MAX_VISUAL_GROUNDING_ITEMS
+    )
+    uncertainties: list[str] = Field(
+        default_factory=list, max_length=MAX_VISUAL_GROUNDING_ITEMS
+    )
     scene: str | None = None
     products: list[str] = Field(default_factory=list)
     brands: list[str] = Field(default_factory=list)
@@ -92,13 +101,19 @@ class VideoUnderstandingRequest(BaseModel):
 
 
 class VideoUnderstandingResult(BaseModel):
-    """Structured result returned by a video understanding adapter."""
+    """Video result whose scene/object/action fields describe current-frame facts."""
 
     summary: str = Field(min_length=1)
     objects: list[str] = Field(default_factory=list)
     people: list[str] = Field(default_factory=list)
     actions: list[str] = Field(default_factory=list)
     events: list[str] = Field(default_factory=list)
+    changes: list[str] = Field(
+        default_factory=list, max_length=MAX_VISUAL_GROUNDING_ITEMS
+    )
+    uncertainties: list[str] = Field(
+        default_factory=list, max_length=MAX_VISUAL_GROUNDING_ITEMS
+    )
     scene: str | None = None
     products: list[str] = Field(default_factory=list)
     brands: list[str] = Field(default_factory=list)
