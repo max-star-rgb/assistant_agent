@@ -39,7 +39,6 @@ For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
 
 ## Observability and local operations
 
-- `scripts/agentruntime_view.py`: canonical runtime trace viewer.
 - `scripts/trace_metrics.py`: redacted trace metric summary.
 - Gateway lifecycle 由 `scripts/run_server.py` 写入 `.data/gateway_events.jsonl`；仓库当前没有
   独立 viewer，按 `run_id`、`turn_id` 或 `trace_id` 使用标准 JSONL/文本工具检索。

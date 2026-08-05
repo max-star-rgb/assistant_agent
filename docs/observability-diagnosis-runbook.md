@@ -44,40 +44,11 @@ ID，再按本地证据降级；两边均无法定位时才请求环境、host �
 
 ## 快速入口
 
-### 查看一个 canonical trace
+### 查看 Langfuse trace
 
-`agentruntime_view.py` 接受 `trace_id` 或 `run_id`：
-
-```bash
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python \
-  scripts/agentruntime_view.py <trace_id> \
-  --sections overview,decision,timeline --errors
-```
-
-默认读取 `.data/graph_trace.jsonl`。若 server 仍在运行，可查询进程内 primary 和 JSONL fallback：
-
-```bash
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python \
-  scripts/agentruntime_view.py <trace_id> \
-  --server http://127.0.0.1:8000 \
-  --sections overview,decision,timeline --errors
-```
-
-完整参数以当前帮助为准：
-
-```bash
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/agentruntime_view.py --help
-```
-
-### 跟随本地最新运行
-
-```bash
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python \
-  scripts/agentruntime_view.py last --follow --follow-include-existing
-```
-
-`last`、`latest` 和 `@last` 从本地 JSONL 解析目标。并行调试时用 `--session-id <session_id>` 隔离；
-需要观察尚未终止的更新时再加 `--follow-live-updates`。
+日常人工诊断先在本机 Langfuse 的 `assistant.turn` 中按精确 `trace_id` 查询，读取 observation、
+input/output、status、usage 和 Score。Langfuse 是人工查看主入口，但 UI 未命中只代表远端证据缺失，
+不能据此断言 Runtime 未执行。
 
 ### 查询 loopback server
 
@@ -91,21 +62,25 @@ GET /traces/{trace_id}/context
 GET /traces/{trace_id}/conversation  # 仅显式本地内容诊断
 ```
 
-Conversation 查询必须使用 loopback `--server`，且内容捕获未被
-`MULTIMODAL_AGENT_LOCAL_TRACE_CONTENT=0` 关闭：
+Server 仍在运行时，可直接读取结构化 trace：
 
 ```bash
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python \
-  scripts/agentruntime_view.py <trace_id> \
-  --server http://127.0.0.1:8000 \
-  --sections overview,conversation,decision --errors
+curl -fsS "http://127.0.0.1:8089/traces/<trace_id>" \
+  | /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m json.tool
 ```
 
-非 loopback URL 会被 viewer 拒绝。正文只用于当前问题的本地诊断，不应粘贴进 issue、日志或最终报告。
+只有确需当前 turn 正文且 Server 使用 `--allow-local-trace-content` 启动时，才查询 loopback 内容接口：
+
+```bash
+curl -fsS "http://127.0.0.1:8089/traces/<trace_id>/conversation" \
+  | /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m json.tool
+```
+
+非 loopback 请求会被拒绝。正文只用于当前问题的本地诊断，不应粘贴进 issue、日志或最终报告。
 
 ### 检查 Gateway 与 delivery JSONL
 
-仓库当前没有 `scripts/gateway_view.py`。使用关联 ID 直接检索 prompt-safe JSONL：
+Langfuse 或 Server 不可用时，使用关联 ID 直接检索 prompt-safe 本地机器 JSONL：
 
 ```bash
 rg -n --fixed-strings '<run_id>' \

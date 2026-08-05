@@ -19,10 +19,10 @@ Observability 是运行时行为的只读投影，不是另一套执行状态机
 - `assistant.turn.summary` 是一个 turn 的身份与终态摘要；摘要不能覆盖更细粒度的 raw timeline 事实。
 - Gateway lifecycle 和 Agent-Service delivery audit 分别证明入口生命周期与媒体发送/ACK 状态；它们不能由
   Assistant terminal status 推导。
-- Langfuse、OpenTelemetry、开发者 viewer 和评估分数都是 canonical trace 的投影或派生视图，不得成为冲突的第二事实源。
+- Langfuse、OpenTelemetry、结构化查询和评估分数都是 canonical trace 的投影或派生视图，不得成为冲突的第二事实源。
 
 发生冲突时按以下顺序判断：当前源码和测试高于 prose；同一运行中，原始 machine event 高于派生摘要，
-派生摘要高于 viewer 文案；Git 历史只用于解释演进，不证明当前行为。
+派生摘要高于派生查询文案；Git 历史只用于解释演进，不证明当前行为。
 
 观测失败原则上必须 fail-open：日志、trace persistence、export 或 score 写入失败不得改变 Agent 业务结果。
 但“观测缺失”必须保留为诊断限制，不能据此声称某一步没有发生。
@@ -251,8 +251,9 @@ Provider protocol capture。overlay 写入失败时 canonical event 仍须保留
 parent 使用稳定的 `agent.runtime` root span ID。已有 `langfuse.session.id` 负责在 Session 页面聚合
 同一会话的多个 turn；Langfuse 不创建第二套 session 或 memory 数据库。
 
-Langfuse 的 trace、observation、score 和 Dataset/Experiment 是远端投影与评估记录。面板如何折叠或展示
-长 JSON 不属于架构契约；需要完整证据时查询 observation 数据或回到 canonical trace。
+Langfuse 的 trace、observation、score 和 Dataset/Experiment 是远端投影与评估记录，也是日常人工查看
+Runtime trace 的主入口。面板如何折叠或展示长 JSON 不属于架构契约；需要核对机器事实时查询 observation
+数据、结构化 trace API，或回到本地 canonical JSONL。
 
 ### Langfuse-first Runtime 审计
 
@@ -349,7 +350,7 @@ Dataset 发布和 Experiment 运行由 [`../evals/README.md`](../evals/README.md
 7. **内容与历史隔离**：本地调试 overlay 不进入 conversation history，failed turn 也不例外。
 8. **敏感内容永不捕获**：credentials、authorization、hidden reasoning 和 inline binary media 被排除。
 9. **观测 fail-open**：persistence、export、logging 或 score 失败不改变业务结果，同时诊断必须承认证据缺口。
-10. **派生视图不反写事实**：viewer、metrics、Langfuse 和 grader 不改变 canonical event 的语义或 Runtime 状态。
+10. **派生视图不反写事实**：结构化查询、metrics、Langfuse 和 grader 不改变 canonical event 的语义或 Runtime 状态。
 
 `tests/core/contract/test_observability_contract.py` 保护已经登记的稳定观测契约；具体 core invariant 归属以
 `tests/core/INVARIANTS.md` 为准。
@@ -369,7 +370,6 @@ Dataset 发布和 Experiment 运行由 [`../evals/README.md`](../evals/README.md
 | `src/assistant_agent/observability/otel_mapping.py` | canonical trace 到 OTel/Langfuse span plan 的映射 |
 | `src/assistant_agent/observability/operational_logging.py` | Gateway console、JSONL 和兼容 text log |
 | `src/assistant_agent/gateway/observability.py` | prompt-safe Gateway lifecycle schema 和 sink |
-| `scripts/agentruntime_view.py` | canonical runtime trace 开发者 viewer |
 | `tests/core/contract/test_observability_contract.py` | 稳定 observability core contract |
 
 真实运行诊断命令、证据优先级和降级路径集中维护在
