@@ -1,6 +1,6 @@
 # Observability Harness
 
-Last updated: 2026-07-31
+Last updated: 2026-08-05
 
 本文档是 `assistant_agent` 当前 observability 架构、trace 语义、日志边界与
 redaction 规则的权威入口。它定义系统必须保留的稳定机器事实和各观测面的职责，不复制
@@ -100,6 +100,13 @@ Agent turn 时仍会产生这些 content-safe side-stream 事件；测试也可�
 投影为 `other`，不能借 reason 字段旁路脱敏。
 同一 observer 还发布 `visual_semantic.retained/evicted/index_failed` 与 `visual_memory.query`；只记录
 哈希化 session、sequence、稳定 status、数量和 latency，不记录 VLM 文本、用户 query、向量或 evidence。
+
+视觉上下文预算事件登记为 `visual_context.preflight/compacted/compaction_failed/hard_limit`。payload
+只能包含哈希化 session、sequence、input token 数、effective input limit、target token 数、usage ratio、
+covered/recent count、summary revision、latency 和 allowlist 内的枚举 status；未知 status 归一为
+`other`。这些事件绝不记录
+视觉全文、summary、用户 query、record/video/observation ID、evidence/path、向量、JPEG 或 Provider
+raw response。事件写入仍是 best-effort/fail-open，缺少事件不能改变或反推视觉 Provider 调用结果。
 
 ### ReAct、phase 与重试
 
