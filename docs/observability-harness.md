@@ -107,7 +107,9 @@ Agent turn 时仍会产生这些 content-safe side-stream 事件；测试也可�
 payload
 只能包含哈希化 session、sequence、input token 数、effective input limit、target token 数、usage ratio、
 covered/recent count、summary revision、latency、compacted 布尔值和 allowlist 内的枚举 status；未知 status 归一为
-`other`。这些事件绝不记录
+`other`。`revision_conflict` 表示 CAS loser 已按同一 video/as-of 重读 winning summary 并重建 pack；
+随后是否继续或 hard fail 必须以这个新 pack 为准。covered count 来自代码拥有的有界 coverage metadata，
+事件和模型投影都不携带 record ID 或 coverage digest。这些事件绝不记录
 视觉全文、summary、用户 query、record/video/observation ID、evidence/path、向量、JPEG 或 Provider
 raw response。hard limit 事件只表示最终 Qwen/VLM observation 未调用；此前可能为预算收敛调用独立
 LLM visual compactor，按当前状态机最多两次。事件写入仍是 best-effort/fail-open，缺少事件不能改变

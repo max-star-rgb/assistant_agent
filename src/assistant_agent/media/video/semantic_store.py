@@ -23,6 +23,7 @@ from assistant_agent.media.vision.models import MAX_VISUAL_GROUNDING_ITEMS
 from assistant_agent.media.video.visual_context_models import (
     VisualContextSnapshot,
     VisualContextSummary,
+    extend_visual_context_coverage_digest,
 )
 
 
@@ -73,11 +74,15 @@ class VisualSemanticRecord(BaseModel):
     def validate_search_index(self) -> "VisualSemanticRecord":
         if self.index_status == "ready":
             if not self.search_embedding or not self.embedding_space_id:
-                raise ValueError("ready visual record requires search embedding metadata")
+                raise ValueError(
+                    "ready visual record requires search embedding metadata"
+                )
             if not all(isfinite(value) for value in self.search_embedding):
                 raise ValueError("visual search embedding must be finite")
         elif self.search_embedding is not None or self.embedding_space_id is not None:
-            raise ValueError("unavailable visual record cannot carry search embedding metadata")
+            raise ValueError(
+                "unavailable visual record cannot carry search embedding metadata"
+            )
         return self
 
 
@@ -132,6 +137,7 @@ class SessionVisualSemanticStore:
         self._video_records: dict[str, list[str]] = {}
         self._snapshots: dict[str, VisualSemanticSnapshot] = {}
         self._visual_context_summaries: dict[str, VisualContextSummary] = {}
+        self._visual_context_covered_record_ids: dict[str, set[str]] = {}
         self._failed_sequences: dict[str, set[int]] = {}
         self._evidence_bytes = 0
         self._lock = Lock()
@@ -168,7 +174,9 @@ class SessionVisualSemanticStore:
                 if evidence_bytes > self.max_evidence_bytes:
                     raise ValueError("visual_semantic_evidence_too_large")
                 self._records[stored.record_id] = stored
-                self._video_records.setdefault(stored.video_id, []).append(stored.record_id)
+                self._video_records.setdefault(stored.video_id, []).append(
+                    stored.record_id
+                )
                 self._evidence_bytes += evidence_bytes
                 evicted = self._evict_over_budget_locked()
                 latest = self._latest_locked(stored.video_id)
@@ -177,7 +185,9 @@ class SessionVisualSemanticStore:
                     video_id=stored.video_id,
                     latest_record=latest,
                     last_success_sequence=(latest.frame_sequence if latest else None),
-                    last_success_timestamp_ms=(latest.captured_at_ms if latest else None),
+                    last_success_timestamp_ms=(
+                        latest.captured_at_ms if latest else None
+                    ),
                     last_observation_status="succeeded",
                     last_error=None,
                     pending_count=(previous.pending_count if previous else 0),
@@ -389,8 +399,7 @@ class SessionVisualSemanticStore:
         with self._lock:
             self._ensure_open()
             return any(
-                record.index_status == "ready"
-                and record.search_embedding is not None
+                record.index_status == "ready" and record.search_embedding is not None
                 for record in self._records.values()
             )
 
@@ -425,11 +434,56 @@ class SessionVisualSemanticStore:
                 summary=(summary.model_copy(deep=True) if summary else None),
             )
 
+    def visual_context_for_compilation(
+        self,
+        video_id: str,
+        *,
+        before_sequence: int,
+    ) -> tuple[VisualContextSnapshot, list[VisualSemanticRecord]]:
+        """Atomically read one as-of summary and its precisely uncovered raw rows."""
+
+        with self._lock:
+            self._ensure_open()
+            summary = self._visual_context_summaries.get(video_id)
+            records = sorted(
+                (
+                    record
+                    for record in self._records_for_video_locked(video_id)
+                    if record.frame_sequence < before_sequence
+                ),
+                key=lambda record: (record.frame_sequence, record.created_at_ms),
+            )
+            if (
+                summary is not None
+                and summary.covered_through_sequence >= before_sequence
+            ):
+                # Summaries merge observations and cannot be sliced at an older
+                # as-of boundary.  Prefer retained raw rows over future leakage.
+                summary = None
+            elif summary is not None:
+                retained_covered_ids = self._visual_context_covered_record_ids.get(
+                    video_id,
+                    set(),
+                )
+                records = [
+                    record
+                    for record in records
+                    if record.record_id not in retained_covered_ids
+                ]
+            return (
+                VisualContextSnapshot(
+                    video_id=video_id,
+                    summary=(summary.model_copy(deep=True) if summary else None),
+                ),
+                [record.model_copy(deep=True) for record in records],
+            )
+
     def replace_visual_context_summary(
         self,
         video_id: str,
         summary: VisualContextSummary,
         *,
+        covered_records: list[VisualSemanticRecord],
         expected_revision: int,
     ) -> VisualContextSnapshot:
         """CAS-publish a summary without altering retained searchable records."""
@@ -445,9 +499,17 @@ class SessionVisualSemanticStore:
                 or summary.summary_revision != current_revision + 1
             ):
                 raise ValueError("visual_context_revision_conflict")
-            self._validate_context_coverage_locked(video_id, summary, current)
+            selected_ids = self._validate_context_coverage_locked(
+                video_id,
+                summary,
+                current,
+                covered_records=covered_records,
+            )
             stored = summary.model_copy(deep=True)
             self._visual_context_summaries[video_id] = stored
+            self._visual_context_covered_record_ids.setdefault(video_id, set()).update(
+                selected_ids
+            )
             return VisualContextSnapshot(
                 video_id=video_id,
                 summary=stored.model_copy(deep=True),
@@ -460,6 +522,7 @@ class SessionVisualSemanticStore:
             self._video_records.clear()
             self._snapshots.clear()
             self._visual_context_summaries.clear()
+            self._visual_context_covered_record_ids.clear()
             self._failed_sequences.clear()
             self._evidence_bytes = 0
             self._condition.notify_all()
@@ -475,6 +538,7 @@ class SessionVisualSemanticStore:
             self._video_records.clear()
             self._snapshots.clear()
             self._visual_context_summaries.clear()
+            self._visual_context_covered_record_ids.clear()
             self._failed_sequences.clear()
             self._evidence_bytes = 0
             self._condition.notify_all()
@@ -518,6 +582,11 @@ class SessionVisualSemanticStore:
             ]
             if not self._video_records[record.video_id]:
                 self._video_records.pop(record.video_id, None)
+            covered_ids = self._visual_context_covered_record_ids.get(record.video_id)
+            if covered_ids is not None:
+                covered_ids.discard(record_id)
+                if not covered_ids:
+                    self._visual_context_covered_record_ids.pop(record.video_id, None)
             evicted.append(record)
         for video_id, snapshot in list(self._snapshots.items()):
             latest = self._latest_locked(video_id)
@@ -556,71 +625,70 @@ class SessionVisualSemanticStore:
         video_id: str,
         summary: VisualContextSummary,
         current: VisualContextSummary | None,
-    ) -> None:
-        existing_ids = current.covered_record_ids if current else []
-        candidate_ids = summary.covered_record_ids
-        existing_id_set = set(existing_ids)
-        candidate_id_set = set(candidate_ids)
-        if not existing_id_set.issubset(candidate_id_set):
+        *,
+        covered_records: list[VisualSemanticRecord],
+    ) -> list[str]:
+        if summary.video_id != video_id or not covered_records:
             raise ValueError("visual_context_non_contiguous_prefix")
-        if candidate_id_set == existing_id_set:
+        selected_ids = [record.record_id for record in covered_records]
+        if len(set(selected_ids)) != len(selected_ids):
             raise ValueError("visual_context_non_contiguous_prefix")
         records = sorted(
             self._records_for_video_locked(video_id),
             key=lambda record: (record.frame_sequence, record.created_at_ms),
         )
         records_by_id = {record.record_id: record for record in records}
-        missing_ids = candidate_id_set.difference(records_by_id)
-        if not missing_ids.issubset(existing_id_set):
+        if any(record_id not in records_by_id for record_id in selected_ids):
             raise ValueError("visual_context_non_contiguous_prefix")
-        covered_records = [
-            records_by_id[record_id]
-            for record_id in candidate_ids
-            if record_id in records_by_id
-        ]
-        expected_ids = [record.record_id for record in records[: len(covered_records)]]
-        if [record.record_id for record in covered_records] != expected_ids:
-            raise ValueError("visual_context_non_contiguous_prefix")
-        self._validate_context_range_metadata(
-            summary,
-            covered_records,
-            current=(current if missing_ids else None),
+        retained_covered_ids = self._visual_context_covered_record_ids.get(
+            video_id,
+            set(),
         )
-
-    @staticmethod
-    def _validate_context_range_metadata(
-        summary: VisualContextSummary,
-        records: list[VisualSemanticRecord],
-        *,
-        current: VisualContextSummary | None,
-    ) -> None:
-        sequences = [record.frame_sequence for record in records]
+        if retained_covered_ids.intersection(selected_ids):
+            raise ValueError("visual_context_non_contiguous_prefix")
+        uncovered_records = [
+            record for record in records if record.record_id not in retained_covered_ids
+        ]
+        expected_ids = [
+            record.record_id for record in uncovered_records[: len(selected_ids)]
+        ]
+        if selected_ids != expected_ids:
+            raise ValueError("visual_context_non_contiguous_prefix")
+        selected_records = [records_by_id[record_id] for record_id in selected_ids]
+        sequences = [record.frame_sequence for record in selected_records]
         captured_at_ms = [
             record.captured_at_ms
-            for record in records
+            for record in selected_records
             if record.captured_at_ms is not None
         ]
         if current is not None:
-            sequences.extend([current.first_sequence, current.last_sequence])
+            sequences.extend([current.first_sequence, current.covered_through_sequence])
             if current.first_captured_at_ms is not None:
                 captured_at_ms.append(current.first_captured_at_ms)
             if current.last_captured_at_ms is not None:
                 captured_at_ms.append(current.last_captured_at_ms)
-        if not sequences or (
-            summary.first_sequence != min(sequences)
-            or summary.last_sequence != max(sequences)
+        expected_digest = extend_visual_context_coverage_digest(
+            current.coverage_digest if current else None,
+            [
+                (record.record_id, record.frame_sequence, record.created_at_ms)
+                for record in selected_records
+            ],
+        )
+        if (
+            summary.covered_record_count
+            != (current.covered_record_count if current else 0) + len(selected_records)
+            or summary.first_sequence != min(sequences)
+            or summary.covered_through_sequence != max(sequences)
+            or summary.coverage_digest != expected_digest
         ):
             raise ValueError("visual_context_non_contiguous_prefix")
-        if summary.first_captured_at_ms is not None and (
-            not captured_at_ms
-            or summary.first_captured_at_ms != min(captured_at_ms)
-        ):
+        expected_first_captured_at_ms = min(captured_at_ms) if captured_at_ms else None
+        expected_last_captured_at_ms = max(captured_at_ms) if captured_at_ms else None
+        if summary.first_captured_at_ms != expected_first_captured_at_ms:
             raise ValueError("visual_context_non_contiguous_prefix")
-        if summary.last_captured_at_ms is not None and (
-            not captured_at_ms
-            or summary.last_captured_at_ms != max(captured_at_ms)
-        ):
+        if summary.last_captured_at_ms != expected_last_captured_at_ms:
             raise ValueError("visual_context_non_contiguous_prefix")
+        return selected_ids
 
     def _validate_session(self, session_id: str) -> None:
         if self._session_id is None:

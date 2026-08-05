@@ -168,17 +168,25 @@ Provider prompt。普通请求不能因携带类似 Gateway 的 metadata 而隐�
 每个选中关键帧调用后台 VLM 前，`VisualContextService` 在固定的 `before_sequence` 边界编译
 `VisualContextPack`。启用视觉压缩时，VLM 只接收旧的 revisioned summary、其后未覆盖的最近逐条
 `VisualSemanticRecord` 文本以及当前一张 JPEG；历史文本按独立 VLM tokenizer 对实际投影做 token
-preflight，不再由 Provider 施加 4,000 字符截断。target/trigger/hard 与主 Context 共用同一心智模型：
-target 指导最旧连续 prefix 的选择并表示期望预算，trigger 启动压缩，hard 是最终 Qwen/VLM observation
-调用前的拒绝边界。每次成功压缩后都会重建并重新计数；只要低于 hard 即可继续，即使最近原文或
-summary 使结果仍高于 target，也不会为追逐 target 无限压缩。视觉上下文使用独立的 tokenizer、
-input limit、safety margin、summary/output/image/instruction reserve 和配置。
+preflight，不再由 Provider 施加 4,000 字符截断。每次 observation 使用新建的 Provider WebSocket
+conversation，成功、失败或不完整响应后都关闭连接，Provider 侧不会隐式携带上一张图片或回复。
+target/trigger/hard 与主 Context 共用同一心智模型：target 决定预计把重建请求降到目标所需的最小
+最旧连续 prefix，并据剩余空间收紧本轮 summary output budget；`keep_recent_records` 始终保留。
+trigger 启动压缩，hard 是最终 Qwen/VLM observation 调用前的拒绝边界。每次成功压缩后都会重建并
+重新计数；只要低于 hard 即可继续，即使最近原文或 summary 使结果仍高于 target，也不会为追逐
+target 无限压缩。视觉上下文使用独立的 tokenizer、input limit、safety margin、
+summary/output/image/instruction reserve 和配置。
 
-视觉压缩只覆盖最旧的连续 record prefix，并保留配置数量的最近逐条文本。只有压缩成功、coverage 与
-revision 校验通过后才原子替换 summary；soft failure 保留旧 summary 和所有原始记录，hard failure
-在无法收敛时跳过本次最终 Qwen/VLM observation。为收敛预算，独立 LLM visual compactor 可以先按
-现有状态机最多调用两次；因此 hard 拒绝不表示此前没有 compactor Provider 调用。未启用 compaction
-时才使用旧 rolling summary 的 2,000 字符兼容路径，并把
+视觉压缩只覆盖代码选定的最旧连续 record prefix，并保留配置数量的最近逐条文本。LLM 只返回固定的
+语义数组，不接收或回显 record ID；summary coverage 使用有界的 `covered_record_count`、
+`covered_through_sequence` 和固定长度 digest。Store 只为当前 raw retention 内记录保存有界的精确
+covered-ID membership，因此迟到记录或相同 sequence 的新记录不会被 frontier 误判为已覆盖；raw
+eviction 后 digest/frontier 仍可续接。只有压缩成功、代码 coverage 与 revision 校验通过后才原子替换
+summary；CAS revision conflict 会按同一 video/as-of 重读 winning summary 并重建一次 pack，再依据新
+pack 继续或 hard fail。soft failure 保留旧 summary 和所有原始记录，hard failure 在无法收敛时跳过
+本次最终 Qwen/VLM observation。为收敛预算，独立 LLM visual compactor 可以先按现有状态机最多调用
+两次；因此 hard 拒绝不表示此前没有 compactor Provider 调用。未启用 compaction 时才使用旧 rolling
+summary 的 2,000 字符兼容路径，并把
 `visual_context_compaction.status` 记录为 `unavailable`。这两条路径都不改变 observer 的
 one-inflight/one-latest-pending 调度。
 

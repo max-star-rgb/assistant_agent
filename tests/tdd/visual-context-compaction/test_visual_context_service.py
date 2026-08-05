@@ -17,6 +17,9 @@ from assistant_agent.media.video.visual_context import (
     VisualContextService,
 )
 from assistant_agent.media.video.visual_context_models import VisualContextSummary
+from assistant_agent.media.video.visual_context_compactor import (
+    VisualContextSummaryValidator,
+)
 
 
 class WordCounter:
@@ -75,7 +78,7 @@ def _add_records(
 def _policy(*, trigger: float = 0.70, hard: float = 0.85) -> ContextWindowPolicy:
     return ContextWindowPolicy(
         input_token_limit=100,
-        target_ratio=.40,
+        target_ratio=0.40,
         trigger_ratio=trigger,
         hard_ratio=hard,
         safety_margin_tokens=0,
@@ -101,6 +104,33 @@ def _service(
         image_reserve_tokens=10,
         output_reserve_tokens=10,
         observer=observer,
+    )
+
+
+def _summary_from_records(
+    *,
+    video_id: str,
+    existing_summary: VisualContextSummary | None,
+    records: list[VisualSemanticRecord],
+    source_token_count: int,
+    summary_max_tokens: int,
+    stable_scene: list[str] | None = None,
+) -> VisualContextSummary:
+    return VisualContextSummaryValidator().validate(
+        {
+            "stable_scene": stable_scene or [],
+            "object_last_confirmed": [],
+            "people_last_confirmed": [],
+            "changes": [],
+            "uncertainties": [],
+        },
+        video_id=video_id,
+        existing_summary=existing_summary,
+        records=records,
+        source_token_count=source_token_count,
+        summary_token_count=1,
+        summary_max_tokens=summary_max_tokens,
+        compactor_model="test-compactor",
     )
 
 
@@ -146,20 +176,18 @@ def test_prepare_emits_compacted_after_successful_replace_and_rebuild(
             summary_max_tokens: int,
         ) -> VisualContextSummary:
             assert existing_summary is None
-            assert summary_max_tokens == 20
-            return VisualContextSummary(
+            assert 1 <= summary_max_tokens <= 20
+            return _summary_from_records(
                 video_id=video_id,
-                summary_revision=1,
-                covered_record_ids=[record.record_id for record in records],
-                first_sequence=records[0].frame_sequence,
-                last_sequence=records[-1].frame_sequence,
+                existing_summary=existing_summary,
+                records=records,
                 source_token_count=source_token_count,
-                summary_token_count=1,
+                summary_max_tokens=summary_max_tokens,
             )
 
     pack = _service(
         store,
-        policy=_policy(trigger=.50, hard=.95),
+        policy=_policy(trigger=0.50, hard=0.95),
         compactor=SuccessfulCompactor(),
         observer=observer,
     ).prepare("video-1", before_sequence=4, user_query="状态")
@@ -191,9 +219,9 @@ def test_prepare_emits_compaction_failed_and_hard_limit(
             store,
             policy=ContextWindowPolicy(
                 input_token_limit=70,
-                target_ratio=.40,
-                trigger_ratio=.50,
-                hard_ratio=.80,
+                target_ratio=0.40,
+                trigger_ratio=0.50,
+                hard_ratio=0.80,
                 summary_max_tokens=20,
             ),
             compactor=FailingCompactor(),
@@ -208,7 +236,10 @@ def test_prepare_emits_compaction_failed_and_hard_limit(
     assert observer.events[-2].payload["status"] == "failed"
     assert observer.events[-1].payload["status"] == "hard_limit"
     assert all(
-        not ({"text", "summary", "query", "record_ids", "path", "vector"} & event.payload.keys())
+        not (
+            {"text", "summary", "query", "record_ids", "path", "vector"}
+            & event.payload.keys()
+        )
         for event in observer.events
     )
 
@@ -235,30 +266,39 @@ def test_prepare_excludes_raw_records_already_covered_by_summary(
 ) -> None:
     _add_records(store, tmp_path, count=3)
     first = store.records_for_context("video-1", before_sequence=2)[0]
-    summary = VisualContextSummary(
+    summary = _summary_from_records(
         video_id="video-1",
-        summary_revision=1,
-        covered_record_ids=[first.record_id],
-        first_sequence=1,
-        last_sequence=1,
-        first_captured_at_ms=1_000,
-        last_captured_at_ms=1_000,
-        stable_scene=["客厅"],
+        existing_summary=None,
+        records=[first],
         source_token_count=5,
-        summary_token_count=2,
+        summary_max_tokens=20,
+        stable_scene=["客厅"],
     )
-    store.replace_visual_context_summary("video-1", summary, expected_revision=0)
+    store.replace_visual_context_summary(
+        "video-1",
+        summary,
+        covered_records=[first],
+        expected_revision=0,
+    )
 
     pack = _service(store, policy=_policy()).prepare(
         "video-1", before_sequence=4, user_query="状态"
     )
 
     assert pack.summary == summary
-    assert [record.record_id for record in pack.recent_records] == ["record-2", "record-3"]
-    assert [item["record_id"] for item in _xml_json_value(pack.memory_context, "recent_records")] == [
+    assert [record.record_id for record in pack.recent_records] == [
         "record-2",
         "record-3",
     ]
+    assert [
+        item["frame_sequence"]
+        for item in _xml_json_value(pack.memory_context, "recent_records")
+    ] == [2, 3]
+    compressed = _xml_json_value(pack.memory_context, "compressed_prefix")
+    assert isinstance(compressed, dict)
+    assert "coverage_digest" not in compressed
+    assert "covered_record_count" not in compressed
+    assert "record-1" not in pack.memory_context
 
 
 def test_prepare_does_not_render_summary_that_covers_future_sequence(
@@ -267,19 +307,20 @@ def test_prepare_does_not_render_summary_that_covers_future_sequence(
 ) -> None:
     _add_records(store, tmp_path, count=4)
     records = store.records_for_context("video-1", before_sequence=5)
-    future_summary = VisualContextSummary(
+    future_summary = _summary_from_records(
         video_id="video-1",
-        summary_revision=1,
-        covered_record_ids=[record.record_id for record in records],
-        first_sequence=1,
-        last_sequence=4,
-        first_captured_at_ms=1_000,
-        last_captured_at_ms=4_000,
-        stable_scene=["客厅"],
+        existing_summary=None,
+        records=records,
         source_token_count=10,
-        summary_token_count=2,
+        summary_max_tokens=20,
+        stable_scene=["客厅"],
     )
-    store.replace_visual_context_summary("video-1", future_summary, expected_revision=0)
+    store.replace_visual_context_summary(
+        "video-1",
+        future_summary,
+        covered_records=records,
+        expected_revision=0,
+    )
 
     pack = _service(store, policy=_policy()).prepare(
         "video-1", before_sequence=4, user_query="状态"
@@ -302,7 +343,7 @@ def test_prepare_soft_compactor_failure_returns_unmodified_context_without_state
 
     pack = _service(
         store,
-        policy=_policy(trigger=.50, hard=.95),
+        policy=_policy(trigger=0.50, hard=0.95),
         compactor=FailingCompactor(),
     ).prepare("video-1", before_sequence=4, user_query="状态")
 
@@ -330,21 +371,23 @@ def test_prepare_rejects_compactor_coverage_outside_selected_prefix(
             source_token_count: int,
             summary_max_tokens: int,
         ) -> VisualContextSummary:
-            return VisualContextSummary(
+            return _summary_from_records(
                 video_id=video_id,
-                summary_revision=1,
-                covered_record_ids=["record-1", "record-2"],
-                first_sequence=1,
-                last_sequence=2,
-                first_captured_at_ms=1_000,
-                last_captured_at_ms=2_000,
+                existing_summary=existing_summary,
+                records=[
+                    *records,
+                    store.records_for_context(
+                        "video-1",
+                        before_sequence=4,
+                    )[1],
+                ],
                 source_token_count=source_token_count,
-                summary_token_count=summary_max_tokens,
+                summary_max_tokens=summary_max_tokens,
             )
 
     pack = _service(
         store,
-        policy=_policy(trigger=.50, hard=.95),
+        policy=_policy(trigger=0.50, hard=0.95),
         compactor=OverreachingCompactor(),
     ).prepare("video-1", before_sequence=4, user_query="状态")
 
@@ -369,9 +412,9 @@ def test_prepare_hard_limit_without_compactor_raises_stable_error(
             store,
             policy=ContextWindowPolicy(
                 input_token_limit=70,
-                target_ratio=.40,
-                trigger_ratio=.50,
-                hard_ratio=.80,
+                target_ratio=0.40,
+                trigger_ratio=0.50,
+                hard_ratio=0.80,
                 summary_max_tokens=20,
             ),
         ).prepare("video-1", before_sequence=4, user_query="状态")
@@ -401,24 +444,17 @@ def test_prepare_hard_limit_closes_after_two_nonconverging_compactions(
             summary_max_tokens: int,
         ) -> VisualContextSummary:
             self.calls += 1
-            covered = list(existing_summary.covered_record_ids) if existing_summary else []
-            covered.extend(record.record_id for record in records)
             if self.calls == 1:
                 store.record_success(
                     _record(tmp_path, sequence=3, summary="word " * 10)
                 )
-            return VisualContextSummary(
+            return _summary_from_records(
                 video_id=video_id,
-                summary_revision=(existing_summary.summary_revision + 1 if existing_summary else 1),
-                covered_record_ids=covered,
-                first_sequence=1,
-                last_sequence=records[-1].frame_sequence,
-                first_captured_at_ms=1_000,
-                last_captured_at_ms=records[-1].captured_at_ms,
-                stable_scene=["word " * 60],
+                existing_summary=existing_summary,
+                records=records,
                 source_token_count=source_token_count,
-                summary_token_count=summary_max_tokens,
-                compactor_model="test",
+                summary_max_tokens=summary_max_tokens,
+                stable_scene=["word " * 60],
             )
 
     compactor = NonconvergingCompactor()
@@ -427,9 +463,9 @@ def test_prepare_hard_limit_closes_after_two_nonconverging_compactions(
             store,
             policy=ContextWindowPolicy(
                 input_token_limit=70,
-                target_ratio=.40,
-                trigger_ratio=.50,
-                hard_ratio=.80,
+                target_ratio=0.40,
+                trigger_ratio=0.50,
+                hard_ratio=0.80,
                 summary_max_tokens=20,
             ),
             compactor=compactor,
@@ -437,6 +473,151 @@ def test_prepare_hard_limit_closes_after_two_nonconverging_compactions(
 
     assert exc.value.code == "visual_context_hard_limit"
     assert compactor.calls == 2
+
+
+def test_target_ratio_selects_minimum_oldest_prefix_and_preserves_recent_records(
+    tmp_path: Path,
+) -> None:
+    def run(target_ratio: float, name: str) -> tuple[list[int], int]:
+        root = tmp_path / name
+        root.mkdir()
+        target_store = SessionVisualSemanticStore(
+            root=root / "store",
+            session_id="session-1",
+        )
+        _add_records(target_store, root, count=8, summary="word " * 30)
+
+        class CapturingCompactor:
+            def __init__(self) -> None:
+                self.calls: list[tuple[list[int], int]] = []
+
+            def compact(
+                self,
+                *,
+                video_id: str,
+                existing_summary: VisualContextSummary | None,
+                records: list[VisualSemanticRecord],
+                source_token_count: int,
+                summary_max_tokens: int,
+            ) -> VisualContextSummary:
+                self.calls.append(
+                    ([record.frame_sequence for record in records], summary_max_tokens)
+                )
+                return _summary_from_records(
+                    video_id=video_id,
+                    existing_summary=existing_summary,
+                    records=records,
+                    source_token_count=source_token_count,
+                    summary_max_tokens=summary_max_tokens,
+                )
+
+        compactor = CapturingCompactor()
+        pack = _service(
+            target_store,
+            policy=ContextWindowPolicy(
+                input_token_limit=400,
+                target_ratio=target_ratio,
+                trigger_ratio=0.50,
+                hard_ratio=0.95,
+                summary_max_tokens=50,
+            ),
+            compactor=compactor,
+            keep_recent_records=2,
+        ).prepare("video-1", before_sequence=9, user_query="状态")
+
+        assert len(compactor.calls) == 1
+        selected, budget = compactor.calls[0]
+        assert selected == list(range(1, len(selected) + 1))
+        assert 7 not in selected and 8 not in selected
+        assert [record.frame_sequence for record in pack.recent_records][-2:] == [7, 8]
+        return selected, budget
+
+    low_target = run(0.20, "low-target")
+    high_target = run(0.45, "high-target")
+
+    assert low_target != high_target
+    assert len(low_target[0]) >= len(high_target[0])
+
+
+def test_revision_conflict_rebuilds_from_winning_summary_once(
+    store: SessionVisualSemanticStore,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _add_records(store, tmp_path, count=3, summary="word " * 10)
+    winning: list[VisualContextSummary] = []
+
+    class CandidateCompactor:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def compact(
+            self,
+            *,
+            video_id: str,
+            existing_summary: VisualContextSummary | None,
+            records: list[VisualSemanticRecord],
+            source_token_count: int,
+            summary_max_tokens: int,
+        ) -> VisualContextSummary:
+            self.calls += 1
+            return _summary_from_records(
+                video_id=video_id,
+                existing_summary=existing_summary,
+                records=records,
+                source_token_count=source_token_count,
+                summary_max_tokens=summary_max_tokens,
+            )
+
+    original_replace = store.replace_visual_context_summary
+
+    def publish_winner_then_conflict(
+        video_id: str,
+        summary: VisualContextSummary,
+        *,
+        covered_records: list[VisualSemanticRecord],
+        expected_revision: int,
+    ) -> object:
+        _ = summary
+        winner = _summary_from_records(
+            video_id=video_id,
+            existing_summary=None,
+            records=covered_records,
+            source_token_count=1,
+            summary_max_tokens=20,
+            stable_scene=["winning-summary"],
+        )
+        winning.append(winner)
+        original_replace(
+            video_id,
+            winner,
+            covered_records=covered_records,
+            expected_revision=expected_revision,
+        )
+        raise ValueError("visual_context_revision_conflict")
+
+    monkeypatch.setattr(
+        store,
+        "replace_visual_context_summary",
+        publish_winner_then_conflict,
+    )
+    compactor = CandidateCompactor()
+    observer = InMemoryEmbeddingObserver()
+
+    pack = _service(
+        store,
+        policy=_policy(trigger=0.50, hard=0.99),
+        compactor=compactor,
+        observer=observer,
+    ).prepare("video-1", before_sequence=4, user_query="状态")
+
+    assert compactor.calls == 1
+    assert pack.summary == winning[0]
+    assert [record.frame_sequence for record in pack.recent_records] == [2, 3]
+    assert pack.compacted is True
+    assert pack.decision.hard is False
+    assert observer.events[-1].event_name == "visual_context.compaction_failed"
+    assert observer.events[-1].payload["status"] == "revision_conflict"
 
 
 def test_prepare_projects_only_prompt_safe_record_fields(
@@ -451,7 +632,6 @@ def test_prepare_projects_only_prompt_safe_record_fields(
 
     records_payload = _xml_json_value(pack.memory_context, "recent_records")
     assert set(records_payload[0]) == {
-        "record_id",
         "frame_sequence",
         "captured_at_ms",
         "scene",
@@ -464,7 +644,8 @@ def test_prepare_projects_only_prompt_safe_record_fields(
         "changes",
         "uncertainties",
     }
-    assert records_payload[0]["record_id"] == "record-1"
+    assert records_payload[0]["frame_sequence"] == 1
+    assert "record-1" not in pack.memory_context
 
 
 def _xml_json_value(memory_context: str, name: str) -> object:

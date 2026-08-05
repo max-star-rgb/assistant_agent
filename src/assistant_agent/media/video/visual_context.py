@@ -20,7 +20,11 @@ from assistant_agent.media.video.semantic_store import (
     SessionVisualSemanticStore,
     VisualSemanticRecord,
 )
-from assistant_agent.media.video.visual_context_models import VisualContextSummary
+from assistant_agent.media.video.visual_context_models import (
+    VisualContextSummary,
+    extend_visual_context_coverage_digest,
+    visual_context_summary_projection,
+)
 
 
 class VisualContextTokenCounter(Protocol):
@@ -55,6 +59,12 @@ class VisualContextPack:
     input_tokens: int
     decision: ContextWindowDecision
     compacted: bool
+
+
+@dataclass(frozen=True)
+class _VisualCompactionPlan:
+    records: list[VisualSemanticRecord]
+    summary_max_tokens: int
 
 
 class VisualContextHardLimitError(RuntimeError):
@@ -125,8 +135,8 @@ class VisualContextService:
 
         current = initial
         for attempt in range(2):
-            records_to_compact = self._oldest_uncovered_prefix(current.recent_records)
-            if not records_to_compact:
+            plan = self._compaction_plan(current, user_query=user_query)
+            if plan is None:
                 self._emit_budget_observation(
                     "visual_context.compaction_failed",
                     pack=current,
@@ -140,25 +150,44 @@ class VisualContextService:
                 summary = self._compactor.compact(
                     video_id=video_id,
                     existing_summary=current.summary,
-                    records=records_to_compact,
+                    records=plan.records,
                     source_token_count=self._source_token_count(
-                        current.summary, records_to_compact
+                        current.summary, plan.records
                     ),
-                    summary_max_tokens=self._window_policy.summary_max_tokens,
+                    summary_max_tokens=plan.summary_max_tokens,
                 )
                 self._validate_compactor_coverage(
                     summary,
                     existing_summary=current.summary,
-                    records=records_to_compact,
+                    records=plan.records,
                 )
                 self._store.replace_visual_context_summary(
                     video_id,
                     summary,
+                    covered_records=plan.records,
                     expected_revision=(
                         current.summary.summary_revision if current.summary else 0
                     ),
                 )
-            except Exception:
+            except Exception as exc:
+                if _is_revision_conflict(exc):
+                    current = self._build_pack(
+                        video_id=video_id,
+                        before_sequence=before_sequence,
+                        user_query=user_query,
+                        compacted=True,
+                    )
+                    self._emit_budget_observation(
+                        "visual_context.compaction_failed",
+                        pack=current,
+                        sequence=before_sequence,
+                        status="revision_conflict",
+                        latency_ms=self._elapsed_ms(compaction_started_ns),
+                    )
+                    return self._failure_or_pack(
+                        current,
+                        sequence=before_sequence,
+                    )
                 self._emit_budget_observation(
                     "visual_context.compaction_failed",
                     pack=current,
@@ -195,20 +224,12 @@ class VisualContextService:
         user_query: str,
         compacted: bool,
     ) -> VisualContextPack:
-        snapshot = self._store.visual_context_snapshot(video_id)
-        summary = snapshot.summary
-        if summary is not None and summary.last_sequence >= before_sequence:
-            # A summary cannot be sliced safely: its observations are merged.
-            # Fall back to the bounded raw history rather than leak future frames.
-            summary = None
-        covered_record_ids = set(summary.covered_record_ids) if summary else set()
-        records = tuple(
-            record
-            for record in self._store.records_for_context(
-                video_id, before_sequence=before_sequence
-            )
-            if record.record_id not in covered_record_ids
+        snapshot, uncovered_records = self._store.visual_context_for_compilation(
+            video_id,
+            before_sequence=before_sequence,
         )
+        summary = snapshot.summary
+        records = tuple(uncovered_records)
         memory_context = _render_visual_history(
             summary=summary,
             recent_records=records,
@@ -235,12 +256,81 @@ class VisualContextService:
             compacted=compacted,
         )
 
-    def _oldest_uncovered_prefix(
-        self, records: tuple[VisualSemanticRecord, ...]
-    ) -> list[VisualSemanticRecord]:
-        if self._keep_recent_records == 0:
-            return list(records)
-        return list(records[:-self._keep_recent_records])
+    def _compaction_plan(
+        self,
+        pack: VisualContextPack,
+        *,
+        user_query: str,
+    ) -> _VisualCompactionPlan | None:
+        eligible_count = max(0, len(pack.recent_records) - self._keep_recent_records)
+        if eligible_count == 0:
+            return None
+        required_reduction = max(
+            0,
+            pack.input_tokens - pack.decision.target_tokens,
+        )
+        minimum_summary_tokens = max(
+            1,
+            self._token_counter.count_text(
+                json.dumps(
+                    {
+                        "stable_scene": [],
+                        "object_last_confirmed": [],
+                        "people_last_confirmed": [],
+                        "changes": [],
+                        "uncertainties": [],
+                    },
+                    separators=(",", ":"),
+                )
+            ),
+        )
+        fallback: _VisualCompactionPlan | None = None
+        for prefix_length in range(1, eligible_count + 1):
+            records = list(pack.recent_records[:prefix_length])
+            remaining_records = pack.recent_records[prefix_length:]
+            base_input_tokens = self._projected_input_tokens(
+                summary=None,
+                recent_records=remaining_records,
+                as_of_sequence=pack.as_of_sequence,
+                user_query=user_query,
+            )
+            freed_tokens = max(0, pack.input_tokens - base_input_tokens)
+            available_summary_tokens = freed_tokens - required_reduction
+            summary_max_tokens = max(
+                1,
+                min(
+                    self._window_policy.summary_max_tokens,
+                    max(minimum_summary_tokens, available_summary_tokens),
+                ),
+            )
+            fallback = _VisualCompactionPlan(
+                records=records,
+                summary_max_tokens=summary_max_tokens,
+            )
+            if available_summary_tokens >= minimum_summary_tokens:
+                return fallback
+        return fallback
+
+    def _projected_input_tokens(
+        self,
+        *,
+        summary: VisualContextSummary | None,
+        recent_records: tuple[VisualSemanticRecord, ...],
+        as_of_sequence: int | None,
+        user_query: str,
+    ) -> int:
+        return (
+            self._token_counter.count_text(
+                _render_visual_history(
+                    summary=summary,
+                    recent_records=recent_records,
+                    as_of_sequence=as_of_sequence,
+                )
+            )
+            + self._token_counter.count_text(user_query)
+            + self._instruction_reserve_tokens
+            + self._image_reserve_tokens
+        )
 
     def _source_token_count(
         self,
@@ -262,13 +352,41 @@ class VisualContextService:
         existing_summary: VisualContextSummary | None,
         records: list[VisualSemanticRecord],
     ) -> None:
-        expected_ids = [
-            *(existing_summary.covered_record_ids if existing_summary else []),
-            *(record.record_id for record in records),
+        sequences = [record.frame_sequence for record in records]
+        captured_at_ms = [
+            record.captured_at_ms
+            for record in records
+            if record.captured_at_ms is not None
         ]
+        if existing_summary is not None:
+            sequences.extend(
+                [
+                    existing_summary.first_sequence,
+                    existing_summary.covered_through_sequence,
+                ]
+            )
+            if existing_summary.first_captured_at_ms is not None:
+                captured_at_ms.append(existing_summary.first_captured_at_ms)
+            if existing_summary.last_captured_at_ms is not None:
+                captured_at_ms.append(existing_summary.last_captured_at_ms)
+        expected_digest = extend_visual_context_coverage_digest(
+            existing_summary.coverage_digest if existing_summary else None,
+            [
+                (record.record_id, record.frame_sequence, record.created_at_ms)
+                for record in records
+            ],
+        )
         if (
-            len(summary.covered_record_ids) != len(expected_ids)
-            or set(summary.covered_record_ids) != set(expected_ids)
+            summary.covered_record_count
+            != (existing_summary.covered_record_count if existing_summary else 0)
+            + len(records)
+            or summary.covered_through_sequence != max(sequences)
+            or summary.first_sequence != min(sequences)
+            or summary.coverage_digest != expected_digest
+            or summary.first_captured_at_ms
+            != (min(captured_at_ms) if captured_at_ms else None)
+            or summary.last_captured_at_ms
+            != (max(captured_at_ms) if captured_at_ms else None)
         ):
             raise ValueError("visual_context_compactor_coverage_mismatch")
 
@@ -315,7 +433,7 @@ class VisualContextService:
             target_tokens=pack.decision.target_tokens,
             usage_ratio=pack.decision.usage_ratio,
             covered_count=(
-                len(pack.summary.covered_record_ids) if pack.summary is not None else 0
+                pack.summary.covered_record_count if pack.summary is not None else 0
             ),
             recent_count=len(pack.recent_records),
             revision=(pack.summary.summary_revision if pack.summary is not None else 0),
@@ -343,7 +461,7 @@ def _render_visual_history(
     recent_records: tuple[VisualSemanticRecord, ...] | list[VisualSemanticRecord],
     as_of_sequence: int | None,
 ) -> str:
-    summary_payload = summary.model_dump(mode="json") if summary else None
+    summary_payload = visual_context_summary_projection(summary) if summary else None
     records_payload = [_record_projection(record) for record in recent_records]
     return (
         '<visual_history trust="untrusted_observation" '
@@ -357,7 +475,6 @@ def _render_visual_history(
 
 def _record_projection(record: VisualSemanticRecord) -> dict[str, object]:
     return {
-        "record_id": record.record_id,
         "frame_sequence": record.frame_sequence,
         "captured_at_ms": record.captured_at_ms,
         "scene": record.scene,
@@ -375,4 +492,10 @@ def _record_projection(record: VisualSemanticRecord) -> dict[str, object]:
 def _escaped_json(value: object) -> str:
     return html.escape(
         json.dumps(value, ensure_ascii=False, separators=(",", ":")), quote=True
+    )
+
+
+def _is_revision_conflict(exc: Exception) -> bool:
+    return (
+        isinstance(exc, ValueError) and str(exc) == "visual_context_revision_conflict"
     )

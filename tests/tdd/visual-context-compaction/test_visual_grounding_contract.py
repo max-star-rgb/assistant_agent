@@ -172,6 +172,7 @@ def test_visual_result_converters_preserve_changes_and_uncertainties() -> None:
 def test_visual_history_projection_preserves_record_changes_and_uncertainties() -> None:
     projection = _record_projection(_semantic_record())
 
+    assert "record_id" not in projection
     assert projection["objects"] == ["桌面"]
     assert projection["changes"] == ["上一帧的杯子当前未观察到"]
     assert projection["uncertainties"] == ["杯子可能被移出画面"]
@@ -180,5 +181,6 @@ def test_visual_history_projection_preserves_record_changes_and_uncertainties() 
 def test_visual_compactor_projection_preserves_grounding_fields() -> None:
     projection = _compactor_record_projection(_semantic_record())
 
+    assert "record_id" not in projection
     assert projection["changes"] == ["上一帧的杯子当前未观察到"]
     assert projection["uncertainties"] == ["杯子可能被移出画面"]

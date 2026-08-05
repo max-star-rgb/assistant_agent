@@ -137,7 +137,9 @@ def embedding_trace_payload(
     if observation is not None:
         payload.update(
             {
-                "modality": "image" if isinstance(observation, ImageObservation) else "text",
+                "modality": "image"
+                if isinstance(observation, ImageObservation)
+                else "text",
                 "session_id_digest": _digest(observation.session_id),
                 "observation_id_digest": _digest(observation.observation_id),
             }
@@ -358,6 +360,7 @@ def visual_context_trace_payload(
                 "ready",
                 "succeeded",
                 "failed",
+                "revision_conflict",
                 "hard_limit",
                 "unavailable",
             }

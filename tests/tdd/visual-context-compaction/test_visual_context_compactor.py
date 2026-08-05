@@ -43,13 +43,12 @@ def records() -> list[VisualSemanticRecord]:
     ]
 
 
-def test_llm_visual_compactor_rejects_non_contiguous_coverage(
+def test_llm_visual_compactor_rejects_unsorted_coverage_input(
     records: list[VisualSemanticRecord],
 ) -> None:
     adapter = ScriptedChatAdapter(
         response_text=json.dumps(
             {
-                "covered_record_ids": [records[1].record_id],
                 "stable_scene": [],
                 "object_last_confirmed": [],
                 "people_last_confirmed": [],
@@ -64,7 +63,7 @@ def test_llm_visual_compactor_rejects_non_contiguous_coverage(
         compactor.compact(
             video_id="video-1",
             existing_summary=None,
-            records=records,
+            records=list(reversed(records)),
             source_token_count=30,
             summary_max_tokens=20,
         )
@@ -76,9 +75,10 @@ def test_llm_visual_compactor_computes_coverage_metadata_from_records(
     existing = VisualContextSummary(
         video_id="video-1",
         summary_revision=4,
-        covered_record_ids=["record-1"],
+        covered_record_count=1,
+        covered_through_sequence=1,
+        coverage_digest="a" * 64,
         first_sequence=1,
-        last_sequence=1,
         first_captured_at_ms=1_000,
         last_captured_at_ms=1_000,
         stable_scene=["原有场景"],
@@ -88,7 +88,6 @@ def test_llm_visual_compactor_computes_coverage_metadata_from_records(
     adapter = ScriptedChatAdapter(
         response_text=json.dumps(
             {
-                "covered_record_ids": ["record-1", "record-2", "record-3"],
                 "stable_scene": ["客厅"],
                 "object_last_confirmed": ["杯子@record-3"],
                 "people_last_confirmed": [],
@@ -109,9 +108,11 @@ def test_llm_visual_compactor_computes_coverage_metadata_from_records(
 
     assert summary.video_id == "video-1"
     assert summary.summary_revision == 5
-    assert summary.covered_record_ids == ["record-1", "record-2", "record-3"]
+    assert summary.covered_record_count == 3
+    assert summary.covered_through_sequence == 3
+    assert len(summary.coverage_digest) == 64
+    assert summary.coverage_digest != existing.coverage_digest
     assert summary.first_sequence == 1
-    assert summary.last_sequence == 3
     assert summary.first_captured_at_ms == 1_000
     assert summary.last_captured_at_ms == 3_000
     assert summary.source_token_count == 30
@@ -123,6 +124,9 @@ def test_llm_visual_compactor_computes_coverage_metadata_from_records(
     )
     assert "/private/evidence" not in serialized_request
     assert "search_embedding" not in serialized_request
+    assert "coverage_digest" not in serialized_request
+    assert "covered_record" not in serialized_request
+    assert all(record.record_id not in serialized_request for record in records)
 
 
 def test_llm_visual_compactor_rejects_summary_over_token_budget(
@@ -131,7 +135,6 @@ def test_llm_visual_compactor_rejects_summary_over_token_budget(
     adapter = ScriptedChatAdapter(
         response_text=json.dumps(
             {
-                "covered_record_ids": ["record-2", "record-3"],
                 "stable_scene": ["one two three four five six"],
                 "object_last_confirmed": [],
                 "people_last_confirmed": [],
@@ -157,13 +160,12 @@ def test_llm_visual_compactor_rejects_fields_outside_fixed_schema(
     adapter = ScriptedChatAdapter(
         response_text=json.dumps(
             {
-                "covered_record_ids": ["record-2", "record-3"],
                 "stable_scene": [],
                 "object_last_confirmed": [],
                 "people_last_confirmed": [],
                 "changes": [],
                 "uncertainties": [],
-                "evidence_ref": "/private/model-invented-path.jpg",
+                "covered_record_ids": ["record-2", "record-3"],
             }
         )
     )
@@ -176,6 +178,52 @@ def test_llm_visual_compactor_rejects_fields_outside_fixed_schema(
             source_token_count=30,
             summary_max_tokens=20,
         )
+
+
+def test_many_compaction_rounds_keep_coverage_and_projection_bounded() -> None:
+    adapter = ScriptedChatAdapter(
+        response_text=json.dumps(
+            {
+                "stable_scene": ["室内"],
+                "object_last_confirmed": ["杯子"],
+                "people_last_confirmed": [],
+                "changes": [],
+                "uncertainties": [],
+            },
+            ensure_ascii=False,
+        )
+    )
+    compactor = LLMVisualContextCompactor(adapter, token_counter=WordCounter())
+    summary: VisualContextSummary | None = None
+    request_sizes: list[int] = []
+
+    for round_index in range(25):
+        batch = [
+            _record(
+                record_id=f"record-{round_index:02d}-{offset}",
+                sequence=round_index * 4 + offset,
+                captured_at_ms=(round_index * 4 + offset) * 1_000,
+            )
+            for offset in range(1, 5)
+        ]
+        summary = compactor.compact(
+            video_id="video-1",
+            existing_summary=summary,
+            records=batch,
+            source_token_count=100,
+            summary_max_tokens=20,
+        )
+        serialized = json.dumps(adapter.requests[-1].messages, ensure_ascii=False)
+        request_sizes.append(len(serialized))
+        if round_index:
+            assert f"record-{round_index - 1:02d}-1" not in serialized
+
+    assert summary is not None
+    assert summary.covered_record_count == 100
+    assert summary.covered_through_sequence == 100
+    assert len(summary.coverage_digest) == 64
+    assert "covered_record_ids" not in summary.model_dump(mode="json")
+    assert max(request_sizes[1:]) - min(request_sizes[1:]) < 40
 
 
 def _record(
