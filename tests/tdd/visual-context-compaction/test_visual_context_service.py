@@ -17,7 +17,10 @@ from assistant_agent.media.video.visual_context import (
     VisualContextService,
     _render_visual_history,
 )
-from assistant_agent.media.video.visual_context_models import VisualContextSummary
+from assistant_agent.media.video.visual_context_models import (
+    VisualContextSummary,
+    visual_context_summary_projection,
+)
 from assistant_agent.media.video.visual_context_compactor import (
     VisualContextSummaryValidator,
 )
@@ -568,13 +571,36 @@ def test_target_plan_uses_real_rebuilt_projection_for_minimum_prefix(
             summary_max_tokens: int,
         ) -> VisualContextSummary:
             selected_records.extend(records)
-            return _summary_from_records(
+            raw_response = json.dumps(
+                {
+                    "stable_scene": ["&" * 82],
+                    "object_last_confirmed": [],
+                    "people_last_confirmed": [],
+                    "changes": [],
+                    "uncertainties": [],
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            summary = _summary_from_records(
                 video_id=video_id,
                 existing_summary=existing_summary,
                 records=records,
                 source_token_count=source_token_count,
                 summary_max_tokens=summary_max_tokens,
+                stable_scene=["&" * 82],
             )
+            projection = html.escape(
+                json.dumps(
+                    visual_context_summary_projection(summary),
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
+                quote=True,
+            )
+            assert counter.count_text(raw_response) <= summary_max_tokens
+            assert counter.count_text(projection) <= summary_max_tokens
+            return summary
 
     counter = CharacterCounter()
     policy = ContextWindowPolicy(
@@ -616,6 +642,70 @@ def test_target_plan_uses_real_rebuilt_projection_for_minimum_prefix(
         )
     ) + counter.count_text("状态")
     assert previous_input_tokens > pack.decision.target_tokens
+
+
+def test_target_plan_does_not_publish_escape_expanded_summary_above_target(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "unsafe-projection"
+    root.mkdir()
+    target_store = SessionVisualSemanticStore(
+        root=root / "store",
+        session_id="session-1",
+    )
+    _add_records(target_store, root, count=8, summary="word " * 30)
+
+    class EscapeHeavyCompactor:
+        def compact(
+            self,
+            *,
+            video_id: str,
+            existing_summary: VisualContextSummary | None,
+            records: list[VisualSemanticRecord],
+            source_token_count: int,
+            summary_max_tokens: int,
+        ) -> VisualContextSummary:
+            raw_response = json.dumps(
+                {
+                    "stable_scene": ["&" * 421],
+                    "object_last_confirmed": [],
+                    "people_last_confirmed": [],
+                    "changes": [],
+                    "uncertainties": [],
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            assert len(raw_response) <= summary_max_tokens
+            return _summary_from_records(
+                video_id=video_id,
+                existing_summary=existing_summary,
+                records=records,
+                source_token_count=source_token_count,
+                summary_max_tokens=summary_max_tokens,
+                stable_scene=["&" * 421],
+            )
+
+    pack = VisualContextService(
+        store=target_store,
+        token_counter=CharacterCounter(),
+        window_policy=ContextWindowPolicy(
+            input_token_limit=5_000,
+            target_ratio=0.40,
+            trigger_ratio=0.60,
+            hard_ratio=0.95,
+            summary_max_tokens=1_000,
+        ),
+        compactor=EscapeHeavyCompactor(),
+        keep_recent_records=2,
+        instruction_reserve_tokens=0,
+        image_reserve_tokens=0,
+        output_reserve_tokens=0,
+    ).prepare("video-1", before_sequence=9, user_query="状态")
+
+    assert pack.summary is None
+    assert pack.compacted is False
+    assert target_store.visual_context_snapshot("video-1").summary is None
 
 
 def test_revision_conflict_rebuilds_from_winning_summary_once(

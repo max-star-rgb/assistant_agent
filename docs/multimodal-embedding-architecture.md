@@ -91,7 +91,10 @@ sequence frontier 与固定 digest 计算 coverage。Store 只保存当前 raw r
 预算。独立 VLM tokenizer 对最终视觉历史、当前 query 以及 instruction/image/output reserve 做
 preflight；target 选择预计使重建请求降到目标所需的最小最旧连续 prefix，并据目标剩余空间约束本轮
 summary budget；配置的最近 records 始终保留。trigger 启动 LLM compactor，hard 是最终 Qwen/VLM
-observation 调用前的拒绝边界。每次成功压缩后重建并重新计数，低于 hard 即可继续；最近 raw records
+observation 调用前的拒绝边界。summary budget 以最终结构化 summary 经真实 JSON projection/HTML
+escaping 后的 token 数计量；Provider raw generation 复用该 cap 作为前置上限，compactor 和 Service
+仍分别验证实际 summary projection 与完整 rebuilt pack，所以不假设 raw/escaped token 存在固定比例。
+每次成功压缩后重建并重新计数，低于 hard 即可继续；最近 raw records
 或 summary 使结果仍高于 target 时，不为追逐 target 无限压缩。CAS revision conflict 会重读同一
 video/as-of 的 winning summary 并重建一次 pack，不使用 stale pack 决定 observation。Provider 不再对
 该历史施加 4,000 字符截断。trigger 到 hard 之间压缩失败时保持旧 summary 和 raw records；hard 仍

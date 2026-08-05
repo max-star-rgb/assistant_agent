@@ -12,6 +12,7 @@ from assistant_agent.media.video.semantic_store import VisualSemanticRecord
 from assistant_agent.media.video.visual_context import (
     VisualContextCompactor,
     VisualContextTokenCounter,
+    _render_visual_summary_projection,
 )
 from assistant_agent.media.video.visual_context_models import (
     VisualContextSummary,
@@ -60,11 +61,6 @@ class VisualContextSummaryValidator:
             existing_summary=existing_summary,
             records=records,
         )
-        if summary_token_count > max(1, summary_max_tokens):
-            raise VisualContextCompactionError(
-                "visual_context_summary_token_budget_exceeded"
-            )
-
         sequences = [record.frame_sequence for record in validated_records]
         captured_at_ms = [
             record.captured_at_ms
@@ -178,7 +174,7 @@ class LLMVisualContextCompactor:
         except (TypeError, json.JSONDecodeError) as exc:
             raise VisualContextCompactionError("visual_context_invalid_json") from exc
 
-        return self.validator.validate(
+        summary = self.validator.validate(
             payload,
             video_id=video_id,
             existing_summary=existing_summary,
@@ -188,6 +184,13 @@ class LLMVisualContextCompactor:
             summary_max_tokens=summary_max_tokens,
             compactor_model=str(getattr(self.chat_adapter, "model", "") or ""),
         )
+        if self.token_counter.count_text(
+            _render_visual_summary_projection(summary)
+        ) > max(1, summary_max_tokens):
+            raise VisualContextCompactionError(
+                "visual_context_summary_token_budget_exceeded"
+            )
+        return summary
 
 
 def create_visual_context_compactor(

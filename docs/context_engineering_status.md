@@ -172,6 +172,10 @@ preflight，不再由 Provider 施加 4,000 字符截断。每次 observation �
 conversation，成功、失败或不完整响应后都关闭连接，Provider 侧不会隐式携带上一张图片或回复。
 target/trigger/hard 与主 Context 共用同一心智模型：target 决定预计把重建请求降到目标所需的最小
 最旧连续 prefix，并据剩余空间收紧本轮 summary output budget；`keep_recent_records` 始终保留。
+这里的 `summary_max_tokens` 是最终结构化 summary 经实际 JSON projection 与 HTML escaping 后的 token
+cap；Provider generation 使用同一数值作为前置上限，但安全性由 compactor 对真实 summary projection
+复核、Service 对完整 rebuilt pack 再按 target 复核来保证，不依赖 raw response 与 escaped text 的固定
+换算比例。
 trigger 启动压缩，hard 是最终 Qwen/VLM observation 调用前的拒绝边界。每次成功压缩后都会重建并
 重新计数；只要低于 hard 即可继续，即使最近原文或 summary 使结果仍高于 target，也不会为追逐
 target 无限压缩。视觉上下文使用独立的 tokenizer、input limit、safety margin、

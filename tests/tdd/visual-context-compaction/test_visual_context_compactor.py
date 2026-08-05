@@ -18,6 +18,11 @@ class WordCounter:
         return len(text.split())
 
 
+class CharacterCounter:
+    def count_text(self, text: str) -> int:
+        return len(text)
+
+
 class ScriptedChatAdapter:
     provider = "test-provider"
     model = "visual-compactor-test-model"
@@ -152,6 +157,38 @@ def test_llm_visual_compactor_rejects_summary_over_token_budget(
             source_token_count=30,
             summary_max_tokens=3,
         )
+
+
+def test_llm_visual_compactor_rejects_escaped_projection_over_budget(
+    records: list[VisualSemanticRecord],
+) -> None:
+    response_text = json.dumps(
+        {
+            "stable_scene": ["&" * 421],
+            "object_last_confirmed": [],
+            "people_last_confirmed": [],
+            "changes": [],
+            "uncertainties": [],
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    summary_projection_cap = len(response_text)
+    adapter = ScriptedChatAdapter(response_text=response_text)
+
+    with pytest.raises(VisualContextCompactionError, match="token_budget"):
+        LLMVisualContextCompactor(
+            adapter,
+            token_counter=CharacterCounter(),
+        ).compact(
+            video_id="video-1",
+            existing_summary=None,
+            records=records,
+            source_token_count=30,
+            summary_max_tokens=summary_projection_cap,
+        )
+
+    assert len(response_text) <= summary_projection_cap
 
 
 def test_llm_visual_compactor_rejects_fields_outside_fixed_schema(
