@@ -50,7 +50,6 @@ from assistant_agent.tools.observation import (
     rejected_observation,
 )
 from assistant_agent.tools.models import ToolResult, ToolSpec
-from assistant_agent.tools.ids import SHOPPING_SEARCH_TOOL_NAME
 from assistant_agent.runtime.chat_adapter import (
     ChatAdapter,
     ChatRequest,
@@ -984,30 +983,6 @@ def _apply_decision_guards(
             return _guard_final_answer(guard)
     if (
         isinstance(decision, AssistantToolCall)
-        and decision.tool_name == SHOPPING_SEARCH_TOOL_NAME
-        and any(
-            record.tool_name == SHOPPING_SEARCH_TOOL_NAME
-            for record in state.tool_calls
-        )
-    ):
-        guard = LoopGuardDecision(
-            True,
-            "run_tool_call_limit_reached",
-            (
-                "shopping_search may execute at most once in one run; "
-                "the additional call was blocked."
-            ),
-            disposition="block_action",
-        )
-        _record_loop_guard(graph_state, guard)
-        return decision.model_copy(
-            update={
-                "reason": guard.message,
-                "safety_notes": [*decision.safety_notes, guard.code],
-            }
-        )
-    if (
-        isinstance(decision, AssistantToolCall)
         and not _is_plan_mode_active(state)
         and LoopGuard(state.request.metadata).terminal_tool_already_succeeded(decision.tool_name)
     ):
@@ -1022,6 +997,26 @@ def _apply_decision_guards(
             text="工具已成功执行，我会基于已有结果回答。",
             reason=guard.message,
             safety_notes=[guard.code],
+        )
+    if (
+        isinstance(decision, AssistantToolCall)
+        and _tool_repeat_limit_reached(graph_state, decision.tool_name)
+    ):
+        guard = LoopGuardDecision(
+            True,
+            "tool_repeat_limit_reached",
+            (
+                f"{decision.tool_name} may execute successfully at most once "
+                "in one run; the additional call was blocked."
+            ),
+            disposition="finalize",
+        )
+        _record_loop_guard(graph_state, guard)
+        return decision.model_copy(
+            update={
+                "reason": guard.message,
+                "safety_notes": [*decision.safety_notes, guard.code],
+            }
         )
     if (
         isinstance(decision, AssistantToolCall)
@@ -1092,6 +1087,26 @@ def _apply_decision_guards(
             }
         )
     return decision
+
+
+def _tool_repeat_limit_reached(
+    graph_state: AssistantLoopState,
+    tool_name: str,
+) -> bool:
+    registry = getattr(graph_state.get("tool_executor"), "registry", None)
+    get_spec = getattr(registry, "get_spec", None)
+    if not callable(get_spec):
+        return False
+    try:
+        spec = get_spec(tool_name)
+    except KeyError:
+        return False
+    if spec.repeat_policy != "once_per_run":
+        return False
+    return any(
+        record.tool_name == tool_name and record.status == "succeeded"
+        for record in graph_state["state"].tool_calls
+    )
 
 
 def _apply_terminal_decision(
@@ -1525,11 +1540,33 @@ def _execute_single_requested_tool_node(graph_state: AssistantLoopState) -> Assi
 
     tool_name = decision.tool_name
     tool_input = decision.tool_input
-    if "run_tool_call_limit_reached" in decision.safety_notes:
+    repeat_limit_reached = (
+        "tool_repeat_limit_reached" in decision.safety_notes
+        or _tool_repeat_limit_reached(graph_state, tool_name)
+    )
+    if repeat_limit_reached:
+        if "tool_repeat_limit_reached" not in decision.safety_notes:
+            _record_loop_guard(
+                graph_state,
+                LoopGuardDecision(
+                    True,
+                    "tool_repeat_limit_reached",
+                    (
+                        f"{tool_name} may execute successfully at most once "
+                        "in one run; the additional call was blocked."
+                    ),
+                    disposition="finalize",
+                ),
+            )
+        _enter_finalize_phase(
+            graph_state,
+            reason="tool_repeat_limit_reached",
+            source="loop_guard",
+        )
         observation = rejected_observation(
             tool_name=tool_name or "unknown",
-            code="run_tool_call_limit_reached",
-            message="shopping_search may execute at most once in one run.",
+            code="tool_repeat_limit_reached",
+            message="This tool already completed successfully in this run.",
         )
         return {
             **graph_state,

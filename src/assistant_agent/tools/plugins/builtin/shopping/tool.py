@@ -37,6 +37,7 @@ class ShoppingSearchTool(ToolBase):
     input_schema = ShoppingSearchRequest
     output_schema = ShoppingSearchResult
     category = "read"
+    repeat_policy = "distinct_inputs"
     llm_hidden_input_fields = ("top_k_per_need",)
 
     def __init__(

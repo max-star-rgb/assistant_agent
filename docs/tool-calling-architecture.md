@@ -71,6 +71,7 @@ input_schema / output_schema
 category: read | generate | write | dangerous
 requires_media
 media_scope: any | attached | live
+repeat_policy: once_per_run | distinct_inputs
 llm_hidden_input_fields
 runtime_input_bindings
 run(input, context) -> ToolResult
@@ -84,6 +85,7 @@ input_schema
 category
 requires_media
 media_scope
+repeat_policy
 ```
 
 Registry 的 `get_spec()` 与 `list_specs()` 使用同一个 builder，Provider adapter、catalog、validator
@@ -92,6 +94,12 @@ manifest；`tools/ids.py` 只保存已经成为跨层协议的稳定字符串。
 
 `category` 表达副作用、自动重试、失败恢复和审计语义，不负责推断用户意图，也不控制默认暴露。
 未声明分类的 Tool 使用 `dangerous` 作为保守默认值。
+
+`repeat_policy` 表达一次 run 内的 Tool 级重复调用边界。默认 `once_per_run`：已有一次成功执行后，
+后续不同参数调用也会被 Runtime 拒绝并进入 finalize。`distinct_inputs` 允许不同规范化输入继续调用，
+但参数完全相同且已有完整成功 observation 时仍复用已有结果。所有策略都受全局
+`max_tool_iterations` 限制；该字段是 Runtime 治理事实，不进入 Provider Tool schema，也不按工具名
+维护第二套中心配置。
 
 ### 3.1.1 异步生成任务与入口投递
 
@@ -287,6 +295,11 @@ Validator 返回稳定 code、可解释 message、prompt-safe metadata 和仅供
 一次 Executor 自动重试保持相同 tool call 和输入；模型看到 observation 后修改参数再次调用属于新的
 assistant action。通用 Executor 不维护跨进程幂等 ledger；外部写入需要的幂等键由领域 adapter、
 协议或 durable task 提供。
+
+assistant loop 在 decision guard 与实际执行边界都读取 `ToolSpec.repeat_policy`，从而覆盖 sequential
+与同一 Provider turn 的批量 tool calls。Tool 级限制只在已有成功结果后生效；失败后的恢复继续服从
+recoverable/non-recoverable 与相同失败输入去重规则。触发默认单次限制时产生
+`tool_repeat_limit_reached` observation，不再继续消耗迭代反复拒绝。
 
 取消可能发生在执行前、重试等待期间或 Tool 返回之后。读操作成功后发现取消时不能继续发布为有效
 结果；非只读操作则必须保留已经发生的副作用事实，并以结构化取消状态结束，不能伪装为未执行。

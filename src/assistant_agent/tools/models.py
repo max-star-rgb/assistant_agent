@@ -10,6 +10,7 @@ from assistant_agent.tools.capability_output import CapabilityOutputContract
 ToolCategory = Literal["read", "generate", "write", "dangerous"]
 ToolMediaRequirement = Literal["video", "image", "audio"]
 ToolMediaScope = Literal["any", "attached", "live"]
+ToolRepeatPolicy = Literal["once_per_run", "distinct_inputs"]
 
 
 def _empty_tool_input_schema() -> dict[str, Any]:
@@ -60,6 +61,7 @@ class ToolSpec(BaseModel):
     category: ToolCategory = "dangerous"
     requires_media: list[ToolMediaRequirement] = Field(default_factory=list)
     media_scope: ToolMediaScope = "any"
+    repeat_policy: ToolRepeatPolicy = "once_per_run"
 
 
 class RunToolCatalog(BaseModel):

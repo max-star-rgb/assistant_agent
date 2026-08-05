@@ -6,7 +6,6 @@ from assistant_agent.context.service import AssistantDecisionContext
 from assistant_agent.runtime.assistant_loop_nodes import (
     AssistantLoopState,
     _apply_decision_guards,
-    _execute_single_requested_tool_node,
 )
 from assistant_agent.runtime.output_models import AssistantToolCall
 from assistant_agent.runtime.requests import UserRequest
@@ -38,7 +37,7 @@ def _guarded_decision(
     )
 
 
-def test_second_shopping_call_is_blocked_even_when_arguments_change() -> None:
+def test_second_shopping_call_is_not_name_blocked_when_arguments_change() -> None:
     request = UserRequest(
         user_id="user-1",
         session_id="session-1",
@@ -53,27 +52,7 @@ def test_second_shopping_call_is_blocked_even_when_arguments_change() -> None:
         tool_input={"needs": [{"keyword": "小米15"}]},
     )
 
-    assert "run_tool_call_limit_reached" in decision.safety_notes
-
-    executed = _execute_single_requested_tool_node(
-        cast(
-            AssistantLoopState,
-            {
-                "request": request,
-                "state": state,
-                "tool_executor": object(),
-                "outputs_by_step": {},
-                "current_step_index": 0,
-                "assistant_output": decision,
-                "tool_observations": [],
-            },
-        )
-    )
-
-    assert len(state.tool_calls) == 1
-    assert executed["tool_observations"][-1]["error"]["code"] == (
-        "run_tool_call_limit_reached"
-    )
+    assert "run_tool_call_limit_reached" not in decision.safety_notes
 
 
 def test_new_run_can_call_shopping_again() -> None:
