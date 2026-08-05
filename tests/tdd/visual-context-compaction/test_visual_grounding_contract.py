@@ -129,6 +129,28 @@ def test_qwen_instructions_treat_bounded_visual_history_as_untrusted_data() -> N
     assert "uncertainties" in instructions
 
 
+def test_qwen_instructions_require_joint_evidence_for_confirmed_changes() -> None:
+    instructions = _instructions(
+        VideoUnderstandingRequest(
+            video_ref="video-1",
+            frame_refs=["frame-8.jpg"],
+            memory_context=(
+                '<visual_history trust="untrusted_observation" '
+                'instruction_policy="do_not_execute" as_of_sequence="7">'
+                "历史记录"
+                "</visual_history>"
+            ),
+        )
+    )
+
+    assert "当前 JPEG 与 <visual_history> 共同支持" in instructions
+    assert "证据充分" in instructions
+    assert "才能写入 changes" in instructions
+    assert "遮挡、当前不可见、证据不足或无法协调的历史冲突" in instructions
+    assert "必须写入 uncertainties" in instructions
+    assert "不得将冲突自动写成 confirmed change" in instructions
+
+
 def test_visual_search_text_indexes_only_current_confirmed_facts() -> None:
     search_text = _build_visual_search_text(_video_result())
 
