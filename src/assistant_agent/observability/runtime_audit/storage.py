@@ -2,13 +2,27 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 import json
 from pathlib import Path
 from typing import Literal
+from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel
 
 from assistant_agent.observability.runtime_audit.models import RuntimeAuditBundle
+
+
+_AUDIT_TIMEZONE = ZoneInfo("Asia/Shanghai")
+
+
+def format_audit_run_id(collected_at: datetime) -> str:
+    """Format a readable minute-level audit identifier in the local audit timezone."""
+
+    if collected_at.tzinfo is None or collected_at.utcoffset() is None:
+        raise ValueError("collected_at must be timezone-aware")
+    local_time = collected_at.astimezone(_AUDIT_TIMEZONE)
+    return f"runtime_audit_{local_time:%Y%m%d_%H%M}"
 
 
 class RuntimeAuditWatermark(BaseModel):
@@ -30,8 +44,21 @@ class RuntimeAuditArtifactStore:
         self.reports_dir = self.root / "reports"
         self.watermark_path = self.state_dir / "watermark.json"
 
+    def allocate_audit_run_id(self, collected_at: datetime) -> str:
+        """Return the first unused minute-level identifier across all audit artifacts."""
+
+        base = format_audit_run_id(collected_at)
+        sequence = 1
+        while True:
+            audit_run_id = base if sequence == 1 else f"{base}_{sequence:02d}"
+            if not self._artifact_exists(audit_run_id):
+                return audit_run_id
+            sequence += 1
+
     def write_bundle(self, bundle: RuntimeAuditBundle) -> Path:
         path = self.inbox_dir / f"{bundle.audit_run_id}.json"
+        if path.exists():
+            raise FileExistsError(f"Runtime audit bundle already exists: {path}")
         _atomic_write(path, bundle.model_dump_json(indent=2))
         watermark = RuntimeAuditWatermark(
             audit_run_id=bundle.audit_run_id,
@@ -54,6 +81,17 @@ class RuntimeAuditArtifactStore:
 
     def codex_schema_path(self, audit_run_id: str) -> Path:
         return self.state_dir / f"{audit_run_id}.report-schema.json"
+
+    def _artifact_exists(self, audit_run_id: str) -> bool:
+        return any(
+            path.exists()
+            for path in (
+                self.inbox_dir / f"{audit_run_id}.json",
+                self.reports_dir / f"{audit_run_id}.json",
+                self.reports_dir / f"{audit_run_id}.md",
+                self.state_dir / f"{audit_run_id}.report-schema.json",
+            )
+        )
 
 
 def _atomic_write(path: Path, content: str) -> None:

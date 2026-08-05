@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
-import hashlib
 from pathlib import Path
 from typing import Protocol
 
@@ -19,6 +18,7 @@ from assistant_agent.observability.runtime_audit.models import (
     RuntimeAuditBundle,
 )
 from assistant_agent.observability.trace_store import TraceEvent, redact_trace_event
+from assistant_agent.observability.runtime_audit.storage import format_audit_run_id
 from assistant_agent.providers.provider_errors import sanitize_error_message
 
 
@@ -51,6 +51,7 @@ def collect_runtime_audit(
     window_start: datetime,
     window_end: datetime,
     collected_at: datetime | None = None,
+    audit_run_id: str | None = None,
     judge_grace: timedelta = timedelta(minutes=15),
     low_score_threshold: float = DEFAULT_LOW_SCORE_THRESHOLD,
 ) -> RuntimeAuditBundle:
@@ -137,7 +138,7 @@ def collect_runtime_audit(
         )
         findings.extend(_observation_findings(trace))
     return RuntimeAuditBundle(
-        audit_run_id=_audit_run_id(window_start, window_end, collected_at),
+        audit_run_id=audit_run_id or format_audit_run_id(collected_at),
         collected_at=collected_at,
         window_start=window_start,
         window_end=window_end,
@@ -523,11 +524,6 @@ def _is_low_score(value: object, *, threshold: float) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in {"false", "fail", "failed", "poor", "bad"}
     return False
-
-
-def _audit_run_id(start: datetime, end: datetime, collected_at: datetime) -> str:
-    seed = f"{start.isoformat()}:{end.isoformat()}:{collected_at.isoformat()}"
-    return "runtime_audit_" + hashlib.sha256(seed.encode("utf-8")).hexdigest()[:20]
 
 
 def _utc(value: datetime) -> datetime:

@@ -122,6 +122,7 @@ def _collect(args, *, repo_root: Path, store: RuntimeAuditArtifactStore):
     collected_at = datetime.now(timezone.utc)
     window_end = collected_at
     window_start = window_end - timedelta(hours=args.window_hours)
+    audit_run_id = store.allocate_audit_run_id(collected_at)
     source = create_langfuse_audit_source_from_env(os.environ)
     try:
         bundle = collect_runtime_audit(
@@ -130,6 +131,7 @@ def _collect(args, *, repo_root: Path, store: RuntimeAuditArtifactStore):
             window_start=window_start,
             window_end=window_end,
             collected_at=collected_at,
+            audit_run_id=audit_run_id,
             judge_grace=timedelta(minutes=args.judge_grace_minutes),
             low_score_threshold=args.low_score_threshold,
         )
