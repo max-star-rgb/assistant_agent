@@ -7,6 +7,7 @@ import json
 import os
 import threading
 from collections.abc import Awaitable, Callable
+from datetime import timedelta
 from typing import Any, TypeVar
 
 import anyio
@@ -96,12 +97,14 @@ class SdkMCPClientRunner(MCPToolRunner):
             return ToolResult(
                 tool_name=namespaced_tool_name,
                 success=False,
-                error=sanitize_error_message(exc),
+                error=_mcp_execution_error_message(exc),
             )
 
     async def _list_tools(self, server: MCPServerConfig) -> list[MCPToolDefinition]:
-        async with _sdk_session(server) as session:
-            response = await session.list_tools()
+        deadline = anyio.current_time() + server.timeout_seconds
+        async with _sdk_session(server, deadline=deadline) as session:
+            with anyio.fail_after(_remaining_timeout_seconds(deadline)):
+                response = await session.list_tools()
         definitions: list[MCPToolDefinition] = []
         for tool in response.tools:
             tool_payload = _dump_sdk_value(tool)
@@ -135,8 +138,15 @@ class SdkMCPClientRunner(MCPToolRunner):
         namespaced_tool_name: str,
         tool_input: dict[str, Any],
     ) -> ToolResult:
-        async with _sdk_session(server) as session:
-            response = await session.call_tool(tool_name, arguments=tool_input)
+        deadline = anyio.current_time() + server.timeout_seconds
+        async with _sdk_session(server, deadline=deadline) as session:
+            response = await session.call_tool(
+                tool_name,
+                arguments=tool_input,
+                read_timeout_seconds=timedelta(
+                    seconds=_remaining_timeout_seconds(deadline)
+                ),
+            )
         return _tool_result_from_sdk_response(
             server=server,
             tool_name=tool_name,
@@ -168,7 +178,7 @@ def _run_async_from_sync(factory: Callable[[], Awaitable[_T]]) -> _T:
     return result["value"]
 
 
-def _sdk_session(server: MCPServerConfig):
+def _sdk_session(server: MCPServerConfig, *, deadline: float):
     from contextlib import asynccontextmanager
 
     from mcp import ClientSession, StdioServerParameters
@@ -184,14 +194,44 @@ def _sdk_session(server: MCPServerConfig):
             env=_mcp_subprocess_environment(server.env),
             cwd=server.cwd,
         )
-        with anyio.fail_after(server.timeout_seconds):
-            with open(os.devnull, "w", encoding="utf-8") as errlog:
-                async with stdio_client(server_params, errlog=errlog) as (read, write):
-                    async with ClientSession(read, write) as session:
+        with open(os.devnull, "w", encoding="utf-8") as errlog:
+            async with stdio_client(server_params, errlog=errlog) as (read, write):
+                async with ClientSession(read, write) as session:
+                    with anyio.fail_after(_remaining_timeout_seconds(deadline)):
                         await session.initialize()
-                        yield session
+                    yield session
 
     return _session()
+
+
+def _remaining_timeout_seconds(deadline: float) -> float:
+    remaining = deadline - anyio.current_time()
+    if remaining <= 0:
+        raise TimeoutError("MCP operation timed out.")
+    return remaining
+
+
+def _mcp_execution_error_message(exc: BaseException) -> str:
+    leaves = _exception_leaves(exc)
+    for leaf in leaves:
+        message = sanitize_error_message(str(leaf) or leaf)
+        lowered = message.lower()
+        if "timeout" in lowered or "timed out" in lowered:
+            if lowered.startswith("provider_timeout:"):
+                return message
+            return f"provider_timeout: {message}"
+    selected = leaves[0] if leaves else exc
+    return sanitize_error_message(str(selected) or selected)
+
+
+def _exception_leaves(exc: BaseException) -> list[BaseException]:
+    if isinstance(exc, BaseExceptionGroup):
+        return [
+            leaf
+            for nested in exc.exceptions
+            for leaf in _exception_leaves(nested)
+        ]
+    return [exc]
 
 
 def _mcp_subprocess_environment(server_env: dict[str, str]) -> dict[str, str] | None:

@@ -67,7 +67,7 @@
         "profile": "workspace_mcp_v1",
         "user_email": "<your-google-account@example.com>"
       },
-      "timeout_seconds": 60
+      "timeout_seconds": 20
     }
   ]
 }

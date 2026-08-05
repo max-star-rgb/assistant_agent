@@ -19,6 +19,7 @@ from assistant_agent.tools.plugins.builtin.email_access.models import (
 )
 from assistant_agent.tools.models import ToolResult
 from assistant_agent.providers.provider_errors import (
+    is_recoverable_provider_error,
     normalize_provider_error_code,
     sanitize_error_message,
 )
@@ -144,7 +145,7 @@ class WorkspaceMCPEmailBackend:
                 request,
                 provider=binding.provider,
                 output_ref=result.output_ref or binding.output_ref,
-                code="provider_execution_failed",
+                code=_mcp_failure_code(result.error),
                 message=result.error or "Email search MCP call failed.",
                 latency_ms=latency_ms,
             )
@@ -192,7 +193,7 @@ class WorkspaceMCPEmailBackend:
                 request,
                 provider=binding.provider,
                 output_ref=result.output_ref or binding.output_ref,
-                code="provider_execution_failed",
+                code=_mcp_failure_code(result.error),
                 message=result.error or "Email read MCP call failed.",
                 latency_ms=latency_ms,
             )
@@ -312,6 +313,18 @@ def _run_mcp_tool(
             error=sanitize_error_message(exc),
             output_ref=binding.output_ref,
         )
+
+
+def _mcp_failure_code(error: str | None) -> str:
+    message = (error or "").strip()
+    lowered = message.lower()
+    if "timeout" in lowered or "timed out" in lowered:
+        return "provider_timeout"
+    prefix = message.split(":", maxsplit=1)[0]
+    normalized = normalize_provider_error_code(prefix)
+    if normalized.startswith("provider_") and normalized != "provider_unknown_error":
+        return normalized
+    return "provider_execution_failed"
 
 
 def _tool_result_text(result: ToolResult) -> str:
@@ -445,10 +458,11 @@ def _failed_read(
 
 
 def _error(code: str, message: object) -> EmailProviderError:
+    normalized_code = normalize_provider_error_code(code)
     return EmailProviderError(
-        code=normalize_provider_error_code(code),
+        code=normalized_code,
         message=sanitize_error_message(message),
-        recoverable=True,
+        recoverable=is_recoverable_provider_error(normalized_code),
     )
 
 
