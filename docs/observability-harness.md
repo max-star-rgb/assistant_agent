@@ -294,6 +294,10 @@ Langfuse 日常 evaluator 使用原生 **Live Observations**、100% sampling 和
 `memory_extraction` 过滤 SPAN `memory.turn_ingestion`，回答、grounding 与 memory recall 过滤
 GENERATION `llm.chat` 且 metadata `assistant_agent.runtime_action=text`；该 generation 的 input 同时包含
 当前请求、上下文、可用工具结果和长期记忆，比只看根 SPAN 更适合 observation-level 语义判断。
+OTel 普通 span attribute 在 Langfuse 中只进入不可直接筛选的 `metadata.attributes`；因此
+`runtime_action` 与 `memory_semantic_evidence` 还必须通过
+`langfuse.observation.metadata.assistant_agent.*` 显式投影为顶层 observation metadata，供上述 rule
+命中。generic `assistant_agent.*` 属性继续保留用于原始 OTel 诊断。
 必须先在 UI preview 核对 input/output mapping；Mem0 change text 还要求 operator 显式允许本机 memory
 trace content。Evaluator/rule 公共 API 当前仍标为 unstable，因此仓库不自动改写 Langfuse 配置，避免
 定时审计获得管理权限或随版本漂移破坏现有 evaluator。配置依据见 Langfuse 官方的

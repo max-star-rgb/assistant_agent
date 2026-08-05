@@ -461,6 +461,11 @@ def _event_attributes(event: TraceEvent) -> dict[str, Any]:
             attrs["langfuse.observation.status_message"] = sanitize_trace_value(error_message)
     attrs.update(_safe_attributes(event.attributes, prefix="assistant_agent"))
     attrs.update(_safe_attributes(event.output_summary, prefix="assistant_agent", allowed_keys=_ALLOWED_OUTPUT_KEYS))
+    runtime_action = attrs.get("assistant_agent.runtime_action")
+    if isinstance(runtime_action, str):
+        attrs[
+            "langfuse.observation.metadata.assistant_agent.runtime_action"
+        ] = runtime_action
     usage = _usage_details(event.attributes)
     if usage:
         attrs["langfuse.observation.usage_details"] = json.dumps(usage, ensure_ascii=False, separators=(",", ":"))
@@ -711,13 +716,17 @@ def _event_io_attributes(
 
     attributes = {"langfuse.observation.input": _json_value(_drop_none_if_mapping(input_payload))}
     if name == "memory.ingestion.finished":
-        attributes["assistant_agent.memory_semantic_evidence"] = (
+        semantic_evidence = (
             "available"
             if memory_content is not None
             and memory_content.user_text
             and memory_content.assistant_text
             else "unavailable"
         )
+        attributes["assistant_agent.memory_semantic_evidence"] = semantic_evidence
+        attributes[
+            "langfuse.observation.metadata.assistant_agent.memory_semantic_evidence"
+        ] = semantic_evidence
     if include_output:
         serialized_output = (
             output_payload
