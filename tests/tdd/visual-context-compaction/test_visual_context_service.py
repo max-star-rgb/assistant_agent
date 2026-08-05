@@ -36,6 +36,15 @@ class CharacterCounter:
         return len(text)
 
 
+class NonAdditiveBoundaryCounter:
+    """Model a projection token that no longer matches inside its XML boundary."""
+
+    def count_text(self, text: str) -> int:
+        if text.startswith("{&quot;summary_revision&quot;") and text.endswith("}"):
+            return 1
+        return len(text)
+
+
 @pytest.fixture
 def store(tmp_path: Path) -> SessionVisualSemanticStore:
     return SessionVisualSemanticStore(root=tmp_path, session_id="session-1")
@@ -703,6 +712,96 @@ def test_target_plan_does_not_publish_escape_expanded_summary_above_target(
         output_reserve_tokens=0,
     ).prepare("video-1", before_sequence=9, user_query="状态")
 
+    assert pack.summary is None
+    assert pack.compacted is False
+    assert target_store.visual_context_snapshot("video-1").summary is None
+
+
+def test_target_plan_rejects_full_pack_over_target_from_boundary_tokenization(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "non-additive-boundary"
+    root.mkdir()
+    target_store = SessionVisualSemanticStore(
+        root=root / "store",
+        session_id="session-1",
+    )
+    _add_records(target_store, root, count=8, summary="word " * 30)
+    counter = NonAdditiveBoundaryCounter()
+    candidates: list[tuple[VisualContextSummary, int, int]] = []
+
+    class BoundarySensitiveCompactor:
+        def compact(
+            self,
+            *,
+            video_id: str,
+            existing_summary: VisualContextSummary | None,
+            records: list[VisualSemanticRecord],
+            source_token_count: int,
+            summary_max_tokens: int,
+        ) -> VisualContextSummary:
+            raw_response = json.dumps(
+                {
+                    "stable_scene": ["&" * 84],
+                    "object_last_confirmed": [],
+                    "people_last_confirmed": [],
+                    "changes": [],
+                    "uncertainties": [],
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            summary = _summary_from_records(
+                video_id=video_id,
+                existing_summary=existing_summary,
+                records=records,
+                source_token_count=source_token_count,
+                summary_max_tokens=summary_max_tokens,
+                stable_scene=["&" * 84],
+            )
+            projection = html.escape(
+                json.dumps(
+                    visual_context_summary_projection(summary),
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
+                quote=True,
+            )
+            projection_tokens = counter.count_text(projection)
+            assert counter.count_text(raw_response) <= summary_max_tokens
+            assert projection_tokens <= summary_max_tokens
+            candidates.append((summary, len(records), projection_tokens))
+            return summary
+
+    pack = VisualContextService(
+        store=target_store,
+        token_counter=counter,
+        window_policy=ContextWindowPolicy(
+            input_token_limit=5_000,
+            target_ratio=0.40,
+            trigger_ratio=0.60,
+            hard_ratio=0.95,
+            summary_max_tokens=1_000,
+        ),
+        compactor=BoundarySensitiveCompactor(),
+        keep_recent_records=2,
+        instruction_reserve_tokens=0,
+        image_reserve_tokens=0,
+        output_reserve_tokens=0,
+    ).prepare("video-1", before_sequence=9, user_query="状态")
+
+    candidate, selected_count, projection_tokens = candidates[0]
+    all_records = target_store.records_for_context("video-1", before_sequence=9)
+    rebuilt_tokens = counter.count_text(
+        _render_visual_history(
+            summary=candidate,
+            recent_records=tuple(all_records[selected_count:]),
+            as_of_sequence=8,
+        )
+    ) + counter.count_text("状态")
+    assert projection_tokens == 1
+    assert rebuilt_tokens > pack.decision.target_tokens
+    assert pack.decision.hard is False
     assert pack.summary is None
     assert pack.compacted is False
     assert target_store.visual_context_snapshot("video-1").summary is None
