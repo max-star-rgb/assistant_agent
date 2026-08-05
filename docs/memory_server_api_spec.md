@@ -1,6 +1,6 @@
 # Mem0 HTTP 接入契约
 
-最后更新：2026-07-24
+最后更新：2026-08-04
 
 项目不再定义独立的 Memory Server 协议。本文件只记录 `assistant_agent` 实际使用的
 Mem0 OSS REST 子集；完整行为以 Mem0 官方 API 为准。
@@ -13,11 +13,12 @@ Mem0 OSS REST 子集；完整行为以 Mem0 官方 API 为准。
 ## Session 启动召回
 
 ```http
-GET /memories?user_id=<opaque>&agent_id=<opaque>&limit=5
+GET /memories?user_id=<opaque>&agent_id=<opaque>
 ```
 
-响应只消费 `results` 数组中每条记录的 `id`、`memory`、`created_at` 和可选 `score`。
-该调用只发生在 session 创建阶段。
+响应全量返回该身份下的长期记忆；只消费 `results` 数组中每条记录的 `id`、`memory`、
+`created_at` 和可选 `score`。该调用只发生在 session 创建阶段，结果冻结为 session snapshot；
+后续进入 Provider 上下文前仍由 ContextBuilder 统一执行预算裁剪。
 
 ## Turn capture
 

@@ -1,6 +1,6 @@
 # Memory 架构
 
-最后更新：2026-08-03
+最后更新：2026-08-04
 
 本文是 `assistant_agent` 长期记忆实现的当前权威。项目只使用 Mem0，不再提供
 InMemory、JSONL、SQLite、remote service、dual-core、Hindsight 或自定义插件后端。
@@ -10,6 +10,11 @@ InMemory、JSONL、SQLite、remote service、dual-core、Hindsight 或自定义�
 Mem0 拥有记忆算法，包括对话事实提取、合并、更新、向量化、索引和持久化。
 `assistant_agent` 不实现检索排序、关键词规则、冲突消解、TTL、用户画像、promotion、
 读写策略或 fallback。
+
+Session 创建时必须全量读取该 `user_id + agent_id` 下的长期记忆并冻结为结构化 snapshot，不能在
+Mem0 client 或 sidecar 预先按固定 `top_k` 截断。Mem0 原生 `get_all` 的单次 `top_k` 只是分页窗口；
+sidecar 逐步扩大窗口直到收齐全部结果。ContextBuilder 在每轮编译时统一执行上下文预算和裁剪，
+全量 snapshot 不等于无预算地把所有正文发送给 Provider。
 
 仓库本地 Mem0 sidecar 通过 Mem0 原生 `custom_instructions` 约束长期记忆的提取范围和表达语言：
 只保留对未来跨 session 协助具有持续价值、能够从对话直接支持的用户事实，忽略临时视觉环境、
@@ -79,7 +84,8 @@ prompt-safe canonical event；memory text 不进入 JSONL、公开 trace query �
 - 写入：只调用一次 `POST /memories`，传递完整 user/assistant messages；不显式传
   `infer=false`，由 Mem0 默认 inference 负责提取和更新；同时传入 Mem0 原生 `run_id`
   标记 session 范围的短期上下文。
-- 召回：session 启动使用 `GET /memories`，按 `user_id + agent_id` 限定身份，并限制返回数量。
+- 召回：session 启动使用 `GET /memories`，按 `user_id + agent_id` 限定身份并全量返回长期记忆；
+  sidecar 负责展开 Mem0 原生 `get_all` 窗口，项目不做相关性排序或固定数量截断。
   不携带 `run_id`，因此新 session 可以召回同一用户与 Agent 的跨 session 长期记忆。
 - 项目不写 `core`/`daily` 记录、不维护稳定 ID 映射，也不二次处理 Mem0 结果。
 

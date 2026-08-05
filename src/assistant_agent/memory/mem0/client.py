@@ -33,10 +33,8 @@ class UnavailableMem0Client:
     def recall_long_term_memory(
         self,
         identity: RequestIdentity,
-        *,
-        top_k: int = 5,
     ) -> list[LongTermMemory]:
-        _ = identity, top_k
+        _ = identity
         raise Mem0OperationError("recall", "Mem0 sidecar is not configured")
 
     def ingest_completed_turn(
@@ -79,8 +77,6 @@ class Mem0Client:
     def recall_long_term_memory(
         self,
         identity: RequestIdentity,
-        *,
-        top_k: int = 5,
     ) -> list[LongTermMemory]:
         engine_identity = bind_mem0_identity(
             identity,
@@ -89,14 +85,11 @@ class Mem0Client:
         payload = self._request(
             "GET",
             "/memories",
-            query={
-                **engine_identity.long_term_filters,
-                "limit": str(top_k),
-            },
+            query=engine_identity.long_term_filters,
         )
         return [
             _long_term_memory(value)
-            for value in _mapping_list(payload.get("results"))[:top_k]
+            for value in _mapping_list(payload.get("results"))
         ]
 
     def ingest_completed_turn(
