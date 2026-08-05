@@ -37,11 +37,12 @@ def build_codex_command(
     repo_root: Path,
     output_path: Path,
     schema_path: Path,
+    codex_executable: str = "codex",
 ) -> list[str]:
     """Return the fixed non-mutating Codex invocation."""
 
     return [
-        "codex",
+        codex_executable,
         "exec",
         "--ephemeral",
         "--sandbox",
@@ -93,10 +94,15 @@ def run_codex_report(
         encoding="utf-8",
     )
     prompt = _codex_prompt(bundle_path)
+    process_environment = sanitized_codex_environment(environment or os.environ)
     command = build_codex_command(
         repo_root=repo_root,
         output_path=output_path,
         schema_path=schema_path,
+        codex_executable=process_environment.get(
+            "ASSISTANT_AGENT_CODEX_EXECUTABLE",
+            "codex",
+        ),
     )
     result = process_runner(
         command,
@@ -106,7 +112,7 @@ def run_codex_report(
         check=False,
         timeout=timeout_seconds,
         cwd=repo_root,
-        env=sanitized_codex_environment(environment or os.environ),
+        env=process_environment,
     )
     if result.returncode != 0:
         stderr = getattr(result, "stderr", "") or "codex exec failed"

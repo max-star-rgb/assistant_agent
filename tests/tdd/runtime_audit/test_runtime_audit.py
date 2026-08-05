@@ -476,6 +476,46 @@ def test_codex_report_runner_validates_structured_output_without_passing_bundle_
     }
 
 
+def test_codex_report_runner_uses_explicit_executable_outside_service_path(
+    tmp_path: Path,
+) -> None:
+    """Would fail if a systemd service had to discover Codex through its reduced PATH."""
+
+    bundle_path = tmp_path / "inbox" / "audit.json"
+    bundle_path.parent.mkdir()
+    bundle_path.write_text('{"audit_run_id":"runtime_audit_test"}', encoding="utf-8")
+    output_path = tmp_path / "reports" / "audit.json"
+    schema_path = tmp_path / "state" / "schema.json"
+    captured: dict[str, object] = {}
+
+    def fake_run(command, **_kwargs):
+        captured["command"] = command
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(
+            CodexAuditReport(
+                audit_run_id="runtime_audit_test",
+                executive_summary="No critical issue.",
+                coverage_assessment="Complete for the selected window.",
+            ).model_dump_json(),
+            encoding="utf-8",
+        )
+        return SimpleNamespace(returncode=0, stderr="", stdout="")
+
+    run_codex_report(
+        bundle_path=bundle_path,
+        repo_root=tmp_path,
+        output_path=output_path,
+        schema_path=schema_path,
+        environment={
+            "PATH": "/usr/bin",
+            "ASSISTANT_AGENT_CODEX_EXECUTABLE": "/opt/codex/bin/codex",
+        },
+        process_runner=fake_run,
+    )
+
+    assert captured["command"][0] == "/opt/codex/bin/codex"
+
+
 def test_langfuse_read_failure_is_infrastructure_unknown_not_missing_export(
     tmp_path: Path,
 ) -> None:
