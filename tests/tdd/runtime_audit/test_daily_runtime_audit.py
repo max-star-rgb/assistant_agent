@@ -103,6 +103,116 @@ def test_concurrent_failed_publish_cannot_replace_successful_daily_report(
     assert successful_path.read_text(encoding="utf-8").strip() == "成功日报"
 
 
+def test_no_replace_publish_keeps_partial_content_off_the_final_daily_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = RuntimeAuditArtifactStore(tmp_path / "runtime_audit")
+    partial_write_started = threading.Event()
+    allow_finish = threading.Event()
+    original_fdopen = storage_module.os.fdopen
+
+    class PausedWriter:
+        def __init__(self, handle) -> None:
+            self.handle = handle
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            self.handle.close()
+
+        def write(self, content: str) -> int:
+            midpoint = len(content) // 2
+            self.handle.write(content[:midpoint])
+            self.handle.flush()
+            partial_write_started.set()
+            assert allow_finish.wait(timeout=5)
+            return midpoint + self.handle.write(content[midpoint:])
+
+        def flush(self) -> None:
+            self.handle.flush()
+
+        def fileno(self) -> int:
+            return self.handle.fileno()
+
+    def controlled_fdopen(*args, **kwargs):
+        handle = original_fdopen(*args, **kwargs)
+        if threading.current_thread().name == "failed-writer":
+            return PausedWriter(handle)
+        return handle
+
+    monkeypatch.setattr(storage_module.os, "fdopen", controlled_fdopen)
+    failed_writer = threading.Thread(
+        name="failed-writer",
+        target=store.write_failed_daily_report_if_absent,
+        args=(date(2026, 8, 5), "失败日报内容"),
+    )
+    failed_writer.start()
+    assert partial_write_started.wait(timeout=5)
+
+    try:
+        assert not store.daily_report_path(date(2026, 8, 5)).exists()
+    finally:
+        allow_finish.set()
+        failed_writer.join(timeout=5)
+
+    assert not failed_writer.is_alive()
+    assert store.daily_report_path(date(2026, 8, 5)).read_text(encoding="utf-8") == "失败日报内容\n"
+
+
+def test_failed_no_replace_cleanup_cannot_delete_successful_daily_report(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = RuntimeAuditArtifactStore(tmp_path / "runtime_audit")
+    failure_ready = threading.Event()
+    allow_failure = threading.Event()
+    failures: list[Exception] = []
+    original_fdopen = storage_module.os.fdopen
+
+    class FailingWriter:
+        def __init__(self, handle) -> None:
+            self.handle = handle
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            self.handle.close()
+
+        def write(self, content: str) -> int:
+            failure_ready.set()
+            assert allow_failure.wait(timeout=5)
+            raise OSError("simulated failed daily publish")
+
+    def controlled_fdopen(*args, **kwargs):
+        handle = original_fdopen(*args, **kwargs)
+        if threading.current_thread().name == "failed-writer":
+            return FailingWriter(handle)
+        return handle
+
+    monkeypatch.setattr(storage_module.os, "fdopen", controlled_fdopen)
+
+    def write_failure_report() -> None:
+        try:
+            store.write_failed_daily_report_if_absent(date(2026, 8, 5), "失败日报")
+        except Exception as exc:
+            failures.append(exc)
+
+    failed_writer = threading.Thread(name="failed-writer", target=write_failure_report)
+    failed_writer.start()
+    assert failure_ready.wait(timeout=5)
+
+    successful_path = store.write_daily_report(date(2026, 8, 5), "成功日报", replace=True)
+    allow_failure.set()
+    failed_writer.join(timeout=5)
+
+    assert not failed_writer.is_alive()
+    assert len(failures) == 1
+    assert successful_path.read_text(encoding="utf-8") == "成功日报\n"
+
+
 def test_legacy_watermark_is_not_a_completed_daily_audit(tmp_path: Path) -> None:
     store = RuntimeAuditArtifactStore(tmp_path / "runtime_audit")
     store.watermark_path.parent.mkdir(parents=True)

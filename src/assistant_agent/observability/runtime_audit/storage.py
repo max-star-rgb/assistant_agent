@@ -154,6 +154,28 @@ class RuntimeAuditArtifactStore:
 
 
 def _atomic_write(path: Path, content: str) -> None:
+    temporary = _write_temporary(path, content)
+    try:
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _atomic_write_if_absent(path: Path, content: str) -> bool:
+    """Publish fully written content once without replacing an existing artifact."""
+
+    temporary = _write_temporary(path, content)
+    try:
+        try:
+            os.link(temporary, path)
+        except FileExistsError:
+            return False
+    finally:
+        temporary.unlink(missing_ok=True)
+    return True
+
+
+def _write_temporary(path: Path, content: str) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(
         dir=path.parent,
@@ -165,26 +187,12 @@ def _atomic_write(path: Path, content: str) -> None:
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             handle.write(_with_trailing_newline(content))
-        temporary.replace(path)
-    finally:
-        temporary.unlink(missing_ok=True)
-
-
-def _atomic_write_if_absent(path: Path, content: str) -> bool:
-    """Publish content once without replacing an existing artifact."""
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
-    except FileExistsError:
-        return False
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            handle.write(_with_trailing_newline(content))
+            handle.flush()
+            os.fsync(handle.fileno())
     except Exception:
-        path.unlink(missing_ok=True)
+        temporary.unlink(missing_ok=True)
         raise
-    return True
+    return temporary
 
 
 def _with_trailing_newline(content: str) -> str:
