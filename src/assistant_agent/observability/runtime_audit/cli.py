@@ -155,6 +155,7 @@ def _daily_dry_run(args, *, store: RuntimeAuditArtifactStore) -> int:
                 "audit_dates": [item.isoformat() for item in dates],
                 "report_paths": [str(store.daily_report_path(item)) for item in dates],
                 "failed_date": None,
+                "codex_enabled": not args.skip_codex,
                 "production_mutation_allowed": False,
             },
             ensure_ascii=False,

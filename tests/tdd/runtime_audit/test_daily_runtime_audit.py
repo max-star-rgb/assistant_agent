@@ -2045,9 +2045,22 @@ def test_non_adjacent_continuous_run_rejects_before_all_daily_side_effects(
 
 
 def test_daily_run_dry_run_lists_only_the_requested_date(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Would fail if dry-run contacted a source instead of exposing planned daily paths."""
+
+    monkeypatch.setattr(
+        cli_module,
+        "create_langfuse_audit_source_from_env",
+        lambda _: pytest.fail("daily dry-run must not create a Langfuse source"),
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "run_daily_codex_report",
+        lambda **_: pytest.fail("daily dry-run must not invoke Codex"),
+    )
 
     assert main(
         [
@@ -2067,6 +2080,8 @@ def test_daily_run_dry_run_lists_only_the_requested_date(
         str(tmp_path / ".data/runtime_audit/reports/2026-08-05.md")
     ]
     assert payload["failed_date"] is None
+    assert payload["codex_enabled"] is True
+    assert payload["production_mutation_allowed"] is False
 
 
 def test_run_defaults_to_previous_calendar_day_and_date_conflicts_with_window_hours() -> None:
