@@ -17,6 +17,7 @@ from pydantic import BaseModel
 
 from assistant_agent.observability.runtime_audit.daily_models import (
     DailyAuditAttempt,
+    DailyAuditCommitIntent,
     DailyAuditWatermarkV2,
     IssueRegistry,
 )
@@ -112,21 +113,20 @@ class RuntimeAuditArtifactStore:
         predecessor = self.last_completed_date()
         if commit_continuous_state and predecessor is not None and audit_date_next(predecessor) != attempt.audit_date:
             raise ValueError("daily commit target must follow its predecessor")
-        payload = {
-            "schema_version": "assistant_agent_daily_commit_intent_v2",
-            "attempt": attempt.model_dump(mode="json"),
+        payload = DailyAuditCommitIntent.model_validate({
+            "attempt": attempt.model_dump(mode="python"),
             "markdown": markdown,
-            "registry": registry.model_dump(mode="json") if registry is not None else None,
+            "registry": registry.model_dump(mode="python") if registry is not None else None,
             "commit_continuous_state": commit_continuous_state,
-            "expected_predecessor_watermark": predecessor.isoformat() if predecessor else None,
+            "expected_predecessor_watermark": predecessor,
             "previous_registry_digest": self.issue_registry_digest(),
-            "desired_registry_digest": _registry_digest(registry) if registry is not None else None,
-        }
-        _atomic_write(path, json.dumps(payload, ensure_ascii=False, indent=2))
+            "desired_registry_digest": registry_digest(registry) if registry is not None else None,
+        })
+        _atomic_write(path, payload.model_dump_json(indent=2))
         return path
 
     def issue_registry_digest(self) -> str:
-        return _registry_digest(self.read_issue_registry())
+        return registry_digest(self.read_issue_registry())
 
     def read_commit_intents(self) -> list[dict]:
         if not self.commits_dir.exists():
@@ -139,6 +139,10 @@ class RuntimeAuditArtifactStore:
     def quarantine_commit_intent(self, path: Path) -> Path:
         self.quarantine_dir.mkdir(parents=True, exist_ok=True)
         target = self.quarantine_dir / path.name
+        sequence = 1
+        while target.exists():
+            target = self.quarantine_dir / f"{path.stem}.{sequence:02d}{path.suffix}"
+            sequence += 1
         os.replace(path, target)
         return target
 
@@ -288,7 +292,7 @@ def _iso_z(value) -> str:
     return value.isoformat().replace("+00:00", "Z")
 
 
-def _registry_digest(registry: IssueRegistry | None) -> str:
+def registry_digest(registry: IssueRegistry | None) -> str:
     payload = registry.model_dump_json() if registry is not None else ""
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 

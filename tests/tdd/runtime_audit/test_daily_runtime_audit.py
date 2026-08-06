@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from assistant_agent.observability.runtime_audit import storage as storage_module
+from assistant_agent.observability.runtime_audit import cli as cli_module
 from assistant_agent.observability.runtime_audit.cli import (
     _parser,
     _resolve_bundle_path,
@@ -1257,6 +1258,102 @@ def test_explicit_rerun_does_not_mutate_continuous_issue_or_watermark(
     assert set(store.read_issue_registry().issues) == {"tool.example"}
 
 
+@pytest.mark.parametrize(
+    ("audit_date", "previous_status", "candidate_status", "evidence_field"),
+    [
+        (date(2026, 8, 5), "code_addressed", "runtime_verified", "runtime_verification_refs"),
+        (date(2026, 8, 4), "runtime_verified", "regressed", "trace_evidence_refs"),
+    ],
+)
+def test_explicit_rerun_skips_lifecycle_merge_but_keeps_bundle_evidence_gate(
+    tmp_path: Path,
+    audit_date: date,
+    previous_status: str,
+    candidate_status: str,
+    evidence_field: str,
+) -> None:
+    """Would fail if an explicit rerun merged lifecycle state or skipped evidence checks."""
+
+    store = RuntimeAuditArtifactStore(tmp_path / "runtime_audit")
+    previous = DailyAuditIssue(
+        issue_key="tool.lifecycle",
+        status=previous_status,
+        title="已有问题",
+        first_seen=date(2026, 8, 1),
+        last_seen=date(2026, 8, 5),
+        trace_evidence_refs=["trace:historical"],
+        code_evidence_refs=["code:fix"],
+        runtime_verification_refs=(
+            ["trace:verified"] if previous_status == "runtime_verified" else []
+        ),
+    )
+    store.write_issue_registry(IssueRegistry(issues={previous.issue_key: previous}))
+    store.mark_day_completed(
+        date(2026, 8, 5), attempt_id="continuous", bundle_path="/tmp/continuous"
+    )
+    registry_before = store.issues_path.read_bytes()
+    watermark_before = store.watermark_path.read_bytes()
+
+    candidate = DailyAuditIssue(
+        issue_key=previous.issue_key,
+        status=candidate_status,
+        title=previous.title,
+        first_seen=audit_date,
+        last_seen=audit_date,
+        **{evidence_field: ["trace:trace-current"]},
+    )
+    result = run_one_daily_audit(
+        window=window_for_date(audit_date),
+        source=FakeLangfuseSource(
+            [
+                _daily_trace("trace-current").model_copy(
+                    update={
+                        "timestamp": datetime(
+                            audit_date.year,
+                            audit_date.month,
+                            audit_date.day,
+                            12,
+                            tzinfo=timezone.utc,
+                        )
+                    }
+                )
+            ]
+        ),
+        local_trace_path=tmp_path / "graph_trace.jsonl",
+        store=store,
+        repo_root=tmp_path,
+        codex_runner=lambda **_: _daily_codex_report(
+            audit_date=audit_date, issue=candidate
+        ),
+        collected_at=datetime(2026, 8, 7, 0, 15, tzinfo=timezone.utc),
+        commit_continuous_state=False,
+    )
+
+    assert result.status == "succeeded"
+    assert store.issues_path.read_bytes() == registry_before
+    assert store.watermark_path.read_bytes() == watermark_before
+
+    forged = candidate.model_copy(
+        update={evidence_field: ["trace:not-in-current-bundle"]}
+    )
+    rejected = run_one_daily_audit(
+        window=window_for_date(audit_date),
+        source=FakeLangfuseSource([_daily_trace("trace-current")]),
+        local_trace_path=tmp_path / "graph_trace.jsonl",
+        store=store,
+        repo_root=tmp_path,
+        codex_runner=lambda **_: _daily_codex_report(
+            audit_date=audit_date, issue=forged
+        ),
+        collected_at=datetime(2026, 8, 7, 0, 16, tzinfo=timezone.utc),
+        commit_continuous_state=False,
+    )
+
+    assert rejected.status == "failed"
+    assert store.issues_path.read_bytes() == registry_before
+    assert store.watermark_path.read_bytes() == watermark_before
+
+
 @pytest.mark.parametrize("stage", ["report", "registry", "attempt", "watermark"])
 def test_interrupted_continuous_commit_recovers_from_intent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stage: str
@@ -1295,13 +1392,155 @@ def test_interrupted_continuous_commit_recovers_from_intent(
             collected_at=datetime(2026, 8, 6, 0, 15, tzinfo=timezone.utc),
         )
 
+    intent = store.read_commit_intents()[0]
+    expected_markdown = intent["markdown"]
+    expected_registry = IssueRegistry.model_validate(intent["registry"])
+    expected_digest = intent["desired_registry_digest"]
+
     recover_pending_daily_commits(store)
-    assert store.last_completed_date() == date(2026, 8, 5)
+
+    report_path = store.daily_report_path(date(2026, 8, 5))
+    assert report_path.read_text(encoding="utf-8").strip() == expected_markdown.strip()
+    assert store.read_issue_registry() == expected_registry
+    assert store.issue_registry_digest() == expected_digest
+    recovered_attempt = DailyAuditAttempt.model_validate_json(
+        (store.attempts_dir / f"{intent['attempt']['attempt_id']}.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert recovered_attempt.status == "succeeded"
+    assert recovered_attempt.error_summary is None
+    assert recovered_attempt.bundle_path == intent["attempt"]["bundle_path"]
+    watermark = store.read_daily_watermark()
+    assert watermark is not None
+    assert watermark.last_completed_date == date(2026, 8, 5)
+    assert watermark.last_attempt_id == recovered_attempt.attempt_id
+    assert watermark.bundle_path == recovered_attempt.bundle_path
     assert store.read_commit_intents() == []
 
 
+@pytest.mark.parametrize(
+    "invalid_kind",
+    [
+        "legacy",
+        "unknown",
+        "non_object",
+        "type_error",
+        "stale",
+        "watermark_conflict",
+        "digest_conflict",
+    ],
+)
+def test_invalid_commit_intent_is_atomically_quarantined_and_does_not_reblock(
+    tmp_path: Path, invalid_kind: str
+) -> None:
+    """Would fail if malformed or conflicting journals were deleted or retried forever."""
+
+    store = RuntimeAuditArtifactStore(tmp_path / "runtime_audit")
+    attempt = DailyAuditAttempt(
+        attempt_id=f"intent-{invalid_kind}",
+        audit_date=date(2026, 8, 5),
+        status="running",
+        bundle_path="/tmp/bundle.json",
+        codex_output_path="/tmp/codex.json",
+    )
+    desired_registry = IssueRegistry(
+        issues={
+            "tool.desired": DailyAuditIssue(
+                issue_key="tool.desired",
+                status="uncertain",
+                title="待确认",
+                first_seen=date(2026, 8, 5),
+                last_seen=date(2026, 8, 5),
+                trace_evidence_refs=["trace:current"],
+            )
+        }
+    )
+    intent_path = store.write_commit_intent(
+        attempt,
+        markdown="# 预期日报",
+        registry=desired_registry,
+        commit_continuous_state=True,
+    )
+    payload = json.loads(intent_path.read_text(encoding="utf-8"))
+    if invalid_kind == "legacy":
+        payload["schema_version"] = "assistant_agent_daily_commit_intent_v1"
+    elif invalid_kind == "unknown":
+        payload["schema_version"] = "assistant_agent_daily_commit_intent_v999"
+    elif invalid_kind == "non_object":
+        payload = ["not-an-object"]
+    elif invalid_kind == "type_error":
+        payload["commit_continuous_state"] = "true"
+    elif invalid_kind == "stale":
+        store.mark_day_completed(
+            date(2026, 8, 6), attempt_id="newer", bundle_path="/tmp/newer"
+        )
+    elif invalid_kind == "watermark_conflict":
+        store.mark_day_completed(
+            date(2026, 8, 5), attempt_id="other", bundle_path="/tmp/other"
+        )
+    elif invalid_kind == "digest_conflict":
+        store.write_issue_registry(
+            IssueRegistry(
+                issues={
+                    "tool.other": DailyAuditIssue(
+                        issue_key="tool.other",
+                        status="open",
+                        title="并发状态",
+                        first_seen=date(2026, 8, 5),
+                        last_seen=date(2026, 8, 5),
+                    )
+                }
+            )
+        )
+    raw_intent = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+    intent_path.write_text(raw_intent, encoding="utf-8")
+    watermark_before = (
+        store.watermark_path.read_bytes() if store.watermark_path.exists() else None
+    )
+    registry_before = (
+        store.issues_path.read_bytes() if store.issues_path.exists() else None
+    )
+
+    recover_pending_daily_commits(store)
+
+    quarantined = list(store.quarantine_dir.glob(f"{intent_path.stem}*.json"))
+    assert not intent_path.exists()
+    assert len(quarantined) == 1
+    assert quarantined[0].read_text(encoding="utf-8") == raw_intent
+    assert not store.daily_report_path(date(2026, 8, 5)).exists()
+    assert not (store.attempts_dir / f"{attempt.attempt_id}.json").exists()
+    assert (
+        store.watermark_path.read_bytes() if store.watermark_path.exists() else None
+    ) == watermark_before
+    assert (store.issues_path.read_bytes() if store.issues_path.exists() else None) == registry_before
+
+    recover_pending_daily_commits(store)
+    assert list(store.quarantine_dir.glob(f"{intent_path.stem}*.json")) == quarantined
+
+
+def test_quarantine_preserves_existing_same_named_artifact(tmp_path: Path) -> None:
+    """Would fail if quarantining a repeated bad journal overwrote prior evidence."""
+
+    store = RuntimeAuditArtifactStore(tmp_path / "runtime_audit")
+    path = store.commits_dir / "repeated.json"
+    path.parent.mkdir(parents=True)
+    raw_intent = '{"schema_version":"unknown"}\n'
+    path.write_text(raw_intent, encoding="utf-8")
+    store.quarantine_dir.mkdir(parents=True)
+    existing = store.quarantine_dir / path.name
+    existing.write_text("prior evidence\n", encoding="utf-8")
+
+    recover_pending_daily_commits(store)
+
+    assert existing.read_text(encoding="utf-8") == "prior evidence\n"
+    alternatives = [item for item in store.quarantine_dir.glob("repeated*.json") if item != existing]
+    assert len(alternatives) == 1
+    assert alternatives[0].read_text(encoding="utf-8") == raw_intent
+
+
 def test_daily_claim_serializes_concurrent_registry_updates(tmp_path: Path) -> None:
-    """Would fail if concurrent daily runs lost an issue-registry update."""
+    """Would fail if concurrent adjacent daily runs lost an issue-registry update."""
 
     store = RuntimeAuditArtifactStore(tmp_path / "runtime_audit")
     first_entered = threading.Event()
@@ -1318,15 +1557,30 @@ def test_daily_claim_serializes_concurrent_registry_updates(tmp_path: Path) -> N
         )
         return _daily_codex_report(audit_date=audit_date, issue=issue)
 
-    def invoke() -> None:
+    def invoke(audit_date: date) -> None:
         results.append(run_one_daily_audit(
-            window=window_for_date(date(2026, 8, 5)), source=FakeLangfuseSource([_daily_trace()]),
+            window=window_for_date(audit_date),
+            source=FakeLangfuseSource(
+                [
+                    _daily_trace().model_copy(
+                        update={
+                            "timestamp": datetime(
+                                audit_date.year,
+                                audit_date.month,
+                                audit_date.day,
+                                12,
+                                tzinfo=timezone.utc,
+                            )
+                        }
+                    )
+                ]
+            ),
             local_trace_path=tmp_path / "graph_trace.jsonl", store=store, repo_root=tmp_path,
-            codex_runner=runner, collected_at=datetime(2026, 8, 6, 0, 15, tzinfo=timezone.utc),
+            codex_runner=runner, collected_at=datetime(2026, 8, 7, 0, 15, tzinfo=timezone.utc),
         ))
 
-    first = threading.Thread(target=invoke)
-    second = threading.Thread(target=invoke)
+    first = threading.Thread(target=invoke, args=(date(2026, 8, 5),))
+    second = threading.Thread(target=invoke, args=(date(2026, 8, 6),))
     first.start()
     assert first_entered.wait(timeout=5)
     second.start()
@@ -1336,6 +1590,10 @@ def test_daily_claim_serializes_concurrent_registry_updates(tmp_path: Path) -> N
 
     assert not first.is_alive() and not second.is_alive()
     assert len(results) == 2
+    assert [result.audit_date for result in results] == [
+        date(2026, 8, 5),
+        date(2026, 8, 6),
+    ]
     assert store.read_issue_registry().issues["tool.shared"].status == "uncertain"
 
 
@@ -1359,25 +1617,304 @@ def test_cli_source_factory_failure_publishes_daily_failure(
     assert "审计未完成" in store.daily_report_path(date(2026, 8, 5)).read_text(encoding="utf-8")
 
 
-def test_gap_continuous_commit_changes_no_target_state(tmp_path: Path) -> None:
-    """Would fail if a backward/gap journal wrote report or lifecycle state before CAS rejection."""
+def test_auto_source_failure_recomputes_latest_pending_date_under_claim(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Would fail if source failure reported the stale target chosen before interleaving."""
+
+    store = RuntimeAuditArtifactStore(tmp_path / ".data/runtime_audit")
+    store.mark_day_completed(
+        date(2026, 8, 2), attempt_id="prior", bundle_path="/tmp/prior"
+    )
+    source_creation_started = threading.Event()
+    competing_run_completed = threading.Event()
+
+    def complete_first_pending() -> None:
+        assert source_creation_started.wait(timeout=5)
+        with store.daily_claim():
+            store.mark_day_completed(
+                date(2026, 8, 3),
+                attempt_id="competing",
+                bundle_path="/tmp/competing",
+            )
+        competing_run_completed.set()
+
+    competitor = threading.Thread(target=complete_first_pending)
+    competitor.start()
+
+    def fail_source_factory(_: object) -> object:
+        source_creation_started.set()
+        assert competing_run_completed.wait(timeout=5)
+        raise RuntimeError("source unavailable")
+
+    monkeypatch.setattr(cli_module, "previous_day_window", lambda _: window_for_date(date(2026, 8, 5)))
+    monkeypatch.setattr(cli_module, "create_langfuse_audit_source_from_env", fail_source_factory)
+
+    exit_code = main(["--no-env-file", "--repo-root", str(tmp_path), "run"])
+    competitor.join(timeout=5)
+
+    assert not competitor.is_alive()
+    assert exit_code == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["audit_dates"] == ["2026-08-04"]
+    assert payload["failed_date"] == "2026-08-04"
+    attempts = [
+        DailyAuditAttempt.model_validate_json(path.read_text(encoding="utf-8"))
+        for path in store.attempts_dir.glob("*.json")
+    ]
+    assert [(attempt.audit_date, attempt.status) for attempt in attempts] == [
+        (date(2026, 8, 4), "failed")
+    ]
+
+
+def test_auto_source_failure_after_competing_completion_returns_success_without_attempt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Would fail if an already-completed automatic target were reported as failed."""
+
+    store = RuntimeAuditArtifactStore(tmp_path / ".data/runtime_audit")
+    store.mark_day_completed(
+        date(2026, 8, 4), attempt_id="prior", bundle_path="/tmp/prior"
+    )
+    source_creation_started = threading.Event()
+    competing_run_completed = threading.Event()
+
+    def complete_only_pending() -> None:
+        assert source_creation_started.wait(timeout=5)
+        with store.daily_claim():
+            store.mark_day_completed(
+                date(2026, 8, 5),
+                attempt_id="competing",
+                bundle_path="/tmp/competing",
+            )
+        competing_run_completed.set()
+
+    competitor = threading.Thread(target=complete_only_pending)
+    competitor.start()
+
+    def fail_source_factory(_: object) -> object:
+        source_creation_started.set()
+        assert competing_run_completed.wait(timeout=5)
+        raise RuntimeError("source unavailable")
+
+    monkeypatch.setattr(cli_module, "previous_day_window", lambda _: window_for_date(date(2026, 8, 5)))
+    monkeypatch.setattr(cli_module, "create_langfuse_audit_source_from_env", fail_source_factory)
+
+    exit_code = main(["--no-env-file", "--repo-root", str(tmp_path), "run"])
+    competitor.join(timeout=5)
+
+    assert not competitor.is_alive()
+    assert exit_code == 0
+    assert json.loads(capsys.readouterr().out) == {
+        "audit_dates": [],
+        "report_paths": [],
+        "failed_date": None,
+    }
+    assert list(store.attempts_dir.glob("*.json")) == []
+
+
+def test_auto_run_with_no_pending_day_does_not_create_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Would fail if a completed automatic schedule still initialized Langfuse."""
+
+    store = RuntimeAuditArtifactStore(tmp_path / ".data/runtime_audit")
+    store.mark_day_completed(
+        date(2026, 8, 5), attempt_id="complete", bundle_path="/tmp/complete"
+    )
+    monkeypatch.setattr(cli_module, "previous_day_window", lambda _: window_for_date(date(2026, 8, 5)))
+    monkeypatch.setattr(
+        cli_module,
+        "create_langfuse_audit_source_from_env",
+        lambda _: pytest.fail("source must not be created when no day is pending"),
+    )
+
+    assert main(["--no-env-file", "--repo-root", str(tmp_path), "run"]) == 0
+    assert json.loads(capsys.readouterr().out) == {
+        "audit_dates": [],
+        "report_paths": [],
+        "failed_date": None,
+    }
+
+
+def test_source_close_warning_keeps_success_exit_code_and_payload(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Would fail if best-effort source cleanup overturned a committed daily result."""
+
+    local_trace_path = tmp_path / ".data/graph_trace.jsonl"
+    local_trace_path.parent.mkdir(parents=True)
+    local_trace_path.write_text("", encoding="utf-8")
+
+    class CloseWarningSource(FakeLangfuseSource):
+        def close(self) -> None:
+            raise RuntimeError("close warning")
+
+    monkeypatch.setattr(
+        cli_module,
+        "create_langfuse_audit_source_from_env",
+        lambda _: CloseWarningSource([]),
+    )
+
+    exit_code = main(
+        [
+            "--no-env-file",
+            "--repo-root",
+            str(tmp_path),
+            "run",
+            "--date",
+            "2026-08-05",
+        ]
+    )
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    payload = json.loads(captured.out)
+    assert payload["audit_dates"] == ["2026-08-05"]
+    assert payload["failed_date"] is None
+    warning = json.loads(captured.err)
+    assert warning["status"] == "source_close_warning"
+
+
+def test_rolling_and_daily_entrypoints_share_claim_without_self_deadlock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Would fail if legacy rolling collection crossed or recursively deadlocked daily state."""
+
+    store = RuntimeAuditArtifactStore(tmp_path / "runtime_audit")
+    daily_entered = threading.Event()
+    release_daily = threading.Event()
+    rolling_invoked = threading.Event()
+    rolling_source_created = threading.Event()
+    errors: list[BaseException] = []
+
+    def daily_codex(**_: object) -> daily_models_module.DailyCodexAuditReport:
+        daily_entered.set()
+        assert release_daily.wait(timeout=5)
+        return _daily_codex_report()
+
+    class RollingSource(FakeLangfuseSource):
+        def close(self) -> None:
+            return None
+
+    def create_rolling_source(_: object) -> RollingSource:
+        rolling_source_created.set()
+        return RollingSource([])
+
+    monkeypatch.setattr(cli_module, "create_langfuse_audit_source_from_env", create_rolling_source)
+
+    def run_daily() -> None:
+        try:
+            run_one_daily_audit(
+                window=window_for_date(date(2026, 8, 5)),
+                source=FakeLangfuseSource([_daily_trace()]),
+                local_trace_path=tmp_path / "graph_trace.jsonl",
+                store=store,
+                repo_root=tmp_path,
+                codex_runner=daily_codex,
+                collected_at=datetime(2026, 8, 6, 0, 15, tzinfo=timezone.utc),
+            )
+        except BaseException as exc:
+            errors.append(exc)
+
+    rolling_args = SimpleNamespace(
+        window_hours=2.0,
+        date=None,
+        local_trace_path=Path("graph_trace.jsonl"),
+        judge_grace_minutes=15.0,
+        low_score_threshold=0.5,
+    )
+
+    def run_rolling() -> None:
+        rolling_invoked.set()
+        try:
+            cli_module._collect(rolling_args, repo_root=tmp_path, store=store)
+        except BaseException as exc:
+            errors.append(exc)
+
+    daily_thread = threading.Thread(target=run_daily)
+    rolling_thread = threading.Thread(target=run_rolling)
+    daily_thread.start()
+    assert daily_entered.wait(timeout=5)
+    rolling_thread.start()
+    assert rolling_invoked.wait(timeout=5)
+    assert not rolling_source_created.wait(timeout=0.1)
+
+    release_daily.set()
+    daily_thread.join(timeout=5)
+    rolling_thread.join(timeout=5)
+
+    assert not daily_thread.is_alive()
+    assert not rolling_thread.is_alive()
+    assert rolling_source_created.is_set()
+    assert errors == []
+
+
+@pytest.mark.parametrize(
+    "target_date", [date(2026, 8, 4), date(2026, 8, 5), date(2026, 8, 7)]
+)
+def test_non_adjacent_continuous_run_rejects_before_all_daily_side_effects(
+    tmp_path: Path, target_date: date
+) -> None:
+    """Would fail if backward, same-day, or gap runs reached collection or persistence."""
 
     store = RuntimeAuditArtifactStore(tmp_path / "runtime_audit")
     store.mark_day_completed(date(2026, 8, 5), attempt_id="prior", bundle_path="/tmp/prior")
-    before_registry = store.read_issue_registry().model_dump_json()
-    before_watermark = store.watermark_path.read_text(encoding="utf-8")
+    with store.daily_claim():
+        pass
+    before = {
+        path.relative_to(store.root): path.read_bytes()
+        for path in store.root.rglob("*")
+        if path.is_file()
+    }
+    source_calls: list[object] = []
+    codex_calls: list[object] = []
+
+    class TrackingSource(FakeLangfuseSource):
+        def list_traces(self, **kwargs: datetime) -> list[LangfuseTraceSnapshot]:
+            source_calls.append(kwargs)
+            return super().list_traces(**kwargs)
+
     with pytest.raises(ValueError, match="target must follow"):
         run_one_daily_audit(
-            window=window_for_date(date(2026, 8, 7)),
-            source=FakeLangfuseSource([_daily_trace().model_copy(update={"timestamp": datetime(2026, 8, 7, 12, tzinfo=timezone.utc)})]),
+            window=window_for_date(target_date),
+            source=TrackingSource(
+                [
+                    _daily_trace().model_copy(
+                        update={
+                            "timestamp": datetime(
+                                target_date.year,
+                                target_date.month,
+                                target_date.day,
+                                12,
+                                tzinfo=timezone.utc,
+                            )
+                        }
+                    )
+                ]
+            ),
             local_trace_path=tmp_path / "graph_trace.jsonl", store=store, repo_root=tmp_path,
-            codex_runner=lambda **_: _daily_codex_report(audit_date=date(2026, 8, 7)),
+            codex_runner=lambda **kwargs: codex_calls.append(kwargs)
+            or _daily_codex_report(audit_date=target_date),
             collected_at=datetime(2026, 8, 8, 0, 15, tzinfo=timezone.utc),
         )
 
-    assert not store.daily_report_path(date(2026, 8, 7)).exists()
-    assert store.read_issue_registry().model_dump_json() == before_registry
-    assert store.watermark_path.read_text(encoding="utf-8") == before_watermark
+    after = {
+        path.relative_to(store.root): path.read_bytes()
+        for path in store.root.rglob("*")
+        if path.is_file()
+    }
+    assert source_calls == []
+    assert codex_calls == []
+    assert after == before
 
 
 def test_daily_run_dry_run_lists_only_the_requested_date(

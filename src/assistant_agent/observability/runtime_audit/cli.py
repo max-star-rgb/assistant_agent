@@ -13,6 +13,7 @@ from assistant_agent.observability.runtime_audit.collector import collect_runtim
 from assistant_agent.observability.runtime_audit.daily_runner import (
     recover_pending_daily_commits,
     run_failed_daily_audit,
+    run_failed_pending_daily_audit,
     run_one_daily_audit,
     run_pending_daily_audits,
 )
@@ -201,13 +202,23 @@ def _run_daily(args, *, repo_root: Path, store: RuntimeAuditArtifactStore) -> in
         else:
             results = run_pending_daily_audits(yesterday=yesterday, **common)
     except Exception as exc:
-        target = window_for_date(dates[0])
-        results = [
-            run_failed_daily_audit(
-                window=target, store=store, collected_at=collected_at,
+        if args.date is not None:
+            results = [
+                run_failed_daily_audit(
+                    window=window_for_date(args.date),
+                    store=store,
+                    collected_at=collected_at,
+                    error_summary=sanitize_error_message(exc),
+                )
+            ]
+        else:
+            failed_result = run_failed_pending_daily_audit(
+                yesterday=yesterday,
+                store=store,
+                collected_at=collected_at,
                 error_summary=sanitize_error_message(exc),
             )
-        ]
+            results = [] if failed_result is None else [failed_result]
     finally:
         if source is not None:
             try:

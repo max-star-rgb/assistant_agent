@@ -6,7 +6,14 @@ from datetime import date
 import re
 from typing import Literal
 
-from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 
 
 DailyAttemptStatus = Literal["running", "succeeded", "failed"]
@@ -135,3 +142,46 @@ class DailyAuditWatermarkV2(BaseModel):
     last_completed_date: date
     last_attempt_id: str
     bundle_path: str
+
+
+class _StrictDailyAuditIssue(DailyAuditIssue):
+    model_config = ConfigDict(strict=True, extra="forbid")
+
+
+class _StrictIssueRegistry(IssueRegistry):
+    model_config = ConfigDict(strict=True, extra="forbid")
+
+    issues: dict[str, _StrictDailyAuditIssue] = Field(default_factory=dict)
+
+
+class _StrictDailyAuditAttempt(DailyAuditAttempt):
+    model_config = ConfigDict(strict=True, extra="forbid")
+
+
+class DailyAuditCommitIntent(BaseModel):
+    """Strict journal contract for an idempotent multi-artifact daily commit."""
+
+    model_config = ConfigDict(strict=True, extra="forbid")
+
+    schema_version: Literal["assistant_agent_daily_commit_intent_v2"] = (
+        "assistant_agent_daily_commit_intent_v2"
+    )
+    attempt: _StrictDailyAuditAttempt
+    markdown: str
+    registry: _StrictIssueRegistry | None
+    commit_continuous_state: bool
+    expected_predecessor_watermark: date | None
+    previous_registry_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    desired_registry_digest: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+
+    @model_validator(mode="after")
+    def _validate_commit_shape(self) -> "DailyAuditCommitIntent":
+        if self.attempt.status != "running":
+            raise ValueError("daily commit intent attempt must be running")
+        if (self.registry is None) != (self.desired_registry_digest is None):
+            raise ValueError("daily commit registry and desired digest must appear together")
+        if not self.commit_continuous_state and self.registry is not None:
+            raise ValueError("explicit daily refresh cannot carry continuous registry state")
+        return self
