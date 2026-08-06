@@ -3,9 +3,28 @@
 from __future__ import annotations
 
 from collections import Counter
+from datetime import date
+import re
 
+from assistant_agent.observability.runtime_audit.daily_models import (
+    DailyAuditIssue,
+    DailyCodexAuditReport,
+)
 from assistant_agent.observability.runtime_audit.models import CodexAuditReport, RuntimeAuditBundle
-from assistant_agent.providers.provider_errors import sanitize_error_message
+from assistant_agent.observability.runtime_audit.safety import (
+    sanitize_runtime_audit_text,
+)
+
+
+_MACHINE_EVIDENCE_REF = re.compile(
+    r"(?<![A-Za-z0-9_])(?:trace|code|test|observation|run|score):[A-Za-z0-9._/:@+=-]+"
+)
+_UUID = re.compile(
+    r"(?<![A-Za-z0-9_])[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?![A-Za-z0-9_])",
+    re.IGNORECASE,
+)
+_MARKDOWN_CONTROL = re.compile(r"([\\`*_{}\[\]<>#+()\-.!|])")
+_UNSAFE_ISSUE_KEY = re.compile(r"[^A-Za-z0-9._/:@+=-]")
 
 
 def render_deterministic_report(bundle: RuntimeAuditBundle) -> str:
@@ -120,5 +139,225 @@ def render_codex_report(report: CodexAuditReport) -> str:
     return "\n".join(lines)
 
 
+def render_daily_codex_report(
+    report: DailyCodexAuditReport,
+    *,
+    issues: list[DailyAuditIssue] | None = None,
+) -> str:
+    """Render the daily Codex contract as a plain-language Chinese report."""
+
+    issue_view = report.issues if issues is None else issues
+    decision_issues = [
+        issue
+        for issue in issue_view
+        if issue.status in {"open", "regressed"}
+    ]
+    addressed_issues = [
+        issue for issue in issue_view if issue.status == "code_addressed"
+    ]
+    verified_issues = [
+        issue for issue in issue_view if issue.status == "runtime_verified"
+    ]
+    uncertain_issues = [
+        issue for issue in issue_view if issue.status == "uncertain"
+    ]
+    lines = [
+        f"# {report.audit_date.isoformat()} 运行审计日报",
+        "",
+        "## 一句话结论",
+        "",
+        _plain_text(report.daily_summary),
+        "",
+        "## 昨日概况",
+        "",
+        _plain_text(report.activity_summary),
+        "",
+        "## 需要你决定",
+        "",
+    ]
+    _append_issue_guidance(lines, decision_issues, empty_message="昨天没有需要维护者决定的问题。")
+    lines.extend(["", "## 需要继续观察", ""])
+    _append_issue_guidance(
+        lines,
+        uncertain_issues,
+        empty_message="昨天没有需要继续观察的证据不足项。",
+        include_suggested_change=False,
+    )
+    lines.extend(["", "## 已处理等待自然验证", ""])
+    _append_issue_guidance(
+        lines,
+        addressed_issues,
+        empty_message="昨天没有已处理、等待自然验证的问题。",
+        include_suggested_change=False,
+    )
+    lines.extend(["", "## 昨日已验证解决", ""])
+    _append_issue_guidance(
+        lines,
+        verified_issues,
+        empty_message="昨天没有已在真实运行中验证解决的问题。",
+        include_suggested_change=False,
+    )
+    lines.extend(
+        [
+            "",
+            "## 记忆情况",
+            "",
+            _plain_text(report.memory_summary),
+            "",
+            "## 系统运行情况",
+            "",
+            _plain_text(report.infrastructure_summary),
+        ]
+    )
+    if report.limitations:
+        lines.extend(["", "审计限制："])
+        lines.extend(
+            f"- {_plain_text(value, fallback='未提供限制说明。')}"
+            for value in report.limitations
+        )
+    lines.extend(["", "## 证据附录", ""])
+    _append_evidence_appendix(lines, issue_view)
+    return "\n".join(lines) + "\n"
+
+
+def render_empty_daily_report(
+    audit_date: date,
+    *,
+    langfuse_available: bool,
+    local_available: bool,
+    issues: list[DailyAuditIssue] | None = None,
+) -> str:
+    """Render a successful no-activity day without invoking Codex."""
+
+    availability = [
+        "Langfuse 证据源可用" if langfuse_available else "Langfuse 证据源不可用",
+        "本地完整性证据可用" if local_available else "本地完整性证据不可用",
+    ]
+    if not (langfuse_available and local_available):
+        return render_failed_daily_report(
+            audit_date,
+            f"证据源不完整：{'；'.join(availability)}。无法确认昨日是否无可审计对话。",
+        )
+    lines = [
+        f"# {audit_date.isoformat()} 运行审计日报",
+        "",
+        "## 一句话结论",
+        "",
+        "昨日无可审计对话，审计任务运行正常。",
+        "",
+        "## 系统运行情况",
+        "",
+        f"- {'；'.join(availability)}。",
+    ]
+    active = [
+        issue
+        for issue in (issues or [])
+        if issue.status in {"open", "regressed", "code_addressed", "uncertain"}
+    ]
+    if active:
+        lines.extend(["", "## 连续问题状态", ""])
+        for issue in active:
+            label = {
+                "open": "仍待决定",
+                "regressed": "再次出现",
+                "code_addressed": "已处理，等待自然验证",
+                "uncertain": "需要继续观察",
+            }[issue.status]
+            lines.append(
+                f"- `{_render_issue_key(issue.issue_key)}`：{_plain_text(issue.title, fallback='未命名问题')}（{label}）。"
+            )
+    lines.append("")
+    return "\n".join(lines)
+
+
+def render_failed_daily_report(audit_date: date, error_summary: str) -> str:
+    """Render a safe and explicit daily-audit failure for maintainers."""
+
+    return "\n".join(
+        [
+            f"# {audit_date.isoformat()} 运行审计日报",
+            "",
+            "## 一句话结论",
+            "",
+            "审计未完成，无法对昨日运行情况给出结论。",
+            "",
+            "## 系统运行情况",
+            "",
+            f"- 失败摘要：{_failed_plain_text(error_summary)}",
+            "",
+        ]
+    )
+
+
+def _append_issue_guidance(
+    lines: list[str],
+    issues: list[DailyAuditIssue],
+    *,
+    empty_message: str,
+    include_suggested_change: bool = True,
+) -> None:
+    if not issues:
+        lines.append(empty_message)
+        return
+    for issue in issues:
+        lines.extend([f"### {_plain_text(issue.title, fallback='未命名问题')}", ""])
+        lines.append(_plain_text(issue.plain_summary, fallback="暂无问题说明。"))
+        lines.append(
+            f"- 对用户的影响：{_plain_text(issue.user_impact, fallback='用户影响尚不明确。')}"
+        )
+        if include_suggested_change:
+            lines.append(
+                f"- 建议：{_plain_text(issue.suggested_change, fallback='暂无具体修改建议。')}"
+            )
+        lines.append(
+            f"- 如何验证：{_plain_text(issue.validation, fallback='尚未提供验证方式。')}"
+        )
+        lines.append("")
+    lines.pop()
+
+
+def _append_evidence_appendix(lines: list[str], issues: list[DailyAuditIssue]) -> None:
+    has_evidence = False
+    for issue in issues:
+        references = [
+            *issue.trace_evidence_refs,
+            *issue.code_evidence_refs,
+            *issue.runtime_verification_refs,
+        ]
+        if not references:
+            continue
+        has_evidence = True
+        lines.append(
+            f"- `{_render_issue_key(issue.issue_key)}`："
+            f"{', '.join(f'`{_safe(ref)}`' for ref in references)}"
+        )
+    if not has_evidence:
+        lines.append("没有可附上的机器证据。")
+
+
 def _safe(value: str) -> str:
-    return sanitize_error_message(value)
+    return sanitize_runtime_audit_text(value)
+
+
+def _render_issue_key(value: str) -> str:
+    return _UNSAFE_ISSUE_KEY.sub("_", sanitize_runtime_audit_text(value))
+
+
+def _plain_text(value: str, *, fallback: str = "") -> str:
+    """Render untrusted model text as one escaped Markdown-safe human sentence."""
+
+    if not value.strip():
+        return fallback
+    sanitized = sanitize_runtime_audit_text(value).strip()
+    without_machine_refs = _MACHINE_EVIDENCE_REF.sub("机器证据见附录", sanitized)
+    without_machine_ids = _UUID.sub("机器证据见附录", without_machine_refs)
+    collapsed = " ".join(without_machine_ids.split())
+    if not collapsed:
+        return fallback
+    return _MARKDOWN_CONTROL.sub(r"\\\1", collapsed)
+
+
+def _failed_plain_text(error_summary: str) -> str:
+    """Render a failure summary without retaining URL-embedded user credentials."""
+
+    return _plain_text(error_summary, fallback="未提供失败摘要。")

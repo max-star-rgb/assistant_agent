@@ -2,14 +2,25 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime, timedelta
+from contextlib import contextmanager
+import hashlib
+import fcntl
 import json
+import os
 from pathlib import Path
+import tempfile
 from typing import Literal
 from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel
 
+from assistant_agent.observability.runtime_audit.daily_models import (
+    DailyAuditAttempt,
+    DailyAuditCommitIntent,
+    DailyAuditWatermarkV2,
+    IssueRegistry,
+)
 from assistant_agent.observability.runtime_audit.models import RuntimeAuditBundle
 
 
@@ -42,6 +53,13 @@ class RuntimeAuditArtifactStore:
         self.state_dir = self.root / "state"
         self.inbox_dir = self.root / "inbox"
         self.reports_dir = self.root / "reports"
+        self.attempts_dir = self.state_dir / "attempts"
+        self.schemas_dir = self.state_dir / "schemas"
+        self.commits_dir = self.state_dir / "commits"
+        self.quarantine_dir = self.commits_dir / "quarantine"
+        self.lock_path = self.state_dir / "daily-run.lock"
+        self.issues_path = self.state_dir / "issues.json"
+        self.latest_bundle_path = self.state_dir / "latest-bundle.json"
         self.watermark_path = self.state_dir / "watermark.json"
 
     def allocate_audit_run_id(self, collected_at: datetime) -> str:
@@ -66,40 +84,219 @@ class RuntimeAuditArtifactStore:
             bundle_path=str(path),
         )
         _atomic_write(
-            self.watermark_path,
+            self.latest_bundle_path,
             json.dumps(watermark.model_dump(mode="json"), ensure_ascii=False, indent=2),
         )
         return path
 
     def write_deterministic_report(self, bundle: RuntimeAuditBundle, markdown: str) -> Path:
-        path = self.reports_dir / f"{bundle.audit_run_id}.md"
+        path = self.attempts_dir / f"{bundle.audit_run_id}.deterministic.md"
         _atomic_write(path, markdown)
         return path
 
     def codex_json_path(self, audit_run_id: str) -> Path:
-        return self.reports_dir / f"{audit_run_id}.json"
+        return self.attempts_dir / f"{audit_run_id}.codex.json"
 
     def codex_schema_path(self, audit_run_id: str) -> Path:
-        return self.state_dir / f"{audit_run_id}.report-schema.json"
+        return self.schemas_dir / f"{audit_run_id}.report-schema.json"
+
+    def write_attempt(self, attempt: DailyAuditAttempt) -> Path:
+        path = self.attempts_dir / f"{attempt.attempt_id}.json"
+        _atomic_write(path, attempt.model_dump_json(indent=2))
+        return path
+
+    def commit_intent_path(self, attempt_id: str) -> Path:
+        return self.commits_dir / f"{attempt_id}.json"
+
+    def write_commit_intent(self, attempt: DailyAuditAttempt, *, markdown: str, registry: IssueRegistry | None, commit_continuous_state: bool) -> Path:
+        path = self.commit_intent_path(attempt.attempt_id)
+        predecessor = self.last_completed_date()
+        if commit_continuous_state and predecessor is not None and audit_date_next(predecessor) != attempt.audit_date:
+            raise ValueError("daily commit target must follow its predecessor")
+        payload = DailyAuditCommitIntent.model_validate({
+            "schema_version": "assistant_agent_daily_commit_intent_v2",
+            "attempt": attempt.model_dump(mode="python"),
+            "markdown": markdown,
+            "registry": registry.model_dump(mode="python") if registry is not None else None,
+            "commit_continuous_state": commit_continuous_state,
+            "expected_predecessor_watermark": predecessor,
+            "previous_registry_digest": self.issue_registry_digest(),
+            "desired_registry_digest": registry_digest(registry) if registry is not None else None,
+        })
+        _atomic_write(path, payload.model_dump_json(indent=2))
+        return path
+
+    def issue_registry_digest(self) -> str:
+        return registry_digest(self.read_issue_registry())
+
+    def read_commit_intents(self) -> list[dict]:
+        if not self.commits_dir.exists():
+            return []
+        return [json.loads(path.read_text(encoding="utf-8")) for path in sorted(self.commits_dir.glob("*.json"))]
+
+    def commit_intent_files(self) -> list[Path]:
+        return sorted(self.commits_dir.glob("*.json")) if self.commits_dir.exists() else []
+
+    def quarantine_commit_intent(self, path: Path) -> Path:
+        self.quarantine_dir.mkdir(parents=True, exist_ok=True)
+        target = self.quarantine_dir / path.name
+        sequence = 1
+        while target.exists():
+            target = self.quarantine_dir / f"{path.stem}.{sequence:02d}{path.suffix}"
+            sequence += 1
+        os.replace(path, target)
+        return target
+
+    def clear_commit_intent(self, attempt_id: str) -> None:
+        self.commit_intent_path(attempt_id).unlink(missing_ok=True)
+
+    @contextmanager
+    def daily_claim(self):
+        self.lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with self.lock_path.open("a+", encoding="utf-8") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+    def read_issue_registry(self) -> IssueRegistry:
+        if not self.issues_path.exists():
+            return IssueRegistry()
+        return IssueRegistry.model_validate_json(
+            self.issues_path.read_text(encoding="utf-8")
+        )
+
+    def write_issue_registry(self, registry: IssueRegistry) -> Path:
+        _atomic_write(self.issues_path, registry.model_dump_json(indent=2))
+        return self.issues_path
+
+    def daily_report_path(self, audit_date: date) -> Path:
+        return self.reports_dir / f"{audit_date.isoformat()}.md"
+
+    def write_daily_report(self, audit_date: date, markdown: str, *, replace: bool = True) -> Path:
+        path = self.daily_report_path(audit_date)
+        if replace:
+            _atomic_write(path, markdown)
+        else:
+            _atomic_write_if_absent(path, markdown)
+        return path
+
+    def write_failed_daily_report_if_absent(self, audit_date: date, markdown: str) -> Path:
+        return self.write_daily_report(audit_date, markdown, replace=False)
+
+    def mark_day_completed(
+        self,
+        audit_date: date,
+        *,
+        attempt_id: str,
+        bundle_path: str,
+    ) -> Path:
+        current = self.read_daily_watermark()
+        if current is not None:
+            if current.last_completed_date == audit_date and current.last_attempt_id == attempt_id:
+                return self.watermark_path
+            if audit_date != current.last_completed_date + timedelta(days=1):
+                raise ValueError("daily watermark must advance exactly one calendar day")
+        watermark = DailyAuditWatermarkV2(
+            last_completed_date=audit_date,
+            last_attempt_id=attempt_id,
+            bundle_path=bundle_path,
+        )
+        _atomic_write(
+            self.watermark_path,
+            json.dumps(watermark.model_dump(mode="json"), ensure_ascii=False, indent=2),
+        )
+        return self.watermark_path
+
+    def last_completed_date(self) -> date | None:
+        watermark = self.read_daily_watermark()
+        return watermark.last_completed_date if watermark else None
+
+    def read_daily_watermark(self) -> DailyAuditWatermarkV2 | None:
+        if not self.watermark_path.exists():
+            return None
+        payload = json.loads(self.watermark_path.read_text(encoding="utf-8"))
+        if (
+            payload.get("schema_version")
+            != "assistant_agent_runtime_audit_watermark_v2"
+        ):
+            return None
+        return DailyAuditWatermarkV2.model_validate(payload)
+
+    def is_day_completed(self, audit_date: date) -> bool:
+        """Whether a successful checkpoint proves this date already has a good report."""
+
+        completed = self.last_completed_date()
+        return completed is not None and completed >= audit_date
 
     def _artifact_exists(self, audit_run_id: str) -> bool:
         return any(
             path.exists()
             for path in (
                 self.inbox_dir / f"{audit_run_id}.json",
-                self.reports_dir / f"{audit_run_id}.json",
                 self.reports_dir / f"{audit_run_id}.md",
-                self.state_dir / f"{audit_run_id}.report-schema.json",
+                self.attempts_dir / f"{audit_run_id}.codex.json",
+                self.schemas_dir / f"{audit_run_id}.report-schema.json",
+                self.attempts_dir / f"{audit_run_id}.json",
             )
         )
 
 
 def _atomic_write(path: Path, content: str) -> None:
+    temporary = _write_temporary(path, content)
+    try:
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _atomic_write_if_absent(path: Path, content: str) -> bool:
+    """Publish fully written content once without replacing an existing artifact."""
+
+    temporary = _write_temporary(path, content)
+    try:
+        try:
+            os.link(temporary, path)
+        except FileExistsError:
+            return False
+    finally:
+        temporary.unlink(missing_ok=True)
+    return True
+
+
+def _write_temporary(path: Path, content: str) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(content + ("" if content.endswith("\n") else "\n"), encoding="utf-8")
-    temporary.replace(path)
+    descriptor, temporary_name = tempfile.mkstemp(
+        dir=path.parent,
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        text=True,
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(_with_trailing_newline(content))
+            handle.flush()
+            os.fsync(handle.fileno())
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
+    return temporary
+
+
+def _with_trailing_newline(content: str) -> str:
+    return content + ("" if content.endswith("\n") else "\n")
 
 
 def _iso_z(value) -> str:
     return value.isoformat().replace("+00:00", "Z")
+
+
+def registry_digest(registry: IssueRegistry | None) -> str:
+    payload = registry.model_dump_json() if registry is not None else ""
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def audit_date_next(value: date) -> date:
+    return value + timedelta(days=1)

@@ -18,6 +18,8 @@ from assistant_agent.observability.runtime_audit.runner import (
     run_codex_report,
     sanitized_codex_environment,
 )
+from assistant_agent.observability.runtime_audit import daily_models as daily_models_module
+from assistant_agent.observability.runtime_audit import runner as runner_module
 from assistant_agent.observability.runtime_audit.storage import RuntimeAuditArtifactStore
 from assistant_agent.observability.runtime_audit.report import render_deterministic_report
 from evals.agent.contracts import AssertionResult, DimensionResult
@@ -447,7 +449,7 @@ def test_langfuse_source_paginates_headers_then_fetches_full_trace_details() -> 
     assert traces[0].scores[0].score_id == "score-trace-1"
 
 
-def test_artifact_store_writes_versioned_bundle_watermark_and_read_only_report(
+def test_artifact_store_writes_versioned_bundle_latest_pointer_and_read_only_report(
     tmp_path: Path,
 ) -> None:
     """Would fail if the hourly run could not resume or its report implied mutation."""
@@ -469,16 +471,17 @@ def test_artifact_store_writes_versioned_bundle_watermark_and_read_only_report(
     )
 
     persisted = json.loads(bundle_path.read_text(encoding="utf-8"))
-    watermark = json.loads(store.watermark_path.read_text(encoding="utf-8"))
+    latest_bundle = json.loads(store.latest_bundle_path.read_text(encoding="utf-8"))
     markdown = markdown_path.read_text(encoding="utf-8")
     assert persisted["schema_version"] == "assistant_agent_runtime_audit_bundle_v1"
     assert persisted["production_mutation_allowed"] is False
-    assert watermark == {
+    assert latest_bundle == {
         "schema_version": "assistant_agent_runtime_audit_watermark_v1",
         "audit_run_id": bundle.audit_run_id,
         "last_window_end": now.isoformat().replace("+00:00", "Z"),
         "bundle_path": str(bundle_path),
     }
+    assert not store.watermark_path.exists()
     assert "No production, code, Langfuse, or memory mutation was performed." in markdown
 
 
@@ -567,6 +570,136 @@ def test_codex_report_runner_uses_explicit_executable_outside_service_path(
     )
 
     assert captured["command"][0] == "/opt/codex/bin/codex"
+
+
+def test_daily_codex_runner_uses_issue_state_and_daily_schema_in_stdin(
+    tmp_path: Path,
+) -> None:
+    """Would fail if daily Codex received state in argv or could return a rolling report."""
+
+    audit_date = datetime(2026, 8, 5, tzinfo=UTC).date()
+    bundle_path = tmp_path / "inbox" / "daily.json"
+    issues_path = tmp_path / "state" / "issues.json"
+    output_path = tmp_path / "state" / "attempts" / "daily.codex.json"
+    schema_path = tmp_path / "state" / "schemas" / "daily.schema.json"
+    bundle_path.parent.mkdir()
+    issues_path.parent.mkdir()
+    bundle_path.write_text('{"schema_version":"assistant_agent_runtime_audit_bundle_v1"}', encoding="utf-8")
+    issues_path.write_text('{"schema_version":"assistant_agent_runtime_audit_issues_v1","issues":{}}', encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        captured["input"] = kwargs["input"]
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(
+            daily_models_module.DailyCodexAuditReport(
+                audit_date=audit_date,
+                daily_summary="没有需要处理的问题。",
+                activity_summary="昨日无可审计对话。",
+                memory_summary="没有记忆问题。",
+                infrastructure_summary="审计任务运行正常。",
+            ).model_dump_json(),
+            encoding="utf-8",
+        )
+        return SimpleNamespace(returncode=0, stderr="", stdout="")
+
+    report = runner_module.run_daily_codex_report(
+        audit_date=audit_date,
+        bundle_path=bundle_path,
+        issues_path=issues_path,
+        repo_root=tmp_path,
+        output_path=output_path,
+        schema_path=schema_path,
+        environment={"PATH": "/usr/bin", "LANGFUSE_SECRET_KEY": "do-not-leak"},
+        process_runner=fake_run,
+    )
+
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    assert report.audit_date == audit_date
+    assert schema["additionalProperties"] is False
+    assert set(schema["required"]) == set(schema["properties"])
+    assert str(bundle_path) in str(captured["input"])
+    assert str(issues_path) in str(captured["input"])
+    assert str(bundle_path) not in captured["command"]
+    assert str(issues_path) not in captured["command"]
+    assert "报告读者是项目维护者，不是另一个 Codex。" in str(captured["input"])
+    assert "production_mutation_allowed 必须为 false" in str(captured["input"])
+    assert "除输入已有机器证据外，不得声称已运行测试、已部署、已在生产或真实 trace 验证。" in str(captured["input"])
+    assert "不得把推测写成事实。" in str(captured["input"])
+
+
+def test_codex_environment_removes_credentials_and_proxies_but_preserves_codex_login_home() -> None:
+    """Would fail if report subprocess leaked credentials or lost Codex's controlled login home."""
+
+    sanitized = runner_module.sanitized_codex_environment(
+        {
+            "PATH": "/usr/bin",
+            "HOME": "/controlled/codex-home",
+            "CODEX_HOME": "/controlled/codex-home/.codex",
+            "LANGFUSE_SECRET_KEY": "redacted",
+            "APP_TOKEN": "redacted",
+            "HTTPS_PROXY": "http://credential@proxy.invalid",
+            "HTTP_PROXY": "http://credential@proxy.invalid",
+            "ALL_PROXY": "socks5://credential@proxy.invalid",
+            "SERVICE_HTTPS_PROXY_URL": "http://credential@proxy.invalid",
+            "DATABASE_URL": "redacted",
+            "GITHUB_PAT": "redacted",
+            "PRIVATE_KEY": "redacted",
+            "UNRELATED_RUNTIME_SETTING": "must-not-pass-through",
+        }
+    )
+
+    assert sanitized == {
+        "PATH": "/usr/bin",
+        "HOME": "/controlled/codex-home",
+        "CODEX_HOME": "/controlled/codex-home/.codex",
+        "MULTIMODAL_AGENT_PROVIDER_MODE": "mock",
+    }
+
+
+def test_codex_environment_has_an_explicit_minimal_startup_allowlist() -> None:
+    """Would fail if an unlisted runtime variable reached the isolated Codex process."""
+
+    sanitized = runner_module.sanitized_codex_environment(
+        {
+            "PATH": "/usr/bin",
+            "HOME": "/controlled/codex-home",
+            "CODEX_HOME": "/controlled/codex-home/.codex",
+            "ASSISTANT_AGENT_CODEX_EXECUTABLE": "/opt/codex/bin/codex",
+            "LANG": "zh_CN.UTF-8",
+            "LC_ALL": "zh_CN.UTF-8",
+            "LC_CTYPE": "zh_CN.UTF-8",
+            "LC_API_KEY": "redacted",
+            "LC_DATABASE_URL": "redacted",
+            "TERM": "xterm-256color",
+            "TMPDIR": "/tmp/codex",
+            "SSL_CERT_FILE": "/etc/ssl/cert.pem",
+            "SSL_CERT_DIR": "/etc/ssl/certs",
+            "REQUESTS_CA_BUNDLE": "/etc/ssl/custom.pem",
+            "DATABASE_URL": "redacted",
+            "GITHUB_PAT": "redacted",
+            "PRIVATE_KEY": "redacted",
+            "OTHER_PROXY_VALUE": "http://credential@proxy.invalid",
+            "UNLISTED_VALUE": "must-not-pass-through",
+        }
+    )
+
+    assert sanitized == {
+        "PATH": "/usr/bin",
+        "HOME": "/controlled/codex-home",
+        "CODEX_HOME": "/controlled/codex-home/.codex",
+        "ASSISTANT_AGENT_CODEX_EXECUTABLE": "/opt/codex/bin/codex",
+        "LANG": "zh_CN.UTF-8",
+        "LC_ALL": "zh_CN.UTF-8",
+        "LC_CTYPE": "zh_CN.UTF-8",
+        "TERM": "xterm-256color",
+        "TMPDIR": "/tmp/codex",
+        "SSL_CERT_FILE": "/etc/ssl/cert.pem",
+        "SSL_CERT_DIR": "/etc/ssl/certs",
+        "REQUESTS_CA_BUNDLE": "/etc/ssl/custom.pem",
+        "MULTIMODAL_AGENT_PROVIDER_MODE": "mock",
+    }
 
 
 def test_langfuse_read_failure_is_infrastructure_unknown_not_missing_export(

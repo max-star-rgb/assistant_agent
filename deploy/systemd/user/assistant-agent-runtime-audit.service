@@ -1,5 +1,5 @@
 [Unit]
-Description=Read-only Langfuse-first Assistant Agent runtime audit
+Description=Read-only daily Langfuse-first Assistant Agent runtime audit
 After=network-online.target
 Wants=network-online.target
 
@@ -13,4 +13,4 @@ ExecStart=%h/miniconda3/envs/hello_agent/bin/python scripts/run_runtime_audit.py
 NoNewPrivileges=true
 PrivateTmp=true
 UMask=0077
-TimeoutStartSec=20min
+TimeoutStartSec=infinity

@@ -42,6 +42,12 @@ For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
 ## Observability and local operations
 
 - `scripts/trace_metrics.py`: redacted trace metric summary.
+- `scripts/run_runtime_audit.py`: 只读日审计稳定入口。默认 `run` 审计前一北京时间自然日，并从
+  watermark 顺序补齐漏掉的日期；Langfuse 是主证据，本地 trace 只做完整性与有限 fallback。人读结果只写
+  `.data/runtime_audit/reports/YYYY-MM-DD.md`，内部 JSON 留在 inbox/state；已确认的空日生成极简中文日报且
+  不调用 Codex。`run --date YYYY-MM-DD` 只刷新当日日报并执行只读 lifecycle/evidence 校验，不改变连续
+  issue registry 或 watermark。其他完整参数见 `--help` 与
+  [`docs/observability-harness.md`](../docs/observability-harness.md)。
 - Gateway lifecycle 由 `scripts/run_server.py` 写入 `.data/gateway_events.jsonl`；仓库当前没有
   独立 viewer，按 `run_id`、`turn_id` 或 `trace_id` 使用标准 JSONL/文本工具检索。
 

@@ -56,7 +56,10 @@ class LangfuseSdkAuditSource:
                 continue
             detail = self.client.api.trace.get(trace_id)
             snapshot = LangfuseTraceSnapshot.from_api_payload(detail)
-            if snapshot.name in {None, "assistant.turn"}:
+            if (
+                snapshot.name in {None, "assistant.turn"}
+                and window_start <= snapshot.timestamp < window_end
+            ):
                 traces.append(
                     snapshot.model_copy(update={"scores": self._scores_for_trace(trace_id)})
                 )

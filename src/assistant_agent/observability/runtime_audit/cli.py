@@ -3,13 +3,26 @@
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
 import sys
 
 from assistant_agent.observability.runtime_audit.collector import collect_runtime_audit
+from assistant_agent.observability.runtime_audit.daily_runner import (
+    DailyAuditDayError,
+    recover_pending_daily_commits,
+    run_failed_daily_audit,
+    run_failed_pending_daily_audit,
+    run_one_daily_audit,
+    run_pending_daily_audits,
+)
+from assistant_agent.observability.runtime_audit.daily_window import (
+    pending_audit_dates,
+    previous_day_window,
+    window_for_date,
+)
 from assistant_agent.observability.runtime_audit.langfuse_source import (
     create_langfuse_audit_source_from_env,
 )
@@ -21,9 +34,14 @@ from assistant_agent.observability.runtime_audit.report import (
     render_codex_report,
     render_deterministic_report,
 )
-from assistant_agent.observability.runtime_audit.runner import run_codex_report
+from assistant_agent.observability.runtime_audit.runner import (
+    run_codex_report,
+    run_daily_codex_report,
+)
 from assistant_agent.observability.runtime_audit.storage import RuntimeAuditArtifactStore
-from assistant_agent.providers.provider_errors import sanitize_error_message
+from assistant_agent.observability.runtime_audit.safety import (
+    sanitize_runtime_audit_text,
+)
 from assistant_agent.runtime.assistant_run_service import load_env_file
 
 
@@ -35,26 +53,31 @@ def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     repo_root = Path(args.repo_root).resolve()
     store = RuntimeAuditArtifactStore(repo_root / args.artifact_root)
-    if args.command in {"collect", "run"} and args.dry_run:
-        print(
-            json.dumps(
-                {
-                    "status": "dry_run",
-                    "command": args.command,
-                    "repo_root": str(repo_root),
-                    "artifact_root": str(store.root),
-                    "local_trace_path": str(repo_root / args.local_trace_path),
-                    "window_hours": args.window_hours,
-                    "codex_enabled": args.command == "run" and not args.skip_codex,
-                    "production_mutation_allowed": False,
-                },
-                ensure_ascii=False,
-            )
-        )
-        return 0
-    if args.command in {"collect", "run", "configure-evaluators"} and not args.no_env_file:
-        load_env_file(repo_root / args.env_file, override=False)
     try:
+        if args.command == "run" and args.window_hours is None and args.dry_run:
+            return _daily_dry_run(args, store=store)
+        if args.command in {"collect", "run"} and args.dry_run:
+            print(
+                json.dumps(
+                    {
+                        "status": "dry_run",
+                        "command": args.command,
+                        "repo_root": str(repo_root),
+                        "artifact_root": str(store.root),
+                        "local_trace_path": str(repo_root / args.local_trace_path),
+                        "window_hours": args.window_hours,
+                        "codex_enabled": args.command == "run" and not args.skip_codex,
+                        "production_mutation_allowed": False,
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            return 0
+        if (
+            args.command in {"collect", "run", "configure-evaluators"}
+            and not args.no_env_file
+        ):
+            load_env_file(repo_root / args.env_file, override=False)
         if args.command == "configure-evaluators":
             if args.apply and not args.allow_online_judge:
                 raise RuntimeError("--apply also requires --allow-online-judge.")
@@ -74,6 +97,8 @@ def main(argv: list[str] | None = None) -> int:
             bundle_path, _, _ = _collect(args, repo_root=repo_root, store=store)
             print(json.dumps({"status": "collected", "bundle_path": str(bundle_path)}))
             return 0
+        if args.command == "run" and args.window_hours is None and not args.skip_codex:
+            return _run_daily(args, repo_root=repo_root, store=store)
         if args.command == "report":
             bundle_path = _resolve_bundle_path(args.bundle, store=store, repo_root=repo_root)
             return _report(
@@ -83,7 +108,7 @@ def main(argv: list[str] | None = None) -> int:
                 skip_codex=args.skip_codex,
                 codex_timeout_seconds=args.codex_timeout_seconds,
             )
-        bundle_path, _, bundle = _collect(args, repo_root=repo_root, store=store)
+        bundle_path, report_path, bundle = _collect(args, repo_root=repo_root, store=store)
         if args.skip_codex:
             print(
                 json.dumps(
@@ -91,7 +116,7 @@ def main(argv: list[str] | None = None) -> int:
                         "status": "completed_without_codex",
                         "audit_run_id": bundle.audit_run_id,
                         "bundle_path": str(bundle_path),
-                        "report_path": str(store.reports_dir / f"{bundle.audit_run_id}.md"),
+                        "report_path": str(report_path),
                     }
                 )
             )
@@ -109,19 +134,149 @@ def main(argv: list[str] | None = None) -> int:
                 {
                     "status": "failed",
                     "error_type": type(exc).__name__,
-                    "message": sanitize_error_message(exc),
+                    "message": sanitize_runtime_audit_text(exc),
                 },
                 ensure_ascii=False,
             ),
             file=sys.stderr,
         )
-        return 2
+    return 2
+
+
+def _daily_dry_run(args, *, store: RuntimeAuditArtifactStore) -> int:
+    if args.date is not None:
+        dates = [args.date]
+    else:
+        yesterday = previous_day_window(datetime.now(timezone.utc)).audit_date
+        from assistant_agent.observability.runtime_audit.daily_window import pending_audit_dates
+
+        dates = pending_audit_dates(
+            yesterday=yesterday, last_completed=store.last_completed_date()
+        )
+    print(
+        json.dumps(
+            {
+                "status": "dry_run",
+                "audit_dates": [item.isoformat() for item in dates],
+                "report_paths": [str(store.daily_report_path(item)) for item in dates],
+                "failed_date": None,
+                "codex_enabled": not args.skip_codex,
+                "production_mutation_allowed": False,
+            },
+            ensure_ascii=False,
+        )
+    )
+    return 0
+
+
+def _run_daily(args, *, repo_root: Path, store: RuntimeAuditArtifactStore) -> int:
+    """Run explicit refreshes or ordered backfill through the resumable daily loop."""
+
+    collected_at = datetime.now(timezone.utc)
+    recover_pending_daily_commits(store)
+    yesterday = previous_day_window(collected_at).audit_date
+    dates = [args.date] if args.date is not None else pending_audit_dates(
+        yesterday=yesterday, last_completed=store.last_completed_date()
+    )
+    if not dates:
+        print(json.dumps({"audit_dates": [], "report_paths": [], "failed_date": None}))
+        return 0
+    try:
+        source = create_langfuse_audit_source_from_env(os.environ)
+    except Exception as exc:
+        if args.date is not None:
+            results = [
+                run_failed_daily_audit(
+                    window=window_for_date(args.date),
+                    store=store,
+                    collected_at=collected_at,
+                    error_summary=sanitize_runtime_audit_text(exc),
+                )
+            ]
+        else:
+            failed_result = run_failed_pending_daily_audit(
+                yesterday=yesterday,
+                store=store,
+                collected_at=collected_at,
+                error_summary=sanitize_runtime_audit_text(exc),
+            )
+            results = [] if failed_result is None else [failed_result]
+        execution_failed_date = None
+    else:
+        execution_failed_date = None
+        def runner(**kwargs):
+            return run_daily_codex_report(
+                **kwargs, timeout_seconds=args.codex_timeout_seconds
+            )
+        common = {
+            "source": source,
+            "local_trace_path": repo_root / args.local_trace_path,
+            "store": store,
+            "repo_root": repo_root,
+            "codex_runner": runner,
+            "collected_at": collected_at,
+            "judge_grace": timedelta(minutes=args.judge_grace_minutes),
+            "low_score_threshold": args.low_score_threshold,
+        }
+        try:
+            if args.date is not None:
+                results = [
+                    run_one_daily_audit(
+                        window=window_for_date(args.date),
+                        commit_continuous_state=False,
+                        **common,
+                    )
+                ]
+            else:
+                results = run_pending_daily_audits(yesterday=yesterday, **common)
+        except DailyAuditDayError as exc:
+            results = exc.completed_results
+            execution_failed_date = exc.audit_date
+        except Exception:
+            if args.date is None:
+                raise
+            results = []
+            execution_failed_date = args.date
+        finally:
+            try:
+                source.close()
+            except Exception as exc:
+                print(
+                    json.dumps({"status": "source_close_warning", "message": sanitize_runtime_audit_text(exc)}),
+                    file=sys.stderr,
+                )
+    failed = next((item for item in results if item.status == "failed"), None)
+    failed_date = failed.audit_date if failed else execution_failed_date
+    audit_dates = [item.audit_date for item in results]
+    if failed_date is not None and failed_date not in audit_dates:
+        audit_dates.append(failed_date)
+    print(
+        json.dumps(
+            {
+                "audit_dates": [item.isoformat() for item in audit_dates],
+                "report_paths": [str(item.report_path) for item in results if item.report_path],
+                "failed_date": failed_date.isoformat() if failed_date else None,
+            },
+            ensure_ascii=False,
+        )
+    )
+    return 2 if failed_date is not None else 0
 
 
 def _collect(args, *, repo_root: Path, store: RuntimeAuditArtifactStore):
+    with store.daily_claim():
+        return _collect_locked(args, repo_root=repo_root, store=store)
+
+
+def _collect_locked(args, *, repo_root: Path, store: RuntimeAuditArtifactStore):
     collected_at = datetime.now(timezone.utc)
-    window_end = collected_at
-    window_start = window_end - timedelta(hours=args.window_hours)
+    if args.window_hours is not None:
+        window_end = collected_at
+        window_start = window_end - timedelta(hours=args.window_hours)
+    else:
+        window = window_for_date(args.date) if args.date else previous_day_window(collected_at)
+        window_start = window.start_utc
+        window_end = window.end_utc
     audit_run_id = store.allocate_audit_run_id(collected_at)
     source = create_langfuse_audit_source_from_env(os.environ)
     try:
@@ -180,9 +335,14 @@ def _resolve_bundle_path(value: str | None, *, store: RuntimeAuditArtifactStore,
     if value:
         path = Path(value)
         return path if path.is_absolute() else (repo_root / path).resolve()
-    if not store.watermark_path.exists():
+    artifact_path = (
+        store.latest_bundle_path
+        if store.latest_bundle_path.exists()
+        else store.watermark_path
+    )
+    if not artifact_path.exists():
         raise RuntimeError("No runtime audit watermark exists; run collect first.")
-    payload = json.loads(store.watermark_path.read_text(encoding="utf-8"))
+    payload = json.loads(artifact_path.read_text(encoding="utf-8"))
     path = Path(payload["bundle_path"])
     return path if path.is_absolute() else (repo_root / path).resolve()
 
@@ -196,7 +356,9 @@ def _parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
     for name in ("collect", "run"):
         child = subparsers.add_parser(name)
-        child.add_argument("--window-hours", type=float, default=2.0)
+        window = child.add_mutually_exclusive_group()
+        window.add_argument("--date", type=date.fromisoformat)
+        window.add_argument("--window-hours", type=float)
         child.add_argument("--judge-grace-minutes", type=float, default=15.0)
         child.add_argument("--low-score-threshold", type=float, default=0.5)
         child.add_argument("--local-trace-path", default=str(DEFAULT_LOCAL_TRACE_PATH))
