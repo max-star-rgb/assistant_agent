@@ -77,7 +77,7 @@ class RuntimeAuditArtifactStore:
         path = self.inbox_dir / f"{bundle.audit_run_id}.json"
         if path.exists():
             raise FileExistsError(f"Runtime audit bundle already exists: {path}")
-        _atomic_write(path, bundle.model_dump_json(indent=2))
+        _atomic_write(path, bundle.model_dump_json(exclude_none=True))
         watermark = RuntimeAuditWatermark(
             audit_run_id=bundle.audit_run_id,
             last_window_end=_iso_z(bundle.window_end),

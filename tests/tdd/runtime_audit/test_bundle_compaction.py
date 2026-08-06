@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
+import json
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -9,12 +11,24 @@ from pydantic import ValidationError
 from assistant_agent.observability.runtime_audit.bundle_compaction import (
     compact_trace_evidence,
 )
+from assistant_agent.observability.runtime_audit.collector import (
+    GROUNDING,
+    MEMORY_EXTRACTION,
+    MEMORY_RECALL,
+    RESPONSE_QUALITY,
+    TOOL_RESULT_QUALITY,
+    collect_runtime_audit,
+)
 from assistant_agent.observability.runtime_audit.models import (
     AuditCoverage,
     LangfuseObservationSnapshot,
     LangfuseScoreSnapshot,
     LangfuseTraceSnapshot,
     RuntimeAuditBundle,
+)
+from assistant_agent.observability.runtime_audit.runner import _daily_codex_prompt
+from assistant_agent.observability.runtime_audit.storage import (
+    RuntimeAuditArtifactStore,
 )
 
 
@@ -160,3 +174,96 @@ def test_v2_bundle_rejects_dangling_tool_catalog_reference() -> None:
             traces=[trace],
             tool_catalogs={},
         )
+
+
+class _Source:
+    def list_traces(self, *, window_start: datetime, window_end: datetime):
+        del window_start, window_end
+        trace = _trace()
+        trace.timestamp = datetime(2026, 8, 5, 12, tzinfo=timezone.utc)
+        trace.observations = [
+            LangfuseObservationSnapshot(
+                observation_id="final-text",
+                name="llm.chat",
+                type="GENERATION",
+                input={"messages": [], "tools": _catalog()},
+                output={"text": "ok"},
+                metadata={"assistant_agent.runtime_action": "text"},
+            ),
+            LangfuseObservationSnapshot(
+                observation_id="tool-execution",
+                name="probe",
+                type="SPAN",
+                input={"arguments": {"query": "probe"}},
+                output={"status": "success"},
+                metadata={"assistant_agent.observation_kind": "tool_execution"},
+            ),
+            LangfuseObservationSnapshot(
+                observation_id="memory-ingestion",
+                name="memory.turn_ingestion",
+                type="SPAN",
+                input={"messages": [{"role": "user", "content": "probe"}]},
+                output={"memory_count": 1, "changes": [{"event": "ADD"}]},
+                metadata={
+                    "assistant_agent.memory_semantic_evidence": "available"
+                },
+            ),
+        ]
+        trace.scores = []
+        return [trace]
+
+
+def _collected_bundle() -> RuntimeAuditBundle:
+    return collect_runtime_audit(
+        source=_Source(),
+        local_trace_path=None,
+        window_start=datetime(2026, 8, 5, tzinfo=timezone.utc),
+        window_end=datetime(2026, 8, 6, tzinfo=timezone.utc),
+        collected_at=datetime(2026, 8, 6, 1, tzinfo=timezone.utc),
+    )
+
+
+def test_collector_classifies_metadata_before_persisted_compaction() -> None:
+    bundle = _collected_bundle()
+
+    score_names = {
+        finding.score_name
+        for finding in bundle.findings
+        if finding.code == "score_missing"
+    }
+    assert score_names == {
+        RESPONSE_QUALITY,
+        GROUNDING,
+        MEMORY_RECALL,
+        TOOL_RESULT_QUALITY,
+        MEMORY_EXTRACTION,
+    }
+    assert bundle.schema_version == "assistant_agent_runtime_audit_bundle_v2"
+    assert bundle.tool_catalogs
+    assert bundle.traces[0].metadata is None
+    assert all(item.metadata is None for item in bundle.traces[0].observations)
+
+
+def test_store_writes_compact_bundle_without_none_or_raw_metadata(
+    tmp_path: Path,
+) -> None:
+    bundle = _collected_bundle()
+
+    path = RuntimeAuditArtifactStore(tmp_path).write_bundle(bundle)
+
+    text = path.read_text(encoding="utf-8")
+    payload = json.loads(text)
+    assert "\n  " not in text
+    assert "metadata" not in payload["traces"][0]
+    assert all("metadata" not in item for item in payload["traces"][0]["observations"])
+
+
+def test_daily_prompt_explains_tool_catalog_references() -> None:
+    prompt = _daily_codex_prompt(
+        audit_date=date(2026, 8, 5),
+        bundle_path=Path("/tmp/bundle.json"),
+        issues_path=Path("/tmp/issues.json"),
+    )
+
+    assert "tool_catalog_ref" in prompt
+    assert "tool_catalogs" in prompt

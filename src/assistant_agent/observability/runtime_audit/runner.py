@@ -249,6 +249,7 @@ def _codex_prompt(bundle_path: Path) -> str:
 5. 只提出有 evidence_refs 的人工修改与验证建议，不修改文件、Langfuse、Mem0、代码或任何外部状态。
 6. 不调用 Provider、Tool、网络或其他 agent。最终只输出符合给定 JSON Schema 的对象。
 7. production_mutation_allowed 必须为 false，audit_run_id 必须与 bundle 一致。
+8. input 中的 tool_catalog_ref 必须从 bundle 顶层 tool_catalogs 解析，不得把引用摘要当成工具名。
 """
 
 
@@ -278,5 +279,6 @@ def _daily_codex_prompt(
 11. Score 证据复用 trace_evidence_refs，格式为 trace:<trace-id>/score:<score-id>；不得虚构独立 score evidence 字段。
 12. 无法从本地 Git 与文件事实证明建议涉及的 owning module 时，写入 limitation 或保持 uncertain，不得虚构代码关联。
 13. production_mutation_allowed 必须为 false，audit_date 必须与审计日期一致。
+14. input 中的 tool_catalog_ref 必须从 bundle 顶层 tool_catalogs 解析，不得把引用摘要当成工具名。
 最终只输出符合给定 JSON Schema 的对象。
 """

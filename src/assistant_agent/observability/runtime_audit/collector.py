@@ -7,6 +7,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Protocol
 
+from assistant_agent.observability.runtime_audit.bundle_compaction import (
+    compact_trace_evidence,
+)
 from assistant_agent.observability.runtime_audit.models import (
     AuditCoverage,
     AuditFinding,
@@ -146,6 +149,7 @@ def collect_runtime_audit(
             )
         )
         findings.extend(_observation_findings(trace))
+    compacted_traces, tool_catalogs = compact_trace_evidence(traces)
     return RuntimeAuditBundle(
         audit_run_id=audit_run_id or format_audit_run_id(collected_at),
         collected_at=collected_at,
@@ -159,7 +163,7 @@ def collect_runtime_audit(
             missing_export_count=len(missing_ids),
             local_source_available=local_available,
         ),
-        traces=traces,
+        traces=compacted_traces,
         local_manifests=manifests,
         local_fallbacks=fallbacks,
         findings=sorted(
@@ -171,6 +175,7 @@ def collect_runtime_audit(
                 item.code,
             ),
         ),
+        tool_catalogs=tool_catalogs,
         production_mutation_allowed=False,
     )
 

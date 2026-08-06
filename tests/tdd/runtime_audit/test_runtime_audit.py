@@ -473,7 +473,7 @@ def test_artifact_store_writes_versioned_bundle_latest_pointer_and_read_only_rep
     persisted = json.loads(bundle_path.read_text(encoding="utf-8"))
     latest_bundle = json.loads(store.latest_bundle_path.read_text(encoding="utf-8"))
     markdown = markdown_path.read_text(encoding="utf-8")
-    assert persisted["schema_version"] == "assistant_agent_runtime_audit_bundle_v1"
+    assert persisted["schema_version"] == "assistant_agent_runtime_audit_bundle_v2"
     assert persisted["production_mutation_allowed"] is False
     assert latest_bundle == {
         "schema_version": "assistant_agent_runtime_audit_watermark_v1",
