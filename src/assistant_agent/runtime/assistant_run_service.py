@@ -17,6 +17,7 @@ from assistant_agent.runtime.state import AgentState
 from assistant_agent.config import ProviderConfig
 from assistant_agent.api.models import AgentRunResponse, agent_run_response_from_state
 from assistant_agent.context.models import ContextSummary
+from assistant_agent.context.token_counter import ContextTokenCounter
 from assistant_agent.runtime.events import AgentEvent
 from assistant_agent.runtime.requests import UserRequest
 from assistant_agent.context.compactor import (
@@ -543,6 +544,7 @@ def run_assistant_request(
         conversation_store=resolved_store,
         enable_conversation_history=enable_conversation_history,
         enable_context_summary=resolved_runtime.context_compactor is not None,
+        context_token_counter=resolved_runtime.context_token_counter,
     )
     resolved_request = prepare_realtime_task_state_request(
         resolved_request,
@@ -964,6 +966,7 @@ def _prepare_conversation_request(
     conversation_store: ConversationStore,
     enable_conversation_history: bool,
     enable_context_summary: bool,
+    context_token_counter: ContextTokenCounter | None = None,
 ) -> UserRequest:
     if not enable_conversation_history:
         return request
@@ -985,7 +988,10 @@ def _prepare_conversation_request(
         if enable_context_summary
         else None
     )
-    recent_selection = select_full_conversation_history(history)
+    recent_selection = select_full_conversation_history(
+        history,
+        token_counter=context_token_counter,
+    )
     if not history:
         metadata.setdefault("conversation_history", [])
         if summary is not None:
@@ -1022,7 +1028,7 @@ def _prepare_conversation_request(
         )
         metadata.update(
             {
-                "conversation_context_token_aware": False,
+                "conversation_context_token_aware": recent_selection.token_aware,
                 "conversation_context_recent_turns": len(recent_selection.recent_turns),
                 "conversation_context_recent_tokens": recent_selection.recent_tokens,
                 "conversation_context_recent_token_budget": 0,

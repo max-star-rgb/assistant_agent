@@ -181,11 +181,7 @@ class ContextService:
         context_projector: Callable[[UserRequest], None] | None = None,
     ) -> ContextPreflightResult:
         request = self.compile_native_request(context, state).chat_request
-        if (
-            self.compactor is None
-            or self.token_counter is None
-            or self.window_policy is None
-        ):
+        if self.token_counter is None or self.window_policy is None:
             return ContextPreflightResult(request=request, context=context)
 
         input_tokens = self.token_counter.count_chat_request(request)
@@ -208,6 +204,21 @@ class ContextService:
             tokenizer_id=self.token_counter.tokenizer_id,
         )
         if not decision.triggered:
+            return ContextPreflightResult(request=request, context=context)
+
+        if self.compactor is None:
+            state.request.metadata["context_compaction_skipped_reason"] = (
+                "compactor_unavailable"
+            )
+            if decision.hard:
+                state.request.metadata["context_compaction_blocked"] = True
+                return ContextPreflightResult(
+                    request=request,
+                    context=context,
+                    failure=ContextPreflightFailure(
+                        "上下文已进入硬限制区，但没有配置上下文压缩器。"
+                    ),
+                )
             return ContextPreflightResult(request=request, context=context)
 
         turns = _conversation_turns_for_compaction(context.request)

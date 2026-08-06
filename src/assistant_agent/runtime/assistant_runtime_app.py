@@ -101,6 +101,7 @@ class AssistantRuntimeApp:
         )
         runtime.embedding_coordinator_store.clear_session(user_id, session_id)
         runtime.visual_semantic_store_pool.clear_session(user_id, session_id)
+        runtime.visual_memory_text_index.delete_session(user_id, session_id)
         if deleted:
             clear_conversation_history(user_id, session_id, config=runtime.config)
         return deleted
@@ -114,6 +115,7 @@ class AssistantRuntimeApp:
         runtime.long_term_memory_service.clear_user(user_id=user_id)
         runtime.embedding_coordinator_store.clear_user(user_id)
         visual_sessions_deleted = runtime.visual_semantic_store_pool.clear_user(user_id)
+        runtime.visual_memory_text_index.delete_user(user_id)
         return {
             "run_history_records": run_history_deleted,
             "trace_events": trace_deleted,

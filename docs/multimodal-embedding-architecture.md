@@ -1,6 +1,6 @@
 # 统一多模态 Embedding 架构
 
-Last updated: 2026-08-05
+Last updated: 2026-08-06
 
 本文档是 `assistant_agent` 当前 image/text embedding 平台、session 短期视觉时间线、历史找物和连接级视觉提醒能力的
 事实权威。媒体接入与关键帧生命周期见 `media-agent-service-websocket.md`，显式 Tool 治理见
@@ -11,9 +11,10 @@ Last updated: 2026-08-05
 当前用户能力包括：
 
 - 会话内短期视觉回忆：把选中的语义关键帧交给 VLM 文本化，并在 session 内保留成功结果；
-- 历史找物：在可信 session/as-of/time 边界内读取 Store 保留的最多 256 条带时间戳 VLM 文本，使用同
-  session coordinator 生成一次 query text embedding，与成功建立的 VLM text embedding index 做 cosine
-  排序并返回最多 8 条 Top-K。Tool 不在查询阶段再次调用 VLM，也不替主 LLM做最终事实判定。
+- 历史找物：在可信 user/session/as-of/time 边界内读取 Store 保留的最多 256 条带时间戳 VLM 文本，
+  使用本地 Qdrant 的 multilingual BM25 与 `BAAI/bge-small-zh-v1.5` dense vector 做 Weighted RRF，
+  BM25:dense 权重为 `3:1`、两路各 prefetch 32 条、返回最多 12 条。Tool 不在查询阶段再次调用 VLM，
+  也不替主 LLM 做最终事实判定。
 - 连接级视觉提醒：把用户提交的视觉条件计算一次 text embedding，与每个已选关键帧的现有 image
   embedding 匹配，首次命中后通过当前 Agent-Service VIDEO 连接即时通知。
 
@@ -47,11 +48,11 @@ Realtime frame
                   -> parallel realtime_video_observe task per selected frame
                   -> VLM current-frame summary text
                   -> VisualSemanticRecord（带时间戳的单帧文本）
-                  -> bounded timestamped text timeline
+                  -> bounded timestamped text timeline + Qdrant derived index
         -> SessionVisualSemanticStore
              ├─ live_view_inspect（最近 8 条 as-of 文本）
              └─ visual_memory_search（最多 256 条可信候选）
-                    -> query text embedding + cosine Top-K（最多 8 条）
+                    -> Qdrant BM25 + BGE Weighted RRF（3:1，最多 12 条）
                     -> VisualTimelineContextService（必要时执行 target / trigger / hard）
                     -> bounded Tool model_observation
 ```
@@ -65,6 +66,9 @@ Coordinator 按 session 隔离：相同 modality + observation id 的并发请�
 不能阻塞其他 consumer。观测事件只记录摘要和 digest，不记录向量、文本、图片路径或原始标识。
 
 ## SigLIP2 资产与 readiness
+
+SigLIP2 只用于 image embedding、语义关键帧选择和 image-text 视觉提醒，不再承担 VLM 历史文本之间的
+text-text 检索。历史文本检索的 dense encoder 与 SigLIP2 使用不同模型和索引边界。
 
 schema v2 manifest 必须从同一不可变 `google/siglip2-base-patch16-224` revision 导出
 `vision_model.onnx`、`text_model.onnx` 和 `tokenizer.json`，共同声明 `:joint-projection-v1` space。
@@ -86,6 +90,16 @@ mock 模式使用确定性离线共同空间，不加载真实模型。
 不能逐条覆盖；两个 limit 必须为正整数。主动消息后台投递使用
 `PROACTIVE_MESSAGE_DELIVERY_TIMEOUT_SECONDS`（默认 `95` 秒），覆盖普通/视频 turn 的连接内串行等待，
 同时为异常 channel send 提供有界终止。
+
+视觉文本检索使用 `VISUAL_MEMORY_QDRANT_URL`（默认 `http://127.0.0.1:6333`）、
+`VISUAL_MEMORY_QDRANT_COLLECTION`、`VISUAL_MEMORY_QDRANT_TIMEOUT_SECONDS` 和
+`VISUAL_MEMORY_DENSE_MODEL_CACHE_DIR`。本地部署先显式安装 `.[visual-memory-search]`，再由 operator 在
+可联网准备阶段把 `BAAI/bge-small-zh-v1.5` 下载到配置的 cache；运行时固定
+`local_files_only=True`。Qdrant 可用以下 profile 单独启动，不会同时启动 Mem0：
+
+```bash
+docker compose -f docker/mem0/compose.yaml --profile visual-memory up -d qdrant
+```
 
 ## 全语义实时选帧
 
@@ -138,8 +152,9 @@ Store 自身的 retention 继续提供更大的有界历史；`visual_memory_sea
 平台不直接处理语音。音频在上游转为稳定文本后，与键盘输入一样成为 `TextObservation`；`source`
 只说明来源。Runtime 只对非空 final `request.text` 编码，且 session 必须存在 text consumer。文本
 Runtime 的一般文本 embedding 不写入视觉语义存储或 Mem0。成功 VLM 结果的单帧文本直接进入 session
-视觉时间线；`visual_memory_search` 只召回成功建立兼容 text embedding index 的记录，并显式报告候选总数、
-可检索数、阈值命中数、实际返回数、是否截断以及 index coverage 是否完整。
+视觉时间线；`visual_memory_search` 只召回成功写入 Qdrant 派生索引的记录，并显式报告候选总数、
+可检索数、实际返回数和 index coverage 是否完整。Qdrant 或本地 BGE 不可用时返回结构化
+`unavailable`，禁止回退到 SigLIP2 text-text cosine。
 
 Alignment 按 similarity 降序、时间距离升序关联同空间事件。Attention 只有设置内部 text target 后才
 比较 image event 并保存 `visual_attention_candidate`；候选不会自动转为 Agent 行为。
@@ -154,10 +169,16 @@ Agent-Service sink 只负责普通 chat 之后的 WebSocket 投影。单条 comp
 
 ## Session retention、as-of 与清理
 
-`SessionVisualSemanticStore` 只发布通过校验的 VLM 成功结果，并把其 canonical text 编码为
-`search_embedding`。Store 同时受记录数和 owned evidence 总字节限制；关键帧 evidence 通过 hard-link，
+`SessionVisualSemanticStore` 只发布通过校验的 VLM 成功结果；同一个完成 task 会立即把完整单帧文本以
+`user_id + session_id + sequence + timestamp` 写入 Qdrant 派生索引，不等待更早 sequence 完成。
+逐帧写入使用 Qdrant `wait=false`，以 WAL acknowledgment 结束发布热路径，避免 segment 优化长尾阻塞
+该帧 task；Tool 查询前以本地时间线最后一条 record id 作为 freshness marker，最多 250ms 轮询 Qdrant
+point retrieve。marker 可见后才执行混合检索；达到上限仍不可见时继续返回当前命中，但明确设置
+`coverage_complete=false`。
+Store 不再保存用于历史检索的 SigLIP2 text embedding。Store 同时受记录数和 owned evidence 总字节限制；关键帧 evidence 通过 hard-link，
 必要时退回 copy。淘汰、session/user 删除、TTL eviction 和 runtime pool close 都删除记录与 evidence。
-普通 WebSocket transport close 不清理，因此同 user/session 重连仍能复用历史。
+普通 WebSocket transport close 不清理，因此同 user/session 重连仍能复用历史。显式 session/user 删除会
+同时按严格 payload filter 删除 Qdrant points；Qdrant 是派生索引，本地 Store 仍是 retention 事实来源。
 活跃实时 observer 同时持有 embedding coordinator 与 visual store lease；idle TTL 和 LRU 只淘汰无
 lease 条目，避免长连接在持续处理期间被关闭。observer close 会幂等释放 lease；显式 session/user clear
 和 runtime close 仍可立即终止并清理对应状态。
@@ -173,14 +194,19 @@ durable task 或 notification outbox，不能跨连接恢复。仅执行 `visual
 “知道了”等指代；该事件在连接关闭时清除，不进入 ConversationStore、Mem0 或跨连接恢复。
 
 查询时 Runtime 绑定 user/session，ToolContext 提供可信 as-of sequence/time；模型只能提交
-`query/time_window/search_mode`。Tool 先按可信边界读取 Store 最后最多 256 条记录，再通过同 session
-coordinator 对 query 编码一次；只比较同 embedding space 且 index ready 的记录，按 cosine similarity
-降序取服务端阈值以上的最多 8 条。并列时优先较新的记录。结果分别报告 `observation_count`、
+`query/time_window/search_mode`。Tool 先按可信边界读取 Store 最后最多 256 条记录，再把 Store 最早保留
+时间作为 Qdrant 下界，避免派生索引返回已经越过本地 retention 的旧记录。Qdrant 对 BM25 和 dense 两路
+应用相同的 user/session/sequence/time filter，使用原生 Weighted RRF 返回最多 12 条。结果分别报告 `observation_count`、
 `searchable_observation_count`、`matched_observation_count`、`returned_observation_count`、`truncated` 和
 `coverage_complete`，不能用候选总数冒充模型实际收到的条数。若 Top-K 仍触发 Tool 输出预算，Tool 尾部
 继续应用 `ContextWindowPolicy` hard gate；压缩后必须再次更新实际返回数和截断状态。Tool 不读取
 evidence、不再次调用 VLM，也不输出路径、向量或坐标。未来记录不能进入结果；状态为
 `records|empty|unavailable`，其中 `records` 只表示存在阈值内候选，不等同于最终事实确认。
+
+每条返回给主 LLM 的 observation 保留机器字段 `timestamp_ms`，并根据同一可信帧时间确定性生成
+`time_label`，同时给出相对查询时刻的时间和带 UTC offset 的 `Asia/Shanghai` 绝对时间。该标签只在
+查询投影中生成，不写回 Store，不进入 VLM 单帧文本、Qdrant 文档或排序。未来时间戳只显示绝对时间，
+避免产生负数相对时间。
 
 `visual_memory_search` 只读取原始 `VisualSemanticRecord`。Tool 尾部压缩结果只进入本次
 `model_observation`，不反写 Store、conversation、Mem0 或后台 VLM 请求。主 `llm.context` tokenizer
@@ -191,7 +217,7 @@ hard gate。
 
 `visual_memory_search` 是 `category=read`、`requires_media=[]`，视频断线后仍可查询已有历史。Runtime
 在 catalog 构建前删除调用方传入的 `_trusted_visual_memory_available`，再根据当前 session Store 的
-`SessionVisualSemanticStore.has_searchable_history()` 覆盖；exposure 不检查请求关键词。执行仍经过
+`SessionVisualSemanticStore.has_visual_history()` 覆盖；exposure 不检查请求关键词。执行仍经过
 `ActionValidator -> ToolExecutor -> ToolRegistry -> tool`。
 
 `visual_reminder_manage` 是 `category=write`、`requires_media=[]`。Runtime 在 catalog 构建前删除调用方
@@ -206,6 +232,9 @@ session evidence 不是长期记忆，不写 Mem0，也不跨 user/session 搜�
 ## 验证入口
 
 ```bash
+MULTIMODAL_AGENT_PROVIDER_MODE=mock /home/lenovo1/miniconda3/envs/hello_agent/bin/python \
+  -m pytest -q tests/tdd/qdrant-visual-memory-search
+
 MULTIMODAL_AGENT_PROVIDER_MODE=mock /home/lenovo1/miniconda3/envs/hello_agent/bin/python \
   -m pytest -q tests/tdd/unified-siglip2
 

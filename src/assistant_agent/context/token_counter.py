@@ -71,15 +71,17 @@ class TokenizerJsonTokenCounter:
 def create_context_token_counter(
     config: ProviderConfig,
 ) -> ContextTokenCounter | None:
-    """Create the configured offline tokenizer counter for LLM compaction."""
+    """Create the configured offline tokenizer counter for Provider input."""
 
-    if config.context_compactor_mode != "llm" or config.provider_mode != "real":
+    if config.provider_mode != "real":
         return None
     if not config.context_tokenizer_path:
-        raise ValueError(
-            "LLM context compaction requires "
-            "MULTIMODAL_AGENT_CONTEXT_TOKENIZER_PATH"
-        )
+        if config.context_compactor_mode == "llm":
+            raise ValueError(
+                "LLM context compaction requires "
+                "MULTIMODAL_AGENT_CONTEXT_TOKENIZER_PATH"
+            )
+        return None
     return TokenizerJsonTokenCounter(
         config.context_tokenizer_path,
         tokenizer_id=str(config.chat_model or config.chat_provider),

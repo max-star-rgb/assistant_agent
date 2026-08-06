@@ -78,6 +78,7 @@ class RealtimeVideoContext(BaseModel):
     keyframe_selection_latency_ms: int | None = Field(default=None, ge=0)
     queue_wait_latency_ms: int | None = Field(default=None, ge=0)
     text_embedding_latency_ms: int | None = Field(default=None, ge=0)
+    visual_memory_index_latency_ms: int | None = Field(default=None, ge=0)
     semantic_store_write_latency_ms: int | None = Field(default=None, ge=0)
     semantic_publish_latency_ms: int | None = Field(default=None, ge=0)
     provider: str | None = None

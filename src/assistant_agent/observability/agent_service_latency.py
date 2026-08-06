@@ -133,6 +133,7 @@ class VideoLatencyContext(BaseModel):
     keyframe_selection_latency_ms: int | None = Field(default=None, ge=0)
     queue_wait_latency_ms: int | None = Field(default=None, ge=0)
     text_embedding_latency_ms: int | None = Field(default=None, ge=0)
+    visual_memory_index_latency_ms: int | None = Field(default=None, ge=0)
     semantic_store_write_latency_ms: int | None = Field(default=None, ge=0)
     semantic_publish_latency_ms: int | None = Field(default=None, ge=0)
     pending_count: int | None = Field(default=None, ge=0)
@@ -464,6 +465,9 @@ def _video_context(events: list[TraceEvent]) -> VideoLatencyContext | None:
             text_embedding_latency_ms=_safe_int(
                 video.get("text_embedding_latency_ms")
             ),
+            visual_memory_index_latency_ms=_safe_int(
+                video.get("visual_memory_index_latency_ms")
+            ),
             semantic_store_write_latency_ms=_safe_int(
                 video.get("semantic_store_write_latency_ms")
             ),
@@ -515,6 +519,9 @@ def _video_context(events: list[TraceEvent]) -> VideoLatencyContext | None:
             queue_wait_latency_ms=_safe_int(payload.get("queue_wait_latency_ms")),
             text_embedding_latency_ms=_safe_int(
                 payload.get("text_embedding_latency_ms")
+            ),
+            visual_memory_index_latency_ms=_safe_int(
+                payload.get("visual_memory_index_latency_ms")
             ),
             semantic_store_write_latency_ms=_safe_int(
                 payload.get("semantic_store_write_latency_ms")

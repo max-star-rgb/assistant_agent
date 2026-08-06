@@ -133,6 +133,7 @@ def shared_gateway_runtime_factory(primary_factory: RuntimeFactory) -> RuntimeFa
             realtime_video_memory_store=primary_runtime.realtime_video_memory_store,
             embedding_coordinator_store=primary_runtime.embedding_coordinator_store,
             visual_semantic_store_pool=primary_runtime.visual_semantic_store_pool,
+            visual_memory_text_index=primary_runtime.visual_memory_text_index,
             durable_task_service=primary_runtime.durable_task_service,
         )
 

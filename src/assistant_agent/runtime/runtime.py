@@ -97,6 +97,10 @@ from assistant_agent.media.video.visual_reminder import VisualReminderRegistry
 from assistant_agent.media.video.semantic_store_pool import (
     SessionVisualSemanticStorePool,
 )
+from assistant_agent.media.video.qdrant_visual_memory_index import (
+    create_visual_memory_text_index,
+)
+from assistant_agent.media.video.visual_memory_index import VisualMemoryTextIndex
 from assistant_agent.media.embedding.coordinator import SessionEmbeddingCoordinator
 from assistant_agent.media.embedding.coordinator_store import SessionEmbeddingCoordinatorStore
 from assistant_agent.media.embedding.provider import create_multimodal_embedding_provider
@@ -159,6 +163,7 @@ class AgentGraphRuntime:
         embedding_observer: EmbeddingObserver | None = None,
         visual_semantic_store_pool: SessionVisualSemanticStorePool | None = None,
         visual_reminder_registry: VisualReminderRegistry | None = None,
+        visual_memory_text_index: VisualMemoryTextIndex | None = None,
         checkpointer: Any | None = None,
         context_source_coordinator: ContextSourceCoordinator | None = None,
         durable_task_service: DurableTaskService | None = None,
@@ -182,6 +187,10 @@ class AgentGraphRuntime:
                 root=Path(".data") / "visual_semantic_memory",
                 observer=self.embedding_observer,
             )
+        )
+        self.visual_memory_text_index = (
+            visual_memory_text_index
+            or create_visual_memory_text_index(self.config)
         )
         self.visual_reminder_registry = (
             visual_reminder_registry
@@ -233,6 +242,7 @@ class AgentGraphRuntime:
                 embedding_coordinator_store=self.embedding_coordinator_store,
                 visual_semantic_store_pool=self.visual_semantic_store_pool,
                 visual_reminder_registry=self.visual_reminder_registry,
+                visual_memory_text_index=self.visual_memory_text_index,
                 durable_task_service=self.durable_task_service,
             )
             if self.durable_task_service is not None:
@@ -702,7 +712,7 @@ class AgentGraphRuntime:
         )
         if (
             semantic_store is not None
-            and semantic_store.has_searchable_history()
+            and semantic_store.has_visual_history()
         ):
             request.metadata["_trusted_visual_memory_available"] = True
         if is_trusted_agent_service_request(request):
@@ -761,6 +771,7 @@ class AgentGraphRuntime:
 
         self.embedding_coordinator_store.close()
         self.visual_semantic_store_pool.close()
+        self.visual_memory_text_index.close()
         return self.long_term_memory_service.close(
             timeout=self.config.memory_ingestion_shutdown_timeout_seconds,
         )

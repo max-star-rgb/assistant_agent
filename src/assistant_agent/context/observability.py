@@ -133,6 +133,27 @@ def build_traced_assistant_context_pack(
             compiled_input_tokens,
             reserved_output_tokens=compilation.chat_request.max_tokens,
         ).effective_input_limit
+    token_accounting_attributes: dict[str, Any] = {
+        "token_accounting_status": (
+            "available"
+            if compiled_input_tokens is not None and effective_input_limit is not None
+            else "unavailable"
+        )
+    }
+    if context_token_counter is not None:
+        token_accounting_attributes["tokenizer_id"] = (
+            context_token_counter.tokenizer_id
+        )
+    if compiled_input_tokens is not None and effective_input_limit is not None:
+        token_accounting_attributes.update(
+            {
+                "compiled_input_tokens": compiled_input_tokens,
+                "effective_input_limit": effective_input_limit,
+                "context_token_usage_ratio": (
+                    compiled_input_tokens / effective_input_limit
+                ),
+            }
+        )
     context_report = build_context_report(
         pack,
         selected_tool_specs=compilation.selected_tool_specs,
@@ -176,7 +197,7 @@ def build_traced_assistant_context_pack(
             "compaction_triggered": pack.budget.compaction_triggered,
             "compression_stage": pack.budget.compression_stage,
             "total_chars": pack.budget.total_chars,
-            "total_tokens": pack.budget.total_tokens,
+            **token_accounting_attributes,
         },
     )
     return pack
@@ -265,6 +286,7 @@ def _realtime_video_trace(pack: AssistantContextPack) -> dict[str, Any]:
         "keyframe_selection_latency_ms": context.keyframe_selection_latency_ms,
         "queue_wait_latency_ms": context.queue_wait_latency_ms,
         "text_embedding_latency_ms": context.text_embedding_latency_ms,
+        "visual_memory_index_latency_ms": context.visual_memory_index_latency_ms,
         "semantic_store_write_latency_ms": context.semantic_store_write_latency_ms,
         "jpeg_prepare_latency_ms": context.jpeg_prepare_latency_ms,
         "connection_setup_latency_ms": context.connection_setup_latency_ms,

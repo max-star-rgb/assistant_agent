@@ -32,7 +32,7 @@ VisualObservationStatus = Literal["succeeded", "failed"]
 
 
 class VisualSemanticRecord(BaseModel):
-    """One validated current-frame VLM result and its optional search embedding."""
+    """One validated current-frame VLM result and derived-index status."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -75,14 +75,14 @@ class VisualSemanticRecord(BaseModel):
 
     @model_validator(mode="after")
     def validate_search_index(self) -> "VisualSemanticRecord":
-        if self.index_status == "ready":
+        if self.search_embedding is not None:
             if not self.search_embedding or not self.embedding_space_id:
-                raise ValueError(
-                    "ready visual record requires search embedding metadata"
-                )
+                raise ValueError("visual search embedding metadata is incomplete")
             if not all(isfinite(value) for value in self.search_embedding):
                 raise ValueError("visual search embedding must be finite")
-        elif self.search_embedding is not None or self.embedding_space_id is not None:
+        elif self.embedding_space_id is not None:
+            raise ValueError("visual embedding space requires an embedding")
+        if self.index_status == "unavailable" and self.search_embedding is not None:
             raise ValueError(
                 "unavailable visual record cannot carry search embedding metadata"
             )

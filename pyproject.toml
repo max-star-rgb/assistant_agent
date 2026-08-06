@@ -30,6 +30,9 @@ local-vision-embedding = [
     "Pillow>=10,<12",
     "onnxruntime-gpu>=1.21,<1.27",
 ]
+visual-memory-search = [
+    "fastembed>=0.8,<1",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests/core"]

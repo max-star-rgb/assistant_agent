@@ -335,6 +335,7 @@ def _compact_visual_memory_search_output(
             if not isinstance(item, Mapping):
                 continue
             timestamp_ms = item.get("timestamp_ms")
+            time_label = item.get("time_label")
             text = item.get("text")
             if not isinstance(timestamp_ms, int) or not isinstance(text, str):
                 continue
@@ -343,9 +344,10 @@ def _compact_visual_memory_search_output(
                     ("data", "observations", f"[{index}]", "text")
                 )
                 text = PRUNED_INLINE_MEDIA_PLACEHOLDER
-            output["observations"].append(
-                {"timestamp_ms": timestamp_ms, "text": text}
-            )
+            observation = {"timestamp_ms": timestamp_ms, "text": text}
+            if isinstance(time_label, str) and time_label:
+                observation["time_label"] = time_label
+            output["observations"].append(observation)
     return output
 
 

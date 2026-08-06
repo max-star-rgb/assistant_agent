@@ -21,6 +21,7 @@ if TYPE_CHECKING:
         SessionVisualSemanticStorePool,
     )
     from assistant_agent.media.video.visual_reminder import VisualReminderRegistry
+    from assistant_agent.media.video.visual_memory_index import VisualMemoryTextIndex
     from assistant_agent.tools.plugins.builtin.calendar_weather_contacts.adapters import (
         CalendarAdapter,
     )
@@ -40,6 +41,7 @@ class ToolPluginContext:
     embedding_coordinator_store: SessionEmbeddingCoordinatorStore | None = None
     visual_semantic_store_pool: SessionVisualSemanticStorePool | None = None
     visual_reminder_registry: VisualReminderRegistry | None = None
+    visual_memory_text_index: VisualMemoryTextIndex | None = None
 
     @property
     def mock_mode(self) -> bool:

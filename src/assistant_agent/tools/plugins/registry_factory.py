@@ -52,6 +52,7 @@ def create_default_registry(
     embedding_coordinator_store=None,
     visual_semantic_store_pool=None,
     visual_reminder_registry=None,
+    visual_memory_text_index=None,
     plugin_modules: Iterable[str] | None = None,
 ) -> ToolRegistry:
     """Assemble and seal the default runtime registry."""
@@ -78,6 +79,7 @@ def create_default_registry(
         embedding_coordinator_store=embedding_coordinator_store,
         visual_semantic_store_pool=visual_semantic_store_pool,
         visual_reminder_registry=visual_reminder_registry,
+        visual_memory_text_index=visual_memory_text_index,
     )
     module_names = (
         configured_plugin_modules_from_env()

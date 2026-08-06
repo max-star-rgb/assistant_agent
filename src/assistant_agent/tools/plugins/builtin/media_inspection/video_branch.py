@@ -749,6 +749,11 @@ class VideoUnderstandingBranch(ToolBase):
             "text_embedding_latency_ms": (
                 diagnostics.text_embedding_latency_ms if diagnostics is not None else None
             ),
+            "visual_memory_index_latency_ms": (
+                diagnostics.visual_memory_index_latency_ms
+                if diagnostics is not None
+                else None
+            ),
             "semantic_store_write_latency_ms": (
                 diagnostics.semantic_store_write_latency_ms
                 if diagnostics is not None

@@ -289,6 +289,11 @@ Provider protocol capture。overlay 写入失败时 canonical event 仍须保留
 - root 的 external parent 只接受 `run.started` 显式提供的上游 parent，不能把内部 Tool/VLM
   `parent_span_id` 反推为 root parent；
 - usage 映射到 generation/OTel token attributes，不能因嵌套结构而丢失；
+- `context.compile` 是不产生 Provider 费用的 span：目标 tokenizer 的
+  `compiled_input_tokens`、`effective_input_limit`、`context_token_usage_ratio`、`tokenizer_id` 和
+  `token_accounting_status` 自动投影为 Langfuse observation metadata，但不得写入 Usage breakdown；
+  `llm.chat` generation 的 Usage breakdown 只记录 Provider 返回的实际 input/output/total，避免同一轮
+  preflight 与实际调用重复计量；
 - only-allowlisted metadata 和 output reference 可以进入公开 projection。
 
 `assistant.turn.summary` 到达时主 trace 可以先导出；Runtime 随后发出的 `response.delivered` 与后台

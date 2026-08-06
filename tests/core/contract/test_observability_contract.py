@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -498,6 +499,75 @@ def test_started_events_define_span_start_times() -> None:
     assert context_span.end_time <= llm_span.start_time
 
 
+@pytest.mark.core_invariant("OBS-001")
+def test_context_preflight_metadata_does_not_duplicate_generation_usage() -> None:
+    created_at = datetime(2026, 8, 6, 10, 0, tzinfo=timezone.utc)
+    events = [
+        _trace_event(
+            canonical_event="context.build.finished",
+            span_id="context-span",
+            created_at=created_at,
+            status="succeeded",
+            observation_type="span",
+            observation_name="context.compile",
+            attributes={
+                "iteration": 1,
+                "compiled_input_tokens": 120,
+                "effective_input_limit": 1_000,
+                "context_token_usage_ratio": 0.12,
+                "tokenizer_id": "tokenizer-sentinel",
+                "token_accounting_status": "available",
+                "total_tokens": 0,
+            },
+        ),
+        _trace_event(
+            canonical_event="llm.chat.finished",
+            span_id="llm-span",
+            created_at=created_at + timedelta(seconds=1),
+            status="succeeded",
+            observation_type="generation",
+            attributes={
+                "iteration": 1,
+                "usage": {
+                    "prompt_tokens": 125,
+                    "completion_tokens": 25,
+                    "total_tokens": 150,
+                },
+            },
+        ),
+    ]
+
+    spans = build_text_otel_span_specs(events)
+    context_attributes = next(
+        span.attributes for span in spans if span.name == "context.compile"
+    )
+    llm_attributes = next(
+        span.attributes for span in spans if span.name == "llm.chat"
+    )
+
+    assert context_attributes[
+        "langfuse.observation.metadata.assistant_agent.compiled_input_tokens"
+    ] == 120
+    assert context_attributes[
+        "langfuse.observation.metadata.assistant_agent.effective_input_limit"
+    ] == 1_000
+    assert context_attributes[
+        "langfuse.observation.metadata.assistant_agent.context_token_usage_ratio"
+    ] == 0.12
+    assert context_attributes[
+        "langfuse.observation.metadata.assistant_agent.tokenizer_id"
+    ] == "tokenizer-sentinel"
+    assert context_attributes[
+        "langfuse.observation.metadata.assistant_agent.token_accounting_status"
+    ] == "available"
+    assert "langfuse.observation.usage_details" not in context_attributes
+    assert json.loads(llm_attributes["langfuse.observation.usage_details"]) == {
+        "input": 125,
+        "output": 25,
+        "total": 150,
+    }
+
+
 def _trace_event(
     *,
     canonical_event: str,
@@ -507,6 +577,7 @@ def _trace_event(
     latency_ms: int | None = None,
     observation_type: str | None = None,
     observation_name: str | None = None,
+    attributes: dict | None = None,
 ) -> TraceEvent:
     return TraceEvent(
         trace_id="trace-sentinel",
@@ -520,6 +591,6 @@ def _trace_event(
         span_id=span_id,
         status=status,
         latency_ms=latency_ms,
-        attributes={"iteration": 1},
+        attributes=attributes or {"iteration": 1},
         created_at=created_at,
     )

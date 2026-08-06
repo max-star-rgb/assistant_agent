@@ -145,9 +145,13 @@ def test_visual_memory_tool_runs_through_validator_executor_registry(tmp_path: P
     assert validation.accepted is True
     assert result.success is True
     assert result.data["status"] == "records"
-    assert result.data["observations"] == [
+    assert [
+        {key: item[key] for key in ("timestamp_ms", "text")}
+        for item in result.data["observations"]
+    ] == [
         {"timestamp_ms": 100, "text": "白色低帮运动鞋"}
     ]
+    assert result.data["observations"][0]["time_label"]
     assert "evidence_ref" not in str(result.data)
     assert "search_embedding" not in str(result.data)
     coordinator_store.close()

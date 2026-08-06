@@ -109,6 +109,14 @@ Trigger 到 hard 之间压缩失败时保留原文继续；hard 区间重试后�
 
 Mock/offline 默认不调用压缩模型。Real 模式使用 LLM compactor 时必须显式配置 compactor、
 匹配目标 endpoint 的输入上限和本地 tokenizer 资产；tokenizer loader 不得联网下载。
+Tokenizer accounting 与 compactor 生命周期相互独立：Real 模式只要配置本地 tokenizer 资产，
+即使 compactor 关闭也必须执行完整 compiled request preflight。进入 soft trigger 但没有 compactor 时
+保留原文继续；进入 hard 区时必须在 Provider 调用前稳定阻断。只有启用 LLM compactor 时 tokenizer
+才是启动必需配置；其他模式缺失 tokenizer 时 token accounting 明确标记为 unavailable。
+
+Conversation recent window 优先复用同一个目标模型 tokenizer。仅在 tokenizer 不可用的 mock/offline
+路径使用确定性的字符启发式 estimate，并将 `conversation_context_token_aware` 标为 false；estimate
+只用于报告或离线选择，不能作为完整 Provider request 的 hard-limit 依据。
 
 ## 6. Memory Context
 
@@ -226,6 +234,11 @@ Budget 必须按完整 compiled request 计算，包括 messages、tools、tool 
 字符估算只能用于预编译报告，不能冒充 tokenizer 计数。Provider 私有 chat template 的差异由
 safety margin 和调用后的 usage 误差观测吸收。
 
+Token 预算治理与局部资源治理使用不同单位：模型窗口准入、conversation 选择及 compaction 阈值按
+token；文件读取、日志/trace、单字段安全投影和异常 payload 防护仍可按 byte、char、line 或 item
+限制。局部字符限制不能替代最终 compiled request token preflight，字符观测字段也不应重命名为
+token 字段。
+
 容量治理优先保持因果完整性和证据：
 
 - ContextBuilder 不得用全局字符上限静默裁剪 conversation、memory 或 tool observations。
@@ -237,6 +250,10 @@ safety margin 和调用后的 usage 误差观测吸收。
 selected tools、source counts、compaction 状态和 tokenizer preflight，但不得返回原始 prompt、
 memory 文本、完整 tool observation、raw Provider payload 或 secret。Token 不可用时必须明确标记
 为 unavailable，不能用零伪装。
+
+Langfuse 中 `context.compile` 只把 tokenizer preflight 投影为 observation metadata，不计入 Usage
+breakdown；实际 input/output/total usage 只归属随后对应的 `llm.chat` generation，防止同一 Provider
+调用重复计量。
 
 Canonical `context.build.started` / `context.build.finished` 记录 context 编译生命周期；
 最终 compiled `ChatRequest` 只归属对应的 `llm.chat` generation input。查询和脱敏规则见

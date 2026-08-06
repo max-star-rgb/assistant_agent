@@ -19,7 +19,7 @@ from assistant_agent.observability.trace_store import (
     append_observability_event,
 )
 from assistant_agent.media.embedding.coordinator import SessionEmbeddingCoordinator
-from assistant_agent.media.embedding.models import EmbeddingEvent, TextObservation
+from assistant_agent.media.embedding.models import EmbeddingEvent
 from assistant_agent.media.embedding.observability import (
     emit_visual_semantic_observation,
 )
@@ -60,6 +60,11 @@ from assistant_agent.media.video.types import (
 from assistant_agent.media.video.visual_reminder import (
     VisualReminderRegistry,
 )
+from assistant_agent.media.video.visual_memory_index import (
+    UnavailableVisualMemoryTextIndex,
+    VisualMemoryIndexDocument,
+    VisualMemoryTextIndex,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -80,7 +85,7 @@ class _ObservationItem:
 @dataclass(frozen=True)
 class _VisualSemanticPublishOutcome:
     visual_record_id: str
-    text_embedding_latency_ms: int
+    visual_memory_index_latency_ms: int
     semantic_store_write_latency_ms: int
 
 
@@ -101,6 +106,7 @@ class RealtimeVideoObserver:
         embedding_coordinator: SessionEmbeddingCoordinator,
         observation_registry_factory: ObservationRegistryFactory | None = None,
         visual_reminder_registry: VisualReminderRegistry | None = None,
+        visual_memory_text_index: VisualMemoryTextIndex | None = None,
         trace_store: TraceStore | None = None,
         provider_config: ProviderConfig | None = None,
         keyframe_root: Path | str = DEFAULT_KEYFRAME_ROOT,
@@ -121,6 +127,13 @@ class RealtimeVideoObserver:
         self.memory_store = memory_store
         self.embedding_coordinator = embedding_coordinator
         self.visual_reminder_registry = visual_reminder_registry
+        self.visual_memory_text_index = (
+            visual_memory_text_index
+            or UnavailableVisualMemoryTextIndex(
+                code="visual_memory_qdrant_unavailable",
+                message="visual memory retrieval service is unavailable",
+            )
+        )
         self.trace_store = trace_store
         self.keyframe_root = Path(keyframe_root)
         self.semantic_store = semantic_store or SessionVisualSemanticStore(
@@ -537,8 +550,9 @@ class RealtimeVideoObserver:
                 ).model_copy(
                     update={
                         "published_at_ms": self.wall_clock_ms(),
-                        "text_embedding_latency_ms": (
-                            publish_outcome.text_embedding_latency_ms
+                        "text_embedding_latency_ms": None,
+                        "visual_memory_index_latency_ms": (
+                            publish_outcome.visual_memory_index_latency_ms
                         ),
                         "semantic_store_write_latency_ms": (
                             publish_outcome.semantic_store_write_latency_ms
@@ -635,26 +649,31 @@ class RealtimeVideoObserver:
         result: VideoUnderstandingResult,
         trace_link: VisionInferenceTraceLink | None,
     ) -> _VisualSemanticPublishOutcome:
-        embedding_started_ns = self.clock_ns()
-        text_outcome = self.embedding_coordinator.embed_text(
-            TextObservation(
-                session_id=self.session_id,
-                observation_id=f"visual-record:{video_id}:{frame.sequence}",
-                text=_build_visual_search_text(result),
-                source="visual_semantic_record",
-                occurred_at_ms=frame.timestamp_ms,
-            ),
-            priority="background",
+        record_id = f"visual-{uuid4().hex}"
+        created_at_ms = self.wall_clock_ms()
+        captured_at_ms = (
+            frame.timestamp_ms if frame.timestamp_ms is not None else created_at_ms
         )
-        embedding_finished_ns = self.clock_ns()
-        text_event = text_outcome if isinstance(text_outcome, EmbeddingEvent) else None
+        index_started_ns = self.clock_ns()
+        index_outcome = self.visual_memory_text_index.upsert(
+            VisualMemoryIndexDocument(
+                record_id=record_id,
+                user_id=self.user_id,
+                session_id=self.session_id,
+                video_id=video_id,
+                frame_sequence=frame.sequence,
+                captured_at_ms=captured_at_ms,
+                text=result.summary.strip() or _build_visual_search_text(result),
+            )
+        )
+        index_finished_ns = self.clock_ns()
         evidence_bytes = Path(frame.uri).stat().st_size
         record = VisualSemanticRecord(
-            record_id=f"visual-{uuid4().hex}",
+            record_id=record_id,
             session_id=self.session_id,
             video_id=video_id,
             frame_sequence=frame.sequence,
-            captured_at_ms=frame.timestamp_ms,
+            captured_at_ms=captured_at_ms,
             summary=result.summary,
             scene=result.scene,
             objects=list(result.objects),
@@ -682,19 +701,17 @@ class RealtimeVideoObserver:
             source_vlm_span_id=(
                 trace_link.span_id if trace_link is not None else None
             ),
-            search_embedding=(list(text_event.vector) if text_event else None),
-            embedding_space_id=(
-                text_event.embedding_space_id if text_event else None
-            ),
-            index_status=("ready" if text_event else "unavailable"),
+            search_embedding=None,
+            embedding_space_id=None,
+            index_status=index_outcome.status,
             evidence_ref=frame.uri,
             evidence_bytes=evidence_bytes,
-            created_at_ms=self.wall_clock_ms(),
+            created_at_ms=created_at_ms,
         )
         store_started_ns = self.clock_ns()
         self.semantic_store.record_success(record)
         store_finished_ns = self.clock_ns()
-        if text_event is None:
+        if index_outcome.status == "unavailable":
             emit_visual_semantic_observation(
                 self.embedding_coordinator.observer,
                 "visual_semantic.index_failed",
@@ -704,9 +721,9 @@ class RealtimeVideoObserver:
             )
         return _VisualSemanticPublishOutcome(
             visual_record_id=record.record_id,
-            text_embedding_latency_ms=_elapsed_ms(
-                embedding_started_ns,
-                embedding_finished_ns,
+            visual_memory_index_latency_ms=_elapsed_ms(
+                index_started_ns,
+                index_finished_ns,
             ),
             semantic_store_write_latency_ms=_elapsed_ms(
                 store_started_ns,

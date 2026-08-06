@@ -229,10 +229,14 @@ def test_visual_memory_tool_returns_ranked_top_k_from_256_observations(
     assert result.model_observation["truncated"] is True
     assert result.model_observation["coverage_complete"] is True
     assert len(result.model_observation["observations"]) == 8
-    assert result.model_observation["observations"][0] == {
+    assert {
+        key: result.model_observation["observations"][0][key]
+        for key in ("timestamp_ms", "text")
+    } == {
         "timestamp_ms": 256_000,
         "text": "frame-256-text",
     }
+    assert result.model_observation["observations"][0]["time_label"]
     assert "similarity" not in result.model_observation
 
 
@@ -268,7 +272,10 @@ def test_visual_memory_tool_applies_as_of_and_time_window_before_ranking(
         ),
     )
 
-    assert result.model_observation["observations"] == [
+    assert [
+        {key: item[key] for key in ("timestamp_ms", "text")}
+        for item in result.model_observation["observations"]
+    ] == [
         {"timestamp_ms": 3_000, "text": "frame-3-text"},
         {"timestamp_ms": 2_000, "text": "frame-2-text"},
     ]
@@ -370,7 +377,10 @@ def test_visual_memory_tool_tail_compacts_before_model_observation(
     assert result.model_observation["status"] == "records"
     assert result.model_observation["observation_count"] == 20
     assert result.model_observation["returned_observation_count"] == 3
-    assert result.model_observation["observations"] == [
+    assert [
+        {key: item[key] for key in ("timestamp_ms", "text")}
+        for item in result.model_observation["observations"]
+    ] == [
         {"timestamp_ms": 18_000, "text": "frame-18-text"},
         {"timestamp_ms": 2_000, "text": "frame-2-text"},
         {"timestamp_ms": 1_000, "text": "frame-1-text"},

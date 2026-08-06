@@ -8,6 +8,7 @@ from typing import Any, Mapping, Protocol
 
 from assistant_agent.context.models import ContextPolicy
 from assistant_agent.context.token_budget import CONTEXT_TOKEN_MAX_METADATA_KEYS, TokenBudgetReporter
+from assistant_agent.context.token_counter import ContextTokenCounter
 
 
 DEFAULT_RECENT_TURNS = 2
@@ -143,9 +144,10 @@ def select_conversation_window(
     recent_turns: int = DEFAULT_RECENT_TURNS,
     metadata: Mapping[str, Any] | None = None,
     context_policy: ContextPolicy | None = None,
+    token_counter: ContextTokenCounter | None = None,
     force_minimum_recent: bool = False,
 ) -> ConversationWindowSelection:
-    """Select the raw recent transcript window using local token estimates."""
+    """Select recent transcript using the target tokenizer when available."""
 
     token_budget = _recent_token_budget(metadata or {}, context_policy=context_policy)
     if not history:
@@ -161,7 +163,12 @@ def select_conversation_window(
     selected_tokens = 0
     reporter = TokenBudgetReporter()
     for index in range(len(history) - 1, -1, -1):
-        turn_tokens = reporter.estimate(_format_turn(history[index], index + 1))
+        formatted_turn = _format_turn(history[index], index + 1)
+        turn_tokens = (
+            token_counter.count_text(formatted_turn)
+            if token_counter is not None
+            else reporter.estimate(formatted_turn)
+        )
         must_keep = selected_count < minimum_recent_turns
         fits_budget = not force_minimum_recent and selected_tokens + turn_tokens <= token_budget
         if must_keep or fits_budget or selected_count == 0:
@@ -176,17 +183,24 @@ def select_conversation_window(
         recent_turns=list(history[split_index:]),
         recent_tokens=selected_tokens,
         token_budget=token_budget,
+        token_aware=token_counter is not None,
     )
 
 
 def select_full_conversation_history(
     history: list[ConversationTurnView],
+    *,
+    token_counter: ContextTokenCounter | None = None,
 ) -> ConversationWindowSelection:
     """Select every stored turn verbatim without applying a context window."""
 
     reporter = TokenBudgetReporter()
     total_tokens = sum(
-        reporter.estimate(_format_turn(turn, index))
+        (
+            token_counter.count_text(_format_turn(turn, index))
+            if token_counter is not None
+            else reporter.estimate(_format_turn(turn, index))
+        )
         for index, turn in enumerate(history, start=1)
     )
     return ConversationWindowSelection(
@@ -194,7 +208,7 @@ def select_full_conversation_history(
         recent_turns=list(history),
         recent_tokens=total_tokens,
         token_budget=0,
-        token_aware=False,
+        token_aware=token_counter is not None,
     )
 
 

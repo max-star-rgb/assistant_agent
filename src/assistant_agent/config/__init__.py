@@ -89,6 +89,11 @@ class ProviderConfig:
     keyframe_semantic_threshold: float = 0.18
     visual_memory_candidate_similarity: float = 0.20
     visual_memory_confirmed_similarity: float = 0.30
+    visual_memory_qdrant_url: str = "http://127.0.0.1:6333"
+    visual_memory_qdrant_collection: str = "assistant_visual_memory"
+    visual_memory_qdrant_timeout_seconds: float = 2.0
+    visual_memory_dense_model_cache_dir: str = ".data/models/fastembed"
+    visual_memory_result_limit: int = 12
     visual_reminder_similarity_threshold: float = 0.82
     visual_reminder_max_active: int = 16
     visual_reminder_terminal_history_limit: int = 64
@@ -262,6 +267,16 @@ class ProviderConfig:
             raise ValueError(
                 "visual memory thresholds must satisfy candidate < confirmed"
             )
+        if not self.visual_memory_qdrant_url.strip():
+            raise ValueError("visual memory Qdrant URL must be non-empty")
+        if not self.visual_memory_qdrant_collection.strip():
+            raise ValueError("visual memory Qdrant collection must be non-empty")
+        if self.visual_memory_qdrant_timeout_seconds <= 0:
+            raise ValueError("visual memory Qdrant timeout must be positive")
+        if not self.visual_memory_dense_model_cache_dir.strip():
+            raise ValueError("visual memory dense model cache must be non-empty")
+        if self.visual_memory_result_limit <= 0:
+            raise ValueError("visual memory result limit must be positive")
         if not 0.0 <= self.visual_reminder_similarity_threshold <= 1.0:
             raise ValueError("visual reminder similarity threshold must be within [0, 1]")
         if self.visual_reminder_max_active <= 0:
@@ -431,6 +446,22 @@ class ProviderConfig:
             visual_memory_confirmed_similarity=_float_env(
                 source.get("REALTIME_VISUAL_MEMORY_CONFIRMED_SIMILARITY"),
                 0.30,
+            ),
+            visual_memory_qdrant_url=source.get(
+                "VISUAL_MEMORY_QDRANT_URL",
+                "http://127.0.0.1:6333",
+            ),
+            visual_memory_qdrant_collection=source.get(
+                "VISUAL_MEMORY_QDRANT_COLLECTION",
+                "assistant_visual_memory",
+            ),
+            visual_memory_qdrant_timeout_seconds=_float_env(
+                source.get("VISUAL_MEMORY_QDRANT_TIMEOUT_SECONDS"),
+                2.0,
+            ),
+            visual_memory_dense_model_cache_dir=source.get(
+                "VISUAL_MEMORY_DENSE_MODEL_CACHE_DIR",
+                ".data/models/fastembed",
             ),
             visual_reminder_similarity_threshold=_float_env(
                 source.get("REALTIME_VISUAL_REMINDER_SIMILARITY_THRESHOLD"),

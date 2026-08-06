@@ -6,8 +6,10 @@ import pytest
 
 from assistant_agent.config import ProviderConfig
 from assistant_agent.context.compactor import ContextCompactionResult
+from assistant_agent.context.conversation import select_conversation_window
 from assistant_agent.context.models import ContextSummary
 from assistant_agent.context.token_budget import ContextWindowPolicy
+from assistant_agent.context.token_counter import create_context_token_counter
 from assistant_agent.observability.trace_store import InMemoryTraceStore
 from assistant_agent.runtime.assistant_run_service import (
     ConversationTurn,
@@ -141,6 +143,17 @@ class ToolTurnTokenCounter(ThresholdTokenCounter):
         return 6_000
 
 
+class FixedTextTokenCounter(ThresholdTokenCounter):
+    def __init__(self, *, text_tokens: int) -> None:
+        super().__init__(raw_history_tokens=20)
+        self.text_tokens = text_tokens
+        self.counted_texts: list[str] = []
+
+    def count_text(self, value: str) -> int:
+        self.counted_texts.append(value)
+        return self.text_tokens
+
+
 def _runtime(
     adapter: CompactionChatAdapter,
     token_counter: ThresholdTokenCounter,
@@ -182,6 +195,179 @@ def test_context_window_policy_uses_configured_ratios() -> None:
     assert at_trigger.hard is False
     assert at_trigger.target_tokens == 4_000
     assert at_hard.hard is True
+
+
+@pytest.mark.core_invariant("CTX-001")
+def test_real_runtime_can_create_token_counter_without_compactor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    counter_sentinel = object()
+    created: dict[str, object] = {}
+
+    def build_counter(tokenizer_path, *, tokenizer_id):
+        created["tokenizer_path"] = tokenizer_path
+        created["tokenizer_id"] = tokenizer_id
+        return counter_sentinel
+
+    monkeypatch.setattr(
+        "assistant_agent.context.token_counter.TokenizerJsonTokenCounter",
+        build_counter,
+    )
+    config = ProviderConfig(
+        provider_mode="real",
+        context_compactor_mode="off",
+        context_tokenizer_path="/tokenizer-sentinel/tokenizer.json",
+        chat_provider="provider-sentinel",
+        chat_model="model-sentinel",
+    )
+
+    counter = create_context_token_counter(config)
+
+    assert counter is counter_sentinel
+    assert created == {
+        "tokenizer_path": "/tokenizer-sentinel/tokenizer.json",
+        "tokenizer_id": "model-sentinel",
+    }
+
+
+@pytest.mark.core_invariant("CTX-001")
+def test_hard_token_preflight_blocks_provider_without_compactor() -> None:
+    adapter = CompactionChatAdapter()
+    runtime = AgentGraphRuntime(
+        registry=sealed_registry(),
+        config=ProviderConfig(
+            langgraph_checkpointer_backend="none",
+            context_input_token_limit=10_000,
+            context_compaction_safety_margin_tokens=0,
+        ),
+        chat_adapter=adapter,
+        context_token_counter=ThresholdTokenCounter(raw_history_tokens=8_500),
+        session_store=InMemorySessionStore(),
+    )
+    conversation_store = InMemoryConversationStore()
+    conversation_store.append(
+        "user-sentinel",
+        "session-sentinel",
+        ConversationTurn(
+            "old-user-sentinel",
+            "old-assistant-sentinel",
+            "old-run",
+            "old-trace",
+        ),
+    )
+    try:
+        artifacts = run_assistant_request(
+            UserRequest(
+                user_id="user-sentinel",
+                session_id="session-sentinel",
+                text="current-user-sentinel",
+            ),
+            runtime=runtime,
+            conversation_store=conversation_store,
+        )
+
+        assert artifacts.state.status == "completed"
+        assert adapter.main_turns == 0
+        assert artifacts.state.request.metadata["context_compaction_blocked"] is True
+        assert artifacts.state.request.metadata["context_compaction_skipped_reason"] == (
+            "compactor_unavailable"
+        )
+    finally:
+        runtime.close()
+
+
+@pytest.mark.core_invariant("CTX-001")
+def test_conversation_accounting_uses_runtime_tokenizer() -> None:
+    adapter = CompactionChatAdapter()
+    token_counter = FixedTextTokenCounter(text_tokens=7)
+    runtime = AgentGraphRuntime(
+        registry=sealed_registry(),
+        config=ProviderConfig(
+            langgraph_checkpointer_backend="none",
+            context_input_token_limit=10_000,
+            context_compaction_safety_margin_tokens=0,
+        ),
+        chat_adapter=adapter,
+        context_token_counter=token_counter,
+        session_store=InMemorySessionStore(),
+    )
+    conversation_store = InMemoryConversationStore()
+    conversation_store.append(
+        "user-sentinel",
+        "session-sentinel",
+        ConversationTurn(
+            "old-user-sentinel",
+            "old-assistant-sentinel",
+            "old-run",
+            "old-trace",
+        ),
+    )
+    try:
+        artifacts = run_assistant_request(
+            UserRequest(
+                user_id="user-sentinel",
+                session_id="session-sentinel",
+                text="current-user-sentinel",
+            ),
+            runtime=runtime,
+            conversation_store=conversation_store,
+        )
+
+        metadata = artifacts.state.request.metadata
+        assert metadata["conversation_context_token_aware"] is True
+        assert metadata["conversation_context_recent_tokens"] == 7
+        assert token_counter.counted_texts
+    finally:
+        runtime.close()
+
+
+@pytest.mark.core_invariant("CTX-001")
+def test_conversation_window_selection_uses_target_tokenizer() -> None:
+    history = [
+        ConversationTurn(
+            f"user-{index}-sentinel",
+            f"assistant-{index}-sentinel",
+            f"run-{index}",
+            f"trace-{index}",
+        )
+        for index in range(3)
+    ]
+    token_counter = FixedTextTokenCounter(text_tokens=1)
+
+    selection = select_conversation_window(
+        history,
+        recent_turns=1,
+        metadata={"conversation_recent_max_tokens": 2},
+        token_counter=token_counter,
+    )
+
+    assert [turn.user_text for turn in selection.compacted_turns] == [
+        "user-0-sentinel"
+    ]
+    assert [turn.user_text for turn in selection.recent_turns] == [
+        "user-1-sentinel",
+        "user-2-sentinel",
+    ]
+    assert selection.recent_tokens == 2
+    assert selection.token_aware is True
+
+
+@pytest.mark.core_invariant("CTX-001")
+def test_conversation_window_marks_estimated_fallback_as_not_token_aware() -> None:
+    selection = select_conversation_window(
+        [
+            ConversationTurn(
+                "user-sentinel",
+                "assistant-sentinel",
+                "run-sentinel",
+                "trace-sentinel",
+            )
+        ],
+        recent_turns=1,
+        metadata={"conversation_recent_max_tokens": 128},
+    )
+
+    assert selection.token_aware is False
 
 
 @pytest.mark.core_invariant("CTX-001")
@@ -429,5 +615,48 @@ def test_compiled_accounting_matches_provider_request() -> None:
             request.messages[0]["content"]
         )
         assert report["sections"]["tool_schema"]["chars"] == tool_chars
+    finally:
+        runtime.close()
+
+
+@pytest.mark.core_invariant("CTX-001")
+def test_context_compile_event_exposes_tokenizer_preflight_attributes() -> None:
+    adapter = CompactionChatAdapter()
+    trace_store = InMemoryTraceStore()
+    runtime = AgentGraphRuntime(
+        registry=sealed_registry(),
+        config=ProviderConfig(
+            langgraph_checkpointer_backend="none",
+            context_input_token_limit=10_000,
+            context_compaction_safety_margin_tokens=0,
+        ),
+        chat_adapter=adapter,
+        context_token_counter=ThresholdTokenCounter(raw_history_tokens=20),
+        session_store=InMemorySessionStore(),
+        trace_store=trace_store,
+    )
+    try:
+        state = runtime.run_state(
+            UserRequest(
+                user_id="user-sentinel",
+                session_id="session-sentinel",
+                text="request-sentinel",
+            )
+        )
+
+        context_event = next(
+            event
+            for event in trace_store.list_by_run(state.run_id)
+            if event.canonical_event == "context.build.finished"
+        )
+
+        assert context_event.attributes["compiled_input_tokens"] == 20
+        assert context_event.attributes["effective_input_limit"] == 8_976
+        assert context_event.attributes["context_token_usage_ratio"] == pytest.approx(
+            20 / 8_976
+        )
+        assert context_event.attributes["tokenizer_id"] == "tokenizer-sentinel"
+        assert context_event.attributes["token_accounting_status"] == "available"
+        assert "total_tokens" not in context_event.attributes
     finally:
         runtime.close()

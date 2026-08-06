@@ -1797,6 +1797,7 @@ def _create_realtime_video_observer(
             resource_release=release_resources,
             provider_config=runtime.config,
             visual_reminder_registry=runtime.visual_reminder_registry,
+            visual_memory_text_index=runtime.visual_memory_text_index,
             trace_store=state.trace_store,
         )
     except Exception:

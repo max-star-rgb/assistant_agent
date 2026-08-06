@@ -58,11 +58,14 @@ _ALLOWED_ATTRIBUTE_KEYS = frozenset(
         "client_type",
         "content_export_policy",
         "capability",
+        "compiled_input_tokens",
+        "context_token_usage_ratio",
         "context_usage_ratio",
         "decision_type",
         "disposition",
         "output_type",
         "error_count",
+        "effective_input_limit",
         "failure_code",
         "frame_sequence",
         "first_text_latency_ms",
@@ -92,6 +95,8 @@ _ALLOWED_ATTRIBUTE_KEYS = frozenset(
         "source_tool_span_id",
         "source",
         "terminal_status",
+        "token_accounting_status",
+        "tokenizer_id",
         "transport_mode",
         "tool_call_id",
         "tool_count",
@@ -523,6 +528,19 @@ def _event_attributes(event: TraceEvent) -> dict[str, Any]:
         attrs[
             "langfuse.observation.metadata.assistant_agent.runtime_action"
         ] = runtime_action
+    if canonical_event == "context.build.finished":
+        for key in (
+            "compiled_input_tokens",
+            "effective_input_limit",
+            "context_token_usage_ratio",
+            "tokenizer_id",
+            "token_accounting_status",
+        ):
+            value = attrs.get(f"assistant_agent.{key}")
+            if _safe_scalar(value):
+                attrs[
+                    f"langfuse.observation.metadata.assistant_agent.{key}"
+                ] = value
     for key in _VISUAL_TRACE_LINK_FIELDS:
         value = attrs.get(f"assistant_agent.{key}")
         if _safe_scalar(value):
@@ -533,7 +551,11 @@ def _event_attributes(event: TraceEvent) -> dict[str, Any]:
         attrs[
             "langfuse.observation.metadata.assistant_agent.source_vision_trace_url"
         ] = source_vision_trace_url
-    usage = _usage_details(event.attributes)
+    usage = (
+        _usage_details(event.attributes)
+        if _observation_type(event) == "generation"
+        else {}
+    )
     if usage:
         attrs["langfuse.observation.usage_details"] = json.dumps(usage, ensure_ascii=False, separators=(",", ":"))
         if "input" in usage:

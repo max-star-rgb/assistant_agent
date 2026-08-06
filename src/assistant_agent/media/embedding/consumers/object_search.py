@@ -2,22 +2,22 @@
 
 from __future__ import annotations
 
-import hashlib
-from time import perf_counter_ns
-from typing import Literal, Protocol
+from collections.abc import Callable
+from datetime import datetime
+from time import perf_counter_ns, time_ns
+from typing import Literal
+from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from assistant_agent.media.embedding.observability import (
     emit_visual_semantic_observation,
 )
-from assistant_agent.media.embedding.models import (
-    EmbeddingEvent,
-    EmbeddingFailureEvent,
-    EmbeddingOutcome,
-    TextObservation,
-)
 from assistant_agent.media.video.semantic_store import SessionVisualSemanticStore
+from assistant_agent.media.video.visual_memory_index import (
+    VisualMemoryIndexQuery,
+    VisualMemoryTextIndex,
+)
 from assistant_agent.media.video.visual_timeline_context import (
     VisualTimelineCompactionMetadata,
     VisualTimelineCoverage,
@@ -27,11 +27,13 @@ from assistant_agent.media.video.visual_timeline_context import (
 
 VisualMemorySearchStatus = Literal["records", "empty", "unavailable"]
 VisualMemorySearchMode = Literal["auto", "object", "scene", "event"]
+VISUAL_MEMORY_TIMEZONE = ZoneInfo("Asia/Shanghai")
 
 
 class VisualMemorySearchRequest(BaseModel):
     model_config = ConfigDict(frozen=True)
 
+    user_id: str = Field(min_length=1)
     session_id: str = Field(min_length=1)
     request_id: str = Field(min_length=1)
     query: str = Field(min_length=1, max_length=4_000)
@@ -77,37 +79,27 @@ class VisualMemorySearchResult(BaseModel):
         return self
 
 
-class TextEmbeddingCoordinator(Protocol):
-    def embed_text(
-        self,
-        observation: TextObservation,
-        *,
-        priority: Literal["interactive", "background"] = "interactive",
-    ) -> EmbeddingOutcome: ...
-
-
 class VisualMemorySearchService:
-    """Rank retained VLM text by a query embedding within trusted boundaries."""
+    """Project Qdrant-ranked VLM text into the main-model timeline contract."""
 
     def __init__(
         self,
         *,
         semantic_store: SessionVisualSemanticStore,
-        embedding_coordinator: TextEmbeddingCoordinator,
-        min_similarity: float = 0.20,
-        limit: int = 8,
+        text_index: VisualMemoryTextIndex,
+        limit: int = 12,
+        clock_ms: Callable[[], int] | None = None,
     ) -> None:
-        if not -1.0 <= min_similarity <= 1.0:
-            raise ValueError("visual memory similarity must be between -1 and 1")
         if limit <= 0:
             raise ValueError("visual memory result limit must be positive")
         self.semantic_store = semantic_store
-        self.embedding_coordinator = embedding_coordinator
-        self.min_similarity = min_similarity
+        self.text_index = text_index
         self.limit = limit
+        self.clock_ms = clock_ms or _wall_clock_ms
 
     def search(self, request: VisualMemorySearchRequest) -> VisualMemorySearchResult:
         started_ns = perf_counter_ns()
+        query_at_ms = self.clock_ms()
         if (
             self.semantic_store.session_id is not None
             and request.session_id != self.semantic_store.session_id
@@ -124,73 +116,81 @@ class VisualMemorySearchService:
             self._emit_query_observation(request, result, records, started_ns)
             return result
 
-        query_embedding = self.embedding_coordinator.embed_text(
-            TextObservation(
-                session_id=request.session_id,
-                observation_id=(
-                    f"visual-memory-query:{request.request_id}:"
-                    f"{hashlib.sha256(request.query.encode('utf-8')).hexdigest()[:16]}"
-                ),
-                text=request.query,
-                source="visual_memory_search",
-                occurred_at_ms=request.until_ms,
-            ),
-            priority="interactive",
+        retained_since_ms = min(
+            (
+                record.captured_at_ms
+                if record.captured_at_ms is not None
+                else record.created_at_ms
+            )
+            for record in records
         )
-        if isinstance(query_embedding, EmbeddingFailureEvent):
+        effective_since_ms = (
+            retained_since_ms
+            if request.since_ms is None
+            else max(request.since_ms, retained_since_ms)
+        )
+        index_result = self.text_index.search(
+            VisualMemoryIndexQuery(
+                user_id=request.user_id,
+                session_id=request.session_id,
+                query=request.query,
+                as_of_sequence=request.as_of_sequence,
+                since_ms=effective_since_ms,
+                until_ms=request.until_ms,
+                freshness_record_id=records[-1].record_id,
+                limit=self.limit,
+            )
+        )
+        searchable_count = sum(
+            1 for record in records if record.index_status == "ready"
+        )
+        if index_result.status == "unavailable":
             result = VisualMemorySearchResult(
                 status="unavailable",
                 observation_count=len(records),
+                searchable_observation_count=searchable_count,
                 coverage_complete=False,
-                errors=[
-                    {
-                        "code": query_embedding.code,
-                        "message": query_embedding.safe_message,
-                        "recoverable": query_embedding.recoverable,
-                    }
-                ],
+                errors=[error.model_dump() for error in index_result.errors],
             )
             self._emit_query_observation(request, result, records, started_ns)
             return result
-        if not isinstance(query_embedding, EmbeddingEvent):
-            raise TypeError("visual_memory_query_embedding_invalid")
-
-        searchable_count = sum(
-            1
-            for record in records
-            if record.index_status == "ready"
-            and record.search_embedding is not None
-            and record.embedding_space_id == query_embedding.embedding_space_id
-        )
-        candidates = self.semantic_store.search(
-            query_embedding,
-            as_of_sequence=request.as_of_sequence,
-            since_ms=request.since_ms,
-            as_of_ms=request.until_ms,
-            min_similarity=self.min_similarity,
-            limit=max(1, len(records)),
-        )
-        returned_candidates = candidates[: self.limit]
-        observations = [
-            VisualMemoryTextObservation(
-                timestamp_ms=(
-                    candidate.record.captured_at_ms
-                    if candidate.record.captured_at_ms is not None
-                    else candidate.record.created_at_ms
-                ),
-                text=candidate.record.summary,
-            )
-            for candidate in returned_candidates
+        retained_by_id = {record.record_id: record for record in records}
+        retained_hits = [
+            (hit, retained_by_id[hit.document.record_id])
+            for hit in index_result.hits
+            if hit.document.record_id in retained_by_id
+            and hit.document.user_id == request.user_id
+            and hit.document.session_id == request.session_id
         ]
+        observations: list[VisualMemoryTextObservation] = []
+        for _hit, record in retained_hits:
+            observed_at_ms = (
+                record.captured_at_ms
+                if record.captured_at_ms is not None
+                else record.created_at_ms
+            )
+            observations.append(
+                VisualMemoryTextObservation(
+                    timestamp_ms=observed_at_ms,
+                    time_label=_visual_memory_time_label(
+                        observed_at_ms,
+                        query_at_ms=query_at_ms,
+                    ),
+                    text=record.summary,
+                )
+            )
+        matched_count = len(retained_hits)
         result = VisualMemorySearchResult(
             status="records" if observations else "empty",
             observations=observations,
             observation_count=len(records),
             searchable_observation_count=searchable_count,
-            matched_observation_count=len(candidates),
+            matched_observation_count=matched_count,
             returned_observation_count=len(observations),
-            truncated=len(candidates) > len(observations),
-            coverage_complete=searchable_count == len(records),
+            truncated=False,
+            coverage_complete=(
+                index_result.coverage_complete and searchable_count == len(records)
+            ),
         )
         self._emit_query_observation(request, result, records, started_ns)
         return result
@@ -212,3 +212,37 @@ class VisualMemorySearchService:
             last_sequence=(records[-1].frame_sequence if records else None),
             latency_ms=max(0, (perf_counter_ns() - started_ns) // 1_000_000),
         )
+
+
+def _wall_clock_ms() -> int:
+    return time_ns() // 1_000_000
+
+
+def _visual_memory_time_label(timestamp_ms: int, *, query_at_ms: int) -> str:
+    absolute = datetime.fromtimestamp(
+        timestamp_ms / 1_000,
+        tz=VISUAL_MEMORY_TIMEZONE,
+    ).strftime("%Y-%m-%d %H:%M:%S %z")
+    absolute = f"{absolute[:-2]}:{absolute[-2:]}"
+    if timestamp_ms > query_at_ms:
+        return absolute
+    return f"{_relative_time_label(query_at_ms - timestamp_ms)}（{absolute}）"
+
+
+def _relative_time_label(elapsed_ms: int) -> str:
+    elapsed_seconds = elapsed_ms // 1_000
+    if elapsed_seconds == 0:
+        return "刚刚"
+    if elapsed_seconds < 60:
+        return f"约{elapsed_seconds}秒前"
+    elapsed_minutes, seconds = divmod(elapsed_seconds, 60)
+    if elapsed_minutes < 60:
+        suffix = f"{seconds}秒" if seconds else ""
+        return f"约{elapsed_minutes}分{suffix}前"
+    elapsed_hours, minutes = divmod(elapsed_minutes, 60)
+    if elapsed_hours < 24:
+        suffix = f"{minutes}分钟" if minutes else ""
+        return f"约{elapsed_hours}小时{suffix}前"
+    elapsed_days, hours = divmod(elapsed_hours, 24)
+    suffix = f"{hours}小时" if hours else ""
+    return f"约{elapsed_days}天{suffix}前"

@@ -16,13 +16,10 @@ from assistant_agent.media.embedding.observability import (
     EmbeddingObserver,
     emit_visual_semantic_observation,
 )
-from assistant_agent.media.embedding.coordinator import SessionEmbeddingCoordinator
-from assistant_agent.media.embedding.coordinator_store import (
-    SessionEmbeddingCoordinatorStore,
-)
 from assistant_agent.media.video.semantic_store_pool import (
     SessionVisualSemanticStorePool,
 )
+from assistant_agent.media.video.visual_memory_index import VisualMemoryTextIndex
 from assistant_agent.media.video.visual_timeline_context import (
     VisualTimelineContextService,
     VisualTimelineHardLimitError,
@@ -68,17 +65,12 @@ class VisualMemorySearchTool(ToolBase):
         self,
         *,
         semantic_store_pool: SessionVisualSemanticStorePool,
-        embedding_coordinator_store: SessionEmbeddingCoordinatorStore[
-            SessionEmbeddingCoordinator
-        ]
-        | None = None,
-        min_similarity: float = 0.20,
-        limit: int = 8,
+        text_index: VisualMemoryTextIndex,
+        limit: int = 12,
         timeline_context_service: VisualTimelineContextService | None = None,
     ) -> None:
         self.semantic_store_pool = semantic_store_pool
-        self.embedding_coordinator_store = embedding_coordinator_store
-        self.min_similarity = min_similarity
+        self.text_index = text_index
         self.limit = limit
         self.timeline_context_service = timeline_context_service
 
@@ -96,24 +88,8 @@ class VisualMemorySearchTool(ToolBase):
         semantic_store = self.semantic_store_pool.peek(user_id, input.session_id)
         if semantic_store is None:
             result = VisualMemorySearchResult(status="empty")
-        elif self.embedding_coordinator_store is None:
-            result = VisualMemorySearchResult(
-                status="unavailable",
-                coverage_complete=False,
-                errors=[
-                    {
-                        "code": "visual_memory_embedding_unavailable",
-                        "message": "visual memory text embedding is unavailable",
-                        "recoverable": True,
-                    }
-                ],
-            )
         else:
             semantic_lease = self.semantic_store_pool.acquire(
-                user_id,
-                input.session_id,
-            )
-            embedding_lease = self.embedding_coordinator_store.acquire(
                 user_id,
                 input.session_id,
             )
@@ -128,12 +104,12 @@ class VisualMemorySearchTool(ToolBase):
                 since_ms, until_ms = _time_bounds(input.time_window, request_metadata)
                 service = VisualMemorySearchService(
                     semantic_store=semantic_lease.store,
-                    embedding_coordinator=embedding_lease.coordinator,
-                    min_similarity=self.min_similarity,
+                    text_index=self.text_index,
                     limit=self.limit,
                 )
                 result = service.search(
                     VisualMemorySearchRequest(
+                        user_id=user_id,
                         session_id=input.session_id,
                         request_id=(
                             context.run_id
@@ -157,7 +133,6 @@ class VisualMemorySearchTool(ToolBase):
                         session_id=input.session_id,
                     )
             finally:
-                embedding_lease.release()
                 semantic_lease.release()
         data = result.model_dump(mode="json", exclude_none=True)
         return ToolResult(

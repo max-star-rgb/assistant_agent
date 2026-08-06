@@ -33,6 +33,7 @@ class RealtimeVideoObservationDiagnostics(BaseModel):
     queue_wait_latency_ms: int | None = Field(default=None, ge=0)
     observation_latency_ms: int | None = Field(default=None, ge=0)
     text_embedding_latency_ms: int | None = Field(default=None, ge=0)
+    visual_memory_index_latency_ms: int | None = Field(default=None, ge=0)
     semantic_store_write_latency_ms: int | None = Field(default=None, ge=0)
     published_at_ms: int | None = Field(default=None, ge=0)
     published_at_ns: int | None = Field(default=None, ge=0)
@@ -455,6 +456,11 @@ def project_realtime_video_context(
         ),
         text_embedding_latency_ms=(
             diagnostics.text_embedding_latency_ms if diagnostics is not None else None
+        ),
+        visual_memory_index_latency_ms=(
+            diagnostics.visual_memory_index_latency_ms
+            if diagnostics is not None
+            else None
         ),
         semantic_store_write_latency_ms=(
             diagnostics.semantic_store_write_latency_ms if diagnostics is not None else None

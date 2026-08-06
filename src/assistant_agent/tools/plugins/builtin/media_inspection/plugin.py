@@ -62,13 +62,13 @@ class MediaInspectionPlugin:
         if (
             vision_ready
             and context.visual_semantic_store_pool is not None
-            and context.embedding_coordinator_store is not None
+            and context.visual_memory_text_index is not None
         ):
             tools.append(
                 VisualMemorySearchTool(
                     semantic_store_pool=context.visual_semantic_store_pool,
-                    embedding_coordinator_store=context.embedding_coordinator_store,
-                    min_similarity=context.config.visual_memory_candidate_similarity,
+                    text_index=context.visual_memory_text_index,
+                    limit=context.config.visual_memory_result_limit,
                 )
             )
         return tools

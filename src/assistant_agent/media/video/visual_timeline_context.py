@@ -15,6 +15,7 @@ class VisualTimelineItem(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     timestamp_ms: int = Field(ge=0)
+    time_label: str | None = Field(default=None, max_length=120)
     text: str = Field(max_length=4_000)
 
 
