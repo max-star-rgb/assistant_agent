@@ -80,6 +80,13 @@ def _run_one_locked(
     judge_grace: timedelta, low_score_threshold: float,
     commit_continuous_state: bool,
 ) -> DailyAuditRunResult:
+    predecessor = store.last_completed_date()
+    if (
+        commit_continuous_state
+        and predecessor is not None
+        and window.audit_date not in {predecessor, predecessor + timedelta(days=1)}
+    ):
+        raise ValueError("daily commit target must follow its predecessor")
     attempt_id = store.allocate_audit_run_id(collected_at)
     bundle_path = store.inbox_dir / f"{attempt_id}.json"
     running = DailyAuditAttempt(
@@ -238,10 +245,16 @@ def _commit_success(
     registry,
     commit_continuous_state: bool,
 ) -> DailyAuditRunResult:
-    intent_path = store.write_commit_intent(
-        attempt, markdown=markdown, registry=registry,
-        commit_continuous_state=commit_continuous_state,
-    )
+    try:
+        intent_path = store.write_commit_intent(
+            attempt, markdown=markdown, registry=registry,
+            commit_continuous_state=commit_continuous_state,
+        )
+    except ValueError as exc:
+        return _fail(
+            store=store, attempt=attempt, bundle_path=bundle_path,
+            error_summary=sanitize_error_message(exc), publish_failure=True,
+        )
     try:
         report_path = _apply_commit_intent(
             store, json.loads(intent_path.read_text(encoding="utf-8"))
@@ -257,8 +270,12 @@ def _commit_success(
 
 
 def _recover_pending_commits(store: RuntimeAuditArtifactStore) -> None:
-    for intent in store.read_commit_intents():
-        _apply_commit_intent(store, intent)
+    for path in store.commit_intent_files():
+        try:
+            intent = json.loads(path.read_text(encoding="utf-8"))
+            _apply_commit_intent(store, intent)
+        except (RuntimeError, ValueError, KeyError, json.JSONDecodeError):
+            store.quarantine_commit_intent(path)
 
 
 def _apply_commit_intent(store: RuntimeAuditArtifactStore, intent: dict) -> Path:
@@ -281,6 +298,9 @@ def _apply_commit_intent(store: RuntimeAuditArtifactStore, intent: dict) -> Path
         store.clear_commit_intent(attempt.attempt_id)
         raise RuntimeError("stale daily commit intent cannot overwrite newer watermark")
     expected_date = date.fromisoformat(predecessor) if predecessor else None
+    if expected_date is not None and attempt.audit_date != expected_date + timedelta(days=1):
+        store.clear_commit_intent(attempt.attempt_id)
+        raise RuntimeError("daily commit intent target is not adjacent to predecessor")
     if current_date not in {expected_date, attempt.audit_date}:
         store.clear_commit_intent(attempt.attempt_id)
         raise RuntimeError("daily commit intent watermark precondition failed")

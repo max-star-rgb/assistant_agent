@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from contextlib import contextmanager
 import hashlib
 import fcntl
@@ -55,6 +55,7 @@ class RuntimeAuditArtifactStore:
         self.attempts_dir = self.state_dir / "attempts"
         self.schemas_dir = self.state_dir / "schemas"
         self.commits_dir = self.state_dir / "commits"
+        self.quarantine_dir = self.commits_dir / "quarantine"
         self.lock_path = self.state_dir / "daily-run.lock"
         self.issues_path = self.state_dir / "issues.json"
         self.latest_bundle_path = self.state_dir / "latest-bundle.json"
@@ -108,13 +109,16 @@ class RuntimeAuditArtifactStore:
 
     def write_commit_intent(self, attempt: DailyAuditAttempt, *, markdown: str, registry: IssueRegistry | None, commit_continuous_state: bool) -> Path:
         path = self.commit_intent_path(attempt.attempt_id)
+        predecessor = self.last_completed_date()
+        if commit_continuous_state and predecessor is not None and audit_date_next(predecessor) != attempt.audit_date:
+            raise ValueError("daily commit target must follow its predecessor")
         payload = {
             "schema_version": "assistant_agent_daily_commit_intent_v2",
             "attempt": attempt.model_dump(mode="json"),
             "markdown": markdown,
             "registry": registry.model_dump(mode="json") if registry is not None else None,
             "commit_continuous_state": commit_continuous_state,
-            "expected_predecessor_watermark": self.last_completed_date().isoformat() if self.last_completed_date() else None,
+            "expected_predecessor_watermark": predecessor.isoformat() if predecessor else None,
             "previous_registry_digest": self.issue_registry_digest(),
             "desired_registry_digest": _registry_digest(registry) if registry is not None else None,
         }
@@ -128,6 +132,15 @@ class RuntimeAuditArtifactStore:
         if not self.commits_dir.exists():
             return []
         return [json.loads(path.read_text(encoding="utf-8")) for path in sorted(self.commits_dir.glob("*.json"))]
+
+    def commit_intent_files(self) -> list[Path]:
+        return sorted(self.commits_dir.glob("*.json")) if self.commits_dir.exists() else []
+
+    def quarantine_commit_intent(self, path: Path) -> Path:
+        self.quarantine_dir.mkdir(parents=True, exist_ok=True)
+        target = self.quarantine_dir / path.name
+        os.replace(path, target)
+        return target
 
     def clear_commit_intent(self, attempt_id: str) -> None:
         self.commit_intent_path(attempt_id).unlink(missing_ok=True)
@@ -178,9 +191,7 @@ class RuntimeAuditArtifactStore:
         if current is not None:
             if current.last_completed_date == audit_date and current.last_attempt_id == attempt_id:
                 return self.watermark_path
-            if audit_date != current.last_completed_date.fromordinal(
-                current.last_completed_date.toordinal() + 1
-            ):
+            if audit_date != current.last_completed_date + timedelta(days=1):
                 raise ValueError("daily watermark must advance exactly one calendar day")
         watermark = DailyAuditWatermarkV2(
             last_completed_date=audit_date,
@@ -280,3 +291,7 @@ def _iso_z(value) -> str:
 def _registry_digest(registry: IssueRegistry | None) -> str:
     payload = registry.model_dump_json() if registry is not None else ""
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def audit_date_next(value: date) -> date:
+    return value + timedelta(days=1)

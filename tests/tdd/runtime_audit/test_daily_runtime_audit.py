@@ -1359,6 +1359,27 @@ def test_cli_source_factory_failure_publishes_daily_failure(
     assert "审计未完成" in store.daily_report_path(date(2026, 8, 5)).read_text(encoding="utf-8")
 
 
+def test_gap_continuous_commit_changes_no_target_state(tmp_path: Path) -> None:
+    """Would fail if a backward/gap journal wrote report or lifecycle state before CAS rejection."""
+
+    store = RuntimeAuditArtifactStore(tmp_path / "runtime_audit")
+    store.mark_day_completed(date(2026, 8, 5), attempt_id="prior", bundle_path="/tmp/prior")
+    before_registry = store.read_issue_registry().model_dump_json()
+    before_watermark = store.watermark_path.read_text(encoding="utf-8")
+    with pytest.raises(ValueError, match="target must follow"):
+        run_one_daily_audit(
+            window=window_for_date(date(2026, 8, 7)),
+            source=FakeLangfuseSource([_daily_trace().model_copy(update={"timestamp": datetime(2026, 8, 7, 12, tzinfo=timezone.utc)})]),
+            local_trace_path=tmp_path / "graph_trace.jsonl", store=store, repo_root=tmp_path,
+            codex_runner=lambda **_: _daily_codex_report(audit_date=date(2026, 8, 7)),
+            collected_at=datetime(2026, 8, 8, 0, 15, tzinfo=timezone.utc),
+        )
+
+    assert not store.daily_report_path(date(2026, 8, 7)).exists()
+    assert store.read_issue_registry().model_dump_json() == before_registry
+    assert store.watermark_path.read_text(encoding="utf-8") == before_watermark
+
+
 def test_daily_run_dry_run_lists_only_the_requested_date(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
