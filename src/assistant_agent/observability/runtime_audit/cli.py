@@ -10,6 +10,10 @@ from pathlib import Path
 import sys
 
 from assistant_agent.observability.runtime_audit.collector import collect_runtime_audit
+from assistant_agent.observability.runtime_audit.daily_runner import (
+    run_one_daily_audit,
+    run_pending_daily_audits,
+)
 from assistant_agent.observability.runtime_audit.daily_window import (
     previous_day_window,
     window_for_date,
@@ -25,7 +29,10 @@ from assistant_agent.observability.runtime_audit.report import (
     render_codex_report,
     render_deterministic_report,
 )
-from assistant_agent.observability.runtime_audit.runner import run_codex_report
+from assistant_agent.observability.runtime_audit.runner import (
+    run_codex_report,
+    run_daily_codex_report,
+)
 from assistant_agent.observability.runtime_audit.storage import RuntimeAuditArtifactStore
 from assistant_agent.providers.provider_errors import sanitize_error_message
 from assistant_agent.runtime.assistant_run_service import load_env_file
@@ -39,6 +46,8 @@ def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     repo_root = Path(args.repo_root).resolve()
     store = RuntimeAuditArtifactStore(repo_root / args.artifact_root)
+    if args.command == "run" and args.window_hours is None and args.dry_run:
+        return _daily_dry_run(args, store=store)
     if args.command in {"collect", "run"} and args.dry_run:
         print(
             json.dumps(
@@ -78,6 +87,8 @@ def main(argv: list[str] | None = None) -> int:
             bundle_path, _, _ = _collect(args, repo_root=repo_root, store=store)
             print(json.dumps({"status": "collected", "bundle_path": str(bundle_path)}))
             return 0
+        if args.command == "run" and args.window_hours is None and not args.skip_codex:
+            return _run_daily(args, repo_root=repo_root, store=store)
         if args.command == "report":
             bundle_path = _resolve_bundle_path(args.bundle, store=store, repo_root=repo_root)
             return _report(
@@ -119,7 +130,72 @@ def main(argv: list[str] | None = None) -> int:
             ),
             file=sys.stderr,
         )
-        return 2
+    return 2
+
+
+def _daily_dry_run(args, *, store: RuntimeAuditArtifactStore) -> int:
+    if args.date is not None:
+        dates = [args.date]
+    else:
+        yesterday = previous_day_window(datetime.now(timezone.utc)).audit_date
+        from assistant_agent.observability.runtime_audit.daily_window import pending_audit_dates
+
+        dates = pending_audit_dates(
+            yesterday=yesterday, last_completed=store.last_completed_date()
+        )
+    print(
+        json.dumps(
+            {
+                "status": "dry_run",
+                "audit_dates": [item.isoformat() for item in dates],
+                "report_paths": [str(store.daily_report_path(item)) for item in dates],
+                "failed_date": None,
+                "production_mutation_allowed": False,
+            },
+            ensure_ascii=False,
+        )
+    )
+    return 0
+
+
+def _run_daily(args, *, repo_root: Path, store: RuntimeAuditArtifactStore) -> int:
+    """Run explicit refreshes or ordered backfill through the resumable daily loop."""
+
+    collected_at = datetime.now(timezone.utc)
+    source = create_langfuse_audit_source_from_env(os.environ)
+    try:
+        runner = lambda **kwargs: run_daily_codex_report(
+            **kwargs, timeout_seconds=args.codex_timeout_seconds
+        )
+        common = {
+            "source": source,
+            "local_trace_path": repo_root / args.local_trace_path,
+            "store": store,
+            "repo_root": repo_root,
+            "codex_runner": runner,
+            "collected_at": collected_at,
+            "judge_grace": timedelta(minutes=args.judge_grace_minutes),
+            "low_score_threshold": args.low_score_threshold,
+        }
+        if args.date is not None:
+            results = [run_one_daily_audit(window=window_for_date(args.date), **common)]
+        else:
+            yesterday = previous_day_window(collected_at).audit_date
+            results = run_pending_daily_audits(yesterday=yesterday, **common)
+    finally:
+        source.close()
+    failed = next((item for item in results if item.status == "failed"), None)
+    print(
+        json.dumps(
+            {
+                "audit_dates": [item.audit_date.isoformat() for item in results],
+                "report_paths": [str(item.report_path) for item in results if item.report_path],
+                "failed_date": failed.audit_date.isoformat() if failed else None,
+            },
+            ensure_ascii=False,
+        )
+    )
+    return 2 if failed else 0
 
 
 def _collect(args, *, repo_root: Path, store: RuntimeAuditArtifactStore):

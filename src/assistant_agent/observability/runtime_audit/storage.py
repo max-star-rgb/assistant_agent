@@ -152,6 +152,12 @@ class RuntimeAuditArtifactStore:
             return None
         return DailyAuditWatermarkV2.model_validate(payload).last_completed_date
 
+    def is_day_completed(self, audit_date: date) -> bool:
+        """Whether a successful checkpoint proves this date already has a good report."""
+
+        completed = self.last_completed_date()
+        return completed is not None and completed >= audit_date
+
     def _artifact_exists(self, audit_run_id: str) -> bool:
         return any(
             path.exists()
