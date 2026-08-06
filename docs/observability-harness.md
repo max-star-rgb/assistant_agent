@@ -97,6 +97,12 @@ conversation overlay 在 Langfuse projection 中旁路上述边界。该 policy 
 Tool observation。VLM event 与后台 summary 的观测写入均 fail-open；写入失败不能阻止 Provider 调用或
 把成功视觉结果改成业务失败。
 
+成功 VLM 的归一化结构化结果可以进入与 canonical trace 分离的进程内 content overlay；只允许
+summary、scene、objects、people、actions、events、OCR、grounding 列表、confidence 和 Provider/model/
+latency 等已校验字段，不允许媒体引用、媒体字节、embedding 或 Provider 原始 payload。该内容只有在
+本地 trace content 开启且 exporter 指向 loopback Langfuse 时才投影到 `vlm.infer` generation 和
+`vision.runtime` root output；canonical event 与 JSONL 始终不保存视觉正文。
+
 统一 embedding side stream 额外发布 `embedding.requested/deduplicated/started/finished/failed/
 dispatched/consumer_dropped/session_cleanup`。这些事件只允许 modality、dimension、latency、priority、
 consumer count、错误码和稳定 digest；不得包含向量、文本、图片/evidence 路径或原始 session、
@@ -284,7 +290,10 @@ parent 使用稳定的 `agent.runtime` root span ID。已有 `langfuse.session.i
 
 后台 `vision.observation` 只通过同一 `langfuse.session.id` 与会话聚合；它不创建 Assistant turn summary、
 conversation history 或主 LLM generation。其内部仍保留 `tool.execute -> vlm.infer` 因果链，从而分别
-观察 Tool 治理耗时和副 VLM Provider 耗时。
+观察 Tool 治理耗时和副 VLM Provider 耗时。每条成功 `VisualSemanticRecord` 同时保存产生它的
+`source_vision_trace_id`、`source_vision_run_id` 和 `source_vlm_span_id`。`live_view_inspect` 读取缓存时只把
+实际选中 record 的这些身份以及 `source_visual_record_id`、`snapshot_sequence` 作为 prompt-safe metadata
+投影到主 turn Tool observation；不得用 Session 时间邻近或全局最新 trace 猜测来源。
 
 连接级视觉提醒使用创建 turn 的 correlation 记录 late-capable canonical events：
 `visual_reminder.created`、`visual_reminder.matched`、`visual_reminder.delivery.finished` 和

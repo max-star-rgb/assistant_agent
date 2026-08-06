@@ -77,6 +77,10 @@ class RealtimeVideoSnapshot(BaseModel):
     confidence: float | None = None
     provider: str | None = None
     model: str | None = None
+    source_vision_trace_id: str | None = None
+    source_vision_run_id: str | None = None
+    source_vlm_span_id: str | None = None
+    source_visual_record_id: str | None = None
     keyframes: list[SemanticKeyframeRecord] = Field(default_factory=list)
     last_success_sequence: int | None = None
     last_success_timestamp_ms: int | None = None
@@ -123,6 +127,10 @@ class RealtimeVideoMemoryStore:
         result: VideoUnderstandingResult,
         *,
         diagnostics: RealtimeVideoObservationDiagnostics | None = None,
+        source_vision_trace_id: str | None = None,
+        source_vision_run_id: str | None = None,
+        source_vlm_span_id: str | None = None,
+        source_visual_record_id: str | None = None,
     ) -> list[SemanticKeyframeRecord]:
         """Apply one successful observation and return evicted keyframes."""
 
@@ -160,6 +168,10 @@ class RealtimeVideoMemoryStore:
                     "confidence": result.confidence,
                     "provider": result.provider,
                     "model": result.model,
+                    "source_vision_trace_id": source_vision_trace_id,
+                    "source_vision_run_id": source_vision_run_id,
+                    "source_vlm_span_id": source_vlm_span_id,
+                    "source_visual_record_id": source_visual_record_id,
                     "keyframes": retained,
                     "last_success_sequence": frame.sequence,
                     "last_success_timestamp_ms": frame.timestamp_ms,

@@ -63,6 +63,9 @@ class VisualSemanticRecord(BaseModel):
     confidence: float | None = Field(default=None, ge=0.0, le=1.0)
     provider: str | None = Field(default=None, max_length=120)
     model: str | None = Field(default=None, max_length=240)
+    source_vision_trace_id: str | None = Field(default=None, max_length=160)
+    source_vision_run_id: str | None = Field(default=None, max_length=240)
+    source_vlm_span_id: str | None = Field(default=None, max_length=160)
     search_embedding: list[float] | None = Field(default=None, exclude=True)
     embedding_space_id: str | None = Field(default=None, max_length=240)
     index_status: VisualIndexStatus

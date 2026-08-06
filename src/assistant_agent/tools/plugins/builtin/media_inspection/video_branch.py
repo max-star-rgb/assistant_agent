@@ -23,7 +23,10 @@ from assistant_agent.media.vision.vision_client import (
     video_result_from_vision_result,
     vision_request_from_video_request,
 )
-from assistant_agent.media.vision.observability import observe_vision_inference
+from assistant_agent.media.vision.observability import (
+    VisionInferenceTraceLink,
+    observe_vision_inference,
+)
 from assistant_agent.media.video.video_context import (
     DEFAULT_VIDEO_CONTEXT_WINDOW_SIZE,
     VideoContextStore,
@@ -160,6 +163,7 @@ class VideoUnderstandingBranch(ToolBase):
 
         input = self._with_context_frames(input)
         self._sync_client_video_adapter()
+        trace_links: list[VisionInferenceTraceLink] = []
         try:
             result = video_result_from_vision_result(
                 observe_vision_inference(
@@ -184,6 +188,7 @@ class VideoUnderstandingBranch(ToolBase):
                         if observation_mode
                         else "video-understanding-v1"
                     ),
+                    trace_link_callback=trace_links.append,
                 )
             )
         except ValueError as exc:
@@ -244,6 +249,7 @@ class VideoUnderstandingBranch(ToolBase):
                 snapshot=snapshot,
                 provider=result.provider,
                 model=result.model,
+                trace_link=trace_links[-1] if trace_links else None,
             ),
         )
 
@@ -540,6 +546,7 @@ class VideoUnderstandingBranch(ToolBase):
         provider: str | None,
         model: str | None,
         target_sequence: int | None = None,
+        trace_link: VisionInferenceTraceLink | None = None,
     ) -> dict[str, object]:
         diagnostics = snapshot.observation_diagnostics if snapshot is not None else None
         published_at_ms = (
@@ -587,6 +594,30 @@ class VideoUnderstandingBranch(ToolBase):
             else None,
             "provider": provider,
             "model": model,
+            "source_vision_trace_id": (
+                trace_link.trace_id
+                if trace_link is not None
+                else snapshot.source_vision_trace_id
+                if snapshot is not None
+                else None
+            ),
+            "source_vision_run_id": (
+                trace_link.run_id
+                if trace_link is not None
+                else snapshot.source_vision_run_id
+                if snapshot is not None
+                else None
+            ),
+            "source_vlm_span_id": (
+                trace_link.span_id
+                if trace_link is not None
+                else snapshot.source_vlm_span_id
+                if snapshot is not None
+                else None
+            ),
+            "source_visual_record_id": (
+                snapshot.source_visual_record_id if snapshot is not None else None
+            ),
             "jpeg_prepare_latency_ms": (
                 diagnostics.jpeg_prepare_latency_ms if diagnostics is not None else None
             ),
@@ -685,6 +716,16 @@ def _project_visual_semantic_snapshot(
         confidence=record.confidence if record is not None else None,
         provider=record.provider if record is not None else None,
         model=record.model if record is not None else None,
+        source_vision_trace_id=(
+            record.source_vision_trace_id if record is not None else None
+        ),
+        source_vision_run_id=(
+            record.source_vision_run_id if record is not None else None
+        ),
+        source_vlm_span_id=(
+            record.source_vlm_span_id if record is not None else None
+        ),
+        source_visual_record_id=(record.record_id if record is not None else None),
         keyframes=(
             [
                 SemanticKeyframeRecord(

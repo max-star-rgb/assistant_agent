@@ -43,6 +43,15 @@ class TraceLlmOutput(BaseModel):
     provider_protocol_response: dict[str, Any] | None = None
 
 
+class TraceVlmOutput(BaseModel):
+    """One normalized local-only VLM result keyed by generation span."""
+
+    span_id: str = Field(min_length=1)
+    provider: str | None = None
+    model: str | None = None
+    normalized_result: dict[str, Any]
+
+
 class TraceToolObservation(BaseModel):
     """One complete assistant-facing tool observation for local diagnostics."""
 
@@ -61,6 +70,7 @@ class TraceConversationView(BaseModel):
     delivered: TraceConversationText | None = None
     llm_inputs: list[TraceLlmInput] = Field(default_factory=list)
     llm_outputs: list[TraceLlmOutput] = Field(default_factory=list)
+    vlm_outputs: list[TraceVlmOutput] = Field(default_factory=list)
     tool_observations: list[TraceToolObservation] = Field(default_factory=list)
 
 
@@ -76,6 +86,7 @@ class TraceConversationRecord:
     delivered_text: str | None = None
     llm_inputs: tuple[TraceLlmInput, ...] = ()
     llm_outputs: tuple[TraceLlmOutput, ...] = ()
+    vlm_outputs: tuple[TraceVlmOutput, ...] = ()
     tool_observations: tuple[TraceToolObservation, ...] = ()
 
 
@@ -117,6 +128,7 @@ class InMemoryTraceConversationStore:
                 delivered_text=existing.delivered_text if existing is not None else None,
                 llm_inputs=existing.llm_inputs if existing is not None else (),
                 llm_outputs=existing.llm_outputs if existing is not None else (),
+                vlm_outputs=existing.vlm_outputs if existing is not None else (),
                 tool_observations=(
                     existing.tool_observations if existing is not None else ()
                 ),
@@ -154,6 +166,7 @@ class InMemoryTraceConversationStore:
                 delivered_text=existing.delivered_text if existing is not None else None,
                 llm_inputs=inputs[-16:],
                 llm_outputs=existing.llm_outputs if existing is not None else (),
+                vlm_outputs=existing.vlm_outputs if existing is not None else (),
                 tool_observations=(
                     existing.tool_observations if existing is not None else ()
                 ),
@@ -186,11 +199,53 @@ class InMemoryTraceConversationStore:
                 delivered_text=existing.delivered_text if existing is not None else None,
                 llm_inputs=existing.llm_inputs if existing is not None else (),
                 llm_outputs=outputs[-16:],
+                vlm_outputs=existing.vlm_outputs if existing is not None else (),
                 tool_observations=(
                     existing.tool_observations if existing is not None else ()
                 ),
             )
             self._replace_record(record)
+
+    def append_vlm_output(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+        trace_id: str,
+        vlm_output: TraceVlmOutput,
+    ) -> None:
+        """Upsert one bounded normalized VLM result by generation span."""
+
+        with self._lock:
+            existing = self._matching_record(
+                user_id=user_id,
+                session_id=session_id,
+                trace_id=trace_id,
+            )
+            existing_outputs = existing.vlm_outputs if existing is not None else ()
+            outputs = tuple(
+                item for item in existing_outputs if item.span_id != vlm_output.span_id
+            ) + (vlm_output,)
+            self._replace_record(
+                TraceConversationRecord(
+                    user_id=user_id,
+                    session_id=session_id,
+                    trace_id=trace_id,
+                    user_text=existing.user_text if existing is not None else "",
+                    assistant_text=(
+                        existing.assistant_text if existing is not None else ""
+                    ),
+                    delivered_text=(
+                        existing.delivered_text if existing is not None else None
+                    ),
+                    llm_inputs=existing.llm_inputs if existing is not None else (),
+                    llm_outputs=existing.llm_outputs if existing is not None else (),
+                    vlm_outputs=outputs[-16:],
+                    tool_observations=(
+                        existing.tool_observations if existing is not None else ()
+                    ),
+                )
+            )
 
     def append_tool_observation(
         self,
@@ -222,6 +277,7 @@ class InMemoryTraceConversationStore:
                 delivered_text=existing.delivered_text if existing is not None else None,
                 llm_inputs=existing.llm_inputs if existing is not None else (),
                 llm_outputs=existing.llm_outputs if existing is not None else (),
+                vlm_outputs=existing.vlm_outputs if existing is not None else (),
                 tool_observations=observations[-32:],
             )
             self._replace_record(record)
@@ -254,6 +310,7 @@ class InMemoryTraceConversationStore:
                     delivered_text=delivered_text,
                     llm_inputs=existing.llm_inputs,
                     llm_outputs=existing.llm_outputs,
+                    vlm_outputs=existing.vlm_outputs,
                     tool_observations=existing.tool_observations,
                 )
             )
@@ -267,6 +324,7 @@ class InMemoryTraceConversationStore:
         limit: int = DEFAULT_TRACE_CONVERSATION_CHAR_LIMIT,
         include_llm_inputs: bool = False,
         include_llm_outputs: bool = False,
+        include_vlm_outputs: bool = False,
         include_tool_observations: bool = False,
     ) -> TraceConversationView | None:
         if limit <= 0:
@@ -289,6 +347,9 @@ class InMemoryTraceConversationStore:
                     ),
                     llm_inputs=list(record.llm_inputs) if include_llm_inputs else [],
                     llm_outputs=list(record.llm_outputs) if include_llm_outputs else [],
+                    vlm_outputs=(
+                        list(record.vlm_outputs) if include_vlm_outputs else []
+                    ),
                     tool_observations=(
                         list(record.tool_observations)
                         if include_tool_observations

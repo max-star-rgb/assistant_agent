@@ -679,6 +679,7 @@ class TextOtelTraceObserver:
             limit=4000,
             include_llm_inputs=True,
             include_llm_outputs=True,
+            include_vlm_outputs=True,
             include_tool_observations=True,
         )
 

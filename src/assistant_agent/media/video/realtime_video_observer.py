@@ -28,6 +28,7 @@ from assistant_agent.runtime.state import AgentState
 from assistant_agent.runtime.tool_executor import ToolExecutor
 from assistant_agent.runtime.decision_models import AssistantDecision
 from assistant_agent.media.vision.models import VideoUnderstandingResult
+from assistant_agent.media.vision.observability import VisionInferenceTraceLink
 from assistant_agent.runtime.requests import UserRequest
 from assistant_agent.tools.models import ToolResult
 from assistant_agent.providers.provider_errors import sanitize_error_message
@@ -78,6 +79,7 @@ class _ObservationItem:
 
 @dataclass(frozen=True)
 class _VisualSemanticPublishOutcome:
+    visual_record_id: str
     text_embedding_latency_ms: int
     semantic_store_write_latency_ms: int
 
@@ -515,11 +517,13 @@ class RealtimeVideoObserver:
             observation = _snapshot_publishable_observation(result)
             if observation is not None:
                 video_id = item_video_id(item.record, self.video_id)
+                trace_link = _vision_trace_link(result)
                 publish_outcome = await asyncio.to_thread(
                     self._publish_visual_semantic_record,
                     video_id,
                     item.record,
                     observation,
+                    trace_link,
                 )
                 semantic_published_ns = self.clock_ns()
                 diagnostics = self._observation_diagnostics(
@@ -546,6 +550,18 @@ class RealtimeVideoObserver:
                     item.record,
                     observation,
                     diagnostics=diagnostics,
+                    source_vision_trace_id=(
+                        trace_link.trace_id if trace_link is not None else None
+                    ),
+                    source_vision_run_id=(
+                        trace_link.run_id if trace_link is not None else None
+                    ),
+                    source_vlm_span_id=(
+                        trace_link.span_id if trace_link is not None else None
+                    ),
+                    source_visual_record_id=(
+                        publish_outcome.visual_record_id
+                    ),
                 )
                 for record in evicted:
                     self._delete_record(record)
@@ -617,6 +633,7 @@ class RealtimeVideoObserver:
         video_id: str,
         frame: SemanticKeyframeRecord,
         result: VideoUnderstandingResult,
+        trace_link: VisionInferenceTraceLink | None,
     ) -> _VisualSemanticPublishOutcome:
         embedding_started_ns = self.clock_ns()
         text_outcome = self.embedding_coordinator.embed_text(
@@ -656,6 +673,15 @@ class RealtimeVideoObserver:
             confidence=result.confidence,
             provider=result.provider,
             model=result.model,
+            source_vision_trace_id=(
+                trace_link.trace_id if trace_link is not None else None
+            ),
+            source_vision_run_id=(
+                trace_link.run_id if trace_link is not None else None
+            ),
+            source_vlm_span_id=(
+                trace_link.span_id if trace_link is not None else None
+            ),
             search_embedding=(list(text_event.vector) if text_event else None),
             embedding_space_id=(
                 text_event.embedding_space_id if text_event else None
@@ -677,6 +703,7 @@ class RealtimeVideoObserver:
                 status="unavailable",
             )
         return _VisualSemanticPublishOutcome(
+            visual_record_id=record.record_id,
             text_embedding_latency_ms=_elapsed_ms(
                 embedding_started_ns,
                 embedding_finished_ns,
@@ -989,6 +1016,20 @@ def item_video_id(item: SemanticKeyframeRecord, video_id: str | None) -> str:
     if video_id is None:
         raise RuntimeError("video id is not initialized")
     return video_id
+
+
+def _vision_trace_link(result: ToolResult) -> VisionInferenceTraceLink | None:
+    summary = result.trace_summary
+    if not isinstance(summary, dict):
+        return None
+    values = {
+        "trace_id": summary.get("source_vision_trace_id"),
+        "run_id": summary.get("source_vision_run_id"),
+        "span_id": summary.get("source_vlm_span_id"),
+    }
+    if not all(isinstance(value, str) and value for value in values.values()):
+        return None
+    return VisionInferenceTraceLink.model_validate(values)
 
 
 def _result_error(result: ToolResult) -> dict[str, Any]:

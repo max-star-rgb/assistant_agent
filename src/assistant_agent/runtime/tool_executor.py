@@ -58,6 +58,15 @@ from assistant_agent.tools.plugins.registry_factory import create_default_regist
 from assistant_agent.tools.registry import ToolRegistry
 
 
+_VISUAL_TRACE_LINK_FIELDS = (
+    "source_vision_trace_id",
+    "source_vision_run_id",
+    "source_vlm_span_id",
+    "source_visual_record_id",
+    "snapshot_sequence",
+)
+
+
 class ToolExecutor:
     """Execute one Tool serially and commit its lifecycle to AgentState."""
 
@@ -701,6 +710,7 @@ def _policy_safe_output_summary(
             "success": result.success,
             "data_field_names": sorted(str(key) for key in data),
             "error_code": classify_error(result.error or "") if result.error else None,
+            **_visual_trace_link_summary(result),
         }
     if local_trace_content_enabled():
         data = result.data if isinstance(result.data, dict) else {}
@@ -744,6 +754,20 @@ def _policy_safe_output_summary(
         "data_field_names": sorted(str(key) for key in data),
         "result_size_bytes": len(str(data).encode("utf-8")),
     }
+
+
+def _visual_trace_link_summary(result: ToolResult) -> dict[str, Any]:
+    trace_summary = result.trace_summary
+    if not isinstance(trace_summary, dict):
+        return {}
+    values: dict[str, Any] = {}
+    for key in _VISUAL_TRACE_LINK_FIELDS:
+        value = trace_summary.get(key)
+        if isinstance(value, str) and value:
+            values[key] = value
+        elif key == "snapshot_sequence" and isinstance(value, int) and not isinstance(value, bool):
+            values[key] = value
+    return values
 
 
 def _provider_name(payload: dict[str, Any]) -> str | None:

@@ -25,6 +25,7 @@ if TYPE_CHECKING:
         TraceLlmInput,
         TraceLlmOutput,
         TraceToolObservation,
+        TraceVlmOutput,
     )
 
 
@@ -101,7 +102,20 @@ _ALLOWED_OUTPUT_KEYS = frozenset(
         "item_count",
         "output_ref",
         "result_count",
+        "snapshot_sequence",
+        "source_vision_trace_id",
+        "source_vision_run_id",
+        "source_vlm_span_id",
+        "source_visual_record_id",
     }
+)
+
+_VISUAL_TRACE_LINK_FIELDS = (
+    "source_vision_trace_id",
+    "source_vision_run_id",
+    "source_vlm_span_id",
+    "source_visual_record_id",
+    "snapshot_sequence",
 )
 
 
@@ -502,6 +516,10 @@ def _event_attributes(event: TraceEvent) -> dict[str, Any]:
         attrs[
             "langfuse.observation.metadata.assistant_agent.runtime_action"
         ] = runtime_action
+    for key in _VISUAL_TRACE_LINK_FIELDS:
+        value = attrs.get(f"assistant_agent.{key}")
+        if _safe_scalar(value):
+            attrs[f"langfuse.observation.metadata.assistant_agent.{key}"] = value
     usage = _usage_details(event.attributes)
     if usage:
         attrs["langfuse.observation.usage_details"] = json.dumps(usage, ensure_ascii=False, separators=(",", ":"))
@@ -533,14 +551,21 @@ def _root_io_attributes(
                 "media_kind": terminal.attributes.get("media_kind", "live_view"),
             }
         )
-        output_value = _json_value(
+        vlm_output = _latest_vlm_output_for_events(events, conversation=conversation)
+        output_payload = (
             {
+                **vlm_output.normalized_result,
+                "content_exported": True,
+            }
+            if vlm_output is not None
+            else {
                 "status": terminal.output_summary.get(
                     "status", terminal.status or "unknown"
                 ),
                 "content_exported": False,
             }
         )
+        output_value = _json_value(output_payload)
         return {
             "langfuse.observation.input": input_value,
             "langfuse.observation.output": output_value,
@@ -650,6 +675,7 @@ def _event_io_attributes(
                         "result_count",
                         "artifact_id",
                         "artifact_ref",
+                        *_VISUAL_TRACE_LINK_FIELDS,
                     ),
                 ),
             }
@@ -768,6 +794,14 @@ def _event_io_attributes(
         llm_output = _llm_output_for_event(conversation, span_id=event.span_id)
         if llm_output is not None:
             output_payload = _llm_provider_output_preview(llm_output)
+            include_output = True
+    elif name == "vlm.infer.finished":
+        vlm_output = _vlm_output_for_event(conversation, span_id=event.span_id)
+        if vlm_output is not None:
+            output_payload = {
+                **vlm_output.normalized_result,
+                "content_exported": True,
+            }
             include_output = True
     elif name == "response.final" and conversation is not None:
         output_payload = {
@@ -941,6 +975,35 @@ def _llm_output_for_event(
         (item for item in conversation.llm_outputs if item.span_id == span_id),
         None,
     )
+
+
+def _vlm_output_for_event(
+    conversation: "TraceConversationView | None",
+    *,
+    span_id: str | None,
+) -> "TraceVlmOutput | None":
+    if conversation is None or span_id is None:
+        return None
+    return next(
+        (item for item in reversed(conversation.vlm_outputs) if item.span_id == span_id),
+        None,
+    )
+
+
+def _latest_vlm_output_for_events(
+    events: list[TraceEvent],
+    *,
+    conversation: "TraceConversationView | None",
+) -> "TraceVlmOutput | None":
+    for event in reversed(events):
+        if (
+            _event_name(event) == "vlm.infer.finished"
+            and _event_status(event) != "error"
+        ):
+            matched = _vlm_output_for_event(conversation, span_id=event.span_id)
+            if matched is not None:
+                return matched
+    return None
 
 
 def _tool_observation_for_event(
