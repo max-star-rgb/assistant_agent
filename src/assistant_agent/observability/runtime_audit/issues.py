@@ -62,11 +62,17 @@ def build_refresh_issue_registry(
             raise ValueError(f"duplicate observed issue: {candidate.issue_key}")
         observed_keys.add(candidate.issue_key)
         current = previous.issues.get(candidate.issue_key)
+        if current is not None and current.first_seen > audit_date:
+            if candidate.status in {"runtime_verified", "regressed"}:
+                raise ValueError(
+                    "historical refresh predates the existing issue lifecycle"
+                )
+            current = None
         _validate_observation(
             current,
             candidate,
             audit_date,
-            require_later_date=False,
+            require_later_date=True,
         )
         merged[candidate.issue_key] = _merge_issue(current, candidate, audit_date)
     return IssueRegistry(issues=merged)
@@ -76,17 +82,23 @@ def report_issue_view(
     previous: IssueRegistry,
     merged: IssueRegistry,
     observed: list[DailyAuditIssue],
+    *,
+    audit_date: date,
 ) -> list[DailyAuditIssue]:
     """Return deterministic active state plus only genuine observed verifications."""
 
     observed_by_key = {issue.issue_key: issue for issue in observed}
     visible: list[DailyAuditIssue] = []
     for issue_key, issue in sorted(merged.issues.items()):
+        prior = previous.issues.get(issue_key)
+        if issue.first_seen > audit_date:
+            continue
+        if prior is not None and prior.last_seen > audit_date and issue_key not in observed_by_key:
+            continue
         if issue.status in {"open", "regressed", "code_addressed", "uncertain"}:
             visible.append(issue)
             continue
         candidate = observed_by_key.get(issue_key)
-        prior = previous.issues.get(issue_key)
         if (
             issue.status == "runtime_verified"
             and candidate is not None

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 import threading
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
@@ -75,6 +77,48 @@ def _daily_codex_report(
         memory_summary="未发现记忆问题。",
         infrastructure_summary="证据源正常。",
     )
+
+
+def _runtime_audit_test_repo(
+    tmp_path: Path,
+    *,
+    committed_at: str,
+) -> tuple[Path, str]:
+    repo = tmp_path / "repo"
+    test_path = repo / "tests/tdd/runtime_audit/test_regression.py"
+    test_path.parent.mkdir(parents=True)
+    test_path.write_text("def test_regression():\n    assert True\n", encoding="utf-8")
+    subprocess.run(["git", "init", str(repo)], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "audit@example.invalid"],
+        cwd=repo,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Runtime Audit Test"],
+        cwd=repo,
+        check=True,
+    )
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    environment = dict(os.environ)
+    environment.update(
+        {"GIT_AUTHOR_DATE": committed_at, "GIT_COMMITTER_DATE": committed_at}
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "fix: add regression coverage"],
+        cwd=repo,
+        env=environment,
+        check=True,
+        capture_output=True,
+    )
+    result = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    return repo, result.stdout.strip()
 
 
 def test_human_daily_report_is_chinese_and_moves_machine_ids_to_appendix() -> None:
@@ -1151,6 +1195,10 @@ def test_invalid_bundle_refs_cannot_promote_runtime_verification(
 def test_current_bundle_ref_can_promote_runtime_verification(tmp_path: Path) -> None:
     """Would fail if bundle authenticity blocked a genuine later verification trace."""
 
+    repo, commit_sha = _runtime_audit_test_repo(
+        tmp_path,
+        committed_at="2026-08-04T13:00:00+00:00",
+    )
     store = RuntimeAuditArtifactStore(tmp_path / "runtime_audit")
     prior = DailyAuditIssue(
         issue_key="tool.example",
@@ -1159,7 +1207,10 @@ def test_current_bundle_ref_can_promote_runtime_verification(tmp_path: Path) -> 
         first_seen=date(2026, 8, 4),
         last_seen=date(2026, 8, 4),
         trace_evidence_refs=["trace:prior"],
-        code_evidence_refs=["code:change"],
+        code_evidence_refs=[
+            f"code:{commit_sha}",
+            "test:tests/tdd/runtime_audit/test_regression.py",
+        ],
     )
     store.write_issue_registry(IssueRegistry(issues={prior.issue_key: prior}))
     candidate = DailyAuditIssue(
@@ -1176,7 +1227,7 @@ def test_current_bundle_ref_can_promote_runtime_verification(tmp_path: Path) -> 
         source=FakeLangfuseSource([_daily_trace("trace-current")]),
         local_trace_path=tmp_path / "graph_trace.jsonl",
         store=store,
-        repo_root=tmp_path,
+        repo_root=repo,
         codex_runner=lambda **_: _daily_codex_report(issue=candidate),
         collected_at=datetime(2026, 8, 6, 0, 15, tzinfo=timezone.utc),
     )
@@ -1260,30 +1311,60 @@ def test_explicit_rerun_does_not_mutate_continuous_issue_or_watermark(
 
 
 @pytest.mark.parametrize(
-    ("audit_date", "previous_status", "candidate_status", "evidence_field"),
+    (
+        "audit_date",
+        "previous_last_seen",
+        "previous_status",
+        "candidate_status",
+        "evidence_field",
+        "committed_at",
+    ),
     [
-        (date(2026, 8, 5), "code_addressed", "runtime_verified", "runtime_verification_refs"),
-        (date(2026, 8, 4), "runtime_verified", "regressed", "trace_evidence_refs"),
+        (
+            date(2026, 8, 5),
+            date(2026, 8, 4),
+            "code_addressed",
+            "runtime_verified",
+            "runtime_verification_refs",
+            "2026-08-04T13:00:00+00:00",
+        ),
+        (
+            date(2026, 8, 4),
+            date(2026, 8, 3),
+            "runtime_verified",
+            "regressed",
+            "trace_evidence_refs",
+            "2026-08-03T13:00:00+00:00",
+        ),
     ],
 )
 def test_explicit_rerun_skips_lifecycle_merge_but_keeps_bundle_evidence_gate(
     tmp_path: Path,
     audit_date: date,
+    previous_last_seen: date,
     previous_status: str,
     candidate_status: str,
     evidence_field: str,
+    committed_at: str,
 ) -> None:
     """Would fail if an explicit rerun merged lifecycle state or skipped evidence checks."""
 
+    repo, commit_sha = _runtime_audit_test_repo(
+        tmp_path,
+        committed_at=committed_at,
+    )
     store = RuntimeAuditArtifactStore(tmp_path / "runtime_audit")
     previous = DailyAuditIssue(
         issue_key="tool.lifecycle",
         status=previous_status,
         title="已有问题",
         first_seen=date(2026, 8, 1),
-        last_seen=date(2026, 8, 5),
+        last_seen=previous_last_seen,
         trace_evidence_refs=["trace:historical"],
-        code_evidence_refs=["code:fix"],
+        code_evidence_refs=[
+            f"code:{commit_sha}",
+            "test:tests/tdd/runtime_audit/test_regression.py",
+        ],
         runtime_verification_refs=(
             ["trace:verified"] if previous_status == "runtime_verified" else []
         ),
@@ -1322,7 +1403,7 @@ def test_explicit_rerun_skips_lifecycle_merge_but_keeps_bundle_evidence_gate(
         ),
         local_trace_path=tmp_path / "graph_trace.jsonl",
         store=store,
-        repo_root=tmp_path,
+        repo_root=repo,
         codex_runner=lambda **_: _daily_codex_report(
             audit_date=audit_date, issue=candidate
         ),
@@ -1356,7 +1437,7 @@ def test_explicit_rerun_skips_lifecycle_merge_but_keeps_bundle_evidence_gate(
         ),
         local_trace_path=tmp_path / "graph_trace.jsonl",
         store=store,
-        repo_root=tmp_path,
+        repo_root=repo,
         codex_runner=lambda **_: _daily_codex_report(
             audit_date=audit_date, issue=forged
         ),

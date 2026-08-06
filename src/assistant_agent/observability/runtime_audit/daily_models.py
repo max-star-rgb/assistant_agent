@@ -10,6 +10,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    StringConstraints,
     ValidationInfo,
     field_validator,
     model_validator,
@@ -29,7 +30,23 @@ IssueStatus = Literal[
     "uncertain",
 ]
 _SAFE_EVIDENCE_REF_SUFFIX = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/:@+=-]*$")
-EvidenceRef = Annotated[str, Field(max_length=500)]
+_EVIDENCE_ID_PATTERN = r"[A-Za-z0-9][A-Za-z0-9._:@+=-]*"
+_TRACE_EVIDENCE_PATTERN = (
+    rf"^trace:{_EVIDENCE_ID_PATTERN}"
+    rf"(?:/(?:observation|score):{_EVIDENCE_ID_PATTERN})?$"
+)
+_CODE_EVIDENCE_PATTERN = (
+    r"^(?:code:[0-9A-Fa-f]{7,40}|"
+    r"test:tests/[A-Za-z0-9][A-Za-z0-9._/@+=-]*)$"
+)
+TraceEvidenceRef = Annotated[
+    str,
+    StringConstraints(max_length=500, pattern=_TRACE_EVIDENCE_PATTERN),
+]
+CodeEvidenceRef = Annotated[
+    str,
+    StringConstraints(max_length=500, pattern=_CODE_EVIDENCE_PATTERN),
+]
 LimitedHumanText = Annotated[str, Field(max_length=2_000)]
 
 
@@ -86,9 +103,15 @@ class CodexDailyAuditIssue(DailyAuditIssue):
     user_impact: str = Field(default="", max_length=2_000)
     suggested_change: str = Field(default="", max_length=2_000)
     validation: str = Field(default="", max_length=2_000)
-    trace_evidence_refs: list[EvidenceRef] = Field(default_factory=list, max_length=50)
-    code_evidence_refs: list[EvidenceRef] = Field(default_factory=list, max_length=50)
-    runtime_verification_refs: list[EvidenceRef] = Field(default_factory=list, max_length=50)
+    trace_evidence_refs: list[TraceEvidenceRef] = Field(
+        default_factory=list, max_length=50
+    )
+    code_evidence_refs: list[CodeEvidenceRef] = Field(
+        default_factory=list, max_length=50
+    )
+    runtime_verification_refs: list[TraceEvidenceRef] = Field(
+        default_factory=list, max_length=50
+    )
 
     @field_validator("issue_key")
     @classmethod

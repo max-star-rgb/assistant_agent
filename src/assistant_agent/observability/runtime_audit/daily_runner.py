@@ -160,7 +160,12 @@ def _run_one_locked(
             window.audit_date,
             langfuse_available=bundle.coverage.langfuse_source_available,
             local_available=bundle.coverage.local_source_available,
-            issues=report_issue_view(previous_registry, previous_registry, []),
+            issues=report_issue_view(
+                previous_registry,
+                previous_registry,
+                [],
+                audit_date=window.audit_date,
+            ),
         )
         if not bundle.coverage.local_source_available:
             return _fail(
@@ -192,6 +197,7 @@ def _run_one_locked(
             report,
             bundle=bundle,
             repo_root=repo_root,
+            previous_registry=previous_registry,
         )
         _validate_sensitive_text_overlap(report, bundle)
         report_registry = (
@@ -203,7 +209,12 @@ def _run_one_locked(
                 window.audit_date,
             )
         )
-        issues = report_issue_view(previous_registry, report_registry, report.issues)
+        issues = report_issue_view(
+            previous_registry,
+            report_registry,
+            report.issues,
+            audit_date=window.audit_date,
+        )
         registry = report_registry if commit_continuous_state else None
         markdown = render_daily_codex_report(report, issues=issues)
     except Exception as exc:
@@ -515,12 +526,36 @@ def _validate_repository_code_evidence(
     *,
     bundle: RuntimeAuditBundle,
     repo_root: Path,
+    previous_registry: IssueRegistry,
 ) -> None:
     """Authenticate code-addressed refs against local Git and repository files."""
 
     repo_root = Path(repo_root).resolve()
     trace_times = _bundle_trace_times(bundle)
     for issue in report.issues:
+        previous_issue = previous_registry.issues.get(issue.issue_key)
+        if issue.status in {"runtime_verified", "regressed"} and previous_issue is not None:
+            commit_times = [
+                _git_commit_time(repo_root, ref.removeprefix("code:"))
+                for ref in previous_issue.code_evidence_refs
+                if ref.startswith("code:")
+            ]
+            verification_refs = (
+                issue.runtime_verification_refs
+                if issue.status == "runtime_verified"
+                else issue.trace_evidence_refs
+            )
+            verification_times = [
+                trace_times[_parse_trace_ref(ref)[0]]
+                for ref in verification_refs
+                if _parse_trace_ref(ref)[0] in trace_times
+            ]
+            if commit_times and (
+                not verification_times or min(verification_times) <= max(commit_times)
+            ):
+                raise ValueError(
+                    "runtime verification evidence must follow the recorded code fix"
+                )
         if issue.status != "code_addressed":
             continue
         commit_refs = [
