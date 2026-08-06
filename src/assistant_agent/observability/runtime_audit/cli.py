@@ -87,7 +87,7 @@ def main(argv: list[str] | None = None) -> int:
                 skip_codex=args.skip_codex,
                 codex_timeout_seconds=args.codex_timeout_seconds,
             )
-        bundle_path, _, bundle = _collect(args, repo_root=repo_root, store=store)
+        bundle_path, report_path, bundle = _collect(args, repo_root=repo_root, store=store)
         if args.skip_codex:
             print(
                 json.dumps(
@@ -95,7 +95,7 @@ def main(argv: list[str] | None = None) -> int:
                         "status": "completed_without_codex",
                         "audit_run_id": bundle.audit_run_id,
                         "bundle_path": str(bundle_path),
-                        "report_path": str(store.reports_dir / f"{bundle.audit_run_id}.md"),
+                        "report_path": str(report_path),
                     }
                 )
             )

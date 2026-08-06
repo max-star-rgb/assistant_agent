@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from datetime import date, datetime
 import json
+import os
 from pathlib import Path
+import tempfile
 from typing import Literal
 from zoneinfo import ZoneInfo
 
@@ -80,7 +82,7 @@ class RuntimeAuditArtifactStore:
         return path
 
     def write_deterministic_report(self, bundle: RuntimeAuditBundle, markdown: str) -> Path:
-        path = self.reports_dir / f"{bundle.audit_run_id}.md"
+        path = self.attempts_dir / f"{bundle.audit_run_id}.deterministic.md"
         _atomic_write(path, markdown)
         return path
 
@@ -100,8 +102,10 @@ class RuntimeAuditArtifactStore:
 
     def write_daily_report(self, audit_date: date, markdown: str, *, replace: bool = True) -> Path:
         path = self.daily_report_path(audit_date)
-        if replace or not path.exists():
+        if replace:
             _atomic_write(path, markdown)
+        else:
+            _atomic_write_if_absent(path, markdown)
         return path
 
     def write_failed_daily_report_if_absent(self, audit_date: date, markdown: str) -> Path:
@@ -151,9 +155,40 @@ class RuntimeAuditArtifactStore:
 
 def _atomic_write(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(content + ("" if content.endswith("\n") else "\n"), encoding="utf-8")
-    temporary.replace(path)
+    descriptor, temporary_name = tempfile.mkstemp(
+        dir=path.parent,
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        text=True,
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(_with_trailing_newline(content))
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _atomic_write_if_absent(path: Path, content: str) -> bool:
+    """Publish content once without replacing an existing artifact."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
+    except FileExistsError:
+        return False
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(_with_trailing_newline(content))
+    except Exception:
+        path.unlink(missing_ok=True)
+        raise
+    return True
+
+
+def _with_trailing_newline(content: str) -> str:
+    return content + ("" if content.endswith("\n") else "\n")
 
 
 def _iso_z(value) -> str:

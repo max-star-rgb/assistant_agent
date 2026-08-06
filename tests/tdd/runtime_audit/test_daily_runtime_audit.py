@@ -1,13 +1,19 @@
 from __future__ import annotations
 
 import json
+import threading
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from assistant_agent.observability.runtime_audit.cli import _parser, _resolve_bundle_path
+from assistant_agent.observability.runtime_audit import storage as storage_module
+from assistant_agent.observability.runtime_audit.cli import (
+    _parser,
+    _resolve_bundle_path,
+    main,
+)
 from assistant_agent.observability.runtime_audit.collector import collect_runtime_audit
 from assistant_agent.observability.runtime_audit.daily_window import (
     pending_audit_dates,
@@ -42,6 +48,59 @@ def test_failed_rerun_does_not_replace_successful_daily_report(tmp_path: Path) -
     path = store.write_daily_report(date(2026, 8, 5), "成功日报", replace=True)
     store.write_failed_daily_report_if_absent(date(2026, 8, 5), "失败日报")
     assert path.read_text(encoding="utf-8").strip() == "成功日报"
+
+
+def test_rolling_markdown_stays_internal_and_cli_reports_its_actual_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    store = RuntimeAuditArtifactStore(tmp_path / "runtime_audit")
+    bundle = SimpleNamespace(audit_run_id="runtime_audit_20260806_0015")
+    rolling_path = store.write_deterministic_report(bundle, "内部报告")
+
+    assert rolling_path == (
+        store.attempts_dir / "runtime_audit_20260806_0015.deterministic.md"
+    )
+    assert list(store.reports_dir.glob("*.md")) == []
+
+    monkeypatch.setattr(
+        "assistant_agent.observability.runtime_audit.cli._collect",
+        lambda *args, **kwargs: (Path("/tmp/bundle.json"), rolling_path, bundle),
+    )
+
+    assert main(["--no-env-file", "--repo-root", str(tmp_path), "run", "--skip-codex"]) == 0
+    assert json.loads(capsys.readouterr().out)["report_path"] == str(rolling_path)
+
+
+def test_concurrent_failed_publish_cannot_replace_successful_daily_report(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = RuntimeAuditArtifactStore(tmp_path / "runtime_audit")
+    failure_ready = threading.Event()
+    allow_failed_publish = threading.Event()
+    original_publish = storage_module._atomic_write_if_absent
+
+    def blocked_failed_publish(path: Path, content: str) -> bool:
+        failure_ready.set()
+        assert allow_failed_publish.wait(timeout=5)
+        return original_publish(path, content)
+
+    monkeypatch.setattr(storage_module, "_atomic_write_if_absent", blocked_failed_publish)
+    failed_writer = threading.Thread(
+        target=store.write_failed_daily_report_if_absent,
+        args=(date(2026, 8, 5), "失败日报"),
+    )
+    failed_writer.start()
+    assert failure_ready.wait(timeout=5)
+
+    successful_path = store.write_daily_report(date(2026, 8, 5), "成功日报", replace=True)
+    allow_failed_publish.set()
+    failed_writer.join(timeout=5)
+
+    assert not failed_writer.is_alive()
+    assert successful_path.read_text(encoding="utf-8").strip() == "成功日报"
 
 
 def test_legacy_watermark_is_not_a_completed_daily_audit(tmp_path: Path) -> None:
