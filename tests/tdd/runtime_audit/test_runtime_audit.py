@@ -18,6 +18,8 @@ from assistant_agent.observability.runtime_audit.runner import (
     run_codex_report,
     sanitized_codex_environment,
 )
+from assistant_agent.observability.runtime_audit import daily_models as daily_models_module
+from assistant_agent.observability.runtime_audit import runner as runner_module
 from assistant_agent.observability.runtime_audit.storage import RuntimeAuditArtifactStore
 from assistant_agent.observability.runtime_audit.report import render_deterministic_report
 from evals.agent.contracts import AssertionResult, DimensionResult
@@ -568,6 +570,61 @@ def test_codex_report_runner_uses_explicit_executable_outside_service_path(
     )
 
     assert captured["command"][0] == "/opt/codex/bin/codex"
+
+
+def test_daily_codex_runner_uses_issue_state_and_daily_schema_in_stdin(
+    tmp_path: Path,
+) -> None:
+    """Would fail if daily Codex received state in argv or could return a rolling report."""
+
+    audit_date = datetime(2026, 8, 5, tzinfo=UTC).date()
+    bundle_path = tmp_path / "inbox" / "daily.json"
+    issues_path = tmp_path / "state" / "issues.json"
+    output_path = tmp_path / "state" / "attempts" / "daily.codex.json"
+    schema_path = tmp_path / "state" / "schemas" / "daily.schema.json"
+    bundle_path.parent.mkdir()
+    issues_path.parent.mkdir()
+    bundle_path.write_text('{"schema_version":"assistant_agent_runtime_audit_bundle_v1"}', encoding="utf-8")
+    issues_path.write_text('{"schema_version":"assistant_agent_runtime_audit_issues_v1","issues":{}}', encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        captured["input"] = kwargs["input"]
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(
+            daily_models_module.DailyCodexAuditReport(
+                audit_date=audit_date,
+                daily_summary="没有需要处理的问题。",
+                activity_summary="昨日无可审计对话。",
+                memory_summary="没有记忆问题。",
+                infrastructure_summary="审计任务运行正常。",
+            ).model_dump_json(),
+            encoding="utf-8",
+        )
+        return SimpleNamespace(returncode=0, stderr="", stdout="")
+
+    report = runner_module.run_daily_codex_report(
+        audit_date=audit_date,
+        bundle_path=bundle_path,
+        issues_path=issues_path,
+        repo_root=tmp_path,
+        output_path=output_path,
+        schema_path=schema_path,
+        environment={"PATH": "/usr/bin", "LANGFUSE_SECRET_KEY": "do-not-leak"},
+        process_runner=fake_run,
+    )
+
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    assert report.audit_date == audit_date
+    assert schema["additionalProperties"] is False
+    assert set(schema["required"]) == set(schema["properties"])
+    assert str(bundle_path) in str(captured["input"])
+    assert str(issues_path) in str(captured["input"])
+    assert str(bundle_path) not in captured["command"]
+    assert str(issues_path) not in captured["command"]
+    assert "报告读者是项目维护者，不是另一个 Codex。" in str(captured["input"])
+    assert "production_mutation_allowed 必须为 false" in str(captured["input"])
 
 
 def test_langfuse_read_failure_is_infrastructure_unknown_not_missing_export(

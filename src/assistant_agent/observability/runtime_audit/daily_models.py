@@ -62,6 +62,22 @@ class DailyAuditIssue(BaseModel):
         return values
 
 
+class DailyCodexAuditReport(BaseModel):
+    """Plain-language daily report returned by the isolated Codex process."""
+
+    schema_version: Literal["assistant_agent_daily_codex_audit_v1"] = (
+        "assistant_agent_daily_codex_audit_v1"
+    )
+    audit_date: date
+    daily_summary: str
+    activity_summary: str
+    issues: list[DailyAuditIssue] = Field(default_factory=list)
+    memory_summary: str
+    infrastructure_summary: str
+    limitations: list[str] = Field(default_factory=list)
+    production_mutation_allowed: Literal[False] = False
+
+
 class IssueRegistry(BaseModel):
     """Persisted lifecycle state for daily runtime-audit issues."""
 

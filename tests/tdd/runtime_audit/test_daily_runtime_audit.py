@@ -25,12 +25,72 @@ from assistant_agent.observability.runtime_audit.daily_models import (
     DailyAuditIssue,
     IssueRegistry,
 )
+from assistant_agent.observability.runtime_audit import daily_models as daily_models_module
+from assistant_agent.observability.runtime_audit import report as report_module
 from assistant_agent.observability.runtime_audit.issues import (
     merge_issue_registry,
 )
 from assistant_agent.observability.runtime_audit.langfuse_source import LangfuseSdkAuditSource
 from assistant_agent.observability.runtime_audit.models import LangfuseTraceSnapshot
 from assistant_agent.observability.runtime_audit.storage import RuntimeAuditArtifactStore
+
+
+def test_human_daily_report_is_chinese_and_moves_machine_ids_to_appendix() -> None:
+    """Would fail if the daily report buried user impact behind machine evidence."""
+
+    report = daily_models_module.DailyCodexAuditReport(
+        audit_date=date(2026, 8, 5),
+        daily_summary="昨天有一个工具选择问题需要决定。",
+        activity_summary="共 4 次对话，其中 1 次调用工具。",
+        issues=[
+            DailyAuditIssue(
+                issue_key="tool.email_for_market_data",
+                status="open",
+                title="错误使用邮件搜索",
+                plain_summary="助手把公开市场查询交给了邮箱搜索。",
+                user_impact="用户可能得到无关结果。",
+                suggested_change="收紧邮箱搜索的适用范围。",
+                validation="等待后续同类自然请求。",
+                first_seen=date(2026, 8, 5),
+                last_seen=date(2026, 8, 5),
+                trace_evidence_refs=["trace:abc/observation:def"],
+            )
+        ],
+        memory_summary="未发现需要处理的记忆问题。",
+        infrastructure_summary="Trace 导出正常。",
+    )
+
+    markdown = report_module.render_daily_codex_report(report)
+
+    assert "## 需要你决定" in markdown
+    assert "用户可能得到无关结果" in markdown
+    assert markdown.index("## 证据附录") < markdown.index("trace:abc")
+    assert "Executive Summary" not in markdown
+
+
+def test_empty_day_report_is_short_and_explicitly_successful() -> None:
+    """Would fail if an empty audit day were mistaken for an audit failure."""
+
+    markdown = report_module.render_empty_daily_report(
+        date(2026, 8, 5),
+        langfuse_available=True,
+        local_available=True,
+    )
+
+    assert "昨日无可审计对话" in markdown
+    assert "审计任务运行正常" in markdown
+
+
+def test_failed_daily_report_states_failure_without_leaking_secrets() -> None:
+    """Would fail if a failed audit looked successful or exposed credentials."""
+
+    markdown = report_module.render_failed_daily_report(
+        date(2026, 8, 5),
+        "Authorization: Bearer private-token timed out",
+    )
+
+    assert "审计未完成" in markdown
+    assert "private-token" not in markdown
 
 
 def test_issue_requires_runtime_evidence_before_verified() -> None:

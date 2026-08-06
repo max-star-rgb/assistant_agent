@@ -3,7 +3,12 @@
 from __future__ import annotations
 
 from collections import Counter
+from datetime import date
 
+from assistant_agent.observability.runtime_audit.daily_models import (
+    DailyAuditIssue,
+    DailyCodexAuditReport,
+)
 from assistant_agent.observability.runtime_audit.models import CodexAuditReport, RuntimeAuditBundle
 from assistant_agent.providers.provider_errors import sanitize_error_message
 
@@ -118,6 +123,157 @@ def render_codex_report(report: CodexAuditReport) -> str:
         ]
     )
     return "\n".join(lines)
+
+
+def render_daily_codex_report(report: DailyCodexAuditReport) -> str:
+    """Render the daily Codex contract as a plain-language Chinese report."""
+
+    decision_issues = [
+        issue
+        for issue in report.issues
+        if issue.status in {"open", "regressed", "uncertain"}
+    ]
+    addressed_issues = [
+        issue for issue in report.issues if issue.status == "code_addressed"
+    ]
+    verified_issues = [
+        issue for issue in report.issues if issue.status == "runtime_verified"
+    ]
+    lines = [
+        f"# {report.audit_date.isoformat()} 运行审计日报",
+        "",
+        "## 一句话结论",
+        "",
+        _safe(report.daily_summary),
+        "",
+        "## 昨日概况",
+        "",
+        _safe(report.activity_summary),
+        "",
+        "## 需要你决定",
+        "",
+    ]
+    _append_issue_guidance(lines, decision_issues, empty_message="昨天没有需要维护者决定的问题。")
+    lines.extend(["", "## 已处理等待自然验证", ""])
+    _append_issue_guidance(
+        lines,
+        addressed_issues,
+        empty_message="昨天没有已处理、等待自然验证的问题。",
+        include_suggested_change=False,
+    )
+    lines.extend(["", "## 昨日已验证解决", ""])
+    _append_issue_guidance(
+        lines,
+        verified_issues,
+        empty_message="昨天没有已在真实运行中验证解决的问题。",
+        include_suggested_change=False,
+    )
+    lines.extend(
+        [
+            "",
+            "## 记忆情况",
+            "",
+            _safe(report.memory_summary),
+            "",
+            "## 系统运行情况",
+            "",
+            _safe(report.infrastructure_summary),
+        ]
+    )
+    if report.limitations:
+        lines.extend(["", "审计限制："])
+        lines.extend(f"- {_safe(value)}" for value in report.limitations)
+    lines.extend(["", "## 证据附录", ""])
+    _append_evidence_appendix(lines, report.issues)
+    return "\n".join(lines) + "\n"
+
+
+def render_empty_daily_report(
+    audit_date: date,
+    *,
+    langfuse_available: bool,
+    local_available: bool,
+) -> str:
+    """Render a successful no-activity day without invoking Codex."""
+
+    availability = []
+    availability.append("Langfuse 证据源可用" if langfuse_available else "Langfuse 证据源不可用")
+    availability.append("本地完整性证据可用" if local_available else "本地完整性证据不可用")
+    return "\n".join(
+        [
+            f"# {audit_date.isoformat()} 运行审计日报",
+            "",
+            "## 一句话结论",
+            "",
+            "昨日无可审计对话，审计任务运行正常。",
+            "",
+            "## 系统运行情况",
+            "",
+            f"- {'；'.join(availability)}。",
+            "",
+        ]
+    )
+
+
+def render_failed_daily_report(audit_date: date, error_summary: str) -> str:
+    """Render a safe and explicit daily-audit failure for maintainers."""
+
+    return "\n".join(
+        [
+            f"# {audit_date.isoformat()} 运行审计日报",
+            "",
+            "## 一句话结论",
+            "",
+            "审计未完成，无法对昨日运行情况给出结论。",
+            "",
+            "## 系统运行情况",
+            "",
+            f"- 失败摘要：{_safe(error_summary)}",
+            "",
+        ]
+    )
+
+
+def _append_issue_guidance(
+    lines: list[str],
+    issues: list[DailyAuditIssue],
+    *,
+    empty_message: str,
+    include_suggested_change: bool = True,
+) -> None:
+    if not issues:
+        lines.append(empty_message)
+        return
+    for issue in issues:
+        lines.extend([f"### {_safe(issue.title)}", ""])
+        if issue.plain_summary:
+            lines.append(_safe(issue.plain_summary))
+        if issue.user_impact:
+            lines.append(f"- 对用户的影响：{_safe(issue.user_impact)}")
+        if include_suggested_change and issue.suggested_change:
+            lines.append(f"- 建议：{_safe(issue.suggested_change)}")
+        if issue.validation:
+            lines.append(f"- 如何验证：{_safe(issue.validation)}")
+        lines.append("")
+    lines.pop()
+
+
+def _append_evidence_appendix(lines: list[str], issues: list[DailyAuditIssue]) -> None:
+    has_evidence = False
+    for issue in issues:
+        references = [
+            *issue.trace_evidence_refs,
+            *issue.code_evidence_refs,
+            *issue.runtime_verification_refs,
+        ]
+        if not references:
+            continue
+        has_evidence = True
+        lines.append(
+            f"- {_safe(issue.title)}：{', '.join(f'`{_safe(ref)}`' for ref in references)}"
+        )
+    if not has_evidence:
+        lines.append("没有可附上的机器证据。")
 
 
 def _safe(value: str) -> str:
