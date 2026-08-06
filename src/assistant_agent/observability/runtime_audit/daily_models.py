@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import date
 import re
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import (
     BaseModel,
@@ -13,6 +13,10 @@ from pydantic import (
     ValidationInfo,
     field_validator,
     model_validator,
+)
+
+from assistant_agent.observability.runtime_audit.safety import (
+    sanitize_runtime_audit_text,
 )
 
 
@@ -25,6 +29,8 @@ IssueStatus = Literal[
     "uncertain",
 ]
 _SAFE_EVIDENCE_REF_SUFFIX = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/:@+=-]*$")
+EvidenceRef = Annotated[str, Field(max_length=500)]
+LimitedHumanText = Annotated[str, Field(max_length=2_000)]
 
 
 class DailyAuditIssue(BaseModel):
@@ -71,6 +77,27 @@ class DailyAuditIssue(BaseModel):
         return values
 
 
+class CodexDailyAuditIssue(DailyAuditIssue):
+    """Bounded Codex output view; persisted historical issues remain compatible."""
+
+    issue_key: str = Field(max_length=200)
+    title: str = Field(max_length=500)
+    plain_summary: str = Field(default="", max_length=2_000)
+    user_impact: str = Field(default="", max_length=2_000)
+    suggested_change: str = Field(default="", max_length=2_000)
+    validation: str = Field(default="", max_length=2_000)
+    trace_evidence_refs: list[EvidenceRef] = Field(default_factory=list, max_length=50)
+    code_evidence_refs: list[EvidenceRef] = Field(default_factory=list, max_length=50)
+    runtime_verification_refs: list[EvidenceRef] = Field(default_factory=list, max_length=50)
+
+    @field_validator("issue_key")
+    @classmethod
+    def _validate_safe_issue_key(cls, value: str) -> str:
+        if not _SAFE_EVIDENCE_REF_SUFFIX.fullmatch(value):
+            raise ValueError("issue_key contains unsafe control characters")
+        return value
+
+
 class DailyCodexAuditReport(BaseModel):
     """Plain-language daily report returned by the isolated Codex process."""
 
@@ -78,13 +105,25 @@ class DailyCodexAuditReport(BaseModel):
         "assistant_agent_daily_codex_audit_v1"
     )
     audit_date: date
-    daily_summary: str
-    activity_summary: str
-    issues: list[DailyAuditIssue] = Field(default_factory=list)
-    memory_summary: str
-    infrastructure_summary: str
-    limitations: list[str] = Field(default_factory=list)
+    daily_summary: str = Field(max_length=2_000)
+    activity_summary: str = Field(max_length=2_000)
+    issues: list[CodexDailyAuditIssue] = Field(default_factory=list, max_length=50)
+    memory_summary: str = Field(max_length=2_000)
+    infrastructure_summary: str = Field(max_length=2_000)
+    limitations: list[LimitedHumanText] = Field(default_factory=list, max_length=30)
     production_mutation_allowed: Literal[False] = False
+
+    @field_validator("issues", mode="before")
+    @classmethod
+    def _normalize_issue_models(cls, value: object) -> object:
+        if not isinstance(value, list):
+            return value
+        return [
+            item.model_dump(mode="python")
+            if isinstance(item, DailyAuditIssue)
+            else item
+            for item in value
+        ]
 
     @field_validator(
         "daily_summary",
@@ -133,6 +172,11 @@ class DailyAuditAttempt(BaseModel):
     bundle_path: str
     codex_output_path: str | None = None
     error_summary: str | None = None
+
+    @field_validator("error_summary")
+    @classmethod
+    def _sanitize_error_summary(cls, value: str | None) -> str | None:
+        return None if value is None else sanitize_runtime_audit_text(value)
 
 
 class DailyAuditWatermarkV2(BaseModel):

@@ -12,7 +12,9 @@ from typing import Any, Callable
 
 from assistant_agent.observability.runtime_audit.daily_models import DailyCodexAuditReport
 from assistant_agent.observability.runtime_audit.models import CodexAuditReport
-from assistant_agent.providers.provider_errors import sanitize_error_message
+from assistant_agent.observability.runtime_audit.safety import (
+    sanitize_runtime_audit_text,
+)
 
 
 _CODEX_ENVIRONMENT_ALLOWLIST = frozenset(
@@ -123,7 +125,7 @@ def run_codex_report(
     )
     if result.returncode != 0:
         stderr = getattr(result, "stderr", "") or "codex exec failed"
-        detail = sanitize_error_message(stderr[-1_000:])
+        detail = sanitize_runtime_audit_text(stderr[-1_000:])
         raise RuntimeError(f"Codex runtime audit report failed: {detail}")
     try:
         report = CodexAuditReport.model_validate_json(output_path.read_text(encoding="utf-8"))
@@ -189,7 +191,7 @@ def run_daily_codex_report(
     )
     if result.returncode != 0:
         stderr = getattr(result, "stderr", "") or "codex exec failed"
-        detail = sanitize_error_message(stderr[-1_000:])
+        detail = sanitize_runtime_audit_text(stderr[-1_000:])
         raise RuntimeError(f"Codex daily runtime audit report failed: {detail}")
     try:
         report = DailyCodexAuditReport.model_validate_json(
@@ -271,6 +273,10 @@ def _daily_codex_prompt(
 6. 不得运行测试、修改文件、调用网络、Provider、Tool、Memory 或其他 agent。
 7. 只能基于输入中的事实报告；基础设施或证据缺口必须写入 limitations，不能伪造成质量失败。
 8. 除输入已有机器证据外，不得声称已运行测试、已部署、已在生产或真实 trace 验证。不得把推测写成事实。
-9. production_mutation_allowed 必须为 false，audit_date 必须与审计日期一致。
+9. 不得复制完整用户对话、不得复制 Memory 正文、不得复制 Provider 原始响应；只写最小必要摘要。
+10. code_addressed 必须同时引用本次坏 Trace 和可信代码证据：提交使用 code:<commit-sha>，测试使用 test:<repo-relative-path>。首次发现时如已有后于坏 Trace 的可信提交，也可以标记 code_addressed。
+11. Score 证据复用 trace_evidence_refs，格式为 trace:<trace-id>/score:<score-id>；不得虚构独立 score evidence 字段。
+12. 无法从本地 Git 与文件事实证明建议涉及的 owning module 时，写入 limitation 或保持 uncertain，不得虚构代码关联。
+13. production_mutation_allowed 必须为 false，audit_date 必须与审计日期一致。
 最终只输出符合给定 JSON Schema 的对象。
 """

@@ -13,4 +13,4 @@ ExecStart=%h/miniconda3/envs/hello_agent/bin/python scripts/run_runtime_audit.py
 NoNewPrivileges=true
 PrivateTmp=true
 UMask=0077
-TimeoutStartSec=20min
+TimeoutStartSec=infinity

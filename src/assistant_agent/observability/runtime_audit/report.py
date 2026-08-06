@@ -11,7 +11,9 @@ from assistant_agent.observability.runtime_audit.daily_models import (
     DailyCodexAuditReport,
 )
 from assistant_agent.observability.runtime_audit.models import CodexAuditReport, RuntimeAuditBundle
-from assistant_agent.providers.provider_errors import sanitize_error_message
+from assistant_agent.observability.runtime_audit.safety import (
+    sanitize_runtime_audit_text,
+)
 
 
 _MACHINE_EVIDENCE_REF = re.compile(
@@ -21,8 +23,8 @@ _UUID = re.compile(
     r"(?<![A-Za-z0-9_])[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?![A-Za-z0-9_])",
     re.IGNORECASE,
 )
-_URL_USERINFO = re.compile(r"([a-z][a-z0-9+.-]*://)[^/?#\s@]+@", re.IGNORECASE)
 _MARKDOWN_CONTROL = re.compile(r"([\\`*_{}\[\]<>#+()\-.!|])")
+_UNSAFE_ISSUE_KEY = re.compile(r"[^A-Za-z0-9._/:@+=-]")
 
 
 def render_deterministic_report(bundle: RuntimeAuditBundle) -> str:
@@ -137,19 +139,27 @@ def render_codex_report(report: CodexAuditReport) -> str:
     return "\n".join(lines)
 
 
-def render_daily_codex_report(report: DailyCodexAuditReport) -> str:
+def render_daily_codex_report(
+    report: DailyCodexAuditReport,
+    *,
+    issues: list[DailyAuditIssue] | None = None,
+) -> str:
     """Render the daily Codex contract as a plain-language Chinese report."""
 
+    issue_view = report.issues if issues is None else issues
     decision_issues = [
         issue
-        for issue in report.issues
-        if issue.status in {"open", "regressed", "uncertain"}
+        for issue in issue_view
+        if issue.status in {"open", "regressed"}
     ]
     addressed_issues = [
-        issue for issue in report.issues if issue.status == "code_addressed"
+        issue for issue in issue_view if issue.status == "code_addressed"
     ]
     verified_issues = [
-        issue for issue in report.issues if issue.status == "runtime_verified"
+        issue for issue in issue_view if issue.status == "runtime_verified"
+    ]
+    uncertain_issues = [
+        issue for issue in issue_view if issue.status == "uncertain"
     ]
     lines = [
         f"# {report.audit_date.isoformat()} 运行审计日报",
@@ -166,6 +176,13 @@ def render_daily_codex_report(report: DailyCodexAuditReport) -> str:
         "",
     ]
     _append_issue_guidance(lines, decision_issues, empty_message="昨天没有需要维护者决定的问题。")
+    lines.extend(["", "## 需要继续观察", ""])
+    _append_issue_guidance(
+        lines,
+        uncertain_issues,
+        empty_message="昨天没有需要继续观察的证据不足项。",
+        include_suggested_change=False,
+    )
     lines.extend(["", "## 已处理等待自然验证", ""])
     _append_issue_guidance(
         lines,
@@ -199,7 +216,7 @@ def render_daily_codex_report(report: DailyCodexAuditReport) -> str:
             for value in report.limitations
         )
     lines.extend(["", "## 证据附录", ""])
-    _append_evidence_appendix(lines, report.issues)
+    _append_evidence_appendix(lines, issue_view)
     return "\n".join(lines) + "\n"
 
 
@@ -208,6 +225,7 @@ def render_empty_daily_report(
     *,
     langfuse_available: bool,
     local_available: bool,
+    issues: list[DailyAuditIssue] | None = None,
 ) -> str:
     """Render a successful no-activity day without invoking Codex."""
 
@@ -220,20 +238,36 @@ def render_empty_daily_report(
             audit_date,
             f"证据源不完整：{'；'.join(availability)}。无法确认昨日是否无可审计对话。",
         )
-    return "\n".join(
-        [
-            f"# {audit_date.isoformat()} 运行审计日报",
-            "",
-            "## 一句话结论",
-            "",
-            "昨日无可审计对话，审计任务运行正常。",
-            "",
-            "## 系统运行情况",
-            "",
-            f"- {'；'.join(availability)}。",
-            "",
-        ]
-    )
+    lines = [
+        f"# {audit_date.isoformat()} 运行审计日报",
+        "",
+        "## 一句话结论",
+        "",
+        "昨日无可审计对话，审计任务运行正常。",
+        "",
+        "## 系统运行情况",
+        "",
+        f"- {'；'.join(availability)}。",
+    ]
+    active = [
+        issue
+        for issue in (issues or [])
+        if issue.status in {"open", "regressed", "code_addressed", "uncertain"}
+    ]
+    if active:
+        lines.extend(["", "## 连续问题状态", ""])
+        for issue in active:
+            label = {
+                "open": "仍待决定",
+                "regressed": "再次出现",
+                "code_addressed": "已处理，等待自然验证",
+                "uncertain": "需要继续观察",
+            }[issue.status]
+            lines.append(
+                f"- `{_render_issue_key(issue.issue_key)}`：{_plain_text(issue.title, fallback='未命名问题')}（{label}）。"
+            )
+    lines.append("")
+    return "\n".join(lines)
 
 
 def render_failed_daily_report(audit_date: date, error_summary: str) -> str:
@@ -294,7 +328,7 @@ def _append_evidence_appendix(lines: list[str], issues: list[DailyAuditIssue]) -
             continue
         has_evidence = True
         lines.append(
-            f"- {_plain_text(issue.title, fallback='未命名问题')}："
+            f"- `{_render_issue_key(issue.issue_key)}`："
             f"{', '.join(f'`{_safe(ref)}`' for ref in references)}"
         )
     if not has_evidence:
@@ -302,7 +336,11 @@ def _append_evidence_appendix(lines: list[str], issues: list[DailyAuditIssue]) -
 
 
 def _safe(value: str) -> str:
-    return sanitize_error_message(value)
+    return sanitize_runtime_audit_text(value)
+
+
+def _render_issue_key(value: str) -> str:
+    return _UNSAFE_ISSUE_KEY.sub("_", sanitize_runtime_audit_text(value))
 
 
 def _plain_text(value: str, *, fallback: str = "") -> str:
@@ -310,7 +348,7 @@ def _plain_text(value: str, *, fallback: str = "") -> str:
 
     if not value.strip():
         return fallback
-    sanitized = sanitize_error_message(value).strip()
+    sanitized = sanitize_runtime_audit_text(value).strip()
     without_machine_refs = _MACHINE_EVIDENCE_REF.sub("机器证据见附录", sanitized)
     without_machine_ids = _UUID.sub("机器证据见附录", without_machine_refs)
     collapsed = " ".join(without_machine_ids.split())
@@ -322,5 +360,4 @@ def _plain_text(value: str, *, fallback: str = "") -> str:
 def _failed_plain_text(error_summary: str) -> str:
     """Render a failure summary without retaining URL-embedded user credentials."""
 
-    redacted_url = _URL_USERINFO.sub(r"\1[redacted]@", error_summary)
-    return _plain_text(redacted_url, fallback="未提供失败摘要。")
+    return _plain_text(error_summary, fallback="未提供失败摘要。")

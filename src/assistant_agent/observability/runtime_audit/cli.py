@@ -39,7 +39,9 @@ from assistant_agent.observability.runtime_audit.runner import (
     run_daily_codex_report,
 )
 from assistant_agent.observability.runtime_audit.storage import RuntimeAuditArtifactStore
-from assistant_agent.providers.provider_errors import sanitize_error_message
+from assistant_agent.observability.runtime_audit.safety import (
+    sanitize_runtime_audit_text,
+)
 from assistant_agent.runtime.assistant_run_service import load_env_file
 
 
@@ -51,28 +53,31 @@ def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     repo_root = Path(args.repo_root).resolve()
     store = RuntimeAuditArtifactStore(repo_root / args.artifact_root)
-    if args.command == "run" and args.window_hours is None and args.dry_run:
-        return _daily_dry_run(args, store=store)
-    if args.command in {"collect", "run"} and args.dry_run:
-        print(
-            json.dumps(
-                {
-                    "status": "dry_run",
-                    "command": args.command,
-                    "repo_root": str(repo_root),
-                    "artifact_root": str(store.root),
-                    "local_trace_path": str(repo_root / args.local_trace_path),
-                    "window_hours": args.window_hours,
-                    "codex_enabled": args.command == "run" and not args.skip_codex,
-                    "production_mutation_allowed": False,
-                },
-                ensure_ascii=False,
-            )
-        )
-        return 0
-    if args.command in {"collect", "run", "configure-evaluators"} and not args.no_env_file:
-        load_env_file(repo_root / args.env_file, override=False)
     try:
+        if args.command == "run" and args.window_hours is None and args.dry_run:
+            return _daily_dry_run(args, store=store)
+        if args.command in {"collect", "run"} and args.dry_run:
+            print(
+                json.dumps(
+                    {
+                        "status": "dry_run",
+                        "command": args.command,
+                        "repo_root": str(repo_root),
+                        "artifact_root": str(store.root),
+                        "local_trace_path": str(repo_root / args.local_trace_path),
+                        "window_hours": args.window_hours,
+                        "codex_enabled": args.command == "run" and not args.skip_codex,
+                        "production_mutation_allowed": False,
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            return 0
+        if (
+            args.command in {"collect", "run", "configure-evaluators"}
+            and not args.no_env_file
+        ):
+            load_env_file(repo_root / args.env_file, override=False)
         if args.command == "configure-evaluators":
             if args.apply and not args.allow_online_judge:
                 raise RuntimeError("--apply also requires --allow-online-judge.")
@@ -129,7 +134,7 @@ def main(argv: list[str] | None = None) -> int:
                 {
                     "status": "failed",
                     "error_type": type(exc).__name__,
-                    "message": sanitize_error_message(exc),
+                    "message": sanitize_runtime_audit_text(exc),
                 },
                 ensure_ascii=False,
             ),
@@ -185,7 +190,7 @@ def _run_daily(args, *, repo_root: Path, store: RuntimeAuditArtifactStore) -> in
                     window=window_for_date(args.date),
                     store=store,
                     collected_at=collected_at,
-                    error_summary=sanitize_error_message(exc),
+                    error_summary=sanitize_runtime_audit_text(exc),
                 )
             ]
         else:
@@ -193,7 +198,7 @@ def _run_daily(args, *, repo_root: Path, store: RuntimeAuditArtifactStore) -> in
                 yesterday=yesterday,
                 store=store,
                 collected_at=collected_at,
-                error_summary=sanitize_error_message(exc),
+                error_summary=sanitize_runtime_audit_text(exc),
             )
             results = [] if failed_result is None else [failed_result]
         execution_failed_date = None
@@ -237,7 +242,7 @@ def _run_daily(args, *, repo_root: Path, store: RuntimeAuditArtifactStore) -> in
                 source.close()
             except Exception as exc:
                 print(
-                    json.dumps({"status": "source_close_warning", "message": sanitize_error_message(exc)}),
+                    json.dumps({"status": "source_close_warning", "message": sanitize_runtime_audit_text(exc)}),
                     file=sys.stderr,
                 )
     failed = next((item for item in results if item.status == "failed"), None)

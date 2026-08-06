@@ -18,7 +18,7 @@ _ALLOWED_TRANSITIONS: dict[IssueStatus, set[IssueStatus]] = {
     "regressed": {"regressed", "code_addressed", "uncertain"},
     "uncertain": {"uncertain", "open", "code_addressed"},
 }
-_INITIAL_STATUSES = {"open", "uncertain"}
+_INITIAL_STATUSES = {"open", "code_addressed", "uncertain"}
 
 
 def merge_issue_registry(
@@ -44,10 +44,66 @@ def merge_issue_registry(
     return IssueRegistry(issues=merged)
 
 
+def build_refresh_issue_registry(
+    previous: IssueRegistry,
+    observed: list[DailyAuditIssue],
+    audit_date: date,
+) -> IssueRegistry:
+    """Validate a read-only historical refresh without applying chronology persistence."""
+
+    previous = IssueRegistry.model_validate(previous.model_dump(mode="python"))
+    merged = dict(previous.issues)
+    observed_keys: set[str] = set()
+    for unvalidated_candidate in observed:
+        candidate = DailyAuditIssue.model_validate(
+            unvalidated_candidate.model_dump(mode="python")
+        )
+        if candidate.issue_key in observed_keys:
+            raise ValueError(f"duplicate observed issue: {candidate.issue_key}")
+        observed_keys.add(candidate.issue_key)
+        current = previous.issues.get(candidate.issue_key)
+        _validate_observation(
+            current,
+            candidate,
+            audit_date,
+            require_later_date=False,
+        )
+        merged[candidate.issue_key] = _merge_issue(current, candidate, audit_date)
+    return IssueRegistry(issues=merged)
+
+
+def report_issue_view(
+    previous: IssueRegistry,
+    merged: IssueRegistry,
+    observed: list[DailyAuditIssue],
+) -> list[DailyAuditIssue]:
+    """Return deterministic active state plus only genuine observed verifications."""
+
+    observed_by_key = {issue.issue_key: issue for issue in observed}
+    visible: list[DailyAuditIssue] = []
+    for issue_key, issue in sorted(merged.issues.items()):
+        if issue.status in {"open", "regressed", "code_addressed", "uncertain"}:
+            visible.append(issue)
+            continue
+        candidate = observed_by_key.get(issue_key)
+        prior = previous.issues.get(issue_key)
+        if (
+            issue.status == "runtime_verified"
+            and candidate is not None
+            and candidate.status == "runtime_verified"
+            and prior is not None
+            and prior.status != "runtime_verified"
+        ):
+            visible.append(issue)
+    return visible
+
+
 def _validate_observation(
     current: DailyAuditIssue | None,
     candidate: DailyAuditIssue,
     audit_date: date,
+    *,
+    require_later_date: bool = True,
 ) -> None:
     if current is None:
         if candidate.status not in _INITIAL_STATUSES:
@@ -57,22 +113,51 @@ def _validate_observation(
             f"invalid issue transition: {current.status} -> {candidate.status}"
         )
 
-    if candidate.status == "code_addressed" and not candidate.code_evidence_refs:
-        raise ValueError("code_addressed requires code evidence")
+    if candidate.status == "code_addressed":
+        if not any(ref.startswith("code:") for ref in candidate.code_evidence_refs):
+            raise ValueError("code_addressed requires code evidence using code:<commit-sha>")
+        if current is None and not candidate.trace_evidence_refs:
+            raise ValueError("first-seen code_addressed requires bad trace evidence")
+        if (
+            current is not None
+            and current.status != "code_addressed"
+            and not _new_refs(
+                [ref for ref in candidate.code_evidence_refs if ref.startswith("code:")],
+                {
+                    ref
+                    for ref in current.code_evidence_refs
+                    if ref.startswith("code:")
+                },
+            )
+        ):
+            raise ValueError("code_addressed transition requires new code evidence")
     if candidate.status == "runtime_verified":
-        _require_runtime_verification_evidence(current, candidate, audit_date)
+        _require_runtime_verification_evidence(
+            current,
+            candidate,
+            audit_date,
+            require_later_date=require_later_date,
+        )
     if candidate.status == "regressed":
-        _require_new_trace_evidence(current, candidate, audit_date)
+        _require_new_trace_evidence(
+            current,
+            candidate,
+            audit_date,
+            require_later_date=require_later_date,
+        )
 
 
 def _require_runtime_verification_evidence(
     current: DailyAuditIssue | None,
     candidate: DailyAuditIssue,
     audit_date: date,
+    *,
+    require_later_date: bool,
 ) -> None:
     if not candidate.runtime_verification_refs:
         raise ValueError("runtime_verified requires runtime verification evidence")
-    _require_later_audit_date(current, audit_date)
+    if require_later_date:
+        _require_later_audit_date(current, audit_date)
     if current is not None and not _new_refs(
         candidate.runtime_verification_refs, _trace_evidence_refs(current)
     ):
@@ -83,8 +168,11 @@ def _require_new_trace_evidence(
     current: DailyAuditIssue | None,
     candidate: DailyAuditIssue,
     audit_date: date,
+    *,
+    require_later_date: bool,
 ) -> None:
-    _require_later_audit_date(current, audit_date)
+    if require_later_date:
+        _require_later_audit_date(current, audit_date)
     if current is None or not _new_refs(
         candidate.trace_evidence_refs, _trace_evidence_refs(current)
     ):

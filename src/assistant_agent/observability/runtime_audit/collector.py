@@ -19,7 +19,9 @@ from assistant_agent.observability.runtime_audit.models import (
 )
 from assistant_agent.observability.trace_store import TraceEvent, redact_trace_event
 from assistant_agent.observability.runtime_audit.storage import format_audit_run_id
-from assistant_agent.providers.provider_errors import sanitize_error_message
+from assistant_agent.observability.runtime_audit.safety import (
+    sanitize_runtime_audit_text,
+)
 
 
 RESPONSE_QUALITY = "assistant_agent.quality.response_quality"
@@ -82,7 +84,7 @@ def collect_runtime_audit(
                 code="langfuse_read_failed",
                 category="infrastructure",
                 severity="error",
-                summary="Langfuse trace collection failed: " + sanitize_error_message(exc),
+                summary="Langfuse trace collection failed: " + sanitize_runtime_audit_text(exc),
             )
         )
     local_events, local_issues, local_available = _read_local_events(
@@ -197,18 +199,37 @@ def _read_local_events(
         )
     events: list[TraceEvent] = []
     invalid = 0
-    with path.open("r", encoding="utf-8") as handle:
-        for line in handle:
-            if not line.strip():
-                continue
-            try:
-                event = TraceEvent.model_validate_json(line)
-            except Exception:
-                invalid += 1
-                continue
-            created_at = _utc(event.created_at)
-            if window_start <= created_at < window_end:
-                events.append(event)
+    valid = 0
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                try:
+                    event = TraceEvent.model_validate_json(line)
+                except Exception:
+                    invalid += 1
+                    continue
+                valid += 1
+                created_at = _utc(event.created_at)
+                if window_start <= created_at < window_end:
+                    events.append(event)
+    except OSError as exc:
+        return (
+            [],
+            [
+                AuditFinding(
+                    code="local_completeness_read_failed",
+                    category="infrastructure",
+                    severity="warning",
+                    summary=(
+                        "The local completeness source could not be read: "
+                        + sanitize_runtime_audit_text(exc)
+                    ),
+                )
+            ],
+            False,
+        )
     issues = []
     if invalid:
         issues.append(
@@ -219,6 +240,16 @@ def _read_local_events(
                 summary=f"Skipped {invalid} invalid local completeness record(s).",
             )
         )
+    if invalid and not valid:
+        issues.append(
+            AuditFinding(
+                code="local_completeness_records_all_invalid",
+                category="infrastructure",
+                severity="warning",
+                summary="The local completeness source contained no valid records.",
+            )
+        )
+        return [], issues, False
     return events, issues, True
 
 

@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from contextlib import nullcontext
-from datetime import date, datetime, timedelta
-from pathlib import Path
+from datetime import date, datetime, timedelta, timezone
+import re
+from pathlib import Path, PurePosixPath
+import subprocess
 from typing import Literal
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ValidationError, field_validator
 
 from assistant_agent.observability.runtime_audit.collector import (
     DEFAULT_LOW_SCORE_THRESHOLD,
@@ -26,7 +28,12 @@ from assistant_agent.observability.runtime_audit.daily_window import (
     pending_audit_dates,
     window_for_date,
 )
-from assistant_agent.observability.runtime_audit.issues import merge_issue_registry
+from assistant_agent.observability.runtime_audit.issues import (
+    build_refresh_issue_registry,
+    merge_issue_registry,
+    report_issue_view,
+)
+from assistant_agent.observability.runtime_audit.models import RuntimeAuditBundle
 from assistant_agent.observability.runtime_audit.report import (
     render_daily_codex_report,
     render_empty_daily_report,
@@ -36,7 +43,9 @@ from assistant_agent.observability.runtime_audit.storage import (
     RuntimeAuditArtifactStore,
     registry_digest as storage_registry_digest,
 )
-from assistant_agent.providers.provider_errors import sanitize_error_message
+from assistant_agent.observability.runtime_audit.safety import (
+    sanitize_runtime_audit_text,
+)
 
 
 class DailyCommitIntentRejected(RuntimeError):
@@ -50,6 +59,11 @@ class DailyAuditRunResult(BaseModel):
     bundle_path: Path
     report_path: Path | None = None
     error_summary: str | None = None
+
+    @field_validator("error_summary")
+    @classmethod
+    def _safe_error(cls, value: str | None) -> str | None:
+        return None if value is None else sanitize_runtime_audit_text(value)
 
 
 class DailyAuditDayError(RuntimeError):
@@ -129,7 +143,7 @@ def _run_one_locked(
         store.write_attempt(running)
     except Exception as exc:
         return _fail(store=store, attempt=running, bundle_path=bundle_path,
-                     error_summary=sanitize_error_message(exc), publish_failure=True)
+                     error_summary=sanitize_runtime_audit_text(exc), publish_failure=True)
 
     if not bundle.coverage.langfuse_source_available:
         return _fail(
@@ -141,10 +155,12 @@ def _run_one_locked(
         )
 
     if not bundle.traces and not bundle.local_manifests and not bundle.local_fallbacks:
+        previous_registry = store.read_issue_registry()
         markdown = render_empty_daily_report(
             window.audit_date,
             langfuse_available=bundle.coverage.langfuse_source_available,
             local_available=bundle.coverage.local_source_available,
+            issues=report_issue_view(previous_registry, previous_registry, []),
         )
         if not bundle.coverage.local_source_available:
             return _fail(
@@ -159,6 +175,7 @@ def _run_one_locked(
                                commit_continuous_state=commit_continuous_state)
 
     try:
+        previous_registry = store.read_issue_registry()
         report = codex_runner(
             audit_date=window.audit_date,
             bundle_path=bundle_path,
@@ -169,21 +186,32 @@ def _run_one_locked(
         )
         if report.audit_date != window.audit_date:
             raise ValueError("Codex daily report audit_date does not match the requested day")
+        report = _add_deterministic_limitations(report, bundle)
         _validate_current_bundle_evidence(report, bundle)
-        registry = (
-            merge_issue_registry(
-                store.read_issue_registry(), report.issues, window.audit_date
-            )
-            if commit_continuous_state
-            else None
+        _validate_repository_code_evidence(
+            report,
+            bundle=bundle,
+            repo_root=repo_root,
         )
-        markdown = render_daily_codex_report(report)
+        _validate_sensitive_text_overlap(report, bundle)
+        report_registry = (
+            merge_issue_registry(previous_registry, report.issues, window.audit_date)
+            if commit_continuous_state
+            else build_refresh_issue_registry(
+                previous_registry,
+                report.issues,
+                window.audit_date,
+            )
+        )
+        issues = report_issue_view(previous_registry, report_registry, report.issues)
+        registry = report_registry if commit_continuous_state else None
+        markdown = render_daily_codex_report(report, issues=issues)
     except Exception as exc:
         return _fail(
             store=store,
             attempt=running,
             bundle_path=bundle_path,
-            error_summary=sanitize_error_message(exc),
+            error_summary=sanitize_runtime_audit_text(exc),
             publish_failure=True,
         )
 
@@ -312,7 +340,7 @@ def _commit_success(
     except ValueError as exc:
         return _fail(
             store=store, attempt=attempt, bundle_path=bundle_path,
-            error_summary=sanitize_error_message(exc), publish_failure=True,
+            error_summary=sanitize_runtime_audit_text(exc), publish_failure=True,
         )
     try:
         intent = DailyAuditCommitIntent.model_validate_json(
@@ -323,7 +351,7 @@ def _commit_success(
         store.quarantine_commit_intent(intent_path)
         return _fail(
             store=store, attempt=attempt, bundle_path=bundle_path,
-            error_summary=sanitize_error_message(exc), publish_failure=True,
+            error_summary=sanitize_runtime_audit_text(exc), publish_failure=True,
         )
     return DailyAuditRunResult(audit_date=attempt.audit_date, status="succeeded",
                                attempt_id=attempt.attempt_id, bundle_path=bundle_path,
@@ -406,6 +434,7 @@ def _fail(
     error_summary: str,
     publish_failure: bool,
 ) -> DailyAuditRunResult:
+    error_summary = sanitize_runtime_audit_text(error_summary)
     report_path = store.daily_report_path(attempt.audit_date)
     if publish_failure and not store.is_day_completed(attempt.audit_date):
         store.write_failed_daily_report_if_absent(
@@ -425,7 +454,7 @@ def _fail(
 
 
 def _validate_current_bundle_evidence(
-    report: DailyCodexAuditReport, bundle: object,
+    report: DailyCodexAuditReport, bundle: RuntimeAuditBundle,
 ) -> None:
     """Reject Codex lifecycle evidence not represented by this exact read-only bundle."""
 
@@ -437,18 +466,210 @@ def _validate_current_bundle_evidence(
         for trace in bundle.traces
         for observation in trace.observations
     }
+    scores = {
+        (trace.trace_id, score.score_id)
+        for trace in bundle.traces
+        for score in trace.scores
+    }
     for issue in report.issues:
         for ref in [*issue.trace_evidence_refs, *issue.runtime_verification_refs]:
-            trace_id, observation_id = _parse_trace_ref(ref)
+            trace_id, evidence_kind, evidence_id = _parse_trace_ref(ref)
             if trace_id not in trace_ids:
                 raise ValueError("daily issue evidence ref is not in the current audit bundle")
-            if observation_id is not None and (trace_id, observation_id) not in observations:
+            if (
+                evidence_kind == "observation"
+                and (trace_id, evidence_id) not in observations
+            ):
                 raise ValueError("daily issue observation ref is not in the current audit bundle")
+            if evidence_kind == "score" and (trace_id, evidence_id) not in scores:
+                raise ValueError("daily issue Score ref is not in the current audit bundle")
 
 
-def _parse_trace_ref(ref: str) -> tuple[str, str | None]:
+def _parse_trace_ref(ref: str) -> tuple[str, str | None, str | None]:
     value = ref.removeprefix("trace:")
-    trace_id, separator, suffix = value.partition("/observation:")
-    if not trace_id or (separator and not suffix):
+    trace_id = value
+    evidence_kind = None
+    evidence_id = None
+    for suffix_kind in ("observation", "score"):
+        separator = f"/{suffix_kind}:"
+        if separator in value:
+            trace_id, evidence_id = value.split(separator, maxsplit=1)
+            evidence_kind = suffix_kind
+            break
+    if (
+        not trace_id
+        or (evidence_kind is not None and not evidence_id)
+        or "/observation:" in (evidence_id or "")
+        or "/score:" in (evidence_id or "")
+    ):
         raise ValueError("daily issue evidence ref is malformed")
-    return trace_id, suffix if separator else None
+    return trace_id, evidence_kind, evidence_id
+
+
+_COMMIT_SHA = re.compile(r"^[0-9a-fA-F]{7,40}$")
+_SENSITIVE_OVERLAP_CHARS = 80
+
+
+def _validate_repository_code_evidence(
+    report: DailyCodexAuditReport,
+    *,
+    bundle: RuntimeAuditBundle,
+    repo_root: Path,
+) -> None:
+    """Authenticate code-addressed refs against local Git and repository files."""
+
+    repo_root = Path(repo_root).resolve()
+    trace_times = _bundle_trace_times(bundle)
+    for issue in report.issues:
+        if issue.status != "code_addressed":
+            continue
+        commit_refs = [
+            ref.removeprefix("code:")
+            for ref in issue.code_evidence_refs
+            if ref.startswith("code:")
+        ]
+        if not commit_refs:
+            raise ValueError("code_addressed requires a code:<commit-sha> reference")
+        bad_trace_times = [
+            trace_times[_parse_trace_ref(ref)[0]]
+            for ref in issue.trace_evidence_refs
+            if _parse_trace_ref(ref)[0] in trace_times
+        ]
+        for commit_sha in commit_refs:
+            committed_at = _git_commit_time(repo_root, commit_sha)
+            if bad_trace_times and committed_at < max(bad_trace_times):
+                raise ValueError("code evidence commit predates the referenced bad trace")
+        for ref in issue.code_evidence_refs:
+            if not ref.startswith("test:"):
+                continue
+            relative = PurePosixPath(ref.removeprefix("test:"))
+            if (
+                relative.is_absolute()
+                or not relative.parts
+                or relative.parts[0] != "tests"
+                or ".." in relative.parts
+            ):
+                raise ValueError("test evidence must be a repository-relative tests path")
+            test_path = (repo_root / Path(*relative.parts)).resolve()
+            if not test_path.is_relative_to(repo_root) or not test_path.is_file():
+                raise ValueError("test evidence path does not exist in the repository")
+
+
+def _git_commit_time(repo_root: Path, commit_sha: str) -> datetime:
+    if not _COMMIT_SHA.fullmatch(commit_sha):
+        raise ValueError("code evidence must use a hexadecimal Git commit SHA")
+    result = subprocess.run(
+        [
+            "git",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "show",
+            "-s",
+            "--format=%H%n%cI",
+            commit_sha,
+        ],
+        cwd=repo_root,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=5,
+    )
+    lines = result.stdout.splitlines()
+    if result.returncode != 0 or len(lines) != 2 or len(lines[0]) != 40:
+        raise ValueError("code evidence does not resolve to a repository commit")
+    return datetime.fromisoformat(lines[1]).astimezone(timezone.utc)
+
+
+def _bundle_trace_times(bundle: RuntimeAuditBundle) -> dict[str, datetime]:
+    times = {
+        trace.trace_id: trace.timestamp.astimezone(timezone.utc)
+        for trace in bundle.traces
+    }
+    for manifest in bundle.local_manifests:
+        times.setdefault(
+            manifest.trace_id,
+            manifest.last_event_at.astimezone(timezone.utc),
+        )
+    return times
+
+
+def _add_deterministic_limitations(
+    report: DailyCodexAuditReport,
+    bundle: RuntimeAuditBundle,
+) -> DailyCodexAuditReport:
+    if bundle.coverage.local_source_available:
+        return report
+    limitation = "本地完整性证据不可用，远端审计仍已完成，但无法执行本地完整性对账。"
+    limitations = list(report.limitations)
+    if limitation not in limitations:
+        if len(limitations) >= 30:
+            limitations[-1] = limitation
+        else:
+            limitations.append(limitation)
+    return report.model_copy(update={"limitations": limitations})
+
+
+def _validate_sensitive_text_overlap(
+    report: DailyCodexAuditReport,
+    bundle: RuntimeAuditBundle,
+) -> None:
+    report_texts = list(_report_human_text(report))
+    sensitive_texts: list[str] = []
+    for trace in bundle.traces:
+        for value in (trace.input, trace.output, trace.metadata):
+            sensitive_texts.extend(_string_leaves(value))
+        for observation in trace.observations:
+            for value in (observation.input, observation.output, observation.metadata):
+                sensitive_texts.extend(_string_leaves(value))
+    for report_text in report_texts:
+        normalized_report = _normalize_overlap_text(report_text)
+        if len(normalized_report) < _SENSITIVE_OVERLAP_CHARS:
+            continue
+        for sensitive_text in sensitive_texts:
+            normalized_sensitive = _normalize_overlap_text(sensitive_text)
+            if len(normalized_sensitive) < _SENSITIVE_OVERLAP_CHARS:
+                continue
+            if any(
+                normalized_sensitive[index : index + _SENSITIVE_OVERLAP_CHARS]
+                in normalized_report
+                for index in range(
+                    len(normalized_sensitive) - _SENSITIVE_OVERLAP_CHARS + 1
+                )
+            ):
+                raise ValueError(
+                    "Codex daily report copied a sensitive long source-text fragment"
+                )
+
+
+def _report_human_text(report: DailyCodexAuditReport) -> Iterator[str]:
+    yield report.daily_summary
+    yield report.activity_summary
+    yield report.memory_summary
+    yield report.infrastructure_summary
+    yield from report.limitations
+    for issue in report.issues:
+        yield issue.title
+        yield issue.plain_summary
+        yield issue.user_impact
+        yield issue.suggested_change
+        yield issue.validation
+
+
+def _string_leaves(value: object) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        result: list[str] = []
+        for child in value.values():
+            result.extend(_string_leaves(child))
+        return result
+    if isinstance(value, list):
+        result = []
+        for child in value:
+            result.extend(_string_leaves(child))
+        return result
+    return []
+
+
+def _normalize_overlap_text(value: str) -> str:
+    return " ".join(value.split())

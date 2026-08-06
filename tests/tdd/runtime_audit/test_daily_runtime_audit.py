@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
+from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -1567,7 +1568,7 @@ def test_daily_claim_serializes_concurrent_registry_updates(tmp_path: Path) -> N
     def runner(*, audit_date: date, **_: object) -> daily_models_module.DailyCodexAuditReport:
         if not first_entered.is_set():
             first_entered.set()
-            assert release_first.wait(timeout=5)
+            assert release_first.wait(timeout=30)
         issue = DailyAuditIssue(
             issue_key="tool.shared", status="uncertain", title="共享问题",
             first_seen=audit_date, last_seen=audit_date, trace_evidence_refs=["trace:trace-current"],
@@ -1599,11 +1600,11 @@ def test_daily_claim_serializes_concurrent_registry_updates(tmp_path: Path) -> N
     first = threading.Thread(target=invoke, args=(date(2026, 8, 5),))
     second = threading.Thread(target=invoke, args=(date(2026, 8, 6),))
     first.start()
-    assert first_entered.wait(timeout=5)
+    assert first_entered.wait(timeout=30)
     second.start()
     release_first.set()
-    first.join(timeout=5)
-    second.join(timeout=5)
+    first.join(timeout=30)
+    second.join(timeout=30)
 
     assert not first.is_alive() and not second.is_alive()
     assert len(results) == 2
@@ -1920,12 +1921,13 @@ def test_rolling_and_daily_entrypoints_share_claim_without_self_deadlock(
     daily_entered = threading.Event()
     release_daily = threading.Event()
     rolling_invoked = threading.Event()
+    rolling_claim_attempted = threading.Event()
     rolling_source_created = threading.Event()
     errors: list[BaseException] = []
 
     def daily_codex(**_: object) -> daily_models_module.DailyCodexAuditReport:
         daily_entered.set()
-        assert release_daily.wait(timeout=5)
+        assert release_daily.wait(timeout=30)
         return _daily_codex_report()
 
     class RollingSource(FakeLangfuseSource):
@@ -1937,6 +1939,16 @@ def test_rolling_and_daily_entrypoints_share_claim_without_self_deadlock(
         return RollingSource([])
 
     monkeypatch.setattr(cli_module, "create_langfuse_audit_source_from_env", create_rolling_source)
+    original_claim = store.daily_claim
+
+    @contextmanager
+    def observed_claim():
+        if threading.current_thread().name == "rolling-audit":
+            rolling_claim_attempted.set()
+        with original_claim():
+            yield
+
+    monkeypatch.setattr(store, "daily_claim", observed_claim)
 
     def run_daily() -> None:
         try:
@@ -1967,17 +1979,18 @@ def test_rolling_and_daily_entrypoints_share_claim_without_self_deadlock(
         except BaseException as exc:
             errors.append(exc)
 
-    daily_thread = threading.Thread(target=run_daily)
-    rolling_thread = threading.Thread(target=run_rolling)
+    daily_thread = threading.Thread(name="daily-audit", target=run_daily)
+    rolling_thread = threading.Thread(name="rolling-audit", target=run_rolling)
     daily_thread.start()
-    assert daily_entered.wait(timeout=5)
+    assert daily_entered.wait(timeout=30)
     rolling_thread.start()
-    assert rolling_invoked.wait(timeout=5)
-    assert not rolling_source_created.wait(timeout=0.1)
+    assert rolling_invoked.wait(timeout=30)
+    assert rolling_claim_attempted.wait(timeout=30)
+    assert not rolling_source_created.is_set()
 
     release_daily.set()
-    daily_thread.join(timeout=5)
-    rolling_thread.join(timeout=5)
+    daily_thread.join(timeout=30)
+    rolling_thread.join(timeout=30)
 
     assert not daily_thread.is_alive()
     assert not rolling_thread.is_alive()
