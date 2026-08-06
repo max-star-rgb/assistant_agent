@@ -1,12 +1,11 @@
 [Unit]
-Description=Run Assistant Agent runtime audit hourly
+Description=Run Assistant Agent runtime audit daily
 
 [Timer]
-OnCalendar=hourly
+OnCalendar=*-*-* 00:15:00 Asia/Shanghai
 Persistent=true
 RandomizedDelaySec=2min
 Unit=assistant-agent-runtime-audit.service
 
 [Install]
 WantedBy=timers.target
-

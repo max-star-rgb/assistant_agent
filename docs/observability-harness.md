@@ -307,22 +307,35 @@ Runtime trace 的主入口。面板如何折叠或展示长 JSON 不属于架构
 
 ### Langfuse-first Runtime 审计
 
-`scripts/run_runtime_audit.py` 提供只读的日常审计入口。它默认重扫最近两小时的全部
-`assistant.turn`，从 Langfuse 读取完整 trace、observation 和 Score；本地
-`.data/graph_trace.jsonl` 只生成 trace/run、时间、terminal 与 event count 完整性 manifest。只有
-Langfuse API 可读但缺少对应 trace 时，才把该 trace 的有界、redacted local timeline 放入 fallback
-evidence。Langfuse 本身不可读时只记录 infrastructure unknown，不能把全部本地 trace 误报为导出缺失。
+`scripts/run_runtime_audit.py run` 是只读的日常审计入口。user timer 每天北京时间 00:15
+运行，审计刚结束的前一个自然日（北京时间 00:00 至次日 00:00），而不是最近几小时。它以
+Langfuse 的完整 trace、observation 和 Score 为主证据；本地 `.data/graph_trace.jsonl` 只生成
+trace/run、时间、terminal 与 event count 的完整性 manifest。只有 Langfuse 可读但缺少相应 trace
+时，才把有界、redacted 的本地 timeline 作为 fallback evidence；Langfuse 不可读只记录
+infrastructure unknown，不能把本地记录误报为导出缺失。
+
+审计以 `state/watermark.json` 的最后成功自然日为检查点。错过调度或机器离线后，下一次无参数
+`run` 会从 watermark 的下一日按日顺序补跑，遇到失败即停止，不能跳过日期。若某日已确认
+Langfuse 和本地完整性来源都可读、且没有任何 trace 或本地证据，会写入一份极简中文成功日报，
+并且不调用 Codex。需要单独复查某个自然日时，operator 可显式使用 `run --date YYYY-MM-DD`；完整参数
+继续以 `--help` 为准。
 
 产物固定写入 `.data/runtime_audit/`：
 
-- `state/watermark.json`：最近窗口与 bundle 路径；
-- `inbox/<audit_run_id>.json`：版本化、只读 audit bundle；
-- `reports/<audit_run_id>.json`：可选 Codex 结构化报告；
-- `reports/<audit_run_id>.md`：确定性基线或经 schema 校验的 Codex 人工审阅报告。
+- `inbox/<audit_run_id>.json`：版本化、只读的内部 audit bundle；
+- `state/attempts/`、`state/issues.json`、`state/watermark.json`：内部尝试记录、issue registry 与连续成功检查点；
+- `reports/YYYY-MM-DD.md`：唯一面向人的日报；`reports/` 不放内部 JSON。
 
-Codex 通过 `--ephemeral --sandbox read-only` 运行；子进程环境移除 Langfuse 和 Provider credentials，
-强制 mock Provider mode，只允许生成报告，不允许修改代码、Langfuse 或 Memory。Langfuse 读取失败、
-Judge pending 和 evaluator 基础设施失败都不属于质量失败。
+每个日期的状态机为 `running -> succeeded` 或 `running -> failed`。成功时先以 journal 校验
+日报、issue registry 和 watermark 的前置条件，再原子推进连续状态；中断后的待提交 journal 会在下次
+运行先恢复，冲突的旧 journal 会隔离。失败会保留内部 bundle，并写入“审计未完成”的失败日报；它不会
+覆盖已有成功日报，也不会推进 issue registry 或 watermark。
+
+有 trace 或本地缺失导出证据时，Codex 通过 `--ephemeral --sandbox read-only` 运行；子进程环境移除
+Langfuse 和 Provider credentials，强制 mock Provider mode，只允许生成报告，不允许修改代码、Langfuse
+或 Memory。Langfuse、Codex、报告 schema、Judge pending 或 evaluator 基础设施失败都不是质量失败，
+而是上述不可推进的审计失败。issue 的代码修复只能标为 `code_addressed`；必须在后续自然日取得新的
+运行证据，才能升级为 `runtime_verified`，新 trace 证明复发时才标为 `regressed`。
 
 统一质量 Score 名称为：
 
@@ -377,17 +390,20 @@ Langfuse 原生 live evaluator 使用 evaluation rule name 作为落库 Score na
 Score。`memory_extraction` rule 额外过滤 `assistant_agent.memory_semantic_evidence=available`，因此只有
 显式启用本地 memory trace content 且 observation 同时包含原对话和 Mem0 changes 时才调用 Judge。
 
-每小时调度使用仓库提供的 user unit 模板；安装/启用属于 operator 动作，不由审计器自行修改：
+每日调度使用仓库提供的 user unit 模板；安装/启用属于 operator 动作，不由审计器自行修改。unit
+必须链接到已部署的主 checkout（默认 `%h/pycharm_project/assistant_agent`），不得链接到临时 worktree。
+首次安装或发现现有 user unit 指向旧 checkout 时，在主 checkout 中重新链接并启用 timer：
 
 ```bash
-systemctl --user link "$PWD/deploy/systemd/user/assistant-agent-runtime-audit.service"
-systemctl --user link "$PWD/deploy/systemd/user/assistant-agent-runtime-audit.timer"
+audit_project_root="$HOME/pycharm_project/assistant_agent"
+systemctl --user link "$audit_project_root/deploy/systemd/user/assistant-agent-runtime-audit.service"
+systemctl --user link "$audit_project_root/deploy/systemd/user/assistant-agent-runtime-audit.timer"
 systemctl --user daemon-reload
 systemctl --user enable --now assistant-agent-runtime-audit.timer
-systemctl --user start assistant-agent-runtime-audit.service
 ```
 
-用 `systemctl --user list-timers assistant-agent-runtime-audit.timer` 查看下次运行，用
+更新 unit 后只需 reload/restart timer，不手工启动 service；用 `systemctl --user list-timers
+assistant-agent-runtime-audit.timer` 查看下次运行，用
 `journalctl --user -u assistant-agent-runtime-audit.service` 查看状态和 artifact path。unit 默认工作目录为
 `%h/pycharm_project/assistant_agent`、Python 为 `%h/miniconda3/envs/hello_agent/bin/python`；路径不同
 必须先复制模板并显式修改。

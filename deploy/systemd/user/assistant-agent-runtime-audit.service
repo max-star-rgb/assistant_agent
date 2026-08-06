@@ -1,5 +1,5 @@
 [Unit]
-Description=Read-only Langfuse-first Assistant Agent runtime audit
+Description=Read-only daily Langfuse-first Assistant Agent runtime audit
 After=network-online.target
 Wants=network-online.target
 
