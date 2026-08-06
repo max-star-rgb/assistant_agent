@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from time import monotonic, sleep
 from uuid import uuid4
 
 import pytest
@@ -35,6 +36,24 @@ MOUSE_TEXTS = {
     84: "当前画面主要物体是一只罗技鼠标。",
     85: "近处可见黑色罗技鼠标。",
 }
+
+
+def _wait_until_all_points_are_visible(
+    transport: QdrantHttpTransport,
+    collection: str,
+) -> None:
+    deadline = monotonic() + 60.0
+    while monotonic() < deadline:
+        response = transport.request(
+            "POST",
+            f"/collections/{collection}/points/count",
+            {"exact": True},
+        )
+        result = response.get("result")
+        if isinstance(result, dict) and result.get("count") == 90:
+            return
+        sleep(0.05)
+    raise AssertionError("Qdrant did not make all 90 incident points visible")
 
 
 def test_incident_shape_mouse_query_recalls_seq_81_to_85_in_top_three() -> None:
@@ -76,6 +95,8 @@ def test_incident_shape_mouse_query_recalls_seq_81_to_85_in_top_three() -> None:
                 sequence,
                 outcome.model_dump(mode="json"),
             )
+
+        _wait_until_all_points_are_visible(transport, collection)
 
         result = index.search(
             VisualMemoryIndexQuery(
