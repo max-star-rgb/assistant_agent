@@ -15,24 +15,20 @@ from assistant_agent.observability.runtime_audit.models import CodexAuditReport
 from assistant_agent.providers.provider_errors import sanitize_error_message
 
 
-_CREDENTIAL_MARKERS = (
-    "API_KEY",
-    "APIKEY",
-    "AUTHORIZATION",
-    "BEARER",
-    "COOKIE",
-    "CREDENTIAL",
-    "LANGFUSE",
-    "OPENAI",
-    "ANTHROPIC",
-    "DASHSCOPE",
-    "DEEPSEEK",
-    "VOLCENGINE",
-    "SECRET",
-    "TOKEN",
-    "PASSWORD",
+_CODEX_ENVIRONMENT_ALLOWLIST = frozenset(
+    {
+        "PATH",
+        "HOME",
+        "CODEX_HOME",
+        "ASSISTANT_AGENT_CODEX_EXECUTABLE",
+        "LANG",
+        "TERM",
+        "TMPDIR",
+        "SSL_CERT_FILE",
+        "SSL_CERT_DIR",
+        "REQUESTS_CA_BUNDLE",
+    }
 )
-_PROXY_MARKERS = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY")
 
 
 def build_codex_command(
@@ -61,17 +57,18 @@ def build_codex_command(
 
 
 def sanitized_codex_environment(values: Mapping[str, str]) -> dict[str, str]:
-    """Remove secrets and credential-bearing proxies from the Codex subprocess.
+    """Return the minimum environment required by the isolated Codex subprocess.
 
     ``HOME`` and ``CODEX_HOME`` are intentionally retained only so the Codex CLI can
     use its controlled local login state; they are not a general credential exception.
+    All other variables, including credentials, proxies, and unknown application
+    configuration, are dropped by the explicit allowlist.
     """
 
     result = {
         key: value
         for key, value in values.items()
-        if not any(marker in key.upper() for marker in _CREDENTIAL_MARKERS)
-        and not any(marker in key.upper() for marker in _PROXY_MARKERS)
+        if key in _CODEX_ENVIRONMENT_ALLOWLIST or key.startswith("LC_")
     }
     result["MULTIMODAL_AGENT_PROVIDER_MODE"] = "mock"
     return result

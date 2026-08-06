@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date
+import re
 from typing import Literal
 
 from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
@@ -16,6 +17,7 @@ IssueStatus = Literal[
     "regressed",
     "uncertain",
 ]
+_SAFE_EVIDENCE_REF_SUFFIX = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/:@+=-]*$")
 
 
 class DailyAuditIssue(BaseModel):
@@ -108,8 +110,9 @@ class IssueRegistry(BaseModel):
 
 
 def _is_prefixed_ref(value: str, prefix: str) -> bool:
-    return value.startswith(prefix) and bool(value[len(prefix) :]) and not any(
-        character.isspace() for character in value
+    suffix = value[len(prefix) :]
+    return value.startswith(prefix) and bool(suffix) and bool(
+        _SAFE_EVIDENCE_REF_SUFFIX.fullmatch(suffix)
     )
 
 

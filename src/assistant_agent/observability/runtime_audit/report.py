@@ -14,7 +14,14 @@ from assistant_agent.observability.runtime_audit.models import CodexAuditReport,
 from assistant_agent.providers.provider_errors import sanitize_error_message
 
 
-_MACHINE_EVIDENCE_REF = re.compile(r"\b(?:trace|code|test):\S+")
+_MACHINE_EVIDENCE_REF = re.compile(
+    r"\b(?:trace|code|test|observation|run|score):[^\s`<>()\[\]{}]+"
+)
+_UUID = re.compile(
+    r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b",
+    re.IGNORECASE,
+)
+_URL_USERINFO = re.compile(r"([a-z][a-z0-9+.-]*://)[^/?#\s@]+@", re.IGNORECASE)
 _MARKDOWN_CONTROL = re.compile(r"([\\`*_{}\[\]<>#+()\-.!|])")
 
 
@@ -242,7 +249,7 @@ def render_failed_daily_report(audit_date: date, error_summary: str) -> str:
             "",
             "## 系统运行情况",
             "",
-            f"- 失败摘要：{_plain_text(error_summary, fallback='未提供失败摘要。')}",
+            f"- 失败摘要：{_failed_plain_text(error_summary)}",
             "",
         ]
     )
@@ -305,7 +312,15 @@ def _plain_text(value: str, *, fallback: str = "") -> str:
         return fallback
     sanitized = sanitize_error_message(value).strip()
     without_machine_refs = _MACHINE_EVIDENCE_REF.sub("机器证据见附录", sanitized)
-    collapsed = " ".join(without_machine_refs.split())
+    without_machine_ids = _UUID.sub("机器证据见附录", without_machine_refs)
+    collapsed = " ".join(without_machine_ids.split())
     if not collapsed:
         return fallback
     return _MARKDOWN_CONTROL.sub(r"\\\1", collapsed)
+
+
+def _failed_plain_text(error_summary: str) -> str:
+    """Render a failure summary without retaining URL-embedded user credentials."""
+
+    redacted_url = _URL_USERINFO.sub(r"\1[redacted]@", error_summary)
+    return _plain_text(redacted_url, fallback="未提供失败摘要。")

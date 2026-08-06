@@ -643,6 +643,10 @@ def test_codex_environment_removes_credentials_and_proxies_but_preserves_codex_l
             "HTTP_PROXY": "http://credential@proxy.invalid",
             "ALL_PROXY": "socks5://credential@proxy.invalid",
             "SERVICE_HTTPS_PROXY_URL": "http://credential@proxy.invalid",
+            "DATABASE_URL": "redacted",
+            "GITHUB_PAT": "redacted",
+            "PRIVATE_KEY": "redacted",
+            "UNRELATED_RUNTIME_SETTING": "must-not-pass-through",
         }
     )
 
@@ -650,6 +654,46 @@ def test_codex_environment_removes_credentials_and_proxies_but_preserves_codex_l
         "PATH": "/usr/bin",
         "HOME": "/controlled/codex-home",
         "CODEX_HOME": "/controlled/codex-home/.codex",
+        "MULTIMODAL_AGENT_PROVIDER_MODE": "mock",
+    }
+
+
+def test_codex_environment_has_an_explicit_minimal_startup_allowlist() -> None:
+    """Would fail if an unlisted runtime variable reached the isolated Codex process."""
+
+    sanitized = runner_module.sanitized_codex_environment(
+        {
+            "PATH": "/usr/bin",
+            "HOME": "/controlled/codex-home",
+            "CODEX_HOME": "/controlled/codex-home/.codex",
+            "ASSISTANT_AGENT_CODEX_EXECUTABLE": "/opt/codex/bin/codex",
+            "LANG": "zh_CN.UTF-8",
+            "LC_CTYPE": "zh_CN.UTF-8",
+            "TERM": "xterm-256color",
+            "TMPDIR": "/tmp/codex",
+            "SSL_CERT_FILE": "/etc/ssl/cert.pem",
+            "SSL_CERT_DIR": "/etc/ssl/certs",
+            "REQUESTS_CA_BUNDLE": "/etc/ssl/custom.pem",
+            "DATABASE_URL": "redacted",
+            "GITHUB_PAT": "redacted",
+            "PRIVATE_KEY": "redacted",
+            "OTHER_PROXY_VALUE": "http://credential@proxy.invalid",
+            "UNLISTED_VALUE": "must-not-pass-through",
+        }
+    )
+
+    assert sanitized == {
+        "PATH": "/usr/bin",
+        "HOME": "/controlled/codex-home",
+        "CODEX_HOME": "/controlled/codex-home/.codex",
+        "ASSISTANT_AGENT_CODEX_EXECUTABLE": "/opt/codex/bin/codex",
+        "LANG": "zh_CN.UTF-8",
+        "LC_CTYPE": "zh_CN.UTF-8",
+        "TERM": "xterm-256color",
+        "TMPDIR": "/tmp/codex",
+        "SSL_CERT_FILE": "/etc/ssl/cert.pem",
+        "SSL_CERT_DIR": "/etc/ssl/certs",
+        "REQUESTS_CA_BUNDLE": "/etc/ssl/custom.pem",
         "MULTIMODAL_AGENT_PROVIDER_MODE": "mock",
     }
 

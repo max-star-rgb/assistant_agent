@@ -239,6 +239,81 @@ def test_failed_daily_report_uses_the_same_plain_text_boundary() -> None:
     assert "\\# \\[伪造链接\\]\\(https://invalid\\.example\\)" in markdown
 
 
+def test_failed_daily_report_redacts_url_userinfo() -> None:
+    """Would fail if a failure report exposed credentials embedded in a URL."""
+
+    markdown = report_module.render_failed_daily_report(
+        date(2026, 8, 5),
+        "连接 https://alice:secret@audit.example/runtime 失败",
+    )
+
+    assert "alice:secret" not in markdown
+    assert "audit\\.example" in markdown
+
+
+def test_daily_report_replaces_extended_machine_ids_without_hiding_normal_chinese() -> None:
+    """Would fail if non-trace machine IDs leaked into prose or ordinary text disappeared."""
+
+    markdown = report_module.render_daily_codex_report(
+        daily_models_module.DailyCodexAuditReport(
+            audit_date=date(2026, 8, 5),
+            daily_summary="普通中文保留；observation:obs-123 需要查看。",
+            activity_summary="run:run-123 与 score:quality-1 已记录。",
+            memory_summary="请求 1234 不应被隐藏。",
+            infrastructure_summary="实例 123e4567-e89b-12d3-a456-426614174000 可追溯。",
+            limitations=["证据 00000000-0000-0000-0000-000000000000 不完整。"],
+        )
+    )
+
+    body, _ = markdown.split("## 证据附录", maxsplit=1)
+    assert "observation:obs-123" not in body
+    assert "run:run-123" not in body
+    assert "score:quality-1" not in body
+    assert "123e4567-e89b-12d3-a456-426614174000" not in body
+    assert "00000000-0000-0000-0000-000000000000" not in body
+    assert body.count("机器证据见附录") >= 5
+    assert "普通中文保留" in body
+    assert "请求 1234 不应被隐藏" in body
+
+
+def test_issue_evidence_refs_reject_markdown_and_html_controls() -> None:
+    """Would fail if a machine evidence ref could escape the appendix code span."""
+
+    for field_name, value in (
+        ("trace_evidence_refs", "trace:bad`ref"),
+        ("trace_evidence_refs", "trace:<script>"),
+        ("code_evidence_refs", "code:bad[link]"),
+        ("code_evidence_refs", "test:path*wildcard"),
+    ):
+        with pytest.raises(ValueError, match="evidence reference"):
+            DailyAuditIssue(
+                issue_key="tool.email_for_market_data",
+                status="open",
+                title="错误使用邮件搜索",
+                first_seen=date(2026, 8, 5),
+                last_seen=date(2026, 8, 5),
+                **{field_name: [value]},
+            )
+
+
+def test_issue_evidence_refs_accept_trace_commit_and_test_paths() -> None:
+    """Would fail if safe existing trace, commit, and test-path evidence stopped working."""
+
+    issue = DailyAuditIssue(
+        issue_key="tool.email_for_market_data",
+        status="open",
+        title="错误使用邮件搜索",
+        first_seen=date(2026, 8, 5),
+        last_seen=date(2026, 8, 5),
+        trace_evidence_refs=["trace:abc/observation:def"],
+        code_evidence_refs=["code:fa1d777", "test:tests/tdd/runtime_audit/test_daily.py"],
+        runtime_verification_refs=["trace:run-20260806/observation:fixed"],
+    )
+
+    assert issue.trace_evidence_refs == ["trace:abc/observation:def"]
+    assert issue.code_evidence_refs[-1] == "test:tests/tdd/runtime_audit/test_daily.py"
+
+
 def test_issue_requires_runtime_evidence_before_verified() -> None:
     """Would fail if code/test evidence alone could mark an issue runtime verified."""
 
