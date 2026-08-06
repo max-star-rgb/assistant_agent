@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import hashlib
+import json
+import re
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from assistant_agent.providers.provider_errors import (
     sanitize_error_detail,
@@ -165,9 +168,10 @@ class AuditCoverage(BaseModel):
 class RuntimeAuditBundle(BaseModel):
     """Read-only input artifact consumed by deterministic and Codex reporting."""
 
-    schema_version: Literal["assistant_agent_runtime_audit_bundle_v1"] = (
-        "assistant_agent_runtime_audit_bundle_v1"
-    )
+    schema_version: Literal[
+        "assistant_agent_runtime_audit_bundle_v1",
+        "assistant_agent_runtime_audit_bundle_v2",
+    ] = "assistant_agent_runtime_audit_bundle_v2"
     audit_run_id: str
     collected_at: datetime
     window_start: datetime
@@ -177,7 +181,46 @@ class RuntimeAuditBundle(BaseModel):
     local_manifests: list[LocalTraceManifest] = Field(default_factory=list)
     local_fallbacks: list[LocalTraceFallback] = Field(default_factory=list)
     findings: list[AuditFinding] = Field(default_factory=list)
+    tool_catalogs: dict[str, list[Any]] = Field(default_factory=dict)
     production_mutation_allowed: Literal[False] = False
+
+    @model_validator(mode="after")
+    def validate_tool_catalog_references(self) -> "RuntimeAuditBundle":
+        if self.schema_version == "assistant_agent_runtime_audit_bundle_v1":
+            return self
+        for catalog_id, catalog in self.tool_catalogs.items():
+            if not re.fullmatch(r"[0-9a-f]{64}", catalog_id):
+                raise ValueError("tool catalog reference must be a SHA-256 digest")
+            payload = json.dumps(
+                catalog,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            if hashlib.sha256(payload).hexdigest() != catalog_id:
+                raise ValueError("tool catalog reference does not match its content")
+        for trace in self.traces:
+            values = [trace.input, *(item.input for item in trace.observations)]
+            for value in values:
+                for catalog_ref in _tool_catalog_refs(value):
+                    if not isinstance(catalog_ref, str) or not re.fullmatch(
+                        r"[0-9a-f]{64}", catalog_ref
+                    ):
+                        raise ValueError("tool catalog reference must be a SHA-256 digest")
+                    if catalog_ref not in self.tool_catalogs:
+                        raise ValueError("tool catalog reference is not present in bundle")
+        return self
+
+
+def _tool_catalog_refs(value: Any):
+    if isinstance(value, dict):
+        if "tool_catalog_ref" in value:
+            yield value["tool_catalog_ref"]
+        for child in value.values():
+            yield from _tool_catalog_refs(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _tool_catalog_refs(child)
 
 
 class AuditRecommendation(BaseModel):
