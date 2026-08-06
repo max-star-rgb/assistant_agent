@@ -293,7 +293,10 @@ conversation history 或主 LLM generation。其内部仍保留 `tool.execute ->
 观察 Tool 治理耗时和副 VLM Provider 耗时。每条成功 `VisualSemanticRecord` 同时保存产生它的
 `source_vision_trace_id`、`source_vision_run_id` 和 `source_vlm_span_id`。`live_view_inspect` 读取缓存时只把
 实际选中 record 的这些身份以及 `source_visual_record_id`、`snapshot_sequence` 作为 prompt-safe metadata
-投影到主 turn Tool observation；不得用 Session 时间邻近或全局最新 trace 猜测来源。
+投影到主 turn Tool observation；不得用 Session 时间邻近或全局最新 trace 猜测来源。投影目标为
+loopback Langfuse 时，还会根据精确的 `source_vision_trace_id` 生成
+`source_vision_trace_url`，供 UI 从 `live_view_inspect` 直接打开对应 `vision.observation`；该 URL 只存在于
+Langfuse/OTel 派生视图，不反写 canonical Tool 结果，非 loopback host 也不生成。
 
 连接级视觉提醒使用创建 turn 的 correlation 记录 late-capable canonical events：
 `visual_reminder.created`、`visual_reminder.matched`、`visual_reminder.delivery.finished` 和

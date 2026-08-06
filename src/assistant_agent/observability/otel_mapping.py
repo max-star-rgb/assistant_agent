@@ -14,6 +14,7 @@ from assistant_agent.context.report import (
     context_report_trace_payload,
     context_report_v2_from_v1,
 )
+from assistant_agent.observability.langfuse_config import local_langfuse_trace_url
 from assistant_agent.observability.trace_store import TraceEvent, redact_trace_event, sanitize_trace_value
 from assistant_agent.observability.turn_evaluator import build_turn_diagnostic
 from assistant_agent.observability.turn_summary import latest_turn_summary_from_events
@@ -520,6 +521,12 @@ def _event_attributes(event: TraceEvent) -> dict[str, Any]:
         value = attrs.get(f"assistant_agent.{key}")
         if _safe_scalar(value):
             attrs[f"langfuse.observation.metadata.assistant_agent.{key}"] = value
+    source_vision_trace_url = _source_vision_trace_url(event)
+    if source_vision_trace_url is not None:
+        attrs["assistant_agent.source_vision_trace_url"] = source_vision_trace_url
+        attrs[
+            "langfuse.observation.metadata.assistant_agent.source_vision_trace_url"
+        ] = source_vision_trace_url
     usage = _usage_details(event.attributes)
     if usage:
         attrs["langfuse.observation.usage_details"] = json.dumps(usage, ensure_ascii=False, separators=(",", ":"))
@@ -528,6 +535,13 @@ def _event_attributes(event: TraceEvent) -> dict[str, Any]:
         if "output" in usage:
             attrs["gen_ai.usage.output_tokens"] = usage["output"]
     return attrs
+
+
+def _source_vision_trace_url(event: TraceEvent) -> str | None:
+    trace_id = event.output_summary.get("source_vision_trace_id")
+    if not isinstance(trace_id, str):
+        return None
+    return local_langfuse_trace_url(trace_id)
 
 
 def _root_io_attributes(
@@ -679,6 +693,9 @@ def _event_io_attributes(
                     ),
                 ),
             }
+        source_vision_trace_url = _source_vision_trace_url(event)
+        if source_vision_trace_url is not None:
+            output_payload["source_vision_trace_url"] = source_vision_trace_url
     elif name == "tool.observation":
         input_payload = {
             "tool_name": event.tool_name,
