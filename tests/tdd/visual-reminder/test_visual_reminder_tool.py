@@ -12,6 +12,7 @@ from assistant_agent.media.video.visual_reminder import (
     VisualReminderManager,
     VisualReminderRegistry,
 )
+from assistant_agent.observability.trace_store import InMemoryTraceStore
 from assistant_agent.runtime.requests import UserRequest
 from assistant_agent.runtime.runtime import AgentGraphRuntime
 from assistant_agent.tools.base import ToolContext
@@ -43,7 +44,8 @@ def _trusted_metadata(*, call_type: str = "VIDEO") -> dict:
 
 
 def test_tool_creates_lists_and_cancels_in_current_runtime_session() -> None:
-    reminders = VisualReminderRegistry()
+    trace_store = InMemoryTraceStore()
+    reminders = VisualReminderRegistry(trace_store=trace_store)
     manager = VisualReminderManager(user_id="u1", session_id="s1")
     reminders.register(manager)
     coordinators = _coordinator_store()
@@ -51,7 +53,12 @@ def test_tool_creates_lists_and_cancels_in_current_runtime_session() -> None:
         coordinator_store=coordinators,
         reminder_registry=reminders,
     )
-    context = ToolContext(user_id="u1", session_id="s1", run_id="r1")
+    context = ToolContext(
+        user_id="u1",
+        session_id="s1",
+        run_id="r1",
+        trace_id="trace-1",
+    )
 
     created = tool.run(
         {
@@ -79,6 +86,18 @@ def test_tool_creates_lists_and_cancels_in_current_runtime_session() -> None:
     assert listed.data["reminders"][0]["target"] == "水已经烧开"
     assert cancelled.data["status"] == "cancelled"
     assert reminders.peek("u2", "s1") is None
+    lifecycle = [
+        event
+        for event in trace_store.list_by_run("r1")
+        if event.canonical_event == "visual_reminder.created"
+    ]
+    assert len(lifecycle) == 1
+    assert lifecycle[0].trace_id == "trace-1"
+    assert lifecycle[0].attributes == {
+        "reminder_id": created.data["reminder_id"],
+        "reminder_status": "pending",
+    }
+    assert "水已经烧开" not in str(lifecycle[0].model_dump(mode="json"))
     coordinators.close()
 
 

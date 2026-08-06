@@ -77,9 +77,15 @@ def test_live_view_reads_semantic_store_without_provider(tmp_path: Path) -> None
     )
 
     assert result.success is True
-    assert result.model_observation["scene"] == "厨房"
-    assert result.model_observation["objects"] == ["钥匙"]
-    assert result.model_observation["snapshot_sequence"] == 12
+    assert result.model_observation["observations"] == [
+        {"timestamp_ms": 12_000, "text": "厨房台面上有一把钥匙"}
+    ]
+    assert result.model_observation["freshness"] == {
+        "observed_timestamp_ms": 12_000,
+        "sequence_gap": 0,
+        "fallback_used": False,
+        "refresh_in_progress": False,
+    }
 
 
 def test_runtime_and_live_tool_share_visual_semantic_pool(tmp_path: Path) -> None:

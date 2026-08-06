@@ -285,6 +285,35 @@ class RuntimeEventPublisher:
                 created_at=fact.occurred_at,
             )
         )
+        response_text = state.response.message if state.response else ""
+        self._append_trace(
+            TraceEvent(
+                trace_id=state.trace_id,
+                run_id=state.run_id,
+                user_id=state.user_id,
+                session_id=state.session_id,
+                node_name="runtime",
+                event_type="observability",
+                canonical_event="response.delivered",
+                observation_type="span",
+                observation_name="response.delivered",
+                span_id=new_span_id(),
+                status="succeeded",
+                attributes={
+                    "source": "runtime_final_response",
+                    "message_present": bool(response_text),
+                    "message_chars": len(response_text),
+                },
+                output_summary={
+                    "response": {
+                        "message_present": bool(response_text),
+                        "message_chars": len(response_text),
+                        "source": "runtime_final_response",
+                    }
+                },
+                created_at=fact.occurred_at,
+            )
+        )
 
     def publish_tool_started(self, fact: ToolStartedFact) -> None:
         """Publish one tool-start fact to both projections."""
@@ -312,6 +341,9 @@ class RuntimeEventPublisher:
                             "retry_count": 0,
                             "tool_reported_latency_ms": None,
                             "tool_category": fact.tool_contract.get("category"),
+                            "content_export_policy": fact.tool_contract.get(
+                                "trace_content_policy"
+                            ),
                         }
                     ),
                     created_at=fact.occurred_at,
@@ -494,6 +526,9 @@ class RuntimeEventPublisher:
                             "retry_exhausted": fact.retry_exhausted,
                             "tool_reported_latency_ms": fact.reported_latency_ms,
                             "tool_category": fact.tool_contract.get("category"),
+                            "content_export_policy": fact.tool_contract.get(
+                                "trace_content_policy"
+                            ),
                         }
                     ),
                     error=trace_error,

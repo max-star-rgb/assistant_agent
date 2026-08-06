@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from assistant_agent.config import ProviderConfig
@@ -9,6 +11,8 @@ from assistant_agent.media.video.visual_reminder import (
     VisualReminderManager,
     VisualReminderRegistry,
 )
+from assistant_agent.observability.trace_store import InMemoryTraceStore
+from assistant_agent.runtime.proactive_messages import ProactiveDeliveryAttempt
 
 
 def _event(
@@ -185,6 +189,228 @@ def test_close_rejects_new_records_and_registry_unregister_is_identity_safe() ->
         )
 
 
+def test_runtime_registry_closes_connection_and_records_pending_reminder() -> None:
+    asyncio.run(_runtime_registry_closes_connection_and_records_pending_reminder())
+
+
+async def _runtime_registry_closes_connection_and_records_pending_reminder() -> None:
+    trace_store = InMemoryTraceStore()
+    registry = VisualReminderRegistry(trace_store=trace_store)
+    manager = _manager()
+    created = manager.create(
+        target="target",
+        message="message",
+        target_embedding=_event("target", "text", [1.0, 0.0]),
+        run_id="run-1",
+        trace_id="trace-1",
+    )
+    registry.register(manager)
+
+    assert await registry.close_connection("u1", "s1", manager=manager) is True
+
+    assert registry.peek("u1", "s1") is None
+    assert manager.list_records() == []
+    cleared = trace_store.list_by_run("run-1")[-1]
+    assert cleared.canonical_event == "visual_reminder.cleared"
+    assert cleared.attributes == {
+        "reminder_id": created.reminder_id,
+        "reminder_status": "pending",
+        "reason": "connection_closed",
+    }
+
+
+def test_runtime_registry_releases_reservation_when_delivery_is_cancelled() -> None:
+    asyncio.run(_runtime_registry_releases_reservation_when_delivery_is_cancelled())
+
+
+async def _runtime_registry_releases_reservation_when_delivery_is_cancelled() -> None:
+    delivery_started = asyncio.Event()
+
+    class Sink:
+        async def publish(self, _message):
+            delivery_started.set()
+            await asyncio.Future()
+
+    trace_store = InMemoryTraceStore()
+    registry = VisualReminderRegistry(trace_store=trace_store)
+    manager = _manager()
+    manager.create(
+        target="target",
+        message="message",
+        target_embedding=_event("target", "text", [1.0, 0.0]),
+        run_id="run-1",
+        trace_id="trace-1",
+    )
+    registry.register(manager, sink=Sink())
+
+    assert await registry.publish_image_event(
+        "u1",
+        "s1",
+        _event("frame", "image", [1.0, 0.0]),
+    ) == 1
+    await delivery_started.wait()
+    assert await registry.close_connection(
+        "u1",
+        "s1",
+        manager=manager,
+    ) is True
+
+    lifecycle = trace_store.list_by_run("run-1")
+    cancelled = next(
+        event
+        for event in lifecycle
+        if event.canonical_event == "visual_reminder.delivery.finished"
+    )
+    assert cancelled.status == "cancelled"
+    assert cancelled.attributes["reminder_status"] == "pending"
+    assert manager.list_records() == []
+
+
+def test_runtime_dispatch_does_not_wait_for_channel_and_records_sent_event() -> None:
+    asyncio.run(_runtime_dispatch_does_not_wait_for_channel_and_records_sent_event())
+
+
+async def _runtime_dispatch_does_not_wait_for_channel_and_records_sent_event() -> None:
+    delivery_started = asyncio.Event()
+    release_delivery = asyncio.Event()
+    published = []
+
+    class BlockingSink:
+        async def publish(self, message):
+            published.append(message)
+            delivery_started.set()
+            await release_delivery.wait()
+            return ProactiveDeliveryAttempt(
+                message_id=message.message_id,
+                status="sent",
+                delivery_scope="server_transport",
+            )
+
+    registry = VisualReminderRegistry(delivery_timeout_seconds=1.0)
+    manager = _manager()
+    created = manager.create(
+        target="target",
+        message="precomposed-message",
+        target_embedding=_event("target", "text", [1.0, 0.0]),
+        run_id="run-1",
+        trace_id="trace-1",
+    )
+    registry.register(manager, sink=BlockingSink())
+
+    dispatched = await asyncio.wait_for(
+        registry.publish_image_event(
+            "u1",
+            "s1",
+            _event("frame", "image", [1.0, 0.0]),
+        ),
+        timeout=0.1,
+    )
+
+    assert dispatched == 1
+    await delivery_started.wait()
+    assert manager.list_records()[0].status == "reserved"
+    assert published[0].content == "precomposed-message"
+    assert published[0].delivery_mode == "connection_ephemeral"
+
+    release_delivery.set()
+    await registry.wait_idle("u1", "s1")
+
+    assert manager.list_records()[0].status == "triggered"
+    events = registry.recent_session_events("u1", "s1")
+    assert [event.message_id for event in events] == [created.reminder_id]
+    assert events[0].content == "precomposed-message"
+
+
+def test_runtime_delivery_timeout_releases_pending_reminder() -> None:
+    asyncio.run(_runtime_delivery_timeout_releases_pending_reminder())
+
+
+async def _runtime_delivery_timeout_releases_pending_reminder() -> None:
+    class NeverCompletesSink:
+        async def publish(self, _message):
+            await asyncio.Future()
+
+    trace_store = InMemoryTraceStore()
+    registry = VisualReminderRegistry(
+        trace_store=trace_store,
+        delivery_timeout_seconds=0.01,
+    )
+    manager = _manager()
+    manager.create(
+        target="target",
+        message="message",
+        target_embedding=_event("target", "text", [1.0, 0.0]),
+        run_id="run-1",
+        trace_id="trace-1",
+    )
+    registry.register(manager, sink=NeverCompletesSink())
+
+    assert await registry.publish_image_event(
+        "u1",
+        "s1",
+        _event("frame", "image", [1.0, 0.0]),
+    ) == 1
+    await registry.wait_idle("u1", "s1")
+
+    assert manager.list_records()[0].status == "pending"
+    terminal = trace_store.list_by_run("run-1")[-1]
+    assert terminal.canonical_event == "visual_reminder.delivery.finished"
+    assert terminal.status == "failed"
+    assert terminal.attributes["delivery_status"] == "failed"
+    assert terminal.attributes["error_code"] == "delivery_timeout"
+
+
+def test_runtime_serializes_multiple_proactive_deliveries_per_connection() -> None:
+    asyncio.run(_runtime_serializes_multiple_proactive_deliveries_per_connection())
+
+
+async def _runtime_serializes_multiple_proactive_deliveries_per_connection() -> None:
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+    started = []
+
+    class OrderingSink:
+        async def publish(self, message):
+            started.append(message.content)
+            if message.content == "first":
+                first_started.set()
+                await release_first.wait()
+            return ProactiveDeliveryAttempt(
+                message_id=message.message_id,
+                status="sent",
+                delivery_scope="server_transport",
+            )
+
+    registry = VisualReminderRegistry(delivery_timeout_seconds=1.0)
+    manager = _manager()
+    manager.create(
+        target="target",
+        message="first",
+        target_embedding=_event("target-1", "text", [1.0, 0.0]),
+    )
+    manager.create(
+        target="target-2",
+        message="second",
+        target_embedding=_event("target-2", "text", [1.0, 0.0]),
+    )
+    registry.register(manager, sink=OrderingSink())
+
+    assert await registry.publish_image_event(
+        "u1",
+        "s1",
+        _event("frame", "image", [1.0, 0.0]),
+    ) == 2
+    await first_started.wait()
+    await asyncio.sleep(0)
+
+    assert started == ["first"]
+
+    release_first.set()
+    await registry.wait_idle("u1", "s1")
+
+    assert started == ["first", "second"]
+
+
 def test_visual_reminder_configuration_is_loaded_and_validated() -> None:
     config = ProviderConfig.from_env(
         {
@@ -192,12 +418,14 @@ def test_visual_reminder_configuration_is_loaded_and_validated() -> None:
             "REALTIME_VISUAL_REMINDER_SIMILARITY_THRESHOLD": "0.75",
             "REALTIME_VISUAL_REMINDER_MAX_ACTIVE": "4",
             "REALTIME_VISUAL_REMINDER_TERMINAL_HISTORY_LIMIT": "8",
+            "PROACTIVE_MESSAGE_DELIVERY_TIMEOUT_SECONDS": "95",
         }
     )
 
     assert config.visual_reminder_similarity_threshold == 0.75
     assert config.visual_reminder_max_active == 4
     assert config.visual_reminder_terminal_history_limit == 8
+    assert config.proactive_message_delivery_timeout_seconds == 95.0
 
     for name, value in (
         ("REALTIME_VISUAL_REMINDER_SIMILARITY_THRESHOLD", "1.1"),

@@ -7,7 +7,10 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
-from assistant_agent.tools.ids import SHOPPING_SEARCH_TOOL_NAME
+from assistant_agent.tools.ids import (
+    SHOPPING_SEARCH_TOOL_NAME,
+    VISUAL_MEMORY_SEARCH_TOOL_NAME,
+)
 from assistant_agent.tools.observation import (
     PROVIDER_TOOL_CALL_ID_KEY,
     prompt_observation_payload,
@@ -297,9 +300,51 @@ def _compact_data(tool_name: str, value: Any, *, stats: _CompactionStats) -> dic
     if not isinstance(value, Mapping):
         return {}
     data = dict(value)
+    if tool_name == VISUAL_MEMORY_SEARCH_TOOL_NAME:
+        return _compact_visual_memory_search_output(data, stats=stats)
     if tool_name == SHOPPING_SEARCH_TOOL_NAME:
         return _compact_shopping_search_output(data, stats=stats)
     return _compact_generic_mapping(data, stats=stats, key_path=("data",))
+
+
+def _compact_visual_memory_search_output(
+    data: dict[str, Any],
+    *,
+    stats: _CompactionStats,
+) -> dict[str, Any]:
+    """Preserve the complete bounded VLM timeline for main-model retrieval."""
+
+    output = _copy_keys(
+        data,
+        (
+            "status",
+            "observation_count",
+            "returned_observation_count",
+            "timeline_summary",
+            "coverage",
+            "compaction",
+            "errors",
+        ),
+    )
+    observations = data.get("observations")
+    if isinstance(observations, list):
+        output["observations"] = []
+        for index, item in enumerate(observations):
+            if not isinstance(item, Mapping):
+                continue
+            timestamp_ms = item.get("timestamp_ms")
+            text = item.get("text")
+            if not isinstance(timestamp_ms, int) or not isinstance(text, str):
+                continue
+            if _looks_like_inline_media_payload(text):
+                stats.record_pruned_key(
+                    ("data", "observations", f"[{index}]", "text")
+                )
+                text = PRUNED_INLINE_MEDIA_PLACEHOLDER
+            output["observations"].append(
+                {"timestamp_ms": timestamp_ms, "text": text}
+            )
+    return output
 
 
 def _compact_shopping_search_output(data: dict[str, Any], *, stats: _CompactionStats) -> dict[str, Any]:

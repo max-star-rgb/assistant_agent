@@ -177,12 +177,15 @@ def test_run_facts_project_to_correlated_events() -> None:
     assert [event.canonical_event for event in traces] == [
         "run.started",
         "run.completed",
+        "response.delivered",
     ]
     assert {event.run_id for event in event_sink.events} == {state.run_id}
     assert {event.run_id for event in traces} == {state.run_id}
     assert {event.trace_id for event in traces} == {state.trace_id}
     assert event_sink.events[0].created_at == traces[0].created_at
     assert event_sink.events[1].created_at == traces[1].created_at
+    assert event_sink.events[1].created_at == traces[2].created_at
+    assert traces[2].attributes["source"] == "runtime_final_response"
 
 
 @pytest.mark.core_invariant("OBS-001")

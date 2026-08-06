@@ -261,6 +261,19 @@ def _realtime_video_trace(pack: AssistantContextPack) -> dict[str, Any]:
         "first_delta_latency_ms": context.first_delta_latency_ms,
         "total_observation_latency_ms": context.total_observation_latency_ms,
         "semantic_publish_latency_ms": context.semantic_publish_latency_ms,
+        "h264_decode_latency_ms": context.h264_decode_latency_ms,
+        "keyframe_selection_latency_ms": context.keyframe_selection_latency_ms,
+        "queue_wait_latency_ms": context.queue_wait_latency_ms,
+        "text_embedding_latency_ms": context.text_embedding_latency_ms,
+        "semantic_store_write_latency_ms": context.semantic_store_write_latency_ms,
+        "jpeg_prepare_latency_ms": context.jpeg_prepare_latency_ms,
+        "connection_setup_latency_ms": context.connection_setup_latency_ms,
+        "instruction_update_latency_ms": context.instruction_update_latency_ms,
+        "media_commit_latency_ms": context.media_commit_latency_ms,
+        "response_first_delta_latency_ms": context.response_first_delta_latency_ms,
+        "response_tail_latency_ms": context.response_tail_latency_ms,
+        "response_latency_ms": context.response_latency_ms,
+        "result_parse_latency_ms": context.result_parse_latency_ms,
     }
     trace.update({key: value for key, value in optional_values.items() if value is not None})
     return trace

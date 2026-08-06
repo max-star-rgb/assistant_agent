@@ -174,7 +174,10 @@ class VisualReminderManageTool(ToolBase):
             target=input.target or "",
             message=input.message or "",
             target_embedding=outcome,
+            run_id=context.run_id,
+            trace_id=context.trace_id,
         )
+        self.reminder_registry.record_created(manager, record.reminder_id)
         return self._result(
             {
                 **record.model_dump(mode="json"),

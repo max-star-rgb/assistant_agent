@@ -103,6 +103,9 @@ def test_runtime_returns_before_background_ingestion_finishes() -> None:
         ]
         assert canonical_events.index(
             "run.completed"
+        ) < canonical_events.index("response.delivered")
+        assert canonical_events.index(
+            "response.delivered"
         ) < canonical_events.index("memory.ingestion.queued")
         assert "memory.ingestion.finished" not in canonical_events
 

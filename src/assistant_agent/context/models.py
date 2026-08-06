@@ -74,6 +74,11 @@ class RealtimeVideoContext(BaseModel):
     frame_capture_age_ms: int | None = Field(default=None, ge=0)
     snapshot_publish_age_ms: int | None = Field(default=None, ge=0)
     observation_latency_ms: int | None = Field(default=None, ge=0)
+    h264_decode_latency_ms: int | None = Field(default=None, ge=0)
+    keyframe_selection_latency_ms: int | None = Field(default=None, ge=0)
+    queue_wait_latency_ms: int | None = Field(default=None, ge=0)
+    text_embedding_latency_ms: int | None = Field(default=None, ge=0)
+    semantic_store_write_latency_ms: int | None = Field(default=None, ge=0)
     semantic_publish_latency_ms: int | None = Field(default=None, ge=0)
     provider: str | None = None
     model: str | None = None
@@ -87,6 +92,14 @@ class RealtimeVideoContext(BaseModel):
     completed_sequence: int | None = Field(default=None, ge=0)
     first_delta_latency_ms: int | None = Field(default=None, ge=0)
     total_observation_latency_ms: int | None = Field(default=None, ge=0)
+    jpeg_prepare_latency_ms: int | None = Field(default=None, ge=0)
+    connection_setup_latency_ms: int | None = Field(default=None, ge=0)
+    instruction_update_latency_ms: int | None = Field(default=None, ge=0)
+    media_commit_latency_ms: int | None = Field(default=None, ge=0)
+    response_first_delta_latency_ms: int | None = Field(default=None, ge=0)
+    response_tail_latency_ms: int | None = Field(default=None, ge=0)
+    response_latency_ms: int | None = Field(default=None, ge=0)
+    result_parse_latency_ms: int | None = Field(default=None, ge=0)
 
 
 class ContextSection(BaseModel):

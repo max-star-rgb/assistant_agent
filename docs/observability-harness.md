@@ -87,6 +87,16 @@ input/output summary 和安全错误。具体字段以该 model 为准。
 稳定生命周期包括 run、LLM、Tool、Memory、Context、response 和 runtime postprocess 等边界。
 事件全集由各 owning module 构造，本文档不维护重复清单。
 
+VLM Provider 调用使用成对的 `vlm.infer.started/finished`，terminal 投影为名为 `vlm.infer` 的
+generation。同步视觉 Tool 的 generation 通过 `parent_span_id` 挂在对应 `tool.execute` 下；纯视觉
+Store/embedding/reminder 操作不伪造 VLM generation。事件只允许 capability、source、media kind/count、
+prompt version、Provider/model、latency、usage、状态和稳定错误码，不记录视觉正文、JPEG/base64、媒体
+ID/路径或 Provider 原始响应；错误消息固定为通用安全描述。
+视觉理解 Tool 自身同时使用 `metadata_only` trace content policy，防止 `tool.started/finished` 或本地
+conversation overlay 在 Langfuse projection 中旁路上述边界。该 policy 不删减主 LLM 实际消费的
+Tool observation。VLM event 与后台 summary 的观测写入均 fail-open；写入失败不能阻止 Provider 调用或
+把成功视觉结果改成业务失败。
+
 统一 embedding side stream 额外发布 `embedding.requested/deduplicated/started/finished/failed/
 dispatched/consumer_dropped/session_cleanup`。这些事件只允许 modality、dimension、latency、priority、
 consumer count、错误码和稳定 digest；不得包含向量、文本、图片/evidence 路径或原始 session、
@@ -98,12 +108,14 @@ frame sequence、替换 sequence 和稳定 reason；不得包含 JPEG/evidence �
 默认 Runtime 为 session embedding coordinator 注入结构化 logging observer，因此后台视频没有活动
 Agent turn 时仍会产生这些 content-safe side-stream 事件；测试也可注入内存 observer。未知 reason 统一
 投影为 `other`，不能借 reason 字段旁路脱敏。
-同一 observer 还发布 `visual_semantic.retained/evicted/index_failed` 与 `visual_memory.query`；只记录
+同一 observer 还发布 `visual_semantic.retained/evicted/index_failed`、`visual_memory.query` 与
+`visual_memory.compaction`；只记录
 哈希化 session、sequence、稳定 status、数量和 latency，不记录 VLM 文本、用户 query、向量或 evidence。
 
-视觉上下文预算事件为 `visual_context.preflight/compacted/compaction_failed/hard_limit`：真实
-`VisualContextService` 在初始预算评估、成功 CAS 后重建、compactor 失败和最终 hard 拒绝处分别发出；
-未启用 compaction 的 realtime fallback 也发出 status=`unavailable`、compacted=`false` 的 preflight。
+视觉上下文预算事件为 `visual_context.preflight/compacted/compaction_failed/hard_limit`：独立调用
+`VisualContextService` 时，它在初始预算评估、成功 CAS 后重建、compactor 失败和最终 hard 拒绝处分别发出。
+当前 Agent-Service realtime observer 使用单帧、无历史的 VLM 输入，不构造该 Service，因而不会产生
+这些预算事件；observer 的工具 metadata 仅标记 `visual_context_compaction.status=disabled_single_frame_text`。
 payload
 只能包含哈希化 session、sequence、input token 数、effective input limit、target token 数、usage ratio、
 covered/recent count、summary revision、latency、compacted 布尔值和 allowlist 内的枚举 status；未知 status 归一为
@@ -181,7 +193,21 @@ wrapper 和 WebSocket send 组合为尽可能不重叠的 critical path：
 Provider/Tool 自报 latency、ACK latency 和视频 freshness 是嵌套或次级诊断，不再次计入 critical path。
 最大 critical-path stage 是 bottleneck；`unattributed` 为正时也是合法候选，而不是自动归因给 Provider。
 实时视频的 `semantic_publish_latency_ms` 使用进程单调时钟计算从 Agent-Service WebSocket 收到视频消息
-到成功语义发布的端到端耗时；它是后台视频诊断，不与 chat critical path 重复相加。
+到 `SessionVisualSemanticStore.record_success` 完成、记录已可查询的端到端耗时；它包含解码、选帧、task 调度、
+视觉 observation、文本 embedding 和 semantic store 写入，不与 chat critical path 重复相加。后台视觉
+同时输出 `h264_decode_latency_ms`、`keyframe_selection_latency_ms`、`queue_wait_latency_ms`、
+`observation_latency_ms`、`text_embedding_latency_ms`、`semantic_store_write_latency_ms` 以定位本地阶段。
+`keyframe_selection_latency_ms` 从视频 ingress 到关键帧选中后扣除 H.264 decode；
+`queue_wait_latency_ms` 在并行 VLM 架构中只表示 task 创建到实际开始执行的调度等待，不包含前一关键帧
+Provider 耗时；
+成功文本发布后进行的独立 WebSocket 关闭握手不属于可查询关键路径，因此不计入
+`observation_latency_ms` 或 `semantic_publish_latency_ms`；
+Qwen WebSocket 还输出 `jpeg_prepare_latency_ms`、`connection_setup_latency_ms`、
+`instruction_update_latency_ms`、`media_commit_latency_ms`、`response_first_delta_latency_ms`、
+`response_tail_latency_ms`、`response_latency_ms` 和 `result_parse_latency_ms`。这些字段经
+`context.build.finished` 投影到 `agent_service.turn.finished.video`，均为嵌套诊断，不重复计入总耗时。
+兼容字段 `first_delta_latency_ms` 仍表示整次 observation 起点到首个 delta；
+`response_first_delta_latency_ms` 只表示 `response.create` 到首个 delta。
 
 超时或取消中的摘要可以同时表达 entry failure、runtime pending cancel 和 terminal unknown。
 这类摘要是截止某一时刻的事实，不得替代之后出现的 `run.cancelled` 或 `run.failed`。
@@ -239,17 +265,32 @@ Provider protocol capture。overlay 写入失败时 canonical event 仍须保留
 
 `build_text_otel_span_specs()` 将 redacted canonical events 投影为依赖无关的 OTel span plan：
 
-- 根 span 名为 `agent.runtime`，Langfuse trace 名固定为 `assistant.turn`；
+- 普通 Assistant turn 的根 span 为 `agent.runtime`，Langfuse trace 名为 `assistant.turn`；
+- 后台实时 VLM 每次 observation 使用独立 run/trace，以 prompt-safe
+  `vision.observation.summary` 闭合；根 span 为 `vision.runtime`，Langfuse trace 名为
+  `vision.observation`，不能伪装成没有用户 turn 的 `assistant.turn`；
 - ReAct iteration 是根 span 下的逻辑 span；
 - 声明了 observation type 的 operation 映射为 span、generation 或 event；
 - operation 的 parent、start/end、status 来自 canonical span 关系和 started/terminal event；
+- root 的 external parent 只接受 `run.started` 显式提供的上游 parent，不能把内部 Tool/VLM
+  `parent_span_id` 反推为 root parent；
 - usage 映射到 generation/OTel token attributes，不能因嵌套结构而丢失；
 - only-allowlisted metadata 和 output reference 可以进入公开 projection。
 
-`assistant.turn.summary` 到达时主 trace 可以先导出；后续后台 `memory.ingestion.finished` 不得被
-静默丢弃。OTel observer 将它作为单独的 late `memory.turn_ingestion` span 追加到同一 trace，
+`assistant.turn.summary` 到达时主 trace 可以先导出；Runtime 随后发出的 `response.delivered` 与后台
+`memory.ingestion.finished` 都不得被静默丢弃。OTel observer 将它们作为单独的 late span 追加到同一 trace，
 parent 使用稳定的 `agent.runtime` root span ID。已有 `langfuse.session.id` 负责在 Session 页面聚合
 同一会话的多个 turn；Langfuse 不创建第二套 session 或 memory 数据库。
+
+后台 `vision.observation` 只通过同一 `langfuse.session.id` 与会话聚合；它不创建 Assistant turn summary、
+conversation history 或主 LLM generation。其内部仍保留 `tool.execute -> vlm.infer` 因果链，从而分别
+观察 Tool 治理耗时和副 VLM Provider 耗时。
+
+连接级视觉提醒使用创建 turn 的 correlation 记录 late-capable canonical events：
+`visual_reminder.created`、`visual_reminder.matched`、`visual_reminder.delivery.finished` 和
+`visual_reminder.cleared`。这些事件只包含 reminder ID、状态、相似度和清理原因等 prompt-safe 摘要；
+target、message、向量和媒体内容不得进入 canonical trace。观测写入失败 fail-open，不改变提醒匹配、
+主动 message 发布或连接清理。
 
 Langfuse 的 trace、observation、score 和 Dataset/Experiment 是远端投影与评估记录，也是日常人工查看
 Runtime trace 的主入口。面板如何折叠或展示长 JSON 不属于架构契约；需要核对机器事实时查询 observation
@@ -378,6 +419,7 @@ Dataset 发布和 Experiment 运行由 [`../evals/README.md`](../evals/README.md
 | `src/assistant_agent/observability/trace_content_policy.py` | 本地 content/protocol capture 开关 |
 | `src/assistant_agent/observability/trace_conversation.py` | 有界、进程内 current-turn content overlay |
 | `src/assistant_agent/observability/otel_mapping.py` | canonical trace 到 OTel/Langfuse span plan 的映射 |
+| `src/assistant_agent/media/vision/observability.py` | 内容安全的 `vlm.infer` generation 事件边界 |
 | `src/assistant_agent/observability/operational_logging.py` | Gateway console、JSONL 和兼容 text log |
 | `src/assistant_agent/gateway/observability.py` | prompt-safe Gateway lifecycle schema 和 sink |
 | `tests/core/contract/test_observability_contract.py` | 稳定 observability core contract |

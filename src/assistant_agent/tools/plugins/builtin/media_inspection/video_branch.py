@@ -23,6 +23,7 @@ from assistant_agent.media.vision.vision_client import (
     video_result_from_vision_result,
     vision_request_from_video_request,
 )
+from assistant_agent.media.vision.observability import observe_vision_inference
 from assistant_agent.media.video.video_context import (
     DEFAULT_VIDEO_CONTEXT_WINDOW_SIZE,
     VideoContextStore,
@@ -48,6 +49,7 @@ from assistant_agent.tools.base import ToolBase, ToolContext
 
 
 LIVE_VIEW_SNAPSHOT_WAIT_SECONDS = 10.0
+LIVE_VIEW_TEXT_TIMELINE_LIMIT = 8
 
 
 class VideoUnderstandingBranch(ToolBase):
@@ -99,6 +101,7 @@ class VideoUnderstandingBranch(ToolBase):
         )
         snapshot = None
         status_snapshot = None
+        text_observations: list[dict[str, object]] | None = None
         visual_target_sequence = self._live_target_sequence(context)
         if (
             video_ref
@@ -111,6 +114,11 @@ class VideoUnderstandingBranch(ToolBase):
             snapshot = self._live_snapshot_for_request(
                 video_ref,
                 context=context,
+            )
+            text_observations = self._live_text_observations(
+                video_ref,
+                context=context,
+                snapshot=snapshot,
             )
             status_snapshot = snapshot
             if snapshot is None and visual_target_sequence is not None:
@@ -125,6 +133,7 @@ class VideoUnderstandingBranch(ToolBase):
                 return self._memory_result(
                     snapshot,
                     target_sequence=visual_target_sequence,
+                    observations=text_observations,
                 )
         if agent_service_text_only:
             status_override = None
@@ -153,7 +162,29 @@ class VideoUnderstandingBranch(ToolBase):
         self._sync_client_video_adapter()
         try:
             result = video_result_from_vision_result(
-                self.client.understand(vision_request_from_video_request(input))
+                observe_vision_inference(
+                    lambda: self.client.understand(
+                        vision_request_from_video_request(input)
+                    ),
+                    context=context,
+                    capability=VIDEO_UNDERSTANDING_CAPABILITY,
+                    source=(
+                        "background_keyframe_observation"
+                        if observation_mode
+                        else "explicit_video"
+                    ),
+                    media_kind=("live_view" if observation_mode else "explicit_video"),
+                    media_count=max(
+                        len(input.frame_refs),
+                        len(input.video_ids),
+                        1 if input.video_ref else 0,
+                    ),
+                    prompt_version=(
+                        "realtime-single-frame-v1"
+                        if observation_mode
+                        else "video-understanding-v1"
+                    ),
+                )
             )
         except ValueError as exc:
             contract = build_capability_output_contract(
@@ -262,6 +293,43 @@ class VideoUnderstandingBranch(ToolBase):
             return None
         return self.semantic_store_pool.peek(context.user_id, context.session_id)
 
+    def _live_text_observations(
+        self,
+        video_ref: str,
+        *,
+        context: ToolContext,
+        snapshot: RealtimeVideoSnapshot | None,
+    ) -> list[dict[str, object]]:
+        semantic_store = self._semantic_store(context)
+        target_sequence = self._live_target_sequence(context)
+        if semantic_store is not None:
+            sequence = target_sequence
+            if sequence is None and snapshot is not None:
+                sequence = snapshot.last_success_sequence
+            if sequence is not None:
+                return [
+                    {
+                        "timestamp_ms": (
+                            record.captured_at_ms
+                            if record.captured_at_ms is not None
+                            else record.created_at_ms
+                        ),
+                        "text": record.summary,
+                    }
+                    for record in semantic_store.recent_at_or_before(
+                        video_ref,
+                        sequence=sequence,
+                        limit=LIVE_VIEW_TEXT_TIMELINE_LIMIT,
+                    )
+                    if record.summary
+                ]
+        if snapshot is None or not snapshot.current_state:
+            return []
+        observation: dict[str, object] = {"text": snapshot.current_state}
+        if snapshot.last_success_timestamp_ms is not None:
+            observation["timestamp_ms"] = snapshot.last_success_timestamp_ms
+        return [observation]
+
     @staticmethod
     def _live_target_sequence(context: ToolContext) -> int | None:
         request_metadata = context.metadata.get("request_metadata")
@@ -295,6 +363,7 @@ class VideoUnderstandingBranch(ToolBase):
         snapshot: RealtimeVideoSnapshot,
         *,
         target_sequence: int | None = None,
+        observations: list[dict[str, object]] | None = None,
     ) -> ToolResult:
         output_ref = f"memory://realtime-video/{_safe_ref(snapshot.video_id)}"
         status = _snapshot_status(snapshot, target_sequence=target_sequence)
@@ -331,6 +400,7 @@ class VideoUnderstandingBranch(ToolBase):
             "fallback_used": sequence_gap > 0,
             "observed_timestamp_ms": snapshot.last_success_timestamp_ms,
             "keyframe_count": len(snapshot.keyframes),
+            "observations": observations or [],
         }
         contract = build_capability_output_contract(
             capability=VIDEO_UNDERSTANDING_CAPABILITY,
@@ -352,7 +422,7 @@ class VideoUnderstandingBranch(ToolBase):
             tool_name=self.name,
             success=True,
             data=payload,
-            model_observation=_video_model_observation(payload),
+            model_observation=_live_view_model_observation(payload),
             output_ref=output_ref,
             latency_ms=0,
             contract=contract,
@@ -429,22 +499,6 @@ class VideoUnderstandingBranch(ToolBase):
             "error_code": error_code,
             "usable_visual_text": False,
         }
-        model_observation = {
-            "status": status,
-            "summary": description,
-            "description": description,
-            "source": "realtime_video_memory_unavailable",
-            "media_kind": "live_view",
-            "media_refs": [video_ref] if video_ref else [],
-                "snapshot_sequence": payload["snapshot_sequence"],
-                "target_sequence": target_sequence,
-                "sequence_gap": sequence_gap,
-                "fallback_used": sequence_gap > 0,
-            "pending_count": pending_count,
-            "in_flight": in_flight,
-            "error_code": error_code,
-            "usable_visual_text": False,
-        }
         contract = build_capability_output_contract(
             capability=VIDEO_UNDERSTANDING_CAPABILITY,
             status="partial",
@@ -465,7 +519,7 @@ class VideoUnderstandingBranch(ToolBase):
             success=True,
             data=payload,
             voice_summary=description,
-            model_observation=model_observation,
+            model_observation=_live_view_model_observation(payload),
             output_ref=output_ref,
             latency_ms=0,
             contract=contract,
@@ -506,6 +560,23 @@ class VideoUnderstandingBranch(ToolBase):
             "semantic_publish_latency_ms": (
                 diagnostics.semantic_publish_latency_ms if diagnostics is not None else None
             ),
+            "h264_decode_latency_ms": (
+                diagnostics.h264_decode_latency_ms if diagnostics is not None else None
+            ),
+            "keyframe_selection_latency_ms": (
+                diagnostics.keyframe_selection_latency_ms if diagnostics is not None else None
+            ),
+            "queue_wait_latency_ms": (
+                diagnostics.queue_wait_latency_ms if diagnostics is not None else None
+            ),
+            "text_embedding_latency_ms": (
+                diagnostics.text_embedding_latency_ms if diagnostics is not None else None
+            ),
+            "semantic_store_write_latency_ms": (
+                diagnostics.semantic_store_write_latency_ms
+                if diagnostics is not None
+                else None
+            ),
             "pending_count": snapshot.pending_count if snapshot is not None else 0,
             "in_flight": snapshot.in_flight if snapshot is not None else False,
             "fallback_used": sequence_gap > 0,
@@ -516,6 +587,32 @@ class VideoUnderstandingBranch(ToolBase):
             else None,
             "provider": provider,
             "model": model,
+            "jpeg_prepare_latency_ms": (
+                diagnostics.jpeg_prepare_latency_ms if diagnostics is not None else None
+            ),
+            "connection_setup_latency_ms": (
+                diagnostics.connection_setup_latency_ms if diagnostics is not None else None
+            ),
+            "instruction_update_latency_ms": (
+                diagnostics.instruction_update_latency_ms if diagnostics is not None else None
+            ),
+            "media_commit_latency_ms": (
+                diagnostics.media_commit_latency_ms if diagnostics is not None else None
+            ),
+            "response_first_delta_latency_ms": (
+                diagnostics.response_first_delta_latency_ms
+                if diagnostics is not None
+                else None
+            ),
+            "response_tail_latency_ms": (
+                diagnostics.response_tail_latency_ms if diagnostics is not None else None
+            ),
+            "response_latency_ms": (
+                diagnostics.response_latency_ms if diagnostics is not None else None
+            ),
+            "result_parse_latency_ms": (
+                diagnostics.result_parse_latency_ms if diagnostics is not None else None
+            ),
         }
 
     def _with_context_frames(
@@ -778,4 +875,32 @@ def _timestamp_model_observation(item: dict[str, Any]) -> dict[str, Any]:
         key: item[key]
         for key in ("start_ms", "end_ms", "description")
         if item.get(key) not in (None, "", [], {})
+    }
+
+
+def _live_view_model_observation(payload: dict[str, Any]) -> dict[str, Any]:
+    freshness = {
+        "observed_timestamp_ms": payload.get("observed_timestamp_ms"),
+        "sequence_gap": payload.get("sequence_gap"),
+        "fallback_used": payload.get("fallback_used"),
+        "refresh_in_progress": bool(
+            payload.get("in_flight") or int(payload.get("pending_count") or 0) > 0
+        ),
+    }
+    observation = {
+        "status": payload.get("status"),
+        "summary": payload.get("summary"),
+        "observations": payload.get("observations"),
+        "freshness": {
+            key: value
+            for key, value in freshness.items()
+            if value not in (None, "", [], {})
+        },
+        "usable_visual_text": payload.get("usable_visual_text", True),
+        "error_code": payload.get("error_code"),
+    }
+    return {
+        key: value
+        for key, value in observation.items()
+        if value not in (None, "", [], {})
     }

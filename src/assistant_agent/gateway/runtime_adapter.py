@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 from collections.abc import Callable
 from time import perf_counter
 from typing import Any
@@ -228,13 +227,6 @@ class GatewayRuntimeAdapter:
                     emit_chunks=not forwarder.response_delta_seen,
                 )
 
-            if status == "completed":
-                _append_response_delivered_event(
-                    artifacts=artifacts,
-                    state=state,
-                    delivered_text=delivered_text,
-                    source=delivery_source,
-                )
             result_metadata["realtime_progress"] = forwarder.progress_summary()
             result_metadata["response_delivery_source"] = delivery_source
             return RealtimeAgentResult(
@@ -323,52 +315,6 @@ def _append_realtime_backend_finished_event(
             "user_visible_event_count": progress_summary.get("user_visible_event_count"),
             "sla_fallback_emitted": progress_summary.get("sla_fallback_emitted"),
         },
-    )
-
-
-def _append_response_delivered_event(
-    *,
-    artifacts: Any,
-    state: Any,
-    delivered_text: str,
-    source: str,
-) -> None:
-    """Record the entry-layer response contract without persisting raw content."""
-
-    runtime = getattr(artifacts, "runtime", None)
-    trace_store = getattr(runtime, "trace_store", None)
-    append_observability_event(
-        trace_store,
-        trace_id=state.trace_id,
-        run_id=state.run_id,
-        user_id=state.user_id,
-        session_id=state.session_id,
-        canonical_event="response.delivered",
-        observation_type="span",
-        node_name="realtime_backend",
-        status="succeeded",
-        attributes={
-            "source": source,
-            "message_present": bool(delivered_text),
-            "message_chars": len(delivered_text),
-        },
-        output_summary={
-            "response": {
-                "message_present": bool(delivered_text),
-                "message_chars": len(delivered_text),
-                "source": source,
-            }
-        },
-    )
-    if os.environ.get("MULTIMODAL_AGENT_LOCAL_TRACE_CONTENT") != "1":
-        return
-    from assistant_agent.observability.trace_conversation import get_default_trace_conversation_store
-
-    get_default_trace_conversation_store().append_delivered(
-        user_id=state.user_id,
-        session_id=state.session_id,
-        trace_id=state.trace_id,
-        delivered_text=delivered_text,
     )
 
 

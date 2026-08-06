@@ -250,7 +250,9 @@ observer。VIDEO 消息的 `userNumber` 必须等于握手 `number`，不一致�
 创建前要求 Provider 的 image/text 双模态 readiness 同时可用；产出的 text embedding 必须与 readiness
 声明的 model、revision、embedding space 和 dimension 一致，并且是有限、非零的归一化向量。
 
-首次达到服务端阈值后，Agent 主动发送独立 `chatResponse`：
+首次达到服务端阈值后，Runtime registry 不再次调用 LLM，立即 dispatch 包含创建时预存 message 的
+`connection_ephemeral` `ProactiveMessage`；Agent-Service sink 只把该主动消息投影为独立
+`chatResponse`：
 
 ```json
 {
@@ -263,11 +265,14 @@ observer。VIDEO 消息的 `userNumber` 必须等于握手 `number`，不一致�
 
 - `chatIndex` 固定为 `visual-reminder:<reminder_id>`，不占用或续接普通 chat turn 的 sequence；
 - 正文是创建时保存的 `message`，不发送 target、向量、相似度、关键帧路径或 Provider payload；
-- reminder response 与普通 chat、video ACK、3D callback 投递共用同一连接 `send_lock`，不会并发写
-  WebSocket；
-- `_send_response()` 成功后提醒进入 `triggered` 并停止匹配；发送失败且连接仍活动时恢复 pending，
-  等待后续关键帧，不对当前帧同步重试；
+- sink 等待当前连接已有普通 chat task 完成，再与 video ACK、3D callback 共用 `send_lock`，因此不会
+  插入普通流式回答中间或并发写 WebSocket；
+- Runtime 后台 delivery task 按连接保持提醒顺序且不阻塞视频语义队列；`send_text` 返回只记为
+  `delivery_scope=server_transport`，此后提醒进入 `triggered` 并停止匹配；发送失败或达到配置超时且连接
+  仍活动时恢复 pending，等待后续关键帧，不对当前帧同步重试；
 - reminder response 不带 `deliveryId`，不进入普通 chat 的 `chatResponseAck` registry，也不持久化重试；
+- sent message 作为有界、连接级 proactive session event 提供给同连接下一轮 Agent context；它不是普通
+  conversation turn 或长期记忆，连接关闭即清除；
 - 同一连接切换 `video_id` 时保留 manager；WebSocket close 时先关闭并清空 manager，再关闭 observer
   和注销 owner/session，旧连接不可恢复提醒。
 
@@ -450,19 +455,20 @@ ACK 耗时通过独立事件记录，`ACK pending` 表示仍缺媒体侧应用�
 - `videoContent` 必须是无 `0x` 前缀的 H.264 Annex-B Hex 字符串，并以三字节或四字节 NAL 起始码开头。
 - 媒体服务必须让每条消息可独立解码：每帧包含 SPS、PPS 和 I-Frame，不依赖前后消息。
 - Agent 使用本机 FFmpeg 把每条独立 H.264 消息解码为 JPEG；不再生成灰度指纹，也不运行像素差或 SSIM。
-- 每个 session 复用统一 embedding coordinator。视频帧按固定 5 FPS 时间准入，每个准入帧只执行一次共享 SigLIP2 image embedding，并只根据 embedding cosine distance、首帧、交互提升和最长 10 秒间隔选帧。旧 2 FPS semantic probe 仅作为新输入 FPS 配置的迁移 alias，不再代表独立 probe。Qwen 视觉文本只在选帧之后生成，不反向参与本轮判定。收到 `chat` 时，冻结此前最新原始帧 sequence；需要时将该帧交互式提升并保护，工具只消费不晚于该边界的语义。
-- 连接级视觉提醒只消费最终已选关键帧回调携带的同一个 image `EmbeddingEvent`；5 FPS 已准入但未选中的帧不匹配。embedding 失败后因 interactive/max interval 降级选出的关键帧没有 event，因此跳过提醒但仍可进入 Qwen。提醒投递任务与 Qwen 队列隔离，单条比较或发送失败不能阻断原有视觉语义发布。
-- 原始视频上下文只保留最近 3 帧；成功 VLM 结果发布到同 user/session 的 `SessionVisualSemanticStore`，同时保留 canonical text search embedding 和受限 evidence。它们不作为 Qwen 多帧历史发送。启用 `VisualContextService` 时，每轮 Qwen 请求只含当前选中的一张 JPEG，以及按独立 VLM tokenizer/limit 完成 token preflight 的旧 summary + 最近逐条文本；每轮新建独立 Provider WebSocket conversation，完成或失败后关闭，且 Provider 不再做 4,000 字符截断。未启用 visual compaction 时才回退到旧 rolling summary 的最多 2,000 字符兼容路径，并记录 `visual_context_compaction.status=unavailable`。semantic embedding 与 Qwen observation 各自最多 1 个执行中帧和 1 个 latest-wins pending，交互式目标不被替换，从而优先保证实时且无积压。
-- 视觉上下文预算复用 `ContextWindowPolicy` 的 target/trigger/hard 语义，但使用独立 VLM 绝对预算和 reserve。target 选择预计把重建请求降到目标所需的最小最旧连续 prefix，并按剩余空间约束 summary budget；配置的最近 records 始终保留。每次成功压缩后重建计数，低于 hard 即可继续，不要求为达到 target 无限压缩。LLM 不接收或回显 record ID；coverage 是代码生成的 bounded record count、sequence frontier 与固定 digest，Store 只为 raw retention 内记录保留有界精确 covered ID，防止乱序/同 sequence 误覆盖。只有通过 coverage/revision 校验才更新 summary；CAS conflict 会重读同一 video/as-of winning summary 并重建一次 pack。soft failure 保留旧 summary/raw records。hard 无法收敛时跳过的是最终 Qwen/VLM observation Provider，不阻塞已经完成的 `videoResponse` ACK，也会继续处理 latest pending 关键帧；在此之前，独立 LLM visual compactor 可按现有状态机最多调用两次以尝试收敛预算。
+- 每个 session 复用统一 embedding coordinator。视频帧按固定 5 FPS 时间准入，每个准入帧只执行一次共享 SigLIP2 image embedding，并只根据 embedding cosine distance、首帧、交互提升和最长 10 秒间隔选帧。旧 2 FPS semantic probe 仅作为新输入 FPS 配置的迁移 alias，不再代表独立 probe。Qwen 视觉文本只在选帧之后生成，不反向参与本轮判定。收到 `chat` 时，以此前最新原始帧为 A 边界，从已经选中的关键帧中冻结不晚于 A 的最近 sequence；尚无关键帧时才交互式提升 A 帧。
+- 连接级视觉提醒只消费最终已选关键帧回调携带的同一个 image `EmbeddingEvent`；5 FPS 已准入但未选中的帧不匹配。embedding 失败后因 interactive/max interval 降级选出的关键帧没有 event，因此跳过提醒但仍可进入 Qwen。Runtime 在排入后续 Qwen/VLM 工作前完成 reserve 和 delivery task dispatch，不等待 channel I/O；后台发送失败或超时会恢复 pending，后续视觉语义发布不被阻塞。
+- 原始视频上下文只保留最近 3 帧；每轮 Qwen 请求只含当前选中的一张 JPEG，不注入上一帧图片、历史视觉文本或 rolling summary。提示词要求 VLM 只输出当前单帧的非空 `summary`；每个已选关键帧立即建立独立 task、ToolRegistry、VLM adapter 和 Provider WebSocket conversation，因此不同关键帧并行推理、独立完成和独立失败。SigLIP2 semantic embedding 仍最多 1 个执行中帧和 1 个 latest-wins pending，以有界成本决定哪些帧成为关键帧；该限制不再延伸到选帧后的 VLM。
+- 每个成功的单帧文本结果按帧采集时间和 sequence 发布到同 user/session 的 `SessionVisualSemanticStore`，同时保留 canonical text search embedding 和受限 evidence。时间线的增长与 VLM 推理解耦：VLM 不读取该列表，只有后续 Tool 查询才读取。
 - 解码后的帧注册到当前 `AgentGraphRuntime.video_context_store`；原始 H.264 不落盘，也不进入 prompt、trace 或 Provider 请求。
 - 选中关键帧的后台视觉理解经过 `ActionValidator -> ToolExecutor -> ToolRegistry -> realtime_video_observe`；该内部 ToolSpec 不进入主 LLM catalog，WebSocket 入口也不直接调用 Provider。这里的成功分三层：`ToolResult.success is True` 只表示工具执行完成；内部 `VideoUnderstandingResult` 可验证且 `errors` 为空才算 VLM 语义成功；还必须 `source=background_keyframe_observation` 才允许发布为 rolling semantic snapshot。失败、partial、harness 说明性结果或 query-time `realtime_video_memory_unavailable` 结果只记录失败/可解释状态，不能写入 `current_state`。mock 模式不联网，真实连续 MLLM 只允许 `MULTIMODAL_AGENT_PROVIDER_MODE=real` 配置。
 - 同一连接后续 `chat` 会携带该 session 的 `video_id` 进入 Gateway。有 active video 时，AgentRuntime 可基于可信 entry profile 和结构化媒体引用动态暴露 `live_view_inspect`，不根据用户文本关键词暴露或调用工具。DeepSeek 只看到该工具的 schema；它看不到实时镜头可用状态、被动 `realtime_video_context`、视频帧、JPEG 路径、base64、VLM 角色模板、Qwen 原文或 provider raw response。
 - 可信 Agent-Service 请求不会把 opaque `video_id`、镜头连接状态或后台语义快照渲染进主 LLM prompt。只有主 LLM 自主调用 `live_view_inspect` 后，工具 observation 才把当前实时镜头的有界视觉语义返回给它；最终回答不应向用户说“你刚发送的视频”、快照、后台观察或 Provider。
-- 后台观察器持续把成功视觉文本发布到统一 `SessionVisualSemanticStore`；需要当前画面事实时，由 AgentRuntime 主 LLM 通过动态暴露的 `live_view_inspect` 表达需求。目标 sequence 已有记录时立即返回，仍在识别时最多等待 10 秒；等待期间提问之后到达的新帧不能替换该目标。达到等待上限后才退回到 `sequence <= 目标 sequence` 的最近成功记录；若此前仍无成功记录，才返回 unavailable。普通问候不应主动提及视觉。
-- Revisioned visual summary 只供下一次后台 Qwen context projection；它不进入主 Agent prompt、conversation、Mem0 或 `visual_memory_search`。历史找物仍只从 raw `VisualSemanticRecord` 建立候选、as-of 过滤和排序，压缩失败或成功都不删除、改写这些记录。
-- 每个连接始终最多一个 Qwen observation in-flight 和一个 latest-wins pending 帧；冻结的 chat 目标 sequence 在本轮期间受保护，不适用 pending latest-wins 替换。只有后台 observer 负责提交帧到 Qwen，不能绕开 observer 启动第二个 Qwen。
-- 每次 Qwen observation 建立新的 WebSocket，并以新的 `session.created` 开始独立 Provider conversation；成功、失败、超时或不完整响应后立即关闭并丢弃连接。前一轮连接失败会让下一轮连接使用 0.25/0.5/1/2/5 秒封顶退避。失败保留最后成功快照并投影 `refreshing`/`stale`；切换 video id、连接关闭或 observer close 仍会清理 pending、快照、retained/raw JPEG 和临时文件。
-- 新鲜度以成功语义对应帧的采集时间为主：`frame_capture_age_ms` 表示采集年龄，`snapshot_publish_age_ms` 表示 Qwen 结果发布年龄；`semantic_publish_latency_ms` 表示 Agent-Service 收到该视频消息到成功语义写入滚动记忆的端到端时延。采集时间缺失或在未来时不伪造年龄或时延。
+- `live_view_inspect` 的完整 `ToolResult.data`、contract 和 trace 继续保留诊断所需的宽结构；主 LLM 接收精简 observation：`status`、最新 `summary`、最多 8 条按时间排序的 `observations=[{"timestamp_ms": ..., "text": ...}]`、合并后的 `freshness`、`usable_visual_text` 和可选安全 `error_code`。列表仅包含 `sequence <= 目标 sequence` 的记录，不暴露原始 target/snapshot sequence、pending 数量、Provider/model、媒体引用或 evidence。
+- 后台观察器持续把成功的单帧视觉文本发布到统一 `SessionVisualSemanticStore`；chat 到达 A 时刻时，入口从当时已经选中、处理中或已完成的关键帧里冻结 `sequence <= A` 的最近一帧，只有尚无任何关键帧时才交互式提升 A 时刻的最新原始帧。需要当前画面事实时，由 AgentRuntime 主 LLM 通过动态暴露的 `live_view_inspect` 表达需求。目标 sequence 已有记录时立即返回，仍在识别时最多等待 10 秒；它只等待该 exact sequence，不等待更早未完成帧，也不消费提问后到达的新帧。达到等待上限后才退回到 `sequence <= 目标 sequence` 的最近成功记录；若此前仍无成功记录，才返回 unavailable。普通问候不应主动提及视觉。
+- 时间线不进入主 Agent 的被动 prompt、conversation、Mem0，也不作为下一次后台 VLM 的输入。`visual_memory_search` 仍只从原始 `VisualSemanticRecord` 建立候选、as-of 过滤和排序。
+- 选帧后的 Qwen observation 不设 observer 级串行队列或 latest-wins pending；每个已选关键帧立即启动，后完成的旧 sequence 不会覆盖更大 sequence 的 rolling snapshot，但仍会作为原始时间线记录保留。冻结的 chat 目标 sequence 在本轮期间受保护，并可在更早 sequence 未完成时独立发布、立即唤醒 Tool。只有后台 observer 负责创建这些受治理的并行调用。
+- 每次 Qwen observation 建立自己的 adapter 和 WebSocket，并以新的 `session.created` 开始独立 Provider conversation；调用之间不共享 socket、隐式 conversation、诊断状态或失败退避。成功结果先写入 semantic store，使文本立即可查询，再在该帧 task 的清理阶段关闭并丢弃 WebSocket；关闭握手不阻塞语义发布。失败、超时或不完整响应同样由该帧独立清理，Provider 限流/失败按单帧独立记录。失败保留最后成功快照并投影 `refreshing`/`stale`；切换 video id、连接关闭或 observer close 仍会清理活动 task、快照、retained/raw JPEG 和临时文件。
+- 新鲜度以成功语义对应帧的采集时间为主：`frame_capture_age_ms` 表示采集年龄，`snapshot_publish_age_ms` 表示 Qwen 结果发布年龄；`semantic_publish_latency_ms` 表示 Agent-Service 收到该视频消息到 semantic store 写入完成、结果已可查询的端到端时延，不再在 embedding/store 写入前提前停止，也不包含随后独立进行的 WebSocket 关闭握手。采集时间缺失或在未来时不伪造年龄或时延。
 - 普通上传/API（非 Agent-Service）调用 `media_inspect`：图片进入 image branch，明确上传的视频进入显式视频 Provider 路径；它不读取实时会话的滚动语义记忆。
 - Agent-Service 携带视频引用的 chat turn 保留 90 秒 facade 总预算，用于覆盖 Gateway、AgentRuntime 主 LLM 执行、动态视觉工具调用以及可能较慢的上下文刷新。普通文本 chat 默认同样使用 90 秒，
   可通过 `ASSISTANT_AGENT_TEXT_TURN_TIMEOUT_SECONDS` 调整；主 Chat Provider 默认 75 秒，
@@ -999,7 +1005,8 @@ schema v2 ONNX 资产同时包含 image
 `visual_projection`、text projection 和 tokenizer，并由同一 revision/space 约束；schema v1 image-only
 资产只能报告 `text_ready=false`。模型资产、依赖、checksum 或 CUDA
 不可用时不会回退到像素或 SSIM；只有交互 pin 或最长间隔可继续触发降级 VLM observation。
-视觉上下文压缩由 `REALTIME_VISUAL_CONTEXT_COMPACTOR` 显式启用；real LLM compactor 必须配置本地
+视觉上下文压缩由 `REALTIME_VISUAL_CONTEXT_COMPACTOR` 显式启用；当前该配置同时控制
+`visual_memory_search` Tool 尾部的视觉时间线压缩。real LLM compactor 必须配置本地
 `REALTIME_VISUAL_CONTEXT_TOKENIZER_PATH`，不会联网下载 tokenizer。视觉 input limit、
 target/trigger/hard ratio、safety margin、summary max tokens、最近 record 数和 instruction/image/output
 reserve 均由对应 `REALTIME_VISUAL_CONTEXT_*` 配置独立控制。
@@ -1042,7 +1049,8 @@ pytest。只有同时选择 real provider mode、显式配置 Qwen vision provid
 | `frame_capture_age_ms` 较高 | 本轮消费的语义对应 Media 帧采集时间较早，是画面陈旧度主指标。 |
 | `snapshot_publish_age_ms` 较高 | Qwen 结果发布后已过去较长时间。 |
 | `sequence_gap` 大于 0 | 10 秒目标序号等待仍未取得精确目标；回答只能使用目标 sequence 之前的最近成功文本，并保留画面可能滞后的不确定性。 |
-| `semantic_publish_latency_ms` 较高 | 从 WebSocket 收到目标视频消息到成功语义发布较慢；该值包含解码、选帧、排队和视觉 observation。 |
+| `semantic_publish_latency_ms` 较高 | 从 WebSocket 收到目标视频消息到语义记录可查询较慢；该值包含解码、选帧、task/thread 调度、视觉 observation、文本 embedding 和 semantic store 写入，但不包含文本已发布后的 WebSocket 关闭握手。先按 `h264_decode_latency_ms`、`keyframe_selection_latency_ms`、`queue_wait_latency_ms`、`observation_latency_ms`、`text_embedding_latency_ms`、`semantic_store_write_latency_ms` 分解。并行实现后 `queue_wait_latency_ms` 仅表示 task 到实际执行的调度等待，不再表示等待上一帧 VLM；持续升高通常说明线程池或本机资源饱和。 |
+| `response_latency_ms` 较高 | Qwen 的 `response.create` 到 `response.done` 较慢；用 `response_first_delta_latency_ms` 区分首包等待，用 `response_tail_latency_ms` 区分首包后的生成尾段。建连、session update、媒体提交和解析分别查看对应阶段字段。 |
 | `unattributed` | 端到端耗时中尚未被叶子阶段解释的剩余部分。 |
 
 视频诊断中的后台观察 latency 不直接计入 chat 关键路径。普通上传/API 的显式视频

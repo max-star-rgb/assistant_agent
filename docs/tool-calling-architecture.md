@@ -55,8 +55,20 @@ VLM。Attention、alignment、keyframe 与 embedding Provider 都是内部组件
 `visual_reminder_manage` 是连接级视觉提醒的有状态 `write` Tool，支持 `create/list/cancel`。它只在
 可信 Agent-Service VIDEO entry、结构化 call type 和活动 owner/session manager 同时成立时暴露；
 session 由 runtime identity 注入，模型不能提交 manager、owner、embedding 或阈值。`create` 只编码
-一次视觉条件 target，`list/cancel` 不调用 embedding Provider。关键帧匹配和主动 `chatResponse` 是
-observer/入口的后续内部行为，但创建、查看和取消仍完整经过 Tool 治理链。
+一次视觉条件 target，`list/cancel` 不调用 embedding Provider。关键帧匹配、一次性状态转换和主动
+message 发布由 Runtime 持有的 registry 负责；Agent-Service 只注入 `ProactiveMessageSink` 并投影为
+`chatResponse`。创建、查看和取消仍完整经过 Tool 治理链。
+
+需要 VLM 的 `media_inspect`、显式视频理解和内部 `realtime_video_observe` 仍由视觉 Tool 拥有参数绑定、
+授权、业务语义与 `ToolResult`；具体模型调用统一经过 Provider-neutral `VisionUnderstandingClient` 和
+vision/video adapter。VLM 是 Tool 的内部 Provider 能力，不注册成主 LLM 可见的通用 Tool，具体 Tool
+也不得直接依赖某一家 Provider SDK。`visual_memory_search`、`visual_reminder_manage` 等不需要视觉
+推理的 Tool 不得为了统一形式额外调用 VLM。
+
+上述视觉理解 Tool 声明 `trace_content_policy=metadata_only`。这只收窄 canonical Tool event、当前 turn
+的 trace conversation overlay 和 Langfuse Tool observation，不改变交给主 LLM 的结构化 Tool
+observation；因此 Agent 仍能依据视觉结果回答，但对应 Tool span 不包含媒体引用、视觉正文、本地路径
+或 Provider 失败原文。
 
 ## 3. 公共契约
 
@@ -116,8 +128,11 @@ owner-bound API 查询。具体 wire 字段、兼容路径和当前进程内存�
 `media-agent-service-websocket.md`。
 
 连接级视觉提醒不是 durable notification。`visual_reminder_manage(create)` 成功只表示提醒已写入当前
-活动连接 manager；后续已选关键帧命中后，observer 预留一次性状态并由 Agent-Service 复用当前
-WebSocket 串行发送。发送成功转为 triggered；失败且连接仍活动时恢复 pending。连接关闭时直接清空，
+活动连接 manager；后续已选关键帧命中后，Runtime registry 立即构造 `connection_ephemeral`
+`ProactiveMessage` 并交给 Runtime-owned 后台 delivery task，不再次调用主 LLM，也不阻塞后续 VLM
+队列。Agent-Service sink 等待已有普通 chat task 结束后通过当前 WebSocket 串行发送；只有
+`server_transport` sent 才转为 triggered，失败或有界超时且连接仍活动时恢复 pending。连接关闭时
+Runtime registry 取消 delivery task 并直接清空，
 不写 notification outbox、不跨连接重放，也不使用 `chatResponseAck` 持久化确认。
 
 ### 3.2 输入所有权

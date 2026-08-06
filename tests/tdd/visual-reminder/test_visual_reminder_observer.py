@@ -11,7 +11,12 @@ from assistant_agent.media.video.realtime_video_observer import RealtimeVideoObs
 from assistant_agent.media.video.semantic_store import SessionVisualSemanticStore
 from assistant_agent.media.video.video_adapter import FakeRealtimeVisionAdapter
 from assistant_agent.media.video.video_context import VideoFrame
-from assistant_agent.media.video.visual_reminder import VisualReminderManager
+from assistant_agent.media.video.visual_reminder import (
+    VisualReminderManager,
+    VisualReminderRegistry,
+)
+from assistant_agent.observability.trace_store import InMemoryTraceStore
+from assistant_agent.runtime.proactive_messages import ProactiveDeliveryAttempt
 from assistant_agent.tools.plugins.builtin.media_inspection.tool import (
     RealtimeVideoObserveTool,
 )
@@ -78,6 +83,8 @@ def _manager() -> VisualReminderManager:
         target="水已经烧开",
         message="水烧开了",
         target_embedding=_target_event(),
+        run_id="run-1",
+        trace_id="trace-1",
     )
     return manager
 
@@ -91,8 +98,18 @@ async def _selected_keyframe_reuses_embedding_and_sends_once(tmp_path: Path) -> 
     manager = _manager()
     sent = []
 
-    async def sender(reminder) -> None:
-        sent.append(reminder)
+    class Sink:
+        async def publish(self, message):
+            sent.append(message)
+            return ProactiveDeliveryAttempt(
+                message_id=message.message_id,
+                status="sent",
+                delivery_scope="server_transport",
+            )
+
+    trace_store = InMemoryTraceStore()
+    reminder_registry = VisualReminderRegistry(trace_store=trace_store)
+    reminder_registry.register(manager, sink=Sink())
 
     memory_store = RealtimeVideoMemoryStore()
     semantic_store = SessionVisualSemanticStore(
@@ -106,13 +123,13 @@ async def _selected_keyframe_reuses_embedding_and_sends_once(tmp_path: Path) -> 
         memory_store=memory_store,
         semantic_store=semantic_store,
         embedding_coordinator=SessionEmbeddingCoordinator("session-1", provider),
-        visual_reminder_manager=manager,
-        visual_reminder_sender=sender,
+        visual_reminder_registry=reminder_registry,
         keyframe_root=tmp_path / "keyframes",
     )
     try:
         await observer.submit(_frame(tmp_path, 1))
         await observer.wait_idle()
+        await reminder_registry.wait_idle("user-1", "session-1")
         manager.create(
             target="水已经烧开",
             message="第二条提醒",
@@ -121,11 +138,20 @@ async def _selected_keyframe_reuses_embedding_and_sends_once(tmp_path: Path) -> 
         await asyncio.sleep(0.21)
         await observer.submit(_frame(tmp_path, 2))
         await observer.wait_idle()
+        await reminder_registry.wait_idle("user-1", "session-1")
 
         assert provider.image_calls == 2
-        assert [item.message for item in sent] == ["水烧开了"]
+        assert [item.content for item in sent] == ["水烧开了"]
         assert manager.list_records()[0].status == "triggered"
         assert manager.list_records()[1].status == "pending"
+        lifecycle = [
+            event.canonical_event
+            for event in trace_store.list_by_run("run-1")
+        ]
+        assert lifecycle == [
+            "visual_reminder.matched",
+            "visual_reminder.delivery.finished",
+        ]
     finally:
         await observer.close()
         semantic_store.close()
@@ -139,8 +165,13 @@ async def _sender_failure_releases_reminder_without_blocking_vlm(tmp_path: Path)
     provider = _CountingFixedProvider()
     manager = _manager()
 
-    async def failing_sender(_reminder) -> None:
-        raise RuntimeError("offline send failure")
+    class FailingSink:
+        async def publish(self, _message):
+            raise RuntimeError("offline send failure")
+
+    trace_store = InMemoryTraceStore()
+    reminder_registry = VisualReminderRegistry(trace_store=trace_store)
+    reminder_registry.register(manager, sink=FailingSink())
 
     memory_store = RealtimeVideoMemoryStore()
     semantic_store = SessionVisualSemanticStore(
@@ -154,16 +185,19 @@ async def _sender_failure_releases_reminder_without_blocking_vlm(tmp_path: Path)
         memory_store=memory_store,
         semantic_store=semantic_store,
         embedding_coordinator=SessionEmbeddingCoordinator("session-1", provider),
-        visual_reminder_manager=manager,
-        visual_reminder_sender=failing_sender,
+        visual_reminder_registry=reminder_registry,
         keyframe_root=tmp_path / "keyframes-failure",
     )
     try:
         await observer.submit(_frame(tmp_path, 1))
         await observer.wait_idle()
+        await reminder_registry.wait_idle("user-1", "session-1")
 
         assert manager.list_records()[0].status == "pending"
         assert semantic_store.latest("video-1") is not None
+        terminal = trace_store.list_by_run("run-1")[-1]
+        assert terminal.canonical_event == "visual_reminder.delivery.finished"
+        assert terminal.status == "failed"
     finally:
         await observer.close()
         semantic_store.close()

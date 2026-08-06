@@ -1,6 +1,6 @@
 """Base contracts for tools."""
 
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, Field, ValidationError
 
@@ -26,6 +26,9 @@ class ToolContext(BaseModel):
     """Execution context passed to tools."""
 
     run_id: str | None = None
+    trace_id: str | None = None
+    trace_store: Any | None = Field(default=None, exclude=True)
+    parent_span_id: str | None = Field(default=None, exclude=True)
     user_id: str | None = None
     session_id: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -60,6 +63,7 @@ class Tool(Protocol):
     media_scope: ToolMediaScope
     llm_hidden_input_fields: tuple[str, ...]
     runtime_input_bindings: tuple[Any, ...]
+    trace_content_policy: Literal["default", "metadata_only"]
 
     def run(self, input: BaseModel | dict[str, Any], context: ToolContext | None = None) -> ToolResult:
         """Execute the tool and return a structured result."""
@@ -75,6 +79,7 @@ class ToolBase:
     media_scope: ToolMediaScope = "any"
     llm_hidden_input_fields: tuple[str, ...] = ()
     runtime_input_bindings: tuple[Any, ...] = ()
+    trace_content_policy: Literal["default", "metadata_only"] = "default"
     def run(self, input: BaseModel | dict[str, Any], context: ToolContext | None = None) -> ToolResult:
         try:
             payload = self._validate_input(input)

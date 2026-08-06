@@ -112,10 +112,19 @@ def create_realtime_video_understanding_adapter(
     """Select Qwen realtime only for background live-video observations."""
 
     resolved = config or ProviderConfig.from_env()
+    if resolved.vision_provider == "qwen":
+        return _create_qwen_realtime_adapter(
+            resolved,
+            close_connection_on_return=False,
+        )
     return create_video_understanding_adapter(resolved)
 
 
-def _create_qwen_realtime_adapter(resolved: ProviderConfig) -> VideoUnderstandingAdapter:
+def _create_qwen_realtime_adapter(
+    resolved: ProviderConfig,
+    *,
+    close_connection_on_return: bool = True,
+) -> VideoUnderstandingAdapter:
     from assistant_agent.providers.qwen_realtime_vision import (
         QwenRealtimeVisionAdapter,
         QwenRealtimeVisionConfig,
@@ -127,7 +136,8 @@ def _create_qwen_realtime_adapter(resolved: ProviderConfig) -> VideoUnderstandin
             base_url=resolved.qwen_realtime_vision_base_url,
             model=resolved.qwen_realtime_vision_model,
             timeout_seconds=resolved.video_understanding_timeout_seconds,
-        )
+        ),
+        close_connection_on_return=close_connection_on_return,
     )
 
 

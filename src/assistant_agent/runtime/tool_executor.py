@@ -122,8 +122,10 @@ class ToolExecutor:
             runtime_input=runtime_input,
         )
         tool_spec = self.registry.get_spec(tool_name)
+        trace_content_policy = _trace_content_policy(tool)
         execution_summary = {
             "category": tool_spec.category,
+            "trace_content_policy": trace_content_policy,
         }
         pre_tool_call = build_pre_tool_call_summary(
             tool_name=tool_name,
@@ -154,7 +156,10 @@ class ToolExecutor:
                 step_id=step_id,
                 span_id=tool_span_id,
                 tool_contract=execution_summary,
-                input_summary=_policy_safe_input_summary(bound_input),
+                input_summary=_policy_safe_input_summary(
+                    bound_input,
+                    content_policy=trace_content_policy,
+                ),
                 pre_tool_call=pre_tool_call,
                 progress_message=progress_message,
             )
@@ -166,6 +171,9 @@ class ToolExecutor:
             before_tool_execution()
         context = ToolContext(
             run_id=state.run_id,
+            trace_id=trace_id or state.trace_id,
+            trace_store=trace_store,
+            parent_span_id=tool_span_id,
             user_id=state.user_id,
             session_id=state.session_id,
             skill_reference_grants=_loaded_skill_reference_grants(state),
@@ -257,7 +265,10 @@ class ToolExecutor:
         latency_ms = int((perf_counter() - started_at) * 1000)
         if result.latency_ms is None:
             result.latency_ms = latency_ms
-        tool_contract = _execution_summary(tool_spec)
+        tool_contract = _execution_summary(
+            tool_spec,
+            trace_content_policy=trace_content_policy,
+        )
 
         error_code = None
         recovery_action = None
@@ -318,8 +329,14 @@ class ToolExecutor:
                 reported_latency_ms=reported_latency_ms,
                 retry_count=retry_count,
                 tool_contract=tool_contract,
-                input_summary=_policy_safe_input_summary(bound_input),
-                output_summary=_policy_safe_output_summary(result),
+                input_summary=_policy_safe_input_summary(
+                    bound_input,
+                    content_policy=trace_content_policy,
+                ),
+                output_summary=_policy_safe_output_summary(
+                    result,
+                    content_policy=trace_content_policy,
+                ),
                 post_tool_call=post_tool_call,
                 contract_summary=contract_summary(result.contract),
                 output_ref=result.output_ref if result.success else None,
@@ -328,7 +345,13 @@ class ToolExecutor:
                 error_code=error_code,
                 error_message=result.error if not result.success else None,
                 trace_error_message=(
-                    _policy_safe_error(result.error) if not result.success else None
+                    (
+                        "Tool execution failed."
+                        if trace_content_policy == "metadata_only"
+                        else _policy_safe_error(result.error)
+                    )
+                    if not result.success
+                    else None
                 ),
                 recovery_action=recovery_action,
                 delivery_recovery_action=recovery_action,
@@ -379,7 +402,11 @@ class ToolExecutor:
             latency_ms=latency_ms,
             cancel_metadata=error_details,
         )
-        tool_contract = _execution_summary(tool_spec)
+        trace_content_policy = _trace_content_policy(self.registry.get(tool_name))
+        tool_contract = _execution_summary(
+            tool_spec,
+            trace_content_policy=trace_content_policy,
+        )
         post_tool_call = build_post_tool_call_summary(
             tool_name=tool_name,
             result=result,
@@ -418,7 +445,10 @@ class ToolExecutor:
                 reported_latency_ms=result.latency_ms,
                 retry_count=0,
                 tool_contract=tool_contract,
-                input_summary=_policy_safe_input_summary(tool_input),
+                input_summary=_policy_safe_input_summary(
+                    tool_input,
+                    content_policy=trace_content_policy,
+                ),
                 output_summary={"cancelled": True},
                 post_tool_call=post_tool_call,
                 contract_summary=None,
@@ -636,7 +666,18 @@ def _agent_service_latest_generated_image_id(state: AgentState) -> str | None:
     return image_id.strip()
 
 
-def _policy_safe_input_summary(payload: dict[str, Any]) -> dict[str, Any]:
+def _policy_safe_input_summary(
+    payload: dict[str, Any],
+    *,
+    content_policy: str = "default",
+) -> dict[str, Any]:
+    if content_policy == "metadata_only":
+        return {
+            "content_export_policy": "metadata_only",
+            "redacted": True,
+            "field_count": len(payload),
+            "field_names": sorted(str(key) for key in payload),
+        }
     if local_trace_content_enabled():
         safe = sanitize_error_detail(payload)
         return safe if isinstance(safe, dict) else {}
@@ -647,7 +688,20 @@ def _policy_safe_input_summary(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _policy_safe_output_summary(result: ToolResult) -> dict[str, Any]:
+def _policy_safe_output_summary(
+    result: ToolResult,
+    *,
+    content_policy: str = "default",
+) -> dict[str, Any]:
+    if content_policy == "metadata_only":
+        data = result.data if isinstance(result.data, dict) else {}
+        return {
+            "content_export_policy": "metadata_only",
+            "redacted": True,
+            "success": result.success,
+            "data_field_names": sorted(str(key) for key in data),
+            "error_code": classify_error(result.error or "") if result.error else None,
+        }
     if local_trace_content_enabled():
         data = result.data if isinstance(result.data, dict) else {}
         safe = sanitize_error_detail(
@@ -718,7 +772,17 @@ def _effective_max_retries(
     return global_max_retries if tool_spec.category == "read" else 0
 
 
-def _execution_summary(tool_spec: ToolSpec) -> dict[str, Any]:
+def _execution_summary(
+    tool_spec: ToolSpec,
+    *,
+    trace_content_policy: str = "default",
+) -> dict[str, Any]:
     return {
         "category": tool_spec.category,
+        "trace_content_policy": trace_content_policy,
     }
+
+
+def _trace_content_policy(tool: object) -> str:
+    value = getattr(tool, "trace_content_policy", "default")
+    return "metadata_only" if value == "metadata_only" else "default"

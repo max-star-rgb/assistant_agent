@@ -60,6 +60,7 @@ turn
   -> LongTermMemoryService attaches the frozen snapshot to AgentState
   -> ContextBuilder assembles and renders original memory evidence
   -> LLM response
+  -> Runtime emits final_response and records response.delivered
   -> enqueue background ingestion
   -> POST /memories {messages, user_id, agent_id, run_id, metadata}
 ```
@@ -67,8 +68,14 @@ turn
 任何 turn（包括第一轮）都不会触发长期记忆召回。调用方必须先创建 session；如果没有
 snapshot，turn 使用空记忆继续运行。Mem0 召回失败也冻结为空结果，不能阻断回复。
 
-turn ingestion 不等待 Mem0。后台队列按身份串行、不同身份可并行；队列已满或 Mem0 失败只写
+`response.delivered` 由 Runtime 在最终回答发出时记录，不等待 Gateway/WebSocket 的发送确认，并且
+严格先于 memory 入队。turn ingestion 不等待 Mem0。后台队列按身份串行、不同身份可并行；队列已满或 Mem0 失败只写
 结构化 trace，不把失败升级为前台 run 错误。
+
+纯连接级视觉提醒管理 turn 是窄例外：当本轮存在 ToolResult 且全部来自
+`visual_reminder_manage` 时，Runtime 根据结构化工具身份以
+`reason=connection_scoped_visual_reminder` 跳过整轮 ingestion。该判断不读取用户或助手文本，不使用
+关键词或意图规则；混合其他 ToolResult 的 turn 仍提交给 Mem0 原生 inference。
 
 Mem0 `add` 返回的 `results` 会在 adapter 边界收窄为 `id`、最终 `memory` 文本和原生
 `event`（`ADD` / `UPDATE` / `DELETE`）。其中数量、event 计数和 memory ID 可以进入
@@ -116,10 +123,13 @@ mock/offline 环境使用明确的 unavailable adapter；它不是本地记忆�
 
 该入口在 Mem0 健康后保持前台运行并显示 `mem0> ` 提示符，适合直接作为 PyCharm Run
 Configuration 使用。输入 `help` 可查看 `status`、`list`、`get`、`history`、`add`、
-`update`、`delete` 和 `exit` 等命令；缺少必要参数时会进入逐项提示。`list` 不添加身份过滤，
+`update`、`delete`、`clear` 和 `exit` 等命令；缺少必要参数时会进入逐项提示。`list` 不添加身份过滤，
 因此会显示 Mem0 中所有用户的原始身份和记录。人工 `add` 默认使用 `infer=false` 原文保存，只有
-`add --infer` 才启用 Mem0 原生提取与合并；单条 `delete` 默认要求明确确认，控制台不提供批量清空
-命令。退出控制台不会停止 Mem0、Qdrant 或清理持久化数据。
+`add --infer` 才启用 Mem0 原生提取与合并；单条 `delete` 默认要求明确确认。`clear` 必须提供至少
+一个原始 `user_id`、`agent_id` 或 `run_id` filter，按身份清空允许显式 `--yes`；全库清空必须写成
+`clear --all`，拒绝 `--yes`，并要求现场准确输入 `DELETE ALL MEMORIES`。全库清空调用 Mem0
+`reset()`，会同时清理向量集合和 history 数据库。退出控制台不会停止 Mem0、Qdrant 或清理持久化
+数据。
 
 这是本地 operator 控制台，直接使用 Mem0 sidecar 的原生 API，不是 Assistant 可调用的 memory
 tool，也没有为 runtime 新增 CRUD/control-plane API。已创建的 session snapshot 仍保持冻结；通过

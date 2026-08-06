@@ -12,9 +12,16 @@ from assistant_agent.media.embedding.consumers.object_search import (
     VisualMemorySearchResult,
     VisualMemorySearchService,
 )
-from assistant_agent.media.embedding.coordinator_store import SessionEmbeddingCoordinatorStore
+from assistant_agent.media.embedding.observability import (
+    EmbeddingObserver,
+    emit_visual_semantic_observation,
+)
 from assistant_agent.media.video.semantic_store_pool import (
     SessionVisualSemanticStorePool,
+)
+from assistant_agent.media.video.visual_timeline_context import (
+    VisualTimelineContextService,
+    VisualTimelineHardLimitError,
 )
 from assistant_agent.tools.base import ToolBase, ToolContext
 from assistant_agent.tools.ids import VISUAL_MEMORY_SEARCH_TOOL_NAME
@@ -55,35 +62,31 @@ class VisualMemorySearchTool(ToolBase):
     def __init__(
         self,
         *,
-        coordinator_store: SessionEmbeddingCoordinatorStore,
         semantic_store_pool: SessionVisualSemanticStorePool,
-        candidate_similarity: float = 0.20,
-        confirmed_similarity: float = 0.30,
+        timeline_context_service: VisualTimelineContextService | None = None,
     ) -> None:
-        self.coordinator_store = coordinator_store
         self.semantic_store_pool = semantic_store_pool
-        self.candidate_similarity = candidate_similarity
-        self.confirmed_similarity = confirmed_similarity
+        self.timeline_context_service = timeline_context_service
+
+    def configure_timeline_context_service(
+        self,
+        service: VisualTimelineContextService | None,
+    ) -> None:
+        """Attach the runtime-owned Tool-tail compactor without replacing overrides."""
+
+        if self.timeline_context_service is None:
+            self.timeline_context_service = service
 
     def _run(self, input: VisualMemorySearchInput, context: ToolContext) -> ToolResult:
         user_id = context.user_id or ""
-        coordinator = self.coordinator_store.peek(user_id, input.session_id)
         semantic_store = self.semantic_store_pool.peek(user_id, input.session_id)
-        if coordinator is None or semantic_store is None:
-            result = VisualMemorySearchResult(status="not_found")
+        if semantic_store is None:
+            result = VisualMemorySearchResult(status="empty")
         else:
             semantic_lease = self.semantic_store_pool.acquire(
                 user_id,
                 input.session_id,
             )
-            try:
-                coordinator_lease = self.coordinator_store.acquire(
-                    user_id,
-                    input.session_id,
-                )
-            except Exception:
-                semantic_lease.release()
-                raise
             try:
                 request_metadata = context.metadata.get("request_metadata")
                 request_metadata = (
@@ -94,10 +97,7 @@ class VisualMemorySearchTool(ToolBase):
                 )
                 since_ms, until_ms = _time_bounds(input.time_window, request_metadata)
                 service = VisualMemorySearchService(
-                    coordinator=coordinator_lease.coordinator,
                     semantic_store=semantic_lease.store,
-                    candidate_similarity=self.candidate_similarity,
-                    confirmed_similarity=self.confirmed_similarity,
                 )
                 result = service.search(
                     VisualMemorySearchRequest(
@@ -113,17 +113,90 @@ class VisualMemorySearchTool(ToolBase):
                         until_ms=until_ms,
                     )
                 )
+                if (
+                    result.status == "records"
+                    and self.timeline_context_service is not None
+                ):
+                    result = self._compact_timeline(
+                        input.query,
+                        result,
+                        observer=semantic_lease.store.observer,
+                        session_id=input.session_id,
+                    )
             finally:
-                coordinator_lease.release()
                 semantic_lease.release()
-        data = result.model_dump(mode="json")
+        data = result.model_dump(mode="json", exclude_none=True)
         return ToolResult(
             tool_name=self.name,
             success=result.status != "unavailable",
             data=data,
             model_observation=data,
             voice_summary=_voice_summary(result),
-            error=("visual memory embedding is unavailable" if result.status == "unavailable" else None),
+            error=("visual memory history is unavailable" if result.status == "unavailable" else None),
+        )
+
+    def _compact_timeline(
+        self,
+        query: str,
+        result: VisualMemorySearchResult,
+        *,
+        observer: EmbeddingObserver | None,
+        session_id: str,
+    ) -> VisualMemorySearchResult:
+        assert self.timeline_context_service is not None
+        try:
+            projection = self.timeline_context_service.prepare(
+                query=query,
+                observations=list(result.observations),
+            )
+        except VisualTimelineHardLimitError:
+            emit_visual_semantic_observation(
+                observer,
+                "visual_memory.compaction",
+                session_id=session_id,
+                status="hard_limit",
+                count=result.observation_count,
+                returned_count=0,
+                hard=True,
+            )
+            return VisualMemorySearchResult(
+                status="unavailable",
+                observation_count=result.observation_count,
+                returned_observation_count=0,
+                errors=[
+                    {
+                        "code": "visual_memory_context_hard_limit",
+                        "message": (
+                            "visual timeline could not be compacted below the hard limit"
+                        ),
+                        "recoverable": True,
+                    }
+                ],
+            )
+        metadata = projection.compaction
+        emit_visual_semantic_observation(
+            observer,
+            "visual_memory.compaction",
+            session_id=session_id,
+            status=metadata.status,
+            count=result.observation_count,
+            returned_count=len(projection.observations),
+            input_tokens=metadata.input_tokens,
+            output_tokens=metadata.output_tokens,
+            target_tokens=metadata.target_tokens,
+            attempts=metadata.attempts,
+            triggered=metadata.triggered,
+            hard=metadata.hard,
+            target_reached=metadata.target_reached,
+        )
+        return result.model_copy(
+            update={
+                "observations": projection.observations,
+                "returned_observation_count": len(projection.observations),
+                "timeline_summary": projection.timeline_summary,
+                "coverage": projection.coverage,
+                "compaction": projection.compaction,
+            }
         )
 
 
@@ -149,10 +222,8 @@ def _non_negative_int(value) -> int | None:
 
 
 def _voice_summary(result: VisualMemorySearchResult) -> str:
-    if result.status == "confirmed":
-        return "在会话历史的视觉语义记录中找到了高度相关内容。"
-    if result.status == "candidate":
-        return "找到了相关历史画面，但目前只能作为候选。"
-    if result.status == "not_found":
-        return "当前会话历史中没有找到相关画面。"
-    return "当前无法检索会话视觉历史。"
+    if result.status == "records":
+        return f"已读取当前会话保留的 {result.observation_count} 条历史画面文本。"
+    if result.status == "empty":
+        return "当前会话没有保留的历史画面文本。"
+    return "当前无法读取会话视觉历史。"

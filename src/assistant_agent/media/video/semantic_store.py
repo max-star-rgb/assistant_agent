@@ -309,6 +309,81 @@ class SessionVisualSemanticStore:
                 key=lambda item: (item.frame_sequence, item.created_at_ms),
             )
 
+    def recent_at_or_before(
+        self,
+        video_id: str,
+        *,
+        sequence: int,
+        limit: int,
+    ) -> list[VisualSemanticRecord]:
+        """Return a bounded chronological copy of records at one as-of boundary."""
+
+        if limit <= 0:
+            raise ValueError("visual semantic timeline limit must be positive")
+        with self._lock:
+            self._ensure_open()
+            records = sorted(
+                (
+                    record
+                    for record in self._records_for_video_locked(video_id)
+                    if record.frame_sequence <= sequence
+                ),
+                key=lambda item: (item.frame_sequence, item.created_at_ms),
+            )[-limit:]
+            return [record.model_copy(deep=True) for record in records]
+
+    def text_timeline(
+        self,
+        *,
+        as_of_sequence: int | None = None,
+        since_ms: int | None = None,
+        until_ms: int | None = None,
+        limit: int = 256,
+    ) -> list[VisualSemanticRecord]:
+        """Return the bounded session VLM text timeline at one trusted boundary."""
+
+        if as_of_sequence is not None and as_of_sequence < 0:
+            raise ValueError("visual semantic as-of sequence must be non-negative")
+        if since_ms is not None and since_ms < 0:
+            raise ValueError("visual semantic start time must be non-negative")
+        if until_ms is not None and until_ms < 0:
+            raise ValueError("visual semantic end time must be non-negative")
+        if since_ms is not None and until_ms is not None and since_ms > until_ms:
+            raise ValueError("visual semantic start time must not follow end time")
+        if limit <= 0:
+            raise ValueError("visual semantic timeline limit must be positive")
+        with self._lock:
+            self._ensure_open()
+            records = []
+            for record in self._records.values():
+                observed_at_ms = (
+                    record.captured_at_ms
+                    if record.captured_at_ms is not None
+                    else record.created_at_ms
+                )
+                if (
+                    as_of_sequence is not None
+                    and record.frame_sequence > as_of_sequence
+                ):
+                    continue
+                if since_ms is not None and observed_at_ms < since_ms:
+                    continue
+                if until_ms is not None and observed_at_ms > until_ms:
+                    continue
+                records.append(record)
+            records.sort(
+                key=lambda item: (
+                    (
+                        item.captured_at_ms
+                        if item.captured_at_ms is not None
+                        else item.created_at_ms
+                    ),
+                    item.frame_sequence,
+                    item.created_at_ms,
+                )
+            )
+            return [record.model_copy(deep=True) for record in records[-limit:]]
+
     def wait_for_sequence(
         self,
         video_id: str,
@@ -402,6 +477,13 @@ class SessionVisualSemanticStore:
                 record.index_status == "ready" and record.search_embedding is not None
                 for record in self._records.values()
             )
+
+    def has_visual_history(self) -> bool:
+        """Report whether the session retains any successful VLM text record."""
+
+        with self._lock:
+            self._ensure_open()
+            return bool(self._records)
 
     def records_for_context(
         self,

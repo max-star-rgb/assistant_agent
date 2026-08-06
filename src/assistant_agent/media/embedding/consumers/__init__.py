@@ -10,10 +10,10 @@ from assistant_agent.media.embedding.consumers.attention import (
     VisualAttentionConsumer,
 )
 from assistant_agent.media.embedding.consumers.object_search import (
-    VisualMemoryMatch,
     VisualMemorySearchRequest,
     VisualMemorySearchResult,
     VisualMemorySearchService,
+    VisualMemoryTextObservation,
 )
 
 __all__ = [
@@ -22,8 +22,8 @@ __all__ = [
     "CrossModalAlignmentConsumer",
     "VisualAttentionCandidate",
     "VisualAttentionConsumer",
-    "VisualMemoryMatch",
     "VisualMemorySearchRequest",
     "VisualMemorySearchResult",
     "VisualMemorySearchService",
+    "VisualMemoryTextObservation",
 ]

@@ -7,7 +7,7 @@ import pytest
 
 from assistant_agent.api import agent_service_websocket as agent_service
 from assistant_agent.config import ProviderConfig
-from assistant_agent.media.video.visual_reminder import VisualReminderReservation
+from assistant_agent.runtime.proactive_messages import ProactiveMessage
 from assistant_agent.runtime.runtime import AgentGraphRuntime
 from assistant_agent.tools.registry import ToolRegistry
 
@@ -195,15 +195,16 @@ def test_gateway_metadata_carries_structured_video_call_type() -> None:
 def test_visual_reminder_response_uses_independent_media_chat_index() -> None:
     state = _state(_GatewayManager())
     state.response_session_id = "response-session"
-    reservation = VisualReminderReservation(
-        reminder_id="reminder-1",
-        reservation_id="reservation-1",
-        target="水已经烧开",
-        message="水烧开了",
-        similarity=0.9,
+    message = ProactiveMessage(
+        message_id="reminder-1",
+        user_id="u1",
+        session_id="runtime-session",
+        kind="visual_reminder",
+        content="水烧开了",
+        delivery_mode="connection_ephemeral",
     )
 
-    envelope = agent_service._visual_reminder_chat_response(state, reservation)
+    envelope = agent_service._proactive_message_chat_response(state, message)
     body = json.loads(envelope["body"])
 
     assert envelope["message"] == "chatResponse"
@@ -213,3 +214,56 @@ def test_visual_reminder_response_uses_independent_media_chat_index() -> None:
         "description": "水烧开了",
         "status": "SUCCESS",
     }
+
+
+def test_proactive_sink_waits_for_active_chat_and_reports_server_sent() -> None:
+    asyncio.run(_proactive_sink_waits_for_active_chat_and_reports_server_sent())
+
+
+async def _proactive_sink_waits_for_active_chat_and_reports_server_sent() -> None:
+    class WebSocket:
+        def __init__(self) -> None:
+            self.sent = []
+
+        async def send_text(self, raw: str) -> None:
+            self.sent.append(json.loads(raw))
+
+    websocket = WebSocket()
+    state = _state(_GatewayManager())
+    state.response_session_id = "response-session"
+    release_chat = asyncio.Event()
+
+    async def active_chat() -> None:
+        await release_chat.wait()
+
+    chat_task = asyncio.create_task(active_chat())
+    state.chat_tasks.add(chat_task)
+    sink = agent_service._AgentServiceProactiveMessageSink(
+        websocket=websocket,
+        state=state,
+    )
+    delivery = asyncio.create_task(
+        sink.publish(
+            ProactiveMessage(
+                message_id="reminder-1",
+                user_id="u1",
+                session_id="runtime-session",
+                kind="visual_reminder",
+                content="水烧开了",
+                delivery_mode="connection_ephemeral",
+            )
+        )
+    )
+    await asyncio.sleep(0)
+
+    assert websocket.sent == []
+
+    release_chat.set()
+    await chat_task
+    attempt = await delivery
+
+    assert attempt.message_id == "reminder-1"
+    assert attempt.status == "sent"
+    assert attempt.delivery_scope == "server_transport"
+    body = json.loads(websocket.sent[0]["body"])
+    assert body["message"]["chatIndex"] == "visual-reminder:reminder-1"

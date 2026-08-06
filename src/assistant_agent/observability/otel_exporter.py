@@ -499,7 +499,7 @@ class TextOtelTraceObserver:
         self._exporting_run_ids: set[str] = set()
         self._exported_run_ids: set[str] = set()
         self._dropped_run_ids: set[str] = set()
-        self._pending_late_memory_events: dict[str, TraceEvent] = {}
+        self._pending_late_events: dict[str, list[TraceEvent]] = {}
         self._errors: list[str] = []
         self._exported_run_count = 0
         self._dropped_run_count = 0
@@ -547,18 +547,20 @@ class TextOtelTraceObserver:
             return
         exported_event = event if self.include_content else redact_trace_event(event)
         route, events_to_export = self._buffer_event(exported_event)
-        if route == "late_memory":
-            self._export_late_memory_event(exported_event)
+        if route == "late_event":
+            self._export_late_event(exported_event)
         elif route == "batch" and events_to_export is not None:
             self._export_events(events_to_export)
-            pending_memory = self._complete_run_export(exported_event.run_id)
-            if pending_memory is not None:
-                self._export_late_memory_event(pending_memory)
+            for pending_event in self._complete_run_export(exported_event.run_id):
+                self._export_late_event(pending_event)
 
-    def _export_late_memory_event(self, event: TraceEvent) -> None:
+    def _export_late_event(self, event: TraceEvent) -> None:
         try:
             memory_content = None
-            if self.include_memory_content:
+            if (
+                self.include_memory_content
+                and event.canonical_event == "memory.ingestion.finished"
+            ):
                 from assistant_agent.memory.trace_content import (
                     get_default_memory_trace_content_store,
                 )
@@ -592,18 +594,22 @@ class TextOtelTraceObserver:
     def _buffer_event(
         self,
         event: TraceEvent,
-    ) -> tuple[Literal["buffered", "batch", "late_memory", "ignored"], list[TraceEvent] | None]:
+    ) -> tuple[Literal["buffered", "batch", "late_event", "ignored"], list[TraceEvent] | None]:
         with self._lock:
             run_id = event.run_id
             if run_id in self._dropped_run_ids:
                 return "ignored", None
             if run_id in self._exporting_run_ids:
-                if event.canonical_event == "memory.ingestion.finished":
-                    self._pending_late_memory_events[run_id] = event
+                if _is_late_exportable_event(event):
+                    pending = self._pending_late_events.setdefault(run_id, [])
+                    if len(pending) >= self.max_events_per_run:
+                        pending.pop(0)
+                        self._dropped_event_count += 1
+                    pending.append(event)
                 return "buffered", None
             if run_id in self._exported_run_ids:
-                if event.canonical_event == "memory.ingestion.finished":
-                    return "late_memory", None
+                if _is_late_exportable_event(event):
+                    return "late_event", None
                 return "ignored", None
             if run_id not in self._events_by_run:
                 self._ensure_run_capacity_locked()
@@ -613,18 +619,18 @@ class TextOtelTraceObserver:
                 events.pop(0)
                 self._dropped_event_count += 1
             events.append(event)
-            if event.canonical_event != ASSISTANT_TURN_SUMMARY_EVENT:
+            if not _is_batch_terminal_event(event):
                 return "buffered", None
             events_to_export = list(events)
             del self._events_by_run[run_id]
             self._exporting_run_ids.add(run_id)
             return "batch", events_to_export
 
-    def _complete_run_export(self, run_id: str) -> TraceEvent | None:
+    def _complete_run_export(self, run_id: str) -> list[TraceEvent]:
         with self._lock:
             self._exporting_run_ids.discard(run_id)
             self._exported_run_ids.add(run_id)
-            return self._pending_late_memory_events.pop(run_id, None)
+            return self._pending_late_events.pop(run_id, [])
 
     def _ensure_run_capacity_locked(self) -> None:
         while len(self._events_by_run) >= self.max_buffered_runs:
@@ -718,6 +724,22 @@ class TextOtelTraceObserver:
 
 def _truthy_env_value(value: str | None) -> bool:
     return value is not None and value.strip().lower() in _TRUTHY_ENV_VALUES
+
+
+def _is_late_exportable_event(event: TraceEvent) -> bool:
+    canonical_event = event.canonical_event or ""
+    return (
+        canonical_event == "memory.ingestion.finished"
+        or canonical_event == "response.delivered"
+        or canonical_event.startswith("visual_reminder.")
+    )
+
+
+def _is_batch_terminal_event(event: TraceEvent) -> bool:
+    return event.canonical_event in {
+        ASSISTANT_TURN_SUMMARY_EVENT,
+        "vision.observation.summary",
+    }
 
 
 def _is_loopback_endpoint(endpoint: str | None) -> bool:

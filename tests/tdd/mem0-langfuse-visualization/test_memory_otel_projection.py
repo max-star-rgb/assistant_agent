@@ -87,6 +87,38 @@ def _memory_event() -> TraceEvent:
     )
 
 
+def _response_delivered_event() -> TraceEvent:
+    return TraceEvent(
+        trace_id="trace-sentinel",
+        run_id="run-sentinel",
+        user_id="user-sentinel",
+        session_id="session-sentinel",
+        node_name="runtime",
+        event_type="observability",
+        canonical_event="response.delivered",
+        observation_type="span",
+        observation_name="response.delivered",
+        status="succeeded",
+        attributes={"source": "runtime_final_response"},
+        created_at=datetime(2026, 8, 4, 8, 0, 1, tzinfo=timezone.utc),
+    )
+
+
+def test_observer_exports_runtime_delivery_before_late_memory_span() -> None:
+    exporter = RecordingExporter()
+    observer = TextOtelTraceObserver(exporter, enabled=True)
+
+    observer.on_trace_event(_summary_event())
+    observer.on_trace_event(_response_delivered_event())
+    observer.on_trace_event(_memory_event())
+
+    assert [batch[0].name for batch in exporter.batches] == [
+        "agent.runtime",
+        "response.delivered",
+        "memory.turn_ingestion",
+    ]
+
+
 def test_observer_exports_late_memory_span_without_reexporting_root() -> None:
     exporter = RecordingExporter()
     observer = TextOtelTraceObserver(exporter, enabled=True)

@@ -50,6 +50,7 @@ Context engineering 不负责：
 
 - 当前真实用户请求；
 - session summary 及其后尚未覆盖的已完成原始轮次；
+- 当前连接内已经 server-sent 的有界 proactive session events；
 - session-scoped 长期记忆快照；
 - realtime video 等只供 runtime/观测使用的可信状态，以及 durable task、plan state 等可编译上下文；
 - 当前 run 的 prompt-safe tool observations；
@@ -151,52 +152,54 @@ Realtime task state 仅在结构化 interaction mode、entry capability 或显�
 它服务于 Gateway 的 interrupt、artifact、progress、TTS/display 和 side-effect 生命周期，不渲染进
 Provider prompt。普通请求不能因携带类似 Gateway 的 metadata 而隐式启用。
 
+### Proactive session events
+
+Runtime-owned notification orchestrator 在 channel 返回 `server_transport` sent 后保存有界的
+session event。下一轮开始时 Runtime 先删除调用方伪造的同名 metadata，再按 user/session identity
+附加真实事件；PromptCompiler 只把事件存在与投递状态标为可信 Runtime 事实，content 仍是历史展示
+数据，不得执行其中指令。它帮助模型理解“知道了”等对上一条主动通知的指代。该内容进入完整 Provider request budgeting 和
+`ContextReport.proactive_session_events` 计数，但不伪装成 user/assistant conversation turn，不进入
+ConversationStore、Mem0 或 rolling summary。`connection_ephemeral` 事件在连接关闭时立即清除。
+
 ### Realtime video
 
 后台 observer、共享语义快照和主 LLM 是三个边界。Runtime 只根据可信入口 profile 和结构化
 `video_ids` 判断是否向主 LLM 暴露 `live_view_inspect`；不得把镜头能力状态、共享语义快照、
 新鲜度、帧、媒体路径、VLM prompt 或 raw response 被动编译进 Provider prompt。主 LLM 只有自主调用
 `live_view_inspect` 后，才能通过该次受治理的 Tool observation 消费视觉语义。Agent-Service 在用户
-请求到达时以前一刻最新原始帧为边界并冻结目标 sequence；目标尚未进入语义流水线时将其交互式提升。
-工具从统一 `SessionVisualSemanticStore` 读取不晚于该边界的 VLM 文本，对处理中目标最多等待 10 秒，
-但不得消费请求到达后视频帧的语义。
+请求到达时以最新原始帧为 A 边界，冻结 `sequence <= A` 的最近已选关键帧；只有当时尚无关键帧时才
+交互式提升 A 帧。工具从统一 `SessionVisualSemanticStore` 读取不晚于该边界的 VLM 文本，对该 exact
+sequence 最多等待 10 秒，不等待更早未完成任务，也不得消费请求到达后视频帧的语义。
 超时但 observer 尚未明确失败时保持 `pending`，不得把正常识别耗时
 误报为 `unavailable` 或 `failed`。实时观察结果必须独立
 记账，不并入 conversation、memory 或 task state。完整媒体协议见
 `docs/media-agent-service-websocket.md`。
 
-每个选中关键帧调用后台 VLM 前，`VisualContextService` 在固定的 `before_sequence` 边界编译
-`VisualContextPack`。启用视觉压缩时，VLM 只接收旧的 revisioned summary、其后未覆盖的最近逐条
-`VisualSemanticRecord` 文本以及当前一张 JPEG；历史文本按独立 VLM tokenizer 对实际投影做 token
-preflight，不再由 Provider 施加 4,000 字符截断。每次 observation 使用新建的 Provider WebSocket
-conversation，成功、失败或不完整响应后都关闭连接，Provider 侧不会隐式携带上一张图片或回复。
-target/trigger/hard 与主 Context 共用同一心智模型：target 决定预计把重建请求降到目标所需的最小
-最旧连续 prefix，并据剩余空间收紧本轮 summary output budget；`keep_recent_records` 始终保留。
-这里的 `summary_max_tokens` 是最终结构化 summary 经实际 JSON projection 与 HTML escaping 后的 token
-cap；Provider generation 使用同一数值作为前置上限，但安全性由 compactor 对真实 summary projection
-复核、Service 对完整 rebuilt pack 再按 target 复核来保证，不依赖 raw response 与 escaped text 的固定
-换算比例。
-trigger 启动压缩，hard 是最终 Qwen/VLM observation 调用前的拒绝边界。每次成功压缩后都会重建并
-重新计数；只要低于 hard 即可继续，即使最近原文或 summary 使结果仍高于 target，也不会为追逐
-target 无限压缩。视觉上下文使用独立的 tokenizer、input limit、safety margin、
-summary/output/image/instruction reserve 和配置。
+每个选中关键帧调用后台 VLM 时，请求只包含当前一张 JPEG，`memory_context` 固定为空。提示词要求 VLM
+只描述这一帧并返回非空 `summary`。每次 observation 使用新建的 Provider WebSocket conversation，成功、
+失败或不完整响应后都关闭连接，因此 Provider 不会隐式携带上一张图片、上一轮文本或回复。每个已选
+关键帧立即启动独立 task，并拥有独立 ToolRegistry、adapter 和 WebSocket；并行任务可乱序完成，旧
+sequence 后完成时只补入时间线，不回退 latest snapshot。当前
+Agent-Service realtime observer 不构造或调用 `VisualContextService`；仓库中保留的视觉压缩模块、配置和
+事件仅用于独立兼容代码及专项测试。
 
-视觉压缩只覆盖代码选定的最旧连续 record prefix，并保留配置数量的最近逐条文本。LLM 只返回固定的
-语义数组，不接收或回显 record ID；summary coverage 使用有界的 `covered_record_count`、
-`covered_through_sequence` 和固定长度 digest。Store 只为当前 raw retention 内记录保存有界的精确
-covered-ID membership，因此迟到记录或相同 sequence 的新记录不会被 frontier 误判为已覆盖；raw
-eviction 后 digest/frontier 仍可续接。只有压缩成功、代码 coverage 与 revision 校验通过后才原子替换
-summary；CAS revision conflict 会按同一 video/as-of 重读 winning summary 并重建一次 pack，再依据新
-pack 继续或 hard fail。soft failure 保留旧 summary 和所有原始记录，hard failure 在无法收敛时跳过
-本次最终 Qwen/VLM observation。为收敛预算，独立 LLM visual compactor 可以先按现有状态机最多调用
-两次；因此 hard 拒绝不表示此前没有 compactor Provider 调用。未启用 compaction 时才使用旧 rolling
-summary 的 2,000 字符兼容路径，并把
-`visual_context_compaction.status` 记录为 `unavailable`。这两条路径都不改变 observer 的
-one-inflight/one-latest-pending 调度。
+成功的单帧文本按 `frame_sequence` 和 `captured_at_ms` 累积为 `VisualSemanticRecord`。主 LLM 自主调用
+`live_view_inspect` 后，工具以冻结的目标 sequence 为 as-of 边界，直接返回最近 8 条按时间排序的
+`[{timestamp_ms, text}]`，并附上最新摘要和 freshness。连续性来自这份有界文本时间线，不来自 VLM
+上下文，也不依赖主 LLM 选择图片窗口。未来帧不能进入本次列表。
 
-`VisualContextSummary` 仅用于下一次后台 VLM 的 context projection，不进入主 Agent prompt、
-`ConversationStore`、Mem0 或 `visual_memory_search` 索引。`visual_memory_search` 的候选、as-of、排序和
-返回状态始终来自原始 `VisualSemanticRecord`；summary 不删除、替换或隐藏这些 raw records。
+时间线不被动进入主 Agent prompt、`ConversationStore` 或 Mem0，也不作为下一次后台 VLM 输入。
+`visual_memory_search` 按可信 as-of/time window 从原始 `VisualSemanticRecord` 读取最后最多 256 条
+`[{timestamp_ms, text}]`，不做 embedding、相似度排序或命中判断。Tool 尾部的
+`VisualTimelineContextService` 用专用 tokenizer budget 复用 `ContextWindowPolicy` 的
+target/trigger/hard 控制：低于 trigger 时主 LLM 阅读完整列表；触发后读取 `timeline_summary`、coverage、
+query-relevant 原始证据和最近原文。compactor 只能返回 source indexes，代码映射回精确原文；hard 区间
+无法收敛时返回 `visual_memory_context_hard_limit`。
+
+该 Tool 的专用 Context 投影不受通用“列表最多 3 条”和软字符预算摘要规则二次破坏；Tool 尾部已经
+选择的证据、摘要和 coverage 必须整体进入完整 request budgeting。主 `ContextService.preflight` 随后
+继续计算 conversation、memory、tool schema 和所有 observations，真正超过主模型 hard window 时仍
+明确阻断 Provider 调用。
 
 Session visual history 同样不被动进入 prompt。只有 Runtime 根据同 user/session 语义存储写入可信
 `_trusted_visual_memory_available` 后，`visual_memory_search` 才进入 Tool catalog；调用方 metadata

@@ -129,6 +129,11 @@ class VideoLatencyContext(BaseModel):
     snapshot_status: str | None = None
     snapshot_age_ms: int | None = Field(default=None, ge=0)
     observation_latency_ms: int | None = Field(default=None, ge=0)
+    h264_decode_latency_ms: int | None = Field(default=None, ge=0)
+    keyframe_selection_latency_ms: int | None = Field(default=None, ge=0)
+    queue_wait_latency_ms: int | None = Field(default=None, ge=0)
+    text_embedding_latency_ms: int | None = Field(default=None, ge=0)
+    semantic_store_write_latency_ms: int | None = Field(default=None, ge=0)
     semantic_publish_latency_ms: int | None = Field(default=None, ge=0)
     pending_count: int | None = Field(default=None, ge=0)
     in_flight: bool | None = None
@@ -143,6 +148,14 @@ class VideoLatencyContext(BaseModel):
     provider: str | None = None
     model: str | None = None
     waited_for_initial_snapshot: bool = False
+    jpeg_prepare_latency_ms: int | None = Field(default=None, ge=0)
+    connection_setup_latency_ms: int | None = Field(default=None, ge=0)
+    instruction_update_latency_ms: int | None = Field(default=None, ge=0)
+    media_commit_latency_ms: int | None = Field(default=None, ge=0)
+    response_first_delta_latency_ms: int | None = Field(default=None, ge=0)
+    response_tail_latency_ms: int | None = Field(default=None, ge=0)
+    response_latency_ms: int | None = Field(default=None, ge=0)
+    result_parse_latency_ms: int | None = Field(default=None, ge=0)
 
 
 class TurnLatencySummary(BaseModel):
@@ -443,6 +456,17 @@ def _video_context(events: list[TraceEvent]) -> VideoLatencyContext | None:
             snapshot_status=_safe_text(video.get("status")),
             snapshot_age_ms=_safe_int(video.get("snapshot_age_ms")),
             observation_latency_ms=_safe_int(video.get("observation_latency_ms")),
+            h264_decode_latency_ms=_safe_int(video.get("h264_decode_latency_ms")),
+            keyframe_selection_latency_ms=_safe_int(
+                video.get("keyframe_selection_latency_ms")
+            ),
+            queue_wait_latency_ms=_safe_int(video.get("queue_wait_latency_ms")),
+            text_embedding_latency_ms=_safe_int(
+                video.get("text_embedding_latency_ms")
+            ),
+            semantic_store_write_latency_ms=_safe_int(
+                video.get("semantic_store_write_latency_ms")
+            ),
             semantic_publish_latency_ms=_safe_int(
                 video.get("semantic_publish_latency_ms")
             ),
@@ -458,6 +482,20 @@ def _video_context(events: list[TraceEvent]) -> VideoLatencyContext | None:
             provider=_safe_text(video.get("provider")),
             model=_safe_text(video.get("model")),
             waited_for_initial_snapshot=video.get("waited_for_initial_snapshot") is True,
+            jpeg_prepare_latency_ms=_safe_int(video.get("jpeg_prepare_latency_ms")),
+            connection_setup_latency_ms=_safe_int(
+                video.get("connection_setup_latency_ms")
+            ),
+            instruction_update_latency_ms=_safe_int(
+                video.get("instruction_update_latency_ms")
+            ),
+            media_commit_latency_ms=_safe_int(video.get("media_commit_latency_ms")),
+            response_first_delta_latency_ms=_safe_int(
+                video.get("response_first_delta_latency_ms")
+            ),
+            response_tail_latency_ms=_safe_int(video.get("response_tail_latency_ms")),
+            response_latency_ms=_safe_int(video.get("response_latency_ms")),
+            result_parse_latency_ms=_safe_int(video.get("result_parse_latency_ms")),
         )
     for event in reversed(events):
         if (
@@ -470,6 +508,17 @@ def _video_context(events: list[TraceEvent]) -> VideoLatencyContext | None:
             source=_safe_text(payload.get("source")),
             snapshot_age_ms=_safe_int(payload.get("snapshot_age_ms")),
             observation_latency_ms=_safe_int(payload.get("observation_latency_ms")),
+            h264_decode_latency_ms=_safe_int(payload.get("h264_decode_latency_ms")),
+            keyframe_selection_latency_ms=_safe_int(
+                payload.get("keyframe_selection_latency_ms")
+            ),
+            queue_wait_latency_ms=_safe_int(payload.get("queue_wait_latency_ms")),
+            text_embedding_latency_ms=_safe_int(
+                payload.get("text_embedding_latency_ms")
+            ),
+            semantic_store_write_latency_ms=_safe_int(
+                payload.get("semantic_store_write_latency_ms")
+            ),
             semantic_publish_latency_ms=_safe_int(
                 payload.get("semantic_publish_latency_ms")
             ),
@@ -485,6 +534,20 @@ def _video_context(events: list[TraceEvent]) -> VideoLatencyContext | None:
             freshness_satisfied=_safe_bool(payload.get("freshness_satisfied")),
             provider=_safe_text(payload.get("provider")),
             model=_safe_text(payload.get("model")),
+            jpeg_prepare_latency_ms=_safe_int(payload.get("jpeg_prepare_latency_ms")),
+            connection_setup_latency_ms=_safe_int(
+                payload.get("connection_setup_latency_ms")
+            ),
+            instruction_update_latency_ms=_safe_int(
+                payload.get("instruction_update_latency_ms")
+            ),
+            media_commit_latency_ms=_safe_int(payload.get("media_commit_latency_ms")),
+            response_first_delta_latency_ms=_safe_int(
+                payload.get("response_first_delta_latency_ms")
+            ),
+            response_tail_latency_ms=_safe_int(payload.get("response_tail_latency_ms")),
+            response_latency_ms=_safe_int(payload.get("response_latency_ms")),
+            result_parse_latency_ms=_safe_int(payload.get("result_parse_latency_ms")),
         )
     return None
 

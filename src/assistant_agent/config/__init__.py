@@ -92,6 +92,7 @@ class ProviderConfig:
     visual_reminder_similarity_threshold: float = 0.82
     visual_reminder_max_active: int = 16
     visual_reminder_terminal_history_limit: int = 64
+    proactive_message_delivery_timeout_seconds: float = 95.0
     openai_vision_base_url: str = "https://api.openai.com/v1"
     openai_vision_model: str = "gpt-4o-mini"
     qwen_vision_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
@@ -266,6 +267,8 @@ class ProviderConfig:
             raise ValueError("visual reminder active limit must be positive")
         if self.visual_reminder_terminal_history_limit <= 0:
             raise ValueError("visual reminder terminal history limit must be positive")
+        if self.proactive_message_delivery_timeout_seconds <= 0:
+            raise ValueError("proactive message delivery timeout must be positive")
         if not (
             0.0
             < self.context_compaction_target_ratio
@@ -439,6 +442,10 @@ class ProviderConfig:
             visual_reminder_terminal_history_limit=_int_env(
                 source.get("REALTIME_VISUAL_REMINDER_TERMINAL_HISTORY_LIMIT"),
                 64,
+            ),
+            proactive_message_delivery_timeout_seconds=_float_env(
+                source.get("PROACTIVE_MESSAGE_DELIVERY_TIMEOUT_SECONDS"),
+                95.0,
             ),
             openai_vision_base_url=source.get("OPENAI_VISION_BASE_URL", "https://api.openai.com/v1"),
             openai_vision_model=source.get("OPENAI_VISION_MODEL", "gpt-4o-mini"),

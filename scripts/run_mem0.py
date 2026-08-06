@@ -25,6 +25,7 @@ HEALTH_URL = f"{MEM0_BASE_URL}/ready"
 STARTUP_TIMEOUT_SECONDS = 600.0
 POLL_INTERVAL_SECONDS = 1.0
 REQUEST_TIMEOUT_SECONDS = 5.0
+CLEAR_ALL_CONFIRMATION = "DELETE ALL MEMORIES"
 
 InputFn = Callable[[str], str]
 RequestFn = Callable[..., dict[str, object]]
@@ -286,6 +287,65 @@ def _execute_command(
                 return True
         _print_json(request("DELETE", path))
         return True
+    if command == "clear":
+        parsed = _parse_clear_args(command_args)
+        filters = {
+            key: value
+            for key, value in {
+                "user_id": parsed.user_id,
+                "agent_id": parsed.agent_id,
+                "run_id": parsed.run_id,
+            }.items()
+            if value
+        }
+        clear_all = parsed.all_memories
+        if clear_all and filters:
+            raise CommandError("--all cannot be combined with identity filters")
+        if clear_all and parsed.yes:
+            raise CommandError("--yes cannot be used with --all")
+
+        if not clear_all and not filters:
+            scope = input_fn("Clear scope (identity/all): ").strip().lower()
+            if scope == "all":
+                clear_all = True
+            elif scope == "identity":
+                filters = {
+                    key: value
+                    for key, value in {
+                        "user_id": input_fn("User ID (optional): ").strip(),
+                        "agent_id": input_fn("Agent ID (optional): ").strip(),
+                        "run_id": input_fn("Run ID (optional): ").strip(),
+                    }.items()
+                    if value
+                }
+            else:
+                raise CommandError("clear scope must be 'identity' or 'all'")
+
+        if clear_all:
+            if parsed.yes:
+                raise CommandError("--yes cannot be used with --all")
+            print("This will delete every Mem0 memory and its complete history.")
+            confirmation = input_fn(
+                f"Type '{CLEAR_ALL_CONFIRMATION}' to continue: "
+            )
+            if confirmation != CLEAR_ALL_CONFIRMATION:
+                print("Clear cancelled.")
+                return True
+            body: dict[str, object] = {"all": True}
+        else:
+            if not filters:
+                raise CommandError("clear requires at least one identity filter")
+            print("Matching identity scope:")
+            _print_json(filters)
+            if not parsed.yes:
+                confirmation = input_fn("Type 'yes' to clear this scope: ")
+                if confirmation.strip().lower() != "yes":
+                    print("Clear cancelled.")
+                    return True
+            body = filters
+
+        _print_json(request("DELETE", "/memories", body=body))
+        return True
 
     raise CommandError(f"unknown command {command!r}; type 'help' for commands")
 
@@ -359,6 +419,16 @@ def _parse_delete_args(args: list[str]) -> argparse.Namespace:
     return parser.parse_intermixed_args(args)
 
 
+def _parse_clear_args(args: list[str]) -> argparse.Namespace:
+    parser = _parser("clear")
+    parser.add_argument("--user-id")
+    parser.add_argument("--agent-id")
+    parser.add_argument("--run-id")
+    parser.add_argument("--all", dest="all_memories", action="store_true")
+    parser.add_argument("--yes", action="store_true")
+    return parser.parse_args(args)
+
+
 def _parser(command: str) -> _CommandParser:
     return _CommandParser(prog=command, add_help=False, exit_on_error=False)
 
@@ -421,6 +491,11 @@ def _help_text() -> str:
       Replace one memory's text. Missing values are prompted.
   delete [memory_id] [--yes]
       Delete one memory. Without --yes, show it and require confirmation.
+  clear [--user-id ID] [--agent-id ID] [--run-id ID] [--yes]
+      Clear every memory matching the identity filters. Missing scope is prompted.
+  clear --all
+      Clear every memory and its history. Requires typing DELETE ALL MEMORIES.
+      --yes is never accepted for this scope.
   exit | quit
       Exit this console without stopping Mem0 or Qdrant.
 
@@ -429,7 +504,9 @@ Examples:
   add --user-id usr_example -- 我喜欢黑咖啡
   add --infer --user-id usr_example -- 用户说他喜欢黑咖啡
   update 01234567-89ab-cdef-0123-456789abcdef 新的记忆正文
-  delete 01234567-89ab-cdef-0123-456789abcdef"""
+  delete 01234567-89ab-cdef-0123-456789abcdef
+  clear --user-id usr_example
+  clear --all"""
 
 
 def _print_diagnostics_hint() -> None:

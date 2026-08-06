@@ -254,14 +254,25 @@ Async migration remains selective:
 - do not duplicate business logic merely to remove `asyncio.to_thread()`.
 
 Completed-turn long-term-memory ingestion is a separate post-response thread
-boundary. `AgentGraphRuntime` emits `final_response` first, freezes a sanitized
-`CompletedTurn`, and submits it to the bounded `MemoryIngestionQueue`
+boundary. `AgentGraphRuntime` emits `final_response` and immediately records
+`response.delivered` from the Runtime final answer, then freezes a sanitized
+`CompletedTurn` and submits it to the bounded `MemoryIngestionQueue`
 without waiting for memory Provider I/O. Its trace span carries
 `execution_phase=post_response_background`; Agent-Service critical-path and
 active-stage accounting exclude that background span. Runtime close drains
 accepted work within the configured shutdown bound. Detailed identity,
 ordering, saturation and eventual-consistency rules remain authoritative in
 `docs/memory-service-architecture.md`.
+
+Proactive messages are a separate non-turn delivery contract. An LLM-authored
+Tool input may precompose message content, but a later Runtime event only creates
+a typed `ProactiveMessage`; it does not start another assistant loop or emit a
+second `final_response`. Runtime-owned background delivery tasks apply bounded
+timeout and reminder state transitions, while the entry-owned
+`ProactiveMessageSink` arbitrates with active channel turns and reports an
+explicit delivery scope. Connection-ephemeral sent events are projected into
+the next turn as bounded session evidence and are cleared on disconnect; they
+are neither conversation history nor long-term memory.
 
 `ProviderStreamingTurnRunner` bridges an async provider stream into the current
 synchronous runtime turn. It uses an event loop directly when called from a

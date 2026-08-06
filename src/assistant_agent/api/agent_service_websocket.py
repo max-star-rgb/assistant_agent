@@ -6,7 +6,7 @@ import asyncio
 import json
 import logging
 import random
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from time import perf_counter_ns
@@ -43,11 +43,14 @@ from assistant_agent.media.video.h264_video_ingestion import H264VideoIngestionS
 from assistant_agent.identifiers import new_prefixed_uuid7
 from assistant_agent.observability.operational_logging import digest_identifier, record_gateway_lifecycle
 from assistant_agent.media.video.realtime_video_observer import RealtimeVideoObserver
-from assistant_agent.media.video.visual_context import VisualContextService
 from assistant_agent.media.video.video_context import VideoFrame
 from assistant_agent.media.video.visual_reminder import (
     VisualReminderManager,
-    VisualReminderReservation,
+)
+from assistant_agent.runtime.proactive_messages import (
+    ProactiveDeliveryAttempt,
+    ProactiveMessage,
+    ProactiveMessageSink,
 )
 from assistant_agent.observability.trace_store import TraceStore, append_observability_event
 from assistant_agent.observability.turn_summary import append_agent_service_turn_summary
@@ -114,9 +117,7 @@ class AgentServiceConnectionState:
     assistant_control_call_type: str | None = None
     visual_reminder_manager: VisualReminderManager | None = None
     visual_reminder_owner_id: str | None = None
-    visual_reminder_sender: Callable[
-        [VisualReminderReservation], Awaitable[None]
-    ] | None = None
+    proactive_message_sink: ProactiveMessageSink | None = None
     chats: list[dict[str, Any]] = field(default_factory=list)
     video_ids: list[str] = field(default_factory=list)
     latest_video_frames: dict[str, VideoFrame] = field(default_factory=dict)
@@ -595,16 +596,10 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
         trace_store=_get_agent_service_trace_store(),
         text_turn_timeout_seconds=_agent_service_text_turn_timeout_seconds(),
     )
-    async def visual_reminder_sender(
-        reservation: VisualReminderReservation,
-    ) -> None:
-        await _send_response(
-            websocket,
-            _visual_reminder_chat_response(state, reservation),
-            state=state,
-        )
-
-    state.visual_reminder_sender = visual_reminder_sender
+    state.proactive_message_sink = _AgentServiceProactiveMessageSink(
+        websocket=websocket,
+        state=state,
+    )
     logger.info(
         "agent-service websocket connected version=%s session_digest=%s query_keys=%s",
         version,
@@ -797,13 +792,14 @@ async def _cleanup_agent_service_connection(
     reminder_manager = state.visual_reminder_manager
     reminder_owner_id = state.visual_reminder_owner_id
     if reminder_manager is not None:
-        reminder_manager.close()
         if state.runtime_session_id is not None and reminder_owner_id is not None:
-            _get_shared_agent_runtime().visual_reminder_registry.unregister(
+            await _get_shared_agent_runtime().visual_reminder_registry.close_connection(
                 reminder_owner_id,
                 state.runtime_session_id,
                 manager=reminder_manager,
             )
+        else:
+            reminder_manager.close()
         state.visual_reminder_manager = None
     if state.runtime_session_id is not None:
         await get_gateway_artifact_delivery_hub().unregister(
@@ -1169,6 +1165,7 @@ async def _run_chat_delivery(
             observer = state.video_observer
             visual_target_lease = prepared.visual_target_lease
             if target_frame is not None and observer is not None:
+                should_promote = False
                 if (
                     visual_target_lease is None
                     or visual_target_lease.observer is not observer
@@ -1178,16 +1175,18 @@ async def _run_chat_delivery(
                         observer=observer,
                         sequence=target_frame.sequence,
                     )
-                try:
-                    await observer.promote(target_frame)
-                except Exception as exc:  # noqa: BLE001 - tool can fall back to older text.
-                    logger.warning(
-                        "realtime visual target promotion failed session_digest=%s "
-                        "sequence=%s error_type=%s",
-                        digest_identifier(prepared.session_id),
-                        target_frame.sequence,
-                        type(exc).__name__,
-                    )
+                    should_promote = True
+                if should_promote:
+                    try:
+                        await observer.promote(target_frame)
+                    except Exception as exc:  # noqa: BLE001 - older text remains usable.
+                        logger.warning(
+                            "realtime visual target promotion failed session_digest=%s "
+                            "sequence=%s error_type=%s",
+                            digest_identifier(prepared.session_id),
+                            target_frame.sequence,
+                            type(exc).__name__,
+                        )
             try:
                 turn = await _run_agent_service_chat_turn(
                     state=state,
@@ -1350,25 +1349,35 @@ async def _protect_chat_visual_target(
     state: AgentServiceConnectionState,
     prepared: PreparedChat,
 ) -> PreparedChat:
-    """Protect the keyframe chosen at chat arrival from later queue replacement."""
+    """Freeze the newest already-selected keyframe that cannot follow chat."""
 
-    target_frame = prepared.video_target_frame
+    raw_target_frame = prepared.video_target_frame
     observer = state.video_observer
-    if target_frame is None or observer is None:
+    if raw_target_frame is None or observer is None:
         return prepared
+    selected = observer.latest_keyframe_at_or_before(
+        raw_target_frame.video_id,
+        target_sequence=raw_target_frame.sequence,
+    )
+    target_frame = selected or raw_target_frame
     observer.pin_sequence(target_frame.sequence)
     lease = _VisualTargetLease(observer=observer, sequence=target_frame.sequence)
-    try:
-        await observer.promote(target_frame)
-    except Exception as exc:  # noqa: BLE001 - turn can still use an earlier snapshot.
-        logger.warning(
-            "realtime visual target early promotion failed session_digest=%s "
-            "sequence=%s error_type=%s",
-            digest_identifier(prepared.session_id),
-            target_frame.sequence,
-            type(exc).__name__,
-        )
-    return replace(prepared, visual_target_lease=lease)
+    if selected is None:
+        try:
+            await observer.promote(target_frame)
+        except Exception as exc:  # noqa: BLE001 - turn can still use earlier text.
+            logger.warning(
+                "realtime visual target early promotion failed session_digest=%s "
+                "sequence=%s error_type=%s",
+                digest_identifier(prepared.session_id),
+                target_frame.sequence,
+                type(exc).__name__,
+            )
+    return replace(
+        prepared,
+        video_target_frame=target_frame,
+        visual_target_lease=lease,
+    )
 
 
 async def _emit_periodic_chat_progress(
@@ -1716,13 +1725,14 @@ async def _configure_visual_reminder_connection(
     previous = state.visual_reminder_manager
     previous_owner = state.visual_reminder_owner_id
     if previous is not None:
-        previous.close()
         if state.runtime_session_id is not None and previous_owner is not None:
-            runtime.visual_reminder_registry.unregister(
+            await runtime.visual_reminder_registry.close_connection(
                 previous_owner,
                 state.runtime_session_id,
                 manager=previous,
             )
+        else:
+            previous.close()
         state.visual_reminder_manager = None
         state.visual_reminder_owner_id = None
     if call_type != "VIDEO":
@@ -1736,7 +1746,10 @@ async def _configure_visual_reminder_connection(
         max_active=runtime.config.visual_reminder_max_active,
         terminal_history_limit=runtime.config.visual_reminder_terminal_history_limit,
     )
-    runtime.visual_reminder_registry.register(manager)
+    runtime.visual_reminder_registry.register(
+        manager,
+        sink=state.proactive_message_sink,
+    )
     state.visual_reminder_manager = manager
     state.visual_reminder_owner_id = user_id
 
@@ -1768,40 +1781,23 @@ def _create_realtime_video_observer(
         semantic_lease.release()
 
     try:
-        visual_context_service = None
-        if runtime.visual_context_token_counter is not None:
-            visual_context_service = VisualContextService(
-                store=semantic_lease.store,
-                token_counter=runtime.visual_context_token_counter,
-                window_policy=runtime.visual_context_window_policy,
-                compactor=runtime.visual_context_compactor,
-                keep_recent_records=runtime.config.visual_context_keep_recent_records,
-                instruction_reserve_tokens=(
-                    runtime.config.visual_context_instruction_reserve_tokens
-                ),
-                image_reserve_tokens=(
-                    runtime.config.visual_context_image_reserve_tokens
-                ),
-                output_reserve_tokens=(
-                    runtime.config.visual_context_output_reserve_tokens
-                ),
-                observer=runtime.embedding_observer,
-            )
         return RealtimeVideoObserver(
             user_id=user_id,
             session_id=session_id,
-            registry=create_realtime_video_observation_registry(
-                runtime.config,
-                realtime_video_memory_store=runtime.realtime_video_memory_store,
+            registry=None,
+            observation_registry_factory=lambda: (
+                create_realtime_video_observation_registry(
+                    runtime.config,
+                    realtime_video_memory_store=runtime.realtime_video_memory_store,
+                )
             ),
             memory_store=runtime.realtime_video_memory_store,
             embedding_coordinator=embedding_lease.coordinator,
             semantic_store=semantic_lease.store,
-            visual_context_service=visual_context_service,
             resource_release=release_resources,
             provider_config=runtime.config,
-            visual_reminder_manager=state.visual_reminder_manager,
-            visual_reminder_sender=state.visual_reminder_sender,
+            visual_reminder_registry=runtime.visual_reminder_registry,
+            trace_store=state.trace_store,
         )
     except Exception:
         release_resources()
@@ -1825,19 +1821,56 @@ def _failure_chat_response(
     )
 
 
-def _visual_reminder_chat_response(
+@dataclass(frozen=True)
+class _AgentServiceProactiveMessageSink:
+    websocket: WebSocket
+    state: AgentServiceConnectionState
+
+    async def publish(
+        self,
+        message: ProactiveMessage,
+    ) -> ProactiveDeliveryAttempt:
+        await self._wait_for_active_chats()
+        await _send_response(
+            self.websocket,
+            _proactive_message_chat_response(self.state, message),
+            state=self.state,
+        )
+        return ProactiveDeliveryAttempt(
+            message_id=message.message_id,
+            status="sent",
+            delivery_scope="server_transport",
+        )
+
+    async def _wait_for_active_chats(self) -> None:
+        current = asyncio.current_task()
+        while True:
+            tasks = tuple(
+                task
+                for task in self.state.chat_tasks
+                if task is not current and not task.done()
+            )
+            if not tasks:
+                return
+            await asyncio.gather(
+                *(asyncio.shield(task) for task in tasks),
+                return_exceptions=True,
+            )
+
+
+def _proactive_message_chat_response(
     state: AgentServiceConnectionState,
-    reservation: VisualReminderReservation,
+    message: ProactiveMessage,
 ) -> dict[str, Any]:
     return _response_envelope(
         message="chatResponse",
         session_id=state.response_session_id,
         body={
             "message": {
-                "chatIndex": f"visual-reminder:{reservation.reminder_id}",
+                "chatIndex": f"visual-reminder:{message.message_id}",
                 "content": {
                     "intentResult": {
-                        "description": reservation.message,
+                        "description": message.content,
                         "status": "SUCCESS",
                     }
                 },

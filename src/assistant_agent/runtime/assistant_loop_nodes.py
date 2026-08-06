@@ -1786,6 +1786,13 @@ def _execute_single_requested_tool_node(graph_state: AssistantLoopState) -> Assi
                 observation,
                 tool_call_id=tool_call_id,
                 source_tool_span_id=source_tool_span_id,
+                content_export_policy=str(
+                    getattr(
+                        tool_executor.registry.get(tool_name),
+                        "trace_content_policy",
+                        "default",
+                    )
+                ),
             ),
             "outputs_by_step": outputs_by_step,
         }
@@ -2081,6 +2088,7 @@ def _record_react_observation(
     *,
     tool_call_id: str | None = None,
     source_tool_span_id: str | None = None,
+    content_export_policy: str = "default",
 ) -> list[dict[str, Any]]:
     """Append a tool observation to both graph state and demo metadata."""
 
@@ -2097,7 +2105,11 @@ def _record_react_observation(
     ):
         payload[PROVIDER_TOOL_CALL_ID_KEY] = decision.provider_tool_call_id
     observations = existing + [payload]
-    observation_error = payload.get("error")
+    trace_payload = _trace_safe_tool_observation(
+        payload,
+        content_export_policy=content_export_policy,
+    )
+    observation_error = trace_payload.get("error")
     if not isinstance(observation_error, dict):
         observation_error = None
     from assistant_agent.observability.trace_conversation import (
@@ -2111,12 +2123,12 @@ def _record_react_observation(
         trace_id=graph_state.get("trace_id") or state.trace_id,
         tool_observation=TraceToolObservation(
             observation_index=len(observations),
-            tool_name=str(payload.get("tool_name") or "unknown"),
-            observation=dict(payload),
+            tool_name=str(trace_payload.get("tool_name") or "unknown"),
+            observation=dict(trace_payload),
         ),
     )
     trace_event = _observation_trace_event(
-        payload,
+        trace_payload,
         len(observations),
         tool_call_id=tool_call_id,
         source_tool_span_id=source_tool_span_id,
@@ -2129,11 +2141,11 @@ def _record_react_observation(
         steps.append(
             {
                 "iteration": len(observations),
-                "observation_tool": payload.get("tool_name"),
-                "status": payload.get("status"),
-                "success": payload.get("status") == "succeeded",
-                "summary": payload.get("summary"),
-                "output_ref": payload.get("output_ref"),
+                "observation_tool": trace_payload.get("tool_name"),
+                "status": trace_payload.get("status"),
+                "success": trace_payload.get("status") == "succeeded",
+                "summary": trace_payload.get("summary"),
+                "output_ref": trace_payload.get("output_ref"),
                 "error": observation_error,
             }
         )
@@ -2147,20 +2159,21 @@ def _record_react_observation(
             canonical_event="tool.observation",
             observation_type="event",
             observation_scope="iteration",
-            status=payload.get("status"),
-            tool_name=payload.get("tool_name"),
+            status=trace_payload.get("status"),
+            tool_name=trace_payload.get("tool_name"),
             output_summary={
-                "summary": payload.get("summary"),
-                "output_ref": payload.get("output_ref"),
+                "summary": trace_payload.get("summary"),
+                "output_ref": trace_payload.get("output_ref"),
             },
             attributes={
                 key: value
                 for key, value in {
                     "observation_index": len(observations),
-                    "summary": payload.get("summary"),
-                    "output_ref": payload.get("output_ref"),
+                    "summary": trace_payload.get("summary"),
+                    "output_ref": trace_payload.get("output_ref"),
                     "tool_call_id": tool_call_id,
                     "source_tool_span_id": source_tool_span_id,
+                    "content_export_policy": content_export_policy,
                 }.items()
                 if value is not None
             },
@@ -2168,6 +2181,30 @@ def _record_react_observation(
         )
     )
     return observations
+
+
+def _trace_safe_tool_observation(
+    payload: dict[str, Any],
+    *,
+    content_export_policy: str,
+) -> dict[str, Any]:
+    if content_export_policy != "metadata_only":
+        return payload
+    error = payload.get("error")
+    safe_error = None
+    if isinstance(error, dict):
+        safe_error = {
+            "code": error.get("code") or "tool_failed",
+            "message": "Tool observation failed.",
+            "retryable": bool(error.get("retryable", False)),
+        }
+    return {
+        "tool_name": payload.get("tool_name") or "unknown",
+        "status": payload.get("status") or "failed",
+        "outcome": payload.get("outcome"),
+        "is_complete": bool(payload.get("is_complete", False)),
+        "error": safe_error,
+    }
 
 
 def _decision_trace_event(decision: AssistantTurnOutput, iteration: int) -> dict[str, Any]:

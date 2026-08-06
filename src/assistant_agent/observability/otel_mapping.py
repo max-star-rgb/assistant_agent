@@ -30,6 +30,7 @@ if TYPE_CHECKING:
 
 OTEL_SPAN_SPEC_SCHEMA_VERSION = "assistant_agent_text_otel_span_spec_v1"
 TEXT_MODALITY = "text"
+VISION_MODALITY = "vision"
 
 _VOICE_ATTRIBUTE_TOKENS = frozenset(
     {
@@ -47,21 +48,28 @@ _ALLOWED_ATTRIBUTE_KEYS = frozenset(
         "attempt_count",
         "budget_ratio",
         "client_type",
+        "content_export_policy",
+        "capability",
         "context_usage_ratio",
         "decision_type",
         "disposition",
         "output_type",
         "error_count",
         "failure_code",
+        "frame_sequence",
         "first_text_latency_ms",
         "from_phase",
         "guard_code",
         "input_tokens",
         "iteration",
+        "media_count",
+        "media_kind",
+        "model_role",
         "next_action",
         "next_attempt",
         "output_tokens",
         "provider_latency_ms",
+        "prompt_version",
         "response_present",
         "retry_exhausted",
         "execution_retry_count",
@@ -81,6 +89,7 @@ _ALLOWED_ATTRIBUTE_KEYS = frozenset(
         "tool_count",
         "tool_reported_latency_ms",
         "to_phase",
+        "trace_kind",
         "validation_status",
         "wall_latency_ms",
     }
@@ -214,11 +223,22 @@ def _root_span(
         for event in events
     )
     finished_at = max(event.created_at for event in events)
+    vision_trace = _is_vision_observation_trace(events)
+    diagnostic_attributes = (
+        {}
+        if vision_trace
+        else {
+            **_turn_summary_attributes(events),
+            **_text_latency_attributes(events),
+            **_agent_service_latency_attributes(events),
+            **build_turn_diagnostic(events).langfuse_trace_metadata(),
+        }
+    )
     return OtelSpanSpec(
         trace_id=events[0].trace_id,
         span_id=_root_span_id(events),
         parent_span_id=_external_parent_span_id(events),
-        name="agent.runtime",
+        name="vision.runtime" if vision_trace else "agent.runtime",
         start_time=started_at,
         end_time=finished_at,
         status=_root_status(events),
@@ -227,10 +247,7 @@ def _root_span(
             "langfuse.observation.type": "span",
             "assistant_agent.canonical_event": "run",
             "assistant_agent.node_name": "runtime",
-            **_turn_summary_attributes(events),
-            **_text_latency_attributes(events),
-            **_agent_service_latency_attributes(events),
-            **build_turn_diagnostic(events).langfuse_trace_metadata(),
+            **diagnostic_attributes,
             **_root_io_attributes(events, conversation=conversation),
         },
     )
@@ -244,7 +261,9 @@ def _external_parent_span_id(events: list[TraceEvent]) -> str | None:
         (
             event.parent_span_id
             for event in events
-            if event.parent_span_id and event.parent_span_id != root_span_id
+            if _event_name(event) == "run.started"
+            and event.parent_span_id
+            and event.parent_span_id != root_span_id
         ),
         None,
     )
@@ -357,13 +376,18 @@ def _trace_attributes(events: list[TraceEvent]) -> dict[str, Any]:
     session_id = _string_or_none(summary.get("session_id")) or first.session_id
     run_id = _string_or_none(summary.get("run_id")) or first.run_id
     trace_id = _string_or_none(summary.get("trace_id")) or first.trace_id
+    vision_trace = _is_vision_observation_trace(events)
     attrs: dict[str, Any] = {
-        "langfuse.trace.name": "assistant.turn",
+        "langfuse.trace.name": (
+            "vision.observation" if vision_trace else "assistant.turn"
+        ),
         "langfuse.trace.metadata.assistant_trace_id": trace_id,
         "langfuse.trace.metadata.run_id": run_id,
         "assistant_agent.trace_id": trace_id,
         "assistant_agent.run_id": run_id,
-        "assistant_agent.modality": TEXT_MODALITY,
+        "assistant_agent.modality": (
+            VISION_MODALITY if vision_trace else TEXT_MODALITY
+        ),
     }
     if user_id:
         attrs["langfuse.user.id"] = user_id
@@ -372,8 +396,15 @@ def _trace_attributes(events: list[TraceEvent]) -> dict[str, Any]:
         attrs["assistant_agent.agent_session_id"] = session_id
         attrs["langfuse.trace.metadata.agent_session_id"] = session_id
     client_type = _string_or_none(summary.get("client_type"))
-    attrs["assistant_agent.session_scope"] = _session_scope(client_type)
-    attrs["langfuse.trace.metadata.session_scope"] = _session_scope(client_type)
+    session_scope = (
+        "agent_service_connection"
+        if vision_trace
+        else _session_scope(client_type)
+    )
+    attrs["assistant_agent.session_scope"] = session_scope
+    attrs["langfuse.trace.metadata.session_scope"] = session_scope
+    if vision_trace:
+        attrs["langfuse.trace.metadata.trace_kind"] = "vision_observation"
     return attrs
 
 
@@ -486,6 +517,36 @@ def _root_io_attributes(
     *,
     conversation: "TraceConversationView | None",
 ) -> dict[str, str]:
+    if _is_vision_observation_trace(events):
+        terminal = next(
+            (
+                event
+                for event in reversed(events)
+                if _event_name(event) == "vision.observation.summary"
+            ),
+            events[-1],
+        )
+        input_value = _json_value(
+            {
+                "modality": VISION_MODALITY,
+                "content_exported": False,
+                "media_kind": terminal.attributes.get("media_kind", "live_view"),
+            }
+        )
+        output_value = _json_value(
+            {
+                "status": terminal.output_summary.get(
+                    "status", terminal.status or "unknown"
+                ),
+                "content_exported": False,
+            }
+        )
+        return {
+            "langfuse.observation.input": input_value,
+            "langfuse.observation.output": output_value,
+            "langfuse.trace.input": input_value,
+            "langfuse.trace.output": output_value,
+        }
     summary = _latest_turn_summary(events)
     if conversation is not None:
         input_payload: dict[str, Any] = {
@@ -559,7 +620,7 @@ def _event_io_attributes(
         if event.tool_name:
             output_payload["tool_name"] = event.tool_name
     elif name in {"tool.finished", "tool.failed"}:
-        if conversation is not None:
+        if conversation is not None and not _metadata_only_content(event):
             input_payload = {"tool_name": event.tool_name, **event.input_summary}
             output_payload = {
                 "tool_name": event.tool_name,
@@ -600,10 +661,16 @@ def _event_io_attributes(
                 ("tool_call_id", "source_tool_span_id"),
             ),
         }
-        tool_observation = _tool_observation_for_event(
-            conversation,
-            observation_index=_mapping_int(event.attributes, "observation_index"),
-            tool_name=event.tool_name,
+        tool_observation = (
+            None
+            if _metadata_only_content(event)
+            else _tool_observation_for_event(
+                conversation,
+                observation_index=_mapping_int(
+                    event.attributes, "observation_index"
+                ),
+                tool_name=event.tool_name,
+            )
         )
         output_payload = (
             dict(tool_observation.observation)
@@ -977,7 +1044,31 @@ def _latest_turn_summary(events: list[TraceEvent]) -> dict[str, Any]:
 
 
 def _root_span_id(events: list[TraceEvent]) -> str:
-    return _stable_span_id(events[0].trace_id, "agent.runtime")
+    root_name = (
+        "vision.runtime"
+        if _is_vision_observation_trace(events)
+        else "agent.runtime"
+    )
+    return _stable_span_id(events[0].trace_id, root_name)
+
+
+def _is_vision_observation_trace(events: Iterable[TraceEvent]) -> bool:
+    return any(
+        _event_name(event) == "vision.observation.summary"
+        and event.attributes.get("trace_kind") == "vision_observation"
+        for event in events
+    )
+
+
+def _metadata_only_content(event: TraceEvent) -> bool:
+    return any(
+        source.get("content_export_policy") == "metadata_only"
+        for source in (
+            event.attributes,
+            event.input_summary,
+            event.output_summary,
+        )
+    )
 
 
 def _stable_span_id(trace_id: str, name: str) -> str:

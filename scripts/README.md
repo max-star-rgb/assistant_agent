@@ -16,12 +16,14 @@ eval、Gateway 主链路覆盖的 probe 不应继续沉积到本目录。
   one Run process, and stops the containers without deleting data when terminated.
 - `scripts/run_mem0.py`: PyCharm-friendly local Mem0 operator console. It starts
   Mem0 + Qdrant, waits for health, then stays attached at a `mem0> ` prompt with
-  `help`, `status`, `list`, `get`, `history`, `add`, `update`, `delete`, and
-  `exit` commands. The console directly displays and manages raw records across
+  `help`, `status`, `list`, `get`, `history`, `add`, `update`, `delete`, `clear`,
+  and `exit` commands. The console directly displays and manages raw records across
   all Mem0 identities; `add` stores text directly by default and only enables
   Mem0 inference with `add --infer`. Single-record deletion requires confirmation
-  unless `--yes` is supplied, and no bulk-clear command is exposed. Exiting leaves
-  both containers and persistent data running.
+  unless `--yes` is supplied. `clear` accepts one or more raw identity filters;
+  `clear --all` resets every memory plus Mem0 history and always requires typing
+  `DELETE ALL MEMORIES` (`--yes` is rejected for this scope). Exiting leaves both
+  containers and persistent data running.
 - `scripts/migrate_mem0_memories_to_chinese.py`：检查或迁移一个 runtime 用户已有的
   Mem0 记忆为简体中文。默认命令只读；更新要求 real Provider mode、已配置的 Qwen 和
   Mem0，并同时传入 `--apply` 与 `--allow-real-provider`。输出只包含数量、memory ID、

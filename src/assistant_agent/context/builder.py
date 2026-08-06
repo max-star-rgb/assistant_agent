@@ -20,6 +20,7 @@ from assistant_agent.tools.models import ToolSpec
 from assistant_agent.tools.ids import (
     LOAD_SKILL_REFERENCE_TOOL_NAME,
     LOAD_SKILL_TOOL_NAME,
+    VISUAL_MEMORY_SEARCH_TOOL_NAME,
 )
 from assistant_agent.tools.spec_adapters import tool_specs_to_openai_tools
 from assistant_agent.context.compactor import (
@@ -603,10 +604,18 @@ def _source_counts(
     context_source_issue_count: int,
 ) -> dict[str, int]:
     conversation_history = request.metadata.get("conversation_history")
+    proactive_session_events = request.metadata.get(
+        "_trusted_proactive_session_events"
+    )
     return {
         "conversation_turns": len(conversation_history) if isinstance(conversation_history, list) else 0,
         "conversation_recent_turns": _metadata_int(request, "conversation_context_recent_turns"),
         "conversation_compacted_turns": _metadata_int(request, "conversation_context_compacted_turns"),
+        "proactive_session_events": (
+            len(proactive_session_events)
+            if isinstance(proactive_session_events, list)
+            else 0
+        ),
         "memory_items": memory_item_count,
         "memory_blocks": len(memory_blocks),
         "realtime_task_state": 1 if realtime_task_state is not None else 0,
@@ -650,7 +659,15 @@ def _budget_report(
     compression_stage: str = COMPRESSION_STAGE_NONE,
     compression_reasons: list[str] | None = None,
 ) -> ContextBudgetReport:
-    request_chars = len(request.text or "")
+    proactive_session_events = request.metadata.get(
+        "_trusted_proactive_session_events"
+    )
+    proactive_session_chars = (
+        _json_chars(proactive_session_events)
+        if isinstance(proactive_session_events, list)
+        else 0
+    )
+    request_chars = len(request.text or "") + proactive_session_chars
     conversation_chars = len(conversation_text)
     memory_chars = len(memory_text)
     realtime_task_state_chars = _json_chars(realtime_task_state) if realtime_task_state else 0
@@ -964,10 +981,40 @@ def _trim_observations_to_chars(
     *,
     max_chars: int,
 ) -> list[dict[str, Any]]:
-    if max_chars <= 0 or not observations:
+    if not observations:
         return []
     if _json_chars(observations) <= max_chars:
         return observations
+
+    protected = [
+        observation
+        for observation in observations
+        if observation.get("tool_name") == VISUAL_MEMORY_SEARCH_TOOL_NAME
+    ]
+    if protected:
+        candidate = [
+            observation
+            if observation.get("tool_name") == VISUAL_MEMORY_SEARCH_TOOL_NAME
+            else _summarize_observation_for_budget(observation)
+            for observation in observations
+        ]
+        while _json_chars(candidate) > max_chars:
+            removable_index = next(
+                (
+                    index
+                    for index, observation in enumerate(candidate)
+                    if observation.get("tool_name")
+                    != VISUAL_MEMORY_SEARCH_TOOL_NAME
+                ),
+                None,
+            )
+            if removable_index is None:
+                break
+            candidate.pop(removable_index)
+        return candidate
+
+    if max_chars <= 0:
+        return []
 
     candidate = [_summarize_observation_for_budget(observation) for observation in observations]
     while len(candidate) > 1 and _json_chars(candidate) > max_chars:

@@ -144,25 +144,19 @@ def test_visual_memory_tool_runs_through_validator_executor_registry(tmp_path: P
 
     assert validation.accepted is True
     assert result.success is True
-    assert result.data["status"] == "confirmed"
+    assert result.data["status"] == "records"
+    assert result.data["observations"] == [
+        {"timestamp_ms": 100, "text": "白色低帮运动鞋"}
+    ]
     assert "evidence_ref" not in str(result.data)
     assert "search_embedding" not in str(result.data)
     coordinator_store.close()
     semantic_pool.close()
 
 
-def test_query_leases_prevent_capacity_eviction_while_embedding_blocks(
+def test_query_leases_prevent_capacity_eviction_while_store_read_blocks(
     tmp_path: Path,
 ) -> None:
-    provider = _BlockingTextProvider()
-    coordinator_store = SessionEmbeddingCoordinatorStore(
-        factory=lambda _user_id, session_id: SessionEmbeddingCoordinator(
-            session_id,
-            provider if session_id == "session-1" else _FixedTextProvider(),
-        ),
-        max_sessions=1,
-    )
-    first_coordinator = coordinator_store.resolve("user-1", "session-1")
     semantic_pool = SessionVisualSemanticStorePool(
         root=tmp_path / "pool",
         max_sessions=1,
@@ -185,10 +179,17 @@ def test_query_leases_prevent_capacity_eviction_while_embedding_blocks(
             created_at_ms=1,
         )
     )
-    tool = VisualMemorySearchTool(
-        coordinator_store=coordinator_store,
-        semantic_store_pool=semantic_pool,
-    )
+    started = Event()
+    release = Event()
+    original_text_timeline = first_store.text_timeline
+
+    def blocking_text_timeline(**kwargs):
+        started.set()
+        release.wait(timeout=2.0)
+        return original_text_timeline(**kwargs)
+
+    first_store.text_timeline = blocking_text_timeline
+    tool = VisualMemorySearchTool(semantic_store_pool=semantic_pool)
     outcomes = []
     errors: list[BaseException] = []
 
@@ -208,17 +209,14 @@ def test_query_leases_prevent_capacity_eviction_while_embedding_blocks(
 
     query_thread = Thread(target=run_query)
     query_thread.start()
-    assert provider.started.wait(timeout=1.0)
+    assert started.wait(timeout=1.0)
 
-    coordinator_store.resolve("user-2", "session-2")
     semantic_pool.resolve("user-2", "session-2")
 
-    assert first_coordinator._closed is False
     assert first_store.closed is False
-    provider.release.set()
+    release.set()
     query_thread.join(timeout=2.0)
 
     assert errors == []
     assert outcomes[0].success is True
-    coordinator_store.close()
     semantic_pool.close()

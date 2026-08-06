@@ -16,7 +16,7 @@ class _SemanticStore:
     def __init__(self, available: bool) -> None:
         self.available = available
 
-    def has_searchable_history(self) -> bool:
+    def has_visual_history(self) -> bool:
         return self.available
 
 

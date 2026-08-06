@@ -89,9 +89,20 @@ def list_unfiltered_memories(
 ) -> list[dict[str, Any]]:
     """List raw records across identities through Mem0's vector-store formatter."""
 
+    return list_raw_memories(mem0_memory, filters={}, limit=limit)
+
+
+def list_raw_memories(
+    mem0_memory: Any,
+    *,
+    filters: Mapping[str, str],
+    limit: int | None = None,
+) -> list[dict[str, Any]]:
+    """List complete raw records with optional identity filters."""
+
     def fetch(top_k: int) -> list[Mapping[str, Any]]:
         return mem0_memory._get_all_from_vector_store(
-            {},
+            dict(filters),
             top_k,
             show_expired=True,
             output_limit=top_k,
@@ -100,6 +111,61 @@ def list_unfiltered_memories(
     if limit is not None:
         return [dict(item) for item in fetch(limit)]
     return collect_all_memories(fetch)
+
+
+def clear_memories(
+    mem0_memory: Any,
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Clear one explicit identity scope or the explicitly opted-in whole store."""
+
+    allowed_keys = {"all", "user_id", "agent_id", "run_id"}
+    unknown_keys = set(payload) - allowed_keys
+    if unknown_keys:
+        raise ValueError("unsupported clear fields")
+
+    if "all" in payload and not isinstance(payload["all"], bool):
+        raise ValueError("all must be a boolean")
+
+    filters: dict[str, str] = {}
+    for key in ("user_id", "agent_id", "run_id"):
+        value = payload.get(key)
+        if value is None or value == "":
+            continue
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"{key} must be a non-empty string")
+        filters[key] = value.strip()
+
+    if "all" in payload and filters:
+        raise ValueError("all cannot be combined with identity filters")
+
+    if payload.get("all") is True:
+        deleted_count = len(list_unfiltered_memories(mem0_memory))
+        mem0_memory.reset()
+        return {
+            "success": True,
+            "scope": "all",
+            "deleted_count": deleted_count,
+        }
+
+    if not filters:
+        raise ValueError("clear requires identity filters or all=true")
+
+    remaining = list_raw_memories(mem0_memory, filters=filters)
+    deleted_count = len(remaining)
+    while remaining:
+        before_ids = tuple(str(item.get("id") or "") for item in remaining)
+        mem0_memory.delete_all(**filters)
+        remaining = list_raw_memories(mem0_memory, filters=filters)
+        after_ids = tuple(str(item.get("id") or "") for item in remaining)
+        if after_ids == before_ids:
+            raise RuntimeError("Mem0 identity clear made no progress")
+    return {
+        "success": True,
+        "scope": "identity",
+        "filters": filters,
+        "deleted_count": deleted_count,
+    }
 
 
 def resolve_mem0_provider_environment(

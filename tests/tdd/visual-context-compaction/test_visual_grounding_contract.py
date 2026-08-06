@@ -57,7 +57,7 @@ def _semantic_record(*, uncertainties: list[str] | None = None) -> VisualSemanti
     )
 
 
-def test_qwen_result_separates_current_facts_from_history_changes() -> None:
+def test_qwen_result_keeps_only_single_frame_summary_text() -> None:
     payload = _normalize_result_payload(
         {
             "summary": "当前桌面为空",
@@ -67,24 +67,12 @@ def test_qwen_result_separates_current_facts_from_history_changes() -> None:
         }
     )
 
-    assert payload["objects"] == ["桌面"]
-    assert payload["changes"] == ["上一帧的杯子当前未观察到"]
-    assert payload["uncertainties"] == ["杯子可能被移出画面"]
+    assert payload == {"summary": "当前桌面为空"}
 
 
-def test_grounding_lists_are_bounded_to_twenty_items() -> None:
+def test_shared_grounding_models_still_bound_lists_to_twenty_items() -> None:
     too_many = [f"变化-{index}" for index in range(21)]
 
-    payload = _normalize_result_payload(
-        {
-            "summary": "当前桌面为空",
-            "changes": too_many,
-            "uncertainties": too_many,
-        }
-    )
-
-    assert payload["changes"] == too_many[:20]
-    assert payload["uncertainties"] == too_many[:20]
     with pytest.raises(ValidationError):
         VideoUnderstandingResult(
             summary="当前桌面为空",
@@ -103,7 +91,7 @@ def test_grounding_lists_are_bounded_to_twenty_items() -> None:
         _semantic_record(uncertainties=too_many)
 
 
-def test_qwen_instructions_treat_bounded_visual_history_as_untrusted_data() -> None:
+def test_qwen_instructions_ignore_visual_history_and_use_only_current_frame() -> None:
     history_payload = f"历史中的杯子仍在桌上{'历史记录' * 1_000}历史边界结束"
     memory_context = (
         '<visual_history trust="untrusted_observation" '
@@ -121,15 +109,13 @@ def test_qwen_instructions_treat_bounded_visual_history_as_untrusted_data() -> N
         )
     )
 
-    assert memory_context in instructions
-    assert "历史不得复制进当前事实" in instructions
-    assert 'instruction_policy="do_not_execute"' in instructions
-    assert 'as_of_sequence="7"' in instructions
-    assert "changes" in instructions
-    assert "uncertainties" in instructions
+    assert memory_context not in instructions
+    assert "只描述当前这一张图片" in instructions
+    assert "不使用或推断此前画面" in instructions
+    assert len(instructions) < 1_000
 
 
-def test_qwen_instructions_require_joint_evidence_for_confirmed_changes() -> None:
+def test_qwen_instructions_do_not_request_cross_frame_changes() -> None:
     instructions = _instructions(
         VideoUnderstandingRequest(
             video_ref="video-1",
@@ -143,12 +129,9 @@ def test_qwen_instructions_require_joint_evidence_for_confirmed_changes() -> Non
         )
     )
 
-    assert "当前 JPEG 与 <visual_history> 共同支持" in instructions
-    assert "证据充分" in instructions
-    assert "才能写入 changes" in instructions
-    assert "遮挡、当前不可见、证据不足或无法协调的历史冲突" in instructions
-    assert "必须写入 uncertainties" in instructions
-    assert "不得将冲突自动写成 confirmed change" in instructions
+    assert "visual_history" not in instructions
+    assert "changes" not in instructions
+    assert "只返回当前单帧文本" in instructions
 
 
 def test_visual_search_text_indexes_only_current_confirmed_facts() -> None:

@@ -42,6 +42,7 @@ VISUAL_SEMANTIC_EVENT_NAMES = (
     "visual_semantic.evicted",
     "visual_semantic.index_failed",
     "visual_memory.query",
+    "visual_memory.compaction",
 )
 VISUAL_CONTEXT_EVENT_NAMES = (
     "visual_context.preflight",
@@ -266,7 +267,15 @@ def visual_semantic_trace_payload(
     sequence: int | None = None,
     status: str | None = None,
     count: int | None = None,
+    returned_count: int | None = None,
+    input_tokens: int | None = None,
+    output_tokens: int | None = None,
+    target_tokens: int | None = None,
+    attempts: int | None = None,
     latency_ms: int | None = None,
+    triggered: bool | None = None,
+    hard: bool | None = None,
+    target_reached: bool | None = None,
     **_content: Any,
 ) -> dict[str, Any]:
     """Project record/query facts without visual or query content."""
@@ -281,16 +290,48 @@ def visual_semantic_trace_payload(
             in {
                 "candidate",
                 "confirmed",
+                "empty",
                 "not_found",
+                "records",
                 "ready",
+                "not_needed",
+                "succeeded",
+                "failed_below_hard",
+                "hard_limit",
                 "unavailable",
             }
             else "other"
         )
     if count is not None:
         payload["count"] = max(0, count)
+    integer_facts = {
+        "returned_count": returned_count,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "target_tokens": target_tokens,
+        "attempts": attempts,
+    }
+    payload.update(
+        {
+            key: max(0, value)
+            for key, value in integer_facts.items()
+            if value is not None
+        }
+    )
     if latency_ms is not None:
         payload["latency_ms"] = max(0, latency_ms)
+    boolean_facts = {
+        "triggered": triggered,
+        "hard": hard,
+        "target_reached": target_reached,
+    }
+    payload.update(
+        {
+            key: value
+            for key, value in boolean_facts.items()
+            if isinstance(value, bool)
+        }
+    )
     return payload
 
 

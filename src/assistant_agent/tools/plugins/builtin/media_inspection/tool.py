@@ -27,6 +27,7 @@ from assistant_agent.media.vision.vision_client import (
     video_request_from_vision_request,
     vision_request_has_video,
 )
+from assistant_agent.media.vision.observability import observe_vision_inference
 from assistant_agent.providers.provider_errors import (
     ProviderAdapterError,
     build_provider_error,
@@ -54,6 +55,7 @@ class MediaInspectTool(ToolBase):
     category = "read"
     requires_media = ["image", "video"]
     media_scope = "attached"
+    trace_content_policy = "metadata_only"
     runtime_input_bindings = (
         RuntimeInputBinding(field="image_ids", source="request", key="image_ids"),
         RuntimeInputBinding(field="video_ids", source="request", key="video_ids"),
@@ -128,7 +130,14 @@ class MediaInspectTool(ToolBase):
             )
             return result.model_copy(update={"tool_name": self.name})
         try:
-            result = self.client.understand(input)
+            result = observe_vision_inference(
+                lambda: self.client.understand(input),
+                context=context,
+                capability=IMAGE_UNDERSTANDING_CAPABILITY,
+                source="request_image",
+                media_kind="image",
+                media_count=len(input.image_ids),
+            )
         except ProviderAdapterError as exc:
             capability = IMAGE_UNDERSTANDING_CAPABILITY
             provider = getattr(

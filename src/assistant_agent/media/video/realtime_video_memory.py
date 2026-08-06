@@ -32,6 +32,8 @@ class RealtimeVideoObservationDiagnostics(BaseModel):
     keyframe_selection_latency_ms: int | None = Field(default=None, ge=0)
     queue_wait_latency_ms: int | None = Field(default=None, ge=0)
     observation_latency_ms: int | None = Field(default=None, ge=0)
+    text_embedding_latency_ms: int | None = Field(default=None, ge=0)
+    semantic_store_write_latency_ms: int | None = Field(default=None, ge=0)
     published_at_ms: int | None = Field(default=None, ge=0)
     published_at_ns: int | None = Field(default=None, ge=0)
     semantic_publish_latency_ms: int | None = Field(default=None, ge=0)
@@ -43,6 +45,14 @@ class RealtimeVideoObservationDiagnostics(BaseModel):
     completed_sequence: int | None = Field(default=None, ge=0)
     first_delta_latency_ms: int | None = Field(default=None, ge=0)
     total_observation_latency_ms: int | None = Field(default=None, ge=0)
+    jpeg_prepare_latency_ms: int | None = Field(default=None, ge=0)
+    connection_setup_latency_ms: int | None = Field(default=None, ge=0)
+    instruction_update_latency_ms: int | None = Field(default=None, ge=0)
+    media_commit_latency_ms: int | None = Field(default=None, ge=0)
+    response_first_delta_latency_ms: int | None = Field(default=None, ge=0)
+    response_tail_latency_ms: int | None = Field(default=None, ge=0)
+    response_latency_ms: int | None = Field(default=None, ge=0)
+    result_parse_latency_ms: int | None = Field(default=None, ge=0)
 
 
 class RealtimeVideoSnapshot(BaseModel):
@@ -422,6 +432,21 @@ def project_realtime_video_context(
         frame_capture_age_ms=capture_age,
         snapshot_publish_age_ms=publish_age,
         observation_latency_ms=(diagnostics.observation_latency_ms if diagnostics is not None else None),
+        h264_decode_latency_ms=(
+            diagnostics.h264_decode_latency_ms if diagnostics is not None else None
+        ),
+        keyframe_selection_latency_ms=(
+            diagnostics.keyframe_selection_latency_ms if diagnostics is not None else None
+        ),
+        queue_wait_latency_ms=(
+            diagnostics.queue_wait_latency_ms if diagnostics is not None else None
+        ),
+        text_embedding_latency_ms=(
+            diagnostics.text_embedding_latency_ms if diagnostics is not None else None
+        ),
+        semantic_store_write_latency_ms=(
+            diagnostics.semantic_store_write_latency_ms if diagnostics is not None else None
+        ),
         semantic_publish_latency_ms=(
             diagnostics.semantic_publish_latency_ms if diagnostics is not None else None
         ),
@@ -440,6 +465,30 @@ def project_realtime_video_context(
         ),
         total_observation_latency_ms=(
             diagnostics.total_observation_latency_ms if diagnostics is not None else None
+        ),
+        jpeg_prepare_latency_ms=(
+            diagnostics.jpeg_prepare_latency_ms if diagnostics is not None else None
+        ),
+        connection_setup_latency_ms=(
+            diagnostics.connection_setup_latency_ms if diagnostics is not None else None
+        ),
+        instruction_update_latency_ms=(
+            diagnostics.instruction_update_latency_ms if diagnostics is not None else None
+        ),
+        media_commit_latency_ms=(
+            diagnostics.media_commit_latency_ms if diagnostics is not None else None
+        ),
+        response_first_delta_latency_ms=(
+            diagnostics.response_first_delta_latency_ms if diagnostics is not None else None
+        ),
+        response_tail_latency_ms=(
+            diagnostics.response_tail_latency_ms if diagnostics is not None else None
+        ),
+        response_latency_ms=(
+            diagnostics.response_latency_ms if diagnostics is not None else None
+        ),
+        result_parse_latency_ms=(
+            diagnostics.result_parse_latency_ms if diagnostics is not None else None
         ),
     )
 

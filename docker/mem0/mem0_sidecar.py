@@ -14,6 +14,7 @@ os.environ.setdefault("MEM0_TELEMETRY", "False")
 from mem0 import Memory
 from mem0_env import (
     LONG_TERM_MEMORY_CUSTOM_INSTRUCTIONS,
+    clear_memories,
     collect_all_memories,
     list_unfiltered_memories,
     resolve_mem0_provider_environment,
@@ -169,11 +170,13 @@ def delete_memory(memory_id: str) -> dict[str, Any]:
 
 
 @app.delete("/memories")
-def clear_memories(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
-    filters = _entity_filters(payload)
-    before = _result(memory().get_all(filters=filters)).get("results", [])
-    memory().delete_all(**filters)
-    return {"success": True, "deleted_count": len(before)}
+def clear_memory_records(
+    payload: dict[str, Any] = Body(default={}),
+) -> dict[str, Any]:
+    try:
+        return clear_memories(memory(), payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _qdrant_client() -> QdrantClient:

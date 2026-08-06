@@ -1,6 +1,7 @@
 """Default LangGraph runtime for agent execution."""
 
 import asyncio
+import hashlib
 import json
 from pathlib import Path
 from time import perf_counter, time
@@ -66,6 +67,12 @@ from assistant_agent.media.video.realtime_video_memory import project_realtime_v
 from assistant_agent.media.video.visual_context_compactor import (
     create_visual_context_compactor,
 )
+from assistant_agent.media.video.visual_timeline_compactor import (
+    create_visual_timeline_compactor,
+)
+from assistant_agent.media.video.visual_timeline_context import (
+    VisualTimelineContextService,
+)
 from assistant_agent.context.soul_source import (
     SOUL_COMPILED_MAX_CHARS,
     SOUL_SOURCE_ID,
@@ -77,7 +84,10 @@ from assistant_agent.context.sources import (
 )
 from assistant_agent.runtime.run_history import RunHistoryStore
 from assistant_agent.runtime.session_store import SessionStore, create_session_store
-from assistant_agent.tools.ids import LIVE_VIEW_INSPECT_TOOL_NAME
+from assistant_agent.tools.ids import (
+    LIVE_VIEW_INSPECT_TOOL_NAME,
+    VISUAL_MEMORY_SEARCH_TOOL_NAME,
+)
 from assistant_agent.observability.trace_store import InMemoryTraceStore, TraceStore, append_observability_event
 from assistant_agent.observability.turn_summary import append_runtime_turn_summary
 from assistant_agent.media.video.video_context import InMemoryVideoContextStore, VideoContextStore
@@ -173,7 +183,12 @@ class AgentGraphRuntime:
             )
         )
         self.visual_reminder_registry = (
-            visual_reminder_registry or VisualReminderRegistry()
+            visual_reminder_registry
+            or VisualReminderRegistry(
+                delivery_timeout_seconds=(
+                    self.config.proactive_message_delivery_timeout_seconds
+                )
+            )
         )
         self.long_term_memory_service = (
             long_term_memory_service
@@ -264,6 +279,7 @@ class AgentGraphRuntime:
         self.session_store = session_store or create_session_store(self.config)
         self.event_sink = event_sink
         self.trace_store = trace_store or InMemoryTraceStore()
+        self.visual_reminder_registry.set_trace_store(self.trace_store)
         self.chat_adapter = chat_adapter or create_chat_adapter(self.config)
         self.visual_context_token_counter = create_visual_context_token_counter(
             self.config
@@ -283,6 +299,40 @@ class AgentGraphRuntime:
             ),
             summary_max_tokens=self.config.visual_context_summary_max_tokens,
         )
+        self.visual_timeline_compactor = create_visual_timeline_compactor(
+            self.config,
+            self.chat_adapter,
+            token_counter=self.visual_context_token_counter,
+        )
+        self.visual_timeline_context_service = (
+            VisualTimelineContextService(
+                compactor=self.visual_timeline_compactor,
+                token_counter=self.visual_context_token_counter,
+                window_policy=self.visual_context_window_policy,
+                keep_recent_observations=(
+                    self.config.visual_context_keep_recent_records
+                ),
+            )
+            if self.visual_timeline_compactor is not None
+            and self.visual_context_token_counter is not None
+            else None
+        )
+        try:
+            visual_memory_tool = self.registry.get(
+                VISUAL_MEMORY_SEARCH_TOOL_NAME
+            )
+        except KeyError:
+            pass
+        else:
+            configure_timeline_context = getattr(
+                visual_memory_tool,
+                "configure_timeline_context_service",
+                None,
+            )
+            if callable(configure_timeline_context):
+                configure_timeline_context(
+                    self.visual_timeline_context_service
+                )
         self.context_token_counter = (
             context_token_counter
             if context_token_counter is not None
@@ -408,6 +458,7 @@ class AgentGraphRuntime:
         )
         self._refresh_visual_memory_capability(request)
         self._refresh_visual_reminder_capability(request)
+        self._attach_proactive_session_context(request)
         base_event_sink = event_sink or self.event_sink
         run_event_sink = (
             _ResponseDeltaTrackingEventSink(base_event_sink)
@@ -607,6 +658,7 @@ class AgentGraphRuntime:
                 )
         runtime_event_publisher.deliver_run_terminal(terminal_fact)
         if terminal_status == "completed":
+            _record_local_delivered_response(state)
             self.long_term_memory_service.enqueue_completed_turn(
                 trace_store=self.trace_store,
                 state=state,
@@ -644,7 +696,7 @@ class AgentGraphRuntime:
         )
         if (
             semantic_store is not None
-            and semantic_store.has_searchable_history()
+            and semantic_store.has_visual_history()
         ):
             request.metadata["_trusted_visual_memory_available"] = True
         if is_trusted_agent_service_request(request):
@@ -674,6 +726,19 @@ class AgentGraphRuntime:
         )
         if manager is not None:
             request.metadata["_trusted_visual_reminder_available"] = True
+
+    def _attach_proactive_session_context(self, request: UserRequest) -> None:
+        """Overwrite caller data with bounded Runtime-owned delivery evidence."""
+
+        request.metadata.pop("_trusted_proactive_session_events", None)
+        events = self.visual_reminder_registry.recent_session_events(
+            request.user_id,
+            request.session_id,
+        )
+        if events:
+            request.metadata["_trusted_proactive_session_events"] = [
+                event.model_dump(mode="json") for event in events
+            ]
 
     def drain_memory_ingestions(self, *, timeout: float | None = None) -> bool:
         """Wait for accepted memory ingestions."""
@@ -1122,6 +1187,26 @@ def _record_local_trace_conversation(state: AgentState) -> None:
         trace_id=state.trace_id,
         user_text=user_text,
         assistant_text=assistant_text,
+    )
+
+
+def _record_local_delivered_response(state: AgentState) -> None:
+    from assistant_agent.observability.trace_content_policy import local_trace_content_enabled
+
+    if not local_trace_content_enabled() or state.response is None:
+        return
+    delivered_text = state.response.message.strip()
+    if not delivered_text:
+        return
+    from assistant_agent.observability.trace_conversation import (
+        get_default_trace_conversation_store,
+    )
+
+    get_default_trace_conversation_store().append_delivered(
+        user_id=state.user_id,
+        session_id=state.session_id,
+        trace_id=state.trace_id,
+        delivered_text=delivered_text,
     )
 
 

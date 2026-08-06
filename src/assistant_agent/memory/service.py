@@ -23,6 +23,7 @@ from assistant_agent.providers.provider_errors import (
     sanitize_error_message,
 )
 from assistant_agent.observability.trace_store import TraceStore
+from assistant_agent.tools.ids import VISUAL_REMINDER_MANAGE_TOOL_NAME
 
 
 _INGESTION_TEXT_POLICY = ProviderSafetyPolicy(
@@ -108,6 +109,13 @@ class LongTermMemoryService:
     ) -> bool:
         """Submit a completed turn without delaying the foreground response."""
 
+        skip_reason = _structured_ingestion_skip_reason(state)
+        if skip_reason is not None:
+            state.request.metadata["memory_ingestion"] = {
+                "status": "skipped",
+                "reason": skip_reason,
+            }
+            return False
         turn = self._completed_turn(state)
         if turn is None:
             state.request.metadata["memory_ingestion"] = {"status": "skipped"}
@@ -254,3 +262,14 @@ def _identity_from_state(state: AgentState) -> RequestIdentity:
 
 def _elapsed_ms(started: float) -> int:
     return max(0, int((perf_counter() - started) * 1000))
+
+
+def _structured_ingestion_skip_reason(state: AgentState) -> str | None:
+    """Return a deterministic skip reason from governed ToolResult identity."""
+
+    if state.tool_results and all(
+        result.tool_name == VISUAL_REMINDER_MANAGE_TOOL_NAME
+        for result in state.tool_results
+    ):
+        return "connection_scoped_visual_reminder"
+    return None

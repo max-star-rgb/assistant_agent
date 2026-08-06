@@ -12,7 +12,8 @@
 
 - `add` 默认发送 `infer=false`；只有显式 `--infer` 才发送 `infer=true`。
 - `list` 默认不携带身份过滤，显示所有用户原始记录。
-- 不提供批量清空命令。
+- `clear` 必须显式提供身份 filters 或 `--all`，两种范围不能混用。
+- 身份清空允许 `--yes`；全库清空拒绝 `--yes`，并要求现场输入 `DELETE ALL MEMORIES`。
 - `delete` 默认先展示目标并要求输入 `yes`；`--yes` 才跳过确认。
 - 不新增依赖，不调用真实 Provider，不改动 runtime Memory 治理链。
 - console 文案和 wrapper 不新增永久 pytest；sidecar 无身份列表 bugfix 使用独立 `tests/tdd/mem0-interactive-console/` 做临时 RED/GREEN。
@@ -125,3 +126,59 @@
 - [ ] **Step 3: 提交决策**
 
   当前工作区已有大量用户改动，且设计/计划文档默认不提交。本轮不自动提交；最终报告本任务文件、验证命令、Core invariant 与 Tests 决策，并说明未运行真实 Provider、未写入或删除真实记忆。
+
+### Task 4: 增加安全的批量清空
+
+**Files:**
+- Modify: `scripts/run_mem0.py`
+- Modify: `docker/mem0/mem0_env.py`
+- Modify: `docker/mem0/mem0_sidecar.py`
+- Modify: `tests/tdd/mem0-interactive-console/test_unfiltered_mem0_listing.py`
+- Create: `tests/tdd/mem0-interactive-console/test_mem0_clear.py`
+- Modify: `scripts/README.md`
+- Modify: `docs/memory-service-architecture.md`
+- Modify: `docs/superpowers/specs/2026-08-05-mem0-interactive-console-design.md`
+
+**Interfaces:**
+- Consumes: `_execute_command(...)`、sidecar `DELETE /memories`、Mem0 2.0.11 `delete_all(...)` 与 `reset()`。
+- Produces: `clear [identity filters] [--yes]`、`clear --all`，以及 `clear_memories(mem0_memory, payload) -> dict[str, Any]` 的可测试服务端门禁。
+
+- [ ] **Step 1: 写入服务端 RED 测试**
+
+  在 `test_mem0_clear.py` 使用记录调用的 fake Mem0，验证：空 payload 和 `all + filters` 被拒绝且无调用；身份 scope 只调用 `delete_all(**filters)`；全库 scope 只调用 `reset()`；两种结果均返回准确 `deleted_count` 且无 memory text。
+
+- [ ] **Step 2: 运行 RED 并确认缺失行为**
+
+  运行：
+
+  ```bash
+  MULTIMODAL_AGENT_PROVIDER_MODE=mock \
+  /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q \
+    tests/tdd/mem0-interactive-console
+  ```
+
+  预期新增用例因安全清空 helper 尚不存在而失败；现有无过滤列表用例保持通过。
+
+- [ ] **Step 3: 实现服务端门禁和准确计数**
+
+  在 `mem0_env.py` 增加按任意 filters 读取全部原始记录的 helper，并实现纯 Python `clear_memories`：严格检查 `all` 为 boolean、禁止空 scope 和混合 scope；身份分支先计数再 `delete_all`，全库分支先计数再 `reset`。FastAPI route 只把 payload 委托给 helper，并将 `ValueError` 映射为 HTTP 400。
+
+- [ ] **Step 4: 写入控制台 RED harness**
+
+  用受控 `request_fn` / `input_fn` 验证：`clear --user-id U` 非 `yes` 不发 DELETE；`clear --user-id U --yes` 发送 identity body；`clear --all` 错误短语不发送；正确短语发送 `{"all": true}`；`clear --all --yes` 和混合 scope 均报参数错误。
+
+- [ ] **Step 5: 实现统一 clear 命令**
+
+  在 `run_mem0.py` 增加 `_parse_clear_args` 和 handler。无参数时先要求输入 `identity` 或 `all`；身份模式逐项提示且至少一项非空。执行前显示结构化 scope；身份确认要求 `yes`，全库确认要求精确 `DELETE ALL MEMORIES`，取消只输出提示并继续 REPL。
+
+- [ ] **Step 6: 运行 GREEN 和静态验证**
+
+  显式运行临时 TDD、受控 console harness、`py_compile`、ruff、Compose config 与 `git diff --check`。预期全部退出码为 0；不得用真实 sidecar 执行 DELETE。
+
+- [ ] **Step 7: 同步帮助和文档**
+
+  在 console `help`、`scripts/README.md` 和 Memory 权威文档加入两种 clear 语法、确认规则、`reset()` 会清理 history 的说明，并删除“不提供批量清空”的旧表述。
+
+- [ ] **Step 8: 真实取消分支 smoke 与范围审计**
+
+  运行真实 `run_mem0.py`，输入 `clear --all` 后输入非确认短语，再执行 `status` 和 `exit`，证明取消后控制台继续且未发 DELETE；使用只读 `list --limit 1` 前后数量摘要确认无变化。最后检查工作区，不提交或混入既有用户改动。

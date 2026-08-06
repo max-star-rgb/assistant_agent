@@ -24,6 +24,7 @@ CONTEXT_REPORT_SECTION_NAMES = (
     "system_prompt",
     "developer_prompt",
     "request",
+    "proactive_session_events",
     "session_summary",
     "recent_transcript",
     "memory",
@@ -72,6 +73,19 @@ def build_context_report(
             chars=len(pack.request.text),
             estimated_tokens=_positive_or_none(pack.budget.request_tokens),
             source="UserRequest.text",
+        )
+    proactive_events = _proactive_session_events(pack.request.metadata)
+    if proactive_events:
+        sections["proactive_session_events"] = ContextReportSection(
+            chars=len(
+                json.dumps(
+                    proactive_events,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+            ),
+            item_count=len(proactive_events),
+            source="trusted_runtime.proactive_session_events",
         )
     if pack.context_summary is not None:
         sections["session_summary"] = ContextReportSection(
@@ -607,6 +621,13 @@ def _plan_chars(pack: AssistantContextPack) -> int:
 
 def _source_count(pack: AssistantContextPack, key: str) -> int:
     return _int_value(pack.source_counts.get(key))
+
+
+def _proactive_session_events(metadata: dict[str, Any]) -> list[dict[str, Any]]:
+    raw_events = metadata.get("_trusted_proactive_session_events")
+    if not isinstance(raw_events, list):
+        return []
+    return [event for event in raw_events if isinstance(event, dict)]
 
 
 def _json_chars(value: Any) -> int:
