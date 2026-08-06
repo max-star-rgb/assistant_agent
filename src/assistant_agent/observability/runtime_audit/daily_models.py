@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import date
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 DailyAttemptStatus = Literal["running", "succeeded", "failed"]
@@ -34,6 +34,33 @@ class DailyAuditIssue(BaseModel):
     code_evidence_refs: list[str] = Field(default_factory=list)
     runtime_verification_refs: list[str] = Field(default_factory=list)
 
+    @field_validator("issue_key")
+    @classmethod
+    def _normalize_issue_key(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("issue_key must not be blank")
+        return normalized
+
+    @field_validator("trace_evidence_refs", "runtime_verification_refs")
+    @classmethod
+    def _validate_trace_evidence_refs(cls, values: list[str]) -> list[str]:
+        if any(not _is_prefixed_ref(value, "trace:") for value in values):
+            raise ValueError("evidence reference must use trace:<nonempty-id>")
+        return values
+
+    @field_validator("code_evidence_refs")
+    @classmethod
+    def _validate_code_evidence_refs(cls, values: list[str]) -> list[str]:
+        if any(
+            not (_is_prefixed_ref(value, "code:") or _is_prefixed_ref(value, "test:"))
+            for value in values
+        ):
+            raise ValueError(
+                "evidence reference must use code:<nonempty-id> or test:<nonempty-id>"
+            )
+        return values
+
 
 class IssueRegistry(BaseModel):
     """Persisted lifecycle state for daily runtime-audit issues."""
@@ -42,6 +69,19 @@ class IssueRegistry(BaseModel):
         "assistant_agent_runtime_audit_issues_v1"
     )
     issues: dict[str, DailyAuditIssue] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _validate_issue_keys(self) -> "IssueRegistry":
+        for issue_key, issue in self.issues.items():
+            if issue_key != issue.issue_key:
+                raise ValueError("issue registry key must match issue.issue_key")
+        return self
+
+
+def _is_prefixed_ref(value: str, prefix: str) -> bool:
+    return value.startswith(prefix) and bool(value[len(prefix) :]) and not any(
+        character.isspace() for character in value
+    )
 
 
 class DailyAuditAttempt(BaseModel):

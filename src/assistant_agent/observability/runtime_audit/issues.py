@@ -28,14 +28,18 @@ def merge_issue_registry(
 ) -> IssueRegistry:
     """Merge daily observations without promoting unsupported issue states."""
 
+    previous = IssueRegistry.model_validate(previous.model_dump(mode="python"))
     merged = dict(previous.issues)
     observed_keys: set[str] = set()
-    for candidate in observed:
+    for unvalidated_candidate in observed:
+        candidate = DailyAuditIssue.model_validate(
+            unvalidated_candidate.model_dump(mode="python")
+        )
         if candidate.issue_key in observed_keys:
             raise ValueError(f"duplicate observed issue: {candidate.issue_key}")
         observed_keys.add(candidate.issue_key)
         current = previous.issues.get(candidate.issue_key)
-        _validate_observation(current, candidate)
+        _validate_observation(current, candidate, audit_date)
         merged[candidate.issue_key] = _merge_issue(current, candidate, audit_date)
     return IssueRegistry(issues=merged)
 
@@ -43,6 +47,7 @@ def merge_issue_registry(
 def _validate_observation(
     current: DailyAuditIssue | None,
     candidate: DailyAuditIssue,
+    audit_date: date,
 ) -> None:
     if current is None:
         if candidate.status not in _INITIAL_STATUSES:
@@ -55,19 +60,21 @@ def _validate_observation(
     if candidate.status == "code_addressed" and not candidate.code_evidence_refs:
         raise ValueError("code_addressed requires code evidence")
     if candidate.status == "runtime_verified":
-        _require_runtime_verification_evidence(current, candidate)
+        _require_runtime_verification_evidence(current, candidate, audit_date)
     if candidate.status == "regressed":
-        _require_new_trace_evidence(current, candidate)
+        _require_new_trace_evidence(current, candidate, audit_date)
 
 
 def _require_runtime_verification_evidence(
     current: DailyAuditIssue | None,
     candidate: DailyAuditIssue,
+    audit_date: date,
 ) -> None:
     if not candidate.runtime_verification_refs:
         raise ValueError("runtime_verified requires runtime verification evidence")
+    _require_later_audit_date(current, audit_date)
     if current is not None and not _new_refs(
-        candidate.runtime_verification_refs, _all_evidence_refs(current)
+        candidate.runtime_verification_refs, _trace_evidence_refs(current)
     ):
         raise ValueError("runtime_verified requires subsequent runtime verification evidence")
 
@@ -75,9 +82,11 @@ def _require_runtime_verification_evidence(
 def _require_new_trace_evidence(
     current: DailyAuditIssue | None,
     candidate: DailyAuditIssue,
+    audit_date: date,
 ) -> None:
+    _require_later_audit_date(current, audit_date)
     if current is None or not _new_refs(
-        candidate.trace_evidence_refs, _all_evidence_refs(current)
+        candidate.trace_evidence_refs, _trace_evidence_refs(current)
     ):
         raise ValueError("regressed requires new trace evidence")
 
@@ -109,12 +118,13 @@ def _merge_issue(
     )
 
 
-def _all_evidence_refs(issue: DailyAuditIssue) -> set[str]:
-    return set(
-        issue.trace_evidence_refs
-        + issue.code_evidence_refs
-        + issue.runtime_verification_refs
-    )
+def _require_later_audit_date(current: DailyAuditIssue | None, audit_date: date) -> None:
+    if current is None or audit_date <= current.last_seen:
+        raise ValueError("status transition must occur after previous last_seen")
+
+
+def _trace_evidence_refs(issue: DailyAuditIssue) -> set[str]:
+    return set(issue.trace_evidence_refs + issue.runtime_verification_refs)
 
 
 def _new_refs(candidate_refs: list[str], existing_refs: set[str]) -> set[str]:
