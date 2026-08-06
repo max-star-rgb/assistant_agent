@@ -21,9 +21,137 @@ from assistant_agent.observability.runtime_audit.daily_window import (
     window_for_date,
 )
 from assistant_agent.observability.runtime_audit.daily_models import DailyAuditAttempt
+from assistant_agent.observability.runtime_audit.issues import (
+    DailyAuditIssue,
+    IssueRegistry,
+    merge_issue_registry,
+)
 from assistant_agent.observability.runtime_audit.langfuse_source import LangfuseSdkAuditSource
 from assistant_agent.observability.runtime_audit.models import LangfuseTraceSnapshot
 from assistant_agent.observability.runtime_audit.storage import RuntimeAuditArtifactStore
+
+
+def test_issue_requires_runtime_evidence_before_verified() -> None:
+    """Would fail if code/test evidence alone could mark an issue runtime verified."""
+
+    previous = IssueRegistry(
+        issues={
+            "tool.email_for_market_data": DailyAuditIssue(
+                issue_key="tool.email_for_market_data",
+                status="open",
+                title="错误使用邮件搜索",
+                first_seen=date(2026, 8, 5),
+                last_seen=date(2026, 8, 5),
+                trace_evidence_refs=["trace:bad"],
+            )
+        }
+    )
+    addressed = previous.issues["tool.email_for_market_data"].model_copy(
+        update={
+            "status": "code_addressed",
+            "code_evidence_refs": [
+                "commit:abc123",
+                "test:tests/tdd/tool/test_market.py",
+            ],
+        }
+    )
+
+    merged = merge_issue_registry(previous, [addressed], date(2026, 8, 6))
+
+    assert merged.issues[addressed.issue_key].status == "code_addressed"
+
+    invalid = addressed.model_copy(update={"status": "runtime_verified"})
+    with pytest.raises(ValueError, match="runtime verification evidence"):
+        merge_issue_registry(merged, [invalid], date(2026, 8, 7))
+
+
+def test_issue_runtime_verification_requires_a_subsequent_trace() -> None:
+    """Would fail if an old bad trace could verify a later runtime fix."""
+
+    previous = IssueRegistry(
+        issues={
+            "tool.email_for_market_data": DailyAuditIssue(
+                issue_key="tool.email_for_market_data",
+                status="code_addressed",
+                title="错误使用邮件搜索",
+                first_seen=date(2026, 8, 5),
+                last_seen=date(2026, 8, 6),
+                trace_evidence_refs=["trace:bad"],
+                code_evidence_refs=["commit:abc123"],
+            )
+        }
+    )
+    verified = previous.issues["tool.email_for_market_data"].model_copy(
+        update={
+            "status": "runtime_verified",
+            "runtime_verification_refs": ["trace:fixed"],
+        }
+    )
+
+    merged = merge_issue_registry(previous, [verified], date(2026, 8, 7))
+
+    issue = merged.issues[verified.issue_key]
+    assert issue.status == "runtime_verified"
+    assert issue.runtime_verification_refs == ["trace:fixed"]
+    assert issue.last_seen == date(2026, 8, 7)
+
+
+def test_issue_regression_requires_a_new_trace_and_preserves_history() -> None:
+    """Would fail if an historic bad trace could regress or be overwritten."""
+
+    previous = IssueRegistry(
+        issues={
+            "tool.email_for_market_data": DailyAuditIssue(
+                issue_key="tool.email_for_market_data",
+                status="runtime_verified",
+                title="错误使用邮件搜索",
+                first_seen=date(2026, 8, 5),
+                last_seen=date(2026, 8, 7),
+                trace_evidence_refs=["trace:bad"],
+                code_evidence_refs=["commit:abc123"],
+                runtime_verification_refs=["trace:fixed"],
+            )
+        }
+    )
+    invalid = previous.issues["tool.email_for_market_data"].model_copy(
+        update={"status": "regressed"}
+    )
+    with pytest.raises(ValueError, match="new trace evidence"):
+        merge_issue_registry(previous, [invalid], date(2026, 8, 8))
+
+    regressed = invalid.model_copy(
+        update={"trace_evidence_refs": ["trace:bad", "trace:bad-again"]}
+    )
+    merged = merge_issue_registry(previous, [regressed], date(2026, 8, 8))
+
+    issue = merged.issues[regressed.issue_key]
+    assert issue.status == "regressed"
+    assert issue.trace_evidence_refs == ["trace:bad", "trace:bad-again"]
+    assert issue.runtime_verification_refs == ["trace:fixed"]
+
+
+def test_issue_registry_keeps_unobserved_history_and_round_trips_through_store(
+    tmp_path: Path,
+) -> None:
+    """Would fail if an absent observation closed an issue or storage lost its registry."""
+
+    issue = DailyAuditIssue(
+        issue_key="tool.email_for_market_data",
+        status="open",
+        title="错误使用邮件搜索",
+        first_seen=date(2026, 8, 5),
+        last_seen=date(2026, 8, 5),
+        trace_evidence_refs=["trace:bad"],
+    )
+    merged = merge_issue_registry(
+        IssueRegistry(issues={issue.issue_key: issue}), [], date(2026, 8, 6)
+    )
+    store = RuntimeAuditArtifactStore(tmp_path / "runtime_audit")
+
+    path = store.write_issue_registry(merged)
+
+    assert path == store.issues_path
+    assert store.read_issue_registry() == merged
 
 
 def test_daily_artifacts_keep_codex_json_internal_and_publish_one_markdown(tmp_path: Path) -> None:

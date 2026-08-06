@@ -15,6 +15,7 @@ from pydantic import BaseModel
 from assistant_agent.observability.runtime_audit.daily_models import (
     DailyAuditAttempt,
     DailyAuditWatermarkV2,
+    IssueRegistry,
 )
 from assistant_agent.observability.runtime_audit.models import RuntimeAuditBundle
 
@@ -96,6 +97,17 @@ class RuntimeAuditArtifactStore:
         path = self.attempts_dir / f"{attempt.attempt_id}.json"
         _atomic_write(path, attempt.model_dump_json(indent=2))
         return path
+
+    def read_issue_registry(self) -> IssueRegistry:
+        if not self.issues_path.exists():
+            return IssueRegistry()
+        return IssueRegistry.model_validate_json(
+            self.issues_path.read_text(encoding="utf-8")
+        )
+
+    def write_issue_registry(self, registry: IssueRegistry) -> Path:
+        _atomic_write(self.issues_path, registry.model_dump_json(indent=2))
+        return self.issues_path
 
     def daily_report_path(self, audit_date: date) -> Path:
         return self.reports_dir / f"{audit_date.isoformat()}.md"
