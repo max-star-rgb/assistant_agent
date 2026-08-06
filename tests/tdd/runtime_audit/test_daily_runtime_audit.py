@@ -81,6 +81,138 @@ def test_empty_day_report_is_short_and_explicitly_successful() -> None:
     assert "审计任务运行正常" in markdown
 
 
+@pytest.mark.parametrize(
+    ("langfuse_available", "local_available"),
+    [(False, True), (True, False), (False, False)],
+)
+def test_empty_day_report_requires_all_evidence_sources(
+    langfuse_available: bool,
+    local_available: bool,
+) -> None:
+    """Would fail if incomplete evidence were presented as a successful empty day."""
+
+    markdown = report_module.render_empty_daily_report(
+        date(2026, 8, 5),
+        langfuse_available=langfuse_available,
+        local_available=local_available,
+    )
+
+    assert "审计未完成" in markdown
+    assert "昨日无可审计对话" not in markdown
+    assert "审计任务运行正常" not in markdown
+
+
+def test_daily_report_escapes_plain_text_and_keeps_body_machine_ids_in_appendix() -> None:
+    """Would fail if report text could inject Markdown or expose evidence IDs in its body."""
+
+    report = daily_models_module.DailyCodexAuditReport(
+        audit_date=date(2026, 8, 5),
+        daily_summary="结论见 trace:body-summary\n# 伪造标题",
+        activity_summary="- [伪造链接](https://invalid.example)",
+        issues=[
+            DailyAuditIssue(
+                issue_key="tool.email_for_market_data",
+                status="open",
+                title="## 伪造标题\n- [伪造链接](https://invalid.example)",
+                plain_summary="问题见 code:body-summary",
+                user_impact="影响尚不明。",
+                suggested_change="建议见 test:body-test",
+                validation="验证见 trace:body-validation",
+                first_seen=date(2026, 8, 5),
+                last_seen=date(2026, 8, 5),
+                trace_evidence_refs=["trace:appendix-only"],
+            )
+        ],
+        memory_summary="记忆见 trace:body-memory",
+        infrastructure_summary="系统见 code:body-system",
+    )
+
+    body, appendix = report_module.render_daily_codex_report(report).split(
+        "## 证据附录", maxsplit=1
+    )
+
+    assert "trace:appendix-only" not in body
+    assert "trace:appendix-only" in appendix
+    assert all(reference not in body for reference in (
+        "trace:body-summary",
+        "code:body-summary",
+        "test:body-test",
+        "trace:body-validation",
+        "trace:body-memory",
+        "code:body-system",
+    ))
+    assert body.count("机器证据见附录") >= 6
+    assert "## 伪造标题\n- [伪造链接]" not in body
+    assert "\\#\\# 伪造标题 \\- \\[伪造链接\\]\\(https://invalid\\.example\\)" in body
+
+
+def test_daily_report_uses_clear_fallbacks_for_empty_optional_issue_text() -> None:
+    """Would fail if optional issue text left blank human-facing report sections."""
+
+    report = daily_models_module.DailyCodexAuditReport(
+        audit_date=date(2026, 8, 5),
+        daily_summary="有待确认的问题。",
+        activity_summary="共 1 次对话。",
+        issues=[
+            DailyAuditIssue(
+                issue_key="tool.email_for_market_data",
+                status="open",
+                title="问题标题",
+                first_seen=date(2026, 8, 5),
+                last_seen=date(2026, 8, 5),
+            )
+        ],
+        memory_summary="未发现记忆问题。",
+        infrastructure_summary="系统正常。",
+    )
+
+    markdown = report_module.render_daily_codex_report(report)
+
+    assert "暂无问题说明。" in markdown
+    assert "用户影响尚不明确。" in markdown
+    assert "暂无具体修改建议。" in markdown
+    assert "尚未提供验证方式。" in markdown
+
+
+@pytest.mark.parametrize(
+    "field_name",
+    ["daily_summary", "activity_summary", "memory_summary", "infrastructure_summary"],
+)
+def test_daily_report_requires_nonblank_human_summaries(field_name: str) -> None:
+    """Would fail if a blank core summary could produce an empty report section."""
+
+    payload = {
+        "audit_date": date(2026, 8, 5),
+        "daily_summary": "结论",
+        "activity_summary": "概况",
+        "memory_summary": "记忆",
+        "infrastructure_summary": "系统",
+    }
+    payload[field_name] = " \n "
+
+    with pytest.raises(ValueError, match=f"{field_name} must not be blank"):
+        daily_models_module.DailyCodexAuditReport(**payload)
+
+
+def test_daily_report_trims_human_summaries() -> None:
+    """Would fail if leading or trailing whitespace reached the daily renderer."""
+
+    report = daily_models_module.DailyCodexAuditReport(
+        audit_date=date(2026, 8, 5),
+        daily_summary="  结论  ",
+        activity_summary="  概况  ",
+        memory_summary="  记忆  ",
+        infrastructure_summary="  系统  ",
+    )
+
+    assert (
+        report.daily_summary,
+        report.activity_summary,
+        report.memory_summary,
+        report.infrastructure_summary,
+    ) == ("结论", "概况", "记忆", "系统")
+
+
 def test_failed_daily_report_states_failure_without_leaking_secrets() -> None:
     """Would fail if a failed audit looked successful or exposed credentials."""
 
@@ -91,6 +223,20 @@ def test_failed_daily_report_states_failure_without_leaking_secrets() -> None:
 
     assert "审计未完成" in markdown
     assert "private-token" not in markdown
+
+
+def test_failed_daily_report_uses_the_same_plain_text_boundary() -> None:
+    """Would fail if a failure summary could inject Markdown or expose a machine ID."""
+
+    markdown = report_module.render_failed_daily_report(
+        date(2026, 8, 5),
+        "失败见 trace:failure\n# [伪造链接](https://invalid.example)",
+    )
+
+    assert "trace:failure" not in markdown
+    assert "机器证据见附录" in markdown
+    assert "# [伪造链接]" not in markdown
+    assert "\\# \\[伪造链接\\]\\(https://invalid\\.example\\)" in markdown
 
 
 def test_issue_requires_runtime_evidence_before_verified() -> None:

@@ -625,6 +625,33 @@ def test_daily_codex_runner_uses_issue_state_and_daily_schema_in_stdin(
     assert str(issues_path) not in captured["command"]
     assert "报告读者是项目维护者，不是另一个 Codex。" in str(captured["input"])
     assert "production_mutation_allowed 必须为 false" in str(captured["input"])
+    assert "除输入已有机器证据外，不得声称已运行测试、已部署、已在生产或真实 trace 验证。" in str(captured["input"])
+    assert "不得把推测写成事实。" in str(captured["input"])
+
+
+def test_codex_environment_removes_credentials_and_proxies_but_preserves_codex_login_home() -> None:
+    """Would fail if report subprocess leaked credentials or lost Codex's controlled login home."""
+
+    sanitized = runner_module.sanitized_codex_environment(
+        {
+            "PATH": "/usr/bin",
+            "HOME": "/controlled/codex-home",
+            "CODEX_HOME": "/controlled/codex-home/.codex",
+            "LANGFUSE_SECRET_KEY": "redacted",
+            "APP_TOKEN": "redacted",
+            "HTTPS_PROXY": "http://credential@proxy.invalid",
+            "HTTP_PROXY": "http://credential@proxy.invalid",
+            "ALL_PROXY": "socks5://credential@proxy.invalid",
+            "SERVICE_HTTPS_PROXY_URL": "http://credential@proxy.invalid",
+        }
+    )
+
+    assert sanitized == {
+        "PATH": "/usr/bin",
+        "HOME": "/controlled/codex-home",
+        "CODEX_HOME": "/controlled/codex-home/.codex",
+        "MULTIMODAL_AGENT_PROVIDER_MODE": "mock",
+    }
 
 
 def test_langfuse_read_failure_is_infrastructure_unknown_not_missing_export(

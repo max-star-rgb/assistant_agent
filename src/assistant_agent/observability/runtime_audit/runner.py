@@ -32,6 +32,7 @@ _CREDENTIAL_MARKERS = (
     "TOKEN",
     "PASSWORD",
 )
+_PROXY_MARKERS = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY")
 
 
 def build_codex_command(
@@ -60,12 +61,17 @@ def build_codex_command(
 
 
 def sanitized_codex_environment(values: Mapping[str, str]) -> dict[str, str]:
-    """Remove service/provider credentials before starting the report process."""
+    """Remove secrets and credential-bearing proxies from the Codex subprocess.
+
+    ``HOME`` and ``CODEX_HOME`` are intentionally retained only so the Codex CLI can
+    use its controlled local login state; they are not a general credential exception.
+    """
 
     result = {
         key: value
         for key, value in values.items()
         if not any(marker in key.upper() for marker in _CREDENTIAL_MARKERS)
+        and not any(marker in key.upper() for marker in _PROXY_MARKERS)
     }
     result["MULTIMODAL_AGENT_PROVIDER_MODE"] = "mock"
     return result
@@ -265,6 +271,7 @@ def _daily_codex_prompt(
 5. 同一个 code_addressed 问题不得每天重复完整修改建议。
 6. 不得运行测试、修改文件、调用网络、Provider、Tool、Memory 或其他 agent。
 7. 只能基于输入中的事实报告；基础设施或证据缺口必须写入 limitations，不能伪造成质量失败。
-8. production_mutation_allowed 必须为 false，audit_date 必须与审计日期一致。
+8. 除输入已有机器证据外，不得声称已运行测试、已部署、已在生产或真实 trace 验证。不得把推测写成事实。
+9. production_mutation_allowed 必须为 false，audit_date 必须与审计日期一致。
 最终只输出符合给定 JSON Schema 的对象。
 """

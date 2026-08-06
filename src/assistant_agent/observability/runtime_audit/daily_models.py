@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import date
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
 
 
 DailyAttemptStatus = Literal["running", "succeeded", "failed"]
@@ -76,6 +76,19 @@ class DailyCodexAuditReport(BaseModel):
     infrastructure_summary: str
     limitations: list[str] = Field(default_factory=list)
     production_mutation_allowed: Literal[False] = False
+
+    @field_validator(
+        "daily_summary",
+        "activity_summary",
+        "memory_summary",
+        "infrastructure_summary",
+    )
+    @classmethod
+    def _normalize_human_summary(cls, value: str, info: ValidationInfo) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError(f"{info.field_name} must not be blank")
+        return normalized
 
 
 class IssueRegistry(BaseModel):
