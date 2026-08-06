@@ -333,15 +333,21 @@ def test_code_addressed_rejects_missing_repository_test_file(
     assert result.status == "failed"
 
 
-def test_code_addressed_rejects_commit_older_than_its_bad_trace(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    "committed_at",
+    ["2026-08-05T11:00:00+00:00", "2026-08-05T12:00:00+00:00"],
+)
+def test_code_addressed_rejects_commit_not_later_than_its_bad_trace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    committed_at: str,
 ) -> None:
-    """Would fail if an older commit could be presented as handling a later bad trace."""
+    """Would fail if a non-later commit could be presented as handling a bad trace."""
 
     repo, commit_sha = _committed_test_repo(
         tmp_path,
         monkeypatch,
-        committed_at="2026-08-05T11:00:00+00:00",
+        committed_at=committed_at,
     )
     store = RuntimeAuditArtifactStore(tmp_path / "runtime_audit")
     prior = DailyAuditIssue(
@@ -591,6 +597,8 @@ def test_daily_schema_rejects_malformed_evidence_before_codex_returns() -> None:
     assert re.fullmatch(runtime_pattern, "trace:trace-1/observation:observation-1")
     assert re.fullmatch(code_pattern, "code:0123456789abcdef0123456789abcdef01234567")
     assert re.fullmatch(code_pattern, "test:tests/tdd/runtime_audit/test_example.py")
+    assert re.fullmatch(code_pattern, "test:tests/tdd/_helper.py")
+    assert re.fullmatch(code_pattern, "test:tests/_support/test_probe.py")
     assert re.fullmatch(trace_pattern, "commit:abc123") is None
     assert re.fullmatch(code_pattern, "code:not-a-sha") is None
     assert re.fullmatch(code_pattern, "test:tests/a/../escape.py") is None
@@ -665,6 +673,7 @@ def test_historical_refresh_does_not_project_future_last_seen_state() -> None:
     ("trace_timestamp", "expected_status"),
     [
         (datetime(2026, 8, 5, 9, tzinfo=timezone.utc), "failed"),
+        (datetime(2026, 8, 5, 12, tzinfo=timezone.utc), "failed"),
         (datetime(2026, 8, 5, 14, tzinfo=timezone.utc), "succeeded"),
     ],
 )
@@ -753,6 +762,55 @@ def test_legacy_code_ref_downgrades_verification_instead_of_failing_day(
     persisted = store.read_issue_registry().issues[current.issue_key]
     assert persisted.status == "uncertain"
     assert "旧版修复证据无法验证" in result.report_path.read_text(encoding="utf-8")
+
+
+def test_mixed_legacy_and_authenticated_commit_uses_only_real_fix_time(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Would fail if one legacy ref poisoned an otherwise authenticated transition."""
+
+    repo, commit_sha = _committed_test_repo(
+        tmp_path,
+        monkeypatch,
+        committed_at="2026-08-05T12:00:00+00:00",
+    )
+    store = RuntimeAuditArtifactStore(tmp_path / "runtime_audit")
+    current = DailyAuditIssue(
+        issue_key="tool.mixed-evidence",
+        status="code_addressed",
+        title="混合历史证据",
+        first_seen=date(2026, 8, 3),
+        last_seen=date(2026, 8, 4),
+        trace_evidence_refs=["trace:bad"],
+        code_evidence_refs=[
+            "code:legacy-ref",
+            f"code:{commit_sha}",
+            "test:tests/tdd/example/test_regression.py",
+        ],
+    )
+    store.write_issue_registry(IssueRegistry(issues={current.issue_key: current}))
+    candidate = current.model_copy(
+        update={
+            "status": "runtime_verified",
+            "trace_evidence_refs": [],
+            "code_evidence_refs": [],
+            "runtime_verification_refs": ["trace:trace-current"],
+        }
+    )
+
+    result = _run(
+        tmp_path,
+        source=FakeSource(
+            [_trace(timestamp=datetime(2026, 8, 5, 14, tzinfo=timezone.utc))]
+        ),
+        store=store,
+        repo_root=repo,
+        codex_runner=lambda **_: _report(issue=candidate),
+    )
+
+    assert result.status == "succeeded"
+    assert store.read_issue_registry().issues[current.issue_key].status == "runtime_verified"
 
 
 @pytest.mark.parametrize(

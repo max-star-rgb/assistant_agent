@@ -542,11 +542,10 @@ def _validate_repository_code_evidence(
     for issue in report.issues:
         previous_issue = previous_registry.issues.get(issue.issue_key)
         if issue.status in {"runtime_verified", "regressed"} and previous_issue is not None:
-            commit_times = [
-                _git_commit_time(repo_root, ref.removeprefix("code:"))
-                for ref in previous_issue.code_evidence_refs
-                if ref.startswith("code:")
-            ]
+            commit_times = _authenticated_commit_times(
+                repo_root,
+                previous_issue.code_evidence_refs,
+            )
             verification_refs = (
                 issue.runtime_verification_refs
                 if issue.status == "runtime_verified"
@@ -579,8 +578,10 @@ def _validate_repository_code_evidence(
         ]
         for commit_sha in commit_refs:
             committed_at = _git_commit_time(repo_root, commit_sha)
-            if bad_trace_times and committed_at < max(bad_trace_times):
-                raise ValueError("code evidence commit predates the referenced bad trace")
+            if bad_trace_times and committed_at <= max(bad_trace_times):
+                raise ValueError(
+                    "code evidence commit must follow the referenced bad trace"
+                )
             if historical_refresh and committed_at >= bundle.window_end:
                 raise ValueError("historical refresh code evidence postdates the audit window")
         for ref in issue.code_evidence_refs:
@@ -614,20 +615,7 @@ def _downgrade_unverifiable_legacy_transitions(
         if issue.status not in {"runtime_verified", "regressed"} or previous is None:
             issues.append(issue)
             continue
-        commit_refs = [
-            ref.removeprefix("code:")
-            for ref in previous.code_evidence_refs
-            if ref.startswith("code:")
-        ]
-        authenticated = False
-        for commit_sha in commit_refs:
-            try:
-                _git_commit_time(repo_root, commit_sha)
-            except (OSError, RuntimeError, subprocess.SubprocessError, ValueError):
-                continue
-            authenticated = True
-            break
-        if authenticated:
+        if _authenticated_commit_times(repo_root, previous.code_evidence_refs):
             issues.append(issue)
             continue
         limitation = f"{issue.issue_key}：旧版修复证据无法验证，暂不确认运行终态。"
@@ -672,6 +660,23 @@ def _git_commit_time(repo_root: Path, commit_sha: str) -> datetime:
     if result.returncode != 0 or len(lines) != 2 or len(lines[0]) != 40:
         raise ValueError("code evidence does not resolve to a repository commit")
     return datetime.fromisoformat(lines[1]).astimezone(timezone.utc)
+
+
+def _authenticated_commit_times(repo_root: Path, refs: list[str]) -> list[datetime]:
+    """Resolve valid historical commit refs while tolerating legacy ref formats."""
+
+    commit_times: list[datetime] = []
+    for ref in refs:
+        if not ref.startswith("code:"):
+            continue
+        commit_sha = ref.removeprefix("code:")
+        if not _COMMIT_SHA.fullmatch(commit_sha):
+            continue
+        try:
+            commit_times.append(_git_commit_time(repo_root, commit_sha))
+        except (OSError, subprocess.SubprocessError, ValueError):
+            continue
+    return commit_times
 
 
 def _bundle_trace_times(bundle: RuntimeAuditBundle) -> dict[str, datetime]:
