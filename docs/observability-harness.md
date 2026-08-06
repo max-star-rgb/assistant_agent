@@ -366,6 +366,12 @@ Langfuse 和本地完整性来源都可读、且没有任何 trace 或本地证�
 - `state/attempts/`、`state/issues.json`、`state/watermark.json`：内部尝试记录、issue registry 与连续成功检查点；
 - `reports/YYYY-MM-DD.md`：唯一面向人的日报；`reports/` 不放内部 JSON。
 
+新收集的内部 inbox 使用 `assistant_agent_runtime_audit_bundle_v2` 紧凑 JSON。collector 可在生成
+确定性 finding 时临时读取 Langfuse raw metadata，但持久化前会删除 Trace、Observation 和 Score 的
+metadata。Trace/Observation input 中重复的 Tool catalog 按完整 SHA-256 提取到 bundle 顶层
+`tool_catalogs`，原位置只保留 `tool_catalog_ref`；Tool 业务 output 中同名字段不参与改写。读取端继续
+兼容旧 v1 bundle，v1 只作为历史输入，不再由新收集流程生成。
+
 每个日期的状态机为 `running -> succeeded` 或 `running -> failed`。成功时先以 journal 校验
 日报、issue registry 和 watermark 的前置条件，再原子推进连续状态；中断后的待提交 journal 会在下次
 运行先恢复，冲突的旧 journal 会隔离。失败会保留内部 bundle，并写入“审计未完成”的失败日报；它不会

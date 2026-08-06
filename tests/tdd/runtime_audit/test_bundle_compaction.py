@@ -267,3 +267,55 @@ def test_daily_prompt_explains_tool_catalog_references() -> None:
 
     assert "tool_catalog_ref" in prompt
     assert "tool_catalogs" in prompt
+
+
+def test_synthetic_daily_catalogs_compact_below_forty_percent() -> None:
+    names = ["first"] * 30 + ["second"] * 14 + ["third"] * 3 + ["fourth"] * 2
+    trace = LangfuseTraceSnapshot(
+        trace_id="trace-volume",
+        timestamp=NOW,
+        metadata={"resourceAttributes": {"service": "assistant-agent"}},
+        observations=[
+            LangfuseObservationSnapshot(
+                observation_id=f"observation-{index}",
+                name="llm.chat",
+                type="GENERATION",
+                input={"messages": [], "tools": _catalog(name)},
+                output={"text": "ok"},
+                metadata={
+                    "attributes": {
+                        "assistant_agent.runtime_action": "text",
+                        "resource": "repeated-transport-metadata",
+                    }
+                },
+            )
+            for index, name in enumerate(names)
+        ],
+    )
+    raw_bundle = RuntimeAuditBundle(
+        schema_version="assistant_agent_runtime_audit_bundle_v1",
+        audit_run_id="raw-volume",
+        collected_at=NOW,
+        window_start=NOW,
+        window_end=NOW,
+        coverage=_coverage(),
+        traces=[trace],
+    )
+    compacted, catalogs = compact_trace_evidence([trace])
+    compact_bundle = RuntimeAuditBundle(
+        audit_run_id="compact-volume",
+        collected_at=NOW,
+        window_start=NOW,
+        window_end=NOW,
+        coverage=_coverage(),
+        traces=compacted,
+        tool_catalogs=catalogs,
+    )
+
+    pretty_raw_size = len(raw_bundle.model_dump_json(indent=2).encode("utf-8"))
+    compact_size = len(
+        compact_bundle.model_dump_json(exclude_none=True).encode("utf-8")
+    )
+
+    assert len(compact_bundle.tool_catalogs) == 4
+    assert compact_size < pretty_raw_size * 0.40
