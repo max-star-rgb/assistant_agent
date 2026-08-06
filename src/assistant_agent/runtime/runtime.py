@@ -702,7 +702,7 @@ class AgentGraphRuntime:
         )
         if (
             semantic_store is not None
-            and semantic_store.has_visual_history()
+            and semantic_store.has_searchable_history()
         ):
             request.metadata["_trusted_visual_memory_available"] = True
         if is_trusted_agent_service_request(request):

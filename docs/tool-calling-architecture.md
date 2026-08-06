@@ -189,6 +189,11 @@ Tool 必须返回结构化 `ToolResult`。其中：
 视图。assistant loop 把模型可见 observation 交回 LLM，使其能够继续调用其他工具、修正参数、追问
 或基于已有证据作答。
 
+正常 Tool observation 使用独立的 prompt-safety 投影：清除 secret、raw payload、inline media、私有路径等
+不安全内容，但不套用 Provider error detail 的固定列表上限。工具声明的结构化计数必须与该边界实际保留
+的列表一致；后续 context compaction 若再缩减项目，必须显式更新返回数和截断状态。失败详情仍使用
+Provider error sanitizer 的有界策略。
+
 ## 4. 注册与装配
 
 ### 4.1 ToolRegistry

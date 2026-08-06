@@ -11,9 +11,9 @@ Last updated: 2026-08-05
 当前用户能力包括：
 
 - 会话内短期视觉回忆：把选中的语义关键帧交给 VLM 文本化，并在 session 内保留成功结果；
-- 历史找物：读取 Store 保留的最多 256 条带时间戳 VLM 文本；低于 Tool 输出预算 trigger 时完整交给
-  主 LLM，达到 trigger 后由 Tool 尾部的 query-aware compactor 压缩旧 prefix，并保留相关原文与最近
-  原文。Tool 不做 embedding、相似度排序或最终命中判定，也不在查询阶段再次调用 VLM。
+- 历史找物：在可信 session/as-of/time 边界内读取 Store 保留的最多 256 条带时间戳 VLM 文本，使用同
+  session coordinator 生成一次 query text embedding，与成功建立的 VLM text embedding index 做 cosine
+  排序并返回最多 8 条 Top-K。Tool 不在查询阶段再次调用 VLM，也不替主 LLM做最终事实判定。
 - 连接级视觉提醒：把用户提交的视觉条件计算一次 text embedding，与每个已选关键帧的现有 image
   embedding 匹配，首次命中后通过当前 Agent-Service VIDEO 连接即时通知。
 
@@ -50,8 +50,9 @@ Realtime frame
                   -> bounded timestamped text timeline
         -> SessionVisualSemanticStore
              ├─ live_view_inspect（最近 8 条 as-of 文本）
-             └─ visual_memory_search（最多 256 条原始时间线）
-                    -> VisualTimelineContextService（target / trigger / hard）
+             └─ visual_memory_search（最多 256 条可信候选）
+                    -> query text embedding + cosine Top-K（最多 8 条）
+                    -> VisualTimelineContextService（必要时执行 target / trigger / hard）
                     -> bounded Tool model_observation
 ```
 
@@ -137,7 +138,8 @@ Store 自身的 retention 继续提供更大的有界历史；`visual_memory_sea
 平台不直接处理语音。音频在上游转为稳定文本后，与键盘输入一样成为 `TextObservation`；`source`
 只说明来源。Runtime 只对非空 final `request.text` 编码，且 session 必须存在 text consumer。文本
 Runtime 的一般文本 embedding 不写入视觉语义存储或 Mem0。成功 VLM 结果的单帧文本直接进入 session
-视觉时间线；`visual_memory_search` 不依赖记录是否成功建立 text embedding index。
+视觉时间线；`visual_memory_search` 只召回成功建立兼容 text embedding index 的记录，并显式报告候选总数、
+可检索数、阈值命中数、实际返回数、是否截断以及 index coverage 是否完整。
 
 Alignment 按 similarity 降序、时间距离升序关联同空间事件。Attention 只有设置内部 text target 后才
 比较 image event 并保存 `visual_attention_candidate`；候选不会自动转为 Agent 行为。
@@ -171,14 +173,14 @@ durable task 或 notification outbox，不能跨连接恢复。仅执行 `visual
 “知道了”等指代；该事件在连接关闭时清除，不进入 ConversationStore、Mem0 或跨连接恢复。
 
 查询时 Runtime 绑定 user/session，ToolContext 提供可信 as-of sequence/time；模型只能提交
-`query/time_window/search_mode`。Tool 不消费 query 做过滤、编码、相似度比较或排序，只按可信边界读取
-Store 最后最多 256 条记录。读取后，Tool 尾部使用主 ChatAdapter 对应 tokenizer 和
-`ContextWindowPolicy` 的 target/trigger/hard 心智模型：低于 trigger 原样返回；触发后保留最近原文，
-并让专用 compactor 只用 indexes 选择与 query 相关的旧原文，同时生成 `timeline_summary` 和 coverage；
-重建后再次计数。低于 hard 的压缩失败可带 `failed_below_hard` 返回原文，hard 区间重试仍失败则返回
-`visual_memory_context_hard_limit`，禁止发送超限原文。Tool 不读取 evidence、不调用 VLM，也不输出路径、
-向量或坐标。未来记录不能进入结果；状态为 `records|empty|unavailable`，其中 `records` 只表示存在可读
-历史，不表示目标已经出现。
+`query/time_window/search_mode`。Tool 先按可信边界读取 Store 最后最多 256 条记录，再通过同 session
+coordinator 对 query 编码一次；只比较同 embedding space 且 index ready 的记录，按 cosine similarity
+降序取服务端阈值以上的最多 8 条。并列时优先较新的记录。结果分别报告 `observation_count`、
+`searchable_observation_count`、`matched_observation_count`、`returned_observation_count`、`truncated` 和
+`coverage_complete`，不能用候选总数冒充模型实际收到的条数。若 Top-K 仍触发 Tool 输出预算，Tool 尾部
+继续应用 `ContextWindowPolicy` hard gate；压缩后必须再次更新实际返回数和截断状态。Tool 不读取
+evidence、不再次调用 VLM，也不输出路径、向量或坐标。未来记录不能进入结果；状态为
+`records|empty|unavailable`，其中 `records` 只表示存在阈值内候选，不等同于最终事实确认。
 
 `visual_memory_search` 只读取原始 `VisualSemanticRecord`。Tool 尾部压缩结果只进入本次
 `model_observation`，不反写 Store、conversation、Mem0 或后台 VLM 请求。主 `llm.context` tokenizer
@@ -189,8 +191,7 @@ hard gate。
 
 `visual_memory_search` 是 `category=read`、`requires_media=[]`，视频断线后仍可查询已有历史。Runtime
 在 catalog 构建前删除调用方传入的 `_trusted_visual_memory_available`，再根据当前 session Store 的
-`SessionVisualSemanticStore.has_visual_history()` 覆盖；是否存在 text embedding index 不影响暴露，
-exposure 也不检查请求关键词。执行仍经过
+`SessionVisualSemanticStore.has_searchable_history()` 覆盖；exposure 不检查请求关键词。执行仍经过
 `ActionValidator -> ToolExecutor -> ToolRegistry -> tool`。
 
 `visual_reminder_manage` 是 `category=write`、`requires_media=[]`。Runtime 在 catalog 构建前删除调用方

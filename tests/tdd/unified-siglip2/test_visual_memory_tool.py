@@ -189,7 +189,17 @@ def test_query_leases_prevent_capacity_eviction_while_store_read_blocks(
         return original_text_timeline(**kwargs)
 
     first_store.text_timeline = blocking_text_timeline
-    tool = VisualMemorySearchTool(semantic_store_pool=semantic_pool)
+    coordinator_store = SessionEmbeddingCoordinatorStore(
+        factory=lambda _user_id, session_id: SessionEmbeddingCoordinator(
+            session_id,
+            _FixedTextProvider(),
+        ),
+        max_sessions=1,
+    )
+    tool = VisualMemorySearchTool(
+        semantic_store_pool=semantic_pool,
+        embedding_coordinator_store=coordinator_store,
+    )
     outcomes = []
     errors: list[BaseException] = []
 
@@ -219,4 +229,5 @@ def test_query_leases_prevent_capacity_eviction_while_store_read_blocks(
 
     assert errors == []
     assert outcomes[0].success is True
+    coordinator_store.close()
     semantic_pool.close()

@@ -13,6 +13,12 @@ from assistant_agent.media.video.semantic_store_pool import (
     SessionVisualSemanticStorePool,
 )
 from assistant_agent.media.embedding.observability import InMemoryEmbeddingObserver
+from assistant_agent.media.embedding.coordinator import SessionEmbeddingCoordinator
+from assistant_agent.media.embedding.coordinator_store import (
+    SessionEmbeddingCoordinatorStore,
+)
+from assistant_agent.media.embedding.models import EmbeddingEvent
+from assistant_agent.media.embedding.provider import MockMultimodalEmbeddingProvider
 from assistant_agent.context.token_budget import ContextWindowPolicy
 from assistant_agent.media.video.visual_timeline_context import (
     VisualTimelineCompaction,
@@ -42,10 +48,39 @@ def _record(
             frame_sequence=sequence,
             captured_at_ms=sequence * 1_000,
             summary=summary or f"frame-{sequence}-text",
-            index_status="unavailable",
+            search_embedding=[1.0, 0.0],
+            embedding_space_id="visual-text-test",
+            index_status="ready",
             evidence_ref=str(evidence),
             evidence_bytes=evidence.stat().st_size,
             created_at_ms=sequence * 1_000 + 10,
+        )
+    )
+
+
+class _FixedTextProvider(MockMultimodalEmbeddingProvider):
+    def embed_text(self, observation):
+        return EmbeddingEvent(
+            event_id=f"query-{observation.observation_id}",
+            modality="text",
+            vector=[1.0, 0.0],
+            embedding_space_id="visual-text-test",
+            model_id="fixed",
+            model_revision="v1",
+            dimension=2,
+            normalized=True,
+            session_id=observation.session_id,
+            source_observation_id=observation.observation_id,
+            text_source=observation.source,
+            latency_ms=0,
+        )
+
+
+def _coordinator_store() -> SessionEmbeddingCoordinatorStore:
+    return SessionEmbeddingCoordinatorStore(
+        factory=lambda _user_id, session_id: SessionEmbeddingCoordinator(
+            session_id,
+            _FixedTextProvider(),
         )
     )
 
@@ -149,7 +184,7 @@ def test_store_text_timeline_applies_timestamp_window(tmp_path: Path) -> None:
     assert [record.frame_sequence for record in records] == [2, 3, 4]
 
 
-def test_visual_memory_tool_returns_all_256_vlm_text_observations(
+def test_visual_memory_tool_returns_ranked_top_k_from_256_observations(
     tmp_path: Path,
 ) -> None:
     evidence = tmp_path / "frame.jpg"
@@ -167,7 +202,10 @@ def test_visual_memory_tool_returns_all_256_vlm_text_observations(
                 else f"frame-{sequence}-text"
             ),
         )
-    tool = VisualMemorySearchTool(semantic_store_pool=pool)
+    tool = VisualMemorySearchTool(
+        semantic_store_pool=pool,
+        embedding_coordinator_store=_coordinator_store(),
+    )
 
     result = tool.run(
         VisualMemorySearchInput(query="黑色手机", session_id="session-1"),
@@ -185,15 +223,20 @@ def test_visual_memory_tool_returns_all_256_vlm_text_observations(
     assert result.success is True
     assert result.model_observation["status"] == "records"
     assert result.model_observation["observation_count"] == 256
-    assert len(result.model_observation["observations"]) == 256
-    assert result.model_observation["observations"][32] == {
-        "timestamp_ms": 33_000,
-        "text": "白色桌面上放着一部屏幕显示 3:25 的黑色智能手机。",
+    assert result.model_observation["searchable_observation_count"] == 256
+    assert result.model_observation["matched_observation_count"] == 256
+    assert result.model_observation["returned_observation_count"] == 8
+    assert result.model_observation["truncated"] is True
+    assert result.model_observation["coverage_complete"] is True
+    assert len(result.model_observation["observations"]) == 8
+    assert result.model_observation["observations"][0] == {
+        "timestamp_ms": 256_000,
+        "text": "frame-256-text",
     }
     assert "similarity" not in result.model_observation
 
 
-def test_visual_memory_tool_applies_as_of_and_time_window_without_ranking(
+def test_visual_memory_tool_applies_as_of_and_time_window_before_ranking(
     tmp_path: Path,
 ) -> None:
     evidence = tmp_path / "frame.jpg"
@@ -202,7 +245,10 @@ def test_visual_memory_tool_applies_as_of_and_time_window_without_ranking(
     store = pool.resolve("user-1", "session-1")
     for sequence in range(1, 6):
         _record(store, evidence, sequence=sequence)
-    tool = VisualMemorySearchTool(semantic_store_pool=pool)
+    tool = VisualMemorySearchTool(
+        semantic_store_pool=pool,
+        embedding_coordinator_store=_coordinator_store(),
+    )
 
     result = tool.run(
         VisualMemorySearchInput(
@@ -223,8 +269,8 @@ def test_visual_memory_tool_applies_as_of_and_time_window_without_ranking(
     )
 
     assert result.model_observation["observations"] == [
-        {"timestamp_ms": 2_000, "text": "frame-2-text"},
         {"timestamp_ms": 3_000, "text": "frame-3-text"},
+        {"timestamp_ms": 2_000, "text": "frame-2-text"},
     ]
 
 
@@ -310,6 +356,8 @@ def test_visual_memory_tool_tail_compacts_before_model_observation(
         _record(store, evidence, sequence=sequence)
     tool = VisualMemorySearchTool(
         semantic_store_pool=pool,
+        embedding_coordinator_store=_coordinator_store(),
+        limit=20,
         timeline_context_service=_timeline_context_service(),
     )
 
@@ -323,9 +371,9 @@ def test_visual_memory_tool_tail_compacts_before_model_observation(
     assert result.model_observation["observation_count"] == 20
     assert result.model_observation["returned_observation_count"] == 3
     assert result.model_observation["observations"] == [
-        {"timestamp_ms": 3_000, "text": "frame-3-text"},
-        {"timestamp_ms": 19_000, "text": "frame-19-text"},
-        {"timestamp_ms": 20_000, "text": "frame-20-text"},
+        {"timestamp_ms": 18_000, "text": "frame-18-text"},
+        {"timestamp_ms": 2_000, "text": "frame-2-text"},
+        {"timestamp_ms": 1_000, "text": "frame-1-text"},
     ]
     assert result.model_observation["timeline_summary"] == "旧画面中曾出现黑色手机。"
     assert result.model_observation["coverage"]["covered_count"] == 18
@@ -352,6 +400,8 @@ def test_visual_memory_tool_hard_compaction_failure_blocks_raw_timeline(
         _record(store, evidence, sequence=sequence)
     tool = VisualMemorySearchTool(
         semantic_store_pool=pool,
+        embedding_coordinator_store=_coordinator_store(),
+        limit=20,
         timeline_context_service=_timeline_context_service(fail=True),
     )
 
@@ -361,16 +411,17 @@ def test_visual_memory_tool_hard_compaction_failure_blocks_raw_timeline(
     )
 
     assert result.success is False
-    assert result.model_observation == {
-        "status": "unavailable",
-        "observations": [],
-        "observation_count": 20,
-        "returned_observation_count": 0,
-        "errors": [
-            {
-                "code": "visual_memory_context_hard_limit",
-                "message": "visual timeline could not be compacted below the hard limit",
-                "recoverable": True,
-            }
-        ],
-    }
+    assert result.model_observation["status"] == "unavailable"
+    assert result.model_observation["observations"] == []
+    assert result.model_observation["observation_count"] == 20
+    assert result.model_observation["searchable_observation_count"] == 20
+    assert result.model_observation["matched_observation_count"] == 20
+    assert result.model_observation["returned_observation_count"] == 0
+    assert result.model_observation["truncated"] is True
+    assert result.model_observation["errors"] == [
+        {
+            "code": "visual_memory_context_hard_limit",
+            "message": "visual timeline could not be compacted below the hard limit",
+            "recoverable": True,
+        }
+    ]

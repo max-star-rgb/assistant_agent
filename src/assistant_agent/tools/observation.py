@@ -10,9 +10,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from assistant_agent.tools.models import ToolResult
 from assistant_agent.providers.provider_errors import (
-    sanitize_error_detail,
     sanitize_error_message,
 )
+from assistant_agent.tools.observation_safety import sanitize_tool_observation_detail
 
 ObservationStatus = Literal["succeeded", "failed", "rejected"]
 ObservationOutcome = Literal["success", "partial", "empty"]
@@ -134,7 +134,7 @@ def observation_from_tool_result(
         if isinstance(result.model_observation, dict)
         else result.data
     )
-    data = sanitize_error_detail(data_source or {})
+    data = sanitize_tool_observation_detail(data_source or {})
     error_message = sanitize_error_message(result.error or "") if result.error else None
     structured_data = data if isinstance(data, dict) else {}
     outcome = _observation_outcome(status, structured_data)

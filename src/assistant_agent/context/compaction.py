@@ -319,7 +319,11 @@ def _compact_visual_memory_search_output(
         (
             "status",
             "observation_count",
+            "searchable_observation_count",
+            "matched_observation_count",
             "returned_observation_count",
+            "truncated",
+            "coverage_complete",
             "timeline_summary",
             "coverage",
             "compaction",

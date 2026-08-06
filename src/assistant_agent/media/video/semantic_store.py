@@ -438,20 +438,23 @@ class SessionVisualSemanticStore:
             records = list(self._records.values())
         candidates: list[VisualSemanticCandidate] = []
         for record in records:
+            observed_at_ms = (
+                record.captured_at_ms
+                if record.captured_at_ms is not None
+                else record.created_at_ms
+            )
             if video_id is not None and record.video_id != video_id:
                 continue
             if as_of_sequence is not None and record.frame_sequence > as_of_sequence:
                 continue
             if (
                 since_ms is not None
-                and record.captured_at_ms is not None
-                and record.captured_at_ms < since_ms
+                and observed_at_ms < since_ms
             ):
                 continue
             if (
                 as_of_ms is not None
-                and record.captured_at_ms is not None
-                and record.captured_at_ms > as_of_ms
+                and observed_at_ms > as_of_ms
             ):
                 continue
             if (
