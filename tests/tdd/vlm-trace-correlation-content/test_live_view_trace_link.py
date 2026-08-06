@@ -113,6 +113,18 @@ async def _assert_background_record_trace_link(tmp_path: Path) -> None:
     assert record.source_vision_run_id == summary.run_id
     assert record.source_vlm_span_id == vlm.span_id
     assert vlm.parent_span_id == tool.span_id
+    specs = build_text_otel_span_specs(
+        trace_store.list_by_run(summary.run_id)
+    )
+    background_tool = next(
+        item
+        for item in specs
+        if item.attributes.get("gen_ai.tool.name") == "realtime_video_observe"
+    )
+    background_output = json.loads(
+        background_tool.attributes["langfuse.observation.output"]
+    )
+    assert "source_vision_trace_url" not in background_output
 
 
 def test_live_view_tool_projects_exact_source_trace_link(

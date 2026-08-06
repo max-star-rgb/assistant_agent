@@ -232,6 +232,7 @@ class _OtelSdkSpanBridge:
         import_module: Callable[[str], Any] = importlib.import_module,
     ) -> None:
         trace_module = import_module("opentelemetry.trace")
+        context_module = import_module("opentelemetry.context")
         resource_module = import_module("opentelemetry.sdk.resources")
         sdk_trace_module = import_module("opentelemetry.sdk.trace")
         sdk_export_module = import_module("opentelemetry.sdk.trace.export")
@@ -254,26 +255,28 @@ class _OtelSdkSpanBridge:
         provider.add_span_processor(processor)
 
         self._trace_module = trace_module
+        self._context_module = context_module
         self._provider = provider
         self._tracer = provider.get_tracer(DEFAULT_OTEL_TRACER_NAME)
 
     def export(self, spans: Sequence[OtelSpanSpec]) -> None:
         contexts_by_span_id: dict[str, Any] = {}
         created_spans: list[tuple[OtelSpanSpec, Any]] = []
-        root_context: Any = None
-        for spec in spans:
-            if root_context is None:
+        for spec in _parent_first_span_specs(spans):
+            if spec.parent_span_id in contexts_by_span_id:
+                parent_context = contexts_by_span_id[spec.parent_span_id]
+            elif spec.parent_span_id:
                 parent_context = _otel_trace_parent_context(
                     self._trace_module,
                     trace_id=langfuse_trace_id(spec.trace_id),
                     parent_span_id=spec.parent_span_id,
                 )
             else:
-                parent_context = contexts_by_span_id.get(
-                    spec.parent_span_id or "",
-                    root_context,
-                )
-            with self._id_generator.use_span_id(_otel_spec_span_id(spec.span_id)):
+                parent_context = self._context_module.Context()
+            with self._id_generator.use_ids(
+                span_id=_otel_spec_span_id(spec.span_id),
+                trace_id=int(langfuse_trace_id(spec.trace_id), 16),
+            ):
                 span = self._tracer.start_span(
                     spec.name,
                     context=parent_context,
@@ -282,8 +285,6 @@ class _OtelSdkSpanBridge:
                 )
             _set_otel_status(self._trace_module, span, spec.status)
             contexts_by_span_id[spec.span_id] = self._trace_module.set_span_in_context(span)
-            if root_context is None:
-                root_context = contexts_by_span_id[spec.span_id]
             created_spans.append((spec, span))
         for spec, span in sorted(created_spans, key=lambda item: item[0].end_time):
             span.end(end_time=_datetime_to_epoch_ns(spec.end_time))
@@ -303,15 +304,19 @@ class _SpecSpanIdGenerator:
     def __init__(self) -> None:
         self._lock = Lock()
         self._next_span_id: int | None = None
+        self._next_trace_id: int | None = None
+        self._generated_trace_id_random = True
 
     @contextmanager
-    def use_span_id(self, span_id: int):
+    def use_ids(self, *, span_id: int, trace_id: int):
         with self._lock:
             self._next_span_id = span_id
+            self._next_trace_id = trace_id
             try:
                 yield
             finally:
                 self._next_span_id = None
+                self._next_trace_id = None
 
     def generate_span_id(self) -> int:
         span_id = self._next_span_id
@@ -319,7 +324,38 @@ class _SpecSpanIdGenerator:
         return span_id or _random_nonzero_id(bits=64)
 
     def generate_trace_id(self) -> int:
-        return _random_nonzero_id(bits=128)
+        trace_id = self._next_trace_id
+        self._next_trace_id = None
+        self._generated_trace_id_random = trace_id is None
+        return trace_id or _random_nonzero_id(bits=128)
+
+    def is_trace_id_random(self) -> bool:
+        return self._generated_trace_id_random
+
+
+def _parent_first_span_specs(spans: Sequence[OtelSpanSpec]) -> list[OtelSpanSpec]:
+    """Order one export batch so an in-batch parent is created before its child."""
+
+    remaining = list(spans)
+    batch_span_ids = {spec.span_id for spec in remaining}
+    created_span_ids: set[str] = set()
+    ordered: list[OtelSpanSpec] = []
+    while remaining:
+        ready = [
+            spec
+            for spec in remaining
+            if spec.parent_span_id is None
+            or spec.parent_span_id not in batch_span_ids
+            or spec.parent_span_id in created_span_ids
+        ]
+        if not ready:
+            ordered.extend(remaining)
+            break
+        for spec in ready:
+            ordered.append(spec)
+            created_span_ids.add(spec.span_id)
+            remaining.remove(spec)
+    return ordered
 
 
 class BufferedTextOtelSpanExporter:
@@ -681,6 +717,7 @@ class TextOtelTraceObserver:
             include_llm_outputs=True,
             include_vlm_outputs=True,
             include_tool_observations=True,
+            include_tool_results=True,
         )
 
     @staticmethod

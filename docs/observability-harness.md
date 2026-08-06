@@ -92,8 +92,12 @@ generation。同步视觉 Tool 的 generation 通过 `parent_span_id` 挂在对�
 Store/embedding/reminder 操作不伪造 VLM generation。事件只允许 capability、source、media kind/count、
 prompt version、Provider/model、latency、usage、状态和稳定错误码，不记录视觉正文、JPEG/base64、媒体
 ID/路径或 Provider 原始响应；错误消息固定为通用安全描述。
-视觉理解 Tool 自身同时使用 `metadata_only` trace content policy，防止 `tool.started/finished` 或本地
-conversation overlay 在 Langfuse projection 中旁路上述边界。该 policy 不删减主 LLM 实际消费的
+视觉理解 Tool 自身同时使用 `metadata_only` canonical lifecycle policy，防止
+`tool.started/finished` 或远程 exporter 旁路上述边界。启用本地 trace content 且 exporter
+指向 loopback Langfuse 时，进程内 content overlay（以及显式开启的本地 `trace.content` 诊断记录）可以
+额外保存经过独立 allowlist 的语义内容：
+Tool execution span 展示不含媒体身份、evidence、向量和 Provider raw payload 的安全 ToolResult；
+`tool.observation` 展示进入 Context budget 前的完整语义 observation。该 policy 不删减主 LLM 实际消费的
 Tool observation。VLM event 与后台 summary 的观测写入均 fail-open；写入失败不能阻止 Provider 调用或
 把成功视觉结果改成业务失败。
 
@@ -278,6 +282,8 @@ Provider protocol capture。overlay 写入失败时 canonical event 仍须保留
 - ReAct iteration 是根 span 下的逻辑 span；
 - 声明了 observation type 的 operation 映射为 span、generation 或 event；
 - operation 的 parent、start/end、status 来自 canonical span 关系和 started/terminal event；
+- exporter 必须先创建 batch 内父 span 再创建子 span；没有 external parent 的 runtime root 是真正 root，
+  不能为保持 trace ID 伪造 `0000000000000001` parent；
 - root 的 external parent 只接受 `run.started` 显式提供的上游 parent，不能把内部 Tool/VLM
   `parent_span_id` 反推为 root parent；
 - usage 映射到 generation/OTel token attributes，不能因嵌套结构而丢失；
@@ -297,6 +303,18 @@ conversation history 或主 LLM generation。其内部仍保留 `tool.execute ->
 loopback Langfuse 时，还会根据精确的 `source_vision_trace_id` 生成
 `source_vision_trace_url`，供 UI 从 `live_view_inspect` 直接打开对应 `vision.observation`；该 URL 只存在于
 Langfuse/OTel 派生视图，不反写 canonical Tool 结果，非 loopback host 也不生成。
+
+视觉 Tool 在 Langfuse 中有三个不可互换的内容边界：具体 Tool execution span（例如
+`live_view_inspect`）展示安全 ToolResult；`tool.observation` 展示 Context compaction 前的语义 observation；
+下一次 `llm.chat.input` 展示 compaction、budget 和 Provider 协议编译后的实际请求，是“主 LLM 真正看到
+什么”的唯一权威。`tool.observation.input` 分别标注 `runtime_tool_call_id` 和
+`provider_tool_call_id`，不得继续用同名 `tool_call_id` 混淆内部执行身份与 Provider 协议身份。
+
+后台 `realtime_video_observe` 是视觉结果生产者，不是主 LLM Tool observation。其 `vlm.infer` 必须作为
+Tool span 的子 generation；`vlm.infer.input` 只展示 `media_kind`、`media_count`、`prompt_version`、
+`source`、可用的 `frame_sequence` 和 `content_exported=false`，不展示图片或媒体引用。来源 URL 只用于
+跨 trace 消费者；后台 Tool 位于自己的 `vision.observation` 内时不得生成指向自身的
+`source_vision_trace_url`。
 
 连接级视觉提醒使用创建 turn 的 correlation 记录 late-capable canonical events：
 `visual_reminder.created`、`visual_reminder.matched`、`visual_reminder.delivery.finished` 和

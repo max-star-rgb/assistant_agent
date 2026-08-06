@@ -18,6 +18,10 @@ from assistant_agent.observability.langfuse_config import local_langfuse_trace_u
 from assistant_agent.observability.trace_store import TraceEvent, redact_trace_event, sanitize_trace_value
 from assistant_agent.observability.turn_evaluator import build_turn_diagnostic
 from assistant_agent.observability.turn_summary import latest_turn_summary_from_events
+from assistant_agent.observability.visual_trace_content import (
+    sanitize_visual_tool_result,
+    sanitize_visual_trace_content,
+)
 
 if TYPE_CHECKING:
     from assistant_agent.memory.trace_content import MemoryIngestionTraceContent
@@ -26,6 +30,7 @@ if TYPE_CHECKING:
         TraceLlmInput,
         TraceLlmOutput,
         TraceToolObservation,
+        TraceToolResult,
         TraceVlmOutput,
     )
 
@@ -539,7 +544,7 @@ def _event_attributes(event: TraceEvent) -> dict[str, Any]:
 
 def _source_vision_trace_url(event: TraceEvent) -> str | None:
     trace_id = event.output_summary.get("source_vision_trace_id")
-    if not isinstance(trace_id, str):
+    if not isinstance(trace_id, str) or trace_id == event.trace_id:
         return None
     return local_langfuse_trace_url(trace_id)
 
@@ -659,7 +664,28 @@ def _event_io_attributes(
         if event.tool_name:
             output_payload["tool_name"] = event.tool_name
     elif name in {"tool.finished", "tool.failed"}:
-        if conversation is not None and not _metadata_only_content(event):
+        local_tool_result = _tool_result_for_event(
+            conversation,
+            span_id=event.span_id,
+        )
+        if local_tool_result is not None and _metadata_only_content(event):
+            input_payload = {
+                "tool_name": event.tool_name,
+                **_selected_payload(
+                    event.input_summary,
+                    ("field_count", "media_count", "prompt_length"),
+                ),
+            }
+            output_payload = sanitize_visual_tool_result(
+                local_tool_result.result
+            )
+            output_payload.update(
+                _selected_payload(
+                    event.output_summary,
+                    _VISUAL_TRACE_LINK_FIELDS,
+                )
+            )
+        elif conversation is not None and not _metadata_only_content(event):
             input_payload = {"tool_name": event.tool_name, **event.input_summary}
             output_payload = {
                 "tool_name": event.tool_name,
@@ -697,35 +723,46 @@ def _event_io_attributes(
         if source_vision_trace_url is not None:
             output_payload["source_vision_trace_url"] = source_vision_trace_url
     elif name == "tool.observation":
+        tool_observation = _tool_observation_for_event(
+            conversation,
+            observation_index=_mapping_int(
+                event.attributes, "observation_index"
+            ),
+            tool_name=event.tool_name,
+        )
         input_payload = {
             "tool_name": event.tool_name,
-            **_selected_payload(
-                event.attributes,
-                ("tool_call_id", "source_tool_span_id"),
+            "runtime_tool_call_id": (
+                tool_observation.runtime_tool_call_id
+                if tool_observation is not None
+                else event.attributes.get("tool_call_id")
             ),
+            "provider_tool_call_id": (
+                tool_observation.provider_tool_call_id
+                if tool_observation is not None
+                else None
+            ),
+            "source_tool_span_id": event.attributes.get("source_tool_span_id"),
         }
-        tool_observation = (
-            None
-            if _metadata_only_content(event)
-            else _tool_observation_for_event(
-                conversation,
-                observation_index=_mapping_int(
-                    event.attributes, "observation_index"
-                ),
-                tool_name=event.tool_name,
+        if tool_observation is not None:
+            observation_payload = {
+                key: value
+                for key, value in tool_observation.observation.items()
+                if key != "_provider_tool_call_id"
+            }
+            output_payload = (
+                sanitize_visual_trace_content(observation_payload)
+                if _metadata_only_content(event)
+                else observation_payload
             )
-        )
-        output_payload = (
-            dict(tool_observation.observation)
-            if tool_observation is not None
-            else {
+        else:
+            output_payload = {
                 "tool_name": event.tool_name,
                 **_selected_payload(
                     {**event.output_summary, **event.attributes},
                     ("summary", "output_ref"),
                 ),
             }
-        )
     elif name in {
         "memory.session_recall.finished",
         "memory.ingestion.finished",
@@ -813,6 +850,20 @@ def _event_io_attributes(
             output_payload = _llm_provider_output_preview(llm_output)
             include_output = True
     elif name == "vlm.infer.finished":
+        input_payload = {
+            "operation": "vlm.infer",
+            **_selected_payload(
+                event.attributes,
+                (
+                    "media_kind",
+                    "media_count",
+                    "prompt_version",
+                    "source",
+                    "frame_sequence",
+                ),
+            ),
+            "content_exported": False,
+        }
         vlm_output = _vlm_output_for_event(conversation, span_id=event.span_id)
         if vlm_output is not None:
             output_payload = {
@@ -1049,6 +1100,23 @@ def _tool_observation_for_event(
             item
             for item in conversation.tool_observations
             if item.tool_name == tool_name
+        ),
+        None,
+    )
+
+
+def _tool_result_for_event(
+    conversation: "TraceConversationView | None",
+    *,
+    span_id: str | None,
+) -> "TraceToolResult | None":
+    if conversation is None or span_id is None:
+        return None
+    return next(
+        (
+            item
+            for item in getattr(conversation, "tool_results", [])
+            if item.span_id == span_id
         ),
         None,
     )

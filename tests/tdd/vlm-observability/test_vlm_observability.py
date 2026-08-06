@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -23,7 +25,6 @@ from assistant_agent.observability.otel_exporter import TextOtelTraceObserver
 from assistant_agent.observability.otel_mapping import build_text_otel_span_specs
 from assistant_agent.observability.trace_conversation import (
     TraceConversationText,
-    TraceConversationView,
     TraceToolObservation,
 )
 from assistant_agent.observability.trace_store import InMemoryTraceStore, TraceEvent
@@ -236,8 +237,8 @@ def test_background_vision_summary_flushes_otel_batch() -> None:
     assert exporter.batches[0][0].attributes["langfuse.trace.name"] == "vision.observation"
 
 
-def test_metadata_only_visual_tool_ignores_content_overlay() -> None:
-    event = TraceEvent(
+def test_local_visual_tool_projects_safe_result_and_semantic_observation() -> None:
+    tool_event = TraceEvent(
         trace_id="4" * 32,
         run_id="run-visual-tool",
         user_id="user-vlm",
@@ -259,33 +260,93 @@ def test_metadata_only_visual_tool_ignores_content_overlay() -> None:
         },
         attributes={"content_export_policy": "metadata_only"},
     )
-    conversation = TraceConversationView(
-        trace_id=event.trace_id,
+    observation_event = TraceEvent(
+        trace_id=tool_event.trace_id,
+        run_id=tool_event.run_id,
+        user_id=tool_event.user_id,
+        session_id=tool_event.session_id,
+        node_name="assistant",
+        event_type="observability",
+        canonical_event="tool.observation",
+        observation_type="event",
+        observation_name="tool.observation",
+        tool_name=MEDIA_INSPECT_TOOL_NAME,
+        status="succeeded",
+        attributes={
+            "observation_index": 1,
+            "source_tool_span_id": "tool-span",
+            "content_export_policy": "metadata_only",
+        },
+        output_summary={"summary": None, "output_ref": None},
+    )
+    tool_observation = TraceToolObservation(
+        observation_index=1,
+        tool_name=MEDIA_INSPECT_TOOL_NAME,
+        observation={
+            "tool_name": MEDIA_INSPECT_TOOL_NAME,
+            "status": "succeeded",
+            "summary": "visual-safe-summary",
+            "outcome": "success",
+            "is_complete": True,
+            "data": {
+                "objects": ["cup"],
+                "media_refs": ["video-secret"],
+                "raw_provider_response": "provider-observation-secret",
+            },
+        },
+    )
+    conversation = SimpleNamespace(
+        trace_id=tool_event.trace_id,
         user=TraceConversationText(text="inspect", chars=7),
         assistant=TraceConversationText(text="done", chars=4),
+        delivered=None,
+        llm_inputs=[],
+        llm_outputs=[],
+        vlm_outputs=[],
         tool_observations=[
-            TraceToolObservation(
-                observation_index=1,
+            tool_observation,
+        ],
+        tool_results=[
+            SimpleNamespace(
+                span_id="tool-span",
                 tool_name=MEDIA_INSPECT_TOOL_NAME,
-                observation={
-                    "tool_name": MEDIA_INSPECT_TOOL_NAME,
-                    "summary": "visual-secret",
-                    "data": {"media_refs": ["video-secret"]},
+                result={
+                    "success": True,
+                    "output_ref": "memory://visual-safe",
+                    "data": {
+                        "summary": "visual-safe-summary",
+                        "objects": ["cup"],
+                        "media_refs": ["video-secret"],
+                        "raw_provider_payload": "provider-secret",
+                    },
                 },
-            )
+            ),
         ],
     )
 
-    tool_span = next(
-        span
-        for span in build_text_otel_span_specs([event], conversation=conversation)
-        if span.name == "tool.execute"
+    spans = build_text_otel_span_specs(
+        [tool_event, observation_event],
+        conversation=conversation,
     )
+    tool_span = next(span for span in spans if span.name == "tool.execute")
+    observation = next(span for span in spans if span.name == "tool.observation")
 
-    payload = str(tool_span.attributes)
-    assert "visual-secret" not in payload
+    tool_output = json.loads(tool_span.attributes["langfuse.observation.output"])
+    observation_output = json.loads(
+        observation.attributes["langfuse.observation.output"]
+    )
+    assert tool_output["data"] == {
+        "summary": "visual-safe-summary",
+        "objects": ["cup"],
+    }
+    assert observation_output == {
+        **tool_observation.observation,
+        "data": {"objects": ["cup"]},
+    }
+    payload = str([tool_span.attributes, observation.attributes])
     assert "video-secret" not in payload
-    assert "metadata_only" in payload
+    assert "provider-secret" not in payload
+    assert "provider-observation-secret" not in payload
 
 
 def test_realtime_observer_records_one_independent_vlm_trace(tmp_path: Path) -> None:
@@ -361,6 +422,18 @@ async def _assert_realtime_observer_vlm_trace(tmp_path: Path) -> None:
     assert "video-vlm" not in run_payload
     assert str(frame_path) not in run_payload
     assert record.summary not in run_payload
+    specs = build_text_otel_span_specs(trace_store.list_by_run(summary.run_id))
+    vlm_span = next(item for item in specs if item.name == "vlm.infer")
+    vlm_input = json.loads(vlm_span.attributes["langfuse.observation.input"])
+    assert vlm_input == {
+        "operation": "vlm.infer",
+        "media_kind": "live_view",
+        "media_count": 1,
+        "prompt_version": "realtime-single-frame-v1",
+        "source": "background_keyframe_observation",
+        "frame_sequence": 1,
+        "content_exported": False,
+    }
 
 
 def test_realtime_observer_failure_summary_hides_media_path(tmp_path: Path) -> None:

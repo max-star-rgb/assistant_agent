@@ -49,6 +49,7 @@ from assistant_agent.tools.observation import (
     observation_from_tool_result,
     rejected_observation,
 )
+from assistant_agent.tools.observation_safety import sanitize_tool_observation_detail
 from assistant_agent.tools.models import ToolResult, ToolSpec
 from assistant_agent.runtime.chat_adapter import (
     ChatAdapter,
@@ -1780,6 +1781,7 @@ def _execute_single_requested_tool_node(graph_state: AssistantLoopState) -> Assi
                         "default",
                     )
                 ),
+                tool_result=result,
             ),
             "outputs_by_step": outputs_by_step,
         }
@@ -2076,6 +2078,7 @@ def _record_react_observation(
     tool_call_id: str | None = None,
     source_tool_span_id: str | None = None,
     content_export_policy: str = "default",
+    tool_result: ToolResult | None = None,
 ) -> list[dict[str, Any]]:
     """Append a tool observation to both graph state and demo metadata."""
 
@@ -2100,18 +2103,52 @@ def _record_react_observation(
     if not isinstance(observation_error, dict):
         observation_error = None
     from assistant_agent.observability.trace_conversation import (
+        TraceToolResult,
         TraceToolObservation,
         get_default_trace_conversation_store,
     )
+    from assistant_agent.observability.visual_trace_content import (
+        sanitize_visual_trace_content,
+    )
 
-    get_default_trace_conversation_store().append_tool_observation(
+    trace_content_store = get_default_trace_conversation_store()
+    if (
+        tool_result is not None
+        and source_tool_span_id is not None
+        and content_export_policy == "metadata_only"
+    ):
+        trace_content_store.append_tool_result(
+            user_id=state.user_id,
+            session_id=state.session_id,
+            trace_id=graph_state.get("trace_id") or state.trace_id,
+            tool_result=TraceToolResult(
+                span_id=source_tool_span_id,
+                tool_name=tool_result.tool_name,
+                result=_safe_visual_tool_result_content(
+                    tool_result,
+                    observation=payload,
+                ),
+            ),
+        )
+    trace_content_store.append_tool_observation(
         user_id=state.user_id,
         session_id=state.session_id,
         trace_id=graph_state.get("trace_id") or state.trace_id,
         tool_observation=TraceToolObservation(
             observation_index=len(observations),
-            tool_name=str(trace_payload.get("tool_name") or "unknown"),
-            observation=dict(trace_payload),
+            tool_name=str(payload.get("tool_name") or "unknown"),
+            observation=(
+                sanitize_visual_trace_content(payload)
+                if content_export_policy == "metadata_only"
+                else dict(payload)
+            ),
+            source_tool_span_id=source_tool_span_id,
+            runtime_tool_call_id=tool_call_id,
+            provider_tool_call_id=(
+                decision.provider_tool_call_id
+                if isinstance(decision, AssistantToolCall)
+                else None
+            ),
         ),
     )
     trace_event = _observation_trace_event(
@@ -2168,6 +2205,30 @@ def _record_react_observation(
         )
     )
     return observations
+
+
+def _safe_visual_tool_result_content(
+    result: ToolResult,
+    *,
+    observation: dict[str, Any],
+) -> dict[str, Any]:
+    from assistant_agent.observability.visual_trace_content import (
+        sanitize_visual_tool_result,
+    )
+
+    safe_data = sanitize_tool_observation_detail(
+        result.data if isinstance(result.data, dict) else {}
+    )
+    error = observation.get("error")
+    return sanitize_visual_tool_result(
+        {
+            "tool_name": result.tool_name,
+            "success": result.success,
+            "output_ref": result.output_ref,
+            "data": safe_data if isinstance(safe_data, dict) else {},
+            "error": dict(error) if isinstance(error, dict) else None,
+        }
+    )
 
 
 def _trace_safe_tool_observation(

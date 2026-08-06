@@ -58,6 +58,17 @@ class TraceToolObservation(BaseModel):
     observation_index: int = Field(ge=1)
     tool_name: str = Field(min_length=1)
     observation: dict[str, Any]
+    source_tool_span_id: str | None = None
+    runtime_tool_call_id: str | None = None
+    provider_tool_call_id: str | None = None
+
+
+class TraceToolResult(BaseModel):
+    """One sanitized local-only ToolResult keyed by its execution span."""
+
+    span_id: str = Field(min_length=1)
+    tool_name: str = Field(min_length=1)
+    result: dict[str, Any]
 
 
 class TraceConversationView(BaseModel):
@@ -72,6 +83,7 @@ class TraceConversationView(BaseModel):
     llm_outputs: list[TraceLlmOutput] = Field(default_factory=list)
     vlm_outputs: list[TraceVlmOutput] = Field(default_factory=list)
     tool_observations: list[TraceToolObservation] = Field(default_factory=list)
+    tool_results: list[TraceToolResult] = Field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -88,6 +100,7 @@ class TraceConversationRecord:
     llm_outputs: tuple[TraceLlmOutput, ...] = ()
     vlm_outputs: tuple[TraceVlmOutput, ...] = ()
     tool_observations: tuple[TraceToolObservation, ...] = ()
+    tool_results: tuple[TraceToolResult, ...] = ()
 
 
 class InMemoryTraceConversationStore:
@@ -132,6 +145,7 @@ class InMemoryTraceConversationStore:
                 tool_observations=(
                     existing.tool_observations if existing is not None else ()
                 ),
+                tool_results=existing.tool_results if existing is not None else (),
             )
             self._replace_record(record)
 
@@ -170,6 +184,7 @@ class InMemoryTraceConversationStore:
                 tool_observations=(
                     existing.tool_observations if existing is not None else ()
                 ),
+                tool_results=existing.tool_results if existing is not None else (),
             )
             self._replace_record(record)
 
@@ -203,6 +218,7 @@ class InMemoryTraceConversationStore:
                 tool_observations=(
                     existing.tool_observations if existing is not None else ()
                 ),
+                tool_results=existing.tool_results if existing is not None else (),
             )
             self._replace_record(record)
 
@@ -244,6 +260,9 @@ class InMemoryTraceConversationStore:
                     tool_observations=(
                         existing.tool_observations if existing is not None else ()
                     ),
+                    tool_results=(
+                        existing.tool_results if existing is not None else ()
+                    ),
                 )
             )
 
@@ -279,8 +298,51 @@ class InMemoryTraceConversationStore:
                 llm_outputs=existing.llm_outputs if existing is not None else (),
                 vlm_outputs=existing.vlm_outputs if existing is not None else (),
                 tool_observations=observations[-32:],
+                tool_results=existing.tool_results if existing is not None else (),
             )
             self._replace_record(record)
+
+    def append_tool_result(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+        trace_id: str,
+        tool_result: TraceToolResult,
+    ) -> None:
+        """Upsert one sanitized ToolResult by execution span."""
+
+        with self._lock:
+            existing = self._matching_record(
+                user_id=user_id,
+                session_id=session_id,
+                trace_id=trace_id,
+            )
+            existing_results = existing.tool_results if existing is not None else ()
+            results = tuple(
+                item for item in existing_results if item.span_id != tool_result.span_id
+            ) + (tool_result,)
+            self._replace_record(
+                TraceConversationRecord(
+                    user_id=user_id,
+                    session_id=session_id,
+                    trace_id=trace_id,
+                    user_text=existing.user_text if existing is not None else "",
+                    assistant_text=(
+                        existing.assistant_text if existing is not None else ""
+                    ),
+                    delivered_text=(
+                        existing.delivered_text if existing is not None else None
+                    ),
+                    llm_inputs=existing.llm_inputs if existing is not None else (),
+                    llm_outputs=existing.llm_outputs if existing is not None else (),
+                    vlm_outputs=existing.vlm_outputs if existing is not None else (),
+                    tool_observations=(
+                        existing.tool_observations if existing is not None else ()
+                    ),
+                    tool_results=results[-32:],
+                )
+            )
 
     def append_delivered(
         self,
@@ -312,6 +374,7 @@ class InMemoryTraceConversationStore:
                     llm_outputs=existing.llm_outputs,
                     vlm_outputs=existing.vlm_outputs,
                     tool_observations=existing.tool_observations,
+                    tool_results=existing.tool_results,
                 )
             )
 
@@ -326,6 +389,7 @@ class InMemoryTraceConversationStore:
         include_llm_outputs: bool = False,
         include_vlm_outputs: bool = False,
         include_tool_observations: bool = False,
+        include_tool_results: bool = False,
     ) -> TraceConversationView | None:
         if limit <= 0:
             raise ValueError("limit must be positive")
@@ -354,6 +418,9 @@ class InMemoryTraceConversationStore:
                         list(record.tool_observations)
                         if include_tool_observations
                         else []
+                    ),
+                    tool_results=(
+                        list(record.tool_results) if include_tool_results else []
                     ),
                 )
         return None

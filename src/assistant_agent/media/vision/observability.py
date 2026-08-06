@@ -94,6 +94,7 @@ def observe_vision_inference(
     source: str,
     media_kind: str,
     media_count: int,
+    frame_sequence: int | None = None,
     prompt_version: str = VISION_INFERENCE_PROMPT_VERSION,
     trace_link_callback: Callable[[VisionInferenceTraceLink], None] | None = None,
 ) -> _ResultT:
@@ -121,6 +122,13 @@ def observe_vision_inference(
         "media_count": max(0, int(media_count)),
         "prompt_version": prompt_version,
         "model_role": "vlm",
+        **(
+            {"frame_sequence": frame_sequence}
+            if isinstance(frame_sequence, int)
+            and not isinstance(frame_sequence, bool)
+            and frame_sequence >= 0
+            else {}
+        ),
     }
     _append_fail_open(
         trace_store,
@@ -139,6 +147,15 @@ def observe_vision_inference(
         input_summary={
             "media_kind": media_kind,
             "media_count": max(0, int(media_count)),
+            "prompt_version": prompt_version,
+            "source": source,
+            **(
+                {"frame_sequence": frame_sequence}
+                if isinstance(frame_sequence, int)
+                and not isinstance(frame_sequence, bool)
+                and frame_sequence >= 0
+                else {}
+            ),
         },
     )
     started_at = perf_counter()

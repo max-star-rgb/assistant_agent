@@ -184,6 +184,14 @@ class VideoUnderstandingBranch(ToolBase):
                         len(input.video_ids),
                         1 if input.video_ref else 0,
                     ),
+                    frame_sequence=(
+                        input.metadata.get("frame_sequence")
+                        if isinstance(input.metadata.get("frame_sequence"), int)
+                        and not isinstance(
+                            input.metadata.get("frame_sequence"), bool
+                        )
+                        else None
+                    ),
                     prompt_version=(
                         "realtime-single-frame-v1"
                         if observation_mode
