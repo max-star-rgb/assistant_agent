@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from contextlib import contextmanager
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -51,6 +53,8 @@ class RuntimeAuditArtifactStore:
         self.reports_dir = self.root / "reports"
         self.attempts_dir = self.state_dir / "attempts"
         self.schemas_dir = self.state_dir / "schemas"
+        self.commits_dir = self.state_dir / "commits"
+        self.lock_path = self.state_dir / "daily-run.lock"
         self.issues_path = self.state_dir / "issues.json"
         self.latest_bundle_path = self.state_dir / "latest-bundle.json"
         self.watermark_path = self.state_dir / "watermark.json"
@@ -97,6 +101,38 @@ class RuntimeAuditArtifactStore:
         path = self.attempts_dir / f"{attempt.attempt_id}.json"
         _atomic_write(path, attempt.model_dump_json(indent=2))
         return path
+
+    def commit_intent_path(self, attempt_id: str) -> Path:
+        return self.commits_dir / f"{attempt_id}.json"
+
+    def write_commit_intent(self, attempt: DailyAuditAttempt, *, markdown: str, registry: IssueRegistry | None, commit_continuous_state: bool) -> Path:
+        path = self.commit_intent_path(attempt.attempt_id)
+        payload = {
+            "attempt": attempt.model_dump(mode="json"),
+            "markdown": markdown,
+            "registry": registry.model_dump(mode="json") if registry is not None else None,
+            "commit_continuous_state": commit_continuous_state,
+        }
+        _atomic_write(path, json.dumps(payload, ensure_ascii=False, indent=2))
+        return path
+
+    def read_commit_intents(self) -> list[dict]:
+        if not self.commits_dir.exists():
+            return []
+        return [json.loads(path.read_text(encoding="utf-8")) for path in sorted(self.commits_dir.glob("*.json"))]
+
+    def clear_commit_intent(self, attempt_id: str) -> None:
+        self.commit_intent_path(attempt_id).unlink(missing_ok=True)
+
+    @contextmanager
+    def daily_claim(self):
+        self.lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with self.lock_path.open("a+", encoding="utf-8") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
     def read_issue_registry(self) -> IssueRegistry:
         if not self.issues_path.exists():

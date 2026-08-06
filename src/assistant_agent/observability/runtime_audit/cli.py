@@ -11,6 +11,7 @@ import sys
 
 from assistant_agent.observability.runtime_audit.collector import collect_runtime_audit
 from assistant_agent.observability.runtime_audit.daily_runner import (
+    run_failed_daily_audit,
     run_one_daily_audit,
     run_pending_daily_audits,
 )
@@ -162,11 +163,13 @@ def _run_daily(args, *, repo_root: Path, store: RuntimeAuditArtifactStore) -> in
     """Run explicit refreshes or ordered backfill through the resumable daily loop."""
 
     collected_at = datetime.now(timezone.utc)
-    source = create_langfuse_audit_source_from_env(os.environ)
+    source = None
     try:
-        runner = lambda **kwargs: run_daily_codex_report(
-            **kwargs, timeout_seconds=args.codex_timeout_seconds
-        )
+        source = create_langfuse_audit_source_from_env(os.environ)
+        def runner(**kwargs):
+            return run_daily_codex_report(
+                **kwargs, timeout_seconds=args.codex_timeout_seconds
+            )
         common = {
             "source": source,
             "local_trace_path": repo_root / args.local_trace_path,
@@ -178,12 +181,27 @@ def _run_daily(args, *, repo_root: Path, store: RuntimeAuditArtifactStore) -> in
             "low_score_threshold": args.low_score_threshold,
         }
         if args.date is not None:
-            results = [run_one_daily_audit(window=window_for_date(args.date), **common)]
+            results = [
+                run_one_daily_audit(
+                    window=window_for_date(args.date),
+                    commit_continuous_state=False,
+                    **common,
+                )
+            ]
         else:
             yesterday = previous_day_window(collected_at).audit_date
             results = run_pending_daily_audits(yesterday=yesterday, **common)
+    except Exception as exc:
+        target = window_for_date(args.date) if args.date else previous_day_window(collected_at)
+        results = [
+            run_failed_daily_audit(
+                window=target, store=store, collected_at=collected_at,
+                error_summary=sanitize_error_message(exc),
+            )
+        ]
     finally:
-        source.close()
+        if source is not None:
+            source.close()
     failed = next((item for item in results if item.status == "failed"), None)
     print(
         json.dumps(

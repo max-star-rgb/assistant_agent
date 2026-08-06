@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from contextlib import nullcontext
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Literal
@@ -53,28 +54,52 @@ def run_one_daily_audit(
     collected_at: datetime,
     judge_grace: timedelta = timedelta(minutes=15),
     low_score_threshold: float = DEFAULT_LOW_SCORE_THRESHOLD,
+    commit_continuous_state: bool = True,
+    _claimed: bool = False,
 ) -> DailyAuditRunResult:
     """Collect, publish, and checkpoint one day without crossing a failed state."""
 
+    claim = nullcontext() if _claimed else store.daily_claim()
+    with claim:
+        _recover_pending_commits(store)
+        return _run_one_locked(
+            window=window, source=source, local_trace_path=local_trace_path,
+            store=store, repo_root=repo_root, codex_runner=codex_runner,
+            collected_at=collected_at, judge_grace=judge_grace,
+            low_score_threshold=low_score_threshold,
+            commit_continuous_state=commit_continuous_state,
+        )
+
+
+def _run_one_locked(
+    *, window: DailyAuditWindow, source: LangfuseAuditSource, local_trace_path: Path,
+    store: RuntimeAuditArtifactStore, repo_root: Path,
+    codex_runner: Callable[..., DailyCodexAuditReport], collected_at: datetime,
+    judge_grace: timedelta, low_score_threshold: float,
+    commit_continuous_state: bool,
+) -> DailyAuditRunResult:
     attempt_id = store.allocate_audit_run_id(collected_at)
-    bundle = collect_runtime_audit(
-        source=source,
-        local_trace_path=local_trace_path,
-        window_start=window.start_utc,
-        window_end=window.end_utc,
-        collected_at=collected_at,
-        audit_run_id=attempt_id,
-        judge_grace=judge_grace,
-        low_score_threshold=low_score_threshold,
-    )
-    bundle_path = store.write_bundle(bundle)
+    bundle_path = store.inbox_dir / f"{attempt_id}.json"
     running = DailyAuditAttempt(
         attempt_id=attempt_id,
         audit_date=window.audit_date,
         status="running",
         bundle_path=str(bundle_path),
+        codex_output_path=str(store.codex_json_path(attempt_id)),
     )
-    store.write_attempt(running)
+    try:
+        bundle = collect_runtime_audit(
+            source=source, local_trace_path=local_trace_path,
+            window_start=window.start_utc, window_end=window.end_utc,
+            collected_at=collected_at, audit_run_id=attempt_id,
+            judge_grace=judge_grace, low_score_threshold=low_score_threshold,
+        )
+        bundle_path = store.write_bundle(bundle)
+        running = running.model_copy(update={"bundle_path": str(bundle_path)})
+        store.write_attempt(running)
+    except Exception as exc:
+        return _fail(store=store, attempt=running, bundle_path=bundle_path,
+                     error_summary=sanitize_error_message(exc), publish_failure=True)
 
     if not bundle.coverage.langfuse_source_available:
         return _fail(
@@ -85,7 +110,7 @@ def run_one_daily_audit(
             publish_failure=True,
         )
 
-    if not bundle.traces:
+    if not bundle.traces and not bundle.local_manifests and not bundle.local_fallbacks:
         markdown = render_empty_daily_report(
             window.audit_date,
             langfuse_available=bundle.coverage.langfuse_source_available,
@@ -99,12 +124,9 @@ def run_one_daily_audit(
                 error_summary="Local completeness evidence source was unavailable; the day cannot be treated as empty.",
                 publish_failure=True,
             )
-        return _succeed(
-            store=store,
-            attempt=running,
-            bundle_path=bundle_path,
-            markdown=markdown,
-        )
+        return _commit_success(store=store, attempt=running, bundle_path=bundle_path,
+                               markdown=markdown, registry=None,
+                               commit_continuous_state=commit_continuous_state)
 
     try:
         report = codex_runner(
@@ -131,22 +153,9 @@ def run_one_daily_audit(
             publish_failure=True,
         )
 
-    # A completed report is published before its related internal checkpoint.  Each
-    # file is atomically replaced; a failure in a later step cannot advance watermark.
-    report_path = store.write_daily_report(window.audit_date, markdown, replace=True)
-    store.write_issue_registry(registry)
-    succeeded = running.model_copy(update={"status": "succeeded"})
-    store.write_attempt(succeeded)
-    store.mark_day_completed(
-        window.audit_date, attempt_id=attempt_id, bundle_path=str(bundle_path)
-    )
-    return DailyAuditRunResult(
-        audit_date=window.audit_date,
-        status="succeeded",
-        attempt_id=attempt_id,
-        bundle_path=bundle_path,
-        report_path=report_path,
-    )
+    return _commit_success(store=store, attempt=running, bundle_path=bundle_path,
+                           markdown=markdown, registry=registry,
+                           commit_continuous_state=commit_continuous_state)
 
 
 def run_pending_daily_audits(
@@ -164,10 +173,13 @@ def run_pending_daily_audits(
     """Backfill in calendar order, stopping at the first failed daily attempt."""
 
     results: list[DailyAuditRunResult] = []
-    for audit_date in pending_audit_dates(
-        yesterday=yesterday, last_completed=store.last_completed_date()
-    ):
-        result = run_one_daily_audit(
+    with store.daily_claim():
+        _recover_pending_commits(store)
+        dates = pending_audit_dates(
+            yesterday=yesterday, last_completed=store.last_completed_date()
+        )
+        for audit_date in dates:
+            result = run_one_daily_audit(
             window=window_for_date(audit_date),
             source=source,
             local_trace_path=local_trace_path,
@@ -176,34 +188,73 @@ def run_pending_daily_audits(
             codex_runner=codex_runner,
             collected_at=collected_at,
             judge_grace=judge_grace,
-            low_score_threshold=low_score_threshold,
-        )
-        results.append(result)
-        if result.status == "failed":
-            break
+                low_score_threshold=low_score_threshold,
+                commit_continuous_state=True,
+                _claimed=True,
+            )
+            results.append(result)
+            if result.status == "failed":
+                break
     return results
 
 
-def _succeed(
+def run_failed_daily_audit(
+    *, window: DailyAuditWindow, store: RuntimeAuditArtifactStore,
+    collected_at: datetime, error_summary: str,
+) -> DailyAuditRunResult:
+    """Record an operator-visible failure when a source cannot even be constructed."""
+
+    with store.daily_claim():
+        attempt_id = store.allocate_audit_run_id(collected_at)
+        bundle_path = store.inbox_dir / f"{attempt_id}.json"
+        attempt = DailyAuditAttempt(
+            attempt_id=attempt_id, audit_date=window.audit_date, status="running",
+            bundle_path=str(bundle_path), codex_output_path=str(store.codex_json_path(attempt_id)),
+        )
+        return _fail(store=store, attempt=attempt, bundle_path=bundle_path,
+                     error_summary=error_summary, publish_failure=True)
+
+
+def _commit_success(
     *,
     store: RuntimeAuditArtifactStore,
     attempt: DailyAuditAttempt,
     bundle_path: Path,
     markdown: str,
+    registry,
+    commit_continuous_state: bool,
 ) -> DailyAuditRunResult:
-    report_path = store.write_daily_report(attempt.audit_date, markdown, replace=True)
-    succeeded = attempt.model_copy(update={"status": "succeeded"})
+    intent_path = store.write_commit_intent(
+        attempt, markdown=markdown, registry=registry,
+        commit_continuous_state=commit_continuous_state,
+    )
+    import json
+    report_path = _apply_commit_intent(store, json.loads(intent_path.read_text(encoding="utf-8")))
+    return DailyAuditRunResult(audit_date=attempt.audit_date, status="succeeded",
+                               attempt_id=attempt.attempt_id, bundle_path=bundle_path,
+                               report_path=report_path)
+
+
+def _recover_pending_commits(store: RuntimeAuditArtifactStore) -> None:
+    for intent in store.read_commit_intents():
+        _apply_commit_intent(store, intent)
+
+
+def _apply_commit_intent(store: RuntimeAuditArtifactStore, intent: dict) -> Path:
+    attempt = DailyAuditAttempt.model_validate(intent["attempt"])
+    report_path = store.write_daily_report(attempt.audit_date, intent["markdown"], replace=True)
+    if intent["commit_continuous_state"]:
+        registry = intent.get("registry")
+        if registry is not None:
+            from assistant_agent.observability.runtime_audit.daily_models import IssueRegistry
+            store.write_issue_registry(IssueRegistry.model_validate(registry))
+    succeeded = attempt.model_copy(update={"status": "succeeded", "error_summary": None})
     store.write_attempt(succeeded)
-    store.mark_day_completed(
-        attempt.audit_date, attempt_id=attempt.attempt_id, bundle_path=str(bundle_path)
-    )
-    return DailyAuditRunResult(
-        audit_date=attempt.audit_date,
-        status="succeeded",
-        attempt_id=attempt.attempt_id,
-        bundle_path=bundle_path,
-        report_path=report_path,
-    )
+    if intent["commit_continuous_state"]:
+        store.mark_day_completed(attempt.audit_date, attempt_id=attempt.attempt_id,
+                                 bundle_path=attempt.bundle_path)
+    store.clear_commit_intent(attempt.attempt_id)
+    return report_path
 
 
 def _fail(
@@ -214,6 +265,7 @@ def _fail(
     error_summary: str,
     publish_failure: bool,
 ) -> DailyAuditRunResult:
+    report_path = store.daily_report_path(attempt.audit_date)
     if publish_failure and not store.is_day_completed(attempt.audit_date):
         store.write_failed_daily_report_if_absent(
             attempt.audit_date,
@@ -226,6 +278,7 @@ def _fail(
         status="failed",
         attempt_id=attempt.attempt_id,
         bundle_path=bundle_path,
+        report_path=report_path if report_path.exists() else None,
         error_summary=error_summary,
     )
 
