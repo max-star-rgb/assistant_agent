@@ -276,6 +276,26 @@ def test_daily_report_replaces_extended_machine_ids_without_hiding_normal_chines
     assert "请求 1234 不应被隐藏" in body
 
 
+def test_daily_report_replaces_machine_ids_adjacent_to_chinese_text() -> None:
+    """Would fail if Unicode word boundaries let Chinese-adjacent machine IDs leak."""
+
+    markdown = report_module.render_daily_codex_report(
+        daily_models_module.DailyCodexAuditReport(
+            audit_date=date(2026, 8, 5),
+            daily_summary="证据trace:abc仍需查看。",
+            activity_summary="普通中文保持可读。",
+            memory_summary="实例<123e4567-e89b-12d3-a456-426614174000>已记录。",
+            infrastructure_summary="正常运行。",
+        )
+    )
+
+    body, _ = markdown.split("## 证据附录", maxsplit=1)
+    assert "trace:abc" not in body
+    assert "123e4567-e89b-12d3-a456-426614174000" not in body
+    assert body.count("机器证据见附录") >= 2
+    assert "普通中文保持可读" in body
+
+
 def test_issue_evidence_refs_reject_markdown_and_html_controls() -> None:
     """Would fail if a machine evidence ref could escape the appendix code span."""
 

@@ -15,10 +15,10 @@ from assistant_agent.providers.provider_errors import sanitize_error_message
 
 
 _MACHINE_EVIDENCE_REF = re.compile(
-    r"\b(?:trace|code|test|observation|run|score):[^\s`<>()\[\]{}]+"
+    r"(?<![A-Za-z0-9_])(?:trace|code|test|observation|run|score):[A-Za-z0-9._/:@+=-]+"
 )
 _UUID = re.compile(
-    r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b",
+    r"(?<![A-Za-z0-9_])[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?![A-Za-z0-9_])",
     re.IGNORECASE,
 )
 _URL_USERINFO = re.compile(r"([a-z][a-z0-9+.-]*://)[^/?#\s@]+@", re.IGNORECASE)

@@ -22,6 +22,8 @@ _CODEX_ENVIRONMENT_ALLOWLIST = frozenset(
         "CODEX_HOME",
         "ASSISTANT_AGENT_CODEX_EXECUTABLE",
         "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
         "TERM",
         "TMPDIR",
         "SSL_CERT_FILE",
@@ -68,7 +70,7 @@ def sanitized_codex_environment(values: Mapping[str, str]) -> dict[str, str]:
     result = {
         key: value
         for key, value in values.items()
-        if key in _CODEX_ENVIRONMENT_ALLOWLIST or key.startswith("LC_")
+        if key in _CODEX_ENVIRONMENT_ALLOWLIST
     }
     result["MULTIMODAL_AGENT_PROVIDER_MODE"] = "mock"
     return result
