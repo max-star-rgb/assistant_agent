@@ -35,9 +35,11 @@ _TRACE_EVIDENCE_PATTERN = (
     rf"^trace:{_EVIDENCE_ID_PATTERN}"
     rf"(?:/(?:observation|score):{_EVIDENCE_ID_PATTERN})?$"
 )
+_TEST_PATH_SEGMENT_PATTERN = r"[A-Za-z0-9][A-Za-z0-9._@+=-]*"
 _CODE_EVIDENCE_PATTERN = (
     r"^(?:code:[0-9A-Fa-f]{7,40}|"
-    r"test:tests/[A-Za-z0-9][A-Za-z0-9._/@+=-]*)$"
+    rf"test:tests/{_TEST_PATH_SEGMENT_PATTERN}"
+    rf"(?:/{_TEST_PATH_SEGMENT_PATTERN})*)$"
 )
 TraceEvidenceRef = Annotated[
     str,

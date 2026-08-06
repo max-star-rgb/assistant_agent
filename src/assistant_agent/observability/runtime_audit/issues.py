@@ -62,7 +62,7 @@ def build_refresh_issue_registry(
             raise ValueError(f"duplicate observed issue: {candidate.issue_key}")
         observed_keys.add(candidate.issue_key)
         current = previous.issues.get(candidate.issue_key)
-        if current is not None and current.first_seen > audit_date:
+        if current is not None and current.last_seen > audit_date:
             if candidate.status in {"runtime_verified", "regressed"}:
                 raise ValueError(
                     "historical refresh predates the existing issue lifecycle"

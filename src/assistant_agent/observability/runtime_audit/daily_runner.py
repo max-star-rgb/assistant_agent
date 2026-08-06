@@ -193,11 +193,17 @@ def _run_one_locked(
             raise ValueError("Codex daily report audit_date does not match the requested day")
         report = _add_deterministic_limitations(report, bundle)
         _validate_current_bundle_evidence(report, bundle)
+        report = _downgrade_unverifiable_legacy_transitions(
+            report,
+            previous_registry=previous_registry,
+            repo_root=repo_root,
+        )
         _validate_repository_code_evidence(
             report,
             bundle=bundle,
             repo_root=repo_root,
             previous_registry=previous_registry,
+            historical_refresh=not commit_continuous_state,
         )
         _validate_sensitive_text_overlap(report, bundle)
         report_registry = (
@@ -527,6 +533,7 @@ def _validate_repository_code_evidence(
     bundle: RuntimeAuditBundle,
     repo_root: Path,
     previous_registry: IssueRegistry,
+    historical_refresh: bool,
 ) -> None:
     """Authenticate code-addressed refs against local Git and repository files."""
 
@@ -574,6 +581,8 @@ def _validate_repository_code_evidence(
             committed_at = _git_commit_time(repo_root, commit_sha)
             if bad_trace_times and committed_at < max(bad_trace_times):
                 raise ValueError("code evidence commit predates the referenced bad trace")
+            if historical_refresh and committed_at >= bundle.window_end:
+                raise ValueError("historical refresh code evidence postdates the audit window")
         for ref in issue.code_evidence_refs:
             if not ref.startswith("test:"):
                 continue
@@ -588,6 +597,56 @@ def _validate_repository_code_evidence(
             test_path = (repo_root / Path(*relative.parts)).resolve()
             if not test_path.is_relative_to(repo_root) or not test_path.is_file():
                 raise ValueError("test evidence path does not exist in the repository")
+
+
+def _downgrade_unverifiable_legacy_transitions(
+    report: DailyCodexAuditReport,
+    *,
+    previous_registry: IssueRegistry,
+    repo_root: Path,
+) -> DailyCodexAuditReport:
+    """Keep old registry refs readable without authenticating a terminal transition."""
+
+    issues = []
+    limitations = list(report.limitations)
+    for issue in report.issues:
+        previous = previous_registry.issues.get(issue.issue_key)
+        if issue.status not in {"runtime_verified", "regressed"} or previous is None:
+            issues.append(issue)
+            continue
+        commit_refs = [
+            ref.removeprefix("code:")
+            for ref in previous.code_evidence_refs
+            if ref.startswith("code:")
+        ]
+        authenticated = False
+        for commit_sha in commit_refs:
+            try:
+                _git_commit_time(repo_root, commit_sha)
+            except (OSError, RuntimeError, subprocess.SubprocessError, ValueError):
+                continue
+            authenticated = True
+            break
+        if authenticated:
+            issues.append(issue)
+            continue
+        limitation = f"{issue.issue_key}：旧版修复证据无法验证，暂不确认运行终态。"
+        limitations.append(limitation)
+        issues.append(
+            issue.model_copy(
+                update={
+                    "status": "uncertain",
+                    "validation": "补录真实 Git commit SHA 后再等待自然运行验证。",
+                    "runtime_verification_refs": [],
+                }
+            )
+        )
+    return report.model_copy(
+        update={
+            "issues": issues,
+            "limitations": list(dict.fromkeys(limitations)),
+        }
+    )
 
 
 def _git_commit_time(repo_root: Path, commit_sha: str) -> datetime:
@@ -623,8 +682,17 @@ def _bundle_trace_times(bundle: RuntimeAuditBundle) -> dict[str, datetime]:
     for manifest in bundle.local_manifests:
         times.setdefault(
             manifest.trace_id,
-            manifest.last_event_at.astimezone(timezone.utc),
+            manifest.first_event_at.astimezone(timezone.utc),
         )
+    for fallback in bundle.local_fallbacks:
+        if not fallback.timeline:
+            continue
+        first_event_at = min(event.created_at for event in fallback.timeline).astimezone(
+            timezone.utc
+        )
+        existing = times.get(fallback.trace_id)
+        if existing is None or first_event_at < existing:
+            times[fallback.trace_id] = first_event_at
     return times
 
 

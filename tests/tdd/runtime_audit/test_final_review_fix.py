@@ -593,6 +593,9 @@ def test_daily_schema_rejects_malformed_evidence_before_codex_returns() -> None:
     assert re.fullmatch(code_pattern, "test:tests/tdd/runtime_audit/test_example.py")
     assert re.fullmatch(trace_pattern, "commit:abc123") is None
     assert re.fullmatch(code_pattern, "code:not-a-sha") is None
+    assert re.fullmatch(code_pattern, "test:tests/a/../escape.py") is None
+    assert re.fullmatch(code_pattern, "test:tests/a//b.py") is None
+    assert re.fullmatch(code_pattern, "test:tests/a/") is None
 
 
 def test_historical_refresh_rejects_transition_before_existing_lifecycle_node() -> None:
@@ -619,6 +622,43 @@ def test_historical_refresh_rejects_transition_before_existing_lifecycle_node() 
         build_refresh_issue_registry(registry, [verified], date(2026, 8, 4))
 
     assert report_issue_view(registry, registry, [], audit_date=date(2026, 8, 4)) == []
+
+
+def test_historical_refresh_does_not_project_future_last_seen_state() -> None:
+    """Would fail if a later code-addressed snapshot leaked into an earlier report."""
+
+    future = DailyAuditIssue(
+        issue_key="tool.future-state",
+        status="code_addressed",
+        title="后来才修复",
+        first_seen=date(2026, 8, 1),
+        last_seen=date(2026, 8, 5),
+        trace_evidence_refs=["trace:future-bad"],
+        code_evidence_refs=["code:0123456789abcdef0123456789abcdef01234567"],
+    )
+    observed = DailyAuditIssue(
+        issue_key=future.issue_key,
+        status="open",
+        title="当时仍未处理",
+        first_seen=date(2026, 8, 4),
+        last_seen=date(2026, 8, 4),
+        trace_evidence_refs=["trace:historical-bad"],
+    )
+    previous = IssueRegistry(issues={future.issue_key: future})
+
+    refreshed = build_refresh_issue_registry(previous, [observed], date(2026, 8, 4))
+    issue = refreshed.issues[future.issue_key]
+    assert issue.status == "open"
+    assert issue.first_seen == date(2026, 8, 4)
+    assert issue.last_seen == date(2026, 8, 4)
+    assert issue.code_evidence_refs == []
+
+    assert report_issue_view(
+        previous,
+        previous,
+        [],
+        audit_date=date(2026, 8, 4),
+    ) == []
 
 
 @pytest.mark.parametrize(
@@ -659,6 +699,7 @@ def test_refresh_verification_trace_must_follow_repository_fix(
         update={
             "status": "runtime_verified",
             "trace_evidence_refs": [],
+            "code_evidence_refs": [],
             "runtime_verification_refs": ["trace:trace-current"],
         }
     )
@@ -674,6 +715,118 @@ def test_refresh_verification_trace_must_follow_repository_fix(
 
     assert result.status == expected_status
     assert store.read_issue_registry() == IssueRegistry(issues={current.issue_key: current})
+
+
+def test_legacy_code_ref_downgrades_verification_instead_of_failing_day(
+    tmp_path: Path,
+) -> None:
+    """Would fail if a readable legacy registry ref broke all later daily audits."""
+
+    store = RuntimeAuditArtifactStore(tmp_path / "runtime_audit")
+    current = DailyAuditIssue(
+        issue_key="tool.legacy-evidence",
+        status="code_addressed",
+        title="旧版修复证据",
+        first_seen=date(2026, 8, 3),
+        last_seen=date(2026, 8, 4),
+        trace_evidence_refs=["trace:bad"],
+        code_evidence_refs=["code:legacy-ref"],
+    )
+    store.write_issue_registry(IssueRegistry(issues={current.issue_key: current}))
+    candidate = current.model_copy(
+        update={
+            "status": "runtime_verified",
+            "trace_evidence_refs": [],
+            "code_evidence_refs": [],
+            "runtime_verification_refs": ["trace:trace-current"],
+        }
+    )
+
+    result = _run(
+        tmp_path,
+        source=FakeSource([_trace()]),
+        store=store,
+        codex_runner=lambda **_: _report(issue=candidate),
+    )
+
+    assert result.status == "succeeded"
+    persisted = store.read_issue_registry().issues[current.issue_key]
+    assert persisted.status == "uncertain"
+    assert "旧版修复证据无法验证" in result.report_path.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    ("first_event_at", "expected_status"),
+    [
+        (datetime(2026, 8, 5, 11, tzinfo=timezone.utc), "failed"),
+        (datetime(2026, 8, 5, 13, tzinfo=timezone.utc), "succeeded"),
+    ],
+)
+def test_local_verification_uses_trace_start_not_terminal_time(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    first_event_at: datetime,
+    expected_status: str,
+) -> None:
+    """Would fail if a pre-fix local run were authenticated by its post-fix end time."""
+
+    repo, commit_sha = _committed_test_repo(
+        tmp_path,
+        monkeypatch,
+        committed_at="2026-08-05T12:00:00+00:00",
+    )
+    local_path = tmp_path / "graph_trace.jsonl"
+    events = [
+        {
+            "trace_id": "local-current",
+            "run_id": "run-local-current",
+            "node_name": "runtime",
+            "event_type": "observability",
+            "canonical_event": canonical_event,
+            "status": status,
+            "created_at": created_at.isoformat(),
+        }
+        for canonical_event, status, created_at in (
+            ("run.started", "running", first_event_at),
+            ("run.completed", "completed", datetime(2026, 8, 5, 14, tzinfo=timezone.utc)),
+        )
+    ]
+    local_path.write_text(
+        "\n".join(json.dumps(event) for event in events) + "\n",
+        encoding="utf-8",
+    )
+    store = RuntimeAuditArtifactStore(tmp_path / "runtime_audit")
+    current = DailyAuditIssue(
+        issue_key="tool.local-temporal",
+        status="code_addressed",
+        title="等待本地运行验证",
+        first_seen=date(2026, 8, 3),
+        last_seen=date(2026, 8, 4),
+        trace_evidence_refs=["trace:bad"],
+        code_evidence_refs=[
+            f"code:{commit_sha}",
+            "test:tests/tdd/example/test_regression.py",
+        ],
+    )
+    store.write_issue_registry(IssueRegistry(issues={current.issue_key: current}))
+    candidate = current.model_copy(
+        update={
+            "status": "runtime_verified",
+            "trace_evidence_refs": [],
+            "runtime_verification_refs": ["trace:local-current"],
+        }
+    )
+
+    result = _run(
+        tmp_path,
+        source=FakeSource([]),
+        local_trace_path=local_path,
+        store=store,
+        repo_root=repo,
+        codex_runner=lambda **_: _report(issue=candidate),
+    )
+
+    assert result.status == expected_status
 
 
 def test_historical_registry_issue_text_remains_readable_beyond_codex_limits() -> None:
