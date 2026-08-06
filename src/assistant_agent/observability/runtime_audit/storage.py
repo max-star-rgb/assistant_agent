@@ -114,6 +114,7 @@ class RuntimeAuditArtifactStore:
         if commit_continuous_state and predecessor is not None and audit_date_next(predecessor) != attempt.audit_date:
             raise ValueError("daily commit target must follow its predecessor")
         payload = DailyAuditCommitIntent.model_validate({
+            "schema_version": "assistant_agent_daily_commit_intent_v2",
             "attempt": attempt.model_dump(mode="python"),
             "markdown": markdown,
             "registry": registry.model_dump(mode="python") if registry is not None else None,

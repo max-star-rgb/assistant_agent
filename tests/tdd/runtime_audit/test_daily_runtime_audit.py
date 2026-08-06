@@ -1338,7 +1338,21 @@ def test_explicit_rerun_skips_lifecycle_merge_but_keeps_bundle_evidence_gate(
     )
     rejected = run_one_daily_audit(
         window=window_for_date(audit_date),
-        source=FakeLangfuseSource([_daily_trace("trace-current")]),
+        source=FakeLangfuseSource(
+            [
+                _daily_trace("trace-current").model_copy(
+                    update={
+                        "timestamp": datetime(
+                            audit_date.year,
+                            audit_date.month,
+                            audit_date.day,
+                            12,
+                            tzinfo=timezone.utc,
+                        )
+                    }
+                )
+            ]
+        ),
         local_trace_path=tmp_path / "graph_trace.jsonl",
         store=store,
         repo_root=tmp_path,
@@ -1424,6 +1438,7 @@ def test_interrupted_continuous_commit_recovers_from_intent(
     [
         "legacy",
         "unknown",
+        "missing_schema",
         "non_object",
         "type_error",
         "stale",
@@ -1467,6 +1482,8 @@ def test_invalid_commit_intent_is_atomically_quarantined_and_does_not_reblock(
         payload["schema_version"] = "assistant_agent_daily_commit_intent_v1"
     elif invalid_kind == "unknown":
         payload["schema_version"] = "assistant_agent_daily_commit_intent_v999"
+    elif invalid_kind == "missing_schema":
+        payload.pop("schema_version")
     elif invalid_kind == "non_object":
         payload = ["not-an-object"]
     elif invalid_kind == "type_error":
@@ -1715,6 +1732,116 @@ def test_auto_source_failure_after_competing_completion_returns_success_without_
         "failed_date": None,
     }
     assert list(store.attempts_dir.glob("*.json")) == []
+
+
+def test_auto_backfill_partial_commit_reports_original_day_before_next_claim(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Would fail if a D3 commit exception were recovered and misreported as D4."""
+
+    day_two = date(2026, 8, 2)
+    day_three = date(2026, 8, 3)
+    day_four = date(2026, 8, 4)
+    store = RuntimeAuditArtifactStore(tmp_path / ".data/runtime_audit")
+    store.mark_day_completed(
+        day_two, attempt_id="day-two", bundle_path="/tmp/day-two"
+    )
+    source_windows: list[tuple[datetime, datetime]] = []
+    codex_dates: list[date] = []
+
+    class TrackingSource(FakeLangfuseSource):
+        def list_traces(
+            self, *, window_start: datetime, window_end: datetime
+        ) -> list[LangfuseTraceSnapshot]:
+            source_windows.append((window_start, window_end))
+            return super().list_traces(
+                window_start=window_start, window_end=window_end
+            )
+
+        def close(self) -> None:
+            return None
+
+    traces = [
+        _daily_trace("trace-day-three").model_copy(
+            update={"timestamp": datetime(2026, 8, 3, 12, tzinfo=timezone.utc)}
+        ),
+        _daily_trace("trace-day-four").model_copy(
+            update={"timestamp": datetime(2026, 8, 4, 12, tzinfo=timezone.utc)}
+        ),
+    ]
+    monkeypatch.setattr(
+        cli_module,
+        "previous_day_window",
+        lambda _: window_for_date(day_four),
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "create_langfuse_audit_source_from_env",
+        lambda _: TrackingSource(traces),
+    )
+
+    def fake_codex_runner(
+        *, audit_date: date, **_: object
+    ) -> daily_models_module.DailyCodexAuditReport:
+        codex_dates.append(audit_date)
+        return _daily_codex_report(audit_date=audit_date)
+
+    monkeypatch.setattr(cli_module, "run_daily_codex_report", fake_codex_runner)
+    original_clear = RuntimeAuditArtifactStore.clear_commit_intent
+    clear_calls = {"value": 0}
+
+    def fail_first_clear(
+        current_store: RuntimeAuditArtifactStore, attempt_id: str
+    ) -> None:
+        clear_calls["value"] += 1
+        if clear_calls["value"] == 1:
+            raise OSError("injected journal clear failure")
+        original_clear(current_store, attempt_id)
+
+    monkeypatch.setattr(
+        RuntimeAuditArtifactStore, "clear_commit_intent", fail_first_clear
+    )
+
+    first_exit = main(["--no-env-file", "--repo-root", str(tmp_path), "run"])
+    first_payload = json.loads(capsys.readouterr().out)
+
+    assert first_exit == 2
+    assert first_payload["audit_dates"] == [day_three.isoformat()]
+    assert first_payload["failed_date"] == day_three.isoformat()
+    assert codex_dates == [day_three]
+    assert source_windows == [
+        (
+            window_for_date(day_three).start_utc,
+            window_for_date(day_three).end_utc,
+        )
+    ]
+    assert store.daily_report_path(day_three).exists()
+    assert not store.daily_report_path(day_four).exists()
+    attempts_after_first = [
+        DailyAuditAttempt.model_validate_json(path.read_text(encoding="utf-8"))
+        for path in store.attempts_dir.glob("*.json")
+    ]
+    assert {attempt.audit_date for attempt in attempts_after_first} == {day_three}
+    assert [intent["attempt"]["audit_date"] for intent in store.read_commit_intents()] == [
+        day_three.isoformat()
+    ]
+
+    second_exit = main(["--no-env-file", "--repo-root", str(tmp_path), "run"])
+    second_payload = json.loads(capsys.readouterr().out)
+
+    assert second_exit == 0
+    assert second_payload["audit_dates"] == [day_four.isoformat()]
+    assert second_payload["failed_date"] is None
+    assert codex_dates == [day_three, day_four]
+    assert source_windows[-1] == (
+        window_for_date(day_four).start_utc,
+        window_for_date(day_four).end_utc,
+    )
+    assert store.daily_report_path(day_four).exists()
+    assert store.last_completed_date() == day_four
+    assert store.read_commit_intents() == []
 
 
 def test_auto_run_with_no_pending_day_does_not_create_source(

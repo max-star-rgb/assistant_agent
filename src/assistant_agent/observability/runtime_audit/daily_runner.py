@@ -52,6 +52,20 @@ class DailyAuditRunResult(BaseModel):
     error_summary: str | None = None
 
 
+class DailyAuditDayError(RuntimeError):
+    """An unexpected backfill exception tied to one exact audit day."""
+
+    def __init__(
+        self,
+        *,
+        audit_date: date,
+        completed_results: list[DailyAuditRunResult],
+    ) -> None:
+        super().__init__(f"daily audit execution failed for {audit_date.isoformat()}")
+        self.audit_date = audit_date
+        self.completed_results = list(completed_results)
+
+
 def run_one_daily_audit(
     *,
     window: DailyAuditWindow,
@@ -199,19 +213,25 @@ def run_pending_daily_audits(
             yesterday=yesterday, last_completed=store.last_completed_date()
         )
         for audit_date in dates:
-            result = run_one_daily_audit(
-            window=window_for_date(audit_date),
-            source=source,
-            local_trace_path=local_trace_path,
-            store=store,
-            repo_root=repo_root,
-            codex_runner=codex_runner,
-            collected_at=collected_at,
-            judge_grace=judge_grace,
-                low_score_threshold=low_score_threshold,
-                commit_continuous_state=True,
-                _claimed=True,
-            )
+            try:
+                result = run_one_daily_audit(
+                    window=window_for_date(audit_date),
+                    source=source,
+                    local_trace_path=local_trace_path,
+                    store=store,
+                    repo_root=repo_root,
+                    codex_runner=codex_runner,
+                    collected_at=collected_at,
+                    judge_grace=judge_grace,
+                    low_score_threshold=low_score_threshold,
+                    commit_continuous_state=True,
+                    _claimed=True,
+                )
+            except Exception as exc:
+                raise DailyAuditDayError(
+                    audit_date=audit_date,
+                    completed_results=results,
+                ) from exc
             results.append(result)
             if result.status == "failed":
                 break

@@ -11,6 +11,7 @@ import sys
 
 from assistant_agent.observability.runtime_audit.collector import collect_runtime_audit
 from assistant_agent.observability.runtime_audit.daily_runner import (
+    DailyAuditDayError,
     recover_pending_daily_commits,
     run_failed_daily_audit,
     run_failed_pending_daily_audit,
@@ -174,33 +175,8 @@ def _run_daily(args, *, repo_root: Path, store: RuntimeAuditArtifactStore) -> in
     if not dates:
         print(json.dumps({"audit_dates": [], "report_paths": [], "failed_date": None}))
         return 0
-    source = None
     try:
         source = create_langfuse_audit_source_from_env(os.environ)
-        def runner(**kwargs):
-            return run_daily_codex_report(
-                **kwargs, timeout_seconds=args.codex_timeout_seconds
-            )
-        common = {
-            "source": source,
-            "local_trace_path": repo_root / args.local_trace_path,
-            "store": store,
-            "repo_root": repo_root,
-            "codex_runner": runner,
-            "collected_at": collected_at,
-            "judge_grace": timedelta(minutes=args.judge_grace_minutes),
-            "low_score_threshold": args.low_score_threshold,
-        }
-        if args.date is not None:
-            results = [
-                run_one_daily_audit(
-                    window=window_for_date(args.date),
-                    commit_continuous_state=False,
-                    **common,
-                )
-            ]
-        else:
-            results = run_pending_daily_audits(yesterday=yesterday, **common)
     except Exception as exc:
         if args.date is not None:
             results = [
@@ -219,8 +195,43 @@ def _run_daily(args, *, repo_root: Path, store: RuntimeAuditArtifactStore) -> in
                 error_summary=sanitize_error_message(exc),
             )
             results = [] if failed_result is None else [failed_result]
-    finally:
-        if source is not None:
+        execution_failed_date = None
+    else:
+        execution_failed_date = None
+        def runner(**kwargs):
+            return run_daily_codex_report(
+                **kwargs, timeout_seconds=args.codex_timeout_seconds
+            )
+        common = {
+            "source": source,
+            "local_trace_path": repo_root / args.local_trace_path,
+            "store": store,
+            "repo_root": repo_root,
+            "codex_runner": runner,
+            "collected_at": collected_at,
+            "judge_grace": timedelta(minutes=args.judge_grace_minutes),
+            "low_score_threshold": args.low_score_threshold,
+        }
+        try:
+            if args.date is not None:
+                results = [
+                    run_one_daily_audit(
+                        window=window_for_date(args.date),
+                        commit_continuous_state=False,
+                        **common,
+                    )
+                ]
+            else:
+                results = run_pending_daily_audits(yesterday=yesterday, **common)
+        except DailyAuditDayError as exc:
+            results = exc.completed_results
+            execution_failed_date = exc.audit_date
+        except Exception:
+            if args.date is None:
+                raise
+            results = []
+            execution_failed_date = args.date
+        finally:
             try:
                 source.close()
             except Exception as exc:
@@ -229,17 +240,21 @@ def _run_daily(args, *, repo_root: Path, store: RuntimeAuditArtifactStore) -> in
                     file=sys.stderr,
                 )
     failed = next((item for item in results if item.status == "failed"), None)
+    failed_date = failed.audit_date if failed else execution_failed_date
+    audit_dates = [item.audit_date for item in results]
+    if failed_date is not None and failed_date not in audit_dates:
+        audit_dates.append(failed_date)
     print(
         json.dumps(
             {
-                "audit_dates": [item.audit_date.isoformat() for item in results],
+                "audit_dates": [item.isoformat() for item in audit_dates],
                 "report_paths": [str(item.report_path) for item in results if item.report_path],
-                "failed_date": failed.audit_date.isoformat() if failed else None,
+                "failed_date": failed_date.isoformat() if failed_date else None,
             },
             ensure_ascii=False,
         )
     )
-    return 2 if failed else 0
+    return 2 if failed_date is not None else 0
 
 
 def _collect(args, *, repo_root: Path, store: RuntimeAuditArtifactStore):

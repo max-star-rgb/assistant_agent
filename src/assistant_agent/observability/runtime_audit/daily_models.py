@@ -163,9 +163,7 @@ class DailyAuditCommitIntent(BaseModel):
 
     model_config = ConfigDict(strict=True, extra="forbid")
 
-    schema_version: Literal["assistant_agent_daily_commit_intent_v2"] = (
-        "assistant_agent_daily_commit_intent_v2"
-    )
+    schema_version: Literal["assistant_agent_daily_commit_intent_v2"]
     attempt: _StrictDailyAuditAttempt
     markdown: str
     registry: _StrictIssueRegistry | None
