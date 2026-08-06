@@ -7,7 +7,12 @@ from typing import Any
 
 from pydantic import BaseModel, ValidationError
 
-from assistant_agent.tools.models import ToolCategory, ToolMediaRequirement, ToolResult
+from assistant_agent.tools.models import (
+    ToolCategory,
+    ToolMediaRequirement,
+    ToolRepeatPolicy,
+    ToolResult,
+)
 from assistant_agent.providers.provider_errors import sanitize_error_message
 from assistant_agent.tools.base import ToolContext
 
@@ -27,6 +32,7 @@ class DecoratedTool:
         handler: ToolHandler,
         category: ToolCategory = "dangerous",
         requires_media: list[ToolMediaRequirement] | None = None,
+        repeat_policy: ToolRepeatPolicy = "once_per_run",
     ) -> None:
         self.name = name
         self.description = description
@@ -34,6 +40,7 @@ class DecoratedTool:
         self.output_schema = input_schema
         self.category = category
         self.requires_media = list(requires_media or [])
+        self.repeat_policy = repeat_policy
         self._handler = handler
 
     def run(
@@ -72,6 +79,7 @@ def tool(
     input_schema: type[BaseModel],
     category: ToolCategory = "dangerous",
     requires_media: list[ToolMediaRequirement] | None = None,
+    repeat_policy: ToolRepeatPolicy = "once_per_run",
 ) -> Callable[[ToolHandler], DecoratedTool]:
     """Return a local tool object without registering it globally."""
 
@@ -83,6 +91,7 @@ def tool(
             handler=handler,
             category=category,
             requires_media=requires_media,
+            repeat_policy=repeat_policy,
         )
 
     return decorate

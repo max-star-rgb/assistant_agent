@@ -19,6 +19,7 @@ class WebSearchTool(ToolBase):
     input_schema = WebSearchRequest
     output_schema = WebSearchResult
     category = "read"
+    repeat_policy = "distinct_inputs"
     llm_hidden_input_fields = ("limit",)
 
     def __init__(self, adapter: WebSearchAdapter | None = None) -> None:

@@ -42,6 +42,7 @@ class WeatherTool(ToolBase):
     input_schema = WeatherRequest
     output_schema = WeatherResult
     category = "read"
+    repeat_policy = "distinct_inputs"
     llm_hidden_input_fields = ("units",)
 
     def __init__(self, adapter: WeatherAdapter | None = None) -> None:
@@ -75,6 +76,7 @@ class CalendarSearchTool(ToolBase):
     input_schema = CalendarSearchRequest
     output_schema = CalendarSearchResult
     category = "read"
+    repeat_policy = "distinct_inputs"
     llm_hidden_input_fields = ("limit",)
 
     def __init__(self, adapter: CalendarAdapter | None = None) -> None:
@@ -104,6 +106,7 @@ class CalendarCreateTool(ToolBase):
     input_schema = CalendarCreateRequest
     output_schema = CalendarCreateResult
     category = "write"
+    repeat_policy = "distinct_inputs"
     runtime_input_bindings = (
         RuntimeInputBinding(field="idempotency_key", source="durable_idempotency"),
     )
@@ -141,6 +144,7 @@ class ContactsSearchTool(ToolBase):
     input_schema = ContactsSearchRequest
     output_schema = ContactsSearchResult
     category = "read"
+    repeat_policy = "distinct_inputs"
     llm_hidden_input_fields = ("limit",)
 
     def __init__(self, adapter: ContactsAdapter | None = None) -> None:

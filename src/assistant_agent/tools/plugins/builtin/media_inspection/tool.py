@@ -53,6 +53,7 @@ class MediaInspectTool(ToolBase):
     input_schema = VisionUnderstandingRequest
     output_schema = VisionUnderstandingResult
     category = "read"
+    repeat_policy = "distinct_inputs"
     requires_media = ["image", "video"]
     media_scope = "attached"
     trace_content_policy = "metadata_only"
@@ -222,6 +223,7 @@ class LiveViewInspectTool(MediaInspectTool):
 
     name = LIVE_VIEW_INSPECT_TOOL_NAME
     description = "在用户询问视频内容时获取实时画面的文本描述"
+    repeat_policy = "distinct_inputs"
     requires_media = ["video"]
     media_scope = "live"
 
@@ -231,6 +233,7 @@ class RealtimeVideoObserveTool(MediaInspectTool):
 
     name = REALTIME_VIDEO_OBSERVE_TOOL_NAME
     description = "内部实时视频帧观察工具。"
+    repeat_policy = "distinct_inputs"
     requires_media = ["video"]
     media_scope = "any"
 

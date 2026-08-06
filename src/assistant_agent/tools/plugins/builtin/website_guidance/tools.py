@@ -28,6 +28,7 @@ class WebPageInspectTool(ToolBase):
     input_schema = WebPageInspectRequest
     output_schema = WebPageGuidanceResult
     category = "read"
+    repeat_policy = "distinct_inputs"
 
     def __init__(self, backend: WebsiteGuidanceBackend) -> None:
         self.backend = backend
@@ -54,6 +55,7 @@ class WebPageExploreTool(ToolBase):
     input_schema = WebPageExploreRequest
     output_schema = WebPageGuidanceResult
     category = "dangerous"
+    repeat_policy = "distinct_inputs"
 
     def __init__(self, backend: WebsiteGuidanceBackend) -> None:
         self.backend = backend

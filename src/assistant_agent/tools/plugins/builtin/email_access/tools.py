@@ -26,6 +26,7 @@ class EmailSearchTool(ToolBase):
     input_schema = EmailSearchRequest
     output_schema = EmailSearchResult
     category = "read"
+    repeat_policy = "distinct_inputs"
     llm_hidden_input_fields = ("limit",)
 
     def __init__(self, backend: EmailBackend) -> None:
@@ -69,6 +70,7 @@ class EmailReadTool(ToolBase):
     input_schema = EmailReadRequest
     output_schema = EmailReadResult
     category = "read"
+    repeat_policy = "distinct_inputs"
     llm_hidden_input_fields = ("max_total_chars",)
 
     def __init__(self, backend: EmailBackend) -> None:

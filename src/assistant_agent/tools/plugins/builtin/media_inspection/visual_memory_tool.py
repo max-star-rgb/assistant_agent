@@ -58,6 +58,7 @@ class VisualMemorySearchTool(ToolBase):
     input_schema = VisualMemorySearchInput
     output_schema = VisualMemorySearchResult
     category = "read"
+    repeat_policy = "distinct_inputs"
     requires_media = []
     runtime_input_bindings = (
         RuntimeInputBinding(field="session_id", source="runtime_identity", key="session_id"),

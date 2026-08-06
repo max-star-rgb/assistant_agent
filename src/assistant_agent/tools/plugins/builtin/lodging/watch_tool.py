@@ -31,6 +31,7 @@ class HotelPriceWatchCreateTool(ToolBase):
     input_schema = HotelPriceWatchGoal
     output_schema = HotelPriceWatchCreateOutput
     category = "write"
+    repeat_policy = "distinct_inputs"
 
     def __init__(self, service: DurableTaskService) -> None:
         self.service = service

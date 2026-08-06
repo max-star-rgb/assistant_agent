@@ -20,6 +20,7 @@ class LodgingSearchTool(ToolBase):
     input_schema = LodgingSearchRequest
     output_schema = LodgingSearchResult
     category = "read"
+    repeat_policy = "distinct_inputs"
     llm_hidden_input_fields = ("limit",)
 
     def __init__(self, adapter: LodgingSearchAdapter | None = None) -> None:

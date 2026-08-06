@@ -8,6 +8,7 @@ from assistant_agent.tools.models import (
     ToolCategory,
     ToolMediaRequirement,
     ToolMediaScope,
+    ToolRepeatPolicy,
     ToolResult,
 )
 from assistant_agent.providers.provider_errors import sanitize_error_message
@@ -61,6 +62,7 @@ class Tool(Protocol):
     category: ToolCategory
     requires_media: list[ToolMediaRequirement]
     media_scope: ToolMediaScope
+    repeat_policy: ToolRepeatPolicy
     llm_hidden_input_fields: tuple[str, ...]
     runtime_input_bindings: tuple[Any, ...]
     trace_content_policy: Literal["default", "metadata_only"]
@@ -77,9 +79,11 @@ class ToolBase:
     category: ToolCategory = "dangerous"
     requires_media: list[ToolMediaRequirement] = []
     media_scope: ToolMediaScope = "any"
+    repeat_policy: ToolRepeatPolicy = "once_per_run"
     llm_hidden_input_fields: tuple[str, ...] = ()
     runtime_input_bindings: tuple[Any, ...] = ()
     trace_content_policy: Literal["default", "metadata_only"] = "default"
+
     def run(self, input: BaseModel | dict[str, Any], context: ToolContext | None = None) -> ToolResult:
         try:
             payload = self._validate_input(input)

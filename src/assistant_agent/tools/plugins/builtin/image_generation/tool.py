@@ -31,6 +31,7 @@ class ImageGenerationTool(ToolBase):
     input_schema = ImageGenerationRequest
     output_schema = ImageGenerationResult
     category = "generate"
+    repeat_policy = "once_per_run"
     llm_hidden_input_fields = (
         "size",
         "n",

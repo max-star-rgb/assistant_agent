@@ -19,6 +19,7 @@ class WebFetchTool(ToolBase):
     input_schema = WebFetchRequest
     output_schema = WebFetchResult
     category = "read"
+    repeat_policy = "distinct_inputs"
     llm_hidden_input_fields = ("max_chars", "content_format")
 
     def __init__(self, adapter: WebFetchAdapter | None = None) -> None:

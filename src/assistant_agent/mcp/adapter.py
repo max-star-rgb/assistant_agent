@@ -8,7 +8,7 @@ from typing import Any, Protocol
 from pydantic import BaseModel, Field, create_model
 
 from assistant_agent.mcp.config import MCPToolAdapterConfig
-from assistant_agent.tools.models import ToolResult, ToolSpec
+from assistant_agent.tools.models import ToolRepeatPolicy, ToolResult, ToolSpec
 from assistant_agent.providers.provider_errors import sanitize_error_message
 from assistant_agent.tools.base import ToolContext
 
@@ -52,6 +52,7 @@ class MCPProxyTool:
         self.input_schema = _input_model_for_definition(definition)
         self.output_schema = self.input_schema
         self.category = "read" if config.is_read_only(definition.name) else "write"
+        self.repeat_policy = _repeat_policy_for_tool(config, definition.name)
 
     def run(
         self,
@@ -97,6 +98,7 @@ class MCPToolAdapter:
             description=definition.description,
             input_schema=_canonical_input_schema(definition.input_schema),
             category="read" if self.config.is_read_only(definition.name) else "write",
+            repeat_policy=_repeat_policy_for_tool(self.config, definition.name),
         )
 
     def proxy_tool_for_definition(self, definition: MCPToolDefinition) -> MCPProxyTool:
@@ -112,6 +114,13 @@ class MCPToolAdapter:
 
 def namespaced_mcp_tool_name(config: MCPToolAdapterConfig, tool_name: str) -> str:
     return _namespaced_tool_name(config, tool_name)
+
+
+def _repeat_policy_for_tool(
+    config: MCPToolAdapterConfig,
+    tool_name: str,
+) -> ToolRepeatPolicy:
+    return "distinct_inputs" if config.is_read_only(tool_name) else "once_per_run"
 
 
 def _namespaced_tool_name(config: MCPToolAdapterConfig, tool_name: str) -> str:

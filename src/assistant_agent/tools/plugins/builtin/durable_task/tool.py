@@ -35,6 +35,7 @@ class TaskPlanSubmitTool(ToolBase):
     input_schema = TaskPlanSubmitInput
     output_schema = TaskPlanSubmitOutput
     category = "write"
+    repeat_policy = "once_per_run"
 
     def __init__(self, service: DurableTaskService) -> None:
         self.service = service

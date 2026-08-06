@@ -26,6 +26,7 @@ class PythonInterpreterTool(ToolBase):
     input_schema = PythonInterpreterInput
     output_schema = PythonInterpreterResult
     category = "write"
+    repeat_policy = "distinct_inputs"
     llm_hidden_input_fields = ("purpose", "timeout_s")
 
     def __init__(

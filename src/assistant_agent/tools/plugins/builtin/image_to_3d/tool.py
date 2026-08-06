@@ -54,6 +54,7 @@ class ImageTo3DTool(ToolBase):
     input_schema = ImageTo3DRequest
     output_schema = ImageTo3DResult
     category = "generate"
+    repeat_policy = "once_per_run"
 
     def __init__(self, adapter: ImageTo3DStarter) -> None:
         self.adapter = adapter

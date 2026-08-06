@@ -60,6 +60,7 @@ class VisualReminderManageTool(ToolBase):
     input_schema = VisualReminderManageInput
     output_schema = VisualReminderManageOutput
     category = "write"
+    repeat_policy = "distinct_inputs"
     requires_media = []
     runtime_input_bindings = (
         RuntimeInputBinding(

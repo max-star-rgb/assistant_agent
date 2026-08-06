@@ -3,9 +3,12 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any, cast
 
+import pytest
 from pydantic import BaseModel
 
 from assistant_agent.context.service import AssistantDecisionContext
+from assistant_agent.mcp.adapter import MCPToolAdapter, MCPToolDefinition
+from assistant_agent.mcp.config import MCPToolAdapterConfig
 from assistant_agent.runtime.assistant_loop_nodes import (
     AssistantLoopState,
     _apply_decision_guards,
@@ -17,9 +20,60 @@ from assistant_agent.runtime.output_models import AssistantToolCall
 from assistant_agent.runtime.requests import UserRequest
 from assistant_agent.runtime.state import AgentState
 from assistant_agent.runtime.tool_executor import ToolExecutor
-from assistant_agent.tools.base import ToolBase
+from assistant_agent.tools.base import ToolBase, ToolContext
+from assistant_agent.tools.decorators import tool
 from assistant_agent.tools.models import ToolResult
+from assistant_agent.tools.plugins.builtin.calendar_weather_contacts.tools import (
+    CalendarCreateTool,
+    CalendarSearchTool,
+    ContactsSearchTool,
+    WeatherTool,
+)
+from assistant_agent.tools.plugins.builtin.durable_task.tool import TaskPlanSubmitTool
+from assistant_agent.tools.plugins.builtin.email_access.tools import (
+    EmailReadTool,
+    EmailSearchTool,
+)
+from assistant_agent.tools.plugins.builtin.image_generation.tool import (
+    ImageGenerationTool,
+)
+from assistant_agent.tools.plugins.builtin.image_to_3d.tool import ImageTo3DTool
+from assistant_agent.tools.plugins.builtin.local_file_access.tool import LocalFileReadTool
+from assistant_agent.tools.plugins.builtin.lodging.tool import LodgingSearchTool
+from assistant_agent.tools.plugins.builtin.lodging.watch_tool import (
+    HotelPriceWatchCreateTool,
+)
+from assistant_agent.tools.plugins.builtin.media_inspection.tool import (
+    LiveViewInspectTool,
+    MediaInspectTool,
+    RealtimeVideoObserveTool,
+)
+from assistant_agent.tools.plugins.builtin.media_inspection.video_branch import (
+    VideoUnderstandingBranch,
+)
+from assistant_agent.tools.plugins.builtin.media_inspection.visual_memory_tool import (
+    VisualMemorySearchTool,
+)
+from assistant_agent.tools.plugins.builtin.media_inspection.visual_reminder_tool import (
+    VisualReminderManageTool,
+)
+from assistant_agent.tools.plugins.builtin.python_execution.tool import (
+    PythonInterpreterTool,
+)
 from assistant_agent.tools.plugins.builtin.shopping.tool import ShoppingSearchTool
+from assistant_agent.tools.plugins.builtin.skill_loading.tool import (
+    LoadSkillReferenceTool,
+    LoadSkillTool,
+)
+from assistant_agent.tools.plugins.builtin.visual_image_search.tool import (
+    VisualImageSearchTool,
+)
+from assistant_agent.tools.plugins.builtin.web_access.fetch_tool import WebFetchTool
+from assistant_agent.tools.plugins.builtin.web_access.search_tool import WebSearchTool
+from assistant_agent.tools.plugins.builtin.website_guidance.tools import (
+    WebPageExploreTool,
+    WebPageInspectTool,
+)
 from assistant_agent.tools.registry import ToolRegistry
 
 
@@ -49,6 +103,139 @@ class _DefaultProbeTool(ToolBase):
 class _RepeatableProbeTool(_DefaultProbeTool):
     name = "repeatable_probe"
     repeat_policy = "distinct_inputs"
+
+
+class _RepeatableWriteProbeTool(_RepeatableProbeTool):
+    name = "repeatable_write_probe"
+    category = "write"
+
+    def __init__(self) -> None:
+        self.executed_queries: list[str] = []
+
+    def _run(self, input: _ProbeInput, context: object) -> ToolResult:
+        self.executed_queries.append(input.query)
+        return super()._run(input, context)
+
+
+class _ImageGenerationProbeTool(_DefaultProbeTool):
+    name = "image_generation"
+    category = "generate"
+    repeat_policy = "once_per_run"
+
+
+def test_mcp_read_and_write_definitions_project_matching_repeat_policy() -> None:
+    """Catches MCP read/write classification being dropped from direct specs."""
+
+    config = MCPToolAdapterConfig(
+        server_name="server-sentinel",
+        allowed_tools=["lookup", "mutate"],
+        read_only_tools=["lookup"],
+    )
+    adapter = MCPToolAdapter(config)
+
+    read_spec = adapter.tool_spec_for_definition(MCPToolDefinition(name="lookup"))
+    write_spec = adapter.tool_spec_for_definition(MCPToolDefinition(name="mutate"))
+
+    assert read_spec is not None
+    assert write_spec is not None
+    assert read_spec.repeat_policy == "distinct_inputs"
+    assert write_spec.repeat_policy == "once_per_run"
+
+
+def test_mcp_proxy_registry_uses_the_same_repeat_policy_mapping() -> None:
+    """Catches MCP proxy registration disagreeing with direct spec projection."""
+
+    config = MCPToolAdapterConfig(
+        server_name="server-sentinel",
+        allowed_tools=["lookup", "mutate"],
+        read_only_tools=["lookup"],
+    )
+    adapter = MCPToolAdapter(config, runner=cast(Any, object()))
+    registry = ToolRegistry()
+    registry.register(
+        adapter.proxy_tool_for_definition(MCPToolDefinition(name="lookup"))
+    )
+    registry.register(
+        adapter.proxy_tool_for_definition(MCPToolDefinition(name="mutate"))
+    )
+
+    assert (
+        registry.get_spec("mcp.server-sentinel.lookup").repeat_policy
+        == "distinct_inputs"
+    )
+    assert (
+        registry.get_spec("mcp.server-sentinel.mutate").repeat_policy
+        == "once_per_run"
+    )
+
+
+def test_decorated_tool_projects_an_explicit_repeat_policy() -> None:
+    """Catches the local decorator preventing tools from choosing a policy."""
+
+    @tool(
+        name="decorated_repeatable_probe",
+        input_schema=_ProbeInput,
+        category="read",
+        repeat_policy="distinct_inputs",
+    )
+    def decorated_probe(input: _ProbeInput, context: ToolContext) -> ToolResult:
+        return ToolResult(
+            tool_name="decorated_repeatable_probe",
+            success=True,
+            data={"value": input.query},
+        )
+
+    registry = ToolRegistry()
+    registry.register(decorated_probe)
+
+    assert (
+        registry.get_spec("decorated_repeatable_probe").repeat_policy
+        == "distinct_inputs"
+    )
+
+
+@pytest.mark.parametrize(
+    ("tool_type", "expected"),
+    [
+        (WeatherTool, "distinct_inputs"),
+        (CalendarSearchTool, "distinct_inputs"),
+        (CalendarCreateTool, "distinct_inputs"),
+        (ContactsSearchTool, "distinct_inputs"),
+        (EmailSearchTool, "distinct_inputs"),
+        (EmailReadTool, "distinct_inputs"),
+        (LocalFileReadTool, "distinct_inputs"),
+        (WebSearchTool, "distinct_inputs"),
+        (WebFetchTool, "distinct_inputs"),
+        (LodgingSearchTool, "distinct_inputs"),
+        (HotelPriceWatchCreateTool, "distinct_inputs"),
+        (ShoppingSearchTool, "distinct_inputs"),
+        (VisualImageSearchTool, "distinct_inputs"),
+        (MediaInspectTool, "distinct_inputs"),
+        (LiveViewInspectTool, "distinct_inputs"),
+        (RealtimeVideoObserveTool, "distinct_inputs"),
+        (VideoUnderstandingBranch, "distinct_inputs"),
+        (VisualMemorySearchTool, "distinct_inputs"),
+        (VisualReminderManageTool, "distinct_inputs"),
+        (LoadSkillTool, "distinct_inputs"),
+        (LoadSkillReferenceTool, "distinct_inputs"),
+        (WebPageInspectTool, "distinct_inputs"),
+        (PythonInterpreterTool, "distinct_inputs"),
+        (WebPageExploreTool, "distinct_inputs"),
+        (TaskPlanSubmitTool, "once_per_run"),
+        (ImageGenerationTool, "once_per_run"),
+        (ImageTo3DTool, "once_per_run"),
+    ],
+)
+def test_builtin_registry_projects_the_approved_repeat_policy(
+    tool_type: type[ToolBase],
+    expected: str,
+) -> None:
+    """Catches a builtin being assigned to the wrong repeat behavior."""
+
+    registry = ToolRegistry()
+    registry.register(tool_type.__new__(tool_type))
+
+    assert registry.get_spec(tool_type.name).repeat_policy == expected
 
 
 def test_registry_projects_default_and_explicit_repeat_policy() -> None:
@@ -217,6 +404,88 @@ def test_execution_boundary_blocks_unguarded_second_default_call() -> None:
         "tool_repeat_limit_reached"
     )
     assert executed["run_phase"].value == "finalize"
+
+
+def _execute_write_probe_batch(
+    tool: _RepeatableWriteProbeTool,
+    queries: list[str],
+) -> AssistantLoopState:
+    registry = ToolRegistry()
+    registry.register(tool)
+    state = AgentState.from_request(
+        UserRequest(
+            user_id="user-sentinel",
+            session_id="session-sentinel",
+            text="run write probes",
+        )
+    )
+    return execute_requested_tool_node(
+        cast(
+            AssistantLoopState,
+            {
+                "request": state.request,
+                "state": state,
+                "tool_executor": ToolExecutor(registry=registry),
+                "outputs_by_step": {},
+                "current_step_index": 0,
+                "pending_tool_calls": [
+                    AssistantToolCall(
+                        tool_name=tool.name,
+                        tool_input={"query": query},
+                    )
+                    for query in queries
+                ],
+                "tool_observations": [],
+                "max_tool_iterations": len(queries),
+            },
+        )
+    )
+
+
+def test_distinct_input_write_tool_blocks_identical_calls_at_execution_boundary() -> None:
+    """Catches native batches re-running a successful identical write call."""
+
+    tool = _RepeatableWriteProbeTool()
+
+    executed = _execute_write_probe_batch(tool, ["same", "same"])
+
+    assert tool.executed_queries == ["same"]
+    assert (
+        executed["tool_observations"][-1]["error"]["code"]
+        == "duplicate_complete_tool_call"
+    )
+
+
+def test_distinct_input_write_tool_allows_different_calls_in_one_batch() -> None:
+    """Catches distinct-input write tools being narrowed to once per run."""
+
+    tool = _RepeatableWriteProbeTool()
+
+    _execute_write_probe_batch(tool, ["first", "second"])
+
+    assert tool.executed_queries == ["first", "second"]
+
+
+def test_image_generation_uses_the_generic_once_per_run_guard() -> None:
+    """Catches the image-generation name bypassing ToolSpec repeat policy."""
+
+    registry = ToolRegistry()
+    registry.register(_ImageGenerationProbeTool())
+    state = _successful_state("image_generation", {"query": "first"})
+    state.request.metadata["assistant_loop_guard"]["succeeded_terminal_tools"] = [
+        "image_generation"
+    ]
+
+    decision = _guarded_decision(
+        state,
+        registry,
+        tool_name="image_generation",
+        tool_input={"query": "second"},
+    )
+
+    assert isinstance(decision, AssistantToolCall)
+    assert "tool_repeat_limit_reached" in decision.safety_notes
+    assert "duplicate_terminal_tool" not in decision.safety_notes
 
 
 def test_repeatable_tool_still_obeys_the_global_tool_call_budget() -> None:

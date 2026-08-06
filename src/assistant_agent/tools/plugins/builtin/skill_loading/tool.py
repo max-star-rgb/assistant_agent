@@ -37,6 +37,7 @@ class LoadSkillTool(ToolBase):
     input_schema = LoadSkillRequest
     output_schema = LoadSkillResult
     category = "read"
+    repeat_policy = "distinct_inputs"
 
     def __init__(self, *, root: str | Path | None = None) -> None:
         self.root = Path(root).resolve() if root is not None else default_repo_root()
@@ -85,6 +86,7 @@ class LoadSkillReferenceTool(ToolBase):
     input_schema = LoadSkillReferenceRequest
     output_schema = LoadSkillReferenceResult
     category = "read"
+    repeat_policy = "distinct_inputs"
 
     def __init__(self, *, root: str | Path | None = None) -> None:
         self.root = Path(root).resolve() if root is not None else default_repo_root()

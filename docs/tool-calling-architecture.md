@@ -107,11 +107,16 @@ manifest；`tools/ids.py` 只保存已经成为跨层协议的稳定字符串。
 `category` 表达副作用、自动重试、失败恢复和审计语义，不负责推断用户意图，也不控制默认暴露。
 未声明分类的 Tool 使用 `dangerous` 作为保守默认值。
 
-`repeat_policy` 表达一次 run 内的 Tool 级重复调用边界。默认 `once_per_run`：已有一次成功执行后，
-后续不同参数调用也会被 Runtime 拒绝并进入 finalize。`distinct_inputs` 允许不同规范化输入继续调用，
-但参数完全相同且已有完整成功 observation 时仍复用已有结果。所有策略都受全局
-`max_tool_iterations` 限制；该字段是 Runtime 治理事实，不进入 Provider Tool schema，也不按工具名
-维护第二套中心配置。
+`repeat_policy` 表达一次 run 内的 Tool 级重复调用边界。`once_per_run` 在已有一次成功执行后拒绝
+同工具的后续调用；`distinct_inputs` 允许不同规范化输入继续调用，但参数完全相同且已有成功结果时
+仍复用已有结果。失败调用不消耗成功额度，完全相同的失败输入仍由失败去重 guard 处理。所有策略
+都受全局 `max_tool_iterations` 限制；该字段是 Runtime 治理事实，不进入 Provider Tool schema。
+
+每个内置 concrete Tool 必须显式声明策略。当前 `task_plan_submit`、`image_generation` 和
+`image_to_3d` 使用 `once_per_run`，其余内置 Tool 使用 `distinct_inputs`。`ToolSpec` 与 `ToolBase` 的
+默认 `once_per_run` 只为旧式或外部 Tool 提供保守兼容回退，不能替代内置 Tool 的显式分类。
+Runtime 只读取 Registry 投影后的 `ToolSpec.repeat_policy`，不按工具名维护终止工具清单或第二套
+重复执行配置。
 
 ### 3.1.1 异步生成任务与入口投递
 
@@ -261,6 +266,10 @@ MCP 是外部 Tool source。远端定义先经过 server 配置、allowlist、re
 再作为 proxy Tool 参与同一批注册。注册完成后，MCP Tool 与进程内 Tool 使用相同的 ToolSpec、
 RunToolCatalog、Validator、Executor、结果和审计边界。
 
+MCP 的重复策略只根据 server 配置中的结构化只读声明映射：`read_only_tools` 中的工具使用
+`distinct_inputs`，其余工具使用 `once_per_run`。直接生成 ToolSpec 与注册 proxy Tool 必须复用同一
+映射；未提供可信只读声明时按写工具保守处理，不能根据远端工具名称或 description 猜测。
+
 MCP server、认证、远端方法映射和部署命令属于配置或对应集成文档，不进入本文。
 
 ## 5. 单轮暴露与 Provider 转换
@@ -317,9 +326,10 @@ assistant action。通用 Executor 不维护跨进程幂等 ledger；外部写�
 协议或 durable task 提供。
 
 assistant loop 在 decision guard 与实际执行边界都读取 `ToolSpec.repeat_policy`，从而覆盖 sequential
-与同一 Provider turn 的批量 tool calls。Tool 级限制只在已有成功结果后生效；失败后的恢复继续服从
-recoverable/non-recoverable 与相同失败输入去重规则。触发默认单次限制时产生
-`tool_repeat_limit_reached` observation，不再继续消耗迭代反复拒绝。
+与同一 Provider turn 的批量 tool calls。所有 category 的成功调用都会登记规范化调用签名；
+`distinct_inputs` 的相同成功输入产生 `duplicate_complete_tool_call`，`once_per_run` 的第二次调用产生
+`tool_repeat_limit_reached`。Tool 级成功限制不因失败调用生效；失败后的恢复继续服从
+recoverable/non-recoverable 与相同失败输入去重规则。重复拒绝进入 finalize，不再继续消耗迭代。
 
 取消可能发生在执行前、重试等待期间或 Tool 返回之后。读操作成功后发现取消时不能继续发布为有效
 结果；非只读操作则必须保留已经发生的副作用事实，并以结构化取消状态结束，不能伪装为未执行。

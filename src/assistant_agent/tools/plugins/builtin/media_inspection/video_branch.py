@@ -69,6 +69,7 @@ class VideoUnderstandingBranch(ToolBase):
     input_schema = VideoUnderstandingRequest
     output_schema = VideoUnderstandingResult
     category = "read"
+    repeat_policy = "distinct_inputs"
     requires_media = ["video"]
 
     def __init__(

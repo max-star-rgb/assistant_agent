@@ -54,6 +54,7 @@ class LocalFileReadTool(ToolBase):
     input_schema = FileReadRequest
     output_schema = FileReadResult
     category = "read"
+    repeat_policy = "distinct_inputs"
     llm_hidden_input_fields = ("max_chars",)
 
     def __init__(

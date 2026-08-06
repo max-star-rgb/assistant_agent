@@ -23,6 +23,7 @@ class VisualImageSearchTool(ToolBase):
     input_schema = VisualImageSearchRequest
     output_schema = VisualImageSearchResult
     category = "read"
+    repeat_policy = "distinct_inputs"
     requires_media = ["image"]
     llm_hidden_input_fields = ("limit",)
 
