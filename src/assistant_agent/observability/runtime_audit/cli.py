@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
 import sys
 
 from assistant_agent.observability.runtime_audit.collector import collect_runtime_audit
+from assistant_agent.observability.runtime_audit.daily_window import (
+    previous_day_window,
+    window_for_date,
+)
 from assistant_agent.observability.runtime_audit.langfuse_source import (
     create_langfuse_audit_source_from_env,
 )
@@ -120,8 +124,13 @@ def main(argv: list[str] | None = None) -> int:
 
 def _collect(args, *, repo_root: Path, store: RuntimeAuditArtifactStore):
     collected_at = datetime.now(timezone.utc)
-    window_end = collected_at
-    window_start = window_end - timedelta(hours=args.window_hours)
+    if args.window_hours is not None:
+        window_end = collected_at
+        window_start = window_end - timedelta(hours=args.window_hours)
+    else:
+        window = window_for_date(args.date) if args.date else previous_day_window(collected_at)
+        window_start = window.start_utc
+        window_end = window.end_utc
     audit_run_id = store.allocate_audit_run_id(collected_at)
     source = create_langfuse_audit_source_from_env(os.environ)
     try:
@@ -196,7 +205,9 @@ def _parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
     for name in ("collect", "run"):
         child = subparsers.add_parser(name)
-        child.add_argument("--window-hours", type=float, default=2.0)
+        window = child.add_mutually_exclusive_group()
+        window.add_argument("--date", type=date.fromisoformat)
+        window.add_argument("--window-hours", type=float)
         child.add_argument("--judge-grace-minutes", type=float, default=15.0)
         child.add_argument("--low-score-threshold", type=float, default=0.5)
         child.add_argument("--local-trace-path", default=str(DEFAULT_LOCAL_TRACE_PATH))
