@@ -173,6 +173,23 @@ class VideoUnderstandingBranch(ToolBase):
         input = self._with_context_frames(input)
         self._sync_client_video_adapter()
         trace_links: list[VisionInferenceTraceLink] = []
+        source = (
+            "background_keyframe_observation"
+            if observation_mode
+            else "explicit_video"
+        )
+        media_kind = "live_view" if observation_mode else "explicit_video"
+        prompt_version = (
+            "realtime-single-frame-v1"
+            if observation_mode
+            else "video-understanding-v1"
+        )
+        frame_sequence = (
+            input.metadata.get("frame_sequence")
+            if isinstance(input.metadata.get("frame_sequence"), int)
+            and not isinstance(input.metadata.get("frame_sequence"), bool)
+            else None
+        )
         try:
             result = video_result_from_vision_result(
                 observe_vision_inference(
@@ -181,29 +198,21 @@ class VideoUnderstandingBranch(ToolBase):
                     ),
                     context=context,
                     capability=VIDEO_UNDERSTANDING_CAPABILITY,
-                    source=(
-                        "background_keyframe_observation"
-                        if observation_mode
-                        else "explicit_video"
-                    ),
-                    media_kind=("live_view" if observation_mode else "explicit_video"),
+                    source=source,
+                    media_kind=media_kind,
                     media_count=max(
                         len(input.frame_refs),
                         len(input.video_ids),
                         1 if input.video_ref else 0,
                     ),
-                    frame_sequence=(
-                        input.metadata.get("frame_sequence")
-                        if isinstance(input.metadata.get("frame_sequence"), int)
-                        and not isinstance(
-                            input.metadata.get("frame_sequence"), bool
-                        )
-                        else None
-                    ),
-                    prompt_version=(
-                        "realtime-single-frame-v1"
-                        if observation_mode
-                        else "video-understanding-v1"
+                    frame_sequence=frame_sequence,
+                    prompt_version=prompt_version,
+                    local_input_content=self._local_vlm_input_content(
+                        input,
+                        mode=source,
+                        media_kind=media_kind,
+                        prompt_version=prompt_version,
+                        frame_sequence=frame_sequence,
                     ),
                     trace_link_callback=trace_links.append,
                 )
@@ -224,11 +233,6 @@ class VideoUnderstandingBranch(ToolBase):
                 tool_name=self.name, success=False, error=str(exc), contract=contract
             )
 
-        source = (
-            "background_keyframe_observation"
-            if observation_mode
-            else "explicit_video"
-        )
         payload = {
             **result.model_dump(mode="json"),
             "source": source,
@@ -419,6 +423,13 @@ class VideoUnderstandingBranch(ToolBase):
                     frame_sequence=latest_frame.sequence,
                     query_provided=True,
                     prompt_version="live-view-query-v1",
+                    local_input_content=self._local_vlm_input_content(
+                        request,
+                        mode="live_view_query",
+                        media_kind="live_view",
+                        prompt_version="live-view-query-v1",
+                        frame_sequence=latest_frame.sequence,
+                    ),
                 )
             )
         except ValueError as exc:
@@ -491,6 +502,37 @@ class VideoUnderstandingBranch(ToolBase):
                 target_sequence=target_sequence,
             ),
         )
+
+    def _local_vlm_input_content(
+        self,
+        request: VideoUnderstandingRequest,
+        *,
+        mode: str,
+        media_kind: str,
+        prompt_version: str,
+        frame_sequence: int | None,
+    ) -> dict[str, object]:
+        resolved_instructions = None
+        resolve = getattr(self.adapter, "resolved_instructions", None)
+        if callable(resolve):
+            try:
+                candidate = resolve(request)
+            except Exception:  # noqa: BLE001 - observability must remain fail-open.
+                candidate = None
+            if isinstance(candidate, str) and candidate:
+                resolved_instructions = candidate
+        frame_count = len(request.frame_refs)
+        return {
+            "mode": mode,
+            "prompt_version": prompt_version,
+            "resolved_instructions": resolved_instructions,
+            "query": request.user_query,
+            "media_kind": media_kind,
+            "frame_sequence": frame_sequence,
+            "frame_count": frame_count,
+            "history_frame_count": max(0, frame_count - 1),
+            "memory_context_present": bool(request.memory_context),
+        }
 
     def _memory_result(
         self,

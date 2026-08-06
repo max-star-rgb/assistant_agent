@@ -25,6 +25,7 @@ from assistant_agent.observability.otel_mapping import (
     langfuse_trace_id,
 )
 from assistant_agent.observability.trace_content_policy import (
+    local_trace_content_enabled,
     local_memory_trace_content_enabled,
 )
 from assistant_agent.observability.langfuse_config import (
@@ -73,6 +74,7 @@ class OtlpHttpTextExporterConfig:
     service_name: str = DEFAULT_OTEL_SERVICE_NAME
     queue_capacity: int = DEFAULT_EXPORT_QUEUE_CAPACITY
     include_content: bool = True
+    include_vlm_input_content: bool = False
     include_memory_content: bool = False
 
     @classmethod
@@ -112,6 +114,11 @@ class OtlpHttpTextExporterConfig:
             )
             or DEFAULT_EXPORT_QUEUE_CAPACITY,
             include_content=enabled,
+            include_vlm_input_content=(
+                enabled
+                and local_trace_content_enabled(values)
+                and _is_loopback_endpoint(endpoint)
+            ),
             include_memory_content=(
                 enabled
                 and local_memory_trace_content_enabled(values)
@@ -218,6 +225,7 @@ def create_text_otel_trace_observer_from_env() -> TextOtelTraceObserver | None:
         BufferedTextOtelSpanExporter(setup.exporter, capacity=config.queue_capacity),
         enabled=True,
         include_content=config.include_content,
+        include_vlm_input_content=config.include_vlm_input_content,
         include_memory_content=config.include_memory_content,
     )
 
@@ -517,6 +525,7 @@ class TextOtelTraceObserver:
         max_events_per_run: int = DEFAULT_MAX_EVENTS_PER_RUN,
         continue_on_error: bool = True,
         include_content: bool = False,
+        include_vlm_input_content: bool = False,
         include_memory_content: bool = False,
     ) -> None:
         if max_buffered_runs <= 0:
@@ -529,6 +538,7 @@ class TextOtelTraceObserver:
         self.max_events_per_run = max_events_per_run
         self.continue_on_error = continue_on_error
         self.include_content = include_content
+        self.include_vlm_input_content = include_vlm_input_content
         self.include_memory_content = include_memory_content
         self._lock = Lock()
         self._events_by_run: dict[str, list[TraceEvent]] = {}
@@ -698,8 +708,7 @@ class TextOtelTraceObserver:
         with self._lock:
             self._exported_run_count += 1
 
-    @staticmethod
-    def _trace_conversation(events: list[TraceEvent]):
+    def _trace_conversation(self, events: list[TraceEvent]):
         identity = next(
             (event for event in events if event.user_id and event.session_id and event.trace_id),
             None,
@@ -715,6 +724,7 @@ class TextOtelTraceObserver:
             limit=4000,
             include_llm_inputs=True,
             include_llm_outputs=True,
+            include_vlm_inputs=self.include_vlm_input_content,
             include_vlm_outputs=True,
             include_tool_observations=True,
             include_tool_results=True,

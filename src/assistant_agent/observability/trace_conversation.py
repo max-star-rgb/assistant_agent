@@ -52,6 +52,13 @@ class TraceVlmOutput(BaseModel):
     normalized_result: dict[str, Any]
 
 
+class TraceVlmInput(BaseModel):
+    """One sanitized local-only VLM request keyed by generation span."""
+
+    span_id: str = Field(min_length=1)
+    normalized_input: dict[str, Any]
+
+
 class TraceToolObservation(BaseModel):
     """One complete assistant-facing tool observation for local diagnostics."""
 
@@ -81,6 +88,7 @@ class TraceConversationView(BaseModel):
     delivered: TraceConversationText | None = None
     llm_inputs: list[TraceLlmInput] = Field(default_factory=list)
     llm_outputs: list[TraceLlmOutput] = Field(default_factory=list)
+    vlm_inputs: list[TraceVlmInput] = Field(default_factory=list)
     vlm_outputs: list[TraceVlmOutput] = Field(default_factory=list)
     tool_observations: list[TraceToolObservation] = Field(default_factory=list)
     tool_results: list[TraceToolResult] = Field(default_factory=list)
@@ -98,6 +106,7 @@ class TraceConversationRecord:
     delivered_text: str | None = None
     llm_inputs: tuple[TraceLlmInput, ...] = ()
     llm_outputs: tuple[TraceLlmOutput, ...] = ()
+    vlm_inputs: tuple[TraceVlmInput, ...] = ()
     vlm_outputs: tuple[TraceVlmOutput, ...] = ()
     tool_observations: tuple[TraceToolObservation, ...] = ()
     tool_results: tuple[TraceToolResult, ...] = ()
@@ -141,6 +150,7 @@ class InMemoryTraceConversationStore:
                 delivered_text=existing.delivered_text if existing is not None else None,
                 llm_inputs=existing.llm_inputs if existing is not None else (),
                 llm_outputs=existing.llm_outputs if existing is not None else (),
+                vlm_inputs=existing.vlm_inputs if existing is not None else (),
                 vlm_outputs=existing.vlm_outputs if existing is not None else (),
                 tool_observations=(
                     existing.tool_observations if existing is not None else ()
@@ -180,6 +190,7 @@ class InMemoryTraceConversationStore:
                 delivered_text=existing.delivered_text if existing is not None else None,
                 llm_inputs=inputs[-16:],
                 llm_outputs=existing.llm_outputs if existing is not None else (),
+                vlm_inputs=existing.vlm_inputs if existing is not None else (),
                 vlm_outputs=existing.vlm_outputs if existing is not None else (),
                 tool_observations=(
                     existing.tool_observations if existing is not None else ()
@@ -214,6 +225,7 @@ class InMemoryTraceConversationStore:
                 delivered_text=existing.delivered_text if existing is not None else None,
                 llm_inputs=existing.llm_inputs if existing is not None else (),
                 llm_outputs=outputs[-16:],
+                vlm_inputs=existing.vlm_inputs if existing is not None else (),
                 vlm_outputs=existing.vlm_outputs if existing is not None else (),
                 tool_observations=(
                     existing.tool_observations if existing is not None else ()
@@ -221,6 +233,51 @@ class InMemoryTraceConversationStore:
                 tool_results=existing.tool_results if existing is not None else (),
             )
             self._replace_record(record)
+
+    def append_vlm_input(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+        trace_id: str,
+        vlm_input: TraceVlmInput,
+    ) -> None:
+        """Upsert one sanitized VLM input by generation span."""
+
+        with self._lock:
+            existing = self._matching_record(
+                user_id=user_id,
+                session_id=session_id,
+                trace_id=trace_id,
+            )
+            existing_inputs = existing.vlm_inputs if existing is not None else ()
+            inputs = tuple(
+                item for item in existing_inputs if item.span_id != vlm_input.span_id
+            ) + (vlm_input,)
+            self._replace_record(
+                TraceConversationRecord(
+                    user_id=user_id,
+                    session_id=session_id,
+                    trace_id=trace_id,
+                    user_text=existing.user_text if existing is not None else "",
+                    assistant_text=(
+                        existing.assistant_text if existing is not None else ""
+                    ),
+                    delivered_text=(
+                        existing.delivered_text if existing is not None else None
+                    ),
+                    llm_inputs=existing.llm_inputs if existing is not None else (),
+                    llm_outputs=existing.llm_outputs if existing is not None else (),
+                    vlm_inputs=inputs[-16:],
+                    vlm_outputs=existing.vlm_outputs if existing is not None else (),
+                    tool_observations=(
+                        existing.tool_observations if existing is not None else ()
+                    ),
+                    tool_results=(
+                        existing.tool_results if existing is not None else ()
+                    ),
+                )
+            )
 
     def append_vlm_output(
         self,
@@ -256,6 +313,7 @@ class InMemoryTraceConversationStore:
                     ),
                     llm_inputs=existing.llm_inputs if existing is not None else (),
                     llm_outputs=existing.llm_outputs if existing is not None else (),
+                    vlm_inputs=existing.vlm_inputs if existing is not None else (),
                     vlm_outputs=outputs[-16:],
                     tool_observations=(
                         existing.tool_observations if existing is not None else ()
@@ -296,6 +354,7 @@ class InMemoryTraceConversationStore:
                 delivered_text=existing.delivered_text if existing is not None else None,
                 llm_inputs=existing.llm_inputs if existing is not None else (),
                 llm_outputs=existing.llm_outputs if existing is not None else (),
+                vlm_inputs=existing.vlm_inputs if existing is not None else (),
                 vlm_outputs=existing.vlm_outputs if existing is not None else (),
                 tool_observations=observations[-32:],
                 tool_results=existing.tool_results if existing is not None else (),
@@ -336,6 +395,7 @@ class InMemoryTraceConversationStore:
                     ),
                     llm_inputs=existing.llm_inputs if existing is not None else (),
                     llm_outputs=existing.llm_outputs if existing is not None else (),
+                    vlm_inputs=existing.vlm_inputs if existing is not None else (),
                     vlm_outputs=existing.vlm_outputs if existing is not None else (),
                     tool_observations=(
                         existing.tool_observations if existing is not None else ()
@@ -372,6 +432,7 @@ class InMemoryTraceConversationStore:
                     delivered_text=delivered_text,
                     llm_inputs=existing.llm_inputs,
                     llm_outputs=existing.llm_outputs,
+                    vlm_inputs=existing.vlm_inputs,
                     vlm_outputs=existing.vlm_outputs,
                     tool_observations=existing.tool_observations,
                     tool_results=existing.tool_results,
@@ -387,6 +448,7 @@ class InMemoryTraceConversationStore:
         limit: int = DEFAULT_TRACE_CONVERSATION_CHAR_LIMIT,
         include_llm_inputs: bool = False,
         include_llm_outputs: bool = False,
+        include_vlm_inputs: bool = False,
         include_vlm_outputs: bool = False,
         include_tool_observations: bool = False,
         include_tool_results: bool = False,
@@ -411,6 +473,9 @@ class InMemoryTraceConversationStore:
                     ),
                     llm_inputs=list(record.llm_inputs) if include_llm_inputs else [],
                     llm_outputs=list(record.llm_outputs) if include_llm_outputs else [],
+                    vlm_inputs=(
+                        list(record.vlm_inputs) if include_vlm_inputs else []
+                    ),
                     vlm_outputs=(
                         list(record.vlm_outputs) if include_vlm_outputs else []
                     ),

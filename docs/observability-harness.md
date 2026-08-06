@@ -101,11 +101,13 @@ Tool execution span 展示不含媒体身份、evidence、向量和 Provider raw
 Tool observation。VLM event 与后台 summary 的观测写入均 fail-open；写入失败不能阻止 Provider 调用或
 把成功视觉结果改成业务失败。
 
-成功 VLM 的归一化结构化结果可以进入与 canonical trace 分离的进程内 content overlay；只允许
-summary、scene、objects、people、actions、events、OCR、grounding 列表、confidence 和 Provider/model/
-latency 等已校验字段，不允许媒体引用、媒体字节、embedding 或 Provider 原始 payload。该内容只有在
-本地 trace content 开启且 exporter 指向 loopback Langfuse 时才投影到 `vlm.infer` generation 和
-`vision.runtime` root output；canonical event 与 JSONL 始终不保存视觉正文。
+VLM 的安全输入和归一化结构化结果可以进入与 canonical trace 分离的进程内 content overlay。输入只允许
+mode、prompt version、adapter 实际 resolved instructions、query、media kind、frame sequence/count、
+history frame count 和 memory context 是否存在；不允许媒体引用、JPEG/base64、媒体字节、embedding 或
+Provider raw request。输出只允许 summary、scene、objects、people、actions、events、OCR、grounding
+列表、confidence 和 Provider/model/latency 等已校验字段。VLM input 只有在本地 trace content 开启且
+exporter 指向 loopback Langfuse 时才投影到 `vlm.infer` generation 与 `vision.runtime` root input；输出按
+既有本地 content export policy 投影。canonical event 与 JSONL 始终不保存 prompt、query 或视觉正文。
 
 统一 embedding side stream 额外发布 `embedding.requested/deduplicated/started/finished/failed/
 dispatched/consumer_dropped/session_cleanup`。这些事件只允许 modality、dimension、latency、priority、
@@ -304,10 +306,12 @@ loopback Langfuse 时，还会根据精确的 `source_vision_trace_id` 生成
 `source_vision_trace_url`，供 UI 从 `live_view_inspect` 直接打开对应 `vision.observation`；该 URL 只存在于
 Langfuse/OTel 派生视图，不反写 canonical Tool 结果，非 loopback host 也不生成。
 
-前台 `live_view_inspect(query=...)` 还会在自己的 Tool span 下创建独立 `vlm.infer` generation，输入只记录
-query 是否存在、单帧 media metadata 和 prompt version，不记录 query 文本、JPEG 或 evidence 路径；输出
-展示脱敏后的 query-specific VLM 文本。原缓存 record 的 `source_vision_trace_url` 继续指向生产该证据帧的
-后台 trace，两者分别表达“本轮如何回答”和“这张证据帧从何而来”。
+前台 `live_view_inspect(query=...)` 还会在自己的 Tool span 下创建独立 `vlm.infer` generation。loopback
+input overlay 展示 adapter 实际 resolved instructions、query 和“单帧、无历史、无 memory context”等
+结构化上下文，但不记录 JPEG 或 evidence 路径；关闭本地 content、非 loopback exporter 或 overlay
+缺失时降级为 query 是否存在、单帧 media metadata 和 prompt version。输出展示脱敏后的 query-specific
+VLM 文本。原缓存 record 的 `source_vision_trace_url` 继续指向生产该证据帧的后台 trace，两者分别表达
+“本轮如何回答”和“这张证据帧从何而来”。
 
 视觉 Tool 在 Langfuse 中有三个不可互换的内容边界：具体 Tool execution span（例如
 `live_view_inspect`）展示安全 ToolResult；`tool.observation` 展示 Context compaction 前的语义 observation；
@@ -316,10 +320,11 @@ query 是否存在、单帧 media metadata 和 prompt version，不记录 query 
 `provider_tool_call_id`，不得继续用同名 `tool_call_id` 混淆内部执行身份与 Provider 协议身份。
 
 后台 `realtime_video_observe` 是视觉结果生产者，不是主 LLM Tool observation。其 `vlm.infer` 必须作为
-Tool span 的子 generation；`vlm.infer.input` 只展示 `media_kind`、`media_count`、`prompt_version`、
-`source`、可用的 `frame_sequence` 和 `content_exported=false`，不展示图片或媒体引用。来源 URL 只用于
-跨 trace 消费者；后台 Tool 位于自己的 `vision.observation` 内时不得生成指向自身的
-`source_vision_trace_url`。
+Tool span 的子 generation；loopback content overlay 可让 `vlm.infer.input` 和 `vision.runtime` root input
+展示 resolved instructions、query 及明确的单帧上下文计数。overlay 不可用时只展示 `media_kind`、
+`media_count`、`prompt_version`、`source`、可用的 `frame_sequence`、`query_provided` 和
+`content_exported=false`。两种模式都不展示图片或媒体引用。来源 URL 只用于跨 trace 消费者；后台 Tool
+位于自己的 `vision.observation` 内时不得生成指向自身的 `source_vision_trace_url`。
 
 连接级视觉提醒使用创建 turn 的 correlation 记录 late-capable canonical events：
 `visual_reminder.created`、`visual_reminder.matched`、`visual_reminder.delivery.finished` 和

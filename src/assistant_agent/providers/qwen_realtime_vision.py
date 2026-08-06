@@ -114,6 +114,11 @@ class QwenRealtimeVisionAdapter:
     def last_raw_response_text(self) -> str | None:
         return self._last_raw_response_text
 
+    def resolved_instructions(self, request: VideoUnderstandingRequest) -> str:
+        """Return the exact instructions this adapter sends for the request."""
+
+        return _instructions(request)
+
     @property
     def last_observation_phase(self) -> str:
         return self._last_observation_phase

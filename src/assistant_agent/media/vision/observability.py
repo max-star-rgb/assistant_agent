@@ -45,6 +45,17 @@ _VLM_OUTPUT_FIELDS = (
 )
 _MAX_VLM_CONTENT_TEXT_CHARS = 4_000
 _MAX_VLM_CONTENT_ITEMS = 20
+_VLM_INPUT_FIELDS = (
+    "mode",
+    "prompt_version",
+    "resolved_instructions",
+    "query",
+    "media_kind",
+    "frame_sequence",
+    "frame_count",
+    "history_frame_count",
+    "memory_context_present",
+)
 _BLOCKED_VLM_CONTENT_KEYS = frozenset(
     {
         "evidence_ref",
@@ -97,6 +108,7 @@ def observe_vision_inference(
     frame_sequence: int | None = None,
     query_provided: bool | None = None,
     prompt_version: str = VISION_INFERENCE_PROMPT_VERSION,
+    local_input_content: Mapping[str, Any] | None = None,
     trace_link_callback: Callable[[VisionInferenceTraceLink], None] | None = None,
 ) -> _ResultT:
     """Run one VLM call and emit a redacted generation when tracing is active."""
@@ -168,6 +180,11 @@ def observe_vision_inference(
                 else {}
             ),
         },
+    )
+    _append_vlm_input_fail_open(
+        context=context,
+        span_id=span_id,
+        input_content=local_input_content,
     )
     started_at = perf_counter()
     try:
@@ -283,6 +300,42 @@ def _append_vlm_content_fail_open(
                 provider=provider,
                 model=model,
                 normalized_result=_normalized_vlm_output(result),
+            ),
+        )
+    except Exception:
+        return
+
+
+def _append_vlm_input_fail_open(
+    *,
+    context: VisionInferenceTraceContext,
+    span_id: str,
+    input_content: Mapping[str, Any] | None,
+) -> None:
+    if (
+        not local_trace_content_enabled()
+        or not input_content
+        or not context.user_id
+        or not context.session_id
+        or not context.trace_id
+    ):
+        return
+    try:
+        from assistant_agent.observability.trace_conversation import TraceVlmInput
+
+        normalized_input = {
+            field: _safe_vlm_content_value(input_content[field])
+            for field in _VLM_INPUT_FIELDS
+            if input_content.get(field) not in (None, "", [], {})
+            or isinstance(input_content.get(field), bool | int)
+        }
+        _trace_content_store().append_vlm_input(
+            user_id=context.user_id,
+            session_id=context.session_id,
+            trace_id=context.trace_id,
+            vlm_input=TraceVlmInput(
+                span_id=span_id,
+                normalized_input=normalized_input,
             ),
         )
     except Exception:

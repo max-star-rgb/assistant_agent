@@ -31,6 +31,7 @@ if TYPE_CHECKING:
         TraceLlmOutput,
         TraceToolObservation,
         TraceToolResult,
+        TraceVlmInput,
         TraceVlmOutput,
     )
 
@@ -563,13 +564,17 @@ def _root_io_attributes(
             ),
             events[-1],
         )
-        input_value = _json_value(
-            {
+        vlm_input = _latest_vlm_input_for_events(events, conversation=conversation)
+        input_payload = (
+            {**vlm_input.normalized_input, "content_exported": True}
+            if vlm_input is not None
+            else {
                 "modality": VISION_MODALITY,
                 "content_exported": False,
                 "media_kind": terminal.attributes.get("media_kind", "live_view"),
             }
         )
+        input_value = _json_value(input_payload)
         vlm_output = _latest_vlm_output_for_events(events, conversation=conversation)
         output_payload = (
             {
@@ -850,20 +855,26 @@ def _event_io_attributes(
             output_payload = _llm_provider_output_preview(llm_output)
             include_output = True
     elif name == "vlm.infer.finished":
-        input_payload = {
-            "operation": "vlm.infer",
-            **_selected_payload(
-                event.attributes,
-                (
-                    "media_kind",
-                    "media_count",
-                    "prompt_version",
-                    "source",
-                    "frame_sequence",
+        vlm_input = _vlm_input_for_event(conversation, span_id=event.span_id)
+        input_payload = (
+            {**vlm_input.normalized_input, "content_exported": True}
+            if vlm_input is not None
+            else {
+                "operation": "vlm.infer",
+                **_selected_payload(
+                    event.attributes,
+                    (
+                        "media_kind",
+                        "media_count",
+                        "prompt_version",
+                        "source",
+                        "frame_sequence",
+                        "query_provided",
+                    ),
                 ),
-            ),
-            "content_exported": False,
-        }
+                "content_exported": False,
+            }
+        )
         vlm_output = _vlm_output_for_event(conversation, span_id=event.span_id)
         if vlm_output is not None:
             output_payload = {
@@ -1058,6 +1069,19 @@ def _vlm_output_for_event(
     )
 
 
+def _vlm_input_for_event(
+    conversation: "TraceConversationView | None",
+    *,
+    span_id: str | None,
+) -> "TraceVlmInput | None":
+    if conversation is None or span_id is None:
+        return None
+    return next(
+        (item for item in reversed(conversation.vlm_inputs) if item.span_id == span_id),
+        None,
+    )
+
+
 def _latest_vlm_output_for_events(
     events: list[TraceEvent],
     *,
@@ -1069,6 +1093,19 @@ def _latest_vlm_output_for_events(
             and _event_status(event) != "error"
         ):
             matched = _vlm_output_for_event(conversation, span_id=event.span_id)
+            if matched is not None:
+                return matched
+    return None
+
+
+def _latest_vlm_input_for_events(
+    events: list[TraceEvent],
+    *,
+    conversation: "TraceConversationView | None",
+) -> "TraceVlmInput | None":
+    for event in reversed(events):
+        if _event_name(event) == "vlm.infer.finished":
+            matched = _vlm_input_for_event(conversation, span_id=event.span_id)
             if matched is not None:
                 return matched
     return None

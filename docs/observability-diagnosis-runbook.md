@@ -77,6 +77,11 @@ curl -fsS "http://127.0.0.1:8089/traces/<trace_id>/conversation" \
 ```
 
 非 loopback 请求会被拒绝。正文只用于当前问题的本地诊断，不应粘贴进 issue、日志或最终报告。
+本地 trace content 与 loopback OTel export 同时启用时，`vision.observation` 的 `vision.runtime` root input
+和子 `vlm.infer.input` 会展示脱敏后的 resolved instructions、query、帧/历史计数与 memory context 是否
+存在；不会展示 JPEG、base64、媒体路径或 Provider raw request。若只看到 `content_exported=false` 和
+media metadata，先检查 exporter 是否确实指向 loopback、Server 是否在本次 observation 完成前重启，
+以及当前 trace 是否由支持 input overlay 的新进程生成。
 
 ### 检查 Gateway 与 delivery JSONL
 
