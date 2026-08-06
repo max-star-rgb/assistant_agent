@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from contextlib import nullcontext
 from datetime import date, datetime, timedelta
+import json
 from pathlib import Path
 from typing import Literal
 
@@ -18,6 +19,7 @@ from assistant_agent.observability.runtime_audit.collector import (
 from assistant_agent.observability.runtime_audit.daily_models import (
     DailyAuditAttempt,
     DailyCodexAuditReport,
+    IssueRegistry,
 )
 from assistant_agent.observability.runtime_audit.daily_window import (
     DailyAuditWindow,
@@ -140,8 +142,12 @@ def _run_one_locked(
         if report.audit_date != window.audit_date:
             raise ValueError("Codex daily report audit_date does not match the requested day")
         _validate_current_bundle_evidence(report, bundle)
-        registry = merge_issue_registry(
-            store.read_issue_registry(), report.issues, window.audit_date
+        registry = (
+            merge_issue_registry(
+                store.read_issue_registry(), report.issues, window.audit_date
+            )
+            if commit_continuous_state
+            else None
         )
         markdown = render_daily_codex_report(report)
     except Exception as exc:
@@ -198,6 +204,13 @@ def run_pending_daily_audits(
     return results
 
 
+def recover_pending_daily_commits(store: RuntimeAuditArtifactStore) -> None:
+    """Recover journaled daily commits before any source is created or consulted."""
+
+    with store.daily_claim():
+        _recover_pending_commits(store)
+
+
 def run_failed_daily_audit(
     *, window: DailyAuditWindow, store: RuntimeAuditArtifactStore,
     collected_at: datetime, error_summary: str,
@@ -205,6 +218,7 @@ def run_failed_daily_audit(
     """Record an operator-visible failure when a source cannot even be constructed."""
 
     with store.daily_claim():
+        _recover_pending_commits(store)
         attempt_id = store.allocate_audit_run_id(collected_at)
         bundle_path = store.inbox_dir / f"{attempt_id}.json"
         attempt = DailyAuditAttempt(
@@ -228,8 +242,15 @@ def _commit_success(
         attempt, markdown=markdown, registry=registry,
         commit_continuous_state=commit_continuous_state,
     )
-    import json
-    report_path = _apply_commit_intent(store, json.loads(intent_path.read_text(encoding="utf-8")))
+    try:
+        report_path = _apply_commit_intent(
+            store, json.loads(intent_path.read_text(encoding="utf-8"))
+        )
+    except RuntimeError as exc:
+        return _fail(
+            store=store, attempt=attempt, bundle_path=bundle_path,
+            error_summary=sanitize_error_message(exc), publish_failure=True,
+        )
     return DailyAuditRunResult(audit_date=attempt.audit_date, status="succeeded",
                                attempt_id=attempt.attempt_id, bundle_path=bundle_path,
                                report_path=report_path)
@@ -242,15 +263,44 @@ def _recover_pending_commits(store: RuntimeAuditArtifactStore) -> None:
 
 def _apply_commit_intent(store: RuntimeAuditArtifactStore, intent: dict) -> Path:
     attempt = DailyAuditAttempt.model_validate(intent["attempt"])
+    if intent.get("schema_version") != "assistant_agent_daily_commit_intent_v2":
+        raise RuntimeError("unsupported daily commit intent")
+    if not intent["commit_continuous_state"]:
+        report_path = store.write_daily_report(
+            attempt.audit_date, intent["markdown"], replace=True
+        )
+        store.write_attempt(
+            attempt.model_copy(update={"status": "succeeded", "error_summary": None})
+        )
+        store.clear_commit_intent(attempt.attempt_id)
+        return report_path
+    current_watermark = store.read_daily_watermark()
+    predecessor = intent.get("expected_predecessor_watermark")
+    current_date = current_watermark.last_completed_date if current_watermark else None
+    if current_date is not None and current_date > attempt.audit_date:
+        store.clear_commit_intent(attempt.attempt_id)
+        raise RuntimeError("stale daily commit intent cannot overwrite newer watermark")
+    expected_date = date.fromisoformat(predecessor) if predecessor else None
+    if current_date not in {expected_date, attempt.audit_date}:
+        store.clear_commit_intent(attempt.attempt_id)
+        raise RuntimeError("daily commit intent watermark precondition failed")
+    if current_date == attempt.audit_date and current_watermark.last_attempt_id != attempt.attempt_id:
+        store.clear_commit_intent(attempt.attempt_id)
+        raise RuntimeError("daily commit intent conflicts with completed attempt")
+    desired = intent.get("desired_registry_digest")
+    previous = intent.get("previous_registry_digest")
+    current_digest = store.issue_registry_digest()
+    if desired is not None and current_digest not in {previous, desired}:
+        store.clear_commit_intent(attempt.attempt_id)
+        raise RuntimeError("daily commit intent registry precondition failed")
     report_path = store.write_daily_report(attempt.audit_date, intent["markdown"], replace=True)
     if intent["commit_continuous_state"]:
         registry = intent.get("registry")
-        if registry is not None:
-            from assistant_agent.observability.runtime_audit.daily_models import IssueRegistry
+        if registry is not None and current_digest != desired:
             store.write_issue_registry(IssueRegistry.model_validate(registry))
     succeeded = attempt.model_copy(update={"status": "succeeded", "error_summary": None})
     store.write_attempt(succeeded)
-    if intent["commit_continuous_state"]:
+    if intent["commit_continuous_state"] and current_date != attempt.audit_date:
         store.mark_day_completed(attempt.audit_date, attempt_id=attempt.attempt_id,
                                  bundle_path=attempt.bundle_path)
     store.clear_commit_intent(attempt.attempt_id)

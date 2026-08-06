@@ -16,6 +16,7 @@ from assistant_agent.observability.runtime_audit.cli import (
 )
 from assistant_agent.observability.runtime_audit.collector import collect_runtime_audit
 from assistant_agent.observability.runtime_audit.daily_runner import (
+    recover_pending_daily_commits,
     run_one_daily_audit,
     run_pending_daily_audits,
 )
@@ -1203,6 +1204,7 @@ def test_rerun_replaces_success_only_after_a_new_success(tmp_path: Path) -> None
     failed = run_one_daily_audit(
         **common,
         codex_runner=lambda **_: (_ for _ in ()).throw(RuntimeError("Codex failed")),
+        commit_continuous_state=False,
     )
 
     assert failed.status == "failed"
@@ -1210,7 +1212,7 @@ def test_rerun_replaces_success_only_after_a_new_success(tmp_path: Path) -> None
 
     replacement = _daily_codex_report().model_copy(update={"daily_summary": "刷新后的结论。"})
     refreshed = run_one_daily_audit(
-        **common, codex_runner=lambda **_: replacement
+        **common, codex_runner=lambda **_: replacement, commit_continuous_state=False
     )
 
     assert refreshed.status == "succeeded"
@@ -1285,18 +1287,15 @@ def test_interrupted_continuous_commit_recovers_from_intent(
         run_one_daily_audit(
             window=window_for_date(date(2026, 8, 5)), source=FakeLangfuseSource([_daily_trace()]),
             local_trace_path=tmp_path / "graph_trace.jsonl", store=store, repo_root=tmp_path,
-            codex_runner=lambda **_: _daily_codex_report(),
+            codex_runner=lambda **_: _daily_codex_report(issue=DailyAuditIssue(
+                issue_key="tool.interrupted", status="uncertain", title="中断",
+                first_seen=date(2026, 8, 5), last_seen=date(2026, 8, 5),
+                trace_evidence_refs=["trace:trace-current"],
+            )),
             collected_at=datetime(2026, 8, 6, 0, 15, tzinfo=timezone.utc),
         )
 
-    result = run_one_daily_audit(
-        window=window_for_date(date(2026, 8, 5)), source=FakeLangfuseSource([_daily_trace()]),
-        local_trace_path=tmp_path / "graph_trace.jsonl", store=store, repo_root=tmp_path,
-        codex_runner=lambda **_: _daily_codex_report(),
-        collected_at=datetime(2026, 8, 6, 0, 16, tzinfo=timezone.utc),
-    )
-
-    assert result.status == "succeeded"
+    recover_pending_daily_commits(store)
     assert store.last_completed_date() == date(2026, 8, 5)
     assert store.read_commit_intents() == []
 

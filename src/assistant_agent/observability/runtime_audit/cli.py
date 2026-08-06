@@ -11,11 +11,13 @@ import sys
 
 from assistant_agent.observability.runtime_audit.collector import collect_runtime_audit
 from assistant_agent.observability.runtime_audit.daily_runner import (
+    recover_pending_daily_commits,
     run_failed_daily_audit,
     run_one_daily_audit,
     run_pending_daily_audits,
 )
 from assistant_agent.observability.runtime_audit.daily_window import (
+    pending_audit_dates,
     previous_day_window,
     window_for_date,
 )
@@ -163,6 +165,14 @@ def _run_daily(args, *, repo_root: Path, store: RuntimeAuditArtifactStore) -> in
     """Run explicit refreshes or ordered backfill through the resumable daily loop."""
 
     collected_at = datetime.now(timezone.utc)
+    recover_pending_daily_commits(store)
+    yesterday = previous_day_window(collected_at).audit_date
+    dates = [args.date] if args.date is not None else pending_audit_dates(
+        yesterday=yesterday, last_completed=store.last_completed_date()
+    )
+    if not dates:
+        print(json.dumps({"audit_dates": [], "report_paths": [], "failed_date": None}))
+        return 0
     source = None
     try:
         source = create_langfuse_audit_source_from_env(os.environ)
@@ -189,10 +199,9 @@ def _run_daily(args, *, repo_root: Path, store: RuntimeAuditArtifactStore) -> in
                 )
             ]
         else:
-            yesterday = previous_day_window(collected_at).audit_date
             results = run_pending_daily_audits(yesterday=yesterday, **common)
     except Exception as exc:
-        target = window_for_date(args.date) if args.date else previous_day_window(collected_at)
+        target = window_for_date(dates[0])
         results = [
             run_failed_daily_audit(
                 window=target, store=store, collected_at=collected_at,
@@ -201,7 +210,13 @@ def _run_daily(args, *, repo_root: Path, store: RuntimeAuditArtifactStore) -> in
         ]
     finally:
         if source is not None:
-            source.close()
+            try:
+                source.close()
+            except Exception as exc:
+                print(
+                    json.dumps({"status": "source_close_warning", "message": sanitize_error_message(exc)}),
+                    file=sys.stderr,
+                )
     failed = next((item for item in results if item.status == "failed"), None)
     print(
         json.dumps(
@@ -217,6 +232,11 @@ def _run_daily(args, *, repo_root: Path, store: RuntimeAuditArtifactStore) -> in
 
 
 def _collect(args, *, repo_root: Path, store: RuntimeAuditArtifactStore):
+    with store.daily_claim():
+        return _collect_locked(args, repo_root=repo_root, store=store)
+
+
+def _collect_locked(args, *, repo_root: Path, store: RuntimeAuditArtifactStore):
     collected_at = datetime.now(timezone.utc)
     if args.window_hours is not None:
         window_end = collected_at

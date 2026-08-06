@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from contextlib import contextmanager
+import hashlib
 import fcntl
 import json
 import os
@@ -108,13 +109,20 @@ class RuntimeAuditArtifactStore:
     def write_commit_intent(self, attempt: DailyAuditAttempt, *, markdown: str, registry: IssueRegistry | None, commit_continuous_state: bool) -> Path:
         path = self.commit_intent_path(attempt.attempt_id)
         payload = {
+            "schema_version": "assistant_agent_daily_commit_intent_v2",
             "attempt": attempt.model_dump(mode="json"),
             "markdown": markdown,
             "registry": registry.model_dump(mode="json") if registry is not None else None,
             "commit_continuous_state": commit_continuous_state,
+            "expected_predecessor_watermark": self.last_completed_date().isoformat() if self.last_completed_date() else None,
+            "previous_registry_digest": self.issue_registry_digest(),
+            "desired_registry_digest": _registry_digest(registry) if registry is not None else None,
         }
         _atomic_write(path, json.dumps(payload, ensure_ascii=False, indent=2))
         return path
+
+    def issue_registry_digest(self) -> str:
+        return _registry_digest(self.read_issue_registry())
 
     def read_commit_intents(self) -> list[dict]:
         if not self.commits_dir.exists():
@@ -166,6 +174,14 @@ class RuntimeAuditArtifactStore:
         attempt_id: str,
         bundle_path: str,
     ) -> Path:
+        current = self.read_daily_watermark()
+        if current is not None:
+            if current.last_completed_date == audit_date and current.last_attempt_id == attempt_id:
+                return self.watermark_path
+            if audit_date != current.last_completed_date.fromordinal(
+                current.last_completed_date.toordinal() + 1
+            ):
+                raise ValueError("daily watermark must advance exactly one calendar day")
         watermark = DailyAuditWatermarkV2(
             last_completed_date=audit_date,
             last_attempt_id=attempt_id,
@@ -178,6 +194,10 @@ class RuntimeAuditArtifactStore:
         return self.watermark_path
 
     def last_completed_date(self) -> date | None:
+        watermark = self.read_daily_watermark()
+        return watermark.last_completed_date if watermark else None
+
+    def read_daily_watermark(self) -> DailyAuditWatermarkV2 | None:
         if not self.watermark_path.exists():
             return None
         payload = json.loads(self.watermark_path.read_text(encoding="utf-8"))
@@ -186,7 +206,7 @@ class RuntimeAuditArtifactStore:
             != "assistant_agent_runtime_audit_watermark_v2"
         ):
             return None
-        return DailyAuditWatermarkV2.model_validate(payload).last_completed_date
+        return DailyAuditWatermarkV2.model_validate(payload)
 
     def is_day_completed(self, audit_date: date) -> bool:
         """Whether a successful checkpoint proves this date already has a good report."""
@@ -255,3 +275,8 @@ def _with_trailing_newline(content: str) -> str:
 
 def _iso_z(value) -> str:
     return value.isoformat().replace("+00:00", "Z")
+
+
+def _registry_digest(registry: IssueRegistry | None) -> str:
+    payload = registry.model_dump_json() if registry is not None else ""
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
