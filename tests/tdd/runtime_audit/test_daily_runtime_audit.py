@@ -7,15 +7,96 @@ from types import SimpleNamespace
 
 import pytest
 
-from assistant_agent.observability.runtime_audit.cli import _parser
+from assistant_agent.observability.runtime_audit.cli import _parser, _resolve_bundle_path
 from assistant_agent.observability.runtime_audit.collector import collect_runtime_audit
 from assistant_agent.observability.runtime_audit.daily_window import (
     pending_audit_dates,
     previous_day_window,
     window_for_date,
 )
+from assistant_agent.observability.runtime_audit.daily_models import DailyAuditAttempt
 from assistant_agent.observability.runtime_audit.langfuse_source import LangfuseSdkAuditSource
 from assistant_agent.observability.runtime_audit.models import LangfuseTraceSnapshot
+from assistant_agent.observability.runtime_audit.storage import RuntimeAuditArtifactStore
+
+
+def test_daily_artifacts_keep_codex_json_internal_and_publish_one_markdown(tmp_path: Path) -> None:
+    store = RuntimeAuditArtifactStore(tmp_path / "runtime_audit")
+    attempt = DailyAuditAttempt(
+        attempt_id="runtime_audit_20260806_0015",
+        audit_date=date(2026, 8, 5),
+        status="succeeded",
+        bundle_path="/tmp/bundle.json",
+        codex_output_path="/tmp/codex.json",
+    )
+    attempt_path = store.write_attempt(attempt)
+    report_path = store.write_daily_report(date(2026, 8, 5), "# 日报", replace=True)
+    assert attempt_path == store.state_dir / "attempts" / f"{attempt.attempt_id}.json"
+    assert store.codex_json_path(attempt.attempt_id).parent == store.state_dir / "attempts"
+    assert report_path == store.reports_dir / "2026-08-05.md"
+    assert list(store.reports_dir.glob("*.json")) == []
+
+
+def test_failed_rerun_does_not_replace_successful_daily_report(tmp_path: Path) -> None:
+    store = RuntimeAuditArtifactStore(tmp_path / "runtime_audit")
+    path = store.write_daily_report(date(2026, 8, 5), "成功日报", replace=True)
+    store.write_failed_daily_report_if_absent(date(2026, 8, 5), "失败日报")
+    assert path.read_text(encoding="utf-8").strip() == "成功日报"
+
+
+def test_legacy_watermark_is_not_a_completed_daily_audit(tmp_path: Path) -> None:
+    store = RuntimeAuditArtifactStore(tmp_path / "runtime_audit")
+    store.watermark_path.parent.mkdir(parents=True)
+    store.watermark_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "assistant_agent_runtime_audit_watermark_v1",
+                "audit_run_id": "runtime_audit_20260806_0015",
+                "last_window_end": "2026-08-05T16:00:00Z",
+                "bundle_path": "/tmp/legacy-bundle.json",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert store.last_completed_date() is None
+
+    watermark_path = store.mark_day_completed(
+        date(2026, 8, 5),
+        attempt_id="runtime_audit_20260806_0015",
+        bundle_path="/tmp/bundle.json",
+    )
+
+    assert watermark_path == store.watermark_path
+    assert json.loads(watermark_path.read_text(encoding="utf-8")) == {
+        "schema_version": "assistant_agent_runtime_audit_watermark_v2",
+        "last_completed_date": "2026-08-05",
+        "last_attempt_id": "runtime_audit_20260806_0015",
+        "bundle_path": "/tmp/bundle.json",
+    }
+    assert store.last_completed_date() == date(2026, 8, 5)
+
+
+def test_bundle_resolution_prefers_latest_pointer_then_legacy_watermark(tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    store = RuntimeAuditArtifactStore(repo_root / "runtime_audit")
+    store.latest_bundle_path.parent.mkdir(parents=True)
+    store.latest_bundle_path.write_text(
+        json.dumps({"bundle_path": "latest.json"}), encoding="utf-8"
+    )
+    store.watermark_path.write_text(
+        json.dumps({"bundle_path": "legacy.json"}), encoding="utf-8"
+    )
+
+    assert _resolve_bundle_path(None, store=store, repo_root=repo_root) == (
+        repo_root / "latest.json"
+    )
+
+    store.latest_bundle_path.unlink()
+
+    assert _resolve_bundle_path(None, store=store, repo_root=repo_root) == (
+        repo_root / "legacy.json"
+    )
 
 
 def test_previous_day_uses_shanghai_calendar_boundaries() -> None:

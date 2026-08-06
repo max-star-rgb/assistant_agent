@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 import json
 from pathlib import Path
 from typing import Literal
@@ -10,6 +10,10 @@ from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel
 
+from assistant_agent.observability.runtime_audit.daily_models import (
+    DailyAuditAttempt,
+    DailyAuditWatermarkV2,
+)
 from assistant_agent.observability.runtime_audit.models import RuntimeAuditBundle
 
 
@@ -42,6 +46,10 @@ class RuntimeAuditArtifactStore:
         self.state_dir = self.root / "state"
         self.inbox_dir = self.root / "inbox"
         self.reports_dir = self.root / "reports"
+        self.attempts_dir = self.state_dir / "attempts"
+        self.schemas_dir = self.state_dir / "schemas"
+        self.issues_path = self.state_dir / "issues.json"
+        self.latest_bundle_path = self.state_dir / "latest-bundle.json"
         self.watermark_path = self.state_dir / "watermark.json"
 
     def allocate_audit_run_id(self, collected_at: datetime) -> str:
@@ -66,7 +74,7 @@ class RuntimeAuditArtifactStore:
             bundle_path=str(path),
         )
         _atomic_write(
-            self.watermark_path,
+            self.latest_bundle_path,
             json.dumps(watermark.model_dump(mode="json"), ensure_ascii=False, indent=2),
         )
         return path
@@ -77,19 +85,66 @@ class RuntimeAuditArtifactStore:
         return path
 
     def codex_json_path(self, audit_run_id: str) -> Path:
-        return self.reports_dir / f"{audit_run_id}.json"
+        return self.attempts_dir / f"{audit_run_id}.codex.json"
 
     def codex_schema_path(self, audit_run_id: str) -> Path:
-        return self.state_dir / f"{audit_run_id}.report-schema.json"
+        return self.schemas_dir / f"{audit_run_id}.report-schema.json"
+
+    def write_attempt(self, attempt: DailyAuditAttempt) -> Path:
+        path = self.attempts_dir / f"{attempt.attempt_id}.json"
+        _atomic_write(path, attempt.model_dump_json(indent=2))
+        return path
+
+    def daily_report_path(self, audit_date: date) -> Path:
+        return self.reports_dir / f"{audit_date.isoformat()}.md"
+
+    def write_daily_report(self, audit_date: date, markdown: str, *, replace: bool = True) -> Path:
+        path = self.daily_report_path(audit_date)
+        if replace or not path.exists():
+            _atomic_write(path, markdown)
+        return path
+
+    def write_failed_daily_report_if_absent(self, audit_date: date, markdown: str) -> Path:
+        return self.write_daily_report(audit_date, markdown, replace=False)
+
+    def mark_day_completed(
+        self,
+        audit_date: date,
+        *,
+        attempt_id: str,
+        bundle_path: str,
+    ) -> Path:
+        watermark = DailyAuditWatermarkV2(
+            last_completed_date=audit_date,
+            last_attempt_id=attempt_id,
+            bundle_path=bundle_path,
+        )
+        _atomic_write(
+            self.watermark_path,
+            json.dumps(watermark.model_dump(mode="json"), ensure_ascii=False, indent=2),
+        )
+        return self.watermark_path
+
+    def last_completed_date(self) -> date | None:
+        if not self.watermark_path.exists():
+            return None
+        payload = json.loads(self.watermark_path.read_text(encoding="utf-8"))
+        if (
+            payload.get("schema_version")
+            != "assistant_agent_runtime_audit_watermark_v2"
+        ):
+            return None
+        return DailyAuditWatermarkV2.model_validate(payload).last_completed_date
 
     def _artifact_exists(self, audit_run_id: str) -> bool:
         return any(
             path.exists()
             for path in (
                 self.inbox_dir / f"{audit_run_id}.json",
-                self.reports_dir / f"{audit_run_id}.json",
                 self.reports_dir / f"{audit_run_id}.md",
-                self.state_dir / f"{audit_run_id}.report-schema.json",
+                self.attempts_dir / f"{audit_run_id}.codex.json",
+                self.schemas_dir / f"{audit_run_id}.report-schema.json",
+                self.attempts_dir / f"{audit_run_id}.json",
             )
         )
 

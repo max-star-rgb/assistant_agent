@@ -189,9 +189,14 @@ def _resolve_bundle_path(value: str | None, *, store: RuntimeAuditArtifactStore,
     if value:
         path = Path(value)
         return path if path.is_absolute() else (repo_root / path).resolve()
-    if not store.watermark_path.exists():
+    artifact_path = (
+        store.latest_bundle_path
+        if store.latest_bundle_path.exists()
+        else store.watermark_path
+    )
+    if not artifact_path.exists():
         raise RuntimeError("No runtime audit watermark exists; run collect first.")
-    payload = json.loads(store.watermark_path.read_text(encoding="utf-8"))
+    payload = json.loads(artifact_path.read_text(encoding="utf-8"))
     path = Path(payload["bundle_path"])
     return path if path.is_absolute() else (repo_root / path).resolve()
 

@@ -447,7 +447,7 @@ def test_langfuse_source_paginates_headers_then_fetches_full_trace_details() -> 
     assert traces[0].scores[0].score_id == "score-trace-1"
 
 
-def test_artifact_store_writes_versioned_bundle_watermark_and_read_only_report(
+def test_artifact_store_writes_versioned_bundle_latest_pointer_and_read_only_report(
     tmp_path: Path,
 ) -> None:
     """Would fail if the hourly run could not resume or its report implied mutation."""
@@ -469,16 +469,17 @@ def test_artifact_store_writes_versioned_bundle_watermark_and_read_only_report(
     )
 
     persisted = json.loads(bundle_path.read_text(encoding="utf-8"))
-    watermark = json.loads(store.watermark_path.read_text(encoding="utf-8"))
+    latest_bundle = json.loads(store.latest_bundle_path.read_text(encoding="utf-8"))
     markdown = markdown_path.read_text(encoding="utf-8")
     assert persisted["schema_version"] == "assistant_agent_runtime_audit_bundle_v1"
     assert persisted["production_mutation_allowed"] is False
-    assert watermark == {
+    assert latest_bundle == {
         "schema_version": "assistant_agent_runtime_audit_watermark_v1",
         "audit_run_id": bundle.audit_run_id,
         "last_window_end": now.isoformat().replace("+00:00", "Z"),
         "bundle_path": str(bundle_path),
     }
+    assert not store.watermark_path.exists()
     assert "No production, code, Langfuse, or memory mutation was performed." in markdown
 
 
