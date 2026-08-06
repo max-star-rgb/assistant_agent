@@ -713,6 +713,14 @@ Gateway WebSocket 不经过这段投影，因此单独调用生图不会向 Medi
 `detail[].type`。图片包使用媒体 legacy 完整结构，不携带纯文本流式协议的 camelCase display、
 sequence、final 或 delivery ACK 扩展字段。
 
+受管 `output_ref` 始终保持 `/artifacts/generated/<filename>` 内部相对引用。部署显式配置
+`ARTIFACT_BASE_URL=http://<LAN_AGENT_IP>:8089` 时，Runtime 从该可信 origin 确定性生成局域网
+绝对 URL，并把去重后的 `artifact_urls` 和图片链接加入最终响应；HTTP、Gateway、CLI 和
+Agent-Service 因而复用同一交付结果。该 origin 不从普通请求 metadata、`Host` 或转发头推导，
+也不复用 3D callback 的 `PUBLIC_IP` / `PUBLIC_PORT`。未配置或配置非法时不生成、也不猜测绝对
+URL；内部 artifact、Agent-Service Base64 `IMAGE detail` 和后续 3D 复用不受影响。主 LLM 的
+生图 observation 只包含成功图片的 `image_id`，不接收内部路径、Provider URL 或最终展示 URL。
+
 整体链路联调期间，生图插件内的开发常量 `DEVELOPMENT_IMAGE_FIXTURE_ID` 固定指向
 `.local/generated/349cc6c272f4ec7a88800f0f.png`。启用该常量时，`image_generation` 保留模型
 传入的 prompt，但直接返回该本地 artifact，不初始化或调用真实生图 Provider；主 LLM、媒体
@@ -732,7 +740,9 @@ fixture 返回的 `imageId` 取文件名去掉扩展名。发给媒体的 `IMAGE
 从本地文件名提取并返回 `{"image_id":["<图片ID>"]}`。LLM 随后调用 `image_to_3d` 时可以省略
 `src_image`；运行时优先从同一 run 已成功的 `image_generation` 结果中绑定最近一个图片 ID。如果
 用户在同一媒体 WebSocket 连接的后续 turn 说“继续生成3D”，则使用该连接上一 turn 最近成功生成的
-图片 ID。显式提供 `src_image` 仍用于转换已有受管图片。Agent 与渲染服务
+图片 ID。只要 runtime-owned 最近图片存在，它就优先于模型提交的 `src_image`，避免模型虚构 ID
+覆盖已知产物；只有没有同 run 或连接级最近图片时，模型参数才作为已有受管图片 ID 的 fallback。
+Agent 与渲染服务
 之间没有任何直连；`image_to_3d` 在同一 `.local/generated` 根目录内按 ID 安全解析 JPEG、PNG、
 WebP 或 GIF 原文件，读取为纯 Base64 后调用 3D 服务：
 
@@ -887,9 +897,9 @@ Hub 发布；旧请求没有可轮询 job，因此没有活动 subscriber 时返
 Agent 不下载、保存、缓存或解析 `mediaUrl` 指向的产物。回调中继不创建新 Agent turn、不调用 LLM，
 也不把产物 URL 写入 conversation history。
 
-`src_image` 省略时先读取同一
-run 最近一次成功 `image_generation` 的结构化 `image_id`，再读取当前媒体连接上一 turn 保存的
-最近图片 ID；两者都不存在时明确要求先生成图片，不会猜测全局最新文件。连接关闭后该引用随连接
+源图片先读取同一 run 最近一次成功 `image_generation` 的结构化 `image_id`，再读取当前媒体连接
+上一 turn 保存的最近图片 ID，最后才回退到模型提交的 `src_image`；三者都不存在时明确要求先生成
+图片，不会猜测全局最新文件。连接关闭后该引用随连接
 状态清除，不跨用户或跨进程恢复。产物 `format` 不暴露给 LLM，Agent 固定向 3D 服务提交 `mp4`。
 Tool 不查询渲染服务，也不读取 `.local/generated` 之外的路径。发给媒体的 `IMAGE.image` 同样通过受管
 `output_ref` 从该本地目录读取，不使用 Provider 临时 URL，也不写第二份镜像。
@@ -1145,8 +1155,10 @@ if __name__ == "__main__":
   turn 和尚未进入 Gateway 的排队 chat turn 后返回 ACK。
 - `video` 在入口层完成严格校验和 H.264 I-Frame 到 JPEG 的受控解码，后续 `chat` 只把稳定 `video_id` 送入 Gateway；入口层不直接调用视频 Provider。
 - 默认 mock/local/offline 运行不会调用真实外部 Provider；真实 Provider 只在显式 profile 和本机安全配置允许时启用。
-- `image_to_3d` 是受治理生成 Tool；只消费 Agent 受管图片 artifact。省略 `src_image` 时可使用同一
-  run 最近的生图结果，Agent-Service 入口还兼容本连接上一 turn 的最近图片。真实 3D POST 只在
+- 生图原文件只保存在 `.local/generated`。配置可信 `ARTIFACT_BASE_URL` 后，Runtime 为所有入口
+  确定性附加局域网 `artifact_urls`；未配置时不伪造绝对 URL，Agent-Service 仍发送 Base64 `IMAGE detail`。
+- `image_to_3d` 是受治理生成 Tool；只消费 Agent 受管图片 artifact。同一 run 最近的生图结果和
+  Agent-Service 本连接上一 turn 的最近图片都优先于模型 `src_image`。真实 3D POST 只在
   real 模式且配置完整时执行。
 - 3D callback route 当前只强制 `mediaType`，先把 `mediaUrl` 或 `image` 保存到 runtime-owned job；
   随后只发布中性 `artifact.completed`。Runtime/Tool/job 不知道入口是否为媒体；Agent-Service adapter

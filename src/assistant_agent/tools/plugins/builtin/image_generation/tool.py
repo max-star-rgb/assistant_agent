@@ -172,15 +172,11 @@ def _image_generation_provider_error_contract(
 
 
 def _image_generation_model_observation(data: dict[str, Any]) -> dict[str, Any]:
-    image_urls = data.get("image_urls") or (
-        [data["image_url"]] if data.get("image_url") else []
-    )
     observation: dict[str, Any] = {
-        "images": list(dict.fromkeys(image_urls)),
         "image_id": data.get("image_id"),
         "errors": data.get("errors"),
     }
-    if not image_urls:
+    if not data.get("image_id"):
         observation["summary"] = _image_generation_summary(data)
     return {
         key: value

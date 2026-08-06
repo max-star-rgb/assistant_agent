@@ -40,6 +40,7 @@ from assistant_agent.runtime.requests import (
     UserRequest,
     normalize_task_execution_mode,
 )
+from assistant_agent.runtime.generated_artifacts import with_generated_artifact_delivery
 from assistant_agent.multi_agent.models import DEFAULT_AGENT_ID
 from assistant_agent.observability.trace_context import RuntimeTraceContext
 from assistant_agent.tools.models import ToolResult, ToolSpec
@@ -588,6 +589,11 @@ class AgentGraphRuntime:
                         ),
                         run_event_sink,
                     )
+        if state.response is not None:
+            state.response = with_generated_artifact_delivery(
+                state.response,
+                base_url=self.config.artifact_base_url,
+            )
         if self.run_history is not None:
             postprocess_started_at = perf_counter()
             terminal_status = _terminal_history_status(state.status)

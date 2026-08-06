@@ -66,7 +66,12 @@ class ImageTo3DTool(ToolBase):
                 error="image_to_3d requires runtime session identity",
                 model_observation={"status": "failed", "message": "缺少会话身份，无法生成3D模型。"},
             )
-        src_image = input.src_image or context.metadata.get("latest_generated_image_id")
+        latest_image_id = context.metadata.get("latest_generated_image_id")
+        src_image = (
+            latest_image_id.strip()
+            if isinstance(latest_image_id, str) and latest_image_id.strip()
+            else input.src_image
+        )
         if not isinstance(src_image, str) or not src_image.strip():
             return ToolResult(
                 tool_name=self.name,
