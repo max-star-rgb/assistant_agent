@@ -64,7 +64,14 @@ def collect_runtime_audit(
     source_issues: list[AuditFinding] = []
     try:
         traces = sorted(
-            source.list_traces(window_start=window_start, window_end=window_end),
+            (
+                trace
+                for trace in source.list_traces(
+                    window_start=window_start,
+                    window_end=window_end,
+                )
+                if window_start <= _utc(trace.timestamp) < window_end
+            ),
             key=lambda item: (item.timestamp, item.trace_id),
         )
     except Exception as exc:
@@ -200,7 +207,7 @@ def _read_local_events(
                 invalid += 1
                 continue
             created_at = _utc(event.created_at)
-            if window_start <= created_at <= window_end:
+            if window_start <= created_at < window_end:
                 events.append(event)
     issues = []
     if invalid:
