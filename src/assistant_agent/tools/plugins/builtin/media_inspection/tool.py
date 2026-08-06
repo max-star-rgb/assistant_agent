@@ -4,6 +4,7 @@ from typing import Any
 
 from assistant_agent.tools.capability_output import build_capability_output_contract
 from assistant_agent.media.vision.models import (
+    LiveViewInspectRequest,
     VisionUnderstandingRequest,
     VisionUnderstandingResult,
 )
@@ -222,10 +223,45 @@ class LiveViewInspectTool(MediaInspectTool):
     """Inspect the latest governed snapshot from a trusted live media session."""
 
     name = LIVE_VIEW_INSPECT_TOOL_NAME
-    description = "在用户询问视频内容时获取实时画面的文本描述"
+    description = "根据具体 query 检查当前实时画面的最新一帧并返回 VLM 回答。"
+    input_schema = LiveViewInspectRequest
     repeat_policy = "distinct_inputs"
     requires_media = ["video"]
     media_scope = "live"
+    llm_hidden_input_fields = ("question", "user_query")
+    runtime_input_bindings = tuple(
+        binding
+        for binding in MediaInspectTool.runtime_input_bindings
+        if binding.field != "user_query"
+    )
+
+    def _validate_input(
+        self,
+        input: Any,
+    ) -> VisionUnderstandingRequest | LiveViewInspectRequest:
+        # Keep direct internal/test callers compatible; governed LLM calls use
+        # the query-required schema exposed by ToolRegistry.
+        if isinstance(input, VisionUnderstandingRequest) and not isinstance(
+            input,
+            LiveViewInspectRequest,
+        ):
+            return input
+        return super()._validate_input(input)
+
+    def _run(
+        self,
+        input: VisionUnderstandingRequest | LiveViewInspectRequest,
+        context: ToolContext,
+    ) -> ToolResult:
+        request = input
+        if isinstance(input, LiveViewInspectRequest):
+            request = VisionUnderstandingRequest.model_validate(
+                {
+                    **input.model_dump(mode="python", exclude={"query"}),
+                    "user_query": input.query,
+                }
+            )
+        return super()._run(request, context)
 
 
 class RealtimeVideoObserveTool(MediaInspectTool):

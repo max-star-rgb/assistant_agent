@@ -17,7 +17,6 @@ from assistant_agent.tools.observation import (
 )
 
 
-MAX_ITEMS_PER_LIST = 3
 MAX_TEXT_CHARS = 1200
 MAX_GENERIC_DEPTH = 3
 MAX_COMMAND_OUTPUT_LINES = 20
@@ -275,7 +274,6 @@ def compact_observation_for_context(observation: dict[str, Any]) -> dict[str, An
         compaction_metadata: dict[str, Any] = {
             "original_chars": original_chars,
             "compacted_chars": _json_chars(compacted),
-            "max_items_per_list": MAX_ITEMS_PER_LIST,
             "max_text_chars": MAX_TEXT_CHARS,
         }
         if stats.pruned_keys:
@@ -387,11 +385,9 @@ def _compact_shopping_search_output(data: dict[str, Any], *, stats: _CompactionS
                 stats=stats,
                 key_path=("data", "selections", f"[{index}]"),
             )
-            for index, item in enumerate(selections[:MAX_ITEMS_PER_LIST])
+            for index, item in enumerate(selections)
             if isinstance(item, Mapping)
         ]
-        if len(selections) > MAX_ITEMS_PER_LIST:
-            output["omitted_selections_count"] = len(selections) - MAX_ITEMS_PER_LIST
     items = data.get("items")
     if isinstance(items, list):
         output["items"] = [
@@ -400,11 +396,9 @@ def _compact_shopping_search_output(data: dict[str, Any], *, stats: _CompactionS
                 stats=stats,
                 key_path=("data", "items", f"[{index}]"),
             )
-            for index, item in enumerate(items[:MAX_ITEMS_PER_LIST])
+            for index, item in enumerate(items)
             if isinstance(item, Mapping)
         ]
-        if len(items) > MAX_ITEMS_PER_LIST:
-            output["omitted_items_count"] = len(items) - MAX_ITEMS_PER_LIST
     return _compact_generic_mapping(output, stats=stats, key_path=("data",))
 
 
@@ -427,11 +421,9 @@ def _compact_shopping_need(
                 stats=stats,
                 key_path=(*key_path, "candidates", f"[{candidate_index}]"),
             )
-            for candidate_index, item in enumerate(candidates[:MAX_ITEMS_PER_LIST])
+            for candidate_index, item in enumerate(candidates)
             if isinstance(item, Mapping)
         ]
-        if len(candidates) > MAX_ITEMS_PER_LIST:
-            output["omitted_candidates_count"] = len(candidates) - MAX_ITEMS_PER_LIST
     selected = output.get("selected")
     if isinstance(selected, Mapping):
         output["selected"] = _compact_shopping_selection(
@@ -509,7 +501,7 @@ def _compact_generic_value(value: Any, *, depth: int, stats: _CompactionStats, k
     if isinstance(value, list):
         items = [
             _compact_generic_value(item, depth=depth + 1, stats=stats, key_path=(*key_path, f"[{index}]"))
-            for index, item in enumerate(value[:MAX_ITEMS_PER_LIST])
+            for index, item in enumerate(value)
         ]
         return items
     return value
@@ -569,9 +561,7 @@ def _summarize_deep_mapping(
             pruned_count += 1
             continue
         safe_keys.append(key)
-    summary: dict[str, Any] = {"type": "mapping", "keys": safe_keys[:MAX_ITEMS_PER_LIST]}
-    if len(safe_keys) > MAX_ITEMS_PER_LIST:
-        summary["omitted_keys_count"] = len(safe_keys) - MAX_ITEMS_PER_LIST
+    summary: dict[str, Any] = {"type": "mapping", "keys": safe_keys}
     if pruned_count:
         summary["pruned_payload_keys_count"] = pruned_count
     return summary

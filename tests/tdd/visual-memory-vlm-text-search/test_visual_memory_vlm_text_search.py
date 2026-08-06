@@ -293,7 +293,7 @@ def test_soft_context_budget_does_not_summarize_visual_memory_timeline() -> None
     assert trimmed == [observation]
 
 
-def test_context_projection_keeps_generic_list_limit_for_other_tools() -> None:
+def test_context_projection_keeps_complete_safe_lists_for_other_tools() -> None:
     projected = project_observations_for_context(
         [
             {
@@ -304,7 +304,7 @@ def test_context_projection_keeps_generic_list_limit_for_other_tools() -> None:
         ]
     )
 
-    assert projected[0]["data"]["items"] == [0, 1, 2]
+    assert projected[0]["data"]["items"] == list(range(10))
 
 
 def test_context_projection_preserves_compacted_visual_timeline_contract() -> None:

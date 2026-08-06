@@ -41,6 +41,16 @@ class VisionUnderstandingRequest(BaseModel):
     memory_context: str | list[str] | None = None
 
 
+class LiveViewInspectRequest(VisionUnderstandingRequest):
+    """Model query plus runtime-owned references for one live-view inspection."""
+
+    query: str = Field(
+        min_length=1,
+        max_length=500,
+        description="需要根据当前实时画面回答的具体问题。",
+    )
+
+
 class VisionUnderstandingResult(BaseModel):
     """Unified result whose scene/object/action fields describe current visual facts."""
 

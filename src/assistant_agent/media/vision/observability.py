@@ -95,6 +95,7 @@ def observe_vision_inference(
     media_kind: str,
     media_count: int,
     frame_sequence: int | None = None,
+    query_provided: bool | None = None,
     prompt_version: str = VISION_INFERENCE_PROMPT_VERSION,
     trace_link_callback: Callable[[VisionInferenceTraceLink], None] | None = None,
 ) -> _ResultT:
@@ -129,6 +130,11 @@ def observe_vision_inference(
             and frame_sequence >= 0
             else {}
         ),
+        **(
+            {"query_provided": query_provided}
+            if isinstance(query_provided, bool)
+            else {}
+        ),
     }
     _append_fail_open(
         trace_store,
@@ -154,6 +160,11 @@ def observe_vision_inference(
                 if isinstance(frame_sequence, int)
                 and not isinstance(frame_sequence, bool)
                 and frame_sequence >= 0
+                else {}
+            ),
+            **(
+                {"query_provided": query_provided}
+                if isinstance(query_provided, bool)
                 else {}
             ),
         },

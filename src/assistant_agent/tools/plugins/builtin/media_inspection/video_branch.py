@@ -134,6 +134,14 @@ class VideoUnderstandingBranch(ToolBase):
                     and snapshot.last_success_sequence is not None
                 )
             ):
+                if input.user_query and snapshot.keyframes:
+                    return self._live_query_result(
+                        input,
+                        context=context,
+                        snapshot=snapshot,
+                        target_sequence=visual_target_sequence,
+                        observations=text_observations,
+                    )
                 return self._memory_result(
                     snapshot,
                     target_sequence=visual_target_sequence,
@@ -372,6 +380,117 @@ class VideoUnderstandingBranch(ToolBase):
             and self.client.video_adapter is not self.adapter
         ):
             self.client.video_adapter = self.adapter
+
+    def _live_query_result(
+        self,
+        input: VideoUnderstandingRequest,
+        *,
+        context: ToolContext,
+        snapshot: RealtimeVideoSnapshot,
+        target_sequence: int | None,
+        observations: list[dict[str, object]],
+    ) -> ToolResult:
+        latest_frame = snapshot.keyframes[-1]
+        request = input.model_copy(
+            update={
+                "video_ref": snapshot.video_id,
+                "video_ids": [snapshot.video_id],
+                "frame_refs": [latest_frame.uri],
+                "max_frames": 1,
+                "metadata": {
+                    **input.metadata,
+                    "frame_sequence": latest_frame.sequence,
+                },
+                "memory_context": None,
+            }
+        )
+        self._sync_client_video_adapter()
+        try:
+            result = video_result_from_vision_result(
+                observe_vision_inference(
+                    lambda: self.client.understand(
+                        vision_request_from_video_request(request)
+                    ),
+                    context=context,
+                    capability=VIDEO_UNDERSTANDING_CAPABILITY,
+                    source="live_view_query",
+                    media_kind="live_view",
+                    media_count=1,
+                    frame_sequence=latest_frame.sequence,
+                    query_provided=True,
+                    prompt_version="live-view-query-v1",
+                )
+            )
+        except ValueError as exc:
+            contract = build_capability_output_contract(
+                capability=VIDEO_UNDERSTANDING_CAPABILITY,
+                status="failed",
+                errors=[
+                    {
+                        "code": _error_code(str(exc)),
+                        "message": str(exc),
+                        "recoverable": True,
+                    }
+                ],
+            )
+            return ToolResult(
+                tool_name=self.name,
+                success=False,
+                error=str(exc),
+                contract=contract,
+            )
+
+        sequence_gap = _sequence_gap(snapshot, target_sequence=target_sequence)
+        payload = {
+            **result.model_dump(mode="json"),
+            "status": "failed" if result.errors else "ready",
+            "source": "live_view_query",
+            "media_kind": "live_view",
+            "media_refs": [snapshot.video_id],
+            "snapshot_sequence": latest_frame.sequence,
+            "target_sequence": target_sequence,
+            "sequence_gap": sequence_gap,
+            "fallback_used": sequence_gap > 0,
+            "observed_timestamp_ms": snapshot.last_success_timestamp_ms,
+            "pending_count": snapshot.pending_count,
+            "in_flight": snapshot.in_flight,
+            "observations": observations,
+            "usable_visual_text": not result.errors,
+        }
+        output_ref = result.output_ref
+        contract = build_capability_output_contract(
+            capability=VIDEO_UNDERSTANDING_CAPABILITY,
+            status="failed" if result.errors else "succeeded",
+            output_ref=output_ref,
+            data=payload,
+            errors=result.errors,
+            metadata={
+                "provider": result.provider,
+                "model": result.model,
+                "latency_ms": result.latency_ms,
+                "source": "live_view_query",
+                "snapshot_sequence": latest_frame.sequence,
+                "target_sequence": target_sequence,
+                "sequence_gap": sequence_gap,
+            },
+        )
+        return ToolResult(
+            tool_name=self.name,
+            success=not result.errors,
+            data=payload,
+            model_observation=_live_view_model_observation(payload),
+            error=result.errors[0]["message"] if result.errors else None,
+            output_ref=output_ref,
+            latency_ms=result.latency_ms,
+            contract=contract,
+            trace_summary=self._trace_summary(
+                source="live_view_query",
+                snapshot=snapshot,
+                provider=result.provider,
+                model=result.model,
+                target_sequence=target_sequence,
+            ),
+        )
 
     def _memory_result(
         self,

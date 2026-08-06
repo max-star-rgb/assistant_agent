@@ -297,12 +297,17 @@ parent 使用稳定的 `agent.runtime` root span ID。已有 `langfuse.session.i
 后台 `vision.observation` 只通过同一 `langfuse.session.id` 与会话聚合；它不创建 Assistant turn summary、
 conversation history 或主 LLM generation。其内部仍保留 `tool.execute -> vlm.infer` 因果链，从而分别
 观察 Tool 治理耗时和副 VLM Provider 耗时。每条成功 `VisualSemanticRecord` 同时保存产生它的
-`source_vision_trace_id`、`source_vision_run_id` 和 `source_vlm_span_id`。`live_view_inspect` 读取缓存时只把
+`source_vision_trace_id`、`source_vision_run_id` 和 `source_vlm_span_id`。`live_view_inspect` 选择缓存记录时只把
 实际选中 record 的这些身份以及 `source_visual_record_id`、`snapshot_sequence` 作为 prompt-safe metadata
 投影到主 turn Tool observation；不得用 Session 时间邻近或全局最新 trace 猜测来源。投影目标为
 loopback Langfuse 时，还会根据精确的 `source_vision_trace_id` 生成
 `source_vision_trace_url`，供 UI 从 `live_view_inspect` 直接打开对应 `vision.observation`；该 URL 只存在于
 Langfuse/OTel 派生视图，不反写 canonical Tool 结果，非 loopback host 也不生成。
+
+前台 `live_view_inspect(query=...)` 还会在自己的 Tool span 下创建独立 `vlm.infer` generation，输入只记录
+query 是否存在、单帧 media metadata 和 prompt version，不记录 query 文本、JPEG 或 evidence 路径；输出
+展示脱敏后的 query-specific VLM 文本。原缓存 record 的 `source_vision_trace_url` 继续指向生产该证据帧的
+后台 trace，两者分别表达“本轮如何回答”和“这张证据帧从何而来”。
 
 视觉 Tool 在 Langfuse 中有三个不可互换的内容边界：具体 Tool execution span（例如
 `live_view_inspect`）展示安全 ToolResult；`tool.observation` 展示 Context compaction 前的语义 observation；

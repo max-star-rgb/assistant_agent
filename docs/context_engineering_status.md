@@ -184,9 +184,10 @@ Agent-Service realtime observer 不构造或调用 `VisualContextService`；仓�
 事件仅用于独立兼容代码及专项测试。
 
 成功的单帧文本按 `frame_sequence` 和 `captured_at_ms` 累积为 `VisualSemanticRecord`。主 LLM 自主调用
-`live_view_inspect` 后，工具以冻结的目标 sequence 为 as-of 边界，直接返回最近 8 条按时间排序的
-`[{timestamp_ms, text}]`，并附上最新摘要和 freshness。连续性来自这份有界文本时间线，不来自 VLM
-上下文，也不依赖主 LLM 选择图片窗口。未来帧不能进入本次列表。
+`live_view_inspect(query=...)` 后，工具以冻结的目标 sequence 为 as-of 边界，选择不晚于该边界的最新
+证据帧，把主 LLM 提供的具体 `query` 和且仅和这一张 JPEG 交给前台 VLM；VLM 的 query-specific
+`summary` 作为工具主要答案。工具同时返回最近 8 条按时间排序的后台
+`[{timestamp_ms, text}]` 和 freshness，供主 LLM理解短时连续性。未来帧不能进入该列表或前台 VLM。
 
 时间线不被动进入主 Agent prompt、`ConversationStore` 或 Mem0，也不作为下一次后台 VLM 输入。
 `visual_memory_search` 按可信 as-of/time window 从原始 `VisualSemanticRecord` 读取最后最多 256 条
@@ -196,10 +197,10 @@ target/trigger/hard 控制：低于 trigger 时主 LLM 阅读完整列表；触�
 query-relevant 原始证据和最近原文。compactor 只能返回 source indexes，代码映射回精确原文；hard 区间
 无法收敛时返回 `visual_memory_context_hard_limit`。
 
-该 Tool 的专用 Context 投影不受通用“列表最多 3 条”和软字符预算摘要规则二次破坏；Tool 尾部已经
-选择的证据、摘要和 coverage 必须整体进入完整 request budgeting。主 `ContextService.preflight` 随后
-继续计算 conversation、memory、tool schema 和所有 observations，真正超过主模型 hard window 时仍
-明确阻断 Provider 调用。
+Context 的通用安全投影不再按固定元素数截断任何安全列表；Tool 自己已经选择的证据、摘要、coverage
+和结构化计数必须整体进入完整 request budgeting。敏感字段、inline media、私有路径和单段超长文本
+仍按安全策略处理。主 `ContextService.preflight` 随后继续计算 conversation、memory、tool schema 和
+所有 observations，真正超过主模型 hard window 时仍明确阻断 Provider 调用，而不是静默删除列表尾部。
 
 Session visual history 同样不被动进入 prompt。只有 Runtime 根据同 user/session 语义存储写入可信
 `_trusted_visual_memory_available` 后，`visual_memory_search` 才进入 Tool catalog；调用方 metadata

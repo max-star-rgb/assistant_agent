@@ -188,7 +188,7 @@ def test_live_view_tool_projects_exact_source_trace_link(
             state,
             "step-live-link",
             LIVE_VIEW_INSPECT_TOOL_NAME,
-            {},
+            {"query": "现在画面里有什么？"},
             trace_store=trace_store,
             trace_id=state.trace_id,
         )

@@ -462,8 +462,8 @@ ACK 耗时通过独立事件记录，`ACK pending` 表示仍缺媒体侧应用�
 - 解码后的帧注册到当前 `AgentGraphRuntime.video_context_store`；原始 H.264 不落盘，也不进入 prompt、trace 或 Provider 请求。
 - 选中关键帧的后台视觉理解经过 `ActionValidator -> ToolExecutor -> ToolRegistry -> realtime_video_observe`；该内部 ToolSpec 不进入主 LLM catalog，WebSocket 入口也不直接调用 Provider。这里的成功分三层：`ToolResult.success is True` 只表示工具执行完成；内部 `VideoUnderstandingResult` 可验证且 `errors` 为空才算 VLM 语义成功；还必须 `source=background_keyframe_observation` 才允许发布为 rolling semantic snapshot。失败、partial、harness 说明性结果或 query-time `realtime_video_memory_unavailable` 结果只记录失败/可解释状态，不能写入 `current_state`。mock 模式不联网，真实连续 MLLM 只允许 `MULTIMODAL_AGENT_PROVIDER_MODE=real` 配置。
 - 同一连接后续 `chat` 会携带该 session 的 `video_id` 进入 Gateway。有 active video 时，AgentRuntime 可基于可信 entry profile 和结构化媒体引用动态暴露 `live_view_inspect`，不根据用户文本关键词暴露或调用工具。DeepSeek 只看到该工具的 schema；它看不到实时镜头可用状态、被动 `realtime_video_context`、视频帧、JPEG 路径、base64、VLM 角色模板、Qwen 原文或 provider raw response。
-- 可信 Agent-Service 请求不会把 opaque `video_id`、镜头连接状态或后台语义快照渲染进主 LLM prompt。只有主 LLM 自主调用 `live_view_inspect` 后，工具 observation 才把当前实时镜头的有界视觉语义返回给它；最终回答不应向用户说“你刚发送的视频”、快照、后台观察或 Provider。
-- `live_view_inspect` 的完整 `ToolResult.data`、contract 和 trace 继续保留诊断所需的宽结构；主 LLM 接收精简 observation：`status`、最新 `summary`、最多 8 条按时间排序的 `observations=[{"timestamp_ms": ..., "text": ...}]`、合并后的 `freshness`、`usable_visual_text` 和可选安全 `error_code`。列表仅包含 `sequence <= 目标 sequence` 的记录，不暴露原始 target/snapshot sequence、pending 数量、Provider/model、媒体引用或 evidence。
+- 可信 Agent-Service 请求不会把 opaque `video_id`、镜头连接状态或后台语义快照渲染进主 LLM prompt。只有主 LLM 自主调用 `live_view_inspect(query=...)` 后，工具才选择冻结边界内最新一张证据帧，并把该具体 query 与这一张 JPEG 交给前台 VLM；最终回答不应向用户说“你刚发送的视频”、快照、后台观察或 Provider。
+- `live_view_inspect` 的完整 `ToolResult.data`、contract 和 trace 继续保留诊断所需的宽结构；主 LLM 接收精简 observation：`status`、前台 VLM 针对 query 的 `summary`、最多 8 条按时间排序的后台 `observations=[{"timestamp_ms": ..., "text": ...}]`、合并后的 `freshness`、`usable_visual_text` 和可选安全 `error_code`。列表和前台 VLM 帧都只允许 `sequence <= 目标 sequence`，不暴露原始 target/snapshot sequence、pending 数量、Provider/model、媒体引用或 evidence。Context 安全投影不再用统一固定元素数二次截断该列表。
 - 后台观察器持续把成功的单帧视觉文本发布到统一 `SessionVisualSemanticStore`；chat 到达 A 时刻时，入口从当时已经选中、处理中或已完成的关键帧里冻结 `sequence <= A` 的最近一帧，只有尚无任何关键帧时才交互式提升 A 时刻的最新原始帧。需要当前画面事实时，由 AgentRuntime 主 LLM 通过动态暴露的 `live_view_inspect` 表达需求。目标 sequence 已有记录时立即返回，仍在识别时最多等待 10 秒；它只等待该 exact sequence，不等待更早未完成帧，也不消费提问后到达的新帧。达到等待上限后才退回到 `sequence <= 目标 sequence` 的最近成功记录；若此前仍无成功记录，才返回 unavailable。普通问候不应主动提及视觉。
 - 时间线不进入主 Agent 的被动 prompt、conversation、Mem0，也不作为下一次后台 VLM 的输入。`visual_memory_search` 仍只从原始 `VisualSemanticRecord` 建立候选、as-of 过滤和排序。
 - 选帧后的 Qwen observation 不设 observer 级串行队列或 latest-wins pending；每个已选关键帧立即启动，后完成的旧 sequence 不会覆盖更大 sequence 的 rolling snapshot，但仍会作为原始时间线记录保留。冻结的 chat 目标 sequence 在本轮期间受保护，并可在更早 sequence 未完成时独立发布、立即唤醒 Tool。只有后台 observer 负责创建这些受治理的并行调用。
@@ -575,7 +575,7 @@ ffprobe -show_streams -select_streams v sample.h264
 | --- | --- |
 | `request_image` | `media_inspect` 解析明确图片引用 |
 | `explicit_video` | `media_inspect` 解析明确上传的视频引用并调用 Provider |
-| `rolling_video_memory` | `live_view_inspect` 读取受信 Agent-Service 会话的滚动语义记忆，不发生查询时视觉 Provider 调用 |
+| `live_view_query` | `live_view_inspect(query=...)` 读取受信 Agent-Service 会话冻结边界内的最新证据帧，并调用前台 VLM 回答具体 query |
 | `realtime_video_memory_unavailable` | Agent-Service 查询等待最多 10 秒后仍没有 A 之前可用的语义文本；目标仍在 observer 中时返回 `pending`，只有明确终态错误才返回 `failed`，并把可转述说明交给 LLM，不调用查询时视觉 Provider |
 | `background_keyframe_observation` | 内部 `realtime_video_observe` 对选中关键帧执行的受治理后台分析 |
 
@@ -1051,7 +1051,7 @@ pytest。只有同时选择 real provider mode、显式配置 Qwen vision provid
 | `conversation_prepare` | 会话历史读取、上下文请求准备较慢。 |
 | `llm_chat[1]` | 首次 LLM 工具选择/直接回答调用较慢。 |
 | `tool_execute[media_inspect]` | 普通上传/API 对明确图片或视频执行视觉理解；显式视频的查询时 Provider 工作计入这里。 |
-| `tool_execute[live_view_inspect]` | AgentRuntime 动态暴露后，由主 LLM 读取/检查滚动语义文本；不执行查询时帧识别。 |
+| `tool_execute[live_view_inspect]` | AgentRuntime 动态暴露后，由主 LLM 提供具体 query；工具选取冻结边界内最新证据帧并执行一次前台 VLM。 |
 | `tool_execute[realtime_video_observe]` | Agent-Service 后台 observer 对选中关键帧执行 Qwen observation。 |
 | `llm_chat[2]` | 工具观察后的最终回答 LLM 调用较慢。 |
 | `websocket_send` | socket/媒体接收端产生传输背压。 |
