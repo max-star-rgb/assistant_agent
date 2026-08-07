@@ -42,10 +42,21 @@ class MemoryPluginRegistry:
         self,
         records: Sequence[MemoryPluginRegistrationRecord],
         active_plugin: MemoryPlugin,
+        *,
+        validated_active_descriptor: MemoryPluginDescriptor | None = None,
     ) -> None:
         sealed_records = tuple(record.model_copy(deep=True) for record in records)
         active_records = [record for record in sealed_records if record.active]
-        if len(active_records) != 1 or active_records[0].descriptor != active_plugin.descriptor:
+        if len(active_records) != 1:
+            raise ValueError("memory_plugin_registry_invalid")
+        if validated_active_descriptor is None:
+            try:
+                active_descriptor = active_plugin.descriptor
+            except Exception:
+                raise ValueError("memory_plugin_registry_invalid") from None
+        else:
+            active_descriptor = validated_active_descriptor
+        if active_records[0].descriptor != active_descriptor:
             raise ValueError("memory_plugin_registry_invalid")
         self._active_plugin = active_plugin
         self._assembly_report = MemoryPluginAssemblyReport(

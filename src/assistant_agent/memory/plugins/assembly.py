@@ -91,7 +91,11 @@ def assemble_memory_plugins(
         )
     except Exception:
         _fail(config.slot, "memory_plugin_build_failed")
-    plugin_descriptor = _validated_descriptor(getattr(plugin, "descriptor", None))
+    try:
+        plugin_descriptor_value = getattr(plugin, "descriptor", None)
+    except Exception:
+        _fail(config.slot, "memory_plugin_descriptor_invalid")
+    plugin_descriptor = _validated_descriptor(plugin_descriptor_value)
     if plugin_descriptor is None:
         _fail(config.slot, "memory_plugin_descriptor_invalid")
     if plugin_descriptor != active_candidate.descriptor:
@@ -106,7 +110,11 @@ def assemble_memory_plugins(
         )
         for candidate in candidates
     ]
-    return MemoryPluginRegistry(records, plugin)
+    return MemoryPluginRegistry(
+        records,
+        plugin,
+        validated_active_descriptor=plugin_descriptor,
+    )
 
 
 def _builtin_candidate(
@@ -156,7 +164,12 @@ def _validate_factory(
     factory: object,
     issues: list[MemoryPluginIssue],
 ) -> MemoryPluginDescriptor | None:
-    descriptor = _validated_descriptor(getattr(factory, "descriptor", None))
+    try:
+        descriptor_value = getattr(factory, "descriptor", None)
+    except Exception:
+        issues.append(_issue("memory_plugin_descriptor_invalid"))
+        return None
+    descriptor = _validated_descriptor(descriptor_value)
     config_model = getattr(factory, "config_model", None)
     build = getattr(factory, "build", None)
     if (
@@ -228,7 +241,7 @@ def _fail(
             ),
             issues=normalized,
         )
-    )
+    ) from None
 
 
 def _is_valid_memory_plugin_slot(value: object) -> bool:

@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import traceback
 from datetime import datetime, timezone
 from types import ModuleType
 
@@ -73,6 +74,52 @@ class _Factory:
         if self._build_error is not None:
             raise self._build_error
         return _Plugin(self._built_descriptor)
+
+
+class _DescriptorGetterFactory:
+    config_model = _FactoryConfig
+
+    def __init__(
+        self,
+        *,
+        descriptor: MemoryPluginDescriptor | None = None,
+        descriptor_error: Exception | None = None,
+        plugin: object | None = None,
+    ) -> None:
+        self._descriptor = descriptor
+        self._descriptor_error = descriptor_error
+        self._plugin = plugin
+
+    @property
+    def descriptor(self) -> MemoryPluginDescriptor:
+        if self._descriptor_error is not None:
+            raise self._descriptor_error
+        assert self._descriptor is not None
+        return self._descriptor
+
+    def build(self, context: MemoryPluginBuildContext, config: BaseModel) -> object:
+        return self._plugin or _Plugin(self.descriptor)
+
+
+class _OneShotDescriptorPlugin:
+    def __init__(
+        self,
+        descriptor: MemoryPluginDescriptor,
+        *,
+        first_error: Exception | None = None,
+    ) -> None:
+        self._descriptor = descriptor
+        self._first_error = first_error
+        self._descriptor_reads = 0
+
+    @property
+    def descriptor(self) -> MemoryPluginDescriptor:
+        self._descriptor_reads += 1
+        if self._first_error is not None:
+            raise self._first_error
+        if self._descriptor_reads > 1:
+            raise RuntimeError("repeated-descriptor-secret-sentinel")
+        return self._descriptor
 
 
 def _descriptor(plugin_id: str = "probe.memory") -> MemoryPluginDescriptor:
@@ -539,6 +586,141 @@ def test_plugin_build_failure_does_not_return_partial_registry() -> None:
 
     assert exc_info.value.report.issues[0].code == "memory_plugin_build_failed"
     assert "secret-sentinel" not in str(exc_info.value.report)
+
+
+def test_plugin_build_failure_suppresses_secret_exception_traceback() -> None:
+    module_name = "test_memory_plugin_build_failure_traceback"
+    sys.modules[module_name] = _module(
+        module_name,
+        _Factory(_descriptor(), build_error=RuntimeError("build-secret-sentinel")),
+    )
+    try:
+        try:
+            assemble_memory_plugins(
+                config=_config(
+                    slot="probe.memory",
+                    plugins={"probe.memory": _configured_plugin(module_name)},
+                ),
+                builtin_factories=(),
+                build_context=_build_context(),
+            )
+        except MemoryPluginAssemblyError as error:
+            assembly_error = error
+            rendered_traceback = traceback.format_exc()
+        else:
+            pytest.fail("assembly unexpectedly succeeded")
+    finally:
+        sys.modules.pop(module_name, None)
+
+    assert assembly_error.report.issues[0].code == "memory_plugin_build_failed"
+    assert assembly_error.__suppress_context__ is True
+    assert "build-secret-sentinel" not in rendered_traceback
+
+
+def test_factory_descriptor_getter_failure_is_domainized_and_sanitized() -> None:
+    module_name = "test_memory_plugin_factory_descriptor_getter_failure"
+    sys.modules[module_name] = _module(
+        module_name,
+        _DescriptorGetterFactory(
+            descriptor_error=RuntimeError("factory-descriptor-secret-sentinel")
+        ),
+    )
+    try:
+        try:
+            assemble_memory_plugins(
+                config=_config(
+                    slot="probe.memory",
+                    plugins={"probe.memory": _configured_plugin(module_name)},
+                ),
+                builtin_factories=(),
+                build_context=_build_context(),
+            )
+        except MemoryPluginAssemblyError as error:
+            assembly_error = error
+            rendered_traceback = traceback.format_exc()
+        else:
+            pytest.fail("assembly unexpectedly succeeded")
+    finally:
+        sys.modules.pop(module_name, None)
+
+    assert assembly_error.report.issues[0].code == "memory_plugin_descriptor_invalid"
+    assert "factory-descriptor-secret-sentinel" not in str(assembly_error.report)
+    assert "factory-descriptor-secret-sentinel" not in rendered_traceback
+
+
+def test_plugin_descriptor_getter_failure_is_domainized_and_sanitized() -> None:
+    module_name = "test_memory_plugin_descriptor_getter_failure"
+    descriptor = _descriptor()
+    plugin = _OneShotDescriptorPlugin(
+        descriptor,
+        first_error=RuntimeError("plugin-descriptor-secret-sentinel"),
+    )
+    sys.modules[module_name] = _module(
+        module_name,
+        _DescriptorGetterFactory(descriptor=descriptor, plugin=plugin),
+    )
+    try:
+        try:
+            assemble_memory_plugins(
+                config=_config(
+                    slot="probe.memory",
+                    plugins={"probe.memory": _configured_plugin(module_name)},
+                ),
+                builtin_factories=(),
+                build_context=_build_context(),
+            )
+        except MemoryPluginAssemblyError as error:
+            assembly_error = error
+            rendered_traceback = traceback.format_exc()
+        else:
+            pytest.fail("assembly unexpectedly succeeded")
+    finally:
+        sys.modules.pop(module_name, None)
+
+    assert assembly_error.report.issues[0].code == "memory_plugin_descriptor_invalid"
+    assert "plugin-descriptor-secret-sentinel" not in str(assembly_error.report)
+    assert "plugin-descriptor-secret-sentinel" not in rendered_traceback
+
+
+def test_registry_seals_with_validated_descriptor_snapshot_without_rereading_getter() -> None:
+    module_name = "test_memory_plugin_descriptor_snapshot"
+    descriptor = _descriptor()
+    plugin = _OneShotDescriptorPlugin(descriptor)
+    sys.modules[module_name] = _module(
+        module_name,
+        _DescriptorGetterFactory(descriptor=descriptor, plugin=plugin),
+    )
+    try:
+        registry = assemble_memory_plugins(
+            config=_config(
+                slot="probe.memory",
+                plugins={"probe.memory": _configured_plugin(module_name)},
+            ),
+            builtin_factories=(),
+            build_context=_build_context(),
+        )
+    finally:
+        sys.modules.pop(module_name, None)
+
+    assert registry.active_plugin is plugin
+    assert registry.assembly_report.active_slot == "probe.memory"
+
+
+def test_registry_compatibility_path_rejects_mismatched_plugin_descriptor() -> None:
+    descriptor = _descriptor()
+
+    with pytest.raises(ValueError, match="memory_plugin_registry_invalid"):
+        MemoryPluginRegistry(
+            [
+                MemoryPluginRegistrationRecord(
+                    descriptor=descriptor,
+                    source="builtin:probe.memory",
+                    enabled=True,
+                    active=True,
+                )
+            ],
+            _Plugin(_descriptor("other.memory")),
+        )
 
 
 def test_registry_exposes_only_the_selected_plugin_and_safe_generation() -> None:
