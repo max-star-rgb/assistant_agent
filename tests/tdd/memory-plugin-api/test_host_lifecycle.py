@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier, Event, Lock, Thread
-from time import sleep
+from time import monotonic, sleep
 from typing import Any
 
 import pytest
@@ -73,6 +73,7 @@ class RecordingMemoryPlugin:
         self.prepare_calls = 0
         self.open_requests: list[Any] = []
         self.prepare_requests: list[Any] = []
+        self.close_requests: list[Any] = []
 
     def open_session(self, request: Any) -> MemorySessionOpenResult:
         self.open_calls += 1
@@ -97,6 +98,7 @@ class RecordingMemoryPlugin:
         return MemoryTurnIngestionResult(status="accepted")
 
     def close_session(self, request: Any) -> MemorySessionCloseResult:
+        self.close_requests.append(request)
         return MemorySessionCloseResult(status="closed")
 
 
@@ -247,6 +249,34 @@ class BlockingOpenMemoryPlugin(RecordingMemoryPlugin):
         return MemorySessionCloseResult(status="closed")
 
 
+class BlockingConcurrentOpenMemoryPlugin(RecordingMemoryPlugin):
+    def __init__(self, *, expected_open_calls: int = 2) -> None:
+        super().__init__()
+        self._open_lock = Lock()
+        self.expected_open_calls = expected_open_calls
+        self.first_open_started = Event()
+        self.second_open_started = Event()
+        self.expected_opens_started = Event()
+        self.open_release = Event()
+
+    def open_session(self, request: Any) -> MemorySessionOpenResult:
+        with self._open_lock:
+            self.open_calls += 1
+            call_number = self.open_calls
+            self.open_requests.append(request)
+        if call_number == 1:
+            self.first_open_started.set()
+        elif call_number == 2:
+            self.second_open_started.set()
+        if call_number >= self.expected_open_calls:
+            self.expected_opens_started.set()
+        assert self.open_release.wait(1.0)
+        return MemorySessionOpenResult(
+            status="ready",
+            session_handle=f"concurrent-handle-{call_number}",
+        )
+
+
 class RetryableLateCloseMemoryPlugin(BlockingOpenMemoryPlugin):
     def __init__(
         self,
@@ -379,6 +409,52 @@ class BlockingCachedResolveSessionStore(MemoryPluginSessionStore):
         return resolution
 
 
+class BlockingPublishedResolveSessionStore(MemoryPluginSessionStore):
+    def __init__(self, *, max_entries: int = 1024) -> None:
+        super().__init__(max_entries=max_entries)
+        self._gate_lock = Lock()
+        self._blocked_session_id: str | None = None
+        self.published = Event()
+        self.release = Event()
+
+    def block_session(self, session_id: str) -> None:
+        with self._gate_lock:
+            self._blocked_session_id = session_id
+            self.published.clear()
+            self.release.clear()
+
+    def resolve(self, identity: RequestIdentity, **kwargs: Any):  # type: ignore[no-untyped-def]
+        resolution = super().resolve(identity, **kwargs)
+        with self._gate_lock:
+            should_block = self._blocked_session_id == identity.session_id
+            if should_block:
+                self._blocked_session_id = None
+        if should_block:
+            self.published.set()
+            assert self.release.wait(1.0)
+        return resolution
+
+
+class BlockingBeforePublishSessionStore(MemoryPluginSessionStore):
+    def __init__(self) -> None:
+        super().__init__()
+        self.before_publish_started = Event()
+        self.before_publish_release = Event()
+
+    def resolve(self, identity: RequestIdentity, **kwargs: Any):  # type: ignore[no-untyped-def]
+        before_publish = kwargs["before_publish"]
+
+        def blocked_before_publish(
+            record: MemoryPluginSessionRecord,
+        ) -> MemoryPluginSessionRecord:
+            self.before_publish_started.set()
+            assert self.before_publish_release.wait(1.0)
+            return before_publish(record)
+
+        kwargs["before_publish"] = blocked_before_publish
+        return super().resolve(identity, **kwargs)
+
+
 class DescriptorFailsAfterSealPlugin:
     def __init__(self, descriptor: MemoryPluginDescriptor) -> None:
         self._descriptor = descriptor
@@ -487,6 +563,143 @@ class ScriptedIngestionMemoryPlugin(RecordingMemoryPlugin):
         return MemorySessionCloseResult(status="closed")
 
 
+class UniqueHandleMemoryPlugin(ScriptedIngestionMemoryPlugin):
+    def open_session(self, request: Any) -> MemorySessionOpenResult:
+        with self._calls_lock:
+            self.open_calls += 1
+            call_number = self.open_calls
+            self.open_requests.append(request)
+        return MemorySessionOpenResult(
+            status="ready",
+            session_handle=f"unique-handle-{call_number}",
+        )
+
+
+class BlockingPrepareCloseMemoryPlugin(UniqueHandleMemoryPlugin):
+    def __init__(self) -> None:
+        super().__init__()
+        self.prepare_started = Event()
+        self.prepare_release = Event()
+        self.prepare_finished = Event()
+        self.close_before_prepare_finished = Event()
+
+    def prepare_context(self, request: Any) -> MemoryContextContribution:
+        with self._calls_lock:
+            self.prepare_calls += 1
+            self.prepare_requests.append(request)
+        self.prepare_started.set()
+        try:
+            assert self.prepare_release.wait(1.0)
+            return MemoryContextContribution(status="succeeded")
+        finally:
+            self.prepare_finished.set()
+
+    def close_session(self, request: Any) -> MemorySessionCloseResult:
+        if not self.prepare_finished.is_set():
+            self.close_before_prepare_finished.set()
+        return super().close_session(request)
+
+
+class BlockingMaintenanceCloseMemoryPlugin(UniqueHandleMemoryPlugin):
+    def __init__(self) -> None:
+        super().__init__(
+            supports_idempotent_ingestion=False,
+            block_ingestion=True,
+        )
+        self.close_release = Event()
+        self.close_finished = Event()
+
+    def close_session(self, request: Any) -> MemorySessionCloseResult:
+        with self._calls_lock:
+            self.close_requests.append(request)
+        self.close_started.set()
+        try:
+            assert self.close_release.wait(1.0)
+            return MemorySessionCloseResult(status="closed")
+        finally:
+            self.close_finished.set()
+
+
+class ToggleFailingCloseMemoryPlugin(UniqueHandleMemoryPlugin):
+    def __init__(self) -> None:
+        super().__init__()
+        self.fail_close = True
+
+    def close_session(self, request: Any) -> MemorySessionCloseResult:
+        with self._calls_lock:
+            self.close_requests.append(request)
+        if self.fail_close:
+            return MemorySessionCloseResult(
+                status="failed",
+                issues=[
+                    MemoryPluginIssue(
+                        code="plugin.retry",
+                        message="plugin.retry",
+                        recoverable=True,
+                    )
+                ],
+            )
+        return MemorySessionCloseResult(status="closed")
+
+
+class OversizedFirstCloseResultMemoryPlugin(UniqueHandleMemoryPlugin):
+    def __init__(self, *, issue_count: int = 200_000) -> None:
+        super().__init__()
+        issue = MemoryPluginIssue(
+            code="plugin.retry",
+            message="plugin.retry",
+            recoverable=True,
+        )
+        self.first_close_result = MemorySessionCloseResult.model_construct(
+            status="closed",
+            issues=[issue] * issue_count,
+        )
+
+    def close_session(self, request: Any) -> MemorySessionCloseResult:
+        with self._calls_lock:
+            self.close_requests.append(request)
+            call_number = len(self.close_requests)
+        if call_number == 1:
+            return self.first_close_result
+        return MemorySessionCloseResult(status="closed")
+
+
+class BlockingCloseValidationHost(MemoryPluginHost):
+    def __init__(self, **kwargs: Any) -> None:
+        self.validation_started = Event()
+        self.validation_release = Event()
+        super().__init__(**kwargs)
+
+    def _validated_close_result(
+        self,
+        raw: object,
+        *,
+        cancellation: Any | None = None,
+        call_deadline: float | None = None,
+    ) -> MemorySessionCloseResult | None:
+        self.validation_started.set()
+        assert self.validation_release.wait(1.0)
+        return super()._validated_close_result(
+            raw,
+            cancellation=cancellation,
+            call_deadline=call_deadline,
+        )
+
+
+class PausingMaintenanceExitHost(MemoryPluginHost):
+    def __init__(self, **kwargs: Any) -> None:
+        self.maintenance_exiting = Event()
+        self.maintenance_exit_release = Event()
+        super().__init__(**kwargs)
+
+    def _maintenance_reaper_loop(self) -> None:
+        try:
+            super()._maintenance_reaper_loop()
+        finally:
+            self.maintenance_exiting.set()
+            assert self.maintenance_exit_release.wait(1.0)
+
+
 class BlockingSessionDrainQueue(MemoryIngestionQueue):
     """Hold only per-session drain so Host.close can race with its owner."""
 
@@ -522,7 +735,13 @@ class BlockingHostCloseQueue(MemoryIngestionQueue):
 
 
 class UnsafeIssueCodeMemoryPlugin(ScriptedIngestionMemoryPlugin):
+    def __init__(self, *, unsafe_open: bool = True) -> None:
+        super().__init__()
+        self.unsafe_open = unsafe_open
+
     def open_session(self, request: Any) -> MemorySessionOpenResult:
+        if not self.unsafe_open:
+            return super().open_session(request)
         self.open_calls += 1
         self.open_requests.append(request)
         return MemorySessionOpenResult(
@@ -613,20 +832,51 @@ def test_open_timeout_covers_validation_and_never_publishes_large_baseline() -> 
         state=_state(),
         trace_store=None,
     )
-    cached = host.session_store.get(identity)
-    reused = host.open_session(
-        identity=identity,
-        state=_state(),
-        trace_store=None,
-    )
 
     assert plugin.open_calls == 1
     assert snapshot.memories == []
     assert snapshot.error_codes == ["memory_plugin_timeout"]
-    assert cached is not None
-    assert cached.baseline.memories == []
-    assert reused.memories == []
-    assert reused.error_codes == ["memory_plugin_timeout"]
+    assert host.session_store.get(identity) is None
+    assert host.close(timeout=1.0) is True
+    assert [request.session_handle for request in plugin.close_requests] == [
+        "handle-sentinel"
+    ]
+
+
+def test_open_publish_deadline_keeps_the_allocated_handle_for_cleanup() -> None:
+    plugin = UniqueHandleMemoryPlugin()
+    store = BlockingBeforePublishSessionStore()
+    host, _ = _host(
+        plugin,
+        session_store=store,
+        execution_policy=MemoryPluginExecutionPolicy(
+            open_session_timeout_seconds=0.01,
+        ),
+    )
+    identity = _identity()
+
+    try:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            opening = executor.submit(
+                host.open_session,
+                identity=identity,
+                state=_completed_state(run_id="publish-deadline-handle"),
+                trace_store=None,
+            )
+            assert store.before_publish_started.wait(0.5)
+            sleep(0.02)
+            store.before_publish_release.set()
+            opened = opening.result(timeout=1.0)
+
+        assert opened.status == "degraded"
+        assert opened.error_codes == ["memory_plugin_timeout"]
+        assert host.close(timeout=1.0) is True
+        assert [request.session_handle for request in plugin.close_requests] == [
+            "unique-handle-1"
+        ]
+    finally:
+        store.before_publish_release.set()
+        host.close(timeout=1.0)
 
 
 def test_deep_open_metadata_degrades_without_recursion_error_details() -> None:
@@ -1725,6 +1975,37 @@ def test_close_session_waits_for_inflight_open_and_closes_its_late_handle() -> N
     host.close(timeout=1.0)
 
 
+def test_timed_out_open_retains_and_closes_its_late_allocated_handle() -> None:
+    plugin = BlockingOpenMemoryPlugin()
+    host, _ = _host(
+        plugin,
+        execution_policy=MemoryPluginExecutionPolicy(
+            open_session_timeout_seconds=0.01,
+            close_session_timeout_seconds=0.2,
+        ),
+    )
+    identity = _identity()
+
+    try:
+        opened = host.open_session(
+            identity=identity,
+            state=_completed_state(run_id="timed-out-open-late-handle"),
+            trace_store=None,
+        )
+        assert plugin.open_started.wait(0.5)
+        assert opened.status == "degraded"
+        assert opened.error_codes == ["memory_plugin_timeout"]
+
+        plugin.open_release.set()
+        assert host.close(timeout=1.0) is True
+        assert [request.session_handle for request in plugin.close_requests] == [
+            "late-handle-sentinel"
+        ]
+    finally:
+        plugin.open_release.set()
+        host.close(timeout=1.0)
+
+
 def test_close_session_timeout_invalidates_and_reaps_one_late_open() -> None:
     plugin = BlockingOpenMemoryPlugin()
     host, _ = _host(plugin)
@@ -2262,6 +2543,925 @@ def test_host_close_closes_every_open_session_handle_before_success() -> None:
     assert len(plugin.close_requests) == 2
 
 
+def test_reset_transfers_replaced_handle_to_retryable_host_close_ownership() -> None:
+    plugin = UniqueHandleMemoryPlugin()
+    host, _ = _host(plugin)
+    identity = _identity()
+
+    first = host.open_session(
+        identity=identity,
+        state=_completed_state(run_id="run-before-reset"),
+        trace_store=None,
+    )
+    second = host.open_session(
+        identity=identity,
+        state=_completed_state(run_id="run-after-reset"),
+        trace_store=None,
+        reset=True,
+    )
+
+    assert first.status == second.status == "ready"
+    assert [request.session_handle for request in plugin.close_requests] == [
+        "unique-handle-1"
+    ]
+    assert plugin.close_requests[0].reason == "reset"
+    assert (
+        host.clear_session(
+            user_id=identity.user_id,
+            session_id=identity.session_id or "",
+        )
+        == 1
+    )
+    assert len(plugin.close_requests) == 1
+    assert host.close(timeout=1.0) is True
+    assert [request.session_handle for request in plugin.close_requests] == [
+        "unique-handle-1",
+        "unique-handle-2",
+    ]
+    assert [request.reason for request in plugin.close_requests] == [
+        "reset",
+        "reset",
+    ]
+
+
+def test_capacity_eviction_transfers_every_handle_to_host_close_ownership() -> None:
+    plugin = UniqueHandleMemoryPlugin()
+    host, _ = _host(
+        plugin,
+        session_store=MemoryPluginSessionStore(max_entries=1),
+    )
+    first_identity = _identity(session_id="capacity-session-a")
+    second_identity = _identity(session_id="capacity-session-b")
+
+    host.open_session(
+        identity=first_identity,
+        state=_completed_state(
+            session_id="capacity-session-a",
+            run_id="capacity-run-a",
+        ),
+        trace_store=None,
+    )
+    host.open_session(
+        identity=second_identity,
+        state=_completed_state(
+            session_id="capacity-session-b",
+            run_id="capacity-run-b",
+        ),
+        trace_store=None,
+    )
+
+    assert host.session_store.get(first_identity) is None
+    assert host.close(timeout=1.0) is True
+    assert [request.session_handle for request in plugin.close_requests] == [
+        "unique-handle-1",
+        "unique-handle-2",
+    ]
+    assert [request.reason for request in plugin.close_requests] == [
+        "expired",
+        "shutdown",
+    ]
+
+
+def test_capacity_admission_reserves_a_slot_before_concurrent_plugin_open() -> None:
+    plugin = BlockingConcurrentOpenMemoryPlugin()
+    host, _ = _host(
+        plugin,
+        session_store=MemoryPluginSessionStore(max_entries=1),
+    )
+    first_session = "reserved-capacity-a"
+    second_session = "reserved-capacity-b"
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            first = executor.submit(
+                host.open_session,
+                identity=_identity(session_id=first_session),
+                state=_completed_state(
+                    session_id=first_session,
+                    run_id="reserved-capacity-run-a",
+                ),
+                trace_store=None,
+            )
+            assert plugin.first_open_started.wait(0.5)
+            second = executor.submit(
+                host.open_session,
+                identity=_identity(session_id=second_session),
+                state=_completed_state(
+                    session_id=second_session,
+                    run_id="reserved-capacity-run-b",
+                ),
+                trace_store=None,
+            )
+
+            rejected = second.result(timeout=0.2)
+            assert rejected.status == "degraded"
+            assert rejected.error_codes == ["memory_plugin_unavailable"]
+            assert not plugin.second_open_started.is_set()
+            assert plugin.open_calls == 1
+
+            plugin.open_release.set()
+            assert first.result(timeout=1.0).status == "ready"
+
+        assert host.close(timeout=1.0) is True
+        assert [request.session_handle for request in plugin.close_requests] == [
+            "concurrent-handle-1"
+        ]
+    finally:
+        plugin.open_release.set()
+        host.close(timeout=1.0)
+
+
+def test_capacity_admission_never_dispatches_more_than_the_store_limit() -> None:
+    max_entries = 3
+    opener_count = 20
+    plugin = BlockingConcurrentOpenMemoryPlugin(
+        expected_open_calls=max_entries,
+    )
+    host, _ = _host(
+        plugin,
+        session_store=MemoryPluginSessionStore(max_entries=max_entries),
+    )
+    start = Barrier(opener_count)
+
+    def open_one(index: int) -> SessionMemorySnapshot:
+        start.wait()
+        session_id = f"capacity-stress-{index}"
+        return host.open_session(
+            identity=_identity(session_id=session_id),
+            state=_completed_state(
+                session_id=session_id,
+                run_id=f"capacity-stress-run-{index}",
+            ),
+            trace_store=None,
+        )
+
+    try:
+        with ThreadPoolExecutor(max_workers=opener_count) as executor:
+            openings = [
+                executor.submit(open_one, index) for index in range(opener_count)
+            ]
+            assert plugin.expected_opens_started.wait(0.5)
+            sleep(0.02)
+            assert plugin.open_calls == max_entries
+            plugin.open_release.set()
+            snapshots = [opening.result(timeout=1.0) for opening in openings]
+
+        assert sum(snapshot.status == "ready" for snapshot in snapshots) == max_entries
+        assert sum(snapshot.status == "degraded" for snapshot in snapshots) == (
+            opener_count - max_entries
+        )
+        assert host.close(timeout=1.0) is True
+        assert len(plugin.close_requests) == max_entries
+    finally:
+        plugin.open_release.set()
+        host.close(timeout=1.0)
+
+
+def test_capacity_eviction_closes_displaced_handles_during_steady_state() -> None:
+    plugin = UniqueHandleMemoryPlugin()
+    host, _ = _host(
+        plugin,
+        session_store=MemoryPluginSessionStore(max_entries=1),
+    )
+
+    for index in range(5):
+        session_id = f"steady-capacity-{index}"
+        opened = host.open_session(
+            identity=_identity(session_id=session_id),
+            state=_completed_state(
+                session_id=session_id,
+                run_id=f"steady-capacity-run-{index}",
+            ),
+            trace_store=None,
+        )
+        assert opened.status == "ready"
+
+    assert [request.session_handle for request in plugin.close_requests] == [
+        "unique-handle-1",
+        "unique-handle-2",
+        "unique-handle-3",
+        "unique-handle-4",
+    ]
+    assert all(request.reason == "expired" for request in plugin.close_requests)
+    assert host.close(timeout=1.0) is True
+    assert plugin.close_requests[-1].session_handle == "unique-handle-5"
+
+
+def test_capacity_eviction_drains_active_ingestion_before_closing_handle() -> None:
+    plugin = UniqueHandleMemoryPlugin(
+        supports_idempotent_ingestion=False,
+        block_ingestion=True,
+    )
+    host, _ = _host(
+        plugin,
+        session_store=MemoryPluginSessionStore(max_entries=1),
+    )
+    first_session = "ingesting-capacity-a"
+    second_session = "ingesting-capacity-b"
+    first_state = _completed_state(
+        session_id=first_session,
+        run_id="ingesting-capacity-run-a",
+    )
+    host.open_session(
+        identity=_identity(session_id=first_session),
+        state=first_state,
+        trace_store=None,
+    )
+    assert host.schedule_ingestion(state=first_state, trace_store=None)
+    assert plugin.ingestion_started.wait(0.5)
+
+    try:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            opening = executor.submit(
+                host.open_session,
+                identity=_identity(session_id=second_session),
+                state=_completed_state(
+                    session_id=second_session,
+                    run_id="ingesting-capacity-run-b",
+                ),
+                trace_store=None,
+            )
+            sleep(0.05)
+            assert not opening.done()
+            assert plugin.close_requests == []
+            plugin.ingestion_release.set()
+            opened = opening.result(timeout=1.0)
+
+        assert opened.status == "ready"
+        assert [request.session_handle for request in plugin.close_requests] == [
+            "unique-handle-1"
+        ]
+        assert host.close(timeout=1.0) is True
+    finally:
+        plugin.ingestion_release.set()
+        host.close(timeout=1.0)
+
+
+def test_capacity_eviction_waits_for_timed_out_prepare_before_closing_handle() -> None:
+    plugin = BlockingPrepareCloseMemoryPlugin()
+    host, _ = _host(
+        plugin,
+        session_store=MemoryPluginSessionStore(max_entries=1),
+        execution_policy=MemoryPluginExecutionPolicy(
+            prepare_context_timeout_seconds=0.01,
+            close_session_timeout_seconds=0.5,
+        ),
+    )
+    first_session = "preparing-capacity-a"
+    second_session = "preparing-capacity-b"
+    first_identity = _identity(session_id=first_session)
+    first_state = _state(
+        session_id=first_session,
+        run_id="preparing-capacity-run-a",
+    )
+    host.open_session(
+        identity=first_identity,
+        state=first_state,
+        trace_store=None,
+    )
+    assert (
+        host.prepare_context(
+            state=first_state,
+            trace_store=None,
+            cancel_token=None,
+        ).status
+        == "degraded"
+    )
+    assert plugin.prepare_started.wait(0.5)
+    assert not plugin.prepare_finished.is_set()
+
+    try:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            opening = executor.submit(
+                host.open_session,
+                identity=_identity(session_id=second_session),
+                state=_completed_state(
+                    session_id=second_session,
+                    run_id="preparing-capacity-run-b",
+                ),
+                trace_store=None,
+            )
+            sleep(0.05)
+            assert not opening.done()
+            assert plugin.close_requests == []
+            assert not plugin.close_before_prepare_finished.is_set()
+
+            plugin.prepare_release.set()
+            assert plugin.prepare_finished.wait(0.5)
+            opened = opening.result(timeout=1.0)
+
+        assert opened.status == "ready"
+        assert [request.session_handle for request in plugin.close_requests] == [
+            "unique-handle-1"
+        ]
+        assert not plugin.close_before_prepare_finished.is_set()
+    finally:
+        plugin.prepare_release.set()
+        host.close(timeout=1.0)
+
+
+def test_reset_cleanup_recovers_after_timed_out_ingestion_finishes() -> None:
+    plugin = UniqueHandleMemoryPlugin(
+        supports_idempotent_ingestion=False,
+        block_ingestion=True,
+    )
+    host, _ = _host(
+        plugin,
+        execution_policy=MemoryPluginExecutionPolicy(
+            ingest_turn_timeout_seconds=0.01,
+            close_session_timeout_seconds=0.02,
+        ),
+    )
+    identity = _identity()
+    first_state = _completed_state(run_id="reset-ingestion-before")
+    next_state = _completed_state(run_id="reset-ingestion-after")
+    host.open_session(identity=identity, state=first_state, trace_store=None)
+    assert host.schedule_ingestion(state=first_state, trace_store=None)
+    assert plugin.ingestion_started.wait(0.5)
+
+    try:
+        reset_result = host.open_session(
+            identity=identity,
+            state=next_state,
+            trace_store=None,
+            reset=True,
+        )
+
+        assert reset_result.status == "degraded"
+        assert plugin.close_requests == []
+        assert not host.schedule_ingestion(state=next_state, trace_store=None)
+        assert next_state.request.metadata["memory_ingestion"] == {
+            "status": "failed",
+            "error_code": "memory_plugin_session_closed",
+        }
+
+        plugin.ingestion_release.set()
+        assert plugin.close_started.wait(0.5)
+        deadline = monotonic() + 0.5
+        session_key = runtime_memory_identity_key(identity)
+        while session_key in host._session_admission_closed and monotonic() < deadline:
+            sleep(0.001)
+
+        assert session_key not in host._session_admission_closed
+        assert [request.session_handle for request in plugin.close_requests] == [
+            "unique-handle-1"
+        ]
+        assert (
+            host.open_session(
+                identity=identity,
+                state=next_state,
+                trace_store=None,
+            ).status
+            == "ready"
+        )
+        assert host.schedule_ingestion(state=next_state, trace_store=None)
+    finally:
+        plugin.ingestion_release.set()
+        host.close(timeout=1.0)
+
+
+def test_host_close_owns_a_running_maintenance_reap_before_success() -> None:
+    plugin = BlockingMaintenanceCloseMemoryPlugin()
+    host, _ = _host(
+        plugin,
+        execution_policy=MemoryPluginExecutionPolicy(
+            ingest_turn_timeout_seconds=0.01,
+            close_session_timeout_seconds=0.02,
+        ),
+    )
+    identity = _identity()
+    first_state = _completed_state(run_id="maintenance-close-before")
+    next_state = _completed_state(run_id="maintenance-close-after")
+    host.open_session(identity=identity, state=first_state, trace_store=None)
+    assert host.schedule_ingestion(state=first_state, trace_store=None)
+    assert plugin.ingestion_started.wait(0.5)
+    assert (
+        host.open_session(
+            identity=identity,
+            state=next_state,
+            trace_store=None,
+            reset=True,
+        ).status
+        == "degraded"
+    )
+
+    try:
+        plugin.ingestion_release.set()
+        assert plugin.close_started.wait(0.5)
+        assert not plugin.close_finished.is_set()
+
+        assert host.close(timeout=0.02) is False
+        assert len(plugin.close_requests) == 1
+        assert not plugin.close_finished.is_set()
+
+        plugin.close_release.set()
+        assert plugin.close_finished.wait(0.5)
+        assert host.close(timeout=1.0) is True
+        assert [request.session_handle for request in plugin.close_requests] == [
+            "unique-handle-1",
+            "unique-handle-2",
+        ]
+        assert host._maintenance_thread is None
+    finally:
+        plugin.ingestion_release.set()
+        plugin.close_release.set()
+        host.close(timeout=1.0)
+
+
+def test_late_reset_close_releases_only_the_old_handle_admission_barrier() -> None:
+    plugin = BlockingMaintenanceCloseMemoryPlugin()
+    host, _ = _host(
+        plugin,
+        execution_policy=MemoryPluginExecutionPolicy(
+            close_session_timeout_seconds=0.02,
+        ),
+    )
+    identity = _identity()
+    host.open_session(
+        identity=identity,
+        state=_completed_state(run_id="late-reset-close-before"),
+        trace_store=None,
+    )
+
+    try:
+        reset_result = host.open_session(
+            identity=identity,
+            state=_completed_state(run_id="late-reset-close-after"),
+            trace_store=None,
+            reset=True,
+        )
+        assert reset_result.status == "degraded"
+        assert plugin.close_started.wait(0.5)
+
+        plugin.close_release.set()
+        assert plugin.close_finished.wait(0.5)
+        deadline = monotonic() + 0.5
+        session_key = runtime_memory_identity_key(identity)
+        while (
+            host._active_session_closes or session_key in host._session_admission_closed
+        ) and monotonic() < deadline:
+            sleep(0.001)
+
+        assert host._pending_reaps == {}
+        assert host._active_session_closes == {}
+        assert session_key not in host._session_admission_closed
+        assert (
+            host.open_session(
+                identity=identity,
+                state=_completed_state(run_id="late-reset-close-reopened"),
+                trace_store=None,
+            ).status
+            == "ready"
+        )
+    finally:
+        plugin.close_release.set()
+        plugin.ingestion_release.set()
+        host.close(timeout=1.0)
+
+
+def test_host_close_joins_maintenance_after_its_active_pointer_is_cleared() -> None:
+    plugin = UniqueHandleMemoryPlugin(
+        supports_idempotent_ingestion=False,
+        block_ingestion=True,
+    )
+    host, _ = _host(
+        plugin,
+        host_type=PausingMaintenanceExitHost,
+        execution_policy=MemoryPluginExecutionPolicy(
+            ingest_turn_timeout_seconds=0.01,
+            close_session_timeout_seconds=0.02,
+        ),
+    )
+    assert isinstance(host, PausingMaintenanceExitHost)
+    identity = _identity()
+    first_state = _completed_state(run_id="maintenance-exit-before")
+    next_state = _completed_state(run_id="maintenance-exit-after")
+    host.open_session(identity=identity, state=first_state, trace_store=None)
+    assert host.schedule_ingestion(state=first_state, trace_store=None)
+    assert plugin.ingestion_started.wait(0.5)
+    assert (
+        host.open_session(
+            identity=identity,
+            state=next_state,
+            trace_store=None,
+            reset=True,
+        ).status
+        == "degraded"
+    )
+
+    try:
+        plugin.ingestion_release.set()
+        assert host.maintenance_exiting.wait(0.5)
+        assert host._maintenance_thread is None
+
+        assert host.close(timeout=0.02) is False
+
+        host.maintenance_exit_release.set()
+        assert host.close(timeout=1.0) is True
+    finally:
+        plugin.ingestion_release.set()
+        host.maintenance_exit_release.set()
+        host.close(timeout=1.0)
+
+
+def test_close_waits_for_a_timed_out_prepare_future_before_closing_handle() -> None:
+    plugin = BlockingPrepareCloseMemoryPlugin()
+    host, _ = _host(
+        plugin,
+        execution_policy=MemoryPluginExecutionPolicy(
+            prepare_context_timeout_seconds=0.01,
+            close_session_timeout_seconds=0.02,
+        ),
+    )
+    identity = _identity()
+    state = _state(run_id="timed-out-prepare-close")
+    host.open_session(identity=identity, state=state, trace_store=None)
+
+    try:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            preparing = executor.submit(
+                host.prepare_context,
+                state=state,
+                trace_store=None,
+                cancel_token=None,
+            )
+            assert plugin.prepare_started.wait(0.5)
+            assert preparing.result(timeout=0.2).status == "degraded"
+            assert not plugin.prepare_finished.is_set()
+
+            first_close = host.close_session(identity=identity, timeout=0.02)
+            assert first_close.status == "partial"
+            assert plugin.close_requests == []
+            assert not plugin.close_before_prepare_finished.is_set()
+
+            plugin.prepare_release.set()
+            assert plugin.prepare_finished.wait(0.5)
+
+        assert host.close_session(identity=identity, timeout=1.0).status == "closed"
+        assert len(plugin.close_requests) == 1
+        assert not plugin.close_before_prepare_finished.is_set()
+    finally:
+        plugin.prepare_release.set()
+        host.close(timeout=1.0)
+
+
+def test_failed_eviction_reap_fail_closes_new_handles_at_the_capacity_bound() -> None:
+    plugin = ToggleFailingCloseMemoryPlugin()
+    host, _ = _host(
+        plugin,
+        session_store=MemoryPluginSessionStore(max_entries=1),
+    )
+    first_session = "failed-reap-capacity-a"
+    second_session = "failed-reap-capacity-b"
+    third_session = "failed-reap-capacity-c"
+
+    try:
+        assert (
+            host.open_session(
+                identity=_identity(session_id=first_session),
+                state=_completed_state(
+                    session_id=first_session,
+                    run_id="failed-reap-run-a",
+                ),
+                trace_store=None,
+            ).status
+            == "ready"
+        )
+        assert (
+            host.open_session(
+                identity=_identity(session_id=second_session),
+                state=_completed_state(
+                    session_id=second_session,
+                    run_id="failed-reap-run-b",
+                ),
+                trace_store=None,
+            ).status
+            == "ready"
+        )
+
+        rejected = host.open_session(
+            identity=_identity(session_id=third_session),
+            state=_completed_state(
+                session_id=third_session,
+                run_id="failed-reap-run-c",
+            ),
+            trace_store=None,
+        )
+
+        assert rejected.status == "degraded"
+        assert rejected.error_codes == ["memory_plugin_unavailable"]
+        assert plugin.open_calls == 2
+        assert len(host._pending_reaps) == 1
+    finally:
+        plugin.fail_close = False
+        assert host.close(timeout=1.0) is True
+
+
+def test_shutdown_waits_for_published_eviction_ownership_before_success() -> None:
+    plugin = UniqueHandleMemoryPlugin()
+    store = BlockingPublishedResolveSessionStore(max_entries=1)
+    host, _ = _host(plugin, session_store=store)
+    first_identity = _identity(session_id="published-capacity-a")
+    second_identity = _identity(session_id="published-capacity-b")
+    host.open_session(
+        identity=first_identity,
+        state=_completed_state(
+            session_id="published-capacity-a",
+            run_id="published-capacity-run-a",
+        ),
+        trace_store=None,
+    )
+    store.block_session("published-capacity-b")
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        opening = executor.submit(
+            host.open_session,
+            identity=second_identity,
+            state=_completed_state(
+                session_id="published-capacity-b",
+                run_id="published-capacity-run-b",
+            ),
+            trace_store=None,
+        )
+        assert store.published.wait(0.5)
+        closing = executor.submit(host.close, timeout=1.0)
+        sleep(0.02)
+        assert not closing.done()
+        store.release.set()
+        opened = opening.result(timeout=1.0)
+        closed = closing.result(timeout=1.0)
+
+    assert opened.status == "degraded"
+    assert closed is True
+    assert {request.session_handle for request in plugin.close_requests} == {
+        "unique-handle-1",
+        "unique-handle-2",
+    }
+    assert host.close(timeout=1.0) is True
+
+
+def test_capacity_reservation_blocks_eviction_until_the_opener_returns() -> None:
+    plugin = UniqueHandleMemoryPlugin()
+    store = BlockingPublishedResolveSessionStore(max_entries=1)
+    host, _ = _host(plugin, session_store=store)
+    first_session = "unreturned-capacity-a"
+    second_session = "unreturned-capacity-b"
+    store.block_session(first_session)
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        first_opening = executor.submit(
+            host.open_session,
+            identity=_identity(session_id=first_session),
+            state=_completed_state(
+                session_id=first_session,
+                run_id="unreturned-capacity-run-a",
+            ),
+            trace_store=None,
+        )
+        assert store.published.wait(0.5)
+
+        second_blocked = host.open_session(
+            identity=_identity(session_id=second_session),
+            state=_completed_state(
+                session_id=second_session,
+                run_id="unreturned-capacity-run-b",
+            ),
+            trace_store=None,
+        )
+        assert second_blocked.status == "degraded"
+        assert second_blocked.error_codes == ["memory_plugin_unavailable"]
+        store.release.set()
+        first_opened = first_opening.result(timeout=1.0)
+
+    assert first_opened.status == "ready"
+    second_opened = host.open_session(
+        identity=_identity(session_id=second_session),
+        state=_completed_state(
+            session_id=second_session,
+            run_id="unreturned-capacity-run-b-retry",
+        ),
+        trace_store=None,
+    )
+    assert second_opened.status == "ready"
+    assert [request.session_handle for request in plugin.close_requests] == [
+        "unique-handle-1"
+    ]
+    assert host.close(timeout=1.0) is True
+
+
+def test_clear_during_reset_preserves_both_replaced_and_published_handles() -> None:
+    plugin = UniqueHandleMemoryPlugin()
+    store = BlockingPublishedResolveSessionStore()
+    host, _ = _host(plugin, session_store=store)
+    identity = _identity()
+    host.open_session(
+        identity=identity,
+        state=_completed_state(run_id="clear-reset-before"),
+        trace_store=None,
+    )
+    store.block_session(identity.session_id or "")
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        resetting = executor.submit(
+            host.open_session,
+            identity=identity,
+            state=_completed_state(run_id="clear-reset-after"),
+            trace_store=None,
+            reset=True,
+        )
+        assert store.published.wait(0.5)
+        assert (
+            host.clear_session(
+                user_id=identity.user_id,
+                session_id=identity.session_id or "",
+            )
+            == 1
+        )
+        store.release.set()
+        reset_result = resetting.result(timeout=1.0)
+
+    assert reset_result.status == "degraded"
+    assert host.close(timeout=1.0) is True
+    assert [request.session_handle for request in plugin.close_requests] == [
+        "unique-handle-1",
+        "unique-handle-2",
+    ]
+
+
+def test_deferred_close_validation_does_not_hold_the_lifecycle_lock() -> None:
+    plugin = TimingOutLateCloseMemoryPlugin()
+    plugin.open_release.set()
+    host, _ = _host(
+        plugin,
+        host_type=BlockingCloseValidationHost,
+        execution_policy=MemoryPluginExecutionPolicy(
+            close_session_timeout_seconds=0.02,
+        ),
+    )
+    assert isinstance(host, BlockingCloseValidationHost)
+    identity = _identity()
+    host.open_session(
+        identity=identity,
+        state=_completed_state(),
+        trace_store=None,
+    )
+
+    try:
+        first = host.close_session(identity=identity, timeout=0.02)
+        assert first.status == "failed"
+        plugin.first_close_release.set()
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            clearing = executor.submit(
+                host.clear_session,
+                user_id=identity.user_id,
+                session_id=identity.session_id or "",
+            )
+            assert host.validation_started.wait(0.5)
+            assert clearing.result(timeout=0.1) == 0
+
+        host.validation_release.set()
+        assert host.close_session(identity=identity, timeout=1.0).status == "closed"
+        assert host.close(timeout=1.0) is True
+    finally:
+        plugin.first_close_release.set()
+        host.validation_release.set()
+        host.close(timeout=1.0)
+
+
+def test_close_timeout_includes_validation_of_oversized_plugin_result() -> None:
+    plugin = OversizedFirstCloseResultMemoryPlugin()
+    host, _ = _host(
+        plugin,
+        execution_policy=MemoryPluginExecutionPolicy(
+            close_session_timeout_seconds=0.02,
+        ),
+    )
+    identity = _identity()
+    host.open_session(
+        identity=identity,
+        state=_completed_state(),
+        trace_store=None,
+    )
+
+    started = monotonic()
+    first = host.close_session(identity=identity, timeout=0.02)
+    elapsed = monotonic() - started
+
+    assert first.status == "failed"
+    assert [issue.code for issue in first.issues] == ["memory_plugin_invalid_result"]
+    assert elapsed < 0.2
+    assert host.session_store.get(identity) is not None
+    second = host.close_session(identity=identity, timeout=1.0)
+    assert second.status == "closed"
+    assert len(plugin.close_requests) == 2
+    assert host.close(timeout=1.0) is True
+
+
+def test_close_caller_returns_at_deadline_while_result_validation_is_running() -> None:
+    plugin = UniqueHandleMemoryPlugin()
+    host, _ = _host(
+        plugin,
+        host_type=BlockingCloseValidationHost,
+        execution_policy=MemoryPluginExecutionPolicy(
+            close_session_timeout_seconds=0.02,
+        ),
+    )
+    assert isinstance(host, BlockingCloseValidationHost)
+    identity = _identity()
+    host.open_session(
+        identity=identity,
+        state=_completed_state(),
+        trace_store=None,
+    )
+
+    try:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            closing = executor.submit(
+                host.close_session,
+                identity=identity,
+                timeout=0.02,
+            )
+            assert host.validation_started.wait(0.5)
+            first = closing.result(timeout=0.1)
+        assert first.status == "failed"
+        assert [issue.code for issue in first.issues] == ["memory_plugin_timeout"]
+        assert host.session_store.get(identity) is not None
+
+        host.validation_release.set()
+        assert host.close_session(identity=identity, timeout=1.0).status == "closed"
+        assert len(plugin.close_requests) == 2
+        assert host.close(timeout=1.0) is True
+    finally:
+        host.validation_release.set()
+        host.close(timeout=1.0)
+
+
+def test_ingestion_timeout_keeps_true_ordering_and_session_close_ownership() -> None:
+    plugin = ScriptedIngestionMemoryPlugin(
+        supports_idempotent_ingestion=False,
+        block_ingestion=True,
+    )
+    host, _ = _host(
+        plugin,
+        execution_policy=MemoryPluginExecutionPolicy(
+            ingest_turn_timeout_seconds=0.01,
+        ),
+    )
+    identity = _identity()
+    first = _completed_state(run_id="timeout-ingestion-first")
+    second = _completed_state(run_id="timeout-ingestion-second")
+    host.open_session(identity=identity, state=first, trace_store=None)
+
+    try:
+        assert host.schedule_ingestion(state=first, trace_store=None)
+        assert plugin.ingestion_started.wait(0.5)
+        assert host.schedule_ingestion(state=second, trace_store=None)
+        sleep(0.05)
+
+        assert len(plugin.requests) == 1
+        assert host.drain(timeout=0.01) is False
+        close_result = host.close_session(identity=identity, timeout=0.01)
+        assert close_result.status == "partial"
+        assert plugin.close_requests == []
+
+        plugin.ingestion_release.set()
+        assert host.drain(timeout=1.0) is True
+        assert len(plugin.requests) == 2
+        assert host.close_session(identity=identity, timeout=1.0).status == "closed"
+        assert len(plugin.close_requests) == 1
+    finally:
+        plugin.ingestion_release.set()
+        host.close(timeout=1.0)
+
+
+def test_host_close_does_not_close_handle_while_timed_out_ingestion_runs() -> None:
+    plugin = ScriptedIngestionMemoryPlugin(
+        supports_idempotent_ingestion=False,
+        block_ingestion=True,
+    )
+    host, _ = _host(
+        plugin,
+        execution_policy=MemoryPluginExecutionPolicy(
+            ingest_turn_timeout_seconds=0.01,
+        ),
+    )
+    state = _completed_state(run_id="host-close-timeout-ingestion")
+    host.open_session(identity=_identity(), state=state, trace_store=None)
+    assert host.schedule_ingestion(state=state, trace_store=None)
+    assert plugin.ingestion_started.wait(0.5)
+
+    try:
+        sleep(0.05)
+        assert host.close(timeout=0.02) is False
+        assert plugin.close_requests == []
+        plugin.ingestion_release.set()
+        assert host.close(timeout=1.0) is True
+        assert len(plugin.close_requests) == 1
+    finally:
+        plugin.ingestion_release.set()
+        host.close(timeout=1.0)
+
+
 @pytest.mark.parametrize("clear_scope", ["session", "user"])
 def test_clear_cannot_steal_a_handle_owned_by_host_shutdown(
     clear_scope: str,
@@ -2537,11 +3737,22 @@ def test_clear_session_discards_an_inflight_prepare_result() -> None:
 
 
 def test_host_rejects_unsafe_issue_codes_across_plugin_operations() -> None:
-    plugin = UnsafeIssueCodeMemoryPlugin()
-    host, _ = _host(plugin)
     state = _completed_state()
     trace_store = InMemoryTraceStore()
+    unsafe_open_plugin = UnsafeIssueCodeMemoryPlugin()
+    unsafe_open_host, _ = _host(unsafe_open_plugin)
 
+    unsafe_opened = unsafe_open_host.open_session(
+        identity=_identity(),
+        state=state,
+        trace_store=trace_store,
+    )
+    assert unsafe_opened.error_codes == ["memory_plugin_invalid_result"]
+    assert unsafe_open_host.session_store.get(_identity()) is None
+    assert unsafe_open_host.close(timeout=1.0) is True
+
+    plugin = UnsafeIssueCodeMemoryPlugin(unsafe_open=False)
+    host, _ = _host(plugin)
     opened = host.open_session(
         identity=_identity(),
         state=state,
@@ -2556,7 +3767,7 @@ def test_host_rejects_unsafe_issue_codes_across_plugin_operations() -> None:
         assert host.schedule_ingestion(state=state, trace_store=trace_store)
         assert host.drain(timeout=1.0)
 
-        assert opened.error_codes == ["memory_plugin_invalid_result"]
+        assert opened.error_codes == []
         assert prepared.error_codes == ["memory_plugin_invalid_result"]
         events = trace_store.list_by_run(state.run_id)
         recall_events = [
@@ -2570,15 +3781,24 @@ def test_host_rejects_unsafe_issue_codes_across_plugin_operations() -> None:
             if event.canonical_event == "memory.ingestion.finished"
         )
 
-        assert len(recall_events) == 2
-        for event in recall_events:
-            assert event.attributes["error_codes"] == ["memory_plugin_invalid_result"]
-            assert event.output_summary["error_codes"] == [
-                "memory_plugin_invalid_result"
-            ]
-            assert event.attributes["memory_plugin_issue_codes"] == [
-                "memory_plugin_invalid_result"
-            ]
+        assert len(recall_events) == 3
+        assert [event.attributes["error_codes"] for event in recall_events] == [
+            ["memory_plugin_invalid_result"],
+            [],
+            ["memory_plugin_invalid_result"],
+        ]
+        assert [event.output_summary["error_codes"] for event in recall_events] == [
+            ["memory_plugin_invalid_result"],
+            [],
+            ["memory_plugin_invalid_result"],
+        ]
+        assert [
+            event.attributes["memory_plugin_issue_codes"] for event in recall_events
+        ] == [
+            ["memory_plugin_invalid_result"],
+            [],
+            ["memory_plugin_invalid_result"],
+        ]
         assert finished.attributes["memory_plugin_issue_codes"] == [
             "memory_plugin_invalid_result"
         ]
@@ -2595,6 +3815,23 @@ def test_host_rejects_unsafe_issue_codes_across_plugin_operations() -> None:
         assert "sk-secret123" not in serialized
     finally:
         host.close(timeout=1.0)
+
+
+def test_invalid_open_result_keeps_a_safe_session_handle_for_cleanup() -> None:
+    plugin = UnsafeIssueCodeMemoryPlugin()
+    host, _ = _host(plugin)
+
+    opened = host.open_session(
+        identity=_identity(),
+        state=_completed_state(run_id="invalid-open-safe-handle"),
+        trace_store=None,
+    )
+
+    assert opened.error_codes == ["memory_plugin_invalid_result"]
+    assert host.close(timeout=1.0) is True
+    assert [request.session_handle for request in plugin.close_requests] == [
+        "handle-sentinel"
+    ]
 
 
 def test_memory_observability_normalizes_untrusted_issue_and_error_codes() -> None:
@@ -2842,6 +4079,7 @@ def _descriptor(
 def _host(
     plugin: Any,
     *,
+    host_type: type[MemoryPluginHost] = MemoryPluginHost,
     session_store: MemoryPluginSessionStore | None = None,
     media_store: ManagedMemoryMediaStore | None = None,
     execution_policy: MemoryPluginExecutionPolicy | None = None,
@@ -2862,7 +4100,7 @@ def _host(
         max_total_bytes=1024 * 1024
     )
     return (
-        MemoryPluginHost(
+        host_type(
             registry=registry,
             session_store=session_store or MemoryPluginSessionStore(),
             media_store=resolved_media_store,
