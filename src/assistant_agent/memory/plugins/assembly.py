@@ -5,7 +5,6 @@ from __future__ import annotations
 import importlib
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Any
 
 from pydantic import BaseModel
 
@@ -92,7 +91,10 @@ def assemble_memory_plugins(
         )
     except Exception:
         _fail(config.slot, "memory_plugin_build_failed")
-    if not _matching_plugin_descriptor(plugin, active_candidate.descriptor):
+    plugin_descriptor = _validated_descriptor(getattr(plugin, "descriptor", None))
+    if plugin_descriptor is None:
+        _fail(config.slot, "memory_plugin_descriptor_invalid")
+    if plugin_descriptor != active_candidate.descriptor:
         _fail(config.slot, "memory_plugin_descriptor_mismatch")
 
     records = [
@@ -154,16 +156,22 @@ def _validate_factory(
     factory: object,
     issues: list[MemoryPluginIssue],
 ) -> MemoryPluginDescriptor | None:
-    descriptor = getattr(factory, "descriptor", None)
+    descriptor = _validated_descriptor(getattr(factory, "descriptor", None))
     config_model = getattr(factory, "config_model", None)
     build = getattr(factory, "build", None)
     if (
-        not isinstance(descriptor, MemoryPluginDescriptor)
+        descriptor is None
         or not isinstance(config_model, type)
         or not issubclass(config_model, BaseModel)
         or not callable(build)
     ):
-        issues.append(_issue("memory_plugin_factory_invalid"))
+        issues.append(
+            _issue(
+                "memory_plugin_descriptor_invalid"
+                if descriptor is None
+                else "memory_plugin_factory_invalid"
+            )
+        )
         return None
     return descriptor
 
@@ -190,11 +198,13 @@ def _append_duplicate_issues(
         seen.add(plugin_id)
 
 
-def _matching_plugin_descriptor(
-    plugin: Any,
-    descriptor: MemoryPluginDescriptor,
-) -> bool:
-    return getattr(plugin, "descriptor", None) == descriptor
+def _validated_descriptor(value: object) -> MemoryPluginDescriptor | None:
+    if not isinstance(value, MemoryPluginDescriptor):
+        return None
+    try:
+        return MemoryPluginDescriptor.model_validate(value.model_dump(mode="python"))
+    except Exception:
+        return None
 
 
 def _issue(code: str) -> MemoryPluginIssue:

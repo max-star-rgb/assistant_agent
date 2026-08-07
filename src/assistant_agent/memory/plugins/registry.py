@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -71,7 +72,9 @@ def _generation_for(report: MemoryPluginAssemblyReport) -> str:
         "active_slot": report.active_slot,
         "plugins": [
             {
-                "descriptor": record.descriptor.model_dump(mode="json"),
+                "descriptor": _canonicalize(
+                    record.descriptor.model_dump(mode="python")
+                ),
                 "source": record.source,
             }
             for record in sorted(
@@ -82,3 +85,25 @@ def _generation_for(report: MemoryPluginAssemblyReport) -> str:
     }
     canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _canonicalize(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {
+            key: _canonicalize(item)
+            for key, item in sorted(value.items(), key=lambda item: item[0])
+        }
+    if isinstance(value, (set, frozenset)):
+        normalized = [_canonicalize(item) for item in value]
+        return sorted(
+            normalized,
+            key=lambda item: json.dumps(
+                item,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+        )
+    if isinstance(value, (list, tuple)):
+        return [_canonicalize(item) for item in value]
+    return value

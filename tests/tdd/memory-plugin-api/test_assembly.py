@@ -1,4 +1,7 @@
 import json
+import os
+from pathlib import Path
+import subprocess
 import sys
 from datetime import datetime, timezone
 from types import ModuleType
@@ -24,6 +27,10 @@ from assistant_agent.memory.plugins.contracts import (
     MemorySessionCloseResult,
     MemorySessionOpenResult,
     MemoryTurnIngestionResult,
+)
+from assistant_agent.memory.plugins.registry import (
+    MemoryPluginRegistrationRecord,
+    MemoryPluginRegistry,
 )
 
 
@@ -342,6 +349,92 @@ def test_assembly_rejects_bypassed_invalid_slot_as_a_domain_error(slot: str) -> 
     assert "ValidationError" not in str(exc_info.value)
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("api_version", "unsupported_api"), ("kind", "not_memory")],
+    ids=["api-version", "kind"],
+)
+def test_factory_rejects_model_constructed_invalid_descriptor(
+    field: str,
+    value: str,
+) -> None:
+    valid_descriptor = _descriptor()
+    descriptor = MemoryPluginDescriptor.model_construct(
+        plugin_id=valid_descriptor.plugin_id,
+        plugin_version=valid_descriptor.plugin_version,
+        api_version=value if field == "api_version" else valid_descriptor.api_version,
+        kind=value if field == "kind" else valid_descriptor.kind,
+        capabilities=valid_descriptor.capabilities,
+    )
+    module_name = f"test_memory_plugin_invalid_factory_{field}"
+    sys.modules[module_name] = _module(module_name, _Factory(descriptor))
+    try:
+        with pytest.raises(MemoryPluginAssemblyError) as exc_info:
+            assemble_memory_plugins(
+                config=_config(
+                    slot="probe.memory",
+                    plugins={"probe.memory": _configured_plugin(module_name)},
+                ),
+                builtin_factories=(),
+                build_context=_build_context(),
+            )
+    finally:
+        sys.modules.pop(module_name, None)
+
+    assert exc_info.value.report.issues[0].code == "memory_plugin_descriptor_invalid"
+
+
+def test_factory_rejects_descriptor_with_mutated_invalid_modality() -> None:
+    descriptor = _descriptor()
+    descriptor.capabilities.modalities.add("untrusted_modality")
+    module_name = "test_memory_plugin_invalid_modality"
+    sys.modules[module_name] = _module(module_name, _Factory(descriptor))
+    try:
+        with pytest.raises(MemoryPluginAssemblyError) as exc_info:
+            assemble_memory_plugins(
+                config=_config(
+                    slot="probe.memory",
+                    plugins={"probe.memory": _configured_plugin(module_name)},
+                ),
+                builtin_factories=(),
+                build_context=_build_context(),
+            )
+    finally:
+        sys.modules.pop(module_name, None)
+
+    assert exc_info.value.report.issues[0].code == "memory_plugin_descriptor_invalid"
+
+
+def test_assembly_rejects_invalid_descriptor_returned_by_plugin_build() -> None:
+    valid_descriptor = _descriptor()
+    invalid_built_descriptor = MemoryPluginDescriptor.model_construct(
+        plugin_id=valid_descriptor.plugin_id,
+        plugin_version=valid_descriptor.plugin_version,
+        api_version=valid_descriptor.api_version,
+        kind="not_memory",
+        capabilities=valid_descriptor.capabilities,
+    )
+    module_name = "test_memory_plugin_invalid_built_descriptor"
+    sys.modules[module_name] = _module(
+        module_name,
+        _Factory(valid_descriptor, built_descriptor=invalid_built_descriptor),
+    )
+    try:
+        with pytest.raises(MemoryPluginAssemblyError) as exc_info:
+            assemble_memory_plugins(
+                config=_config(
+                    slot="probe.memory",
+                    plugins={"probe.memory": _configured_plugin(module_name)},
+                ),
+                builtin_factories=(),
+                build_context=_build_context(),
+            )
+    finally:
+        sys.modules.pop(module_name, None)
+
+    assert exc_info.value.report.issues[0].code == "memory_plugin_descriptor_invalid"
+
+
 def test_duplicate_plugin_id_fails_before_active_plugin_is_constructed() -> None:
     descriptor = _descriptor()
     module_name = "test_memory_plugin_duplicate"
@@ -495,3 +588,97 @@ def test_registry_report_is_a_defensive_snapshot_of_mutable_capabilities() -> No
     sealed_report = registry.assembly_report
     assert sealed_report.records[0].descriptor.capabilities.modalities == {"text"}
     assert registry.generation == generation
+
+
+def test_registry_generation_is_stable_for_differently_ordered_modalities() -> None:
+    first_modalities: set[str] = set()
+    first_modalities.update(["image", "text", "audio"])
+    second_modalities: set[str] = set()
+    second_modalities.update(["audio", "image", "text"])
+    first_descriptor = MemoryPluginDescriptor(
+        plugin_id="probe.memory",
+        plugin_version="1",
+        capabilities=MemoryPluginCapabilities(
+            modalities=first_modalities,
+            supports_session_recall=True,
+            supports_turn_ingestion=True,
+            supports_context_refresh=True,
+            supports_idempotent_ingestion=True,
+        ),
+    )
+    second_descriptor = MemoryPluginDescriptor(
+        plugin_id="probe.memory",
+        plugin_version="1",
+        capabilities=MemoryPluginCapabilities(
+            modalities=second_modalities,
+            supports_session_recall=True,
+            supports_turn_ingestion=True,
+            supports_context_refresh=True,
+            supports_idempotent_ingestion=True,
+        ),
+    )
+
+    first_registry = assemble_memory_plugins(
+        config=_config(slot="probe.memory", plugins={}),
+        builtin_factories=(_Factory(first_descriptor),),
+        build_context=_build_context(),
+    )
+    second_registry = assemble_memory_plugins(
+        config=_config(slot="probe.memory", plugins={}),
+        builtin_factories=(_Factory(second_descriptor),),
+        build_context=_build_context(),
+    )
+
+    assert first_registry.generation == second_registry.generation
+
+
+def test_registry_generation_is_stable_across_python_hash_seeds() -> None:
+    script = """
+from assistant_agent.memory.plugins.contracts import (
+    MemoryPluginCapabilities,
+    MemoryPluginDescriptor,
+)
+from assistant_agent.memory.plugins.registry import (
+    MemoryPluginRegistrationRecord,
+    MemoryPluginRegistry,
+)
+
+class Plugin:
+    def __init__(self, descriptor):
+        self.descriptor = descriptor
+
+descriptor = MemoryPluginDescriptor(
+    plugin_id="probe.memory",
+    plugin_version="1",
+    capabilities=MemoryPluginCapabilities(
+        modalities={"text", "image", "audio"},
+        supports_session_recall=True,
+        supports_turn_ingestion=True,
+        supports_context_refresh=True,
+        supports_idempotent_ingestion=True,
+    ),
+)
+registry = MemoryPluginRegistry(
+    [
+        MemoryPluginRegistrationRecord(
+            descriptor=descriptor,
+            source="builtin:probe.memory",
+            enabled=True,
+            active=True,
+        )
+    ],
+    Plugin(descriptor),
+)
+print(registry.generation)
+"""
+    root = Path(__file__).parents[3]
+    generations = []
+    for seed in ("1", "2"):
+        output = subprocess.check_output(
+            [sys.executable, "-c", script],
+            text=True,
+            env={**os.environ, "PYTHONHASHSEED": seed, "PYTHONPATH": str(root / "src")},
+        )
+        generations.append(output.strip())
+
+    assert generations[0] == generations[1]
