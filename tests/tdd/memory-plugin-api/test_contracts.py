@@ -1,4 +1,7 @@
+import json
+from collections.abc import Callable
 from datetime import datetime, timezone
+from typing import Any
 
 import pytest
 from pydantic import ValidationError
@@ -13,7 +16,11 @@ from assistant_agent.memory.plugins.contracts import (
     MemoryPluginCapabilities,
     MemoryPluginDescriptor,
     MemoryPluginIssue,
+    MemorySessionCloseRequest,
+    MemorySessionOpenRequest,
     MemorySessionOpenResult,
+    MemoryTurnIngestionRequest,
+    CompletedMemoryTurn,
     NeverCancelledMemoryToken,
 )
 
@@ -149,3 +156,110 @@ def test_legacy_mem0_memory_remains_a_standard_context_item() -> None:
     assert memory.source == "long_term"
     assert snapshot.memories[0].source == "long_term"
     assert snapshot.plugin_id is None
+
+
+RequestBuilder = Callable[[NeverCancelledMemoryToken | None], Any]
+
+
+def _identity() -> MemoryIdentity:
+    return MemoryIdentity(
+        user_id="user-sentinel",
+        agent_id="agent-sentinel",
+        session_id="session-sentinel",
+    )
+
+
+def _open_request(
+    cancellation: NeverCancelledMemoryToken | None,
+) -> MemorySessionOpenRequest:
+    fields: dict[str, Any] = {
+        "memory_session_id": "memory-session-sentinel",
+        "identity": _identity(),
+        "opened_at": datetime.now(timezone.utc),
+        "entry_profile": "test",
+        "deadline": datetime.now(timezone.utc),
+    }
+    if cancellation is not None:
+        fields["cancellation"] = cancellation
+    return MemorySessionOpenRequest(**fields)
+
+
+def _context_request(
+    cancellation: NeverCancelledMemoryToken | None,
+) -> MemoryContextRequest:
+    fields: dict[str, Any] = {
+        "memory_session_id": "memory-session-sentinel",
+        "session_handle": None,
+        "identity": _identity(),
+        "current_turn": MemoryMessage(role="user", text="request-sentinel"),
+        "media_refs": [],
+        "context_budget_hint": MemoryBudgetHint(max_items=8, max_chars=2048),
+        "deadline": datetime.now(timezone.utc),
+    }
+    if cancellation is not None:
+        fields["cancellation"] = cancellation
+    return MemoryContextRequest(**fields)
+
+
+def _ingestion_request(
+    cancellation: NeverCancelledMemoryToken | None,
+) -> MemoryTurnIngestionRequest:
+    fields: dict[str, Any] = {
+        "memory_session_id": "memory-session-sentinel",
+        "session_handle": None,
+        "identity": _identity(),
+        "turn": CompletedMemoryTurn(
+            user_message=MemoryMessage(role="user", text="request-sentinel"),
+            assistant_message=MemoryMessage(
+                role="assistant",
+                text="response-sentinel",
+            ),
+            occurred_at=datetime.now(timezone.utc),
+        ),
+        "idempotency_key": "idempotency-sentinel",
+        "deadline": datetime.now(timezone.utc),
+    }
+    if cancellation is not None:
+        fields["cancellation"] = cancellation
+    return MemoryTurnIngestionRequest(**fields)
+
+
+def _close_request(
+    cancellation: NeverCancelledMemoryToken | None,
+) -> MemorySessionCloseRequest:
+    fields: dict[str, Any] = {
+        "memory_session_id": "memory-session-sentinel",
+        "session_handle": None,
+        "identity": _identity(),
+        "reason": "normal",
+        "deadline": datetime.now(timezone.utc),
+    }
+    if cancellation is not None:
+        fields["cancellation"] = cancellation
+    return MemorySessionCloseRequest(**fields)
+
+
+@pytest.mark.parametrize(
+    "build_request",
+    [_open_request, _context_request, _ingestion_request, _close_request],
+    ids=["open", "context", "ingestion", "close"],
+)
+def test_lifecycle_request_excludes_cancellation_from_python_and_json_dumps(
+    build_request: RequestBuilder,
+) -> None:
+    request = build_request(NeverCancelledMemoryToken())
+
+    assert "cancellation" not in request.model_dump()
+    assert "cancellation" not in json.loads(request.model_dump_json())
+
+
+@pytest.mark.parametrize(
+    "build_request",
+    [_open_request, _context_request, _ingestion_request, _close_request],
+    ids=["open", "context", "ingestion", "close"],
+)
+def test_lifecycle_request_requires_cancellation_token(
+    build_request: RequestBuilder,
+) -> None:
+    with pytest.raises(ValidationError):
+        build_request(None)

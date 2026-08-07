@@ -128,7 +128,7 @@ class MemorySessionOpenRequest(_FrozenMemoryModel):
     opened_at: datetime
     entry_profile: str = Field(min_length=1, max_length=128)
     deadline: datetime
-    cancellation: MemoryCancellationToken
+    cancellation: MemoryCancellationToken = Field(exclude=True)
 
 
 class MemorySessionOpenResult(_FrozenMemoryModel):
@@ -146,7 +146,7 @@ class MemoryContextRequest(_FrozenMemoryModel):
     media_refs: list[ManagedMediaRef] = Field(default_factory=list)
     context_budget_hint: MemoryBudgetHint
     deadline: datetime
-    cancellation: MemoryCancellationToken
+    cancellation: MemoryCancellationToken = Field(exclude=True)
 
 
 class CompletedMemoryTurn(_FrozenMemoryModel):
@@ -170,7 +170,7 @@ class MemoryTurnIngestionRequest(_FrozenMemoryModel):
     turn: CompletedMemoryTurn
     idempotency_key: str = Field(min_length=1, max_length=512)
     deadline: datetime
-    cancellation: MemoryCancellationToken
+    cancellation: MemoryCancellationToken = Field(exclude=True)
 
 
 class MemoryTurnIngestionResult(_FrozenMemoryModel):
@@ -185,7 +185,7 @@ class MemorySessionCloseRequest(_FrozenMemoryModel):
     identity: MemoryIdentity
     reason: Literal["normal", "reset", "expired", "shutdown", "plugin_replaced"]
     deadline: datetime
-    cancellation: MemoryCancellationToken
+    cancellation: MemoryCancellationToken = Field(exclude=True)
 
 
 class MemorySessionCloseResult(_FrozenMemoryModel):
