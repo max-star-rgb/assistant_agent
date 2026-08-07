@@ -165,6 +165,12 @@ class MemoryPluginSessionStore:
             self._entries.move_to_end(key)
             return _copy_record(record)
 
+    def list_records(self) -> list[MemoryPluginSessionRecord]:
+        """Return defensive copies of every currently published session."""
+
+        with self._condition:
+            return [_copy_record(record) for record in self._entries.values()]
+
     def pop(self, identity: RequestIdentity) -> MemoryPluginSessionRecord | None:
         """Remove one exact Runtime session and invalidate an in-flight load."""
 

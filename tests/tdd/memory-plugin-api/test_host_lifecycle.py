@@ -15,6 +15,10 @@ from assistant_agent.identity import RequestIdentity
 from assistant_agent.memory.mem0.identity import bind_mem0_identity
 from assistant_agent.memory.ingestion_queue import MemoryIngestionQueue
 from assistant_agent.memory.models import SessionMemorySnapshot
+from assistant_agent.memory.observability import (
+    record_ingestion_finished,
+    record_session_recall,
+)
 from assistant_agent.memory.plugins.contracts import (
     ManagedMediaRef,
     MemoryChange,
@@ -375,6 +379,71 @@ class ScriptedIngestionMemoryPlugin(RecordingMemoryPlugin):
             self.close_requests.append(request)
         self.close_started.set()
         return MemorySessionCloseResult(status="closed")
+
+
+class BlockingSessionDrainQueue(MemoryIngestionQueue):
+    """Hold only per-session drain so Host.close can race with its owner."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.session_drain_started = Event()
+        self.release_session_drain = Event()
+
+    def drain(
+        self,
+        *,
+        timeout: float | None = None,
+        ordering_key: tuple[str, str, str] | None = None,
+    ) -> bool:
+        if ordering_key is not None:
+            self.session_drain_started.set()
+            assert self.release_session_drain.wait(1.0)
+        return super().drain(timeout=timeout, ordering_key=ordering_key)
+
+
+class UnsafeIssueCodeMemoryPlugin(ScriptedIngestionMemoryPlugin):
+    def open_session(self, request: Any) -> MemorySessionOpenResult:
+        self.open_calls += 1
+        self.open_requests.append(request)
+        return MemorySessionOpenResult(
+            status="ready",
+            session_handle="handle-sentinel",
+            issues=[
+                MemoryPluginIssue(
+                    code="authorization_secret_sentinel",
+                    message="safe-open-issue",
+                    recoverable=False,
+                )
+            ],
+        )
+
+    def prepare_context(self, request: Any) -> MemoryContextContribution:
+        self.prepare_calls += 1
+        self.prepare_requests.append(request)
+        return MemoryContextContribution(
+            status="partial",
+            issues=[
+                MemoryPluginIssue(
+                    code="sk-secret123",
+                    message="safe-prepare-issue",
+                    recoverable=False,
+                )
+            ],
+        )
+
+    def ingest_turn(self, request: Any) -> MemoryTurnIngestionResult:
+        with self._calls_lock:
+            self.requests.append(request)
+        return MemoryTurnIngestionResult(
+            status="partial",
+            issues=[
+                MemoryPluginIssue(
+                    code="authorization_secret_sentinel",
+                    message="safe-ingestion-issue",
+                    recoverable=False,
+                )
+            ],
+        )
 
 
 def test_host_opens_session_and_prepares_memory_once_per_run() -> None:
@@ -1644,6 +1713,114 @@ def test_host_close_timeout_can_retry_after_late_open_reap() -> None:
         plugin.open_release.set()
 
 
+def test_host_close_waits_for_active_session_close_owner_before_shutdown() -> None:
+    plugin = ScriptedIngestionMemoryPlugin()
+    queue = BlockingSessionDrainQueue()
+    host, _ = _host(plugin, ingestion_queue=queue)
+    identity = _identity()
+    host.open_session(
+        identity=identity,
+        state=_completed_state(),
+        trace_store=None,
+    )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        session_closing = executor.submit(
+            host.close_session,
+            identity=identity,
+            reason="normal",
+            timeout=1.0,
+        )
+        assert queue.session_drain_started.wait(0.5)
+        host_closing = executor.submit(host.close, timeout=1.0)
+        try:
+            sleep(0.02)
+            assert not host_closing.done()
+            assert plugin.close_requests == []
+        finally:
+            queue.release_session_drain.set()
+
+        session_result = session_closing.result(timeout=1.0)
+        host_result = host_closing.result(timeout=1.0)
+
+    assert session_result.status == "closed"
+    assert host_result is True
+    assert len(plugin.close_requests) == 1
+    assert host.session_store.get(identity) is None
+    assert host.close(timeout=1.0) is True
+
+
+def test_host_close_timeout_preserves_active_session_close_for_retry() -> None:
+    plugin = ScriptedIngestionMemoryPlugin()
+    queue = BlockingSessionDrainQueue()
+    host, _ = _host(plugin, ingestion_queue=queue)
+    identity = _identity()
+    host.open_session(
+        identity=identity,
+        state=_completed_state(),
+        trace_store=None,
+    )
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        session_closing = executor.submit(
+            host.close_session,
+            identity=identity,
+            reason="normal",
+            timeout=1.0,
+        )
+        assert queue.session_drain_started.wait(0.5)
+        try:
+            assert host.close(timeout=0.01) is False
+            assert plugin.close_requests == []
+            assert host.session_store.get(identity) is not None
+        finally:
+            queue.release_session_drain.set()
+        session_result = session_closing.result(timeout=1.0)
+
+    assert session_result.status == "closed"
+    assert len(plugin.close_requests) == 1
+    assert host.session_store.get(identity) is None
+    assert host.close(timeout=1.0) is True
+    assert host.close(timeout=1.0) is True
+    assert len(plugin.close_requests) == 1
+
+
+def test_host_close_closes_every_open_session_handle_before_success() -> None:
+    plugin = ScriptedIngestionMemoryPlugin()
+    host, _ = _host(plugin)
+    first_identity = _identity(session_id="session-a")
+    second_identity = _identity(session_id="session-b")
+    host.open_session(
+        identity=first_identity,
+        state=_completed_state(session_id="session-a", run_id="run-a"),
+        trace_store=None,
+    )
+    host.open_session(
+        identity=second_identity,
+        state=_completed_state(session_id="session-b", run_id="run-b"),
+        trace_store=None,
+    )
+
+    assert host.close(timeout=1.0) is True
+
+    assert len(plugin.close_requests) == 2
+    assert {request.identity.session_id for request in plugin.close_requests} == {
+        bind_memory_plugin_identity(
+            first_identity,
+            namespace="assistant-agent",
+        ).session_id,
+        bind_memory_plugin_identity(
+            second_identity,
+            namespace="assistant-agent",
+        ).session_id,
+    }
+    assert all(request.reason == "shutdown" for request in plugin.close_requests)
+    assert host.session_store.get(first_identity) is None
+    assert host.session_store.get(second_identity) is None
+    assert host.close(timeout=1.0) is True
+    assert len(plugin.close_requests) == 2
+
+
 def test_close_invalidates_a_cached_open_before_it_returns_ready() -> None:
     plugin = ScriptedIngestionMemoryPlugin()
     store = BlockingCachedResolveSessionStore()
@@ -1818,6 +1995,137 @@ def test_clear_session_discards_an_inflight_prepare_result() -> None:
     assert host.session_store.get(identity) is None
     assert host.attach_frozen_context(state) is None
     host.close(timeout=1.0)
+
+
+def test_host_rejects_unsafe_issue_codes_across_plugin_operations() -> None:
+    plugin = UnsafeIssueCodeMemoryPlugin()
+    host, _ = _host(plugin)
+    state = _completed_state()
+    trace_store = InMemoryTraceStore()
+
+    opened = host.open_session(
+        identity=_identity(),
+        state=state,
+        trace_store=trace_store,
+    )
+    prepared = host.prepare_context(
+        state=state,
+        trace_store=trace_store,
+        cancel_token=None,
+    )
+    try:
+        assert host.schedule_ingestion(state=state, trace_store=trace_store)
+        assert host.drain(timeout=1.0)
+
+        assert opened.error_codes == ["memory_plugin_invalid_result"]
+        assert prepared.error_codes == ["memory_plugin_invalid_result"]
+        events = trace_store.list_by_run(state.run_id)
+        recall_events = [
+            event
+            for event in events
+            if event.canonical_event == "memory.session_recall.finished"
+        ]
+        finished = next(
+            event
+            for event in events
+            if event.canonical_event == "memory.ingestion.finished"
+        )
+
+        assert len(recall_events) == 2
+        for event in recall_events:
+            assert event.attributes["error_codes"] == ["memory_plugin_invalid_result"]
+            assert event.output_summary["error_codes"] == [
+                "memory_plugin_invalid_result"
+            ]
+            assert event.attributes["memory_plugin_issue_codes"] == [
+                "memory_plugin_invalid_result"
+            ]
+        assert finished.attributes["memory_plugin_issue_codes"] == [
+            "memory_plugin_invalid_result"
+        ]
+        assert finished.error == {
+            "code": "memory_plugin_invalid_result",
+            "message": "memory_plugin_invalid_result",
+        }
+
+        serialized = json.dumps(
+            [event.model_dump(mode="json") for event in events],
+            ensure_ascii=False,
+        )
+        assert "authorization_secret_sentinel" not in serialized
+        assert "sk-secret123" not in serialized
+    finally:
+        host.close(timeout=1.0)
+
+
+def test_memory_observability_normalizes_untrusted_issue_and_error_codes() -> None:
+    state = _completed_state()
+    trace_store = InMemoryTraceStore()
+
+    record_session_recall(
+        trace_store=trace_store,
+        state=state,
+        status="degraded",
+        latency_ms=0,
+        error_codes=["plugin.retry", "authorization_secret_sentinel"],
+        memory_plugin_id="mem0",
+        memory_plugin_version="1.0.0",
+        memory_plugin_api_version="assistant_memory_plugin_v1",
+        memory_plugin_operation="prepare_context",
+        memory_plugin_issue_codes=["sk-secret123", "plugin.retry"],
+    )
+    record_ingestion_finished(
+        trace_store=trace_store,
+        state=state,
+        status="failed",
+        latency_ms=0,
+        errors=[
+            {"code": "authorization_secret_sentinel", "message": "safe-error"},
+            {"code": "plugin.retry", "message": "safe-retry"},
+        ],
+        error_code="sk-secret123",
+        memory_plugin_id="mem0",
+        memory_plugin_version="1.0.0",
+        memory_plugin_api_version="assistant_memory_plugin_v1",
+        memory_plugin_operation="ingest_turn",
+        memory_plugin_issue_codes=[
+            "authorization_secret_sentinel",
+            "plugin.retry",
+        ],
+    )
+
+    recall, finished = trace_store.list_by_run(state.run_id)
+    assert recall.attributes["error_codes"] == [
+        "plugin.retry",
+        "memory_plugin_invalid_result",
+    ]
+    assert recall.output_summary["error_codes"] == [
+        "plugin.retry",
+        "memory_plugin_invalid_result",
+    ]
+    assert recall.attributes["memory_plugin_issue_codes"] == [
+        "memory_plugin_invalid_result",
+        "plugin.retry",
+    ]
+    assert finished.attributes["memory_plugin_issue_codes"] == [
+        "memory_plugin_invalid_result",
+        "plugin.retry",
+    ]
+    assert finished.output_summary["errors"] == [
+        {"code": "memory_plugin_invalid_result", "message": "safe-error"},
+        {"code": "plugin.retry", "message": "safe-retry"},
+    ]
+    assert finished.error == {
+        "code": "memory_plugin_invalid_result",
+        "message": "memory_plugin_invalid_result",
+    }
+
+    serialized = json.dumps(
+        [event.model_dump(mode="json") for event in (recall, finished)],
+        ensure_ascii=False,
+    )
+    assert "authorization_secret_sentinel" not in serialized
+    assert "sk-secret123" not in serialized
 
 
 def test_plugin_observability_keeps_canonical_events_prompt_safe() -> None:
