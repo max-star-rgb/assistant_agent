@@ -40,7 +40,10 @@ from assistant_agent.observability.runtime_audit.issues import (
     merge_issue_registry,
 )
 from assistant_agent.observability.runtime_audit.langfuse_source import LangfuseSdkAuditSource
-from assistant_agent.observability.runtime_audit.models import LangfuseTraceSnapshot
+from assistant_agent.observability.runtime_audit.models import (
+    LangfuseScoreSnapshot,
+    LangfuseTraceSnapshot,
+)
 from assistant_agent.observability.runtime_audit.storage import RuntimeAuditArtifactStore
 
 
@@ -61,6 +64,25 @@ def _daily_trace(trace_id: str = "trace-current") -> LangfuseTraceSnapshot:
         timestamp=datetime(2026, 8, 5, 12, tzinfo=timezone.utc),
         observations=[],
         scores=[],
+    )
+
+
+def _clean_daily_trace(trace_id: str = "trace-clean") -> LangfuseTraceSnapshot:
+    return _daily_trace(trace_id).model_copy(
+        update={
+            "scores": [
+                LangfuseScoreSnapshot(
+                    score_id="response-clean",
+                    name="assistant_agent.quality.response_quality",
+                    value=True,
+                ),
+                LangfuseScoreSnapshot(
+                    score_id="grounding-clean",
+                    name="assistant_agent.quality.grounding",
+                    value=True,
+                ),
+            ]
+        }
     )
 
 
@@ -148,7 +170,15 @@ def test_human_daily_report_is_chinese_and_moves_machine_ids_to_appendix() -> No
 
     markdown = report_module.render_daily_codex_report(report)
 
-    assert "## 需要你决定" in markdown
+    assert "## 昨天是否需要你处理" in markdown
+    assert "## 需要处理" in markdown
+    assert "发生了什么：" in markdown
+    assert "建议怎么做：" in markdown
+    assert "怎么确认：" in markdown
+    assert "## 技术附录（通常不用看）" in markdown
+    assert "## 昨日概况" not in markdown
+    assert "## 记忆情况" not in markdown
+    assert "## 系统运行情况" not in markdown
     assert "用户可能得到无关结果" in markdown
     assert markdown.index("## 证据附录") < markdown.index("trace:abc")
     assert "Executive Summary" not in markdown
@@ -993,6 +1023,26 @@ def test_empty_daily_run_does_not_invoke_codex(tmp_path: Path) -> None:
     assert calls == []
     assert result.report_path is not None
     assert "昨日无可审计对话" in result.report_path.read_text(encoding="utf-8")
+
+
+def test_nonempty_day_without_anomalies_does_not_invoke_codex(tmp_path: Path) -> None:
+    """Would fail if Codex audited normal traces instead of anomaly-only evidence."""
+
+    local_trace_path = tmp_path / "graph_trace.jsonl"
+    local_trace_path.write_text("", encoding="utf-8")
+    result = run_one_daily_audit(
+        window=window_for_date(date(2026, 8, 5)),
+        source=FakeLangfuseSource([_clean_daily_trace()]),
+        local_trace_path=local_trace_path,
+        store=RuntimeAuditArtifactStore(tmp_path / "runtime_audit"),
+        repo_root=tmp_path,
+        codex_runner=lambda **_: pytest.fail("Codex must not audit normal traces"),
+        collected_at=datetime(2026, 8, 6, 0, 15, tzinfo=timezone.utc),
+    )
+
+    assert result.status == "succeeded"
+    assert result.report_path is not None
+    assert "没有发现需要处理的异常" in result.report_path.read_text(encoding="utf-8")
 
 
 def test_local_only_daily_evidence_invokes_codex_not_empty_report(tmp_path: Path) -> None:

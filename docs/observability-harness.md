@@ -379,12 +379,13 @@ metadata。Trace/Observation input 中重复的 Tool catalog 按完整 SHA-256 �
 `local_fallbacks` 或 finding。只有真实缺少对应 Langfuse `assistant.turn` 的本地主运行记录才保留有界
 timeline fallback。
 
-完整审计 bundle 供 Codex 原生搜索、机器追溯和发布后校验；Codex 日审计先读取独立的
-`assistant_agent_daily_codex_input_v1` 导航索引。该索引包含完整 bundle 路径、当天全部 trace 的基础事实和
-Score，并为低分、缺失 Score、observation error 等确定性异常预取相关 observation 详情。索引以
-350,000 bytes 为硬上限；超限时优先省略大 input/output 内容并保留 observation 身份、大小和省略原因，
-Codex 需要核对时必须按 trace/observation 在完整审计 bundle 中原生搜索和分段读取，不能把索引省略误报为
-证据缺失。结构本身仍超限则审计失败，不能静默丢失覆盖范围。
+完整审计 bundle 只供本地机器追溯和发布后校验；Codex 日审计只读取独立的
+`assistant_agent_daily_codex_input_v1` 异常索引。本地确定性程序仍扫描当天全部 trace，但索引只包含低分、
+缺失 Score、observation error 等异常 trace 的基础事实、Score 和完整 observation 序列。没有异常时直接
+生成极简成功日报，不启动 Codex。存在异常时，Codex 只能读取和审计该索引中的 trace ID，输入不暴露完整
+bundle 路径，也不得浏览或评价其他正常 trace。索引以 350,000 bytes 为硬上限；超限时优先省略异常 trace
+中的大 input/output 内容，同时保留 observation 身份、大小和省略原因。结构本身仍超限则审计失败，不能
+静默丢失异常范围。
 
 每个日期的状态机为 `running -> succeeded` 或 `running -> failed`。成功时先以 journal 校验
 日报、issue registry 和 watermark 的前置条件，再原子推进状态；中断后的待提交 journal 会在下次
@@ -393,11 +394,11 @@ Codex 需要核对时必须按 trace/observation 在完整审计 bundle 中原�
 
 发布 Markdown 前必须从 previous/merged 或手工 refresh registry 生成确定性 issue view：持续
 `open`、`regressed`、`code_addressed` 和 `uncertain` 不因 Codex 当日漏发而消失；`uncertain` 只进入
-“需要继续观察”，不进入“需要你决定”；`runtime_verified` 只在当日真实转换时出现。空日不调用 Codex，
+“暂时观察”，不进入“需要处理”；`runtime_verified` 只在当日真实转换时出现。空日或无异常日不调用 Codex，
 但仍保留 active/code-addressed 状态行。证据附录使用稳定 `issue_key`；Score 证据复用现有
 `trace_evidence_refs`，格式为 `trace:<trace-id>/score:<score-id>`，并按 current bundle 校验归属。
 
-有 trace 或本地缺失导出证据时，Codex 通过 `--ephemeral --sandbox read-only` 运行；子进程环境移除
+确定性第三层存在异常时，Codex 通过 `--ephemeral --sandbox read-only` 运行；子进程环境移除
 Langfuse 和 Provider credentials，强制 mock Provider mode，只允许生成报告，不允许修改代码、Langfuse
 或 Memory。Codex 网络必须经过 operator 明确配置：runner 只透传无用户名密码且指向
 `127.0.0.1`、`localhost` 或 `::1` 的标准 proxy 环境变量，远端或带凭据 proxy 仍被删除。systemd

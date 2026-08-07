@@ -845,8 +845,8 @@ def test_orphan_local_side_stream_is_not_counted_as_a_missing_turn_export(
     assert bundle.findings == []
 
 
-def test_daily_codex_input_indexes_all_traces_and_bounds_detailed_evidence() -> None:
-    """Would fail if Codex had to read the full persisted trace archive."""
+def test_daily_codex_input_contains_only_anomalous_traces_with_bounded_evidence() -> None:
+    """Would fail if Codex received normal traces or needed the full archive."""
 
     from assistant_agent.observability.runtime_audit.codex_input import (
         build_daily_codex_input,
@@ -895,13 +895,16 @@ def test_daily_codex_input_indexes_all_traces_and_bounds_detailed_evidence() -> 
             LangfuseTraceSnapshot(
                 trace_id="normal-trace",
                 timestamp=now - timedelta(hours=2),
-                input={"tool_catalog_ref": catalog_ref},
                 observations=[noisy],
             ),
             LangfuseTraceSnapshot(
                 trace_id="bad-trace",
                 timestamp=now - timedelta(hours=1),
-                observations=[relevant],
+                observations=[
+                    relevant.model_copy(
+                        update={"input": {"tool_catalog_ref": catalog_ref}}
+                    )
+                ],
             ),
         ],
         findings=[
@@ -918,25 +921,24 @@ def test_daily_codex_input_indexes_all_traces_and_bounds_detailed_evidence() -> 
         tool_catalogs={catalog_ref: catalog},
     )
 
-    payload = build_daily_codex_input(
-        bundle,
-        source_bundle_path=Path("/archive/full-bundle.json"),
-        max_bytes=20_000,
-    )
+    payload = build_daily_codex_input(bundle, max_bytes=20_000)
     encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
 
     assert len(encoded) <= 20_000
-    assert [item["trace_id"] for item in payload["trace_index"]] == [
-        "normal-trace",
-        "bad-trace",
-    ]
+    assert payload["audit_gate"] == {
+        "requires_codex": True,
+        "anomaly_trace_count": 1,
+        "anomaly_finding_count": 1,
+        "finding_codes": ["observation_error"],
+    }
+    assert [item["trace_id"] for item in payload["trace_index"]] == ["bad-trace"]
     assert [item["trace_id"] for item in payload["evidence_traces"]] == ["bad-trace"]
     assert "x" * 1_000 not in encoded.decode()
     assert payload["evidence_traces"][0]["observations"][0]["observation_id"] == (
         "tool-observation"
     )
     assert payload["tool_catalogs"] == {catalog_ref: catalog}
-    assert payload["source_bundle_path"] == "/archive/full-bundle.json"
+    assert "source_bundle_path" not in payload
 
 
 def test_native_online_evaluator_configuration_uses_canonical_names_and_full_sampling() -> None:

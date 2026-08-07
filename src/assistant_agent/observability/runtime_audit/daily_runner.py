@@ -19,6 +19,7 @@ from assistant_agent.observability.runtime_audit.collector import (
 )
 from assistant_agent.observability.runtime_audit.codex_input import (
     build_daily_codex_input,
+    requires_codex_audit,
 )
 from assistant_agent.observability.runtime_audit.daily_models import (
     DailyAuditAttempt,
@@ -41,6 +42,7 @@ from assistant_agent.observability.runtime_audit.report import (
     render_daily_codex_report,
     render_empty_daily_report,
     render_failed_daily_report,
+    render_no_anomaly_daily_report,
 )
 from assistant_agent.observability.runtime_audit.storage import (
     RuntimeAuditArtifactStore,
@@ -144,7 +146,7 @@ def _run_one_locked(
         bundle_path = store.write_bundle(bundle)
         codex_input_path = store.write_codex_input(
             attempt_id,
-            build_daily_codex_input(bundle, source_bundle_path=bundle_path),
+            build_daily_codex_input(bundle),
         )
         running = running.model_copy(
             update={
@@ -190,6 +192,27 @@ def _run_one_locked(
         return _commit_success(store=store, attempt=running, bundle_path=bundle_path,
                                markdown=markdown, registry=None,
                                commit_continuous_state=commit_continuous_state)
+
+    if not requires_codex_audit(bundle):
+        previous_registry = store.read_issue_registry()
+        markdown = render_no_anomaly_daily_report(
+            window.audit_date,
+            trace_count=bundle.coverage.langfuse_trace_count,
+            issues=report_issue_view(
+                previous_registry,
+                previous_registry,
+                [],
+                audit_date=window.audit_date,
+            ),
+        )
+        return _commit_success(
+            store=store,
+            attempt=running,
+            bundle_path=bundle_path,
+            markdown=markdown,
+            registry=None,
+            commit_continuous_state=commit_continuous_state,
+        )
 
     try:
         previous_registry = store.read_issue_registry()

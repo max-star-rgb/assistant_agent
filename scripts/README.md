@@ -50,7 +50,8 @@ For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
 - `scripts/trace_metrics.py`: redacted trace metric summary.
 - `scripts/run_runtime_audit.py`: 只读日审计稳定入口。默认 `run` 永远只审计前一北京时间自然日，不自动
   补跑更早的失败或遗漏日期；Langfuse 是主证据，本地 trace 只做完整性、auxiliary 聚合与有限 fallback。完整
-  审计 bundle 留在 inbox，Codex 读取有界的全 trace 索引和异常详情，并可按需原生回查该 bundle。人读结果只写
+  审计 bundle 留在 inbox；第三层只列异常 trace，没有异常时不调用 Codex，有异常时 Codex 只审计这些 trace，
+  不读取完整 bundle 或其他正常 trace。人读结果只写
   `.data/runtime_audit/reports/YYYY-MM-DD.md`，内部 JSON 留在 inbox/state；已确认的空日生成极简中文日报且
   不调用 Codex。`run --date YYYY-MM-DD` 只刷新当日日报并执行只读 lifecycle/evidence 校验，不改变连续
   issue registry 或 watermark。其他完整参数见 `--help` 与

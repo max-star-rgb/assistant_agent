@@ -164,55 +164,49 @@ def render_daily_codex_report(
     lines = [
         f"# {report.audit_date.isoformat()} 运行审计日报",
         "",
-        "## 一句话结论",
+        "## 昨天是否需要你处理",
         "",
         _plain_text(report.daily_summary),
         "",
-        "## 昨日概况",
-        "",
-        _plain_text(report.activity_summary),
-        "",
-        "## 需要你决定",
+        "## 需要处理",
         "",
     ]
-    _append_issue_guidance(lines, decision_issues, empty_message="昨天没有需要维护者决定的问题。")
-    lines.extend(["", "## 需要继续观察", ""])
+    _append_issue_guidance(lines, decision_issues, empty_message="没有需要你处理的新问题。")
+    lines.extend(["", "## 暂时观察", ""])
     _append_issue_guidance(
         lines,
         uncertain_issues,
-        empty_message="昨天没有需要继续观察的证据不足项。",
+        empty_message="没有需要暂时观察的新问题。",
         include_suggested_change=False,
     )
-    lines.extend(["", "## 已处理等待自然验证", ""])
+    lines.extend(["", "## 已修改，等待实际验证", ""])
     _append_issue_guidance(
         lines,
         addressed_issues,
-        empty_message="昨天没有已处理、等待自然验证的问题。",
+        empty_message="没有已修改、等待实际验证的问题。",
         include_suggested_change=False,
     )
-    lines.extend(["", "## 昨日已验证解决", ""])
+    lines.extend(["", "## 昨天确认恢复", ""])
     _append_issue_guidance(
         lines,
         verified_issues,
-        empty_message="昨天没有已在真实运行中验证解决的问题。",
+        empty_message="昨天没有确认恢复的问题。",
         include_suggested_change=False,
     )
     lines.extend(
         [
             "",
-            "## 记忆情况",
+            "## 技术附录（通常不用看）",
             "",
-            _plain_text(report.memory_summary),
-            "",
-            "## 系统运行情况",
-            "",
-            _plain_text(report.infrastructure_summary),
+            f"- 扫描概况：{_plain_text(report.activity_summary)}",
+            f"- 记忆检查：{_plain_text(report.memory_summary)}",
+            f"- 审计系统：{_plain_text(report.infrastructure_summary)}",
         ]
     )
     if report.limitations:
-        lines.extend(["", "审计限制："])
+        lines.append("- 还不能确定的部分：")
         lines.extend(
-            f"- {_plain_text(value, fallback='未提供限制说明。')}"
+            f"  - {_plain_text(value, fallback='未提供限制说明。')}"
             for value in report.limitations
         )
     lines.extend(["", "## 证据附录", ""])
@@ -270,6 +264,34 @@ def render_empty_daily_report(
     return "\n".join(lines)
 
 
+def render_no_anomaly_daily_report(
+    audit_date: date,
+    *,
+    trace_count: int,
+    issues: list[DailyAuditIssue] | None = None,
+) -> str:
+    """Render a nonempty day whose deterministic third layer has no anomaly."""
+
+    lines = [
+        f"# {audit_date.isoformat()} 运行审计日报",
+        "",
+        "## 结论",
+        "",
+        f"昨天扫描了 {trace_count} 条对话，没有发现需要处理的异常，因此没有调用 Codex。",
+    ]
+    active = [
+        issue
+        for issue in (issues or [])
+        if issue.status in {"open", "regressed", "code_addressed", "uncertain"}
+    ]
+    if active:
+        lines.extend(["", "## 以前的问题", ""])
+        for issue in active:
+            lines.append(f"- {_plain_text(issue.title, fallback='未命名问题')}：仍需后续观察。")
+    lines.append("")
+    return "\n".join(lines)
+
+
 def render_failed_daily_report(audit_date: date, error_summary: str) -> str:
     """Render a safe and explicit daily-audit failure for maintainers."""
 
@@ -301,16 +323,17 @@ def _append_issue_guidance(
         return
     for issue in issues:
         lines.extend([f"### {_plain_text(issue.title, fallback='未命名问题')}", ""])
-        lines.append(_plain_text(issue.plain_summary, fallback="暂无问题说明。"))
         lines.append(
-            f"- 对用户的影响：{_plain_text(issue.user_impact, fallback='用户影响尚不明确。')}"
+            "- 发生了什么："
+            f"{_plain_text(issue.plain_summary, fallback='暂无问题说明。')} "
+            f"{_plain_text(issue.user_impact, fallback='用户影响尚不明确。')}"
         )
         if include_suggested_change:
             lines.append(
-                f"- 建议：{_plain_text(issue.suggested_change, fallback='暂无具体修改建议。')}"
+                f"- 建议怎么做：{_plain_text(issue.suggested_change, fallback='暂无具体修改建议。')}"
             )
         lines.append(
-            f"- 如何验证：{_plain_text(issue.validation, fallback='尚未提供验证方式。')}"
+            f"- 怎么确认：{_plain_text(issue.validation, fallback='尚未提供验证方式。')}"
         )
         lines.append("")
     lines.pop()

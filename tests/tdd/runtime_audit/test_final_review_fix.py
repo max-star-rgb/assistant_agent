@@ -503,9 +503,9 @@ def test_uncertain_is_observation_not_maintainer_decision() -> None:
         trace_evidence_refs=["trace:trace-current"],
     )
     markdown = render_daily_codex_report(_report(issue=issue))
-    decision, observation = markdown.split("## 需要继续观察", maxsplit=1)
+    decision, observation = markdown.split("## 暂时观察", maxsplit=1)
 
-    assert "继续观察" not in decision.split("## 需要你决定", maxsplit=1)[1]
+    assert "继续观察" not in decision.split("## 需要处理", maxsplit=1)[1]
     assert "继续观察" in observation
     assert "tool.observe" in markdown
 

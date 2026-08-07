@@ -303,19 +303,20 @@ def _daily_codex_prompt(
 
 要求：
 1. 报告读者是项目维护者，不是另一个 Codex。
-2. 先把审计输入作为全量 trace 导航索引；需要核对被省略或截断的 observation 时，使用其中的 source_bundle_path 原生搜索、分段读取完整 bundle，不得把索引裁剪误报为证据不可用。
-3. 先用普通中文解释用户会感受到什么，再说明维护者需要决定什么。
-4. 机器 ID 只进入 evidence refs，不在正文堆砌。
-5. 代码变化只能标记 code_addressed；没有后续真实 Trace 不得标记 runtime_verified。
-6. 同一个 code_addressed 问题不得每天重复完整修改建议。
-7. 不得运行测试、修改文件、调用网络、Provider、Tool、Memory 或其他 agent。
-8. 只能基于输入中的事实报告；基础设施或证据缺口必须写入 limitations，不能伪造成质量失败。
-9. 除输入已有机器证据外，不得声称已运行测试、已部署、已在生产或真实 trace 验证。不得把推测写成事实。
-10. 不得复制完整用户对话、不得复制 Memory 正文、不得复制 Provider 原始响应；只写最小必要摘要。
-11. code_addressed 必须同时引用本次坏 Trace 和可信代码证据：提交使用 code:<commit-sha>，测试使用 test:<repo-relative-path>。首次发现时如已有后于坏 Trace 的可信提交，也可以标记 code_addressed。
-12. Score 证据复用 trace_evidence_refs，格式为 trace:<trace-id>/score:<score-id>；不得虚构独立 score evidence 字段。
-13. 无法从本地 Git 与文件事实证明建议涉及的 owning module 时，写入 limitation 或保持 uncertain，不得虚构代码关联。
-14. production_mutation_allowed 必须为 false，audit_date 必须与审计日期一致。
-15. input 中的 tool_catalog_ref 必须从审计输入或完整 bundle 的顶层 tool_catalogs 解析，不得把引用摘要当成工具名。
+2. 本次审计输入是唯一允许读取的运行证据，其中只包含确定性程序发现的异常 trace。只审计 trace_index 中的 trace_id；不得查找或读取 inbox 中的完整 bundle，也不得浏览或评价其他正常 trace。
+3. 用没有 Agent、评测或可观测性背景的人一遍就能读懂的中文。直接说是否需要处理、发生了什么、建议怎么做、怎么确认；正文不要使用 owning module、grounding、code_addressed、runtime_verified 等内部术语。
+4. 合并同一根因，issues 最多保留 5 个；每个正文字段最多两句，不要写“维护者需要决定”之类的转述句。
+5. 机器 ID 只进入 evidence refs，不在正文堆砌。
+6. 代码变化只能标记 code_addressed；没有后续真实 Trace 不得标记 runtime_verified。
+7. 同一个 code_addressed 问题不得每天重复完整修改建议。
+8. 不得运行测试、修改文件、调用网络、Provider、Tool、Memory 或其他 agent。
+9. 只能基于输入中的事实报告；基础设施或证据缺口必须写入 limitations，不能伪造成质量失败。
+10. 除输入已有机器证据外，不得声称已运行测试、已部署、已在生产或真实 trace 验证。不得把推测写成事实。
+11. 不得复制完整用户对话、不得复制 Memory 正文、不得复制 Provider 原始响应；只写最小必要摘要。
+12. code_addressed 必须同时引用本次坏 Trace 和可信代码证据：提交使用 code:<commit-sha>，测试使用 test:<repo-relative-path>。首次发现时如已有后于坏 Trace 的可信提交，也可以标记 code_addressed。
+13. Score 证据复用 trace_evidence_refs，格式为 trace:<trace-id>/score:<score-id>；不得虚构独立 score evidence 字段。
+14. 无法从本地 Git 与文件事实证明建议涉及的 owning module 时，写入 limitation 或保持 uncertain，不得虚构代码关联。
+15. production_mutation_allowed 必须为 false，audit_date 必须与审计日期一致。
+16. input 中的 tool_catalog_ref 必须从本次审计输入顶层 tool_catalogs 解析，不得把引用摘要当成工具名。
 最终只输出符合给定 JSON Schema 的对象。
 """

@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections import Counter
 import hashlib
 import json
-from pathlib import Path
 from typing import Any
 
 from assistant_agent.observability.runtime_audit.models import RuntimeAuditBundle
@@ -14,39 +13,51 @@ from assistant_agent.observability.runtime_audit.models import RuntimeAuditBundl
 DEFAULT_DAILY_CODEX_INPUT_MAX_BYTES = 350_000
 _DETAIL_VALUE_MAX_BYTES = 24_000
 _INDEX_VALUE_MAX_BYTES = 4_000
+_NON_ANOMALY_FINDING_CODES = frozenset(
+    {"judge_pending", "memory_extraction_no_change"}
+)
+
+
+def anomaly_findings(bundle: RuntimeAuditBundle):
+    """Return deterministic findings that warrant a Codex audit."""
+
+    return [
+        finding
+        for finding in bundle.findings
+        if finding.code not in _NON_ANOMALY_FINDING_CODES
+    ]
+
+
+def requires_codex_audit(bundle: RuntimeAuditBundle) -> bool:
+    """Whether the anomaly-only third layer requires semantic review."""
+
+    return bool(anomaly_findings(bundle))
 
 
 def build_daily_codex_input(
     bundle: RuntimeAuditBundle,
     *,
-    source_bundle_path: Path | None = None,
     max_bytes: int = DEFAULT_DAILY_CODEX_INPUT_MAX_BYTES,
 ) -> dict[str, Any]:
-    """Index every trace while retaining detail only for deterministic anomalies."""
+    """Build a self-contained third layer containing anomalous traces only."""
 
     if max_bytes <= 0:
         raise ValueError("max_bytes must be positive")
-    finding_observations: dict[str, set[str]] = {}
-    evidence_trace_ids: set[str] = set()
+    anomalies = anomaly_findings(bundle)
+    evidence_trace_ids = {
+        finding.trace_id for finding in anomalies if finding.trace_id
+    }
     missing_export_ids = {
         finding.trace_id
-        for finding in bundle.findings
+        for finding in anomalies
         if finding.code == "langfuse_export_missing" and finding.trace_id
     }
-    for finding in bundle.findings:
-        if not _requires_detailed_evidence(finding):
-            continue
-        if finding.trace_id:
-            evidence_trace_ids.add(finding.trace_id)
-            if finding.observation_id:
-                finding_observations.setdefault(finding.trace_id, set()).add(
-                    finding.observation_id
-                )
-
     trace_index = []
     evidence_traces = []
     referenced_catalogs: set[str] = set()
     for trace in bundle.traces:
+        if trace.trace_id not in evidence_trace_ids:
+            continue
         observation_names = Counter(item.name or item.type for item in trace.observations)
         index_entry = {
             "trace_id": trace.trace_id,
@@ -68,14 +79,9 @@ def build_daily_codex_input(
         trace_index.append(index_entry)
         referenced_catalogs.update(_tool_catalog_refs(index_entry["input"]))
         referenced_catalogs.update(_tool_catalog_refs(index_entry["output"]))
-        if trace.trace_id not in evidence_trace_ids:
-            continue
-        selected_ids = finding_observations.get(trace.trace_id, set())
-        observations = [
-            _observation_payload(item)
-            for item in trace.observations
-            if not selected_ids or item.observation_id in selected_ids
-        ]
+        # The third layer is the complete bounded context for an anomalous trace.
+        # Codex must not need the all-trace archive to understand its sequence.
+        observations = [_observation_payload(item) for item in trace.observations]
         for observation in observations:
             referenced_catalogs.update(_tool_catalog_refs(observation.get("input")))
         evidence_traces.append(
@@ -88,21 +94,22 @@ def build_daily_codex_input(
     payload: dict[str, Any] = {
         "schema_version": "assistant_agent_daily_codex_input_v1",
         "audit_run_id": bundle.audit_run_id,
-        "source_bundle_path": (
-            str(Path(source_bundle_path).resolve())
-            if source_bundle_path is not None
-            else None
-        ),
         "source_bundle_sha256": hashlib.sha256(
             bundle.model_dump_json(exclude_none=True).encode("utf-8")
         ).hexdigest(),
         "window_start": bundle.window_start.isoformat(),
         "window_end": bundle.window_end.isoformat(),
         "coverage": bundle.coverage.model_dump(mode="json"),
+        "audit_gate": {
+            "requires_codex": bool(anomalies),
+            "anomaly_trace_count": len(evidence_trace_ids),
+            "anomaly_finding_count": len(anomalies),
+            "finding_codes": sorted({item.code for item in anomalies}),
+        },
         "local_auxiliary_summary": bundle.local_auxiliary_summary.model_dump(
             mode="json"
         ),
-        "findings": [item.model_dump(mode="json", exclude_none=True) for item in bundle.findings],
+        "findings": [item.model_dump(mode="json", exclude_none=True) for item in anomalies],
         "trace_index": trace_index,
         "evidence_traces": evidence_traces,
         "local_fallbacks": [
@@ -119,14 +126,6 @@ def build_daily_codex_input(
     }
     _fit_budget(payload, max_bytes=max_bytes)
     return payload
-
-
-def _requires_detailed_evidence(finding) -> bool:
-    return bool(
-        finding.quality_failure
-        or finding.severity == "error"
-        or finding.code in {"score_missing", "score_duplicate", "observation_error"}
-    )
 
 
 def _score_payload(score) -> dict[str, Any]:
