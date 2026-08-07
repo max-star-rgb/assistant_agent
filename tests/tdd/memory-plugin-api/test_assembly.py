@@ -6,6 +6,7 @@ import sys
 import traceback
 from datetime import datetime, timezone
 from types import ModuleType
+from typing import ClassVar
 
 import pytest
 from pydantic import BaseModel, SecretStr
@@ -122,6 +123,102 @@ class _OneShotDescriptorPlugin:
         return self._descriptor
 
 
+class _GuardedExportModule(ModuleType):
+    def __init__(
+        self,
+        name: str,
+        factory: object,
+        *,
+        getter_error: Exception | None = None,
+    ) -> None:
+        super().__init__(name)
+        self._factory = factory
+        self._getter_error = getter_error
+        self.export_reads = 0
+
+    @property
+    def __assistant_memory_plugin_factory__(self) -> object:
+        self.export_reads += 1
+        if self._getter_error is not None:
+            raise self._getter_error
+        if self.export_reads > 1:
+            raise RuntimeError("repeated-export-secret-sentinel")
+        return self._factory
+
+
+class _ConfigModelGetterFactory:
+    def __init__(
+        self,
+        descriptor: MemoryPluginDescriptor,
+        *,
+        config_model: type[BaseModel] = _FactoryConfig,
+        getter_error: Exception | None = None,
+    ) -> None:
+        self.descriptor = descriptor
+        self._config_model = config_model
+        self._getter_error = getter_error
+        self.config_model_reads = 0
+
+    @property
+    def config_model(self) -> type[BaseModel]:
+        self.config_model_reads += 1
+        if self._getter_error is not None:
+            raise self._getter_error
+        if self.config_model_reads > 1:
+            raise RuntimeError("repeated-config-model-secret-sentinel")
+        return self._config_model
+
+    def build(self, context: MemoryPluginBuildContext, config: BaseModel) -> _Plugin:
+        return _Plugin(self.descriptor)
+
+
+class _BuildGetterFactory:
+    config_model = _FactoryConfig
+
+    def __init__(
+        self,
+        descriptor: MemoryPluginDescriptor,
+        *,
+        getter_error: Exception | None = None,
+    ) -> None:
+        self.descriptor = descriptor
+        self._getter_error = getter_error
+        self.build_reads = 0
+
+    @property
+    def build(self):  # type: ignore[no-untyped-def]
+        self.build_reads += 1
+        if self._getter_error is not None:
+            raise self._getter_error
+        if self.build_reads > 1:
+            raise RuntimeError("repeated-build-getter-secret-sentinel")
+        return self._build_plugin
+
+    def _build_plugin(
+        self,
+        context: MemoryPluginBuildContext,
+        config: BaseModel,
+    ) -> _Plugin:
+        return _Plugin(self.descriptor)
+
+
+class _OneShotValidationConfig(BaseModel):
+    validation_calls: ClassVar[int] = 0
+
+    @classmethod
+    def model_validate(cls, obj, *args, **kwargs):  # type: ignore[no-untyped-def]
+        cls.validation_calls += 1
+        if cls.validation_calls > 1:
+            raise RuntimeError("repeated-config-validation-secret-sentinel")
+        return super().model_validate(obj, *args, **kwargs)
+
+
+class _ExplodingValidationConfig(BaseModel):
+    @classmethod
+    def model_validate(cls, obj, *args, **kwargs):  # type: ignore[no-untyped-def]
+        raise RuntimeError("config-validation-secret-sentinel")
+
+
 def _descriptor(plugin_id: str = "probe.memory") -> MemoryPluginDescriptor:
     return MemoryPluginDescriptor(
         plugin_id=plugin_id,
@@ -152,6 +249,36 @@ def _build_context() -> MemoryPluginBuildContext:
         secret_resolver=object(),
         clock=lambda: datetime(2026, 8, 7, tzinfo=timezone.utc),
     )
+
+
+def _capture_assembly_failure(
+    *,
+    config: MemoryPluginsConfig,
+    builtin_factories: tuple[object, ...] = (),
+) -> tuple[MemoryPluginAssemblyError, str]:
+    try:
+        assemble_memory_plugins(
+            config=config,
+            builtin_factories=builtin_factories,
+            build_context=_build_context(),
+        )
+    except MemoryPluginAssemblyError as error:
+        return error, traceback.format_exc()
+    pytest.fail("assembly unexpectedly succeeded")
+
+
+def _assert_sanitized_assembly_failure(
+    error: MemoryPluginAssemblyError,
+    rendered_traceback: str,
+    *,
+    code: str,
+    secret: str,
+) -> None:
+    assert error.report.issues[0].code == code
+    assert error.__suppress_context__ is True
+    assert secret not in str(error.report)
+    assert secret not in str(error)
+    assert secret not in rendered_traceback
 
 
 def _module(name: str, factory: object | None) -> ModuleType:
@@ -545,6 +672,52 @@ def test_module_without_declared_factory_export_fails_closed() -> None:
     assert exc_info.value.report.issues[0].code == "memory_plugin_export_missing"
 
 
+def test_module_factory_export_is_read_once_and_snapshotted(monkeypatch) -> None:
+    module_name = "test_memory_plugin_one_shot_export"
+    module = _GuardedExportModule(module_name, _Factory(_descriptor()))
+    monkeypatch.setitem(sys.modules, module_name, module)
+
+    registry = assemble_memory_plugins(
+        config=_config(
+            slot="probe.memory",
+            plugins={"probe.memory": _configured_plugin(module_name)},
+        ),
+        builtin_factories=(),
+        build_context=_build_context(),
+    )
+
+    assert registry.assembly_report.active_slot == "probe.memory"
+    assert module.export_reads == 1
+
+
+def test_module_export_getter_failure_is_domainized_and_sanitized(monkeypatch) -> None:
+    module_name = "test_memory_plugin_export_getter_failure"
+    secret = "module-export-secret-sentinel"
+    monkeypatch.setitem(
+        sys.modules,
+        module_name,
+        _GuardedExportModule(
+            module_name,
+            _Factory(_descriptor()),
+            getter_error=RuntimeError(secret),
+        ),
+    )
+
+    error, rendered_traceback = _capture_assembly_failure(
+        config=_config(
+            slot="probe.memory",
+            plugins={"probe.memory": _configured_plugin(module_name)},
+        )
+    )
+
+    _assert_sanitized_assembly_failure(
+        error,
+        rendered_traceback,
+        code="memory_plugin_export_missing",
+        secret=secret,
+    )
+
+
 def test_plugin_descriptor_must_match_its_factory_descriptor() -> None:
     module_name = "test_memory_plugin_descriptor_mismatch"
     factory = _Factory(_descriptor(), built_descriptor=_descriptor("other.memory"))
@@ -646,6 +819,136 @@ def test_factory_descriptor_getter_failure_is_domainized_and_sanitized() -> None
     assert assembly_error.report.issues[0].code == "memory_plugin_descriptor_invalid"
     assert "factory-descriptor-secret-sentinel" not in str(assembly_error.report)
     assert "factory-descriptor-secret-sentinel" not in rendered_traceback
+
+
+def test_factory_config_model_is_read_once_and_snapshotted(monkeypatch) -> None:
+    module_name = "test_memory_plugin_one_shot_config_model"
+    factory = _ConfigModelGetterFactory(_descriptor())
+    monkeypatch.setitem(sys.modules, module_name, _module(module_name, factory))
+
+    registry = assemble_memory_plugins(
+        config=_config(
+            slot="probe.memory",
+            plugins={"probe.memory": _configured_plugin(module_name)},
+        ),
+        builtin_factories=(),
+        build_context=_build_context(),
+    )
+
+    assert registry.assembly_report.active_slot == "probe.memory"
+    assert factory.config_model_reads == 1
+
+
+def test_factory_config_model_getter_failure_is_domainized_and_sanitized(
+    monkeypatch,
+) -> None:
+    module_name = "test_memory_plugin_config_model_getter_failure"
+    secret = "config-model-getter-secret-sentinel"
+    factory = _ConfigModelGetterFactory(
+        _descriptor(),
+        getter_error=RuntimeError(secret),
+    )
+    monkeypatch.setitem(sys.modules, module_name, _module(module_name, factory))
+
+    error, rendered_traceback = _capture_assembly_failure(
+        config=_config(
+            slot="probe.memory",
+            plugins={"probe.memory": _configured_plugin(module_name)},
+        )
+    )
+
+    _assert_sanitized_assembly_failure(
+        error,
+        rendered_traceback,
+        code="memory_plugin_factory_invalid",
+        secret=secret,
+    )
+
+
+def test_factory_build_callable_is_read_once_and_snapshotted(monkeypatch) -> None:
+    module_name = "test_memory_plugin_one_shot_build_getter"
+    factory = _BuildGetterFactory(_descriptor())
+    monkeypatch.setitem(sys.modules, module_name, _module(module_name, factory))
+
+    registry = assemble_memory_plugins(
+        config=_config(
+            slot="probe.memory",
+            plugins={"probe.memory": _configured_plugin(module_name)},
+        ),
+        builtin_factories=(),
+        build_context=_build_context(),
+    )
+
+    assert registry.assembly_report.active_slot == "probe.memory"
+    assert factory.build_reads == 1
+
+
+def test_factory_build_getter_failure_is_domainized_and_sanitized(monkeypatch) -> None:
+    module_name = "test_memory_plugin_build_getter_failure"
+    secret = "build-getter-secret-sentinel"
+    factory = _BuildGetterFactory(
+        _descriptor(),
+        getter_error=RuntimeError(secret),
+    )
+    monkeypatch.setitem(sys.modules, module_name, _module(module_name, factory))
+
+    error, rendered_traceback = _capture_assembly_failure(
+        config=_config(
+            slot="probe.memory",
+            plugins={"probe.memory": _configured_plugin(module_name)},
+        )
+    )
+
+    _assert_sanitized_assembly_failure(
+        error,
+        rendered_traceback,
+        code="memory_plugin_factory_invalid",
+        secret=secret,
+    )
+
+
+def test_factory_config_validation_is_called_once_and_snapshotted(monkeypatch) -> None:
+    module_name = "test_memory_plugin_one_shot_config_validation"
+    factory = _Factory(_descriptor())
+    factory.config_model = _OneShotValidationConfig
+    _OneShotValidationConfig.validation_calls = 0
+    monkeypatch.setitem(sys.modules, module_name, _module(module_name, factory))
+
+    registry = assemble_memory_plugins(
+        config=_config(
+            slot="probe.memory",
+            plugins={"probe.memory": _configured_plugin(module_name)},
+        ),
+        builtin_factories=(),
+        build_context=_build_context(),
+    )
+
+    assert registry.assembly_report.active_slot == "probe.memory"
+    assert _OneShotValidationConfig.validation_calls == 1
+
+
+def test_factory_config_validation_failure_is_domainized_and_sanitized(
+    monkeypatch,
+) -> None:
+    module_name = "test_memory_plugin_config_validation_failure"
+    secret = "config-validation-secret-sentinel"
+    factory = _Factory(_descriptor())
+    factory.config_model = _ExplodingValidationConfig
+    monkeypatch.setitem(sys.modules, module_name, _module(module_name, factory))
+
+    error, rendered_traceback = _capture_assembly_failure(
+        config=_config(
+            slot="probe.memory",
+            plugins={"probe.memory": _configured_plugin(module_name)},
+        )
+    )
+
+    _assert_sanitized_assembly_failure(
+        error,
+        rendered_traceback,
+        code="memory_plugin_config_invalid",
+        secret=secret,
+    )
 
 
 def test_plugin_descriptor_getter_failure_is_domainized_and_sanitized() -> None:

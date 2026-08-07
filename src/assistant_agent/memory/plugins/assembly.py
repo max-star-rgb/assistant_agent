@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import importlib
-from collections.abc import Iterable
-from dataclasses import dataclass
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass, replace
 
 from pydantic import BaseModel
 
@@ -40,9 +40,23 @@ class MemoryPluginAssemblyError(RuntimeError):
 @dataclass(frozen=True)
 class _Candidate:
     descriptor: MemoryPluginDescriptor
-    factory: MemoryPluginFactory
+    config_model: type[BaseModel]
+    validate_config: Callable[[object], object]
+    build: Callable[[MemoryPluginBuildContext, BaseModel], object]
     entry: MemoryPluginEntryConfig
     source: str
+    validated_config: BaseModel | None = None
+
+
+@dataclass(frozen=True)
+class _FactorySnapshot:
+    descriptor: MemoryPluginDescriptor
+    config_model: type[BaseModel]
+    validate_config: Callable[[object], object]
+    build: Callable[[MemoryPluginBuildContext, BaseModel], object]
+
+
+_MISSING_EXPORT = object()
 
 
 def assemble_memory_plugins(
@@ -68,10 +82,16 @@ def assemble_memory_plugins(
             candidates.append(candidate)
 
     _append_duplicate_issues(candidates, issues)
+    validated_candidates: list[_Candidate] = []
     for candidate in candidates:
-        _validate_candidate_config(candidate, issues)
+        validated_config = _validate_candidate_config(candidate, issues)
+        if validated_config is not None:
+            validated_candidates.append(
+                replace(candidate, validated_config=validated_config)
+            )
     if issues:
         _fail(config.slot, *issues)
+    candidates = validated_candidates
 
     active_candidates = [
         candidate
@@ -83,11 +103,13 @@ def assemble_memory_plugins(
     active_candidate = active_candidates[0]
     if not active_candidate.entry.enabled:
         _fail(config.slot, "memory_plugin_slot_disabled")
+    if active_candidate.validated_config is None:
+        _fail(config.slot, "memory_plugin_config_invalid")
 
     try:
-        plugin = active_candidate.factory.build(
+        plugin = active_candidate.build(
             build_context,
-            active_candidate.factory.config_model.model_validate(active_candidate.entry.config),
+            active_candidate.validated_config,
         )
     except Exception:
         _fail(config.slot, "memory_plugin_build_failed")
@@ -121,14 +143,16 @@ def _builtin_candidate(
     factory: object,
     issues: list[MemoryPluginIssue],
 ) -> _Candidate | None:
-    descriptor = _validate_factory(factory, issues)
-    if descriptor is None:
+    snapshot = _snapshot_factory(factory, issues)
+    if snapshot is None:
         return None
     return _Candidate(
-        descriptor=descriptor,
-        factory=factory,
+        descriptor=snapshot.descriptor,
+        config_model=snapshot.config_model,
+        validate_config=snapshot.validate_config,
+        build=snapshot.build,
         entry=MemoryPluginEntryConfig(module="builtin"),
-        source=f"builtin:{descriptor.plugin_id}",
+        source=f"builtin:{snapshot.descriptor.plugin_id}",
     )
 
 
@@ -142,61 +166,85 @@ def _module_candidate(
     except Exception:
         issues.append(_issue("memory_plugin_module_import_failed"))
         return None
-    if not hasattr(module, MEMORY_PLUGIN_EXPORT):
+    try:
+        factory = getattr(module, MEMORY_PLUGIN_EXPORT, _MISSING_EXPORT)
+    except Exception:
         issues.append(_issue("memory_plugin_export_missing"))
         return None
-    factory = getattr(module, MEMORY_PLUGIN_EXPORT)
-    descriptor = _validate_factory(factory, issues)
-    if descriptor is None:
+    if factory is _MISSING_EXPORT:
+        issues.append(_issue("memory_plugin_export_missing"))
         return None
-    if descriptor.plugin_id != configured_id:
+    snapshot = _snapshot_factory(factory, issues)
+    if snapshot is None:
+        return None
+    if snapshot.descriptor.plugin_id != configured_id:
         issues.append(_issue("memory_plugin_descriptor_mismatch"))
         return None
     return _Candidate(
-        descriptor=descriptor,
-        factory=factory,
+        descriptor=snapshot.descriptor,
+        config_model=snapshot.config_model,
+        validate_config=snapshot.validate_config,
+        build=snapshot.build,
         entry=entry,
         source=f"module:{entry.module}",
     )
 
 
-def _validate_factory(
+def _snapshot_factory(
     factory: object,
     issues: list[MemoryPluginIssue],
-) -> MemoryPluginDescriptor | None:
+) -> _FactorySnapshot | None:
     try:
         descriptor_value = getattr(factory, "descriptor", None)
     except Exception:
         issues.append(_issue("memory_plugin_descriptor_invalid"))
         return None
     descriptor = _validated_descriptor(descriptor_value)
-    config_model = getattr(factory, "config_model", None)
-    build = getattr(factory, "build", None)
+    if descriptor is None:
+        issues.append(_issue("memory_plugin_descriptor_invalid"))
+        return None
+    try:
+        config_model = getattr(factory, "config_model", None)
+        build = getattr(factory, "build", None)
+    except Exception:
+        issues.append(_issue("memory_plugin_factory_invalid"))
+        return None
     if (
-        descriptor is None
-        or not isinstance(config_model, type)
+        not isinstance(config_model, type)
         or not issubclass(config_model, BaseModel)
         or not callable(build)
     ):
-        issues.append(
-            _issue(
-                "memory_plugin_descriptor_invalid"
-                if descriptor is None
-                else "memory_plugin_factory_invalid"
-            )
-        )
+        issues.append(_issue("memory_plugin_factory_invalid"))
         return None
-    return descriptor
+    try:
+        validate_config = getattr(config_model, "model_validate", None)
+    except Exception:
+        issues.append(_issue("memory_plugin_config_invalid"))
+        return None
+    if not callable(validate_config):
+        issues.append(_issue("memory_plugin_config_invalid"))
+        return None
+    return _FactorySnapshot(
+        descriptor=descriptor,
+        config_model=config_model,
+        validate_config=validate_config,
+        build=build,
+    )
 
 
 def _validate_candidate_config(
     candidate: _Candidate,
     issues: list[MemoryPluginIssue],
-) -> None:
+) -> BaseModel | None:
     try:
-        candidate.factory.config_model.model_validate(candidate.entry.config)
+        validated_config = candidate.validate_config(candidate.entry.config)
     except Exception:
         issues.append(_issue("memory_plugin_config_invalid"))
+        return None
+    if not isinstance(validated_config, BaseModel):
+        issues.append(_issue("memory_plugin_config_invalid"))
+        return None
+    return validated_config
 
 
 def _append_duplicate_issues(
