@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from threading import Event, Thread
+from threading import Barrier, Event, Lock, Thread
 from time import sleep
 from typing import Any
 
@@ -9,6 +9,7 @@ import pytest
 
 from assistant_agent.identity import RequestIdentity
 from assistant_agent.memory.mem0.identity import bind_mem0_identity
+from assistant_agent.memory.models import SessionMemorySnapshot
 from assistant_agent.memory.plugins.contracts import (
     ManagedMediaRef,
     MemoryContextContribution,
@@ -29,7 +30,11 @@ from assistant_agent.memory.plugins.registry import (
     MemoryPluginRegistrationRecord,
     MemoryPluginRegistry,
 )
-from assistant_agent.memory.plugins.session_store import MemoryPluginSessionStore
+from assistant_agent.memory.plugins.session_store import (
+    MemoryPluginSessionRecord,
+    MemoryPluginSessionStore,
+    runtime_memory_identity_key,
+)
 from assistant_agent.runtime.requests import UserRequest
 from assistant_agent.runtime.state import AgentState
 
@@ -126,6 +131,30 @@ class ExplodingMemoryPlugin(RecordingMemoryPlugin):
         raise RuntimeError("secret-provider-response-sentinel")
 
 
+class BlockingPrepareMemoryPlugin(RecordingMemoryPlugin):
+    def __init__(self) -> None:
+        super().__init__(baseline=[_item("baseline", "baseline")])
+        self._calls_lock = Lock()
+        self.first_started = Event()
+        self.second_started = Event()
+        self.release = Event()
+
+    def prepare_context(self, request: Any) -> MemoryContextContribution:
+        with self._calls_lock:
+            self.prepare_calls += 1
+            call_number = self.prepare_calls
+            self.prepare_requests.append(request)
+        if call_number == 1:
+            self.first_started.set()
+        elif call_number == 2:
+            self.second_started.set()
+        self.release.wait(1.0)
+        return MemoryContextContribution(
+            items=[_item("turn", "turn")],
+            status="succeeded",
+        )
+
+
 class MutableCancelToken:
     def __init__(self) -> None:
         self.cancelled = False
@@ -166,6 +195,51 @@ def test_host_opens_session_and_prepares_memory_once_per_run() -> None:
     assert state.memory_context_prepared is True
     assert plugin.open_requests[0].deadline == NOW + timedelta(seconds=5)
     assert plugin.prepare_requests[0].deadline == NOW + timedelta(seconds=5)
+
+
+def test_concurrent_prepare_uses_one_single_flight_and_one_frozen_result() -> None:
+    plugin = BlockingPrepareMemoryPlugin()
+    host, _ = _host(plugin)
+    state = _state()
+    host.open_session(identity=_identity(), state=state, trace_store=None)
+    start = Barrier(3)
+    results: list[SessionMemorySnapshot] = []
+    failures: list[BaseException] = []
+
+    def prepare() -> None:
+        try:
+            start.wait()
+            results.append(
+                host.prepare_context(
+                    state=state,
+                    trace_store=None,
+                    cancel_token=None,
+                )
+            )
+        except BaseException as error:
+            failures.append(error)
+
+    threads = [Thread(target=prepare), Thread(target=prepare)]
+    for thread in threads:
+        thread.start()
+    start.wait()
+    assert plugin.first_started.wait(0.5)
+    # The bounded wait observes whether a forbidden second Plugin call starts
+    # while the first call is intentionally held by ``release``.
+    plugin.second_started.wait(0.1)
+    plugin.release.set()
+    for thread in threads:
+        thread.join(0.5)
+
+    assert failures == []
+    assert all(not thread.is_alive() for thread in threads)
+    assert plugin.prepare_calls == 1
+    assert len(results) == 2
+    assert results[0] == results[1]
+    assert [item.memory_id for item in results[0].memories] == [
+        "baseline",
+        "turn",
+    ]
 
 
 def test_plugin_identity_matches_legacy_mem0_hash_and_ignores_metadata() -> None:
@@ -227,6 +301,69 @@ def test_session_store_isolates_sessions_and_clears_only_requested_scope() -> No
     assert store.clear_user(user_id="user-sentinel") == 1
     assert store.get(second) is None
     assert store.get(third) is not None
+
+
+@pytest.mark.parametrize("clear_kind", ["session", "user"])
+def test_session_store_clear_invalidates_inflight_loader_and_waiters(
+    clear_kind: str,
+) -> None:
+    store = MemoryPluginSessionStore()
+    identity = _identity()
+    first_started = Event()
+    release_first = Event()
+    waiter_ready = Event()
+    loader_calls = 0
+    loader_lock = Lock()
+    results: list[MemoryPluginSessionRecord] = []
+    failures: list[BaseException] = []
+
+    def loader() -> MemoryPluginSessionRecord:
+        nonlocal loader_calls
+        with loader_lock:
+            loader_calls += 1
+            call_number = loader_calls
+        if call_number == 1:
+            first_started.set()
+            assert release_first.wait(0.5)
+        return _session_record(
+            identity,
+            memory_id="stale" if call_number == 1 else "fresh",
+        )
+
+    def resolve(*, waiter: bool = False) -> None:
+        try:
+            if waiter:
+                waiter_ready.set()
+            results.append(store.resolve(identity, loader=loader).record)
+        except BaseException as error:
+            failures.append(error)
+
+    first = Thread(target=resolve)
+    waiter = Thread(target=resolve, kwargs={"waiter": True})
+    first.start()
+    assert first_started.wait(0.5)
+    waiter.start()
+    assert waiter_ready.wait(0.5)
+    if clear_kind == "session":
+        store.clear_session(
+            user_id=identity.user_id,
+            session_id=identity.session_id or "",
+        )
+    else:
+        store.clear_user(user_id=identity.user_id)
+    release_first.set()
+    first.join(0.5)
+    waiter.join(0.5)
+
+    assert failures == []
+    assert not first.is_alive()
+    assert not waiter.is_alive()
+    assert loader_calls == 2
+    assert len(results) == 2
+    assert all(record.baseline.memories[0].memory_id == "fresh" for record in results)
+    retained = store.get(identity)
+    assert retained is not None
+    assert retained.baseline.memories[0].memory_id == "fresh"
 
 
 def test_host_does_not_prepare_when_plugin_has_no_context_refresh() -> None:
@@ -394,6 +531,83 @@ def test_prepare_exception_degrades_to_stable_internal_issue() -> None:
     assert "secret-provider-response-sentinel" not in snapshot.model_dump_json()
 
 
+def test_oversized_current_text_degrades_once_without_validation_error() -> None:
+    plugin = RecordingMemoryPlugin(baseline=[_item("baseline", "baseline")])
+    host, _ = _host(plugin)
+    state = _state(text="x" * 20_001)
+    host.open_session(identity=_identity(), state=state, trace_store=None)
+
+    first = host.prepare_context(state=state, trace_store=None, cancel_token=None)
+    second = host.prepare_context(state=state, trace_store=None, cancel_token=None)
+
+    assert plugin.prepare_calls == 0
+    assert state.memory_context_prepared is True
+    assert first == second
+    assert [item.memory_id for item in first.memories] == ["baseline"]
+    assert first.error_codes == ["memory_plugin_internal_error"]
+
+
+@pytest.mark.parametrize(
+    "unsafe_kind",
+    [
+        "embedded-path",
+        "memory-id-key",
+        "text-assignment",
+        "nested-metadata-key",
+        "nested-auth-key",
+        "nested-metadata-value",
+    ],
+)
+def test_credential_and_embedded_path_are_rejected_atomically(
+    unsafe_kind: str,
+) -> None:
+    plugin = RecordingMemoryPlugin(
+        baseline=[_item("baseline", "baseline")],
+        prepare_result=_unsafe_contribution(unsafe_kind),
+    )
+    host, _ = _host(plugin)
+    state = _state()
+    host.open_session(identity=_identity(), state=state, trace_store=None)
+
+    snapshot = host.prepare_context(
+        state=state,
+        trace_store=None,
+        cancel_token=None,
+    )
+
+    assert [item.memory_id for item in snapshot.memories] == ["baseline"]
+    assert snapshot.error_codes == ["memory_plugin_invalid_result"]
+
+
+@pytest.mark.parametrize("non_finite", [float("nan"), float("inf"), float("-inf")])
+def test_non_finite_raw_metadata_is_rejected_before_json_roundtrip(
+    non_finite: float,
+) -> None:
+    plugin = RecordingMemoryPlugin(
+        baseline=[_item("baseline", "baseline")],
+        current=[
+            MemoryContextItem(
+                memory_id="non-finite",
+                text="non-finite",
+                source="long_term",
+                metadata={"score": non_finite},
+            )
+        ],
+    )
+    host, _ = _host(plugin)
+    state = _state()
+    host.open_session(identity=_identity(), state=state, trace_store=None)
+
+    snapshot = host.prepare_context(
+        state=state,
+        trace_store=None,
+        cancel_token=None,
+    )
+
+    assert [item.memory_id for item in snapshot.memories] == ["baseline"]
+    assert snapshot.error_codes == ["memory_plugin_invalid_result"]
+
+
 def test_frozen_context_is_not_rewritten_by_plugin_or_caller_mutation() -> None:
     current = _item("turn", "turn")
     plugin = RecordingMemoryPlugin(current=[current])
@@ -411,6 +625,36 @@ def test_frozen_context_is_not_rewritten_by_plugin_or_caller_mutation() -> None:
         ("turn", "turn")
     ]
     assert second == attached
+
+
+def test_state_frozen_copy_cannot_rewrite_host_authoritative_context() -> None:
+    plugin = RecordingMemoryPlugin(current=[_item("turn", "turn")])
+    host, _ = _host(plugin)
+    state = _state()
+    host.open_session(identity=_identity(), state=state, trace_store=None)
+    host.prepare_context(state=state, trace_store=None, cancel_token=None)
+    assert state.frozen_memory_context is not None
+    state.frozen_memory_context.memories.append(_item("forged", "forged"))
+    assert state.session_memory_snapshot is not None
+    state.session_memory_snapshot.memories.append(_item("forged-session", "forged"))
+
+    attached = host.attach_frozen_context(state)
+
+    assert attached is not None
+    assert [item.memory_id for item in attached.memories] == ["turn"]
+
+
+def test_run_memory_flags_are_excluded_from_state_serialization() -> None:
+    state = _state()
+    state.memory_context_prepared = True
+    state.frozen_memory_context = SessionMemorySnapshot(
+        memories=[_item("turn", "turn")]
+    )
+
+    dumped = state.model_dump(mode="python")
+
+    assert "memory_context_prepared" not in dumped
+    assert "frozen_memory_context" not in dumped
 
 
 def _descriptor(*, supports_context_refresh: bool = True) -> MemoryPluginDescriptor:
@@ -479,12 +723,13 @@ def _state(
     user_id: str = "user-sentinel",
     session_id: str = "session-sentinel",
     metadata: dict[str, Any] | None = None,
+    text: str = "request-sentinel",
 ) -> AgentState:
     return AgentState.from_request(
         UserRequest(
             user_id=user_id,
             session_id=session_id,
-            text="request-sentinel",
+            text=text,
             metadata=dict(metadata or {}),
         ),
         run_id=run_id,
@@ -530,3 +775,57 @@ def _invalid_contribution(kind: str) -> MemoryContextContribution:
             )
         ]
     return MemoryContextContribution(items=items, status="succeeded")
+
+
+def _session_record(
+    identity: RequestIdentity,
+    *,
+    memory_id: str,
+) -> MemoryPluginSessionRecord:
+    plugin_identity = bind_memory_plugin_identity(
+        identity,
+        namespace="assistant-agent",
+    )
+    return MemoryPluginSessionRecord(
+        plugin_id="mem0",
+        plugin_version="1.0.0",
+        runtime_identity_key=runtime_memory_identity_key(identity),
+        identity=plugin_identity,
+        memory_session_id="memory-session-sentinel",
+        session_handle="handle-sentinel",
+        baseline=SessionMemorySnapshot(memories=[_item(memory_id, memory_id)]),
+        status="ready",
+    )
+
+
+def _unsafe_contribution(kind: str) -> MemoryContextContribution:
+    if kind == "embedded-path":
+        item = _item("unsafe", "说明路径：/home/user/private-memory.txt")
+    elif kind == "memory-id-key":
+        item = _item("sk-secret-sentinel", "unsafe")
+    elif kind == "text-assignment":
+        item = _item("unsafe", "access_token=credential-sentinel")
+    elif kind == "nested-metadata-key":
+        item = MemoryContextItem(
+            memory_id="unsafe",
+            text="unsafe",
+            source="long_term",
+            metadata={"nested": {"service_access_token": "credential-sentinel"}},
+        )
+    elif kind == "nested-auth-key":
+        item = MemoryContextItem(
+            memory_id="unsafe",
+            text="unsafe",
+            source="long_term",
+            metadata={"nested": {"service_auth": "credential-sentinel"}},
+        )
+    else:
+        item = MemoryContextItem(
+            memory_id="unsafe",
+            text="unsafe",
+            source="long_term",
+            metadata={
+                "nested": [{"value": "Authorization: Bearer credential-sentinel"}]
+            },
+        )
+    return MemoryContextContribution(items=[item], status="succeeded")

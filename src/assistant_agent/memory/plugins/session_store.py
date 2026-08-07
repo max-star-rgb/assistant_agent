@@ -67,7 +67,8 @@ class MemoryPluginSessionStore:
         self._entries: OrderedDict[
             RuntimeMemoryIdentityKey, MemoryPluginSessionRecord
         ] = OrderedDict()
-        self._loading: set[RuntimeMemoryIdentityKey] = set()
+        self._loading: dict[RuntimeMemoryIdentityKey, int] = {}
+        self._epochs: dict[RuntimeMemoryIdentityKey, int] = {}
 
     def resolve(
         self,
@@ -79,11 +80,14 @@ class MemoryPluginSessionStore:
         """Run ``loader`` once for a session and return defensive copies."""
 
         key = runtime_memory_identity_key(identity)
-        with self._condition:
-            if reset:
-                self._entries.pop(key, None)
-            while key in self._loading:
-                self._condition.wait()
+        reset_pending = reset
+        while True:
+            with self._condition:
+                if reset_pending:
+                    self._invalidate(key)
+                    reset_pending = False
+                while key in self._loading:
+                    self._condition.wait()
                 cached = self._entries.get(key)
                 if cached is not None:
                     self._entries.move_to_end(key)
@@ -91,37 +95,41 @@ class MemoryPluginSessionStore:
                         record=_copy_record(cached),
                         status="reused",
                     )
-            cached = self._entries.get(key)
-            if cached is not None:
-                self._entries.move_to_end(key)
-                return MemoryPluginSessionResolution(
-                    record=_copy_record(cached),
-                    status="reused",
-                )
-            self._loading.add(key)
+                load_epoch = self._epochs.get(key, 0)
+                self._loading[key] = load_epoch
 
-        try:
-            loaded = loader()
-            if loaded.runtime_identity_key != key:
-                raise ValueError("memory plugin session identity mismatch")
-            frozen = _copy_record(loaded)
-        except Exception:
+            try:
+                loaded = loader()
+                if loaded.runtime_identity_key != key:
+                    raise ValueError("memory plugin session identity mismatch")
+                frozen = _copy_record(loaded)
+            except BaseException as error:
+                with self._condition:
+                    stale = self._epochs.get(key, 0) != load_epoch
+                    if self._loading.get(key) == load_epoch:
+                        self._loading.pop(key, None)
+                    self._condition.notify_all()
+                if stale and isinstance(error, Exception):
+                    continue
+                raise
+
             with self._condition:
-                self._loading.discard(key)
+                if self._epochs.get(key, 0) != load_epoch:
+                    if self._loading.get(key) == load_epoch:
+                        self._loading.pop(key, None)
+                    self._condition.notify_all()
+                    continue
+                self._entries[key] = frozen
+                self._entries.move_to_end(key)
+                while len(self._entries) > self.max_entries:
+                    self._entries.popitem(last=False)
+                if self._loading.get(key) == load_epoch:
+                    self._loading.pop(key, None)
                 self._condition.notify_all()
-            raise
-
-        with self._condition:
-            self._entries[key] = frozen
-            self._entries.move_to_end(key)
-            while len(self._entries) > self.max_entries:
-                self._entries.popitem(last=False)
-            self._loading.discard(key)
-            self._condition.notify_all()
-        return MemoryPluginSessionResolution(
-            record=_copy_record(frozen),
-            status="loaded",
-        )
+            return MemoryPluginSessionResolution(
+                record=_copy_record(frozen),
+                status="loaded",
+            )
 
     def get(self, identity: RequestIdentity) -> MemoryPluginSessionRecord | None:
         key = runtime_memory_identity_key(identity)
@@ -134,25 +142,31 @@ class MemoryPluginSessionStore:
 
     def clear_session(self, *, user_id: str, session_id: str) -> int:
         with self._condition:
-            keys = [
+            keys = {
                 key
-                for key in self._entries
+                for key in (*self._entries, *self._loading)
                 if key[0] == user_id and key[2] == session_id
-            ]
+            }
             for key in keys:
-                self._entries.pop(key, None)
+                self._invalidate(key)
+            self._condition.notify_all()
             return len(keys)
 
     def clear_user(self, *, user_id: str, agent_id: str | None = None) -> int:
         with self._condition:
-            keys = [
+            keys = {
                 key
-                for key in self._entries
+                for key in (*self._entries, *self._loading)
                 if key[0] == user_id and (agent_id is None or key[1] == agent_id)
-            ]
+            }
             for key in keys:
-                self._entries.pop(key, None)
+                self._invalidate(key)
+            self._condition.notify_all()
             return len(keys)
+
+    def _invalidate(self, key: RuntimeMemoryIdentityKey) -> None:
+        self._entries.pop(key, None)
+        self._epochs[key] = self._epochs.get(key, 0) + 1
 
 
 def runtime_memory_identity_key(

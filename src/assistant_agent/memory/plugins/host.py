@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FutureTimeout
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from threading import Condition
 from time import monotonic, perf_counter
 from typing import Any, TypeVar
 
@@ -51,16 +53,32 @@ from assistant_agent.runtime.state import AgentState
 
 
 _ModelT = TypeVar("_ModelT", bound=BaseModel)
+_RunMemoryKey = tuple[str, str, str, str]
 _SAFE_CODE_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,127}$")
 _ABSOLUTE_PATH_RE = re.compile(
-    r"(?:^|[\s('\"=])(?:/(?:[^/\s]+/)*[^/\s]+|[A-Za-z]:[\\/][^\s]+)"
+    r"(?:^/(?!/)[^\s]+"
+    r"|/(?:home|root|tmp|var|etc|usr|opt|srv|mnt|media|Users|private)"
+    r"(?:/[^/\s]+)+"
+    r"|(?<![A-Za-z0-9])[A-Za-z]:[\\/][^\s]+)"
 )
 _BASE64_RE = re.compile(
     r"(?:[A-Za-z0-9+/]{80,}={0,2}|data:[^;\s]+;base64,)", re.IGNORECASE
 )
+_SECRET_ASSIGNMENT_RE = re.compile(
+    r"(?:api[_-]?key|auth(?:orization)?|access[_-]?token|refresh[_-]?token|"
+    r"credential(?:s)?|password|secret(?:[_-]?token)?|token)"
+    r"\s*[:=]\s*(?:bearer\s+)?[^\s,;]{4,}",
+    re.IGNORECASE,
+)
+_BEARER_RE = re.compile(r"\bbearer\s+[A-Za-z0-9._~+/-]{4,}", re.IGNORECASE)
+_KEY_PREFIX_RE = re.compile(
+    r"(?<![A-Za-z0-9])(?:sk|pk)-[A-Za-z0-9_-]{4,}", re.IGNORECASE
+)
 _BLOCKED_METADATA_KEYS = frozenset(
     {
         "api_key",
+        "access_token",
+        "auth",
         "authorization",
         "base64",
         "bytes",
@@ -74,7 +92,24 @@ _BLOCKED_METADATA_KEYS = frozenset(
         "prompt_patch",
         "role",
         "secret",
+        "secret_token",
         "system_prompt",
+        "token",
+        "refresh_token",
+    }
+)
+_CREDENTIAL_METADATA_KEYS = frozenset(
+    {
+        "api_key",
+        "access_token",
+        "auth",
+        "authorization",
+        "credential",
+        "credentials",
+        "password",
+        "refresh_token",
+        "secret",
+        "secret_token",
         "token",
     }
 )
@@ -157,6 +192,9 @@ class MemoryPluginHost:
             max_workers=4,
             thread_name_prefix="assistant-memory-plugin",
         )
+        self._run_condition = Condition()
+        self._preparing_runs: set[_RunMemoryKey] = set()
+        self._frozen_run_contexts: dict[_RunMemoryKey, SessionMemorySnapshot] = {}
 
     @property
     def active_plugin(self):  # type: ignore[no-untyped-def]
@@ -210,23 +248,51 @@ class MemoryPluginHost:
         """Recall at most once for this run and freeze the merged contribution."""
 
         del trace_store  # Task 5 owns the expanded Plugin observability projection.
-        if state.memory_context_prepared:
-            attached = self.attach_frozen_context(state=state)
-            return attached or SessionMemorySnapshot(
-                status="unavailable",
-                error_codes=[MEMORY_PLUGIN_UNAVAILABLE],
-            )
+        run_key = _run_memory_key(state)
+        with self._run_condition:
+            while True:
+                frozen = self._frozen_run_contexts.get(run_key)
+                if frozen is not None:
+                    return self._publish_snapshot_to_state(state, frozen)
+                if run_key not in self._preparing_runs:
+                    self._preparing_runs.add(run_key)
+                    break
+                self._run_condition.wait()
 
+        try:
+            try:
+                snapshot = self._prepare_context_once(
+                    state=state,
+                    cancel_token=cancel_token,
+                )
+            except Exception:
+                snapshot = self._internal_prepare_fallback(state)
+            frozen = snapshot.model_copy(deep=True)
+        except BaseException:
+            with self._run_condition:
+                self._preparing_runs.discard(run_key)
+                self._run_condition.notify_all()
+            raise
+
+        with self._run_condition:
+            self._frozen_run_contexts[run_key] = frozen
+            self._preparing_runs.discard(run_key)
+            self._run_condition.notify_all()
+        return self._publish_snapshot_to_state(state, frozen)
+
+    def _prepare_context_once(
+        self,
+        *,
+        state: AgentState,
+        cancel_token: Any | None,
+    ) -> SessionMemorySnapshot:
         identity = _identity_from_state(state)
         record = self.session_store.get(identity)
         if record is None:
-            return self._freeze_for_run(
-                state,
-                SessionMemorySnapshot(
-                    plugin_id=self.active_plugin.descriptor.plugin_id,
-                    status="unavailable",
-                    error_codes=[MEMORY_PLUGIN_UNAVAILABLE],
-                ),
+            return SessionMemorySnapshot(
+                plugin_id=self.active_plugin.descriptor.plugin_id,
+                status="unavailable",
+                error_codes=[MEMORY_PLUGIN_UNAVAILABLE],
             )
 
         descriptor = self.active_plugin.descriptor
@@ -234,25 +300,16 @@ class MemoryPluginHost:
             record.plugin_id != descriptor.plugin_id
             or record.plugin_version != descriptor.plugin_version
         ):
-            return self._freeze_for_run(
-                state,
-                _fallback_snapshot(record, MEMORY_PLUGIN_UNAVAILABLE),
-            )
+            return _fallback_snapshot(record, MEMORY_PLUGIN_UNAVAILABLE)
         if not descriptor.capabilities.supports_context_refresh:
-            return self._freeze_for_run(state, record.baseline)
+            return record.baseline.model_copy(deep=True)
 
         token = _DelegatingCancellationToken(cancel_token)
         if token.is_cancelled():
-            return self._freeze_for_run(
-                state,
-                _fallback_snapshot(record, MEMORY_PLUGIN_UNAVAILABLE),
-            )
+            return _fallback_snapshot(record, MEMORY_PLUGIN_UNAVAILABLE)
         current_text = state.request.text
         if not isinstance(current_text, str) or not current_text:
-            return self._freeze_for_run(
-                state,
-                _fallback_snapshot(record, MEMORY_PLUGIN_INTERNAL_ERROR),
-            )
+            return _fallback_snapshot(record, MEMORY_PLUGIN_INTERNAL_ERROR)
 
         media_refs, media_issues = self._resolve_request_media(
             state=state,
@@ -280,13 +337,10 @@ class MemoryPluginHost:
             cancellation=token,
         )
         if failure_code is not None:
-            return self._freeze_for_run(
-                state,
-                _fallback_snapshot(
-                    record,
-                    failure_code,
-                    extra_codes=[issue.code for issue in media_issues],
-                ),
+            return _fallback_snapshot(
+                record,
+                failure_code,
+                extra_codes=[issue.code for issue in media_issues],
             )
 
         contribution = self._validated_contribution(
@@ -295,16 +349,13 @@ class MemoryPluginHost:
             owner_scope=record.identity.session_id,
         )
         if contribution is None:
-            return self._freeze_for_run(
-                state,
-                _fallback_snapshot(
-                    record,
-                    MEMORY_PLUGIN_INVALID_RESULT,
-                    extra_codes=[issue.code for issue in media_issues],
-                ),
+            return _fallback_snapshot(
+                record,
+                MEMORY_PLUGIN_INVALID_RESULT,
+                extra_codes=[issue.code for issue in media_issues],
             )
         merged = _merge_items(record.baseline.memories, contribution.items)
-        snapshot = SessionMemorySnapshot(
+        return SessionMemorySnapshot(
             memories=merged,
             plugin_id=record.plugin_id,
             status=contribution.status,
@@ -316,7 +367,6 @@ class MemoryPluginHost:
                 ]
             ),
         )
-        return self._freeze_for_run(state, snapshot)
 
     def attach_frozen_context(
         self,
@@ -324,16 +374,46 @@ class MemoryPluginHost:
     ) -> SessionMemorySnapshot | None:
         """Attach an independent copy of this run's immutable source snapshot."""
 
-        frozen = state.frozen_memory_context
+        run_key = _run_memory_key(state)
+        with self._run_condition:
+            while run_key in self._preparing_runs:
+                self._run_condition.wait()
+            frozen = self._frozen_run_contexts.get(run_key)
         if frozen is None:
             record = self.session_store.get(_identity_from_state(state))
             if record is None:
                 state.session_memory_snapshot = None
                 return None
             frozen = record.baseline.model_copy(deep=True)
-        attached = frozen.model_copy(deep=True)
-        state.session_memory_snapshot = attached
-        return attached.model_copy(deep=True)
+            state.session_memory_snapshot = frozen.model_copy(deep=True)
+            return frozen.model_copy(deep=True)
+        return self._publish_snapshot_to_state(state, frozen)
+
+    def _internal_prepare_fallback(
+        self,
+        state: AgentState,
+    ) -> SessionMemorySnapshot:
+        try:
+            record = self.session_store.get(_identity_from_state(state))
+        except Exception:
+            record = None
+        if record is not None:
+            return _fallback_snapshot(record, MEMORY_PLUGIN_INTERNAL_ERROR)
+        return SessionMemorySnapshot(
+            plugin_id=self.active_plugin.descriptor.plugin_id,
+            status="degraded",
+            error_codes=[MEMORY_PLUGIN_INTERNAL_ERROR],
+        )
+
+    @staticmethod
+    def _publish_snapshot_to_state(
+        state: AgentState,
+        snapshot: SessionMemorySnapshot,
+    ) -> SessionMemorySnapshot:
+        state.frozen_memory_context = snapshot.model_copy(deep=True)
+        state.session_memory_snapshot = snapshot.model_copy(deep=True)
+        state.memory_context_prepared = True
+        return snapshot.model_copy(deep=True)
 
     def _open_record(
         self,
@@ -426,6 +506,8 @@ class MemoryPluginHost:
         descriptor: MemoryPluginDescriptor,
         owner_scope: str,
     ) -> MemorySessionOpenResult | None:
+        if not _raw_open_metadata_is_finite(raw):
+            return None
         result = _round_trip_model(raw, MemorySessionOpenResult)
         if result is None:
             return None
@@ -471,6 +553,8 @@ class MemoryPluginHost:
         descriptor: MemoryPluginDescriptor,
         owner_scope: str,
     ) -> MemoryContextContribution | None:
+        if not _raw_contribution_metadata_is_finite(raw):
+            return None
         contribution = _round_trip_model(raw, MemoryContextContribution)
         if contribution is None:
             return None
@@ -581,17 +665,6 @@ class MemoryPluginHost:
                 return None, MEMORY_PLUGIN_UNAVAILABLE
             return result, None
 
-    def _freeze_for_run(
-        self,
-        state: AgentState,
-        snapshot: SessionMemorySnapshot,
-    ) -> SessionMemorySnapshot:
-        state.frozen_memory_context = snapshot.model_copy(deep=True)
-        state.memory_context_prepared = True
-        attached = self.attach_frozen_context(state=state)
-        assert attached is not None
-        return attached
-
     def _now(self) -> datetime:
         value = self._clock()
         if not isinstance(value, datetime) or value.tzinfo is None:
@@ -698,9 +771,13 @@ def _source_allowed(
 
 def _forbidden_metadata(value: Any, *, key: str | None = None) -> bool:
     if key is not None:
-        normalized = key.strip().lower()
-        if normalized in _BLOCKED_METADATA_KEYS or normalized.endswith(
-            ("_base64", "_bytes", "_blob", "_data_uri")
+        normalized = re.sub(r"[^a-z0-9]+", "_", key.strip().lower()).strip("_")
+        if (
+            normalized in _BLOCKED_METADATA_KEYS
+            or normalized.endswith(
+                tuple(f"_{blocked}" for blocked in _CREDENTIAL_METADATA_KEYS)
+            )
+            or normalized.endswith(("_base64", "_bytes", "_blob", "_data_uri"))
         ):
             return True
     if isinstance(value, str):
@@ -720,10 +797,57 @@ def _forbidden_string(value: str) -> bool:
     if not isinstance(value, str):
         return True
     return bool(
-        value.lower().startswith("file://")
+        "file://" in value.lower()
         or _ABSOLUTE_PATH_RE.search(value)
         or _BASE64_RE.search(value)
+        or _SECRET_ASSIGNMENT_RE.search(value)
+        or _BEARER_RE.search(value)
+        or _KEY_PREFIX_RE.search(value)
     )
+
+
+def _raw_open_metadata_is_finite(raw: object) -> bool:
+    if type(raw) is not MemorySessionOpenResult:
+        return True
+    try:
+        if not _has_exact_model_shape(raw, MemorySessionOpenResult):
+            return True
+        values = object.__getattribute__(raw, "__dict__")
+        contribution = dict.__getitem__(values, "initial_contribution")
+    except Exception:
+        return False
+    return contribution is None or _raw_contribution_metadata_is_finite(contribution)
+
+
+def _raw_contribution_metadata_is_finite(raw: object) -> bool:
+    if type(raw) is not MemoryContextContribution:
+        return True
+    try:
+        if not _has_exact_model_shape(raw, MemoryContextContribution):
+            return True
+        values = object.__getattribute__(raw, "__dict__")
+        items = dict.__getitem__(values, "items")
+        for item in items:
+            item_values = object.__getattribute__(item, "__dict__")
+            metadata = dict.__getitem__(item_values, "metadata")
+            if _contains_non_finite(metadata):
+                return False
+    except Exception:
+        return False
+    return True
+
+
+def _contains_non_finite(value: Any) -> bool:
+    if isinstance(value, float):
+        return not math.isfinite(value)
+    if isinstance(value, dict):
+        return any(
+            _contains_non_finite(item_key) or _contains_non_finite(item_value)
+            for item_key, item_value in value.items()
+        )
+    if isinstance(value, (list, tuple)):
+        return any(_contains_non_finite(item) for item in value)
+    return False
 
 
 def _fallback_snapshot(
@@ -782,3 +906,7 @@ def _identity_from_state(state: AgentState) -> RequestIdentity:
         agent_id=state.agent_id,
         session_id=state.session_id,
     )
+
+
+def _run_memory_key(state: AgentState) -> _RunMemoryKey:
+    return state.user_id, state.agent_id, state.session_id, state.run_id

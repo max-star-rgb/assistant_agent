@@ -48,7 +48,7 @@ class AgentState(BaseModel):
         default=None,
         exclude=True,
     )
-    memory_context_prepared: bool = False
+    memory_context_prepared: bool = Field(default=False, exclude=True)
     context_source_result: ContextSourceResult = Field(default_factory=ContextSourceResult)
     perception: PerceptionBundle | None = None
     intent: IntentResult | None = None
