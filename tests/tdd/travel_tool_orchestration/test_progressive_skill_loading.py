@@ -250,6 +250,23 @@ def test_load_skill_returns_complete_travel_planning_workflow() -> None:
     assert "## Procedure" in result.data["content"]
     assert "## Pitfalls" in result.data["content"]
     assert "## Verification" in result.data["content"]
+    assert [
+        line
+        for line in result.data["content"].splitlines()
+        if line.startswith("## ")
+    ] == [
+        "## When to Use",
+        "## When Not to Use",
+        "## Decision Rules",
+        "## Quick Reference",
+        "## Procedure",
+        "## Output Contract",
+        "## Pitfalls",
+        "## Verification",
+        "## Governed Tools",
+        "## Permissions",
+        "## Visibility",
+    ]
 
 
 def test_load_skill_reference_requires_successful_load_in_same_run() -> None:
