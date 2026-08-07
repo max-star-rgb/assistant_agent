@@ -52,9 +52,10 @@ For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
   补跑更早的失败或遗漏日期；Langfuse 是主证据，本地 trace 只做完整性、auxiliary 聚合与有限 fallback。完整
   审计 bundle 留在 inbox；第三层只列异常 trace，没有异常时不调用 Codex，有异常时 Codex 只审计这些 trace，
   不读取完整 bundle 或其他正常 trace。人读结果只写
-  `.data/runtime_audit/reports/YYYY-MM-DD.md`，内部 JSON 留在 inbox/state；已确认的空日生成极简中文日报且
-  不调用 Codex。`run --date YYYY-MM-DD` 只刷新当日日报并执行只读 lifecycle/evidence 校验，不改变连续
-  issue registry 或 watermark。其他完整参数见 `--help` 与
+  `.data/runtime_audit/reports/YYYY-MM-DD.md`；第二层为 `inbox/YYYY-MM-DD.bundle.json`，第三层为
+  `state/codex-inputs/YYYY-MM-DD.codex-input.json`。三份正式产物按被审计日期一一对应，运行时间只保留在
+  attempt metadata。已确认的空日生成极简中文日报且不调用 Codex。`run --date YYYY-MM-DD` 对已完成日期
+  默认跳过；显式 `--force` 才会刷新同日正式产物，并且不改变连续 issue registry 或 watermark。其他完整参数见 `--help` 与
   [`docs/observability-harness.md`](../docs/observability-harness.md)。systemd 需要本地代理时，将无凭据的
   loopback proxy 写入未跟踪的 `%h/.config/assistant_agent/runtime-audit.env`；不要把代理凭据写进仓库。
 - Gateway lifecycle 由 `scripts/run_server.py` 写入 `.data/gateway_events.jsonl`；仓库当前没有

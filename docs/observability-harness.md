@@ -354,7 +354,8 @@ infrastructure unknown，不能把本地记录误报为导出缺失。本地 JSO
 
 审计以 `state/watermark.json` 记录最近一次自动审计成功的自然日。无参数 `run` 永远只考虑刚结束的
 昨天：昨天尚未成功时审计昨天，昨天已经成功时不重复运行；错过调度、机器离线或前一日失败都不会
-自动补跑更早日期。若需要复查更早日期，必须由 operator 显式使用 `run --date YYYY-MM-DD`。若某日已确认
+自动补跑更早日期。`run --date YYYY-MM-DD` 默认同样幂等：该日期已完成时直接跳过；确需重新审计时必须
+显式使用 `run --date YYYY-MM-DD --force`，`--force` 不允许省略日期。若某日已确认
 Langfuse 和本地完整性来源都可读、且没有任何 trace 或本地证据，会写入一份极简中文成功日报，
 并且不调用 Codex。显式日期命令只
 以当前 registry 建立只读 lifecycle refresh view 并刷新对应 Markdown，不写 `state/issues.json`，也不
@@ -363,8 +364,9 @@ Langfuse 和本地完整性来源都可读、且没有任何 trace 或本地证�
 
 产物固定写入 `.data/runtime_audit/`：
 
-- `inbox/<audit_run_id>.json`：版本化、只读的内部 audit bundle；
-- `state/codex-inputs/`：交给 Codex 的有界异常索引；
+- `inbox/YYYY-MM-DD.bundle.json`：按被审计日期命名的只读完整 audit bundle；
+- `state/codex-inputs/YYYY-MM-DD.codex-input.json`：同日交给 Codex 的有界异常索引；
+- `state/staging/`：运行中或失败 attempt 的临时证据，成功发布后清理；
 - `state/attempts/`、`state/issues.json`、`state/watermark.json`：内部尝试记录、issue registry 与最近成功检查点；
 - `reports/YYYY-MM-DD.md`：唯一面向人的日报；`reports/` 不放内部 JSON。
 
@@ -387,10 +389,11 @@ bundle 路径，也不得浏览或评价其他正常 trace。索引以 350,000 b
 中的大 input/output 内容，同时保留 observation 身份、大小和省略原因。结构本身仍超限则审计失败，不能
 静默丢失异常范围。
 
-每个日期的状态机为 `running -> succeeded` 或 `running -> failed`。成功时先以 journal 校验
-日报、issue registry 和 watermark 的前置条件，再原子推进状态；中断后的待提交 journal 会在下次
-运行先恢复，冲突的旧 journal 会隔离。失败会保留内部 bundle，并写入“审计未完成”的失败日报；它不会
-覆盖已有成功日报，也不会推进 issue registry 或 watermark。
+每个日期的状态机为 `running -> succeeded` 或 `running -> failed`。`attempt_id` 仍保存实际运行时间，
+但不进入三份正式产物的文件名。运行时先写 staging；成功时以 journal 校验日报、issue registry 和
+watermark 的前置条件，再把第二层、第三层和日报按单文件原子写、整体可恢复的方式发布到同一个日期。中断后的待提交 journal 会在下次
+运行先恢复，冲突的旧 journal 会隔离。失败只保留内部 attempt/staging 诊断证据；它不会覆盖同日已有成功
+bundle、Codex input 或日报，也不会推进 issue registry 或 watermark。
 
 发布 Markdown 前必须从 previous/merged 或手工 refresh registry 生成确定性 issue view：持续
 `open`、`regressed`、`code_addressed` 和 `uncertain` 不因 Codex 当日漏发而消失；`uncertain` 只进入

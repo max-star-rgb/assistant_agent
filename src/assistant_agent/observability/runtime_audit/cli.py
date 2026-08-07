@@ -54,6 +54,8 @@ def main(argv: list[str] | None = None) -> int:
     repo_root = Path(args.repo_root).resolve()
     store = RuntimeAuditArtifactStore(repo_root / args.artifact_root)
     try:
+        if args.command == "run" and args.force and args.date is None:
+            raise ValueError("--force requires an explicit --date.")
         if args.command == "run" and args.window_hours is None and args.dry_run:
             return _daily_dry_run(args, store=store)
         if args.command in {"collect", "run"} and args.dry_run:
@@ -145,7 +147,11 @@ def main(argv: list[str] | None = None) -> int:
 
 def _daily_dry_run(args, *, store: RuntimeAuditArtifactStore) -> int:
     if args.date is not None:
-        dates = [args.date]
+        dates = (
+            [args.date]
+            if args.force or not store.is_day_completed(args.date)
+            else []
+        )
     else:
         yesterday = previous_day_window(datetime.now(timezone.utc)).audit_date
         from assistant_agent.observability.runtime_audit.daily_window import pending_audit_dates
@@ -175,9 +181,16 @@ def _run_daily(args, *, repo_root: Path, store: RuntimeAuditArtifactStore) -> in
     collected_at = datetime.now(timezone.utc)
     recover_pending_daily_commits(store)
     yesterday = previous_day_window(collected_at).audit_date
-    dates = [args.date] if args.date is not None else pending_audit_dates(
-        yesterday=yesterday, last_completed=store.last_completed_date()
-    )
+    if args.date is not None:
+        dates = (
+            [args.date]
+            if args.force or not store.is_day_completed(args.date)
+            else []
+        )
+    else:
+        dates = pending_audit_dates(
+            yesterday=yesterday, last_completed=store.last_completed_date()
+        )
     if not dates:
         print(json.dumps({"audit_dates": [], "report_paths": [], "failed_date": None}))
         return 0
@@ -365,6 +378,7 @@ def _parser() -> argparse.ArgumentParser:
         child.add_argument("--dry-run", action="store_true")
         if name == "run":
             child.add_argument("--skip-codex", action="store_true")
+            child.add_argument("--force", action="store_true")
             child.add_argument("--codex-timeout-seconds", type=float, default=900.0)
     report = subparsers.add_parser("report")
     report.add_argument("--bundle")

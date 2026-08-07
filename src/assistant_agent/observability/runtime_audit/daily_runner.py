@@ -128,7 +128,7 @@ def _run_one_locked(
     ):
         raise ValueError("daily commit target must be newer than its predecessor")
     attempt_id = store.allocate_audit_run_id(collected_at)
-    bundle_path = store.inbox_dir / f"{attempt_id}.json"
+    bundle_path = store.staged_daily_bundle_path(attempt_id)
     running = DailyAuditAttempt(
         attempt_id=attempt_id,
         audit_date=window.audit_date,
@@ -143,8 +143,8 @@ def _run_one_locked(
             collected_at=collected_at, audit_run_id=attempt_id,
             judge_grace=judge_grace, low_score_threshold=low_score_threshold,
         )
-        bundle_path = store.write_bundle(bundle)
-        codex_input_path = store.write_codex_input(
+        bundle_path = store.write_staged_daily_bundle(bundle)
+        codex_input_path = store.write_staged_daily_codex_input(
             attempt_id,
             build_daily_codex_input(bundle),
         )
@@ -334,7 +334,7 @@ def run_failed_daily_audit(
     with store.daily_claim():
         _recover_pending_commits(store)
         attempt_id = store.allocate_audit_run_id(collected_at)
-        bundle_path = store.inbox_dir / f"{attempt_id}.json"
+        bundle_path = store.staged_daily_bundle_path(attempt_id)
         attempt = DailyAuditAttempt(
             attempt_id=attempt_id, audit_date=window.audit_date, status="running",
             bundle_path=str(bundle_path), codex_output_path=str(store.codex_json_path(attempt_id)),
@@ -358,7 +358,7 @@ def run_failed_pending_daily_audit(
             return None
         audit_date = dates[0]
         attempt_id = store.allocate_audit_run_id(collected_at)
-        bundle_path = store.inbox_dir / f"{attempt_id}.json"
+        bundle_path = store.staged_daily_bundle_path(attempt_id)
         attempt = DailyAuditAttempt(
             attempt_id=attempt_id,
             audit_date=audit_date,
@@ -406,7 +406,8 @@ def _commit_success(
             error_summary=sanitize_runtime_audit_text(exc), publish_failure=True,
         )
     return DailyAuditRunResult(audit_date=attempt.audit_date, status="succeeded",
-                               attempt_id=attempt.attempt_id, bundle_path=bundle_path,
+                               attempt_id=attempt.attempt_id,
+                               bundle_path=store.daily_bundle_path(attempt.audit_date),
                                report_path=report_path)
 
 
@@ -426,12 +427,17 @@ def _apply_commit_intent(
 ) -> Path:
     attempt = intent.attempt
     if not intent.commit_continuous_state:
+        bundle_path, codex_input_path = store.publish_daily_evidence(attempt)
+        succeeded = _succeeded_attempt(
+            attempt,
+            bundle_path=bundle_path,
+            codex_input_path=codex_input_path,
+        )
         report_path = store.write_daily_report(
             attempt.audit_date, intent.markdown, replace=True
         )
-        store.write_attempt(
-            attempt.model_copy(update={"status": "succeeded", "error_summary": None})
-        )
+        store.write_attempt(succeeded)
+        store.clear_staged_daily_evidence(attempt)
         store.clear_commit_intent(attempt.attempt_id)
         return report_path
     current_watermark = store.read_daily_watermark()
@@ -466,16 +472,38 @@ def _apply_commit_intent(
         raise DailyCommitIntentRejected(
             "daily commit intent desired registry digest is invalid"
         )
+    bundle_path, codex_input_path = store.publish_daily_evidence(attempt)
+    succeeded = _succeeded_attempt(
+        attempt,
+        bundle_path=bundle_path,
+        codex_input_path=codex_input_path,
+    )
     report_path = store.write_daily_report(attempt.audit_date, intent.markdown, replace=True)
     if registry is not None and current_digest != desired:
         store.write_issue_registry(IssueRegistry.model_validate(registry.model_dump()))
-    succeeded = attempt.model_copy(update={"status": "succeeded", "error_summary": None})
     store.write_attempt(succeeded)
     if current_date != attempt.audit_date:
         store.mark_day_completed(attempt.audit_date, attempt_id=attempt.attempt_id,
-                                 bundle_path=attempt.bundle_path)
+                                 bundle_path=str(bundle_path))
+    store.clear_staged_daily_evidence(attempt)
     store.clear_commit_intent(attempt.attempt_id)
     return report_path
+
+
+def _succeeded_attempt(
+    attempt: DailyAuditAttempt,
+    *,
+    bundle_path: Path,
+    codex_input_path: Path,
+) -> DailyAuditAttempt:
+    return attempt.model_copy(
+        update={
+            "status": "succeeded",
+            "error_summary": None,
+            "bundle_path": str(bundle_path),
+            "codex_input_path": str(codex_input_path),
+        }
+    )
 
 
 def _fail(

@@ -977,11 +977,12 @@ def test_nonempty_daily_run_collects_invokes_codex_and_publishes_markdown(
     """Would fail if a nonempty day skipped its isolated human audit or report."""
 
     calls: list[dict[str, object]] = []
+    store = RuntimeAuditArtifactStore(tmp_path / "runtime_audit")
     result = run_one_daily_audit(
         window=window_for_date(date(2026, 8, 5)),
         source=FakeLangfuseSource([_daily_trace()]),
         local_trace_path=tmp_path / "graph_trace.jsonl",
-        store=RuntimeAuditArtifactStore(tmp_path / "runtime_audit"),
+        store=store,
         repo_root=tmp_path,
         codex_runner=lambda **kwargs: calls.append(kwargs) or _daily_codex_report(),
         collected_at=datetime(2026, 8, 6, 0, 15, tzinfo=timezone.utc),
@@ -992,7 +993,14 @@ def test_nonempty_daily_run_collects_invokes_codex_and_publishes_markdown(
     codex_input_path = Path(calls[0]["bundle_path"])
     assert codex_input_path != result.bundle_path
     assert codex_input_path.name.endswith(".codex-input.json")
-    assert json.loads(codex_input_path.read_text(encoding="utf-8"))["schema_version"] == (
+    assert result.bundle_path == store.daily_bundle_path(date(2026, 8, 5))
+    assert result.bundle_path.name == "2026-08-05.bundle.json"
+    assert store.daily_codex_input_path(date(2026, 8, 5)).name == (
+        "2026-08-05.codex-input.json"
+    )
+    assert json.loads(
+        store.daily_codex_input_path(date(2026, 8, 5)).read_text(encoding="utf-8")
+    )["schema_version"] == (
         "assistant_agent_daily_codex_input_v1"
     )
     assert json.loads(result.bundle_path.read_text(encoding="utf-8"))["schema_version"] == (
@@ -1001,7 +1009,7 @@ def test_nonempty_daily_run_collects_invokes_codex_and_publishes_markdown(
     assert result.report_path is not None
     assert result.report_path.name == "2026-08-05.md"
     assert result.report_path.exists()
-    assert RuntimeAuditArtifactStore(tmp_path / "runtime_audit").last_completed_date() == date(2026, 8, 5)
+    assert store.last_completed_date() == date(2026, 8, 5)
 
 
 def test_empty_daily_run_does_not_invoke_codex(tmp_path: Path) -> None:
@@ -1314,6 +1322,8 @@ def test_rerun_replaces_success_only_after_a_new_success(tmp_path: Path) -> None
     )
     assert first.status == "succeeded"
     successful_report = store.daily_report_path(date(2026, 8, 5)).read_text(encoding="utf-8")
+    successful_bundle = store.daily_bundle_path(date(2026, 8, 5)).read_bytes()
+    successful_codex_input = store.daily_codex_input_path(date(2026, 8, 5)).read_bytes()
 
     failed = run_one_daily_audit(
         **common,
@@ -1323,6 +1333,11 @@ def test_rerun_replaces_success_only_after_a_new_success(tmp_path: Path) -> None
 
     assert failed.status == "failed"
     assert store.daily_report_path(date(2026, 8, 5)).read_text(encoding="utf-8") == successful_report
+    assert store.daily_bundle_path(date(2026, 8, 5)).read_bytes() == successful_bundle
+    assert (
+        store.daily_codex_input_path(date(2026, 8, 5)).read_bytes()
+        == successful_codex_input
+    )
 
     replacement = _daily_codex_report().model_copy(update={"daily_summary": "刷新后的结论。"})
     refreshed = run_one_daily_audit(
@@ -1567,7 +1582,12 @@ def test_interrupted_continuous_commit_recovers_from_intent(
     )
     assert recovered_attempt.status == "succeeded"
     assert recovered_attempt.error_summary is None
-    assert recovered_attempt.bundle_path == intent["attempt"]["bundle_path"]
+    assert recovered_attempt.bundle_path == str(
+        store.daily_bundle_path(date(2026, 8, 5))
+    )
+    assert recovered_attempt.codex_input_path == str(
+        store.daily_codex_input_path(date(2026, 8, 5))
+    )
     watermark = store.read_daily_watermark()
     assert watermark is not None
     assert watermark.last_completed_date == date(2026, 8, 5)
@@ -2007,6 +2027,103 @@ def test_auto_run_with_no_pending_day_does_not_create_source(
         "report_paths": [],
         "failed_date": None,
     }
+
+
+def test_completed_explicit_date_is_idempotent_without_force(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Would fail if an ordinary explicit command regenerated a completed day."""
+
+    store = RuntimeAuditArtifactStore(tmp_path / ".data/runtime_audit")
+    store.mark_day_completed(
+        date(2026, 8, 5), attempt_id="complete", bundle_path="/tmp/complete"
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "create_langfuse_audit_source_from_env",
+        lambda _: pytest.fail("completed explicit date must not create a source"),
+    )
+
+    exit_code = main(
+        [
+            "--no-env-file",
+            "--repo-root",
+            str(tmp_path),
+            "run",
+            "--date",
+            "2026-08-05",
+        ]
+    )
+
+    assert exit_code == 0
+    assert json.loads(capsys.readouterr().out) == {
+        "audit_dates": [],
+        "report_paths": [],
+        "failed_date": None,
+    }
+
+
+def test_force_reaudits_completed_explicit_date_into_one_canonical_file_set(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Would fail if --force either skipped the day or created timestamped outputs."""
+
+    artifact_root = tmp_path / ".data/runtime_audit"
+    store = RuntimeAuditArtifactStore(artifact_root)
+    store.mark_day_completed(
+        date(2026, 8, 5), attempt_id="complete", bundle_path="/tmp/complete"
+    )
+    local_trace_path = tmp_path / ".data/graph_trace.jsonl"
+    local_trace_path.parent.mkdir(parents=True, exist_ok=True)
+    local_trace_path.write_text("", encoding="utf-8")
+
+    class EmptySource(FakeLangfuseSource):
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(
+        cli_module,
+        "create_langfuse_audit_source_from_env",
+        lambda _: EmptySource([]),
+    )
+
+    exit_code = main(
+        [
+            "--no-env-file",
+            "--repo-root",
+            str(tmp_path),
+            "run",
+            "--date",
+            "2026-08-05",
+            "--force",
+        ]
+    )
+
+    assert exit_code == 0
+    assert json.loads(capsys.readouterr().out)["audit_dates"] == ["2026-08-05"]
+    assert [path.name for path in store.inbox_dir.glob("*.json")] == [
+        "2026-08-05.bundle.json"
+    ]
+    assert [path.name for path in store.codex_inputs_dir.glob("*.json")] == [
+        "2026-08-05.codex-input.json"
+    ]
+    assert store.daily_report_path(date(2026, 8, 5)).exists()
+
+
+def test_force_requires_an_explicit_date(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Would fail if --force could accidentally rerun an implicit day."""
+
+    assert main(
+        ["--no-env-file", "--repo-root", str(tmp_path), "run", "--force"]
+    ) == 2
+    assert json.loads(capsys.readouterr().err)["error_type"] == "ValueError"
 
 
 def test_source_close_warning_keeps_success_exit_code_and_payload(

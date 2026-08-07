@@ -54,6 +54,7 @@ class RuntimeAuditArtifactStore:
         self.inbox_dir = self.root / "inbox"
         self.reports_dir = self.root / "reports"
         self.attempts_dir = self.state_dir / "attempts"
+        self.staging_dir = self.state_dir / "staging"
         self.codex_inputs_dir = self.state_dir / "codex-inputs"
         self.schemas_dir = self.state_dir / "schemas"
         self.commits_dir = self.state_dir / "commits"
@@ -94,6 +95,69 @@ class RuntimeAuditArtifactStore:
         path = self.attempts_dir / f"{bundle.audit_run_id}.deterministic.md"
         _atomic_write(path, markdown)
         return path
+
+    def daily_bundle_path(self, audit_date: date) -> Path:
+        return self.inbox_dir / f"{audit_date.isoformat()}.bundle.json"
+
+    def daily_codex_input_path(self, audit_date: date) -> Path:
+        return self.codex_inputs_dir / f"{audit_date.isoformat()}.codex-input.json"
+
+    def staged_daily_bundle_path(self, attempt_id: str) -> Path:
+        return self.staging_dir / f"{attempt_id}.bundle.json"
+
+    def staged_daily_codex_input_path(self, attempt_id: str) -> Path:
+        return self.staging_dir / f"{attempt_id}.codex-input.json"
+
+    def write_staged_daily_bundle(self, bundle: RuntimeAuditBundle) -> Path:
+        path = self.staged_daily_bundle_path(bundle.audit_run_id)
+        _atomic_write(path, bundle.model_dump_json(exclude_none=True))
+        return path
+
+    def write_staged_daily_codex_input(
+        self, audit_run_id: str, payload: dict
+    ) -> Path:
+        path = self.staged_daily_codex_input_path(audit_run_id)
+        _atomic_write(
+            path,
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+        )
+        return path
+
+    def publish_daily_evidence(
+        self, attempt: DailyAuditAttempt
+    ) -> tuple[Path, Path]:
+        """Publish one canonical bundle/input pair with atomic per-file writes."""
+
+        bundle_path = self.daily_bundle_path(attempt.audit_date)
+        codex_input_path = self.daily_codex_input_path(attempt.audit_date)
+        if attempt.codex_input_path is None:
+            raise ValueError("daily attempt is missing its staged Codex input")
+        _require_staged_or_canonical(Path(attempt.bundle_path), bundle_path)
+        _require_staged_or_canonical(
+            Path(attempt.codex_input_path), codex_input_path
+        )
+        _publish_staged_or_keep_canonical(Path(attempt.bundle_path), bundle_path)
+        _publish_staged_or_keep_canonical(
+            Path(attempt.codex_input_path), codex_input_path
+        )
+        bundle = RuntimeAuditBundle.model_validate_json(
+            bundle_path.read_text(encoding="utf-8")
+        )
+        watermark = RuntimeAuditWatermark(
+            audit_run_id=bundle.audit_run_id,
+            last_window_end=_iso_z(bundle.window_end),
+            bundle_path=str(bundle_path),
+        )
+        _atomic_write(
+            self.latest_bundle_path,
+            json.dumps(watermark.model_dump(mode="json"), ensure_ascii=False, indent=2),
+        )
+        return bundle_path, codex_input_path
+
+    def clear_staged_daily_evidence(self, attempt: DailyAuditAttempt) -> None:
+        Path(attempt.bundle_path).unlink(missing_ok=True)
+        if attempt.codex_input_path is not None:
+            Path(attempt.codex_input_path).unlink(missing_ok=True)
 
     def codex_json_path(self, audit_run_id: str) -> Path:
         return self.attempts_dir / f"{audit_run_id}.codex.json"
@@ -256,6 +320,8 @@ class RuntimeAuditArtifactStore:
                 self.codex_inputs_dir / f"{audit_run_id}.codex-input.json",
                 self.schemas_dir / f"{audit_run_id}.report-schema.json",
                 self.attempts_dir / f"{audit_run_id}.json",
+                self.staged_daily_bundle_path(audit_run_id),
+                self.staged_daily_codex_input_path(audit_run_id),
             )
         )
 
@@ -280,6 +346,19 @@ def _atomic_write_if_absent(path: Path, content: str) -> bool:
     finally:
         temporary.unlink(missing_ok=True)
     return True
+
+
+def _publish_staged_or_keep_canonical(staged: Path, canonical: Path) -> None:
+    if staged.exists():
+        _atomic_write(canonical, staged.read_text(encoding="utf-8"))
+        return
+    if not canonical.exists():
+        raise FileNotFoundError(f"Daily audit staged evidence is missing: {staged}")
+
+
+def _require_staged_or_canonical(staged: Path, canonical: Path) -> None:
+    if not staged.exists() and not canonical.exists():
+        raise FileNotFoundError(f"Daily audit staged evidence is missing: {staged}")
 
 
 def _write_temporary(path: Path, content: str) -> Path:
