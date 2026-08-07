@@ -243,6 +243,32 @@ class BlockingOpenMemoryPlugin(RecordingMemoryPlugin):
         return MemorySessionCloseResult(status="closed")
 
 
+class BlockingCachedResolveSessionStore(MemoryPluginSessionStore):
+    def __init__(self) -> None:
+        super().__init__()
+        self._gate_lock = Lock()
+        self._armed = False
+        self.cached_resolved = Event()
+        self.release_cached = Event()
+
+    def arm(self) -> None:
+        with self._gate_lock:
+            self._armed = True
+            self.cached_resolved.clear()
+            self.release_cached.clear()
+
+    def resolve(self, *args: Any, **kwargs: Any):  # type: ignore[no-untyped-def]
+        resolution = super().resolve(*args, **kwargs)
+        with self._gate_lock:
+            should_block = self._armed and resolution.status == "reused"
+            if should_block:
+                self._armed = False
+        if should_block:
+            self.cached_resolved.set()
+            assert self.release_cached.wait(1.0)
+        return resolution
+
+
 class DescriptorFailsAfterSealPlugin:
     def __init__(self, descriptor: MemoryPluginDescriptor) -> None:
         self._descriptor = descriptor
@@ -1551,6 +1577,157 @@ def test_close_session_timeout_invalidates_and_reaps_one_late_open() -> None:
         assert len(plugin.close_requests) == 1
     finally:
         plugin.open_release.set()
+        host.close(timeout=1.0)
+
+
+def test_host_close_waits_for_late_open_reap_before_reporting_success() -> None:
+    plugin = BlockingOpenMemoryPlugin()
+    host, _ = _host(plugin)
+    identity = _identity()
+    state = _completed_state()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        opening = executor.submit(
+            host.open_session,
+            identity=identity,
+            state=state,
+            trace_store=None,
+        )
+        assert plugin.open_started.wait(0.5)
+        closing = executor.submit(host.close, timeout=1.0)
+        sleep(0.02)
+        assert not closing.done()
+        assert plugin.close_requests == []
+
+        plugin.open_release.set()
+        opened = opening.result(timeout=1.0)
+        closed = closing.result(timeout=1.0)
+
+    assert opened.status == "degraded"
+    assert opened.error_codes == ["memory_plugin_unavailable"]
+    assert host.session_store.get(identity) is None
+    assert len(plugin.close_requests) == 1
+    assert plugin.close_requests[0].session_handle == "late-handle-sentinel"
+    assert closed is True
+    assert host.close(timeout=1.0) is True
+
+
+def test_host_close_timeout_can_retry_after_late_open_reap() -> None:
+    plugin = BlockingOpenMemoryPlugin()
+    host, _ = _host(plugin)
+    identity = _identity()
+    state = _completed_state()
+
+    try:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            opening = executor.submit(
+                host.open_session,
+                identity=identity,
+                state=state,
+                trace_store=None,
+            )
+            assert plugin.open_started.wait(0.5)
+
+            assert host.close(timeout=0.01) is False
+            assert plugin.close_requests == []
+            plugin.open_release.set()
+            opened = opening.result(timeout=1.0)
+
+        assert opened.status == "degraded"
+        assert opened.error_codes == ["memory_plugin_unavailable"]
+        assert host.session_store.get(identity) is None
+        assert len(plugin.close_requests) == 1
+        assert host.close(timeout=1.0) is True
+        assert host.close(timeout=1.0) is True
+        assert len(plugin.close_requests) == 1
+    finally:
+        plugin.open_release.set()
+
+
+def test_close_invalidates_a_cached_open_before_it_returns_ready() -> None:
+    plugin = ScriptedIngestionMemoryPlugin()
+    store = BlockingCachedResolveSessionStore()
+    host, _ = _host(plugin, session_store=store)
+    identity = _identity()
+    state = _completed_state()
+    assert (
+        host.open_session(
+            identity=identity,
+            state=state,
+            trace_store=None,
+        ).status
+        == "ready"
+    )
+    store.arm()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        opening = executor.submit(
+            host.open_session,
+            identity=identity,
+            state=state,
+            trace_store=None,
+        )
+        assert store.cached_resolved.wait(0.5)
+        closing = executor.submit(host.close_session, identity=identity, timeout=1.0)
+        sleep(0.02)
+        assert not closing.done()
+
+        store.release_cached.set()
+        opened = opening.result(timeout=1.0)
+        closed = closing.result(timeout=1.0)
+
+    assert opened.status == "degraded"
+    assert opened.error_codes == ["memory_plugin_unavailable"]
+    assert closed.status == "closed"
+    assert plugin.open_calls == 1
+    assert len(plugin.close_requests) == 1
+    assert host.session_store.get(identity) is None
+    host.close(timeout=1.0)
+
+
+def test_clear_invalidates_a_cached_open_before_it_returns_ready() -> None:
+    plugin = ScriptedIngestionMemoryPlugin()
+    store = BlockingCachedResolveSessionStore()
+    host, _ = _host(plugin, session_store=store)
+    identity = _identity()
+    state = _completed_state()
+    assert (
+        host.open_session(
+            identity=identity,
+            state=state,
+            trace_store=None,
+        ).status
+        == "ready"
+    )
+    store.arm()
+
+    try:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            opening = executor.submit(
+                host.open_session,
+                identity=identity,
+                state=state,
+                trace_store=None,
+            )
+            assert store.cached_resolved.wait(0.5)
+
+            assert (
+                host.clear_session(
+                    user_id=identity.user_id,
+                    session_id=identity.session_id or "",
+                )
+                == 1
+            )
+            store.release_cached.set()
+            opened = opening.result(timeout=1.0)
+
+        assert opened.status == "degraded"
+        assert opened.error_codes == ["memory_plugin_unavailable"]
+        assert plugin.open_calls == 1
+        assert plugin.close_requests == []
+        assert host.session_store.get(identity) is None
+    finally:
+        store.release_cached.set()
         host.close(timeout=1.0)
 
 

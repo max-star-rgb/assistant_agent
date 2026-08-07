@@ -321,6 +321,12 @@ class MemoryPluginHost:
                 ),
             )
             snapshot = resolution.record.baseline.model_copy(deep=True)
+            snapshot = self._complete_open(
+                session_key=session_key,
+                invalidation=open_invalidation,
+                snapshot=snapshot,
+                descriptor=descriptor,
+            )
             if resolution.status == "loaded":
                 record_session_recall(
                     trace_store=trace_store,
@@ -343,19 +349,21 @@ class MemoryPluginHost:
                     identity=identity,
                     record=invalidated.record,
                 )
-            return SessionMemorySnapshot(
-                plugin_id=descriptor.plugin_id,
-                status="degraded",
-                error_codes=[MEMORY_PLUGIN_UNAVAILABLE],
+            return self._complete_open(
+                session_key=session_key,
+                invalidation=open_invalidation,
+                snapshot=SessionMemorySnapshot(
+                    plugin_id=descriptor.plugin_id,
+                    status="degraded",
+                    error_codes=[MEMORY_PLUGIN_UNAVAILABLE],
+                ),
+                descriptor=descriptor,
             )
         finally:
-            with self._lifecycle_condition:
-                openings = self._opening_sessions.get(session_key)
-                if openings is not None:
-                    openings.discard(open_invalidation)
-                if not openings:
-                    self._opening_sessions.pop(session_key, None)
-                self._lifecycle_condition.notify_all()
+            self._discard_opening(
+                session_key=session_key,
+                invalidation=open_invalidation,
+            )
 
     def prepare_context(
         self,
@@ -843,6 +851,20 @@ class MemoryPluginHost:
         queue_closed = self.ingestion_queue.close(
             timeout=_remaining_timeout(started, close_timeout)
         )
+        with self._lifecycle_condition:
+            while self._opening_sessions:
+                remaining = _remaining_timeout(started, close_timeout)
+                if remaining <= 0:
+                    break
+                self._lifecycle_condition.wait(remaining)
+            openings_drained = not self._opening_sessions
+        if not queue_closed or not openings_drained:
+            with self._lifecycle_condition:
+                self._host_close_result = False
+                self._host_close_in_progress = False
+                self._lifecycle_condition.notify_all()
+            return False
+
         with self._executor_condition:
             self._executor_accepting = False
             while self._executor_futures:
@@ -852,7 +874,7 @@ class MemoryPluginHost:
                 self._executor_condition.wait(remaining)
             executor_drained = not self._executor_futures
         self._executor.shutdown(wait=executor_drained, cancel_futures=True)
-        result = queue_closed and executor_drained
+        result = executor_drained
         with self._lifecycle_condition:
             self._host_close_result = result
             self._host_close_in_progress = False
@@ -1153,6 +1175,58 @@ class MemoryPluginHost:
         state.session_memory_snapshot = snapshot.model_copy(deep=True)
         state.memory_context_prepared = True
         return snapshot.model_copy(deep=True)
+
+    def _complete_open(
+        self,
+        *,
+        session_key: _SessionMemoryKey,
+        invalidation: Event,
+        snapshot: SessionMemorySnapshot,
+        descriptor: MemoryPluginDescriptor,
+    ) -> SessionMemorySnapshot:
+        with self._lifecycle_condition:
+            invalidated = (
+                invalidation.is_set()
+                or not self._host_accepting
+                or session_key in self._closing_sessions
+                or session_key in self._session_admission_closed
+            )
+            self._discard_opening_locked(
+                session_key=session_key,
+                invalidation=invalidation,
+            )
+        if not invalidated:
+            return snapshot
+        return SessionMemorySnapshot(
+            plugin_id=descriptor.plugin_id,
+            status="degraded",
+            error_codes=[MEMORY_PLUGIN_UNAVAILABLE],
+        )
+
+    def _discard_opening(
+        self,
+        *,
+        session_key: _SessionMemoryKey,
+        invalidation: Event,
+    ) -> None:
+        with self._lifecycle_condition:
+            self._discard_opening_locked(
+                session_key=session_key,
+                invalidation=invalidation,
+            )
+
+    def _discard_opening_locked(
+        self,
+        *,
+        session_key: _SessionMemoryKey,
+        invalidation: Event,
+    ) -> None:
+        openings = self._opening_sessions.get(session_key)
+        if openings is not None:
+            openings.discard(invalidation)
+        if not openings:
+            self._opening_sessions.pop(session_key, None)
+        self._lifecycle_condition.notify_all()
 
     def _open_record_if_current(
         self,
