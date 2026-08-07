@@ -75,6 +75,8 @@ class MemoryPluginSessionStore:
         identity: RequestIdentity,
         *,
         loader: Callable[[], MemoryPluginSessionRecord],
+        before_publish: Callable[[MemoryPluginSessionRecord], MemoryPluginSessionRecord]
+        | None = None,
         reset: bool = False,
     ) -> MemoryPluginSessionResolution:
         """Run ``loader`` once for a session and return defensive copies."""
@@ -119,6 +121,16 @@ class MemoryPluginSessionStore:
                         self._loading.pop(key, None)
                     self._condition.notify_all()
                     continue
+                if before_publish is not None:
+                    try:
+                        frozen = before_publish(frozen)
+                        if frozen.runtime_identity_key != key:
+                            raise ValueError("memory plugin session identity mismatch")
+                    except BaseException:
+                        if self._loading.get(key) == load_epoch:
+                            self._loading.pop(key, None)
+                        self._condition.notify_all()
+                        raise
                 self._entries[key] = frozen
                 self._entries.move_to_end(key)
                 while len(self._entries) > self.max_entries:

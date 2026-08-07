@@ -55,8 +55,8 @@ from assistant_agent.runtime.state import AgentState
 _ModelT = TypeVar("_ModelT", bound=BaseModel)
 _RunMemoryKey = tuple[str, str, str, str]
 _SAFE_CODE_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,127}$")
-_POSIX_PATH_CANDIDATE_RE = re.compile(r"/(?!/)[^\s\"'<>]+")
-_WINDOWS_DRIVE_PATH_RE = re.compile(r"(?<![A-Za-z0-9])[A-Za-z]:[\\/][^\s\"'<>]+")
+_POSIX_PATH_CANDIDATE_RE = re.compile(r"/(?!/)[^\s\"'<>]*")
+_WINDOWS_DRIVE_PATH_RE = re.compile(r"(?<![A-Za-z0-9])[A-Za-z]:[\\/][^\s\"'<>]*")
 _UNC_PATH_RE = re.compile(r"(?<!\\)\\\\[^\s\\/]+[\\/][^\s\"'<>]+")
 _BASE64_RE = re.compile(
     r"(?:[A-Za-z0-9+/]{80,}={0,2}|data:[^;\s]+;base64,)", re.IGNORECASE
@@ -110,6 +110,11 @@ _CREDENTIAL_METADATA_KEYS = frozenset(
         "token",
     }
 )
+_CREDENTIAL_METADATA_COMPACT_KEYS = frozenset(
+    key.replace("_", "") for key in _CREDENTIAL_METADATA_KEYS
+)
+_MAX_VALIDATION_DEPTH = 256
+_MAX_VALIDATION_NODES = 1_000_000
 
 
 def bind_memory_plugin_identity(
@@ -228,6 +233,8 @@ class MemoryPluginHost:
             cached.plugin_id != descriptor.plugin_id
             or cached.plugin_version != descriptor.plugin_version
         )
+        cancellation = _DelegatingCancellationToken(None)
+        call_deadline = monotonic() + self.execution_policy.open_session_timeout_seconds
         resolution = self.session_store.resolve(
             identity,
             reset=reset or plugin_changed,
@@ -235,6 +242,13 @@ class MemoryPluginHost:
                 identity=identity,
                 state=state,
                 descriptor=descriptor,
+                cancellation=cancellation,
+                call_deadline=call_deadline,
+            ),
+            before_publish=lambda record: _guard_open_record_for_publish(
+                record,
+                cancellation=cancellation,
+                call_deadline=call_deadline,
             ),
         )
         snapshot = resolution.record.baseline.model_copy(deep=True)
@@ -409,7 +423,19 @@ class MemoryPluginHost:
                 failure_code,
                 extra_codes=[issue.code for issue in media_issues],
             )
-        merged = _merge_items(record.baseline.memories, contribution.items)
+        try:
+            merged = _merge_items(
+                record.baseline.memories,
+                contribution.items,
+                cancellation=cancellation,
+                call_deadline=call_deadline,
+            )
+        except _MemoryCallStopped as stopped:
+            return _fallback_snapshot(
+                record,
+                stopped.issue_code,
+                extra_codes=[issue.code for issue in media_issues],
+            )
         failure_code = _call_failure_code(cancellation, call_deadline)
         if failure_code is not None:
             return _fallback_snapshot(
@@ -494,6 +520,8 @@ class MemoryPluginHost:
         identity: RequestIdentity,
         state: AgentState,
         descriptor: MemoryPluginDescriptor,
+        cancellation: MemoryCancellationToken,
+        call_deadline: float,
     ) -> MemoryPluginSessionRecord:
         plugin_namespace = (
             self.identity_namespace
@@ -508,7 +536,6 @@ class MemoryPluginHost:
             descriptor.plugin_id,
             plugin_identity,
         )
-        cancellation = _DelegatingCancellationToken(None)
         request = MemorySessionOpenRequest(
             memory_session_id=memory_session_id,
             identity=plugin_identity,
@@ -521,56 +548,72 @@ class MemoryPluginHost:
             lambda: self._active_plugin.open_session(request),
             timeout_seconds=self.execution_policy.open_session_timeout_seconds,
             cancellation=cancellation,
+            call_deadline=call_deadline,
         )
-        result = self._validated_open_result(
-            raw,
-            descriptor=descriptor,
-            owner_scope=plugin_identity.session_id,
-        )
+        try:
+            _ensure_call_active(cancellation, call_deadline)
+            result = self._validated_open_result(
+                raw,
+                descriptor=descriptor,
+                owner_scope=plugin_identity.session_id,
+                cancellation=cancellation,
+                call_deadline=call_deadline,
+            )
+        except _MemoryCallStopped as stopped:
+            failure_code = stopped.issue_code
+            result = None
+        except Exception:
+            failure_code = MEMORY_PLUGIN_INVALID_RESULT
+            result = None
         if failure_code is not None or result is None:
             code = failure_code or MEMORY_PLUGIN_INVALID_RESULT
-            baseline = SessionMemorySnapshot(
-                plugin_id=descriptor.plugin_id,
-                status="degraded",
-                error_codes=[code],
+            return _degraded_open_record(
+                identity=identity,
+                descriptor=descriptor,
+                plugin_identity=plugin_identity,
+                memory_session_id=memory_session_id,
+                issue_code=code,
             )
-            return MemoryPluginSessionRecord(
+
+        try:
+            _ensure_call_active(cancellation, call_deadline)
+            contribution = result.initial_contribution
+            baseline = SessionMemorySnapshot(
+                memories=list(contribution.items) if contribution is not None else [],
+                plugin_id=descriptor.plugin_id,
+                status=result.status,
+                error_codes=_unique_codes(
+                    [
+                        *(issue.code for issue in result.issues),
+                        *(
+                            (issue.code for issue in contribution.issues)
+                            if contribution is not None
+                            else ()
+                        ),
+                    ]
+                ),
+            )
+            _ensure_call_active(cancellation, call_deadline)
+            record = MemoryPluginSessionRecord(
                 plugin_id=descriptor.plugin_id,
                 plugin_version=descriptor.plugin_version,
                 runtime_identity_key=runtime_memory_identity_key(identity),
                 identity=plugin_identity,
                 memory_session_id=memory_session_id,
-                session_handle=None,
+                session_handle=result.session_handle,
                 baseline=baseline,
-                status="degraded",
+                status=result.status,
             )
-
-        contribution = result.initial_contribution
-        baseline = SessionMemorySnapshot(
-            memories=list(contribution.items) if contribution is not None else [],
-            plugin_id=descriptor.plugin_id,
-            status=result.status,
-            error_codes=_unique_codes(
-                [
-                    *(issue.code for issue in result.issues),
-                    *(
-                        (issue.code for issue in contribution.issues)
-                        if contribution is not None
-                        else ()
-                    ),
-                ]
-            ),
-        )
-        return MemoryPluginSessionRecord(
-            plugin_id=descriptor.plugin_id,
-            plugin_version=descriptor.plugin_version,
-            runtime_identity_key=runtime_memory_identity_key(identity),
-            identity=plugin_identity,
-            memory_session_id=memory_session_id,
-            session_handle=result.session_handle,
-            baseline=baseline,
-            status=result.status,
-        )
+            _ensure_call_active(cancellation, call_deadline)
+            return record
+        except _MemoryCallStopped as stopped:
+            return _degraded_open_record(
+                identity=identity,
+                descriptor=descriptor,
+                plugin_identity=plugin_identity,
+                memory_session_id=memory_session_id,
+                issue_code=stopped.issue_code,
+            )
 
     def _validated_open_result(
         self,
@@ -578,12 +621,25 @@ class MemoryPluginHost:
         *,
         descriptor: MemoryPluginDescriptor,
         owner_scope: str,
+        cancellation: MemoryCancellationToken | None = None,
+        call_deadline: float | None = None,
     ) -> MemorySessionOpenResult | None:
-        if _raw_contains_non_finite(raw):
+        _ensure_call_active(cancellation, call_deadline)
+        if not _raw_result_is_safe(
+            raw,
+            cancellation=cancellation,
+            call_deadline=call_deadline,
+        ):
             return None
-        result = _round_trip_model(raw, MemorySessionOpenResult)
+        result = _round_trip_model(
+            raw,
+            MemorySessionOpenResult,
+            cancellation=cancellation,
+            call_deadline=call_deadline,
+        )
         if result is None:
             return None
+        _ensure_call_active(cancellation, call_deadline)
         raw_open_values = object.__getattribute__(raw, "__dict__")
         raw_contribution = dict.__getitem__(
             raw_open_values,
@@ -595,6 +651,8 @@ class MemoryPluginHost:
                     "initial_contribution": _restore_signed_media_refs(
                         result.initial_contribution,
                         raw_contribution,
+                        cancellation=cancellation,
+                        call_deadline=call_deadline,
                     )
                 },
                 deep=True,
@@ -603,13 +661,17 @@ class MemoryPluginHost:
             result.session_handle
         ):
             return None
-        if not all(_valid_issue(issue) for issue in result.issues):
-            return None
+        for issue in result.issues:
+            _ensure_call_active(cancellation, call_deadline)
+            if not _valid_issue(issue):
+                return None
         if result.initial_contribution is not None:
             contribution = self._validated_contribution(
                 result.initial_contribution,
                 descriptor=descriptor,
                 owner_scope=owner_scope,
+                cancellation=cancellation,
+                call_deadline=call_deadline,
             )
             if contribution is None:
                 return None
@@ -617,6 +679,7 @@ class MemoryPluginHost:
                 update={"initial_contribution": contribution},
                 deep=True,
             )
+        _ensure_call_active(cancellation, call_deadline)
         return result
 
     def _validated_contribution(
@@ -629,14 +692,28 @@ class MemoryPluginHost:
         call_deadline: float | None = None,
     ) -> MemoryContextContribution | None:
         _ensure_call_active(cancellation, call_deadline)
-        if _raw_contains_non_finite(raw):
+        if not _raw_result_is_safe(
+            raw,
+            cancellation=cancellation,
+            call_deadline=call_deadline,
+        ):
             return None
         _ensure_call_active(cancellation, call_deadline)
-        contribution = _round_trip_model(raw, MemoryContextContribution)
+        contribution = _round_trip_model(
+            raw,
+            MemoryContextContribution,
+            cancellation=cancellation,
+            call_deadline=call_deadline,
+        )
         if contribution is None:
             return None
         _ensure_call_active(cancellation, call_deadline)
-        contribution = _restore_signed_media_refs(contribution, raw)
+        contribution = _restore_signed_media_refs(
+            contribution,
+            raw,
+            cancellation=cancellation,
+            call_deadline=call_deadline,
+        )
         if len(contribution.items) > self.execution_policy.max_context_items:
             return None
         for issue in contribution.issues:
@@ -661,10 +738,14 @@ class MemoryPluginHost:
                     separators=(",", ":"),
                     allow_nan=False,
                 )
-            except (TypeError, ValueError, OverflowError):
+            except Exception:
                 return None
             _ensure_call_active(cancellation, call_deadline)
-            if _forbidden_metadata(item.metadata):
+            if _forbidden_metadata(
+                item.metadata,
+                cancellation=cancellation,
+                call_deadline=call_deadline,
+            ):
                 return None
             total_chars += len(item.text) + len(metadata_json)
             if total_chars > self.execution_policy.max_context_chars:
@@ -693,7 +774,9 @@ class MemoryPluginHost:
                     return None
                 _ensure_call_active(cancellation, call_deadline)
         _ensure_call_active(cancellation, call_deadline)
-        return contribution.model_copy(deep=True)
+        validated = contribution.model_copy(deep=True)
+        _ensure_call_active(cancellation, call_deadline)
+        return validated
 
     def _resolve_request_media(
         self,
@@ -764,19 +847,44 @@ class MemoryPluginHost:
         return self._now() + timedelta(seconds=timeout_seconds)
 
 
-def _round_trip_model(raw: object, model_type: type[_ModelT]) -> _ModelT | None:
+def _round_trip_model(
+    raw: object,
+    model_type: type[_ModelT],
+    *,
+    cancellation: MemoryCancellationToken | None = None,
+    call_deadline: float | None = None,
+) -> _ModelT | None:
     if type(raw) is not model_type:
         return None
     try:
-        if not _has_exact_model_shape(raw, model_type):
+        _ensure_call_active(cancellation, call_deadline)
+        if not _has_exact_model_shape(
+            raw,
+            model_type,
+            cancellation=cancellation,
+            call_deadline=call_deadline,
+        ):
             return None
+        _ensure_call_active(cancellation, call_deadline)
         encoded = raw.model_dump_json()
-        return model_type.model_validate_json(encoded)
+        _ensure_call_active(cancellation, call_deadline)
+        validated = model_type.model_validate_json(encoded)
+        _ensure_call_active(cancellation, call_deadline)
+        return validated
+    except _MemoryCallStopped:
+        raise
     except Exception:
         return None
 
 
-def _has_exact_model_shape(raw: BaseModel, model_type: type[BaseModel]) -> bool:
+def _has_exact_model_shape(
+    raw: BaseModel,
+    model_type: type[BaseModel],
+    *,
+    cancellation: MemoryCancellationToken | None = None,
+    call_deadline: float | None = None,
+) -> bool:
+    _ensure_call_active(cancellation, call_deadline)
     if type(raw) is not model_type:
         return False
     values = object.__getattribute__(raw, "__dict__")
@@ -790,31 +898,60 @@ def _has_exact_model_shape(raw: BaseModel, model_type: type[BaseModel]) -> bool:
     if model_type is MemoryContextContribution:
         items = dict.__getitem__(values, "items")
         issues = dict.__getitem__(values, "issues")
-        return (
-            type(items) is list
-            and type(issues) is list
-            and all(_has_exact_model_shape(item, MemoryContextItem) for item in items)
-            and all(
-                _has_exact_model_shape(issue, MemoryPluginIssue) for issue in issues
-            )
-        )
+        if type(items) is not list or type(issues) is not list:
+            return False
+        for item in items:
+            _ensure_call_active(cancellation, call_deadline)
+            if not _has_exact_model_shape(
+                item,
+                MemoryContextItem,
+                cancellation=cancellation,
+                call_deadline=call_deadline,
+            ):
+                return False
+        for issue in issues:
+            _ensure_call_active(cancellation, call_deadline)
+            if not _has_exact_model_shape(
+                issue,
+                MemoryPluginIssue,
+                cancellation=cancellation,
+                call_deadline=call_deadline,
+            ):
+                return False
+        return True
     if model_type is MemoryContextItem:
         media_refs = dict.__getitem__(values, "media_refs")
-        return type(media_refs) is list and all(
-            _has_exact_model_shape(ref, ManagedMediaRef) for ref in media_refs
-        )
+        if type(media_refs) is not list:
+            return False
+        for ref in media_refs:
+            _ensure_call_active(cancellation, call_deadline)
+            if not _has_exact_model_shape(
+                ref,
+                ManagedMediaRef,
+                cancellation=cancellation,
+                call_deadline=call_deadline,
+            ):
+                return False
+        return True
     if model_type is MemorySessionOpenResult:
         issues = dict.__getitem__(values, "issues")
         contribution = dict.__getitem__(values, "initial_contribution")
-        return (
-            type(issues) is list
-            and all(
-                _has_exact_model_shape(issue, MemoryPluginIssue) for issue in issues
-            )
-            and (
-                contribution is None
-                or _has_exact_model_shape(contribution, MemoryContextContribution)
-            )
+        if type(issues) is not list:
+            return False
+        for issue in issues:
+            _ensure_call_active(cancellation, call_deadline)
+            if not _has_exact_model_shape(
+                issue,
+                MemoryPluginIssue,
+                cancellation=cancellation,
+                call_deadline=call_deadline,
+            ):
+                return False
+        return contribution is None or _has_exact_model_shape(
+            contribution,
+            MemoryContextContribution,
+            cancellation=cancellation,
+            call_deadline=call_deadline,
         )
     return True
 
@@ -822,6 +959,9 @@ def _has_exact_model_shape(raw: BaseModel, model_type: type[BaseModel]) -> bool:
 def _restore_signed_media_refs(
     validated: MemoryContextContribution,
     raw: MemoryContextContribution,
+    *,
+    cancellation: MemoryCancellationToken | None = None,
+    call_deadline: float | None = None,
 ) -> MemoryContextContribution:
     """Keep exact Host-issued timestamps while retaining full JSON validation."""
 
@@ -829,6 +969,7 @@ def _restore_signed_media_refs(
     raw_items = dict.__getitem__(raw_values, "items")
     restored_items: list[MemoryContextItem] = []
     for validated_item, raw_item in zip(validated.items, raw_items, strict=True):
+        _ensure_call_active(cancellation, call_deadline)
         item_values = object.__getattribute__(raw_item, "__dict__")
         raw_refs = dict.__getitem__(item_values, "media_refs")
         restored_items.append(
@@ -837,7 +978,10 @@ def _restore_signed_media_refs(
                 deep=True,
             )
         )
-    return validated.model_copy(update={"items": restored_items}, deep=True)
+    _ensure_call_active(cancellation, call_deadline)
+    restored = validated.model_copy(update={"items": restored_items}, deep=True)
+    _ensure_call_active(cancellation, call_deadline)
+    return restored
 
 
 def _valid_issue(issue: MemoryPluginIssue) -> bool:
@@ -858,30 +1002,64 @@ def _source_allowed(
     return item.source in modalities
 
 
-def _forbidden_metadata(value: Any, *, key: str | None = None) -> bool:
-    if key is not None:
-        if _forbidden_string(key):
+def _forbidden_metadata(
+    value: Any,
+    *,
+    cancellation: MemoryCancellationToken | None = None,
+    call_deadline: float | None = None,
+) -> bool:
+    stack: list[tuple[Any, str | None, int]] = [(value, None, 0)]
+    visited = 0
+    seen: set[int] = set()
+    while stack:
+        _ensure_call_active(cancellation, call_deadline)
+        item, key, depth = stack.pop()
+        visited += 1
+        if visited > _MAX_VALIDATION_NODES or depth > _MAX_VALIDATION_DEPTH:
             return True
-        normalized = re.sub(r"[^a-z0-9]+", "_", key.strip().lower()).strip("_")
-        if (
-            normalized in _BLOCKED_METADATA_KEYS
-            or normalized.endswith(
-                tuple(f"_{blocked}" for blocked in _CREDENTIAL_METADATA_KEYS)
-            )
-            or normalized.endswith(("_base64", "_bytes", "_blob", "_data_uri"))
-        ):
+        if key is not None and _forbidden_metadata_key(key):
             return True
-    if isinstance(value, str):
-        return _forbidden_string(value)
-    if isinstance(value, list):
-        return any(_forbidden_metadata(item) for item in value)
-    if isinstance(value, dict):
-        return any(
-            not isinstance(item_key, str)
-            or _forbidden_metadata(item_value, key=item_key)
-            for item_key, item_value in value.items()
-        )
+        if item is None or type(item) in {bool, int}:
+            continue
+        if type(item) is float:
+            if not math.isfinite(item):
+                return True
+            continue
+        if type(item) is str:
+            if _forbidden_string(item):
+                return True
+            continue
+        if type(item) not in {dict, list}:
+            return True
+        identity = id(item)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        if type(item) is list:
+            stack.extend((child, None, depth + 1) for child in reversed(item))
+            continue
+        for item_key, item_value in reversed(tuple(item.items())):
+            if type(item_key) is not str:
+                return True
+            stack.append((item_value, item_key, depth + 1))
     return False
+
+
+def _forbidden_metadata_key(key: str) -> bool:
+    if _forbidden_string(key):
+        return True
+    camel_split = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", key.strip())
+    normalized = re.sub(r"[^a-zA-Z0-9]+", "_", camel_split).strip("_").lower()
+    compact = normalized.replace("_", "")
+    return bool(
+        normalized in _BLOCKED_METADATA_KEYS
+        or compact in _CREDENTIAL_METADATA_COMPACT_KEYS
+        or compact.endswith(tuple(_CREDENTIAL_METADATA_COMPACT_KEYS))
+        or normalized.endswith(
+            tuple(f"_{blocked}" for blocked in _CREDENTIAL_METADATA_KEYS)
+        )
+        or normalized.endswith(("_base64", "_bytes", "_blob", "_data_uri"))
+    )
 
 
 def _forbidden_string(value: str) -> bool:
@@ -905,12 +1083,7 @@ def _contains_absolute_path(value: str) -> bool:
         if start == 0:
             return True
         previous = value[start - 1]
-        if previous in ":/\\" or (
-            previous.isascii() and (previous.isalnum() or previous in "._-")
-        ):
-            continue
-        candidate = match.group(0)
-        if previous.isalnum() and not previous.isascii() and "/" not in candidate[1:]:
+        if previous in ":/\\" or previous.isalnum() or previous in "._-":
             continue
         return True
     return False
@@ -940,32 +1113,69 @@ def _ensure_call_active(
         raise _MemoryCallStopped(issue_code)
 
 
-def _raw_contains_non_finite(
+def _raw_result_is_safe(
     value: Any,
     *,
-    _seen: set[int] | None = None,
+    cancellation: MemoryCancellationToken | None = None,
+    call_deadline: float | None = None,
 ) -> bool:
-    if isinstance(value, float):
-        return not math.isfinite(value)
-    if isinstance(value, BaseModel):
-        try:
-            value = object.__getattribute__(value, "__dict__")
-        except Exception:
-            return True
-    if not isinstance(value, (dict, list, tuple, set, frozenset)):
-        return False
-    seen = _seen if _seen is not None else set()
-    identity = id(value)
-    if identity in seen:
-        return False
-    seen.add(identity)
-    if isinstance(value, dict):
-        return any(
-            _raw_contains_non_finite(item_key, _seen=seen)
-            or _raw_contains_non_finite(item_value, _seen=seen)
-            for item_key, item_value in value.items()
-        )
-    return any(_raw_contains_non_finite(item, _seen=seen) for item in value)
+    stack: list[tuple[Any, int, bool]] = [(value, 0, False)]
+    visited = 0
+    seen: set[int] = set()
+    while stack:
+        _ensure_call_active(cancellation, call_deadline)
+        item, depth, in_metadata = stack.pop()
+        visited += 1
+        if visited > _MAX_VALIDATION_NODES or depth > _MAX_VALIDATION_DEPTH:
+            return False
+        if item is None or type(item) in {bool, int, str}:
+            continue
+        if type(item) is float:
+            if not math.isfinite(item):
+                return False
+            continue
+        if isinstance(item, datetime):
+            if in_metadata:
+                return False
+            continue
+        if isinstance(item, BaseModel):
+            if in_metadata:
+                return False
+            try:
+                values = object.__getattribute__(item, "__dict__")
+            except Exception:
+                return False
+            if type(values) is not dict:
+                return False
+            identity = id(item)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            for field_name, field_value in reversed(tuple(values.items())):
+                if type(field_name) is not str:
+                    return False
+                stack.append(
+                    (
+                        field_value,
+                        depth + 1,
+                        type(item) is MemoryContextItem and field_name == "metadata",
+                    )
+                )
+            continue
+        if type(item) not in {dict, list}:
+            return False
+        identity = id(item)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        if type(item) is list:
+            stack.extend((child, depth + 1, in_metadata) for child in reversed(item))
+            continue
+        for item_key, item_value in reversed(tuple(item.items())):
+            if type(item_key) is not str:
+                return False
+            stack.append((item_value, depth + 1, in_metadata))
+    return True
 
 
 def _fallback_snapshot(
@@ -984,13 +1194,68 @@ def _fallback_snapshot(
     )
 
 
+def _degraded_open_record(
+    *,
+    identity: RequestIdentity,
+    descriptor: MemoryPluginDescriptor,
+    plugin_identity: MemoryIdentity,
+    memory_session_id: str,
+    issue_code: str,
+) -> MemoryPluginSessionRecord:
+    return MemoryPluginSessionRecord(
+        plugin_id=descriptor.plugin_id,
+        plugin_version=descriptor.plugin_version,
+        runtime_identity_key=runtime_memory_identity_key(identity),
+        identity=plugin_identity,
+        memory_session_id=memory_session_id,
+        session_handle=None,
+        baseline=SessionMemorySnapshot(
+            plugin_id=descriptor.plugin_id,
+            status="degraded",
+            error_codes=[issue_code],
+        ),
+        status="degraded",
+    )
+
+
+def _guard_open_record_for_publish(
+    record: MemoryPluginSessionRecord,
+    *,
+    cancellation: MemoryCancellationToken,
+    call_deadline: float,
+) -> MemoryPluginSessionRecord:
+    issue_code = _call_failure_code(cancellation, call_deadline)
+    if issue_code is None:
+        return record
+    return MemoryPluginSessionRecord(
+        plugin_id=record.plugin_id,
+        plugin_version=record.plugin_version,
+        runtime_identity_key=record.runtime_identity_key,
+        identity=record.identity,
+        memory_session_id=record.memory_session_id,
+        session_handle=None,
+        baseline=SessionMemorySnapshot(
+            plugin_id=record.plugin_id,
+            status="degraded",
+            error_codes=[issue_code],
+        ),
+        status="degraded",
+    )
+
+
 def _merge_items(
     baseline: list[MemoryContextItem],
     current: list[MemoryContextItem],
+    *,
+    cancellation: MemoryCancellationToken | None = None,
+    call_deadline: float | None = None,
 ) -> list[MemoryContextItem]:
     merged: dict[str, MemoryContextItem] = {}
-    for item in [*baseline, *current]:
-        merged[item.memory_id] = item.model_copy(deep=True)
+    for items in (baseline, current):
+        for item in items:
+            _ensure_call_active(cancellation, call_deadline)
+            merged[item.memory_id] = item.model_copy(deep=True)
+    _ensure_call_active(cancellation, call_deadline)
     return list(merged.values())
 
 

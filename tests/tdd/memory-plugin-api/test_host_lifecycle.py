@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from threading import Barrier, Event, Lock, Thread
 from time import sleep
@@ -149,6 +150,45 @@ class NonFiniteOpenIssuePlugin(RecordingMemoryPlugin):
         )
 
 
+class DeepOpenResultPlugin(RecordingMemoryPlugin):
+    def __init__(self, *, depth: int) -> None:
+        super().__init__()
+        metadata: dict[str, Any] = {"leaf": "safe"}
+        for _ in range(depth):
+            metadata = {"nested": metadata}
+        item = MemoryContextItem.model_construct(
+            memory_id="deep",
+            text="deep",
+            source="long_term",
+            relevance=None,
+            occurred_at=None,
+            created_at=None,
+            media_refs=[],
+            metadata=metadata,
+        )
+        contribution = MemoryContextContribution.model_construct(
+            items=[item],
+            status="succeeded",
+            issues=[],
+        )
+        self.open_result = MemorySessionOpenResult.model_construct(
+            status="ready",
+            session_handle="handle-sentinel",
+            initial_contribution=contribution,
+            issues=[],
+        )
+
+    def open_session(self, request: Any) -> MemorySessionOpenResult:
+        self.open_calls += 1
+        self.open_requests.append(request)
+        return self.open_result
+
+
+@dataclass(frozen=True)
+class DataclassScore:
+    score: float
+
+
 class BlockingPrepareMemoryPlugin(RecordingMemoryPlugin):
     def __init__(self) -> None:
         super().__init__(baseline=[_item("baseline", "baseline")])
@@ -260,6 +300,54 @@ def test_host_opens_session_and_prepares_memory_once_per_run() -> None:
     assert state.memory_context_prepared is True
     assert plugin.open_requests[0].deadline == NOW + timedelta(seconds=5)
     assert plugin.prepare_requests[0].deadline == NOW + timedelta(seconds=5)
+
+
+def test_open_timeout_covers_validation_and_never_publishes_large_baseline() -> None:
+    repeated = _item("large", "large")
+    plugin = RecordingMemoryPlugin(baseline=[repeated] * 20_000)
+    host, _ = _host(
+        plugin,
+        execution_policy=MemoryPluginExecutionPolicy(
+            open_session_timeout_seconds=0.01,
+            max_context_items=25_000,
+        ),
+    )
+
+    identity = _identity()
+    snapshot = host.open_session(
+        identity=identity,
+        state=_state(),
+        trace_store=None,
+    )
+    cached = host.session_store.get(identity)
+    reused = host.open_session(
+        identity=identity,
+        state=_state(),
+        trace_store=None,
+    )
+
+    assert plugin.open_calls == 1
+    assert snapshot.memories == []
+    assert snapshot.error_codes == ["memory_plugin_timeout"]
+    assert cached is not None
+    assert cached.baseline.memories == []
+    assert reused.memories == []
+    assert reused.error_codes == ["memory_plugin_timeout"]
+
+
+def test_deep_open_metadata_degrades_without_recursion_error_details() -> None:
+    plugin = DeepOpenResultPlugin(depth=1_200)
+    host, _ = _host(plugin)
+
+    snapshot = host.open_session(
+        identity=_identity(),
+        state=_state(),
+        trace_store=None,
+    )
+
+    assert snapshot.memories == []
+    assert snapshot.error_codes == ["memory_plugin_invalid_result"]
+    assert "RecursionError" not in snapshot.model_dump_json()
 
 
 def test_concurrent_prepare_uses_one_single_flight_and_one_frozen_result() -> None:
@@ -747,6 +835,8 @@ def test_oversized_current_text_degrades_once_without_validation_error() -> None
         "text-assignment",
         "nested-metadata-key",
         "nested-auth-key",
+        "camel-api-key",
+        "camel-access-token",
         "nested-metadata-value",
     ],
 )
@@ -773,7 +863,14 @@ def test_credential_and_embedded_path_are_rejected_atomically(
 
 @pytest.mark.parametrize(
     "unsafe_kind",
-    ["workspace-text-path", "metadata-key-path", "windows-unc-path"],
+    [
+        "posix-root",
+        "workspace-text-path",
+        "metadata-key-path",
+        "windows-drive-root-forward",
+        "windows-drive-root-backslash",
+        "windows-unc-path",
+    ],
 )
 def test_arbitrary_absolute_paths_are_rejected_from_all_string_surfaces(
     unsafe_kind: str,
@@ -804,6 +901,7 @@ def test_arbitrary_absolute_paths_are_rejected_from_all_string_surfaces(
         "//example.com/workspace/reference",
         "docs/workspace/reference.md",
         "中文/English and/or",
+        "输入/输出/错误",
     ],
 )
 def test_urls_and_relative_text_are_not_misclassified_as_absolute_paths(
@@ -932,6 +1030,40 @@ def test_non_finite_open_result_is_rejected_before_roundtrip() -> None:
     )
 
     assert snapshot.memories == []
+    assert snapshot.error_codes == ["memory_plugin_invalid_result"]
+
+
+def test_dataclass_hidden_non_finite_metadata_is_rejected_before_roundtrip() -> None:
+    item = MemoryContextItem.model_construct(
+        memory_id="dataclass-non-finite",
+        text="dataclass-non-finite",
+        source="long_term",
+        relevance=None,
+        occurred_at=None,
+        created_at=None,
+        media_refs=[],
+        metadata={"payload": DataclassScore(score=float("inf"))},
+    )
+    contribution = MemoryContextContribution.model_construct(
+        items=[item],
+        status="succeeded",
+        issues=[],
+    )
+    plugin = RecordingMemoryPlugin(
+        baseline=[_item("baseline", "baseline")],
+        prepare_result=contribution,
+    )
+    host, _ = _host(plugin)
+    state = _state()
+    host.open_session(identity=_identity(), state=state, trace_store=None)
+
+    snapshot = host.prepare_context(
+        state=state,
+        trace_store=None,
+        cancel_token=None,
+    )
+
+    assert [memory.memory_id for memory in snapshot.memories] == ["baseline"]
     assert snapshot.error_codes == ["memory_plugin_invalid_result"]
 
 
@@ -1146,6 +1278,20 @@ def _unsafe_contribution(kind: str) -> MemoryContextContribution:
             source="long_term",
             metadata={"nested": {"service_auth": "credential-sentinel"}},
         )
+    elif kind == "camel-api-key":
+        item = MemoryContextItem(
+            memory_id="unsafe",
+            text="unsafe",
+            source="long_term",
+            metadata={"serviceApiKey": "credential-sentinel"},
+        )
+    elif kind == "camel-access-token":
+        item = MemoryContextItem(
+            memory_id="unsafe",
+            text="unsafe",
+            source="long_term",
+            metadata={"accessToken": "credential-sentinel"},
+        )
     else:
         item = MemoryContextItem(
             memory_id="unsafe",
@@ -1159,7 +1305,9 @@ def _unsafe_contribution(kind: str) -> MemoryContextContribution:
 
 
 def _absolute_path_contribution(kind: str) -> MemoryContextContribution:
-    if kind == "workspace-text-path":
+    if kind == "posix-root":
+        item = _item("unsafe", "/")
+    elif kind == "workspace-text-path":
         item = _item("unsafe", "构建产物：/workspace/project/private.txt")
     elif kind == "metadata-key-path":
         item = MemoryContextItem(
@@ -1168,6 +1316,10 @@ def _absolute_path_contribution(kind: str) -> MemoryContextContribution:
             source="long_term",
             metadata={"artifact /workspace/project/private.txt": "unsafe"},
         )
+    elif kind == "windows-drive-root-forward":
+        item = _item("unsafe", "drive C:/")
+    elif kind == "windows-drive-root-backslash":
+        item = _item("unsafe", "drive C:\\")
     else:
         item = _item("unsafe", r"share \\server\share\private.txt")
     return MemoryContextContribution(items=[item], status="succeeded")
