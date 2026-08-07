@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from pydantic import ValidationError
 
 from assistant_agent.memory.plugins.contracts import MemoryArtifactPayload
 from assistant_agent.memory.plugins.media import (
@@ -397,3 +398,158 @@ def test_resolve_returns_independent_canonical_copies_and_uses_payload_size_budg
     assert second_refs[0].size_bytes == 6
     assert budget_refs == []
     assert [issue.code for issue in budget_issues] == ["memory_media_total_limit"]
+
+
+class _TrackingStr(str):
+    def __new__(cls, value: str) -> _TrackingStr:
+        instance = super().__new__(cls, value)
+        instance.calls: list[str] = []
+        return instance
+
+    def __hash__(self) -> int:
+        self.calls.append("hash")
+        return str.__hash__(self)
+
+    def __eq__(self, other: object) -> bool:
+        self.calls.append("eq")
+        return str.__eq__(self, other)
+
+    def __str__(self) -> str:
+        self.calls.append("str")
+        return str.__str__(self)
+
+
+class _TrackingDatetime(datetime):
+    def __new__(cls, value: datetime) -> _TrackingDatetime:
+        instance = datetime.__new__(
+            cls,
+            value.year,
+            value.month,
+            value.day,
+            value.hour,
+            value.minute,
+            value.second,
+            value.microsecond,
+            value.tzinfo,
+        )
+        instance.calls: list[str] = []
+        return instance
+
+    def __eq__(self, other: object) -> bool:
+        self.calls.append("eq")
+        return datetime.__eq__(self, other)
+
+    def __ge__(self, other: object) -> bool:
+        self.calls.append("ge")
+        return datetime.__ge__(self, other)
+
+
+class _TrackingInt(int):
+    def __new__(cls, value: int) -> _TrackingInt:
+        instance = super().__new__(cls, value)
+        instance.calls: list[str] = []
+        return instance
+
+    def __eq__(self, other: object) -> bool:
+        self.calls.append("eq")
+        return int.__eq__(self, other)
+
+
+def test_read_and_stream_reject_injected_scalar_subclasses_before_hooks_run() -> None:
+    """Injected scalar subclasses cannot run hash/equality/time hooks at access."""
+    store = ManagedMemoryMediaStore(max_total_bytes=1024)
+    canonical = store.register(
+        owner_scope="owner-sentinel",
+        media_type="image",
+        mime_type="image/jpeg",
+        payload=b"123456",
+    )
+    injected_values = [
+        ("ref_id", _TrackingStr(canonical.ref_id)),
+        ("owner_scope", _TrackingStr(canonical.owner_scope)),
+        ("mime_type", _TrackingStr(canonical.mime_type)),
+        ("media_type", _TrackingStr(canonical.media_type)),
+        ("created_at", _TrackingDatetime(canonical.created_at)),
+        ("size_bytes", _TrackingInt(canonical.size_bytes)),
+    ]
+
+    for field, injected in injected_values:
+        ref = canonical.model_copy(deep=True)
+        ref.__dict__[field] = injected
+        with pytest.raises(MemoryMediaAccessError) as read_error:
+            store.read(ref, owner_scope="owner-sentinel", max_bytes=1024)
+        with pytest.raises(MemoryMediaAccessError) as stream_error:
+            store.open_stream(ref, owner_scope="owner-sentinel", max_bytes=1024)
+
+        assert read_error.value.code == "memory_media_ref_mismatch"
+        assert stream_error.value.code == "memory_media_ref_mismatch"
+        assert injected.calls == []
+
+
+def test_read_rejects_bool_size_before_using_it_as_an_integer() -> None:
+    """A bool injected as size is invalid even though bool is an int subclass."""
+    store = ManagedMemoryMediaStore(max_total_bytes=1024)
+    ref = store.register(
+        owner_scope="owner-sentinel",
+        media_type="image",
+        mime_type="image/jpeg",
+        payload=b"123456",
+    )
+    ref.__dict__["size_bytes"] = True
+
+    with pytest.raises(MemoryMediaAccessError) as exc_info:
+        store.read(ref, owner_scope="owner-sentinel", max_bytes=1024)
+
+    assert exc_info.value.code == "memory_media_ref_mismatch"
+
+
+def test_resolve_rejects_subclassed_request_ref_id_before_dict_lookup() -> None:
+    """resolve never hashes or compares a caller-controlled ID subclass."""
+    store = ManagedMemoryMediaStore(max_total_bytes=1024)
+    canonical = store.register(
+        owner_scope="owner-sentinel",
+        media_type="image",
+        mime_type="image/jpeg",
+        payload=b"123456",
+    )
+    injected_id = _TrackingStr(canonical.ref_id)
+    request = UserRequest(
+        user_id="user-sentinel",
+        session_id="session-sentinel",
+        image_ids=[canonical.ref_id],
+    )
+    request.image_ids[0] = injected_id
+
+    refs, issues = store.resolve_request_refs(
+        request,
+        owner_scope="owner-sentinel",
+        allowed_modalities={"image"},
+        max_items=1,
+        max_total_bytes=1024,
+    )
+
+    assert refs == []
+    assert [issue.code for issue in issues] == ["memory_media_ref_invalid"]
+    assert injected_id.calls == []
+
+
+def test_registration_failure_does_not_consume_store_budget() -> None:
+    """A failed public-ref validation leaves no hidden entry or retained bytes."""
+    store = ManagedMemoryMediaStore(max_total_bytes=6)
+
+    with pytest.raises(ValidationError):
+        store.register(
+            owner_scope="x" * 513,
+            media_type="image",
+            mime_type="image/jpeg",
+            payload=b"123456",
+        )
+
+    ref = store.register(
+        owner_scope="owner-sentinel",
+        media_type="image",
+        mime_type="image/jpeg",
+        payload=b"123456",
+    )
+
+    assert store.read(ref, owner_scope="owner-sentinel", max_bytes=6) == b"123456"

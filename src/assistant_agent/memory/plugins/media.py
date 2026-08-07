@@ -50,6 +50,16 @@ class _StoredMedia:
     expires_at: datetime | None
 
 
+@dataclass(frozen=True)
+class _ExternalMediaRef:
+    ref_id: str
+    media_type: MemoryModality
+    mime_type: str
+    size_bytes: int
+    created_at: datetime
+    owner_scope: str
+
+
 class ManagedMemoryMediaStore:
     """An opaque-ref store that never accepts a path, URL, or encoded string."""
 
@@ -102,13 +112,11 @@ class ManagedMemoryMediaStore:
             expires_at = payload.expires_at
             payload = payload.payload
 
-        if (
-            not isinstance(owner_scope, str)
-            or not owner_scope
-            or media_type not in {"image", "audio", "video", "document"}
-            or not isinstance(mime_type, str)
-            or not mime_type
-            or not isinstance(payload, bytes)
+        if not self._is_registration_metadata(
+            owner_scope,
+            media_type,
+            mime_type,
+            payload,
         ):
             raise TypeError("managed media registration requires typed bytes metadata")
 
@@ -120,21 +128,22 @@ class ManagedMemoryMediaStore:
         if size_bytes > self._max_item_bytes:
             raise MemoryMediaRegistrationError("memory_media_size_limit")
 
+        entry = _StoredMedia(
+            ref_id=uuid4().hex,
+            media_type=media_type,
+            mime_type=mime_type,
+            created_at=created_at,
+            owner_scope=owner_scope,
+            payload=normalized_payload,
+            expires_at=expires_at,
+        )
+        public_ref = self._ref_for(entry)
         with self._lock:
             if self._total_bytes + size_bytes > self._max_total_bytes:
                 raise MemoryMediaRegistrationError("memory_media_total_limit")
-            entry = _StoredMedia(
-                ref_id=uuid4().hex,
-                media_type=media_type,
-                mime_type=mime_type,
-                created_at=created_at,
-                owner_scope=owner_scope,
-                payload=normalized_payload,
-                expires_at=expires_at,
-            )
             self._entries[entry.ref_id] = entry
             self._total_bytes += size_bytes
-        return self._ref_for(entry)
+        return public_ref
 
     def read(
         self,
@@ -188,7 +197,13 @@ class ManagedMemoryMediaStore:
     ) -> tuple[list[ManagedMediaRef], list[MemoryPluginIssue]]:
         """Resolve only already-registered request IDs without reading bytes."""
 
-        if max_items < 0 or max_total_bytes < 0:
+        if (
+            type(owner_scope) is not str
+            or type(max_items) is not int
+            or type(max_total_bytes) is not int
+            or max_items < 0
+            or max_total_bytes < 0
+        ):
             raise ValueError("media request limits must be non-negative")
         now = self._ensure_aware(self._clock())
         resolved: list[ManagedMediaRef] = []
@@ -203,6 +218,9 @@ class ManagedMemoryMediaStore:
             candidates.append((request.audio_id, "audio"))
 
         for ref_id, requested_modality in candidates:
+            if type(ref_id) is not str:
+                issues.append(self._issue("memory_media_ref_invalid"))
+                continue
             if ref_id in seen_ids:
                 issues.append(self._issue("memory_media_ref_duplicate"))
                 continue
@@ -244,15 +262,20 @@ class ManagedMemoryMediaStore:
         allowed_modalities: set[MemoryModality] | None,
         allowed_mime_types: set[str] | None,
     ) -> _StoredMedia:
-        if max_bytes < 0:
+        external_ref = self._external_ref(ref)
+        if external_ref is None:
+            raise MemoryMediaAccessError("memory_media_ref_mismatch")
+        if type(owner_scope) is not str:
+            raise MemoryMediaAccessError("memory_media_owner_mismatch")
+        if type(max_bytes) is not int or max_bytes < 0:
             raise MemoryMediaAccessError("memory_media_size_limit")
         with self._lock:
-            entry = self._entries.get(ref.ref_id)
+            entry = self._entries.get(external_ref.ref_id)
         if entry is None:
             raise MemoryMediaAccessError("memory_media_ref_unknown")
         if entry.owner_scope != owner_scope:
             raise MemoryMediaAccessError("memory_media_owner_mismatch")
-        if not self._matches_entry(ref, entry):
+        if not self._matches_entry(external_ref, entry):
             raise MemoryMediaAccessError("memory_media_ref_mismatch")
         if self._is_expired(entry, self._ensure_aware(self._clock())):
             raise MemoryMediaAccessError("memory_media_expired")
@@ -282,7 +305,7 @@ class ManagedMemoryMediaStore:
         )
 
     @staticmethod
-    def _matches_entry(ref: ManagedMediaRef, entry: _StoredMedia) -> bool:
+    def _matches_entry(ref: _ExternalMediaRef, entry: _StoredMedia) -> bool:
         return (
             ref.ref_id == entry.ref_id
             and ref.media_type == entry.media_type
@@ -290,6 +313,56 @@ class ManagedMemoryMediaStore:
             and ref.size_bytes == len(entry.payload)
             and ref.created_at == entry.created_at
             and ref.owner_scope == entry.owner_scope
+        )
+
+    @staticmethod
+    def _external_ref(ref: object) -> _ExternalMediaRef | None:
+        if type(ref) is not ManagedMediaRef:
+            return None
+        values = object.__getattribute__(ref, "__dict__")
+        if type(values) is not dict:
+            return None
+        ref_id = values.get("ref_id")
+        media_type = values.get("media_type")
+        mime_type = values.get("mime_type")
+        size_bytes = values.get("size_bytes")
+        created_at = values.get("created_at")
+        owner_scope = values.get("owner_scope")
+        if (
+            type(ref_id) is not str
+            or type(media_type) is not str
+            or media_type not in {"image", "audio", "video", "document"}
+            or type(mime_type) is not str
+            or type(size_bytes) is not int
+            or size_bytes < 0
+            or not ManagedMemoryMediaStore._is_exact_aware_datetime(created_at)
+            or type(owner_scope) is not str
+        ):
+            return None
+        return _ExternalMediaRef(
+            ref_id=ref_id,
+            media_type=media_type,
+            mime_type=mime_type,
+            size_bytes=size_bytes,
+            created_at=created_at,
+            owner_scope=owner_scope,
+        )
+
+    @staticmethod
+    def _is_registration_metadata(
+        owner_scope: object,
+        media_type: object,
+        mime_type: object,
+        payload: object,
+    ) -> bool:
+        return (
+            type(owner_scope) is str
+            and bool(owner_scope)
+            and type(media_type) is str
+            and media_type in {"image", "audio", "video", "document"}
+            and type(mime_type) is str
+            and bool(mime_type)
+            and isinstance(payload, bytes)
         )
 
     @staticmethod
@@ -302,6 +375,14 @@ class ManagedMemoryMediaStore:
 
     @staticmethod
     def _ensure_aware(value: datetime) -> datetime:
-        if value.tzinfo is None or value.utcoffset() is None:
+        if not ManagedMemoryMediaStore._is_exact_aware_datetime(value):
             raise ValueError("managed media timestamps must be timezone-aware")
         return value
+
+    @staticmethod
+    def _is_exact_aware_datetime(value: object) -> bool:
+        return (
+            type(value) is datetime
+            and type(value.tzinfo) is timezone
+            and value.utcoffset() is not None
+        )
