@@ -14,6 +14,12 @@ eval、Gateway 主链路覆盖的 probe 不应继续沉积到本目录。
 - `scripts/run_langfuse.py`: PyCharm-friendly local Langfuse supervisor. It starts
   the ignored `.data/langfuse` Compose stack, waits for health, stays attached as
   one Run process, and stops the containers without deleting data when terminated.
+- `scripts/run_qdrant.py`：PyCharm-friendly 本地 Qdrant supervisor。它只启动
+  `docker/mem0/compose.yaml` 的 `visual-memory` profile 和 `qdrant` service，等待
+  `http://127.0.0.1:6333/healthz` 就绪，并作为一个 Run process 持续运行。仓库已提供共享配置
+  `.run/Qdrant.run.xml`；在 PyCharm 选择 **Qdrant** 后点击 Run 即可启动，点击 Stop 会停止容器但保留
+  `qdrant_data` volume。命令行可运行
+  `/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_qdrant.py`。
 - `scripts/run_mem0.py`: PyCharm-friendly local Mem0 operator console. It starts
   Mem0 + Qdrant, waits for health, then stays attached at a `mem0> ` prompt with
   `help`, `status`, `list`, `get`, `history`, `add`, `update`, `delete`, `clear`,
