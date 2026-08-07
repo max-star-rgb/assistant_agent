@@ -364,6 +364,8 @@ def _truncate_human_text(value: str, *, max_chars: int) -> str:
 def _direct_advice(value: str) -> str:
     if value.startswith("我建议你"):
         return value
+    if value.startswith("我建议"):
+        return "我建议你" + value.removeprefix("我建议").removeprefix("你")
     if value.startswith("建议你"):
         return "我" + value
     return "我建议你" + value

@@ -435,7 +435,23 @@ def test_daily_report_removes_bare_git_sha_test_paths_and_internal_terms() -> No
     assert "code_addressed" not in markdown
 
 
-def test_daily_report_keeps_advice_conversational_without_duplicate_prefix() -> None:
+@pytest.mark.parametrize(
+    ("suggested_change", "expected"),
+    [
+        (
+            "我建议你只在用户明确确认后保存计划。",
+            "我建议你只在用户明确确认后保存计划。",
+        ),
+        (
+            "我建议只在用户明确确认后保存计划。",
+            "我建议你只在用户明确确认后保存计划。",
+        ),
+    ],
+)
+def test_daily_report_keeps_advice_conversational_without_duplicate_prefix(
+    suggested_change: str,
+    expected: str,
+) -> None:
     """Would fail if renderer boilerplate duplicated Codex's direct advice."""
 
     issue = DailyAuditIssue(
@@ -444,7 +460,7 @@ def test_daily_report_keeps_advice_conversational_without_duplicate_prefix() -> 
         title="计划写入过早",
         plain_summary="咨询可能被当成确定计划。",
         user_impact="后续回答可能引用错误安排。",
-        suggested_change="我建议你只在用户明确确认后保存计划。",
+        suggested_change=suggested_change,
         first_seen=date(2026, 8, 5),
         last_seen=date(2026, 8, 5),
     )
@@ -459,8 +475,9 @@ def test_daily_report_keeps_advice_conversational_without_duplicate_prefix() -> 
         )
     )
 
-    assert "我建议你只在用户明确确认后保存计划。" in markdown
+    assert expected in markdown
     assert "我建议你先我建议你" not in markdown
+    assert "我建议你我建议" not in markdown
 
 
 def test_daily_report_stays_bounded_with_five_verbose_issues() -> None:
