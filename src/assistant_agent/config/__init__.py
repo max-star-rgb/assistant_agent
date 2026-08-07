@@ -114,6 +114,11 @@ class ProviderConfig:
     mem0_api_key: str | None = None
     mem0_timeout_seconds: float = 5.0
     mem0_identity_namespace: str = "assistant-agent"
+    memory_plugin_config_path: str | None = None
+    memory_plugin_open_timeout_seconds: float = 5.0
+    memory_plugin_prepare_timeout_seconds: float = 5.0
+    memory_plugin_ingest_timeout_seconds: float = 30.0
+    memory_plugin_close_timeout_seconds: float = 5.0
     memory_ingestion_max_workers: int = 2
     memory_ingestion_max_pending: int = 64
     memory_ingestion_shutdown_timeout_seconds: float = 10.0
@@ -510,6 +515,25 @@ class ProviderConfig:
             mem0_identity_namespace=(
                 source.get("MEM0_IDENTITY_NAMESPACE")
                 or "assistant-agent"
+            ),
+            memory_plugin_config_path=source.get(
+                "MULTIMODAL_AGENT_MEMORY_PLUGIN_CONFIG_PATH"
+            ),
+            memory_plugin_open_timeout_seconds=_float_env(
+                source.get("MULTIMODAL_AGENT_MEMORY_PLUGIN_OPEN_TIMEOUT_SECONDS"),
+                5.0,
+            ),
+            memory_plugin_prepare_timeout_seconds=_float_env(
+                source.get("MULTIMODAL_AGENT_MEMORY_PLUGIN_PREPARE_TIMEOUT_SECONDS"),
+                5.0,
+            ),
+            memory_plugin_ingest_timeout_seconds=_float_env(
+                source.get("MULTIMODAL_AGENT_MEMORY_PLUGIN_INGEST_TIMEOUT_SECONDS"),
+                30.0,
+            ),
+            memory_plugin_close_timeout_seconds=_float_env(
+                source.get("MULTIMODAL_AGENT_MEMORY_PLUGIN_CLOSE_TIMEOUT_SECONDS"),
+                5.0,
             ),
             memory_ingestion_max_workers=max(
                 1,
