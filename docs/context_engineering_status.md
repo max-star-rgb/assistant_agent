@@ -160,6 +160,19 @@ objective、constraints、plan/step 状态、artifact references、等待状态�
 raw Provider response、父会话历史及未登记扩展不得进入 prompt。Durable snapshot 是当前执行状态，
 不是 session summary 或长期记忆。
 
+通用 Durable Workflow 不把完整前台会话或 Workflow Store JSON 回放给模型。Worker 为每个 work item
+生成 `WorkflowContextManifest`，只包含 objective、constraints、owner 校验后的 artifact ref、digest 和
+有界 excerpt；lease、revision、绝对路径、Store client 和完整来源正文不进入 prompt。artifact 内容由
+`LocalWorkflowArtifactStore` 独立持久化，Context Compiler 施加 per-artifact 和 total char budget。
+
+`AgentGraphRuntime.run_work_item()` 使用 runtime-owned `_trusted_workflow_assignment` 和显式
+`_trusted_workflow_allowed_tools`。空 allowlist 的含义是零个 Tool，而不是“无覆盖”；普通请求不能通过
+伪造同名自然语言扩大候选集合，HTTP、WebSocket 和 A2A 入口也会剥离这些 runtime-owned metadata。
+每个 work item 使用独立 run，结果摘要重新写成不可变 artifact 后再
+传递给下游，不依赖无界 transcript。trusted work-item run 不附加 session memory snapshot、不写入
+长期记忆或稳定文本 embedding，也不投影原 session 的实时视觉/主动事件；跨阶段上下文只能来自
+显式 manifest 和 owner-bound artifact。
+
 ### 实时任务状态
 
 Realtime task state 仅在结构化 interaction mode、entry capability 或显式 runtime opt-in 下启用。

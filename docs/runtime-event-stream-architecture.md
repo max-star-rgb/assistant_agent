@@ -219,6 +219,29 @@ cursor-based replay/tail：
 因此 `AgentRunStream` 仍表示一次前台 runtime run，`TaskEventSubscription` 表示一个可跨进程
 重启的 durable task 的观察窗口；两者不能互相替代，也不应共享内存队列作为事实源。
 
+Durable Workflow 使用相同的分离原则，但事件事实源是 `WorkflowStore`：
+
+- `GET /workflows/{workflow_id}/events?after=<cursor>` 先经 `WorkflowService` 做 `user_id + agent_id`
+  校验，再读取事务内与 revision 一起提交的 `WorkflowEvent`；
+- 前台 `workflow_submit` run 在返回 handle 后结束，不 tail 后台事件；
+- 每个语义 work item 都产生独立 `AgentGraphRuntime` run/trace，Workflow event 通过
+  `workflow_id/work_item_id/attempt` 关联，不伪装成同一个超长 run；
+- waiting-input、cancel、retry、local plan revision 和 terminal 都是持久事件；客户端断线只丢失
+  临时观察窗口，使用 cursor 可重放；
+- 当前 HTTP facade 是 pull/replay，不建立长期 WebSocket producer，也不把消费者速度耦合到 worker。
+
+当前持久恢复边界刻意放在 work-item quantum 之间：LangGraph controller 每次 invocation 只执行一个
+work item，并在 `commit_quantum` 用 Workflow revision、事件和结果做一次原子提交；进程重启后从
+`WorkflowStore` 重新 hydrate，再由过期 lease 重新 claim。当前实现没有声称可以从一次 Provider/Tool
+调用的中间指令继续，也没有把 LangGraph SQLite checkpointer 作为第二事实源；崩溃在提交前发生时，
+该 quantum 会按 lease/retry 语义重做。因此首批内置 definition 只给 work item 暴露只读 Tool，未来
+若允许写副作用，必须先增加 operation-level idempotency key 和 side-effect commit barrier。
+
+普通 work-item 最终文本直接作为成功结果。只有 trusted work-item prompt 返回完整、通过严格 schema
+校验的 `workflow_control` JSON 时，adapter 才会把它解释为 `repair`、`blocked` 或 `failed`；Markdown
+代码块、混合文本和未知字段都不会成为控制指令。`repair_work_item_ids` 只能从 controller 提供的祖先
+候选中选择，并在 plan revision 前再次经过 DAG/descendant 校验。
+
 ## Thread Model And Ordering
 
 The core runtime and shared assistant service remain synchronous sources of

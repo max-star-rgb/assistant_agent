@@ -48,6 +48,10 @@ from assistant_agent.media.agent_service_entry import is_trusted_agent_service_r
 from assistant_agent.runtime.event_sink import EventSink
 from assistant_agent.automation.durable_tasks.service import DurableTaskService
 from assistant_agent.automation.durable_tasks.sqlite_store import SQLiteTaskStore
+from assistant_agent.workflows.artifacts import LocalWorkflowArtifactStore
+from assistant_agent.workflows.builtin import default_workflow_definitions
+from assistant_agent.workflows.service import WorkflowService
+from assistant_agent.workflows.sqlite_store import SQLiteWorkflowStore
 from assistant_agent.runtime.chat_adapter import ChatAdapter, ChatRequest, ChatResult, create_chat_adapter
 from assistant_agent.runtime.checkpointer import create_checkpointer
 from assistant_agent.context.observability import build_traced_assistant_context_pack
@@ -167,6 +171,8 @@ class AgentGraphRuntime:
         checkpointer: Any | None = None,
         context_source_coordinator: ContextSourceCoordinator | None = None,
         durable_task_service: DurableTaskService | None = None,
+        workflow_service: WorkflowService | None = None,
+        workflow_artifact_store: LocalWorkflowArtifactStore | None = None,
         agent_id: str = DEFAULT_AGENT_ID,
     ) -> None:
         self.agent_id = agent_id
@@ -204,6 +210,17 @@ class AgentGraphRuntime:
             long_term_memory_service
             or create_long_term_memory_service(self.config)
         )
+        self.workflow_service = workflow_service
+        self.workflow_artifact_store = workflow_artifact_store
+        if self.config.durable_workflows_enabled:
+            self.workflow_service = self.workflow_service or WorkflowService(
+                store=SQLiteWorkflowStore(self.config.durable_workflow_path),
+                definitions=default_workflow_definitions(),
+            )
+            self.workflow_artifact_store = (
+                self.workflow_artifact_store
+                or LocalWorkflowArtifactStore(self.config.durable_workflow_artifact_path)
+            )
         self.durable_task_service = durable_task_service
         self.notification_outbox_store = None
         if (
@@ -244,6 +261,7 @@ class AgentGraphRuntime:
                 visual_reminder_registry=self.visual_reminder_registry,
                 visual_memory_text_index=self.visual_memory_text_index,
                 durable_task_service=self.durable_task_service,
+                workflow_service=self.workflow_service,
             )
             if self.durable_task_service is not None:
                 self.durable_task_service.registry = self.registry
@@ -266,6 +284,14 @@ class AgentGraphRuntime:
                     raise ValueError(
                         "A custom Registry for durable tasks must include task_plan_submit before runtime startup."
                     )
+            if (
+                self.config.durable_workflows_enabled
+                and "workflow_submit" not in self.registry.list()
+            ):
+                raise ValueError(
+                    "A custom Registry for durable workflows must include "
+                    "workflow_submit before runtime startup."
+                )
         if (
             self.durable_task_service is not None
             and self.durable_task_service.notification_outbox is None
@@ -390,6 +416,7 @@ class AgentGraphRuntime:
             event_sink=self.event_sink,
             context_metadata={
                 "durable_task_service": self.durable_task_service,
+                "workflow_service": self.workflow_service,
             },
         )
         self._conditional_graph = build_conditional_agent_graph()
@@ -448,6 +475,79 @@ class AgentGraphRuntime:
         )
         return state
 
+    def run_work_item(self, request):
+        """Execute one bounded Workflow assignment through the existing assistant loop."""
+
+        from assistant_agent.workflows.agent_runtime import (
+            AgentWorkItemRequest,
+            AgentWorkItemResult,
+            parse_work_item_response,
+            render_work_item_prompt,
+        )
+
+        assignment = (
+            request
+            if isinstance(request, AgentWorkItemRequest)
+            else AgentWorkItemRequest.model_validate(request)
+        )
+        user_request = UserRequest(
+            user_id=assignment.user_id,
+            session_id=assignment.session_id,
+            text=render_work_item_prompt(assignment),
+            task_execution_mode="foreground",
+            metadata={
+                "_trusted_workflow_assignment": {
+                    "workflow_id": assignment.workflow_id,
+                    "work_item_id": assignment.work_item_id,
+                    "attempt_id": assignment.attempt_id,
+                },
+                "_trusted_workflow_max_iterations": assignment.max_iterations,
+                "_trusted_workflow_allowed_tools": list(
+                    assignment.allowed_tool_names
+                ),
+                "tool_visibility": {
+                    "allowed_tools": list(assignment.allowed_tool_names),
+                    "profile": "workflow_work_item",
+                },
+            },
+        )
+        state = self.run_state(user_request)
+        if state.status == "completed" and state.response is not None:
+            status = "succeeded"
+            summary = state.response.message
+        elif state.status == "cancelled":
+            status = "blocked"
+            summary = "Work item execution was cancelled."
+        else:
+            status = "failed"
+            summary = (
+                state.response.message
+                if state.response is not None
+                else "Work item execution failed."
+            )
+        model_calls_used = sum(
+            1
+            for step in state.request.metadata.get("assistant_loop_steps", [])
+            if isinstance(step, dict) and step.get("output_type") is not None
+        )
+        artifact_refs = list(state.response.output_refs) if state.response else []
+        if status == "succeeded":
+            return parse_work_item_response(
+                summary,
+                run_id=state.run_id,
+                artifact_refs=artifact_refs,
+                model_calls_used=model_calls_used,
+                tool_calls_used=len(state.tool_calls),
+            )
+        return AgentWorkItemResult(
+            status=status,
+            run_id=state.run_id,
+            summary=summary,
+            artifact_refs=artifact_refs,
+            model_calls_used=model_calls_used,
+            tool_calls_used=len(state.tool_calls),
+        )
+
     def run_state(
         self,
         request: UserRequest,
@@ -467,9 +567,11 @@ class AgentGraphRuntime:
             request,
             durable_tasks_enabled=self.config.durable_tasks_enabled,
         )
-        self._refresh_visual_memory_capability(request)
-        self._refresh_visual_reminder_capability(request)
-        self._attach_proactive_session_context(request)
+        workflow_work_item = _is_workflow_work_item_request(request)
+        if not workflow_work_item:
+            self._refresh_visual_memory_capability(request)
+            self._refresh_visual_reminder_capability(request)
+            self._attach_proactive_session_context(request)
         base_event_sink = event_sink or self.event_sink
         run_event_sink = (
             _ResponseDeltaTrackingEventSink(base_event_sink)
@@ -483,6 +585,7 @@ class AgentGraphRuntime:
             event_sink=run_event_sink,
             context_metadata={
                 "durable_task_service": self.durable_task_service,
+                "workflow_service": self.workflow_service,
             },
             cancel_token=cancel_token,
         )
@@ -492,8 +595,9 @@ class AgentGraphRuntime:
             trace_id=trace_context.trace_id if trace_context is not None else None,
             agent_id=self.agent_id,
         )
-        self._embed_stable_request_text(state, request)
-        self._attach_session_memory_snapshot(state)
+        if not workflow_work_item:
+            self._embed_stable_request_text(state, request)
+            self._attach_session_memory_snapshot(state)
         state.context_source_result = self.context_source_coordinator.load_once(
             ContextSourceRequest(
                 user_id=state.user_id,
@@ -557,7 +661,10 @@ class AgentGraphRuntime:
             "current_step_index": 0,
             "run_phase": RunPhase.ACT,
             "trace_id": state.trace_id,
-            "max_tool_iterations": self.config.max_tool_iterations,
+            "max_tool_iterations": _workflow_iteration_limit(
+                request,
+                configured=self.config.max_tool_iterations,
+            ),
             "max_plan_steps": self.config.max_plan_steps,
             "max_plan_revisions": self.config.max_plan_revisions,
         }
@@ -673,7 +780,7 @@ class AgentGraphRuntime:
                     run_event_sink,
                 )
         runtime_event_publisher.deliver_run_terminal(terminal_fact)
-        if terminal_status == "completed":
+        if terminal_status == "completed" and not workflow_work_item:
             _record_local_delivered_response(state)
             self.long_term_memory_service.enqueue_completed_turn(
                 trace_store=self.trace_store,
@@ -1301,6 +1408,21 @@ def _durable_quantum_tool_specs(registry: Any, state: AgentState) -> list[ToolSp
     except Exception as exc:
         _set_durable_tool_description_failure_response(state, exc)
         return None
+
+
+def _workflow_iteration_limit(request: UserRequest, *, configured: int) -> int:
+    """Honor only runtime-owned Workflow budgets and never expand the global limit."""
+
+    if not isinstance(request.metadata.get("_trusted_workflow_assignment"), dict):
+        return configured
+    requested = request.metadata.get("_trusted_workflow_max_iterations")
+    if not isinstance(requested, int):
+        return configured
+    return max(1, min(requested, configured))
+
+
+def _is_workflow_work_item_request(request: UserRequest) -> bool:
+    return isinstance(request.metadata.get("_trusted_workflow_assignment"), dict)
 
 
 def _set_durable_tool_description_failure_response(state: AgentState, exc: Exception) -> None:

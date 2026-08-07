@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from assistant_agent.mcp.config import MCPServerConfig
     from assistant_agent.mcp.registration import MCPToolDiscoveryRunner
     from assistant_agent.automation.durable_tasks.service import DurableTaskService
+    from assistant_agent.workflows.service import WorkflowService
     from assistant_agent.media.video.realtime_video_memory import RealtimeVideoMemoryStore
     from assistant_agent.media.video.video_context import VideoContextStore
     from assistant_agent.media.embedding.coordinator_store import SessionEmbeddingCoordinatorStore
@@ -37,6 +38,7 @@ class ToolPluginContext:
     video_context_store: VideoContextStore | None = None
     realtime_video_memory_store: RealtimeVideoMemoryStore | None = None
     durable_task_service: DurableTaskService | None = None
+    workflow_service: WorkflowService | None = None
     calendar_adapter: CalendarAdapter | None = None
     embedding_coordinator_store: SessionEmbeddingCoordinatorStore | None = None
     visual_semantic_store_pool: SessionVisualSemanticStorePool | None = None

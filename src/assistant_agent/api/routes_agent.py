@@ -24,6 +24,7 @@ from assistant_agent.multi_agent.control_plane_models import (
 from assistant_agent.api.models import AgentRunResponse, PROTOCOL_VERSION
 from assistant_agent.identity import RequestIdentity
 from assistant_agent.runtime.requests import UserRequest
+from assistant_agent.runtime.request_metadata import sanitize_external_request_metadata
 from assistant_agent.runtime.session_models import SessionCreate, SessionDeleteResult, SessionList, SessionRecord
 from assistant_agent.runtime.assistant_run_service import (
     create_runtime,
@@ -775,19 +776,7 @@ def _with_identity_metadata(request: UserRequest, resolution: ResolvedRequestIde
 
 
 def _public_request_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
-    safe_metadata = dict(metadata)
-    for key in (
-        "system_prompt_profile",
-        "channel",
-        "source",
-        "durable_task_binding",
-        "durable_task_snapshot",
-        "durable_idempotency_key",
-        "worker_lease",
-        "_trusted_durable_execution",
-    ):
-        safe_metadata.pop(key, None)
-    return safe_metadata
+    return sanitize_external_request_metadata(metadata)
 
 
 def _require_trial_access_for_identity(resolution: ResolvedRequestIdentity) -> RequestIdentity:

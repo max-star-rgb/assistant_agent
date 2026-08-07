@@ -33,6 +33,7 @@ from assistant_agent.api.identity import (
     enforce_identity_policy,
     resolve_request_identity,
 )
+from assistant_agent.runtime.request_metadata import sanitize_external_request_metadata
 
 
 router = APIRouter()
@@ -135,7 +136,7 @@ async def a2a_json_rpc(
             "user_id": identity.identity.user_id,
             "session_id": identity.identity.session_id or route_request.session_id,
             "metadata": {
-                **dict(route_request.metadata),
+                **sanitize_external_request_metadata(route_request.metadata),
                 "request_identity": identity.metadata(),
             },
         }

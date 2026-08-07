@@ -23,6 +23,7 @@ from assistant_agent.api.routes_eval_experiments import (
     router as eval_experiments_router,
 )
 from assistant_agent.api.routes_tasks import router as tasks_router
+from assistant_agent.api.routes_workflows import router as workflows_router
 from assistant_agent.api.routes_skills import router as skills_router
 from assistant_agent.api.models import PROTOCOL_VERSION, api_error
 from assistant_agent.runtime.generated_artifacts import GENERATED_ARTIFACT_DIR
@@ -43,6 +44,10 @@ from assistant_agent.runtime.server_startup_summary import print_tool_registry_s
 from assistant_agent.skills.application import (
     create_skill_runtime_app_from_env,
 )
+from assistant_agent.workflows.context import WorkflowContextCompiler
+from assistant_agent.workflows.execution import AgentRuntimeWorkItemExecutor
+from assistant_agent.workflows.runtime import WorkflowRuntime
+from assistant_agent.workflows.worker import DurableWorkflowWorker
 
 SKIP_DOTENV_ENV = "MULTIMODAL_AGENT_SKIP_DOTENV"
 
@@ -79,6 +84,7 @@ def create_app() -> FastAPI:
     app.include_router(agent_router)
     app.include_router(eval_experiments_router)
     app.include_router(tasks_router)
+    app.include_router(workflows_router)
     app.include_router(skills_router)
     app.include_router(a2a_router)
     app.include_router(agent_service_websocket_router)
@@ -90,9 +96,11 @@ def create_app() -> FastAPI:
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     await start_durable_task_worker(app)
+    await start_durable_workflow_worker(app)
     try:
         yield
     finally:
+        await shutdown_durable_workflow_worker(app)
         await shutdown_durable_task_worker(app)
         await shutdown_gateway_runtime()
         shutdown_agent_runtime()
@@ -101,6 +109,78 @@ async def _lifespan(app: FastAPI):
 def get_durable_task_worker(app: FastAPI) -> DurableTaskWorker | None:
     worker = getattr(app.state, "durable_task_worker", None)
     return worker if isinstance(worker, DurableTaskWorker) else None
+
+
+def get_durable_workflow_worker(app: FastAPI) -> DurableWorkflowWorker | None:
+    worker = getattr(app.state, "durable_workflow_worker", None)
+    return worker if isinstance(worker, DurableWorkflowWorker) else None
+
+
+async def start_durable_workflow_worker(app: FastAPI) -> DurableWorkflowWorker | None:
+    runtime = getattr(app.state, "agent_runtime", None) or routes_agent.get_agent_runtime()
+    service = getattr(runtime, "workflow_service", None)
+    artifact_store = getattr(runtime, "workflow_artifact_store", None)
+    config = getattr(runtime, "config", None)
+    app.state.durable_workflow_worker = None
+    app.state.durable_workflow_stop_event = None
+    app.state.durable_workflow_worker_task = None
+    app.state.durable_workflow_store_closed = False
+    app.state.durable_workflow_artifact_store_closed = False
+    if (
+        service is None
+        or artifact_store is None
+        or config is None
+        or not config.durable_workflow_worker_enabled
+    ):
+        return None
+    stop_event = Event()
+    work_item_executor = AgentRuntimeWorkItemExecutor(
+        agent_runtime=runtime,
+        artifact_store=artifact_store,
+        context_compiler=WorkflowContextCompiler(artifact_store=artifact_store),
+        max_iterations=config.max_tool_iterations,
+    )
+    worker = DurableWorkflowWorker(
+        service=service,
+        runtime=WorkflowRuntime(
+            service=service,
+            work_item_executor=work_item_executor,
+        ),
+        worker_id=f"api-workflow-worker-{os.getpid()}-{id(app)}",
+        lease_seconds=config.durable_workflow_lease_seconds,
+        poll_seconds=config.durable_workflow_poll_seconds,
+    )
+    app.state.durable_workflow_worker = worker
+    app.state.durable_workflow_stop_event = stop_event
+    app.state.durable_workflow_worker_task = asyncio.create_task(
+        asyncio.to_thread(worker.run, stop_event)
+    )
+    return worker
+
+
+async def shutdown_durable_workflow_worker(app: FastAPI) -> None:
+    stop_event = getattr(app.state, "durable_workflow_stop_event", None)
+    worker_task = getattr(app.state, "durable_workflow_worker_task", None)
+    if stop_event is not None:
+        stop_event.set()
+    if worker_task is not None:
+        try:
+            await asyncio.wait_for(asyncio.shield(worker_task), timeout=5.0)
+        except asyncio.TimeoutError:
+            worker_task.cancel()
+    runtime = getattr(app.state, "agent_runtime", None)
+    service = getattr(runtime, "workflow_service", None) if runtime is not None else None
+    artifacts = (
+        getattr(runtime, "workflow_artifact_store", None)
+        if runtime is not None
+        else None
+    )
+    if service is not None and not app.state.durable_workflow_store_closed:
+        service.store.close()
+        app.state.durable_workflow_store_closed = True
+    if artifacts is not None and not app.state.durable_workflow_artifact_store_closed:
+        artifacts.close()
+        app.state.durable_workflow_artifact_store_closed = True
 
 
 async def start_durable_task_worker(app: FastAPI) -> DurableTaskWorker | None:

@@ -54,6 +54,7 @@ from assistant_agent.runtime.realtime_task_state import (
     get_default_realtime_task_state_store,
     snapshot_from_task_state,
 )
+from assistant_agent.runtime.request_metadata import sanitize_external_request_metadata
 
 
 @dataclass
@@ -2045,10 +2046,9 @@ def _run_timeout_ms(payload: Mapping[str, Any], session_config: Mapping[str, Any
 
 
 def _user_message_metadata(payload: Mapping[str, Any]) -> dict[str, Any]:
-    metadata = dict(payload.get("metadata") or {})
-    trusted_source = _trusted_entry_source(metadata)
-    for key in ("system_prompt_profile", "channel", "source"):
-        metadata.pop(key, None)
+    raw_metadata = dict(payload.get("metadata") or {})
+    trusted_source = _trusted_entry_source(raw_metadata)
+    metadata = sanitize_external_request_metadata(raw_metadata)
     if trusted_source is not None:
         metadata["source"] = trusted_source
     return metadata

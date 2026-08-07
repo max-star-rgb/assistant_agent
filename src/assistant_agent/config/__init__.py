@@ -241,6 +241,12 @@ class ProviderConfig:
     durable_task_poll_seconds: float = 1.0
     durable_task_max_seconds: int = 2_592_000
     durable_workflow_max_quanta: int = 1_000
+    durable_workflows_enabled: bool = False
+    durable_workflow_path: str = ".local/workflows/workflows.sqlite3"
+    durable_workflow_worker_enabled: bool = False
+    durable_workflow_lease_seconds: int = 30
+    durable_workflow_poll_seconds: float = 1.0
+    durable_workflow_artifact_path: str = ".local/workflows/artifacts"
 
     def __post_init__(self) -> None:
         self.validate_provider_mode()
@@ -727,6 +733,36 @@ class ProviderConfig:
                     source.get("MULTIMODAL_AGENT_DURABLE_WORKFLOW_MAX_QUANTA"),
                     1_000,
                 ),
+            ),
+            durable_workflows_enabled=_bool_env(
+                source.get("MULTIMODAL_AGENT_DURABLE_WORKFLOWS_ENABLED"),
+                False,
+            ),
+            durable_workflow_path=(
+                source.get("MULTIMODAL_AGENT_DURABLE_WORKFLOW_PATH")
+                or ".local/workflows/workflows.sqlite3"
+            ),
+            durable_workflow_worker_enabled=_bool_env(
+                source.get("MULTIMODAL_AGENT_DURABLE_WORKFLOW_WORKER_ENABLED"),
+                False,
+            ),
+            durable_workflow_lease_seconds=max(
+                5,
+                _int_env(
+                    source.get("MULTIMODAL_AGENT_DURABLE_WORKFLOW_LEASE_SECONDS"),
+                    30,
+                ),
+            ),
+            durable_workflow_poll_seconds=max(
+                0.1,
+                _float_env(
+                    source.get("MULTIMODAL_AGENT_DURABLE_WORKFLOW_POLL_SECONDS"),
+                    1.0,
+                ),
+            ),
+            durable_workflow_artifact_path=(
+                source.get("MULTIMODAL_AGENT_DURABLE_WORKFLOW_ARTIFACT_PATH")
+                or ".local/workflows/artifacts"
             ),
             openai_chat_base_url=source.get("OPENAI_CHAT_BASE_URL", "https://api.openai.com/v1"),
             openai_chat_model=source.get("OPENAI_CHAT_MODEL", "gpt-4o-mini"),
