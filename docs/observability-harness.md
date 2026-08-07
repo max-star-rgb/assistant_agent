@@ -400,12 +400,14 @@ watermark 的前置条件，再把第二层、第三层和日报按单文件原�
 运行先恢复，冲突的旧 journal 会隔离。失败只保留内部 attempt/staging 诊断证据；它不会覆盖同日已有成功
 bundle、Codex input 或日报，也不会推进 issue registry 或 watermark。
 
-发布 Markdown 前必须从 previous/merged 或手工 refresh registry 生成确定性 issue view：持续
-`open`、`regressed`、`code_addressed` 和 `uncertain` 不因 Codex 当日漏发而消失；`uncertain` 只作为
-暂时不能下结论的事项，不进入当前修改建议；`runtime_verified` 只在当日真实转换时出现。空日或无异常日
-不调用 Codex，但仍以自然语言保留 active/code-addressed 问题标题。面向人的 Markdown 是结论先行的
+自动连续日报发布 Markdown 前必须从 previous/merged registry 生成确定性 issue view，使持续
+`open`、`regressed`、`code_addressed` 和 `uncertain` 不因 Codex 当日漏发而消失；显式日期 refresh 不改
+registry，其人读 Markdown 只使用本次 Codex 已归并的问题，避免旧标题和旧正文与当前归纳重复出现。
+`uncertain` 只作为暂时不能下结论的事项，不进入当前修改建议；`runtime_verified` 只在当日真实转换时出现。
+空日或无异常日不调用 Codex，但仍以自然语言保留 active/code-addressed 问题标题。面向人的 Markdown 是结论先行的
 对话式投影，不生成证据附录，也不显示 issue key、Trace/Score/observation/run ID、commit SHA、测试路径
-或内部生命周期术语。完整机器证据仍保存在第三层 JSON 与 issue registry 中；Score 证据复用现有
+或内部生命周期术语。renderer 对各段设置人读长度预算，五个极端长问题也不得超过 1,500 字；正常日报
+目标仍为约 500～1,000 字。完整机器证据仍保存在第三层 JSON 与 issue registry 中；Score 证据复用现有
 `trace_evidence_refs`，格式为 `trace:<trace-id>/score:<score-id>`，并按 current bundle 校验归属。
 
 确定性第三层存在异常时，Codex 通过 `--ephemeral --sandbox read-only` 运行；子进程环境移除

@@ -174,7 +174,7 @@ def render_daily_codex_report(
     lines = [
         f"# {report.audit_date.isoformat()} 运行审计",
         "",
-        _plain_text(report.daily_summary),
+        _plain_text(report.daily_summary, max_chars=160),
     ]
     if decision_issues:
         lines.extend(["", "## 你现在需要处理的", ""])
@@ -199,8 +199,12 @@ def render_daily_codex_report(
         if uncertain_issues and report.limitations:
             lines.append("")
         lines.extend(
-            _plain_text(value, fallback="目前还缺少足够信息。")
-            for value in report.limitations
+            _plain_text(
+                value,
+                fallback="目前还缺少足够信息。",
+                max_chars=100,
+            )
+            for value in report.limitations[:2]
         )
     return "\n".join(lines) + "\n"
 
@@ -291,24 +295,30 @@ def _append_conversational_issues(
     include_advice: bool = False,
 ) -> None:
     for issue in issues:
-        lines.extend([f"### {_plain_text(issue.title, fallback='未命名问题')}", ""])
+        lines.extend(
+            [
+                f"### {_plain_text(issue.title, fallback='未命名问题', max_chars=50)}",
+                "",
+            ]
+        )
         summary = _plain_text(
             issue.plain_summary,
             fallback="目前还没有足够信息说明具体原因。",
+            max_chars=100 if include_advice else 80,
         )
         impact = _plain_text(
             issue.user_impact,
             fallback="对用户的具体影响暂时不明确。",
+            max_chars=70 if include_advice else 60,
         )
         lines.append(f"{summary} {impact}")
         if include_advice:
             advice = _plain_text(
                 issue.suggested_change,
                 fallback="补齐相关运行证据，再决定是否需要改代码。",
+                max_chars=80,
             )
-            lines.extend(["", f"我建议你先{advice}"])
-        if issue.validation.strip():
-            lines.extend(["", _plain_text(issue.validation)])
+            lines.extend(["", _direct_advice(advice)])
         lines.append("")
     lines.pop()
 
@@ -317,7 +327,12 @@ def _safe(value: str) -> str:
     return sanitize_runtime_audit_text(value)
 
 
-def _plain_text(value: str, *, fallback: str = "") -> str:
+def _plain_text(
+    value: str,
+    *,
+    fallback: str = "",
+    max_chars: int | None = None,
+) -> str:
     """Render untrusted model text as one escaped Markdown-safe human sentence."""
 
     if not value.strip():
@@ -331,7 +346,27 @@ def _plain_text(value: str, *, fallback: str = "") -> str:
     collapsed = " ".join(without_internal_terms.split())
     if not collapsed:
         return fallback
+    if max_chars is not None and len(collapsed) > max_chars:
+        collapsed = _truncate_human_text(collapsed, max_chars=max_chars)
     return _MARKDOWN_CONTROL.sub(r"\\\1", collapsed)
+
+
+def _truncate_human_text(value: str, *, max_chars: int) -> str:
+    if max_chars <= 1:
+        return "…"
+    candidate = value[: max_chars - 1].rstrip()
+    sentence_end = max(candidate.rfind(mark) for mark in "。！？；")
+    if sentence_end >= max_chars // 2:
+        return candidate[: sentence_end + 1]
+    return candidate.rstrip("，、；：。！？ ") + "…"
+
+
+def _direct_advice(value: str) -> str:
+    if value.startswith("我建议你"):
+        return value
+    if value.startswith("建议你"):
+        return "我" + value
+    return "我建议你" + value
 
 
 def _failed_plain_text(error_summary: str) -> str:

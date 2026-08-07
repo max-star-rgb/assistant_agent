@@ -266,11 +266,15 @@ def _run_one_locked(
                 window.audit_date,
             )
         )
-        issues = report_issue_view(
-            previous_registry,
-            report_registry,
-            report.issues,
-            audit_date=window.audit_date,
+        issues = (
+            report_issue_view(
+                previous_registry,
+                report_registry,
+                report.issues,
+                audit_date=window.audit_date,
+            )
+            if commit_continuous_state
+            else list(report.issues)
         )
         registry = report_registry if commit_continuous_state else None
         markdown = render_daily_codex_report(report, issues=issues)
@@ -738,7 +742,7 @@ def _downgrade_unverifiable_legacy_transitions(
         if _authenticated_commit_times(repo_root, previous.code_evidence_refs):
             issues.append(issue)
             continue
-        limitation = f"{issue.issue_key}：旧版修复证据无法验证，暂不确认运行终态。"
+        limitation = "旧版修复证据无法验证，因此暂时不能确认问题已经恢复。"
         limitations.append(limitation)
         issues.append(
             issue.model_copy(

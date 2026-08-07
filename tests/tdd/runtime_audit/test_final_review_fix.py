@@ -514,6 +514,44 @@ def test_report_view_keeps_active_registry_issue_codex_omitted(
     assert "tool.persistent" not in markdown
 
 
+def test_explicit_refresh_reports_current_consolidation_without_old_duplicate(
+    tmp_path: Path,
+) -> None:
+    """Would fail if a manual refresh mixed old prose into current consolidated issues."""
+
+    store = RuntimeAuditArtifactStore(tmp_path / "runtime_audit")
+    prior = DailyAuditIssue(
+        issue_key="memory.old-wording",
+        status="open",
+        title="旧的重复记忆问题",
+        first_seen=date(2026, 8, 4),
+        last_seen=date(2026, 8, 4),
+        trace_evidence_refs=["trace:prior"],
+    )
+    store.write_issue_registry(IssueRegistry(issues={prior.issue_key: prior}))
+    current = DailyAuditIssue(
+        issue_key="memory.consolidated",
+        status="open",
+        title="合并后的记忆问题",
+        first_seen=AUDIT_DATE,
+        last_seen=AUDIT_DATE,
+        trace_evidence_refs=["trace:trace-current"],
+    )
+
+    result = _run(
+        tmp_path,
+        source=FakeSource([_trace()]),
+        store=store,
+        codex_runner=lambda **_: _report(issue=current),
+        commit_continuous_state=False,
+    )
+
+    markdown = result.report_path.read_text(encoding="utf-8")
+    assert result.status == "succeeded"
+    assert "合并后的记忆问题" in markdown
+    assert "旧的重复记忆问题" not in markdown
+
+
 def test_empty_day_keeps_code_addressed_registry_status_without_codex(
     tmp_path: Path
 ) -> None:

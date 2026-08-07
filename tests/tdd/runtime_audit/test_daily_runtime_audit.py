@@ -291,7 +291,7 @@ def test_daily_report_uses_clear_fallbacks_for_empty_optional_issue_text() -> No
 
     assert "目前还没有足够信息说明具体原因。" in markdown
     assert "对用户的具体影响暂时不明确。" in markdown
-    assert "我建议你先补齐相关运行证据" in markdown
+    assert "我建议你补齐相关运行证据" in markdown
 
 
 @pytest.mark.parametrize(
@@ -433,6 +433,66 @@ def test_daily_report_removes_bare_git_sha_test_paths_and_internal_terms() -> No
     assert "049488ee61a83e63b259451c593ada642afdc348" not in markdown
     assert "tests/tdd/runtime_audit/test_report.py" not in markdown
     assert "code_addressed" not in markdown
+
+
+def test_daily_report_keeps_advice_conversational_without_duplicate_prefix() -> None:
+    """Would fail if renderer boilerplate duplicated Codex's direct advice."""
+
+    issue = DailyAuditIssue(
+        issue_key="memory.plan",
+        status="open",
+        title="计划写入过早",
+        plain_summary="咨询可能被当成确定计划。",
+        user_impact="后续回答可能引用错误安排。",
+        suggested_change="我建议你只在用户明确确认后保存计划。",
+        first_seen=date(2026, 8, 5),
+        last_seen=date(2026, 8, 5),
+    )
+    markdown = report_module.render_daily_codex_report(
+        daily_models_module.DailyCodexAuditReport(
+            audit_date=date(2026, 8, 5),
+            daily_summary="昨天有一件事需要处理。",
+            activity_summary="概况。",
+            issues=[issue],
+            memory_summary="记忆。",
+            infrastructure_summary="系统。",
+        )
+    )
+
+    assert "我建议你只在用户明确确认后保存计划。" in markdown
+    assert "我建议你先我建议你" not in markdown
+
+
+def test_daily_report_stays_bounded_with_five_verbose_issues() -> None:
+    """Would fail if a bounded Codex result still became a multi-page human report."""
+
+    issues = [
+        DailyAuditIssue(
+            issue_key=f"quality.issue-{index}",
+            status="open" if index < 2 else "code_addressed",
+            title=f"问题 {index}",
+            plain_summary="问题说明" * 80,
+            user_impact="用户影响" * 80,
+            suggested_change="我建议你调整对应处理方式" * 30,
+            validation="等待真实使用验证" * 30,
+            first_seen=date(2026, 8, 5),
+            last_seen=date(2026, 8, 5),
+        )
+        for index in range(5)
+    ]
+    report = daily_models_module.DailyCodexAuditReport(
+        audit_date=date(2026, 8, 5),
+        daily_summary="总体结论" * 100,
+        activity_summary="概况。",
+        issues=issues,
+        memory_summary="记忆。",
+        infrastructure_summary="系统。",
+        limitations=["限制说明" * 100 for _ in range(5)],
+    )
+
+    markdown = report_module.render_daily_codex_report(report)
+
+    assert len(markdown) <= 1_500
 
 
 def test_issue_evidence_refs_reject_markdown_and_html_controls() -> None:
