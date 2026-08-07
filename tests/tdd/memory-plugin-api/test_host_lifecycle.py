@@ -17,6 +17,7 @@ from assistant_agent.memory.plugins.contracts import (
     MemoryPluginCapabilities,
     MemoryPluginDescriptor,
     MemoryPluginExecutionPolicy,
+    MemoryPluginIssue,
     MemorySessionCloseResult,
     MemorySessionOpenResult,
     MemoryTurnIngestionResult,
@@ -131,6 +132,23 @@ class ExplodingMemoryPlugin(RecordingMemoryPlugin):
         raise RuntimeError("secret-provider-response-sentinel")
 
 
+class NonFiniteOpenIssuePlugin(RecordingMemoryPlugin):
+    def open_session(self, request: Any) -> MemorySessionOpenResult:
+        self.open_calls += 1
+        self.open_requests.append(request)
+        issue = MemoryPluginIssue.model_construct(
+            code="plugin.retry",
+            message="plugin.retry",
+            recoverable=True,
+            retry_after_seconds=float("inf"),
+        )
+        return MemorySessionOpenResult(
+            status="ready",
+            session_handle="handle-sentinel",
+            issues=[issue],
+        )
+
+
 class BlockingPrepareMemoryPlugin(RecordingMemoryPlugin):
     def __init__(self) -> None:
         super().__init__(baseline=[_item("baseline", "baseline")])
@@ -153,6 +171,53 @@ class BlockingPrepareMemoryPlugin(RecordingMemoryPlugin):
             items=[_item("turn", "turn")],
             status="succeeded",
         )
+
+
+class DescriptorFailsAfterSealPlugin:
+    def __init__(self, descriptor: MemoryPluginDescriptor) -> None:
+        self._descriptor = descriptor
+        self.descriptor_reads = 0
+        self.delegate = RecordingMemoryPlugin(
+            baseline=[_item("baseline", "baseline")],
+            current=[_item("turn", "turn")],
+        )
+
+    @property
+    def descriptor(self) -> MemoryPluginDescriptor:
+        self.descriptor_reads += 1
+        if self.descriptor_reads > 1:
+            raise RuntimeError("secret-descriptor-getter-sentinel")
+        return self._descriptor
+
+    def open_session(self, request: Any) -> MemorySessionOpenResult:
+        return self.delegate.open_session(request)
+
+    def prepare_context(self, request: Any) -> MemoryContextContribution:
+        return self.delegate.prepare_context(request)
+
+    def ingest_turn(self, request: Any) -> MemoryTurnIngestionResult:
+        return self.delegate.ingest_turn(request)
+
+    def close_session(self, request: Any) -> MemorySessionCloseResult:
+        return self.delegate.close_session(request)
+
+
+class BlockingReadMemoryMediaStore(ManagedMemoryMediaStore):
+    def __init__(self) -> None:
+        super().__init__(max_total_bytes=1024 * 1024)
+        self.validation_started = Event()
+        self.release_validation = Event()
+
+    def read(self, ref: ManagedMediaRef, **kwargs: Any) -> bytes:
+        self.validation_started.set()
+        assert self.release_validation.wait(0.5)
+        return super().read(ref, **kwargs)
+
+
+class ExplodingAssemblyReportRegistry(MemoryPluginRegistry):
+    @property
+    def assembly_report(self):  # type: ignore[no-untyped-def]
+        raise RuntimeError("secret-assembly-report-sentinel")
 
 
 class MutableCancelToken:
@@ -268,6 +333,78 @@ def test_plugin_identity_matches_legacy_mem0_hash_and_ignores_metadata() -> None
         legacy.run_id,
     )
     assert plugin.open_requests[0].identity == bound
+
+
+def test_host_uses_sealed_descriptor_without_runtime_plugin_getter() -> None:
+    descriptor = _descriptor()
+    plugin = DescriptorFailsAfterSealPlugin(descriptor)
+    registry = MemoryPluginRegistry(
+        records=[
+            MemoryPluginRegistrationRecord(
+                descriptor=descriptor,
+                source="test",
+                enabled=True,
+                active=True,
+            )
+        ],
+        active_plugin=plugin,
+    )
+    host = MemoryPluginHost(
+        registry=registry,
+        session_store=MemoryPluginSessionStore(),
+        media_store=ManagedMemoryMediaStore(max_total_bytes=1024 * 1024),
+        clock=lambda: NOW,
+    )
+    state = _state()
+
+    opened = host.open_session(
+        identity=_identity(),
+        state=state,
+        trace_store=None,
+    )
+    prepared = host.prepare_context(
+        state=state,
+        trace_store=None,
+        cancel_token=None,
+    )
+
+    assert plugin.descriptor_reads == 1
+    assert [item.memory_id for item in opened.memories] == ["baseline"]
+    assert [item.memory_id for item in prepared.memories] == ["baseline", "turn"]
+
+
+def test_host_snapshot_failure_degrades_without_public_exception_details() -> None:
+    descriptor = _descriptor()
+    plugin = RecordingMemoryPlugin()
+    registry = ExplodingAssemblyReportRegistry(
+        records=[
+            MemoryPluginRegistrationRecord(
+                descriptor=descriptor,
+                source="test",
+                enabled=True,
+                active=True,
+            )
+        ],
+        active_plugin=plugin,
+    )
+    host = MemoryPluginHost(registry=registry, clock=lambda: NOW)
+    state = _state()
+
+    opened = host.open_session(
+        identity=_identity(),
+        state=state,
+        trace_store=None,
+    )
+    prepared = host.prepare_context(
+        state=state,
+        trace_store=None,
+        cancel_token=None,
+    )
+
+    assert opened.error_codes == ["memory_plugin_internal_error"]
+    assert prepared.error_codes == ["memory_plugin_internal_error"]
+    assert "secret-assembly-report-sentinel" not in opened.model_dump_json()
+    assert "secret-assembly-report-sentinel" not in prepared.model_dump_json()
 
 
 def test_session_store_isolates_sessions_and_clears_only_requested_scope() -> None:
@@ -518,6 +655,61 @@ def test_prepare_cancellation_is_cooperative_and_discards_result() -> None:
     assert snapshot.error_codes == ["memory_plugin_unavailable"]
 
 
+@pytest.mark.parametrize(
+    ("stop_kind", "expected_code"),
+    [
+        ("cancel", "memory_plugin_unavailable"),
+        ("deadline", "memory_plugin_timeout"),
+    ],
+)
+def test_prepare_discards_result_when_stopped_during_validation(
+    stop_kind: str,
+    expected_code: str,
+) -> None:
+    media_store = BlockingReadMemoryMediaStore()
+    plugin = RecordingMemoryPlugin(baseline=[_item("baseline", "baseline")])
+    host, _ = _host(
+        plugin,
+        media_store=media_store,
+        execution_policy=MemoryPluginExecutionPolicy(
+            prepare_context_timeout_seconds=0.05
+        ),
+    )
+    state = _state()
+    token = MutableCancelToken()
+    host.open_session(identity=_identity(), state=state, trace_store=None)
+    owner_scope = plugin.open_requests[0].identity.session_id
+    ref = media_store.register(
+        owner_scope=owner_scope,
+        media_type="image",
+        mime_type="image/jpeg",
+        payload=b"jpeg-sentinel",
+    )
+    plugin.current = [_item("late-current", "late-current", media_refs=[ref])]
+
+    def stop_during_validation() -> None:
+        assert media_store.validation_started.wait(0.2)
+        if stop_kind == "cancel":
+            token.cancelled = True
+        else:
+            sleep(0.06)
+        media_store.release_validation.set()
+
+    stopper = Thread(target=stop_during_validation)
+    stopper.start()
+    snapshot = host.prepare_context(
+        state=state,
+        trace_store=None,
+        cancel_token=token,
+    )
+    stopper.join(0.2)
+
+    assert not stopper.is_alive()
+    assert plugin.prepare_calls == 1
+    assert [item.memory_id for item in snapshot.memories] == ["baseline"]
+    assert snapshot.error_codes == [expected_code]
+
+
 def test_prepare_exception_degrades_to_stable_internal_issue() -> None:
     plugin = ExplodingMemoryPlugin(baseline=[_item("baseline", "baseline")])
     host, _ = _host(plugin)
@@ -579,6 +771,68 @@ def test_credential_and_embedded_path_are_rejected_atomically(
     assert snapshot.error_codes == ["memory_plugin_invalid_result"]
 
 
+@pytest.mark.parametrize(
+    "unsafe_kind",
+    ["workspace-text-path", "metadata-key-path", "windows-unc-path"],
+)
+def test_arbitrary_absolute_paths_are_rejected_from_all_string_surfaces(
+    unsafe_kind: str,
+) -> None:
+    plugin = RecordingMemoryPlugin(
+        baseline=[_item("baseline", "baseline")],
+        prepare_result=_absolute_path_contribution(unsafe_kind),
+    )
+    host, _ = _host(plugin)
+    state = _state()
+    host.open_session(identity=_identity(), state=state, trace_store=None)
+
+    snapshot = host.prepare_context(
+        state=state,
+        trace_store=None,
+        cancel_token=None,
+    )
+
+    assert [item.memory_id for item in snapshot.memories] == ["baseline"]
+    assert snapshot.error_codes == ["memory_plugin_invalid_result"]
+
+
+@pytest.mark.parametrize(
+    "safe_text",
+    [
+        "https://example.com/workspace/reference",
+        "https://example.com/search?q=/workspace/reference",
+        "//example.com/workspace/reference",
+        "docs/workspace/reference.md",
+        "中文/English and/or",
+    ],
+)
+def test_urls_and_relative_text_are_not_misclassified_as_absolute_paths(
+    safe_text: str,
+) -> None:
+    plugin = RecordingMemoryPlugin(
+        current=[
+            MemoryContextItem(
+                memory_id="safe",
+                text=safe_text,
+                source="long_term",
+                metadata={safe_text: safe_text},
+            )
+        ]
+    )
+    host, _ = _host(plugin)
+    state = _state()
+    host.open_session(identity=_identity(), state=state, trace_store=None)
+
+    snapshot = host.prepare_context(
+        state=state,
+        trace_store=None,
+        cancel_token=None,
+    )
+
+    assert [item.memory_id for item in snapshot.memories] == ["safe"]
+    assert snapshot.error_codes == []
+
+
 @pytest.mark.parametrize("non_finite", [float("nan"), float("inf"), float("-inf")])
 def test_non_finite_raw_metadata_is_rejected_before_json_roundtrip(
     non_finite: float,
@@ -605,6 +859,79 @@ def test_non_finite_raw_metadata_is_rejected_before_json_roundtrip(
     )
 
     assert [item.memory_id for item in snapshot.memories] == ["baseline"]
+    assert snapshot.error_codes == ["memory_plugin_invalid_result"]
+
+
+@pytest.mark.parametrize(
+    ("raw_field", "non_finite"),
+    [
+        ("item-relevance", float("nan")),
+        ("item-relevance", float("inf")),
+        ("item-relevance", float("-inf")),
+        ("issue-retry", float("inf")),
+    ],
+)
+def test_non_finite_anywhere_in_raw_result_is_rejected_before_roundtrip(
+    raw_field: str,
+    non_finite: float,
+) -> None:
+    if raw_field == "item-relevance":
+        items = [
+            MemoryContextItem.model_construct(
+                memory_id="non-finite",
+                text="non-finite",
+                source="long_term",
+                relevance=non_finite,
+                occurred_at=None,
+                created_at=None,
+                media_refs=[],
+                metadata={},
+            )
+        ]
+        issues: list[MemoryPluginIssue] = []
+    else:
+        items = []
+        issues = [
+            MemoryPluginIssue.model_construct(
+                code="plugin.retry",
+                message="plugin.retry",
+                recoverable=True,
+                retry_after_seconds=non_finite,
+            )
+        ]
+    plugin = RecordingMemoryPlugin(
+        baseline=[_item("baseline", "baseline")],
+        prepare_result=MemoryContextContribution(
+            items=items,
+            status="succeeded",
+            issues=issues,
+        ),
+    )
+    host, _ = _host(plugin)
+    state = _state()
+    host.open_session(identity=_identity(), state=state, trace_store=None)
+
+    snapshot = host.prepare_context(
+        state=state,
+        trace_store=None,
+        cancel_token=None,
+    )
+
+    assert [item.memory_id for item in snapshot.memories] == ["baseline"]
+    assert snapshot.error_codes == ["memory_plugin_invalid_result"]
+
+
+def test_non_finite_open_result_is_rejected_before_roundtrip() -> None:
+    plugin = NonFiniteOpenIssuePlugin()
+    host, _ = _host(plugin)
+
+    snapshot = host.open_session(
+        identity=_identity(),
+        state=_state(),
+        trace_store=None,
+    )
+
+    assert snapshot.memories == []
     assert snapshot.error_codes == ["memory_plugin_invalid_result"]
 
 
@@ -828,4 +1155,19 @@ def _unsafe_contribution(kind: str) -> MemoryContextContribution:
                 "nested": [{"value": "Authorization: Bearer credential-sentinel"}]
             },
         )
+    return MemoryContextContribution(items=[item], status="succeeded")
+
+
+def _absolute_path_contribution(kind: str) -> MemoryContextContribution:
+    if kind == "workspace-text-path":
+        item = _item("unsafe", "构建产物：/workspace/project/private.txt")
+    elif kind == "metadata-key-path":
+        item = MemoryContextItem(
+            memory_id="unsafe",
+            text="unsafe",
+            source="long_term",
+            metadata={"artifact /workspace/project/private.txt": "unsafe"},
+        )
+    else:
+        item = _item("unsafe", r"share \\server\share\private.txt")
     return MemoryContextContribution(items=[item], status="succeeded")

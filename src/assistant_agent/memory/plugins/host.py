@@ -55,12 +55,9 @@ from assistant_agent.runtime.state import AgentState
 _ModelT = TypeVar("_ModelT", bound=BaseModel)
 _RunMemoryKey = tuple[str, str, str, str]
 _SAFE_CODE_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,127}$")
-_ABSOLUTE_PATH_RE = re.compile(
-    r"(?:^/(?!/)[^\s]+"
-    r"|/(?:home|root|tmp|var|etc|usr|opt|srv|mnt|media|Users|private)"
-    r"(?:/[^/\s]+)+"
-    r"|(?<![A-Za-z0-9])[A-Za-z]:[\\/][^\s]+)"
-)
+_POSIX_PATH_CANDIDATE_RE = re.compile(r"/(?!/)[^\s\"'<>]+")
+_WINDOWS_DRIVE_PATH_RE = re.compile(r"(?<![A-Za-z0-9])[A-Za-z]:[\\/][^\s\"'<>]+")
+_UNC_PATH_RE = re.compile(r"(?<!\\)\\\\[^\s\\/]+[\\/][^\s\"'<>]+")
 _BASE64_RE = re.compile(
     r"(?:[A-Za-z0-9+/]{80,}={0,2}|data:[^;\s]+;base64,)", re.IGNORECASE
 )
@@ -161,6 +158,12 @@ class _DelegatingCancellationToken:
             raise RuntimeError("Memory Plugin call cancelled.")
 
 
+class _MemoryCallStopped(RuntimeError):
+    def __init__(self, issue_code: str) -> None:
+        self.issue_code = issue_code
+        super().__init__("memory_plugin_call_stopped")
+
+
 class MemoryPluginHost:
     """Validate and freeze recall from the Registry's active Plugin."""
 
@@ -179,6 +182,9 @@ class MemoryPluginHost:
         if not isinstance(identity_namespace, str) or not identity_namespace:
             raise ValueError("identity_namespace must be non-empty")
         self.registry = registry
+        self._active_plugin, self._active_descriptor = _sealed_registry_runtime(
+            registry
+        )
         self.session_store = session_store or MemoryPluginSessionStore()
         self.media_store = media_store or ManagedMemoryMediaStore(
             max_total_bytes=32 * 1024 * 1024
@@ -198,7 +204,7 @@ class MemoryPluginHost:
 
     @property
     def active_plugin(self):  # type: ignore[no-untyped-def]
-        return self.registry.active_plugin
+        return self._active_plugin
 
     def open_session(
         self,
@@ -211,7 +217,12 @@ class MemoryPluginHost:
         """Open the active Plugin once and freeze its session baseline."""
 
         started = perf_counter()
-        descriptor = self.active_plugin.descriptor
+        descriptor = self._active_descriptor
+        if descriptor is None or self._active_plugin is None:
+            return SessionMemorySnapshot(
+                status="degraded",
+                error_codes=[MEMORY_PLUGIN_INTERNAL_ERROR],
+            )
         cached = self.session_store.get(identity)
         plugin_changed = cached is not None and (
             cached.plugin_id != descriptor.plugin_id
@@ -259,14 +270,22 @@ class MemoryPluginHost:
                     break
                 self._run_condition.wait()
 
+        cancellation = _DelegatingCancellationToken(cancel_token)
+        call_deadline = (
+            monotonic() + self.execution_policy.prepare_context_timeout_seconds
+        )
         try:
             try:
                 snapshot = self._prepare_context_once(
                     state=state,
-                    cancel_token=cancel_token,
+                    cancellation=cancellation,
+                    call_deadline=call_deadline,
                 )
             except Exception:
                 snapshot = self._internal_prepare_fallback(state)
+            failure_code = _call_failure_code(cancellation, call_deadline)
+            if failure_code is not None:
+                snapshot = self._prepare_fallback(state, failure_code)
             frozen = snapshot.model_copy(deep=True)
         except BaseException:
             with self._run_condition:
@@ -275,6 +294,12 @@ class MemoryPluginHost:
             raise
 
         with self._run_condition:
+            failure_code = _call_failure_code(cancellation, call_deadline)
+            if failure_code is not None:
+                frozen = self._prepare_fallback(
+                    state,
+                    failure_code,
+                ).model_copy(deep=True)
             self._frozen_run_contexts[run_key] = frozen
             self._preparing_runs.discard(run_key)
             self._run_condition.notify_all()
@@ -284,18 +309,30 @@ class MemoryPluginHost:
         self,
         *,
         state: AgentState,
-        cancel_token: Any | None,
+        cancellation: MemoryCancellationToken,
+        call_deadline: float,
     ) -> SessionMemorySnapshot:
         identity = _identity_from_state(state)
         record = self.session_store.get(identity)
         if record is None:
+            if self._active_descriptor is None or self._active_plugin is None:
+                return SessionMemorySnapshot(
+                    status="degraded",
+                    error_codes=[MEMORY_PLUGIN_INTERNAL_ERROR],
+                )
             return SessionMemorySnapshot(
-                plugin_id=self.active_plugin.descriptor.plugin_id,
+                plugin_id=(
+                    self._active_descriptor.plugin_id
+                    if self._active_descriptor is not None
+                    else None
+                ),
                 status="unavailable",
                 error_codes=[MEMORY_PLUGIN_UNAVAILABLE],
             )
 
-        descriptor = self.active_plugin.descriptor
+        descriptor = self._active_descriptor
+        if descriptor is None or self._active_plugin is None:
+            return _fallback_snapshot(record, MEMORY_PLUGIN_INTERNAL_ERROR)
         if (
             record.plugin_id != descriptor.plugin_id
             or record.plugin_version != descriptor.plugin_version
@@ -304,9 +341,9 @@ class MemoryPluginHost:
         if not descriptor.capabilities.supports_context_refresh:
             return record.baseline.model_copy(deep=True)
 
-        token = _DelegatingCancellationToken(cancel_token)
-        if token.is_cancelled():
-            return _fallback_snapshot(record, MEMORY_PLUGIN_UNAVAILABLE)
+        failure_code = _call_failure_code(cancellation, call_deadline)
+        if failure_code is not None:
+            return _fallback_snapshot(record, failure_code)
         current_text = state.request.text
         if not isinstance(current_text, str) or not current_text:
             return _fallback_snapshot(record, MEMORY_PLUGIN_INTERNAL_ERROR)
@@ -329,12 +366,13 @@ class MemoryPluginHost:
             deadline=self._deadline(
                 self.execution_policy.prepare_context_timeout_seconds
             ),
-            cancellation=token,
+            cancellation=cancellation,
         )
         raw, failure_code = self._invoke(
-            lambda: self.active_plugin.prepare_context(request),
+            lambda: self._active_plugin.prepare_context(request),
             timeout_seconds=self.execution_policy.prepare_context_timeout_seconds,
-            cancellation=token,
+            cancellation=cancellation,
+            call_deadline=call_deadline,
         )
         if failure_code is not None:
             return _fallback_snapshot(
@@ -343,18 +381,42 @@ class MemoryPluginHost:
                 extra_codes=[issue.code for issue in media_issues],
             )
 
-        contribution = self._validated_contribution(
-            raw,
-            descriptor=descriptor,
-            owner_scope=record.identity.session_id,
-        )
+        try:
+            _ensure_call_active(cancellation, call_deadline)
+            contribution = self._validated_contribution(
+                raw,
+                descriptor=descriptor,
+                owner_scope=record.identity.session_id,
+                cancellation=cancellation,
+                call_deadline=call_deadline,
+            )
+        except _MemoryCallStopped as stopped:
+            return _fallback_snapshot(
+                record,
+                stopped.issue_code,
+                extra_codes=[issue.code for issue in media_issues],
+            )
         if contribution is None:
             return _fallback_snapshot(
                 record,
                 MEMORY_PLUGIN_INVALID_RESULT,
                 extra_codes=[issue.code for issue in media_issues],
             )
+        failure_code = _call_failure_code(cancellation, call_deadline)
+        if failure_code is not None:
+            return _fallback_snapshot(
+                record,
+                failure_code,
+                extra_codes=[issue.code for issue in media_issues],
+            )
         merged = _merge_items(record.baseline.memories, contribution.items)
+        failure_code = _call_failure_code(cancellation, call_deadline)
+        if failure_code is not None:
+            return _fallback_snapshot(
+                record,
+                failure_code,
+                extra_codes=[issue.code for issue in media_issues],
+            )
         return SessionMemorySnapshot(
             memories=merged,
             plugin_id=record.plugin_id,
@@ -393,16 +455,27 @@ class MemoryPluginHost:
         self,
         state: AgentState,
     ) -> SessionMemorySnapshot:
+        return self._prepare_fallback(state, MEMORY_PLUGIN_INTERNAL_ERROR)
+
+    def _prepare_fallback(
+        self,
+        state: AgentState,
+        issue_code: str,
+    ) -> SessionMemorySnapshot:
         try:
             record = self.session_store.get(_identity_from_state(state))
         except Exception:
             record = None
         if record is not None:
-            return _fallback_snapshot(record, MEMORY_PLUGIN_INTERNAL_ERROR)
+            return _fallback_snapshot(record, issue_code)
         return SessionMemorySnapshot(
-            plugin_id=self.active_plugin.descriptor.plugin_id,
+            plugin_id=(
+                self._active_descriptor.plugin_id
+                if self._active_descriptor is not None
+                else None
+            ),
             status="degraded",
-            error_codes=[MEMORY_PLUGIN_INTERNAL_ERROR],
+            error_codes=[issue_code],
         )
 
     @staticmethod
@@ -445,7 +518,7 @@ class MemoryPluginHost:
             cancellation=cancellation,
         )
         raw, failure_code = self._invoke(
-            lambda: self.active_plugin.open_session(request),
+            lambda: self._active_plugin.open_session(request),
             timeout_seconds=self.execution_policy.open_session_timeout_seconds,
             cancellation=cancellation,
         )
@@ -506,7 +579,7 @@ class MemoryPluginHost:
         descriptor: MemoryPluginDescriptor,
         owner_scope: str,
     ) -> MemorySessionOpenResult | None:
-        if not _raw_open_metadata_is_finite(raw):
+        if _raw_contains_non_finite(raw):
             return None
         result = _round_trip_model(raw, MemorySessionOpenResult)
         if result is None:
@@ -552,22 +625,30 @@ class MemoryPluginHost:
         *,
         descriptor: MemoryPluginDescriptor,
         owner_scope: str,
+        cancellation: MemoryCancellationToken | None = None,
+        call_deadline: float | None = None,
     ) -> MemoryContextContribution | None:
-        if not _raw_contribution_metadata_is_finite(raw):
+        _ensure_call_active(cancellation, call_deadline)
+        if _raw_contains_non_finite(raw):
             return None
+        _ensure_call_active(cancellation, call_deadline)
         contribution = _round_trip_model(raw, MemoryContextContribution)
         if contribution is None:
             return None
+        _ensure_call_active(cancellation, call_deadline)
         contribution = _restore_signed_media_refs(contribution, raw)
         if len(contribution.items) > self.execution_policy.max_context_items:
             return None
-        if not all(_valid_issue(issue) for issue in contribution.issues):
-            return None
+        for issue in contribution.issues:
+            _ensure_call_active(cancellation, call_deadline)
+            if not _valid_issue(issue):
+                return None
 
         total_chars = 0
         total_media_items = 0
         total_media_bytes = 0
         for item in contribution.items:
+            _ensure_call_active(cancellation, call_deadline)
             if not _source_allowed(item, descriptor):
                 return None
             if _forbidden_string(item.memory_id) or _forbidden_string(item.text):
@@ -582,6 +663,7 @@ class MemoryPluginHost:
                 )
             except (TypeError, ValueError, OverflowError):
                 return None
+            _ensure_call_active(cancellation, call_deadline)
             if _forbidden_metadata(item.metadata):
                 return None
             total_chars += len(item.text) + len(metadata_json)
@@ -592,6 +674,7 @@ class MemoryPluginHost:
             if total_media_items > self.execution_policy.max_media_items_per_turn:
                 return None
             for ref in item.media_refs:
+                _ensure_call_active(cancellation, call_deadline)
                 total_media_bytes += ref.size_bytes
                 if total_media_bytes > self.execution_policy.max_media_bytes_per_turn:
                     return None
@@ -608,6 +691,8 @@ class MemoryPluginHost:
                     )
                 except (MemoryMediaAccessError, TypeError, ValueError):
                     return None
+                _ensure_call_active(cancellation, call_deadline)
+        _ensure_call_active(cancellation, call_deadline)
         return contribution.model_copy(deep=True)
 
     def _resolve_request_media(
@@ -644,25 +729,29 @@ class MemoryPluginHost:
         *,
         timeout_seconds: float,
         cancellation: MemoryCancellationToken,
+        call_deadline: float | None = None,
     ) -> tuple[object | None, str | None]:
         future: Future[Any] = self._executor.submit(callback)
-        call_deadline = monotonic() + timeout_seconds
+        resolved_deadline = (
+            call_deadline
+            if call_deadline is not None
+            else monotonic() + timeout_seconds
+        )
         while True:
-            if cancellation.is_cancelled():
+            failure_code = _call_failure_code(cancellation, resolved_deadline)
+            if failure_code is not None:
                 future.cancel()
-                return None, MEMORY_PLUGIN_UNAVAILABLE
-            remaining = call_deadline - monotonic()
-            if remaining <= 0:
-                future.cancel()
-                return None, MEMORY_PLUGIN_TIMEOUT
+                return None, failure_code
+            remaining = resolved_deadline - monotonic()
             try:
                 result = future.result(timeout=min(remaining, 0.01))
             except FutureTimeout:
                 continue
             except Exception:
                 return None, MEMORY_PLUGIN_INTERNAL_ERROR
-            if cancellation.is_cancelled():
-                return None, MEMORY_PLUGIN_UNAVAILABLE
+            failure_code = _call_failure_code(cancellation, resolved_deadline)
+            if failure_code is not None:
+                return None, failure_code
             return result, None
 
     def _now(self) -> datetime:
@@ -771,6 +860,8 @@ def _source_allowed(
 
 def _forbidden_metadata(value: Any, *, key: str | None = None) -> bool:
     if key is not None:
+        if _forbidden_string(key):
+            return True
         normalized = re.sub(r"[^a-z0-9]+", "_", key.strip().lower()).strip("_")
         if (
             normalized in _BLOCKED_METADATA_KEYS
@@ -798,7 +889,7 @@ def _forbidden_string(value: str) -> bool:
         return True
     return bool(
         "file://" in value.lower()
-        or _ABSOLUTE_PATH_RE.search(value)
+        or _contains_absolute_path(value)
         or _BASE64_RE.search(value)
         or _SECRET_ASSIGNMENT_RE.search(value)
         or _BEARER_RE.search(value)
@@ -806,48 +897,75 @@ def _forbidden_string(value: str) -> bool:
     )
 
 
-def _raw_open_metadata_is_finite(raw: object) -> bool:
-    if type(raw) is not MemorySessionOpenResult:
+def _contains_absolute_path(value: str) -> bool:
+    if _WINDOWS_DRIVE_PATH_RE.search(value) or _UNC_PATH_RE.search(value):
         return True
-    try:
-        if not _has_exact_model_shape(raw, MemorySessionOpenResult):
+    for match in _POSIX_PATH_CANDIDATE_RE.finditer(value):
+        start = match.start()
+        if start == 0:
             return True
-        values = object.__getattribute__(raw, "__dict__")
-        contribution = dict.__getitem__(values, "initial_contribution")
-    except Exception:
-        return False
-    return contribution is None or _raw_contribution_metadata_is_finite(contribution)
-
-
-def _raw_contribution_metadata_is_finite(raw: object) -> bool:
-    if type(raw) is not MemoryContextContribution:
+        previous = value[start - 1]
+        if previous in ":/\\" or (
+            previous.isascii() and (previous.isalnum() or previous in "._-")
+        ):
+            continue
+        candidate = match.group(0)
+        if previous.isalnum() and not previous.isascii() and "/" not in candidate[1:]:
+            continue
         return True
-    try:
-        if not _has_exact_model_shape(raw, MemoryContextContribution):
-            return True
-        values = object.__getattribute__(raw, "__dict__")
-        items = dict.__getitem__(values, "items")
-        for item in items:
-            item_values = object.__getattribute__(item, "__dict__")
-            metadata = dict.__getitem__(item_values, "metadata")
-            if _contains_non_finite(metadata):
-                return False
-    except Exception:
-        return False
-    return True
+    return False
 
 
-def _contains_non_finite(value: Any) -> bool:
+def _call_failure_code(
+    cancellation: MemoryCancellationToken | None,
+    call_deadline: float | None,
+) -> str | None:
+    if cancellation is not None:
+        try:
+            if cancellation.is_cancelled():
+                return MEMORY_PLUGIN_UNAVAILABLE
+        except Exception:
+            return MEMORY_PLUGIN_INTERNAL_ERROR
+    if call_deadline is not None and monotonic() >= call_deadline:
+        return MEMORY_PLUGIN_TIMEOUT
+    return None
+
+
+def _ensure_call_active(
+    cancellation: MemoryCancellationToken | None,
+    call_deadline: float | None,
+) -> None:
+    issue_code = _call_failure_code(cancellation, call_deadline)
+    if issue_code is not None:
+        raise _MemoryCallStopped(issue_code)
+
+
+def _raw_contains_non_finite(
+    value: Any,
+    *,
+    _seen: set[int] | None = None,
+) -> bool:
     if isinstance(value, float):
         return not math.isfinite(value)
+    if isinstance(value, BaseModel):
+        try:
+            value = object.__getattribute__(value, "__dict__")
+        except Exception:
+            return True
+    if not isinstance(value, (dict, list, tuple, set, frozenset)):
+        return False
+    seen = _seen if _seen is not None else set()
+    identity = id(value)
+    if identity in seen:
+        return False
+    seen.add(identity)
     if isinstance(value, dict):
         return any(
-            _contains_non_finite(item_key) or _contains_non_finite(item_value)
+            _raw_contains_non_finite(item_key, _seen=seen)
+            or _raw_contains_non_finite(item_value, _seen=seen)
             for item_key, item_value in value.items()
         )
-    if isinstance(value, (list, tuple)):
-        return any(_contains_non_finite(item) for item in value)
-    return False
+    return any(_raw_contains_non_finite(item, _seen=seen) for item in value)
 
 
 def _fallback_snapshot(
@@ -910,3 +1028,21 @@ def _identity_from_state(state: AgentState) -> RequestIdentity:
 
 def _run_memory_key(state: AgentState) -> _RunMemoryKey:
     return state.user_id, state.agent_id, state.session_id, state.run_id
+
+
+def _sealed_registry_runtime(
+    registry: MemoryPluginRegistry,
+) -> tuple[object | None, MemoryPluginDescriptor | None]:
+    try:
+        active_plugin = registry.active_plugin
+        report = registry.assembly_report
+        active_records = [record for record in report.records if record.active]
+        if len(active_records) != 1:
+            return None, None
+        active_record = active_records[0]
+        if active_record.descriptor.plugin_id != report.active_slot:
+            return None, None
+        descriptor = active_record.descriptor.model_copy(deep=True)
+    except Exception:
+        return None, None
+    return active_plugin, descriptor
