@@ -70,6 +70,10 @@ from assistant_agent.tools.ids import VISUAL_REMINDER_MANAGE_TOOL_NAME
 _ModelT = TypeVar("_ModelT", bound=BaseModel)
 _RunMemoryKey = tuple[str, str, str, str]
 _SessionMemoryKey = tuple[str, str, str]
+_SessionCloseReason = Literal[
+    "normal", "reset", "expired", "shutdown", "plugin_replaced"
+]
+_SessionCloseSource = Literal["pending", "stored"]
 _SAFE_CODE_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,127}$")
 _UNSAFE_ISSUE_CODE_RE = re.compile(
     r"(?:api[_-]?key|authorization|bearer|credential|password|secret|token)",
@@ -201,6 +205,25 @@ class _ScheduledMemoryIngestion:
     initial_issue_codes: tuple[str, ...]
 
 
+@dataclass
+class _PendingSessionReap:
+    reap_id: int
+    record: MemoryPluginSessionRecord
+    reason: _SessionCloseReason
+    cache_terminal: bool
+
+
+@dataclass
+class _ActiveSessionClose:
+    future: Future[Any]
+    record: MemoryPluginSessionRecord
+    reason: _SessionCloseReason
+    source: _SessionCloseSource
+    pending_reap_id: int | None
+    cache_terminal: bool
+    deferred: bool = False
+
+
 class MemoryPluginHost:
     """Validate and freeze recall from the Registry's active Plugin."""
 
@@ -245,10 +268,14 @@ class MemoryPluginHost:
         self._opening_sessions: dict[_SessionMemoryKey, set[Event]] = {}
         self._closing_sessions: set[_SessionMemoryKey] = set()
         self._session_admission_closed: set[_SessionMemoryKey] = set()
+        self._clear_admission_barriers: set[_SessionMemoryKey] = set()
         self._session_close_reasons: dict[
             _SessionMemoryKey,
-            Literal["normal", "reset", "expired", "shutdown", "plugin_replaced"],
+            _SessionCloseReason,
         ] = {}
+        self._pending_reaps: dict[int, _PendingSessionReap] = {}
+        self._next_pending_reap_id = 0
+        self._active_session_closes: dict[_SessionMemoryKey, _ActiveSessionClose] = {}
         self._closed_session_results: dict[
             _SessionMemoryKey, MemorySessionCloseResult
         ] = {}
@@ -720,9 +747,7 @@ class MemoryPluginHost:
         self,
         *,
         identity: RequestIdentity,
-        reason: Literal[
-            "normal", "reset", "expired", "shutdown", "plugin_replaced"
-        ] = "normal",
+        reason: _SessionCloseReason = "normal",
         timeout: float | None = None,
     ) -> MemorySessionCloseResult:
         """Stop session ingestion, drain accepted work, and close exactly once."""
@@ -731,6 +756,7 @@ class MemoryPluginHost:
         wait_timeout = self._bounded_timeout(timeout)
         wait_deadline = monotonic() + wait_timeout
         with self._lifecycle_condition:
+            self._harvest_completed_active_closes_locked(ordering_key)
             cached = self._closed_session_results.get(ordering_key)
             if cached is not None:
                 return cached.model_copy(deep=True)
@@ -739,19 +765,26 @@ class MemoryPluginHost:
                 if remaining <= 0:
                     return _close_failure(MEMORY_PLUGIN_TIMEOUT, partial=True)
                 self._lifecycle_condition.wait(remaining)
+                self._harvest_completed_active_closes_locked(ordering_key)
                 cached = self._closed_session_results.get(ordering_key)
                 if cached is not None:
                     return cached.model_copy(deep=True)
-            while ordering_key in self._closing_sessions:
+            while True:
+                self._harvest_completed_active_closes_locked(ordering_key)
+                if ordering_key not in self._closing_sessions:
+                    break
                 remaining = wait_deadline - monotonic()
                 if remaining <= 0:
                     return _close_failure(MEMORY_PLUGIN_TIMEOUT, partial=True)
                 self._lifecycle_condition.wait(remaining)
+                self._harvest_completed_active_closes_locked(ordering_key)
                 cached = self._closed_session_results.get(ordering_key)
                 if cached is not None:
                     return cached.model_copy(deep=True)
             self._session_admission_closed.add(ordering_key)
             self._session_close_reasons.setdefault(ordering_key, reason)
+            stable_reason = self._session_close_reasons[ordering_key]
+            self._mark_pending_reaps_terminal_locked(ordering_key)
             self._closing_sessions.add(ordering_key)
             for invalidation in self._opening_sessions.get(ordering_key, ()):
                 invalidation.set()
@@ -767,15 +800,16 @@ class MemoryPluginHost:
                 self._closing_sessions.discard(ordering_key)
                 self._lifecycle_condition.notify_all()
                 return cached.model_copy(deep=True)
-            record = self.session_store.get(identity)
 
         return self._finish_session_close_owner(
             identity=identity,
             ordering_key=ordering_key,
-            reason=reason,
+            reason=stable_reason,
             wait_deadline=wait_deadline,
             opening_drained=opening_drained,
-            record=record,
+            cache_terminal=True,
+            include_stored=True,
+            drain_ingestion=True,
         )
 
     def _finish_session_close_owner(
@@ -783,46 +817,97 @@ class MemoryPluginHost:
         *,
         identity: RequestIdentity,
         ordering_key: _SessionMemoryKey,
-        reason: Literal["normal", "reset", "expired", "shutdown", "plugin_replaced"],
+        reason: _SessionCloseReason,
         wait_deadline: float,
         opening_drained: bool,
-        record: MemoryPluginSessionRecord | None,
+        cache_terminal: bool,
+        include_stored: bool,
+        drain_ingestion: bool,
     ) -> MemorySessionCloseResult:
         if not opening_drained:
             self._release_session_close_owner(ordering_key)
             return _close_failure(MEMORY_PLUGIN_TIMEOUT, partial=True)
 
-        try:
-            drained = self.ingestion_queue.drain(
-                ordering_key=ordering_key,
-                timeout=max(0.0, wait_deadline - monotonic()),
-            )
-        except Exception:
-            self._release_session_close_owner(ordering_key)
-            return _close_failure(MEMORY_PLUGIN_INTERNAL_ERROR, partial=True)
-        if not drained:
-            self._release_session_close_owner(ordering_key)
-            return _close_failure(MEMORY_PLUGIN_TIMEOUT, partial=True)
-
-        result = MemorySessionCloseResult(status="closed")
-        if record is not None:
-            result = self._close_plugin_session(
-                record=record,
-                reason=reason,
-                timeout_seconds=max(0.0, wait_deadline - monotonic()),
-            )
-            if result.status != "closed":
+        if drain_ingestion:
+            try:
+                drained = self.ingestion_queue.drain(
+                    ordering_key=ordering_key,
+                    timeout=max(0.0, wait_deadline - monotonic()),
+                )
+            except Exception:
                 self._release_session_close_owner(ordering_key)
-                return result.model_copy(deep=True)
-        self.session_store.pop(identity)
-        self._clear_frozen_contexts(lambda run_key: run_key[:3] == ordering_key)
+                return _close_failure(MEMORY_PLUGIN_INTERNAL_ERROR, partial=True)
+            if not drained:
+                self._release_session_close_owner(ordering_key)
+                return _close_failure(MEMORY_PLUGIN_TIMEOUT, partial=True)
+
+        terminal_result = MemorySessionCloseResult(status="closed")
+        while True:
+            with self._lifecycle_condition:
+                pending = self._next_pending_reap_locked(ordering_key)
+            if pending is not None:
+                result, deferred = self._close_plugin_session(
+                    record=pending.record,
+                    reason=pending.reason,
+                    source="pending",
+                    pending_reap_id=pending.reap_id,
+                    cache_terminal=(cache_terminal or pending.cache_terminal),
+                    timeout_seconds=max(0.0, wait_deadline - monotonic()),
+                )
+                if result.status != "closed":
+                    if not deferred:
+                        self._release_session_close_owner(ordering_key)
+                    return result.model_copy(deep=True)
+                terminal_result = result.model_copy(deep=True)
+                with self._lifecycle_condition:
+                    current = self._pending_reaps.get(pending.reap_id)
+                    if current is pending:
+                        cache_terminal = cache_terminal or current.cache_terminal
+                        self._pending_reaps.pop(pending.reap_id, None)
+                    self._lifecycle_condition.notify_all()
+                continue
+
+            record = self.session_store.get(identity) if include_stored else None
+            if record is not None:
+                result, deferred = self._close_plugin_session(
+                    record=record,
+                    reason=reason,
+                    source="stored",
+                    pending_reap_id=None,
+                    cache_terminal=cache_terminal,
+                    timeout_seconds=max(0.0, wait_deadline - monotonic()),
+                )
+                if result.status != "closed":
+                    if not deferred:
+                        self._release_session_close_owner(ordering_key)
+                    return result.model_copy(deep=True)
+                terminal_result = result.model_copy(deep=True)
+                self.session_store.pop(identity)
+                continue
+
+            with self._lifecycle_condition:
+                if self._next_pending_reap_locked(ordering_key) is not None:
+                    continue
+            break
+
+        if include_stored or cache_terminal:
+            self._clear_frozen_contexts(lambda run_key: run_key[:3] == ordering_key)
         with self._lifecycle_condition:
-            self._closed_session_results[ordering_key] = result.model_copy(deep=True)
-            self._session_admission_closed.discard(ordering_key)
-            self._session_close_reasons.pop(ordering_key, None)
+            if cache_terminal:
+                self._closed_session_results[ordering_key] = terminal_result.model_copy(
+                    deep=True
+                )
+            clear_barrier_waiting = (
+                ordering_key in self._clear_admission_barriers
+                and bool(self._opening_sessions.get(ordering_key))
+            )
+            if not clear_barrier_waiting:
+                self._clear_admission_barriers.discard(ordering_key)
+                self._session_admission_closed.discard(ordering_key)
+                self._session_close_reasons.pop(ordering_key, None)
             self._closing_sessions.discard(ordering_key)
             self._lifecycle_condition.notify_all()
-        return result.model_copy(deep=True)
+        return terminal_result.model_copy(deep=True)
 
     def _release_session_close_owner(
         self,
@@ -836,8 +921,32 @@ class MemoryPluginHost:
         """Clear only Host-owned state; never issue remote memory CRUD."""
 
         with self._lifecycle_condition:
+            self._harvest_completed_active_closes_locked()
+            if (
+                not self._host_accepting
+                or any(
+                    key[0] == user_id and key[2] == session_id
+                    for key in self._session_admission_closed
+                )
+                or any(
+                    key[0] == user_id and key[2] == session_id
+                    for key in self._closing_sessions
+                )
+                or any(
+                    pending.record.runtime_identity_key[0] == user_id
+                    and pending.record.runtime_identity_key[2] == session_id
+                    for pending in self._pending_reaps.values()
+                )
+                or any(
+                    key[0] == user_id and key[2] == session_id
+                    for key in self._active_session_closes
+                )
+            ):
+                return 0
             for key, invalidations in self._opening_sessions.items():
                 if key[0] == user_id and key[2] == session_id:
+                    self._clear_admission_barriers.add(key)
+                    self._session_admission_closed.add(key)
                     for invalidation in invalidations:
                         invalidation.set()
             cleared = self.session_store.clear_session(
@@ -853,8 +962,35 @@ class MemoryPluginHost:
         """Clear one user's Host state without granting Plugin deletion rights."""
 
         with self._lifecycle_condition:
+            self._harvest_completed_active_closes_locked()
+            if (
+                not self._host_accepting
+                or any(
+                    key[0] == user_id and (agent_id is None or key[1] == agent_id)
+                    for key in self._session_admission_closed
+                )
+                or any(
+                    key[0] == user_id and (agent_id is None or key[1] == agent_id)
+                    for key in self._closing_sessions
+                )
+                or any(
+                    pending.record.runtime_identity_key[0] == user_id
+                    and (
+                        agent_id is None
+                        or pending.record.runtime_identity_key[1] == agent_id
+                    )
+                    for pending in self._pending_reaps.values()
+                )
+                or any(
+                    key[0] == user_id and (agent_id is None or key[1] == agent_id)
+                    for key in self._active_session_closes
+                )
+            ):
+                return 0
             for key, invalidations in self._opening_sessions.items():
                 if key[0] == user_id and (agent_id is None or key[1] == agent_id):
+                    self._clear_admission_barriers.add(key)
+                    self._session_admission_closed.add(key)
                     for invalidation in invalidations:
                         invalidation.set()
             cleared = self.session_store.clear_user(
@@ -876,6 +1012,7 @@ class MemoryPluginHost:
         started = monotonic()
         close_deadline = started + close_timeout
         with self._lifecycle_condition:
+            self._harvest_completed_active_closes_locked()
             while self._host_close_in_progress:
                 remaining = close_timeout - (monotonic() - started)
                 if remaining <= 0:
@@ -903,36 +1040,59 @@ class MemoryPluginHost:
             return self._finish_host_close_attempt(False)
 
         with self._lifecycle_condition:
-            while self._closing_sessions:
+            while True:
+                self._harvest_completed_active_closes_locked()
+                if not self._closing_sessions:
+                    break
                 remaining = _remaining_timeout(started, close_timeout)
                 if remaining <= 0:
                     break
                 self._lifecycle_condition.wait(remaining)
+            self._harvest_completed_active_closes_locked()
             session_owners_drained = not self._closing_sessions
         if not session_owners_drained:
             return self._finish_host_close_attempt(False)
 
-        for record in self.session_store.list_records():
-            if _remaining_timeout(started, close_timeout) <= 0:
-                return self._finish_host_close_attempt(False)
-            ordering_key = record.runtime_identity_key
-            identity = _identity_from_runtime_key(ordering_key)
+        while True:
             with self._lifecycle_condition:
+                published = self.session_store.list_records()
+                remaining_keys = {record.runtime_identity_key for record in published}
+                remaining_keys.update(
+                    pending.record.runtime_identity_key
+                    for pending in self._pending_reaps.values()
+                )
+                if not remaining_keys:
+                    break
+                ordering_key = min(remaining_keys)
                 self._session_admission_closed.add(ordering_key)
                 self._session_close_reasons.setdefault(ordering_key, "shutdown")
+                stable_reason = self._session_close_reasons[ordering_key]
+                self._mark_pending_reaps_terminal_locked(ordering_key)
                 self._closing_sessions.add(ordering_key)
+            if _remaining_timeout(started, close_timeout) <= 0:
+                self._release_session_close_owner(ordering_key)
+                return self._finish_host_close_attempt(False)
+            identity = _identity_from_runtime_key(ordering_key)
             result = self._finish_session_close_owner(
                 identity=identity,
                 ordering_key=ordering_key,
-                reason="shutdown",
+                reason=stable_reason,
                 wait_deadline=close_deadline,
                 opening_drained=True,
-                record=record,
+                cache_terminal=True,
+                include_stored=True,
+                drain_ingestion=True,
             )
             if result.status != "closed":
                 return self._finish_host_close_attempt(False)
 
-        if self.session_store.list_records():
+        with self._lifecycle_condition:
+            handles_remain = bool(
+                self._pending_reaps
+                or self._active_session_closes
+                or self.session_store.list_records()
+            )
+        if handles_remain:
             return self._finish_host_close_attempt(False)
 
         with self._executor_condition:
@@ -1153,9 +1313,12 @@ class MemoryPluginHost:
         self,
         *,
         record: MemoryPluginSessionRecord,
-        reason: Literal["normal", "reset", "expired", "shutdown", "plugin_replaced"],
+        reason: _SessionCloseReason,
+        source: _SessionCloseSource,
+        pending_reap_id: int | None,
+        cache_terminal: bool,
         timeout_seconds: float | None = None,
-    ) -> MemorySessionCloseResult:
+    ) -> tuple[MemorySessionCloseResult, bool]:
         descriptor = self._active_descriptor
         if (
             descriptor is None
@@ -1163,12 +1326,12 @@ class MemoryPluginHost:
             or record.plugin_id != descriptor.plugin_id
             or record.plugin_version != descriptor.plugin_version
         ):
-            return _close_failure(MEMORY_PLUGIN_UNAVAILABLE)
+            return _close_failure(MEMORY_PLUGIN_UNAVAILABLE), False
         resolved_timeout = self.execution_policy.close_session_timeout_seconds
         if timeout_seconds is not None:
             resolved_timeout = min(resolved_timeout, max(0.0, timeout_seconds))
         if resolved_timeout <= 0:
-            return _close_failure(MEMORY_PLUGIN_TIMEOUT)
+            return _close_failure(MEMORY_PLUGIN_TIMEOUT), False
         cancellation = _DelegatingCancellationToken(None)
         request = MemorySessionCloseRequest(
             memory_session_id=record.memory_session_id,
@@ -1179,18 +1342,22 @@ class MemoryPluginHost:
             cancellation=cancellation,
         )
         call_deadline = monotonic() + resolved_timeout
-        raw, failure_code = self._invoke(
+        raw, failure_code, deferred = self._invoke_owned_close(
             lambda: self._active_plugin.close_session(request),
-            timeout_seconds=resolved_timeout,
+            record=record,
+            reason=reason,
+            source=source,
+            pending_reap_id=pending_reap_id,
+            cache_terminal=cache_terminal,
             cancellation=cancellation,
             call_deadline=call_deadline,
         )
         if failure_code is not None:
-            return _close_failure(failure_code)
+            return _close_failure(failure_code), deferred
         result = self._validated_close_result(raw)
         if result is None:
-            return _close_failure(MEMORY_PLUGIN_INVALID_RESULT)
-        return result
+            return _close_failure(MEMORY_PLUGIN_INVALID_RESULT), False
+        return result, False
 
     @staticmethod
     def _validated_close_result(raw: object) -> MemorySessionCloseResult | None:
@@ -1307,7 +1474,24 @@ class MemoryPluginHost:
             openings.discard(invalidation)
         if not openings:
             self._opening_sessions.pop(session_key, None)
+        self._release_clear_admission_if_drained_locked(session_key)
         self._lifecycle_condition.notify_all()
+
+    def _release_clear_admission_if_drained_locked(
+        self,
+        session_key: _SessionMemoryKey,
+    ) -> None:
+        if session_key not in self._clear_admission_barriers:
+            return
+        if (
+            self._opening_sessions.get(session_key)
+            or self._next_pending_reap_locked(session_key) is not None
+            or session_key in self._closing_sessions
+        ):
+            return
+        self._clear_admission_barriers.discard(session_key)
+        self._session_admission_closed.discard(session_key)
+        self._session_close_reasons.pop(session_key, None)
 
     def _open_record_if_current(
         self,
@@ -1337,17 +1521,78 @@ class MemoryPluginHost:
     ) -> None:
         ordering_key = runtime_memory_identity_key(identity)
         with self._lifecycle_condition:
-            close_requested = ordering_key in self._session_admission_closed
-            reason = self._session_close_reasons.get(ordering_key, "reset")
-        result = self._close_plugin_session(record=record, reason=reason)
-        if not close_requested:
-            return
-        self._clear_frozen_contexts(lambda run_key: run_key[:3] == ordering_key)
-        with self._lifecycle_condition:
-            self._closed_session_results[ordering_key] = result.model_copy(deep=True)
-            self._session_admission_closed.discard(ordering_key)
-            self._session_close_reasons.pop(ordering_key, None)
+            terminal_requested = (
+                not self._host_accepting
+                or self._host_close_in_progress
+                or ordering_key in self._session_close_reasons
+            )
+            reason = self._session_close_reasons.get(
+                ordering_key,
+                "shutdown" if not self._host_accepting else "reset",
+            )
+            self._register_pending_reap_locked(
+                record=record,
+                reason=reason,
+                cache_terminal=terminal_requested,
+            )
+            self._session_admission_closed.add(ordering_key)
+            self._session_close_reasons.setdefault(ordering_key, reason)
+            if self._host_close_in_progress or ordering_key in self._closing_sessions:
+                self._lifecycle_condition.notify_all()
+                return
+            self._closing_sessions.add(ordering_key)
             self._lifecycle_condition.notify_all()
+
+        self._finish_session_close_owner(
+            identity=identity,
+            ordering_key=ordering_key,
+            reason=reason,
+            wait_deadline=(
+                monotonic() + self.execution_policy.close_session_timeout_seconds
+            ),
+            opening_drained=True,
+            cache_terminal=terminal_requested,
+            include_stored=terminal_requested,
+            drain_ingestion=terminal_requested,
+        )
+
+    def _register_pending_reap_locked(
+        self,
+        *,
+        record: MemoryPluginSessionRecord,
+        reason: _SessionCloseReason,
+        cache_terminal: bool,
+    ) -> _PendingSessionReap:
+        self._next_pending_reap_id += 1
+        pending = _PendingSessionReap(
+            reap_id=self._next_pending_reap_id,
+            record=record,
+            reason=reason,
+            cache_terminal=cache_terminal,
+        )
+        self._pending_reaps[pending.reap_id] = pending
+        return pending
+
+    def _next_pending_reap_locked(
+        self,
+        ordering_key: _SessionMemoryKey,
+    ) -> _PendingSessionReap | None:
+        return next(
+            (
+                pending
+                for pending in self._pending_reaps.values()
+                if pending.record.runtime_identity_key == ordering_key
+            ),
+            None,
+        )
+
+    def _mark_pending_reaps_terminal_locked(
+        self,
+        ordering_key: _SessionMemoryKey,
+    ) -> None:
+        for pending in self._pending_reaps.values():
+            if pending.record.runtime_identity_key == ordering_key:
+                pending.cache_terminal = True
 
     def _open_record(
         self,
@@ -1641,6 +1886,142 @@ class MemoryPluginHost:
                 )
             ]
 
+    def _invoke_owned_close(
+        self,
+        callback: Any,
+        *,
+        record: MemoryPluginSessionRecord,
+        reason: _SessionCloseReason,
+        source: _SessionCloseSource,
+        pending_reap_id: int | None,
+        cache_terminal: bool,
+        cancellation: MemoryCancellationToken,
+        call_deadline: float,
+    ) -> tuple[object | None, str | None, bool]:
+        ordering_key = record.runtime_identity_key
+        failure_code = _call_failure_code(cancellation, call_deadline)
+        if failure_code is not None:
+            return None, failure_code, False
+        with self._lifecycle_condition:
+            if ordering_key in self._active_session_closes:
+                return None, MEMORY_PLUGIN_TIMEOUT, True
+            with self._executor_condition:
+                if not self._executor_accepting:
+                    return None, MEMORY_PLUGIN_UNAVAILABLE, False
+                try:
+                    future: Future[Any] = self._executor.submit(callback)
+                except Exception:
+                    return None, MEMORY_PLUGIN_INTERNAL_ERROR, False
+                self._executor_futures.add(future)
+                active = _ActiveSessionClose(
+                    future=future,
+                    record=record,
+                    reason=reason,
+                    source=source,
+                    pending_reap_id=pending_reap_id,
+                    cache_terminal=cache_terminal,
+                )
+                self._active_session_closes[ordering_key] = active
+                future.add_done_callback(self._forget_executor_future)
+                future.add_done_callback(self._notify_active_close_completion)
+            self._lifecycle_condition.notify_all()
+
+        while True:
+            failure_code = _call_failure_code(cancellation, call_deadline)
+            if failure_code is not None:
+                cancelled = future.cancel()
+                if cancelled:
+                    with self._lifecycle_condition:
+                        if self._active_session_closes.get(ordering_key) is active:
+                            self._active_session_closes.pop(ordering_key, None)
+                        self._lifecycle_condition.notify_all()
+                else:
+                    with self._lifecycle_condition:
+                        if self._active_session_closes.get(ordering_key) is active:
+                            active.deferred = True
+                        self._lifecycle_condition.notify_all()
+                return None, failure_code, not cancelled
+            remaining = call_deadline - monotonic()
+            try:
+                result = future.result(timeout=min(remaining, 0.01))
+            except FutureTimeout:
+                continue
+            except Exception:
+                with self._lifecycle_condition:
+                    if self._active_session_closes.get(ordering_key) is active:
+                        self._active_session_closes.pop(ordering_key, None)
+                    self._lifecycle_condition.notify_all()
+                return None, MEMORY_PLUGIN_INTERNAL_ERROR, False
+            failure_code = _call_failure_code(cancellation, call_deadline)
+            if failure_code is not None:
+                with self._lifecycle_condition:
+                    if self._active_session_closes.get(ordering_key) is active:
+                        active.deferred = True
+                    self._lifecycle_condition.notify_all()
+                return None, failure_code, True
+            with self._lifecycle_condition:
+                if self._active_session_closes.get(ordering_key) is active:
+                    self._active_session_closes.pop(ordering_key, None)
+                self._lifecycle_condition.notify_all()
+            return result, None, False
+
+    def _harvest_completed_active_closes_locked(
+        self,
+        ordering_key: _SessionMemoryKey | None = None,
+    ) -> None:
+        candidates = tuple(self._active_session_closes.items())
+        for session_key, active in candidates:
+            if ordering_key is not None and session_key != ordering_key:
+                continue
+            if not active.deferred or not active.future.done():
+                continue
+            if self._active_session_closes.get(session_key) is not active:
+                continue
+            self._active_session_closes.pop(session_key, None)
+            try:
+                raw = active.future.result()
+            except Exception:
+                result = _close_failure(MEMORY_PLUGIN_INTERNAL_ERROR)
+            else:
+                result = self._validated_close_result(raw) or _close_failure(
+                    MEMORY_PLUGIN_INVALID_RESULT
+                )
+
+            if result.status == "closed":
+                if active.source == "pending" and active.pending_reap_id is not None:
+                    pending = self._pending_reaps.get(active.pending_reap_id)
+                    if pending is not None and pending.record == active.record:
+                        self._pending_reaps.pop(active.pending_reap_id, None)
+                elif active.source == "stored":
+                    identity = _identity_from_runtime_key(session_key)
+                    stored = self.session_store.get(identity)
+                    if stored == active.record:
+                        self.session_store.pop(identity)
+
+                more_handles = bool(
+                    self._next_pending_reap_locked(session_key)
+                    or self.session_store.get(_identity_from_runtime_key(session_key))
+                )
+                if not more_handles:
+                    if active.cache_terminal:
+                        self._closed_session_results[session_key] = result.model_copy(
+                            deep=True
+                        )
+                    if active.source == "stored" or active.cache_terminal:
+                        self._clear_frozen_contexts(
+                            lambda run_key: run_key[:3] == session_key
+                        )
+                    clear_barrier_waiting = (
+                        session_key in self._clear_admission_barriers
+                        and bool(self._opening_sessions.get(session_key))
+                    )
+                    if not clear_barrier_waiting:
+                        self._clear_admission_barriers.discard(session_key)
+                        self._session_admission_closed.discard(session_key)
+                        self._session_close_reasons.pop(session_key, None)
+            self._closing_sessions.discard(session_key)
+            self._lifecycle_condition.notify_all()
+
     def _invoke(
         self,
         callback: Any,
@@ -1684,6 +2065,11 @@ class MemoryPluginHost:
         with self._executor_condition:
             self._executor_futures.discard(future)
             self._executor_condition.notify_all()
+
+    def _notify_active_close_completion(self, future: Future[Any]) -> None:
+        del future
+        with self._lifecycle_condition:
+            self._lifecycle_condition.notify_all()
 
     def _now(self) -> datetime:
         value = self._clock()
