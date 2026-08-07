@@ -244,6 +244,11 @@ def _run_one_locked(
             previous_registry=previous_registry,
             repo_root=repo_root,
         )
+        report = _discard_earlier_context_commits(
+            report,
+            bundle=bundle,
+            repo_root=repo_root,
+        )
         _validate_repository_code_evidence(
             report,
             bundle=bundle,
@@ -599,6 +604,47 @@ def _parse_trace_ref(ref: str) -> tuple[str, str | None, str | None]:
 
 _COMMIT_SHA = re.compile(r"^[0-9a-fA-F]{7,40}$")
 _SENSITIVE_OVERLAP_CHARS = 80
+
+
+def _discard_earlier_context_commits(
+    report: DailyCodexAuditReport,
+    *,
+    bundle: RuntimeAuditBundle,
+    repo_root: Path,
+) -> DailyCodexAuditReport:
+    """Remove real commits that precede the latest bad trace from mixed evidence."""
+
+    trace_times = _bundle_trace_times(bundle)
+    normalized_issues = []
+    for issue in report.issues:
+        if issue.status != "code_addressed":
+            normalized_issues.append(issue)
+            continue
+        bad_trace_times = [
+            trace_times[_parse_trace_ref(ref)[0]]
+            for ref in issue.trace_evidence_refs
+            if _parse_trace_ref(ref)[0] in trace_times
+        ]
+        if not bad_trace_times:
+            normalized_issues.append(issue)
+            continue
+        latest_bad_trace = max(bad_trace_times)
+        filtered_refs = []
+        for ref in issue.code_evidence_refs:
+            if not ref.startswith("code:"):
+                filtered_refs.append(ref)
+                continue
+            try:
+                committed_at = _git_commit_time(repo_root, ref.removeprefix("code:"))
+            except (OSError, subprocess.SubprocessError, ValueError):
+                filtered_refs.append(ref)
+                continue
+            if committed_at > latest_bad_trace:
+                filtered_refs.append(ref)
+        normalized_issues.append(
+            issue.model_copy(update={"code_evidence_refs": filtered_refs})
+        )
+    return report.model_copy(update={"issues": normalized_issues})
 
 
 def _validate_repository_code_evidence(

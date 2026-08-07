@@ -380,6 +380,61 @@ def test_code_addressed_rejects_commit_not_later_than_its_bad_trace(
     assert result.status == "failed"
 
 
+def test_code_addressed_discards_earlier_context_commit_when_later_fix_exists(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Would fail if one earlier context commit invalidated a later real fix."""
+
+    repo, earlier_sha = _committed_test_repo(
+        tmp_path,
+        monkeypatch,
+        committed_at="2026-08-05T11:00:00+00:00",
+    )
+    test_path = repo / "tests/tdd/example/test_regression.py"
+    test_path.write_text(
+        "def test_regression():\n    assert 1 + 1 == 2\n",
+        encoding="utf-8",
+    )
+    _git(repo, "add", "tests/tdd/example/test_regression.py")
+    environment = dict(__import__("os").environ)
+    environment.update(
+        {
+            "GIT_AUTHOR_DATE": "2026-08-05T13:00:00+00:00",
+            "GIT_COMMITTER_DATE": "2026-08-05T13:00:00+00:00",
+        }
+    )
+    _git(repo, "commit", "-m", "fix: complete regression handling", env=environment)
+    later_sha = _git(repo, "rev-parse", "HEAD")
+    issue = DailyAuditIssue(
+        issue_key="tool.mixed-time-order",
+        status="code_addressed",
+        title="已有后续修复",
+        first_seen=AUDIT_DATE,
+        last_seen=AUDIT_DATE,
+        trace_evidence_refs=["trace:trace-current"],
+        code_evidence_refs=[
+            f"code:{earlier_sha}",
+            f"code:{later_sha}",
+            "test:tests/tdd/example/test_regression.py",
+        ],
+    )
+    store = RuntimeAuditArtifactStore(tmp_path / "runtime_audit")
+
+    result = _run(
+        tmp_path,
+        source=FakeSource([_trace()]),
+        store=store,
+        repo_root=repo,
+        codex_runner=lambda **_: _report(issue=issue),
+    )
+
+    assert result.status == "succeeded"
+    persisted = store.read_issue_registry().issues[issue.issue_key]
+    assert f"code:{earlier_sha}" not in persisted.code_evidence_refs
+    assert f"code:{later_sha}" in persisted.code_evidence_refs
+
+
 def test_regressed_issue_cannot_reuse_old_code_evidence() -> None:
     """Would fail if a regression could be suppressed by replaying its obsolete fix evidence."""
 
