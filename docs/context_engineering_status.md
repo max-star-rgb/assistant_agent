@@ -77,16 +77,22 @@ system profile、context pack、原生工具调用轨迹和本轮 ToolSpec；不
 - `ChatRequest.tools` 只来自本轮结构化治理后的 `ToolSpec`。Tool catalog 和 context assembly
   不读取 `request.text` 做关键词、正则或确定性意图路由。
 - `ResponseStyle` 由显式请求和入口 profile 解析，不从用户文本或主题猜测；不同入口仍复用同一编译器。
-- Provider 支持 developer role 时，可把 procedural guidance 编译为 developer message；
-  否则保守放入 system guidance，不伪造 Provider 不支持的角色。
+- System instruction 以稳定的 `Assistant Runtime Contract` 为根，区分运行时事实、authority、执行、
+  工具、Skill lifecycle、回答和 `act/finalize` 阶段；动态程序指导不得作为无边界的同级 Markdown
+  章节裸拼接。
+- Provider 支持 developer role 时，可把 procedural guidance 编译为 developer message；否则保守放入
+  system guidance，不伪造 Provider 不支持的角色。两条路径都使用同一
+  `<procedural_guidance>` 投影：未加载摘要位于 `<skill_index>`，正文位于
+  `<loaded_skills>`，按需 reference 位于 `<skill_references>`，每项保留稳定 Skill id 与版本边界。
 - `FINALIZE` 只保留已发生且成对匹配的 native tool call/result 因果证据，并关闭后续工具调用。
   具体运行阶段和失败恢复见 `docs/runtime-event-stream-architecture.md` 与
   `docs/tool-calling-architecture.md`。
 
-项目 Skill 使用渐进披露：未加载时只注入名称和适用条件摘要；任务符合某个 Skill 的适用条件时，
-模型必须先通过受治理的 `load_skill` 加载正文，不能因任务简单或预计只调用一个业务工具而跳过。
-不相关 Skill 不加载，reference 只按需加载，加载过程不向用户播报。动态 Skill 正文仍是
-`ContextSection`，不能改变 ToolSpec、工具权限或 validator 结果。
+项目 Skill 使用渐进披露：未加载时只在 `<skill_index>` 注入名称和适用条件摘要；任务符合一个或多个
+Skill 的适用条件时，模型必须在相关业务工具之前通过受治理的 `load_skill` 加载每个直接相关正文，
+不能因任务简单或预计只调用一个业务工具而跳过。不相关 Skill 不加载，reference 只能从本轮正文实际
+返回的 `reference_ids` 中按需加载，加载过程静默且不向用户播报。动态 Skill 正文仍是
+`ContextSection`；编译器渲染其来源边界，但它不能改变 ToolSpec、工具权限、用户授权或 validator 结果。
 
 ## 5. Conversation 与 Compaction
 
@@ -250,6 +256,11 @@ token 字段。
 selected tools、source counts、compaction 状态和 tokenizer preflight，但不得返回原始 prompt、
 memory 文本、完整 tool observation、raw Provider payload 或 secret。Token 不可用时必须明确标记
 为 unavailable，不能用零伪装。
+
+`ContextBudgetReport.procedural_guidance_chars` 记录原始 `ContextSection.content` 的来源字符量，不包含
+编译阶段增加的 `<procedural_guidance>` envelope、属性和 XML entity 开销；该字段用于来源 accounting，
+不是模型窗口准入值。最终 compiled request tokenizer preflight 和 system/developer prompt report 必须包含
+这些渲染开销，并继续作为 hard window 的权威口径。
 
 Langfuse 中 `context.compile` 只把 tokenizer preflight 投影为 observation metadata，不计入 Usage
 breakdown；实际 input/output/total usage 只归属随后对应的 `llm.chat` generation，防止同一 Provider

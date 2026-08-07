@@ -2,11 +2,16 @@
 
 from dataclasses import dataclass
 from enum import StrEnum
+from html import escape
 import json
 from typing import Any
 
 from assistant_agent.runtime.system_prompt_policy import render_system_instruction
-from assistant_agent.context.models import AssistantContextPack, RenderedAssistantContext
+from assistant_agent.context.models import (
+    AssistantContextPack,
+    ContextSection,
+    RenderedAssistantContext,
+)
 from assistant_agent.tools.spec_adapters import tool_specs_to_openai_tools
 from assistant_agent.tools.models import ToolSpec
 from assistant_agent.tools.observation import native_tool_observation_payload
@@ -162,19 +167,104 @@ def owner_persona_for_pack(pack: AssistantContextPack) -> str:
 
 
 def procedural_guidance_for_pack(pack: AssistantContextPack) -> str:
-    """Return active project Skill guidance in deterministic section order."""
+    """Render active project Skills with explicit discovery/load boundaries."""
 
-    sections = [
+    sections = sorted(
+        [
         section
         for section in pack.context_sections
         if section.kind in {"skill_summary", "skill_body", "skill_reference"}
         and section.authority == "procedural_guidance"
         and not section.sensitive
-    ]
-    return "\n\n".join(
-        section.content
-        for section in sorted(sections, key=lambda item: item.priority)
+        ],
+        key=lambda item: item.priority,
     )
+    if not sections:
+        return ""
+
+    summaries = [section for section in sections if section.kind == "skill_summary"]
+    bodies = [section for section in sections if section.kind == "skill_body"]
+    references = [
+        section for section in sections if section.kind == "skill_reference"
+    ]
+    rendered = ["<procedural_guidance>"]
+    if summaries:
+        rendered.append("<skill_index>")
+        for section in summaries:
+            rendered.extend(
+                [
+                    _skill_open_tag(section.title, section.source_version),
+                    f"<description>{escape(section.content.strip())}</description>",
+                    "</skill>",
+                ]
+            )
+        rendered.append("</skill_index>")
+    if bodies:
+        rendered.append("<loaded_skills>")
+        for section in bodies:
+            rendered.extend(
+                [
+                    _skill_open_tag(section.title, section.source_version),
+                    _escape_xml_text(section.content),
+                    "</skill>",
+                ]
+            )
+        rendered.append("</loaded_skills>")
+    if references:
+        rendered.append("<skill_references>")
+        for section in references:
+            identity = _skill_reference_identity(section)
+            if identity is None:
+                continue
+            skill_id, reference_id = identity
+            rendered.extend(
+                [
+                    (
+                        f'<reference skill_id="{escape(skill_id, quote=True)}" '
+                        f'reference_id="{escape(reference_id, quote=True)}" '
+                        f'version="{escape(section.source_version, quote=True)}">'
+                    ),
+                    _escape_xml_text(section.content),
+                    "</reference>",
+                ]
+            )
+        rendered.append("</skill_references>")
+    rendered.append("</procedural_guidance>")
+    return "\n".join(rendered)
+
+
+def _skill_open_tag(skill_id: str, version: str) -> str:
+    return (
+        f'<skill id="{escape(skill_id, quote=True)}" '
+        f'version="{escape(version, quote=True)}">'
+    )
+
+
+def _escape_xml_text(content: str) -> str:
+    """Keep trusted Markdown readable without allowing envelope delimiters."""
+
+    return escape(content.strip(), quote=False)
+
+
+def _skill_reference_identity(
+    section: ContextSection,
+) -> tuple[str, str] | None:
+    """Recover builder-owned reference identity and reject malformed sections."""
+
+    prefix = "project_skill_reference:"
+    if not section.section_id.startswith(prefix):
+        return None
+    skill_id, separator, reference_id = section.section_id.removeprefix(
+        prefix
+    ).rpartition(":")
+    if (
+        not separator
+        or not skill_id
+        or not reference_id
+        or section.title != f"{skill_id}:{reference_id}"
+    ):
+        return None
+    return skill_id, reference_id
 
 
 def _skill_loading_enabled(

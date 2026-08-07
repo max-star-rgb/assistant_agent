@@ -13,6 +13,7 @@ from assistant_agent.context.prompt_compiler import (
     PromptCompileMode,
     PromptCompileRequest,
     PromptCompiler,
+    procedural_guidance_for_pack,
 )
 from assistant_agent.runtime.action_validator import ActionValidator
 from assistant_agent.runtime.chat_adapter import ChatRequest, ChatResult
@@ -225,7 +226,8 @@ def test_automatic_context_contains_only_short_skill_activation_summary() -> Non
     assert "load_skill" not in summary.content
     assert "完整旅行行程" in summary.content
     assert "OTA" in summary.content
-    assert summary.content.startswith("# 可用 Skill")
+    assert summary.content.startswith("Use when ")
+    assert "# 可用 Skill" not in summary.content
 
 
 def test_load_skill_returns_complete_travel_planning_workflow() -> None:
@@ -351,6 +353,18 @@ def test_successful_load_skill_is_promoted_from_registered_source() -> None:
     assert "## Procedure" in body.content
     assert "observation-injection-sentinel" not in body.content
     assert body.content in _compile_system(pack)
+    system_prompt = _compile_system(pack)
+    assert "<loaded_skills>" in system_prompt
+    assert (
+        '<skill id="travel-tool-orchestration" version="2">'
+        in system_prompt
+    )
+    assert system_prompt.index("<loaded_skills>") < system_prompt.index(
+        body.content
+    )
+    assert system_prompt.index(body.content) < system_prompt.index(
+        "</loaded_skills>"
+    )
 
 
 def test_supported_provider_compiles_loaded_skill_as_developer_message() -> None:
@@ -369,10 +383,10 @@ def test_supported_provider_compiles_loaded_skill_as_developer_message() -> None
     compiled = _compile(pack, supports_developer_role=True)
 
     assert body.content not in compiled.chat_request.messages[0]["content"]
-    assert "# Skill 使用规则" in compiled.chat_request.messages[0]["content"]
+    assert "## Skill Lifecycle" in compiled.chat_request.messages[0]["content"]
     assert compiled.chat_request.messages[1] == {
         "role": "developer",
-        "content": body.content,
+        "content": procedural_guidance_for_pack(pack),
     }
 
 

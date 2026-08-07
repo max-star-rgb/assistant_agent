@@ -70,12 +70,9 @@ def render_skill_guidance(
 def render_skill_activation_summary(
     descriptor: SkillDescriptor,
 ) -> str:
-    """Render the small L0 projection that lets the model discover one Skill."""
+    """Return the small L0 description used inside the Skill index."""
 
-    return (
-        "# 可用 Skill\n\n"
-        f"- `{descriptor.name}`：{descriptor.description}"
-    )
+    return descriptor.description
 
 
 _ALLOWED_SECTION_TITLES = {
