@@ -9,16 +9,23 @@ import re
 from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FutureTimeout
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from threading import Condition
+from threading import Condition, Event
 from time import monotonic, perf_counter
-from typing import Any, TypeVar
+from typing import Any, Literal, TypeVar
 
 from pydantic import BaseModel
 
 from assistant_agent.identity import RequestIdentity
+from assistant_agent.memory.ingestion_queue import MemoryIngestionQueue
 from assistant_agent.memory.models import SessionMemorySnapshot
-from assistant_agent.memory.observability import record_session_recall
+from assistant_agent.memory.observability import (
+    MemoryObservationContext,
+    record_ingestion_finished,
+    record_ingestion_queued,
+    record_session_recall,
+)
 from assistant_agent.memory.plugins.contracts import (
+    CompletedMemoryTurn,
     MEMORY_PLUGIN_INTERNAL_ERROR,
     MEMORY_PLUGIN_INVALID_RESULT,
     MEMORY_PLUGIN_TIMEOUT,
@@ -29,13 +36,19 @@ from assistant_agent.memory.plugins.contracts import (
     MemoryContextContribution,
     MemoryContextItem,
     MemoryContextRequest,
+    MemoryChange,
     MemoryIdentity,
     MemoryMessage,
     MemoryPluginDescriptor,
     MemoryPluginExecutionPolicy,
     MemoryPluginIssue,
+    MemorySessionCloseRequest,
+    MemorySessionCloseResult,
     MemorySessionOpenRequest,
     MemorySessionOpenResult,
+    MemoryToolEvidence,
+    MemoryTurnIngestionRequest,
+    MemoryTurnIngestionResult,
 )
 from assistant_agent.memory.plugins.media import (
     ManagedMemoryMediaStore,
@@ -50,10 +63,12 @@ from assistant_agent.memory.plugins.session_store import (
 from assistant_agent.observability.trace_store import TraceStore
 from assistant_agent.runtime.cancellation import is_cancelled
 from assistant_agent.runtime.state import AgentState
+from assistant_agent.tools.ids import VISUAL_REMINDER_MANAGE_TOOL_NAME
 
 
 _ModelT = TypeVar("_ModelT", bound=BaseModel)
 _RunMemoryKey = tuple[str, str, str, str]
+_SessionMemoryKey = tuple[str, str, str]
 _SAFE_CODE_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,127}$")
 _POSIX_PATH_CANDIDATE_RE = re.compile(r"/(?!/)[^\s\"'<>]*")
 _WINDOWS_DRIVE_PATH_RE = re.compile(r"(?<![A-Za-z0-9])[A-Za-z]:[\\/][^\s\"'<>]*")
@@ -169,6 +184,18 @@ class _MemoryCallStopped(RuntimeError):
         super().__init__("memory_plugin_call_stopped")
 
 
+@dataclass(frozen=True)
+class _ScheduledMemoryIngestion:
+    request: MemoryTurnIngestionRequest
+    ordering_key: _SessionMemoryKey
+    trace_store: TraceStore | None
+    observation_context: MemoryObservationContext
+    plugin_id: str
+    plugin_version: str
+    api_version: str
+    initial_issue_codes: tuple[str, ...]
+
+
 class MemoryPluginHost:
     """Validate and freeze recall from the Registry's active Plugin."""
 
@@ -178,6 +205,7 @@ class MemoryPluginHost:
         registry: MemoryPluginRegistry,
         session_store: MemoryPluginSessionStore | None = None,
         media_store: ManagedMemoryMediaStore | None = None,
+        ingestion_queue: MemoryIngestionQueue | None = None,
         execution_policy: MemoryPluginExecutionPolicy | None = None,
         identity_namespace: str = "assistant-agent",
         clock: Any | None = None,
@@ -194,6 +222,7 @@ class MemoryPluginHost:
         self.media_store = media_store or ManagedMemoryMediaStore(
             max_total_bytes=32 * 1024 * 1024
         )
+        self.ingestion_queue = ingestion_queue or MemoryIngestionQueue()
         self.execution_policy = (
             execution_policy or MemoryPluginExecutionPolicy()
         ).model_copy(deep=True)
@@ -206,6 +235,19 @@ class MemoryPluginHost:
         self._run_condition = Condition()
         self._preparing_runs: set[_RunMemoryKey] = set()
         self._frozen_run_contexts: dict[_RunMemoryKey, SessionMemorySnapshot] = {}
+        self._run_epochs: dict[_RunMemoryKey, int] = {}
+        self._lifecycle_condition = Condition()
+        self._opening_sessions: dict[_SessionMemoryKey, int] = {}
+        self._closing_sessions: set[_SessionMemoryKey] = set()
+        self._closed_session_results: dict[
+            _SessionMemoryKey, MemorySessionCloseResult
+        ] = {}
+        self._host_accepting = True
+        self._host_close_in_progress = False
+        self._host_close_result: bool | None = None
+        self._executor_condition = Condition()
+        self._executor_futures: set[Future[Any]] = set()
+        self._executor_accepting = True
 
     @property
     def active_plugin(self):  # type: ignore[no-untyped-def]
@@ -223,45 +265,74 @@ class MemoryPluginHost:
 
         started = perf_counter()
         descriptor = self._active_descriptor
-        if descriptor is None or self._active_plugin is None:
-            return SessionMemorySnapshot(
-                status="degraded",
-                error_codes=[MEMORY_PLUGIN_INTERNAL_ERROR],
+        session_key = runtime_memory_identity_key(identity)
+        with self._lifecycle_condition:
+            if not self._host_accepting or session_key in self._closing_sessions:
+                return SessionMemorySnapshot(
+                    plugin_id=descriptor.plugin_id if descriptor is not None else None,
+                    status="degraded",
+                    error_codes=[MEMORY_PLUGIN_UNAVAILABLE],
+                )
+            self._closed_session_results.pop(session_key, None)
+            if descriptor is None or self._active_plugin is None:
+                return SessionMemorySnapshot(
+                    status="degraded",
+                    error_codes=[MEMORY_PLUGIN_INTERNAL_ERROR],
+                )
+            self._opening_sessions[session_key] = (
+                self._opening_sessions.get(session_key, 0) + 1
             )
-        cached = self.session_store.get(identity)
-        plugin_changed = cached is not None and (
-            cached.plugin_id != descriptor.plugin_id
-            or cached.plugin_version != descriptor.plugin_version
-        )
-        cancellation = _DelegatingCancellationToken(None)
-        call_deadline = monotonic() + self.execution_policy.open_session_timeout_seconds
-        resolution = self.session_store.resolve(
-            identity,
-            reset=reset or plugin_changed,
-            loader=lambda: self._open_record(
-                identity=identity,
-                state=state,
-                descriptor=descriptor,
-                cancellation=cancellation,
-                call_deadline=call_deadline,
-            ),
-            before_publish=lambda record: _guard_open_record_for_publish(
-                record,
-                cancellation=cancellation,
-                call_deadline=call_deadline,
-            ),
-        )
-        snapshot = resolution.record.baseline.model_copy(deep=True)
-        if resolution.status == "loaded":
-            record_session_recall(
-                trace_store=trace_store,
-                state=state,
-                status=snapshot.status,
-                latency_ms=max(0, int((perf_counter() - started) * 1000)),
-                memory_count=len(snapshot.memories),
-                error_codes=list(snapshot.error_codes),
+        try:
+            cached = self.session_store.get(identity)
+            plugin_changed = cached is not None and (
+                cached.plugin_id != descriptor.plugin_id
+                or cached.plugin_version != descriptor.plugin_version
             )
-        return snapshot
+            cancellation = _DelegatingCancellationToken(None)
+            call_deadline = (
+                monotonic() + self.execution_policy.open_session_timeout_seconds
+            )
+            resolution = self.session_store.resolve(
+                identity,
+                reset=reset or plugin_changed,
+                loader=lambda: self._open_record(
+                    identity=identity,
+                    state=state,
+                    descriptor=descriptor,
+                    cancellation=cancellation,
+                    call_deadline=call_deadline,
+                ),
+                before_publish=lambda record: _guard_open_record_for_publish(
+                    record,
+                    cancellation=cancellation,
+                    call_deadline=call_deadline,
+                ),
+            )
+            snapshot = resolution.record.baseline.model_copy(deep=True)
+            if resolution.status == "loaded":
+                record_session_recall(
+                    trace_store=trace_store,
+                    state=state,
+                    status=snapshot.status,
+                    latency_ms=max(0, int((perf_counter() - started) * 1000)),
+                    memory_count=len(snapshot.memories),
+                    error_codes=list(snapshot.error_codes),
+                    memory_plugin_id=descriptor.plugin_id,
+                    memory_plugin_version=descriptor.plugin_version,
+                    memory_plugin_api_version=descriptor.api_version,
+                    memory_plugin_operation="open_session",
+                    memory_plugin_issue_codes=list(snapshot.error_codes),
+                    memory_plugin_retry_count=0,
+                )
+            return snapshot
+        finally:
+            with self._lifecycle_condition:
+                remaining = self._opening_sessions.get(session_key, 0) - 1
+                if remaining > 0:
+                    self._opening_sessions[session_key] = remaining
+                else:
+                    self._opening_sessions.pop(session_key, None)
+                self._lifecycle_condition.notify_all()
 
     def prepare_context(
         self,
@@ -272,18 +343,31 @@ class MemoryPluginHost:
     ) -> SessionMemorySnapshot:
         """Recall at most once for this run and freeze the merged contribution."""
 
-        del trace_store  # Task 5 owns the expanded Plugin observability projection.
         run_key = _run_memory_key(state)
         with self._run_condition:
+            entry_epoch = self._run_epochs.get(run_key, 0)
             while True:
+                if self._run_epochs.get(run_key, 0) != entry_epoch:
+                    invalidated = SessionMemorySnapshot(
+                        plugin_id=(
+                            self._active_descriptor.plugin_id
+                            if self._active_descriptor is not None
+                            else None
+                        ),
+                        status="degraded",
+                        error_codes=[MEMORY_PLUGIN_UNAVAILABLE],
+                    )
+                    return self._publish_snapshot_to_state(state, invalidated)
                 frozen = self._frozen_run_contexts.get(run_key)
                 if frozen is not None:
                     return self._publish_snapshot_to_state(state, frozen)
                 if run_key not in self._preparing_runs:
                     self._preparing_runs.add(run_key)
+                    run_epoch = entry_epoch
                     break
                 self._run_condition.wait()
 
+        started = perf_counter()
         cancellation = _DelegatingCancellationToken(cancel_token)
         call_deadline = (
             monotonic() + self.execution_policy.prepare_context_timeout_seconds
@@ -314,9 +398,36 @@ class MemoryPluginHost:
                     state,
                     failure_code,
                 ).model_copy(deep=True)
-            self._frozen_run_contexts[run_key] = frozen
+            if self._run_epochs.get(run_key, 0) != run_epoch:
+                frozen = SessionMemorySnapshot(
+                    plugin_id=(
+                        self._active_descriptor.plugin_id
+                        if self._active_descriptor is not None
+                        else None
+                    ),
+                    status="degraded",
+                    error_codes=[MEMORY_PLUGIN_UNAVAILABLE],
+                )
+            else:
+                self._frozen_run_contexts[run_key] = frozen
             self._preparing_runs.discard(run_key)
             self._run_condition.notify_all()
+        descriptor = self._active_descriptor
+        if descriptor is not None:
+            record_session_recall(
+                trace_store=trace_store,
+                state=state,
+                status=frozen.status,
+                latency_ms=max(0, int((perf_counter() - started) * 1000)),
+                memory_count=len(frozen.memories),
+                error_codes=list(frozen.error_codes),
+                memory_plugin_id=descriptor.plugin_id,
+                memory_plugin_version=descriptor.plugin_version,
+                memory_plugin_api_version=descriptor.api_version,
+                memory_plugin_operation="prepare_context",
+                memory_plugin_issue_codes=list(frozen.error_codes),
+                memory_plugin_retry_count=0,
+            )
         return self._publish_snapshot_to_state(state, frozen)
 
     def _prepare_context_once(
@@ -476,6 +587,479 @@ class MemoryPluginHost:
             state.session_memory_snapshot = frozen.model_copy(deep=True)
             return frozen.model_copy(deep=True)
         return self._publish_snapshot_to_state(state, frozen)
+
+    def schedule_ingestion(
+        self,
+        *,
+        state: AgentState,
+        trace_store: TraceStore | None,
+    ) -> bool:
+        """Capture and enqueue one completed turn without retaining AgentState."""
+
+        descriptor = self._active_descriptor
+        if (
+            descriptor is None
+            or self._active_plugin is None
+            or not descriptor.capabilities.supports_turn_ingestion
+        ):
+            state.request.metadata["memory_ingestion"] = {"status": "skipped"}
+            return False
+        skip_reason = _structured_ingestion_skip_reason(state)
+        if skip_reason is not None:
+            state.request.metadata["memory_ingestion"] = {
+                "status": "skipped",
+                "reason": skip_reason,
+            }
+            return False
+
+        identity = _identity_from_state(state)
+        ordering_key = runtime_memory_identity_key(identity)
+        with self._lifecycle_condition:
+            if (
+                not self._host_accepting
+                or ordering_key in self._closing_sessions
+                or ordering_key in self._closed_session_results
+            ):
+                state.request.metadata["memory_ingestion"] = {
+                    "status": "failed",
+                    "error_code": "memory_plugin_session_closed",
+                }
+                return False
+            record = self.session_store.get(identity)
+            if (
+                record is None
+                or record.plugin_id != descriptor.plugin_id
+                or record.plugin_version != descriptor.plugin_version
+            ):
+                state.request.metadata["memory_ingestion"] = {"status": "skipped"}
+                return False
+            scheduled = self._scheduled_ingestion(
+                state=state,
+                record=record,
+                descriptor=descriptor,
+                trace_store=trace_store,
+            )
+            if scheduled is None:
+                state.request.metadata["memory_ingestion"] = {"status": "skipped"}
+                return False
+
+            start_gate = Event()
+            submitted = self.ingestion_queue.submit(
+                ordering_key=scheduled.ordering_key,
+                callback=lambda: self._run_scheduled_ingestion_after_gate(
+                    scheduled,
+                    start_gate,
+                ),
+            )
+            if not submitted.accepted:
+                state.request.metadata["memory_ingestion"] = {
+                    "status": "failed",
+                    "error_code": submitted.reason,
+                }
+                return False
+            state.request.metadata["memory_ingestion"] = {
+                "status": "queued",
+                "pending_count": submitted.pending_count,
+            }
+            record_ingestion_queued(
+                trace_store=trace_store,
+                context=scheduled.observation_context,
+                pending_count=submitted.pending_count,
+                memory_plugin_id=scheduled.plugin_id,
+                memory_plugin_version=scheduled.plugin_version,
+                memory_plugin_api_version=scheduled.api_version,
+                memory_plugin_operation="ingest_turn",
+                memory_plugin_issue_codes=list(scheduled.initial_issue_codes),
+                memory_plugin_retry_count=0,
+            )
+            start_gate.set()
+            return True
+
+    def drain(self, *, timeout: float | None = None) -> bool:
+        """Drain accepted ingestion work within an explicit Host bound."""
+
+        return self.ingestion_queue.drain(timeout=self._bounded_timeout(timeout))
+
+    def close_session(
+        self,
+        *,
+        identity: RequestIdentity,
+        reason: Literal[
+            "normal", "reset", "expired", "shutdown", "plugin_replaced"
+        ] = "normal",
+        timeout: float | None = None,
+    ) -> MemorySessionCloseResult:
+        """Stop session ingestion, drain accepted work, and close exactly once."""
+
+        ordering_key = runtime_memory_identity_key(identity)
+        wait_timeout = self._bounded_timeout(timeout)
+        wait_deadline = monotonic() + wait_timeout
+        with self._lifecycle_condition:
+            cached = self._closed_session_results.get(ordering_key)
+            if cached is not None:
+                return cached.model_copy(deep=True)
+            while ordering_key in self._closing_sessions:
+                remaining = wait_deadline - monotonic()
+                if remaining <= 0:
+                    return _close_failure(MEMORY_PLUGIN_TIMEOUT, partial=True)
+                self._lifecycle_condition.wait(remaining)
+                cached = self._closed_session_results.get(ordering_key)
+                if cached is not None:
+                    return cached.model_copy(deep=True)
+            self._closing_sessions.add(ordering_key)
+            opening_drained = True
+            while self._opening_sessions.get(ordering_key, 0):
+                remaining = wait_deadline - monotonic()
+                if remaining <= 0:
+                    opening_drained = False
+                    break
+                self._lifecycle_condition.wait(remaining)
+            record = self.session_store.get(identity)
+
+        result = MemorySessionCloseResult(status="closed")
+        try:
+            drained = self.ingestion_queue.drain(
+                ordering_key=ordering_key,
+                timeout=wait_timeout,
+            )
+            if record is not None:
+                result = self._close_plugin_session(record=record, reason=reason)
+            if not drained or not opening_drained:
+                result = _merge_close_issue(result, MEMORY_PLUGIN_TIMEOUT)
+        except Exception:
+            result = _close_failure(MEMORY_PLUGIN_INTERNAL_ERROR)
+        finally:
+            self.session_store.pop(identity)
+            self._clear_frozen_contexts(lambda run_key: run_key[:3] == ordering_key)
+            with self._lifecycle_condition:
+                self._closed_session_results[ordering_key] = result.model_copy(
+                    deep=True
+                )
+                self._closing_sessions.discard(ordering_key)
+                self._lifecycle_condition.notify_all()
+        return result.model_copy(deep=True)
+
+    def clear_session(self, *, user_id: str, session_id: str) -> int:
+        """Clear only Host-owned state; never issue remote memory CRUD."""
+
+        with self._lifecycle_condition:
+            cleared = self.session_store.clear_session(
+                user_id=user_id,
+                session_id=session_id,
+            )
+            self._clear_frozen_contexts(
+                lambda run_key: run_key[0] == user_id and run_key[2] == session_id
+            )
+            return cleared
+
+    def clear_user(self, *, user_id: str, agent_id: str | None = None) -> int:
+        """Clear one user's Host state without granting Plugin deletion rights."""
+
+        with self._lifecycle_condition:
+            cleared = self.session_store.clear_user(
+                user_id=user_id,
+                agent_id=agent_id,
+            )
+            self._clear_frozen_contexts(
+                lambda run_key: (
+                    run_key[0] == user_id
+                    and (agent_id is None or run_key[1] == agent_id)
+                )
+            )
+            return cleared
+
+    def close(self, *, timeout: float | None = None) -> bool:
+        """Bound queue and Plugin worker shutdown; retry timed-out cleanup."""
+
+        close_timeout = self._bounded_timeout(timeout)
+        started = monotonic()
+        with self._lifecycle_condition:
+            while self._host_close_in_progress:
+                remaining = close_timeout - (monotonic() - started)
+                if remaining <= 0:
+                    return False
+                self._lifecycle_condition.wait(remaining)
+            if self._host_close_result is True:
+                return True
+            self._host_close_in_progress = True
+            self._host_accepting = False
+
+        queue_closed = self.ingestion_queue.close(
+            timeout=_remaining_timeout(started, close_timeout)
+        )
+        with self._executor_condition:
+            self._executor_accepting = False
+            while self._executor_futures:
+                remaining = _remaining_timeout(started, close_timeout)
+                if remaining <= 0:
+                    break
+                self._executor_condition.wait(remaining)
+            executor_drained = not self._executor_futures
+        self._executor.shutdown(wait=executor_drained, cancel_futures=True)
+        result = queue_closed and executor_drained
+        with self._lifecycle_condition:
+            self._host_close_result = result
+            self._host_close_in_progress = False
+            self._lifecycle_condition.notify_all()
+        return result
+
+    def _scheduled_ingestion(
+        self,
+        *,
+        state: AgentState,
+        record: MemoryPluginSessionRecord,
+        descriptor: MemoryPluginDescriptor,
+        trace_store: TraceStore | None,
+    ) -> _ScheduledMemoryIngestion | None:
+        response = state.response
+        if state.status != "completed" or response is None:
+            return None
+        user_text = state.request.text
+        assistant_text = response.message
+        if not _valid_memory_message_text(user_text) or not _valid_memory_message_text(
+            assistant_text
+        ):
+            return None
+
+        evidence: list[MemoryToolEvidence] = []
+        for result in state.tool_results:
+            tool_name = result.tool_name
+            if not _safe_bounded_string(tool_name, max_chars=128):
+                continue
+            output_ref = result.output_ref
+            if not _safe_bounded_string(output_ref, max_chars=512):
+                output_ref = None
+            status: Literal["succeeded", "failed", "partial"]
+            if not result.success:
+                status = "failed"
+            elif (
+                isinstance(result.data, dict) and result.data.get("status") == "partial"
+            ):
+                status = "partial"
+            else:
+                status = "succeeded"
+            evidence.append(
+                MemoryToolEvidence(
+                    tool_name=tool_name,
+                    status=status,
+                    output_ref=output_ref,
+                )
+            )
+
+        media_refs, media_issues = self._resolve_request_media(
+            state=state,
+            record=record,
+            descriptor=descriptor,
+        )
+        turn_index = _conversation_turn_index(state)
+        idempotency_key = hashlib.sha256(
+            f"{descriptor.plugin_id}{state.run_id}{turn_index}".encode()
+        ).hexdigest()
+        try:
+            request = MemoryTurnIngestionRequest(
+                memory_session_id=record.memory_session_id,
+                session_handle=record.session_handle,
+                identity=record.identity.model_copy(deep=True),
+                turn=CompletedMemoryTurn(
+                    user_message=MemoryMessage(role="user", text=user_text),
+                    assistant_message=MemoryMessage(
+                        role="assistant",
+                        text=assistant_text,
+                    ),
+                    tool_evidence=evidence,
+                    media_refs=media_refs,
+                    occurred_at=self._now(),
+                ),
+                idempotency_key=idempotency_key,
+                deadline=self._deadline(
+                    self.execution_policy.ingest_turn_timeout_seconds
+                ),
+                cancellation=_DelegatingCancellationToken(None),
+            )
+        except Exception:
+            return None
+        return _ScheduledMemoryIngestion(
+            request=request.model_copy(deep=True),
+            ordering_key=record.runtime_identity_key,
+            trace_store=trace_store,
+            observation_context=MemoryObservationContext.from_state(state),
+            plugin_id=descriptor.plugin_id,
+            plugin_version=descriptor.plugin_version,
+            api_version=descriptor.api_version,
+            initial_issue_codes=tuple(issue.code for issue in media_issues),
+        )
+
+    def _run_scheduled_ingestion_after_gate(
+        self,
+        scheduled: _ScheduledMemoryIngestion,
+        start_gate: Event,
+    ) -> None:
+        start_gate.wait()
+        self._run_scheduled_ingestion(scheduled)
+
+    def _run_scheduled_ingestion(
+        self,
+        scheduled: _ScheduledMemoryIngestion,
+    ) -> None:
+        started = perf_counter()
+        descriptor = self._active_descriptor
+        retry_count = 0
+        result: MemoryTurnIngestionResult | None = None
+        failure_code: str | None = None
+        while True:
+            call_deadline = (
+                monotonic() + self.execution_policy.ingest_turn_timeout_seconds
+            )
+            raw, failure_code = self._invoke(
+                lambda: self._active_plugin.ingest_turn(scheduled.request),
+                timeout_seconds=self.execution_policy.ingest_turn_timeout_seconds,
+                cancellation=scheduled.request.cancellation,
+                call_deadline=call_deadline,
+            )
+            if failure_code is None:
+                result = self._validated_ingestion_result(raw)
+                if result is None:
+                    failure_code = MEMORY_PLUGIN_INVALID_RESULT
+            retryable = (
+                descriptor is not None
+                and descriptor.capabilities.supports_idempotent_ingestion
+                and retry_count == 0
+                and (
+                    failure_code
+                    in {
+                        MEMORY_PLUGIN_TIMEOUT,
+                        MEMORY_PLUGIN_UNAVAILABLE,
+                        MEMORY_PLUGIN_INTERNAL_ERROR,
+                    }
+                    or (
+                        result is not None
+                        and any(issue.recoverable for issue in result.issues)
+                    )
+                )
+            )
+            if retryable:
+                retry_count += 1
+                result = None
+                failure_code = None
+                continue
+            break
+
+        issue_codes = list(scheduled.initial_issue_codes)
+        if result is not None:
+            issue_codes.extend(issue.code for issue in result.issues)
+            status = {
+                "accepted": "succeeded",
+                "partial": "partial",
+                "rejected": "failed",
+                "failed": "failed",
+            }[result.status]
+            changes: list[MemoryChange] = list(result.changes)
+        else:
+            issue_codes.append(failure_code or MEMORY_PLUGIN_INTERNAL_ERROR)
+            status = "failed"
+            changes = []
+        record_ingestion_finished(
+            trace_store=scheduled.trace_store,
+            context=scheduled.observation_context,
+            status=status,
+            latency_ms=max(0, int((perf_counter() - started) * 1000)),
+            changes=changes,
+            source_turn=scheduled.request.idempotency_key[:24],
+            error_code=failure_code if result is None else None,
+            memory_plugin_id=scheduled.plugin_id,
+            memory_plugin_version=scheduled.plugin_version,
+            memory_plugin_api_version=scheduled.api_version,
+            memory_plugin_operation="ingest_turn",
+            memory_plugin_issue_codes=_unique_codes(issue_codes),
+            memory_plugin_retry_count=retry_count,
+        )
+
+    def _validated_ingestion_result(
+        self,
+        raw: object,
+    ) -> MemoryTurnIngestionResult | None:
+        if not _raw_result_is_safe(raw):
+            return None
+        result = _round_trip_model(raw, MemoryTurnIngestionResult)
+        if result is None:
+            return None
+        for issue in result.issues:
+            if not _valid_issue(issue):
+                return None
+        for change in result.changes:
+            if _forbidden_string(change.memory_id):
+                return None
+            if change.memory_type is not None and _forbidden_string(change.memory_type):
+                return None
+        return result.model_copy(deep=True)
+
+    def _close_plugin_session(
+        self,
+        *,
+        record: MemoryPluginSessionRecord,
+        reason: Literal["normal", "reset", "expired", "shutdown", "plugin_replaced"],
+    ) -> MemorySessionCloseResult:
+        descriptor = self._active_descriptor
+        if (
+            descriptor is None
+            or self._active_plugin is None
+            or record.plugin_id != descriptor.plugin_id
+            or record.plugin_version != descriptor.plugin_version
+        ):
+            return _close_failure(MEMORY_PLUGIN_UNAVAILABLE)
+        cancellation = _DelegatingCancellationToken(None)
+        request = MemorySessionCloseRequest(
+            memory_session_id=record.memory_session_id,
+            session_handle=record.session_handle,
+            identity=record.identity.model_copy(deep=True),
+            reason=reason,
+            deadline=self._deadline(
+                self.execution_policy.close_session_timeout_seconds
+            ),
+            cancellation=cancellation,
+        )
+        raw, failure_code = self._invoke(
+            lambda: self._active_plugin.close_session(request),
+            timeout_seconds=self.execution_policy.close_session_timeout_seconds,
+            cancellation=cancellation,
+            call_deadline=(
+                monotonic() + self.execution_policy.close_session_timeout_seconds
+            ),
+        )
+        if failure_code is not None:
+            return _close_failure(failure_code)
+        result = self._validated_close_result(raw)
+        if result is None:
+            return _close_failure(MEMORY_PLUGIN_INVALID_RESULT)
+        return result
+
+    @staticmethod
+    def _validated_close_result(raw: object) -> MemorySessionCloseResult | None:
+        if not _raw_result_is_safe(raw):
+            return None
+        result = _round_trip_model(raw, MemorySessionCloseResult)
+        if result is None or any(not _valid_issue(issue) for issue in result.issues):
+            return None
+        return result.model_copy(deep=True)
+
+    def _clear_frozen_contexts(self, predicate: Any) -> None:
+        with self._run_condition:
+            keys = {
+                key
+                for key in (*self._frozen_run_contexts, *self._preparing_runs)
+                if predicate(key)
+            }
+            for key in keys:
+                self._frozen_run_contexts.pop(key, None)
+                self._run_epochs[key] = self._run_epochs.get(key, 0) + 1
+            self._run_condition.notify_all()
+
+    def _bounded_timeout(self, timeout: float | None) -> float:
+        if timeout is None:
+            return self.ingestion_queue.shutdown_timeout_seconds
+        if isinstance(timeout, bool) or not isinstance(timeout, int | float):
+            raise TypeError("timeout must be a number")
+        return max(0.0, float(timeout))
 
     def _internal_prepare_fallback(
         self,
@@ -814,7 +1398,15 @@ class MemoryPluginHost:
         cancellation: MemoryCancellationToken,
         call_deadline: float | None = None,
     ) -> tuple[object | None, str | None]:
-        future: Future[Any] = self._executor.submit(callback)
+        with self._executor_condition:
+            if not self._executor_accepting:
+                return None, MEMORY_PLUGIN_UNAVAILABLE
+            try:
+                future: Future[Any] = self._executor.submit(callback)
+            except Exception:
+                return None, MEMORY_PLUGIN_INTERNAL_ERROR
+            self._executor_futures.add(future)
+            future.add_done_callback(self._forget_executor_future)
         resolved_deadline = (
             call_deadline
             if call_deadline is not None
@@ -836,6 +1428,11 @@ class MemoryPluginHost:
             if failure_code is not None:
                 return None, failure_code
             return result, None
+
+    def _forget_executor_future(self, future: Future[Any]) -> None:
+        with self._executor_condition:
+            self._executor_futures.discard(future)
+            self._executor_condition.notify_all()
 
     def _now(self) -> datetime:
         value = self._clock()
@@ -952,6 +1549,41 @@ def _has_exact_model_shape(
             MemoryContextContribution,
             cancellation=cancellation,
             call_deadline=call_deadline,
+        )
+    if model_type is MemoryTurnIngestionResult:
+        changes = dict.__getitem__(values, "changes")
+        issues = dict.__getitem__(values, "issues")
+        if type(changes) is not list or type(issues) is not list:
+            return False
+        return all(
+            _has_exact_model_shape(
+                change,
+                MemoryChange,
+                cancellation=cancellation,
+                call_deadline=call_deadline,
+            )
+            for change in changes
+        ) and all(
+            _has_exact_model_shape(
+                issue,
+                MemoryPluginIssue,
+                cancellation=cancellation,
+                call_deadline=call_deadline,
+            )
+            for issue in issues
+        )
+    if model_type is MemorySessionCloseResult:
+        issues = dict.__getitem__(values, "issues")
+        if type(issues) is not list:
+            return False
+        return all(
+            _has_exact_model_shape(
+                issue,
+                MemoryPluginIssue,
+                cancellation=cancellation,
+                call_deadline=call_deadline,
+            )
+            for issue in issues
         )
     return True
 
@@ -1293,6 +1925,76 @@ def _identity_from_state(state: AgentState) -> RequestIdentity:
 
 def _run_memory_key(state: AgentState) -> _RunMemoryKey:
     return state.user_id, state.agent_id, state.session_id, state.run_id
+
+
+def _structured_ingestion_skip_reason(state: AgentState) -> str | None:
+    if state.tool_results and all(
+        result.tool_name == VISUAL_REMINDER_MANAGE_TOOL_NAME
+        for result in state.tool_results
+    ):
+        return "connection_scoped_visual_reminder"
+    return None
+
+
+def _valid_memory_message_text(value: object) -> bool:
+    return type(value) is str and 0 < len(value) <= 20_000
+
+
+def _safe_bounded_string(value: object, *, max_chars: int) -> bool:
+    return (
+        type(value) is str
+        and 0 < len(value) <= max_chars
+        and not _forbidden_string(value)
+    )
+
+
+def _conversation_turn_index(state: AgentState) -> str:
+    value = state.request.metadata.get("conversation_turn_index")
+    if type(value) is int and value > 0:
+        return str(value)
+    if type(value) is str and 0 < len(value) <= 128:
+        return value
+    return "1"
+
+
+def _close_failure(
+    issue_code: str,
+    *,
+    partial: bool = False,
+) -> MemorySessionCloseResult:
+    return MemorySessionCloseResult(
+        status="partial" if partial else "failed",
+        issues=[
+            MemoryPluginIssue(
+                code=issue_code,
+                message=issue_code,
+                recoverable=partial or issue_code == MEMORY_PLUGIN_TIMEOUT,
+            )
+        ],
+    )
+
+
+def _merge_close_issue(
+    result: MemorySessionCloseResult,
+    issue_code: str,
+) -> MemorySessionCloseResult:
+    issues = list(result.issues)
+    if issue_code not in {issue.code for issue in issues}:
+        issues.append(
+            MemoryPluginIssue(
+                code=issue_code,
+                message=issue_code,
+                recoverable=True,
+            )
+        )
+    status: Literal["closed", "partial", "failed"] = result.status
+    if status == "closed":
+        status = "partial"
+    return MemorySessionCloseResult(status=status, issues=issues)
+
+
+def _remaining_timeout(started: float, timeout: float) -> float:
+    return max(0.0, timeout - (monotonic() - started))
 
 
 def _sealed_registry_runtime(

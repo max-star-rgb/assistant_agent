@@ -152,6 +152,16 @@ class MemoryPluginSessionStore:
             self._entries.move_to_end(key)
             return _copy_record(record)
 
+    def pop(self, identity: RequestIdentity) -> MemoryPluginSessionRecord | None:
+        """Remove one exact Runtime session and invalidate an in-flight load."""
+
+        key = runtime_memory_identity_key(identity)
+        with self._condition:
+            record = self._entries.get(key)
+            self._invalidate(key)
+            self._condition.notify_all()
+            return _copy_record(record) if record is not None else None
+
     def clear_session(self, *, user_id: str, session_id: str) -> int:
         with self._condition:
             keys = {

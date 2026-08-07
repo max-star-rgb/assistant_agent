@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier, Event, Lock, Thread
 from time import sleep
 from typing import Any
@@ -10,9 +12,11 @@ import pytest
 
 from assistant_agent.identity import RequestIdentity
 from assistant_agent.memory.mem0.identity import bind_mem0_identity
+from assistant_agent.memory.ingestion_queue import MemoryIngestionQueue
 from assistant_agent.memory.models import SessionMemorySnapshot
 from assistant_agent.memory.plugins.contracts import (
     ManagedMediaRef,
+    MemoryChange,
     MemoryContextContribution,
     MemoryContextItem,
     MemoryPluginCapabilities,
@@ -37,8 +41,11 @@ from assistant_agent.memory.plugins.session_store import (
     MemoryPluginSessionStore,
     runtime_memory_identity_key,
 )
-from assistant_agent.runtime.requests import UserRequest
+from assistant_agent.observability.trace_store import InMemoryTraceStore
+from assistant_agent.runtime.requests import AgentResponse, UserRequest
 from assistant_agent.runtime.state import AgentState
+from assistant_agent.tools.ids import VISUAL_REMINDER_MANAGE_TOOL_NAME
+from assistant_agent.tools.models import ToolResult
 
 
 NOW = datetime(2026, 8, 7, 12, 0, tzinfo=timezone.utc)
@@ -213,6 +220,28 @@ class BlockingPrepareMemoryPlugin(RecordingMemoryPlugin):
         )
 
 
+class BlockingOpenMemoryPlugin(RecordingMemoryPlugin):
+    def __init__(self) -> None:
+        super().__init__()
+        self.open_started = Event()
+        self.open_release = Event()
+        self.close_requests: list[Any] = []
+
+    def open_session(self, request: Any) -> MemorySessionOpenResult:
+        self.open_calls += 1
+        self.open_requests.append(request)
+        self.open_started.set()
+        assert self.open_release.wait(1.0)
+        return MemorySessionOpenResult(
+            status="ready",
+            session_handle="late-handle-sentinel",
+        )
+
+    def close_session(self, request: Any) -> MemorySessionCloseResult:
+        self.close_requests.append(request)
+        return MemorySessionCloseResult(status="closed")
+
+
 class DescriptorFailsAfterSealPlugin:
     def __init__(self, descriptor: MemoryPluginDescriptor) -> None:
         self._descriptor = descriptor
@@ -260,6 +289,11 @@ class ExplodingAssemblyReportRegistry(MemoryPluginRegistry):
         raise RuntimeError("secret-assembly-report-sentinel")
 
 
+class ExplodingTraceStore:
+    def append(self, event: Any) -> None:
+        raise RuntimeError("trace-persistence-sentinel")
+
+
 class MutableCancelToken:
     def __init__(self) -> None:
         self.cancelled = False
@@ -270,6 +304,50 @@ class MutableCancelToken:
     def raise_if_cancelled(self) -> None:
         if self.cancelled:
             raise RuntimeError("cancelled-sentinel")
+
+
+class ScriptedIngestionMemoryPlugin(RecordingMemoryPlugin):
+    def __init__(
+        self,
+        *,
+        ingestion_results: list[MemoryTurnIngestionResult | Exception] | None = None,
+        supports_idempotent_ingestion: bool = True,
+        block_ingestion: bool = False,
+    ) -> None:
+        super().__init__()
+        self.descriptor = _descriptor(
+            supports_idempotent_ingestion=supports_idempotent_ingestion
+        )
+        self.ingestion_results = list(
+            ingestion_results or [MemoryTurnIngestionResult(status="accepted")]
+        )
+        self.block_ingestion = block_ingestion
+        self.ingestion_started = Event()
+        self.ingestion_release = Event()
+        self.close_started = Event()
+        self.requests: list[Any] = []
+        self.close_requests: list[Any] = []
+        self._calls_lock = Lock()
+
+    def ingest_turn(self, request: Any) -> MemoryTurnIngestionResult:
+        with self._calls_lock:
+            call_number = len(self.requests)
+            self.requests.append(request)
+        self.ingestion_started.set()
+        if self.block_ingestion:
+            assert self.ingestion_release.wait(1.0)
+        result = self.ingestion_results[
+            min(call_number, len(self.ingestion_results) - 1)
+        ]
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    def close_session(self, request: Any) -> MemorySessionCloseResult:
+        with self._calls_lock:
+            self.close_requests.append(request)
+        self.close_started.set()
+        return MemorySessionCloseResult(status="closed")
 
 
 def test_host_opens_session_and_prepares_memory_once_per_run() -> None:
@@ -1116,7 +1194,484 @@ def test_run_memory_flags_are_excluded_from_state_serialization() -> None:
     assert "frozen_memory_context" not in dumped
 
 
-def _descriptor(*, supports_context_refresh: bool = True) -> MemoryPluginDescriptor:
+def test_host_schedules_an_immutable_standard_turn_with_stable_idempotency() -> None:
+    plugin = ScriptedIngestionMemoryPlugin(block_ingestion=True)
+    queue = MemoryIngestionQueue(max_workers=1, max_pending=4)
+    host, media_store = _host(plugin, ingestion_queue=queue)
+    state = _completed_state(run_id="run-sentinel", turn_index=2)
+    identity = _identity()
+    host.open_session(identity=identity, state=state, trace_store=None)
+    record = host.session_store.get(identity)
+    assert record is not None
+    image_ref = media_store.register(
+        b"jpeg-sentinel",
+        owner_scope=record.identity.session_id,
+        media_type="image",
+        mime_type="image/jpeg",
+    )
+    state.request.image_ids = [image_ref.ref_id]
+    state.tool_results = [
+        ToolResult(
+            tool_name="tool-sentinel",
+            success=True,
+            output_ref="artifact-sentinel",
+        ),
+        ToolResult(
+            tool_name="failed-tool-sentinel",
+            success=False,
+            error="raw-error-sentinel",
+            output_ref="/private/output-sentinel",
+        ),
+    ]
+
+    try:
+        assert host.schedule_ingestion(state=state, trace_store=None) is True
+        assert plugin.ingestion_started.wait(0.5)
+        request = plugin.requests[0]
+
+        expected_key = hashlib.sha256(b"mem0run-sentinel2").hexdigest()
+        assert request.idempotency_key == expected_key
+        assert request.turn.user_message.role == "user"
+        assert request.turn.user_message.text == "request-sentinel"
+        assert request.turn.assistant_message.role == "assistant"
+        assert request.turn.assistant_message.text == "response-sentinel"
+        assert [evidence.model_dump() for evidence in request.turn.tool_evidence] == [
+            {
+                "tool_name": "tool-sentinel",
+                "status": "succeeded",
+                "output_ref": "artifact-sentinel",
+            },
+            {
+                "tool_name": "failed-tool-sentinel",
+                "status": "failed",
+                "output_ref": None,
+            },
+        ]
+        assert request.turn.media_refs == [image_ref]
+        assert state.request.metadata["memory_ingestion"]["status"] == "queued"
+
+        state.request.text = "mutated-request"
+        assert state.response is not None
+        state.response.message = "mutated-response"
+        state.tool_results.clear()
+        state.request.image_ids.clear()
+        assert request.turn.user_message.text == "request-sentinel"
+        assert request.turn.assistant_message.text == "response-sentinel"
+        assert request.turn.media_refs == [image_ref]
+    finally:
+        plugin.ingestion_release.set()
+        host.close(timeout=1.0)
+
+
+def test_host_ingestion_uses_per_identity_ordering_and_global_pending_bound() -> None:
+    class OrderingPlugin(ScriptedIngestionMemoryPlugin):
+        def __init__(self) -> None:
+            super().__init__()
+            self.first_started = Event()
+            self.first_release = Event()
+            self.second_started = Event()
+            self.other_started = Event()
+
+        def ingest_turn(self, request: Any) -> MemoryTurnIngestionResult:
+            with self._calls_lock:
+                self.requests.append(request)
+                call_number = len(self.requests)
+            if request.identity.session_id == self.first_identity:
+                if call_number == 1:
+                    self.first_started.set()
+                    assert self.first_release.wait(1.0)
+                else:
+                    self.second_started.set()
+            else:
+                self.other_started.set()
+            return MemoryTurnIngestionResult(status="accepted")
+
+    plugin = OrderingPlugin()
+    host, _ = _host(
+        plugin,
+        ingestion_queue=MemoryIngestionQueue(max_workers=2, max_pending=3),
+    )
+    first = _completed_state(run_id="run-a1", session_id="session-a")
+    second = _completed_state(run_id="run-a2", session_id="session-a")
+    other = _completed_state(run_id="run-b1", session_id="session-b")
+    first_identity = _identity(session_id="session-a")
+    other_identity = _identity(session_id="session-b")
+    host.open_session(identity=first_identity, state=first, trace_store=None)
+    host.open_session(identity=other_identity, state=other, trace_store=None)
+    first_record = host.session_store.get(first_identity)
+    assert first_record is not None
+    plugin.first_identity = first_record.identity.session_id
+
+    try:
+        assert host.schedule_ingestion(state=first, trace_store=None)
+        assert plugin.first_started.wait(0.5)
+        assert host.schedule_ingestion(state=second, trace_store=None)
+        assert host.schedule_ingestion(state=other, trace_store=None)
+        assert plugin.other_started.wait(0.5)
+        assert not plugin.second_started.is_set()
+
+        overflow = _completed_state(run_id="run-b2", session_id="session-b")
+        assert host.schedule_ingestion(state=overflow, trace_store=None) is False
+        assert overflow.request.metadata["memory_ingestion"] == {
+            "status": "failed",
+            "error_code": "memory_ingestion_queue_full",
+        }
+
+        plugin.first_release.set()
+        assert host.drain(timeout=1.0)
+        assert plugin.second_started.is_set()
+    finally:
+        plugin.first_release.set()
+        host.close(timeout=1.0)
+
+
+def test_ingestion_without_idempotency_support_never_retries_failure() -> None:
+    plugin = ScriptedIngestionMemoryPlugin(
+        ingestion_results=[RuntimeError("remote-raw-error-sentinel")],
+        supports_idempotent_ingestion=False,
+    )
+    host, _ = _host(plugin)
+    state = _completed_state()
+    host.open_session(identity=_identity(), state=state, trace_store=None)
+
+    try:
+        assert host.schedule_ingestion(state=state, trace_store=None)
+        assert host.drain(timeout=1.0)
+        assert len(plugin.requests) == 1
+    finally:
+        host.close(timeout=1.0)
+
+
+def test_idempotent_ingestion_retries_one_recoverable_result_at_most_once() -> None:
+    recoverable = MemoryTurnIngestionResult(
+        status="partial",
+        issues=[
+            MemoryPluginIssue(
+                code="plugin.retry",
+                message="retry-sentinel",
+                recoverable=True,
+            )
+        ],
+    )
+    plugin = ScriptedIngestionMemoryPlugin(
+        ingestion_results=[recoverable, recoverable, recoverable],
+        supports_idempotent_ingestion=True,
+    )
+    host, _ = _host(plugin)
+    state = _completed_state()
+    host.open_session(identity=_identity(), state=state, trace_store=None)
+
+    try:
+        assert host.schedule_ingestion(state=state, trace_store=None)
+        assert host.drain(timeout=1.0)
+        assert len(plugin.requests) == 2
+        assert plugin.requests[0].idempotency_key == plugin.requests[1].idempotency_key
+    finally:
+        host.close(timeout=1.0)
+
+
+def test_ingestion_skip_uses_only_structured_visual_reminder_results() -> None:
+    plugin = ScriptedIngestionMemoryPlugin()
+    host, _ = _host(plugin)
+    state = _completed_state(text="please remember this ordinary sentinel")
+    state.tool_results = [
+        ToolResult(
+            tool_name=VISUAL_REMINDER_MANAGE_TOOL_NAME,
+            success=True,
+        )
+    ]
+    host.open_session(identity=_identity(), state=state, trace_store=None)
+
+    try:
+        assert host.schedule_ingestion(state=state, trace_store=None) is False
+        assert state.request.metadata["memory_ingestion"] == {
+            "status": "skipped",
+            "reason": "connection_scoped_visual_reminder",
+        }
+        assert plugin.requests == []
+    finally:
+        host.close(timeout=1.0)
+
+
+def test_close_session_stops_new_ingestion_drains_and_calls_plugin_once() -> None:
+    plugin = ScriptedIngestionMemoryPlugin(block_ingestion=True)
+    host, _ = _host(plugin)
+    identity = _identity()
+    state = _completed_state()
+    host.open_session(identity=identity, state=state, trace_store=None)
+    host.prepare_context(state=state, trace_store=None, cancel_token=None)
+    assert host.schedule_ingestion(state=state, trace_store=None)
+    assert plugin.ingestion_started.wait(0.5)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first_close = executor.submit(
+            host.close_session,
+            identity=identity,
+            reason="normal",
+            timeout=1.0,
+        )
+        second_close = executor.submit(
+            host.close_session,
+            identity=identity,
+            reason="normal",
+            timeout=1.0,
+        )
+        sleep(0.02)
+        rejected = _completed_state(run_id="run-after-close-start")
+        assert host.schedule_ingestion(state=rejected, trace_store=None) is False
+        assert not plugin.close_started.is_set()
+
+        plugin.ingestion_release.set()
+        first_result = first_close.result(timeout=1.0)
+        second_result = second_close.result(timeout=1.0)
+
+    repeated = host.close_session(
+        identity=identity,
+        reason="normal",
+        timeout=1.0,
+    )
+    assert first_result == second_result == repeated
+    assert first_result.status == "closed"
+    assert len(plugin.close_requests) == 1
+    assert plugin.close_requests[0].session_handle == "handle-sentinel"
+    assert host.session_store.get(identity) is None
+    assert host.attach_frozen_context(state) is None
+    host.close(timeout=1.0)
+
+
+def test_close_session_waits_for_inflight_open_and_closes_its_late_handle() -> None:
+    plugin = BlockingOpenMemoryPlugin()
+    host, _ = _host(plugin)
+    identity = _identity()
+    state = _completed_state()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        opening = executor.submit(
+            host.open_session,
+            identity=identity,
+            state=state,
+            trace_store=None,
+        )
+        assert plugin.open_started.wait(0.5)
+        closing = executor.submit(
+            host.close_session,
+            identity=identity,
+            reason="normal",
+            timeout=1.0,
+        )
+        sleep(0.02)
+        assert not closing.done()
+
+        plugin.open_release.set()
+        opening.result(timeout=1.0)
+        close_result = closing.result(timeout=1.0)
+
+    assert close_result.status == "closed"
+    assert len(plugin.close_requests) == 1
+    assert plugin.close_requests[0].session_handle == "late-handle-sentinel"
+    assert host.session_store.get(identity) is None
+    host.close(timeout=1.0)
+
+
+def test_host_close_can_finish_cleanup_after_an_initial_bounded_timeout() -> None:
+    plugin = ScriptedIngestionMemoryPlugin(block_ingestion=True)
+    host, _ = _host(plugin)
+    state = _completed_state()
+    host.open_session(identity=_identity(), state=state, trace_store=None)
+    assert host.schedule_ingestion(state=state, trace_store=None)
+    assert plugin.ingestion_started.wait(0.5)
+
+    assert host.close(timeout=0.01) is False
+    plugin.ingestion_release.set()
+    assert host.ingestion_queue.drain(timeout=1.0)
+    assert host.close(timeout=1.0) is True
+
+
+def test_clear_operations_only_remove_host_state_without_plugin_crud() -> None:
+    plugin = ScriptedIngestionMemoryPlugin()
+    host, _ = _host(plugin)
+    first_identity = _identity(session_id="session-a")
+    second_identity = _identity(session_id="session-b")
+    first_state = _completed_state(session_id="session-a", run_id="run-a")
+    second_state = _completed_state(session_id="session-b", run_id="run-b")
+    host.open_session(identity=first_identity, state=first_state, trace_store=None)
+    host.open_session(identity=second_identity, state=second_state, trace_store=None)
+    host.prepare_context(state=first_state, trace_store=None, cancel_token=None)
+    host.prepare_context(state=second_state, trace_store=None, cancel_token=None)
+
+    try:
+        assert host.clear_session(user_id="user-sentinel", session_id="session-a") == 1
+        assert host.session_store.get(first_identity) is None
+        assert host.attach_frozen_context(first_state) is None
+        assert host.session_store.get(second_identity) is not None
+        assert plugin.close_requests == []
+
+        assert host.clear_user(user_id="user-sentinel") == 1
+        assert host.session_store.get(second_identity) is None
+        assert host.attach_frozen_context(second_state) is None
+        assert plugin.close_requests == []
+    finally:
+        host.close(timeout=1.0)
+
+
+def test_clear_session_discards_an_inflight_prepare_result() -> None:
+    plugin = BlockingPrepareMemoryPlugin()
+    host, _ = _host(plugin)
+    identity = _identity()
+    state = _completed_state()
+    host.open_session(identity=identity, state=state, trace_store=None)
+    waiter_entered = Event()
+
+    def prepare_waiter() -> SessionMemorySnapshot:
+        waiter_entered.set()
+        return host.prepare_context(
+            state=state,
+            trace_store=None,
+            cancel_token=None,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        preparing = executor.submit(
+            host.prepare_context,
+            state=state,
+            trace_store=None,
+            cancel_token=None,
+        )
+        assert plugin.first_started.wait(0.5)
+        waiting = executor.submit(prepare_waiter)
+        assert waiter_entered.wait(0.5)
+        sleep(0.02)
+        assert not waiting.done()
+        assert not plugin.second_started.is_set()
+        assert (
+            host.clear_session(
+                user_id="user-sentinel",
+                session_id="session-sentinel",
+            )
+            == 1
+        )
+        plugin.release.set()
+        prepared = preparing.result(timeout=1.0)
+        waited = waiting.result(timeout=1.0)
+
+    assert prepared.memories == []
+    assert waited.memories == []
+    assert not plugin.second_started.is_set()
+    assert host.session_store.get(identity) is None
+    assert host.attach_frozen_context(state) is None
+    host.close(timeout=1.0)
+
+
+def test_plugin_observability_keeps_canonical_events_prompt_safe() -> None:
+    recoverable = MemoryTurnIngestionResult(
+        status="partial",
+        changes=[
+            MemoryChange(
+                operation="updated",
+                memory_id="memory-sentinel",
+                memory_type="semantic",
+            )
+        ],
+        issues=[
+            MemoryPluginIssue(
+                code="plugin.retry",
+                message="remote-detail-sentinel",
+                recoverable=True,
+            )
+        ],
+    )
+    plugin = ScriptedIngestionMemoryPlugin(ingestion_results=[recoverable, recoverable])
+    host, _ = _host(plugin)
+    state = _completed_state(text="private-user-body-sentinel")
+    assert state.response is not None
+    state.response.message = "private-assistant-body-sentinel"
+    trace_store = InMemoryTraceStore()
+    host.open_session(identity=_identity(), state=state, trace_store=trace_store)
+
+    try:
+        assert host.schedule_ingestion(state=state, trace_store=trace_store)
+        assert host.drain(timeout=1.0)
+        events = trace_store.list_by_run(state.run_id)
+        recall = next(
+            event
+            for event in events
+            if event.canonical_event == "memory.session_recall.finished"
+        )
+        queued = next(
+            event
+            for event in events
+            if event.canonical_event == "memory.ingestion.queued"
+        )
+        finished = next(
+            event
+            for event in events
+            if event.canonical_event == "memory.ingestion.finished"
+        )
+
+        for event, operation, retry_count in (
+            (recall, "open_session", 0),
+            (queued, "ingest_turn", 0),
+            (finished, "ingest_turn", 1),
+        ):
+            assert event.attributes["memory_plugin_id"] == "mem0"
+            assert event.attributes["memory_plugin_version"] == "1.0.0"
+            assert (
+                event.attributes["memory_plugin_api_version"]
+                == "assistant_memory_plugin_v1"
+            )
+            assert event.attributes["memory_plugin_operation"] == operation
+            assert event.attributes["memory_plugin_retry_count"] == retry_count
+        assert finished.attributes["memory_plugin_issue_codes"] == ["plugin.retry"]
+        assert finished.attributes["change_counts"] == {"updated": 1}
+
+        serialized = [event.model_dump(mode="json") for event in events]
+        assert all("remote-detail-sentinel" not in repr(event) for event in serialized)
+        assert all(
+            "private-user-body-sentinel" not in repr(event) for event in serialized
+        )
+        assert all(
+            "private-assistant-body-sentinel" not in repr(event) for event in serialized
+        )
+        assert all("handle-sentinel" not in repr(event) for event in serialized)
+    finally:
+        host.close(timeout=1.0)
+
+
+def test_plugin_observability_failure_is_fail_open_for_host_lifecycle() -> None:
+    plugin = ScriptedIngestionMemoryPlugin()
+    host, _ = _host(plugin)
+    state = _completed_state()
+    trace_store = ExplodingTraceStore()
+
+    try:
+        opened = host.open_session(
+            identity=_identity(),
+            state=state,
+            trace_store=trace_store,  # type: ignore[arg-type]
+        )
+        prepared = host.prepare_context(
+            state=state,
+            trace_store=trace_store,  # type: ignore[arg-type]
+            cancel_token=None,
+        )
+        assert host.schedule_ingestion(
+            state=state,
+            trace_store=trace_store,  # type: ignore[arg-type]
+        )
+        assert host.drain(timeout=1.0)
+
+        assert opened.status == "ready"
+        assert prepared.status == "succeeded"
+        assert len(plugin.requests) == 1
+    finally:
+        host.close(timeout=1.0)
+
+
+def _descriptor(
+    *,
+    supports_context_refresh: bool = True,
+    supports_idempotent_ingestion: bool = True,
+) -> MemoryPluginDescriptor:
     return MemoryPluginDescriptor(
         plugin_id="mem0",
         plugin_version="1.0.0",
@@ -1125,17 +1680,18 @@ def _descriptor(*, supports_context_refresh: bool = True) -> MemoryPluginDescrip
             supports_session_recall=True,
             supports_turn_ingestion=True,
             supports_context_refresh=supports_context_refresh,
-            supports_idempotent_ingestion=True,
+            supports_idempotent_ingestion=supports_idempotent_ingestion,
         ),
     )
 
 
 def _host(
-    plugin: RecordingMemoryPlugin,
+    plugin: Any,
     *,
     session_store: MemoryPluginSessionStore | None = None,
     media_store: ManagedMemoryMediaStore | None = None,
     execution_policy: MemoryPluginExecutionPolicy | None = None,
+    ingestion_queue: MemoryIngestionQueue | None = None,
 ) -> tuple[MemoryPluginHost, ManagedMemoryMediaStore]:
     registry = MemoryPluginRegistry(
         records=[
@@ -1156,6 +1712,7 @@ def _host(
             registry=registry,
             session_store=session_store or MemoryPluginSessionStore(),
             media_store=resolved_media_store,
+            ingestion_queue=ingestion_queue,
             execution_policy=execution_policy or MemoryPluginExecutionPolicy(),
             identity_namespace="assistant-agent",
             clock=lambda: NOW,
@@ -1195,6 +1752,25 @@ def _state(
         trace_id=f"trace-{run_id}",
         agent_id="assistant-default",
     )
+
+
+def _completed_state(
+    *,
+    run_id: str = "run-sentinel",
+    user_id: str = "user-sentinel",
+    session_id: str = "session-sentinel",
+    turn_index: int | str = 1,
+    text: str = "request-sentinel",
+) -> AgentState:
+    state = _state(
+        run_id=run_id,
+        user_id=user_id,
+        session_id=session_id,
+        metadata={"conversation_turn_index": turn_index},
+        text=text,
+    )
+    state.set_response(AgentResponse(message="response-sentinel"))
+    return state
 
 
 def _item(
