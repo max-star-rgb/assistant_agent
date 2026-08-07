@@ -7,7 +7,7 @@ from datetime import datetime
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from assistant_agent.identity import RequestIdentity
 from assistant_agent.memory.plugins.contracts import MemoryContextItem
@@ -21,6 +21,8 @@ class LongTermMemory(MemoryContextItem):
 
 class SessionMemorySnapshot(BaseModel):
     """Structured long-term memories frozen for one session."""
+
+    model_config = ConfigDict(extra="forbid")
 
     memories: list[MemoryContextItem] = Field(default_factory=list)
     plugin_id: str | None = Field(default=None, min_length=1, max_length=128)

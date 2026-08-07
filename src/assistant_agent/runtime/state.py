@@ -44,6 +44,11 @@ class AgentState(BaseModel):
     execution_strategy: ExecutionStrategyName = "react"
 
     session_memory_snapshot: SessionMemorySnapshot | None = None
+    frozen_memory_context: SessionMemorySnapshot | None = Field(
+        default=None,
+        exclude=True,
+    )
+    memory_context_prepared: bool = False
     context_source_result: ContextSourceResult = Field(default_factory=ContextSourceResult)
     perception: PerceptionBundle | None = None
     intent: IntentResult | None = None

@@ -11,6 +11,17 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator
 
 
 MemoryModality: TypeAlias = Literal["image", "audio", "video", "document"]
+MemoryPluginHostIssueCode: TypeAlias = Literal[
+    "memory_plugin_timeout",
+    "memory_plugin_unavailable",
+    "memory_plugin_invalid_result",
+    "memory_plugin_internal_error",
+]
+
+MEMORY_PLUGIN_TIMEOUT = "memory_plugin_timeout"
+MEMORY_PLUGIN_UNAVAILABLE = "memory_plugin_unavailable"
+MEMORY_PLUGIN_INVALID_RESULT = "memory_plugin_invalid_result"
+MEMORY_PLUGIN_INTERNAL_ERROR = "memory_plugin_internal_error"
 
 
 class _FrozenMemoryModel(BaseModel):
