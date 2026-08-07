@@ -203,7 +203,10 @@ def record_ingestion_finished(
         and source_turn
         and resolved.user_id
         and resolved.session_id
-        and all(isinstance(change, Mem0MemoryChange) for change in resolved_changes)
+        and all(
+            isinstance(change, (Mem0MemoryChange, MemoryChange))
+            for change in resolved_changes
+        )
     ):
         try:
             (content_store or get_default_memory_trace_content_store()).put(
@@ -215,11 +218,7 @@ def record_ingestion_finished(
                     source_turn=source_turn,
                     user_text=source_user_text,
                     assistant_text=source_assistant_text,
-                    changes=[
-                        change
-                        for change in resolved_changes
-                        if isinstance(change, Mem0MemoryChange)
-                    ],
+                    changes=resolved_changes,
                 )
             )
             content_capture_status = "captured"

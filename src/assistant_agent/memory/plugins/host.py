@@ -820,6 +820,12 @@ class MemoryPluginHost:
             ):
                 state.request.metadata["memory_ingestion"] = {"status": "skipped"}
                 return False
+            if record.status == "unavailable":
+                state.request.metadata["memory_ingestion"] = {
+                    "status": "skipped",
+                    "reason": "memory_plugin_unavailable",
+                }
+                return False
             scheduled = self._scheduled_ingestion(
                 state=state,
                 record=record,
@@ -1479,6 +1485,10 @@ class MemoryPluginHost:
             latency_ms=max(0, int((perf_counter() - started) * 1000)),
             changes=changes,
             source_turn=scheduled.request.idempotency_key[:24],
+            source_user_text=scheduled.request.turn.user_message.text,
+            source_assistant_text=(
+                scheduled.request.turn.assistant_message.text
+            ),
             error_code=failure_code if result is None else None,
             memory_plugin_id=scheduled.plugin_id,
             memory_plugin_version=scheduled.plugin_version,

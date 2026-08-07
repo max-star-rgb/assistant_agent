@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from threading import Event
+from time import sleep
 from typing import Any
 
 import pytest
@@ -24,6 +27,7 @@ from assistant_agent.memory.plugins.builtin.mem0 import (
     Mem0MemoryPlugin,
     default_memory_plugin_factories,
 )
+from assistant_agent.memory.plugins.assembly import MemoryPluginAssemblyError
 from assistant_agent.memory.plugins.contracts import (
     CompletedMemoryTurn,
     MemoryBudgetHint,
@@ -31,6 +35,7 @@ from assistant_agent.memory.plugins.contracts import (
     MemoryIdentity,
     MemoryMessage,
     MemoryPluginBuildContext,
+    MemoryPluginExecutionPolicy,
     MemorySessionCloseRequest,
     MemorySessionOpenRequest,
     MemoryTurnIngestionRequest,
@@ -46,6 +51,10 @@ from assistant_agent.memory.plugins.registry import (
     MemoryPluginRegistry,
 )
 from assistant_agent.memory.plugins.session_store import MemoryPluginSessionStore
+from assistant_agent.memory.trace_content import (
+    get_default_memory_trace_content_store,
+)
+from assistant_agent.observability.trace_store import InMemoryTraceStore
 from assistant_agent.runtime.requests import AgentResponse, UserRequest
 from assistant_agent.runtime.state import AgentState
 
@@ -82,6 +91,27 @@ class ExplodingIngestionMem0Client(RecordingMem0Client):
     def ingest_completed_turn(self, turn: Any) -> Mem0IngestionResult:
         self.ingested_turns.append(turn)
         raise RuntimeError("provider-secret-sentinel")
+
+
+class SlowIngestionMem0Client(RecordingMem0Client):
+    def ingest_completed_turn(self, turn: Any) -> Mem0IngestionResult:
+        self.ingested_turns.append(turn)
+        sleep(0.05)
+        return self.ingestion_result
+
+
+class BlockingIngestionMem0Client(RecordingMem0Client):
+    def __init__(self) -> None:
+        super().__init__(memories=[])
+        self.started = Event()
+        self.release = Event()
+
+    def ingest_completed_turn(self, turn: Any) -> Mem0IngestionResult:
+        self.ingested_turns.append(turn)
+        self.started.set()
+        if not self.release.wait(1.0):
+            raise TimeoutError("blocking-ingestion-timeout")
+        return self.ingestion_result
 
 
 class RejectingSecretResolver:
@@ -157,7 +187,11 @@ def _build_context(provider_mode: str) -> MemoryPluginBuildContext:
     )
 
 
-def _host_for_plugin(plugin: Mem0MemoryPlugin) -> MemoryPluginHost:
+def _host_for_plugin(
+    plugin: Mem0MemoryPlugin,
+    *,
+    execution_policy: MemoryPluginExecutionPolicy | None = None,
+) -> MemoryPluginHost:
     registry = MemoryPluginRegistry(
         records=[
             MemoryPluginRegistrationRecord(
@@ -174,6 +208,7 @@ def _host_for_plugin(plugin: Mem0MemoryPlugin) -> MemoryPluginHost:
         session_store=MemoryPluginSessionStore(),
         media_store=ManagedMemoryMediaStore(max_total_bytes=1024),
         ingestion_queue=MemoryIngestionQueue(max_workers=1, max_pending=2),
+        execution_policy=execution_policy,
         clock=lambda: NOW,
     )
 
@@ -269,9 +304,17 @@ def test_mem0_plugin_ingestion_maps_native_changes_and_private_turn() -> None:
     )
     plugin = Mem0MemoryPlugin(client=client)
 
-    result = plugin.ingest_turn(_ingestion_request())
+    request = _ingestion_request()
+    result = plugin.ingest_turn(request)
+    repeated = plugin.ingest_turn(
+        request.model_copy(
+            update={"deadline": request.deadline + timedelta(seconds=1)}
+        )
+    )
 
     assert result.status == "accepted"
+    assert repeated == result
+    assert len(client.ingested_turns) == 1
     assert [change.model_dump() for change in result.changes] == [
         {
             "operation": "created",
@@ -448,34 +491,144 @@ def test_mem0_plugin_ingestion_maps_native_failure_to_a_safe_issue() -> None:
     )
     plugin = Mem0MemoryPlugin(client=client)
 
-    result = plugin.ingest_turn(_ingestion_request())
+    request = _ingestion_request()
+    result = plugin.ingest_turn(request)
+    repeated = plugin.ingest_turn(request)
 
     assert result.status == "failed"
+    assert repeated == result
+    assert len(client.ingested_turns) == 1
     assert result.changes == []
     assert [issue.code for issue in result.issues] == [
         "mem0_ingestion_failed"
     ]
+    assert result.issues[0].recoverable is False
 
 
 def test_mem0_plugin_ingestion_contains_an_adapter_exception() -> None:
     """Leaking a private adapter exception across the Plugin API must fail."""
 
-    plugin = Mem0MemoryPlugin(
-        client=ExplodingIngestionMem0Client(memories=[])
-    )
+    client = ExplodingIngestionMem0Client(memories=[])
+    plugin = Mem0MemoryPlugin(client=client)
 
-    result = plugin.ingest_turn(_ingestion_request())
+    request = _ingestion_request()
+    result = plugin.ingest_turn(request)
+    repeated = plugin.ingest_turn(request)
 
     assert result.status == "failed"
+    assert repeated == result
+    assert len(client.ingested_turns) == 1
     assert result.changes == []
     assert [issue.model_dump() for issue in result.issues] == [
         {
             "code": "mem0_ingestion_failed",
             "message": "mem0_ingestion_failed",
-            "recoverable": True,
+            "recoverable": False,
             "retry_after_seconds": None,
         }
     ]
+
+
+def test_mem0_host_timeout_retry_reuses_the_terminal_outcome() -> None:
+    """A Host timeout retry must not issue a second native write."""
+
+    client = SlowIngestionMem0Client(
+        memories=[],
+        ingestion_result=Mem0IngestionResult(
+            accepted=True,
+            changes=[
+                Mem0MemoryChange(
+                    memory_id="memory-timeout-sentinel",
+                    memory="timeout-content-sentinel",
+                    event="ADD",
+                )
+            ],
+        ),
+    )
+    host = _host_for_plugin(
+        Mem0MemoryPlugin(client=client),
+        execution_policy=MemoryPluginExecutionPolicy(
+            ingest_turn_timeout_seconds=0.01
+        ),
+    )
+    state = _completed_state()
+    identity = RequestIdentity.for_user(
+        user_id=state.user_id,
+        agent_id=state.agent_id,
+        session_id=state.session_id,
+    )
+    trace_store = InMemoryTraceStore()
+
+    try:
+        host.open_session(
+            identity=identity,
+            state=state,
+            trace_store=trace_store,
+        )
+        assert host.schedule_ingestion(
+            state=state,
+            trace_store=trace_store,
+        )
+        assert host.drain(timeout=1.0)
+
+        finished = next(
+            event
+            for event in trace_store.list_by_run(state.run_id)
+            if event.canonical_event == "memory.ingestion.finished"
+        )
+        assert len(client.ingested_turns) == 1
+        assert finished.status == "succeeded"
+        assert finished.attributes["memory_plugin_retry_count"] == 1
+    finally:
+        assert host.close(timeout=1.0)
+
+
+def test_mem0_plugin_singleflights_concurrent_duplicate_keys() -> None:
+    """Concurrent duplicates must share the same native write and outcome."""
+
+    client = BlockingIngestionMem0Client()
+    plugin = Mem0MemoryPlugin(client=client)
+    request = _ingestion_request()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(plugin.ingest_turn, request)
+        try:
+            assert client.started.wait(0.5)
+            second = executor.submit(plugin.ingest_turn, request)
+            sleep(0.02)
+            assert len(client.ingested_turns) == 1
+        finally:
+            client.release.set()
+
+        assert first.result(timeout=0.5).status == "accepted"
+        assert second.result(timeout=0.5) == first.result(timeout=0.5)
+        assert len(client.ingested_turns) == 1
+
+
+def test_mem0_plugin_ledger_fails_closed_at_capacity_and_clears_on_close() -> None:
+    """The bounded ledger must reject new writes until session cleanup."""
+
+    client = RecordingMem0Client(memories=[])
+    plugin = Mem0MemoryPlugin(client=client, max_ingestion_records=1)
+    first_request = _ingestion_request()
+    second_request = first_request.model_copy(
+        update={"idempotency_key": "second-source-turn-sentinel"}
+    )
+
+    assert plugin.ingest_turn(first_request).status == "accepted"
+    rejected = plugin.ingest_turn(second_request)
+    repeated_rejection = plugin.ingest_turn(second_request)
+
+    assert rejected.status == "failed"
+    assert repeated_rejection.status == "failed"
+    assert [issue.code for issue in rejected.issues] == [
+        "mem0_ingestion_ledger_full"
+    ]
+    assert len(client.ingested_turns) == 1
+
+    assert plugin.close_session(_close_request()).status == "closed"
+    assert plugin.ingest_turn(second_request).status == "accepted"
+    assert len(client.ingested_turns) == 2
 
 
 def test_mem0_plugin_prepare_context_does_not_repeat_session_recall() -> None:
@@ -687,6 +840,15 @@ def test_default_composition_root_seals_offline_mem0_without_network(
         assert report.records[0].source == "builtin:mem0"
         assert snapshot.status == "unavailable"
         assert snapshot.error_codes == ["mem0_recall_failed"]
+        assert service.enqueue_completed_turn(
+            state=state,
+            trace_store=None,
+        ) is False
+        assert state.request.metadata["memory_ingestion"] == {
+            "status": "skipped",
+            "reason": "memory_plugin_unavailable",
+        }
+        assert service.ingestion_queue.pending_count == 0
     finally:
         assert service.close(timeout=1.0) is True
 
@@ -737,3 +899,115 @@ def test_explicit_mem0_module_config_replaces_the_builtin_candidate(
         ]
     finally:
         assert service.close(timeout=1.0) is True
+
+
+def test_explicit_mem0_config_rejects_plaintext_api_key(
+    tmp_path: Path,
+) -> None:
+    """A persisted plaintext Mem0 credential must fail closed and stay redacted."""
+
+    plaintext_secret = "plaintext-secret-sentinel"
+    config_path = tmp_path / "memory-plugins-plaintext.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "assistant_memory_plugins_v1",
+                "slot": "mem0",
+                "plugins": {
+                    "mem0": {
+                        "enabled": True,
+                        "module": (
+                            "assistant_agent.memory.plugins.builtin.mem0"
+                        ),
+                        "config": {
+                            "base_url": "http://memory.invalid",
+                            "api_key": plaintext_secret,
+                        },
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(MemoryPluginAssemblyError) as captured:
+        create_long_term_memory_service(
+            ProviderConfig(
+                provider_mode="mock",
+                memory_plugin_config_path=str(config_path),
+            )
+        )
+
+    issue_codes = [issue.code for issue in captured.value.report.issues]
+    assert issue_codes == ["memory_plugin_config_invalid"]
+    assert plaintext_secret not in str(captured.value)
+    assert plaintext_secret not in captured.value.report.model_dump_json()
+
+
+def test_mem0_local_trace_overlay_keeps_turn_text_out_of_canonical_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Local-only Mem0 content must survive the standard result projection."""
+
+    monkeypatch.setenv("MULTIMODAL_AGENT_LOCAL_MEMORY_TRACE_CONTENT", "1")
+    client = RecordingMem0Client(
+        memories=[],
+        ingestion_result=Mem0IngestionResult(
+            accepted=True,
+            changes=[
+                Mem0MemoryChange(
+                    memory_id="memory-overlay-sentinel",
+                    memory="private-memory-text-sentinel",
+                    event="ADD",
+                )
+            ],
+        ),
+    )
+    host = _host_for_plugin(Mem0MemoryPlugin(client=client))
+    state = _completed_state()
+    identity = RequestIdentity.for_user(
+        user_id=state.user_id,
+        agent_id=state.agent_id,
+        session_id=state.session_id,
+    )
+    trace_store = InMemoryTraceStore()
+
+    try:
+        host.open_session(
+            identity=identity,
+            state=state,
+            trace_store=trace_store,
+        )
+        assert host.schedule_ingestion(
+            state=state,
+            trace_store=trace_store,
+        )
+        assert host.drain(timeout=1.0)
+
+        content = get_default_memory_trace_content_store().get(
+            trace_id=state.trace_id,
+            run_id=state.run_id,
+        )
+        finished = next(
+            event
+            for event in trace_store.list_by_run(state.run_id)
+            if event.canonical_event == "memory.ingestion.finished"
+        )
+        assert content is not None
+        assert content.user_text == "request-sentinel"
+        assert content.assistant_text == "response-sentinel"
+        assert content.changes[0].model_dump(mode="json") == {
+            "operation": "created",
+            "memory_id": "memory-overlay-sentinel",
+            "memory_type": "long_term",
+        }
+        assert "private-memory-text-sentinel" not in content.model_dump_json()
+        assert finished.attributes["content_capture_status"] == "captured"
+        assert "private-memory-text-sentinel" not in finished.model_dump_json()
+        assert "request-sentinel" not in finished.model_dump_json()
+        assert "response-sentinel" not in finished.model_dump_json()
+        assert finished.attributes["memory_ids"] == [
+            "memory-overlay-sentinel"
+        ]
+    finally:
+        assert host.close(timeout=1.0)

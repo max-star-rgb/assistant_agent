@@ -2,9 +2,18 @@
 
 from __future__ import annotations
 
+import hashlib
+from dataclasses import dataclass, field
+from threading import Event, Lock
 from typing import Protocol
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    field_validator,
+)
 
 from assistant_agent.config import ProviderConfig
 from assistant_agent.memory.mem0.client import Mem0Client, UnavailableMem0Client
@@ -48,11 +57,25 @@ MEM0_MEMORY_PLUGIN_DESCRIPTOR = MemoryPluginDescriptor(
 class Mem0MemoryPluginConfig(BaseModel):
     """Validated, secret-safe inputs for constructing the Mem0 adapter."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        hide_input_in_errors=True,
+    )
 
     base_url: SecretStr | str | None = None
     api_key: SecretStr | None = None
     timeout_seconds: float = Field(default=5.0, gt=0.0)
+
+    @field_validator("api_key", mode="before")
+    @classmethod
+    def api_key_must_be_a_resolved_secret(
+        cls,
+        value: object,
+    ) -> SecretStr | None:
+        if value is None or isinstance(value, SecretStr):
+            return value
+        raise ValueError("memory_plugin_secret_reference_required")
 
 
 class _Mem0ClientAdapter(Protocol):
@@ -67,13 +90,43 @@ class _Mem0ClientAdapter(Protocol):
     ) -> Mem0IngestionResult: ...
 
 
+@dataclass
+class _Mem0IngestionRecord:
+    """One process-local singleflight and terminal idempotency record."""
+
+    memory_session_id: str
+    request_fingerprint: str
+    completed: Event = field(default_factory=Event)
+    result: MemoryTurnIngestionResult | None = None
+
+
 class Mem0MemoryPlugin:
-    """Translate the standard Memory Plugin API to the private Mem0 client."""
+    """Translate the standard API and deduplicate writes within one process.
+
+    Idempotency is scoped to an open Host session.  It protects the Host's
+    automatic retry from issuing a second native POST; it is not a durable
+    promise across process restart.
+    """
 
     descriptor = MEM0_MEMORY_PLUGIN_DESCRIPTOR
+    _DEFAULT_MAX_INGESTION_RECORDS = 4096
 
-    def __init__(self, *, client: _Mem0ClientAdapter) -> None:
+    def __init__(
+        self,
+        *,
+        client: _Mem0ClientAdapter,
+        max_ingestion_records: int = _DEFAULT_MAX_INGESTION_RECORDS,
+    ) -> None:
+        if (
+            isinstance(max_ingestion_records, bool)
+            or not isinstance(max_ingestion_records, int)
+            or max_ingestion_records <= 0
+        ):
+            raise ValueError("max_ingestion_records must be a positive integer")
         self._client = client
+        self._max_ingestion_records = max_ingestion_records
+        self._ingestion_lock = Lock()
+        self._ingestion_records: dict[str, _Mem0IngestionRecord] = {}
 
     def open_session(
         self,
@@ -88,12 +141,18 @@ class Mem0MemoryPlugin:
         try:
             memories = self._client.recall_long_term_memory(identity)
         except Exception:
+            configured = bool(getattr(self._client, "configured", True))
             return MemorySessionOpenResult(
-                status="unavailable",
+                status="degraded" if configured else "unavailable",
                 initial_contribution=MemoryContextContribution(
                     status="unavailable"
                 ),
-                issues=[_issue("mem0_recall_failed", recoverable=True)],
+                issues=[
+                    _issue(
+                        "mem0_recall_failed",
+                        recoverable=configured,
+                    )
+                ],
             )
         return MemorySessionOpenResult(
             status="ready",
@@ -113,26 +172,71 @@ class Mem0MemoryPlugin:
         request: MemoryTurnIngestionRequest,
     ) -> MemoryTurnIngestionResult:
         request.cancellation.raise_if_cancelled()
+        request_fingerprint = hashlib.sha256(
+            request.model_dump_json(
+                exclude={"cancellation", "deadline"}
+            ).encode("utf-8")
+        ).hexdigest()
+        with self._ingestion_lock:
+            record = self._ingestion_records.get(request.idempotency_key)
+            if record is None:
+                if len(self._ingestion_records) >= self._max_ingestion_records:
+                    return _ingestion_failure("mem0_ingestion_ledger_full")
+                record = _Mem0IngestionRecord(
+                    memory_session_id=request.memory_session_id,
+                    request_fingerprint=request_fingerprint,
+                )
+                self._ingestion_records[request.idempotency_key] = record
+                owns_write = True
+            else:
+                owns_write = False
+                if (
+                    record.memory_session_id != request.memory_session_id
+                    or record.request_fingerprint != request_fingerprint
+                ):
+                    return _ingestion_failure("mem0_idempotency_conflict")
+
+        if not owns_write:
+            record.completed.wait()
+            with self._ingestion_lock:
+                cached = record.result
+            return (
+                cached.model_copy(deep=True)
+                if cached is not None
+                else _ingestion_failure("mem0_ingestion_failed")
+            )
+
+        result = _ingestion_failure("mem0_ingestion_failed")
+        try:
+            result = self._ingest_once(request)
+        except Exception:
+            result = _ingestion_failure("mem0_ingestion_failed")
+        finally:
+            # Publish even if a non-standard BaseException escapes, otherwise
+            # concurrent duplicates could wait forever on this singleflight.
+            with self._ingestion_lock:
+                record.result = result.model_copy(deep=True)
+                record.completed.set()
+        return result
+
+    def _ingest_once(
+        self,
+        request: MemoryTurnIngestionRequest,
+    ) -> MemoryTurnIngestionResult:
         identity = Mem0Identity(
             user_id=request.identity.user_id,
             agent_id=request.identity.agent_id,
             run_id=request.identity.session_id,
         )
-        try:
-            native = self._client.ingest_completed_turn(
-                Mem0CompletedTurn(
-                    identity=identity,
-                    user_text=request.turn.user_message.text,
-                    assistant_text=request.turn.assistant_message.text,
-                    occurred_at=request.turn.occurred_at,
-                    source_turn=request.idempotency_key,
-                )
+        native = self._client.ingest_completed_turn(
+            Mem0CompletedTurn(
+                identity=identity,
+                user_text=request.turn.user_message.text,
+                assistant_text=request.turn.assistant_message.text,
+                occurred_at=request.turn.occurred_at,
+                source_turn=request.idempotency_key,
             )
-        except Exception:
-            return MemoryTurnIngestionResult(
-                status="failed",
-                issues=[_issue("mem0_ingestion_failed", recoverable=True)],
-            )
+        )
         operations = {
             "ADD": "created",
             "UPDATE": "updated",
@@ -156,7 +260,7 @@ class Mem0MemoryPlugin:
                 for change in native.changes or []
             ],
             issues=(
-                [_issue("mem0_ingestion_failed", recoverable=True)]
+                [_issue("mem0_ingestion_failed", recoverable=False)]
                 if native.errors or not native.accepted
                 else []
             ),
@@ -174,6 +278,16 @@ class Mem0MemoryPlugin:
         request: MemorySessionCloseRequest,
     ) -> MemorySessionCloseResult:
         request.cancellation.raise_if_cancelled()
+        with self._ingestion_lock:
+            # The Host drains accepted session work before invoking close.
+            completed_keys = [
+                key
+                for key, record in self._ingestion_records.items()
+                if record.memory_session_id == request.memory_session_id
+                and record.completed.is_set()
+            ]
+            for key in completed_keys:
+                self._ingestion_records.pop(key, None)
         return MemorySessionCloseResult(status="closed")
 
 
@@ -244,6 +358,13 @@ def _issue(code: str, *, recoverable: bool) -> MemoryPluginIssue:
         code=code,
         message=code,
         recoverable=recoverable,
+    )
+
+
+def _ingestion_failure(code: str) -> MemoryTurnIngestionResult:
+    return MemoryTurnIngestionResult(
+        status="failed",
+        issues=[_issue(code, recoverable=False)],
     )
 
 

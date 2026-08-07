@@ -9,6 +9,7 @@ from typing import Protocol
 from pydantic import BaseModel, Field
 
 from assistant_agent.memory.mem0.models import Mem0MemoryChange
+from assistant_agent.memory.plugins.contracts import MemoryChange
 
 
 class MemoryIngestionTraceContent(BaseModel):
@@ -21,7 +22,7 @@ class MemoryIngestionTraceContent(BaseModel):
     source_turn: str = Field(min_length=1)
     user_text: str | None = None
     assistant_text: str | None = None
-    changes: list[Mem0MemoryChange] = Field(default_factory=list)
+    changes: list[Mem0MemoryChange | MemoryChange] = Field(default_factory=list)
 
 
 class MemoryTraceContentStore(Protocol):
