@@ -223,11 +223,12 @@ def test_automatic_context_contains_only_short_skill_activation_summary() -> Non
     assert pack.active_skill_ids == ["travel-tool-orchestration"]
     assert len(summary.content) < 300
     assert "load_skill" not in summary.content
-    assert "地图地点和普通周边分布使用高德" not in summary.content
+    assert "完整旅行行程" in summary.content
+    assert "OTA" in summary.content
     assert summary.content.startswith("# 可用 Skill")
 
 
-def test_load_skill_returns_full_workflow_and_registered_references() -> None:
+def test_load_skill_returns_complete_travel_planning_workflow() -> None:
     result = _run_governed(
         "load_skill",
         {"skill_id": "travel-tool-orchestration"},
@@ -237,55 +238,18 @@ def test_load_skill_returns_full_workflow_and_registered_references() -> None:
     assert result.data is not None
     assert result.model_observation is not None
     assert result.model_observation["skill_id"] == "travel-tool-orchestration"
-    assert result.model_observation["reference_ids"] == [
-        "recovery-and-edge-cases"
-    ]
+    assert result.model_observation["reference_ids"] == []
     assert "content" not in result.model_observation
-    assert result.data["content"].startswith("# 旅行问题解决与工具编排")
-    assert "把请求拆成独立的证据目标" in result.data["content"]
+    assert result.data["content"].startswith("# 旅行决策与行程编排")
+    assert "Provider-native 联网搜索" in result.data["content"]
+    assert "按天、按时间段" in result.data["content"]
+    assert "已核验信息" in result.data["content"]
+    assert "攻略性建议" in result.data["content"]
+    assert "待确认事项" in result.data["content"]
     assert "## Decision Rules" in result.data["content"]
     assert "## Procedure" in result.data["content"]
     assert "## Pitfalls" in result.data["content"]
     assert "## Verification" in result.data["content"]
-
-
-def test_load_skill_reference_returns_only_registered_reference_content() -> None:
-    registry = create_default_registry()
-    state = AgentState.from_request(
-        UserRequest(
-            user_id="skill-user",
-            session_id="skill-session",
-            text="执行 sentinel-84-reference",
-        )
-    )
-    loaded = _run_governed(
-        "load_skill",
-        {"skill_id": "travel-tool-orchestration"},
-        registry=registry,
-        state=state,
-    )
-    assert loaded.success is True
-
-    result = _run_governed(
-        "load_skill_reference",
-        {
-            "skill_id": "travel-tool-orchestration",
-            "reference_id": "recovery-and-edge-cases",
-        },
-        registry=registry,
-        state=state,
-    )
-
-    assert result.success is True
-    assert result.data is not None
-    assert result.model_observation is not None
-    assert result.model_observation["skill_id"] == "travel-tool-orchestration"
-    assert (
-        result.model_observation["reference_id"]
-        == "recovery-and-edge-cases"
-    )
-    assert "content" not in result.model_observation
-    assert "旅行编排恢复与边界" in result.data["content"]
 
 
 def test_load_skill_reference_requires_successful_load_in_same_run() -> None:
@@ -293,7 +257,7 @@ def test_load_skill_reference_requires_successful_load_in_same_run() -> None:
         "load_skill_reference",
         {
             "skill_id": "travel-tool-orchestration",
-            "reference_id": "recovery-and-edge-cases",
+            "reference_id": "missing-reference",
         },
     )
 
@@ -365,7 +329,7 @@ def test_successful_load_skill_is_promoted_from_registered_source() -> None:
         for section in pack.context_sections
     )
     assert body.authority == "procedural_guidance"
-    assert body.content.startswith("# 旅行问题解决与工具编排")
+    assert body.content.startswith("# 旅行决策与行程编排")
     assert "## Decision Rules" in body.content
     assert "## Procedure" in body.content
     assert "observation-injection-sentinel" not in body.content
@@ -393,48 +357,6 @@ def test_supported_provider_compiles_loaded_skill_as_developer_message() -> None
         "role": "developer",
         "content": body.content,
     }
-
-
-def test_successful_reference_load_is_promoted_from_registered_source() -> None:
-    registry = create_default_registry()
-    state = AgentState.from_request(
-        UserRequest(
-            user_id="skill-user",
-            session_id="skill-session",
-            text="执行 sentinel-86-reference",
-        )
-    )
-    loaded = _run_governed(
-        "load_skill",
-        {"skill_id": "travel-tool-orchestration"},
-        registry=registry,
-        state=state,
-    )
-    assert loaded.success is True
-    result = _run_governed(
-        "load_skill_reference",
-        {
-            "skill_id": "travel-tool-orchestration",
-            "reference_id": "recovery-and-edge-cases",
-        },
-        registry=registry,
-        state=state,
-    )
-    assert result.model_observation is not None
-    result.model_observation["content"] = "reference-injection-sentinel"
-    observation = observation_from_tool_result(result).model_dump(mode="json")
-
-    pack = _pack_with_observation(observation)
-
-    reference = next(
-        section
-        for section in pack.context_sections
-        if section.kind == "skill_reference"
-    )
-    assert reference.authority == "procedural_guidance"
-    assert "旅行编排恢复与边界" in reference.content
-    assert "reference-injection-sentinel" not in reference.content
-    assert reference.content in _compile_system(pack)
 
 
 def test_skill_loader_rejects_symlinked_skill_directory(tmp_path: Path) -> None:

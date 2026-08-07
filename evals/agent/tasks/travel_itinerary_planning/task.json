@@ -1,0 +1,13 @@
+{
+  "id": "travel_itinerary_planning",
+  "description": "Agent 应综合住宿价格、关键通勤、抵离时间和慢节奏偏好，生成可执行的多日旅行行程并诚实标记未核验运营信息。",
+  "capability": "constraint_aware_multi_day_itinerary",
+  "request": {
+    "user_id": "eval-travel-itinerary-user",
+    "session_id": "eval-travel-itinerary-session",
+    "text": "我和父母三位成人住一间房，2026年10月2日10:30到杭州东站，10月5日17:00从杭州东站返程。酒店每晚不超过900元，想去西湖、灵隐寺和中国丝绸博物馆，节奏不要太赶。请比较酒店和关键通勤，推荐一个并附OTA链接，再按每天上午、下午、晚上排完整行程。开放和预约信息能核验就附来源，核验不到就明确写待确认。"
+  },
+  "environment": "evals.agent.tasks.travel_itinerary_planning.environment:TravelItineraryPlanningEnvironment",
+  "grader": "evals.agent.tasks.travel_itinerary_planning.grader:grade",
+  "tags": ["readonly", "travel", "skill", "lodging", "amap", "itinerary", "multi-tool"]
+}

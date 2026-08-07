@@ -219,6 +219,10 @@ rubric、长依赖说明或其他 oracle，也不能把 Langfuse Dataset 当作�
   受控工具目录和确定性住宿依赖；校准反例保留正确住宿回答但省略 Skill 加载，使
   `tool_execution=false`，从而把内部工作流加载与回答质量分开判断。正式 Experiment 还应在 Trace
   中确认 `load_skill` 发生在住宿业务工具之前。
+- `travel_itinerary_planning`：面对包含三位成人住宿、预算、抵离时间、父母慢节奏和三个必去地点的
+  四日旅行请求，Agent 必须加载旅行 Skill，比较受控酒店报价与关键通勤，再生成按天、按时间段的
+  可执行行程。Environment 提供确定性住宿、地理编码和公交路线证据；grader 同时检查抵返缓冲、
+  OTA 边界，以及没有可识别网页或远期天气证据时是否把开放、预约和天气诚实列为待确认。
 
 当前网页证据 Task：
 

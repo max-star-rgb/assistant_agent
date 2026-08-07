@@ -44,9 +44,7 @@
                 "status": "succeeded",
                 "summary": "内部工作流已加载。",
                 "skill_id": "travel-tool-orchestration",
-                "reference_ids": [
-                  "recovery-and-edge-cases"
-                ]
+                "reference_ids": []
               }
             }
           },
