@@ -408,9 +408,11 @@ registry，其人读 Markdown 只使用本次 Codex 已归并的问题，避免�
 对话式投影，不生成证据附录，也不显示 issue key、Score/observation/run ID、commit SHA、测试路径或内部
 生命周期术语。唯一例外是每类问题下的“最近的相关记录”：renderer 从本次完整 bundle 中匹配已经通过
 归属校验的真实 `assistant.turn`，按北京时间从近到远列出最多 3 条，明确显示 `session_id` 和 Trace ID，
-并使用 Langfuse Python SDK 的公共 `get_trace_url()` 结果生成一键跳转链接。Codex 不接触、不生成也不复制
-这些 ID 或 URL。URL 获取失败、缺失、不是 `http/https` 或包含用户凭据时，日报保留 Session 与 Trace ID，
-显示“Langfuse 链接暂不可用”，但审计本身继续成功；没有可匹配记录时不显示空列表。
+并以 Langfuse Python SDK 公共 `get_trace_url()` 返回的详情地址为可信基址，确定性转换为 Trace 列表页的
+展开链接。链接保留“排除 `vision.observation`”过滤器，并通过 `peek`、UTC `timestamp` 与
+`peekView=expanded` 直接展开目标 Trace，方便继续查看前后记录。Codex 不接触、不生成也不复制这些 ID
+或 URL。URL 获取失败、缺失、不是 `http/https`、包含用户凭据或地址中的 Trace ID 不匹配时，日报保留
+Session 与 Trace ID，显示“Langfuse 链接暂不可用”，但审计本身继续成功；没有可匹配记录时不显示空列表。
 
 renderer 对自然语言段落设置人读长度预算，定位记录不计入正文预算，但由每类问题最多 3 条的上限控制；
 五个极端长问题的自然语言正文仍不得超过 1,500 字，正常日报目标仍为约 500～1,000 字。完整机器证据仍

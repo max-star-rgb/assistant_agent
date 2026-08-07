@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import Counter
 from datetime import date, timezone
 import re
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlencode, urlsplit, urlunsplit
 from zoneinfo import ZoneInfo
 
 from assistant_agent.observability.runtime_audit.daily_models import (
@@ -43,6 +43,7 @@ _INTERNAL_TERM = re.compile(
 _MARKDOWN_CONTROL = re.compile(r"([\\`*_{}\[\]<>#+()\-.!|])")
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _MAX_ISSUE_TRACE_REFERENCES = 3
+_TRACE_LIST_FILTER = "traceName;stringOptions;;none of;vision.observation"
 
 
 def render_deterministic_report(bundle: RuntimeAuditBundle) -> str:
@@ -343,7 +344,7 @@ def _append_conversational_issues(
                 )
                 session_id = _inline_code(trace.session_id or "未提供")
                 trace_id = _inline_code(trace.trace_id)
-                trace_url = _safe_trace_url(trace.trace_url)
+                trace_url = _trace_list_url(trace)
                 assistant_turn = (
                     f"[`{trace_id}`](<{trace_url}>)"
                     if trace_url is not None
@@ -412,6 +413,32 @@ def _safe_trace_url(value: str | None) -> str | None:
     ):
         return None
     return value
+
+
+def _trace_list_url(trace: LangfuseTraceSnapshot) -> str | None:
+    detail_url = _safe_trace_url(trace.trace_url)
+    if detail_url is None:
+        return None
+    parsed = urlsplit(detail_url)
+    prefix, marker, path_trace_id = parsed.path.rpartition("/traces/")
+    if not marker or unquote(path_trace_id) != trace.trace_id:
+        return None
+    timestamp = (
+        trace.timestamp.astimezone(timezone.utc)
+        .isoformat(timespec="milliseconds")
+        .replace("+00:00", "Z")
+    )
+    query = urlencode(
+        [
+            ("filter", _TRACE_LIST_FILTER),
+            ("peek", trace.trace_id),
+            ("timestamp", timestamp),
+            ("peekView", "expanded"),
+        ]
+    )
+    return urlunsplit(
+        (parsed.scheme, parsed.netloc, f"{prefix}/traces", query, "")
+    )
 
 
 def _safe(value: str) -> str:

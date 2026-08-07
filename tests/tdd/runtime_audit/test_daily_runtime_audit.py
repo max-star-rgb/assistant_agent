@@ -191,7 +191,7 @@ def test_human_daily_report_reads_like_a_direct_reply_without_machine_ids() -> N
     )
 
 
-def test_daily_report_lists_three_latest_assistant_turns_with_native_links() -> None:
+def test_daily_report_lists_three_latest_turns_with_expanded_trace_list_links() -> None:
     """Would fail if a merged issue could not be located in its newest real turns."""
 
     issue = DailyAuditIssue(
@@ -253,13 +253,21 @@ def test_daily_report_lists_three_latest_assistant_turns_with_native_links() -> 
     assert "Session：`session-trace-new`" in markdown
     assert (
         "Assistant turn：[`trace-new`](<https://langfuse.example/"
-        "project/project-1/traces/trace-new>)"
+        "project/project-1/traces?"
+        "filter=traceName%3BstringOptions%3B%3Bnone+of%3Bvision.observation&"
+        "peek=trace-new&timestamp=2026-08-05T11%3A00%3A00.000Z&"
+        "peekView=expanded>)"
     ) in markdown
 
 
 @pytest.mark.parametrize(
     "trace_url",
-    [None, "javascript:alert(1)", "https://user:secret@langfuse.example/traces/trace-1"],
+    [
+        None,
+        "javascript:alert(1)",
+        "https://user:secret@langfuse.example/traces/trace-1",
+        "https://langfuse.example/project/project-1/traces/other-trace",
+    ],
 )
 def test_daily_report_falls_back_when_trace_link_is_missing_or_unsafe(
     trace_url: str | None,
@@ -1470,7 +1478,10 @@ def test_current_bundle_evidence_allows_issue_merge(tmp_path: Path) -> None:
     assert "Session：`session-current`" in markdown
     assert (
         "Assistant turn：[`trace-current`](<https://langfuse.example/"
-        "project/project-1/traces/trace-current>)"
+        "project/project-1/traces?"
+        "filter=traceName%3BstringOptions%3B%3Bnone+of%3Bvision.observation&"
+        "peek=trace-current&timestamp=2026-08-05T12%3A00%3A00.000Z&"
+        "peekView=expanded>)"
     ) in markdown
 
 
