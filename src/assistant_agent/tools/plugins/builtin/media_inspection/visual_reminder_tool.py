@@ -56,7 +56,10 @@ class VisualReminderManageOutput(BaseModel):
 
 class VisualReminderManageTool(ToolBase):
     name = VISUAL_REMINDER_MANAGE_TOOL_NAME
-    description = "创建、查看或取消当前视频连接中的一次性视觉提醒。"
+    description = (
+        "创建、列出或取消当前活动视频连接中的一次性视觉提醒；当后续画面匹配目标时发送"
+        "指定消息，并返回提醒 ID 或当前记录。提醒只在本次连接内有效，不持久化或跨连接重放。"
+    )
     input_schema = VisualReminderManageInput
     output_schema = VisualReminderManageOutput
     category = "write"

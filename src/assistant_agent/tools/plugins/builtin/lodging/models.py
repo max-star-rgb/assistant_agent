@@ -137,26 +137,26 @@ class LodgingSearchResult(BaseModel):
 
 class HotelPriceWatchGoal(BaseModel):
     search: LodgingSearchRequest = Field(
-        description="Structured lodging query repeated by each check.",
+        description="每次查价时重复使用的结构化住宿检索条件。",
     )
     max_nightly_price: float = Field(
         gt=0,
-        description="Notify when the lowest nightly price is at or below this value.",
+        description="最低每晚价不高于此阈值时发送通知。",
     )
     check_interval_s: int = Field(
         default=3600,
         ge=60,
         le=604_800,
-        description="Seconds between bounded price checks.",
+        description="两次查价之间的秒数，范围为 60 到 604800。",
     )
     ends_at: datetime = Field(
-        description="Timezone-aware deadline after which the watch stops.",
+        description="带时区的监控截止时间；超过后停止查价。",
     )
     notification_channel: str = Field(
         default="mock_app",
         min_length=1,
         max_length=80,
-        description="Configured transport-neutral notification channel.",
+        description="已配置的传输无关通知通道标识。",
     )
 
     @model_validator(mode="after")

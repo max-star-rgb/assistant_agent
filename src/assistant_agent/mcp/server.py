@@ -50,24 +50,28 @@ class OfflineMCPServer:
         return [
             {
                 "name": "agent_run",
-                "description": "Run AgentGraphRuntime with mock/local defaults.",
+                "description": (
+                    "使用 mock/local 配置运行一次完整 AgentGraphRuntime 请求；可携带文本和"
+                    "媒体引用，返回运行状态、回复、工具序列、标识及已清理错误。仅用于离线"
+                    "开发与验证，不调用真实 Provider。"
+                ),
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "user_id": {"type": "string", "description": "User id for isolation."},
-                        "session_id": {"type": "string", "description": "Session id for conversation state."},
-                        "text": {"type": "string", "description": "User request text."},
+                        "user_id": {"type": "string", "description": "用于身份隔离的用户 ID。"},
+                        "session_id": {"type": "string", "description": "用于关联对话状态的会话 ID。"},
+                        "text": {"type": "string", "description": "用户请求文本。"},
                         "image_ids": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "Optional image references.",
+                            "description": "可选图片引用列表。",
                         },
                         "video_ids": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "Optional video references.",
+                            "description": "可选视频引用列表。",
                         },
-                        "metadata": {"type": "object", "description": "Optional request metadata."},
+                        "metadata": {"type": "object", "description": "可选请求元数据。"},
                     },
                     "required": [],
                 },
@@ -75,7 +79,10 @@ class OfflineMCPServer:
             },
             {
                 "name": "tool_list",
-                "description": "List registered local ToolRegistry tools.",
+                "description": (
+                    "列出当前离线 MCP 服务自身的工具，以及本地 ToolRegistry 已注册的工具名"
+                    "和 ToolSpec。只读，不执行任何业务工具。"
+                ),
                 "inputSchema": {
                     "type": "object",
                     "properties": {},
@@ -85,17 +92,21 @@ class OfflineMCPServer:
             },
             {
                 "name": "tool_run",
-                "description": "Run one registered mock/local ToolRegistry tool.",
+                "description": (
+                    "按工具名和匹配其 schema 的输入，通过 Validator、Executor 与 Registry"
+                    " 治理链执行一个已注册的 mock/local 工具；返回执行结果或结构化拒绝原因。"
+                    "不能调用当前 Registry 中不存在或未获准的工具。"
+                ),
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "tool_name": {
                             "type": "string",
-                            "description": "Registered ToolRegistry tool name.",
+                            "description": "ToolRegistry 中已注册的工具名。",
                         },
                         "input": {
                             "type": "object",
-                            "description": "Tool input matching the registry tool schema.",
+                            "description": "符合目标工具输入 schema 的参数对象。",
                         },
                     },
                     "required": ["tool_name"],
@@ -104,13 +115,16 @@ class OfflineMCPServer:
             },
             {
                 "name": "demo_flow_run",
-                "description": "Run one offline demo scenario through existing demo flow logic.",
+                "description": (
+                    "按可选 scenario_id 运行一个现有离线 demo 场景，并返回 demo flow 的"
+                    "结构化摘要。仅用于本地演示，不代表真实 Provider 或外部服务结果。"
+                ),
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "scenario_id": {
                             "type": "string",
-                            "description": "Optional demo scenario id.",
+                            "description": "可选的离线 demo 场景 ID。",
                         },
                     },
                     "required": [],

@@ -27,7 +27,10 @@ from assistant_agent.tools.input_binding import RuntimeInputBinding
 
 class ImageGenerationTool(ToolBase):
     name = IMAGE_GENERATION_TOOL_NAME
-    description = "根据文本提示词生成图片。"
+    description = (
+        "根据文本中的内容、构图和风格要求生成图片；返回可供后续展示或处理的 image_id "
+        "及生成结果。会调用图片生成服务；不用于理解、检索或修改现有图片。"
+    )
     input_schema = ImageGenerationRequest
     output_schema = ImageGenerationResult
     category = "generate"

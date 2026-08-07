@@ -25,8 +25,9 @@ class HotelPriceWatchCreateOutput(BaseModel):
 class HotelPriceWatchCreateTool(ToolBase):
     name = HOTEL_PRICE_WATCH_CREATE_TOOL_NAME
     description = (
-        "在显式 durable/计划模式下创建只读酒店价格监控；按固定间隔查价，到价后通知一次。"
-        "不能预订、占房或付款。"
+        "创建持久酒店价格监控，按指定住宿条件和间隔复查至截止时间，并在最低每晚价"
+        "不高于阈值时向配置通道通知；返回任务 ID、状态和进度地址。会创建后台任务，"
+        "但不预订、占房或付款。"
     )
     input_schema = HotelPriceWatchGoal
     output_schema = HotelPriceWatchCreateOutput

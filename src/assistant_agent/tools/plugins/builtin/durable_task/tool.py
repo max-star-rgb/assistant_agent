@@ -31,7 +31,10 @@ class TaskPlanSubmitTool(ToolBase):
     """Create or revise the task bound by trusted execution context."""
 
     name = "task_plan_submit"
-    description = "提交用于持久异步执行的有界结构化计划。"
+    description = (
+        "为当前可信运行提交新的持久异步任务计划，或修订已绑定任务的计划；返回任务 ID、"
+        "计划版本、状态、进度地址和取消能力。只提交结构化计划，不代表各步骤已经完成。"
+    )
     input_schema = TaskPlanSubmitInput
     output_schema = TaskPlanSubmitOutput
     category = "write"

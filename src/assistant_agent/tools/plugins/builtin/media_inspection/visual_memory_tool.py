@@ -51,7 +51,10 @@ class VisualMemorySearchInput(BaseModel):
 
 class VisualMemorySearchTool(ToolBase):
     name = VISUAL_MEMORY_SEARCH_TOOL_NAME
-    description = "在当前会话已保留的历史画面中查找物体、场景或事件。"
+    description = (
+        "按查询词、可选时间范围和搜索模式检索当前会话已索引的历史画面文本；返回匹配的"
+        "物体、场景或事件观察及时间线摘要。只读，不检查当前画面，也不重新调用视觉模型。"
+    )
     input_schema = VisualMemorySearchInput
     output_schema = VisualMemorySearchResult
     category = "read"

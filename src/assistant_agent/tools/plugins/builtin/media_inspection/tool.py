@@ -50,7 +50,10 @@ class MediaInspectTool(ToolBase):
     """Inspect image or explicit-video media attached to the current request."""
 
     name = MEDIA_INSPECT_TOOL_NAME
-    description = "分析当前请求附带的图片或视频。"
+    description = (
+        "根据用户问题分析当前请求实际附带的图片或显式视频；返回场景、物体、人物、"
+        "动作、事件、媒体文字等结构化视觉结果。只处理本次附件，不搜索网页或历史画面。"
+    )
     input_schema = VisionUnderstandingRequest
     output_schema = VisionUnderstandingResult
     category = "read"
@@ -223,7 +226,10 @@ class LiveViewInspectTool(MediaInspectTool):
     """Inspect the latest governed snapshot from a trusted live media session."""
 
     name = LIVE_VIEW_INSPECT_TOOL_NAME
-    description = "根据具体 query 检查当前实时画面的最新一帧并返回 VLM 回答。"
+    description = (
+        "根据具体 query 检查当前实时视频连接的最新可用画面，并返回针对该画面的视觉"
+        "回答。只观察当前快照，不检索较早的会话画面。"
+    )
     input_schema = LiveViewInspectRequest
     repeat_policy = "distinct_inputs"
     requires_media = ["video"]
@@ -268,7 +274,10 @@ class RealtimeVideoObserveTool(MediaInspectTool):
     """Internal governed tool used only by the background frame observer."""
 
     name = REALTIME_VIDEO_OBSERVE_TOOL_NAME
-    description = "内部实时视频帧观察工具。"
+    description = (
+        "供后台实时视频观察器分析受信任的视频帧并生成结构化视觉观察；结果用于运行时"
+        "视频上下文与记忆处理。仅供内部观察流程使用，不面向普通用户请求。"
+    )
     repeat_policy = "distinct_inputs"
     requires_media = ["video"]
     media_scope = "any"

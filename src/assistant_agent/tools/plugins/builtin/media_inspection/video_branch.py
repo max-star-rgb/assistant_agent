@@ -60,11 +60,9 @@ class VideoUnderstandingBranch(ToolBase):
 
     name = MEDIA_INSPECT_TOOL_NAME
     description = (
-        "查询当前实时镜头或显式视频引用中的视觉事实。当前 turn 已有 active video 时，"
-        "可只提供 user_query，由运行时绑定当前 turn 的视频引用；普通上传/API 场景使用 "
-        "video_ref 或 video_ids。不要传内部帧路径、JPEG/base64、本地文件路径或 Provider 字段。"
-        "使用当前 turn 的视频引用和工具结果回答；证据不足、过期或工具结果不确定时按结果表达不确定，"
-        "不要编造当前画面。"
+        "分析运行时绑定的当前实时视频或显式视频引用；返回场景、物体、动作、事件、"
+        "媒体文字和证据状态等结构化视觉结果。只接受受治理的视频引用，不接受内部帧"
+        "路径、原始媒体字节、本地文件路径或 Provider 参数。"
     )
     input_schema = VideoUnderstandingRequest
     output_schema = VideoUnderstandingResult

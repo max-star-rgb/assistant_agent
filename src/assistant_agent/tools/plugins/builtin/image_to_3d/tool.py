@@ -50,7 +50,10 @@ class MockImageTo3DAdapter:
 
 class ImageTo3DTool(ToolBase):
     name = IMAGE_TO_3D_TOOL_NAME
-    description = "将本地生成图片提交给3D服务；完成结果可通过任务ID查询。"
+    description = (
+        "把本轮最近生成的图片或指定的本地生成图片 ID 提交为异步 3D 生成任务；"
+        "返回接收状态、源图片 ID 和 job_id。只负责提交任务，不等待或伪造最终 3D 成品。"
+    )
     input_schema = ImageTo3DRequest
     output_schema = ImageTo3DResult
     category = "generate"

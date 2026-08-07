@@ -16,7 +16,11 @@ from assistant_agent.tools.plugins.builtin.lodging.backend import (
 
 class LodgingSearchTool(ToolBase):
     name = "lodging_search"
-    description = "查询酒店候选、价格和 OTA 跳转链接，不能预订或付款。"
+    description = (
+        "按目的地、入住退房日期、人数、房间和住宿偏好检索并排序酒店报价；返回带"
+        "观测时间、每晚价、总价、币种和 OTA booking_url 的候选。价格与库存仅代表"
+        "查询时结果；只读，不预订、占房或付款。"
+    )
     input_schema = LodgingSearchRequest
     output_schema = LodgingSearchResult
     category = "read"

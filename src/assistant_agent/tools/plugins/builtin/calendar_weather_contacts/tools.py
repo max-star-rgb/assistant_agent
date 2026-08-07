@@ -38,7 +38,10 @@ class WeatherTool(ToolBase):
     """Look up weather through the configured personal weather adapter."""
 
     name = WEATHER_TOOL_NAME
-    description = "查询指定地点和日期范围的逐日天气。"
+    description = (
+        "按地点和单日或最长 7 天的日期区间查询逐日天气；返回天气状况、"
+        "摄氏温度、最高最低温和降水概率等预报信息。只读，不修改任何外部数据。"
+    )
     input_schema = WeatherRequest
     output_schema = WeatherResult
     category = "read"
@@ -72,7 +75,10 @@ class CalendarSearchTool(ToolBase):
     """Search calendar events through the configured calendar adapter."""
 
     name = CALENDAR_SEARCH_TOOL_NAME
-    description = "搜索用户的日历事件。"
+    description = (
+        "按查询词和可选时间范围检索当前用户的日历；返回事件 ID、标题、起止时间、"
+        "时区、地点和参与人数。只读，不创建或修改事件。"
+    )
     input_schema = CalendarSearchRequest
     output_schema = CalendarSearchResult
     category = "read"
@@ -102,7 +108,10 @@ class CalendarCreateTool(ToolBase):
     """Create calendar events through the governed ToolExecutor path."""
 
     name = CALENDAR_CREATE_TOOL_NAME
-    description = "创建日历事件。"
+    description = (
+        "在当前用户的日历中创建事件，可设置起止时间、时区、地点、参与者和备注；"
+        "返回事件 ID 与创建结果。会写入外部日历，不负责后续修改或删除。"
+    )
     input_schema = CalendarCreateRequest
     output_schema = CalendarCreateResult
     category = "write"
@@ -140,7 +149,10 @@ class ContactsSearchTool(ToolBase):
     """Search personal contacts through the configured contacts adapter."""
 
     name = CONTACTS_SEARCH_TOOL_NAME
-    description = "搜索联系人或联系方式。"
+    description = (
+        "按姓名、关系、邮箱或电话检索当前用户的联系人；返回联系人 ID、显示名称、"
+        "邮箱和电话号码。只读，不新增、修改或联系任何人。"
+    )
     input_schema = ContactsSearchRequest
     output_schema = ContactsSearchResult
     category = "read"

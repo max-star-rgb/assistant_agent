@@ -15,7 +15,10 @@ from assistant_agent.tools.base import ToolBase, ToolContext
 
 class WebSearchTool(ToolBase):
     name = WEB_SEARCH_TOOL_NAME
-    description = "搜索公开网页中的当前信息、新闻和资料。"
+    description = (
+        "按查询词、可选时间范围和来源域名搜索公开网页；返回标题、URL、摘要、来源和"
+        "发布时间等候选证据。只检索结果列表，不读取目标网页正文或执行页面操作。"
+    )
     input_schema = WebSearchRequest
     output_schema = WebSearchResult
     category = "read"

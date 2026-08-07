@@ -31,8 +31,9 @@ class ShoppingSearchTool(ToolBase):
 
     name = SHOPPING_SEARCH_TOOL_NAME
     description = (
-        "搜索、推荐和比较一个或多个商品需求及购买链接；按单价、数量和总预算组合。"
-        "仅表达购买意向时先追问。不能下单。"
+        "针对一个或多个明确商品需求检索候选、比较价格与购买链接，并按数量、单件"
+        "上限和总预算选择组合；返回各需求的候选、选择、未覆盖项和预算结果。只读，"
+        "不加入购物车、下单或付款。"
     )
     input_schema = ShoppingSearchRequest
     output_schema = ShoppingSearchResult

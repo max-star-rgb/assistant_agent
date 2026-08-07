@@ -22,7 +22,11 @@ from assistant_agent.tools.base import ToolBase, ToolContext, ToolInputValidatio
 
 class PythonInterpreterTool(ToolBase):
     name = PYTHON_INTERPRETER_TOOL_NAME
-    description = "运行受限 Python 代码进行计算和数据分析。"
+    description = (
+        "在短生命周期的受限 Python 沙箱中执行计算或数据分析代码；可通过 input_data "
+        "接收 JSON，并返回 result、标准输出、标准错误和截断或超时状态。禁止文件、"
+        "网络、进程、Shell 和动态代码执行。"
+    )
     input_schema = PythonInterpreterInput
     output_schema = PythonInterpreterResult
     category = "write"
