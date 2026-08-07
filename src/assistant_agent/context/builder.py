@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from assistant_agent.runtime.state import AgentState
+from assistant_agent.memory.plugins.contracts import MemoryContextItem
 from assistant_agent.context.models import (
     AssistantContextPack,
     AssistantPlanContext,
@@ -93,11 +94,7 @@ def build_assistant_context_pack(
         text = "\n".join(summaries)
         memory_source_ids = []
     else:
-        memories = (
-            state.session_memory_snapshot.memories
-            if state.session_memory_snapshot is not None
-            else []
-        )
+        memories = _run_memory_items(state)
         summaries = [memory.text for memory in memories if memory.text]
         text = "\n".join(summaries)
         memory_source_ids = [
@@ -344,6 +341,19 @@ def build_assistant_context_pack(
         source_counts=source_counts,
         budget=final_budget,
     )
+
+
+def _run_memory_items(state: AgentState) -> list[MemoryContextItem]:
+    """Read the Host-frozen run source before the mutable compatibility copy."""
+
+    snapshot = (
+        state.frozen_memory_context
+        if state.memory_context_prepared
+        else state.session_memory_snapshot
+    )
+    if snapshot is None:
+        return []
+    return list(snapshot.memories)
 
 
 def build_assistant_plan_context(state: AgentState) -> AssistantPlanContext:

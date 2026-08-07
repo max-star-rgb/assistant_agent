@@ -35,6 +35,7 @@ from assistant_agent.automation.durable_tasks.models import (
     TrustedTaskBinding,
 )
 from assistant_agent.identity import RequestIdentity
+from assistant_agent.identifiers import new_run_id
 from assistant_agent.runtime.requests import (
     AgentResponse,
     UserRequest,
@@ -463,6 +464,36 @@ class AgentGraphRuntime:
         connection) without mutating ``self.event_sink``.
         """
 
+        effective_run_id = run_id or new_run_id()
+        identity = RequestIdentity.for_user(
+            user_id=request.user_id,
+            agent_id=self.agent_id,
+            session_id=request.session_id,
+        )
+        try:
+            return self._run_state(
+                request,
+                event_sink=event_sink,
+                cancel_token=cancel_token,
+                trace_context=trace_context,
+                run_id=effective_run_id,
+            )
+        finally:
+            self.long_term_memory_service.release_run_context(
+                identity=identity,
+                run_id=effective_run_id,
+            )
+
+    def _run_state(
+        self,
+        request: UserRequest,
+        event_sink: EventSink | None = None,
+        cancel_token: Any | None = None,
+        trace_context: RuntimeTraceContext | None = None,
+        run_id: str | None = None,
+    ) -> AgentState:
+        """Execute one run while the Host retains its frozen Memory context."""
+
         request = normalize_task_execution_mode(
             request,
             durable_tasks_enabled=self.config.durable_tasks_enabled,
@@ -493,7 +524,6 @@ class AgentGraphRuntime:
             agent_id=self.agent_id,
         )
         self._embed_stable_request_text(state, request)
-        self._attach_session_memory_snapshot(state)
         state.context_source_result = self.context_source_coordinator.load_once(
             ContextSourceRequest(
                 user_id=state.user_id,
@@ -538,6 +568,10 @@ class AgentGraphRuntime:
                 },
             )
         runtime_event_publisher.record_run_started(run_started_fact)
+        self._prepare_run_memory_context(
+            state,
+            cancel_token=cancel_token,
+        )
         runtime_context = GraphRuntimeContext(
             intent_detector=self.intent_detector,
             router=self.router,
@@ -765,6 +799,20 @@ class AgentGraphRuntime:
         """Attach the frozen snapshot without performing recall."""
 
         self.long_term_memory_service.attach_session_snapshot(state)
+
+    def _prepare_run_memory_context(
+        self,
+        state: AgentState,
+        *,
+        cancel_token: Any | None,
+    ) -> None:
+        """Prepare and freeze the active Plugin contribution once per run."""
+
+        self.long_term_memory_service.prepare_context(
+            state=state,
+            trace_store=self.trace_store,
+            cancel_token=cancel_token,
+        )
 
     def close(self) -> bool:
         """Drain and close runtime-owned background lifecycle services."""

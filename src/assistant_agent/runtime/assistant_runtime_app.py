@@ -95,9 +95,13 @@ class AssistantRuntimeApp:
     def delete_session(self, user_id: str, session_id: str) -> bool:
         runtime = self.runtime
         deleted = runtime.session_store.delete(user_id, session_id)
-        runtime.long_term_memory_service.clear_session(
-            user_id=user_id,
-            session_id=session_id,
+        runtime.long_term_memory_service.finalize_session(
+            identity=RequestIdentity.for_user(
+                user_id=user_id,
+                agent_id=runtime.agent_id,
+                session_id=session_id,
+            ),
+            reason="reset",
         )
         runtime.embedding_coordinator_store.clear_session(user_id, session_id)
         runtime.visual_semantic_store_pool.clear_session(user_id, session_id)
@@ -111,8 +115,11 @@ class AssistantRuntimeApp:
         run_history_deleted = runtime.run_history.delete_by_user(user_id) if runtime.run_history is not None else 0
         trace_deleted = runtime.trace_store.delete_by_user(user_id)
         conversation_sessions_deleted = clear_user_conversation_history(user_id, config=runtime.config)
+        runtime.long_term_memory_service.reset_user_sessions(
+            user_id=user_id,
+            agent_id=runtime.agent_id,
+        )
         session_records_deleted = runtime.session_store.delete_by_user(user_id)
-        runtime.long_term_memory_service.clear_user(user_id=user_id)
         runtime.embedding_coordinator_store.clear_user(user_id)
         visual_sessions_deleted = runtime.visual_semantic_store_pool.clear_user(user_id)
         runtime.visual_memory_text_index.delete_user(user_id)

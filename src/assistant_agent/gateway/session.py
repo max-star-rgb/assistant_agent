@@ -7,7 +7,7 @@ import time
 from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 from assistant_agent.gateway.event_mapping import realtime_event_to_frame
 from assistant_agent.gateway.observability import (
@@ -1729,6 +1729,13 @@ class GatewaySessionManager:
         session_initializer: (
             Callable[[str, str, Mapping[str, Any]], Awaitable[None]] | None
         ) = None,
+        session_finalizer: (
+            Callable[
+                [str, str, Literal["reset", "expired", "shutdown"]],
+                Awaitable[None],
+            ]
+            | None
+        ) = None,
     ) -> None:
         self.max_sessions = max_sessions
         self.idle_timeout_s = idle_timeout_s
@@ -1745,12 +1752,14 @@ class GatewaySessionManager:
             turn_arbitration_controller or GatewayTurnArbitrationController()
         )
         self.session_initializer = session_initializer
+        self.session_finalizer = session_finalizer
         self._entries: dict[str, _GatewaySessionEntry] = {}
         self._deferred_config: dict[str, dict[str, Any]] = {}
         self._initialized_sessions: set[tuple[str, str]] = set()
         self._session_initializations: dict[
             tuple[str, str], asyncio.Task[None]
         ] = {}
+        self._finalizing_users: dict[str, int] = {}
         self._lock = asyncio.Lock()
         self._reaper_task: asyncio.Task[None] | None = None
         self._start_reaper = start_reaper
@@ -1766,6 +1775,8 @@ class GatewaySessionManager:
 
         key = (user_id, session_id)
         async with self._lock:
+            if user_id in self._finalizing_users:
+                raise RuntimeError("gateway_session_destroying")
             if key in self._initialized_sessions:
                 return
             task = self._session_initializations.get(key)
@@ -1783,11 +1794,17 @@ class GatewaySessionManager:
             await task
         except BaseException:
             async with self._lock:
-                self._session_initializations.pop(key, None)
+                if self._session_initializations.get(key) is task:
+                    self._session_initializations.pop(key, None)
             raise
         async with self._lock:
-            self._session_initializations.pop(key, None)
-            self._initialized_sessions.add(key)
+            if self._session_initializations.get(key) is task:
+                self._session_initializations.pop(key, None)
+                self._initialized_sessions.add(key)
+                return
+            if key in self._initialized_sessions:
+                return
+        raise asyncio.CancelledError
 
     async def _initialize_session(
         self,
@@ -1815,6 +1832,8 @@ class GatewaySessionManager:
         config: Mapping[str, Any] | None = None,
     ) -> GatewaySessionHandle:
         async with self._lock:
+            if user_id in self._finalizing_users:
+                raise RuntimeError("gateway_session_destroying")
             if user_id in self._entries:
                 entry = self._entries[user_id]
                 if config:
@@ -1891,35 +1910,77 @@ class GatewaySessionManager:
                 config=dict(deferred),
             )
 
-    async def destroy(self, user_id: str) -> bool:
+    async def destroy(
+        self,
+        user_id: str,
+        *,
+        reason: Literal["reset", "expired", "shutdown"] = "reset",
+    ) -> bool:
+        if reason not in {"reset", "expired", "shutdown"}:
+            raise ValueError("invalid gateway session finalization reason")
         async with self._lock:
+            self._finalizing_users[user_id] = (
+                self._finalizing_users.get(user_id, 0) + 1
+            )
             entry = self._entries.pop(user_id, None)
+            session_keys = {
+                key for key in self._initialized_sessions if key[0] == user_id
+            }
             self._initialized_sessions = {
                 key for key in self._initialized_sessions if key[0] != user_id
             }
-            initialization_tasks = [
-                self._session_initializations.pop(key)
+            initialization_items = [
+                (key, self._session_initializations.pop(key))
                 for key in list(self._session_initializations)
                 if key[0] == user_id
             ]
-        for task in initialization_tasks:
-            task.cancel()
-        if initialization_tasks:
-            await asyncio.gather(*initialization_tasks, return_exceptions=True)
-        if entry is None:
-            return False
-        await entry.service.close(source="gateway_disconnect")
-        entry.stop()
-        if entry.task is not None:
-            await asyncio.gather(entry.task, return_exceptions=True)
-        await entry.gateway_ep.close()
-        await entry.session_ep.close()
-        self._emit_lifecycle(
-            "gateway.session.destroyed",
-            user_id=user_id,
-            payload={"active_count": self.active_count()},
+            session_keys.update(key for key, _task in initialization_items)
+        try:
+            initialization_tasks = [task for _key, task in initialization_items]
+            for task in initialization_tasks:
+                task.cancel()
+            if initialization_tasks:
+                await asyncio.gather(*initialization_tasks, return_exceptions=True)
+            try:
+                if entry is not None:
+                    await entry.service.close(source="gateway_disconnect")
+                    entry.stop()
+                    if entry.task is not None:
+                        await asyncio.gather(entry.task, return_exceptions=True)
+                    await entry.gateway_ep.close()
+                    await entry.session_ep.close()
+            finally:
+                await self._finalize_sessions(session_keys, reason=reason)
+            if entry is not None:
+                self._emit_lifecycle(
+                    "gateway.session.destroyed",
+                    user_id=user_id,
+                    payload={"active_count": self.active_count()},
+                )
+            return entry is not None
+        finally:
+            async with self._lock:
+                remaining_finalizers = self._finalizing_users.get(user_id, 0) - 1
+                if remaining_finalizers > 0:
+                    self._finalizing_users[user_id] = remaining_finalizers
+                else:
+                    self._finalizing_users.pop(user_id, None)
+
+    async def _finalize_sessions(
+        self,
+        session_keys: set[tuple[str, str]],
+        *,
+        reason: Literal["reset", "expired", "shutdown"],
+    ) -> None:
+        if self.session_finalizer is None or not session_keys:
+            return
+        await asyncio.gather(
+            *(
+                self.session_finalizer(user_id, session_id, reason)
+                for user_id, session_id in sorted(session_keys)
+            ),
+            return_exceptions=True,
         )
-        return True
 
     async def reap_once(self) -> list[str]:
         evict: list[str] = []
@@ -1928,7 +1989,7 @@ class GatewaySessionManager:
                 if entry.idle_seconds() >= self.idle_timeout_s:
                     evict.append(user_id)
         for user_id in evict:
-            await self.destroy(user_id)
+            await self.destroy(user_id, reason="expired")
         return evict
 
     def active_count(self) -> int:
@@ -1968,9 +2029,13 @@ class GatewaySessionManager:
             await asyncio.gather(self._reaper_task, return_exceptions=True)
         self._reaper_task = None
         async with self._lock:
-            user_ids = list(self._entries)
+            user_ids = {
+                *self._entries,
+                *(key[0] for key in self._initialized_sessions),
+                *(key[0] for key in self._session_initializations),
+            }
         for user_id in user_ids:
-            await self.destroy(user_id)
+            await self.destroy(user_id, reason="shutdown")
         if self._owns_admission_controller:
             await self.admission_controller.close()
 

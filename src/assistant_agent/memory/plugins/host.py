@@ -774,6 +774,27 @@ class MemoryPluginHost:
             return frozen.model_copy(deep=True)
         return self._publish_snapshot_to_state(state, frozen)
 
+    def release_run_context(
+        self,
+        *,
+        identity: RequestIdentity,
+        run_id: str,
+    ) -> bool:
+        """Release one terminal run's Host-owned frozen context idempotently."""
+
+        session_key = runtime_memory_identity_key(identity)
+        if type(run_id) is not str or not run_id:
+            raise ValueError("run_id must be a non-empty string")
+        run_key = (*session_key, run_id)
+        with self._run_condition:
+            released = self._frozen_run_contexts.pop(run_key, None) is not None
+            if run_key in self._preparing_runs:
+                self._run_epochs[run_key] = self._run_epochs.get(run_key, 0) + 1
+            else:
+                self._run_epochs.pop(run_key, None)
+            self._run_condition.notify_all()
+            return released
+
     def schedule_ingestion(
         self,
         *,

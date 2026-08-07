@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from threading import Condition
-from typing import Any
+from typing import Any, Literal
 
 from assistant_agent.runtime.runtime import AgentGraphRuntime
 from assistant_agent.identity import RequestIdentity
@@ -69,6 +69,23 @@ class GatewayRuntimePool:
         runtime = self._checkout()
         try:
             runtime.initialize_session_memory(identity)
+        finally:
+            self._checkin(runtime)
+
+    def finalize_session_memory(
+        self,
+        identity: RequestIdentity,
+        *,
+        reason: Literal["reset", "expired", "shutdown"] = "reset",
+    ) -> None:
+        """Close and clear one Gateway-owned Memory Plugin session."""
+
+        runtime = self._checkout()
+        try:
+            runtime.long_term_memory_service.finalize_session(
+                identity=identity.model_copy(update={"agent_id": runtime.agent_id}),
+                reason=reason,
+            )
         finally:
             self._checkin(runtime)
 
