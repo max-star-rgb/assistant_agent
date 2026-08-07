@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from threading import Condition
 from typing import Any, Literal
 
@@ -63,12 +63,20 @@ class GatewayRuntimePool:
         finally:
             self._checkin(runtime)
 
-    def initialize_session_memory(self, identity: RequestIdentity) -> None:
+    def initialize_session_memory(
+        self,
+        identity: RequestIdentity,
+        *,
+        session_config: Mapping[str, Any] | None = None,
+    ) -> None:
         """Warm one session snapshot outside the first turn lifecycle."""
 
         runtime = self._checkout()
         try:
-            runtime.initialize_session_memory(identity)
+            runtime.initialize_session_memory(
+                identity,
+                session_config=session_config,
+            )
         finally:
             self._checkin(runtime)
 

@@ -264,7 +264,11 @@ async def _initialize_gateway_session_memory(
         user_id=user_id,
         session_id=session_id,
     )
-    await asyncio.to_thread(runtime_pool.initialize_session_memory, identity)
+    await asyncio.to_thread(
+        runtime_pool.initialize_session_memory,
+        identity,
+        session_config=config,
+    )
 
 
 async def _finalize_gateway_session_memory(

@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 import json
+from collections.abc import Mapping
 from pathlib import Path
 from time import perf_counter, time
 from typing import TYPE_CHECKING, Any, Literal
@@ -117,6 +118,24 @@ from assistant_agent.tools.registry import ToolRegistry
 
 if TYPE_CHECKING:
     from assistant_agent.automation.durable_tasks.worker import TaskQuantumResult
+
+
+def _trusted_memory_session_metadata(
+    session_config: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    if not isinstance(session_config, Mapping):
+        return {}
+    try:
+        entry_profile = session_config.get("entry_profile")
+    except Exception:
+        return {}
+    if type(entry_profile) is not str or not 0 < len(entry_profile) <= 128:
+        return {}
+    return {
+        "gateway": {
+            "session_config": {"entry_profile": entry_profile},
+        }
+    }
 
 
 def _stable_text_observation(
@@ -427,6 +446,7 @@ class AgentGraphRuntime:
         identity: RequestIdentity,
         *,
         reset: bool = False,
+        session_config: Mapping[str, Any] | None = None,
     ) -> AgentState:
         """Recall and freeze long-term memory before any turn starts."""
 
@@ -437,6 +457,7 @@ class AgentGraphRuntime:
             user_id=identity.user_id,
             session_id=identity.session_id,
             text="",
+            metadata=_trusted_memory_session_metadata(session_config),
         )
         state = AgentState.from_request(request, agent_id=identity.agent_id)
         state.session_memory_snapshot = (

@@ -815,6 +815,37 @@ def test_host_opens_session_and_prepares_memory_once_per_run() -> None:
     assert plugin.prepare_requests[0].deadline == NOW + timedelta(seconds=5)
 
 
+@pytest.mark.parametrize(
+    ("metadata", "expected_profile"),
+    [
+        (
+            {
+                "entry_profile": "forged-profile",
+                "gateway": {
+                    "session_config": {"entry_profile": "agent_service"}
+                },
+            },
+            "agent_service",
+        ),
+        ({"entry_profile": "forged-profile"}, "runtime"),
+    ],
+)
+def test_open_uses_only_trusted_gateway_session_entry_profile(
+    metadata: dict[str, Any],
+    expected_profile: str,
+) -> None:
+    plugin = RecordingMemoryPlugin()
+    host, _ = _host(plugin)
+    state = _state(metadata=metadata)
+
+    try:
+        host.open_session(identity=_identity(), state=state, trace_store=None)
+
+        assert plugin.open_requests[0].entry_profile == expected_profile
+    finally:
+        host.close(timeout=1.0)
+
+
 def test_open_timeout_covers_validation_and_never_publishes_large_baseline() -> None:
     repeated = _item("large", "large")
     plugin = RecordingMemoryPlugin(baseline=[repeated] * 20_000)
@@ -1836,6 +1867,110 @@ def test_idempotent_ingestion_retries_one_recoverable_result_at_most_once() -> N
         assert host.drain(timeout=1.0)
         assert len(plugin.requests) == 2
         assert plugin.requests[0].idempotency_key == plugin.requests[1].idempotency_key
+    finally:
+        host.close(timeout=1.0)
+
+
+def test_queued_ingestion_refreshes_plugin_deadline_when_work_starts() -> None:
+    class BacklogMemoryPlugin(ScriptedIngestionMemoryPlugin):
+        def __init__(self) -> None:
+            super().__init__()
+            self.first_started = Event()
+            self.first_release = Event()
+
+        def ingest_turn(self, request: Any) -> MemoryTurnIngestionResult:
+            with self._calls_lock:
+                self.requests.append(request)
+            if request.turn.user_message.text == "first-request-sentinel":
+                self.first_started.set()
+                assert self.first_release.wait(1.0)
+            return MemoryTurnIngestionResult(status="accepted")
+
+    plugin = BacklogMemoryPlugin()
+    current_time = [NOW]
+    host, _ = _host(
+        plugin,
+        ingestion_queue=MemoryIngestionQueue(max_workers=1, max_pending=2),
+        clock=lambda: current_time[0],
+    )
+    first = _completed_state(
+        run_id="first-run-sentinel",
+        session_id="first-session-sentinel",
+        text="first-request-sentinel",
+    )
+    second = _completed_state(
+        run_id="second-run-sentinel",
+        session_id="second-session-sentinel",
+        text="second-request-sentinel",
+    )
+    host.open_session(
+        identity=_identity(session_id="first-session-sentinel"),
+        state=first,
+        trace_store=None,
+    )
+    host.open_session(
+        identity=_identity(session_id="second-session-sentinel"),
+        state=second,
+        trace_store=None,
+    )
+
+    try:
+        assert host.schedule_ingestion(state=first, trace_store=None)
+        assert plugin.first_started.wait(0.5)
+        assert host.schedule_ingestion(state=second, trace_store=None)
+        current_time[0] = NOW + timedelta(minutes=5)
+        plugin.first_release.set()
+        assert host.drain(timeout=1.0)
+
+        second_request = next(
+            request
+            for request in plugin.requests
+            if request.turn.user_message.text == "second-request-sentinel"
+        )
+        assert second_request.deadline == current_time[0] + timedelta(seconds=30)
+    finally:
+        plugin.first_release.set()
+        host.close(timeout=1.0)
+
+
+def test_ingestion_retry_refreshes_deadline_and_keeps_idempotency_key() -> None:
+    recoverable = MemoryTurnIngestionResult(
+        status="partial",
+        issues=[
+            MemoryPluginIssue(
+                code="plugin.retry",
+                message="retry-sentinel",
+                recoverable=True,
+            )
+        ],
+    )
+    current_time = [NOW]
+
+    class AdvancingRetryMemoryPlugin(ScriptedIngestionMemoryPlugin):
+        def ingest_turn(self, request: Any) -> MemoryTurnIngestionResult:
+            result = super().ingest_turn(request)
+            if len(self.requests) == 1:
+                current_time[0] = NOW + timedelta(minutes=5)
+            return result
+
+    plugin = AdvancingRetryMemoryPlugin(
+        ingestion_results=[
+            recoverable,
+            MemoryTurnIngestionResult(status="accepted"),
+        ]
+    )
+    host, _ = _host(plugin, clock=lambda: current_time[0])
+    state = _completed_state()
+    host.open_session(identity=_identity(), state=state, trace_store=None)
+
+    try:
+        assert host.schedule_ingestion(state=state, trace_store=None)
+        assert host.drain(timeout=1.0)
+        assert len(plugin.requests) == 2
+        assert plugin.requests[0].idempotency_key == plugin.requests[1].idempotency_key
+        assert plugin.requests[1].deadline == (
+            plugin.requests[0].deadline + timedelta(minutes=5)
+        )
     finally:
         host.close(timeout=1.0)
 
@@ -4084,6 +4219,7 @@ def _host(
     media_store: ManagedMemoryMediaStore | None = None,
     execution_policy: MemoryPluginExecutionPolicy | None = None,
     ingestion_queue: MemoryIngestionQueue | None = None,
+    clock: Any | None = None,
 ) -> tuple[MemoryPluginHost, ManagedMemoryMediaStore]:
     registry = MemoryPluginRegistry(
         records=[
@@ -4107,7 +4243,7 @@ def _host(
             ingestion_queue=ingestion_queue,
             execution_policy=execution_policy or MemoryPluginExecutionPolicy(),
             identity_namespace="assistant-agent",
-            clock=lambda: NOW,
+            clock=clock if clock is not None else (lambda: NOW),
         ),
         resolved_media_store,
     )

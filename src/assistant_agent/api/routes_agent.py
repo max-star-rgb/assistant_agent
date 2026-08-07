@@ -777,6 +777,7 @@ def _with_identity_metadata(request: UserRequest, resolution: ResolvedRequestIde
 def _public_request_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
     safe_metadata = dict(metadata)
     for key in (
+        "entry_profile",
         "system_prompt_profile",
         "channel",
         "source",
@@ -787,6 +788,11 @@ def _public_request_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
         "_trusted_durable_execution",
     ):
         safe_metadata.pop(key, None)
+    gateway = safe_metadata.get("gateway")
+    if isinstance(gateway, dict):
+        gateway = dict(gateway)
+        gateway.pop("session_config", None)
+        safe_metadata["gateway"] = gateway
     return safe_metadata
 
 

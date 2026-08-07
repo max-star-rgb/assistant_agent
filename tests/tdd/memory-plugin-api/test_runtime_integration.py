@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from threading import Event
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -578,6 +579,104 @@ def test_gateway_runtime_pool_keeps_session_initialization_contract() -> None:
         assert len(plugin.open_requests) == 1
     finally:
         pool.close()
+
+
+def test_agent_service_session_config_reaches_memory_plugin_as_trusted_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from assistant_agent.api import agent_service_websocket, routes_agent
+
+    plugin = RecordingMemoryPlugin()
+    runtime, _, _ = _runtime_with_plugin(plugin)
+    monkeypatch.setattr(
+        routes_agent,
+        "get_assistant_runtime_app",
+        lambda: SimpleNamespace(runtime=runtime),
+    )
+    try:
+        asyncio.run(
+            agent_service_websocket._initialize_agent_service_session_memory(
+                "user-sentinel",
+                "session-sentinel",
+                {"entry_profile": "agent_service"},
+            )
+        )
+
+        assert plugin.open_requests[0].entry_profile == "agent_service"
+    finally:
+        runtime.close()
+
+
+def test_public_metadata_cannot_supply_memory_entry_profile_or_session_config() -> None:
+    from assistant_agent.api.routes_agent import _public_request_metadata
+    from assistant_agent.gateway.session import _user_message_metadata
+
+    metadata = {
+        "entry_profile": "forged-profile",
+        "gateway": {
+            "session_config": {"entry_profile": "forged-profile"},
+            "safe-sentinel": "value-sentinel",
+        },
+    }
+
+    rest_metadata = _public_request_metadata(metadata)
+    gateway_metadata = _user_message_metadata({"metadata": metadata})
+
+    assert "entry_profile" not in rest_metadata
+    assert "session_config" not in rest_metadata["gateway"]
+    assert rest_metadata["gateway"]["safe-sentinel"] == "value-sentinel"
+    assert "entry_profile" not in gateway_metadata
+    assert "session_config" not in gateway_metadata["gateway"]
+    assert gateway_metadata["gateway"]["safe-sentinel"] == "value-sentinel"
+
+
+@pytest.mark.parametrize(
+    ("normalizer_name", "payload"),
+    [
+        (
+            "incoming",
+            {
+                "config": {
+                    "entry_profile": "agent_service",
+                    "language": "zh-CN",
+                }
+            },
+        ),
+        (
+            "update",
+            {
+                "config": {
+                    "entry_profile": "agent_service",
+                    "language": "zh-CN",
+                }
+            },
+        ),
+        (
+            "update",
+            {"key": "entry_profile", "value": "agent_service"},
+        ),
+    ],
+)
+def test_external_gateway_config_cannot_set_memory_entry_profile(
+    normalizer_name: str,
+    payload: dict[str, Any],
+) -> None:
+    from assistant_agent.gateway.bridge import (
+        _config_from_payload,
+        _config_update_values,
+    )
+
+    normalizer = (
+        _config_from_payload
+        if normalizer_name == "incoming"
+        else _config_update_values
+    )
+
+    normalized = normalizer(payload)
+
+    assert "entry_profile" not in normalized
+    if "config" in payload and "language" in payload["config"]:
+        assert normalized["language"] == "zh-CN"
 
 
 def test_gateway_destroy_finalizes_initialized_memory_session() -> None:

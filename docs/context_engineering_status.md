@@ -1,6 +1,6 @@
 # Context Engineering Architecture
 
-Last updated: 2026-08-05
+Last updated: 2026-08-08
 
 本文是 assistant context 的当前权威入口，描述稳定职责、生命周期、跨模块契约和失败语义。
 它不记录阶段进展、历史变更或下一步事项。具体默认值、内部类型和实现细节以源码、配置和测试为准。
@@ -120,16 +120,22 @@ Conversation recent window 优先复用同一个目标模型 tokenizer。仅在 
 
 ## 6. Memory Context
 
-Context engineering 只消费 Memory service 提供的结构化 session snapshot：
+Context engineering 只消费 `MemoryPluginHost` 提供的结构化、按 run 冻结的 snapshot：
 
-- Session 创建时，Memory service 按可信身份从 Mem0 加载一次并冻结 snapshot。
-- 同一 session 的所有 turn 复用该 snapshot；缺失或读取失败时使用空记忆，不在 turn 中隐式重试召回。
+- Session 创建时，Host 以可信身份打开唯一 active Memory Plugin，并冻结 Plugin 返回的 session
+  baseline；Mem0 只是默认内置 Plugin 的私有 adapter。
+- 每个 user turn 最多调用一次 `prepare_context()`；Host 将本轮完整 contribution 与 baseline 按
+  `memory_id` 合并，并为当前 run 冻结结果。同一 ReAct run 的后续模型与工具迭代只复用该副本。
+- Plugin 不支持 context refresh、session 尚未打开或召回失败时，Host 分别使用 baseline 或可解释的
+  空/降级 snapshot，不让 Memory 故障阻断当前回答。
 - Snapshot 作为独立的合成 `user` 数据消息进入 prompt；当前真实用户请求仍是后一条独立消息。
-- 合成 memory 消息不写入 `ConversationStore`，也不作为原始 user message 提交给 Mem0。
-- 成功回复提交后，user/assistant messages 由 Memory service 异步交给 Mem0 ingestion。
+- 合成 memory 消息不写入 `ConversationStore`，也不作为原始 user message 再次提交给 Memory Plugin。
+- 成功回复交付后，原始 user/assistant messages 由 Host 通过有界后台队列交给 active Plugin 的通用
+  `ingest_turn()` 生命周期。
 
-Mem0 拥有提取、合并、向量化、索引和持久化。Context/runtime 不实现第二套 ranking、promotion、
-profile、冲突处理或 memory tool。完整 Memory 契约见 `docs/memory-service-architecture.md`。
+Active Memory Plugin 拥有提取、合并、排序、向量化和持久化算法。Context/runtime 不实现第二套
+ranking、promotion、profile、冲突处理或 memory tool。完整 Memory 契约见
+`docs/memory-service-architecture.md`。
 
 ## 7. Tool Observation
 

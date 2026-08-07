@@ -1448,13 +1448,22 @@ class MemoryPluginHost:
         result: MemoryTurnIngestionResult | None = None
         failure_code: str | None = None
         while True:
-            call_deadline = (
-                monotonic() + self.execution_policy.ingest_turn_timeout_seconds
-            )
+            timeout_seconds = self.execution_policy.ingest_turn_timeout_seconds
+            try:
+                request_deadline = self._deadline(timeout_seconds)
+                call_deadline = monotonic() + timeout_seconds
+                attempt_request = scheduled.request.model_copy(
+                    update={"deadline": request_deadline}
+                )
+            except Exception:
+                failure_code = MEMORY_PLUGIN_INTERNAL_ERROR
+                break
             raw, failure_code = self._invoke_ingestion(
-                lambda: self._active_plugin.ingest_turn(scheduled.request),
-                timeout_seconds=self.execution_policy.ingest_turn_timeout_seconds,
-                cancellation=scheduled.request.cancellation,
+                lambda request=attempt_request: self._active_plugin.ingest_turn(
+                    request
+                ),
+                timeout_seconds=timeout_seconds,
+                cancellation=attempt_request.cancellation,
                 call_deadline=call_deadline,
             )
             if failure_code is None:
@@ -3468,8 +3477,14 @@ def _memory_session_id(plugin_id: str, identity: MemoryIdentity) -> str:
 
 
 def _entry_profile(state: AgentState) -> str:
-    value = state.request.metadata.get("entry_profile")
-    if isinstance(value, str) and 0 < len(value) <= 128:
+    gateway = state.request.metadata.get("gateway")
+    if type(gateway) is not dict:
+        return "runtime"
+    session_config = gateway.get("session_config")
+    if type(session_config) is not dict:
+        return "runtime"
+    value = session_config.get("entry_profile")
+    if type(value) is str and 0 < len(value) <= 128:
         return value
     return "runtime"
 

@@ -16,7 +16,6 @@ from assistant_agent.memory.plugins.config import (
     MemoryPluginsConfig,
 )
 from assistant_agent.memory.plugins.contracts import (
-    MemoryPlugin,
     MemoryPluginBuildContext,
     MemoryPluginDescriptor,
     MemoryPluginFactory,

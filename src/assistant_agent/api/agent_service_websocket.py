@@ -1599,13 +1599,13 @@ async def _initialize_agent_service_session_memory(
     session_id: str,
     config: Any,
 ) -> None:
-    _ = config
     from assistant_agent.api import routes_agent
 
     runtime = routes_agent.get_assistant_runtime_app().runtime
     await asyncio.to_thread(
         runtime.initialize_session_memory,
         RequestIdentity.for_user(user_id=user_id, session_id=session_id),
+        session_config=config,
     )
 
 

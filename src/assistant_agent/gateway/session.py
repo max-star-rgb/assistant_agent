@@ -2112,8 +2112,13 @@ def _run_timeout_ms(payload: Mapping[str, Any], session_config: Mapping[str, Any
 def _user_message_metadata(payload: Mapping[str, Any]) -> dict[str, Any]:
     metadata = dict(payload.get("metadata") or {})
     trusted_source = _trusted_entry_source(metadata)
-    for key in ("system_prompt_profile", "channel", "source"):
+    for key in ("entry_profile", "system_prompt_profile", "channel", "source"):
         metadata.pop(key, None)
+    gateway = metadata.get("gateway")
+    if isinstance(gateway, dict):
+        gateway = dict(gateway)
+        gateway.pop("session_config", None)
+        metadata["gateway"] = gateway
     if trusted_source is not None:
         metadata["source"] = trusted_source
     return metadata
