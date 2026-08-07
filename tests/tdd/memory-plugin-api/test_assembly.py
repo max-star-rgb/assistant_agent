@@ -11,6 +11,7 @@ from typing import ClassVar
 import pytest
 from pydantic import BaseModel, SecretStr
 
+import assistant_agent.memory.plugins.registry as memory_plugin_registry_module
 from assistant_agent.config import ProviderConfig
 from assistant_agent.memory.plugins.assembly import (
     MemoryPluginAssemblyError,
@@ -18,6 +19,7 @@ from assistant_agent.memory.plugins.assembly import (
 )
 from assistant_agent.memory.plugins.config import (
     MemoryPluginConfigError,
+    MemoryPluginEntryConfig,
     MemoryPluginsConfig,
     load_memory_plugins_config,
 )
@@ -219,6 +221,11 @@ class _ExplodingValidationConfig(BaseModel):
         raise RuntimeError("config-validation-secret-sentinel")
 
 
+class _ExplodingSecretEnv(dict[str, str]):
+    def get(self, key: str, default: str | None = None) -> str | None:
+        raise RuntimeError("secret-env-lookup-sentinel")
+
+
 def _descriptor(plugin_id: str = "probe.memory") -> MemoryPluginDescriptor:
     return MemoryPluginDescriptor(
         plugin_id=plugin_id,
@@ -265,6 +272,18 @@ def _capture_assembly_failure(
     except MemoryPluginAssemblyError as error:
         return error, traceback.format_exc()
     pytest.fail("assembly unexpectedly succeeded")
+
+
+def _capture_config_failure(
+    path: Path,
+    *,
+    env: dict[str, str],
+) -> tuple[MemoryPluginConfigError, str]:
+    try:
+        load_memory_plugins_config(path, env=env)
+    except MemoryPluginConfigError as error:
+        return error, traceback.format_exc()
+    pytest.fail("config loading unexpectedly succeeded")
 
 
 def _assert_sanitized_assembly_failure(
@@ -471,6 +490,91 @@ def test_config_rejects_invalid_slot_as_a_safe_domain_error(tmp_path, slot: str)
 
     assert exc_info.value.code == "memory_plugin_slot_invalid"
     assert "ValidationError" not in str(exc_info.value)
+
+
+def test_config_validation_failure_suppresses_sensitive_validation_error_chain(
+    tmp_path,
+) -> None:
+    secret = "config-model-validation-secret-sentinel"
+    path = tmp_path / "memory_plugins.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": "assistant_memory_plugins_v1",
+                "slot": "probe.memory",
+                "plugins": {
+                    "probe.memory": {
+                        "enabled": secret,
+                        "module": "probe_memory_plugin",
+                        "config": {},
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    error, rendered_traceback = _capture_config_failure(path, env={})
+
+    assert error.code == "memory_plugin_config_invalid"
+    assert error.__cause__ is None
+    assert error.__suppress_context__ is True
+    assert secret not in str(error)
+    assert secret not in rendered_traceback
+
+
+def test_config_rejects_module_that_cannot_fit_registration_source(tmp_path) -> None:
+    secret = "module-length-secret-sentinel"
+    module_name = secret + ("x" * (506 - len(secret)))
+    path = tmp_path / "memory_plugins.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": "assistant_memory_plugins_v1",
+                "slot": "probe.memory",
+                "plugins": {
+                    "probe.memory": _configured_plugin(module_name),
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    error, rendered_traceback = _capture_config_failure(path, env={})
+
+    assert error.code == "memory_plugin_config_invalid"
+    assert error.__cause__ is None
+    assert secret not in str(error)
+    assert secret not in rendered_traceback
+
+
+def test_config_secret_env_lookup_failure_is_domainized_and_sanitized(tmp_path) -> None:
+    path = tmp_path / "memory_plugins.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": "assistant_memory_plugins_v1",
+                "slot": "probe.memory",
+                "plugins": {
+                    "probe.memory": _configured_plugin(
+                        "probe_memory_plugin",
+                        config={"api_key": "${PROBE_MEMORY_API_KEY}"},
+                    )
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    error, rendered_traceback = _capture_config_failure(
+        path,
+        env=_ExplodingSecretEnv(),
+    )
+
+    assert error.code == "memory_plugin_config_invalid"
+    assert error.__cause__ is None
+    assert "secret-env-lookup-sentinel" not in str(error)
+    assert "secret-env-lookup-sentinel" not in rendered_traceback
 
 
 def test_provider_config_reads_only_explicit_memory_plugin_settings() -> None:
@@ -1024,6 +1128,119 @@ def test_registry_compatibility_path_rejects_mismatched_plugin_descriptor() -> N
             ],
             _Plugin(_descriptor("other.memory")),
         )
+
+
+def test_registry_constructor_has_no_validated_descriptor_bypass() -> None:
+    descriptor = _descriptor()
+
+    with pytest.raises(TypeError):
+        MemoryPluginRegistry(
+            [
+                MemoryPluginRegistrationRecord(
+                    descriptor=descriptor,
+                    source="builtin:probe.memory",
+                    enabled=True,
+                    active=True,
+                )
+            ],
+            _Plugin(_descriptor("other.memory")),
+            validated_active_descriptor=descriptor,
+        )
+
+
+def test_registry_rejects_model_constructed_invalid_descriptor() -> None:
+    valid_descriptor = _descriptor()
+    invalid_descriptor = MemoryPluginDescriptor.model_construct(
+        plugin_id=valid_descriptor.plugin_id,
+        plugin_version=valid_descriptor.plugin_version,
+        api_version=valid_descriptor.api_version,
+        kind="not_memory",
+        capabilities=valid_descriptor.capabilities,
+    )
+
+    with pytest.raises(ValueError, match="memory_plugin_registry_invalid"):
+        MemoryPluginRegistry(
+            [
+                MemoryPluginRegistrationRecord.model_construct(
+                    descriptor=invalid_descriptor,
+                    source="builtin:probe.memory",
+                    enabled=True,
+                    active=True,
+                )
+            ],
+            _Plugin(invalid_descriptor),
+        )
+
+
+def test_registry_rejects_descriptor_with_mutated_invalid_modality() -> None:
+    descriptor = _descriptor()
+    record = MemoryPluginRegistrationRecord(
+        descriptor=descriptor,
+        source="builtin:probe.memory",
+        enabled=True,
+        active=True,
+    )
+    descriptor.capabilities.modalities.add("untrusted_modality")
+
+    with pytest.raises(ValueError, match="memory_plugin_registry_invalid"):
+        MemoryPluginRegistry([record], _Plugin(descriptor))
+
+
+def test_assembly_domainizes_bypassed_overlong_registration_source(
+    monkeypatch,
+) -> None:
+    secret = "record-source-secret-sentinel"
+    module_name = secret + ("x" * (506 - len(secret)))
+    monkeypatch.setitem(
+        sys.modules,
+        module_name,
+        _module(module_name, _Factory(_descriptor())),
+    )
+    config = MemoryPluginsConfig.model_construct(
+        schema_version="assistant_memory_plugins_v1",
+        slot="probe.memory",
+        plugins={
+            "probe.memory": MemoryPluginEntryConfig.model_construct(
+                enabled=True,
+                module=module_name,
+                config={},
+            )
+        },
+    )
+
+    error, rendered_traceback = _capture_assembly_failure(config=config)
+
+    _assert_sanitized_assembly_failure(
+        error,
+        rendered_traceback,
+        code="memory_plugin_registry_invalid",
+        secret=secret,
+    )
+
+
+def test_assembly_domainizes_registry_generation_failure(monkeypatch) -> None:
+    secret = "registry-generation-secret-sentinel"
+
+    def _explode_generation(report) -> str:  # type: ignore[no-untyped-def]
+        raise RuntimeError(secret)
+
+    monkeypatch.setattr(
+        memory_plugin_registry_module,
+        "_generation_for",
+        _explode_generation,
+    )
+
+    error, rendered_traceback = _capture_assembly_failure(
+        config=_config(slot="probe.memory", plugins={}),
+        builtin_factories=(_Factory(_descriptor()),),
+    )
+
+    _assert_sanitized_assembly_failure(
+        error,
+        rendered_traceback,
+        code="memory_plugin_registry_invalid",
+        secret=secret,
+    )
 
 
 def test_registry_exposes_only_the_selected_plugin_and_safe_generation() -> None:

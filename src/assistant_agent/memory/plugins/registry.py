@@ -5,10 +5,13 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import Any, NoReturn
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from assistant_agent.memory.plugins.config import (
+    MEMORY_PLUGIN_REGISTRATION_SOURCE_MAX_LENGTH,
+)
 from assistant_agent.memory.plugins.contracts import (
     MemoryPlugin,
     MemoryPluginDescriptor,
@@ -22,7 +25,10 @@ class _FrozenAssemblyModel(BaseModel):
 
 class MemoryPluginRegistrationRecord(_FrozenAssemblyModel):
     descriptor: MemoryPluginDescriptor
-    source: str = Field(min_length=1, max_length=512)
+    source: str = Field(
+        min_length=1,
+        max_length=MEMORY_PLUGIN_REGISTRATION_SOURCE_MAX_LENGTH,
+    )
     enabled: bool
     active: bool = False
 
@@ -31,6 +37,14 @@ class MemoryPluginAssemblyReport(_FrozenAssemblyModel):
     active_slot: str = Field(min_length=1, max_length=128)
     records: tuple[MemoryPluginRegistrationRecord, ...] = ()
     issues: tuple[MemoryPluginIssue, ...] = ()
+
+
+class MemoryPluginRegistryError(ValueError):
+    """Stable, sanitized failure raised while sealing a Registry."""
+
+    def __init__(self, assembly_issue_code: str) -> None:
+        self.assembly_issue_code = assembly_issue_code
+        super().__init__("memory_plugin_registry_invalid")
 
 
 class MemoryPluginRegistry:
@@ -42,28 +56,36 @@ class MemoryPluginRegistry:
         self,
         records: Sequence[MemoryPluginRegistrationRecord],
         active_plugin: MemoryPlugin,
-        *,
-        validated_active_descriptor: MemoryPluginDescriptor | None = None,
     ) -> None:
-        sealed_records = tuple(record.model_copy(deep=True) for record in records)
-        active_records = [record for record in sealed_records if record.active]
-        if len(active_records) != 1:
-            raise ValueError("memory_plugin_registry_invalid")
-        if validated_active_descriptor is None:
+        try:
+            sealed_records = tuple(_validated_record(record) for record in records)
+            active_records = [record for record in sealed_records if record.active]
+            if len(active_records) != 1:
+                _registry_fail("memory_plugin_registry_invalid")
             try:
-                active_descriptor = active_plugin.descriptor
+                active_descriptor_value = getattr(active_plugin, "descriptor")
             except Exception:
-                raise ValueError("memory_plugin_registry_invalid") from None
-        else:
-            active_descriptor = validated_active_descriptor
-        if active_records[0].descriptor != active_descriptor:
-            raise ValueError("memory_plugin_registry_invalid")
+                _registry_fail("memory_plugin_descriptor_invalid")
+            active_descriptor = _validated_descriptor(active_descriptor_value)
+            if active_descriptor is None:
+                _registry_fail("memory_plugin_descriptor_invalid")
+            if active_records[0].descriptor != active_descriptor:
+                _registry_fail("memory_plugin_descriptor_mismatch")
+            assembly_report = MemoryPluginAssemblyReport(
+                active_slot=active_records[0].descriptor.plugin_id,
+                records=sealed_records,
+            )
+            generation = _generation_for(assembly_report)
+        except MemoryPluginRegistryError:
+            raise
+        except Exception:
+            raise MemoryPluginRegistryError(
+                "memory_plugin_registry_invalid"
+            ) from None
+
         self._active_plugin = active_plugin
-        self._assembly_report = MemoryPluginAssemblyReport(
-            active_slot=active_records[0].descriptor.plugin_id,
-            records=sealed_records,
-        )
-        self._generation = _generation_for(self._assembly_report)
+        self._assembly_report = assembly_report
+        self._generation = generation
 
     @property
     def active_plugin(self) -> MemoryPlugin:
@@ -76,6 +98,44 @@ class MemoryPluginRegistry:
     @property
     def assembly_report(self) -> MemoryPluginAssemblyReport:
         return self._assembly_report.model_copy(deep=True)
+
+
+def _validated_record(
+    value: object,
+) -> MemoryPluginRegistrationRecord:
+    if not isinstance(value, MemoryPluginRegistrationRecord):
+        _registry_fail("memory_plugin_registry_invalid")
+    try:
+        descriptor_value = getattr(value, "descriptor")
+    except Exception:
+        _registry_fail("memory_plugin_descriptor_invalid")
+    descriptor = _validated_descriptor(descriptor_value)
+    if descriptor is None:
+        _registry_fail("memory_plugin_descriptor_invalid")
+    try:
+        return MemoryPluginRegistrationRecord(
+            descriptor=descriptor,
+            source=value.source,
+            enabled=value.enabled,
+            active=value.active,
+        )
+    except Exception:
+        _registry_fail("memory_plugin_registry_invalid")
+
+
+def _validated_descriptor(value: object) -> MemoryPluginDescriptor | None:
+    if not isinstance(value, MemoryPluginDescriptor):
+        return None
+    try:
+        return MemoryPluginDescriptor.model_validate(
+            value.model_dump(mode="python")
+        )
+    except Exception:
+        return None
+
+
+def _registry_fail(assembly_issue_code: str) -> NoReturn:
+    raise MemoryPluginRegistryError(assembly_issue_code) from None
 
 
 def _generation_for(report: MemoryPluginAssemblyReport) -> str:

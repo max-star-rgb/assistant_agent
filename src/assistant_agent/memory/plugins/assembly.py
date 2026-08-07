@@ -10,6 +10,7 @@ from pydantic import BaseModel
 
 from assistant_agent.memory.plugins.config import (
     MEMORY_PLUGIN_EXPORT,
+    MEMORY_PLUGIN_MODULE_SOURCE_PREFIX,
     MEMORY_PLUGIN_SLOT_MAX_LENGTH,
     MemoryPluginEntryConfig,
     MemoryPluginsConfig,
@@ -25,6 +26,7 @@ from assistant_agent.memory.plugins.registry import (
     MemoryPluginAssemblyReport,
     MemoryPluginRegistrationRecord,
     MemoryPluginRegistry,
+    MemoryPluginRegistryError,
 )
 
 
@@ -114,29 +116,20 @@ def assemble_memory_plugins(
     except Exception:
         _fail(config.slot, "memory_plugin_build_failed")
     try:
-        plugin_descriptor_value = getattr(plugin, "descriptor", None)
+        records = [
+            MemoryPluginRegistrationRecord(
+                descriptor=candidate.descriptor,
+                source=candidate.source,
+                enabled=candidate.entry.enabled,
+                active=candidate is active_candidate,
+            )
+            for candidate in candidates
+        ]
+        return MemoryPluginRegistry(records, plugin)
+    except MemoryPluginRegistryError as exc:
+        _fail(config.slot, exc.assembly_issue_code)
     except Exception:
-        _fail(config.slot, "memory_plugin_descriptor_invalid")
-    plugin_descriptor = _validated_descriptor(plugin_descriptor_value)
-    if plugin_descriptor is None:
-        _fail(config.slot, "memory_plugin_descriptor_invalid")
-    if plugin_descriptor != active_candidate.descriptor:
-        _fail(config.slot, "memory_plugin_descriptor_mismatch")
-
-    records = [
-        MemoryPluginRegistrationRecord(
-            descriptor=candidate.descriptor,
-            source=candidate.source,
-            enabled=candidate.entry.enabled,
-            active=candidate is active_candidate,
-        )
-        for candidate in candidates
-    ]
-    return MemoryPluginRegistry(
-        records,
-        plugin,
-        validated_active_descriptor=plugin_descriptor,
-    )
+        _fail(config.slot, "memory_plugin_registry_invalid")
 
 
 def _builtin_candidate(
@@ -186,7 +179,7 @@ def _module_candidate(
         validate_config=snapshot.validate_config,
         build=snapshot.build,
         entry=entry,
-        source=f"module:{entry.module}",
+        source=f"{MEMORY_PLUGIN_MODULE_SOURCE_PREFIX}{entry.module}",
     )
 
 

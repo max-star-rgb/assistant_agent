@@ -15,6 +15,12 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr
 MEMORY_PLUGIN_CONFIG_PATH_ENV = "MULTIMODAL_AGENT_MEMORY_PLUGIN_CONFIG_PATH"
 MEMORY_PLUGIN_EXPORT = "__assistant_memory_plugin_factory__"
 MEMORY_PLUGIN_SLOT_MAX_LENGTH = 128
+MEMORY_PLUGIN_REGISTRATION_SOURCE_MAX_LENGTH = 512
+MEMORY_PLUGIN_MODULE_SOURCE_PREFIX = "module:"
+MEMORY_PLUGIN_MODULE_MAX_LENGTH = (
+    MEMORY_PLUGIN_REGISTRATION_SOURCE_MAX_LENGTH
+    - len(MEMORY_PLUGIN_MODULE_SOURCE_PREFIX)
+)
 _SECRET_REFERENCE = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$")
 
 MemoryPluginConfigValue = TypeAliasType(
@@ -40,7 +46,7 @@ class MemoryPluginEntryConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool = True
-    module: str
+    module: str = Field(min_length=1, max_length=MEMORY_PLUGIN_MODULE_MAX_LENGTH)
     config: dict[str, MemoryPluginConfigValue] = Field(default_factory=dict)
 
 
@@ -64,21 +70,26 @@ def load_memory_plugins_config(
             Path(path).read_text(encoding="utf-8"),
             object_pairs_hook=_reject_duplicate_json_keys,
         )
-    except _DuplicateJsonKeyError as exc:
-        raise MemoryPluginConfigError("memory_plugin_config_duplicate_key") from exc
-    except (OSError, json.JSONDecodeError) as exc:
-        raise MemoryPluginConfigError("memory_plugin_config_invalid") from exc
+    except _DuplicateJsonKeyError:
+        raise MemoryPluginConfigError("memory_plugin_config_duplicate_key") from None
+    except Exception:
+        raise MemoryPluginConfigError("memory_plugin_config_invalid") from None
     if not isinstance(raw, dict):
         raise MemoryPluginConfigError("memory_plugin_config_invalid")
 
     source = os.environ if env is None else env
-    resolved = _resolve_secret_references(raw, source)
+    try:
+        resolved = _resolve_secret_references(raw, source)
+    except MemoryPluginConfigError:
+        raise
+    except Exception:
+        raise MemoryPluginConfigError("memory_plugin_config_invalid") from None
     if not _is_valid_memory_plugin_slot(resolved.get("slot")):
         raise MemoryPluginConfigError("memory_plugin_slot_invalid")
     try:
         return MemoryPluginsConfig.model_validate(resolved)
-    except Exception as exc:
-        raise MemoryPluginConfigError("memory_plugin_config_invalid") from exc
+    except Exception:
+        raise MemoryPluginConfigError("memory_plugin_config_invalid") from None
 
 
 def _resolve_secret_references(
