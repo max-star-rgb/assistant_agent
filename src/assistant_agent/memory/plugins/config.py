@@ -7,14 +7,20 @@ import os
 import re
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Literal
+from typing import Literal, TypeAliasType
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, SecretStr
+from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 
 MEMORY_PLUGIN_CONFIG_PATH_ENV = "MULTIMODAL_AGENT_MEMORY_PLUGIN_CONFIG_PATH"
 MEMORY_PLUGIN_EXPORT = "__assistant_memory_plugin_factory__"
 _SECRET_REFERENCE = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$")
+
+MemoryPluginConfigValue = TypeAliasType(
+    "MemoryPluginConfigValue",
+    "str | int | float | bool | None | SecretStr | list[MemoryPluginConfigValue] "
+    "| dict[str, MemoryPluginConfigValue]",
+)
 
 
 class MemoryPluginConfigError(ValueError):
@@ -30,7 +36,7 @@ class MemoryPluginEntryConfig(BaseModel):
 
     enabled: bool = True
     module: str
-    config: dict[str, JsonValue | SecretStr] = Field(default_factory=dict)
+    config: dict[str, MemoryPluginConfigValue] = Field(default_factory=dict)
 
 
 class MemoryPluginsConfig(BaseModel):
@@ -76,8 +82,6 @@ def _resolve_secret_references(
 
     match = _SECRET_REFERENCE.fullmatch(value)
     if match is None:
-        if "${" in value:
-            raise MemoryPluginConfigError("memory_plugin_secret_reference_invalid")
         return value
     secret = env.get(match.group(1))
     if secret is None:

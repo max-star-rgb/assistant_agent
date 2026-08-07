@@ -42,7 +42,7 @@ class MemoryPluginRegistry:
         records: Sequence[MemoryPluginRegistrationRecord],
         active_plugin: MemoryPlugin,
     ) -> None:
-        sealed_records = tuple(records)
+        sealed_records = tuple(record.model_copy(deep=True) for record in records)
         active_records = [record for record in sealed_records if record.active]
         if len(active_records) != 1 or active_records[0].descriptor != active_plugin.descriptor:
             raise ValueError("memory_plugin_registry_invalid")
@@ -63,7 +63,7 @@ class MemoryPluginRegistry:
 
     @property
     def assembly_report(self) -> MemoryPluginAssemblyReport:
-        return self._assembly_report
+        return self._assembly_report.model_copy(deep=True)
 
 
 def _generation_for(report: MemoryPluginAssemblyReport) -> str:

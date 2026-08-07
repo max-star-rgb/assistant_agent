@@ -167,6 +167,88 @@ def test_config_missing_secret_fails_without_echoing_value(tmp_path) -> None:
     assert "MISSING_MEMORY_SECRET" not in str(exc_info.value)
 
 
+def test_config_resolves_nested_dict_and_list_secret_references(tmp_path) -> None:
+    path = tmp_path / "memory_plugins.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": "assistant_memory_plugins_v1",
+                "slot": "probe.memory",
+                "plugins": {
+                    "probe.memory": _configured_plugin(
+                        "probe_memory_plugin",
+                        config={
+                            "credentials": {"api_key": "${NESTED_MEMORY_API_KEY}"},
+                            "tokens": ["plain-token", "${LIST_MEMORY_API_KEY}"],
+                        },
+                    )
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_memory_plugins_config(
+        path,
+        env={
+            "NESTED_MEMORY_API_KEY": "nested-secret-sentinel",
+            "LIST_MEMORY_API_KEY": "list-secret-sentinel",
+        },
+    )
+
+    plugin_config = config.plugins["probe.memory"].config
+    assert plugin_config["credentials"]["api_key"].get_secret_value() == "nested-secret-sentinel"
+    assert plugin_config["tokens"] == ["plain-token", SecretStr("list-secret-sentinel")]
+
+
+def test_config_missing_nested_secret_fails_without_echoing_reference(tmp_path) -> None:
+    path = tmp_path / "memory_plugins.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": "assistant_memory_plugins_v1",
+                "slot": "probe.memory",
+                "plugins": {
+                    "probe.memory": _configured_plugin(
+                        "probe_memory_plugin",
+                        config={"credentials": {"api_key": "${MISSING_NESTED_SECRET}"}},
+                    )
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(MemoryPluginConfigError) as exc_info:
+        load_memory_plugins_config(path, env={})
+
+    assert exc_info.value.code == "memory_plugin_secret_missing"
+    assert "MISSING_NESTED_SECRET" not in str(exc_info.value)
+
+
+def test_config_leaves_non_reference_interpolation_string_literal(tmp_path) -> None:
+    path = tmp_path / "memory_plugins.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": "assistant_memory_plugins_v1",
+                "slot": "probe.memory",
+                "plugins": {
+                    "probe.memory": _configured_plugin(
+                        "probe_memory_plugin",
+                        config={"template": "prefix ${NOT_A_SECRET} suffix"},
+                    )
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_memory_plugins_config(path, env={"NOT_A_SECRET": "secret-sentinel"})
+
+    assert config.plugins["probe.memory"].config["template"] == "prefix ${NOT_A_SECRET} suffix"
+
+
 def test_provider_config_reads_only_explicit_memory_plugin_settings() -> None:
     config = ProviderConfig.from_env(
         {
@@ -325,3 +407,29 @@ def test_registry_exposes_only_the_selected_plugin_and_safe_generation() -> None
     assert registry.assembly_report.active_slot == "probe.memory"
     assert len(registry.generation) == 64
     assert "secret-sentinel" not in registry.assembly_report.model_dump_json()
+
+
+def test_registry_report_is_a_defensive_snapshot_of_mutable_capabilities() -> None:
+    module_name = "test_memory_plugin_registry_snapshot"
+    descriptor = _descriptor()
+    sys.modules[module_name] = _module(module_name, _Factory(descriptor))
+    try:
+        registry = assemble_memory_plugins(
+            config=_config(
+                slot="probe.memory",
+                plugins={"probe.memory": _configured_plugin(module_name)},
+            ),
+            builtin_factories=(),
+            build_context=_build_context(),
+        )
+    finally:
+        sys.modules.pop(module_name, None)
+
+    generation = registry.generation
+    report = registry.assembly_report
+    report.records[0].descriptor.capabilities.modalities.add("image")
+    descriptor.capabilities.modalities.add("audio")
+
+    sealed_report = registry.assembly_report
+    assert sealed_report.records[0].descriptor.capabilities.modalities == {"text"}
+    assert registry.generation == generation
