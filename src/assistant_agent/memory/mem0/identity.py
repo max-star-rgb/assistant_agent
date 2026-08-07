@@ -1,4 +1,4 @@
-"""Opaque identity binding for Mem0."""
+"""Opaque identity binding retained for operator compatibility."""
 
 from __future__ import annotations
 
