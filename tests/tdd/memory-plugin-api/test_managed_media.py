@@ -553,3 +553,377 @@ def test_registration_failure_does_not_consume_store_budget() -> None:
     )
 
     assert store.read(ref, owner_scope="owner-sentinel", max_bytes=6) == b"123456"
+
+
+class _FalseyClock:
+    def __init__(self, instant: datetime) -> None:
+        self.instant = instant
+        self.bool_calls = 0
+
+    def __bool__(self) -> bool:
+        self.bool_calls += 1
+        return False
+
+    def __call__(self) -> datetime:
+        return self.instant
+
+
+class _MasqueradingStr(str):
+    def __new__(
+        cls,
+        value: str,
+        *,
+        target: str,
+    ) -> _MasqueradingStr:
+        instance = super().__new__(cls, value)
+        instance.target = target
+        instance.calls: list[str] = []
+        return instance
+
+    def __hash__(self) -> int:
+        self.calls.append("hash")
+        return str.__hash__(self.target)
+
+    def __eq__(self, other: object) -> bool:
+        self.calls.append("eq")
+        return type(other) is str and other == self.target
+
+
+class _TrackingSet(set[str]):
+    def __init__(self, values: set[str]) -> None:
+        super().__init__(values)
+        self.calls: list[str] = []
+
+    def __iter__(self):  # type: ignore[no-untyped-def]
+        self.calls.append("iter")
+        return super().__iter__()
+
+    def __contains__(self, value: object) -> bool:
+        self.calls.append("contains")
+        return super().__contains__(value)
+
+    def __len__(self) -> int:
+        self.calls.append("len")
+        return super().__len__()
+
+
+class _TrackingList(list[str]):
+    def __init__(self, values: list[str]) -> None:
+        super().__init__(values)
+        self.calls: list[str] = []
+
+    def __iter__(self):  # type: ignore[no-untyped-def]
+        self.calls.append("iter")
+        return super().__iter__()
+
+    def __len__(self) -> int:
+        self.calls.append("len")
+        return super().__len__()
+
+
+class _ComparisonInt(int):
+    def __new__(cls, value: int) -> _ComparisonInt:
+        instance = super().__new__(cls, value)
+        instance.calls: list[str] = []
+        return instance
+
+    def __lt__(self, other: object) -> bool:
+        self.calls.append("lt")
+        return False
+
+    def __gt__(self, other: object) -> bool:
+        self.calls.append("gt")
+        return False
+
+    def __eq__(self, other: object) -> bool:
+        self.calls.append("eq")
+        return False
+
+    def __bool__(self) -> bool:
+        self.calls.append("bool")
+        return True
+
+
+def test_falsey_host_clock_remains_the_expiry_authority() -> None:
+    """A lawful falsey Callable must not be replaced by the wall clock."""
+    opened_at = datetime(2100, 1, 1, tzinfo=timezone.utc)
+    clock = _FalseyClock(opened_at)
+    store = ManagedMemoryMediaStore(max_total_bytes=1024, clock=clock)
+    ref = store.register(
+        owner_scope="owner-sentinel",
+        media_type="image",
+        mime_type="image/jpeg",
+        payload=b"jpeg-sentinel",
+        expires_at=opened_at + timedelta(seconds=1),
+    )
+    clock.instant = opened_at + timedelta(seconds=1)
+
+    with pytest.raises(MemoryMediaAccessError) as exc_info:
+        store.read(ref, owner_scope="owner-sentinel", max_bytes=1024)
+
+    assert exc_info.value.code == "memory_media_expired"
+    assert clock.bool_calls == 0
+
+
+@pytest.mark.parametrize(
+    ("argument", "value", "target", "expected_code"),
+    [
+        (
+            "allowed_modalities",
+            "audio",
+            "image",
+            "memory_media_allowed_modalities_invalid",
+        ),
+        (
+            "allowed_mime_types",
+            "image/png",
+            "image/jpeg",
+            "memory_media_allowed_mime_types_invalid",
+        ),
+    ],
+)
+def test_read_rejects_allowlist_scalar_subclasses_before_hash_or_equality(
+    argument: str,
+    value: str,
+    target: str,
+    expected_code: str,
+) -> None:
+    """A scalar subclass cannot impersonate an allowed modality or MIME."""
+    store = ManagedMemoryMediaStore(max_total_bytes=1024)
+    ref = store.register(
+        owner_scope="owner-sentinel",
+        media_type="image",
+        mime_type="image/jpeg",
+        payload=b"jpeg-sentinel",
+    )
+    injected = _MasqueradingStr(value, target=target)
+    allowlist = {injected}
+    injected.calls.clear()
+
+    with pytest.raises(MemoryMediaAccessError) as exc_info:
+        store.read(
+            ref,
+            owner_scope="owner-sentinel",
+            max_bytes=1024,
+            **{argument: allowlist},
+        )
+
+    assert exc_info.value.code == expected_code
+    assert injected.calls == []
+
+
+@pytest.mark.parametrize(
+    ("argument", "value", "expected_code"),
+    [
+        (
+            "allowed_modalities",
+            "image",
+            "memory_media_allowed_modalities_invalid",
+        ),
+        (
+            "allowed_mime_types",
+            "image/jpeg",
+            "memory_media_allowed_mime_types_invalid",
+        ),
+    ],
+)
+def test_read_rejects_allowlist_container_subclasses_before_container_hooks(
+    argument: str,
+    value: str,
+    expected_code: str,
+) -> None:
+    """Only an exact built-in set may define Plugin media authority."""
+    store = ManagedMemoryMediaStore(max_total_bytes=1024)
+    ref = store.register(
+        owner_scope="owner-sentinel",
+        media_type="image",
+        mime_type="image/jpeg",
+        payload=b"jpeg-sentinel",
+    )
+    allowlist = _TrackingSet({value})
+
+    with pytest.raises(MemoryMediaAccessError) as exc_info:
+        store.read(
+            ref,
+            owner_scope="owner-sentinel",
+            max_bytes=1024,
+            **{argument: allowlist},
+        )
+
+    assert exc_info.value.code == expected_code
+    assert allowlist.calls == []
+
+
+def test_resolve_rejects_allowlist_scalar_subclass_before_membership_hooks() -> None:
+    """Resolution snapshots only exact modality strings before lookup decisions."""
+    store = ManagedMemoryMediaStore(max_total_bytes=1024)
+    ref = store.register(
+        owner_scope="owner-sentinel",
+        media_type="image",
+        mime_type="image/jpeg",
+        payload=b"jpeg-sentinel",
+    )
+    request = UserRequest(
+        user_id="user-sentinel",
+        session_id="session-sentinel",
+        image_ids=[ref.ref_id],
+    )
+    injected = _MasqueradingStr("audio", target="image")
+    allowlist = {injected}
+    injected.calls.clear()
+
+    refs, issues = store.resolve_request_refs(
+        request,
+        owner_scope="owner-sentinel",
+        allowed_modalities=allowlist,
+        max_items=1,
+        max_total_bytes=1024,
+    )
+
+    assert refs == []
+    assert [issue.code for issue in issues] == [
+        "memory_media_allowed_modalities_invalid"
+    ]
+    assert injected.calls == []
+
+
+def test_resolve_rejects_allowlist_container_subclass_before_container_hooks() -> None:
+    """Resolution never iterates or queries a caller-defined set subclass."""
+    store = ManagedMemoryMediaStore(max_total_bytes=1024)
+    ref = store.register(
+        owner_scope="owner-sentinel",
+        media_type="image",
+        mime_type="image/jpeg",
+        payload=b"jpeg-sentinel",
+    )
+    request = UserRequest(
+        user_id="user-sentinel",
+        session_id="session-sentinel",
+        image_ids=[ref.ref_id],
+    )
+    allowlist = _TrackingSet({"image"})
+
+    refs, issues = store.resolve_request_refs(
+        request,
+        owner_scope="owner-sentinel",
+        allowed_modalities=allowlist,
+        max_items=1,
+        max_total_bytes=1024,
+    )
+
+    assert refs == []
+    assert [issue.code for issue in issues] == [
+        "memory_media_allowed_modalities_invalid"
+    ]
+    assert allowlist.calls == []
+
+
+def test_resolve_rejects_request_container_subclass_before_iteration_hooks() -> None:
+    """A mutated UserRequest list cannot execute caller iteration or length hooks."""
+    store = ManagedMemoryMediaStore(max_total_bytes=1024)
+    ref = store.register(
+        owner_scope="owner-sentinel",
+        media_type="image",
+        mime_type="image/jpeg",
+        payload=b"jpeg-sentinel",
+    )
+    request = UserRequest(
+        user_id="user-sentinel",
+        session_id="session-sentinel",
+        image_ids=[ref.ref_id],
+    )
+    injected_ids = _TrackingList([ref.ref_id])
+    request.__dict__["image_ids"] = injected_ids
+
+    refs, issues = store.resolve_request_refs(
+        request,
+        owner_scope="owner-sentinel",
+        allowed_modalities={"image"},
+        max_items=1,
+        max_total_bytes=1024,
+    )
+
+    assert refs == []
+    assert [issue.code for issue in issues] == ["memory_media_request_invalid"]
+    assert injected_ids.calls == []
+
+
+def test_read_rejects_non_exact_ref_dict_key_before_lookup_hooks() -> None:
+    """Raw ref keys are proven exact before any dict lookup can compare them."""
+    store = ManagedMemoryMediaStore(max_total_bytes=1024)
+    ref = store.register(
+        owner_scope="owner-sentinel",
+        media_type="image",
+        mime_type="image/jpeg",
+        payload=b"jpeg-sentinel",
+    )
+    ref_id = ref.__dict__.pop("ref_id")
+    injected_key = _MasqueradingStr("attacker-ref-id", target="ref_id")
+    ref.__dict__[injected_key] = ref_id
+    injected_key.calls.clear()
+
+    with pytest.raises(MemoryMediaAccessError) as exc_info:
+        store.read(ref, owner_scope="owner-sentinel", max_bytes=1024)
+
+    assert exc_info.value.code == "memory_media_ref_mismatch"
+    assert injected_key.calls == []
+
+
+def test_read_rejects_ref_dict_with_unexpected_fields() -> None:
+    """A managed ref must contain exactly the declared public field set."""
+    store = ManagedMemoryMediaStore(max_total_bytes=1024)
+    ref = store.register(
+        owner_scope="owner-sentinel",
+        media_type="image",
+        mime_type="image/jpeg",
+        payload=b"jpeg-sentinel",
+    )
+    ref.__dict__["unexpected"] = "caller-controlled"
+
+    with pytest.raises(MemoryMediaAccessError) as exc_info:
+        store.read(ref, owner_scope="owner-sentinel", max_bytes=1024)
+
+    assert exc_info.value.code == "memory_media_ref_mismatch"
+
+
+@pytest.mark.parametrize("argument", ["max_total_bytes", "max_item_bytes"])
+def test_store_constructor_rejects_int_subclasses_before_comparison_hooks(
+    argument: str,
+) -> None:
+    """Store budgets must be exact integers before any range comparison."""
+    injected = _ComparisonInt(1024)
+    arguments = {"max_total_bytes": 1024, argument: injected}
+
+    with pytest.raises(TypeError):
+        ManagedMemoryMediaStore(**arguments)
+
+    assert injected.calls == []
+
+
+@pytest.mark.parametrize("argument", ["max_total_bytes", "max_item_bytes"])
+def test_store_constructor_rejects_bool_budgets(argument: str) -> None:
+    """A bool cannot silently become a byte budget through int inheritance."""
+    arguments = {"max_total_bytes": 1024, argument: True}
+
+    with pytest.raises(TypeError):
+        ManagedMemoryMediaStore(**arguments)
+
+
+def test_artifact_registration_rejects_non_exact_dict_key_before_lookup_hooks() -> None:
+    """Artifact model keys receive the same hook-free snapshot treatment as refs."""
+    store = ManagedMemoryMediaStore(max_total_bytes=1024)
+    artifact = MemoryArtifactPayload(
+        owner_scope="owner-sentinel",
+        media_type="image",
+        mime_type="image/jpeg",
+        payload=b"jpeg-sentinel",
+    )
+    owner_scope = artifact.__dict__.pop("owner_scope")
+    injected_key = _MasqueradingStr("attacker-owner", target="owner_scope")
+    artifact.__dict__[injected_key] = owner_scope
+    injected_key.calls.clear()
+
+    with pytest.raises(TypeError):
+        store.register(artifact)
+
+    assert injected_key.calls == []

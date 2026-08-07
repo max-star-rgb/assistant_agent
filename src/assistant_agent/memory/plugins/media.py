@@ -23,6 +23,23 @@ from assistant_agent.memory.plugins.contracts import (
 from assistant_agent.runtime.requests import UserRequest
 
 
+_MEDIA_TYPES = frozenset({"image", "audio", "video", "document"})
+_MANAGED_MEDIA_REF_FIELDS = frozenset(
+    {
+        "ref_id",
+        "media_type",
+        "mime_type",
+        "size_bytes",
+        "created_at",
+        "owner_scope",
+    }
+)
+_MEMORY_ARTIFACT_PAYLOAD_FIELDS = frozenset(
+    {"owner_scope", "media_type", "mime_type", "payload", "expires_at"}
+)
+_REQUEST_MEDIA_FIELDS = frozenset({"image_ids", "video_ids", "audio_id"})
+
+
 class MemoryMediaAccessError(PermissionError):
     """Stable denial returned when a Plugin cannot access managed media."""
 
@@ -70,6 +87,10 @@ class ManagedMemoryMediaStore:
         max_item_bytes: int | None = None,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
+        if type(max_total_bytes) is not int:
+            raise TypeError("max_total_bytes must be an exact integer")
+        if max_item_bytes is not None and type(max_item_bytes) is not int:
+            raise TypeError("max_item_bytes must be an exact integer")
         if max_total_bytes < 0:
             raise ValueError("max_total_bytes must be non-negative")
         if max_item_bytes is not None and max_item_bytes < 0:
@@ -78,7 +99,9 @@ class ManagedMemoryMediaStore:
         self._max_item_bytes = (
             max_total_bytes if max_item_bytes is None else max_item_bytes
         )
-        self._clock = clock or (lambda: datetime.now(timezone.utc))
+        self._clock = (
+            clock if clock is not None else lambda: datetime.now(timezone.utc)
+        )
         self._entries: dict[str, _StoredMedia] = {}
         self._total_bytes = 0
         self._lock = RLock()
@@ -106,11 +129,10 @@ class ManagedMemoryMediaStore:
                 for value in (owner_scope, media_type, mime_type, expires_at)
             ):
                 raise TypeError("artifact registration cannot mix payload fields")
-            owner_scope = payload.owner_scope
-            media_type = payload.media_type
-            mime_type = payload.mime_type
-            expires_at = payload.expires_at
-            payload = payload.payload
+            artifact_fields = self._artifact_payload_fields(payload)
+            if artifact_fields is None:
+                raise TypeError("managed artifact payload must have exact fields")
+            owner_scope, media_type, mime_type, payload, expires_at = artifact_fields
 
         if not self._is_registration_metadata(
             owner_scope,
@@ -205,17 +227,23 @@ class ManagedMemoryMediaStore:
             or max_total_bytes < 0
         ):
             raise ValueError("media request limits must be non-negative")
+        try:
+            safe_allowed_modalities = self._copy_exact_string_set(
+                allowed_modalities,
+                allow_none=False,
+                error_code="memory_media_allowed_modalities_invalid",
+                valid_values=_MEDIA_TYPES,
+            )
+        except MemoryMediaAccessError as error:
+            return [], [self._issue(error.code)]
+        candidates = self._request_candidates(request)
+        if candidates is None:
+            return [], [self._issue("memory_media_request_invalid")]
         now = self._ensure_aware(self._clock())
         resolved: list[ManagedMediaRef] = []
         issues: list[MemoryPluginIssue] = []
         total_bytes = 0
         seen_ids: set[str] = set()
-        candidates = [
-            *( (ref_id, "image") for ref_id in request.image_ids ),
-            *( (ref_id, "video") for ref_id in request.video_ids ),
-        ]
-        if request.audio_id is not None:
-            candidates.append((request.audio_id, "audio"))
 
         for ref_id, requested_modality in candidates:
             if type(ref_id) is not str:
@@ -239,7 +267,7 @@ class ManagedMemoryMediaStore:
             if self._is_expired(entry, now):
                 issues.append(self._issue("memory_media_expired"))
                 continue
-            if entry.media_type not in allowed_modalities:
+            if entry.media_type not in safe_allowed_modalities:
                 issues.append(self._issue("memory_media_modality_not_allowed"))
                 continue
             if len(resolved) >= max_items:
@@ -269,6 +297,17 @@ class ManagedMemoryMediaStore:
             raise MemoryMediaAccessError("memory_media_owner_mismatch")
         if type(max_bytes) is not int or max_bytes < 0:
             raise MemoryMediaAccessError("memory_media_size_limit")
+        safe_allowed_modalities = self._copy_exact_string_set(
+            allowed_modalities,
+            allow_none=True,
+            error_code="memory_media_allowed_modalities_invalid",
+            valid_values=_MEDIA_TYPES,
+        )
+        safe_allowed_mime_types = self._copy_exact_string_set(
+            allowed_mime_types,
+            allow_none=True,
+            error_code="memory_media_allowed_mime_types_invalid",
+        )
         with self._lock:
             entry = self._entries.get(external_ref.ref_id)
         if entry is None:
@@ -280,13 +319,13 @@ class ManagedMemoryMediaStore:
         if self._is_expired(entry, self._ensure_aware(self._clock())):
             raise MemoryMediaAccessError("memory_media_expired")
         if (
-            allowed_modalities is not None
-            and entry.media_type not in allowed_modalities
+            safe_allowed_modalities is not None
+            and entry.media_type not in safe_allowed_modalities
         ):
             raise MemoryMediaAccessError("memory_media_modality_not_allowed")
         if (
-            allowed_mime_types is not None
-            and entry.mime_type not in allowed_mime_types
+            safe_allowed_mime_types is not None
+            and entry.mime_type not in safe_allowed_mime_types
         ):
             raise MemoryMediaAccessError("memory_media_mime_not_allowed")
         if len(entry.payload) > max_bytes:
@@ -322,16 +361,23 @@ class ManagedMemoryMediaStore:
         values = object.__getattribute__(ref, "__dict__")
         if type(values) is not dict:
             return None
-        ref_id = values.get("ref_id")
-        media_type = values.get("media_type")
-        mime_type = values.get("mime_type")
-        size_bytes = values.get("size_bytes")
-        created_at = values.get("created_at")
-        owner_scope = values.get("owner_scope")
+        field_names: set[str] = set()
+        for field_name in values:
+            if type(field_name) is not str:
+                return None
+            field_names.add(field_name)
+        if field_names != _MANAGED_MEDIA_REF_FIELDS:
+            return None
+        ref_id = dict.__getitem__(values, "ref_id")
+        media_type = dict.__getitem__(values, "media_type")
+        mime_type = dict.__getitem__(values, "mime_type")
+        size_bytes = dict.__getitem__(values, "size_bytes")
+        created_at = dict.__getitem__(values, "created_at")
+        owner_scope = dict.__getitem__(values, "owner_scope")
         if (
             type(ref_id) is not str
             or type(media_type) is not str
-            or media_type not in {"image", "audio", "video", "document"}
+            or media_type not in _MEDIA_TYPES
             or type(mime_type) is not str
             or type(size_bytes) is not int
             or size_bytes < 0
@@ -359,10 +405,87 @@ class ManagedMemoryMediaStore:
             type(owner_scope) is str
             and bool(owner_scope)
             and type(media_type) is str
-            and media_type in {"image", "audio", "video", "document"}
+            and media_type in _MEDIA_TYPES
             and type(mime_type) is str
             and bool(mime_type)
             and isinstance(payload, bytes)
+        )
+
+    @staticmethod
+    def _copy_exact_string_set(
+        value: object,
+        *,
+        allow_none: bool,
+        error_code: str,
+        valid_values: frozenset[str] | None = None,
+    ) -> set[str] | None:
+        if value is None:
+            if allow_none:
+                return None
+            raise MemoryMediaAccessError(error_code)
+        if type(value) is not set:
+            raise MemoryMediaAccessError(error_code)
+        safe_values: set[str] = set()
+        for item in value:
+            if type(item) is not str:
+                raise MemoryMediaAccessError(error_code)
+            if valid_values is not None and item not in valid_values:
+                raise MemoryMediaAccessError(error_code)
+            safe_values.add(item)
+        return safe_values
+
+    @staticmethod
+    def _request_candidates(
+        request: object,
+    ) -> list[tuple[object, MemoryModality]] | None:
+        if type(request) is not UserRequest:
+            return None
+        values = object.__getattribute__(request, "__dict__")
+        if type(values) is not dict:
+            return None
+        field_names: set[str] = set()
+        for field_name in values:
+            if type(field_name) is not str:
+                return None
+            field_names.add(field_name)
+        if not _REQUEST_MEDIA_FIELDS.issubset(field_names):
+            return None
+        image_ids = dict.__getitem__(values, "image_ids")
+        video_ids = dict.__getitem__(values, "video_ids")
+        audio_id = dict.__getitem__(values, "audio_id")
+        if type(image_ids) is not list or type(video_ids) is not list:
+            return None
+        candidates: list[tuple[object, MemoryModality]] = []
+        for ref_id in image_ids:
+            candidates.append((ref_id, "image"))
+        for ref_id in video_ids:
+            candidates.append((ref_id, "video"))
+        if audio_id is not None:
+            candidates.append((audio_id, "audio"))
+        return candidates
+
+    @staticmethod
+    def _artifact_payload_fields(
+        artifact: object,
+    ) -> tuple[object, object, object, object, object] | None:
+        if type(artifact) is not MemoryArtifactPayload:
+            return None
+        values = object.__getattribute__(artifact, "__dict__")
+        if type(values) is not dict:
+            return None
+        field_names: set[str] = set()
+        for field_name in values:
+            if type(field_name) is not str:
+                return None
+            field_names.add(field_name)
+        if field_names != _MEMORY_ARTIFACT_PAYLOAD_FIELDS:
+            return None
+        return (
+            dict.__getitem__(values, "owner_scope"),
+            dict.__getitem__(values, "media_type"),
+            dict.__getitem__(values, "mime_type"),
+            dict.__getitem__(values, "payload"),
+            dict.__getitem__(values, "expires_at"),
         )
 
     @staticmethod
