@@ -54,6 +54,14 @@ class MemoryPluginSessionResolution:
     status: MemoryPluginSessionResolutionStatus
 
 
+class MemoryPluginSessionLoadInvalidated(RuntimeError):
+    """Signal a caller-owned load invalidated before Host publication."""
+
+    def __init__(self, record: MemoryPluginSessionRecord | None = None) -> None:
+        self.record = _copy_record(record) if record is not None else None
+        super().__init__("memory_plugin_session_load_invalidated")
+
+
 class MemoryPluginSessionStore:
     """Resolve one isolated Plugin session record per Runtime session."""
 
@@ -78,6 +86,7 @@ class MemoryPluginSessionStore:
         before_publish: Callable[[MemoryPluginSessionRecord], MemoryPluginSessionRecord]
         | None = None,
         reset: bool = False,
+        retry_on_invalidation: bool = True,
     ) -> MemoryPluginSessionResolution:
         """Run ``loader`` once for a session and return defensive copies."""
 
@@ -112,7 +121,9 @@ class MemoryPluginSessionStore:
                         self._loading.pop(key, None)
                     self._condition.notify_all()
                 if stale and isinstance(error, Exception):
-                    continue
+                    if retry_on_invalidation:
+                        continue
+                    raise MemoryPluginSessionLoadInvalidated() from None
                 raise
 
             with self._condition:
@@ -120,7 +131,9 @@ class MemoryPluginSessionStore:
                     if self._loading.get(key) == load_epoch:
                         self._loading.pop(key, None)
                     self._condition.notify_all()
-                    continue
+                    if retry_on_invalidation:
+                        continue
+                    raise MemoryPluginSessionLoadInvalidated(frozen)
                 if before_publish is not None:
                     try:
                         frozen = before_publish(frozen)

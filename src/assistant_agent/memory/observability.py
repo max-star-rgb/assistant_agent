@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -22,6 +23,14 @@ from assistant_agent.observability.trace_store import (
     new_span_id,
     sanitize_trace_value,
 )
+
+
+_SAFE_PLUGIN_ATTRIBUTE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_SECRET_PLUGIN_ATTRIBUTE_RE = re.compile(
+    r"(?:api[_-]?key|authorization|bearer|credential|password|secret|token)",
+    re.IGNORECASE,
+)
+_REDACTED_PLUGIN_ATTRIBUTE = "[redacted]"
 
 
 @dataclass(frozen=True)
@@ -279,13 +288,23 @@ def _memory_plugin_attributes(
     if plugin_id is None:
         return {}
     return {
-        "memory_plugin_id": plugin_id,
-        "memory_plugin_version": plugin_version,
-        "memory_plugin_api_version": api_version,
-        "memory_plugin_operation": operation,
+        "memory_plugin_id": _safe_plugin_attribute(plugin_id),
+        "memory_plugin_version": _safe_plugin_attribute(plugin_version),
+        "memory_plugin_api_version": _safe_plugin_attribute(api_version),
+        "memory_plugin_operation": _safe_plugin_attribute(operation),
         "memory_plugin_issue_codes": list(issue_codes or []),
         "memory_plugin_retry_count": max(0, retry_count),
     }
+
+
+def _safe_plugin_attribute(value: str | None) -> str | None:
+    if value is None:
+        return None
+    if not _SAFE_PLUGIN_ATTRIBUTE_RE.fullmatch(
+        value
+    ) or _SECRET_PLUGIN_ATTRIBUTE_RE.search(value):
+        return _REDACTED_PLUGIN_ATTRIBUTE
+    return value
 
 
 def _change_operation(change: Mem0MemoryChange | MemoryChange) -> str:

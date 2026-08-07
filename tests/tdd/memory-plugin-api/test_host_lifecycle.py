@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor
@@ -1271,6 +1272,7 @@ def test_host_ingestion_uses_per_identity_ordering_and_global_pending_bound() ->
             self.first_release = Event()
             self.second_started = Event()
             self.other_started = Event()
+            self.other_release = Event()
 
         def ingest_turn(self, request: Any) -> MemoryTurnIngestionResult:
             with self._calls_lock:
@@ -1284,6 +1286,7 @@ def test_host_ingestion_uses_per_identity_ordering_and_global_pending_bound() ->
                     self.second_started.set()
             else:
                 self.other_started.set()
+                assert self.other_release.wait(1.0)
             return MemoryTurnIngestionResult(status="accepted")
 
     plugin = OrderingPlugin()
@@ -1318,10 +1321,12 @@ def test_host_ingestion_uses_per_identity_ordering_and_global_pending_bound() ->
         }
 
         plugin.first_release.set()
+        plugin.other_release.set()
         assert host.drain(timeout=1.0)
         assert plugin.second_started.is_set()
     finally:
         plugin.first_release.set()
+        plugin.other_release.set()
         host.close(timeout=1.0)
 
 
@@ -1439,6 +1444,38 @@ def test_close_session_stops_new_ingestion_drains_and_calls_plugin_once() -> Non
     host.close(timeout=1.0)
 
 
+def test_close_session_drain_timeout_is_retryable_without_closing_early() -> None:
+    plugin = ScriptedIngestionMemoryPlugin(block_ingestion=True)
+    host, _ = _host(plugin)
+    identity = _identity()
+    state = _completed_state()
+    host.open_session(identity=identity, state=state, trace_store=None)
+    assert host.schedule_ingestion(state=state, trace_store=None)
+    assert plugin.ingestion_started.wait(0.5)
+
+    try:
+        first = host.close_session(identity=identity, timeout=0.01)
+
+        assert first.status == "partial"
+        assert [issue.code for issue in first.issues] == ["memory_plugin_timeout"]
+        assert plugin.close_requests == []
+        assert host.session_store.get(identity) is not None
+        rejected = _completed_state(run_id="run-after-drain-timeout")
+        assert host.schedule_ingestion(state=rejected, trace_store=None) is False
+
+        plugin.ingestion_release.set()
+        second = host.close_session(identity=identity, timeout=1.0)
+        repeated = host.close_session(identity=identity, timeout=1.0)
+
+        assert second.status == "closed"
+        assert repeated == second
+        assert len(plugin.close_requests) == 1
+        assert host.session_store.get(identity) is None
+    finally:
+        plugin.ingestion_release.set()
+        host.close(timeout=1.0)
+
+
 def test_close_session_waits_for_inflight_open_and_closes_its_late_handle() -> None:
     plugin = BlockingOpenMemoryPlugin()
     host, _ = _host(plugin)
@@ -1471,6 +1508,50 @@ def test_close_session_waits_for_inflight_open_and_closes_its_late_handle() -> N
     assert plugin.close_requests[0].session_handle == "late-handle-sentinel"
     assert host.session_store.get(identity) is None
     host.close(timeout=1.0)
+
+
+def test_close_session_timeout_invalidates_and_reaps_one_late_open() -> None:
+    plugin = BlockingOpenMemoryPlugin()
+    host, _ = _host(plugin)
+    identity = _identity()
+    state = _completed_state()
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            opening = executor.submit(
+                host.open_session,
+                identity=identity,
+                state=state,
+                trace_store=None,
+            )
+            assert plugin.open_started.wait(0.5)
+
+            first_close = host.close_session(identity=identity, timeout=0.01)
+            assert first_close.status == "partial"
+            assert [issue.code for issue in first_close.issues] == [
+                "memory_plugin_timeout"
+            ]
+            assert plugin.close_requests == []
+            assert host.session_store.get(identity) is None
+
+            plugin.open_release.set()
+            opened = opening.result(timeout=1.0)
+
+        assert opened.status == "degraded"
+        assert opened.error_codes == ["memory_plugin_unavailable"]
+        assert plugin.open_calls == 1
+        assert len(plugin.close_requests) == 1
+        assert plugin.close_requests[0].session_handle == "late-handle-sentinel"
+        assert host.session_store.get(identity) is None
+
+        second_close = host.close_session(identity=identity, timeout=1.0)
+        repeated = host.close_session(identity=identity, timeout=1.0)
+        assert second_close.status == "closed"
+        assert repeated == second_close
+        assert len(plugin.close_requests) == 1
+    finally:
+        plugin.open_release.set()
+        host.close(timeout=1.0)
 
 
 def test_host_close_can_finish_cleanup_after_an_initial_bounded_timeout() -> None:
@@ -1663,6 +1744,55 @@ def test_plugin_observability_failure_is_fail_open_for_host_lifecycle() -> None:
         assert opened.status == "ready"
         assert prepared.status == "succeeded"
         assert len(plugin.requests) == 1
+    finally:
+        host.close(timeout=1.0)
+
+
+def test_plugin_observability_redacts_unsafe_descriptor_attributes() -> None:
+    plugin = ScriptedIngestionMemoryPlugin()
+    plugin.descriptor = plugin.descriptor.model_copy(
+        update={
+            "plugin_id": "authorization-secret-sentinel",
+            "plugin_version": "api_key-secret-sentinel",
+        }
+    )
+    host, _ = _host(plugin)
+    state = _completed_state()
+    trace_store = InMemoryTraceStore()
+    host.open_session(identity=_identity(), state=state, trace_store=trace_store)
+
+    try:
+        assert host.schedule_ingestion(state=state, trace_store=trace_store)
+        assert host.drain(timeout=1.0)
+        events = [
+            event
+            for event in trace_store.list_by_run(state.run_id)
+            if event.canonical_event
+            in {
+                "memory.session_recall.finished",
+                "memory.ingestion.queued",
+                "memory.ingestion.finished",
+            }
+        ]
+
+        assert len(events) == 3
+        for event in events:
+            assert event.attributes["memory_plugin_id"] == "[redacted]"
+            assert event.attributes["memory_plugin_version"] == "[redacted]"
+            assert (
+                event.attributes["memory_plugin_api_version"]
+                == "assistant_memory_plugin_v1"
+            )
+            assert "memory_plugin_operation" in event.attributes
+            assert "memory_plugin_issue_codes" in event.attributes
+            assert "memory_plugin_retry_count" in event.attributes
+        serialized = json.dumps(
+            [event.model_dump(mode="json") for event in events],
+            ensure_ascii=False,
+        )
+        assert "secret-sentinel" not in serialized
+        assert "authorization-secret-sentinel" not in serialized
+        assert "api_key-secret-sentinel" not in serialized
     finally:
         host.close(timeout=1.0)
 
