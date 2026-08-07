@@ -195,6 +195,7 @@ class DailyAuditAttempt(BaseModel):
     audit_date: date
     status: DailyAttemptStatus
     bundle_path: str
+    codex_input_path: str | None = None
     codex_output_path: str | None = None
     error_summary: str | None = None
 

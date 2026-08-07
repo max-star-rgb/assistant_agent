@@ -17,6 +17,9 @@ from assistant_agent.observability.runtime_audit.collector import (
     LangfuseAuditSource,
     collect_runtime_audit,
 )
+from assistant_agent.observability.runtime_audit.codex_input import (
+    build_daily_codex_input,
+)
 from assistant_agent.observability.runtime_audit.daily_models import (
     DailyAuditAttempt,
     DailyAuditCommitIntent,
@@ -67,7 +70,7 @@ class DailyAuditRunResult(BaseModel):
 
 
 class DailyAuditDayError(RuntimeError):
-    """An unexpected backfill exception tied to one exact audit day."""
+    """An unexpected automatic-audit exception tied to one exact audit day."""
 
     def __init__(
         self,
@@ -119,9 +122,9 @@ def _run_one_locked(
     if (
         commit_continuous_state
         and predecessor is not None
-        and window.audit_date != predecessor + timedelta(days=1)
+        and window.audit_date <= predecessor
     ):
-        raise ValueError("daily commit target must follow its predecessor")
+        raise ValueError("daily commit target must be newer than its predecessor")
     attempt_id = store.allocate_audit_run_id(collected_at)
     bundle_path = store.inbox_dir / f"{attempt_id}.json"
     running = DailyAuditAttempt(
@@ -139,7 +142,16 @@ def _run_one_locked(
             judge_grace=judge_grace, low_score_threshold=low_score_threshold,
         )
         bundle_path = store.write_bundle(bundle)
-        running = running.model_copy(update={"bundle_path": str(bundle_path)})
+        codex_input_path = store.write_codex_input(
+            attempt_id,
+            build_daily_codex_input(bundle, source_bundle_path=bundle_path),
+        )
+        running = running.model_copy(
+            update={
+                "bundle_path": str(bundle_path),
+                "codex_input_path": str(codex_input_path),
+            }
+        )
         store.write_attempt(running)
     except Exception as exc:
         return _fail(store=store, attempt=running, bundle_path=bundle_path,
@@ -183,7 +195,7 @@ def _run_one_locked(
         previous_registry = store.read_issue_registry()
         report = codex_runner(
             audit_date=window.audit_date,
-            bundle_path=bundle_path,
+            bundle_path=codex_input_path,
             issues_path=store.issues_path,
             repo_root=repo_root,
             output_path=store.codex_json_path(attempt_id),
@@ -249,7 +261,7 @@ def run_pending_daily_audits(
     judge_grace: timedelta = timedelta(minutes=15),
     low_score_threshold: float = DEFAULT_LOW_SCORE_THRESHOLD,
 ) -> list[DailyAuditRunResult]:
-    """Backfill in calendar order, stopping at the first failed daily attempt."""
+    """Audit yesterday once; older failed or missed dates require explicit reruns."""
 
     results: list[DailyAuditRunResult] = []
     with store.daily_claim():
@@ -406,9 +418,9 @@ def _apply_commit_intent(
             "stale daily commit intent cannot overwrite newer watermark"
         )
     expected_date = intent.expected_predecessor_watermark
-    if expected_date is not None and attempt.audit_date != expected_date + timedelta(days=1):
+    if expected_date is not None and attempt.audit_date <= expected_date:
         raise DailyCommitIntentRejected(
-            "daily commit intent target is not adjacent to predecessor"
+            "daily commit intent target is not newer than predecessor"
         )
     if current_date not in {expected_date, attempt.audit_date}:
         raise DailyCommitIntentRejected(

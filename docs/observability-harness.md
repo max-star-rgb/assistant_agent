@@ -352,10 +352,11 @@ infrastructure unknown，不能把本地记录误报为导出缺失。本地 JSO
 必须标记 local completeness unavailable；远端 Trace 非空时仍完成远端审计并在日报限制中公开该缺口，
 远端也为空时则审计失败，不能认证为空日或推进连续状态。
 
-审计以 `state/watermark.json` 的最后成功自然日为检查点。错过调度或机器离线后，下一次无参数
-`run` 会从 watermark 的下一日按日顺序补跑，遇到失败即停止，不能跳过日期。若某日已确认
+审计以 `state/watermark.json` 记录最近一次自动审计成功的自然日。无参数 `run` 永远只考虑刚结束的
+昨天：昨天尚未成功时审计昨天，昨天已经成功时不重复运行；错过调度、机器离线或前一日失败都不会
+自动补跑更早日期。若需要复查更早日期，必须由 operator 显式使用 `run --date YYYY-MM-DD`。若某日已确认
 Langfuse 和本地完整性来源都可读、且没有任何 trace 或本地证据，会写入一份极简中文成功日报，
-并且不调用 Codex。需要单独复查某个自然日时，operator 可显式使用 `run --date YYYY-MM-DD`；该命令只
+并且不调用 Codex。显式日期命令只
 以当前 registry 建立只读 lifecycle refresh view 并刷新对应 Markdown，不写 `state/issues.json`，也不
 改变连续 watermark。即使是历史日期，伪造的 Trace/Score、未知 issue 直接进入
 `runtime_verified`/`regressed`、伪造 commit 或不存在的测试路径仍会被拒绝。完整参数继续以 `--help` 为准。
@@ -363,7 +364,8 @@ Langfuse 和本地完整性来源都可读、且没有任何 trace 或本地证�
 产物固定写入 `.data/runtime_audit/`：
 
 - `inbox/<audit_run_id>.json`：版本化、只读的内部 audit bundle；
-- `state/attempts/`、`state/issues.json`、`state/watermark.json`：内部尝试记录、issue registry 与连续成功检查点；
+- `state/codex-inputs/`：交给 Codex 的有界异常索引；
+- `state/attempts/`、`state/issues.json`、`state/watermark.json`：内部尝试记录、issue registry 与最近成功检查点；
 - `reports/YYYY-MM-DD.md`：唯一面向人的日报；`reports/` 不放内部 JSON。
 
 新收集的内部 inbox 使用 `assistant_agent_runtime_audit_bundle_v2` 紧凑 JSON。collector 可在生成
@@ -372,8 +374,20 @@ metadata。Trace/Observation input 中重复的 Tool catalog 按完整 SHA-256 �
 `tool_catalogs`，原位置只保留 `tool_catalog_ref`；Tool 业务 output 中同名字段不参与改写。读取端继续
 兼容旧 v1 bundle，v1 只作为历史输入，不再由新收集流程生成。
 
+本地 auxiliary side stream 不作为 Langfuse 导出缺失：视觉工具、session recall 等未形成
+`assistant.turn` completeness record 的本地事件只在 bundle 中保存事件类型与数量聚合，不逐条生成
+`local_fallbacks` 或 finding。只有真实缺少对应 Langfuse `assistant.turn` 的本地主运行记录才保留有界
+timeline fallback。
+
+完整审计 bundle 供 Codex 原生搜索、机器追溯和发布后校验；Codex 日审计先读取独立的
+`assistant_agent_daily_codex_input_v1` 导航索引。该索引包含完整 bundle 路径、当天全部 trace 的基础事实和
+Score，并为低分、缺失 Score、observation error 等确定性异常预取相关 observation 详情。索引以
+350,000 bytes 为硬上限；超限时优先省略大 input/output 内容并保留 observation 身份、大小和省略原因，
+Codex 需要核对时必须按 trace/observation 在完整审计 bundle 中原生搜索和分段读取，不能把索引省略误报为
+证据缺失。结构本身仍超限则审计失败，不能静默丢失覆盖范围。
+
 每个日期的状态机为 `running -> succeeded` 或 `running -> failed`。成功时先以 journal 校验
-日报、issue registry 和 watermark 的前置条件，再原子推进连续状态；中断后的待提交 journal 会在下次
+日报、issue registry 和 watermark 的前置条件，再原子推进状态；中断后的待提交 journal 会在下次
 运行先恢复，冲突的旧 journal 会隔离。失败会保留内部 bundle，并写入“审计未完成”的失败日报；它不会
 覆盖已有成功日报，也不会推进 issue registry 或 watermark。
 
@@ -385,7 +399,11 @@ metadata。Trace/Observation input 中重复的 Tool catalog 按完整 SHA-256 �
 
 有 trace 或本地缺失导出证据时，Codex 通过 `--ephemeral --sandbox read-only` 运行；子进程环境移除
 Langfuse 和 Provider credentials，强制 mock Provider mode，只允许生成报告，不允许修改代码、Langfuse
-或 Memory。Langfuse、Codex、报告 schema、Judge pending 或 evaluator 基础设施失败都不是质量失败，
+或 Memory。Codex 网络必须经过 operator 明确配置：runner 只透传无用户名密码且指向
+`127.0.0.1`、`localhost` 或 `::1` 的标准 proxy 环境变量，远端或带凭据 proxy 仍被删除。systemd
+不会自动继承交互终端变量；需要本地代理时在未跟踪的
+`%h/.config/assistant_agent/runtime-audit.env` 中配置 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY` 与
+对应小写变量。Langfuse、Codex、报告 schema、Judge pending 或 evaluator 基础设施失败都不是质量失败，
 而是上述不可推进的审计失败。issue 的代码修复只能标为 `code_addressed`；必须在后续自然日取得新的
 运行证据，才能升级为 `runtime_verified`，新 trace 证明复发时才标为 `regressed`。首次发现 issue 时若
 本次坏 Trace 之后已经存在可信代码处理，可以直接标记 `code_addressed`；`code:<commit-sha>` 必须解析为
@@ -468,8 +486,8 @@ systemctl --user enable --now assistant-agent-runtime-audit.timer
 assistant-agent-runtime-audit.timer` 查看下次运行，用
 `journalctl --user -u assistant-agent-runtime-audit.service` 查看状态和 artifact path。unit 默认工作目录为
 `%h/pycharm_project/assistant_agent`、Python 为 `%h/miniconda3/envs/hello_agent/bin/python`；路径不同
-必须先复制模板并显式修改。service 不对整次 daily/backfill 设置有限 `TimeoutStartSec`，因此多日顺序补跑
-不会被一个全局 20 分钟截止时间终止；每次 Codex 子进程仍保留自己的显式 timeout。
+必须先复制模板并显式修改。service 不对整次 daily run 设置有限 `TimeoutStartSec`；每次 Codex 子进程
+仍保留自己的显式 timeout。
 
 历史 `agent_eval.dimension.*` 和默认关闭的 legacy runtime Score 不做破坏性清理；它们仅作为历史数据
 保留。新 Experiment 与日常 evaluator 必须使用上述 canonical 名称，迁移后的完整性检查也只认新名称。

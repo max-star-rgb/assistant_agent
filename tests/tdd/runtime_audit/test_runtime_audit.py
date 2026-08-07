@@ -658,6 +658,32 @@ def test_codex_environment_removes_credentials_and_proxies_but_preserves_codex_l
     }
 
 
+def test_codex_environment_preserves_only_credential_free_loopback_proxies() -> None:
+    """Would fail if systemd Codex could not reach the operator's local proxy."""
+
+    sanitized = runner_module.sanitized_codex_environment(
+        {
+            "PATH": "/usr/bin",
+            "HTTP_PROXY": "http://127.0.0.1:7888",
+            "HTTPS_PROXY": "http://localhost:7888",
+            "ALL_PROXY": "socks://[::1]:7888",
+            "NO_PROXY": "127.0.0.1,localhost",
+            "http_proxy": "http://127.0.0.1:7888",
+            "HTTPS_PROXY_WITH_AUTH": "http://user:secret@127.0.0.1:7888",
+        }
+    )
+
+    assert sanitized == {
+        "PATH": "/usr/bin",
+        "HTTP_PROXY": "http://127.0.0.1:7888",
+        "HTTPS_PROXY": "http://localhost:7888",
+        "ALL_PROXY": "socks://[::1]:7888",
+        "NO_PROXY": "127.0.0.1,localhost",
+        "http_proxy": "http://127.0.0.1:7888",
+        "MULTIMODAL_AGENT_PROVIDER_MODE": "mock",
+    }
+
+
 def test_codex_environment_has_an_explicit_minimal_startup_allowlist() -> None:
     """Would fail if an unlisted runtime variable reached the isolated Codex process."""
 
@@ -810,10 +836,107 @@ def test_orphan_local_side_stream_is_not_counted_as_a_missing_turn_export(
     assert bundle.coverage.local_trace_count == 0
     assert bundle.coverage.missing_export_count == 0
     assert bundle.local_manifests == []
-    assert bundle.local_fallbacks[0].trace_id == "recall-side-stream"
-    assert [(item.code, item.category) for item in bundle.findings] == [
-        ("local_side_stream_unmatched", "coverage")
+    assert bundle.local_fallbacks == []
+    assert bundle.local_auxiliary_summary.trace_count == 1
+    assert bundle.local_auxiliary_summary.event_count == 1
+    assert bundle.local_auxiliary_summary.canonical_event_counts == {
+        "memory.session_recall.finished": 1
+    }
+    assert bundle.findings == []
+
+
+def test_daily_codex_input_indexes_all_traces_and_bounds_detailed_evidence() -> None:
+    """Would fail if Codex had to read the full persisted trace archive."""
+
+    from assistant_agent.observability.runtime_audit.codex_input import (
+        build_daily_codex_input,
+    )
+    from assistant_agent.observability.runtime_audit.models import (
+        AuditCoverage,
+        AuditFinding,
+        LangfuseObservationSnapshot,
+        RuntimeAuditBundle,
+    )
+    import hashlib
+
+    now = datetime(2026, 8, 5, 4, 0, tzinfo=UTC)
+    noisy = LangfuseObservationSnapshot(
+        observation_id="context-observation",
+        name="context.compile",
+        type="SPAN",
+        input={"content": "x" * 50_000},
+        output={"content": "y" * 50_000},
+    )
+    relevant = LangfuseObservationSnapshot(
+        observation_id="tool-observation",
+        name="tool.execute",
+        type="SPAN",
+        output={"error": "tool failed", "detail": "z" * 50_000},
+    )
+    catalog = [{"name": "lookup"}]
+    catalog_ref = hashlib.sha256(
+        json.dumps(
+            catalog, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode()
+    ).hexdigest()
+    bundle = RuntimeAuditBundle(
+        audit_run_id="runtime_audit_test",
+        collected_at=now,
+        window_start=now - timedelta(days=1),
+        window_end=now,
+        coverage=AuditCoverage(
+            langfuse_trace_count=2,
+            local_trace_count=0,
+            matched_trace_count=0,
+            missing_export_count=0,
+            local_source_available=True,
+        ),
+        traces=[
+            LangfuseTraceSnapshot(
+                trace_id="normal-trace",
+                timestamp=now - timedelta(hours=2),
+                input={"tool_catalog_ref": catalog_ref},
+                observations=[noisy],
+            ),
+            LangfuseTraceSnapshot(
+                trace_id="bad-trace",
+                timestamp=now - timedelta(hours=1),
+                observations=[relevant],
+            ),
+        ],
+        findings=[
+            AuditFinding(
+                code="observation_error",
+                category="tool",
+                severity="error",
+                summary="Tool observation failed.",
+                trace_id="bad-trace",
+                observation_id="tool-observation",
+                quality_failure=True,
+            )
+        ],
+        tool_catalogs={catalog_ref: catalog},
+    )
+
+    payload = build_daily_codex_input(
+        bundle,
+        source_bundle_path=Path("/archive/full-bundle.json"),
+        max_bytes=20_000,
+    )
+    encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
+
+    assert len(encoded) <= 20_000
+    assert [item["trace_id"] for item in payload["trace_index"]] == [
+        "normal-trace",
+        "bad-trace",
     ]
+    assert [item["trace_id"] for item in payload["evidence_traces"]] == ["bad-trace"]
+    assert "x" * 1_000 not in encoded.decode()
+    assert payload["evidence_traces"][0]["observations"][0]["observation_id"] == (
+        "tool-observation"
+    )
+    assert payload["tool_catalogs"] == {catalog_ref: catalog}
+    assert payload["source_bundle_path"] == "/archive/full-bundle.json"
 
 
 def test_native_online_evaluator_configuration_uses_canonical_names_and_full_sampling() -> None:

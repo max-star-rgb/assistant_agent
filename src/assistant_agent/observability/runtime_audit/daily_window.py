@@ -35,7 +35,6 @@ def previous_day_window(now: datetime) -> DailyAuditWindow:
 
 
 def pending_audit_dates(*, yesterday: date, last_completed: date | None) -> list[date]:
-    start = yesterday if last_completed is None else last_completed + timedelta(days=1)
-    if start > yesterday:
-        return []
-    return [start + timedelta(days=offset) for offset in range((yesterday - start).days + 1)]
+    """Select only yesterday for automatic runs; historical days are explicit reruns."""
+
+    return [] if last_completed is not None and last_completed >= yesterday else [yesterday]

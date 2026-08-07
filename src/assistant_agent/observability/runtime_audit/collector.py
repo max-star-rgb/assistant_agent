@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Protocol
@@ -16,6 +16,7 @@ from assistant_agent.observability.runtime_audit.models import (
     LangfuseObservationSnapshot,
     LangfuseTraceSnapshot,
     LocalFallbackEvent,
+    LocalAuxiliarySummary,
     LocalTraceFallback,
     LocalTraceManifest,
     RuntimeAuditBundle,
@@ -106,7 +107,7 @@ def collect_runtime_audit(
     manifests = [_manifest(events) for _, events in sorted(turn_by_trace.items())]
     remote_ids = {trace.trace_id for trace in traces}
     missing_ids = sorted(set(turn_by_trace) - remote_ids) if langfuse_available else []
-    orphan_side_ids = (
+    auxiliary_side_ids = (
         sorted(set(local_by_trace) - set(turn_by_trace) - remote_ids)
         if langfuse_available
         else []
@@ -126,19 +127,14 @@ def collect_runtime_audit(
                 summary="Local terminal evidence exists but the Langfuse window has no matching trace.",
             )
         )
-    for trace_id in orphan_side_ids:
-        events = local_by_trace[trace_id]
-        manifest = _manifest(events)
-        fallbacks.append(_fallback(events, manifest=manifest))
-        findings.append(
-            AuditFinding(
-                code="local_side_stream_unmatched",
-                category="coverage",
-                severity="info",
-                trace_id=trace_id,
-                summary="A local auxiliary lifecycle event is not an assistant.turn completeness record.",
-            )
-        )
+    auxiliary_events = [
+        event
+        for trace_id in auxiliary_side_ids
+        for event in local_by_trace[trace_id]
+    ]
+    auxiliary_event_counts = Counter(
+        event.canonical_event or event.event_type for event in auxiliary_events
+    )
     for trace in traces:
         findings.extend(
             _score_findings(
@@ -166,6 +162,11 @@ def collect_runtime_audit(
         traces=compacted_traces,
         local_manifests=manifests,
         local_fallbacks=fallbacks,
+        local_auxiliary_summary=LocalAuxiliarySummary(
+            trace_count=len(auxiliary_side_ids),
+            event_count=len(auxiliary_events),
+            canonical_event_counts=dict(sorted(auxiliary_event_counts.items())),
+        ),
         findings=sorted(
             findings,
             key=lambda item: (

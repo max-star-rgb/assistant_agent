@@ -170,7 +170,7 @@ def _daily_dry_run(args, *, store: RuntimeAuditArtifactStore) -> int:
 
 
 def _run_daily(args, *, repo_root: Path, store: RuntimeAuditArtifactStore) -> int:
-    """Run explicit refreshes or ordered backfill through the resumable daily loop."""
+    """Run an explicit refresh or yesterday's resumable automatic audit."""
 
     collected_at = datetime.now(timezone.utc)
     recover_pending_daily_commits(store)

@@ -925,8 +925,8 @@ def test_explicit_date_uses_shanghai_calendar_boundaries() -> None:
     assert window.end_utc == datetime(2026, 8, 5, 16, 0, tzinfo=timezone.utc)
 
 
-def test_pending_days_backfill_without_historical_first_run() -> None:
-    """Would fail if first runs or missed dates selected an incorrect audit range."""
+def test_automatic_schedule_only_selects_yesterday() -> None:
+    """Would fail if an automatic run retried older failed or missed dates."""
 
     assert pending_audit_dates(
         yesterday=date(2026, 8, 5), last_completed=None
@@ -934,7 +934,11 @@ def test_pending_days_backfill_without_historical_first_run() -> None:
     assert pending_audit_dates(
         yesterday=date(2026, 8, 5),
         last_completed=date(2026, 8, 2),
-    ) == [date(2026, 8, 3), date(2026, 8, 4), date(2026, 8, 5)]
+    ) == [date(2026, 8, 5)]
+    assert pending_audit_dates(
+        yesterday=date(2026, 8, 5),
+        last_completed=date(2026, 8, 5),
+    ) == []
 
 
 def test_nonempty_daily_run_collects_invokes_codex_and_publishes_markdown(
@@ -955,6 +959,15 @@ def test_nonempty_daily_run_collects_invokes_codex_and_publishes_markdown(
 
     assert result.status == "succeeded"
     assert len(calls) == 1
+    codex_input_path = Path(calls[0]["bundle_path"])
+    assert codex_input_path != result.bundle_path
+    assert codex_input_path.name.endswith(".codex-input.json")
+    assert json.loads(codex_input_path.read_text(encoding="utf-8"))["schema_version"] == (
+        "assistant_agent_daily_codex_input_v1"
+    )
+    assert json.loads(result.bundle_path.read_text(encoding="utf-8"))["schema_version"] == (
+        "assistant_agent_runtime_audit_bundle_v2"
+    )
     assert result.report_path is not None
     assert result.report_path.name == "2026-08-05.md"
     assert result.report_path.exists()
@@ -1056,8 +1069,8 @@ def test_codex_failure_preserves_bundle_and_does_not_update_state(tmp_path: Path
     assert "审计未完成" in store.daily_report_path(date(2026, 8, 5)).read_text(encoding="utf-8")
 
 
-def test_backfill_stops_at_first_failed_date(tmp_path: Path) -> None:
-    """Would fail if a missed-day failure let the watermark jump across that date."""
+def test_automatic_run_skips_older_days_and_audits_only_yesterday(tmp_path: Path) -> None:
+    """Would fail if an old failure made the daily timer replay historical dates."""
 
     store = RuntimeAuditArtifactStore(tmp_path / "runtime_audit")
     store.mark_day_completed(
@@ -1067,8 +1080,6 @@ def test_backfill_stops_at_first_failed_date(tmp_path: Path) -> None:
 
     def codex_runner(*, audit_date: date, **_: object) -> daily_models_module.DailyCodexAuditReport:
         seen_dates.append(audit_date)
-        if audit_date == date(2026, 8, 4):
-            raise RuntimeError("Codex failed")
         return _daily_codex_report(audit_date=audit_date)
 
     results = run_pending_daily_audits(
@@ -1091,9 +1102,9 @@ def test_backfill_stops_at_first_failed_date(tmp_path: Path) -> None:
         collected_at=datetime(2026, 8, 6, 0, 15, tzinfo=timezone.utc),
     )
 
-    assert [result.audit_date for result in results] == [date(2026, 8, 3), date(2026, 8, 4)]
-    assert seen_dates == [date(2026, 8, 3), date(2026, 8, 4)]
-    assert store.last_completed_date() == date(2026, 8, 3)
+    assert [result.audit_date for result in results] == [date(2026, 8, 5)]
+    assert seen_dates == [date(2026, 8, 5)]
+    assert store.last_completed_date() == date(2026, 8, 5)
 
 
 @pytest.mark.parametrize("evidence_ref", ["trace:forged", "trace:historical"])
@@ -1757,14 +1768,14 @@ def test_auto_source_failure_recomputes_latest_pending_date_under_claim(
     assert not competitor.is_alive()
     assert exit_code == 2
     payload = json.loads(capsys.readouterr().out)
-    assert payload["audit_dates"] == ["2026-08-04"]
-    assert payload["failed_date"] == "2026-08-04"
+    assert payload["audit_dates"] == ["2026-08-05"]
+    assert payload["failed_date"] == "2026-08-05"
     attempts = [
         DailyAuditAttempt.model_validate_json(path.read_text(encoding="utf-8"))
         for path in store.attempts_dir.glob("*.json")
     ]
     assert [(attempt.audit_date, attempt.status) for attempt in attempts] == [
-        (date(2026, 8, 4), "failed")
+        (date(2026, 8, 5), "failed")
     ]
 
 
@@ -1816,12 +1827,12 @@ def test_auto_source_failure_after_competing_completion_returns_success_without_
     assert list(store.attempts_dir.glob("*.json")) == []
 
 
-def test_auto_backfill_partial_commit_reports_original_day_before_next_claim(
+def test_automatic_run_recovers_yesterday_commit_without_replaying_older_days(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Would fail if a D3 commit exception were recovered and misreported as D4."""
+    """Would fail if journal recovery caused historical replay or duplicate auditing."""
 
     day_two = date(2026, 8, 2)
     day_three = date(2026, 8, 3)
@@ -1890,37 +1901,33 @@ def test_auto_backfill_partial_commit_reports_original_day_before_next_claim(
     first_payload = json.loads(capsys.readouterr().out)
 
     assert first_exit == 2
-    assert first_payload["audit_dates"] == [day_three.isoformat()]
-    assert first_payload["failed_date"] == day_three.isoformat()
-    assert codex_dates == [day_three]
+    assert first_payload["audit_dates"] == [day_four.isoformat()]
+    assert first_payload["failed_date"] == day_four.isoformat()
+    assert codex_dates == [day_four]
     assert source_windows == [
         (
-            window_for_date(day_three).start_utc,
-            window_for_date(day_three).end_utc,
+            window_for_date(day_four).start_utc,
+            window_for_date(day_four).end_utc,
         )
     ]
-    assert store.daily_report_path(day_three).exists()
-    assert not store.daily_report_path(day_four).exists()
+    assert not store.daily_report_path(day_three).exists()
+    assert store.daily_report_path(day_four).exists()
     attempts_after_first = [
         DailyAuditAttempt.model_validate_json(path.read_text(encoding="utf-8"))
         for path in store.attempts_dir.glob("*.json")
     ]
-    assert {attempt.audit_date for attempt in attempts_after_first} == {day_three}
+    assert {attempt.audit_date for attempt in attempts_after_first} == {day_four}
     assert [intent["attempt"]["audit_date"] for intent in store.read_commit_intents()] == [
-        day_three.isoformat()
+        day_four.isoformat()
     ]
 
     second_exit = main(["--no-env-file", "--repo-root", str(tmp_path), "run"])
     second_payload = json.loads(capsys.readouterr().out)
 
     assert second_exit == 0
-    assert second_payload["audit_dates"] == [day_four.isoformat()]
+    assert second_payload["audit_dates"] == []
     assert second_payload["failed_date"] is None
-    assert codex_dates == [day_three, day_four]
-    assert source_windows[-1] == (
-        window_for_date(day_four).start_utc,
-        window_for_date(day_four).end_utc,
-    )
+    assert codex_dates == [day_four]
     assert store.daily_report_path(day_four).exists()
     assert store.last_completed_date() == day_four
     assert store.read_commit_intents() == []
@@ -2079,13 +2086,11 @@ def test_rolling_and_daily_entrypoints_share_claim_without_self_deadlock(
     assert errors == []
 
 
-@pytest.mark.parametrize(
-    "target_date", [date(2026, 8, 4), date(2026, 8, 5), date(2026, 8, 7)]
-)
-def test_non_adjacent_continuous_run_rejects_before_all_daily_side_effects(
+@pytest.mark.parametrize("target_date", [date(2026, 8, 4), date(2026, 8, 5)])
+def test_non_newer_continuous_run_rejects_before_all_daily_side_effects(
     tmp_path: Path, target_date: date
 ) -> None:
-    """Would fail if backward, same-day, or gap runs reached collection or persistence."""
+    """Would fail if a backward or same-day run rewrote the latest checkpoint."""
 
     store = RuntimeAuditArtifactStore(tmp_path / "runtime_audit")
     store.mark_day_completed(date(2026, 8, 5), attempt_id="prior", bundle_path="/tmp/prior")
@@ -2104,7 +2109,7 @@ def test_non_adjacent_continuous_run_rejects_before_all_daily_side_effects(
             source_calls.append(kwargs)
             return super().list_traces(**kwargs)
 
-    with pytest.raises(ValueError, match="target must follow"):
+    with pytest.raises(ValueError, match="target must be newer"):
         run_one_daily_audit(
             window=window_for_date(target_date),
             source=TrackingSource(

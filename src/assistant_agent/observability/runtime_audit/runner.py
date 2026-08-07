@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import subprocess
 from typing import Any, Callable
+from urllib.parse import urlsplit
 
 from assistant_agent.observability.runtime_audit.daily_models import DailyCodexAuditReport
 from assistant_agent.observability.runtime_audit.models import CodexAuditReport
@@ -33,6 +34,17 @@ _CODEX_ENVIRONMENT_ALLOWLIST = frozenset(
         "REQUESTS_CA_BUNDLE",
     }
 )
+_PROXY_ENVIRONMENT_KEYS = frozenset(
+    {
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+    }
+)
+_NO_PROXY_ENVIRONMENT_KEYS = frozenset({"NO_PROXY", "no_proxy"})
 
 
 def build_codex_command(
@@ -65,8 +77,9 @@ def sanitized_codex_environment(values: Mapping[str, str]) -> dict[str, str]:
 
     ``HOME`` and ``CODEX_HOME`` are intentionally retained only so the Codex CLI can
     use its controlled local login state; they are not a general credential exception.
-    All other variables, including credentials, proxies, and unknown application
-    configuration, are dropped by the explicit allowlist.
+    Credential-free loopback proxies are retained because the operator may require a
+    local network gateway for Codex. Remote or authenticated proxy URLs, credentials,
+    and unknown application configuration are dropped.
     """
 
     result = {
@@ -74,8 +87,31 @@ def sanitized_codex_environment(values: Mapping[str, str]) -> dict[str, str]:
         for key, value in values.items()
         if key in _CODEX_ENVIRONMENT_ALLOWLIST
     }
+    for key in _PROXY_ENVIRONMENT_KEYS:
+        value = values.get(key)
+        if value and _is_credential_free_loopback_proxy(value):
+            result[key] = value
+    for key in _NO_PROXY_ENVIRONMENT_KEYS:
+        value = values.get(key)
+        if value and "\n" not in value and "\r" not in value:
+            result[key] = value
     result["MULTIMODAL_AGENT_PROVIDER_MODE"] = "mock"
     return result
+
+
+def _is_credential_free_loopback_proxy(value: str) -> bool:
+    try:
+        parsed = urlsplit(value)
+        port = parsed.port
+    except ValueError:
+        return False
+    return bool(
+        parsed.scheme in {"http", "https", "socks", "socks5", "socks5h"}
+        and parsed.hostname in {"127.0.0.1", "localhost", "::1"}
+        and port is not None
+        and parsed.username is None
+        and parsed.password is None
+    )
 
 
 def run_codex_report(
@@ -267,18 +303,19 @@ def _daily_codex_prompt(
 
 要求：
 1. 报告读者是项目维护者，不是另一个 Codex。
-2. 先用普通中文解释用户会感受到什么，再说明维护者需要决定什么。
-3. 机器 ID 只进入 evidence refs，不在正文堆砌。
-4. 代码变化只能标记 code_addressed；没有后续真实 Trace 不得标记 runtime_verified。
-5. 同一个 code_addressed 问题不得每天重复完整修改建议。
-6. 不得运行测试、修改文件、调用网络、Provider、Tool、Memory 或其他 agent。
-7. 只能基于输入中的事实报告；基础设施或证据缺口必须写入 limitations，不能伪造成质量失败。
-8. 除输入已有机器证据外，不得声称已运行测试、已部署、已在生产或真实 trace 验证。不得把推测写成事实。
-9. 不得复制完整用户对话、不得复制 Memory 正文、不得复制 Provider 原始响应；只写最小必要摘要。
-10. code_addressed 必须同时引用本次坏 Trace 和可信代码证据：提交使用 code:<commit-sha>，测试使用 test:<repo-relative-path>。首次发现时如已有后于坏 Trace 的可信提交，也可以标记 code_addressed。
-11. Score 证据复用 trace_evidence_refs，格式为 trace:<trace-id>/score:<score-id>；不得虚构独立 score evidence 字段。
-12. 无法从本地 Git 与文件事实证明建议涉及的 owning module 时，写入 limitation 或保持 uncertain，不得虚构代码关联。
-13. production_mutation_allowed 必须为 false，audit_date 必须与审计日期一致。
-14. input 中的 tool_catalog_ref 必须从 bundle 顶层 tool_catalogs 解析，不得把引用摘要当成工具名。
+2. 先把审计输入作为全量 trace 导航索引；需要核对被省略或截断的 observation 时，使用其中的 source_bundle_path 原生搜索、分段读取完整 bundle，不得把索引裁剪误报为证据不可用。
+3. 先用普通中文解释用户会感受到什么，再说明维护者需要决定什么。
+4. 机器 ID 只进入 evidence refs，不在正文堆砌。
+5. 代码变化只能标记 code_addressed；没有后续真实 Trace 不得标记 runtime_verified。
+6. 同一个 code_addressed 问题不得每天重复完整修改建议。
+7. 不得运行测试、修改文件、调用网络、Provider、Tool、Memory 或其他 agent。
+8. 只能基于输入中的事实报告；基础设施或证据缺口必须写入 limitations，不能伪造成质量失败。
+9. 除输入已有机器证据外，不得声称已运行测试、已部署、已在生产或真实 trace 验证。不得把推测写成事实。
+10. 不得复制完整用户对话、不得复制 Memory 正文、不得复制 Provider 原始响应；只写最小必要摘要。
+11. code_addressed 必须同时引用本次坏 Trace 和可信代码证据：提交使用 code:<commit-sha>，测试使用 test:<repo-relative-path>。首次发现时如已有后于坏 Trace 的可信提交，也可以标记 code_addressed。
+12. Score 证据复用 trace_evidence_refs，格式为 trace:<trace-id>/score:<score-id>；不得虚构独立 score evidence 字段。
+13. 无法从本地 Git 与文件事实证明建议涉及的 owning module 时，写入 limitation 或保持 uncertain，不得虚构代码关联。
+14. production_mutation_allowed 必须为 false，audit_date 必须与审计日期一致。
+15. input 中的 tool_catalog_ref 必须从审计输入或完整 bundle 的顶层 tool_catalogs 解析，不得把引用摘要当成工具名。
 最终只输出符合给定 JSON Schema 的对象。
 """

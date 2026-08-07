@@ -165,6 +165,14 @@ class AuditCoverage(BaseModel):
     local_source_available: bool
 
 
+class LocalAuxiliarySummary(BaseModel):
+    """Aggregate local side streams without copying their timelines into Codex input."""
+
+    trace_count: int = Field(default=0, ge=0)
+    event_count: int = Field(default=0, ge=0)
+    canonical_event_counts: dict[str, int] = Field(default_factory=dict)
+
+
 class RuntimeAuditBundle(BaseModel):
     """Read-only input artifact consumed by deterministic and Codex reporting."""
 
@@ -180,6 +188,9 @@ class RuntimeAuditBundle(BaseModel):
     traces: list[LangfuseTraceSnapshot] = Field(default_factory=list)
     local_manifests: list[LocalTraceManifest] = Field(default_factory=list)
     local_fallbacks: list[LocalTraceFallback] = Field(default_factory=list)
+    local_auxiliary_summary: LocalAuxiliarySummary = Field(
+        default_factory=LocalAuxiliarySummary
+    )
     findings: list[AuditFinding] = Field(default_factory=list)
     tool_catalogs: dict[str, list[Any]] = Field(default_factory=dict)
     production_mutation_allowed: Literal[False] = False
