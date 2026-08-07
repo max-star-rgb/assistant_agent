@@ -83,6 +83,7 @@ Facade 不改变 Gateway 生命周期，也不把 provisional stream 重建成�
 | turn | 一次被 Gateway 接受的用户输入 |
 | `run_id` | turn 的可取消执行生命周期及跨 Gateway/runtime/trace 的关联键 |
 | durable `task_id` | Gateway run 结束后由 durable service 管理的长期任务身份，不是 `run_id` |
+| durable `workflow_id` | 跨多个 work-item run 和进程重启的长阶段流程身份，不是 Gateway active run |
 
 产品所说的 Agent instance 对应连接/用户拥有的逻辑 AgentSession，不对应一个专属
 `AgentGraphRuntime` 实例。Runtime 可由应用池化并在不同 session 之间复用，但同一 session
@@ -289,6 +290,12 @@ Durable task 不进入 Gateway active-run map，不复用 Gateway followup queue
 WebSocket/coroutine。其具体契约以
 [tool-calling-architecture.md](tool-calling-architecture.md)、
 [runtime-event-stream-architecture.md](runtime-event-stream-architecture.md)、源码和测试为准。
+
+通用 Durable Workflow 遵循相同 connection boundary。Gateway 只承载触发 `workflow_submit` 的
+ingress run；提交成功后不把 `workflow_id` 放入 active-run map、不占用 followup queue，也不要求原
+WebSocket 保持连接。后续 status/events/input/cancel 由 identity-scoped `/workflows` facade 调用
+`WorkflowService`，不能直接读取 SQLite 或 artifact 文件。后台 work item 的独立 run 不重新打开已
+结束 ingress run 的输出门。
 
 ### 7.3 Multi-agent 与工具
 

@@ -76,7 +76,13 @@ def select_prompt_tool_specs(
     )
     available_specs = list(qualification.qualified_tool_specs)
     selection_mode = "qualified_tools"
-    if request.metadata.get("_trusted_durable_execution") is True:
+    if isinstance(request.metadata.get("_trusted_workflow_assignment"), dict):
+        allowed = set(
+            _string_list(request.metadata.get("_trusted_workflow_allowed_tools"))
+        )
+        available_specs = [spec for spec in available_specs if spec.name in allowed]
+        selection_mode = "workflow_work_item_tools"
+    elif request.metadata.get("_trusted_durable_execution") is True:
         ready = set(_string_list(request.metadata.get("ready_tool_names")))
         allowed = ready | set(DURABLE_TASK_SUBMISSION_TOOL_NAMES)
         available_specs = [
@@ -104,6 +110,13 @@ def select_prompt_tool_specs(
         name: list(items)
         for name, items in qualification.excluded_reasons.items()
     }
+    if isinstance(request.metadata.get("_trusted_workflow_assignment"), dict):
+        available_set = {spec.name for spec in available_specs}
+        for spec in qualification.qualified_tool_specs:
+            if spec.name not in available_set:
+                excluded_reasons.setdefault(spec.name, []).append(
+                    "workflow_work_item_not_allowed"
+                )
     run_tool_catalog = RunToolCatalog(
         available_tool_names=available_names,
         selection_reasons=reasons,

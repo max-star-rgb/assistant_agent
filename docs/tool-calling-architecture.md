@@ -45,6 +45,13 @@ allowlist。Registry inventory 与单轮 catalog 含义不同，不能互相替�
 媒体状态、可信 durable step 等结构化事实确定；是否调用、调用哪个候选工具以及如何填写模型拥有的
 参数由 LLM 决定。
 
+通用长阶段任务遵守同一规则。启用
+`MULTIMODAL_AGENT_DURABLE_WORKFLOWS_ENABLED=true`、绑定 `WorkflowService` 且至少存在一个
+已注册 `WorkflowDefinition` 时，builtin Plugin 才注册 `workflow_submit`。是否调用由现有
+Provider-native ReAct LLM 自主决定；入口不增加关键词路由、正则分类或独立 assistant-decision LLM。
+该 Tool 只原子创建持久 Workflow 并返回 handle，不在前台 run 内执行完整流程。普通任务仍走当前
+assistant loop。
+
 `visual_memory_search` 遵守同一边界：它是唯一新增的历史视觉 Tool，category 为 `read`，不要求本轮
 附带媒体。Runtime 只依据同 user/session `SessionVisualSemanticStore.has_searchable_history()` 生成可信 exposure fact，并覆盖调用方
 同名 metadata；模型不能提交 session、as-of sequence、evidence path 或 embedding。执行仍完整经过
@@ -273,6 +280,21 @@ MCP 的重复策略只根据 server 配置中的结构化只读声明映射：`r
 
 MCP server、认证、远端方法映射和部署命令属于配置或对应集成文档，不进入本文。
 
+### 4.5 Durable Workflow Plugin
+
+`durable_workflow` 是默认关闭的内置 Plugin。它从 `ToolPluginContext.workflow_service` 接收可信服务；
+配置关闭、服务缺失或 definition catalog 为空时返回空工具列表，不能暴露一个无法推进的提交 Tool。
+`workflow_submit` 是 `write/once_per_run/metadata_only` Tool，输入是通用
+`WorkflowSubmission`：`workflow_type/objective/deliverables/constraints/inputs/initial_workstreams/
+requested_budget/durability_reasons/seed_artifact_refs/idempotency_key`。Research 问题等业务字段只能放在
+definition-owned `inputs` schema 中，不能污染通用契约。
+
+Tool 从 `ToolExecutor` 注入的 `request_identity`、`run_id` 和同一 `WorkflowService` binding 构造
+owner-bound submission；模型不能提交 owner、lease、revision、worker 或 Store。成功 observation 只
+包含 `workflow_id/type/status/phase/status_url/events_url/event_cursor` 等安全 handle。重复
+`user + agent + ingress_run + idempotency_key` 且 payload digest 相同返回既有 Workflow；不同 payload
+返回结构化冲突。
+
 ## 5. 单轮暴露与 Provider 转换
 
 注册成功的 Tool 默认是候选能力；入口 `allowed_tools`、媒体要求和可信 durable ready step 可以继续
@@ -355,6 +377,13 @@ Gateway 不按 Tool name 或 Provider 错误码改写运行终态。
 - **Durable task**：只通过可信 task mode、ready step、binding 和幂等输入收窄或约束执行；
   worker 调用仍走统一工具链。任务恢复、lease、notification 和 checkpoint 属于 durable/runtime
   权威，不由通用 Executor 代管。
+- **Durable Workflow**：`workflow_submit` 只负责 admission/creation；独立
+  `DurableWorkflowWorker -> WorkflowRuntime` 每个 quantum 最多提交一个 work item 结果或一个局部
+  plan revision。语义 work item 通过 `AgentGraphRuntime.run_work_item()` 回到同一 assistant loop；
+  work-item Tool allowlist 是可信空集合也必须表示“暴露零个 Tool”，不能退化为完整 Registry。
+  每次 work-item run 回传实际 model/tool call 数并在同一 revision commit 中扣减预算；后续 quantum
+  在 model、workflow quantum 或 deadline 耗尽时终止。Tool 预算为零时不再暴露 Tool，剩余预算同时
+  收窄 work-item assistant loop 的 iteration 上限。
 - **Memory**：记忆读写遵循 `MemoryManager` 与 memory policy；默认长期记忆不是主模型可调用 Tool。
 - **Gateway、CLI、API、demo、eval**：都是入口或观察形态，不能直接调用 Tool 实现来复制 Agent
   逻辑。
@@ -392,6 +421,10 @@ payload、凭据、绝对路径和大块内联数据不能因 ToolResult 或调�
 - `runtime/tool_executor.py`：调用、重试、取消、状态提交和生命周期事件；
 - `tools/observation.py`：ToolResult 到模型观察的通用投影；
 - `tests/core/contract/test_tool_contract.py`：`TOOL-001` 核心治理契约。
+- `workflows/`：Workflow 契约、definition、Store、LangGraph controller、worker、artifact/context 和
+  `AgentGraphRuntime` work-item adapter；
+- `tools/plugins/builtin/workflow/`：`workflow_submit` Tool 与 fail-closed Plugin；
+- `api/routes_workflows.py`：identity-scoped status/events/input/cancel 薄入口。
 
 ## 10. 不变量
 

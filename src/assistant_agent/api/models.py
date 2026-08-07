@@ -112,6 +112,22 @@ class DurableTaskEventsResponse(BaseModel):
     next_cursor: int = Field(default=0, ge=0)
 
 
+class WorkflowResponse(BaseModel):
+    """Identity-safe durable Workflow projection."""
+
+    protocol_version: str = PROTOCOL_VERSION
+    workflow: dict[str, Any]
+    plan: dict[str, Any]
+
+
+class WorkflowEventsResponse(BaseModel):
+    protocol_version: str = PROTOCOL_VERSION
+    workflow_id: str
+    events: list[dict[str, Any]] = Field(default_factory=list)
+    next_cursor: int = Field(default=0, ge=0)
+
+
+
 def api_error_from_agent_error(error: AgentError) -> ApiError:
     """Convert internal AgentError to stable external ApiError."""
 
