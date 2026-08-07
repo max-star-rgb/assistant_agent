@@ -59,6 +59,14 @@ class _FactorySnapshot:
 
 
 _MISSING_EXPORT = object()
+_MISSING_PLUGIN = object()
+_REGISTRY_ASSEMBLY_ISSUE_CODES = frozenset(
+    {
+        "memory_plugin_descriptor_invalid",
+        "memory_plugin_descriptor_mismatch",
+        "memory_plugin_registry_invalid",
+    }
+)
 
 
 def assemble_memory_plugins(
@@ -108,13 +116,20 @@ def assemble_memory_plugins(
     if active_candidate.validated_config is None:
         _fail(config.slot, "memory_plugin_config_invalid")
 
+    plugin: object = _MISSING_PLUGIN
+    build_failed = False
     try:
         plugin = active_candidate.build(
             build_context,
             active_candidate.validated_config,
         )
     except Exception:
+        build_failed = True
+    if build_failed:
         _fail(config.slot, "memory_plugin_build_failed")
+
+    registry: MemoryPluginRegistry | None = None
+    registry_issue_code: str | None = None
     try:
         records = [
             MemoryPluginRegistrationRecord(
@@ -125,11 +140,21 @@ def assemble_memory_plugins(
             )
             for candidate in candidates
         ]
-        return MemoryPluginRegistry(records, plugin)
+        registry = MemoryPluginRegistry(records, plugin)
     except MemoryPluginRegistryError as exc:
-        _fail(config.slot, exc.assembly_issue_code)
+        registry_issue_code = (
+            exc.assembly_issue_code
+            if exc.assembly_issue_code in _REGISTRY_ASSEMBLY_ISSUE_CODES
+            else "memory_plugin_registry_invalid"
+        )
     except Exception:
-        _fail(config.slot, "memory_plugin_registry_invalid")
+        registry_issue_code = "memory_plugin_registry_invalid"
+    if registry_issue_code is not None or registry is None:
+        _fail(
+            config.slot,
+            registry_issue_code or "memory_plugin_registry_invalid",
+        )
+    return registry
 
 
 def _builtin_candidate(

@@ -35,6 +35,7 @@ from assistant_agent.memory.plugins.contracts import (
 from assistant_agent.memory.plugins.registry import (
     MemoryPluginRegistrationRecord,
     MemoryPluginRegistry,
+    MemoryPluginRegistryError,
 )
 
 
@@ -286,6 +287,18 @@ def _capture_config_failure(
     pytest.fail("config loading unexpectedly succeeded")
 
 
+def _capture_registry_failure(
+    *,
+    records: list[MemoryPluginRegistrationRecord],
+    active_plugin: object,
+) -> tuple[MemoryPluginRegistryError, str]:
+    try:
+        MemoryPluginRegistry(records, active_plugin)
+    except MemoryPluginRegistryError as error:
+        return error, traceback.format_exc()
+    pytest.fail("registry sealing unexpectedly succeeded")
+
+
 def _assert_sanitized_assembly_failure(
     error: MemoryPluginAssemblyError,
     rendered_traceback: str,
@@ -294,8 +307,24 @@ def _assert_sanitized_assembly_failure(
     secret: str,
 ) -> None:
     assert error.report.issues[0].code == code
+    assert error.__cause__ is None
+    assert error.__context__ is None
     assert error.__suppress_context__ is True
     assert secret not in str(error.report)
+    assert secret not in str(error)
+    assert secret not in rendered_traceback
+
+
+def _assert_sanitized_registry_failure(
+    error: MemoryPluginRegistryError,
+    rendered_traceback: str,
+    *,
+    secret: str,
+) -> None:
+    assert str(error) == "memory_plugin_registry_invalid"
+    assert error.__cause__ is None
+    assert error.__context__ is None
+    assert error.__suppress_context__ is True
     assert secret not in str(error)
     assert secret not in rendered_traceback
 
@@ -463,12 +492,34 @@ def test_config_rejects_duplicate_json_plugin_keys_without_echoing_values(tmp_pa
         encoding="utf-8",
     )
 
-    with pytest.raises(MemoryPluginConfigError) as exc_info:
-        load_memory_plugins_config(path, env={})
+    error, rendered_traceback = _capture_config_failure(path, env={})
 
-    assert exc_info.value.code == "memory_plugin_config_duplicate_key"
-    assert "first-secret" not in str(exc_info.value)
-    assert "second-secret" not in str(exc_info.value)
+    assert error.code == "memory_plugin_config_duplicate_key"
+    assert error.__cause__ is None
+    assert error.__context__ is None
+    assert "first-secret" not in str(error)
+    assert "second-secret" not in str(error)
+    assert "first-secret" not in rendered_traceback
+    assert "second-secret" not in rendered_traceback
+
+
+def test_config_invalid_json_does_not_retain_source_document(tmp_path) -> None:
+    secret = "json-document-secret-sentinel"
+    path = tmp_path / "memory_plugins.json"
+    path.write_text(
+        '{"schema_version": "assistant_memory_plugins_v1", '
+        f'"secret": "{secret}",',
+        encoding="utf-8",
+    )
+
+    error, rendered_traceback = _capture_config_failure(path, env={})
+
+    assert error.code == "memory_plugin_config_invalid"
+    assert error.__cause__ is None
+    assert error.__context__ is None
+    assert error.__suppress_context__ is True
+    assert secret not in str(error)
+    assert secret not in rendered_traceback
 
 
 @pytest.mark.parametrize("slot", ["", "x" * 129], ids=["empty", "too-long"])
@@ -518,6 +569,7 @@ def test_config_validation_failure_suppresses_sensitive_validation_error_chain(
 
     assert error.code == "memory_plugin_config_invalid"
     assert error.__cause__ is None
+    assert error.__context__ is None
     assert error.__suppress_context__ is True
     assert secret not in str(error)
     assert secret not in rendered_traceback
@@ -544,6 +596,7 @@ def test_config_rejects_module_that_cannot_fit_registration_source(tmp_path) -> 
 
     assert error.code == "memory_plugin_config_invalid"
     assert error.__cause__ is None
+    assert error.__context__ is None
     assert secret not in str(error)
     assert secret not in rendered_traceback
 
@@ -573,6 +626,7 @@ def test_config_secret_env_lookup_failure_is_domainized_and_sanitized(tmp_path) 
 
     assert error.code == "memory_plugin_config_invalid"
     assert error.__cause__ is None
+    assert error.__context__ is None
     assert "secret-env-lookup-sentinel" not in str(error)
     assert "secret-env-lookup-sentinel" not in rendered_traceback
 
@@ -890,7 +944,10 @@ def test_plugin_build_failure_suppresses_secret_exception_traceback() -> None:
         sys.modules.pop(module_name, None)
 
     assert assembly_error.report.issues[0].code == "memory_plugin_build_failed"
+    assert assembly_error.__cause__ is None
+    assert assembly_error.__context__ is None
     assert assembly_error.__suppress_context__ is True
+    assert "build-secret-sentinel" not in str(assembly_error)
     assert "build-secret-sentinel" not in rendered_traceback
 
 
@@ -921,7 +978,10 @@ def test_factory_descriptor_getter_failure_is_domainized_and_sanitized() -> None
         sys.modules.pop(module_name, None)
 
     assert assembly_error.report.issues[0].code == "memory_plugin_descriptor_invalid"
+    assert assembly_error.__cause__ is None
+    assert assembly_error.__context__ is None
     assert "factory-descriptor-secret-sentinel" not in str(assembly_error.report)
+    assert "factory-descriptor-secret-sentinel" not in str(assembly_error)
     assert "factory-descriptor-secret-sentinel" not in rendered_traceback
 
 
@@ -1085,7 +1145,10 @@ def test_plugin_descriptor_getter_failure_is_domainized_and_sanitized() -> None:
         sys.modules.pop(module_name, None)
 
     assert assembly_error.report.issues[0].code == "memory_plugin_descriptor_invalid"
+    assert assembly_error.__cause__ is None
+    assert assembly_error.__context__ is None
     assert "plugin-descriptor-secret-sentinel" not in str(assembly_error.report)
+    assert "plugin-descriptor-secret-sentinel" not in str(assembly_error)
     assert "plugin-descriptor-secret-sentinel" not in rendered_traceback
 
 
@@ -1186,6 +1249,171 @@ def test_registry_rejects_descriptor_with_mutated_invalid_modality() -> None:
         MemoryPluginRegistry([record], _Plugin(descriptor))
 
 
+def test_registry_error_does_not_retain_plugin_descriptor_getter_failure() -> None:
+    secret = "registry-plugin-descriptor-secret-sentinel"
+    descriptor = _descriptor()
+    record = MemoryPluginRegistrationRecord(
+        descriptor=descriptor,
+        source="builtin:probe.memory",
+        enabled=True,
+        active=True,
+    )
+
+    error, rendered_traceback = _capture_registry_failure(
+        records=[record],
+        active_plugin=_OneShotDescriptorPlugin(
+            descriptor,
+            first_error=RuntimeError(secret),
+        ),
+    )
+
+    _assert_sanitized_registry_failure(
+        error,
+        rendered_traceback,
+        secret=secret,
+    )
+
+
+def test_registry_error_does_not_retain_invalid_record_failure() -> None:
+    secret = "registry-record-secret-sentinel"
+    descriptor = _descriptor()
+    invalid_record = MemoryPluginRegistrationRecord.model_construct(
+        descriptor=descriptor,
+        source=secret + ("x" * 512),
+        enabled=True,
+        active=True,
+    )
+
+    error, rendered_traceback = _capture_registry_failure(
+        records=[invalid_record],
+        active_plugin=_Plugin(descriptor),
+    )
+
+    _assert_sanitized_registry_failure(
+        error,
+        rendered_traceback,
+        secret=secret,
+    )
+
+
+def test_registry_error_does_not_retain_report_failure(monkeypatch) -> None:
+    secret = "registry-report-secret-sentinel"
+    descriptor = _descriptor()
+    record = MemoryPluginRegistrationRecord(
+        descriptor=descriptor,
+        source="builtin:probe.memory",
+        enabled=True,
+        active=True,
+    )
+
+    def _explode_report(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise RuntimeError(secret)
+
+    monkeypatch.setattr(
+        memory_plugin_registry_module,
+        "MemoryPluginAssemblyReport",
+        _explode_report,
+    )
+
+    error, rendered_traceback = _capture_registry_failure(
+        records=[record],
+        active_plugin=_Plugin(descriptor),
+    )
+
+    _assert_sanitized_registry_failure(
+        error,
+        rendered_traceback,
+        secret=secret,
+    )
+
+
+def test_registry_error_does_not_retain_generation_failure(monkeypatch) -> None:
+    secret = "direct-registry-generation-secret-sentinel"
+    descriptor = _descriptor()
+    record = MemoryPluginRegistrationRecord(
+        descriptor=descriptor,
+        source="builtin:probe.memory",
+        enabled=True,
+        active=True,
+    )
+
+    def _explode_generation(report) -> str:  # type: ignore[no-untyped-def]
+        raise RuntimeError(secret)
+
+    monkeypatch.setattr(
+        memory_plugin_registry_module,
+        "_generation_for",
+        _explode_generation,
+    )
+
+    error, rendered_traceback = _capture_registry_failure(
+        records=[record],
+        active_plugin=_Plugin(descriptor),
+    )
+
+    _assert_sanitized_registry_failure(
+        error,
+        rendered_traceback,
+        secret=secret,
+    )
+
+
+def test_registry_rejects_duplicate_plugin_ids() -> None:
+    descriptor = _descriptor()
+    records = [
+        MemoryPluginRegistrationRecord(
+            descriptor=descriptor,
+            source="builtin:probe.memory",
+            enabled=True,
+            active=True,
+        ),
+        MemoryPluginRegistrationRecord(
+            descriptor=descriptor,
+            source="module:probe_memory_plugin",
+            enabled=True,
+            active=False,
+        ),
+    ]
+
+    with pytest.raises(ValueError, match="memory_plugin_registry_invalid"):
+        MemoryPluginRegistry(records, _Plugin(descriptor))
+
+
+def test_registry_rejects_disabled_active_record() -> None:
+    descriptor = _descriptor()
+    record = MemoryPluginRegistrationRecord(
+        descriptor=descriptor,
+        source="builtin:probe.memory",
+        enabled=False,
+        active=True,
+    )
+
+    with pytest.raises(ValueError, match="memory_plugin_registry_invalid"):
+        MemoryPluginRegistry([record], _Plugin(descriptor))
+
+
+@pytest.mark.parametrize("active_flags", [(False,), (True, True)])
+def test_registry_requires_exactly_one_active_record(
+    active_flags: tuple[bool, ...],
+) -> None:
+    descriptors = [
+        _descriptor(f"probe-{index}.memory")
+        for index in range(len(active_flags))
+    ]
+    records = [
+        MemoryPluginRegistrationRecord(
+            descriptor=descriptor,
+            source=f"builtin:{descriptor.plugin_id}",
+            enabled=True,
+            active=active,
+        )
+        for descriptor, active in zip(descriptors, active_flags, strict=True)
+    ]
+
+    with pytest.raises(ValueError, match="memory_plugin_registry_invalid"):
+        MemoryPluginRegistry(records, _Plugin(descriptors[0]))
+
+
 def test_assembly_domainizes_bypassed_overlong_registration_source(
     monkeypatch,
 ) -> None:
@@ -1209,6 +1437,31 @@ def test_assembly_domainizes_bypassed_overlong_registration_source(
     )
 
     error, rendered_traceback = _capture_assembly_failure(config=config)
+
+    _assert_sanitized_assembly_failure(
+        error,
+        rendered_traceback,
+        code="memory_plugin_registry_invalid",
+        secret=secret,
+    )
+
+
+def test_assembly_domainizes_registry_report_failure(monkeypatch) -> None:
+    secret = "assembly-registry-report-secret-sentinel"
+
+    def _explode_report(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise RuntimeError(secret)
+
+    monkeypatch.setattr(
+        memory_plugin_registry_module,
+        "MemoryPluginAssemblyReport",
+        _explode_report,
+    )
+
+    error, rendered_traceback = _capture_assembly_failure(
+        config=_config(slot="probe.memory", plugins={}),
+        builtin_factories=(_Factory(_descriptor()),),
+    )
 
     _assert_sanitized_assembly_failure(
         error,

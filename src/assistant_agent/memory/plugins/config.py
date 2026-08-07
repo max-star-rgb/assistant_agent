@@ -42,6 +42,10 @@ class _DuplicateJsonKeyError(ValueError):
     """Internal signal for JSON objects that would silently overwrite a key."""
 
 
+class _MissingSecretReferenceError(ValueError):
+    """Internal signal for a declared secret reference with no value."""
+
+
 class MemoryPluginEntryConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -65,31 +69,47 @@ def load_memory_plugins_config(
 ) -> MemoryPluginsConfig:
     """Load one explicit config file and resolve only declared secret references."""
 
+    raw: object = None
+    load_error_code: str | None = None
     try:
         raw = json.loads(
             Path(path).read_text(encoding="utf-8"),
             object_pairs_hook=_reject_duplicate_json_keys,
         )
     except _DuplicateJsonKeyError:
-        raise MemoryPluginConfigError("memory_plugin_config_duplicate_key") from None
+        load_error_code = "memory_plugin_config_duplicate_key"
     except Exception:
-        raise MemoryPluginConfigError("memory_plugin_config_invalid") from None
+        load_error_code = "memory_plugin_config_invalid"
+    if load_error_code is not None:
+        raise MemoryPluginConfigError(load_error_code) from None
     if not isinstance(raw, dict):
         raise MemoryPluginConfigError("memory_plugin_config_invalid")
 
     source = os.environ if env is None else env
+    resolved: object = None
+    resolution_error_code: str | None = None
     try:
         resolved = _resolve_secret_references(raw, source)
-    except MemoryPluginConfigError:
-        raise
+    except _MissingSecretReferenceError:
+        resolution_error_code = "memory_plugin_secret_missing"
     except Exception:
-        raise MemoryPluginConfigError("memory_plugin_config_invalid") from None
+        resolution_error_code = "memory_plugin_config_invalid"
+    if resolution_error_code is not None:
+        raise MemoryPluginConfigError(resolution_error_code) from None
+    if not isinstance(resolved, dict):
+        raise MemoryPluginConfigError("memory_plugin_config_invalid")
     if not _is_valid_memory_plugin_slot(resolved.get("slot")):
         raise MemoryPluginConfigError("memory_plugin_slot_invalid")
+
+    validated: object = None
+    validation_failed = False
     try:
-        return MemoryPluginsConfig.model_validate(resolved)
+        validated = MemoryPluginsConfig.model_validate(resolved)
     except Exception:
+        validation_failed = True
+    if validation_failed or not isinstance(validated, MemoryPluginsConfig):
         raise MemoryPluginConfigError("memory_plugin_config_invalid") from None
+    return validated
 
 
 def _resolve_secret_references(
@@ -108,7 +128,7 @@ def _resolve_secret_references(
         return value
     secret = env.get(match.group(1))
     if secret is None:
-        raise MemoryPluginConfigError("memory_plugin_secret_missing")
+        raise _MissingSecretReferenceError()
     return SecretStr(secret)
 
 
