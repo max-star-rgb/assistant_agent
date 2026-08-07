@@ -11,6 +11,7 @@ from pydantic import BaseModel
 
 from assistant_agent.memory.plugins.config import (
     MEMORY_PLUGIN_EXPORT,
+    MEMORY_PLUGIN_SLOT_MAX_LENGTH,
     MemoryPluginEntryConfig,
     MemoryPluginsConfig,
 )
@@ -53,6 +54,8 @@ def assemble_memory_plugins(
 ) -> MemoryPluginRegistry:
     """Validate every declared factory, then construct only the selected slot."""
 
+    if not _is_valid_memory_plugin_slot(config.slot):
+        _fail(config.slot, "memory_plugin_slot_invalid")
     builtin_factories = tuple(builtin_factories)
     candidates: list[_Candidate] = []
     issues: list[MemoryPluginIssue] = []
@@ -199,7 +202,7 @@ def _issue(code: str) -> MemoryPluginIssue:
 
 
 def _fail(
-    active_slot: str,
+    active_slot: object,
     *issues: str | MemoryPluginIssue,
 ) -> None:
     normalized = tuple(
@@ -207,5 +210,19 @@ def _fail(
         for issue in issues
     )
     raise MemoryPluginAssemblyError(
-        MemoryPluginAssemblyReport(active_slot=active_slot, issues=normalized)
+        MemoryPluginAssemblyReport(
+            active_slot=(
+                active_slot
+                if _is_valid_memory_plugin_slot(active_slot)
+                else "invalid-memory-plugin-slot"
+            ),
+            issues=normalized,
+        )
+    )
+
+
+def _is_valid_memory_plugin_slot(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and 1 <= len(value) <= MEMORY_PLUGIN_SLOT_MAX_LENGTH
     )

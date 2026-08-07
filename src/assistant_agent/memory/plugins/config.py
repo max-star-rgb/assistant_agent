@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 MEMORY_PLUGIN_CONFIG_PATH_ENV = "MULTIMODAL_AGENT_MEMORY_PLUGIN_CONFIG_PATH"
 MEMORY_PLUGIN_EXPORT = "__assistant_memory_plugin_factory__"
+MEMORY_PLUGIN_SLOT_MAX_LENGTH = 128
 _SECRET_REFERENCE = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$")
 
 MemoryPluginConfigValue = TypeAliasType(
@@ -31,6 +32,10 @@ class MemoryPluginConfigError(ValueError):
         self.code = code
 
 
+class _DuplicateJsonKeyError(ValueError):
+    """Internal signal for JSON objects that would silently overwrite a key."""
+
+
 class MemoryPluginEntryConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -43,7 +48,7 @@ class MemoryPluginsConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     schema_version: Literal["assistant_memory_plugins_v1"]
-    slot: str
+    slot: str = Field(min_length=1, max_length=MEMORY_PLUGIN_SLOT_MAX_LENGTH)
     plugins: dict[str, MemoryPluginEntryConfig]
 
 
@@ -55,7 +60,12 @@ def load_memory_plugins_config(
     """Load one explicit config file and resolve only declared secret references."""
 
     try:
-        raw = json.loads(Path(path).read_text(encoding="utf-8"))
+        raw = json.loads(
+            Path(path).read_text(encoding="utf-8"),
+            object_pairs_hook=_reject_duplicate_json_keys,
+        )
+    except _DuplicateJsonKeyError as exc:
+        raise MemoryPluginConfigError("memory_plugin_config_duplicate_key") from exc
     except (OSError, json.JSONDecodeError) as exc:
         raise MemoryPluginConfigError("memory_plugin_config_invalid") from exc
     if not isinstance(raw, dict):
@@ -63,6 +73,8 @@ def load_memory_plugins_config(
 
     source = os.environ if env is None else env
     resolved = _resolve_secret_references(raw, source)
+    if not _is_valid_memory_plugin_slot(resolved.get("slot")):
+        raise MemoryPluginConfigError("memory_plugin_slot_invalid")
     try:
         return MemoryPluginsConfig.model_validate(resolved)
     except Exception as exc:
@@ -87,3 +99,21 @@ def _resolve_secret_references(
     if secret is None:
         raise MemoryPluginConfigError("memory_plugin_secret_missing")
     return SecretStr(secret)
+
+
+def _reject_duplicate_json_keys(
+    pairs: list[tuple[str, object]],
+) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise _DuplicateJsonKeyError()
+        result[key] = value
+    return result
+
+
+def _is_valid_memory_plugin_slot(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and 1 <= len(value) <= MEMORY_PLUGIN_SLOT_MAX_LENGTH
+    )

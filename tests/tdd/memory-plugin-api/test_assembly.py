@@ -249,6 +249,49 @@ def test_config_leaves_non_reference_interpolation_string_literal(tmp_path) -> N
     assert config.plugins["probe.memory"].config["template"] == "prefix ${NOT_A_SECRET} suffix"
 
 
+def test_config_rejects_duplicate_json_plugin_keys_without_echoing_values(tmp_path) -> None:
+    path = tmp_path / "memory_plugins.json"
+    path.write_text(
+        """{
+            "schema_version": "assistant_memory_plugins_v1",
+            "slot": "probe.memory",
+            "plugins": {
+                "probe.memory": {"module": "first", "config": {"api_key": "first-secret"}},
+                "probe.memory": {"module": "second", "config": {"api_key": "second-secret"}}
+            }
+        }""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(MemoryPluginConfigError) as exc_info:
+        load_memory_plugins_config(path, env={})
+
+    assert exc_info.value.code == "memory_plugin_config_duplicate_key"
+    assert "first-secret" not in str(exc_info.value)
+    assert "second-secret" not in str(exc_info.value)
+
+
+@pytest.mark.parametrize("slot", ["", "x" * 129], ids=["empty", "too-long"])
+def test_config_rejects_invalid_slot_as_a_safe_domain_error(tmp_path, slot: str) -> None:
+    path = tmp_path / "memory_plugins.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": "assistant_memory_plugins_v1",
+                "slot": slot,
+                "plugins": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(MemoryPluginConfigError) as exc_info:
+        load_memory_plugins_config(path, env={})
+
+    assert exc_info.value.code == "memory_plugin_slot_invalid"
+    assert "ValidationError" not in str(exc_info.value)
+
+
 def test_provider_config_reads_only_explicit_memory_plugin_settings() -> None:
     config = ProviderConfig.from_env(
         {
@@ -278,6 +321,25 @@ def test_unknown_active_slot_fails_closed() -> None:
         )
 
     assert exc_info.value.report.issues[0].code == "memory_plugin_slot_unknown"
+
+
+@pytest.mark.parametrize("slot", ["", "x" * 129], ids=["empty", "too-long"])
+def test_assembly_rejects_bypassed_invalid_slot_as_a_domain_error(slot: str) -> None:
+    config = MemoryPluginsConfig.model_construct(
+        schema_version="assistant_memory_plugins_v1",
+        slot=slot,
+        plugins={},
+    )
+
+    with pytest.raises(MemoryPluginAssemblyError) as exc_info:
+        assemble_memory_plugins(
+            config=config,
+            builtin_factories=(),
+            build_context=_build_context(),
+        )
+
+    assert exc_info.value.report.issues[0].code == "memory_plugin_slot_invalid"
+    assert "ValidationError" not in str(exc_info.value)
 
 
 def test_duplicate_plugin_id_fails_before_active_plugin_is_constructed() -> None:
