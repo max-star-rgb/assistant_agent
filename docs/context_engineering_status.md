@@ -1,4 +1,4 @@
-# Context Engineering Architecture
+# 上下文工程架构
 
 Last updated: 2026-08-05
 
@@ -44,7 +44,7 @@ Context engineering 不负责：
 `ContextService` 是 assistant node 的运行时依赖，不是独立 graph node。入口、API、CLI、Gateway
 和 eval 不得复制另一套 context assembly 或 prompt compilation。
 
-## 3. Context Pack 与来源
+## 3. 上下文包与来源
 
 `AssistantContextPack` 是 Provider-neutral 的单轮上下文契约。它可以承载：
 
@@ -62,7 +62,7 @@ Context engineering 不负责：
 切换 owner、注入 memory snapshot 或扩大工具目录。Context section 是数据或指导材料，不自动成为
 系统权限、用户授权或长期记忆。
 
-## 4. Prompt 编译契约
+## 4. 提示词编译契约
 
 `PromptCompiler` 是生产 Provider 请求的唯一编译入口。它是无副作用组件：只消费已解析的
 system profile、context pack、原生工具调用轨迹和本轮 ToolSpec；不访问 store、registry 或 Provider，
@@ -77,7 +77,7 @@ system profile、context pack、原生工具调用轨迹和本轮 ToolSpec；不
 - `ChatRequest.tools` 只来自本轮结构化治理后的 `ToolSpec`。Tool catalog 和 context assembly
   不读取 `request.text` 做关键词、正则或确定性意图路由。
 - `ResponseStyle` 由显式请求和入口 profile 解析，不从用户文本或主题猜测；不同入口仍复用同一编译器。
-- System instruction 以稳定的 `Assistant Runtime Contract` 为根，区分运行时事实、authority、执行、
+- System instruction 以稳定的“助理运行契约”为根，区分运行时事实、authority、执行、
   工具、Skill lifecycle、回答和 `act/finalize` 阶段；动态程序指导不得作为无边界的同级 Markdown
   章节裸拼接。
 - Provider 支持 developer role 时，可把 procedural guidance 编译为 developer message；否则保守放入
@@ -94,7 +94,7 @@ Skill 的适用条件时，模型必须在相关业务工具之前通过受治�
 返回的 `reference_ids` 中按需加载，加载过程静默且不向用户播报。动态 Skill 正文仍是
 `ContextSection`；编译器渲染其来源边界，但它不能改变 ToolSpec、工具权限、用户授权或 validator 结果。
 
-## 5. Conversation 与 Compaction
+## 5. 对话与压缩
 
 短期对话由 `ConversationStore` 按 session 管理，普通 turn 与 rolling summary 分开持久化。
 Summary 只用于恢复当前 session，不写入长期 memory。
@@ -124,7 +124,7 @@ Conversation recent window 优先复用同一个目标模型 tokenizer。仅在 
 路径使用确定性的字符启发式 estimate，并将 `conversation_context_token_aware` 标为 false；estimate
 只用于报告或离线选择，不能作为完整 Provider request 的 hard-limit 依据。
 
-## 6. Memory Context
+## 6. 记忆上下文
 
 Context engineering 只消费 Memory service 提供的结构化 session snapshot：
 
@@ -137,7 +137,7 @@ Context engineering 只消费 Memory service 提供的结构化 session snapshot
 Mem0 拥有提取、合并、向量化、索引和持久化。Context/runtime 不实现第二套 ranking、promotion、
 profile、冲突处理或 memory tool。完整 Memory 契约见 `docs/memory-service-architecture.md`。
 
-## 7. Tool Observation
+## 7. 工具观察结果
 
 Runtime 保留完整内部 `ToolResult` 供执行、trace 和交付层使用；进入模型的副本必须先投影和清洗。
 
@@ -153,20 +153,20 @@ Runtime 保留完整内部 `ToolResult` 供执行、trace 和交付层使用；�
 
 ## 8. 专项上下文边界
 
-### Durable task
+### 持久化任务
 
 只有可信 worker resume 可以注入校验后的 durable task snapshot。模型只接收当前执行所需的
 objective、constraints、plan/step 状态、artifact references、等待状态和剩余预算；lease、secret、
 raw Provider response、父会话历史及未登记扩展不得进入 prompt。Durable snapshot 是当前执行状态，
 不是 session summary 或长期记忆。
 
-### Realtime task state
+### 实时任务状态
 
 Realtime task state 仅在结构化 interaction mode、entry capability 或显式 runtime opt-in 下启用。
 它服务于 Gateway 的 interrupt、artifact、progress、TTS/display 和 side-effect 生命周期，不渲染进
 Provider prompt。普通请求不能因携带类似 Gateway 的 metadata 而隐式启用。
 
-### Proactive session events
+### 主动会话事件
 
 Runtime-owned notification orchestrator 在 channel 返回 `server_transport` sent 后保存有界的
 session event。下一轮开始时 Runtime 先删除调用方伪造的同名 metadata，再按 user/session identity
@@ -175,7 +175,7 @@ session event。下一轮开始时 Runtime 先删除调用方伪造的同名 met
 `ContextReport.proactive_session_events` 计数，但不伪装成 user/assistant conversation turn，不进入
 ConversationStore、Mem0 或 rolling summary。`connection_ephemeral` 事件在连接关闭时立即清除。
 
-### Realtime video
+### 实时视频
 
 后台 observer、共享语义快照和主 LLM 是三个边界。Runtime 只根据可信入口 profile 和结构化
 `video_ids` 判断是否向主 LLM 暴露 `live_view_inspect`；不得把镜头能力状态、共享语义快照、
@@ -221,20 +221,20 @@ Session visual history 同样不被动进入 prompt。只有 Runtime 根据同 u
 会先被覆盖，exposure 不检查请求文本。模型只拥有 query/time window/search mode，session 与 as-of
 由 Runtime/ToolContext 绑定。ASR 已在上游变为普通 final text，不存在语音 embedding prompt 通道。
 
-### Editable owner context
+### 可编辑所有者上下文
 
 Owner context 默认关闭，只能由进程配置和可信 owner identity 启用。Loader 必须执行 root containment、
 文件类型、symlink、编码、容量和敏感内容校验；非法新版本只能使用同 owner 分区的 last-known-good
 或省略。Owner persona 可以影响表达，不能改变工具权限、identity、memory policy 或 provider mode。
 
-### Cross-agent delegation
+### 跨 Agent 委派
 
 子 Agent 只接收显式 `context_refs`、子任务预算和脱敏审计摘要。父 conversation、memory context、
 raw tool results、Provider payload、secret 和任意未列入 allowlist 的 metadata 不向下传递。
 Delegation context 不取代子运行自己的 `AssistantContextPack`。完整路由契约见
 `docs/agent-communication-routing.md`。
 
-## 9. Budget、失败与可观测性
+## 9. 预算、失败与可观测性
 
 Budget 必须按完整 compiled request 计算，包括 messages、tools、tool choice 和 response format；
 字符估算只能用于预编译报告，不能冒充 tokenizer 计数。Provider 私有 chat template 的差异由

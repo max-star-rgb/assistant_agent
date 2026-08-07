@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from assistant_agent.context.builder import build_assistant_context_pack
 from assistant_agent.context.models import ContextSection
 from assistant_agent.context.prompt_compiler import (
@@ -123,7 +125,7 @@ def test_project_travel_skill_activates_from_available_tools_without_filtering()
     assert len(skill_sections[0].content) < 300
     assert "load_skill" not in skill_sections[0].content
     assert "地图地点和普通周边分布使用高德" not in skill_sections[0].content
-    assert "## Skill Lifecycle" in _compile_system(pack)
+    assert "## 技能生命周期" in _compile_system(pack)
     assert "load_skill" in _compile_system(pack)
 
 
@@ -140,9 +142,9 @@ def test_system_only_provider_namespaces_skill_index_and_runtime_contract() -> N
         "system",
         "user",
     ]
-    assert system_prompt.startswith("# Assistant Runtime Contract\n")
+    assert system_prompt.startswith("# 助理运行契约\n")
     assert '<runtime_facts trust="runtime">' in system_prompt
-    assert "## Skill Lifecycle" in system_prompt
+    assert "## 技能生命周期" in system_prompt
     assert "一个或多个 Skill" in system_prompt
     assert "不得猜测或自行构造 reference id" in system_prompt
     assert "不能扩大本轮工具目录、权限或用户授权" in system_prompt
@@ -156,7 +158,8 @@ def test_system_only_provider_namespaces_skill_index_and_runtime_contract() -> N
     assert "<description>Use when 用户需要酒店筛选或比较" in system_prompt
     assert "# 可用 Skill" not in system_prompt
     assert '<run_phase mode="act">' in system_prompt
-    assert system_prompt.index("## Skill Lifecycle") < system_prompt.index(
+    assert re.search(r"^#{1,3} [A-Za-z]", system_prompt, re.MULTILINE) is None
+    assert system_prompt.index("## 技能生命周期") < system_prompt.index(
         "<procedural_guidance>"
     )
     assert system_prompt.index("<procedural_guidance>") < system_prompt.index(
@@ -246,7 +249,7 @@ def test_supported_provider_compiles_skill_summary_as_developer_message() -> Non
     assert skill_section.content not in compiled.chat_request.messages[0][
         "content"
     ]
-    assert "## Skill Lifecycle" in compiled.chat_request.messages[0]["content"]
+    assert "## 技能生命周期" in compiled.chat_request.messages[0]["content"]
     assert "load_skill_reference" in compiled.chat_request.messages[0][
         "content"
     ]

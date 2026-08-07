@@ -248,26 +248,26 @@ def test_load_skill_returns_complete_travel_planning_workflow() -> None:
     assert "已核验信息" in result.data["content"]
     assert "攻略性建议" in result.data["content"]
     assert "待确认事项" in result.data["content"]
-    assert "## Decision Rules" in result.data["content"]
-    assert "## Procedure" in result.data["content"]
-    assert "## Pitfalls" in result.data["content"]
-    assert "## Verification" in result.data["content"]
+    assert "## 决策规则" in result.data["content"]
+    assert "## 执行流程" in result.data["content"]
+    assert "## 常见错误" in result.data["content"]
+    assert "## 完成前检查" in result.data["content"]
     assert [
         line
         for line in result.data["content"].splitlines()
         if line.startswith("## ")
     ] == [
-        "## When to Use",
-        "## When Not to Use",
-        "## Decision Rules",
-        "## Quick Reference",
-        "## Procedure",
-        "## Output Contract",
-        "## Pitfalls",
-        "## Verification",
-        "## Governed Tools",
-        "## Permissions",
-        "## Visibility",
+        "## 适用场景",
+        "## 不适用场景",
+        "## 决策规则",
+        "## 信息来源速查",
+        "## 执行流程",
+        "## 输出契约",
+        "## 常见错误",
+        "## 完成前检查",
+        "## 受治理工具",
+        "## 权限",
+        "## 可见性",
     ]
 
 
@@ -349,8 +349,8 @@ def test_successful_load_skill_is_promoted_from_registered_source() -> None:
     )
     assert body.authority == "procedural_guidance"
     assert body.content.startswith("# 旅行决策与行程编排")
-    assert "## Decision Rules" in body.content
-    assert "## Procedure" in body.content
+    assert "## 决策规则" in body.content
+    assert "## 执行流程" in body.content
     assert "observation-injection-sentinel" not in body.content
     assert body.content in _compile_system(pack)
     system_prompt = _compile_system(pack)
@@ -383,7 +383,7 @@ def test_supported_provider_compiles_loaded_skill_as_developer_message() -> None
     compiled = _compile(pack, supports_developer_role=True)
 
     assert body.content not in compiled.chat_request.messages[0]["content"]
-    assert "## Skill Lifecycle" in compiled.chat_request.messages[0]["content"]
+    assert "## 技能生命周期" in compiled.chat_request.messages[0]["content"]
     assert compiled.chat_request.messages[1] == {
         "role": "developer",
         "content": procedural_guidance_for_pack(pack),
