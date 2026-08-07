@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 from collections.abc import Iterable, Mapping
+from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime, timezone
 from typing import Any
 
@@ -89,33 +90,42 @@ def _run_plugins(
     source = os.environ if env is None else env
     active_slot: str | None = None
     try:
-        provider_config = ProviderConfig.from_env(source)
-        override_factories = (
-            None if factory_overrides is None else tuple(factory_overrides)
-        )
-        plugin_config = _plugin_config(
-            provider_config=provider_config,
-            factory_overrides=override_factories,
-            env=source,
-        )
-        active_slot = plugin_config.slot
-        factories = _factories(
-            provider_config=provider_config,
-            plugin_config=plugin_config,
-            factory_overrides=override_factories,
-        )
-        media_store = ManagedMemoryMediaStore(max_total_bytes=0)
-        registry = assemble_memory_plugins(
-            config=plugin_config,
-            builtin_factories=factories,
-            build_context=MemoryPluginBuildContext(
-                provider_mode=provider_config.provider_mode,
-                media_reader=media_store,
-                artifact_writer=media_store,
-                secret_resolver=_EnvironmentMemorySecretResolver(source),
-                clock=lambda: datetime.now(timezone.utc),
-            ),
-        )
+        with open(os.devnull, "w", encoding="utf-8") as discarded_output:
+            with (
+                redirect_stdout(discarded_output),
+                redirect_stderr(discarded_output),
+            ):
+                provider_config = ProviderConfig.from_env(source)
+                override_factories = (
+                    None
+                    if factory_overrides is None
+                    else tuple(factory_overrides)
+                )
+                plugin_config = _plugin_config(
+                    provider_config=provider_config,
+                    factory_overrides=override_factories,
+                    env=source,
+                )
+                active_slot = plugin_config.slot
+                factories = _factories(
+                    provider_config=provider_config,
+                    plugin_config=plugin_config,
+                    factory_overrides=override_factories,
+                )
+                media_store = ManagedMemoryMediaStore(max_total_bytes=0)
+                registry = assemble_memory_plugins(
+                    config=plugin_config,
+                    builtin_factories=factories,
+                    build_context=MemoryPluginBuildContext(
+                        provider_mode=provider_config.provider_mode,
+                        media_reader=media_store,
+                        artifact_writer=media_store,
+                        secret_resolver=_EnvironmentMemorySecretResolver(
+                            source
+                        ),
+                        clock=lambda: datetime.now(timezone.utc),
+                    ),
+                )
     except MemoryPluginAssemblyError as exc:
         _print_report(
             _failure_report(
@@ -236,9 +246,11 @@ def _mem0_base_url_configured(
     plugin_config: MemoryPluginsConfig,
 ) -> bool:
     configured_entry = plugin_config.plugins.get("mem0")
-    value: object = provider_config.mem0_base_url
-    if configured_entry is not None and "base_url" in configured_entry.config:
-        value = configured_entry.config["base_url"]
+    value: object = (
+        configured_entry.config.get("base_url")
+        if configured_entry is not None
+        else provider_config.mem0_base_url
+    )
     if isinstance(value, SecretStr):
         value = value.get_secret_value()
     return isinstance(value, str) and bool(value.strip())

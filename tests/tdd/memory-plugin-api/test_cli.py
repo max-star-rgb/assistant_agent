@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from collections.abc import Mapping
 
 from pydantic import BaseModel, ConfigDict
@@ -23,6 +24,14 @@ from assistant_agent.memory.plugins.contracts import (
 
 class _ProbeConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+
+class _NoisyProbeConfig(_ProbeConfig):
+    @classmethod
+    def model_validate(cls, value: object, *args: object, **kwargs: object):  # type: ignore[no-untyped-def]
+        print("secret-config-validation-output")
+        print("secret-config-validation-error", file=sys.stderr)
+        return super().model_validate(value, *args, **kwargs)
 
 
 class _RecordingPlugin:
@@ -97,6 +106,30 @@ class _FailingFactory(_RecordingFactory):
         raise RuntimeError("secret-build-value")
 
 
+class _NoisyFactory(_RecordingFactory):
+    config_model = _NoisyProbeConfig
+
+    def build(
+        self,
+        context: MemoryPluginBuildContext,
+        config: BaseModel,
+    ) -> _RecordingPlugin:
+        print("secret-build-output")
+        print("secret-build-error", file=sys.stderr)
+        return self.plugin
+
+
+class _NoisyFailingFactory(_RecordingFactory):
+    def build(
+        self,
+        context: MemoryPluginBuildContext,
+        config: BaseModel,
+    ) -> _RecordingPlugin:
+        print("secret-failing-build-output")
+        print("secret-failing-build-error", file=sys.stderr)
+        raise RuntimeError("secret-failing-build-exception")
+
+
 def _payload(capsys) -> dict[str, object]:  # type: ignore[no-untyped-def]
     return json.loads(capsys.readouterr().out)
 
@@ -154,6 +187,95 @@ def test_plugins_cli_reports_selected_plugin_without_runtime_calls(
     assert factory.plugin.prepare_calls == 0
     assert factory.plugin.ingest_calls == 0
     assert factory.plugin.close_calls == 0
+
+
+def test_plugins_cli_discards_config_and_factory_output_on_success(
+    capsys,
+) -> None:  # type: ignore[no-untyped-def]
+    exit_code = memory_cli.main(
+        ["plugins"],
+        factory_overrides=[_NoisyFactory()],
+        env={"MULTIMODAL_AGENT_PROVIDER_MODE": "mock"},
+    )
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+
+    assert exit_code == 0
+    assert payload["sealed"] is True
+    assert captured.err == ""
+    assert "secret-config-validation" not in captured.out
+    assert "secret-build" not in captured.out
+
+
+def test_plugins_cli_discards_factory_output_on_failure(
+    capsys,
+) -> None:  # type: ignore[no-untyped-def]
+    exit_code = memory_cli.main(
+        ["plugins"],
+        factory_overrides=[_NoisyFailingFactory()],
+        env={"MULTIMODAL_AGENT_PROVIDER_MODE": "mock"},
+    )
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+
+    assert exit_code == 1
+    assert payload["sealed"] is False
+    assert payload["issues"][0]["code"] == "memory_plugin_build_failed"  # type: ignore[index]
+    assert captured.err == ""
+    assert "secret-failing-build" not in captured.out
+
+
+def test_plugins_cli_discards_configured_module_import_output(
+    tmp_path,
+    monkeypatch,
+    capsys,
+) -> None:  # type: ignore[no-untyped-def]
+    module_name = "noisy_memory_plugin_for_cli"
+    (tmp_path / f"{module_name}.py").write_text(
+        "\n".join(
+            (
+                'print("secret-module-import-output")',
+                "import sys",
+                'print("secret-module-import-error", file=sys.stderr)',
+                "from assistant_agent.memory.plugins.builtin.mem0 import Mem0MemoryPluginFactory",
+                "__assistant_memory_plugin_factory__ = Mem0MemoryPluginFactory()",
+            )
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    config_path = tmp_path / "memory-plugins.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "assistant_memory_plugins_v1",
+                "slot": "mem0",
+                "plugins": {
+                    "mem0": {
+                        "enabled": True,
+                        "module": module_name,
+                        "config": {},
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    exit_code = memory_cli.main(
+        ["plugins"],
+        env={
+            "MULTIMODAL_AGENT_PROVIDER_MODE": "mock",
+            "MULTIMODAL_AGENT_MEMORY_PLUGIN_CONFIG_PATH": str(config_path),
+        },
+    )
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+
+    assert exit_code == 0
+    assert payload["sealed"] is True
+    assert captured.err == ""
+    assert "secret-module-import" not in captured.out
 
 
 def test_plugins_cli_reports_default_mock_mem0_as_offline_without_real_client(
@@ -228,6 +350,57 @@ def test_plugins_cli_reports_explicit_builtin_mem0_module_as_offline(
     assert payload["readiness"] == "unavailable"
     assert [issue["code"] for issue in payload["issues"]] == [  # type: ignore[index]
         "memory_plugin_offline"
+    ]
+
+
+def test_plugins_cli_explicit_mem0_config_does_not_inherit_legacy_base_url(
+    tmp_path,
+    monkeypatch,
+    capsys,
+) -> None:  # type: ignore[no-untyped-def]
+    config_path = tmp_path / "memory-plugins.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "assistant_memory_plugins_v1",
+                "slot": "mem0",
+                "plugins": {
+                    "mem0": {
+                        "enabled": True,
+                        "module": (
+                            "assistant_agent.memory.plugins.builtin.mem0"
+                        ),
+                        "config": {},
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def _unexpected_real_client(**kwargs: object) -> object:
+        raise AssertionError("explicit empty Mem0 config must stay unavailable")
+
+    monkeypatch.setattr(
+        "assistant_agent.memory.plugins.builtin.mem0.Mem0Client",
+        _unexpected_real_client,
+    )
+    exit_code = memory_cli.main(
+        ["plugins"],
+        env={
+            "MULTIMODAL_AGENT_PROVIDER_MODE": "real",
+            "MULTIMODAL_AGENT_CHAT_PROVIDER": "qwen",
+            "QWEN_API_KEY": "chat-key-sentinel",
+            "MEM0_BASE_URL": "https://legacy-mem0.invalid",
+            "MULTIMODAL_AGENT_MEMORY_PLUGIN_CONFIG_PATH": str(config_path),
+        },
+    )
+    payload = _payload(capsys)
+
+    assert exit_code == 0
+    assert payload["readiness"] == "unavailable"
+    assert [issue["code"] for issue in payload["issues"]] == [  # type: ignore[index]
+        "memory_plugin_unconfigured"
     ]
 
 

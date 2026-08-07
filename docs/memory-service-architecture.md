@@ -218,6 +218,8 @@ Provider 请求。
 exit code `0` 报告 `sealed=true`、`readiness=unavailable` 和 `memory_plugin_offline`，因为装配有效但
 后端按安全模式离线。装配失败以同一 schema 返回 exit code `1`、`sealed=false`、
 `generation=null`；报告不包含 Plugin config、解析后的 secret、原始异常或远端响应。
+装配期间显式 module、config validator 和 factory 写入的 stdout/stderr 会被丢弃，CLI stdout 只保留
+最终 JSON 报告；Plugin 需要诊断构造逻辑时应返回脱敏的结构化 issue，而不是打印配置或异常。
 
 该 CLI 是 Runtime Plugin 的只读装配诊断，不安装、升级、卸载或运行 Plugin 生命周期。
 
