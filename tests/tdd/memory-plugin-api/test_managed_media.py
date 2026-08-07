@@ -848,6 +848,80 @@ def test_resolve_rejects_request_container_subclass_before_iteration_hooks() -> 
     assert injected_ids.calls == []
 
 
+@pytest.mark.parametrize(
+    ("extra_field", "missing_field"),
+    [
+        ("unexpected", None),
+        (None, "user_id"),
+        (None, "metadata"),
+    ],
+)
+def test_resolve_requires_the_complete_request_field_snapshot_before_media_parsing(
+    extra_field: str | None,
+    missing_field: str | None,
+) -> None:
+    """Only the complete UserRequest field snapshot may reach media parsing."""
+    store = ManagedMemoryMediaStore(max_total_bytes=1024)
+    ref = store.register(
+        owner_scope="owner-sentinel",
+        media_type="image",
+        mime_type="image/jpeg",
+        payload=b"jpeg-sentinel",
+    )
+    request = UserRequest(
+        user_id="user-sentinel",
+        session_id="session-sentinel",
+        image_ids=[ref.ref_id],
+    )
+    if extra_field is not None:
+        request.__dict__[extra_field] = "caller-controlled"
+    if missing_field is not None:
+        request.__dict__.pop(missing_field)
+
+    refs, issues = store.resolve_request_refs(
+        request,
+        owner_scope="owner-sentinel",
+        allowed_modalities={"image"},
+        max_items=1,
+        max_total_bytes=1024,
+    )
+
+    assert refs == []
+    assert [issue.code for issue in issues] == ["memory_media_request_invalid"]
+
+
+def test_resolve_rejects_a_malicious_request_key_before_key_or_media_hooks() -> None:
+    """Request keys are exact strings before any field lookup or media parsing."""
+    store = ManagedMemoryMediaStore(max_total_bytes=1024)
+    ref = store.register(
+        owner_scope="owner-sentinel",
+        media_type="image",
+        mime_type="image/jpeg",
+        payload=b"jpeg-sentinel",
+    )
+    request = UserRequest(
+        user_id="user-sentinel",
+        session_id="session-sentinel",
+        image_ids=[ref.ref_id],
+    )
+    image_ids = request.__dict__.pop("image_ids")
+    injected_key = _MasqueradingStr("attacker-image-ids", target="image_ids")
+    request.__dict__[injected_key] = image_ids
+    injected_key.calls.clear()
+
+    refs, issues = store.resolve_request_refs(
+        request,
+        owner_scope="owner-sentinel",
+        allowed_modalities={"image"},
+        max_items=1,
+        max_total_bytes=1024,
+    )
+
+    assert refs == []
+    assert [issue.code for issue in issues] == ["memory_media_request_invalid"]
+    assert injected_key.calls == []
+
+
 def test_read_rejects_non_exact_ref_dict_key_before_lookup_hooks() -> None:
     """Raw ref keys are proven exact before any dict lookup can compare them."""
     store = ManagedMemoryMediaStore(max_total_bytes=1024)

@@ -37,7 +37,7 @@ _MANAGED_MEDIA_REF_FIELDS = frozenset(
 _MEMORY_ARTIFACT_PAYLOAD_FIELDS = frozenset(
     {"owner_scope", "media_type", "mime_type", "payload", "expires_at"}
 )
-_REQUEST_MEDIA_FIELDS = frozenset({"image_ids", "video_ids", "audio_id"})
+_USER_REQUEST_FIELDS = frozenset(UserRequest.model_fields)
 
 
 class MemoryMediaAccessError(PermissionError):
@@ -448,7 +448,7 @@ class ManagedMemoryMediaStore:
             if type(field_name) is not str:
                 return None
             field_names.add(field_name)
-        if not _REQUEST_MEDIA_FIELDS.issubset(field_names):
+        if field_names != _USER_REQUEST_FIELDS:
             return None
         image_ids = dict.__getitem__(values, "image_ids")
         video_ids = dict.__getitem__(values, "video_ids")
