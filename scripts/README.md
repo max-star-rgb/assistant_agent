@@ -53,8 +53,9 @@ For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
   审计 bundle 留在 inbox；第三层只列异常 trace，没有异常时不调用 Codex，有异常时 Codex 只审计这些 trace，
   不读取完整 bundle 或其他正常 trace。第三层同时带有审计窗口开始至采集时刻的有界 Git commit/patch
   证据，用于区分“仍需修改”和“代码已改、等待真实运行验证”。人读结果采用结论先行的对话式中文，
-  不展示 Trace/Score ID、commit SHA、测试路径、issue key、内部状态名或证据附录；机器证据只保留在
-  第三层 JSON 和内部 registry。人读结果只写
+  不展示 Score ID、commit SHA、测试路径、issue key、内部状态名或证据附录；每类问题下只额外列出最多
+  3 条最近的真实 `assistant.turn`，包含北京时间、Session、Trace ID 和 Langfuse 原生跳转链接。链接不可用
+  时显示 ID 与降级提示，不影响日报生成；其余机器证据只保留在第三层 JSON 和内部 registry。人读结果只写
   `.data/runtime_audit/reports/YYYY-MM-DD.md`；第二层为 `inbox/YYYY-MM-DD.bundle.json`，第三层为
   `state/codex-inputs/YYYY-MM-DD.codex-input.json`。三份正式产物按被审计日期一一对应，运行时间只保留在
   attempt metadata。已确认的空日生成极简中文日报且不调用 Codex。`run --date YYYY-MM-DD` 对已完成日期

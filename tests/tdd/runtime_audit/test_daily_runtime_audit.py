@@ -191,6 +191,102 @@ def test_human_daily_report_reads_like_a_direct_reply_without_machine_ids() -> N
     )
 
 
+def test_daily_report_lists_three_latest_assistant_turns_with_native_links() -> None:
+    """Would fail if a merged issue could not be located in its newest real turns."""
+
+    issue = DailyAuditIssue(
+        issue_key="quality.unsupported_claims",
+        status="open",
+        title="回答补充了证据中没有的信息",
+        plain_summary="品牌、找物与旅行回答中出现了没有依据的断言。",
+        user_impact="用户可能据此继续行动。",
+        suggested_change="先区分事实、推断和待确认信息。",
+        first_seen=date(2026, 8, 5),
+        last_seen=date(2026, 8, 5),
+        trace_evidence_refs=[
+            "trace:trace-old/observation:answer-old",
+            "trace:trace-new/score:grounding-new",
+            "trace:trace-middle/observation:answer-middle",
+            "trace:trace-new/observation:answer-new",
+            "trace:trace-third",
+            "trace:not-an-assistant-turn",
+        ],
+    )
+    report = _daily_codex_report(issue=issue)
+
+    def trace(
+        trace_id: str,
+        hour: int,
+        *,
+        name: str = "assistant.turn",
+    ) -> LangfuseTraceSnapshot:
+        return _daily_trace(trace_id).model_copy(
+            update={
+                "name": name,
+                "timestamp": datetime(2026, 8, 5, hour, tzinfo=timezone.utc),
+                "session_id": f"session-{trace_id}",
+                "trace_url": (
+                    "https://langfuse.example/project/project-1/traces/"
+                    f"{trace_id}"
+                ),
+            }
+        )
+
+    markdown = report_module.render_daily_codex_report(
+        report,
+        traces=[
+            trace("trace-old", 8),
+            trace("trace-third", 9),
+            trace("trace-middle", 10),
+            trace("trace-new", 11),
+            trace("not-an-assistant-turn", 12, name="agent.runtime"),
+        ],
+    )
+
+    assert "最近的相关记录：" in markdown
+    assert markdown.count("Assistant turn：") == 3
+    assert markdown.index("trace-new") < markdown.index("trace-middle")
+    assert markdown.index("trace-middle") < markdown.index("trace-third")
+    assert "trace-old" not in markdown
+    assert "not-an-assistant-turn" not in markdown
+    assert "2026-08-05 19:00" in markdown
+    assert "Session：`session-trace-new`" in markdown
+    assert (
+        "Assistant turn：[`trace-new`](<https://langfuse.example/"
+        "project/project-1/traces/trace-new>)"
+    ) in markdown
+
+
+@pytest.mark.parametrize(
+    "trace_url",
+    [None, "javascript:alert(1)", "https://user:secret@langfuse.example/traces/trace-1"],
+)
+def test_daily_report_falls_back_when_trace_link_is_missing_or_unsafe(
+    trace_url: str | None,
+) -> None:
+    """Would fail if a bad dashboard URL broke the report or became a clickable link."""
+
+    issue = DailyAuditIssue(
+        issue_key="quality.unsupported_claims",
+        status="open",
+        title="回答缺少依据",
+        first_seen=date(2026, 8, 5),
+        last_seen=date(2026, 8, 5),
+        trace_evidence_refs=["trace:trace-1"],
+    )
+    trace = _daily_trace("trace-1").model_copy(
+        update={"session_id": "session-1", "trace_url": trace_url}
+    )
+
+    markdown = report_module.render_daily_codex_report(
+        _daily_codex_report(issue=issue),
+        traces=[trace],
+    )
+
+    assert "Assistant turn：`trace-1`（Langfuse 链接暂不可用）" in markdown
+    assert "Assistant turn：[" not in markdown
+
+
 def test_empty_day_report_is_short_and_explicitly_successful() -> None:
     """Would fail if an empty audit day were mistaken for an audit failure."""
 
@@ -1348,7 +1444,19 @@ def test_current_bundle_evidence_allows_issue_merge(tmp_path: Path) -> None:
     )
     result = run_one_daily_audit(
         window=window_for_date(date(2026, 8, 5)),
-        source=FakeLangfuseSource([_daily_trace("trace-current")]),
+        source=FakeLangfuseSource(
+            [
+                _daily_trace("trace-current").model_copy(
+                    update={
+                        "session_id": "session-current",
+                        "trace_url": (
+                            "https://langfuse.example/project/project-1/traces/"
+                            "trace-current"
+                        ),
+                    }
+                )
+            ]
+        ),
         local_trace_path=tmp_path / "graph_trace.jsonl",
         store=store,
         repo_root=tmp_path,
@@ -1358,6 +1466,12 @@ def test_current_bundle_evidence_allows_issue_merge(tmp_path: Path) -> None:
 
     assert result.status == "succeeded"
     assert store.read_issue_registry().issues["tool.example"].status == "uncertain"
+    markdown = result.report_path.read_text(encoding="utf-8")
+    assert "Session：`session-current`" in markdown
+    assert (
+        "Assistant turn：[`trace-current`](<https://langfuse.example/"
+        "project/project-1/traces/trace-current>)"
+    ) in markdown
 
 
 @pytest.mark.parametrize("verification_ref", ["trace:forged", "trace:historical"])

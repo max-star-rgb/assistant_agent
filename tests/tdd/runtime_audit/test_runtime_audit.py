@@ -506,8 +506,15 @@ def test_langfuse_source_paginates_headers_then_fetches_full_trace_details() -> 
                 meta=SimpleNamespace(cursor=None),
             )
 
+    trace_urls: list[str] = []
+
+    def get_trace_url(*, trace_id: str) -> str:
+        trace_urls.append(trace_id)
+        return f"https://langfuse.example/project/project-1/traces/{trace_id}"
+
     client = SimpleNamespace(
-        api=SimpleNamespace(trace=trace_api, scores_v3=ScoresApi())
+        api=SimpleNamespace(trace=trace_api, scores_v3=ScoresApi()),
+        get_trace_url=get_trace_url,
     )
     source = LangfuseSdkAuditSource(client, page_size=50)
 
@@ -520,6 +527,52 @@ def test_langfuse_source_paginates_headers_then_fetches_full_trace_details() -> 
     assert [trace.trace_id for trace in traces] == ["trace-1", "trace-2"]
     assert traces[0].observations[0].observation_id == "observation-trace-1"
     assert traces[0].scores[0].score_id == "score-trace-1"
+    assert traces[0].trace_url == (
+        "https://langfuse.example/project/project-1/traces/trace-1"
+    )
+    assert trace_urls == ["trace-1", "trace-2"]
+
+
+def test_langfuse_source_keeps_trace_when_native_url_lookup_fails() -> None:
+    """Would fail if a dashboard-link outage could abort evidence collection."""
+
+    now = datetime(2026, 8, 5, 4, 0, tzinfo=UTC)
+
+    class TraceApi:
+        def list(self, **_):
+            return SimpleNamespace(
+                data=[SimpleNamespace(id="trace-1")],
+                meta=SimpleNamespace(total_pages=1),
+            )
+
+        def get(self, trace_id: str):
+            return {
+                "id": trace_id,
+                "name": "assistant.turn",
+                "timestamp": now - timedelta(minutes=10),
+            }
+
+    class ScoresApi:
+        def get_many_v3(self, **_):
+            return SimpleNamespace(data=[], meta=SimpleNamespace(cursor=None))
+
+    def unavailable_url(**_: str) -> str:
+        raise RuntimeError("dashboard unavailable")
+
+    source = LangfuseSdkAuditSource(
+        SimpleNamespace(
+            api=SimpleNamespace(trace=TraceApi(), scores_v3=ScoresApi()),
+            get_trace_url=unavailable_url,
+        )
+    )
+
+    traces = source.list_traces(
+        window_start=now - timedelta(hours=2),
+        window_end=now,
+    )
+
+    assert [trace.trace_id for trace in traces] == ["trace-1"]
+    assert traces[0].trace_url is None
 
 
 def test_artifact_store_writes_versioned_bundle_latest_pointer_and_read_only_report(

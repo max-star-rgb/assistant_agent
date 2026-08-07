@@ -3,14 +3,20 @@
 from __future__ import annotations
 
 from collections import Counter
-from datetime import date
+from datetime import date, timezone
 import re
+from urllib.parse import urlsplit
+from zoneinfo import ZoneInfo
 
 from assistant_agent.observability.runtime_audit.daily_models import (
     DailyAuditIssue,
     DailyCodexAuditReport,
 )
-from assistant_agent.observability.runtime_audit.models import CodexAuditReport, RuntimeAuditBundle
+from assistant_agent.observability.runtime_audit.models import (
+    CodexAuditReport,
+    LangfuseTraceSnapshot,
+    RuntimeAuditBundle,
+)
 from assistant_agent.observability.runtime_audit.safety import (
     sanitize_runtime_audit_text,
 )
@@ -35,6 +41,8 @@ _INTERNAL_TERM = re.compile(
     re.IGNORECASE,
 )
 _MARKDOWN_CONTROL = re.compile(r"([\\`*_{}\[\]<>#+()\-.!|])")
+_SHANGHAI = ZoneInfo("Asia/Shanghai")
+_MAX_ISSUE_TRACE_REFERENCES = 3
 
 
 def render_deterministic_report(bundle: RuntimeAuditBundle) -> str:
@@ -153,6 +161,7 @@ def render_daily_codex_report(
     report: DailyCodexAuditReport,
     *,
     issues: list[DailyAuditIssue] | None = None,
+    traces: list[LangfuseTraceSnapshot] | None = None,
 ) -> str:
     """Render validated audit facts as a conversational Chinese reply."""
 
@@ -178,7 +187,12 @@ def render_daily_codex_report(
     ]
     if decision_issues:
         lines.extend(["", "## 你现在需要处理的", ""])
-        _append_conversational_issues(lines, decision_issues, include_advice=True)
+        _append_conversational_issues(
+            lines,
+            decision_issues,
+            include_advice=True,
+            traces=traces,
+        )
     if addressed_issues:
         lines.extend(
             [
@@ -189,13 +203,13 @@ def render_daily_codex_report(
                 "",
             ]
         )
-        _append_conversational_issues(lines, addressed_issues)
+        _append_conversational_issues(lines, addressed_issues, traces=traces)
     if verified_issues:
         lines.extend(["", "## 昨天已经确认恢复的", ""])
-        _append_conversational_issues(lines, verified_issues)
+        _append_conversational_issues(lines, verified_issues, traces=traces)
     if uncertain_issues or report.limitations:
         lines.extend(["", "## 还有一些暂时不能下结论", ""])
-        _append_conversational_issues(lines, uncertain_issues)
+        _append_conversational_issues(lines, uncertain_issues, traces=traces)
         if uncertain_issues and report.limitations:
             lines.append("")
         lines.extend(
@@ -293,6 +307,7 @@ def _append_conversational_issues(
     issues: list[DailyAuditIssue],
     *,
     include_advice: bool = False,
+    traces: list[LangfuseTraceSnapshot] | None = None,
 ) -> None:
     for issue in issues:
         lines.extend(
@@ -319,8 +334,84 @@ def _append_conversational_issues(
                 max_chars=80,
             )
             lines.extend(["", _direct_advice(advice)])
+        related_traces = _issue_traces(issue, traces or [])
+        if related_traces:
+            lines.extend(["", "最近的相关记录：", ""])
+            for index, trace in enumerate(related_traces, start=1):
+                occurred_at = trace.timestamp.astimezone(_SHANGHAI).strftime(
+                    "%Y-%m-%d %H:%M"
+                )
+                session_id = _inline_code(trace.session_id or "未提供")
+                trace_id = _inline_code(trace.trace_id)
+                trace_url = _safe_trace_url(trace.trace_url)
+                assistant_turn = (
+                    f"[`{trace_id}`](<{trace_url}>)"
+                    if trace_url is not None
+                    else f"`{trace_id}`（Langfuse 链接暂不可用）"
+                )
+                lines.extend(
+                    [
+                        f"{index}. {occurred_at}",
+                        f"   Session：`{session_id}`",
+                        f"   Assistant turn：{assistant_turn}",
+                    ]
+                )
         lines.append("")
     lines.pop()
+
+
+def _issue_traces(
+    issue: DailyAuditIssue,
+    traces: list[LangfuseTraceSnapshot],
+) -> list[LangfuseTraceSnapshot]:
+    trace_ids = {
+        trace_id
+        for ref in [*issue.trace_evidence_refs, *issue.runtime_verification_refs]
+        if (trace_id := _trace_id_from_evidence_ref(ref)) is not None
+    }
+    matching = [
+        trace
+        for trace in traces
+        if trace.trace_id in trace_ids and trace.name == "assistant.turn"
+    ]
+    matching.sort(
+        key=lambda trace: trace.timestamp.astimezone(timezone.utc),
+        reverse=True,
+    )
+    return matching[:_MAX_ISSUE_TRACE_REFERENCES]
+
+
+def _trace_id_from_evidence_ref(ref: str) -> str | None:
+    if not ref.startswith("trace:"):
+        return None
+    trace_id = ref.removeprefix("trace:").split("/", 1)[0]
+    return trace_id or None
+
+
+def _inline_code(value: str) -> str:
+    sanitized = sanitize_runtime_audit_text(value)
+    return " ".join(sanitized.split()).replace("`", "′") or "未提供"
+
+
+def _safe_trace_url(value: str | None) -> str | None:
+    if not isinstance(value, str) or not value:
+        return None
+    if any(character.isspace() or ord(character) < 32 for character in value):
+        return None
+    if any(character in value for character in "<>"):
+        return None
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        return None
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+    ):
+        return None
+    return value
 
 
 def _safe(value: str) -> str:

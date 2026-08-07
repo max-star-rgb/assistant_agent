@@ -77,6 +77,7 @@ class LangfuseTraceSnapshot(BaseModel):
     name: str | None = None
     timestamp: datetime
     session_id: str | None = None
+    trace_url: str | None = None
     user_id: str | None = None
     environment: str | None = None
     input: Any = None

@@ -61,9 +61,24 @@ class LangfuseSdkAuditSource:
                 and window_start <= snapshot.timestamp < window_end
             ):
                 traces.append(
-                    snapshot.model_copy(update={"scores": self._scores_for_trace(trace_id)})
+                    snapshot.model_copy(
+                        update={
+                            "scores": self._scores_for_trace(trace_id),
+                            "trace_url": self._trace_url(trace_id),
+                        }
+                    )
                 )
         return traces
+
+    def _trace_url(self, trace_id: str) -> str | None:
+        get_trace_url = getattr(self.client, "get_trace_url", None)
+        if not callable(get_trace_url):
+            return None
+        try:
+            value = get_trace_url(trace_id=trace_id)
+        except Exception:
+            return None
+        return value if isinstance(value, str) and value else None
 
     def _scores_for_trace(self, trace_id: str):
         scores = []

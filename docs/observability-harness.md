@@ -405,9 +405,16 @@ bundle、Codex input 或日报，也不会推进 issue registry 或 watermark。
 registry，其人读 Markdown 只使用本次 Codex 已归并的问题，避免旧标题和旧正文与当前归纳重复出现。
 `uncertain` 只作为暂时不能下结论的事项，不进入当前修改建议；`runtime_verified` 只在当日真实转换时出现。
 空日或无异常日不调用 Codex，但仍以自然语言保留 active/code-addressed 问题标题。面向人的 Markdown 是结论先行的
-对话式投影，不生成证据附录，也不显示 issue key、Trace/Score/observation/run ID、commit SHA、测试路径
-或内部生命周期术语。renderer 对各段设置人读长度预算，五个极端长问题也不得超过 1,500 字；正常日报
-目标仍为约 500～1,000 字。完整机器证据仍保存在第三层 JSON 与 issue registry 中；Score 证据复用现有
+对话式投影，不生成证据附录，也不显示 issue key、Score/observation/run ID、commit SHA、测试路径或内部
+生命周期术语。唯一例外是每类问题下的“最近的相关记录”：renderer 从本次完整 bundle 中匹配已经通过
+归属校验的真实 `assistant.turn`，按北京时间从近到远列出最多 3 条，明确显示 `session_id` 和 Trace ID，
+并使用 Langfuse Python SDK 的公共 `get_trace_url()` 结果生成一键跳转链接。Codex 不接触、不生成也不复制
+这些 ID 或 URL。URL 获取失败、缺失、不是 `http/https` 或包含用户凭据时，日报保留 Session 与 Trace ID，
+显示“Langfuse 链接暂不可用”，但审计本身继续成功；没有可匹配记录时不显示空列表。
+
+renderer 对自然语言段落设置人读长度预算，定位记录不计入正文预算，但由每类问题最多 3 条的上限控制；
+五个极端长问题的自然语言正文仍不得超过 1,500 字，正常日报目标仍为约 500～1,000 字。完整机器证据仍
+保存在第三层 JSON 与 issue registry 中；Score 证据复用现有
 `trace_evidence_refs`，格式为 `trace:<trace-id>/score:<score-id>`，并按 current bundle 校验归属。
 
 确定性第三层存在异常时，Codex 通过 `--ephemeral --sandbox read-only` 运行；子进程环境移除

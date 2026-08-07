@@ -277,7 +277,11 @@ def _run_one_locked(
             else list(report.issues)
         )
         registry = report_registry if commit_continuous_state else None
-        markdown = render_daily_codex_report(report, issues=issues)
+        markdown = render_daily_codex_report(
+            report,
+            issues=issues,
+            traces=bundle.traces,
+        )
     except Exception as exc:
         return _fail(
             store=store,
