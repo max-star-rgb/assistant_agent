@@ -10,7 +10,7 @@ from typing import Any
 from assistant_agent.observability.runtime_audit.models import RuntimeAuditBundle
 
 
-DEFAULT_DAILY_CODEX_INPUT_MAX_BYTES = 350_000
+DEFAULT_DAILY_CODEX_INPUT_MAX_BYTES = 500_000
 _DETAIL_VALUE_MAX_BYTES = 24_000
 _INDEX_VALUE_MAX_BYTES = 4_000
 _NON_ANOMALY_FINDING_CODES = frozenset(
@@ -37,6 +37,7 @@ def requires_codex_audit(bundle: RuntimeAuditBundle) -> bool:
 def build_daily_codex_input(
     bundle: RuntimeAuditBundle,
     *,
+    repository_changes: dict[str, Any] | None = None,
     max_bytes: int = DEFAULT_DAILY_CODEX_INPUT_MAX_BYTES,
 ) -> dict[str, Any]:
     """Build a self-contained third layer containing anomalous traces only."""
@@ -94,6 +95,7 @@ def build_daily_codex_input(
     payload: dict[str, Any] = {
         "schema_version": "assistant_agent_daily_codex_input_v1",
         "audit_run_id": bundle.audit_run_id,
+        "collected_at": bundle.collected_at.isoformat(),
         "source_bundle_sha256": hashlib.sha256(
             bundle.model_dump_json(exclude_none=True).encode("utf-8")
         ).hexdigest(),
@@ -121,6 +123,10 @@ def build_daily_codex_input(
             key: value
             for key, value in bundle.tool_catalogs.items()
             if key in referenced_catalogs
+        },
+        "repository_changes": repository_changes or {
+            "available": False,
+            "commits": [],
         },
         "production_mutation_allowed": False,
     }

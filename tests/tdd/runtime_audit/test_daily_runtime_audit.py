@@ -977,6 +977,40 @@ def test_nonempty_daily_run_collects_invokes_codex_and_publishes_markdown(
     """Would fail if a nonempty day skipped its isolated human audit or report."""
 
     calls: list[dict[str, object]] = []
+    subprocess.run(["git", "init", str(tmp_path)], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "audit@example.invalid"],
+        cwd=tmp_path,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Runtime Audit Test"],
+        cwd=tmp_path,
+        check=True,
+    )
+    source_file = tmp_path / "src/assistant_agent/fix.py"
+    source_file.parent.mkdir(parents=True)
+    source_file.write_text("FIXED = True\n", encoding="utf-8")
+    subprocess.run(["git", "add", "--all"], cwd=tmp_path, check=True)
+    commit_environment = {
+        **os.environ,
+        "GIT_AUTHOR_DATE": "2026-08-05T13:00:00+00:00",
+        "GIT_COMMITTER_DATE": "2026-08-05T13:00:00+00:00",
+    }
+    subprocess.run(
+        ["git", "commit", "-m", "fix traced issue"],
+        cwd=tmp_path,
+        env=commit_environment,
+        check=True,
+        capture_output=True,
+    )
+    commit_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
     store = RuntimeAuditArtifactStore(tmp_path / "runtime_audit")
     result = run_one_daily_audit(
         window=window_for_date(date(2026, 8, 5)),
@@ -998,11 +1032,16 @@ def test_nonempty_daily_run_collects_invokes_codex_and_publishes_markdown(
     assert store.daily_codex_input_path(date(2026, 8, 5)).name == (
         "2026-08-05.codex-input.json"
     )
-    assert json.loads(
+    codex_payload = json.loads(
         store.daily_codex_input_path(date(2026, 8, 5)).read_text(encoding="utf-8")
-    )["schema_version"] == (
+    )
+    assert codex_payload["schema_version"] == (
         "assistant_agent_daily_codex_input_v1"
     )
+    assert codex_payload["repository_changes"]["available"] is True
+    assert [
+        item["sha"] for item in codex_payload["repository_changes"]["commits"]
+    ] == [commit_sha]
     assert json.loads(result.bundle_path.read_text(encoding="utf-8"))["schema_version"] == (
         "assistant_agent_runtime_audit_bundle_v2"
     )

@@ -323,9 +323,9 @@ def _daily_codex_prompt(
 9. 只能基于输入中的事实报告；基础设施或证据缺口必须写入 limitations，不能伪造成质量失败。
 10. 除输入已有机器证据外，不得声称已运行测试、已部署、已在生产或真实 trace 验证。不得把推测写成事实。
 11. 不得复制完整用户对话、不得复制 Memory 正文、不得复制 Provider 原始响应；只写最小必要摘要。
-12. code_addressed 必须同时引用本次坏 Trace 和可信代码证据：提交使用 code:<commit-sha>，测试使用 test:<repo-relative-path>。首次发现时如已有后于坏 Trace 的可信提交，也可以标记 code_addressed。
+12. 必须逐项对照 repository_changes：只有提交时间晚于对应坏 Trace，且 subject、files 或 patch_excerpt 能证明处理了同一根因时，才可标记 code_addressed；引用使用 code:<commit-sha>，相关测试使用 test:<repo-relative-path>。代码已改不等于真实运行已恢复，仍不得标记 runtime_verified。
 13. Score 证据复用 trace_evidence_refs，格式为 trace:<trace-id>/score:<score-id>；不得虚构独立 score evidence 字段。
-14. 无法从本地 Git 与文件事实证明建议涉及的 owning module 时，写入 limitation 或保持 uncertain，不得虚构代码关联。
+14. repository_changes 不可用、被截断或无法证明同一根因时，写入 limitation 或保持 open/uncertain，不得仅凭提交时间接近就虚构代码关联。
 15. production_mutation_allowed 必须为 false，audit_date 必须与审计日期一致。
 16. input 中的 tool_catalog_ref 必须从本次审计输入顶层 tool_catalogs 解析，不得把引用摘要当成工具名。
 最终只输出符合给定 JSON Schema 的对象。

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -44,6 +46,77 @@ class FakeLangfuseSource:
             for trace in self.traces
             if window_start <= trace.timestamp <= window_end
         ]
+
+
+def test_repository_change_evidence_filters_commits_and_keeps_bounded_patch(
+    tmp_path: Path,
+) -> None:
+    """Would fail if Codex could not compare bad traces with later Git fixes."""
+
+    from assistant_agent.observability.runtime_audit.git_evidence import (
+        collect_repository_change_evidence,
+    )
+
+    subprocess.run(["git", "init", str(tmp_path)], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "audit@example.invalid"],
+        cwd=tmp_path,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Runtime Audit Test"],
+        cwd=tmp_path,
+        check=True,
+    )
+
+    def commit(value: str, committed_at: str) -> str:
+        source = tmp_path / "src/assistant_agent/example.py"
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_text(f'VALUE = "{value}"\n', encoding="utf-8")
+        documentation = tmp_path / "docs/change.md"
+        documentation.parent.mkdir(parents=True, exist_ok=True)
+        documentation.write_text(value * 2_000, encoding="utf-8")
+        subprocess.run(["git", "add", "--all"], cwd=tmp_path, check=True)
+        environment = {
+            **os.environ,
+            "GIT_AUTHOR_DATE": committed_at,
+            "GIT_COMMITTER_DATE": committed_at,
+        }
+        subprocess.run(
+            ["git", "commit", "-m", f"set {value}"],
+            cwd=tmp_path,
+            env=environment,
+            check=True,
+            capture_output=True,
+        )
+        return subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=tmp_path,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+    commit("before", "2026-08-05T11:00:00+00:00")
+    included_sha = commit("fixed", "2026-08-05T13:00:00+00:00")
+    commit("after", "2026-08-05T15:00:00+00:00")
+
+    evidence = collect_repository_change_evidence(
+        repo_root=tmp_path,
+        window_start=datetime(2026, 8, 5, 12, tzinfo=UTC),
+        collected_at=datetime(2026, 8, 5, 14, tzinfo=UTC),
+        max_patch_chars=1_000,
+    )
+
+    assert evidence["available"] is True
+    assert evidence["commit_count"] == 1
+    assert [item["sha"] for item in evidence["commits"]] == [included_sha]
+    assert evidence["commits"][0]["files"] == [
+        "docs/change.md",
+        "src/assistant_agent/example.py",
+    ]
+    assert '+VALUE = "fixed"' in evidence["commits"][0]["patch_excerpt"]
+    assert len(evidence["commits"][0]["patch_excerpt"]) <= 1_000
 
 
 def _write_event(
@@ -929,7 +1002,16 @@ def test_daily_codex_input_contains_only_anomalous_traces_with_bounded_evidence(
         tool_catalogs={catalog_ref: catalog},
     )
 
-    payload = build_daily_codex_input(bundle, max_bytes=20_000)
+    repository_changes = {
+        "available": True,
+        "commit_count": 1,
+        "commits": [{"sha": "a" * 40, "subject": "fix anomaly"}],
+    }
+    payload = build_daily_codex_input(
+        bundle,
+        repository_changes=repository_changes,
+        max_bytes=20_000,
+    )
     encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
 
     assert len(encoded) <= 20_000
@@ -946,6 +1028,7 @@ def test_daily_codex_input_contains_only_anomalous_traces_with_bounded_evidence(
         "tool-observation"
     )
     assert payload["tool_catalogs"] == {catalog_ref: catalog}
+    assert payload["repository_changes"] == repository_changes
     assert "source_bundle_path" not in payload
 
 

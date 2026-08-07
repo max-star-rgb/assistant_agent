@@ -37,6 +37,9 @@ from assistant_agent.observability.runtime_audit.issues import (
     merge_issue_registry,
     report_issue_view,
 )
+from assistant_agent.observability.runtime_audit.git_evidence import (
+    collect_repository_change_evidence,
+)
 from assistant_agent.observability.runtime_audit.models import RuntimeAuditBundle
 from assistant_agent.observability.runtime_audit.report import (
     render_daily_codex_report,
@@ -144,9 +147,17 @@ def _run_one_locked(
             judge_grace=judge_grace, low_score_threshold=low_score_threshold,
         )
         bundle_path = store.write_staged_daily_bundle(bundle)
+        repository_changes = collect_repository_change_evidence(
+            repo_root=repo_root,
+            window_start=bundle.window_start,
+            collected_at=bundle.collected_at,
+        )
         codex_input_path = store.write_staged_daily_codex_input(
             attempt_id,
-            build_daily_codex_input(bundle),
+            build_daily_codex_input(
+                bundle,
+                repository_changes=repository_changes,
+            ),
         )
         running = running.model_copy(
             update={

@@ -386,8 +386,11 @@ timeline fallback。
 缺失 Score、observation error 等异常 trace 的基础事实、Score 和完整 observation 序列。没有异常时直接
 生成极简成功日报，不启动 Codex。存在异常时，Codex 只能读取和审计该索引中的 trace ID，输入不暴露完整
 bundle 路径，也不得浏览或评价其他正常 trace。runner 将第三层索引和既有 issue registry 作为
-`codex exec` 的 stdin 上下文直接交付，不依赖 Codex 子进程再通过 shell 打开证据文件。索引以
-350,000 bytes 为硬上限；超限时优先省略异常 trace
+`codex exec` 的 stdin 上下文直接交付，不依赖 Codex 子进程再通过 shell 打开证据文件。第三层还包含从
+审计窗口开始到本次采集时刻的有界 `repository_changes`：完整 commit SHA、提交时间、subject、改动文件
+和优先覆盖 `src/assistant_agent`/`tests` 的 patch 摘要。Codex 只有在提交晚于对应坏 Trace 且代码事实能
+证明处理同一根因时，才能把问题标记为“已修改，等待实际验证”；时间接近本身不构成修复证据。索引以
+500,000 bytes 为硬上限；超限时优先省略异常 trace
 中的大 input/output 内容，同时保留 observation 身份、大小和省略原因。结构本身仍超限则审计失败，不能
 静默丢失异常范围。
 
