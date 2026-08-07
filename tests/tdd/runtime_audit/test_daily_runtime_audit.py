@@ -143,8 +143,8 @@ def _runtime_audit_test_repo(
     return repo, result.stdout.strip()
 
 
-def test_human_daily_report_is_chinese_and_moves_machine_ids_to_appendix() -> None:
-    """Would fail if the daily report buried user impact behind machine evidence."""
+def test_human_daily_report_reads_like_a_direct_reply_without_machine_ids() -> None:
+    """Would fail if the human report remained a formal machine-evidence audit."""
 
     report = daily_models_module.DailyCodexAuditReport(
         audit_date=date(2026, 8, 5),
@@ -170,18 +170,25 @@ def test_human_daily_report_is_chinese_and_moves_machine_ids_to_appendix() -> No
 
     markdown = report_module.render_daily_codex_report(report)
 
-    assert "## 昨天是否需要你处理" in markdown
-    assert "## 需要处理" in markdown
-    assert "发生了什么：" in markdown
-    assert "建议怎么做：" in markdown
-    assert "怎么确认：" in markdown
-    assert "## 技术附录（通常不用看）" in markdown
-    assert "## 昨日概况" not in markdown
-    assert "## 记忆情况" not in markdown
-    assert "## 系统运行情况" not in markdown
+    assert markdown.startswith("# 2026-08-05 运行审计\n\n昨天有一个工具选择问题需要决定。")
+    assert "## 你现在需要处理的" in markdown
+    assert markdown.index("昨天有一个工具选择问题需要决定。") < markdown.index(
+        "## 你现在需要处理的"
+    )
     assert "用户可能得到无关结果" in markdown
-    assert markdown.index("## 证据附录") < markdown.index("trace:abc")
-    assert "Executive Summary" not in markdown
+    assert "我建议你" in markdown
+    assert all(
+        value not in markdown
+        for value in (
+            "发生了什么：",
+            "建议怎么做：",
+            "怎么确认：",
+            "技术附录",
+            "证据附录",
+            "trace:abc",
+            "tool.email_for_market_data",
+        )
+    )
 
 
 def test_empty_day_report_is_short_and_explicitly_successful() -> None:
@@ -193,8 +200,8 @@ def test_empty_day_report_is_short_and_explicitly_successful() -> None:
         local_available=True,
     )
 
-    assert "昨日无可审计对话" in markdown
-    assert "审计任务运行正常" in markdown
+    assert "昨天没有可审计对话" in markdown
+    assert "审计流程本身运行正常" in markdown
 
 
 @pytest.mark.parametrize(
@@ -213,13 +220,13 @@ def test_empty_day_report_requires_all_evidence_sources(
         local_available=local_available,
     )
 
-    assert "审计未完成" in markdown
+    assert "审计没有完成" in markdown
     assert "昨日无可审计对话" not in markdown
     assert "审计任务运行正常" not in markdown
 
 
-def test_daily_report_escapes_plain_text_and_keeps_body_machine_ids_in_appendix() -> None:
-    """Would fail if report text could inject Markdown or expose evidence IDs in its body."""
+def test_daily_report_escapes_plain_text_and_removes_all_machine_ids() -> None:
+    """Would fail if report text could inject Markdown or expose any evidence ID."""
 
     report = daily_models_module.DailyCodexAuditReport(
         audit_date=date(2026, 8, 5),
@@ -243,13 +250,10 @@ def test_daily_report_escapes_plain_text_and_keeps_body_machine_ids_in_appendix(
         infrastructure_summary="系统见 code:body-system",
     )
 
-    body, appendix = report_module.render_daily_codex_report(report).split(
-        "## 证据附录", maxsplit=1
-    )
+    markdown = report_module.render_daily_codex_report(report)
 
-    assert "trace:appendix-only" not in body
-    assert "trace:appendix-only" in appendix
-    assert all(reference not in body for reference in (
+    assert all(reference not in markdown for reference in (
+        "trace:appendix-only",
         "trace:body-summary",
         "code:body-summary",
         "test:body-test",
@@ -257,9 +261,10 @@ def test_daily_report_escapes_plain_text_and_keeps_body_machine_ids_in_appendix(
         "trace:body-memory",
         "code:body-system",
     ))
-    assert body.count("机器证据见附录") >= 6
-    assert "## 伪造标题\n- [伪造链接]" not in body
-    assert "\\#\\# 伪造标题 \\- \\[伪造链接\\]\\(https://invalid\\.example\\)" in body
+    assert "机器证据见附录" not in markdown
+    assert "证据附录" not in markdown
+    assert "## 伪造标题\n- [伪造链接]" not in markdown
+    assert "\\#\\# 伪造标题 \\- \\[伪造链接\\]\\(https://invalid\\.example\\)" in markdown
 
 
 def test_daily_report_uses_clear_fallbacks_for_empty_optional_issue_text() -> None:
@@ -284,10 +289,9 @@ def test_daily_report_uses_clear_fallbacks_for_empty_optional_issue_text() -> No
 
     markdown = report_module.render_daily_codex_report(report)
 
-    assert "暂无问题说明。" in markdown
-    assert "用户影响尚不明确。" in markdown
-    assert "暂无具体修改建议。" in markdown
-    assert "尚未提供验证方式。" in markdown
+    assert "目前还没有足够信息说明具体原因。" in markdown
+    assert "对用户的具体影响暂时不明确。" in markdown
+    assert "我建议你先补齐相关运行证据" in markdown
 
 
 @pytest.mark.parametrize(
@@ -337,7 +341,7 @@ def test_failed_daily_report_states_failure_without_leaking_secrets() -> None:
         "Authorization: Bearer private-token timed out",
     )
 
-    assert "审计未完成" in markdown
+    assert "审计没有完成" in markdown
     assert "private-token" not in markdown
 
 
@@ -350,7 +354,7 @@ def test_failed_daily_report_uses_the_same_plain_text_boundary() -> None:
     )
 
     assert "trace:failure" not in markdown
-    assert "机器证据见附录" in markdown
+    assert "机器证据见附录" not in markdown
     assert "# [伪造链接]" not in markdown
     assert "\\# \\[伪造链接\\]\\(https://invalid\\.example\\)" in markdown
 
@@ -373,7 +377,7 @@ def test_daily_report_replaces_extended_machine_ids_without_hiding_normal_chines
     markdown = report_module.render_daily_codex_report(
         daily_models_module.DailyCodexAuditReport(
             audit_date=date(2026, 8, 5),
-            daily_summary="普通中文保留；observation:obs-123 需要查看。",
+            daily_summary="普通中文保留；请求 1234 不应被隐藏；observation:obs-123 需要查看。",
             activity_summary="run:run-123 与 score:quality-1 已记录。",
             memory_summary="请求 1234 不应被隐藏。",
             infrastructure_summary="实例 123e4567-e89b-12d3-a456-426614174000 可追溯。",
@@ -381,15 +385,14 @@ def test_daily_report_replaces_extended_machine_ids_without_hiding_normal_chines
         )
     )
 
-    body, _ = markdown.split("## 证据附录", maxsplit=1)
-    assert "observation:obs-123" not in body
-    assert "run:run-123" not in body
-    assert "score:quality-1" not in body
-    assert "123e4567-e89b-12d3-a456-426614174000" not in body
-    assert "00000000-0000-0000-0000-000000000000" not in body
-    assert body.count("机器证据见附录") >= 5
-    assert "普通中文保留" in body
-    assert "请求 1234 不应被隐藏" in body
+    assert "observation:obs-123" not in markdown
+    assert "run:run-123" not in markdown
+    assert "score:quality-1" not in markdown
+    assert "123e4567-e89b-12d3-a456-426614174000" not in markdown
+    assert "00000000-0000-0000-0000-000000000000" not in markdown
+    assert "机器证据见附录" not in markdown
+    assert "普通中文保留" in markdown
+    assert "请求 1234 不应被隐藏" in markdown
 
 
 def test_daily_report_replaces_machine_ids_adjacent_to_chinese_text() -> None:
@@ -398,18 +401,38 @@ def test_daily_report_replaces_machine_ids_adjacent_to_chinese_text() -> None:
     markdown = report_module.render_daily_codex_report(
         daily_models_module.DailyCodexAuditReport(
             audit_date=date(2026, 8, 5),
-            daily_summary="证据trace:abc仍需查看。",
-            activity_summary="普通中文保持可读。",
+            daily_summary="普通中文保持可读；证据trace:abc仍需查看。",
+            activity_summary="概况正常。",
             memory_summary="实例<123e4567-e89b-12d3-a456-426614174000>已记录。",
             infrastructure_summary="正常运行。",
         )
     )
 
-    body, _ = markdown.split("## 证据附录", maxsplit=1)
-    assert "trace:abc" not in body
-    assert "123e4567-e89b-12d3-a456-426614174000" not in body
-    assert body.count("机器证据见附录") >= 2
-    assert "普通中文保持可读" in body
+    assert "trace:abc" not in markdown
+    assert "123e4567-e89b-12d3-a456-426614174000" not in markdown
+    assert "机器证据见附录" not in markdown
+    assert "普通中文保持可读" in markdown
+
+
+def test_daily_report_removes_bare_git_sha_test_paths_and_internal_terms() -> None:
+    """Would fail if technical implementation details leaked without ref prefixes."""
+
+    markdown = report_module.render_daily_codex_report(
+        daily_models_module.DailyCodexAuditReport(
+            audit_date=date(2026, 8, 5),
+            daily_summary=(
+                "提交 049488ee61a83e63b259451c593ada642afdc348 已处理；"
+                "状态 code_addressed，依据 tests/tdd/runtime_audit/test_report.py。"
+            ),
+            activity_summary="概况正常。",
+            memory_summary="记忆正常。",
+            infrastructure_summary="系统正常。",
+        )
+    )
+
+    assert "049488ee61a83e63b259451c593ada642afdc348" not in markdown
+    assert "tests/tdd/runtime_audit/test_report.py" not in markdown
+    assert "code_addressed" not in markdown
 
 
 def test_issue_evidence_refs_reject_markdown_and_html_controls() -> None:
@@ -1069,7 +1092,7 @@ def test_empty_daily_run_does_not_invoke_codex(tmp_path: Path) -> None:
     assert result.status == "succeeded"
     assert calls == []
     assert result.report_path is not None
-    assert "昨日无可审计对话" in result.report_path.read_text(encoding="utf-8")
+    assert "昨天没有可审计对话" in result.report_path.read_text(encoding="utf-8")
 
 
 def test_nonempty_day_without_anomalies_does_not_invoke_codex(tmp_path: Path) -> None:
@@ -1089,7 +1112,7 @@ def test_nonempty_day_without_anomalies_does_not_invoke_codex(tmp_path: Path) ->
 
     assert result.status == "succeeded"
     assert result.report_path is not None
-    assert "没有发现需要处理的异常" in result.report_path.read_text(encoding="utf-8")
+    assert "没有发现需要你处理的新问题" in result.report_path.read_text(encoding="utf-8")
 
 
 def test_local_only_daily_evidence_invokes_codex_not_empty_report(tmp_path: Path) -> None:
@@ -1142,7 +1165,7 @@ def test_langfuse_failure_publishes_failed_day_without_advancing_watermark(tmp_p
 
     assert result.status == "failed"
     assert store.last_completed_date() is None
-    assert "审计未完成" in store.daily_report_path(date(2026, 8, 5)).read_text(encoding="utf-8")
+    assert "审计没有完成" in store.daily_report_path(date(2026, 8, 5)).read_text(encoding="utf-8")
 
 
 def test_codex_failure_preserves_bundle_and_does_not_update_state(tmp_path: Path) -> None:
@@ -1163,7 +1186,7 @@ def test_codex_failure_preserves_bundle_and_does_not_update_state(tmp_path: Path
     assert result.bundle_path.exists()
     assert store.last_completed_date() is None
     assert not store.issues_path.exists()
-    assert "审计未完成" in store.daily_report_path(date(2026, 8, 5)).read_text(encoding="utf-8")
+    assert "审计没有完成" in store.daily_report_path(date(2026, 8, 5)).read_text(encoding="utf-8")
 
 
 def test_automatic_run_skips_older_days_and_audits_only_yesterday(tmp_path: Path) -> None:
@@ -1833,7 +1856,7 @@ def test_cli_source_factory_failure_publishes_daily_failure(
     payload = json.loads(capsys.readouterr().out)
     store = RuntimeAuditArtifactStore(tmp_path / ".data/runtime_audit")
     assert payload["failed_date"] == "2026-08-05"
-    assert "审计未完成" in store.daily_report_path(date(2026, 8, 5)).read_text(encoding="utf-8")
+    assert "审计没有完成" in store.daily_report_path(date(2026, 8, 5)).read_text(encoding="utf-8")
 
 
 def test_auto_source_failure_recomputes_latest_pending_date_under_claim(

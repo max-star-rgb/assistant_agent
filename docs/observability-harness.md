@@ -401,9 +401,11 @@ watermark 的前置条件，再把第二层、第三层和日报按单文件原�
 bundle、Codex input 或日报，也不会推进 issue registry 或 watermark。
 
 发布 Markdown 前必须从 previous/merged 或手工 refresh registry 生成确定性 issue view：持续
-`open`、`regressed`、`code_addressed` 和 `uncertain` 不因 Codex 当日漏发而消失；`uncertain` 只进入
-“暂时观察”，不进入“需要处理”；`runtime_verified` 只在当日真实转换时出现。空日或无异常日不调用 Codex，
-但仍保留 active/code-addressed 状态行。证据附录使用稳定 `issue_key`；Score 证据复用现有
+`open`、`regressed`、`code_addressed` 和 `uncertain` 不因 Codex 当日漏发而消失；`uncertain` 只作为
+暂时不能下结论的事项，不进入当前修改建议；`runtime_verified` 只在当日真实转换时出现。空日或无异常日
+不调用 Codex，但仍以自然语言保留 active/code-addressed 问题标题。面向人的 Markdown 是结论先行的
+对话式投影，不生成证据附录，也不显示 issue key、Trace/Score/observation/run ID、commit SHA、测试路径
+或内部生命周期术语。完整机器证据仍保存在第三层 JSON 与 issue registry 中；Score 证据复用现有
 `trace_evidence_refs`，格式为 `trace:<trace-id>/score:<score-id>`，并按 current bundle 校验归属。
 
 确定性第三层存在异常时，Codex 通过 `--ephemeral --sandbox read-only` 运行；子进程环境移除
@@ -420,8 +422,10 @@ Langfuse 和 Provider credentials，强制 mock Provider mode，只允许生成�
 证据相对 previous 必须为新，regressed 后不得复用旧证据。能取得 commit 时间时还必须晚于引用的坏 Trace；
 仅凭时间相近不能虚构 owning-module 关系。
 
-Codex schema 对正文、issue、evidence 和 limitations 设置长度/数量上限；prompt 禁止复制完整用户对话、
-Memory 正文或 Provider 原始响应。发布前还会比较 Codex 正文字段与 bundle 中敏感长文本，若出现长片段
+Codex schema 对正文、issue、evidence 和 limitations 设置长度/数量上限；prompt 要求像直接回复维护者一样
+使用普通中文，并禁止在正文字段写入机器 ID、内部状态、完整用户对话、Memory 正文或 Provider 原始响应。
+机器引用只允许进入结构化 evidence ref 字段，最终 renderer 还会独立清除意外混入正文的技术标识。发布前
+还会比较 Codex 正文字段与 bundle 中敏感长文本，若出现长片段
 重合，则保留内部 Codex JSON 用于诊断，但只记录失败 attempt，不发布成功日报、不写 registry、不推进
 watermark。所有进入 attempt、CLI stderr、日报和 commit journal 的错误先经过同一 credential 与 URL
 userinfo 清洗边界。

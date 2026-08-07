@@ -456,7 +456,7 @@ def test_report_view_keeps_active_registry_issue_codex_omitted(
     assert result.status == "succeeded"
     markdown = result.report_path.read_text(encoding="utf-8")
     assert "持续待处理问题" in markdown
-    assert "tool.persistent" in markdown
+    assert "tool.persistent" not in markdown
 
 
 def test_empty_day_keeps_code_addressed_registry_status_without_codex(
@@ -488,7 +488,7 @@ def test_empty_day_keeps_code_addressed_registry_status_without_codex(
     assert result.status == "succeeded"
     markdown = result.report_path.read_text(encoding="utf-8")
     assert "等待自然验证" in markdown
-    assert "tool.waiting" in markdown
+    assert "tool.waiting" not in markdown
 
 
 def test_uncertain_is_observation_not_maintainer_decision() -> None:
@@ -503,11 +503,11 @@ def test_uncertain_is_observation_not_maintainer_decision() -> None:
         trace_evidence_refs=["trace:trace-current"],
     )
     markdown = render_daily_codex_report(_report(issue=issue))
-    decision, observation = markdown.split("## 暂时观察", maxsplit=1)
+    decision, observation = markdown.split("## 还有一些暂时不能下结论", maxsplit=1)
 
-    assert "继续观察" not in decision.split("## 需要处理", maxsplit=1)[1]
+    assert "继续观察" not in decision
     assert "继续观察" in observation
-    assert "tool.observe" in markdown
+    assert "tool.observe" not in markdown
 
 
 def test_trace_score_combination_ref_must_match_current_bundle(tmp_path: Path) -> None:
@@ -951,7 +951,8 @@ def test_historical_unsafe_issue_key_is_readable_but_safely_rendered() -> None:
     markdown = render_daily_codex_report(_report(), issues=[registry.issues[issue.issue_key]])
 
     assert "tool.`historic`" not in markdown
-    assert "tool._historic_" in markdown
+    assert "tool._historic_" not in markdown
+    assert "历史问题" in markdown
 
 
 def test_codex_prompt_forbids_copying_sensitive_source_bodies(tmp_path: Path) -> None:
@@ -1011,7 +1012,7 @@ def test_sensitive_long_text_overlap_keeps_internal_json_but_blocks_success(
     assert result.status == "failed"
     assert store.codex_json_path(result.attempt_id).exists()
     assert store.last_completed_date() is None
-    assert "审计未完成" in store.daily_report_path(AUDIT_DATE).read_text(encoding="utf-8")
+    assert "审计没有完成" in store.daily_report_path(AUDIT_DATE).read_text(encoding="utf-8")
     assert sensitive not in store.daily_report_path(AUDIT_DATE).read_text(encoding="utf-8")
 
 

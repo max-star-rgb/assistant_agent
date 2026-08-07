@@ -23,8 +23,18 @@ _UUID = re.compile(
     r"(?<![A-Za-z0-9_])[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?![A-Za-z0-9_])",
     re.IGNORECASE,
 )
+_GIT_SHA = re.compile(
+    r"(?<![0-9a-f])(?=[0-9a-f]{7,40}(?![0-9a-f]))(?=[0-9a-f]*[a-f])"
+    r"[0-9a-f]{7,40}(?![0-9a-f])",
+    re.IGNORECASE,
+)
+_TEST_PATH = re.compile(r"(?<![A-Za-z0-9_])tests(?:/[A-Za-z0-9._@+=-]+)+")
+_INTERNAL_TERM = re.compile(
+    r"(?<![A-Za-z0-9_])(?:open|regressed|uncertain|code_addressed|"
+    r"runtime_verified|owning module|grounding)(?![A-Za-z0-9_])",
+    re.IGNORECASE,
+)
 _MARKDOWN_CONTROL = re.compile(r"([\\`*_{}\[\]<>#+()\-.!|])")
-_UNSAFE_ISSUE_KEY = re.compile(r"[^A-Za-z0-9._/:@+=-]")
 
 
 def render_deterministic_report(bundle: RuntimeAuditBundle) -> str:
@@ -144,7 +154,7 @@ def render_daily_codex_report(
     *,
     issues: list[DailyAuditIssue] | None = None,
 ) -> str:
-    """Render the daily Codex contract as a plain-language Chinese report."""
+    """Render validated audit facts as a conversational Chinese reply."""
 
     issue_view = report.issues if issues is None else issues
     decision_issues = [
@@ -162,55 +172,36 @@ def render_daily_codex_report(
         issue for issue in issue_view if issue.status == "uncertain"
     ]
     lines = [
-        f"# {report.audit_date.isoformat()} 运行审计日报",
-        "",
-        "## 昨天是否需要你处理",
+        f"# {report.audit_date.isoformat()} 运行审计",
         "",
         _plain_text(report.daily_summary),
-        "",
-        "## 需要处理",
-        "",
     ]
-    _append_issue_guidance(lines, decision_issues, empty_message="没有需要你处理的新问题。")
-    lines.extend(["", "## 暂时观察", ""])
-    _append_issue_guidance(
-        lines,
-        uncertain_issues,
-        empty_message="没有需要暂时观察的新问题。",
-        include_suggested_change=False,
-    )
-    lines.extend(["", "## 已修改，等待实际验证", ""])
-    _append_issue_guidance(
-        lines,
-        addressed_issues,
-        empty_message="没有已修改、等待实际验证的问题。",
-        include_suggested_change=False,
-    )
-    lines.extend(["", "## 昨天确认恢复", ""])
-    _append_issue_guidance(
-        lines,
-        verified_issues,
-        empty_message="昨天没有确认恢复的问题。",
-        include_suggested_change=False,
-    )
-    lines.extend(
-        [
-            "",
-            "## 技术附录（通常不用看）",
-            "",
-            f"- 扫描概况：{_plain_text(report.activity_summary)}",
-            f"- 记忆检查：{_plain_text(report.memory_summary)}",
-            f"- 审计系统：{_plain_text(report.infrastructure_summary)}",
-        ]
-    )
-    if report.limitations:
-        lines.append("- 还不能确定的部分：")
+    if decision_issues:
+        lines.extend(["", "## 你现在需要处理的", ""])
+        _append_conversational_issues(lines, decision_issues, include_advice=True)
+    if addressed_issues:
         lines.extend(
-            f"  - {_plain_text(value, fallback='未提供限制说明。')}"
+            [
+                "",
+                "## 这些已经改了，先观察",
+                "",
+                "下面这些已经有针对性的代码调整。现在不建议继续修改，先等后续真实对话验证效果。",
+                "",
+            ]
+        )
+        _append_conversational_issues(lines, addressed_issues)
+    if verified_issues:
+        lines.extend(["", "## 昨天已经确认恢复的", ""])
+        _append_conversational_issues(lines, verified_issues)
+    if uncertain_issues or report.limitations:
+        lines.extend(["", "## 还有一些暂时不能下结论", ""])
+        _append_conversational_issues(lines, uncertain_issues)
+        if uncertain_issues and report.limitations:
+            lines.append("")
+        lines.extend(
+            _plain_text(value, fallback="目前还缺少足够信息。")
             for value in report.limitations
         )
-    lines.extend(["", "## 证据附录", ""])
-    _append_evidence_appendix(lines, issue_view)
     return "\n".join(lines) + "\n"
 
 
@@ -233,15 +224,9 @@ def render_empty_daily_report(
             f"证据源不完整：{'；'.join(availability)}。无法确认昨日是否无可审计对话。",
         )
     lines = [
-        f"# {audit_date.isoformat()} 运行审计日报",
+        f"# {audit_date.isoformat()} 运行审计",
         "",
-        "## 一句话结论",
-        "",
-        "昨日无可审计对话，审计任务运行正常。",
-        "",
-        "## 系统运行情况",
-        "",
-        f"- {'；'.join(availability)}。",
+        "昨天没有可审计对话。审计流程本身运行正常，目前没有需要你处理的新问题。",
     ]
     active = [
         issue
@@ -249,17 +234,11 @@ def render_empty_daily_report(
         if issue.status in {"open", "regressed", "code_addressed", "uncertain"}
     ]
     if active:
-        lines.extend(["", "## 连续问题状态", ""])
-        for issue in active:
-            label = {
-                "open": "仍待决定",
-                "regressed": "再次出现",
-                "code_addressed": "已处理，等待自然验证",
-                "uncertain": "需要继续观察",
-            }[issue.status]
-            lines.append(
-                f"- `{_render_issue_key(issue.issue_key)}`：{_plain_text(issue.title, fallback='未命名问题')}（{label}）。"
-            )
+        lines.extend(["", "以前发现的问题还需要继续跟踪：", ""])
+        lines.extend(
+            f"- {_plain_text(issue.title, fallback='一个尚未命名的问题')}。"
+            for issue in active
+        )
     lines.append("")
     return "\n".join(lines)
 
@@ -273,11 +252,9 @@ def render_no_anomaly_daily_report(
     """Render a nonempty day whose deterministic third layer has no anomaly."""
 
     lines = [
-        f"# {audit_date.isoformat()} 运行审计日报",
+        f"# {audit_date.isoformat()} 运行审计",
         "",
-        "## 结论",
-        "",
-        f"昨天扫描了 {trace_count} 条对话，没有发现需要处理的异常，因此没有调用 Codex。",
+        f"昨天检查了 {trace_count} 次运行，没有发现需要你处理的新问题。",
     ]
     active = [
         issue
@@ -285,7 +262,7 @@ def render_no_anomaly_daily_report(
         if issue.status in {"open", "regressed", "code_addressed", "uncertain"}
     ]
     if active:
-        lines.extend(["", "## 以前的问题", ""])
+        lines.extend(["", "以前发现的问题还需要继续跟踪：", ""])
         for issue in active:
             lines.append(f"- {_plain_text(issue.title, fallback='未命名问题')}：仍需后续观察。")
     lines.append("")
@@ -297,73 +274,47 @@ def render_failed_daily_report(audit_date: date, error_summary: str) -> str:
 
     return "\n".join(
         [
-            f"# {audit_date.isoformat()} 运行审计日报",
+            f"# {audit_date.isoformat()} 运行审计",
             "",
-            "## 一句话结论",
+            "审计没有完成，所以暂时无法判断昨天的运行情况。",
             "",
-            "审计未完成，无法对昨日运行情况给出结论。",
-            "",
-            "## 系统运行情况",
-            "",
-            f"- 失败摘要：{_failed_plain_text(error_summary)}",
+            _failed_plain_text(error_summary),
             "",
         ]
     )
 
 
-def _append_issue_guidance(
+def _append_conversational_issues(
     lines: list[str],
     issues: list[DailyAuditIssue],
     *,
-    empty_message: str,
-    include_suggested_change: bool = True,
+    include_advice: bool = False,
 ) -> None:
-    if not issues:
-        lines.append(empty_message)
-        return
     for issue in issues:
         lines.extend([f"### {_plain_text(issue.title, fallback='未命名问题')}", ""])
-        lines.append(
-            "- 发生了什么："
-            f"{_plain_text(issue.plain_summary, fallback='暂无问题说明。')} "
-            f"{_plain_text(issue.user_impact, fallback='用户影响尚不明确。')}"
+        summary = _plain_text(
+            issue.plain_summary,
+            fallback="目前还没有足够信息说明具体原因。",
         )
-        if include_suggested_change:
-            lines.append(
-                f"- 建议怎么做：{_plain_text(issue.suggested_change, fallback='暂无具体修改建议。')}"
+        impact = _plain_text(
+            issue.user_impact,
+            fallback="对用户的具体影响暂时不明确。",
+        )
+        lines.append(f"{summary} {impact}")
+        if include_advice:
+            advice = _plain_text(
+                issue.suggested_change,
+                fallback="补齐相关运行证据，再决定是否需要改代码。",
             )
-        lines.append(
-            f"- 怎么确认：{_plain_text(issue.validation, fallback='尚未提供验证方式。')}"
-        )
+            lines.extend(["", f"我建议你先{advice}"])
+        if issue.validation.strip():
+            lines.extend(["", _plain_text(issue.validation)])
         lines.append("")
     lines.pop()
 
 
-def _append_evidence_appendix(lines: list[str], issues: list[DailyAuditIssue]) -> None:
-    has_evidence = False
-    for issue in issues:
-        references = [
-            *issue.trace_evidence_refs,
-            *issue.code_evidence_refs,
-            *issue.runtime_verification_refs,
-        ]
-        if not references:
-            continue
-        has_evidence = True
-        lines.append(
-            f"- `{_render_issue_key(issue.issue_key)}`："
-            f"{', '.join(f'`{_safe(ref)}`' for ref in references)}"
-        )
-    if not has_evidence:
-        lines.append("没有可附上的机器证据。")
-
-
 def _safe(value: str) -> str:
     return sanitize_runtime_audit_text(value)
-
-
-def _render_issue_key(value: str) -> str:
-    return _UNSAFE_ISSUE_KEY.sub("_", sanitize_runtime_audit_text(value))
 
 
 def _plain_text(value: str, *, fallback: str = "") -> str:
@@ -372,9 +323,12 @@ def _plain_text(value: str, *, fallback: str = "") -> str:
     if not value.strip():
         return fallback
     sanitized = sanitize_runtime_audit_text(value).strip()
-    without_machine_refs = _MACHINE_EVIDENCE_REF.sub("机器证据见附录", sanitized)
-    without_machine_ids = _UUID.sub("机器证据见附录", without_machine_refs)
-    collapsed = " ".join(without_machine_ids.split())
+    without_machine_refs = _MACHINE_EVIDENCE_REF.sub("", sanitized)
+    without_machine_ids = _UUID.sub("", without_machine_refs)
+    without_git_shas = _GIT_SHA.sub("", without_machine_ids)
+    without_test_paths = _TEST_PATH.sub("", without_git_shas)
+    without_internal_terms = _INTERNAL_TERM.sub("", without_test_paths)
+    collapsed = " ".join(without_internal_terms.split())
     if not collapsed:
         return fallback
     return _MARKDOWN_CONTROL.sub(r"\\\1", collapsed)
