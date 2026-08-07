@@ -1,13 +1,15 @@
-# Mem0 HTTP 接入契约
+# 默认 Mem0 Plugin 私有 HTTP 接入契约
 
-最后更新：2026-08-04
+最后更新：2026-08-08
 
-项目不再定义独立的 Memory Server 协议。本文件只记录 `assistant_agent` 实际使用的
-Mem0 OSS REST 子集；完整行为以 Mem0 官方 API 为准。
+项目不定义通用 Memory Server 协议。本文件只记录默认 `Mem0MemoryPlugin` 的私有
+`Mem0Client` 实际使用的 Mem0 OSS REST 子集；完整行为以 Mem0 官方 API 为准。
+Runtime 和第三方 Memory Plugin 不依赖本协议，只依赖
+[`assistant_memory_plugin_v1`](memory-service-architecture.md)。
 
 ## 身份
 
-召回请求携带项目从可信 runtime 身份生成的不透明 `user_id` 和 `agent_id`；写入请求还必须
+召回请求携带 Host 从可信 Runtime 身份生成的不透明 `user_id` 和 `agent_id`；写入请求还必须
 携带由 `user_id + agent_id + session_id` 稳定生成的不透明 `run_id`。用户输入不能直接覆盖这些字段。
 
 ## Session 启动召回
@@ -43,7 +45,8 @@ Content-Type: application/json
 ```
 
 项目不设置 `infer=false`，不发送自定义 extraction prompt，不创建 core/daily 双记录。
-该后台请求由 adapter 自动使用至少 30 秒超时；不复用 session-start recall 的 5 秒前台超时。
+Host 使用独立的 ingestion deadline 约束该后台调用；Mem0 adapter 仍为原生 HTTP `add` 自动使用
+至少 30 秒的 I/O timeout，不复用 session-start recall 的 5 秒 adapter timeout。
 
 响应只消费原生 `results` 中每条合法记录的 `id`、`memory` 和 `event`。支持的 event 为
 `ADD`、`UPDATE`、`DELETE`；空数组表示没有提炼出长期记忆。memory text 只可进入显式启用的
@@ -51,6 +54,8 @@ Content-Type: application/json
 
 ## 错误语义
 
-- recall 失败：session snapshot 为空并标记 `mem0_recall_failed`，session/turn 继续。
-- capture 失败：后台任务记录 `mem0_capture_failed`，已返回的 assistant 回复不受影响。
+- recall 失败：`Mem0MemoryPlugin` 返回 `mem0_recall_failed`，Host 冻结空 baseline，
+  session/turn 继续。
+- capture 失败：Plugin 返回 `mem0_ingestion_failed`，Host 后台任务记录失败，已返回的
+  Assistant 回复不受影响。
 - 响应原文、URL、凭据和异常细节不进入模型上下文。
