@@ -5,9 +5,12 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
-from typing import BinaryIO, Literal, Protocol, runtime_checkable
+from typing import BinaryIO, Literal, Protocol, TypeAlias, runtime_checkable
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator
+
+
+MemoryModality: TypeAlias = Literal["image", "audio", "video", "document"]
 
 
 class _FrozenMemoryModel(BaseModel):
@@ -82,7 +85,7 @@ class MemoryBudgetHint(_FrozenMemoryModel):
 
 class ManagedMediaRef(_FrozenMemoryModel):
     ref_id: str = Field(min_length=1, max_length=512)
-    media_type: Literal["image", "audio", "video", "document"]
+    media_type: MemoryModality
     mime_type: str = Field(min_length=1, max_length=255)
     size_bytes: int = Field(ge=0)
     created_at: datetime
@@ -194,13 +197,42 @@ class MemorySessionCloseResult(_FrozenMemoryModel):
 
 
 class MemoryMediaReader(Protocol):
-    def read(self, ref: ManagedMediaRef, *, max_bytes: int) -> bytes: ...
+    def read(
+        self,
+        ref: ManagedMediaRef,
+        *,
+        owner_scope: str,
+        max_bytes: int,
+        allowed_modalities: set[MemoryModality] | None = None,
+        allowed_mime_types: set[str] | None = None,
+    ) -> bytes: ...
 
-    def open_stream(self, ref: ManagedMediaRef, *, max_bytes: int) -> BinaryIO: ...
+    def open_stream(
+        self,
+        ref: ManagedMediaRef,
+        *,
+        owner_scope: str,
+        max_bytes: int,
+        allowed_modalities: set[MemoryModality] | None = None,
+        allowed_mime_types: set[str] | None = None,
+    ) -> BinaryIO: ...
 
 
-class MemoryArtifactPayload(Protocol):
-    """Opaque payload accepted only by a host-owned artifact writer."""
+class MemoryArtifactPayload(_FrozenMemoryModel):
+    """Bytes-only artifact supplied to the Host-owned media writer."""
+
+    owner_scope: str = Field(min_length=1, max_length=512)
+    media_type: MemoryModality
+    mime_type: str = Field(min_length=1, max_length=255)
+    payload: bytes = Field(min_length=1)
+    expires_at: datetime | None = None
+
+    @field_validator("payload", mode="before")
+    @classmethod
+    def payload_must_be_bytes(cls, value: object) -> bytes:
+        if not isinstance(value, bytes):
+            raise TypeError("Memory artifact payload must be bytes.")
+        return value
 
 
 class MemoryArtifactWriter(Protocol):
