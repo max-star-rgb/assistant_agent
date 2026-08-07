@@ -385,7 +385,9 @@ timeline fallback。
 `assistant_agent_daily_codex_input_v1` 异常索引。本地确定性程序仍扫描当天全部 trace，但索引只包含低分、
 缺失 Score、observation error 等异常 trace 的基础事实、Score 和完整 observation 序列。没有异常时直接
 生成极简成功日报，不启动 Codex。存在异常时，Codex 只能读取和审计该索引中的 trace ID，输入不暴露完整
-bundle 路径，也不得浏览或评价其他正常 trace。索引以 350,000 bytes 为硬上限；超限时优先省略异常 trace
+bundle 路径，也不得浏览或评价其他正常 trace。runner 将第三层索引和既有 issue registry 作为
+`codex exec` 的 stdin 上下文直接交付，不依赖 Codex 子进程再通过 shell 打开证据文件。索引以
+350,000 bytes 为硬上限；超限时优先省略异常 trace
 中的大 input/output 内容，同时保留 observation 身份、大小和省略原因。结构本身仍超限则审计失败，不能
 静默丢失异常范围。
 

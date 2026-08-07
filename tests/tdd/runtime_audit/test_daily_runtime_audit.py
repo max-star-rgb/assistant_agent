@@ -2113,6 +2113,26 @@ def test_force_reaudits_completed_explicit_date_into_one_canonical_file_set(
     ]
     assert store.daily_report_path(date(2026, 8, 5)).exists()
 
+    # A successful explicit refresh is itself enough to make the next ordinary
+    # command idempotent, even when it did not advance the continuous watermark.
+    store.watermark_path.unlink(missing_ok=True)
+    monkeypatch.setattr(
+        cli_module,
+        "create_langfuse_audit_source_from_env",
+        lambda _: pytest.fail("canonical successful artifacts must prevent a rerun"),
+    )
+    assert main(
+        [
+            "--no-env-file",
+            "--repo-root",
+            str(tmp_path),
+            "run",
+            "--date",
+            "2026-08-05",
+        ]
+    ) == 0
+    assert json.loads(capsys.readouterr().out)["audit_dates"] == []
+
 
 def test_force_requires_an_explicit_date(
     tmp_path: Path,

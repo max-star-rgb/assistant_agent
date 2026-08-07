@@ -619,10 +619,18 @@ def test_daily_codex_runner_uses_issue_state_and_daily_schema_in_stdin(
     assert report.audit_date == audit_date
     assert schema["additionalProperties"] is False
     assert set(schema["required"]) == set(schema["properties"])
-    assert str(bundle_path) in str(captured["input"])
-    assert str(issues_path) in str(captured["input"])
+    assert '"schema_version":"assistant_agent_runtime_audit_bundle_v1"' in str(
+        captured["input"]
+    )
+    assert (
+        '"schema_version":"assistant_agent_runtime_audit_issues_v1","issues":{}'
+        in str(captured["input"])
+    )
+    assert str(bundle_path) not in str(captured["input"])
+    assert str(issues_path) not in str(captured["input"])
     assert str(bundle_path) not in captured["command"]
     assert str(issues_path) not in captured["command"]
+    assert "下面两个 JSON 块已随 stdin 直接提供" in str(captured["input"])
     assert "报告读者是项目维护者，不是另一个 Codex。" in str(captured["input"])
     assert "production_mutation_allowed 必须为 false" in str(captured["input"])
     assert "除输入已有机器证据外，不得声称已运行测试、已部署、已在生产或真实 trace 验证。" in str(captured["input"])

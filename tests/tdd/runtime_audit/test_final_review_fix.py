@@ -959,6 +959,10 @@ def test_codex_prompt_forbids_copying_sensitive_source_bodies(tmp_path: Path) ->
 
     captured: dict[str, object] = {}
     output_path = tmp_path / "output.json"
+    bundle_path = tmp_path / "bundle.json"
+    issues_path = tmp_path / "issues.json"
+    bundle_path.write_text('{"trace_index":[]}', encoding="utf-8")
+    issues_path.write_text('{"issues":{}}', encoding="utf-8")
 
     def fake_run(command: list[str], **kwargs: object) -> SimpleNamespace:
         captured["input"] = kwargs["input"]
@@ -967,8 +971,8 @@ def test_codex_prompt_forbids_copying_sensitive_source_bodies(tmp_path: Path) ->
 
     runner_module.run_daily_codex_report(
         audit_date=AUDIT_DATE,
-        bundle_path=tmp_path / "bundle.json",
-        issues_path=tmp_path / "issues.json",
+        bundle_path=bundle_path,
+        issues_path=issues_path,
         repo_root=tmp_path,
         output_path=output_path,
         schema_path=tmp_path / "schema.json",

@@ -308,7 +308,16 @@ class RuntimeAuditArtifactStore:
         """Whether a successful checkpoint proves this date already has a good report."""
 
         completed = self.last_completed_date()
-        return completed is not None and completed >= audit_date
+        if completed is not None and completed >= audit_date:
+            return True
+        return all(
+            path.exists()
+            for path in (
+                self.daily_bundle_path(audit_date),
+                self.daily_codex_input_path(audit_date),
+                self.daily_report_path(audit_date),
+            )
+        )
 
     def _artifact_exists(self, audit_run_id: str) -> bool:
         return any(

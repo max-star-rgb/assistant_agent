@@ -261,8 +261,8 @@ def test_store_writes_compact_bundle_without_none_or_raw_metadata(
 def test_daily_prompt_explains_tool_catalog_references() -> None:
     prompt = _daily_codex_prompt(
         audit_date=date(2026, 8, 5),
-        bundle_path=Path("/tmp/bundle.json"),
-        issues_path=Path("/tmp/issues.json"),
+        audit_input_json='{"tool_catalogs":{}}',
+        issues_json='{"issues":{}}',
     )
 
     assert "tool_catalog_ref" in prompt
