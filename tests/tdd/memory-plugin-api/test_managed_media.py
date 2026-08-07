@@ -306,3 +306,94 @@ def test_media_payload_and_store_normalize_lying_bytes_before_budget_checks() ->
         )
 
     assert exc_info.value.code == "memory_media_size_limit"
+
+
+def test_tampered_returned_ref_cannot_widen_read_authority_or_shrink_bytes() -> None:
+    """Mutating a returned ref must not mutate the store's canonical evidence."""
+    store = ManagedMemoryMediaStore(max_total_bytes=1024)
+    owner_ref = store.register(
+        owner_scope="owner-a",
+        media_type="image",
+        mime_type="image/jpeg",
+        payload=b"123456",
+    )
+    object.__setattr__(owner_ref, "owner_scope", "owner-b")
+
+    with pytest.raises(MemoryMediaAccessError) as owner_error:
+        store.read(owner_ref, owner_scope="owner-b", max_bytes=1024)
+
+    altered_ref = store.register(
+        owner_scope="owner-a",
+        media_type="image",
+        mime_type="image/jpeg",
+        payload=b"123456",
+    )
+    altered_ref.__dict__.update(
+        media_type="audio",
+        mime_type="audio/mpeg",
+        size_bytes=1,
+    )
+
+    with pytest.raises(MemoryMediaAccessError) as altered_error:
+        store.read(
+            altered_ref,
+            owner_scope="owner-a",
+            max_bytes=1,
+            allowed_modalities={"audio"},
+            allowed_mime_types={"audio/mpeg"},
+        )
+
+    assert owner_error.value.code == "memory_media_owner_mismatch"
+    assert altered_error.value.code == "memory_media_ref_mismatch"
+
+
+def test_resolve_returns_independent_canonical_copies_and_uses_payload_size_budget() -> None:
+    """Returned resolution refs cannot poison future resolutions or their budgets."""
+    store = ManagedMemoryMediaStore(max_total_bytes=1024)
+    registered = store.register(
+        owner_scope="owner-sentinel",
+        media_type="image",
+        mime_type="image/jpeg",
+        payload=b"123456",
+    )
+    request = UserRequest(
+        user_id="user-sentinel",
+        session_id="session-sentinel",
+        image_ids=[registered.ref_id],
+    )
+
+    first_refs, first_issues = store.resolve_request_refs(
+        request,
+        owner_scope="owner-sentinel",
+        allowed_modalities={"image"},
+        max_items=1,
+        max_total_bytes=1024,
+    )
+    first_refs[0].__dict__.update(
+        owner_scope="forged-owner",
+        mime_type="image/png",
+        size_bytes=1,
+    )
+    second_refs, second_issues = store.resolve_request_refs(
+        request,
+        owner_scope="owner-sentinel",
+        allowed_modalities={"image"},
+        max_items=1,
+        max_total_bytes=1024,
+    )
+    budget_refs, budget_issues = store.resolve_request_refs(
+        request,
+        owner_scope="owner-sentinel",
+        allowed_modalities={"image"},
+        max_items=1,
+        max_total_bytes=1,
+    )
+
+    assert first_issues == []
+    assert second_issues == []
+    assert first_refs[0] is not second_refs[0]
+    assert second_refs[0].owner_scope == "owner-sentinel"
+    assert second_refs[0].mime_type == "image/jpeg"
+    assert second_refs[0].size_bytes == 6
+    assert budget_refs == []
+    assert [issue.code for issue in budget_issues] == ["memory_media_total_limit"]

@@ -41,7 +41,11 @@ class MemoryMediaRegistrationError(ValueError):
 
 @dataclass(frozen=True)
 class _StoredMedia:
-    ref: ManagedMediaRef
+    ref_id: str
+    media_type: MemoryModality
+    mime_type: str
+    owner_scope: str
+    created_at: datetime
     payload: bytes
     expires_at: datetime | None
 
@@ -119,21 +123,18 @@ class ManagedMemoryMediaStore:
         with self._lock:
             if self._total_bytes + size_bytes > self._max_total_bytes:
                 raise MemoryMediaRegistrationError("memory_media_total_limit")
-            ref = ManagedMediaRef(
+            entry = _StoredMedia(
                 ref_id=uuid4().hex,
                 media_type=media_type,
                 mime_type=mime_type,
-                size_bytes=size_bytes,
                 created_at=created_at,
                 owner_scope=owner_scope,
-            )
-            self._entries[ref.ref_id] = _StoredMedia(
-                ref=ref,
                 payload=normalized_payload,
                 expires_at=expires_at,
             )
+            self._entries[entry.ref_id] = entry
             self._total_bytes += size_bytes
-        return ref
+        return self._ref_for(entry)
 
     def read(
         self,
@@ -211,27 +212,27 @@ class ManagedMemoryMediaStore:
             if entry is None:
                 issues.append(self._issue("memory_media_ref_unknown"))
                 continue
-            ref = entry.ref
-            if ref.owner_scope != owner_scope:
+            if entry.owner_scope != owner_scope:
                 issues.append(self._issue("memory_media_owner_mismatch"))
                 continue
-            if ref.media_type != requested_modality:
+            if entry.media_type != requested_modality:
                 issues.append(self._issue("memory_media_modality_mismatch"))
                 continue
             if self._is_expired(entry, now):
                 issues.append(self._issue("memory_media_expired"))
                 continue
-            if ref.media_type not in allowed_modalities:
+            if entry.media_type not in allowed_modalities:
                 issues.append(self._issue("memory_media_modality_not_allowed"))
                 continue
             if len(resolved) >= max_items:
                 issues.append(self._issue("memory_media_item_limit"))
                 continue
-            if total_bytes + ref.size_bytes > max_total_bytes:
+            size_bytes = len(entry.payload)
+            if total_bytes + size_bytes > max_total_bytes:
                 issues.append(self._issue("memory_media_total_limit"))
                 continue
-            resolved.append(ref)
-            total_bytes += ref.size_bytes
+            resolved.append(self._ref_for(entry))
+            total_bytes += size_bytes
         return resolved, issues
 
     def _validated_entry(
@@ -249,19 +250,47 @@ class ManagedMemoryMediaStore:
             entry = self._entries.get(ref.ref_id)
         if entry is None:
             raise MemoryMediaAccessError("memory_media_ref_unknown")
-        if entry.ref.owner_scope != owner_scope:
+        if entry.owner_scope != owner_scope:
             raise MemoryMediaAccessError("memory_media_owner_mismatch")
-        if entry.ref != ref:
+        if not self._matches_entry(ref, entry):
             raise MemoryMediaAccessError("memory_media_ref_mismatch")
         if self._is_expired(entry, self._ensure_aware(self._clock())):
             raise MemoryMediaAccessError("memory_media_expired")
-        if allowed_modalities is not None and ref.media_type not in allowed_modalities:
+        if (
+            allowed_modalities is not None
+            and entry.media_type not in allowed_modalities
+        ):
             raise MemoryMediaAccessError("memory_media_modality_not_allowed")
-        if allowed_mime_types is not None and ref.mime_type not in allowed_mime_types:
+        if (
+            allowed_mime_types is not None
+            and entry.mime_type not in allowed_mime_types
+        ):
             raise MemoryMediaAccessError("memory_media_mime_not_allowed")
-        if entry.ref.size_bytes > max_bytes:
+        if len(entry.payload) > max_bytes:
             raise MemoryMediaAccessError("memory_media_size_limit")
         return entry
+
+    @staticmethod
+    def _ref_for(entry: _StoredMedia) -> ManagedMediaRef:
+        return ManagedMediaRef(
+            ref_id=entry.ref_id,
+            media_type=entry.media_type,
+            mime_type=entry.mime_type,
+            size_bytes=len(entry.payload),
+            created_at=entry.created_at,
+            owner_scope=entry.owner_scope,
+        )
+
+    @staticmethod
+    def _matches_entry(ref: ManagedMediaRef, entry: _StoredMedia) -> bool:
+        return (
+            ref.ref_id == entry.ref_id
+            and ref.media_type == entry.media_type
+            and ref.mime_type == entry.mime_type
+            and ref.size_bytes == len(entry.payload)
+            and ref.created_at == entry.created_at
+            and ref.owner_scope == entry.owner_scope
+        )
 
     @staticmethod
     def _is_expired(entry: _StoredMedia, now: datetime) -> bool:
