@@ -139,7 +139,8 @@ def test_resolve_request_refs_enforces_modality_and_total_budget() -> None:
 def test_managed_media_stream_rechecks_expiry() -> None:
     """An expired reference cannot be read through the streaming escape hatch."""
     now = datetime(2026, 8, 7, tzinfo=timezone.utc)
-    store = ManagedMemoryMediaStore(max_total_bytes=1024, clock=lambda: now)
+    clock = _MutableClock(now)
+    store = ManagedMemoryMediaStore(max_total_bytes=1024, clock=clock)
     ref = store.register(
         owner_scope="owner-sentinel",
         media_type="audio",
@@ -148,13 +149,9 @@ def test_managed_media_stream_rechecks_expiry() -> None:
         expires_at=now + timedelta(seconds=1),
     )
 
+    clock.instant = now + timedelta(seconds=1)
     with pytest.raises(MemoryMediaAccessError) as exc_info:
-        store.open_stream(
-            ref,
-            owner_scope="owner-sentinel",
-            max_bytes=1024,
-            now=now + timedelta(seconds=1),
-        )
+        store.open_stream(ref, owner_scope="owner-sentinel", max_bytes=1024)
 
     assert exc_info.value.code == "memory_media_expired"
 
@@ -205,3 +202,107 @@ def test_managed_media_store_enforces_total_registration_budget() -> None:
         )
 
     assert exc_info.value.code == "memory_media_total_limit"
+
+
+class _MutableClock:
+    def __init__(self, instant: datetime) -> None:
+        self.instant = instant
+
+    def __call__(self) -> datetime:
+        return self.instant
+
+
+class _LyingBytes(bytes):
+    def __len__(self) -> int:
+        return 1
+
+    def __bytes__(self) -> bytes:
+        return b"x"
+
+
+def test_managed_media_expiry_uses_host_clock_without_reader_time_override() -> None:
+    """A Plugin cannot rewind the Host clock to revive expired media."""
+    opened_at = datetime(2026, 8, 7, tzinfo=timezone.utc)
+    clock = _MutableClock(opened_at)
+    store = ManagedMemoryMediaStore(max_total_bytes=1024, clock=clock)
+    ref = store.register(
+        owner_scope="owner-sentinel",
+        media_type="image",
+        mime_type="image/jpeg",
+        payload=b"jpeg-sentinel",
+        expires_at=opened_at + timedelta(seconds=1),
+    )
+    clock.instant = opened_at + timedelta(seconds=1)
+
+    with pytest.raises(MemoryMediaAccessError) as read_error:
+        store.read(ref, owner_scope="owner-sentinel", max_bytes=1024)
+    with pytest.raises(MemoryMediaAccessError) as stream_error:
+        store.open_stream(ref, owner_scope="owner-sentinel", max_bytes=1024)
+    with pytest.raises(TypeError):
+        store.read(
+            ref,
+            owner_scope="owner-sentinel",
+            max_bytes=1024,
+            now=opened_at,
+        )
+    with pytest.raises(TypeError):
+        store.open_stream(
+            ref,
+            owner_scope="owner-sentinel",
+            max_bytes=1024,
+            now=opened_at,
+        )
+
+    assert read_error.value.code == "memory_media_expired"
+    assert stream_error.value.code == "memory_media_expired"
+
+
+def test_managed_store_implements_artifact_writer_keyword_and_host_bytes_paths() -> None:
+    """The same store accepts the writer Protocol's keyword and Host raw bytes."""
+    store = ManagedMemoryMediaStore(max_total_bytes=1024)
+    artifact = MemoryArtifactPayload(
+        owner_scope="owner-sentinel",
+        media_type="document",
+        mime_type="text/plain",
+        payload=b"writer-sentinel",
+    )
+
+    try:
+        keyword_ref = store.register(payload=artifact)
+    except TypeError as error:
+        pytest.fail(f"writer Protocol keyword form failed: {error}")
+    positional_ref = store.register(artifact)
+    host_ref = store.register(
+        owner_scope="owner-sentinel",
+        media_type="document",
+        mime_type="text/plain",
+        payload=b"host-sentinel",
+    )
+
+    assert store.read(keyword_ref, owner_scope="owner-sentinel", max_bytes=1024) == b"writer-sentinel"
+    assert store.read(positional_ref, owner_scope="owner-sentinel", max_bytes=1024) == b"writer-sentinel"
+    assert store.read(host_ref, owner_scope="owner-sentinel", max_bytes=1024) == b"host-sentinel"
+
+
+def test_media_payload_and_store_normalize_lying_bytes_before_budget_checks() -> None:
+    """A bytes subclass cannot underreport its body size to retain readable media."""
+    payload = _LyingBytes(b"123456")
+    artifact = MemoryArtifactPayload(
+        owner_scope="owner-sentinel",
+        media_type="image",
+        mime_type="image/jpeg",
+        payload=payload,
+    )
+    store = ManagedMemoryMediaStore(max_total_bytes=1024, max_item_bytes=5)
+
+    assert type(artifact.payload) is bytes
+    assert len(artifact.payload) == 6
+    with pytest.raises(MemoryMediaRegistrationError) as exc_info:
+        store.register(
+            owner_scope="owner-sentinel",
+            media_type="image",
+            mime_type="image/jpeg",
+            payload=payload,
+        )
+
+    assert exc_info.value.code == "memory_media_size_limit"

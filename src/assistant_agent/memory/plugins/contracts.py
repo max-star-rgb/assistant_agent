@@ -232,7 +232,7 @@ class MemoryArtifactPayload(_FrozenMemoryModel):
     def payload_must_be_bytes(cls, value: object) -> bytes:
         if not isinstance(value, bytes):
             raise TypeError("Memory artifact payload must be bytes.")
-        return value
+        return memoryview(value).tobytes()
 
 
 class MemoryArtifactWriter(Protocol):

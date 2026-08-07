@@ -71,33 +71,32 @@ class ManagedMemoryMediaStore:
 
     def register(
         self,
-        artifact: MemoryArtifactPayload | None = None,
+        payload: MemoryArtifactPayload | bytes | None = None,
         *,
         owner_scope: str | None = None,
         media_type: MemoryModality | None = None,
         mime_type: str | None = None,
-        payload: bytes | None = None,
         expires_at: datetime | None = None,
     ) -> ManagedMediaRef:
         """Register Host-held bytes and return an unguessable, scoped reference.
 
-        The positional form is the artifact-writer protocol.  Keyword fields
-        are the Host's direct registration path; neither form accepts a
-        filesystem path, URL, or Base64 string because ``payload`` must be
-        actual ``bytes``.
+        ``payload=MemoryArtifactPayload(...)`` and its positional equivalent
+        implement the artifact-writer Protocol. Host direct registration uses
+        the same keyword with raw ``bytes`` plus the scoped metadata. Neither
+        path accepts a filesystem path, URL, or Base64 string.
         """
 
-        if artifact is not None:
+        if isinstance(payload, MemoryArtifactPayload):
             if any(
                 value is not None
-                for value in (owner_scope, media_type, mime_type, payload, expires_at)
+                for value in (owner_scope, media_type, mime_type, expires_at)
             ):
                 raise TypeError("artifact registration cannot mix payload fields")
-            owner_scope = artifact.owner_scope
-            media_type = artifact.media_type
-            mime_type = artifact.mime_type
-            payload = artifact.payload
-            expires_at = artifact.expires_at
+            owner_scope = payload.owner_scope
+            media_type = payload.media_type
+            mime_type = payload.mime_type
+            expires_at = payload.expires_at
+            payload = payload.payload
 
         if (
             not isinstance(owner_scope, str)
@@ -109,10 +108,11 @@ class ManagedMemoryMediaStore:
         ):
             raise TypeError("managed media registration requires typed bytes metadata")
 
+        normalized_payload = memoryview(payload).tobytes()
         created_at = self._ensure_aware(self._clock())
         if expires_at is not None:
             expires_at = self._ensure_aware(expires_at)
-        size_bytes = len(payload)
+        size_bytes = len(normalized_payload)
         if size_bytes > self._max_item_bytes:
             raise MemoryMediaRegistrationError("memory_media_size_limit")
 
@@ -129,7 +129,7 @@ class ManagedMemoryMediaStore:
             )
             self._entries[ref.ref_id] = _StoredMedia(
                 ref=ref,
-                payload=payload,
+                payload=normalized_payload,
                 expires_at=expires_at,
             )
             self._total_bytes += size_bytes
@@ -143,7 +143,6 @@ class ManagedMemoryMediaStore:
         max_bytes: int,
         allowed_modalities: set[MemoryModality] | None = None,
         allowed_mime_types: set[str] | None = None,
-        now: datetime | None = None,
     ) -> bytes:
         """Read media only after revalidating the reference on this call."""
 
@@ -153,7 +152,6 @@ class ManagedMemoryMediaStore:
             max_bytes=max_bytes,
             allowed_modalities=allowed_modalities,
             allowed_mime_types=allowed_mime_types,
-            now=now,
         )
         return entry.payload
 
@@ -165,7 +163,6 @@ class ManagedMemoryMediaStore:
         max_bytes: int,
         allowed_modalities: set[MemoryModality] | None = None,
         allowed_mime_types: set[str] | None = None,
-        now: datetime | None = None,
     ) -> BinaryIO:
         """Open an independent in-memory stream after the same read checks."""
 
@@ -176,7 +173,6 @@ class ManagedMemoryMediaStore:
                 max_bytes=max_bytes,
                 allowed_modalities=allowed_modalities,
                 allowed_mime_types=allowed_mime_types,
-                now=now,
             )
         )
 
@@ -246,7 +242,6 @@ class ManagedMemoryMediaStore:
         max_bytes: int,
         allowed_modalities: set[MemoryModality] | None,
         allowed_mime_types: set[str] | None,
-        now: datetime | None,
     ) -> _StoredMedia:
         if max_bytes < 0:
             raise MemoryMediaAccessError("memory_media_size_limit")
@@ -258,7 +253,7 @@ class ManagedMemoryMediaStore:
             raise MemoryMediaAccessError("memory_media_owner_mismatch")
         if entry.ref != ref:
             raise MemoryMediaAccessError("memory_media_ref_mismatch")
-        if self._is_expired(entry, self._ensure_aware(now or self._clock())):
+        if self._is_expired(entry, self._ensure_aware(self._clock())):
             raise MemoryMediaAccessError("memory_media_expired")
         if allowed_modalities is not None and ref.media_type not in allowed_modalities:
             raise MemoryMediaAccessError("memory_media_modality_not_allowed")
