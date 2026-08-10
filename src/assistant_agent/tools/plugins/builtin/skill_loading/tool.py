@@ -71,12 +71,16 @@ class LoadSkillTool(ToolBase):
                 "summary": "内部工作流已加载。",
                 "skill_id": result.skill_id,
                 "reference_ids": result.reference_ids,
+                "granted_tools": result.granted_tools,
+                "unavailable_tools": result.unavailable_tools,
             },
             trace_summary={
                 "status": result.status,
                 "skill_id": result.skill_id,
                 "content_chars": len(result.content),
                 "reference_count": len(result.reference_ids),
+                "granted_tools": result.granted_tools,
+                "unavailable_tools": result.unavailable_tools,
             },
         )
 

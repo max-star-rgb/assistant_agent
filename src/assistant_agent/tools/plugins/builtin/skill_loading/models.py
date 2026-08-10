@@ -26,6 +26,8 @@ class LoadSkillResult(BaseModel):
     skill_id: str
     content: str
     reference_ids: list[str] = Field(default_factory=list)
+    granted_tools: list[str] = Field(default_factory=list)
+    unavailable_tools: list[str] = Field(default_factory=list)
 
 
 class LoadSkillReferenceResult(BaseModel):

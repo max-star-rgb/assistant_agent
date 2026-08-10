@@ -789,6 +789,27 @@ def test_runtime_expands_catalog_after_load_and_restores_it_next_turn() -> None:
 
     assert first.status == "completed"
     assert second.status == "completed"
+    load_result = next(
+        result for result in first.tool_results if result.tool_name == "load_skill"
+    )
+    assert load_result.data is not None
+    assert load_result.data["granted_tools"] == ["lodging_search"]
+    assert load_result.data["unavailable_tools"] == [
+        "mcp.amap_maps.maps_geo",
+        "mcp.amap_maps.maps_ip_location",
+        "mcp.amap_maps.maps_weather",
+        "mcp.amap_maps.maps_bicycling",
+        "mcp.amap_maps.maps_direction_walking",
+        "mcp.amap_maps.maps_direction_driving",
+        "mcp.amap_maps.maps_direction_transit_integrated",
+        "mcp.amap_maps.maps_text_search",
+        "mcp.amap_maps.maps_around_search",
+    ]
+    assert load_result.model_observation is not None
+    assert load_result.model_observation["granted_tools"] == ["lodging_search"]
+    assert load_result.model_observation["unavailable_tools"] == (
+        load_result.data["unavailable_tools"]
+    )
     assert "lodging_search" not in _request_tool_names(adapter.requests[0])
     assert "lodging_search" in _request_tool_names(adapter.requests[1])
     assert "lodging_search" in _request_tool_names(adapter.requests[2])

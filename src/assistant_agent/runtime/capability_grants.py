@@ -58,9 +58,11 @@ class CapabilityGrantController:
         *,
         session_store: _CapabilitySessionStore,
         skill_root: Path,
+        registered_tool_specs: list[Any] | None = None,
     ) -> None:
         self.session_store = session_store
         self.skill_root = Path(skill_root)
+        self.registered_tool_specs = list(registered_tool_specs or [])
 
     def prepare_run(self, state: Any, tool_specs: list[Any]) -> None:
         """Restore session grants and activate structurally eligible context Skills."""
@@ -145,11 +147,50 @@ class CapabilityGrantController:
             agent_id=state.agent_id,
         )
         state.upsert_capability_grant(grant)
+        self._annotate_load_result(
+            state=state,
+            result=result,
+            catalog=catalog,
+            descriptor=descriptor,
+        )
         self.session_store.grant_capability(
             user_id=state.user_id,
             session_id=state.session_id,
             grant=grant,
         )
+
+    def _annotate_load_result(
+        self,
+        *,
+        state: Any,
+        result: Any,
+        catalog: Any,
+        descriptor: Any,
+    ) -> None:
+        """Report the governed tools actually available after this grant."""
+
+        if not self.registered_tool_specs:
+            return
+        from assistant_agent.context.tool_catalog import select_prompt_tool_specs
+
+        selection = select_prompt_tool_specs(
+            state.request,
+            self.registered_tool_specs,
+            skill_catalog=catalog,
+            capability_grants=state.capability_grants,
+        )
+        available = set(selection.run_tool_catalog.available_tool_names)
+        granted_tools = [
+            name for name in descriptor.governed_tools if name in available
+        ]
+        unavailable_tools = [
+            name for name in descriptor.governed_tools if name not in available
+        ]
+        for payload in (result.data, result.model_observation, result.trace_summary):
+            if not isinstance(payload, dict):
+                continue
+            payload["granted_tools"] = list(granted_tools)
+            payload["unavailable_tools"] = list(unavailable_tools)
 
 
 def _grant_source_for_descriptor(descriptor: Any) -> CapabilityGrantSource | None:

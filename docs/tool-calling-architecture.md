@@ -208,6 +208,9 @@ Skill 认领的业务 Tool 默认不进入 `RunToolCatalog`。未激活的 `acti
 模型调用才把该 Skill 已声明且仍满足本轮资格的 Tool 加入目录。调用方 metadata（包括历史
 `enabled_skills` 字段）不能生成 grant。可信 Workflow work-item 与 durable ready-tool allowlist 仍按其
 既有白名单直接收窄目录，不依赖模型加载 Skill，也不把前台 session Skill 正文投影进 worker prompt。
+成功的 `load_skill` 结果同时返回 `granted_tools` 与 `unavailable_tools`：前者是 manifest 声明、启动期
+Registry 和本轮结构化资格的实际交集，后者保留其余声明项，使 MCP 未注册、入口限制或媒体条件不足
+等降级不会被误报为已授予能力。
 
 `activation=context` Skill 不可由 `load_skill` 调用；Runtime 只复用现有 entry/media/env 等结构化
 资格事实自动生成 context grant。当前 grant 以 `user_id + agent_id + session_id` 隔离并持久到整个会话，不设

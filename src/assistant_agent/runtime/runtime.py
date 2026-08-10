@@ -359,6 +359,7 @@ class AgentGraphRuntime:
         self.capability_grant_controller = CapabilityGrantController(
             session_store=self.session_store,
             skill_root=default_repo_root(),
+            registered_tool_specs=self.registry.list_specs(),
         )
         self.event_sink = event_sink
         self.trace_store = trace_store or InMemoryTraceStore()
