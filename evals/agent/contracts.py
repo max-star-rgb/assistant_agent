@@ -30,6 +30,9 @@ class ToolExecution(BaseModel):
     exposed: bool = False
     error_code: str | None = None
     output: dict[str, Any] = Field(default_factory=dict)
+    dependency_mode: Literal["live", "controlled_replacement"] = "live"
+    production_source_ref: str | None = None
+    replacement_source_ref: str | None = None
 
 
 class ValidationResult(BaseModel):

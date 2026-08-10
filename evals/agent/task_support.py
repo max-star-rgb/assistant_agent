@@ -49,10 +49,13 @@ from evals.agent.evidence import (
 )
 from evals.agent.grading import rule_assertion
 from evals.agent.provider_gate import validate_real_chat_config
+from evals.agent.registry_overlay import EvalToolProvenance
 
 
 StateReader = Callable[[AgentGraphRuntime, Any], dict[str, Any]]
 BeforeRun = Callable[[AgentGraphRuntime], None]
+RegistryTransform = Callable[[ToolRegistry], ToolRegistry]
+ProvenanceReader = Callable[[], Mapping[str, EvalToolProvenance]]
 
 
 class _ControlledShoppingSearchAdapter:
@@ -321,6 +324,81 @@ def execute_isolated_runtime(
         ),
         available_tools=available_tools(state, events),
         tool_executions=tool_executions(events),
+        validation_results=validation_results(events),
+        initial_state=starting,
+        final_state=final_state,
+        state_diff=_state_diff(starting, final_state),
+        trace_event_names=[
+            event.canonical_event
+            for event in events
+            if event.canonical_event is not None
+        ],
+        provider_result_kinds=provider_result_kinds(events),
+    )
+    return TaskExecution(evidence=evidence, trace_events=events)
+
+
+def execute_agent_eval_runtime(
+    *,
+    task: TaskSpec,
+    request: UserRequest,
+    trace_id: str,
+    parent_span_id: str,
+    registry_transform: RegistryTransform,
+    provenance_reader: ProvenanceReader,
+    config: ProviderConfig | None = None,
+    chat_adapter: ChatAdapter | None = None,
+    initial_state: dict[str, Any] | None = None,
+    before_run: BeforeRun | None = None,
+    final_state_reader: StateReader | None = None,
+    runtime_overrides: Mapping[str, Any] | None = None,
+) -> TaskExecution:
+    """Run an Agent eval through the production Runtime dependency assembly."""
+
+    resolved_config = config or ProviderConfig.from_env()
+    if chat_adapter is None:
+        validate_real_chat_config(resolved_config)
+    runtime = AgentGraphRuntime(
+        config=resolved_config,
+        registry_transform=registry_transform,
+        chat_adapter=chat_adapter,
+        trace_store=InMemoryTraceStore(),
+        **dict(runtime_overrides or {}),
+    )
+    try:
+        if before_run is not None:
+            before_run(runtime)
+        state = runtime.run_state(
+            UserRequest.model_validate(request),
+            trace_context=RuntimeTraceContext(
+                trace_id=trace_id,
+                parent_span_id=parent_span_id,
+            ),
+        )
+        events = runtime.trace_store.list_by_run(state.run_id)
+        final_state = (
+            final_state_reader(runtime, state)
+            if final_state_reader is not None
+            else dict(initial_state or {})
+        )
+    finally:
+        runtime.close()
+    starting = dict(initial_state or {})
+    evidence = RunEvidence(
+        task_id=task.id,
+        run_id=state.run_id,
+        trace_id=state.trace_id,
+        terminal_status=state.status,
+        response=(
+            state.response.model_dump(mode="json")
+            if state.response is not None
+            else None
+        ),
+        available_tools=available_tools(state, events),
+        tool_executions=tool_executions(
+            events,
+            provenance=provenance_reader(),
+        ),
         validation_results=validation_results(events),
         initial_state=starting,
         final_state=final_state,

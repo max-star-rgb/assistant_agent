@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 from assistant_agent.observability.trace_store import TraceEvent
 from evals.agent.contracts import ToolExecution, ValidationResult
+from evals.agent.registry_overlay import EvalToolProvenance
 
 
-def tool_executions(events: list[TraceEvent]) -> list[ToolExecution]:
+def tool_executions(
+    events: list[TraceEvent],
+    *,
+    provenance: Mapping[str, EvalToolProvenance] | None = None,
+) -> list[ToolExecution]:
     terminals = {
         event.attributes.get("tool_call_id"): event
         for event in events
@@ -21,6 +27,7 @@ def tool_executions(events: list[TraceEvent]) -> list[ToolExecution]:
             continue
         tool_call_id = event.attributes.get("tool_call_id")
         terminal = terminals.get(tool_call_id)
+        tool_provenance = provenance.get(event.tool_name) if provenance else None
         executions.append(
             ToolExecution(
                 tool_call_id=(str(tool_call_id) if tool_call_id is not None else None),
@@ -45,6 +52,21 @@ def tool_executions(events: list[TraceEvent]) -> list[ToolExecution]:
                     if terminal is not None
                     and isinstance(terminal.output_summary, dict)
                     else {}
+                ),
+                dependency_mode=(
+                    tool_provenance.dependency_mode
+                    if tool_provenance is not None
+                    else "live"
+                ),
+                production_source_ref=(
+                    tool_provenance.production_source_ref
+                    if tool_provenance is not None
+                    else None
+                ),
+                replacement_source_ref=(
+                    tool_provenance.replacement_source_ref
+                    if tool_provenance is not None
+                    else None
                 ),
             )
         )
