@@ -88,6 +88,9 @@ class ReleaseRunEvidence(BaseModel):
                 "tool_results": [
                     result.model_dump(mode="json") for result in state.tool_results
                 ],
+                "tool_calls": [
+                    call.model_dump(mode="json") for call in state.tool_calls
+                ],
                 "errors": [error.model_dump(mode="json") for error in state.errors],
             },
         )
@@ -97,4 +100,3 @@ def _event_value(event: Any, name: str) -> Any:
     if isinstance(event, Mapping):
         return event.get(name)
     return getattr(event, name, None)
-

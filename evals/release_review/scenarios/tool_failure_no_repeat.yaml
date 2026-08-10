@@ -1,0 +1,26 @@
+id: tool_failure_no_repeat
+phase: decision
+capability: tool_failure_recovery_without_repeat
+risk: high
+request: 查一下杭州明天的天气；如果查询服务不可用，请直接说明，不要反复尝试。
+tool_contract:
+  required: [weather]
+  allowed: []
+  forbidden: []
+  arguments:
+    - tool: weather
+      path: location
+      equals: 杭州
+  sequence:
+    before: []
+    before_final_response: [weather]
+fixtures:
+  weather:
+    - success: false
+      error: provider unavailable
+state_assertions:
+  - path: status
+    equals: completed
+  - path: tool_calls
+    length: 1
+

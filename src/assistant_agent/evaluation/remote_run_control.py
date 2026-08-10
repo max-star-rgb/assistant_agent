@@ -19,7 +19,11 @@ from pydantic import BaseModel
 
 
 DEFAULT_REMOTE_RUN_ARTIFACT_ROOT = (
-    Path(__file__).resolve().parents[3] / ".data" / "evals" / "remote"
+    Path(__file__).resolve().parents[3]
+    / ".data"
+    / "evals"
+    / "release_review"
+    / "remote"
 )
 TERMINAL_REMOTE_RUN_STATUSES = frozenset({"completed", "failed", "stopped"})
 RemoteRunStatusName = Literal[
@@ -81,19 +85,24 @@ class RemoteProgressTracker:
         self.last_event = event_name
         task_count = event.get("task_count")
         if (
-            event_name == "agent_eval.run.started"
+            event_name in {"agent_eval.run.started", "release_review.run.started"}
             and isinstance(task_count, int)
             and not isinstance(task_count, bool)
             and task_count >= 0
         ):
             self.task_count = task_count
             self.current_stage = "starting"
-        task_id = event.get("task_id")
+        task_id = event.get("task_id") or event.get("item_key")
         if isinstance(task_id, str) and task_id:
             self.current_task_id = task_id
-        if event_name == "agent_eval.task.started":
+        if event_name in {"agent_eval.task.started", "release_review.item.started"}:
             self.current_stage = "agent"
-        elif event_name == "agent_eval.task.completed":
+        elif event_name in {
+            "agent_eval.task.completed",
+            "release_review.item.completed",
+        }:
+            if isinstance(task_id, str) and task_id:
+                self.completed_task_ids.add(task_id)
             self.current_stage = "agent_completed"
         elif event_name == "agent_eval.evaluation.started":
             self.current_stage = "evaluation"
@@ -115,7 +124,7 @@ class RemoteProgressTracker:
             if isinstance(task_id, str) and task_id:
                 self.completed_task_ids.add(task_id)
             self.current_stage = "task_completed"
-        elif event_name == "agent_eval.run.completed":
+        elif event_name in {"agent_eval.run.completed", "release_review.run.completed"}:
             self.current_stage = "finalizing"
         elif event_name.endswith(".failed"):
             self.current_stage = "failed"
@@ -240,7 +249,7 @@ def format_progress_event(
     tracker: RemoteProgressTracker,
     event_name: str,
 ) -> str | None:
-    if not event_name.startswith("agent_eval."):
+    if not event_name.startswith(("agent_eval.", "release_review.")):
         return None
     completed = len(tracker.completed_task_ids)
     total = "?" if tracker.task_count is None else str(tracker.task_count)

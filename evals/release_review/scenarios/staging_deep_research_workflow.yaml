@@ -1,0 +1,23 @@
+id: staging_deep_research_workflow
+phase: staging
+capability: real_deep_research_workflow_submission
+risk: critical
+request: 创建一个可恢复的长期研究任务：分析未来一年企业 Agent 治理的关键趋势，交付带引用的中文报告、风险清单和三阶段落地建议。
+tool_contract:
+  required: [workflow_submit]
+  allowed: []
+  forbidden: []
+  arguments:
+    - tool: workflow_submit
+      path: workflow_type
+      equals: deep_research
+  sequence:
+    before: []
+    before_final_response: [workflow_submit]
+state_assertions:
+  - path: status
+    equals: completed
+staging:
+  resource_profile: deep_research_workflow
+  cleanup: required
+

@@ -12,9 +12,9 @@ from http.client import HTTPConnection, HTTPException
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
-REMOTE_EXPERIMENT_PATH = "/internal/evals/langfuse/remote-experiment"
-REMOTE_EXPERIMENT_SIGNING_SECRET_ENV = (
-    "ASSISTANT_AGENT_LANGFUSE_REMOTE_EXPERIMENT_SIGNING_SECRET"
+RELEASE_REVIEW_PATH = "/internal/evals/langfuse/release-review"
+RELEASE_REVIEW_SIGNING_SECRET_ENV = (
+    "ASSISTANT_AGENT_LANGFUSE_RELEASE_REVIEW_SIGNING_SECRET"
 )
 
 
@@ -34,7 +34,7 @@ def create_server(config: WebhookProxyConfig) -> ThreadingHTTPServer:
 
     class WebhookProxyHandler(BaseHTTPRequestHandler):
         def do_POST(self) -> None:
-            if self.path != REMOTE_EXPERIMENT_PATH:
+            if self.path != RELEASE_REVIEW_PATH:
                 self.send_error(404)
                 return
 
@@ -55,7 +55,7 @@ def create_server(config: WebhookProxyConfig) -> ThreadingHTTPServer:
             try:
                 upstream.request(
                     "POST",
-                    REMOTE_EXPERIMENT_PATH,
+                    RELEASE_REVIEW_PATH,
                     body=body,
                     headers={
                         "Content-Type": self.headers.get(
@@ -108,7 +108,7 @@ def main() -> None:
     server = create_server(
         WebhookProxyConfig(
             signing_secret=(
-                os.environ.get(REMOTE_EXPERIMENT_SIGNING_SECRET_ENV) or None
+                os.environ.get(RELEASE_REVIEW_SIGNING_SECRET_ENV) or None
             )
         )
     )

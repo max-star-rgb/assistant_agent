@@ -6,57 +6,57 @@ import os
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
-from assistant_agent.evaluation.remote_experiment import (
-    RemoteExperimentAccepted,
-    RemoteExperimentDisabled,
-    RemoteExperimentInvalid,
-    RemoteExperimentLauncher,
-    RemoteExperimentLaunchFailed,
-    RemoteExperimentSettings,
-    RemoteExperimentUnauthorized,
+from assistant_agent.evaluation.release_review import (
+    ReleaseReviewAccepted,
+    ReleaseReviewDisabled,
+    ReleaseReviewInvalid,
+    ReleaseReviewLauncher,
+    ReleaseReviewLaunchFailed,
+    ReleaseReviewSettings,
+    ReleaseReviewUnauthorized,
 )
 
 
 router = APIRouter(prefix="/internal/evals", tags=["agent-evals"])
 
 
-def get_remote_experiment_launcher(request: Request) -> RemoteExperimentLauncher:
+def get_release_review_launcher(request: Request) -> ReleaseReviewLauncher:
     configured = getattr(
         request.app.state,
-        "remote_experiment_launcher",
+        "release_review_launcher",
         None,
     )
-    if isinstance(configured, RemoteExperimentLauncher):
+    if isinstance(configured, ReleaseReviewLauncher):
         return configured
-    launcher = RemoteExperimentLauncher(
-        RemoteExperimentSettings.from_env(os.environ)
+    launcher = ReleaseReviewLauncher(
+        ReleaseReviewSettings.from_env(os.environ)
     )
-    request.app.state.remote_experiment_launcher = launcher
+    request.app.state.release_review_launcher = launcher
     return launcher
 
 
 @router.post(
-    "/langfuse/remote-experiment",
-    response_model=RemoteExperimentAccepted,
+    "/langfuse/release-review",
+    response_model=ReleaseReviewAccepted,
     status_code=status.HTTP_202_ACCEPTED,
 )
-async def trigger_remote_experiment(
+async def trigger_release_review(
     request: Request,
-    launcher: RemoteExperimentLauncher = Depends(
-        get_remote_experiment_launcher
+    launcher: ReleaseReviewLauncher = Depends(
+        get_release_review_launcher
     ),
-) -> RemoteExperimentAccepted:
+) -> ReleaseReviewAccepted:
     raw_body = await request.body()
     try:
         return launcher.launch(
             raw_body=raw_body,
             signature_header=request.headers.get("x-langfuse-signature"),
         )
-    except RemoteExperimentUnauthorized as exc:
+    except ReleaseReviewUnauthorized as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
-    except RemoteExperimentInvalid as exc:
+    except ReleaseReviewInvalid as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except RemoteExperimentDisabled as exc:
+    except ReleaseReviewDisabled as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    except RemoteExperimentLaunchFailed as exc:
+    except ReleaseReviewLaunchFailed as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc

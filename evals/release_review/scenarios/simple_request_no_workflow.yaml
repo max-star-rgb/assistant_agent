@@ -1,0 +1,16 @@
+id: simple_request_no_workflow
+phase: decision
+capability: direct_response_without_long_workflow
+risk: high
+request: 你好，请用两句话介绍你能帮我做什么。
+tool_contract:
+  required: []
+  allowed: []
+  forbidden: [workflow_submit]
+fixtures: {}
+state_assertions:
+  - path: status
+    equals: completed
+  - path: tool_calls
+    length: 0
+

@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import subprocess
+import sys
 from dataclasses import replace
 from pathlib import Path
 from time import monotonic
@@ -241,6 +242,7 @@ def _build_service(
         scenario_root=scenario_root,
         artifact_root=artifact_root,
         settings_factory=settings_factory,
+        progress=_emit_progress,
     )
 
 
@@ -283,6 +285,9 @@ def _require_args(parser: argparse.ArgumentParser, args: argparse.Namespace, *na
         parser.error("missing required arguments: " + ", ".join(missing))
 
 
+def _emit_progress(payload: dict[str, object]) -> None:
+    print(json.dumps(payload, ensure_ascii=False), file=sys.stderr, flush=True)
+
+
 if __name__ == "__main__":
     raise SystemExit(main())
-

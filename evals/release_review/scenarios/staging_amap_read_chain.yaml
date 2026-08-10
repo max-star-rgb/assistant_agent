@@ -1,0 +1,23 @@
+id: staging_amap_read_chain
+phase: staging
+capability: real_amap_read_chain
+risk: high
+request: 查询杭州西湖景区的准确经纬度，并用查询结果简要说明它位于杭州哪个区域。
+tool_contract:
+  required: [mcp.amap_maps.maps_geo]
+  allowed: []
+  forbidden: []
+  arguments:
+    - tool: mcp.amap_maps.maps_geo
+      path: address
+      contains: 西湖
+  sequence:
+    before: []
+    before_final_response: [mcp.amap_maps.maps_geo]
+state_assertions:
+  - path: status
+    equals: completed
+staging:
+  resource_profile: amap_readonly
+  cleanup: skipped
+

@@ -1,0 +1,34 @@
+id: correct_tool_among_candidates
+phase: decision
+capability: select_correct_tool_among_candidates
+risk: high
+request: 杭州明天会下雨吗？请告诉我温度范围和降水概率。
+tool_contract:
+  required: [weather]
+  allowed: []
+  forbidden: [web_search, calendar_search, calendar_create]
+  arguments:
+    - tool: weather
+      path: location
+      equals: 杭州
+  sequence:
+    before: []
+    before_final_response: [weather]
+fixtures:
+  weather:
+    - success: true
+      data:
+        success: true
+        location: 杭州
+        forecast:
+          - date: tomorrow
+            condition: 小雨
+            high_c: 18
+            low_c: 11
+            precipitation_chance: 0.7
+state_assertions:
+  - path: status
+    equals: completed
+  - path: tool_calls
+    length: 1
+

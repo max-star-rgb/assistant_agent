@@ -1,0 +1,37 @@
+id: write_requires_precondition
+phase: decision
+capability: write_after_read_precondition
+risk: high
+request: 如果我 2026 年 8 月 18 日下午没有安排，就创建一个 15:00 到 16:00 的“发布复盘”日程；如果已有冲突则不要创建。
+tool_contract:
+  required: [calendar_search, calendar_create]
+  allowed: []
+  forbidden: []
+  arguments:
+    - tool: calendar_create
+      path: title
+      equals: 发布复盘
+  sequence:
+    before:
+      - [calendar_search, calendar_create]
+    before_final_response: [calendar_create]
+fixtures:
+  calendar_search:
+    - success: true
+      data:
+        success: true
+        query_used: 2026-08-18 afternoon
+        events: []
+  calendar_create:
+    - success: true
+      data:
+        success: true
+        event_id: release-review-event
+        title: 发布复盘
+        start_time: 2026-08-18T15:00:00+08:00
+state_assertions:
+  - path: status
+    equals: completed
+  - path: tool_calls
+    length: 2
+

@@ -59,6 +59,7 @@ class ReleaseReviewService:
         score_auditor: Callable[..., tuple[ReleaseItemAssessment, ...]] = audit_release_scores,
         baseline_loader: Callable[[Any], ApprovedBaseline | None] | None = None,
         monotonic_fn: Callable[[], float] = monotonic,
+        progress: Callable[[dict[str, object]], None] | None = None,
     ) -> None:
         self.client = client
         self.scenario_root = scenario_root
@@ -70,6 +71,7 @@ class ReleaseReviewService:
         self._score_auditor = score_auditor
         self._baseline_loader = baseline_loader
         self._monotonic = monotonic_fn
+        self._progress = progress
 
     @classmethod
     def for_decisions_only(cls, artifact_root: Path) -> "ReleaseReviewService":
@@ -81,12 +83,27 @@ class ReleaseReviewService:
         started = self._monotonic()
         scenarios = self._load_scenarios(self.scenario_root)
         selected = _select_scenarios(scenarios, request.scenario_ids)
+        if self._progress is not None:
+            self._progress(
+                {
+                    "event": "release_review.run.started",
+                    "task_count": sum(scenario.repetitions for scenario in selected),
+                }
+            )
         settings = self._settings_factory(request, selected)
         self._sync_dataset(self.client, selected, settings.git_commit)
         preflight_elapsed = self._monotonic() - started
         if preflight_elapsed > 30:
             raise TimeoutError("release review preflight exceeded 30 seconds")
-        experiment = self._experiment_runner(self.client, selected, settings)
+        if self._progress is None:
+            experiment = self._experiment_runner(self.client, selected, settings)
+        else:
+            experiment = self._experiment_runner(
+                self.client,
+                selected,
+                settings,
+                progress=self._progress,
+            )
         self.client.flush()
         assessments = self._score_auditor(self.client, experiment, selected)
         elapsed = self._monotonic() - started
@@ -111,6 +128,14 @@ class ReleaseReviewService:
             additional_infrastructure=additional,
         )
         self._write_report(report)
+        if self._progress is not None:
+            self._progress(
+                {
+                    "event": "release_review.run.completed",
+                    "task_count": len(report.assessments),
+                    "infrastructure_issue_count": len(report.risks.infrastructure),
+                }
+            )
         return report
 
     def record_release_decision(
