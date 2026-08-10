@@ -14,6 +14,7 @@ from evals.release_review.contracts import (
     ReleaseScenario,
     RuntimeScenarioProvenance,
 )
+from evals.release_review.cli import main as release_review_main
 from evals.release_review.loader import load_scenario
 from evals.release_review.runtime_promotion import (
     discover_runtime_candidates,
@@ -147,6 +148,11 @@ def _promotion_registry() -> IssueRegistry:
     return IssueRegistry(issues={issue.issue_key: issue})
 
 
+def _write_registry(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(_promotion_registry().model_dump_json(indent=2), encoding="utf-8")
+
+
 def test_promotes_reviewed_decision_without_persisting_trace_ids(tmp_path: Path) -> None:
     draft = tmp_path / "draft.yaml"
     scenario_root = tmp_path / "scenarios"
@@ -239,3 +245,64 @@ def test_promotion_rejects_staging_duplicate_and_target_conflicts(tmp_path: Path
             existing_scenarios=(),
             draft_path=draft,
         )
+
+
+def test_cli_lists_runtime_candidates_without_loading_provider_env(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    registry_path = tmp_path / "issues.json"
+    scenario_root = tmp_path / "scenarios"
+    _write_registry(registry_path)
+
+    exit_code = release_review_main(
+        [
+            "--list-runtime-candidates",
+            "--runtime-issue-registry",
+            str(registry_path),
+            "--scenario-root",
+            str(scenario_root),
+        ]
+    )
+
+    assert exit_code == 0
+    payload = __import__("json").loads(capsys.readouterr().out)
+    assert payload["action"] == "list_runtime_candidates"
+    assert payload["candidate_count"] == 1
+    assert payload["candidates"][0]["issue_key"] == "route_grounding"
+
+
+def test_cli_promotes_candidate_only_with_explicit_write_gate(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    registry_path = tmp_path / "issues.json"
+    scenario_root = tmp_path / "scenarios"
+    draft = tmp_path / "draft.yaml"
+    _write_registry(registry_path)
+    _write_draft(draft)
+    base_args = [
+        "--promote-runtime-candidate",
+        "--runtime-issue-registry",
+        str(registry_path),
+        "--scenario-root",
+        str(scenario_root),
+        "--issue-key",
+        "route_grounding",
+        "--draft-scenario",
+        str(draft),
+        "--operator",
+        "operator-1",
+    ]
+
+    with pytest.raises(SystemExit) as exc_info:
+        release_review_main(base_args)
+    assert exc_info.value.code == 2
+
+    exit_code = release_review_main([*base_args, "--allow-write-scenario"])
+
+    assert exit_code == 0
+    payload = __import__("json").loads(capsys.readouterr().out)
+    assert payload["action"] == "promote_runtime_candidate"
+    assert payload["issue_key"] == "route_grounding"
+    assert Path(payload["scenario_path"]).exists()
