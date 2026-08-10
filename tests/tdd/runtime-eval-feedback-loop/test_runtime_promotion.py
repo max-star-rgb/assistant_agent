@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timezone
+from pathlib import Path
+
+import pytest
+import yaml
 
 from assistant_agent.observability.runtime_audit.daily_models import (
     DailyAuditIssue,
@@ -10,7 +14,11 @@ from evals.release_review.contracts import (
     ReleaseScenario,
     RuntimeScenarioProvenance,
 )
-from evals.release_review.runtime_promotion import discover_runtime_candidates
+from evals.release_review.loader import load_scenario
+from evals.release_review.runtime_promotion import (
+    discover_runtime_candidates,
+    promote_runtime_candidate,
+)
 
 
 def _issue(
@@ -100,3 +108,134 @@ def test_discovers_only_trace_backed_actionable_unpromoted_issues() -> None:
     assert candidates[1].trace_evidence_count == 1
     assert candidates[1].first_seen == date(2026, 8, 6)
     assert candidates[1].last_seen == date(2026, 8, 9)
+
+
+def _write_draft(path: Path, *, phase: str = "decision") -> None:
+    payload: dict[str, object] = {
+        "id": "route_answer_must_not_invent_details",
+        "phase": phase,
+        "capability": "grounded_route_answer",
+        "risk": "high",
+        "request": "根据测试路线工具的实际结果回答，不确定的信息明确说明未知。",
+        "tool_contract": {
+            "required": ["probe.route"],
+            "allowed": [],
+            "forbidden": [],
+            "sequence": {"before_final_response": ["probe.route"]},
+        },
+        "fixtures": {
+            "probe.route": [
+                {"success": True, "data": {"route": ["测试线路"]}}
+            ]
+        },
+        "state_assertions": [{"path": "status", "equals": "completed"}],
+    }
+    if phase == "staging":
+        payload["fixtures"] = {}
+        payload["staging"] = {
+            "resource_profile": "amap_readonly",
+            "cleanup": "skipped",
+        }
+    path.write_text(yaml.safe_dump(payload, allow_unicode=True), encoding="utf-8")
+
+
+def _promotion_registry() -> IssueRegistry:
+    issue = _issue(
+        "route_grounding",
+        trace_evidence_refs=["trace:secret-trace-id/score:score-1"],
+    )
+    return IssueRegistry(issues={issue.issue_key: issue})
+
+
+def test_promotes_reviewed_decision_without_persisting_trace_ids(tmp_path: Path) -> None:
+    draft = tmp_path / "draft.yaml"
+    scenario_root = tmp_path / "scenarios"
+    _write_draft(draft)
+
+    result = promote_runtime_candidate(
+        registry=_promotion_registry(),
+        existing_scenarios=(),
+        scenario_root=scenario_root,
+        issue_key="route_grounding",
+        draft_path=draft,
+        operator="operator-1",
+        allow_write=True,
+        reviewed_at=datetime(2026, 8, 10, tzinfo=timezone.utc),
+    )
+
+    assert result.path == scenario_root / "runtime" / f"{result.scenario.id}.yaml"
+    assert result.path.exists()
+    assert "secret-trace-id" not in result.path.read_text(encoding="utf-8")
+    loaded = load_scenario(result.path)
+    assert loaded.provenance is not None
+    assert loaded.provenance.issue_key == "route_grounding"
+    assert loaded.provenance.reviewed_by == "operator-1"
+    assert loaded.provenance.evidence_sha256 == result.evidence_sha256
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ({"allow_write": False}, "allow_write"),
+        ({"issue_key": "missing"}, "unknown runtime audit issue"),
+        ({"operator": "unsafe operator"}, "operator"),
+    ],
+)
+def test_promotion_rejects_missing_review_authority(
+    tmp_path: Path,
+    change: dict[str, object],
+    message: str,
+) -> None:
+    draft = tmp_path / "draft.yaml"
+    _write_draft(draft)
+    kwargs: dict[str, object] = {
+        "registry": _promotion_registry(),
+        "existing_scenarios": (),
+        "scenario_root": tmp_path / "scenarios",
+        "issue_key": "route_grounding",
+        "draft_path": draft,
+        "operator": "operator-1",
+        "allow_write": True,
+    }
+    kwargs.update(change)
+
+    with pytest.raises((ValueError, PermissionError), match=message):
+        promote_runtime_candidate(**kwargs)
+
+
+def test_promotion_rejects_staging_duplicate_and_target_conflicts(tmp_path: Path) -> None:
+    staging = tmp_path / "staging.yaml"
+    _write_draft(staging, phase="staging")
+    common = {
+        "registry": _promotion_registry(),
+        "scenario_root": tmp_path / "scenarios",
+        "issue_key": "route_grounding",
+        "operator": "operator-1",
+        "allow_write": True,
+    }
+
+    with pytest.raises(ValueError, match="Decision"):
+        promote_runtime_candidate(
+            **common,
+            existing_scenarios=(),
+            draft_path=staging,
+        )
+
+    draft = tmp_path / "draft.yaml"
+    _write_draft(draft)
+    with pytest.raises(ValueError, match="already promoted"):
+        promote_runtime_candidate(
+            **common,
+            existing_scenarios=(_scenario(issue_key="route_grounding"),),
+            draft_path=draft,
+        )
+
+    target = tmp_path / "scenarios" / "runtime" / "route_answer_must_not_invent_details.yaml"
+    target.parent.mkdir(parents=True)
+    target.write_text("existing", encoding="utf-8")
+    with pytest.raises(FileExistsError, match="already exists"):
+        promote_runtime_candidate(
+            **common,
+            existing_scenarios=(),
+            draft_path=draft,
+        )
