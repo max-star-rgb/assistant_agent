@@ -50,7 +50,6 @@ def test_report_classifies_critical_high_flaky_and_infrastructure() -> None:
         experiment_run_id="run-1",
         experiment_run_url="https://langfuse.invalid/run-1",
         model="model",
-        prompt_version="prompt",
         git_commit="git",
         catalog_generation="catalog",
         evaluator_version="evaluator",
@@ -73,19 +72,19 @@ def test_baseline_comparison_requires_matching_contract_identity() -> None:
     assessments = (_assessment("high"),)
     matching = ApprovedBaseline(
         experiment_run_id="approved-run",
-        prompt_version="prompt",
+        model="model",
         catalog_generation="catalog",
         evaluator_version="evaluator",
         scenario_hashes={"high": "hash-high"},
     )
     changed = matching.model_copy(update={"catalog_generation": "different"})
+    changed_model = matching.model_copy(update={"model": "different-model"})
 
     comparable = build_release_report(
         release_id="release-1",
         experiment_run_id="run-1",
         experiment_run_url=None,
         model="model",
-        prompt_version="prompt",
         git_commit="git",
         catalog_generation="catalog",
         evaluator_version="evaluator",
@@ -97,17 +96,29 @@ def test_baseline_comparison_requires_matching_contract_identity() -> None:
         experiment_run_id="run-1",
         experiment_run_url=None,
         model="model",
-        prompt_version="prompt",
         git_commit="git",
         catalog_generation="catalog",
         evaluator_version="evaluator",
         assessments=assessments,
         baseline=changed,
     )
+    model_incomparable = build_release_report(
+        release_id="release-1",
+        experiment_run_id="run-1",
+        experiment_run_url=None,
+        model="model",
+        git_commit="git",
+        catalog_generation="catalog",
+        evaluator_version="evaluator",
+        assessments=assessments,
+        baseline=changed_model,
+    )
 
     assert comparable.baseline.comparable is True
     assert incomparable.baseline.comparable is False
     assert "catalog_generation" in incomparable.baseline.reason
+    assert model_incomparable.baseline.comparable is False
+    assert "model" in model_incomparable.baseline.reason
 
 
 def test_service_runs_fixed_pipeline_and_marks_global_timeout(tmp_path: Path) -> None:
@@ -122,7 +133,6 @@ def test_service_runs_fixed_pipeline_and_marks_global_timeout(tmp_path: Path) ->
     settings = SimpleNamespace(
         release_id="release-1",
         model="model",
-        prompt_version="prompt",
         git_commit="git",
         catalog_generation="catalog",
         evaluator_version="evaluator",
@@ -141,9 +151,7 @@ def test_service_runs_fixed_pipeline_and_marks_global_timeout(tmp_path: Path) ->
     )
 
     report = service.run(
-        ReleaseReviewRequest(
-            release_id="release-1", model="model", prompt_version="prompt"
-        )
+        ReleaseReviewRequest(release_id="release-1")
     )
 
     assert calls == ["sync", "flush"]

@@ -28,8 +28,6 @@ class ReleaseReviewRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     release_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
-    model: str = Field(min_length=1, max_length=128)
-    prompt_version: str = Field(min_length=1, max_length=128)
     scenario_ids: tuple[str, ...] | None = None
     run_name: str | None = Field(default=None, max_length=128)
 
@@ -118,7 +116,6 @@ class ReleaseReviewService:
             ),
             experiment_run_url=experiment.dataset_run_url,
             model=settings.model,
-            prompt_version=settings.prompt_version,
             git_commit=settings.git_commit,
             catalog_generation=settings.catalog_generation,
             evaluator_version=settings.evaluator_version,

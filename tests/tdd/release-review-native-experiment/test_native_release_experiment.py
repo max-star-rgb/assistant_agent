@@ -159,7 +159,6 @@ def test_native_experiment_uses_phase_specific_execution_and_one_evaluator() -> 
     settings = ReleaseExperimentSettings(
         release_id="release-1",
         model="model-sentinel",
-        prompt_version="prompt-sentinel",
         git_commit="git-sentinel",
         catalog_generation="catalog-sentinel",
         evaluator_version="evaluator-sentinel",
@@ -178,7 +177,6 @@ def test_native_experiment_uses_phase_specific_execution_and_one_evaluator() -> 
         "evaluation_mode": "release_review",
         "release_id": "release-1",
         "model": "model-sentinel",
-        "prompt_version": "prompt-sentinel",
         "git_commit": "git-sentinel",
         "catalog_generation": "catalog-sentinel",
         "evaluator_version": "evaluator-sentinel",
@@ -199,7 +197,6 @@ def test_native_task_rejects_dataset_hash_drift() -> None:
     settings = ReleaseExperimentSettings(
         release_id="release-1",
         model="model",
-        prompt_version="prompt",
         git_commit="git",
         catalog_generation="catalog",
         evaluator_version="evaluator",
@@ -235,7 +232,6 @@ def test_staging_cleanup_runs_when_runtime_fails() -> None:
     settings = ReleaseExperimentSettings(
         release_id="release-1",
         model="model",
-        prompt_version="prompt",
         git_commit="git",
         catalog_generation="catalog",
         evaluator_version="evaluator",

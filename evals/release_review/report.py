@@ -30,7 +30,7 @@ class ApprovedBaseline(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     experiment_run_id: str
-    prompt_version: str
+    model: str
     catalog_generation: str
     evaluator_version: str
     scenario_hashes: dict[str, str]
@@ -60,7 +60,6 @@ class ReleaseReviewReport(BaseModel):
     experiment_run_id: str
     experiment_run_url: str | None = None
     model: str
-    prompt_version: str
     git_commit: str
     catalog_generation: str
     evaluator_version: str
@@ -93,7 +92,6 @@ def build_release_report(
     experiment_run_id: str,
     experiment_run_url: str | None,
     model: str,
-    prompt_version: str,
     git_commit: str,
     catalog_generation: str,
     evaluator_version: str,
@@ -131,7 +129,7 @@ def build_release_report(
     }
     comparison = _compare_baseline(
         baseline,
-        prompt_version=prompt_version,
+        model=model,
         catalog_generation=catalog_generation,
         evaluator_version=evaluator_version,
         scenario_hashes=scenario_hashes,
@@ -147,7 +145,6 @@ def build_release_report(
         experiment_run_id=experiment_run_id,
         experiment_run_url=experiment_run_url,
         model=model,
-        prompt_version=prompt_version,
         git_commit=git_commit,
         catalog_generation=catalog_generation,
         evaluator_version=evaluator_version,
@@ -166,7 +163,7 @@ def build_release_report(
 def _compare_baseline(
     baseline: ApprovedBaseline | None,
     *,
-    prompt_version: str,
+    model: str,
     catalog_generation: str,
     evaluator_version: str,
     scenario_hashes: dict[str, str],
@@ -174,8 +171,8 @@ def _compare_baseline(
     if baseline is None:
         return BaselineComparison(comparable=False, reason="no approved baseline")
     mismatches: list[str] = []
-    if baseline.prompt_version != prompt_version:
-        mismatches.append("prompt_version")
+    if baseline.model != model:
+        mismatches.append("model")
     if baseline.catalog_generation != catalog_generation:
         mismatches.append("catalog_generation")
     if baseline.evaluator_version != evaluator_version:
@@ -193,4 +190,3 @@ def _compare_baseline(
         comparable=True,
         reason="comparable to approved baseline",
     )
-

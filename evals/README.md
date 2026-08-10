@@ -94,12 +94,13 @@ operator 可把人工决定写入本地审计产物：
 ```bash
 MULTIMODAL_AGENT_PROVIDER_MODE=real \
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_release_review.py \
-  --run --release-id <release-id> --model <model> --prompt-version <version> \
+  --run --release-id <release-id> \
   --allow-real-provider --allow-staging-side-effects
 ```
 
 可重复使用 `--scenario <id>` 选择子集。运行前必须确认真实主模型配置完整、Langfuse 可用、所需生产工具
-已注册以及 Staging 资源可清理。结果写入 `.data/evals/release_review/<release-id>/report.{json,md}`；
+已注册以及 Staging 资源可清理。runner 从服务端 `ProviderConfig` 自动取得并记录实际主模型；UI 和 CLI
+不得重复指定模型。结果写入 `.data/evals/release_review/<release-id>/report.{json,md}`；
 远程触发 receipt/log 位于其 `remote/` 子目录。产物、真实响应、凭据和用户数据均不得提交。
 
 ## Langfuse UI 触发
@@ -115,7 +116,9 @@ MULTIMODAL_AGENT_PROVIDER_MODE=real
 ```
 
 请求必须带五分钟内有效的 HMAC-SHA256 签名。Langfuse envelope 的 `datasetName` 必须是固定 Dataset，
-`payload` 是 JSON 字符串，包含 `releaseId`、`model`、`promptVersion`，可选 `scenarios` 和 `runName`。
+`payload` 是 JSON 字符串，只要求 `releaseId`，可选 `scenarios` 和 `runName`。模型属于服务端配置；当前
+prompt 由代码和运行上下文动态编译，不接受人工版本标签。UI Config 运行全部场景的最小值是
+`{"releaseId":"<release-id>"}`。
 服务端使用固定 argv 启动同一 `--run` CLI；签名与 body 生成稳定 trigger id，重复投递不会启动第二次。
 UI 只负责选择 Dataset、Experiment Evaluator 和触发运行，不拥有 Provider 模式、Staging readiness、案例
 定义或发布权限。

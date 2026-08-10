@@ -72,8 +72,6 @@ def test_signed_webhook_launches_only_fixed_release_review_argv(tmp_path: Path) 
     body = _body(
         {
             "releaseId": "release-1",
-            "model": "qwen-plus",
-            "promptVersion": "prompt-v1",
             "scenarios": ["deep_research_admission", "simple_request_no_workflow"],
             "runName": "run-1",
         }
@@ -93,10 +91,6 @@ def test_signed_webhook_launches_only_fixed_release_review_argv(tmp_path: Path) 
             "--run",
             "--release-id",
             "release-1",
-            "--model",
-            "qwen-plus",
-            "--prompt-version",
-            "prompt-v1",
             "--allow-real-provider",
             "--allow-staging-side-effects",
             "--scenario",
@@ -113,11 +107,7 @@ def test_signature_expiry_wrong_dataset_and_extra_payload_are_rejected(
     tmp_path: Path,
 ) -> None:
     launcher = _launcher(tmp_path, [])
-    payload = {
-        "releaseId": "release-1",
-        "model": "qwen-plus",
-        "promptVersion": "prompt-v1",
-    }
+    payload = {"releaseId": "release-1"}
     body = _body(payload)
 
     with pytest.raises(ReleaseReviewUnauthorized):
@@ -133,16 +123,21 @@ def test_signature_expiry_wrong_dataset_and_extra_payload_are_rejected(
         launcher.launch(raw_body=extra, signature_header=_signature(extra))
 
 
+@pytest.mark.parametrize("field", ("model", "promptVersion"))
+def test_payload_rejects_server_owned_model_and_manual_prompt_version(
+    tmp_path: Path, field: str
+) -> None:
+    launcher = _launcher(tmp_path, [])
+    body = _body({"releaseId": "release-1", field: "obsolete-value"})
+
+    with pytest.raises(ReleaseReviewInvalid, match="payload"):
+        launcher.launch(raw_body=body, signature_header=_signature(body))
+
+
 def test_duplicate_delivery_is_idempotent_and_identifiers_are_safe(tmp_path: Path) -> None:
     commands: list[list[str]] = []
     launcher = _launcher(tmp_path, commands)
-    body = _body(
-        {
-            "releaseId": "release-1",
-            "model": "qwen-plus",
-            "promptVersion": "prompt-v1",
-        }
-    )
+    body = _body({"releaseId": "release-1"})
     signature = _signature(body)
 
     first = launcher.launch(raw_body=body, signature_header=signature)
@@ -152,13 +147,7 @@ def test_duplicate_delivery_is_idempotent_and_identifiers_are_safe(tmp_path: Pat
     assert duplicate.duplicate is True
     assert len(commands) == 1
 
-    unsafe = _body(
-        {
-            "releaseId": "../production",
-            "model": "qwen-plus",
-            "promptVersion": "prompt-v1",
-        }
-    )
+    unsafe = _body({"releaseId": "../production"})
     with pytest.raises(ReleaseReviewInvalid):
         launcher.launch(raw_body=unsafe, signature_header=_signature(unsafe))
 

@@ -67,5 +67,5 @@ CLI。UI 可选择 Dataset 和 Experiment Evaluator，但不能传环境变量�
 - API、CLI 和 webhook 复用同一 Release Review service 与 runtime，不复制 Agent loop。
 - Decision fixture backend 只改变 Tool 执行结果，不改变注册表或 ToolSpec。
 - Staging 资源必须 preflight、隔离、限并发并在失败路径清理。
-- Git scenario hash、prompt version、catalog generation 和 evaluator version 不一致时，baseline 不可比较。
+- 服务端记录的实际主模型、Git scenario hash、catalog generation 和 evaluator version 不一致时，baseline 不可比较。
 - 不提交凭据、真实用户数据、Provider 原始响应、生产 Trace 或 `.data/evals/` 产物。

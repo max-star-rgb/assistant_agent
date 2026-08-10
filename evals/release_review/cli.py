@@ -53,8 +53,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--env-file", type=Path, default=PROJECT_ROOT / ".env")
     parser.add_argument("--no-env-file", action="store_true")
     parser.add_argument("--release-id")
-    parser.add_argument("--model")
-    parser.add_argument("--prompt-version")
     parser.add_argument("--run-name")
     parser.add_argument("--scenario", action="append", dest="scenario_ids")
     parser.add_argument("--git-commit")
@@ -135,18 +133,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             return 0
 
-        _require_args(parser, args, "release_id", "model", "prompt_version")
+        _require_args(parser, args, "release_id")
         if not args.allow_real_provider:
             parser.error("--run requires --allow-real-provider")
         selected_ids = tuple(args.scenario_ids) if args.scenario_ids else None
         if _selection_requires_staging(scenarios, selected_ids) and not args.allow_staging_side_effects:
             parser.error("--run with Staging scenarios requires --allow-staging-side-effects")
         config = ProviderConfig.from_env()
-        _validate_real_config(config, args.model)
+        _validate_real_config(config)
         request = ReleaseReviewRequest(
             release_id=args.release_id,
-            model=args.model,
-            prompt_version=args.prompt_version,
             scenario_ids=selected_ids,
             run_name=args.run_name,
         )
@@ -245,8 +241,7 @@ def _build_service(
         )
         return ReleaseExperimentSettings(
             release_id=review_request.release_id,
-            model=review_request.model,
-            prompt_version=review_request.prompt_version,
+            model=config.resolved_chat_provider().model,
             git_commit=git_commit,
             catalog_generation=catalog.generation,
             evaluator_version=EVALUATOR_VERSION,
@@ -265,15 +260,10 @@ def _build_service(
     )
 
 
-def _validate_real_config(config: ProviderConfig, requested_model: str) -> None:
+def _validate_real_config(config: ProviderConfig) -> None:
     if config.provider_mode != "real":
         raise RuntimeError("Release Review requires MULTIMODAL_AGENT_PROVIDER_MODE=real")
     config.validate_provider_mode()
-    configured_model = config.resolved_chat_provider().model
-    if configured_model != requested_model:
-        raise RuntimeError(
-            f"requested model {requested_model!r} does not match configured model {configured_model!r}"
-        )
 
 
 def _langfuse_client() -> Langfuse:

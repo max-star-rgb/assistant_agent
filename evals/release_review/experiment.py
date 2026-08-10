@@ -41,7 +41,6 @@ ProgressCallback = Callable[[dict[str, object]], None]
 class ReleaseExperimentSettings:
     release_id: str
     model: str
-    prompt_version: str
     git_commit: str
     catalog_generation: str
     evaluator_version: str
@@ -208,7 +207,6 @@ def run_release_experiment(
             "evaluation_mode": "release_review",
             "release_id": settings.release_id,
             "model": settings.model,
-            "prompt_version": settings.prompt_version,
             "git_commit": settings.git_commit,
             "catalog_generation": settings.catalog_generation,
             "evaluator_version": settings.evaluator_version,

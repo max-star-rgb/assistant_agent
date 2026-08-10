@@ -39,11 +39,6 @@ class ReleaseReviewPayload(BaseModel):
         pattern=_SAFE_IDENTIFIER,
         validation_alias=AliasChoices("releaseId", "release_id"),
     )
-    model: str = Field(min_length=1, max_length=128, pattern=_SAFE_IDENTIFIER)
-    prompt_version: str = Field(
-        pattern=_SAFE_IDENTIFIER,
-        validation_alias=AliasChoices("promptVersion", "prompt_version"),
-    )
     scenarios: tuple[str, ...] | None = Field(default=None, max_length=32)
     run_name: str | None = Field(
         default=None,
@@ -288,10 +283,6 @@ class ReleaseReviewLauncher:
             "--run",
             "--release-id",
             accepted.release_id,
-            "--model",
-            payload.model,
-            "--prompt-version",
-            payload.prompt_version,
             "--allow-real-provider",
             "--allow-staging-side-effects",
         ]
