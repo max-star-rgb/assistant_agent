@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import shutil
 from collections.abc import Mapping
 from copy import deepcopy
 from threading import Lock
@@ -131,9 +132,72 @@ class StagingResourceManager:
         )
 
 
+class LocalStagingProfileAdapter:
+    """Prepare operation-scoped local stores for workflow and calendar staging."""
+
+    def __init__(self, profile: str, root: str | Any) -> None:
+        from pathlib import Path
+
+        if profile not in ALLOWED_STAGING_PROFILES:
+            raise ValueError(f"unsupported staging profile: {profile}")
+        self.profile = profile
+        self.root = Path(root).resolve()
+
+    def prepare(
+        self,
+        *,
+        namespace: str,
+        scenario: ReleaseScenario,
+    ) -> PreparedStagingResource:
+        del scenario
+        if self.profile == "amap_readonly":
+            return PreparedStagingResource(runtime_metadata={})
+        target = (self.root / namespace).resolve()
+        if self.root not in target.parents:
+            raise ValueError("staging target escaped configured root")
+        target.mkdir(parents=True, exist_ok=True)
+        if self.profile == "deep_research_workflow":
+            metadata = {
+                "staging_paths": {
+                    "workflow_db": str(target / "workflows.sqlite3"),
+                    "workflow_artifacts": str(target / "artifacts"),
+                }
+            }
+        else:
+            metadata = {
+                "staging_paths": {"calendar_db": str(target / "calendar.sqlite3")}
+            }
+        return PreparedStagingResource(
+            runtime_metadata=metadata,
+            resource_refs=(f"file://{target}",),
+        )
+
+    def cleanup(
+        self,
+        *,
+        namespace: str,
+        resource_refs: tuple[str, ...],
+    ) -> CleanupResult:
+        target = (self.root / namespace).resolve()
+        if self.root not in target.parents:
+            return CleanupResult(
+                status="failed",
+                resource_refs=resource_refs,
+                failed_refs=resource_refs,
+                issues=("staging target escaped configured root",),
+                infrastructure_status="cleanup_failed",
+            )
+        if target.exists():
+            shutil.rmtree(target)
+        return CleanupResult(
+            status="succeeded",
+            resource_refs=resource_refs,
+            cleaned_refs=resource_refs,
+        )
+
+
 def _staging_namespace(release_id: str, scenario_id: str) -> str:
     source = f"{release_id}-{scenario_id}"
     slug = re.sub(r"[^a-z0-9]+", "-", source.lower()).strip("-")
     digest = hashlib.sha256(source.encode("utf-8")).hexdigest()[:8]
     return f"rr-{slug[:49].rstrip('-')}-{digest}"
-
