@@ -6,6 +6,7 @@ from evals.agent.contracts import (
     EnvironmentValidation,
     RunEvidence,
     TaskExecution,
+    TaskSpec,
 )
 from evals.agent import grading
 from evals.agent.grading import rule_assertion
@@ -13,14 +14,13 @@ from evals.agent.langfuse_backend import (
     run_tasks,
     verify_persisted_dimension_scores,
 )
-from evals.agent.loader import load_task
 
 
 SCORE_PREFIX = "assistant_agent.quality."
 
 
-def test_native_evaluator_task_does_not_require_legacy_grader_entrypoint() -> None:
-    task = __import__("evals.agent.contracts", fromlist=["TaskSpec"]).TaskSpec(
+def _native_task() -> TaskSpec:
+    return TaskSpec(
         id="native_evaluator_task",
         description="native evaluator task",
         capability="native evaluator",
@@ -31,6 +31,10 @@ def test_native_evaluator_task_does_not_require_legacy_grader_entrypoint() -> No
         ),
         environment="evals.agent.environment:Environment",
     )
+
+
+def test_native_evaluator_task_does_not_require_legacy_grader_entrypoint() -> None:
+    task = _native_task()
 
     assert task.grader is None
 
@@ -65,10 +69,14 @@ class ValidEnvironment:
 
 
 def test_grade_task_conformance_uses_only_environment_rules(monkeypatch) -> None:
-    task = load_task("amap_weather_missing_city_clarification")
+    task = _native_task()
     monkeypatch.setattr(
         "evals.agent.loader.load_entrypoint",
         lambda _: ValidEnvironment,
+    )
+    monkeypatch.setattr(
+        "evals.agent.loader.load_case_source",
+        lambda _: SimpleNamespace(level="task"),
     )
 
     result = grading.grade_task_conformance(
@@ -90,7 +98,7 @@ def test_grade_task_conformance_uses_only_environment_rules(monkeypatch) -> None
 
 
 def test_run_tasks_emits_only_rule_owned_task_conformance(monkeypatch) -> None:
-    task = load_task("amap_weather_missing_city_clarification")
+    task = _native_task()
     item = SimpleNamespace(
         input={
             "task_id": task.id,
@@ -137,8 +145,16 @@ def test_run_tasks_emits_only_rule_owned_task_conformance(monkeypatch) -> None:
         lambda _: ValidEnvironment,
     )
     monkeypatch.setattr(
+        "evals.agent.langfuse_backend.load_task",
+        lambda _: task,
+    )
+    monkeypatch.setattr(
         "evals.agent.loader.load_entrypoint",
         lambda _: ValidEnvironment,
+    )
+    monkeypatch.setattr(
+        "evals.agent.loader.load_case_source",
+        lambda _: SimpleNamespace(level="task"),
     )
 
     result = run_tasks(

@@ -55,7 +55,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     selector.add_argument(
         "--suite",
         choices=list_suites(),
-        help="Select a named task suite; defaults to smoke.",
+        help="Select a named task suite; defaults to deep_research.",
     )
     selector.add_argument(
         "--dataset-active",
@@ -84,7 +84,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error("--dataset-active is only supported with --run.")
     tasks: list[TaskSpec] = []
     if not args.dataset_active:
-        task_ids = args.task or load_suite(args.suite or "smoke")
+        task_ids = args.task or load_suite(args.suite or "deep_research")
         tasks = [load_task(task_id) for task_id in task_ids]
 
     if args.inspect:

@@ -237,36 +237,6 @@ Evaluator prompt、长依赖说明或其他 oracle，也不能把 Langfuse Datas
 - 每个案例至少保留一个正确样本和一个可信错误样本；校准文件统一经
   `load_calibration_set()` 按 `schema_version` 分派解析。
 
-当前天气 Task：
-
-- `amap_weather_forecast_date_grounding`：调用
-  `mcp.amap_maps.maps_weather(city="上海市")`，根据返回项的明确 `date` 选择明天白天预报，
-  区分昼夜字段，并避免把日级预报说成精确小时预报；
-- `amap_weather_missing_city_clarification`：用户没有提供城市或区县时先澄清，不猜测地点，也不提前
-  调用天气工具；
-- `amap_weather_provider_failure_recovery`：高德天气固定返回 `provider_timeout` 后，诚实说明当前
-  没有可核实预报，不编造天气，并给出重试、出发前复查和有限的保守建议。此时
-  内部 grader 的 `tool_execution=true`、`tool_semantics=false` 是合法组合；持久化时前者映射为
-  `task_conformance=true`，后者不再写成 task-level Score。
-
-当前旅行 Skill Task：
-
-- `travel_skill_proactive_loading`：面对一个只需住宿搜索即可完成的简单旅行请求，Agent 仍须成功
-  调用 `load_skill` 加载 `travel-tool-orchestration`，并调用 `lodging_search`。Environment 使用完整
-  受控工具目录和确定性住宿依赖；校准反例保留正确住宿回答但省略 Skill 加载，使
-  `tool_execution=false`，从而把内部工作流加载与回答质量分开判断。正式 Experiment 还应在 Trace
-  中确认 `load_skill` 发生在住宿业务工具之前。
-- `travel_itinerary_planning`：面对包含三位成人住宿、预算、抵离时间、父母慢节奏和三个必去地点的
-  四日旅行请求，Agent 必须加载旅行 Skill，比较受控酒店报价与关键通勤，再生成按天、按时间段的
-  可执行行程。Environment 提供确定性住宿、地理编码和公交路线证据；grader 同时检查抵返缓冲、
-  OTA 边界，以及没有可识别网页或远期天气证据时是否把开放、预约和天气诚实列为待确认。
-
-当前网页证据 Task：
-
-- `website_unverified_url_honesty`：受控 website backend 对未声明 URL 返回
-  `mock_url_unverified` 且不提供 `final_url` 后，Agent 必须说明没有可核实的页面证据，不编造页面标题、
-  资格条件或办理步骤，并给出核对 URL、稍后重试或由用户提供页面内容等有限恢复建议。
-
 当前 Deep Research Mission：
 
 - `deep_research_autonomous_admission`：复杂行业研究请求应由 ReAct LLM 自主调用
@@ -276,16 +246,15 @@ Evaluator prompt、长依赖说明或其他 oracle，也不能把 Langfuse Datas
 - `deep_research_evidence_plan`：面对冲突证据研究，必须初始化 scope、来源收集、证据抽取、大纲、
   草稿、核验和合成七阶段计划，并保留多来源目标。
 
-三个 Mission 共用 `DeepResearchMissionEnvironment`：活动 `AgentGraphRuntime` 暴露完整受控目录，真实
-调用 governed `workflow_submit`，状态写入每次运行独立的 `InMemoryWorkflowStore`。其 suite 名为
+三个 Mission 共用 `DeepResearchMissionEnvironment`：活动 `AgentGraphRuntime` 使用 production Tool
+Registry，并只对案例明确声明的同名工具应用原子 replacement；未替换工具保持部署中的真实依赖。
+其 suite 名为
 `deep_research`；`--inspect --suite deep_research` 离线，正式 `--run` 才调用真实 Agent Provider 和
 Langfuse 原生 Evaluator。
 
-每个 Agent Task Environment 的默认完整目录由共享 `build_controlled_registry()` 装配，包含 Agent
-默认内置工具和与部署 allowlist 一致的 9 个高德 MCP namespaced 只读工具，不按 Task 选择子集。
-目标工具连接该 Task 的确定性 runner，其余工具连接受控的本地或 mock 实现；整个 pytest/校准
-Environment 都不连接真实高德服务，并使用每次运行隔离的 in-memory 状态。三个天气 Task 的目标
-工具均为 `mcp.amap_maps.maps_weather`，输入使用真实 `city` schema。
+`evals/agent/tasks/` 下的基础能力案例已移除。Environment 的静态检查不会提前构建真实 Registry；
+正式执行时由 Runtime 装配 production Registry，再执行同名 replacement 和完整校验。Evidence 会记录
+每次工具执行来自 `live` 依赖还是 `controlled_replacement`，避免评测侧追加模拟工具造成重名注册。
 
 ### 正式运行顺序：PyCharm + Dataset 同步 + Langfuse UI
 
@@ -295,7 +264,7 @@ Environment 都不连接真实高德服务，并使用每次运行隔离的 in-m
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python \
   scripts/run_agent_evals.py \
   --inspect \
-  --task amap_weather_provider_failure_recovery
+  --task deep_research_autonomous_admission
 ```
 
 `--inspect` 会显示 `case_source.level`，并显示 `mission_objective_rule.required/implemented`，以便在
@@ -506,7 +475,7 @@ ACTIVE/ARCHIVED 控制范围并点击 `Run`。运行弹窗中的 Experiment Eval
 日常使用不需要记忆字段。只有精确调试时才临时覆盖 config：
 
 ```json
-{"task":"amap_weather_provider_failure_recovery","runName":"ui-amap-weather-timeout"}
+{"task":"deep_research_autonomous_admission","runName":"ui-deep-research-admission"}
 ```
 
 或：

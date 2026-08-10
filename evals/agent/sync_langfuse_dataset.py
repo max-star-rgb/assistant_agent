@@ -2,7 +2,7 @@
 """Synchronize all local Agent eval cases to the Langfuse Dataset.
 
 Run this file directly (including from an IDE) after editing cases under
-``evals/agent/tasks`` or ``evals/agent/missions``. With no arguments it
+``evals/agent/missions``. With no arguments it
 publishes every local Git-owned Task and Mission, then removes stale Git-owned
 Dataset items whose local case directories no longer exist. It never starts an
 Experiment.

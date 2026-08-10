@@ -8,7 +8,7 @@ from evals.agent.loader import load_task
 
 
 def test_native_calibration_cases_use_human_labels_for_canonical_scores() -> None:
-    task = load_task("amap_weather_missing_city_clarification")
+    task = load_task("deep_research_autonomous_admission")
 
     cases = calibration.build_native_calibration_cases([task])
 
@@ -23,7 +23,7 @@ def test_native_calibration_cases_use_human_labels_for_canonical_scores() -> Non
 
 
 def test_native_calibration_compares_persisted_langfuse_scores() -> None:
-    task = load_task("amap_weather_missing_city_clarification")
+    task = load_task("deep_research_autonomous_admission")
     cases = calibration.build_native_calibration_cases([task])
     persisted_scores = [dict(case.expected_scores) for case in cases]
 

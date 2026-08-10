@@ -1,1 +1,0 @@
-"""Paginated file-reading Task."""

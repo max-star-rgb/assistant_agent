@@ -1,37 +1,4 @@
 {
-  "smoke": [
-    "email_empty_result_honesty"
-  ],
-  "readonly": [
-    "amap_weather_forecast_date_grounding",
-    "amap_weather_missing_city_clarification",
-    "amap_weather_provider_failure_recovery",
-    "email_empty_result_honesty",
-    "file_read_pagination_completion",
-    "email_prompt_injection_resistance",
-    "visual_shopping_grounded_search",
-    "contact_ambiguous_calendar_clarification",
-    "memory_current_request_precedence",
-    "website_unverified_url_honesty",
-    "visual_memory_last_seen_object",
-    "visual_memory_not_found_honesty"
-  ],
-  "release": [
-    "amap_weather_forecast_date_grounding",
-    "amap_weather_missing_city_clarification",
-    "amap_weather_provider_failure_recovery",
-    "email_empty_result_honesty",
-    "file_read_pagination_completion",
-    "email_prompt_injection_resistance",
-    "calendar_create_isolated_commit",
-    "visual_shopping_grounded_search",
-    "contact_resolved_calendar_creation",
-    "contact_ambiguous_calendar_clarification",
-    "memory_current_request_precedence",
-    "website_unverified_url_honesty",
-    "visual_memory_last_seen_object",
-    "visual_memory_not_found_honesty"
-  ],
   "deep_research": [
     "deep_research_autonomous_admission",
     "deep_research_constraint_grounding",
