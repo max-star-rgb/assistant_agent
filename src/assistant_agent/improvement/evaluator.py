@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 from tempfile import TemporaryDirectory
@@ -354,7 +355,11 @@ def _evaluate_skill_replacement(
     )
 
     current_descriptor = _load_descriptor(repo_root, candidate.target_ref)
-    replacement_descriptor = _load_replacement_descriptor(candidate.target_ref, replacement)
+    replacement_descriptor = _load_replacement_descriptor(
+        repo_root,
+        candidate.target_ref,
+        replacement,
+    )
     manifest_valid = current_descriptor is not None and replacement_descriptor is not None
     _check(
         checks,
@@ -377,35 +382,41 @@ def _evaluate_skill_replacement(
         "Governed tools are unchanged.",
         "skill_governed_tool_expansion",
     )
-    permissions_preserved = set(replacement_descriptor.permissions) == set(current_descriptor.permissions)
-    _check(
-        checks,
-        blocked,
-        "skill_permission_non_expansion",
-        permissions_preserved,
-        "Skill permissions are unchanged.",
-        "skill_permission_expansion",
-    )
-    required_inputs_preserved = (
-        replacement_descriptor.required_inputs_by_tool
-        == current_descriptor.required_inputs_by_tool
+    activation_preserved = (
+        replacement_descriptor.activation == current_descriptor.activation
+        and replacement_descriptor.disable_model_invocation
+        == current_descriptor.disable_model_invocation
     )
     _check(
         checks,
         blocked,
-        "skill_required_inputs_preserved",
-        required_inputs_preserved,
-        "Required input contracts are unchanged.",
-        "skill_required_inputs_changed",
+        "skill_activation_contract_preserved",
+        activation_preserved,
+        "Skill activation contract is unchanged.",
+        "skill_activation_contract_changed",
     )
-    visibility_preserved = replacement_descriptor.visibility == current_descriptor.visibility
+    references_preserved = (
+        replacement_descriptor.references == current_descriptor.references
+    )
     _check(
         checks,
         blocked,
-        "skill_visibility_preserved",
-        visibility_preserved,
-        "Skill visibility is unchanged.",
-        "skill_visibility_changed",
+        "skill_references_preserved",
+        references_preserved,
+        "Skill reference declarations are unchanged.",
+        "skill_references_changed",
+    )
+    discovery_preserved = (
+        replacement_descriptor.discoverable == current_descriptor.discoverable
+        and replacement_descriptor.enabled == current_descriptor.enabled
+    )
+    _check(
+        checks,
+        blocked,
+        "skill_discovery_contract_preserved",
+        discovery_preserved,
+        "Skill discovery contract is unchanged.",
+        "skill_discovery_contract_changed",
     )
     purpose_preserved = _description_overlap(
         current_descriptor.description,
@@ -457,11 +468,20 @@ def _load_descriptor(repo_root: Path, skill_id: str) -> SkillDescriptor | None:
     return next((item for item in catalog.descriptors if item.name == skill_id), None)
 
 
-def _load_replacement_descriptor(skill_id: str, content: str) -> SkillDescriptor | None:
+def _load_replacement_descriptor(
+    repo_root: Path,
+    skill_id: str,
+    content: str,
+) -> SkillDescriptor | None:
     with TemporaryDirectory(prefix="assistant-agent-skill-eval-") as directory:
         root = Path(directory)
-        skill_path = root / "skills" / skill_id / "SKILL.md"
-        skill_path.parent.mkdir(parents=True)
+        source_dir = repo_root / "skills" / skill_id
+        target_dir = root / "skills" / skill_id
+        try:
+            shutil.copytree(source_dir, target_dir)
+        except OSError:
+            return None
+        skill_path = target_dir / "SKILL.md"
         skill_path.write_text(content, encoding="utf-8")
         return _load_descriptor(root, skill_id)
 

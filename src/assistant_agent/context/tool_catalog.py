@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from assistant_agent.context.models import ToolCatalogSummary
+from assistant_agent.runtime.capability_grants import CapabilityGrant
 from assistant_agent.runtime.requests import UserRequest
 from assistant_agent.tools.models import RunToolCatalog, ToolSpec
 from assistant_agent.tools.ids import (
@@ -33,6 +34,10 @@ class ToolCatalogSelection:
     summary: ToolCatalogSummary
     active_skill_ids: list[str]
     active_skill_descriptors: list[SkillDescriptor]
+    discoverable_skill_ids: list[str]
+    discoverable_skill_descriptors: list[SkillDescriptor]
+    capability_grant_ids: list[str]
+    skill_granted_tool_names: list[str]
     skill_descriptors: list[SkillDescriptor]
 
 
@@ -50,7 +55,6 @@ class ToolQualificationSelection:
 class ToolVisibilityOverrides:
     """Structured per-run tool exposure overrides."""
 
-    explicit_skills: set[str]
     allowed_tools: set[str]
     profile: str | None
 
@@ -60,6 +64,7 @@ def select_prompt_tool_specs(
     tool_specs: list[ToolSpec],
     *,
     skill_catalog: SkillCatalog | None = None,
+    capability_grants: list[CapabilityGrant] | None = None,
     registry_generation: str | None = None,
 ) -> ToolCatalogSelection:
     """Return the complete run-qualified ToolSpec catalog."""
@@ -74,35 +79,71 @@ def select_prompt_tool_specs(
         tool_specs,
         catalog=catalog,
     )
-    available_specs = list(qualification.qualified_tool_specs)
+    eligible_specs = list(qualification.qualified_tool_specs)
+    trusted_workflow = isinstance(
+        request.metadata.get("_trusted_workflow_assignment"),
+        dict,
+    )
+    trusted_durable = request.metadata.get("_trusted_durable_execution") is True
+    bypass_skill_projection = trusted_workflow or trusted_durable
+    effective_grants = (
+        [] if bypass_skill_projection else list(capability_grants or [])
+    )
+    active_skill_descriptors = _active_skill_descriptors(
+        catalog,
+        effective_grants,
+    )
+    active_skill_ids = [descriptor.name for descriptor in active_skill_descriptors]
+    valid_grants = _valid_capability_grants(catalog, effective_grants)
+    granted_tool_names = {
+        tool_name
+        for grant in valid_grants
+        for tool_name in grant.tool_names
+    }
+    enabled_descriptors = _enabled_descriptors(catalog)
+    claimed_tool_names = {
+        tool_name
+        for descriptor in enabled_descriptors
+        for tool_name in descriptor.governed_tools
+    }
+    available_specs = [
+        spec
+        for spec in eligible_specs
+        if spec.name not in claimed_tool_names or spec.name in granted_tool_names
+    ]
     selection_mode = "qualified_tools"
-    if isinstance(request.metadata.get("_trusted_workflow_assignment"), dict):
+    if trusted_workflow:
         allowed = set(
             _string_list(request.metadata.get("_trusted_workflow_allowed_tools"))
         )
-        available_specs = [spec for spec in available_specs if spec.name in allowed]
+        available_specs = [spec for spec in eligible_specs if spec.name in allowed]
         selection_mode = "workflow_work_item_tools"
-    elif request.metadata.get("_trusted_durable_execution") is True:
+    elif trusted_durable:
         ready = set(_string_list(request.metadata.get("ready_tool_names")))
         allowed = ready | set(DURABLE_TASK_SUBMISSION_TOOL_NAMES)
         available_specs = [
-            spec for spec in available_specs if spec.name in allowed
+            spec for spec in eligible_specs if spec.name in allowed
         ]
         selection_mode = "durable_ready_tools"
     registered_names = [spec.name for spec in tool_specs]
     available_names = [spec.name for spec in available_specs]
-    visibility_overrides = _visibility_overrides(request)
-    active_skill_descriptors = _active_skills(
-        catalog,
-        visibility_overrides.explicit_skills,
-        available_tool_names=set(available_names),
+    discoverable_skill_descriptors = (
+        []
+        if bypass_skill_projection
+        else _discoverable_skills(
+            catalog,
+            active_skill_ids=set(active_skill_ids),
+            eligible_tool_names={spec.name for spec in eligible_specs},
+        )
     )
-    active_skill_ids = [
-        descriptor.name for descriptor in active_skill_descriptors
+    discoverable_skill_ids = [
+        descriptor.name for descriptor in discoverable_skill_descriptors
     ]
+    visibility_overrides = _visibility_overrides(request)
     entry_profile = visibility_overrides.profile
     reasons = [
-        *(f"skill_activated:{skill_id}" for skill_id in active_skill_ids),
+        *(f"capability_grant:{grant.grant_id}" for grant in valid_grants),
+        *(f"skill_discoverable:{skill_id}" for skill_id in discoverable_skill_ids),
         *([f"entry_profile:{entry_profile}"] if entry_profile else []),
         selection_mode,
     ]
@@ -110,13 +151,25 @@ def select_prompt_tool_specs(
         name: list(items)
         for name, items in qualification.excluded_reasons.items()
     }
-    if isinstance(request.metadata.get("_trusted_workflow_assignment"), dict):
+    if trusted_workflow:
         available_set = {spec.name for spec in available_specs}
         for spec in qualification.qualified_tool_specs:
             if spec.name not in available_set:
                 excluded_reasons.setdefault(spec.name, []).append(
                     "workflow_work_item_not_allowed"
                 )
+    elif not trusted_durable:
+        available_set = {spec.name for spec in available_specs}
+        for spec in eligible_specs:
+            if spec.name not in available_set and spec.name in claimed_tool_names:
+                excluded_reasons.setdefault(spec.name, []).append(
+                    "capability_not_granted"
+                )
+    skill_granted_tool_names = [
+        spec.name
+        for spec in available_specs
+        if spec.name in granted_tool_names
+    ]
     run_tool_catalog = RunToolCatalog(
         available_tool_names=available_names,
         selection_reasons=reasons,
@@ -136,6 +189,10 @@ def select_prompt_tool_specs(
         ),
         active_skill_ids=active_skill_ids,
         active_skill_descriptors=active_skill_descriptors,
+        discoverable_skill_ids=discoverable_skill_ids,
+        discoverable_skill_descriptors=discoverable_skill_descriptors,
+        capability_grant_ids=[grant.grant_id for grant in valid_grants],
+        skill_granted_tool_names=skill_granted_tool_names,
         skill_descriptors=list(catalog.descriptors),
     )
 
@@ -162,16 +219,10 @@ def qualify_tool_specs(
                 excluded_reasons[spec.name] = ["tool_not_exposed"]
             continue
         qualified_specs.append(spec)
-    active_skill_descriptors = _active_skills(
-        catalog or SkillCatalog(),
-        visibility_overrides.explicit_skills,
-        available_tool_names={spec.name for spec in qualified_specs},
-    )
-    active_skill_ids = [descriptor.name for descriptor in active_skill_descriptors]
     return ToolQualificationSelection(
         qualified_tool_specs=qualified_specs,
-        active_skill_ids=active_skill_ids,
-        active_skill_descriptors=active_skill_descriptors,
+        active_skill_ids=[],
+        active_skill_descriptors=[],
         excluded_reasons=excluded_reasons,
     )
 
@@ -180,39 +231,82 @@ def _visibility_overrides(request: UserRequest) -> ToolVisibilityOverrides:
     payload = request.metadata.get("tool_visibility")
     payload = payload if isinstance(payload, dict) else {}
     return ToolVisibilityOverrides(
-        explicit_skills=set(_string_list(payload.get("enabled_skills"))),
         allowed_tools=set(_string_list(payload.get("allowed_tools"))),
         profile=_string_value(payload.get("profile")),
     )
 
 
-def _active_skills(
-    catalog: SkillCatalog,
-    explicit_skill_ids: set[str],
-    *,
-    available_tool_names: set[str],
-) -> list[SkillDescriptor]:
-    if LOAD_SKILL_TOOL_NAME not in available_tool_names:
-        return []
-    active_skills: list[SkillDescriptor] = []
-    for descriptor in catalog.descriptors:
-        if not descriptor.enabled or descriptor.disable_model_invocation:
-            continue
-        permitted_tools = {
-            tool_name
-            for tool_name in descriptor.governed_tools
-            if f"tool:{tool_name}" in descriptor.permissions
-        }
-        if not permitted_tools.intersection(available_tool_names):
-            continue
-        explicitly_enabled = descriptor.name in explicit_skill_ids
-        enabled_by_default = (
-            descriptor.visibility.enabled_by_default
-            and not descriptor.visibility.skill_only
+def _enabled_descriptors(catalog: SkillCatalog) -> list[SkillDescriptor]:
+    return [
+        descriptor
+        for descriptor in catalog.descriptors
+        if descriptor.enabled
+        and not (
+            descriptor.activation == "model"
+            and descriptor.disable_model_invocation
         )
-        if explicitly_enabled or enabled_by_default:
-            active_skills.append(descriptor)
-    return active_skills
+    ]
+
+
+def _valid_capability_grants(
+    catalog: SkillCatalog,
+    grants: list[CapabilityGrant],
+) -> list[CapabilityGrant]:
+    descriptors = {
+        descriptor.name: descriptor
+        for descriptor in _enabled_descriptors(catalog)
+    }
+    valid: list[CapabilityGrant] = []
+    for grant in grants:
+        if grant.source == "tool_search":
+            continue
+        descriptor = descriptors.get(grant.skill_id or "")
+        if descriptor is None:
+            continue
+        expected_source = (
+            "context" if descriptor.activation == "context" else "skill"
+        )
+        if grant.source != expected_source:
+            continue
+        valid.append(
+            grant.model_copy(update={"tool_names": list(descriptor.governed_tools)})
+        )
+    return valid
+
+
+def _active_skill_descriptors(
+    catalog: SkillCatalog,
+    grants: list[CapabilityGrant],
+) -> list[SkillDescriptor]:
+    active_ids = {
+        grant.skill_id
+        for grant in _valid_capability_grants(catalog, grants)
+        if grant.skill_id is not None
+    }
+    return [
+        descriptor
+        for descriptor in _enabled_descriptors(catalog)
+        if descriptor.name in active_ids
+    ]
+
+
+def _discoverable_skills(
+    catalog: SkillCatalog,
+    *,
+    active_skill_ids: set[str],
+    eligible_tool_names: set[str],
+) -> list[SkillDescriptor]:
+    if LOAD_SKILL_TOOL_NAME not in eligible_tool_names:
+        return []
+    return [
+        descriptor
+        for descriptor in _enabled_descriptors(catalog)
+        if descriptor.activation == "model"
+        and descriptor.discoverable
+        and not descriptor.disable_model_invocation
+        and descriptor.name not in active_skill_ids
+        and bool(set(descriptor.governed_tools).intersection(eligible_tool_names))
+    ]
 
 
 def _string_list(value: Any) -> list[str]:

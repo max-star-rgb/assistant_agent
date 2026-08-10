@@ -82,7 +82,7 @@ def _compile(
     )
 
 
-def test_project_travel_skill_activates_from_available_tools_without_filtering() -> None:
+def test_project_skills_are_discoverable_without_exposing_claimed_tools() -> None:
     tools = [
         _tool("lodging_search"),
         _tool("mcp.amap_maps.maps_text_search"),
@@ -92,11 +92,12 @@ def test_project_travel_skill_activates_from_available_tools_without_filtering()
 
     pack = _pack(text="执行 sentinel-42", tools=tools)
 
-    assert pack.active_skill_ids == ["travel-tool-orchestration"]
+    assert pack.active_skill_ids == []
+    assert pack.discoverable_skill_ids == [
+        "travel-tool-orchestration",
+        "workspace-communications",
+    ]
     assert pack.run_tool_catalog.available_tool_names == [
-        "lodging_search",
-        "mcp.amap_maps.maps_text_search",
-        "calendar_search",
         "load_skill",
         "load_skill_reference",
     ]
@@ -105,7 +106,7 @@ def test_project_travel_skill_activates_from_available_tools_without_filtering()
         for section in pack.context_sections
         if section.kind == "skill_summary"
     ]
-    assert len(skill_sections) == 1
+    assert len(skill_sections) == 2
     assert skill_sections[0].authority == "procedural_guidance"
     assert skill_sections[0].source_type == "skill_loader"
     assert (
@@ -114,13 +115,13 @@ def test_project_travel_skill_activates_from_available_tools_without_filtering()
     )
     assert (
         pack.budget.procedural_guidance_chars
-        == len(skill_sections[0].content)
+        == sum(len(section.content) for section in skill_sections)
     )
     assert pack.budget.trimmed_chars == 0
-    assert pack.source_counts["active_skills"] == 1
-    assert pack.context_source_report.count_by_kind["skill_summary"] == 1
+    assert pack.source_counts["discoverable_skills"] == 2
+    assert pack.source_counts["active_skills"] == 0
+    assert pack.context_source_report.count_by_kind["skill_summary"] == 2
     assert skill_sections[0].content in _compile_system(pack)
-    assert skill_sections[0].content.startswith("Use when ")
     assert "# 可用 Skill" not in skill_sections[0].content
     assert len(skill_sections[0].content) < 300
     assert "load_skill" not in skill_sections[0].content
@@ -147,15 +148,15 @@ def test_system_only_provider_namespaces_skill_index_and_runtime_contract() -> N
     assert "## 技能生命周期" in system_prompt
     assert "一个或多个 Skill" in system_prompt
     assert "不得猜测或自行构造 reference id" in system_prompt
-    assert "不能扩大本轮工具目录、权限或用户授权" in system_prompt
+    assert "不能绕过入口限制、媒体要求、权限、Validator 或用户授权" in system_prompt
     assert "应静默调用" in system_prompt
     assert "<procedural_guidance>" in system_prompt
     assert "<skill_index>" in system_prompt
     assert (
-        '<skill id="travel-tool-orchestration" version="2">'
+        '<skill id="travel-tool-orchestration" version="3">'
         in system_prompt
     )
-    assert "<description>Use when 用户需要酒店筛选或比较" in system_prompt
+    assert "<description>用于酒店比较、目的地通勤" in system_prompt
     assert "# 可用 Skill" not in system_prompt
     assert '<run_phase mode="act">' in system_prompt
     assert re.search(r"^#{1,3} [A-Za-z]", system_prompt, re.MULTILINE) is None
@@ -280,11 +281,11 @@ def test_project_travel_skill_is_not_activated_without_governed_tools() -> None:
     )
 
     assert pack.active_skill_ids == []
+    assert pack.discoverable_skill_ids == ["workspace-communications"]
     assert all(
-        section.kind != "skill_summary"
+        section.title != "travel-tool-orchestration"
         for section in pack.context_sections
     )
-    assert "# Skill 使用规则" not in _compile_system(pack)
 
 
 def test_project_travel_skill_is_not_activated_without_loader_tool() -> None:
@@ -310,11 +311,12 @@ def test_project_travel_skill_uses_run_visible_tools_after_entry_filtering() -> 
         },
     )
 
-    assert pack.run_tool_catalog.available_tool_names == ["calendar_search"]
+    assert pack.run_tool_catalog.available_tool_names == []
     assert pack.active_skill_ids == []
     compiled = _compile(pack)
-    assert [tool["function"]["name"] for tool in compiled.chat_request.tools] == [
-        "calendar_search"
+    assert compiled.chat_request.tools == []
+    assert pack.run_tool_catalog.excluded_reasons["calendar_search"] == [
+        "capability_not_granted"
     ]
 
 

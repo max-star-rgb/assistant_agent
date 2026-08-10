@@ -91,6 +91,8 @@ from assistant_agent.context.sources import (
 )
 from assistant_agent.runtime.run_history import RunHistoryStore
 from assistant_agent.runtime.session_store import SessionStore, create_session_store
+from assistant_agent.runtime.capability_grants import CapabilityGrantController
+from assistant_agent.skills.loading import default_repo_root
 from assistant_agent.tools.ids import (
     LIVE_VIEW_INSPECT_TOOL_NAME,
     VISUAL_MEMORY_SEARCH_TOOL_NAME,
@@ -351,6 +353,10 @@ class AgentGraphRuntime:
         self.router = router or ToolRouter()
         self.run_history = run_history
         self.session_store = session_store or create_session_store(self.config)
+        self.capability_grant_controller = CapabilityGrantController(
+            session_store=self.session_store,
+            skill_root=default_repo_root(),
+        )
         self.event_sink = event_sink
         self.trace_store = trace_store or InMemoryTraceStore()
         self.visual_reminder_registry.set_trace_store(self.trace_store)
@@ -664,6 +670,22 @@ class AgentGraphRuntime:
             trace_id=trace_context.trace_id if trace_context is not None else None,
             agent_id=self.agent_id,
         )
+        try:
+            self.capability_grant_controller.prepare_run(
+                state,
+                self.registry.list_specs(),
+            )
+        except Exception as exc:
+            state.errors.append(
+                AgentError(
+                    message="Capability grant restoration failed.",
+                    source="capability_grant_controller",
+                    details={
+                        "code": "capability_grant_restore_failed",
+                        "error_type": type(exc).__name__,
+                    },
+                )
+            )
         if not workflow_work_item:
             self._embed_stable_request_text(state, request)
         state.context_source_result = self.context_source_coordinator.load_once(
@@ -723,6 +745,7 @@ class AgentGraphRuntime:
             chat_turn=self._run_native_chat_turn,
             context_service=self.context_service,
             context_projector=self._refresh_realtime_video_context,
+            tool_result_handler=self.capability_grant_controller.handle_tool_result,
             trace_store=self.trace_store,
             event_sink=run_event_sink,
             cancel_token=cancel_token,

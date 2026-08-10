@@ -1,10 +1,3 @@
----
-name: travel-tool-orchestration
-description: Use when 用户需要酒店筛选或比较、通勤方案、目的地与景点安排、按天按时间段的完整旅行行程、旅行天气、开放或预约核验，或 OTA 跳转链接。
-metadata:
-  manifest-version: "2"
----
-
 # 旅行决策与行程编排
 
 把约束转成可执行的住宿、通勤或旅行方案。先保护固定时间和硬约束，只核验最终候选；将事实、建议和未知项分开表达。
@@ -82,35 +75,3 @@ metadata:
 - 当前开放、预约、票务和临时变更有适用日期与可识别来源；否则明确属于攻略性建议或待确认事项。
 - 天气只使用覆盖旅行日期的预报；路线只按工具实际支持的时间语义描述。
 - OTA 链接与候选一一对应；链接不代表锁价、库存保证、预订成功或最终成交。
-
-## 受治理工具
-
-- lodging_search
-- mcp.amap_maps.maps_geo
-- mcp.amap_maps.maps_ip_location
-- mcp.amap_maps.maps_weather
-- mcp.amap_maps.maps_bicycling
-- mcp.amap_maps.maps_direction_walking
-- mcp.amap_maps.maps_direction_driving
-- mcp.amap_maps.maps_direction_transit_integrated
-- mcp.amap_maps.maps_text_search
-- mcp.amap_maps.maps_around_search
-
-## 权限
-
-- tool:lodging_search
-- tool:mcp.amap_maps.maps_geo
-- tool:mcp.amap_maps.maps_ip_location
-- tool:mcp.amap_maps.maps_weather
-- tool:mcp.amap_maps.maps_bicycling
-- tool:mcp.amap_maps.maps_direction_walking
-- tool:mcp.amap_maps.maps_direction_driving
-- tool:mcp.amap_maps.maps_direction_transit_integrated
-- tool:mcp.amap_maps.maps_text_search
-- tool:mcp.amap_maps.maps_around_search
-
-## 可见性
-
-- tags: travel, itinerary, lodging, commute, maps, weather, ota
-- enabled-by-default: true
-- skill-only: false

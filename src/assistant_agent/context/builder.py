@@ -117,6 +117,7 @@ def build_assistant_context_pack(
     tool_catalog = select_prompt_tool_specs(
         active_request,
         active_tool_specs,
+        capability_grants=state.capability_grants,
         registry_generation=registry_generation,
     )
     prompt_tool_specs = tool_catalog.available_tool_specs
@@ -142,13 +143,37 @@ def build_assistant_context_pack(
             identity_scope="project",
             priority=30,
         )
-        for descriptor in tool_catalog.active_skill_descriptors
+        for descriptor in tool_catalog.discoverable_skill_descriptors
         if descriptor.name not in loaded_skill_ids
     ]
+    active_skill_names = {
+        descriptor.name for descriptor in tool_catalog.active_skill_descriptors
+    }
     skill_context_sections.extend(
-        _loaded_skill_context_sections(
+        ContextSection(
+            section_id=f"project_skill_body:{descriptor.name}",
+            kind="skill_body",
+            title=descriptor.name,
+            content=render_skill_guidance(descriptor),
+            authority="procedural_guidance",
+            stability="semi_stable",
+            source_type="skill_loader",
+            source_ref=f"skills/{descriptor.name}/SKILL.md",
+            source_version=str(descriptor.manifest_version),
+            identity_scope="project",
+            priority=31,
+        )
+        for descriptor in tool_catalog.active_skill_descriptors
+    )
+    skill_context_sections.extend(
+        section
+        for section in _loaded_skill_context_sections(
             observations=active_observations,
             descriptors=tool_catalog.skill_descriptors,
+        )
+        if not (
+            section.kind == "skill_body"
+            and section.title in active_skill_names
         )
     )
     unbudgeted_context_sections = [
@@ -331,6 +356,10 @@ def build_assistant_context_pack(
         run_tool_catalog=tool_catalog.run_tool_catalog,
         tool_catalog_summary=tool_catalog.summary,
         active_skill_ids=tool_catalog.active_skill_ids,
+        discoverable_skill_ids=tool_catalog.discoverable_skill_ids,
+        capability_grant_ids=tool_catalog.capability_grant_ids,
+        session_restored_grant_ids=list(state.session_restored_grant_ids),
+        skill_granted_tool_names=tool_catalog.skill_granted_tool_names,
         context_sections=context_sections,
         context_source_report=build_context_source_report(
             state.context_source_result,
@@ -635,8 +664,11 @@ def _source_counts(
         "observations": len(observations),
         "tool_specs": len(tool_specs),
         "prompt_tool_specs": len(prompt_tool_specs),
-        "active_skills": sum(
+        "discoverable_skills": sum(
             1 for section in context_sections if section.kind == "skill_summary"
+        ),
+        "active_skills": sum(
+            1 for section in context_sections if section.kind == "skill_body"
         ),
         "loaded_skill_bodies": sum(
             1 for section in context_sections if section.kind == "skill_body"

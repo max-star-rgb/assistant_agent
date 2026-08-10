@@ -168,19 +168,29 @@ def _write_skill(
     skill_dir = root / "skills" / skill_id
     skill_dir.mkdir(parents=True)
     references = (
-        f"\n## References\n\n- guide: {reference_path}\n"
+        f'\n[references]\nguide = "{reference_path}"\n'
         if reference_path is not None
         else ""
     )
+    (skill_dir / "skill.toml").write_text(
+        (
+            "schema_version = 1\n"
+            f'skill_id = "{skill_id}"\n'
+            "version = 1\n"
+            'description = "Use when running a sentinel capability."\n'
+            "enabled = true\n"
+            "discoverable = true\n"
+            "disable_model_invocation = false\n"
+            'activation = "model"\n'
+            'governed_tools = ["sentinel_tool"]\n'
+            f"{references}"
+        ),
+        encoding="utf-8",
+    )
     (skill_dir / "SKILL.md").write_text(
         (
-            "---\n"
-            f"name: {skill_id}\n"
-            "description: Use when running a sentinel capability.\n"
-            "---\n\n"
-            "## Governed Tools\n\n- sentinel_tool\n\n"
-            "## Permissions\n\n- tool:sentinel_tool\n"
-            f"{references}"
+            "# Sentinel workflow\n\n"
+            "Follow the procedural sentinel guidance.\n"
         ),
         encoding="utf-8",
     )
@@ -221,12 +231,12 @@ def test_automatic_context_contains_only_short_skill_activation_summary() -> Non
         for section in pack.context_sections
         if section.kind == "skill_summary"
     )
-    assert pack.active_skill_ids == ["travel-tool-orchestration"]
+    assert pack.active_skill_ids == []
+    assert pack.discoverable_skill_ids == ["travel-tool-orchestration"]
     assert len(summary.content) < 300
     assert "load_skill" not in summary.content
-    assert "完整旅行行程" in summary.content
-    assert "OTA" in summary.content
-    assert summary.content.startswith("Use when ")
+    assert "酒店比较" in summary.content
+    assert "按天行程决策" in summary.content
     assert "# 可用 Skill" not in summary.content
 
 
@@ -265,9 +275,6 @@ def test_load_skill_returns_complete_travel_planning_workflow() -> None:
         "## 输出契约",
         "## 常见错误",
         "## 完成前检查",
-        "## 受治理工具",
-        "## 权限",
-        "## 可见性",
     ]
 
 
@@ -356,7 +363,7 @@ def test_successful_load_skill_is_promoted_from_registered_source() -> None:
     system_prompt = _compile_system(pack)
     assert "<loaded_skills>" in system_prompt
     assert (
-        '<skill id="travel-tool-orchestration" version="2">'
+        '<skill id="travel-tool-orchestration" version="3">'
         in system_prompt
     )
     assert system_prompt.index("<loaded_skills>") < system_prompt.index(
@@ -408,7 +415,7 @@ def test_skill_loader_rejects_symlinked_skill_directory(tmp_path: Path) -> None:
     ]
 
 
-def test_manifest_v1_full_body_remains_available_after_loading(
+def test_manifest_skill_full_body_remains_available_after_loading(
     tmp_path: Path,
 ) -> None:
     repo_root = tmp_path / "repo"
@@ -416,10 +423,10 @@ def test_manifest_v1_full_body_remains_available_after_loading(
     skill_file = skill_dir / "SKILL.md"
     skill_file.write_text(
         skill_file.read_text(encoding="utf-8")
-        + "\n## Activation Summary\n\nlegacy-activation-sentinel\n"
-        + "\n## Required Inputs\n\n- sentinel_tool: query\n"
-        + "\n## Safe Examples\n\n- legacy-safe-example-sentinel\n"
-        + "\n## Runtime Constraints\n\n- legacy-runtime-sentinel\n",
+        + "\n## 激活后流程\n\nlegacy-activation-sentinel\n"
+        + "\n## 输入准备\n\n- sentinel_tool: query\n"
+        + "\n## 安全示例\n\n- legacy-safe-example-sentinel\n"
+        + "\n## 运行约束\n\n- legacy-runtime-sentinel\n",
         encoding="utf-8",
     )
 
@@ -433,23 +440,21 @@ def test_manifest_v1_full_body_remains_available_after_loading(
     assert "legacy-runtime-sentinel" in content
 
 
-def test_manifest_v2_requires_complete_workflow_sections(tmp_path: Path) -> None:
+def test_skill_loader_rejects_unsupported_schema_version(tmp_path: Path) -> None:
     repo_root = tmp_path / "repo"
-    skill_dir = _write_skill(repo_root, "incomplete-v2-skill")
-    skill_file = skill_dir / "SKILL.md"
-    content = skill_file.read_text(encoding="utf-8").replace(
-        "description: Use when running a sentinel capability.\n",
-        "description: Use when running a sentinel capability.\n"
-        "metadata:\n"
-        "  manifest-version: 2\n",
+    skill_dir = _write_skill(repo_root, "future-schema-skill")
+    manifest_file = skill_dir / "skill.toml"
+    content = manifest_file.read_text(encoding="utf-8").replace(
+        "schema_version = 1",
+        "schema_version = 2",
     )
-    skill_file.write_text(content, encoding="utf-8")
+    manifest_file.write_text(content, encoding="utf-8")
 
     catalog = load_repo_skill_descriptors(repo_root)
 
     assert catalog.descriptors == []
     assert [issue.code for issue in catalog.issues] == [
-        "missing_v2_workflow_sections"
+        "invalid_skill_manifest"
     ]
 
 
@@ -458,43 +463,37 @@ def test_skill_loader_rejects_malformed_manifest_version(
 ) -> None:
     repo_root = tmp_path / "repo"
     skill_dir = _write_skill(repo_root, "malformed-version-skill")
-    skill_file = skill_dir / "SKILL.md"
-    content = skill_file.read_text(encoding="utf-8").replace(
-        "description: Use when running a sentinel capability.\n",
-        "description: Use when running a sentinel capability.\n"
-        "metadata:\n"
-        "  manifest-version: two\n",
+    manifest_file = skill_dir / "skill.toml"
+    content = manifest_file.read_text(encoding="utf-8").replace(
+        "version = 1",
+        'version = "two"',
     )
-    skill_file.write_text(content, encoding="utf-8")
+    manifest_file.write_text(content, encoding="utf-8")
 
     catalog = load_repo_skill_descriptors(repo_root)
 
     assert catalog.descriptors == []
     assert [issue.code for issue in catalog.issues] == [
-        "invalid_manifest_version"
+        "invalid_skill_manifest"
     ]
 
 
-def test_skill_loader_rejects_unsupported_manifest_version(
+def test_skill_loader_accepts_new_procedure_version(
     tmp_path: Path,
 ) -> None:
     repo_root = tmp_path / "repo"
     skill_dir = _write_skill(repo_root, "future-version-skill")
-    skill_file = skill_dir / "SKILL.md"
-    content = skill_file.read_text(encoding="utf-8").replace(
-        "description: Use when running a sentinel capability.\n",
-        "description: Use when running a sentinel capability.\n"
-        "metadata:\n"
-        "  manifest-version: 3\n",
+    manifest_file = skill_dir / "skill.toml"
+    content = manifest_file.read_text(encoding="utf-8").replace(
+        "\nversion = 1\n",
+        "\nversion = 3\n",
     )
-    skill_file.write_text(content, encoding="utf-8")
+    manifest_file.write_text(content, encoding="utf-8")
 
     catalog = load_repo_skill_descriptors(repo_root)
 
-    assert catalog.descriptors == []
-    assert [issue.code for issue in catalog.issues] == [
-        "unsupported_manifest_version"
-    ]
+    assert catalog.issues == []
+    assert [descriptor.manifest_version for descriptor in catalog.descriptors] == [3]
 
 
 def test_skill_loader_rejects_symlinked_reference(tmp_path: Path) -> None:

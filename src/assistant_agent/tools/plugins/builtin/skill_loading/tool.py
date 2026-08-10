@@ -43,7 +43,11 @@ class LoadSkillTool(ToolBase):
         self.root = Path(root).resolve() if root is not None else default_repo_root()
 
     def _run(self, input: LoadSkillRequest, context: ToolContext) -> ToolResult:
-        descriptor = _descriptor(self.root, input.skill_id)
+        descriptor = _descriptor(
+            self.root,
+            input.skill_id,
+            model_invocable=True,
+        )
         if descriptor is None:
             return _failure(
                 self.name,
@@ -161,13 +165,25 @@ class LoadSkillReferenceTool(ToolBase):
         )
 
 
-def _descriptor(root: Path, skill_id: str) -> SkillDescriptor | None:
+def _descriptor(
+    root: Path,
+    skill_id: str,
+    *,
+    model_invocable: bool = False,
+) -> SkillDescriptor | None:
     catalog = load_repo_skill_descriptors(root)
     return next(
         (
             descriptor
             for descriptor in catalog.descriptors
             if descriptor.name == skill_id
+            and (
+                not model_invocable
+                or (
+                    descriptor.activation == "model"
+                    and not descriptor.disable_model_invocation
+                )
+            )
         ),
         None,
     )

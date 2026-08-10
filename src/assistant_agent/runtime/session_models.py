@@ -5,6 +5,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from assistant_agent.runtime.capability_grants import CapabilityGrant
+
 
 class SessionCreate(BaseModel):
     """Create a new user conversation session."""
@@ -21,6 +23,11 @@ class SessionRecord(BaseModel):
     session_id: str = Field(min_length=1)
     title: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+    capability_grants: list[CapabilityGrant] = Field(
+        default_factory=list,
+        exclude=True,
+        repr=False,
+    )
     run_count: int = Field(default=0, ge=0)
     last_run_id: str | None = None
     last_trace_id: str | None = None

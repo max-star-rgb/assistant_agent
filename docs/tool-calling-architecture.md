@@ -197,6 +197,19 @@ excluded_reasons
 `selection_reasons` 和 `excluded_reasons` 只解释结构化选择结果，不授予额外权限。已注册工具的完整
 清单仍由 Registry 提供。
 
+Skill 认领的业务 Tool 默认不进入 `RunToolCatalog`。未激活的 `activation=model` Skill 只在
+`load_skill` 本轮结构化可用且至少一个受治理 Tool 通过入口、媒体和 policy 资格检查时进入可发现
+索引；模型成功调用 `load_skill` 后，Runtime 从仓库内 `skill.toml` 构造 `CapabilityGrant`，下一次
+模型调用才把该 Skill 已声明且仍满足本轮资格的 Tool 加入目录。调用方 metadata（包括历史
+`enabled_skills` 字段）不能生成 grant。可信 Workflow work-item 与 durable ready-tool allowlist 仍按其
+既有白名单直接收窄目录，不依赖模型加载 Skill，也不把前台 session Skill 正文投影进 worker prompt。
+
+`activation=context` Skill 不可由 `load_skill` 调用；Runtime 只复用现有 entry/media/env 等结构化
+资格事实自动生成 context grant。当前 grant 以 `user_id + agent_id + session_id` 隔离并持久到整个会话，不设
+TTL 或主动清除；恢复时必须用当前 manifest 重建 Tool 列表，不能信任 session 中的旧 Tool 名称。
+`source=tool_search` 只保留为未来扩展枚举，当前没有搜索器或自定义 Tool Search 协议，也不会产生
+实际授权语义。
+
 ### 3.4 ToolResult 与模型观察
 
 Tool 必须返回结构化 `ToolResult`。其中：
@@ -313,8 +326,9 @@ owner-bound submission；模型不能提交 owner、lease、revision、worker �
 
 ## 5. 单轮暴露与 Provider 转换
 
-注册成功的 Tool 默认是候选能力；入口 `allowed_tools`、媒体要求和可信 durable ready step 可以继续
-收窄当前 turn 的集合。Tool `category`、Plugin 归属和 Skill 激活不自动赋予或扩大权限。
+注册成功的 Tool 默认是候选能力；入口 `allowed_tools`、媒体要求、CapabilityGrant 和可信 durable
+ready step 共同决定当前 turn 的集合。grant 只能在结构化资格集合内打开 Skill 已声明的候选 Tool，
+不能扩大 Registry、入口权限或用户授权。Tool `category` 和 Plugin 归属不自动赋予或扩大权限。
 
 媒体约束由 `requires_media` 与 `media_scope` 基于结构化请求事实判断。模型看不到不满足当前媒体
 条件的 Tool，Validator 仍会在执行前重复检查，防止状态漂移或伪造调用。
@@ -387,8 +401,9 @@ Gateway 不按 Tool name 或 Provider 错误码改写运行终态。
 
 - **Provider-native 能力**：发生在一次 `llm.chat` 内部的 Provider 生成能力不投影为本地 Tool，
   不产生本地 ToolResult 或 Tool lifecycle；Provider 返回的自定义 function call 仍进入统一链路。
-- **Skill**：只描述如何组合已治理 Tool，不注册业务实现、不扩大 catalog，也不绕过校验和执行。
-  Skill 正文与 reference 的加载、上下文权威和渐进披露见
+- **Skill**：`SKILL.md` 只描述如何组合已治理 Tool；`skill.toml` 独立保存版本、激活模式和受治理
+  Tool 等机器契约。Skill 不注册业务实现，CapabilityGrant 也只在既有结构化资格内动态扩展当前
+  catalog，不能绕过校验和执行。Skill 正文与 reference 的加载、上下文权威和渐进披露见
   `docs/context_engineering_status.md`。
 - **Durable task**：只通过可信 task mode、ready step、binding 和幂等输入收窄或约束执行；
   worker 调用仍走统一工具链。任务恢复、lease、notification 和 checkpoint 属于 durable/runtime

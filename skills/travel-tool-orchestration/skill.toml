@@ -1,0 +1,22 @@
+schema_version = 1
+skill_id = "travel-tool-orchestration"
+version = 3
+description = "用于酒店比较、目的地通勤、景点安排、旅行天气和按天行程决策。"
+enabled = true
+discoverable = true
+disable_model_invocation = false
+activation = "model"
+governed_tools = [
+  "lodging_search",
+  "mcp.amap_maps.maps_geo",
+  "mcp.amap_maps.maps_ip_location",
+  "mcp.amap_maps.maps_weather",
+  "mcp.amap_maps.maps_bicycling",
+  "mcp.amap_maps.maps_direction_walking",
+  "mcp.amap_maps.maps_direction_driving",
+  "mcp.amap_maps.maps_direction_transit_integrated",
+  "mcp.amap_maps.maps_text_search",
+  "mcp.amap_maps.maps_around_search",
+]
+
+[references]

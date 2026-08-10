@@ -1,0 +1,17 @@
+schema_version = 1
+skill_id = "workspace-communications"
+version = 1
+description = "用于检索邮件、读取邮件正文、查询或创建日历事件以及查找联系人。"
+enabled = true
+discoverable = true
+disable_model_invocation = false
+activation = "model"
+governed_tools = [
+  "email_search",
+  "email_read",
+  "calendar_search",
+  "calendar_create",
+  "contacts_search",
+]
+
+[references]

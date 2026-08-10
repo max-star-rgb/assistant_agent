@@ -10,6 +10,7 @@ from assistant_agent.memory.models import SessionMemorySnapshot
 from assistant_agent.context.models import ContextSourceResult
 from assistant_agent.media.vision.models import PerceptionBundle
 from assistant_agent.runtime.planning_models import IntentResult, TaskPlan
+from assistant_agent.runtime.capability_grants import CapabilityGrant
 from assistant_agent.runtime.requests import AgentResponse, UserRequest
 from assistant_agent.tools.models import RunToolCatalog, ToolCallRecord, ToolResult, ToolSelection
 from assistant_agent.multi_agent.models import DEFAULT_AGENT_ID
@@ -58,6 +59,8 @@ class AgentState(BaseModel):
     plan_revision_count: int = Field(default=0, ge=0)
 
     selected_tools: list[ToolSelection] = Field(default_factory=list)
+    capability_grants: list[CapabilityGrant] = Field(default_factory=list)
+    session_restored_grant_ids: list[str] = Field(default_factory=list)
     run_tool_catalog: RunToolCatalog | None = None
     tool_calls: list[ToolCallRecord] = Field(default_factory=list)
     tool_results: list[ToolResult] = Field(default_factory=list)
@@ -109,6 +112,16 @@ class AgentState(BaseModel):
         self.tool_calls.append(record)
         self.status = "running"
         return record
+
+    def upsert_capability_grant(self, grant: CapabilityGrant) -> None:
+        """Add or replace one trusted grant in deterministic order."""
+
+        self.capability_grants = [
+            existing
+            for existing in self.capability_grants
+            if existing.grant_id != grant.grant_id
+        ]
+        self.capability_grants.append(grant)
 
     def complete_tool_call(
         self,

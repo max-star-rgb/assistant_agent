@@ -93,6 +93,7 @@ class AssistantLoopState(TypedDict):
     chat_turn: NotRequired[Any]
     context_service: NotRequired[ContextService]
     context_projector: NotRequired[Any]
+    tool_result_handler: NotRequired[Any]
     outputs_by_step: dict[str, ToolResult]
     current_step_index: int
     trace_id: NotRequired[str]
@@ -1715,6 +1716,7 @@ def _execute_single_requested_tool_node(graph_state: AssistantLoopState) -> Assi
             failure_mode="continue_to_model",
             progress_message=decision.progress_message,
         )
+        _handle_runtime_tool_result(graph_state, state, result)
 
         observation = observation_from_tool_result(
             result,
@@ -1803,6 +1805,32 @@ def _execute_single_requested_tool_node(graph_state: AssistantLoopState) -> Assi
             **graph_state,
             "tool_observations": _record_react_observation(graph_state, tool_observations, observation),
         }
+
+
+def _handle_runtime_tool_result(
+    graph_state: AssistantLoopState,
+    state: AgentState,
+    result: ToolResult,
+) -> None:
+    """Apply optional runtime control protocols without changing Tool success."""
+
+    handler = graph_state.get("tool_result_handler")
+    if not callable(handler):
+        return
+    try:
+        handler(state, result)
+    except Exception as exc:
+        state.errors.append(
+            AgentError(
+                message="Capability grant persistence failed.",
+                source="capability_grant_controller",
+                details={
+                    "code": "capability_grant_persistence_failed",
+                    "tool_name": result.tool_name,
+                    "error_type": type(exc).__name__,
+                },
+            )
+        )
 
 
 def _current_plan_step(

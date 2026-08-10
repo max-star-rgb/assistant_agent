@@ -99,11 +99,19 @@ system profile、context pack、原生工具调用轨迹和本轮 ToolSpec；不
   具体运行阶段和失败恢复见 `docs/runtime-event-stream-architecture.md` 与
   `docs/tool-calling-architecture.md`。
 
-项目 Skill 使用渐进披露：未加载时只在 `<skill_index>` 注入名称和适用条件摘要；任务符合一个或多个
-Skill 的适用条件时，模型必须在相关业务工具之前通过受治理的 `load_skill` 加载每个直接相关正文，
-不能因任务简单或预计只调用一个业务工具而跳过。不相关 Skill 不加载，reference 只能从本轮正文实际
-返回的 `reference_ids` 中按需加载，加载过程静默且不向用户播报。动态 Skill 正文仍是
-`ContextSection`；编译器渲染其来源边界，但它不能改变 ToolSpec、工具权限、用户授权或 validator 结果。
+项目 Skill 使用渐进披露，并把机器契约与模型指导分开：`skill.toml` 保存稳定 id、版本、描述、
+`activation`、可发现性、受治理 Tool 和 reference 映射；`SKILL.md` 只保存完整程序性指导，不重复
+Tool 清单、权限或可见性声明。未加载的 `activation=model` Skill 只在 `<skill_index>` 注入名称和适用
+条件摘要，且不会暴露其认领的业务 Tool；任务符合一个或多个 Skill 的适用条件时，模型必须先通过受
+治理的 `load_skill` 加载直接相关正文。成功结果由 Runtime 转成会话级 `CapabilityGrant`，同一 run 的
+下一次模型调用以及同 owner/agent/session 的后续 turn 才可看到该 Skill 正文和仍满足本轮结构化资格的 Tool。
+
+`activation=context` Skill 不进入索引且不能由模型加载；它只在已有 entry/media/env 结构化事实满足
+受治理 Tool exposure 时由 Runtime 自动激活，适用于图片、视频帧和实时画面等上下文能力。Skill grant
+当前在会话内持续保留，不设 TTL 或清除；恢复时以当前 `skill.toml` 重建能力。调用方 metadata 不能
+伪造或预选 Skill。reference 只能从正文加载结果实际返回的 `reference_ids` 中按需加载，整个加载过程
+静默且不向用户播报。动态正文仍是 `ContextSection`；编译器渲染来源边界，但它不能绕过入口限制、
+媒体要求、ToolSpec policy、用户授权或 validator 结果。
 
 ## 5. 对话与压缩
 

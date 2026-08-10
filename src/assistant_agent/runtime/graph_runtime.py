@@ -33,6 +33,7 @@ RUNTIME_STATE_KEYS = frozenset(
         "chat_turn",
         "context_service",
         "context_projector",
+        "tool_result_handler",
         "trace_store",
         "event_sink",
         "current_node_name",
@@ -50,6 +51,7 @@ class GraphRuntimeContext:
     chat_turn: Callable[[Any], Any] | None = None
     context_service: ContextService | None = None
     context_projector: Callable[[Any], None] | None = None
+    tool_result_handler: Callable[[Any, Any], None] | None = None
     intent_detector: IntentDetector | None = None
     router: ToolRouter | None = None
     trace_store: TraceStore | None = None
@@ -108,6 +110,8 @@ def _with_runtime_context(graph_state: GraphStateT, runtime_context: GraphRuntim
         enriched_state["context_service"] = runtime_context.context_service
     if runtime_context.context_projector is not None:
         enriched_state["context_projector"] = runtime_context.context_projector
+    if runtime_context.tool_result_handler is not None:
+        enriched_state["tool_result_handler"] = runtime_context.tool_result_handler
     if runtime_context.trace_store is not None:
         enriched_state["trace_store"] = runtime_context.trace_store
     if runtime_context.event_sink is not None:

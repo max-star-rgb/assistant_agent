@@ -114,6 +114,16 @@ run with an honest user-visible retry prompt instead of emitting `task_failed`:
 Tool providers, vision/search providers, durable-task provider calls, and
 cancellation paths do not use this fallback.
 
+assistant loop 在每次 Tool 执行后保留统一的 runtime result hook。当前 `load_skill` 成功结果通过该
+hook 生成 `CapabilityGrant`，先更新当前 `AgentState`，再以 user/agent/session identity 幂等持久化；
+因此同一 run 的下一次 Provider 调用即可获得扩展后的 Tool catalog，下一 turn 则在创建 state 后从
+SessionStore 恢复。失败的 Tool、调用方 metadata 或模型输出文本都不能生成 grant。恢复时 Runtime
+重新读取当前 `skill.toml` 并重建 Tool 名称，已删除、禁用或改为不兼容 activation 的 Skill 不再生效。
+context activation 也走相同 grant/session 模型，但来源只能是结构化 entry/media/env 资格事实。
+grant 是 session store 的内部恢复字段，不进入公开 Session API 投影；持久化失败会记录结构化 runtime
+error，不会把已成功的 ToolResult 改写为 Tool 失败。同一进程内并行 run 的 session grant 更新由
+store 实例原子串行化，避免 read-modify-write 丢失；JSONL backend 不在此基础上宣称跨进程事务能力。
+
 Foreground provider turns are consumed inside the shared LangGraph assistant
 loop. 配置为 `qwen` provider 的主 Agent 百炼兼容 Chat Completions 固定启用 Provider-native 联网：
 `enable_search=true`、`enable_thinking=false`、`search_strategy=turbo`、
