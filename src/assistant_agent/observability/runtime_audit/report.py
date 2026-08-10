@@ -237,7 +237,7 @@ def render_empty_daily_report(
         "Langfuse 证据源可用" if langfuse_available else "Langfuse 证据源不可用",
         "本地完整性证据可用" if local_available else "本地完整性证据不可用",
     ]
-    if not (langfuse_available and local_available):
+    if not langfuse_available:
         return render_failed_daily_report(
             audit_date,
             f"证据源不完整：{'；'.join(availability)}。无法确认昨日是否无可审计对话。",
@@ -245,8 +245,10 @@ def render_empty_daily_report(
     lines = [
         f"# {audit_date.isoformat()} 运行审计",
         "",
-        "昨天没有可审计对话。审计流程本身运行正常，目前没有需要你处理的新问题。",
+        "昨天无运行trace。审计流程本身运行正常，目前没有需要你处理的新问题。",
     ]
+    if not local_available:
+        lines.extend(["", "本地完整性证据不可用；以上结论来自可用的 Langfuse 查询结果。"])
     active = [
         issue
         for issue in (issues or [])

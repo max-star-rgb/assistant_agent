@@ -12,6 +12,7 @@ import sys
 from assistant_agent.observability.runtime_audit.collector import collect_runtime_audit
 from assistant_agent.observability.runtime_audit.daily_runner import (
     DailyAuditDayError,
+    DailyAuditRunResult,
     recover_pending_daily_commits,
     run_failed_daily_audit,
     run_failed_pending_daily_audit,
@@ -263,17 +264,28 @@ def _run_daily(args, *, repo_root: Path, store: RuntimeAuditArtifactStore) -> in
     audit_dates = [item.audit_date for item in results]
     if failed_date is not None and failed_date not in audit_dates:
         audit_dates.append(failed_date)
-    print(
-        json.dumps(
-            {
-                "audit_dates": [item.isoformat() for item in audit_dates],
-                "report_paths": [str(item.report_path) for item in results if item.report_path],
-                "failed_date": failed_date.isoformat() if failed_date else None,
-            },
-            ensure_ascii=False,
-        )
-    )
+    output = {
+        "audit_dates": [item.isoformat() for item in audit_dates],
+        "report_paths": [str(item.report_path) for item in results if item.report_path],
+        "failed_date": failed_date.isoformat() if failed_date else None,
+    }
+    if _has_empty_day_report(results):
+        output["message"] = "昨天无运行trace"
+    print(json.dumps(output, ensure_ascii=False))
     return 2 if failed_date is not None else 0
+
+
+def _has_empty_day_report(results: list[DailyAuditRunResult]) -> bool:
+    for result in results:
+        if result.status != "succeeded" or result.report_path is None:
+            continue
+        try:
+            markdown = result.report_path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if "昨天无运行trace" in markdown:
+            return True
+    return False
 
 
 def _collect(args, *, repo_root: Path, store: RuntimeAuditArtifactStore):

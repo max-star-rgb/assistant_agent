@@ -13,6 +13,11 @@
 
 开始任务时，先按任务类型读取对应 `docs/*.md` 权威文档；如果文档与当前源码不一致，以源码和测试为准，并在本次变更中回补文档。项目 skill 只作为 workflow 检查清单或脚本入口，不作为事实权威。
 
+`docs/authority.toml` 是 Agent-facing 文档的机器可读路由与 owner 清单。开始工程任务时，先用明确任务
+类型和预计修改路径匹配其中的 `read_when/source_globs`，再读取对应 `authority`；只有任务确实跨领域时
+才加载第二篇。该 manifest 只用于 coding agent 选择工程文档，不进入产品 Runtime，不得用于判断终端
+用户意图、预选 Tool 或选择 workflow。manifest 当前处于 `pilot`，下表继续作为未登记领域的回退路由。
+
 | task | read first |
 | --- | --- |
 | Gateway、realtime、WebSocket、Media-Agent | `docs/gateway-architecture.md`；`docs/media-agent-service-websocket.md` |
@@ -103,6 +108,9 @@
 - 普通开发默认不读 `docs/development/**`、`docs/superpowers/**`、`docs/interview/**`，除非用户点名或任务明确属于历史 runbook、历史设计记录或面试资料。
 - 当用户基于真实测试、真实通话、真实 run/trace 或机器日志提问“为什么失败/为什么这样表现”，或提供 `assistant.turn: <trace_id>` 时，先按 `docs/observability-diagnosis-runbook.md` 读取对应机器事实，必要时再用 `docs/observability-harness.md` 核对观测契约，然后结合用户片段和源码回答。
 - 执行中先读相关代码和文档，保持 scope 小；搜索优先用 `rg` / `rg --files`，手工编辑默认用 `apply_patch`。
+- 修改当前 authority、`AGENTS.md` 文档路由、`docs/authority.toml` 或 authority validator 后，完成前运行
+  `/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/check_documentation_authority.py --repo-root .`；
+  `review_required` 只表示必须复核 owner，不要求机械制造文档 diff。
 - 新增或修改 pytest、判断代码变更的验证范围、补充回归测试或诊断确定性测试失败时，使用 `.codex/skills/assistant-agent-development-testing`；该 skill 不指导功能实现。不得为小功能机械增加永久测试。
 - 不回滚用户已有改动；提交时只包含本任务相关文件；新增设计文档默认不提交，除非用户明确要求纳入版本控制。
 - 完成修改后需要判断是否应该提交本任务改动；Codex 处于计划模式时，完成后直接提交本任务改动；除非用户明确要求，否则不 push、不合并、不创建 PR。

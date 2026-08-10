@@ -24,8 +24,6 @@ from assistant_agent.observability.runtime_audit import daily_models as daily_mo
 from assistant_agent.observability.runtime_audit import runner as runner_module
 from assistant_agent.observability.runtime_audit.storage import RuntimeAuditArtifactStore
 from assistant_agent.observability.runtime_audit.report import render_deterministic_report
-from evals.agent.contracts import AssertionResult, DimensionResult
-from evals.agent.langfuse_backend import _task_conformance_evaluation
 
 
 UTC = timezone.utc
@@ -898,29 +896,6 @@ def test_langfuse_read_failure_is_infrastructure_unknown_not_missing_export(
     assert "private-token" not in bundle.findings[0].summary
 
 
-def test_experiment_local_rule_publishes_only_task_conformance() -> None:
-    """Would fail if semantic Judge scores leaked back into the local evaluator."""
-
-    dimension = DimensionResult(
-        passed=True,
-        reason="passed",
-        assertions={
-            "criterion": AssertionResult(
-                passed=True,
-                label="criterion",
-                reason="passed",
-                evaluation_method="rule",
-            )
-        },
-    )
-    evaluations = [_task_conformance_evaluation(dimension)]
-
-    assert [item.name for item in evaluations] == [
-        "assistant_agent.quality.task_conformance",
-    ]
-    assert all(item.data_type == "BOOLEAN" for item in evaluations)
-
-
 def test_codex_report_schema_is_strict_for_every_object() -> None:
     """Would fail with Codex invalid_json_schema before a report request starts."""
 
@@ -1113,21 +1088,19 @@ def test_native_online_evaluator_configuration_uses_canonical_names_and_full_sam
         "assistant_agent.quality.memory_extraction",
         "assistant_agent.quality.memory_recall",
     ]
-    assert len(rules.created) == 7
+    assert len(rules.created) == 5
     assert [item.name for item in rules.created] == [
-        "assistant_agent.quality.response_quality.live",
-        "assistant_agent.quality.response_quality.experiment",
-        "assistant_agent.quality.grounding.live",
-        "assistant_agent.quality.grounding.experiment",
-        "assistant_agent.quality.tool_result_quality.live",
-        "assistant_agent.quality.memory_extraction.live",
-        "assistant_agent.quality.memory_recall.live",
+        "assistant_agent.quality.response_quality",
+        "assistant_agent.quality.grounding",
+        "assistant_agent.quality.tool_result_quality",
+        "assistant_agent.quality.memory_extraction",
+        "assistant_agent.quality.memory_recall",
     ]
     assert all(item.enabled is True and item.sampling == 1.0 for item in rules.created)
     tool_rule = next(
         item
         for item in rules.created
-        if item.name == "assistant_agent.quality.tool_result_quality.live"
+        if item.name == "assistant_agent.quality.tool_result_quality"
     )
     tool_filters = [item.model_dump(mode="json") for item in tool_rule.filter]
     assert not any(item["column"] == "name" for item in tool_filters)
@@ -1140,7 +1113,7 @@ def test_native_online_evaluator_configuration_uses_canonical_names_and_full_sam
     } in tool_filters
     assert result.applied is True
     assert result.created_evaluators == 5
-    assert result.created_rules == 7
+    assert result.created_rules == 5
 
 
 def test_native_online_evaluator_configuration_renames_legacy_rules_in_place() -> None:
@@ -1209,17 +1182,12 @@ def test_native_online_evaluator_configuration_renames_legacy_rules_in_place() -
         model="qwen3.6-flash",
     )
 
-    assert [item.name for item in rules.created] == [
-        "assistant_agent.quality.response_quality.experiment",
-        "assistant_agent.quality.grounding.experiment",
-    ]
+    assert rules.created == []
     assert len(rules.updated) == 5
     assert [item[0] for item in rules.updated] == [
         f"legacy-rule-{index}" for index in range(5)
     ]
-    assert [item[1]["name"] for item in rules.updated] == [
-        f"{name}.live" for name in canonical_names
-    ]
+    assert [item[1]["name"] for item in rules.updated] == canonical_names
     migrated_tool_filters = [
         item.model_dump(mode="json")
         for item in rules.updated[2][1]["filter"]
@@ -1232,39 +1200,22 @@ def test_native_online_evaluator_configuration_renames_legacy_rules_in_place() -
         "type": "stringObject",
         "value": "tool_execution",
     } in migrated_tool_filters
-    assert result.rule_names == [
-        "assistant_agent.quality.response_quality.live",
-        "assistant_agent.quality.response_quality.experiment",
-        "assistant_agent.quality.grounding.live",
-        "assistant_agent.quality.grounding.experiment",
-        "assistant_agent.quality.tool_result_quality.live",
-        "assistant_agent.quality.memory_extraction.live",
-        "assistant_agent.quality.memory_recall.live",
-    ]
+    assert result.rule_names == canonical_names
     assert result.existing_evaluators == 5
     assert result.existing_rules == 5
-    assert result.created_rules == 2
+    assert result.created_rules == 0
     assert result.updated_rules == 5
 
 
 def test_native_online_evaluator_configuration_reconciles_existing_tool_rule() -> None:
     """Would fail if an existing name-based tool rule never received the metadata filter."""
 
-    evaluator_names = [
+    canonical_names = [
         "assistant_agent.quality.response_quality",
         "assistant_agent.quality.grounding",
         "assistant_agent.quality.tool_result_quality",
         "assistant_agent.quality.memory_extraction",
         "assistant_agent.quality.memory_recall",
-    ]
-    rule_names = [
-        "assistant_agent.quality.response_quality.live",
-        "assistant_agent.quality.response_quality.experiment",
-        "assistant_agent.quality.grounding.live",
-        "assistant_agent.quality.grounding.experiment",
-        "assistant_agent.quality.tool_result_quality.live",
-        "assistant_agent.quality.memory_extraction.live",
-        "assistant_agent.quality.memory_recall.live",
     ]
 
     class EvaluatorResource:
@@ -1272,7 +1223,7 @@ def test_native_online_evaluator_configuration_reconciles_existing_tool_rule() -
             return SimpleNamespace(
                 data=[
                     SimpleNamespace(name=name, scope="project")
-                    for name in evaluator_names
+                    for name in canonical_names
                 ]
             )
 
@@ -1292,7 +1243,7 @@ def test_native_online_evaluator_configuration_reconciles_existing_tool_rule() -
                         enabled=False,
                         sampling=0.25,
                     )
-                    for index, name in enumerate(rule_names)
+                    for index, name in enumerate(canonical_names)
                 ]
             )
 
@@ -1319,9 +1270,9 @@ def test_native_online_evaluator_configuration_reconciles_existing_tool_rule() -
         model="qwen3.6-flash",
     )
 
-    assert len(rules.updated) == 7
-    rule_id, changes = rules.updated[4]
-    assert rule_id == "rule-4"
+    assert len(rules.updated) == 5
+    rule_id, changes = rules.updated[2]
+    assert rule_id == "rule-2"
     filters = [item.model_dump(mode="json") for item in changes["filter"]]
     assert not any(item["column"] == "name" for item in filters)
     assert {
@@ -1333,5 +1284,5 @@ def test_native_online_evaluator_configuration_reconciles_existing_tool_rule() -
     } in filters
     assert all("enabled" not in update for _, update in rules.updated)
     assert all("sampling" not in update for _, update in rules.updated)
-    assert result.existing_rules == 7
-    assert result.updated_rules == 7
+    assert result.existing_rules == 5
+    assert result.updated_rules == 5

@@ -41,7 +41,7 @@ def _client(*, evaluators: Resource, rules: Resource) -> SimpleNamespace:
     )
 
 
-def test_configuration_creates_live_and_experiment_rules_for_shared_evaluators() -> None:
+def test_runtime_audit_configuration_creates_only_live_observation_rules() -> None:
     evaluators = Resource()
     rules = Resource()
 
@@ -53,28 +53,12 @@ def test_configuration_creates_live_and_experiment_rules_for_shared_evaluators()
     )
 
     assert [request.name for request in evaluators.created] == EVALUATOR_NAMES
-    assert [request.name for request in rules.created] == [
-        "assistant_agent.quality.response_quality.live",
-        "assistant_agent.quality.response_quality.experiment",
-        "assistant_agent.quality.grounding.live",
-        "assistant_agent.quality.grounding.experiment",
-        "assistant_agent.quality.tool_result_quality.live",
-        "assistant_agent.quality.memory_extraction.live",
-        "assistant_agent.quality.memory_recall.live",
-    ]
-    assert [request.target.value for request in rules.created] == [
-        "observation",
-        "experiment",
-        "observation",
-        "experiment",
-        "observation",
-        "observation",
-        "observation",
-    ]
+    assert [request.name for request in rules.created] == EVALUATOR_NAMES
+    assert [request.target.value for request in rules.created] == ["observation"] * 5
     assert all(request.enabled is True for request in rules.created)
     assert all(request.sampling == 1.0 for request in rules.created)
     assert result.created_evaluators == 5
-    assert result.created_rules == 7
+    assert result.created_rules == 5
 
 
 def test_reconcile_preserves_ui_owned_enabled_and_sampling_state() -> None:
@@ -88,17 +72,7 @@ def test_reconcile_preserves_ui_owned_enabled_and_sampling_state() -> None:
             enabled=False,
             sampling=0.05,
         )
-        for index, name in enumerate(
-            [
-                "assistant_agent.quality.response_quality.live",
-                "assistant_agent.quality.response_quality.experiment",
-                "assistant_agent.quality.grounding.live",
-                "assistant_agent.quality.grounding.experiment",
-                "assistant_agent.quality.tool_result_quality.live",
-                "assistant_agent.quality.memory_extraction.live",
-                "assistant_agent.quality.memory_recall.live",
-            ]
-        )
+        for index, name in enumerate(EVALUATOR_NAMES)
     ]
     rules = Resource(existing_rules)
 
@@ -109,20 +83,23 @@ def test_reconcile_preserves_ui_owned_enabled_and_sampling_state() -> None:
         model="qwen3.6-flash",
     )
 
-    assert len(rules.updated) == 7
+    assert len(rules.updated) == 5
     assert all("enabled" not in changes for _, changes in rules.updated)
     assert all("sampling" not in changes for _, changes in rules.updated)
-    assert result.existing_rules == 7
-    assert result.updated_rules == 7
+    assert result.existing_rules == 5
+    assert result.updated_rules == 5
 
 
-def test_canonical_pre_convergence_rules_are_renamed_to_live_rules() -> None:
+def test_legacy_live_rules_are_renamed_to_canonical_score_names() -> None:
     evaluators = Resource(
         [SimpleNamespace(name=name, scope="project") for name in EVALUATOR_NAMES]
     )
     rules = Resource(
         [
-            SimpleNamespace(id=f"legacy-{index}", name=name)
+            SimpleNamespace(
+                id=f"legacy-{index}",
+                name=f"assistant-agent-live-{name.removeprefix('assistant_agent.quality.').replace('_', '-')}",
+            )
             for index, name in enumerate(EVALUATOR_NAMES)
         ]
     )
@@ -134,10 +111,27 @@ def test_canonical_pre_convergence_rules_are_renamed_to_live_rules() -> None:
         model="qwen3.6-flash",
     )
 
-    assert [changes["name"] for _, changes in rules.updated] == [
-        f"{name}.live" for name in EVALUATOR_NAMES
-    ]
-    assert [request.name for request in rules.created] == [
-        "assistant_agent.quality.response_quality.experiment",
-        "assistant_agent.quality.grounding.experiment",
-    ]
+    assert [changes["name"] for _, changes in rules.updated] == EVALUATOR_NAMES
+    assert rules.created == []
+
+
+def test_misclassified_dot_live_rules_are_restored_in_place() -> None:
+    evaluators = Resource(
+        [SimpleNamespace(name=name, scope="project") for name in EVALUATOR_NAMES]
+    )
+    rules = Resource(
+        [
+            SimpleNamespace(id=f"dot-live-{index}", name=f"{name}.live")
+            for index, name in enumerate(EVALUATOR_NAMES)
+        ]
+    )
+
+    configure_native_online_evaluators(
+        _client(evaluators=evaluators, rules=rules),
+        apply=True,
+        model_provider="qwen",
+        model="qwen3.6-flash",
+    )
+
+    assert [changes["name"] for _, changes in rules.updated] == EVALUATOR_NAMES
+    assert rules.created == []

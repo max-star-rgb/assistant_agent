@@ -304,15 +304,16 @@ def test_empty_day_report_is_short_and_explicitly_successful() -> None:
         local_available=True,
     )
 
-    assert "昨天没有可审计对话" in markdown
+    assert "昨天无运行trace" in markdown
     assert "审计流程本身运行正常" in markdown
+    assert "审计没有完成" not in markdown
 
 
 @pytest.mark.parametrize(
     ("langfuse_available", "local_available"),
-    [(False, True), (True, False), (False, False)],
+    [(False, True), (False, False)],
 )
-def test_empty_day_report_requires_all_evidence_sources(
+def test_empty_day_report_requires_langfuse_source(
     langfuse_available: bool,
     local_available: bool,
 ) -> None:
@@ -327,6 +328,18 @@ def test_empty_day_report_requires_all_evidence_sources(
     assert "审计没有完成" in markdown
     assert "昨日无可审计对话" not in markdown
     assert "审计任务运行正常" not in markdown
+
+
+def test_empty_langfuse_day_is_successful_when_local_manifest_is_unavailable() -> None:
+    markdown = report_module.render_empty_daily_report(
+        date(2026, 8, 5),
+        langfuse_available=True,
+        local_available=False,
+    )
+
+    assert "昨天无运行trace" in markdown
+    assert "本地完整性证据不可用" in markdown
+    assert "审计没有完成" not in markdown
 
 
 def test_daily_report_escapes_plain_text_and_removes_all_machine_ids() -> None:
@@ -1273,7 +1286,36 @@ def test_empty_daily_run_does_not_invoke_codex(tmp_path: Path) -> None:
     assert result.status == "succeeded"
     assert calls == []
     assert result.report_path is not None
-    assert "昨天没有可审计对话" in result.report_path.read_text(encoding="utf-8")
+    assert "昨天无运行trace" in result.report_path.read_text(encoding="utf-8")
+
+
+def test_empty_daily_cli_prints_no_runtime_trace_message(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    source = FakeLangfuseSource([])
+    source.close = lambda: None
+    monkeypatch.setattr(
+        "assistant_agent.observability.runtime_audit.cli.create_langfuse_audit_source_from_env",
+        lambda _: source,
+    )
+
+    exit_code = main(
+        [
+            "--no-env-file",
+            "--repo-root",
+            str(tmp_path),
+            "run",
+            "--date",
+            "2026-08-05",
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 0
+    assert payload["message"] == "昨天无运行trace"
+    assert payload["failed_date"] is None
 
 
 def test_nonempty_day_without_anomalies_does_not_invoke_codex(tmp_path: Path) -> None:

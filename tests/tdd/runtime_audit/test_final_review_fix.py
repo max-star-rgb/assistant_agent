@@ -167,10 +167,10 @@ def test_remote_trace_survives_unreadable_local_source_and_reports_limitation(
 
 
 @pytest.mark.parametrize("local_content", ["not-json\n", "{also-not-json}\n"])
-def test_invalid_only_local_source_cannot_certify_an_empty_day(
+def test_invalid_only_local_source_keeps_empty_langfuse_day_successful(
     tmp_path: Path, local_content: str
 ) -> None:
-    """Would fail if invalid-only local JSONL were treated as a readable empty source."""
+    """Would fail if missing local completeness turned a confirmed empty Langfuse day into failure."""
 
     local_path = tmp_path / "graph_trace.jsonl"
     local_path.write_text(local_content, encoding="utf-8")
@@ -184,9 +184,10 @@ def test_invalid_only_local_source_cannot_certify_an_empty_day(
         codex_runner=lambda **kwargs: calls.append(kwargs) or _report(),
     )
 
-    assert result.status == "failed"
+    assert result.status == "succeeded"
     assert calls == []
-    assert store.last_completed_date() is None
+    assert store.last_completed_date() == AUDIT_DATE
+    assert "昨天无运行trace" in result.report_path.read_text(encoding="utf-8")
     bundle = json.loads(result.bundle_path.read_text(encoding="utf-8"))
     assert bundle["coverage"]["local_source_available"] is False
     assert any(
@@ -219,8 +220,9 @@ def test_unreadable_empty_local_source_persists_infrastructure_finding(
         codex_runner=lambda **_: pytest.fail("empty unavailable evidence must not call Codex"),
     )
 
-    assert result.status == "failed"
-    assert store.last_completed_date() is None
+    assert result.status == "succeeded"
+    assert store.last_completed_date() == AUDIT_DATE
+    assert "昨天无运行trace" in result.report_path.read_text(encoding="utf-8")
     bundle = json.loads(result.bundle_path.read_text(encoding="utf-8"))
     assert any(
         finding["code"] == "local_completeness_read_failed"

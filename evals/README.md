@@ -1,5 +1,16 @@
 # Eval 体系
 
+## Authority contract
+
+| 字段 | 内容 |
+| --- | --- |
+| 定位 | system eval 与 Agent Task Experiment 的当前权威 |
+| Owns | eval 分层、Task/Environment、Dataset 同步、Experiment、Remote webhook、task-level Score 完整性 |
+| Does not own | 生产 Trace 生命周期、日常 runtime audit、Live Observation Rule 配置 |
+| 源码与 schema 入口 | `evals/agent/`、`src/assistant_agent/evaluation/`、`src/assistant_agent/api/routes_eval_experiments.py` |
+| 验证入口 | `docs/authority.toml` 中 `agent-eval.verification` |
+| 相邻 authority | Runtime trace 与日常评分见 [`../docs/observability-harness.md`](../docs/observability-harness.md)；pytest 归属见 [`../tests/README.md`](../tests/README.md) |
+
 `evals/` 回答真实能力是否连通、具体实现专项风险是否仍可复现，以及 Agent 在完整任务中的行为是否
 合格。永久核心代码契约属于 `tests/core`；临时功能 TDD 属于 `tests/tdd/<feature>`。
 
@@ -22,6 +33,34 @@ evals/
 | `evals/agent` | Agent 能否在受控任务中作出正确决策并完成目标 | Git Task/Grader 与 Langfuse Experiment/Score |
 
 不要用 mock fallback、目录混放或重复 runner 让一层伪装成另一层。
+
+### 文档权威与维护边界
+
+本文件是 eval 分类、Agent Experiment、Dataset 同步、Remote Experiment webhook 和 Score 完整性
+契约的唯一操作权威。相邻文档只承担以下职责：
+
+- `docs/observability-harness.md` 定义 Runtime trace、日常审计和 Live Observation Rule；只说明它们
+  不负责 Experiment，并链接到本文件；
+- `scripts/README.md` 只索引稳定命令，说明用途、主要副作用和权威文档入口；不复制运行顺序、环境变量、
+  webhook 请求体或 UI 字段；
+- `.codex/skills/langfuse-eval-engineering/SKILL.md` 是执行检查清单，不是事实权威，开始工作时必须先读
+  本文件。
+
+维护时先用源码和测试确认行为，再只修改拥有该契约的权威章节；其他入口原则上只检查链接和一句话边界，
+不得同步复制正文。涉及 eval、runtime audit 或二者边界的文档变更，完成前先运行 authority validator，
+再按需运行完整文档证据扫描：
+
+```bash
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python \
+  scripts/check_documentation_authority.py --repo-root .
+
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python \
+  .codex/skills/assistant-agent-documentation-sync/scripts/collect_documentation_evidence.py \
+  --repo-root .
+```
+
+validator 负责 owner、路由、精确事实和源码复核提示；collector 负责链接与文档库存。两者都不能判断
+自然语言语义是否重复，review 仍须检查薄入口没有重新展开本文件正文。
 
 ## Incubating system checks
 
@@ -127,7 +166,7 @@ Task (用户挑战)
   -> AgentGraphRuntime
   -> Evidence (轨迹、终态、状态与回答)
   -> Git Rule: task_conformance
-  + Langfuse Experiment Rules: grounding / response_quality
+  + Langfuse UI-selected Experiment Evaluators: grounding / response_quality
   -> 三个 task-level Score + 可选 live observation Score
   -> Langfuse Experiment
 ```
@@ -248,7 +287,7 @@ Langfuse 原生 Evaluator。
 Environment 都不连接真实高德服务，并使用每次运行隔离的 in-memory 状态。三个天气 Task 的目标
 工具均为 `mcp.amap_maps.maps_weather`，输入使用真实 `city` schema。
 
-### 运行顺序
+### 正式运行顺序：PyCharm + Dataset 同步 + Langfuse UI
 
 1. 检查 Task 和 Environment，不联网：
 
@@ -260,7 +299,7 @@ Environment 都不连接真实高德服务，并使用每次运行隔离的 in-m
 ```
 
 `--inspect` 会显示 `case_source.level`，并显示 `mission_objective_rule.required/implemented`，以便在
-校准前发现 Mission 缺少目标状态 Rule。inspect、calibrate、publish、run 和 Scores v3 审计顺序保持不变。
+同步前发现 Mission 缺少目标状态 Rule。
 
 2. 显式运行迁移后的 Agent eval infrastructure 专项检查（非 core、非发布门禁）：
 
@@ -269,101 +308,42 @@ Environment 都不连接真实高德服务，并使用每次运行隔离的 in-m
   evals/system/incubating/agent-eval-infrastructure/checks_*.py
 ```
 
-3. 使用 Langfuse 原生 Experiment Evaluator 校准人工标注 Evidence：
+3. 按[“从 Langfuse UI 触发 CLI”](#从-langfuse-ui-触发-cli)完成一次性 webhook 配置，然后在
+PyCharm 选择共享 Run Configuration **Langfuse** 并点击 Run。它执行
+`scripts/run_langfuse.py`，启动本地 Compose、等待 `http://localhost:3000` 健康并保持前台；点击 Stop
+只停止容器，不删除数据。Agent Experiment 还要求 **Assistant Server** 以 real Provider mode 运行，且
+Remote Experiment 开关、签名 secret 和 Dataset 已配置。
 
-```bash
-MULTIMODAL_AGENT_PROVIDER_MODE=real \
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python \
-  scripts/run_agent_evals.py \
-  --calibrate \
-  --task amap_weather_provider_failure_recovery \
-  --allow-real-provider
-```
-
-4. 显式发布 Task 到统一 Dataset：
+4. 直接运行 `evals/agent/sync_langfuse_dataset.py`（IDE 中右键 Run 即可）：
 
 ```bash
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python \
-  scripts/run_agent_evals.py \
-  --publish \
-  --task amap_weather_provider_failure_recovery
+  evals/agent/sync_langfuse_dataset.py
 ```
 
-默认 Dataset 为 `assistant-agent-regression`。发布只 upsert 所选 Task，不运行 Agent 或 Evaluator。
+默认 Dataset 为 `assistant-agent-regression`。同步会 upsert Git 中全部 Task/Mission，并删除只属于该
+Dataset、但本地已不存在的陈旧 Git-owned item；它不运行 Agent 或 Evaluator。
 原生 item ID 使用 `<dataset_name>__<task_id>`，避免与同一 Langfuse project 的历史 Dataset item
 冲突。
 在第一次 Langfuse 写入前，发布入口会重新加载并验证 Git case 的 Environment 和
 calibration；Mission 还必须提供可执行、非空且仅含 Rule 的 `objective_state_assertions()`。
 任一契约缺失时发布直接按基础设施错误失败，不会留下“已 ACTIVE 但不可运行”的新 Dataset item。
 
-需要把 Git 中全部 Task 与 Mission 一次性同步到统一 Dataset 时，可以直接在 IDE 中运行
-`evals/agent/sync_langfuse_dataset.py`，无需传入参数；它会发布两个案例目录中的全部本地定义，并
-删除只属于该 Dataset、但本地案例已不存在的陈旧 item。该入口只同步 Dataset，不启动 Experiment。
-如需暂时保留陈旧 item，可在命令行显式传入 `--keep-stale`。
+如需暂时保留陈旧 item，可显式传入 `--keep-stale`。
 
-5. 运行一个 Task：
+5. 打开 Langfuse UI：`Datasets -> assistant-agent-regression`，通过 Dataset Items 的 ACTIVE/ARCHIVED
+状态选择本次范围。按下文的 UI 字段表启动单 Task 烟测，并选择
+`assistant_agent.quality.grounding` 与 `assistant_agent.quality.response_quality` 两个 Experiment
+Evaluator。UI webhook 只负责触发同一个受治理的 `run_agent_evals.py --run`，不会把 Agent loop 搬进
+Langfuse。
 
-```bash
-MULTIMODAL_AGENT_PROVIDER_MODE=real \
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python \
-  scripts/run_agent_evals.py \
-  --run \
-  --task amap_weather_provider_failure_recovery \
-  --allow-real-provider \
-  --run-name amap-weather-provider-failure-recovery
-```
+6. 确认单 Task 的 Trace、三个 canonical Score 与 Environment 终态后，再按下文 suite config 扩大
+范围。第一次运行不得使用空 config，因为 `{}` 会运行 Dataset 中全部 ACTIVE Git Task。
 
-受控天气成功路径使用同一入口显式选择：
-
-```bash
-MULTIMODAL_AGENT_PROVIDER_MODE=real \
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python \
-  scripts/run_agent_evals.py \
-  --run \
-  --task amap_weather_forecast_date_grounding \
-  --allow-real-provider \
-  --run-name amap-weather-forecast-date-grounding
-```
-
-6. 运行 Suite：
-
-```bash
-MULTIMODAL_AGENT_PROVIDER_MODE=real \
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python \
-  scripts/run_agent_evals.py \
-  --run \
-  --suite release \
-  --allow-real-provider \
-  --run-name agent-release
-```
-
-`--task` 可重复，用于精确运行多个 Task；`--task` 与 `--suite` 互斥。三个高德天气基础 Task 已加入
-`readonly` 和 `release`；`smoke` 仍保持最小快速案例。加入 suite 只表示 Git 定义和离线校准完整，
-首次真实 Experiment 仍应先按 Task ID 运行并审计 Evaluator 与 Trace。
-精确 Task 和 Suite 运行也只选择 ACTIVE Dataset item，不会重新执行 ARCHIVED 历史项；同一
-`task_id` 若存在多个 ACTIVE item，运行会按基础设施错误 fail-fast，必须先在 Dataset Items 中只保留
-一个 ACTIVE item。
-
-运行统一 Dataset 中全部 ACTIVE Task：
-
-```bash
-MULTIMODAL_AGENT_PROVIDER_MODE=real \
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python \
-  scripts/run_agent_evals.py \
-  --run \
-  --dataset-active \
-  --allow-real-provider \
-  --run-name dataset-active
-```
-
-`--dataset-active` 只用于 `--run`：它读取 Langfuse Dataset，忽略 ARCHIVED items，并要求每个 ACTIVE
-item 的 `input.task_id`、`metadata.task_id` 与 Git Task 一致。空集合、未知 Task 或契约不一致都属于
-评测基础设施错误，不会静默跳过。
-
-Agent 使用仓库显式配置的真实 Chat Provider；语义评分使用 Langfuse 中版本化的 Evaluator family 和
-LLM connection，两者不再由 CLI 复用同一 Provider adapter。Live Rule 与 Experiment Rule 可在
-Langfuse UI 中分别启停和调整 sampling；若 Experiment Rule 被暂停、执行失败或没有在等待窗口内产生
-Score，CLI 按评测基础设施失败退出 2，不把缺失 Evaluator 结果写成 `false`。
+Agent 使用仓库显式配置的真实 Chat Provider；语义评分使用 Langfuse UI 为 Experiment 选择的 Evaluator
+和 LLM connection，两者不复用同一 Provider adapter。日常 Trace 的 Live Observation Rule 由
+runtime-audit 配置入口管理，但与 Experiment 的 Dataset 同步、Evaluator 选择和 UI Run 无关。缺失
+Experiment Score 时，后台 CLI 按评测基础设施失败退出 2，不写成 `false`。
 
 ### 安全和退出码
 
@@ -412,9 +392,9 @@ metadata 把每条 assertion 的 `passed`、
 `label`、`method` 和可选 `criterion_id` 写成独立标量字段，避免把完整 rubric、reason 或嵌套大对象
 传播成超长属性。
 
-Experiment runner 的本地 evaluator 只写 `task_conformance`；两个原生 Experiment Rule 异步写入
-`grounding/response_quality`。CLI `flush()` 后通过 Langfuse Scores v3 API 同时按 trace ID 与
-observation ID 轮询。
+Experiment runner 的本地 evaluator 只写 `task_conformance`；Langfuse UI 为该 Experiment 选择的
+Evaluator 异步写入 `grounding/response_quality`。后台 CLI `flush()` 后通过 Langfuse Scores v3 API
+同时按 trace ID 与 observation ID 轮询。
 三个 task-level Score 必须实际落库、名称无缺失或重复，并且
 全部挂在该 item 的同一个 `experiment-item-task` observation 上；否则按评测基础设施失败退出 2，
 不能因为 SDK 内存结果存在而报告成功。当前自托管 Langfuse 4.6 使用
@@ -457,6 +437,8 @@ fixture 完成字段迁移后，应在一次独立清理中删除兼容层及其
 
 ### 从 Langfuse UI 触发 CLI
 
+本节是 Remote Experiment 环境变量、请求体、UI 字段和操作顺序的唯一权威；其他仓库文档只能链接本节。
+
 Assistant Server 提供默认关闭的 Remote Custom Experiment webhook：
 
 ```text
@@ -468,7 +450,7 @@ POST /internal/evals/langfuse/remote-experiment
 参数；Task、Environment、Git Rule 和三个 task-level Score 使用上述统一定义。CLI stdout、stderr 和状态回执
 写入 `.data/evals/remote/<trigger_id>.*`，不提交。
 
-先在 Assistant Server 的本机未跟踪环境中配置：
+先在仓库根未跟踪 `.env` 中配置 Assistant Server：
 
 ```text
 MULTIMODAL_AGENT_PROVIDER_MODE=real
@@ -476,6 +458,15 @@ ASSISTANT_AGENT_LANGFUSE_REMOTE_EXPERIMENT_ENABLED=true
 ASSISTANT_AGENT_LANGFUSE_REMOTE_EXPERIMENT_SIGNING_SECRET=<Langfuse-setup-secret>
 ASSISTANT_AGENT_LANGFUSE_REMOTE_EXPERIMENT_DATASET=assistant-agent-regression
 ```
+
+再在未跟踪的 `.data/langfuse/.env` 中配置 Compose 代理；签名 secret 必须与仓库根 `.env` 完全相同：
+
+```text
+ASSISTANT_AGENT_LANGFUSE_REMOTE_EXPERIMENT_SIGNING_SECRET=<同一个 Langfuse-setup-secret>
+LANGFUSE_WEBHOOK_WHITELISTED_HOST=assistant-agent-eval-webhook
+```
+
+修改任一文件后都要重启 PyCharm 中的 **Langfuse** 与 **Assistant Server**。不要提交这两个 `.env`。
 
 当前 Langfuse `4.6` 部署继续保留 Remote Experiment 代理作为端口、签名与 Assistant Server 安全边界。
 本轮升级只验证了代理容器健康和 Compose 网络可达，没有在 real Provider 模式触发远程 Experiment；
@@ -496,17 +487,21 @@ Assistant Server 对其二次解析。空对象默认运行 Dataset 中全部 AC
 
 内部 80 端口代理会在请求没有 `x-langfuse-signature` 时使用同一个 secret 补充
 `t=<timestamp>,v1=<hmac-sha256>`；Langfuse 已携带签名时，代理保持原值、不重复签名。
-同一个 secret 必须同时配置到仓库根 `.env`（Assistant Server）与
-`.data/langfuse/.env`（Compose 代理），两处文件都不得提交。
 
 然后在 Langfuse Dataset 页面选择 `Run Experiment -> via Webhook -> Configure`：
 
-1. URL 填
-   `http://assistant-agent-eval-webhook/internal/evals/langfuse/remote-experiment`；
-2. Default config 保持 `{}`；
-3. 打开 Enabled，保存配置；
-4. 通过 `--publish` 确保 Task 已存在于统一 Dataset；
-5. 在 Dataset Items 中用 ACTIVE/ARCHIVED 控制是否参与运行，然后点击 `Run`。
+| UI 字段 | 值 | 说明 |
+| --- | --- | --- |
+| Name | `assistant-agent-evals` | 仅显示名称，可以改成其他易识别名称 |
+| URL | `http://assistant-agent-eval-webhook/internal/evals/langfuse/remote-experiment` | 使用 Compose 内部代理；禁止填写 `localhost:8089` 或 `host.docker.internal:8089` |
+| Default config | `{}` | 原样成为请求顶层 `payload` 的 JSON 字符串 |
+| Headers / Signing secret | 留空 | 内部代理为无签名请求补充共享 HMAC；若 UI 已发送签名，代理会原样保留 |
+| Enabled | 开启 | 保存后才可用于 Dataset Experiment |
+
+`projectId`、`datasetId` 和 `datasetName` 由 Langfuse 自动放入请求 envelope，不填写到 Default
+config。配置保存后，先运行 `evals/agent/sync_langfuse_dataset.py`，再在 Dataset Items 中用
+ACTIVE/ARCHIVED 控制范围并点击 `Run`。运行弹窗中的 Experiment Evaluator 选择不属于 webhook 配置；
+应独立选择 `assistant_agent.quality.grounding` 与 `assistant_agent.quality.response_quality`。
 
 日常使用不需要记忆字段。只有精确调试时才临时覆盖 config：
 
@@ -517,8 +512,17 @@ Assistant Server 对其二次解析。空对象默认运行 Dataset 中全部 AC
 或：
 
 ```json
-{"suite":"release","runName":"ui-release"}
+{"suite":"deep_research","runName":"deep-research-suite"}
 ```
+
+首次使用建议先运行：
+
+```json
+{"task":"deep_research_autonomous_admission","runName":"deep-research-admission-first"}
+```
+
+空 config `{}` 会运行统一 Dataset 中全部 ACTIVE 且能映射到 Git 的 Task，只适合已经核对 ACTIVE 范围的
+批量运行。
 
 当前 Langfuse 4.6 的本机 Docker Compose 继续使用 `assistant-agent-eval-webhook` 在内部 80 端口提供
 单路径代理，避免把 Assistant Server 的 8089 端口直接暴露给 Remote Experiment，
@@ -530,6 +534,19 @@ Assistant Server 对其二次解析。空对象默认运行 Dataset 中全部 AC
 webhook 校验 HMAC SHA-256 和五分钟时效，对相同签名与 body 的重投递只启动一次；收到请求后立即
 返回 `202 Accepted`，CLI 继续异步执行。只有显式启用 webhook、配置签名 secret 且 Server 运行于
 real Provider mode 时才接受触发。
+
+Assistant Server 控制台为 UI 触发的运行显示一个整体进度条。需要查询或停止后台运行时，在该控制台
+输入：
+
+```text
+eval status
+eval stop
+eval status <trigger_id>
+eval stop <trigger_id>
+```
+
+省略 `trigger_id` 时操作最近一次运行；`eval stop` 只会停止回执中保留了完整固定命令和独立进程组的
+新版本运行。
 
 真实运行生成的数据只保存在 Langfuse 和未跟踪 `.data/**`；不得提交凭据、原始生产 Trace、真实
 用户数据或 Provider 原始响应。

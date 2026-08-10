@@ -1,0 +1,55 @@
+schema_version = 1
+coverage = "pilot"
+
+[[domains]]
+id = "runtime-observability"
+authority = "docs/observability-harness.md"
+read_when = [
+  "trace、observability、OTel 或 Langfuse 投影",
+  "runtime audit、Live Observation Rule 或日常评分",
+]
+source_globs = [
+  "src/assistant_agent/observability/**",
+  "scripts/run_runtime_audit.py",
+  "deploy/systemd/user/assistant-agent-runtime-audit.*",
+  "tests/tdd/runtime_audit/**",
+]
+thin_references = ["scripts/README.md"]
+verification = [
+  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/runtime_audit",
+  "python scripts/run_runtime_audit.py configure-evaluators --model-provider qwen --model qwen3.6-flash",
+]
+exclusive_literals = [
+  "assistant-agent-runtime-audit.service",
+]
+exclusive_allowlist = []
+
+[[domains]]
+id = "agent-eval"
+authority = "evals/README.md"
+read_when = [
+  "system eval 或 Agent Task eval",
+  "Langfuse Dataset、Experiment、Remote webhook 或 Score 完整性",
+]
+source_globs = [
+  "evals/agent/**",
+  "evals/system/**",
+  "src/assistant_agent/evaluation/**",
+  "src/assistant_agent/api/routes_eval_experiments.py",
+  "scripts/run_agent_evals.py",
+  "deploy/langfuse_eval_webhook/**",
+  "tests/tdd/eval-convergence/**",
+]
+thin_references = [
+  "docs/observability-harness.md",
+  "scripts/README.md",
+]
+verification = [
+  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/eval-convergence",
+  "python evals/agent/sync_langfuse_dataset.py --help",
+]
+exclusive_literals = [
+  "assistant-agent-eval-webhook",
+  "ASSISTANT_AGENT_LANGFUSE_REMOTE_EXPERIMENT_SIGNING_SECRET",
+]
+exclusive_allowlist = []

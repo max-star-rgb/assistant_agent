@@ -192,14 +192,6 @@ def _run_one_locked(
                 audit_date=window.audit_date,
             ),
         )
-        if not bundle.coverage.local_source_available:
-            return _fail(
-                store=store,
-                attempt=running,
-                bundle_path=bundle_path,
-                error_summary="Local completeness evidence source was unavailable; the day cannot be treated as empty.",
-                publish_failure=True,
-            )
         return _commit_success(store=store, attempt=running, bundle_path=bundle_path,
                                markdown=markdown, registry=None,
                                commit_continuous_state=commit_continuous_state)

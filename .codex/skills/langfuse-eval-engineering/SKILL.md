@@ -81,25 +81,23 @@ Task 不得靠 expected answer 文本匹配通过；工具行为以 Trace 和状
 
 ## 6. 校准、运行、审计
 
-顺序固定：
+正式人工运行顺序固定：
 
 1. `--inspect` 检查 Task/Mission 和 Environment，不联网，并确认案例层级及 Mission Rule 是否实现；
 2. pytest 验证 loader、Environment、Evidence、Git Rule 和薄 Langfuse backend；
-3. `--calibrate` 在专用 Dataset Experiment 上比较原生 Evaluator Score 与人工正反标签；
-4. `--publish` 显式发布所选 Task；
-5. `--run` 执行真实 Experiment。
+3. 在 PyCharm 使用 **Langfuse** Run Configuration 启动本地服务；
+4. 运行 `evals/agent/sync_langfuse_dataset.py` 同步 Git Task/Mission；
+5. 从 Langfuse Dataset UI 通过已签名 webhook 启动真实 Experiment，并在 UI 选择 Experiment
+   Evaluator。`run_runtime_audit` 不参与 Dataset 同步或 Experiment 运行。
 
 Langfuse Remote Custom Experiment 只允许通过签名 webhook 触发同一个 `--run` CLI。默认空 payload
 运行当前 Dataset 中全部 ACTIVE 且能映射到 Git 的 Task；`task`、`suite` 和 `runName` 仅作为高级
 覆盖项。UI 不能创建案例、传环境变量、扩大副作用权限或替代本地校准/审计。
-当前自托管 Langfuse `4.6` 仍通过 Compose 中白名单的内部 80 端口
-`assistant-agent-eval-webhook`，不能直接填写 Assistant Server 的 `:8089`。
-UI Default config 按顶层 `payload` JSON 字符串解析；内部代理只为缺少签名的请求补充与 Assistant
-Server 共享的 HMAC，已有签名必须原样保留。升级烟测未在 real Provider 模式触发 Remote Experiment，
-修改该契约前必须重新做端到端验证。
+具体 URL、环境变量、请求 envelope、UI 字段、代理端口和签名行为只查阅 `evals/README.md`，本 skill
+不复制这些部署事实。修改 Remote Experiment 契约前必须重新做端到端验证。
 
 运行后检查 Agent 输入、工具 Trace、依赖结果、最终回答和原生 Evaluator 理由。Experiment runner
-本地只写 `assistant_agent.quality.task_conformance`；Langfuse Experiment Rule 生成
+本地只写 `assistant_agent.quality.task_conformance`；Langfuse UI 选择的 Experiment Evaluator 生成
 `assistant_agent.quality.grounding` 与 `assistant_agent.quality.response_quality`。三项都是独立 BOOLEAN
 task-level Score，不生成 reward 或总通过分。单工具语义质量由
 `assistant_agent.quality.tool_result_quality` Live Observation Evaluator 负责。
@@ -139,8 +137,8 @@ Trace 导出、Dataset、Evaluator、证据解析或 Score 缺失属于评测基
   `label + reason`；内部 assertion key 不得单独充当用户可见诊断。
 - 可客观证明的事实必须使用 Rule；LLM Judge 只判断开放语义，不能覆盖 Rule 结果。Evaluator 故障属于
   基础设施失败。
-- Live Rule 和 Experiment Rule 引用同一个 Evaluator family；仓库 reconcile 不覆盖 UI 中已有的
-  `enabled/sampling`，新 Rule 首次创建默认启用且 100% sampling。
+- Runtime audit 的 Live Observation Rule 与 Experiment 触发链路分离；仓库 reconcile 不覆盖 UI 中
+  已有的 `enabled/sampling`，也不创建 Experiment Rule。
 - Environment validation、凭据、Evidence 和 Evaluator 故障属于基础设施状态，不计入 Agent 分数。
 - 工具业务结果预期只由 Environment 声明；通用评分入口把实际终态与 oracle 的匹配写入内部
   `tool_execution` 并持久化为 `task_conformance`；Mission 还把 Environment 的 objective state Rule

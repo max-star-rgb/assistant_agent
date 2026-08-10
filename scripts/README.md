@@ -3,6 +3,9 @@
 这里只保留当前 runtime、观测、评测和专项验收仍在使用的入口。一次性排障或已由 pytest、
 eval、Gateway 主链路覆盖的 probe 不应继续沉积到本目录。
 
+- `scripts/check_documentation_authority.py`：离线校验 `docs/authority.toml` 的 owner、路由、排他事实与
+  changed-path 复核范围；输出结构化 JSON，不读取 `.env`、不联网、不改写文档。
+
 ## Realtime runtime
 
 - `scripts/run_server.py`: starts the FastAPI backend with Gateway, media, HTTP,
@@ -62,21 +65,11 @@ For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
 ## Observability and local operations
 
 - `scripts/trace_metrics.py`: redacted trace metric summary.
-- `scripts/run_runtime_audit.py`: 只读日审计稳定入口。默认 `run` 永远只审计前一北京时间自然日，不自动
-  补跑更早的失败或遗漏日期；Langfuse 是主证据，本地 trace 只做完整性、auxiliary 聚合与有限 fallback。完整
-  审计 bundle 留在 inbox；第三层只列异常 trace，没有异常时不调用 Codex，有异常时 Codex 只审计这些 trace，
-  不读取完整 bundle 或其他正常 trace。第三层同时带有审计窗口开始至采集时刻的有界 Git commit/patch
-  证据，用于区分“仍需修改”和“代码已改、等待真实运行验证”。人读结果采用结论先行的对话式中文，
-  不展示 Score ID、commit SHA、测试路径、issue key、内部状态名或证据附录；每类问题下只额外列出最多
-  3 条最近的真实 `assistant.turn`，包含北京时间、Session、Trace ID，以及自动展开目标记录的 Langfuse
-  Trace 列表链接。链接不可用时显示 ID 与降级提示，不影响日报生成；其余机器证据只保留在第三层 JSON
-  和内部 registry。人读结果只写
-  `.data/runtime_audit/reports/YYYY-MM-DD.md`；第二层为 `inbox/YYYY-MM-DD.bundle.json`，第三层为
-  `state/codex-inputs/YYYY-MM-DD.codex-input.json`。三份正式产物按被审计日期一一对应，运行时间只保留在
-  attempt metadata。已确认的空日生成极简中文日报且不调用 Codex。`run --date YYYY-MM-DD` 对已完成日期
-  默认跳过；显式 `--force` 才会刷新同日正式产物，并且不改变连续 issue registry 或 watermark。其他完整参数见 `--help` 与
-  [`docs/observability-harness.md`](../docs/observability-harness.md)。systemd 需要本地代理时，将无凭据的
-  loopback proxy 写入未跟踪的 `%h/.config/assistant_agent/runtime-audit.env`；不要把代理凭据写进仓库。
+- `scripts/run_runtime_audit.py`: 只读日审计稳定入口。`run` 默认审计前一北京时间自然日；Langfuse 查询
+  成功但没有 Trace 时输出“昨天无运行trace”，存在异常时才调用受限 Codex。它不启动 Langfuse、不同步
+  Dataset，也不运行 Agent Experiment；`configure-evaluators` 只管理日常 Live Observation Rule。
+  参数、证据边界、状态机、产物和 systemd 配置统一见
+  [`docs/observability-harness.md`](../docs/observability-harness.md#langfuse-first-runtime-审计)。
 - Gateway lifecycle 由 `scripts/run_server.py` 写入 `.data/gateway_events.jsonl`；仓库当前没有
   独立 viewer，按 `run_id`、`turn_id` 或 `trace_id` 使用标准 JSONL/文本工具检索。
 
@@ -114,28 +107,11 @@ For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
   `--publish` 把所选 Task 薄发布到统一 Langfuse Dataset；`--run` 通过活动
   `AgentGraphRuntime` 创建 Experiment、Trace 和 canonical `assistant_agent.quality.*` Score。用可重复
   `--task` 精确选择，或用 `--suite` 选择集合。真实 Chat 调用同时要求 real 模式、
-  完整 Provider 配置和 `--allow-real-provider`。语义评分由 Langfuse 中版本化的 Evaluator family
-  执行；Live Rule 与 Experiment Rule 共用定义，启停和 sampling 由 UI 管理。阶段进度写 stderr。
-  实现位于 `evals/agent/`。
-- Langfuse Remote Custom Experiment 可调用 Assistant Server 的
-  `POST /internal/evals/langfuse/remote-experiment`；该默认关闭的 HMAC webhook 只把已校验的
-  Task/Suite 映射为上述 CLI 的固定后台 argv，运行回执和 stdout/stderr 写入
-  `.data/evals/remote/`。当前 Langfuse `4.6` 部署通过内部 80 端口
-  `assistant-agent-eval-webhook` 转发到 Assistant Server 8089；代理保留已有签名，或为未签名的
-  Remote Experiment 请求补充共享 HMAC。空 `payload` 通过 `--dataset-active` 运行统一 Dataset
-  中全部 ACTIVE Git Task；请求契约、secret 配置与操作步骤见 `evals/README.md`。UI 触发的新运行
-  只在 Assistant Server 控制台显示单个 `tqdm` 整体任务进度条，不打印 Task、evaluation、Evaluator
-  阶段明细或结束状态。状态查询和停止命令仍可直接输入，但服务器启动时不额外打印命令提示：
-
-  ```bash
-  eval status
-  eval stop
-  eval status <trigger_id>
-  eval stop <trigger_id>
-  ```
-
-  不传 `trigger_id` 时默认操作最新运行。`eval stop` 发送 `SIGTERM` 前会核对回执中的完整启动命令
-  和独立进程组，旧版无 `command` 回执不会被停止。
+  完整 Provider 配置和 `--allow-real-provider`。正式人工运行使用 PyCharm **Langfuse**、
+  `evals/agent/sync_langfuse_dataset.py` 和 Langfuse UI Remote Experiment；`run_runtime_audit` 不参与。
+  完整运行顺序、webhook 字段、环境变量、Score 与后台运行控制统一见
+  [`evals/README.md`](../evals/README.md)。实现位于
+  `evals/agent/`。
 - `scripts/run_improvement_lab.py`: offline, non-mutating improvement proposal runner.
 - `scripts/check_pilot_readiness.py` and `scripts/collect_pilot_evidence.py`:
   multi-agent pilot operator helpers.

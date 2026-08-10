@@ -2,6 +2,17 @@
 
 Last updated: 2026-08-06
 
+## Authority contract
+
+| 字段 | 内容 |
+| --- | --- |
+| 定位 | Runtime observability 与日常审计的当前权威 |
+| Owns | canonical trace、OTel/Langfuse 投影、redaction、runtime audit、Live Observation Rule |
+| Does not own | Dataset、Agent Task、Remote Experiment、Experiment task-level Score |
+| 源码与 schema 入口 | `src/assistant_agent/observability/`、`scripts/run_runtime_audit.py` |
+| 验证入口 | `docs/authority.toml` 中 `runtime-observability.verification` |
+| 相邻 authority | Agent eval 见 [`../evals/README.md`](../evals/README.md)；真实运行诊断见 [`observability-diagnosis-runbook.md`](observability-diagnosis-runbook.md) |
+
 本文档是 `assistant_agent` 当前 observability 架构、trace 语义、日志边界与
 redaction 规则的权威入口。它定义系统必须保留的稳定机器事实和各观测面的职责，不复制
 Pydantic 字段全集、脚本参数全集或外部 UI 的展示细节。
@@ -349,14 +360,15 @@ Langfuse 的完整 trace、observation 和 Score 为主证据；本地 `.data/gr
 trace/run、时间、terminal 与 event count 的完整性 manifest。只有 Langfuse 可读但缺少相应 trace
 时，才把有界、redacted 的本地 timeline 作为 fallback evidence；Langfuse 不可读只记录
 infrastructure unknown，不能把本地记录误报为导出缺失。本地 JSONL 不存在、不可读或只含无效记录时
-必须标记 local completeness unavailable；远端 Trace 非空时仍完成远端审计并在日报限制中公开该缺口，
-远端也为空时则审计失败，不能认证为空日或推进连续状态。
+必须标记 local completeness unavailable；远端 Trace 非空时仍完成远端审计并在日报限制中公开该缺口。
+Langfuse 查询成功且远端 Trace 为空时，成功记录“昨天无运行trace”，本地缺口只作为限制公开，不调用
+Codex，也不把正常空窗口写成“审计没有完成”。只有 Langfuse 主证据不可读时才不能认证为空日。
 
 审计以 `state/watermark.json` 记录最近一次自动审计成功的自然日。无参数 `run` 永远只考虑刚结束的
 昨天：昨天尚未成功时审计昨天，昨天已经成功时不重复运行；错过调度、机器离线或前一日失败都不会
 自动补跑更早日期。`run --date YYYY-MM-DD` 默认同样幂等：该日期已完成时直接跳过；确需重新审计时必须
-显式使用 `run --date YYYY-MM-DD --force`，`--force` 不允许省略日期。若某日已确认
-Langfuse 和本地完整性来源都可读、且没有任何 trace 或本地证据，会写入一份极简中文成功日报，
+显式使用 `run --date YYYY-MM-DD --force`，`--force` 不允许省略日期。若某日 Langfuse 查询成功且没有
+任何远端 trace 或本地 fallback evidence，会写入一份极简中文成功日报，
 并且不调用 Codex。显式日期命令只
 以当前 registry 建立只读 lifecycle refresh view 并刷新对应 Markdown，不写 `state/issues.json`，也不
 改变连续 watermark。即使是历史日期，伪造的 Trace/Score、未知 issue 直接进入
@@ -445,23 +457,21 @@ userinfo 清洗边界。
 
 | Score | 目标与来源 |
 | --- | --- |
-| `assistant_agent.quality.response_quality` | 最终回答质量；同一个原生 Evaluator family 由 Live Rule 和 Experiment Rule 分别触发 |
-| `assistant_agent.quality.grounding` | 最终回答对工具/上下文/终态证据的忠实度；同一个原生 Evaluator family 覆盖 live 与 experiment |
+| `assistant_agent.quality.response_quality` | 日常 Trace 最终文本回答质量；来自 Live Observation Evaluator |
+| `assistant_agent.quality.grounding` | 日常 Trace 最终文本对工具/上下文证据的忠实度；来自 Live Observation Evaluator |
 | `assistant_agent.quality.tool_result_quality` | 单个 `tool.execute` observation 的结果语义质量；只使用 observation evaluator |
 | `assistant_agent.quality.memory_extraction` | 单个 `memory.turn_ingestion` observation 的长期记忆提取质量 |
 | `assistant_agent.quality.memory_recall` | 具有实际召回证据的 memory/LLM observation 的召回质量；证据不足时保持 missing/unsupported，不伪造失败 |
-| `assistant_agent.quality.task_conformance` | 仅 Experiment；Environment oracle 与 Mission objective Rule 的任务符合度 |
 
 Score name 只表达测量对象；`source`、judge/model、evaluator version、live/experiment mode 放 Score
 metadata。terminal、Tool 调用成败、event count、latency 等已知运行事实保留为 observation/metadata，
-不伪装成质量 Score。跨多个 observation 的 `tool_use` 轨迹判断第一阶段只进入 Codex 报告。
+不伪装成质量 Score。跨多个 observation 的 `tool_use` 轨迹判断第一阶段只进入 Codex 报告。Experiment
+task-level Score、Dataset 和运行契约统一由 [`evals/README.md`](../evals/README.md) 定义，本文件不复制。
 
-Langfuse 日常 evaluator 使用原生 **Live Observations** 和 observation name/type filter；首次创建默认
-100% sampling，之后 `enabled/sampling` 由 Langfuse UI 作为运维状态管理。仓库 reconcile 只更新
-evaluator reference、target、filter 和 mapping，不覆盖 UI 中的启停或采样。`response_quality` 与
-`grounding` 还各有一条面向 `assistant-agent-regression` 和
-`assistant-agent-evaluator-calibration` Dataset 的 Experiment Rule；两类 Rule 引用同一个 Evaluator
-family，因此 prompt、模型和输出定义只有一个权威版本。不要新建 deprecated trace-level evaluator。
+Langfuse 日常 evaluator 只使用原生 **Live Observations** 和 observation name/type filter；首次创建
+默认 100% sampling，之后 `enabled/sampling` 由 Langfuse UI 作为运维状态管理。仓库 reconcile 只更新
+evaluator reference、target、filter 和 mapping，不覆盖 UI 中的启停或采样。该配置属于日常 Trace
+评分，不创建 Experiment Rule，也不启动 Dataset Experiment。不要新建 deprecated trace-level evaluator。
 Langfuse 可按 `gen_ai.tool.name` 将 Tool execution SPAN 显示为
 `shopping_search` 等具体工具名，因此 `tool_result_quality` 不依赖 observation name，而过滤 SPAN 且
 metadata `assistant_agent.observation_kind=tool_execution`；该稳定标记由 canonical
@@ -493,11 +503,17 @@ trace content。Evaluator/rule 公共 API 当前仍标为 unstable，因此仓�
   --apply --allow-online-judge
 ```
 
-Evaluator family 使用 `assistant_agent.quality.*` canonical 名称；Rule 使用 `.live` 与 `.experiment`
-后缀表达触发目标。入口创建缺失项；若检测到早期 canonical 或 `assistant-agent-live-*` Rule，则通过
-同一 Rule ID 原地迁移为 `.live`，不删除或回写历史 Score。`memory_extraction` Rule 额外过滤
+Evaluator 与 Live Observation Rule 使用同一个 `assistant_agent.quality.*` canonical 名称。入口只创建
+缺失的五条日常 Rule；若检测到早期 `assistant-agent-live-*` Rule 或错误版本创建的
+`assistant_agent.quality.*.live` Rule，则通过同一 Rule ID 原地迁移为 canonical 名称，不删除或回写
+历史 Score。`memory_extraction` Rule 额外过滤
 `assistant_agent.memory_semantic_evidence=available`，因此只有
 显式启用本地 memory trace content 且 observation 同时包含原对话和 Mem0 changes 时才调用 Judge。
+
+`scripts/run_runtime_audit.py` 无论使用 `run` 还是一次性 `configure-evaluators`，都不负责启动 Langfuse、
+同步 Dataset 或运行 Experiment；前者只读审计已有 Trace，后者只配置供日常 Trace 使用的 Live
+Observation Rule。Experiment 的启动、Dataset 同步和 UI 配置只查阅
+[`evals/README.md`](../evals/README.md#从-langfuse-ui-触发-cli)。
 
 每日调度使用仓库提供的 user unit 模板；安装/启用属于 operator 动作，不由审计器自行修改。unit
 必须链接到已部署的主 checkout（默认 `%h/pycharm_project/assistant_agent`），不得链接到临时 worktree。
@@ -519,11 +535,10 @@ assistant-agent-runtime-audit.timer` 查看下次运行，用
 仍保留自己的显式 timeout。
 
 历史 `agent_eval.dimension.*` 和默认关闭的 legacy runtime Score 不做破坏性清理；它们仅作为历史数据
-保留。新 Experiment 与日常 evaluator 必须使用上述 canonical 名称，迁移后的完整性检查也只认新名称。
-
-text turn score、trajectory diagnostic 和 Agent Experiment 都必须从已记录事实派生。grader 的真实调用、
-Dataset 发布和 Experiment 运行由 [`../evals/README.md`](../evals/README.md) 管理；不得因 observability
-默认开启而自动调用真实 Provider 或 judge。
+保留。`configure-evaluators --apply` 会把旧 `assistant-agent-live-*` 规则以及错误版本创建的
+`assistant_agent.quality.*.live` 规则原地改回上述 canonical 名称，避免重复日常评分；它不会自动删除
+错误版本可能创建的 `*.experiment` 规则，operator 应按 eval 权威文档在 Langfuse UI 中确认后禁用或
+删除。迁移后的日常审计完整性检查只认上述 canonical 名称。
 
 ## 长期不变量
 
