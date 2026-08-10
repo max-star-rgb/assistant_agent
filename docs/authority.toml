@@ -76,6 +76,7 @@ source_globs = [
   "src/assistant_agent/automation/durable_tasks/**",
   "src/assistant_agent/api/routes_workflows.py",
   "src/assistant_agent/runtime/action_validator.py",
+  "src/assistant_agent/runtime/tool_execution_backend.py",
   "src/assistant_agent/runtime/tool_executor.py",
 ]
 thin_references = ["README.md", "scripts/README.md"]
@@ -245,31 +246,30 @@ exclusive_literals = []
 exclusive_allowlist = []
 
 [[domains]]
-id = "agent-eval"
+id = "release-review-eval"
 authority = "evals/README.md"
 read_when = [
-  "system eval 或 Agent Task eval",
-  "Langfuse Dataset、Experiment、Remote webhook 或 Score 完整性",
+  "system eval 或上线前 Release Review",
+  "Langfuse Dataset、Experiment、Release Review webhook 或 Score 完整性",
 ]
 source_globs = [
-  "evals/agent/**",
+  "evals/release_review/**",
   "evals/system/**",
   "src/assistant_agent/evaluation/**",
   "src/assistant_agent/api/routes_eval_experiments.py",
-  "scripts/run_agent_evals.py",
+  "scripts/run_release_review.py",
   "deploy/langfuse_eval_webhook/**",
-  "tests/tdd/eval-convergence/**",
+  "tests/tdd/release-review-native-experiment/**",
 ]
 thin_references = [
   "docs/observability-harness.md",
   "scripts/README.md",
 ]
 verification = [
-  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/eval-convergence",
-  "python evals/agent/sync_langfuse_dataset.py --help",
+  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/release-review-native-experiment",
+  "python scripts/run_release_review.py --inspect",
 ]
 exclusive_literals = [
-  "assistant-agent-eval-webhook",
-  "ASSISTANT_AGENT_LANGFUSE_REMOTE_EXPERIMENT_SIGNING_SECRET",
+  "ASSISTANT_AGENT_LANGFUSE_RELEASE_REVIEW_SIGNING_SECRET",
 ]
 exclusive_allowlist = []

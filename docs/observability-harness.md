@@ -8,18 +8,20 @@ Last updated: 2026-08-06
 | --- | --- |
 | 定位 | Runtime observability 与日常审计的当前权威 |
 | Owns | canonical trace、OTel/Langfuse 投影、redaction、runtime audit、Live Observation Rule |
-| Does not own | Dataset、Agent Task、Remote Experiment、Experiment task-level Score |
+| Does not own | Release Review Dataset、Scenario、Experiment 与 task-level Score |
 | 源码与 schema 入口 | `src/assistant_agent/observability/`、`scripts/run_runtime_audit.py` |
 | 验证入口 | `docs/authority.toml` 中 `runtime-observability.verification` |
-| 相邻 authority | Agent eval 见 [`../evals/README.md`](../evals/README.md)；真实运行诊断见 [`observability-diagnosis-runbook.md`](observability-diagnosis-runbook.md) |
+| 相邻 authority | 上线前 Release Review 见 [`../evals/README.md`](../evals/README.md)；真实运行诊断见 [`observability-diagnosis-runbook.md`](observability-diagnosis-runbook.md) |
 
 本文档是 `assistant_agent` 当前 observability 架构、trace 语义、日志边界与
 redaction 规则的权威入口。它定义系统必须保留的稳定机器事实和各观测面的职责，不复制
 Pydantic 字段全集、脚本参数全集或外部 UI 的展示细节。
 
 真实测试、真实通话、真实 run/trace 或机器日志的具体定位步骤见
-[`observability-diagnosis-runbook.md`](observability-diagnosis-runbook.md)。评估数据集、Experiment
-和 grader 的职责边界见 [`../evals/README.md`](../evals/README.md)。
+[`observability-diagnosis-runbook.md`](observability-diagnosis-runbook.md)。上线前 Release Review 的
+Dataset、Experiment 和发布证据边界见 [`../evals/README.md`](../evals/README.md)。两条链路可以复用
+`assistant_agent.quality.*` 的稳定正向 Score 语义，但不共享触发、案例、采样或发布状态：runtime audit
+持续检查线上日常 trace，Release Review 仅由 operator 在上线前显式运行。
 
 ## 定位与权威边界
 

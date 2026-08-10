@@ -3,7 +3,7 @@
 import asyncio
 import hashlib
 import json
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from pathlib import Path
 from time import perf_counter, time
 from typing import TYPE_CHECKING, Any, Literal
@@ -127,9 +127,6 @@ if TYPE_CHECKING:
     from assistant_agent.automation.durable_tasks.worker import TaskQuantumResult
 
 
-RegistryTransform = Callable[[ToolRegistry], ToolRegistry]
-
-
 def _trusted_memory_session_metadata(
     session_config: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
@@ -200,11 +197,8 @@ class AgentGraphRuntime:
         workflow_service: WorkflowService | None = None,
         workflow_artifact_store: LocalWorkflowArtifactStore | None = None,
         agent_id: str = DEFAULT_AGENT_ID,
-        registry_transform: RegistryTransform | None = None,
         tool_execution_backend: ToolExecutionBackend | None = None,
     ) -> None:
-        if registry is not None and registry_transform is not None:
-            raise ValueError("registry and registry_transform are mutually exclusive")
         self.agent_id = agent_id
         self.tool_execution_backend = tool_execution_backend
         self.config = config or ProviderConfig.from_env()
@@ -283,7 +277,7 @@ class AgentGraphRuntime:
                     ),
                     notification_outbox=self.notification_outbox_store,
                 )
-            production_registry = create_default_registry(
+            self.registry = create_default_registry(
                 self.config,
                 video_context_store=self.video_context_store,
                 realtime_video_memory_store=self.realtime_video_memory_store,
@@ -294,17 +288,6 @@ class AgentGraphRuntime:
                 durable_task_service=self.durable_task_service,
                 workflow_service=self.workflow_service,
             )
-            if registry_transform is None:
-                self.registry = production_registry
-            else:
-                transformed_registry = registry_transform(production_registry)
-                if not isinstance(transformed_registry, ToolRegistry):
-                    raise TypeError("registry_transform must return ToolRegistry")
-                if not transformed_registry.sealed:
-                    raise ValueError(
-                        "registry_transform must return a sealed ToolRegistry"
-                    )
-                self.registry = transformed_registry
             if self.durable_task_service is not None:
                 self.durable_task_service.registry = self.registry
         else:

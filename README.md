@@ -19,7 +19,7 @@ Core project docs:
 - Media-Agent WebSocket contract: [docs/media-agent-service-websocket.md](docs/media-agent-service-websocket.md)
 - 统一 SigLIP2 image/text embedding、短期视觉回忆与历史找物: [docs/multimodal-embedding-architecture.md](docs/multimodal-embedding-architecture.md)
 - Core pytest、临时 TDD 与 incubating 边界: [tests/README.md](tests/README.md)
-- System/Agent eval 与 incubating 运行规则: [evals/README.md](evals/README.md)
+- System eval、上线前 Release Review 与 incubating 运行规则: [evals/README.md](evals/README.md)
 
 ## Local Environment
 

@@ -252,10 +252,7 @@ MULTIMODAL_AGENT_PROVIDER_MODE=mock /home/lenovo1/miniconda3/envs/hello_agent/bi
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python \
   scripts/run_system_multimodal_embedding_eval.py --dry-run
 
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_agent_evals.py \
-  --inspect --task visual_memory_last_seen_object
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_agent_evals.py \
-  --inspect --task visual_memory_not_found_honesty
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_release_review.py --inspect
 ```
 
 真实本地 CUDA 使用 `--allow-local-model`；真实 Chat/Judge 与 Langfuse publish/run 使用各自 operator gate。

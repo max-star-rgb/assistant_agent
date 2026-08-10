@@ -19,8 +19,8 @@ Langfuse 只补充 observation 层级和 Score。
 Observed behavior: 实际请求与行为
 Comparison: 成功和失败的差异
 Attribution: Agent、依赖、grader 或未知
-Task candidate: 可独立判断的 capability
+Scenario candidate: 可独立判断的 capability
 ```
 
-从 Trace 派生 Task 时，使用脱敏的合成请求和受控 Environment 重现行为；不要复制用户数据、原始
+从 Trace 派生 Scenario 时，使用脱敏的合成请求和 Decision fixture 或隔离 Staging 重现行为；不要复制用户数据、原始
 Provider 响应或历史目标回答。

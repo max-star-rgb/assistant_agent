@@ -8,7 +8,7 @@ Last updated: 2026-07-31
 | --- | --- |
 | 定位 | 真实 run、trace、通话与机器日志的操作诊断权威 |
 | Owns | trace_id 取证顺序、Langfuse/local 查询、证据降级、归因格式与敏感信息处理 |
-| Does not own | TraceEvent schema、采样/export、日常 audit、Agent eval 与修复实现 |
+| Does not own | TraceEvent schema、采样/export、日常 audit、Release Review 与修复实现 |
 | 源码与 schema 入口 | `src/assistant_agent/observability/trace_query.py`、`trace_store.py`、delivery/latency readers |
 | 验证入口 | `docs/authority.toml` 中 `observability-diagnosis.verification` |
 | 相邻 authority | Trace 契约与日常审计见 [`observability-harness.md`](observability-harness.md)；评测见 [`../evals/README.md`](../evals/README.md) |

@@ -1,4 +1,4 @@
-"""Inspect and stop Langfuse-triggered Agent eval runs from the server console."""
+"""Inspect and stop Langfuse-triggered Release Review runs."""
 
 from __future__ import annotations
 
@@ -182,7 +182,7 @@ def request_remote_run_stop(
     status = receipt.get("status")
     if status in TERMINAL_REMOTE_RUN_STATUSES:
         raise RemoteRunControlError(
-            f"Remote Agent eval run is already {status}: "
+            f"Remote Release Review run is already {status}: "
             f"{receipt.get('trigger_id')}."
         )
     if status == "stop_requested":
@@ -196,13 +196,13 @@ def request_remote_run_stop(
         and all(isinstance(part, str) and part for part in expected_command)
     ):
         raise RemoteRunControlError(
-            "Remote Agent eval receipt has no verifiable launch command; "
+            "Remote Release Review receipt has no verifiable launch command; "
             "refusing to signal the process."
         )
     actual_command = list((process_cmdline or _process_cmdline)(pid))
     if actual_command != expected_command:
         raise RemoteRunControlError(
-            f"Process {pid} command does not match the recorded Agent eval run; "
+            f"Process {pid} command does not match the recorded Release Review run; "
             "refusing to signal it."
         )
     pgid = (process_group_id or os.getpgid)(pid)
@@ -407,7 +407,7 @@ def _load_receipt(
         receipts.append((parsed_created_at, path, payload))
     if not receipts:
         target = trigger_id or "latest"
-        raise RemoteRunNotFound(f"Remote Agent eval run not found: {target}.")
+        raise RemoteRunNotFound(f"Remote Release Review run not found: {target}.")
     _, path, receipt = max(receipts, key=lambda item: item[0])
     return path, receipt
 
@@ -423,7 +423,7 @@ def _required_string(receipt: dict[str, Any], field: str) -> str:
     value = receipt.get(field)
     if not isinstance(value, str) or not value:
         raise RemoteRunControlError(
-            f"Remote Agent eval receipt has invalid {field}."
+            f"Remote Release Review receipt has invalid {field}."
         )
     return value
 
@@ -432,7 +432,7 @@ def _required_positive_int(receipt: dict[str, Any], field: str) -> int:
     value = receipt.get(field)
     if isinstance(value, bool) or not isinstance(value, int) or value <= 1:
         raise RemoteRunControlError(
-            f"Remote Agent eval receipt has invalid {field}."
+            f"Remote Release Review receipt has invalid {field}."
         )
     return value
 
@@ -446,7 +446,7 @@ def _process_cmdline(pid: int) -> list[str]:
         raw = Path(f"/proc/{pid}/cmdline").read_bytes()
     except OSError as exc:
         raise RemoteRunControlError(
-            f"Cannot inspect remote Agent eval process {pid}."
+            f"Cannot inspect remote Release Review process {pid}."
         ) from exc
     return [
         part.decode("utf-8", errors="surrogateescape")

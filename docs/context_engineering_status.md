@@ -320,7 +320,7 @@ Canonical `context.build.started` / `context.build.finished` 记录 context 编�
 
 `tests/core/integration/test_context_lifecycle.py` 保护已登记的 context core invariant，包括预算、
 compaction 失败分级、compiled accounting 和 native tool call/result 配对。更具体的 feature 检查
-位于 `tests/tdd/**` 或 `evals/system/incubating/**`；tokenizer 误差和摘要语义质量属于 system/Agent eval，
+位于 `tests/tdd/**` 或 `evals/system/incubating/**`；tokenizer 误差和摘要语义质量属于 system eval 或上线前 Release Review，
 pytest 不调用真实 Provider。
 
 相关权威：

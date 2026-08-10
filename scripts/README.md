@@ -101,19 +101,11 @@ For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
   `.data/evals/system/multimodal_embedding/`，不保存向量、文本、图片内容或媒体路径。dry-run 还列出
   固定 5 FPS、latest-wins、纯语义选帧、VLM 文本索引和无 query-time VLM 的架构检查面；流水线行为
   由离线 pytest 验证。
-- `scripts/run_agent_evals.py`: Task 中心的 Agent eval 稳定入口。`--inspect`
-  只读显示 Task 和 Environment；`--calibrate` 把人工正反 Evidence 发布到校准 Dataset，并校准
-  Langfuse 原生 Experiment Evaluator；
-  `--publish` 把所选 Task 薄发布到统一 Langfuse Dataset；`--run` 通过活动
-  `AgentGraphRuntime` 创建 Experiment、Trace 和 canonical `assistant_agent.quality.*` Score。用可重复
-  `--task` 精确选择，或用 `--suite` 选择集合。真实 Chat 调用同时要求 real 模式、
-  完整 Provider 配置和 `--allow-real-provider`。`--run` 使用 production Tool Registry；除 Environment
-  明确声明的同名 replacement 外，已配置 Tool 保持真实实现，可能产生外部调用和持久化写入且不会
-  自动回滚。正式人工运行使用 PyCharm **Langfuse**、
-  `evals/agent/sync_langfuse_dataset.py` 和 Langfuse UI Remote Experiment；`run_runtime_audit` 不参与。
-  完整运行顺序、webhook 字段、环境变量、Score 与后台运行控制统一见
-  [`evals/README.md`](../evals/README.md)。实现位于
-  `evals/agent/`。
+- `scripts/run_release_review.py`：上线前 Release Review 的唯一稳定入口。`--inspect` 离线检查 Git YAML
+  scenario；`--sync` 同步固定 Langfuse Dataset；`--run` 以一个原生 Dataset Run / Experiment 执行
+  Decision fixture backend 与隔离 Staging；`--record-decision` 保存 operator 的人工发布决定。真实运行
+  必须同时显式允许 real Provider 和 Staging 副作用，不会静默回退 mock。Dataset、Score、webhook、
+  清理和产物契约统一见 [`evals/README.md`](../evals/README.md)。日常 `run_runtime_audit` 不参与这条链路。
 - `scripts/run_improvement_lab.py`: offline, non-mutating improvement proposal runner.
 
 ## Specialized integrations

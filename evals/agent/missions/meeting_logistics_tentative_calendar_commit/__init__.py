@@ -1,1 +1,0 @@
-"""Controlled meeting-logistics Mission."""

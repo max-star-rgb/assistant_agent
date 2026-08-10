@@ -131,7 +131,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         _require_args(parser, args, "release_id", "model", "prompt_version")
         if not args.allow_real_provider:
             parser.error("--run requires --allow-real-provider")
-        if any(item.phase == "staging" for item in scenarios) and not args.allow_staging_side_effects:
+        selected_ids = tuple(args.scenario_ids) if args.scenario_ids else None
+        if _selection_requires_staging(scenarios, selected_ids) and not args.allow_staging_side_effects:
             parser.error("--run with Staging scenarios requires --allow-staging-side-effects")
         config = ProviderConfig.from_env()
         _validate_real_config(config, args.model)
@@ -139,7 +140,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             release_id=args.release_id,
             model=args.model,
             prompt_version=args.prompt_version,
-            scenario_ids=tuple(args.scenario_ids) if args.scenario_ids else None,
+            scenario_ids=selected_ids,
             run_name=args.run_name,
         )
         service = _build_service(
@@ -166,6 +167,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         )
         return 2
+
+
+def _selection_requires_staging(
+    scenarios: Sequence[object], scenario_ids: tuple[str, ...] | None
+) -> bool:
+    selected = None if scenario_ids is None else set(scenario_ids)
+    return any(
+        getattr(item, "phase", None) == "staging"
+        and (selected is None or getattr(item, "id", None) in selected)
+        for item in scenarios
+    )
 
 
 def _build_service(

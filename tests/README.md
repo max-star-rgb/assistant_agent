@@ -6,7 +6,7 @@
 | --- | --- |
 | 定位 | pytest 目录归属、核心准入、验证范围与任务汇报的当前权威 |
 | Owns | core invariant、`tests/core`、临时 `tests/tdd`、incubating 边界、最小测试选择与汇报格式 |
-| Does not own | system/Agent eval 运行协议、具体 feature 行为、真实 Provider 验证、产品架构 |
+| Does not own | system eval/Release Review 运行协议、具体 feature 行为、真实 Provider 验证、产品架构 |
 | 源码与 schema 入口 | `pyproject.toml`、`tests/core/INVARIANTS.md`、`tests/core/`、`tests/tdd/` |
 | 验证入口 | `docs/authority.toml` 中 `test-policy.verification` |
 | 相邻 authority | Eval 分层见 [`../evals/README.md`](../evals/README.md)；Codex 测试 workflow 见 [`../.codex/skills/assistant-agent-development-testing/SKILL.md`](../.codex/skills/assistant-agent-development-testing/SKILL.md) |
@@ -76,7 +76,7 @@ mock/local/offline，不读取真实 `.env`，不访问网络、真实 Provider�
 
 incubating 不是正式真实 system eval。`checks_*.py` 必须保持 offline；真实 Tool、Context、Memory
 或 Provider 连通性必须使用 `evals/system` 的正式 runner、real mode、完整配置和 operator 显式确认。
-当正式 system eval、Agent eval Experiment 或生产证据已稳定覆盖对应事实后，incubating feature
+当正式 system eval、Release Review Experiment 或生产证据已稳定覆盖对应事实后，incubating feature
 可以整目录删除，不应修改 core。
 
 ## Core 准入决策
@@ -91,7 +91,8 @@ incubating 不是正式真实 system eval。`checks_*.py` 必须保持 offline�
 4. 如果有真实 bug，先证明它是框架 bug，并说明现有 core 安全网为何漏检；明确关联 invariant ID 后，
    才扩展该 invariant 已有的 core 测试。
 5. 如果只是 node/provider 专项风险，且有持续观察价值，放入独立
-   `evals/system/incubating/<feature>/`；模型选择、参数语义和回答质量放入 `evals/agent`。
+   `evals/system/incubating/<feature>/`；待发布模型的工具决策、参数语义和回答质量放入
+   `evals/release_review`。
 6. 新增 core invariant 属于明确的框架契约决策：先登记 ID 和负责文件，再添加最小测试。覆盖率、
    文件变动或评审要求本身不是准入证据。
 
@@ -155,7 +156,7 @@ MULTIMODAL_AGENT_PROVIDER_MODE=mock \
 invariant 发生变化、用户明确要求，或者定向验证暴露出无法界定的核心影响时，才运行裸 pytest。
 不得仅因任务结束或 skill 被触发而机械运行裸 pytest。
 
-真实 Provider 永不进入 pytest。正式 system eval 和 Agent eval 的命令、安全门禁及结果权威见
+真实 Provider 永不进入 pytest。正式 system eval 和 Release Review 的命令、安全门禁及结果权威见
 [`evals/README.md`](../evals/README.md)。
 
 ## 任务汇报
@@ -190,4 +191,4 @@ Core invariant: unchanged.
 Tests: not added because the change does not affect a stable framework contract.
 ```
 
-若调用了真实 Provider，必须在 pytest 汇报之外另列 system/Agent eval 的范围、门禁和结果。
+若调用了真实 Provider，必须在 pytest 汇报之外另列 system eval/Release Review 的范围、门禁和结果。

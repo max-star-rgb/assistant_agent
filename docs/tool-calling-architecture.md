@@ -250,10 +250,11 @@ Registry，并基于注册记录与 ToolSpec 生成稳定 generation。seal 后�
 批量注册先验证整批贡献，再原子提交。重复 Tool name、无效输入契约、Plugin 协议错误或装配失败
 必须 fail closed，不能留下半装配 Registry。
 
-正式 Agent eval 复用 Runtime 的 production Registry composition root，不自行追加一套模拟目录。
-Environment 如需确定性故障或固定证据，只能在 production Registry 创建后、Executor 绑定前，通过
-`registry_transform` 对已存在 Tool 做同名原子 replacement；replacement 必须保持完整 `ToolSpec`，
-未声明名称继续使用 production 实现。静态 inspect 不装配真实 Registry，正式运行时再完成该校验。
+上线前 Release Review 复用 Runtime 的 production Registry composition root，不自行追加模拟目录或
+同名 Tool。Decision 场景由受信 composition root 向 `ToolExecutor` 注入无副作用 execution backend；
+它只替换最终 invocation，Registry、ToolSpec、RunToolCatalog、Validator、状态生命周期和 trace 均保持
+生产路径。Staging 场景使用默认 Registry backend 和隔离预发布资源。具体运行契约见
+[`../evals/README.md`](../evals/README.md)。
 
 ### 4.2 Plugin
 
@@ -378,13 +379,18 @@ Validator 返回稳定 code、可解释 message、prompt-safe metadata 和仅供
 - 绑定每次调用的身份、请求状态和显式可信 runtime 输入；
 - 创建 Tool call record，发布 `tool.started`；
 - 按 `category` 和执行策略处理有限自动重试；
-- 通过 Registry 调用 `tool.run()`；
+- 默认通过 `RegistryExecutionBackend` 调用 Registry 中的 `tool.run()`；受信 Release Review Decision
+  可在同一 Executor 内使用无副作用 `ScenarioExecutionBackend`；
 - 记录真实墙钟延迟、结果、恢复决策与 terminal event；
 - 把成功或失败提交回 `AgentState`。
 
 一次 Executor 自动重试保持相同 tool call 和输入；模型看到 observation 后修改参数再次调用属于新的
 assistant action。通用 Executor 不维护跨进程幂等 ledger；外部写入需要的幂等键由领域 adapter、
 协议或 durable task 提供。
+
+execution backend 只能由进程内受信 composition root 显式注入，不能由请求正文、metadata、模型输出或
+Dataset 内容选择。无论使用哪种 backend，Executor 都必须先完成 Registry contract lookup、runtime
+binding、生命周期事件和状态提交；生产与 Staging 默认 backend 始终实际调用 Registry Tool。
 
 assistant loop 在 decision guard 与实际执行边界都读取 `ToolSpec.repeat_policy`，从而覆盖 sequential
 与同一 Provider turn 的批量 tool calls。所有 category 的成功调用都会登记规范化调用签名；

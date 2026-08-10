@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
-from evals.release_review.cli import main
+from evals.release_review.cli import _selection_requires_staging, main
 from evals.release_review.report import (
     ApprovedBaseline,
     ReleaseItemAssessment,
@@ -198,3 +198,14 @@ def test_cli_inspect_is_offline_and_record_decision_is_explicit(
         == 0
     )
     assert (tmp_path / "artifacts" / "release-1" / "decision.json").exists()
+
+
+def test_staging_permission_gate_only_considers_selected_scenarios() -> None:
+    scenarios = (
+        SimpleNamespace(id="decision-only", phase="decision"),
+        SimpleNamespace(id="staging", phase="staging"),
+    )
+
+    assert _selection_requires_staging(scenarios, ("decision-only",)) is False
+    assert _selection_requires_staging(scenarios, ("staging",)) is True
+    assert _selection_requires_staging(scenarios, None) is True

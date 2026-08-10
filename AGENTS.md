@@ -7,8 +7,8 @@
 项目名、发行名和 Python 包名均为 `assistant_agent`，源码在 `src/assistant_agent/`。默认 Python 使用本机 conda 环境 `hello_agent`，除非用户明确要求，不要重命名环境路径。
 
 本项目是本地优先的助理 Agent。默认运行和 pytest 使用
-`MULTIMODAL_AGENT_PROVIDER_MODE=mock`。只有 `evals/system` 或明确的 `evals/agent`
-真实 Task eval 可以使用真实 Provider，并且必须通过
+`MULTIMODAL_AGENT_PROVIDER_MODE=mock`。只有 `evals/system` 或明确的 `evals/release_review`
+上线前真实评审可以使用真实 Provider，并且必须通过
 `MULTIMODAL_AGENT_PROVIDER_MODE=real`、本机未跟踪配置和对应 operator 确认开关显式启用。
 
 `docs/authority.toml` 是全部 Agent-facing 当前文档的机器可读路由与 owner 清单。开始工程任务时：
@@ -74,8 +74,8 @@ manifest 只用于 coding agent 选择工程文档，不进入产品 Runtime，�
 | `tests/core/` | 永久、默认收集的离线核心 pytest；只保护已登记 core invariant |
 | `tests/tdd/*/` | 每个 feature 独立、显式运行且可由用户手动删除的临时 RED/GREEN pytest；不自动晋升 core |
 | `evals/system/` | 正式真实能力验证，以及 `incubating/<feature>/` 中可删除的节点专项检查；边界与结果权威见 `evals/README.md` |
-| `evals/agent/` | Task 中心的端到端 Agent 行为评估；Git 定义 Task/Environment/Grader，Langfuse 保存 Dataset、Experiment、Trace 和 Score |
-| `scripts/` | 服务、demo、system eval 和 Agent task eval 的稳定命令入口；索引见 `scripts/README.md` |
+| `evals/release_review/` | 上线前 Agent 行为评审；Git YAML 定义 Decision/Staging 场景，Langfuse 保存 Dataset、Experiment、Trace 和 Score |
+| `scripts/` | 服务、demo、system eval 和 Release Review 的稳定命令入口；索引见 `scripts/README.md` |
 | `docs/*.md` | 当前架构、接口和状态权威文档 |
 | `docs/development/`, `docs/superpowers/`, `docs/interview/` | 非默认材料：开发阶段记录、历史计划/spec、面试资料；不作为当前规则入口 |
 | `.codex/skills/` | 少量项目 workflow、检查清单和脚本；不作为事实权威 |
@@ -112,7 +112,7 @@ manifest 只用于 coding agent 选择工程文档，不进入产品 Runtime，�
 永久、默认 pytest 只有 `tests/core`；`tests/tdd/*/` 下的 feature 仅用于显式临时 RED/GREEN；
 `evals/system/incubating/<feature>` 是可删除的节点专项区。是否新增测试、目录归属、最小验证范围和
 `Core invariant:` / `Tests:` 汇报格式统一以 `tests/README.md` 为准。正式真实能力验证见
-`evals/system`，端到端 Agent 行为质量见 `evals/agent`；不得用 mock fallback、路径混放或重复
+`evals/system`，上线前 Agent 行为质量见 `evals/release_review`；不得用 mock fallback、路径混放或重复
 runner 伪装成彼此。`AGENTS.md` 只提供入口，不复制具体规则。
 
 ## 9. 业务专项

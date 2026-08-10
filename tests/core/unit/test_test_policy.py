@@ -22,7 +22,7 @@ INVARIANTS_PATH = CORE_ROOT / "INVARIANTS.md"
 PYTEST_FILE_PATTERN = re.compile(r"(?:test_.*|.*_test)\.py$")
 FORBIDDEN_IMPORTS = (
     "assistant_agent.tools.plugins.builtin",
-    "evals.agent",
+    "evals.release_review",
     "assistant_agent.providers",
     "assistant_agent.memory.mem0",
 )
