@@ -89,6 +89,17 @@ class WriteProbeTool(ProbeTool):
     category = "write"
 
 
+class InvocationProbeTool(ProbeTool):
+    name = "invocation_probe_tool"
+
+    def __init__(self) -> None:
+        self.invocations = 0
+
+    def _run(self, input: ProbeInput, context: ToolContext) -> ToolResult:
+        self.invocations += 1
+        return super()._run(input, context)
+
+
 class ValidatedProbeTool(ProbeTool):
     name = "validated_probe_tool"
 
@@ -312,6 +323,22 @@ def test_write_execution_has_one_structured_terminal_result() -> None:
     assert len(state.tool_results) == 1
     assert len(terminal_events) == 1
     assert terminal_events[0].type == "tool_finished"
+
+
+@pytest.mark.core_invariant("TOOL-001")
+def test_default_executor_invokes_registered_tool_once() -> None:
+    tool = InvocationProbeTool()
+    state = AgentState.from_request(_request())
+
+    result = ToolExecutor(registry=sealed_registry(tool)).run_tool(
+        state,
+        "step-sentinel",
+        tool.name,
+        {"value": "value-sentinel"},
+    )
+
+    assert tool.invocations == 1
+    assert result.data == {"value": "value-sentinel"}
 
 
 @pytest.mark.core_invariant("TOOL-001")

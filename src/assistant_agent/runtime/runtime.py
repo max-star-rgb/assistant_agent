@@ -19,6 +19,7 @@ from assistant_agent.runtime.run_phase import RunPhase
 from assistant_agent.runtime.state import AgentError, AgentState
 from assistant_agent.runtime.event_stream import AgentRunStream, AsyncQueueEventSink
 from assistant_agent.runtime.tool_executor import ToolExecutor
+from assistant_agent.runtime.tool_execution_backend import ToolExecutionBackend
 from assistant_agent.runtime.provider_streaming import ProviderStreamingTurnRunner, supports_async_streaming_chat
 from assistant_agent.memory.factory import create_long_term_memory_service
 from assistant_agent.memory.service import LongTermMemoryService
@@ -200,10 +201,12 @@ class AgentGraphRuntime:
         workflow_artifact_store: LocalWorkflowArtifactStore | None = None,
         agent_id: str = DEFAULT_AGENT_ID,
         registry_transform: RegistryTransform | None = None,
+        tool_execution_backend: ToolExecutionBackend | None = None,
     ) -> None:
         if registry is not None and registry_transform is not None:
             raise ValueError("registry and registry_transform are mutually exclusive")
         self.agent_id = agent_id
+        self.tool_execution_backend = tool_execution_backend
         self.config = config or ProviderConfig.from_env()
         self.video_context_store = video_context_store or InMemoryVideoContextStore()
         self.realtime_video_memory_store = realtime_video_memory_store or RealtimeVideoMemoryStore()
@@ -461,6 +464,7 @@ class AgentGraphRuntime:
                 "durable_task_service": self.durable_task_service,
                 "workflow_service": self.workflow_service,
             },
+            execution_backend=self.tool_execution_backend,
         )
         self._conditional_graph = build_conditional_agent_graph()
         self._react_graph = build_assistant_loop_graph()
@@ -664,6 +668,7 @@ class AgentGraphRuntime:
                 "workflow_service": self.workflow_service,
             },
             cancel_token=cancel_token,
+            execution_backend=self.tool_execution_backend,
         )
         state = AgentState.from_request(
             request,
@@ -1022,6 +1027,7 @@ class AgentGraphRuntime:
                 "durable_task_binding": binding,
             },
             cancel_token=cancel_token,
+            execution_backend=self.tool_execution_backend,
         )
         try:
             raise_if_cancelled(cancel_token, phase="durable_quantum_start", state=state)

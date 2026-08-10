@@ -16,6 +16,10 @@ from assistant_agent.runtime.legacy_tool_mapping import (
     canonical_capability_for_action,
     canonical_capability_for_tool,
 )
+from assistant_agent.runtime.tool_execution_backend import (
+    RegistryExecutionBackend,
+    ToolExecutionBackend,
+)
 from assistant_agent.runtime.recovery import RecoveryPolicy, ToolFailureMode, classify_error
 from assistant_agent.runtime.state import AgentState
 from assistant_agent.tools.capability_output import contract_summary
@@ -78,6 +82,7 @@ class ToolExecutor:
         execution_policy: ProviderExecutionPolicy | None = None,
         context_metadata: dict[str, Any] | None = None,
         cancel_token: Any | None = None,
+        execution_backend: ToolExecutionBackend | None = None,
     ) -> None:
         self.registry = registry or create_default_registry()
         self.event_sink = event_sink
@@ -85,6 +90,7 @@ class ToolExecutor:
         self.execution_policy = execution_policy or ProviderExecutionPolicy.from_env()
         self.context_metadata = dict(context_metadata or {})
         self.cancel_token = cancel_token
+        self.execution_backend = execution_backend or RegistryExecutionBackend()
 
     def run_tool(
         self,
@@ -541,7 +547,12 @@ class ToolExecutor:
         context: ToolContext,
     ) -> ToolResult:
         try:
-            return self.registry.run(tool_name, tool_input, context)
+            return self.execution_backend.run(
+                self.registry,
+                tool_name,
+                tool_input,
+                context,
+            )
         except AgentRunCancelled:
             raise
         except Exception as exc:  # pragma: no cover - registry boundary
