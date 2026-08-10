@@ -106,12 +106,14 @@ Tool 清单、权限或可见性声明。未加载的 `activation=model` Skill �
 治理的 `load_skill` 加载直接相关正文。成功结果由 Runtime 转成会话级 `CapabilityGrant`，同一 run 的
 下一次模型调用以及同 owner/agent/session 的后续 turn 才可看到该 Skill 正文和仍满足本轮结构化资格的 Tool。
 
-`activation=context` Skill 不进入索引且不能由模型加载；它只在已有 entry/media/env 结构化事实满足
-受治理 Tool exposure 时由 Runtime 自动激活，适用于图片、视频帧和实时画面等上下文能力。Skill grant
-当前在会话内持续保留，不设 TTL 或清除；恢复时以当前 `skill.toml` 重建能力。调用方 metadata 不能
-伪造或预选 Skill。reference 只能从正文加载结果实际返回的 `reference_ids` 中按需加载，整个加载过程
-静默且不向用户播报。动态正文仍是 `ContextSection`；编译器渲染来源边界，但它不能绕过入口限制、
-媒体要求、ToolSpec policy、用户授权或 validator 结果。
+`activation=context` manifest 是内部 Context Toolset 声明，不进入 Skill 索引且不能由模型加载。它只在
+已有 entry/media/env 结构化事实满足受治理 Tool exposure 时由 Runtime 生成
+`ContextToolsetGrant`，适用于图片、视频帧和实时画面等上下文能力；该 grant 只暴露当前合格 Tool，
+不产生 active Skill 或 `skill_body`。`SkillGrant` 和 Context Toolset grant 当前都在会话内持续保留，
+不设 TTL 或清除；恢复时以当前 manifest 重建能力。调用方 metadata 不能伪造或预选能力。reference
+只能从 Skill 正文加载结果实际返回的 `reference_ids` 中按需加载，整个加载过程静默且不向用户播报。
+动态 Skill 正文仍是 `ContextSection`；编译器渲染来源边界，但它不能绕过入口限制、媒体要求、
+ToolSpec policy、用户授权或 validator 结果。
 
 ## 5. 对话与压缩
 

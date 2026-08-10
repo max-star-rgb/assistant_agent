@@ -5,7 +5,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from assistant_agent.runtime.capability_grants import CapabilityGrant
+from assistant_agent.runtime.capability_grants import CapabilityGrantValue
 
 
 class SessionCreate(BaseModel):
@@ -23,7 +23,7 @@ class SessionRecord(BaseModel):
     session_id: str = Field(min_length=1)
     title: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
-    capability_grants: list[CapabilityGrant] = Field(
+    capability_grants: list[CapabilityGrantValue] = Field(
         default_factory=list,
         exclude=True,
         repr=False,

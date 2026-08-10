@@ -212,11 +212,14 @@ Skill 认领的业务 Tool 默认不进入 `RunToolCatalog`。未激活的 `acti
 Registry 和本轮结构化资格的实际交集，后者保留其余声明项，使 MCP 未注册、入口限制或媒体条件不足
 等降级不会被误报为已授予能力。
 
-`activation=context` Skill 不可由 `load_skill` 调用；Runtime 只复用现有 entry/media/env 等结构化
-资格事实自动生成 context grant。当前 grant 以 `user_id + agent_id + session_id` 隔离并持久到整个会话，不设
-TTL 或主动清除；恢复时必须用当前 manifest 重建 Tool 列表，不能信任 session 中的旧 Tool 名称。
-`source=tool_search` 只保留为未来扩展枚举，当前没有搜索器或自定义 Tool Search 协议，也不会产生
-实际授权语义。
+`CapabilityGrant` 只保存共有身份和 Tool 集合，具体实例分为三类：模型加载程序性正文产生
+`SkillGrant(skill_id)`；entry/media/env 等结构化资格事实产生 `ContextToolsetGrant(toolset_id)`；未来可信
+Tool Search 产生 `DeferredToolsetGrant(toolset_id)`。context Toolset 不可由 `load_skill` 调用，也不进入
+active Skill 或正文投影，只扩展仍满足本轮结构化资格的 Tool。当前 grant 以
+`user_id + agent_id + session_id` 隔离并持久到整个会话，不设 TTL 或主动清除；恢复时必须用当前
+manifest 重建 Tool 列表，不能信任 session 中的旧 Tool 名称。旧 context 记录中的 `skill_id` 只在
+反序列化边界迁移为 `toolset_id`。`DeferredToolsetGrant` 当前只建立类型与持久化契约；在没有可信搜索器
+时继续 fail closed，不产生实际授权语义。
 
 ### 3.4 ToolResult 与模型观察
 

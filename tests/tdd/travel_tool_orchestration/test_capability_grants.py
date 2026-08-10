@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+import json
 from pathlib import Path
 from threading import Event, Lock
+from typing import Literal
+
+import pytest
+from pydantic import ValidationError
 
 from assistant_agent.skills.loading import (
     default_repo_root,
@@ -15,7 +20,11 @@ from assistant_agent.context.prompt_compiler import (
     PromptCompileRequest,
     PromptCompiler,
 )
-from assistant_agent.runtime.capability_grants import CapabilityGrant
+from assistant_agent.runtime.capability_grants import (
+    ContextToolsetGrant,
+    DeferredToolsetGrant,
+    SkillGrant,
+)
 from assistant_agent.runtime.session_store import (
     InMemorySessionStore,
     JsonlSessionStore,
@@ -160,6 +169,143 @@ def test_manifest_loader_requires_skill_toml(tmp_path: Path) -> None:
     assert [issue.code for issue in catalog.issues] == ["missing_skill_manifest"]
 
 
+def test_concrete_capability_grants_preserve_typed_subjects() -> None:
+    from assistant_agent.runtime.capability_grants import (
+        ContextToolsetGrant,
+        DeferredToolsetGrant,
+        SkillGrant,
+        validate_capability_grant,
+    )
+
+    skill = validate_capability_grant(
+        {
+            "source": "skill",
+            "grant_id": "skill:sentinel-skill",
+            "skill_id": "sentinel-skill",
+            "tool_names": ["sentinel_search"],
+        }
+    )
+    context_toolset = validate_capability_grant(
+        {
+            "source": "context",
+            "grant_id": "context:visual-context",
+            "toolset_id": "visual-context",
+            "tool_names": ["media_inspect"],
+        }
+    )
+    deferred_toolset = validate_capability_grant(
+        {
+            "source": "tool_search",
+            "grant_id": "tool-search:workspace",
+            "toolset_id": "workspace",
+            "tool_names": ["email_search"],
+        }
+    )
+    legacy_context_toolset = validate_capability_grant(
+        {
+            "source": "context",
+            "grant_id": "context:legacy-visual-context",
+            "skill_id": "legacy-visual-context",
+            "tool_names": ["media_inspect"],
+        }
+    )
+
+    assert isinstance(skill, SkillGrant)
+    assert skill.capability_id == "sentinel-skill"
+    with pytest.raises(ValidationError, match="frozen"):
+        skill.source = "context"  # type: ignore[assignment]
+    assert isinstance(context_toolset, ContextToolsetGrant)
+    assert context_toolset.capability_id == "visual-context"
+    assert isinstance(deferred_toolset, DeferredToolsetGrant)
+    assert deferred_toolset.capability_id == "workspace"
+    assert isinstance(legacy_context_toolset, ContextToolsetGrant)
+    assert legacy_context_toolset.model_dump(mode="json") == {
+        "source": "context",
+        "grant_id": "context:legacy-visual-context",
+        "agent_id": "agent.default",
+        "tool_names": ["media_inspect"],
+        "toolset_id": "legacy-visual-context",
+    }
+
+
+def test_context_toolset_grant_rejects_conflicting_legacy_subjects() -> None:
+    from assistant_agent.runtime.capability_grants import validate_capability_grant
+
+    with pytest.raises(ValueError, match="conflicting context Toolset subjects"):
+        validate_capability_grant(
+            {
+                "source": "context",
+                "grant_id": "context:visual-context",
+                "toolset_id": "visual-context",
+                "skill_id": "different-context",
+                "tool_names": ["media_inspect"],
+            }
+        )
+
+
+def test_capability_grant_boundaries_reject_unregistered_runtime_types(
+    tmp_path: Path,
+) -> None:
+    from assistant_agent.runtime.capability_grants import (
+        CapabilityGrant,
+        validate_capability_grant,
+    )
+
+    class UnregisteredSkillGrant(CapabilityGrant):
+        source: Literal["skill"] = "skill"
+        skill_id: str
+
+        @property
+        def capability_id(self) -> str:
+            return self.skill_id
+
+    unregistered = UnregisteredSkillGrant(
+        grant_id="skill:sentinel-skill",
+        skill_id="sentinel-skill",
+        tool_names=["sentinel_search"],
+    )
+    parsed = validate_capability_grant(unregistered)
+
+    assert type(parsed) is SkillGrant
+
+    state = AgentState.from_request(
+        UserRequest(user_id="owner-a", session_id="session-a", text="hello")
+    )
+    state.upsert_capability_grant(unregistered)  # type: ignore[arg-type]
+    assert type(state.capability_grants[0]) is SkillGrant
+
+    _write_manifest_skill(tmp_path, "sentinel-skill")
+    selection = select_prompt_tool_specs(
+        UserRequest(user_id="owner-a", session_id="session-a", text="hello"),
+        [ToolSpec(name="sentinel_search"), ToolSpec(name="load_skill")],
+        skill_catalog=load_repo_skill_descriptors(tmp_path),
+        capability_grants=[unregistered],  # type: ignore[list-item]
+    )
+    assert "sentinel_search" not in selection.run_tool_catalog.available_tool_names
+
+    _write_manifest_skill(
+        tmp_path,
+        "context-toolset",
+        activation="context",
+        governed_tools=("context_search",),
+    )
+    corrupted_skill = SkillGrant(
+        grant_id="skill:context-toolset",
+        skill_id="context-toolset",
+        tool_names=["context_search"],
+    ).model_copy(update={"source": "context"})
+    corrupted_selection = select_prompt_tool_specs(
+        UserRequest(user_id="owner-a", session_id="session-a", text="hello"),
+        [ToolSpec(name="context_search"), ToolSpec(name="load_skill")],
+        skill_catalog=load_repo_skill_descriptors(tmp_path),
+        capability_grants=[corrupted_skill],
+    )
+    assert (
+        "context_search"
+        not in corrupted_selection.run_tool_catalog.available_tool_names
+    )
+
+
 def test_session_store_upserts_capability_grants_with_owner_isolation() -> None:
     store = InMemorySessionStore()
     first_grant = {
@@ -212,6 +358,38 @@ def test_jsonl_session_store_restores_capability_grants(tmp_path: Path) -> None:
     assert [grant.grant_id for grant in restored.capability_grants] == [
         "skill:sentinel-skill"
     ]
+    assert isinstance(restored.capability_grants[0], SkillGrant)
+
+
+def test_jsonl_session_store_migrates_legacy_context_grant_subject(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "sessions.jsonl"
+    path.write_text(
+        json.dumps(
+            {
+                "user_id": "owner-a",
+                "session_id": "session-a",
+                "capability_grants": [
+                    {
+                        "source": "context",
+                        "grant_id": "context:visual-context",
+                        "agent_id": "agent.default",
+                        "skill_id": "visual-context",
+                        "tool_names": ["media_inspect"],
+                    }
+                ],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    restored = JsonlSessionStore(path).get("owner-a", "session-a")
+
+    assert restored is not None
+    assert isinstance(restored.capability_grants[0], ContextToolsetGrant)
+    assert restored.capability_grants[0].toolset_id == "visual-context"
 
 
 def test_session_grants_are_atomic_across_parallel_runs(monkeypatch) -> None:
@@ -415,11 +593,13 @@ def test_grant_controller_promotes_successful_load_skill_result(
     assert [grant.grant_id for grant in state.capability_grants] == [
         "skill:sentinel-skill"
     ]
+    assert isinstance(state.capability_grants[0], SkillGrant)
     stored = store.get("owner-a", "session-a")
     assert stored is not None
     assert [grant.grant_id for grant in stored.capability_grants] == [
         "skill:sentinel-skill"
     ]
+    assert isinstance(stored.capability_grants[0], SkillGrant)
 
 
 def test_catalog_hides_claimed_tools_until_capability_is_granted(
@@ -454,8 +634,7 @@ def test_catalog_hides_claimed_tools_until_capability_is_granted(
         tool_specs,
         skill_catalog=catalog,
         capability_grants=[
-            CapabilityGrant(
-                source="skill",
+            SkillGrant(
                 grant_id="skill:sentinel-skill",
                 skill_id="sentinel-skill",
                 tool_names=["sentinel_search"],
@@ -492,9 +671,9 @@ def test_tool_search_source_is_reserved_but_cannot_grant_tools(
         [ToolSpec(name="sentinel_search"), ToolSpec(name="load_skill")],
         skill_catalog=load_repo_skill_descriptors(tmp_path),
         capability_grants=[
-            CapabilityGrant(
-                source="tool_search",
+            DeferredToolsetGrant(
                 grant_id="tool-search:sentinel",
+                toolset_id="sentinel",
                 tool_names=["sentinel_search"],
             )
         ],
@@ -509,8 +688,7 @@ def test_trusted_worker_catalogs_do_not_project_session_skills(
 ) -> None:
     _write_manifest_skill(tmp_path, "sentinel-skill")
     catalog = load_repo_skill_descriptors(tmp_path)
-    grant = CapabilityGrant(
-        source="skill",
+    grant = SkillGrant(
         grant_id="skill:sentinel-skill",
         skill_id="sentinel-skill",
         tool_names=["sentinel_search"],
@@ -601,8 +779,7 @@ def test_context_builder_renders_cards_before_grant_and_body_after_grant() -> No
     )
     activated_state = AgentState.from_request(request)
     activated_state.upsert_capability_grant(
-        CapabilityGrant(
-            source="skill",
+        SkillGrant(
             grant_id="skill:travel-tool-orchestration",
             skill_id="travel-tool-orchestration",
             tool_names=["lodging_search"],
@@ -641,7 +818,7 @@ def test_context_builder_renders_cards_before_grant_and_body_after_grant() -> No
     )
 
 
-def test_structured_image_context_activates_visual_skill_without_text_routing() -> None:
+def test_structured_image_context_activates_visual_toolset_without_skill_body() -> None:
     registry = create_default_registry()
     store = InMemorySessionStore()
     request = UserRequest(
@@ -669,10 +846,18 @@ def test_structured_image_context_activates_visual_skill_without_text_routing() 
     assert "context:visual-context" in [
         grant.grant_id for grant in state.capability_grants
     ]
+    visual_grant = next(
+        grant
+        for grant in state.capability_grants
+        if grant.grant_id == "context:visual-context"
+    )
+    assert isinstance(visual_grant, ContextToolsetGrant)
+    assert visual_grant.toolset_id == "visual-context"
     assert "media_inspect" in pack.run_tool_catalog.available_tool_names
     assert "visual_image_search" in pack.run_tool_catalog.available_tool_names
-    assert any(
-        section.kind == "skill_body" and section.title == "visual-context"
+    assert "visual-context" not in pack.active_skill_ids
+    assert all(
+        section.kind != "skill_body" or section.title != "visual-context"
         for section in pack.context_sections
     )
 

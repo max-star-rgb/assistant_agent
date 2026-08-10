@@ -6,7 +6,12 @@ from dataclasses import dataclass
 from typing import Any
 
 from assistant_agent.context.models import ToolCatalogSummary
-from assistant_agent.runtime.capability_grants import CapabilityGrant
+from assistant_agent.runtime.capability_grants import (
+    CapabilityGrantValue,
+    ContextToolsetGrant,
+    DeferredToolsetGrant,
+    SkillGrant,
+)
 from assistant_agent.runtime.requests import UserRequest
 from assistant_agent.tools.models import RunToolCatalog, ToolSpec
 from assistant_agent.tools.ids import (
@@ -65,7 +70,7 @@ def select_prompt_tool_specs(
     tool_specs: list[ToolSpec],
     *,
     skill_catalog: SkillCatalog | None = None,
-    capability_grants: list[CapabilityGrant] | None = None,
+    capability_grants: list[CapabilityGrantValue] | None = None,
     registry_generation: str | None = None,
 ) -> ToolCatalogSelection:
     """Return the complete run-qualified ToolSpec catalog."""
@@ -254,23 +259,30 @@ def _enabled_descriptors(catalog: SkillCatalog) -> list[SkillDescriptor]:
 
 def _valid_capability_grants(
     catalog: SkillCatalog,
-    grants: list[CapabilityGrant],
-) -> list[CapabilityGrant]:
+    grants: list[CapabilityGrantValue],
+) -> list[CapabilityGrantValue]:
     descriptors = {
         descriptor.name: descriptor
         for descriptor in _enabled_descriptors(catalog)
     }
-    valid: list[CapabilityGrant] = []
+    valid: list[CapabilityGrantValue] = []
     for grant in grants:
-        if grant.source == "tool_search":
+        if type(grant) is DeferredToolsetGrant:
             continue
-        descriptor = descriptors.get(grant.skill_id or "")
+        if type(grant) not in (SkillGrant, ContextToolsetGrant):
+            continue
+        descriptor = descriptors.get(grant.capability_id)
         if descriptor is None:
             continue
-        expected_source = (
-            "context" if descriptor.activation == "context" else "skill"
+        expected_source, expected_activation = (
+            ("skill", "model")
+            if type(grant) is SkillGrant
+            else ("context", "context")
         )
-        if grant.source != expected_source:
+        if (
+            grant.source != expected_source
+            or descriptor.activation != expected_activation
+        ):
             continue
         valid.append(
             grant.model_copy(update={"tool_names": list(descriptor.governed_tools)})
@@ -280,12 +292,12 @@ def _valid_capability_grants(
 
 def _active_skill_descriptors(
     catalog: SkillCatalog,
-    grants: list[CapabilityGrant],
+    grants: list[CapabilityGrantValue],
 ) -> list[SkillDescriptor]:
     active_ids = {
         grant.skill_id
         for grant in _valid_capability_grants(catalog, grants)
-        if grant.skill_id is not None
+        if isinstance(grant, SkillGrant)
     }
     return [
         descriptor

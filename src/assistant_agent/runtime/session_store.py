@@ -13,7 +13,10 @@ from pydantic import ValidationError
 
 from assistant_agent.config import ProviderConfig
 from assistant_agent.runtime.session_models import SessionCreate, SessionRecord
-from assistant_agent.runtime.capability_grants import CapabilityGrant
+from assistant_agent.runtime.capability_grants import (
+    CapabilityGrantValue,
+    validate_capability_grant,
+)
 from assistant_agent.identifiers import new_session_id
 
 
@@ -49,7 +52,7 @@ class SessionStore(Protocol):
         *,
         user_id: str,
         session_id: str,
-        grant: CapabilityGrant | dict[str, object],
+        grant: CapabilityGrantValue | dict[str, object],
     ) -> SessionRecord:
         """Idempotently add or replace one owner-scoped capability grant."""
 
@@ -121,7 +124,7 @@ class InMemorySessionStore:
         *,
         user_id: str,
         session_id: str,
-        grant: CapabilityGrant | dict[str, object],
+        grant: CapabilityGrantValue | dict[str, object],
     ) -> SessionRecord:
         with self._lock:
             existing = self._records.get((user_id, session_id))
@@ -131,7 +134,7 @@ class InMemorySessionStore:
                     SessionCreate(user_id=user_id),
                     session_id=session_id,
                 ),
-                CapabilityGrant.model_validate(grant),
+                validate_capability_grant(grant),
             )
             self._records[(user_id, session_id)] = record
             return record
@@ -213,7 +216,7 @@ class JsonlSessionStore:
         *,
         user_id: str,
         session_id: str,
-        grant: CapabilityGrant | dict[str, object],
+        grant: CapabilityGrantValue | dict[str, object],
     ) -> SessionRecord:
         with self._lock:
             existing = self.get(user_id, session_id)
@@ -223,7 +226,7 @@ class JsonlSessionStore:
                     SessionCreate(user_id=user_id),
                     session_id=session_id,
                 ),
-                CapabilityGrant.model_validate(grant),
+                validate_capability_grant(grant),
             )
             self._upsert(record)
             return record
@@ -349,7 +352,7 @@ def _touch_record(
 
 def _grant_record(
     record: SessionRecord,
-    grant: CapabilityGrant,
+    grant: CapabilityGrantValue,
 ) -> SessionRecord:
     grants = [
         existing
