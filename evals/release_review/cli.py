@@ -125,7 +125,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.sync:
             result = sync_release_dataset(client, scenarios, git_commit)
             client.flush()
-            print(json.dumps(result.__dict__, ensure_ascii=False, default=list))
+            print(
+                json.dumps(
+                    result.__dict__,
+                    ensure_ascii=False,
+                    default=list,
+                    indent=2,
+                )
+            )
             return 0
 
         _require_args(parser, args, "release_id", "model", "prompt_version")
