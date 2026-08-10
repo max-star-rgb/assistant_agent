@@ -90,8 +90,9 @@ Live Evaluator、LLM Judge 或日报自动修改正式 Dataset。
   --list-runtime-candidates
 ```
 
-维护者或 coding agent 根据本地证据生成一个经过脱敏的 Decision Scenario 草稿。草稿不得包含
-`provenance`，也不得复制真实 Trace ID、用户原始对话、Provider 原始响应或 Tool 原始 payload。完成
+维护者或 coding agent 根据本地证据在正式 `scenarios/` 目录之外生成一个经过脱敏的 Decision Scenario
+草稿。草稿不得包含 `provenance`，也不得复制真实 Trace ID、用户原始对话、Provider 原始响应或 Tool
+原始 payload。完成
 人工复核后，使用双重写入门禁晋升：
 
 ```bash

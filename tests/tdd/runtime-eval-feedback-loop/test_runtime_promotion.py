@@ -251,6 +251,24 @@ def test_promotion_rejects_staging_duplicate_and_target_conflicts(tmp_path: Path
         )
 
 
+def test_promotion_rejects_draft_inside_formal_scenario_root(tmp_path: Path) -> None:
+    scenario_root = tmp_path / "scenarios"
+    draft = scenario_root / "unreviewed.yaml"
+    draft.parent.mkdir(parents=True)
+    _write_draft(draft)
+
+    with pytest.raises(ValueError, match="outside the formal scenario root"):
+        promote_runtime_candidate(
+            registry=_promotion_registry(),
+            existing_scenarios=(),
+            scenario_root=scenario_root,
+            issue_key="route_grounding",
+            draft_path=draft,
+            operator="operator-1",
+            allow_write=True,
+        )
+
+
 def test_cli_lists_runtime_candidates_without_loading_provider_env(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],

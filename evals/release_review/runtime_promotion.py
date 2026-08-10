@@ -105,7 +105,11 @@ def promote_runtime_candidate(
     ):
         raise ValueError(f"runtime audit issue already promoted: {issue_key}")
 
-    draft = load_scenario(Path(draft_path))
+    scenario_root = Path(scenario_root).resolve()
+    draft_path = Path(draft_path).resolve()
+    if draft_path.is_relative_to(scenario_root):
+        raise ValueError("runtime promotion draft must stay outside the formal scenario root")
+    draft = load_scenario(draft_path)
     if draft.phase != "decision":
         raise ValueError("runtime promotion only accepts Decision scenarios")
     if draft.provenance is not None:
@@ -134,7 +138,7 @@ def promote_runtime_candidate(
             )
         }
     )
-    target = Path(scenario_root) / "runtime" / f"{scenario.id}.yaml"
+    target = scenario_root / "runtime" / f"{scenario.id}.yaml"
     if target.exists():
         raise FileExistsError(f"Release Review scenario already exists: {target}")
     target.parent.mkdir(parents=True, exist_ok=True)
