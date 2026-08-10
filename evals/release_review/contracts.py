@@ -81,7 +81,7 @@ class RuntimeScenarioProvenance(_StrictModel):
     """Non-sensitive lineage for a scenario distilled from runtime evidence."""
 
     source: Literal["runtime_audit"]
-    issue_key: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:@+=-]*$")
+    issue_key_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     first_seen: date
     last_seen: date
     evidence_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")

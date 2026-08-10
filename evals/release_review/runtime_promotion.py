@@ -48,8 +48,8 @@ def discover_runtime_candidates(
     *,
     existing_scenarios: Sequence[ReleaseScenario] = (),
 ) -> tuple[RuntimeRegressionCandidate, ...]:
-    promoted_issue_keys = {
-        scenario.provenance.issue_key
+    promoted_issue_hashes = {
+        scenario.provenance.issue_key_sha256
         for scenario in existing_scenarios
         if scenario.provenance is not None
         and scenario.provenance.source == "runtime_audit"
@@ -58,7 +58,7 @@ def discover_runtime_candidates(
     for issue_key, issue in sorted(registry.issues.items()):
         if issue.status not in {"open", "code_addressed", "regressed"}:
             continue
-        if not issue.trace_evidence_refs or issue_key in promoted_issue_keys:
+        if not issue.trace_evidence_refs or _issue_key_sha256(issue_key) in promoted_issue_hashes:
             continue
         candidates.append(
             RuntimeRegressionCandidate(
@@ -100,7 +100,7 @@ def promote_runtime_candidate(
         raise ValueError(f"runtime audit issue has no trace evidence: {issue_key}")
     if any(
         scenario.provenance is not None
-        and scenario.provenance.issue_key == issue_key
+        and scenario.provenance.issue_key_sha256 == _issue_key_sha256(issue_key)
         for scenario in existing_scenarios
     ):
         raise ValueError(f"runtime audit issue already promoted: {issue_key}")
@@ -125,7 +125,7 @@ def promote_runtime_candidate(
         update={
             "provenance": RuntimeScenarioProvenance(
                 source="runtime_audit",
-                issue_key=issue.issue_key,
+                issue_key_sha256=_issue_key_sha256(issue.issue_key),
                 first_seen=issue.first_seen,
                 last_seen=issue.last_seen,
                 evidence_sha256=evidence_sha256,
@@ -167,6 +167,10 @@ def _reject_trace_ids_in_draft(
     }
     if any(trace_id and trace_id in serialized for trace_id in trace_ids):
         raise ValueError("runtime promotion draft contains a production trace id")
+
+
+def _issue_key_sha256(issue_key: str) -> str:
+    return hashlib.sha256(issue_key.encode("utf-8")).hexdigest()
 
 
 def _atomic_write_new(path: Path, content: str) -> None:

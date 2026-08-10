@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timezone
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -51,7 +52,7 @@ def _scenario(*, issue_key: str | None = None) -> ReleaseScenario:
     if issue_key is not None:
         payload["provenance"] = RuntimeScenarioProvenance(
             source="runtime_audit",
-            issue_key=issue_key,
+            issue_key_sha256=hashlib.sha256(issue_key.encode("utf-8")).hexdigest(),
             first_seen=date(2026, 8, 6),
             last_seen=date(2026, 8, 9),
             evidence_sha256="a" * 64,
@@ -174,9 +175,12 @@ def test_promotes_reviewed_decision_without_persisting_trace_ids(tmp_path: Path)
     assert "secret-trace-id" not in result.path.read_text(encoding="utf-8")
     loaded = load_scenario(result.path)
     assert loaded.provenance is not None
-    assert loaded.provenance.issue_key == "route_grounding"
+    assert loaded.provenance.issue_key_sha256 == hashlib.sha256(
+        b"route_grounding"
+    ).hexdigest()
     assert loaded.provenance.reviewed_by == "operator-1"
     assert loaded.provenance.evidence_sha256 == result.evidence_sha256
+    assert "route_grounding" not in result.path.read_text(encoding="utf-8")
 
 
 @pytest.mark.parametrize(
