@@ -107,7 +107,9 @@ For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
   `--publish` 把所选 Task 薄发布到统一 Langfuse Dataset；`--run` 通过活动
   `AgentGraphRuntime` 创建 Experiment、Trace 和 canonical `assistant_agent.quality.*` Score。用可重复
   `--task` 精确选择，或用 `--suite` 选择集合。真实 Chat 调用同时要求 real 模式、
-  完整 Provider 配置和 `--allow-real-provider`。正式人工运行使用 PyCharm **Langfuse**、
+  完整 Provider 配置和 `--allow-real-provider`。`--run` 使用 production Tool Registry；除 Environment
+  明确声明的同名 replacement 外，已配置 Tool 保持真实实现，可能产生外部调用和持久化写入且不会
+  自动回滚。正式人工运行使用 PyCharm **Langfuse**、
   `evals/agent/sync_langfuse_dataset.py` 和 Langfuse UI Remote Experiment；`run_runtime_audit` 不参与。
   完整运行顺序、webhook 字段、环境变量、Score 与后台运行控制统一见
   [`evals/README.md`](../evals/README.md)。实现位于

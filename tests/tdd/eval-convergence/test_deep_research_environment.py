@@ -3,6 +3,9 @@ from assistant_agent.runtime.chat_adapter import ChatResult
 from assistant_agent.runtime.output_models import NativeToolCall
 from assistant_agent.runtime.requests import UserRequest
 from evals.agent.contracts import TaskSpec
+from assistant_agent.workflows.builtin import default_workflow_definitions
+from assistant_agent.workflows.service import WorkflowService
+from assistant_agent.workflows.store import InMemoryWorkflowStore
 
 
 class ScriptedChatAdapter:
@@ -55,7 +58,7 @@ class ScriptedChatAdapter:
         return next(self.results)
 
 
-def _probe_environment_type():
+def _probe_environment_type(workflow_service=None):
     support = importlib.import_module("evals.agent.deep_research_support")
 
     class ProbeEnvironment(support.DeepResearchMissionEnvironment):
@@ -64,6 +67,10 @@ def _probe_environment_type():
         expected_constraint_terms = ("事实", "推断")
         minimum_research_questions = 2
         minimum_source_target = 10
+
+        def runtime_overrides(self, request):
+            del request
+            return {"workflow_service": workflow_service}
 
     return ProbeEnvironment
 
@@ -83,7 +90,7 @@ def _task() -> TaskSpec:
     )
 
 
-def test_deep_research_environment_exposes_governed_workflow_tool() -> None:
+def test_deep_research_environment_static_validation_is_offline() -> None:
     environment = _probe_environment_type()(
         config=ProviderConfig(provider_mode="mock")
     )
@@ -92,17 +99,26 @@ def test_deep_research_environment_exposes_governed_workflow_tool() -> None:
     expectations = environment.tool_outcome_expectations()
 
     assert validation.passed is True
-    assert "workflow_submit" in environment.registry.list()
-    workflow_expectation = next(
-        item for item in expectations if item.tool_name == "workflow_submit"
-    )
+    assert environment.runtime_assembly is None
+    assert len(expectations) == 1
+    workflow_expectation = expectations[0]
+    assert workflow_expectation.tool_name == "workflow_submit"
     assert workflow_expectation.required is True
     assert workflow_expectation.expected_result == "success"
 
 
-def test_deep_research_environment_projects_created_workflow_state() -> None:
-    environment = _probe_environment_type()(
-        config=ProviderConfig(provider_mode="mock"),
+def test_deep_research_environment_projects_created_workflow_state(tmp_path) -> None:
+    workflow_service = WorkflowService(
+        store=InMemoryWorkflowStore(),
+        definitions=default_workflow_definitions(),
+    )
+    environment = _probe_environment_type(workflow_service)(
+        config=ProviderConfig(
+            provider_mode="mock",
+            durable_workflows_enabled=True,
+            durable_workflow_path=str(tmp_path / "workflows.sqlite3"),
+            durable_workflow_artifact_path=str(tmp_path / "artifacts"),
+        ),
         chat_adapter=ScriptedChatAdapter(),
     )
 
@@ -115,6 +131,7 @@ def test_deep_research_environment_projects_created_workflow_state() -> None:
     assertions = environment.objective_state_assertions(execution.evidence)
 
     assert execution.evidence.terminal_status == "completed"
+    assert execution.evidence.tool_executions[0].dependency_mode == "live"
     assert execution.evidence.final_state["workflow"]["workflow_type"] == (
         "deep_research"
     )

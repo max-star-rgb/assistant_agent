@@ -1,11 +1,8 @@
-"""Shared, behavior-neutral support for controlled Agent eval Tasks."""
+"""Shared runtime and evidence helpers for Agent eval Environments."""
 
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import replace
-from pathlib import Path
-from tempfile import TemporaryDirectory
 from typing import Any
 
 from assistant_agent.config import ProviderConfig
@@ -14,25 +11,6 @@ from assistant_agent.observability.trace_store import InMemoryTraceStore
 from assistant_agent.runtime.chat_adapter import ChatAdapter
 from assistant_agent.runtime.requests import UserRequest
 from assistant_agent.runtime.runtime import AgentGraphRuntime
-from assistant_agent.runtime.session_store import InMemorySessionStore
-from assistant_agent.tools.base import Tool
-from assistant_agent.tools.base import ToolBase, ToolContext
-from assistant_agent.tools.models import ToolResult
-from assistant_agent.tools.ids import VISUAL_MEMORY_SEARCH_TOOL_NAME
-from assistant_agent.tools.plugins.builtin.media_inspection.visual_memory_tool import (
-    VisualMemorySearchInput,
-)
-from assistant_agent.media.embedding.consumers.object_search import VisualMemorySearchResult
-from assistant_agent.media.video.semantic_store import VisualSemanticRecord
-from assistant_agent.tools.plugins.builtin.shopping.models import (
-    PriceCompareRequest,
-    PriceCompareResult,
-    ProductSearchRequest,
-    ProductSearchResult,
-)
-from assistant_agent.tools.plugins.builtin.shopping.tool import ShoppingSearchTool
-from assistant_agent.tools.plugins.contracts import ToolRegistrationRecord
-from assistant_agent.tools.plugins.registry_factory import create_default_registry
 from assistant_agent.tools.registry import ToolRegistry
 from evals.agent.contracts import (
     AssertionResult,
@@ -56,161 +34,6 @@ StateReader = Callable[[AgentGraphRuntime, Any], dict[str, Any]]
 BeforeRun = Callable[[AgentGraphRuntime], None]
 RegistryTransform = Callable[[ToolRegistry], ToolRegistry]
 ProvenanceReader = Callable[[], Mapping[str, EvalToolProvenance]]
-
-
-class _ControlledShoppingSearchAdapter:
-    def search(self, request: ProductSearchRequest) -> ProductSearchResult:
-        return ProductSearchResult(
-            provider="eval:controlled-shopping",
-            query_used=request.query,
-            output_ref="eval://shopping/search/empty",
-        )
-
-
-class _ControlledShoppingCompareAdapter:
-    def compare(self, request: PriceCompareRequest) -> PriceCompareResult:
-        return PriceCompareResult(
-            query=request.query,
-            items=list(request.items),
-            summary="受控评测环境没有更多比价结果。",
-            provider="eval:controlled-shopping",
-            output_ref="eval://shopping/compare/empty",
-        )
-
-
-def _controlled_shopping_tool() -> ShoppingSearchTool:
-    return ShoppingSearchTool(
-        search_adapter=_ControlledShoppingSearchAdapter(),
-        compare_adapter=_ControlledShoppingCompareAdapter(),
-    )
-
-
-class ControlledVisualMemorySearchTool(ToolBase):
-    """Deterministic visual-history outcome for active-runtime Agent Tasks."""
-
-    name = VISUAL_MEMORY_SEARCH_TOOL_NAME
-    description = "在当前会话已保留的历史画面中查找物体、场景或事件。"
-    input_schema = VisualMemorySearchInput
-    output_schema = VisualMemorySearchResult
-    category = "read"
-    requires_media = []
-    llm_hidden_input_fields = ("session_id",)
-
-    def __init__(self, result: dict[str, Any] | None = None) -> None:
-        self.result = result or {
-            "status": "not_found",
-            "verification_status": "skipped",
-            "matches": [],
-            "errors": [],
-        }
-
-    def _run(self, input: VisualMemorySearchInput, context: ToolContext) -> ToolResult:
-        del input, context
-        return ToolResult(
-            tool_name=self.name,
-            success=True,
-            data=dict(self.result),
-            model_observation=dict(self.result),
-        )
-
-
-def install_controlled_visual_semantic_history(
-    runtime: AgentGraphRuntime,
-    request: UserRequest,
-    *,
-    summary: str,
-) -> None:
-    """Publish one searchable record so runtime capability gating uses real state."""
-
-    store = runtime.visual_semantic_store_pool.resolve(
-        request.user_id,
-        request.session_id,
-    )
-    with TemporaryDirectory(prefix="visual-semantic-agent-eval-") as temporary:
-        evidence = Path(temporary) / "frame.jpg"
-        evidence.write_bytes(b"controlled-agent-eval-evidence")
-        store.record_success(
-            VisualSemanticRecord(
-                record_id="controlled-record-42",
-                session_id=request.session_id,
-                video_id="session-video",
-                frame_sequence=42,
-                captured_at_ms=1722765480000,
-                summary=summary,
-                scene="受控评测场景",
-                search_embedding=[1.0, 0.0],
-                embedding_space_id="controlled-eval-space",
-                index_status="ready",
-                evidence_ref=str(evidence),
-                evidence_bytes=0,
-                created_at_ms=1722765480000,
-            )
-        )
-
-
-def build_controlled_base_registry(
-    *,
-    replacements: Mapping[str, Tool] | None = None,
-    config: ProviderConfig | None = None,
-    workflow_service: Any | None = None,
-) -> ToolRegistry:
-    """Build the local offline-safe catalog and replace selected dependencies."""
-
-    source = create_default_registry(
-        config or ProviderConfig(provider_mode="mock"),
-        workflow_service=workflow_service,
-        plugin_modules=[],
-    )
-    controlled_tools: dict[str, Tool] = {
-        "shopping_search": _controlled_shopping_tool(),
-        VISUAL_MEMORY_SEARCH_TOOL_NAME: ControlledVisualMemorySearchTool(),
-    }
-    local_tool_names = sorted({*source.list(), *controlled_tools})
-    replacement_by_name = dict(replacements or {})
-    unknown = set(replacement_by_name) - set(local_tool_names)
-    if unknown:
-        raise ValueError(
-            f"Controlled replacements are not registered: {sorted(unknown)}"
-        )
-    registry = ToolRegistry()
-    for name in local_tool_names:
-        if name in source.list():
-            registration = source.registration_record(name)
-        else:
-            registration = ToolRegistrationRecord(
-                tool_name=name,
-                plugin_id="eval.controlled",
-                plugin_version="1",
-                source_type="manual",
-                source_ref="evals.agent.task_support",
-            )
-        default_tool = (
-            controlled_tools[name] if name in controlled_tools else source.get(name)
-        )
-        registry.register(
-            replacement_by_name.get(name, default_tool),
-            registration,
-        )
-    registry.seal()
-    return registry
-
-
-def build_controlled_registry(
-    *,
-    replacements: Mapping[str, Tool] | None = None,
-    config: ProviderConfig | None = None,
-    workflow_service: Any | None = None,
-) -> ToolRegistry:
-    """Build the complete offline-safe catalog with default AMap tools."""
-
-    from evals.agent.travel_support import add_controlled_amap_tools
-
-    base = build_controlled_base_registry(
-        replacements=replacements,
-        config=config,
-        workflow_service=workflow_service,
-    )
-    return add_controlled_amap_tools(base)
 
 
 def outcome_expectations(
@@ -256,86 +79,6 @@ def subset_registry(
         )
     selected.seal()
     return selected
-
-
-def execute_isolated_runtime(
-    *,
-    task: TaskSpec,
-    request: UserRequest,
-    trace_id: str,
-    parent_span_id: str,
-    registry: ToolRegistry,
-    config: ProviderConfig | None = None,
-    chat_adapter: ChatAdapter | None = None,
-    initial_state: dict[str, Any] | None = None,
-    before_run: BeforeRun | None = None,
-    final_state_reader: StateReader | None = None,
-    runtime_overrides: Mapping[str, Any] | None = None,
-) -> TaskExecution:
-    """Run the active Runtime with per-run stores and project stable Evidence."""
-
-    resolved_config = config or ProviderConfig.from_env()
-    if chat_adapter is None:
-        validate_real_chat_config(resolved_config)
-    isolated = replace(
-        resolved_config,
-        mem0_base_url=None,
-        conversation_history_backend="memory",
-        langgraph_checkpointer_backend="none",
-        durable_tasks_enabled=False,
-        durable_task_worker_enabled=False,
-    )
-    runtime = AgentGraphRuntime(
-        config=isolated,
-        registry=registry,
-        chat_adapter=chat_adapter,
-        trace_store=InMemoryTraceStore(),
-        session_store=InMemorySessionStore(),
-        **dict(runtime_overrides or {}),
-    )
-    try:
-        if before_run is not None:
-            before_run(runtime)
-        state = runtime.run_state(
-            UserRequest.model_validate(request),
-            trace_context=RuntimeTraceContext(
-                trace_id=trace_id,
-                parent_span_id=parent_span_id,
-            ),
-        )
-        events = runtime.trace_store.list_by_run(state.run_id)
-        final_state = (
-            final_state_reader(runtime, state)
-            if final_state_reader is not None
-            else dict(initial_state or {})
-        )
-    finally:
-        runtime.close()
-    starting = dict(initial_state or {})
-    evidence = RunEvidence(
-        task_id=task.id,
-        run_id=state.run_id,
-        trace_id=state.trace_id,
-        terminal_status=state.status,
-        response=(
-            state.response.model_dump(mode="json")
-            if state.response is not None
-            else None
-        ),
-        available_tools=available_tools(state, events),
-        tool_executions=tool_executions(events),
-        validation_results=validation_results(events),
-        initial_state=starting,
-        final_state=final_state,
-        state_diff=_state_diff(starting, final_state),
-        trace_event_names=[
-            event.canonical_event
-            for event in events
-            if event.canonical_event is not None
-        ],
-        provider_result_kinds=provider_result_kinds(events),
-    )
-    return TaskExecution(evidence=evidence, trace_events=events)
 
 
 def execute_agent_eval_runtime(

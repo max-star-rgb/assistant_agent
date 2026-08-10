@@ -176,7 +176,7 @@ Git 是回归定义权威：
 ```text
 evals/agent/
   contracts.py          # Task、Evidence、Grader 契约
-  environment_base.py   # 受控 Environment 的共享生命周期与工具可见性
+  environment_base.py   # production Registry、精确替换和 Environment 生命周期
   loader.py             # Task、Suite 和入口加载
   evidence.py           # Runtime Trace 的稳定投影
   grading.py            # Environment outcome 与 Mission objective Rule
@@ -184,44 +184,43 @@ evals/agent/
   calibration.py        # 人工正反标签与原生 Evaluator 校准投影
   langfuse_backend.py   # Dataset 发布与 Experiment 薄适配
   cli.py                # 稳定命令入口
-  suites.json           # Task ID 集合
-  tasks/<task_id>/
+  suites.json           # Mission ID 集合
+  missions/<mission_id>/
     task.json           # 用户请求、capability 与代码入口
-    environment.py      # 依赖、工具、状态、隔离与执行
+    environment.py      # replacement、状态证据和执行 hook
     calibration.json    # 人工标注的正反证据
-  missions/<mission_id>/ # 与 Task 相同的运行协议；额外验证目标终态
 ```
 
-`tasks/` 与 `missions/` 只是案例组织层级，共用 loader、Environment、Evidence、校准、发布和运行
-协议；loader 会拒绝两个目录之间重复的 ID。基础 Task 只验证受控工具 outcome；Mission 适用于还必须
-由结构化状态 Evidence 证明客观终态的案例。Mission Environment 必须实现非空、只含 Rule assertion 的
-  `objective_state_assertions()`；目标状态 Rule 只由 Environment 拥有。
+当前基础 Task 案例已删除，只保留 Mission。Mission 必须由结构化状态 Evidence 证明客观终态，
+Environment 必须实现非空、只含 Rule assertion 的 `objective_state_assertions()`；目标状态 Rule 只由
+Environment 拥有。
 
 Langfuse 是协作和运行后端：Dataset 保存已发布请求，Experiment 保存 Trace、输出和 Score。Dataset
 item 只包含 `task_id + request + 短 metadata`，不复制 case level、Environment、state oracle、
 Evaluator prompt、长依赖说明或其他 oracle，也不能把 Langfuse Dataset 当作回归定义的唯一副本。
 
-### Task 规则
+### Mission 规则
 
-- 一个 Task 只验证一个可命名 capability；
+- 一个 Mission 只验证一个可命名 capability；
 - `task.json` 的请求必须像自然用户请求，不描述测试机关；
-- Environment 使用活动 `AgentGraphRuntime`，可以模拟依赖，不能模拟 Agent 决策，并在运行前验证
-  Tool Registry、受控依赖、隔离和复位前提；
-- 基础 Task Environment 继承 `ControlledTaskEnvironment`：公共
-  `describe/validate/tool_outcome_expectations/execute` 由共享模板拥有；任务文件只实现受控依赖、
-  registry replacement、必需成功/失败、Task 专属 Rule 和状态 hook；
-- 所有 Task 的默认 Environment 使用同一份完整 Agent eval Tool Registry，不按 Task、capability、
-  用户话术或目标工具裁剪目录；它包含 Agent 在相同结构化运行条件下会暴露的全部工具。媒体、
+- Environment 使用活动 `AgentGraphRuntime` 和 production Tool Registry；replacement 只能精确替换
+  production Registry 中已有的同名 Tool，且必须保持完整 ToolSpec，不得追加平行模拟目录；
+- Environment 继承 `ControlledTaskEnvironment`：公共
+  `describe/validate/tool_outcome_expectations/execute` 由共享模板拥有；案例只实现精确 replacement、
+  必需成功/失败、Mission Rule 和状态 hook；
+- 所有 Mission 默认使用相同配置下的完整 production Tool Registry，不按 Mission、capability、
+  用户话术或目标工具裁剪目录。媒体、
   entry profile 和 durable ready-step 等运行时结构化条件仍可在具体 run 中收窄可见集合；
 - 特殊场景需要改变目录时，Environment 或受信入口可以通过结构化
   `metadata.tool_visibility.profile + allowed_tools` 精确收窄工具集合。override 必须声明可读的
-  profile，`allowed_tools` 必须是已注册受控工具的子集，`validate()` 必须检查该配置，最终可见集合
+  profile，`allowed_tools` 必须是已注册 production 工具的子集，runtime validation 必须检查该配置，最终可见集合
   仍须完整声明 outcome expectation；不得把 override 放入自然语言或 Dataset metadata，
   也不得借此启用未配置或未授权的真实工具；
 - Environment 为每个可见工具声明结果预期；目标工具可以是必调的 `must_succeed` 或
   `must_fail_with(error_code)`，其余正常目录工具可以声明为非必调、但一旦调用就必须成功。该声明
   不会进入 Agent input 或 Dataset metadata；
-- 写操作必须使用每次运行可丢弃或可复位的状态；
+- real 模式服务启动即授权已配置 Tool 的真实调用与写入；正式运行不自动回滚。需要确定性状态的
+  Mission 必须把对应 Tool 明确声明为 replacement，并在 Evidence 中记录来源；
 - objective Rule 和人工标签对 Agent 隐藏；客观事实由 Git Rule 检查，开放语义由 Langfuse 原生
   Evaluator 判断；
 - Experiment runner 固定输出 `assistant_agent.quality.task_conformance`、
@@ -229,8 +228,8 @@ Evaluator prompt、长依赖说明或其他 oracle，也不能把 Langfuse Datas
   task-level Score，不生成 reward 或总通过分；
 - Environment oracle 直接生成 `task_conformance`；单个工具结果质量由
   `assistant_agent.quality.tool_result_quality` Live Observation evaluator 负责；
-- 对基础 Task，`tool_execution` 只表示工具 outcome 与 Environment oracle 匹配；对 Mission，它还必须
-  合入 `objective_state_assertions()` 的终态 Rule；
+- `tool_execution` 同时表示工具 outcome 与 Environment oracle 匹配，并合入
+  `objective_state_assertions()` 的终态 Rule；
 - 不创建天气、日历、Workflow 等 capability 专属 Score；原生 `response_quality` 直接依据用户请求
   与最终回答判断完整性；
 - 每条 Git assertion 必须标记 `evaluation_method=rule`；Langfuse Evaluator reasoning 保留在原生 Score；
@@ -258,7 +257,7 @@ Langfuse 原生 Evaluator。
 
 ### 正式运行顺序：PyCharm + Dataset 同步 + Langfuse UI
 
-1. 检查 Task 和 Environment，不联网：
+1. 检查 Mission 和 Environment，不联网：
 
 ```bash
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python \
@@ -270,27 +269,20 @@ Langfuse 原生 Evaluator。
 `--inspect` 会显示 `case_source.level`，并显示 `mission_objective_rule.required/implemented`，以便在
 同步前发现 Mission 缺少目标状态 Rule。
 
-2. 显式运行迁移后的 Agent eval infrastructure 专项检查（非 core、非发布门禁）：
-
-```bash
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q \
-  evals/system/incubating/agent-eval-infrastructure/checks_*.py
-```
-
-3. 按[“从 Langfuse UI 触发 CLI”](#从-langfuse-ui-触发-cli)完成一次性 webhook 配置，然后在
+2. 按[“从 Langfuse UI 触发 CLI”](#从-langfuse-ui-触发-cli)完成一次性 webhook 配置，然后在
 PyCharm 选择共享 Run Configuration **Langfuse** 并点击 Run。它执行
 `scripts/run_langfuse.py`，启动本地 Compose、等待 `http://localhost:3000` 健康并保持前台；点击 Stop
 只停止容器，不删除数据。Agent Experiment 还要求 **Assistant Server** 以 real Provider mode 运行，且
 Remote Experiment 开关、签名 secret 和 Dataset 已配置。
 
-4. 直接运行 `evals/agent/sync_langfuse_dataset.py`（IDE 中右键 Run 即可）：
+3. 直接运行 `evals/agent/sync_langfuse_dataset.py`（IDE 中右键 Run 即可）：
 
 ```bash
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python \
   evals/agent/sync_langfuse_dataset.py
 ```
 
-默认 Dataset 为 `assistant-agent-regression`。同步会 upsert Git 中全部 Task/Mission，并删除只属于该
+默认 Dataset 为 `assistant-agent-regression`。同步会 upsert Git 中全部 Mission，并删除只属于该
 Dataset、但本地已不存在的陈旧 Git-owned item；它不运行 Agent 或 Evaluator。
 原生 item ID 使用 `<dataset_name>__<task_id>`，避免与同一 Langfuse project 的历史 Dataset item
 冲突。
@@ -300,14 +292,14 @@ calibration；Mission 还必须提供可执行、非空且仅含 Rule 的 `objec
 
 如需暂时保留陈旧 item，可显式传入 `--keep-stale`。
 
-5. 打开 Langfuse UI：`Datasets -> assistant-agent-regression`，通过 Dataset Items 的 ACTIVE/ARCHIVED
-状态选择本次范围。按下文的 UI 字段表启动单 Task 烟测，并选择
+4. 打开 Langfuse UI：`Datasets -> assistant-agent-regression`，通过 Dataset Items 的 ACTIVE/ARCHIVED
+状态选择本次范围。按下文的 UI 字段表启动单 Mission 烟测，并选择
 `assistant_agent.quality.grounding` 与 `assistant_agent.quality.response_quality` 两个 Experiment
 Evaluator。UI webhook 只负责触发同一个受治理的 `run_agent_evals.py --run`，不会把 Agent loop 搬进
 Langfuse。
 
-6. 确认单 Task 的 Trace、三个 canonical Score 与 Environment 终态后，再按下文 suite config 扩大
-范围。第一次运行不得使用空 config，因为 `{}` 会运行 Dataset 中全部 ACTIVE Git Task。
+5. 确认单 Mission 的 Trace、三个 canonical Score 与 Environment 终态后，再按下文 suite config 扩大
+范围。第一次运行不得使用空 config，因为 `{}` 会运行 Dataset 中全部 ACTIVE Git Mission。
 
 Agent 使用仓库显式配置的真实 Chat Provider；语义评分使用 Langfuse UI 为 Experiment 选择的 Evaluator
 和 LLM connection，两者不复用同一 Provider adapter。日常 Trace 的 Live Observation Rule 由
@@ -321,6 +313,8 @@ Experiment Score 时，后台 CLI 按评测基础设施失败退出 2，不写�
 - `--calibrate` 要求 `--allow-real-provider`，用于确认 Langfuse 原生 Judge 的真实费用；它不启动
   Agent Chat Provider；`--run` 还要求 `MULTIMODAL_AGENT_PROVIDER_MODE=real` 和完整真实 Chat 配置；
 - `--run` 还要求 Langfuse 凭据与可用的 OTLP Trace 导出；
+- `--run` 使用 production Registry 和已配置真实 Tool，可能产生外部调用与持久化写入；未声明
+  replacement 的 Tool 不会静默回退到 mock，也不会自动清理副作用；
 - `--run` 在完整产出三个 task-level Score 后返回 0，不再根据分数组合返回 Agent 失败码；
 - `--calibrate` 将正反 Evidence 发布到 `assistant-agent-evaluator-calibration` Dataset，并比较三个
   canonical Score 与人工标签；不一致返回 1；

@@ -77,6 +77,15 @@ class MCPProxyTool:
                 error=sanitize_error_message(exc),
             )
 
+    def with_runner(self, runner: MCPToolRunner) -> MCPProxyTool:
+        """Clone this discovered Tool contract with another execution runner."""
+
+        return MCPProxyTool(
+            config=self._config,
+            definition=self._definition,
+            runner=runner,
+        )
+
 
 class MCPToolAdapter:
     """Normalize allowlisted MCP tools into ToolSpec or proxy tool objects."""

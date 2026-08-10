@@ -22,7 +22,6 @@ from evals.agent.grading import environment_validation, rule_assertion
 from evals.agent.task_support import (
     StateReader,
     execute_agent_eval_runtime,
-    execute_isolated_runtime,
     outcome_expectations,
     subset_registry,
 )
@@ -57,15 +56,11 @@ class ControlledTaskEnvironment:
     ) -> None:
         self.config = config
         self.chat_adapter = chat_adapter
-        self._registry: ToolRegistry | None = None
         self._runtime_assembly: EvalRegistryAssembly | None = None
         self.setup()
 
     def setup(self) -> None:
         """Prepare Task-local controlled dependencies and isolated state."""
-
-    def build_registry(self) -> ToolRegistry:
-        raise NotImplementedError
 
     def tool_replacements(
         self,
@@ -110,31 +105,15 @@ class ControlledTaskEnvironment:
         return {}
 
     @property
-    def registry(self) -> ToolRegistry:
-        if self._registry is None:
-            registry = self.build_registry()
-            if not isinstance(registry, ToolRegistry):
-                raise TypeError("build_registry() must return ToolRegistry.")
-            self._registry = registry
-        return self._registry
-
-    @property
     def runtime_assembly(self) -> EvalRegistryAssembly | None:
         return self._runtime_assembly
 
-    def _uses_legacy_registry(self) -> bool:
-        return type(self).build_registry is not ControlledTaskEnvironment.build_registry
-
     def visible_tool_names(self) -> list[str]:
-        if not self._uses_legacy_registry() and self._runtime_assembly is None:
+        if self._runtime_assembly is None:
             return sorted(
                 {*self.required_successes(), *self.required_failures()}
             )
-        registry = (
-            self.registry
-            if self._uses_legacy_registry()
-            else self._runtime_assembly.registry
-        )
+        registry = self._runtime_assembly.registry
         override = self.visibility_override()
         if override is None:
             return registry.list()
@@ -144,13 +123,9 @@ class ControlledTaskEnvironment:
     def describe(self) -> dict[str, Any]:
         override = self.visibility_override()
         registered_tool_count = (
-            len(self.registry.list())
-            if self._uses_legacy_registry()
-            else (
-                len(self._runtime_assembly.registry.list())
-                if self._runtime_assembly is not None
-                else None
-            )
+            len(self._runtime_assembly.registry.list())
+            if self._runtime_assembly is not None
+            else None
         )
         return {
             "runtime": "AgentGraphRuntime",
@@ -166,27 +141,24 @@ class ControlledTaskEnvironment:
         }
 
     def validate(self) -> EnvironmentValidation:
-        if not self._uses_legacy_registry():
-            successes = set(self.required_successes())
-            failures = set(self.required_failures())
-            checks = {
-                "required_tool_outcomes_do_not_conflict": rule_assertion(
-                    not successes.intersection(failures),
-                    (
-                        f"successes={sorted(successes)}, "
-                        f"failures={sorted(failures)}"
-                    ),
-                    label="必需工具结果约束无冲突",
+        successes = set(self.required_successes())
+        failures = set(self.required_failures())
+        checks = {
+            "required_tool_outcomes_do_not_conflict": rule_assertion(
+                not successes.intersection(failures),
+                (
+                    f"successes={sorted(successes)}, "
+                    f"failures={sorted(failures)}"
                 ),
-                "replacement_overlay_is_runtime_bound": rule_assertion(
-                    True,
-                    "production_registry_is_resolved_during_runtime_assembly",
-                    label="替换层延迟到 Runtime 装配",
-                ),
-            }
-            return environment_validation(checks)
-        registry = self.registry
-        return self._validate_registry(registry)
+                label="必需工具结果约束无冲突",
+            ),
+            "replacement_overlay_is_runtime_bound": rule_assertion(
+                True,
+                "production_registry_is_resolved_during_runtime_assembly",
+                label="替换层延迟到 Runtime 装配",
+            ),
+        }
+        return environment_validation(checks)
 
     def _validate_registry(self, registry: ToolRegistry) -> EnvironmentValidation:
         registered = set(registry.list())
@@ -288,7 +260,7 @@ class ControlledTaskEnvironment:
         selected_names = (
             (
                 self.visible_tool_names()
-                if self._uses_legacy_registry() or self._runtime_assembly is not None
+                if self._runtime_assembly is not None
                 else [*self.required_successes(), *self.required_failures()]
             )
             if available_tools is None
@@ -303,9 +275,7 @@ class ControlledTaskEnvironment:
                 ]
             )
         )
-        if self._uses_legacy_registry():
-            source_registry = self.registry
-        elif self._runtime_assembly is not None:
+        if self._runtime_assembly is not None:
             source_registry = self._runtime_assembly.registry
         else:
             return [
@@ -345,20 +315,6 @@ class ControlledTaskEnvironment:
         def run_before(runtime: AgentGraphRuntime) -> None:
             self.before_run(runtime, resolved_request)
 
-        if self._uses_legacy_registry():
-            return execute_isolated_runtime(
-                task=task,
-                request=resolved_request,
-                trace_id=trace_id,
-                parent_span_id=parent_span_id,
-                config=self.config,
-                registry=self.registry,
-                chat_adapter=self.chat_adapter,
-                initial_state=initial_state,
-                before_run=run_before,
-                final_state_reader=self.final_state_reader(resolved_request),
-                runtime_overrides=self.runtime_overrides(resolved_request),
-            )
         return execute_agent_eval_runtime(
             task=task,
             request=resolved_request,

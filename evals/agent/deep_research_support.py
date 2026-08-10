@@ -1,24 +1,15 @@
-"""Controlled durable-workflow Environment shared by Deep Research Missions."""
+"""Production durable-workflow Environment shared by Deep Research Missions."""
 
 from __future__ import annotations
 
-from dataclasses import replace
-from pathlib import Path
-from tempfile import TemporaryDirectory
 from typing import Any, ClassVar
 
-from assistant_agent.config import ProviderConfig
 from assistant_agent.runtime.requests import UserRequest
 from assistant_agent.runtime.runtime import AgentGraphRuntime
 from assistant_agent.tools.ids import WORKFLOW_SUBMIT_TOOL_NAME
-from assistant_agent.tools.registry import ToolRegistry
-from assistant_agent.workflows.builtin import default_workflow_definitions
-from assistant_agent.workflows.service import WorkflowService
-from assistant_agent.workflows.store import InMemoryWorkflowStore
 from evals.agent.contracts import AssertionResult, RunEvidence
 from evals.agent.environment_base import ControlledTaskEnvironment
 from evals.agent.grading import rule_assertion
-from evals.agent.task_support import build_controlled_registry
 
 
 DEEP_RESEARCH_PLAN_STAGE_IDS = (
@@ -33,79 +24,28 @@ DEEP_RESEARCH_PLAN_STAGE_IDS = (
 
 
 class DeepResearchMissionEnvironment(ControlledTaskEnvironment):
-    """Run actual workflow admission against isolated in-memory persistence."""
+    """Run workflow admission against the production Runtime service and store."""
 
-    dependency_label = "controlled:deep_research_workflow"
+    dependency_label = "live:production-workflow"
     writes = True
-    state_reset = "in_memory_per_mission_run"
+    state_reset = "persistent_production_store"
     expected_objective_terms: ClassVar[tuple[str, ...]] = ()
     expected_deliverable_terms: ClassVar[tuple[str, ...]] = ()
     expected_constraint_terms: ClassVar[tuple[str, ...]] = ()
     minimum_research_questions: ClassVar[int] = 1
     minimum_source_target: ClassVar[int] = 3
 
-    def setup(self) -> None:
-        self._tempdir = TemporaryDirectory(prefix="agent-eval-deep-research-")
-        self._root = Path(self._tempdir.name)
-        base = self.config or ProviderConfig(provider_mode="mock")
-        self.config = replace(
-            base,
-            durable_workflows_enabled=True,
-            durable_workflow_worker_enabled=False,
-            durable_workflow_path=str(self._root / "workflows.sqlite3"),
-            durable_workflow_artifact_path=str(self._root / "artifacts"),
-        )
-        self.workflow_store = InMemoryWorkflowStore()
-        self.workflow_service = WorkflowService(
-            store=self.workflow_store,
-            definitions=default_workflow_definitions(),
-        )
-
-    def build_registry(self) -> ToolRegistry:
-        return build_controlled_registry(
-            config=self.config,
-            workflow_service=self.workflow_service,
-        )
-
     def required_successes(self) -> tuple[str, ...]:
         return (WORKFLOW_SUBMIT_TOOL_NAME,)
-
-    def task_validation_checks(
-        self,
-        registry: ToolRegistry,
-    ) -> dict[str, AssertionResult]:
-        workflow_types = self.workflow_service.definitions.list_types()
-        return {
-            "deep_research_definition_registered": rule_assertion(
-                "deep_research" in workflow_types,
-                f"workflow_types={workflow_types}",
-                label="Deep Research Workflow 已注册",
-            ),
-            "workflow_store_isolated": rule_assertion(
-                isinstance(self.workflow_store, InMemoryWorkflowStore),
-                "store=in_memory_per_mission_run",
-                label="Workflow 状态按 Mission 隔离",
-            ),
-            "workflow_tool_governed": rule_assertion(
-                WORKFLOW_SUBMIT_TOOL_NAME in registry.list(),
-                f"registered={WORKFLOW_SUBMIT_TOOL_NAME in registry.list()}",
-                label="Workflow Tool 经过受控目录注册",
-            ),
-        }
 
     def initial_state(self, request: UserRequest) -> dict[str, Any]:
         del request
         return {"workflow": None}
 
-    def runtime_overrides(self, request: UserRequest) -> dict[str, Any]:
-        del request
-        return {"workflow_service": self.workflow_service}
-
     def final_state_reader(self, request: UserRequest):
         del request
 
         def read(runtime: AgentGraphRuntime, state: Any) -> dict[str, Any]:
-            del runtime
             workflow_id = None
             for result in state.tool_results:
                 if result.tool_name != WORKFLOW_SUBMIT_TOOL_NAME or not result.success:
@@ -115,12 +55,18 @@ class DeepResearchMissionEnvironment(ControlledTaskEnvironment):
                     workflow_id = workflow.get("workflow_id")
             if not isinstance(workflow_id, str) or not workflow_id:
                 return {"workflow": None}
-            bundle = self.workflow_store.load(workflow_id)
+            service = runtime.workflow_service
+            if service is None:
+                raise RuntimeError(
+                    "Deep Research eval requires the production WorkflowService."
+                )
+            store = service.store
+            bundle = store.load(workflow_id)
             if bundle is None:
                 return {"workflow": None}
             workflow = bundle.workflow
             plan = bundle.current_plan
-            events = self.workflow_store.list_events(
+            events = store.list_events(
                 workflow_id,
                 after=0,
                 limit=500,

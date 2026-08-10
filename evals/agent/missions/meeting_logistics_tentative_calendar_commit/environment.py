@@ -29,19 +29,16 @@ from evals.agent.contracts import (
 )
 from evals.agent.environment_base import (
     ControlledTaskEnvironment,
-    EnvironmentToolVisibility,
 )
 from evals.agent.grading import rule_assertion
+from evals.agent.registry_overlay import EvalToolReplacement
 from evals.agent.task_support import StateReader
 from evals.agent.travel_support import (
     AMAP_SERVER_NAME,
     GEO_TOOL,
     POI_TOOL,
     TRANSIT_TOOL,
-    build_travel_registry,
-    maps_geo_definition,
-    maps_text_search_definition,
-    maps_transit_definition,
+    controlled_amap_replacement,
 )
 
 
@@ -193,8 +190,8 @@ class _MeetingLodgingAdapter:
 class MeetingLogisticsEnvironment(ControlledTaskEnvironment):
     """Frozen maps/lodging dependencies with an isolated local calendar."""
 
-    dependency_label = "controlled:meeting-maps-lodging-local-calendar-v1"
-    tool_catalog_label = "complete_controlled_registry_minus_python"
+    dependency_label = "production-with-controlled-meeting-dependencies-v1"
+    tool_catalog_label = "production_registry_with_exact_replacements"
     writes = True
     state_reset = "temporary_sqlite_per_environment"
 
@@ -212,16 +209,6 @@ class MeetingLogisticsEnvironment(ControlledTaskEnvironment):
 
     def required_successes(self) -> tuple[str, ...]:
         return _REQUIRED_TOOLS
-
-    def visibility_override(self) -> EnvironmentToolVisibility:
-        return EnvironmentToolVisibility(
-            profile="meeting_logistics",
-            allowed_tools=tuple(
-                name
-                for name in self.registry.list()
-                if name != "python_interpreter"
-            ),
-        )
 
     def initial_state(self, request: UserRequest) -> dict[str, Any]:
         del request
@@ -346,31 +333,17 @@ class MeetingLogisticsEnvironment(ControlledTaskEnvironment):
             )
         )
         registered = set(registry.list())
-        dangerous_tools = [
-            spec.name
-            for spec in (
-                registry.get_spec(name)
-                for name in self.visible_tool_names()
-            )
-            if spec.category == "dangerous"
-        ]
-        side_effect_visible = sorted(
-            name
-            for name in self.visible_tool_names()
-            if registry.get_spec(name).category in {"write", "dangerous"}
-        )
         return {
             "full_tool_registry": rule_assertion(
                 registry.sealed
-                and set(_REQUIRED_TOOLS).issubset(registered)
-                and {"web_search", "web_fetch"}.isdisjoint(registered),
+                and set(_REQUIRED_TOOLS).issubset(registered),
                 f"registered_tools={registry.list()}",
                 label="完整目录包含会议物流目标工具",
             ),
             "outcome_contract_matches_registry": rule_assertion(
                 {item.tool_name for item in expectations}
                 == visible_names
-                == registered - {"python_interpreter"},
+                == registered,
                 (
                     f"expectation_count={len(expectations)}, "
                     f"visible_tools={sorted(visible_names)}"
@@ -428,32 +401,38 @@ class MeetingLogisticsEnvironment(ControlledTaskEnvironment):
                 ),
                 label="SQLite 日历按运行隔离",
             ),
-            "side_effect_boundary": rule_assertion(
-                side_effect_visible == ["calendar_create"]
-                and not dangerous_tools,
-                (
-                    f"side_effect_visible={side_effect_visible}, "
-                    f"dangerous_tools={dangerous_tools}"
-                ),
-                label="邀请预订付款能力未暴露",
-            ),
         }
 
-    def build_registry(self) -> ToolRegistry:
-        return build_travel_registry(
-            definitions=[
-                maps_text_search_definition(),
-                maps_geo_definition(),
-                maps_transit_definition(),
-            ],
-            runner=self._maps_runner,
-            replacements={
-                "lodging_search": LodgingSearchTool(self._lodging_adapter),
-                "calendar_search": CalendarSearchTool(
-                    self._calendar_adapter
+    def tool_replacements(
+        self,
+        production_registry: ToolRegistry,
+    ) -> tuple[EvalToolReplacement, ...]:
+        tools = (
+            controlled_amap_replacement(
+                production_registry.get(POI_TOOL),
+                runner=self._maps_runner,
+            ),
+            controlled_amap_replacement(
+                production_registry.get(GEO_TOOL),
+                runner=self._maps_runner,
+            ),
+            controlled_amap_replacement(
+                production_registry.get(TRANSIT_TOOL),
+                runner=self._maps_runner,
+            ),
+            LodgingSearchTool(self._lodging_adapter),
+            CalendarSearchTool(self._calendar_adapter),
+            CalendarCreateTool(self._calendar_adapter),
+        )
+        return tuple(
+            EvalToolReplacement(
+                tool_name=tool.name,
+                tool=tool,
+                reason="meeting mission requires stable route, lodging, and calendar state",
+                source_ref=(
+                    "evals.agent.missions."
+                    "meeting_logistics_tentative_calendar_commit.environment"
                 ),
-                "calendar_create": CalendarCreateTool(
-                    self._calendar_adapter
-                ),
-            },
+            )
+            for tool in tools
         )

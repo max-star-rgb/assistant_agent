@@ -229,6 +229,11 @@ Registry，并基于注册记录与 ToolSpec 生成稳定 generation。seal 后�
 批量注册先验证整批贡献，再原子提交。重复 Tool name、无效输入契约、Plugin 协议错误或装配失败
 必须 fail closed，不能留下半装配 Registry。
 
+正式 Agent eval 复用 Runtime 的 production Registry composition root，不自行追加一套模拟目录。
+Environment 如需确定性故障或固定证据，只能在 production Registry 创建后、Executor 绑定前，通过
+`registry_transform` 对已存在 Tool 做同名原子 replacement；replacement 必须保持完整 `ToolSpec`，
+未声明名称继续使用 production 实现。静态 inspect 不装配真实 Registry，正式运行时再完成该校验。
+
 ### 4.2 Plugin
 
 Plugin 是启动期代码装配和所有权边界，不是 Tool 的执行协议，也不授予单轮执行权限。Plugin 按共享
