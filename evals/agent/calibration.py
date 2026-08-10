@@ -62,6 +62,22 @@ class CalibrationResult(BaseModel):
     reason: str
 
 
+class NativeCalibrationCase(BaseModel):
+    task: TaskSpec
+    fixture_id: str = Field(min_length=1)
+    evidence: RunEvidence
+    expected_scores: dict[str, bool]
+
+
+class NativeCalibrationResult(BaseModel):
+    task_id: str
+    fixture_id: str
+    expected_scores: dict[str, bool]
+    actual_scores: dict[str, bool]
+    matched: bool
+    reason: str
+
+
 def load_calibration_set(task_id: str) -> CalibrationSet:
     """Load a calibration fixture through its declared schema version."""
 
@@ -79,6 +95,58 @@ def load_calibration_set(task_id: str) -> CalibrationSet:
             f"Unsupported calibration schema_version: {schema_version!r}."
         ) from exc
     return loader(raw)
+
+
+def build_native_calibration_cases(
+    tasks: list[TaskSpec],
+) -> list[NativeCalibrationCase]:
+    """Project human labels onto the three persisted canonical Scores."""
+
+    cases: list[NativeCalibrationCase] = []
+    for task in tasks:
+        for fixture in load_calibration_set(task.id).fixtures:
+            evidence = RunEvidence.model_validate(_replace_tomorrow(fixture.evidence))
+            cases.append(
+                NativeCalibrationCase(
+                    task=task,
+                    fixture_id=fixture.id,
+                    evidence=evidence,
+                    expected_scores={
+                        "task_conformance": fixture.expected_dimensions.tool_execution,
+                        "grounding": fixture.expected_dimensions.grounding,
+                        "response_quality": fixture.expected_dimensions.response_quality,
+                    },
+                )
+            )
+    return cases
+
+
+def compare_native_calibration_scores(
+    cases: list[NativeCalibrationCase],
+    persisted_scores: list[dict[str, bool]],
+) -> list[NativeCalibrationResult]:
+    if len(cases) != len(persisted_scores):
+        raise RuntimeError(
+            "Native calibration Score count does not match calibration cases."
+        )
+    results: list[NativeCalibrationResult] = []
+    for case, actual in zip(cases, persisted_scores, strict=True):
+        matched = actual == case.expected_scores
+        results.append(
+            NativeCalibrationResult(
+                task_id=case.task.id,
+                fixture_id=case.fixture_id,
+                expected_scores=case.expected_scores,
+                actual_scores=actual,
+                matched=matched,
+                reason=(
+                    "Langfuse 原生 Evaluator Score 与人工标注一致。"
+                    if matched
+                    else "Langfuse 原生 Evaluator Score 与人工标注不一致。"
+                ),
+            )
+        )
+    return results
 
 
 def _calibration_judge_verdicts(

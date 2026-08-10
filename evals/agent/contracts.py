@@ -17,7 +17,7 @@ class TaskSpec(BaseModel):
     capability: str = Field(min_length=1)
     request: UserRequest
     environment: str = Field(min_length=1)
-    grader: str = Field(min_length=1)
+    grader: str | None = Field(default=None, min_length=1)
     tags: list[str] = Field(default_factory=list)
 
 

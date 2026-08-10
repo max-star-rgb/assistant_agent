@@ -95,23 +95,22 @@ For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
   固定 5 FPS、latest-wins、纯语义选帧、VLM 文本索引和无 query-time VLM 的架构检查面；流水线行为
   由离线 pytest 验证。
 - `scripts/run_agent_evals.py`: Task 中心的 Agent eval 稳定入口。`--inspect`
-  只读显示 Task 和 Environment；`--calibrate` 直接校准隐藏 grader；
+  只读显示 Task 和 Environment；`--calibrate` 把人工正反 Evidence 发布到校准 Dataset，并校准
+  Langfuse 原生 Experiment Evaluator；
   `--publish` 把所选 Task 薄发布到统一 Langfuse Dataset；`--run` 通过活动
-  `AgentGraphRuntime` 创建 Experiment、Trace 和 `agent_eval.*` Score。用可重复
+  `AgentGraphRuntime` 创建 Experiment、Trace 和 canonical `assistant_agent.quality.*` Score。用可重复
   `--task` 精确选择，或用 `--suite` 选择集合。真实 Chat 调用同时要求 real 模式、
-  完整 Provider 配置和 `--allow-real-provider`。Judge 默认非流式、30 秒 timeout、0 次 SDK
-  retry，并通过 `ipv4_direct` 绕过代理、强制 IPv4；可用 `--judge-timeout-seconds`、
-  `--judge-max-retries` 覆盖传输边界，或用 `--judge-network-mode environment` 恢复环境代理和
-  DNS；阶段进度写 stderr。
+  完整 Provider 配置和 `--allow-real-provider`。语义评分由 Langfuse 中版本化的 Evaluator family
+  执行；Live Rule 与 Experiment Rule 共用定义，启停和 sampling 由 UI 管理。阶段进度写 stderr。
   实现位于 `evals/agent/`。
 - Langfuse Remote Custom Experiment 可调用 Assistant Server 的
   `POST /internal/evals/langfuse/remote-experiment`；该默认关闭的 HMAC webhook 只把已校验的
   Task/Suite 映射为上述 CLI 的固定后台 argv，运行回执和 stdout/stderr 写入
-  `.data/evals/remote/`。本机固定的 Langfuse `3.224.2` 通过内部 80 端口
-  `assistant-agent-eval-webhook` 转发到 Assistant Server 8089；代理为该版本尚未签名的
+  `.data/evals/remote/`。当前 Langfuse `4.6` 部署通过内部 80 端口
+  `assistant-agent-eval-webhook` 转发到 Assistant Server 8089；代理保留已有签名，或为未签名的
   Remote Experiment 请求补充共享 HMAC。空 `payload` 通过 `--dataset-active` 运行统一 Dataset
   中全部 ACTIVE Git Task；请求契约、secret 配置与操作步骤见 `evals/README.md`。UI 触发的新运行
-  只在 Assistant Server 控制台显示单个 `tqdm` 整体任务进度条，不打印 Task、evaluation、Judge
+  只在 Assistant Server 控制台显示单个 `tqdm` 整体任务进度条，不打印 Task、evaluation、Evaluator
   阶段明细或结束状态。状态查询和停止命令仍可直接输入，但服务器启动时不额外打印命令提示：
 
   ```bash

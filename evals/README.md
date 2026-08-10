@@ -117,16 +117,18 @@ VLM 文本索引与查询阶段不调用 VLM 等检查面；它不等于真实 C
 
 ## Agent eval
 
-Agent eval 内部 grader 采用四个分离维度；Langfuse 对外只写三个 task-level canonical Score，单工具
-语义质量交给对应 observation evaluator：
+Agent eval 把确定性任务符合度与语义质量分开：Git/Environment 只计算
+`task_conformance`，Langfuse 原生 Evaluator family 同时负责日常 Trace 与 Experiment 的
+`grounding/response_quality`。对外固定保留三个 task-level canonical Score：
 
 ```text
 Task (用户挑战)
   + Environment (runtime、工具、依赖、状态与隔离)
   -> AgentGraphRuntime
   -> Evidence (轨迹、终态、状态与回答)
-  -> Task-local Grader
-  -> 三个 task-level Score + 可选 observation Score
+  -> Git Rule: task_conformance
+  + Langfuse Experiment Rules: grounding / response_quality
+  -> 三个 task-level Score + 可选 live observation Score
   -> Langfuse Experiment
 ```
 
@@ -136,20 +138,17 @@ Git 是回归定义权威：
 evals/agent/
   contracts.py          # Task、Evidence、Grader 契约
   environment_base.py   # 受控 Environment 的共享生命周期与工具可见性
-  batch_grading.py      # 固定三项 Judge 与 Task rubric 工厂
   loader.py             # Task、Suite 和入口加载
   evidence.py           # Runtime Trace 的稳定投影
-  grading.py            # 内部四维与 Environment outcome 匹配
-  judge.py              # 真实 Provider 语义 Judge 边界
+  grading.py            # Environment outcome 与 Mission objective Rule
   provider_gate.py      # real 模式与 Provider 完整性闸门
-  calibration.py        # 正反 Evidence 直接校准
+  calibration.py        # 人工正反标签与原生 Evaluator 校准投影
   langfuse_backend.py   # Dataset 发布与 Experiment 薄适配
   cli.py                # 稳定命令入口
   suites.json           # Task ID 集合
   tasks/<task_id>/
     task.json           # 用户请求、capability 与代码入口
     environment.py      # 依赖、工具、状态、隔离与执行
-    grader.py           # 隐藏评分逻辑
     calibration.json    # 人工标注的正反证据
   missions/<mission_id>/ # 与 Task 相同的运行协议；额外验证目标终态
 ```
@@ -157,11 +156,11 @@ evals/agent/
 `tasks/` 与 `missions/` 只是案例组织层级，共用 loader、Environment、Evidence、校准、发布和运行
 协议；loader 会拒绝两个目录之间重复的 ID。基础 Task 只验证受控工具 outcome；Mission 适用于还必须
 由结构化状态 Evidence 证明客观终态的案例。Mission Environment 必须实现非空、只含 Rule assertion 的
-`objective_state_assertions()`；目标状态 Rule 由 Environment 拥有，Task-local grader 不拥有该 Rule。
+  `objective_state_assertions()`；目标状态 Rule 只由 Environment 拥有。
 
 Langfuse 是协作和运行后端：Dataset 保存已发布请求，Experiment 保存 Trace、输出和 Score。Dataset
-item 只包含 `task_id + request + 短 metadata`，不复制 case level、Environment、state oracle、grader
-rubric、长依赖说明或其他 oracle，也不能把 Langfuse Dataset 当作回归定义的唯一副本。
+item 只包含 `task_id + request + 短 metadata`，不复制 case level、Environment、state oracle、
+Evaluator prompt、长依赖说明或其他 oracle，也不能把 Langfuse Dataset 当作回归定义的唯一副本。
 
 ### Task 规则
 
@@ -178,26 +177,25 @@ rubric、长依赖说明或其他 oracle，也不能把 Langfuse Dataset 当作�
 - 特殊场景需要改变目录时，Environment 或受信入口可以通过结构化
   `metadata.tool_visibility.profile + allowed_tools` 精确收窄工具集合。override 必须声明可读的
   profile，`allowed_tools` 必须是已注册受控工具的子集，`validate()` 必须检查该配置，最终可见集合
-  仍须完整声明 outcome expectation；不得把 override 放入自然语言、grader、Dataset metadata，
+  仍须完整声明 outcome expectation；不得把 override 放入自然语言或 Dataset metadata，
   也不得借此启用未配置或未授权的真实工具；
 - Environment 为每个可见工具声明结果预期；目标工具可以是必调的 `must_succeed` 或
   `must_fail_with(error_code)`，其余正常目录工具可以声明为非必调、但一旦调用就必须成功。该声明
   不会进入 Agent input 或 Dataset metadata；
 - 写操作必须使用每次运行可丢弃或可复位的状态；
-- grader 对 Agent 隐藏，客观事实优先用代码检查，开放语义才用 Judge；
+- objective Rule 和人工标签对 Agent 隐藏；客观事实由 Git Rule 检查，开放语义由 Langfuse 原生
+  Evaluator 判断；
 - Experiment runner 固定输出 `assistant_agent.quality.task_conformance`、
   `assistant_agent.quality.grounding`、`assistant_agent.quality.response_quality` 三个彼此独立的 BOOLEAN
   task-level Score，不生成 reward 或总通过分；
-- 内部 `tool_execution` 由 Environment oracle 做 Rule 判定并映射为 `task_conformance`；内部
-  `tool_semantics` 继续用于 grader 校准，但不写成 task-level Score；单个工具结果质量由
-  `assistant_agent.quality.tool_result_quality` observation evaluator 负责；
+- Environment oracle 直接生成 `task_conformance`；单个工具结果质量由
+  `assistant_agent.quality.tool_result_quality` Live Observation evaluator 负责；
 - 对基础 Task，`tool_execution` 只表示工具 outcome 与 Environment oracle 匹配；对 Mission，它还必须
   合入 `objective_state_assertions()` 的终态 Rule；
-- Task 专属要求只进入 `response_quality` rubric，并通过
-  `grader_for_response_quality()` 绑定共享评分管线，不创建天气、日历等工具专属 Score；
-- 每条 assertion 必须标记 `evaluation_method=rule|judge`；可客观证明的事实使用 Rule，开放语义才使用
-  LLM Judge；
-- grader 必须先通过至少一个正确样本和一个可信错误样本的直接校准；校准文件统一经
+- 不创建天气、日历、Workflow 等 capability 专属 Score；原生 `response_quality` 直接依据用户请求
+  与最终回答判断完整性；
+- 每条 Git assertion 必须标记 `evaluation_method=rule`；Langfuse Evaluator reasoning 保留在原生 Score；
+- 每个案例至少保留一个正确样本和一个可信错误样本；校准文件统一经
   `load_calibration_set()` 按 `schema_version` 分派解析。
 
 当前天气 Task：
@@ -230,6 +228,20 @@ rubric、长依赖说明或其他 oracle，也不能把 Langfuse Dataset 当作�
   `mock_url_unverified` 且不提供 `final_url` 后，Agent 必须说明没有可核实的页面证据，不编造页面标题、
   资格条件或办理步骤，并给出核对 URL、稍后重试或由用户提供页面内容等有限恢复建议。
 
+当前 Deep Research Mission：
+
+- `deep_research_autonomous_admission`：复杂行业研究请求应由 ReAct LLM 自主调用
+  `workflow_submit(workflow_type="deep_research")`，不增加关键词分类器或第二个 decision LLM；
+- `deep_research_constraint_grounding`：中国市场、私有化部署、来源优先级、待确认边界和三类交付物
+  必须进入持久 Workflow state；
+- `deep_research_evidence_plan`：面对冲突证据研究，必须初始化 scope、来源收集、证据抽取、大纲、
+  草稿、核验和合成七阶段计划，并保留多来源目标。
+
+三个 Mission 共用 `DeepResearchMissionEnvironment`：活动 `AgentGraphRuntime` 暴露完整受控目录，真实
+调用 governed `workflow_submit`，状态写入每次运行独立的 `InMemoryWorkflowStore`。其 suite 名为
+`deep_research`；`--inspect --suite deep_research` 离线，正式 `--run` 才调用真实 Agent Provider 和
+Langfuse 原生 Evaluator。
+
 每个 Agent Task Environment 的默认完整目录由共享 `build_controlled_registry()` 装配，包含 Agent
 默认内置工具和与部署 allowlist 一致的 9 个高德 MCP namespaced 只读工具，不按 Task 选择子集。
 目标工具连接该 Task 的确定性 runner，其余工具连接受控的本地或 mock 实现；整个 pytest/校准
@@ -257,7 +269,7 @@ Environment 都不连接真实高德服务，并使用每次运行隔离的 in-m
   evals/system/incubating/agent-eval-infrastructure/checks_*.py
 ```
 
-3. 使用真实 Judge 校准人工标注 Evidence：
+3. 使用 Langfuse 原生 Experiment Evaluator 校准人工标注 Evidence：
 
 ```bash
 MULTIMODAL_AGENT_PROVIDER_MODE=real \
@@ -277,10 +289,10 @@ MULTIMODAL_AGENT_PROVIDER_MODE=real \
   --task amap_weather_provider_failure_recovery
 ```
 
-默认 Dataset 为 `assistant-agent-regression`。发布只 upsert 所选 Task，不运行 Agent 或 Judge。
+默认 Dataset 为 `assistant-agent-regression`。发布只 upsert 所选 Task，不运行 Agent 或 Evaluator。
 原生 item ID 使用 `<dataset_name>__<task_id>`，避免与同一 Langfuse project 的历史 Dataset item
 冲突。
-在第一次 Langfuse 写入前，发布入口会重新加载并验证 Git case 的 Environment、grader 和
+在第一次 Langfuse 写入前，发布入口会重新加载并验证 Git case 的 Environment 和
 calibration；Mission 还必须提供可执行、非空且仅含 Rule 的 `objective_state_assertions()`。
 任一契约缺失时发布直接按基础设施错误失败，不会留下“已 ACTIVE 但不可运行”的新 Dataset item。
 
@@ -298,8 +310,6 @@ MULTIMODAL_AGENT_PROVIDER_MODE=real \
   --run \
   --task amap_weather_provider_failure_recovery \
   --allow-real-provider \
-  --judge-timeout-seconds 30 \
-  --judge-max-retries 0 \
   --run-name amap-weather-provider-failure-recovery
 ```
 
@@ -329,7 +339,7 @@ MULTIMODAL_AGENT_PROVIDER_MODE=real \
 
 `--task` 可重复，用于精确运行多个 Task；`--task` 与 `--suite` 互斥。三个高德天气基础 Task 已加入
 `readonly` 和 `release`；`smoke` 仍保持最小快速案例。加入 suite 只表示 Git 定义和离线校准完整，
-首次真实 Experiment 仍应先按 Task ID 运行并审计 Judge 与 Trace。
+首次真实 Experiment 仍应先按 Task ID 运行并审计 Evaluator 与 Trace。
 精确 Task 和 Suite 运行也只选择 ACTIVE Dataset item，不会重新执行 ARCHIVED 历史项；同一
 `task_id` 若存在多个 ACTIVE item，运行会按基础设施错误 fail-fast，必须先在 Dataset Items 中只保留
 一个 ACTIVE item。
@@ -350,36 +360,22 @@ MULTIMODAL_AGENT_PROVIDER_MODE=real \
 item 的 `input.task_id`、`metadata.task_id` 与 Git Task 一致。空集合、未知 Task 或契约不一致都属于
 评测基础设施错误，不会静默跳过。
 
-Agent 与 LLM Judge 共享已显式选择的真实 Chat Provider 和模型，但不共享传输策略。Judge 固定
-`stream=false`，Qwen Judge 关闭 thinking，并使用独立超时和 SDK 重试：
-
-```text
-AGENT_EVAL_JUDGE_TIMEOUT_SECONDS=30
-AGENT_EVAL_JUDGE_MAX_RETRIES=0
-AGENT_EVAL_JUDGE_NETWORK_MODE=ipv4_direct
-```
-
-命令行 `--judge-timeout-seconds`、`--judge-max-retries`、`--judge-network-mode` 优先于同名
-环境变量。网络模式默认 `ipv4_direct`，绕过环境代理并把 Judge HTTP transport 绑定到 IPv4；
-Provider 只能通过代理访问时，可显式改用 `environment`，沿用系统 HTTP(S) proxy 和 DNS。该开关
-只改变 Judge 网络链路，不改变 Agent Provider 链路。
-运行进度以逐行 JSON 写入 stderr，最终结果仍只写 stdout；每个 criterion 在 Langfuse 中生成
-`judge.<criterion_id>` evaluator observation，其 input 保存当次实际使用的 `criterion_id`、
-`rubric`、`task_id` 和 `run_id`。Judge 超时或连接失败仍属于评测基础设施失败，退出 2，不生成
-Agent 失败分数。Langfuse SDK 即使内部捕获 evaluator 异常，CLI 也会重新抛出原始 Judge 故障，
-不会用缺少 Score 等二次错误覆盖根因。`max_retries=0` 不会重试瞬时连接失败；需要由
-operator 显式接受重试时，可把 `--judge-max-retries` 调为正数。
+Agent 使用仓库显式配置的真实 Chat Provider；语义评分使用 Langfuse 中版本化的 Evaluator family 和
+LLM connection，两者不再由 CLI 复用同一 Provider adapter。Live Rule 与 Experiment Rule 可在
+Langfuse UI 中分别启停和调整 sampling；若 Experiment Rule 被暂停、执行失败或没有在等待窗口内产生
+Score，CLI 按评测基础设施失败退出 2，不把缺失 Evaluator 结果写成 `false`。
 
 ### 安全和退出码
 
 - `--inspect` 不读取 `.env`，不联网；
 - `--publish` 需要 Langfuse 凭据，但不调用 Chat Provider；
-- `--calibrate` 和 `--run` 同时要求 `--allow-real-provider`、
-  `MULTIMODAL_AGENT_PROVIDER_MODE=real` 和完整真实 Chat 配置；
+- `--calibrate` 要求 `--allow-real-provider`，用于确认 Langfuse 原生 Judge 的真实费用；它不启动
+  Agent Chat Provider；`--run` 还要求 `MULTIMODAL_AGENT_PROVIDER_MODE=real` 和完整真实 Chat 配置；
 - `--run` 还要求 Langfuse 凭据与可用的 OTLP Trace 导出；
 - `--run` 在完整产出三个 task-level Score 后返回 0，不再根据分数组合返回 Agent 失败码；
-- `--calibrate` 仍校准内部四维，人工标注与实际内部维度不一致时返回 1；
-- 凭据、Environment、Mission Rule、Dataset、Trace、Judge、Evidence 或 Score 故障返回 2；
+- `--calibrate` 将正反 Evidence 发布到 `assistant-agent-evaluator-calibration` Dataset，并比较三个
+  canonical Score 与人工标签；不一致返回 1；
+- 凭据、Environment、Mission Rule、Dataset、Trace、Evaluator、Evidence 或 Score 故障返回 2；
 - 通过返回 0。
 
 ### 评分与基础设施
@@ -392,14 +388,12 @@ assistant_agent.quality.grounding
 assistant_agent.quality.response_quality
 ```
 
-三个持久化 Score 全部采用阳性语义且不聚合；内部 grader 仍保留四维以便校准：
+三个持久化 Score 全部采用阳性语义且不聚合：
 
-- `task_conformance`：由内部 `tool_execution` 映射；基础 Task 的实际工具终态是否符合 Environment
+- `task_conformance`：基础 Task 的实际工具终态是否符合 Environment
   oracle，Mission 还要求目标状态 Rule 通过。预期 `provider_timeout` 且实际错误码相同仍为 `true`；
-- 内部 `tool_semantics`：继续判断整项 Evidence 中工具数据是否可用，用于校准和诊断，但不持久化为
-  task-level Score。正式单工具质量使用 observation-level `tool_result_quality`；
-- `grounding`：Agent 最终回答是否忠于工具结果，包括正确理解成功、失败和空结果；
-- `response_quality`：回答是否真正回应当前用户请求，并且表达清晰、完整、有用。
+- `grounding`：由 canonical Langfuse Evaluator 判断最终回答是否忠于工具结果和结构化终态；
+- `response_quality`：由同一 canonical Evaluator family 判断回答是否回应用户请求且清晰完整。
 
 因此天气超时恢复案例可以产生：
 
@@ -410,23 +404,22 @@ grounding=true
 response_quality=true|false
 ```
 
-`tool_execution` 的 Rule 结果具有确定性权威，Judge 不得覆盖。Judge Provider 超时、输出不可解析、
-criterion 缺失或未返回 verdict 属于评测基础设施失败，不得记录为 Agent Score 失败。三个 Judge
-固定使用 `tool_semantics`、`grounding`、`response_quality` criterion；每个 criterion 在
-`experiment-item-evaluation` 下形成独立 `judge.<criterion_id>` observation。
+`task_conformance` 的 Git Rule 结果具有确定性权威，Langfuse Evaluator 不得覆盖。Evaluator Provider 超时、
+输出不可解析或未返回 Score 属于评测基础设施失败，不得记录为 Agent Score 失败。
 
 Score comment 在通过时展示 assertion label，失败时展示 label 与真实 reason。Langfuse Score
 metadata 把每条 assertion 的 `passed`、
 `label`、`method` 和可选 `criterion_id` 写成独立标量字段，避免把完整 rubric、reason 或嵌套大对象
 传播成超长属性。
 
-Experiment 完成后，CLI 先检查 SDK 返回的每个 item 都包含三个 canonical BOOLEAN Evaluation，再
-`flush()` 并通过 Langfuse Scores v3 API 回查。三个 task-level Score 必须实际落库、名称无缺失或重复，并且
+Experiment runner 的本地 evaluator 只写 `task_conformance`；两个原生 Experiment Rule 异步写入
+`grounding/response_quality`。CLI `flush()` 后通过 Langfuse Scores v3 API 同时按 trace ID 与
+observation ID 轮询。
+三个 task-level Score 必须实际落库、名称无缺失或重复，并且
 全部挂在该 item 的同一个 `experiment-item-task` observation 上；否则按评测基础设施失败退出 2，
-不能因为 SDK 吞掉 Score 写入异常而报告运行成功。
-本机 Langfuse `3.224.2` 仍处于 v3 write mode，定位该 task observation 必须使用 SDK 的
-`api.legacy.observations_v1`；Observations v2 只在 v4 write mode 可用。Score 记录本身继续使用
-Scores v3 API 审计，两者不能因版本号相似而绑定到同一 API 代际。
+不能因为 SDK 内存结果存在而报告成功。当前自托管 Langfuse 4.6 使用
+`client.api.observations.get_many()`（Observations v2）；3.224.2 的 legacy observation API 不再是
+运行兼容路径。
 
 工具业务结果预期以 Environment 的强类型声明为唯一事实源：
 
@@ -445,16 +438,22 @@ ToolOutcomeExpectation(
 )
 ```
 
-校准和 Langfuse Experiment 都通过通用 `grade_task()` 自动比较实际 `tool.finished/tool.failed` 与
-Environment 的成功/失败及错误码 oracle，并把结果写入 `tool_execution`；Mission 还在同一维度合入
-Environment 的目标状态 Rule。Task grader 不再硬编码调用次数、顺序、参数、状态、objective Rule 或总
-通过逻辑，只提供 Task 专属 `response_quality` rubric；通用入口固定执行另外两个语义 Judge。
+校准和正式 Experiment 都通过 `grade_task_conformance()` 比较实际 `tool.finished/tool.failed` 与
+Environment oracle；Mission 在同一维度合入目标状态 Rule。Task 不再创建专属 grader 或
+`response_quality` rubric。
 
-Calibration v3 为每个 Evidence 显式保存四项 `expected_dimensions`，以及三个 Judge criterion 的
-人工 `judge_verdicts`。校准逐项比较，不计算聚合通过标记。
+Calibration v3 仍作为迁移期人工标签格式读取；原生校准只投影其中的 `tool_execution ->
+task_conformance`、`grounding` 和 `response_quality`，不再调用旧 `tool_semantics` Judge。
 
-Environment validation、凭据、Dataset、Trace 导出、Evidence 解析和 Judge 故障属于评测基础设施
-失败，退出 2，不生成或篡改 Agent Score。Task-local rubric 只解释 `response_quality`。
+Environment validation、凭据、Dataset、Trace 导出、Evidence 解析和 Evaluator 故障属于评测基础设施
+失败，退出 2，不生成或篡改 Agent Score。
+
+### 迁移兼容与删除计划
+
+正式 `--run/--calibrate/--publish` 已不再引用本地 Provider Judge。为读取既有 Task 与 Calibration v3，
+`judge.py`、`batch_grading.py`、旧 `grade_task()` / `run_calibration()`、历史 `grader.py` 和
+`tool_semantics/judge_verdicts` 字段暂时保留。新 Task 禁止继续使用这些入口；待历史 Task 定义和校准
+fixture 完成字段迁移后，应在一次独立清理中删除兼容层及其旧专项测试，避免长期维护两套评分机制。
 
 ### 从 Langfuse UI 触发 CLI
 
@@ -466,7 +465,7 @@ POST /internal/evals/langfuse/remote-experiment
 
 它只负责验签、校验统一 Dataset 和 Git 中已有的 Task/Suite，然后在后台以固定 argv 启动
 `scripts/run_agent_evals.py --run`。请求不能传入 shell、环境变量、env file、写权限或其他 CLI
-参数；Task、Environment、Grader 和三个 task-level Score 仍完全使用仓库中的定义。CLI stdout、stderr 和状态回执
+参数；Task、Environment、Git Rule 和三个 task-level Score 使用上述统一定义。CLI stdout、stderr 和状态回执
 写入 `.data/evals/remote/<trigger_id>.*`，不提交。
 
 先在 Assistant Server 的本机未跟踪环境中配置：
@@ -478,7 +477,9 @@ ASSISTANT_AGENT_LANGFUSE_REMOTE_EXPERIMENT_SIGNING_SECRET=<Langfuse-setup-secret
 ASSISTANT_AGENT_LANGFUSE_REMOTE_EXPERIMENT_DATASET=assistant-agent-regression
 ```
 
-本机固定使用 Langfuse `3.224.2`。该版本发送的请求体为：
+当前 Langfuse `4.6` 部署继续保留 Remote Experiment 代理作为端口、签名与 Assistant Server 安全边界。
+本轮升级只验证了代理容器健康和 Compose 网络可达，没有在 real Provider 模式触发远程 Experiment；
+因此请求体仍按现有兼容契约解析：
 
 ```json
 {
@@ -493,9 +494,8 @@ ASSISTANT_AGENT_LANGFUSE_REMOTE_EXPERIMENT_DATASET=assistant-agent-regression
 Assistant Server 对其二次解析。空对象默认运行 Dataset 中全部 ACTIVE 且能映射到 Git 的 Task；
 `task|suite + runName` 只作为精确调试时的高级白名单字段。
 
-`3.224.2` 尚未把 Remote Experiment 原生签名功能发布到自托管镜像，因此内部 80 端口代理会在
-请求没有 `x-langfuse-signature` 时使用同一个 secret 补充
-`t=<timestamp>,v1=<hmac-sha256>`；未来 Langfuse 原生携带签名时，代理保持原值、不重复签名。
+内部 80 端口代理会在请求没有 `x-langfuse-signature` 时使用同一个 secret 补充
+`t=<timestamp>,v1=<hmac-sha256>`；Langfuse 已携带签名时，代理保持原值、不重复签名。
 同一个 secret 必须同时配置到仓库根 `.env`（Assistant Server）与
 `.data/langfuse/.env`（Compose 代理），两处文件都不得提交。
 
@@ -520,10 +520,10 @@ Assistant Server 对其二次解析。空对象默认运行 Dataset 中全部 AC
 {"suite":"release","runName":"ui-release"}
 ```
 
-Langfuse `3.224.2` 的 webhook SSRF 校验只允许 URL 使用 80 或 443，host/IP whitelist 不会放行
-8089。因此本机 Docker Compose 使用 `assistant-agent-eval-webhook` 在内部 80 端口提供单路径代理，
+当前 Langfuse 4.6 的本机 Docker Compose 继续使用 `assistant-agent-eval-webhook` 在内部 80 端口提供
+单路径代理，避免把 Assistant Server 的 8089 端口直接暴露给 Remote Experiment，
 并设置 `LANGFUSE_WEBHOOK_WHITELISTED_HOST=assistant-agent-eval-webhook`；代理原样转发 body 和
-已有的 `x-langfuse-signature`，或为 3.224.2 的未签名请求补签后，转发到绑定
+已有的 `x-langfuse-signature`，或为未签名请求补签后，转发到绑定
 `0.0.0.0:8089` 的 Assistant Server。不要在 UI URL 中填写
 `host.docker.internal:8089`。
 

@@ -17,25 +17,30 @@ from assistant_agent.observability.otel_exporter import (
     TextOtelTraceObserver,
     create_otlp_http_text_span_exporter,
 )
-from evals.agent.calibration import load_calibration_set
+from evals.agent.calibration import (
+    NativeCalibrationResult,
+    build_native_calibration_cases,
+    compare_native_calibration_scores,
+    load_calibration_set,
+)
 from evals.agent.contracts import (
     DimensionResult,
-    GraderResult,
-    LLMJudge,
     RunEvidence,
     TaskEnvironment,
     TaskSpec,
 )
 from evals.agent.grading import (
-    DIMENSION_NAMES,
-    grade_task,
+    grade_task_conformance,
     validate_mission_objective_assertions,
 )
-from evals.agent.judge import ProgressCallback
 from evals.agent.loader import load_case_source, load_entrypoint, load_task
 
 
+ProgressCallback = Callable[[dict[str, object]], None]
+
+
 DEFAULT_DATASET_NAME = "assistant-agent-regression"
+DEFAULT_CALIBRATION_DATASET_NAME = "assistant-agent-evaluator-calibration"
 QUALITY_SCORE_PREFIX = "assistant_agent.quality."
 EXPERIMENT_SCORE_DIMENSIONS = (
     ("task_conformance", "tool_execution"),
@@ -119,9 +124,6 @@ def _validate_task_definition_for_publish(task: TaskSpec) -> None:
     environment_type = load_entrypoint(task.environment)
     environment: TaskEnvironment = environment_type()
     environment.validate().require_valid()
-    grader = load_entrypoint(task.grader)
-    if not callable(grader):
-        raise RuntimeError(f"Agent eval grader is not callable: {task.grader}.")
     load_calibration_set(task.id)
     if source.level != "mission":
         return
@@ -151,7 +153,6 @@ def run_tasks(
     tasks: Collection[TaskSpec],
     *,
     config: ProviderConfig,
-    judge: LLMJudge,
     dataset_name: str = DEFAULT_DATASET_NAME,
     run_name: str | None = None,
     trace_observer: TextOtelTraceObserver | None = None,
@@ -254,10 +255,9 @@ def run_tasks(
             task_id=str(task_id),
         )
         try:
-            result: GraderResult = grade_task(
+            task_conformance = grade_task_conformance(
                 task=task,
                 evidence=RunEvidence.model_validate(output),
-                judge=judge,
             )
         except Exception as exc:
             _report_progress(
@@ -273,12 +273,9 @@ def run_tasks(
             "agent_eval.evaluation.completed",
             task_id=str(task_id),
             elapsed_ms=int((time.perf_counter() - started_at) * 1000),
-            dimensions={
-                name: getattr(result.dimensions, name).passed
-                for name in DIMENSION_NAMES
-            },
+            dimensions={"task_conformance": task_conformance.passed},
         )
-        return _evaluations(result)
+        return [_task_conformance_evaluation(task_conformance)]
 
     return _run_experiment_preserving_evaluator_errors(
         selected_dataset.run_experiment,
@@ -287,7 +284,8 @@ def run_tasks(
         run_name=run_name,
         description=(
             "Run Git-owned task environments through AgentGraphRuntime and "
-            "score them with task-local graders."
+            "score deterministic conformance while Langfuse native rules "
+            "evaluate semantic quality."
         ),
         task=execute_item,
         max_concurrency=1,
@@ -296,6 +294,115 @@ def run_tasks(
             "task_count": len(task_by_id),
         },
     )
+
+
+def run_native_calibration(
+    client: Langfuse,
+    tasks: Collection[TaskSpec],
+    *,
+    dataset_name: str = DEFAULT_CALIBRATION_DATASET_NAME,
+    run_name: str | None = None,
+    progress: ProgressCallback | None = None,
+) -> tuple[Any, list[NativeCalibrationResult]]:
+    """Calibrate the same Langfuse evaluator families used by live traffic."""
+
+    cases = build_native_calibration_cases(list(tasks))
+    if not cases:
+        raise RuntimeError("Native calibration contains no fixtures.")
+    client.create_dataset(
+        name=dataset_name,
+        description=(
+            "Git-owned human labels for assistant_agent native Langfuse evaluators."
+        ),
+        metadata={"owner": "evals/agent", "kind": "evaluator_calibration"},
+    )
+    case_by_key = {
+        (case.task.id, case.fixture_id): case
+        for case in cases
+    }
+    item_ids: set[str] = set()
+    for case in cases:
+        item_id = f"{dataset_name}__{case.task.id}__{case.fixture_id}"
+        item_ids.add(item_id)
+        client.create_dataset_item(
+            dataset_name=dataset_name,
+            id=item_id,
+            input={
+                "task_id": case.task.id,
+                "request": case.task.request.model_dump(mode="json"),
+            },
+            expected_output=case.expected_scores,
+            metadata={
+                "task_id": case.task.id,
+                "fixture_id": case.fixture_id,
+                "kind": "evaluator_calibration",
+            },
+        )
+    dataset = client.get_dataset(dataset_name)
+    selected_items = sorted(
+        [
+            item
+            for item in dataset.items
+            if _item_field(item, "id") in item_ids
+            and _item_status(item) == "ACTIVE"
+        ],
+        key=lambda item: str(_item_field(item, "id")),
+    )
+    if len(selected_items) != len(cases):
+        raise RuntimeError(
+            "Native calibration Dataset is missing ACTIVE calibration fixtures."
+        )
+    selected_dataset = copy(dataset)
+    selected_dataset.items = selected_items
+    ordered_cases = [case_by_key[_calibration_case_key(item)] for item in selected_items]
+
+    def calibration_task(*, item: Any, **_: Any) -> dict[str, Any]:
+        key = _calibration_case_key(item)
+        case = case_by_key.get(key)
+        if case is None:
+            raise RuntimeError(f"Unknown native calibration case: {key!r}.")
+        return case.evidence.model_dump(mode="json")
+
+    def conformance_evaluator(
+        *,
+        output: Any,
+        metadata: dict[str, Any] | None = None,
+        **_: Any,
+    ) -> list[Evaluation]:
+        task_id = (metadata or {}).get("task_id")
+        fixture_id = (metadata or {}).get("fixture_id")
+        case = case_by_key.get((task_id, fixture_id))
+        if case is None:
+            raise RuntimeError(
+                f"Unknown native calibration evaluator case: {(task_id, fixture_id)!r}."
+            )
+        dimension_result = grade_task_conformance(
+            task=case.task,
+            evidence=RunEvidence.model_validate(output),
+        )
+        return [_task_conformance_evaluation(dimension_result)]
+
+    experiment = _run_experiment_preserving_evaluator_errors(
+        selected_dataset.run_experiment,
+        evaluator=conformance_evaluator,
+        name="assistant-agent-evaluator-calibration",
+        run_name=run_name,
+        description=(
+            "Calibrate native Langfuse evaluator families against Git-owned labels."
+        ),
+        task=calibration_task,
+        max_concurrency=1,
+        metadata={"framework": "evals/agent", "kind": "evaluator_calibration"},
+    )
+    persisted = verify_persisted_dimension_scores(client, experiment)
+    comparisons = compare_native_calibration_scores(ordered_cases, persisted)
+    _report_progress(
+        progress,
+        "agent_eval.calibration.completed",
+        fixture_count=len(comparisons),
+        matched=sum(item.matched for item in comparisons),
+    )
+    return experiment, comparisons
 
 
 def _run_experiment_preserving_evaluator_errors(
@@ -327,47 +434,13 @@ def _run_experiment_preserving_evaluator_errors(
     return result
 
 
-def experiment_dimension_scores(result: Any) -> list[dict[str, bool]]:
-    expected_names = {
-        f"{QUALITY_SCORE_PREFIX}{score_name}": score_name
-        for score_name, _ in EXPERIMENT_SCORE_DIMENSIONS
-    }
-    item_scores: list[dict[str, bool]] = []
-    for item_result in result.item_results:
-        resolved: dict[str, bool] = {}
-        for evaluation in item_result.evaluations:
-            dimension_name = expected_names.get(evaluation.name)
-            if dimension_name is None:
-                continue
-            if not isinstance(evaluation.value, bool):
-                raise RuntimeError(
-                    f"Experiment dimension {evaluation.name} is not BOOLEAN."
-                )
-            if dimension_name in resolved:
-                raise RuntimeError(
-                    "Experiment result contains duplicate Agent eval dimension: "
-                    f"{evaluation.name}."
-                )
-            resolved[dimension_name] = evaluation.value
-        expected_dimensions = {name for name, _ in EXPERIMENT_SCORE_DIMENSIONS}
-        if set(resolved) != expected_dimensions:
-            raise RuntimeError(
-                "Experiment result is missing Agent eval dimensions: "
-                f"expected={sorted(expected_dimensions)}, actual={sorted(resolved)}."
-            )
-        item_scores.append(resolved)
-    if not item_scores:
-        raise RuntimeError("Experiment result contains no evaluated items.")
-    return item_scores
-
-
 def verify_persisted_dimension_scores(
     client: Langfuse,
     result: Any,
     *,
     attempts: int = 30,
     retry_delay_seconds: float = 0.5,
-) -> None:
+) -> list[dict[str, bool]]:
     """Verify every Experiment item persisted the canonical task-level Scores."""
 
     if attempts < 1:
@@ -376,6 +449,7 @@ def verify_persisted_dimension_scores(
         f"{QUALITY_SCORE_PREFIX}{score_name}"
         for score_name, _ in EXPERIMENT_SCORE_DIMENSIONS
     }
+    persisted: list[dict[str, bool]] = []
     client.flush()
     for item_result in result.item_results:
         trace_id = getattr(item_result, "trace_id", None)
@@ -385,7 +459,7 @@ def verify_persisted_dimension_scores(
             )
         failure_detail = ""
         for attempt in range(attempts):
-            observations_response = client.api.legacy.observations_v1.get_many(
+            observations_response = client.api.observations.get_many(
                 trace_id=trace_id,
                 name="experiment-item-task",
                 type="SPAN",
@@ -416,6 +490,7 @@ def verify_persisted_dimension_scores(
                 fields="subject",
                 name=",".join(sorted(expected_names)),
                 trace_id=trace_id,
+                observation_id=task_observation_id,
             )
             scores = [
                 score
@@ -434,6 +509,7 @@ def verify_persisted_dimension_scores(
                 )
             else:
                 invalid_records: list[str] = []
+                resolved_values: dict[str, bool] = {}
                 for score in scores:
                     subject = getattr(score, "subject", None)
                     if getattr(score, "data_type", None) != "BOOLEAN":
@@ -458,7 +534,16 @@ def verify_persisted_dimension_scores(
                             f"{score.name}: subject.id does not match "
                             "experiment-item-task observation"
                         )
+                    elif not isinstance(getattr(score, "value", None), bool):
+                        invalid_records.append(
+                            f"{score.name}: value is not BOOLEAN"
+                        )
+                    else:
+                        resolved_values[
+                            score.name.removeprefix(QUALITY_SCORE_PREFIX)
+                        ] = score.value
                 if not invalid_records:
+                    persisted.append(resolved_values)
                     break
                 failure_detail = (
                     f"trace_id={trace_id}, invalid={invalid_records}"
@@ -470,6 +555,7 @@ def verify_persisted_dimension_scores(
                 "Experiment is missing persisted Agent eval dimensions on one "
                 f"experiment-item-task observation: {failure_detail}."
             )
+    return persisted
 
 
 def create_required_trace_observer(
@@ -493,18 +579,16 @@ def create_required_trace_observer(
     )
 
 
-def _evaluations(result: GraderResult) -> list[Evaluation]:
-    return [
-        Evaluation(
-            name=f"{QUALITY_SCORE_PREFIX}{score_name}",
-            value=dimension_result.passed,
-            data_type="BOOLEAN",
-            comment=dimension_result.reason,
-            metadata=_assertion_metadata(dimension_result),
-        )
-        for score_name, dimension_name in EXPERIMENT_SCORE_DIMENSIONS
-        for dimension_result in [getattr(result.dimensions, dimension_name)]
-    ]
+def _task_conformance_evaluation(
+    dimension_result: DimensionResult,
+) -> Evaluation:
+    return Evaluation(
+        name=f"{QUALITY_SCORE_PREFIX}task_conformance",
+        value=dimension_result.passed,
+        data_type="BOOLEAN",
+        comment=dimension_result.reason,
+        metadata=_assertion_metadata(dimension_result),
+    )
 
 
 def _assertion_metadata(
@@ -530,6 +614,19 @@ def _item_field(item: Any, name: str) -> Any:
 def _item_status(item: Any) -> Any:
     status = _item_field(item, "status")
     return getattr(status, "value", status)
+
+
+def _calibration_case_key(item: Any) -> tuple[str, str]:
+    metadata = _item_field(item, "metadata")
+    if not isinstance(metadata, dict):
+        raise RuntimeError("Calibration item metadata must be an object.")
+    task_id = metadata.get("task_id")
+    fixture_id = metadata.get("fixture_id")
+    if not isinstance(task_id, str) or not task_id:
+        raise RuntimeError("Calibration item metadata.task_id must be non-empty.")
+    if not isinstance(fixture_id, str) or not fixture_id:
+        raise RuntimeError("Calibration item metadata.fixture_id must be non-empty.")
+    return task_id, fixture_id
 
 
 def _report_progress(

@@ -20,21 +20,13 @@ from assistant_agent.providers.provider_http import (
     without_unsupported_socks_proxy_env,
 )
 from assistant_agent.runtime.assistant_run_service import load_env_file
-from evals.agent.calibration import run_calibration
 from evals.agent.contracts import TaskSpec
-from evals.agent.judge import (
-    JUDGE_MAX_RETRIES_ENV,
-    JUDGE_NETWORK_MODES,
-    JUDGE_NETWORK_MODE_ENV,
-    JUDGE_TIMEOUT_ENV,
-    create_provider_judge,
-)
 from evals.agent.langfuse_backend import (
     DEFAULT_DATASET_NAME,
     active_dataset_task_ids,
     create_required_trace_observer,
-    experiment_dimension_scores,
     publish_tasks,
+    run_native_calibration,
     run_tasks,
     verify_persisted_dimension_scores,
 )
@@ -82,34 +74,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--allow-real-provider",
         action="store_true",
-        help="Required for calibration or Agent runs using a real Chat Provider.",
-    )
-    parser.add_argument(
-        "--judge-timeout-seconds",
-        type=float,
-        default=None,
         help=(
-            "Override the LLM Judge timeout; defaults to "
-            f"{JUDGE_TIMEOUT_ENV} or 30 seconds."
-        ),
-    )
-    parser.add_argument(
-        "--judge-max-retries",
-        type=int,
-        default=None,
-        help=(
-            "Override LLM Judge SDK retries; defaults to "
-            f"{JUDGE_MAX_RETRIES_ENV} or 0."
-        ),
-    )
-    parser.add_argument(
-        "--judge-network-mode",
-        choices=JUDGE_NETWORK_MODES,
-        default=None,
-        help=(
-            "Select Judge networking: environment honors proxy settings; "
-            "ipv4_direct bypasses proxies and forces IPv4. Defaults to "
-            f"{JUDGE_NETWORK_MODE_ENV} or ipv4_direct."
+            "Required for Langfuse native Evaluator calibration or Agent runs "
+            "using a real Chat Provider."
         ),
     )
     args = parser.parse_args(argv)
@@ -171,15 +138,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             return 0
 
-        config = ProviderConfig.from_env()
-        validate_real_chat_config(config)
-        judge_env = dict(os.environ)
-        if args.judge_timeout_seconds is not None:
-            judge_env[JUDGE_TIMEOUT_ENV] = str(args.judge_timeout_seconds)
-        if args.judge_max_retries is not None:
-            judge_env[JUDGE_MAX_RETRIES_ENV] = str(args.judge_max_retries)
-        if args.judge_network_mode is not None:
-            judge_env[JUDGE_NETWORK_MODE_ENV] = args.judge_network_mode
         if args.calibrate:
             _emit_progress(
                 {
@@ -187,25 +145,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "task_count": len(tasks),
                 }
             )
-            judge = create_provider_judge(
-                config,
-                env=judge_env,
+            client = client or _langfuse_client()
+            _, calibration_results = run_native_calibration(
+                client,
+                tasks,
+                run_name=args.run_name,
                 progress=_emit_progress,
             )
-            try:
-                results = [
-                    result.model_dump(mode="json")
-                    for task in tasks
-                    for result in run_calibration(task, judge)
-                ]
-            finally:
-                judge.close()
-            _emit_progress(
-                {
-                    "event": "agent_eval.calibration.completed",
-                    "fixture_count": len(results),
-                }
-            )
+            results = [item.model_dump(mode="json") for item in calibration_results]
             print(
                 json.dumps(
                     {"action": "calibrate", "results": results},
@@ -215,13 +162,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             return 0 if all(result["matched"] for result in results) else 1
 
+        config = ProviderConfig.from_env()
+        validate_real_chat_config(config)
         client = client or _langfuse_client()
-        judge = create_provider_judge(
-            config,
-            env=judge_env,
-            langfuse=client,
-            progress=_emit_progress,
-        )
         observer = create_required_trace_observer()
         _emit_progress(
             {
@@ -235,7 +178,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                 client,
                 tasks,
                 config=config,
-                judge=judge,
                 dataset_name=args.dataset_name,
                 run_name=args.run_name,
                 trace_observer=observer,
@@ -243,13 +185,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 active_only=args.dataset_active,
             )
         finally:
-            judge.close()
             if not observer.close(timeout=10.0):
                 raise RuntimeError(
                     "Langfuse Runtime trace export did not close cleanly."
                 )
-        dimension_scores = experiment_dimension_scores(result)
-        verify_persisted_dimension_scores(client, result)
+        dimension_scores = verify_persisted_dimension_scores(client, result)
         _emit_progress(
             {
                 "event": "agent_eval.run.completed",

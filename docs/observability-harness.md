@@ -445,8 +445,8 @@ userinfo 清洗边界。
 
 | Score | 目标与来源 |
 | --- | --- |
-| `assistant_agent.quality.response_quality` | 最终文本 `llm.chat` generation 的回答质量；日常使用原生 observation LLM-as-a-Judge，Experiment 可由受控 grader 写入 |
-| `assistant_agent.quality.grounding` | 最终文本 generation 对工具/上下文证据的忠实度；日常 observation evaluator，Experiment 可由受控 grader 写入 |
+| `assistant_agent.quality.response_quality` | 最终回答质量；同一个原生 Evaluator family 由 Live Rule 和 Experiment Rule 分别触发 |
+| `assistant_agent.quality.grounding` | 最终回答对工具/上下文/终态证据的忠实度；同一个原生 Evaluator family 覆盖 live 与 experiment |
 | `assistant_agent.quality.tool_result_quality` | 单个 `tool.execute` observation 的结果语义质量；只使用 observation evaluator |
 | `assistant_agent.quality.memory_extraction` | 单个 `memory.turn_ingestion` observation 的长期记忆提取质量 |
 | `assistant_agent.quality.memory_recall` | 具有实际召回证据的 memory/LLM observation 的召回质量；证据不足时保持 missing/unsupported，不伪造失败 |
@@ -456,8 +456,13 @@ Score name 只表达测量对象；`source`、judge/model、evaluator version、
 metadata。terminal、Tool 调用成败、event count、latency 等已知运行事实保留为 observation/metadata，
 不伪装成质量 Score。跨多个 observation 的 `tool_use` 轨迹判断第一阶段只进入 Codex 报告。
 
-Langfuse 日常 evaluator 使用原生 **Live Observations**、100% sampling 和 observation name/type filter；
-不要新建 deprecated trace-level evaluator。Langfuse 可按 `gen_ai.tool.name` 将 Tool execution SPAN 显示为
+Langfuse 日常 evaluator 使用原生 **Live Observations** 和 observation name/type filter；首次创建默认
+100% sampling，之后 `enabled/sampling` 由 Langfuse UI 作为运维状态管理。仓库 reconcile 只更新
+evaluator reference、target、filter 和 mapping，不覆盖 UI 中的启停或采样。`response_quality` 与
+`grounding` 还各有一条面向 `assistant-agent-regression` 和
+`assistant-agent-evaluator-calibration` Dataset 的 Experiment Rule；两类 Rule 引用同一个 Evaluator
+family，因此 prompt、模型和输出定义只有一个权威版本。不要新建 deprecated trace-level evaluator。
+Langfuse 可按 `gen_ai.tool.name` 将 Tool execution SPAN 显示为
 `shopping_search` 等具体工具名，因此 `tool_result_quality` 不依赖 observation name，而过滤 SPAN 且
 metadata `assistant_agent.observation_kind=tool_execution`；该稳定标记由 canonical
 `tool.finished/tool.failed` 在 OTel 投影边界生成。runtime audit 使用同一标记，并为迁移前 trace 兼容读取
@@ -488,10 +493,10 @@ trace content。Evaluator/rule 公共 API 当前仍标为 unstable，因此仓�
   --apply --allow-online-judge
 ```
 
-Langfuse 原生 live evaluator 使用 evaluation rule name 作为落库 Score name，因此 rule 与 evaluator
-统一使用同一个 `assistant_agent.quality.*` canonical 名称。入口创建缺失项；若检测到本项目早期的
-`assistant-agent-live-*` rule，则通过同一 rule ID 原地重命名，不创建并行 Judge、不删除或回写历史
-Score。`memory_extraction` rule 额外过滤 `assistant_agent.memory_semantic_evidence=available`，因此只有
+Evaluator family 使用 `assistant_agent.quality.*` canonical 名称；Rule 使用 `.live` 与 `.experiment`
+后缀表达触发目标。入口创建缺失项；若检测到早期 canonical 或 `assistant-agent-live-*` Rule，则通过
+同一 Rule ID 原地迁移为 `.live`，不删除或回写历史 Score。`memory_extraction` Rule 额外过滤
+`assistant_agent.memory_semantic_evidence=available`，因此只有
 显式启用本地 memory trace content 且 observation 同时包含原对话和 Mem0 changes 时才调用 Judge。
 
 每日调度使用仓库提供的 user unit 模板；安装/启用属于 operator 动作，不由审计器自行修改。unit

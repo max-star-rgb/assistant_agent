@@ -149,11 +149,13 @@ def build_controlled_base_registry(
     *,
     replacements: Mapping[str, Tool] | None = None,
     config: ProviderConfig | None = None,
+    workflow_service: Any | None = None,
 ) -> ToolRegistry:
     """Build the local offline-safe catalog and replace selected dependencies."""
 
     source = create_default_registry(
         config or ProviderConfig(provider_mode="mock"),
+        workflow_service=workflow_service,
         plugin_modules=[],
     )
     controlled_tools: dict[str, Tool] = {
@@ -194,6 +196,7 @@ def build_controlled_registry(
     *,
     replacements: Mapping[str, Tool] | None = None,
     config: ProviderConfig | None = None,
+    workflow_service: Any | None = None,
 ) -> ToolRegistry:
     """Build the complete offline-safe catalog with default AMap tools."""
 
@@ -202,6 +205,7 @@ def build_controlled_registry(
     base = build_controlled_base_registry(
         replacements=replacements,
         config=config,
+        workflow_service=workflow_service,
     )
     return add_controlled_amap_tools(base)
 

@@ -1,0 +1,81 @@
+{
+  "schema_version": "agent_eval_calibration_v3",
+  "fixtures": [
+    {
+      "id": "constraints_preserved_in_workflow",
+      "judge_verdicts": {
+        "tool_semantics": {"passed": true, "reason": "人工标注：Workflow 受理结果结构完整。"},
+        "grounding": {"passed": true, "reason": "人工标注：回答没有扩写 Workflow 未保存的约束。"},
+        "response_quality": {"passed": true, "reason": "人工标注：回答确认了研究范围、约束和分阶段交付。"}
+      },
+      "evidence": {
+        "task_id": "deep_research_constraint_grounding",
+        "run_id": "calibration-constraint-positive",
+        "trace_id": "b1111111111111111111111111111111",
+        "terminal_status": "completed",
+        "response": {"message": "已按中国市场、私有化部署、官方文档优先和未公开能力待确认的约束创建深度研究任务。"},
+        "available_tools": ["workflow_submit"],
+        "tool_executions": [{
+          "name": "workflow_submit",
+          "input": {
+            "workflow_type": "deep_research",
+            "objective": "研究 2025–2026 年中国企业采用 LLM Agent 可观测与评测平台的技术选型",
+            "deliverables": ["中文选型报告", "风险清单", "分阶段落地建议"],
+            "constraints": ["只看可私有化部署方案", "官方文档优先", "未公开能力标为待确认"],
+            "inputs": {"research_questions": ["数据驻留如何满足？", "审计能力如何？", "评测成本如何？", "迁移风险如何？"], "source_target": 12},
+            "durability_reasons": ["multi_stage"],
+            "idempotency_key": "calibration-constraint"
+          },
+          "status": "succeeded",
+          "terminal_event": "tool.finished",
+          "exposed": true,
+          "output": {"workflow": {"workflow_type": "deep_research", "status": "queued"}}
+        }],
+        "validation_results": [{"tool_name": "workflow_submit", "status": "accepted"}],
+        "initial_state": {"workflow": null},
+        "final_state": {"workflow": {
+          "workflow_type": "deep_research",
+          "status": "queued",
+          "phase": "admitted",
+          "objective": "研究 2025–2026 年中国企业采用 LLM Agent 可观测与评测平台的技术选型",
+          "deliverables": ["中文选型报告", "风险清单", "分阶段落地建议"],
+          "constraints": ["只看可私有化部署方案", "官方文档优先", "未公开能力标为待确认"],
+          "inputs": {"research_questions": ["数据驻留如何满足？", "审计能力如何？", "评测成本如何？", "迁移风险如何？"], "source_target": 12},
+          "plan_stage_ids": ["scope", "collect_sources", "extract_evidence", "outline", "draft", "verify", "synthesize"]
+        }},
+        "state_diff": {"added": [], "modified": ["workflow"], "deleted": []}
+      },
+      "expected_dimensions": {"tool_execution": true, "tool_semantics": true, "grounding": true, "response_quality": true}
+    },
+    {
+      "id": "drops_private_deployment_constraints",
+      "judge_verdicts": {
+        "tool_semantics": {"passed": true, "reason": "人工标注：工具本身返回合法。"},
+        "grounding": {"passed": true, "reason": "人工标注：回答忠于实际提交内容。"},
+        "response_quality": {"passed": false, "reason": "人工标注：提交遗漏私有化、官方文档和待确认边界。"}
+      },
+      "evidence": {
+        "task_id": "deep_research_constraint_grounding",
+        "run_id": "calibration-constraint-negative",
+        "trace_id": "b2222222222222222222222222222222",
+        "terminal_status": "completed",
+        "response": {"message": "已创建一项通用平台调研。"},
+        "available_tools": ["workflow_submit"],
+        "tool_executions": [{"name": "workflow_submit", "status": "succeeded", "terminal_event": "tool.finished", "exposed": true, "input": {"workflow_type": "deep_research"}, "output": {"workflow": {"status": "queued"}}}],
+        "validation_results": [{"tool_name": "workflow_submit", "status": "accepted"}],
+        "initial_state": {"workflow": null},
+        "final_state": {"workflow": {
+          "workflow_type": "deep_research",
+          "status": "queued",
+          "objective": "研究一些 Agent 平台",
+          "deliverables": ["报告"],
+          "constraints": [],
+          "inputs": {"research_questions": ["有哪些平台？"], "source_target": 3},
+          "plan_stage_ids": ["scope", "collect_sources", "extract_evidence", "outline", "draft", "verify", "synthesize"]
+        }},
+        "state_diff": {"added": [], "modified": ["workflow"], "deleted": []}
+      },
+      "expected_dimensions": {"tool_execution": false, "tool_semantics": true, "grounding": true, "response_quality": false}
+    }
+  ]
+}

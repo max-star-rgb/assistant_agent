@@ -133,6 +133,10 @@ def grade_task(
     environment = load_entrypoint(task.environment)()
     environment.validate().require_valid()
     expectations = environment.tool_outcome_expectations(evidence.available_tools)
+    if task.grader is None:
+        raise RuntimeError(
+            f"Legacy task-local grading is not configured for {task.id!r}."
+        )
     grader = load_entrypoint(task.grader)
     task_result: TaskJudgeResult = grader(evidence, judge)
     source = load_case_source(task.id)
@@ -146,6 +150,33 @@ def grade_task(
         objective_assertions = objective_method(evidence)
     return enforce_tool_outcome_expectations(
         task_result,
+        evidence=evidence,
+        expectations=expectations,
+        objective_assertions=objective_assertions,
+    )
+
+
+def grade_task_conformance(
+    *,
+    task: TaskSpec,
+    evidence: RunEvidence,
+) -> DimensionResult:
+    """Evaluate only Git-owned deterministic Environment and Mission rules."""
+
+    from evals.agent.loader import load_case_source, load_entrypoint
+
+    environment = load_entrypoint(task.environment)()
+    environment.validate().require_valid()
+    expectations = environment.tool_outcome_expectations(evidence.available_tools)
+    objective_assertions = None
+    if load_case_source(task.id).level == "mission":
+        objective_method = getattr(environment, "objective_state_assertions", None)
+        if not callable(objective_method):
+            raise RuntimeError(
+                f"Mission {task.id!r} must define objective_state_assertions()."
+            )
+        objective_assertions = objective_method(evidence)
+    return _tool_conformance_dimension(
         evidence=evidence,
         expectations=expectations,
         objective_assertions=objective_assertions,
@@ -185,6 +216,25 @@ def enforce_tool_outcome_expectations(
     expectations: list[ToolOutcomeExpectation],
     objective_assertions: Mapping[str, AssertionResult] | None = None,
 ) -> GraderResult:
+    tool_execution = _tool_conformance_dimension(
+        evidence=evidence,
+        expectations=expectations,
+        objective_assertions=objective_assertions,
+    )
+    return grader_result(
+        tool_execution=tool_execution,
+        tool_semantics=result.tool_semantics,
+        grounding=result.grounding,
+        response_quality=result.response_quality,
+    )
+
+
+def _tool_conformance_dimension(
+    *,
+    evidence: RunEvidence,
+    expectations: list[ToolOutcomeExpectation],
+    objective_assertions: Mapping[str, AssertionResult] | None = None,
+) -> DimensionResult:
     _require_expectation_coverage(evidence, expectations)
     tool_execution_assertions = {
         "outcome_matches_environment": _tool_outcomes_match(
@@ -197,12 +247,7 @@ def enforce_tool_outcome_expectations(
             objective_assertions
         ).items():
             tool_execution_assertions[f"mission_state.{key}"] = assertion
-    return grader_result(
-        tool_execution=dimension(tool_execution_assertions),
-        tool_semantics=result.tool_semantics,
-        grounding=result.grounding,
-        response_quality=result.response_quality,
-    )
+    return dimension(tool_execution_assertions)
 
 
 def _require_expectation_coverage(

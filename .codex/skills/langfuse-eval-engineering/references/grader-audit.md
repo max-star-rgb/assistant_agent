@@ -1,10 +1,9 @@
-# Grader 设计与审计
+# 评分设计与审计
 
-## 内部四维与持久化 Score
+## 两层评分权威
 
-先验证 Environment、受控依赖、隔离和评测输入；失败属于 infrastructure failure，不生成 Agent
-内部 grader 仍计算四个维度用于校准；正式 Experiment 固定写入三个 BOOLEAN task-level Score，不生成
-reward 或总通过分：
+评测输入、受控依赖、隔离或 Evidence 构造失败属于 infrastructure failure，不生成 Agent 失败分。
+正式 Experiment 固定要求三个相互独立的 BOOLEAN task-level Score：
 
 ```text
 assistant_agent.quality.task_conformance
@@ -12,17 +11,12 @@ assistant_agent.quality.grounding
 assistant_agent.quality.response_quality
 ```
 
-- `task_conformance`：由内部 `tool_execution` 映射，判断实际工具终态与 Mission objective 是否符合
-  Environment oracle，使用 Rule；
-  Mission 还合入 Environment 的 objective state Rule；
-- 内部 `tool_semantics`：用于 grader 校准和诊断，不再写为 task-level Score；单个工具 observation 的
-  语义质量由 `assistant_agent.quality.tool_result_quality` 原生 evaluator 负责；
-- `grounding`：最终回答是否忠于工具结果，使用 LLM Judge；
-- `response_quality`：回答是否真正回应当前请求并且清晰完整，使用 LLM Judge。
+- `task_conformance`：仓库中的确定性 Rule 比较工具 outcome、Environment oracle 与 Mission objective；
+- `grounding`：Langfuse 原生 Evaluator 判断回答是否忠于工具结果、上下文和结构化终态；
+- `response_quality`：Langfuse 原生 Evaluator 判断回答是否清晰、完整地回应当前请求。
 
-各项都采用阳性语义。预期天气超时且实际错误码匹配时，`task_conformance=true`；
-超时没有产生可用天气数据时，对应 `tool.execute` 可得到 `tool_result_quality=false`；Agent 正确理解超时时，
-`grounding=true`。不要把这些维度聚合成 pass 或 reward。
+各项保持阳性语义，不聚合为 pass、reward 或总分。单个工具 observation 的语义质量由
+`assistant_agent.quality.tool_result_quality` Live Evaluator 独立负责。
 
 ## Environment oracle
 
@@ -37,64 +31,46 @@ ToolOutcomeExpectation.must_fail_with(
 )
 ```
 
-该预期不进入 Agent input 或 Dataset metadata。所有正式评分入口通过 `grade_task()`，由它比较
-`tool.finished/tool.failed/error_code` 并生成唯一的 `tool_execution` Rule assertion。预期覆盖
-不完整、重复或与可见工具不一致属于 infrastructure failure。
+该预期不进入 Agent input 或 Dataset metadata。`grade_task_conformance()` 比较
+`tool.finished/tool.failed/error_code`，并为 Mission 合入非空的 `objective_state_assertions()`。
+预期覆盖不完整、重复或与可见工具不一致属于 infrastructure failure。Task 不得另建 grader 重复
+次数、顺序、参数、状态、成功、错误码或 objective state oracle。
 
-`tool_execution` 只回答“受控案例是否按 oracle 发生”，不回答工具数据是否有用。不要在 Task grader
-重复判断次数、顺序、参数、状态、成功或错误码。Mission objective Rule 由 Environment 的非空
-`objective_state_assertions()` 独占；Task grader 不得拥有或重复 state oracle。
+## 原生 Evaluator
 
-## 三个 Judge
+`grounding` 与 `response_quality` 各自只有一个版本化 Evaluator family。Live Rule 与 Experiment Rule
+引用相同 family，使日常 Trace 和正式 Experiment 使用同一 prompt、模型与输出定义。仓库管理 Rule
+的 evaluator reference、target、filter 与 mapping；Langfuse UI 管理已有 Rule 的 `enabled/sampling`。
 
-每个 Task 固定调用三个 criterion：
-
-```text
-judge.tool_semantics
-judge.grounding
-judge.response_quality
-```
-
-`tool_semantics` 和 `grounding` 使用通用 rubric；Task grader 只提供
-`response_quality` 的专属通过条件。三个 Judge 都接收同一份结构化 Evidence，但职责不得重叠：
-
-- 合法空结果可以通过 `tool_semantics`，Provider 超时或损坏数据不能通过；
-- `grounding` 不评价回答是否完整，只检查对工具成功、失败、空结果和字段的陈述；
-- `response_quality` 不因工具失败自动失败，只检查 Agent 是否在现有条件下清晰完整地回应用户。
-
-Judge 超时、解析失败、缺少 verdict 或 criterion 不匹配属于 infrastructure failure，不能记录为
-Score false。
-
-## 可读性
-
-每项 assertion 提供面向评测查看者的短 `label`。Score comment 通过时列出 label，失败时展示
-`label + reason`；内部 assertion key 不得单独充当 comment。Score metadata 只保存
-`passed/label/method/criterion_id` 标量，不传播 rubric、长 reason 或嵌套对象。
+Evaluator 超时、解析失败、Rule 暂停或 Score 未在等待窗口内产生都属于 infrastructure failure，不能
+记录为 `false`。Experiment 完成后用 Observations v2 定位 `experiment-item-task`，再用 Scores v3
+同时按 `trace_id + observation_id` 回查三项 Score。
 
 ## 校准
 
-Calibration v3 至少包含一个阳性样本和一个可信反例。每个 fixture 显式保存：
+Calibration v3 至少包含一个阳性样本和一个可信反例。旧标签投影为：
 
 ```text
-expected_dimensions:
-  tool_execution
-  tool_semantics
-  grounding
-  response_quality
-
-judge_verdicts:
-  tool_semantics
-  grounding
-  response_quality
+tool_execution -> task_conformance
+grounding -> grounding
+response_quality -> response_quality
 ```
 
-逐项比较实际结果与人工标签。不要恢复旧的总通过字段，也不要通过聚合逻辑掩盖不匹配。
+校准器把 Evidence 放入 `assistant-agent-evaluator-calibration` Dataset Experiment，等待原生 Evaluator
+Score，并逐项与人工标签比较。旧 `tool_semantics` 标签和本地 Provider Judge 仅属迁移兼容，不是新
+Task 的评分入口。
 
-## 隐藏与独立性
+## 隐藏、独立与 Evidence
 
-- Agent 输入不得包含 rubric、oracle、校准标签或预期结论；
-- Judge 只接收完成判定所需的 Evidence；
+- Agent 输入不得包含 Rule、Evaluator prompt、oracle、校准标签或预期结论；
 - Agent 的自述不能证明工具终态；
-- Trace 用于提供证据，不直接充当正确答案。
-- Langfuse Dataset item 只保存 `task_id + request + 短 metadata`，不复制 case level、state oracle 或
-  rubric。
+- Trace 只提供证据，不直接充当正确答案；
+- Evidence 只投影 runtime 终态、可见工具、调用参数与结果、依赖错误码、状态 diff 和最终回答；
+- Dataset item 只保存 `task_id + request + 短 metadata`，不复制 Environment 私有配置或长 oracle。
+
+## 迁移兼容代码删除条件
+
+`evals/agent/judge.py`、`batch_grading.py`、旧 `grade_task()` / `run_calibration()` 以及现有 Task 的
+`grader.py` 暂时保留用于读取旧定义；正式 CLI、Experiment 和新 Task 不得引用它们。待历史
+`task.json.grader` 与 Calibration v3 的 `tool_semantics/judge_verdicts` 字段完成数据迁移后，一次性删除，
+不长期维护两套评分机制。

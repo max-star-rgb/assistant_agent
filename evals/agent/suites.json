@@ -31,5 +31,10 @@
     "website_unverified_url_honesty",
     "visual_memory_last_seen_object",
     "visual_memory_not_found_honesty"
+  ],
+  "deep_research": [
+    "deep_research_autonomous_admission",
+    "deep_research_constraint_grounding",
+    "deep_research_evidence_plan"
   ]
 }

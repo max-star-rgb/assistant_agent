@@ -73,6 +73,6 @@ override 由 Environment 或受信入口拥有：profile 必须可读，allowlis
 不要把整条原始 Trace 或 Environment 私有配置复制进 Dataset metadata。Langfuse Dataset item 只保存
 `task_id + request + 短 metadata`；不要复制 case level、state oracle 或 grader rubric。
 
-Evidence 进入 grader 后，确定性 Rule 和 LLM Judge 必须分开：Trace、参数、错误码和状态等客观事实
-由 Rule 判断；只有结果解释、证据使用和回答质量等开放语义交给 Judge。两者统一聚合到按 Agent 行为
-命名的固定维度，不按判断手段创建 Score。
+Evidence 进入评分层后，确定性 Git Rule 和原生 Langfuse Evaluator 必须分开：Trace、参数、错误码和
+状态等客观事实由 Rule 判断；只有结果解释、证据使用和回答质量等开放语义交给 Evaluator。两者统一
+使用按 Agent 行为命名的固定维度，不按判断手段创建 Score。
