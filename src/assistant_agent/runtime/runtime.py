@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 import json
+from collections.abc import Mapping
 from pathlib import Path
 from time import perf_counter, time
 from typing import TYPE_CHECKING, Any, Literal
@@ -35,6 +36,7 @@ from assistant_agent.automation.durable_tasks.models import (
     TrustedTaskBinding,
 )
 from assistant_agent.identity import RequestIdentity
+from assistant_agent.identifiers import new_run_id
 from assistant_agent.runtime.requests import (
     AgentResponse,
     UserRequest,
@@ -120,6 +122,24 @@ from assistant_agent.tools.registry import ToolRegistry
 
 if TYPE_CHECKING:
     from assistant_agent.automation.durable_tasks.worker import TaskQuantumResult
+
+
+def _trusted_memory_session_metadata(
+    session_config: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    if not isinstance(session_config, Mapping):
+        return {}
+    try:
+        entry_profile = session_config.get("entry_profile")
+    except Exception:
+        return {}
+    if type(entry_profile) is not str or not 0 < len(entry_profile) <= 128:
+        return {}
+    return {
+        "gateway": {
+            "session_config": {"entry_profile": entry_profile},
+        }
+    }
 
 
 def _stable_text_observation(
@@ -453,6 +473,7 @@ class AgentGraphRuntime:
         identity: RequestIdentity,
         *,
         reset: bool = False,
+        session_config: Mapping[str, Any] | None = None,
     ) -> AgentState:
         """Recall and freeze long-term memory before any turn starts."""
 
@@ -463,6 +484,7 @@ class AgentGraphRuntime:
             user_id=identity.user_id,
             session_id=identity.session_id,
             text="",
+            metadata=_trusted_memory_session_metadata(session_config),
         )
         state = AgentState.from_request(request, agent_id=identity.agent_id)
         state.session_memory_snapshot = (
@@ -563,6 +585,36 @@ class AgentGraphRuntime:
         connection) without mutating ``self.event_sink``.
         """
 
+        effective_run_id = run_id or new_run_id()
+        identity = RequestIdentity.for_user(
+            user_id=request.user_id,
+            agent_id=self.agent_id,
+            session_id=request.session_id,
+        )
+        try:
+            return self._run_state(
+                request,
+                event_sink=event_sink,
+                cancel_token=cancel_token,
+                trace_context=trace_context,
+                run_id=effective_run_id,
+            )
+        finally:
+            self.long_term_memory_service.release_run_context(
+                identity=identity,
+                run_id=effective_run_id,
+            )
+
+    def _run_state(
+        self,
+        request: UserRequest,
+        event_sink: EventSink | None = None,
+        cancel_token: Any | None = None,
+        trace_context: RuntimeTraceContext | None = None,
+        run_id: str | None = None,
+    ) -> AgentState:
+        """Execute one run while the Host retains its frozen Memory context."""
+
         request = normalize_task_execution_mode(
             request,
             durable_tasks_enabled=self.config.durable_tasks_enabled,
@@ -597,7 +649,6 @@ class AgentGraphRuntime:
         )
         if not workflow_work_item:
             self._embed_stable_request_text(state, request)
-            self._attach_session_memory_snapshot(state)
         state.context_source_result = self.context_source_coordinator.load_once(
             ContextSourceRequest(
                 user_id=state.user_id,
@@ -642,6 +693,11 @@ class AgentGraphRuntime:
                 },
             )
         runtime_event_publisher.record_run_started(run_started_fact)
+        if not workflow_work_item:
+            self._prepare_run_memory_context(
+                state,
+                cancel_token=cancel_token,
+            )
         runtime_context = GraphRuntimeContext(
             intent_detector=self.intent_detector,
             router=self.router,
@@ -872,6 +928,20 @@ class AgentGraphRuntime:
         """Attach the frozen snapshot without performing recall."""
 
         self.long_term_memory_service.attach_session_snapshot(state)
+
+    def _prepare_run_memory_context(
+        self,
+        state: AgentState,
+        *,
+        cancel_token: Any | None,
+    ) -> None:
+        """Prepare and freeze the active Plugin contribution once per run."""
+
+        self.long_term_memory_service.prepare_context(
+            state=state,
+            trace_store=self.trace_store,
+            cancel_token=cancel_token,
+        )
 
     def close(self) -> bool:
         """Drain and close runtime-owned background lifecycle services."""

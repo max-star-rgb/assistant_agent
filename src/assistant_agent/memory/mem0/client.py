@@ -1,4 +1,4 @@
-"""Mem0-native client used by the long-term memory service."""
+"""Private Mem0 HTTP client owned by the built-in Memory Plugin."""
 
 from __future__ import annotations
 
@@ -6,17 +6,17 @@ from collections.abc import Mapping
 from datetime import datetime
 from typing import Any
 
-from assistant_agent.memory.mem0.identity import bind_mem0_identity
 from assistant_agent.memory.mem0.transport import (
     Mem0HttpRequest,
     Mem0OperationError,
     Mem0Transport,
     urllib_mem0_transport,
 )
-from assistant_agent.memory.models import CompletedTurn, LongTermMemory
-from assistant_agent.identity import RequestIdentity
+from assistant_agent.memory.models import LongTermMemory
 from assistant_agent.memory.mem0.models import (
+    Mem0CompletedTurn,
     Mem0HealthResult,
+    Mem0Identity,
     Mem0IngestionResult,
     Mem0MemoryChange,
 )
@@ -32,21 +32,21 @@ class UnavailableMem0Client:
 
     def recall_long_term_memory(
         self,
-        identity: RequestIdentity,
+        identity: Mem0Identity,
     ) -> list[LongTermMemory]:
         _ = identity
         raise Mem0OperationError("recall", "Mem0 sidecar is not configured")
 
     def ingest_completed_turn(
         self,
-        turn: CompletedTurn,
+        turn: Mem0CompletedTurn,
     ) -> Mem0IngestionResult:
         _ = turn
         raise Mem0OperationError("ingest", "Mem0 sidecar is not configured")
 
 
 class Mem0Client:
-    """Bind runtime identity and expose only Mem0 get-all/add operations."""
+    """Expose only native Mem0 get-all/add for already-bound Plugin data."""
 
     configured = True
     _MIN_INGESTION_TIMEOUT_SECONDS = 30.0
@@ -55,13 +55,11 @@ class Mem0Client:
         self,
         *,
         base_url: str,
-        identity_namespace: str,
         timeout_seconds: float = 5.0,
         api_key: str | None = None,
         transport: Mem0Transport | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
-        self.identity_namespace = identity_namespace
         self.timeout_seconds = timeout_seconds
         self.ingestion_timeout_seconds = max(
             timeout_seconds,
@@ -76,16 +74,12 @@ class Mem0Client:
 
     def recall_long_term_memory(
         self,
-        identity: RequestIdentity,
+        identity: Mem0Identity,
     ) -> list[LongTermMemory]:
-        engine_identity = bind_mem0_identity(
-            identity,
-            namespace=self.identity_namespace,
-        )
         payload = self._request(
             "GET",
             "/memories",
-            query=engine_identity.long_term_filters,
+            query=identity.long_term_filters,
         )
         return [
             _long_term_memory(value)
@@ -94,12 +88,8 @@ class Mem0Client:
 
     def ingest_completed_turn(
         self,
-        turn: CompletedTurn,
+        turn: Mem0CompletedTurn,
     ) -> Mem0IngestionResult:
-        identity = bind_mem0_identity(
-            turn.identity,
-            namespace=self.identity_namespace,
-        )
         try:
             payload = self._request(
                 "POST",
@@ -109,7 +99,7 @@ class Mem0Client:
                         {"role": "user", "content": turn.user_text},
                         {"role": "assistant", "content": turn.assistant_text},
                     ],
-                    **identity.mem0_filters,
+                    **turn.identity.mem0_filters,
                     "metadata": {
                         "source": "runtime_turn_ingestion",
                         "source_turn": turn.source_turn,

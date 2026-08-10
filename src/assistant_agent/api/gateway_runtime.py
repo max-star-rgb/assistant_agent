@@ -8,7 +8,7 @@ import os
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from threading import RLock
-from typing import Any
+from typing import Any, Literal
 
 from assistant_agent.gateway import (
     GatewayBridge,
@@ -236,6 +236,16 @@ def create_gateway_session_manager(
             if backend_factory is None
             else _noop_session_initializer()
         ),
+        session_finalizer=lambda user_id, session_id, reason: (
+            _finalize_gateway_session_memory(
+                runtime_pool,
+                user_id=user_id,
+                session_id=session_id,
+                reason=reason,
+            )
+            if backend_factory is None
+            else _noop_session_initializer()
+        ),
         lifecycle_sink=record_gateway_lifecycle,
         start_reaper=_bool_env(source, GATEWAY_START_REAPER_ENV, default=True)
         if start_reaper is None
@@ -254,7 +264,29 @@ async def _initialize_gateway_session_memory(
         user_id=user_id,
         session_id=session_id,
     )
-    await asyncio.to_thread(runtime_pool.initialize_session_memory, identity)
+    await asyncio.to_thread(
+        runtime_pool.initialize_session_memory,
+        identity,
+        session_config=config,
+    )
+
+
+async def _finalize_gateway_session_memory(
+    runtime_pool: GatewayRuntimePool,
+    *,
+    user_id: str,
+    session_id: str,
+    reason: Literal["reset", "expired", "shutdown"],
+) -> None:
+    identity = RequestIdentity.for_user(
+        user_id=user_id,
+        session_id=session_id,
+    )
+    await asyncio.to_thread(
+        runtime_pool.finalize_session_memory,
+        identity,
+        reason=reason,
+    )
 
 
 async def _noop_session_initializer() -> None:

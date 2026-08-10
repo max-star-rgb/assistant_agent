@@ -29,7 +29,21 @@ eval、Gateway 主链路覆盖的 probe 不应继续沉积到本目录。
   unless `--yes` is supplied. `clear` accepts one or more raw identity filters;
   `clear --all` resets every memory plus Mem0 history and always requires typing
   `DELETE ALL MEMORIES` (`--yes` is rejected for this scope). Exiting leaves both
-  containers and persistent data running.
+  containers and persistent data running. 这是直接读写 Mem0 sidecar 原生记录的 operator console，
+  不是 Runtime Memory Plugin 管理入口，也不经过 `assistant_memory_plugin_v1` 的
+  `open_session` / `prepare_context` / `ingest_turn` / `close_session` 生命周期。
+
+Runtime Memory Plugin 的只读装配诊断不是 `scripts/` supervisor，直接运行：
+
+```bash
+MULTIMODAL_AGENT_PROVIDER_MODE=mock \
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python \
+  -m assistant_agent.memory.cli plugins
+```
+
+该命令只解析配置并装配 factory，输出脱敏 JSON；不启动 Mem0/Qdrant，不执行远端健康检查、召回、
+写入或真实 Provider 请求。默认 mock 会报告 sealed 的 `mem0` slot，同时以
+`readiness=unavailable` 和 `memory_plugin_offline` 明确表示后端离线。
 - `scripts/migrate_mem0_memories_to_chinese.py`：检查或迁移一个 runtime 用户已有的
   Mem0 记忆为简体中文。默认命令只读；更新要求 real Provider mode、已配置的 Qwen 和
   Mem0，并同时传入 `--apply` 与 `--allow-real-provider`。输出只包含数量、memory ID、

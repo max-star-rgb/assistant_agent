@@ -119,7 +119,7 @@ def build_context_report(
                 _source_count(pack, "memory_items") or len(memory_item_ids)
             ),
             trimmed="memory" in pack.budget.trimmed_sections,
-            source="ContextBuilder.session_memory_snapshot",
+            source="MemoryPluginHost.active_plugin",
         )
     if pack.realtime_video_context is not None:
         sections["realtime_video_context"] = ContextReportSection(

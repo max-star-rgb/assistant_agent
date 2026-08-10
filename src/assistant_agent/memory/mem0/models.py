@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class Mem0Identity(BaseModel):
@@ -25,6 +26,18 @@ class Mem0Identity(BaseModel):
     @property
     def long_term_filters(self) -> dict[str, str]:
         return {"user_id": self.user_id, "agent_id": self.agent_id}
+
+
+class Mem0CompletedTurn(BaseModel):
+    """Plugin-private input for one native Mem0 ``add`` operation."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    identity: Mem0Identity
+    user_text: str = Field(min_length=1, max_length=20_000)
+    assistant_text: str = Field(min_length=1, max_length=20_000)
+    occurred_at: datetime
+    source_turn: str = Field(min_length=1, max_length=512)
 
 
 class Mem0MemoryChange(BaseModel):

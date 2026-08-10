@@ -10,7 +10,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from time import perf_counter_ns
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 from uuid import uuid4
 
 from anyio import CancelScope
@@ -1588,6 +1588,7 @@ def _create_agent_service_gateway_manager() -> GatewaySessionManager:
             load_env=False,
         ),
         session_initializer=_initialize_agent_service_session_memory,
+        session_finalizer=_finalize_agent_service_session_memory,
         lifecycle_sink=record_gateway_lifecycle,
         start_reaper=False,
     )
@@ -1598,13 +1599,32 @@ async def _initialize_agent_service_session_memory(
     session_id: str,
     config: Any,
 ) -> None:
-    _ = config
     from assistant_agent.api import routes_agent
 
     runtime = routes_agent.get_assistant_runtime_app().runtime
     await asyncio.to_thread(
         runtime.initialize_session_memory,
         RequestIdentity.for_user(user_id=user_id, session_id=session_id),
+        session_config=config,
+    )
+
+
+async def _finalize_agent_service_session_memory(
+    user_id: str,
+    session_id: str,
+    reason: Literal["reset", "expired", "shutdown"],
+) -> None:
+    from assistant_agent.api import routes_agent
+
+    runtime = routes_agent.get_assistant_runtime_app().runtime
+    await asyncio.to_thread(
+        runtime.long_term_memory_service.finalize_session,
+        identity=RequestIdentity.for_user(
+            user_id=user_id,
+            agent_id=runtime.agent_id,
+            session_id=session_id,
+        ),
+        reason=reason,
     )
 
 

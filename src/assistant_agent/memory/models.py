@@ -5,24 +5,27 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from assistant_agent.identity import RequestIdentity
+from assistant_agent.memory.plugins.contracts import MemoryContextItem
 
 
-class LongTermMemory(BaseModel):
+class LongTermMemory(MemoryContextItem):
     """One original long-term memory record returned by Mem0."""
 
-    memory_id: str = Field(min_length=1)
-    text: str = Field(min_length=1)
-    created_at: datetime
-    relevance: float | None = Field(default=None, ge=0.0, le=1.0)
+    source: Literal["long_term"] = "long_term"
 
 
 class SessionMemorySnapshot(BaseModel):
     """Structured long-term memories frozen for one session."""
 
-    memories: list[LongTermMemory] = Field(default_factory=list)
+    model_config = ConfigDict(extra="forbid")
+
+    memories: list[MemoryContextItem] = Field(default_factory=list)
+    plugin_id: str | None = Field(default=None, min_length=1, max_length=128)
     error_codes: list[str] = Field(default_factory=list)
     status: str = "succeeded"
 

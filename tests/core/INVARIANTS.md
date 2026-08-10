@@ -10,7 +10,7 @@
 | RUN-001 | Run 只能以 completed、failed 或 cancelled 之一终态结束；终态后不再产生可执行状态转换，并对已注册 Tool 的可选 terminal lifecycle hook 做一次 best-effort 通知。 | `tests/core/integration/test_runtime_lifecycle.py` |
 | LOOP-001 | 通用 assistant loop 按事件和 tool call 结果推进，直到确定终态或可解释失败。 | `tests/core/integration/test_runtime_lifecycle.py` |
 | TOOL-001 | 每次本地显式 tool call 都经过 validation、execution、registry 治理链，并产生结构化结果。 | `tests/core/contract/test_tool_contract.py`；`tests/core/integration/test_runtime_lifecycle.py` |
-| EXT-001 | Probe Tool 与 Plugin 扩展通过声明的注册、schema 与执行契约接入，不绕过治理链。 | `tests/core/contract/test_extension_contract.py` |
+| EXT-001 | Probe Tool 与受信任 capability Plugin 通过声明的 identity、版本、schema、显式装配和宿主治理契约接入；扩展不能绕过其所属治理链。 | `tests/core/contract/test_extension_contract.py` |
 | CTX-001 | Context budget、compaction 与因果配对保持可验证的结构化计数和事件关系。 | `tests/core/integration/test_context_lifecycle.py` |
 | GATE-001 | Gateway 的 session、run、turn 与 frame 按定义的生命周期创建、转移、终止和重连。 | `tests/core/contract/test_gateway_contract.py` |
 | IDENT-001 | session/run 与 durable subscription 按 user/agent 边界隔离；入口身份字段原样保留并用于关联。 | `tests/core/integration/test_runtime_lifecycle.py`；`tests/core/integration/test_durable_lifecycle.py` |

@@ -833,14 +833,25 @@ def _with_delivery_cursor(
 
 def _config_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
     config = payload.get("config")
-    return dict(config) if isinstance(config, dict) else {}
+    return _external_session_config(config)
 
 
 def _config_update_values(payload: dict[str, Any]) -> dict[str, Any]:
     config = payload.get("config")
     if isinstance(config, dict):
-        return dict(config)
+        return _external_session_config(config)
     key = payload.get("key")
     if key is None:
         return {}
-    return {str(key): payload.get("value")}
+    normalized_key = str(key)
+    if normalized_key == "entry_profile":
+        return {}
+    return {normalized_key: payload.get("value")}
+
+
+def _external_session_config(value: object) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    config = dict(value)
+    config.pop("entry_profile", None)
+    return config

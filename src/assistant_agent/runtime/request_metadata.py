@@ -8,6 +8,7 @@ from typing import Any
 
 RUNTIME_OWNED_REQUEST_METADATA_KEYS = frozenset(
     {
+        "entry_profile",
         "system_prompt_profile",
         "channel",
         "source",
@@ -26,8 +27,14 @@ RUNTIME_OWNED_REQUEST_METADATA_KEYS = frozenset(
 def sanitize_external_request_metadata(metadata: Mapping[str, Any]) -> dict[str, Any]:
     """Remove runtime-owned capabilities from untrusted entry metadata."""
 
-    return {
+    sanitized = {
         key: value
         for key, value in metadata.items()
         if key not in RUNTIME_OWNED_REQUEST_METADATA_KEYS
     }
+    gateway = sanitized.get("gateway")
+    if isinstance(gateway, Mapping):
+        gateway = dict(gateway)
+        gateway.pop("session_config", None)
+        sanitized["gateway"] = gateway
+    return sanitized

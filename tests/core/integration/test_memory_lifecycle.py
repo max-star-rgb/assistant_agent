@@ -2,13 +2,28 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from threading import Event, Lock
-from types import SimpleNamespace
 
 import pytest
 
+from assistant_agent.identity import RequestIdentity
 from assistant_agent.memory.ingestion_queue import MemoryIngestionQueue
+from assistant_agent.memory.plugins.contracts import (
+    MemoryChange,
+    MemoryContextContribution,
+    MemoryPluginCapabilities,
+    MemoryPluginDescriptor,
+    MemorySessionCloseResult,
+    MemorySessionOpenResult,
+    MemoryTurnIngestionResult,
+)
+from assistant_agent.memory.plugins.host import MemoryPluginHost
+from assistant_agent.memory.plugins.media import ManagedMemoryMediaStore
+from assistant_agent.memory.plugins.registry import (
+    MemoryPluginRegistrationRecord,
+    MemoryPluginRegistry,
+)
+from assistant_agent.memory.plugins.session_store import MemoryPluginSessionStore
 from assistant_agent.memory.service import LongTermMemoryService
-from assistant_agent.memory.session_snapshot import SessionMemorySnapshotStore
 from assistant_agent.runtime.chat_adapter import ChatResult
 from assistant_agent.runtime.requests import UserRequest
 from assistant_agent.runtime.runtime import AgentGraphRuntime
@@ -33,38 +48,79 @@ def default_registry_assembly_is_forbidden(
     )
 
 
-class BlockingIngestionClient:
-    configured = True
+class BlockingMemoryPlugin:
+    descriptor = MemoryPluginDescriptor(
+        plugin_id="probe-memory",
+        plugin_version="1",
+        capabilities=MemoryPluginCapabilities(
+            modalities={"text"},
+            supports_session_recall=True,
+            supports_turn_ingestion=True,
+            supports_context_refresh=False,
+            supports_idempotent_ingestion=True,
+        ),
+    )
 
     def __init__(self) -> None:
         self.started = Event()
         self.release = Event()
 
-    def recall_long_term_memory(self, identity, *, top_k=5):
-        return []
+    def open_session(self, request) -> MemorySessionOpenResult:
+        return MemorySessionOpenResult(
+            status="ready",
+            initial_contribution=MemoryContextContribution(
+                status="succeeded"
+            ),
+        )
 
-    def ingest_completed_turn(self, turn):
+    def prepare_context(self, request) -> MemoryContextContribution:
+        return MemoryContextContribution(status="succeeded")
+
+    def ingest_turn(self, request) -> MemoryTurnIngestionResult:
         self.started.set()
         if not self.release.wait(2.0):
             raise TimeoutError("ingestion-sentinel")
-        return SimpleNamespace(
-            accepted=True,
-            memory_ids=["memory-sentinel"],
-            errors=[],
+        return MemoryTurnIngestionResult(
+            status="accepted",
+            changes=[
+                MemoryChange(
+                    operation="created",
+                    memory_id="memory-sentinel",
+                )
+            ],
         )
 
+    def close_session(self, request) -> MemorySessionCloseResult:
+        return MemorySessionCloseResult(status="closed")
 
-@pytest.mark.core_invariant("OBS-001")
-def test_runtime_returns_before_background_ingestion_finishes() -> None:
-    client = BlockingIngestionClient()
-    memory_service = LongTermMemoryService(
-        client=client,
-        snapshot_store=SessionMemorySnapshotStore(),
+
+def _memory_host(plugin: BlockingMemoryPlugin) -> MemoryPluginHost:
+    registry = MemoryPluginRegistry(
+        records=[
+            MemoryPluginRegistrationRecord(
+                descriptor=plugin.descriptor,
+                source="core-probe",
+                enabled=True,
+                active=True,
+            )
+        ],
+        active_plugin=plugin,
+    )
+    return MemoryPluginHost(
+        registry=registry,
+        session_store=MemoryPluginSessionStore(),
+        media_store=ManagedMemoryMediaStore(max_total_bytes=1024),
         ingestion_queue=MemoryIngestionQueue(
             max_workers=1,
             max_pending=2,
         ),
     )
+
+
+@pytest.mark.core_invariant("OBS-001")
+def test_runtime_returns_before_background_ingestion_finishes() -> None:
+    plugin = BlockingMemoryPlugin()
+    memory_service = LongTermMemoryService(host=_memory_host(plugin))
     runtime = AgentGraphRuntime(
         registry=sealed_registry(),
         config=offline_config(),
@@ -83,6 +139,12 @@ def test_runtime_returns_before_background_ingestion_finishes() -> None:
     )
     executor = ThreadPoolExecutor(max_workers=1)
     try:
+        runtime.initialize_session_memory(
+            RequestIdentity.for_user(
+                user_id="user-sentinel",
+                session_id="session-sentinel",
+            )
+        )
         future = executor.submit(
             runtime.run_state,
             UserRequest(
@@ -95,7 +157,7 @@ def test_runtime_returns_before_background_ingestion_finishes() -> None:
 
         assert state.status == "completed"
         assert state.request.metadata["memory_ingestion"]["status"] == "queued"
-        assert client.started.wait(0.5) is True
+        assert plugin.started.wait(0.5) is True
         assert memory_service.ingestion_queue.pending_count == 1
         canonical_events = [
             event.canonical_event
@@ -109,7 +171,7 @@ def test_runtime_returns_before_background_ingestion_finishes() -> None:
         ) < canonical_events.index("memory.ingestion.queued")
         assert "memory.ingestion.finished" not in canonical_events
 
-        client.release.set()
+        plugin.release.set()
         assert runtime.drain_memory_ingestions(timeout=1.0) is True
         ingestion = next(
             event
@@ -119,7 +181,7 @@ def test_runtime_returns_before_background_ingestion_finishes() -> None:
         assert ingestion.status == "succeeded"
         assert ingestion.attributes["memory_count"] == 1
     finally:
-        client.release.set()
+        plugin.release.set()
         runtime.close()
         executor.shutdown(wait=True)
 

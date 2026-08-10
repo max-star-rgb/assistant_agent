@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from assistant_agent.identity import RequestIdentity
 from assistant_agent.memory.mem0.client import Mem0Client
-from assistant_agent.memory.mem0.models import Mem0IngestionResult
-from assistant_agent.memory.models import CompletedTurn
+from assistant_agent.memory.mem0.models import (
+    Mem0CompletedTurn,
+    Mem0Identity,
+    Mem0IngestionResult,
+)
 
 
 def test_ingestion_preserves_only_valid_mem0_changes() -> None:
@@ -47,16 +49,15 @@ def test_ingestion_preserves_only_valid_mem0_changes() -> None:
 
     client = Mem0Client(
         base_url="http://mem0.invalid",
-        identity_namespace="test-namespace",
         transport=transport,
     )
 
     result = client.ingest_completed_turn(
-        CompletedTurn(
-            identity=RequestIdentity.for_user(
-                user_id="user-sentinel",
-                agent_id="agent-sentinel",
-                session_id="session-sentinel",
+        Mem0CompletedTurn(
+            identity=Mem0Identity(
+                user_id="usr_00000000000000000000000000000000",
+                agent_id="agt_00000000000000000000000000000000",
+                run_id="run_00000000000000000000000000000000",
             ),
             user_text="request-sentinel",
             assistant_text="response-sentinel",

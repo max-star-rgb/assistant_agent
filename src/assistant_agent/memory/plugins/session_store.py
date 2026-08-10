@@ -1,0 +1,360 @@
+"""Process-local session state for the active Memory Plugin."""
+
+from __future__ import annotations
+
+from collections import OrderedDict
+from collections.abc import Callable
+from dataclasses import dataclass
+from threading import Condition, Event
+from typing import Literal
+
+from assistant_agent.identity import RequestIdentity
+from assistant_agent.memory.models import SessionMemorySnapshot
+from assistant_agent.memory.plugins.contracts import MemoryIdentity
+
+
+RuntimeMemoryIdentityKey = tuple[str, str, str]
+MemoryPluginSessionResolutionStatus = Literal["loaded", "reused"]
+MemoryPluginSessionRetirementReason = Literal["reset", "expired", "plugin_replaced"]
+
+
+@dataclass(frozen=True)
+class MemoryPluginSessionRecord:
+    """Host-owned state for one Runtime session and one active Plugin."""
+
+    plugin_id: str
+    plugin_version: str
+    runtime_identity_key: RuntimeMemoryIdentityKey
+    identity: MemoryIdentity
+    memory_session_id: str
+    session_handle: str | None
+    baseline: SessionMemorySnapshot
+    status: str
+
+    def __post_init__(self) -> None:
+        if not self.plugin_id or not self.plugin_version or not self.memory_session_id:
+            raise ValueError("memory plugin session identifiers must be non-empty")
+        if len(self.runtime_identity_key) != 3 or not all(
+            isinstance(value, str) and value for value in self.runtime_identity_key
+        ):
+            raise ValueError("runtime identity key must contain three values")
+        object.__setattr__(self, "baseline", self.baseline.model_copy(deep=True))
+
+    @property
+    def plugin_identity(self) -> MemoryIdentity:
+        return self.identity.model_copy(deep=True)
+
+    @property
+    def handle(self) -> str | None:
+        return self.session_handle
+
+
+@dataclass(frozen=True)
+class MemoryPluginSessionResolution:
+    record: MemoryPluginSessionRecord
+    status: MemoryPluginSessionResolutionStatus
+
+
+@dataclass(frozen=True)
+class MemoryPluginRetiredSessionRecord:
+    """A displaced handle retained until the Host explicitly claims it."""
+
+    retirement_id: int
+    record: MemoryPluginSessionRecord
+    reason: MemoryPluginSessionRetirementReason
+    eager_close: bool
+
+
+class MemoryPluginSessionLoadInvalidated(RuntimeError):
+    """Signal a caller-owned load invalidated before Host publication."""
+
+    def __init__(self, record: MemoryPluginSessionRecord | None = None) -> None:
+        self.record = _copy_record(record) if record is not None else None
+        super().__init__("memory_plugin_session_load_invalidated")
+
+
+class MemoryPluginSessionStore:
+    """Resolve one isolated Plugin session record per Runtime session."""
+
+    def __init__(self, *, max_entries: int = 1024) -> None:
+        if isinstance(max_entries, bool) or not isinstance(max_entries, int):
+            raise TypeError("max_entries must be an integer")
+        if max_entries <= 0:
+            raise ValueError("max_entries must be positive")
+        self.max_entries = max_entries
+        self._condition = Condition()
+        self._entries: OrderedDict[
+            RuntimeMemoryIdentityKey, MemoryPluginSessionRecord
+        ] = OrderedDict()
+        self._loading: dict[RuntimeMemoryIdentityKey, int] = {}
+        self._epochs: dict[RuntimeMemoryIdentityKey, int] = {}
+        self._resolution_leases: dict[RuntimeMemoryIdentityKey, set[Event]] = {}
+        self._retired: OrderedDict[int, MemoryPluginRetiredSessionRecord] = (
+            OrderedDict()
+        )
+        self._next_retirement_id = 0
+
+    def resolve(
+        self,
+        identity: RequestIdentity,
+        *,
+        loader: Callable[[], MemoryPluginSessionRecord],
+        before_publish: Callable[[MemoryPluginSessionRecord], MemoryPluginSessionRecord]
+        | None = None,
+        reset: bool = False,
+        reset_reason: MemoryPluginSessionRetirementReason = "reset",
+        retry_on_invalidation: bool = True,
+        resolution_invalidation: Event | None = None,
+    ) -> MemoryPluginSessionResolution:
+        """Run ``loader`` once for a session and return defensive copies."""
+
+        key = runtime_memory_identity_key(identity)
+        reset_pending = reset
+        while True:
+            with self._condition:
+                if reset_pending:
+                    self._invalidate(
+                        key,
+                        retirement_reason=reset_reason,
+                        eager_close=True,
+                    )
+                    reset_pending = False
+                while key in self._loading:
+                    self._condition.wait()
+                cached = self._entries.get(key)
+                if cached is not None:
+                    self._entries.move_to_end(key)
+                    self._register_resolution_lease(
+                        key,
+                        resolution_invalidation,
+                    )
+                    return MemoryPluginSessionResolution(
+                        record=_copy_record(cached),
+                        status="reused",
+                    )
+                load_epoch = self._epochs.get(key, 0)
+                self._loading[key] = load_epoch
+
+            try:
+                loaded = loader()
+                if loaded.runtime_identity_key != key:
+                    raise ValueError("memory plugin session identity mismatch")
+                frozen = _copy_record(loaded)
+            except BaseException as error:
+                with self._condition:
+                    stale = self._epochs.get(key, 0) != load_epoch
+                    if self._loading.get(key) == load_epoch:
+                        self._loading.pop(key, None)
+                    self._condition.notify_all()
+                if stale and isinstance(error, Exception):
+                    if retry_on_invalidation:
+                        continue
+                    raise MemoryPluginSessionLoadInvalidated() from None
+                raise
+
+            with self._condition:
+                if self._epochs.get(key, 0) != load_epoch:
+                    if self._loading.get(key) == load_epoch:
+                        self._loading.pop(key, None)
+                    self._condition.notify_all()
+                    if retry_on_invalidation:
+                        continue
+                    raise MemoryPluginSessionLoadInvalidated(frozen)
+                if before_publish is not None:
+                    try:
+                        frozen = before_publish(frozen)
+                        if frozen.runtime_identity_key != key:
+                            raise ValueError("memory plugin session identity mismatch")
+                    except BaseException:
+                        if self._loading.get(key) == load_epoch:
+                            self._loading.pop(key, None)
+                        self._condition.notify_all()
+                        raise
+                self._entries[key] = frozen
+                self._entries.move_to_end(key)
+                while len(self._entries) > self.max_entries:
+                    _, evicted = self._entries.popitem(last=False)
+                    self._retire_record(
+                        evicted,
+                        reason="expired",
+                        eager_close=True,
+                    )
+                self._register_resolution_lease(
+                    key,
+                    resolution_invalidation,
+                )
+                if self._loading.get(key) == load_epoch:
+                    self._loading.pop(key, None)
+                self._condition.notify_all()
+            return MemoryPluginSessionResolution(
+                record=_copy_record(frozen),
+                status="loaded",
+            )
+
+    def get(self, identity: RequestIdentity) -> MemoryPluginSessionRecord | None:
+        key = runtime_memory_identity_key(identity)
+        with self._condition:
+            record = self._entries.get(key)
+            if record is None:
+                return None
+            self._entries.move_to_end(key)
+            return _copy_record(record)
+
+    def list_records(self) -> list[MemoryPluginSessionRecord]:
+        """Return defensive copies of every currently published session."""
+
+        with self._condition:
+            return [_copy_record(record) for record in self._entries.values()]
+
+    def list_retired_records(self) -> list[MemoryPluginRetiredSessionRecord]:
+        """Return every displaced handle that still needs Host close ownership."""
+
+        with self._condition:
+            return [_copy_retirement(retired) for retired in self._retired.values()]
+
+    def claim_retired_records(self) -> list[MemoryPluginRetiredSessionRecord]:
+        """Atomically transfer all displaced handles to the owning Host."""
+
+        with self._condition:
+            retired = [_copy_retirement(record) for record in self._retired.values()]
+            self._retired.clear()
+            return retired
+
+    def release_resolution(
+        self,
+        identity: RequestIdentity,
+        invalidation: Event,
+    ) -> bool:
+        """Release one opener lease and report whether retirement invalidated it."""
+
+        key = runtime_memory_identity_key(identity)
+        with self._condition:
+            leases = self._resolution_leases.get(key)
+            if leases is not None:
+                leases.discard(invalidation)
+                if not leases:
+                    self._resolution_leases.pop(key, None)
+            return invalidation.is_set()
+
+    def pop(self, identity: RequestIdentity) -> MemoryPluginSessionRecord | None:
+        """Remove one exact Runtime session and invalidate an in-flight load."""
+
+        key = runtime_memory_identity_key(identity)
+        with self._condition:
+            record = self._entries.get(key)
+            self._invalidate(key)
+            self._condition.notify_all()
+            return _copy_record(record) if record is not None else None
+
+    def clear_session(self, *, user_id: str, session_id: str) -> int:
+        with self._condition:
+            keys = {
+                key
+                for key in (*self._entries, *self._loading)
+                if key[0] == user_id and key[2] == session_id
+            }
+            for key in keys:
+                self._invalidate(
+                    key,
+                    retirement_reason="reset",
+                    eager_close=False,
+                )
+            self._condition.notify_all()
+            return len(keys)
+
+    def clear_user(self, *, user_id: str, agent_id: str | None = None) -> int:
+        with self._condition:
+            keys = {
+                key
+                for key in (*self._entries, *self._loading)
+                if key[0] == user_id and (agent_id is None or key[1] == agent_id)
+            }
+            for key in keys:
+                self._invalidate(
+                    key,
+                    retirement_reason="reset",
+                    eager_close=False,
+                )
+            self._condition.notify_all()
+            return len(keys)
+
+    def _invalidate(
+        self,
+        key: RuntimeMemoryIdentityKey,
+        *,
+        retirement_reason: MemoryPluginSessionRetirementReason | None = None,
+        eager_close: bool = False,
+    ) -> None:
+        record = self._entries.pop(key, None)
+        self._invalidate_resolution_leases(key)
+        if record is not None and retirement_reason is not None:
+            self._retire_record(
+                record,
+                reason=retirement_reason,
+                eager_close=eager_close,
+            )
+        self._epochs[key] = self._epochs.get(key, 0) + 1
+
+    def _retire_record(
+        self,
+        record: MemoryPluginSessionRecord,
+        *,
+        reason: MemoryPluginSessionRetirementReason,
+        eager_close: bool,
+    ) -> None:
+        self._invalidate_resolution_leases(record.runtime_identity_key)
+        self._next_retirement_id += 1
+        retired = MemoryPluginRetiredSessionRecord(
+            retirement_id=self._next_retirement_id,
+            record=_copy_record(record),
+            reason=reason,
+            eager_close=eager_close,
+        )
+        self._retired[retired.retirement_id] = retired
+
+    def _register_resolution_lease(
+        self,
+        key: RuntimeMemoryIdentityKey,
+        invalidation: Event | None,
+    ) -> None:
+        if invalidation is not None:
+            self._resolution_leases.setdefault(key, set()).add(invalidation)
+
+    def _invalidate_resolution_leases(
+        self,
+        key: RuntimeMemoryIdentityKey,
+    ) -> None:
+        for invalidation in self._resolution_leases.get(key, ()):
+            invalidation.set()
+
+
+def runtime_memory_identity_key(
+    identity: RequestIdentity,
+) -> RuntimeMemoryIdentityKey:
+    if not identity.session_id:
+        raise ValueError("session_id is required for Memory Plugin sessions")
+    return identity.user_id, identity.agent_id, identity.session_id
+
+
+def _copy_record(record: MemoryPluginSessionRecord) -> MemoryPluginSessionRecord:
+    return MemoryPluginSessionRecord(
+        plugin_id=record.plugin_id,
+        plugin_version=record.plugin_version,
+        runtime_identity_key=tuple(record.runtime_identity_key),
+        identity=record.identity.model_copy(deep=True),
+        memory_session_id=record.memory_session_id,
+        session_handle=record.session_handle,
+        baseline=record.baseline.model_copy(deep=True),
+        status=record.status,
+    )
+
+
+def _copy_retirement(
+    retired: MemoryPluginRetiredSessionRecord,
+) -> MemoryPluginRetiredSessionRecord:
+    return MemoryPluginRetiredSessionRecord(
+        retirement_id=retired.retirement_id,
+        record=_copy_record(retired.record),
+        reason=retired.reason,
+        eager_close=retired.eager_close,
+    )
