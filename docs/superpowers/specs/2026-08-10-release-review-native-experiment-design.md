@@ -83,8 +83,9 @@ ToolSpec。工具调用仍经过 `ActionValidator`，但 `ToolExecutor` 把执�
 后端只改变 Tool 的执行结果，不改变 Registry、Tool name、ToolSpec、可见目录、Validator 或 assistant
 loop。由此不再需要模拟 Registry、同名 Tool replacement 或 eval 专属 `registry_transform`。
 
-Decision 计划保留 8 至 12 个高价值场景，并发度默认 4。Critical 场景运行两次以暴露随机性；普通场景
-运行一次。一次关键失败不能被平均分掩盖。
+Decision 计划保留 8 至 12 个高价值场景，并发度默认 4。Critical 场景在同步时展开为两个独立 Dataset
+Item，以便每次尝试都拥有原生 Trace 和 Score；普通场景展开为一个 Item。报告按 scenario ID 聚合，
+一次关键失败不能被平均分掩盖。
 
 ### 5.2 Staging Smoke
 
