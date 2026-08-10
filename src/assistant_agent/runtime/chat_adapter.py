@@ -29,12 +29,14 @@ from assistant_agent.providers.llm_events import LLMEvent, LLMEventAccumulator, 
 from assistant_agent.providers.specs import CHAT_PROVIDER_SPECS, ProviderCapabilities
 from assistant_agent.providers.provider_errors import ProviderAdapterError, build_provider_error
 from assistant_agent.providers.provider_http import without_unsupported_socks_proxy_env
+from assistant_agent.runtime.requests import AssistantMode
 
 
 ChatProviderName = Literal["mock", "openai", "qwen", "ark", "deepseek", "local"]
 ChatStreamCallback = Callable[[str, dict[str, Any]], None]
 ProviderRequestCallback = Callable[[dict[str, Any]], None]
 ProviderTransportMode = Literal["sync", "sdk_stream", "provider_stream"]
+ProviderSearchProfile = Literal["standard", "deep_research"]
 
 
 ProviderChatCapabilities = ProviderCapabilities
@@ -55,6 +57,8 @@ class ChatRequest(BaseModel):
     user_id: str = Field(min_length=1)
     session_id: str = Field(min_length=1)
     user_query: str = Field(min_length=1)
+    assistant_mode: AssistantMode = "standard"
+    provider_search_profile: ProviderSearchProfile = "standard"
     messages: list[dict[str, Any]] = Field(default_factory=list)
     tools: list[dict[str, Any]] = Field(default_factory=list)
     tool_choice: str | dict[str, Any] | None = None
@@ -290,7 +294,7 @@ class OpenAICompatibleChatAdapter:
             self.model,
             self.capabilities,
             stream=self.stream,
-            extra_body=self._extra_body(),
+            extra_body=self._extra_body(request),
         )
         _emit_provider_request(request.provider_request_callback, payload)
         try:
@@ -354,7 +358,7 @@ class OpenAICompatibleChatAdapter:
             self.model,
             self.capabilities,
             stream=True,
-            extra_body=self._extra_body(),
+            extra_body=self._extra_body(request),
         )
         _emit_provider_request(request.provider_request_callback, payload)
         stream: Any | None = None
@@ -386,9 +390,19 @@ class OpenAICompatibleChatAdapter:
             if stream is not None:
                 await _close_provider_stream(stream)
 
-    def _extra_body(self) -> dict[str, Any] | None:
+    def _extra_body(self, request: ChatRequest) -> dict[str, Any] | None:
         if self.provider != "qwen":
             return None
+        if self.native_web_search and request.provider_search_profile == "deep_research":
+            return {
+                "enable_thinking": True,
+                "enable_search": True,
+                "search_options": {
+                    "search_strategy": "max",
+                    "forced_search": True,
+                    "enable_search_extension": True,
+                },
+            }
         extra_body: dict[str, Any] = {}
         if self.enable_thinking is not None:
             extra_body["enable_thinking"] = self.enable_thinking

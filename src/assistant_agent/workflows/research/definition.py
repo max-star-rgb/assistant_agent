@@ -13,7 +13,7 @@ from assistant_agent.workflows.models import (
 class DeepResearchWorkflowDefinition:
     descriptor = WorkflowDefinitionDescriptor(
         workflow_type="deep_research",
-        definition_version="1",
+        definition_version="2",
     )
 
     def validate_submission(self, submission: WorkflowSubmission) -> None:
@@ -43,16 +43,22 @@ class DeepResearchWorkflowDefinition:
             WorkflowWorkItem(
                 work_item_id="collect_sources",
                 kind="collect_sources",
-                objective=f"收集约 {source_target} 个可信且多样的来源，保存来源引用和摘要。",
+                objective=(
+                    f"收集约 {source_target} 个可信且多样的来源线索，"
+                    "尽量在模型输出中保留来源信息和摘要。"
+                ),
                 depends_on=["scope"],
-                acceptance_contract={"minimum_sources": max(3, source_target // 2)},
+                acceptance_contract={
+                    "target_sources": source_target,
+                    "source_verification": "best_effort",
+                },
             ),
             WorkflowWorkItem(
                 work_item_id="extract_evidence",
                 kind="extract_evidence",
-                objective="从来源中提取可追溯证据、冲突与不确定性。",
+                objective="从可用来源线索中提取证据、冲突与不确定性。",
                 depends_on=["collect_sources"],
-                acceptance_contract={"requires_source_refs": True},
+                acceptance_contract={"source_refs": "best_effort"},
             ),
             WorkflowWorkItem(
                 work_item_id="outline",
@@ -65,14 +71,17 @@ class DeepResearchWorkflowDefinition:
                 kind="draft",
                 objective="按大纲和证据撰写带引用的报告草稿。",
                 depends_on=["outline"],
-                acceptance_contract={"requires_citations": True},
+                acceptance_contract={"citations": "best_effort"},
             ),
             WorkflowWorkItem(
                 work_item_id="verify",
                 kind="verify",
                 objective="验证交付物完整性、claim/evidence 对齐和引用覆盖。",
                 depends_on=["draft"],
-                acceptance_contract={"unresolved_claims": 0},
+                acceptance_contract={
+                    "unresolved_claims_target": 0,
+                    "verification": "best_effort",
+                },
             ),
             WorkflowWorkItem(
                 work_item_id="synthesize",

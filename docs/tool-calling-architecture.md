@@ -63,6 +63,11 @@ Provider-native ReAct LLM 自主决定；入口不增加关键词路由、正则
 该 Tool 只原子创建持久 Workflow 并返回 handle，不在前台 run 内执行完整流程。普通任务仍走当前
 assistant loop。
 
+显式产品模式是结构化入口事实，不是文本意图路由。当前唯一新增模式
+`assistant_mode=deep_research` 会把前台 RunToolCatalog 收窄为 `workflow_submit`，并在首次 Provider
+决策中要求选择该 Tool；用户文本不会隐式开启该模式。模式提交成功后仍由既有 durable Workflow
+执行，普通 `assistant_mode=standard` 不改变现有工具目录和 assistant loop。
+
 `visual_memory_search` 遵守同一边界：它是唯一新增的历史视觉 Tool，category 为 `read`，不要求本轮
 附带媒体。Runtime 只依据同 user/session `SessionVisualSemanticStore.has_searchable_history()` 生成可信 exposure fact，并覆盖调用方
 同名 metadata；模型不能提交 session、as-of sequence、evidence path 或 embedding。执行仍完整经过
@@ -412,6 +417,8 @@ Gateway 不按 Tool name 或 Provider 错误码改写运行终态。
   `DurableWorkflowWorker -> WorkflowRuntime` 每个 quantum 最多提交一个 work item 结果或一个局部
   plan revision。语义 work item 通过 `AgentGraphRuntime.run_work_item()` 回到同一 assistant loop；
   work-item Tool allowlist 是可信空集合也必须表示“暴露零个 Tool”，不能退化为完整 Registry。
+  `deep_research` work item 固定使用空本地 Tool allowlist；联网由 Qwen/Bailian Chat Completions 的
+  Provider-native 搜索完成，不注册或调用本地 `web_search`/`web_fetch`，也不会绕过 Tool 治理链。
   每次 work-item run 回传实际 model/tool call 数并在同一 revision commit 中扣减预算；后续 quantum
   在 model、workflow quantum 或 deadline 耗尽时终止。Tool 预算为零时不再暴露 Tool，剩余预算同时
   收窄 work-item assistant loop 的 iteration 上限。

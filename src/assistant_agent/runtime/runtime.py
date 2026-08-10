@@ -539,6 +539,7 @@ class AgentGraphRuntime:
             user_id=assignment.user_id,
             session_id=assignment.session_id,
             text=render_work_item_prompt(assignment),
+            assistant_mode=assignment.assistant_mode,
             task_execution_mode="foreground",
             metadata={
                 "_trusted_workflow_assignment": {

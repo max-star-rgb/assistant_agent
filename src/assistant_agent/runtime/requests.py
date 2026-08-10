@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 
 TaskExecutionMode = Literal["auto", "durable", "foreground"]
 ResponseStyle = Literal["conversation", "concise", "structured", "voice"]
+AssistantMode = Literal["standard", "deep_research"]
 
 
 class RuntimeTaskUpdate(BaseModel):
@@ -26,6 +27,7 @@ class UserRequest(BaseModel):
     image_ids: list[str] = Field(default_factory=list)
     video_ids: list[str] = Field(default_factory=list)
     audio_id: str | None = None
+    assistant_mode: AssistantMode = "standard"
     execution_strategy: Literal["react", "plan_and_solve"] = "react"
     task_execution_mode: TaskExecutionMode = "auto"
     response_style: ResponseStyle | None = None
@@ -41,6 +43,12 @@ def resolve_response_style(request: UserRequest) -> ResponseStyle:
     if request.metadata.get("interaction_mode") == "realtime":
         return "voice"
     return "conversation"
+
+
+def assistant_mode_from_metadata(metadata: dict[str, Any]) -> AssistantMode:
+    """Read the explicit product mode without inferring it from request text."""
+
+    return "deep_research" if metadata.get("assistant_mode") == "deep_research" else "standard"
 
 
 def normalize_task_execution_mode(

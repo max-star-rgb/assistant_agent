@@ -198,6 +198,14 @@ raw Provider response、父会话历史及未登记扩展不得进入 prompt。D
 长期记忆或稳定文本 embedding，也不投影原 session 的实时视觉/主动事件；跨阶段上下文只能来自
 显式 manifest 和 owner-bound artifact。
 
+`UserRequest.assistant_mode` 是结构化产品模式，只支持 `standard` 与 `deep_research`。PromptCompiler
+把该字段原样投影到 `ChatRequest`，不渲染成用户文本；Tool catalog 在 `deep_research` 前台入口只保留
+`workflow_submit`，首次调用使用指定 function choice。后台 `deep_research` work item 继承同一模式，
+但可信空 allowlist 进一步收窄为零个本地 Tool，并由 PromptCompiler 额外设置
+`provider_search_profile=deep_research`；前台 admission 保持 standard search profile。模式不会从
+关键词、Skill 或历史内容推断。若入口未注册或未暴露 `workflow_submit`，PromptCompiler 必须失败关闭，
+不能静默退化为普通问答。
+
 ### 实时任务状态
 
 Realtime task state 仅在结构化 interaction mode、entry capability 或显式 runtime opt-in 下启用。

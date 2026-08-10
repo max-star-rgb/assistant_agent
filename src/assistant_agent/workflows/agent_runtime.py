@@ -7,6 +7,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from assistant_agent.runtime.requests import AssistantMode
 from assistant_agent.workflows.context import WorkflowContextManifest
 
 
@@ -21,6 +22,7 @@ class AgentWorkItemRequest(BaseModel):
     session_id: str
     objective: str = Field(min_length=1, max_length=10_000)
     work_item_kind: str = Field(default="generic", min_length=1, max_length=120)
+    assistant_mode: AssistantMode = "standard"
     repair_candidate_ids: list[str] = Field(default_factory=list, max_length=128)
     context_manifest: WorkflowContextManifest
     allowed_tool_names: list[str] = Field(default_factory=list)

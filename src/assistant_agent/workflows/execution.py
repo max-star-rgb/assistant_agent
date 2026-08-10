@@ -65,11 +65,19 @@ class AgentRuntimeWorkItemExecutor:
             session_id=assignment.session_id,
             objective=assignment.work_item.objective,
             work_item_kind=assignment.work_item.kind,
+            assistant_mode=(
+                "deep_research"
+                if assignment.workflow_type == "deep_research"
+                else "standard"
+            ),
             repair_candidate_ids=list(assignment.repair_candidate_ids),
             context_manifest=manifest,
             allowed_tool_names=(
                 list(_READ_TOOLS_BY_KIND.get(assignment.work_item.kind, []))
-                if assignment.tool_calls_remaining > 0
+                if (
+                    assignment.workflow_type != "deep_research"
+                    and assignment.tool_calls_remaining > 0
+                )
                 else []
             ),
             max_iterations=max(

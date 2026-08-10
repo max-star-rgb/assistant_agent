@@ -162,6 +162,11 @@ Gateway 为每个开始的 run 发出稳定的 started/stream/progress/terminal 
 上下文或可信 session config。普通用户文本和任意 message metadata 不能提升权限、改变 profile，
 或决定工具候选空间。
 
+`assistant_mode` 与上述权限 profile 不同：它是用户通过产品控件或 HTTP schema 显式选择的运行模式，
+当前只新增 `deep_research`，缺省为 `standard`。HTTP entry adapter 把已校验字段投影到 Gateway metadata，
+Runtime 再恢复为 `UserRequest.assistant_mode`；它不能从文本推断，也不能扩大本地 Tool 权限，
+`deep_research` 只会进一步收窄 catalog 并改变 Provider 请求策略。
+
 `gateway.capabilities` 只定义通用 `EntryAdapterCapabilities` 数据类型；HTTP、规范化 Gateway WebSocket
 和 Agent-Service 的具体 capability 实例分别由各自 API entry adapter 定义。Gateway package 不导出
 也不命名 Media-Agent profile。

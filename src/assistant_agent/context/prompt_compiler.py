@@ -16,6 +16,7 @@ from assistant_agent.tools.spec_adapters import tool_specs_to_openai_tools
 from assistant_agent.tools.models import ToolSpec
 from assistant_agent.tools.observation import native_tool_observation_payload
 from assistant_agent.runtime.chat_adapter import ChatRequest, ChatStreamCallback
+from assistant_agent.tools.ids import WORKFLOW_SUBMIT_TOOL_NAME
 from assistant_agent.context.conversation import native_conversation_messages
 from assistant_agent.context.finalization import (
     FINALIZE_CONTINUATION_MESSAGE,
@@ -124,13 +125,11 @@ class PromptCompiler:
             user_id=request.user_id,
             session_id=request.session_id,
             user_query=user_query,
+            assistant_mode=request.context_pack.request.assistant_mode,
+            provider_search_profile=_provider_search_profile(request),
             messages=messages,
             tools=tool_specs_to_openai_tools(selected_tool_specs),
-            tool_choice=(
-                "auto"
-                if selected_tool_specs
-                else ("none" if request.answer_only else None)
-            ),
+            tool_choice=_tool_choice(request, selected_tool_specs),
             temperature=request.temperature,
             max_tokens=request.max_tokens,
             stream_callback=request.stream_callback,
@@ -141,6 +140,42 @@ class PromptCompiler:
             rendered_context=rendered_context,
             selected_tool_specs=selected_tool_specs,
         )
+
+
+def _tool_choice(
+    request: PromptCompileRequest,
+    selected_tool_specs: tuple[ToolSpec, ...],
+) -> str | dict[str, Any] | None:
+    if request.answer_only:
+        return "none"
+    if (
+        request.context_pack.request.assistant_mode == "deep_research"
+        and not isinstance(
+            request.context_pack.request.metadata.get("_trusted_workflow_assignment"),
+            dict,
+        )
+        and not request.observations
+        and not request.native_calls
+    ):
+        if [spec.name for spec in selected_tool_specs] != [WORKFLOW_SUBMIT_TOOL_NAME]:
+            raise ValueError("deep_research_mode_requires_workflow_submit")
+        return {
+            "type": "function",
+            "function": {"name": WORKFLOW_SUBMIT_TOOL_NAME},
+        }
+    if not selected_tool_specs:
+        return None
+    return "auto"
+
+
+def _provider_search_profile(request: PromptCompileRequest) -> str:
+    active_request = request.context_pack.request
+    if (
+        active_request.assistant_mode == "deep_research"
+        and isinstance(active_request.metadata.get("_trusted_workflow_assignment"), dict)
+    ):
+        return "deep_research"
+    return "standard"
 
 
 def prompt_tool_specs_for_mode(

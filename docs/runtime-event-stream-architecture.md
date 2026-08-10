@@ -125,10 +125,19 @@ error，不会把已成功的 ToolResult 改写为 Tool 失败。同一进程内
 store 实例原子串行化，避免 read-modify-write 丢失；JSONL backend 不在此基础上宣称跨进程事务能力。
 
 Foreground provider turns are consumed inside the shared LangGraph assistant
-loop. 配置为 `qwen` provider 的主 Agent 百炼兼容 Chat Completions 固定启用 Provider-native 联网：
+loop. 配置为 `qwen` provider 的主 Agent 继续使用百炼兼容 Chat Completions 和 Provider-native 联网。
+普通 `assistant_mode=standard` 保持既有
 `enable_search=true`、`enable_thinking=false`、`search_strategy=turbo`、
-`forced_search=false`、`enable_search_extension=true`、`freshness=7` 与 SDK streaming
-均由 adapter 固定设置，旧 `CHAT_STREAM=false` 不再把这条 Provider 请求降级为非流式。
+`forced_search=false`、`enable_search_extension=true`、`freshness=7`；显式
+`deep_research` Workflow work item 使用 run-scoped `provider_search_profile=deep_research`，改为
+`enable_thinking=true`、`search_strategy=max`、`forced_search=true`、
+`enable_search_extension=true`，且不设置全局 freshness。前台模式提交仍使用普通搜索配置，避免在创建
+Workflow 前进行一次无意义的研究搜索。两种 profile 都使用 SDK streaming，旧 `CHAT_STREAM=false`
+不再把这条 Provider 请求降级为非流式。profile 来自结构化请求和可信 Workflow assignment，不根据
+自然语言推断。
+OpenAI-compatible Chat Completions 不提供 DashScope 专属的 `enable_source`、`enable_citation`
+和 `citation_format` 响应契约，因此当前 Workflow 只能要求模型在正文中尽量保留来源线索，不能把来源
+列表、角标或引用覆盖率声明为机器可验证事实；需要这类结构化证据时再单独评估 DashScope adapter。
 `MULTIMODAL_AGENT_NATIVE_PROVIDER_STREAMING` 只控制 Runtime 是否使用 async-native stream
 consumer；关闭时仍由同步 adapter 聚合 Qwen 的流式响应。Judge 等显式直接构造且未开启
 `native_web_search` 的辅助 adapter 保持独立的非联网、非流式策略。Other providers remain opt-in through
@@ -255,8 +264,10 @@ Durable Workflow 使用相同的分离原则，但事件事实源是 `WorkflowSt
 work item，并在 `commit_quantum` 用 Workflow revision、事件和结果做一次原子提交；进程重启后从
 `WorkflowStore` 重新 hydrate，再由过期 lease 重新 claim。当前实现没有声称可以从一次 Provider/Tool
 调用的中间指令继续，也没有把 LangGraph SQLite checkpointer 作为第二事实源；崩溃在提交前发生时，
-该 quantum 会按 lease/retry 语义重做。因此首批内置 definition 只给 work item 暴露只读 Tool，未来
-若允许写副作用，必须先增加 operation-level idempotency key 和 side-effect commit barrier。
+该 quantum 会按 lease/retry 语义重做。因此普通首批内置 definition 只给 work item 暴露只读 Tool；
+`deep_research` 是当前例外，它暴露零个本地 Tool，并在相同 Chat Completions Provider turn 内使用
+百炼原生联网。未来若允许写副作用，必须先增加 operation-level idempotency key 和 side-effect
+commit barrier。
 
 普通 work-item 最终文本直接作为成功结果。只有 trusted work-item prompt 返回完整、通过严格 schema
 校验的 `workflow_control` JSON 时，adapter 才会把它解释为 `repair`、`blocked` 或 `failed`；Markdown

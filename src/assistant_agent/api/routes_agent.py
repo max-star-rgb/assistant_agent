@@ -226,6 +226,7 @@ def _gateway_http_metadata(request: UserRequest, capture_id: str) -> dict[str, A
     gateway_payload.pop("artifact_delivery", None)
     metadata["gateway"] = gateway_payload
     metadata["execution_strategy"] = request.execution_strategy
+    metadata["assistant_mode"] = request.assistant_mode
     return metadata
 
 
