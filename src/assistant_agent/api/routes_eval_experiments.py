@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from starlette.concurrency import run_in_threadpool
 
 from assistant_agent.evaluation.release_review import (
     ReleaseReviewAccepted,
@@ -12,6 +13,7 @@ from assistant_agent.evaluation.release_review import (
     ReleaseReviewInvalid,
     ReleaseReviewLauncher,
     ReleaseReviewLaunchFailed,
+    ReleaseReviewPreflightFailed,
     ReleaseReviewSettings,
     ReleaseReviewUnauthorized,
 )
@@ -48,7 +50,8 @@ async def trigger_release_review(
 ) -> ReleaseReviewAccepted:
     raw_body = await request.body()
     try:
-        return launcher.launch(
+        return await run_in_threadpool(
+            launcher.launch,
             raw_body=raw_body,
             signature_header=request.headers.get("x-langfuse-signature"),
         )
@@ -57,6 +60,8 @@ async def trigger_release_review(
     except ReleaseReviewInvalid as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except ReleaseReviewDisabled as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ReleaseReviewPreflightFailed as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except ReleaseReviewLaunchFailed as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc

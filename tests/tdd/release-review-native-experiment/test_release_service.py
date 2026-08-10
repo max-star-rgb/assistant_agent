@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+import evals.release_review.cli as release_cli
+from assistant_agent.tools.registry import ToolRegistry
 from evals.release_review.cli import _selection_requires_staging, main
 from evals.release_review.report import (
     ApprovedBaseline,
@@ -217,3 +219,69 @@ def test_staging_permission_gate_only_considers_selected_scenarios() -> None:
     assert _selection_requires_staging(scenarios, ("decision-only",)) is False
     assert _selection_requires_staging(scenarios, ("staging",)) is True
     assert _selection_requires_staging(scenarios, None) is True
+
+
+def test_cli_preflight_checks_catalog_without_creating_langfuse_client(
+    monkeypatch, capsys
+) -> None:
+    required: list[str] = []
+
+    class Catalog:
+        generation = "catalog-sentinel"
+
+        def require_tools(self, tool_names) -> None:
+            required.extend(tool_names)
+
+    monkeypatch.setattr(
+        release_cli.ProviderConfig,
+        "from_env",
+        lambda: SimpleNamespace(),
+    )
+    monkeypatch.setattr(release_cli, "_validate_real_config", lambda config: None)
+    monkeypatch.setattr(release_cli, "_catalog_snapshot", lambda config: Catalog())
+    monkeypatch.setattr(
+        release_cli,
+        "_langfuse_client",
+        lambda: (_ for _ in ()).throw(AssertionError("preflight must stay local")),
+    )
+
+    assert (
+        main(
+            [
+                "--preflight",
+                "--no-env-file",
+                "--release-id",
+                "release-1",
+                "--allow-real-provider",
+                "--allow-staging-side-effects",
+                "--scenario",
+                "deep_research_admission",
+            ]
+        )
+        == 0
+    )
+
+    assert required == ["workflow_submit"]
+    assert '"status": "ready"' in capsys.readouterr().out
+
+
+def test_catalog_probe_runs_in_disposable_working_directory(monkeypatch) -> None:
+    starting_directory = Path.cwd()
+    probe_directories: list[Path] = []
+
+    class Runtime:
+        def __init__(self, config) -> None:
+            probe_directories.append(Path.cwd())
+            self.registry = ToolRegistry()
+            self.registry.seal()
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(release_cli, "AgentGraphRuntime", Runtime)
+
+    release_cli._catalog_snapshot(SimpleNamespace())
+
+    assert probe_directories[0] != starting_directory
+    assert not probe_directories[0].exists()
+    assert Path.cwd() == starting_directory

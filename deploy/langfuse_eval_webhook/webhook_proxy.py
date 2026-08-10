@@ -24,7 +24,7 @@ class WebhookProxyConfig:
     bind_port: int = 80
     upstream_host: str = "host.docker.internal"
     upstream_port: int = 8089
-    upstream_timeout_seconds: float = 10.0
+    upstream_timeout_seconds: float = 35.0
     signing_secret: str | None = None
     now: Callable[[], float] = time.time
 

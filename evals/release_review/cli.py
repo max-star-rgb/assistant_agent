@@ -5,14 +5,17 @@ import json
 import os
 import subprocess
 import sys
+from contextlib import chdir
 from dataclasses import replace
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from time import monotonic
 from typing import Sequence
 
 from langfuse import Langfuse
 
 from assistant_agent.config import ProviderConfig
+from assistant_agent.mcp.config import DEFAULT_MCP_CONFIG_PATH, MCP_CONFIG_PATH_ENV
 from assistant_agent.observability.langfuse_config import (
     langfuse_credentials_from_env,
     langfuse_host_from_env,
@@ -25,7 +28,7 @@ from assistant_agent.tools.plugins.builtin.calendar_weather_contacts.local_calen
 )
 from assistant_agent.tools.plugins.registry_factory import create_default_registry
 
-from .catalog import build_catalog_snapshot
+from .catalog import ReleaseCatalogSnapshot, build_catalog_snapshot
 from .experiment import ReleaseExperimentSettings
 from .loader import load_scenarios
 from .service import ReleaseReviewRequest, ReleaseReviewService
@@ -46,6 +49,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     action = parser.add_mutually_exclusive_group(required=True)
     action.add_argument("--inspect", action="store_true")
     action.add_argument("--sync", action="store_true")
+    action.add_argument("--preflight", action="store_true")
     action.add_argument("--run", action="store_true")
     action.add_argument("--record-decision", action="store_true")
     parser.add_argument("--scenario-root", type=Path, default=DEFAULT_SCENARIO_ROOT)
@@ -118,9 +122,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         if not args.no_env_file:
             load_env_file(args.env_file)
         scenarios = load_scenarios(args.scenario_root)
-        client = _langfuse_client()
-        git_commit = args.git_commit or _git_commit()
         if args.sync:
+            client = _langfuse_client()
+            git_commit = args.git_commit or _git_commit()
             result = sync_release_dataset(client, scenarios, git_commit)
             client.flush()
             print(
@@ -135,12 +139,42 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         _require_args(parser, args, "release_id")
         if not args.allow_real_provider:
-            parser.error("--run requires --allow-real-provider")
+            parser.error("--preflight/--run requires --allow-real-provider")
         selected_ids = tuple(args.scenario_ids) if args.scenario_ids else None
         if _selection_requires_staging(scenarios, selected_ids) and not args.allow_staging_side_effects:
-            parser.error("--run with Staging scenarios requires --allow-staging-side-effects")
+            parser.error(
+                "--preflight/--run with Staging scenarios requires "
+                "--allow-staging-side-effects"
+            )
         config = ProviderConfig.from_env()
         _validate_real_config(config)
+        selected = _select_scenarios(scenarios, selected_ids)
+        if args.preflight:
+            catalog = _catalog_snapshot(config)
+            catalog.require_tools(
+                tool_name
+                for scenario in selected
+                for tool_name in scenario.tool_contract.required
+            )
+            print(
+                json.dumps(
+                    {
+                        "action": "preflight",
+                        "status": "ready",
+                        "release_id": args.release_id,
+                        "scenario_count": len(selected),
+                        "dataset_item_count": sum(
+                            scenario.repetitions for scenario in selected
+                        ),
+                        "catalog_generation": catalog.generation,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            return 0
+        client = _langfuse_client()
+        git_commit = args.git_commit or _git_commit()
         request = ReleaseReviewRequest(
             release_id=args.release_id,
             scenario_ids=selected_ids,
@@ -183,6 +217,18 @@ def _selection_requires_staging(
     )
 
 
+def _select_scenarios(
+    scenarios: Sequence[object], scenario_ids: tuple[str, ...] | None
+) -> tuple[object, ...]:
+    if scenario_ids is None:
+        return tuple(scenarios)
+    by_id = {getattr(item, "id", None): item for item in scenarios}
+    unknown = [scenario_id for scenario_id in scenario_ids if scenario_id not in by_id]
+    if unknown:
+        raise ValueError(f"unknown Release Review scenario: {unknown[0]}")
+    return tuple(by_id[scenario_id] for scenario_id in scenario_ids)
+
+
 def _build_service(
     *,
     client: Langfuse,
@@ -203,11 +249,7 @@ def _build_service(
             )
         }
     )
-    probe = AgentGraphRuntime(config=config)
-    try:
-        catalog = build_catalog_snapshot(probe.registry)
-    finally:
-        probe.close()
+    catalog = _catalog_snapshot(config)
 
     def runtime_factory(scenario, backend, runtime_metadata):
         paths = runtime_metadata.get("staging_paths", {})
@@ -258,6 +300,29 @@ def _build_service(
         settings_factory=settings_factory,
         progress=_emit_progress,
     )
+
+
+def _catalog_snapshot(config: ProviderConfig) -> ReleaseCatalogSnapshot:
+    configured_mcp_path = Path(
+        os.environ.get(MCP_CONFIG_PATH_ENV, DEFAULT_MCP_CONFIG_PATH)
+    ).expanduser()
+    if not configured_mcp_path.is_absolute():
+        configured_mcp_path = (PROJECT_ROOT / configured_mcp_path).resolve()
+    previous_mcp_path = os.environ.get(MCP_CONFIG_PATH_ENV)
+    try:
+        os.environ[MCP_CONFIG_PATH_ENV] = str(configured_mcp_path)
+        with TemporaryDirectory(prefix="assistant-agent-release-preflight-") as temporary:
+            with chdir(temporary):
+                probe = AgentGraphRuntime(config=config)
+                try:
+                    return build_catalog_snapshot(probe.registry)
+                finally:
+                    probe.close()
+    finally:
+        if previous_mcp_path is None:
+            os.environ.pop(MCP_CONFIG_PATH_ENV, None)
+        else:
+            os.environ[MCP_CONFIG_PATH_ENV] = previous_mcp_path
 
 
 def _validate_real_config(config: ProviderConfig) -> None:

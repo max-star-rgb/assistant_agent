@@ -18,6 +18,7 @@ from typing import Any, Literal
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, ValidationError
 
 from assistant_agent.evaluation.remote_run_control import RemoteProgressTracker
+from assistant_agent.providers.provider_errors import sanitize_error_message
 
 
 RELEASE_REVIEW_DATASET = "assistant-agent-release-review"
@@ -125,7 +126,12 @@ class ReleaseReviewLaunchFailed(ReleaseReviewError):
     pass
 
 
+class ReleaseReviewPreflightFailed(ReleaseReviewLaunchFailed):
+    pass
+
+
 PopenFactory = Callable[..., subprocess.Popen[bytes]]
+RunFactory = Callable[..., subprocess.CompletedProcess[str]]
 Reaper = Callable[
     [subprocess.Popen[bytes], Path, dict[str, Any], Path, Path], None
 ]
@@ -138,12 +144,14 @@ class ReleaseReviewLauncher:
         *,
         env: Mapping[str, str] | None = None,
         popen_factory: PopenFactory = subprocess.Popen,
+        run_factory: RunFactory = subprocess.run,
         now: Callable[[], float] = time.time,
         reaper: Reaper | None = None,
     ) -> None:
         self.settings = settings
         self._env = dict(env if env is not None else os.environ)
         self._popen_factory = popen_factory
+        self._run_factory = run_factory
         self._now = now
         self._reaper = reaper or _start_process_reaper
         self._lock = threading.Lock()
@@ -217,6 +225,8 @@ class ReleaseReviewLauncher:
         payload: ReleaseReviewPayload,
     ) -> ReleaseReviewAccepted:
         command = self._command(accepted, payload)
+        preflight_command = self._preflight_command(accepted)
+        self._run_preflight(preflight_command)
         self.settings.artifact_root.mkdir(parents=True, exist_ok=True)
         receipt_path = self.settings.artifact_root / f"{accepted.trigger_id}.json"
         with self._lock:
@@ -291,6 +301,50 @@ class ReleaseReviewLauncher:
         command.extend(("--run-name", accepted.run_name))
         return command
 
+    def _preflight_command(
+        self,
+        accepted: ReleaseReviewAccepted,
+    ) -> list[str]:
+        script = self.settings.repository_root / "scripts" / "run_release_review.py"
+        if not script.is_file():
+            raise ReleaseReviewLaunchFailed("Release Review CLI entrypoint is unavailable.")
+        command = [
+            sys.executable,
+            str(script),
+            "--preflight",
+            "--release-id",
+            accepted.release_id,
+            "--allow-real-provider",
+            "--allow-staging-side-effects",
+        ]
+        for scenario_id in accepted.scenario_ids or ():
+            command.extend(("--scenario", scenario_id))
+        return command
+
+    def _run_preflight(self, command: list[str]) -> None:
+        try:
+            completed = self._run_factory(
+                command,
+                cwd=self.settings.repository_root,
+                env=self._env,
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                shell=False,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise ReleaseReviewPreflightFailed(
+                "Release Review preflight could not complete."
+            ) from exc
+        if completed.returncode == 0:
+            return
+        message = _preflight_error_message(completed.stdout)
+        raise ReleaseReviewPreflightFailed(
+            f"Release Review preflight failed: {message}"
+        )
+
 
 def _verify_signature(
     *,
@@ -329,6 +383,17 @@ def _verify_signature(
 def _trigger_id(signature_header: str, raw_body: bytes) -> str:
     digest = hashlib.sha256(signature_header.encode() + b"\0" + raw_body)
     return digest.hexdigest()[:24]
+
+
+def _preflight_error_message(stdout: str) -> str:
+    try:
+        payload = json.loads(stdout)
+    except (TypeError, ValueError):
+        return "infrastructure readiness check failed"
+    message = payload.get("message") if isinstance(payload, dict) else None
+    if not isinstance(message, str) or not message.strip():
+        return "infrastructure readiness check failed"
+    return sanitize_error_message(message)
 
 
 def _start_process_reaper(

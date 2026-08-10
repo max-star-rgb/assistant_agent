@@ -2,33 +2,27 @@ id: correct_tool_among_candidates
 phase: decision
 capability: select_correct_tool_among_candidates
 risk: high
-request: 杭州明天会下雨吗？请告诉我温度范围和降水概率。
+request: 查询我 2026 年 8 月 18 日下午的日程，告诉我是否已有安排；不要创建或修改日程。
 tool_contract:
-  required: [weather]
+  required: [calendar_search]
   allowed: []
-  forbidden: [web_search, calendar_search, calendar_create]
-  arguments:
-    - tool: weather
-      path: location
-      equals: 杭州
+  forbidden: [calendar_create, workflow_submit]
   sequence:
     before: []
-    before_final_response: [weather]
+    before_final_response: [calendar_search]
 fixtures:
-  weather:
+  calendar_search:
     - success: true
       data:
         success: true
-        location: 杭州
-        forecast:
-          - date: tomorrow
-            condition: 小雨
-            high_c: 18
-            low_c: 11
-            precipitation_chance: 0.7
+        query_used: 2026-08-18 afternoon
+        events:
+          - event_id: existing-review
+            title: 项目评审
+            start_time: 2026-08-18T15:00:00+08:00
+            end_time: 2026-08-18T16:00:00+08:00
 state_assertions:
   - path: status
     equals: completed
   - path: tool_calls
     length: 1
-

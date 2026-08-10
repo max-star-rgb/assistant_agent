@@ -46,7 +46,9 @@ item；同一 Git-owned 旧 item 会被归档，Langfuse UI 不能新增案例�
 
 - **Decision**：运行真实模型和生产工具目录，但通过注入的 `ToolExecutionBackend` 返回 YAML 中的确定性
   fixture。它检验 Agent 是否选对/漏用工具、参数、顺序、失败后的行为和回答 grounding；不注册模拟
-  高德或其他同名 Tool，因此不会再发生 `Tool already registered`。
+  高德或其他同名 Tool，因此不会再发生 `Tool already registered`。默认案例只能要求当前生产目录中
+  已注册的 Tool；Qwen Provider-native 联网不写成虚构的本地 `web_search` Tool，未配置的可选天气
+  Tool 也不进入默认发布验收。
 - **Staging**：运行真实模型及真实工具实现。写操作使用 run-scoped workflow/SQLite 资源并在结束后清理；
   高德案例只允许只读调用。Staging 禁止 fixture 和静默 mock fallback。
 
@@ -119,7 +121,10 @@ MULTIMODAL_AGENT_PROVIDER_MODE=real
 `payload` 是 JSON 字符串，只要求 `releaseId`，可选 `scenarios` 和 `runName`。模型属于服务端配置；当前
 prompt 由代码和运行上下文动态编译，不接受人工版本标签。UI Config 运行全部场景的最小值是
 `{"releaseId":"<release-id>"}`。
-服务端使用固定 argv 启动同一 `--run` CLI；签名与 body 生成稳定 trigger id，重复投递不会启动第二次。
+服务端先用固定 argv 同步执行同一 CLI 的 `--preflight`，校验真实 Provider 配置、所选 Scenario 和生产
+Tool catalog；失败会以非 2xx 直接返回 Langfuse，不会先接受再静默退出。preflight 通过后才返回 `202`
+并异步启动 `--run`；Experiment 页面要到原生 Dataset Run 创建后才出现记录，异步 receipt/log 仍位于
+`.data/evals/release_review/remote/`。签名与 body 生成稳定 trigger id，重复投递不会启动第二次。
 UI 只负责选择 Dataset、Experiment Evaluator 和触发运行，不拥有 Provider 模式、Staging readiness、案例
 定义或发布权限。
 

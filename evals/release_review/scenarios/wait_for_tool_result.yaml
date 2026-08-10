@@ -2,25 +2,21 @@ id: wait_for_tool_result
 phase: decision
 capability: wait_for_tool_result_before_response
 risk: high
-request: 查询北京今天的天气，并根据查询结果告诉我是否需要带伞。
+request: 查询我 2026 年 8 月 19 日 14:00 到 17:00 的日程，并根据查询结果告诉我这段时间是否空闲。
 tool_contract:
-  required: [weather]
+  required: [calendar_search]
   allowed: []
   forbidden: []
   sequence:
     before: []
-    before_final_response: [weather]
+    before_final_response: [calendar_search]
 fixtures:
-  weather:
+  calendar_search:
     - success: true
       data:
         success: true
-        location: 北京
-        forecast:
-          - date: today
-            condition: 阵雨
-            precipitation_chance: 0.8
+        query_used: 2026-08-19 14:00/17:00
+        events: []
 state_assertions:
   - path: status
     equals: completed
-
