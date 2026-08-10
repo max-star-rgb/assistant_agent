@@ -2,6 +2,17 @@
 
 Last updated: 2026-07-21
 
+## Authority contract
+
+| 字段 | 内容 |
+| --- | --- |
+| 定位 | Multi-agent instance routing、delegation 与 A2A adapter 的当前权威 |
+| Owns | AgentDirectory、routing/delegation policy、transport、control plane、A2A JSON-RPC 与隔离边界 |
+| Does not own | 默认单 Agent loop、Gateway frame、Tool 执行、Memory/context 内部策略 |
+| 源码与 schema 入口 | `src/assistant_agent/multi_agent/`、`src/assistant_agent/api/routes_a2a.py` |
+| 验证入口 | `docs/authority.toml` 中 `agent-communication.verification` |
+| 相邻 authority | Runtime 见 [`runtime-event-stream-architecture.md`](runtime-event-stream-architecture.md)；Gateway 见 [`gateway-architecture.md`](gateway-architecture.md) |
+
 This document is the current canonical entry for multi-agent instance routing, agent-to-agent communication, and A2A-style protocol adapter boundaries. Update it whenever agent directory/router behavior, agent communication services, cross-instance sessions, A2A routes, JSON-RPC transport, or related safety policy changes.
 
 Current status: opt-in local AgentRouter boundary, inbound A2A JSON-RPC adapter, default-disabled outbound A2A JSON-RPC pilot transport, read-only control-plane observability, explicit local JSONL durable delegation trace for readiness/pilot use, first-pass pilot operator workflow, strict local pilot evidence package, and breaking cleanup of old router/runtime compatibility imports implemented. The repository still keeps the existing `/agent/run`, CLI, eval, and realtime Gateway paths on one default `AgentGraphRuntime`. It now has a public `assistant_agent.multi_agent` aggregate entrypoint, protocol-neutral schemas, an `AgentDirectory`, deterministic `AgentRoutingPolicy`, `AgentDelegationPolicy`, `LocalAgentTransport`, `A2AJsonRpcTransport`, `AgentCommunicationService`, a local multi-runtime factory, and an `AgentRouter` service with a default process-local redacted control-plane store plus opt-in `JsonlAgentControlPlaneStore`. The former `delegate_to_agent` Tool is temporarily removed, so no Registry exposes model-driven delegation. Explicit `/agents/run` routing, read-only control-plane APIs, pilot scripts, inbound A2A routes, and outbound transport controls remain available.
@@ -133,8 +144,6 @@ Implemented files:
 | `src/assistant_agent/multi_agent/a2a_adapter.py` | implemented | Inbound A2A adapter that maps public agent card and JSON-RPC `SendMessage` requests to/from `AgentRouter`, with public skill filtering. |
 | `src/assistant_agent/api/routes_agent.py` | implemented | Existing `/agent/run` plus separate `/agents/run` router/debug endpoint sharing trial access rules. |
 | `src/assistant_agent/api/routes_a2a.py` | implemented | Inbound A2A-compatible agent card and JSON-RPC endpoint over local AgentRouter, including parse/invalid/method/params/internal error mapping. |
-| `scripts/check_pilot_readiness.py` | implemented | Local operator command for read-only pilot readiness checks without server startup, provider calls, or remote-agent calls. |
-| `scripts/collect_pilot_evidence.py` | implemented | Strict local/offline evidence package collector covering `/agent/run`, `/agents/run`, inbound `/a2a/rpc`, readiness, route, delegation, budget, audit, replay-preview, and trace summaries without server startup, real provider calls, remote-agent calls, or raw trace bodies. |
 | `docs/development/agent-pilot-operator-runbook.md` | implemented | Operator runbook for local/pilot startup, auth/readiness verification, smoke requests, redacted evidence collection, and backout. |
 
 ## Protocol Boundary
@@ -166,7 +175,6 @@ Rules:
 - AgentRouter runs are recorded in a process-local redacted control-plane store by default. Read-only `/control-plane/runs/{run_id}`, `/control-plane/traces/{trace_id}`, `/control-plane/runs/{run_id}/route`, `/control-plane/runs/{run_id}/delegation-tree`, `/control-plane/runs/{run_id}/budget`, `/control-plane/runs/{run_id}/audit`, `/control-plane/audit/events`, `/control-plane/runs/{run_id}/replay-preview`, and `/control-plane/readiness` expose route, delegation, identity provenance, budget/latency, audit decisions, readiness, and replay-preview summaries without raw provider payloads, auth tokens, inline media bodies, hidden reasoning, raw memory content, or parent conversation history.
 - `JsonlAgentControlPlaneStore` is an explicit local durable store for readiness and pilot evidence. It persists redacted route records and audit events to a caller-provided JSONL file, keeps latest record by run/trace on read, and does not enable default multi-agent routing, remote discovery, remote A2A, or user-facing control actions.
 - Current audit event types include `auth_decision`, `route_decision`, `delegation_decision`, `remote_a2a_decision`, `provider_opt_in_decision`, `memory_access`, `memory_export`, and `memory_delete`. Default audit retention is process-local and replay-safe only; JSONL retention is durable only for explicit local files until deleted by the operator.
-- `scripts/check_pilot_readiness.py` provides an offline operator check for provider mode, auth-bound identity policy, provider config, remote A2A allowlist, and redaction gates. It does not start the server, call a real provider, or call a remote agent.
 - AgentRouter route priority is deterministic: explicit `target_agent_id`, configured capability routing table, unique capability match, `controller_delegate` fallback to `agent.default`, then default `agent.default`.
 - `GET /.well-known/agent-card.json` exposes a local A2A agent card. It advertises the local `/a2a/rpc` JSON-RPC endpoint, public supported methods, local/offline no-auth status, and enabled local agent skills with public capability filtering.
 - Agent Card output must not expose secrets, raw provider details, internal class names, or local file paths.
@@ -307,8 +315,8 @@ The inbound MVP exposes this repository as an agent without changing default `/a
 ## Update Rules
 
 - Read this document before designing or changing agent instance routing, agent-to-agent communication, or A2A adapters.
-- Keep `AGENTS.md` pointing to this file as the rule-routing entry.
-- Keep `AGENTS.md` synchronized when this document changes status, scope, or agent communication entry rules. `README.md` remains a temporary placeholder until the project stabilizes.
+- Keep the `agent-communication` entry in `docs/authority.toml` synchronized with current source ownership and verification.
+- Update `README.md` only when the human-facing navigation entry changes; do not copy routing details into `AGENTS.md`.
 - If implementation affects architecture layering, update the boundary rules in `AGENTS.md`.
 - If delegation affects prompt/context content, also read and update `docs/context_engineering_status.md`.
 - If delegation reads or writes memory, also read and update `docs/memory-service-architecture.md`.
@@ -322,10 +330,10 @@ Default stable core pytest safety net (bare pytest collects only `tests/core`):
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q
 ```
 
-For broader behavior checks, run the deterministic eval/demo and explicit pilot evidence tools:
+For broader behavior checks, run the deterministic eval/demo tools. Pilot-readiness logic currently has no standalone
+operator script; import/compile validation is recorded in `docs/authority.toml` until a stable entrypoint exists:
 
 ```bash
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_evals.py
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_demo_flows.py
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/collect_pilot_evidence.py
 ```

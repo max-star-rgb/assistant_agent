@@ -2,6 +2,17 @@
 
 最后更新：2026-08-08
 
+## Authority contract
+
+| 字段 | 内容 |
+| --- | --- |
+| 定位 | 默认 Mem0 Plugin 私有 HTTP adapter 子集的当前权威 |
+| Owns | `Mem0Client` 使用的 recall、turn capture、identity filter、响应字段与错误语义 |
+| Does not own | 通用 Memory Server 协议、Runtime Memory 生命周期、第三方 Memory Plugin API |
+| 源码与 schema 入口 | `src/assistant_agent/memory/mem0/`、`src/assistant_agent/memory/plugins/builtin/mem0.py` |
+| 验证入口 | `docs/authority.toml` 中 `memory-server-api.verification` |
+| 相邻 authority | Memory Host 与 Plugin 契约见 [`memory-service-architecture.md`](memory-service-architecture.md) |
+
 项目不定义通用 Memory Server 协议。本文件只记录默认 `Mem0MemoryPlugin` 的私有
 `Mem0Client` 实际使用的 Mem0 OSS REST 子集；完整行为以 Mem0 官方 API 为准。
 Runtime 和第三方 Memory Plugin 不依赖本协议，只依赖

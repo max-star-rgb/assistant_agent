@@ -2,6 +2,17 @@
 
 Last updated: 2026-07-31
 
+## Authority contract
+
+| 字段 | 内容 |
+| --- | --- |
+| 定位 | 真实 run、trace、通话与机器日志的操作诊断权威 |
+| Owns | trace_id 取证顺序、Langfuse/local 查询、证据降级、归因格式与敏感信息处理 |
+| Does not own | TraceEvent schema、采样/export、日常 audit、Agent eval 与修复实现 |
+| 源码与 schema 入口 | `src/assistant_agent/observability/trace_query.py`、`trace_store.py`、delivery/latency readers |
+| 验证入口 | `docs/authority.toml` 中 `observability-diagnosis.verification` |
+| 相邻 authority | Trace 契约与日常审计见 [`observability-harness.md`](observability-harness.md)；评测见 [`../evals/README.md`](../evals/README.md) |
+
 本文档用于诊断真实测试、真实通话、真实 run/trace 和机器日志。它回答“拿到一次真实运行后如何取证”，
 不重新定义 trace schema 或运行时契约；事件和安全边界以
 [`observability-harness.md`](observability-harness.md) 为准。

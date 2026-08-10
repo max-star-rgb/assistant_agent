@@ -2,6 +2,17 @@
 
 Last updated: 2026-08-06
 
+## Authority contract
+
+| 字段 | 内容 |
+| --- | --- |
+| 定位 | 统一 image/text embedding 与短期视觉语义能力的当前权威 |
+| Owns | SigLIP2、semantic keyframe、视觉时间线、Qdrant 检索、历史找物与连接级视觉提醒 |
+| Does not own | Media-Agent wire、通用 Tool 执行链、长期记忆、VLM Provider 私有协议 |
+| 源码与 schema 入口 | `src/assistant_agent/media/embedding/`、`media/video/`、`tools/plugins/builtin/media_inspection/` |
+| 验证入口 | `docs/authority.toml` 中 `multimodal-embedding.verification` |
+| 相邻 authority | 媒体协议见 [`media-agent-service-websocket.md`](media-agent-service-websocket.md)；Tool 见 [`tool-calling-architecture.md`](tool-calling-architecture.md) |
+
 本文档是 `assistant_agent` 当前 image/text embedding 平台、session 短期视觉时间线、历史找物和连接级视觉提醒能力的
 事实权威。媒体接入与关键帧生命周期见 `media-agent-service-websocket.md`，显式 Tool 治理见
 `tool-calling-architecture.md`；源码和测试与本文冲突时，以源码和测试为准并回补本文。

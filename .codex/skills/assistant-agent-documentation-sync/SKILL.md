@@ -12,10 +12,13 @@ Use this skill only after an explicit documentation-sync request. Repository cha
 1. Read `AGENTS.md`; inspect `git status --short`, `git diff --name-status`, and
    `git diff --cached --name-status`; identify unrelated user work. The collector's
    `git_changes` covers only `--git-range`, not dirty or staged changes.
-2. Read `docs/authority.toml`, then read the relevant project specialty skills and the manifest-selected authority documents.
+2. Read `docs/authority.toml`; match `read_when` and expected changed paths against `source_globs`, then read only the
+   selected authority and any adjacent authority required by its contract card. Do not preload every authority.
 3. Run the stable authority validator. Run the bundled collector once without `--git-range` for the complete inventory and once with the user-supplied range. If no range was supplied, do not invent one; Git history may only localize investigation.
 4. Map implemented capabilities to owning source, tests/config, authority, `README.md`, `AGENTS.md`, and specialty skills.
-5. Update existing authority where possible. Create a new authority only for an implemented, stable, separately owned boundary with real validation entrypoints.
+5. Update the existing owner authority where possible. Create a new authority only for an implemented, stable,
+   separately owned boundary with real validation entrypoints; register it in the complete manifest and add the six-field
+   `Authority contract` in the same change.
 6. Review `docs/development/**`, walkthroughs, references, roadmaps, and `docs/superpowers/**`. Specs and plans are development records, not current authority.
 7. Delete only when a replacement authority exists, no unique operational/API/compatibility value remains, all inbound references can be repaired, and source/test/history evidence is conclusive. Otherwise report a candidate without deleting it.
 8. Re-run the collector, skill validation, relevant offline tests, and `git diff --check`. Never call a real provider for documentation validation.
@@ -29,8 +32,9 @@ Validate current authority ownership, routing, exclusive facts and changed-path 
   scripts/check_documentation_authority.py --repo-root . [--git-range BASE..HEAD]
 ```
 
-The validator emits JSON and never edits files. `review_required` means inspect the listed owner; it does not require
-manufacturing a Markdown diff.
+The validator emits JSON and never edits files. With `coverage = "complete"`, every root `docs/*.md` plus
+`tests/README.md` and `evals/README.md` must have exactly one manifest owner and a complete contract card.
+`review_required` means inspect the listed owner; it does not require manufacturing a Markdown diff.
 
 Then collect the wider documentation inventory and link evidence:
 

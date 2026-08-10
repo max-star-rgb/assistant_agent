@@ -1,5 +1,16 @@
 # 工具调用架构
 
+## Authority contract
+
+| 字段 | 内容 |
+| --- | --- |
+| 定位 | Tool 注册、暴露、调用、执行与 durable workflow 治理的当前权威 |
+| Owns | Tool/ToolSpec、catalog、Plugin、MCP、Validator、Executor、Workflow Tool 与副作用边界 |
+| Does not own | 用户意图关键词路由、Gateway 生命周期、Memory Plugin 生命周期、Provider vendor 私有协议 |
+| 源码与 schema 入口 | `src/assistant_agent/tools/`、`src/assistant_agent/workflows/`、`src/assistant_agent/mcp/` |
+| 验证入口 | `docs/authority.toml` 中 `tool-calling.verification` |
+| 相邻 authority | Runtime 见 [`runtime-event-stream-architecture.md`](runtime-event-stream-architecture.md)；Memory 见 [`memory-service-architecture.md`](memory-service-architecture.md) |
+
 本文是 `assistant_agent` 工具注册、暴露、调用和执行边界的当前权威说明。源码和测试优先于本文。
 
 ## 1. 文档边界
@@ -384,7 +395,7 @@ Gateway 不按 Tool name 或 Provider 错误码改写运行终态。
   每次 work-item run 回传实际 model/tool call 数并在同一 revision commit 中扣减预算；后续 quantum
   在 model、workflow quantum 或 deadline 耗尽时终止。Tool 预算为零时不再暴露 Tool，剩余预算同时
   收窄 work-item assistant loop 的 iteration 上限。
-- **Memory**：记忆读写遵循 `MemoryManager` 与 memory policy；默认长期记忆不是主模型可调用 Tool。
+- **Memory**：记忆读写遵循 `MemoryPluginHost` 与 Plugin lifecycle；默认长期记忆不是主模型可调用 Tool。
 - **Gateway、CLI、API、demo、eval**：都是入口或观察形态，不能直接调用 Tool 实现来复制 Agent
   逻辑。
 - **内部 Tool**：后台 observer 或 worker 可以使用独立 Registry/catalog，但仍必须经过 Validator

@@ -83,5 +83,5 @@ cd /home/lenovo1/pycharm_project/runTime && conda run -n hello_agent env PYTHONP
 For skill/doc-only changes:
 
 ```bash
-git diff --check -- AGENTS.md docs/gateway-architecture.md docs/media-agent-service-websocket.md .codex/skills/assistant-runtime-reference src/assistant_agent/gateway src/assistant_agent/api/gateway_runtime.py src/assistant_agent/api/gateway_websocket.py tests/critical/test_safety_net.py scripts/run_gateway_client.py
+git diff --check -- AGENTS.md docs/gateway-architecture.md docs/media-agent-service-websocket.md .codex/skills/assistant-runtime-reference src/assistant_agent/gateway src/assistant_agent/api/gateway_runtime.py src/assistant_agent/api/gateway_websocket.py tests/core/contract/test_gateway_contract.py scripts/run_client.py
 ```

@@ -2,6 +2,17 @@
 
 最后更新：2026-08-08
 
+## Authority contract
+
+| 字段 | 内容 |
+| --- | --- |
+| 定位 | 排他 Memory Plugin 与 Runtime 记忆治理生命周期的当前权威 |
+| Owns | `MemoryPluginHost`、四生命周期、identity、freeze、ingestion、预算投影与 Plugin 装配 |
+| Does not own | 默认 Mem0 私有 HTTP wire、conversation 编译、通用 Memory Server 协议、Memory Tool |
+| 源码与 schema 入口 | `src/assistant_agent/memory/plugins/`、`memory/factory.py`、`memory/service.py` |
+| 验证入口 | `docs/authority.toml` 中 `memory-plugin.verification` |
+| 相邻 authority | Mem0 adapter 见 [`memory_server_api_spec.md`](memory_server_api_spec.md)；Context 见 [`context_engineering_status.md`](context_engineering_status.md) |
+
 本文是 `assistant_agent` 长期记忆的当前权威。Runtime 只允许一个排他的 active Memory Plugin，
 并且只通过 `MemoryPluginHost` 使用它。Mem0 是默认内置实现；`Mem0Client` 是
 `Mem0MemoryPlugin` 的私有 HTTP/service adapter，不再是 Runtime 依赖。

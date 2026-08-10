@@ -2,6 +2,17 @@
 
 Last updated: 2026-07-23
 
+## Authority contract
+
+| 字段 | 内容 |
+| --- | --- |
+| 定位 | Assistant loop 与 Provider/runtime event stream 的当前权威 |
+| Owns | `LLMEvent`、`AgentEvent`、`AgentRunStream`、stream/result、thread bridge、取消与终态 |
+| Does not own | Gateway frame/session、Tool 治理、trace schema、prompt/context 预算 |
+| 源码与 schema 入口 | `src/assistant_agent/runtime/`、`src/assistant_agent/providers/llm_events.py` |
+| 验证入口 | `docs/authority.toml` 中 `runtime-event-stream.verification` |
+| 相邻 authority | Gateway 见 [`gateway-architecture.md`](gateway-architecture.md)；Tool 见 [`tool-calling-architecture.md`](tool-calling-architecture.md) |
+
 This document is the current authority for provider and assistant runtime
 streaming in `assistant_agent`. It defines the event contracts, stream/result
 separation, thread bridge, cancellation limits, compatibility boundaries, and

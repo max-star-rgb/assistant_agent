@@ -11,27 +11,16 @@
 真实 Task eval 可以使用真实 Provider，并且必须通过
 `MULTIMODAL_AGENT_PROVIDER_MODE=real`、本机未跟踪配置和对应 operator 确认开关显式启用。
 
-开始任务时，先按任务类型读取对应 `docs/*.md` 权威文档；如果文档与当前源码不一致，以源码和测试为准，并在本次变更中回补文档。项目 skill 只作为 workflow 检查清单或脚本入口，不作为事实权威。
+`docs/authority.toml` 是全部 Agent-facing 当前文档的机器可读路由与 owner 清单。开始工程任务时：
 
-`docs/authority.toml` 是 Agent-facing 文档的机器可读路由与 owner 清单。开始工程任务时，先用明确任务
-类型和预计修改路径匹配其中的 `read_when/source_globs`，再读取对应 `authority`；只有任务确实跨领域时
-才加载第二篇。该 manifest 只用于 coding agent 选择工程文档，不进入产品 Runtime，不得用于判断终端
-用户意图、预选 Tool 或选择 workflow。manifest 当前处于 `pilot`，下表继续作为未登记领域的回退路由。
+1. 用明确任务类型匹配 `read_when`，用预计读取或修改的路径匹配 `source_globs`；
+2. 先只读取匹配 domain 的 `authority`，并用文首 `Authority contract` 确认 owns / does not own；
+3. 只有改动跨越 contract 边界时，才读取其中列出的相邻 authority；
+4. 若文档与源码或测试不一致，以源码和测试为准，并在同次变更中回补 owner authority。
 
-| task | read first |
-| --- | --- |
-| Gateway、realtime、WebSocket、Media-Agent | `docs/gateway-architecture.md`；`docs/media-agent-service-websocket.md` |
-| assistant loop、runtime stream、provider stream | `docs/runtime-event-stream-architecture.md` |
-| tool calling、MCP、durable task、provider 调用治理 | `docs/tool-calling-architecture.md` |
-| memory、本地/外部记忆服务、记忆读写策略 | `docs/memory-service-architecture.md`；`docs/memory_server_api_spec.md` |
-| context、prompt、conversation history、context budget | `docs/context_engineering_status.md` |
-| SigLIP2、image/text embedding、语义关键帧、短期视觉回忆、历史找物 | `docs/multimodal-embedding-architecture.md`；涉及实时入口时再读 `docs/media-agent-service-websocket.md` |
-| 长时 Agent、durable task 定时恢复、proactive wake、任务提醒 | 先读 `docs/gateway-architecture.md`、`docs/runtime-event-stream-architecture.md`、`docs/tool-calling-architecture.md`，再读开发路线图 `docs/development/2026-07-25-long-running-agent-plan.md`；路线图不是当前事实权威 |
-| multi-agent、A2A、delegation | `docs/agent-communication-routing.md` |
-| trace、observability、redaction、事件与日志契约 | `docs/observability-harness.md` |
-| 真实测试、真实通话、真实 run/trace、`assistant.turn` / Langfuse trace 与机器日志诊断 | `docs/observability-diagnosis-runbook.md`；必要时再读 `docs/observability-harness.md` |
-| pytest 分层、目录归属、默认收集和新增测试规则 | `tests/README.md` |
-| system eval、Agent task eval、Langfuse Experiment、真实 Provider 评测运行 | `evals/README.md` |
+不要预读 manifest 中所有 authority。项目 skill 只作为 workflow 检查清单或脚本入口，不作为事实权威。
+manifest 只用于 coding agent 选择工程文档，不进入产品 Runtime，不得用于判断终端用户意图、预选 Tool
+或选择 workflow。
 
 - 遇到 Provider 相关实现/调试时，优先联网核对官方文档，重点包括 DeepSeek tool calls（`https://api-docs.deepseek.com/zh-cn/guides/tool_calls`）、阿里百炼模型文档（`https://bailian.console.aliyun.com/cn-beijing/?spm=a2c4g.11186623.0.0.60393ba2UI7e5t&tab=doc#/doc/?type=model&url=2963787`）和火山引擎模型文档（`https://docs.volcengine.com/docs/82379/1099455?lang=zh`）。
 
@@ -49,7 +38,7 @@
   Provider-native 只读联网属于模型生成能力，不投影为本地 Tool，也不进入该执行链。
 - Provider 运行只分 `mock` 和 `real`。mock 模式下主 LLM 与 Provider-backed tools 强制使用 mock；real 模式下主 LLM 必须完整配置，Provider-backed tools 只注册已完整配置的真实实现，禁止静默回退到 mock。
 - Tool catalog、tool exposure、工具预选和入口路由不得用关键词、正则、高信号话术或手写请求规则推断用户意图；只能基于 `ToolSpec` policy/category、代码配置、结构化显式 opt-in、entry profile、media/env 等结构化事实定义候选工具空间。是否调用候选工具、调用哪个工具和如何构造参数由 LLM 判断；执行阶段仍必须做安全、授权、幂等和 schema 校验。
-- Memory 读写必须经过 `MemoryManager`、read/write policy、store/audit 边界；memory tool 保持薄适配。
+- Memory 读写必须经过 `MemoryPluginHost`、Plugin lifecycle、store/audit 边界；Memory adapter 保持薄适配。
 - MCP、durable task、A2A、API、CLI、demo、eval 都是入口或调度形态，不能绕过 runtime、tool、provider、memory 治理链路。
 - API、demo、eval、CLI 应复用同一套 runtime 行为，避免各自实现 Agent 逻辑。
 - 非 Python 的 Web UI、BFF、vendor adapter 或边缘入口只能做薄适配器；不要把旧 `runTime` agent loop 引入本项目。
@@ -81,7 +70,7 @@
 
 | path | responsibility |
 | --- | --- |
-| `src/assistant_agent/` | 主源码；具体归属先看第 1 节任务路由和对应架构文档 |
+| `src/assistant_agent/` | 主源码；具体归属先用 `docs/authority.toml` 匹配 owner authority |
 | `tests/core/` | 永久、默认收集的离线核心 pytest；只保护已登记 core invariant |
 | `tests/tdd/*/` | 每个 feature 独立、显式运行且可由用户手动删除的临时 RED/GREEN pytest；不自动晋升 core |
 | `evals/system/` | 正式真实能力验证，以及 `incubating/<feature>/` 中可删除的节点专项检查；边界与结果权威见 `evals/README.md` |
@@ -96,7 +85,7 @@
 ## 6. 开发规则
 
 - 新代码优先放入既有分层，公共契约优先使用 Pydantic model；不要为单次需求制造新架构。
-- Tool、Provider、Memory、Gateway、Context、多 Agent 和 durable task 的具体规则以第 1 节对应权威文档为准。
+- Tool、Provider、Memory、Gateway、Context、多 Agent 和 durable task 的具体规则以 manifest 匹配的 authority 为准。
 - 工具结果必须结构化，失败必须返回可解释错误；外部能力必须经过 adapter、mock/unconfigured 和安全 profile 边界。
 - Memory tool、MCP、A2A、durable task 和入口层都保持薄适配，不把治理逻辑散落到入口脚本或 route 中。
 - 业务功能建议从具体模块导入；只有明确包级公共入口才放进 `__init__.py` 聚合导出。
@@ -104,7 +93,9 @@
 ## 7. 文档与工作模式
 
 - `AGENTS.md` 是当前唯一 agent 工作入口，应简短稳定；`README.md` 是人类轻导航入口。
-- 当前架构权威文档只保留在 `docs/*.md`；新增、删除或重命名 root authority 时，同步更新第 1 节路由表和 README。
+- 当前 authority 只保留在 `docs/*.md`、`tests/README.md` 与 `evals/README.md`，并全部登记在
+  `docs/authority.toml`。新增、删除或重命名 authority 时，同步更新 manifest、文首 contract card；仅当
+  人类导航需要时再更新 README，不在 `AGENTS.md` 复制领域路由表。
 - 普通开发默认不读 `docs/development/**`、`docs/superpowers/**`、`docs/interview/**`，除非用户点名或任务明确属于历史 runbook、历史设计记录或面试资料。
 - 当用户基于真实测试、真实通话、真实 run/trace 或机器日志提问“为什么失败/为什么这样表现”，或提供 `assistant.turn: <trace_id>` 时，先按 `docs/observability-diagnosis-runbook.md` 读取对应机器事实，必要时再用 `docs/observability-harness.md` 核对观测契约，然后结合用户片段和源码回答。
 - 执行中先读相关代码和文档，保持 scope 小；搜索优先用 `rg` / `rg --files`，手工编辑默认用 `apply_patch`。

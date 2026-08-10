@@ -1,5 +1,16 @@
 # 核心 pytest 测试体系
 
+## Authority contract
+
+| 字段 | 内容 |
+| --- | --- |
+| 定位 | pytest 目录归属、核心准入、验证范围与任务汇报的当前权威 |
+| Owns | core invariant、`tests/core`、临时 `tests/tdd`、incubating 边界、最小测试选择与汇报格式 |
+| Does not own | system/Agent eval 运行协议、具体 feature 行为、真实 Provider 验证、产品架构 |
+| 源码与 schema 入口 | `pyproject.toml`、`tests/core/INVARIANTS.md`、`tests/core/`、`tests/tdd/` |
+| 验证入口 | `docs/authority.toml` 中 `test-policy.verification` |
+| 相邻 authority | Eval 分层见 [`../evals/README.md`](../evals/README.md)；Codex 测试 workflow 见 [`../.codex/skills/assistant-agent-development-testing/SKILL.md`](../.codex/skills/assistant-agent-development-testing/SKILL.md) |
+
 本文件是 pytest 目录归属、核心准入、验证范围和任务汇报的唯一事实权威。
 
 **默认决定：不新增永久 pytest。** 永久、默认 pytest 只有 `tests/core/**`。只有已登记的 core

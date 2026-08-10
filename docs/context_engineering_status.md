@@ -2,6 +2,17 @@
 
 Last updated: 2026-08-08
 
+## Authority contract
+
+| 字段 | 内容 |
+| --- | --- |
+| 定位 | Assistant context 构建、编译、预算与压缩的当前权威 |
+| Owns | `AssistantContextPack`、conversation、memory/tool 投影、prompt 编译、budget、compaction、report |
+| Does not own | Tool 选择与授权、Memory 提取持久化、Gateway 生命周期、Provider 执行与 trace schema |
+| 源码与 schema 入口 | `src/assistant_agent/context/`、`src/assistant_agent/runtime/system_prompt_policy.py` |
+| 验证入口 | `docs/authority.toml` 中 `context-engineering.verification` |
+| 相邻 authority | Runtime 见 [`runtime-event-stream-architecture.md`](runtime-event-stream-architecture.md)；Memory 见 [`memory-service-architecture.md`](memory-service-architecture.md) |
+
 本文是 assistant context 的当前权威入口，描述稳定职责、生命周期、跨模块契约和失败语义。
 它不记录阶段进展、历史变更或下一步事项。具体默认值、内部类型和实现细节以源码、配置和测试为准。
 

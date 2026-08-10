@@ -31,7 +31,22 @@ def _repository(tmp_path: Path, *, manifest: str) -> Path:
     (repo / "docs").mkdir(parents=True)
     (repo / "src/example").mkdir(parents=True)
     (repo / "docs/authority.toml").write_text(manifest, encoding="utf-8")
-    (repo / "docs/example.md").write_text("# Example\n", encoding="utf-8")
+    (repo / "docs/example.md").write_text(
+        """# Example
+
+## Authority contract
+
+| field | value |
+| --- | --- |
+| 定位 | example |
+| Owns | example |
+| Does not own | other |
+| 源码与 schema 入口 | `src/example/` |
+| 验证入口 | manifest |
+| 相邻 authority | none |
+""",
+        encoding="utf-8",
+    )
     (repo / "AGENTS.md").write_text(
         "Read `docs/example.md` for example work.\n",
         encoding="utf-8",
@@ -206,7 +221,11 @@ def test_exclusive_literal_allows_owner_history_and_exact_allowlist(
         'exclusive_allowlist = ["README.md"]',
     )
     repo = _repository(tmp_path, manifest=_manifest(allowed_domain))
-    (repo / "docs/example.md").write_text("EXAMPLE_ONLY_LITERAL\n", encoding="utf-8")
+    owner = repo / "docs/example.md"
+    owner.write_text(
+        owner.read_text(encoding="utf-8") + "\nEXAMPLE_ONLY_LITERAL\n",
+        encoding="utf-8",
+    )
     (repo / "README.md").write_text("EXAMPLE_ONLY_LITERAL\n", encoding="utf-8")
     history = repo / "docs/superpowers/specs/history.md"
     history.parent.mkdir(parents=True)
@@ -272,14 +291,82 @@ def test_complete_coverage_rejects_unregistered_current_authority_route(
         manifest=_manifest(_domain(), coverage="complete"),
     )
     (repo / "docs/second.md").write_text("# Second\n", encoding="utf-8")
-    (repo / "AGENTS.md").write_text(
-        "Read `docs/example.md` and `docs/second.md`.\n",
+    (repo / "AGENTS.md").write_text("Read `docs/authority.toml`.\n", encoding="utf-8")
+
+    report = authority.validate_repository(repo)
+
+    assert _codes(report) == {"unregistered_current_authority"}
+
+
+def test_complete_coverage_routes_through_manifest_not_each_authority(
+    tmp_path: Path,
+) -> None:
+    repo = _repository(
+        tmp_path,
+        manifest=_manifest(_domain(), coverage="complete"),
+    )
+    (repo / "AGENTS.md").write_text("Read `docs/authority.toml`.\n", encoding="utf-8")
+
+    report = authority.validate_repository(repo)
+
+    assert report.valid is True
+
+
+def test_complete_coverage_requires_manifest_route(tmp_path: Path) -> None:
+    repo = _repository(
+        tmp_path,
+        manifest=_manifest(_domain(), coverage="complete"),
+    )
+    (repo / "AGENTS.md").write_text("# No manifest route\n", encoding="utf-8")
+
+    report = authority.validate_repository(repo)
+
+    assert _codes(report) == {"manifest_not_routed"}
+
+
+def test_complete_coverage_rejects_non_current_authority(tmp_path: Path) -> None:
+    domain = _domain().replace(
+        'authority = "docs/example.md"',
+        'authority = "docs/reference/nested.md"',
+    )
+    repo = _repository(tmp_path, manifest=_manifest(domain, coverage="complete"))
+    nested = repo / "docs/reference/nested.md"
+    nested.parent.mkdir(parents=True)
+    nested.write_text((repo / "docs/example.md").read_text(encoding="utf-8"), encoding="utf-8")
+    (repo / "AGENTS.md").write_text("Read `docs/authority.toml`.\n", encoding="utf-8")
+
+    report = authority.validate_repository(repo)
+
+    assert _codes(report) == {
+        "unregistered_current_authority",
+        "unknown_manifest_authority",
+    }
+
+
+def test_authority_requires_contract_heading(tmp_path: Path) -> None:
+    repo = _repository(tmp_path, manifest=_manifest(_domain()))
+    (repo / "docs/example.md").write_text("# Example\n", encoding="utf-8")
+
+    report = authority.validate_repository(repo)
+
+    assert _codes(report) == {"missing_authority_contract"}
+
+
+def test_authority_requires_every_contract_field(tmp_path: Path) -> None:
+    repo = _repository(tmp_path, manifest=_manifest(_domain()))
+    path = repo / "docs/example.md"
+    path.write_text(
+        path.read_text(encoding="utf-8").replace("| Does not own | other |\n", ""),
         encoding="utf-8",
     )
 
     report = authority.validate_repository(repo)
 
-    assert _codes(report) == {"unregistered_authority_route"}
+    issues = [item for item in report.errors if item.code == "missing_authority_contract_field"]
+    assert [(item.domain_id, item.path) for item in issues] == [
+        ("example", "docs/example.md")
+    ]
+    assert "Does not own" in issues[0].message
 
 
 def test_repository_manifest_and_authority_contract_cards_are_valid() -> None:
@@ -288,8 +375,19 @@ def test_repository_manifest_and_authority_contract_cards_are_valid() -> None:
 
     assert report.valid is True
     assert {domain.id for domain in manifest.domains} == {
+        "agent-communication",
         "agent-eval",
+        "context-engineering",
+        "gateway",
+        "media-agent-protocol",
+        "memory-plugin",
+        "memory-server-api",
+        "multimodal-embedding",
+        "observability-diagnosis",
+        "runtime-event-stream",
         "runtime-observability",
+        "test-policy",
+        "tool-calling",
     }
     for domain in manifest.domains:
         markdown = (REPO_ROOT / domain.authority).read_text(encoding="utf-8")

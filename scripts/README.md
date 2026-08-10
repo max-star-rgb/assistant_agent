@@ -113,8 +113,6 @@ For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
   [`evals/README.md`](../evals/README.md)。实现位于
   `evals/agent/`。
 - `scripts/run_improvement_lab.py`: offline, non-mutating improvement proposal runner.
-- `scripts/check_pilot_readiness.py` and `scripts/collect_pilot_evidence.py`:
-  multi-agent pilot operator helpers.
 
 ## Specialized integrations
 

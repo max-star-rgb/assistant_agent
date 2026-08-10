@@ -18,6 +18,15 @@ from typing import Any
 SUPPORTED_SCHEMA_VERSION = 1
 MANIFEST_PATH = Path("docs/authority.toml")
 DOMAIN_ID_RE = re.compile(r"^[a-z][a-z0-9-]*$")
+AUTHORITY_CONTRACT_HEADING = "## Authority contract"
+AUTHORITY_CONTRACT_FIELDS = (
+    "定位",
+    "Owns",
+    "Does not own",
+    "源码与 schema 入口",
+    "验证入口",
+    "相邻 authority",
+)
 TOP_LEVEL_FIELDS = frozenset({"schema_version", "coverage", "domains"})
 DOMAIN_FIELDS = frozenset(
     {
@@ -191,6 +200,7 @@ def validate_repository(
     agents_path = repo / "AGENTS.md"
     agents_text = _read_text(agents_path)
     current_documents = _current_document_paths(repo, manifest)
+    current_authorities = _current_authority_paths(repo)
     for domain in manifest.domains:
         authority_path = repo / domain.authority
         if not authority_path.is_file():
@@ -202,6 +212,34 @@ def validate_repository(
                     path=domain.authority,
                 )
             )
+        else:
+            authority_text = _read_text(authority_path)
+            if AUTHORITY_CONTRACT_HEADING not in authority_text:
+                errors.append(
+                    ValidationIssue(
+                        code="missing_authority_contract",
+                        message=(
+                            f"Authority is missing {AUTHORITY_CONTRACT_HEADING!r}: "
+                            f"{domain.authority}."
+                        ),
+                        domain_id=domain.id,
+                        path=domain.authority,
+                    )
+                )
+            else:
+                for field in AUTHORITY_CONTRACT_FIELDS:
+                    if re.search(rf"^\|\s*{re.escape(field)}\s*\|", authority_text, re.MULTILINE) is None:
+                        errors.append(
+                            ValidationIssue(
+                                code="missing_authority_contract_field",
+                                message=(
+                                    f"Authority contract in {domain.authority} "
+                                    f"is missing field {field!r}."
+                                ),
+                                domain_id=domain.id,
+                                path=domain.authority,
+                            )
+                        )
         for reference in domain.thin_references:
             if not (repo / reference).is_file():
                 errors.append(
@@ -212,7 +250,7 @@ def validate_repository(
                         path=reference,
                     )
                 )
-        if domain.authority not in agents_text:
+        if manifest.coverage == "pilot" and domain.authority not in agents_text:
             errors.append(
                 ValidationIssue(
                     code="authority_not_routed",
@@ -252,17 +290,27 @@ def validate_repository(
                     )
     if manifest.coverage == "complete":
         registered = {domain.authority for domain in manifest.domains}
-        routed = set(
-            re.findall(
-                r"`((?:docs/[^/`]+\.md|evals/README\.md|tests/README\.md))`",
-                agents_text,
-            )
-        )
-        for path in sorted(routed - registered):
+        if MANIFEST_PATH.as_posix() not in agents_text:
             errors.append(
                 ValidationIssue(
-                    code="unregistered_authority_route",
-                    message=f"AGENTS.md routes an unregistered authority: {path}.",
+                    code="manifest_not_routed",
+                    message=f"AGENTS.md does not route through {MANIFEST_PATH.as_posix()}.",
+                    path="AGENTS.md",
+                )
+            )
+        for path in sorted(current_authorities - registered):
+            errors.append(
+                ValidationIssue(
+                    code="unregistered_current_authority",
+                    message=f"Current authority is not registered in the manifest: {path}.",
+                    path=path,
+                )
+            )
+        for path in sorted(registered - current_authorities):
+            errors.append(
+                ValidationIssue(
+                    code="unknown_manifest_authority",
+                    message=f"Manifest authority is outside the current authority set: {path}.",
                     path=path,
                 )
             )
@@ -476,6 +524,21 @@ def _current_document_paths(
             if path.is_file()
         )
     return tuple(repo / path for path in sorted(relative_paths))
+
+
+def _current_authority_paths(repo: Path) -> set[str]:
+    paths: set[str] = set()
+    docs_root = repo / "docs"
+    if docs_root.is_dir():
+        paths.update(
+            path.relative_to(repo).as_posix()
+            for path in docs_root.glob("*.md")
+            if path.is_file()
+        )
+    for relative in ("tests/README.md", "evals/README.md"):
+        if (repo / relative).is_file():
+            paths.add(relative)
+    return paths
 
 
 def _read_text(path: Path) -> str:

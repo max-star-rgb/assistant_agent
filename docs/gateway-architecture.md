@@ -2,6 +2,17 @@
 
 Last updated: 2026-08-04
 
+## Authority contract
+
+| 字段 | 内容 |
+| --- | --- |
+| 定位 | Gateway session/run 与实时入口生命周期的当前权威 |
+| Owns | session、queue、admission、run、cancel、interrupt、reconnect、frame 映射与 delivery |
+| Does not own | Assistant 推理、Tool 执行、Provider stream 内部语义、Media-Agent wire 字段 |
+| 源码与 schema 入口 | `src/assistant_agent/gateway/`、`src/assistant_agent/api/gateway_*.py` |
+| 验证入口 | `docs/authority.toml` 中 `gateway.verification` |
+| 相邻 authority | 媒体协议见 [`media-agent-service-websocket.md`](media-agent-service-websocket.md)；Runtime stream 见 [`runtime-event-stream-architecture.md`](runtime-event-stream-architecture.md) |
+
 ## 1. 文档边界
 
 本文是 `assistant_agent.gateway` 的当前架构权威，定义 Gateway 的稳定职责、生命周期、

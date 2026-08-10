@@ -2,6 +2,17 @@
 
 Last updated: 2026-08-05
 
+## Authority contract
+
+| 字段 | 内容 |
+| --- | --- |
+| 定位 | Media-Agent WebSocket、媒体交付与 3D callback 的当前协议权威 |
+| Owns | `/agent-service/v1` envelope、媒体消息、H.264、图片交付、3D submit/callback |
+| Does not own | Gateway 通用生命周期、Assistant 推理、embedding 检索算法、外部渲染服务内部实现 |
+| 源码与 schema 入口 | `src/assistant_agent/api/agent_service_websocket.py`、`rendering_3d_callback.py`、`src/assistant_agent/media/video/` |
+| 验证入口 | `docs/authority.toml` 中 `media-agent-protocol.verification` |
+| 相邻 authority | Gateway 见 [`gateway-architecture.md`](gateway-architecture.md)；embedding 见 [`multimodal-embedding-architecture.md`](multimodal-embedding-architecture.md) |
+
 本文档是以下当前接口及责任边界的唯一权威文档：
 
 - Media-Agent 与 `assistant_agent` 之间的 `/agent-service/v1` WebSocket；

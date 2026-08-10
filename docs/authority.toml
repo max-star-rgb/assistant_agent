@@ -1,5 +1,185 @@
 schema_version = 1
-coverage = "pilot"
+coverage = "complete"
+
+[[domains]]
+id = "gateway"
+authority = "docs/gateway-architecture.md"
+read_when = [
+  "Gateway、session、run、cancel、interrupt、reconnect 或 stream frame 生命周期",
+  "realtime backend、delivery、queue、admission 或入口到 Runtime 的映射",
+]
+source_globs = [
+  "src/assistant_agent/gateway/**",
+  "src/assistant_agent/api/gateway_runtime.py",
+  "src/assistant_agent/api/gateway_websocket.py",
+  "tests/core/contract/test_gateway_contract.py",
+]
+thin_references = ["README.md", "scripts/README.md"]
+verification = [
+  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/core/contract/test_gateway_contract.py",
+]
+exclusive_literals = []
+exclusive_allowlist = []
+
+[[domains]]
+id = "media-agent-protocol"
+authority = "docs/media-agent-service-websocket.md"
+read_when = [
+  "Media-Agent WebSocket、assistantControl、chat/audio/video/interrupt wire contract",
+  "图片交付、3D submit/callback、H.264 或媒体联调",
+]
+source_globs = [
+  "src/assistant_agent/api/agent_service_websocket.py",
+  "src/assistant_agent/api/rendering_3d_callback.py",
+  "src/assistant_agent/gateway/artifact_delivery.py",
+  "src/assistant_agent/media/video/**",
+  "scripts/run_client.py",
+]
+thin_references = ["README.md", "docs/gateway-architecture.md", "scripts/README.md"]
+verification = [
+  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python scripts/run_client.py --help",
+]
+exclusive_literals = []
+exclusive_allowlist = []
+
+[[domains]]
+id = "runtime-event-stream"
+authority = "docs/runtime-event-stream-architecture.md"
+read_when = [
+  "assistant loop、AgentGraphRuntime、AgentEvent 或 AgentRunStream",
+  "Provider stream、LLMEvent、thread bridge、取消或 terminal result",
+]
+source_globs = [
+  "src/assistant_agent/runtime/**",
+  "src/assistant_agent/providers/llm_events.py",
+  "src/assistant_agent/gateway/runtime_adapter.py",
+  "src/assistant_agent/gateway/runtime_event_mapping.py",
+]
+thin_references = ["README.md", "docs/gateway-architecture.md"]
+verification = [
+  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q",
+]
+exclusive_literals = []
+exclusive_allowlist = []
+
+[[domains]]
+id = "tool-calling"
+authority = "docs/tool-calling-architecture.md"
+read_when = [
+  "Tool、ToolSpec、catalog、exposure、ActionValidator、ToolExecutor 或 ToolRegistry",
+  "Plugin、MCP、durable workflow、Provider-native 能力或副作用治理",
+]
+source_globs = [
+  "src/assistant_agent/tools/**",
+  "src/assistant_agent/mcp/**",
+  "src/assistant_agent/workflows/**",
+  "src/assistant_agent/automation/durable_tasks/**",
+  "src/assistant_agent/api/routes_workflows.py",
+  "src/assistant_agent/runtime/action_validator.py",
+  "src/assistant_agent/runtime/tool_executor.py",
+]
+thin_references = ["README.md", "scripts/README.md"]
+verification = [
+  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/core/contract/test_tool_contract.py",
+]
+exclusive_literals = []
+exclusive_allowlist = []
+
+[[domains]]
+id = "memory-plugin"
+authority = "docs/memory-service-architecture.md"
+read_when = [
+  "Memory Plugin、MemoryPluginHost、长期记忆生命周期或 session freeze",
+  "记忆读取、写入、ingestion、identity、媒体引用或 Mem0 Plugin 装配",
+]
+source_globs = [
+  "src/assistant_agent/memory/plugins/**",
+  "src/assistant_agent/memory/factory.py",
+  "src/assistant_agent/memory/service.py",
+  "src/assistant_agent/memory/session_snapshot.py",
+  "src/assistant_agent/memory/models.py",
+  "src/assistant_agent/memory/ingestion_queue.py",
+]
+thin_references = ["README.md", "docs/context_engineering_status.md", "scripts/README.md"]
+verification = [
+  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/memory-plugin-api",
+]
+exclusive_literals = []
+exclusive_allowlist = []
+
+[[domains]]
+id = "memory-server-api"
+authority = "docs/memory_server_api_spec.md"
+read_when = [
+  "默认 Mem0 Plugin 私有 HTTP adapter 或 OSS REST 子集",
+  "Mem0Client request/response、身份 filter 或错误语义",
+]
+source_globs = [
+  "src/assistant_agent/memory/mem0/**",
+  "src/assistant_agent/memory/plugins/builtin/mem0.py",
+]
+thin_references = ["README.md", "docs/memory-service-architecture.md"]
+verification = [
+  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/memory-plugin-api/test_mem0_plugin.py",
+]
+exclusive_literals = []
+exclusive_allowlist = []
+
+[[domains]]
+id = "context-engineering"
+authority = "docs/context_engineering_status.md"
+read_when = [
+  "context、prompt、conversation history、context budget 或 compaction",
+  "AssistantContextPack、ChatRequest 编译、Tool observation 或 context report",
+]
+source_globs = [
+  "src/assistant_agent/context/**",
+  "src/assistant_agent/runtime/system_prompt_policy.py",
+]
+thin_references = ["README.md", "docs/runtime-event-stream-architecture.md"]
+verification = [
+  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/core/integration/test_context_lifecycle.py",
+]
+exclusive_literals = []
+exclusive_allowlist = []
+
+[[domains]]
+id = "multimodal-embedding"
+authority = "docs/multimodal-embedding-architecture.md"
+read_when = [
+  "SigLIP2、image/text embedding、semantic keyframe 或视觉提醒",
+  "短期视觉时间线、visual_memory_search、Qdrant 或历史找物",
+]
+source_globs = [
+  "src/assistant_agent/media/embedding/**",
+  "src/assistant_agent/media/video/**",
+  "src/assistant_agent/tools/plugins/builtin/media_inspection/**",
+  "scripts/run_system_multimodal_embedding_eval.py",
+]
+thin_references = ["README.md", "docs/media-agent-service-websocket.md"]
+verification = [
+  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/unified-siglip2 tests/tdd/qdrant-visual-memory-search",
+]
+exclusive_literals = []
+exclusive_allowlist = []
+
+[[domains]]
+id = "agent-communication"
+authority = "docs/agent-communication-routing.md"
+read_when = [
+  "multi-agent、AgentRouter、delegation、agent directory 或 control plane",
+  "A2A、JSON-RPC、跨实例 session、transport 或 pilot readiness",
+]
+source_globs = [
+  "src/assistant_agent/multi_agent/**",
+  "src/assistant_agent/api/routes_a2a.py",
+]
+thin_references = ["README.md", "scripts/README.md"]
+verification = [
+  "python -m compileall -q src/assistant_agent/multi_agent",
+]
+exclusive_literals = []
+exclusive_allowlist = []
 
 [[domains]]
 id = "runtime-observability"
@@ -22,6 +202,46 @@ verification = [
 exclusive_literals = [
   "assistant-agent-runtime-audit.service",
 ]
+exclusive_allowlist = []
+
+[[domains]]
+id = "observability-diagnosis"
+authority = "docs/observability-diagnosis-runbook.md"
+read_when = [
+  "诊断真实测试、真实通话、真实 run、trace 或机器日志",
+  "用户提供 assistant.turn trace_id 或询问一次运行为何失败",
+]
+source_globs = [
+  "src/assistant_agent/observability/trace_query.py",
+  "src/assistant_agent/observability/trace_store.py",
+  "src/assistant_agent/observability/trajectory_debug.py",
+  "src/assistant_agent/observability/agent_service_delivery.py",
+  "src/assistant_agent/observability/agent_service_latency.py",
+]
+thin_references = ["AGENTS.md", "docs/observability-harness.md"]
+verification = [
+  "python -c 'from assistant_agent.observability.trace_query import TraceQueryService'",
+]
+exclusive_literals = []
+exclusive_allowlist = []
+
+[[domains]]
+id = "test-policy"
+authority = "tests/README.md"
+read_when = [
+  "新增或修改 pytest、选择 core/TDD/incubating 目录",
+  "判断验证范围、core invariant 或汇报测试决策",
+]
+source_globs = [
+  "tests/core/**",
+  "tests/tdd/**",
+  "pyproject.toml",
+]
+thin_references = ["AGENTS.md", ".codex/skills/assistant-agent-development-testing/SKILL.md"]
+verification = [
+  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/core/unit/test_test_policy.py",
+]
+exclusive_literals = []
 exclusive_allowlist = []
 
 [[domains]]
