@@ -170,6 +170,7 @@ async def _run_agent_through_gateway(request: UserRequest) -> AgentRunResponse:
                 image_ids=list(request.image_ids),
                 video_ids=list(request.video_ids),
                 audio_id=request.audio_id,
+                assistant_mode=request.assistant_mode,
                 metadata=_gateway_http_metadata(request, capture_id),
             )
         )
@@ -226,7 +227,6 @@ def _gateway_http_metadata(request: UserRequest, capture_id: str) -> dict[str, A
     gateway_payload.pop("artifact_delivery", None)
     metadata["gateway"] = gateway_payload
     metadata["execution_strategy"] = request.execution_strategy
-    metadata["assistant_mode"] = request.assistant_mode
     return metadata
 
 

@@ -122,7 +122,10 @@ class PromptCompiler:
             session_id=request.session_id,
             user_query=user_query,
             assistant_mode=request.context_pack.request.assistant_mode,
-            provider_search_profile=_provider_search_profile(request),
+            provider_search_profile=_provider_search_profile(
+                request,
+                selected_tool_specs,
+            ),
             messages=messages,
             tools=tool_specs_to_openai_tools(selected_tool_specs),
             tool_choice=_tool_choice(request, selected_tool_specs),
@@ -153,8 +156,11 @@ def _tool_choice(
         and not request.observations
         and not request.native_calls
     ):
-        if [spec.name for spec in selected_tool_specs] != [WORKFLOW_SUBMIT_TOOL_NAME]:
-            raise ValueError("deep_research_mode_requires_workflow_submit")
+        selected_names = [spec.name for spec in selected_tool_specs]
+        if not selected_names:
+            return None
+        if selected_names != [WORKFLOW_SUBMIT_TOOL_NAME]:
+            raise ValueError("deep_research_mode_invalid_tool_catalog")
         return {
             "type": "function",
             "function": {"name": WORKFLOW_SUBMIT_TOOL_NAME},
@@ -164,11 +170,17 @@ def _tool_choice(
     return "auto"
 
 
-def _provider_search_profile(request: PromptCompileRequest) -> str:
+def _provider_search_profile(
+    request: PromptCompileRequest,
+    selected_tool_specs: tuple[ToolSpec, ...],
+) -> str:
     active_request = request.context_pack.request
-    if (
-        active_request.assistant_mode == "deep_research"
-        and isinstance(active_request.metadata.get("_trusted_workflow_assignment"), dict)
+    if active_request.assistant_mode != "deep_research":
+        return "standard"
+    if isinstance(active_request.metadata.get("_trusted_workflow_assignment"), dict):
+        return "deep_research"
+    if not any(
+        spec.name == WORKFLOW_SUBMIT_TOOL_NAME for spec in selected_tool_specs
     ):
         return "deep_research"
     return "standard"

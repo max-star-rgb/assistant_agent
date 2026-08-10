@@ -7,6 +7,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
+from assistant_agent.planning_contracts import PlanDisplayTitle
+
 
 WorkflowStatus = Literal[
     "queued",
@@ -50,6 +52,7 @@ class WorkflowSeedWorkItem(BaseModel):
 
     seed_id: str = Field(min_length=1, max_length=120)
     kind: str = Field(min_length=1, max_length=120)
+    display_title: PlanDisplayTitle = None
     objective: str = Field(min_length=1, max_length=4_000)
     depends_on: list[str] = Field(default_factory=list, max_length=64)
     input_artifact_refs: list[str] = Field(default_factory=list, max_length=128)
@@ -67,6 +70,10 @@ class WorkflowSubmission(BaseModel):
     initial_workstreams: list[WorkflowSeedWorkItem] = Field(
         default_factory=list,
         max_length=128,
+        description=(
+            "Agent 为该长期任务预先生成的可执行 DAG。任务可合理拆解时应提供；"
+            "每项同时声明依赖、内部 objective 和用户可见 display_title。"
+        ),
     )
     requested_budget: WorkflowBudgetRequest = Field(
         default_factory=WorkflowBudgetRequest
@@ -96,6 +103,7 @@ class WorkflowWorkItem(BaseModel):
 
     work_item_id: str = Field(min_length=1, max_length=160)
     kind: str = Field(min_length=1, max_length=120)
+    display_title: PlanDisplayTitle = None
     objective: str = Field(min_length=1, max_length=10_000)
     depends_on: list[str] = Field(default_factory=list, max_length=64)
     input_artifact_refs: list[str] = Field(default_factory=list, max_length=128)

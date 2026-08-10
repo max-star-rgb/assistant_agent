@@ -1,6 +1,6 @@
 # Media-Agent WebSocket 接口权威文档
 
-Last updated: 2026-08-05
+Last updated: 2026-08-10
 
 ## Authority contract
 
@@ -170,6 +170,7 @@ observer。VIDEO 消息的 `userNumber` 必须等于握手 `number`，不一致�
 {
   "chatIndex": "对话索引",
   "userNumber": "用户号码",
+  "assistantMode": "standard",
   "contents": [
     {
       "speakerNumber": "说话人号码",
@@ -192,6 +193,7 @@ observer。VIDEO 消息的 `userNumber` 必须等于握手 `number`，不一致�
 | --- | --- | --- | --- |
 | `chatIndex` | string/number | 是 | 对话索引，响应中原样返回 |
 | `userNumber` | string | 是 | 用户号码；作为 Gateway `user_id`，内部 session 由本连接的 `agent-service-*` 标识承担 |
+| `assistantMode` | string | 否 | 当前允许 `standard`、`deep_research`，缺省为 `standard`；入口只做协议解析，Gateway 将其校验并固化为本轮 mode |
 | `contents` | array | 是 | 至少一条内容 |
 | `contents[].speakerNumber` | string | 是 | 说话人号码 |
 | `contents[].speechContent` | string | 文本消息必填 | 已完成 ASR 的文本 |
@@ -202,6 +204,11 @@ observer。VIDEO 消息的 `userNumber` 必须等于握手 `number`，不一致�
 处理规则：
 
 - Agent 使用最新一条非空 `speechContent` 作为本轮 Gateway 输入文本。
+- `assistantMode` 是逐 turn 的结构化产品选择，不从 `speechContent` 推断；非法值返回本轮
+  `chatResponse` FAIL。`scripts/run_client.py` 的 `/deep research` 只切换后续请求为
+  `deep_research`，`/standard` 切回普通模式，命令本身不发送给 Agent。客户端 tail 到
+  `waiting_input` 时会在当前 Workflow 上读取一次输入，通过 identity-scoped HTTP facade 携带
+  `resume_token` 提交后继续 tail；该输入不会作为新的 `chat` 创建另一个 Workflow。
 - 只包含 `imageContent` 的内容项可以随请求传入，但当前不单独触发图像理解。
 - `chat` 会进入 `GatewayTurnFacade -> GatewaySessionManager -> GatewayRuntimeAdapter -> AssistantRuntimeApp -> AgentGraphRuntime`。
 - 每个媒体 WebSocket 拥有一个连接级逻辑 AgentSession（本地
@@ -247,6 +254,14 @@ observer。VIDEO 消息的 `userNumber` 必须等于握手 `number`，不一致�
 - Agent 图片生成成功后，Gateway `run.end.payload.output_refs` 保留最多 4 个去重后的输出引用。
   Agent-Service 只读取本 Agent 托管的 `/artifacts/generated/` 图片，并在成功终包中投影为
   `intentResult.detail`；不会把 Provider 临时 URL、本地绝对路径或任意外部引用直接发送给媒体。
+- Durable Workflow 提交成功后，Agent-Service 从同一 `run.end.payload.output_refs` 中只保留
+  `workflow://` 引用，并在成功终包顶层投影为有界去重的 `outputRefs`。本地 `run_client.py` 不解析
+  模型正文，而是据此使用已有 `/workflows/{workflow_id}` 与 cursor-based `/events` facade 持续
+  pull/tail；默认只显示 status facade 根据持久化 plan 生成的自然语言 `progress`（如当前 item 的
+  `display_title` 和完成度），不显示内部 Workflow ID 或原始事件。显式传入 `--workflow-details` 才
+  展开 cursor/event 诊断信息。completed 时打印最终成功 work item 的 `result_summary`，failed、
+  cancelled、blocked 或 waiting-input 时结束当前观察窗口。该 tail 不把后台 Workflow 重新放回
+  Gateway active run。
 - 图片原始文件必须不超过 25 MiB，并且内容可识别为 JPEG、PNG、GIF 或 WebP。
   `imageId` 使用 Agent 托管 artifact 文件名去掉扩展名后的图片 ID；找不到、超限、越界或无法识别的引用会被忽略，
   不得让已有文本响应失败。
@@ -942,8 +957,10 @@ Base64、真实用户内容或服务原始响应。当前 adapter 不记录 3D �
 | 外层 `body` 不是 JSON 字符串 | 返回当前消息对应响应类型，`body.code=\"FAIL\"` |
 | `body` 字符串不是 JSON object | 返回当前消息对应响应类型，`body.code=\"FAIL\"` |
 | 缺少必填字段 | 返回当前消息对应响应类型，`body.code=\"FAIL\"` |
+| `chat.body.assistantMode` 非法 | 返回 `chatResponse`，`body.code=\"FAIL\"`；不进入 Gateway run |
 | `videoContent` 非法、超过大小限制或无法解码 | 返回 `videoResponse`，`body.code=\"FAIL\"`；连接保持可用 |
 | 未知 `message` 类型 | 返回 `error` |
+| 服务重启以 `1012` 关闭本地交互客户端 | `run_client.py` 使用原 session id 和握手能力重连并保留本地 `assistantMode`；中断消息因 delivery 状态不确定而不自动重放，要求 operator 手工重发 |
 | Gateway 超时或后端错误 | 返回 `chatResponse`，`body.code=\"FAIL\"`；本地 `run_client.py` 会在 stderr 显示失败原因并以非零状态结束。若 runtime 已启动，失败 delivery audit 与 trace terminal summary 保留统一的 `run_id` 与独立的 `trace_id`；超时时 runtime 状态先记为 `pending_cancel`，以后续真实取消/失败事件为准。 |
 | 3D 回调缺少 `mediaType` | FastAPI/Pydantic HTTP 422 API error envelope；不转发 |
 | 3D 回调 `mediaType` 不支持 | HTTP 200 `{"code":"success"}`；已登记 job 保存结果，但不发布事件 |

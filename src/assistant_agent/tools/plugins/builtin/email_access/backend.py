@@ -145,7 +145,7 @@ class WorkspaceMCPEmailBackend:
                 request,
                 provider=binding.provider,
                 output_ref=result.output_ref or binding.output_ref,
-                code=_mcp_failure_code(result.error),
+                code=_mcp_failure_code(result),
                 message=result.error or "Email search MCP call failed.",
                 latency_ms=latency_ms,
             )
@@ -193,7 +193,7 @@ class WorkspaceMCPEmailBackend:
                 request,
                 provider=binding.provider,
                 output_ref=result.output_ref or binding.output_ref,
-                code=_mcp_failure_code(result.error),
+                code=_mcp_failure_code(result),
                 message=result.error or "Email read MCP call failed.",
                 latency_ms=latency_ms,
             )
@@ -315,16 +315,62 @@ def _run_mcp_tool(
         )
 
 
-def _mcp_failure_code(error: str | None) -> str:
-    message = (error or "").strip()
+def _mcp_failure_code(result: ToolResult) -> str:
+    structured_code = _mcp_structured_failure_code(result)
+    if structured_code is not None:
+        return structured_code
+    message = (result.error or "").strip()
     lowered = message.lower()
     if "timeout" in lowered or "timed out" in lowered:
         return "provider_timeout"
+    if _is_google_auth_failure(lowered):
+        return "provider_auth_failed"
     prefix = message.split(":", maxsplit=1)[0]
     normalized = normalize_provider_error_code(prefix)
     if normalized.startswith("provider_") and normalized != "provider_unknown_error":
         return normalized
     return "provider_execution_failed"
+
+
+def _mcp_structured_failure_code(result: ToolResult) -> str | None:
+    candidates: list[object] = []
+    if result.contract is not None:
+        candidates.extend(error.code for error in result.contract.errors)
+    for payload in (result.model_observation, result.data):
+        if not isinstance(payload, dict):
+            continue
+        candidates.extend(_error_codes(payload.get("errors")))
+        structured = payload.get("structured_content")
+        if isinstance(structured, dict):
+            candidates.extend(_error_codes(structured.get("errors")))
+    for candidate in candidates:
+        if not isinstance(candidate, str):
+            continue
+        normalized = normalize_provider_error_code(candidate)
+        if normalized.startswith("provider_") and normalized != "provider_unknown_error":
+            return normalized
+    return None
+
+
+def _error_codes(value: object) -> list[object]:
+    if not isinstance(value, list):
+        return []
+    return [
+        item.get("code")
+        for item in value
+        if isinstance(item, dict)
+    ]
+
+
+def _is_google_auth_failure(message: str) -> bool:
+    return any(
+        marker in message
+        for marker in (
+            "google authentication needed",
+            "google oauth authorization",
+            "authorize google gmail",
+        )
+    )
 
 
 def _tool_result_text(result: ToolResult) -> str:

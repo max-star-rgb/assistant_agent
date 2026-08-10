@@ -1512,6 +1512,7 @@ class GatewaySessionService:
             image_ids=_string_list(payload.get("image_ids")),
             video_ids=_string_list(payload.get("video_ids")),
             audio_id=_optional_string(payload.get("audio_id")),
+            assistant_mode=_assistant_mode(payload),
             metadata=metadata,
         )
 
@@ -2117,6 +2118,13 @@ def _user_message_metadata(payload: Mapping[str, Any]) -> dict[str, Any]:
     if trusted_source is not None:
         metadata["source"] = trusted_source
     return metadata
+
+
+def _assistant_mode(payload: Mapping[str, Any]) -> Literal["standard", "deep_research"]:
+    value = payload.get("assistant_mode", "standard")
+    if value not in {"standard", "deep_research"}:
+        raise ValueError("message.user assistant_mode must be standard or deep_research")
+    return value
 
 
 def _trusted_entry_source(metadata: Mapping[str, Any]) -> str | None:

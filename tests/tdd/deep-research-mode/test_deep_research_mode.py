@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+import asyncio
+import json
 from types import SimpleNamespace
 
-import pytest
-
-from assistant_agent.api.routes_agent import _gateway_http_metadata
+from assistant_agent.api.agent_service_websocket import (
+    AgentServiceConnectionState,
+    ChatHandler,
+    PreparedChat,
+    _prepared_chat_response,
+)
 from assistant_agent.context.tool_catalog import select_prompt_tool_specs
+from assistant_agent.config import ProviderConfig
 from assistant_agent.context.models import AssistantContextPack
 from assistant_agent.context.prompt_compiler import (
     PromptCompileMode,
@@ -13,22 +19,28 @@ from assistant_agent.context.prompt_compiler import (
     PromptCompiler,
 )
 from assistant_agent.gateway.runtime_adapter import realtime_request_to_user_request
-from assistant_agent.gateway.runtime_types import RealtimeAgentRequest
+from assistant_agent.gateway.runtime_types import RealtimeAgentRequest, RealtimeAgentResult
+from assistant_agent.gateway.session import GatewaySessionManager
+from assistant_agent.gateway.turn_facade import GatewayTurnFacade, GatewayTurnRequest
+from assistant_agent.observability.agent_service_delivery import AgentServiceDelivery
 from assistant_agent.runtime.chat_adapter import (
     ChatRequest,
+    ChatResult,
     OpenAICompatibleChatAdapter,
 )
+from assistant_agent.runtime.runtime import AgentGraphRuntime
 from assistant_agent.runtime.requests import UserRequest
 from assistant_agent.skills.loading import SkillCatalog
 from assistant_agent.tools.ids import WORKFLOW_SUBMIT_TOOL_NAME
 from assistant_agent.tools.models import ToolSpec
-from assistant_agent.workflows.agent_runtime import AgentWorkItemResult
+from assistant_agent.workflows.agent_runtime import AgentWorkItemRequest, AgentWorkItemResult
 from assistant_agent.workflows.artifacts import LocalWorkflowArtifactStore
 from assistant_agent.workflows.context import WorkflowContextCompiler
 from assistant_agent.workflows.execution import AgentRuntimeWorkItemExecutor
 from assistant_agent.workflows.models import WorkflowSubmission
 from assistant_agent.workflows.research.definition import DeepResearchWorkflowDefinition
 from assistant_agent.workflows.runtime import WorkItemAssignment
+from scripts.run_client import chat_body, parse_console_command
 
 
 class _CapturingCompletions:
@@ -88,25 +100,175 @@ def _qwen_adapter(client: _CapturingClient) -> OpenAICompatibleChatAdapter:
 
 
 def test_deep_research_mode_reaches_runtime_as_structured_request_state() -> None:
-    http_request = UserRequest(
-        user_id="user-sentinel",
-        session_id="session-sentinel",
-        text="research-sentinel",
-        assistant_mode="deep_research",
-    )
-
-    metadata = _gateway_http_metadata(http_request, "capture-sentinel")
     runtime_request = realtime_request_to_user_request(
         RealtimeAgentRequest(
-            user_id=http_request.user_id,
-            session_id=http_request.session_id,
-            text=http_request.text or "",
-            metadata=metadata,
+            user_id="user-sentinel",
+            session_id="session-sentinel",
+            text="research-sentinel",
+            assistant_mode="deep_research",
+            metadata={"assistant_mode": "standard"},
         )
     )
 
-    assert metadata["assistant_mode"] == "deep_research"
     assert runtime_request.assistant_mode == "deep_research"
+
+
+def test_run_client_deep_command_sets_structured_chat_mode() -> None:
+    assert parse_console_command("/deep research") == ("mode", "deep_research")
+    assert parse_console_command("/standard") == ("mode", "standard")
+
+    body = chat_body(
+        text="research-sentinel",
+        chat_index="chat-sentinel",
+        user_number="user-sentinel",
+        speaker_number="user-sentinel",
+        stream=False,
+        assistant_mode="deep_research",
+        now=lambda: "2026-08-10T00:00:00+08:00",
+    )
+
+    assert body["assistantMode"] == "deep_research"
+
+
+def test_agent_service_converts_chat_mode_to_gateway_turn_field() -> None:
+    class CapturingFacade:
+        def __init__(self) -> None:
+            self.request = None
+
+        async def run_turn(self, request, **_kwargs):
+            self.request = request
+            return SimpleNamespace(
+                status="completed",
+                response_text="ok-sentinel",
+                payload={},
+                reason="completed",
+            )
+
+    facade = CapturingFacade()
+    state = AgentServiceConnectionState(
+        session_id="vendor-session-sentinel",
+        query_params={},
+        runtime_session_id="runtime-session-sentinel",
+        response_session_id="vendor-session-sentinel",
+        media_protocol=True,
+        gateway_facade=facade,
+    )
+    body = {
+        "chatIndex": "chat-sentinel",
+        "userNumber": "user-sentinel",
+        "assistantMode": "deep_research",
+        "contents": [
+            {
+                "speakerNumber": "user-sentinel",
+                "speechContent": "research-sentinel",
+                "time": "2026-08-10T00:00:00+08:00",
+            }
+        ],
+        "stream": False,
+    }
+
+    asyncio.run(
+        ChatHandler().handle(
+            session_id="runtime-session-sentinel",
+            body=body,
+            state=state,
+        )
+    )
+
+    assert facade.request.assistant_mode == "deep_research"
+
+
+def test_agent_service_projects_workflow_output_ref_structurally() -> None:
+    response = _prepared_chat_response(
+        PreparedChat(
+            session_id="runtime-session-sentinel",
+            response_session_id="vendor-session-sentinel",
+            body={"stream": True},
+            chat_index="chat-sentinel",
+            user_number="user-sentinel",
+            latest_speech="research-sentinel",
+            contents=[],
+            assistant_mode="deep_research",
+            video_ids=[],
+            received_ns=1,
+            accepted_ns=2,
+            session_turn=1,
+        ),
+        state=AgentServiceConnectionState(
+            session_id="vendor-session-sentinel",
+            query_params={},
+            media_protocol=True,
+        ),
+        turn=SimpleNamespace(
+            status="completed",
+            response_text="accepted-sentinel",
+            payload={
+                "output_refs": [
+                    "workflow://workflow-sentinel",
+                    "provider://chat/provider-sentinel",
+                ]
+            },
+        ),
+        delivery=AgentServiceDelivery(
+            delivery_id="delivery-sentinel",
+            session_digest="session-digest-sentinel",
+            chat_index_digest="chat-digest-sentinel",
+            chat_index="chat-sentinel",
+            expects_ack=False,
+        ),
+        sequence=1,
+    )
+
+    body = json.loads(response["body"])
+    assert body["outputRefs"] == ["workflow://workflow-sentinel"]
+
+
+def test_gateway_snapshots_assistant_mode_on_realtime_request() -> None:
+    class CapturingBackend:
+        def __init__(self) -> None:
+            self.requests = []
+
+        async def run_turn(self, request, **_kwargs):
+            self.requests.append(request)
+            return RealtimeAgentResult(
+                status="completed",
+                response_text="ok-sentinel",
+                run_id=request.run_id,
+            )
+
+    async def run() -> None:
+        backend = CapturingBackend()
+        manager = GatewaySessionManager(
+            backend_factory=lambda: backend,
+            start_reaper=False,
+        )
+        facade = GatewayTurnFacade(manager=manager)
+        try:
+            await facade.run_turn(
+                GatewayTurnRequest(
+                    user_id="user-sentinel",
+                    session_id="session-sentinel",
+                    text="research-sentinel",
+                    assistant_mode="deep_research",
+                )
+            )
+        finally:
+            await facade.close()
+            await manager.close()
+
+        assert backend.requests[0].assistant_mode == "deep_research"
+
+    asyncio.run(run())
+
+
+def test_standard_mode_remains_the_gateway_default() -> None:
+    request = realtime_request_to_user_request(RealtimeAgentRequest(
+        user_id="user-sentinel",
+        session_id="session-sentinel",
+        text="research-sentinel",
+    ))
+
+    assert request.assistant_mode == "standard"
 
 
 def test_deep_research_entry_exposes_only_workflow_submission() -> None:
@@ -172,7 +334,7 @@ def test_deep_research_entry_requires_the_workflow_submission_tool() -> None:
     assert compiled.chat_request.provider_search_profile == "standard"
 
 
-def test_deep_research_entry_fails_closed_without_workflow_submission() -> None:
+def test_deep_research_without_workflow_runs_inline_with_native_search() -> None:
     request = UserRequest(
         user_id="user-sentinel",
         session_id="session-sentinel",
@@ -185,22 +347,22 @@ def test_deep_research_entry_fails_closed_without_workflow_submission() -> None:
         max_iterations=5,
     )
 
-    with pytest.raises(
-        ValueError,
-        match="deep_research_mode_requires_workflow_submit",
-    ):
-        PromptCompiler().compile(
-            PromptCompileRequest(
-                user_id=request.user_id,
-                session_id=request.session_id,
-                mode=PromptCompileMode.NATIVE_TOOL,
-                user_query_fallback="fallback-sentinel",
-                context_pack=pack,
-                observations=(),
-                native_calls=(),
-                tool_call_id_prefix="call_",
-            )
+    compiled = PromptCompiler().compile(
+        PromptCompileRequest(
+            user_id=request.user_id,
+            session_id=request.session_id,
+            mode=PromptCompileMode.NATIVE_TOOL,
+            user_query_fallback="fallback-sentinel",
+            context_pack=pack,
+            observations=(),
+            native_calls=(),
+            tool_call_id_prefix="call_",
         )
+    )
+
+    assert compiled.chat_request.tools == []
+    assert compiled.chat_request.tool_choice is None
+    assert compiled.chat_request.provider_search_profile == "deep_research"
 
 
 def test_deep_research_chat_uses_required_max_search_without_freshness() -> None:
@@ -311,7 +473,12 @@ def test_deep_research_work_items_use_native_search_and_no_local_web_tools(
             "session_id": "session-sentinel",
             "attempt_id": "attempt-sentinel",
             "objective": "research-objective-sentinel",
-            "inputs": {},
+            "inputs": {
+                "user_inputs": [{
+                    "resume_token": "resume-sentinel",
+                    "values": {"response": "clarification-sentinel"},
+                }]
+            },
             "model_calls_remaining": 5,
             "tool_calls_remaining": 5,
             "work_item": {
@@ -327,7 +494,83 @@ def test_deep_research_work_items_use_native_search_and_no_local_web_tools(
     assert result.status == "succeeded"
     assert agent_runtime.requests[0].assistant_mode == "deep_research"
     assert agent_runtime.requests[0].allowed_tool_names == []
+    assert agent_runtime.requests[0].workflow_inputs == {
+        "user_inputs": [{
+            "resume_token": "resume-sentinel",
+            "values": {"response": "clarification-sentinel"},
+        }]
+    }
     artifact_store.close()
+
+
+class _ScriptedWorkItemChatAdapter:
+    provider = "scripted"
+    model = "scripted-model"
+
+    def __init__(self, result: ChatResult) -> None:
+        self.result = result
+        self.requests: list[ChatRequest] = []
+
+    def chat(self, request: ChatRequest) -> ChatResult:
+        self.requests.append(request)
+        return self.result
+
+
+def _deep_research_work_item_request() -> AgentWorkItemRequest:
+    return AgentWorkItemRequest(
+        workflow_id="workflow-sentinel",
+        work_item_id="draft-sentinel",
+        attempt_id="attempt-sentinel",
+        user_id="user-sentinel",
+        agent_id="agent-sentinel",
+        session_id="session-sentinel",
+        objective="draft-objective-sentinel",
+        work_item_kind="draft",
+        assistant_mode="deep_research",
+        context_manifest={
+            "workflow_id": "workflow-sentinel",
+            "objective": "research-objective-sentinel",
+            "constraints": [],
+            "artifacts": [],
+            "total_excerpt_chars": 0,
+            "trimmed": False,
+        },
+    )
+
+
+def test_deep_research_work_item_uses_a_separate_response_budget() -> None:
+    adapter = _ScriptedWorkItemChatAdapter(ChatResult(
+        provider="scripted",
+        model="scripted-model",
+        finish_reason="stop",
+        response_text="complete-result-sentinel",
+    ))
+    runtime = AgentGraphRuntime(
+        config=ProviderConfig(langgraph_checkpointer_backend="none"),
+        chat_adapter=adapter,
+    )
+
+    result = runtime.run_work_item(_deep_research_work_item_request())
+
+    assert result.status == "succeeded"
+    assert adapter.requests[0].max_tokens == 8_192
+
+
+def test_truncated_work_item_is_not_persisted_as_a_successful_result() -> None:
+    adapter = _ScriptedWorkItemChatAdapter(ChatResult(
+        provider="scripted",
+        model="scripted-model",
+        finish_reason="length",
+        response_text="partial-result-sentinel",
+    ))
+    runtime = AgentGraphRuntime(
+        config=ProviderConfig(langgraph_checkpointer_backend="none"),
+        chat_adapter=adapter,
+    )
+
+    result = runtime.run_work_item(_deep_research_work_item_request())
+
+    assert result.status == "failed"
 
 
 def test_chat_compatible_research_plan_marks_sources_as_best_effort() -> None:

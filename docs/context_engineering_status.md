@@ -169,6 +169,8 @@ ranking、promotion、profile、冲突处理或 memory tool。完整 Memory 契�
 Runtime 保留完整内部 `ToolResult` 供执行、trace 和交付层使用；进入模型的副本必须先投影和清洗。
 
 - 工具通过 `ToolResult.model_observation` 定义业务相关的模型投影。
+- MCP adapter 可在不修改完整 `ToolResult.data` 的前提下做 server/tool 限定投影；高德文本 POI 当前只
+  保留前 5 个轻量候选，并显式报告总数、返回数和截断状态，避免图片字段挤占后续业务 Tool 的上下文。
 - Context 层只负责公共协议、安全清洗和容量限制，不解释工具私有业务字段。
 - Prompt-safe observation 保留模型继续推理所需的 status、summary、结构化 data、completion/error
   事实及安全的 output reference。
@@ -195,18 +197,22 @@ raw Provider response、父会话历史及未登记扩展不得进入 prompt。D
 `AgentGraphRuntime.run_work_item()` 使用 runtime-owned `_trusted_workflow_assignment` 和显式
 `_trusted_workflow_allowed_tools`。空 allowlist 的含义是零个 Tool，而不是“无覆盖”；普通请求不能通过
 伪造同名自然语言扩大候选集合，HTTP、WebSocket 和 A2A 入口也会剥离这些 runtime-owned metadata。
+Workflow 在 `waiting_input` 后收到的 owner-scoped 恢复值会作为结构化 `workflow_inputs` 进入下一次
+work-item request；它属于用户数据而非权限或控制指令。每个 work item 的 Provider 输出预算由
+`MULTIMODAL_AGENT_DEEP_RESEARCH_MAX_TOKENS` 独立配置，普通对话继续使用
+`MULTIMODAL_AGENT_CHAT_MAX_TOKENS`，避免启用 thinking/search 后沿用短回复预算。
 每个 work item 使用独立 run，结果摘要重新写成不可变 artifact 后再
 传递给下游，不依赖无界 transcript。trusted work-item run 不附加 session memory snapshot、不写入
 长期记忆或稳定文本 embedding，也不投影原 session 的实时视觉/主动事件；跨阶段上下文只能来自
 显式 manifest 和 owner-bound artifact。
 
 `UserRequest.assistant_mode` 是结构化产品模式，只支持 `standard` 与 `deep_research`。PromptCompiler
-把该字段原样投影到 `ChatRequest`，不渲染成用户文本；Tool catalog 在 `deep_research` 前台入口只保留
-`workflow_submit`，首次调用使用指定 function choice。后台 `deep_research` work item 继承同一模式，
-但可信空 allowlist 进一步收窄为零个本地 Tool，并由 PromptCompiler 额外设置
-`provider_search_profile=deep_research`；前台 admission 保持 standard search profile。模式不会从
-关键词、Skill 或历史内容推断。若入口未注册或未暴露 `workflow_submit`，PromptCompiler 必须失败关闭，
-不能静默退化为普通问答。
+把该字段原样投影到 `ChatRequest`，不渲染成用户文本。Tool catalog 在 `deep_research` 前台入口只允许
+`workflow_submit`：已注册时首次调用使用指定 function choice，前台 admission 保持 standard search
+profile；未启用 Durable Workflow 时 catalog 为空，PromptCompiler 直接设置
+`provider_search_profile=deep_research`，以零个本地 Tool 执行本轮 Provider-native 深搜，不退化为
+standard 搜索。后台 `deep_research` work item 继承同一模式，可信空 allowlist 同样表示零个本地 Tool，
+并使用 deep research search profile。模式不会从关键词、Skill 或历史内容推断。
 
 ### 实时任务状态
 

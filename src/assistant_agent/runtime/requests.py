@@ -45,12 +45,6 @@ def resolve_response_style(request: UserRequest) -> ResponseStyle:
     return "conversation"
 
 
-def assistant_mode_from_metadata(metadata: dict[str, Any]) -> AssistantMode:
-    """Read the explicit product mode without inferring it from request text."""
-
-    return "deep_research" if metadata.get("assistant_mode") == "deep_research" else "standard"
-
-
 def normalize_task_execution_mode(
     request: UserRequest,
     *,

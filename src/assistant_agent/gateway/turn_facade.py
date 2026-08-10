@@ -10,6 +10,7 @@ from typing import Any, Literal
 from assistant_agent.gateway.protocol import Frame, frame
 from assistant_agent.gateway.session import GatewaySessionManager
 from assistant_agent.identifiers import new_run_id, new_turn_id
+from assistant_agent.runtime.requests import AssistantMode
 
 GatewayStreamChunkConsumer = Callable[[str, Frame], Awaitable[None]]
 GatewayTurnCorrelationObserver = Callable[["GatewayTurnCorrelation"], None]
@@ -99,6 +100,7 @@ class GatewayTurnRequest:
     image_ids: list[str] = field(default_factory=list)
     video_ids: list[str] = field(default_factory=list)
     audio_id: str | None = None
+    assistant_mode: AssistantMode = "standard"
     metadata: dict[str, Any] = field(default_factory=dict)
     config: dict[str, Any] = field(default_factory=dict)
     timeout_s: float = 30.0
@@ -165,6 +167,10 @@ class GatewayTurnFacade:
             raise ValueError("GatewayTurnRequest.timeout_s must be positive")
         if request.mode not in {"followup", "replace"}:
             raise ValueError("GatewayTurnRequest.mode must be followup or replace")
+        if request.assistant_mode not in {"standard", "deep_research"}:
+            raise ValueError(
+                "GatewayTurnRequest.assistant_mode must be standard or deep_research"
+            )
 
         handle = await self._manager.acquire(
             user_id=request.user_id,
@@ -361,6 +367,7 @@ def _message_payload(
         "turn_id": turn_id,
         "run_id": run_id,
         "mode": request.mode,
+        "assistant_mode": request.assistant_mode,
     }
     if request.image_ids:
         payload["image_ids"] = list(request.image_ids)

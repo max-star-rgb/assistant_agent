@@ -30,6 +30,14 @@ class ToolSelection(BaseModel):
     step_id: str | None = None
 
 
+class ToolTurnHandoff(BaseModel):
+    """Trusted Tool-owned terminal handoff for an asynchronously continuing job."""
+
+    kind: str = Field(min_length=1, max_length=120)
+    message: str = Field(min_length=1, max_length=1_000)
+    data: dict[str, Any] = Field(default_factory=dict)
+
+
 class ToolResult(BaseModel):
     """Structured output from a tool execution.
 
@@ -50,6 +58,7 @@ class ToolResult(BaseModel):
     output_ref: str | None = None
     latency_ms: int | None = Field(default=None, ge=0)
     contract: CapabilityOutputContract | None = None
+    turn_handoff: ToolTurnHandoff | None = None
 
 
 class ToolSpec(BaseModel):

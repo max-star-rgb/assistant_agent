@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 
 import pytest
 
@@ -14,8 +15,12 @@ from assistant_agent.runtime.output_models import NativeToolCall
 from assistant_agent.runtime.requests import UserRequest
 from assistant_agent.runtime.runtime import AgentGraphRuntime
 from assistant_agent.runtime.session_store import InMemorySessionStore
+from assistant_agent.tools.base import ToolContext
+from assistant_agent.tools.capability_output import build_capability_output_contract
+from assistant_agent.tools.models import ToolResult
 from tests.core.support import (
     CancelledToken,
+    ProbeInput,
     ProbeTool,
     ScriptedChatAdapter,
     offline_config,
@@ -31,6 +36,43 @@ class _RunLifecycleProbeTool(ProbeTool):
 
     def on_run_terminal(self, run_id: str, status: str) -> None:
         self.terminals.append((run_id, status))
+
+
+class _NonrecoverableProbeTool(ProbeTool):
+    name = "nonrecoverable_probe_tool"
+
+    def __init__(self) -> None:
+        self.executed_values: list[str] = []
+
+    def _run(self, input: ProbeInput, context: ToolContext) -> ToolResult:
+        self.executed_values.append(input.value)
+        return ToolResult(
+            tool_name=self.name,
+            success=False,
+            error="nonrecoverable-sentinel",
+            contract=build_capability_output_contract(
+                capability=self.name,
+                status="failed",
+                errors=[
+                    {
+                        "code": "provider_auth_failed",
+                        "message": "nonrecoverable-sentinel",
+                        "recoverable": False,
+                    }
+                ],
+            ),
+        )
+
+
+class _IndependentProbeTool(ProbeTool):
+    name = "independent_probe_tool"
+
+    def __init__(self) -> None:
+        self.executed_values: list[str] = []
+
+    def _run(self, input: ProbeInput, context: ToolContext) -> ToolResult:
+        self.executed_values.append(input.value)
+        return super()._run(input, context)
 
 
 @pytest.fixture(autouse=True)
@@ -210,6 +252,77 @@ def test_probe_tool_call_completes_through_governed_runtime() -> None:
             == terminal.attributes["tool_call_id"]
         )
         assert observation.attributes["source_tool_span_id"] == terminal.span_id
+    finally:
+        runtime.close()
+
+
+@pytest.mark.core_invariant("LOOP-001")
+@pytest.mark.core_invariant("TOOL-001")
+def test_nonrecoverable_failure_blocks_later_same_tool_in_native_batch() -> None:
+    failing_tool = _NonrecoverableProbeTool()
+    independent_tool = _IndependentProbeTool()
+    adapter = ScriptedChatAdapter(
+        [
+            ChatResult(
+                provider="scripted",
+                model="scripted-model",
+                finish_reason="tool_calls",
+                tool_calls=[
+                    NativeToolCall(
+                        id="call-failing-first",
+                        name=failing_tool.name,
+                        arguments={"value": "first"},
+                    ),
+                    NativeToolCall(
+                        id="call-failing-second",
+                        name=failing_tool.name,
+                        arguments={"value": "second"},
+                    ),
+                    NativeToolCall(
+                        id="call-independent",
+                        name=independent_tool.name,
+                        arguments={"value": "independent"},
+                    ),
+                ],
+            ),
+            ChatResult(
+                provider="scripted",
+                model="scripted-model",
+                finish_reason="stop",
+                response_text="final-sentinel",
+            ),
+        ]
+    )
+    runtime = AgentGraphRuntime(
+        registry=sealed_registry(failing_tool, independent_tool),
+        config=offline_config(),
+        chat_adapter=adapter,
+        session_store=InMemorySessionStore(),
+    )
+    try:
+        state = runtime.run_state(
+            UserRequest(
+                user_id="user-sentinel",
+                session_id="session-sentinel",
+                text="input-sentinel",
+            )
+        )
+
+        assert failing_tool.executed_values == ["first"]
+        assert independent_tool.executed_values == ["independent"]
+        tool_messages = [
+            message
+            for message in adapter.requests[1].messages
+            if message.get("role") == "tool"
+        ]
+        assert [message.get("tool_call_id") for message in tool_messages] == [
+            "call-failing-first",
+            "call-failing-second",
+            "call-independent",
+        ]
+        blocked = json.loads(str(tool_messages[1]["content"]))
+        assert blocked["error"]["code"] == "nonrecoverable_tool_retry_blocked"
+        assert state.status == "completed"
     finally:
         runtime.close()
 

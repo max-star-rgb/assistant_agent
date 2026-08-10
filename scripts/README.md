@@ -9,7 +9,11 @@ eval、Gateway 主链路覆盖的 probe 不应继续沉积到本目录。
 ## Realtime runtime
 
 - `scripts/run_server.py`: starts the FastAPI backend with Gateway, media, HTTP,
-  memory, trace, and tool-governed runtime routes.
+  memory, trace, and tool-governed runtime routes. 启动完成后默认打印从实际 app/runtime
+  收集的精简运维摘要，包括 bind、健康检查、Provider、Tool 分类计数、Worker、已启用集成、
+  安全开关，以及 Runtime canonical trace、Langfuse export、Gateway lifecycle、Agent-Service
+  delivery audit 和 Gateway text log 的分层观测位置；只有排查 Tool 装配时才使用
+  `--startup-details` 展开按 plugin ownership 分组的完整清单。
   本机 Langfuse 需要查看 Mem0 具体 change text 时，显式增加
   `--allow-local-memory-trace-content`；它只对 loopback OTLP endpoint 生效，canonical JSONL
   仍只保留数量、event 计数和 memory ID。在 Langfuse Session 中打开各 turn 的
@@ -53,8 +57,24 @@ MULTIMODAL_AGENT_PROVIDER_MODE=mock \
   状态和稳定错误码，不持久化记忆正文或 Provider 响应。
 - `scripts/run_client.py`: server-backed Media-Agent protocol console client for
   `/agent-service/v1`; type text repeatedly, or use `/new [sessionId]` to open a
-  new media session. Agent chat responses print only the reply text, not the
-  raw vendor envelope. The handshake marks `clientInfo.clientType=run_client`
+  new media session. In interactive mode, `/deep research` selects
+  `assistantMode=deep_research` for subsequent turns and `/standard` switches back;
+  these local commands are not sent as chat text. If the server closes the
+  connection during an interactive turn (for example close code 1012 during a
+  service restart), the client reconnects the same media session and preserves
+  the selected mode. Because delivery is ambiguous, it never retries the interrupted
+  chat automatically and asks the operator to resend it. When a successful terminal
+  response contains a structured `workflow://` output ref, the client then tails the
+  identity-scoped Workflow status/events HTTP facade by cursor. In interactive mode,
+  `waiting_input` opens a Workflow-specific prompt, submits the response with the
+  persisted resume token, and continues tailing instead of sending a new chat turn.
+  Non-interactive mode stops at action-required state. On completion the client prints
+  the final successful work-item summary. Default workflow output is product-facing:
+  it uses the persisted plan item's short natural-language `display_title` and completion
+  count, while hiding raw event names and workflow IDs. Use `--workflow-details` to expose
+  cursor-based events and identifiers for debugging.
+  Agent chat responses print only the reply text, not the raw vendor envelope. The
+  handshake marks `clientInfo.clientType=run_client`
   so trace and Gateway metadata can distinguish local protocol tests from
   ordinary media-agent calls. It is not a generic Gateway/Assistant client and
   uses an explicit bounded receive limit for Base64 IMAGE response frames.

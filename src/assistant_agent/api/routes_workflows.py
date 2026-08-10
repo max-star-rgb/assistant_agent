@@ -24,6 +24,7 @@ from assistant_agent.workflows.service import (
     WorkflowServiceError,
     WorkflowStateConflict,
 )
+from assistant_agent.workflows.progress import project_workflow_progress
 from assistant_agent.workflows.store import WorkflowStoreError
 
 
@@ -167,6 +168,10 @@ def _workflow_response(bundle) -> WorkflowResponse:
             "terminal_at": workflow.terminal_at,
         },
         plan=bundle.current_plan.model_dump(mode="json"),
+        progress=project_workflow_progress(
+            workflow=workflow,
+            plan=bundle.current_plan,
+        ),
     )
 
 

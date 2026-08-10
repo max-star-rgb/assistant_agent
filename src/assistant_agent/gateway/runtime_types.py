@@ -6,7 +6,7 @@ from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, Field
 
-from assistant_agent.runtime.requests import ResponseStyle
+from assistant_agent.runtime.requests import AssistantMode, ResponseStyle
 
 
 class RealtimeCancelToken(Protocol):
@@ -30,6 +30,7 @@ class RealtimeAgentRequest(BaseModel):
     image_ids: list[str] = Field(default_factory=list)
     video_ids: list[str] = Field(default_factory=list)
     audio_id: str | None = None
+    assistant_mode: AssistantMode = "standard"
     response_style: ResponseStyle = "voice"
     metadata: dict[str, Any] = Field(default_factory=dict)
 

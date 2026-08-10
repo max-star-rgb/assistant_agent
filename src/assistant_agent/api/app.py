@@ -40,7 +40,7 @@ from assistant_agent.automation.proactive_wake.delivery import (
     MockProactiveNotificationTransport,
     NotificationDeliveryWorker,
 )
-from assistant_agent.runtime.server_startup_summary import print_tool_registry_summary
+from assistant_agent.runtime.server_startup_summary import prepare_server_startup_report
 from assistant_agent.skills.application import (
     create_skill_runtime_app_from_env,
 )
@@ -97,6 +97,7 @@ def create_app() -> FastAPI:
 async def _lifespan(app: FastAPI):
     await start_durable_task_worker(app)
     await start_durable_workflow_worker(app)
+    prepare_server_startup_report(app, app.state.agent_runtime)
     try:
         yield
     finally:
@@ -187,7 +188,6 @@ async def start_durable_task_worker(app: FastAPI) -> DurableTaskWorker | None:
     """Bind the app to the shared runtime service and optionally start one worker."""
 
     runtime = routes_agent.get_agent_runtime()
-    print_tool_registry_summary(runtime.registry)
     service = getattr(runtime, "durable_task_service", None)
     config = getattr(runtime, "config", None)
     app.state.agent_runtime = runtime

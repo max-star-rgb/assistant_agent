@@ -51,6 +51,10 @@ from assistant_agent.tools.observation import (
 )
 from assistant_agent.tools.observation_safety import sanitize_tool_observation_detail
 from assistant_agent.tools.models import ToolResult, ToolSpec
+from assistant_agent.tools.ids import (
+    LOAD_SKILL_REFERENCE_TOOL_NAME,
+    LOAD_SKILL_TOOL_NAME,
+)
 from assistant_agent.runtime.chat_adapter import (
     ChatAdapter,
     ChatRequest,
@@ -103,10 +107,13 @@ class AssistantLoopState(TypedDict):
     pending_tool_calls: NotRequired[list[AssistantToolCall]]
     assistant_iterations: NotRequired[int]
     tool_calls_used: NotRequired[int]
+    action_tool_calls_used: NotRequired[int]
+    control_tool_calls_used: NotRequired[int]
     run_phase: NotRequired[RunPhase]
     tool_observations: NotRequired[list[dict[str, Any]]]
     current_node_name: NotRequired[str]
     max_tool_iterations: NotRequired[int]
+    max_control_tool_iterations: NotRequired[int]
     max_plan_steps: NotRequired[int]
     max_plan_revisions: NotRequired[int]
     last_llm_span_id: NotRequired[str]
@@ -231,8 +238,13 @@ def _build_decision_context(
     max_iterations: int,
     is_mock: bool,
 ) -> AssistantDecisionContext:
-    tool_calls_used = int(graph_state.get("tool_calls_used", len(tool_observations)))
-    if tool_calls_used >= max_iterations:
+    action_tool_calls_used = int(
+        graph_state.get(
+            "action_tool_calls_used",
+            _count_action_tool_calls(graph_state["state"]),
+        )
+    )
+    if action_tool_calls_used >= max_iterations:
         _enter_finalize_phase(
             graph_state,
             reason="tool_call_budget_exhausted",
@@ -241,7 +253,7 @@ def _build_decision_context(
     run_phase = _run_phase(graph_state)
     if run_phase is RunPhase.FINALIZE:
         tool_specs = []
-        if tool_calls_used >= max_iterations:
+        if action_tool_calls_used >= max_iterations:
             request.metadata["tool_call_budget_exhausted"] = True
     else:
         try:
@@ -619,6 +631,8 @@ def _run_chat_turn(
             ),
             "finish_reason": result.finish_reason,
             "tool_call_count": len(result.tool_calls),
+            "search_performed": bool(result.search_sources),
+            "search_source_count": len(result.search_sources),
             "provider_latency_ms": provider_latency_ms,
             "wall_latency_ms": wall_latency_ms,
             "usage": normalize_provider_token_usage(result.usage),
@@ -1449,20 +1463,52 @@ def execute_requested_tool_node(graph_state: AssistantLoopState) -> AssistantLoo
 
     current = graph_state
     max_tool_calls = int(graph_state.get("max_tool_iterations", _get_max_tool_iterations()))
+    max_control_tool_calls = int(
+        graph_state.get(
+            "max_control_tool_iterations",
+            _get_max_control_tool_iterations(),
+        )
+    )
     tool_calls_used = int(graph_state.get("tool_calls_used", 0))
+    action_tool_calls_used = int(
+        graph_state.get(
+            "action_tool_calls_used",
+            _count_action_tool_calls(graph_state["state"]),
+        )
+    )
+    control_tool_calls_used = int(
+        graph_state.get(
+            "control_tool_calls_used",
+            _count_control_tool_calls(graph_state["state"]),
+        )
+    )
     for index, decision in enumerate(pending):
-        if tool_calls_used >= max_tool_calls:
+        is_control_tool = _is_control_tool_name(decision.tool_name)
+        budget_exhausted = (
+            control_tool_calls_used >= max_control_tool_calls
+            if is_control_tool
+            else action_tool_calls_used >= max_tool_calls
+        )
+        if budget_exhausted:
             skipped = len(pending) - index
             metadata = current["state"].request.metadata
             _enter_finalize_phase(
                 current,
-                reason="tool_call_budget_exhausted",
-                source="tool_budget",
+                reason=(
+                    "control_tool_call_budget_exhausted"
+                    if is_control_tool
+                    else "tool_call_budget_exhausted"
+                ),
+                source="control_tool_budget" if is_control_tool else "tool_budget",
             )
-            metadata["tool_call_budget_exhausted"] = True
-            metadata["tool_calls_skipped_for_budget"] = (
-                int(metadata.get("tool_calls_skipped_for_budget", 0)) + skipped
+            skipped_key = (
+                "control_tool_calls_skipped_for_budget"
+                if is_control_tool
+                else "tool_calls_skipped_for_budget"
             )
+            metadata[skipped_key] = int(metadata.get(skipped_key, 0)) + skipped
+            if not is_control_tool:
+                metadata["tool_call_budget_exhausted"] = True
             break
         current = _execute_single_requested_tool_node(
             {
@@ -1472,7 +1518,13 @@ def execute_requested_tool_node(graph_state: AssistantLoopState) -> AssistantLoo
         )
         tool_calls_used += 1
         current["tool_calls_used"] = tool_calls_used
-        if tool_calls_used >= max_tool_calls:
+        if is_control_tool:
+            control_tool_calls_used += 1
+        else:
+            action_tool_calls_used += 1
+        current["control_tool_calls_used"] = control_tool_calls_used
+        current["action_tool_calls_used"] = action_tool_calls_used
+        if not is_control_tool and action_tool_calls_used >= max_tool_calls:
             _enter_finalize_phase(
                 current,
                 reason="tool_call_budget_exhausted",
@@ -1483,6 +1535,29 @@ def execute_requested_tool_node(graph_state: AssistantLoopState) -> AssistantLoo
 
     current["pending_tool_calls"] = []
     return current
+
+
+def _is_control_tool_name(tool_name: str | None) -> bool:
+    return tool_name in {
+        LOAD_SKILL_TOOL_NAME,
+        LOAD_SKILL_REFERENCE_TOOL_NAME,
+    }
+
+
+def _count_control_tool_calls(state: AgentState) -> int:
+    return sum(
+        1
+        for call in state.tool_calls
+        if _is_control_tool_name(call.tool_name)
+    )
+
+
+def _count_action_tool_calls(state: AgentState) -> int:
+    return sum(
+        1
+        for call in state.tool_calls
+        if not _is_control_tool_name(call.tool_name)
+    )
 
 
 def _tool_result_is_nonrecoverable(result: ToolResult) -> bool:
@@ -1561,7 +1636,29 @@ def _execute_single_requested_tool_node(graph_state: AssistantLoopState) -> Assi
                 observation,
             ),
         }
-    if "nonrecoverable_tool_retry_blocked" in decision.safety_notes:
+    nonrecoverable_retry_blocked = (
+        "nonrecoverable_tool_retry_blocked" in decision.safety_notes
+        or (
+            not _is_plan_mode_active(state)
+            and LoopGuard(
+                state.request.metadata
+            ).nonrecoverable_failure_already_seen(tool_name)
+        )
+    )
+    if nonrecoverable_retry_blocked:
+        if "nonrecoverable_tool_retry_blocked" not in decision.safety_notes:
+            _record_loop_guard(
+                graph_state,
+                LoopGuardDecision(
+                    True,
+                    "nonrecoverable_tool_retry_blocked",
+                    (
+                        f"{tool_name} already reported a non-recoverable failure "
+                        "in this run; another call to the same tool was blocked."
+                    ),
+                    disposition="block_action",
+                ),
+            )
         observation = rejected_observation(
             tool_name=tool_name or "unknown",
             code="nonrecoverable_tool_retry_blocked",
@@ -1717,6 +1814,7 @@ def _execute_single_requested_tool_node(graph_state: AssistantLoopState) -> Assi
             progress_message=decision.progress_message,
         )
         _handle_runtime_tool_result(graph_state, state, result)
+        _apply_tool_turn_handoff(state, result)
 
         observation = observation_from_tool_result(
             result,
@@ -1831,6 +1929,23 @@ def _handle_runtime_tool_result(
                 },
             )
         )
+
+
+def _apply_tool_turn_handoff(state: AgentState, result: ToolResult) -> None:
+    """Complete the foreground turn from a trusted Tool-owned async handoff."""
+
+    handoff = result.turn_handoff
+    if not result.success or handoff is None:
+        return
+    state.set_response(AgentResponse(
+        message=handoff.message,
+        data={
+            "assistant_output": "tool_handoff",
+            "handoff": handoff.model_dump(mode="json"),
+            "tool_count": len(state.tool_calls),
+        },
+        output_refs=[result.output_ref] if result.output_ref else [],
+    ))
 
 
 def _current_plan_step(
@@ -2500,6 +2615,20 @@ def _get_max_tool_iterations() -> int:
     except Exception:
         pass
     try:
-        return int(os.environ.get("MAX_TOOL_ITERATIONS", "5"))
+        return int(os.environ.get("MAX_TOOL_ITERATIONS", "8"))
     except ValueError:
-        return 5
+        return 8
+
+
+def _get_max_control_tool_iterations() -> int:
+    """Get the control-tool budget independently from action Tool calls."""
+    import os
+    try:
+        from assistant_agent.config import ProviderConfig
+        return ProviderConfig.from_env().max_control_tool_iterations
+    except Exception:
+        pass
+    try:
+        return int(os.environ.get("MAX_CONTROL_TOOL_ITERATIONS", "3"))
+    except ValueError:
+        return 3

@@ -41,6 +41,7 @@ LodgingProviderName = Literal["mock", "flyai"]
 IntentRouterName = Literal["rule", "mock_llm", "hybrid", "llm"]
 SearchProviderName = Literal["mock", "http", "tavily"]
 VisualImageSearchProviderName = Literal["mock", "qwen"]
+QwenChatApiProtocol = Literal["dashscope", "openai_compatible"]
 
 
 @dataclass(frozen=True)
@@ -139,6 +140,8 @@ class ProviderConfig:
     chat_stream: bool = False
     native_provider_streaming: bool = False
     chat_timeout_seconds: float = 75.0
+    chat_max_tokens: int = 1_024
+    deep_research_chat_max_tokens: int = 8_192
     agent_service_text_turn_timeout_seconds: float = 90.0
     context_compactor_mode: ContextCompactorMode = "off"
     context_tokenizer_path: str | None = None
@@ -161,6 +164,7 @@ class ProviderConfig:
     visual_context_image_reserve_tokens: int = 2_048
     visual_context_output_reserve_tokens: int = 2_048
     qwen_chat_enable_thinking: bool = False
+    qwen_chat_api_protocol: QwenChatApiProtocol = "dashscope"
     openai_chat_base_url: str = "https://api.openai.com/v1"
     openai_chat_model: str = "gpt-4o-mini"
     qwen_chat_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
@@ -234,7 +238,8 @@ class ProviderConfig:
     intent_router: IntentRouterName = "rule"
     agent_graph_mode: AgentGraphMode = "assistant_loop"  # 默认使用新的 ReAct 架构
     langgraph_checkpointer_backend: LangGraphCheckpointerBackend = "memory"
-    max_tool_iterations: int = 5
+    max_tool_iterations: int = 8
+    max_control_tool_iterations: int = 3
     max_plan_steps: int = 8
     max_plan_revisions: int = 2
     durable_tasks_enabled: bool = False
@@ -600,6 +605,20 @@ class ProviderConfig:
                 source.get("MULTIMODAL_AGENT_CHAT_TIMEOUT_SECONDS"),
                 75.0,
             ),
+            chat_max_tokens=max(
+                1,
+                _int_env(
+                    source.get("MULTIMODAL_AGENT_CHAT_MAX_TOKENS"),
+                    1_024,
+                ),
+            ),
+            deep_research_chat_max_tokens=max(
+                1,
+                _int_env(
+                    source.get("MULTIMODAL_AGENT_DEEP_RESEARCH_MAX_TOKENS"),
+                    8_192,
+                ),
+            ),
             agent_service_text_turn_timeout_seconds=_float_env(
                 source.get("ASSISTANT_AGENT_TEXT_TURN_TIMEOUT_SECONDS"),
                 90.0,
@@ -713,6 +732,9 @@ class ProviderConfig:
             qwen_chat_enable_thinking=_bool_env(
                 source.get("QWEN_CHAT_ENABLE_THINKING"),
                 False,
+            ),
+            qwen_chat_api_protocol=_qwen_chat_api_protocol(
+                source.get("QWEN_CHAT_API_PROTOCOL")
             ),
             durable_tasks_enabled=_bool_env(
                 source.get("MULTIMODAL_AGENT_DURABLE_TASKS_ENABLED"),
@@ -918,7 +940,11 @@ class ProviderConfig:
                 source.get("LANGGRAPH_CHECKPOINTER_BACKEND")
                 or source.get("MULTIMODAL_AGENT_CHECKPOINTER_BACKEND")
             ),
-            max_tool_iterations=_int_env(source.get("MAX_TOOL_ITERATIONS"), 5),
+            max_tool_iterations=_int_env(source.get("MAX_TOOL_ITERATIONS"), 8),
+            max_control_tool_iterations=_int_env(
+                source.get("MAX_CONTROL_TOOL_ITERATIONS"),
+                3,
+            ),
             max_plan_steps=_int_env(source.get("MAX_PLAN_STEPS"), 8),
             max_plan_revisions=_int_env(source.get("MAX_PLAN_REVISIONS"), 2),
         )
@@ -1235,6 +1261,15 @@ def _qwen_realtime_vision_base_url(
 
 def _chat_provider(value: str | None, *, allow_real: bool = True) -> ChatProviderName:
     return select_chat_provider(value, allow_real=allow_real)
+
+
+def _qwen_chat_api_protocol(value: str | None) -> QwenChatApiProtocol:
+    normalized = (value or "dashscope").strip().lower()
+    if normalized not in {"dashscope", "openai_compatible"}:
+        raise ValueError(
+            "QWEN_CHAT_API_PROTOCOL must be 'dashscope' or 'openai_compatible'"
+        )
+    return normalized  # type: ignore[return-value]
 
 
 def _image_generation_provider(value: str | None, *, allow_real: bool = True) -> ImageGenerationProviderName:

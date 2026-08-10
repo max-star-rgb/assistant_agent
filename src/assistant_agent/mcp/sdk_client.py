@@ -23,6 +23,7 @@ from assistant_agent.mcp.config import (
     MCPToolAdapterConfig,
     resolve_mcp_server_env,
 )
+from assistant_agent.mcp.model_observation import project_mcp_model_observation
 from assistant_agent.tools.models import ToolResult
 from assistant_agent.providers.provider_errors import (
     ProviderSafetyPolicy,
@@ -273,7 +274,12 @@ def _tool_result_from_sdk_response(
         "structured_content": sanitize_error_detail(structured) if structured is not None else None,
         "is_error": is_error,
     }
-    observation = _observation_from_sdk_payload(summary=summary, structured=structured)
+    observation = _observation_from_sdk_payload(
+        server_name=server.server_name,
+        tool_name=tool_name,
+        summary=summary,
+        structured=structured,
+    )
     if is_error:
         return ToolResult(
             tool_name=namespaced_tool_name,
@@ -306,7 +312,20 @@ def _summary_from_sdk_payload(*, content: Any, structured: Any) -> str:
     return ""
 
 
-def _observation_from_sdk_payload(*, summary: str, structured: Any) -> dict[str, Any]:
+def _observation_from_sdk_payload(
+    *,
+    server_name: str,
+    tool_name: str,
+    summary: str,
+    structured: Any,
+) -> dict[str, Any]:
+    projected = project_mcp_model_observation(
+        server_name=server_name,
+        tool_name=tool_name,
+        structured=structured,
+    )
+    if projected is not None:
+        return projected
     if isinstance(structured, dict):
         sanitized = sanitize_error_detail(structured)
         if isinstance(sanitized, dict):

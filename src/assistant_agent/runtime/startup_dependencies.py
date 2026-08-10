@@ -67,14 +67,14 @@ def collect_startup_dependency_statuses(
     )
     web_search_default = _web_search_status(config)
 
-    checks: dict[str, Callable[[], StartupDependencyStatus]] = {
-        "langfuse": lambda: _probe_langfuse(
+    checks: dict[str, Callable[[], StartupDependencyStatus]] = {}
+    if otel_export_enabled:
+        checks["langfuse"] = lambda: _probe_langfuse(
             values,
             timeout_seconds=timeout_seconds,
             probe=health_probe,
             export_enabled=otel_export_enabled,
-        ),
-    }
+        )
     if not mem0_disabled:
         checks["mem0"] = lambda: _probe_mem0(
             config,
@@ -86,20 +86,21 @@ def collect_startup_dependency_statuses(
         "langfuse": langfuse_default,
         "web_search": web_search_default,
     }
-    with ThreadPoolExecutor(
-        max_workers=len(checks),
-        thread_name_prefix="startup-dependency",
-    ) as executor:
-        futures = {
-            name: executor.submit(check)
-            for name, check in checks.items()
-        }
-        for name, future in futures.items():
-            try:
-                resolved[name] = future.result()
-            except Exception:
-                # Startup dependency reporting is diagnostic and must stay fail-open.
-                continue
+    if checks:
+        with ThreadPoolExecutor(
+            max_workers=len(checks),
+            thread_name_prefix="startup-dependency",
+        ) as executor:
+            futures = {
+                name: executor.submit(check)
+                for name, check in checks.items()
+            }
+            for name, future in futures.items():
+                try:
+                    resolved[name] = future.result()
+                except Exception:
+                    # Startup dependency reporting is diagnostic and must stay fail-open.
+                    continue
     return (
         resolved["mem0"],
         resolved["langfuse"],
@@ -161,11 +162,7 @@ def _probe_langfuse(
 
 def _web_search_status(config: ProviderConfig) -> StartupDependencyStatus:
     if config.provider_mode == "mock":
-        return StartupDependencyStatus(
-            name="Web search",
-            state="ready",
-            detail="mock",
-        )
+        return StartupDependencyStatus(name="Web search", state="disabled")
     if config.chat_provider != "qwen":
         return StartupDependencyStatus(name="Web search", state="disabled")
     ready = not config.resolved_chat_provider().missing_required_env()

@@ -27,7 +27,7 @@ from assistant_agent.runtime.generated_artifacts import (
     MAX_DELIVERED_IMAGE_COUNT,
     generated_artifact_payload,
 )
-from assistant_agent.runtime.requests import UserRequest
+from assistant_agent.runtime.requests import AssistantMode, UserRequest
 from assistant_agent.observability.agent_service_delivery import (
     AgentServiceDelivery,
     AgentServiceDeliveryRegistry,
@@ -173,6 +173,7 @@ class PreparedChat:
     user_number: str
     latest_speech: str
     contents: list[Any]
+    assistant_mode: AssistantMode
     video_ids: list[str]
     received_ns: int
     accepted_ns: int | None
@@ -363,6 +364,7 @@ class ChatHandler(BaseHandler):
 
         if not latest_speech:
             raise AgentServiceProtocolError("missing contents[].speechContent")
+        assistant_mode = _assistant_mode_from_chat_body(body)
 
         state.chats.append(dict(body))
         turn = await _run_agent_service_chat_turn(
@@ -372,6 +374,7 @@ class ChatHandler(BaseHandler):
             chat_index=chat_index,
             latest_speech=latest_speech,
             contents=contents,
+            assistant_mode=assistant_mode,
         )
         if turn.status == "error":
             return self.fail(
@@ -1076,6 +1079,7 @@ def _prepare_chat_raw_message(
                 raise AgentServiceProtocolError(f"missing contents[{index}].speechContent")
         if not latest_speech:
             raise AgentServiceProtocolError("missing contents[].speechContent")
+        assistant_mode = _assistant_mode_from_chat_body(body)
         state.session_turn_counter += 1
         state.session_id = protocol_session_id
         state.chats.append(dict(body))
@@ -1094,6 +1098,7 @@ def _prepare_chat_raw_message(
             user_number=user_number,
             latest_speech=latest_speech,
             contents=contents,
+            assistant_mode=assistant_mode,
             video_ids=active_video_ids,
             video_target_frame=video_target_frame,
             received_ns=received_ns,
@@ -1195,6 +1200,7 @@ async def _run_chat_delivery(
                     chat_index=prepared.chat_index,
                     latest_speech=prepared.latest_speech,
                     contents=prepared.contents,
+                    assistant_mode=prepared.assistant_mode,
                     video_ids=prepared.video_ids,
                     visual_target_sequence=(
                         target_frame.sequence if target_frame is not None else None
@@ -1426,6 +1432,14 @@ def _prepared_chat_response(
             "description": response_text,
             "status": "SUCCESS",
         }
+        workflow_output_refs = _workflow_output_refs(
+            turn.payload.get("output_refs")
+        )
+        workflow_fields = (
+            {"outputRefs": workflow_output_refs}
+            if workflow_output_refs
+            else {}
+        )
         image_details = _generated_image_details(turn.payload.get("output_refs"))
         if image_details:
             state.latest_generated_image_id = image_details[-1]["imageId"]
@@ -1456,6 +1470,7 @@ def _prepared_chat_response(
                         },
                     },
                 },
+                **workflow_fields,
             }
         else:
             body = {
@@ -1468,6 +1483,7 @@ def _prepared_chat_response(
                 **_display_flags(sequence > 1),
                 "sequence": sequence,
                 "final": True,
+                **workflow_fields,
             }
             if delivery.expects_ack:
                 body["deliveryId"] = delivery.delivery_id
@@ -1503,6 +1519,18 @@ def _generated_image_details(output_refs: Any) -> list[dict[str, str]]:
                 }
             )
     return details
+
+
+def _workflow_output_refs(output_refs: Any) -> list[str]:
+    if not isinstance(output_refs, list):
+        return []
+    return list(dict.fromkeys(
+        output_ref
+        for output_ref in output_refs
+        if isinstance(output_ref, str)
+        and output_ref.startswith("workflow://")
+        and len(output_ref) > len("workflow://")
+    ))[:4]
 
 
 def _remaining_stream_text(full_text: str, streamed_text: str) -> str:
@@ -1952,6 +1980,7 @@ async def _run_agent_service_chat_turn(
     chat_index: Any,
     latest_speech: str,
     contents: list[Any],
+    assistant_mode: AssistantMode = "standard",
     video_ids: list[str] | None = None,
     visual_target_sequence: int | None = None,
     stream_requested: bool = False,
@@ -1966,6 +1995,7 @@ async def _run_agent_service_chat_turn(
             user_id=user_number,
             session_id=session_id,
             text=latest_speech,
+            assistant_mode=assistant_mode,
             video_ids=active_video_ids,
             timeout_s=(
                 VIDEO_TURN_TIMEOUT_SECONDS
@@ -2011,6 +2041,15 @@ def _agent_service_text_turn_timeout_seconds() -> float:
     from assistant_agent.api import routes_agent
 
     return routes_agent.get_assistant_runtime_app().runtime.config.agent_service_text_turn_timeout_seconds
+
+
+def _assistant_mode_from_chat_body(body: dict[str, Any]) -> AssistantMode:
+    value = body.get("assistantMode", "standard")
+    if value not in {"standard", "deep_research"}:
+        raise AgentServiceProtocolError(
+            "assistantMode must be standard or deep_research"
+        )
+    return value
 
 
 def _active_chat_video_ids(

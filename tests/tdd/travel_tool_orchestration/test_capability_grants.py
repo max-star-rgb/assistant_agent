@@ -757,7 +757,7 @@ def test_improvement_replacement_reuses_current_machine_manifest() -> None:
     )
 
     assert descriptor is not None
-    assert descriptor.manifest_version == 3
+    assert descriptor.manifest_version == 4
     assert "lodging_search" in descriptor.governed_tools
     assert descriptor.body == "# 更新后的旅行流程\n\n只替换程序性指导。"
 

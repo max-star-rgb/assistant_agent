@@ -4,6 +4,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from assistant_agent.planning_contracts import PlanDisplayTitle
+
 
 IntentName = Literal[
     "direct_chat",
@@ -39,6 +41,7 @@ class TaskStep(BaseModel):
     """Agent 任务中的单个计划步骤。"""
 
     step_id: str = Field(min_length=1)
+    display_title: PlanDisplayTitle = None
     action: str = Field(min_length=1)
     tool_name: str | None = None
     input_refs: list[str] = Field(default_factory=list)

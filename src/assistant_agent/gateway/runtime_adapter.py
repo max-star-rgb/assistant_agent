@@ -28,7 +28,7 @@ from assistant_agent.gateway.cancellation_models import (
     build_realtime_turn_cancellation_metadata,
 )
 from assistant_agent.runtime.events import AgentEvent
-from assistant_agent.runtime.requests import UserRequest, assistant_mode_from_metadata
+from assistant_agent.runtime.requests import UserRequest
 from assistant_agent.runtime.assistant_run_service import (
     run_assistant_request_stream,
 )
@@ -340,7 +340,7 @@ def realtime_request_to_user_request(request: RealtimeAgentRequest) -> UserReque
         image_ids=list(request.image_ids),
         video_ids=list(request.video_ids),
         audio_id=request.audio_id,
-        assistant_mode=assistant_mode_from_metadata(metadata),
+        assistant_mode=request.assistant_mode,
         execution_strategy=_execution_strategy_from_metadata(metadata),
         response_style=request.response_style,
         metadata=metadata,

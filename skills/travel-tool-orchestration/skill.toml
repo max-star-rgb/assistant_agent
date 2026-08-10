@@ -1,6 +1,6 @@
 schema_version = 1
 skill_id = "travel-tool-orchestration"
-version = 3
+version = 4
 description = "用于酒店比较、目的地通勤、景点安排、旅行天气和按天行程决策。"
 enabled = true
 discoverable = true

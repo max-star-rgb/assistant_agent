@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 from assistant_agent.automation.durable_tasks.models import TrustedTaskBinding
 from assistant_agent.identity import RequestIdentity
 from assistant_agent.runtime.planning_models import TaskPlan
-from assistant_agent.tools.models import ToolResult
+from assistant_agent.tools.models import ToolResult, ToolTurnHandoff
 from assistant_agent.tools.base import ToolBase, ToolContext
 
 if TYPE_CHECKING:
@@ -102,4 +102,16 @@ class TaskPlanSubmitTool(ToolBase):
                 "plan_version": bundle.task.current_plan_version,
             },
             output_ref=f"task://{bundle.task.task_id}",
+            turn_handoff=ToolTurnHandoff(
+                kind="durable_task",
+                message=(
+                    "长期任务计划已更新。"
+                    if binding_value is not None
+                    else "长期任务已开始。"
+                ),
+                data={
+                    "status": bundle.task.status,
+                    "plan_version": bundle.task.current_plan_version,
+                },
+            ),
         )

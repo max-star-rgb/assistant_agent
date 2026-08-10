@@ -68,6 +68,8 @@ def test_workflow_tool_is_registered_only_with_explicit_capability_binding() -> 
     assert WORKFLOW_SUBMIT_TOOL_NAME not in disabled.list()
     assert WORKFLOW_SUBMIT_TOOL_NAME in enabled.list()
     assert "probe" in enabled.get_spec(WORKFLOW_SUBMIT_TOOL_NAME).description
+    assert "initial_workstreams" in enabled.get_spec(WORKFLOW_SUBMIT_TOOL_NAME).description
+    assert "display_title" in enabled.get_spec(WORKFLOW_SUBMIT_TOOL_NAME).description
 
 
 def test_workflow_submit_runs_through_validator_and_executor() -> None:

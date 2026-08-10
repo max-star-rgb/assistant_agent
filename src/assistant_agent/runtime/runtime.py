@@ -436,6 +436,10 @@ class AgentGraphRuntime:
                     False,
                 )
             ),
+            chat_max_tokens=self.config.chat_max_tokens,
+            deep_research_chat_max_tokens=(
+                self.config.deep_research_chat_max_tokens
+            ),
         )
         self.checkpointer = checkpointer if checkpointer is not None else create_checkpointer(self.config)
         self.context_source_coordinator = context_source_coordinator or ContextSourceCoordinator(
@@ -565,6 +569,25 @@ class AgentGraphRuntime:
             if isinstance(step, dict) and step.get("output_type") is not None
         )
         artifact_refs = list(state.response.output_refs) if state.response else []
+        terminal_failure_note = next(
+            (
+                note
+                for step in state.request.metadata.get("assistant_loop_steps", [])
+                if isinstance(step, dict)
+                for note in step.get("safety_notes", [])
+                if note in {
+                    "provider_response_truncated",
+                    "provider_error",
+                    "provider_refusal",
+                    "provider_timeout",
+                    "provider_empty_response",
+                    "empty_native_final_answer",
+                }
+            ),
+            None,
+        )
+        if status == "succeeded" and terminal_failure_note is not None:
+            status = "failed"
         if status == "succeeded":
             return parse_work_item_response(
                 summary,
@@ -751,6 +774,10 @@ class AgentGraphRuntime:
                 request,
                 configured=self.config.max_tool_iterations,
             ),
+            "max_control_tool_iterations": self.config.max_control_tool_iterations,
+            "tool_calls_used": 0,
+            "action_tool_calls_used": 0,
+            "control_tool_calls_used": 0,
             "max_plan_steps": self.config.max_plan_steps,
             "max_plan_revisions": self.config.max_plan_revisions,
         }

@@ -103,6 +103,7 @@ class DurableTaskResponse(BaseModel):
     plan: dict[str, Any]
     steps: list[dict[str, Any]] = Field(default_factory=list)
     artifacts: list[dict[str, Any]] = Field(default_factory=list)
+    progress: dict[str, Any]
 
 
 class DurableTaskEventsResponse(BaseModel):
@@ -118,6 +119,7 @@ class WorkflowResponse(BaseModel):
     protocol_version: str = PROTOCOL_VERSION
     workflow: dict[str, Any]
     plan: dict[str, Any]
+    progress: dict[str, Any]
 
 
 class WorkflowEventsResponse(BaseModel):

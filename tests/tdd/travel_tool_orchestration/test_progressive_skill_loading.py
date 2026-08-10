@@ -363,7 +363,7 @@ def test_successful_load_skill_is_promoted_from_registered_source() -> None:
     system_prompt = _compile_system(pack)
     assert "<loaded_skills>" not in system_prompt
     assert (
-        '<loaded_skill id="travel-tool-orchestration" version="3">'
+        '<loaded_skill id="travel-tool-orchestration" version="4">'
         in system_prompt
     )
     assert system_prompt.index("<loaded_skill ") < system_prompt.index(

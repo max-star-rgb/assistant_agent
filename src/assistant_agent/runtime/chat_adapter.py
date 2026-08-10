@@ -35,7 +35,7 @@ from assistant_agent.runtime.requests import AssistantMode
 ChatProviderName = Literal["mock", "openai", "qwen", "ark", "deepseek", "local"]
 ChatStreamCallback = Callable[[str, dict[str, Any]], None]
 ProviderRequestCallback = Callable[[dict[str, Any]], None]
-ProviderTransportMode = Literal["sync", "sdk_stream", "provider_stream"]
+ProviderTransportMode = Literal["sync", "sdk_stream", "provider_stream", "dashscope_http"]
 ProviderSearchProfile = Literal["standard", "deep_research"]
 
 
@@ -88,6 +88,14 @@ class ProviderProtocolToolCall(BaseModel):
     arguments_raw: str
 
 
+class ProviderSearchSource(BaseModel):
+    """A provider-returned web source safe to expose as answer evidence."""
+
+    index: int = Field(ge=1)
+    title: str = Field(min_length=1)
+    url: str = Field(min_length=1)
+
+
 class ProviderProtocolResponse(BaseModel):
     """Local-only semantic snapshot of one Provider protocol response.
 
@@ -102,6 +110,7 @@ class ProviderProtocolResponse(BaseModel):
     finish_reason: str | None = None
     usage: dict[str, Any] = Field(default_factory=dict)
     provider_request_id: str | None = None
+    search_sources: list[ProviderSearchSource] = Field(default_factory=list)
     token_delta_count: int = Field(default=0, ge=0)
     tool_call_delta_count: int = Field(default=0, ge=0)
     reasoning_delta_count: int = Field(default=0, ge=0)
@@ -119,6 +128,7 @@ class ChatResult(BaseModel):
     provider: str = Field(min_length=1)
     model: str | None = None
     usage: dict[str, Any] = Field(default_factory=dict)
+    search_sources: list[ProviderSearchSource] = Field(default_factory=list)
     latency_ms: int | None = Field(default=None, ge=0)
     errors: list[ChatProviderError] = Field(default_factory=list)
     output_ref: str | None = None
@@ -429,6 +439,16 @@ def create_chat_adapter(config: ProviderConfig | None = None) -> ChatAdapter:
     missing = settings.missing_required_env()
     if missing:
         return UnconfiguredChatAdapter(resolved.chat_provider, ", ".join(missing))
+    if settings.provider == "qwen" and resolved.qwen_chat_api_protocol == "dashscope":
+        from assistant_agent.providers.dashscope_chat import DashScopeChatAdapter
+
+        return DashScopeChatAdapter(
+            provider=settings.provider,
+            api_key=settings.api_key or "",
+            base_url=settings.base_url or "",
+            model=settings.model or "",
+            timeout_seconds=resolved.chat_timeout_seconds,
+        )
     if settings.adapter_kind == "openai_compatible":
         return OpenAICompatibleChatAdapter(
             provider=settings.provider,

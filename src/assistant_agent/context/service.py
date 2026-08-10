@@ -82,6 +82,8 @@ class ContextService:
         window_policy: ContextWindowPolicy | None = None,
         current_location: str | None = None,
         supports_developer_role: bool = False,
+        chat_max_tokens: int = 1_024,
+        deep_research_chat_max_tokens: int = 8_192,
     ) -> None:
         if compactor is not None and token_counter is None:
             raise ValueError("context compaction requires a model tokenizer")
@@ -90,6 +92,8 @@ class ContextService:
         self.window_policy = window_policy
         self.current_location = current_location
         self.supports_developer_role = supports_developer_role
+        self.chat_max_tokens = chat_max_tokens
+        self.deep_research_chat_max_tokens = deep_research_chat_max_tokens
 
     def build(
         self,
@@ -156,6 +160,17 @@ class ContextService:
                 current_location=self.current_location,
                 answer_only=context.answer_only,
                 supports_developer_role=self.supports_developer_role,
+                max_tokens=(
+                    self.deep_research_chat_max_tokens
+                    if (
+                        context.request.assistant_mode == "deep_research"
+                        and isinstance(
+                            context.request.metadata.get("_trusted_workflow_assignment"),
+                            dict,
+                        )
+                    )
+                    else self.chat_max_tokens
+                ),
             )
         )
         if compilation.selected_tool_specs:

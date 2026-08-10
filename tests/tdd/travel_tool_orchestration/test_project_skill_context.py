@@ -156,7 +156,7 @@ def test_initial_system_prompt_projects_only_skill_cards() -> None:
     assert "<procedural_guidance>" not in system_prompt
     assert "<skill_index>" in system_prompt
     assert (
-        '<skill_card id="travel-tool-orchestration" version="3">'
+        '<skill_card id="travel-tool-orchestration" version="4">'
         in system_prompt
     )
     assert "用于酒店比较、目的地通勤" in system_prompt

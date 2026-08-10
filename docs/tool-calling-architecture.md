@@ -64,9 +64,11 @@ Provider-native ReAct LLM 自主决定；入口不增加关键词路由、正则
 assistant loop。
 
 显式产品模式是结构化入口事实，不是文本意图路由。当前唯一新增模式
-`assistant_mode=deep_research` 会把前台 RunToolCatalog 收窄为 `workflow_submit`，并在首次 Provider
-决策中要求选择该 Tool；用户文本不会隐式开启该模式。模式提交成功后仍由既有 durable Workflow
-执行，普通 `assistant_mode=standard` 不改变现有工具目录和 assistant loop。
+`assistant_mode=deep_research` 会把前台 RunToolCatalog 收窄为至多一个 `workflow_submit`；用户文本
+不会隐式开启该模式。若 Durable Workflow 已启用，首次 Provider 决策必须选择该 Tool，提交成功后
+由既有 durable Workflow 执行；若未启用，则 catalog 保持为空并直接使用 Provider-native deep
+research search profile 完成本轮，不注册或调用本地联网 Tool。普通 `assistant_mode=standard` 不改变
+现有工具目录和 assistant loop。
 
 `visual_memory_search` 遵守同一边界：它是唯一新增的历史视觉 Tool，category 为 `read`，不要求本轮
 附带媒体。Runtime 只依据同 user/session `SessionVisualSemanticStore.has_searchable_history()` 生成可信 exposure fact，并覆盖调用方
@@ -242,6 +244,11 @@ Tool 必须返回结构化 `ToolResult`。其中：
 阻断或由 Tool 专项预算策略压缩，并显式更新返回数和截断状态。失败详情仍使用 Provider error sanitizer
 的有界策略。
 
+MCP proxy 在保留完整 `ToolResult.data` 的同时可以提供工具名限定的模型观察投影。当前高德
+`amap_maps/maps_text_search` 只向模型保留前 5 个 POI 的 `id/name/address/location/typecode`，并返回
+`total_count/returned_count/truncated`；图片等高体积字段不进入下一轮 prompt。未知 MCP Tool 或无法
+识别的响应仍退回通用安全投影，专项逻辑不能改变执行、trace 或交付所用的完整结果。
+
 ## 4. 注册与装配
 
 ### 4.1 ToolRegistry
@@ -330,11 +337,21 @@ MCP server、认证、远端方法映射和部署命令属于配置或对应集�
 requested_budget/durability_reasons/seed_artifact_refs/idempotency_key`。Research 问题等业务字段只能放在
 definition-owned `inputs` schema 中，不能污染通用契约。
 
+`initial_workstreams` 是 Agent 在提交前生成的可执行 DAG，不是仅供展示的说明文本。每项同时持有
+内部执行 `objective`、依赖/验收约束和用户可见 `display_title`；`display_title` 与旧
+`TaskPlan.steps` 使用同一个 `PlanDisplayTitle` 长度及内容契约。Deep Research 优先执行 Agent 提交的
+workstream，仅在未提供时使用 definition 的保守兜底计划。Workflow status facade 从已持久化的当前
+plan 和 item 状态生成统一 `progress`，入口不得依据事件名称、用户原文或额外 LLM 调用虚构进度。
+
 Tool 从 `ToolExecutor` 注入的 `request_identity`、`run_id` 和同一 `WorkflowService` binding 构造
 owner-bound submission；模型不能提交 owner、lease、revision、worker 或 Store。成功 observation 只
 包含 `workflow_id/type/status/phase/status_url/events_url/event_cursor` 等安全 handle。重复
 `user + agent + ingress_run + idempotency_key` 且 payload digest 相同返回既有 Workflow；不同 payload
 返回结构化冲突。
+
+提交成功的异步 Tool 可返回受信 `ToolTurnHandoff`。assistant loop 将其作为本轮确定性终态，保留
+`output_ref` 并停止第二次 Provider 调用；模型不会在提交后再生成一份与持久化 plan 可能不一致的
+“计划说明”。`workflow_submit` 和旧 `task_plan_submit` 都遵守该终止语义。
 
 ## 5. 单轮暴露与 Provider 转换
 
@@ -401,6 +418,11 @@ assistant loop 在 decision guard 与实际执行边界都读取 `ToolSpec.repea
 `tool_repeat_limit_reached`。Tool 级成功限制不因失败调用生效；失败后的恢复继续服从
 recoverable/non-recoverable 与相同失败输入去重规则。重复拒绝进入 finalize，不再继续消耗迭代。
 
+assistant loop 对模型发起的 Tool 分为 control 与 action 两套额度：`load_skill`、
+`load_skill_reference` 使用独立 control 计数，业务 Tool 使用 action 计数；总调用数仍保留作兼容诊断。
+默认 action 上限为 8、control 上限为 3，分别由 `MAX_TOOL_ITERATIONS` 和
+`MAX_CONTROL_TOOL_ITERATIONS` 覆盖。action 用尽后进入 finalize；control 用尽不能挤占业务额度。
+
 取消可能发生在执行前、重试等待期间或 Tool 返回之后。读操作成功后发现取消时不能继续发布为有效
 结果；非只读操作则必须保留已经发生的副作用事实，并以结构化取消状态结束，不能伪装为未执行。
 
@@ -424,13 +446,18 @@ Gateway 不按 Tool name 或 Provider 错误码改写运行终态。
   `docs/context_engineering_status.md`。
 - **Durable task**：只通过可信 task mode、ready step、binding 和幂等输入收窄或约束执行；
   worker 调用仍走统一工具链。任务恢复、lease、notification 和 checkpoint 属于 durable/runtime
-  权威，不由通用 Executor 代管。
+  权威，不由通用 Executor 代管。它是早期 Plan-and-Execute 实现；当前仍保留 schedule、external
+  event、notification 和既有 `/tasks` 兼容能力，但 plan item 的用户可见标题、API `progress` 结构
+  和异步提交终止语义已与 Workflow 对齐。新增通用长流程能力应进入 Workflow definition，不再扩张
+  第二套计划/进度协议。
 - **Durable Workflow**：`workflow_submit` 只负责 admission/creation；独立
   `DurableWorkflowWorker -> WorkflowRuntime` 每个 quantum 最多提交一个 work item 结果或一个局部
   plan revision。语义 work item 通过 `AgentGraphRuntime.run_work_item()` 回到同一 assistant loop；
   work-item Tool allowlist 是可信空集合也必须表示“暴露零个 Tool”，不能退化为完整 Registry。
   `deep_research` work item 固定使用空本地 Tool allowlist；联网由 Qwen/Bailian Chat Completions 的
   Provider-native 搜索完成，不注册或调用本地 `web_search`/`web_fetch`，也不会绕过 Tool 治理链。
+  `waiting_input` 的恢复值由 identity-scoped Workflow facade 持久化并传入后续 work-item request；
+  Provider 技术性截断、错误、拒绝或空终态映射为 retry/failure，不得作为成功结果写 artifact。
   每次 work-item run 回传实际 model/tool call 数并在同一 revision commit 中扣减预算；后续 quantum
   在 model、workflow quantum 或 deadline 耗尽时终止。Tool 预算为零时不再暴露 Tool，剩余预算同时
   收窄 work-item assistant loop 的 iteration 上限。

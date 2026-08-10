@@ -63,7 +63,10 @@ class _AuthFailureRunner:
         return ToolResult(
             tool_name=f"mcp.{server_name}.{tool_name}",
             success=False,
-            error="provider_auth_failed: Gmail authorization is unavailable.",
+            error=(
+                "Error calling tool 'search_gmail_messages': "
+                "ACTION REQUIRED: Google Authentication Needed for Google Gmail."
+            ),
         )
 
 

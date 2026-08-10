@@ -25,6 +25,7 @@ from assistant_agent.automation.durable_tasks.service import (
     TaskNotFound,
     TaskTransitionRejected,
 )
+from assistant_agent.automation.durable_tasks.progress import project_durable_task_progress
 from assistant_agent.automation.durable_tasks.store import TaskStoreError
 
 
@@ -188,6 +189,7 @@ def _task_response(bundle: Any) -> DurableTaskResponse:
         plan=plan.plan.model_dump(mode="json"),
         steps=steps,
         artifacts=[item.model_dump(mode="json") for item in bundle.artifacts],
+        progress=project_durable_task_progress(bundle),
     )
 
 

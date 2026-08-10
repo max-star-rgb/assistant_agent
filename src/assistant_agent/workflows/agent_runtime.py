@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 from assistant_agent.runtime.requests import AssistantMode
 from assistant_agent.workflows.context import WorkflowContextManifest
@@ -26,6 +26,7 @@ class AgentWorkItemRequest(BaseModel):
     repair_candidate_ids: list[str] = Field(default_factory=list, max_length=128)
     context_manifest: WorkflowContextManifest
     allowed_tool_names: list[str] = Field(default_factory=list)
+    workflow_inputs: dict[str, JsonValue] = Field(default_factory=dict)
     max_iterations: int = Field(default=5, ge=1, le=20)
 
 
@@ -59,6 +60,11 @@ def render_work_item_prompt(request: AgentWorkItemRequest) -> str:
                 f"[{artifact.artifact_ref} | {artifact.kind} | {artifact.digest}]\n"
                 f"{artifact.excerpt}"
             )
+    if request.workflow_inputs:
+        lines.append(
+            "Workflow inputs:\n"
+            + json.dumps(request.workflow_inputs, ensure_ascii=False, sort_keys=True)
+        )
     lines.append("完成当前 work item 后直接返回结果，不创建新的长期 Workflow。")
     control = (
         '仅当当前步骤无法正常成功时，才把完整最终回复写成严格 JSON：'

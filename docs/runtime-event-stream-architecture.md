@@ -1,6 +1,6 @@
 # Runtime Event Stream Architecture
 
-Last updated: 2026-07-23
+Last updated: 2026-08-10
 
 ## Authority contract
 
@@ -125,21 +125,25 @@ error，不会把已成功的 ToolResult 改写为 Tool 失败。同一进程内
 store 实例原子串行化，避免 read-modify-write 丢失；JSONL backend 不在此基础上宣称跨进程事务能力。
 
 Foreground provider turns are consumed inside the shared LangGraph assistant
-loop. 配置为 `qwen` provider 的主 Agent 继续使用百炼兼容 Chat Completions 和 Provider-native 联网。
+loop. 配置为 `qwen` provider 的主 Agent 默认使用百炼 DashScope Generation API 和
+Provider-native 联网；`QWEN_CHAT_API_PROTOCOL=openai_compatible` 只作为显式兼容回退。
 普通 `assistant_mode=standard` 保持既有
 `enable_search=true`、`enable_thinking=false`、`search_strategy=turbo`、
-`forced_search=false`、`enable_search_extension=true`、`freshness=7`；显式
+`forced_search=false`、`enable_search_extension=true`、`enable_source=true`、
+`enable_citation=true`、`citation_format=[<number>]`、`freshness=7`；显式
 `deep_research` Workflow work item 使用 run-scoped `provider_search_profile=deep_research`，改为
 `enable_thinking=true`、`search_strategy=max`、`forced_search=true`、
-`enable_search_extension=true`，且不设置全局 freshness。前台模式提交仍使用普通搜索配置，避免在创建
-Workflow 前进行一次无意义的研究搜索。两种 profile 都使用 SDK streaming，旧 `CHAT_STREAM=false`
-不再把这条 Provider 请求降级为非流式。profile 来自结构化请求和可信 Workflow assignment，不根据
-自然语言推断。
-OpenAI-compatible Chat Completions 不提供 DashScope 专属的 `enable_source`、`enable_citation`
-和 `citation_format` 响应契约，因此当前 Workflow 只能要求模型在正文中尽量保留来源线索，不能把来源
-列表、角标或引用覆盖率声明为机器可验证事实；需要这类结构化证据时再单独评估 DashScope adapter。
+`enable_search_extension=true`，保留 source/citation 契约且不设置全局 freshness。前台模式提交仍使用
+普通搜索配置，避免在创建 Workflow 前进行一次无意义的研究搜索。DashScope adapter 当前通过同步 HTTP
+聚合一次完整响应；profile 来自结构化请求和可信 Workflow assignment，不根据
+自然语言推断。普通请求的默认输出预算为 1024 token；可信 `deep_research` Workflow work item 默认
+使用独立的 8192 token 预算，两者分别可由 `MULTIMODAL_AGENT_CHAT_MAX_TOKENS` 和
+`MULTIMODAL_AGENT_DEEP_RESEARCH_MAX_TOKENS` 覆盖。
+adapter 将 DashScope `search_info.search_results` 归一化为 `ChatResult.search_sources`，只接受
+HTTP(S) URL、按 URL 去重并把来源链接追加到文本终态；这证明 Provider 返回了哪些来源，但不把引用
+覆盖率或网页内容正确性扩大声明为已验证事实。显式 OpenAI-compatible 回退不提供该结构化来源契约。
 `MULTIMODAL_AGENT_NATIVE_PROVIDER_STREAMING` 只控制 Runtime 是否使用 async-native stream
-consumer；关闭时仍由同步 adapter 聚合 Qwen 的流式响应。Judge 等显式直接构造且未开启
+consumer；sync-only DashScope adapter 始终走 `ChatAdapter.chat()`。Judge 等显式直接构造且未开启
 `native_web_search` 的辅助 adapter 保持独立的非联网、非流式策略。Other providers remain opt-in through
 `ProviderConfig.native_provider_streaming`. When enabled and the adapter exposes
 `stream_chat()`, `ProviderStreamingTurnRunner` consumes the async stream for one
@@ -153,24 +157,25 @@ Every foreground assistant-loop Provider turn emits a paired
 provider/model labels, iteration, a derived `result_kind`, tool-call count, Provider-reported
 latency, wall latency and normalized token usage; it never records prompt or
 response content. 它还记录 route、runtime action、transport mode 与 delta count 等安全摘要，
-用于证明代码解析路径。`result_kind` is computed at the runtime/observability boundary as
+以及 `search_performed/search_source_count`；canonical event 不保存来源标题或 URL。`result_kind` is computed at the runtime/observability boundary as
 `error | tool_call | refusal | truncated | text | empty`; it is not stored in
 `ChatResult` and is not a Provider protocol field. Agent-Service latency summaries use wall latency as the
 critical-path `llm_chat[n]` duration and keep Provider latency as a nested
 diagnostic.
-当本地 OTLP export 开启时，OpenAI-compatible adapter 会在 `llm.chat` span id 下记录传给
-Provider SDK 的完整调用参数，Langfuse generation input 直接使用该对象而不重建字段。
+当本地 OTLP export 开启时，Provider adapter 会在 `llm.chat` span id 下记录传给
+Provider 的完整调用参数，Langfuse generation input 直接使用该对象而不重建字段。
 启用 local trace content 后，进程内 debug overlay 还会保存归一化 `ChatResult`；额外设置
 `MULTIMODAL_AGENT_LOCAL_PROVIDER_PROTOCOL_CAPTURE=1` 后，还保存原始 content、原始工具参数字符串、
-finish reason、usage 与流式事件计数组成的协议语义快照。Langfuse generation output 使用
-OpenAI-compatible assistant message 展示 Provider 的原始语义回复（正文、工具调用或拒绝），
+finish reason、usage、结构化 search sources 与流式事件计数组成的协议语义快照。Langfuse generation output 使用
+assistant message 展示 Provider 的原始语义回复（正文、工具调用或拒绝），
 generation input 保留 SDK 调用的原始 messages/tools/生成参数、stream 和 Provider 特有参数，
 不为展示虚构 message role；finish reason 保留在 trace/协议快照，
 usage、route 与 transport 保留在诊断字段，都不拼接到 output 文本。默认 trace event
 和 `.data/graph_trace.jsonl` 仍只保存安全摘要，vendor SDK response envelope、HTTP header、stream
 chunk body 与 hidden reasoning 不进入 debug store。
-Qwen 的隐式搜索与网页抓取只表现为该 generation input 中的 `enable_search/search_options` 以及
-Provider 最终语义回复；Runtime 不为其制造 `tool.started/tool.finished`，也不增加 `tool_count`。
+Qwen 的隐式搜索与网页抓取表现为 generation input 中的 `enable_search/search_options`、Provider
+最终语义回复和 DashScope 返回的来源；Runtime 不为其制造 `tool.started/tool.finished`，也不增加
+`tool_count`。
 普通前台调用不设置 `response_format`，系统提示词也不要求终态 JSON；因此一次非工具终态只对应
 一次 `llm.chat`。主 assistant loop 只接受严格的 `AssistantTextOutput | AssistantToolCall`：
 普通回答和自然语言追问都作为非空 `text` 交付，native tool call 归一化为 `tool_call` 后进入工具
@@ -253,7 +258,12 @@ Durable Workflow 使用相同的分离原则，但事件事实源是 `WorkflowSt
 
 - `GET /workflows/{workflow_id}/events?after=<cursor>` 先经 `WorkflowService` 做 `user_id + agent_id`
   校验，再读取事务内与 revision 一起提交的 `WorkflowEvent`；
-- 前台 `workflow_submit` run 在返回 handle 后结束，不 tail 后台事件；
+- 前台 `workflow_submit` run 在返回 handle 后结束，本身不 tail 后台事件；本地 `run_client.py` 可在
+  前台终包后另开 identity-scoped HTTP pull 窗口，按 cursor 观察同一 Workflow，但不延长或重新打开
+  ingress Gateway run；
+- 提交 Tool 的受信 handoff 会直接形成短终态回复，不进行第二次 Provider 调用。后台 plan 创建后，
+  status facade 只从持久化当前 item 的 `display_title`、状态和完成数投影产品 `progress`；原始事件
+  仍是诊断事实，但不是默认产品文案；
 - 每个语义 work item 都产生独立 `AgentGraphRuntime` run/trace，Workflow event 通过
   `workflow_id/work_item_id/attempt` 关联，不伪装成同一个超长 run；
 - waiting-input、cancel、retry、local plan revision 和 terminal 都是持久事件；客户端断线只丢失
@@ -269,7 +279,9 @@ work item，并在 `commit_quantum` 用 Workflow revision、事件和结果做�
 百炼原生联网。未来若允许写副作用，必须先增加 operation-level idempotency key 和 side-effect
 commit barrier。
 
-普通 work-item 最终文本直接作为成功结果。只有 trusted work-item prompt 返回完整、通过严格 schema
+普通 work-item 的完整最终文本直接作为成功结果。Provider 截断、错误、拒绝、timeout 或空终态属于
+技术失败，必须进入 work-item retry/failure 状态，不能把用户可见兜底文案写成成功 artifact。只有
+trusted work-item prompt 返回完整、通过严格 schema
 校验的 `workflow_control` JSON 时，adapter 才会把它解释为 `repair`、`blocked` 或 `failed`；Markdown
 代码块、混合文本和未知字段都不会成为控制指令。`repair_work_item_ids` 只能从 controller 提供的祖先
 候选中选择，并在 plan revision 前再次经过 DAG/descendant 校验。

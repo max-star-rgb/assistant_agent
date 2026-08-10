@@ -72,6 +72,7 @@ class AgentRuntimeWorkItemExecutor:
             ),
             repair_candidate_ids=list(assignment.repair_candidate_ids),
             context_manifest=manifest,
+            workflow_inputs=dict(assignment.inputs),
             allowed_tool_names=(
                 list(_READ_TOOLS_BY_KIND.get(assignment.work_item.kind, []))
                 if (

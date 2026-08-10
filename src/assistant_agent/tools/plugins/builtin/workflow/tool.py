@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from assistant_agent.identity import RequestIdentity
 from assistant_agent.tools.base import ToolBase, ToolContext
 from assistant_agent.tools.ids import WORKFLOW_SUBMIT_TOOL_NAME
-from assistant_agent.tools.models import ToolResult
+from assistant_agent.tools.models import ToolResult, ToolTurnHandoff
 from assistant_agent.workflows.models import WorkflowSubmission
 from assistant_agent.workflows.service import WorkflowService, WorkflowServiceError
 
@@ -34,6 +34,9 @@ class WorkflowSubmitTool(ToolBase):
         self.description = (
             f"{type(self).description} 当前已注册 workflow_type: "
             f"{registered_types}。根据用户目标选择最合适的类型，不要虚构类型。"
+            "提交前先规划可执行 DAG 并填写 initial_workstreams；每个 workstream 的 "
+            "display_title 是后续向用户展示的真实进度，应具体、简短且与 objective 一致。"
+            "仅当任务确实无法合理预拆解时才省略 initial_workstreams，由 definition 使用兜底计划。"
         )
 
     def _run(self, input: WorkflowSubmission, context: ToolContext) -> ToolResult:
@@ -91,4 +94,17 @@ class WorkflowSubmitTool(ToolBase):
                 "status": workflow.status,
             },
             output_ref=f"workflow://{workflow.workflow_id}",
+            turn_handoff=ToolTurnHandoff(
+                kind="durable_workflow",
+                message=(
+                    "深度研究已开始。"
+                    if workflow.workflow_type == "deep_research"
+                    else "长期任务已开始。"
+                ),
+                data={
+                    "workflow_type": workflow.workflow_type,
+                    "status": workflow.status,
+                    "phase": workflow.phase,
+                },
+            ),
         )

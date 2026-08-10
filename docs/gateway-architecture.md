@@ -1,6 +1,6 @@
 # Gateway Architecture
 
-Last updated: 2026-08-04
+Last updated: 2026-08-10
 
 ## Authority contract
 
@@ -163,9 +163,11 @@ Gateway 为每个开始的 run 发出稳定的 started/stream/progress/terminal 
 或决定工具候选空间。
 
 `assistant_mode` 与上述权限 profile 不同：它是用户通过产品控件或 HTTP schema 显式选择的运行模式，
-当前只新增 `deep_research`，缺省为 `standard`。HTTP entry adapter 把已校验字段投影到 Gateway metadata，
-Runtime 再恢复为 `UserRequest.assistant_mode`；它不能从文本推断，也不能扩大本地 Tool 权限，
-`deep_research` 只会进一步收窄 catalog 并改变 Provider 请求策略。
+当前只新增 `deep_research`，缺省为 `standard`。各 entry adapter 只负责把自身协议字段归一化为
+`GatewayTurnRequest.assistant_mode` 或规范化 `message.user.payload.assistant_mode`；Gateway 在接受 turn
+时校验并把它固化为 `RealtimeAgentRequest.assistant_mode`，排队和执行期间不再从通用 metadata 恢复。
+它不能从文本推断，也不能扩大本地 Tool 权限，`deep_research` 只会进一步收窄 catalog 并改变
+Provider 请求策略。
 
 `gateway.capabilities` 只定义通用 `EntryAdapterCapabilities` 数据类型；HTTP、规范化 Gateway WebSocket
 和 Agent-Service 的具体 capability 实例分别由各自 API entry adapter 定义。Gateway package 不导出
@@ -241,7 +243,8 @@ stale-output 语义，不直接控制仓库外的 TTS provider。
 
 Gateway 与 Assistant Runtime 之间的公共契约由以下类型组成：
 
-- `RealtimeAgentRequest`：一次规范化 turn，携带绑定后的身份、ID、文本、媒体引用和可信 metadata；
+- `RealtimeAgentRequest`：一次规范化 turn，携带绑定后的身份、ID、文本、媒体引用、一等
+  `assistant_mode` 和可信 metadata；
 - `RealtimeAgentEvent`：progress、tool lifecycle、response chunk 和 error 等流事件；
 - `RealtimeAgentResult`：completed/cancelled/error 终态、最终文本、trace 和 output refs；
 - `RealtimeAgentBackend`：由 `GatewayRuntimeAdapter` 实现的 backend protocol；

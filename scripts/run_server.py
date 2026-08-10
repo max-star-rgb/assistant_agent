@@ -23,7 +23,8 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from assistant_agent.config import ProviderConfig
+import uvicorn
+
 from assistant_agent.gateway.observability import GatewayLifecycleEvent
 from assistant_agent.evaluation.remote_run_control import (
     start_remote_eval_console,
@@ -41,9 +42,12 @@ from assistant_agent.observability.operational_logging import (
     configure_operational_logging_from_env,
     record_gateway_lifecycle,
 )
-from assistant_agent.runtime.startup_dependencies import (
-    collect_startup_dependency_statuses,
-    format_startup_dependency_statuses,
+from assistant_agent.runtime.server_startup_summary import (
+    STARTUP_BIND_HOST_ENV,
+    STARTUP_BIND_PORT_ENV,
+    STARTUP_DETAILS_ENV,
+    STARTUP_PUBLIC_URL_ENV,
+    print_prepared_server_startup_report,
 )
 from assistant_agent.providers.specs import (
     supported_chat_providers,
@@ -71,11 +75,25 @@ LOCAL_MEMORY_TRACE_CONTENT_ENV = "MULTIMODAL_AGENT_LOCAL_MEMORY_TRACE_CONTENT"
 PROVIDER_MODE_ENV = "MULTIMODAL_AGENT_PROVIDER_MODE"
 
 
+class StartupReportingServer(uvicorn.Server):
+    """Uvicorn server that prints the prepared report after binding succeeds."""
+
+    async def startup(self, sockets=None) -> None:
+        await super().startup(sockets=sockets)
+        if self.started:
+            print_prepared_server_startup_report()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Start the assistant backend server (FastAPI).")
     parser.add_argument("--host", default="127.0.0.1", help="Host interface to bind.")
     parser.add_argument("--port", type=int, default=8000, help="Port to bind.")
     parser.add_argument("--public-url", default=None, help="Optional URL to print for sharing with beta users.")
+    parser.add_argument(
+        "--startup-details",
+        action="store_true",
+        help="Include the full Tool ownership inventory after the compact startup report.",
+    )
     parser.add_argument("--reload", action="store_true", help="Enable uvicorn auto-reload for local development.")
     parser.add_argument(
         "--access-log",
@@ -239,23 +257,6 @@ def _trial_user_ids_from_args(args: argparse.Namespace) -> list[str]:
     return sorted(item for item in ids if item)
 
 
-def _print_startup_summary(
-    args: argparse.Namespace,
-    config: ProviderConfig,
-) -> None:
-    ws_base = f"ws://{args.host}:{args.port}"
-    model = config.chat_model or "default"
-
-    print(f"Provider mode: {config.provider_mode}")
-    print(f"Main LLM: {config.chat_provider} / {model}")
-    for line in format_startup_dependency_statuses(
-        collect_startup_dependency_statuses(config)
-    ):
-        print(line)
-    print("Services:")
-    print(f"  media_agent: {ws_base}/agent-service/v1")
-
-
 def _log_gateway_server_starting(
     args: argparse.Namespace,
     *,
@@ -275,6 +276,32 @@ def _log_gateway_server_starting(
     )
 
 
+def _run_uvicorn(args: argparse.Namespace) -> None:
+    """Run Uvicorn and print READY only after its listener has been created."""
+
+    from uvicorn.supervisors import ChangeReload
+
+    config = uvicorn.Config(
+        "assistant_agent.api.app:create_app",
+        factory=True,
+        host=args.host,
+        port=args.port,
+        reload=args.reload,
+        access_log=args.access_log,
+        log_level="info" if args.access_log else "warning",
+    )
+    config.load_app()
+    server = StartupReportingServer(config=config)
+    try:
+        if config.should_reload:
+            socket = config.bind_socket()
+            ChangeReload(config, target=server.run, sockets=[socket]).run()
+            return
+        server.run()
+    except KeyboardInterrupt:
+        pass
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
@@ -282,8 +309,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     except RuntimeError as exc:
         print(str(exc), file=sys.stderr)
         return 2
-    config = ProviderConfig.from_env()
-
     log_dir = Path(args.log_dir).expanduser()
     if not log_dir.is_absolute():
         log_dir = REPO_ROOT / log_dir
@@ -300,22 +325,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     os.environ[OPERATIONAL_CONSOLE_LEVEL_ENV] = args.console_level
     os.environ[OPERATIONAL_FILE_LEVEL_ENV] = args.file_log_level
     os.environ[OPERATIONAL_CONSOLE_MODE_ENV] = args.console_mode
+    os.environ[STARTUP_BIND_HOST_ENV] = args.host
+    os.environ[STARTUP_BIND_PORT_ENV] = str(args.port)
+    if args.public_url:
+        os.environ[STARTUP_PUBLIC_URL_ENV] = args.public_url
+    else:
+        os.environ.pop(STARTUP_PUBLIC_URL_ENV, None)
+    if args.startup_details:
+        os.environ[STARTUP_DETAILS_ENV] = "1"
+    else:
+        os.environ.pop(STARTUP_DETAILS_ENV, None)
     configure_operational_logging_from_env()
     _log_gateway_server_starting(args, log_dir=log_dir, gateway_event_path=gateway_event_path)
 
-    import uvicorn
-
-    _print_startup_summary(args, config)
+    print(f"assistant_agent  STARTING ({args.host}:{args.port})", flush=True)
     start_remote_eval_console()
-    uvicorn.run(
-        "assistant_agent.api.app:create_app",
-        factory=True,
-        host=args.host,
-        port=args.port,
-        reload=args.reload,
-        access_log=args.access_log,
-        log_level="info" if args.access_log else "warning",
-    )
+    _run_uvicorn(args)
     return 0
 
 

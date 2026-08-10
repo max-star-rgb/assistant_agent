@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from assistant_agent.config import ProviderConfig
 from assistant_agent.identity import RequestIdentity
+from assistant_agent.memory.models import SessionMemorySnapshot
 from assistant_agent.runtime.chat_adapter import ChatRequest, ChatResult
 from assistant_agent.runtime.output_models import NativeToolCall
 from assistant_agent.runtime.requests import UserRequest
@@ -36,6 +37,14 @@ class WorkflowMemoryProbe:
     def __init__(self) -> None:
         self.attached_workflow_runs = 0
         self.enqueued_workflow_runs = 0
+
+    def prepare_context(self, *, state, trace_store, cancel_token) -> SessionMemorySnapshot:
+        snapshot = SessionMemorySnapshot()
+        state.session_memory_snapshot = snapshot
+        return snapshot
+
+    def release_run_context(self, *, identity, run_id) -> bool:
+        return False
 
     def attach_session_snapshot(self, state) -> None:
         if "_trusted_workflow_assignment" in state.request.metadata:
@@ -76,14 +85,8 @@ def test_provider_native_react_autonomously_submits_workflow_without_classifier(
                     "durability_reasons": ["multi_stage"],
                     "idempotency_key": "submission-sentinel",
                 },
-            )],
-        ),
-        ChatResult(
-            provider="scripted",
-            model="scripted-model",
-            finish_reason="stop",
-            response_text="workflow accepted sentinel",
-        ),
+                )],
+            ),
         *[
             ChatResult(
                 provider="scripted",
@@ -116,6 +119,8 @@ def test_provider_native_react_autonomously_submits_workflow_without_classifier(
     assert state.status == "completed"
     assert [call.tool_name for call in state.tool_calls] == [WORKFLOW_SUBMIT_TOOL_NAME]
     assert state.tool_results[0].success is True
+    assert state.response.data["handoff"]["kind"] == "durable_workflow"
+    assert len(adapter.requests) == 1
     workflow_id = state.tool_results[0].data["workflow"]["workflow_id"]
     assert service.store.load(workflow_id).workflow.status == "queued"
     assert adapter.requests[0].tools[0]["function"]["name"] == WORKFLOW_SUBMIT_TOOL_NAME
@@ -137,7 +142,7 @@ def test_provider_native_react_autonomously_submits_workflow_without_classifier(
         assert worker.run_once() is True
     completed = service.store.load(workflow_id)
     assert completed.workflow.status == "completed"
-    assert len(adapter.requests) == 6
+    assert len(adapter.requests) == 5
     assert all(request.tools == [] for request in adapter.requests[2:])
     assert memory_probe.attached_workflow_runs == 0
     assert memory_probe.enqueued_workflow_runs == 0

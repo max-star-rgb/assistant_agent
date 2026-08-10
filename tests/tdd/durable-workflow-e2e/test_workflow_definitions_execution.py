@@ -6,7 +6,7 @@ from assistant_agent.workflows.artifacts import LocalWorkflowArtifactStore
 from assistant_agent.workflows.context import WorkflowContextCompiler
 from assistant_agent.workflows.definitions import WorkflowDefinitionCatalog
 from assistant_agent.workflows.execution import AgentRuntimeWorkItemExecutor
-from assistant_agent.workflows.models import WorkflowSubmission
+from assistant_agent.workflows.models import WorkflowSeedWorkItem, WorkflowSubmission
 from assistant_agent.workflows.research.definition import DeepResearchWorkflowDefinition
 from assistant_agent.workflows.runtime import WorkItemAssignment
 
@@ -51,6 +51,45 @@ def test_deep_research_is_a_definition_not_a_special_runtime() -> None:
         "synthesize",
     ]
     assert plan.work_items[-1].depends_on == ["verify"]
+
+
+def test_deep_research_uses_agent_planned_workstreams_and_display_titles() -> None:
+    definition = DeepResearchWorkflowDefinition()
+    submission = WorkflowSubmission(
+        workflow_type="deep_research",
+        objective="research-objective-sentinel",
+        deliverables=["report-sentinel"],
+        inputs={"research_questions": ["question-sentinel"], "source_target": 15},
+        initial_workstreams=[
+            WorkflowSeedWorkItem(
+                seed_id="research-hermes",
+                kind="collect_sources",
+                display_title="正在检索并核实 Hermes 工程资料",
+                objective="收集 Hermes 官方文档和一手工程资料。",
+            ),
+            WorkflowSeedWorkItem(
+                seed_id="synthesize",
+                kind="synthesize",
+                display_title="正在撰写跨框架对比报告",
+                objective="综合证据并形成最终报告。",
+                depends_on=["research-hermes"],
+            ),
+        ],
+        durability_reasons=["multi_stage", "many_sources"],
+        idempotency_key="submission-agent-plan-sentinel",
+    )
+
+    plan = definition.build_initial_plan(
+        workflow_id="workflow-sentinel",
+        submission=submission,
+    )
+
+    assert [item.work_item_id for item in plan.work_items] == [
+        "research-hermes",
+        "synthesize",
+    ]
+    assert plan.work_items[0].display_title == "正在检索并核实 Hermes 工程资料"
+    assert plan.work_items[1].depends_on == ["research-hermes"]
 
 
 def test_agent_executor_compiles_dependency_artifacts_and_persists_output(tmp_path) -> None:

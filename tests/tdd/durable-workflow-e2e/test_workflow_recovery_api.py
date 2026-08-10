@@ -45,6 +45,7 @@ class InputDefinition:
                 WorkflowWorkItem(
                     work_item_id="input-step",
                     kind="probe",
+                    display_title="正在等待地区信息",
                     objective="input-step-sentinel",
                 )
             ],
@@ -154,5 +155,16 @@ def test_http_status_events_input_and_cancel_are_thin_service_facades() -> None:
 
     assert status.status_code == 200
     assert status.json()["workflow"]["workflow_id"] == workflow_id
+    assert status.json()["progress"] == {
+        "state": "working",
+        "plan_kind": "needs_input",
+        "workflow_type": "needs_input",
+        "work_item_id": "input-step",
+        "work_item_kind": "probe",
+        "display_title": "正在等待地区信息",
+        "completed_items": 0,
+        "total_items": 1,
+        "attempt_count": 0,
+    }
     assert events.json()["next_cursor"] == 2
     assert cancelled.json()["workflow"]["status"] == "cancelled"
