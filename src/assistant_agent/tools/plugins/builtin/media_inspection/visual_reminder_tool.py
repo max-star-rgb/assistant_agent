@@ -26,8 +26,18 @@ VisualReminderAction = Literal["create", "list", "cancel"]
 
 class VisualReminderManageInput(BaseModel):
     action: VisualReminderAction
-    target: str | None = Field(default=None, min_length=1, max_length=500)
-    message: str | None = Field(default=None, min_length=1, max_length=500)
+    target: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=500,
+        description="创建提醒时用于匹配后续画面的可见条件。",
+    )
+    message: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=500,
+        description="创建提醒时命中条件后发送给用户的通知文案。",
+    )
     reminder_id: str | None = Field(default=None, min_length=1, max_length=120)
     session_id: str = ""
 
@@ -58,7 +68,8 @@ class VisualReminderManageTool(ToolBase):
     name = VISUAL_REMINDER_MANAGE_TOOL_NAME
     description = (
         "创建、列出或取消当前活动视频连接中的一次性视觉提醒；当后续画面匹配目标时发送"
-        "指定消息，并返回提醒 ID 或当前记录。提醒只在本次连接内有效，不持久化或跨连接重放。"
+        "指定消息，并返回提醒 ID 或当前记录。只有成功结果才能视为已创建或取消。提醒只在"
+        "本次连接内有效，不持久化或跨连接重放。"
     )
     input_schema = VisualReminderManageInput
     output_schema = VisualReminderManageOutput

@@ -862,38 +862,6 @@ def test_structured_image_context_activates_visual_toolset_without_skill_body() 
     )
 
 
-def test_skill_lifecycle_policy_describes_dynamic_catalog_expansion() -> None:
-    registry = create_default_registry()
-    request = UserRequest(
-        user_id="owner-a",
-        session_id="session-a",
-        text="sentinel request",
-    )
-    pack = build_assistant_context_pack(
-        state=AgentState.from_request(request),
-        tool_specs=registry.list_specs(),
-        iteration=0,
-        max_iterations=5,
-    )
-
-    compiled = PromptCompiler().compile(
-        PromptCompileRequest(
-            user_id=request.user_id,
-            session_id=request.session_id,
-            mode=PromptCompileMode.NATIVE_TOOL,
-            user_query_fallback="fallback",
-            context_pack=pack,
-            observations=(),
-            native_calls=(),
-            tool_call_id_prefix="call_",
-        )
-    )
-    system_prompt = compiled.chat_request.messages[0]["content"]
-
-    assert "成功加载后" in system_prompt
-    assert "不能扩大本轮工具目录" not in system_prompt
-
-
 def test_load_skill_rejects_context_activated_skill_ids() -> None:
     result = LoadSkillTool().run({"skill_id": "visual-context"})
 

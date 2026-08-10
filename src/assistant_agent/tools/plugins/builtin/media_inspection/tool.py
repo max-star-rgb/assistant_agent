@@ -227,8 +227,9 @@ class LiveViewInspectTool(MediaInspectTool):
 
     name = LIVE_VIEW_INSPECT_TOOL_NAME
     description = (
-        "根据具体 query 检查当前实时视频连接的最新可用画面，并返回针对该画面的视觉"
-        "回答。只观察当前快照，不检索较早的会话画面。"
+        "仅当用户问题需要当前实时画面才能回答时，根据具体 query 检查请求到达时冻结的"
+        "最新可用画面。未调用时不得猜测当前画面；与当前画面无关时不要调用，也不用于"
+        "检索较早的会话画面。"
     )
     input_schema = LiveViewInspectRequest
     repeat_policy = "distinct_inputs"

@@ -88,10 +88,6 @@ class PromptCompiler:
             ),
             current_location=request.current_location,
             answer_only=request.answer_only,
-            skill_loading_enabled=_skill_loading_enabled(
-                request.context_pack,
-                selected_tool_specs,
-            ),
         )
         rendered_context = _render_context(request)
         user_content = _rendered_user_content(rendered_context, request.mode)
@@ -222,31 +218,36 @@ def procedural_guidance_for_pack(pack: AssistantContextPack) -> str:
     references = [
         section for section in sections if section.kind == "skill_reference"
     ]
-    rendered = ["<procedural_guidance>"]
+    rendered: list[str] = []
     if summaries:
         rendered.append("<skill_index>")
         for section in summaries:
             rendered.extend(
                 [
-                    _skill_open_tag(section.title, section.source_version),
-                    f"<description>{escape(section.content.strip())}</description>",
-                    "</skill>",
+                    _skill_open_tag(
+                        "skill_card",
+                        section.title,
+                        section.source_version,
+                    ),
+                    _escape_xml_text(section.content),
+                    "</skill_card>",
                 ]
             )
         rendered.append("</skill_index>")
     if bodies:
-        rendered.append("<loaded_skills>")
         for section in bodies:
             rendered.extend(
                 [
-                    _skill_open_tag(section.title, section.source_version),
+                    _skill_open_tag(
+                        "loaded_skill",
+                        section.title,
+                        section.source_version,
+                    ),
                     _escape_xml_text(section.content),
-                    "</skill>",
+                    "</loaded_skill>",
                 ]
             )
-        rendered.append("</loaded_skills>")
     if references:
-        rendered.append("<skill_references>")
         for section in references:
             identity = _skill_reference_identity(section)
             if identity is None:
@@ -255,22 +256,20 @@ def procedural_guidance_for_pack(pack: AssistantContextPack) -> str:
             rendered.extend(
                 [
                     (
-                        f'<reference skill_id="{escape(skill_id, quote=True)}" '
+                        f'<skill_reference skill_id="{escape(skill_id, quote=True)}" '
                         f'reference_id="{escape(reference_id, quote=True)}" '
                         f'version="{escape(section.source_version, quote=True)}">'
                     ),
                     _escape_xml_text(section.content),
-                    "</reference>",
+                    "</skill_reference>",
                 ]
             )
-        rendered.append("</skill_references>")
-    rendered.append("</procedural_guidance>")
     return "\n".join(rendered)
 
 
-def _skill_open_tag(skill_id: str, version: str) -> str:
+def _skill_open_tag(tag: str, skill_id: str, version: str) -> str:
     return (
-        f'<skill id="{escape(skill_id, quote=True)}" '
+        f'<{tag} id="{escape(skill_id, quote=True)}" '
         f'version="{escape(version, quote=True)}">'
     )
 
@@ -300,20 +299,6 @@ def _skill_reference_identity(
     ):
         return None
     return skill_id, reference_id
-
-
-def _skill_loading_enabled(
-    pack: AssistantContextPack,
-    selected_tool_specs: tuple[ToolSpec, ...],
-) -> bool:
-    has_skill_context = any(
-        section.kind in {"skill_summary", "skill_body", "skill_reference"}
-        and section.authority == "procedural_guidance"
-        and not section.sensitive
-        for section in pack.context_sections
-    )
-    available_tool_names = {spec.name for spec in selected_tool_specs}
-    return has_skill_context and "load_skill" in available_tool_names
 
 
 def _render_context(request: PromptCompileRequest) -> RenderedAssistantContext:

@@ -361,16 +361,16 @@ def test_successful_load_skill_is_promoted_from_registered_source() -> None:
     assert "observation-injection-sentinel" not in body.content
     assert body.content in _compile_system(pack)
     system_prompt = _compile_system(pack)
-    assert "<loaded_skills>" in system_prompt
+    assert "<loaded_skills>" not in system_prompt
     assert (
-        '<skill id="travel-tool-orchestration" version="3">'
+        '<loaded_skill id="travel-tool-orchestration" version="3">'
         in system_prompt
     )
-    assert system_prompt.index("<loaded_skills>") < system_prompt.index(
+    assert system_prompt.index("<loaded_skill ") < system_prompt.index(
         body.content
     )
     assert system_prompt.index(body.content) < system_prompt.index(
-        "</loaded_skills>"
+        "</loaded_skill>"
     )
 
 
@@ -390,7 +390,7 @@ def test_supported_provider_compiles_loaded_skill_as_developer_message() -> None
     compiled = _compile(pack, supports_developer_role=True)
 
     assert body.content not in compiled.chat_request.messages[0]["content"]
-    assert "## 技能生命周期" in compiled.chat_request.messages[0]["content"]
+    assert "## 技能生命周期" not in compiled.chat_request.messages[0]["content"]
     assert compiled.chat_request.messages[1] == {
         "role": "developer",
         "content": procedural_guidance_for_pack(pack),

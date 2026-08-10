@@ -88,13 +88,12 @@ system profile、context pack、原生工具调用轨迹和本轮 ToolSpec；不
 - `ChatRequest.tools` 只来自本轮结构化治理后的 `ToolSpec`。Tool catalog 和 context assembly
   不读取 `request.text` 做关键词、正则或确定性意图路由。
 - `ResponseStyle` 由显式请求和入口 profile 解析，不从用户文本或主题猜测；不同入口仍复用同一编译器。
-- System instruction 以稳定的“助理运行契约”为根，区分运行时事实、authority、执行、
-  工具、Skill lifecycle、回答和 `act/finalize` 阶段；动态程序指导不得作为无边界的同级 Markdown
-  章节裸拼接。
+- System instruction 只保存通用 authority、执行、工具、回答和 `act/finalize` 约束；具体 Tool 的
+  适用条件和输入语义随本轮实际暴露的 `ToolSpec` 提供，不常驻复制到 system policy。
 - Provider 支持 developer role 时，可把 procedural guidance 编译为 developer message；否则保守放入
-  system guidance，不伪造 Provider 不支持的角色。两条路径都使用同一
-  `<procedural_guidance>` 投影：未加载摘要位于 `<skill_index>`，正文位于
-  `<loaded_skills>`，按需 reference 位于 `<skill_references>`，每项保留稳定 Skill id 与版本边界。
+  system guidance，不伪造 Provider 不支持的角色。两条路径使用同一最小边界：初始状态只投影
+  `<skill_index>` 中的 `<skill_card>`；加载后才投影对应 `<loaded_skill>` 正文；按需 reference 使用独立
+  `<skill_reference>`。不再增加全局 procedural wrapper 或常驻 Skill lifecycle 说明。
 - `FINALIZE` 只保留已发生且成对匹配的 native tool call/result 因果证据，并关闭后续工具调用。
   具体运行阶段和失败恢复见 `docs/runtime-event-stream-architecture.md` 与
   `docs/tool-calling-architecture.md`。
@@ -109,7 +108,8 @@ Tool 清单、权限或可见性声明。未加载的 `activation=model` Skill �
 `activation=context` manifest 是内部 Context Toolset 声明，不进入 Skill 索引且不能由模型加载。它只在
 已有 entry/media/env 结构化事实满足受治理 Tool exposure 时由 Runtime 生成
 `ContextToolsetGrant`，适用于图片、视频帧和实时画面等上下文能力；该 grant 只暴露当前合格 Tool，
-不产生 active Skill 或 `skill_body`。`SkillGrant` 和 Context Toolset grant 当前都在会话内持续保留，
+不产生 active Skill 或 `skill_body`，其能力指导随实际暴露的 ToolSpec 渐进出现，不进入 Skill 卡片或
+全局 system policy。`SkillGrant` 和 Context Toolset grant 当前都在会话内持续保留，
 不设 TTL 或清除；恢复时以当前 manifest 重建能力。调用方 metadata 不能伪造或预选能力。reference
 只能从 Skill 正文加载结果实际返回的 `reference_ids` 中按需加载，整个加载过程静默且不向用户播报。
 动态 Skill 正文仍是 `ContextSection`；编译器渲染来源边界，但它不能绕过入口限制、媒体要求、
@@ -306,7 +306,7 @@ memory 文本、完整 tool observation、raw Provider payload 或 secret。Toke
 为 unavailable，不能用零伪装。
 
 `ContextBudgetReport.procedural_guidance_chars` 记录原始 `ContextSection.content` 的来源字符量，不包含
-编译阶段增加的 `<procedural_guidance>` envelope、属性和 XML entity 开销；该字段用于来源 accounting，
+编译阶段增加的 Skill 边界标签、属性和 XML entity 开销；该字段用于来源 accounting，
 不是模型窗口准入值。最终 compiled request tokenizer preflight 和 system/developer prompt report 必须包含
 这些渲染开销，并继续作为 hard window 的权威口径。
 

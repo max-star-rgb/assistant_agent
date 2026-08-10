@@ -31,8 +31,9 @@ MAX_SKILL_REFERENCE_CHARS = 20_000
 class LoadSkillTool(ToolBase):
     name = LOAD_SKILL_TOOL_NAME
     description = (
-        "按 skill_id 读取已注册 Skill 的完整工作流正文，并返回该 Skill 可继续读取的 "
-        "reference_ids。只读取 Skill 注册表中的内容，不接受文件路径或任意未注册资源。"
+        "当当前任务符合 skill_index 中某张 Skill 卡片时，在调用其相关业务工具前按 "
+        "skill_id 静默加载完整工作流正文；不要加载无关 Skill 或向用户播报加载过程。"
+        "成功结果会返回可按需读取的 reference_ids；不接受路径或未注册资源。"
     )
     input_schema = LoadSkillRequest
     output_schema = LoadSkillResult
@@ -88,8 +89,8 @@ class LoadSkillTool(ToolBase):
 class LoadSkillReferenceTool(ToolBase):
     name = LOAD_SKILL_REFERENCE_TOOL_NAME
     description = (
-        "按 skill_id 和 reference_id 读取专项参考正文；reference_id 必须由本次运行中"
-        "成功的 load_skill 授予。只读取已注册参考，不接受文件路径或越权标识。"
+        "仅在已加载 Skill 的专项细节确有必要时，按 skill_id 和本轮 load_skill 实际返回的 "
+        "reference_id 静默读取参考正文；不得猜测标识，也不接受路径或越权资源。"
     )
     input_schema = LoadSkillReferenceRequest
     output_schema = LoadSkillReferenceResult
