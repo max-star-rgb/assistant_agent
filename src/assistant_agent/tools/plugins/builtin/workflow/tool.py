@@ -40,6 +40,27 @@ class WorkflowSubmitTool(ToolBase):
         )
 
     def _run(self, input: WorkflowSubmission, context: ToolContext) -> ToolResult:
+        assistant_mode = context.metadata.get("assistant_mode")
+        if input.workflow_type == "deep_research" and assistant_mode != "deep_research":
+            return ToolResult(
+                tool_name=self.name,
+                success=False,
+                data={"error": {"code": "assistant_mode_required"}},
+                model_observation={"error": {"code": "assistant_mode_required"}},
+                error="Deep Research workflow requires assistant_mode=deep_research.",
+                trace_summary={"error_code": "assistant_mode_required"},
+            )
+        if assistant_mode == "deep_research" and input.workflow_type != "deep_research":
+            return ToolResult(
+                tool_name=self.name,
+                success=False,
+                data={"error": {"code": "workflow_type_mode_mismatch"}},
+                model_observation={
+                    "error": {"code": "workflow_type_mode_mismatch"}
+                },
+                error="Deep Research mode requires workflow_type=deep_research.",
+                trace_summary={"error_code": "workflow_type_mode_mismatch"},
+            )
         service = context.metadata.get("workflow_service")
         identity_payload = context.metadata.get("request_identity")
         if service is not self.service or not isinstance(identity_payload, dict):

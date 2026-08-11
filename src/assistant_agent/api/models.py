@@ -129,6 +129,15 @@ class WorkflowEventsResponse(BaseModel):
     next_cursor: int = Field(default=0, ge=0)
 
 
+class WorkflowResultResponse(BaseModel):
+    """Identity-scoped full final Workflow artifact."""
+
+    protocol_version: str = PROTOCOL_VERSION
+    workflow_id: str
+    artifact_ref: str
+    content: str
+
+
 
 def api_error_from_agent_error(error: AgentError) -> ApiError:
     """Convert internal AgentError to stable external ApiError."""

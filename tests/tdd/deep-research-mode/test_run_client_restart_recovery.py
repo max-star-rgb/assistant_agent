@@ -236,6 +236,12 @@ def test_client_tails_structured_workflow_ref_until_completed(
                     "next_cursor": 2,
                 }
             )
+        if path.endswith("/result"):
+            return _JsonResponse({
+                "workflow_id": "workflow-sentinel",
+                "artifact_ref": "workflow-artifact://final-sentinel",
+                "content": "full-final-report-sentinel",
+            })
         return _JsonResponse(
             {
                 "workflow": {
@@ -276,11 +282,12 @@ def test_client_tails_structured_workflow_ref_until_completed(
     assert requested_paths == [
         "/workflows/workflow-sentinel/events",
         "/workflows/workflow-sentinel",
+        "/workflows/workflow-sentinel/result",
     ]
     assert "workflow.accepted" not in output
     assert "workflow.completed" not in output
     assert "研究完成" in output
-    assert "final-report-sentinel" in output
+    assert "full-final-report-sentinel" in output
 
 
 def test_interactive_client_submits_waiting_workflow_input_instead_of_new_chat(

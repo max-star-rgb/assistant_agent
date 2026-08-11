@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from typing import Literal, Protocol, TypedDict
 from uuid import uuid4
@@ -16,6 +17,7 @@ from assistant_agent.workflows.models import (
     WorkflowWorkItem,
     utc_now,
 )
+from assistant_agent.workflows.planning import next_ready_work_item
 from assistant_agent.workflows.service import WorkflowService
 from assistant_agent.workflows.store import WorkflowLeaseConflict
 
@@ -150,12 +152,9 @@ class WorkflowRuntime:
 
     def _select_ready_work(self, state: WorkflowGraphState) -> WorkflowGraphState:
         plan = state["bundle"].current_plan
-        ready = sorted(
-            (item for item in plan.work_items if item.status == "ready"),
-            key=lambda item: item.work_item_id,
-        )
-        if ready:
-            return {"route": "execute", "selected_work_item_id": ready[0].work_item_id}
+        ready = next_ready_work_item(plan)
+        if ready is not None:
+            return {"route": "execute", "selected_work_item_id": ready.work_item_id}
         if all(item.status in {"succeeded", "skipped", "superseded"} for item in plan.work_items):
             return {"route": "terminal", "selected_work_item_id": "completed"}
         return {"route": "terminal", "selected_work_item_id": "no_ready_work"}
@@ -186,10 +185,10 @@ class WorkflowRuntime:
         )
         try:
             result = self.work_item_executor.execute(assignment)
-        except Exception:
+        except Exception as exc:
             result = WorkItemExecutionResult(
                 status="retryable_failed",
-                error_code="work_item_execution_failed",
+                error_code=_executor_error_code(exc),
             )
         return {"attempt_id": attempt_id, "execution_result": result}
 
@@ -225,7 +224,6 @@ class WorkflowRuntime:
                 )
             ],
         }
-
     def _commit_quantum(self, state: WorkflowGraphState) -> WorkflowGraphState:
         bundle = state["bundle"].model_copy(deep=True)
         events = list(state.get("pending_events", []))
@@ -444,3 +442,8 @@ class WorkflowRuntime:
                 "error_code": item.error_code,
             },
         )
+
+
+def _executor_error_code(exc: Exception) -> str:
+    name = re.sub(r"(?<!^)(?=[A-Z])", "_", type(exc).__name__).lower()
+    return f"work_item_executor_{name}"[:160]

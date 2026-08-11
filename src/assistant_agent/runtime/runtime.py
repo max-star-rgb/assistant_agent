@@ -569,13 +569,19 @@ class AgentGraphRuntime:
             if isinstance(step, dict) and step.get("output_type") is not None
         )
         artifact_refs = list(state.response.output_refs) if state.response else []
+        loop_steps = [
+            step
+            for step in state.request.metadata.get("assistant_loop_steps", [])
+            if isinstance(step, dict) and step.get("output_type") is not None
+        ]
+        terminal_notes = loop_steps[-1].get("safety_notes", []) if loop_steps else []
         terminal_failure_note = next(
             (
                 note
-                for step in state.request.metadata.get("assistant_loop_steps", [])
-                if isinstance(step, dict)
-                for note in step.get("safety_notes", [])
+                for note in terminal_notes
                 if note in {
+                    "provider_context_overflow",
+                    "provider_context_overflow_retry_failed",
                     "provider_response_truncated",
                     "provider_error",
                     "provider_refusal",
@@ -600,6 +606,14 @@ class AgentGraphRuntime:
             status=status,
             run_id=state.run_id,
             summary=summary,
+            error_code=(
+                "provider_context_overflow"
+                if terminal_failure_note in {
+                    "provider_context_overflow",
+                    "provider_context_overflow_retry_failed",
+                }
+                else terminal_failure_note
+            ),
             artifact_refs=artifact_refs,
             model_calls_used=model_calls_used,
             tool_calls_used=len(state.tool_calls),

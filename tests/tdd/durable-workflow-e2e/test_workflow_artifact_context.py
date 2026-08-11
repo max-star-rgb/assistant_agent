@@ -81,6 +81,32 @@ def test_context_manifest_contains_bounded_excerpts_not_full_artifacts(tmp_path)
     store.close()
 
 
+def test_default_context_budget_allows_one_long_draft_to_reach_the_next_item(
+    tmp_path,
+) -> None:
+    store = LocalWorkflowArtifactStore(tmp_path / "artifacts")
+    content = "D" * 8_000
+    ref = store.write_text(
+        identity=_identity(),
+        workflow_id="workflow-sentinel",
+        kind="draft",
+        text=content,
+        producer_work_item_id="draft-sentinel",
+    )
+
+    manifest = WorkflowContextCompiler(artifact_store=store).compile(
+        identity=_identity(),
+        workflow_id="workflow-sentinel",
+        objective="verify-sentinel",
+        constraints=[],
+        artifact_refs=[ref.uri],
+    )
+
+    assert manifest.artifacts[0].excerpt == content
+    assert manifest.trimmed is False
+    store.close()
+
+
 def test_agent_graph_runtime_exposes_bounded_work_item_entry() -> None:
     runtime = AgentGraphRuntime(config=ProviderConfig())
     request = AgentWorkItemRequest(

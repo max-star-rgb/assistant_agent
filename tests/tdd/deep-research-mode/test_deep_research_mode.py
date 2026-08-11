@@ -24,6 +24,7 @@ from assistant_agent.gateway.session import GatewaySessionManager
 from assistant_agent.gateway.turn_facade import GatewayTurnFacade, GatewayTurnRequest
 from assistant_agent.observability.agent_service_delivery import AgentServiceDelivery
 from assistant_agent.runtime.chat_adapter import (
+    ChatProviderError,
     ChatRequest,
     ChatResult,
     OpenAICompatibleChatAdapter,
@@ -33,7 +34,12 @@ from assistant_agent.runtime.requests import UserRequest
 from assistant_agent.skills.loading import SkillCatalog
 from assistant_agent.tools.ids import WORKFLOW_SUBMIT_TOOL_NAME
 from assistant_agent.tools.models import ToolSpec
-from assistant_agent.workflows.agent_runtime import AgentWorkItemRequest, AgentWorkItemResult
+from assistant_agent.workflows.agent_runtime import (
+    AgentWorkItemRequest,
+    AgentWorkItemResult,
+    parse_work_item_response,
+    render_work_item_prompt,
+)
 from assistant_agent.workflows.artifacts import LocalWorkflowArtifactStore
 from assistant_agent.workflows.context import WorkflowContextCompiler
 from assistant_agent.workflows.execution import AgentRuntimeWorkItemExecutor
@@ -526,6 +532,7 @@ def _deep_research_work_item_request() -> AgentWorkItemRequest:
         session_id="session-sentinel",
         objective="draft-objective-sentinel",
         work_item_kind="draft",
+        acceptance_contract={"min_sources": 4},
         assistant_mode="deep_research",
         context_manifest={
             "workflow_id": "workflow-sentinel",
@@ -536,6 +543,34 @@ def _deep_research_work_item_request() -> AgentWorkItemRequest:
             "trimmed": False,
         },
     )
+
+
+def test_work_item_prompt_scopes_global_constraints_to_the_final_deliverable() -> None:
+    request = _deep_research_work_item_request()
+    prompt = render_work_item_prompt(request.model_copy(update={
+        "context_manifest": request.context_manifest.model_copy(
+            update={"constraints": ["最终报告至少引用 15 个来源"]}
+        )
+    }))
+
+    assert '"min_sources": 4' in prompt
+    assert "Workflow 约束默认由最终交付物整体满足" in prompt
+
+
+def test_long_work_item_text_is_preserved_as_content_with_a_bounded_summary() -> None:
+    text = "研究正文" * 2_000
+
+    result = parse_work_item_response(
+        text,
+        run_id="run-sentinel",
+        artifact_refs=[],
+        model_calls_used=1,
+        tool_calls_used=0,
+    )
+
+    assert result.status == "succeeded"
+    assert result.content == text
+    assert len(result.summary) <= 4_000
 
 
 def test_deep_research_work_item_uses_a_separate_response_budget() -> None:
@@ -571,6 +606,26 @@ def test_truncated_work_item_is_not_persisted_as_a_successful_result() -> None:
     result = runtime.run_work_item(_deep_research_work_item_request())
 
     assert result.status == "failed"
+
+
+def test_context_overflow_work_item_is_not_persisted_as_a_successful_result() -> None:
+    adapter = _ScriptedWorkItemChatAdapter(ChatResult(
+        provider="scripted",
+        model="scripted-model",
+        errors=[ChatProviderError(
+            code="provider_context_overflow",
+            message="context-overflow-detail-sentinel",
+        )],
+    ))
+    runtime = AgentGraphRuntime(
+        config=ProviderConfig(langgraph_checkpointer_backend="none"),
+        chat_adapter=adapter,
+    )
+
+    result = runtime.run_work_item(_deep_research_work_item_request())
+
+    assert result.status == "failed"
+    assert result.error_code == "provider_error"
 
 
 def test_chat_compatible_research_plan_marks_sources_as_best_effort() -> None:

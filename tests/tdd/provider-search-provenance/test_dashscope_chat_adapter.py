@@ -120,8 +120,7 @@ def test_dashscope_request_enables_source_and_citation_evidence() -> None:
 
     assert result.success is True
     assert result.response_text == (
-        "answer-sentinel [1]\n\n来源：\n"
-        "- [source-one](https://example.com/one)"
+        "answer-sentinel [[1]](https://example.com/one)"
     )
     assert [source.model_dump() for source in result.search_sources] == [{
         "index": 1,
@@ -165,6 +164,58 @@ def test_dashscope_response_preserves_native_function_calls() -> None:
     assert len(result.tool_calls) == 1
     assert result.tool_calls[0].name == "lodging_search"
     assert result.tool_calls[0].arguments == {"destination": "杭州"}
+
+
+def test_answer_turns_provider_citations_into_inline_links() -> None:
+    response = _text_response()
+    response["output"]["choices"][0]["message"]["content"] = (
+        "claim-a [5]，claim-b [2]，claim-c [ref_4]，再次引用 [5]。"
+    )
+    response["output"]["search_info"]["search_results"] = [
+        {
+            "index": index,
+            "title": f"source-{index}",
+            "url": f"https://example.com/{index}",
+        }
+        for index in range(1, 8)
+    ]
+
+    result = _adapter(_Transport(response)).chat(ChatRequest(
+        user_id="user-sentinel",
+        session_id="session-sentinel",
+        user_query="query-sentinel",
+    ))
+
+    assert len(result.search_sources) == 7
+    assert result.response_text == (
+        "claim-a [[5]](https://example.com/5)，"
+        "claim-b [[2]](https://example.com/2)，"
+        "claim-c [[ref_4]](https://example.com/4)，"
+        "再次引用 [[5]](https://example.com/5)。"
+    )
+    assert "来源：" not in result.response_text
+
+
+def test_answer_without_citations_does_not_invent_inline_links() -> None:
+    response = _text_response()
+    response["output"]["choices"][0]["message"]["content"] = "answer-without-citations"
+    response["output"]["search_info"]["search_results"] = [
+        {
+            "index": index,
+            "title": f"source-{index}",
+            "url": f"https://example.com/{index}",
+        }
+        for index in range(1, 8)
+    ]
+
+    result = _adapter(_Transport(response)).chat(ChatRequest(
+        user_id="user-sentinel",
+        session_id="session-sentinel",
+        user_query="query-sentinel",
+    ))
+
+    assert len(result.search_sources) == 7
+    assert result.response_text == "answer-without-citations"
 
 
 def test_qwen_defaults_to_dashscope_native_with_explicit_compatible_fallback() -> None:

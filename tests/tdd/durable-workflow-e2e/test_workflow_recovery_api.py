@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -9,6 +11,8 @@ from assistant_agent.api.routes_workflows import (
     workflow_request_identity,
 )
 from assistant_agent.identity import RequestIdentity
+from assistant_agent.api import routes_agent
+from assistant_agent.workflows.artifacts import LocalWorkflowArtifactStore
 from assistant_agent.workflows.definitions import (
     WorkflowDefinitionCatalog,
     WorkflowDefinitionDescriptor,
@@ -65,6 +69,18 @@ class InputThenSuccessExecutor:
             status="succeeded",
             summary=f"region:{user_inputs[-1]['values']['region']}",
             artifact_refs=["artifact://final"],
+        )
+
+
+class ArtifactSuccessExecutor:
+    def __init__(self, artifact_ref: str) -> None:
+        self.artifact_ref = artifact_ref
+
+    def execute(self, assignment) -> WorkItemExecutionResult:
+        return WorkItemExecutionResult(
+            status="succeeded",
+            summary="bounded-summary-sentinel",
+            artifact_refs=[self.artifact_ref],
         )
 
 
@@ -168,3 +184,44 @@ def test_http_status_events_input_and_cancel_are_thin_service_facades() -> None:
     }
     assert events.json()["next_cursor"] == 2
     assert cancelled.json()["workflow"]["status"] == "cancelled"
+
+
+def test_http_result_returns_the_identity_scoped_full_final_artifact(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    service = _service()
+    created = _submit(service)
+    artifacts = LocalWorkflowArtifactStore(tmp_path / "artifacts")
+    artifact = artifacts.write_text(
+        identity=_identity(),
+        workflow_id=created.workflow.workflow_id,
+        kind="report",
+        text="full-final-report-sentinel",
+        producer_work_item_id="input-step",
+    )
+    DurableWorkflowWorker(
+        service=service,
+        runtime=WorkflowRuntime(
+            service=service,
+            work_item_executor=ArtifactSuccessExecutor(artifact.uri),
+        ),
+        worker_id="worker-sentinel",
+    ).run_once()
+    monkeypatch.setattr(
+        routes_agent,
+        "get_agent_runtime",
+        lambda: SimpleNamespace(workflow_artifact_store=artifacts),
+    )
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_workflow_service] = lambda: service
+    app.dependency_overrides[workflow_request_identity] = _identity
+
+    response = TestClient(app).get(
+        f"/workflows/{created.workflow.workflow_id}/result"
+    )
+
+    assert response.status_code == 200
+    assert response.json()["content"] == "full-final-report-sentinel"
+    artifacts.close()

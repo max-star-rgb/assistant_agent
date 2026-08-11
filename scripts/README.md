@@ -68,8 +68,10 @@ MULTIMODAL_AGENT_PROVIDER_MODE=mock \
   identity-scoped Workflow status/events HTTP facade by cursor. In interactive mode,
   `waiting_input` opens a Workflow-specific prompt, submits the response with the
   persisted resume token, and continues tailing instead of sending a new chat turn.
-  Non-interactive mode stops at action-required state. On completion the client prints
-  the final successful work-item summary. Default workflow output is product-facing:
+  Non-interactive mode stops at action-required state. On completion the client reads
+  the identity-scoped `/workflows/{workflow_id}/result` artifact and prints the full
+  final output, falling back to the bounded final work-item summary only for an older
+  server without that endpoint. Default workflow output is product-facing:
   it uses the persisted plan item's short natural-language `display_title` and completion
   count, while hiding raw event names and workflow IDs. Use `--workflow-details` to expose
   cursor-based events and identifiers for debugging.

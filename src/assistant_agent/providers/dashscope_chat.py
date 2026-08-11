@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 import json
+import re
 from time import perf_counter
 from typing import Any, Protocol
 from urllib.error import HTTPError, URLError
@@ -21,6 +22,11 @@ from assistant_agent.runtime.chat_adapter import (
 )
 from assistant_agent.runtime.output_models import openai_tool_call_to_native_tool_call
 
+
+_MAX_SEARCH_SOURCES = 20
+_CITATION_PATTERN = re.compile(
+    r"(?<!\[)\[(?P<label>(?:ref_)?(?P<index>[1-9][0-9]*))\](?!\()"
+)
 
 class DashScopeHttpTransport(Protocol):
     def post_json(
@@ -186,7 +192,7 @@ class DashScopeChatAdapter:
                     arguments_raw=str(function.get("arguments", raw_call.get("arguments", ""))),
                 ))
         sources = _parse_search_sources(output.get("search_info", data.get("search_info")))
-        response_text = _append_sources(content.strip(), sources) if not tool_calls else content.strip()
+        response_text = _link_citations(content.strip(), sources) if not tool_calls else content.strip()
         if not response_text and not tool_calls:
             raise ValueError("DashScope response was empty")
         usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
@@ -286,12 +292,23 @@ def _parse_search_sources(search_info: Any) -> list[ProviderSearchSource]:
         index = raw_index if isinstance(raw_index, int) and raw_index >= 1 else position
         sources.append(ProviderSearchSource(index=index, title=safe_title, url=safe_url))
         seen_urls.add(url)
+        if len(sources) >= _MAX_SEARCH_SOURCES:
+            break
     return sources
 
 
-def _append_sources(content: str, sources: list[ProviderSearchSource]) -> str:
-    if not sources:
-        return content
-    lines = [content, "", "来源："] if content else ["来源："]
-    lines.extend(f"- [{source.title}]({source.url})" for source in sources)
-    return "\n".join(lines)
+def _link_citations(
+    content: str,
+    sources: list[ProviderSearchSource],
+) -> str:
+    by_index = {source.index: source for source in sources}
+
+    def replace(match: re.Match[str]) -> str:
+        index = int(match.group("index"))
+        source = by_index.get(index)
+        if source is None:
+            return match.group(0)
+        markdown_url = source.url.replace("(", "%28").replace(")", "%29")
+        return f"[[{match.group('label')}]]({markdown_url})"
+
+    return _CITATION_PATTERN.sub(replace, content)

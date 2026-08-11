@@ -424,9 +424,30 @@ async def tail_workflow(
             print(_workflow_progress_message(progress), flush=True)
             last_progress_key = progress_key
         if status == "completed":
-            summary = _workflow_result_summary(status_payload)
-            if summary:
-                print(f"\n{summary}", flush=True)
+            result_text = ""
+            try:
+                result_payload = await asyncio.to_thread(
+                    _workflow_api_get,
+                    server,
+                    f"/workflows/{workflow_id}/result",
+                    user_number,
+                    session_id,
+                    {},
+                )
+                content = result_payload.get("content")
+                if isinstance(content, str):
+                    result_text = content
+            except Exception as exc:
+                if workflow_details:
+                    print(
+                        f"WARNING: Full Workflow result unavailable: {exc}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+            if not result_text:
+                result_text = _workflow_result_summary(status_payload)
+            if result_text:
+                print(f"\n{result_text}", flush=True)
             return True
         if status in {"failed", "cancelled"}:
             reason = workflow.get("terminal_reason_code") if isinstance(workflow, dict) else None

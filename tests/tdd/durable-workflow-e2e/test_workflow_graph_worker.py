@@ -13,6 +13,7 @@ from assistant_agent.workflows.models import (
     WorkflowSubmission,
     WorkflowWorkItem,
 )
+from assistant_agent.workflows.progress import project_workflow_progress
 from assistant_agent.workflows.runtime import (
     WorkItemExecutionResult,
     WorkflowRuntime,
@@ -74,6 +75,45 @@ class MeteredExecutor(RecordingExecutor):
         return result.model_copy(update={"model_calls_used": 1, "tool_calls_used": 2})
 
 
+class ExplodingExecutor:
+    def execute(self, assignment) -> WorkItemExecutionResult:
+        raise ValueError("sensitive-detail-sentinel")
+
+
+class ParallelDefinition:
+    descriptor = WorkflowDefinitionDescriptor(
+        workflow_type="parallel_probe",
+        definition_version="1",
+    )
+
+    def validate_submission(self, submission: WorkflowSubmission) -> None:
+        return None
+
+    def build_initial_plan(
+        self, *, workflow_id: str, submission: WorkflowSubmission
+    ) -> WorkflowPlanVersion:
+        return WorkflowPlanVersion(
+            workflow_id=workflow_id,
+            version=1,
+            definition_version="1",
+            revision_reason="initial",
+            work_items=[
+                WorkflowWorkItem(
+                    work_item_id="ws_openclaw",
+                    kind="research",
+                    display_title="研究 OpenClaw",
+                    objective="openclaw",
+                ),
+                WorkflowWorkItem(
+                    work_item_id="ws_industry",
+                    kind="research",
+                    display_title="研究业界恢复模式",
+                    objective="industry",
+                ),
+            ],
+        )
+
+
 def _submission() -> WorkflowSubmission:
     return WorkflowSubmission(
         workflow_type="two_step",
@@ -132,6 +172,67 @@ def test_worker_advances_one_work_item_per_quantum_and_completes(tmp_path) -> No
     assert completed.workflow.status == "completed"
     assert completed.workflow.result_artifact_refs == ["artifact://compose"]
     assert executor.executed == ["collect", "compose"]
+    store.close()
+
+
+def test_progress_projects_the_same_ready_item_that_runtime_will_execute(tmp_path) -> None:
+    store = SQLiteWorkflowStore(tmp_path / "workflow.sqlite3")
+    service = WorkflowService(
+        store=store,
+        definitions=WorkflowDefinitionCatalog([ParallelDefinition()]),
+    )
+    created = service.submit(
+        identity=_identity(),
+        ingress_run_id="run-sentinel",
+        submission=WorkflowSubmission(
+            workflow_type="parallel_probe",
+            objective="objective-sentinel",
+            deliverables=["deliverable-sentinel"],
+            durability_reasons=["parallel_roots"],
+            idempotency_key="parallel-submission-sentinel",
+        ),
+    )
+    executor = RecordingExecutor()
+
+    progress = project_workflow_progress(
+        workflow=created.workflow,
+        plan=created.current_plan,
+    )
+    DurableWorkflowWorker(
+        service=service,
+        runtime=WorkflowRuntime(service=service, work_item_executor=executor),
+        worker_id="worker-sentinel",
+    ).run_once()
+
+    assert progress["work_item_id"] == "ws_industry"
+    assert executor.executed == ["ws_industry"]
+    store.close()
+
+
+def test_executor_exception_persists_a_prompt_safe_error_type(tmp_path) -> None:
+    store = SQLiteWorkflowStore(tmp_path / "workflow.sqlite3")
+    service = _service(store)
+    created = service.submit(
+        identity=_identity(),
+        ingress_run_id="run-sentinel",
+        submission=_submission(),
+    )
+
+    DurableWorkflowWorker(
+        service=service,
+        runtime=WorkflowRuntime(
+            service=service,
+            work_item_executor=ExplodingExecutor(),
+        ),
+        worker_id="worker-sentinel",
+    ).run_once()
+
+    events = service.list_events(
+        identity=_identity(),
+        workflow_id=created.workflow.workflow_id,
+    )
+    assert events[-1].payload["error_code"] == "work_item_executor_value_error"
+    assert "sensitive-detail-sentinel" not in str(events[-1].model_dump())
     store.close()
 
 

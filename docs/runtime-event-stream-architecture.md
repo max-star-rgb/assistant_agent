@@ -140,8 +140,12 @@ Provider-native 联网；`QWEN_CHAT_API_PROTOCOL=openai_compatible` 只作为显
 使用独立的 8192 token 预算，两者分别可由 `MULTIMODAL_AGENT_CHAT_MAX_TOKENS` 和
 `MULTIMODAL_AGENT_DEEP_RESEARCH_MAX_TOKENS` 覆盖。
 adapter 将 DashScope `search_info.search_results` 归一化为 `ChatResult.search_sources`，只接受
-HTTP(S) URL、按 URL 去重并把来源链接追加到文本终态；这证明 Provider 返回了哪些来源，但不把引用
-覆盖率或网页内容正确性扩大声明为已验证事实。显式 OpenAI-compatible 回退不提供该结构化来源契约。
+HTTP(S) URL、按 URL 去重并在结构化结果中最多保留 20 条。终态展示不追加底部来源列表；Runtime
+使用 Provider 返回的 `index` 将正文 `[1]` 或 `[ref_1]` 转成显示文本不变的内联 Markdown 链接，
+点击角标直接打开对应来源。正文没有角标、角标没有匹配来源或已经是链接时不猜测、不补链。
+角标语义完全沿用 Provider 在 `enable_citation=true` 下生成的内容，Runtime 不自行插入或伪造引用；
+这证明 Provider 返回了哪些来源，但不把引用覆盖率或网页内容正确性扩大声明为已验证事实。显式
+OpenAI-compatible 回退不提供该结构化来源契约。
 `MULTIMODAL_AGENT_NATIVE_PROVIDER_STREAMING` 只控制 Runtime 是否使用 async-native stream
 consumer；sync-only DashScope adapter 始终走 `ChatAdapter.chat()`。Judge 等显式直接构造且未开启
 `native_web_search` 的辅助 adapter 保持独立的非联网、非流式策略。Other providers remain opt-in through

@@ -24,6 +24,19 @@ class CapturingAgentRuntime:
         )
 
 
+class LongResultAgentRuntime:
+    def __init__(self, content: str) -> None:
+        self.content = content
+
+    def run_work_item(self, request) -> AgentWorkItemResult:
+        return AgentWorkItemResult(
+            status="succeeded",
+            run_id="run-work-item-sentinel",
+            summary=self.content[:4_000],
+            content=self.content,
+        )
+
+
 def test_deep_research_is_a_definition_not_a_special_runtime() -> None:
     definition = DeepResearchWorkflowDefinition()
     submission = WorkflowSubmission(
@@ -145,4 +158,50 @@ def test_agent_executor_compiles_dependency_artifacts_and_persists_output(tmp_pa
         identity=identity,
         artifact_ref=result.artifact_refs[0],
     ) == "work-item-output-sentinel"
+    artifacts.close()
+
+
+def test_agent_executor_persists_full_content_without_overflowing_result_summary(
+    tmp_path,
+) -> None:
+    identity = RequestIdentity.for_user(
+        user_id="user-sentinel",
+        agent_id="agent-sentinel",
+        session_id="session-sentinel",
+    )
+    artifacts = LocalWorkflowArtifactStore(tmp_path / "artifacts")
+    full_content = "研究正文" * 2_000
+    executor = AgentRuntimeWorkItemExecutor(
+        agent_runtime=LongResultAgentRuntime(full_content),
+        artifact_store=artifacts,
+        context_compiler=WorkflowContextCompiler(artifact_store=artifacts),
+    )
+    assignment = WorkItemAssignment.model_validate({
+        "workflow_id": "workflow-sentinel",
+        "workflow_type": "deep_research",
+        "definition_version": "2",
+        "user_id": identity.user_id,
+        "agent_id": identity.agent_id,
+        "session_id": identity.session_id,
+        "attempt_id": "attempt-sentinel",
+        "objective": "research-objective-sentinel",
+        "inputs": {},
+        "model_calls_remaining": 5,
+        "tool_calls_remaining": 5,
+        "work_item": {
+            "work_item_id": "research",
+            "kind": "research",
+            "objective": "research-step-sentinel",
+            "acceptance_contract": {"min_sources": 4},
+        },
+    })
+
+    result = executor.execute(assignment)
+
+    assert result.status == "succeeded"
+    assert len(result.summary) <= 4_000
+    assert artifacts.read_text(
+        identity=identity,
+        artifact_ref=result.artifact_refs[0],
+    ) == full_content
     artifacts.close()

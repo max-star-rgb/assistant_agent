@@ -65,6 +65,7 @@ class AgentRuntimeWorkItemExecutor:
             session_id=assignment.session_id,
             objective=assignment.work_item.objective,
             work_item_kind=assignment.work_item.kind,
+            acceptance_contract=dict(assignment.work_item.acceptance_contract),
             assistant_mode=(
                 "deep_research"
                 if assignment.workflow_type == "deep_research"
@@ -103,7 +104,7 @@ class AgentRuntimeWorkItemExecutor:
             return WorkItemExecutionResult(
                 status="waiting_input",
                 summary=result.summary,
-                error_code="agent_work_item_blocked",
+                error_code=result.error_code or "agent_work_item_blocked",
                 input_request={
                     "required_fields": list(result.unresolved_questions),
                 },
@@ -114,7 +115,7 @@ class AgentRuntimeWorkItemExecutor:
             return WorkItemExecutionResult(
                 status="retryable_failed",
                 summary=result.summary,
-                error_code="agent_work_item_failed",
+                error_code=result.error_code or "agent_work_item_failed",
                 model_calls_used=result.model_calls_used,
                 tool_calls_used=result.tool_calls_used,
             )
@@ -122,7 +123,7 @@ class AgentRuntimeWorkItemExecutor:
             identity=identity,
             workflow_id=assignment.workflow_id,
             kind=assignment.work_item.kind,
-            text=result.summary,
+            text=result.content or result.summary,
             producer_work_item_id=assignment.work_item.work_item_id,
         )
         return WorkItemExecutionResult(

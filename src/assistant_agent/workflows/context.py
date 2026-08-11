@@ -34,7 +34,7 @@ class WorkflowContextCompiler:
         *,
         artifact_store: LocalWorkflowArtifactStore,
         max_total_chars: int = 12_000,
-        max_artifact_chars: int = 4_000,
+        max_artifact_chars: int = 12_000,
     ) -> None:
         self.artifact_store = artifact_store
         self.max_total_chars = max(0, max_total_chars)
@@ -52,7 +52,8 @@ class WorkflowContextCompiler:
         remaining = self.max_total_chars
         excerpts: list[WorkflowArtifactExcerpt] = []
         trimmed = False
-        for artifact_ref in artifact_refs:
+        total_artifacts = len(artifact_refs)
+        for index, artifact_ref in enumerate(artifact_refs):
             ref = self.artifact_store.get_ref(
                 identity=identity,
                 artifact_ref=artifact_ref,
@@ -63,7 +64,9 @@ class WorkflowContextCompiler:
                 identity=identity,
                 artifact_ref=artifact_ref,
             )
-            allowance = min(self.max_artifact_chars, remaining)
+            artifacts_remaining = total_artifacts - index
+            fair_share = remaining // artifacts_remaining
+            allowance = min(self.max_artifact_chars, fair_share)
             excerpt = full_text[:allowance]
             if len(excerpt) < len(full_text):
                 trimmed = True

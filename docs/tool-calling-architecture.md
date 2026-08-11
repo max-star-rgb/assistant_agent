@@ -68,7 +68,11 @@ assistant loop。
 不会隐式开启该模式。若 Durable Workflow 已启用，首次 Provider 决策必须选择该 Tool，提交成功后
 由既有 durable Workflow 执行；若未启用，则 catalog 保持为空并直接使用 Provider-native deep
 research search profile 完成本轮，不注册或调用本地联网 Tool。普通 `assistant_mode=standard` 不改变
-现有工具目录和 assistant loop。
+现有工具目录和 assistant loop。即使普通模式下模型自主选择了 `workflow_submit`，Tool 也只允许提交
+`long_horizon` 等通用 Workflow；`deep_research` 必须同时具有 Gateway 固化的
+`assistant_mode=deep_research`，否则返回结构化 `assistant_mode_required`，不能靠模型参数越过产品模式。
+反向同样成立：深度研究模式只能提交 `deep_research` definition，其他类型以结构化
+`workflow_type_mode_mismatch` 拒绝，使产品 mode 与 durable definition 双向绑定。
 
 `visual_memory_search` 遵守同一边界：它是唯一新增的历史视觉 Tool，category 为 `read`，不要求本轮
 附带媒体。Runtime 只依据同 user/session `SessionVisualSemanticStore.has_searchable_history()` 生成可信 exposure fact，并覆盖调用方
@@ -342,6 +346,8 @@ definition-owned `inputs` schema 中，不能污染通用契约。
 `TaskPlan.steps` 使用同一个 `PlanDisplayTitle` 长度及内容契约。Deep Research 优先执行 Agent 提交的
 workstream，仅在未提供时使用 definition 的保守兜底计划。Workflow status facade 从已持久化的当前
 plan 和 item 状态生成统一 `progress`，入口不得依据事件名称、用户原文或额外 LLM 调用虚构进度。
+Runtime 与 progress facade 复用同一个确定性 ready-item 选择器，保证产品显示的“当前步骤”就是下一次
+实际执行的步骤，而不是 plan 数组中碰巧靠前的另一个并行根节点。
 
 Tool 从 `ToolExecutor` 注入的 `request_identity`、`run_id` 和同一 `WorkflowService` binding 构造
 owner-bound submission；模型不能提交 owner、lease、revision、worker 或 Store。成功 observation 只
@@ -456,6 +462,16 @@ Gateway 不按 Tool name 或 Provider 错误码改写运行终态。
   work-item Tool allowlist 是可信空集合也必须表示“暴露零个 Tool”，不能退化为完整 Registry。
   `deep_research` work item 固定使用空本地 Tool allowlist；联网由 Qwen/Bailian Chat Completions 的
   Provider-native 搜索完成，不注册或调用本地 `web_search`/`web_fetch`，也不会绕过 Tool 治理链。
+  Workflow 级 constraints 默认由最终交付物整体满足；每个 worker prompt 还携带当前 item 的
+  `acceptance_contract`，子任务只对自己的验收约束负责，避免把“最终至少 15 个来源”等全局条件误解为
+  每个并行子任务都必须单独完成。worker 的完整成功正文写入 owner-bound artifact，持久 plan 中只保存
+  最多 4000 字的进度摘要；completed Workflow 的完整最终正文由 identity-scoped
+  `GET /workflows/{workflow_id}/result` 读取，不能用摘要承担最终报告交付。Executor 边界捕获的意外异常
+  只持久化 prompt-safe 的异常类型错误码，不泄露 exception message；模型已成功生成的超长正文不得再
+  因摘要 schema 上限被误判为 provider 执行失败。下游 item 的 context manifest 仍受 12000 字符总预算
+  限制，但在依赖 artifact 间公平分配剩余额度；只有一个长草稿时可以使用全部预算，不再固定截到前
+  4000 字。worker 只以最后一个 assistant step 的结构化失败 note 判断技术终态，context overflow 等
+  失败不会写成成功 artifact，较早步骤已经恢复的失败也不会污染最终结果。
   `waiting_input` 的恢复值由 identity-scoped Workflow facade 持久化并传入后续 work-item request；
   Provider 技术性截断、错误、拒绝或空终态映射为 retry/failure，不得作为成功结果写 artifact。
   每次 work-item run 回传实际 model/tool call 数并在同一 revision commit 中扣减预算；后续 quantum
@@ -501,7 +517,7 @@ payload、凭据、绝对路径和大块内联数据不能因 ToolResult 或调�
 - `workflows/`：Workflow 契约、definition、Store、LangGraph controller、worker、artifact/context 和
   `AgentGraphRuntime` work-item adapter；
 - `tools/plugins/builtin/workflow/`：`workflow_submit` Tool 与 fail-closed Plugin；
-- `api/routes_workflows.py`：identity-scoped status/events/input/cancel 薄入口。
+- `api/routes_workflows.py`：identity-scoped status/events/input/cancel/result 薄入口。
 
 ## 10. 不变量
 

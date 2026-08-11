@@ -22,6 +22,7 @@ class AgentWorkItemRequest(BaseModel):
     session_id: str
     objective: str = Field(min_length=1, max_length=10_000)
     work_item_kind: str = Field(default="generic", min_length=1, max_length=120)
+    acceptance_contract: dict[str, JsonValue] = Field(default_factory=dict)
     assistant_mode: AssistantMode = "standard"
     repair_candidate_ids: list[str] = Field(default_factory=list, max_length=128)
     context_manifest: WorkflowContextManifest
@@ -36,6 +37,8 @@ class AgentWorkItemResult(BaseModel):
     status: Literal["succeeded", "repair", "blocked", "failed"]
     run_id: str
     summary: str
+    content: str = Field(default="", max_length=100_000)
+    error_code: str | None = Field(default=None, max_length=160)
     artifact_refs: list[str] = Field(default_factory=list)
     unresolved_questions: list[str] = Field(default_factory=list)
     repair_work_item_ids: list[str] = Field(default_factory=list)
@@ -51,8 +54,16 @@ def render_work_item_prompt(request: AgentWorkItemRequest) -> str:
         f"Workflow objective: {request.context_manifest.objective}",
     ]
     if request.context_manifest.constraints:
-        lines.append("Constraints:")
+        lines.append(
+            "Workflow 约束默认由最终交付物整体满足；当前 work item 只需满足自身 "
+            "acceptance contract，除非约束明确点名当前步骤:"
+        )
         lines.extend(f"- {item}" for item in request.context_manifest.constraints)
+    if request.acceptance_contract:
+        lines.append(
+            "Work item acceptance contract:\n"
+            + json.dumps(request.acceptance_contract, ensure_ascii=False, sort_keys=True)
+        )
     if request.context_manifest.artifacts:
         lines.append("Artifact excerpts:")
         for artifact in request.context_manifest.artifacts:
@@ -113,7 +124,8 @@ def parse_work_item_response(
         return AgentWorkItemResult(
             status="succeeded",
             run_id=run_id,
-            summary=text,
+            summary=_bounded_summary(text),
+            content=text,
             artifact_refs=artifact_refs,
             model_calls_used=model_calls_used,
             tool_calls_used=tool_calls_used,
@@ -129,3 +141,7 @@ def parse_work_item_response(
         model_calls_used=model_calls_used,
         tool_calls_used=tool_calls_used,
     )
+
+
+def _bounded_summary(text: str, *, max_chars: int = 4_000) -> str:
+    return text if len(text) <= max_chars else text[: max_chars - 1] + "…"

@@ -15,7 +15,11 @@ from assistant_agent.api.identity import (
     enforce_identity_policy,
     resolve_request_identity,
 )
-from assistant_agent.api.models import WorkflowEventsResponse, WorkflowResponse
+from assistant_agent.api.models import (
+    WorkflowEventsResponse,
+    WorkflowResponse,
+    WorkflowResultResponse,
+)
 from assistant_agent.identity import RequestIdentity
 from assistant_agent.workflows.service import (
     WorkflowAccessDenied,
@@ -26,6 +30,11 @@ from assistant_agent.workflows.service import (
 )
 from assistant_agent.workflows.progress import project_workflow_progress
 from assistant_agent.workflows.store import WorkflowStoreError
+from assistant_agent.workflows.artifacts import (
+    ArtifactAccessDenied,
+    ArtifactNotFound,
+    LocalWorkflowArtifactStore,
+)
 
 
 router = APIRouter(prefix="/workflows", tags=["durable-workflows"])
@@ -47,6 +56,17 @@ def get_workflow_service() -> WorkflowService:
     if not isinstance(service, WorkflowService):
         raise _http_error(503, "WORKFLOWS_DISABLED", "Durable workflows are disabled.")
     return service
+
+
+def get_workflow_artifact_store() -> LocalWorkflowArtifactStore:
+    store = getattr(
+        routes_agent.get_agent_runtime(),
+        "workflow_artifact_store",
+        None,
+    )
+    if not isinstance(store, LocalWorkflowArtifactStore):
+        raise _http_error(503, "WORKFLOWS_DISABLED", "Workflow artifacts are disabled.")
+    return store
 
 
 def workflow_request_identity(
@@ -111,6 +131,36 @@ def get_workflow_events(
         workflow_id=workflow_id,
         events=[event.model_dump(mode="json") for event in events],
         next_cursor=events[-1].cursor if events else after,
+    )
+
+
+@router.get("/{workflow_id}/result", response_model=WorkflowResultResponse)
+def get_workflow_result(
+    workflow_id: str,
+    identity: RequestIdentity = Depends(workflow_request_identity),
+    service: WorkflowService = Depends(get_workflow_service),
+    artifact_store: LocalWorkflowArtifactStore = Depends(get_workflow_artifact_store),
+) -> WorkflowResultResponse:
+    try:
+        bundle = service.get_workflow(identity=identity, workflow_id=workflow_id)
+    except (WorkflowServiceError, WorkflowStoreError) as exc:
+        raise _map_error(exc) from exc
+    if bundle.workflow.status != "completed":
+        raise _http_error(409, "WORKFLOW_RESULT_NOT_READY", "Workflow result is not ready.")
+    if not bundle.workflow.result_artifact_refs:
+        raise _http_error(404, "WORKFLOW_RESULT_NOT_FOUND", "Workflow result was not found.")
+    artifact_ref = bundle.workflow.result_artifact_refs[-1]
+    try:
+        content = artifact_store.read_text(
+            identity=identity,
+            artifact_ref=artifact_ref,
+        )
+    except (ArtifactNotFound, ArtifactAccessDenied) as exc:
+        raise _http_error(404, "WORKFLOW_RESULT_NOT_FOUND", "Workflow result was not found.") from exc
+    return WorkflowResultResponse(
+        workflow_id=workflow_id,
+        artifact_ref=artifact_ref,
+        content=content,
     )
 
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from assistant_agent.workflows.models import WorkflowPlanVersion, WorkflowRecord
+from assistant_agent.workflows.planning import next_ready_work_item
 
 
 def project_workflow_progress(
@@ -22,10 +23,12 @@ def project_workflow_progress(
         (
             item
             for item in plan.work_items
-            if item.status in {"running", "ready", "blocked"}
+            if item.status in {"running", "blocked"}
         ),
         None,
     )
+    if active is None:
+        active = next_ready_work_item(plan)
     state = (
         "completed"
         if workflow.status == "completed"

@@ -259,9 +259,10 @@ observer。VIDEO 消息的 `userNumber` 必须等于握手 `number`，不一致�
   模型正文，而是据此使用已有 `/workflows/{workflow_id}` 与 cursor-based `/events` facade 持续
   pull/tail；默认只显示 status facade 根据持久化 plan 生成的自然语言 `progress`（如当前 item 的
   `display_title` 和完成度），不显示内部 Workflow ID 或原始事件。显式传入 `--workflow-details` 才
-  展开 cursor/event 诊断信息。completed 时打印最终成功 work item 的 `result_summary`，failed、
-  cancelled、blocked 或 waiting-input 时结束当前观察窗口。该 tail 不把后台 Workflow 重新放回
-  Gateway active run。
+  展开 cursor/event 诊断信息。completed 时通过 identity-scoped
+  `/workflows/{workflow_id}/result` 读取并打印完整最终 artifact；旧服务未提供该接口时才降级为最终
+  work item 的有界 `result_summary`。failed、cancelled、blocked 或 waiting-input 时结束当前观察窗口。
+  该 tail 不把后台 Workflow 重新放回 Gateway active run。
 - 图片原始文件必须不超过 25 MiB，并且内容可识别为 JPEG、PNG、GIF 或 WebP。
   `imageId` 使用 Agent 托管 artifact 文件名去掉扩展名后的图片 ID；找不到、超限、越界或无法识别的引用会被忽略，
   不得让已有文本响应失败。

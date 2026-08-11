@@ -199,6 +199,7 @@ class ToolExecutor:
                     if key != "_before_tool_execution"
                 },
                 "request_text": state.request.text or "",
+                "assistant_mode": state.request.assistant_mode,
                 "request_metadata": dict(state.request.metadata),
                 "request_identity": RequestIdentity.from_user_request(
                     state.request,
