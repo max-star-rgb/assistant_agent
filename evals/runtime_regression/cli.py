@@ -17,9 +17,10 @@ from assistant_agent.providers.provider_http import without_unsupported_socks_pr
 from assistant_agent.runtime.assistant_run_service import load_env_file
 from assistant_agent.runtime.runtime import AgentGraphRuntime
 
-from .dataset import RUNTIME_REGRESSION_DATASET, promote_failed_score
+from assistant_agent.evaluation.constants import RUNTIME_REGRESSION_DATASET
 from .experiment import (
     RuntimeRegressionExperimentSettings,
+    inspect_runtime_regression_dataset,
     run_runtime_regression_experiment,
     wait_for_runtime_regression_scores,
 )
@@ -30,18 +31,15 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Promote daily Langfuse failures and rerun runtime regressions."
+        description="Run Langfuse-owned cases through the production runtime."
     )
     action = parser.add_mutually_exclusive_group(required=True)
     action.add_argument("--inspect", action="store_true")
-    action.add_argument("--promote-score", action="store_true")
+    action.add_argument("--preflight", action="store_true")
     action.add_argument("--run", action="store_true")
-    parser.add_argument("--score-id")
-    parser.add_argument("--reviewed-by")
     parser.add_argument("--run-name")
     parser.add_argument("--max-concurrency", type=int, default=1)
     parser.add_argument("--score-wait-timeout-seconds", type=float, default=180.0)
-    parser.add_argument("--allow-dataset-write", action="store_true")
     parser.add_argument("--allow-real-provider", action="store_true")
     parser.add_argument("--allow-runtime-side-effects", action="store_true")
     parser.add_argument("--env-file", type=Path, default=PROJECT_ROOT / ".env")
@@ -53,13 +51,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     client = _langfuse_client()
     try:
         if args.inspect:
-            dataset = client.get_dataset(RUNTIME_REGRESSION_DATASET)
-            active = [
-                item
-                for item in dataset.items
-                if getattr(getattr(item, "status", None), "value", getattr(item, "status", None))
-                == "ACTIVE"
-            ]
+            _, active = inspect_runtime_regression_dataset(client)
             print(
                 json.dumps(
                     {
@@ -71,24 +63,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             )
             return 0
-        if args.promote_score:
-            _require_args(parser, args, "score_id", "reviewed_by")
-            if not args.allow_dataset_write:
-                parser.error("--promote-score requires --allow-dataset-write")
-            result = promote_failed_score(
-                client,
-                score_id=args.score_id,
-                reviewed_by=args.reviewed_by,
-            )
-            client.flush()
-            print(result.model_dump_json(indent=2))
-            return 0
-
-        _require_args(parser, args, "run_name")
         if not args.allow_real_provider:
-            parser.error("--run requires --allow-real-provider")
+            action_name = "preflight" if args.preflight else "run"
+            parser.error(f"--{action_name} requires --allow-real-provider")
         if not args.allow_runtime_side_effects:
-            parser.error("--run requires --allow-runtime-side-effects")
+            parser.error(
+                f"--{'preflight' if args.preflight else 'run'} requires "
+                "--allow-runtime-side-effects"
+            )
         if args.max_concurrency < 1:
             parser.error("--max-concurrency must be positive")
         config = ProviderConfig.from_env()
@@ -97,6 +79,23 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "runtime regression Experiment requires MULTIMODAL_AGENT_PROVIDER_MODE=real"
             )
         config.validate_provider_mode()
+        if args.preflight:
+            _, active = inspect_runtime_regression_dataset(client)
+            print(
+                json.dumps(
+                    {
+                        "action": "preflight",
+                        "status": "ready",
+                        "dataset_name": RUNTIME_REGRESSION_DATASET,
+                        "active_item_count": len(active),
+                        "model": config.resolved_chat_provider().model,
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            return 0
+
+        _require_args(parser, args, "run_name")
         result = run_runtime_regression_experiment(
             client,
             RuntimeRegressionExperimentSettings(

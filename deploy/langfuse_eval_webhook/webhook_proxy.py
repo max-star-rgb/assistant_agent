@@ -13,8 +13,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
 RELEASE_REVIEW_PATH = "/internal/evals/langfuse/release-review"
+RUNTIME_REGRESSION_PATH = "/internal/evals/langfuse/runtime-regression"
 RELEASE_REVIEW_SIGNING_SECRET_ENV = (
     "ASSISTANT_AGENT_LANGFUSE_RELEASE_REVIEW_SIGNING_SECRET"
+)
+RUNTIME_REGRESSION_SIGNING_SECRET_ENV = (
+    "ASSISTANT_AGENT_LANGFUSE_RUNTIME_REGRESSION_SIGNING_SECRET"
 )
 
 
@@ -25,7 +29,8 @@ class WebhookProxyConfig:
     upstream_host: str = "host.docker.internal"
     upstream_port: int = 8089
     upstream_timeout_seconds: float = 35.0
-    signing_secret: str | None = None
+    release_review_signing_secret: str | None = None
+    runtime_regression_signing_secret: str | None = None
     now: Callable[[], float] = time.time
 
 
@@ -34,17 +39,21 @@ def create_server(config: WebhookProxyConfig) -> ThreadingHTTPServer:
 
     class WebhookProxyHandler(BaseHTTPRequestHandler):
         def do_POST(self) -> None:
-            if self.path != RELEASE_REVIEW_PATH:
+            signing_secret = {
+                RELEASE_REVIEW_PATH: config.release_review_signing_secret,
+                RUNTIME_REGRESSION_PATH: config.runtime_regression_signing_secret,
+            }.get(self.path)
+            if self.path not in {RELEASE_REVIEW_PATH, RUNTIME_REGRESSION_PATH}:
                 self.send_error(404)
                 return
 
             content_length = int(self.headers.get("Content-Length", "0"))
             body = self.rfile.read(content_length)
             signature = self.headers.get("x-langfuse-signature")
-            if not signature and config.signing_secret:
+            if not signature and signing_secret:
                 signature = _signature_header(
                     body=body,
-                    secret=config.signing_secret,
+                    secret=signing_secret,
                     timestamp=int(config.now()),
                 )
             upstream = HTTPConnection(
@@ -55,7 +64,7 @@ def create_server(config: WebhookProxyConfig) -> ThreadingHTTPServer:
             try:
                 upstream.request(
                     "POST",
-                    RELEASE_REVIEW_PATH,
+                    self.path,
                     body=body,
                     headers={
                         "Content-Type": self.headers.get(
@@ -107,9 +116,12 @@ def _signature_header(*, body: bytes, secret: str, timestamp: int) -> str:
 def main() -> None:
     server = create_server(
         WebhookProxyConfig(
-            signing_secret=(
+            release_review_signing_secret=(
                 os.environ.get(RELEASE_REVIEW_SIGNING_SECRET_ENV) or None
-            )
+            ),
+            runtime_regression_signing_secret=(
+                os.environ.get(RUNTIME_REGRESSION_SIGNING_SECRET_ENV) or None
+            ),
         )
     )
     try:

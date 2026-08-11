@@ -80,27 +80,19 @@ operator 可把人工决定写入本地审计产物：
 
 ## 日常失败到 Runtime Regression
 
-真实回归案例的固定闭环是：**日常对话 → Live Observation Score → 人工复核失败 Score → Langfuse
-Dataset → 生产 Runtime Experiment → Experiment Score**。Dataset
-`assistant-agent-runtime-regressions` 只接收 Langfuse 已落库、`source=EVAL`、BOOLEAN `false` 且 subject
-为 observation 的 canonical `assistant_agent.quality.*` Score；不再从 runtime audit issue 生成 Git YAML，
-也不使用历史生成案例填充该 Dataset。
+真实回归案例的固定闭环是：**日常对话 → Live Observation Score → 人工复核失败 Score → 在 Langfuse UI
+加入固定 Dataset → UI 触发生产 Runtime Experiment → Experiment Score**。唯一 Dataset 名为
+`assistant-agent-runtime-regressions`；不要按日期新建 Dataset，日期、来源和故障分类放在 Item metadata。
+Runtime Regression 不再拥有 Git、本地文件或 CLI 写入的案例来源，也不再提供 `--promote-score`；所有
+active Item 均以 Langfuse 当前内容为准。
 
-人工在 Langfuse Trace 中确认失败后，用精确 Score ID 显式沉淀：
-
-```bash
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_runtime_regressions.py \
-  --promote-score --score-id <score-id> --reviewed-by <reviewer> \
-  --allow-dataset-write
-```
-
-入口重新读取 Score、所属 trace 的全部 Score 与 Observations v2 数据，要求唯一且未截断的根
-`agent.runtime` input，并创建稳定 item ID。item 关联 `source_trace_id` 与 `source_observation_id`，metadata
-记录审核者、源 Score 和同一 trace 的全部失败质量维度；重复沉淀同一 trace 覆盖同一 item，不制造副本。
+在 Trace 页面把根 `agent.runtime` observation 加入 Dataset 后，Item input 可以直接保持 Langfuse 的
+`role/content/chars/truncated` 结构；也兼容手工录入的 `{"request":"..."}`。`truncated=true`、非 user
+role、空 content 或非对象 input 会在 preflight 阶段失败，不会启动真实 Runtime。
 
 首次 Dataset 创建后，运行 `run_runtime_audit.py configure-evaluators --apply --allow-online-judge`，为该
-Dataset ID 配置 response quality 与 grounding 两条 Experiment Rule。随后显式允许真实 Provider 与
-Runtime 副作用进行重跑：
+Dataset ID 配置 response quality 与 grounding 两条 Experiment Rule。服务端保留同一 SDK runner 作为
+webhook 的受控执行内核；operator 仍可用以下命令诊断，但日常不需要手工运行 CLI：
 
 ```bash
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_runtime_regressions.py \
@@ -108,7 +100,7 @@ Runtime 副作用进行重跑：
   --allow-real-provider --allow-runtime-side-effects
 ```
 
-runner 只执行 owner 正确且状态为 ACTIVE 的 item，通过 `AgentGraphRuntime` 重放原始请求，不复制 Agent
+runner 只执行状态为 ACTIVE 的 Langfuse item，通过 `AgentGraphRuntime` 重放原始请求，不复制 Agent
 loop。输出使用结构化 `ReleaseRunEvidence`，Langfuse Experiment Rules 复用日常 evaluator family。CLI
 必须等每个 item 的 `assistant_agent.quality.response_quality.experiment` 与
 `assistant_agent.quality.grounding.experiment` 都落库后才成功；超时或缺分属于 infrastructure failure。
@@ -164,6 +156,22 @@ Tool catalog；失败会以非 2xx 直接返回 Langfuse，不会先接受再静
 `.data/evals/release_review/remote/`。签名与 body 生成稳定 trigger id，重复投递不会启动第二次。
 UI 只负责选择 Dataset、Experiment Evaluator 和触发运行，不拥有 Provider 模式、Staging readiness、案例
 定义或发布权限。
+
+Runtime Regression 的内部入口固定为 `POST /internal/evals/langfuse/runtime-regression`。Assistant Server
+与 `deploy/langfuse_eval_webhook` proxy 同时配置：
+
+```text
+ASSISTANT_AGENT_LANGFUSE_RUNTIME_REGRESSION_ENABLED=true
+ASSISTANT_AGENT_LANGFUSE_RUNTIME_REGRESSION_SIGNING_SECRET=<local-secret>
+ASSISTANT_AGENT_LANGFUSE_RUNTIME_REGRESSION_READY=true
+MULTIMODAL_AGENT_PROVIDER_MODE=real
+```
+
+在固定 Dataset 的 `Start Experiment → Custom Experiment` 中填写可从 Langfuse 容器访问的上述 webhook
+URL；默认 Config 使用 `{}`，需要指定运行名时使用 `{"runName":"<safe-unique-name>"}`。服务端验证五分钟
+内有效的 HMAC-SHA256 签名、固定 Dataset、真实 Provider 配置和全部 active Item 后返回 `202`，随后异步
+调用同一 Runtime Regression runner。相同签名与 body 的重复投递只启动一次；receipt/log 写入
+`.data/evals/runtime_regression/remote/`。Experiment 会在 SDK 创建原生 Dataset Run 后出现在 UI。
 
 ## 修改与验证
 
