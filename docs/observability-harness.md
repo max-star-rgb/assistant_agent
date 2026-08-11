@@ -1,6 +1,6 @@
 # Observability Harness
 
-Last updated: 2026-08-06
+Last updated: 2026-08-11
 
 ## Authority contract
 
@@ -358,7 +358,7 @@ Runtime trace 的主入口。面板如何折叠或展示长 JSON 不属于架构
 
 `scripts/run_runtime_audit.py run` 是只读的日常审计入口。user timer 每天北京时间 00:15
 运行，审计刚结束的前一个自然日（北京时间 00:00 至次日 00:00），而不是最近几小时。它以
-Langfuse 的完整 trace、observation 和 Score 为主证据；本地 `.data/graph_trace.jsonl` 只生成
+Langfuse Observations v2 聚合出的完整 trace、observation 和 Score 为主证据；本地 `.data/graph_trace.jsonl` 只生成
 trace/run、时间、terminal 与 event count 的完整性 manifest。只有 Langfuse 可读但缺少相应 trace
 时，才把有界、redacted 的本地 timeline 作为 fallback evidence；Langfuse 不可读只记录
 infrastructure unknown，不能把本地记录误报为导出缺失。本地 JSONL 不存在、不可读或只含无效记录时
@@ -470,10 +470,12 @@ metadata。terminal、Tool 调用成败、event count、latency 等已知运行�
 不伪装成质量 Score。跨多个 observation 的 `tool_use` 轨迹判断第一阶段只进入 Codex 报告。Experiment
 task-level Score、Dataset 和运行契约统一由 [`evals/README.md`](../evals/README.md) 定义，本文件不复制。
 
-Langfuse 日常 evaluator 只使用原生 **Live Observations** 和 observation name/type filter；首次创建
+Langfuse 日常 evaluator 使用原生 **Live Observations** 和 observation name/type filter；首次创建
 默认 100% sampling，之后 `enabled/sampling` 由 Langfuse UI 作为运维状态管理。仓库 reconcile 只更新
-evaluator reference、target、filter 和 mapping，不覆盖 UI 中的启停或采样。该配置属于日常 Trace
-评分，不创建 Experiment Rule，也不启动 Dataset Experiment。不要新建 deprecated trace-level evaluator。
+evaluator reference、target、filter 和 mapping，不覆盖 UI 中的启停或采样；prompt、output definition 或
+model connection 漂移时创建同名 evaluator 新版本。五个 evaluator family 除服务日常评分外，response
+quality 与 grounding 还被两条 Dataset-ID 过滤的 Experiment Rule 复用。配置器只管理规则，不创建或启动
+Dataset Experiment。不要新建 deprecated trace-level evaluator。
 Langfuse 可按 `gen_ai.tool.name` 将 Tool execution SPAN 显示为
 `shopping_search` 等具体工具名，因此 `tool_result_quality` 不依赖 observation name，而过滤 SPAN 且
 metadata `assistant_agent.observation_kind=tool_execution`；该稳定标记由 canonical
@@ -497,25 +499,27 @@ trace content。Evaluator/rule 公共 API 当前仍标为 unstable，因此仓�
 ```bash
 # 只读查看将创建的 canonical evaluator/rule
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_runtime_audit.py \
-  configure-evaluators --model-provider deepseek-judge --model deepseek-v4-flash
+  configure-evaluators --model-provider qwen-judge --model qwen-flash
 
 # operator 确认该 LLM connection、100% sampling 与费用后才执行
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_runtime_audit.py \
-  configure-evaluators --model-provider deepseek-judge --model deepseek-v4-flash \
+  configure-evaluators --model-provider qwen-judge --model qwen-flash \
   --apply --allow-online-judge
 ```
 
-Evaluator 与 Live Observation Rule 使用同一个 `assistant_agent.quality.*` canonical 名称。入口只创建
-缺失的五条日常 Rule；若检测到早期 `assistant-agent-live-*` Rule 或错误版本创建的
+Evaluator 与 Live Observation Rule 使用同一个 `assistant_agent.quality.*` canonical 名称。入口创建
+缺失的五条日常 Rule；新回归 Dataset 尚不存在时，两条 Experiment Rule 会明确列为 skipped，不影响
+Live Judge 首次启用；Dataset 由审核后的失败 Score 创建后，再次运行配置器即按真实 Dataset ID 补齐规则。
+若检测到早期 `assistant-agent-live-*` Rule 或错误版本创建的
 `assistant_agent.quality.*.live` Rule，则通过同一 Rule ID 原地迁移为 canonical 名称，不删除或回写
 历史 Score。`memory_extraction` Rule 额外过滤
 `assistant_agent.memory_semantic_evidence=available`，因此只有
 显式启用本地 memory trace content 且 observation 同时包含原对话和 Mem0 changes 时才调用 Judge。
 
 `scripts/run_runtime_audit.py` 无论使用 `run` 还是一次性 `configure-evaluators`，都不负责启动 Langfuse、
-同步 Dataset 或运行 Experiment；前者只读审计已有 Trace，后者只配置供日常 Trace 使用的 Live
-Observation Rule。Experiment 的启动、Dataset 同步和 UI 配置只查阅
-[`evals/README.md`](../evals/README.md#从-langfuse-ui-触发-cli)。
+写入 Dataset 或运行 Experiment；前者只读审计已有 Trace，后者配置 Live 与 Runtime Regression
+Experiment Rules。失败 Score 的审核沉淀与 Experiment 启动见
+[`evals/README.md`](../evals/README.md#日常失败到-runtime-regression)。
 
 每日调度使用仓库提供的 user unit 模板；安装/启用属于 operator 动作，不由审计器自行修改。unit
 必须链接到已部署的主 checkout（默认 `%h/pycharm_project/assistant_agent`），不得链接到临时 worktree。
@@ -539,8 +543,8 @@ assistant-agent-runtime-audit.timer` 查看下次运行，用
 历史 `agent_eval.dimension.*` 和默认关闭的 legacy runtime Score 不做破坏性清理；它们仅作为历史数据
 保留。`configure-evaluators --apply` 会把旧 `assistant-agent-live-*` 规则以及错误版本创建的
 `assistant_agent.quality.*.live` 规则原地改回上述 canonical 名称，避免重复日常评分；它不会自动删除
-错误版本可能创建的 `*.experiment` 规则，operator 应按 eval 权威文档在 Langfuse UI 中确认后禁用或
-删除。迁移后的日常审计完整性检查只认上述 canonical 名称。
+错误版本可能创建的无 Dataset-ID 边界 `*.experiment` 规则，operator 应在 Langfuse UI 中确认后禁用或
+删除。当前 Runtime Regression 规则固定使用 canonical evaluator family 与新 Dataset ID。
 
 ## 长期不变量
 

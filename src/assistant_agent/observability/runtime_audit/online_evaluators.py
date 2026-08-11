@@ -5,7 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+from assistant_agent.evaluation.constants import RUNTIME_REGRESSION_DATASET
 
 from langfuse.api.unstable.commons.types.evaluation_rule_filter import (
     EvaluationRuleFilter_StringObject,
@@ -54,18 +56,28 @@ class OnlineEvaluatorConfigurationResult(BaseModel):
     rule_names: list[str]
     created_evaluators: int = 0
     existing_evaluators: int = 0
+    updated_evaluators: int = 0
     created_rules: int = 0
     existing_rules: int = 0
     updated_rules: int = 0
+    skipped_rule_names: list[str] = Field(default_factory=list)
 
 
 @dataclass(frozen=True)
 class _EvaluatorSpec:
     name: str
-    legacy_rule_names: tuple[str, ...]
     prompt: str
+
+
+@dataclass(frozen=True)
+class _RuleSpec:
+    name: str
+    evaluator_name: str
+    target: EvaluationRuleTarget
     observation_name: str | None
-    observation_type: str
+    observation_type: str | None
+    dataset_id: str | None = None
+    legacy_rule_names: tuple[str, ...] = ()
     metadata_filters: tuple[tuple[str, str], ...] = ()
 
 
@@ -76,9 +88,10 @@ def configure_native_online_evaluators(
     model_provider: str,
     model: str,
 ) -> OnlineEvaluatorConfigurationResult:
-    """Create the five live observation evaluators used by runtime audit."""
+    """Reconcile five evaluator families and their Live/Experiment rules."""
 
-    specs = _specs()
+    evaluator_specs = _specs()
+    rule_specs = _rule_specs(dataset_id=None)
     evaluator_resource = client.api.unstable.evaluators
     rule_resource = client.api.unstable.evaluation_rules
     existing_evaluators = {
@@ -91,29 +104,39 @@ def configure_native_online_evaluators(
     }
     result = OnlineEvaluatorConfigurationResult(
         applied=apply,
-        evaluator_names=[item.name for item in specs],
-        rule_names=[item.name for item in specs],
+        evaluator_names=[item.name for item in evaluator_specs],
+        rule_names=[item.name for item in rule_specs],
     )
     if not apply:
         return result
+    dataset_id = _runtime_regression_dataset_id(client)
+    rule_specs = _rule_specs(dataset_id=dataset_id)
 
     created_evaluators = 0
     existing_evaluator_count = 0
+    updated_evaluators = 0
     created_rules = 0
     existing_rule_count = 0
     updated_rules = 0
-    for spec in specs:
+    skipped_rule_names: list[str] = []
+    for spec in evaluator_specs:
+        evaluator_request = _evaluator_request(
+            spec,
+            model_provider=model_provider,
+            model=model,
+        )
         if spec.name not in existing_evaluators:
-            evaluator_resource.create(
-                request=_evaluator_request(
-                    spec,
-                    model_provider=model_provider,
-                    model=model,
-                )
-            )
+            evaluator_resource.create(request=evaluator_request)
             created_evaluators += 1
         else:
             existing_evaluator_count += 1
+            if _evaluator_has_drifted(existing_evaluators[spec.name], evaluator_request):
+                evaluator_resource.create(request=evaluator_request)
+                updated_evaluators += 1
+    for spec in rule_specs:
+        if spec.target == EvaluationRuleTarget.EXPERIMENT and spec.dataset_id is None:
+            skipped_rule_names.append(spec.name)
+            continue
         rule_request = _rule_request(spec)
         existing_rule = existing_rules.get(spec.name)
         legacy_rule = next(
@@ -154,9 +177,11 @@ def configure_native_online_evaluators(
         update={
             "created_evaluators": created_evaluators,
             "existing_evaluators": existing_evaluator_count,
+            "updated_evaluators": updated_evaluators,
             "created_rules": created_rules,
             "existing_rules": existing_rule_count,
             "updated_rules": updated_rules,
+            "skipped_rule_names": skipped_rule_names,
         }
     )
 
@@ -182,44 +207,57 @@ def _evaluator_request(
     )
 
 
-def _rule_request(spec: _EvaluatorSpec) -> CreateLlmAsJudgeEvaluationRuleRequest:
-    filters = [
-        EvaluationRuleFilter_StringOptions(
-            column="type",
-            operator=EvaluationRuleOptionsFilterOperator.ANY_OF,
-            value=[spec.observation_type],
-        ),
-        EvaluationRuleFilter_StringOptions(
-            column="traceName",
-            operator=EvaluationRuleOptionsFilterOperator.ANY_OF,
-            value=["assistant.turn"],
-        ),
-    ]
-    if spec.observation_name is not None:
-        filters.append(
+def _rule_request(spec: _RuleSpec) -> CreateLlmAsJudgeEvaluationRuleRequest:
+    if spec.target == EvaluationRuleTarget.EXPERIMENT:
+        if spec.dataset_id is None:
+            raise ValueError(f"experiment rule {spec.name!r} has no Dataset id")
+        filters = [
             EvaluationRuleFilter_StringOptions(
-                column="name",
+                column="datasetId",
                 operator=EvaluationRuleOptionsFilterOperator.ANY_OF,
-                value=[spec.observation_name],
+                value=[spec.dataset_id],
             )
+        ]
+    else:
+        if spec.observation_type is None:
+            raise ValueError(f"observation rule {spec.name!r} has no observation type")
+        filters = [
+            EvaluationRuleFilter_StringOptions(
+                column="type",
+                operator=EvaluationRuleOptionsFilterOperator.ANY_OF,
+                value=[spec.observation_type],
+            ),
+            EvaluationRuleFilter_StringOptions(
+                column="traceName",
+                operator=EvaluationRuleOptionsFilterOperator.ANY_OF,
+                value=["assistant.turn"],
+            ),
+        ]
+        if spec.observation_name is not None:
+            filters.append(
+                EvaluationRuleFilter_StringOptions(
+                    column="name",
+                    operator=EvaluationRuleOptionsFilterOperator.ANY_OF,
+                    value=[spec.observation_name],
+                )
+            )
+        filters.extend(
+            EvaluationRuleFilter_StringObject(
+                column="metadata",
+                key=key,
+                operator=EvaluationRuleStringFilterOperator.EQUALS,
+                value=value,
+            )
+            for key, value in spec.metadata_filters
         )
-    filters.extend(
-        EvaluationRuleFilter_StringObject(
-            column="metadata",
-            key=key,
-            operator=EvaluationRuleStringFilterOperator.EQUALS,
-            value=value,
-        )
-        for key, value in spec.metadata_filters
-    )
     return CreateLlmAsJudgeEvaluationRuleRequest(
         name=spec.name,
         evaluator=LlmAsJudgeEvaluationRuleEvaluatorReference(
-            name=spec.name,
+            name=spec.evaluator_name,
             scope=EvaluatorScope.PROJECT,
             type=LlmAsJudgeEvaluatorType.LLM_AS_JUDGE,
         ),
-        target=EvaluationRuleTarget.OBSERVATION,
+        target=spec.target,
         enabled=True,
         sampling=1.0,
         filter=filters,
@@ -248,47 +286,29 @@ def _rule_update_fields(
 
 
 def _specs() -> tuple[_EvaluatorSpec, ...]:
-    final_text_filter = (("assistant_agent.runtime_action", "text"),)
     return (
         _EvaluatorSpec(
             name="assistant_agent.quality.response_quality",
-            legacy_rule_names=(
-                "assistant-agent-live-response-quality",
-                "assistant_agent.quality.response_quality.live",
-            ),
-            observation_name="llm.chat",
-            observation_type="GENERATION",
-            metadata_filters=final_text_filter,
             prompt=(
                 "判断 Assistant 输出是否清晰、完整、直接回应当前用户请求。"
                 "不要因为没有调用工具而扣分，除非请求确实需要外部证据。\n\n"
+                "当输出是 Experiment 的 ReleaseRunEvidence 时，以 final_state.response.message 为最终回答，"
+                "并结合 calls、final_state.tool_results 和 final_state.status 判断完整性。\n\n"
                 "完整模型输入：\n{{input}}\n\nAssistant 输出：\n{{output}}"
             ),
         ),
         _EvaluatorSpec(
             name="assistant_agent.quality.grounding",
-            legacy_rule_names=(
-                "assistant-agent-live-grounding",
-                "assistant_agent.quality.grounding.live",
-            ),
-            observation_name="llm.chat",
-            observation_type="GENERATION",
-            metadata_filters=final_text_filter,
             prompt=(
                 "判断 Assistant 输出中的事实断言是否忠于模型输入里可见的工具结果、上下文和失败状态，"
                 "不得把缺失证据补成确定事实。无需外部证据的普通对话可判 true。\n\n"
+                "当输出是 Experiment 的 ReleaseRunEvidence 时，以 final_state.response.message 为最终回答，"
+                "并把 calls、final_state.tool_results 和 final_state.status 作为可见执行证据。\n\n"
                 "完整模型输入：\n{{input}}\n\nAssistant 输出：\n{{output}}"
             ),
         ),
         _EvaluatorSpec(
             name="assistant_agent.quality.tool_result_quality",
-            legacy_rule_names=(
-                "assistant-agent-live-tool-result-quality",
-                "assistant_agent.quality.tool_result_quality.live",
-            ),
-            observation_name=None,
-            observation_type="SPAN",
-            metadata_filters=(("assistant_agent.observation_kind", "tool_execution"),),
             prompt=(
                 "判断单次工具输出相对于工具输入是否语义正确、内部一致且可供后续 Agent 使用。"
                 "Provider 超时、损坏数据或不可解释错误判 false；合法且明确的空结果可判 true。\n\n"
@@ -297,13 +317,6 @@ def _specs() -> tuple[_EvaluatorSpec, ...]:
         ),
         _EvaluatorSpec(
             name="assistant_agent.quality.memory_extraction",
-            legacy_rule_names=(
-                "assistant-agent-live-memory-extraction",
-                "assistant_agent.quality.memory_extraction.live",
-            ),
-            observation_name="memory.turn_ingestion",
-            observation_type="SPAN",
-            metadata_filters=(("assistant_agent.memory_semantic_evidence", "available"),),
             prompt=(
                 "判断长期记忆变更是否忠于本轮完整对话，只保留稳定、未来有用、属于用户的事实或偏好；"
                 "不得保存临时请求、助手猜测、工具瞬时结果或过期事实。没有值得保存的内容且 changes 为空时判 true。\n\n"
@@ -312,13 +325,6 @@ def _specs() -> tuple[_EvaluatorSpec, ...]:
         ),
         _EvaluatorSpec(
             name="assistant_agent.quality.memory_recall",
-            legacy_rule_names=(
-                "assistant-agent-live-memory-recall",
-                "assistant_agent.quality.memory_recall.live",
-            ),
-            observation_name="llm.chat",
-            observation_type="GENERATION",
-            metadata_filters=final_text_filter,
             prompt=(
                 "检查模型输入中的长期记忆上下文是否与当前用户请求相关、未压过当前请求、且没有把明显陈旧的"
                 "动态事实当作当前事实。输出能正确忽略无关记忆时也可判 true。\n\n"
@@ -326,6 +332,147 @@ def _specs() -> tuple[_EvaluatorSpec, ...]:
             ),
         ),
     )
+
+
+def _rule_specs(*, dataset_id: str | None) -> tuple[_RuleSpec, ...]:
+    final_text_filter = (("assistant_agent.runtime_action", "text"),)
+    live = (
+        _RuleSpec(
+            name="assistant_agent.quality.response_quality",
+            evaluator_name="assistant_agent.quality.response_quality",
+            target=EvaluationRuleTarget.OBSERVATION,
+            legacy_rule_names=(
+                "assistant-agent-live-response-quality",
+                "assistant_agent.quality.response_quality.live",
+            ),
+            observation_name="llm.chat",
+            observation_type="GENERATION",
+            metadata_filters=final_text_filter,
+        ),
+        _RuleSpec(
+            name="assistant_agent.quality.grounding",
+            evaluator_name="assistant_agent.quality.grounding",
+            target=EvaluationRuleTarget.OBSERVATION,
+            legacy_rule_names=(
+                "assistant-agent-live-grounding",
+                "assistant_agent.quality.grounding.live",
+            ),
+            observation_name="llm.chat",
+            observation_type="GENERATION",
+            metadata_filters=final_text_filter,
+        ),
+        _RuleSpec(
+            name="assistant_agent.quality.tool_result_quality",
+            evaluator_name="assistant_agent.quality.tool_result_quality",
+            target=EvaluationRuleTarget.OBSERVATION,
+            legacy_rule_names=(
+                "assistant-agent-live-tool-result-quality",
+                "assistant_agent.quality.tool_result_quality.live",
+            ),
+            observation_name=None,
+            observation_type="SPAN",
+            metadata_filters=(("assistant_agent.observation_kind", "tool_execution"),),
+        ),
+        _RuleSpec(
+            name="assistant_agent.quality.memory_extraction",
+            evaluator_name="assistant_agent.quality.memory_extraction",
+            target=EvaluationRuleTarget.OBSERVATION,
+            legacy_rule_names=(
+                "assistant-agent-live-memory-extraction",
+                "assistant_agent.quality.memory_extraction.live",
+            ),
+            observation_name="memory.turn_ingestion",
+            observation_type="SPAN",
+            metadata_filters=(("assistant_agent.memory_semantic_evidence", "available"),),
+        ),
+        _RuleSpec(
+            name="assistant_agent.quality.memory_recall",
+            evaluator_name="assistant_agent.quality.memory_recall",
+            target=EvaluationRuleTarget.OBSERVATION,
+            legacy_rule_names=(
+                "assistant-agent-live-memory-recall",
+                "assistant_agent.quality.memory_recall.live",
+            ),
+            observation_name="llm.chat",
+            observation_type="GENERATION",
+            metadata_filters=final_text_filter,
+        ),
+    )
+    return live + (
+        _RuleSpec(
+            name="assistant_agent.quality.response_quality.experiment",
+            evaluator_name="assistant_agent.quality.response_quality",
+            target=EvaluationRuleTarget.EXPERIMENT,
+            observation_name=None,
+            observation_type=None,
+            dataset_id=dataset_id,
+        ),
+        _RuleSpec(
+            name="assistant_agent.quality.grounding.experiment",
+            evaluator_name="assistant_agent.quality.grounding",
+            target=EvaluationRuleTarget.EXPERIMENT,
+            observation_name=None,
+            observation_type=None,
+            dataset_id=dataset_id,
+        ),
+    )
+
+
+def _runtime_regression_dataset_id(client: Any) -> str | None:
+    try:
+        dataset = client.get_dataset(RUNTIME_REGRESSION_DATASET)
+    except Exception as exc:
+        if getattr(exc, "status_code", None) == 404 or type(exc).__name__ == "NotFoundError":
+            return None
+        raise
+    dataset_id = _field(dataset, "id")
+    if not isinstance(dataset_id, str) or not dataset_id:
+        raise RuntimeError("runtime regression Dataset has no id")
+    return dataset_id
+
+
+def _evaluator_has_drifted(existing: Any, desired: CreateEvaluatorRequest_LlmAsJudge) -> bool:
+    existing_values = _evaluator_configuration(existing)
+    if existing_values is None:
+        return False
+    desired_values = desired.model_dump(mode="json", by_alias=True)
+    return existing_values != {
+        key: desired_values[key]
+        for key in ("type", "prompt", "outputDefinition", "modelConfig")
+    }
+
+
+def _evaluator_configuration(value: Any) -> dict[str, Any] | None:
+    aliases = {
+        "type": ("type",),
+        "prompt": ("prompt",),
+        "outputDefinition": ("outputDefinition", "output_definition"),
+        "modelConfig": ("modelConfig", "model_config_", "model_config"),
+    }
+    result: dict[str, Any] = {}
+    for target, names in aliases.items():
+        field_value = None
+        found = False
+        for name in names:
+            if isinstance(value, dict) and name in value:
+                field_value = value[name]
+                found = True
+                break
+            if not isinstance(value, dict) and hasattr(value, name):
+                field_value = getattr(value, name)
+                found = True
+                break
+        if not found:
+            return None
+        result[target] = _json_value(field_value)
+    return result
+
+
+def _json_value(value: Any) -> Any:
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
+        return model_dump(mode="json", by_alias=True)
+    return value
 
 
 def _response_data(response: Any) -> list[Any]:

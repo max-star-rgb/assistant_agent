@@ -20,7 +20,6 @@ from assistant_agent.observability.langfuse_config import (
     langfuse_credentials_from_env,
     langfuse_host_from_env,
 )
-from assistant_agent.observability.runtime_audit.daily_models import IssueRegistry
 from assistant_agent.providers.provider_http import without_unsupported_socks_proxy_env
 from assistant_agent.runtime.assistant_run_service import load_env_file
 from assistant_agent.runtime.runtime import AgentGraphRuntime
@@ -32,10 +31,6 @@ from assistant_agent.tools.plugins.registry_factory import create_default_regist
 from .catalog import ReleaseCatalogSnapshot, build_catalog_snapshot
 from .experiment import ReleaseExperimentSettings
 from .loader import load_scenarios
-from .runtime_promotion import (
-    discover_runtime_candidates,
-    promote_runtime_candidate,
-)
 from .service import ReleaseReviewRequest, ReleaseReviewService
 from .staging import LocalStagingProfileAdapter, StagingResourceManager
 from .sync_dataset import sync_release_dataset
@@ -44,9 +39,6 @@ from .sync_dataset import sync_release_dataset
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_SCENARIO_ROOT = PROJECT_ROOT / "evals" / "release_review" / "scenarios"
 DEFAULT_ARTIFACT_ROOT = PROJECT_ROOT / ".data" / "evals" / "release_review"
-DEFAULT_RUNTIME_ISSUE_REGISTRY = (
-    PROJECT_ROOT / ".data" / "runtime_audit" / "state" / "issues.json"
-)
 EVALUATOR_VERSION = "release-review-rule-v1"
 
 
@@ -60,8 +52,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     action.add_argument("--preflight", action="store_true")
     action.add_argument("--run", action="store_true")
     action.add_argument("--record-decision", action="store_true")
-    action.add_argument("--list-runtime-candidates", action="store_true")
-    action.add_argument("--promote-runtime-candidate", action="store_true")
     parser.add_argument("--scenario-root", type=Path, default=DEFAULT_SCENARIO_ROOT)
     parser.add_argument("--artifact-root", type=Path, default=DEFAULT_ARTIFACT_ROOT)
     parser.add_argument("--env-file", type=Path, default=PROJECT_ROOT / ".env")
@@ -78,72 +68,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--operator")
     parser.add_argument("--note", default="")
-    parser.add_argument(
-        "--runtime-issue-registry",
-        type=Path,
-        default=DEFAULT_RUNTIME_ISSUE_REGISTRY,
-    )
-    parser.add_argument("--issue-key")
-    parser.add_argument("--draft-scenario", type=Path)
-    parser.add_argument("--allow-write-scenario", action="store_true")
     args = parser.parse_args(argv)
 
     try:
-        if args.list_runtime_candidates:
-            registry = _load_issue_registry(args.runtime_issue_registry)
-            scenarios = load_scenarios(args.scenario_root)
-            candidates = discover_runtime_candidates(
-                registry,
-                existing_scenarios=scenarios,
-            )
-            print(
-                json.dumps(
-                    {
-                        "action": "list_runtime_candidates",
-                        "candidate_count": len(candidates),
-                        "candidates": [
-                            item.model_dump(mode="json") for item in candidates
-                        ],
-                        "production_mutation_allowed": False,
-                    },
-                    ensure_ascii=False,
-                    indent=2,
-                )
-            )
-            return 0
-
-        if args.promote_runtime_candidate:
-            _require_args(parser, args, "issue_key", "draft_scenario", "operator")
-            if not args.allow_write_scenario:
-                parser.error(
-                    "--promote-runtime-candidate requires --allow-write-scenario"
-                )
-            registry = _load_issue_registry(args.runtime_issue_registry)
-            scenarios = load_scenarios(args.scenario_root)
-            result = promote_runtime_candidate(
-                registry=registry,
-                existing_scenarios=scenarios,
-                scenario_root=args.scenario_root,
-                issue_key=args.issue_key,
-                draft_path=args.draft_scenario,
-                operator=args.operator,
-                allow_write=True,
-            )
-            print(
-                json.dumps(
-                    {
-                        "action": "promote_runtime_candidate",
-                        "issue_key": args.issue_key,
-                        "scenario_id": result.scenario.id,
-                        "scenario_path": str(result.path),
-                        "evidence_sha256": result.evidence_sha256,
-                    },
-                    ensure_ascii=False,
-                    indent=2,
-                )
-            )
-            return 0
-
         if args.inspect:
             scenarios = load_scenarios(args.scenario_root)
             print(
@@ -277,13 +204,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         )
         return 2
-
-
-def _load_issue_registry(path: Path) -> IssueRegistry:
-    try:
-        return IssueRegistry.model_validate_json(Path(path).read_text(encoding="utf-8"))
-    except Exception as exc:
-        raise ValueError(f"runtime issue registry is unavailable or invalid: {path}") from exc
 
 
 def _selection_requires_staging(
