@@ -258,6 +258,157 @@ def test_probe_tool_call_completes_through_governed_runtime() -> None:
 
 @pytest.mark.core_invariant("LOOP-001")
 @pytest.mark.core_invariant("TOOL-001")
+def test_invalid_tool_input_is_returned_to_model_for_one_repair_attempt() -> None:
+    adapter = ScriptedChatAdapter(
+        [
+            ChatResult(
+                provider="scripted",
+                model="scripted-model",
+                finish_reason="tool_calls",
+                tool_calls=[
+                    NativeToolCall(
+                        id="call-invalid-sentinel",
+                        name=ProbeTool.name,
+                        arguments={"value": ""},
+                    )
+                ],
+            ),
+            ChatResult(
+                provider="scripted",
+                model="scripted-model",
+                finish_reason="tool_calls",
+                tool_calls=[
+                    NativeToolCall(
+                        id="call-repaired-sentinel",
+                        name=ProbeTool.name,
+                        arguments={"value": "repaired-sentinel"},
+                    )
+                ],
+            ),
+            ChatResult(
+                provider="scripted",
+                model="scripted-model",
+                finish_reason="stop",
+                response_text="final-sentinel",
+            ),
+        ]
+    )
+    runtime = AgentGraphRuntime(
+        registry=sealed_registry(),
+        config=offline_config(),
+        chat_adapter=adapter,
+        session_store=InMemorySessionStore(),
+    )
+    try:
+        state = runtime.run_state(
+            UserRequest(
+                user_id="user-sentinel",
+                session_id="session-sentinel",
+                text="input-sentinel",
+            )
+        )
+
+        assert state.status == "completed"
+        assert state.response is not None
+        assert state.response.message == "final-sentinel"
+        assert len(adapter.requests) == 3
+        repair_messages = [
+            message
+            for message in adapter.requests[1].messages
+            if message.get("role") == "tool"
+        ]
+        assert len(repair_messages) == 1
+        repair_observation = json.loads(str(repair_messages[0]["content"]))
+        assert repair_observation["status"] == "rejected"
+        assert repair_observation["error"]["code"] == "invalid_tool_input"
+        assert repair_observation["error"]["retryable"] is True
+        assert [result.data for result in state.tool_results] == [
+            {"value": "repaired-sentinel"}
+        ]
+    finally:
+        runtime.close()
+
+
+@pytest.mark.core_invariant("LOOP-001")
+@pytest.mark.core_invariant("TOOL-001")
+def test_repeated_invalid_tool_input_enters_answer_only_finalization() -> None:
+    def invalid_call(call_id: str) -> NativeToolCall:
+        return NativeToolCall(
+            id=call_id,
+            name=ProbeTool.name,
+            arguments={"value": ""},
+        )
+
+    adapter = ScriptedChatAdapter(
+        [
+            ChatResult(
+                provider="scripted",
+                model="scripted-model",
+                finish_reason="tool_calls",
+                tool_calls=[invalid_call("call-invalid-first")],
+            ),
+            ChatResult(
+                provider="scripted",
+                model="scripted-model",
+                finish_reason="tool_calls",
+                tool_calls=[
+                    invalid_call("call-invalid-second"),
+                    NativeToolCall(
+                        id="call-after-limit-sentinel",
+                        name=ProbeTool.name,
+                        arguments={"value": "must-not-run-sentinel"},
+                    ),
+                ],
+            ),
+            ChatResult(
+                provider="scripted",
+                model="scripted-model",
+                finish_reason="stop",
+                response_text="safe-final-sentinel",
+            ),
+        ]
+    )
+    runtime = AgentGraphRuntime(
+        registry=sealed_registry(),
+        config=offline_config(),
+        chat_adapter=adapter,
+        session_store=InMemorySessionStore(),
+    )
+    try:
+        state = runtime.run_state(
+            UserRequest(
+                user_id="user-sentinel",
+                session_id="session-sentinel",
+                text="input-sentinel",
+            )
+        )
+
+        assert state.status == "completed"
+        assert state.response is not None
+        assert state.response.message == "safe-final-sentinel"
+        assert len(adapter.requests) == 3
+        assert adapter.requests[-1].tools == []
+        assert adapter.requests[-1].tool_choice == "none"
+        assert state.tool_results == []
+        finalization_tool_messages = [
+            message
+            for message in adapter.requests[-1].messages
+            if message.get("role") == "tool"
+        ]
+        assert finalization_tool_messages
+        assert all(
+            "at least 1 character" not in str(message.get("content"))
+            for message in finalization_tool_messages
+        )
+        assert state.request.metadata["assistant_finalize_reason"] == (
+            "invalid_tool_input_limit"
+        )
+    finally:
+        runtime.close()
+
+
+@pytest.mark.core_invariant("LOOP-001")
+@pytest.mark.core_invariant("TOOL-001")
 def test_nonrecoverable_failure_blocks_later_same_tool_in_native_batch() -> None:
     failing_tool = _NonrecoverableProbeTool()
     independent_tool = _IndependentProbeTool()

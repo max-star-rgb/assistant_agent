@@ -236,6 +236,7 @@ class GatewayRuntimeAdapter:
                 run_id=result_run_id,
                 trace_id=state.trace_id,
                 output_refs=list(response.output_refs) if response is not None else [],
+                annotations=list(response.annotations) if response is not None else [],
                 metadata=result_metadata,
             )
         except Exception as exc:  # pragma: no cover - exact source varies by runtime.

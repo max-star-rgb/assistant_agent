@@ -6,6 +6,7 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from assistant_agent.identifiers import new_tool_call_id
+from assistant_agent.runtime.citations import UrlCitationAnnotation
 
 
 class AssistantTextOutput(BaseModel):
@@ -20,6 +21,7 @@ class AssistantTextOutput(BaseModel):
         description="Brief runtime routing reason, not chain-of-thought.",
     )
     safety_notes: list[str] = Field(default_factory=list)
+    annotations: list[UrlCitationAnnotation] = Field(default_factory=list)
 
     @field_validator("text")
     @classmethod

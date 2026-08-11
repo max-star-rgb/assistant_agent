@@ -32,6 +32,7 @@ WorkItemStatus = Literal[
     "cancelled",
 ]
 TERMINAL_WORKFLOW_STATUSES = {"completed", "failed", "cancelled"}
+ConstraintSeverity = Literal["required", "advisory"]
 
 
 def utc_now() -> datetime:
@@ -45,6 +46,34 @@ class WorkflowBudgetRequest(BaseModel):
     tool_calls: int | None = Field(default=None, ge=1, le=100_000)
     workflow_quanta: int | None = Field(default=None, ge=1, le=1_000_000)
     deadline_seconds: int | None = Field(default=None, ge=60, le=2_592_000)
+
+
+class WorkflowConstraintProposal(BaseModel):
+    """Planner proposal whose verifier may depend on the not-yet-built DAG."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    constraint_id: str = Field(pattern=r"^[a-zA-Z][a-zA-Z0-9_.-]{0,119}$")
+    statement: str = Field(min_length=1, max_length=4_000)
+    owner_work_item_ids: list[str] = Field(min_length=1, max_length=64)
+    verifier_work_item_id: str | None = Field(default=None, min_length=1, max_length=160)
+    severity: ConstraintSeverity = "required"
+
+    @model_validator(mode="after")
+    def validate_owners(self) -> "WorkflowConstraintProposal":
+        if len(self.owner_work_item_ids) != len(set(self.owner_work_item_ids)):
+            raise ValueError("constraint owner work item ids must be unique")
+        return self
+
+
+class WorkflowConstraintBinding(WorkflowConstraintProposal):
+    """Admitted Plan binding with complete verification routing."""
+
+    @model_validator(mode="after")
+    def validate_required_verifier(self) -> "WorkflowConstraintBinding":
+        if self.severity == "required" and self.verifier_work_item_id is None:
+            raise ValueError("required constraint must declare a verifier")
+        return self
 
 
 class WorkflowSeedWorkItem(BaseModel):
@@ -66,6 +95,10 @@ class WorkflowSubmission(BaseModel):
     objective: str = Field(min_length=1, max_length=10_000)
     deliverables: list[str] = Field(min_length=1, max_length=32)
     constraints: list[str] = Field(default_factory=list, max_length=64)
+    constraint_bindings: list[WorkflowConstraintProposal] = Field(
+        default_factory=list,
+        max_length=64,
+    )
     inputs: dict[str, JsonValue] = Field(default_factory=dict)
     initial_workstreams: list[WorkflowSeedWorkItem] = Field(
         default_factory=list,
@@ -125,6 +158,10 @@ class WorkflowPlanVersion(BaseModel):
     definition_version: str = Field(min_length=1, max_length=80)
     revision_reason: str = Field(min_length=1, max_length=500)
     work_items: list[WorkflowWorkItem] = Field(min_length=1, max_length=256)
+    constraint_bindings: list[WorkflowConstraintBinding] = Field(
+        default_factory=list,
+        max_length=64,
+    )
     created_at: datetime = Field(default_factory=utc_now)
 
 

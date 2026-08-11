@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from copy import deepcopy
 import json
-import re
 from time import perf_counter
 from typing import Any, Protocol
 from urllib.error import HTTPError, URLError
@@ -24,9 +23,6 @@ from assistant_agent.runtime.output_models import openai_tool_call_to_native_too
 
 
 _MAX_SEARCH_SOURCES = 20
-_CITATION_PATTERN = re.compile(
-    r"(?<!\[)\[(?P<label>(?:ref_)?(?P<index>[1-9][0-9]*))\](?!\()"
-)
 
 class DashScopeHttpTransport(Protocol):
     def post_json(
@@ -192,7 +188,7 @@ class DashScopeChatAdapter:
                     arguments_raw=str(function.get("arguments", raw_call.get("arguments", ""))),
                 ))
         sources = _parse_search_sources(output.get("search_info", data.get("search_info")))
-        response_text = _link_citations(content.strip(), sources) if not tool_calls else content.strip()
+        response_text = content.strip()
         if not response_text and not tool_calls:
             raise ValueError("DashScope response was empty")
         usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
@@ -295,20 +291,3 @@ def _parse_search_sources(search_info: Any) -> list[ProviderSearchSource]:
         if len(sources) >= _MAX_SEARCH_SOURCES:
             break
     return sources
-
-
-def _link_citations(
-    content: str,
-    sources: list[ProviderSearchSource],
-) -> str:
-    by_index = {source.index: source for source in sources}
-
-    def replace(match: re.Match[str]) -> str:
-        index = int(match.group("index"))
-        source = by_index.get(index)
-        if source is None:
-            return match.group(0)
-        markdown_url = source.url.replace("(", "%28").replace(")", "%29")
-        return f"[[{match.group('label')}]]({markdown_url})"
-
-    return _CITATION_PATTERN.sub(replace, content)

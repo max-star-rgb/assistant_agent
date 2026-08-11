@@ -595,12 +595,18 @@ class AgentGraphRuntime:
         if status == "succeeded" and terminal_failure_note is not None:
             status = "failed"
         if status == "succeeded":
+            required_verification_ids = [
+                item.constraint_id
+                for item in assignment.assigned_constraints
+                if item.verifier_work_item_id == assignment.work_item_id
+            ]
             return parse_work_item_response(
                 summary,
                 run_id=state.run_id,
                 artifact_refs=artifact_refs,
                 model_calls_used=model_calls_used,
                 tool_calls_used=len(state.tool_calls),
+                required_verification_ids=required_verification_ids,
             )
         return AgentWorkItemResult(
             status=status,

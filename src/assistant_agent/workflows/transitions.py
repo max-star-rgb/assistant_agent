@@ -113,6 +113,55 @@ def validate_plan_dag(plan: WorkflowPlanVersion, *, max_work_items: int) -> None
                 pending.append(child)
     if visited != len(ids):
         raise WorkflowTransitionRejected("workflow plan contains a cycle")
+    constraint_ids = [item.constraint_id for item in plan.constraint_bindings]
+    if len(constraint_ids) != len(set(constraint_ids)):
+        raise WorkflowTransitionRejected("duplicate workflow constraint binding")
+    for binding in plan.constraint_bindings:
+        if not set(binding.owner_work_item_ids).issubset(ids):
+            raise WorkflowTransitionRejected("unknown constraint owner work item")
+        if (
+            binding.severity == "required"
+            and binding.verifier_work_item_id is None
+        ):
+            raise WorkflowTransitionRejected(
+                "required constraint must declare a verifier"
+            )
+        if (
+            binding.verifier_work_item_id is not None
+            and binding.verifier_work_item_id not in ids
+        ):
+            raise WorkflowTransitionRejected("unknown constraint verifier work item")
+        if binding.verifier_work_item_id is not None and any(
+            not _is_reachable(
+                outgoing,
+                owner_id,
+                binding.verifier_work_item_id,
+            )
+            for owner_id in binding.owner_work_item_ids
+        ):
+            raise WorkflowTransitionRejected(
+                "constraint verifier must follow every owner"
+            )
+
+
+def _is_reachable(
+    outgoing: dict[str, list[str]],
+    start_id: str,
+    target_id: str,
+) -> bool:
+    if start_id == target_id:
+        return True
+    visited: set[str] = set()
+    pending = list(outgoing[start_id])
+    while pending:
+        candidate = pending.pop()
+        if candidate == target_id:
+            return True
+        if candidate in visited:
+            continue
+        visited.add(candidate)
+        pending.extend(outgoing[candidate])
+    return False
 
 
 def create_initial_bundle(

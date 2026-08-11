@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from threading import Event
 
+import pytest
+from pydantic import ValidationError
+
 from assistant_agent.identity import RequestIdentity
 from assistant_agent.workflows.definitions import (
     WorkflowDefinitionCatalog,
@@ -21,6 +24,10 @@ from assistant_agent.workflows.runtime import (
 from assistant_agent.workflows.service import WorkflowService
 from assistant_agent.workflows.sqlite_store import SQLiteWorkflowStore
 from assistant_agent.workflows.worker import DurableWorkflowWorker
+from assistant_agent.workflows.transitions import (
+    WorkflowTransitionRejected,
+    validate_plan_dag,
+)
 
 
 class TwoStepDefinition:
@@ -130,6 +137,71 @@ def _identity() -> RequestIdentity:
         agent_id="agent-sentinel",
         session_id="session-sentinel",
     )
+
+
+def test_required_constraint_verifier_cannot_run_before_its_owner() -> None:
+    plan = WorkflowPlanVersion.model_validate({
+        "workflow_id": "workflow-sentinel",
+        "version": 1,
+        "definition_version": "1",
+        "revision_reason": "constraint-order-sentinel",
+        "work_items": [
+            {
+                "work_item_id": "collect",
+                "kind": "collect_sources",
+                "objective": "collect-sentinel",
+            },
+            {
+                "work_item_id": "synthesize",
+                "kind": "synthesize",
+                "objective": "synthesize-sentinel",
+                "depends_on": ["collect"],
+            },
+        ],
+        "constraint_bindings": [
+            {
+                "constraint_id": "final-sentinel",
+                "statement": "final-constraint-sentinel",
+                "owner_work_item_ids": ["synthesize"],
+                "verifier_work_item_id": "collect",
+                "severity": "required",
+            }
+        ],
+    })
+
+    with pytest.raises(
+        WorkflowTransitionRejected,
+        match="constraint verifier must follow every owner",
+    ):
+        validate_plan_dag(plan, max_work_items=10)
+
+
+def test_required_constraint_without_verifier_is_rejected_at_plan_admission() -> None:
+    with pytest.raises(
+        ValidationError,
+        match="required constraint must declare a verifier",
+    ):
+        WorkflowPlanVersion.model_validate({
+            "workflow_id": "workflow-sentinel",
+            "version": 1,
+            "definition_version": "1",
+            "revision_reason": "missing-verifier-sentinel",
+            "work_items": [
+                {
+                    "work_item_id": "collect",
+                    "kind": "collect_sources",
+                    "objective": "collect-sentinel",
+                }
+            ],
+            "constraint_bindings": [
+                {
+                    "constraint_id": "required-sentinel",
+                    "statement": "required-constraint-sentinel",
+                    "owner_work_item_ids": ["collect"],
+                    "severity": "required",
+                }
+            ],
+        })
 
 
 def _service(store) -> WorkflowService:

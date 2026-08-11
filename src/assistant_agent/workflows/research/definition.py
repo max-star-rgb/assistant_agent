@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from assistant_agent.workflows.definitions import WorkflowDefinitionDescriptor
+from assistant_agent.workflows.constraints import resolve_constraint_bindings
 from assistant_agent.workflows.models import (
+    WorkflowConstraintBinding,
     WorkflowPlanVersion,
     WorkflowSubmission,
     WorkflowWorkItem,
@@ -32,23 +34,28 @@ class DeepResearchWorkflowDefinition:
         self, *, workflow_id: str, submission: WorkflowSubmission
     ) -> WorkflowPlanVersion:
         if submission.initial_workstreams:
+            work_items = [
+                WorkflowWorkItem(
+                    work_item_id=seed.seed_id,
+                    kind=seed.kind,
+                    display_title=seed.display_title,
+                    objective=seed.objective,
+                    depends_on=list(seed.depends_on),
+                    input_artifact_refs=list(seed.input_artifact_refs),
+                    acceptance_contract=dict(seed.acceptance_contract),
+                )
+                for seed in submission.initial_workstreams
+            ]
             return WorkflowPlanVersion(
                 workflow_id=workflow_id,
                 version=1,
                 definition_version=self.descriptor.definition_version,
                 revision_reason="deep_research_agent_plan",
-                work_items=[
-                    WorkflowWorkItem(
-                        work_item_id=seed.seed_id,
-                        kind=seed.kind,
-                        display_title=seed.display_title,
-                        objective=seed.objective,
-                        depends_on=list(seed.depends_on),
-                        input_artifact_refs=list(seed.input_artifact_refs),
-                        acceptance_contract=dict(seed.acceptance_contract),
-                    )
-                    for seed in submission.initial_workstreams
-                ],
+                work_items=work_items,
+                constraint_bindings=resolve_constraint_bindings(
+                    submission=submission,
+                    work_items=work_items,
+                ),
             )
         source_target = int(submission.inputs.get("source_target", 15))
         questions = submission.inputs.get("research_questions", [])
@@ -116,10 +123,33 @@ class DeepResearchWorkflowDefinition:
                 depends_on=["verify"],
             ),
         ]
+        definition_bindings = [
+            WorkflowConstraintBinding(
+                constraint_id="evidence-source-count",
+                statement=(
+                    f"已核验证据集合包含至少 {source_target} 个可信且多样的来源。"
+                ),
+                owner_work_item_ids=["collect_sources"],
+                verifier_work_item_id="verify",
+                severity="required",
+            ),
+            WorkflowConstraintBinding(
+                constraint_id="final-source-count",
+                statement=f"最终报告引用至少 {source_target} 个可信且多样的来源。",
+                owner_work_item_ids=["synthesize"],
+                verifier_work_item_id="synthesize",
+                severity="required",
+            ),
+        ]
         return WorkflowPlanVersion(
             workflow_id=workflow_id,
             version=1,
             definition_version=self.descriptor.definition_version,
             revision_reason="deep_research_initial",
             work_items=work_items,
+            constraint_bindings=resolve_constraint_bindings(
+                submission=submission,
+                work_items=work_items,
+                definition_bindings=definition_bindings,
+            ),
         )

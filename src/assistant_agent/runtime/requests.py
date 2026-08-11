@@ -4,6 +4,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from assistant_agent.runtime.citations import UrlCitationAnnotation
+
 
 TaskExecutionMode = Literal["auto", "durable", "foreground"]
 ResponseStyle = Literal["conversation", "concise", "structured", "voice"]
@@ -66,3 +68,4 @@ class AgentResponse(BaseModel):
     data: dict[str, Any] | None = None
     followup_question: str | None = None
     output_refs: list[str] = Field(default_factory=list)
+    annotations: list[UrlCitationAnnotation] = Field(default_factory=list)

@@ -192,7 +192,9 @@ raw Provider response、父会话历史及未登记扩展不得进入 prompt。D
 通用 Durable Workflow 不把完整前台会话或 Workflow Store JSON 回放给模型。Worker 为每个 work item
 生成 `WorkflowContextManifest`，只包含 objective、constraints、owner 校验后的 artifact ref、digest 和
 有界 excerpt；lease、revision、绝对路径、Store client 和完整来源正文不进入 prompt。artifact 内容由
-`LocalWorkflowArtifactStore` 独立持久化，Context Compiler 施加 per-artifact 和 total char budget。
+`LocalWorkflowArtifactStore` 独立持久化，Context Compiler 使用已配置的模型 tokenizer（缺失时使用
+显式标记的离线估算器），并按 work-item stage、模型窗口比例、输出 reserve 和 safety margin 计算
+token budget；多个依赖 artifact 在该预算内公平分配，不再使用固定字符上限。
 
 `AgentGraphRuntime.run_work_item()` 使用 runtime-owned `_trusted_workflow_assignment` 和显式
 `_trusted_workflow_allowed_tools`。空 allowlist 的含义是零个 Tool，而不是“无覆盖”；普通请求不能通过
@@ -201,6 +203,8 @@ Workflow 在 `waiting_input` 后收到的 owner-scoped 恢复值会作为结构�
 work-item request；它属于用户数据而非权限或控制指令。每个 work item 的 Provider 输出预算由
 `MULTIMODAL_AGENT_DEEP_RESEARCH_MAX_TOKENS` 独立配置，普通对话继续使用
 `MULTIMODAL_AGENT_CHAT_MAX_TOKENS`，避免启用 thinking/search 后沿用短回复预算。
+当前默认模型窗口映射中，`qwen3.6-flash*` 与 `deepseek-v4-flash*` 都按百炼声明的 1,000,000 token
+输入窗口计算；`MULTIMODAL_AGENT_CONTEXT_INPUT_TOKEN_LIMIT` 仍可显式覆盖。
 每个 work item 使用独立 run，结果摘要重新写成不可变 artifact 后再
 传递给下游，不依赖无界 transcript。trusted work-item run 不附加 session memory snapshot、不写入
 长期记忆或稳定文本 embedding，也不投影原 session 的实时视觉/主动事件；跨阶段上下文只能来自

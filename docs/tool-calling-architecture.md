@@ -338,8 +338,14 @@ MCP server、认证、远端方法映射和部署命令属于配置或对应集�
 配置关闭、服务缺失或 definition catalog 为空时返回空工具列表，不能暴露一个无法推进的提交 Tool。
 `workflow_submit` 是 `write/once_per_run/metadata_only` Tool，输入是通用
 `WorkflowSubmission`：`workflow_type/objective/deliverables/constraints/inputs/initial_workstreams/
-requested_budget/durability_reasons/seed_artifact_refs/idempotency_key`。Research 问题等业务字段只能放在
-definition-owned `inputs` schema 中，不能污染通用契约。
+constraint_bindings/requested_budget/durability_reasons/seed_artifact_refs/idempotency_key`。Research 问题等
+业务字段只能放在 definition-owned `inputs` schema 中，不能污染通用契约。
+
+约束在提交与执行计划中使用两个不同的 Pydantic 边界：LLM Planner 提交
+`WorkflowConstraintProposal`，可以在完整 DAG 尚不存在时省略 `verifier_work_item_id`；Definition 生成
+具体 work items 后，只依据 owner 与依赖拓扑确定性选择共同下游 verifier，并构造严格的
+`WorkflowConstraintBinding`。required binding 无法补全 verifier 时在 Plan admission 失败，不能进入
+持久执行。该过程不读取约束正文关键词，也不削弱 owner 引用、唯一性和拓扑校验。
 
 `initial_workstreams` 是 Agent 在提交前生成的可执行 DAG，不是仅供展示的说明文本。每项同时持有
 内部执行 `objective`、依赖/验收约束和用户可见 `display_title`；`display_title` 与旧
@@ -396,6 +402,14 @@ ToolSpec 转换成 OpenAI-compatible 或 MCP schema 时，应保留名称、简�
 
 Validator 返回稳定 code、可解释 message、prompt-safe metadata 和仅供进程内复用的
 `validated_input`。校验拒绝不会进入 Executor。
+
+校验拒绝也不直接成为用户回复。`invalid_tool_input`、`missing_required_input` 等模型可修正的 schema
+错误先形成带 `retryable=true` 和有界 validation issues 的 Tool observation，回到同一 assistant loop
+供模型修正一次；连续第二次失败才触发 loop guard 并进入无工具 FINALIZE。授权、catalog、runtime-owned
+字段或其他 policy 拒绝仍 fail closed，可直接进入 FINALIZE，但同样不能由执行节点拼接内部 validator
+message 作为最终答案。FINALIZE 投影会移除仅用于模型修参的 schema 路径和 Pydantic 详情；若最终生成
+仍失败，确定性兜底也只给出产品化失败说明。一旦进入 FINALIZE，同一 Provider turn 中尚未处理的批量
+Tool calls 立即停止，不能在恢复额度耗尽后继续执行后续动作。
 
 ### 6.2 ToolExecutor
 
@@ -462,15 +476,26 @@ Gateway 不按 Tool name 或 Provider 错误码改写运行终态。
   work-item Tool allowlist 是可信空集合也必须表示“暴露零个 Tool”，不能退化为完整 Registry。
   `deep_research` work item 固定使用空本地 Tool allowlist；联网由 Qwen/Bailian Chat Completions 的
   Provider-native 搜索完成，不注册或调用本地 `web_search`/`web_fetch`，也不会绕过 Tool 治理链。
-  Workflow 级 constraints 默认由最终交付物整体满足；每个 worker prompt 还携带当前 item 的
-  `acceptance_contract`，子任务只对自己的验收约束负责，避免把“最终至少 15 个来源”等全局条件误解为
-  每个并行子任务都必须单独完成。worker 的完整成功正文写入 owner-bound artifact，持久 plan 中只保存
+  Workflow 级约束使用 `constraint_bindings` 显式声明 `constraint_id/statement/owner_work_item_ids/
+  verifier_work_item_id/severity`。Submission 中它是可补全 proposal；Definition 在 DAG 完成后优先选择
+  位于所有 owner 下游的 `verify` item，其次选择共同下游终端 item，再构造成 admitted binding。Plan
+  admission 校验 required verifier、引用、唯一性以及 verifier 必须等于或位于所有 owner 的下游。每个
+  worker 只接收绑定给自身 owner/verifier 角色的 `assigned_constraints` 以及自己的
+  `acceptance_contract`；prompt renderer 不再用自然语言规则推断全局约束属于哪个阶段。未提供结构化
+  binding 的兼容 prose constraint 会确定性绑定给 DAG 终端 item，由终端 item 同时承担验证，不按约束
+  文本关键词选择步骤。Deep Research definition 则从结构化 `source_target` 生成证据收集与最终引用两个
+  独立 binding。被指定为 verifier 的 work item 必须返回 `workflow_control.status=verified` 和完整的
+  `verified_constraint_ids`；普通文本或漏验 required constraint 会映射为可重试失败，约束不满足时仍用
+  `status=repair + repair_work_item_ids` 进入既有局部返工路径。若 verifier 同时生成最终交付物，完整正文
+  放在 control 的 `content` 字段并写入 artifact。worker 的完整成功正文写入 owner-bound artifact，持久 plan 中只保存
   最多 4000 字的进度摘要；completed Workflow 的完整最终正文由 identity-scoped
   `GET /workflows/{workflow_id}/result` 读取，不能用摘要承担最终报告交付。Executor 边界捕获的意外异常
   只持久化 prompt-safe 的异常类型错误码，不泄露 exception message；模型已成功生成的超长正文不得再
-  因摘要 schema 上限被误判为 provider 执行失败。下游 item 的 context manifest 仍受 12000 字符总预算
-  限制，但在依赖 artifact 间公平分配剩余额度；只有一个长草稿时可以使用全部预算，不再固定截到前
-  4000 字。worker 只以最后一个 assistant step 的结构化失败 note 判断技术终态，context overflow 等
+  因摘要 schema 上限被误判为 provider 执行失败。下游 item 的 context manifest 使用与模型 tokenizer
+  一致的 token counter；未配置本地 tokenizer 时使用显式标记的离线估算器。预算同时受 work-item stage、
+  模型输入窗口 25%、输出 reserve 和 safety margin 约束：默认 stage 为 128K tokens，draft/verify 为
+  192K，synthesize/deliver 为 256K，在 1M 窗口下 synthesize 实际上限为 250K。多个依赖 artifact 公平
+  分配剩余 token 预算，不再使用固定 12K 字符截断。worker 只以最后一个 assistant step 的结构化失败 note 判断技术终态，context overflow 等
   失败不会写成成功 artifact，较早步骤已经恢复的失败也不会污染最终结果。
   `waiting_input` 的恢复值由 identity-scoped Workflow facade 持久化并传入后续 work-item request；
   Provider 技术性截断、错误、拒绝或空终态映射为 retry/failure，不得作为成功结果写 artifact。

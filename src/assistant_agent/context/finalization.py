@@ -13,8 +13,13 @@ from assistant_agent.tools.observation import (
 
 FINALIZE_CONTINUATION_MESSAGE = (
     "工具阶段已结束。请根据以上原始请求和按执行顺序提供的工具结果，"
-    "直接给出最终回答。不要调用任何工具。"
+    "直接给出最终回答。不要调用任何工具，也不要复述内部 schema、字段路径或校验器错误。"
 )
+
+_MODEL_REPAIR_ONLY_ERROR_CODES = {
+    "invalid_tool_input",
+    "missing_required_input",
+}
 
 
 def is_runtime_only_observation(observation: Mapping[str, Any]) -> bool:
@@ -89,8 +94,27 @@ def correlated_native_tool_pairs(
             or observation_name != call_names[call_id]
         ):
             continue
-        pairs.append((index, call, dict(observation)))
+        pairs.append((index, call, _finalization_safe_observation(observation)))
     return pairs
+
+
+def _finalization_safe_observation(
+    observation: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Remove model-repair-only validator details from user-answer synthesis."""
+
+    payload = dict(observation)
+    error = payload.get("error")
+    if not isinstance(error, Mapping) or error.get("code") not in _MODEL_REPAIR_ONLY_ERROR_CODES:
+        return payload
+    payload["summary"] = "Tool arguments could not be validated."
+    payload["data"] = {}
+    payload["error"] = {
+        "code": error["code"],
+        "message": "Tool arguments could not be validated.",
+        "retryable": False,
+    }
+    return payload
 
 
 def _native_call_candidate_ids(call: Mapping[str, Any]) -> set[str]:
@@ -158,6 +182,12 @@ def finalize_fallback_text(observations: Sequence[Mapping[str, Any]]) -> str:
             continue
         summary = payload.get("summary")
         error = payload.get("error")
+        error_code = error.get("code") if isinstance(error, Mapping) else None
+        if error_code in _MODEL_REPAIR_ONLY_ERROR_CODES:
+            fact = "工具请求参数未能通过校验"
+            if fact not in failure_facts:
+                failure_facts.append(fact)
+            continue
         error_message = error.get("message") if isinstance(error, Mapping) else None
         fact = summary if isinstance(summary, str) and summary.strip() else error_message
         if isinstance(fact, str) and fact.strip() and fact.strip() not in failure_facts:

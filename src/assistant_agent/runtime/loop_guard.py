@@ -24,7 +24,7 @@ class LoopGuard:
     """Small counter-based guard against invalid or repetitive actions."""
 
     unknown_tool_limit = 1
-    invalid_tool_input_limit = 1
+    invalid_tool_input_limit = 2
     empty_decision_limit = 1
 
     def __init__(self, metadata: dict[str, Any]) -> None:
@@ -48,16 +48,21 @@ class LoopGuard:
                 "unknown_tool_count",
                 self.unknown_tool_limit,
                 "unknown_tool_limit",
-                disposition="terminate",
+                disposition="finalize",
             )
         if code in {"invalid_tool_input", "missing_required_input"}:
             return self._increment(
                 "invalid_tool_input_count",
                 self.invalid_tool_input_limit,
                 "invalid_tool_input_limit",
-                disposition="terminate",
+                disposition="finalize",
             )
-        return LoopGuardDecision(False, "ok", "Guard not triggered.")
+        return LoopGuardDecision(
+            True,
+            "tool_validation_rejected",
+            f"{code} is not recoverable within the assistant loop.",
+            disposition="finalize",
+        )
 
     def failed_call_already_seen(self, *, tool_name: str, tool_input: dict[str, Any]) -> bool:
         """Return whether the same normalized invocation already failed."""

@@ -38,7 +38,6 @@ from assistant_agent.workflows.agent_runtime import (
     AgentWorkItemRequest,
     AgentWorkItemResult,
     parse_work_item_response,
-    render_work_item_prompt,
 )
 from assistant_agent.workflows.artifacts import LocalWorkflowArtifactStore
 from assistant_agent.workflows.context import WorkflowContextCompiler
@@ -117,6 +116,17 @@ def test_deep_research_mode_reaches_runtime_as_structured_request_state() -> Non
     )
 
     assert runtime_request.assistant_mode == "deep_research"
+
+
+def test_deepseek_v4_flash_uses_its_declared_million_token_input_window() -> None:
+    config = ProviderConfig.from_env({
+        "MULTIMODAL_AGENT_PROVIDER_MODE": "real",
+        "MULTIMODAL_AGENT_CHAT_PROVIDER": "qwen",
+        "QWEN_API_KEY": "key-sentinel",
+        "QWEN_CHAT_MODEL": "deepseek-v4-flash",
+    })
+
+    assert config.context_input_token_limit == 1_000_000
 
 
 def test_run_client_deep_command_sets_structured_chat_mode() -> None:
@@ -533,6 +543,15 @@ def _deep_research_work_item_request() -> AgentWorkItemRequest:
         objective="draft-objective-sentinel",
         work_item_kind="draft",
         acceptance_contract={"min_sources": 4},
+        assigned_constraints=[
+            {
+                "constraint_id": "source-count",
+                "statement": "最终报告至少引用 15 个来源",
+                "owner_work_item_ids": ["draft-sentinel"],
+                "verifier_work_item_id": "verify-sentinel",
+                "severity": "required",
+            }
+        ],
         assistant_mode="deep_research",
         context_manifest={
             "workflow_id": "workflow-sentinel",
@@ -543,18 +562,6 @@ def _deep_research_work_item_request() -> AgentWorkItemRequest:
             "trimmed": False,
         },
     )
-
-
-def test_work_item_prompt_scopes_global_constraints_to_the_final_deliverable() -> None:
-    request = _deep_research_work_item_request()
-    prompt = render_work_item_prompt(request.model_copy(update={
-        "context_manifest": request.context_manifest.model_copy(
-            update={"constraints": ["最终报告至少引用 15 个来源"]}
-        )
-    }))
-
-    assert '"min_sources": 4' in prompt
-    assert "Workflow 约束默认由最终交付物整体满足" in prompt
 
 
 def test_long_work_item_text_is_preserved_as_content_with_a_bounded_summary() -> None:
@@ -571,6 +578,37 @@ def test_long_work_item_text_is_preserved_as_content_with_a_bounded_summary() ->
     assert result.status == "succeeded"
     assert result.content == text
     assert len(result.summary) <= 4_000
+
+
+def test_verifier_requires_a_structured_complete_constraint_result() -> None:
+    missing = parse_work_item_response(
+        "plain-verifier-text-sentinel",
+        run_id="run-sentinel",
+        artifact_refs=[],
+        model_calls_used=1,
+        tool_calls_used=0,
+        required_verification_ids=["source-count"],
+    )
+    verified = parse_work_item_response(
+        json.dumps({
+            "workflow_control": {
+                "status": "verified",
+                "summary": "verification-summary-sentinel",
+                "content": "full-report-sentinel",
+                "verified_constraint_ids": ["source-count"],
+            }
+        }),
+        run_id="run-sentinel",
+        artifact_refs=[],
+        model_calls_used=1,
+        tool_calls_used=0,
+        required_verification_ids=["source-count"],
+    )
+
+    assert missing.status == "failed"
+    assert missing.error_code == "verification_result_missing"
+    assert verified.status == "succeeded"
+    assert verified.content == "full-report-sentinel"
 
 
 def test_deep_research_work_item_uses_a_separate_response_budget() -> None:

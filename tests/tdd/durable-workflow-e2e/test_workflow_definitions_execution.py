@@ -88,6 +88,15 @@ def test_deep_research_uses_agent_planned_workstreams_and_display_titles() -> No
                 depends_on=["research-hermes"],
             ),
         ],
+        constraint_bindings=[
+            {
+                "constraint_id": "source-count",
+                "statement": "最终报告至少引用 15 个来源",
+                "owner_work_item_ids": ["research-hermes", "synthesize"],
+                "verifier_work_item_id": "synthesize",
+                "severity": "required",
+            }
+        ],
         durability_reasons=["multi_stage", "many_sources"],
         idempotency_key="submission-agent-plan-sentinel",
     )
@@ -103,6 +112,55 @@ def test_deep_research_uses_agent_planned_workstreams_and_display_titles() -> No
     ]
     assert plan.work_items[0].display_title == "正在检索并核实 Hermes 工程资料"
     assert plan.work_items[1].depends_on == ["research-hermes"]
+    assert plan.constraint_bindings[0].owner_work_item_ids == [
+        "research-hermes",
+        "synthesize",
+    ]
+
+
+def test_deep_research_infers_missing_required_constraint_verifier_from_dag() -> None:
+    definition = DeepResearchWorkflowDefinition()
+    submission = WorkflowSubmission(
+        workflow_type="deep_research",
+        objective="research-objective-sentinel",
+        deliverables=["report-sentinel"],
+        initial_workstreams=[
+            WorkflowSeedWorkItem(
+                seed_id="collect",
+                kind="collect_sources",
+                objective="collect-sentinel",
+            ),
+            WorkflowSeedWorkItem(
+                seed_id="verify",
+                kind="verify",
+                objective="verify-sentinel",
+                depends_on=["collect"],
+            ),
+            WorkflowSeedWorkItem(
+                seed_id="synthesize",
+                kind="synthesize",
+                objective="synthesize-sentinel",
+                depends_on=["verify"],
+            ),
+        ],
+        constraint_bindings=[
+            {
+                "constraint_id": "source-count",
+                "statement": "final-source-count-sentinel",
+                "owner_work_item_ids": ["collect"],
+                "severity": "required",
+            }
+        ],
+        durability_reasons=["multi_stage"],
+        idempotency_key="submission-infer-verifier-sentinel",
+    )
+
+    plan = definition.build_initial_plan(
+        workflow_id="workflow-sentinel",
+        submission=submission,
+    )
+
+    assert plan.constraint_bindings[0].verifier_work_item_id == "verify"
 
 
 def test_agent_executor_compiles_dependency_artifacts_and_persists_output(tmp_path) -> None:
@@ -138,6 +196,22 @@ def test_agent_executor_compiles_dependency_artifacts_and_persists_output(tmp_pa
             "inputs": {},
             "model_calls_remaining": 5,
             "tool_calls_remaining": 5,
+            "constraint_bindings": [
+                {
+                    "constraint_id": "assigned-sentinel",
+                    "statement": "assigned-constraint-sentinel",
+                    "owner_work_item_ids": ["draft"],
+                    "verifier_work_item_id": "verify",
+                    "severity": "required",
+                },
+                {
+                    "constraint_id": "other-sentinel",
+                    "statement": "other-constraint-sentinel",
+                    "owner_work_item_ids": ["other"],
+                    "verifier_work_item_id": "verify",
+                    "severity": "required",
+                },
+            ],
             "work_item": {
                 "work_item_id": "draft",
                 "kind": "draft",
@@ -153,6 +227,9 @@ def test_agent_executor_compiles_dependency_artifacts_and_persists_output(tmp_pa
     assert len(result.artifact_refs) == 1
     request = agent_runtime.requests[0]
     assert request.context_manifest.artifacts[0].excerpt == "source-evidence-sentinel"
+    assert [item.constraint_id for item in request.assigned_constraints] == [
+        "assigned-sentinel"
+    ]
     assert request.allowed_tool_names == []
     assert artifacts.read_text(
         identity=identity,

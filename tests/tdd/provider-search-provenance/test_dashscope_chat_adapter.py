@@ -119,9 +119,7 @@ def test_dashscope_request_enables_source_and_citation_evidence() -> None:
     }
 
     assert result.success is True
-    assert result.response_text == (
-        "answer-sentinel [[1]](https://example.com/one)"
-    )
+    assert result.response_text == "answer-sentinel [1]"
     assert [source.model_dump() for source in result.search_sources] == [{
         "index": 1,
         "title": "source-one",
@@ -166,7 +164,7 @@ def test_dashscope_response_preserves_native_function_calls() -> None:
     assert result.tool_calls[0].arguments == {"destination": "杭州"}
 
 
-def test_answer_turns_provider_citations_into_inline_links() -> None:
+def test_answer_preserves_provider_citations_for_client_rendering() -> None:
     response = _text_response()
     response["output"]["choices"][0]["message"]["content"] = (
         "claim-a [5]，claim-b [2]，claim-c [ref_4]，再次引用 [5]。"
@@ -188,12 +186,8 @@ def test_answer_turns_provider_citations_into_inline_links() -> None:
 
     assert len(result.search_sources) == 7
     assert result.response_text == (
-        "claim-a [[5]](https://example.com/5)，"
-        "claim-b [[2]](https://example.com/2)，"
-        "claim-c [[ref_4]](https://example.com/4)，"
-        "再次引用 [[5]](https://example.com/5)。"
+        "claim-a [5]，claim-b [2]，claim-c [ref_4]，再次引用 [5]。"
     )
-    assert "来源：" not in result.response_text
 
 
 def test_answer_without_citations_does_not_invent_inline_links() -> None:

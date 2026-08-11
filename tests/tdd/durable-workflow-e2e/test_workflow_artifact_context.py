@@ -13,6 +13,13 @@ from assistant_agent.workflows.artifacts import (
 from assistant_agent.workflows.context import WorkflowContextCompiler
 
 
+class _CharacterTokenCounter:
+    tokenizer_id = "character-sentinel"
+
+    def count_text(self, value: str) -> int:
+        return len(value)
+
+
 def _identity(*, user_id: str = "user-sentinel") -> RequestIdentity:
     return RequestIdentity.for_user(
         user_id=user_id,
@@ -104,6 +111,39 @@ def test_default_context_budget_allows_one_long_draft_to_reach_the_next_item(
 
     assert manifest.artifacts[0].excerpt == content
     assert manifest.trimmed is False
+    store.close()
+
+
+def test_context_budget_is_stage_and_model_window_aware(tmp_path) -> None:
+    store = LocalWorkflowArtifactStore(tmp_path / "artifacts")
+    ref = store.write_text(
+        identity=_identity(),
+        workflow_id="workflow-sentinel",
+        kind="evidence",
+        text="E" * 300_000,
+        producer_work_item_id="evidence-sentinel",
+    )
+    compiler = WorkflowContextCompiler(
+        artifact_store=store,
+        token_counter=_CharacterTokenCounter(),
+        model_context_window_tokens=1_000_000,
+        output_reserve_tokens=32_000,
+        safety_margin_tokens=50_000,
+    )
+
+    manifest = compiler.compile(
+        identity=_identity(),
+        workflow_id="workflow-sentinel",
+        objective="synthesize-sentinel",
+        constraints=[],
+        artifact_refs=[ref.uri],
+        work_item_kind="synthesize",
+    )
+
+    assert manifest.token_budget == 250_000
+    assert manifest.total_excerpt_tokens == 250_000
+    assert len(manifest.artifacts[0].excerpt) == 250_000
+    assert manifest.trimmed is True
     store.close()
 
 

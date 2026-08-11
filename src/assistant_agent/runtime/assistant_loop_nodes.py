@@ -16,6 +16,7 @@ from typing import Any, NotRequired, TypedDict, cast
 
 from assistant_agent.runtime.action_validator import ActionValidator
 from assistant_agent.runtime.cancellation import AgentRunCancelled
+from assistant_agent.runtime.citations import build_url_citation_annotations
 from assistant_agent.runtime.intent import IntentDetector
 from assistant_agent.runtime.llm_event_mapping import stream_delta_to_agent_event
 from assistant_agent.runtime.loop_guard import LoopGuard, LoopGuardDecision
@@ -935,11 +936,16 @@ def _native_final_decision(result: ChatResult) -> AssistantTextOutput:
             safety_notes=["provider_response_truncated"],
         )
     if result.response_text.strip():
+        response_text = result.response_text.strip()
         return AssistantTextOutput(
-            text=result.response_text.strip(),
+            text=response_text,
             reason=_native_finish_reason(
                 result,
                 fallback="Provider finished without requesting a tool; content is the final answer.",
+            ),
+            annotations=build_url_citation_annotations(
+                response_text,
+                result.search_sources,
             ),
         )
     return AssistantTextOutput(
@@ -1128,6 +1134,7 @@ def _apply_terminal_decision(
         state.set_response(
             AgentResponse(
                 message=decision.text,
+                annotations=list(decision.annotations),
                 data={
                     "intent": state.intent.intent if state.intent else None,
                     "assistant_output": decision.type,
@@ -1278,9 +1285,15 @@ def _set_direct_chat_response(
         errors=errors,
     )
     message = result.response_text if result.success else decision.text
+    annotations = (
+        build_url_citation_annotations(message, result.search_sources)
+        if result.success
+        else []
+    )
     state.set_response(
         AgentResponse(
             message=message,
+            annotations=annotations,
             data={
                 "intent": state.intent.intent if state.intent else None,
                 "assistant_output": decision.type,
@@ -1355,6 +1368,7 @@ def _set_assistant_final_answer_response(
     state.set_response(
         AgentResponse(
             message=decision.text,
+            annotations=list(decision.annotations),
             data={
                 "intent": state.intent.intent if state.intent else None,
                 "final_answer_source": "assistant_loop",
@@ -1524,6 +1538,8 @@ def execute_requested_tool_node(graph_state: AssistantLoopState) -> AssistantLoo
             action_tool_calls_used += 1
         current["control_tool_calls_used"] = control_tool_calls_used
         current["action_tool_calls_used"] = action_tool_calls_used
+        if _run_phase(current) is RunPhase.FINALIZE:
+            break
         if not is_control_tool and action_tool_calls_used >= max_tool_calls:
             _enter_finalize_phase(
                 current,
@@ -1767,32 +1783,46 @@ def _execute_single_requested_tool_node(graph_state: AssistantLoopState) -> Assi
         error={"code": validation.code, "message": validation.message} if not validation.accepted else None,
     )
     if not validation.accepted:
+        recoverable_validation = validation.code in {
+            "invalid_tool_input",
+            "missing_required_input",
+        }
+        guard = LoopGuard(state.request.metadata).record_validation_rejection(
+            validation.code,
+            tool_name,
+        )
+        retryable = recoverable_validation and not guard.triggered
         error = AgentError(
             message=validation.message,
             source=tool_name or "assistant_loop",
-            details={"code": validation.code, "recovery_action": "stop_with_error", "validator_result": validation.model_dump(mode="json")},
+            details={
+                "code": validation.code,
+                "recovery_action": (
+                    "retry_tool_call" if retryable else "finalize_without_tools"
+                ),
+                "validator_result": validation.model_dump(mode="json"),
+            },
         )
         state.errors.append(error)
         observation = rejected_observation(
             tool_name=tool_name or "unknown",
             code=validation.code,
             message=validation.message,
+            retryable=retryable,
+            data={
+                "validation_issues": validation.metadata.get(
+                    "validation_issues",
+                    [],
+                )
+            },
         )
         _record_action_rejection(graph_state, observation, validation.model_dump(mode="json"))
-        guard = LoopGuard(state.request.metadata).record_validation_rejection(validation.code, tool_name)
         if guard.triggered:
             _record_loop_guard(graph_state, guard)
-            state.set_response(
-                AgentResponse(
-                    message=f"我没有执行这个工具调用：{validation.message}",
-                    data={
-                        "intent": state.intent.intent if state.intent else None,
-                        "assistant_output": "text",
-                        "validator_result": validation.model_dump(mode="json"),
-                        "loop_guard": guard.__dict__,
-                        "errors": [{"code": validation.code, "message": validation.message}],
-                    },
-                )
+            _enter_finalize_phase(
+                graph_state,
+                reason=guard.code,
+                source="tool_validation",
             )
         return {
             **graph_state,

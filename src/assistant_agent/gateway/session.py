@@ -1559,6 +1559,11 @@ def _run_end_payload(
     }
     if result.status == "completed":
         payload["response_text"] = result.response_text
+        if result.annotations:
+            payload["annotations"] = [
+                annotation.model_dump(mode="json")
+                for annotation in result.annotations
+            ]
     if result.trace_id:
         payload["trace_id"] = result.trace_id
     output_refs = list(dict.fromkeys(result.output_refs))[:4]

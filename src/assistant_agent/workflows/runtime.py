@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from assistant_agent.workflows.models import (
     WorkflowBundle,
+    WorkflowConstraintBinding,
     WorkflowEvent,
     WorkflowLease,
     WorkflowWorkItem,
@@ -35,6 +36,10 @@ class WorkItemAssignment(BaseModel):
     objective: str
     deliverables: list[str] = Field(default_factory=list)
     constraints: list[str] = Field(default_factory=list)
+    constraint_bindings: list[WorkflowConstraintBinding] = Field(
+        default_factory=list,
+        max_length=64,
+    )
     inputs: dict
     model_calls_remaining: int = Field(ge=0)
     tool_calls_remaining: int = Field(ge=0)
@@ -174,6 +179,10 @@ class WorkflowRuntime:
             objective=bundle.workflow.objective,
             deliverables=list(bundle.workflow.deliverables),
             constraints=list(bundle.workflow.constraints),
+            constraint_bindings=[
+                item.model_copy(deep=True)
+                for item in bundle.current_plan.constraint_bindings
+            ],
             inputs=dict(bundle.workflow.inputs),
             model_calls_remaining=bundle.workflow.budget.model_calls_remaining,
             tool_calls_remaining=bundle.workflow.budget.tool_calls_remaining,

@@ -11,6 +11,7 @@ from assistant_agent.workflows.models import (
     WorkflowSubmission,
     WorkflowWorkItem,
 )
+from assistant_agent.workflows.constraints import resolve_constraint_bindings
 from assistant_agent.workflows.research.definition import DeepResearchWorkflowDefinition
 
 
@@ -70,12 +71,17 @@ class LongHorizonWorkflowDefinition:
                     depends_on=["verify"],
                 ),
             ]
+        constraint_bindings = resolve_constraint_bindings(
+            submission=submission,
+            work_items=work_items,
+        )
         return WorkflowPlanVersion(
             workflow_id=workflow_id,
             version=1,
             definition_version=self.descriptor.definition_version,
             revision_reason="initial_submission",
             work_items=work_items,
+            constraint_bindings=constraint_bindings,
         )
 
 

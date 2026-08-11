@@ -140,12 +140,18 @@ Provider-native 联网；`QWEN_CHAT_API_PROTOCOL=openai_compatible` 只作为显
 使用独立的 8192 token 预算，两者分别可由 `MULTIMODAL_AGENT_CHAT_MAX_TOKENS` 和
 `MULTIMODAL_AGENT_DEEP_RESEARCH_MAX_TOKENS` 覆盖。
 adapter 将 DashScope `search_info.search_results` 归一化为 `ChatResult.search_sources`，只接受
-HTTP(S) URL、按 URL 去重并在结构化结果中最多保留 20 条。终态展示不追加底部来源列表；Runtime
-使用 Provider 返回的 `index` 将正文 `[1]` 或 `[ref_1]` 转成显示文本不变的内联 Markdown 链接，
-点击角标直接打开对应来源。正文没有角标、角标没有匹配来源或已经是链接时不猜测、不补链。
-角标语义完全沿用 Provider 在 `enable_citation=true` 下生成的内容，Runtime 不自行插入或伪造引用；
+HTTP(S) URL、按 URL 去重并在结构化结果中最多保留 20 条。Runtime 原样保留 Provider 正文中的
+`[1]` 或 `[ref_1]`，不追加底部来源列表，也不把角标改写成 Markdown 链接。角标语义完全沿用
+Provider 在 `enable_citation=true` 下生成的内容，Runtime 不自行插入或伪造引用；
 这证明 Provider 返回了哪些来源，但不把引用覆盖率或网页内容正确性扩大声明为已验证事实。显式
-OpenAI-compatible 回退不提供该结构化来源契约。
+OpenAI-compatible 回退不提供该结构化来源契约。Provider 非工具终态由 Runtime 的唯一 citation
+解析器把正文中实际出现且能匹配安全来源的 `[n]` / `[ref_n]` 投影成
+`UrlCitationAnnotation(type="url_citation")`；正文保持不变，annotation 使用 Unicode code point
+半开区间并携带 `source_id/title/url`。重复角标产生多个 occurrence、复用同一 `source_id`，未引用来源、
+无匹配角标、已是 Markdown link 的角标和非 HTTP(S) URL 不进入产品响应。annotations 随
+`AssistantTextOutput -> AgentResponse -> AgentRunResponse` 进入 HTTP `/agent/run` 终态，不进入
+conversation history、TTS 或 token delta。可点击样式和跳转仍由客户端负责；CLI 只能验证结构化映射，
+不能替代点击交互验收。
 `MULTIMODAL_AGENT_NATIVE_PROVIDER_STREAMING` 只控制 Runtime 是否使用 async-native stream
 consumer；sync-only DashScope adapter 始终走 `ChatAdapter.chat()`。Judge 等显式直接构造且未开启
 `native_web_search` 的辅助 adapter 保持独立的非联网、非流式策略。Other providers remain opt-in through
@@ -186,6 +192,13 @@ Qwen 的隐式搜索与网页抓取表现为 generation input 中的 `enable_sea
 治理；Provider refusal、截断、空响应和错误仍是 `ChatResult`/runtime 诊断状态，不扩展 assistant
 输出类型。未知类型、空文本和跨变体字段直接校验失败，不静默改写为成功文本。session task-state
 更新由 `UserRequest.runtime_task_update` 的 Pydantic 契约承担，不从 Provider 文本推断。
+
+Provider-native Tool 参数未通过 `ActionValidator` 时，assistant loop 将结构化 rejection 与原始
+tool-call ID 配对后回灌下一次 Provider turn。可修正的 schema 错误允许一次有界模型修参；首次拒绝
+不得提前 `set_response()` 或把 validator message 直出给用户。重复失败或不可恢复的 policy 拒绝进入
+answer-only FINALIZE，工具目录被清空；最终生成上下文会保留失败 code，但移除仅用于修参的字段路径与
+Pydantic 详情。Validator、Executor 与 FINALIZE 的职责因此保持分离：安全校验不放松，执行节点不承担
+用户文案，终态也不会宣称被拒绝的 Tool 已执行。
 
 购物展示协议属于终态交付投影，不属于 assistant loop 文本生成。支持
 `supports_shopping_detail_v1` 的 Gateway adapter 在 run 完成后从完整 shopping ToolResult 追加
@@ -286,9 +299,11 @@ commit barrier。
 普通 work-item 的完整最终文本直接作为成功结果。Provider 截断、错误、拒绝、timeout 或空终态属于
 技术失败，必须进入 work-item retry/failure 状态，不能把用户可见兜底文案写成成功 artifact。只有
 trusted work-item prompt 返回完整、通过严格 schema
-校验的 `workflow_control` JSON 时，adapter 才会把它解释为 `repair`、`blocked` 或 `failed`；Markdown
-代码块、混合文本和未知字段都不会成为控制指令。`repair_work_item_ids` 只能从 controller 提供的祖先
-候选中选择，并在 plan revision 前再次经过 DAG/descendant 校验。
+校验的 `workflow_control` JSON 时，adapter 才会把它解释为 `verified`、`repair`、`blocked` 或
+`failed`；Markdown 代码块、混合文本和未知字段都不会成为控制指令。普通 owner work item 仍可直接
+返回正文；结构化 constraint 指定的 verifier 即使成功也必须返回 `verified` 并完整覆盖分配给它的
+constraint ID，否则该 quantum 进入 retry/failure。`repair_work_item_ids` 只能从 controller 提供的
+祖先候选中选择，并在 plan revision 前再次经过 DAG/descendant 校验。
 
 ## Thread Model And Ordering
 

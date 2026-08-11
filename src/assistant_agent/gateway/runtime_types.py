@@ -6,6 +6,7 @@ from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, Field
 
+from assistant_agent.runtime.citations import UrlCitationAnnotation
 from assistant_agent.runtime.requests import AssistantMode, ResponseStyle
 
 
@@ -70,6 +71,7 @@ class RealtimeAgentResult(BaseModel):
     run_id: str | None = None
     trace_id: str | None = None
     output_refs: list[str] = Field(default_factory=list)
+    annotations: list[UrlCitationAnnotation] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 

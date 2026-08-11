@@ -140,10 +140,24 @@ class ActionValidator:
             validated_input = tool.input_schema.model_validate(complete_input)
         except ValidationError as exc:
             first = exc.errors()[0] if exc.errors() else {"msg": "invalid input"}
+            issues = [
+                {
+                    "path": ".".join(str(part) for part in issue.get("loc", ())),
+                    "type": str(issue.get("type") or "value_error"),
+                    "message": str(issue.get("msg") or "invalid input"),
+                }
+                for issue in exc.errors()[:8]
+            ]
+            location = issues[0]["path"] if issues else ""
+            issue_message = str(first.get("msg", "invalid input"))
             return _reject(
                 "invalid_tool_input",
-                f"{tool_name} input invalid: {first.get('msg', 'invalid input')}",
-                metadata=metadata,
+                (
+                    f"{tool_name} input invalid at {location}: {issue_message}"
+                    if location
+                    else f"{tool_name} input invalid: {issue_message}"
+                ),
+                metadata={**metadata, "validation_issues": issues},
             )
 
         media_error = _validate_required_media(

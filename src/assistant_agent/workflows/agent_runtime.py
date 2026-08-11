@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 from assistant_agent.runtime.requests import AssistantMode
 from assistant_agent.workflows.context import WorkflowContextManifest
+from assistant_agent.workflows.models import WorkflowConstraintBinding
 
 
 class AgentWorkItemRequest(BaseModel):
@@ -23,6 +24,10 @@ class AgentWorkItemRequest(BaseModel):
     objective: str = Field(min_length=1, max_length=10_000)
     work_item_kind: str = Field(default="generic", min_length=1, max_length=120)
     acceptance_contract: dict[str, JsonValue] = Field(default_factory=dict)
+    assigned_constraints: list[WorkflowConstraintBinding] = Field(
+        default_factory=list,
+        max_length=64,
+    )
     assistant_mode: AssistantMode = "standard"
     repair_candidate_ids: list[str] = Field(default_factory=list, max_length=128)
     context_manifest: WorkflowContextManifest
@@ -53,12 +58,18 @@ def render_work_item_prompt(request: AgentWorkItemRequest) -> str:
         f"Work item objective: {request.objective}",
         f"Workflow objective: {request.context_manifest.objective}",
     ]
-    if request.context_manifest.constraints:
+    if request.assigned_constraints:
         lines.append(
-            "Workflow 约束默认由最终交付物整体满足；当前 work item 只需满足自身 "
-            "acceptance contract，除非约束明确点名当前步骤:"
+            "Assigned workflow constraints:\n"
+            + json.dumps(
+                [
+                    item.model_dump(mode="json")
+                    for item in request.assigned_constraints
+                ],
+                ensure_ascii=False,
+                sort_keys=True,
+            )
         )
-        lines.extend(f"- {item}" for item in request.context_manifest.constraints)
     if request.acceptance_contract:
         lines.append(
             "Work item acceptance contract:\n"
@@ -77,11 +88,26 @@ def render_work_item_prompt(request: AgentWorkItemRequest) -> str:
             + json.dumps(request.workflow_inputs, ensure_ascii=False, sort_keys=True)
         )
     lines.append("完成当前 work item 后直接返回结果，不创建新的长期 Workflow。")
-    control = (
-        '仅当当前步骤无法正常成功时，才把完整最终回复写成严格 JSON：'
-        '{"workflow_control":{"status":"blocked|failed","summary":"...",'
-        '"unresolved_questions":["..."]}}。不要把控制 JSON 包在 Markdown 中。'
-    )
+    verifier_ids = [
+        item.constraint_id
+        for item in request.assigned_constraints
+        if item.verifier_work_item_id == request.work_item_id
+    ]
+    if verifier_ids:
+        control = (
+            "当前步骤是结构化约束 verifier。验证成功也必须把完整最终回复写成严格 JSON："
+            '{"workflow_control":{"status":"verified","summary":"...",'
+            '"content":"可选的完整交付物","verified_constraint_ids":["..."]}}。'
+            "verified_constraint_ids 必须完整覆盖："
+            + json.dumps(verifier_ids, ensure_ascii=False)
+            + "。不要把控制 JSON 包在 Markdown 中。"
+        )
+    else:
+        control = (
+            '仅当当前步骤无法正常成功时，才把完整最终回复写成严格 JSON：'
+            '{"workflow_control":{"status":"blocked|failed","summary":"...",'
+            '"unresolved_questions":["..."]}}。不要把控制 JSON 包在 Markdown 中。'
+        )
     if request.repair_candidate_ids:
         candidates = ", ".join(request.repair_candidate_ids)
         control += (
@@ -95,8 +121,10 @@ def render_work_item_prompt(request: AgentWorkItemRequest) -> str:
 class _WorkflowControl(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    status: Literal["repair", "blocked", "failed"]
+    status: Literal["verified", "repair", "blocked", "failed"]
     summary: str = Field(min_length=1, max_length=4_000)
+    content: str = Field(default="", max_length=100_000)
+    verified_constraint_ids: list[str] = Field(default_factory=list, max_length=64)
     unresolved_questions: list[str] = Field(default_factory=list, max_length=64)
     repair_work_item_ids: list[str] = Field(default_factory=list, max_length=128)
 
@@ -114,13 +142,25 @@ def parse_work_item_response(
     artifact_refs: list[str],
     model_calls_used: int,
     tool_calls_used: int,
+    required_verification_ids: list[str] | None = None,
 ) -> AgentWorkItemResult:
     """Parse the narrow trusted work-item control envelope, with text success fallback."""
 
+    required_ids = set(required_verification_ids or [])
     try:
         payload = json.loads(text)
         envelope = _WorkflowControlEnvelope.model_validate(payload)
     except (json.JSONDecodeError, TypeError, ValueError):
+        if required_ids:
+            return AgentWorkItemResult(
+                status="failed",
+                run_id=run_id,
+                summary="Verifier did not return a structured constraint result.",
+                error_code="verification_result_missing",
+                artifact_refs=artifact_refs,
+                model_calls_used=model_calls_used,
+                tool_calls_used=tool_calls_used,
+            )
         return AgentWorkItemResult(
             status="succeeded",
             run_id=run_id,
@@ -131,6 +171,27 @@ def parse_work_item_response(
             tool_calls_used=tool_calls_used,
         )
     control = envelope.workflow_control
+    if control.status == "verified":
+        missing_ids = required_ids.difference(control.verified_constraint_ids)
+        if missing_ids:
+            return AgentWorkItemResult(
+                status="failed",
+                run_id=run_id,
+                summary="Verifier result did not cover every assigned constraint.",
+                error_code="verification_incomplete",
+                artifact_refs=artifact_refs,
+                model_calls_used=model_calls_used,
+                tool_calls_used=tool_calls_used,
+            )
+        return AgentWorkItemResult(
+            status="succeeded",
+            run_id=run_id,
+            summary=control.summary,
+            content=control.content or control.summary,
+            artifact_refs=artifact_refs,
+            model_calls_used=model_calls_used,
+            tool_calls_used=tool_calls_used,
+        )
     return AgentWorkItemResult(
         status=control.status,
         run_id=run_id,

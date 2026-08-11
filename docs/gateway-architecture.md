@@ -253,6 +253,14 @@ Gateway 与 Assistant Runtime 之间的公共契约由以下类型组成：
 `GatewayRuntimeAdapter` 只做 request/event/result 映射和取消转发。它不拥有 planning、tool choice、
 memory policy、Provider policy、agent routing 或 multi-agent decisions。
 
+`RealtimeAgentResult.annotations` 承接 Runtime 已完成的 URL citation 解析；Gateway adapter 不从正文
+`[1]` 二次猜测 URL，也不把角标改写成 Markdown。引用只做 terminal enrichment：token streaming 和
+`response.chunk` 保持纯文本，completed `run.end.payload` 在 annotations 非空时携带其 JSON 投影，
+cancelled/error 终态不交付引用。旧客户端可以继续只消费 `response_text`；Web/UI 客户端使用
+Unicode code point 半开区间将正文角标渲染为可点击链接。当前 Media-Agent `/agent-service/v1` 未声明
+citation capability，因此不扩展其 vendor wire contract；CLI 只能验证文本和结构化映射，不能作为
+点击交互的验收面。
+
 稳定的事件投影原则：
 
 | Runtime 语义 | Gateway 语义 |

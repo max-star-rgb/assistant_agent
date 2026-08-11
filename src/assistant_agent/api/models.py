@@ -4,6 +4,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from assistant_agent.runtime.citations import UrlCitationAnnotation
 from assistant_agent.runtime.state import AgentError, AgentState
 from assistant_agent.providers.provider_errors import sanitize_error_detail, sanitize_error_message
 
@@ -84,6 +85,7 @@ class AgentRunResponse(BaseModel):
     execution_strategy: str = "react"
     intent: str | None
     response_text: str
+    annotations: list[UrlCitationAnnotation] = Field(default_factory=list)
     data: dict[str, Any] = Field(default_factory=dict)
     tool_calls: list[dict[str, Any]] = Field(default_factory=list)
     tool_results: list[dict[str, Any]] = Field(default_factory=list)
@@ -186,6 +188,7 @@ def agent_run_response_from_state(
         execution_strategy=state.execution_strategy,
         intent=state.intent.intent if state.intent else None,
         response_text=state.response.message if state.response else "",
+        annotations=list(state.response.annotations) if state.response else [],
         data=state.response.data if state.response and state.response.data else {},
         tool_calls=[call.model_dump(mode="json") for call in state.tool_calls],
         tool_results=[result.model_dump(mode="json") for result in state.tool_results],

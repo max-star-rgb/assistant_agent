@@ -12,6 +12,7 @@ from assistant_agent.workflows.agent_runtime import (
 )
 from assistant_agent.workflows.artifacts import LocalWorkflowArtifactStore
 from assistant_agent.workflows.context import WorkflowContextCompiler
+from assistant_agent.workflows.constraints import assigned_constraints
 from assistant_agent.workflows.runtime import (
     WorkItemAssignment,
     WorkItemExecutionResult,
@@ -53,8 +54,13 @@ class AgentRuntimeWorkItemExecutor:
             identity=identity,
             workflow_id=assignment.workflow_id,
             objective=assignment.objective,
-            constraints=assignment.constraints,
+            constraints=[],
             artifact_refs=assignment.work_item.input_artifact_refs,
+            work_item_kind=assignment.work_item.kind,
+        )
+        effective_constraints = assigned_constraints(
+            assignment.constraint_bindings,
+            work_item_id=assignment.work_item.work_item_id,
         )
         result = self.agent_runtime.run_work_item(AgentWorkItemRequest(
             workflow_id=assignment.workflow_id,
@@ -66,6 +72,7 @@ class AgentRuntimeWorkItemExecutor:
             objective=assignment.work_item.objective,
             work_item_kind=assignment.work_item.kind,
             acceptance_contract=dict(assignment.work_item.acceptance_contract),
+            assigned_constraints=effective_constraints,
             assistant_mode=(
                 "deep_research"
                 if assignment.workflow_type == "deep_research"

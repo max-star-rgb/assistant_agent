@@ -138,7 +138,13 @@ async def start_durable_workflow_worker(app: FastAPI) -> DurableWorkflowWorker |
     work_item_executor = AgentRuntimeWorkItemExecutor(
         agent_runtime=runtime,
         artifact_store=artifact_store,
-        context_compiler=WorkflowContextCompiler(artifact_store=artifact_store),
+        context_compiler=WorkflowContextCompiler(
+            artifact_store=artifact_store,
+            token_counter=getattr(runtime, "context_token_counter", None),
+            model_context_window_tokens=config.context_input_token_limit,
+            output_reserve_tokens=config.deep_research_chat_max_tokens,
+            safety_margin_tokens=config.context_compaction_safety_margin_tokens,
+        ),
         max_iterations=config.max_tool_iterations,
     )
     worker = DurableWorkflowWorker(

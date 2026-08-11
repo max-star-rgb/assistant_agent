@@ -228,6 +228,8 @@ def rejected_observation(
     tool_name: str,
     code: str,
     message: str,
+    retryable: bool = False,
+    data: Mapping[str, Any] | None = None,
 ) -> ToolObservation:
     """Build an observation for an action rejected before execution."""
 
@@ -237,10 +239,11 @@ def rejected_observation(
         status="rejected",
         summary=f"Action rejected: {safe_message}",
         is_complete=False,
+        data=sanitize_tool_observation_detail(data or {}),
         error=ToolObservationError(
             code=code,
             message=safe_message,
-            retryable=False,
+            retryable=retryable,
         ),
     )
 

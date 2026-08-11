@@ -1352,7 +1352,7 @@ def _context_compactor_mode(value: str | None) -> ContextCompactorMode:
 
 def _default_context_input_token_limit(model: str | None) -> int:
     normalized = (model or "").strip().lower()
-    if normalized.startswith("qwen3.6-flash"):
+    if normalized.startswith(("qwen3.6-flash", "deepseek-v4-flash")):
         return 1_000_000
     return 128_000
 
