@@ -404,6 +404,7 @@ def _root_span(
         status=_root_status(events),
         attributes={
             **trace_attributes,
+            **_langsmith_experiment_attributes(events),
             "langsmith.span.kind": "chain",
             "langfuse.observation.type": (
                 "agent"
@@ -438,6 +439,30 @@ def _external_parent_span_id(events: list[TraceEvent]) -> str | None:
         ),
         None,
     )
+
+
+def _langsmith_experiment_attributes(
+    events: list[TraceEvent],
+) -> dict[str, str]:
+    started = next(
+        (event for event in events if _event_name(event) == "run.started"),
+        None,
+    )
+    if started is None or started.attributes.get("evaluation_backend") != "langsmith":
+        return {}
+    values = {
+        "langsmith.trace.id": started.attributes.get("trace_id"),
+        "langsmith.span.parent_id": started.attributes.get("parent_run_id"),
+        "langsmith.trace.session_id": started.attributes.get("experiment_id"),
+        "langsmith.reference_example_id": started.attributes.get(
+            "reference_example_id"
+        ),
+    }
+    return {
+        key: value
+        for key, value in values.items()
+        if isinstance(value, str) and value
+    }
 
 
 def _event_iterations(events: list[TraceEvent]) -> dict[int, int]:

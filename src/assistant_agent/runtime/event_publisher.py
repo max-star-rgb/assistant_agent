@@ -16,7 +16,10 @@ from assistant_agent.observability.trace_store import (
 from assistant_agent.runtime.event_sink import EventSink
 from assistant_agent.runtime.events import AgentEvent
 from assistant_agent.runtime.state import AgentState
-from assistant_agent.observability.trace_context import RuntimeExportTraceContext
+from assistant_agent.observability.trace_context import (
+    RuntimeExperimentTraceLink,
+    RuntimeExportTraceContext,
+)
 
 
 RunTerminalStatus = Literal["completed", "failed", "cancelled"]
@@ -35,6 +38,7 @@ class RunStartedFact:
     parent_span_id: str | None
     execution_engine: str
     export_trace_context: RuntimeExportTraceContext | None = None
+    experiment_trace_link: RuntimeExperimentTraceLink | None = None
     occurred_at: datetime = field(default_factory=_now)
 
 
@@ -167,6 +171,17 @@ class RuntimeEventPublisher:
         }
         if fact.export_trace_context is not None:
             attributes.update(fact.export_trace_context.model_dump(mode="python"))
+        if fact.experiment_trace_link is not None:
+            link = fact.experiment_trace_link
+            attributes.update(
+                {
+                    "evaluation_backend": link.backend,
+                    "trace_id": link.trace_id,
+                    "parent_run_id": link.parent_run_id,
+                    "experiment_id": link.experiment_id,
+                    "reference_example_id": link.reference_example_id,
+                }
+            )
         self._append_trace(
             TraceEvent(
                 trace_id=state.trace_id,
