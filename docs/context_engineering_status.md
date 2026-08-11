@@ -285,30 +285,40 @@ Owner context 默认关闭，只能由进程配置和可信 owner identity 启�
 文件类型、symlink、编码、容量和敏感内容校验；非法新版本只能使用同 owner 分区的 last-known-good
 或省略。Owner persona 可以影响表达，不能改变工具权限、identity、memory policy 或 provider mode。
 
-同一治理入口还支持结构化用户档案 `USER_PROFILE.json`。默认位置为
-`.local/context/USER_PROFILE.json`，也就是
-`MULTIMODAL_AGENT_EDITABLE_CONTEXT_ROOT` 指向目录下的固定文件；只有同时启用
-`MULTIMODAL_AGENT_EDITABLE_CONTEXT_ENABLED=true` 并通过
-`MULTIMODAL_AGENT_EDITABLE_CONTEXT_USER_ID` 绑定当前可信 `user_id` 时才读取。Runtime 每个 run
-读取并冻结一次，空 `attributes` 合法且不产生 Prompt 上下文。文件使用固定 schema：
+同一治理入口还支持结构化多用户档案 `USER_PROFILES.json`。该能力默认启用，文件默认位于
+`.local/context/USER_PROFILES.json`，也就是
+`MULTIMODAL_AGENT_EDITABLE_CONTEXT_ROOT` 指向目录下的固定文件；operator 可以显式设置
+`MULTIMODAL_AGENT_EDITABLE_CONTEXT_ENABLED=false` 关闭。Runtime 每个 run 使用可信
+`request.user_id` 精确选择一条 profile 并冻结，调用方不能通过 metadata 覆盖该身份。不存在对应条目或
+条目的 `attributes` 为空时，不产生 Prompt 上下文，也不影响当前回答。文件使用固定 schema：
 
 ```json
 {
-  "schema_version": "user_profile_v1",
-  "revision": 1,
-  "attributes": {
-    "home_city": {
-      "value": "上海",
-      "source": "user_confirmed",
-      "updated_at": "2026-08-11"
+  "schema_version": "user_profiles_v1",
+  "profiles": {
+    "user-123": {
+      "revision": 1,
+      "attributes": {
+        "home_city": {
+          "value": "上海",
+          "source": "user_confirmed",
+          "updated_at": "2026-08-11"
+        }
+      }
     }
   }
 }
 ```
 
+`profiles` 的 key 必须与 Runtime 最终解析的 `user_id` 完全一致。不同用户只能投影自己的条目；整个
+文件虽由本地 operator 统一编辑，但其他用户的 profile 正文不会进入本次 `AssistantContextPack`。
 属性名只能使用小写字母、数字和下划线，值只能是字符串、数字或布尔值；`source` 只允许
 `user_confirmed`、`user_setting` 或 `operator_verified`。Profile 只保存用户明确维护的稳定事实，
-不得保存 secret、LLM 推断或临时位置。编辑内容时同步递增 `revision`。
+不得保存 secret、LLM 推断或临时位置。编辑某个用户的内容时同步递增该条目的 `revision`。
+
+`MULTIMODAL_AGENT_EDITABLE_CONTEXT_USER_ID` 只用于可选的本地 `SOUL.md` owner persona，不再限制
+Profile 可用用户集合；未配置该字段时 Runtime 不加载 SOUL，但所有具有独立 profile 条目的用户仍可
+使用自己的结构化档案。
 
 Profile 进入 `AssistantContextPack.context_sections` 时使用 `kind=user_profile`、
 `authority=user_profile_data`、`identity_scope=user`。PromptCompiler 将其与长期记忆保持不同的 JSON

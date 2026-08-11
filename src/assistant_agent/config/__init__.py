@@ -127,7 +127,7 @@ class ProviderConfig:
     conversation_history_backend: ConversationHistoryBackend = "memory"
     conversation_history_path: str = ".local/memory/conversation_history.jsonl"
     max_conversation_history_turns: int = 0
-    editable_context_enabled: bool = False
+    editable_context_enabled: bool = True
     editable_context_root: str = ".local/context"
     editable_context_user_id: str | None = None
     local_file_access_root: str = ".data/files"
@@ -577,7 +577,7 @@ class ProviderConfig:
             ),
             editable_context_enabled=_bool_env(
                 source.get("MULTIMODAL_AGENT_EDITABLE_CONTEXT_ENABLED"),
-                False,
+                True,
             ),
             editable_context_root=(
                 source.get("MULTIMODAL_AGENT_EDITABLE_CONTEXT_ROOT") or ".local/context"

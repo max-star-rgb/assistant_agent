@@ -21,8 +21,8 @@ from assistant_agent.context.sources import ContextSourceRequest
 
 USER_PROFILE_SOURCE_ID = "user_profile"
 USER_PROFILE_SOURCE_REF = "editable_context:user_profile"
-USER_PROFILE_FILE_NAME = "USER_PROFILE.json"
-USER_PROFILE_MAX_BYTES = 16_000
+USER_PROFILE_FILE_NAME = "USER_PROFILES.json"
+USER_PROFILE_MAX_BYTES = 128_000
 USER_PROFILE_COMPILED_MAX_CHARS = 4_000
 
 _ATTRIBUTE_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
@@ -50,12 +50,11 @@ class UserProfileAttribute(BaseModel):
     )
 
 
-class UserProfileDocument(BaseModel):
-    """Versioned on-disk profile document."""
+class UserProfileRecord(BaseModel):
+    """One user-scoped profile record."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_version: Literal["user_profile_v1"] = "user_profile_v1"
     revision: int = Field(ge=1)
     attributes: dict[str, UserProfileAttribute] = Field(
         max_length=64,
@@ -76,25 +75,33 @@ class UserProfileDocument(BaseModel):
         return attributes
 
 
+class UserProfilesDocument(BaseModel):
+    """Versioned on-disk collection keyed by exact runtime user identity."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: Literal["user_profiles_v1"] = "user_profiles_v1"
+    profiles: dict[str, UserProfileRecord] = Field(max_length=1_024)
+
+    @field_validator("profiles")
+    @classmethod
+    def validate_user_ids(
+        cls,
+        profiles: dict[str, UserProfileRecord],
+    ) -> dict[str, UserProfileRecord]:
+        if any(not user_id.strip() or len(user_id) > 256 for user_id in profiles):
+            raise ValueError("invalid user profile identity")
+        return profiles
+
+
 class UserProfileContextSource:
-    """Load one owner-bound USER_PROFILE.json as prompt-safe profile data."""
+    """Load the current user's isolated record from USER_PROFILES.json."""
 
     source_id = USER_PROFILE_SOURCE_ID
 
     def load(self, request: ContextSourceRequest) -> ContextSourceResult:
         if not request.editable_context_enabled:
             return ContextSourceResult()
-        owner_id = request.local_owner_user_id
-        if not owner_id:
-            return _issue(
-                "editable_context_owner_unconfigured",
-                "Editable user profile requires an explicitly bound local owner.",
-            )
-        if request.user_id != owner_id:
-            return _issue(
-                "editable_context_identity_mismatch",
-                "Editable user profile is not available for this request identity.",
-            )
 
         root = request.source_root.expanduser().resolve(strict=False)
         candidate = root / USER_PROFILE_FILE_NAME
@@ -111,19 +118,20 @@ class UserProfileContextSource:
                 return ContextSourceResult()
             return ContextSourceResult(issues=[raw_or_issue])
         try:
-            document = UserProfileDocument.model_validate_json(raw_or_issue)
+            document = UserProfilesDocument.model_validate_json(raw_or_issue)
         except ValidationError:
             return _issue(
                 "user_profile_invalid",
-                "USER_PROFILE.json does not match user_profile_v1.",
+                "USER_PROFILES.json does not match user_profiles_v1.",
             )
-        if not document.attributes:
+        profile = document.profiles.get(request.user_id)
+        if profile is None or not profile.attributes:
             return ContextSourceResult()
 
         content = json.dumps(
             {
                 name: attribute.model_dump(mode="json", exclude_none=True)
-                for name, attribute in document.attributes.items()
+                for name, attribute in profile.attributes.items()
             },
             ensure_ascii=False,
             sort_keys=True,
@@ -153,7 +161,7 @@ class UserProfileContextSource:
                     stability="semi_stable",
                     source_type="editable_file",
                     source_ref=USER_PROFILE_SOURCE_REF,
-                    source_version=f"revision:{document.revision}",
+                    source_version=f"revision:{profile.revision}",
                     identity_scope="user",
                     priority=20,
                     max_chars=compiled_limit,
@@ -168,27 +176,27 @@ def _read_profile_file(path: Path) -> bytes | ContextSourceIssue:
     except FileNotFoundError:
         return _source_issue(
             "user_profile_file_missing",
-            "USER_PROFILE.json is missing from the editable context root.",
+            "USER_PROFILES.json is missing from the editable context root.",
         )
     except OSError:
         return _source_issue(
             "user_profile_file_unreadable",
-            "USER_PROFILE.json could not be inspected.",
+            "USER_PROFILES.json could not be inspected.",
         )
     if stat.S_ISLNK(file_stat.st_mode):
         return _source_issue(
             "user_profile_symlink_not_allowed",
-            "A symbolic link cannot be used as USER_PROFILE.json.",
+            "A symbolic link cannot be used as USER_PROFILES.json.",
         )
     if not stat.S_ISREG(file_stat.st_mode):
         return _source_issue(
             "user_profile_not_regular_file",
-            "USER_PROFILE.json must be a regular file.",
+            "USER_PROFILES.json must be a regular file.",
         )
     if file_stat.st_size > USER_PROFILE_MAX_BYTES:
         return _source_issue(
             "user_profile_file_too_large",
-            "USER_PROFILE.json exceeds the byte limit.",
+            "USER_PROFILES.json exceeds the byte limit.",
         )
 
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
@@ -197,14 +205,14 @@ def _read_profile_file(path: Path) -> bytes | ContextSourceIssue:
     except OSError:
         return _source_issue(
             "user_profile_file_unreadable",
-            "USER_PROFILE.json could not be read.",
+            "USER_PROFILES.json could not be read.",
         )
     try:
         opened_stat = os.fstat(descriptor)
         if not stat.S_ISREG(opened_stat.st_mode):
             return _source_issue(
                 "user_profile_not_regular_file",
-                "USER_PROFILE.json must be a regular file.",
+                "USER_PROFILES.json must be a regular file.",
             )
         raw = os.read(descriptor, USER_PROFILE_MAX_BYTES + 1)
     finally:
@@ -212,7 +220,7 @@ def _read_profile_file(path: Path) -> bytes | ContextSourceIssue:
     if len(raw) > USER_PROFILE_MAX_BYTES:
         return _source_issue(
             "user_profile_file_too_large",
-            "USER_PROFILE.json exceeds the byte limit.",
+            "USER_PROFILES.json exceeds the byte limit.",
         )
     return raw
 

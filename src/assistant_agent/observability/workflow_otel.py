@@ -16,6 +16,7 @@ from assistant_agent.observability.otel_exporter import (
     create_otlp_http_text_span_exporter,
 )
 from assistant_agent.observability.otel_mapping import OtelSpanSpec, langfuse_trace_id
+from assistant_agent.observability.workflow_trace import workflow_root_span_id
 from assistant_agent.workflows.models import (
     TERMINAL_WORKFLOW_STATUSES,
     WorkflowBundle,
@@ -85,7 +86,7 @@ def build_workflow_otel_span_specs(
 
     workflow = bundle.workflow
     export_trace_id = workflow.ingress_trace_id or workflow.workflow_id
-    root_span_id = _stable_span_id(workflow.workflow_id, "workflow.runtime")
+    root_span_id = workflow_root_span_id(export_trace_id)
     common = {
         "langfuse.trace.name": f"{workflow.workflow_type}.workflow",
         "assistant_agent.trace_kind": "workflow",
@@ -286,6 +287,9 @@ def _work_item_span(
             "assistant_agent.canonical_event": event.event_type,
             "assistant_agent.work_item_id": work_item_id,
             "assistant_agent.attempt_id": str(payload.get("attempt_id", "")),
+            "assistant_agent.agent_role": str(
+                payload.get("agent_role", "worker")
+            ),
             "langfuse.observation.input": _json_value(
                 {
                     "work_item_id": work_item_id,

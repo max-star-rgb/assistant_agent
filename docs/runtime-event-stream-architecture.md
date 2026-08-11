@@ -53,13 +53,14 @@ through `RuntimeEventPublisher`, which creates both projections with the same
 occurrence timestamp and correlation identity. Runtime and Tool code must not
 construct a second lifecycle projection by hand after publishing the fact.
 
-Durable Workflow 的 Plan、quantum、返工和 terminal 生命周期不属于单个 Assistant run，因此其事实源是
-已提交的 `WorkflowEvent`，而不是把它们复制为 `TraceEvent`。可观测 Store decorator 可以 fail-open 地将
-Deep Research ingress 将当前 canonical trace ID 与 `workflow_submit` Tool span ID 持久化到 Workflow；
-每个 work-item 通过 Runtime 执行时仍产生自己的 canonical `AgentEvent/TraceEvent`，并保留
-trace/run/attempt 身份。Runtime 在可信 assignment 边界额外注入 OTel 导出上下文，使提交阶段、Workflow
-和 work-item 的 `agent.runtime` 及其子 observation 导出到同一个 `deep_research.workflow` trace，挂在
-对应 durable 层级下；这不会改写 canonical event 身份，也不会把 Workflow 状态机并入 Assistant loop。
+Durable Workflow 的 Plan、quantum、返工和 terminal 生命周期不属于单个 bounded Assistant run，因此其
+事实源是已提交的 `WorkflowEvent`，而不是把它们复制为 `TraceEvent`。Deep Research 是一个逻辑
+Plan-and-Execute runtime：入口把当前 canonical trace ID 持久化到 Workflow，首个 durable quantum 调用
+主 Agent planner 生成结构化 DAG，后续 work item 再由可替换的 worker Agent 执行。planner/worker 每次
+调用仍产生自己的 canonical `AgentEvent/TraceEvent`，并保留 trace/run/attempt 身份。Runtime 在可信
+assignment 边界注入 OTel 导出上下文，使 `workflow.start`、Workflow、planner/worker 的
+`agent.runtime` 及其子 observation 导出到同一个 `deep_research.workflow` trace 并挂在对应 durable
+层级下；这不会改写 canonical event 身份，也不会把 Workflow 状态机塞进单次 Assistant loop。
 
 The projections are not one-to-one. Delivery-only facts such as committed text
 deltas remain `AgentEvent` only, while LLM, context, memory, and graph-node
@@ -293,15 +294,17 @@ Durable Workflow 使用相同的分离原则，但事件事实源是 `WorkflowSt
 
 - `GET /workflows/{workflow_id}/events?after=<cursor>` 先经 `WorkflowService` 做 `user_id + agent_id`
   校验，再读取事务内与 revision 一起提交的 `WorkflowEvent`；
-- 前台 `workflow_submit` run 在返回 handle 后结束，本身不 tail 后台事件；本地 `media_simulator.py` 可在
+- 前台 Deep Research start run 在返回 handle 后结束，本身不 tail 后台事件；本地 `media_simulator.py` 可在
   前台终包后另开 identity-scoped HTTP pull 窗口，按 cursor 观察同一 Workflow，但不延长或重新打开
   ingress Gateway run；
-- 提交 Tool 的受信 handoff 会直接形成短终态回复，不进行第二次 Provider 调用。后台 plan 创建后，
+- 显式 Deep Research start 不调用 Provider 或本地 Tool，直接形成短终态回复。首个后台 quantum 由主
+  Agent planner 生成并提交结构化 plan；其后
   status facade 只从持久化当前 item 的 `display_title`、状态和完成数投影产品 `progress`；原始事件
   仍是诊断事实，但不是默认产品文案；
-- 每个语义 work item 都产生独立 `AgentGraphRuntime` canonical run/trace，Workflow event 通过
+- planner 和每个语义 worker item 都产生独立 bounded `AgentGraphRuntime` canonical run/trace，Workflow event 通过
   `workflow_id/work_item_id/attempt` 关联；Deep Research 的 OTel/Langfuse 投影复用持久化的 ingress
-  trace ID，但不把多个 canonical run 伪装成同一个 Runtime run；
+  trace ID，但不把多个 canonical run 伪装成一次连续 ReAct；它们共同属于一个 durable
+  Plan-and-Execute execution；
 - waiting-input、cancel、retry、local plan revision 和 terminal 都是持久事件；客户端断线只丢失
   临时观察窗口，使用 cursor 可重放；
 - 当前 HTTP facade 是 pull/replay，不建立长期 WebSocket producer，也不把消费者速度耦合到 worker。

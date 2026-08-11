@@ -287,7 +287,7 @@ def test_standard_mode_remains_the_gateway_default() -> None:
     assert request.assistant_mode == "standard"
 
 
-def test_deep_research_entry_exposes_only_workflow_submission() -> None:
+def test_deep_research_entry_does_not_expose_llm_submission_tools() -> None:
     request = UserRequest(
         user_id="user-sentinel",
         session_id="session-sentinel",
@@ -306,26 +306,24 @@ def test_deep_research_entry_exposes_only_workflow_submission() -> None:
         skill_catalog=SkillCatalog(),
     )
 
-    assert selection.run_tool_catalog.available_tool_names == [
-        WORKFLOW_SUBMIT_TOOL_NAME
-    ]
+    assert selection.run_tool_catalog.available_tool_names == []
     assert selection.run_tool_catalog.excluded_reasons == {
+        WORKFLOW_SUBMIT_TOOL_NAME: ["assistant_mode_runtime_managed"],
         "email_search": ["assistant_mode_not_allowed"],
         "maps_text_search": ["assistant_mode_not_allowed"],
     }
 
 
-def test_deep_research_entry_requires_the_workflow_submission_tool() -> None:
+def test_deep_research_entry_prompt_has_no_submission_tool_choice() -> None:
     request = UserRequest(
         user_id="user-sentinel",
         session_id="session-sentinel",
         text="research-sentinel",
         assistant_mode="deep_research",
     )
-    workflow_spec = ToolSpec(name=WORKFLOW_SUBMIT_TOOL_NAME, category="write")
     pack = AssistantContextPack(
         request=request,
-        prompt_tool_specs=[workflow_spec],
+        prompt_tool_specs=[],
         iteration=0,
         max_iterations=5,
     )
@@ -343,11 +341,8 @@ def test_deep_research_entry_requires_the_workflow_submission_tool() -> None:
         )
     )
 
-    assert compiled.chat_request.tool_choice == {
-        "type": "function",
-        "function": {"name": WORKFLOW_SUBMIT_TOOL_NAME},
-    }
-    assert compiled.chat_request.provider_search_profile == "standard"
+    assert compiled.chat_request.tools == []
+    assert compiled.chat_request.tool_choice is None
 
 
 def test_deep_research_without_workflow_runs_inline_with_native_search() -> None:
@@ -688,7 +683,7 @@ def test_chat_compatible_research_plan_marks_sources_as_best_effort() -> None:
         item.work_item_id: item.acceptance_contract for item in plan.work_items
     }
 
-    assert definition.descriptor.definition_version == "2"
+    assert definition.descriptor.definition_version == "3"
     assert contracts["collect_sources"] == {
         "target_sources": 12,
         "source_verification": "best_effort",

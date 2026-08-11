@@ -19,6 +19,7 @@ from assistant_agent.observability.langfuse_config import local_langfuse_trace_u
 from assistant_agent.observability.trace_store import TraceEvent, redact_trace_event, sanitize_trace_value
 from assistant_agent.observability.turn_evaluator import build_turn_diagnostic
 from assistant_agent.observability.turn_summary import latest_turn_summary_from_events
+from assistant_agent.observability.workflow_trace import workflow_root_span_id
 from assistant_agent.observability.visual_trace_content import (
     sanitize_visual_tool_result,
     sanitize_visual_trace_content,
@@ -159,6 +160,7 @@ class OtelTraceProjectionContext:
     workflow_id: str
     work_item_id: str
     attempt_id: str
+    agent_role: Literal["planner", "worker"]
 
 
 def langfuse_trace_id(seed: str) -> str:
@@ -199,9 +201,21 @@ def text_otel_projection_context(
             "workflow_id",
             "work_item_id",
             "attempt_id",
+            "agent_role",
         )
     }
-    if not all(isinstance(value, str) and value for value in values.values()):
+    if not all(
+        isinstance(values[key], str) and values[key]
+        for key in (
+            "export_trace_id",
+            "export_parent_span_id",
+            "export_trace_name",
+            "execution_role",
+            "workflow_id",
+            "work_item_id",
+            "attempt_id",
+        )
+    ):
         return None
     trace_id = str(values["export_trace_id"])
     parent_span_id = str(values["export_parent_span_id"])
@@ -215,6 +229,9 @@ def text_otel_projection_context(
         workflow_id=str(values["workflow_id"]),
         work_item_id=str(values["work_item_id"]),
         attempt_id=str(values["attempt_id"]),
+        agent_role=(
+            "planner" if values["agent_role"] == "planner" else "worker"
+        ),
     )
 
 
@@ -306,11 +323,12 @@ def build_late_text_otel_span_spec(
     *,
     memory_content: "MemoryIngestionTraceContent | None" = None,
     projection_context: OtelTraceProjectionContext | None = None,
+    runtime_parent_span_id: str | None = None,
 ) -> OtelSpanSpec:
     """Map one post-summary event without re-exporting the runtime root span."""
 
     safe_event = event if memory_content is not None else redact_trace_event(event)
-    root_span_id = _root_span_id([safe_event])
+    root_span_id = runtime_parent_span_id or _root_span_id([safe_event])
     span = _operation_span(
         safe_event,
         root_span_id=root_span_id,
@@ -370,12 +388,14 @@ def _root_span(
         parent_span_id=(
             projection_context.parent_span_id
             if projection_context is not None
+            else workflow_root_span_id(events[0].trace_id)
+            if deep_research_ingress
             else _external_parent_span_id(events)
         ),
         name=(
             "vision.runtime"
             if vision_trace
-            else "assistant.submit"
+            else "workflow.start"
             if deep_research_ingress
             else "agent.runtime"
         ),
@@ -386,7 +406,9 @@ def _root_span(
             **trace_attributes,
             "langfuse.observation.type": (
                 "agent"
-                if projection_context is not None or deep_research_ingress
+                if projection_context is not None
+                else "chain"
+                if deep_research_ingress
                 else "span"
             ),
             "assistant_agent.canonical_event": "run",
@@ -561,6 +583,7 @@ def _trace_attributes(
                 "assistant_agent.workflow_id": projection_context.workflow_id,
                 "assistant_agent.work_item_id": projection_context.work_item_id,
                 "assistant_agent.attempt_id": projection_context.attempt_id,
+                "assistant_agent.agent_role": projection_context.agent_role,
                 "langfuse.trace.metadata.workflow_id": projection_context.workflow_id,
             }
         )
@@ -1428,6 +1451,8 @@ def _root_span_id(events: list[TraceEvent]) -> str:
     root_name = (
         "vision.runtime"
         if _is_vision_observation_trace(events)
+        else "workflow.start"
+        if _is_deep_research_ingress(events, projection_context=None)
         else "agent.runtime"
     )
     return _stable_span_id(events[0].trace_id, root_name)
@@ -1451,6 +1476,8 @@ def _is_deep_research_ingress(
     return any(
         _event_name(event) == "run.started"
         and event.attributes.get("assistant_mode") == "deep_research"
+        and event.attributes.get("execution_engine")
+        == "durable_plan_execute_start"
         for event in events
     )
 

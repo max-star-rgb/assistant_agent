@@ -291,8 +291,8 @@ Provider protocol capture。overlay 写入失败时 canonical event 仍须保留
 `build_text_otel_span_specs()` 将 redacted canonical events 投影为依赖无关的 OTel span plan：
 
 - standard Assistant turn 的根 span 为 `agent.runtime`，Langfuse trace 名为 `assistant.turn`；
-- Deep Research ingress 的根 observation 为 `assistant.submit`，Langfuse trace 从入口开始固定命名为
-  `deep_research.workflow`；
+- Deep Research 的 trace 根 observation 为 durable `deep_research.workflow`；前台薄启动 observation
+  为其子节点 `workflow.start`，不再伪装成一次提交 Tool 的 `assistant.submit`；
 - 后台实时 VLM 每次 observation 使用独立 run/trace，以 prompt-safe
   `vision.observation.summary` 闭合；根 span 为 `vision.runtime`，Langfuse trace 名为
   `vision.observation`，不能伪装成没有用户 turn 的 `assistant.turn`；
@@ -319,8 +319,8 @@ Deep Research 从前台提交到 durable terminal 使用同一个 `deep_research
 [Temporal LangSmith tracing sample](https://github.com/temporalio/samples-python/tree/main/langsmith_tracing)
 与 [OpenAI Agents higher-level trace](https://github.com/openai/openai-agents-python/blob/main/docs/tracing.md#higher-level-traces)
 的开源模式：
-入口把可信 `trace_id` 和产生 Workflow 的 `workflow_submit` Tool span ID 持久化到 Workflow record，worker
-恢复后继续把 Workflow 与 work-item observation 导出到该 trace，不依赖原进程中的 ContextVar 存活。
+入口把可信 `trace_id` 持久化到 Workflow record，planner/worker 恢复后继续把 Workflow 与 work-item
+observation 导出到该 trace，不依赖原进程中的 ContextVar 存活。
 已提交的 `workflow.plan.*`、work-item 终态/重试/返工事件和 Workflow terminal 事实投影出 Workflow
 `agent`、Plan `chain` 和 work-item `chain`；每次 work-item 的 `agent.runtime`、context、真实
 `llm.chat` 与 Tool observation 以对应 attempt chain 为 parent。
@@ -328,8 +328,11 @@ Deep Research 从前台提交到 durable terminal 使用同一个 `deep_research
 work-item Assistant run 仍保留自己的 canonical `trace_id/run_id`，用于本地事件查询、恢复和审计；仅
 OTel/Langfuse 的导出 trace identity 被显式投影为 ingress trace identity。work-item span 输出将该值标为
 `assistant_canonical_trace_id`，并只生成当前 Workflow trace 的详情链接，不生成指向不存在的独立子 trace
-链接。`workflow_id/work_item_id/attempt_id` 共同证明投影归属。提交阶段的短回复只结束 Gateway run 和
-`assistant.submit` observation，不结束整个 Langfuse trace；Workflow terminal 才写 trace-level 最终输出。
+链接。`workflow_id/work_item_id/attempt_id` 共同证明投影归属。启动阶段的短回复只结束 Gateway run 和
+`workflow.start` observation，不结束整个 Langfuse trace；Workflow terminal 才写 trace-level 最终输出。
+Workflow root 遵循 OTel span 的 started/terminal 完整性语义，在 durable terminal 时闭合并导出；跨 batch
+传输允许已结束的子 span 先于长生命周期 root 到达。因此运行中的产品进度以持久化 Workflow event/status
+为准，不能为了让 UI 提前出现一个根节点而伪造尚未观察到的 root terminal 时间。
 Provider-native 搜索只属于真实
 `llm.chat` generation，不伪造 Provider 未暴露的内部搜索 span。Workflow 投影只观察 Store 已成功提交的
 事件；总览默认只导出 Plan 标题、类型、依赖、状态、计数和 artifact ref，不导出 Workflow/work-item

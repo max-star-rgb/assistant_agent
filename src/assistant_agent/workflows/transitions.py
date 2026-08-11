@@ -217,6 +217,12 @@ def create_initial_bundle(
         inputs=inputs,
         budget=budget,
         seed_artifact_refs=seed_artifact_refs,
+        phase=(
+            "planning"
+            if len(stored_plan.work_items) == 1
+            and stored_plan.work_items[0].kind == "plan"
+            else "admitted"
+        ),
         created_at=now,
         updated_at=now,
     )
@@ -229,7 +235,12 @@ def create_initial_bundle(
         ),
         WorkflowEvent(
             workflow_id=workflow_id,
-            event_type="workflow.plan.created",
+            event_type=(
+                "workflow.planning.started"
+                if len(stored_plan.work_items) == 1
+                and stored_plan.work_items[0].kind == "plan"
+                else "workflow.plan.created"
+            ),
             status="queued",
             payload={"plan_version": 1, "work_item_count": len(plan.work_items)},
         ),

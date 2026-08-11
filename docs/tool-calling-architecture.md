@@ -64,11 +64,12 @@ Provider-native ReAct LLM 自主决定；入口不增加关键词路由、正则
 assistant loop。
 
 显式产品模式是结构化入口事实，不是文本意图路由。当前唯一新增模式
-`assistant_mode=deep_research` 会把前台 RunToolCatalog 收窄为至多一个 `workflow_submit`；用户文本
-不会隐式开启该模式。若 Durable Workflow 已启用，首次 Provider 决策必须选择该 Tool，提交成功后
-由既有 durable Workflow 执行；若未启用，则 catalog 保持为空并直接使用 Provider-native deep
-research search profile 完成本轮，不注册或调用本地联网 Tool。普通 `assistant_mode=standard` 不改变
-现有工具目录和 assistant loop。即使普通模式下模型自主选择了 `workflow_submit`，Tool 也只允许提交
+`assistant_mode=deep_research` 会把前台 RunToolCatalog 收窄为空；用户文本不会隐式开启该模式。
+Runtime 不进行一次仅为调用 `workflow_submit` 的前台 ReAct，而是直接创建 planning 状态的 durable
+Workflow。首个后台 quantum 才调用主 Agent planner，生成结构化 DAG 后再由 worker 执行。若 Durable
+Workflow 未启用，入口返回结构化不可用错误，不静默退化成另一种执行语义。普通
+`assistant_mode=standard` 不改变现有工具目录和 assistant loop。即使普通模式下模型自主选择了
+`workflow_submit`，Tool 也只允许提交
 `long_horizon` 等通用 Workflow；`deep_research` 必须同时具有 Gateway 固化的
 `assistant_mode=deep_research`，否则返回结构化 `assistant_mode_required`，不能靠模型参数越过产品模式。
 反向同样成立：深度研究模式只能提交 `deep_research` definition，其他类型以结构化
@@ -352,10 +353,11 @@ constraint_bindings/requested_budget/durability_reasons/seed_artifact_refs/idemp
 `WorkflowConstraintBinding`。required binding 无法补全 verifier 时在 Plan admission 失败，不能进入
 持久执行。该过程不读取约束正文关键词，也不削弱 owner 引用、唯一性和拓扑校验。
 
-`initial_workstreams` 是 Agent 在提交前生成的可执行 DAG，不是仅供展示的说明文本。每项同时持有
+`initial_workstreams` 是兼容提交路径可携带的可执行 DAG，不是仅供展示的说明文本。每项同时持有
 内部执行 `objective`、依赖/验收约束和用户可见 `display_title`；`display_title` 与旧
-`TaskPlan.steps` 使用同一个 `PlanDisplayTitle` 长度及内容契约。Deep Research 优先执行 Agent 提交的
-workstream，仅在未提供时使用 definition 的保守兜底计划。Workflow status facade 从已持久化的当前
+`TaskPlan.steps` 使用同一个 `PlanDisplayTitle` 长度及内容契约。显式 Deep Research 使用
+`planning_mode=runtime`，definition 只创建一个“正在制定研究计划”的 planner item；planner 的严格
+JSON 输出通过 schema 与 DAG admission 后成为下一版 plan。Workflow status facade 从已持久化的当前
 plan 和 item 状态生成统一 `progress`，入口不得依据事件名称、用户原文或额外 LLM 调用虚构进度。
 Runtime 与 progress facade 复用同一个确定性 ready-item 选择器，保证产品显示的“当前步骤”就是下一次
 实际执行的步骤，而不是 plan 数组中碰巧靠前的另一个并行根节点。
@@ -475,9 +477,14 @@ Gateway 不按 Tool name 或 Provider 错误码改写运行终态。
   event、notification 和既有 `/tasks` 兼容能力，但 plan item 的用户可见标题、API `progress` 结构
   和异步提交终止语义已与 Workflow 对齐。新增通用长流程能力应进入 Workflow definition，不再扩张
   第二套计划/进度协议。
-- **Durable Workflow**：`workflow_submit` 只负责 admission/creation；独立
+- **Durable Workflow**：显式 Deep Research 由 Runtime 薄启动，`workflow_submit` 继续负责其他兼容
+  admission/creation 路径；独立
   `DurableWorkflowWorker -> WorkflowRuntime` 每个 quantum 最多提交一个 work item 结果或一个局部
-  plan revision。语义 work item 通过 `AgentGraphRuntime.run_work_item()` 回到同一 assistant loop；
+  plan revision。首个 planner item 与语义 worker item 都通过 `AgentGraphRuntime.run_work_item()` 回到
+  同一 assistant loop；executor port 将 `planner_runtime` 与 `agent_runtime` 分开注入，默认可复用同一
+  Runtime，也预留主 Agent 规划、子 Agent/远程 worker 执行的替换点。
+  `agent_role` 由 Workflow controller 根据 version 1 的 bootstrap planner 状态写入可信 assignment，不能
+  从 LLM 生成的 work-item `kind` 推断；planner proposal 禁止复用保留的 `plan` id/kind，避免递归重规划。
   work-item Tool allowlist 是可信空集合也必须表示“暴露零个 Tool”，不能退化为完整 Registry。
   `deep_research` work item 固定使用空本地 Tool allowlist；联网由 Qwen/Bailian Chat Completions 的
   Provider-native 搜索完成，不注册或调用本地 `web_search`/`web_fetch`，也不会绕过 Tool 治理链。
@@ -504,7 +511,7 @@ Gateway 不按 Tool name 或 Provider 错误码改写运行终态。
   失败不会写成成功 artifact，较早步骤已经恢复的失败也不会污染最终结果。
   `waiting_input` 的恢复值由 identity-scoped Workflow facade 持久化并传入后续 work-item request；
   Provider 技术性截断、错误、拒绝或空终态映射为 retry/failure，不得作为成功结果写 artifact。
-  Deep Research 提交时同时持久化 ingress trace ID 和 `workflow_submit` Tool span ID；每次 work-item commit
+  Deep Research 启动时持久化 ingress trace ID；每次 planner/worker commit
   再持久化 attempt 起止时间和实际 Assistant canonical trace/run 身份。可观测层把提交、Workflow 与各
   work-item 的 `agent.runtime` 导出到同一个 `deep_research.workflow` trace，并把 work-item Agent 挂在
   对应 attempt chain 下。canonical Assistant trace 身份保持不变；不再生成额外的前台

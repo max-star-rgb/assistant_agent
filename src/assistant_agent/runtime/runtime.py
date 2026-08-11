@@ -61,6 +61,7 @@ from assistant_agent.automation.durable_tasks.service import DurableTaskService
 from assistant_agent.automation.durable_tasks.sqlite_store import SQLiteTaskStore
 from assistant_agent.workflows.artifacts import LocalWorkflowArtifactStore
 from assistant_agent.workflows.builtin import default_workflow_definitions
+from assistant_agent.workflows.models import WorkflowSubmission
 from assistant_agent.workflows.service import WorkflowService
 from assistant_agent.workflows.observed_store import ObservedWorkflowStore
 from assistant_agent.workflows.sqlite_store import SQLiteWorkflowStore
@@ -543,6 +544,7 @@ class AgentGraphRuntime:
             AgentWorkItemRequest,
             AgentWorkItemResult,
             parse_work_item_response,
+            parse_workflow_plan_response,
             render_work_item_prompt,
         )
 
@@ -588,6 +590,7 @@ class AgentGraphRuntime:
                 workflow_id=assignment.workflow_id,
                 work_item_id=assignment.work_item_id,
                 attempt_id=assignment.attempt_id,
+                agent_role=assignment.agent_role,
             ),
         )
         if state.status == "completed" and state.response is not None:
@@ -635,6 +638,14 @@ class AgentGraphRuntime:
         if status == "succeeded" and terminal_failure_note is not None:
             status = "failed"
         if status == "succeeded":
+            if assignment.agent_role == "planner":
+                return parse_workflow_plan_response(
+                    summary,
+                    run_id=state.run_id,
+                    trace_id=state.trace_id,
+                    model_calls_used=model_calls_used,
+                    tool_calls_used=len(state.tool_calls),
+                )
             required_verification_ids = [
                 item.constraint_id
                 for item in assignment.assigned_constraints
@@ -665,6 +676,7 @@ class AgentGraphRuntime:
             artifact_refs=artifact_refs,
             model_calls_used=model_calls_used,
             tool_calls_used=len(state.tool_calls),
+            agent_role=assignment.agent_role,
         )
 
     def run_state(
@@ -720,7 +732,10 @@ class AgentGraphRuntime:
             durable_tasks_enabled=self.config.durable_tasks_enabled,
         )
         workflow_work_item = _is_workflow_work_item_request(request)
-        if not workflow_work_item:
+        deep_research_start = (
+            request.assistant_mode == "deep_research" and not workflow_work_item
+        )
+        if not workflow_work_item and not deep_research_start:
             self._refresh_visual_memory_capability(request)
             self._refresh_visual_reminder_capability(request)
             self._attach_proactive_session_context(request)
@@ -764,7 +779,7 @@ class AgentGraphRuntime:
                     },
                 )
             )
-        if not workflow_work_item:
+        if not workflow_work_item and not deep_research_start:
             self._embed_stable_request_text(state, request)
         state.context_source_result = self.context_source_coordinator.load_once(
             ContextSourceRequest(
@@ -777,7 +792,11 @@ class AgentGraphRuntime:
                     SOUL_SOURCE_ID: SOUL_COMPILED_MAX_CHARS,
                     USER_PROFILE_SOURCE_ID: USER_PROFILE_COMPILED_MAX_CHARS,
                 },
-                enabled_source_ids={SOUL_SOURCE_ID, USER_PROFILE_SOURCE_ID},
+                enabled_source_ids=(
+                    {USER_PROFILE_SOURCE_ID, SOUL_SOURCE_ID}
+                    if self.config.editable_context_user_id
+                    else {USER_PROFILE_SOURCE_ID}
+                ),
             )
         )
         run_started_at = perf_counter()
@@ -792,7 +811,11 @@ class AgentGraphRuntime:
                 if trace_context is not None
                 else None
             ),
-            execution_engine="langgraph_assistant_loop",
+            execution_engine=(
+                "durable_plan_execute_start"
+                if deep_research_start
+                else "langgraph_assistant_loop"
+            ),
             export_trace_context=export_trace_context,
         )
         runtime_event_publisher.deliver_run_started(run_started_fact)
@@ -814,7 +837,7 @@ class AgentGraphRuntime:
                 },
             )
         runtime_event_publisher.record_run_started(run_started_fact)
-        if not workflow_work_item:
+        if not workflow_work_item and not deep_research_start:
             self._prepare_run_memory_context(
                 state,
                 cancel_token=cancel_token,
@@ -855,7 +878,12 @@ class AgentGraphRuntime:
         except AgentRunCancelled as exc:
             state.cancel(exc.message, source=exc.source, details=exc.details)
         else:
-            if request.task_execution_mode == "durable" and not self.config.durable_tasks_enabled:
+            if deep_research_start:
+                _start_deep_research_workflow(
+                    state,
+                    workflow_service=self.workflow_service,
+                )
+            elif request.task_execution_mode == "durable" and not self.config.durable_tasks_enabled:
                 _set_durable_tasks_disabled_response(state)
             else:
                 self._emit(
@@ -1688,3 +1716,84 @@ def _set_durable_tasks_disabled_response(state: AgentState) -> None:
         data={"errors": [{"code": code, "message": message}]},
     )
     state.status = "failed"
+
+
+def _start_deep_research_workflow(
+    state: AgentState,
+    *,
+    workflow_service: WorkflowService | None,
+) -> None:
+    """Start one durable Plan-and-Execute execution without an ingress ReAct."""
+
+    objective = (state.request.text or "").strip()
+    if workflow_service is None or not objective:
+        code = (
+            "durable_workflows_disabled"
+            if workflow_service is None
+            else "deep_research_objective_required"
+        )
+        state.errors.append(
+            AgentError(
+                message="Deep Research could not start.",
+                source="deep_research_start",
+                details={"code": code},
+            )
+        )
+        state.response = AgentResponse(
+            message="当前无法启动深度研究工作流。",
+            data={"errors": [{"code": code}]},
+        )
+        state.status = "failed"
+        return
+    try:
+        bundle = workflow_service.submit(
+            identity=RequestIdentity.for_user(
+                user_id=state.user_id,
+                agent_id=state.agent_id,
+                session_id=state.session_id,
+            ),
+            ingress_run_id=state.run_id,
+            ingress_trace_id=state.trace_id,
+            ingress_parent_span_id=None,
+            submission=WorkflowSubmission(
+                workflow_type="deep_research",
+                objective=objective,
+                deliverables=["research_report"],
+                planning_mode="runtime",
+                inputs={"research_questions": [objective]},
+                durability_reasons=["assistant_mode_deep_research"],
+                idempotency_key=f"deep_research:{state.run_id}",
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001 - boundary returns a safe failure.
+        state.errors.append(
+            AgentError(
+                message="Deep Research workflow submission failed.",
+                source="deep_research_start",
+                details={
+                    "code": "workflow_submission_failed",
+                    "error_type": type(exc).__name__,
+                },
+            )
+        )
+        state.response = AgentResponse(
+            message="深度研究工作流启动失败。",
+            data={"errors": [{"code": "workflow_submission_failed"}]},
+        )
+        state.status = "failed"
+        return
+    workflow = bundle.workflow
+    state.set_response(
+        AgentResponse(
+            message="深度研究已开始。",
+            data={
+                "workflow": {
+                    "workflow_id": workflow.workflow_id,
+                    "workflow_type": workflow.workflow_type,
+                    "status": workflow.status,
+                    "phase": workflow.phase,
+                }
+            },
+            output_refs=[f"workflow://{workflow.workflow_id}"],
+        )
+    )

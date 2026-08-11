@@ -16,12 +16,15 @@ from assistant_agent.workflows.models import (
     WorkflowConstraintBinding,
     WorkflowEvent,
     WorkflowLease,
+    WorkflowPlanProposal,
+    WorkflowSubmission,
     WorkflowWorkItem,
     utc_now,
 )
 from assistant_agent.workflows.planning import next_ready_work_item
 from assistant_agent.workflows.service import WorkflowService
 from assistant_agent.workflows.store import WorkflowLeaseConflict
+from assistant_agent.workflows.transitions import validate_plan_dag
 
 
 class WorkItemAssignment(BaseModel):
@@ -49,6 +52,7 @@ class WorkItemAssignment(BaseModel):
     model_calls_remaining: int = Field(ge=0)
     tool_calls_remaining: int = Field(ge=0)
     repair_candidate_ids: list[str] = Field(default_factory=list, max_length=128)
+    agent_role: Literal["planner", "worker"] = "worker"
     work_item: WorkflowWorkItem
 
 
@@ -69,6 +73,8 @@ class WorkItemExecutionResult(BaseModel):
     assistant_run_id: str | None = None
     started_at: datetime | None = None
     finished_at: datetime | None = None
+    agent_role: Literal["planner", "worker"] = "worker"
+    plan_proposal: WorkflowPlanProposal | None = None
 
 
 class WorkItemExecutor(Protocol):
@@ -81,6 +87,7 @@ class WorkflowGraphState(TypedDict, total=False):
     bundle: WorkflowBundle
     route: str
     selected_work_item_id: str
+    selected_agent_role: Literal["planner", "worker"]
     attempt_id: str
     execution_result: WorkItemExecutionResult
     pending_events: list[WorkflowEvent]
@@ -176,6 +183,9 @@ class WorkflowRuntime:
     def _execute_work_item(self, state: WorkflowGraphState) -> WorkflowGraphState:
         bundle = state["bundle"]
         work_item = self._work_item(bundle, state["selected_work_item_id"])
+        agent_role: Literal["planner", "worker"] = (
+            "planner" if self._is_bootstrap_planner(bundle, work_item) else "worker"
+        )
         attempt_id = f"attempt_{uuid4().hex}"
         assignment = WorkItemAssignment(
             workflow_id=bundle.workflow.workflow_id,
@@ -200,6 +210,7 @@ class WorkflowRuntime:
                 bundle,
                 work_item.work_item_id,
             ),
+            agent_role=agent_role,
             work_item=work_item.model_copy(deep=True),
         )
         started_at = self.clock()
@@ -209,11 +220,20 @@ class WorkflowRuntime:
             result = WorkItemExecutionResult(
                 status="retryable_failed",
                 error_code=_executor_error_code(exc),
+                agent_role=agent_role,
             )
         result = result.model_copy(
-            update={"started_at": started_at, "finished_at": self.clock()}
+            update={
+                "started_at": started_at,
+                "finished_at": self.clock(),
+                "agent_role": agent_role,
+            }
         )
-        return {"attempt_id": attempt_id, "execution_result": result}
+        return {
+            "attempt_id": attempt_id,
+            "execution_result": result,
+            "selected_agent_role": agent_role,
+        }
 
     def _terminalize(self, state: WorkflowGraphState) -> WorkflowGraphState:
         bundle = state["bundle"].model_copy(deep=True)
@@ -255,6 +275,26 @@ class WorkflowRuntime:
         attempt_id = state.get("attempt_id")
         if result is not None:
             item = self._work_item(bundle, selected_id)
+            planned_revision = None
+            if (
+                result.status == "succeeded"
+                and state.get("selected_agent_role") == "planner"
+            ):
+                try:
+                    if result.plan_proposal is None:
+                        raise ValueError("planner result omitted plan proposal")
+                    planned_revision = self._build_planner_revision(
+                        bundle,
+                        result.plan_proposal,
+                    )
+                except Exception:  # noqa: BLE001 - planner output is untrusted.
+                    result = result.model_copy(
+                        update={
+                            "status": "retryable_failed",
+                            "error_code": "workflow_plan_rejected",
+                            "summary": "Planner proposal failed Workflow admission.",
+                        }
+                    )
             item.attempt_count += 1
             item.active_attempt_id = None
             item.result_summary = result.summary
@@ -281,8 +321,29 @@ class WorkflowRuntime:
                         result=result,
                     )
                 )
-                self._refresh_ready_items(bundle)
-                if all(
+                if planned_revision is not None:
+                    bundle.plans.append(planned_revision)
+                    workflow.current_plan_version = planned_revision.version
+                    workflow.status = "running"
+                    workflow.phase = "executing"
+                    events.append(
+                        WorkflowEvent(
+                            workflow_id=workflow.workflow_id,
+                            event_type="workflow.plan.created",
+                            status="running",
+                            payload={
+                                "plan_version": planned_revision.version,
+                                "work_item_count": len(
+                                    planned_revision.work_items
+                                ),
+                                "planner_agent_role": result.agent_role,
+                                "planner_attempt_id": attempt_id,
+                            },
+                        )
+                    )
+                else:
+                    self._refresh_ready_items(bundle)
+                if planned_revision is None and all(
                     candidate.status in {"succeeded", "skipped", "superseded"}
                     for candidate in bundle.current_plan.work_items
                 ):
@@ -295,7 +356,7 @@ class WorkflowRuntime:
                         event_type="workflow.completed",
                         status="completed",
                     ))
-                else:
+                elif planned_revision is None:
                     workflow.status = "running"
                     workflow.phase = item.kind
             elif result.status == "repair":
@@ -409,6 +470,70 @@ class WorkflowRuntime:
         )
         return {"saved_bundle": saved}
 
+    def _build_planner_revision(
+        self,
+        bundle: WorkflowBundle,
+        proposal: WorkflowPlanProposal,
+    ):
+        workflow = bundle.workflow
+        if any(
+            seed.seed_id == "plan" or seed.kind == "plan"
+            for seed in proposal.workstreams
+        ):
+            raise ValueError("planner proposal uses a reserved plan id or kind")
+        definition = self.service.definitions.require(workflow.workflow_type)
+        submission = WorkflowSubmission(
+            workflow_type=workflow.workflow_type,
+            objective=workflow.objective,
+            deliverables=list(workflow.deliverables),
+            constraints=list(workflow.constraints),
+            constraint_bindings=list(proposal.constraint_bindings),
+            inputs=dict(workflow.inputs),
+            initial_workstreams=list(proposal.workstreams),
+            durability_reasons=["runtime_planner"],
+            seed_artifact_refs=list(workflow.seed_artifact_refs),
+            idempotency_key=workflow.idempotency_key,
+        )
+        definition.validate_submission(submission)
+        revision = definition.build_initial_plan(
+            workflow_id=workflow.workflow_id,
+            submission=submission,
+        )
+        revision.version = workflow.current_plan_version + 1
+        revision.revision_reason = "deep_research_runtime_plan"
+        revision.created_at = self.clock()
+        validate_plan_dag(
+            revision,
+            max_work_items=self.service.limits.max_work_items,
+        )
+        for candidate in revision.work_items:
+            if not candidate.depends_on:
+                candidate.input_artifact_refs = list(
+                    dict.fromkeys(
+                        [
+                            *candidate.input_artifact_refs,
+                            *workflow.seed_artifact_refs,
+                        ]
+                    )
+                )
+                candidate.status = "ready"
+        return revision
+
+    @staticmethod
+    def _is_bootstrap_planner(
+        bundle: WorkflowBundle,
+        work_item: WorkflowWorkItem,
+    ) -> bool:
+        plan = bundle.current_plan
+        return (
+            bundle.workflow.current_plan_version == 1
+            and bundle.workflow.phase == "planning"
+            and plan.revision_reason == "deep_research_planner_pending"
+            and len(plan.work_items) == 1
+            and work_item.work_item_id == "plan"
+            and work_item.kind == "plan"
+        )
+
     @staticmethod
     def _work_item(bundle: WorkflowBundle, work_item_id: str) -> WorkflowWorkItem:
         return next(
@@ -520,6 +645,7 @@ class WorkflowRuntime:
             "artifact_refs": list(item.output_artifact_refs),
             "attempt_id": attempt_id,
             "execution_status": result.status if result is not None else None,
+            "agent_role": result.agent_role if result is not None else None,
             "assistant_trace_id": (
                 result.assistant_trace_id if result is not None else None
             ),

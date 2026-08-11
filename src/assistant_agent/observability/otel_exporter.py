@@ -554,6 +554,7 @@ class TextOtelTraceObserver:
         self._projection_context_by_run: dict[
             str, OtelTraceProjectionContext
         ] = {}
+        self._runtime_root_span_id_by_run: dict[str, str] = {}
         self._projection_required_run_ids: set[str] = set()
         self._errors: list[str] = []
         self._exported_run_count = 0
@@ -615,6 +616,9 @@ class TextOtelTraceObserver:
                 projection_context = self._projection_context_by_run.get(
                     event.run_id
                 )
+                runtime_parent_span_id = self._runtime_root_span_id_by_run.get(
+                    event.run_id
+                )
                 projection_required = (
                     event.run_id in self._projection_required_run_ids
                 )
@@ -637,6 +641,7 @@ class TextOtelTraceObserver:
                 event,
                 memory_content=memory_content,
                 projection_context=projection_context,
+                runtime_parent_span_id=runtime_parent_span_id,
             )
             self.exporter.export([span])
         except Exception as exc:
@@ -731,6 +736,7 @@ class TextOtelTraceObserver:
                 raise
             return
         with self._lock:
+            self._runtime_root_span_id_by_run[events[0].run_id] = spans[0].span_id
             if projection_context is not None:
                 self._projection_context_by_run[events[0].run_id] = (
                     projection_context

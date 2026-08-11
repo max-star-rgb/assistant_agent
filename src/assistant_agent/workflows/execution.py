@@ -35,11 +35,13 @@ class AgentRuntimeWorkItemExecutor:
         self,
         *,
         agent_runtime: BoundedAgentRuntime,
+        planner_runtime: BoundedAgentRuntime | None = None,
         artifact_store: LocalWorkflowArtifactStore,
         context_compiler: WorkflowContextCompiler,
         max_iterations: int = 5,
     ) -> None:
         self.agent_runtime = agent_runtime
+        self.planner_runtime = planner_runtime or agent_runtime
         self.artifact_store = artifact_store
         self.context_compiler = context_compiler
         self.max_iterations = max_iterations
@@ -62,7 +64,11 @@ class AgentRuntimeWorkItemExecutor:
             assignment.constraint_bindings,
             work_item_id=assignment.work_item.work_item_id,
         )
-        result = self.agent_runtime.run_work_item(AgentWorkItemRequest(
+        agent_role = assignment.agent_role
+        selected_runtime = (
+            self.planner_runtime if agent_role == "planner" else self.agent_runtime
+        )
+        result = selected_runtime.run_work_item(AgentWorkItemRequest(
             workflow_id=assignment.workflow_id,
             workflow_type=assignment.workflow_type,
             workflow_trace_id=assignment.workflow_trace_id,
@@ -99,7 +105,19 @@ class AgentRuntimeWorkItemExecutor:
                     assignment.tool_calls_remaining + 1,
                 ),
             ),
+            agent_role=agent_role,
         ))
+        if result.status == "succeeded" and agent_role == "planner":
+            return WorkItemExecutionResult(
+                status="succeeded",
+                summary=result.summary,
+                model_calls_used=result.model_calls_used,
+                tool_calls_used=result.tool_calls_used,
+                assistant_trace_id=result.trace_id,
+                assistant_run_id=result.run_id,
+                agent_role="planner",
+                plan_proposal=result.plan_proposal,
+            )
         if result.status == "repair":
             return WorkItemExecutionResult(
                 status="repair",
@@ -110,6 +128,7 @@ class AgentRuntimeWorkItemExecutor:
                 tool_calls_used=result.tool_calls_used,
                 assistant_trace_id=result.trace_id,
                 assistant_run_id=result.run_id,
+                agent_role=agent_role,
             )
         if result.status == "blocked":
             return WorkItemExecutionResult(
@@ -123,6 +142,7 @@ class AgentRuntimeWorkItemExecutor:
                 tool_calls_used=result.tool_calls_used,
                 assistant_trace_id=result.trace_id,
                 assistant_run_id=result.run_id,
+                agent_role=agent_role,
             )
         if result.status == "failed":
             return WorkItemExecutionResult(
@@ -133,6 +153,7 @@ class AgentRuntimeWorkItemExecutor:
                 tool_calls_used=result.tool_calls_used,
                 assistant_trace_id=result.trace_id,
                 assistant_run_id=result.run_id,
+                agent_role=agent_role,
             )
         artifact = self.artifact_store.write_text(
             identity=identity,
@@ -149,4 +170,5 @@ class AgentRuntimeWorkItemExecutor:
             tool_calls_used=result.tool_calls_used,
             assistant_trace_id=result.trace_id,
             assistant_run_id=result.run_id,
+            agent_role=agent_role,
         )

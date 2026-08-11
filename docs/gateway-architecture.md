@@ -176,7 +176,8 @@ Gateway 为每个开始的 run 发出稳定的 started/stream/progress/terminal 
 `GatewayTurnRequest.assistant_mode` 或规范化 `message.user.payload.assistant_mode`；Gateway 在接受 turn
 时校验并把它固化为 `RealtimeAgentRequest.assistant_mode`，排队和执行期间不再从通用 metadata 恢复。
 它不能从文本推断，也不能扩大本地 Tool 权限，`deep_research` 只会进一步收窄 catalog 并改变
-Provider 请求策略。
+Runtime 执行策略。显式 Deep Research turn 由同一个 `AgentGraphRuntime` 薄启动 durable
+Plan-and-Execute Workflow；Gateway 不生成计划、不选择 worker，也不维持后台执行协程。
 
 `gateway.capabilities` 只定义通用 `EntryAdapterCapabilities` 数据类型；HTTP、规范化 Gateway WebSocket
 和 Agent-Service 的具体 capability 实例分别由各自 API entry adapter 定义。Gateway package 不导出
@@ -328,11 +329,12 @@ WebSocket/coroutine。其具体契约以
 [tool-calling-architecture.md](tool-calling-architecture.md)、
 [runtime-event-stream-architecture.md](runtime-event-stream-architecture.md)、源码和测试为准。
 
-通用 Durable Workflow 遵循相同 connection boundary。Gateway 只承载触发 `workflow_submit` 的
-ingress run；提交成功后不把 `workflow_id` 放入 active-run map、不占用 followup queue，也不要求原
-WebSocket 保持连接。后续 status/events/input/cancel 由 identity-scoped `/workflows` facade 调用
-`WorkflowService`，不能直接读取 SQLite 或 artifact 文件。后台 work item 的独立 run 不重新打开已
-结束 ingress run 的输出门。
+通用 Durable Workflow 遵循相同 connection boundary。显式 `deep_research` ingress 由 Runtime
+直接创建 planning 状态的 Workflow；其他入口仍可通过受治理的 `workflow_submit` 提交通用长流程。
+两者提交成功后都不把 `workflow_id` 放入 active-run map、不占用 followup queue，也不要求原 WebSocket
+保持连接。后续 status/events/input/cancel 由 identity-scoped `/workflows` facade 调用
+`WorkflowService`，不能直接读取 SQLite 或 artifact 文件。后台 planner/worker 的独立 bounded Agent
+run 不重新打开已结束 ingress run 的输出门。
 
 ### 7.3 Multi-agent 与工具
 

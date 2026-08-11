@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue
 from assistant_agent.runtime.requests import AssistantMode
 from assistant_agent.workflows.context import WorkflowContextManifest
 from assistant_agent.workflows.models import WorkflowConstraintBinding
+from assistant_agent.workflows.models import WorkflowPlanProposal
 
 
 class AgentWorkItemRequest(BaseModel):
@@ -39,6 +40,7 @@ class AgentWorkItemRequest(BaseModel):
     allowed_tool_names: list[str] = Field(default_factory=list)
     workflow_inputs: dict[str, JsonValue] = Field(default_factory=dict)
     max_iterations: int = Field(default=5, ge=1, le=20)
+    agent_role: Literal["planner", "worker"] = "worker"
 
 
 class AgentWorkItemResult(BaseModel):
@@ -55,6 +57,8 @@ class AgentWorkItemResult(BaseModel):
     repair_work_item_ids: list[str] = Field(default_factory=list)
     model_calls_used: int = Field(default=0, ge=0)
     tool_calls_used: int = Field(default=0, ge=0)
+    agent_role: Literal["planner", "worker"] = "worker"
+    plan_proposal: WorkflowPlanProposal | None = None
 
 
 def render_work_item_prompt(request: AgentWorkItemRequest) -> str:
@@ -64,6 +68,19 @@ def render_work_item_prompt(request: AgentWorkItemRequest) -> str:
         f"Work item objective: {request.objective}",
         f"Workflow objective: {request.context_manifest.objective}",
     ]
+    if request.agent_role == "planner":
+        lines.append(
+            "你是当前 durable Plan-and-Execute execution 的主规划 Agent。"
+            "只返回严格 JSON，不要执行研究，也不要包裹 Markdown："
+            '{"workflow_plan":{"workstreams":[{"seed_id":"...",'
+            '"kind":"...","display_title":"...","objective":"...",'
+            '"depends_on":[],"acceptance_contract":{}}],'
+            '"constraint_bindings":[{"constraint_id":"...",'
+            '"statement":"...","owner_work_item_ids":["..."],'
+            '"verifier_work_item_id":"...","severity":"required|advisory"}]}}。'
+            "步骤只承担自己的 acceptance_contract；最终交付约束绑定到负责产出或验证它的步骤。"
+        )
+        return "\n\n".join(lines)
     if request.assigned_constraints:
         lines.append(
             "Assigned workflow constraints:\n"
@@ -122,6 +139,47 @@ def render_work_item_prompt(request: AgentWorkItemRequest) -> str:
         )
     lines.append(control)
     return "\n\n".join(lines)
+
+
+class _WorkflowPlanEnvelope(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    workflow_plan: WorkflowPlanProposal
+
+
+def parse_workflow_plan_response(
+    text: str,
+    *,
+    run_id: str,
+    trace_id: str | None,
+    model_calls_used: int,
+    tool_calls_used: int,
+) -> AgentWorkItemResult:
+    """Parse the main planner's strict durable DAG envelope."""
+
+    try:
+        proposal = _WorkflowPlanEnvelope.model_validate_json(text).workflow_plan
+    except ValueError:
+        return AgentWorkItemResult(
+            status="failed",
+            run_id=run_id,
+            trace_id=trace_id,
+            summary="Planner did not return a valid structured workflow plan.",
+            error_code="workflow_plan_invalid",
+            model_calls_used=model_calls_used,
+            tool_calls_used=tool_calls_used,
+            agent_role="planner",
+        )
+    return AgentWorkItemResult(
+        status="succeeded",
+        run_id=run_id,
+        trace_id=trace_id,
+        summary=f"Planned {len(proposal.workstreams)} workflow items.",
+        model_calls_used=model_calls_used,
+        tool_calls_used=tool_calls_used,
+        agent_role="planner",
+        plan_proposal=proposal,
+    )
 
 
 class _WorkflowControl(BaseModel):

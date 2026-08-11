@@ -214,9 +214,17 @@ def qualify_tool_specs(
     visibility_overrides = _visibility_overrides(request)
     qualified_specs: list[ToolSpec] = []
     excluded_reasons: dict[str, list[str]] = {}
+    trusted_workflow = isinstance(
+        request.metadata.get("_trusted_workflow_assignment"),
+        dict,
+    )
     for spec in tool_specs:
-        if request.assistant_mode == "deep_research" and spec.name != WORKFLOW_SUBMIT_TOOL_NAME:
-            excluded_reasons[spec.name] = ["assistant_mode_not_allowed"]
+        if request.assistant_mode == "deep_research" and not trusted_workflow:
+            excluded_reasons[spec.name] = [
+                "assistant_mode_runtime_managed"
+                if spec.name == WORKFLOW_SUBMIT_TOOL_NAME
+                else "assistant_mode_not_allowed"
+            ]
             continue
         if visibility_overrides.allowed_tools and spec.name not in visibility_overrides.allowed_tools:
             excluded_reasons[spec.name] = ["entry_profile_not_allowed"]

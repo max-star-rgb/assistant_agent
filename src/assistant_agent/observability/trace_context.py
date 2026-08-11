@@ -29,3 +29,4 @@ class RuntimeExportTraceContext(BaseModel):
     workflow_id: str = Field(min_length=1, max_length=160)
     work_item_id: str = Field(min_length=1, max_length=160)
     attempt_id: str = Field(min_length=1, max_length=160)
+    agent_role: Literal["planner", "worker"] = "worker"

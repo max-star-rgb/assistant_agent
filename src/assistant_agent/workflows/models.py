@@ -33,6 +33,7 @@ WorkItemStatus = Literal[
 ]
 TERMINAL_WORKFLOW_STATUSES = {"completed", "failed", "cancelled"}
 ConstraintSeverity = Literal["required", "advisory"]
+WorkflowPlanningMode = Literal["submitted", "runtime"]
 
 
 def utc_now() -> datetime:
@@ -94,6 +95,7 @@ class WorkflowSubmission(BaseModel):
     workflow_type: str = Field(pattern=r"^[a-z][a-z0-9_.-]{0,79}$")
     objective: str = Field(min_length=1, max_length=10_000)
     deliverables: list[str] = Field(min_length=1, max_length=32)
+    planning_mode: WorkflowPlanningMode = "submitted"
     constraints: list[str] = Field(default_factory=list, max_length=64)
     constraint_bindings: list[WorkflowConstraintProposal] = Field(
         default_factory=list,
@@ -114,6 +116,18 @@ class WorkflowSubmission(BaseModel):
     durability_reasons: list[str] = Field(min_length=1, max_length=16)
     seed_artifact_refs: list[str] = Field(default_factory=list, max_length=128)
     idempotency_key: str = Field(min_length=1, max_length=240)
+
+
+class WorkflowPlanProposal(BaseModel):
+    """Structured DAG produced by the durable Workflow planner Agent."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    workstreams: list[WorkflowSeedWorkItem] = Field(min_length=1, max_length=128)
+    constraint_bindings: list[WorkflowConstraintProposal] = Field(
+        default_factory=list,
+        max_length=64,
+    )
 
 
 class WorkflowBudget(BaseModel):
@@ -218,15 +232,9 @@ class WorkflowRecord(BaseModel):
             value is not None for value in lease_values
         ):
             raise ValueError("lease owner, token, and expiry must be set together")
-        ingress_trace_values = (
-            self.ingress_trace_id,
-            self.ingress_parent_span_id,
-        )
-        if any(value is None for value in ingress_trace_values) and any(
-            value is not None for value in ingress_trace_values
-        ):
+        if self.ingress_parent_span_id is not None and self.ingress_trace_id is None:
             raise ValueError(
-                "ingress trace id and parent span id must be set together"
+                "ingress parent span id requires an ingress trace id"
             )
         return self
 

@@ -15,7 +15,7 @@ from assistant_agent.workflows.models import (
 class DeepResearchWorkflowDefinition:
     descriptor = WorkflowDefinitionDescriptor(
         workflow_type="deep_research",
-        definition_version="2",
+        definition_version="3",
     )
 
     def validate_submission(self, submission: WorkflowSubmission) -> None:
@@ -33,6 +33,26 @@ class DeepResearchWorkflowDefinition:
     def build_initial_plan(
         self, *, workflow_id: str, submission: WorkflowSubmission
     ) -> WorkflowPlanVersion:
+        if submission.planning_mode == "runtime":
+            return WorkflowPlanVersion(
+                workflow_id=workflow_id,
+                version=1,
+                definition_version=self.descriptor.definition_version,
+                revision_reason="deep_research_planner_pending",
+                work_items=[
+                    WorkflowWorkItem(
+                        work_item_id="plan",
+                        kind="plan",
+                        display_title="正在制定研究计划",
+                        objective=(
+                            "为当前研究目标生成可执行 DAG、步骤验收契约和约束责任绑定。"
+                        ),
+                        acceptance_contract={
+                            "output_schema": "workflow_plan_v1"
+                        },
+                    )
+                ],
+            )
         if submission.initial_workstreams:
             work_items = [
                 WorkflowWorkItem(
