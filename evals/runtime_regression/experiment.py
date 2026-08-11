@@ -70,6 +70,8 @@ def run_runtime_regression_experiment(
         if not isinstance(item_input, dict):
             raise RuntimeError(f"runtime regression item {item_id!r} input must be an object")
         request_text = _request_text(item_id, item_input)
+        # Experiment item input is projected from the canonical task observation.
+        client.update_current_span(input=item_input)
         runtime = settings.runtime_factory()
         try:
             state = runtime.run_state(

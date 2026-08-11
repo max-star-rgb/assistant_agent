@@ -107,7 +107,8 @@ webhook 的受控执行内核；operator 仍可用以下命令诊断，但日常
 runner 只执行状态为 ACTIVE 的 Langfuse item，通过共享 Experiment Runtime Host 装配
 `AgentGraphRuntime`，不复制 Agent loop。Host 为每个 item 创建 production canonical trace store，读取
 Langfuse SDK 当前 `experiment-item-task` 的 OTel trace/span identity 作为 Runtime 父级，并统一关闭 Runtime
-与 exporter。Experiment 主 output 使用与原始 Trace 一致的
+与 exporter。task 回调会把 Dataset Item input 显式回填到当前 `experiment-item-task`，避免 Experiment
+投影依赖 SDK 自动复制后出现空 input。Experiment 主 output 使用与原始 Trace 一致的
 `role/content/chars/truncated/terminal_status` Assistant 结构；`ReleaseRunEvidence` 单独写入 task 下的
 `runtime-regression-evidence` observation input，其 output 为同一个 canonical Assistant 结构，不再把最终回答
 埋在评测 envelope 中，也不把大证据塞入会截断的 metadata。response quality 判断当前回答，grounding

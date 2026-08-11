@@ -42,7 +42,8 @@ class _Runtime:
 
 
 class _Dataset:
-    def __init__(self) -> None:
+    def __init__(self, client) -> None:
+        self.client = client
         self.items = [
             SimpleNamespace(
                 id="runtime-item-1",
@@ -68,7 +69,12 @@ class _Dataset:
 
     def run_experiment(self, **kwargs):
         self.call = kwargs
-        self.task_output = kwargs["task"](item=self.items[0])
+        with self.client.start_as_current_observation(
+            name="experiment-item-task",
+            as_type="span",
+        ) as task_observation:
+            self.task_output = kwargs["task"](item=self.items[0])
+            task_observation.update(output=self.task_output)
         return SimpleNamespace(
             run_name=kwargs["run_name"],
             dataset_run_id="dataset-run-1",
@@ -78,29 +84,45 @@ class _Dataset:
 
 class _Client:
     def __init__(self) -> None:
-        self.dataset = _Dataset()
         self.observations = []
+        self.observation_stack = []
+        self.dataset = _Dataset(self)
 
     def get_dataset(self, name):
         assert name == RUNTIME_REGRESSION_DATASET
         return self.dataset
 
+    def update_current_span(self, *, input=None, **kwargs):
+        if not self.observation_stack:
+            raise AssertionError("no current Langfuse observation")
+        self.observation_stack[-1].input = input
+
     def start_as_current_observation(self, **kwargs):
         observation = SimpleNamespace(
             kwargs=kwargs,
+            input=kwargs.get("input"),
             output=None,
-            update=lambda **update: setattr(observation, "output", update["output"]),
         )
+
+        def update(**values):
+            for name in ("input", "output"):
+                if name in values:
+                    setattr(observation, name, values[name])
+
+        observation.update = update
 
         class Context:
             def __enter__(self):
                 self_observations.append(observation)
+                self_observation_stack.append(observation)
                 return observation
 
             def __exit__(self, exc_type, exc, traceback):
+                assert self_observation_stack.pop() is observation
                 return False
 
         self_observations = self.observations
+        self_observation_stack = self.observation_stack
         return Context()
 
 
@@ -134,6 +156,16 @@ def test_runtime_regression_experiment_replays_active_item_through_runtime() -> 
     assert request.metadata == {
         "runtime_regression": {"dataset_item_id": "runtime-item-1"}
     }
+    assert len(client.observations) == 2
+    task_observation, evidence_observation = client.observations
+    assert task_observation.kwargs["name"] == "experiment-item-task"
+    assert task_observation.input == {
+        "role": "user",
+        "content": "请重跑真实失败案例",
+        "chars": 10,
+        "truncated": False,
+    }
+    assert task_observation.output == client.dataset.task_output
     assert runtimes[0].closed is True
     assert client.dataset.task_output == {
         "role": "assistant",
@@ -142,8 +174,6 @@ def test_runtime_regression_experiment_replays_active_item_through_runtime() -> 
         "truncated": False,
         "terminal_status": "completed",
     }
-    assert len(client.observations) == 1
-    evidence_observation = client.observations[0]
     assert evidence_observation.kwargs["name"] == "runtime-regression-evidence"
     assert evidence_observation.kwargs["as_type"] == "span"
     evidence = evidence_observation.kwargs["input"]
