@@ -244,7 +244,9 @@ Qwen WebSocket 还输出 `jpeg_prepare_latency_ms`、`connection_setup_latency_m
 
 本地 server 使用 `CompositeTraceStore`：进程内 `InMemoryTraceStore` 是即时 primary，后台
 `BufferedJsonlTraceStore` 把事件写入 `.data/graph_trace.jsonl`。后台队列有界：队列满、关闭中写入或
-secondary 异常会记录 drop/error 状态，但不阻塞业务 response。shutdown 只做有时限的 flush。
+secondary 异常会记录 drop/error 状态，但不阻塞业务 response。shutdown 只做有时限的 flush；多个远端
+observer 并行关闭并共享一个绝对 deadline。buffered exporter 的 flush/shutdown 抛错或返回 `False` 必须
+向 lifecycle 调用者返回 `False`，不能只记录后台 error 后误报成功。
 
 因此：
 

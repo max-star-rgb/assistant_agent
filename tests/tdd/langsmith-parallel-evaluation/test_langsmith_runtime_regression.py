@@ -300,7 +300,7 @@ def test_completeness_waits_for_runtime_tree_and_all_feedback() -> None:
     assert all(call["project_id"] == "experiment-id" for call in client.run_calls)
     assert all("start_time" in call for call in client.run_calls)
     assert all("select" in call for call in client.run_calls)
-    assert all("limit" in call for call in client.run_calls)
+    assert all("limit" not in call for call in client.run_calls)
 
 
 def test_completeness_rejects_llm_sibling_outside_runtime_subtree() -> None:
@@ -417,3 +417,32 @@ def test_completeness_retries_bounded_langsmith_rate_limit() -> None:
     assert result.run_ids == (str(UUID(int=1)),)
     assert client.run_calls == 2
     assert sleeps == [1]
+
+
+def test_completeness_sleep_never_exceeds_remaining_deadline() -> None:
+    now = [100.0]
+    sleeps = []
+
+    class Client:
+        def list_runs(self, **kwargs):
+            return iter([])
+
+        def list_feedback(self, **kwargs):
+            return iter([])
+
+    def sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        now[0] += seconds
+
+    with pytest.raises(RuntimeError, match="incomplete"):
+        experiment.wait_for_langsmith_runtime_regression_completeness(
+            Client(),
+            experiment_id="experiment-id",
+            example_ids=(str(EXAMPLE_ID),),
+            timeout_seconds=1.5,
+            poll_interval_seconds=1,
+            sleep=sleep,
+            clock=lambda: now[0],
+        )
+
+    assert sleeps == [1, 0.5]
