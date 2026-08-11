@@ -130,7 +130,6 @@ class InMemoryTaskStore:
                 if task.status not in {
                     "queued",
                     "running",
-                    "replanning",
                     "waiting_schedule",
                 }:
                     continue

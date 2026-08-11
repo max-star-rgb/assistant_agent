@@ -29,6 +29,16 @@ def project_workflow_progress(
     )
     if active is None:
         active = next_ready_work_item(plan)
+    active_items = sorted(
+        (
+            item
+            for item in plan.work_items
+            if item.status in {"running", "blocked"}
+        ),
+        key=lambda item: item.work_item_id,
+    )
+    running_items = sum(item.status == "running" for item in plan.work_items)
+    ready_items = sum(item.status == "ready" for item in plan.work_items)
     state = (
         "completed"
         if workflow.status == "completed"
@@ -48,4 +58,16 @@ def project_workflow_progress(
         "completed_items": completed,
         "total_items": len(plan.work_items),
         "attempt_count": active.attempt_count if active else 0,
+        "running_items": running_items,
+        "ready_items": ready_items,
+        "active_items": [
+            {
+                "work_item_id": item.work_item_id,
+                "work_item_kind": item.kind,
+                "display_title": item.display_title,
+                "attempt_count": item.attempt_count,
+                "status": item.status,
+            }
+            for item in active_items
+        ],
     }

@@ -22,6 +22,10 @@ from assistant_agent.observability.runtime_audit.models import (
     RuntimeAuditBundle,
 )
 from assistant_agent.observability.trace_store import TraceEvent, redact_trace_event
+from assistant_agent.observability.trace_ledger import (
+    LedgerPartitionSnapshot,
+    iter_ledger_events,
+)
 from assistant_agent.observability.runtime_audit.storage import format_audit_run_id
 from assistant_agent.observability.runtime_audit.safety import (
     sanitize_runtime_audit_text,
@@ -91,7 +95,7 @@ def collect_runtime_audit(
                 summary="Langfuse trace collection failed: " + sanitize_runtime_audit_text(exc),
             )
         )
-    local_events, local_issues, local_available = _read_local_events(
+    local_events, local_issues, local_available, ledger_partitions = _read_local_events(
         local_trace_path,
         window_start=window_start,
         window_end=window_end,
@@ -161,6 +165,7 @@ def collect_runtime_audit(
         ),
         traces=compacted_traces,
         local_manifests=manifests,
+        local_ledger_partitions=ledger_partitions,
         local_fallbacks=fallbacks,
         local_auxiliary_summary=LocalAuxiliarySummary(
             trace_count=len(auxiliary_side_ids),
@@ -186,9 +191,14 @@ def _read_local_events(
     *,
     window_start: datetime,
     window_end: datetime,
-) -> tuple[list[TraceEvent], list[AuditFinding], bool]:
+) -> tuple[
+    list[TraceEvent],
+    list[AuditFinding],
+    bool,
+    list[LedgerPartitionSnapshot],
+]:
     if path is None:
-        return [], [], False
+        return [], [], False, []
     path = Path(path)
     if not path.exists():
         return (
@@ -202,24 +212,38 @@ def _read_local_events(
                 )
             ],
             False,
+            [],
         )
     events: list[TraceEvent] = []
     invalid = 0
     valid = 0
+    ledger_partitions: list[LedgerPartitionSnapshot] = []
     try:
-        with path.open("r", encoding="utf-8") as handle:
-            for line in handle:
-                if not line.strip():
-                    continue
-                try:
-                    event = TraceEvent.model_validate_json(line)
-                except Exception:
-                    invalid += 1
-                    continue
-                valid += 1
-                created_at = _utc(event.created_at)
-                if window_start <= created_at < window_end:
-                    events.append(event)
+        if path.is_dir():
+            ledger_events, valid, invalid, ledger_partitions = iter_ledger_events(
+                path,
+                window_start=window_start,
+                window_end=window_end,
+            )
+            events.extend(
+                event
+                for event in ledger_events
+                if window_start <= _utc(event.created_at) < window_end
+            )
+        else:
+            with path.open("r", encoding="utf-8") as handle:
+                for line in handle:
+                    if not line.strip():
+                        continue
+                    try:
+                        event = TraceEvent.model_validate_json(line)
+                    except Exception:
+                        invalid += 1
+                        continue
+                    valid += 1
+                    created_at = _utc(event.created_at)
+                    if window_start <= created_at < window_end:
+                        events.append(event)
     except OSError as exc:
         return (
             [],
@@ -235,6 +259,7 @@ def _read_local_events(
                 )
             ],
             False,
+            [],
         )
     issues = []
     if invalid:
@@ -255,8 +280,8 @@ def _read_local_events(
                 summary="The local completeness source contained no valid records.",
             )
         )
-        return [], issues, False
-    return events, issues, True
+        return [], issues, False, ledger_partitions
+    return events, issues, True, ledger_partitions
 
 
 def _manifest(events: list[TraceEvent]) -> LocalTraceManifest:

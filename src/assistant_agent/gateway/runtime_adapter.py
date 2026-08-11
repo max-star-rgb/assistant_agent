@@ -342,14 +342,9 @@ def realtime_request_to_user_request(request: RealtimeAgentRequest) -> UserReque
         video_ids=list(request.video_ids),
         audio_id=request.audio_id,
         assistant_mode=request.assistant_mode,
-        execution_strategy=_execution_strategy_from_metadata(metadata),
         response_style=request.response_style,
         metadata=metadata,
     )
-
-
-def _execution_strategy_from_metadata(metadata: dict[str, Any]) -> str:
-    return "plan_and_solve" if metadata.get("execution_strategy") == "plan_and_solve" else "react"
 
 
 def _suppress_default_source(metadata: dict[str, Any]) -> bool:

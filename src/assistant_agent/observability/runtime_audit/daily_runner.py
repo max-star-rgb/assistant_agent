@@ -54,6 +54,13 @@ from assistant_agent.observability.runtime_audit.storage import (
 from assistant_agent.observability.runtime_audit.safety import (
     sanitize_runtime_audit_text,
 )
+from assistant_agent.observability.trace_ledger import (
+    LEDGER_TIMEZONE,
+    prune_trace_ledger,
+)
+
+
+DEFAULT_LOCAL_LEDGER_RETENTION_DAYS = 14
 
 
 class DailyCommitIntentRejected(RuntimeError):
@@ -67,6 +74,7 @@ class DailyAuditRunResult(BaseModel):
     bundle_path: Path
     report_path: Path | None = None
     error_summary: str | None = None
+    retention_warning: str | None = None
 
     @field_validator("error_summary")
     @classmethod
@@ -99,6 +107,7 @@ def run_one_daily_audit(
     collected_at: datetime,
     judge_grace: timedelta = timedelta(minutes=15),
     low_score_threshold: float = DEFAULT_LOW_SCORE_THRESHOLD,
+    local_ledger_retention_days: int = DEFAULT_LOCAL_LEDGER_RETENTION_DAYS,
     commit_continuous_state: bool = True,
     _claimed: bool = False,
 ) -> DailyAuditRunResult:
@@ -107,13 +116,29 @@ def run_one_daily_audit(
     claim = nullcontext() if _claimed else store.daily_claim()
     with claim:
         _recover_pending_commits(store)
-        return _run_one_locked(
+        result = _run_one_locked(
             window=window, source=source, local_trace_path=local_trace_path,
             store=store, repo_root=repo_root, codex_runner=codex_runner,
             collected_at=collected_at, judge_grace=judge_grace,
             low_score_threshold=low_score_threshold,
             commit_continuous_state=commit_continuous_state,
         )
+        if result.status == "succeeded":
+            try:
+                prune_trace_ledger(
+                    local_trace_path,
+                    retention_days=local_ledger_retention_days,
+                    reference_date=collected_at.astimezone(LEDGER_TIMEZONE).date(),
+                    is_day_completed=store.has_successful_day_evidence,
+                    approved_snapshots=(
+                        store.successful_ledger_partition_snapshots()
+                    ),
+                )
+            except Exception as exc:
+                result = result.model_copy(
+                    update={"retention_warning": sanitize_runtime_audit_text(exc)}
+                )
+        return result
 
 
 def _run_one_locked(
@@ -299,6 +324,7 @@ def run_pending_daily_audits(
     collected_at: datetime,
     judge_grace: timedelta = timedelta(minutes=15),
     low_score_threshold: float = DEFAULT_LOW_SCORE_THRESHOLD,
+    local_ledger_retention_days: int = DEFAULT_LOCAL_LEDGER_RETENTION_DAYS,
 ) -> list[DailyAuditRunResult]:
     """Audit yesterday once; older failed or missed dates require explicit reruns."""
 
@@ -320,6 +346,7 @@ def run_pending_daily_audits(
                     collected_at=collected_at,
                     judge_grace=judge_grace,
                     low_score_threshold=low_score_threshold,
+                    local_ledger_retention_days=local_ledger_retention_days,
                     commit_continuous_state=True,
                     _claimed=True,
                 )

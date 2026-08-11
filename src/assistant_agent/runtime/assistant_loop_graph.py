@@ -7,10 +7,10 @@ from langgraph.graph import END, START, StateGraph
 from assistant_agent.runtime.assistant_loop_nodes import (
     AssistantLoopState,
     assistant_node,
+    compose_response_node,
     execute_requested_tool_node,
     route_after_assistant,
 )
-from assistant_agent.runtime.graph_nodes import compose_response_node
 from assistant_agent.runtime.graph_runtime import GraphRuntimeContext, bind_runtime_node
 
 

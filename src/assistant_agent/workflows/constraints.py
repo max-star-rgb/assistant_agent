@@ -7,32 +7,31 @@ from collections.abc import Iterable
 from assistant_agent.workflows.models import (
     WorkflowConstraintBinding,
     WorkflowConstraintProposal,
-    WorkflowSubmission,
     WorkflowWorkItem,
 )
 
 
 def resolve_constraint_bindings(
     *,
-    submission: WorkflowSubmission,
+    constraints: Iterable[str],
     work_items: list[WorkflowWorkItem],
-    definition_bindings: Iterable[WorkflowConstraintBinding] = (),
+    proposal_bindings: Iterable[WorkflowConstraintProposal] = (),
+    definition_bindings: Iterable[WorkflowConstraintProposal] = (),
 ) -> list[WorkflowConstraintBinding]:
-    """Return explicit bindings plus deterministic bindings for unowned prose constraints."""
+    """Admit planner bindings and bind any remaining prose constraints."""
 
-    if submission.constraint_bindings:
-        explicit = [item.model_copy(deep=True) for item in submission.constraint_bindings]
-    else:
-        explicit = []
+    proposals = _deduplicate_constraint_proposals(
+        [*definition_bindings, *proposal_bindings]
+    )
     bindings = [
         _with_inferred_verifier(binding, work_items)
-        for binding in [*definition_bindings, *explicit]
+        for binding in proposals
     ]
     bound_statements = {item.statement for item in bindings}
     terminal_ids = _terminal_work_item_ids(work_items)
     verifier_id = terminal_ids[-1]
     existing_ids = {item.constraint_id for item in bindings}
-    for index, statement in enumerate(submission.constraints, start=1):
+    for index, statement in enumerate(constraints, start=1):
         if statement in bound_statements:
             continue
         constraint_id = _available_constraint_id(index, existing_ids)
@@ -45,6 +44,30 @@ def resolve_constraint_bindings(
             severity="required",
         ))
     return bindings
+
+
+def _deduplicate_constraint_proposals(
+    proposals: Iterable[WorkflowConstraintProposal],
+) -> list[WorkflowConstraintProposal]:
+    admitted: list[WorkflowConstraintProposal] = []
+    by_id: dict[str, WorkflowConstraintProposal] = {}
+    statements: set[str] = set()
+    for proposal in proposals:
+        candidate = proposal.model_copy(deep=True)
+        existing = by_id.get(candidate.constraint_id)
+        if existing is not None:
+            if existing.statement != candidate.statement:
+                raise ValueError(
+                    f"conflicting workflow constraint id: {candidate.constraint_id}"
+                )
+            continue
+        if candidate.statement in statements:
+            by_id[candidate.constraint_id] = candidate
+            continue
+        admitted.append(candidate)
+        by_id[candidate.constraint_id] = candidate
+        statements.add(candidate.statement)
+    return admitted
 
 
 def assigned_constraints(

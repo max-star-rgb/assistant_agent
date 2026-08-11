@@ -443,9 +443,6 @@ def summarize_graph_state(graph_state: dict[str, Any]) -> dict[str, Any]:
         return {}
     summary = {
         "status": getattr(state, "status", None),
-        "intent": state.intent.intent if getattr(state, "intent", None) is not None else None,
-        "plan_step_count": len(state.plan.steps) if getattr(state, "plan", None) is not None else 0,
-        "selected_tool_count": len(getattr(state, "selected_tools", [])),
         "tool_call_count": len(getattr(state, "tool_calls", [])),
         "tool_result_count": len(getattr(state, "tool_results", [])),
         "error_count": len(getattr(state, "errors", [])),

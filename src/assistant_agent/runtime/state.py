@@ -9,13 +9,12 @@ from assistant_agent.runtime.cancellation import CANCELLATION_ERROR_CODE, DEFAUL
 from assistant_agent.memory.models import SessionMemorySnapshot
 from assistant_agent.context.models import ContextSourceResult
 from assistant_agent.media.vision.models import PerceptionBundle
-from assistant_agent.runtime.planning_models import IntentResult, TaskPlan
 from assistant_agent.runtime.capability_grants import (
     CapabilityGrantValue,
     validate_capability_grant,
 )
 from assistant_agent.runtime.requests import AgentResponse, UserRequest
-from assistant_agent.tools.models import RunToolCatalog, ToolCallRecord, ToolResult, ToolSelection
+from assistant_agent.tools.models import RunToolCatalog, ToolCallRecord, ToolResult
 from assistant_agent.multi_agent.models import DEFAULT_AGENT_ID
 from assistant_agent.identifiers import (
     new_run_id,
@@ -25,8 +24,6 @@ from assistant_agent.identifiers import (
 
 
 AgentStatus = Literal["created", "running", "waiting_user", "completed", "failed", "cancelled"]
-ExecutionStrategyName = Literal["react", "plan_and_solve"]
-PlanStatus = Literal["none", "active", "replanning", "completed", "failed"]
 
 
 class AgentError(BaseModel):
@@ -45,7 +42,6 @@ class AgentState(BaseModel):
     trace_id: str = Field(default_factory=new_trace_id)
     agent_id: str = Field(default=DEFAULT_AGENT_ID, min_length=1)
     request: UserRequest
-    execution_strategy: ExecutionStrategyName = "react"
 
     session_memory_snapshot: SessionMemorySnapshot | None = None
     frozen_memory_context: SessionMemorySnapshot | None = Field(
@@ -55,13 +51,6 @@ class AgentState(BaseModel):
     memory_context_prepared: bool = Field(default=False, exclude=True)
     context_source_result: ContextSourceResult = Field(default_factory=ContextSourceResult)
     perception: PerceptionBundle | None = None
-    intent: IntentResult | None = None
-    plan: TaskPlan | None = None
-    plan_status: PlanStatus = "none"
-    current_step_id: str | None = None
-    plan_revision_count: int = Field(default=0, ge=0)
-
-    selected_tools: list[ToolSelection] = Field(default_factory=list)
     capability_grants: list[CapabilityGrantValue] = Field(default_factory=list)
     session_restored_grant_ids: list[str] = Field(default_factory=list)
     run_tool_catalog: RunToolCatalog | None = None
@@ -86,7 +75,6 @@ class AgentState(BaseModel):
             trace_id=trace_id or new_trace_id(),
             agent_id=agent_id,
             request=request,
-            execution_strategy=request.execution_strategy,
         )
 
     @property
@@ -171,19 +159,6 @@ class AgentState(BaseModel):
             self.tool_results.append(result)
         self.status = "failed" if stop_run else "running"
         return record
-
-    def set_intent(self, intent: IntentResult) -> None:
-        """Set detected intent and mark the run as active."""
-
-        self.intent = intent
-        self.status = "running"
-
-    def set_plan(self, plan: TaskPlan) -> None:
-        """Set the current task plan."""
-
-        self.plan = plan
-        self.plan_status = "active"
-        self.status = "waiting_user" if plan.requires_followup else "running"
 
     def set_response(self, response: AgentResponse) -> None:
         """Set final response and complete the run."""

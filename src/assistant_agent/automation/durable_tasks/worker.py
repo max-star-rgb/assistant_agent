@@ -69,11 +69,6 @@ class DurableTaskWorker:
                 binding=binding,
                 cancel_token=self.service.task_cancel_token(lease.task_id),
             )
-            if result.checkpoint.kind == "plan_revised":
-                stored = self.service.store.load(lease.task_id)
-                if stored is not None:
-                    _release_if_still_owned(self.service, lease, stored)
-                return True
             checkpoint_lease = lease
             if result.binding is not None:
                 checkpoint_lease = lease.model_copy(

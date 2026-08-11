@@ -7,7 +7,6 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
-from assistant_agent.planning_contracts import PlanDisplayTitle
 
 
 WorkflowStatus = Literal[
@@ -33,7 +32,6 @@ WorkItemStatus = Literal[
 ]
 TERMINAL_WORKFLOW_STATUSES = {"completed", "failed", "cancelled"}
 ConstraintSeverity = Literal["required", "advisory"]
-WorkflowPlanningMode = Literal["submitted", "runtime"]
 
 
 def utc_now() -> datetime:
@@ -82,7 +80,7 @@ class WorkflowSeedWorkItem(BaseModel):
 
     seed_id: str = Field(min_length=1, max_length=120)
     kind: str = Field(min_length=1, max_length=120)
-    display_title: PlanDisplayTitle = None
+    display_title: str = Field(min_length=1, max_length=160)
     objective: str = Field(min_length=1, max_length=4_000)
     depends_on: list[str] = Field(default_factory=list, max_length=64)
     input_artifact_refs: list[str] = Field(default_factory=list, max_length=128)
@@ -95,21 +93,8 @@ class WorkflowSubmission(BaseModel):
     workflow_type: str = Field(pattern=r"^[a-z][a-z0-9_.-]{0,79}$")
     objective: str = Field(min_length=1, max_length=10_000)
     deliverables: list[str] = Field(min_length=1, max_length=32)
-    planning_mode: WorkflowPlanningMode = "submitted"
     constraints: list[str] = Field(default_factory=list, max_length=64)
-    constraint_bindings: list[WorkflowConstraintProposal] = Field(
-        default_factory=list,
-        max_length=64,
-    )
     inputs: dict[str, JsonValue] = Field(default_factory=dict)
-    initial_workstreams: list[WorkflowSeedWorkItem] = Field(
-        default_factory=list,
-        max_length=128,
-        description=(
-            "Agent 为该长期任务预先生成的可执行 DAG。任务可合理拆解时应提供；"
-            "每项同时声明依赖、内部 objective 和用户可见 display_title。"
-        ),
-    )
     requested_budget: WorkflowBudgetRequest = Field(
         default_factory=WorkflowBudgetRequest
     )
@@ -150,7 +135,7 @@ class WorkflowWorkItem(BaseModel):
 
     work_item_id: str = Field(min_length=1, max_length=160)
     kind: str = Field(min_length=1, max_length=120)
-    display_title: PlanDisplayTitle = None
+    display_title: str = Field(min_length=1, max_length=160)
     objective: str = Field(min_length=1, max_length=10_000)
     depends_on: list[str] = Field(default_factory=list, max_length=64)
     input_artifact_refs: list[str] = Field(default_factory=list, max_length=128)
@@ -159,9 +144,36 @@ class WorkflowWorkItem(BaseModel):
     attempt_count: int = Field(default=0, ge=0)
     max_attempts: int = Field(default=3, ge=1, le=20)
     active_attempt_id: str | None = Field(default=None, min_length=1)
+    lease_owner: str | None = Field(default=None, min_length=1)
+    lease_token: str | None = Field(default=None, min_length=1)
+    lease_expires_at: datetime | None = None
+    reserved_model_calls: int = Field(default=0, ge=0)
+    reserved_tool_calls: int = Field(default=0, ge=0)
     output_artifact_refs: list[str] = Field(default_factory=list, max_length=128)
     result_summary: str = Field(default="", max_length=4_000)
     error_code: str | None = Field(default=None, max_length=160)
+
+    @model_validator(mode="after")
+    def validate_attempt_lease(self) -> "WorkflowWorkItem":
+        lease_values = (
+            self.active_attempt_id,
+            self.lease_owner,
+            self.lease_token,
+            self.lease_expires_at,
+        )
+        if any(value is None for value in lease_values) and any(
+            value is not None for value in lease_values
+        ):
+            raise ValueError("attempt id, lease owner, token, and expiry must be set together")
+        if self.lease_expires_at is not None and self.lease_expires_at.tzinfo is None:
+            raise ValueError("work item lease expiry must be timezone-aware")
+        if self.status == "running" and self.lease_token is None:
+            raise ValueError("running work item requires an active lease")
+        if self.lease_token is None and (
+            self.reserved_model_calls or self.reserved_tool_calls
+        ):
+            raise ValueError("budget reservations require an active lease")
+        return self
 
 
 class WorkflowPlanVersion(BaseModel):
@@ -260,6 +272,23 @@ class WorkflowLease(BaseModel):
     expires_at: datetime
 
 
+class WorkflowWorkItemLease(BaseModel):
+    """Durable ownership of one independently executable DAG node."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    workflow_id: str = Field(min_length=1)
+    workflow_revision: int = Field(ge=1)
+    plan_version: int = Field(ge=1)
+    work_item_id: str = Field(min_length=1)
+    attempt_id: str = Field(min_length=1)
+    worker_id: str = Field(min_length=1)
+    lease_token: str = Field(min_length=1)
+    expires_at: datetime
+    reserved_model_calls: int = Field(ge=1)
+    reserved_tool_calls: int = Field(ge=0)
+
+
 class WorkflowBundle(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -293,3 +322,13 @@ class WorkflowBundle(BaseModel):
             for plan in self.plans
             if plan.version == self.workflow.current_plan_version
         )
+
+
+class ClaimedWorkflowWorkItem(BaseModel):
+    """Committed claim plus the immutable execution snapshot for that attempt."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    lease: WorkflowWorkItemLease
+    bundle: WorkflowBundle
+    committed_events: list[WorkflowEvent] = Field(default_factory=list)

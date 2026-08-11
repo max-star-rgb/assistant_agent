@@ -8,7 +8,6 @@ from assistant_agent.runtime.state import AgentState
 from assistant_agent.memory.plugins.contracts import MemoryContextItem
 from assistant_agent.context.models import (
     AssistantContextPack,
-    AssistantPlanContext,
     ContextBudgetReport,
     ContextPolicy,
     ContextSection,
@@ -127,7 +126,6 @@ def build_assistant_context_pack(
         base_max_chars=context_policy.max_context_chars,
         tool_specs=prompt_tool_specs,
     )
-    plan_state = build_assistant_plan_context(state)
     loaded_skill_ids = _successfully_loaded_skill_ids(active_observations)
     skill_context_sections = [
         ContextSection(
@@ -188,7 +186,6 @@ def build_assistant_context_pack(
         realtime_task_state=realtime_task_state,
         realtime_video_context=realtime_video_context,
         durable_task_state=durable_task_state,
-        plan_state=plan_state,
         observations=context_observations,
         tool_specs=prompt_tool_specs,
         context_sections=unbudgeted_context_sections,
@@ -231,7 +228,6 @@ def build_assistant_context_pack(
         realtime_task_state=realtime_task_state,
         realtime_video_context=realtime_video_context,
         durable_task_state=durable_task_state,
-        plan_state=plan_state,
         observations=context_observations,
         tool_specs=prompt_tool_specs,
         context_sections=context_sections,
@@ -275,7 +271,6 @@ def build_assistant_context_pack(
             realtime_video_context=realtime_video_context,
             durable_task_state=durable_task_state,
             observations=context_observations,
-            plan_state=plan_state,
             tool_specs=prompt_tool_specs,
             max_chars=max(0, budget_limit - owner_persona_chars),
         )
@@ -316,7 +311,6 @@ def build_assistant_context_pack(
         realtime_task_state=realtime_task_state,
         realtime_video_context=realtime_video_context,
         durable_task_state=durable_task_state,
-        plan_state=plan_state,
         observations=budgeted.observations,
         tool_specs=prompt_tool_specs,
         context_sections=context_sections,
@@ -349,7 +343,6 @@ def build_assistant_context_pack(
         realtime_task_state=realtime_task_state,
         realtime_video_context=realtime_video_context,
         durable_task_state=durable_task_state,
-        plan_state=plan_state,
         observations=budgeted.observations,
         tool_specs=active_tool_specs,
         prompt_tool_specs=prompt_tool_specs,
@@ -385,18 +378,6 @@ def _run_memory_items(state: AgentState) -> list[MemoryContextItem]:
     return list(snapshot.memories)
 
 
-def build_assistant_plan_context(state: AgentState) -> AssistantPlanContext:
-    """Render-safe snapshot of current plan-mode state."""
-
-    return AssistantPlanContext(
-        plan_mode_active=_is_plan_mode_active(state),
-        plan_status=state.plan_status,
-        current_step_id=state.current_step_id,
-        plan_revision_count=state.plan_revision_count,
-        current_plan=state.plan.model_dump(mode="json") if state.plan is not None else None,
-    )
-
-
 def _conversation_context_text(request: UserRequest) -> str:
     conversation_context = request.metadata.get("conversation_context_text")
     if isinstance(conversation_context, str) and conversation_context.strip():
@@ -409,16 +390,6 @@ def _context_summary(request: UserRequest) -> ContextSummary | None:
     if summary is not None:
         return summary
     return context_summary_from_metadata(request.metadata.get("session_context_summary"))
-
-
-def _is_plan_mode_active(state: AgentState) -> bool:
-    marker = state.request.metadata.get("plan_mode")
-    return (
-        isinstance(marker, dict)
-        and marker.get("active") is True
-        and state.plan is not None
-        and state.plan_status in {"active", "replanning"}
-    )
 
 
 def _metadata_text(request: UserRequest, key: str) -> str:
@@ -689,7 +660,6 @@ def _budget_report(
     realtime_task_state: dict[str, Any] | None,
     realtime_video_context: RealtimeVideoContext | None,
     durable_task_state: dict[str, Any] | None,
-    plan_state: AssistantPlanContext,
     observations: list[dict[str, Any]],
     tool_specs: list[ToolSpec],
     context_sections: list[ContextSection] | None = None,
@@ -719,7 +689,6 @@ def _budget_report(
         else 0
     )
     durable_task_state_chars = _json_chars(durable_task_state) if durable_task_state else 0
-    plan_chars = _json_chars(plan_state.model_dump(mode="json")) if _has_plan_context(plan_state) else 0
     observations_chars = _json_chars(observations)
     tool_spec_chars = _json_chars(tool_specs_to_openai_tools(tool_specs))
     owner_persona_chars = _owner_persona_chars(context_sections or [])
@@ -733,7 +702,6 @@ def _budget_report(
         + realtime_task_state_chars
         + realtime_video_context_chars
         + durable_task_state_chars
-        + plan_chars
         + observations_chars
         + tool_spec_chars
         + owner_persona_chars
@@ -755,7 +723,6 @@ def _budget_report(
                     else {}
                 ),
                 "durable_task_state": durable_task_state or {},
-                "plan": plan_state.model_dump(mode="json") if _has_plan_context(plan_state) else {},
                 "observations": observations,
                 "tool_spec": [spec.model_dump(mode="json") for spec in tool_specs],
                 "owner_persona": "\n\n".join(
@@ -780,7 +747,6 @@ def _budget_report(
         realtime_task_state_chars=realtime_task_state_chars,
         realtime_video_context_chars=realtime_video_context_chars,
         durable_task_state_chars=durable_task_state_chars,
-        plan_chars=plan_chars,
         observations_chars=observations_chars,
         tool_spec_chars=tool_spec_chars,
         owner_persona_chars=owner_persona_chars,
@@ -824,10 +790,6 @@ def _compression_stage(reasons: list[str], *, trimmed_sections: list[str]) -> st
     if reasons:
         return COMPRESSION_STAGE_COMPACTED
     return COMPRESSION_STAGE_NONE
-
-
-def _has_plan_context(plan_state: AssistantPlanContext) -> bool:
-    return plan_state.current_plan is not None or plan_state.plan_status != "none"
 
 
 def _json_chars(value: Any) -> int:
@@ -936,7 +898,6 @@ def _enforce_context_budget(
     realtime_video_context: RealtimeVideoContext | None,
     durable_task_state: dict[str, Any] | None,
     observations: list[dict[str, Any]],
-    plan_state: AssistantPlanContext,
     tool_specs: list[ToolSpec],
     max_chars: int,
 ) -> _BudgetedContext:
@@ -947,7 +908,6 @@ def _enforce_context_budget(
         realtime_task_state=realtime_task_state,
         realtime_video_context=realtime_video_context,
         durable_task_state=durable_task_state,
-        plan_state=plan_state,
         observations=observations,
         tool_specs=tool_specs,
     )
@@ -966,7 +926,6 @@ def _enforce_context_budget(
         + budget.realtime_task_state_chars
         + budget.realtime_video_context_chars
         + budget.durable_task_state_chars
-        + budget.plan_chars
         + budget.tool_spec_chars
     )
     available = max(0, max_chars - fixed_chars)
@@ -1005,7 +964,6 @@ def _enforce_context_budget(
         realtime_task_state=realtime_task_state,
         realtime_video_context=realtime_video_context,
         durable_task_state=durable_task_state,
-        plan_state=plan_state,
         observations=budgeted_observations,
         tool_specs=tool_specs,
     )

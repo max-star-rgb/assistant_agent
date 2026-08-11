@@ -16,11 +16,12 @@ from assistant_agent.workflows.artifacts import LocalWorkflowArtifactStore
 from assistant_agent.workflows.definitions import (
     WorkflowDefinitionCatalog,
     WorkflowDefinitionDescriptor,
+    materialize_work_items,
 )
 from assistant_agent.workflows.models import (
+    WorkflowPlanProposal,
     WorkflowPlanVersion,
     WorkflowSubmission,
-    WorkflowWorkItem,
 )
 from assistant_agent.workflows.runtime import WorkItemExecutionResult, WorkflowRuntime
 from assistant_agent.workflows.service import WorkflowService
@@ -37,27 +38,31 @@ class InputDefinition:
     def validate_submission(self, submission: WorkflowSubmission) -> None:
         return None
 
-    def build_initial_plan(
-        self, *, workflow_id: str, submission: WorkflowSubmission
+    def materialize_plan(
+        self, *, workflow, proposal: WorkflowPlanProposal
     ) -> WorkflowPlanVersion:
         return WorkflowPlanVersion(
-            workflow_id=workflow_id,
-            version=1,
+            workflow_id=workflow.workflow_id,
+            version=workflow.current_plan_version + 1,
             definition_version="1",
-            revision_reason="initial",
-            work_items=[
-                WorkflowWorkItem(
-                    work_item_id="input-step",
-                    kind="probe",
-                    display_title="正在等待地区信息",
-                    objective="input-step-sentinel",
-                )
-            ],
+            revision_reason="runtime_planner",
+            work_items=materialize_work_items(proposal),
         )
 
 
 class InputThenSuccessExecutor:
     def execute(self, assignment) -> WorkItemExecutionResult:
+        if assignment.agent_role == "planner":
+            return WorkItemExecutionResult(
+                status="succeeded",
+                agent_role="planner",
+                plan_proposal=WorkflowPlanProposal(workstreams=[{
+                    "seed_id": "input-step",
+                    "kind": "probe",
+                    "display_title": "正在等待地区信息",
+                    "objective": "input-step-sentinel",
+                }]),
+            )
         user_inputs = assignment.inputs.get("user_inputs", [])
         if not user_inputs:
             return WorkItemExecutionResult(
@@ -77,6 +82,17 @@ class ArtifactSuccessExecutor:
         self.artifact_ref = artifact_ref
 
     def execute(self, assignment) -> WorkItemExecutionResult:
+        if assignment.agent_role == "planner":
+            return WorkItemExecutionResult(
+                status="succeeded",
+                agent_role="planner",
+                plan_proposal=WorkflowPlanProposal(workstreams=[{
+                    "seed_id": "input-step",
+                    "kind": "probe",
+                    "display_title": "正在生成结果",
+                    "objective": "input-step-sentinel",
+                }]),
+            )
         return WorkItemExecutionResult(
             status="succeeded",
             summary="bounded-summary-sentinel",
@@ -124,6 +140,7 @@ def test_waiting_input_resumes_once_with_matching_token() -> None:
         ),
         worker_id="worker-sentinel",
     )
+    assert worker.run_once() is True
     assert worker.run_once() is True
     waiting = service.get_workflow(
         identity=_identity(), workflow_id=created.workflow.workflow_id
@@ -175,9 +192,9 @@ def test_http_status_events_input_and_cancel_are_thin_service_facades() -> None:
         "state": "working",
         "plan_kind": "needs_input",
         "workflow_type": "needs_input",
-        "work_item_id": "input-step",
-        "work_item_kind": "probe",
-        "display_title": "正在等待地区信息",
+        "work_item_id": "plan",
+        "work_item_kind": "plan",
+        "display_title": "正在制定执行计划",
         "completed_items": 0,
         "total_items": 1,
         "attempt_count": 0,
@@ -200,14 +217,16 @@ def test_http_result_returns_the_identity_scoped_full_final_artifact(
         text="full-final-report-sentinel",
         producer_work_item_id="input-step",
     )
-    DurableWorkflowWorker(
+    worker = DurableWorkflowWorker(
         service=service,
         runtime=WorkflowRuntime(
             service=service,
             work_item_executor=ArtifactSuccessExecutor(artifact.uri),
         ),
         worker_id="worker-sentinel",
-    ).run_once()
+    )
+    assert worker.run_once() is True
+    assert worker.run_once() is True
     monkeypatch.setattr(
         routes_agent,
         "get_agent_runtime",

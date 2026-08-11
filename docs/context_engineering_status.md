@@ -187,19 +187,29 @@ Runtime 保留完整内部 `ToolResult` 供执行、trace 和交付层使用；�
 只有可信 worker resume 可以注入校验后的 durable task snapshot。模型只接收当前执行所需的
 objective、constraints、plan/step 状态、artifact references、等待状态和剩余预算；lease、secret、
 raw Provider response、父会话历史及未登记扩展不得进入 prompt。Durable snapshot 是当前执行状态，
-不是 session summary 或长期记忆。
+不是 session summary 或长期记忆。DurableTask 只保留 schedule、external event 和 notification/checkpoint
+执行底座；该 snapshot 不意味着存在模型可见的 plan submit 能力或第二个顶层 Planner。
 
-通用 Durable Workflow 不把完整前台会话或 Workflow Store JSON 回放给模型。Worker 为每个 work item
+通用 Durable Workflow 是长流程唯一 Plan-and-Execute 上下文边界。Submission 只保存 objective、
+deliverables、constraints、definition-owned inputs、budget 和 seed artifacts 等意图事实，不接受
+预规划 DAG。首个 planner work item 使用同一 `AgentGraphRuntime` 编译自己的可信规划上下文，
+生成 `WorkflowPlanProposal`；Definition materialize/admission 后，worker 才按获准 version 2 DAG 获取
+各自上下文。Workflow 不把完整前台会话或 Workflow Store JSON 回放给模型。Worker 为每个 work item
 生成 `WorkflowContextManifest`，只包含 objective、constraints、owner 校验后的 artifact ref、digest 和
 有界 excerpt；lease、revision、绝对路径、Store client 和完整来源正文不进入 prompt。artifact 内容由
 `LocalWorkflowArtifactStore` 独立持久化，Context Compiler 使用已配置的模型 tokenizer（缺失时使用
 显式标记的离线估算器），并按 work-item stage、模型窗口比例、输出 reserve 和 safety margin 计算
 token budget；多个依赖 artifact 在该预算内公平分配，不再使用固定字符上限。
 
+Definition-owned `workflow.inputs`（例如 Deep Research 的 `source_target`）只提供给 planner 和
+Definition materialize，不透传给普通 worker；worker 只接收恢复长流程所需的结构化 `user_inputs`。
+具体子任务条件必须进入已获准 work item 的 objective、acceptance contract、assigned constraint 或
+artifact 上下文，不能靠泄露全局 submission input 隐式生效。
+
 `AgentGraphRuntime.run_work_item()` 使用 runtime-owned `_trusted_workflow_assignment` 和显式
 `_trusted_workflow_allowed_tools`。空 allowlist 的含义是零个 Tool，而不是“无覆盖”；普通请求不能通过
 伪造同名自然语言扩大候选集合，HTTP、WebSocket 和 A2A 入口也会剥离这些 runtime-owned metadata。
-Workflow 在 `waiting_input` 后收到的 owner-scoped 恢复值会作为结构化 `workflow_inputs` 进入下一次
+Workflow 在 `waiting_input` 后收到的恢复值会作为结构化 `workflow_inputs` 进入下一次
 work-item request；它属于用户数据而非权限或控制指令。每个 work item 的 Provider 输出预算由
 `MULTIMODAL_AGENT_DEEP_RESEARCH_MAX_TOKENS` 独立配置，普通对话继续使用
 `MULTIMODAL_AGENT_CHAT_MAX_TOKENS`，避免启用 thinking/search 后沿用短回复预算。
@@ -210,13 +220,13 @@ work-item request；它属于用户数据而非权限或控制指令。每个 wo
 长期记忆或稳定文本 embedding，也不投影原 session 的实时视觉/主动事件；跨阶段上下文只能来自
 显式 manifest 和 owner-bound artifact。
 
-`UserRequest.assistant_mode` 是结构化产品模式，只支持 `standard` 与 `deep_research`。PromptCompiler
-把该字段原样投影到 `ChatRequest`，不渲染成用户文本。Tool catalog 在 `deep_research` 前台入口只允许
-`workflow_submit`：已注册时首次调用使用指定 function choice，前台 admission 保持 standard search
-profile；未启用 Durable Workflow 时 catalog 为空，PromptCompiler 直接设置
-`provider_search_profile=deep_research`，以零个本地 Tool 执行本轮 Provider-native 深搜，不退化为
-standard 搜索。后台 `deep_research` work item 继承同一模式，可信空 allowlist 同样表示零个本地 Tool，
-并使用 deep research search profile。模式不会从关键词、Skill 或历史内容推断。
+`UserRequest.assistant_mode` 是结构化产品模式，只支持 `standard` 与 `deep_research`。standard
+请求由 PromptCompiler 编译正常 assistant-loop `ChatRequest`。`deep_research` 前台入口在进入
+assistant loop/PromptCompiler 之前已由 Runtime 直接创建 planning 状态的 Durable Workflow：该短 run
+不调用 Provider、不暴露或调用 `workflow_submit`，也不在 Workflow 不可用时退化为一次前台
+Provider-native 深搜，而是返回结构化不可用错误。后台 planner 和 `deep_research` work item
+通过 runtime-owned assignment 编译自己的 `ChatRequest`，可信空 allowlist 表示零个本地 Tool，并使用
+deep research search profile。模式不会从关键词、Skill 或历史内容推断。
 
 ### 实时任务状态
 

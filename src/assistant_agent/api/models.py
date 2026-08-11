@@ -82,8 +82,6 @@ class AgentRunResponse(BaseModel):
     run_id: str
     trace_id: str
     status: str
-    execution_strategy: str = "react"
-    intent: str | None
     response_text: str
     annotations: list[UrlCitationAnnotation] = Field(default_factory=list)
     data: dict[str, Any] = Field(default_factory=dict)
@@ -199,8 +197,6 @@ def agent_run_response_from_state(
         run_id=state.run_id,
         trace_id=state.trace_id,
         status=state.status,
-        execution_strategy=state.execution_strategy,
-        intent=state.intent.intent if state.intent else None,
         response_text=state.response.message if state.response else "",
         annotations=list(state.response.annotations) if state.response else [],
         data=state.response.data if state.response and state.response.data else {},
@@ -264,8 +260,6 @@ def _public_react_steps(value: Any) -> list[dict[str, Any]]:
         "summary",
         "step_id",
         "plan_step_count",
-        "plan_status",
-        "execution_strategy",
     }
     steps: list[dict[str, Any]] = []
     for item in value:
@@ -294,7 +288,6 @@ def _public_decision_trace(value: Any) -> list[dict[str, Any]]:
         "answer",
         "step_id",
         "plan_step_count",
-        "plan_status",
     }
     trace: list[dict[str, Any]] = []
     for item in value:

@@ -30,7 +30,6 @@ CONTEXT_REPORT_SECTION_NAMES = (
     "memory",
     "realtime_video_context",
     "durable_task_state",
-    "plan_state",
     "tool_observations",
     "tool_schema",
 )
@@ -142,14 +141,6 @@ def build_context_report(
             item_count=1 if pack.durable_task_state is not None else None,
             trimmed="durable_task_state" in pack.budget.trimmed_sections,
             source="trusted_runtime.durable_task_snapshot",
-        )
-    plan_chars = _plan_chars(pack)
-    if plan_chars:
-        sections["plan_state"] = ContextReportSection(
-            chars=plan_chars,
-            estimated_tokens=_positive_or_none(pack.budget.plan_tokens),
-            item_count=1,
-            source="AgentState.plan_state",
         )
     if pack.observations or "observations" in pack.budget.trimmed_sections:
         sections["tool_observations"] = ContextReportSection(
@@ -411,13 +402,6 @@ def context_report_from_trace_context_summary(context: dict[str, Any]) -> Contex
         trimmed="durable_task_state" in trimmed_sections,
         source="trusted_runtime.durable_task_snapshot",
     )
-    _add_legacy_summary_section(
-        sections,
-        "plan_state",
-        chars=_int_value(budget.get("plan_chars")),
-        estimated_tokens=_positive_or_none(_int_value(budget.get("plan_tokens"))),
-        source="legacy_context_summary.budget",
-    )
     compacted_observations = (
         _int_value((context.get("compaction") or {}).get("compacted_observations"))
         if isinstance(context.get("compaction"), dict)
@@ -610,13 +594,6 @@ def _memory_item_ids(pack: AssistantContextPack) -> list[str]:
             if isinstance(memory_id, str) and memory_id and memory_id not in discovered:
                 discovered.append(memory_id)
     return discovered
-
-
-def _plan_chars(pack: AssistantContextPack) -> int:
-    plan = pack.plan_state
-    if plan.current_plan is None and plan.plan_status == "none":
-        return 0
-    return _json_chars(plan.model_dump(mode="json"))
 
 
 def _source_count(pack: AssistantContextPack, key: str) -> int:

@@ -30,7 +30,6 @@ class UserRequest(BaseModel):
     video_ids: list[str] = Field(default_factory=list)
     audio_id: str | None = None
     assistant_mode: AssistantMode = "standard"
-    execution_strategy: Literal["react", "plan_and_solve"] = "react"
     task_execution_mode: TaskExecutionMode = "auto"
     response_style: ResponseStyle | None = None
     runtime_task_update: RuntimeTaskUpdate | None = None
@@ -54,11 +53,8 @@ def normalize_task_execution_mode(
 ) -> UserRequest:
     """Resolve the effective task mode without changing closed-flag behavior."""
 
-    explicit = "task_execution_mode" in request.model_fields_set
-    effective = request.task_execution_mode
-    if not explicit and durable_tasks_enabled and request.execution_strategy == "plan_and_solve":
-        effective = "durable"
-    return request.model_copy(update={"task_execution_mode": effective})
+    _ = durable_tasks_enabled
+    return request
 
 
 class AgentResponse(BaseModel):

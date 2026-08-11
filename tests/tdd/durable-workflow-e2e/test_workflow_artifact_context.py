@@ -154,6 +154,7 @@ def test_agent_graph_runtime_exposes_bounded_work_item_entry() -> None:
         workflow_type="long_horizon",
         work_item_id="step-sentinel",
         attempt_id="attempt-sentinel",
+        display_title="正在执行 Sentinel 步骤",
         user_id="user-sentinel",
         agent_id="agent-sentinel",
         session_id="session-sentinel",

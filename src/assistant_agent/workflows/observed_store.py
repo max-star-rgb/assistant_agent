@@ -6,6 +6,7 @@ from datetime import datetime
 
 from assistant_agent.observability.workflow_otel import WorkflowCommitObserver
 from assistant_agent.workflows.models import (
+    ClaimedWorkflowWorkItem,
     WorkflowBundle,
     WorkflowEvent,
     WorkflowLease,
@@ -97,6 +98,26 @@ class ObservedWorkflowStore:
 
     def latest_event_cursor(self, workflow_id: str) -> int:
         return self.inner.latest_event_cursor(workflow_id)
+
+    def claim_ready_work_item(
+        self,
+        *,
+        worker_id: str,
+        now: datetime,
+        lease_seconds: int,
+        model_call_limit: int,
+        tool_call_limit: int,
+    ) -> ClaimedWorkflowWorkItem | None:
+        claimed = self.inner.claim_ready_work_item(
+            worker_id=worker_id,
+            now=now,
+            lease_seconds=lease_seconds,
+            model_call_limit=model_call_limit,
+            tool_call_limit=tool_call_limit,
+        )
+        if claimed is not None:
+            self._observe_committed(claimed.bundle, claimed.committed_events)
+        return claimed
 
     def claim_next(
         self,

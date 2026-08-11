@@ -380,7 +380,6 @@ def _gateway_http_metadata(request: UserRequest, capture_id: str) -> dict[str, A
     gateway_payload["entry_capabilities"] = HTTP_AGENT_ENTRY_CAPABILITIES.to_metadata()
     gateway_payload.pop("artifact_delivery", None)
     metadata["gateway"] = gateway_payload
-    metadata["execution_strategy"] = request.execution_strategy
     return metadata
 
 

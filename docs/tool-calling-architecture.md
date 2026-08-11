@@ -142,7 +142,7 @@ manifest；`tools/ids.py` 只保存已经成为跨层协议的稳定字符串。
 仍复用已有结果。失败调用不消耗成功额度，完全相同的失败输入仍由失败去重 guard 处理。所有策略
 都受全局 `max_tool_iterations` 限制；该字段是 Runtime 治理事实，不进入 Provider Tool schema。
 
-每个内置 concrete Tool 必须显式声明策略。当前 `task_plan_submit`、`image_generation` 和
+每个内置 concrete Tool 必须显式声明策略。当前 `workflow_submit`、`image_generation` 和
 `image_to_3d` 使用 `once_per_run`，其余内置 Tool 使用 `distinct_inputs`。`ToolSpec` 与 `ToolBase` 的
 默认 `once_per_run` 只为旧式或外部 Tool 提供保守兼容回退，不能替代内置 Tool 的显式分类。
 Runtime 只读取 Registry 投影后的 `ToolSpec.repeat_policy`，不按工具名维护终止工具清单或第二套
@@ -343,24 +343,32 @@ MCP server、认证、远端方法映射和部署命令属于配置或对应集�
 `durable_workflow` 是默认关闭的内置 Plugin。它从 `ToolPluginContext.workflow_service` 接收可信服务；
 配置关闭、服务缺失或 definition catalog 为空时返回空工具列表，不能暴露一个无法推进的提交 Tool。
 `workflow_submit` 是 `write/once_per_run/metadata_only` Tool，输入是通用
-`WorkflowSubmission`：`workflow_type/objective/deliverables/constraints/inputs/initial_workstreams/
-constraint_bindings/requested_budget/durability_reasons/seed_artifact_refs/idempotency_key`。Research 问题等
-业务字段只能放在 definition-owned `inputs` schema 中，不能污染通用契约。
+`WorkflowSubmission`：`workflow_type/objective/deliverables/constraints/inputs/requested_budget/
+durability_reasons/seed_artifact_refs/idempotency_key`。这些都是用户意图、资源和已有制品事实；
+submission 不接受已规划 DAG、约束责任绑定或 planner mode。Research 问题等业务字段只能
+放在 definition-owned `inputs` schema 中，不能污染通用契约。
 
-约束在提交与执行计划中使用两个不同的 Pydantic 边界：LLM Planner 提交
+所有 Durable Workflow 使用同一个 Plan-and-Execute 入口。`WorkflowService.submit()` 只持久化
+submission，并创建 version 1 bootstrap Plan：该 Plan 仅包含一个 `kind=plan` 的 planner
+work item，Workflow 进入 `phase=planning`。首个后台 quantum 通过
+`AgentGraphRuntime.run_work_item()` 运行主 Agent planner，要求严格的 `WorkflowPlanProposal`；
+Definition 再将 proposal 的 workstreams 和 constraint proposals 领域化为 version 2
+`WorkflowPlanVersion`，经过 DAG、引用、保留 ID/kind 和验证者拓扑 admission 后才进入执行。
+因此第一次 `llm.chat` 就是真实 planner 运行，不存在 submission 阶段的第二套规则 planner
+或预先由模型填写执行 DAG 的兼容路径。
+
+约束在 planner proposal 与获准执行 Plan 中使用两个不同的 Pydantic 边界：LLM Planner 生成
 `WorkflowConstraintProposal`，可以在完整 DAG 尚不存在时省略 `verifier_work_item_id`；Definition 生成
 具体 work items 后，只依据 owner 与依赖拓扑确定性选择共同下游 verifier，并构造严格的
 `WorkflowConstraintBinding`。required binding 无法补全 verifier 时在 Plan admission 失败，不能进入
 持久执行。该过程不读取约束正文关键词，也不削弱 owner 引用、唯一性和拓扑校验。
 
-`initial_workstreams` 是兼容提交路径可携带的可执行 DAG，不是仅供展示的说明文本。每项同时持有
-内部执行 `objective`、依赖/验收约束和用户可见 `display_title`；`display_title` 与旧
-`TaskPlan.steps` 使用同一个 `PlanDisplayTitle` 长度及内容契约。显式 Deep Research 使用
-`planning_mode=runtime`，definition 只创建一个“正在制定研究计划”的 planner item；planner 的严格
-JSON 输出通过 schema 与 DAG admission 后成为下一版 plan。Workflow status facade 从已持久化的当前
-plan 和 item 状态生成统一 `progress`，入口不得依据事件名称、用户原文或额外 LLM 调用虚构进度。
-Runtime 与 progress facade 复用同一个确定性 ready-item 选择器，保证产品显示的“当前步骤”就是下一次
-实际执行的步骤，而不是 plan 数组中碰巧靠前的另一个并行根节点。
+获准 work item 同时持有内部执行 `objective`、依赖/验收约束和用户可见
+`display_title`。Workflow status facade 从已持久化的当前 Plan 和 item 状态生成统一
+`progress`，入口不得依据事件名称、用户原文或额外 LLM 调用虚构进度。Runtime 与
+progress facade 复用同一个确定性 ready-item 选择器，依赖无关的根可形成 fan-out，
+下游验证或 synthesize 节点只在依赖满足后就绪；验证器返回受限 repair 目标时，controller
+以新 Plan version 做局部返工，而不重启整个 Workflow。
 
 Tool 从 `ToolExecutor` 注入的 `request_identity`、`run_id` 和同一 `WorkflowService` binding 构造
 owner-bound submission；模型不能提交 owner、lease、revision、worker 或 Store。成功 observation 只
@@ -370,7 +378,7 @@ owner-bound submission；模型不能提交 owner、lease、revision、worker �
 
 提交成功的异步 Tool 可返回受信 `ToolTurnHandoff`。assistant loop 将其作为本轮确定性终态，保留
 `output_ref` 并停止第二次 Provider 调用；模型不会在提交后再生成一份与持久化 plan 可能不一致的
-“计划说明”。`workflow_submit` 和旧 `task_plan_submit` 都遵守该终止语义。
+“计划说明”。`workflow_submit` 遵守该终止语义；DurableTask 不再注册模型可见的 plan submit Tool。
 
 ## 5. 单轮暴露与 Provider 转换
 
@@ -471,14 +479,13 @@ Gateway 不按 Tool name 或 Provider 错误码改写运行终态。
   Tool 等机器契约。Skill 不注册业务实现，CapabilityGrant 也只在既有结构化资格内动态扩展当前
   catalog，不能绕过校验和执行。Skill 正文与 reference 的加载、上下文权威和渐进披露见
   `docs/context_engineering_status.md`。
-- **Durable task**：只通过可信 task mode、ready step、binding 和幂等输入收窄或约束执行；
-  worker 调用仍走统一工具链。任务恢复、lease、notification 和 checkpoint 属于 durable/runtime
-  权威，不由通用 Executor 代管。它是早期 Plan-and-Execute 实现；当前仍保留 schedule、external
-  event、notification 和既有 `/tasks` 兼容能力，但 plan item 的用户可见标题、API `progress` 结构
-  和异步提交终止语义已与 Workflow 对齐。新增通用长流程能力应进入 Workflow definition，不再扩张
-  第二套计划/进度协议。
-- **Durable Workflow**：显式 Deep Research 由 Runtime 薄启动，`workflow_submit` 继续负责其他兼容
-  admission/creation 路径；独立
+- **Durable task**：只保留 schedule、external event、notification 和相应 checkpoint/lease 的
+  执行底座；可信 ready step 的工具调用仍走统一治理链。它不再向主 LLM 暴露 plan submit
+  Tool，也不拥有第二个面向模型的顶层 Planner。新增长流程、DAG、局部返工和进度协议必须
+  进入 Durable Workflow，不再扩张 DurableTask 计划模型。
+- **Durable Workflow**：它是新增长流程的唯一 DAG/Plan-and-Execute authority。显式 Deep
+  Research 由 Runtime 薄启动；普通 assistant loop 可以通过 `workflow_submit` 提交其他获准
+  Workflow type。两条入口都只持久化意图字段，然后进入同一 planning 状态与 bootstrap Plan。
   `DurableWorkflowWorker -> WorkflowRuntime` 每个 quantum 最多提交一个 work item 结果或一个局部
   plan revision。首个 planner item 与语义 worker item 都通过 `AgentGraphRuntime.run_work_item()` 回到
   同一 assistant loop；executor port 将 `planner_runtime` 与 `agent_runtime` 分开注入，默认可复用同一
@@ -489,11 +496,12 @@ Gateway 不按 Tool name 或 Provider 错误码改写运行终态。
   `deep_research` work item 固定使用空本地 Tool allowlist；联网由 Qwen/Bailian Chat Completions 的
   Provider-native 搜索完成，不注册或调用本地 `web_search`/`web_fetch`，也不会绕过 Tool 治理链。
   Workflow 级约束使用 `constraint_bindings` 显式声明 `constraint_id/statement/owner_work_item_ids/
-  verifier_work_item_id/severity`。Submission 中它是可补全 proposal；Definition 在 DAG 完成后优先选择
+  verifier_work_item_id/severity`。Planner proposal 中它是可补全责任提案；Definition 在 DAG 完成后优先选择
   位于所有 owner 下游的 `verify` item，其次选择共同下游终端 item，再构造成 admitted binding。Plan
   admission 校验 required verifier、引用、唯一性以及 verifier 必须等于或位于所有 owner 的下游。每个
   worker 只接收绑定给自身 owner/verifier 角色的 `assigned_constraints` 以及自己的
-  `acceptance_contract`；prompt renderer 不再用自然语言规则推断全局约束属于哪个阶段。未提供结构化
+  `acceptance_contract`；definition-owned 全局 inputs 只供 planner/materialize 使用，worker 只保留
+  结构化恢复用 `user_inputs`。prompt renderer 不再用自然语言规则推断全局约束属于哪个阶段。未提供结构化
   binding 的兼容 prose constraint 会确定性绑定给 DAG 终端 item，由终端 item 同时承担验证，不按约束
   文本关键词选择步骤。Deep Research definition 则从结构化 `source_target` 生成证据收集与最终引用两个
   独立 binding。被指定为 verifier 的 work item 必须返回 `workflow_control.status=verified` 和完整的
@@ -512,10 +520,12 @@ Gateway 不按 Tool name 或 Provider 错误码改写运行终态。
   `waiting_input` 的恢复值由 identity-scoped Workflow facade 持久化并传入后续 work-item request；
   Provider 技术性截断、错误、拒绝或空终态映射为 retry/failure，不得作为成功结果写 artifact。
   Deep Research 启动时持久化 ingress trace ID；每次 planner/worker commit
-  再持久化 attempt 起止时间和实际 Assistant canonical trace/run 身份。可观测层把提交、Workflow 与各
-  work-item 的 `agent.runtime` 导出到同一个 `deep_research.workflow` trace，并把 work-item Agent 挂在
-  对应 attempt chain 下。canonical Assistant trace 身份保持不变；不再生成额外的前台
-  `assistant.turn` 或后台孤立 trace，也不虚构 Provider-native 搜索的内部步骤。该投影只读取成功提交的
+  再持久化 attempt 起止时间和实际 Assistant canonical trace/run 身份。可观测层将每个由 Agent
+  执行的 attempt 直接投影为对应 `display_title` 命名的 agent observation，并复用 durable
+  attempt span ID；不额外展示 attempt chain 或其下嵌套的通用 `agent.runtime`。该 observation 的
+  memory/ReAct/context/`llm.chat`/Tool/response 子树仍来自同一个标准 assistant loop。canonical
+  Assistant trace 身份保持不变；不生成额外的前台 `assistant.turn`、后台孤立 trace 或
+  `workflow.start`，也不虚构 Provider-native 搜索的内部步骤。该投影只读取成功提交的
   Store 事件且必须 fail-open；缺少完整 ingress trace context 时不阻止 Workflow 提交。
   每次 work-item run 回传实际 model/tool call 数并在同一 revision commit 中扣减预算；后续 quantum
   在 model、workflow quantum 或 deadline 耗尽时终止。Tool 预算为零时不再暴露 Tool，剩余预算同时

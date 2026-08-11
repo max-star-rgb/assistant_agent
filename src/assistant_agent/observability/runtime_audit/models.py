@@ -14,6 +14,7 @@ from assistant_agent.providers.provider_errors import (
     sanitize_error_detail,
     sanitize_error_message,
 )
+from assistant_agent.observability.trace_ledger import LedgerPartitionSnapshot
 
 
 AuditCategory = Literal["coverage", "infrastructure", "quality", "memory", "tool"]
@@ -188,6 +189,7 @@ class RuntimeAuditBundle(BaseModel):
     coverage: AuditCoverage
     traces: list[LangfuseTraceSnapshot] = Field(default_factory=list)
     local_manifests: list[LocalTraceManifest] = Field(default_factory=list)
+    local_ledger_partitions: list[LedgerPartitionSnapshot] = Field(default_factory=list)
     local_fallbacks: list[LocalTraceFallback] = Field(default_factory=list)
     local_auxiliary_summary: LocalAuxiliarySummary = Field(
         default_factory=LocalAuxiliarySummary

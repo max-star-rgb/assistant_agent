@@ -12,17 +12,19 @@ from typing import Any
 from assistant_agent.runtime.hooks import HookManager, HookTraceStore
 from assistant_agent.observability.langfuse_scores import create_langfuse_score_trace_observer_from_env
 from assistant_agent.observability.otel_exporter import create_text_otel_trace_observer_from_env
+from assistant_agent.observability.trace_ledger import (
+    DailyTraceLedgerStore,
+)
 from assistant_agent.providers.provider_errors import sanitize_error_message
 from assistant_agent.observability.trace_store import (
     CompositeTraceStore,
     InMemoryTraceStore,
-    JsonlTraceStore,
     TraceEvent,
     TraceStore,
 )
 
 
-DEFAULT_TRACE_PATH = Path(".data/graph_trace.jsonl")
+DEFAULT_TRACE_PATH = Path(".data/trace_ledger")
 DEFAULT_TRACE_QUEUE_CAPACITY = 4096
 DEFAULT_TRACE_CLOSE_TIMEOUT_SECONDS = 1.0
 
@@ -195,7 +197,7 @@ def create_server_trace_store(
     path: Path | str = DEFAULT_TRACE_PATH,
     capacity: int = DEFAULT_TRACE_QUEUE_CAPACITY,
 ) -> CompositeTraceStore:
-    """Create immediate in-memory reads with background JSONL persistence."""
+    """Create immediate reads with background completeness-ledger persistence."""
 
     return _create_runtime_trace_store(
         path=path,
@@ -234,7 +236,7 @@ def _create_runtime_trace_store(
         )
 
     primary = InMemoryTraceStore()
-    secondary = BufferedJsonlTraceStore(JsonlTraceStore(path), capacity=capacity)
+    secondary = BufferedJsonlTraceStore(DailyTraceLedgerStore(path), capacity=capacity)
     secondaries: list[TraceStore] = [secondary]
     if otel_observer is not None:
         secondaries.append(HookTraceStore(HookManager([otel_observer])))

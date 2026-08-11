@@ -556,6 +556,7 @@ class TextOtelTraceObserver:
         ] = {}
         self._runtime_root_span_id_by_run: dict[str, str] = {}
         self._projection_required_run_ids: set[str] = set()
+        self._suppressed_run_ids: set[str] = set()
         self._errors: list[str] = []
         self._exported_run_count = 0
         self._dropped_run_count = 0
@@ -613,6 +614,8 @@ class TextOtelTraceObserver:
     def _export_late_event(self, event: TraceEvent) -> None:
         try:
             with self._lock:
+                if event.run_id in self._suppressed_run_ids:
+                    return
                 projection_context = self._projection_context_by_run.get(
                     event.run_id
                 )
@@ -726,6 +729,10 @@ class TextOtelTraceObserver:
                 conversation=conversation,
                 memory_content=memory_content,
             )
+            if not spans:
+                with self._lock:
+                    self._suppressed_run_ids.add(events[0].run_id)
+                return
             if spans:
                 accepted = self.exporter.export(spans)
                 if accepted is False:

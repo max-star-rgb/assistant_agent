@@ -166,7 +166,6 @@ class OfflineMCPServer:
             "agent_run",
             {
                 "status": state.status,
-                "intent": state.intent.intent if state.intent else None,
                 "response_text": response.message if response else "",
                 "tool_sequence": [call.tool_name for call in state.tool_calls],
                 "run_id": state.run_id,

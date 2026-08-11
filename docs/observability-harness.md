@@ -55,7 +55,7 @@ Observability 是运行时行为的只读投影，不是另一套执行状态机
 
 默认本地文件包括：
 
-- `.data/graph_trace.jsonl`：canonical Assistant trace 的后台持久化副本；
+- `.data/trace_ledger/YYYY-MM-DD.jsonl`：按北京时间自然日分片的最小 trace 完整性账本；
 - `.data/gateway_events.jsonl`：prompt-safe Gateway lifecycle；
 - `.data/agent_service_delivery.jsonl`：Agent-Service delivery audit；
 - `.data/logs/gateway.log`：Gateway lifecycle 的兼容文本投影。
@@ -242,16 +242,30 @@ Qwen WebSocket 还输出 `jpeg_prepare_latency_ms`、`connection_setup_latency_m
 
 ### Canonical trace persistence
 
-本地 server 使用 `CompositeTraceStore`：进程内 `InMemoryTraceStore` 是即时 primary，后台
-`BufferedJsonlTraceStore` 把事件写入 `.data/graph_trace.jsonl`。后台队列有界：队列满、关闭中写入或
-secondary 异常会记录 drop/error 状态，但不阻塞业务 response。shutdown 只做有时限的 flush。
+本地 server 使用 `CompositeTraceStore`：进程内 `InMemoryTraceStore` 是即时 canonical primary，后台
+`BufferedJsonlTraceStore` 把最小完整性记录写入 `.data/trace_ledger/YYYY-MM-DD.jsonl`。账本只保留
+trace/run、node、event type/canonical event、status、error code、时间和完整性 digest；不保留
+user/session、Provider/Tool 正文、input/output summary、span attributes 或 content overlay。后台队列
+有界：队列满、关闭中写入或 secondary 异常会记录 drop/error 状态，但不阻塞业务 response。shutdown
+只做有时限的 flush。保留的字符串字段只接受机器 ID、已登记 node/status、canonical event 命名空间和
+结构化 error code；新增事件词汇必须先扩展该 allowlist，不能把自由文本复用到这些字段。
 
 因此：
 
 - 进程内查询可能看到尚未落盘的事件；
 - 进程崩溃、队列丢弃或 flush 超时可能产生部分 JSONL；
-- JSONL 缺事件不能单独证明运行时没有发出该事件；
+- ledger 缺事件不能单独证明运行时没有发出该事件；
 - persistence、OTel export 和 Langfuse score observer 都是 secondary，失败必须 fail-open。
+
+日审计成功发布后执行 ledger retention：默认保留 14 天，并且只有对应日期已经有成功审计证明时才删除
+过期分片；审计失败、尚未审计或仍处于 TTL 内的分片不得删除。成功审计 bundle 记录目标分片的
+fingerprint 和 valid/invalid count；清理在与 writer 共享的文件锁内重新核对 fingerprint，只删除无
+invalid record 且内容仍与审计快照完全一致的分片。后续日审计会读取历史成功 bundle 中的快照，使首次
+审计时仍在 TTL 内的分片到期后能够清理；迟到 append 或替换会使该分片继续保留。
+`--local-ledger-retention-days` 可以调整正整数 TTL。清理失败保持 fail-open，不反转已经成功的审计或
+Agent 结果。旧
+`.data/graph_trace.jsonl` 不再由 Runtime 写入；runtime audit collector 仍兼容读取该单文件，供迁移期
+历史证据使用。
 
 ### Gateway operational logging
 
@@ -290,9 +304,10 @@ Provider protocol capture。overlay 写入失败时 canonical event 仍须保留
 
 `build_text_otel_span_specs()` 将 redacted canonical events 投影为依赖无关的 OTel span plan：
 
-- standard Assistant turn 的根 span 为 `agent.runtime`，Langfuse trace 名为 `assistant.turn`；
-- Deep Research 的 trace 根 observation 为 durable `deep_research.workflow`；前台薄启动 observation
-  为其子节点 `workflow.start`，不再伪装成一次提交 Tool 的 `assistant.submit`；
+- standard Assistant turn 的根 span 为 `agent.runtime`，Langfuse trace 名为 `assistant.turn`；这一投影保持
+  原样，包含 memory recall、ReAct iteration、context、`llm.chat`、Tool、response 和交付/后台记忆子树；
+- Deep Research 的唯一 trace 根 observation 是 durable `deep_research.workflow`；前台薄启动 run
+  不导出 `workflow.start`、`assistant.submit` 或另一个 `assistant.turn`；
 - 后台实时 VLM 每次 observation 使用独立 run/trace，以 prompt-safe
   `vision.observation.summary` 闭合；根 span 为 `vision.runtime`，Langfuse trace 名为
   `vision.observation`，不能伪装成没有用户 turn 的 `assistant.turn`；
@@ -321,18 +336,55 @@ Deep Research 从前台提交到 durable terminal 使用同一个 `deep_research
 的开源模式：
 入口把可信 `trace_id` 持久化到 Workflow record，planner/worker 恢复后继续把 Workflow 与 work-item
 observation 导出到该 trace，不依赖原进程中的 ContextVar 存活。
-已提交的 `workflow.plan.*`、work-item 终态/重试/返工事件和 Workflow terminal 事实投影出 Workflow
-`agent`、Plan `chain` 和 work-item `chain`；每次 work-item 的 `agent.runtime`、context、真实
-`llm.chat` 与 Tool observation 以对应 attempt chain 为 parent。
+已提交的 `workflow.plan.created/revised` 投影为 `workflow.plan`；它是 planner 结果通过
+Definition materialize/admission 后的事件/状态 commit，不是第二次规划 Agent 运行。work-item
+终态、重试、返工和 Workflow terminal 仍由已提交的 Store 事实驱动投影。Planner 的结构化响应解析与
+Definition materialize/admission 在该 bounded Agent run 写入 terminal canonical event 之前完成；因此
+非法 proposal 会直接把同一个“正在制定研究计划” observation 标为失败，不会先显示成功再由外层
+Workflow 反向覆盖。
+
+一个典型 Deep Research 在 Langfuse 中的结构是：
+
+```text
+deep_research.workflow                         # durable logical root
+├── 正在制定研究计划                     # agent, role=planner
+│   ├── memory.session_recall                  # 若该 canonical run 实际发生
+│   ├── react.iteration
+│   │   ├── context.compile
+│   │   ├── llm.chat                       # 第一次 LLM 调用生成 proposal
+│   │   ├── action.validation / tool.*     # 按实际调用存在
+│   │   └── tool.observation
+│   └── response.final
+├── workflow.plan                              # admitted Plan 的 event/state commit
+├── 正在研究 Hermes                         # agent, role=worker
+│   └── 与 standard agent runtime 相同的子树
+├── 正在研究 OpenClaw
+│   └── 与 standard agent runtime 相同的子树
+├── 正在生成最终报告
+│   └── 与 standard agent runtime 相同的子树
+└── workflow.completed                        # terminal event；失败/取消同理
+```
+
+对 Agent-backed work item，durable attempt 与 canonical Agent root 在导出层融合为一个
+observation：名称直接使用已持久化的 `display_title`，并复用 attempt span ID。因此界面
+不再展示一层自然语言 attempt chain，也不在其下嵌套 generic `agent.runtime`。非 Agent executor
+缺少 `assistant_run_id` 时仍可以投影独立 work-item chain 以保留真实执行事实，但不得虚构 Agent
+子树。`subagent.runtime` 只保留给未来真正独立委派、拥有自己 runtime 身份的子 Agent；planner
+与默认 worker 只是同一 Plan-and-Execute runtime 的可替换角色，不因角色分开就改名为 subagent。
 
 work-item Assistant run 仍保留自己的 canonical `trace_id/run_id`，用于本地事件查询、恢复和审计；仅
 OTel/Langfuse 的导出 trace identity 被显式投影为 ingress trace identity。work-item span 输出将该值标为
 `assistant_canonical_trace_id`，并只生成当前 Workflow trace 的详情链接，不生成指向不存在的独立子 trace
-链接。`workflow_id/work_item_id/attempt_id` 共同证明投影归属。启动阶段的短回复只结束 Gateway run 和
-`workflow.start` observation，不结束整个 Langfuse trace；Workflow terminal 才写 trace-level 最终输出。
-Workflow root 遵循 OTel span 的 started/terminal 完整性语义，在 durable terminal 时闭合并导出；跨 batch
-传输允许已结束的子 span 先于长生命周期 root 到达。因此运行中的产品进度以持久化 Workflow event/status
-为准，不能为了让 UI 提前出现一个根节点而伪造尚未观察到的 root terminal 时间。
+链接。`workflow_id/work_item_id/attempt_id` 共同证明投影归属。启动阶段的短回复只结束 Gateway run，
+不产生独立的前台 OTel observation；Workflow 接受时立即导出一个名为 `deep_research.workflow` 的不可变
+root anchor，使后续 planner/worker 不会在 Langfuse 中暂时成为孤立节点。root 不伪造长期运行时长或
+terminal 输出，也不在终态用相同 span ID 重发更新；终态事实单独投影为其下的
+`workflow.completed/failed/cancelled` event。该边界遵循
+[Langfuse v4 的 immutable observation 约束](https://langfuse.com/faq/all/tracing-data-updates)，
+运行中产品进度仍以持久化 Workflow event/status 为准。
+Agent-backed attempt 的成功事件不再生成重复 wrapper；`retry_scheduled`、`repair.requested` 和
+`input.required` 则保留为 root 下独立的 Workflow 状态事件，用于解释下一次同名 Agent observation
+为什么再次运行。
 Provider-native 搜索只属于真实
 `llm.chat` generation，不伪造 Provider 未暴露的内部搜索 span。Workflow 投影只观察 Store 已成功提交的
 事件；总览默认只导出 Plan 标题、类型、依赖、状态、计数和 artifact ref，不导出 Workflow/work-item
@@ -386,8 +438,9 @@ target、message、向量和媒体内容不得进入 canonical trace。观测写
 主动 message 发布或连接清理。
 
 Langfuse 的 trace、observation、score 和 Dataset/Experiment 是远端投影与评估记录，也是日常人工查看
-Runtime trace 的主入口。面板如何折叠或展示长 JSON 不属于架构契约；需要核对机器事实时查询 observation
-数据、结构化 trace API，或回到本地 canonical JSONL。
+和历史诊断 Runtime trace 的主入口。面板如何折叠或展示长 JSON 不属于架构契约；需要核对机器事实时
+查询 observation 数据或结构化 trace API。当前进程仍可查询内存 canonical timeline；本地 ledger 只证明
+最小完整性和导出缺口，不能替代 Langfuse 的完整 observation 内容。
 
 Langfuse Experiment 使用共享 Runtime Host 作为装配和资源所有权边界：Host 为每个 item 注入必须可用的
 OTel exporter，把 SDK 当前 task span 转换为 `RuntimeTraceContext`，并按 Runtime 后 trace store 的顺序做
@@ -400,9 +453,9 @@ task output 或 Score 齐全掩盖内部 Trace 缺失。
 
 `scripts/run_runtime_audit.py run` 是只读的日常审计入口。user timer 每天北京时间 00:15
 运行，审计刚结束的前一个自然日（北京时间 00:00 至次日 00:00），而不是最近几小时。它以
-Langfuse Observations v2 聚合出的完整 trace、observation 和 Score 为主证据；本地 `.data/graph_trace.jsonl` 只生成
+Langfuse Observations v2 聚合出的完整 trace、observation 和 Score 为主证据；本地 `.data/trace_ledger/` 只生成
 trace/run、时间、terminal 与 event count 的完整性 manifest。只有 Langfuse 可读但缺少相应 trace
-时，才把有界、redacted 的本地 timeline 作为 fallback evidence；Langfuse 不可读只记录
+时，才把 ledger 中有界的最小事件序列作为 fallback evidence；Langfuse 不可读只记录
 infrastructure unknown，不能把本地记录误报为导出缺失。本地 JSONL 不存在、不可读或只含无效记录时
 必须标记 local completeness unavailable；远端 Trace 非空时仍完成远端审计并在日报限制中公开该缺口。
 Langfuse 查询成功且远端 Trace 为空时，成功记录“昨天无运行trace”，本地缺口只作为限制公开，不调用

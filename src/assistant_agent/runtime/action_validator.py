@@ -15,7 +15,7 @@ from assistant_agent.runtime.output_models import AssistantToolCall
 from assistant_agent.runtime.requests import UserRequest
 from assistant_agent.tools.tool_call_boundary import build_pre_tool_call_summary
 from assistant_agent.tools.ids import (
-    DURABLE_TASK_SUBMISSION_TOOL_NAMES,
+    DURABLE_TASK_CREATION_TOOL_NAMES,
     WORKFLOW_SUBMIT_TOOL_NAME,
 )
 from assistant_agent.tools.base import ToolInputValidationError
@@ -194,7 +194,7 @@ def _validate_task_execution_mode(
     mode = request.task_execution_mode
     binding = request.metadata.get("durable_task_binding")
     if mode == "foreground" and (
-        tool_name in DURABLE_TASK_SUBMISSION_TOOL_NAMES
+        tool_name in DURABLE_TASK_CREATION_TOOL_NAMES
         or tool_name == WORKFLOW_SUBMIT_TOOL_NAME
     ):
         return _reject(
@@ -204,7 +204,7 @@ def _validate_task_execution_mode(
     if (
         mode == "durable"
         and binding is None
-        and tool_name not in DURABLE_TASK_SUBMISSION_TOOL_NAMES
+        and tool_name not in DURABLE_TASK_CREATION_TOOL_NAMES
     ):
         return _reject(
             "durable_plan_required",
@@ -213,7 +213,7 @@ def _validate_task_execution_mode(
     if (
         mode != "durable"
         or binding is None
-        or tool_name in DURABLE_TASK_SUBMISSION_TOOL_NAMES
+        or tool_name in DURABLE_TASK_CREATION_TOOL_NAMES
     ):
         return None
     try:

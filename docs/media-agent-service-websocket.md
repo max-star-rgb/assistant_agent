@@ -1084,7 +1084,7 @@ pytest。只有同时选择 real provider mode、显式配置 Qwen vision provid
 
 `scripts/run_server.py` 默认启用非阻塞 trace 持久化。收到安全日志中的 `trace_id` 后，先在 Langfuse
 中按该 ID 查看 `assistant.turn` 的 observation、status 和 latency；若远端缺失，再按同一 ID 检索
-`.data/graph_trace.jsonl`、`.data/gateway_events.jsonl` 和 `.data/agent_service_delivery.jsonl`。
+`.data/trace_ledger/*.jsonl`、`.data/gateway_events.jsonl` 和 `.data/agent_service_delivery.jsonl`。
 入口与 Assistant Runtime 共享同一个 `run_id`，LLM/工具事件使用该 `run_id` 与独立 `trace_id` 关联。
 最大关键路径阶段是本轮 bottleneck，常见慢点映射如下：
 
@@ -1113,7 +1113,7 @@ Provider 调用会体现在 `tool_execute[media_inspect]`；Agent-Service 动态
 `videoResponse(code=0)` 仍仅是帧校验、
 解码、注册与调度成功的证据，不是 MLLM 完成证据。
 
-默认日志、trace、`.data/graph_trace.jsonl` 和 delivery audit 均不含对话正文。
+默认日志、trace、`.data/trace_ledger/*.jsonl` 和 delivery audit 均不含对话正文。
 确需确认分析的是哪一轮时，只能在本机调试进程显式开启正文查询，再从 loopback 结构化接口读取：
 
 ```bash

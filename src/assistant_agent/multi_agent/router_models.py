@@ -128,6 +128,5 @@ class AgentRouteRequest(UserRequest):
             image_ids=list(self.image_ids),
             video_ids=list(self.video_ids),
             audio_id=self.audio_id,
-            execution_strategy=self.execution_strategy,
             metadata=dict(self.metadata if metadata is None else metadata),
         )

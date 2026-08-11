@@ -8,12 +8,19 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from threading import RLock
 
-from assistant_agent.workflows.models import WorkflowBundle, WorkflowEvent, WorkflowLease, utc_now
+from assistant_agent.workflows.models import (
+    ClaimedWorkflowWorkItem,
+    WorkflowBundle,
+    WorkflowEvent,
+    WorkflowLease,
+    utc_now,
+)
 from assistant_agent.workflows.store import (
     WorkflowAlreadyExists,
     WorkflowLeaseConflict,
     WorkflowRevisionConflict,
     assign_event_cursors,
+    claim_ready_item_in_bundle,
 )
 
 
@@ -165,6 +172,78 @@ class SQLiteWorkflowStore:
     def latest_event_cursor(self, workflow_id: str) -> int:
         with self._lock:
             return self._last_cursor(workflow_id)
+
+    def claim_ready_work_item(
+        self,
+        *,
+        worker_id: str,
+        now: datetime,
+        lease_seconds: int,
+        model_call_limit: int,
+        tool_call_limit: int,
+    ) -> ClaimedWorkflowWorkItem | None:
+        with self._lock:
+            try:
+                self._connection.execute("BEGIN IMMEDIATE")
+                rows = self._connection.execute(
+                    """
+                    SELECT bundle_json FROM durable_workflows
+                    WHERE status IN ('queued', 'running', 'recovering')
+                    ORDER BY updated_at, workflow_id
+                    """
+                ).fetchall()
+                for row in rows:
+                    bundle = WorkflowBundle.model_validate_json(row[0])
+                    workflow = bundle.workflow
+                    previous_revision = workflow.revision
+                    lease, events = claim_ready_item_in_bundle(
+                        bundle,
+                        worker_id=worker_id,
+                        now=now,
+                        lease_seconds=lease_seconds,
+                        model_call_limit=model_call_limit,
+                        tool_call_limit=tool_call_limit,
+                    )
+                    if not events:
+                        continue
+                    workflow.revision = previous_revision + 1
+                    workflow.updated_at = now
+                    updated = self._connection.execute(
+                        """
+                        UPDATE durable_workflows
+                        SET status=?, revision=?, cancel_requested=?, lease_owner=?,
+                            lease_token=?, lease_expires_at=?, bundle_json=?, updated_at=?
+                        WHERE workflow_id=? AND revision=?
+                        """,
+                        self._update_values(bundle) + (
+                            workflow.workflow_id,
+                            previous_revision,
+                        ),
+                    )
+                    if updated.rowcount != 1:
+                        raise WorkflowRevisionConflict(workflow.workflow_id)
+                    last_cursor = self._last_cursor(workflow.workflow_id)
+                    committed = assign_event_cursors(
+                        workflow.workflow_id,
+                        events,
+                        start=last_cursor + 1,
+                    )
+                    self._insert_events(committed)
+                    if lease is not None:
+                        lease = lease.model_copy(
+                            update={"workflow_revision": workflow.revision}
+                        )
+                        self._connection.commit()
+                        return ClaimedWorkflowWorkItem(
+                            lease=lease,
+                            bundle=bundle.model_copy(deep=True),
+                            committed_events=committed,
+                        )
+                self._connection.commit()
+                return None
+            except Exception:
+                self._connection.rollback()
+                raise
 
     def claim_next(
         self, *, worker_id: str, now: datetime, lease_seconds: int

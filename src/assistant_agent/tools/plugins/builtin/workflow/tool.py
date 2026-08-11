@@ -34,12 +34,9 @@ class WorkflowSubmitTool(ToolBase):
         self.description = (
             f"{type(self).description} 当前已注册 workflow_type: "
             f"{registered_types}。根据用户目标选择最合适的类型，不要虚构类型。"
-            "提交前先规划可执行 DAG 并填写 initial_workstreams；每个 workstream 的 "
-            "display_title 是后续向用户展示的真实进度，应具体、简短且与 objective 一致。"
-            "全局约束使用 constraint_bindings 显式绑定 owner_work_item_ids、"
-            "verifier_work_item_id 和 severity；若提交时无法可靠确定 verifier，可省略该字段，"
-            "Workflow Definition 会在完整 DAG 生成后按拓扑补全。不要依赖约束正文推断步骤责任。"
-            "仅当任务确实无法合理预拆解时才省略 initial_workstreams，由 definition 使用兜底计划。"
+            "只提交目标、交付物、约束、输入、预算、持久化原因和已有制品等意图数据；"
+            "Durable Workflow 会先运行 planner 生成 DAG、步骤验收契约、用户可见进度标题"
+            "和约束责任绑定，再执行获准计划。"
         )
 
     def _run(self, input: WorkflowSubmission, context: ToolContext) -> ToolResult:

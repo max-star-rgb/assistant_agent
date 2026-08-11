@@ -10,9 +10,7 @@ from assistant_agent.workflows.definitions import (
     WorkflowDefinitionDescriptor,
 )
 from assistant_agent.workflows.models import (
-    WorkflowPlanVersion,
     WorkflowSubmission,
-    WorkflowWorkItem,
 )
 from assistant_agent.workflows.service import (
     WorkflowAccessDenied,
@@ -32,27 +30,6 @@ class ProbeDefinition:
     def validate_submission(self, submission: WorkflowSubmission) -> None:
         if submission.inputs.get("reject") is True:
             raise ValueError("probe submission rejected")
-
-    def build_initial_plan(
-        self,
-        *,
-        workflow_id: str,
-        submission: WorkflowSubmission,
-    ) -> WorkflowPlanVersion:
-        return WorkflowPlanVersion(
-            workflow_id=workflow_id,
-            version=1,
-            definition_version=self.descriptor.definition_version,
-            revision_reason="initial",
-            work_items=[
-                WorkflowWorkItem(
-                    work_item_id="probe-step",
-                    kind="probe",
-                    objective=submission.objective,
-                )
-            ],
-        )
-
 
 def _submission(**updates) -> WorkflowSubmission:
     values = {
@@ -89,7 +66,7 @@ def _identity(*, agent_id: str = "agent-sentinel") -> RequestIdentity:
     )
 
 
-def test_submission_is_generic_and_initial_plan_root_becomes_ready() -> None:
+def test_submission_is_generic_and_bootstrap_planner_becomes_ready() -> None:
     service = _service(InMemoryWorkflowStore())
 
     bundle = service.submit(
@@ -99,6 +76,8 @@ def test_submission_is_generic_and_initial_plan_root_becomes_ready() -> None:
     )
 
     assert bundle.workflow.status == "queued"
+    assert bundle.workflow.phase == "planning"
+    assert bundle.current_plan.work_items[0].kind == "plan"
     assert bundle.plans[0].work_items[0].status == "ready"
     assert bundle.workflow.budget.model_calls_remaining == 4
 

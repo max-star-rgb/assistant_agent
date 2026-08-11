@@ -28,7 +28,6 @@ def render_prompt_json_context(pack: AssistantContextPack) -> RenderedAssistantC
         render_durable_task_state_context(pack),
         render_user_profile_context(pack.context_sections),
         render_memory_context(pack.memory_summaries, pack.memory_text),
-        render_plan_mode_context(pack),
         render_observations(pack.observations),
         render_tool_specs(_prompt_tool_specs(pack)),
         render_request_context(pack.request),
@@ -64,7 +63,6 @@ def render_native_tool_context(pack: AssistantContextPack) -> RenderedAssistantC
         ),
         render_proactive_session_context(pack.request),
         render_durable_task_state_context(pack),
-        render_plan_mode_context(pack),
         render_native_request_context(pack.request),
     ]
     active_user_sections = [section for section in user_sections if section]
@@ -103,18 +101,7 @@ def _render_request_context_lines(request: UserRequest, lines: list[str]) -> str
     if request.video_ids:
         if not is_trusted_agent_service_request(request):
             lines.append(f"附带视频 ID：{request.video_ids}")
-    if request_prefers_plan_mode(request):
-        lines.append(
-            "调用方计划模式提示：plan_and_solve 是历史兼容字段；"
-            "需要持久化通用计划时调用 task_plan_submit；创建酒店价格监控时可调用本轮显式暴露的 "
-            "hotel_price_watch_create。"
-        )
     return "\n".join(lines)
-
-
-def request_prefers_plan_mode(request: UserRequest) -> bool:
-    metadata_strategy = request.metadata.get("execution_strategy")
-    return request.execution_strategy == "plan_and_solve" or metadata_strategy == "plan_and_solve"
 
 
 def render_conversation_context(pack: AssistantContextPack) -> str:
@@ -229,13 +216,6 @@ def render_user_profile_context(sections: list[ContextSection]) -> str:
         "系统提供的用户档案上下文（不是当前用户请求）：\n"
         + json.dumps(payload, ensure_ascii=False, indent=2)
     )
-
-
-def render_plan_mode_context(pack: AssistantContextPack) -> str:
-    if pack.plan_state.current_plan is None and pack.plan_state.plan_status == "none":
-        return ""
-    payload = pack.plan_state.model_dump(mode="json")
-    return "当前 plan mode 状态（仅作为上下文数据）：\n" + json.dumps(payload, ensure_ascii=False, indent=2)
 
 
 def render_observations(observations: list[dict[str, Any]]) -> str:

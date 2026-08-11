@@ -69,7 +69,6 @@ class DurableTaskService:
         store: TaskStore,
         registry: ToolRegistry,
         max_plan_steps: int = 8,
-        max_plan_revisions: int = 2,
         max_tool_calls: int = 32,
         max_model_calls: int = 40,
         max_workflow_quanta: int = 1_000,
@@ -81,7 +80,6 @@ class DurableTaskService:
         self.store = store
         self.registry = registry
         self.plan_validator = PlanValidator(max_steps=max_plan_steps)
-        self.max_plan_revisions = max_plan_revisions
         self.max_tool_calls = max_tool_calls
         self.max_model_calls = max_model_calls
         self.max_workflow_quanta = max_workflow_quanta
@@ -135,7 +133,6 @@ class DurableTaskService:
                 "tool_calls": self.max_tool_calls,
                 "model_calls": self.max_model_calls,
                 "workflow_quanta": self.max_workflow_quanta,
-                "plan_revisions": self.max_plan_revisions,
                 "deadline_epoch_s": deadline_epoch_s,
             },
             created_at=now,
@@ -163,73 +160,6 @@ class DurableTaskService:
                     record.status,
                     {"plan_version": 1, "step_count": len(plan.steps)},
                 ),
-            ],
-        )
-
-    def revise_plan(
-        self,
-        *,
-        binding: TrustedTaskBinding,
-        plan: TaskPlan,
-        revision_reason: str,
-    ) -> DurableTaskBundle:
-        self._validate_plan(plan)
-        bundle = self._bound_bundle(binding)
-        if len(bundle.plans) - 1 >= self.max_plan_revisions:
-            raise TaskConflict("plan revision limit reached")
-        previous = self._current_plan(bundle)
-        completed = {
-            run.step_id: run
-            for run in bundle.step_runs
-            if run.plan_version == previous.plan_version and run.status == "succeeded"
-        }
-        previous_steps = {step.step_id: step for step in previous.plan.steps}
-        inherited = [
-            step.step_id
-            for step in plan.steps
-            if step.step_id in completed
-            and completed[step.step_id].tool_name == step.tool_name
-            and previous.plan.goal == plan.goal
-            and previous_steps.get(step.step_id) == step
-        ]
-        next_version = bundle.task.current_plan_version + 1
-        plan_version = TaskPlanVersion(
-            task_id=bundle.task.task_id,
-            plan_version=next_version,
-            plan=plan,
-            revision_reason=revision_reason,
-            inherited_step_ids=inherited,
-            replaced_step_ids=[
-                step.step_id for step in previous.plan.steps if step.step_id not in inherited
-            ],
-        )
-        bundle.plans.append(plan_version)
-        new_runs = self._new_step_runs(bundle.task.task_id, plan_version)
-        for run in new_runs:
-            if run.step_id in inherited:
-                prior = completed[run.step_id]
-                run.status = "succeeded"
-                run.output_ref = prior.output_ref
-                run.summary = prior.summary
-        bundle.step_runs.extend(new_runs)
-        bundle.task.current_plan_version = next_version
-        bundle.task.objective = plan.goal
-        bundle.task.remaining_budget["plan_revisions"] = max(
-            0,
-            int(bundle.task.remaining_budget.get("plan_revisions", 0)) - 1,
-        )
-        bundle.task.status = "waiting_input" if plan.requires_followup else "running"
-        self._refresh_ready_steps(bundle)
-        return self.store.save(
-            bundle,
-            expected_version=binding.task_version,
-            events=[
-                self._event(
-                    bundle,
-                    "plan.revised",
-                    bundle.task.status,
-                    {"plan_version": next_version, "inherited_step_ids": inherited},
-                )
             ],
         )
 
@@ -564,6 +494,9 @@ class DurableTaskService:
         run.status = "running"
         run.attempt += 1
         run.started_at = utc_now()
+        run.finished_at = None
+        run.error_code = None
+        run.error_message = None
         run.tool_input_digest = tool_input_digest
         bundle.task.remaining_budget["tool_calls"] = remaining - 1
         saved = self.store.save(
@@ -638,11 +571,22 @@ class DurableTaskService:
         elif transition.kind == "tool_failed":
             if run is None:
                 raise TaskTransitionRejected("tool failure requires step_id")
-            run.status = "failed"
             run.error_code = transition.error_code
             run.error_message = transition.error_message
-            bundle.task.status = "replanning"
-            event_type = "step.failed"
+            if run.status == "running" and run.attempt < self.max_step_attempts:
+                run.status = "ready"
+                bundle.task.status = "running"
+                event_type = "step.retry_scheduled"
+            else:
+                run.status = "failed"
+                run.finished_at = utc_now()
+                bundle.task.status = "failed"
+                bundle.task.terminal_at = utc_now()
+                bundle.task.lease_owner = None
+                bundle.task.lease_token = None
+                bundle.task.lease_expires_at = None
+                bundle.task.wait = None
+                event_type = "step.failed"
         elif transition.kind == "waiting_schedule":
             wait = transition.wait
             if wait is None:

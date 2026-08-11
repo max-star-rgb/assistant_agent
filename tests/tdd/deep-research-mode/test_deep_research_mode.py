@@ -38,12 +38,11 @@ from assistant_agent.workflows.agent_runtime import (
     AgentWorkItemRequest,
     AgentWorkItemResult,
     parse_work_item_response,
+    render_work_item_prompt,
 )
 from assistant_agent.workflows.artifacts import LocalWorkflowArtifactStore
 from assistant_agent.workflows.context import WorkflowContextCompiler
 from assistant_agent.workflows.execution import AgentRuntimeWorkItemExecutor
-from assistant_agent.workflows.models import WorkflowSubmission
-from assistant_agent.workflows.research.definition import DeepResearchWorkflowDefinition
 from assistant_agent.workflows.runtime import WorkItemAssignment
 from scripts.media_simulator import chat_body, parse_console_command
 
@@ -486,6 +485,8 @@ def test_deep_research_work_items_use_native_search_and_no_local_web_tools(
             "attempt_id": "attempt-sentinel",
             "objective": "research-objective-sentinel",
             "inputs": {
+                "research_questions": ["global-question-sentinel"],
+                "source_target": 15,
                 "user_inputs": [{
                     "resume_token": "resume-sentinel",
                     "values": {"response": "clarification-sentinel"},
@@ -493,10 +494,11 @@ def test_deep_research_work_items_use_native_search_and_no_local_web_tools(
             },
             "model_calls_remaining": 5,
             "tool_calls_remaining": 5,
-            "work_item": {
-                "work_item_id": "collect-sentinel",
-                "kind": "collect_sources",
-                "objective": "collect-sources-sentinel",
+                "work_item": {
+                    "work_item_id": "collect-sentinel",
+                    "kind": "collect_sources",
+                    "display_title": "正在收集 Sentinel 来源",
+                    "objective": "collect-sources-sentinel",
             },
         }
     )
@@ -515,6 +517,12 @@ def test_deep_research_work_items_use_native_search_and_no_local_web_tools(
             "values": {"response": "clarification-sentinel"},
         }]
     }
+    assert "source_target" not in render_work_item_prompt(
+        agent_runtime.requests[0]
+    )
+    assert "global-question-sentinel" not in render_work_item_prompt(
+        agent_runtime.requests[0]
+    )
     artifact_store.close()
 
 
@@ -537,6 +545,7 @@ def _deep_research_work_item_request() -> AgentWorkItemRequest:
         workflow_type="deep_research",
         work_item_id="draft-sentinel",
         attempt_id="attempt-sentinel",
+        display_title="正在撰写 Sentinel 草稿",
         user_id="user-sentinel",
         agent_id="agent-sentinel",
         session_id="session-sentinel",
@@ -664,33 +673,3 @@ def test_context_overflow_work_item_is_not_persisted_as_a_successful_result() ->
 
     assert result.status == "failed"
     assert result.error_code == "provider_error"
-
-
-def test_chat_compatible_research_plan_marks_sources_as_best_effort() -> None:
-    definition = DeepResearchWorkflowDefinition()
-    plan = definition.build_initial_plan(
-        workflow_id="workflow-sentinel",
-        submission=WorkflowSubmission(
-            workflow_type="deep_research",
-            objective="research-objective-sentinel",
-            deliverables=["report-sentinel"],
-            inputs={"source_target": 12},
-            durability_reasons=["multi_stage", "many_sources"],
-            idempotency_key="submission-sentinel",
-        ),
-    )
-    contracts = {
-        item.work_item_id: item.acceptance_contract for item in plan.work_items
-    }
-
-    assert definition.descriptor.definition_version == "3"
-    assert contracts["collect_sources"] == {
-        "target_sources": 12,
-        "source_verification": "best_effort",
-    }
-    assert contracts["extract_evidence"] == {"source_refs": "best_effort"}
-    assert contracts["draft"] == {"citations": "best_effort"}
-    assert contracts["verify"] == {
-        "unresolved_claims_target": 0,
-        "verification": "best_effort",
-    }

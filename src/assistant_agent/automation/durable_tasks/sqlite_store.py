@@ -167,7 +167,7 @@ class SQLiteTaskStore:
                     """
                     SELECT task_id, bundle_json FROM durable_tasks
                     WHERE status IN (
-                      'queued', 'running', 'replanning', 'waiting_schedule'
+                      'queued', 'running', 'waiting_schedule'
                     )
                       AND (
                         status != 'waiting_schedule'

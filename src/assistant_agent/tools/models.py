@@ -21,15 +21,6 @@ def _empty_tool_input_schema() -> dict[str, Any]:
     }
 
 
-class ToolSelection(BaseModel):
-    """A tool chosen by the agent for a planned step."""
-
-    tool_name: str = Field(min_length=1)
-    reason: str = Field(min_length=1)
-    input: dict[str, Any] = Field(default_factory=dict)
-    step_id: str | None = None
-
-
 class ToolTurnHandoff(BaseModel):
     """Trusted Tool-owned terminal handoff for an asynchronously continuing job."""
 

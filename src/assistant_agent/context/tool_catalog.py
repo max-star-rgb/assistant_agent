@@ -15,7 +15,7 @@ from assistant_agent.runtime.capability_grants import (
 from assistant_agent.runtime.requests import UserRequest
 from assistant_agent.tools.models import RunToolCatalog, ToolSpec
 from assistant_agent.tools.ids import (
-    DURABLE_TASK_SUBMISSION_TOOL_NAMES,
+    DURABLE_TASK_CREATION_TOOL_NAMES,
     LOAD_SKILL_TOOL_NAME,
     WORKFLOW_SUBMIT_TOOL_NAME,
 )
@@ -126,7 +126,7 @@ def select_prompt_tool_specs(
         selection_mode = "workflow_work_item_tools"
     elif trusted_durable:
         ready = set(_string_list(request.metadata.get("ready_tool_names")))
-        allowed = ready | set(DURABLE_TASK_SUBMISSION_TOOL_NAMES)
+        allowed = ready | set(DURABLE_TASK_CREATION_TOOL_NAMES)
         available_specs = [
             spec for spec in eligible_specs if spec.name in allowed
         ]

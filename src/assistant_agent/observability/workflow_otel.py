@@ -17,11 +17,7 @@ from assistant_agent.observability.otel_exporter import (
 )
 from assistant_agent.observability.otel_mapping import OtelSpanSpec, langfuse_trace_id
 from assistant_agent.observability.workflow_trace import workflow_root_span_id
-from assistant_agent.workflows.models import (
-    TERMINAL_WORKFLOW_STATUSES,
-    WorkflowBundle,
-    WorkflowEvent,
-)
+from assistant_agent.workflows.models import WorkflowBundle, WorkflowEvent
 
 
 class WorkflowCommitObserver(Protocol):
@@ -85,7 +81,7 @@ def build_workflow_otel_span_specs(
     """Map committed plan, attempt, and terminal facts to one overview trace."""
 
     workflow = bundle.workflow
-    export_trace_id = workflow.ingress_trace_id or workflow.workflow_id
+    export_trace_id = _workflow_export_trace_id(bundle)
     root_span_id = workflow_root_span_id(export_trace_id)
     common = {
         "langfuse.trace.name": f"{workflow.workflow_type}.workflow",
@@ -98,64 +94,138 @@ def build_workflow_otel_span_specs(
     }
     spans: list[OtelSpanSpec] = []
     for event in events:
+        if event.event_type == "workflow.accepted":
+            spans.append(_root_span(bundle, event, root_span_id, common))
         if event.event_type in {"workflow.plan.created", "workflow.plan.revised"}:
             spans.append(_plan_span(bundle, event, root_span_id, common))
         if _is_work_item_event(event):
-            spans.append(_work_item_span(bundle, event, root_span_id, common))
-    if workflow.status in TERMINAL_WORKFLOW_STATUSES:
-        terminal_at = workflow.terminal_at or workflow.updated_at
-        spans.insert(
-            0,
-            OtelSpanSpec(
-                trace_id=export_trace_id,
-                span_id=root_span_id,
-                parent_span_id=workflow.ingress_parent_span_id,
-                name=f"{workflow.workflow_type}.workflow",
-                start_time=workflow.created_at,
-                end_time=terminal_at,
-                status="ok" if workflow.status == "completed" else "error",
-                attributes={
-                    **common,
-                    "langfuse.observation.type": "agent",
-                    "assistant_agent.canonical_event": "workflow.runtime",
-                    "assistant_agent.terminal_status": workflow.status,
-                    "langfuse.observation.input": _json_value(
-                        {
-                            "workflow_type": workflow.workflow_type,
-                            "deliverable_count": len(workflow.deliverables),
-                            "constraint_count": len(workflow.constraints),
-                        }
-                    ),
-                    "langfuse.observation.output": _json_value(
-                        {
-                            "status": workflow.status,
-                            "terminal_reason_code": workflow.terminal_reason_code,
-                            "result_artifact_refs": workflow.result_artifact_refs,
-                        }
-                    ),
-                    **(
-                        {}
-                        if workflow.ingress_trace_id is not None
-                        else {
-                            "langfuse.trace.input": _json_value(
-                                {
-                                    "workflow_type": workflow.workflow_type,
-                                    "deliverable_count": len(workflow.deliverables),
-                                    "constraint_count": len(workflow.constraints),
-                                }
-                            )
-                        }
-                    ),
-                    "langfuse.trace.output": _json_value(
-                        {
-                            "status": workflow.status,
-                            "result_artifact_refs": workflow.result_artifact_refs,
-                        }
-                    ),
-                },
-            ),
-        )
+            if not event.payload.get("assistant_run_id"):
+                spans.append(_work_item_span(bundle, event, root_span_id, common))
+            elif event.event_type not in {
+                "workflow.work_item.succeeded",
+                "workflow.failed",
+            }:
+                spans.append(_work_item_state_span(bundle, event, root_span_id, common))
+        if event.event_type in {
+            "workflow.completed",
+            "workflow.failed",
+            "workflow.cancelled",
+        }:
+            spans.append(_terminal_span(bundle, event, root_span_id, common))
     return spans
+
+
+def _root_span(
+    bundle: WorkflowBundle,
+    event: WorkflowEvent,
+    root_span_id: str,
+    common: dict[str, str],
+) -> OtelSpanSpec:
+    """Export one immutable root anchor when the Workflow is accepted."""
+
+    workflow = bundle.workflow
+    root_input = {
+        "workflow_type": workflow.workflow_type,
+        "deliverable_count": len(workflow.deliverables),
+        "constraint_count": len(workflow.constraints),
+    }
+    return OtelSpanSpec(
+        trace_id=_workflow_export_trace_id(bundle),
+        span_id=root_span_id,
+        parent_span_id=workflow.ingress_parent_span_id,
+        name=f"{workflow.workflow_type}.workflow",
+        start_time=event.created_at,
+        end_time=event.created_at,
+        status="unset",
+        attributes={
+            **common,
+            "langfuse.observation.type": "agent",
+            "assistant_agent.canonical_event": "workflow.runtime",
+            "langfuse.observation.input": _json_value(root_input),
+            **(
+                {}
+                if workflow.ingress_trace_id is not None
+                else {"langfuse.trace.input": _json_value(root_input)}
+            ),
+        },
+    )
+
+
+def _terminal_span(
+    bundle: WorkflowBundle,
+    event: WorkflowEvent,
+    root_span_id: str,
+    common: dict[str, str],
+) -> OtelSpanSpec:
+    workflow = bundle.workflow
+    return OtelSpanSpec(
+        trace_id=_workflow_export_trace_id(bundle),
+        span_id=_stable_span_id(workflow.workflow_id, f"terminal:{event.cursor}"),
+        parent_span_id=root_span_id,
+        name=event.event_type,
+        start_time=event.created_at,
+        end_time=event.created_at,
+        status="ok" if event.event_type == "workflow.completed" else "error",
+        attributes={
+            **common,
+            "langfuse.observation.type": "event",
+            "assistant_agent.canonical_event": event.event_type,
+            "assistant_agent.terminal_status": workflow.status,
+            "langfuse.observation.output": _json_value(
+                {
+                    "status": workflow.status,
+                    "terminal_reason_code": workflow.terminal_reason_code,
+                    "result_artifact_refs": workflow.result_artifact_refs,
+                }
+            ),
+        },
+    )
+
+
+def _work_item_state_span(
+    bundle: WorkflowBundle,
+    event: WorkflowEvent,
+    root_span_id: str,
+    common: dict[str, str],
+) -> OtelSpanSpec:
+    payload = event.payload
+    return OtelSpanSpec(
+        trace_id=_workflow_export_trace_id(bundle),
+        span_id=_stable_span_id(
+            bundle.workflow.workflow_id,
+            f"work-item-state:{event.cursor}",
+        ),
+        parent_span_id=root_span_id,
+        name=event.event_type,
+        start_time=event.created_at,
+        end_time=event.created_at,
+        status=(
+            "error"
+            if event.event_type == "workflow.work_item.retry_scheduled"
+            else "unset"
+        ),
+        attributes={
+            **common,
+            "langfuse.observation.type": "event",
+            "assistant_agent.canonical_event": event.event_type,
+            "assistant_agent.work_item_id": str(
+                payload.get("work_item_id", "")
+            ),
+            "assistant_agent.attempt_id": str(payload.get("attempt_id", "")),
+            "assistant_agent.agent_role": str(payload.get("agent_role", "worker")),
+            "langfuse.observation.output": _json_value(
+                {
+                    "status": payload.get("work_item_status", event.status),
+                    "execution_status": payload.get("execution_status"),
+                    "error_code": payload.get("error_code"),
+                    "repair_work_item_ids": payload.get(
+                        "repair_work_item_ids",
+                        [],
+                    ),
+                }
+            ),
+        },
+    )
 
 
 def _plan_span(
@@ -172,10 +242,7 @@ def _plan_span(
         bundle.current_plan,
     )
     return OtelSpanSpec(
-        trace_id=(
-            bundle.workflow.ingress_trace_id
-            or bundle.workflow.workflow_id
-        ),
+        trace_id=_workflow_export_trace_id(bundle),
         span_id=_stable_span_id(bundle.workflow.workflow_id, f"plan:{event.cursor}"),
         parent_span_id=root_span_id,
         name="workflow.plan",
@@ -233,10 +300,7 @@ def _work_item_span(
         None,
     )
     assistant_trace_id = payload.get("assistant_trace_id")
-    workflow_trace_id = langfuse_trace_id(
-        bundle.workflow.ingress_trace_id
-        or bundle.workflow.workflow_id
-    )
+    workflow_trace_id = _workflow_export_trace_id(bundle)
     output = {
         "status": payload.get("work_item_status", event.status),
         "execution_status": payload.get("execution_status"),
@@ -251,10 +315,7 @@ def _work_item_span(
         "workflow_trace_url": local_langfuse_trace_url(workflow_trace_id),
     }
     return OtelSpanSpec(
-        trace_id=(
-            bundle.workflow.ingress_trace_id
-            or bundle.workflow.workflow_id
-        ),
+        trace_id=_workflow_export_trace_id(bundle),
         span_id=(
             workflow_attempt_span_id(
                 bundle.workflow.workflow_id,
@@ -311,6 +372,12 @@ def _is_work_item_event(event: WorkflowEvent) -> bool:
         "workflow.input.required",
         "workflow.failed",
     }
+
+
+def _workflow_export_trace_id(bundle: WorkflowBundle) -> str:
+    return langfuse_trace_id(
+        bundle.workflow.ingress_trace_id or bundle.workflow.workflow_id
+    )
 
 
 def _stable_span_id(workflow_id: str, suffix: str) -> str:

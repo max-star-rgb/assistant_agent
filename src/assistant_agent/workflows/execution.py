@@ -74,11 +74,15 @@ class AgentRuntimeWorkItemExecutor:
             workflow_trace_id=assignment.workflow_trace_id,
             work_item_id=assignment.work_item.work_item_id,
             attempt_id=assignment.attempt_id,
+            display_title=assignment.work_item.display_title,
             user_id=assignment.user_id,
             agent_id=assignment.agent_id,
             session_id=assignment.session_id,
             objective=assignment.work_item.objective,
             work_item_kind=assignment.work_item.kind,
+            attempt_number=assignment.work_item.attempt_count + 1,
+            previous_error_code=assignment.work_item.error_code,
+            previous_result_summary=assignment.work_item.result_summary,
             acceptance_contract=dict(assignment.work_item.acceptance_contract),
             assigned_constraints=effective_constraints,
             assistant_mode=(
@@ -88,7 +92,13 @@ class AgentRuntimeWorkItemExecutor:
             ),
             repair_candidate_ids=list(assignment.repair_candidate_ids),
             context_manifest=manifest,
-            workflow_inputs=dict(assignment.inputs),
+            workflow_deliverables=list(assignment.deliverables),
+            workflow_constraints=list(assignment.constraints),
+            workflow_inputs=(
+                dict(assignment.inputs)
+                if agent_role == "planner"
+                else _worker_runtime_inputs(assignment.inputs)
+            ),
             allowed_tool_names=(
                 list(_READ_TOOLS_BY_KIND.get(assignment.work_item.kind, []))
                 if (
@@ -172,3 +182,10 @@ class AgentRuntimeWorkItemExecutor:
             assistant_run_id=result.run_id,
             agent_role=agent_role,
         )
+
+
+def _worker_runtime_inputs(inputs: dict) -> dict:
+    """Expose runtime resume values without leaking definition-global inputs."""
+
+    user_inputs = inputs.get("user_inputs")
+    return {"user_inputs": user_inputs} if isinstance(user_inputs, list) else {}

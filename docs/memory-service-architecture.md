@@ -1,6 +1,6 @@
 # Memory Plugin 架构
 
-最后更新：2026-08-08
+最后更新：2026-08-11
 
 ## Authority contract
 
@@ -244,7 +244,7 @@ operation / status / latency_ms / item_count / media_count
 change_counts / issue_codes / retry_count / timeout
 ```
 
-普通日志、canonical JSONL 和公开 trace 不记录 memory text、原始 user/assistant message、媒体正文、
+普通日志、本地 completeness ledger 和公开 trace 不记录 memory text、原始 user/assistant message、媒体正文、
 session handle、API key、Plugin 原始异常或远端原始响应。Plugin 异常被 Host 转换为稳定的
 `memory_plugin_timeout`、`memory_plugin_unavailable`、`memory_plugin_invalid_result` 或
 `memory_plugin_internal_error`。

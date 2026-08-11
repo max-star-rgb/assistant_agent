@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
-from assistant_agent.workflows.definitions import WorkflowDefinitionDescriptor
+from assistant_agent.workflows.definitions import (
+    WorkflowDefinitionDescriptor,
+    materialize_work_items,
+)
 from assistant_agent.workflows.constraints import resolve_constraint_bindings
 from assistant_agent.workflows.models import (
-    WorkflowConstraintBinding,
+    WorkflowConstraintProposal,
+    WorkflowPlanProposal,
     WorkflowPlanVersion,
+    WorkflowRecord,
     WorkflowSubmission,
     WorkflowWorkItem,
 )
@@ -16,6 +21,8 @@ class DeepResearchWorkflowDefinition:
     descriptor = WorkflowDefinitionDescriptor(
         workflow_type="deep_research",
         definition_version="3",
+        planner_display_title="正在制定研究计划",
+        planner_objective="为当前研究目标生成可执行 DAG、步骤验收契约和约束责任绑定。",
     )
 
     def validate_submission(self, submission: WorkflowSubmission) -> None:
@@ -30,146 +37,118 @@ class DeepResearchWorkflowDefinition:
         if not isinstance(source_target, int) or not 3 <= source_target <= 100:
             raise ValueError("source_target must be between 3 and 100")
 
-    def build_initial_plan(
-        self, *, workflow_id: str, submission: WorkflowSubmission
+    def materialize_plan(
+        self,
+        *,
+        workflow: WorkflowRecord,
+        proposal: WorkflowPlanProposal,
     ) -> WorkflowPlanVersion:
-        if submission.planning_mode == "runtime":
-            return WorkflowPlanVersion(
-                workflow_id=workflow_id,
-                version=1,
-                definition_version=self.descriptor.definition_version,
-                revision_reason="deep_research_planner_pending",
-                work_items=[
-                    WorkflowWorkItem(
-                        work_item_id="plan",
-                        kind="plan",
-                        display_title="正在制定研究计划",
-                        objective=(
-                            "为当前研究目标生成可执行 DAG、步骤验收契约和约束责任绑定。"
-                        ),
-                        acceptance_contract={
-                            "output_schema": "workflow_plan_v1"
-                        },
-                    )
-                ],
-            )
-        if submission.initial_workstreams:
-            work_items = [
-                WorkflowWorkItem(
-                    work_item_id=seed.seed_id,
-                    kind=seed.kind,
-                    display_title=seed.display_title,
-                    objective=seed.objective,
-                    depends_on=list(seed.depends_on),
-                    input_artifact_refs=list(seed.input_artifact_refs),
-                    acceptance_contract=dict(seed.acceptance_contract),
-                )
-                for seed in submission.initial_workstreams
-            ]
-            return WorkflowPlanVersion(
-                workflow_id=workflow_id,
-                version=1,
-                definition_version=self.descriptor.definition_version,
-                revision_reason="deep_research_agent_plan",
-                work_items=work_items,
-                constraint_bindings=resolve_constraint_bindings(
-                    submission=submission,
-                    work_items=work_items,
-                ),
-            )
-        source_target = int(submission.inputs.get("source_target", 15))
-        questions = submission.inputs.get("research_questions", [])
-        question_text = "；".join(str(item) for item in questions) or submission.objective
-        work_items = [
-            WorkflowWorkItem(
-                work_item_id="scope",
-                kind="scope",
-                display_title="正在界定研究范围与问题",
-                objective=f"界定研究范围、问题和排除项：{question_text}",
-            ),
-            WorkflowWorkItem(
-                work_item_id="collect_sources",
-                kind="collect_sources",
-                display_title="正在收集并核实可信来源",
-                objective=(
-                    f"收集约 {source_target} 个可信且多样的来源线索，"
-                    "尽量在模型输出中保留来源信息和摘要。"
-                ),
-                depends_on=["scope"],
-                acceptance_contract={
-                    "target_sources": source_target,
-                    "source_verification": "best_effort",
-                },
-            ),
-            WorkflowWorkItem(
-                work_item_id="extract_evidence",
-                kind="extract_evidence",
-                display_title="正在提取证据、冲突与不确定性",
-                objective="从可用来源线索中提取证据、冲突与不确定性。",
-                depends_on=["collect_sources"],
-                acceptance_contract={"source_refs": "best_effort"},
-            ),
-            WorkflowWorkItem(
-                work_item_id="outline",
-                kind="outline",
-                display_title="正在整理研究报告结构",
-                objective="根据问题和证据建立完整报告大纲。",
-                depends_on=["extract_evidence"],
-            ),
-            WorkflowWorkItem(
-                work_item_id="draft",
-                kind="draft",
-                display_title="正在撰写带引用的研究报告",
-                objective="按大纲和证据撰写带引用的报告草稿。",
-                depends_on=["outline"],
-                acceptance_contract={"citations": "best_effort"},
-            ),
-            WorkflowWorkItem(
-                work_item_id="verify",
-                kind="verify",
-                display_title="正在核验引用与结论",
-                objective="验证交付物完整性、claim/evidence 对齐和引用覆盖。",
-                depends_on=["draft"],
-                acceptance_contract={
-                    "unresolved_claims_target": 0,
-                    "verification": "best_effort",
-                },
-            ),
-            WorkflowWorkItem(
-                work_item_id="synthesize",
-                kind="synthesize",
-                display_title="正在生成最终报告与执行摘要",
-                objective="合成最终报告、执行摘要、限制和来源列表。",
-                depends_on=["verify"],
-            ),
-        ]
-        definition_bindings = [
-            WorkflowConstraintBinding(
-                constraint_id="evidence-source-count",
-                statement=(
-                    f"已核验证据集合包含至少 {source_target} 个可信且多样的来源。"
-                ),
-                owner_work_item_ids=["collect_sources"],
-                verifier_work_item_id="verify",
-                severity="required",
-            ),
-            WorkflowConstraintBinding(
-                constraint_id="final-source-count",
-                statement=f"最终报告引用至少 {source_target} 个可信且多样的来源。",
-                owner_work_item_ids=["synthesize"],
-                verifier_work_item_id="synthesize",
-                severity="required",
-            ),
-        ]
+        work_items = materialize_work_items(proposal)
+        source_target = int(workflow.inputs.get("source_target", 15))
+        definition_bindings = _source_constraint_bindings(
+            work_items,
+            source_target=source_target,
+        )
         return WorkflowPlanVersion(
-            workflow_id=workflow_id,
-            version=1,
+            workflow_id=workflow.workflow_id,
+            version=workflow.current_plan_version + 1,
             definition_version=self.descriptor.definition_version,
-            revision_reason="deep_research_initial",
+            revision_reason="runtime_planner",
             work_items=work_items,
             constraint_bindings=resolve_constraint_bindings(
-                submission=submission,
+                constraints=workflow.constraints,
                 work_items=work_items,
+                proposal_bindings=proposal.constraint_bindings,
                 definition_bindings=definition_bindings,
             ),
         )
+
+
+_SOURCE_COLLECTION_KINDS = {
+    "collect",
+    "collect_sources",
+    "research",
+    "search",
+    "source_collection",
+    "web_research",
+}
+_EVIDENCE_AGGREGATION_KINDS = {"evidence", "extract_evidence"}
+_FINAL_WORK_KINDS = {
+    "compose",
+    "deliver",
+    "finalize",
+    "report",
+    "synthesize",
+}
+
+
+def _source_constraint_bindings(
+    work_items: list[WorkflowWorkItem],
+    *,
+    source_target: int,
+) -> list[WorkflowConstraintProposal]:
+    terminal_ids = _terminal_ids(work_items)
+    final_candidates = [
+        item.work_item_id
+        for item in work_items
+        if item.work_item_id in terminal_ids and item.kind in _FINAL_WORK_KINDS
+    ]
+    final_id = (final_candidates or terminal_ids)[-1]
+    source_collection_ids = [
+        item.work_item_id
+        for item in work_items
+        if item.kind in _SOURCE_COLLECTION_KINDS
+    ]
+    aggregate_item = next(
+        (item for item in work_items if item.kind in _EVIDENCE_AGGREGATION_KINDS),
+        None,
+    )
+    verify_item = next(
+        (item for item in work_items if item.kind == "verify"),
+        None,
+    )
+    final_item = next(
+        item for item in work_items if item.work_item_id == final_id
+    )
+    if aggregate_item is not None:
+        evidence_owner_ids = [aggregate_item.work_item_id]
+    elif len(source_collection_ids) == 1:
+        evidence_owner_ids = source_collection_ids
+    elif len(source_collection_ids) > 1:
+        evidence_owner_ids = [(verify_item or final_item).work_item_id]
+    else:
+        evidence_owner_ids = list(
+            (verify_item or final_item).depends_on
+        )
+    if not evidence_owner_ids:
+        evidence_owner_ids = [final_id]
+    return [
+        WorkflowConstraintProposal(
+            constraint_id="evidence-source-count",
+            statement=(
+                f"已核验证据集合包含至少 {source_target} 个可信且多样的来源。"
+            ),
+            owner_work_item_ids=evidence_owner_ids,
+            severity="required",
+        ),
+        WorkflowConstraintProposal(
+            constraint_id="final-source-count",
+            statement=f"最终报告引用至少 {source_target} 个可信且多样的来源。",
+            owner_work_item_ids=[final_id],
+            verifier_work_item_id=final_id,
+            severity="required",
+        ),
+    ]
+
+
+def _terminal_ids(work_items: list[WorkflowWorkItem]) -> list[str]:
+    dependency_ids = {
+        dependency
+        for item in work_items
+        for dependency in item.depends_on
+    }
+    return [
+        item.work_item_id
+        for item in work_items
+        if item.work_item_id not in dependency_ids
+    ]

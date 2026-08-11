@@ -28,7 +28,6 @@ from assistant_agent.tools.plugins.builtin.calendar_weather_contacts.tools impor
     CalendarSearchTool,
     ContactsSearchTool,
 )
-from assistant_agent.tools.plugins.builtin.durable_task.tool import TaskPlanSubmitTool
 from assistant_agent.tools.plugins.builtin.email_access.tools import (
     EmailReadTool,
     EmailSearchTool,
@@ -219,7 +218,6 @@ def test_decorated_tool_projects_an_explicit_repeat_policy() -> None:
         (WebPageInspectTool, "distinct_inputs"),
         (PythonInterpreterTool, "distinct_inputs"),
         (WebPageExploreTool, "distinct_inputs"),
-        (TaskPlanSubmitTool, "once_per_run"),
         (ImageGenerationTool, "once_per_run"),
         (ImageTo3DTool, "once_per_run"),
     ],

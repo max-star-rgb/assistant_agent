@@ -1,28 +1,24 @@
 """Controlled assistant loop nodes.
 
 In real chat-adapter mode, the LLM uses provider-native responses: natural
-language content for direct answers, or native tool_calls for tool requests. In
-mock mode, the rule plan provides deterministic decisions for stable offline
-tests.
+language content for direct answers, or native tool_calls for tool requests.
+Mock mode uses the same decision path with a deterministic local adapter.
 
 Local code owns the minimum required guardrails around those decisions:
 tool listing, native tool-call normalization, validation, execution, loop
 limits, trace recording, and state mutation.
 """
 
-from inspect import signature
 from time import perf_counter
 from typing import Any, NotRequired, TypedDict, cast
 
 from assistant_agent.runtime.action_validator import ActionValidator
 from assistant_agent.runtime.cancellation import AgentRunCancelled
 from assistant_agent.runtime.citations import build_url_citation_annotations
-from assistant_agent.runtime.intent import IntentDetector
 from assistant_agent.runtime.llm_event_mapping import stream_delta_to_agent_event
 from assistant_agent.runtime.loop_guard import LoopGuard, LoopGuardDecision
-from assistant_agent.runtime.prompt_builder import build_direct_chat_request, build_text_capability_output
-from assistant_agent.runtime.router import ToolRouter
 from assistant_agent.runtime.run_phase import RunPhase
+from assistant_agent.runtime.response_composer import compose_response
 from assistant_agent.runtime.state import AgentError, AgentState
 from assistant_agent.runtime.tool_executor import ToolExecutor
 from assistant_agent.runtime.output_models import (
@@ -30,19 +26,16 @@ from assistant_agent.runtime.output_models import (
     AssistantToolCall,
     AssistantTurnOutput,
 )
-from assistant_agent.runtime.capability_models import canonical_intent
 from assistant_agent.context.service import (
     AssistantDecisionContext,
     ContextPreflightFailure,
     ContextService,
 )
 from assistant_agent.context.finalization import finalize_fallback_text
-from assistant_agent.runtime.events import AgentEvent
 from assistant_agent.runtime.event_publisher import (
     AssistantStepFact,
     RuntimeEventPublisher,
 )
-from assistant_agent.runtime.planning_models import TaskPlan, TaskStep
 from assistant_agent.runtime.requests import AgentResponse, UserRequest
 from assistant_agent.tools.observation import (
     PROVIDER_TOOL_CALL_ID_KEY,
@@ -71,6 +64,9 @@ from assistant_agent.observability.trace_store import (
     new_span_id,
     sanitize_trace_value,
 )
+from assistant_agent.observability.response_observability import (
+    append_response_final_event,
+)
 
 
 PROVIDER_CONTEXT_OVERFLOW_CODES = {
@@ -91,8 +87,6 @@ class AssistantLoopState(TypedDict):
 
     request: UserRequest
     state: AgentState
-    intent_detector: NotRequired[IntentDetector]
-    router: NotRequired[ToolRouter]
     tool_executor: NotRequired[ToolExecutor]
     chat_adapter: NotRequired[ChatAdapter]
     chat_turn: NotRequired[Any]
@@ -187,9 +181,6 @@ def assistant_node(graph_state: AssistantLoopState) -> AssistantLoopState:
 
     request = graph_state["request"]
     is_mock = _is_mock_chat_adapter(chat_adapter)
-
-    if is_mock:
-        _ensure_rule_plan(graph_state)
 
     context = _build_decision_context(
         graph_state,
@@ -311,25 +302,7 @@ def _decide_next_action(
 ) -> tuple[AssistantTurnOutput, AssistantDecisionContext]:
     """Select the next assistant action without mutating response state."""
 
-    if context.is_mock:
-        return _decide_with_mock_plan(graph_state, context, state), context
     return _decide_with_llm(chat_adapter, context, state, graph_state=graph_state)
-
-
-def _decide_with_mock_plan(
-    graph_state: AssistantLoopState,
-    context: AssistantDecisionContext,
-    state: AgentState,
-) -> AssistantTurnOutput:
-    """Return deterministic offline decisions backed by the rule-generated plan."""
-
-    decision = _mock_assistant_decision_from_plan(
-        request=context.request,
-        tool_observations=context.tool_observations,
-        state=state,
-        outputs_by_step=graph_state["outputs_by_step"],
-    )
-    return decision
 
 
 def _decide_with_llm(
@@ -892,8 +865,6 @@ def _provider_context_overflow_final_answer(result: ChatResult) -> AssistantText
 
 
 def _use_native_tool_calling(context: AssistantDecisionContext, chat_adapter: ChatAdapter) -> bool:
-    if context.is_mock:
-        return False
     return _chat_adapter_supports_native_tools(chat_adapter)
 
 
@@ -1025,7 +996,6 @@ def _apply_decision_guards(
         )
     if (
         isinstance(decision, AssistantToolCall)
-        and not _is_plan_mode_active(state)
         and LoopGuard(state.request.metadata).nonrecoverable_failure_already_seen(
             decision.tool_name
         )
@@ -1048,7 +1018,6 @@ def _apply_decision_guards(
         )
     if (
         isinstance(decision, AssistantToolCall)
-        and not _is_plan_mode_active(state)
         and LoopGuard(state.request.metadata).complete_call_already_seen(
             tool_name=decision.tool_name,
             tool_input=decision.tool_input or {},
@@ -1072,7 +1041,6 @@ def _apply_decision_guards(
         )
     if (
         isinstance(decision, AssistantToolCall)
-        and not _is_plan_mode_active(state)
         and LoopGuard(state.request.metadata).failed_call_already_seen(
             tool_name=decision.tool_name,
             tool_input=decision.tool_input or {},
@@ -1125,25 +1093,16 @@ def _apply_terminal_decision(
         return
 
     state = graph_state["state"]
-    if _is_plan_mode_active(state):
-        _mark_plan_mode_status(state, "completed")
     if not state.tool_results:
-        if _is_direct_chat_state(state):
-            _set_direct_chat_response(graph_state, decision, context.iterations, context.tool_observations)
-            return
         state.set_response(
             AgentResponse(
                 message=decision.text,
                 annotations=list(decision.annotations),
                 data={
-                    "intent": state.intent.intent if state.intent else None,
                     "assistant_output": decision.type,
                     "reason": decision.reason,
                     "iterations": context.iterations,
                     "tool_observations": len(context.tool_observations),
-                    "plan_status": state.plan_status,
-                    "current_step_id": state.current_step_id,
-                    "plan_revision_count": state.plan_revision_count,
                     **_fallback_response_data(decision),
                 },
             )
@@ -1151,7 +1110,7 @@ def _apply_terminal_decision(
         state.status = "completed"
         return
 
-    if _should_preserve_assistant_final_answer(decision=decision, is_mock=context.is_mock):
+    if _should_preserve_assistant_final_answer(decision=decision):
         _set_assistant_final_answer_response(graph_state, decision, context.iterations, context.tool_observations)
         state.status = "completed"
     elif state.status != "failed":
@@ -1164,20 +1123,6 @@ def _fallback_response_data(decision: AssistantTextOutput) -> dict[str, Any]:
         None,
     )
     return {"fallback_reason": code} if code is not None else {}
-
-
-def _ensure_rule_plan(graph_state: AssistantLoopState) -> None:
-    """Populate intent, plan, and selected tools for deterministic offline ReAct runs."""
-
-    state = graph_state["state"]
-    request = graph_state["request"]
-    router = graph_state.get("router") or ToolRouter()
-    if state.intent is None:
-        detector = graph_state.get("intent_detector") or IntentDetector()
-        state.set_intent(detector.detect(request))
-    if state.plan is None:
-        state.set_plan(_route_with_optional_request(router, state.intent, request))
-    state.selected_tools = _select_tools_with_optional_request(router, state.intent, request)
 
 
 def _with_finalize_protocol_retry_guidance(request: ChatRequest) -> ChatRequest:
@@ -1209,120 +1154,10 @@ def _finalize_fallback(context: AssistantDecisionContext) -> AssistantTextOutput
     )
 
 
-def _mock_assistant_decision_from_plan(
-    *,
-    request: UserRequest,
-    tool_observations: list[dict[str, Any]],
-    state: AgentState,
-    outputs_by_step: dict[str, ToolResult],
-) -> AssistantTurnOutput:
-    """Return the next deterministic ReAct decision from the rule-based plan."""
-
-    if state.plan is None:
-        return AssistantTextOutput(
-            text="离线计划不可用，无法选择下一步工具。",
-            reason="_decide_with_mock_plan(...) requires state.plan from the rule router.",
-            safety_notes=["missing_rule_plan"],
-        )
-
-    if state.plan.requires_followup:
-        return AssistantTextOutput(
-            text=state.plan.followup_question or "请补充你想让我处理的对象或目标。",
-            reason="计划缺少必要输入，需要追问用户。",
-        )
-
-    executable_steps = [step for step in state.plan.steps if step.tool_name is not None]
-    next_index = len(state.tool_results)
-    if next_index < len(executable_steps):
-        step = executable_steps[next_index]
-        from assistant_agent.runtime.tool_input_builder import build_tool_input
-
-        return AssistantToolCall(
-            tool_name=step.tool_name,
-            tool_input=build_tool_input(step.action, request, outputs_by_step),
-            reason=step.reason or f"执行计划步骤：{step.action}",
-        )
-
-    return AssistantTextOutput(
-        text="计划步骤已执行完毕。",
-        reason="计划步骤已执行完毕，交给响应合成器生成最终答复。",
-    )
-
-
-def _set_direct_chat_response(
-    graph_state: AssistantLoopState,
-    decision: AssistantTextOutput,
-    iterations: int,
-    tool_observations: list[dict[str, Any]],
-) -> None:
-    """Run direct_chat through the chat adapter so text-only ReAct has a contract."""
-
-    state = graph_state["state"]
-    request = graph_state["request"]
-    memory_summaries = [
-        memory.text
-        for memory in (
-            state.session_memory_snapshot.memories
-            if state.session_memory_snapshot is not None
-            else []
-        )
-    ]
-    chat_request = _with_response_stream_callback(
-        build_direct_chat_request(
-            request,
-            memory_context=memory_summaries,
-        ),
-        graph_state,
-        source="direct_chat",
-    )
-    result = graph_state["chat_adapter"].chat(chat_request)
-    errors = [error.model_dump(mode="json") for error in result.errors]
-    contract = build_text_capability_output(
-        capability="direct_chat",
-        status="succeeded" if result.success else "failed",
-        output_ref=result.output_ref,
-        data={"response_text": result.response_text, "provider": result.provider, "model": result.model},
-        errors=errors,
-    )
-    message = result.response_text if result.success else decision.text
-    annotations = (
-        build_url_citation_annotations(message, result.search_sources)
-        if result.success
-        else []
-    )
-    state.set_response(
-        AgentResponse(
-            message=message,
-            annotations=annotations,
-            data={
-                "intent": state.intent.intent if state.intent else None,
-                "assistant_output": decision.type,
-                "reason": decision.reason,
-                "iterations": iterations,
-                "tool_observations": len(tool_observations),
-                "tool_count": len(state.tool_calls),
-                "provider": result.provider,
-                "model": result.model,
-                "usage": result.usage,
-                "output_ref": result.output_ref,
-                "errors": errors,
-                "contract": contract,
-                "plan_status": state.plan_status,
-                "current_step_id": state.current_step_id,
-                "plan_revision_count": state.plan_revision_count,
-            },
-            output_refs=[result.output_ref] if result.output_ref else [],
-        )
-    )
-
-
-def _should_preserve_assistant_final_answer(*, decision: AssistantTextOutput, is_mock: bool) -> bool:
+def _should_preserve_assistant_final_answer(*, decision: AssistantTextOutput) -> bool:
     """Return true when an assistant final answer should bypass response composition."""
 
-    return (
-        not is_mock
-        and not _assistant_final_answer_is_technical_failure(decision)
-    )
+    return not _assistant_final_answer_is_technical_failure(decision)
 
 
 def _assistant_final_answer_is_technical_failure(decision: AssistantTextOutput) -> bool:
@@ -1370,7 +1205,6 @@ def _set_assistant_final_answer_response(
             message=decision.text,
             annotations=list(decision.annotations),
             data={
-                "intent": state.intent.intent if state.intent else None,
                 "final_answer_source": "assistant_loop",
                 "assistant_output": decision.type,
                 "reason": decision.reason,
@@ -1382,17 +1216,10 @@ def _set_assistant_final_answer_response(
                 "errors": failures,
                 "degraded": bool(failures),
                 "handled_tool_failures": handled_tool_failures,
-                "plan_status": state.plan_status,
-                "current_step_id": state.current_step_id,
-                "plan_revision_count": state.plan_revision_count,
             },
             output_refs=output_refs,
         )
     )
-
-
-def _is_direct_chat_state(state: AgentState) -> bool:
-    return state.intent is not None and canonical_intent(state.intent.intent) == "direct_chat"
 
 
 def _with_response_stream_callback(
@@ -1654,11 +1481,8 @@ def _execute_single_requested_tool_node(graph_state: AssistantLoopState) -> Assi
         }
     nonrecoverable_retry_blocked = (
         "nonrecoverable_tool_retry_blocked" in decision.safety_notes
-        or (
-            not _is_plan_mode_active(state)
-            and LoopGuard(
-                state.request.metadata
-            ).nonrecoverable_failure_already_seen(tool_name)
+        or LoopGuard(state.request.metadata).nonrecoverable_failure_already_seen(
+            tool_name
         )
     )
     if nonrecoverable_retry_blocked:
@@ -1734,34 +1558,7 @@ def _execute_single_requested_tool_node(graph_state: AssistantLoopState) -> Assi
                 observation,
             ),
         }
-    step, plan_rejection = _current_plan_step(state, decision, graph_state["outputs_by_step"])
-    if plan_rejection is not None:
-        rejection_error = plan_rejection.error
-        state.errors.append(
-            AgentError(
-                message=(
-                    rejection_error.message
-                    if rejection_error is not None
-                    else plan_rejection.summary
-                ),
-                source=tool_name or "plan_mode",
-                details={
-                    "code": (
-                        rejection_error.code
-                        if rejection_error is not None
-                        else "plan_step_rejected"
-                    ),
-                    "recovery_action": "revise_plan",
-                },
-            )
-        )
-        return {
-            **graph_state,
-            "tool_observations": _record_react_observation(graph_state, tool_observations, plan_rejection),
-        }
-    step_id = step.step_id if step is not None else f"assistant_loop_{len(tool_observations) + 1}"
-    if step is not None:
-        state.current_step_id = step.step_id
+    step_id = f"assistant_loop_{len(tool_observations) + 1}"
 
     validation = ActionValidator().validate(
         decision=decision,
@@ -1835,7 +1632,6 @@ def _execute_single_requested_tool_node(graph_state: AssistantLoopState) -> Assi
             step_id,
             tool_name,
             tool_input,
-            step=step,
             trace_store=graph_state.get("trace_store"),
             trace_id=graph_state.get("trace_id"),
             node_name=graph_state.get("current_node_name", "execute_tool"),
@@ -1853,8 +1649,6 @@ def _execute_single_requested_tool_node(graph_state: AssistantLoopState) -> Assi
             graph_state,
             tool_name=tool_name,
         )
-        if _is_plan_mode_active(state) and not result.success:
-            _mark_plan_mode_status(state, "replanning")
         tool_spec = tool_executor.registry.get_spec(tool_name)
         if not result.success and tool_spec.category in {"write", "dangerous"}:
             _enter_finalize_phase(
@@ -1873,17 +1667,10 @@ def _execute_single_requested_tool_node(graph_state: AssistantLoopState) -> Assi
             success=result.success,
             nonrecoverable=_tool_result_is_nonrecoverable(result),
         )
-        guard = (
-            LoopGuardDecision(False, "ok", "Guard not triggered for optional step.")
-            if step is not None and step.optional
-            else recorded_guard
-        )
+        guard = recorded_guard
         if guard.triggered:
             _record_loop_guard(graph_state, guard)
-            if (
-                not _is_plan_mode_active(state)
-                and guard.disposition == "finalize"
-            ):
+            if guard.disposition == "finalize":
                 _enter_finalize_phase(
                     graph_state,
                     reason=guard.code,
@@ -1894,8 +1681,6 @@ def _execute_single_requested_tool_node(graph_state: AssistantLoopState) -> Assi
             **graph_state["outputs_by_step"],
             step_id: result,
         }
-        if step is not None:
-            _advance_plan_after_tool_result(state, outputs_by_step, result)
         return {
             **graph_state,
             "tool_observations": _record_react_observation(
@@ -1978,159 +1763,6 @@ def _apply_tool_turn_handoff(state: AgentState, result: ToolResult) -> None:
     ))
 
 
-def _current_plan_step(
-    state: AgentState,
-    decision: AssistantToolCall,
-    outputs_by_step: dict[str, ToolResult],
-) -> tuple[TaskStep | None, ToolObservation | None]:
-    if not _is_plan_mode_active(state):
-        return _legacy_current_plan_step(state, decision.tool_name), None
-    if state.plan is None:
-        return None, None
-
-    if decision.step_id:
-        step = _plan_step_by_id(state.plan, decision.step_id)
-        if step is None:
-            return None, rejected_observation(
-                tool_name=decision.tool_name or "unknown",
-                code="unknown_step",
-                message=f"Unknown plan step: {decision.step_id}.",
-            )
-    else:
-        step = _next_matching_plan_step(state.plan, decision.tool_name, outputs_by_step)
-        if step is None:
-            return None, rejected_observation(
-                tool_name=decision.tool_name or "unknown",
-                code="plan_step_not_found",
-                message=f"Tool {decision.tool_name or 'unknown'} is not part of the active plan.",
-            )
-
-    if step.tool_name is None:
-        return None, rejected_observation(
-            tool_name=decision.tool_name or "unknown",
-            code="non_executable_step",
-            message=f"Plan step {step.step_id} has no executable tool.",
-        )
-    if step.tool_name != decision.tool_name:
-        return None, rejected_observation(
-            tool_name=decision.tool_name or "unknown",
-            code="plan_tool_mismatch",
-            message=f"Plan step {step.step_id} requires {step.tool_name}, not {decision.tool_name}.",
-        )
-    dependency_error = _dependency_error(step, outputs_by_step)
-    if dependency_error is not None:
-        return None, rejected_observation(
-            tool_name=step.tool_name,
-            code="dependency_not_satisfied",
-            message=dependency_error,
-        )
-    return step, None
-
-
-def _legacy_current_plan_step(state: AgentState, tool_name: str | None) -> TaskStep | None:
-    if state.plan is None or tool_name is None:
-        return None
-    executable_steps = [step for step in state.plan.steps if step.tool_name is not None]
-    result_count = len(state.tool_results)
-    index = min(result_count, max(len(executable_steps) - 1, 0))
-    if executable_steps and executable_steps[index].tool_name == tool_name:
-        return executable_steps[index]
-    for step in executable_steps:
-        if step.tool_name == tool_name:
-            return step
-    return None
-
-
-def _is_plan_mode_active(state: AgentState) -> bool:
-    marker = state.request.metadata.get("plan_mode")
-    return (
-        isinstance(marker, dict)
-        and marker.get("active") is True
-        and state.plan is not None
-        and state.plan_status in {"active", "replanning"}
-    )
-
-
-def _mark_plan_mode_status(state: AgentState, status: str) -> None:
-    if status in {"none", "active", "replanning", "completed", "failed"}:
-        state.plan_status = cast(Any, status)
-    active = state.plan is not None and state.plan_status in {"active", "replanning"}
-    state.request.metadata["plan_status"] = state.plan_status
-    state.request.metadata["plan_mode"] = {"active": active}
-    if state.plan is not None:
-        state.request.metadata["current_plan"] = state.plan.model_dump(mode="json")
-    state.request.metadata["current_step_id"] = state.current_step_id
-    state.request.metadata["plan_revision_count"] = state.plan_revision_count
-
-
-def _plan_step_by_id(plan: TaskPlan | None, step_id: str | None) -> TaskStep | None:
-    if plan is None or step_id is None:
-        return None
-    for step in plan.steps:
-        if step.step_id == step_id:
-            return step
-    return None
-
-
-def _next_matching_plan_step(
-    plan: TaskPlan,
-    tool_name: str | None,
-    outputs_by_step: dict[str, ToolResult],
-) -> TaskStep | None:
-    for step in plan.steps:
-        if step.tool_name != tool_name:
-            continue
-        result = outputs_by_step.get(step.step_id)
-        if result is None or not result.success:
-            return step
-    return None
-
-
-def _next_pending_plan_step_id(plan: TaskPlan, outputs_by_step: dict[str, ToolResult]) -> str | None:
-    for step in plan.steps:
-        if step.tool_name is None:
-            continue
-        result = outputs_by_step.get(step.step_id)
-        if result is None or not result.success:
-            return step.step_id
-    return None
-
-
-def _dependency_error(step: TaskStep, outputs_by_step: dict[str, ToolResult]) -> str | None:
-    for dependency in step.depends_on:
-        result = outputs_by_step.get(dependency)
-        if result is None or not result.success:
-            return f"Step {step.step_id} depends on unfinished step {dependency}."
-    return None
-
-
-def _advance_plan_after_tool_result(
-    state: AgentState,
-    outputs_by_step: dict[str, ToolResult],
-    result: ToolResult,
-) -> None:
-    if state.plan is None:
-        return
-    if not result.success:
-        _mark_plan_mode_status(state, "replanning")
-        return
-    next_step_id = _next_pending_plan_step_id(state.plan, outputs_by_step)
-    state.current_step_id = next_step_id
-    _mark_plan_mode_status(state, "completed" if next_step_id is None else "active")
-
-
-def _route_with_optional_request(router: ToolRouter, intent, request: UserRequest):
-    if len(signature(router.route).parameters) >= 2:
-        return router.route(intent, request)
-    return router.route(intent)
-
-
-def _select_tools_with_optional_request(router: ToolRouter, intent, request: UserRequest):
-    if len(signature(router.select_tools).parameters) >= 2:
-        return router.select_tools(intent, request)
-    return router.select_tools(intent)
-
-
 def route_after_assistant(graph_state: AssistantLoopState) -> str:
     """Route strict assistant text/tool output."""
     state = graph_state["state"]
@@ -2149,6 +1781,29 @@ def route_after_assistant(graph_state: AssistantLoopState) -> str:
         return "execute_tool"
 
     return "finish"
+
+
+def compose_response_node(
+    graph_state: AssistantLoopState,
+) -> AssistantLoopState:
+    """Commit the final response and its canonical response.final event."""
+
+    state = graph_state["state"]
+    response_started_at = perf_counter()
+    response = compose_response(state)
+    if state.status == "failed":
+        state.response = response
+    else:
+        state.set_response(response)
+    append_response_final_event(
+        trace_store=graph_state.get("trace_store"),
+        trace_id=graph_state.get("trace_id"),
+        node_name=graph_state.get("current_node_name", "compose_response"),
+        state=state,
+        source="compose_response",
+        latency_ms=int((perf_counter() - response_started_at) * 1000),
+    )
+    return graph_state
 
 
 def _get_tool_context(state: AgentState) -> Any:
@@ -2192,7 +1847,6 @@ def _record_react_decision(
         "message": decision.text if isinstance(decision, AssistantTextOutput) else None,
         "reason": decision.reason,
         "safety_notes": decision.safety_notes,
-        "plan_status": state.plan_status,
         "run_phase": _run_phase(graph_state).value,
     })
     output_summary = {
@@ -2201,7 +1855,6 @@ def _record_react_decision(
         "confidence": decision.confidence if is_tool_call else None,
         "message_present": isinstance(decision, AssistantTextOutput),
         "step_id": decision.step_id if is_tool_call else None,
-        "plan_status": state.plan_status,
         "run_phase": _run_phase(graph_state).value,
     }
     _runtime_event_publisher(graph_state).publish_assistant_step(
@@ -2222,7 +1875,6 @@ def _record_react_decision(
                 "output_type": decision.type,
                 "tool_name": decision.tool_name if is_tool_call else None,
                 "step_id": decision.step_id if is_tool_call else None,
-                "plan_status": state.plan_status,
                 "safety_notes": decision.safety_notes,
                 "run_phase": _run_phase(graph_state).value,
             },

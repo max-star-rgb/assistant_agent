@@ -1,7 +1,6 @@
 """Explicit composition root for trusted built-in tool plugins."""
 
 from assistant_agent.tools.plugins.contracts import ToolPlugin
-from assistant_agent.tools.plugins.builtin.durable_task.plugin import DurableTaskToolPlugin
 from assistant_agent.tools.plugins.builtin.workflow.plugin import WorkflowToolPlugin
 from assistant_agent.tools.plugins.builtin.email_access.plugin import EmailAccessPlugin
 from assistant_agent.tools.plugins.builtin.image_generation.plugin import ImageGenerationToolPlugin
@@ -47,6 +46,5 @@ def default_tool_plugins() -> tuple[ToolPlugin, ...]:
         CalendarContactsPlugin(),
         ImageGenerationToolPlugin(),
         ImageTo3DToolPlugin(),
-        DurableTaskToolPlugin(),
         WorkflowToolPlugin(),
     )

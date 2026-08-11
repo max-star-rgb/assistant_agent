@@ -11,6 +11,7 @@ import sys
 
 from assistant_agent.observability.runtime_audit.collector import collect_runtime_audit
 from assistant_agent.observability.runtime_audit.daily_runner import (
+    DEFAULT_LOCAL_LEDGER_RETENTION_DAYS,
     DailyAuditDayError,
     DailyAuditRunResult,
     recover_pending_daily_commits,
@@ -47,7 +48,7 @@ from assistant_agent.runtime.assistant_run_service import load_env_file
 
 
 DEFAULT_ARTIFACT_ROOT = Path(".data/runtime_audit")
-DEFAULT_LOCAL_TRACE_PATH = Path(".data/graph_trace.jsonl")
+DEFAULT_LOCAL_TRACE_PATH = Path(".data/trace_ledger")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -231,6 +232,7 @@ def _run_daily(args, *, repo_root: Path, store: RuntimeAuditArtifactStore) -> in
             "collected_at": collected_at,
             "judge_grace": timedelta(minutes=args.judge_grace_minutes),
             "low_score_threshold": args.low_score_threshold,
+            "local_ledger_retention_days": args.local_ledger_retention_days,
         }
         try:
             if args.date is not None:
@@ -259,6 +261,17 @@ def _run_daily(args, *, repo_root: Path, store: RuntimeAuditArtifactStore) -> in
                     json.dumps({"status": "source_close_warning", "message": sanitize_runtime_audit_text(exc)}),
                     file=sys.stderr,
                 )
+    for result in results:
+        if result.retention_warning is not None:
+            print(
+                json.dumps(
+                    {
+                        "status": "local_ledger_prune_warning",
+                        "message": result.retention_warning,
+                    }
+                ),
+                file=sys.stderr,
+            )
     failed = next((item for item in results if item.status == "failed"), None)
     failed_date = failed.audit_date if failed else execution_failed_date
     audit_dates = [item.audit_date for item in results]
@@ -389,6 +402,11 @@ def _parser() -> argparse.ArgumentParser:
         child.add_argument("--local-trace-path", default=str(DEFAULT_LOCAL_TRACE_PATH))
         child.add_argument("--dry-run", action="store_true")
         if name == "run":
+            child.add_argument(
+                "--local-ledger-retention-days",
+                type=_positive_int,
+                default=DEFAULT_LOCAL_LEDGER_RETENTION_DAYS,
+            )
             child.add_argument("--skip-codex", action="store_true")
             child.add_argument("--force", action="store_true")
             child.add_argument("--codex-timeout-seconds", type=float, default=900.0)
@@ -402,6 +420,13 @@ def _parser() -> argparse.ArgumentParser:
     evaluators.add_argument("--apply", action="store_true")
     evaluators.add_argument("--allow-online-judge", action="store_true")
     return parser
+
+
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("value must be a positive integer")
+    return parsed
 
 
 if __name__ == "__main__":

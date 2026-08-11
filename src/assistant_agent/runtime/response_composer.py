@@ -3,7 +3,6 @@
 from assistant_agent.runtime.state import AgentState
 from assistant_agent.runtime.response_templates import (
     compose_contract_response,
-    compose_followup_message,
     extract_response_fields,
 )
 from assistant_agent.runtime.requests import AgentResponse
@@ -38,19 +37,6 @@ def compose_response(state: AgentState) -> AgentResponse:
     handled_tool_failures = sum(
         1 for error in state.errors if "tool_call_id" in error.details
     )
-    if state.plan is not None and state.plan.requires_followup:
-        return AgentResponse(
-            message=compose_followup_message(state.plan.followup_question),
-            data={
-                "intent": state.intent.intent if state.intent else None,
-                "tool_count": len(state.tool_calls),
-                "followup_question": state.plan.followup_question,
-                "errors": failures,
-                "partial_success": False,
-                "contracts": contracts,
-            },
-            followup_question=state.plan.followup_question,
-        )
     fields = extract_response_fields(contracts)
     product_title = fields["product_title"]
     best_price = fields["best_price"]
@@ -76,7 +62,6 @@ def compose_response(state: AgentState) -> AgentResponse:
     return AgentResponse(
         message="；".join(parts) if parts else "已完成请求处理。",
         data={
-            "intent": state.intent.intent if state.intent else None,
             "tool_count": len(state.tool_calls),
             "product_title": product_title,
             "best_price": best_price,

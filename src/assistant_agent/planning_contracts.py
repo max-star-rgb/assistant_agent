@@ -1,4 +1,4 @@
-"""Shared contracts for foreground and durable Plan-and-Execute models."""
+"""Display contracts for internally bound DurableTask plans."""
 
 from __future__ import annotations
 

@@ -11,7 +11,6 @@ from assistant_agent.providers.provider_policy import FallbackPolicy, RetryPolic
 
 
 RecoveryAction = Literal[
-    "ask_followup",
     "skip_step",
     "retry_step",
     "fallback_to_text_response",

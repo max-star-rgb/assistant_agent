@@ -4,11 +4,12 @@ from assistant_agent.identity import RequestIdentity
 from assistant_agent.workflows.definitions import (
     WorkflowDefinitionCatalog,
     WorkflowDefinitionDescriptor,
+    materialize_work_items,
 )
 from assistant_agent.workflows.models import (
+    WorkflowPlanProposal,
     WorkflowPlanVersion,
     WorkflowSubmission,
-    WorkflowWorkItem,
 )
 from assistant_agent.workflows.runtime import WorkItemExecutionResult, WorkflowRuntime
 from assistant_agent.workflows.service import WorkflowService
@@ -22,27 +23,13 @@ class RepairDefinition:
     def validate_submission(self, submission: WorkflowSubmission) -> None:
         return None
 
-    def build_initial_plan(self, *, workflow_id: str, submission: WorkflowSubmission):
+    def materialize_plan(self, *, workflow, proposal: WorkflowPlanProposal):
         return WorkflowPlanVersion(
-            workflow_id=workflow_id,
-            version=1,
+            workflow_id=workflow.workflow_id,
+            version=workflow.current_plan_version + 1,
             definition_version="1",
-            revision_reason="initial",
-            work_items=[
-                WorkflowWorkItem(work_item_id="scope", kind="scope", objective="scope"),
-                WorkflowWorkItem(
-                    work_item_id="evidence",
-                    kind="evidence",
-                    objective="evidence",
-                    depends_on=["scope"],
-                ),
-                WorkflowWorkItem(
-                    work_item_id="verify",
-                    kind="verify",
-                    objective="verify",
-                    depends_on=["evidence"],
-                ),
-            ],
+            revision_reason="runtime_planner",
+            work_items=materialize_work_items(proposal),
         )
 
 
@@ -52,6 +39,8 @@ class RepairOnceExecutor:
         self.repaired = False
 
     def execute(self, assignment) -> WorkItemExecutionResult:
+        if assignment.agent_role == "planner":
+            return _repair_plan_result()
         item_id = assignment.work_item.work_item_id
         self.calls.append(item_id)
         if item_id == "verify" and not self.repaired:
@@ -71,6 +60,8 @@ class RepairOnceExecutor:
 
 class InvalidRepairExecutor:
     def execute(self, assignment) -> WorkItemExecutionResult:
+        if assignment.agent_role == "planner":
+            return _repair_plan_result()
         if assignment.work_item.work_item_id == "verify":
             return WorkItemExecutionResult(
                 status="repair",
@@ -78,6 +69,35 @@ class InvalidRepairExecutor:
                 repair_work_item_ids=["unknown-step"],
             )
         return WorkItemExecutionResult(status="succeeded", summary="ok")
+
+
+def _repair_plan_result() -> WorkItemExecutionResult:
+    return WorkItemExecutionResult(
+        status="succeeded",
+        agent_role="planner",
+        plan_proposal=WorkflowPlanProposal(workstreams=[
+            {
+                "seed_id": "scope",
+                "kind": "scope",
+                "display_title": "正在界定范围",
+                "objective": "scope",
+            },
+            {
+                "seed_id": "evidence",
+                "kind": "evidence",
+                "display_title": "正在收集证据",
+                "objective": "evidence",
+                "depends_on": ["scope"],
+            },
+            {
+                "seed_id": "verify",
+                "kind": "verify",
+                "display_title": "正在核验证据",
+                "objective": "verify",
+                "depends_on": ["evidence"],
+            },
+        ]),
+    )
 
 
 def _identity() -> RequestIdentity:
@@ -116,7 +136,7 @@ def test_verifier_repair_creates_new_plan_and_only_replays_affected_subtree() ->
         worker_id="worker-sentinel",
     )
 
-    for _ in range(5):
+    for _ in range(6):
         assert worker.run_once() is True
 
     completed = service.get_workflow(
@@ -124,8 +144,8 @@ def test_verifier_repair_creates_new_plan_and_only_replays_affected_subtree() ->
         workflow_id=created.workflow.workflow_id,
     )
     assert completed.workflow.status == "completed"
-    assert completed.workflow.current_plan_version == 2
-    assert len(completed.plans) == 2
+    assert completed.workflow.current_plan_version == 3
+    assert len(completed.plans) == 3
     assert executor.calls == ["scope", "evidence", "verify", "evidence", "verify"]
     assert executor.calls.count("scope") == 1
 
@@ -155,6 +175,7 @@ def test_invalid_repair_scope_fails_only_the_workflow_without_crashing_worker() 
         worker_id="worker-sentinel",
     )
 
+    assert worker.run_once() is True
     assert worker.run_once() is True
     assert worker.run_once() is True
     assert worker.run_once() is True

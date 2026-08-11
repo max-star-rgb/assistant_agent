@@ -11,12 +11,12 @@ eval、Gateway 主链路覆盖的 probe 不应继续沉积到本目录。
 - `scripts/run_server.py`: starts the FastAPI backend with Gateway, media, HTTP,
   memory, trace, and tool-governed runtime routes. 启动完成后默认打印从实际 app/runtime
   收集的精简运维摘要，包括 bind、健康检查、Provider、Tool 分类计数、Worker、已启用集成、
-  安全开关，以及 Runtime canonical trace、Langfuse export、Gateway lifecycle、Agent-Service
+  安全开关，以及 Runtime completeness ledger、Langfuse export、Gateway lifecycle、Agent-Service
   delivery audit 和 Gateway text log 的分层观测位置；只有排查 Tool 装配时才使用
   `--startup-details` 展开按 plugin ownership 分组的完整清单。
   本机 Langfuse 需要查看 Mem0 具体 change text 时，显式增加
-  `--allow-local-memory-trace-content`；它只对 loopback OTLP endpoint 生效，canonical JSONL
-  仍只保留数量、event 计数和 memory ID。在 Langfuse Session 中打开各 turn 的
+  `--allow-local-memory-trace-content`；它只对 loopback OTLP endpoint 生效，本地 completeness ledger
+  不保留 Memory 正文。在 Langfuse Session 中打开各 turn 的
   `memory.turn_ingestion` 查看结果，单条演化用 Mem0 原生 history API 钻取。
 - `scripts/run_langfuse.py`: PyCharm-friendly local Langfuse supervisor. It starts
   the ignored `.data/langfuse` Compose stack, waits for health, stays attached as
@@ -95,7 +95,8 @@ For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
 - `scripts/trace_metrics.py`: redacted trace metric summary.
 - `scripts/run_runtime_audit.py`: 只读日审计稳定入口。`run` 默认审计前一北京时间自然日；Langfuse 查询
   成功但没有 Trace 时输出“昨天无运行trace”，存在异常时才调用受限 Codex。它不启动 Langfuse、不同步
-  Dataset，也不运行 Agent Experiment；`configure-evaluators` 管理五条 Live Observation Rule，并在真实
+  Dataset，也不运行 Agent Experiment；成功发布后清理超过 `--local-ledger-retention-days`（默认 14 天）
+  且已有成功审计证明的 `.data/trace_ledger/YYYY-MM-DD.jsonl` 分片；`configure-evaluators` 管理五条 Live Observation Rule，并在真实
   回归 Dataset 已存在时管理两条 Experiment Rule。
   参数、证据边界、状态机、产物和 systemd 配置统一见
   [`docs/observability-harness.md`](../docs/observability-harness.md#langfuse-first-runtime-审计)。

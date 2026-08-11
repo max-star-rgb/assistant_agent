@@ -3,18 +3,15 @@
 import asyncio
 import hashlib
 import json
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from time import perf_counter, time
 from typing import TYPE_CHECKING, Any, Literal
 
 from assistant_agent.runtime.action_validator import ActionValidator
 from assistant_agent.runtime.cancellation import AgentRunCancelled, raise_if_cancelled
-from assistant_agent.runtime.conditional_graph import build_conditional_agent_graph
 from assistant_agent.runtime.assistant_loop_graph import build_assistant_loop_graph
 from assistant_agent.runtime.graph_runtime import GraphRuntimeContext
-from assistant_agent.runtime.intent import IntentDetector
-from assistant_agent.runtime.router import ToolRouter
 from assistant_agent.runtime.run_phase import RunPhase
 from assistant_agent.runtime.state import AgentError, AgentState
 from assistant_agent.runtime.event_stream import AgentRunStream, AsyncQueueEventSink
@@ -53,6 +50,7 @@ from assistant_agent.observability.workflow_otel import (
     create_workflow_otel_observer_from_env,
     workflow_attempt_span_id,
 )
+from assistant_agent.observability.workflow_trace import workflow_root_span_id
 from assistant_agent.observability.otel_mapping import langfuse_trace_id
 from assistant_agent.tools.models import ToolResult, ToolSpec
 from assistant_agent.media.agent_service_entry import is_trusted_agent_service_request
@@ -190,8 +188,6 @@ class AgentGraphRuntime:
         registry: ToolRegistry | None = None,
         long_term_memory_service: LongTermMemoryService | None = None,
         config: ProviderConfig | None = None,
-        intent_detector: IntentDetector | None = None,
-        router: ToolRouter | None = None,
         run_history: RunHistoryStore | None = None,
         session_store: SessionStore | None = None,
         event_sink: EventSink | None = None,
@@ -294,7 +290,6 @@ class AgentGraphRuntime:
                     store=SQLiteTaskStore(self.config.durable_task_path),
                     registry=bootstrap_registry,
                     max_plan_steps=self.config.max_plan_steps,
-                    max_plan_revisions=self.config.max_plan_revisions,
                     lease_seconds=self.config.durable_task_lease_seconds,
                     max_task_seconds=self.config.durable_task_max_seconds,
                     max_workflow_quanta=(
@@ -322,7 +317,6 @@ class AgentGraphRuntime:
                     store=SQLiteTaskStore(self.config.durable_task_path),
                     registry=self.registry,
                     max_plan_steps=self.config.max_plan_steps,
-                    max_plan_revisions=self.config.max_plan_revisions,
                     lease_seconds=self.config.durable_task_lease_seconds,
                     max_task_seconds=self.config.durable_task_max_seconds,
                     max_workflow_quanta=(
@@ -330,10 +324,6 @@ class AgentGraphRuntime:
                     ),
                     notification_outbox=self.notification_outbox_store,
                 )
-                if "task_plan_submit" not in self.registry.list():
-                    raise ValueError(
-                        "A custom Registry for durable tasks must include task_plan_submit before runtime startup."
-                    )
             if (
                 self.config.durable_workflows_enabled
                 and "workflow_submit" not in self.registry.list()
@@ -360,8 +350,6 @@ class AgentGraphRuntime:
                     vision_tool.memory_store = self.realtime_video_memory_store
                 if getattr(vision_tool, "semantic_store_pool", None) is None:
                     vision_tool.semantic_store_pool = self.visual_semantic_store_pool
-        self.intent_detector = intent_detector or IntentDetector()
-        self.router = router or ToolRouter()
         self.run_history = run_history
         self.session_store = session_store or create_session_store(self.config)
         self.capability_grant_controller = CapabilityGrantController(
@@ -479,9 +467,7 @@ class AgentGraphRuntime:
             },
             execution_backend=self.tool_execution_backend,
         )
-        self._conditional_graph = build_conditional_agent_graph()
-        self._react_graph = build_assistant_loop_graph()
-        self._graph = self._react_graph if self.config.agent_graph_mode == "assistant_loop" else self._conditional_graph
+        self._graph = build_assistant_loop_graph()
 
     def _create_session_embedding_coordinator(
         self,
@@ -575,109 +561,178 @@ class AgentGraphRuntime:
                 },
             },
         )
+        parsed_result: AgentWorkItemResult | None = None
+
+        def parse_terminal_work_item_state(state: AgentState) -> AgentWorkItemResult:
+            if state.status == "completed" and state.response is not None:
+                status = "succeeded"
+                summary = state.response.message
+            elif state.status == "cancelled":
+                status = "blocked"
+                summary = "Work item execution was cancelled."
+            else:
+                status = "failed"
+                summary = (
+                    state.response.message
+                    if state.response is not None
+                    else "Work item execution failed."
+                )
+            model_calls_used = sum(
+                1
+                for step in state.request.metadata.get("assistant_loop_steps", [])
+                if isinstance(step, dict) and step.get("output_type") is not None
+            )
+            artifact_refs = (
+                list(state.response.output_refs) if state.response else []
+            )
+            loop_steps = [
+                step
+                for step in state.request.metadata.get("assistant_loop_steps", [])
+                if isinstance(step, dict) and step.get("output_type") is not None
+            ]
+            terminal_notes = (
+                loop_steps[-1].get("safety_notes", []) if loop_steps else []
+            )
+            terminal_failure_note = next(
+                (
+                    note
+                    for note in terminal_notes
+                    if note in {
+                        "provider_context_overflow",
+                        "provider_context_overflow_retry_failed",
+                        "provider_response_truncated",
+                        "provider_error",
+                        "provider_refusal",
+                        "provider_timeout",
+                        "provider_empty_response",
+                        "empty_native_final_answer",
+                    }
+                ),
+                None,
+            )
+            if status == "succeeded" and terminal_failure_note is not None:
+                status = "failed"
+            if status == "succeeded":
+                if assignment.agent_role == "planner":
+                    return parse_workflow_plan_response(
+                        summary,
+                        run_id=state.run_id,
+                        trace_id=state.trace_id,
+                        model_calls_used=model_calls_used,
+                        tool_calls_used=len(state.tool_calls),
+                    )
+                required_verification_ids = [
+                    item.constraint_id
+                    for item in assignment.assigned_constraints
+                    if item.verifier_work_item_id == assignment.work_item_id
+                ]
+                return parse_work_item_response(
+                    summary,
+                    run_id=state.run_id,
+                    trace_id=state.trace_id,
+                    artifact_refs=artifact_refs,
+                    model_calls_used=model_calls_used,
+                    tool_calls_used=len(state.tool_calls),
+                    required_verification_ids=required_verification_ids,
+                )
+            return AgentWorkItemResult(
+                status=status,
+                run_id=state.run_id,
+                trace_id=state.trace_id,
+                summary=summary,
+                error_code=(
+                    "provider_context_overflow"
+                    if terminal_failure_note in {
+                        "provider_context_overflow",
+                        "provider_context_overflow_retry_failed",
+                    }
+                    else terminal_failure_note
+                ),
+                artifact_refs=artifact_refs,
+                model_calls_used=model_calls_used,
+                tool_calls_used=len(state.tool_calls),
+                agent_role=assignment.agent_role,
+            )
+
+        def admit_work_item_result_before_terminal(state: AgentState) -> None:
+            nonlocal parsed_result
+            parsed_result = parse_terminal_work_item_state(state)
+            if (
+                parsed_result.status == "succeeded"
+                and assignment.agent_role == "planner"
+                and parsed_result.plan_proposal is not None
+                and self.workflow_service is not None
+            ):
+                workflow_bundle = self.workflow_service.store.load(
+                    assignment.workflow_id
+                )
+                if workflow_bundle is not None:
+                    try:
+                        from assistant_agent.workflows.runtime import (
+                            materialize_planner_revision,
+                        )
+
+                        materialize_planner_revision(
+                            service=self.workflow_service,
+                            bundle=workflow_bundle,
+                            proposal=parsed_result.plan_proposal,
+                            now=self.workflow_service.clock(),
+                        )
+                    except Exception:  # noqa: BLE001 - proposal is untrusted.
+                        parsed_result = parsed_result.model_copy(
+                            update={
+                                "status": "failed",
+                                "summary": (
+                                    "Planner proposal failed Workflow admission."
+                                ),
+                                "error_code": "workflow_plan_rejected",
+                                "plan_proposal": None,
+                            }
+                        )
+            state.request.metadata["_trusted_workflow_work_item_outcome"] = {
+                "status": parsed_result.status,
+                "error_code": parsed_result.error_code,
+            }
+            if parsed_result.status == "succeeded" or state.status == "cancelled":
+                return
+            error_code = (
+                parsed_result.error_code
+                or f"workflow_work_item_{parsed_result.status}"
+            )
+            state.errors.append(
+                AgentError(
+                    message="Workflow work item result requires outer recovery.",
+                    source="workflow_work_item_result",
+                    details={"code": error_code},
+                )
+            )
+            state.status = "failed"
+
         state = self.run_state(
             user_request,
+            pre_terminal_state_hook=admit_work_item_result_before_terminal,
             export_trace_context=RuntimeExportTraceContext(
                 export_trace_id=(
                     assignment.workflow_trace_id
                     or langfuse_trace_id(assignment.workflow_id)
                 ),
-                export_parent_span_id=workflow_attempt_span_id(
+                export_span_id=workflow_attempt_span_id(
                     assignment.workflow_id,
                     assignment.attempt_id,
                 ),
+                export_parent_span_id=workflow_root_span_id(
+                    assignment.workflow_trace_id
+                    or langfuse_trace_id(assignment.workflow_id)
+                ),
                 export_trace_name=f"{assignment.workflow_type}.workflow",
+                export_observation_name=assignment.display_title,
                 workflow_id=assignment.workflow_id,
                 work_item_id=assignment.work_item_id,
                 attempt_id=assignment.attempt_id,
                 agent_role=assignment.agent_role,
             ),
         )
-        if state.status == "completed" and state.response is not None:
-            status = "succeeded"
-            summary = state.response.message
-        elif state.status == "cancelled":
-            status = "blocked"
-            summary = "Work item execution was cancelled."
-        else:
-            status = "failed"
-            summary = (
-                state.response.message
-                if state.response is not None
-                else "Work item execution failed."
-            )
-        model_calls_used = sum(
-            1
-            for step in state.request.metadata.get("assistant_loop_steps", [])
-            if isinstance(step, dict) and step.get("output_type") is not None
-        )
-        artifact_refs = list(state.response.output_refs) if state.response else []
-        loop_steps = [
-            step
-            for step in state.request.metadata.get("assistant_loop_steps", [])
-            if isinstance(step, dict) and step.get("output_type") is not None
-        ]
-        terminal_notes = loop_steps[-1].get("safety_notes", []) if loop_steps else []
-        terminal_failure_note = next(
-            (
-                note
-                for note in terminal_notes
-                if note in {
-                    "provider_context_overflow",
-                    "provider_context_overflow_retry_failed",
-                    "provider_response_truncated",
-                    "provider_error",
-                    "provider_refusal",
-                    "provider_timeout",
-                    "provider_empty_response",
-                    "empty_native_final_answer",
-                }
-            ),
-            None,
-        )
-        if status == "succeeded" and terminal_failure_note is not None:
-            status = "failed"
-        if status == "succeeded":
-            if assignment.agent_role == "planner":
-                return parse_workflow_plan_response(
-                    summary,
-                    run_id=state.run_id,
-                    trace_id=state.trace_id,
-                    model_calls_used=model_calls_used,
-                    tool_calls_used=len(state.tool_calls),
-                )
-            required_verification_ids = [
-                item.constraint_id
-                for item in assignment.assigned_constraints
-                if item.verifier_work_item_id == assignment.work_item_id
-            ]
-            return parse_work_item_response(
-                summary,
-                run_id=state.run_id,
-                trace_id=state.trace_id,
-                artifact_refs=artifact_refs,
-                model_calls_used=model_calls_used,
-                tool_calls_used=len(state.tool_calls),
-                required_verification_ids=required_verification_ids,
-            )
-        return AgentWorkItemResult(
-            status=status,
-            run_id=state.run_id,
-            trace_id=state.trace_id,
-            summary=summary,
-            error_code=(
-                "provider_context_overflow"
-                if terminal_failure_note in {
-                    "provider_context_overflow",
-                    "provider_context_overflow_retry_failed",
-                }
-                else terminal_failure_note
-            ),
-            artifact_refs=artifact_refs,
-            model_calls_used=model_calls_used,
-            tool_calls_used=len(state.tool_calls),
-            agent_role=assignment.agent_role,
-        )
+        return parsed_result or parse_terminal_work_item_state(state)
 
     def run_state(
         self,
@@ -686,6 +741,7 @@ class AgentGraphRuntime:
         cancel_token: Any | None = None,
         trace_context: RuntimeTraceContext | None = None,
         export_trace_context: RuntimeExportTraceContext | None = None,
+        pre_terminal_state_hook: Callable[[AgentState], None] | None = None,
         run_id: str | None = None,
     ) -> AgentState:
         """Run the graph and return the full state for compatibility callers.
@@ -708,6 +764,7 @@ class AgentGraphRuntime:
                 cancel_token=cancel_token,
                 trace_context=trace_context,
                 export_trace_context=export_trace_context,
+                pre_terminal_state_hook=pre_terminal_state_hook,
                 run_id=effective_run_id,
             )
         finally:
@@ -723,6 +780,7 @@ class AgentGraphRuntime:
         cancel_token: Any | None = None,
         trace_context: RuntimeTraceContext | None = None,
         export_trace_context: RuntimeExportTraceContext | None = None,
+        pre_terminal_state_hook: Callable[[AgentState], None] | None = None,
         run_id: str | None = None,
     ) -> AgentState:
         """Execute one run while the Host retains its frozen Memory context."""
@@ -843,8 +901,6 @@ class AgentGraphRuntime:
                 cancel_token=cancel_token,
             )
         runtime_context = GraphRuntimeContext(
-            intent_detector=self.intent_detector,
-            router=self.router,
             tool_executor=tool_executor,
             chat_adapter=self.chat_adapter,
             chat_turn=self._run_native_chat_turn,
@@ -916,6 +972,21 @@ class AgentGraphRuntime:
                         ),
                         run_event_sink,
                     )
+        if pre_terminal_state_hook is not None:
+            try:
+                pre_terminal_state_hook(state)
+            except Exception as exc:  # noqa: BLE001 - trusted hook fails closed.
+                state.errors.append(
+                    AgentError(
+                        message="Runtime terminal state validation failed.",
+                        source="pre_terminal_state_hook",
+                        details={
+                            "code": "terminal_state_validation_failed",
+                            "error_type": type(exc).__name__,
+                        },
+                    )
+                )
+                state.status = "failed"
         if state.response is not None:
             state.response = with_generated_artifact_delivery(
                 state.response,
@@ -929,8 +1000,8 @@ class AgentGraphRuntime:
                 state.user_id,
                 state.session_id,
                 terminal_status,
-                state.intent.intent if state.intent else None,
-                [tool.tool_name for tool in state.selected_tools],
+                None,
+                list(dict.fromkeys(call.tool_name for call in state.tool_calls)),
                 int((perf_counter() - run_started_at) * 1000),
                 error=state.errors[-1].message if state.errors else None,
             )
@@ -1184,8 +1255,7 @@ class AgentGraphRuntime:
                 )
             call = result.tool_calls[0]
             decision = native_tool_call_to_assistant_decision(call)
-            if call.name != "task_plan_submit":
-                decision.step_id = _durable_step_id_for_call(snapshot, binding, call.name)
+            decision.step_id = _durable_step_id_for_call(snapshot, binding, call.name)
             validation = ActionValidator().validate(
                 decision=decision,
                 registry=self.registry,
@@ -1208,51 +1278,44 @@ class AgentGraphRuntime:
                     state,
                 )
             active_binding = binding
-            if call.name != "task_plan_submit":
-                if self.durable_task_service is None or decision.step_id is None:
-                    return TaskQuantumResult(
-                        TaskCheckpoint(
-                            kind="failed",
-                            error_code="durable_task_service_unavailable",
-                        ),
-                        state,
-                    )
-                active_binding_holder = {"value": binding}
-
-                def begin_external_attempt() -> None:
-                    started_binding = self.durable_task_service.begin_attempt(
-                        binding=binding,
-                        step_id=decision.step_id or "",
-                        tool_name=decision.tool_name or "",
-                        tool_input_digest=_durable_tool_input_digest(
-                            decision.tool_input or {}
-                        ),
-                    )
-                    active_binding_holder["value"] = started_binding
-                    request.metadata["durable_task_binding"] = started_binding.model_dump(
-                        mode="json"
-                    )
-                    tool_executor.context_metadata["durable_task_binding"] = started_binding
-
-                tool_executor.context_metadata["_before_tool_execution"] = (
-                    begin_external_attempt
+            if self.durable_task_service is None or decision.step_id is None:
+                return TaskQuantumResult(
+                    TaskCheckpoint(
+                        kind="failed",
+                        error_code="durable_task_service_unavailable",
+                    ),
+                    state,
                 )
+            active_binding_holder = {"value": binding}
+
+            def begin_external_attempt() -> None:
+                started_binding = self.durable_task_service.begin_attempt(
+                    binding=binding,
+                    step_id=decision.step_id or "",
+                    tool_name=decision.tool_name or "",
+                    tool_input_digest=_durable_tool_input_digest(
+                        decision.tool_input or {}
+                    ),
+                )
+                active_binding_holder["value"] = started_binding
+                request.metadata["durable_task_binding"] = started_binding.model_dump(
+                    mode="json"
+                )
+                tool_executor.context_metadata["durable_task_binding"] = started_binding
+
+            tool_executor.context_metadata["_before_tool_execution"] = (
+                begin_external_attempt
+            )
             tool_result = tool_executor.run_tool(
                 state,
-                decision.step_id or "plan_revision",
+                decision.step_id,
                 decision.tool_name or "",
                 decision.tool_input or {},
                 trace_store=self.trace_store,
                 trace_id=state.trace_id,
                 node_name="durable_task_quantum",
             )
-            if call.name != "task_plan_submit":
-                active_binding = active_binding_holder["value"]
-            if tool_result.tool_name == "task_plan_submit" and tool_result.success:
-                return TaskQuantumResult(
-                    TaskCheckpoint(kind="plan_revised", summary="Plan revised."),
-                    state,
-                )
+            active_binding = active_binding_holder["value"]
             if (tool_result.data or {}).get("side_effect_state") == "unknown":
                 return TaskQuantumResult(
                     TaskCheckpoint(
@@ -1369,19 +1432,12 @@ class AgentGraphRuntime:
         *,
         runtime_context: GraphRuntimeContext | None = None,
     ) -> Any:
-        if self.config.agent_graph_mode != "assistant_loop":
-            if runtime_context is not None:
-                return build_conditional_agent_graph(
-                    checkpointer=self.checkpointer,
-                    runtime_context=runtime_context,
-                )
-            return self._conditional_graph
         if runtime_context is not None:
             return build_assistant_loop_graph(
                 checkpointer=self.checkpointer,
                 runtime_context=runtime_context,
             )
-        return self._react_graph
+        return self._graph
 
     def _langgraph_config(self, request: UserRequest, state: AgentState) -> dict[str, dict[str, str]]:
         return {
@@ -1445,7 +1501,6 @@ class AgentGraphRuntime:
         return AgentResponse(
             message="请求处理失败。",
             data={
-                "intent": state.intent.intent if state.intent else None,
                 "status": state.status,
                 "errors": [error.model_dump(mode="json") for error in state.errors],
             },
@@ -1626,10 +1681,10 @@ def _durable_quantum_tool_specs(registry: Any, state: AgentState) -> list[ToolSp
             specs = registry.list_specs()
         else:
             specs = registry.describe_tools()
-        normalized = [spec if isinstance(spec, ToolSpec) else ToolSpec.model_validate(spec) for spec in specs]
-        if state.request.task_execution_mode != "durable":
-            normalized = [spec for spec in normalized if spec.name != "task_plan_submit"]
-        return normalized
+        return [
+            spec if isinstance(spec, ToolSpec) else ToolSpec.model_validate(spec)
+            for spec in specs
+        ]
     except Exception as exc:
         _set_durable_tool_description_failure_response(state, exc)
         return None
@@ -1759,8 +1814,7 @@ def _start_deep_research_workflow(
                 workflow_type="deep_research",
                 objective=objective,
                 deliverables=["research_report"],
-                planning_mode="runtime",
-                inputs={"research_questions": [objective]},
+                inputs={"research_questions": [objective], "source_target": 15},
                 durability_reasons=["assistant_mode_deep_research"],
                 idempotency_key=f"deep_research:{state.run_id}",
             ),

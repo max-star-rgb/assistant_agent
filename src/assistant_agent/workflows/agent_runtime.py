@@ -24,11 +24,15 @@ class AgentWorkItemRequest(BaseModel):
     )
     work_item_id: str
     attempt_id: str
+    display_title: str = Field(min_length=1, max_length=240)
     user_id: str
     agent_id: str
     session_id: str
     objective: str = Field(min_length=1, max_length=10_000)
     work_item_kind: str = Field(default="generic", min_length=1, max_length=120)
+    attempt_number: int = Field(default=1, ge=1, le=20)
+    previous_error_code: str | None = Field(default=None, max_length=160)
+    previous_result_summary: str = Field(default="", max_length=4_000)
     acceptance_contract: dict[str, JsonValue] = Field(default_factory=dict)
     assigned_constraints: list[WorkflowConstraintBinding] = Field(
         default_factory=list,
@@ -37,6 +41,8 @@ class AgentWorkItemRequest(BaseModel):
     assistant_mode: AssistantMode = "standard"
     repair_candidate_ids: list[str] = Field(default_factory=list, max_length=128)
     context_manifest: WorkflowContextManifest
+    workflow_deliverables: list[str] = Field(default_factory=list, max_length=32)
+    workflow_constraints: list[str] = Field(default_factory=list, max_length=64)
     allowed_tool_names: list[str] = Field(default_factory=list)
     workflow_inputs: dict[str, JsonValue] = Field(default_factory=dict)
     max_iterations: int = Field(default=5, ge=1, le=20)
@@ -68,7 +74,40 @@ def render_work_item_prompt(request: AgentWorkItemRequest) -> str:
         f"Work item objective: {request.objective}",
         f"Workflow objective: {request.context_manifest.objective}",
     ]
+    if request.attempt_number > 1:
+        lines.append(
+            "Previous attempt feedback:\n"
+            + json.dumps(
+                {
+                    "attempt_number": request.attempt_number,
+                    "error_code": request.previous_error_code,
+                    "summary": request.previous_result_summary,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+            + "\n纠正上一尝试暴露的问题；不要重复返回相同的无效结果。"
+        )
     if request.agent_role == "planner":
+        if request.workflow_deliverables:
+            lines.append(
+                "Workflow deliverables:\n"
+                + json.dumps(request.workflow_deliverables, ensure_ascii=False)
+            )
+        if request.workflow_constraints:
+            lines.append(
+                "Workflow constraints:\n"
+                + json.dumps(request.workflow_constraints, ensure_ascii=False)
+            )
+        if request.workflow_inputs:
+            lines.append(
+                "Workflow inputs:\n"
+                + json.dumps(
+                    request.workflow_inputs,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+            )
         lines.append(
             "你是当前 durable Plan-and-Execute execution 的主规划 Agent。"
             "只返回严格 JSON，不要执行研究，也不要包裹 Markdown："

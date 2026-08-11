@@ -432,8 +432,6 @@ class AssistantRunArtifacts:
             "provider": self.runtime.config.chat_provider,
             "model": self.runtime.config.chat_model,
             "provider_mode": self.runtime.config.provider_mode,
-            "graph_mode": self.runtime.config.agent_graph_mode,
-            "execution_strategy": self.state.execution_strategy,
             "query": self.state.request.text or "",
             "response_text": response.response_text,
             "response_data": response.data,
@@ -856,7 +854,6 @@ def runtime_info(config: ProviderConfig) -> dict[str, Any]:
 
     return {
         "provider_mode": config.provider_mode,
-        "graph_mode": config.agent_graph_mode,
         "providers": {
             "chat": config.chat_provider,
             "vision": config.vision_provider,
@@ -886,8 +883,6 @@ def current_stage(state: AgentState) -> str:
     output_type = last.get("output_type") or last.get("decision_type")
     if output_type == "tool_call":
         return "tool_selected"
-    if output_type == "ask_followup":
-        return "waiting_for_user"
     if output_type in {"text", "final_answer"}:
         return "final_answer"
     return "assistant_output"

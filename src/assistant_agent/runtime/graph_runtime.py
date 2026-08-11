@@ -11,8 +11,6 @@ from dataclasses import dataclass
 from typing import Any, TypeVar, cast
 
 from assistant_agent.runtime.cancellation import raise_if_cancelled
-from assistant_agent.runtime.intent import IntentDetector
-from assistant_agent.runtime.router import ToolRouter
 from assistant_agent.runtime.tool_executor import ToolExecutor
 from assistant_agent.runtime.chat_adapter import ChatAdapter
 from assistant_agent.context.service import ContextService
@@ -26,8 +24,6 @@ GraphStateT = TypeVar("GraphStateT", bound=dict[str, Any])
 
 RUNTIME_STATE_KEYS = frozenset(
     {
-        "intent_detector",
-        "router",
         "tool_executor",
         "chat_adapter",
         "chat_turn",
@@ -52,8 +48,6 @@ class GraphRuntimeContext:
     context_service: ContextService | None = None
     context_projector: Callable[[Any], None] | None = None
     tool_result_handler: Callable[[Any, Any], None] | None = None
-    intent_detector: IntentDetector | None = None
-    router: ToolRouter | None = None
     trace_store: TraceStore | None = None
     event_sink: EventSink | None = None
     cancel_token: Any | None = None
@@ -98,10 +92,6 @@ def strip_runtime_context(graph_state: GraphState) -> GraphState:
 
 def _with_runtime_context(graph_state: GraphStateT, runtime_context: GraphRuntimeContext) -> GraphStateT:
     enriched_state = dict(graph_state)
-    if runtime_context.intent_detector is not None:
-        enriched_state["intent_detector"] = runtime_context.intent_detector
-    if runtime_context.router is not None:
-        enriched_state["router"] = runtime_context.router
     enriched_state["tool_executor"] = runtime_context.tool_executor
     enriched_state["chat_adapter"] = runtime_context.chat_adapter
     if runtime_context.chat_turn is not None:

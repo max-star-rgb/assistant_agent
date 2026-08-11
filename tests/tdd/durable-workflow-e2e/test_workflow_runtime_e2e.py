@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from assistant_agent.config import ProviderConfig
 from assistant_agent.identity import RequestIdentity
 from assistant_agent.memory.models import SessionMemorySnapshot
@@ -87,6 +89,30 @@ def test_provider_native_react_autonomously_submits_workflow_without_classifier(
                 },
                 )],
             ),
+        ChatResult(
+            provider="scripted",
+            model="scripted-model",
+            finish_reason="stop",
+            response_text=json.dumps(
+                {
+                    "workflow_plan": {
+                        "workstreams": [
+                            {
+                                "seed_id": f"work-{index}",
+                                "kind": "execute",
+                                "display_title": f"正在执行阶段 {index}",
+                                "objective": f"work-item-{index}-objective",
+                                "depends_on": ([f"work-{index - 1}"] if index > 1 else []),
+                                "acceptance_contract": {},
+                            }
+                            for index in range(1, 4)
+                        ],
+                        "constraint_bindings": [],
+                    }
+                },
+                ensure_ascii=False,
+            ),
+        ),
         *[
             ChatResult(
                 provider="scripted",
@@ -94,7 +120,7 @@ def test_provider_native_react_autonomously_submits_workflow_without_classifier(
                 finish_reason="stop",
                 response_text=f"work-item-{index}-sentinel",
             )
-            for index in range(4)
+            for index in range(1, 4)
         ],
     ])
     runtime = AgentGraphRuntime(

@@ -22,6 +22,7 @@ from assistant_agent.observability.runtime_audit.daily_models import (
     IssueRegistry,
 )
 from assistant_agent.observability.runtime_audit.models import RuntimeAuditBundle
+from assistant_agent.observability.trace_ledger import LedgerPartitionSnapshot
 
 
 _AUDIT_TIMEZONE = ZoneInfo("Asia/Shanghai")
@@ -318,6 +319,39 @@ class RuntimeAuditArtifactStore:
                 self.daily_report_path(audit_date),
             )
         )
+
+    def has_successful_day_evidence(self, audit_date: date) -> bool:
+        """Whether this exact date has all canonical successful audit artifacts."""
+
+        return all(
+            path.exists()
+            for path in (
+                self.daily_bundle_path(audit_date),
+                self.daily_codex_input_path(audit_date),
+                self.daily_report_path(audit_date),
+            )
+        )
+
+    def successful_ledger_partition_snapshots(self) -> list[LedgerPartitionSnapshot]:
+        """Load exact-date ledger snapshots from canonical successful daily bundles."""
+
+        snapshots: list[LedgerPartitionSnapshot] = []
+        for path in sorted(self.inbox_dir.glob("????-??-??.bundle.json")):
+            try:
+                audit_date = date.fromisoformat(path.name[:10])
+            except ValueError:
+                continue
+            if not self.has_successful_day_evidence(audit_date):
+                continue
+            bundle = RuntimeAuditBundle.model_validate_json(
+                path.read_text(encoding="utf-8")
+            )
+            snapshots.extend(
+                snapshot
+                for snapshot in bundle.local_ledger_partitions
+                if snapshot.partition_date == audit_date
+            )
+        return snapshots
 
     def _artifact_exists(self, audit_run_id: str) -> bool:
         return any(

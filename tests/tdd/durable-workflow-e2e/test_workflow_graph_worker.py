@@ -9,12 +9,13 @@ from assistant_agent.identity import RequestIdentity
 from assistant_agent.workflows.definitions import (
     WorkflowDefinitionCatalog,
     WorkflowDefinitionDescriptor,
+    materialize_work_items,
 )
 from assistant_agent.workflows.models import (
-    WorkflowPlanVersion,
     WorkflowBudgetRequest,
+    WorkflowPlanProposal,
+    WorkflowPlanVersion,
     WorkflowSubmission,
-    WorkflowWorkItem,
 )
 from assistant_agent.workflows.progress import project_workflow_progress
 from assistant_agent.workflows.runtime import (
@@ -39,27 +40,15 @@ class TwoStepDefinition:
     def validate_submission(self, submission: WorkflowSubmission) -> None:
         return None
 
-    def build_initial_plan(
-        self, *, workflow_id: str, submission: WorkflowSubmission
+    def materialize_plan(
+        self, *, workflow, proposal: WorkflowPlanProposal
     ) -> WorkflowPlanVersion:
         return WorkflowPlanVersion(
-            workflow_id=workflow_id,
-            version=1,
+            workflow_id=workflow.workflow_id,
+            version=workflow.current_plan_version + 1,
             definition_version="1",
-            revision_reason="initial",
-            work_items=[
-                WorkflowWorkItem(
-                    work_item_id="collect",
-                    kind="probe",
-                    objective="collect-sentinel",
-                ),
-                WorkflowWorkItem(
-                    work_item_id="compose",
-                    kind="probe",
-                    objective="compose-sentinel",
-                    depends_on=["collect"],
-                ),
-            ],
+            revision_reason="runtime_planner",
+            work_items=materialize_work_items(proposal),
         )
 
 
@@ -68,6 +57,12 @@ class RecordingExecutor:
         self.executed: list[str] = []
 
     def execute(self, assignment) -> WorkItemExecutionResult:
+        if assignment.agent_role == "planner":
+            return WorkItemExecutionResult(
+                status="succeeded",
+                agent_role="planner",
+                plan_proposal=_proposal_for(assignment.workflow_type),
+            )
         self.executed.append(assignment.work_item.work_item_id)
         return WorkItemExecutionResult(
             status="succeeded",
@@ -96,29 +91,49 @@ class ParallelDefinition:
     def validate_submission(self, submission: WorkflowSubmission) -> None:
         return None
 
-    def build_initial_plan(
-        self, *, workflow_id: str, submission: WorkflowSubmission
+    def materialize_plan(
+        self, *, workflow, proposal: WorkflowPlanProposal
     ) -> WorkflowPlanVersion:
         return WorkflowPlanVersion(
-            workflow_id=workflow_id,
-            version=1,
+            workflow_id=workflow.workflow_id,
+            version=workflow.current_plan_version + 1,
             definition_version="1",
-            revision_reason="initial",
-            work_items=[
-                WorkflowWorkItem(
-                    work_item_id="ws_openclaw",
-                    kind="research",
-                    display_title="研究 OpenClaw",
-                    objective="openclaw",
-                ),
-                WorkflowWorkItem(
-                    work_item_id="ws_industry",
-                    kind="research",
-                    display_title="研究业界恢复模式",
-                    objective="industry",
-                ),
-            ],
+            revision_reason="runtime_planner",
+            work_items=materialize_work_items(proposal),
         )
+
+
+def _proposal_for(workflow_type: str) -> WorkflowPlanProposal:
+    if workflow_type == "parallel_probe":
+        return WorkflowPlanProposal(workstreams=[
+            {
+                "seed_id": "ws_openclaw",
+                "kind": "research",
+                "display_title": "研究 OpenClaw",
+                "objective": "openclaw",
+            },
+            {
+                "seed_id": "ws_industry",
+                "kind": "research",
+                "display_title": "研究业界恢复模式",
+                "objective": "industry",
+            },
+        ])
+    return WorkflowPlanProposal(workstreams=[
+        {
+            "seed_id": "collect",
+            "kind": "probe",
+            "display_title": "正在收集信息",
+            "objective": "collect-sentinel",
+        },
+        {
+            "seed_id": "compose",
+            "kind": "probe",
+            "display_title": "正在整理结果",
+            "objective": "compose-sentinel",
+            "depends_on": ["collect"],
+        },
+    ])
 
 
 def _submission() -> WorkflowSubmission:
@@ -149,11 +164,13 @@ def test_required_constraint_verifier_cannot_run_before_its_owner() -> None:
             {
                 "work_item_id": "collect",
                 "kind": "collect_sources",
+                "display_title": "正在收集来源",
                 "objective": "collect-sentinel",
             },
             {
                 "work_item_id": "synthesize",
                 "kind": "synthesize",
+                "display_title": "正在综合结果",
                 "objective": "synthesize-sentinel",
                 "depends_on": ["collect"],
             },
@@ -190,6 +207,7 @@ def test_required_constraint_without_verifier_is_rejected_at_plan_admission() ->
                 {
                     "work_item_id": "collect",
                     "kind": "collect_sources",
+                    "display_title": "正在收集来源",
                     "objective": "collect-sentinel",
                 }
             ],
@@ -226,6 +244,16 @@ def test_worker_advances_one_work_item_per_quantum_and_completes(tmp_path) -> No
         runtime=runtime,
         worker_id="worker-sentinel",
     )
+
+    assert worker.run_once() is True
+    after_planning = service.get_workflow(
+        identity=_identity(), workflow_id=bundle.workflow.workflow_id
+    )
+    assert after_planning.workflow.current_plan_version == 2
+    assert [item.status for item in after_planning.current_plan.work_items] == [
+        "ready",
+        "pending",
+    ]
 
     assert worker.run_once() is True
     after_first = service.get_workflow(
@@ -266,9 +294,18 @@ def test_progress_projects_the_same_ready_item_that_runtime_will_execute(tmp_pat
     )
     executor = RecordingExecutor()
 
+    DurableWorkflowWorker(
+        service=service,
+        runtime=WorkflowRuntime(service=service, work_item_executor=executor),
+        worker_id="worker-planner",
+    ).run_once()
+    planned = service.get_workflow(
+        identity=_identity(), workflow_id=created.workflow.workflow_id
+    )
+
     progress = project_workflow_progress(
-        workflow=created.workflow,
-        plan=created.current_plan,
+        workflow=planned.workflow,
+        plan=planned.current_plan,
     )
     DurableWorkflowWorker(
         service=service,
@@ -325,6 +362,7 @@ def test_worker_recovers_next_quantum_after_store_reopen(tmp_path) -> None:
         ),
         worker_id="worker-first",
     )
+    assert first_worker.run_once() is True
     assert first_worker.run_once() is True
     first_store.close()
 
@@ -403,7 +441,7 @@ def test_worker_accounts_actual_call_usage_and_stops_before_overspending(tmp_pat
     )
     assert exhausted.workflow.status == "failed"
     assert exhausted.workflow.terminal_reason_code == "model_budget_exhausted"
-    assert executor.executed == ["collect"]
+    assert executor.executed == []
     store.close()
 
 

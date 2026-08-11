@@ -220,7 +220,6 @@ def _coerce_route_request(request: AgentRouteRequest | UserRequest) -> AgentRout
         image_ids=list(request.image_ids),
         video_ids=list(request.video_ids),
         audio_id=request.audio_id,
-        execution_strategy=request.execution_strategy,
         metadata=dict(request.metadata),
     )
 

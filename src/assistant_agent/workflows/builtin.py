@@ -5,11 +5,13 @@ from __future__ import annotations
 from assistant_agent.workflows.definitions import (
     WorkflowDefinitionCatalog,
     WorkflowDefinitionDescriptor,
+    materialize_work_items,
 )
 from assistant_agent.workflows.models import (
+    WorkflowPlanProposal,
     WorkflowPlanVersion,
+    WorkflowRecord,
     WorkflowSubmission,
-    WorkflowWorkItem,
 )
 from assistant_agent.workflows.constraints import resolve_constraint_bindings
 from assistant_agent.workflows.research.definition import DeepResearchWorkflowDefinition
@@ -25,61 +27,23 @@ class LongHorizonWorkflowDefinition:
         if submission.workflow_type != self.descriptor.workflow_type:
             raise ValueError("submission type does not match definition")
 
-    def build_initial_plan(
-        self, *, workflow_id: str, submission: WorkflowSubmission
+    def materialize_plan(
+        self,
+        *,
+        workflow: WorkflowRecord,
+        proposal: WorkflowPlanProposal,
     ) -> WorkflowPlanVersion:
-        if submission.initial_workstreams:
-            work_items = [
-                WorkflowWorkItem(
-                    work_item_id=seed.seed_id,
-                    kind=seed.kind,
-                    display_title=seed.display_title,
-                    objective=seed.objective,
-                    depends_on=list(seed.depends_on),
-                    input_artifact_refs=list(seed.input_artifact_refs),
-                    acceptance_contract=dict(seed.acceptance_contract),
-                )
-                for seed in submission.initial_workstreams
-            ]
-        else:
-            work_items = [
-                WorkflowWorkItem(
-                    work_item_id="analyze",
-                    kind="analyze",
-                    display_title="正在分析任务目标与约束",
-                    objective=f"分析目标、交付物和约束：{submission.objective}",
-                ),
-                WorkflowWorkItem(
-                    work_item_id="execute",
-                    kind="execute",
-                    display_title="正在执行主要任务",
-                    objective=f"完成主要工作：{submission.objective}",
-                    depends_on=["analyze"],
-                ),
-                WorkflowWorkItem(
-                    work_item_id="verify",
-                    kind="verify",
-                    display_title="正在核验交付结果",
-                    objective="根据交付物和约束验证结果，列出仍存在的缺口。",
-                    depends_on=["execute"],
-                ),
-                WorkflowWorkItem(
-                    work_item_id="deliver",
-                    kind="deliver",
-                    display_title="正在整理最终交付物",
-                    objective="合成最终交付物，并明确限制和未决项。",
-                    depends_on=["verify"],
-                ),
-            ]
+        work_items = materialize_work_items(proposal)
         constraint_bindings = resolve_constraint_bindings(
-            submission=submission,
+            constraints=workflow.constraints,
             work_items=work_items,
+            proposal_bindings=proposal.constraint_bindings,
         )
         return WorkflowPlanVersion(
-            workflow_id=workflow_id,
-            version=1,
+            workflow_id=workflow.workflow_id,
+            version=workflow.current_plan_version + 1,
             definition_version=self.descriptor.definition_version,
-            revision_reason="initial_submission",
+            revision_reason="runtime_planner",
             work_items=work_items,
             constraint_bindings=constraint_bindings,
         )

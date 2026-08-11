@@ -8,7 +8,10 @@ import secrets
 from collections.abc import Callable
 
 from assistant_agent.identity import RequestIdentity
-from assistant_agent.workflows.definitions import WorkflowDefinitionCatalog
+from assistant_agent.workflows.definitions import (
+    WorkflowDefinitionCatalog,
+    build_bootstrap_plan,
+)
 from assistant_agent.workflows.models import WorkflowBundle, WorkflowSubmission, utc_now
 from assistant_agent.workflows.models import WorkflowEvent
 from assistant_agent.workflows.store import (
@@ -92,9 +95,9 @@ class WorkflowService:
             definition = self.definitions.require(submission.workflow_type)
             definition.validate_submission(submission)
             workflow_id = f"workflow_{secrets.token_hex(16)}"
-            plan = definition.build_initial_plan(
+            plan = build_bootstrap_plan(
                 workflow_id=workflow_id,
-                submission=submission,
+                descriptor=definition.descriptor,
             )
             now = self.clock()
             bundle, events = create_initial_bundle(

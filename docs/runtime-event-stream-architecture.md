@@ -53,14 +53,22 @@ through `RuntimeEventPublisher`, which creates both projections with the same
 occurrence timestamp and correlation identity. Runtime and Tool code must not
 construct a second lifecycle projection by hand after publishing the fact.
 
+standard 模式只有一套主运行图：`AgentGraphRuntime` 运行 Provider-native ReAct assistant
+loop，在 `assistant -> execute_tool -> assistant` 与 `assistant -> compose_response` 之间循环或收口。
+仓库不再保留 conditional graph、rule intent/router/planner 或可切换它们的 `AGENT_GRAPH_MODE`；
+`UserRequest` 也不再接受 `execution_strategy=plan_and_solve`。当前仍存在的
+`task_execution_mode` 是工具/持久执行的结构化治理事实，不是第二张 Agent graph 的选择器。
+
 Durable Workflow 的 Plan、quantum、返工和 terminal 生命周期不属于单个 bounded Assistant run，因此其
 事实源是已提交的 `WorkflowEvent`，而不是把它们复制为 `TraceEvent`。Deep Research 是一个逻辑
 Plan-and-Execute runtime：入口把当前 canonical trace ID 持久化到 Workflow，首个 durable quantum 调用
 主 Agent planner 生成结构化 DAG，后续 work item 再由可替换的 worker Agent 执行。planner/worker 每次
 调用仍产生自己的 canonical `AgentEvent/TraceEvent`，并保留 trace/run/attempt 身份。Runtime 在可信
-assignment 边界注入 OTel 导出上下文，使 `workflow.start`、Workflow、planner/worker 的
-`agent.runtime` 及其子 observation 导出到同一个 `deep_research.workflow` trace 并挂在对应 durable
-层级下；这不会改写 canonical event 身份，也不会把 Workflow 状态机塞进单次 Assistant loop。
+assignment 边界注入 OTel 导出上下文，使 Workflow 和 planner/worker 子树导出到同一个
+`deep_research.workflow` trace。Agent-backed attempt 复用 durable attempt span ID，并直接以 work item
+`display_title` 命名；不另建 `workflow.start`、attempt wrapper 或嵌套的通用 `agent.runtime`。其下
+仍是标准 assistant loop 产生的 memory、ReAct iteration、context、`llm.chat`、Tool 与 response
+observation。这不会改写 canonical event 身份，也不会把 Workflow 状态机塞进单次 Assistant loop。
 
 The projections are not one-to-one. Delivery-only facts such as committed text
 deltas remain `AgentEvent` only, while LLM, context, memory, and graph-node
@@ -198,9 +206,10 @@ assistant message 展示 Provider 的原始语义回复（正文、工具调用�
 generation input 保留 SDK 调用的 messages/tools 语义以及生成、stream 和 Provider 特有参数，
 并按上述 Provider-neutral 形状支持 Langfuse formatted renderer，不为展示虚构 message role；
 finish reason 保留在 trace/协议快照，
-usage、route 与 transport 保留在诊断字段，都不拼接到 output 文本。默认 trace event
-和 `.data/graph_trace.jsonl` 仍只保存安全摘要，vendor SDK response envelope、HTTP header、stream
-chunk body 与 hidden reasoning 不进入 debug store。
+usage、route 与 transport 保留在诊断字段，都不拼接到 output 文本。默认 trace event 保持安全摘要；
+本地 `.data/trace_ledger/YYYY-MM-DD.jsonl` 只保存经过 identifier 约束的最小完整性字段，不保存
+input/output summary。vendor SDK response envelope、HTTP header、stream chunk body 与 hidden reasoning
+不进入 ledger 或 debug store。
 Qwen 的隐式搜索与网页抓取表现为 generation input 中的
 `provider_parameters.enable_search/search_options`、Provider
 最终语义回复和 DashScope 返回的来源；Runtime 不为其制造 `tool.started/tool.finished`，也不增加
@@ -289,6 +298,8 @@ cursor-based replay/tail：
 
 因此 `AgentRunStream` 仍表示一次前台 runtime run，`TaskEventSubscription` 表示一个可跨进程
 重启的 durable task 的观察窗口；两者不能互相替代，也不应共享内存队列作为事实源。
+DurableTask 当前只作为 schedule、external event 和 notification/checkpoint 的执行底座；
+它没有模型可见的 plan-submit Tool，也不再承担新长流程的顶层 Planner 或 DAG authority。
 
 Durable Workflow 使用相同的分离原则，但事件事实源是 `WorkflowStore`：
 
@@ -297,8 +308,11 @@ Durable Workflow 使用相同的分离原则，但事件事实源是 `WorkflowSt
 - 前台 Deep Research start run 在返回 handle 后结束，本身不 tail 后台事件；本地 `media_simulator.py` 可在
   前台终包后另开 identity-scoped HTTP pull 窗口，按 cursor 观察同一 Workflow，但不延长或重新打开
   ingress Gateway run；
-- 显式 Deep Research start 不调用 Provider 或本地 Tool，直接形成短终态回复。首个后台 quantum 由主
-  Agent planner 生成并提交结构化 plan；其后
+- 显式 Deep Research start 不调用 Provider 或本地 Tool，只持久化用户意图并形成短终态回复。
+  所有 Workflow submission 都先产生仅含 planner item 的 version 1 bootstrap Plan；首个后台
+  quantum 由主 Agent planner 生成严格 `WorkflowPlanProposal`，Definition materialize 和 admission
+  后提交 version 2 DAG。得到批准的依赖图可 fan-out 无依赖工作、在受限范围做局部返工，
+  并在依赖满足后进入验证或 synthesis；其后
   status facade 只从持久化当前 item 的 `display_title`、状态和完成数投影产品 `progress`；原始事件
   仍是诊断事实，但不是默认产品文案；
 - planner 和每个语义 worker item 都产生独立 bounded `AgentGraphRuntime` canonical run/trace，Workflow event 通过
@@ -326,6 +340,12 @@ trusted work-item prompt 返回完整、通过严格 schema
 返回正文；结构化 constraint 指定的 verifier 即使成功也必须返回 `verified` 并完整覆盖分配给它的
 constraint ID，否则该 quantum 进入 retry/failure。`repair_work_item_ids` 只能从 controller 提供的
 祖先候选中选择，并在 plan revision 前再次经过 DAG/descendant 校验。
+重试不是盲重放：下一次 trusted assignment 会携带已提交的前次 attempt number、稳定 error code 和
+有界 result summary，planner/worker prompt 据此纠正 schema、admission 或执行错误；这些反馈来自
+Workflow Store，而不是入口临时状态。
+Planner 的 proposal 解析与同一套 Definition materialize/admission 在该 Agent quantum 发布 terminal
+canonical event 之前执行；解析或 admission 失败会使这次 planner Agent run 本身失败，再由 Workflow
+controller 按已提交的 retry/failure 规则收敛，避免内外两层对同一次尝试给出相反终态。
 
 ## Thread Model And Ordering
 

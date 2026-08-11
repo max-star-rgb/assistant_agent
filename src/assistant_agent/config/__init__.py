@@ -17,7 +17,6 @@ from assistant_agent.providers.specs import (
 )
 
 
-AgentGraphMode = Literal["conditional", "assistant_loop"]
 ContextCompactorMode = Literal["off", "llm"]
 ConversationHistoryBackend = Literal["memory", "jsonl"]
 LangGraphCheckpointerBackend = Literal["none", "memory"]
@@ -38,7 +37,6 @@ ImageGenerationProviderName = str
 ShoppingSearchProviderName = Literal["mock", "http", "haodanku"]
 ShoppingCompareProviderName = Literal["mock", "http", "haodanku"]
 LodgingProviderName = Literal["mock", "flyai"]
-IntentRouterName = Literal["rule", "mock_llm", "hybrid", "llm"]
 SearchProviderName = Literal["mock", "http", "tavily"]
 VisualImageSearchProviderName = Literal["mock", "qwen"]
 QwenChatApiProtocol = Literal["dashscope", "openai_compatible"]
@@ -235,8 +233,6 @@ class ProviderConfig:
     video_understanding_timeout_seconds: float = 60.0
     max_video_bytes: int = 52_428_800
     max_video_seconds: float = 60.0
-    intent_router: IntentRouterName = "rule"
-    agent_graph_mode: AgentGraphMode = "assistant_loop"  # 默认使用新的 ReAct 架构
     langgraph_checkpointer_backend: LangGraphCheckpointerBackend = "memory"
     max_tool_iterations: int = 8
     max_control_tool_iterations: int = 3
@@ -934,8 +930,6 @@ class ProviderConfig:
             ),
             max_video_bytes=_int_env(source.get("MULTIMODAL_AGENT_MAX_VIDEO_BYTES"), 52_428_800),
             max_video_seconds=_float_env(source.get("MULTIMODAL_AGENT_MAX_VIDEO_SECONDS"), 60.0),
-            intent_router=_intent_router(source.get("MULTIMODAL_AGENT_INTENT_ROUTER")),
-            agent_graph_mode=_agent_graph_mode(source.get("AGENT_GRAPH_MODE")),
             langgraph_checkpointer_backend=_langgraph_checkpointer_backend(
                 source.get("LANGGRAPH_CHECKPOINTER_BACKEND")
                 or source.get("MULTIMODAL_AGENT_CHECKPOINTER_BACKEND")
@@ -1330,18 +1324,6 @@ def _clean_env_value(value: str) -> str:
     if len(cleaned) >= 2 and (cleaned[0], cleaned[-1]) in {('"', '"'), ("'", "'"), ("“", "”"), ("‘", "’")}:
         cleaned = cleaned[1:-1]
     return cleaned.strip().strip('"').strip("'").strip("“”‘’")
-
-
-def _intent_router(value: str | None) -> IntentRouterName:
-    if value in {"mock_llm", "hybrid", "llm"}:
-        return value
-    return "rule"
-
-
-def _agent_graph_mode(value: str | None) -> AgentGraphMode:
-    if value == "conditional":
-        return "conditional"
-    return "assistant_loop"  # 默认改为 assistant_loop
 
 
 def _context_compactor_mode(value: str | None) -> ContextCompactorMode:

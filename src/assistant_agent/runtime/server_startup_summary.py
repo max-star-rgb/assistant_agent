@@ -195,7 +195,7 @@ def format_server_startup_report(
             f"  Memory trace content:      {_enabled(report.memory_trace_content_enabled)}",
             "",
             "Observability:",
-            f"  Runtime trace:   {report.runtime_trace_path or 'in-memory only'}",
+            f"  Runtime ledger:  {report.runtime_trace_path or 'in-memory only'}",
             f"  Runtime export:  Langfuse {_langfuse_export_state(report.dependencies)}",
             f"  Gateway events:  {report.gateway_event_path}",
             f"  Delivery audit:  {report.delivery_audit_path}",

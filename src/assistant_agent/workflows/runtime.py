@@ -1,29 +1,30 @@
-"""LangGraph controller for one bounded durable workflow quantum."""
+"""Durable Plan-and-Execute controller for independently leased DAG nodes."""
 
 from __future__ import annotations
 
 import re
 from collections.abc import Callable
 from datetime import datetime
-from typing import Literal, Protocol, TypedDict
+from typing import Literal, Protocol
 from uuid import uuid4
 
-from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, ConfigDict, Field
 
 from assistant_agent.workflows.models import (
+    ClaimedWorkflowWorkItem,
     WorkflowBundle,
     WorkflowConstraintBinding,
     WorkflowEvent,
-    WorkflowLease,
     WorkflowPlanProposal,
-    WorkflowSubmission,
+    WorkflowPlanVersion,
     WorkflowWorkItem,
     utc_now,
 )
-from assistant_agent.workflows.planning import next_ready_work_item
 from assistant_agent.workflows.service import WorkflowService
-from assistant_agent.workflows.store import WorkflowLeaseConflict
+from assistant_agent.workflows.store import (
+    WorkflowLeaseConflict,
+    WorkflowRevisionConflict,
+)
 from assistant_agent.workflows.transitions import validate_plan_dag
 
 
@@ -81,21 +82,53 @@ class WorkItemExecutor(Protocol):
     def execute(self, assignment: WorkItemAssignment) -> WorkItemExecutionResult: ...
 
 
-class WorkflowGraphState(TypedDict, total=False):
-    workflow_id: str
-    lease: WorkflowLease
-    bundle: WorkflowBundle
-    route: str
-    selected_work_item_id: str
-    selected_agent_role: Literal["planner", "worker"]
-    attempt_id: str
-    execution_result: WorkItemExecutionResult
-    pending_events: list[WorkflowEvent]
-    saved_bundle: WorkflowBundle
+def materialize_planner_revision(
+    *,
+    service: WorkflowService,
+    bundle: WorkflowBundle,
+    proposal: WorkflowPlanProposal,
+    now: datetime,
+) -> WorkflowPlanVersion:
+    """Materialize and admit an untrusted planner proposal without committing it."""
+
+    workflow = bundle.workflow
+    if any(
+        seed.seed_id == "plan" or seed.kind == "plan"
+        for seed in proposal.workstreams
+    ):
+        raise ValueError("planner proposal uses a reserved plan id or kind")
+    definition = service.definitions.require(workflow.workflow_type)
+    revision = definition.materialize_plan(
+        workflow=workflow.model_copy(deep=True),
+        proposal=proposal.model_copy(deep=True),
+    )
+    if (
+        revision.workflow_id != workflow.workflow_id
+        or revision.version != workflow.current_plan_version + 1
+        or revision.definition_version != workflow.definition_version
+    ):
+        raise ValueError("planner materialization returned an invalid plan identity")
+    revision.created_at = now
+    validate_plan_dag(
+        revision,
+        max_work_items=service.limits.max_work_items,
+    )
+    for candidate in revision.work_items:
+        if not candidate.depends_on:
+            candidate.input_artifact_refs = list(
+                dict.fromkeys(
+                    [
+                        *candidate.input_artifact_refs,
+                        *workflow.seed_artifact_refs,
+                    ]
+                )
+            )
+            candidate.status = "ready"
+    return revision
 
 
 class WorkflowRuntime:
-    """Deterministic outer controller; semantic work stays behind WorkItemExecutor."""
+    """Execute one claimed node and atomically merge its result into the latest DAG."""
 
     def __init__(
         self,
@@ -103,90 +136,31 @@ class WorkflowRuntime:
         service: WorkflowService,
         work_item_executor: WorkItemExecutor,
         clock: Callable = utc_now,
+        model_call_limit_per_item: int = 5,
+        tool_call_limit_per_item: int = 4,
     ) -> None:
+        if model_call_limit_per_item < 1 or tool_call_limit_per_item < 0:
+            raise ValueError("work item call limits are invalid")
         self.service = service
         self.work_item_executor = work_item_executor
         self.clock = clock
-        self.graph = self._build_graph()
+        self.model_call_limit_per_item = model_call_limit_per_item
+        self.tool_call_limit_per_item = tool_call_limit_per_item
 
-    def run_quantum(self, lease: WorkflowLease) -> WorkflowBundle:
-        result = self.graph.invoke(
-            {"workflow_id": lease.workflow_id, "lease": lease},
-            config={"configurable": {"thread_id": f"workflow:{lease.workflow_id}"}},
-        )
-        return result["saved_bundle"]
+    def run_claim(self, claim: ClaimedWorkflowWorkItem) -> WorkflowBundle:
+        """Execute outside the store lock, then merge using item-token + revision CAS."""
 
-    def _build_graph(self):
-        graph = StateGraph(WorkflowGraphState)
-        graph.add_node("hydrate_flow", self._hydrate_flow)
-        graph.add_node("guard_execution", self._guard_execution)
-        graph.add_node("select_ready_work", self._select_ready_work)
-        graph.add_node("execute_work_item", self._execute_work_item)
-        graph.add_node("terminalize", self._terminalize)
-        graph.add_node("commit_quantum", self._commit_quantum)
-        graph.add_edge(START, "hydrate_flow")
-        graph.add_edge("hydrate_flow", "guard_execution")
-        graph.add_conditional_edges(
-            "guard_execution",
-            lambda state: state["route"],
-            {"select": "select_ready_work", "terminal": "terminalize"},
-        )
-        graph.add_conditional_edges(
-            "select_ready_work",
-            lambda state: state["route"],
-            {"execute": "execute_work_item", "terminal": "terminalize"},
-        )
-        graph.add_edge("execute_work_item", "commit_quantum")
-        graph.add_edge("terminalize", "commit_quantum")
-        graph.add_edge("commit_quantum", END)
-        return graph.compile()
-
-    def _hydrate_flow(self, state: WorkflowGraphState) -> WorkflowGraphState:
-        lease = state["lease"]
-        bundle = self.service.store.load(lease.workflow_id)
-        if bundle is None:
-            raise WorkflowLeaseConflict(lease.workflow_id)
-        workflow = bundle.workflow
+        bundle = claim.bundle
+        lease = claim.lease
+        work_item = self._work_item(bundle, lease.work_item_id)
         if (
-            workflow.revision != lease.workflow_revision
-            or workflow.lease_owner != lease.worker_id
-            or workflow.lease_token != lease.lease_token
+            work_item.active_attempt_id != lease.attempt_id
+            or work_item.lease_token != lease.lease_token
         ):
             raise WorkflowLeaseConflict(lease.workflow_id)
-        return {"bundle": bundle, "pending_events": []}
-
-    def _guard_execution(self, state: WorkflowGraphState) -> WorkflowGraphState:
-        bundle = state["bundle"]
-        workflow = bundle.workflow
-        if workflow.cancel_requested:
-            return {"route": "terminal", "selected_work_item_id": "cancel_requested"}
-        if self.clock() >= workflow.budget.deadline_at:
-            return {"route": "terminal", "selected_work_item_id": "deadline_exceeded"}
-        if workflow.budget.workflow_quanta_remaining <= 0:
-            return {"route": "terminal", "selected_work_item_id": "budget_exhausted"}
-        if workflow.budget.model_calls_remaining <= 0:
-            return {
-                "route": "terminal",
-                "selected_work_item_id": "model_budget_exhausted",
-            }
-        return {"route": "select"}
-
-    def _select_ready_work(self, state: WorkflowGraphState) -> WorkflowGraphState:
-        plan = state["bundle"].current_plan
-        ready = next_ready_work_item(plan)
-        if ready is not None:
-            return {"route": "execute", "selected_work_item_id": ready.work_item_id}
-        if all(item.status in {"succeeded", "skipped", "superseded"} for item in plan.work_items):
-            return {"route": "terminal", "selected_work_item_id": "completed"}
-        return {"route": "terminal", "selected_work_item_id": "no_ready_work"}
-
-    def _execute_work_item(self, state: WorkflowGraphState) -> WorkflowGraphState:
-        bundle = state["bundle"]
-        work_item = self._work_item(bundle, state["selected_work_item_id"])
         agent_role: Literal["planner", "worker"] = (
             "planner" if self._is_bootstrap_planner(bundle, work_item) else "worker"
         )
-        attempt_id = f"attempt_{uuid4().hex}"
         assignment = WorkItemAssignment(
             workflow_id=bundle.workflow.workflow_id,
             workflow_type=bundle.workflow.workflow_type,
@@ -195,7 +169,7 @@ class WorkflowRuntime:
             user_id=bundle.workflow.user_id,
             agent_id=bundle.workflow.agent_id,
             session_id=bundle.workflow.session_id,
-            attempt_id=attempt_id,
+            attempt_id=lease.attempt_id,
             objective=bundle.workflow.objective,
             deliverables=list(bundle.workflow.deliverables),
             constraints=list(bundle.workflow.constraints),
@@ -204,8 +178,8 @@ class WorkflowRuntime:
                 for item in bundle.current_plan.constraint_bindings
             ],
             inputs=dict(bundle.workflow.inputs),
-            model_calls_remaining=bundle.workflow.budget.model_calls_remaining,
-            tool_calls_remaining=bundle.workflow.budget.tool_calls_remaining,
+            model_calls_remaining=lease.reserved_model_calls,
+            tool_calls_remaining=lease.reserved_tool_calls,
             repair_candidate_ids=self._ancestor_ids(
                 bundle,
                 work_item.work_item_id,
@@ -229,121 +203,121 @@ class WorkflowRuntime:
                 "agent_role": agent_role,
             }
         )
-        return {
-            "attempt_id": attempt_id,
-            "execution_result": result,
-            "selected_agent_role": agent_role,
-        }
+        return self._commit_result(claim, result)
 
-    def _terminalize(self, state: WorkflowGraphState) -> WorkflowGraphState:
-        bundle = state["bundle"].model_copy(deep=True)
-        workflow = bundle.workflow
-        reason = state["selected_work_item_id"]
-        now = self.clock()
-        if reason == "cancel_requested":
-            workflow.status = "cancelled"
-            workflow.phase = "cancelled"
-            workflow.terminal_reason_code = "cancel_requested"
-            event_type = "workflow.cancelled"
-        elif reason == "completed":
-            workflow.status = "completed"
-            workflow.phase = "completed"
-            event_type = "workflow.completed"
-        else:
-            workflow.status = "failed" if reason != "no_ready_work" else "blocked"
-            workflow.phase = workflow.status
-            workflow.terminal_reason_code = reason
-            event_type = "workflow.failed" if workflow.status == "failed" else "workflow.blocked"
-        if workflow.status in {"completed", "failed", "cancelled"}:
-            workflow.terminal_at = now
-        return {
-            "bundle": bundle,
-            "pending_events": [
-                WorkflowEvent(
-                    workflow_id=workflow.workflow_id,
-                    event_type=event_type,
-                    status=workflow.status,
-                    payload={"reason_code": reason},
-                )
-            ],
-        }
-    def _commit_quantum(self, state: WorkflowGraphState) -> WorkflowGraphState:
-        bundle = state["bundle"].model_copy(deep=True)
-        events = list(state.get("pending_events", []))
-        selected_id = state.get("selected_work_item_id", "")
-        result = state.get("execution_result")
-        attempt_id = state.get("attempt_id")
-        if result is not None:
-            item = self._work_item(bundle, selected_id)
-            planned_revision = None
+    def _commit_result(
+        self,
+        claim: ClaimedWorkflowWorkItem,
+        execution_result: WorkItemExecutionResult,
+    ) -> WorkflowBundle:
+        lease = claim.lease
+        for _ in range(16):
+            loaded = self.service.store.load(lease.workflow_id)
+            if loaded is None:
+                raise WorkflowLeaseConflict(lease.workflow_id)
+            bundle = loaded.model_copy(deep=True)
+            try:
+                item = self._work_item(bundle, lease.work_item_id)
+            except StopIteration as exc:
+                raise WorkflowLeaseConflict(lease.workflow_id) from exc
             if (
-                result.status == "succeeded"
-                and state.get("selected_agent_role") == "planner"
+                item.active_attempt_id != lease.attempt_id
+                or item.lease_token != lease.lease_token
+                or item.lease_owner != lease.worker_id
             ):
-                try:
-                    if result.plan_proposal is None:
-                        raise ValueError("planner result omitted plan proposal")
-                    planned_revision = self._build_planner_revision(
-                        bundle,
-                        result.plan_proposal,
-                    )
-                except Exception:  # noqa: BLE001 - planner output is untrusted.
-                    result = result.model_copy(
-                        update={
-                            "status": "retryable_failed",
-                            "error_code": "workflow_plan_rejected",
-                            "summary": "Planner proposal failed Workflow admission.",
-                        }
-                    )
-            item.attempt_count += 1
-            item.active_attempt_id = None
-            item.result_summary = result.summary
-            item.output_artifact_refs = list(result.artifact_refs)
-            item.error_code = result.error_code
+                return loaded
             workflow = bundle.workflow
-            workflow.budget.workflow_quanta_remaining -= 1
-            workflow.budget.model_calls_remaining = max(
-                0,
-                workflow.budget.model_calls_remaining - result.model_calls_used,
-            )
-            workflow.budget.tool_calls_remaining = max(
-                0,
-                workflow.budget.tool_calls_remaining - result.tool_calls_used,
-            )
-            if result.status == "succeeded":
-                item.status = "succeeded"
-                events.append(
-                    self._item_event(
-                        bundle,
-                        item,
-                        "workflow.work_item.succeeded",
-                        attempt_id=attempt_id,
-                        result=result,
-                    )
-                )
-                if planned_revision is not None:
-                    bundle.plans.append(planned_revision)
-                    workflow.current_plan_version = planned_revision.version
-                    workflow.status = "running"
-                    workflow.phase = "executing"
-                    events.append(
-                        WorkflowEvent(
-                            workflow_id=workflow.workflow_id,
-                            event_type="workflow.plan.created",
-                            status="running",
-                            payload={
-                                "plan_version": planned_revision.version,
-                                "work_item_count": len(
-                                    planned_revision.work_items
-                                ),
-                                "planner_agent_role": result.agent_role,
-                                "planner_attempt_id": attempt_id,
-                            },
+            events: list[WorkflowEvent] = []
+            if workflow.cancel_requested:
+                self._cancel_workflow(bundle, now=self.clock())
+                events.append(WorkflowEvent(
+                    workflow_id=workflow.workflow_id,
+                    event_type="workflow.cancelled",
+                    status="cancelled",
+                    payload={"reason_code": "cancel_requested"},
+                ))
+            else:
+                result = self._bounded_result(execution_result, claim)
+                self._refund_unused_reservation(workflow, item, result)
+                planned_revision = None
+                if result.status == "succeeded" and result.agent_role == "planner":
+                    try:
+                        if result.plan_proposal is None:
+                            raise ValueError("planner result omitted plan proposal")
+                        planned_revision = self._build_planner_revision(
+                            bundle,
+                            result.plan_proposal,
                         )
-                    )
-                else:
-                    self._refresh_ready_items(bundle)
-                if planned_revision is None and all(
+                    except Exception:  # noqa: BLE001 - planner output is untrusted.
+                        result = result.model_copy(
+                            update={
+                                "status": "retryable_failed",
+                                "error_code": "workflow_plan_rejected",
+                                "summary": "Planner proposal failed Workflow admission.",
+                            }
+                        )
+                item.attempt_count += 1
+                self._clear_item_lease(item)
+                item.result_summary = result.summary
+                item.output_artifact_refs = list(result.artifact_refs)
+                item.error_code = result.error_code
+                self._apply_result(
+                    bundle=bundle,
+                    item=item,
+                    result=result,
+                    planned_revision=planned_revision,
+                    attempt_id=lease.attempt_id,
+                    events=events,
+                )
+            try:
+                return self.service.store.save(
+                    bundle,
+                    expected_revision=loaded.workflow.revision,
+                    events=events,
+                )
+            except WorkflowRevisionConflict:
+                continue
+        raise WorkflowRevisionConflict(lease.workflow_id)
+
+    def _apply_result(
+        self,
+        *,
+        bundle: WorkflowBundle,
+        item: WorkflowWorkItem,
+        result: WorkItemExecutionResult,
+        planned_revision: WorkflowPlanVersion | None,
+        attempt_id: str,
+        events: list[WorkflowEvent],
+    ) -> None:
+        workflow = bundle.workflow
+        if result.status == "succeeded":
+            item.status = "succeeded"
+            events.append(self._item_event(
+                bundle,
+                item,
+                "workflow.work_item.succeeded",
+                attempt_id=attempt_id,
+                result=result,
+            ))
+            if planned_revision is not None:
+                bundle.plans.append(planned_revision)
+                workflow.current_plan_version = planned_revision.version
+                workflow.status = "running"
+                workflow.phase = "executing"
+                events.append(WorkflowEvent(
+                    workflow_id=workflow.workflow_id,
+                    event_type="workflow.plan.created",
+                    status="running",
+                    payload={
+                        "plan_version": planned_revision.version,
+                        "work_item_count": len(planned_revision.work_items),
+                        "planner_agent_role": result.agent_role,
+                        "planner_attempt_id": attempt_id,
+                    },
+                ))
+            else:
+                self._refresh_ready_items(bundle)
+                if all(
                     candidate.status in {"succeeded", "skipped", "superseded"}
                     for candidate in bundle.current_plan.work_items
                 ):
@@ -356,168 +330,184 @@ class WorkflowRuntime:
                         event_type="workflow.completed",
                         status="completed",
                     ))
-                elif planned_revision is None:
+                elif workflow.waiting_input is None:
                     workflow.status = "running"
-                    workflow.phase = item.kind
-            elif result.status == "repair":
-                if not result.repair_work_item_ids:
-                    workflow.status = "failed"
-                    workflow.phase = "failed"
-                    workflow.terminal_reason_code = "repair_scope_missing"
-                    workflow.terminal_at = self.clock()
-                    events.append(
+                    workflow.phase = "executing"
+        elif result.status == "repair":
+            if not result.repair_work_item_ids:
+                self._fail_workflow(
+                    bundle,
+                    item=item,
+                    reason="repair_scope_missing",
+                )
+                workflow.terminal_at = self.clock()
+                events.append(self._item_event(
+                    bundle, item, "workflow.failed", attempt_id=attempt_id, result=result
+                ))
+            else:
+                try:
+                    self._revise_for_repair(
+                        bundle,
+                        repair_ids=set(result.repair_work_item_ids),
+                        verifier_id=item.work_item_id,
+                        reason=result.error_code or "verification_gap",
+                    )
+                except ValueError:
+                    self._fail_workflow(
+                        bundle,
+                        item=item,
+                        reason="invalid_repair_scope",
+                    )
+                    events.append(self._item_event(
+                        bundle, item, "workflow.failed", attempt_id=attempt_id, result=result
+                    ))
+                else:
+                    workflow.status = "running"
+                    workflow.phase = "repairing"
+                    events.extend([
                         self._item_event(
                             bundle,
                             item,
-                            "workflow.failed",
+                            "workflow.repair.requested",
                             attempt_id=attempt_id,
                             result=result,
-                        )
-                    )
-                else:
-                    try:
-                        self._revise_for_repair(
-                            bundle,
-                            repair_ids=set(result.repair_work_item_ids),
-                            verifier_id=item.work_item_id,
-                            reason=result.error_code or "verification_gap",
-                        )
-                    except ValueError:
-                        item.status = "blocked"
-                        workflow.status = "failed"
-                        workflow.phase = "failed"
-                        workflow.terminal_reason_code = "invalid_repair_scope"
-                        workflow.terminal_at = self.clock()
-                        events.append(
-                            self._item_event(
-                                bundle,
-                                item,
-                                "workflow.failed",
-                                attempt_id=attempt_id,
-                                result=result,
-                            )
-                        )
-                    else:
-                        workflow.status = "running"
-                        workflow.phase = "repairing"
-                        events.extend([
-                            self._item_event(
-                                bundle,
-                                item,
-                                "workflow.repair.requested",
-                                attempt_id=attempt_id,
-                                result=result,
-                            ),
-                            WorkflowEvent(
-                                workflow_id=workflow.workflow_id,
-                                event_type="workflow.plan.revised",
-                                status="running",
-                                payload={
-                                    "plan_version": workflow.current_plan_version,
-                                    "repair_work_item_ids": result.repair_work_item_ids,
-                                },
-                            ),
-                        ])
-            elif result.status == "waiting_input":
-                item.status = "blocked"
-                workflow.status = "waiting_input"
-                workflow.phase = "waiting_input"
-                workflow.waiting_input = {
-                    **(result.input_request or {"required_fields": []}),
-                    "resume_token": f"resume_{uuid4().hex}",
-                }
-                events.append(
-                    self._item_event(
-                        bundle,
-                        item,
-                        "workflow.input.required",
-                        attempt_id=attempt_id,
-                        result=result,
-                    )
-                )
-            elif result.status == "retryable_failed" and item.attempt_count < item.max_attempts:
-                item.status = "ready"
+                        ),
+                        WorkflowEvent(
+                            workflow_id=workflow.workflow_id,
+                            event_type="workflow.plan.revised",
+                            status="running",
+                            payload={
+                                "plan_version": workflow.current_plan_version,
+                                "repair_work_item_ids": result.repair_work_item_ids,
+                            },
+                        ),
+                    ])
+        elif result.status == "waiting_input":
+            item.status = "blocked"
+            workflow.status = "waiting_input"
+            workflow.phase = "waiting_input"
+            workflow.waiting_input = {
+                **(result.input_request or {"required_fields": []}),
+                "resume_token": f"resume_{uuid4().hex}",
+            }
+            events.append(self._item_event(
+                bundle,
+                item,
+                "workflow.input.required",
+                attempt_id=attempt_id,
+                result=result,
+            ))
+        elif result.status == "retryable_failed" and item.attempt_count < item.max_attempts:
+            item.status = "ready"
+            if workflow.waiting_input is None:
                 workflow.status = "running"
-                events.append(
-                    self._item_event(
-                        bundle,
-                        item,
-                        "workflow.work_item.retry_scheduled",
-                        attempt_id=attempt_id,
-                        result=result,
-                    )
-                )
-            else:
-                item.status = "blocked"
-                workflow.status = "failed"
-                workflow.phase = "failed"
-                workflow.terminal_reason_code = result.error_code or "work_item_failed"
-                workflow.terminal_at = self.clock()
-                events.append(
-                    self._item_event(
-                        bundle,
-                        item,
-                        "workflow.failed",
-                        attempt_id=attempt_id,
-                        result=result,
-                    )
-                )
-        lease = state["lease"]
-        saved = self.service.store.save(
-            bundle,
-            expected_revision=lease.workflow_revision,
-            events=events,
+            events.append(self._item_event(
+                bundle,
+                item,
+                "workflow.work_item.retry_scheduled",
+                attempt_id=attempt_id,
+                result=result,
+            ))
+        else:
+            self._fail_workflow(
+                bundle,
+                item=item,
+                reason=result.error_code or "work_item_failed",
+            )
+            events.append(self._item_event(
+                bundle,
+                item,
+                "workflow.failed",
+                attempt_id=attempt_id,
+                result=result,
+            ))
+
+    @staticmethod
+    def _bounded_result(
+        result: WorkItemExecutionResult,
+        claim: ClaimedWorkflowWorkItem,
+    ) -> WorkItemExecutionResult:
+        lease = claim.lease
+        if (
+            result.model_calls_used <= lease.reserved_model_calls
+            and result.tool_calls_used <= lease.reserved_tool_calls
+        ):
+            return result
+        return result.model_copy(update={
+            "status": "retryable_failed",
+            "error_code": "work_item_budget_overrun",
+            "summary": "Work item exceeded its reserved call budget.",
+            "artifact_refs": [],
+            "model_calls_used": min(
+                result.model_calls_used, lease.reserved_model_calls
+            ),
+            "tool_calls_used": min(
+                result.tool_calls_used, lease.reserved_tool_calls
+            ),
+        })
+
+    @staticmethod
+    def _refund_unused_reservation(
+        workflow,
+        item: WorkflowWorkItem,
+        result: WorkItemExecutionResult,
+    ) -> None:
+        workflow.budget.model_calls_remaining += max(
+            0, item.reserved_model_calls - result.model_calls_used
         )
-        return {"saved_bundle": saved}
+        workflow.budget.tool_calls_remaining += max(
+            0, item.reserved_tool_calls - result.tool_calls_used
+        )
+
+    @staticmethod
+    def _clear_item_lease(item: WorkflowWorkItem) -> None:
+        item.active_attempt_id = None
+        item.lease_owner = None
+        item.lease_token = None
+        item.lease_expires_at = None
+        item.reserved_model_calls = 0
+        item.reserved_tool_calls = 0
+
+    def _fail_workflow(
+        self,
+        bundle: WorkflowBundle,
+        *,
+        item: WorkflowWorkItem,
+        reason: str,
+    ) -> None:
+        item.status = "blocked"
+        workflow = bundle.workflow
+        workflow.status = "failed"
+        workflow.phase = "failed"
+        workflow.terminal_reason_code = reason
+        workflow.terminal_at = self.clock()
+        for candidate in bundle.current_plan.work_items:
+            if candidate.status == "running":
+                candidate.status = "cancelled"
+                self._clear_item_lease(candidate)
+
+    def _cancel_workflow(self, bundle: WorkflowBundle, *, now: datetime) -> None:
+        workflow = bundle.workflow
+        workflow.status = "cancelled"
+        workflow.phase = "cancelled"
+        workflow.terminal_reason_code = "cancel_requested"
+        workflow.terminal_at = now
+        for item in bundle.current_plan.work_items:
+            if item.status not in {"succeeded", "skipped", "superseded"}:
+                item.status = "cancelled"
+                self._clear_item_lease(item)
 
     def _build_planner_revision(
         self,
         bundle: WorkflowBundle,
         proposal: WorkflowPlanProposal,
     ):
-        workflow = bundle.workflow
-        if any(
-            seed.seed_id == "plan" or seed.kind == "plan"
-            for seed in proposal.workstreams
-        ):
-            raise ValueError("planner proposal uses a reserved plan id or kind")
-        definition = self.service.definitions.require(workflow.workflow_type)
-        submission = WorkflowSubmission(
-            workflow_type=workflow.workflow_type,
-            objective=workflow.objective,
-            deliverables=list(workflow.deliverables),
-            constraints=list(workflow.constraints),
-            constraint_bindings=list(proposal.constraint_bindings),
-            inputs=dict(workflow.inputs),
-            initial_workstreams=list(proposal.workstreams),
-            durability_reasons=["runtime_planner"],
-            seed_artifact_refs=list(workflow.seed_artifact_refs),
-            idempotency_key=workflow.idempotency_key,
+        return materialize_planner_revision(
+            service=self.service,
+            bundle=bundle,
+            proposal=proposal,
+            now=self.clock(),
         )
-        definition.validate_submission(submission)
-        revision = definition.build_initial_plan(
-            workflow_id=workflow.workflow_id,
-            submission=submission,
-        )
-        revision.version = workflow.current_plan_version + 1
-        revision.revision_reason = "deep_research_runtime_plan"
-        revision.created_at = self.clock()
-        validate_plan_dag(
-            revision,
-            max_work_items=self.service.limits.max_work_items,
-        )
-        for candidate in revision.work_items:
-            if not candidate.depends_on:
-                candidate.input_artifact_refs = list(
-                    dict.fromkeys(
-                        [
-                            *candidate.input_artifact_refs,
-                            *workflow.seed_artifact_refs,
-                        ]
-                    )
-                )
-                candidate.status = "ready"
-        return revision
 
     @staticmethod
     def _is_bootstrap_planner(
@@ -528,7 +518,7 @@ class WorkflowRuntime:
         return (
             bundle.workflow.current_plan_version == 1
             and bundle.workflow.phase == "planning"
-            and plan.revision_reason == "deep_research_planner_pending"
+            and plan.revision_reason == "workflow_planner_pending"
             and len(plan.work_items) == 1
             and work_item.work_item_id == "plan"
             and work_item.kind == "plan"

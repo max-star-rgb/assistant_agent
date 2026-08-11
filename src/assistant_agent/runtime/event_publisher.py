@@ -161,7 +161,6 @@ class RuntimeEventPublisher:
 
         state = fact.state
         attributes = {
-            "execution_strategy": state.execution_strategy,
             "execution_engine": fact.execution_engine,
             "assistant_mode": state.request.assistant_mode,
         }
@@ -212,6 +211,19 @@ class RuntimeEventPublisher:
             "failed": "run.failed",
             "cancelled": "run.cancelled",
         }[fact.terminal_status]
+        workflow_outcome = state.request.metadata.get(
+            "_trusted_workflow_work_item_outcome"
+        )
+        workflow_attributes = (
+            {
+                "workflow_work_item_status": workflow_outcome.get("status"),
+                "workflow_work_item_error_code": workflow_outcome.get(
+                    "error_code"
+                ),
+            }
+            if isinstance(workflow_outcome, dict)
+            else {}
+        )
         self._append_trace(
             TraceEvent(
                 trace_id=state.trace_id,
@@ -228,6 +240,7 @@ class RuntimeEventPublisher:
                     "tool_count": len(state.tool_calls),
                     "error_count": len(state.errors),
                     "response_present": state.response is not None,
+                    **workflow_attributes,
                 },
                 error=latest_error,
                 created_at=fact.occurred_at,

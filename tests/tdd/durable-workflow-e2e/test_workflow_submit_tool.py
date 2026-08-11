@@ -17,9 +17,7 @@ from assistant_agent.workflows.definitions import (
 )
 from assistant_agent.workflows.builtin import default_workflow_definitions
 from assistant_agent.workflows.models import (
-    WorkflowPlanVersion,
     WorkflowSubmission,
-    WorkflowWorkItem,
 )
 from assistant_agent.workflows.service import WorkflowService
 from assistant_agent.workflows.store import InMemoryWorkflowStore
@@ -33,24 +31,6 @@ class ToolProbeDefinition:
 
     def validate_submission(self, submission: WorkflowSubmission) -> None:
         return None
-
-    def build_initial_plan(
-        self, *, workflow_id: str, submission: WorkflowSubmission
-    ) -> WorkflowPlanVersion:
-        return WorkflowPlanVersion(
-            workflow_id=workflow_id,
-            version=1,
-            definition_version="1",
-            revision_reason="initial",
-            work_items=[
-                WorkflowWorkItem(
-                    work_item_id="probe-step",
-                    kind="probe",
-                    objective=submission.objective,
-                )
-            ],
-        )
-
 
 def _service() -> WorkflowService:
     return WorkflowService(
@@ -69,8 +49,10 @@ def test_workflow_tool_is_registered_only_with_explicit_capability_binding() -> 
     assert WORKFLOW_SUBMIT_TOOL_NAME not in disabled.list()
     assert WORKFLOW_SUBMIT_TOOL_NAME in enabled.list()
     assert "probe" in enabled.get_spec(WORKFLOW_SUBMIT_TOOL_NAME).description
-    assert "initial_workstreams" in enabled.get_spec(WORKFLOW_SUBMIT_TOOL_NAME).description
-    assert "display_title" in enabled.get_spec(WORKFLOW_SUBMIT_TOOL_NAME).description
+    input_schema = enabled.get_spec(WORKFLOW_SUBMIT_TOOL_NAME).input_schema
+    assert "initial_workstreams" not in input_schema["properties"]
+    assert "planning_mode" not in input_schema["properties"]
+    assert "constraint_bindings" not in input_schema["properties"]
 
 
 def test_workflow_submit_runs_through_validator_and_executor() -> None:

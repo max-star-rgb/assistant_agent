@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from assistant_agent.api.models import agent_run_response_from_state
 from assistant_agent.runtime import assistant_loop_nodes
-from assistant_agent.runtime.chat_adapter import ChatRequest, ChatResult, ProviderSearchSource
-from assistant_agent.runtime.output_models import AssistantTextOutput
-from assistant_agent.runtime.planning_models import IntentResult
+from assistant_agent.runtime.chat_adapter import ChatResult, ProviderSearchSource
 from assistant_agent.runtime.requests import AgentResponse, UserRequest
 from assistant_agent.runtime.state import AgentState
 
@@ -55,29 +55,15 @@ def test_native_provider_citations_reach_http_response() -> None:
     }]
 
 
-class _DirectChatAdapter:
-    def chat(self, request: ChatRequest) -> ChatResult:
-        return _chat_result()
-
-
 def test_direct_chat_persists_provider_citations_on_agent_response() -> None:
     request = _request()
     state = AgentState.from_request(request)
-    state.set_intent(IntentResult(
-        intent="direct_chat",
-        confidence=1.0,
-        rationale="test-sentinel",
-    ))
+    decision = assistant_loop_nodes._native_final_decision(_chat_result())
 
-    assistant_loop_nodes._set_direct_chat_response(
-        {
-            "request": request,
-            "state": state,
-            "chat_adapter": _DirectChatAdapter(),
-        },
-        AssistantTextOutput(text="fallback-sentinel"),
-        1,
-        [],
+    assistant_loop_nodes._apply_terminal_decision(
+        {"request": request, "state": state},
+        decision,
+        SimpleNamespace(iterations=1, tool_observations=[]),
     )
 
     assert state.response is not None

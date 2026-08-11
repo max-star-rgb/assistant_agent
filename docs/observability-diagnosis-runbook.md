@@ -39,7 +39,7 @@ Memory 内容或媒体。只有排查确实需要正文时，才在 loopback ser
 1. 使用本机未跟踪配置中的 Langfuse host 和凭据，精确查询
    `GET /api/public/traces/{trace_id}`；默认本地 host 是 `http://localhost:3000`。凭据只用于认证，
    不得打印或写入文档。
-2. 用同一 ID 检查 `.data/graph_trace.jsonl`，并按问题类型检查 Gateway lifecycle、delivery audit
+2. 用同一 ID 检查 `.data/trace_ledger/*.jsonl`，并按问题类型检查 Gateway lifecycle、delivery audit
    和相关 eval artifact。
 
 开始归因前，核对：
@@ -47,7 +47,8 @@ Memory 内容或媒体。只有排查确实需要正文时，才在 loopback ser
 - 返回的 trace ID 与用户提供值完全一致；
 - Langfuse trace 名是 `assistant.turn`；
 - timestamp 与用户描述的测试时间、时区和环境一致；
-- metadata 或本地事件中的 `run_id`、`session_id`、`turn_id` 属于同一次运行；
+- metadata、Gateway/delivery 记录或存活进程事件中的 `run_id`、`session_id`、`turn_id` 属于同一次运行；
+  本地 ledger 只保留 `trace_id/run_id`，不能单独核对 session/turn；
 - 若用户提供了多个标识，它们确实通过 machine record 关联，而不是仅凭时间接近。
 
 精确 trace 命中后，不要求用户再提供 run ID 或 session ID。若当前 Langfuse 不可达、无权限或查无此
@@ -101,12 +102,12 @@ Langfuse 或 Server 不可用时，使用关联 ID 直接检索 prompt-safe 本�
 ```bash
 rg -n --fixed-strings '<run_id>' \
   .data/gateway_events.jsonl \
-  .data/graph_trace.jsonl \
+  .data/trace_ledger/*.jsonl \
   .data/agent_service_delivery.jsonl
 
 rg -n --fixed-strings '<trace_id>' \
   .data/gateway_events.jsonl \
-  .data/graph_trace.jsonl \
+  .data/trace_ledger/*.jsonl \
   .data/agent_service_delivery.jsonl
 ```
 
@@ -211,24 +212,25 @@ started 没有 terminal 只说明 span 未闭合或证据不完整。结合最�
 | Memory/Context 异常 | memory/context spans + context report | 是否加载、预算、裁剪、错误或 fallback；不读取原始 memory 内容 |
 | 用户没收到响应 | delivery audit + Gateway lifecycle | Runtime terminal、sent、ACK 和 disconnect 分别是什么 |
 | 整体慢 | latency summary + raw paired spans | critical-path bottleneck、嵌套 latency 和 unattributed 各是多少 |
-| Langfuse 与本地不同 | export/persistence 状态 | 是否异步未导出、JSONL 部分写入、进程内事件尚未落盘或 ID/环境不一致 |
+| Langfuse 与本地不同 | export/persistence 状态 | 是否异步未导出、ledger 部分写入、进程内事件尚未落盘或 ID/环境不一致 |
 
 ## 证据缺失时的降级
 
 ### Langfuse 不可达、无权限或查无 trace
 
 - 记录缺失的是远端持久化证据，而不是断言 trace 不存在；
-- 按精确 trace/run ID 查询 `.data/graph_trace.jsonl`、Gateway 和 delivery JSONL；
+- 按精确 trace/run ID 查询 `.data/trace_ledger/*.jsonl`、Gateway 和 delivery JSONL；
 - server 仍存活时用 `--server` 查询进程内 primary；
-- 本地命中后可以诊断本地事实，但不能声称远端 export 成功。
+- 本地命中后只能确认 ledger 保留的最小事件事实，完整历史诊断仍需 Langfuse 或存活进程内 primary，且不能
+  声称远端 export 成功。
 
-### 本地 JSONL 未命中
+### 本地 ledger 未命中
 
-- 检查路径和启动参数是否使用默认 `.data/graph_trace.jsonl`；
+- 检查路径和启动参数是否使用默认 `.data/trace_ledger/`；
 - server 仍存活时查询进程内 primary；
 - 检查 Langfuse exact trace；
 - 考虑后台队列 drop、崩溃或 bounded flush 造成的部分持久化；
-- 不能因 JSONL 未命中断言 Runtime 从未运行。
+- 不能因 ledger 未命中断言 Runtime 从未运行。
 
 ### 只有 partial trace 或未闭合 span
 

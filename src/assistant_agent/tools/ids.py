@@ -5,8 +5,6 @@ need an entry here unless their identifier becomes a cross-layer protocol.
 """
 
 DIRECT_CHAT_CAPABILITY = "direct_chat"
-MULTI_STEP_ORCHESTRATION_CAPABILITY = "multi_step_orchestration"
-ASK_FOLLOWUP_CAPABILITY = "ask_followup"
 IMAGE_UNDERSTANDING_CAPABILITY = "image_understanding"
 VIDEO_UNDERSTANDING_CAPABILITY = "video_understanding"
 MEDIA_INSPECT_TOOL_NAME = "media_inspect"
@@ -30,14 +28,12 @@ CALENDAR_SEARCH_TOOL_NAME = "calendar_search"
 CALENDAR_CREATE_TOOL_NAME = "calendar_create"
 CONTACTS_SEARCH_TOOL_NAME = "contacts_search"
 PYTHON_INTERPRETER_TOOL_NAME = "python_interpreter"
-TASK_PLAN_SUBMIT_TOOL_NAME = "task_plan_submit"
 WORKFLOW_SUBMIT_TOOL_NAME = "workflow_submit"
 HOTEL_PRICE_WATCH_CREATE_TOOL_NAME = "hotel_price_watch_create"
 LOAD_SKILL_TOOL_NAME = "load_skill"
 LOAD_SKILL_REFERENCE_TOOL_NAME = "load_skill_reference"
-DURABLE_TASK_SUBMISSION_TOOL_NAMES = frozenset(
+DURABLE_TASK_CREATION_TOOL_NAMES = frozenset(
     {
-        TASK_PLAN_SUBMIT_TOOL_NAME,
         HOTEL_PRICE_WATCH_CREATE_TOOL_NAME,
     }
 )

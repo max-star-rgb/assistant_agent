@@ -31,7 +31,6 @@ ContextSectionKind = Literal[
     "retrieved_memory",
     "realtime_task_state",
     "durable_task_state",
-    "plan_state",
     "tool_observation",
     "tool_schema",
 ]
@@ -156,16 +155,6 @@ class ContextSourceReport(BaseModel):
     omitted_section_count: int = Field(default=0, ge=0)
 
 
-class AssistantPlanContext(BaseModel):
-    """Serializable plan-mode context exposed to prompt renderers."""
-
-    plan_mode_active: bool = False
-    plan_status: str = "none"
-    current_step_id: str | None = None
-    plan_revision_count: int = Field(default=0, ge=0)
-    current_plan: dict[str, Any] | None = None
-
-
 class ContextBudgetReport(BaseModel):
     """Approximate character and optional token budget for one assistant context pack."""
 
@@ -175,7 +164,6 @@ class ContextBudgetReport(BaseModel):
     realtime_task_state_chars: int = Field(default=0, ge=0)
     realtime_video_context_chars: int = Field(default=0, ge=0)
     durable_task_state_chars: int = Field(default=0, ge=0)
-    plan_chars: int = Field(default=0, ge=0)
     observations_chars: int = Field(default=0, ge=0)
     tool_spec_chars: int = Field(default=0, ge=0)
     owner_persona_chars: int = Field(default=0, ge=0)
@@ -194,7 +182,6 @@ class ContextBudgetReport(BaseModel):
     memory_tokens: int = Field(default=0, ge=0)
     realtime_video_context_tokens: int = Field(default=0, ge=0)
     durable_task_state_tokens: int = Field(default=0, ge=0)
-    plan_tokens: int = Field(default=0, ge=0)
     observations_tokens: int = Field(default=0, ge=0)
     tool_spec_tokens: int = Field(default=0, ge=0)
     owner_persona_tokens: int = Field(default=0, ge=0)
@@ -316,7 +303,6 @@ class AssistantContextPack(BaseModel):
     realtime_task_state: dict[str, Any] | None = None
     realtime_video_context: RealtimeVideoContext | None = None
     durable_task_state: dict[str, Any] | None = None
-    plan_state: AssistantPlanContext = Field(default_factory=AssistantPlanContext)
     observations: list[dict[str, Any]] = Field(default_factory=list)
     tool_specs: list[ToolSpec] = Field(default_factory=list)
     prompt_tool_specs: list[ToolSpec] = Field(default_factory=list)

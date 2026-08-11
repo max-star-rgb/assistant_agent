@@ -1,1 +1,0 @@
-"""Durable-task Tool plugin."""
