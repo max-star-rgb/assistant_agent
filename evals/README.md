@@ -77,6 +77,43 @@ operator 可把人工决定写入本地审计产物：
   --decision approved --operator <operator>
 ```
 
+## 从真实运行问题沉淀回归案例
+
+Runtime audit 的 `state/issues.json` 是真实问题候选来源，Git 中的
+`evals/release_review/scenarios/*.yaml` 仍是正式案例的唯一事实源。两者之间采用显式审核晋升，不允许
+Live Evaluator、LLM Judge 或日报自动修改正式 Dataset。
+
+先只读列出带真实 Trace 证据、状态为 `open`、`code_addressed` 或 `regressed`，且尚未晋升的 issue：
+
+```bash
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_release_review.py \
+  --list-runtime-candidates
+```
+
+维护者或 coding agent 根据本地证据在正式 `scenarios/` 目录之外生成一个经过脱敏的 Decision Scenario
+草稿。草稿不得包含 `provenance`，也不得复制真实 Trace ID、用户原始对话、Provider 原始响应或 Tool
+原始 payload。完成
+人工复核后，使用双重写入门禁晋升：
+
+```bash
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_release_review.py \
+  --promote-runtime-candidate \
+  --issue-key <issue-key> \
+  --draft-scenario <reviewed-draft.yaml> \
+  --operator <operator> \
+  --allow-write-scenario
+```
+
+晋升入口只接受 Decision Scenario；Staging 所需真实资源、副作用权限和清理责任不能由日常 Trace 自动
+推导。入口重新校验 issue 状态、Trace evidence、Scenario schema、重复 issue、重复 scenario ID 和目标
+文件冲突，再原子写入 `scenarios/runtime/<scenario-id>.yaml`。正式 YAML 的 `provenance` 只保存 issue key
+和 Trace evidence ref 集合各自的 SHA-256、首次/最近发现日期、审核者与审核时间；不保存原始 issue key
+或真实 Trace/Score ID。
+同一 issue 已有正式 Scenario 后不会再次列为候选。
+
+晋升只证明案例来源和人工审核完成，不证明 Agent 已修复。新 Scenario 仍须依次经过 `--inspect`、
+`--sync` 和正式 Release Review；只有后续真实对话证据才能把 runtime issue 标为 `runtime_verified`。
+
 ## 本地运行顺序
 
 只读检查案例，不读取 `.env`、不联网：

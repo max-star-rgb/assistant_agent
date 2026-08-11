@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date, datetime
 from typing import Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -76,6 +77,26 @@ class StagingContract(_StrictModel):
     cleanup: Literal["required", "skipped"]
 
 
+class RuntimeScenarioProvenance(_StrictModel):
+    """Non-sensitive lineage for a scenario distilled from runtime evidence."""
+
+    source: Literal["runtime_audit"]
+    issue_key_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    first_seen: date
+    last_seen: date
+    evidence_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    reviewed_by: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+    reviewed_at: datetime
+
+    @model_validator(mode="after")
+    def _validate_dates(self) -> Self:
+        if self.last_seen < self.first_seen:
+            raise ValueError("runtime provenance last_seen precedes first_seen")
+        if self.reviewed_at.tzinfo is None or self.reviewed_at.utcoffset() is None:
+            raise ValueError("runtime provenance reviewed_at must be timezone-aware")
+        return self
+
+
 class ReleaseScenario(_StrictModel):
     id: str = Field(pattern=r"^[a-z][a-z0-9_]*$")
     phase: Literal["decision", "staging"]
@@ -87,6 +108,7 @@ class ReleaseScenario(_StrictModel):
     fixtures: dict[str, tuple[ToolFixture, ...]] = Field(default_factory=dict)
     state_assertions: tuple[StateAssertion, ...] = ()
     staging: StagingContract | None = None
+    provenance: RuntimeScenarioProvenance | None = None
 
     @model_validator(mode="after")
     def _validate_phase_contract(self) -> Self:
@@ -107,4 +129,3 @@ class ReleaseScenario(_StrictModel):
             if self.fixtures:
                 raise ValueError("staging scenario must not define fixtures")
         return self
-
