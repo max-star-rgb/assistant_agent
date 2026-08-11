@@ -40,6 +40,7 @@ from assistant_agent.runtime.assistant_run_service import (
     get_default_conversation_store as _get_default_conversation_store,
 )
 from assistant_agent.runtime.assistant_runtime_app import AssistantRuntimeApp
+from assistant_agent.runtime.runtime_host import RuntimeHost
 from assistant_agent.multi_agent.agent_control_plane import AgentControlPlaneQueryService, audit_event
 from assistant_agent.api.identity import (
     ApiIdentitySource,
@@ -79,10 +80,7 @@ from assistant_agent.observability.trace_query import (
     ToolCallSummary,
     TraceSummary,
 )
-from assistant_agent.observability.trace_persistence import (
-    close_trace_store,
-    create_server_trace_store,
-)
+from assistant_agent.observability.trace_persistence import create_server_trace_store
 from assistant_agent.observability.trace_conversation import (
     TraceConversationView,
     find_trace_conversation,
@@ -98,6 +96,7 @@ from assistant_agent.api.trial_access import (
 
 router = APIRouter()
 _RUNTIME: Any | None = None
+_RUNTIME_HOST: RuntimeHost | None = None
 _AGENT_ROUTER: AgentRouter | None = None
 _FEEDBACK_STORE: BetaFeedbackStore | None = None
 _REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -112,25 +111,38 @@ HTTP_AGENT_ENTRY_CAPABILITIES = EntryAdapterCapabilities(
 
 
 def get_agent_runtime() -> Any:
-    global _RUNTIME
+    global _RUNTIME, _RUNTIME_HOST
     if _RUNTIME is None:
         trace_store = (
             create_server_trace_store()
             if os.environ.get(SERVER_TRACE_ENABLED_ENV) == "1"
             else None
         )
-        _RUNTIME = create_runtime(trace_store=trace_store)
+        runtime = create_runtime(trace_store=trace_store)
+        _RUNTIME_HOST = RuntimeHost(
+            runtime=runtime,
+            owned_trace_store=trace_store,
+        )
+        _RUNTIME = runtime
     return _RUNTIME
 
 
 def shutdown_agent_runtime() -> None:
     """Flush owned trace persistence and clear the process runtime singleton."""
 
-    global _RUNTIME
+    global _RUNTIME, _RUNTIME_HOST
     runtime = _RUNTIME
+    host = _RUNTIME_HOST
     _RUNTIME = None
+    _RUNTIME_HOST = None
+    if host is not None:
+        host.close(timeout=1.0)
+        return
     if runtime is not None:
-        close_trace_store(getattr(runtime, "trace_store", None), timeout=1.0)
+        RuntimeHost(
+            runtime=runtime,
+            owned_trace_store=getattr(runtime, "trace_store", None),
+        ).close(timeout=1.0)
 
 
 def release_agent_runtime(runtime: Any) -> None:

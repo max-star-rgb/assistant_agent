@@ -461,6 +461,7 @@ stream，不把向量或媒体证据写入 `AgentEvent`、conversation history �
 | `src/assistant_agent/runtime/events.py` | runtime `AgentEvent` contract |
 | `src/assistant_agent/runtime/event_stream.py` | `AgentRunStream` and thread-safe queue sink |
 | `src/assistant_agent/runtime/runtime.py` | graph lifecycle, provider-path selection, `run_state`/`run`/`run_stream` |
+| `src/assistant_agent/runtime/runtime_host.py` | composed Runtime and trace-store ownership/close boundary for real entries |
 | `src/assistant_agent/memory/ingestion_queue.py` | bounded post-response turn-ingestion queue, per-identity ordering, drain and shutdown |
 | `src/assistant_agent/runtime/assistant_run_service.py` | shared sync and streaming run service, `AssistantRunArtifacts` |
 | `src/assistant_agent/gateway/runtime_adapter.py` | assistant stream consumption and realtime terminal result |

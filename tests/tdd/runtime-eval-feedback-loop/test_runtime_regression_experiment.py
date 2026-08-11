@@ -9,6 +9,7 @@ from evals.runtime_regression.experiment import (
     RuntimeRegressionExperimentSettings,
     run_runtime_regression_experiment,
     wait_for_runtime_regression_scores,
+    wait_for_runtime_regression_trace_completeness,
 )
 
 
@@ -178,3 +179,287 @@ def test_runtime_regression_waits_until_every_experiment_score_is_complete() -> 
             "assistant_agent.quality.response_quality.experiment": True,
         }
     }
+
+
+def test_runtime_regression_waits_for_nested_runtime_trace_completeness() -> None:
+    class Experiments:
+        def list_items(self, **kwargs):
+            return SimpleNamespace(
+                data=[
+                    SimpleNamespace(
+                        experiment_item_id="runtime-item-1",
+                        trace_id="1" * 32,
+                    )
+                ]
+            )
+
+    class Observations:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def get_many(self, **kwargs):
+            self.calls += 1
+            data = [
+                SimpleNamespace(
+                    id="run-span",
+                    name="experiment-item-run",
+                    type="SPAN",
+                    parent_observation_id=None,
+                ),
+                SimpleNamespace(
+                    id="task-span",
+                    name="experiment-item-task",
+                    type="SPAN",
+                    parent_observation_id="run-span",
+                ),
+            ]
+            if self.calls > 1:
+                data.extend(
+                    [
+                        SimpleNamespace(
+                            id="runtime-span",
+                            name="agent.runtime",
+                            type="SPAN",
+                            parent_observation_id="task-span",
+                        ),
+                        SimpleNamespace(
+                            id="llm-span",
+                            name="llm.chat",
+                            type="GENERATION",
+                            parent_observation_id="runtime-span",
+                        ),
+                    ]
+                )
+            return SimpleNamespace(data=data, meta=SimpleNamespace(cursor=None))
+
+    observations = Observations()
+    sleeps = []
+    client = SimpleNamespace(
+        api=SimpleNamespace(
+            experiments=Experiments(),
+            observations=observations,
+        )
+    )
+
+    result = wait_for_runtime_regression_trace_completeness(
+        client,
+        experiment_id="experiment-1",
+        dataset_item_ids=("runtime-item-1",),
+        timeout_seconds=2,
+        poll_interval_seconds=1,
+        sleep=lambda seconds: sleeps.append(seconds),
+    )
+
+    assert observations.calls == 2
+    assert sleeps == [1]
+    assert result == {"runtime-item-1": "1" * 32}
+
+
+def test_runtime_regression_rejects_orphan_runtime_trace() -> None:
+    class Experiments:
+        def list_items(self, **kwargs):
+            return SimpleNamespace(
+                data=[
+                    SimpleNamespace(
+                        experiment_item_id="runtime-item-1",
+                        trace_id="1" * 32,
+                    )
+                ]
+            )
+
+    observations = SimpleNamespace(
+        get_many=lambda **kwargs: SimpleNamespace(
+            data=[
+                SimpleNamespace(
+                    id="run-span",
+                    name="experiment-item-run",
+                    type="SPAN",
+                    parent_observation_id=None,
+                ),
+                SimpleNamespace(
+                    id="task-span",
+                    name="experiment-item-task",
+                    type="SPAN",
+                    parent_observation_id="run-span",
+                ),
+                SimpleNamespace(
+                    id="runtime-span",
+                    name="agent.runtime",
+                    type="SPAN",
+                    parent_observation_id=None,
+                ),
+                SimpleNamespace(
+                    id="llm-span",
+                    name="llm.chat",
+                    type="GENERATION",
+                    parent_observation_id="runtime-span",
+                ),
+            ],
+            meta=SimpleNamespace(cursor=None),
+        )
+    )
+    client = SimpleNamespace(
+        api=SimpleNamespace(
+            experiments=Experiments(),
+            observations=observations,
+        )
+    )
+
+    try:
+        wait_for_runtime_regression_trace_completeness(
+            client,
+            experiment_id="experiment-1",
+            dataset_item_ids=("runtime-item-1",),
+            timeout_seconds=0.1,
+            poll_interval_seconds=1,
+            sleep=lambda seconds: None,
+        )
+    except RuntimeError as exc:
+        assert "agent.runtime parent" in str(exc)
+    else:
+        raise AssertionError("orphan Runtime trace must be infrastructure failure")
+
+
+def test_runtime_regression_allows_additional_nested_workflow_runtime() -> None:
+    class Experiments:
+        def list_items(self, **kwargs):
+            return SimpleNamespace(
+                data=[
+                    SimpleNamespace(
+                        experiment_item_id="runtime-item-1",
+                        trace_id="1" * 32,
+                    )
+                ]
+            )
+
+    observations = SimpleNamespace(
+        get_many=lambda **kwargs: SimpleNamespace(
+            data=[
+                SimpleNamespace(
+                    id="run-span",
+                    name="experiment-item-run",
+                    type="SPAN",
+                    parent_observation_id=None,
+                ),
+                SimpleNamespace(
+                    id="task-span",
+                    name="experiment-item-task",
+                    type="SPAN",
+                    parent_observation_id="run-span",
+                ),
+                SimpleNamespace(
+                    id="runtime-span",
+                    name="agent.runtime",
+                    type="SPAN",
+                    parent_observation_id="task-span",
+                ),
+                SimpleNamespace(
+                    id="llm-span",
+                    name="llm.chat",
+                    type="GENERATION",
+                    parent_observation_id="runtime-span",
+                ),
+                SimpleNamespace(
+                    id="workflow-attempt",
+                    name="workflow.attempt",
+                    type="SPAN",
+                    parent_observation_id="runtime-span",
+                ),
+                SimpleNamespace(
+                    id="worker-runtime",
+                    name="agent.runtime",
+                    type="SPAN",
+                    parent_observation_id="workflow-attempt",
+                ),
+            ],
+            meta=SimpleNamespace(cursor=None),
+        )
+    )
+    client = SimpleNamespace(
+        api=SimpleNamespace(
+            experiments=Experiments(),
+            observations=observations,
+        )
+    )
+
+    assert wait_for_runtime_regression_trace_completeness(
+        client,
+        experiment_id="experiment-1",
+        dataset_item_ids=("runtime-item-1",),
+        timeout_seconds=0.1,
+        poll_interval_seconds=1,
+        sleep=lambda seconds: None,
+    ) == {"runtime-item-1": "1" * 32}
+
+
+def test_runtime_regression_paginates_experiment_items() -> None:
+    class Experiments:
+        def __init__(self) -> None:
+            self.cursors = []
+
+        def list_items(self, **kwargs):
+            cursor = kwargs.get("cursor")
+            self.cursors.append(cursor)
+            item_id = "runtime-item-1" if cursor is None else "runtime-item-2"
+            trace_id = "1" * 32 if cursor is None else "2" * 32
+            return SimpleNamespace(
+                data=[
+                    SimpleNamespace(
+                        experiment_item_id=item_id,
+                        trace_id=trace_id,
+                    )
+                ],
+                meta=SimpleNamespace(cursor="next-page" if cursor is None else None),
+            )
+
+    observations = SimpleNamespace(
+        get_many=lambda **kwargs: SimpleNamespace(
+            data=[
+                SimpleNamespace(
+                    id="run-span",
+                    name="experiment-item-run",
+                    type="SPAN",
+                    parent_observation_id=None,
+                ),
+                SimpleNamespace(
+                    id="task-span",
+                    name="experiment-item-task",
+                    type="SPAN",
+                    parent_observation_id="run-span",
+                ),
+                SimpleNamespace(
+                    id="runtime-span",
+                    name="agent.runtime",
+                    type="SPAN",
+                    parent_observation_id="task-span",
+                ),
+                SimpleNamespace(
+                    id="llm-span",
+                    name="llm.chat",
+                    type="GENERATION",
+                    parent_observation_id="runtime-span",
+                ),
+            ],
+            meta=SimpleNamespace(cursor=None),
+        )
+    )
+    experiments = Experiments()
+    client = SimpleNamespace(
+        api=SimpleNamespace(
+            experiments=experiments,
+            observations=observations,
+        )
+    )
+
+    assert wait_for_runtime_regression_trace_completeness(
+        client,
+        experiment_id="experiment-1",
+        dataset_item_ids=("runtime-item-1", "runtime-item-2"),
+        timeout_seconds=0.1,
+        poll_interval_seconds=1,
+        sleep=lambda seconds: None,
+    ) == {
+        "runtime-item-1": "1" * 32,
+        "runtime-item-2": "2" * 32,
+    }
+    assert experiments.cursors == [None, "next-page"]

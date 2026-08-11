@@ -15,6 +15,9 @@ from typing import Sequence
 from langfuse import Langfuse
 
 from assistant_agent.config import ProviderConfig
+from assistant_agent.evaluation.experiment_runtime import (
+    create_experiment_runtime_host,
+)
 from assistant_agent.mcp.config import DEFAULT_MCP_CONFIG_PATH, MCP_CONFIG_PATH_ENV
 from assistant_agent.observability.langfuse_config import (
     langfuse_credentials_from_env,
@@ -269,10 +272,10 @@ def _build_service(
                     scenario_config,
                     calendar_adapter=calendar,
                 )
-        return AgentGraphRuntime(
-            registry=registry,
+        return _create_item_runtime(
             config=scenario_config,
-            tool_execution_backend=backend,
+            registry=registry,
+            backend=backend,
         )
 
     def settings_factory(review_request, selected):
@@ -323,6 +326,17 @@ def _catalog_snapshot(config: ProviderConfig) -> ReleaseCatalogSnapshot:
             os.environ.pop(MCP_CONFIG_PATH_ENV, None)
         else:
             os.environ[MCP_CONFIG_PATH_ENV] = previous_mcp_path
+
+
+def _create_item_runtime(*, config, registry, backend):
+    return create_experiment_runtime_host(
+        lambda trace_store: AgentGraphRuntime(
+            registry=registry,
+            config=config,
+            tool_execution_backend=backend,
+            trace_store=trace_store,
+        )
+    )
 
 
 def _validate_real_config(config: ProviderConfig) -> None:

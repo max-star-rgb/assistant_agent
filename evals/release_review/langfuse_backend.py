@@ -4,6 +4,12 @@ import time
 from collections.abc import Collection
 from typing import Any
 
+from assistant_agent.evaluation.experiment_trace import (
+    experiment_task_observation_id,
+    experiment_trace_hierarchy_problem,
+    load_experiment_trace_observations,
+)
+
 from .contracts import ReleaseScenario
 from .experiment import ReleaseExperimentResult
 from .report import CANONICAL_TASK_SCORES, ReleaseItemAssessment
@@ -88,14 +94,10 @@ def _persisted_scores(
 ) -> dict[str, bool]:
     detail = "not queried"
     for attempt in range(attempts):
-        observations = client.api.observations.get_many(
-            trace_id=trace_id,
-            name="experiment-item-task",
-            type="SPAN",
-            limit=2,
-        ).data
-        if len(observations) == 1 and isinstance(getattr(observations[0], "id", None), str):
-            observation_id = observations[0].id
+        observations = load_experiment_trace_observations(client, trace_id)
+        hierarchy_problem = experiment_trace_hierarchy_problem(observations)
+        observation_id = experiment_task_observation_id(observations)
+        if hierarchy_problem is None and observation_id is not None:
             response = client.api.scores_v3.get_many_v3(
                 limit=100,
                 fields="subject",
@@ -129,7 +131,7 @@ def _persisted_scores(
             else:
                 detail = f"missing={missing}, duplicates={duplicates}"
         else:
-            detail = f"experiment-item-task observations={len(observations)}"
+            detail = hierarchy_problem or "experiment-item-task id missing"
         if attempt + 1 < attempts and retry_delay_seconds > 0:
             time.sleep(retry_delay_seconds)
     raise RuntimeError(detail)

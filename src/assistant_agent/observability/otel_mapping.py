@@ -534,7 +534,14 @@ def _trace_attributes(
         projection_context=projection_context,
     )
     attrs: dict[str, Any] = {
-        "langfuse.trace.name": (
+        "assistant_agent.trace_id": trace_id,
+        "assistant_agent.run_id": run_id,
+        "assistant_agent.modality": (
+            VISION_MODALITY if vision_trace else TEXT_MODALITY
+        ),
+    }
+    if projection_context is not None or _external_parent_span_id(events) is None:
+        attrs["langfuse.trace.name"] = (
             projection_context.trace_name
             if projection_context is not None
             else "deep_research.workflow"
@@ -542,13 +549,7 @@ def _trace_attributes(
             else "vision.observation"
             if vision_trace
             else "assistant.turn"
-        ),
-        "assistant_agent.trace_id": trace_id,
-        "assistant_agent.run_id": run_id,
-        "assistant_agent.modality": (
-            VISION_MODALITY if vision_trace else TEXT_MODALITY
-        ),
-    }
+        )
     if projection_context is None:
         attrs["langfuse.trace.metadata.assistant_trace_id"] = trace_id
         attrs["langfuse.trace.metadata.run_id"] = run_id

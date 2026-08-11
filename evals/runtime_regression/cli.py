@@ -9,6 +9,9 @@ from typing import Sequence
 from langfuse import Langfuse
 
 from assistant_agent.config import ProviderConfig
+from assistant_agent.evaluation.experiment_runtime import (
+    create_experiment_runtime_host,
+)
 from assistant_agent.observability.langfuse_config import (
     langfuse_credentials_from_env,
     langfuse_host_from_env,
@@ -23,6 +26,7 @@ from .experiment import (
     inspect_runtime_regression_dataset,
     run_runtime_regression_experiment,
     wait_for_runtime_regression_scores,
+    wait_for_runtime_regression_trace_completeness,
 )
 
 
@@ -100,7 +104,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             client,
             RuntimeRegressionExperimentSettings(
                 model=config.resolved_chat_provider().model,
-                runtime_factory=lambda: AgentGraphRuntime(config=config),
+                runtime_factory=lambda: _create_item_runtime(config),
                 run_name=args.run_name,
                 max_concurrency=args.max_concurrency,
             ),
@@ -113,6 +117,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             experiment_id=result.dataset_run_id,
             dataset_item_ids=result.dataset_item_ids,
             timeout_seconds=args.score_wait_timeout_seconds,
+        )
+        wait_for_runtime_regression_trace_completeness(
+            client,
+            experiment_id=result.dataset_run_id,
+            dataset_item_ids=result.dataset_item_ids,
         )
         print(
             json.dumps(
@@ -156,6 +165,15 @@ def _langfuse_client() -> Langfuse:
             secret_key=secret_key,
             host=langfuse_host_from_env(os.environ),
         )
+
+
+def _create_item_runtime(config: ProviderConfig):
+    return create_experiment_runtime_host(
+        lambda trace_store: AgentGraphRuntime(
+            config=config,
+            trace_store=trace_store,
+        )
+    )
 
 
 def _require_args(parser: argparse.ArgumentParser, args: argparse.Namespace, *names: str) -> None:

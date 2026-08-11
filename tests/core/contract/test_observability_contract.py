@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -373,6 +374,63 @@ def test_server_trace_store_reads_persisted_trace_after_recreation(
         close_trace_store(recreated_store, timeout=2.0)
 
     assert [event.canonical_event for event in events] == ["run.completed"]
+
+
+@pytest.mark.core_invariant("OBS-001")
+def test_runtime_host_owns_runtime_and_trace_store_lifecycle_once() -> None:
+    assert importlib.util.find_spec("assistant_agent.runtime.runtime_host") is not None
+
+    from assistant_agent.runtime.runtime_host import RuntimeHost
+
+    lifecycle: list[str] = []
+
+    class Runtime:
+        def close(self) -> bool:
+            lifecycle.append("runtime")
+            return True
+
+    class TraceStore:
+        def close(self, *, timeout: float) -> bool:
+            assert timeout > 0
+            lifecycle.append("trace_store")
+            return True
+
+    host = RuntimeHost(runtime=Runtime(), owned_trace_store=TraceStore())
+
+    assert host.close(timeout=2.0) is True
+    assert host.close(timeout=2.0) is True
+    assert lifecycle == ["runtime", "trace_store"]
+
+
+@pytest.mark.core_invariant("OBS-001")
+def test_server_runtime_shutdown_uses_the_same_owned_lifecycle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from assistant_agent.api import routes_agent
+
+    lifecycle: list[str] = []
+
+    class TraceStore:
+        def close(self, *, timeout: float) -> bool:
+            lifecycle.append("trace_store")
+            return True
+
+    class Runtime:
+        def __init__(self) -> None:
+            self.trace_store = TraceStore()
+
+        def close(self) -> bool:
+            lifecycle.append("runtime")
+            return True
+
+    runtime = Runtime()
+    monkeypatch.setattr(routes_agent, "_RUNTIME", runtime)
+    monkeypatch.setattr(routes_agent, "_RUNTIME_HOST", None, raising=False)
+
+    routes_agent.shutdown_agent_runtime()
+    routes_agent.shutdown_agent_runtime()
+
+    assert lifecycle == ["runtime", "trace_store"]
 
 
 @pytest.mark.core_invariant("OBS-001")

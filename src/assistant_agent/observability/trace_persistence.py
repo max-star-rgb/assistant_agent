@@ -197,15 +197,51 @@ def create_server_trace_store(
 ) -> CompositeTraceStore:
     """Create immediate in-memory reads with background JSONL persistence."""
 
+    return _create_runtime_trace_store(
+        path=path,
+        capacity=capacity,
+        require_otel=False,
+        include_score_observer=True,
+    )
+
+
+def create_experiment_trace_store(
+    *,
+    path: Path | str = DEFAULT_TRACE_PATH,
+    capacity: int = DEFAULT_TRACE_QUEUE_CAPACITY,
+) -> CompositeTraceStore:
+    """Create an export-capable store for a fail-closed Langfuse Experiment."""
+
+    return _create_runtime_trace_store(
+        path=path,
+        capacity=capacity,
+        require_otel=True,
+        include_score_observer=False,
+    )
+
+
+def _create_runtime_trace_store(
+    *,
+    path: Path | str,
+    capacity: int,
+    require_otel: bool,
+    include_score_observer: bool,
+) -> CompositeTraceStore:
+    otel_observer = create_text_otel_trace_observer_from_env()
+    if require_otel and otel_observer is None:
+        raise RuntimeError(
+            "Langfuse Experiment requires configured OTel trace export"
+        )
+
     primary = InMemoryTraceStore()
     secondary = BufferedJsonlTraceStore(JsonlTraceStore(path), capacity=capacity)
     secondaries: list[TraceStore] = [secondary]
-    otel_observer = create_text_otel_trace_observer_from_env()
     if otel_observer is not None:
         secondaries.append(HookTraceStore(HookManager([otel_observer])))
-    score_observer = create_langfuse_score_trace_observer_from_env()
-    if score_observer is not None:
-        secondaries.append(HookTraceStore(HookManager([score_observer])))
+    if include_score_observer:
+        score_observer = create_langfuse_score_trace_observer_from_env()
+        if score_observer is not None:
+            secondaries.append(HookTraceStore(HookManager([score_observer])))
     return CompositeTraceStore(
         primary,
         secondaries,

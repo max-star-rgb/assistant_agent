@@ -9,6 +9,9 @@ import time
 from typing import Any, Protocol
 
 from assistant_agent.runtime.requests import UserRequest
+from assistant_agent.evaluation.experiment_trace import (
+    wait_for_experiment_trace_completeness,
+)
 from evals.release_review.evidence import ReleaseRunEvidence
 
 from assistant_agent.evaluation.constants import RUNTIME_REGRESSION_DATASET
@@ -176,6 +179,25 @@ def wait_for_runtime_regression_scores(
     }
     raise RuntimeError(
         "Langfuse Experiment Score completeness timeout; missing=" + repr(missing)
+    )
+
+
+def wait_for_runtime_regression_trace_completeness(
+    client: Any,
+    *,
+    experiment_id: str,
+    dataset_item_ids: tuple[str, ...],
+    timeout_seconds: float = 30.0,
+    poll_interval_seconds: float = 1.0,
+    sleep: Callable[[float], None] = time.sleep,
+) -> dict[str, str]:
+    return wait_for_experiment_trace_completeness(
+        client,
+        experiment_id=experiment_id,
+        experiment_item_ids=dataset_item_ids,
+        timeout_seconds=timeout_seconds,
+        poll_interval_seconds=poll_interval_seconds,
+        sleep=sleep,
     )
 
 

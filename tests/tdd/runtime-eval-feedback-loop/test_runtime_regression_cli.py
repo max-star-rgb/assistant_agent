@@ -32,6 +32,9 @@ class _Client:
     def shutdown(self) -> None:
         self.shutdown_called = True
 
+    def flush(self) -> None:
+        return None
+
 
 class _ProviderConfig:
     provider_mode = "real"
@@ -88,3 +91,79 @@ def test_removed_local_promotion_action_is_rejected_before_langfuse_access(
         runtime_cli.main(["--promote-score", "--no-env-file"])
 
     assert raised.value.code == 2
+
+
+def test_runtime_regression_cli_builds_items_through_experiment_runtime_host(
+    monkeypatch,
+) -> None:
+    assert hasattr(runtime_cli, "_create_item_runtime")
+    captured = {}
+
+    class Runtime:
+        def __init__(self, *, config, trace_store) -> None:
+            captured["config"] = config
+            captured["trace_store"] = trace_store
+
+    def create_host(builder):
+        captured["runtime"] = builder("trace-store-sentinel")
+        return "host-sentinel"
+
+    monkeypatch.setattr(runtime_cli, "AgentGraphRuntime", Runtime)
+    monkeypatch.setattr(runtime_cli, "create_experiment_runtime_host", create_host)
+    config = _ProviderConfig()
+
+    assert runtime_cli._create_item_runtime(config) == "host-sentinel"
+    assert captured["config"] is config
+    assert captured["trace_store"] == "trace-store-sentinel"
+    assert isinstance(captured["runtime"], Runtime)
+
+
+def test_runtime_regression_run_requires_nested_trace_before_success(
+    monkeypatch,
+    capsys,
+) -> None:
+    client = _Client()
+    calls = []
+    monkeypatch.setattr(runtime_cli, "_langfuse_client", lambda: client)
+    monkeypatch.setattr(
+        runtime_cli.ProviderConfig,
+        "from_env",
+        staticmethod(lambda: _ProviderConfig()),
+    )
+    monkeypatch.setattr(
+        runtime_cli,
+        "run_runtime_regression_experiment",
+        lambda client, settings: SimpleNamespace(
+            run_name=settings.run_name,
+            dataset_run_id="experiment-1",
+            dataset_run_url="http://langfuse/run/1",
+            dataset_item_ids=("ui-item-1",),
+        ),
+    )
+    monkeypatch.setattr(
+        runtime_cli,
+        "wait_for_runtime_regression_scores",
+        lambda *args, **kwargs: calls.append("scores") or {"ui-item-1": {}},
+    )
+    assert hasattr(runtime_cli, "wait_for_runtime_regression_trace_completeness")
+    monkeypatch.setattr(
+        runtime_cli,
+        "wait_for_runtime_regression_trace_completeness",
+        lambda *args, **kwargs: calls.append("trace") or {"ui-item-1": "1" * 32},
+    )
+
+    assert (
+        runtime_cli.main(
+            [
+                "--run",
+                "--run-name",
+                "run-1",
+                "--no-env-file",
+                "--allow-real-provider",
+                "--allow-runtime-side-effects",
+            ]
+        )
+        == 0
+    )
+    assert calls == ["scores", "trace"]
+    assert json.loads(capsys.readouterr().out)["dataset_run_id"] == "experiment-1"

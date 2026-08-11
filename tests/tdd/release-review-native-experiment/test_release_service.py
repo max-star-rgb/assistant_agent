@@ -285,3 +285,48 @@ def test_catalog_probe_runs_in_disposable_working_directory(monkeypatch) -> None
     assert probe_directories[0] != starting_directory
     assert not probe_directories[0].exists()
     assert Path.cwd() == starting_directory
+
+
+def test_release_review_builds_items_through_experiment_runtime_host(monkeypatch) -> None:
+    assert hasattr(release_cli, "_create_item_runtime")
+    captured = {}
+
+    class Runtime:
+        def __init__(
+            self,
+            *,
+            registry,
+            config,
+            tool_execution_backend,
+            trace_store,
+        ) -> None:
+            captured.update(
+                registry=registry,
+                config=config,
+                backend=tool_execution_backend,
+                trace_store=trace_store,
+            )
+
+    def create_host(builder):
+        captured["runtime"] = builder("trace-store-sentinel")
+        return "host-sentinel"
+
+    monkeypatch.setattr(release_cli, "AgentGraphRuntime", Runtime)
+    monkeypatch.setattr(release_cli, "create_experiment_runtime_host", create_host)
+    config = SimpleNamespace()
+    registry = SimpleNamespace()
+    backend = SimpleNamespace()
+
+    assert (
+        release_cli._create_item_runtime(
+            config=config,
+            registry=registry,
+            backend=backend,
+        )
+        == "host-sentinel"
+    )
+    assert captured["registry"] is registry
+    assert captured["config"] is config
+    assert captured["backend"] is backend
+    assert captured["trace_store"] == "trace-store-sentinel"
+    assert isinstance(captured["runtime"], Runtime)

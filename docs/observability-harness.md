@@ -303,6 +303,9 @@ Provider protocol capture。overlay 写入失败时 canonical event 仍须保留
   不能为保持 trace ID 伪造 `0000000000000001` parent；
 - root 的 external parent 只接受 `run.started` 显式提供的上游 parent，不能把内部 Tool/VLM
   `parent_span_id` 反推为 root parent；
+- 有 external parent 的普通 Runtime 是上游 Trace 的子树，不写 `langfuse.trace.name` 覆盖上游拥有的
+  Trace 名称；Langfuse Experiment 因此保持 `experiment-item-run → experiment-item-task` 身份，同时在
+  task 下展示完整 `agent.runtime`、context、`llm.chat` 与 Tool observation；
 - usage 映射到 generation/OTel token attributes，不能因嵌套结构而丢失；
 - `context.compile` 是不产生 Provider 费用的 span：目标 tokenizer 的
   `compiled_input_tokens`、`effective_input_limit`、`context_token_usage_ratio`、`tokenizer_id` 和
@@ -382,6 +385,13 @@ target、message、向量和媒体内容不得进入 canonical trace。观测写
 Langfuse 的 trace、observation、score 和 Dataset/Experiment 是远端投影与评估记录，也是日常人工查看
 Runtime trace 的主入口。面板如何折叠或展示长 JSON 不属于架构契约；需要核对机器事实时查询 observation
 数据、结构化 trace API，或回到本地 canonical JSONL。
+
+Langfuse Experiment 使用共享 Runtime Host 作为装配和资源所有权边界：Host 为每个 item 注入必须可用的
+OTel exporter，把 SDK 当前 task span 转换为 `RuntimeTraceContext`，并按 Runtime 后 trace store 的顺序做
+bounded close。普通业务运行仍遵循 observability fail-open；Release Review 与 Runtime Regression 属于
+证据生成流程，若没有当前 task span、无法装配 exporter，或远端没有形成
+`experiment-item-task → agent.runtime → llm.chat`，必须作为 infrastructure failure fail-closed，不能用
+task output 或 Score 齐全掩盖内部 Trace 缺失。
 
 ### Langfuse-first Runtime 审计
 
@@ -577,7 +587,8 @@ assistant-agent-runtime-audit.timer` 查看下次运行，用
 
 ## 长期不变量
 
-1. **单一运行时事实源**：Gateway、API、CLI、demo 和 eval 复用 Assistant Runtime；观测层不实现第二个 Agent loop。
+1. **单一运行时事实源**：Gateway、API、CLI、demo 和 eval 复用 Assistant Runtime；真实入口通过
+   Runtime Host 统一拥有 Runtime 与 trace store 生命周期，观测层不实现第二个 Agent loop。
 2. **关联身份连续**：入口提供的 `run_id` 必须贯穿 Gateway、Runtime、summary 和可用的 delivery/latency 记录。
 3. **span 因果真实**：started/terminal 共享 span 身份；未观察到终态时不伪造 finished span。
 4. **wall time 不被嵌套 latency 替代**：Provider/Tool 自报 latency 只作诊断，不重复计入 critical path。
@@ -604,6 +615,9 @@ assistant-agent-runtime-audit.timer` 查看下次运行，用
 | `src/assistant_agent/observability/trace_content_policy.py` | 本地 content/protocol capture 开关 |
 | `src/assistant_agent/observability/trace_conversation.py` | 有界、进程内 current-turn content overlay |
 | `src/assistant_agent/observability/otel_mapping.py` | canonical trace 到 OTel/Langfuse span plan 的映射 |
+| `src/assistant_agent/runtime/runtime_host.py` | 真实入口 Runtime 与 trace store 的统一 bounded lifecycle owner |
+| `src/assistant_agent/evaluation/experiment_runtime.py` | Experiment task OTel context 到 Runtime 的装配桥 |
+| `src/assistant_agent/evaluation/experiment_trace.py` | Experiment 远端 Runtime 子树完整性门禁 |
 | `src/assistant_agent/media/vision/observability.py` | 内容安全的 `vlm.infer` generation 事件边界 |
 | `src/assistant_agent/observability/operational_logging.py` | Gateway console、JSONL 和兼容 text log |
 | `src/assistant_agent/gateway/observability.py` | prompt-safe Gateway lifecycle schema 和 sink |

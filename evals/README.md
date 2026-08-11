@@ -67,8 +67,10 @@ Score 缺失都是 infrastructure failure，不能写成 Agent 质量失败。
 
 Staging 的单工具 observation 可以额外拥有
 `assistant_agent.quality.tool_result_quality`，但它不替代上述三项。runner 会通过 Langfuse observation 与
-score API 回查完整性；SDK 内存结果不算落库证据。报告分别列出 critical/high、重复运行不一致和
-infrastructure 风险，不计算总 reward，也不自动做发布决定。
+score API 回查完整性；SDK 内存结果不算落库证据。每个 item 的远端 Trace 还必须形成
+`experiment-item-run → experiment-item-task → agent.runtime → llm.chat` 的同 Trace 父子链；缺少 Runtime
+子树、出现孤立 Runtime Trace 或缺少真实模型 generation 都属于 infrastructure failure。报告分别列出
+critical/high、重复运行不一致和 infrastructure 风险，不计算总 reward，也不自动做发布决定。
 
 operator 可把人工决定写入本地审计产物：
 
@@ -100,10 +102,13 @@ webhook 的受控执行内核；operator 仍可用以下命令诊断，但日常
   --allow-real-provider --allow-runtime-side-effects
 ```
 
-runner 只执行状态为 ACTIVE 的 Langfuse item，通过 `AgentGraphRuntime` 重放原始请求，不复制 Agent
-loop。输出使用结构化 `ReleaseRunEvidence`，Langfuse Experiment Rules 复用日常 evaluator family。CLI
+runner 只执行状态为 ACTIVE 的 Langfuse item，通过共享 Experiment Runtime Host 装配
+`AgentGraphRuntime`，不复制 Agent loop。Host 为每个 item 创建 production canonical trace store，读取
+Langfuse SDK 当前 `experiment-item-task` 的 OTel trace/span identity 作为 Runtime 父级，并统一关闭 Runtime
+与 exporter。输出使用结构化 `ReleaseRunEvidence`，Langfuse Experiment Rules 复用日常 evaluator family。CLI
 必须等每个 item 的 `assistant_agent.quality.response_quality.experiment` 与
-`assistant_agent.quality.grounding.experiment` 都落库后才成功；超时或缺分属于 infrastructure failure。
+`assistant_agent.quality.grounding.experiment` 都落库，并从远端 API 确认上述 Runtime 子树完整后才成功；
+超时、缺分或 Trace 层级不完整属于 infrastructure failure。
 `--inspect` 可只读查看 active item 数量。
 
 ## 本地运行顺序
