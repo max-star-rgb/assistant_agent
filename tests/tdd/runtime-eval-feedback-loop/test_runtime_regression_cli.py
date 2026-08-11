@@ -108,7 +108,8 @@ def test_runtime_regression_cli_builds_items_through_experiment_runtime_host(
             captured["config"] = config
             captured["trace_store"] = trace_store
 
-    def create_host(builder):
+    def create_host(builder, *, trace_store_factory):
+        captured["trace_store_factory"] = trace_store_factory
         captured["runtime"] = builder("trace-store-sentinel")
         return "host-sentinel"
 
@@ -120,6 +121,7 @@ def test_runtime_regression_cli_builds_items_through_experiment_runtime_host(
     assert captured["config"] is config
     assert captured["trace_store"] == "trace-store-sentinel"
     assert isinstance(captured["runtime"], Runtime)
+    assert captured["trace_store_factory"] is runtime_cli.create_langfuse_experiment_trace_store
 
 
 def test_runtime_regression_run_requires_nested_trace_before_success(

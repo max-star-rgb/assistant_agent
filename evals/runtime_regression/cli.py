@@ -16,6 +16,9 @@ from assistant_agent.observability.langfuse_config import (
     langfuse_credentials_from_env,
     langfuse_host_from_env,
 )
+from assistant_agent.observability.trace_persistence import (
+    create_langfuse_experiment_trace_store,
+)
 from assistant_agent.providers.provider_http import without_unsupported_socks_proxy_env
 from assistant_agent.runtime.assistant_run_service import load_env_file
 from assistant_agent.runtime.runtime import AgentGraphRuntime
@@ -172,7 +175,8 @@ def _create_item_runtime(config: ProviderConfig):
         lambda trace_store: AgentGraphRuntime(
             config=config,
             trace_store=trace_store,
-        )
+        ),
+        trace_store_factory=create_langfuse_experiment_trace_store,
     )
 
 
