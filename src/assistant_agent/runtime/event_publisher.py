@@ -178,7 +178,9 @@ class RuntimeEventPublisher:
                     "trace_id": link.trace_id,
                     "parent_run_id": link.parent_run_id,
                     "experiment_id": link.experiment_id,
+                    "experiment_project_name": link.project_name,
                     "reference_example_id": link.reference_example_id,
+                    "parent_dotted_order": link.parent_dotted_order,
                 }
             )
         self._append_trace(

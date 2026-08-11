@@ -14,7 +14,9 @@ class RuntimeExperimentTraceLink(BaseModel):
     trace_id: str = Field(min_length=1, max_length=64)
     parent_run_id: str = Field(min_length=1, max_length=64)
     experiment_id: str = Field(min_length=1, max_length=64)
+    project_name: str = Field(min_length=1, max_length=160)
     reference_example_id: str = Field(min_length=1, max_length=64)
+    parent_dotted_order: str = Field(min_length=1, max_length=4096)
 
 
 class RuntimeTraceContext(BaseModel):

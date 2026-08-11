@@ -142,10 +142,12 @@ Experiment、Score 或 Feedback；operator 在哪个 UI 沉淀案例，就用对
 - `assistant_agent.quality.grounding.experiment`；
 - `assistant_agent.quality.regression_improvement.experiment`。
 
-代码桥使用 `Client.evaluate()` 读取 UI Dataset 并复用同一个 `AgentGraphRuntime`。每个 target 的 Runtime
-子树绑定当前 LangSmith RunTree，Experiment 必须出现对象 input/reference output/actual output，以及
-task → `agent.runtime` → `llm.chat`；每个 active Example 必须恰有一个根 run 和全部三项 Feedback，否则
-runner 返回 infrastructure failure。inspect、preflight 和真实运行入口分别为：
+代码桥使用 `Client.evaluate()` 读取 UI Dataset并复用同一个 `AgentGraphRuntime`。runner 会先显式创建
+Experiment project，再把 project UUID/name 和当前 LangSmith RunTree identity 注入每个 target；不能依赖
+SDK 执行期间可能为空的 `RunTree.session_id`。Experiment 必须出现对象
+input/reference output/actual output，以及 task → `agent.runtime` → `llm.chat`；每个 active Example 必须
+恰有一个根 run 和全部三项 Feedback，否则 runner 返回 infrastructure failure。完整性轮询按 Experiment
+批量读取、校验真实父子关系，并对 LangSmith 429 做有界重试。inspect、preflight 和真实运行入口分别为：
 
 ```bash
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python \

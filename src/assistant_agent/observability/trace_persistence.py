@@ -286,8 +286,8 @@ def _create_runtime_trace_store(
     primary = InMemoryTraceStore()
     secondary = BufferedJsonlTraceStore(DailyTraceLedgerStore(path), capacity=capacity)
     secondaries: list[TraceStore] = [secondary]
-    for observer in observers:
-        secondaries.append(HookTraceStore(HookManager([observer])))
+    if observers:
+        secondaries.append(HookTraceStore(HookManager(observers)))
     if include_score_observer:
         score_observer = create_langfuse_score_trace_observer_from_env()
         if score_observer is not None:

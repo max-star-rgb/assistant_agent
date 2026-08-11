@@ -23,6 +23,7 @@ from assistant_agent.observability.otel_exporter import (
 from assistant_agent.observability.trace_persistence import (
     create_langsmith_experiment_trace_store,
 )
+from assistant_agent.providers.provider_errors import sanitize_error_message
 from assistant_agent.runtime.assistant_run_service import load_env_file
 from assistant_agent.runtime.runtime import AgentGraphRuntime
 
@@ -60,100 +61,117 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if not args.no_env_file:
         load_env_file(args.env_file, override=False)
-    client = _langsmith_client()
+    client = None
+    payload: dict | None = None
+    exit_code = 0
     try:
-        if args.inspect:
-            _, active = inspect_langsmith_runtime_regression_dataset(client)
-            _print_json(
-                {
-                    "action": "inspect",
-                    "backend": "langsmith",
-                    "dataset_name": RUNTIME_REGRESSION_DATASET,
-                    "active_example_count": len(active),
-                }
-            )
-            return 0
-        action_name = "preflight" if args.preflight else "run"
-        if not args.allow_real_provider:
-            parser.error(f"--{action_name} requires --allow-real-provider")
-        if not args.allow_runtime_side_effects:
-            parser.error(
-                f"--{action_name} requires --allow-runtime-side-effects"
-            )
-        if args.max_concurrency < 1:
-            parser.error("--max-concurrency must be positive")
-        config = ProviderConfig.from_env()
-        if config.provider_mode != "real":
-            raise RuntimeError(
-                "runtime regression Experiment requires "
-                "MULTIMODAL_AGENT_PROVIDER_MODE=real"
-            )
-        config.validate_provider_mode()
-        if args.preflight:
-            _, active = inspect_langsmith_runtime_regression_dataset(client)
-            _validate_langsmith_exporter()
-            _print_json(
-                {
-                    "action": "preflight",
-                    "backend": "langsmith",
-                    "status": "ready",
-                    "dataset_name": RUNTIME_REGRESSION_DATASET,
-                    "active_example_count": len(active),
-                    "model": config.resolved_chat_provider().model,
-                }
-            )
-            return 0
-
-        _require_args(parser, args, "run_name")
-        result = run_langsmith_runtime_regression_experiment(
-            client,
-            LangSmithRuntimeRegressionSettings(
-                model=config.resolved_chat_provider().model,
-                runtime_factory=lambda binding: _create_item_runtime(
-                    config,
-                    binding,
-                ),
-                run_name=args.run_name,
-                git_commit=_git_commit(),
-                max_concurrency=args.max_concurrency,
-            ),
-        )
-        client.flush()
-        completeness = wait_for_langsmith_runtime_regression_completeness(
-            client,
-            experiment_id=result.experiment_id,
-            example_ids=result.example_ids,
-            timeout_seconds=args.feedback_wait_timeout_seconds,
-        )
-        _print_json(
-            {
-                "action": "run",
-                "backend": "langsmith",
-                "dataset_name": RUNTIME_REGRESSION_DATASET,
-                "experiment_id": result.experiment_id,
-                "experiment_name": result.experiment_name,
-                "experiment_url": result.experiment_url,
-                "example_ids": list(result.example_ids),
-                "run_ids": list(completeness.run_ids),
-                "feedback": completeness.feedback,
-            }
-        )
-        return 0
+        client = _langsmith_client()
+        payload = _execute(client, parser, args)
     except SystemExit:
         raise
     except Exception as exc:
-        _print_json(
-            {
-                "error": "langsmith_runtime_regression_infrastructure_failure",
-                "message": str(exc),
-            }
-        )
-        return 2
+        payload = _infrastructure_failure(exc)
+        exit_code = 2
     finally:
-        try:
-            client.flush()
-        finally:
-            client.close()
+        lifecycle_error = _close_client(client)
+    if lifecycle_error is not None:
+        payload = _infrastructure_failure(lifecycle_error)
+        exit_code = 2
+    if payload is None:
+        payload = _infrastructure_failure(RuntimeError("no CLI result produced"))
+        exit_code = 2
+    _print_json(payload)
+    return exit_code
+
+
+def _execute(client, parser: argparse.ArgumentParser, args: argparse.Namespace) -> dict:
+    if args.inspect:
+        _, active = inspect_langsmith_runtime_regression_dataset(client)
+        return {
+            "action": "inspect",
+            "backend": "langsmith",
+            "dataset_name": RUNTIME_REGRESSION_DATASET,
+            "active_example_count": len(active),
+        }
+    action_name = "preflight" if args.preflight else "run"
+    if not args.allow_real_provider:
+        parser.error(f"--{action_name} requires --allow-real-provider")
+    if not args.allow_runtime_side_effects:
+        parser.error(f"--{action_name} requires --allow-runtime-side-effects")
+    if args.max_concurrency < 1:
+        parser.error("--max-concurrency must be positive")
+    config = ProviderConfig.from_env()
+    if config.provider_mode != "real":
+        raise RuntimeError(
+            "runtime regression Experiment requires "
+            "MULTIMODAL_AGENT_PROVIDER_MODE=real"
+        )
+    config.validate_provider_mode()
+    if args.preflight:
+        _, active = inspect_langsmith_runtime_regression_dataset(client)
+        _validate_langsmith_exporter()
+        return {
+            "action": "preflight",
+            "backend": "langsmith",
+            "status": "ready",
+            "dataset_name": RUNTIME_REGRESSION_DATASET,
+            "active_example_count": len(active),
+            "model": config.resolved_chat_provider().model,
+        }
+
+    _require_args(parser, args, "run_name")
+    result = run_langsmith_runtime_regression_experiment(
+        client,
+        LangSmithRuntimeRegressionSettings(
+            model=config.resolved_chat_provider().model,
+            runtime_factory=lambda binding: _create_item_runtime(config, binding),
+            run_name=args.run_name,
+            git_commit=_git_commit(),
+            max_concurrency=args.max_concurrency,
+        ),
+    )
+    client.flush()
+    completeness = wait_for_langsmith_runtime_regression_completeness(
+        client,
+        experiment_id=result.experiment_id,
+        example_ids=result.example_ids,
+        timeout_seconds=args.feedback_wait_timeout_seconds,
+    )
+    return {
+        "action": "run",
+        "backend": "langsmith",
+        "dataset_name": RUNTIME_REGRESSION_DATASET,
+        "experiment_id": result.experiment_id,
+        "experiment_name": result.experiment_name,
+        "experiment_url": result.experiment_url,
+        "example_ids": list(result.example_ids),
+        "run_ids": list(completeness.run_ids),
+        "feedback": completeness.feedback,
+    }
+
+
+def _close_client(client) -> Exception | None:
+    if client is None:
+        return None
+    errors: list[str] = []
+    try:
+        client.flush()
+    except Exception as exc:
+        errors.append(sanitize_error_message(exc))
+    try:
+        client.close()
+    except Exception as exc:
+        errors.append(sanitize_error_message(exc))
+    if errors:
+        return RuntimeError("; ".join(errors))
+    return None
+
+
+def _infrastructure_failure(exc: Exception) -> dict:
+    return {
+        "error": "langsmith_runtime_regression_infrastructure_failure",
+        "message": sanitize_error_message(exc),
+    }
 
 
 def _langsmith_client():
@@ -170,7 +188,7 @@ def _create_item_runtime(
             trace_store=trace_store,
         ),
         trace_store_factory=lambda: create_langsmith_experiment_trace_store(
-            project_id=binding.project_id,
+            project_id=binding.project_name,
         ),
         trace_context_provider=lambda: binding.trace_context,
     )

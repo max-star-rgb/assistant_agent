@@ -4,9 +4,13 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 import math
 import time
 from typing import Any, Protocol
+from uuid import uuid4
+
+from langsmith.utils import LangSmithRateLimitError
 
 from assistant_agent.evaluation.constants import RUNTIME_REGRESSION_DATASET
 from assistant_agent.evaluation.langsmith_trace import (
@@ -100,9 +104,24 @@ def run_langsmith_runtime_regression_experiment(
 
     dataset, examples = inspect_langsmith_runtime_regression_dataset(client)
     example_ids = tuple(_require_example_id(example) for example in examples)
+    experiment_metadata = {
+        "evaluation_mode": "runtime_regression",
+        "model": settings.model,
+        "git_commit": settings.git_commit,
+    }
+    project = client.create_project(
+        f"{settings.run_name}-{uuid4().hex[:8]}",
+        reference_dataset_id=dataset.id,
+        metadata=experiment_metadata,
+        num_examples=len(examples),
+        evaluator_keys=list(REQUIRED_LANGSMITH_FEEDBACK_KEYS),
+    )
 
     def target(inputs: dict[str, Any]) -> dict[str, Any]:
-        binding = current_langsmith_experiment_binding()
+        binding = current_langsmith_experiment_binding(
+            experiment_id=str(project.id),
+            project_name=str(project.name),
+        )
         if binding is None or binding.trace_context.experiment_link is None:
             raise RuntimeError(
                 "LangSmith Experiment target has no active RunTree binding"
@@ -126,21 +145,21 @@ def run_langsmith_runtime_regression_experiment(
             )
             return assistant_output(state)
         finally:
-            runtime.close()
+            if runtime.close() is False:
+                raise RuntimeError(
+                    f"LangSmith Experiment runtime for {example_id!r} "
+                    "failed to close"
+                )
 
     native = client.evaluate(
         target,
         data=examples,
         evaluators=[],
-        experiment_prefix=settings.run_name,
+        experiment=project,
         blocking=True,
         error_handling="log",
         max_concurrency=settings.max_concurrency,
-        metadata={
-            "evaluation_mode": "runtime_regression",
-            "model": settings.model,
-            "git_commit": settings.git_commit,
-        },
+        metadata=experiment_metadata,
     )
     rows = list(native)
     rows_by_example: dict[str, Any] = {}
@@ -178,7 +197,7 @@ def wait_for_langsmith_runtime_regression_completeness(
     experiment_id: str,
     example_ids: tuple[str, ...],
     timeout_seconds: float = 180.0,
-    poll_interval_seconds: float = 2.0,
+    poll_interval_seconds: float = 5.0,
     sleep: Callable[[float], None] = time.sleep,
 ) -> LangSmithCompletenessResult:
     """Wait for one complete Runtime subtree and all UI Feedback per example."""
@@ -186,13 +205,22 @@ def wait_for_langsmith_runtime_regression_completeness(
     if timeout_seconds <= 0 or poll_interval_seconds <= 0:
         raise ValueError("completeness timeout and poll interval must be positive")
     attempts = math.floor(timeout_seconds / poll_interval_seconds) + 1
+    query_start_time = datetime.now(timezone.utc) - timedelta(hours=1)
     latest_problems: dict[str, list[str]] = {}
     for attempt in range(attempts):
-        result, latest_problems = _audit_experiment(
-            client,
-            experiment_id=experiment_id,
-            example_ids=example_ids,
-        )
+        try:
+            result, latest_problems = _audit_experiment(
+                client,
+                experiment_id=experiment_id,
+                example_ids=example_ids,
+                query_start_time=query_start_time,
+            )
+        except LangSmithRateLimitError:
+            result = None
+            latest_problems = {
+                example_id: ["LangSmith completeness query rate limited"]
+                for example_id in example_ids
+            }
         if result is not None:
             return result
         if attempt + 1 < attempts:
@@ -207,13 +235,34 @@ def _audit_experiment(
     *,
     experiment_id: str,
     example_ids: tuple[str, ...],
+    query_start_time: datetime,
 ) -> tuple[LangSmithCompletenessResult | None, dict[str, list[str]]]:
     expected = set(example_ids)
+    runs = list(
+        client.list_runs(
+            project_id=experiment_id,
+            start_time=query_start_time,
+            select=[
+                "id",
+                "parent_run_id",
+                "name",
+                "reference_example_id",
+                "trace_id",
+                "inputs",
+                "outputs",
+            ],
+            limit=max(100, len(example_ids) * 32),
+        )
+    )
+    runs_by_id = {str(_field(run, "id")): run for run in runs}
     roots_by_example: dict[str, list[Any]] = {key: [] for key in expected}
-    for root in client.list_runs(project_id=experiment_id, is_root=True):
-        example_id = str(_field(root, "reference_example_id") or "")
-        if example_id in roots_by_example:
-            roots_by_example[example_id].append(root)
+    for run in runs:
+        example_id = str(_field(run, "reference_example_id") or "")
+        if (
+            example_id in roots_by_example
+            and _field(run, "parent_run_id") is None
+        ):
+            roots_by_example[example_id].append(run)
 
     problems: dict[str, list[str]] = {}
     roots: dict[str, Any] = {}
@@ -233,13 +282,33 @@ def _audit_experiment(
                 root, "outputs"
             ):
                 item_problems.append("root outputs missing or not an object")
-            trace_names = {
-                str(_field(run, "name"))
-                for run in client.list_runs(trace_id=_field(root, "trace_id"))
-            }
-            for required_name in ("agent.runtime", "llm.chat"):
-                if required_name not in trace_names:
-                    item_problems.append(f"missing trace span {required_name}")
+            root_id = str(_field(root, "id"))
+            runtimes = [
+                run
+                for run in runs
+                if _field(run, "name") == "agent.runtime"
+                and str(_field(run, "parent_run_id")) == root_id
+                and str(_field(run, "reference_example_id") or "")
+                == example_id
+            ]
+            if len(runtimes) != 1:
+                item_problems.append(
+                    f"agent.runtime child count={len(runtimes)}"
+                )
+            else:
+                runtime_id = str(_field(runtimes[0], "id"))
+                llm_descendants = [
+                    run
+                    for run in runs
+                    if _field(run, "name") == "llm.chat"
+                    and _is_descendant(
+                        run,
+                        ancestor_id=runtime_id,
+                        runs_by_id=runs_by_id,
+                    )
+                ]
+                if not llm_descendants:
+                    item_problems.append("missing llm.chat descendant")
         if item_problems:
             problems[example_id] = item_problems
 
@@ -265,7 +334,9 @@ def _audit_experiment(
     required_feedback = set(REQUIRED_LANGSMITH_FEEDBACK_KEYS)
     for example_id in example_ids:
         missing = sorted(
-            required_feedback - set(feedback_by_example[example_id])
+            key
+            for key in required_feedback
+            if feedback_by_example[example_id].get(key) is None
         )
         if missing:
             problems.setdefault(example_id, []).append(
@@ -285,6 +356,25 @@ def _audit_experiment(
 def _example_active(example: Any) -> bool:
     metadata = _field(example, "metadata")
     return not isinstance(metadata, dict) or metadata.get("active", True) is not False
+
+
+def _is_descendant(
+    run: Any,
+    *,
+    ancestor_id: str,
+    runs_by_id: dict[str, Any],
+) -> bool:
+    parent_id = str(_field(run, "parent_run_id") or "")
+    visited: set[str] = set()
+    while parent_id and parent_id not in visited:
+        if parent_id == ancestor_id:
+            return True
+        visited.add(parent_id)
+        parent = runs_by_id.get(parent_id)
+        if parent is None:
+            return False
+        parent_id = str(_field(parent, "parent_run_id") or "")
+    return False
 
 
 def _require_example_id(example: Any) -> str:

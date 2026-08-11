@@ -5,9 +5,10 @@ from __future__ import annotations
 import json
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 from typing import TYPE_CHECKING, Any, Literal
+from uuid import NAMESPACE_URL, uuid5
 
 from pydantic import BaseModel, Field
 
@@ -378,6 +379,11 @@ def _root_span(
         for event in events
     )
     finished_at = max(event.created_at for event in events)
+    root_span_id = (
+        projection_context.span_id
+        if projection_context is not None
+        else _root_span_id(events)
+    )
     vision_trace = _is_vision_observation_trace(events)
     diagnostic_attributes = (
         {}
@@ -398,11 +404,7 @@ def _root_span(
         }
     return OtelSpanSpec(
         trace_id=events[0].trace_id,
-        span_id=(
-            projection_context.span_id
-            if projection_context is not None
-            else _root_span_id(events)
-        ),
+        span_id=root_span_id,
         parent_span_id=(
             projection_context.parent_span_id
             if projection_context is not None
@@ -420,7 +422,11 @@ def _root_span(
         status=_root_status(events),
         attributes={
             **trace_attributes,
-            **_langsmith_experiment_attributes(events),
+            **_langsmith_experiment_attributes(
+                events,
+                root_span_id=root_span_id,
+                started_at=started_at,
+            ),
             "langsmith.span.kind": "chain",
             "langfuse.observation.type": (
                 "agent"
@@ -481,6 +487,9 @@ def _external_parent_span_id(events: list[TraceEvent]) -> str | None:
 
 def _langsmith_experiment_attributes(
     events: list[TraceEvent],
+    *,
+    root_span_id: str,
+    started_at: datetime,
 ) -> dict[str, str]:
     started = next(
         (event for event in events if _event_name(event) == "run.started"),
@@ -488,10 +497,29 @@ def _langsmith_experiment_attributes(
     )
     if started is None or started.attributes.get("evaluation_backend") != "langsmith":
         return {}
+    parent_dotted_order = started.attributes.get("parent_dotted_order")
+    root_run_id = str(
+        uuid5(
+            NAMESPACE_URL,
+            f"assistant-agent-langsmith:{events[0].trace_id}:{root_span_id}",
+        )
+    )
+    dotted_order = None
+    if isinstance(parent_dotted_order, str) and parent_dotted_order:
+        dotted_order = (
+            f"{parent_dotted_order}."
+            f"{started_at.astimezone(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')}"
+            f"{root_run_id}"
+        )
     values = {
         "langsmith.trace.id": started.attributes.get("trace_id"),
         "langsmith.span.parent_id": started.attributes.get("parent_run_id"),
+        "langsmith.span.id": root_run_id,
+        "langsmith.span.dotted_order": dotted_order,
         "langsmith.trace.session_id": started.attributes.get("experiment_id"),
+        "langsmith.trace.session_name": started.attributes.get(
+            "experiment_project_name"
+        ),
         "langsmith.reference_example_id": started.attributes.get(
             "reference_example_id"
         ),

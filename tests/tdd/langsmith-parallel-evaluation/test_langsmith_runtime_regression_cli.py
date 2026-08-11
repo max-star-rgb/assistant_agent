@@ -59,10 +59,16 @@ def _binding() -> LangSmithExperimentBinding:
         trace_id="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
         parent_run_id="11111111-2222-3333-4444-555555555555",
         experiment_id="99999999-8888-7777-6666-555555555555",
+        project_name="run-name-12345678",
         reference_example_id=str(EXAMPLE_ID),
+        parent_dotted_order=(
+            "20260811T120000000000Z"
+            "11111111-2222-3333-4444-555555555555"
+        ),
     )
     return LangSmithExperimentBinding(
         project_id=link.experiment_id,
+        project_name=link.project_name,
         trace_context=RuntimeTraceContext(
             trace_id="a" * 32,
             parent_span_id="1" * 16,
@@ -117,6 +123,45 @@ def test_run_requires_real_provider(monkeypatch, capsys) -> None:
     assert "requires MULTIMODAL_AGENT_PROVIDER_MODE=real" in capsys.readouterr().out
 
 
+def test_client_initialization_failure_is_controlled_and_sanitized(
+    monkeypatch,
+    capsys,
+) -> None:
+    def fail_to_create_client():
+        raise RuntimeError("api_key=sk-secret-value /home/private/client.json")
+
+    monkeypatch.setattr(cli, "_langsmith_client", fail_to_create_client)
+
+    assert cli.main(["--inspect", "--no-env-file"]) == 2
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["error"] == "langsmith_runtime_regression_infrastructure_failure"
+    assert "sk-secret-value" not in output["message"]
+    assert "/home/private/client.json" not in output["message"]
+
+
+def test_client_lifecycle_failure_is_controlled_and_closes_client(
+    monkeypatch,
+    capsys,
+) -> None:
+    client = _Client()
+
+    def fail_to_flush():
+        client.flushed = True
+        raise RuntimeError("token=sk-close-secret")
+
+    monkeypatch.setattr(client, "flush", fail_to_flush)
+    monkeypatch.setattr(cli, "_langsmith_client", lambda: client)
+
+    assert cli.main(["--inspect", "--no-env-file"]) == 2
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["error"] == "langsmith_runtime_regression_infrastructure_failure"
+    assert "sk-close-secret" not in output["message"]
+    assert client.flushed is True
+    assert client.closed is True
+
+
 def test_item_runtime_uses_langsmith_only_experiment_store(monkeypatch) -> None:
     captured = {}
 
@@ -141,7 +186,7 @@ def test_item_runtime_uses_langsmith_only_experiment_store(monkeypatch) -> None:
     config = _RealConfig()
 
     assert cli._create_item_runtime(config, binding) == "host"
-    assert captured["project_id"] == binding.project_id
+    assert captured["project_id"] == binding.project_name
     assert captured["trace_store"] == "langsmith-store"
     assert captured["trace_context"] == binding.trace_context
 

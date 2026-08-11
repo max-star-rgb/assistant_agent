@@ -14,10 +14,15 @@ from assistant_agent.observability.trace_context import (
 @dataclass(frozen=True)
 class LangSmithExperimentBinding:
     project_id: str
+    project_name: str
     trace_context: RuntimeTraceContext
 
 
-def current_langsmith_experiment_binding() -> LangSmithExperimentBinding | None:
+def current_langsmith_experiment_binding(
+    *,
+    experiment_id: str,
+    project_name: str,
+) -> LangSmithExperimentBinding | None:
     """Return the active LangSmith target identity, if it is complete."""
 
     run = _current_run_tree()
@@ -25,16 +30,16 @@ def current_langsmith_experiment_binding() -> LangSmithExperimentBinding | None:
         run is None
         or getattr(run, "id", None) is None
         or getattr(run, "trace_id", None) is None
-        or getattr(run, "session_id", None) is None
         or getattr(run, "reference_example_id", None) is None
+        or not getattr(run, "dotted_order", None)
     ):
         return None
     run_id = run.id
     trace_id = run.trace_id
-    experiment_id = run.session_id
     reference_example_id = run.reference_example_id
     return LangSmithExperimentBinding(
         project_id=str(experiment_id),
+        project_name=project_name,
         trace_context=RuntimeTraceContext(
             trace_id=trace_id.hex,
             parent_span_id=run_id.bytes[:8].hex(),
@@ -43,7 +48,9 @@ def current_langsmith_experiment_binding() -> LangSmithExperimentBinding | None:
                 trace_id=str(trace_id),
                 parent_run_id=str(run_id),
                 experiment_id=str(experiment_id),
+                project_name=project_name,
                 reference_example_id=str(reference_example_id),
+                parent_dotted_order=str(run.dotted_order),
             ),
         ),
     )
