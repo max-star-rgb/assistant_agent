@@ -420,6 +420,7 @@ def _root_span(
         status=_root_status(events),
         attributes={
             **trace_attributes,
+            "langsmith.span.kind": "chain",
             "langfuse.observation.type": (
                 "agent"
                 if projection_context is not None
@@ -597,13 +598,17 @@ def _trace_attributes(
         ),
     }
     if projection_context is not None or _external_parent_span_id(events) is None:
-        attrs["langfuse.trace.name"] = (
+        trace_name = (
             projection_context.trace_name
             if projection_context is not None
             else "vision.observation"
             if vision_trace
             else "assistant.turn"
         )
+        attrs["langfuse.trace.name"] = trace_name
+        attrs["langsmith.trace.name"] = trace_name
+    attrs["langsmith.metadata.assistant_trace_id"] = trace_id
+    attrs["langsmith.metadata.run_id"] = run_id
     if projection_context is None:
         attrs["langfuse.trace.metadata.assistant_trace_id"] = trace_id
         attrs["langfuse.trace.metadata.run_id"] = run_id
@@ -621,8 +626,10 @@ def _trace_attributes(
         )
     if user_id:
         attrs["langfuse.user.id"] = user_id
+        attrs["langsmith.metadata.user_id"] = user_id
     if session_id:
         attrs["langfuse.session.id"] = session_id
+        attrs["langsmith.trace.session_id"] = session_id
         attrs["assistant_agent.agent_session_id"] = session_id
         attrs["langfuse.trace.metadata.agent_session_id"] = session_id
     client_type = _string_or_none(summary.get("client_type"))
@@ -697,6 +704,7 @@ def _event_attributes(event: TraceEvent) -> dict[str, Any]:
     attrs: dict[str, Any] = {
         "langfuse.observation.type": _observation_type(event),
         "langfuse.observation.level": "ERROR" if _event_status(event) == "error" else "DEFAULT",
+        "langsmith.span.kind": _langsmith_span_kind(event),
         "assistant_agent.canonical_event": canonical_event,
         "assistant_agent.node_name": event.node_name,
     }
@@ -820,6 +828,8 @@ def _root_io_attributes(
         attributes = {
             "langfuse.observation.input": input_value,
             "langfuse.observation.output": output_value,
+            "inputs": input_value,
+            "outputs": output_value,
         }
         if include_trace:
             attributes["langfuse.trace.input"] = input_value
@@ -854,6 +864,8 @@ def _root_io_attributes(
     attributes = {
         "langfuse.observation.input": input_value,
         "langfuse.observation.output": output_value,
+        "inputs": input_value,
+        "outputs": output_value,
     }
     if include_trace:
         attributes["langfuse.trace.input"] = input_value
@@ -1128,7 +1140,11 @@ def _event_io_attributes(
             "source": event.attributes.get("source"),
         }
 
-    attributes = {"langfuse.observation.input": _json_value(_drop_none_if_mapping(input_payload))}
+    serialized_input = _json_value(_drop_none_if_mapping(input_payload))
+    attributes = {
+        "langfuse.observation.input": serialized_input,
+        "inputs": serialized_input,
+    }
     if name == "memory.ingestion.finished":
         semantic_evidence = (
             "available"
@@ -1147,9 +1163,9 @@ def _event_io_attributes(
             if name == "llm.chat.finished"
             else _drop_none_if_mapping(output_payload)
         )
-        attributes["langfuse.observation.output"] = _json_value(
-            serialized_output
-        )
+        serialized_output_value = _json_value(serialized_output)
+        attributes["langfuse.observation.output"] = serialized_output_value
+        attributes["outputs"] = serialized_output_value
     return attributes
 
 
@@ -1564,6 +1580,14 @@ def _span_name(event: TraceEvent) -> str:
 
 def _observation_type(event: TraceEvent) -> str:
     return event.observation_type or "span"
+
+
+def _langsmith_span_kind(event: TraceEvent) -> str:
+    if _observation_type(event) == "generation":
+        return "llm"
+    if _event_name(event) in {"tool.finished", "tool.failed"} or event.tool_name:
+        return "tool"
+    return "chain"
 
 
 def _started_at_by_span_id(events: Iterable[TraceEvent]) -> dict[str, datetime]:
