@@ -26,9 +26,11 @@ class RuntimeRegressionRuntime(Protocol):
 
 
 RuntimeFactory = Callable[[], RuntimeRegressionRuntime]
+GROUNDING_EXPERIMENT_SCORE_NAME = "assistant_agent.quality.grounding.experiment"
 REQUIRED_EXPERIMENT_SCORE_NAMES = (
     "assistant_agent.quality.response_quality.experiment",
-    "assistant_agent.quality.grounding.experiment",
+    GROUNDING_EXPERIMENT_SCORE_NAME,
+    "assistant_agent.quality.regression_improvement.experiment",
 )
 
 
@@ -81,7 +83,15 @@ def run_runtime_regression_experiment(
                 )
             )
             events = runtime.trace_store.list_by_run(state.run_id)
-            return ReleaseRunEvidence.from_state(state, events).model_dump(mode="json")
+            evidence = ReleaseRunEvidence.from_state(state, events)
+            output = _assistant_output(state)
+            with client.start_as_current_observation(
+                name="runtime-regression-evidence",
+                as_type="span",
+                input=evidence.model_dump(mode="json"),
+            ) as evidence_span:
+                evidence_span.update(output=output)
+            return output
         finally:
             runtime.close()
 
@@ -129,6 +139,7 @@ def inspect_runtime_regression_dataset(client: Any) -> tuple[Any, list[Any]]:
         if not isinstance(item_input, dict):
             raise RuntimeError(f"runtime regression item {item_id!r} input must be an object")
         _request_text(item_id, item_input)
+        _validate_baseline_output(item_id, _item_field(item, "expected_output"))
     return dataset, items
 
 
@@ -168,6 +179,11 @@ def wait_for_runtime_regression_scores(
                 for score in _item_field(item, "scores") or ()
                 if _item_field(score, "name") in required
             }
+            if GROUNDING_EXPERIMENT_SCORE_NAME not in latest[item_id]:
+                trace_id = _item_field(item, "trace_id")
+                grounding_score = _evidence_grounding_score(client, trace_id)
+                if grounding_score is not None:
+                    latest[item_id][GROUNDING_EXPERIMENT_SCORE_NAME] = grounding_score
         if all(required <= set(latest.get(item_id, {})) for item_id in expected_items):
             return latest
         if attempt + 1 < attempts:
@@ -180,6 +196,39 @@ def wait_for_runtime_regression_scores(
     raise RuntimeError(
         "Langfuse Experiment Score completeness timeout; missing=" + repr(missing)
     )
+
+
+def _evidence_grounding_score(client: Any, trace_id: Any) -> Any | None:
+    if not isinstance(trace_id, str) or not trace_id:
+        return None
+    observations = client.api.observations.get_many(
+        trace_id=trace_id,
+        name="runtime-regression-evidence",
+        type="SPAN",
+        fields="core",
+        limit=2,
+    ).data
+    if len(observations) != 1:
+        return None
+    observation_id = _item_field(observations[0], "id")
+    if not isinstance(observation_id, str) or not observation_id:
+        return None
+    scores = client.api.scores_v3.get_many_v3(
+        name=GROUNDING_EXPERIMENT_SCORE_NAME,
+        trace_id=trace_id,
+        fields="subject",
+        limit=100,
+    ).data
+    matching = [
+        score
+        for score in scores
+        if _item_field(score, "name") == GROUNDING_EXPERIMENT_SCORE_NAME
+        and _item_field(_item_field(score, "subject"), "kind") == "observation"
+        and _item_field(_item_field(score, "subject"), "id") == observation_id
+    ]
+    if len(matching) != 1:
+        return None
+    return _item_field(matching[0], "value")
 
 
 def wait_for_runtime_regression_trace_completeness(
@@ -206,6 +255,33 @@ def _require_item_id(item: Any) -> str:
     if not isinstance(item_id, str) or not item_id:
         raise RuntimeError("runtime regression Dataset item has no id")
     return item_id
+
+
+def _assistant_output(state: Any) -> dict[str, Any]:
+    message = state.response.message if state.response is not None else ""
+    return {
+        "role": "assistant",
+        "content": message,
+        "chars": len(message),
+        "truncated": False,
+        "terminal_status": state.status,
+    }
+
+
+def _validate_baseline_output(item_id: str, value: Any) -> None:
+    if not isinstance(value, dict):
+        raise RuntimeError(
+            f"runtime regression item {item_id!r} expected_output must be an object"
+        )
+    if value.get("role") != "assistant":
+        raise RuntimeError(
+            f"runtime regression item {item_id!r} expected_output role must be assistant"
+        )
+    content = value.get("content")
+    if not isinstance(content, str) or not content.strip():
+        raise RuntimeError(
+            f"runtime regression item {item_id!r} expected_output has no assistant content"
+        )
 
 
 def _request_text(item_id: str, item_input: dict[str, Any]) -> str:

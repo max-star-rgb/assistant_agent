@@ -90,10 +90,12 @@ active Item 均以 Langfuse 当前内容为准。
 
 在 Trace 页面把根 `agent.runtime` observation 加入 Dataset 后，Item input 可以直接保持 Langfuse 的
 `role/content/chars/truncated` 结构；也兼容手工录入的 `{"request":"..."}`。`truncated=true`、非 user
-role、空 content 或非对象 input 会在 preflight 阶段失败，不会启动真实 Runtime。
+role、空 content 或非对象 input 会在 preflight 阶段失败，不会启动真实 Runtime。Item
+`expected_output` 必须保留原始失败运行的 `role=assistant/content/...` 输出；它是用于比较修复效果的
+baseline，不是要求新 Runtime 模仿的 golden answer。缺少有效 baseline 属于 infrastructure failure。
 
 首次 Dataset 创建后，运行 `run_runtime_audit.py configure-evaluators --apply --allow-online-judge`，为该
-Dataset ID 配置 response quality 与 grounding 两条 Experiment Rule。服务端保留同一 SDK runner 作为
+Dataset 配置 response quality、grounding 与 regression improvement 三条回归 Rule。服务端保留同一 SDK runner 作为
 webhook 的受控执行内核；operator 仍可用以下命令诊断，但日常不需要手工运行 CLI：
 
 ```bash
@@ -105,9 +107,14 @@ webhook 的受控执行内核；operator 仍可用以下命令诊断，但日常
 runner 只执行状态为 ACTIVE 的 Langfuse item，通过共享 Experiment Runtime Host 装配
 `AgentGraphRuntime`，不复制 Agent loop。Host 为每个 item 创建 production canonical trace store，读取
 Langfuse SDK 当前 `experiment-item-task` 的 OTel trace/span identity 作为 Runtime 父级，并统一关闭 Runtime
-与 exporter。输出使用结构化 `ReleaseRunEvidence`，Langfuse Experiment Rules 复用日常 evaluator family。CLI
-必须等每个 item 的 `assistant_agent.quality.response_quality.experiment` 与
-`assistant_agent.quality.grounding.experiment` 都落库，并从远端 API 确认上述 Runtime 子树完整后才成功；
+与 exporter。Experiment 主 output 使用与原始 Trace 一致的
+`role/content/chars/truncated/terminal_status` Assistant 结构；`ReleaseRunEvidence` 单独写入 task 下的
+`runtime-regression-evidence` observation input，其 output 为同一个 canonical Assistant 结构，不再把最终回答
+埋在评测 envelope 中，也不把大证据塞入会截断的 metadata。response quality 判断当前回答，grounding
+直接评价 evidence observation，regression improvement 显式比较原始失败 baseline、当前回答和案例
+metadata。CLI 必须等每个 item 的 `assistant_agent.quality.response_quality.experiment`、
+`assistant_agent.quality.grounding.experiment` 与
+`assistant_agent.quality.regression_improvement.experiment` 都落库，并从远端 API 确认上述 Runtime 子树完整后才成功；
 超时、缺分或 Trace 层级不完整属于 infrastructure failure。
 `--inspect` 可只读查看 active item 数量。
 

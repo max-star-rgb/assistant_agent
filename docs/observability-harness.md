@@ -515,9 +515,12 @@ task-level Score、Dataset 和运行契约统一由 [`evals/README.md`](../evals
 Langfuse 日常 evaluator 使用原生 **Live Observations** 和 observation name/type filter；首次创建
 默认 100% sampling，之后 `enabled/sampling` 由 Langfuse UI 作为运维状态管理。仓库 reconcile 只更新
 evaluator reference、target、filter 和 mapping，不覆盖 UI 中的启停或采样；prompt、output definition 或
-model connection 漂移时创建同名 evaluator 新版本。五个 evaluator family 除服务日常评分外，response
-quality 与 grounding 还被两条 Dataset-ID 过滤的 Experiment Rule 复用。配置器只管理规则，不创建或启动
-Dataset Experiment。不要新建 deprecated trace-level evaluator。
+model connection 漂移时创建同名 evaluator 新版本。五个 live evaluator family 服务日常评分；Runtime
+Regression 另外使用 canonical response-quality evaluator、独立的 evidence-aware grounding evaluator 与
+baseline-aware regression-improvement evaluator，共三条回归 Rule。配置器只管理规则，不创建或启动
+Dataset Experiment。其中 grounding Rule 只命中 `sdk-experiment` 环境下唯一的
+`runtime-regression-evidence` observation；另外两条 Experiment Rule 按 Dataset ID 命中 item。不要新建
+deprecated trace-level evaluator。
 Langfuse 可按 `gen_ai.tool.name` 将 Tool execution SPAN 显示为
 `shopping_search` 等具体工具名，因此 `tool_result_quality` 不依赖 observation name，而过滤 SPAN 且
 metadata `assistant_agent.observation_kind=tool_execution`；该稳定标记由 canonical
@@ -550,8 +553,9 @@ trace content。Evaluator/rule 公共 API 当前仍标为 unstable，因此仓�
 ```
 
 Evaluator 与 Live Observation Rule 使用同一个 `assistant_agent.quality.*` canonical 名称。入口创建
-缺失的五条日常 Rule；新回归 Dataset 尚不存在时，两条 Experiment Rule 会明确列为 skipped，不影响
-Live Judge 首次启用；Dataset 由审核后的失败 Score 创建后，再次运行配置器即按真实 Dataset ID 补齐规则。
+缺失的五条日常 Rule 和一条 evidence observation Rule；新回归 Dataset 尚不存在时，两条 Dataset-target
+Experiment Rule 会明确列为 skipped，不影响 Live Judge 首次启用；Dataset 由审核后的失败 Score 创建后，
+再次运行配置器即按真实 Dataset ID 补齐规则。
 若检测到早期 `assistant-agent-live-*` Rule 或错误版本创建的
 `assistant_agent.quality.*.live` Rule，则通过同一 Rule ID 原地迁移为 canonical 名称，不删除或回写
 历史 Score。`memory_extraction` Rule 额外过滤

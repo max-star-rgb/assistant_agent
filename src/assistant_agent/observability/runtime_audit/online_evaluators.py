@@ -79,6 +79,22 @@ class _RuleSpec:
     dataset_id: str | None = None
     legacy_rule_names: tuple[str, ...] = ()
     metadata_filters: tuple[tuple[str, str], ...] = ()
+    mappings: tuple["_RuleMappingSpec", ...] = ()
+    trace_names: tuple[str, ...] = ("assistant.turn",)
+    environments: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class _RuleMappingSpec:
+    variable: str
+    source: EvaluationRuleMappingSource
+    json_path: str | None = None
+
+
+_DEFAULT_RULE_MAPPINGS = (
+    _RuleMappingSpec("input", EvaluationRuleMappingSource.INPUT),
+    _RuleMappingSpec("output", EvaluationRuleMappingSource.OUTPUT),
+)
 
 
 def configure_native_online_evaluators(
@@ -88,7 +104,7 @@ def configure_native_online_evaluators(
     model_provider: str,
     model: str,
 ) -> OnlineEvaluatorConfigurationResult:
-    """Reconcile five evaluator families and their Live/Experiment rules."""
+    """Reconcile live and Runtime Regression evaluator families and rules."""
 
     evaluator_specs = _specs()
     rule_specs = _rule_specs(dataset_id=None)
@@ -227,12 +243,23 @@ def _rule_request(spec: _RuleSpec) -> CreateLlmAsJudgeEvaluationRuleRequest:
                 operator=EvaluationRuleOptionsFilterOperator.ANY_OF,
                 value=[spec.observation_type],
             ),
-            EvaluationRuleFilter_StringOptions(
-                column="traceName",
-                operator=EvaluationRuleOptionsFilterOperator.ANY_OF,
-                value=["assistant.turn"],
-            ),
         ]
+        if spec.environments:
+            filters.append(
+                EvaluationRuleFilter_StringOptions(
+                    column="environment",
+                    operator=EvaluationRuleOptionsFilterOperator.ANY_OF,
+                    value=list(spec.environments),
+                )
+            )
+        if spec.trace_names:
+            filters.append(
+                EvaluationRuleFilter_StringOptions(
+                    column="traceName",
+                    operator=EvaluationRuleOptionsFilterOperator.ANY_OF,
+                    value=list(spec.trace_names),
+                )
+            )
         if spec.observation_name is not None:
             filters.append(
                 EvaluationRuleFilter_StringOptions(
@@ -262,15 +289,19 @@ def _rule_request(spec: _RuleSpec) -> CreateLlmAsJudgeEvaluationRuleRequest:
         sampling=1.0,
         filter=filters,
         mapping=[
-            EvaluationRuleMapping(
-                variable="input",
-                source=EvaluationRuleMappingSource.INPUT,
-            ),
-            EvaluationRuleMapping(
-                variable="output",
-                source=EvaluationRuleMappingSource.OUTPUT,
-            ),
+            _rule_mapping_request(mapping)
+            for mapping in (spec.mappings or _DEFAULT_RULE_MAPPINGS)
         ],
+    )
+
+
+def _rule_mapping_request(spec: _RuleMappingSpec) -> EvaluationRuleMapping:
+    if spec.json_path is None:
+        return EvaluationRuleMapping(variable=spec.variable, source=spec.source)
+    return EvaluationRuleMapping(
+        variable=spec.variable,
+        source=spec.source,
+        json_path=spec.json_path,
     )
 
 
@@ -292,8 +323,6 @@ def _specs() -> tuple[_EvaluatorSpec, ...]:
             prompt=(
                 "判断 Assistant 输出是否清晰、完整、直接回应当前用户请求。"
                 "不要因为没有调用工具而扣分，除非请求确实需要外部证据。\n\n"
-                "当输出是 Experiment 的 ReleaseRunEvidence 时，以 final_state.response.message 为最终回答，"
-                "并结合 calls、final_state.tool_results 和 final_state.status 判断完整性。\n\n"
                 "完整模型输入：\n{{input}}\n\nAssistant 输出：\n{{output}}"
             ),
         ),
@@ -302,8 +331,6 @@ def _specs() -> tuple[_EvaluatorSpec, ...]:
             prompt=(
                 "判断 Assistant 输出中的事实断言是否忠于模型输入里可见的工具结果、上下文和失败状态，"
                 "不得把缺失证据补成确定事实。无需外部证据的普通对话可判 true。\n\n"
-                "当输出是 Experiment 的 ReleaseRunEvidence 时，以 final_state.response.message 为最终回答，"
-                "并把 calls、final_state.tool_results 和 final_state.status 作为可见执行证据。\n\n"
                 "完整模型输入：\n{{input}}\n\nAssistant 输出：\n{{output}}"
             ),
         ),
@@ -329,6 +356,26 @@ def _specs() -> tuple[_EvaluatorSpec, ...]:
                 "检查模型输入中的长期记忆上下文是否与当前用户请求相关、未压过当前请求、且没有把明显陈旧的"
                 "动态事实当作当前事实。输出能正确忽略无关记忆时也可判 true。\n\n"
                 "完整模型输入（含可用记忆上下文）：\n{{input}}\n\nAssistant 输出：\n{{output}}"
+            ),
+        ),
+        _EvaluatorSpec(
+            name="assistant_agent.quality.grounding.experiment",
+            prompt=(
+                "判断当前 Assistant 回答中的事实断言是否忠于本次真实 Runtime 执行证据。"
+                "input 是从 experiment-item-task 独立记录的 calls、tool_results、errors 和终态；"
+                "不得把缺失或失败的工具证据补成确定事实。无需外部证据的普通对话可判 true。\n\n"
+                "Runtime 执行证据：\n{{input}}\n\n当前 Assistant 输出：\n{{output}}"
+            ),
+        ),
+        _EvaluatorSpec(
+            name="assistant_agent.quality.regression_improvement",
+            prompt=(
+                "判断当前真实 Runtime 输出是否消除了原始失败案例中的问题，且没有引入同等或更严重的新问题。"
+                "baseline 是人工沉淀时的原始失败输出，不是 golden answer，也不要求当前回答模仿其措辞。"
+                "优先结合 case metadata 中的故障分类；若 metadata 未说明，则比较两次回答的完整性、事实依据、"
+                "工具使用和失败处理。原问题仍存在、当前结果更差或证据不足时判 false；原输出实际无明显问题且"
+                "当前结果保持同等质量时可判 true。\n\n用户输入：\n{{input}}\n\n原始失败 baseline：\n{{baseline}}"
+                "\n\n当前 Assistant 输出：\n{{output}}\n\n案例 metadata：\n{{case_metadata}}"
             ),
         ),
     )
@@ -409,11 +456,32 @@ def _rule_specs(*, dataset_id: str | None) -> tuple[_RuleSpec, ...]:
         ),
         _RuleSpec(
             name="assistant_agent.quality.grounding.experiment",
-            evaluator_name="assistant_agent.quality.grounding",
+            evaluator_name="assistant_agent.quality.grounding.experiment",
+            target=EvaluationRuleTarget.OBSERVATION,
+            observation_name="runtime-regression-evidence",
+            observation_type="SPAN",
+            trace_names=(),
+            environments=("sdk-experiment",),
+        ),
+        _RuleSpec(
+            name="assistant_agent.quality.regression_improvement.experiment",
+            evaluator_name="assistant_agent.quality.regression_improvement",
             target=EvaluationRuleTarget.EXPERIMENT,
             observation_name=None,
             observation_type=None,
             dataset_id=dataset_id,
+            mappings=(
+                _RuleMappingSpec("input", EvaluationRuleMappingSource.INPUT),
+                _RuleMappingSpec("output", EvaluationRuleMappingSource.OUTPUT),
+                _RuleMappingSpec(
+                    "baseline",
+                    EvaluationRuleMappingSource.EXPECTED_OUTPUT,
+                ),
+                _RuleMappingSpec(
+                    "case_metadata",
+                    EvaluationRuleMappingSource.EXPERIMENT_ITEM_METADATA,
+                ),
+            ),
         ),
     )
 

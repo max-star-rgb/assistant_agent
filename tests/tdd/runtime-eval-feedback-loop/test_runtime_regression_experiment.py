@@ -53,6 +53,13 @@ class _Dataset:
                     "chars": 10,
                     "truncated": False,
                 },
+                expected_output={
+                    "role": "assistant",
+                    "content": "原始失败回答",
+                    "chars": len("原始失败回答"),
+                    "truncated": False,
+                    "terminal_status": "completed",
+                },
                 metadata={"source": "langfuse-ui"},
             )
         ]
@@ -72,10 +79,29 @@ class _Dataset:
 class _Client:
     def __init__(self) -> None:
         self.dataset = _Dataset()
+        self.observations = []
 
     def get_dataset(self, name):
         assert name == RUNTIME_REGRESSION_DATASET
         return self.dataset
+
+    def start_as_current_observation(self, **kwargs):
+        observation = SimpleNamespace(
+            kwargs=kwargs,
+            output=None,
+            update=lambda **update: setattr(observation, "output", update["output"]),
+        )
+
+        class Context:
+            def __enter__(self):
+                self_observations.append(observation)
+                return observation
+
+            def __exit__(self, exc_type, exc, traceback):
+                return False
+
+        self_observations = self.observations
+        return Context()
 
 
 def test_runtime_regression_experiment_replays_active_item_through_runtime() -> None:
@@ -109,8 +135,23 @@ def test_runtime_regression_experiment_replays_active_item_through_runtime() -> 
         "runtime_regression": {"dataset_item_id": "runtime-item-1"}
     }
     assert runtimes[0].closed is True
-    assert client.dataset.task_output["final_state"]["status"] == "completed"
-    assert client.dataset.task_output["final_state"]["response"]["message"] == "重跑后的回答"
+    assert client.dataset.task_output == {
+        "role": "assistant",
+        "content": "重跑后的回答",
+        "chars": len("重跑后的回答"),
+        "truncated": False,
+        "terminal_status": "completed",
+    }
+    assert len(client.observations) == 1
+    evidence_observation = client.observations[0]
+    assert evidence_observation.kwargs["name"] == "runtime-regression-evidence"
+    assert evidence_observation.kwargs["as_type"] == "span"
+    evidence = evidence_observation.kwargs["input"]
+    assert evidence["calls"] == []
+    assert evidence["final_state"]["status"] == "completed"
+    assert evidence["final_state"]["response"]["message"] == "重跑后的回答"
+    assert evidence["infrastructure_error"] is None
+    assert evidence_observation.output == client.dataset.task_output
     call = client.dataset.call
     assert call["name"] == "assistant-agent-runtime-regression"
     assert call["run_name"] == "runtime-regression-first-run"
@@ -141,6 +182,25 @@ def test_runtime_regression_rejects_truncated_ui_trace_input() -> None:
         raise AssertionError("truncated Langfuse item must not be replayed")
 
 
+def test_runtime_regression_rejects_item_without_original_baseline_output() -> None:
+    client = _Client()
+    client.dataset.items[0].expected_output = None
+
+    try:
+        run_runtime_regression_experiment(
+            client,
+            RuntimeRegressionExperimentSettings(
+                model="production-model",
+                runtime_factory=_Runtime,
+                run_name="runtime-regression-missing-baseline",
+            ),
+        )
+    except RuntimeError as exc:
+        assert "expected_output" in str(exc)
+    else:
+        raise AssertionError("regression item without a baseline must fail preflight")
+
+
 def test_runtime_regression_waits_until_every_experiment_score_is_complete() -> None:
     class Experiments:
         def __init__(self) -> None:
@@ -150,7 +210,12 @@ def test_runtime_regression_waits_until_every_experiment_score_is_complete() -> 
             self.calls += 1
             names = ["assistant_agent.quality.grounding.experiment"]
             if self.calls == 2:
-                names.append("assistant_agent.quality.response_quality.experiment")
+                names.extend(
+                    [
+                        "assistant_agent.quality.response_quality.experiment",
+                        "assistant_agent.quality.regression_improvement.experiment",
+                    ]
+                )
             return SimpleNamespace(
                 data=[
                     SimpleNamespace(
@@ -176,6 +241,75 @@ def test_runtime_regression_waits_until_every_experiment_score_is_complete() -> 
     assert result == {
         "runtime-item-1": {
             "assistant_agent.quality.grounding.experiment": True,
+            "assistant_agent.quality.regression_improvement.experiment": True,
+            "assistant_agent.quality.response_quality.experiment": True,
+        }
+    }
+
+
+def test_runtime_regression_collects_grounding_from_evidence_observation() -> None:
+    class Experiments:
+        def list_items(self, **kwargs):
+            return SimpleNamespace(
+                data=[
+                    SimpleNamespace(
+                        experiment_item_id="runtime-item-1",
+                        trace_id="1" * 32,
+                        scores=[
+                            SimpleNamespace(
+                                name="assistant_agent.quality.response_quality.experiment",
+                                value=True,
+                            ),
+                            SimpleNamespace(
+                                name=(
+                                    "assistant_agent.quality."
+                                    "regression_improvement.experiment"
+                                ),
+                                value=True,
+                            ),
+                        ],
+                    )
+                ]
+            )
+
+    observations = SimpleNamespace(
+        get_many=lambda **kwargs: SimpleNamespace(
+            data=[SimpleNamespace(id="evidence-span")]
+        )
+    )
+    scores = SimpleNamespace(
+        get_many_v3=lambda **kwargs: SimpleNamespace(
+            data=[
+                SimpleNamespace(
+                    name="assistant_agent.quality.grounding.experiment",
+                    value=True,
+                    subject=SimpleNamespace(
+                        kind="observation",
+                        id="evidence-span",
+                    ),
+                )
+            ]
+        )
+    )
+    client = SimpleNamespace(
+        api=SimpleNamespace(
+            experiments=Experiments(),
+            observations=observations,
+            scores_v3=scores,
+        )
+    )
+
+    assert wait_for_runtime_regression_scores(
+        client,
+        experiment_id="dataset-run-1",
+        dataset_item_ids=("runtime-item-1",),
+        timeout_seconds=0.1,
+        poll_interval_seconds=1,
+        sleep=lambda seconds: None,
+    ) == {
+        "runtime-item-1": {
+            "assistant_agent.quality.grounding.experiment": True,
+            "assistant_agent.quality.regression_improvement.experiment": True,
             "assistant_agent.quality.response_quality.experiment": True,
         }
     }

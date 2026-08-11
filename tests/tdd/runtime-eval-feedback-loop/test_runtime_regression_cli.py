@@ -21,6 +21,10 @@ class _Client:
                         "content": "来自 Langfuse UI 的案例",
                         "truncated": False,
                     },
+                    expected_output={
+                        "role": "assistant",
+                        "content": "原始失败回答",
+                    },
                 )
             ]
         )

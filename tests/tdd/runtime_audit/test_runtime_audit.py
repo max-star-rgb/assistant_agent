@@ -1117,8 +1117,10 @@ def test_native_online_evaluator_configuration_uses_canonical_names_and_full_sam
         "assistant_agent.quality.tool_result_quality",
         "assistant_agent.quality.memory_extraction",
         "assistant_agent.quality.memory_recall",
+        "assistant_agent.quality.grounding.experiment",
+        "assistant_agent.quality.regression_improvement",
     ]
-    assert len(rules.created) == 7
+    assert len(rules.created) == 8
     assert [item.name for item in rules.created] == [
         "assistant_agent.quality.response_quality",
         "assistant_agent.quality.grounding",
@@ -1127,6 +1129,7 @@ def test_native_online_evaluator_configuration_uses_canonical_names_and_full_sam
         "assistant_agent.quality.memory_recall",
         "assistant_agent.quality.response_quality.experiment",
         "assistant_agent.quality.grounding.experiment",
+        "assistant_agent.quality.regression_improvement.experiment",
     ]
     assert all(item.enabled is True and item.sampling == 1.0 for item in rules.created)
     tool_rule = next(
@@ -1143,17 +1146,76 @@ def test_native_online_evaluator_configuration_uses_canonical_names_and_full_sam
         "type": "stringObject",
         "value": "tool_execution",
     } in tool_filters
+    grounding_evidence_rule = next(
+        item
+        for item in rules.created
+        if item.name == "assistant_agent.quality.grounding.experiment"
+    )
+    assert grounding_evidence_rule.target.value == "observation"
+    assert [
+        (mapping.variable, mapping.source.value, mapping.json_path)
+        for mapping in grounding_evidence_rule.mapping
+    ] == [
+        ("input", "input", None),
+        ("output", "output", None),
+    ]
+    assert [
+        entry.model_dump(mode="json") for entry in grounding_evidence_rule.filter
+    ] == [
+        {
+            "column": "type",
+            "operator": "any of",
+            "type": "stringOptions",
+            "value": ["SPAN"],
+        },
+        {
+            "column": "environment",
+            "operator": "any of",
+            "type": "stringOptions",
+            "value": ["sdk-experiment"],
+        },
+        {
+            "column": "name",
+            "operator": "any of",
+            "type": "stringOptions",
+            "value": ["runtime-regression-evidence"],
+        },
+    ]
     experiment_rules = [
         item for item in rules.created if item.target.value == "experiment"
     ]
     assert [item.name for item in experiment_rules] == [
         "assistant_agent.quality.response_quality.experiment",
-        "assistant_agent.quality.grounding.experiment",
+        "assistant_agent.quality.regression_improvement.experiment",
     ]
-    assert all(
-        item.evaluator.name == item.name.removesuffix(".experiment")
+    assert [item.evaluator.name for item in experiment_rules] == [
+        "assistant_agent.quality.response_quality",
+        "assistant_agent.quality.regression_improvement",
+    ]
+    mappings = {
+        item.name: [
+            (mapping.variable, mapping.source.value, mapping.json_path)
+            for mapping in item.mapping
+        ]
         for item in experiment_rules
-    )
+    }
+    for item in experiment_rules:
+        for mapping in item.mapping:
+            assert ("json_path" in mapping.model_fields_set) is (
+                mapping.json_path is not None
+            )
+    assert mappings == {
+        "assistant_agent.quality.response_quality.experiment": [
+            ("input", "input", None),
+            ("output", "output", None),
+        ],
+        "assistant_agent.quality.regression_improvement.experiment": [
+            ("input", "input", None),
+            ("output", "output", None),
+            ("baseline", "expected_output", None),
+            ("case_metadata", "experiment_item_metadata", None),
+        ],
+    }
     for item in experiment_rules:
         filters = [entry.model_dump(mode="json") for entry in item.filter]
         assert filters == [
@@ -1165,19 +1227,23 @@ def test_native_online_evaluator_configuration_uses_canonical_names_and_full_sam
             }
         ]
     assert result.applied is True
-    assert result.created_evaluators == 5
-    assert result.created_rules == 7
+    assert result.created_evaluators == 7
+    assert result.created_rules == 8
 
 
 def test_native_online_evaluator_configuration_renames_legacy_rules_in_place() -> None:
     """Would fail if migration created duplicate judges or kept legacy Score names."""
 
-    canonical_names = [
+    live_names = [
         "assistant_agent.quality.response_quality",
         "assistant_agent.quality.grounding",
         "assistant_agent.quality.tool_result_quality",
         "assistant_agent.quality.memory_extraction",
         "assistant_agent.quality.memory_recall",
+    ]
+    evaluator_names = live_names + [
+        "assistant_agent.quality.grounding.experiment",
+        "assistant_agent.quality.regression_improvement",
     ]
     legacy_names = [
         "assistant-agent-live-response-quality",
@@ -1192,7 +1258,7 @@ def test_native_online_evaluator_configuration_renames_legacy_rules_in_place() -
             return SimpleNamespace(
                 data=[
                     SimpleNamespace(name=name, scope="project")
-                    for name in canonical_names
+                    for name in evaluator_names
                 ]
             )
 
@@ -1239,12 +1305,13 @@ def test_native_online_evaluator_configuration_renames_legacy_rules_in_place() -
     assert [item.name for item in rules.created] == [
         "assistant_agent.quality.response_quality.experiment",
         "assistant_agent.quality.grounding.experiment",
+        "assistant_agent.quality.regression_improvement.experiment",
     ]
     assert len(rules.updated) == 5
     assert [item[0] for item in rules.updated] == [
         f"legacy-rule-{index}" for index in range(5)
     ]
-    assert [item[1]["name"] for item in rules.updated] == canonical_names
+    assert [item[1]["name"] for item in rules.updated] == live_names
     migrated_tool_filters = [
         item.model_dump(mode="json")
         for item in rules.updated[2][1]["filter"]
@@ -1257,25 +1324,30 @@ def test_native_online_evaluator_configuration_renames_legacy_rules_in_place() -
         "type": "stringObject",
         "value": "tool_execution",
     } in migrated_tool_filters
-    assert result.rule_names == canonical_names + [
+    assert result.rule_names == live_names + [
         "assistant_agent.quality.response_quality.experiment",
         "assistant_agent.quality.grounding.experiment",
+        "assistant_agent.quality.regression_improvement.experiment",
     ]
-    assert result.existing_evaluators == 5
+    assert result.existing_evaluators == 7
     assert result.existing_rules == 5
-    assert result.created_rules == 2
+    assert result.created_rules == 3
     assert result.updated_rules == 5
 
 
 def test_native_online_evaluator_configuration_reconciles_existing_tool_rule() -> None:
     """Would fail if an existing name-based tool rule never received the metadata filter."""
 
-    canonical_names = [
+    live_names = [
         "assistant_agent.quality.response_quality",
         "assistant_agent.quality.grounding",
         "assistant_agent.quality.tool_result_quality",
         "assistant_agent.quality.memory_extraction",
         "assistant_agent.quality.memory_recall",
+    ]
+    evaluator_names = live_names + [
+        "assistant_agent.quality.grounding.experiment",
+        "assistant_agent.quality.regression_improvement",
     ]
 
     class EvaluatorResource:
@@ -1283,7 +1355,7 @@ def test_native_online_evaluator_configuration_reconciles_existing_tool_rule() -
             return SimpleNamespace(
                 data=[
                     SimpleNamespace(name=name, scope="project")
-                    for name in canonical_names
+                    for name in evaluator_names
                 ]
             )
 
@@ -1304,7 +1376,7 @@ def test_native_online_evaluator_configuration_reconciles_existing_tool_rule() -
                         enabled=False,
                         sampling=0.25,
                     )
-                    for index, name in enumerate(canonical_names)
+                    for index, name in enumerate(live_names)
                 ]
             )
 
@@ -1336,6 +1408,7 @@ def test_native_online_evaluator_configuration_reconciles_existing_tool_rule() -
     assert [item.name for item in rules.created] == [
         "assistant_agent.quality.response_quality.experiment",
         "assistant_agent.quality.grounding.experiment",
+        "assistant_agent.quality.regression_improvement.experiment",
     ]
     rule_id, changes = rules.updated[2]
     assert rule_id == "rule-2"
@@ -1357,12 +1430,14 @@ def test_native_online_evaluator_configuration_reconciles_existing_tool_rule() -
 def test_native_online_evaluator_configuration_versions_drifted_evaluator() -> None:
     """Would fail if prompt/model changes never reached existing Langfuse rules."""
 
-    canonical_names = [
+    evaluator_names = [
         "assistant_agent.quality.response_quality",
         "assistant_agent.quality.grounding",
         "assistant_agent.quality.tool_result_quality",
         "assistant_agent.quality.memory_extraction",
         "assistant_agent.quality.memory_recall",
+        "assistant_agent.quality.grounding.experiment",
+        "assistant_agent.quality.regression_improvement",
     ]
 
     class EvaluatorResource:
@@ -1382,7 +1457,7 @@ def test_native_online_evaluator_configuration_versions_drifted_evaluator() -> N
                     )
                     if index == 0
                     else SimpleNamespace(name=name, scope="project")
-                    for index, name in enumerate(canonical_names)
+                    for index, name in enumerate(evaluator_names)
                 ]
             )
 
@@ -1414,9 +1489,9 @@ def test_native_online_evaluator_configuration_versions_drifted_evaluator() -> N
         model="qwen-flash",
     )
 
-    assert [item.name for item in evaluators.created] == [canonical_names[0]]
+    assert [item.name for item in evaluators.created] == [evaluator_names[0]]
     assert result.updated_evaluators == 1
-    assert result.existing_evaluators == 5
+    assert result.existing_evaluators == 7
 
 
 def test_native_online_evaluator_configuration_keeps_live_rules_without_dataset() -> None:
@@ -1455,9 +1530,9 @@ def test_native_online_evaluator_configuration_keeps_live_rules_without_dataset(
         model="qwen-flash",
     )
 
-    assert len(evaluators.created) == 5
-    assert len(rules.created) == 5
+    assert len(evaluators.created) == 7
+    assert len(rules.created) == 6
     assert result.skipped_rule_names == [
         "assistant_agent.quality.response_quality.experiment",
-        "assistant_agent.quality.grounding.experiment",
+        "assistant_agent.quality.regression_improvement.experiment",
     ]
