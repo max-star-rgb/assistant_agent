@@ -15,6 +15,11 @@ from assistant_agent.evaluation.experiment_trace import (
 from evals.release_review.evidence import ReleaseRunEvidence
 
 from assistant_agent.evaluation.constants import RUNTIME_REGRESSION_DATASET
+from assistant_agent.evaluation.runtime_regression_contract import (
+    assistant_output,
+    request_text,
+    validate_failure_baseline,
+)
 
 
 class RuntimeRegressionRuntime(Protocol):
@@ -69,7 +74,7 @@ def run_runtime_regression_experiment(
         item_input = _item_field(item, "input")
         if not isinstance(item_input, dict):
             raise RuntimeError(f"runtime regression item {item_id!r} input must be an object")
-        request_text = _request_text(item_id, item_input)
+        item_request_text = request_text(item_id, item_input)
         # Experiment item input is projected from the canonical task observation.
         client.update_current_span(input=item_input)
         runtime = settings.runtime_factory()
@@ -78,7 +83,7 @@ def run_runtime_regression_experiment(
                 UserRequest(
                     user_id="runtime-regression",
                     session_id=f"runtime-regression-{item_id}",
-                    text=request_text,
+                    text=item_request_text,
                     metadata={
                         "runtime_regression": {"dataset_item_id": item_id}
                     },
@@ -86,7 +91,7 @@ def run_runtime_regression_experiment(
             )
             events = runtime.trace_store.list_by_run(state.run_id)
             evidence = ReleaseRunEvidence.from_state(state, events)
-            output = _assistant_output(state)
+            output = assistant_output(state)
             with client.start_as_current_observation(
                 name="runtime-regression-evidence",
                 as_type="span",
@@ -140,8 +145,8 @@ def inspect_runtime_regression_dataset(client: Any) -> tuple[Any, list[Any]]:
         item_input = _item_field(item, "input")
         if not isinstance(item_input, dict):
             raise RuntimeError(f"runtime regression item {item_id!r} input must be an object")
-        _request_text(item_id, item_input)
-        _validate_baseline_output(item_id, _item_field(item, "expected_output"))
+        request_text(item_id, item_input)
+        validate_failure_baseline(item_id, _item_field(item, "expected_output"))
     return dataset, items
 
 
@@ -257,45 +262,6 @@ def _require_item_id(item: Any) -> str:
     if not isinstance(item_id, str) or not item_id:
         raise RuntimeError("runtime regression Dataset item has no id")
     return item_id
-
-
-def _assistant_output(state: Any) -> dict[str, Any]:
-    message = state.response.message if state.response is not None else ""
-    return {
-        "role": "assistant",
-        "content": message,
-        "chars": len(message),
-        "truncated": False,
-        "terminal_status": state.status,
-    }
-
-
-def _validate_baseline_output(item_id: str, value: Any) -> None:
-    if not isinstance(value, dict):
-        raise RuntimeError(
-            f"runtime regression item {item_id!r} expected_output must be an object"
-        )
-    if value.get("role") != "assistant":
-        raise RuntimeError(
-            f"runtime regression item {item_id!r} expected_output role must be assistant"
-        )
-    content = value.get("content")
-    if not isinstance(content, str) or not content.strip():
-        raise RuntimeError(
-            f"runtime regression item {item_id!r} expected_output has no assistant content"
-        )
-
-
-def _request_text(item_id: str, item_input: dict[str, Any]) -> str:
-    if item_input.get("truncated") is True:
-        raise RuntimeError(f"runtime regression item {item_id!r} input is truncated")
-    role = item_input.get("role")
-    if role is not None and role != "user":
-        raise RuntimeError(f"runtime regression item {item_id!r} input role must be user")
-    request_text = item_input.get("content", item_input.get("request"))
-    if not isinstance(request_text, str) or not request_text.strip():
-        raise RuntimeError(f"runtime regression item {item_id!r} has no user content")
-    return request_text
 
 
 def _item_status(item: Any) -> Any:
