@@ -27,3 +27,4 @@ htmlcov/
 /.worktrees
 /.worktrees/
 /openclaw-study/
+/tests/tdd/
