@@ -5,6 +5,18 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 
+class RuntimeExperimentTraceLink(BaseModel):
+    """Validated external Experiment identity allowed into trace projection."""
+
+    model_config = ConfigDict(frozen=True)
+
+    backend: Literal["langsmith"]
+    trace_id: str = Field(min_length=1, max_length=64)
+    parent_run_id: str = Field(min_length=1, max_length=64)
+    experiment_id: str = Field(min_length=1, max_length=64)
+    reference_example_id: str = Field(min_length=1, max_length=64)
+
+
 class RuntimeTraceContext(BaseModel):
     """External W3C identity used to nest Runtime under an experiment span."""
 
@@ -15,6 +27,7 @@ class RuntimeTraceContext(BaseModel):
         default=None,
         pattern=r"^[0-9a-f]{16}$",
     )
+    experiment_link: RuntimeExperimentTraceLink | None = None
 
 
 class RuntimeExportTraceContext(BaseModel):

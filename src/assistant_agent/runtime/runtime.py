@@ -875,6 +875,11 @@ class AgentGraphRuntime:
                 else "langgraph_assistant_loop"
             ),
             export_trace_context=export_trace_context,
+            experiment_trace_link=(
+                trace_context.experiment_link
+                if trace_context is not None
+                else None
+            ),
         )
         runtime_event_publisher.deliver_run_started(run_started_fact)
         if self.run_history is not None:

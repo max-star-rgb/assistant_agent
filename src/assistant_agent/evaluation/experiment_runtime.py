@@ -13,20 +13,27 @@ from assistant_agent.runtime.runtime_host import RuntimeHost
 
 RuntimeBuilder = Callable[[Any], Any]
 TraceStoreFactory = Callable[[], Any]
+TraceContextProvider = Callable[[], RuntimeTraceContext | None]
 
 
 class ExperimentRuntimeHost:
     """Run one Experiment item below the active Langfuse task span."""
 
-    def __init__(self, host: RuntimeHost) -> None:
+    def __init__(
+        self,
+        host: RuntimeHost,
+        *,
+        trace_context_provider: TraceContextProvider,
+    ) -> None:
         self._host = host
+        self._trace_context_provider = trace_context_provider
 
     @property
     def trace_store(self) -> Any:
         return self._host.trace_store
 
     def run_state(self, request: Any) -> Any:
-        trace_context = current_runtime_trace_context()
+        trace_context = self._trace_context_provider()
         if trace_context is None:
             raise RuntimeError("Langfuse Experiment task has no active OTel parent span")
         return self._host.run_state(request, trace_context=trace_context)
@@ -51,6 +58,7 @@ def create_experiment_runtime_host(
     runtime_builder: RuntimeBuilder,
     *,
     trace_store_factory: TraceStoreFactory | None = None,
+    trace_context_provider: TraceContextProvider = current_runtime_trace_context,
 ) -> ExperimentRuntimeHost:
     """Compose one item Runtime with required export and owned lifecycle."""
 
@@ -69,5 +77,6 @@ def create_experiment_runtime_host(
         close_trace_store(trace_store)
         raise
     return ExperimentRuntimeHost(
-        RuntimeHost(runtime=runtime, owned_trace_store=trace_store)
+        RuntimeHost(runtime=runtime, owned_trace_store=trace_store),
+        trace_context_provider=trace_context_provider,
     )
