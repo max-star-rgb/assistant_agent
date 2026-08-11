@@ -12,8 +12,6 @@ from assistant_agent.tools.plugins.builtin.calendar_weather_contacts.models impo
     CalendarSearchResult,
     ContactsSearchRequest,
     ContactsSearchResult,
-    WeatherRequest,
-    WeatherResult,
 )
 from assistant_agent.tools.models import ToolResult
 from assistant_agent.tools.plugins.builtin.calendar_weather_contacts.adapters import (
@@ -21,54 +19,14 @@ from assistant_agent.tools.plugins.builtin.calendar_weather_contacts.adapters im
     ContactsAdapter,
     MockCalendarAdapter,
     MockContactsAdapter,
-    MockWeatherAdapter,
-    WeatherAdapter,
 )
 from assistant_agent.tools.ids import (
     CALENDAR_CREATE_TOOL_NAME,
     CALENDAR_SEARCH_TOOL_NAME,
     CONTACTS_SEARCH_TOOL_NAME,
-    WEATHER_TOOL_NAME,
 )
 from assistant_agent.tools.base import ToolBase, ToolContext
 from assistant_agent.tools.input_binding import RuntimeInputBinding
-
-
-class WeatherTool(ToolBase):
-    """Look up weather through the configured personal weather adapter."""
-
-    name = WEATHER_TOOL_NAME
-    description = (
-        "按地点和单日或最长 7 天的日期区间查询逐日天气；返回天气状况、"
-        "摄氏温度、最高最低温和降水概率等预报信息。只读，不修改任何外部数据。"
-    )
-    input_schema = WeatherRequest
-    output_schema = WeatherResult
-    category = "read"
-    repeat_policy = "distinct_inputs"
-    llm_hidden_input_fields = ("units",)
-
-    def __init__(self, adapter: WeatherAdapter | None = None) -> None:
-        self.adapter = adapter or MockWeatherAdapter()
-        if getattr(self.adapter, "location_input_language", "any") == "en":
-            self.description = (
-                f"{type(self).description} 当前 Provider 要求使用规范英文地点名；"
-                "调用前请翻译本地化地名，最终回答仍使用用户语言。"
-            )
-
-    def _run(self, input: WeatherRequest, context: ToolContext) -> ToolResult:
-        result = self.adapter.lookup(input)
-        return _tool_result(
-            tool_name=self.name,
-            capability=self.name,
-            success=result.success,
-            data=result.model_dump(mode="json"),
-            model_observation=_weather_observation(result),
-            output_ref=result.output_ref,
-            latency_ms=result.latency_ms,
-            errors=result.errors,
-            provider=result.provider,
-        )
 
 
 class CalendarSearchTool(ToolBase):
@@ -230,21 +188,6 @@ def _calendar_adapter_for_context(
         return adapter
     namespace = context.user_id or context.session_id or context.run_id or "local"
     return resolver(namespace)
-
-
-def _weather_observation(result: WeatherResult) -> dict[str, Any]:
-    return _drop_empty(
-        {
-            "summary": result.summary,
-            "location": result.location,
-            "forecast": [
-                item.model_dump(mode="json", exclude_none=True)
-                for item in result.forecast
-            ],
-            "provider": result.provider,
-            "errors": result.errors,
-        }
-    )
 
 
 def _calendar_search_observation(result: CalendarSearchResult) -> dict[str, Any]:

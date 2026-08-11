@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from hashlib import sha256
 from typing import TYPE_CHECKING, Any, Literal
@@ -147,6 +148,19 @@ class OtelSpanSpec(BaseModel):
     attributes: dict[str, Any] = Field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class OtelTraceProjectionContext:
+    """Trusted export-only trace identity for one canonical Assistant run."""
+
+    trace_id: str
+    parent_span_id: str
+    trace_name: str
+    execution_role: str
+    workflow_id: str
+    work_item_id: str
+    attempt_id: str
+
+
 def langfuse_trace_id(seed: str) -> str:
     """Return a native W3C trace id or map a legacy external trace id."""
 
@@ -157,6 +171,72 @@ def langfuse_trace_id(seed: str) -> str:
         except ValueError:
             pass
     return sha256(seed.encode("utf-8")).digest()[:16].hex()
+
+
+def text_otel_projection_context(
+    events: Iterable[TraceEvent],
+) -> OtelTraceProjectionContext | None:
+    """Read a trusted export-only context from the canonical run-start fact."""
+
+    event = next(
+        (
+            item
+            for item in events
+            if _event_name(item) == "run.started"
+            and item.attributes.get("execution_role") == "workflow_work_item"
+        ),
+        None,
+    )
+    if event is None:
+        return None
+    values = {
+        key: event.attributes.get(key)
+        for key in (
+            "export_trace_id",
+            "export_parent_span_id",
+            "export_trace_name",
+            "execution_role",
+            "workflow_id",
+            "work_item_id",
+            "attempt_id",
+        )
+    }
+    if not all(isinstance(value, str) and value for value in values.values()):
+        return None
+    trace_id = str(values["export_trace_id"])
+    parent_span_id = str(values["export_parent_span_id"])
+    if langfuse_trace_id(trace_id) != trace_id or not _valid_span_id(parent_span_id):
+        return None
+    return OtelTraceProjectionContext(
+        trace_id=trace_id,
+        parent_span_id=parent_span_id,
+        trace_name=str(values["export_trace_name"]),
+        execution_role=str(values["execution_role"]),
+        workflow_id=str(values["workflow_id"]),
+        work_item_id=str(values["work_item_id"]),
+        attempt_id=str(values["attempt_id"]),
+    )
+
+
+def _project_span_trace_identity(
+    spans: list[OtelSpanSpec],
+    projection_context: OtelTraceProjectionContext | None,
+) -> list[OtelSpanSpec]:
+    if projection_context is None:
+        return spans
+    return [
+        span.model_copy(update={"trace_id": projection_context.trace_id})
+        for span in spans
+    ]
+
+
+def _valid_span_id(value: str) -> bool:
+    if len(value) != 16 or value != value.lower():
+        return False
+    try:
+        return int(value, 16) != 0
+    except ValueError:
+        return False
 
 
 def build_text_otel_span_specs(
@@ -174,13 +254,18 @@ def build_text_otel_span_specs(
     )
     if not safe_events:
         return []
+    projection_context = text_otel_projection_context(safe_events)
     started_at_by_span_id = _started_at_by_span_id(safe_events)
     root_span = _root_span(
         safe_events,
         conversation=conversation,
         started_at_by_span_id=started_at_by_span_id,
+        projection_context=projection_context,
     )
-    trace_attributes = _trace_attributes(safe_events)
+    trace_attributes = _trace_attributes(
+        safe_events,
+        projection_context=projection_context,
+    )
     spans = [root_span]
     runtime_parent_id = root_span.span_id
     event_iterations = _event_iterations(safe_events)
@@ -213,28 +298,33 @@ def build_text_otel_span_specs(
                 memory_content=memory_content,
             )
         )
-    return spans
+    return _project_span_trace_identity(spans, projection_context)
 
 
 def build_late_text_otel_span_spec(
     event: TraceEvent,
     *,
     memory_content: "MemoryIngestionTraceContent | None" = None,
+    projection_context: OtelTraceProjectionContext | None = None,
 ) -> OtelSpanSpec:
     """Map one post-summary event without re-exporting the runtime root span."""
 
     safe_event = event if memory_content is not None else redact_trace_event(event)
     root_span_id = _root_span_id([safe_event])
-    return _operation_span(
+    span = _operation_span(
         safe_event,
         root_span_id=root_span_id,
         runtime_parent_id=root_span_id,
         iteration_parent_id=None,
-        trace_attributes=_trace_attributes([safe_event]),
+        trace_attributes=_trace_attributes(
+            [safe_event],
+            projection_context=projection_context,
+        ),
         conversation=None,
         started_at_by_span_id={},
         memory_content=memory_content,
     )
+    return _project_span_trace_identity([span], projection_context)[0]
 
 
 def _root_span(
@@ -242,14 +332,22 @@ def _root_span(
     *,
     conversation: "TraceConversationView | None",
     started_at_by_span_id: Mapping[str, datetime],
+    projection_context: OtelTraceProjectionContext | None,
 ) -> OtelSpanSpec:
-    trace_attributes = _trace_attributes(events)
+    trace_attributes = _trace_attributes(
+        events,
+        projection_context=projection_context,
+    )
     started_at = min(
         _span_start_time(event, started_at_by_span_id=started_at_by_span_id)
         for event in events
     )
     finished_at = max(event.created_at for event in events)
     vision_trace = _is_vision_observation_trace(events)
+    deep_research_ingress = _is_deep_research_ingress(
+        events,
+        projection_context=projection_context,
+    )
     diagnostic_attributes = (
         {}
         if vision_trace
@@ -260,21 +358,45 @@ def _root_span(
             **build_turn_diagnostic(events).langfuse_trace_metadata(),
         }
     )
+    if projection_context is not None:
+        diagnostic_attributes = {
+            key: value
+            for key, value in diagnostic_attributes.items()
+            if not key.startswith("langfuse.trace.metadata.")
+        }
     return OtelSpanSpec(
         trace_id=events[0].trace_id,
         span_id=_root_span_id(events),
-        parent_span_id=_external_parent_span_id(events),
-        name="vision.runtime" if vision_trace else "agent.runtime",
+        parent_span_id=(
+            projection_context.parent_span_id
+            if projection_context is not None
+            else _external_parent_span_id(events)
+        ),
+        name=(
+            "vision.runtime"
+            if vision_trace
+            else "assistant.submit"
+            if deep_research_ingress
+            else "agent.runtime"
+        ),
         start_time=started_at,
         end_time=finished_at,
         status=_root_status(events),
         attributes={
             **trace_attributes,
-            "langfuse.observation.type": "span",
+            "langfuse.observation.type": (
+                "agent"
+                if projection_context is not None or deep_research_ingress
+                else "span"
+            ),
             "assistant_agent.canonical_event": "run",
             "assistant_agent.node_name": "runtime",
             **diagnostic_attributes,
-            **_root_io_attributes(events, conversation=conversation),
+            **_root_io_attributes(
+                events,
+                conversation=conversation,
+                include_trace=projection_context is None,
+            ),
         },
     )
 
@@ -395,7 +517,11 @@ def _operation_span(
     )
 
 
-def _trace_attributes(events: list[TraceEvent]) -> dict[str, Any]:
+def _trace_attributes(
+    events: list[TraceEvent],
+    *,
+    projection_context: OtelTraceProjectionContext | None = None,
+) -> dict[str, Any]:
     first = events[0]
     summary = _latest_turn_summary(events)
     user_id = _string_or_none(summary.get("user_id")) or first.user_id
@@ -403,18 +529,40 @@ def _trace_attributes(events: list[TraceEvent]) -> dict[str, Any]:
     run_id = _string_or_none(summary.get("run_id")) or first.run_id
     trace_id = _string_or_none(summary.get("trace_id")) or first.trace_id
     vision_trace = _is_vision_observation_trace(events)
+    deep_research_ingress = _is_deep_research_ingress(
+        events,
+        projection_context=projection_context,
+    )
     attrs: dict[str, Any] = {
         "langfuse.trace.name": (
-            "vision.observation" if vision_trace else "assistant.turn"
+            projection_context.trace_name
+            if projection_context is not None
+            else "deep_research.workflow"
+            if deep_research_ingress
+            else "vision.observation"
+            if vision_trace
+            else "assistant.turn"
         ),
-        "langfuse.trace.metadata.assistant_trace_id": trace_id,
-        "langfuse.trace.metadata.run_id": run_id,
         "assistant_agent.trace_id": trace_id,
         "assistant_agent.run_id": run_id,
         "assistant_agent.modality": (
             VISION_MODALITY if vision_trace else TEXT_MODALITY
         ),
     }
+    if projection_context is None:
+        attrs["langfuse.trace.metadata.assistant_trace_id"] = trace_id
+        attrs["langfuse.trace.metadata.run_id"] = run_id
+    else:
+        attrs.update(
+            {
+                "assistant_agent.export_trace_id": projection_context.trace_id,
+                "assistant_agent.execution_role": projection_context.execution_role,
+                "assistant_agent.workflow_id": projection_context.workflow_id,
+                "assistant_agent.work_item_id": projection_context.work_item_id,
+                "assistant_agent.attempt_id": projection_context.attempt_id,
+                "langfuse.trace.metadata.workflow_id": projection_context.workflow_id,
+            }
+        )
     if user_id:
         attrs["langfuse.user.id"] = user_id
     if session_id:
@@ -576,6 +724,7 @@ def _root_io_attributes(
     events: list[TraceEvent],
     *,
     conversation: "TraceConversationView | None",
+    include_trace: bool = True,
 ) -> dict[str, str]:
     if _is_vision_observation_trace(events):
         terminal = next(
@@ -612,12 +761,14 @@ def _root_io_attributes(
             }
         )
         output_value = _json_value(output_payload)
-        return {
+        attributes = {
             "langfuse.observation.input": input_value,
             "langfuse.observation.output": output_value,
-            "langfuse.trace.input": input_value,
-            "langfuse.trace.output": output_value,
         }
+        if include_trace:
+            attributes["langfuse.trace.input"] = input_value
+            attributes["langfuse.trace.output"] = output_value
+        return attributes
     summary = _latest_turn_summary(events)
     if conversation is not None:
         input_payload: dict[str, Any] = {
@@ -644,12 +795,14 @@ def _root_io_attributes(
         }
     input_value = _json_value(input_payload)
     output_value = _json_value(output_payload)
-    return {
+    attributes = {
         "langfuse.observation.input": input_value,
         "langfuse.observation.output": output_value,
-        "langfuse.trace.input": input_value,
-        "langfuse.trace.output": output_value,
     }
+    if include_trace:
+        attributes["langfuse.trace.input"] = input_value
+        attributes["langfuse.trace.output"] = output_value
+    return attributes
 
 
 def _event_io_attributes(
@@ -947,9 +1100,29 @@ def _event_io_attributes(
 
 
 def _llm_provider_input(request: Mapping[str, Any]) -> dict[str, Any]:
-    """Return the adapter-captured SDK request without presentation rewrites."""
+    """Return a Langfuse-readable view of one adapter-captured SDK request."""
 
-    return dict(request)
+    provider_input = request.get("input")
+    parameters = request.get("parameters")
+    if not isinstance(provider_input, Mapping) or not isinstance(parameters, Mapping):
+        return dict(request)
+    messages = provider_input.get("messages")
+    if not isinstance(messages, list):
+        return dict(request)
+
+    provider_parameters = {
+        key: value
+        for key, value in parameters.items()
+        if key not in {"tools", "tool_choice"}
+    }
+    projected = {
+        "model": request.get("model"),
+        "messages": messages,
+        "tools": parameters.get("tools"),
+        "tool_choice": parameters.get("tool_choice"),
+        "provider_parameters": provider_parameters,
+    }
+    return _drop_none(projected)
 
 
 def _llm_provider_output_preview(llm_output: "TraceLlmOutput") -> dict[str, Any]:
@@ -1267,6 +1440,20 @@ def _is_vision_observation_trace(events: Iterable[TraceEvent]) -> bool:
     )
 
 
+def _is_deep_research_ingress(
+    events: Iterable[TraceEvent],
+    *,
+    projection_context: OtelTraceProjectionContext | None,
+) -> bool:
+    if projection_context is not None:
+        return False
+    return any(
+        _event_name(event) == "run.started"
+        and event.attributes.get("assistant_mode") == "deep_research"
+        for event in events
+    )
+
+
 def _metadata_only_content(event: TraceEvent) -> bool:
     return any(
         source.get("content_export_policy") == "metadata_only"
@@ -1374,6 +1561,6 @@ def _string_or_none(value: Any) -> str | None:
 
 
 def _session_scope(client_type: str | None) -> str:
-    if client_type in {"media_agent", "run_client"}:
+    if client_type in {"media_agent", "media_simulator"}:
         return "agent_service_connection"
     return "logical_conversation"

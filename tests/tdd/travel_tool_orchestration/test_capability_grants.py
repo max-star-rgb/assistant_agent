@@ -757,7 +757,7 @@ def test_improvement_replacement_reuses_current_machine_manifest() -> None:
     )
 
     assert descriptor is not None
-    assert descriptor.manifest_version == 4
+    assert descriptor.manifest_version == 5
     assert "lodging_search" in descriptor.governed_tools
     assert descriptor.body == "# 更新后的旅行流程\n\n只替换程序性指导。"
 
@@ -950,7 +950,6 @@ def test_runtime_expands_catalog_after_load_and_restores_it_next_turn() -> None:
     assert load_result.data["unavailable_tools"] == [
         "mcp.amap_maps.maps_geo",
         "mcp.amap_maps.maps_ip_location",
-        "mcp.amap_maps.maps_weather",
         "mcp.amap_maps.maps_bicycling",
         "mcp.amap_maps.maps_direction_walking",
         "mcp.amap_maps.maps_direction_driving",

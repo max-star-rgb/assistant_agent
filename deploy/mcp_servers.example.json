@@ -14,7 +14,6 @@
       "allowed_tools": [
         "maps_geo",
         "maps_ip_location",
-        "maps_weather",
         "maps_bicycling",
         "maps_direction_walking",
         "maps_direction_driving",
@@ -25,7 +24,6 @@
       "read_only_tools": [
         "maps_geo",
         "maps_ip_location",
-        "maps_weather",
         "maps_bicycling",
         "maps_direction_walking",
         "maps_direction_driving",

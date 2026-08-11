@@ -1,12 +1,15 @@
 """Agent HTTP routes."""
 
+import asyncio
 import json
 import os
+from collections.abc import AsyncIterator
 from ipaddress import ip_address
 from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
 
 from assistant_agent.multi_agent.agent_router import AgentRouter, create_default_agent_router
 from assistant_agent.multi_agent.router_models import AgentRouteRequest
@@ -21,7 +24,13 @@ from assistant_agent.multi_agent.control_plane_models import (
     AgentControlPlaneRouteSummary,
     AgentControlPlaneRunSummary,
 )
-from assistant_agent.api.models import AgentRunResponse, PROTOCOL_VERSION
+from assistant_agent.api.agent_sse import ServerSentEvent, encode_sse, gateway_frame_to_sse
+from assistant_agent.api.models import (
+    AgentRunCancelRequest,
+    AgentRunCancelResponse,
+    AgentRunResponse,
+    PROTOCOL_VERSION,
+)
 from assistant_agent.identity import RequestIdentity
 from assistant_agent.runtime.requests import UserRequest
 from assistant_agent.runtime.request_metadata import sanitize_external_request_metadata
@@ -163,16 +172,7 @@ async def _run_agent_through_gateway(request: UserRequest) -> AgentRunResponse:
     capture_id = gateway_runtime.new_gateway_http_response_capture_id()
     try:
         turn = await gateway_runtime.get_gateway_turn_facade().run_turn(
-            GatewayTurnRequest(
-                user_id=request.user_id,
-                session_id=request.session_id,
-                text=request.text or "",
-                image_ids=list(request.image_ids),
-                video_ids=list(request.video_ids),
-                audio_id=request.audio_id,
-                assistant_mode=request.assistant_mode,
-                metadata=_gateway_http_metadata(request, capture_id),
-            )
+            _gateway_turn_request(request, capture_id=capture_id)
         )
     except GatewayTurnTimeout as exc:
         gateway_runtime.pop_gateway_http_response(capture_id)
@@ -201,6 +201,148 @@ async def _run_agent_through_gateway(request: UserRequest) -> AgentRunResponse:
     if response is not None:
         return response
     raise _missing_gateway_http_response(turn)
+
+
+def _gateway_turn_request(
+    request: UserRequest,
+    *,
+    capture_id: str,
+) -> GatewayTurnRequest:
+    return GatewayTurnRequest(
+        user_id=request.user_id,
+        session_id=request.session_id,
+        text=request.text or "",
+        image_ids=list(request.image_ids),
+        video_ids=list(request.video_ids),
+        audio_id=request.audio_id,
+        assistant_mode=request.assistant_mode,
+        metadata=_gateway_http_metadata(request, capture_id),
+        cancel_source="http",
+        cancel_reason="client_disconnected",
+    )
+
+
+async def _stream_agent_through_gateway(
+    request: UserRequest,
+) -> StreamingResponse:
+    capture_id = gateway_runtime.new_gateway_http_response_capture_id()
+    try:
+        stream = await gateway_runtime.get_gateway_turn_facade().start_turn(
+            _gateway_turn_request(request, capture_id=capture_id)
+        )
+    except GatewayTurnTimeout as exc:
+        gateway_runtime.pop_gateway_http_response(capture_id)
+        raise HTTPException(
+            status_code=504,
+            detail={
+                "code": "GATEWAY_TURN_TIMEOUT",
+                "message": str(exc),
+                "recoverable": True,
+                **_gateway_error_correlation(exc),
+            },
+        ) from exc
+    except GatewayTurnError as exc:
+        gateway_runtime.pop_gateway_http_response(capture_id)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "code": "GATEWAY_TURN_FAILED",
+                "message": str(exc),
+                "recoverable": False,
+                **_gateway_error_correlation(exc),
+            },
+        ) from exc
+
+    gateway_runtime.register_gateway_http_stream(
+        user_id=request.user_id,
+        session_id=request.session_id,
+        stream=stream,
+    )
+
+    async def events() -> AsyncIterator[bytes]:
+        try:
+            async for gateway_frame in stream:
+                projected = gateway_frame_to_sse(gateway_frame)
+                if projected is not None:
+                    yield encode_sse(projected)
+            turn = await stream.result()
+            response = gateway_runtime.pop_gateway_http_response(capture_id)
+            yield encode_sse(_terminal_sse_event(turn=turn, response=response))
+        except asyncio.CancelledError:
+            await stream.aclose()
+            raise
+        except GatewayTurnError as exc:
+            yield encode_sse(ServerSentEvent(
+                event="run.failed",
+                data={
+                    "run_id": stream.correlation.run_id,
+                    "turn_id": stream.correlation.turn_id,
+                    "trace_id": stream.correlation.trace_id,
+                    "code": "GATEWAY_TURN_FAILED",
+                    "message": str(exc),
+                },
+            ))
+        except Exception as exc:  # noqa: BLE001 - terminalize an already-started SSE run.
+            await stream.aclose()
+            yield encode_sse(ServerSentEvent(
+                event="run.failed",
+                data={
+                    "run_id": stream.correlation.run_id,
+                    "turn_id": stream.correlation.turn_id,
+                    "trace_id": stream.correlation.trace_id,
+                    "code": "GATEWAY_STREAM_FAILED",
+                    "error_type": type(exc).__name__,
+                },
+            ))
+        finally:
+            gateway_runtime.unregister_gateway_http_stream(
+                stream.correlation.run_id,
+                stream=stream,
+            )
+            gateway_runtime.pop_gateway_http_response(capture_id)
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+def _terminal_sse_event(
+    *,
+    turn: GatewayTurnResult,
+    response: AgentRunResponse | None,
+) -> ServerSentEvent:
+    if turn.status == "completed" and response is not None:
+        return ServerSentEvent(
+            event="response.completed",
+            data=response.model_dump(mode="json"),
+        )
+    common = {
+        "run_id": turn.run_id,
+        "turn_id": turn.turn_id,
+        "trace_id": turn.trace_id,
+        "status": turn.status,
+        "reason": turn.reason,
+    }
+    if turn.status == "cancelled":
+        return ServerSentEvent(event="run.cancelled", data=common)
+    error = turn.terminal_frame.get("error")
+    return ServerSentEvent(
+        event="run.failed",
+        data={
+            **common,
+            "code": (
+                "GATEWAY_HTTP_RESPONSE_MISSING"
+                if turn.status == "completed"
+                else "GATEWAY_RUN_FAILED"
+            ),
+            "error": dict(error) if isinstance(error, dict) else {},
+        },
+    )
 
 
 def _gateway_error_correlation(exc: GatewayTurnError) -> dict[str, str]:
@@ -256,11 +398,38 @@ def _missing_gateway_http_response(turn: GatewayTurnResult) -> HTTPException:
 
 
 @router.post("/agent/run", response_model=AgentRunResponse)
-async def run_agent(request: UserRequest, auth_context: AuthContext = Depends(get_auth_context)) -> AgentRunResponse:
+async def run_agent(
+    request: UserRequest,
+    http_request: Request,
+    auth_context: AuthContext = Depends(get_auth_context),
+) -> Any:
     identity_resolution = _identity_from_request(request, auth_context=auth_context)
     _require_trial_access_for_identity(identity_resolution)
     request = _with_identity_metadata(request, identity_resolution)
+    if "text/event-stream" in http_request.headers.get("accept", "").lower():
+        return await _stream_agent_through_gateway(request)
     return await _run_agent_through_gateway(request)
+
+
+@router.post(
+    "/agent/runs/{run_id}/cancel",
+    response_model=AgentRunCancelResponse,
+)
+async def cancel_agent_run(
+    run_id: str,
+    request: AgentRunCancelRequest,
+    auth_context: AuthContext = Depends(get_auth_context),
+) -> AgentRunCancelResponse:
+    identity_resolution = _identity_from_request(request, auth_context=auth_context)
+    _require_trial_access_for_identity(identity_resolution)
+    cancelled = await gateway_runtime.cancel_gateway_http_stream(
+        run_id=run_id,
+        user_id=identity_resolution.identity.user_id,
+        session_id=identity_resolution.identity.session_id or request.session_id,
+    )
+    if not cancelled:
+        raise HTTPException(status_code=404, detail="active agent run not found")
+    return AgentRunCancelResponse(run_id=run_id)
 
 
 @router.get(

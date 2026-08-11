@@ -285,6 +285,39 @@ Owner context 默认关闭，只能由进程配置和可信 owner identity 启�
 文件类型、symlink、编码、容量和敏感内容校验；非法新版本只能使用同 owner 分区的 last-known-good
 或省略。Owner persona 可以影响表达，不能改变工具权限、identity、memory policy 或 provider mode。
 
+同一治理入口还支持结构化用户档案 `USER_PROFILE.json`。默认位置为
+`.local/context/USER_PROFILE.json`，也就是
+`MULTIMODAL_AGENT_EDITABLE_CONTEXT_ROOT` 指向目录下的固定文件；只有同时启用
+`MULTIMODAL_AGENT_EDITABLE_CONTEXT_ENABLED=true` 并通过
+`MULTIMODAL_AGENT_EDITABLE_CONTEXT_USER_ID` 绑定当前可信 `user_id` 时才读取。Runtime 每个 run
+读取并冻结一次，空 `attributes` 合法且不产生 Prompt 上下文。文件使用固定 schema：
+
+```json
+{
+  "schema_version": "user_profile_v1",
+  "revision": 1,
+  "attributes": {
+    "home_city": {
+      "value": "上海",
+      "source": "user_confirmed",
+      "updated_at": "2026-08-11"
+    }
+  }
+}
+```
+
+属性名只能使用小写字母、数字和下划线，值只能是字符串、数字或布尔值；`source` 只允许
+`user_confirmed`、`user_setting` 或 `operator_verified`。Profile 只保存用户明确维护的稳定事实，
+不得保存 secret、LLM 推断或临时位置。编辑内容时同步递增 `revision`。
+
+Profile 进入 `AssistantContextPack.context_sections` 时使用 `kind=user_profile`、
+`authority=user_profile_data`、`identity_scope=user`。PromptCompiler 将其与长期记忆保持不同的 JSON
+数据边界，再放入当前真实用户请求之前的合成 `user` context message：Profile 表示经过身份绑定和
+schema 校验的结构化稳定数据，Memory 仍表示可能过期或错误的不可信历史。该合成消息不进入
+`ConversationStore`，也不提交给
+Memory ingestion；当前用户明确陈述仍可覆盖两者。Profile 内容是事实数据而非指令，不进入
+system/developer role，也不能改变权限或 Tool exposure。
+
 ### 跨 Agent 委派
 
 子 Agent 只接收显式 `context_refs`、子任务预算和脱敏审计摘要。父 conversation、memory context、

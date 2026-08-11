@@ -162,6 +162,10 @@ class SQLiteWorkflowStore:
             ).fetchall()
             return [WorkflowEvent.model_validate_json(row[0]) for row in rows]
 
+    def latest_event_cursor(self, workflow_id: str) -> int:
+        with self._lock:
+            return self._last_cursor(workflow_id)
+
     def claim_next(
         self, *, worker_id: str, now: datetime, lease_seconds: int
     ) -> WorkflowLease | None:

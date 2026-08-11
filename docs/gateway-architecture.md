@@ -1,6 +1,6 @@
 # Gateway Architecture
 
-Last updated: 2026-08-10
+Last updated: 2026-08-11
 
 ## Authority contract
 
@@ -78,9 +78,18 @@ ActionValidator -> ToolExecutor -> ToolRegistry -> tools / providers / memory
 CLI 和 demo 不得复制或绕过主循环及工具治理边界。MCP、A2A 和 eval 可以作为明确的专项适配器
 或 lower-layer contract probe，但不能成为产品入口绕过 runtime/tool governance 的先例。
 
-请求/响应式入口可使用 `GatewayTurnFacade`：它把一次调用投影为规范化
-`message.user`，等待该 run 的终态，再把 Gateway 结果交给入口层转换为自己的响应 schema。
-Facade 不改变 Gateway 生命周期，也不把 provisional stream 重建成业务终态。
+请求/响应式入口使用 `GatewayTurnFacade`：`start_turn()` 返回唯一消费该 run inbox 的
+`GatewayTurnStream`，对外提供 canonical frame iterator、精确 run cancel 和权威 terminal result；
+兼容的 `run_turn()` 只是消费同一 stream 并等待终态。Facade 不改变 Gateway 生命周期，也不把
+provisional stream 重建成业务终态。
+
+产品 HTTP 入口 `POST /agent/run` 通过 `Accept` 选择表示：默认保持完整 JSON
+`AgentRunResponse`，`text/event-stream` 将 canonical Gateway frame 机械映射为
+`run.started`、`response.delta`、progress/tool event 和唯一 terminal SSE。SSE 终包仍读取同一
+权威 response capture，携带完整 `response_text` 与 `annotations`，客户端不得靠拼接 delta 推断
+业务终态。`POST /agent/runs/{run_id}/cancel` 只允许绑定同一 `user_id + session_id` 的活动 HTTP
+stream；HTTP disconnect 对该 stream 做 best-effort cancel。Media-Agent WebSocket 继续使用独立
+vendor wire，但复用上述 Gateway 生命周期。
 
 ## 3. 生命周期模型
 
@@ -257,9 +266,10 @@ memory policy、Provider policy、agent routing 或 multi-agent decisions。
 `[1]` 二次猜测 URL，也不把角标改写成 Markdown。引用只做 terminal enrichment：token streaming 和
 `response.chunk` 保持纯文本，completed `run.end.payload` 在 annotations 非空时携带其 JSON 投影，
 cancelled/error 终态不交付引用。旧客户端可以继续只消费 `response_text`；Web/UI 客户端使用
-Unicode code point 半开区间将正文角标渲染为可点击链接。当前 Media-Agent `/agent-service/v1` 未声明
-citation capability，因此不扩展其 vendor wire contract；CLI 只能验证文本和结构化映射，不能作为
-点击交互的验收面。
+Unicode code point 半开区间将正文角标渲染为可点击链接。Media-Agent `/agent-service/v1` 只有在
+客户端显式声明 `urlCitationAnnotationsV1` 时，才把同一 annotations 投影到成功的非图片终包；
+该 capability 的终包同时携带权威完整正文，供流式客户端替换 provisional 文本后安全应用偏移量；
+HTTP CLI 与媒体模拟器只能验证文本和结构化映射，不能作为点击交互的最终验收面。
 
 稳定的事件投影原则：
 

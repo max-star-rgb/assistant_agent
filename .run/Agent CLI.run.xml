@@ -1,5 +1,5 @@
 <component name="ProjectRunConfigurationManager">
-  <configuration default="false" name="Assistant Client" type="PythonConfigurationType" factoryName="Python">
+  <configuration default="false" name="Agent CLI" type="PythonConfigurationType" factoryName="Python">
     <module name="hello_agent" />
     <option name="ENV_FILES" value="" />
     <option name="INTERPRETER_OPTIONS" value="" />
@@ -13,8 +13,8 @@
     <option name="IS_MODULE_SDK" value="false" />
     <option name="ADD_CONTENT_ROOTS" value="true" />
     <option name="ADD_SOURCE_ROOTS" value="true" />
-    <option name="SCRIPT_NAME" value="$PROJECT_DIR$/scripts/run_client.py" />
-    <option name="PARAMETERS" value="--server http://127.0.0.1:8089 --stream --chat-progress --chat-response-ack --interactive" />
+    <option name="SCRIPT_NAME" value="$PROJECT_DIR$/scripts/agent_cli.py" />
+    <option name="PARAMETERS" value="--server http://127.0.0.1:8089 --interactive" />
     <option name="SHOW_COMMAND_LINE" value="false" />
     <option name="EMULATE_TERMINAL" value="false" />
     <option name="MODULE_MODE" value="false" />

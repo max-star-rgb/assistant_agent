@@ -143,7 +143,7 @@ class ShoppingEvidence(BaseModel):
 
     source_tool: str = Field(
         min_length=1,
-        description="产生证据的工具名，例如 weather。",
+        description="产生证据的前序工具名，例如 visual_memory_search。",
     )
     output_ref: str | None = Field(
         default=None,
@@ -170,7 +170,7 @@ class ShoppingSearchRequest(BaseModel):
     )
     evidence: list[ShoppingEvidence] = Field(
         default_factory=list,
-        description="支持场景判断的结构化工具证据，例如 weather 的摘要和 output_ref。",
+        description="支持场景判断的结构化前序工具证据及其 output_ref。",
     )
     total_budget: float | None = Field(
         default=None,

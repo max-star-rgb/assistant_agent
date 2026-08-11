@@ -175,6 +175,14 @@ class WorkflowRecord(BaseModel):
     agent_id: str = Field(min_length=1)
     session_id: str = Field(min_length=1)
     ingress_run_id: str = Field(min_length=1)
+    ingress_trace_id: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{32}$",
+    )
+    ingress_parent_span_id: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{16}$",
+    )
     idempotency_key: str = Field(min_length=1, max_length=240)
     submission_digest: str = Field(min_length=1, max_length=128)
     objective: str = Field(min_length=1, max_length=10_000)
@@ -210,6 +218,16 @@ class WorkflowRecord(BaseModel):
             value is not None for value in lease_values
         ):
             raise ValueError("lease owner, token, and expiry must be set together")
+        ingress_trace_values = (
+            self.ingress_trace_id,
+            self.ingress_parent_span_id,
+        )
+        if any(value is None for value in ingress_trace_values) and any(
+            value is not None for value in ingress_trace_values
+        ):
+            raise ValueError(
+                "ingress trace id and parent span id must be set together"
+            )
         return self
 
 

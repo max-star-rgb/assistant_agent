@@ -1,6 +1,6 @@
 schema_version = 1
 skill_id = "travel-tool-orchestration"
-version = 4
+version = 5
 description = "用于酒店比较、目的地通勤、景点安排、旅行天气和按天行程决策。"
 enabled = true
 discoverable = true
@@ -10,7 +10,6 @@ governed_tools = [
   "lodging_search",
   "mcp.amap_maps.maps_geo",
   "mcp.amap_maps.maps_ip_location",
-  "mcp.amap_maps.maps_weather",
   "mcp.amap_maps.maps_bicycling",
   "mcp.amap_maps.maps_direction_walking",
   "mcp.amap_maps.maps_direction_driving",

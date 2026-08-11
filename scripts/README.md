@@ -55,7 +55,11 @@ MULTIMODAL_AGENT_PROVIDER_MODE=mock \
   Mem0 记忆为简体中文。默认命令只读；更新要求 real Provider mode、已配置的 Qwen 和
   Mem0，并同时传入 `--apply` 与 `--allow-real-provider`。输出只包含数量、memory ID、
   状态和稳定错误码，不持久化记忆正文或 Provider 响应。
-- `scripts/run_client.py`: server-backed Media-Agent protocol console client for
+- `scripts/agent_cli.py`：HTTP/SSE 产品 CLI，与 Web UI 共用 `/agent/run`。默认请求
+  `text/event-stream` 并逐 delta 输出；`--no-stream` 可验证 JSON 表示，交互模式支持
+  `/standard`、`/deep research`、`/new`，Ctrl-C 会按 `user_id + session_id + run_id`
+  请求取消当前 run。terminal annotations 只打印本轮实际引用来源的紧凑诊断，不修改正文。
+- `scripts/media_simulator.py`: server-backed Media-Agent protocol simulator for
   `/agent-service/v1`; type text repeatedly, or use `/new [sessionId]` to open a
   new media session. In interactive mode, `/deep research` selects
   `assistantMode=deep_research` for subsequent turns and `/standard` switches back;
@@ -75,8 +79,10 @@ MULTIMODAL_AGENT_PROVIDER_MODE=mock \
   it uses the persisted plan item's short natural-language `display_title` and completion
   count, while hiding raw event names and workflow IDs. Use `--workflow-details` to expose
   cursor-based events and identifiers for debugging.
-  Agent chat responses print only the reply text, not the raw vendor envelope. The
-  handshake marks `clientInfo.clientType=run_client`
+  Agent chat responses默认只打印流式正文，不输出 raw vendor envelope 或来源列表。
+  `--citations` 显式协商 `urlCitationAnnotationsV1`，但不承担 App UI 渲染；需要检查媒体 wire
+  来源时显式增加 `--citation-debug`，该参数也会自动启用 citation capability。
+  The handshake marks `clientInfo.clientType=media_simulator`
   so trace and Gateway metadata can distinguish local protocol tests from
   ordinary media-agent calls. It is not a generic Gateway/Assistant client and
   uses an explicit bounded receive limit for Base64 IMAGE response frames.

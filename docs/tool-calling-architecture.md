@@ -330,6 +330,11 @@ MCP 的重复策略只根据 server 配置中的结构化只读声明映射：`r
 `distinct_inputs`，其余工具使用 `once_per_run`。直接生成 ToolSpec 与注册 proxy Tool 必须复用同一
 映射；未提供可信只读声明时按写工具保守处理，不能根据远端工具名称或 description 猜测。
 
+天气统一由主 LLM 的 Provider-native 联网能力处理，不注册本地天气 Tool。为兼容尚未更新的本机
+配置，composition root 会忽略旧高德 `mcp.amap_maps.maps_weather` proxy，以及 deprecated
+`personal_assistant_tools.weather_lookup` 指向的远端 Tool；其他已显式 allowlist 的高德地点与路线
+Tool 仍按正常 MCP 治理链注册。
+
 MCP server、认证、远端方法映射和部署命令属于配置或对应集成文档，不进入本文。
 
 ### 4.5 Durable Workflow Plugin
@@ -499,6 +504,12 @@ Gateway 不按 Tool name 或 Provider 错误码改写运行终态。
   失败不会写成成功 artifact，较早步骤已经恢复的失败也不会污染最终结果。
   `waiting_input` 的恢复值由 identity-scoped Workflow facade 持久化并传入后续 work-item request；
   Provider 技术性截断、错误、拒绝或空终态映射为 retry/failure，不得作为成功结果写 artifact。
+  Deep Research 提交时同时持久化 ingress trace ID 和 `workflow_submit` Tool span ID；每次 work-item commit
+  再持久化 attempt 起止时间和实际 Assistant canonical trace/run 身份。可观测层把提交、Workflow 与各
+  work-item 的 `agent.runtime` 导出到同一个 `deep_research.workflow` trace，并把 work-item Agent 挂在
+  对应 attempt chain 下。canonical Assistant trace 身份保持不变；不再生成额外的前台
+  `assistant.turn` 或后台孤立 trace，也不虚构 Provider-native 搜索的内部步骤。该投影只读取成功提交的
+  Store 事件且必须 fail-open；缺少完整 ingress trace context 时不阻止 Workflow 提交。
   每次 work-item run 回传实际 model/tool call 数并在同一 revision commit 中扣减预算；后续 quantum
   在 model、workflow quantum 或 deadline 耗尽时终止。Tool 预算为零时不再暴露 Tool，剩余预算同时
   收窄 work-item assistant loop 的 iteration 上限。

@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import json
 import re
 import time
-from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Any
@@ -22,23 +20,16 @@ from assistant_agent.tools.plugins.builtin.calendar_weather_contacts.models impo
     ContactCandidate,
     ContactsSearchRequest,
     ContactsSearchResult,
-    WeatherForecast,
-    WeatherRequest,
-    WeatherResult,
 )
 from assistant_agent.tools.models import ToolResult
 from assistant_agent.tools.plugins.builtin.calendar_weather_contacts.adapters import (
     CalendarAdapter,
     ContactsAdapter,
-    MockWeatherAdapter,
-    WeatherAdapter,
-    WeatherLocationInputLanguage,
 )
 from assistant_agent.tools.ids import (
     CALENDAR_CREATE_TOOL_NAME,
     CALENDAR_SEARCH_TOOL_NAME,
     CONTACTS_SEARCH_TOOL_NAME,
-    WEATHER_TOOL_NAME,
 )
 from assistant_agent.providers.provider_errors import (
     normalize_provider_error_code,
@@ -67,10 +58,9 @@ class MCPServiceToolBinding:
 
 
 @dataclass(frozen=True)
-class CalendarWeatherContactsAdapterBundle:
-    """Adapters used when registering the stable personal assistant tools."""
+class CalendarContactsAdapterBundle:
+    """Adapters used when registering stable calendar and contacts tools."""
 
-    weather: WeatherAdapter
     calendar: CalendarAdapter
     contacts: ContactsAdapter
 
@@ -79,22 +69,9 @@ class UnconfiguredMCPServiceAdapter:
     """Structured failure adapter for missing MCP personal assistant mappings."""
 
     provider = "mcp"
-    location_input_language: WeatherLocationInputLanguage = "any"
 
     def __init__(self, missing: str) -> None:
         self.missing = missing
-
-    def lookup(self, request: WeatherRequest) -> WeatherResult:
-        return WeatherResult(
-            success=False,
-            location=request.location,
-            query_used=request.location,
-            forecast=[],
-            summary=f"mcp personal assistant provider is missing {self.missing}.",
-            provider=self.provider,
-            output_ref="unconfigured://mcp/weather",
-            errors=[_error("provider_unconfigured", self._message(), recoverable=True)],
-        )
 
     def search(
         self,
@@ -134,66 +111,6 @@ class UnconfiguredMCPServiceAdapter:
 
     def _message(self) -> str:
         return f"mcp personal assistant provider is missing {self.missing}."
-
-
-class MCPWeatherAdapter:
-    """Weather adapter backed by one explicitly mapped MCP tool."""
-
-    def __init__(self, *, binding: MCPServiceToolBinding, runner: MCPToolRunner) -> None:
-        self.binding = binding
-        self.runner = runner
-
-    @property
-    def location_input_language(self) -> WeatherLocationInputLanguage:
-        return "en" if self.binding.profile == "mcp_weather_server_v1" else "any"
-
-    def lookup(self, request: WeatherRequest) -> WeatherResult:
-        started = time.monotonic()
-        result = _run_mcp_tool(
-            runner=self.runner,
-            binding=self.binding,
-            tool_input=_weather_tool_input(request, self.binding),
-        )
-        latency_ms = _latency_ms(started)
-        if not result.success:
-            return WeatherResult(
-                success=False,
-                location=request.location,
-                query_used=request.location,
-                forecast=[],
-                summary=result.error or "MCP weather lookup failed.",
-                provider=self.binding.provider,
-                latency_ms=latency_ms,
-                output_ref=result.output_ref or self.binding.output_ref,
-                errors=_errors_from_tool_result(result),
-            )
-        payload = _weather_payload(result, self.binding)
-        forecast = _weather_forecast_from_payload(payload)[: request.days]
-        if self.binding.profile == "mcp_weather_server_v1" and not forecast:
-            message = _text(payload, "summary") or "MCP weather response did not contain forecast data."
-            error_code = _weather_response_error_code(message)
-            return WeatherResult(
-                success=False,
-                location=request.location,
-                query_used=request.location,
-                forecast=[],
-                summary=message,
-                provider=self.binding.provider,
-                latency_ms=latency_ms,
-                output_ref=result.output_ref or self.binding.output_ref,
-                errors=[_error(error_code, message, recoverable=True)],
-            )
-        return WeatherResult(
-            success=True,
-            location=_text(payload, "location") or request.location,
-            query_used=_text(payload, "query_used", "query") or request.location,
-            forecast=forecast,
-            summary=_text(payload, "summary") or f"Weather lookup returned {len(forecast)} forecast item(s).",
-            provider=self.binding.provider,
-            latency_ms=latency_ms,
-            output_ref=result.output_ref or self.binding.output_ref,
-            errors=[],
-        )
 
 
 class MCPCalendarAdapter:
@@ -326,17 +243,16 @@ class MCPContactsAdapter:
         )
 
 
-def create_calendar_weather_contacts_adapter_bundle(
+def create_calendar_contacts_adapter_bundle(
     config: ProviderConfig | None = None,
     *,
     mcp_server_configs: list[MCPServerConfig] | None = None,
     mcp_runner: MCPToolRunner | None = None,
-) -> CalendarWeatherContactsAdapterBundle:
-    """Return adapters for the stable personal assistant tools."""
+) -> CalendarContactsAdapterBundle:
+    """Return adapters for stable calendar and contacts tools."""
 
     if config is None or config.provider_mode == "mock":
-        return CalendarWeatherContactsAdapterBundle(
-            weather=MockWeatherAdapter(),
+        return CalendarContactsAdapterBundle(
             calendar=_mock_calendar_adapter(),
             contacts=_mock_contacts_adapter(),
         )
@@ -362,16 +278,7 @@ def create_calendar_weather_contacts_adapter_bundle(
         if bindings.get(CONTACTS_SEARCH_TOOL_NAME)
         else UnconfiguredMCPServiceAdapter("personal_assistant_tools.contacts_search")
     )
-    weather = (
-        MCPWeatherAdapter(
-            binding=bindings[WEATHER_TOOL_NAME],
-            runner=runner,
-        )
-        if bindings.get(WEATHER_TOOL_NAME)
-        else UnconfiguredMCPServiceAdapter("personal_assistant_tools.weather")
-    )
-    return CalendarWeatherContactsAdapterBundle(
-        weather=weather,
+    return CalendarContactsAdapterBundle(
         calendar=calendar,
         contacts=contacts,
     )
@@ -393,10 +300,9 @@ def _mock_contacts_adapter() -> ContactsAdapter:
     return MockContactsAdapter()
 
 
-def _unconfigured_bundle(missing: str) -> CalendarWeatherContactsAdapterBundle:
+def _unconfigured_bundle(missing: str) -> CalendarContactsAdapterBundle:
     adapter = UnconfiguredMCPServiceAdapter(missing)
-    return CalendarWeatherContactsAdapterBundle(
-        weather=adapter,
+    return CalendarContactsAdapterBundle(
         calendar=adapter,
         contacts=adapter,
     )
@@ -423,7 +329,6 @@ def _personal_bindings(
         mapping = server.personal_assistant_tools
         adapter_config = server.adapter_config()
         for capability, tool_name in (
-            (WEATHER_TOOL_NAME, mapping.weather_lookup),
             (CALENDAR_SEARCH_TOOL_NAME, mapping.calendar_search),
             (CALENDAR_CREATE_TOOL_NAME, mapping.calendar_create),
             (CONTACTS_SEARCH_TOOL_NAME, mapping.contacts_search),
@@ -435,9 +340,7 @@ def _personal_bindings(
                 tool_name=tool_name,
                 namespaced_tool_name=namespaced_mcp_tool_name(adapter_config, tool_name),
                 profile=(
-                    mapping.weather_profile
-                    if capability == WEATHER_TOOL_NAME
-                    else mapping.calendar_profile
+                    mapping.calendar_profile
                     if capability in {CALENDAR_SEARCH_TOOL_NAME, CALENDAR_CREATE_TOOL_NAME}
                     else "passthrough"
                 ),
@@ -446,7 +349,7 @@ def _personal_bindings(
     return bindings
 
 
-def configured_calendar_weather_contacts_tools(
+def configured_calendar_contacts_tools(
     server_configs: list[MCPServerConfig],
 ) -> set[str]:
     """Return stable personal tools backed by explicit real MCP mappings."""
@@ -486,20 +389,6 @@ def _safe_payload(result: ToolResult) -> dict[str, Any]:
     return sanitized if isinstance(sanitized, dict) else {}
 
 
-def _weather_tool_input(
-    request: WeatherRequest,
-    binding: MCPServiceToolBinding,
-) -> dict[str, Any]:
-    if binding.profile != "mcp_weather_server_v1":
-        return request.model_dump(mode="json", exclude_none=True)
-    start_date, end_date = request.date_range
-    return {
-        "city": request.location,
-        "start_date": start_date.isoformat(),
-        "end_date": end_date.isoformat(),
-    }
-
-
 def _calendar_search_tool_input(
     request: CalendarSearchRequest,
     binding: MCPServiceToolBinding,
@@ -533,68 +422,6 @@ def _calendar_create_tool_input(
         "attendees": request.attendees or None,
         "description": request.notes,
     }
-
-
-def _weather_payload(
-    result: ToolResult,
-    binding: MCPServiceToolBinding,
-) -> dict[str, Any]:
-    if binding.profile != "mcp_weather_server_v1":
-        return _safe_payload(result)
-    text = _mcp_text_content(result)
-    marker = "=== WEATHER DATA ==="
-    if marker not in text:
-        return _safe_payload(result)
-    candidate = text.split(marker, 1)[1].split("=== ANALYSIS INSTRUCTIONS ===", 1)[0].strip()
-    try:
-        raw = json.loads(candidate)
-    except json.JSONDecodeError:
-        return _safe_payload(result)
-    if not isinstance(raw, dict):
-        return _safe_payload(result)
-    forecast = _aggregate_hourly_weather(raw.get("weather_data"))
-    return {
-        "location": raw.get("city"),
-        "query_used": f"{raw.get('city')} from {raw.get('start_date')} to {raw.get('end_date')}",
-        "forecast": forecast,
-        "summary": f"Weather lookup returned {len(forecast)} daily forecast item(s).",
-    }
-
-
-def _aggregate_hourly_weather(value: Any) -> list[dict[str, Any]]:
-    if not isinstance(value, list):
-        return []
-    by_date: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for item in value:
-        if not isinstance(item, dict):
-            continue
-        timestamp = item.get("time")
-        if isinstance(timestamp, str) and len(timestamp) >= 10:
-            by_date[timestamp[:10]].append(item)
-    daily: list[dict[str, Any]] = []
-    for day, items in sorted(by_date.items()):
-        temperatures = [_float_value(item.get("temperature_c")) for item in items]
-        temperatures = [item for item in temperatures if item is not None]
-        conditions = [
-            str(item.get("weather_description"))
-            for item in items
-            if item.get("weather_description")
-        ]
-        precipitation = [_float_value(item.get("precipitation_probability_percent")) for item in items]
-        precipitation = [item for item in precipitation if item is not None]
-        if not temperatures:
-            continue
-        daily.append(
-            {
-                "date": day,
-                "condition": Counter(conditions).most_common(1)[0][0] if conditions else "unknown",
-                "temperature_c": round(sum(temperatures) / len(temperatures)),
-                "high_c": round(max(temperatures)),
-                "low_c": round(min(temperatures)),
-                "precipitation_chance": min(1.0, max(precipitation, default=0.0) / 100.0),
-            }
-        )
-    return daily
 
 
 _WORKSPACE_EVENT_RE = re.compile(
@@ -658,17 +485,6 @@ def _default_calendar_end(start_time: str) -> str:
         return start_time
 
 
-def _weather_response_error_code(message: str) -> str:
-    normalized = message.lower()
-    if any(status in normalized for status in ("status 429", "status 503", "status 502")):
-        return "provider_unavailable" if "status 429" not in normalized else "provider_rate_limited"
-    if "network error" in normalized or "timed out" in normalized:
-        return "provider_network_error"
-    if "no coordinates found" in normalized or "city was not found" in normalized:
-        return "provider_unsupported_input"
-    return "provider_bad_response"
-
-
 def _calendar_events_from_payload(payload: dict[str, Any]) -> list[CalendarEvent]:
     events = _list_value(payload, "events", "items", "results")
     normalized: list[CalendarEvent] = []
@@ -719,32 +535,6 @@ def _contacts_from_payload(payload: dict[str, Any]) -> list[ContactCandidate]:
                 relation=_text(item, "relation", "source"),
                 emails=emails,
                 phone_numbers=phone_numbers,
-            )
-        )
-    return normalized
-
-
-def _weather_forecast_from_payload(payload: dict[str, Any]) -> list[WeatherForecast]:
-    forecast = _list_value(payload, "forecast", "forecasts", "daily")
-    if not forecast and isinstance(payload.get("current"), dict):
-        forecast = [payload["current"]]
-    normalized: list[WeatherForecast] = []
-    for index, item in enumerate(forecast):
-        if not isinstance(item, dict):
-            continue
-        date = _text(item, "date", "day") or f"day-{index + 1}"
-        condition = _text(item, "condition", "weather", "summary") or "unknown"
-        temperature = _int_value(item.get("temperature_c") or item.get("temperature") or item.get("temp_c")) or 0
-        normalized.append(
-            WeatherForecast(
-                date=date,
-                condition=condition,
-                temperature_c=temperature,
-                high_c=_int_value(item.get("high_c") or item.get("high")),
-                low_c=_int_value(item.get("low_c") or item.get("low")),
-                precipitation_chance=_float_value(
-                    item.get("precipitation_chance") or item.get("rain_chance")
-                ),
             )
         )
     return normalized
@@ -816,14 +606,5 @@ def _int_value(value: Any) -> int | None:
         return None
     try:
         return int(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _float_value(value: Any) -> float | None:
-    if isinstance(value, bool) or value is None:
-        return None
-    try:
-        return float(value)
     except (TypeError, ValueError):
         return None

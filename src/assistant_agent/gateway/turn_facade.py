@@ -14,6 +14,7 @@ from assistant_agent.runtime.requests import AssistantMode
 
 GatewayStreamChunkConsumer = Callable[[str, Frame], Awaitable[None]]
 GatewayTurnCorrelationObserver = Callable[["GatewayTurnCorrelation"], None]
+_TURN_STREAM_END = object()
 
 
 @dataclass(frozen=True)
@@ -123,6 +124,146 @@ class GatewayTurnResult:
     payload: dict[str, Any]
 
 
+class GatewayTurnStream:
+    """One facade-owned Gateway turn exposed as frames plus terminal result."""
+
+    def __init__(
+        self,
+        *,
+        request: GatewayTurnRequest,
+        endpoint: Any,
+        dispatcher: _GatewayTurnDispatcher,
+        inbox: asyncio.Queue[Frame | None],
+        correlation: GatewayTurnCorrelation,
+        on_correlation: GatewayTurnCorrelationObserver | None,
+    ) -> None:
+        self._request = request
+        self._endpoint = endpoint
+        self._dispatcher = dispatcher
+        self._inbox = inbox
+        self._correlation = correlation
+        self._on_correlation = on_correlation
+        self._public_frames: asyncio.Queue[Frame | object] = asyncio.Queue()
+        self._cancel_sent = False
+        self._closed = False
+        self._producer = asyncio.create_task(
+            self._run(),
+            name=f"gateway-turn-stream:{correlation.run_id}",
+        )
+
+    @property
+    def correlation(self) -> GatewayTurnCorrelation:
+        return self._correlation
+
+    def __aiter__(self) -> "GatewayTurnStream":
+        return self
+
+    async def __anext__(self) -> Frame:
+        item = await self._public_frames.get()
+        if item is _TURN_STREAM_END:
+            await self._producer
+            raise StopAsyncIteration
+        return dict(item)  # type: ignore[arg-type]
+
+    async def result(self) -> GatewayTurnResult:
+        """Wait for and return the authoritative Gateway terminal result."""
+
+        return await self._producer
+
+    async def cancel(self, *, source: str, reason: str) -> None:
+        """Request cancellation of this exact run without closing the stream."""
+
+        if self._producer.done() or self._cancel_sent:
+            return
+        self._cancel_sent = True
+        await _best_effort_cancel(
+            self._endpoint,
+            session_id=self._request.session_id,
+            turn_id=self._correlation.turn_id,
+            run_id=self._correlation.run_id,
+            source=source,
+            reason=reason,
+        )
+
+    async def aclose(self) -> None:
+        """Close delivery and best-effort cancel a still-active turn."""
+
+        if self._closed:
+            return
+        self._closed = True
+        if not self._producer.done():
+            await self.cancel(
+                source=self._request.cancel_source,
+                reason=self._request.cancel_reason,
+            )
+            self._producer.cancel()
+        await asyncio.gather(self._producer, return_exceptions=True)
+
+    async def _run(self) -> GatewayTurnResult:
+        frames: list[Frame] = []
+        chunks: list[str] = []
+        try:
+            return await asyncio.wait_for(
+                self._read_until_terminal(frames=frames, chunks=chunks),
+                timeout=self._request.timeout_s,
+            )
+        except TimeoutError as exc:
+            await self.cancel(source="gateway_cancel", reason="facade_timeout")
+            raise GatewayTurnTimeout(
+                f"Gateway turn timed out after {self._request.timeout_s:.3g}s before run.end",
+                correlation=self._correlation,
+            ) from exc
+        except asyncio.CancelledError:
+            await self.cancel(
+                source=self._request.cancel_source,
+                reason=self._request.cancel_reason,
+            )
+            raise
+        finally:
+            await self._dispatcher.unregister(self._correlation.run_id)
+            await self._public_frames.put(_TURN_STREAM_END)
+
+    async def _read_until_terminal(
+        self,
+        *,
+        frames: list[Frame],
+        chunks: list[str],
+    ) -> GatewayTurnResult:
+        while True:
+            received = await self._inbox.get()
+            if received is None:
+                raise GatewayTurnError(
+                    "Gateway endpoint closed before run.end",
+                    correlation=self._correlation,
+                )
+            frame_value = dict(received)
+            frames.append(frame_value)
+            updated = _correlation_from_frame(
+                frame_value,
+                current=self._correlation,
+            )
+            if updated != self._correlation:
+                self._correlation = updated
+                _notify_correlation(self._on_correlation, self._correlation)
+            await self._public_frames.put(frame_value)
+            if frame_value.get("type") == "error":
+                error = frame_value.get("error")
+                code = error.get("code") if isinstance(error, Mapping) else None
+                raise GatewayTurnError(
+                    f"Gateway turn rejected: {code or 'unknown_error'}",
+                    correlation=self._correlation,
+                )
+            if frame_value.get("type") == "stream.chunk":
+                chunks.append(_chunk_text(frame_value))
+                continue
+            if frame_value.get("type") == "run.end":
+                return _turn_result(
+                    frames=frames,
+                    terminal=frame_value,
+                    chunks=chunks,
+                )
+
+
 class GatewayTurnFacade:
     """Run one request/response turn through Gateway frame semantics."""
 
@@ -159,19 +300,40 @@ class GatewayTurnFacade:
         on_stream_chunk: GatewayStreamChunkConsumer | None = None,
         on_correlation: GatewayTurnCorrelationObserver | None = None,
     ) -> GatewayTurnResult:
-        if not request.user_id:
-            raise ValueError("GatewayTurnRequest.user_id is required")
-        if not request.session_id:
-            raise ValueError("GatewayTurnRequest.session_id is required")
-        if request.timeout_s <= 0:
-            raise ValueError("GatewayTurnRequest.timeout_s must be positive")
-        if request.mode not in {"followup", "replace"}:
-            raise ValueError("GatewayTurnRequest.mode must be followup or replace")
-        if request.assistant_mode not in {"standard", "deep_research"}:
-            raise ValueError(
-                "GatewayTurnRequest.assistant_mode must be standard or deep_research"
-            )
+        stream = await self.start_turn(
+            request,
+            on_correlation=on_correlation,
+        )
+        try:
+            async for received in stream:
+                if received.get("type") != "stream.chunk":
+                    continue
+                chunk = _chunk_text(received)
+                if not chunk or on_stream_chunk is None:
+                    continue
+                try:
+                    await on_stream_chunk(chunk, dict(received))
+                except Exception:
+                    await stream.cancel(
+                        source=request.cancel_source,
+                        reason="stream_consumer_failed",
+                    )
+                    await stream.aclose()
+                    raise
+            return await stream.result()
+        except asyncio.CancelledError:
+            await stream.aclose()
+            raise
 
+    async def start_turn(
+        self,
+        request: GatewayTurnRequest,
+        *,
+        on_correlation: GatewayTurnCorrelationObserver | None = None,
+    ) -> GatewayTurnStream:
+        """Start one Gateway turn and expose its canonical frames."""
+
+        self._validate_request(request)
         handle = await self._manager.acquire(
             user_id=request.user_id,
             config=request.config,
@@ -198,107 +360,32 @@ class GatewayTurnFacade:
                     payload=_message_payload(request, turn_id=turn_id, run_id=run_id),
                 )
             )
-            return await self._collect_turn(
-                inbox,
-                handle.endpoint,
-                session_id=request.session_id,
-                turn_id=turn_id,
-                run_id=run_id,
-                timeout_s=request.timeout_s,
-                cancel_source=request.cancel_source,
-                cancel_reason=request.cancel_reason,
-                on_stream_chunk=on_stream_chunk,
-                on_correlation=on_correlation,
-                initial_correlation=correlation,
-            )
-        finally:
+        except BaseException:
             await dispatcher.unregister(run_id)
-
-    async def _collect_turn(
-        self,
-        inbox: asyncio.Queue[Frame | None],
-        endpoint,
-        *,
-        session_id: str,
-        turn_id: str,
-        run_id: str,
-        timeout_s: float,
-        cancel_source: str,
-        cancel_reason: str,
-        on_stream_chunk: GatewayStreamChunkConsumer | None,
-        on_correlation: GatewayTurnCorrelationObserver | None,
-        initial_correlation: GatewayTurnCorrelation,
-    ) -> GatewayTurnResult:
-        frames: list[Frame] = []
-        chunks: list[str] = []
-        correlation = initial_correlation
-
-        async def _read_until_terminal() -> GatewayTurnResult:
-            nonlocal correlation
-            while True:
-                received = await inbox.get()
-                if received is None:
-                    raise GatewayTurnError(
-                        "Gateway endpoint closed before run.end",
-                        correlation=correlation,
-                    )
-                frames.append(received)
-                updated = _correlation_from_frame(received, current=correlation)
-                if updated != correlation:
-                    correlation = updated
-                    _notify_correlation(on_correlation, correlation)
-                if received.get("type") == "error":
-                    error = received.get("error")
-                    code = error.get("code") if isinstance(error, Mapping) else None
-                    raise GatewayTurnError(
-                        f"Gateway turn rejected: {code or 'unknown_error'}",
-                        correlation=correlation,
-                    )
-                if received.get("type") == "stream.chunk":
-                    chunk = _chunk_text(received)
-                    chunks.append(chunk)
-                    if chunk and on_stream_chunk is not None:
-                        try:
-                            await on_stream_chunk(chunk, dict(received))
-                        except Exception:
-                            await _best_effort_cancel(
-                                endpoint,
-                                session_id=session_id,
-                                turn_id=turn_id,
-                                run_id=run_id,
-                                source=cancel_source,
-                                reason="stream_consumer_failed",
-                            )
-                            raise
-                    continue
-                if received.get("type") == "run.end":
-                    return _turn_result(frames=frames, terminal=received, chunks=chunks)
-
-        try:
-            return await asyncio.wait_for(_read_until_terminal(), timeout=timeout_s)
-        except TimeoutError as exc:
-            await _best_effort_cancel(
-                endpoint,
-                session_id=session_id,
-                turn_id=turn_id,
-                run_id=run_id,
-                source="gateway_cancel",
-                reason="facade_timeout",
-            )
-            raise GatewayTurnTimeout(
-                f"Gateway turn timed out after {timeout_s:.3g}s before run.end",
-                correlation=correlation,
-            ) from exc
-        except asyncio.CancelledError:
-            await _best_effort_cancel(
-                endpoint,
-                session_id=session_id,
-                turn_id=turn_id,
-                run_id=run_id,
-                source=cancel_source,
-                reason=cancel_reason,
-            )
             raise
+        return GatewayTurnStream(
+            request=request,
+            endpoint=handle.endpoint,
+            dispatcher=dispatcher,
+            inbox=inbox,
+            correlation=correlation,
+            on_correlation=on_correlation,
+        )
+
+    @staticmethod
+    def _validate_request(request: GatewayTurnRequest) -> None:
+        if not request.user_id:
+            raise ValueError("GatewayTurnRequest.user_id is required")
+        if not request.session_id:
+            raise ValueError("GatewayTurnRequest.session_id is required")
+        if request.timeout_s <= 0:
+            raise ValueError("GatewayTurnRequest.timeout_s must be positive")
+        if request.mode not in {"followup", "replace"}:
+            raise ValueError("GatewayTurnRequest.mode must be followup or replace")
+        if request.assistant_mode not in {"standard", "deep_research"}:
+            raise ValueError(
+                "GatewayTurnRequest.assistant_mode must be standard or deep_research"
+            )
 
 
 def _correlation_from_frame(

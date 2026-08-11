@@ -68,7 +68,7 @@ Observability 是运行时行为的只读投影，不是另一套执行状态机
 
 | 标识 | 语义 |
 | --- | --- |
-| `trace_id` | 一个 Assistant trace 的公共查询键；也是 Langfuse `assistant.turn` trace 的关联键 |
+| `trace_id` | 一个 Assistant run 的 canonical 查询键；普通前台 run 同时用作 Langfuse `assistant.turn` 关联键，Workflow work-item 的导出身份见下文 |
 | `run_id` | 一次执行，从 Gateway ingress 进入 Assistant Runtime 并到达运行终态或取消边界 |
 | `turn_id` | Gateway/session 入口分配的 turn 身份，用于入口生命周期关联 |
 | `delivery_id` | 一个 Agent-Service 媒体响应的发送与可选 ACK 生命周期 |
@@ -290,7 +290,9 @@ Provider protocol capture。overlay 写入失败时 canonical event 仍须保留
 
 `build_text_otel_span_specs()` 将 redacted canonical events 投影为依赖无关的 OTel span plan：
 
-- 普通 Assistant turn 的根 span 为 `agent.runtime`，Langfuse trace 名为 `assistant.turn`；
+- standard Assistant turn 的根 span 为 `agent.runtime`，Langfuse trace 名为 `assistant.turn`；
+- Deep Research ingress 的根 observation 为 `assistant.submit`，Langfuse trace 从入口开始固定命名为
+  `deep_research.workflow`；
 - 后台实时 VLM 每次 observation 使用独立 run/trace，以 prompt-safe
   `vision.observation.summary` 闭合；根 span 为 `vision.runtime`，Langfuse trace 名为
   `vision.observation`，不能伪装成没有用户 turn 的 `assistant.turn`；
@@ -308,6 +310,29 @@ Provider protocol capture。overlay 写入失败时 canonical event 仍须保留
   `llm.chat` generation 的 Usage breakdown 只记录 Provider 返回的实际 input/output/total，避免同一轮
   preflight 与实际调用重复计量；
 - only-allowlisted metadata 和 output reference 可以进入公开 projection。
+
+Deep Research 从前台提交到 durable terminal 使用同一个 `deep_research.workflow` trace。该做法遵循
+[Temporal Python SDK tracing interceptor](https://github.com/temporalio/sdk-python)、
+[Temporal LangSmith tracing sample](https://github.com/temporalio/samples-python/tree/main/langsmith_tracing)
+与 [OpenAI Agents higher-level trace](https://github.com/openai/openai-agents-python/blob/main/docs/tracing.md#higher-level-traces)
+的开源模式：
+入口把可信 `trace_id` 和产生 Workflow 的 `workflow_submit` Tool span ID 持久化到 Workflow record，worker
+恢复后继续把 Workflow 与 work-item observation 导出到该 trace，不依赖原进程中的 ContextVar 存活。
+已提交的 `workflow.plan.*`、work-item 终态/重试/返工事件和 Workflow terminal 事实投影出 Workflow
+`agent`、Plan `chain` 和 work-item `chain`；每次 work-item 的 `agent.runtime`、context、真实
+`llm.chat` 与 Tool observation 以对应 attempt chain 为 parent。
+
+work-item Assistant run 仍保留自己的 canonical `trace_id/run_id`，用于本地事件查询、恢复和审计；仅
+OTel/Langfuse 的导出 trace identity 被显式投影为 ingress trace identity。work-item span 输出将该值标为
+`assistant_canonical_trace_id`，并只生成当前 Workflow trace 的详情链接，不生成指向不存在的独立子 trace
+链接。`workflow_id/work_item_id/attempt_id` 共同证明投影归属。提交阶段的短回复只结束 Gateway run 和
+`assistant.submit` observation，不结束整个 Langfuse trace；Workflow terminal 才写 trace-level 最终输出。
+Provider-native 搜索只属于真实
+`llm.chat` generation，不伪造 Provider 未暴露的内部搜索 span。Workflow 投影只观察 Store 已成功提交的
+事件；总览默认只导出 Plan 标题、类型、依赖、状态、计数和 artifact ref，不导出 Workflow/work-item
+objective、deliverable/constraint 正文。observer 获取 cursor 或导出失败必须 fail-open，不能影响
+lease、revision 或持久状态；cursor 读取使用 Store 的 O(1) latest-cursor 契约，不扫描或重放全量历史。
+缺失完整 ingress trace context 时观测链路 fail-open，Workflow 仍提交并退回兼容的独立 Workflow trace。
 
 `assistant.turn.summary` 到达时主 trace 可以先导出；Runtime 随后发出的 `response.delivered` 与后台
 `memory.ingestion.finished` 都不得被静默丢弃。OTel observer 将它们作为单独的 late span 追加到同一 trace，
@@ -333,8 +358,12 @@ VLM 文本。原缓存 record 的 `source_vision_trace_url` 继续指向生产�
 
 视觉 Tool 在 Langfuse 中有三个不可互换的内容边界：具体 Tool execution span（例如
 `live_view_inspect`）展示安全 ToolResult；`tool.observation` 展示 Context compaction 前的语义 observation；
-下一次 `llm.chat.input` 展示 compaction、budget 和 Provider 协议编译后的实际请求，是“主 LLM 真正看到
-什么”的唯一权威。`tool.observation.input` 分别标注 `runtime_tool_call_id` 和
+下一次 `llm.chat.input` 展示 compaction、budget 和 Provider 协议编译后请求的等价可读投影；
+OpenAI Chat 形状保持不变，DashScope 的 `input.messages`、`parameters.tools` 和
+`parameters.tool_choice` 提升为 Langfuse 可格式化的顶层字段，其余参数归入
+`provider_parameters`。本地 content overlay 中按同一 span 保存的原始 Provider request 才是请求形状
+审计权威，两者不得改写 message、Tool schema 或参数值。`tool.observation.input` 分别标注
+`runtime_tool_call_id` 和
 `provider_tool_call_id`，不得继续用同名 `tool_call_id` 混淆内部执行身份与 Provider 协议身份。
 
 后台 `realtime_video_observe` 是视觉结果生产者，不是主 LLM Tool observation。其 `vlm.infer` 必须作为

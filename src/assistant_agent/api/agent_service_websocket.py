@@ -28,6 +28,7 @@ from assistant_agent.runtime.generated_artifacts import (
     generated_artifact_payload,
 )
 from assistant_agent.runtime.requests import AssistantMode, UserRequest
+from assistant_agent.runtime.citations import UrlCitationAnnotation
 from assistant_agent.observability.agent_service_delivery import (
     AgentServiceDelivery,
     AgentServiceDeliveryRegistry,
@@ -1473,6 +1474,15 @@ def _prepared_chat_response(
                 **workflow_fields,
             }
         else:
+            annotations = _validated_citation_annotations(
+                turn.payload.get("annotations")
+            )
+            if (
+                annotations
+                and state.client_capabilities.get("urlCitationAnnotationsV1", False)
+            ):
+                intent_result["annotations"] = annotations
+                intent_result["fullDescription"] = turn.response_text
             body = {
                 "number": prepared.user_number,
                 "message": {
@@ -1562,8 +1572,25 @@ def _delivery_capabilities(value: Any) -> dict[str, bool]:
         return {}
     return {
         name: value.get(name) is True
-        for name in ("chatProgress", "chatResponseAck")
+        for name in (
+            "chatProgress",
+            "chatResponseAck",
+            "urlCitationAnnotationsV1",
+        )
     }
+
+
+def _validated_citation_annotations(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    annotations: list[dict[str, Any]] = []
+    for item in value:
+        try:
+            annotation = UrlCitationAnnotation.model_validate(item)
+        except (TypeError, ValueError):
+            continue
+        annotations.append(annotation.model_dump(mode="json"))
+    return annotations
 
 
 def _client_info(value: Any) -> dict[str, str]:
@@ -1572,10 +1599,10 @@ def _client_info(value: Any) -> dict[str, str]:
     if not isinstance(value, dict):
         return {"client_type": "media_agent"}
     client_type = _client_info_token(value.get("clientType") or value.get("client_type"))
-    if client_type == "run_client":
+    if client_type == "media_simulator":
         return {
-            "client_type": "run_client",
-            "client_name": "scripts/run_client.py",
+            "client_type": "media_simulator",
+            "client_name": "scripts/media_simulator.py",
         }
     return {"client_type": "media_agent"}
 
@@ -1591,7 +1618,11 @@ def _client_info_token(value: Any) -> str | None:
     if text is None:
         return None
     token = text.strip().lower().replace("-", "_").replace(".", "_")
-    return "run_client" if token in {"run_client", "scripts/run_client_py"} else None
+    return (
+        "media_simulator"
+        if token in {"media_simulator", "scripts/media_simulator_py"}
+        else None
+    )
 
 
 def _client_trace_attributes(timing: AgentServiceTurnTiming) -> dict[str, str]:

@@ -35,7 +35,13 @@ from assistant_agent.runtime.requests import AssistantMode
 ChatProviderName = Literal["mock", "openai", "qwen", "ark", "deepseek", "local"]
 ChatStreamCallback = Callable[[str, dict[str, Any]], None]
 ProviderRequestCallback = Callable[[dict[str, Any]], None]
-ProviderTransportMode = Literal["sync", "sdk_stream", "provider_stream", "dashscope_http"]
+ProviderTransportMode = Literal[
+    "sync",
+    "sdk_stream",
+    "provider_stream",
+    "dashscope_http",
+    "dashscope_sse",
+]
 ProviderSearchProfile = Literal["standard", "deep_research"]
 
 

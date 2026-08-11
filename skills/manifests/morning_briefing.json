@@ -2,10 +2,9 @@
   "schema_version": "skill_v1",
   "name": "morning_briefing",
   "type": "skill",
-  "description": "Build a personal morning or departure briefing from governed read-only tools.",
+  "description": "Build a personal morning briefing from governed calendar and news tools.",
   "permissions": [
     "tool:calendar_search",
-    "tool:weather",
     "tool:web_search"
   ],
   "steps": [
@@ -15,15 +14,6 @@
       "input": {
         "query": "{{ user.request }}",
         "limit": 5
-      },
-      "checkpoint": true
-    },
-    {
-      "id": "weather",
-      "tool": "weather",
-      "input": {
-        "location": "{{ user.request }}",
-        "days": 1
       },
       "checkpoint": true
     },

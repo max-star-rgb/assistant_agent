@@ -1,6 +1,6 @@
 # Media-Agent WebSocket 接口权威文档
 
-Last updated: 2026-08-10
+Last updated: 2026-08-11
 
 ## Authority contract
 
@@ -102,8 +102,12 @@ Agent 兼容说明：
   "callType": "AUDIO",
   "modelName": "模型名称(可选)",
   "language": "zh-CN",
-  "clientCapabilities": {"chatProgress": true, "chatResponseAck": true},
-  "clientInfo": {"clientType": "run_client", "clientName": "scripts/run_client.py"}
+  "clientCapabilities": {
+    "chatProgress": true,
+    "chatResponseAck": true,
+    "urlCitationAnnotationsV1": true
+  },
+  "clientInfo": {"clientType": "media_simulator", "clientName": "scripts/media_simulator.py"}
 }
 ```
 
@@ -117,8 +121,9 @@ Agent 兼容说明：
 | `language` / `locale` | string | 否 | 3D callback 通知语言；只识别 `zh`、`en` 及其区域后缀，缺省或其他值按 `zh` |
 | `clientCapabilities.chatProgress` | boolean | 否 | 为 true 时立即并每 15 秒发送 `chatProgress` |
 | `clientCapabilities.chatResponseAck` | boolean | 否 | 为 true 时最终响应携带 `deliveryId`，媒体处理后回 ACK |
-| `clientInfo.clientType` | string | 否 | 仅用于安全观测分类；本地 `scripts/run_client.py` 发送 `run_client`，真实媒体可省略，缺省记为 `media_agent` |
-| `clientInfo.clientName` | string | 否 | 仅用于安全观测；当前只记录已知的 `scripts/run_client.py` 本地调试客户端 |
+| `clientCapabilities.urlCitationAnnotationsV1` | boolean | 否 | 为 true 时成功的非图片终包在 `intentResult.annotations` 携带 URL citation；未声明时保持旧 wire shape |
+| `clientInfo.clientType` | string | 否 | 仅用于安全观测分类；本地 `scripts/media_simulator.py` 发送 `media_simulator`，真实媒体可省略，缺省记为 `media_agent` |
+| `clientInfo.clientName` | string | 否 | 仅用于安全观测；当前只记录已知的 `scripts/media_simulator.py` 本地调试客户端 |
 
 Agent 每个 WebSocket 连接都会分配新的内部 `agent-service-*` Gateway session。
 外层 `sessionId` 只作为媒体协议关联值原样回传，不用于恢复旧通话历史。
@@ -205,7 +210,7 @@ observer。VIDEO 消息的 `userNumber` 必须等于握手 `number`，不一致�
 
 - Agent 使用最新一条非空 `speechContent` 作为本轮 Gateway 输入文本。
 - `assistantMode` 是逐 turn 的结构化产品选择，不从 `speechContent` 推断；非法值返回本轮
-  `chatResponse` FAIL。`scripts/run_client.py` 的 `/deep research` 只切换后续请求为
+  `chatResponse` FAIL。`scripts/media_simulator.py` 的 `/deep research` 只切换后续请求为
   `deep_research`，`/standard` 切回普通模式，命令本身不发送给 Agent。客户端 tail 到
   `waiting_input` 时会在当前 Workflow 上读取一次输入，通过 identity-scoped HTTP facade 携带
   `resume_token` 提交后继续 tail；该输入不会作为新的 `chat` 创建另一个 Workflow。
@@ -242,6 +247,15 @@ observer。VIDEO 消息的 `userNumber` 必须等于握手 `number`，不一致�
 - Gateway `run.end.payload.response_text` 携带 Runtime 归一化最终正文。Agent-Service
   使用该终态字段计算成功终包，而不是把 provisional `stream.chunk` 拼接成最终答案；
   因此 `stream=false` 仍只返回规范化终态正文，截断、错误恢复文案和购物 detail 也可在终包补齐。
+- URL citation 是可选的 terminal enrichment。只有握手显式声明
+  `clientCapabilities.urlCitationAnnotationsV1=true`，且本轮 completed、终包不含图片 detail 时，
+  Agent-Service 才把 canonical `run.end.payload.annotations` 经 schema 校验后投影到
+  `message.content.intentResult.annotations`，并把 annotations 所引用的权威完整终态正文投影到
+  `message.content.intentResult.fullDescription`。流式 `description` 仍只携带本包增量；客户端在终态
+  使用 `fullDescription` 替换 provisional 文本后，再按 annotation 渲染可点击角标。正文仍保留
+  `[1]` 角标，不改写为 Markdown；annotation
+  的 `start_index/end_index` 是完整最终正文的 Unicode code point 半开区间。PROCESSING、FAIL、图片
+  终包和未协商客户端均不携带该字段。
 - 购物推荐/比价遵循 ReAct：`shopping_search` 返回结构化结果，下一轮 LLM 消费不含链接和展示模板的精简 observation，生成正常自然语言。由于 Agent-Service 声明 `supports_shopping_detail_v1=true`，Gateway Runtime adapter 会从完整成功 ToolResult 抽取标题、平台、价格、商品链接和图片链接，把唯一 `<detail>...</detail>` 追加到最终交付正文；不覆盖 `AgentResponse.message` 或 conversation history，也不增加 LLM 调用。若自然语言已通过 Provider token delta 发送，终包 `description` 只携带尚未发送的换行和协议块。
 - `deliveryId` 和 `chatResponseAck` 只属于成功终包；中间包和失败终包都不进入应用层 ACK 状态。
 - 生成图片不走独立媒体上传接口。媒体服务建立 `/agent-service/v1` 连接后，Agent 复用同一
@@ -255,7 +269,7 @@ observer。VIDEO 消息的 `userNumber` 必须等于握手 `number`，不一致�
   Agent-Service 只读取本 Agent 托管的 `/artifacts/generated/` 图片，并在成功终包中投影为
   `intentResult.detail`；不会把 Provider 临时 URL、本地绝对路径或任意外部引用直接发送给媒体。
 - Durable Workflow 提交成功后，Agent-Service 从同一 `run.end.payload.output_refs` 中只保留
-  `workflow://` 引用，并在成功终包顶层投影为有界去重的 `outputRefs`。本地 `run_client.py` 不解析
+  `workflow://` 引用，并在成功终包顶层投影为有界去重的 `outputRefs`。本地 `scripts/media_simulator.py` 不解析
   模型正文，而是据此使用已有 `/workflows/{workflow_id}` 与 cursor-based `/events` facade 持续
   pull/tail；默认只显示 status facade 根据持久化 plan 生成的自然语言 `progress`（如当前 item 的
   `display_title` 和完成度），不显示内部 Workflow ID 或原始事件。显式传入 `--workflow-details` 才
@@ -961,8 +975,8 @@ Base64、真实用户内容或服务原始响应。当前 adapter 不记录 3D �
 | `chat.body.assistantMode` 非法 | 返回 `chatResponse`，`body.code=\"FAIL\"`；不进入 Gateway run |
 | `videoContent` 非法、超过大小限制或无法解码 | 返回 `videoResponse`，`body.code=\"FAIL\"`；连接保持可用 |
 | 未知 `message` 类型 | 返回 `error` |
-| 服务重启以 `1012` 关闭本地交互客户端 | `run_client.py` 使用原 session id 和握手能力重连并保留本地 `assistantMode`；中断消息因 delivery 状态不确定而不自动重放，要求 operator 手工重发 |
-| Gateway 超时或后端错误 | 返回 `chatResponse`，`body.code=\"FAIL\"`；本地 `run_client.py` 会在 stderr 显示失败原因并以非零状态结束。若 runtime 已启动，失败 delivery audit 与 trace terminal summary 保留统一的 `run_id` 与独立的 `trace_id`；超时时 runtime 状态先记为 `pending_cancel`，以后续真实取消/失败事件为准。 |
+| 服务重启以 `1012` 关闭本地交互客户端 | `media_simulator.py` 使用原 session id 和握手能力重连并保留本地 `assistantMode`；中断消息因 delivery 状态不确定而不自动重放，要求 operator 手工重发 |
+| Gateway 超时或后端错误 | 返回 `chatResponse`，`body.code=\"FAIL\"`；本地 `media_simulator.py` 会在 stderr 显示失败原因并以非零状态结束。若 runtime 已启动，失败 delivery audit 与 trace terminal summary 保留统一的 `run_id` 与独立的 `trace_id`；超时时 runtime 状态先记为 `pending_cancel`，以后续真实取消/失败事件为准。 |
 | 3D 回调缺少 `mediaType` | FastAPI/Pydantic HTTP 422 API error envelope；不转发 |
 | 3D 回调 `mediaType` 不支持 | HTTP 200 `{"code":"success"}`；已登记 job 保存结果，但不发布事件 |
 | 3D 回调缺少对应 `mediaUrl` / `image` | 当前事件保留 JSON `null`；若有 subscriber 仍尝试投影，不会因该字段缺失返回 422 |
@@ -1058,7 +1072,7 @@ reserve 均由对应 `REALTIME_VISUAL_CONTEXT_*` 配置独立控制。
 绝对路径、Provider 请求体或原始响应。`videoResponse body.code=0` 只证明帧已成功
 校验、解码、注册和调度；后台视觉理解成功还必须由 provider/model/status 证据确认。
 
-真实联调通过 `scripts/run_server.py` 与 `scripts/run_client.py` 的显式 operator 流程执行，不放入
+真实联调通过 `scripts/run_server.py` 与 `scripts/media_simulator.py` 的显式 operator 流程执行，不放入
 pytest。只有同时选择 real provider mode、显式配置 Qwen vision provider 和
 本机未跟踪凭据时才允许联网；具体入口和参数见 `scripts/README.md`。
 
@@ -1176,7 +1190,11 @@ if __name__ == "__main__":
 ## 8. 实现边界
 
 - `/agent-service/v1` 是唯一 Media Service WebSocket 入口，不是新的 Agent 主循环。
-- `scripts/run_client.py` 是该媒体入口的协议模拟器，不是通用 Assistant/Gateway client。由于 IMAGE
+- `scripts/media_simulator.py` 是该媒体入口的协议模拟器，不是通用 Assistant/Gateway client；
+  `scripts/agent_cli.py` 才是共用 `/agent/run` 的 HTTP/SSE 产品 CLI。模拟器的 `--citations` 只验证
+  capability 与 wire annotations，默认仍只逐增量打印纯正文，不渲染 OSC 8、不重绘终端，也不追加
+  来源列表。显式 `--citation-debug` 才打印来源诊断，并自动协商 citation capability。Media Service
+  透传 `fullDescription + annotations`，真实点击交互由手机 App renderer 实现。由于 IMAGE
   detail 内联 Base64，它显式使用由单图 25 MiB、最多 4 图的当前 artifact 上限推导出的有界
   WebSocket receive limit；不能依赖 `websockets` 默认 1 MiB。
 - `assistantControl` 建立媒体连接上下文，不绕过 provider/runtime policy。

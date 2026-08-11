@@ -90,6 +90,7 @@ def test_agent_service_success_terminal_embeds_generated_image_detail(
             user_number="user-sentinel",
             latest_speech="generate-image-sentinel",
             contents=[],
+            assistant_mode="standard",
             video_ids=[],
             received_ns=1,
             accepted_ns=2,

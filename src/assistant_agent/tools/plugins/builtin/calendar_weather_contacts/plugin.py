@@ -1,8 +1,8 @@
 """Calendar and contacts tools backed by local or MCP adapters."""
 
 from assistant_agent.tools.plugins.builtin.calendar_weather_contacts.backend import (
-    configured_calendar_weather_contacts_tools,
-    create_calendar_weather_contacts_adapter_bundle,
+    configured_calendar_contacts_tools,
+    create_calendar_contacts_adapter_bundle,
 )
 from assistant_agent.tools.ids import (
     CALENDAR_CREATE_TOOL_NAME,
@@ -24,21 +24,21 @@ from assistant_agent.tools.plugins.builtin.calendar_weather_contacts.local_calen
 DEFAULT_LOCAL_CALENDAR_PATH = ".data/calendar/events.sqlite3"
 
 
-class CalendarWeatherContactsPlugin:
+class CalendarContactsPlugin:
     descriptor = ToolPluginDescriptor(
-        plugin_id="calendar_weather_contacts",
+        plugin_id="calendar_contacts",
         plugin_version="1",
     )
 
     def build_tools(self, context: ToolPluginContext) -> list[Tool]:
-        tool_names = configured_calendar_weather_contacts_tools(context.mcp_server_configs)
+        tool_names = configured_calendar_contacts_tools(context.mcp_server_configs)
         if context.calendar_adapter is not None or not context.mock_mode:
             tool_names.update(
                 {CALENDAR_SEARCH_TOOL_NAME, CALENDAR_CREATE_TOOL_NAME}
             )
         if not context.mock_mode and not tool_names:
             return []
-        adapters = create_calendar_weather_contacts_adapter_bundle(
+        adapters = create_calendar_contacts_adapter_bundle(
             context.config,
             mcp_server_configs=context.mcp_server_configs,
             mcp_runner=context.mcp_runner,

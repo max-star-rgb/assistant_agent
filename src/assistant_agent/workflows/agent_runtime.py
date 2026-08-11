@@ -16,6 +16,11 @@ class AgentWorkItemRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     workflow_id: str
+    workflow_type: str = Field(min_length=1, max_length=80)
+    workflow_trace_id: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{32}$",
+    )
     work_item_id: str
     attempt_id: str
     user_id: str
@@ -41,6 +46,7 @@ class AgentWorkItemResult(BaseModel):
 
     status: Literal["succeeded", "repair", "blocked", "failed"]
     run_id: str
+    trace_id: str | None = None
     summary: str
     content: str = Field(default="", max_length=100_000)
     error_code: str | None = Field(default=None, max_length=160)
@@ -139,6 +145,7 @@ def parse_work_item_response(
     text: str,
     *,
     run_id: str,
+    trace_id: str | None = None,
     artifact_refs: list[str],
     model_calls_used: int,
     tool_calls_used: int,
@@ -155,6 +162,7 @@ def parse_work_item_response(
             return AgentWorkItemResult(
                 status="failed",
                 run_id=run_id,
+                trace_id=trace_id,
                 summary="Verifier did not return a structured constraint result.",
                 error_code="verification_result_missing",
                 artifact_refs=artifact_refs,
@@ -164,6 +172,7 @@ def parse_work_item_response(
         return AgentWorkItemResult(
             status="succeeded",
             run_id=run_id,
+            trace_id=trace_id,
             summary=_bounded_summary(text),
             content=text,
             artifact_refs=artifact_refs,
@@ -177,6 +186,7 @@ def parse_work_item_response(
             return AgentWorkItemResult(
                 status="failed",
                 run_id=run_id,
+                trace_id=trace_id,
                 summary="Verifier result did not cover every assigned constraint.",
                 error_code="verification_incomplete",
                 artifact_refs=artifact_refs,
@@ -186,6 +196,7 @@ def parse_work_item_response(
         return AgentWorkItemResult(
             status="succeeded",
             run_id=run_id,
+            trace_id=trace_id,
             summary=control.summary,
             content=control.content or control.summary,
             artifact_refs=artifact_refs,
@@ -195,6 +206,7 @@ def parse_work_item_response(
     return AgentWorkItemResult(
         status=control.status,
         run_id=run_id,
+        trace_id=trace_id,
         summary=control.summary,
         artifact_refs=artifact_refs,
         unresolved_questions=control.unresolved_questions,

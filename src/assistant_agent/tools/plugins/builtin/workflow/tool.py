@@ -78,11 +78,22 @@ class WorkflowSubmitTool(ToolBase):
                 success=False,
                 error="Trusted run identity is required for workflow submission.",
             )
+        propagate_trace_context = (
+            input.workflow_type == "deep_research"
+            and context.trace_id is not None
+            and context.parent_span_id is not None
+        )
         try:
             bundle = service.submit(
                 identity=RequestIdentity.model_validate(identity_payload),
                 ingress_run_id=context.run_id,
                 submission=input,
+                ingress_trace_id=(
+                    context.trace_id if propagate_trace_context else None
+                ),
+                ingress_parent_span_id=(
+                    context.parent_span_id if propagate_trace_context else None
+                ),
             )
         except WorkflowServiceError as exc:
             return ToolResult(

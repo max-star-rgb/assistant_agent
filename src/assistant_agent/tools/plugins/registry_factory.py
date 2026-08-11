@@ -39,6 +39,9 @@ if TYPE_CHECKING:
     )
 
 
+_PROVIDER_NATIVE_WEATHER_REMOTE_TOOL_NAMES = frozenset({"maps_weather"})
+
+
 def create_default_registry(
     config: ProviderConfig | None = None,
     *,
@@ -118,6 +121,11 @@ def create_default_registry(
             )
             if remote_name
         }
+        suppressed_provider_native_tools = {
+            namespaced_mcp_tool_name(server.adapter_config(), remote_name)
+            for server in server_configs
+            for remote_name in _PROVIDER_NATIVE_WEATHER_REMOTE_TOOL_NAMES
+        }
         for server in server_configs:
             sources.append(
                 ToolPluginSourceRecord(
@@ -127,7 +135,9 @@ def create_default_registry(
                 )
             )
         for item in discovered:
-            if item.tool.name in suppressed_adapter_tools:
+            if item.tool.name in (
+                suppressed_adapter_tools | suppressed_provider_native_tools
+            ):
                 continue
             contributions.append(
                 ToolContribution(

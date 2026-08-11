@@ -12,11 +12,16 @@ source_globs = [
   "src/assistant_agent/gateway/**",
   "src/assistant_agent/api/gateway_runtime.py",
   "src/assistant_agent/api/gateway_websocket.py",
+  "src/assistant_agent/api/agent_sse.py",
+  "src/assistant_agent/api/routes_agent.py",
+  "src/assistant_agent/clients/http_agent.py",
+  "scripts/agent_cli.py",
   "tests/core/contract/test_gateway_contract.py",
 ]
 thin_references = ["README.md", "scripts/README.md"]
 verification = [
   "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/core/contract/test_gateway_contract.py",
+  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python scripts/agent_cli.py --help",
 ]
 exclusive_literals = []
 exclusive_allowlist = []
@@ -33,11 +38,11 @@ source_globs = [
   "src/assistant_agent/api/rendering_3d_callback.py",
   "src/assistant_agent/gateway/artifact_delivery.py",
   "src/assistant_agent/media/video/**",
-  "scripts/run_client.py",
+  "scripts/media_simulator.py",
 ]
 thin_references = ["README.md", "docs/gateway-architecture.md", "scripts/README.md"]
 verification = [
-  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python scripts/run_client.py --help",
+  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python scripts/media_simulator.py --help",
 ]
 exclusive_literals = []
 exclusive_allowlist = []

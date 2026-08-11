@@ -19,10 +19,12 @@ from typing import Any, Literal, Protocol
 from urllib.parse import urlparse
 
 from assistant_agent.observability.otel_mapping import (
+    OtelTraceProjectionContext,
     OtelSpanSpec,
     build_late_text_otel_span_spec,
     build_text_otel_span_specs,
     langfuse_trace_id,
+    text_otel_projection_context,
 )
 from assistant_agent.observability.trace_content_policy import (
     local_trace_content_enabled,
@@ -147,7 +149,7 @@ class _ExportCommand:
 class TextOtelSpanExporter(Protocol):
     """Dependency-free exporter boundary for text OTel span specs."""
 
-    def export(self, spans: Sequence[OtelSpanSpec]) -> None:
+    def export(self, spans: Sequence[OtelSpanSpec]) -> bool | None:
         """Export one completed text turn span batch."""
 
 
@@ -170,8 +172,9 @@ class OtlpHttpTextSpanExporter:
     def __init__(self, bridge: OtlpSpanBridge) -> None:
         self.bridge = bridge
 
-    def export(self, spans: Sequence[OtelSpanSpec]) -> None:
+    def export(self, spans: Sequence[OtelSpanSpec]) -> bool:
         self.bridge.export(spans)
+        return True
 
     def flush(self) -> bool:
         return self.bridge.flush()
@@ -413,16 +416,18 @@ class BufferedTextOtelSpanExporter:
     def worker_alive(self) -> bool:
         return self._worker.is_alive()
 
-    def export(self, spans: Sequence[OtelSpanSpec]) -> None:
+    def export(self, spans: Sequence[OtelSpanSpec]) -> bool:
         with self._state_lock:
             closing = self._closing or self._closed
         if closing:
             self._record_drop()
-            return
+            return False
         try:
             self._queue.put_nowait(_ExportCommand("export", list(spans)))
         except Full:
             self._record_drop()
+            return False
+        return True
 
     def flush(self, *, timeout: float = DEFAULT_EXPORT_CLOSE_TIMEOUT_SECONDS) -> bool:
         if timeout <= 0:
@@ -546,6 +551,10 @@ class TextOtelTraceObserver:
         self._exported_run_ids: set[str] = set()
         self._dropped_run_ids: set[str] = set()
         self._pending_late_events: dict[str, list[TraceEvent]] = {}
+        self._projection_context_by_run: dict[
+            str, OtelTraceProjectionContext
+        ] = {}
+        self._projection_required_run_ids: set[str] = set()
         self._errors: list[str] = []
         self._exported_run_count = 0
         self._dropped_run_count = 0
@@ -602,6 +611,15 @@ class TextOtelTraceObserver:
 
     def _export_late_event(self, event: TraceEvent) -> None:
         try:
+            with self._lock:
+                projection_context = self._projection_context_by_run.get(
+                    event.run_id
+                )
+                projection_required = (
+                    event.run_id in self._projection_required_run_ids
+                )
+            if projection_required and projection_context is None:
+                return
             memory_content = None
             if (
                 self.include_memory_content
@@ -618,6 +636,7 @@ class TextOtelTraceObserver:
             span = build_late_text_otel_span_spec(
                 event,
                 memory_content=memory_content,
+                projection_context=projection_context,
             )
             self.exporter.export([span])
         except Exception as exc:
@@ -686,6 +705,10 @@ class TextOtelTraceObserver:
             self._dropped_run_count += 1
 
     def _export_events(self, events: list[TraceEvent]) -> None:
+        projection_context = text_otel_projection_context(events)
+        if projection_context is not None:
+            with self._lock:
+                self._projection_required_run_ids.add(events[0].run_id)
         try:
             conversation = self._trace_conversation(events) if self.include_content else None
             memory_content = (
@@ -699,13 +722,19 @@ class TextOtelTraceObserver:
                 memory_content=memory_content,
             )
             if spans:
-                self.exporter.export(spans)
+                accepted = self.exporter.export(spans)
+                if accepted is False:
+                    return
         except Exception as exc:
             self._record_error(exc)
             if not self.continue_on_error:
                 raise
             return
         with self._lock:
+            if projection_context is not None:
+                self._projection_context_by_run[events[0].run_id] = (
+                    projection_context
+                )
             self._exported_run_count += 1
 
     def _trace_conversation(self, events: list[TraceEvent]):

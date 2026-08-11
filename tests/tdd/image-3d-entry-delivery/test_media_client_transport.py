@@ -2,7 +2,7 @@ import asyncio
 
 
 def test_media_client_opens_websocket_with_protocol_sized_receive_limit() -> None:
-    from scripts.run_client import (
+    from scripts.media_simulator import (
         AGENT_SERVICE_MAX_MESSAGE_BYTES,
         _open_media_session,
     )

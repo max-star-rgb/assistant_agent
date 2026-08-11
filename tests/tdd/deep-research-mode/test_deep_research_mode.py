@@ -45,7 +45,7 @@ from assistant_agent.workflows.execution import AgentRuntimeWorkItemExecutor
 from assistant_agent.workflows.models import WorkflowSubmission
 from assistant_agent.workflows.research.definition import DeepResearchWorkflowDefinition
 from assistant_agent.workflows.runtime import WorkItemAssignment
-from scripts.run_client import chat_body, parse_console_command
+from scripts.media_simulator import chat_body, parse_console_command
 
 
 class _CapturingCompletions:
@@ -129,7 +129,7 @@ def test_deepseek_v4_flash_uses_its_declared_million_token_input_window() -> Non
     assert config.context_input_token_limit == 1_000_000
 
 
-def test_run_client_deep_command_sets_structured_chat_mode() -> None:
+def test_media_simulator_deep_command_sets_structured_chat_mode() -> None:
     assert parse_console_command("/deep research") == ("mode", "deep_research")
     assert parse_console_command("/standard") == ("mode", "standard")
 
@@ -483,6 +483,7 @@ def test_deep_research_work_items_use_native_search_and_no_local_web_tools(
         {
             "workflow_id": "workflow-sentinel",
             "workflow_type": "deep_research",
+            "workflow_trace_id": "fedcba9876543210fedcba9876543210",
             "definition_version": "2",
             "user_id": "user-sentinel",
             "agent_id": "agent-sentinel",
@@ -508,6 +509,9 @@ def test_deep_research_work_items_use_native_search_and_no_local_web_tools(
     result = executor.execute(assignment)
 
     assert result.status == "succeeded"
+    assert agent_runtime.requests[0].workflow_trace_id == (
+        "fedcba9876543210fedcba9876543210"
+    )
     assert agent_runtime.requests[0].assistant_mode == "deep_research"
     assert agent_runtime.requests[0].allowed_tool_names == []
     assert agent_runtime.requests[0].workflow_inputs == {
@@ -535,6 +539,7 @@ class _ScriptedWorkItemChatAdapter:
 def _deep_research_work_item_request() -> AgentWorkItemRequest:
     return AgentWorkItemRequest(
         workflow_id="workflow-sentinel",
+        workflow_type="deep_research",
         work_item_id="draft-sentinel",
         attempt_id="attempt-sentinel",
         user_id="user-sentinel",

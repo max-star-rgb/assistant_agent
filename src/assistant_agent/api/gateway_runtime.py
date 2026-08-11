@@ -6,6 +6,7 @@ import asyncio
 import math
 import os
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from threading import RLock
 from typing import Any, Literal
@@ -24,7 +25,7 @@ from assistant_agent.gateway.runtime_adapter import GatewayRuntimeAdapter
 from assistant_agent.gateway.runtime_backend import RealtimeAgentBackend
 from assistant_agent.api.models import AgentRunResponse
 from assistant_agent.identity import RequestIdentity
-from assistant_agent.gateway.turn_facade import GatewayTurnFacade
+from assistant_agent.gateway.turn_facade import GatewayTurnFacade, GatewayTurnStream
 from assistant_agent.identifiers import new_prefixed_uuid7
 from assistant_agent.observability.operational_logging import record_gateway_lifecycle
 from assistant_agent.gateway.realtime_turn_arbiter import (
@@ -39,6 +40,8 @@ _GATEWAY_RUNTIME_POOL: GatewayRuntimePool | None = None
 _GATEWAY_RUNTIME_LOOP_ID: int | None = None
 _GATEWAY_HTTP_RESPONSES: dict[str, AgentRunResponse] = {}
 _GATEWAY_HTTP_RESPONSES_LOCK = RLock()
+_GATEWAY_HTTP_STREAMS: dict[str, "_GatewayHttpStreamRegistration"] = {}
+_GATEWAY_HTTP_STREAMS_LOCK = RLock()
 
 GATEWAY_MAX_SESSIONS_ENV = "MULTIMODAL_AGENT_GATEWAY_MAX_SESSIONS"
 GATEWAY_IDLE_TIMEOUT_S_ENV = "MULTIMODAL_AGENT_GATEWAY_IDLE_TIMEOUT_S"
@@ -72,6 +75,13 @@ REALTIME_SEMANTIC_INTERRUPT_MIN_CONFIDENCE_ENV = (
 GATEWAY_HTTP_RESPONSE_CAPTURE_ID = "http_response_capture_id"
 _TRUE_VALUES = {"1", "true", "yes", "on"}
 _FALSE_VALUES = {"0", "false", "no", "off"}
+
+
+@dataclass(frozen=True)
+class _GatewayHttpStreamRegistration:
+    user_id: str
+    session_id: str
+    stream: GatewayTurnStream
 
 
 def get_gateway_session_manager() -> GatewaySessionManager:
@@ -372,6 +382,59 @@ def pop_gateway_http_response(capture_id: str) -> AgentRunResponse | None:
         return _GATEWAY_HTTP_RESPONSES.pop(capture_id, None)
 
 
+def register_gateway_http_stream(
+    *,
+    user_id: str,
+    session_id: str,
+    stream: GatewayTurnStream,
+) -> None:
+    """Register one active HTTP delivery handle by its canonical run id."""
+
+    run_id = stream.correlation.run_id
+    registration = _GatewayHttpStreamRegistration(
+        user_id=user_id,
+        session_id=session_id,
+        stream=stream,
+    )
+    with _GATEWAY_HTTP_STREAMS_LOCK:
+        if run_id in _GATEWAY_HTTP_STREAMS:
+            raise RuntimeError(f"duplicate active HTTP run id: {run_id}")
+        _GATEWAY_HTTP_STREAMS[run_id] = registration
+
+
+def unregister_gateway_http_stream(
+    run_id: str,
+    *,
+    stream: GatewayTurnStream,
+) -> None:
+    """Remove a registration only when the caller owns the same stream handle."""
+
+    with _GATEWAY_HTTP_STREAMS_LOCK:
+        current = _GATEWAY_HTTP_STREAMS.get(run_id)
+        if current is not None and current.stream is stream:
+            _GATEWAY_HTTP_STREAMS.pop(run_id, None)
+
+
+async def cancel_gateway_http_stream(
+    *,
+    run_id: str,
+    user_id: str,
+    session_id: str,
+) -> bool:
+    """Cancel an active HTTP run only for the exact bound identity."""
+
+    with _GATEWAY_HTTP_STREAMS_LOCK:
+        registration = _GATEWAY_HTTP_STREAMS.get(run_id)
+    if (
+        registration is None
+        or registration.user_id != user_id
+        or registration.session_id != session_id
+    ):
+        return False
+    await registration.stream.cancel(source="http", reason="client_cancelled")
+    return True
+
+
 def _capture_gateway_http_response(capture_id: str, response: AgentRunResponse) -> None:
     with _GATEWAY_HTTP_RESPONSES_LOCK:
         _GATEWAY_HTTP_RESPONSES[capture_id] = response
@@ -462,6 +525,8 @@ def reset_gateway_runtime_for_tests() -> None:
 def _clear_gateway_http_responses() -> None:
     with _GATEWAY_HTTP_RESPONSES_LOCK:
         _GATEWAY_HTTP_RESPONSES.clear()
+    with _GATEWAY_HTTP_STREAMS_LOCK:
+        _GATEWAY_HTTP_STREAMS.clear()
 
 
 def _running_loop_id() -> int | None:

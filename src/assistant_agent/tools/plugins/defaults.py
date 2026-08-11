@@ -14,7 +14,7 @@ from assistant_agent.tools.plugins.builtin.skill_loading.plugin import (
 )
 from assistant_agent.tools.plugins.builtin.lodging.plugin import LodgingToolPlugin
 from assistant_agent.tools.plugins.builtin.calendar_weather_contacts.plugin import (
-    CalendarWeatherContactsPlugin,
+    CalendarContactsPlugin,
 )
 from assistant_agent.tools.plugins.builtin.python_execution.plugin import (
     PythonExecutionPlugin,
@@ -44,7 +44,7 @@ def default_tool_plugins() -> tuple[ToolPlugin, ...]:
         VisualImageSearchPlugin(),
         WebsiteGuidancePlugin(),
         ShoppingToolPlugin(),
-        CalendarWeatherContactsPlugin(),
+        CalendarContactsPlugin(),
         ImageGenerationToolPlugin(),
         ImageTo3DToolPlugin(),
         DurableTaskToolPlugin(),

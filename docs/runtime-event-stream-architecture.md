@@ -1,6 +1,6 @@
 # Runtime Event Stream Architecture
 
-Last updated: 2026-08-10
+Last updated: 2026-08-11
 
 ## Authority contract
 
@@ -53,6 +53,14 @@ through `RuntimeEventPublisher`, which creates both projections with the same
 occurrence timestamp and correlation identity. Runtime and Tool code must not
 construct a second lifecycle projection by hand after publishing the fact.
 
+Durable Workflow 的 Plan、quantum、返工和 terminal 生命周期不属于单个 Assistant run，因此其事实源是
+已提交的 `WorkflowEvent`，而不是把它们复制为 `TraceEvent`。可观测 Store decorator 可以 fail-open 地将
+Deep Research ingress 将当前 canonical trace ID 与 `workflow_submit` Tool span ID 持久化到 Workflow；
+每个 work-item 通过 Runtime 执行时仍产生自己的 canonical `AgentEvent/TraceEvent`，并保留
+trace/run/attempt 身份。Runtime 在可信 assignment 边界额外注入 OTel 导出上下文，使提交阶段、Workflow
+和 work-item 的 `agent.runtime` 及其子 observation 导出到同一个 `deep_research.workflow` trace，挂在
+对应 durable 层级下；这不会改写 canonical event 身份，也不会把 Workflow 状态机并入 Assistant loop。
+
 The projections are not one-to-one. Delivery-only facts such as committed text
 deltas remain `AgentEvent` only, while LLM, context, memory, and graph-node
 diagnostics remain `TraceEvent` only. `response.final` is the response-composition
@@ -62,7 +70,8 @@ projection is recorded before `assistant.turn.summary`, while terminal delivery
 is emitted after trace finalization.
 
 Context evidence also has a single owner: `context.build` carries
-`context_report_v2`, while `llm.chat` carries the exact Provider input.
+`context_report_v2`, while the local `llm.chat` content overlay carries the exact
+Provider input and its Langfuse generation carries the equivalent formatted projection.
 `assistant.output` records only the normalized decision and does not duplicate
 either payload. The `agent.runtime` root may retain the scalar
 `context_peak_ratio` as a turn-level diagnostic, but not the full context report.
@@ -134,8 +143,10 @@ Provider-native 联网；`QWEN_CHAT_API_PROTOCOL=openai_compatible` 只作为显
 `deep_research` Workflow work item 使用 run-scoped `provider_search_profile=deep_research`，改为
 `enable_thinking=true`、`search_strategy=max`、`forced_search=true`、
 `enable_search_extension=true`，保留 source/citation 契约且不设置全局 freshness。前台模式提交仍使用
-普通搜索配置，避免在创建 Workflow 前进行一次无意义的研究搜索。DashScope adapter 当前通过同步 HTTP
-聚合一次完整响应；profile 来自结构化请求和可信 Workflow assignment，不根据
+普通搜索配置，避免在创建 Workflow 前进行一次无意义的研究搜索。DashScope adapter 在启用
+`MULTIMODAL_AGENT_NATIVE_PROVIDER_STREAMING` 时使用百炼原生 HTTP SSE：请求携带
+`X-DashScope-SSE: enable` 且设置 `incremental_output=true`，每个增量立即归一化为
+`LLMEvent`；未启用时仍通过同步 HTTP 聚合一次完整响应。profile 来自结构化请求和可信 Workflow assignment，不根据
 自然语言推断。普通请求的默认输出预算为 1024 token；可信 `deep_research` Workflow work item 默认
 使用独立的 8192 token 预算，两者分别可由 `MULTIMODAL_AGENT_CHAT_MAX_TOKENS` 和
 `MULTIMODAL_AGENT_DEEP_RESEARCH_MAX_TOKENS` 覆盖。
@@ -153,7 +164,8 @@ OpenAI-compatible 回退不提供该结构化来源契约。Provider 非工具�
 conversation history、TTS 或 token delta。可点击样式和跳转仍由客户端负责；CLI 只能验证结构化映射，
 不能替代点击交互验收。
 `MULTIMODAL_AGENT_NATIVE_PROVIDER_STREAMING` 只控制 Runtime 是否使用 async-native stream
-consumer；sync-only DashScope adapter 始终走 `ChatAdapter.chat()`。Judge 等显式直接构造且未开启
+consumer；DashScope 的流式终态继续保留 `request_id`、usage 与结构化搜索来源，传输模式记为
+`dashscope_sse`，但不把 vendor 原始 envelope 暴露给客户端。Judge 等显式直接构造且未开启
 `native_web_search` 的辅助 adapter 保持独立的非联网、非流式策略。Other providers remain opt-in through
 `ProviderConfig.native_provider_streaming`. When enabled and the adapter exposes
 `stream_chat()`, `ProviderStreamingTurnRunner` consumes the async stream for one
@@ -173,17 +185,23 @@ response content. 它还记录 route、runtime action、transport mode 与 delta
 critical-path `llm_chat[n]` duration and keep Provider latency as a nested
 diagnostic.
 当本地 OTLP export 开启时，Provider adapter 会在 `llm.chat` span id 下记录传给
-Provider 的完整调用参数，Langfuse generation input 直接使用该对象而不重建字段。
+Provider 的完整调用参数。该原始对象保留在本地 content overlay，作为请求形状的审计证据；
+Langfuse generation input 使用等价的可读投影。OpenAI Chat 形状保持不变，DashScope
+Generation 形状只把 `input.messages`、`parameters.tools` 和 `parameters.tool_choice`
+提升为顶层 `messages`、`tools` 和 `tool_choice`，其余生成、联网和思考参数归入
+`provider_parameters`。投影不改写 message role、Tool schema 或参数值。
 启用 local trace content 后，进程内 debug overlay 还会保存归一化 `ChatResult`；额外设置
 `MULTIMODAL_AGENT_LOCAL_PROVIDER_PROTOCOL_CAPTURE=1` 后，还保存原始 content、原始工具参数字符串、
 finish reason、usage、结构化 search sources 与流式事件计数组成的协议语义快照。Langfuse generation output 使用
 assistant message 展示 Provider 的原始语义回复（正文、工具调用或拒绝），
-generation input 保留 SDK 调用的原始 messages/tools/生成参数、stream 和 Provider 特有参数，
-不为展示虚构 message role；finish reason 保留在 trace/协议快照，
+generation input 保留 SDK 调用的 messages/tools 语义以及生成、stream 和 Provider 特有参数，
+并按上述 Provider-neutral 形状支持 Langfuse formatted renderer，不为展示虚构 message role；
+finish reason 保留在 trace/协议快照，
 usage、route 与 transport 保留在诊断字段，都不拼接到 output 文本。默认 trace event
 和 `.data/graph_trace.jsonl` 仍只保存安全摘要，vendor SDK response envelope、HTTP header、stream
 chunk body 与 hidden reasoning 不进入 debug store。
-Qwen 的隐式搜索与网页抓取表现为 generation input 中的 `enable_search/search_options`、Provider
+Qwen 的隐式搜索与网页抓取表现为 generation input 中的
+`provider_parameters.enable_search/search_options`、Provider
 最终语义回复和 DashScope 返回的来源；Runtime 不为其制造 `tool.started/tool.finished`，也不增加
 `tool_count`。
 普通前台调用不设置 `response_format`，系统提示词也不要求终态 JSON；因此一次非工具终态只对应
@@ -275,14 +293,15 @@ Durable Workflow 使用相同的分离原则，但事件事实源是 `WorkflowSt
 
 - `GET /workflows/{workflow_id}/events?after=<cursor>` 先经 `WorkflowService` 做 `user_id + agent_id`
   校验，再读取事务内与 revision 一起提交的 `WorkflowEvent`；
-- 前台 `workflow_submit` run 在返回 handle 后结束，本身不 tail 后台事件；本地 `run_client.py` 可在
+- 前台 `workflow_submit` run 在返回 handle 后结束，本身不 tail 后台事件；本地 `media_simulator.py` 可在
   前台终包后另开 identity-scoped HTTP pull 窗口，按 cursor 观察同一 Workflow，但不延长或重新打开
   ingress Gateway run；
 - 提交 Tool 的受信 handoff 会直接形成短终态回复，不进行第二次 Provider 调用。后台 plan 创建后，
   status facade 只从持久化当前 item 的 `display_title`、状态和完成数投影产品 `progress`；原始事件
   仍是诊断事实，但不是默认产品文案；
-- 每个语义 work item 都产生独立 `AgentGraphRuntime` run/trace，Workflow event 通过
-  `workflow_id/work_item_id/attempt` 关联，不伪装成同一个超长 run；
+- 每个语义 work item 都产生独立 `AgentGraphRuntime` canonical run/trace，Workflow event 通过
+  `workflow_id/work_item_id/attempt` 关联；Deep Research 的 OTel/Langfuse 投影复用持久化的 ingress
+  trace ID，但不把多个 canonical run 伪装成同一个 Runtime run；
 - waiting-input、cancel、retry、local plan revision 和 terminal 都是持久事件；客户端断线只丢失
   临时观察窗口，使用 cursor 可重放；
 - 当前 HTTP facade 是 pull/replay，不建立长期 WebSocket producer，也不把消费者速度耦合到 worker。

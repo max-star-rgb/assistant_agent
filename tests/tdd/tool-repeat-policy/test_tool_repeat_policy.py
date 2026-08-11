@@ -27,7 +27,6 @@ from assistant_agent.tools.plugins.builtin.calendar_weather_contacts.tools impor
     CalendarCreateTool,
     CalendarSearchTool,
     ContactsSearchTool,
-    WeatherTool,
 )
 from assistant_agent.tools.plugins.builtin.durable_task.tool import TaskPlanSubmitTool
 from assistant_agent.tools.plugins.builtin.email_access.tools import (
@@ -197,7 +196,6 @@ def test_decorated_tool_projects_an_explicit_repeat_policy() -> None:
 @pytest.mark.parametrize(
     ("tool_type", "expected"),
     [
-        (WeatherTool, "distinct_inputs"),
         (CalendarSearchTool, "distinct_inputs"),
         (CalendarCreateTool, "distinct_inputs"),
         (ContactsSearchTool, "distinct_inputs"),

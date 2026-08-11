@@ -14,6 +14,7 @@ from assistant_agent.runtime.chat_adapter import (
     ChatResult,
     ProviderProtocolResponse,
     ProviderProtocolToolCall,
+    ProviderSearchSource,
 )
 
 
@@ -37,6 +38,7 @@ class ProviderStreamingTurnRunner:
         provider = str(getattr(adapter, "provider", "unknown") or "unknown")
         model = getattr(adapter, "model", None)
         refusal: str | None = None
+        terminal_metadata: dict[str, Any] = {}
         terminal_seen = False
         token_delta_count = 0
         tool_call_delta_count = 0
@@ -67,6 +69,7 @@ class ProviderStreamingTurnRunner:
                 reasoning_delta_count += 1
             elif event.event_type == "completed":
                 terminal_seen = True
+                terminal_metadata = dict(event.metadata)
                 raw_refusal = event.metadata.get("refusal")
                 if isinstance(raw_refusal, str) and raw_refusal:
                     refusal = raw_refusal
@@ -89,6 +92,9 @@ class ProviderStreamingTurnRunner:
         response_text = accumulator.response_text
         tool_calls = accumulator.finalize_tool_calls(provider_format="openai_compatible")
         result_provider = accumulator.provider or provider
+        search_sources = _provider_search_sources(
+            terminal_metadata.get("provider_search_sources")
+        )
         result = ChatResult(
             response_text=response_text,
             tool_calls=tool_calls,
@@ -98,10 +104,13 @@ class ProviderStreamingTurnRunner:
             provider=result_provider,
             model=accumulator.model or model,
             usage=accumulator.usage,
+            search_sources=search_sources,
             latency_ms=_elapsed_ms(started_at),
             output_ref=f"provider://chat/{result_provider}",
             protocol_response=ProviderProtocolResponse(
-                transport_mode="provider_stream",
+                transport_mode=str(
+                    terminal_metadata.get("transport_mode") or "provider_stream"
+                ),
                 content=response_text,
                 tool_calls=[
                     ProviderProtocolToolCall(
@@ -119,6 +128,10 @@ class ProviderStreamingTurnRunner:
                 refusal=refusal,
                 finish_reason=accumulator.finish_reason,
                 usage=accumulator.usage,
+                search_sources=search_sources,
+                provider_request_id=_optional_string(
+                    terminal_metadata.get("provider_request_id")
+                ),
                 token_delta_count=token_delta_count,
                 tool_call_delta_count=tool_call_delta_count,
                 reasoning_delta_count=reasoning_delta_count,
@@ -143,6 +156,23 @@ class ProviderStreamingTurnRunner:
                 ]
             }
         )
+
+
+def _provider_search_sources(value: Any) -> list[ProviderSearchSource]:
+    if not isinstance(value, list):
+        return []
+    sources: list[ProviderSearchSource] = []
+    for item in value:
+        try:
+            source = ProviderSearchSource.model_validate(item)
+        except (TypeError, ValueError):
+            continue
+        sources.append(source)
+    return sources
+
+
+def _optional_string(value: Any) -> str | None:
+    return value if isinstance(value, str) and value else None
 
 
 def _emit_token_delta_callback(request: ChatRequest, event: LLMEvent) -> None:

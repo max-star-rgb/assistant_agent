@@ -1,111 +1,18 @@
-"""Schemas for personal assistant calendar, contacts, and weather."""
+"""Schemas for personal assistant calendar and contacts."""
 
 from __future__ import annotations
 
-from datetime import date
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 
 
-class CalendarWeatherContactsProviderError(BaseModel):
-    """Provider boundary error for calendar, weather, and contacts adapters."""
+class CalendarContactsProviderError(BaseModel):
+    """Provider boundary error for calendar and contacts adapters."""
 
     code: str = Field(min_length=1)
     message: str = Field(min_length=1)
     recoverable: bool = False
-
-
-class WeatherRequest(BaseModel):
-    """天气查询输入。"""
-
-    location: str = Field(
-        min_length=1,
-        description="城市或区县；用户未提供时先追问。",
-    )
-    target_date: str | None = Field(
-        default=None,
-        description="日期 YYYY-MM-DD 或最长7天的闭区间 YYYY-MM-DD/YYYY-MM-DD。",
-    )
-    units: Literal["metric"] = "metric"
-
-    @field_validator("location", mode="before")
-    @classmethod
-    def _normalize_location(cls, value: Any) -> Any:
-        if isinstance(value, str):
-            return value.strip()
-        return value
-
-    @field_validator("target_date", mode="before")
-    @classmethod
-    def _normalize_target_date(cls, value: Any) -> Any:
-        if value is None:
-            return None
-        if isinstance(value, date):
-            return value.isoformat()
-        if not isinstance(value, str):
-            return value
-        start_date, end_date = _parse_weather_date_range(value.strip())
-        if start_date == end_date:
-            return start_date.isoformat()
-        return f"{start_date.isoformat()}/{end_date.isoformat()}"
-
-    @property
-    def date_range(self) -> tuple[date, date]:
-        if self.target_date is None:
-            today = date.today()
-            return today, today
-        return _parse_weather_date_range(self.target_date)
-
-    @property
-    def days(self) -> int:
-        start_date, end_date = self.date_range
-        return (end_date - start_date).days + 1
-
-
-def _parse_weather_date_range(value: str) -> tuple[date, date]:
-    parts = value.split("/")
-    if len(parts) not in {1, 2} or any(not part for part in parts):
-        raise ValueError(
-            "target_date must be YYYY-MM-DD or YYYY-MM-DD/YYYY-MM-DD"
-        )
-    try:
-        start_date = date.fromisoformat(parts[0])
-        end_date = date.fromisoformat(parts[-1])
-    except ValueError as exc:
-        raise ValueError(
-            "target_date must be YYYY-MM-DD or YYYY-MM-DD/YYYY-MM-DD"
-        ) from exc
-    if end_date < start_date:
-        raise ValueError("target_date range end must not be before start")
-    if (end_date - start_date).days >= 7:
-        raise ValueError("target_date range must not exceed 7 days")
-    return start_date, end_date
-
-
-class WeatherForecast(BaseModel):
-    """One weather forecast item."""
-
-    date: str = Field(min_length=1)
-    condition: str = Field(min_length=1)
-    temperature_c: int
-    high_c: int | None = None
-    low_c: int | None = None
-    precipitation_chance: float | None = Field(default=None, ge=0, le=1)
-
-
-class WeatherResult(BaseModel):
-    """Weather lookup result."""
-
-    success: bool
-    location: str = Field(min_length=1)
-    query_used: str = Field(min_length=1)
-    forecast: list[WeatherForecast] = Field(default_factory=list)
-    summary: str | None = None
-    provider: str = "mock"
-    latency_ms: int = Field(default=1, ge=0)
-    output_ref: str = Field(min_length=1)
-    errors: list[dict[str, object]] = Field(default_factory=list)
 
 
 class CalendarSearchRequest(BaseModel):

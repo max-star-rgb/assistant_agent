@@ -23,32 +23,27 @@ MCP_CONFIG_PATH_ENV = "MULTIMODAL_AGENT_MCP_CONFIG_PATH"
 DEFAULT_MCP_CONFIG_PATH = ".local/mcp_servers.json"
 MCPTransport = Literal["stdio"]
 MCPServerPreset = Literal["google_workspace", "todoist", "notion", "slack"]
-MCPPersonalAssistantAdapterProfile = Literal[
-    "passthrough",
-    "mcp_weather_server_v1",
-    "workspace_mcp_v1",
-]
+MCPCalendarAdapterProfile = Literal["passthrough", "workspace_mcp_v1"]
 MCPEmailAdapterProfile = Literal["passthrough", "workspace_mcp_v1"]
 _PARENT_ENV_REFERENCE = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$")
 
 
 class MCPPersonalAssistantToolMapping(BaseModel):
-    """Map stable personal assistant tools to provider-specific MCP tools."""
+    """Map stable calendar and contacts tools to provider-specific MCP tools."""
 
-    weather_lookup: str | None = None
+    weather_lookup: str | None = Field(
+        default=None,
+        exclude=True,
+        description="Deprecated weather mapping retained only for registration suppression.",
+    )
     calendar_search: str | None = None
     calendar_create: str | None = None
     contacts_search: str | None = None
-    weather_profile: MCPPersonalAssistantAdapterProfile = "passthrough"
-    calendar_profile: MCPPersonalAssistantAdapterProfile = "passthrough"
+    calendar_profile: MCPCalendarAdapterProfile = "passthrough"
     calendar_user_email: str | None = None
 
     @model_validator(mode="after")
     def validate_adapter_profiles(self) -> "MCPPersonalAssistantToolMapping":
-        if self.weather_profile == "mcp_weather_server_v1" and self.weather_lookup != "get_weather_byDateTimeRange":
-            raise ValueError(
-                "mcp_weather_server_v1 requires weather_lookup=get_weather_byDateTimeRange"
-            )
         if self.calendar_profile == "workspace_mcp_v1":
             if self.calendar_search and self.calendar_search != "get_events":
                 raise ValueError("workspace_mcp_v1 requires calendar_search=get_events")

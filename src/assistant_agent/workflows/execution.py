@@ -64,6 +64,8 @@ class AgentRuntimeWorkItemExecutor:
         )
         result = self.agent_runtime.run_work_item(AgentWorkItemRequest(
             workflow_id=assignment.workflow_id,
+            workflow_type=assignment.workflow_type,
+            workflow_trace_id=assignment.workflow_trace_id,
             work_item_id=assignment.work_item.work_item_id,
             attempt_id=assignment.attempt_id,
             user_id=assignment.user_id,
@@ -106,6 +108,8 @@ class AgentRuntimeWorkItemExecutor:
                 repair_work_item_ids=list(result.repair_work_item_ids),
                 model_calls_used=result.model_calls_used,
                 tool_calls_used=result.tool_calls_used,
+                assistant_trace_id=result.trace_id,
+                assistant_run_id=result.run_id,
             )
         if result.status == "blocked":
             return WorkItemExecutionResult(
@@ -117,6 +121,8 @@ class AgentRuntimeWorkItemExecutor:
                 },
                 model_calls_used=result.model_calls_used,
                 tool_calls_used=result.tool_calls_used,
+                assistant_trace_id=result.trace_id,
+                assistant_run_id=result.run_id,
             )
         if result.status == "failed":
             return WorkItemExecutionResult(
@@ -125,6 +131,8 @@ class AgentRuntimeWorkItemExecutor:
                 error_code=result.error_code or "agent_work_item_failed",
                 model_calls_used=result.model_calls_used,
                 tool_calls_used=result.tool_calls_used,
+                assistant_trace_id=result.trace_id,
+                assistant_run_id=result.run_id,
             )
         artifact = self.artifact_store.write_text(
             identity=identity,
@@ -139,4 +147,6 @@ class AgentRuntimeWorkItemExecutor:
             artifact_refs=[artifact.uri],
             model_calls_used=result.model_calls_used,
             tool_calls_used=result.tool_calls_used,
+            assistant_trace_id=result.trace_id,
+            assistant_run_id=result.run_id,
         )

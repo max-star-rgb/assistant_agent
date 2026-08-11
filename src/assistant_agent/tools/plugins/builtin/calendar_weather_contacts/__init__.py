@@ -1,1 +1,1 @@
-"""Calendar, weather, and contacts Tool plugin."""
+"""Calendar and contacts Tool plugin."""

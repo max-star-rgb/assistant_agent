@@ -45,7 +45,15 @@ from assistant_agent.runtime.requests import (
 )
 from assistant_agent.runtime.generated_artifacts import with_generated_artifact_delivery
 from assistant_agent.multi_agent.models import DEFAULT_AGENT_ID
-from assistant_agent.observability.trace_context import RuntimeTraceContext
+from assistant_agent.observability.trace_context import (
+    RuntimeExportTraceContext,
+    RuntimeTraceContext,
+)
+from assistant_agent.observability.workflow_otel import (
+    create_workflow_otel_observer_from_env,
+    workflow_attempt_span_id,
+)
+from assistant_agent.observability.otel_mapping import langfuse_trace_id
 from assistant_agent.tools.models import ToolResult, ToolSpec
 from assistant_agent.media.agent_service_entry import is_trusted_agent_service_request
 from assistant_agent.runtime.event_sink import EventSink
@@ -54,6 +62,7 @@ from assistant_agent.automation.durable_tasks.sqlite_store import SQLiteTaskStor
 from assistant_agent.workflows.artifacts import LocalWorkflowArtifactStore
 from assistant_agent.workflows.builtin import default_workflow_definitions
 from assistant_agent.workflows.service import WorkflowService
+from assistant_agent.workflows.observed_store import ObservedWorkflowStore
 from assistant_agent.workflows.sqlite_store import SQLiteWorkflowStore
 from assistant_agent.runtime.chat_adapter import ChatAdapter, ChatRequest, ChatResult, create_chat_adapter
 from assistant_agent.runtime.checkpointer import create_checkpointer
@@ -85,6 +94,11 @@ from assistant_agent.context.soul_source import (
     SOUL_COMPILED_MAX_CHARS,
     SOUL_SOURCE_ID,
     SoulContextSource,
+)
+from assistant_agent.context.user_profile_source import (
+    USER_PROFILE_COMPILED_MAX_CHARS,
+    USER_PROFILE_SOURCE_ID,
+    UserProfileContextSource,
 )
 from assistant_agent.context.sources import (
     ContextSourceCoordinator,
@@ -238,10 +252,20 @@ class AgentGraphRuntime:
         self.workflow_service = workflow_service
         self.workflow_artifact_store = workflow_artifact_store
         if self.config.durable_workflows_enabled:
-            self.workflow_service = self.workflow_service or WorkflowService(
-                store=SQLiteWorkflowStore(self.config.durable_workflow_path),
-                definitions=default_workflow_definitions(),
-            )
+            if self.workflow_service is None:
+                workflow_store = SQLiteWorkflowStore(
+                    self.config.durable_workflow_path
+                )
+                workflow_observer = create_workflow_otel_observer_from_env()
+                if workflow_observer is not None:
+                    workflow_store = ObservedWorkflowStore(
+                        inner=workflow_store,
+                        observer=workflow_observer,
+                    )
+                self.workflow_service = WorkflowService(
+                    store=workflow_store,
+                    definitions=default_workflow_definitions(),
+                )
             self.workflow_artifact_store = (
                 self.workflow_artifact_store
                 or LocalWorkflowArtifactStore(self.config.durable_workflow_artifact_path)
@@ -443,7 +467,7 @@ class AgentGraphRuntime:
         )
         self.checkpointer = checkpointer if checkpointer is not None else create_checkpointer(self.config)
         self.context_source_coordinator = context_source_coordinator or ContextSourceCoordinator(
-            [SoulContextSource()]
+            [SoulContextSource(), UserProfileContextSource()]
         )
         self.tool_executor = ToolExecutor(
             registry=self.registry,
@@ -549,7 +573,23 @@ class AgentGraphRuntime:
                 },
             },
         )
-        state = self.run_state(user_request)
+        state = self.run_state(
+            user_request,
+            export_trace_context=RuntimeExportTraceContext(
+                export_trace_id=(
+                    assignment.workflow_trace_id
+                    or langfuse_trace_id(assignment.workflow_id)
+                ),
+                export_parent_span_id=workflow_attempt_span_id(
+                    assignment.workflow_id,
+                    assignment.attempt_id,
+                ),
+                export_trace_name=f"{assignment.workflow_type}.workflow",
+                workflow_id=assignment.workflow_id,
+                work_item_id=assignment.work_item_id,
+                attempt_id=assignment.attempt_id,
+            ),
+        )
         if state.status == "completed" and state.response is not None:
             status = "succeeded"
             summary = state.response.message
@@ -603,6 +643,7 @@ class AgentGraphRuntime:
             return parse_work_item_response(
                 summary,
                 run_id=state.run_id,
+                trace_id=state.trace_id,
                 artifact_refs=artifact_refs,
                 model_calls_used=model_calls_used,
                 tool_calls_used=len(state.tool_calls),
@@ -611,6 +652,7 @@ class AgentGraphRuntime:
         return AgentWorkItemResult(
             status=status,
             run_id=state.run_id,
+            trace_id=state.trace_id,
             summary=summary,
             error_code=(
                 "provider_context_overflow"
@@ -631,6 +673,7 @@ class AgentGraphRuntime:
         event_sink: EventSink | None = None,
         cancel_token: Any | None = None,
         trace_context: RuntimeTraceContext | None = None,
+        export_trace_context: RuntimeExportTraceContext | None = None,
         run_id: str | None = None,
     ) -> AgentState:
         """Run the graph and return the full state for compatibility callers.
@@ -652,6 +695,7 @@ class AgentGraphRuntime:
                 event_sink=event_sink,
                 cancel_token=cancel_token,
                 trace_context=trace_context,
+                export_trace_context=export_trace_context,
                 run_id=effective_run_id,
             )
         finally:
@@ -666,6 +710,7 @@ class AgentGraphRuntime:
         event_sink: EventSink | None = None,
         cancel_token: Any | None = None,
         trace_context: RuntimeTraceContext | None = None,
+        export_trace_context: RuntimeExportTraceContext | None = None,
         run_id: str | None = None,
     ) -> AgentState:
         """Execute one run while the Host retains its frozen Memory context."""
@@ -728,8 +773,11 @@ class AgentGraphRuntime:
                 local_owner_user_id=self.config.editable_context_user_id,
                 provider_mode=self.config.provider_mode,
                 editable_context_enabled=self.config.editable_context_enabled,
-                section_char_budgets={"soul": SOUL_COMPILED_MAX_CHARS},
-                enabled_source_ids={SOUL_SOURCE_ID},
+                section_char_budgets={
+                    SOUL_SOURCE_ID: SOUL_COMPILED_MAX_CHARS,
+                    USER_PROFILE_SOURCE_ID: USER_PROFILE_COMPILED_MAX_CHARS,
+                },
+                enabled_source_ids={SOUL_SOURCE_ID, USER_PROFILE_SOURCE_ID},
             )
         )
         run_started_at = perf_counter()
@@ -745,6 +793,7 @@ class AgentGraphRuntime:
                 else None
             ),
             execution_engine="langgraph_assistant_loop",
+            export_trace_context=export_trace_context,
         )
         runtime_event_publisher.deliver_run_started(run_started_fact)
         if self.run_history is not None:

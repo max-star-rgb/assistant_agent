@@ -51,6 +51,8 @@ async def run_media_console(
     stream: bool = False,
     chat_progress: bool = False,
     chat_response_ack: bool = False,
+    citations: bool = False,
+    citation_debug: bool = False,
     interactive: bool = False,
     workflow_details: bool = False,
 ) -> int:
@@ -63,7 +65,7 @@ async def run_media_console(
     try:
         import websockets
     except ImportError as exc:  # pragma: no cover - optional operator dependency.
-        raise RuntimeError("Install websockets to use scripts/run_client.py") from exc
+        raise RuntimeError("Install websockets to use scripts/media_simulator.py") from exc
 
     current_session_id = session_id or new_session_id()
     websocket = await _open_media_session(
@@ -75,6 +77,7 @@ async def run_media_console(
         model_name=model_name,
         chat_progress=chat_progress,
         chat_response_ack=chat_response_ack,
+        citations=citations,
     )
     chat_counter = 0
     assistant_mode = "standard"
@@ -90,6 +93,7 @@ async def run_media_console(
                     session_id=current_session_id,
                     stream=stream,
                     chat_response_ack=chat_response_ack,
+                    citation_debug=citation_debug,
                     assistant_mode=assistant_mode,
                 )
             except websockets.exceptions.ConnectionClosed as exc:
@@ -107,6 +111,7 @@ async def run_media_console(
                         model_name=model_name,
                         chat_progress=chat_progress,
                         chat_response_ack=chat_response_ack,
+                        citations=citations,
                     )
                 except Exception as reconnect_exc:
                     _print_reconnect_error(reconnect_exc)
@@ -160,6 +165,7 @@ async def run_media_console(
                     model_name=model_name,
                     chat_progress=chat_progress,
                     chat_response_ack=chat_response_ack,
+                    citations=citations,
                 )
                 chat_counter = 0
                 print(f"Opened session {current_session_id}.", flush=True)
@@ -179,6 +185,7 @@ async def run_media_console(
                     session_id=current_session_id,
                     stream=stream,
                     chat_response_ack=chat_response_ack,
+                    citation_debug=citation_debug,
                     assistant_mode=assistant_mode,
                 )
             except websockets.exceptions.ConnectionClosed as exc:
@@ -194,6 +201,7 @@ async def run_media_console(
                         model_name=model_name,
                         chat_progress=chat_progress,
                         chat_response_ack=chat_response_ack,
+                        citations=citations,
                     )
                 except Exception as reconnect_exc:
                     _print_reconnect_error(reconnect_exc)
@@ -227,6 +235,7 @@ async def _open_media_session(
     model_name: str | None,
     chat_progress: bool,
     chat_response_ack: bool,
+    citations: bool = False,
 ) -> Any:
     url = agent_service_ws_url(server, session_id=session_id)
     websocket = await websockets_module.connect(
@@ -243,6 +252,7 @@ async def _open_media_session(
                     model_name=model_name,
                     chat_progress=chat_progress,
                     chat_response_ack=chat_response_ack,
+                    citations=citations,
                 ),
                 session_id=session_id,
             ),
@@ -274,6 +284,7 @@ async def _send_chat_and_print_responses(
     session_id: str | None,
     stream: bool,
     chat_response_ack: bool,
+    citation_debug: bool = False,
     assistant_mode: str = "standard",
 ) -> MediaChatOutcome:
     await websocket.send(
@@ -330,6 +341,8 @@ async def _send_chat_and_print_responses(
             print(description, flush=True)
         elif printed_response_text:
             print(flush=True)
+        if citation_debug:
+            _print_citation_sources(body)
         status = _intent_status(body)
         return MediaChatOutcome(
             ok=status != "FAIL",
@@ -748,13 +761,14 @@ def assistant_control_body(
     model_name: str | None,
     chat_progress: bool,
     chat_response_ack: bool,
+    citations: bool = False,
 ) -> JsonObject:
     body: JsonObject = {
         "number": user_number,
         "callType": call_type,
         "clientInfo": {
-            "clientType": "run_client",
-            "clientName": "scripts/run_client.py",
+            "clientType": "media_simulator",
+            "clientName": "scripts/media_simulator.py",
         },
     }
     if model_name:
@@ -764,6 +778,8 @@ def assistant_control_body(
         capabilities["chatProgress"] = True
     if chat_response_ack:
         capabilities["chatResponseAck"] = True
+    if citations:
+        capabilities["urlCitationAnnotationsV1"] = True
     if capabilities:
         body["clientCapabilities"] = capabilities
     return body
@@ -849,6 +865,27 @@ def chat_response_error(body: JsonObject) -> str | None:
     return str(message)
 
 
+def _print_citation_sources(body: JsonObject) -> None:
+    message = body.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    intent_result = content.get("intentResult") if isinstance(content, dict) else None
+    annotations = intent_result.get("annotations") if isinstance(intent_result, dict) else None
+    if not isinstance(annotations, list):
+        return
+    seen: set[str] = set()
+    for item in annotations:
+        if not isinstance(item, dict):
+            continue
+        source_id = str(item.get("source_id") or "")
+        if not source_id or source_id in seen:
+            continue
+        seen.add(source_id)
+        marker = source_id.removeprefix("source_")
+        title = str(item.get("title") or "source")
+        url = str(item.get("url") or "")
+        print(f"source [{marker}] {title} {url}", flush=True)
+
+
 def print_json(value: JsonObject) -> None:
     print(json.dumps(value, ensure_ascii=False), flush=True)
 
@@ -886,7 +923,7 @@ def _print_reconnect_error(exc: BaseException) -> None:
 
 
 def new_session_id() -> str:
-    return new_prefixed_uuid7("media-client", separator="-")
+    return new_prefixed_uuid7("media-simulator", separator="-")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -908,6 +945,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--chat-response-ack",
         action="store_true",
         help="Negotiate and send application-level chatResponseAck packets.",
+    )
+    parser.add_argument(
+        "--citations",
+        action="store_true",
+        help="Negotiate URL citation annotations for the simulated media client.",
+    )
+    parser.add_argument(
+        "--citation-debug",
+        action="store_true",
+        help="Print citation source diagnostics; also enables citation negotiation.",
     )
     parser.add_argument(
         "--interactive",
@@ -935,6 +982,8 @@ def main(argv: list[str] | None = None) -> int:
             stream=args.stream,
             chat_progress=args.chat_progress,
             chat_response_ack=args.chat_response_ack,
+            citations=args.citations or args.citation_debug,
+            citation_debug=args.citation_debug,
             interactive=args.interactive or args.text is None,
             workflow_details=args.workflow_details,
         )

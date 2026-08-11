@@ -22,7 +22,7 @@ _TERMINAL_EVENTS = {
     "run.cancelled": "cancelled",
 }
 _CLIENT_TYPES = frozenset(
-    {"api", "cli", "gateway", "media_agent", "run_client", "unknown"}
+    {"api", "cli", "gateway", "media_agent", "media_simulator", "unknown"}
 )
 
 
@@ -43,7 +43,7 @@ class AssistantTurnSummary(BaseModel):
         "cli",
         "gateway",
         "media_agent",
-        "run_client",
+        "media_simulator",
         "unknown",
     ] = "unknown"
     terminal_status: Literal["completed", "failed", "cancelled", "unknown"] = "unknown"
@@ -289,8 +289,8 @@ def normalize_client_type(value: Any, *, default: str = "unknown") -> Any:
     """Normalize client type to the small public enum."""
 
     token = str(value or default).strip().lower().replace("-", "_").replace(".", "_")
-    if token == "scripts/run_client_py":
-        token = "run_client"
+    if token == "scripts/media_simulator_py":
+        token = "media_simulator"
     return token if token in _CLIENT_TYPES else default
 
 

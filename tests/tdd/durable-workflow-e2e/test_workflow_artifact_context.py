@@ -151,6 +151,7 @@ def test_agent_graph_runtime_exposes_bounded_work_item_entry() -> None:
     runtime = AgentGraphRuntime(config=ProviderConfig())
     request = AgentWorkItemRequest(
         workflow_id="workflow-sentinel",
+        workflow_type="long_horizon",
         work_item_id="step-sentinel",
         attempt_id="attempt-sentinel",
         user_id="user-sentinel",

@@ -79,6 +79,8 @@ class WorkflowService:
         identity: RequestIdentity,
         ingress_run_id: str,
         submission: WorkflowSubmission,
+        ingress_trace_id: str | None = None,
+        ingress_parent_span_id: str | None = None,
     ) -> WorkflowBundle:
         if identity.session_id is None or not ingress_run_id:
             raise WorkflowSubmissionRejected("trusted session and run identity are required")
@@ -103,6 +105,8 @@ class WorkflowService:
                 agent_id=identity.agent_id,
                 session_id=identity.session_id,
                 ingress_run_id=ingress_run_id,
+                ingress_trace_id=ingress_trace_id,
+                ingress_parent_span_id=ingress_parent_span_id,
                 idempotency_key=submission.idempotency_key,
                 submission_digest=digest,
                 objective=submission.objective,

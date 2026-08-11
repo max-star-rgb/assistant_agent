@@ -1,6 +1,6 @@
 """Stable external API protocol schemas."""
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -95,6 +95,20 @@ class AgentRunResponse(BaseModel):
     current_stage: str | None = None
     blocked_reason: str | None = None
     errors: list[ApiError] = Field(default_factory=list)
+
+
+class AgentRunCancelRequest(BaseModel):
+    """Identity-bound request to cancel one active HTTP/SSE run."""
+
+    user_id: str = Field(min_length=1)
+    session_id: str = Field(min_length=1)
+
+
+class AgentRunCancelResponse(BaseModel):
+    """Acknowledgement that cancellation reached the active Gateway stream."""
+
+    run_id: str = Field(min_length=1)
+    status: Literal["cancel_requested"] = "cancel_requested"
 
 
 class DurableTaskResponse(BaseModel):

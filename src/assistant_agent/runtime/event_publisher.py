@@ -16,6 +16,7 @@ from assistant_agent.observability.trace_store import (
 from assistant_agent.runtime.event_sink import EventSink
 from assistant_agent.runtime.events import AgentEvent
 from assistant_agent.runtime.state import AgentState
+from assistant_agent.observability.trace_context import RuntimeExportTraceContext
 
 
 RunTerminalStatus = Literal["completed", "failed", "cancelled"]
@@ -33,6 +34,7 @@ class RunStartedFact:
     state: AgentState
     parent_span_id: str | None
     execution_engine: str
+    export_trace_context: RuntimeExportTraceContext | None = None
     occurred_at: datetime = field(default_factory=_now)
 
 
@@ -158,6 +160,13 @@ class RuntimeEventPublisher:
         """Record the run-start trace projection in runtime order."""
 
         state = fact.state
+        attributes = {
+            "execution_strategy": state.execution_strategy,
+            "execution_engine": fact.execution_engine,
+            "assistant_mode": state.request.assistant_mode,
+        }
+        if fact.export_trace_context is not None:
+            attributes.update(fact.export_trace_context.model_dump(mode="python"))
         self._append_trace(
             TraceEvent(
                 trace_id=state.trace_id,
@@ -170,10 +179,7 @@ class RuntimeEventPublisher:
                 span_id=new_span_id(),
                 parent_span_id=fact.parent_span_id,
                 status="started",
-                attributes={
-                    "execution_strategy": state.execution_strategy,
-                    "execution_engine": fact.execution_engine,
-                },
+                attributes=attributes,
                 created_at=fact.occurred_at,
             )
         )

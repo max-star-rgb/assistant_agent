@@ -179,7 +179,7 @@ def build_assistant_context_pack(
     unbudgeted_context_sections = [
         section
         for section in state.context_source_result.sections
-        if section.kind == "soul" and not section.sensitive
+        if section.kind in {"soul", "user_profile"} and not section.sensitive
     ] + skill_context_sections
     unbudgeted_report = _budget_report(
         request=active_request,

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
+from datetime import datetime
 from typing import Literal, Protocol, TypedDict
 from uuid import uuid4
 
@@ -28,6 +29,10 @@ class WorkItemAssignment(BaseModel):
 
     workflow_id: str
     workflow_type: str
+    workflow_trace_id: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{32}$",
+    )
     definition_version: str
     user_id: str
     agent_id: str
@@ -60,6 +65,10 @@ class WorkItemExecutionResult(BaseModel):
     repair_work_item_ids: list[str] = Field(default_factory=list, max_length=64)
     model_calls_used: int = Field(default=0, ge=0)
     tool_calls_used: int = Field(default=0, ge=0)
+    assistant_trace_id: str | None = None
+    assistant_run_id: str | None = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
 
 
 class WorkItemExecutor(Protocol):
@@ -171,6 +180,7 @@ class WorkflowRuntime:
         assignment = WorkItemAssignment(
             workflow_id=bundle.workflow.workflow_id,
             workflow_type=bundle.workflow.workflow_type,
+            workflow_trace_id=bundle.workflow.ingress_trace_id,
             definition_version=bundle.workflow.definition_version,
             user_id=bundle.workflow.user_id,
             agent_id=bundle.workflow.agent_id,
@@ -192,6 +202,7 @@ class WorkflowRuntime:
             ),
             work_item=work_item.model_copy(deep=True),
         )
+        started_at = self.clock()
         try:
             result = self.work_item_executor.execute(assignment)
         except Exception as exc:
@@ -199,6 +210,9 @@ class WorkflowRuntime:
                 status="retryable_failed",
                 error_code=_executor_error_code(exc),
             )
+        result = result.model_copy(
+            update={"started_at": started_at, "finished_at": self.clock()}
+        )
         return {"attempt_id": attempt_id, "execution_result": result}
 
     def _terminalize(self, state: WorkflowGraphState) -> WorkflowGraphState:
@@ -238,6 +252,7 @@ class WorkflowRuntime:
         events = list(state.get("pending_events", []))
         selected_id = state.get("selected_work_item_id", "")
         result = state.get("execution_result")
+        attempt_id = state.get("attempt_id")
         if result is not None:
             item = self._work_item(bundle, selected_id)
             item.attempt_count += 1
@@ -257,7 +272,15 @@ class WorkflowRuntime:
             )
             if result.status == "succeeded":
                 item.status = "succeeded"
-                events.append(self._item_event(bundle, item, "workflow.work_item.succeeded"))
+                events.append(
+                    self._item_event(
+                        bundle,
+                        item,
+                        "workflow.work_item.succeeded",
+                        attempt_id=attempt_id,
+                        result=result,
+                    )
+                )
                 self._refresh_ready_items(bundle)
                 if all(
                     candidate.status in {"succeeded", "skipped", "superseded"}
@@ -281,7 +304,15 @@ class WorkflowRuntime:
                     workflow.phase = "failed"
                     workflow.terminal_reason_code = "repair_scope_missing"
                     workflow.terminal_at = self.clock()
-                    events.append(self._item_event(bundle, item, "workflow.failed"))
+                    events.append(
+                        self._item_event(
+                            bundle,
+                            item,
+                            "workflow.failed",
+                            attempt_id=attempt_id,
+                            result=result,
+                        )
+                    )
                 else:
                     try:
                         self._revise_for_repair(
@@ -297,13 +328,25 @@ class WorkflowRuntime:
                         workflow.terminal_reason_code = "invalid_repair_scope"
                         workflow.terminal_at = self.clock()
                         events.append(
-                            self._item_event(bundle, item, "workflow.failed")
+                            self._item_event(
+                                bundle,
+                                item,
+                                "workflow.failed",
+                                attempt_id=attempt_id,
+                                result=result,
+                            )
                         )
                     else:
                         workflow.status = "running"
                         workflow.phase = "repairing"
                         events.extend([
-                            self._item_event(bundle, item, "workflow.repair.requested"),
+                            self._item_event(
+                                bundle,
+                                item,
+                                "workflow.repair.requested",
+                                attempt_id=attempt_id,
+                                result=result,
+                            ),
                             WorkflowEvent(
                                 workflow_id=workflow.workflow_id,
                                 event_type="workflow.plan.revised",
@@ -322,18 +365,42 @@ class WorkflowRuntime:
                     **(result.input_request or {"required_fields": []}),
                     "resume_token": f"resume_{uuid4().hex}",
                 }
-                events.append(self._item_event(bundle, item, "workflow.input.required"))
+                events.append(
+                    self._item_event(
+                        bundle,
+                        item,
+                        "workflow.input.required",
+                        attempt_id=attempt_id,
+                        result=result,
+                    )
+                )
             elif result.status == "retryable_failed" and item.attempt_count < item.max_attempts:
                 item.status = "ready"
                 workflow.status = "running"
-                events.append(self._item_event(bundle, item, "workflow.work_item.retry_scheduled"))
+                events.append(
+                    self._item_event(
+                        bundle,
+                        item,
+                        "workflow.work_item.retry_scheduled",
+                        attempt_id=attempt_id,
+                        result=result,
+                    )
+                )
             else:
                 item.status = "blocked"
                 workflow.status = "failed"
                 workflow.phase = "failed"
                 workflow.terminal_reason_code = result.error_code or "work_item_failed"
                 workflow.terminal_at = self.clock()
-                events.append(self._item_event(bundle, item, "workflow.failed"))
+                events.append(
+                    self._item_event(
+                        bundle,
+                        item,
+                        "workflow.failed",
+                        attempt_id=attempt_id,
+                        result=result,
+                    )
+                )
         lease = state["lease"]
         saved = self.service.store.save(
             bundle,
@@ -440,16 +507,41 @@ class WorkflowRuntime:
         bundle: WorkflowBundle,
         item: WorkflowWorkItem,
         event_type: str,
+        *,
+        attempt_id: str | None = None,
+        result: WorkItemExecutionResult | None = None,
     ) -> WorkflowEvent:
+        payload = {
+            "work_item_id": item.work_item_id,
+            "plan_version": bundle.workflow.current_plan_version,
+            "work_item_status": item.status,
+            "attempt_count": item.attempt_count,
+            "error_code": item.error_code,
+            "artifact_refs": list(item.output_artifact_refs),
+            "attempt_id": attempt_id,
+            "execution_status": result.status if result is not None else None,
+            "assistant_trace_id": (
+                result.assistant_trace_id if result is not None else None
+            ),
+            "assistant_run_id": (
+                result.assistant_run_id if result is not None else None
+            ),
+            "started_at": (
+                result.started_at.isoformat()
+                if result is not None and result.started_at is not None
+                else None
+            ),
+            "finished_at": (
+                result.finished_at.isoformat()
+                if result is not None and result.finished_at is not None
+                else None
+            ),
+        }
         return WorkflowEvent(
             workflow_id=bundle.workflow.workflow_id,
             event_type=event_type,
             status=bundle.workflow.status,
-            payload={
-                "work_item_id": item.work_item_id,
-                "attempt_count": item.attempt_count,
-                "error_code": item.error_code,
-            },
+            payload={key: value for key, value in payload.items() if value is not None},
         )
 
 

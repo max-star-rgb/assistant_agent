@@ -1,10 +1,9 @@
-"""Plugin-private provider boundaries for weather, calendar, and contacts."""
+"""Plugin-private provider boundaries for calendar and contacts."""
 
 from __future__ import annotations
 
-from datetime import timedelta
 import re
-from typing import Literal, Protocol
+from typing import Protocol
 
 from assistant_agent.tools.plugins.builtin.calendar_weather_contacts.models import (
     CalendarCreateRequest,
@@ -15,22 +14,7 @@ from assistant_agent.tools.plugins.builtin.calendar_weather_contacts.models impo
     ContactCandidate,
     ContactsSearchRequest,
     ContactsSearchResult,
-    WeatherForecast,
-    WeatherRequest,
-    WeatherResult,
 )
-
-
-WeatherLocationInputLanguage = Literal["any", "en"]
-
-
-class WeatherAdapter(Protocol):
-    """Weather provider boundary."""
-
-    location_input_language: WeatherLocationInputLanguage
-
-    def lookup(self, request: WeatherRequest) -> WeatherResult:
-        """Return weather for one location."""
 
 
 class CalendarAdapter(Protocol):
@@ -48,46 +32,6 @@ class ContactsAdapter(Protocol):
 
     def search(self, request: ContactsSearchRequest) -> ContactsSearchResult:
         """Return matching contact candidates."""
-
-
-class MockWeatherAdapter:
-    """Deterministic weather adapter for offline tests and local demos."""
-
-    provider = "mock"
-    location_input_language: WeatherLocationInputLanguage = "any"
-
-    def lookup(self, request: WeatherRequest) -> WeatherResult:
-        location = request.location.strip()
-        if not location:
-            return _failed_weather_result(
-                provider=self.provider,
-                location=request.location or "weather",
-                code="weather_location_empty",
-                message="weather requires location.",
-            )
-        start_date, _ = request.date_range
-        forecast = [
-            WeatherForecast(
-                date=(start_date + timedelta(days=offset)).isoformat(),
-                condition="clear",
-                temperature_c=26,
-                high_c=29,
-                low_c=23,
-                precipitation_chance=0.1,
-            )
-            for offset in range(request.days)
-        ]
-        return WeatherResult(
-            success=True,
-            location=location,
-            query_used=f"{location} from {start_date.isoformat()}",
-            forecast=forecast,
-            summary=f"Weather for {location}: clear, 26 C.",
-            provider=self.provider,
-            output_ref=(
-                f"mock://weather/{_slugify(location)}/{start_date.isoformat()}"
-            ),
-        )
 
 
 class MockCalendarAdapter:
@@ -183,23 +127,6 @@ class MockContactsAdapter:
         )
 
 
-class UnconfiguredWeatherAdapter:
-    """Explicit non-mock adapter boundary for unavailable weather providers."""
-
-    def __init__(self, provider: str, missing: str) -> None:
-        self.provider = provider
-        self.missing = missing
-
-    def lookup(self, request: WeatherRequest) -> WeatherResult:
-        return _failed_weather_result(
-            provider=self.provider,
-            location=request.location or "weather",
-            code="provider_unconfigured",
-            message=f"{self.provider} weather provider is missing {self.missing}.",
-            output_ref=f"unconfigured://weather/{self.provider}",
-        )
-
-
 class UnconfiguredCalendarAdapter:
     """Explicit non-mock adapter boundary for unavailable calendar providers."""
 
@@ -240,27 +167,6 @@ class UnconfiguredContactsAdapter:
             message=f"{self.provider} contacts provider is missing {self.missing}.",
             output_ref=f"unconfigured://contacts/{self.provider}",
         )
-
-
-def _failed_weather_result(
-    *,
-    provider: str,
-    location: str,
-    code: str,
-    message: str,
-    recoverable: bool = True,
-    output_ref: str | None = None,
-) -> WeatherResult:
-    return WeatherResult(
-        success=False,
-        location=location,
-        query_used=location,
-        forecast=[],
-        summary=message,
-        provider=provider,
-        output_ref=output_ref or f"{provider}://weather/failed",
-        errors=[_error(code, message, recoverable=recoverable)],
-    )
 
 
 def _failed_calendar_search_result(

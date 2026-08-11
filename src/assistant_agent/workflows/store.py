@@ -52,6 +52,7 @@ class WorkflowStore(Protocol):
     def list_events(
         self, workflow_id: str, *, after: int = 0, limit: int = 100
     ) -> list[WorkflowEvent]: ...
+    def latest_event_cursor(self, workflow_id: str) -> int: ...
     def claim_next(
         self, *, worker_id: str, now: datetime, lease_seconds: int
     ) -> WorkflowLease | None: ...
@@ -151,6 +152,11 @@ class InMemoryWorkflowStore:
                 for event in self._events.get(workflow_id, [])
                 if event.cursor > after
             ][: max(0, limit)]
+
+    def latest_event_cursor(self, workflow_id: str) -> int:
+        with self._lock:
+            events = self._events.get(workflow_id, [])
+            return events[-1].cursor if events else 0
 
     def claim_next(
         self, *, worker_id: str, now: datetime, lease_seconds: int
