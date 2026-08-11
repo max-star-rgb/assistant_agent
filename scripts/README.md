@@ -138,9 +138,15 @@ For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
   清理和产物契约统一见 [`evals/README.md`](../evals/README.md)。日常 `run_runtime_audit` 不参与这条链路。
 - `scripts/run_runtime_regressions.py`：Runtime Regression webhook 复用的受控执行内核。案例只来自
   Langfuse UI 中固定的 `assistant-agent-runtime-regressions` Dataset；`--preflight` 验证 Dataset Item 与
-  real Provider readiness，`--run` 通过生产 `AgentGraphRuntime` 创建真实 Experiment，并等待两项
+  real Provider readiness，`--run` 通过生产 `AgentGraphRuntime` 创建真实 Experiment，并等待三项
   Experiment Score 完整落库。日常操作直接在 Langfuse UI 触发，无需手工运行 CLI。流程与数据契约见
   [`evals/README.md`](../evals/README.md#日常失败到-runtime-regression)。
+- `scripts/run_langsmith_runtime_regressions.py`：并行 LangSmith Runtime Regression 入口。案例只读取
+  LangSmith UI 中同名固定 Dataset，不与 Langfuse 自动同步；`--inspect` 只校验 active Example object，
+  `--preflight` 校验真实 Provider 与 LangSmith exporter，`--run` 通过生产 `AgentGraphRuntime` 创建原生
+  LangSmith Experiment，并等待 Runtime/LLM 子树和三项 Feedback 完整。preflight/run 都要求
+  `--allow-real-provider` 与 `--allow-runtime-side-effects`。流程与 schema 见
+  [`evals/README.md`](../evals/README.md#并行-langsmith-桥)。
 - `scripts/run_improvement_lab.py`: offline, non-mutating improvement proposal runner.
 
 ## Specialized integrations
