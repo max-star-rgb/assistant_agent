@@ -1,4 +1,4 @@
-"""Shared production Runtime composition for Langfuse Experiment tasks."""
+"""Shared production Runtime composition for evaluation Experiment tasks."""
 
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ class ExperimentRuntimeHost:
     def run_state(self, request: Any) -> Any:
         trace_context = self._trace_context_provider()
         if trace_context is None:
-            raise RuntimeError("Langfuse Experiment task has no active OTel parent span")
+            raise RuntimeError("Experiment task has no active trace parent")
         return self._host.run_state(request, trace_context=trace_context)
 
     def close(self, *, timeout: float = 1.0) -> bool:

@@ -101,7 +101,7 @@ def test_experiment_runtime_host_rejects_missing_active_parent_before_runtime_ca
         try:
             host.run_state("request-sentinel")
         except RuntimeError as exc:
-            assert str(exc) == "Langfuse Experiment task has no active OTel parent span"
+            assert str(exc) == "Experiment task has no active trace parent"
         else:
             raise AssertionError("missing Experiment parent must fail closed")
     finally:

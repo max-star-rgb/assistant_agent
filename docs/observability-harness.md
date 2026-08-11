@@ -317,6 +317,10 @@ Provider protocol capture。overlay 写入失败时 canonical event 仍须保留
 同一 span plan 同时携带现有 `langfuse.*` 和 LangSmith OTel semantic attributes；它只是一套 canonical
 事实的两个远端视图，不是两套 Runtime。server 日常装配为 Langfuse 与 LangSmith 分别创建 observer、
 buffer 和 exporter，任一后端配置错误、队列丢弃或导出异常都不得阻断业务结果或另一后端。LangSmith
+Experiment 的 SDK RunTree 与 OTel Runtime 子树混合关联时，root 必须显式携带
+`langsmith.trace.id`、`langsmith.span.id`、`langsmith.span.parent_id`、
+`langsmith.span.dotted_order` 和 `langsmith.trace.session_name`，不得假定活动 RunTree 的
+`session_id` 一定存在。
 默认关闭；只有以下本机未跟踪配置显式启用时才创建其 OTLP exporter：
 
 ```text
@@ -408,9 +412,10 @@ Runtime trace 的主入口。面板如何折叠或展示长 JSON 不属于架构
 数据、结构化 trace API，或回到本地 canonical JSONL。
 
 Experiment 使用共享 Runtime Host 作为装配和资源所有权边界。Langfuse runner 把 SDK 当前 task span
-转换为 `RuntimeTraceContext`，并只装配 Langfuse Experiment exporter；LangSmith runner 把当前 RunTree 的
-trace、parent run、experiment project 和 reference example identity 转换为受校验的 context，并只把
-Runtime 子树发送到该 LangSmith Experiment project，避免在 Langfuse 形成孤儿子树。Host 都按 Runtime 后
+转换为 `RuntimeTraceContext`，并只装配 Langfuse Experiment exporter；LangSmith runner 先显式创建
+Experiment project，再把其 UUID/name 与当前 RunTree 的 trace、parent run、dotted order 和 reference
+example identity 转换为受校验的 context，并只把 Runtime 子树发送到该 LangSmith Experiment project，
+避免在 Langfuse 形成孤儿子树。Host 都按 Runtime 后
 trace store 的顺序做 bounded close。普通业务运行仍遵循 observability fail-open；Release Review 与
 Runtime Regression 属于证据生成流程，若没有当前 task/RunTree parent、无法装配对应 exporter，或远端
 没有形成 task → `agent.runtime` → `llm.chat`，必须作为 infrastructure failure fail-closed，不能用 task

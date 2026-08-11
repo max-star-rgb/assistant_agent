@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import time
 
 import pytest
 
@@ -131,3 +132,42 @@ def test_one_observer_failure_does_not_block_the_other() -> None:
 
     assert len(calls) == 1
     assert len(manager.errors) == 1
+
+
+def test_langsmith_close_cannot_consume_langfuse_close_budget(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    close_calls: list[tuple[str, float]] = []
+
+    class Observer:
+        def __init__(self, name: str, *, delay: float = 0.0) -> None:
+            self.name = name
+            self.delay = delay
+
+        def close(self, *, timeout: float) -> bool:
+            close_calls.append((self.name, timeout))
+            if self.delay:
+                time.sleep(self.delay)
+            return self.name != "langsmith"
+
+    monkeypatch.setattr(
+        persistence,
+        "create_text_otel_trace_observer_from_env",
+        lambda: Observer("langfuse"),
+    )
+    monkeypatch.setattr(
+        persistence,
+        "create_langsmith_text_otel_trace_observer_from_env",
+        lambda: Observer("langsmith", delay=0.02),
+    )
+    monkeypatch.setattr(
+        persistence,
+        "create_langfuse_score_trace_observer_from_env",
+        lambda: None,
+    )
+    store = persistence.create_server_trace_store(path=tmp_path / "trace.jsonl")
+
+    assert persistence.close_trace_store(store, timeout=0.01) is False
+    assert [name for name, _ in close_calls] == ["langsmith", "langfuse"]
+    assert close_calls[1][1] > 0

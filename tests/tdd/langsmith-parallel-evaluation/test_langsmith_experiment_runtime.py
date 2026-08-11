@@ -21,8 +21,13 @@ def _run_tree() -> SimpleNamespace:
     return SimpleNamespace(
         id=UUID("11111111-2222-3333-4444-555555555555"),
         trace_id=UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"),
-        session_id=UUID("99999999-8888-7777-6666-555555555555"),
+        session_id=None,
+        session_name="run-name-12345678",
         reference_example_id=UUID("01234567-89ab-cdef-0123-456789abcdef"),
+        dotted_order=(
+            "20260811T120000000000Z"
+            "11111111-2222-3333-4444-555555555555"
+        ),
     )
 
 
@@ -31,7 +36,10 @@ def test_current_run_tree_becomes_a_valid_runtime_experiment_binding(
 ) -> None:
     monkeypatch.setattr(langsmith_trace, "_current_run_tree", _run_tree)
 
-    binding = langsmith_trace.current_langsmith_experiment_binding()
+    binding = langsmith_trace.current_langsmith_experiment_binding(
+        experiment_id="99999999-8888-7777-6666-555555555555",
+        project_name="run-name-12345678",
+    )
 
     assert binding is not None
     assert binding.project_id == "99999999-8888-7777-6666-555555555555"
@@ -41,13 +49,17 @@ def test_current_run_tree_becomes_a_valid_runtime_experiment_binding(
     assert link is not None
     assert link.parent_run_id == "11111111-2222-3333-4444-555555555555"
     assert link.reference_example_id == "01234567-89ab-cdef-0123-456789abcdef"
+    assert link.parent_dotted_order == _run_tree().dotted_order
 
 
 def test_experiment_runtime_host_accepts_injected_langsmith_trace_context(
     monkeypatch,
 ) -> None:
     monkeypatch.setattr(langsmith_trace, "_current_run_tree", _run_tree)
-    binding = langsmith_trace.current_langsmith_experiment_binding()
+    binding = langsmith_trace.current_langsmith_experiment_binding(
+        experiment_id="99999999-8888-7777-6666-555555555555",
+        project_name="run-name-12345678",
+    )
     assert binding is not None
     received = []
 
@@ -82,7 +94,10 @@ def test_runtime_root_projects_official_langsmith_experiment_links(
     monkeypatch,
 ) -> None:
     monkeypatch.setattr(langsmith_trace, "_current_run_tree", _run_tree)
-    binding = langsmith_trace.current_langsmith_experiment_binding()
+    binding = langsmith_trace.current_langsmith_experiment_binding(
+        experiment_id="99999999-8888-7777-6666-555555555555",
+        project_name="run-name-12345678",
+    )
     assert binding is not None
     state = AgentState.from_request(
         UserRequest(
@@ -107,9 +122,14 @@ def test_runtime_root_projects_official_langsmith_experiment_links(
 
     assert root.attributes["langsmith.trace.id"] == str(_run_tree().trace_id)
     assert root.attributes["langsmith.span.parent_id"] == str(_run_tree().id)
-    assert root.attributes["langsmith.trace.session_id"] == str(
-        _run_tree().session_id
+    assert UUID(root.attributes["langsmith.span.id"])
+    assert root.attributes["langsmith.span.dotted_order"].startswith(
+        _run_tree().dotted_order + "."
+    )
+    assert root.attributes["langsmith.trace.session_id"] == (
+        "99999999-8888-7777-6666-555555555555"
     )
     assert root.attributes["langsmith.reference_example_id"] == str(
         _run_tree().reference_example_id
     )
+    assert root.attributes["langsmith.trace.session_name"] == "run-name-12345678"
