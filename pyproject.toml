@@ -18,7 +18,7 @@ dependencies = [
 [project.optional-dependencies]
 browser = ["playwright>=1.62,<2"]
 dev = ["pytest>=8.0"]
-eval = ["langfuse>=4.10,<5", "PyYAML>=6.0,<7"]
+eval = ["langfuse>=4.10,<5", "langsmith>=0.8.11,<1", "PyYAML>=6.0,<7"]
 observability = [
     "opentelemetry-api>=1.25,<2",
     "opentelemetry-sdk>=1.25,<2",
