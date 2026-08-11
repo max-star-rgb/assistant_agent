@@ -191,7 +191,7 @@ exclusive_allowlist = []
 id = "runtime-observability"
 authority = "docs/observability-harness.md"
 read_when = [
-  "trace、observability、OTel 或 Langfuse 投影",
+  "trace、observability、OTel、Langfuse 或 LangSmith 投影",
   "runtime audit、Live Observation Rule 或日常评分",
 ]
 source_globs = [
@@ -255,19 +255,22 @@ id = "release-review-eval"
 authority = "evals/README.md"
 read_when = [
   "system eval 或上线前 Release Review",
-  "Langfuse Dataset、Experiment、Release Review webhook 或 Score 完整性",
+  "Langfuse/LangSmith Dataset、Experiment、Release Review webhook 或 Score/Feedback 完整性",
 ]
 source_globs = [
   "evals/release_review/**",
   "evals/runtime_regression/**",
+  "evals/langsmith_runtime_regression/**",
   "evals/system/**",
   "src/assistant_agent/evaluation/**",
   "src/assistant_agent/api/routes_eval_experiments.py",
   "scripts/run_release_review.py",
   "scripts/run_runtime_regressions.py",
+  "scripts/run_langsmith_runtime_regressions.py",
   "deploy/langfuse_eval_webhook/**",
   "tests/tdd/release-review-native-experiment/**",
   "tests/tdd/runtime-eval-feedback-loop/**",
+  "tests/tdd/langsmith-parallel-evaluation/**",
 ]
 thin_references = [
   "docs/observability-harness.md",
@@ -277,6 +280,7 @@ verification = [
   "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/release-review-native-experiment",
   "python scripts/run_release_review.py --inspect",
   "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/runtime-eval-feedback-loop",
+  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/langsmith-parallel-evaluation",
 ]
 exclusive_literals = [
   "ASSISTANT_AGENT_LANGFUSE_RELEASE_REVIEW_SIGNING_SECRET",

@@ -7,9 +7,9 @@ Last updated: 2026-08-11
 | 字段 | 内容 |
 | --- | --- |
 | 定位 | 正式 system eval、真实失败回归与上线前 Release Review 的当前权威 |
-| Owns | 真实能力专项验证、Runtime Regression、Release Scenario、Langfuse Dataset/Experiment、Score 完整性、发布决策记录 |
+| Owns | 真实能力专项验证、Runtime Regression、Release Scenario、Langfuse/LangSmith Dataset 与 Experiment、Score/Feedback 完整性、发布决策记录 |
 | Does not own | pytest 分层、日常 trace 评分与 runtime audit、线上长尾诊断 |
-| 源码与 schema 入口 | `evals/system/`、`evals/runtime_regression/`、`evals/release_review/`、`src/assistant_agent/evaluation/` |
+| 源码与 schema 入口 | `evals/system/`、`evals/runtime_regression/`、`evals/langsmith_runtime_regression/`、`evals/release_review/`、`src/assistant_agent/evaluation/` |
 | 验证入口 | `docs/authority.toml` 中 `release-review-eval.verification` |
 | 相邻 authority | pytest 分层见 `tests/README.md`；日常观测见 `docs/observability-harness.md` |
 
@@ -22,7 +22,7 @@ Last updated: 2026-08-11
 | --- | --- | --- |
 | pytest | 确定性代码契约是否成立 | `mock/local/offline`，见 `tests/README.md` |
 | system eval | 一个真实 Provider、Tool、Context、Memory 或本地模型节点是否可用 | 每项独立显式授权，产物写入 `.data/evals/system/` |
-| Runtime Regression | 已人工确认的日常失败在当前生产 Runtime 上是否复现或修复 | Langfuse 保存真实来源 Dataset、Experiment 与 Score；真实运行显式授权 |
+| Runtime Regression | 已人工确认的日常失败在当前生产 Runtime 上是否复现或修复 | Langfuse 或 LangSmith 各自保存 Dataset、Experiment 与评分；真实运行显式授权 |
 | Release Review | 待发布 Agent 是否在关键任务中选对、调用并正确使用工具 | 真实主模型；Decision 使用确定性执行后端，Staging 使用隔离资源 |
 
 Release Review 只在上线前由 operator 显式触发，目标是在 10 分钟内形成可审核证据和风险摘要；它是
@@ -118,6 +118,52 @@ metadata。CLI 必须等每个 item 的 `assistant_agent.quality.response_qualit
 `assistant_agent.quality.regression_improvement.experiment` 都落库，并从远端 API 确认上述 Runtime 子树完整后才成功；
 超时、缺分或 Trace 层级不完整属于 infrastructure failure。
 `--inspect` 可只读查看 active item 数量。
+
+### 并行 LangSmith 桥
+
+LangSmith 是可选的并行事实视图，不替代上述 Langfuse 闭环。两个平台各自拥有名为
+`assistant-agent-runtime-regressions` 的固定 Dataset，但它们是独立资源，不自动同步 Item/Example、
+Experiment、Score 或 Feedback；operator 在哪个 UI 沉淀案例，就用对应 runner 重跑。
+
+在 LangSmith 的 Tracing Project 中人工确认异常后，把根 run 加入固定 Dataset；也可以在 Dataset UI
+手工新增 Example。Example 必须保持对象结构：
+
+- `inputs`：`{role: "user", content, chars, truncated}`；
+- `reference_outputs`（SDK Example 的 `outputs`）：原始失败回答
+  `{role: "assistant", content, chars, truncated, terminal_status}`；
+- `metadata`：至少可用 `active` 控制是否重跑，并可记录 `source_trace_id`、日期和故障分类。
+
+禁止把 input 或 reference output 预序列化成 JSON 字符串。`truncated=true`、空 content、错误 role、
+非对象 reference output 或没有 active Example 都会在 inspect/preflight 阶段 fail-closed。
+
+在 Dataset 中绑定三个 UI evaluator，Feedback key 固定为：
+
+- `assistant_agent.quality.response_quality.experiment`；
+- `assistant_agent.quality.grounding.experiment`；
+- `assistant_agent.quality.regression_improvement.experiment`。
+
+代码桥使用 `Client.evaluate()` 读取 UI Dataset 并复用同一个 `AgentGraphRuntime`。每个 target 的 Runtime
+子树绑定当前 LangSmith RunTree，Experiment 必须出现对象 input/reference output/actual output，以及
+task → `agent.runtime` → `llm.chat`；每个 active Example 必须恰有一个根 run 和全部三项 Feedback，否则
+runner 返回 infrastructure failure。inspect、preflight 和真实运行入口分别为：
+
+```bash
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python \
+  scripts/run_langsmith_runtime_regressions.py --inspect
+
+MULTIMODAL_AGENT_PROVIDER_MODE=real \
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python \
+  scripts/run_langsmith_runtime_regressions.py --preflight \
+  --allow-real-provider --allow-runtime-side-effects
+
+MULTIMODAL_AGENT_PROVIDER_MODE=real \
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python \
+  scripts/run_langsmith_runtime_regressions.py --run --run-name <unique-run-name> \
+  --allow-real-provider --allow-runtime-side-effects
+```
+
+LangSmith CLI 不提供自动收集失败 trace 或 Dataset 写入；案例晋升仍由人工 UI 操作完成。日常 trace export
+fail-open，Experiment 的配置、Dataset、Runtime trace 和 Feedback 完整性 fail-closed。
 
 ## 本地运行顺序
 
