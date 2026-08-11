@@ -11,7 +11,7 @@ from typing import Any, Protocol
 from assistant_agent.runtime.requests import UserRequest
 from evals.release_review.evidence import ReleaseRunEvidence
 
-from .dataset import RUNTIME_REGRESSION_DATASET, RUNTIME_REGRESSION_OWNER
+from assistant_agent.evaluation.constants import RUNTIME_REGRESSION_DATASET
 
 
 class RuntimeRegressionRuntime(Protocol):
@@ -52,18 +52,7 @@ def run_runtime_regression_experiment(
 ) -> RuntimeRegressionExperimentResult:
     """Replay active production-derived cases through the production runtime."""
 
-    dataset = client.get_dataset(RUNTIME_REGRESSION_DATASET)
-    items = sorted(
-        (
-            item
-            for item in getattr(dataset, "items", ())
-            if _item_status(item) == "ACTIVE"
-            and _item_metadata(item).get("owner") == RUNTIME_REGRESSION_OWNER
-        ),
-        key=lambda item: str(_item_field(item, "id")),
-    )
-    if not items:
-        raise RuntimeError("runtime regression Dataset has no active items")
+    dataset, items = inspect_runtime_regression_dataset(client)
     selected_dataset = dataset
     if len(items) != len(getattr(dataset, "items", ())):
         selected_dataset = copy(dataset)
@@ -75,9 +64,7 @@ def run_runtime_regression_experiment(
         item_input = _item_field(item, "input")
         if not isinstance(item_input, dict):
             raise RuntimeError(f"runtime regression item {item_id!r} input must be an object")
-        request_text = item_input.get("request")
-        if not isinstance(request_text, str) or not request_text.strip():
-            raise RuntimeError(f"runtime regression item {item_id!r} has no request")
+        request_text = _request_text(item_id, item_input)
         runtime = settings.runtime_factory()
         try:
             state = runtime.run_state(
@@ -99,8 +86,8 @@ def run_runtime_regression_experiment(
         name="assistant-agent-runtime-regression",
         run_name=settings.run_name,
         description=(
-            "Production-runtime replay of human-reviewed failures promoted from "
-            "daily Langfuse observations."
+            "Production-runtime replay of human-reviewed failures added to the "
+            "fixed Dataset in the Langfuse UI."
         ),
         task=execute_item,
         evaluators=[],
@@ -117,6 +104,29 @@ def run_runtime_regression_experiment(
         dataset_run_url=getattr(native, "dataset_run_url", None),
         dataset_item_ids=item_ids,
     )
+
+
+def inspect_runtime_regression_dataset(client: Any) -> tuple[Any, list[Any]]:
+    """Load and validate active Langfuse-owned regression items without running them."""
+
+    dataset = client.get_dataset(RUNTIME_REGRESSION_DATASET)
+    items = sorted(
+        (
+            item
+            for item in getattr(dataset, "items", ())
+            if _item_status(item) == "ACTIVE"
+        ),
+        key=lambda item: str(_item_field(item, "id")),
+    )
+    if not items:
+        raise RuntimeError("runtime regression Dataset has no active items")
+    for item in items:
+        item_id = _require_item_id(item)
+        item_input = _item_field(item, "input")
+        if not isinstance(item_input, dict):
+            raise RuntimeError(f"runtime regression item {item_id!r} input must be an object")
+        _request_text(item_id, item_input)
+    return dataset, items
 
 
 def wait_for_runtime_regression_scores(
@@ -176,9 +186,16 @@ def _require_item_id(item: Any) -> str:
     return item_id
 
 
-def _item_metadata(item: Any) -> dict[str, Any]:
-    metadata = _item_field(item, "metadata")
-    return metadata if isinstance(metadata, dict) else {}
+def _request_text(item_id: str, item_input: dict[str, Any]) -> str:
+    if item_input.get("truncated") is True:
+        raise RuntimeError(f"runtime regression item {item_id!r} input is truncated")
+    role = item_input.get("role")
+    if role is not None and role != "user":
+        raise RuntimeError(f"runtime regression item {item_id!r} input role must be user")
+    request_text = item_input.get("content", item_input.get("request"))
+    if not isinstance(request_text, str) or not request_text.strip():
+        raise RuntimeError(f"runtime regression item {item_id!r} has no user content")
+    return request_text
 
 
 def _item_status(item: Any) -> Any:

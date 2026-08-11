@@ -135,10 +135,11 @@ For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
   Decision fixture backend 与隔离 Staging；`--record-decision` 保存 operator 的人工发布决定。真实运行
   必须同时显式允许 real Provider 和 Staging 副作用，不会静默回退 mock。Dataset、Score、webhook、
   清理和产物契约统一见 [`evals/README.md`](../evals/README.md)。日常 `run_runtime_audit` 不参与这条链路。
-- `scripts/run_runtime_regressions.py`：把人工确认的日常失败 Score 直接沉淀到
-  `assistant-agent-runtime-regressions` Dataset，并通过生产 `AgentGraphRuntime` 创建真实 Experiment。
-  Dataset 写入、真实 Provider/副作用分别有显式 allow gate；CLI 等待两项 Langfuse Experiment Score
-  完整落库后才成功。流程与数据契约见 [`evals/README.md`](../evals/README.md#日常失败到-runtime-regression)。
+- `scripts/run_runtime_regressions.py`：Runtime Regression webhook 复用的受控执行内核。案例只来自
+  Langfuse UI 中固定的 `assistant-agent-runtime-regressions` Dataset；`--preflight` 验证 Dataset Item 与
+  real Provider readiness，`--run` 通过生产 `AgentGraphRuntime` 创建真实 Experiment，并等待两项
+  Experiment Score 完整落库。日常操作直接在 Langfuse UI 触发，无需手工运行 CLI。流程与数据契约见
+  [`evals/README.md`](../evals/README.md#日常失败到-runtime-regression)。
 - `scripts/run_improvement_lab.py`: offline, non-mutating improvement proposal runner.
 
 ## Specialized integrations

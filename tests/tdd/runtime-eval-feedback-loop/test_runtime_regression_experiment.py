@@ -4,10 +4,7 @@ from types import SimpleNamespace
 
 from assistant_agent.runtime.requests import AgentResponse
 from assistant_agent.runtime.state import AgentState
-from evals.runtime_regression.dataset import (
-    RUNTIME_REGRESSION_DATASET,
-    RUNTIME_REGRESSION_OWNER,
-)
+from assistant_agent.evaluation.constants import RUNTIME_REGRESSION_DATASET
 from evals.runtime_regression.experiment import (
     RuntimeRegressionExperimentSettings,
     run_runtime_regression_experiment,
@@ -49,8 +46,13 @@ class _Dataset:
             SimpleNamespace(
                 id="runtime-item-1",
                 status="ACTIVE",
-                input={"request": "请重跑真实失败案例"},
-                metadata={"owner": RUNTIME_REGRESSION_OWNER},
+                input={
+                    "role": "user",
+                    "content": "请重跑真实失败案例",
+                    "chars": 10,
+                    "truncated": False,
+                },
+                metadata={"source": "langfuse-ui"},
             )
         ]
         self.call = None
@@ -117,6 +119,25 @@ def test_runtime_regression_experiment_replays_active_item_through_runtime() -> 
         "evaluation_mode": "runtime_regression",
         "model": "production-model",
     }
+
+
+def test_runtime_regression_rejects_truncated_ui_trace_input() -> None:
+    client = _Client()
+    client.dataset.items[0].input["truncated"] = True
+
+    try:
+        run_runtime_regression_experiment(
+            client,
+            RuntimeRegressionExperimentSettings(
+                model="production-model",
+                runtime_factory=_Runtime,
+                run_name="runtime-regression-truncated",
+            ),
+        )
+    except RuntimeError as exc:
+        assert "truncated" in str(exc)
+    else:
+        raise AssertionError("truncated Langfuse item must not be replayed")
 
 
 def test_runtime_regression_waits_until_every_experiment_score_is_complete() -> None:

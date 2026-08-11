@@ -280,5 +280,6 @@ verification = [
 ]
 exclusive_literals = [
   "ASSISTANT_AGENT_LANGFUSE_RELEASE_REVIEW_SIGNING_SECRET",
+  "ASSISTANT_AGENT_LANGFUSE_RUNTIME_REGRESSION_SIGNING_SECRET",
 ]
 exclusive_allowlist = []
