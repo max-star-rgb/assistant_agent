@@ -397,8 +397,8 @@ def _parser() -> argparse.ArgumentParser:
     report.add_argument("--skip-codex", action="store_true")
     report.add_argument("--codex-timeout-seconds", type=float, default=900.0)
     evaluators = subparsers.add_parser("configure-evaluators")
-    evaluators.add_argument("--model-provider", default="deepseek-judge")
-    evaluators.add_argument("--model", default="deepseek-v4-flash")
+    evaluators.add_argument("--model-provider", default="qwen-judge")
+    evaluators.add_argument("--model", default="qwen-flash")
     evaluators.add_argument("--apply", action="store_true")
     evaluators.add_argument("--allow-online-judge", action="store_true")
     return parser

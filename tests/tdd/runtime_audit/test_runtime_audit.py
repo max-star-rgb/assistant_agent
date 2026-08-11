@@ -450,40 +450,64 @@ def test_codex_runner_uses_read_only_ephemeral_mode_and_removes_credentials(
     }
 
 
-def test_langfuse_source_paginates_headers_then_fetches_full_trace_details() -> None:
-    """Would fail if the collector scanned only the first page or omitted observations/Scores."""
+def test_langfuse_source_paginates_v2_observations_and_groups_complete_traces() -> None:
+    """Would fail if v4 observation pages were not grouped with their Scores."""
 
     now = datetime(2026, 8, 5, 4, 0, tzinfo=UTC)
 
-    class TraceApi:
+    class ObservationsApi:
         def __init__(self) -> None:
-            self.pages: list[int] = []
+            self.cursors: list[str | None] = []
+            self.detail_trace_ids: list[str] = []
 
-        def list(self, **kwargs):
-            page = kwargs["page"]
-            self.pages.append(page)
-            trace_id = f"trace-{page}"
+        def get_many(self, **kwargs):
+            detail_trace_id = kwargs.get("trace_id")
+            if detail_trace_id is not None:
+                self.detail_trace_ids.append(detail_trace_id)
+                page = int(detail_trace_id.removeprefix("trace-"))
+                return SimpleNamespace(
+                    data=[
+                        self._root(page),
+                        {
+                            "id": f"child-{detail_trace_id}",
+                            "trace_id": detail_trace_id,
+                            "trace_name": "assistant.turn",
+                            "name": "response.delivered",
+                            "type": "SPAN",
+                            "parent_observation_id": f"observation-{detail_trace_id}",
+                            "start_time": now + timedelta(seconds=page),
+                        },
+                    ],
+                    meta=SimpleNamespace(cursor=None),
+                )
+            cursor = kwargs.get("cursor")
+            self.cursors.append(cursor)
+            page = 1 if cursor is None else 2
             return SimpleNamespace(
-                data=[SimpleNamespace(id=trace_id)],
-                meta=SimpleNamespace(total_pages=2),
+                data=[self._root(page)],
+                meta=SimpleNamespace(cursor="next" if page == 1 else None),
             )
 
-        def get(self, trace_id: str):
+        def _root(self, page):
+            trace_id = f"trace-{page}"
             return {
-                "id": trace_id,
-                "name": "assistant.turn",
-                "timestamp": now - timedelta(minutes=10),
-                "observations": [
-                    {
-                        "id": f"observation-{trace_id}",
-                        "name": "agent.runtime",
-                        "type": "SPAN",
-                    }
-                ],
-                "scores": [],
+                "id": f"observation-{trace_id}",
+                "trace_id": trace_id,
+                "trace_name": "assistant.turn",
+                "name": "agent.runtime",
+                "type": "SPAN",
+                "parent_observation_id": None,
+                "start_time": now - timedelta(minutes=10 - page),
+                "end_time": now - timedelta(minutes=9 - page),
+                "input": {"content": f"request {page}"},
+                "output": {"response": f"answer {page}"},
+                "environment": "default",
+                "user_id": "user-1",
+                "session_id": "session-1",
+                "tags": ["daily"],
             }
 
-    trace_api = TraceApi()
+    observations_api = ObservationsApi()
 
     class ScoresApi:
         def get_many_v3(self, **kwargs):
@@ -511,7 +535,7 @@ def test_langfuse_source_paginates_headers_then_fetches_full_trace_details() -> 
         return f"https://langfuse.example/project/project-1/traces/{trace_id}"
 
     client = SimpleNamespace(
-        api=SimpleNamespace(trace=trace_api, scores_v3=ScoresApi()),
+        api=SimpleNamespace(observations=observations_api, scores_v3=ScoresApi()),
         get_trace_url=get_trace_url,
     )
     source = LangfuseSdkAuditSource(client, page_size=50)
@@ -521,9 +545,11 @@ def test_langfuse_source_paginates_headers_then_fetches_full_trace_details() -> 
         window_end=now,
     )
 
-    assert trace_api.pages == [1, 2]
+    assert observations_api.cursors == [None, "next"]
+    assert observations_api.detail_trace_ids == ["trace-1", "trace-2"]
     assert [trace.trace_id for trace in traces] == ["trace-1", "trace-2"]
     assert traces[0].observations[0].observation_id == "observation-trace-1"
+    assert traces[0].observations[1].observation_id == "child-trace-1"
     assert traces[0].scores[0].score_id == "score-trace-1"
     assert traces[0].trace_url == (
         "https://langfuse.example/project/project-1/traces/trace-1"
@@ -536,19 +562,22 @@ def test_langfuse_source_keeps_trace_when_native_url_lookup_fails() -> None:
 
     now = datetime(2026, 8, 5, 4, 0, tzinfo=UTC)
 
-    class TraceApi:
-        def list(self, **_):
+    class ObservationsApi:
+        def get_many(self, **_):
             return SimpleNamespace(
-                data=[SimpleNamespace(id="trace-1")],
-                meta=SimpleNamespace(total_pages=1),
+                data=[
+                    {
+                        "id": "root-1",
+                        "trace_id": "trace-1",
+                        "trace_name": "assistant.turn",
+                        "name": "agent.runtime",
+                        "type": "SPAN",
+                        "parent_observation_id": None,
+                        "start_time": now - timedelta(minutes=10),
+                    }
+                ],
+                meta=SimpleNamespace(cursor=None),
             )
-
-        def get(self, trace_id: str):
-            return {
-                "id": trace_id,
-                "name": "assistant.turn",
-                "timestamp": now - timedelta(minutes=10),
-            }
 
     class ScoresApi:
         def get_many_v3(self, **_):
@@ -559,7 +588,7 @@ def test_langfuse_source_keeps_trace_when_native_url_lookup_fails() -> None:
 
     source = LangfuseSdkAuditSource(
         SimpleNamespace(
-            api=SimpleNamespace(trace=TraceApi(), scores_v3=ScoresApi()),
+            api=SimpleNamespace(observations=ObservationsApi(), scores_v3=ScoresApi()),
             get_trace_url=unavailable_url,
         )
     )
@@ -1066,6 +1095,7 @@ def test_native_online_evaluator_configuration_uses_canonical_names_and_full_sam
     evaluators = Resource()
     rules = Resource()
     client = SimpleNamespace(
+        get_dataset=lambda _: SimpleNamespace(id="runtime-regression-dataset-id"),
         api=SimpleNamespace(
             unstable=SimpleNamespace(
                 evaluators=evaluators,
@@ -1088,13 +1118,15 @@ def test_native_online_evaluator_configuration_uses_canonical_names_and_full_sam
         "assistant_agent.quality.memory_extraction",
         "assistant_agent.quality.memory_recall",
     ]
-    assert len(rules.created) == 5
+    assert len(rules.created) == 7
     assert [item.name for item in rules.created] == [
         "assistant_agent.quality.response_quality",
         "assistant_agent.quality.grounding",
         "assistant_agent.quality.tool_result_quality",
         "assistant_agent.quality.memory_extraction",
         "assistant_agent.quality.memory_recall",
+        "assistant_agent.quality.response_quality.experiment",
+        "assistant_agent.quality.grounding.experiment",
     ]
     assert all(item.enabled is True and item.sampling == 1.0 for item in rules.created)
     tool_rule = next(
@@ -1111,9 +1143,30 @@ def test_native_online_evaluator_configuration_uses_canonical_names_and_full_sam
         "type": "stringObject",
         "value": "tool_execution",
     } in tool_filters
+    experiment_rules = [
+        item for item in rules.created if item.target.value == "experiment"
+    ]
+    assert [item.name for item in experiment_rules] == [
+        "assistant_agent.quality.response_quality.experiment",
+        "assistant_agent.quality.grounding.experiment",
+    ]
+    assert all(
+        item.evaluator.name == item.name.removesuffix(".experiment")
+        for item in experiment_rules
+    )
+    for item in experiment_rules:
+        filters = [entry.model_dump(mode="json") for entry in item.filter]
+        assert filters == [
+            {
+                "column": "datasetId",
+                "operator": "any of",
+                "type": "stringOptions",
+                "value": ["runtime-regression-dataset-id"],
+            }
+        ]
     assert result.applied is True
     assert result.created_evaluators == 5
-    assert result.created_rules == 5
+    assert result.created_rules == 7
 
 
 def test_native_online_evaluator_configuration_renames_legacy_rules_in_place() -> None:
@@ -1167,6 +1220,7 @@ def test_native_online_evaluator_configuration_renames_legacy_rules_in_place() -
 
     rules = RuleResource()
     client = SimpleNamespace(
+        get_dataset=lambda _: SimpleNamespace(id="runtime-regression-dataset-id"),
         api=SimpleNamespace(
             unstable=SimpleNamespace(
                 evaluators=EvaluatorResource(),
@@ -1182,7 +1236,10 @@ def test_native_online_evaluator_configuration_renames_legacy_rules_in_place() -
         model="qwen3.6-flash",
     )
 
-    assert rules.created == []
+    assert [item.name for item in rules.created] == [
+        "assistant_agent.quality.response_quality.experiment",
+        "assistant_agent.quality.grounding.experiment",
+    ]
     assert len(rules.updated) == 5
     assert [item[0] for item in rules.updated] == [
         f"legacy-rule-{index}" for index in range(5)
@@ -1200,10 +1257,13 @@ def test_native_online_evaluator_configuration_renames_legacy_rules_in_place() -
         "type": "stringObject",
         "value": "tool_execution",
     } in migrated_tool_filters
-    assert result.rule_names == canonical_names
+    assert result.rule_names == canonical_names + [
+        "assistant_agent.quality.response_quality.experiment",
+        "assistant_agent.quality.grounding.experiment",
+    ]
     assert result.existing_evaluators == 5
     assert result.existing_rules == 5
-    assert result.created_rules == 0
+    assert result.created_rules == 2
     assert result.updated_rules == 5
 
 
@@ -1232,6 +1292,7 @@ def test_native_online_evaluator_configuration_reconciles_existing_tool_rule() -
 
     class RuleResource:
         def __init__(self) -> None:
+            self.created = []
             self.updated = []
 
         def list(self):
@@ -1248,13 +1309,14 @@ def test_native_online_evaluator_configuration_reconciles_existing_tool_rule() -
             )
 
         def create(self, *, request):
-            raise AssertionError(f"unexpected rule create: {request.name}")
+            self.created.append(request)
 
         def update(self, rule_id, **changes):
             self.updated.append((rule_id, changes))
 
     rules = RuleResource()
     client = SimpleNamespace(
+        get_dataset=lambda _: SimpleNamespace(id="runtime-regression-dataset-id"),
         api=SimpleNamespace(
             unstable=SimpleNamespace(
                 evaluators=EvaluatorResource(),
@@ -1271,6 +1333,10 @@ def test_native_online_evaluator_configuration_reconciles_existing_tool_rule() -
     )
 
     assert len(rules.updated) == 5
+    assert [item.name for item in rules.created] == [
+        "assistant_agent.quality.response_quality.experiment",
+        "assistant_agent.quality.grounding.experiment",
+    ]
     rule_id, changes = rules.updated[2]
     assert rule_id == "rule-2"
     filters = [item.model_dump(mode="json") for item in changes["filter"]]
@@ -1286,3 +1352,112 @@ def test_native_online_evaluator_configuration_reconciles_existing_tool_rule() -
     assert all("sampling" not in update for _, update in rules.updated)
     assert result.existing_rules == 5
     assert result.updated_rules == 5
+
+
+def test_native_online_evaluator_configuration_versions_drifted_evaluator() -> None:
+    """Would fail if prompt/model changes never reached existing Langfuse rules."""
+
+    canonical_names = [
+        "assistant_agent.quality.response_quality",
+        "assistant_agent.quality.grounding",
+        "assistant_agent.quality.tool_result_quality",
+        "assistant_agent.quality.memory_extraction",
+        "assistant_agent.quality.memory_recall",
+    ]
+
+    class EvaluatorResource:
+        def __init__(self) -> None:
+            self.created = []
+
+        def list(self):
+            return SimpleNamespace(
+                data=[
+                    SimpleNamespace(
+                        name=name,
+                        scope="project",
+                        type="llm_as_judge",
+                        prompt="stale prompt",
+                        output_definition={"dataType": "BOOLEAN"},
+                        model_config_={"provider": "old", "model": "old"},
+                    )
+                    if index == 0
+                    else SimpleNamespace(name=name, scope="project")
+                    for index, name in enumerate(canonical_names)
+                ]
+            )
+
+        def create(self, *, request):
+            self.created.append(request)
+
+    class RuleResource:
+        def list(self):
+            return SimpleNamespace(data=[])
+
+        def create(self, *, request):
+            pass
+
+    evaluators = EvaluatorResource()
+    client = SimpleNamespace(
+        get_dataset=lambda _: SimpleNamespace(id="runtime-regression-dataset-id"),
+        api=SimpleNamespace(
+            unstable=SimpleNamespace(
+                evaluators=evaluators,
+                evaluation_rules=RuleResource(),
+            )
+        )
+    )
+
+    result = configure_native_online_evaluators(
+        client,
+        apply=True,
+        model_provider="qwen-judge",
+        model="qwen-flash",
+    )
+
+    assert [item.name for item in evaluators.created] == [canonical_names[0]]
+    assert result.updated_evaluators == 1
+    assert result.existing_evaluators == 5
+
+
+def test_native_online_evaluator_configuration_keeps_live_rules_without_dataset() -> None:
+    """Would fail if a fresh project needed regression data before Live judging."""
+
+    class Resource:
+        def __init__(self) -> None:
+            self.created = []
+
+        def list(self):
+            return SimpleNamespace(data=[])
+
+        def create(self, *, request):
+            self.created.append(request)
+
+    evaluators = Resource()
+    rules = Resource()
+
+    def missing_dataset(_):
+        error = RuntimeError("not found")
+        error.status_code = 404
+        raise error
+
+    result = configure_native_online_evaluators(
+        SimpleNamespace(
+            get_dataset=missing_dataset,
+            api=SimpleNamespace(
+                unstable=SimpleNamespace(
+                    evaluators=evaluators,
+                    evaluation_rules=rules,
+                )
+            ),
+        ),
+        apply=True,
+        model_provider="qwen-judge",
+        model="qwen-flash",
+    )
+
+    assert len(evaluators.created) == 5
+    assert len(rules.created) == 5
+    assert result.skipped_rule_names == [
+        "assistant_agent.quality.response_quality.experiment",
+        "assistant_agent.quality.grounding.experiment",
+    ]

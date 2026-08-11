@@ -2753,29 +2753,37 @@ def test_langfuse_adapter_excludes_fetched_trace_at_window_end() -> None:
     window_start = datetime(2026, 8, 4, 16, 0, tzinfo=timezone.utc)
     window_end = window_start + timedelta(days=1)
 
-    class TraceApi:
-        def list(self, **_: object) -> SimpleNamespace:
+    class ObservationsApi:
+        def get_many(self, **kwargs: object) -> SimpleNamespace:
+            selected_trace_id = kwargs.get("trace_id")
             return SimpleNamespace(
-                data=[SimpleNamespace(id="trace-start"), SimpleNamespace(id="trace-end")],
-                meta=SimpleNamespace(total_pages=1),
+                data=[
+                    {
+                        "id": f"root-{suffix}",
+                        "trace_id": f"trace-{suffix}",
+                        "trace_name": "assistant.turn",
+                        "name": "agent.runtime",
+                        "type": "SPAN",
+                        "parent_observation_id": None,
+                        "start_time": timestamp,
+                    }
+                    for suffix, timestamp in (
+                        ("start", window_start),
+                        ("end", window_end),
+                    )
+                    if selected_trace_id in (None, f"trace-{suffix}")
+                ],
+                meta=SimpleNamespace(cursor=None),
             )
-
-        def get(self, trace_id: str) -> dict[str, object]:
-            timestamp = window_start if trace_id == "trace-start" else window_end
-            return {
-                "id": trace_id,
-                "name": "assistant.turn",
-                "timestamp": timestamp,
-                "observations": [],
-                "scores": [],
-            }
 
     class ScoresApi:
         def get_many_v3(self, **_: object) -> SimpleNamespace:
             return SimpleNamespace(data=[], meta=SimpleNamespace(cursor=None))
 
     source = LangfuseSdkAuditSource(
-        SimpleNamespace(api=SimpleNamespace(trace=TraceApi(), scores_v3=ScoresApi()))
+        SimpleNamespace(
+            api=SimpleNamespace(observations=ObservationsApi(), scores_v3=ScoresApi())
+        )
     )
 
     traces = source.list_traces(window_start=window_start, window_end=window_end)

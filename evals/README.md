@@ -1,27 +1,28 @@
-# Eval 与 Release Review
+# Eval、Runtime Regression 与 Release Review
 
-Last updated: 2026-08-10
+Last updated: 2026-08-11
 
 ## Authority contract
 
 | 字段 | 内容 |
 | --- | --- |
-| 定位 | 正式 system eval 与上线前 Release Review 的当前权威 |
-| Owns | 真实能力专项验证、Release Scenario、Langfuse Dataset/Experiment、Score 完整性、发布决策记录 |
+| 定位 | 正式 system eval、真实失败回归与上线前 Release Review 的当前权威 |
+| Owns | 真实能力专项验证、Runtime Regression、Release Scenario、Langfuse Dataset/Experiment、Score 完整性、发布决策记录 |
 | Does not own | pytest 分层、日常 trace 评分与 runtime audit、线上长尾诊断 |
-| 源码与 schema 入口 | `evals/system/`、`evals/release_review/`、`src/assistant_agent/evaluation/` |
+| 源码与 schema 入口 | `evals/system/`、`evals/runtime_regression/`、`evals/release_review/`、`src/assistant_agent/evaluation/` |
 | 验证入口 | `docs/authority.toml` 中 `release-review-eval.verification` |
 | 相邻 authority | pytest 分层见 `tests/README.md`；日常观测见 `docs/observability-harness.md` |
 
 源码和测试高于本文；本文高于历史设计记录。评测运行不得复制 Agent loop，也不得绕过
 `AgentGraphRuntime`、Provider 配置和 Tool 治理链路。
 
-## 三层边界
+## 四层边界
 
 | 层 | 回答的问题 | 默认安全边界 |
 | --- | --- | --- |
 | pytest | 确定性代码契约是否成立 | `mock/local/offline`，见 `tests/README.md` |
 | system eval | 一个真实 Provider、Tool、Context、Memory 或本地模型节点是否可用 | 每项独立显式授权，产物写入 `.data/evals/system/` |
+| Runtime Regression | 已人工确认的日常失败在当前生产 Runtime 上是否复现或修复 | Langfuse 保存真实来源 Dataset、Experiment 与 Score；真实运行显式授权 |
 | Release Review | 待发布 Agent 是否在关键任务中选对、调用并正确使用工具 | 真实主模型；Decision 使用确定性执行后端，Staging 使用隔离资源 |
 
 Release Review 只在上线前由 operator 显式触发，目标是在 10 分钟内形成可审核证据和风险摘要；它是
@@ -77,42 +78,41 @@ operator 可把人工决定写入本地审计产物：
   --decision approved --operator <operator>
 ```
 
-## 从真实运行问题沉淀回归案例
+## 日常失败到 Runtime Regression
 
-Runtime audit 的 `state/issues.json` 是真实问题候选来源，Git 中的
-`evals/release_review/scenarios/*.yaml` 仍是正式案例的唯一事实源。两者之间采用显式审核晋升，不允许
-Live Evaluator、LLM Judge 或日报自动修改正式 Dataset。
+真实回归案例的固定闭环是：**日常对话 → Live Observation Score → 人工复核失败 Score → Langfuse
+Dataset → 生产 Runtime Experiment → Experiment Score**。Dataset
+`assistant-agent-runtime-regressions` 只接收 Langfuse 已落库、`source=EVAL`、BOOLEAN `false` 且 subject
+为 observation 的 canonical `assistant_agent.quality.*` Score；不再从 runtime audit issue 生成 Git YAML，
+也不使用历史生成案例填充该 Dataset。
 
-先只读列出带真实 Trace 证据、状态为 `open`、`code_addressed` 或 `regressed`，且尚未晋升的 issue：
-
-```bash
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_release_review.py \
-  --list-runtime-candidates
-```
-
-维护者或 coding agent 根据本地证据在正式 `scenarios/` 目录之外生成一个经过脱敏的 Decision Scenario
-草稿。草稿不得包含 `provenance`，也不得复制真实 Trace ID、用户原始对话、Provider 原始响应或 Tool
-原始 payload。完成
-人工复核后，使用双重写入门禁晋升：
+人工在 Langfuse Trace 中确认失败后，用精确 Score ID 显式沉淀：
 
 ```bash
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_release_review.py \
-  --promote-runtime-candidate \
-  --issue-key <issue-key> \
-  --draft-scenario <reviewed-draft.yaml> \
-  --operator <operator> \
-  --allow-write-scenario
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_runtime_regressions.py \
+  --promote-score --score-id <score-id> --reviewed-by <reviewer> \
+  --allow-dataset-write
 ```
 
-晋升入口只接受 Decision Scenario；Staging 所需真实资源、副作用权限和清理责任不能由日常 Trace 自动
-推导。入口重新校验 issue 状态、Trace evidence、Scenario schema、重复 issue、重复 scenario ID 和目标
-文件冲突，再原子写入 `scenarios/runtime/<scenario-id>.yaml`。正式 YAML 的 `provenance` 只保存 issue key
-和 Trace evidence ref 集合各自的 SHA-256、首次/最近发现日期、审核者与审核时间；不保存原始 issue key
-或真实 Trace/Score ID。
-同一 issue 已有正式 Scenario 后不会再次列为候选。
+入口重新读取 Score、所属 trace 的全部 Score 与 Observations v2 数据，要求唯一且未截断的根
+`agent.runtime` input，并创建稳定 item ID。item 关联 `source_trace_id` 与 `source_observation_id`，metadata
+记录审核者、源 Score 和同一 trace 的全部失败质量维度；重复沉淀同一 trace 覆盖同一 item，不制造副本。
 
-晋升只证明案例来源和人工审核完成，不证明 Agent 已修复。新 Scenario 仍须依次经过 `--inspect`、
-`--sync` 和正式 Release Review；只有后续真实对话证据才能把 runtime issue 标为 `runtime_verified`。
+首次 Dataset 创建后，运行 `run_runtime_audit.py configure-evaluators --apply --allow-online-judge`，为该
+Dataset ID 配置 response quality 与 grounding 两条 Experiment Rule。随后显式允许真实 Provider 与
+Runtime 副作用进行重跑：
+
+```bash
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_runtime_regressions.py \
+  --run --run-name <unique-run-name> \
+  --allow-real-provider --allow-runtime-side-effects
+```
+
+runner 只执行 owner 正确且状态为 ACTIVE 的 item，通过 `AgentGraphRuntime` 重放原始请求，不复制 Agent
+loop。输出使用结构化 `ReleaseRunEvidence`，Langfuse Experiment Rules 复用日常 evaluator family。CLI
+必须等每个 item 的 `assistant_agent.quality.response_quality.experiment` 与
+`assistant_agent.quality.grounding.experiment` 都落库后才成功；超时或缺分属于 infrastructure failure。
+`--inspect` 可只读查看 active item 数量。
 
 ## 本地运行顺序
 

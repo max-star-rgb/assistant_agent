@@ -198,7 +198,7 @@ source_globs = [
 thin_references = ["scripts/README.md"]
 verification = [
   "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/runtime_audit",
-  "python scripts/run_runtime_audit.py configure-evaluators --model-provider qwen --model qwen3.6-flash",
+  "python scripts/run_runtime_audit.py configure-evaluators --model-provider qwen-judge --model qwen-flash",
 ]
 exclusive_literals = [
   "assistant-agent-runtime-audit.service",
@@ -254,12 +254,15 @@ read_when = [
 ]
 source_globs = [
   "evals/release_review/**",
+  "evals/runtime_regression/**",
   "evals/system/**",
   "src/assistant_agent/evaluation/**",
   "src/assistant_agent/api/routes_eval_experiments.py",
   "scripts/run_release_review.py",
+  "scripts/run_runtime_regressions.py",
   "deploy/langfuse_eval_webhook/**",
   "tests/tdd/release-review-native-experiment/**",
+  "tests/tdd/runtime-eval-feedback-loop/**",
 ]
 thin_references = [
   "docs/observability-harness.md",
@@ -268,6 +271,7 @@ thin_references = [
 verification = [
   "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/release-review-native-experiment",
   "python scripts/run_release_review.py --inspect",
+  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/runtime-eval-feedback-loop",
 ]
 exclusive_literals = [
   "ASSISTANT_AGENT_LANGFUSE_RELEASE_REVIEW_SIGNING_SECRET",

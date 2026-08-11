@@ -89,7 +89,8 @@ For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
 - `scripts/trace_metrics.py`: redacted trace metric summary.
 - `scripts/run_runtime_audit.py`: 只读日审计稳定入口。`run` 默认审计前一北京时间自然日；Langfuse 查询
   成功但没有 Trace 时输出“昨天无运行trace”，存在异常时才调用受限 Codex。它不启动 Langfuse、不同步
-  Dataset，也不运行 Agent Experiment；`configure-evaluators` 只管理日常 Live Observation Rule。
+  Dataset，也不运行 Agent Experiment；`configure-evaluators` 管理五条 Live Observation Rule，并在真实
+  回归 Dataset 已存在时管理两条 Experiment Rule。
   参数、证据边界、状态机、产物和 systemd 配置统一见
   [`docs/observability-harness.md`](../docs/observability-harness.md#langfuse-first-runtime-审计)。
 - Gateway lifecycle 由 `scripts/run_server.py` 写入 `.data/gateway_events.jsonl`；仓库当前没有
@@ -128,6 +129,10 @@ For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
   Decision fixture backend 与隔离 Staging；`--record-decision` 保存 operator 的人工发布决定。真实运行
   必须同时显式允许 real Provider 和 Staging 副作用，不会静默回退 mock。Dataset、Score、webhook、
   清理和产物契约统一见 [`evals/README.md`](../evals/README.md)。日常 `run_runtime_audit` 不参与这条链路。
+- `scripts/run_runtime_regressions.py`：把人工确认的日常失败 Score 直接沉淀到
+  `assistant-agent-runtime-regressions` Dataset，并通过生产 `AgentGraphRuntime` 创建真实 Experiment。
+  Dataset 写入、真实 Provider/副作用分别有显式 allow gate；CLI 等待两项 Langfuse Experiment Score
+  完整落库后才成功。流程与数据契约见 [`evals/README.md`](../evals/README.md#日常失败到-runtime-regression)。
 - `scripts/run_improvement_lab.py`: offline, non-mutating improvement proposal runner.
 
 ## Specialized integrations
