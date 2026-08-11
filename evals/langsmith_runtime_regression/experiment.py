@@ -199,15 +199,19 @@ def wait_for_langsmith_runtime_regression_completeness(
     timeout_seconds: float = 180.0,
     poll_interval_seconds: float = 5.0,
     sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
 ) -> LangSmithCompletenessResult:
     """Wait for one complete Runtime subtree and all UI Feedback per example."""
 
     if timeout_seconds <= 0 or poll_interval_seconds <= 0:
         raise ValueError("completeness timeout and poll interval must be positive")
-    attempts = math.floor(timeout_seconds / poll_interval_seconds) + 1
+    attempts = math.ceil(timeout_seconds / poll_interval_seconds) + 1
+    deadline = clock() + timeout_seconds
     query_start_time = datetime.now(timezone.utc) - timedelta(hours=1)
     latest_problems: dict[str, list[str]] = {}
     for attempt in range(attempts):
+        if attempt > 0 and clock() >= deadline:
+            break
         try:
             result, latest_problems = _audit_experiment(
                 client,
@@ -224,7 +228,10 @@ def wait_for_langsmith_runtime_regression_completeness(
         if result is not None:
             return result
         if attempt + 1 < attempts:
-            sleep(poll_interval_seconds)
+            remaining = max(0.0, deadline - clock())
+            if remaining <= 0:
+                break
+            sleep(min(poll_interval_seconds, remaining))
     raise RuntimeError(
         "LangSmith Experiment incomplete: " + repr(latest_problems)
     )
@@ -251,7 +258,6 @@ def _audit_experiment(
                 "inputs",
                 "outputs",
             ],
-            limit=max(100, len(example_ids) * 32),
         )
     )
     runs_by_id = {str(_field(run, "id")): run for run in runs}

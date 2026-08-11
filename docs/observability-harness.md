@@ -247,7 +247,9 @@ Qwen WebSocket 还输出 `jpeg_prepare_latency_ms`、`connection_setup_latency_m
 trace/run、node、event type/canonical event、status、error code、时间和完整性 digest；不保留
 user/session、Provider/Tool 正文、input/output summary、span attributes 或 content overlay。后台队列
 有界：队列满、关闭中写入或 secondary 异常会记录 drop/error 状态，但不阻塞业务 response。shutdown
-只做有时限的 flush。保留的字符串字段只接受机器 ID、已登记 node/status、canonical event 命名空间和
+只做有时限的 flush；多个远端 observer 并行关闭并共享一个绝对 deadline。buffered exporter 的
+flush/shutdown 抛错或返回 `False` 必须向 lifecycle 调用者返回 `False`，不能只记录后台 error 后误报
+成功。保留的字符串字段只接受机器 ID、已登记 node/status、canonical event 命名空间和
 结构化 error code；新增事件词汇必须先扩展该 allowlist，不能把自由文本复用到这些字段。
 
 因此：

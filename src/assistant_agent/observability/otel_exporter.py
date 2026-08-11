@@ -427,6 +427,7 @@ class BufferedTextOtelSpanExporter:
         self._last_error: str | None = None
         self._closing = False
         self._closed = False
+        self._close_result: bool | None = None
         self._worker = Thread(
             target=self._run,
             name="assistant-agent-otel-exporter",
@@ -476,7 +477,8 @@ class BufferedTextOtelSpanExporter:
         deadline = monotonic() + timeout
         if not self._enqueue_control(command, timeout=timeout):
             return False
-        return command.done.wait(timeout=max(0.0, deadline - monotonic()))
+        completed = command.done.wait(timeout=max(0.0, deadline - monotonic()))
+        return completed and "error" not in command.result
 
     def close(self, *, timeout: float = DEFAULT_EXPORT_CLOSE_TIMEOUT_SECONDS) -> bool:
         if timeout <= 0:
@@ -484,19 +486,30 @@ class BufferedTextOtelSpanExporter:
         with self._close_lock:
             with self._state_lock:
                 if self._closed:
-                    return not self._worker.is_alive()
+                    return self._close_result is True
                 self._closing = True
             deadline = monotonic() + timeout
             flushed = self.flush(timeout=max(0.0, deadline - monotonic()))
-            stopped = self._enqueue_control(
-                _ExportCommand("stop"),
+            stop_command = _ExportCommand("stop", done=Event())
+            stop_enqueued = self._enqueue_control(
+                stop_command,
                 timeout=max(0.0, deadline - monotonic()),
             )
-            if stopped:
+            stop_completed = False
+            if stop_enqueued:
+                stop_completed = stop_command.done.wait(
+                    timeout=max(0.0, deadline - monotonic())
+                )
                 self._worker.join(timeout=max(0.0, deadline - monotonic()))
             with self._state_lock:
                 self._closed = not self._worker.is_alive()
-            return flushed and self._closed
+                self._close_result = (
+                    flushed
+                    and stop_completed
+                    and "error" not in stop_command.result
+                    and self._closed
+                )
+                return self._close_result
 
     def shutdown(self, *, timeout: float = DEFAULT_EXPORT_CLOSE_TIMEOUT_SECONDS) -> bool:
         return self.close(timeout=timeout)
@@ -507,14 +520,16 @@ class BufferedTextOtelSpanExporter:
                 command = self._queue.get(timeout=0.25)
             except Empty:
                 continue
+            should_stop = command.kind == "stop"
             try:
                 if command.kind == "export":
                     self.sink.export(command.payload)
                 elif command.kind == "flush":
-                    self._flush_sink()
+                    if self._flush_sink() is False:
+                        raise RuntimeError("OTel exporter sink flush returned false")
                 elif command.kind == "stop":
-                    self._close_sink()
-                    return
+                    if self._close_sink() is False:
+                        raise RuntimeError("OTel exporter sink close returned false")
             except Exception as exc:
                 safe_error = _sanitize_exporter_error(exc)
                 command.result["error"] = safe_error
@@ -523,6 +538,8 @@ class BufferedTextOtelSpanExporter:
                 if command.done is not None:
                     command.done.set()
                 self._queue.task_done()
+            if should_stop:
+                return
 
     def _enqueue_control(self, command: _ExportCommand, *, timeout: float) -> bool:
         if timeout <= 0:
@@ -533,17 +550,19 @@ class BufferedTextOtelSpanExporter:
             return False
         return True
 
-    def _flush_sink(self) -> None:
+    def _flush_sink(self) -> bool | None:
         method = getattr(self.sink, "flush", None)
         if callable(method):
-            method()
+            return method()
+        return True
 
-    def _close_sink(self) -> None:
+    def _close_sink(self) -> bool | None:
         method = getattr(self.sink, "shutdown", None)
         if not callable(method):
             method = getattr(self.sink, "close", None)
         if callable(method):
-            method()
+            return method()
+        return True
 
     def _record_drop(self) -> None:
         with self._state_lock:

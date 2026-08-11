@@ -171,3 +171,64 @@ def test_langsmith_close_cannot_consume_langfuse_close_budget(
     assert persistence.close_trace_store(store, timeout=0.01) is False
     assert [name for name, _ in close_calls] == ["langsmith", "langfuse"]
     assert close_calls[1][1] > 0
+
+
+def test_observer_close_uses_one_parallel_deadline() -> None:
+    calls: list[float] = []
+
+    class Observer:
+        def close(self, *, timeout: float) -> bool:
+            calls.append(timeout)
+            time.sleep(timeout)
+            return True
+
+    store = HookTraceStore(HookManager([Observer(), Observer()]))
+    started = time.monotonic()
+
+    assert store.close(timeout=0.05) is False
+
+    elapsed = time.monotonic() - started
+    assert len(calls) == 2
+    assert elapsed < 0.08
+
+
+def test_observer_close_exception_does_not_skip_other_observer() -> None:
+    calls: list[str] = []
+
+    class FailingObserver:
+        def close(self, *, timeout: float) -> bool:
+            calls.append("failing")
+            raise RuntimeError("close failed")
+
+    class RecordingObserver:
+        def close(self, *, timeout: float) -> bool:
+            calls.append("recording")
+            return True
+
+    manager = HookManager([RecordingObserver(), FailingObserver()])
+
+    assert HookTraceStore(manager).close(timeout=0.05) is False
+    assert sorted(calls) == ["failing", "recording"]
+    assert len(manager.errors) == 1
+
+
+@pytest.mark.parametrize("failure_mode", ["raise", "false"])
+def test_buffered_exporter_reports_sink_lifecycle_failure(failure_mode: str) -> None:
+    class Sink:
+        def export(self, spans) -> bool:
+            return True
+
+        def flush(self) -> bool:
+            if failure_mode == "raise":
+                raise RuntimeError("flush failed")
+            return False
+
+        def shutdown(self) -> bool:
+            return False
+
+    exporter = otel_exporter.BufferedTextOtelSpanExporter(Sink())
+
+    assert exporter.flush(timeout=0.2) is False
+    assert exporter.close(timeout=0.2) is False
+    assert exporter.error_count >= 2
+    assert exporter.worker_alive is False

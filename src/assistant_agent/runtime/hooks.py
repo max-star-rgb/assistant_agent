@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 from inspect import Parameter, signature
+from threading import Thread
+from time import monotonic
 from typing import Protocol
 
 from assistant_agent.runtime.events import AgentEvent
@@ -126,16 +128,68 @@ class HookTraceStore:
         return 0
 
     def close(self, *, timeout: float = 1.0) -> bool:
-        closed = True
-        for observer in reversed(self.manager.observers):
+        deadline = monotonic() + max(0.0, timeout)
+        calls: list[tuple[int, object, Callable[..., object]]] = []
+        for index, observer in reversed(
+            list(enumerate(self.manager.observers))
+        ):
             method = getattr(observer, "close", None)
             if not callable(method):
                 method = getattr(observer, "shutdown", None)
             if not callable(method):
                 continue
-            result = _call_lifecycle(method, timeout=timeout)
-            if result is False:
+            calls.append((index, observer, method))
+
+        outcomes: list[dict[str, object]] = [{} for _ in calls]
+
+        def invoke(call_index: int, method: Callable[..., object]) -> None:
+            try:
+                outcomes[call_index]["closed"] = _call_lifecycle(
+                    method,
+                    timeout=max(0.0, deadline - monotonic()),
+                )
+            except Exception as exc:
+                outcomes[call_index]["error"] = exc
+
+        threads = [
+            Thread(
+                target=invoke,
+                args=(call_index, method),
+                name="assistant-agent-hook-close",
+                daemon=True,
+            )
+            for call_index, (_, _, method) in enumerate(calls)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=max(0.0, deadline - monotonic()))
+
+        closed = True
+        first_error: Exception | None = None
+        for thread, (index, observer, _), outcome in zip(
+            threads,
+            calls,
+            outcomes,
+            strict=True,
+        ):
+            error = outcome.get("error")
+            if thread.is_alive() or outcome.get("closed") is not True:
                 closed = False
+            if isinstance(error, Exception):
+                hook_error = build_hook_dispatch_error(
+                    target=observer,
+                    target_index=index,
+                    operation="close",
+                    event=None,
+                    exc=error,
+                )
+                self.manager._errors.append(hook_error)
+                self.manager._dispatch_hook_error(hook_error)
+                if first_error is None:
+                    first_error = error
+        if first_error is not None and not self.manager.continue_on_error:
+            raise first_error
         return closed
 
 
