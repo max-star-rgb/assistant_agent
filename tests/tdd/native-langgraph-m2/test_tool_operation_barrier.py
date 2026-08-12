@@ -22,6 +22,7 @@ from assistant_agent.runtime.state import AgentState
 from assistant_agent.runtime.tool_executor import ToolExecutor
 from assistant_agent.runtime.tool_operation_barrier import (
     OperationDigestConflict,
+    OperationOwnershipError,
     SQLiteToolOperationStore,
     ToolOperationScopeRequired,
     ToolOperationRequest,
@@ -310,6 +311,27 @@ def test_second_live_store_does_not_invalidate_current_owner(tmp_path) -> None:
     )
 
     assert second.load(reservation.operation_key).status == "succeeded"
+
+
+def test_contender_and_load_never_expose_owner_fencing_capability(tmp_path) -> None:
+    store = SQLiteToolOperationStore(tmp_path / "operations.sqlite3")
+    owner = store.reserve_and_mark_invoking(_request())
+    contender = store.reserve_and_mark_invoking(_request())
+    loaded = store.load(owner.operation_key)
+
+    assert contender.disposition == "in_progress"
+    assert contender.record is not None
+    assert not hasattr(contender.record, "owner_token")
+    assert loaded is not None
+    assert not hasattr(loaded, "owner_token")
+    with pytest.raises(OperationOwnershipError):
+        store.commit_success(
+            owner.operation_key,
+            owner_token="forged-owner-token",
+            result_summary="forged",
+            output_ref=None,
+            result_digest="d" * 64,
+        )
 
 
 def test_second_process_default_store_does_not_fence_live_owner(tmp_path) -> None:

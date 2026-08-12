@@ -93,7 +93,6 @@ class ToolOperationRecord:
     input_digest: str
     business_idempotency_key: str | None
     status: ToolOperationStatus
-    owner_token: str | None
     result_summary: str | None
     output_ref: str | None
     result_digest: str | None
@@ -189,10 +188,13 @@ class SQLiteToolOperationStore:
                     owner_token=owner_token,
                 )
 
+            existing_owner_token = (
+                str(row["owner_token"]) if row["owner_token"] is not None else None
+            )
             record = _record_from_row(row)
             self._validate_existing(record, request)
             if record.status == "invoking" and _owner_is_confirmed_dead(
-                record.owner_token
+                existing_owner_token
             ):
                 cursor = connection.execute(
                     """
@@ -201,7 +203,7 @@ class SQLiteToolOperationStore:
                     WHERE operation_key = ? AND status = 'invoking'
                         AND owner_token = ?
                     """,
-                    (_utc_now(), request.operation_key, record.owner_token),
+                    (_utc_now(), request.operation_key, existing_owner_token),
                 )
                 if cursor.rowcount == 1:
                     row = connection.execute(
@@ -521,7 +523,6 @@ def _record_from_row(row: sqlite3.Row) -> ToolOperationRecord:
             else None
         ),
         status=str(row["status"]),  # type: ignore[arg-type]
-        owner_token=str(row["owner_token"]) if row["owner_token"] is not None else None,
         result_summary=(
             str(row["result_summary"]) if row["result_summary"] is not None else None
         ),
