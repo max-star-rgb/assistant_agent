@@ -98,3 +98,24 @@ core。
 - 本任务不停止 server canonical OTel dual tree；该删除属于 Task 7。
 - 未获 operator 真实 Provider/LangSmith 运行授权，因此没有运行真实 Experiment；未用 fake 结果冒充真实
   行为证据。
+
+## Review fix round 1/5
+
+独立审查提出 3 个 Important，均经 RED 复现并修复：
+
+1. `langsmith==0.10.18` 的 `AsyncExperimentResults.get_dataset_id()` 是 coroutine。fake 现改为 async 并记录
+   await 事实；production 使用 `await native.get_dataset_id()`，避免把 coroutine repr 写入结果并消除
+   unawaited coroutine warning。
+2. native tree audit 现严格校验 run type：Experiment task、`AssistantTurnGraph`、`assistant`、
+   `compose_response`、`execute_tool` 必须为 `chain`，`llm.chat` 必须为 `llm`；任一类型错误均以结构化问题
+   fail-closed。真实 LangGraph `astream_events(v2)` 离线 probe 显示上述 graph/node 全部产生
+   `on_chain_start`；LangSmith async target 默认 `traceable` 类型也是 `chain`，项目 LLM/Tool wrapper 分别
+   显式使用 `llm` / `tool`。
+3. 删除“出现 `execute_tool` 就必须有 Tool child”的错误假设。validator rejection、loop guard 等路径允许
+   zero Tool child；但只要存在任何 `run_type=tool` run，它仍必须位于 `execute_tool` 子树。
+
+Fix round RED：`8 failed, 10 passed`，分别命中 async dataset ID、zero Tool child 和六类错误 run type。
+
+Fix round GREEN：Task6 单文件 18 passed；完整 native+LangSmith 临时套件 84 passed；legacy related 31
+passed；default core 86 passed；authority、compileall、diff check 通过。全部为 fake/mock/offline，无网络或
+真实 Provider。

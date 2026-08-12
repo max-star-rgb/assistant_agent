@@ -181,12 +181,13 @@ async def run_langsmith_runtime_regression_experiment(
         _require_run_id(_field(rows_by_example[example_id], "run"))
         for example_id in example_ids
     )
+    native_dataset_id = await native.get_dataset_id()
     return LangSmithRuntimeRegressionResult(
         native_result=native,
         experiment_id=str(native.experiment_id),
         experiment_name=str(native.experiment_name),
         experiment_url=(str(native.url) if getattr(native, "url", None) else None),
-        dataset_id=str(native.get_dataset_id() or dataset.id),
+        dataset_id=str(native_dataset_id or dataset.id),
         example_ids=example_ids,
         run_ids=run_ids,
     )
@@ -273,6 +274,11 @@ def audit_native_graph_tree(
         root_trace_id = str(_field(root, "trace_id") or "")
         if not root_trace_id:
             item_problems.append("root trace missing")
+        if _field(root, "run_type") != "chain":
+            item_problems.append(
+                f"experiment task run_type={_field(root, 'run_type')!r}, "
+                "expected 'chain'"
+            )
         if not isinstance(_field(root, "inputs"), dict) or not _field(root, "inputs"):
             item_problems.append("root inputs missing or not an object")
         if not isinstance(_field(root, "outputs"), dict) or not _field(root, "outputs"):
@@ -305,6 +311,11 @@ def audit_native_graph_tree(
         if len(graphs) != 1:
             item_problems.append(f"AssistantTurnGraph child count={len(graphs)}")
         else:
+            if _field(graphs[0], "run_type") != "chain":
+                item_problems.append(
+                    "AssistantTurnGraph "
+                    f"run_type={_field(graphs[0], 'run_type')!r}, expected 'chain'"
+                )
             graph_id = str(_field(graphs[0], "id"))
             graph_subtree = [
                 run
@@ -324,6 +335,13 @@ def audit_native_graph_tree(
             ]
             if not assistants:
                 item_problems.append("missing assistant graph child")
+            for assistant in assistants:
+                if _field(assistant, "run_type") != "chain":
+                    item_problems.append(
+                        "assistant "
+                        f"run_type={_field(assistant, 'run_type')!r}, "
+                        "expected 'chain'"
+                    )
             compose_responses = [
                 run
                 for run in graph_subtree
@@ -332,7 +350,14 @@ def audit_native_graph_tree(
             ]
             if not compose_responses:
                 item_problems.append("missing compose_response graph child")
-            valid_llm_runs = [
+            for compose_response in compose_responses:
+                if _field(compose_response, "run_type") != "chain":
+                    item_problems.append(
+                        "compose_response "
+                        f"run_type={_field(compose_response, 'run_type')!r}, "
+                        "expected 'chain'"
+                    )
+            nested_llm_runs = [
                 run
                 for run in graph_subtree
                 if _field(run, "name") == "llm.chat"
@@ -345,12 +370,26 @@ def audit_native_graph_tree(
                     for assistant in assistants
                 )
             ]
+            valid_llm_runs = [
+                run
+                for run in nested_llm_runs
+                if _field(run, "run_type") == "llm"
+            ]
+            for llm_run in nested_llm_runs:
+                if _field(llm_run, "run_type") != "llm":
+                    item_problems.append(
+                        "llm.chat "
+                        f"run_type={_field(llm_run, 'run_type')!r}, "
+                        "expected 'llm'"
+                    )
             if not valid_llm_runs:
                 item_problems.append("missing llm.chat in graph subtree")
-            valid_llm_ids = {str(_field(run, "id")) for run in valid_llm_runs}
+            nested_llm_ids = {
+                str(_field(run, "id")) for run in nested_llm_runs
+            }
             if any(
                 _field(run, "name") == "llm.chat"
-                and str(_field(run, "id")) not in valid_llm_ids
+                and str(_field(run, "id")) not in nested_llm_ids
                 for run in subtree
             ):
                 item_problems.append("llm.chat outside assistant subtree")
@@ -360,6 +399,16 @@ def audit_native_graph_tree(
                 for run in graph_subtree
                 if _field(run, "name") == "execute_tool"
             }
+            for execute_tool in graph_subtree:
+                if (
+                    _field(execute_tool, "name") == "execute_tool"
+                    and _field(execute_tool, "run_type") != "chain"
+                ):
+                    item_problems.append(
+                        "execute_tool "
+                        f"run_type={_field(execute_tool, 'run_type')!r}, "
+                        "expected 'chain'"
+                    )
             tool_runs = [
                 run for run in subtree if _field(run, "run_type") == "tool"
             ]
@@ -376,9 +425,6 @@ def audit_native_graph_tree(
                         "governed tool outside execute_tool subtree"
                     )
                     break
-            if execute_tool_ids and not tool_runs:
-                item_problems.append("missing governed tool descendant")
-
         if item_problems:
             problems[example_id] = tuple(item_problems)
 

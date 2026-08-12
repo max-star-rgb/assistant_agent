@@ -67,6 +67,7 @@ class _AsyncResult:
     url = "https://smith.invalid/experiment"
 
     def __init__(self, example: SimpleNamespace) -> None:
+        self.dataset_id_awaited = False
         self.rows = [
             {
                 "example": example,
@@ -82,7 +83,8 @@ class _AsyncResult:
 
         return rows()
 
-    def get_dataset_id(self):
+    async def get_dataset_id(self):
+        self.dataset_id_awaited = True
         return UUID(int=2)
 
 
@@ -146,6 +148,8 @@ def test_dataset_target_awaits_native_graph_under_current_example(
     }
     assert runtime.closed is True
     assert result.example_ids == (str(EXAMPLE_ID),)
+    assert result.dataset_id == str(UUID(int=2))
+    assert result.native_result.dataset_id_awaited is True
     assert client.aevaluate_call["experiment"] is client.created_project
 
 
@@ -332,6 +336,47 @@ def test_native_tree_audit_requires_governed_tool_below_execute_tool() -> None:
     assert "governed tool outside execute_tool subtree" in result.problems[
         str(EXAMPLE_ID)
     ]
+
+
+def test_native_tree_audit_allows_execute_tool_without_tool_child() -> None:
+    result = experiment.audit_native_graph_tree(
+        _native_tree() + [_run(6, name="execute_tool", parent=2)],
+        example_ids=(str(EXAMPLE_ID),),
+    )
+
+    assert result.complete is True
+
+
+@pytest.mark.parametrize(
+    "name,wrong_type",
+    [
+        ("experiment-item-task", "tool"),
+        ("AssistantTurnGraph", "tool"),
+        ("assistant", "tool"),
+        ("compose_response", "tool"),
+        ("execute_tool", "tool"),
+        ("llm.chat", "chain"),
+    ],
+)
+def test_native_tree_audit_rejects_wrong_native_run_types(
+    name,
+    wrong_type,
+) -> None:
+    runs = _native_tree() + [_run(6, name="execute_tool", parent=2)]
+    mutated = [
+        SimpleNamespace(**{**vars(run), "run_type": wrong_type})
+        if run.name == name
+        else run
+        for run in runs
+    ]
+
+    result = experiment.audit_native_graph_tree(
+        mutated,
+        example_ids=(str(EXAMPLE_ID),),
+    )
+
+    assert result.complete is False
+    assert "run_type" in " ".join(result.problems[str(EXAMPLE_ID)])
 
 
 def test_native_tree_audit_rejects_extra_llm_sibling_of_graph() -> None:

@@ -22,3 +22,4 @@ Task 5: fix round 2/5 — positive allowlists protect Tool message top-level/con
 Task 5: fix round 2/5 implementation committed — c92f3708; post-commit TDD 15/related 72/default 86/doc/compileall/diff all passed.
 Task 6: implementation complete — Runtime Regression uses LangSmith aevaluate/current RunTree/native async graph; OTel binding helper removed; native tree audit is fail-closed; TDD 77/related legacy 31/default 86/doc/compileall/diff passed; no real Provider/network.
 Task 6: verification note — concurrent pytest exposed one existing 50ms Task7 timing failure; isolated 1 passed and serial full related suite 77 passed; no Task7 code/test change.
+Task 6: fix round 1/5 — await async Experiment dataset ID; strict chain/llm/tool run-type audit; execute_tool zero-tool-child accepted; TDD 18/full related 84/legacy 31/default 86 passed.
