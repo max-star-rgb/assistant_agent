@@ -146,14 +146,8 @@ def _control_from_child(
         raw = envelope["workflow_control"]
         if not isinstance(raw, Mapping):
             raise ValueError("worker control must be an object")
-        normalized = dict(raw)
-        status = normalized.pop("status", None)
-        if "outcome" not in normalized and status is not None:
-            normalized["outcome"] = (
-                "completed" if status in {"succeeded", "verified"} else status
-            )
-        control = WorkflowWorkerControl.model_validate_json(json.dumps(normalized))
-        return control, message
+        control = WorkflowWorkerControl.model_validate_json(json.dumps(raw))
+        return control, ""
     raise ValueError("worker response must contain strict workflow_control")
 
 

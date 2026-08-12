@@ -142,6 +142,54 @@ def test_plain_text_worker_output_fails_closed_without_artifact(tmp_path):
         artifact_store.close()
 
 
+def test_control_envelope_is_not_written_as_a_deliverable_artifact(tmp_path):
+    from assistant_agent.workflows.graph_state import latest_results
+    from workflow_graph_probe import config, workflow_probe
+
+    response = json.dumps(
+        {"workflow_control": {"outcome": "completed", "summary": "done"}}
+    )
+    app, context, initial, _worker, artifact_store = workflow_probe(
+        tmp_path,
+        {"a": []},
+        worker_responses={"a": response},
+    )
+    try:
+        final = asyncio.run(app.ainvoke(initial, config=config(), context=context))
+        result = latest_results(
+            final["result_ledger"], final["execution_generation_by_node"]
+        )["a"]
+        assert final["status"] == "completed"
+        assert result.status == "succeeded"
+        assert result.artifact_refs == ()
+        assert tuple(final["result_artifact_refs"]) == ()
+    finally:
+        artifact_store.close()
+
+
+def test_legacy_status_alias_is_not_a_valid_worker_control(tmp_path):
+    from assistant_agent.workflows.graph_state import latest_results
+    from workflow_graph_probe import config, workflow_probe
+
+    response = json.dumps(
+        {"workflow_control": {"status": "succeeded", "summary": "done"}}
+    )
+    app, context, initial, _worker, artifact_store = workflow_probe(
+        tmp_path,
+        {"a": []},
+        worker_responses={"a": response},
+    )
+    try:
+        final = asyncio.run(app.ainvoke(initial, config=config(), context=context))
+        result = latest_results(
+            final["result_ledger"], final["execution_generation_by_node"]
+        )["a"]
+        assert final["status"] == "failed"
+        assert result.error_code == "workflow_worker_control_invalid"
+    finally:
+        artifact_store.close()
+
+
 def test_deep_research_worker_does_not_inherit_registered_read_tools(tmp_path):
     from workflow_graph_probe import config, workflow_probe
 
