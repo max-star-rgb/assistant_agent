@@ -941,7 +941,14 @@ class AgentGraphRuntime:
                 pre_terminal_state_hook=pre_terminal_state_hook,
                 run_id=effective_run_id,
             )
-            return await self._run_prepared_graph_async(prepared, resume=resume)
+            try:
+                state = await self._execute_graph_async(prepared, resume=resume)
+            except GraphExecutionError as exc:
+                self._finalize_graph_execution_error(prepared, exc)
+                raise
+            if state.status == "waiting_user":
+                return state
+            return self._finalize_graph_run(prepared, state)
         finally:
             self.long_term_memory_service.release_run_context(
                 identity=identity,
@@ -1340,12 +1347,23 @@ class AgentGraphRuntime:
                     part_consumer=prepared.product_event_projector.project_part,
                 )
             if result.status == "interrupted":
-                if not self.allow_interrupt:
-                    raise GraphExecutionError(
-                        "graph_interrupt_disabled",
-                        "This Runtime composition received an unexpected graph interrupt.",
-                    )
                 state = self._complete_graph_execution(prepared, result.final_state)
+                if state.status in {"cancelled", "failed"}:
+                    return state
+                if not self.allow_interrupt:
+                    state.errors.append(
+                        AgentError(
+                            message="Assistant graph interrupted outside an enabled internal composition.",
+                            source="assistant_graph",
+                            details={
+                                "code": "graph_unexpected_interrupt",
+                                "failure_kind": "infrastructure_error",
+                            },
+                        )
+                    )
+                    state.status = "failed"
+                    state.response = None
+                    return state
                 state.status = "waiting_user"
                 state.response = None
                 return state
@@ -1366,6 +1384,28 @@ class AgentGraphRuntime:
         state = await self._execute_graph_async(prepared, resume=resume)
         if state.status == "waiting_user":
             return state
+        return self._finalize_graph_run(prepared, state)
+
+    def _finalize_graph_execution_error(
+        self,
+        prepared: _PreparedGraphRun,
+        exc: GraphExecutionError,
+    ) -> AgentState:
+        """Close a started graph invocation that failed during native validation."""
+
+        state = prepared.state
+        state.errors.append(
+            AgentError(
+                message="Assistant graph execution failed.",
+                source="assistant_graph",
+                details={
+                    "code": exc.code,
+                    "failure_kind": "infrastructure_error",
+                },
+            )
+        )
+        state.status = "failed"
+        state.response = None
         return self._finalize_graph_run(prepared, state)
 
     def _finalize_graph_run(

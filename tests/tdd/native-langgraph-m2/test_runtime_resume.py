@@ -5,7 +5,10 @@ import asyncio
 import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 
-from assistant_agent.runtime.assistant_graph_app import GraphExecutionError
+from assistant_agent.runtime.assistant_graph_app import (
+    GraphExecutionError,
+    GraphStreamResult,
+)
 from assistant_agent.runtime.assistant_interrupts import (
     AssistantApproveResume,
     AssistantInterruptRequest,
@@ -16,6 +19,7 @@ from assistant_agent.runtime.output_models import NativeToolCall
 from assistant_agent.runtime.requests import UserRequest
 from assistant_agent.runtime.runtime import AgentGraphRuntime
 from assistant_agent.runtime.session_store import InMemorySessionStore
+from assistant_agent.runtime.run_history import RunHistoryStore
 from tests.core.support import (
     ProbeTool,
     ScriptedChatAdapter,
@@ -32,6 +36,24 @@ class _LifecycleProbe(ProbeTool):
 
     def on_run_terminal(self, run_id: str, status: str) -> None:
         self.terminals.append((run_id, status))
+
+
+class _UnexpectedInterruptGraphApp:
+    async def arun(self, input_state, **kwargs) -> GraphStreamResult:
+        return GraphStreamResult(
+            final_state=input_state,
+            parts=(),
+            status="interrupted",
+        )
+
+
+class _PostGraphCancelToken:
+    def __init__(self) -> None:
+        self.checks = 0
+
+    def is_cancelled(self) -> bool:
+        self.checks += 1
+        return self.checks >= 2
 
 
 def _request() -> UserRequest:
@@ -210,6 +232,75 @@ def test_interrupt_flag_rejects_truthy_non_boolean_values() -> None:
         )
 
 
+def test_unexpected_interrupt_fails_through_shared_terminal_lifecycle(tmp_path) -> None:
+    """Raising after run start without a failed terminal must break lifecycle integrity."""
+
+    history = RunHistoryStore(tmp_path / "unexpected-interrupt.jsonl")
+    sink = ListEventSink()
+    tool = _LifecycleProbe()
+    runtime = AgentGraphRuntime(
+        registry=sealed_registry(tool),
+        config=offline_config(),
+        session_store=InMemorySessionStore(),
+        run_history=history,
+    )
+    runtime.assistant_graph_app = _UnexpectedInterruptGraphApp()
+    try:
+        state = asyncio.run(
+            runtime.arun_state(
+                _request(),
+                event_sink=sink,
+                run_id="run-unexpected-interrupt",
+            )
+        )
+
+        assert state.status == "failed"
+        assert state.errors[-1].details["code"] == "graph_unexpected_interrupt"
+        assert [record.status for record in history.read_all()] == [
+            "started",
+            "failed",
+        ]
+        assert [event.type for event in sink.events] == ["task_started", "task_failed"]
+        assert tool.terminals == [("run-unexpected-interrupt", "failed")]
+    finally:
+        runtime.close()
+
+
+def test_post_graph_cancel_wins_over_native_interrupt(tmp_path) -> None:
+    """Overwriting post-graph cancellation with waiting_user must fail."""
+
+    history = RunHistoryStore(tmp_path / "interrupt-cancel-race.jsonl")
+    sink = ListEventSink()
+    tool = _LifecycleProbe()
+    runtime = AgentGraphRuntime(
+        registry=sealed_registry(tool),
+        config=offline_config(),
+        session_store=InMemorySessionStore(),
+        run_history=history,
+        allow_interrupt=True,
+    )
+    runtime.assistant_graph_app = _UnexpectedInterruptGraphApp()
+    try:
+        state = asyncio.run(
+            runtime.arun_state(
+                _request(),
+                event_sink=sink,
+                cancel_token=_PostGraphCancelToken(),
+                run_id="run-interrupt-cancel-race",
+            )
+        )
+
+        assert state.status == "cancelled"
+        assert [record.status for record in history.read_all()] == [
+            "started",
+            "cancelled",
+        ]
+        assert [event.type for event in sink.events] == ["task_started", "task_cancelled"]
+        assert tool.terminals == [("run-interrupt-cancel-race", "cancelled")]
+    finally:
+        runtime.close()
+
+
 def test_internal_state_stream_uses_async_graph_for_wait_and_resume(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -290,3 +381,59 @@ def test_internal_state_stream_uses_async_graph_for_wait_and_resume(
         asyncio.run(interrupt_then_resume())
     finally:
         first.close()
+
+
+def test_invalid_resume_after_prepare_records_one_failed_terminal(tmp_path) -> None:
+    """A resume validation error must not leave a started-only invocation."""
+
+    saver = InMemorySaver()
+    history = RunHistoryStore(tmp_path / "invalid-resume.jsonl")
+    sink = ListEventSink()
+    tool = _LifecycleProbe()
+    runtime = AgentGraphRuntime(
+        registry=sealed_registry(tool),
+        config=offline_config(),
+        chat_adapter=ScriptedChatAdapter(
+            [
+                ChatResult(
+                    provider="scripted",
+                    model="scripted-model",
+                    finish_reason="stop",
+                    response_text="already-complete",
+                )
+            ]
+        ),
+        session_store=InMemorySessionStore(),
+        run_history=history,
+        checkpointer=saver,
+        allow_interrupt=True,
+    )
+    try:
+        completed = asyncio.run(
+            runtime.arun_state(_request(), run_id="run-before-invalid-resume")
+        )
+        with pytest.raises(GraphExecutionError) as captured:
+            asyncio.run(
+                runtime.aresume_state(
+                    _request(),
+                    resume=AssistantApproveResume(action_ref="not-pending"),
+                    event_sink=sink,
+                    run_id="run-invalid-resume",
+                )
+            )
+
+        assert captured.value.code == "graph_interrupt_not_pending"
+        assert completed.status == "completed"
+        assert [record.status for record in history.read_all()] == [
+            "started",
+            "completed",
+            "started",
+            "failed",
+        ]
+        assert [event.type for event in sink.events] == ["task_started", "task_failed"]
+        assert tool.terminals == [
+            ("run-before-invalid-resume", "completed"),
+            ("run-invalid-resume", "failed"),
+        ]
+    finally:
+        runtime.close()

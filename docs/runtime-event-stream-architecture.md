@@ -278,11 +278,12 @@ status, errors, output refs, trace ids, conversation-history effects, realtime
 task-state effects, and other metadata that is not guaranteed to appear in the
 stream.
 
-`AgentGraphRuntime.run_stream()` returns
-`AgentRunStream[AgentState]`:
+`AgentGraphRuntime.astream_state()` is the internal resumable graph stream and
+returns `AgentRunStream[AgentState]`; it is available only on a Runtime explicitly
+constructed with `allow_interrupt=True`:
 
 ```python
-stream = runtime.run_stream(request, cancel_token=cancel_token)
+stream = runtime.astream_state(request, cancel_token=cancel_token)
 async for event in stream:
     consume(event)
 state = await stream.result()
@@ -394,12 +395,12 @@ The realtime backend normally consumes the shared service stream with
 `async for`. The default HTTP Gateway composition root injects
 `GatewayRuntimePool.run_request_stream()` and keeps its runtime lease until the
 inner stream reaches a result or exception; the Agent-Service composition root
-injects `AssistantRuntimeApp.run_request_stream()`. An explicitly injected
-synchronous `run_request=` hook is retained only as a compatibility wrapper and
-still uses a worker-thread bridge. The synchronous
-`run_assistant_request()` and `AgentGraphRuntime.run_state()` APIs also remain
-available for existing non-async callers; they do not define the production
-Gateway stream path.
+injects `AssistantRuntimeApp.run_request_stream()`. `GatewayRuntimeAdapter` only
+accepts an async `run_request_stream=` boundary; the former synchronous
+`run_request=` worker-thread bridge and `AgentGraphRuntime.run_stream()` bridge
+have been removed. The synchronous `run_assistant_request()` and
+`AgentGraphRuntime.run_state()` APIs remain available for existing non-Gateway
+callers; they do not define a product stream path.
 
 Async migration remains selective:
 
