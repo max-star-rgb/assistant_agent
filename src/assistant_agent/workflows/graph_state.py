@@ -370,6 +370,8 @@ class WorkflowProfileAssignment(_CheckpointModel):
             and self.resume_value.action_ref != self.resume_of_action_ref
         ):
             raise ValueError("resume action refs must match")
+        if self.budget_slice.model_calls < 1:
+            raise ValueError("workflow branch assignment requires model call budget")
         return self
 
 

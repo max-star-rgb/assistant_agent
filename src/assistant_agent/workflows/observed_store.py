@@ -108,10 +108,8 @@ class ObservedWorkflowStore:
         lease_seconds: int,
         model_call_limit: int,
         tool_call_limit: int,
-        allowed_execution_engines: frozenset[WorkflowExecutionEngine] = frozenset(
-            {"legacy_scheduler_v2"}
-        ),
-        allowed_workflow_types: frozenset[str] | None = None,
+        allowed_execution_engines: frozenset[WorkflowExecutionEngine],
+        allowed_workflow_types: frozenset[str],
     ) -> WorkflowDispatch | None:
         claimed = self.inner.claim_ready_work_item(
             worker_id=worker_id,

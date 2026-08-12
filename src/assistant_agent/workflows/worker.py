@@ -22,13 +22,13 @@ class DurableWorkflowWorker:
         lease_seconds: int = 30,
         poll_seconds: float = 1.0,
         max_concurrent_items: int = 4,
-        allowed_execution_engines: frozenset[WorkflowExecutionEngine] = frozenset(
-            {"legacy_scheduler_v2"}
-        ),
-        allowed_workflow_types: frozenset[str] | None = None,
+        allowed_execution_engines: frozenset[WorkflowExecutionEngine],
+        allowed_workflow_types: frozenset[str],
     ) -> None:
         if max_concurrent_items < 1:
             raise ValueError("max_concurrent_items must be positive")
+        if not allowed_execution_engines or not allowed_workflow_types:
+            raise ValueError("workflow worker claim allowlists must be non-empty")
         self.service = service
         self.runtime = runtime
         self.worker_id = worker_id

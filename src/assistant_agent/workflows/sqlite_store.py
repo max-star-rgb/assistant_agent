@@ -183,14 +183,14 @@ class SQLiteWorkflowStore:
         lease_seconds: int,
         model_call_limit: int,
         tool_call_limit: int,
-        allowed_execution_engines: frozenset[WorkflowExecutionEngine] = frozenset(
-            {"legacy_scheduler_v2"}
-        ),
-        allowed_workflow_types: frozenset[str] | None = None,
+        allowed_execution_engines: frozenset[WorkflowExecutionEngine],
+        allowed_workflow_types: frozenset[str],
     ) -> WorkflowDispatch | None:
         with self._lock:
             try:
                 self._connection.execute("BEGIN IMMEDIATE")
+                if not allowed_execution_engines or not allowed_workflow_types:
+                    raise ValueError("workflow claim scope allowlists must be non-empty")
                 rows = self._connection.execute(
                     """
                     SELECT bundle_json FROM durable_workflows

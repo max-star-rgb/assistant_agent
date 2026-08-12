@@ -148,8 +148,16 @@ def assistant_graph_profile(
 def profile_input_adapter(
     parent_state: Mapping[str, object],
     assignment: ProfileInvocationInput | Mapping[str, object],
+    *,
+    model_call_limit: int | None = None,
+    tool_call_limit: int | None = None,
 ) -> "AssistantTurnState":
     """Project only admitted identity and assignment facts into child state."""
+
+    if model_call_limit is not None and model_call_limit < 1:
+        raise ValueError("profile model_call_limit must be positive")
+    if tool_call_limit is not None and tool_call_limit < 0:
+        raise ValueError("profile tool_call_limit must be non-negative")
 
     from assistant_agent.runtime.assistant_graph_state import (
         AssistantTurnState,
@@ -242,11 +250,26 @@ def profile_input_adapter(
         ],
         "exclusion_reason_codes": excluded_codes,
     }
-    # A profile with no Tool budget still needs one LLM decision turn.
-    child["max_assistant_iterations"] = max(1, profile.max_tool_iterations)
-    child["max_tool_calls_per_run"] = profile.max_tool_iterations
-    child["max_action_tool_calls_per_run"] = profile.max_tool_iterations
-    child["max_control_tool_calls_per_run"] = profile.max_control_tool_iterations
+    # A profile with no Tool budget still needs one LLM decision turn. Persisted
+    # workflow slices can only narrow these trusted profile maxima.
+    profile_model_limit = max(1, profile.max_tool_iterations)
+    effective_model_limit = (
+        profile_model_limit
+        if model_call_limit is None
+        else min(profile_model_limit, model_call_limit)
+    )
+    effective_tool_limit = (
+        profile.max_tool_iterations
+        if tool_call_limit is None
+        else min(profile.max_tool_iterations, tool_call_limit)
+    )
+    child["max_assistant_iterations"] = effective_model_limit
+    child["max_tool_calls_per_run"] = effective_tool_limit
+    child["max_action_tool_calls_per_run"] = effective_tool_limit
+    child["max_control_tool_calls_per_run"] = min(
+        profile.max_control_tool_iterations,
+        effective_tool_limit,
+    )
     return cast(AssistantTurnState, validate_assistant_turn_state(child))
 
 

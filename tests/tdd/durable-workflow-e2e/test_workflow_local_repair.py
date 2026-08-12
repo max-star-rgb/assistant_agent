@@ -134,6 +134,8 @@ def test_verifier_repair_creates_new_plan_and_only_replays_affected_subtree() ->
         service=service,
         runtime=WorkflowRuntime(service=service, work_item_executor=executor),
         worker_id="worker-sentinel",
+        allowed_execution_engines=frozenset({"legacy_scheduler_v2"}),
+        allowed_workflow_types=frozenset(service.definitions.list_types()),
     )
 
     for _ in range(6):
@@ -173,6 +175,8 @@ def test_invalid_repair_scope_fails_only_the_workflow_without_crashing_worker() 
             work_item_executor=InvalidRepairExecutor(),
         ),
         worker_id="worker-sentinel",
+        allowed_execution_engines=frozenset({"legacy_scheduler_v2"}),
+        allowed_workflow_types=frozenset(service.definitions.list_types()),
     )
 
     assert worker.run_once() is True

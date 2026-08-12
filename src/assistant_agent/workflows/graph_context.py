@@ -216,6 +216,16 @@ class BranchProfileContextFactory:
             raise AssistantStateCompatibilityError(
                 "Child Tool scope does not match outer assignment."
             )
+        budget = assignment.budget_slice
+        if (
+            int(child["max_assistant_iterations"]) > budget.model_calls
+            or int(child["max_tool_calls_per_run"]) > budget.tool_calls
+            or int(child["max_action_tool_calls_per_run"]) > budget.tool_calls
+            or int(child["max_control_tool_calls_per_run"]) > budget.tool_calls
+        ):
+            raise AssistantStateCompatibilityError(
+                "Child execution limits exceed persisted workflow budget slice."
+            )
 
 
 @dataclass(frozen=True)

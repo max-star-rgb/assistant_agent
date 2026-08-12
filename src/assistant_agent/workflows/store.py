@@ -64,10 +64,8 @@ class WorkflowStore(Protocol):
         lease_seconds: int,
         model_call_limit: int,
         tool_call_limit: int,
-        allowed_execution_engines: frozenset[WorkflowExecutionEngine] = frozenset(
-            {"legacy_scheduler_v2"}
-        ),
-        allowed_workflow_types: frozenset[str] | None = None,
+        allowed_execution_engines: frozenset[WorkflowExecutionEngine],
+        allowed_workflow_types: frozenset[str],
     ) -> WorkflowDispatch | None: ...
     def renew_work_item_lease(
         self,
@@ -88,14 +86,14 @@ def workflow_matches_claim_scope(
     bundle: WorkflowBundle,
     *,
     allowed_execution_engines: frozenset[WorkflowExecutionEngine],
-    allowed_workflow_types: frozenset[str] | None,
+    allowed_workflow_types: frozenset[str],
 ) -> bool:
     """Return whether a legacy scheduler may claim this business record."""
 
     workflow = bundle.workflow
-    return workflow.execution_engine in allowed_execution_engines and (
-        allowed_workflow_types is None
-        or workflow.workflow_type in allowed_workflow_types
+    return (
+        workflow.execution_engine in allowed_execution_engines
+        and workflow.workflow_type in allowed_workflow_types
     )
 
 
@@ -396,11 +394,11 @@ class InMemoryWorkflowStore:
         lease_seconds: int,
         model_call_limit: int,
         tool_call_limit: int,
-        allowed_execution_engines: frozenset[WorkflowExecutionEngine] = frozenset(
-            {"legacy_scheduler_v2"}
-        ),
-        allowed_workflow_types: frozenset[str] | None = None,
+        allowed_execution_engines: frozenset[WorkflowExecutionEngine],
+        allowed_workflow_types: frozenset[str],
     ) -> WorkflowDispatch | None:
+        if not allowed_execution_engines or not allowed_workflow_types:
+            raise ValueError("workflow claim scope allowlists must be non-empty")
         with self._lock:
             for bundle in sorted(
                 self._bundles.values(), key=lambda item: item.workflow.updated_at

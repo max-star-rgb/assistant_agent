@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import inspect
 import itertools
 import json
 from datetime import datetime, timedelta, timezone
@@ -52,6 +53,7 @@ from assistant_agent.workflows.builtin import default_workflow_definitions
 from assistant_agent.workflows.service import WorkflowService
 from assistant_agent.workflows.sqlite_store import SQLiteWorkflowStore
 from assistant_agent.workflows.store import InMemoryWorkflowStore
+from tests.core.support import ProbeTool
 
 
 def _submission() -> WorkflowSubmission:
@@ -178,6 +180,11 @@ def _assignment(
     *,
     registry_generation: str = "sha256:" + "a" * 64,
     node_id: str = "research",
+    capability_refs: tuple[str, ...] = (),
+    available_tool_names: tuple[str, ...] = (),
+    explicit_tool_allowlist: tuple[str, ...] = (),
+    model_calls: int = 2,
+    tool_calls: int = 0,
 ) -> WorkflowProfileAssignment:
     return WorkflowProfileAssignment.create(
         profile=profile,
@@ -193,13 +200,13 @@ def _assignment(
         constraints=("cite evidence",),
         input_artifact_refs=("artifact://seed/evidence",),
         acceptance_contract=_acceptance(),
-        capability_refs=(),
-        explicit_tool_allowlist=(),
-        available_tool_names=(),
+        capability_refs=capability_refs,
+        explicit_tool_allowlist=explicit_tool_allowlist,
+        available_tool_names=available_tool_names,
         tool_scope_ref=registry_generation,
         budget_slice=PersistedWorkflowBudgetSlice(
-            model_calls=2,
-            tool_calls=0,
+            model_calls=model_calls,
+            tool_calls=tool_calls,
             workflow_quanta=4,
         ),
     )
@@ -227,7 +234,16 @@ def _child_state(
             capability_refs=assignment.capability_refs,
             explicit_tool_allowlist=assignment.explicit_tool_allowlist,
         ),
+        model_call_limit=assignment.budget_slice.model_calls,
+        tool_call_limit=assignment.budget_slice.tool_calls,
     )
+
+
+def _probe_registry() -> ToolRegistry:
+    registry = ToolRegistry()
+    registry.register(ProbeTool())
+    registry.seal()
+    return registry
 
 
 def _services(tmp_path, registry: ToolRegistry) -> WorkflowGraphRuntimeServices:
@@ -372,6 +388,42 @@ def test_legacy_claim_filters_engine_and_workflow_type_inside_store_boundary(
     store.close()
 
 
+@pytest.mark.parametrize("store_kind", ["memory", "sqlite"])
+def test_claim_scope_requires_explicit_engine_and_workflow_type_allowlists(
+    tmp_path,
+    store_kind,
+) -> None:
+    store = (
+        InMemoryWorkflowStore()
+        if store_kind == "memory"
+        else SQLiteWorkflowStore(tmp_path / "workflows.sqlite3")
+    )
+    signature = inspect.signature(store.claim_ready_work_item)
+
+    assert signature.parameters["allowed_execution_engines"].default is inspect.Parameter.empty
+    assert signature.parameters["allowed_workflow_types"].default is inspect.Parameter.empty
+    common = {
+        "worker_id": "worker-1",
+        "now": datetime.now(timezone.utc),
+        "lease_seconds": 30,
+        "model_call_limit": 1,
+        "tool_call_limit": 0,
+    }
+    with pytest.raises(ValueError, match="allowlists.*non-empty"):
+        store.claim_ready_work_item(
+            **common,
+            allowed_execution_engines=frozenset(),
+            allowed_workflow_types=frozenset({"deep_research"}),
+        )
+    with pytest.raises(ValueError, match="allowlists.*non-empty"):
+        store.claim_ready_work_item(
+            **common,
+            allowed_execution_engines=frozenset({"legacy_scheduler_v2"}),
+            allowed_workflow_types=frozenset(),
+        )
+    store.close()
+
+
 def test_initial_state_rejects_legacy_record_and_preserves_strict_identity() -> None:
     with pytest.raises(ValueError, match="legacy_scheduler_v2"):
         initial_workflow_graph_state(
@@ -487,20 +539,49 @@ def test_branch_factory_builds_independent_agent_state_executor_and_counters(
     assert second.agent_state.errors == []
 
 
+def test_branch_budget_slice_caps_child_even_with_nonempty_tool_catalog(tmp_path) -> None:
+    registry = _probe_registry()
+    assignment = _assignment(
+        registry_generation=registry.generation or "",
+        available_tool_names=("probe_tool",),
+        explicit_tool_allowlist=("probe_tool",),
+        model_calls=1,
+        tool_calls=0,
+    )
+    child = _child_state(assignment, registry)
+
+    assert child["catalog"]["available_tool_names"] == ["probe_tool"]
+    assert child["max_assistant_iterations"] == 1
+    assert child["max_tool_calls_per_run"] == 0
+    assert child["max_action_tool_calls_per_run"] == 0
+
+    over_budget = json.loads(json.dumps(child))
+    over_budget["max_tool_calls_per_run"] = 1
+    over_budget["max_action_tool_calls_per_run"] = 1
+    with pytest.raises(ValueError, match="budget"):
+        BranchProfileContextFactory().context_for_assignment(
+            assignment,
+            over_budget,
+            _services(tmp_path, registry),
+        )
+
+
 @pytest.mark.parametrize("profile", ["planner", "worker", "verifier"])
 def test_fresh_factory_rebuild_matches_uninterrupted_profile_output(
     tmp_path,
     profile,
 ) -> None:
-    registry = ToolRegistry()
-    registry.seal()
+    registry = _probe_registry()
+    available_tool_names = () if profile == "planner" else ("probe_tool",)
     assignment = _assignment(
         profile,
         registry_generation=registry.generation or "",
         node_id=f"{profile}-node",
+        available_tool_names=available_tool_names,
+        explicit_tool_allowlist=available_tool_names,
     )
     child = _child_state(assignment, registry)
-    app = AssistantTurnGraphApp()
+    first_app = AssistantTurnGraphApp()
 
     first_context = BranchProfileContextFactory().context_for_assignment(
         assignment,
@@ -508,23 +589,36 @@ def test_fresh_factory_rebuild_matches_uninterrupted_profile_output(
         _services(tmp_path / "first", registry),
     )
     first = asyncio.run(
-        app.graph_for_profile(profile).ainvoke(child, context=first_context)
+        first_app.graph_for_profile(profile).ainvoke(child, context=first_context)
     )
 
+    fresh_registry = _probe_registry()
     fresh_child = json.loads(json.dumps(child))
+    fresh_app = AssistantTurnGraphApp()
     fresh_context = BranchProfileContextFactory().context_for_assignment(
         WorkflowProfileAssignment.model_validate_json(assignment.model_dump_json()),
         fresh_child,
-        _services(tmp_path / "fresh", registry),
+        _services(tmp_path / "fresh", fresh_registry),
     )
     recovered = asyncio.run(
-        app.graph_for_profile(profile).ainvoke(
+        fresh_app.graph_for_profile(profile).ainvoke(
             fresh_child,
             context=fresh_context,
         )
     )
 
-    assert profile_output_adapter(recovered) == profile_output_adapter(first)
+    assert fresh_registry is not registry
+    assert fresh_registry.generation == registry.generation
+    assert fresh_app is not first_app
+    assert fresh_context.tool_executor is not first_context.tool_executor
+    assert fresh_context.agent_state is not first_context.agent_state
+    assert fresh_context.chat_adapter is not first_context.chat_adapter
+    assert fresh_context.chat_adapter.provider == first_context.chat_adapter.provider
+    assert fresh_context.profile_allowed_tool_names == frozenset(available_tool_names)
+    recovered_output = profile_output_adapter(recovered)
+    uninterrupted_output = profile_output_adapter(first)
+    assert recovered_output.tool_trajectory == uninterrupted_output.tool_trajectory
+    assert recovered_output == uninterrupted_output
 
 
 def test_branch_factory_fails_before_child_node_on_owner_or_scope_mismatch(
@@ -554,3 +648,47 @@ def test_branch_factory_fails_before_child_node_on_owner_or_scope_mismatch(
     stale_child = _child_state(stale_scope, registry)
     with pytest.raises(ValueError, match="Tool scope"):
         factory.context_for_assignment(stale_scope, stale_child, services)
+
+    mismatched_capability_refs = json.loads(json.dumps(child))
+    mismatched_capability_refs["capability_refs"] = ["capability-other"]
+    with pytest.raises(ValueError, match="capability refs"):
+        factory.context_for_assignment(
+            assignment,
+            mismatched_capability_refs,
+            services,
+        )
+
+    mismatched_assignment_ref = json.loads(json.dumps(child))
+    mismatched_assignment_ref["context_refs"][0]["ref"] = (
+        "workflow-assignment:sha256:" + "0" * 64
+    )
+    with pytest.raises(ValueError, match="assignment reference"):
+        factory.context_for_assignment(
+            assignment,
+            mismatched_assignment_ref,
+            services,
+        )
+
+    narrowed_assignment = WorkflowProfileAssignment.create(
+        **{
+            **assignment.model_dump(
+                mode="python",
+                exclude={"assignment_ref", "explicit_tool_allowlist"},
+            ),
+            "explicit_tool_allowlist": ("unavailable_tool",),
+        }
+    )
+    with pytest.raises(ValueError, match="Tool scope|assignment reference"):
+        factory.context_for_assignment(narrowed_assignment, child, services)
+
+    next_generation = WorkflowProfileAssignment.create(
+        **{
+            **assignment.model_dump(
+                mode="python",
+                exclude={"assignment_ref", "execution_generation"},
+            ),
+            "execution_generation": assignment.execution_generation + 1,
+        }
+    )
+    with pytest.raises(ValueError, match="assignment reference"):
+        factory.context_for_assignment(next_generation, child, services)
