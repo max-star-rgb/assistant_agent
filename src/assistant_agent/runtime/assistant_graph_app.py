@@ -4,7 +4,7 @@ from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime
-from typing import Any, Iterator, Literal, cast
+from typing import Any, Iterator, Literal, TypeAlias, cast
 
 from langgraph.types import Command
 
@@ -108,13 +108,144 @@ class GraphExecutionIdentity:
         }
 
 
+GraphStreamMode = Literal[
+    "values", "updates", "messages", "custom", "tasks", "checkpoints"
+]
+GraphDurability = Literal["sync", "async", "exit"]
+_GRAPH_STREAM_MODES = frozenset(
+    {"values", "updates", "messages", "custom", "tasks", "checkpoints"}
+)
+_GRAPH_DURABILITY_MODES = frozenset({"sync", "async", "exit"})
+
+
+@dataclass(frozen=True)
+class GraphStreamSubscription:
+    """Trusted native stream selection; never serialize this onto product wire."""
+
+    modes: tuple[GraphStreamMode, ...]
+    include_subgraphs: bool = True
+    durability: GraphDurability | None = None
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.modes, tuple)
+            or not self.modes
+            or any(mode not in _GRAPH_STREAM_MODES for mode in self.modes)
+        ):
+            raise ValueError("graph stream modes must use the native v2 allowlist")
+        if len(self.modes) != len(set(self.modes)):
+            raise ValueError("graph stream modes must be unique")
+        if type(self.include_subgraphs) is not bool:
+            raise ValueError("include_subgraphs must be a bool")
+        if (
+            self.durability is not None
+            and self.durability not in _GRAPH_DURABILITY_MODES
+        ):
+            raise ValueError("graph stream durability must be sync, async, or exit")
+
+    def native_kwargs(self) -> dict[str, object]:
+        values: dict[str, object] = {
+            "stream_mode": list(self.modes),
+            "subgraphs": self.include_subgraphs,
+            "version": "v2",
+        }
+        if self.durability is not None:
+            values["durability"] = self.durability
+        return values
+
+
+ASSISTANT_GRAPH_STREAM_SUBSCRIPTION = GraphStreamSubscription(
+    modes=("values", "updates", "messages", "custom", "tasks", "checkpoints"),
+    include_subgraphs=True,
+)
+
+
 @dataclass(frozen=True)
 class GraphStreamPart:
     """One normalized item from a LangGraph v2 execution stream."""
 
-    type: str
+    type: GraphStreamMode
     namespace: tuple[str, ...]
     data: Any
+
+
+class GraphValuesPart(GraphStreamPart):
+    type: Literal["values"]
+
+
+class GraphUpdatePart(GraphStreamPart):
+    type: Literal["updates"]
+
+
+class GraphMessagePart(GraphStreamPart):
+    type: Literal["messages"]
+
+
+class GraphCustomPart(GraphStreamPart):
+    type: Literal["custom"]
+
+
+class GraphTaskPart(GraphStreamPart):
+    type: Literal["tasks"]
+
+
+class GraphCheckpointPart(GraphStreamPart):
+    type: Literal["checkpoints"]
+
+
+ValidatedGraphStreamPart: TypeAlias = (
+    GraphValuesPart
+    | GraphUpdatePart
+    | GraphMessagePart
+    | GraphCustomPart
+    | GraphTaskPart
+    | GraphCheckpointPart
+)
+
+
+def parse_graph_stream_part(raw: Mapping[str, Any]) -> ValidatedGraphStreamPart:
+    """Validate one LangGraph v2 envelope before any observer can consume it."""
+
+    if not isinstance(raw, Mapping):
+        raise ValueError("graph stream envelope must be a mapping")
+    stream_type = raw.get("type")
+    if stream_type not in _GRAPH_STREAM_MODES:
+        raise ValueError("graph stream envelope has an unsupported type")
+    raw_namespace = raw.get("ns", ())
+    if not isinstance(raw_namespace, (tuple, list)) or any(
+        not isinstance(item, str) or not item for item in raw_namespace
+    ):
+        raise ValueError("graph stream namespace must contain non-empty strings")
+    if "data" not in raw:
+        raise ValueError("graph stream envelope has no data")
+    data = raw["data"]
+    namespace = tuple(raw_namespace)
+    part_types: dict[str, type[GraphStreamPart]] = {
+        "values": GraphValuesPart,
+        "updates": GraphUpdatePart,
+        "messages": GraphMessagePart,
+        "custom": GraphCustomPart,
+        "tasks": GraphTaskPart,
+        "checkpoints": GraphCheckpointPart,
+    }
+    if stream_type == "messages":
+        if (
+            not isinstance(data, (tuple, list))
+            or len(data) != 2
+            or data[0] is None
+            or not isinstance(data[1], Mapping)
+        ):
+            raise ValueError("messages stream data must be a message/metadata pair")
+        data = (data[0], data[1])
+    elif stream_type != "custom" and not isinstance(data, Mapping):
+        raise ValueError(f"{stream_type} stream data must be a mapping")
+    part_type = part_types[cast(str, stream_type)]
+    return cast(
+        ValidatedGraphStreamPart,
+        part_type(
+            type=cast(GraphStreamMode, stream_type), namespace=namespace, data=data
+        ),
+    )
 
 
 @dataclass(frozen=True)
@@ -308,22 +439,9 @@ class AssistantTurnGraphApp:
                     input_state,
                     config=config,
                     context=context,
-                    stream_mode=[
-                        "values",
-                        "updates",
-                        "messages",
-                        "custom",
-                        "tasks",
-                        "checkpoints",
-                    ],
-                    subgraphs=True,
-                    version="v2",
+                    **ASSISTANT_GRAPH_STREAM_SUBSCRIPTION.native_kwargs(),
                 ):
-                    yield GraphStreamPart(
-                        type=str(raw["type"]),
-                        namespace=tuple(raw.get("ns") or ()),
-                        data=raw.get("data"),
-                    )
+                    yield parse_graph_stream_part(raw)
 
     async def arun(
         self,
@@ -955,9 +1073,7 @@ class AssistantTurnGraphApp:
                 if isinstance(checkpoint_config, Mapping):
                     final_checkpoint_config = checkpoint_config
             public_part = (
-                _safe_time_travel_stream_part(part)
-                if safe_time_travel_parts
-                else part
+                _safe_time_travel_stream_part(part) if safe_time_travel_parts else part
             )
             if public_part is None:
                 continue
@@ -1201,7 +1317,7 @@ def _safe_time_travel_stream_part(part: GraphStreamPart) -> GraphStreamPart | No
     if part.namespace:
         return None
     if part.type == "updates" and isinstance(part.data, Mapping):
-        return GraphStreamPart(
+        return GraphUpdatePart(
             type="updates",
             namespace=(),
             data={str(node_name): None for node_name in part.data},
@@ -1214,7 +1330,7 @@ def _safe_time_travel_stream_part(part: GraphStreamPart) -> GraphStreamPart | No
         data = fact.model_dump(mode="json")
         if _contains_native_stream_key(data):
             return None
-        return GraphStreamPart(type="custom", namespace=(), data=data)
+        return GraphCustomPart(type="custom", namespace=(), data=data)
     return None
 
 

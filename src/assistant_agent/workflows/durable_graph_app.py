@@ -16,6 +16,11 @@ from assistant_agent.observability.langsmith_native import (
     native_graph_trace_scope,
     native_langsmith_tracing,
 )
+from assistant_agent.runtime.assistant_graph_app import (
+    GraphStreamPart,
+    GraphStreamSubscription,
+    parse_graph_stream_part,
+)
 from assistant_agent.workflows.graph_context import WorkflowGraphRuntimeContext
 from assistant_agent.workflows.graph_state import (
     DurableWorkflowState,
@@ -64,9 +69,7 @@ class WorkflowGraphExecutionIdentity:
         )
 
     def runnable_config(self) -> dict[str, dict[str, str]]:
-        return {
-            "configurable": {"thread_id": self.thread_id, "run_id": self.run_id}
-        }
+        return {"configurable": {"thread_id": self.thread_id, "run_id": self.run_id}}
 
 
 class _StrictModel(BaseModel):
@@ -86,11 +89,14 @@ class WorkflowGraphInterrupt(_StrictModel):
     safe_prompt: str
 
 
-@dataclass(frozen=True)
-class WorkflowGraphStreamPart:
-    type: str
-    namespace: tuple[str, ...]
-    data: Any
+WorkflowGraphStreamPart = GraphStreamPart
+
+
+WORKFLOW_GRAPH_STREAM_SUBSCRIPTION = GraphStreamSubscription(
+    modes=("values", "updates", "custom", "tasks", "checkpoints"),
+    include_subgraphs=True,
+    durability="sync",
+)
 
 
 @dataclass(frozen=True)
@@ -154,22 +160,9 @@ class DurableWorkflowGraphApp:
                     input_or_command,
                     config=config,
                     context=context,
-                    stream_mode=[
-                        "values",
-                        "updates",
-                        "custom",
-                        "tasks",
-                        "checkpoints",
-                    ],
-                    subgraphs=True,
-                    durability="sync",
-                    version="v2",
+                    **WORKFLOW_GRAPH_STREAM_SUBSCRIPTION.native_kwargs(),
                 ):
-                    yield WorkflowGraphStreamPart(
-                        type=str(raw["type"]),
-                        namespace=tuple(raw.get("ns") or ()),
-                        data=raw.get("data"),
-                    )
+                    yield parse_graph_stream_part(raw)
 
     async def arun(
         self,
@@ -247,14 +240,16 @@ class DurableWorkflowGraphApp:
         return _safe_snapshot(snapshot, state)
 
     async def _aget_raw_state(self, identity: WorkflowGraphExecutionIdentity) -> Any:
-        return await self.graph.aget_state(
-            identity.runnable_config(), subgraphs=True
-        )
+        return await self.graph.aget_state(identity.runnable_config(), subgraphs=True)
 
     async def aget_state_history(
         self, identity: WorkflowGraphExecutionIdentity, limit: int
     ) -> tuple[Any, ...]:
-        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
+        if (
+            isinstance(limit, bool)
+            or not isinstance(limit, int)
+            or not 1 <= limit <= 100
+        ):
             raise ValueError("state history limit must be between 1 and 100")
         snapshots = tuple(
             [
@@ -364,7 +359,9 @@ class DurableWorkflowGraphApp:
         context: WorkflowGraphRuntimeContext,
     ) -> None:
         owner = state["identity"]
-        owner_map = owner.model_dump(mode="python") if hasattr(owner, "model_dump") else owner
+        owner_map = (
+            owner.model_dump(mode="python") if hasattr(owner, "model_dump") else owner
+        )
         service_owner = context.services.workflow_identity
         if (
             state["workflow_id"] != identity.workflow_id
@@ -388,7 +385,9 @@ class DurableWorkflowGraphApp:
         identity: WorkflowGraphExecutionIdentity,
     ) -> None:
         owner = state["identity"]
-        owner_map = owner.model_dump(mode="python") if hasattr(owner, "model_dump") else owner
+        owner_map = (
+            owner.model_dump(mode="python") if hasattr(owner, "model_dump") else owner
+        )
         if (
             state["workflow_id"] != identity.workflow_id
             or state["workflow_thread_id"] != identity.thread_id
@@ -508,7 +507,8 @@ def _safe_snapshot(
                     request := WorkflowBranchInterruptInput.model_validate_json(
                         json.dumps(getattr(native, "value", None))
                     )
-                ).action_ref in public_by_action
+                ).action_ref
+                in public_by_action
             ),
         )
         for task in tuple(getattr(snapshot, "tasks", ()) or ())
@@ -527,6 +527,7 @@ __all__ = [
     "WorkflowGraphExecutionIdentity",
     "WorkflowGraphInterrupt",
     "WorkflowGraphStreamPart",
+    "WORKFLOW_GRAPH_STREAM_SUBSCRIPTION",
     "WorkflowGraphStreamResult",
     "WorkflowStateSnapshot",
     "WorkflowStateTask",

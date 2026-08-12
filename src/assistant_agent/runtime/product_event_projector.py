@@ -17,7 +17,14 @@ from threading import RLock
 from typing import Annotated, Any, Callable, Literal, Union
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter, ValidationError
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    TypeAdapter,
+    ValidationError,
+)
 
 from assistant_agent.api.models import ApiError
 from assistant_agent.runtime.event_sink import EventSink
@@ -25,8 +32,24 @@ from assistant_agent.runtime.events import AgentEvent
 
 
 RUNTIME_PRODUCT_FACT_SCHEMA_VERSION = "runtime_product_fact_v1"
-_PRODUCT_FACT_ID = ContextVar[str | None]("assistant_agent_product_fact_id", default=None)
-_GRAPH_INTERNAL_KEYS = frozenset({"checkpoint", "checkpoints", "tasks", "ns", "state"})
+_PRODUCT_FACT_ID = ContextVar[str | None](
+    "assistant_agent_product_fact_id", default=None
+)
+_GRAPH_INTERNAL_KEYS = frozenset(
+    {
+        "checkpoint",
+        "checkpoints",
+        "checkpoint_id",
+        "checkpoint_ns",
+        "config",
+        "configurable",
+        "interrupt_id",
+        "task_id",
+        "tasks",
+        "ns",
+        "state",
+    }
+)
 _FLEXIBLE_FACT_FIELDS = frozenset(
     {"payload", "pre_tool_call", "post_tool_call", "contract", "error"}
 )
@@ -165,7 +188,9 @@ def new_runtime_product_fact_id(kind: str) -> str:
 def validate_runtime_product_fact(value: object) -> RuntimeProductFact:
     """Validate one strict fact without accepting undeclared transport fields."""
 
-    candidate = value.model_dump(mode="python") if isinstance(value, BaseModel) else value
+    candidate = (
+        value.model_dump(mode="python") if isinstance(value, BaseModel) else value
+    )
     try:
         _validate_flexible_fact_fields(candidate)
         return _FACT_ADAPTER.validate_python(candidate)
@@ -278,7 +303,11 @@ class ProductEventProjector:
             return None
         if data.get("schema_version") != RUNTIME_PRODUCT_FACT_SCHEMA_VERSION:
             return None
-        return self.project_fact(data)
+        try:
+            validated = validate_runtime_product_fact(data)
+        except RuntimeProductFactValidationError:
+            return None
+        return self.project_fact(validated)
 
     def project_fact(self, fact: RuntimeProductFact | object) -> AgentEvent | None:
         """Map and emit one occurrence, sharing bounded dedupe across all inputs."""
@@ -350,7 +379,9 @@ def _agent_event_from_fact(fact: RuntimeProductFact) -> AgentEvent:
         if fact.finish_reason is not None:
             payload["finish_reason"] = fact.finish_reason
         payload["source"] = fact.source
-        return AgentEvent(type="response_delta", text=fact.text, payload=payload, **common)
+        return AgentEvent(
+            type="response_delta", text=fact.text, payload=payload, **common
+        )
     if isinstance(fact, ToolStartedProductFact):
         return AgentEvent(
             type="tool_started",
@@ -384,7 +415,9 @@ def _agent_event_from_fact(fact: RuntimeProductFact) -> AgentEvent:
             type="tool_finished" if fact.success else "tool_failed",
             tool_name=fact.tool_name,
             output_ref=fact.output_ref if fact.success else None,
-            error=fact.error.model_dump(mode="json") if fact.error is not None else None,
+            error=fact.error.model_dump(mode="json")
+            if fact.error is not None
+            else None,
             payload=payload,
             **common,
         )
@@ -407,7 +440,6 @@ def _agent_event_from_fact(fact: RuntimeProductFact) -> AgentEvent:
                     "status": "waiting_input",
                     "interrupt_kind": fact.interrupt_kind,
                     "action_ref": fact.action_ref,
-                    "interrupt_id": fact.interrupt_id,
                 }
             ),
             **common,
