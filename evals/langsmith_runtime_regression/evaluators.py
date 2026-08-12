@@ -147,6 +147,7 @@ def configure_runtime_regression_evaluators(
         dataset_id=dataset_id,
         model_config_id=model_config_id,
     )
+    _validate_model_configuration(client, model_config_id)
     rules = _response_json(
         client.request_with_retries("GET", "/runs/rules")
     )
@@ -226,6 +227,33 @@ def _structured_evaluator(
             "playground_settings_id": model_config_id,
         }
     }
+
+
+def _validate_model_configuration(client: Any, model_config_id: str) -> None:
+    configurations = _response_json(
+        client.request_with_retries(
+            "GET",
+            "/playground-settings?scope=workspace",
+        )
+    )
+    if not isinstance(configurations, list):
+        raise RuntimeError(
+            "LangSmith model configurations response must be a list"
+        )
+    matching = [
+        item
+        for item in configurations
+        if isinstance(item, dict) and str(item.get("id")) == model_config_id
+    ]
+    if not matching:
+        raise RuntimeError(
+            "LangSmith evaluator model configuration does not exist in the "
+            "active Workspace"
+        )
+    if matching[0].get("available_in_evaluators") is False:
+        raise RuntimeError(
+            "LangSmith model configuration is not available to evaluators"
+        )
 
 
 def _response_json(response: Any) -> Any:

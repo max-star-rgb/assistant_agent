@@ -18,9 +18,19 @@ class _Response:
 
 
 class _Client:
-    def __init__(self, rules=()):
+    def __init__(self, rules=(), model_configurations=None):
         self.dataset = SimpleNamespace(id=DATASET_ID)
         self.rules = list(rules)
+        self.model_configurations = (
+            [
+                {
+                    "id": "model-config-id",
+                    "available_in_evaluators": True,
+                }
+            ]
+            if model_configurations is None
+            else list(model_configurations)
+        )
         self.writes = []
 
     def read_dataset(self, *, dataset_name):
@@ -29,8 +39,10 @@ class _Client:
 
     def request_with_retries(self, method, pathname, **kwargs):
         if method == "GET":
-            assert pathname == "/runs/rules"
-            return _Response(self.rules)
+            if pathname == "/runs/rules":
+                return _Response(self.rules)
+            assert pathname == "/playground-settings?scope=workspace"
+            return _Response(self.model_configurations)
         body = kwargs["request_kwargs"]["json"]
         self.writes.append((method, pathname, body))
         rule_id = (
@@ -94,6 +106,21 @@ def test_configure_dry_run_does_not_mutate_remote_rules() -> None:
     assert result.status == "planned_create"
     assert result.rule_id is None
     assert client.writes == []
+
+
+def test_configure_rejects_missing_model_configuration() -> None:
+    client = _Client(model_configurations=[])
+
+    try:
+        evaluators.configure_runtime_regression_evaluators(
+            client,
+            model_config_id="missing-model-config-id",
+            apply=False,
+        )
+    except RuntimeError as exc:
+        assert "does not exist" in str(exc)
+    else:
+        raise AssertionError("missing model configuration must fail closed")
 
 
 def test_configure_apply_updates_the_one_matching_rule() -> None:
