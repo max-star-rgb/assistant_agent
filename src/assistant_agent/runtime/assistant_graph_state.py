@@ -37,12 +37,13 @@ from assistant_agent.tools.capability_output import (
 
 ASSISTANT_GRAPH_NAME = "AssistantTurnGraph"
 ASSISTANT_GRAPH_VERSION = "3"
-ASSISTANT_STATE_SCHEMA_VERSION = 2
+ASSISTANT_STATE_SCHEMA_VERSION = 3
 
 AssistantGraphContinuation = Literal[
     "assistant", "await_input", "execute_tool", "compose_response", "end"
 ]
 AssistantInvocationKind = Literal["invoke", "resume", "replay", "fork"]
+
 
 class AssistantStateCompatibilityError(ValueError):
     """Raised when persisted state cannot be safely consumed by this graph."""
@@ -242,9 +243,9 @@ class PersistedInterrupt(_CheckpointModel):
     kind: Literal["approval", "input"]
     prompt: str = Field(min_length=1, max_length=2_000)
     action_ref: str = Field(min_length=1, max_length=256)
-    allowed_resume_kinds: tuple[
-        Literal["approve", "reject", "provide_input"], ...
-    ] = Field(min_length=1, max_length=2)
+    allowed_resume_kinds: tuple[Literal["approve", "reject", "provide_input"], ...] = (
+        Field(min_length=1, max_length=2)
+    )
 
 
 class PersistedCitation(_CheckpointModel):
@@ -265,12 +266,14 @@ class PersistedResponse(_CheckpointModel):
 class _AssistantTurnStateModel(_CheckpointModel):
     graph_name: Literal["AssistantTurnGraph"]
     graph_version: Literal["3"]
-    state_schema_version: Literal[2]
+    state_schema_version: Literal[3]
     profile: AssistantGraphProfileName
     turn_origin_id: str = Field(min_length=1, max_length=512)
     invocation_run_id: str = Field(min_length=1, max_length=512)
     invocation_run_ids: tuple[str, ...] = Field(min_length=1, max_length=1_000)
     invocation_kind: AssistantInvocationKind = "invoke"
+    memory_origin_run_id: str = Field(min_length=1, max_length=512)
+    turn_provenance: Literal["product_turn", "time_travel"]
     continuation: AssistantGraphContinuation = "assistant"
     request: PersistedRequest
     run: PersistedRun
@@ -309,12 +312,14 @@ class AssistantTurnState(TypedDict):
 
     graph_name: Literal["AssistantTurnGraph"]
     graph_version: Literal["3"]
-    state_schema_version: Literal[2]
+    state_schema_version: Literal[3]
     profile: AssistantGraphProfileName
     turn_origin_id: str
     invocation_run_id: str
     invocation_run_ids: tuple[str, ...]
     invocation_kind: AssistantInvocationKind
+    memory_origin_run_id: str
+    turn_provenance: Literal["product_turn", "time_travel"]
     continuation: AssistantGraphContinuation
     request: PersistedRequest
     run: PersistedRun
@@ -441,6 +446,8 @@ def assistant_turn_state_from_agent_state(
         invocation_run_id=state.run_id,
         invocation_run_ids=(state.run_id,),
         invocation_kind="invoke",
+        memory_origin_run_id=state.memory_origin_run_id or state.run_id,
+        turn_provenance=state.turn_provenance,
         continuation="assistant",
         request=PersistedRequest.model_validate_json(
             json.dumps(request_payload, ensure_ascii=False)
@@ -490,6 +497,12 @@ def assistant_turn_state_from_loop_state(
                 )
             ),
             "invocation_kind": graph_state.get("invocation_kind", "invoke"),
+            "memory_origin_run_id": graph_state.get(
+                "memory_origin_run_id", state.memory_origin_run_id or state.run_id
+            ),
+            "turn_provenance": graph_state.get(
+                "turn_provenance", state.turn_provenance
+            ),
             "continuation": graph_state.get("continuation", "assistant"),
             "catalog": _project_catalog(
                 state.run_tool_catalog,
@@ -688,6 +701,8 @@ def assistant_loop_state_from_turn_state(
         "invocation_run_id": str(persisted["invocation_run_id"]),
         "invocation_run_ids": list(persisted["invocation_run_ids"]),
         "invocation_kind": str(persisted["invocation_kind"]),
+        "memory_origin_run_id": str(persisted["memory_origin_run_id"]),
+        "turn_provenance": str(persisted["turn_provenance"]),
         "continuation": str(persisted["continuation"]),
         "graph_profile": str(persisted["profile"]),
         "outputs_by_step": outputs_by_step,
@@ -801,6 +816,11 @@ def reenter_assistant_invocation(
         dict.fromkeys([*persisted["invocation_run_ids"], runtime_state.run_id])
     )
     updated["invocation_kind"] = invocation_kind
+    updated["turn_provenance"] = (
+        "time_travel"
+        if invocation_kind in {"replay", "fork"}
+        else persisted["turn_provenance"]
+    )
     return validate_assistant_turn_state(updated)
 
 
@@ -827,6 +847,8 @@ def apply_assistant_turn_state_to_agent_state(
             "Runtime state identity does not match the checkpoint turn."
         )
     runtime_state.status = cast(Any, run["status"])
+    runtime_state.memory_origin_run_id = str(persisted["memory_origin_run_id"])
+    runtime_state.turn_provenance = cast(Any, persisted["turn_provenance"])
     runtime_state.errors = [
         AgentError(
             message=str(item["message"]),
@@ -1140,9 +1162,8 @@ def _pending_bound_input_digest(
             ),
             context_metadata=executor.context_metadata,
         )
-        if (
-            "idempotency_key" in runtime_bound_input_fields(tool)
-            and not bound.get("idempotency_key")
+        if "idempotency_key" in runtime_bound_input_fields(tool) and not bound.get(
+            "idempotency_key"
         ):
             bound["idempotency_key"] = tool_operation_key(
                 thread_id=stable_assistant_thread_id(

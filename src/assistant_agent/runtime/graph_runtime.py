@@ -6,7 +6,9 @@ be persisted in that state. This module binds those dependencies around node
 execution and strips them before the node result returns to LangGraph.
 """
 
-from collections.abc import Callable
+from __future__ import annotations
+
+from collections.abc import Callable, Mapping
 from copy import copy
 from dataclasses import dataclass, field
 import secrets
@@ -21,10 +23,13 @@ from assistant_agent.context.service import ContextService
 from assistant_agent.observability.trace_store import TraceStore, trace_graph_node
 from assistant_agent.runtime.assistant_graph_state import (
     AssistantTurnState,
+    assistant_capability_ref_identity,
+    assistant_context_ref_identity,
     assistant_loop_state_from_turn_state,
     assistant_turn_state_from_loop_state,
     validate_assistant_runtime_refs,
 )
+from assistant_agent.runtime.requests import RuntimeTaskUpdate, UserRequest
 from assistant_agent.runtime.assistant_graph_profiles import (
     assistant_graph_profile,
     AssistantGraphProfileName,
@@ -45,6 +50,91 @@ from assistant_agent.runtime.graph_invocation_claims import (
 
 GraphState = dict[str, Any]
 GraphStateT = TypeVar("GraphStateT", bound=dict[str, Any])
+
+
+class ContinuationPreparationError(ValueError):
+    def __init__(self, code: str, message: str) -> None:
+        self.code = code
+        super().__init__(message)
+
+
+def user_request_from_checkpoint(value: Mapping[str, Any]) -> UserRequest:
+    """Rebuild only product request fields frozen in a validated checkpoint."""
+
+    from assistant_agent.runtime.assistant_graph_state import (
+        persisted_request_from_user_request,
+    )
+
+    media = tuple(value.get("media_refs") or ())
+    messages = [dict(item) for item in tuple(value.get("messages") or ())]
+    request_text = value.get("text")
+    if (
+        request_text is not None
+        and messages
+        and messages[-1].get("role") == "user"
+        and messages[-1].get("text") == request_text
+    ):
+        messages.pop()
+    task_facts = value.get("runtime_task_facts")
+    request = UserRequest(
+        user_id=str(value["user_id"]),
+        session_id=str(value["session_id"]),
+        text=request_text,
+        image_ids=[str(item["ref"]) for item in media if item.get("kind") == "image"],
+        video_ids=[str(item["ref"]) for item in media if item.get("kind") == "video"],
+        audio_id=next(
+            (str(item["ref"]) for item in media if item.get("kind") == "audio"),
+            None,
+        ),
+        assistant_mode=value.get("assistant_mode", "standard"),
+        task_execution_mode=value.get("task_execution_mode", "auto"),
+        response_style=value.get("response_style"),
+        runtime_task_update=(
+            RuntimeTaskUpdate.model_validate(task_facts)
+            if isinstance(task_facts, Mapping)
+            else None
+        ),
+        metadata={"conversation_history": messages},
+    )
+    projected = persisted_request_from_user_request(request)
+    projected["capability_refs"] = list(value.get("capability_refs") or ())
+    if projected != dict(value):
+        raise ContinuationPreparationError(
+            "graph_checkpoint_request_mismatch",
+            "Checkpoint request cannot be reconstructed safely.",
+        )
+    return request
+
+
+def continuation_ref_resolver(
+    persisted: AssistantTurnState,
+    runtime_state: AgentState,
+) -> AssistantRuntimeStateRefResolver:
+    """Validate freshly reconstructed owner-bound refs and freeze their identity."""
+
+    expected_context_refs = tuple(
+        tuple(
+            item.get(key) for key in ("kind", "ref", "source", "version", "status_code")
+        )
+        for item in persisted["context_refs"]
+    )
+    if expected_context_refs != assistant_context_ref_identity(runtime_state):
+        raise ContinuationPreparationError(
+            "graph_continuation_context_refs_unavailable",
+            "Checkpoint context refs cannot be resolved through current owners.",
+        )
+    if tuple(persisted["capability_refs"]) != assistant_capability_ref_identity(
+        runtime_state
+    ):
+        raise ContinuationPreparationError(
+            "graph_continuation_capability_mismatch",
+            "Checkpoint capabilities are unavailable in this Runtime.",
+        )
+
+    def resolve(checkpoint: AssistantTurnState, state: AgentState) -> None:
+        validate_assistant_runtime_refs(checkpoint, state)
+
+    return resolve
 
 
 RUNTIME_STATE_KEYS = frozenset(

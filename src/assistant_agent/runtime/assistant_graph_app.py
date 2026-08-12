@@ -2,8 +2,9 @@
 
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field as dataclass_field, replace
 from datetime import datetime
+from threading import Lock
 from typing import Any, Iterator, Literal, TypeAlias, cast
 
 from langgraph.types import Command
@@ -68,10 +69,27 @@ _HISTORY_SCAN_LIMIT = 500
 class GraphExecutionError(RuntimeError):
     """Structured failure raised when a graph run cannot produce a final state."""
 
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        execution_phase: Literal[
+            "pre_native", "native_started", "native_terminal"
+        ] = "pre_native",
+    ) -> None:
         self.code = code
         self.message = message
+        self.execution_phase = execution_phase
         super().__init__(f"{code}: {message}")
+
+    @property
+    def native_started(self) -> bool:
+        return self.execution_phase == "native_started"
+
+    @native_started.setter
+    def native_started(self, value: bool) -> None:
+        self.execution_phase = "native_started" if value else "pre_native"
 
 
 @dataclass(frozen=True)
@@ -267,6 +285,44 @@ class _GraphInvocationClaimLease:
     mark_terminal: Callable[[], None]
 
 
+@dataclass
+class _ContinuationConsumption:
+    lock: Lock = dataclass_field(default_factory=Lock)
+    consumed: bool = False
+
+    def consume(self) -> bool:
+        with self.lock:
+            if self.consumed:
+                return False
+            self.consumed = True
+            return True
+
+
+@dataclass(frozen=True)
+class _PreparedGraphContinuation:
+    """Claim-owned selected checkpoint; not executable until context binding."""
+
+    identity: GraphExecutionIdentity
+    claim_context: GraphRuntimeContext
+    invocation_kind: Literal["resume", "replay", "fork"]
+    snapshot: Any
+    runnable_config: Mapping[str, Any]
+    fork_values: AssistantTurnState | None = None
+    app_nonce: object | None = None
+    consumption: _ContinuationConsumption = dataclass_field(
+        default_factory=_ContinuationConsumption
+    )
+    resume_payload: Mapping[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class _BoundGraphContinuation:
+    """Opaque continuation whose exact snapshot and fresh context are bound."""
+
+    prepared: _PreparedGraphContinuation
+    context: GraphRuntimeContext
+
+
 class AssistantTurnGraphApp:
     """Own the one compiled assistant graph shared by a runtime instance."""
 
@@ -283,6 +339,7 @@ class AssistantTurnGraphApp:
         )
         self._profile_graphs: dict[AssistantGraphProfileName, Any] = {}
         self._langsmith_config = langsmith_config or _default_langsmith_config()
+        self._continuation_nonce = object()
 
     @classmethod
     def from_compiled_graph(
@@ -297,6 +354,7 @@ class AssistantTurnGraphApp:
         app._graph = graph
         app._profile_graphs = {}
         app._langsmith_config = langsmith_config or _default_langsmith_config()
+        app._continuation_nonce = object()
         return app
 
     @property
@@ -376,14 +434,21 @@ class AssistantTurnGraphApp:
                 with native_graph_trace_scope() as callbacks:
                     config = self._runnable_config(identity, callbacks=callbacks)
                     claim_lease.begin_native()
-                    final_state = cast(
-                        AssistantTurnState,
-                        self._graph.invoke(
-                            input_state,
-                            config=config,
-                            context=context,
-                        ),
-                    )
+                    try:
+                        final_state = cast(
+                            AssistantTurnState,
+                            self._graph.invoke(
+                                input_state,
+                                config=config,
+                                context=context,
+                            ),
+                        )
+                    except GraphExecutionError as exc:
+                        exc.native_started = True
+                        raise
+                    except Exception as exc:
+                        setattr(exc, "native_started", True)
+                        raise
             if _is_terminal_state(final_state):
                 claim_lease.mark_terminal()
             return final_state
@@ -437,13 +502,20 @@ class AssistantTurnGraphApp:
                     runnable_config=runnable_config,
                 )
                 begin_native()
-                async for raw in self._graph.astream(
-                    input_state,
-                    config=config,
-                    context=context,
-                    **ASSISTANT_GRAPH_STREAM_SUBSCRIPTION.native_kwargs(),
-                ):
-                    yield parse_graph_stream_part(raw)
+                try:
+                    async for raw in self._graph.astream(
+                        input_state,
+                        config=config,
+                        context=context,
+                        **ASSISTANT_GRAPH_STREAM_SUBSCRIPTION.native_kwargs(),
+                    ):
+                        yield parse_graph_stream_part(raw)
+                except GraphExecutionError as exc:
+                    exc.native_started = True
+                    raise
+                except Exception as exc:
+                    setattr(exc, "native_started", True)
+                    raise
 
     async def arun(
         self,
@@ -480,21 +552,313 @@ class AssistantTurnGraphApp:
     ) -> GraphStreamResult:
         """Resume one pending native interrupt on the same thread and a new run."""
 
-        resume_context = replace(context, invocation_kind="resume")
-        with self._invocation_claim_scope(
+        prepared = await self.aprepare_resume(
             identity=identity,
-            context=resume_context,
-        ) as claim_lease:
-            result = await self._aresume_claimed(
-                identity=identity,
-                context=resume_context,
-                resume=resume,
-                begin_native=claim_lease.begin_native,
-                part_consumer=part_consumer,
+            context=context,
+            resume=resume,
+        )
+        bound = self.bind_time_travel_context(prepared, context=context)
+        return await self.aexecute_time_travel(bound, part_consumer=part_consumer)
+
+    def claim_continuation_preflight(
+        self,
+        *,
+        identity: GraphExecutionIdentity,
+        context: GraphRuntimeContext,
+    ) -> None:
+        """Retain an invocation claim before continuation checkpoint preflight."""
+
+        self._claim_invocation(identity=identity, context=context)
+
+    async def aprepare_time_travel(
+        self,
+        *,
+        identity: GraphExecutionIdentity,
+        context: GraphRuntimeContext,
+        request: GraphReplayRequest | GraphForkRequest,
+    ) -> _PreparedGraphContinuation:
+        """Claim, select, bind, and effect-check once before product lifecycle."""
+
+        kind: Literal["replay", "fork"] = (
+            "replay" if isinstance(request, GraphReplayRequest) else "fork"
+        )
+        claim_context = replace(context, invocation_kind=kind)
+        self._claim_invocation(identity=identity, context=claim_context)
+        snapshot = await self._resolve_history_snapshot(identity, request.selector)
+        values: AssistantTurnState | None = None
+        if kind == "replay":
+            if tuple(getattr(snapshot, "next", ()) or ()) != ("prepare_invocation",):
+                raise GraphExecutionError(
+                    "graph_checkpoint_not_replayable",
+                    "The selected checkpoint has no safe re-entry gate.",
+                )
+        else:
+            assert isinstance(request, GraphForkRequest)
+            historical_values = getattr(snapshot, "values", None)
+            if isinstance(
+                historical_values, Mapping
+            ) and not fork_patch_preserves_pending_effects(
+                historical_values, request.patch
+            ):
+                raise GraphExecutionError(
+                    "graph_time_travel_effect_forbidden",
+                    "A pending Tool call cannot be forked with a request patch.",
+                )
+            try:
+                values = fork_patch_for_assistant_state(
+                    validate_assistant_turn_state(snapshot.values), request.patch
+                )
+            except Exception as exc:
+                raise GraphExecutionError(
+                    "graph_checkpoint_incompatible",
+                    "Assistant checkpoint cannot be forked by this graph version.",
+                ) from exc
+        return _PreparedGraphContinuation(
+            identity=identity,
+            claim_context=claim_context,
+            invocation_kind=kind,
+            snapshot=snapshot,
+            runnable_config=_snapshot_config(snapshot),
+            fork_values=values,
+            app_nonce=self._continuation_nonce,
+        )
+
+    async def aprepare_resume(
+        self,
+        *,
+        identity: GraphExecutionIdentity,
+        context: GraphRuntimeContext,
+        resume: AssistantResume,
+    ) -> _PreparedGraphContinuation:
+        """Claim and freeze one fully validated resume snapshot before lifecycle."""
+
+        bound = replace(context, invocation_kind="resume")
+        self._claim_invocation(identity=identity, context=bound)
+        snapshot = await self.aget_state(identity)
+        values = getattr(snapshot, "values", None)
+        if not values:
+            raise GraphExecutionError(
+                "graph_checkpoint_not_found",
+                "No assistant checkpoint exists for this thread.",
             )
+        try:
+            state = validate_assistant_turn_state(values)
+        except Exception as exc:
+            raise GraphExecutionError(
+                "graph_checkpoint_incompatible",
+                "Assistant checkpoint cannot be resumed by this graph version.",
+            ) from exc
+        pending_payload = state.get("pending_interrupt")
+        if pending_payload is None or not _snapshot_interrupt_objects(snapshot):
+            raise GraphExecutionError(
+                "graph_interrupt_not_pending",
+                "Assistant checkpoint has no pending native interrupt.",
+            )
+        try:
+            interrupt_request = validate_assistant_interrupt_request(pending_payload)
+            validated_resume = validate_assistant_resume(
+                resume.model_dump(mode="json")
+                if hasattr(resume, "model_dump")
+                else resume
+            )
+            validate_resume_for_interrupt(interrupt_request, validated_resume)
+        except AssistantInterruptContractError as exc:
+            raise GraphExecutionError(exc.code, exc.message) from exc
+        if bound.agent_state is not None:
+            bound.agent_state.trace_id = str(state["run"]["trace_id"])
+        return _PreparedGraphContinuation(
+            identity=identity,
+            claim_context=bound,
+            invocation_kind="resume",
+            snapshot=snapshot,
+            runnable_config=_snapshot_config(snapshot),
+            app_nonce=self._continuation_nonce,
+            resume_payload=validated_resume.model_dump(mode="json"),
+        )
+
+    def bind_time_travel_context(
+        self,
+        prepared: _PreparedGraphContinuation,
+        *,
+        context: GraphRuntimeContext,
+    ) -> _BoundGraphContinuation:
+        """Bind fresh owner/profile/refs under the original claim token."""
+
+        if (
+            prepared.app_nonce is not self._continuation_nonce
+            or context.invocation_token != prepared.claim_context.invocation_token
+        ):
+            raise GraphExecutionError(
+                "graph_invocation_token_mismatch",
+                "Prepared continuation token cannot be replaced.",
+            )
+        if prepared.invocation_kind == "resume":
+            state = validate_assistant_turn_state(prepared.snapshot.values)
+            persisted_run = state["run"]
+            persisted_request = state["request"]
+            runtime_state = context.agent_state
+            expected_thread = GraphExecutionIdentity.for_assistant_turn(
+                agent_id=str(persisted_run["agent_id"]),
+                user_id=str(persisted_request["user_id"]),
+                session_id=str(persisted_request["session_id"]),
+                run_id=prepared.identity.run_id,
+            ).thread_id
+            runtime_request = (
+                persisted_request_from_user_request(runtime_state.request)
+                if runtime_state is not None
+                else {}
+            )
+            if runtime_state is not None:
+                runtime_request["capability_refs"] = list(
+                    assistant_capability_ref_identity(runtime_state)
+                )
+            if state["profile"] != context.graph_profile:
+                raise GraphExecutionError(
+                    "graph_profile_mismatch",
+                    "Resume context profile does not match this checkpoint.",
+                )
+            if (
+                runtime_state is None
+                or prepared.identity.thread_id != expected_thread
+                or prepared.identity.agent_id != persisted_run["agent_id"]
+                or runtime_state.user_id != persisted_request["user_id"]
+                or runtime_state.session_id != persisted_request["session_id"]
+                or runtime_state.agent_id != persisted_run["agent_id"]
+                or runtime_state.run_id != prepared.identity.run_id
+                or runtime_state.trace_id != persisted_run["trace_id"]
+                or prepared.identity.run_id == persisted_run["run_id"]
+                or runtime_request != persisted_request
+            ):
+                raise GraphExecutionError(
+                    "graph_resume_context_mismatch",
+                    "Resume runtime context does not match the pending thread.",
+                )
+            resolver = context.state_ref_resolver or validate_assistant_runtime_refs
+            try:
+                resolver(state, runtime_state)
+            except Exception as exc:
+                raise GraphExecutionError(
+                    "graph_resume_runtime_refs_mismatch",
+                    "Resume runtime refs do not match this checkpoint.",
+                ) from exc
+            checkpoint_tools = set(state["catalog"]["available_tool_names"])
+            runtime_tools = {
+                spec.name for spec in context.tool_executor.registry.list_specs()
+            }
+            if not checkpoint_tools.issubset(runtime_tools):
+                raise GraphExecutionError(
+                    "graph_resume_catalog_unavailable",
+                    "Resume checkpoint Tool catalog is unavailable in this runtime.",
+                )
+        elif prepared.invocation_kind == "replay":
+            context = self._replay_context_from_snapshot(
+                prepared.snapshot,
+                identity=prepared.identity,
+                context=context,
+            )
+        else:
+            assert prepared.fork_values is not None
+            context = self._fork_context_from_snapshot(
+                prepared.fork_values,
+                identity=prepared.identity,
+                context=context,
+            )
+        if (
+            prepared.invocation_kind != "resume"
+            or (prepared.resume_payload or {}).get("kind") == "approve"
+        ):
+            self._guard_time_travel_effects(
+                prepared.snapshot, context, state_override=prepared.fork_values
+            )
+        return _BoundGraphContinuation(prepared=prepared, context=context)
+
+    async def aexecute_time_travel(
+        self,
+        bound: _BoundGraphContinuation,
+        *,
+        part_consumer: Callable[[GraphStreamPart], object] | None = None,
+    ) -> GraphStreamResult:
+        """Execute only the exact snapshot/config admitted by preflight."""
+
+        prepared = bound.prepared
+        context = bound.context
+        if prepared.app_nonce is not self._continuation_nonce:
+            raise GraphExecutionError(
+                "graph_continuation_handle_owner_mismatch",
+                "Prepared continuation belongs to another graph app.",
+            )
+        if not prepared.consumption.consume():
+            raise GraphExecutionError(
+                "graph_continuation_handle_consumed",
+                "Prepared continuation has already been consumed.",
+            )
+        owner_digest = graph_invocation_owner_digest(
+            agent_id=context.agent_state.agent_id,
+            user_id=context.agent_state.user_id,
+            session_id=context.agent_state.session_id,
+        )
+        native_started = False
+
+        def begin_native() -> None:
+            nonlocal native_started
+            context.invocation_claim_store.begin_native(
+                owner_digest=owner_digest,
+                thread_id=prepared.identity.thread_id,
+                run_id=prepared.identity.run_id,
+                invocation_token=context.invocation_token,
+            )
+            native_started = True
+
+        try:
+            config = prepared.runnable_config
+            if prepared.invocation_kind == "fork":
+                updater = getattr(self._graph, "aupdate_state", None)
+                if not callable(updater):
+                    raise GraphExecutionError(
+                        "graph_update_state_api_unavailable",
+                        "Compiled graph does not expose native async state updates.",
+                    )
+                begin_native()
+                config = await updater(
+                    config, prepared.fork_values, as_node="time_travel_anchor"
+                )
+
+                def begin() -> None:
+                    return None
+
+                input_value = None
+            elif prepared.invocation_kind == "resume":
+                begin = begin_native
+                input_value = Command(resume=dict(prepared.resume_payload or {}))
+            else:
+                begin = begin_native
+                input_value = None
+            result = await self._consume_stream_unclaimed(
+                input_value,
+                identity=prepared.identity,
+                context=context,
+                begin_native=begin,
+                runnable_config=config,
+                part_consumer=part_consumer,
+                safe_time_travel_parts=True,
+            )
+            result = replace(result, checkpoint_config=None)
             if _is_terminal_state(result.final_state):
-                claim_lease.mark_terminal()
+                context.invocation_claim_store.mark_terminal(
+                    owner_digest=owner_digest,
+                    thread_id=prepared.identity.thread_id,
+                    run_id=prepared.identity.run_id,
+                    invocation_token=context.invocation_token,
+                )
             return result
+        except GraphExecutionError as exc:
+            if native_started:
+                exc.native_started = True
+            raise
+        except BaseException as exc:
+            if native_started:
+                setattr(exc, "native_started", True)
+            raise
 
     async def areplay(
         self,
@@ -508,37 +872,11 @@ class AssistantTurnGraphApp:
 
         if not isinstance(request, GraphReplayRequest):
             raise TypeError("request must be a GraphReplayRequest")
-        replay_context = replace(context, invocation_kind="replay")
-        with self._invocation_claim_scope(
-            identity=identity,
-            context=replay_context,
-        ) as claim_lease:
-            snapshot = await self._resolve_history_snapshot(identity, request.selector)
-            if tuple(getattr(snapshot, "next", ()) or ()) != ("prepare_invocation",):
-                raise GraphExecutionError(
-                    "graph_checkpoint_not_replayable",
-                    "The selected checkpoint has no safe re-entry gate.",
-                )
-            replay_context = self._replay_context_from_snapshot(
-                snapshot,
-                identity=identity,
-                context=replay_context,
-            )
-            self._guard_time_travel_effects(snapshot, replay_context)
-            historical_config = _snapshot_config(snapshot)
-            result = await self._consume_stream_unclaimed(
-                None,
-                identity=identity,
-                context=replay_context,
-                begin_native=claim_lease.begin_native,
-                runnable_config=historical_config,
-                part_consumer=part_consumer,
-                safe_time_travel_parts=True,
-            )
-            result = replace(result, checkpoint_config=None)
-            if _is_terminal_state(result.final_state):
-                claim_lease.mark_terminal()
-            return result
+        prepared = await self.aprepare_time_travel(
+            identity=identity, context=context, request=request
+        )
+        bound = self.bind_time_travel_context(prepared, context=context)
+        return await self.aexecute_time_travel(bound, part_consumer=part_consumer)
 
     async def afork(
         self,
@@ -552,95 +890,11 @@ class AssistantTurnGraphApp:
 
         if not isinstance(request, GraphForkRequest):
             raise TypeError("request must be a GraphForkRequest")
-        fork_context = replace(context, invocation_kind="fork")
-        with self._invocation_claim_scope(
-            identity=identity,
-            context=fork_context,
-        ) as claim_lease:
-            historical = await self._resolve_history_snapshot(
-                identity,
-                request.selector,
-            )
-            historical_values = getattr(historical, "values", None)
-            if (
-                isinstance(historical_values, Mapping)
-                and not fork_patch_preserves_pending_effects(
-                    historical_values,
-                    request.patch,
-                )
-            ):
-                raise GraphExecutionError(
-                    "graph_time_travel_effect_forbidden",
-                    "A pending Tool call cannot be forked with a request patch.",
-                )
-            try:
-                values = fork_patch_for_assistant_state(
-                    validate_assistant_turn_state(historical.values),
-                    request.patch,
-                )
-            except Exception as exc:
-                raise GraphExecutionError(
-                    "graph_checkpoint_incompatible",
-                    "Assistant checkpoint cannot be forked by this graph version.",
-                ) from exc
-            fork_context = self._fork_context_from_snapshot(
-                values,
-                identity=identity,
-                context=fork_context,
-            )
-            self._guard_time_travel_effects(
-                historical,
-                fork_context,
-                state_override=values,
-            )
-            historical_config = _snapshot_config(historical)
-            updater = getattr(self._graph, "aupdate_state", None)
-            if not callable(updater):
-                raise GraphExecutionError(
-                    "graph_update_state_api_unavailable",
-                    "Compiled graph does not expose native async state updates.",
-                )
-            claim_lease.begin_native()
-            try:
-                fork_config = await updater(
-                    historical_config,
-                    values,
-                    as_node="time_travel_anchor",
-                )
-                getter = getattr(self._graph, "aget_state", None)
-                if not callable(getter):
-                    raise GraphExecutionError(
-                        "graph_state_api_unavailable",
-                        "Compiled graph does not expose native async state access.",
-                    )
-                fork_snapshot = await getter(fork_config)
-            except GraphExecutionError:
-                raise
-            except Exception as exc:
-                raise GraphExecutionError(
-                    "graph_fork_update_failed",
-                    "Native graph branch could not be created safely.",
-                ) from exc
-            if tuple(getattr(fork_snapshot, "next", ()) or ()) != (
-                "prepare_invocation",
-            ):
-                raise GraphExecutionError(
-                    "graph_fork_reentry_missing",
-                    "Fork did not enter the invocation gate.",
-                )
-            result = await self._consume_stream_unclaimed(
-                None,
-                identity=identity,
-                context=fork_context,
-                begin_native=lambda: None,
-                runnable_config=fork_config,
-                part_consumer=part_consumer,
-                safe_time_travel_parts=True,
-            )
-            result = replace(result, checkpoint_config=None)
-            if _is_terminal_state(result.final_state):
-                claim_lease.mark_terminal()
-            return result
+        prepared = await self.aprepare_time_travel(
+            identity=identity, context=context, request=request
+        )
+        bound = self.bind_time_travel_context(prepared, context=context)
+        return await self.aexecute_time_travel(bound, part_consumer=part_consumer)
 
     @staticmethod
     def _guard_time_travel_effects(
@@ -728,7 +982,8 @@ class AssistantTurnGraphApp:
                 "Fork context profile does not match this checkpoint.",
             )
         try:
-            validate_assistant_runtime_refs(state, runtime_state)
+            resolver = context.state_ref_resolver or validate_assistant_runtime_refs
+            resolver(state, runtime_state)
         except Exception as exc:
             raise GraphExecutionError(
                 "graph_fork_runtime_refs_mismatch",
@@ -798,6 +1053,32 @@ class AssistantTurnGraphApp:
             raise GraphExecutionError(
                 "graph_profile_mismatch",
                 "Replay context profile does not match this checkpoint.",
+            )
+        runtime_request = persisted_request_from_user_request(runtime_state.request)
+        runtime_request["capability_refs"] = list(
+            assistant_capability_ref_identity(runtime_state)
+        )
+        if runtime_request != persisted_request:
+            raise GraphExecutionError(
+                "graph_replay_request_mismatch",
+                "Replay request or capability refs do not match this checkpoint.",
+            )
+        try:
+            resolver = context.state_ref_resolver or validate_assistant_runtime_refs
+            resolver(state, runtime_state)
+        except Exception as exc:
+            raise GraphExecutionError(
+                "graph_replay_runtime_refs_mismatch",
+                "Replay runtime refs do not match this checkpoint.",
+            ) from exc
+        checkpoint_tools = set(state["catalog"]["available_tool_names"])
+        runtime_tools = {
+            spec.name for spec in context.tool_executor.registry.list_specs()
+        }
+        if not checkpoint_tools.issubset(runtime_tools):
+            raise GraphExecutionError(
+                "graph_replay_catalog_unavailable",
+                "Replay checkpoint Tool catalog is unavailable in this runtime.",
             )
         return replace(context, invocation_kind="replay")
 
@@ -1233,14 +1514,17 @@ class AssistantTurnGraphApp:
             identity=identity,
             context=context,
         )
+        native_started = False
 
         def begin_native() -> None:
+            nonlocal native_started
             context.invocation_claim_store.begin_native(
                 owner_digest=owner_digest,
                 thread_id=identity.thread_id,
                 run_id=identity.run_id,
                 invocation_token=context.invocation_token,
             )
+            native_started = True
 
         def mark_terminal() -> None:
             context.invocation_claim_store.mark_terminal(
@@ -1255,11 +1539,19 @@ class AssistantTurnGraphApp:
                 begin_native=begin_native,
                 mark_terminal=mark_terminal,
             )
+        except GraphExecutionError as exc:
+            if native_started:
+                exc.native_started = True
+            raise
         except (
             GraphInvocationClaimConflict,
             GraphInvocationClaimCapacityExceeded,
         ) as exc:
             raise GraphExecutionError(exc.code, str(exc)) from exc
+        except BaseException as exc:
+            if native_started:
+                setattr(exc, "native_started", True)
+            raise
 
     @staticmethod
     def _claim_invocation(

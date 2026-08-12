@@ -13,6 +13,7 @@ from assistant_agent.runtime.action_validator import ActionValidator
 from assistant_agent.runtime.cancellation import AgentRunCancelled, raise_if_cancelled
 from assistant_agent.runtime.assistant_graph_app import (
     AssistantTurnGraphApp,
+    _BoundGraphContinuation,
     GraphExecutionError,
     GraphExecutionIdentity,
 )
@@ -25,8 +26,14 @@ from assistant_agent.runtime.assistant_graph_state import (
     assistant_turn_state_from_loop_state,
     validate_assistant_turn_state,
 )
-from assistant_agent.runtime.graph_runtime import GraphRuntimeContext
+from assistant_agent.runtime.graph_runtime import (
+    ContinuationPreparationError,
+    GraphRuntimeContext,
+    continuation_ref_resolver,
+    user_request_from_checkpoint,
+)
 from assistant_agent.runtime.graph_invocation_claims import (
+    GraphInvocationKind,
     GraphInvocationClaimStore,
     InMemoryGraphInvocationClaimStore,
 )
@@ -73,6 +80,12 @@ from assistant_agent.runtime.requests import (
     AgentResponse,
     UserRequest,
     normalize_task_execution_mode,
+)
+from assistant_agent.runtime.graph_time_travel import (
+    GraphCheckpointSelector,
+    GraphCheckpointSummary,
+    GraphForkRequest,
+    GraphReplayRequest,
 )
 from assistant_agent.runtime.generated_artifacts import with_generated_artifact_delivery
 from assistant_agent.multi_agent.models import DEFAULT_AGENT_ID
@@ -251,6 +264,17 @@ class _PreparedGraphRun:
     identity: GraphExecutionIdentity
     cancel_token: Any | None
     pre_terminal_state_hook: Callable[[AgentState], None] | None
+    invocation_kind: GraphInvocationKind = "invoke"
+    graph_continuation: _BoundGraphContinuation | None = None
+
+
+@dataclass(frozen=True)
+class _GraphRunServices:
+    run_event_sink: "_ResponseDeltaTrackingEventSink | None"
+    product_event_projector: ProductEventProjector
+    runtime_event_publisher: RuntimeEventPublisher
+    runtime_context: GraphRuntimeContext
+    run_started_at: float
 
 
 class AgentGraphRuntime:
@@ -836,6 +860,7 @@ class AgentGraphRuntime:
             agent_id=self.agent_id,
             session_id=request.session_id,
         )
+        retain_memory = False
         try:
             return self._run_state(
                 request,
@@ -846,11 +871,15 @@ class AgentGraphRuntime:
                 pre_terminal_state_hook=pre_terminal_state_hook,
                 run_id=effective_run_id,
             )
+        except BaseException as exc:
+            retain_memory = bool(getattr(exc, "native_started", False))
+            raise
         finally:
-            self.long_term_memory_service.release_run_context(
-                identity=identity,
-                run_id=effective_run_id,
-            )
+            if not retain_memory:
+                self.long_term_memory_service.release_run_context(
+                    identity=identity,
+                    run_id=effective_run_id,
+                )
 
     async def arun_state(
         self,
@@ -873,6 +902,8 @@ class AgentGraphRuntime:
             agent_id=self.agent_id,
             session_id=request.session_id,
         )
+        state: AgentState | None = None
+        retain_memory = False
         try:
             prepared = self._prepare_graph_run(
                 request,
@@ -885,15 +916,23 @@ class AgentGraphRuntime:
                 interrupt_request=interrupt_request,
             )
             try:
-                return await self._run_prepared_graph_async(prepared)
+                state = await self._run_prepared_graph_async(prepared)
+                return state
             except GraphExecutionError as exc:
-                self._finalize_graph_execution_error(prepared, exc)
+                if exc.native_started:
+                    retain_memory = True
+                else:
+                    state = self._finalize_graph_execution_error(prepared, exc)
+                raise
+            except BaseException as exc:
+                retain_memory = bool(getattr(exc, "native_started", False))
                 raise
         finally:
-            self.long_term_memory_service.release_run_context(
-                identity=identity,
-                run_id=effective_run_id,
-            )
+            if not retain_memory and (state is None or state.status != "waiting_user"):
+                self.long_term_memory_service.release_run_context(
+                    identity=identity,
+                    run_id=effective_run_id,
+                )
 
     async def aresume_state(
         self,
@@ -916,68 +955,173 @@ class AgentGraphRuntime:
             agent_id=self.agent_id,
             session_id=request.session_id,
         )
+        state: AgentState | None = None
+        prepared: _PreparedGraphRun | None = None
+        retain_memory = False
         try:
-            graph_identity = GraphExecutionIdentity.for_assistant_turn(
-                agent_id=self.agent_id,
-                user_id=request.user_id,
-                session_id=request.session_id,
-                run_id=effective_run_id,
-            )
-            snapshot = await self.assistant_graph_app.aget_state(graph_identity)
-            snapshot_values = getattr(snapshot, "values", None)
-            if not snapshot_values:
-                raise GraphExecutionError(
-                    "graph_checkpoint_not_found",
-                    "No assistant checkpoint exists for this thread.",
-                )
-            try:
-                persisted = validate_assistant_turn_state(snapshot_values)
-            except Exception as exc:
-                raise GraphExecutionError(
-                    "graph_checkpoint_incompatible",
-                    "Assistant checkpoint cannot be resumed by this graph version.",
-                ) from exc
-            persisted_trace_id = str(persisted["run"]["trace_id"])
-            if trace_context is not None and trace_context.trace_id != persisted_trace_id:
-                raise GraphExecutionError(
-                    "graph_resume_trace_mismatch",
-                    "Resume trace context does not match the pending assistant thread.",
-                )
-            resume_trace_context = trace_context or RuntimeTraceContext(
-                trace_id=persisted_trace_id
-            )
-            prepared = self._prepare_graph_run(
-                request,
+            prepared = await self._prepare_graph_continuation(
+                RequestIdentity.for_user(
+                    user_id=request.user_id,
+                    agent_id=self.agent_id,
+                    session_id=request.session_id,
+                ),
                 event_sink=event_sink,
                 cancel_token=cancel_token,
-                trace_context=resume_trace_context,
+                trace_context=trace_context,
                 export_trace_context=export_trace_context,
                 pre_terminal_state_hook=pre_terminal_state_hook,
                 run_id=effective_run_id,
+                invocation_kind="resume",
+                resume=resume,
             )
             try:
                 state = await self._execute_graph_async(prepared, resume=resume)
             except GraphExecutionError as exc:
-                self._finalize_graph_execution_error(prepared, exc)
+                if exc.native_started:
+                    retain_memory = True
+                else:
+                    state = self._finalize_graph_execution_error(prepared, exc)
+                raise
+            except BaseException as exc:
+                retain_memory = bool(getattr(exc, "native_started", False))
                 raise
             if state.status == "waiting_user":
                 return state
             return self._finalize_graph_run(prepared, state)
         finally:
-            self.long_term_memory_service.release_run_context(
-                identity=identity,
-                run_id=effective_run_id,
+            if (
+                state is not None
+                and state.status != "waiting_user"
+                and state.turn_provenance == "product_turn"
+                and not retain_memory
+            ):
+                self.long_term_memory_service.release_run_context(
+                    identity=identity,
+                    run_id=state.memory_origin_run_id or effective_run_id,
+                )
+
+    async def alist_history(
+        self,
+        owner: RequestIdentity,
+        *,
+        limit: int,
+        before: GraphCheckpointSelector | None = None,
+    ) -> tuple[GraphCheckpointSummary, ...]:
+        """List owner-bound product-safe checkpoints from this Runtime's graph."""
+
+        identity = self._graph_identity_for_owner(owner, run_id="history-inspect")
+        if getattr(self.assistant_graph_app.graph, "checkpointer", None) is None:
+            raise GraphExecutionError(
+                "graph_checkpointer_required",
+                "Assistant graph time travel requires an explicitly configured saver.",
             )
+        return await self.assistant_graph_app.alist_history(
+            identity,
+            limit=limit,
+            before=before,
+        )
+
+    async def areplay_state(
+        self,
+        owner: RequestIdentity,
+        request: GraphReplayRequest,
+        *,
+        run_id: str,
+        event_sink: EventSink | None = None,
+        cancel_token: Any | None = None,
+    ) -> AgentState:
+        """Replay an owned checkpoint without entering Memory lifecycle."""
+
+        return await self._atime_travel_state(
+            owner,
+            request,
+            run_id=run_id,
+            invocation_kind="replay",
+            event_sink=event_sink,
+            cancel_token=cancel_token,
+        )
+
+    async def afork_state(
+        self,
+        owner: RequestIdentity,
+        request: GraphForkRequest,
+        *,
+        run_id: str,
+        event_sink: EventSink | None = None,
+        cancel_token: Any | None = None,
+    ) -> AgentState:
+        """Fork an owned checkpoint without entering Memory lifecycle."""
+
+        return await self._atime_travel_state(
+            owner,
+            request,
+            run_id=run_id,
+            invocation_kind="fork",
+            event_sink=event_sink,
+            cancel_token=cancel_token,
+        )
+
+    async def _atime_travel_state(
+        self,
+        owner: RequestIdentity,
+        request: GraphReplayRequest | GraphForkRequest,
+        *,
+        run_id: str,
+        invocation_kind: Literal["replay", "fork"],
+        event_sink: EventSink | None,
+        cancel_token: Any | None,
+    ) -> AgentState:
+        prepared = await self._prepare_graph_continuation(
+            owner,
+            request=request,
+            run_id=run_id,
+            invocation_kind=invocation_kind,
+            event_sink=event_sink,
+            cancel_token=cancel_token,
+            trace_context=None,
+            export_trace_context=None,
+            pre_terminal_state_hook=None,
+        )
+        try:
+            assert prepared.graph_continuation is not None
+            result = await self.assistant_graph_app.aexecute_time_travel(
+                prepared.graph_continuation,
+                part_consumer=prepared.product_event_projector.project_part,
+            )
+            if result.status == "interrupted":
+                state = self._complete_pending_graph_execution(
+                    prepared, result.final_state
+                )
+                state.status = "waiting_user"
+                return state
+            state = self._complete_started_graph_execution(prepared, result.final_state)
+            return self._finalize_graph_run(prepared, state)
+        except GraphExecutionError as exc:
+            if exc.execution_phase in {"pre_native", "native_terminal"}:
+                self._finalize_graph_execution_error(prepared, exc)
+            raise
+        except AgentRunCancelled as exc:
+            state = exc.state if isinstance(exc.state, AgentState) else prepared.state
+            state.cancel(exc.message, source=exc.source, details=exc.details)
+            return self._finalize_graph_run(prepared, state)
 
     async def adelete_assistant_thread(self, *, user_id: str, session_id: str) -> int:
         """Delete one owned graph thread and then release its invocation claims."""
 
-        return await self.assistant_graph_app.adelete_thread(
+        deleted = await self.assistant_graph_app.adelete_thread(
             agent_id=self.agent_id,
             user_id=user_id,
             session_id=session_id,
             invocation_claim_store=self.graph_invocation_claim_store,
         )
+        self.long_term_memory_service.release_thread_contexts(
+            identity=RequestIdentity.for_user(
+                user_id=user_id,
+                agent_id=self.agent_id,
+                session_id=session_id,
+            )
+        )
+        return deleted
 
     def astream_state(
         self,
@@ -1069,7 +1213,8 @@ class AgentGraphRuntime:
         try:
             state = self._execute_graph_sync(prepared)
         except GraphExecutionError as exc:
-            self._finalize_graph_execution_error(prepared, exc)
+            if not exc.native_started:
+                self._finalize_graph_execution_error(prepared, exc)
             raise
         return self._finalize_graph_run(prepared, state)
 
@@ -1099,29 +1244,6 @@ class AgentGraphRuntime:
             self._refresh_visual_memory_capability(request)
             self._refresh_visual_reminder_capability(request)
             self._attach_proactive_session_context(request)
-        base_event_sink = event_sink or self.event_sink
-        run_event_sink = (
-            _ResponseDeltaTrackingEventSink(base_event_sink)
-            if base_event_sink is not None
-            else None
-        )
-        projector_sink: EventSink | None = run_event_sink
-        if run_event_sink is not None and interrupt_request is not None:
-            projector_sink = _InterruptProductEventBarrier(run_event_sink)
-        product_event_projector = ProductEventProjector(event_sink=projector_sink)
-        # The per-run ToolExecutor publishes graph-local product facts only
-        # through the node's native LangGraph stream writer.
-        tool_executor = ToolExecutor(
-            registry=self.registry,
-            event_sink=None,
-            context_metadata={
-                "durable_task_service": self.durable_task_service,
-                "workflow_service": self.workflow_service,
-            },
-            cancel_token=cancel_token,
-            execution_backend=self.tool_execution_backend,
-            operation_store=self.tool_operation_store,
-        )
         state = AgentState.from_request(
             request,
             run_id=run_id,
@@ -1146,47 +1268,20 @@ class AgentGraphRuntime:
             )
         if not workflow_work_item and not deep_research_start:
             self._embed_stable_request_text(state, request)
-        state.context_source_result = self.context_source_coordinator.load_once(
-            ContextSourceRequest(
-                user_id=state.user_id,
-                source_root=Path(self.config.editable_context_root),
-                local_owner_user_id=self.config.editable_context_user_id,
-                provider_mode=self.config.provider_mode,
-                editable_context_enabled=self.config.editable_context_enabled,
-                section_char_budgets={
-                    SOUL_SOURCE_ID: SOUL_COMPILED_MAX_CHARS,
-                    USER_PROFILE_SOURCE_ID: USER_PROFILE_COMPILED_MAX_CHARS,
-                },
-                enabled_source_ids=(
-                    {USER_PROFILE_SOURCE_ID, SOUL_SOURCE_ID}
-                    if self.config.editable_context_user_id
-                    else {USER_PROFILE_SOURCE_ID}
-                ),
-            )
-        )
-        run_started_at = perf_counter()
-        runtime_event_publisher = RuntimeEventPublisher(
-            product_event_projector=product_event_projector,
-            trace_store=self.trace_store,
-        )
-        run_started_fact = RunStartedFact(
-            state=state,
-            parent_span_id=(
-                trace_context.parent_span_id if trace_context is not None else None
-            ),
+        state.context_source_result = self._load_context_source_result(state)
+        services = self._prepare_graph_services(
+            state,
+            event_sink=event_sink,
+            cancel_token=cancel_token,
+            trace_context=trace_context,
+            export_trace_context=export_trace_context,
+            interrupt_request=interrupt_request,
             execution_engine=(
                 "durable_plan_execute_start"
                 if deep_research_start
                 else "langgraph_assistant_loop"
             ),
-            export_trace_context=export_trace_context,
-            experiment_trace_link=(
-                trace_context.experiment_link if trace_context is not None else None
-            ),
         )
-        runtime_event_publisher.deliver_run_started(run_started_fact)
-        if self.run_history is not None:
-            self.run_history.record_start(state.run_id, state.user_id, state.session_id)
         conversation_prepare_latency_ms = request.metadata.get(
             "conversation_prepare_latency_ms"
         )
@@ -1206,24 +1301,11 @@ class AgentGraphRuntime:
                     ),
                 },
             )
-        runtime_event_publisher.record_run_started(run_started_fact)
         if not workflow_work_item and not deep_research_start:
             self._prepare_run_memory_context(
                 state,
                 cancel_token=cancel_token,
             )
-        runtime_context = GraphRuntimeContext(
-            tool_executor=tool_executor,
-            chat_adapter=self.chat_adapter,
-            chat_turn=self._run_native_chat_turn,
-            context_service=self.context_service,
-            context_projector=self._refresh_realtime_video_context,
-            tool_result_handler=self.capability_grant_controller.handle_tool_result,
-            trace_store=self.trace_store,
-            cancel_token=cancel_token,
-            agent_state=state,
-            invocation_claim_store=self.graph_invocation_claim_store,
-        )
         legacy_initial_state = {
             "request": request,
             "state": state,
@@ -1267,15 +1349,337 @@ class AgentGraphRuntime:
             state=state,
             workflow_work_item=workflow_work_item,
             deep_research_start=deep_research_start,
-            run_event_sink=run_event_sink,
-            product_event_projector=product_event_projector,
-            runtime_event_publisher=runtime_event_publisher,
-            run_started_at=run_started_at,
-            runtime_context=runtime_context,
+            run_event_sink=services.run_event_sink,
+            product_event_projector=services.product_event_projector,
+            runtime_event_publisher=services.runtime_event_publisher,
+            run_started_at=services.run_started_at,
+            runtime_context=services.runtime_context,
             initial_state=initial_state,
             identity=identity,
             cancel_token=cancel_token,
             pre_terminal_state_hook=pre_terminal_state_hook,
+        )
+
+    async def _prepare_graph_continuation(
+        self,
+        owner: RequestIdentity,
+        *,
+        run_id: str,
+        invocation_kind: Literal["resume", "replay", "fork"],
+        request: GraphReplayRequest | GraphForkRequest | None = None,
+        resume: AssistantResume | None = None,
+        event_sink: EventSink | None,
+        cancel_token: Any | None,
+        trace_context: RuntimeTraceContext | None,
+        export_trace_context: RuntimeExportTraceContext | None,
+        pre_terminal_state_hook: Callable[[AgentState], None] | None,
+    ) -> _PreparedGraphRun:
+        """Build invocation-local continuation state without Memory lifecycle calls."""
+
+        identity = self._graph_identity_for_owner(owner, run_id=run_id)
+        if getattr(self.assistant_graph_app.graph, "checkpointer", None) is None:
+            raise GraphExecutionError(
+                "graph_checkpointer_required",
+                "Assistant graph time travel requires an explicitly configured saver.",
+            )
+        claim_state = AgentState.from_request(
+            UserRequest(
+                user_id=owner.user_id,
+                session_id=owner.session_id or "",
+                text=None,
+            ),
+            run_id=run_id,
+            agent_id=self.agent_id,
+        )
+        claim_context = GraphRuntimeContext(
+            tool_executor=self.tool_executor,
+            chat_adapter=self.chat_adapter,
+            invocation_claim_store=self.graph_invocation_claim_store,
+            agent_state=claim_state,
+            invocation_kind=invocation_kind,
+        )
+        time_travel_prepared = None
+        if invocation_kind == "resume":
+            if resume is None:
+                raise TypeError("resume continuation requires a resume payload")
+            time_travel_prepared = await self.assistant_graph_app.aprepare_resume(
+                identity=identity,
+                context=claim_context,
+                resume=resume,
+            )
+            snapshot = time_travel_prepared.snapshot
+        else:
+            if request is None:
+                raise TypeError("replay/fork continuation requires a request")
+            time_travel_prepared = await self.assistant_graph_app.aprepare_time_travel(
+                identity=identity,
+                context=claim_context,
+                request=request,
+            )
+            snapshot = time_travel_prepared.snapshot
+        values = getattr(snapshot, "values", None)
+        if not values:
+            raise GraphExecutionError(
+                "graph_checkpoint_not_found",
+                "No assistant checkpoint exists for this thread.",
+            )
+        try:
+            persisted = validate_assistant_turn_state(values)
+            if invocation_kind == "fork":
+                assert time_travel_prepared is not None
+                persisted = time_travel_prepared.fork_values
+                assert persisted is not None
+        except Exception as exc:
+            raise GraphExecutionError(
+                "graph_checkpoint_incompatible",
+                "Assistant checkpoint cannot be continued by this graph version.",
+            ) from exc
+        persisted_run = persisted["run"]
+        persisted_request = persisted["request"]
+        persisted_trace_id = str(persisted_run["trace_id"])
+        if trace_context is not None and trace_context.trace_id != persisted_trace_id:
+            raise GraphExecutionError(
+                "graph_resume_trace_mismatch",
+                "Continuation trace context does not match the assistant thread.",
+            )
+        continuation_request = user_request_from_checkpoint(persisted_request)
+        state = AgentState.from_request(
+            continuation_request,
+            run_id=run_id,
+            trace_id=persisted_trace_id,
+            agent_id=self.agent_id,
+        )
+        state.memory_origin_run_id = str(persisted["memory_origin_run_id"])
+        state.turn_provenance = (
+            "time_travel"
+            if invocation_kind in {"replay", "fork"}
+            else persisted["turn_provenance"]
+        )
+        state.context_source_result = self._load_context_source_result(state)
+        try:
+            self.capability_grant_controller.prepare_run(
+                state,
+                self.registry.list_specs(),
+            )
+        except Exception as exc:
+            raise GraphExecutionError(
+                "graph_continuation_capability_unavailable",
+                "Checkpoint capabilities cannot be reconstructed safely.",
+            ) from exc
+        expected_memory_refs = tuple(
+            (str(item["ref"]), str(item["source"]))
+            for item in persisted["context_refs"]
+            if item["kind"] == "memory"
+        )
+        attached_memory = self.long_term_memory_service.attach_continuation_snapshot(
+            state,
+            origin_identity=owner,
+            origin_run_id=state.memory_origin_run_id,
+            expected_memory_refs=expected_memory_refs,
+        )
+        if expected_memory_refs and attached_memory is None:
+            raise GraphExecutionError(
+                "graph_continuation_context_refs_unavailable",
+                "Checkpoint Memory refs are no longer available from their owner.",
+            )
+        try:
+            resolve_checkpoint_refs = continuation_ref_resolver(persisted, state)
+        except ContinuationPreparationError as exc:
+            raise GraphExecutionError(exc.code, str(exc)) from exc
+
+        services = self._prepare_graph_services(
+            state,
+            event_sink=event_sink,
+            cancel_token=cancel_token,
+            trace_context=trace_context,
+            export_trace_context=export_trace_context,
+            state_ref_resolver=resolve_checkpoint_refs,
+            invocation_kind=invocation_kind,
+            graph_profile=persisted["profile"],
+            invocation_token=claim_context.invocation_token,
+            publish_start=False,
+        )
+        bound_continuation = None
+        assert time_travel_prepared is not None
+        bound_continuation = self.assistant_graph_app.bind_time_travel_context(
+            time_travel_prepared,
+            context=services.runtime_context,
+        )
+        raise_if_cancelled(
+            cancel_token,
+            phase="continuation_pre_native",
+            state=state,
+        )
+        self._publish_graph_run_started(
+            state,
+            runtime_event_publisher=services.runtime_event_publisher,
+            trace_context=trace_context,
+            export_trace_context=export_trace_context,
+            execution_engine="langgraph_assistant_loop",
+        )
+        return _PreparedGraphRun(
+            request=continuation_request,
+            state=state,
+            workflow_work_item=False,
+            deep_research_start=False,
+            run_event_sink=services.run_event_sink,
+            product_event_projector=services.product_event_projector,
+            runtime_event_publisher=services.runtime_event_publisher,
+            run_started_at=services.run_started_at,
+            runtime_context=services.runtime_context,
+            initial_state={},
+            identity=identity,
+            cancel_token=cancel_token,
+            pre_terminal_state_hook=pre_terminal_state_hook,
+            invocation_kind=invocation_kind,
+            graph_continuation=bound_continuation,
+        )
+
+    def _graph_identity_for_owner(
+        self,
+        owner: RequestIdentity,
+        *,
+        run_id: str,
+    ) -> GraphExecutionIdentity:
+        if not isinstance(owner, RequestIdentity):
+            raise TypeError("owner must be a RequestIdentity")
+        if owner.agent_id != self.agent_id or owner.session_id is None:
+            raise GraphExecutionError(
+                "graph_checkpoint_owner_mismatch",
+                "Assistant graph owner must match this Runtime and include a session.",
+            )
+        return GraphExecutionIdentity.for_assistant_turn(
+            agent_id=owner.agent_id,
+            user_id=owner.user_id,
+            session_id=owner.session_id,
+            run_id=run_id,
+        )
+
+    def _prepare_graph_services(
+        self,
+        state: AgentState,
+        *,
+        event_sink: EventSink | None,
+        cancel_token: Any | None,
+        trace_context: RuntimeTraceContext | None,
+        export_trace_context: RuntimeExportTraceContext | None,
+        interrupt_request: AssistantInterruptRequest | None = None,
+        execution_engine: str = "langgraph_assistant_loop",
+        state_ref_resolver: Callable[[Mapping[str, object], AgentState], None]
+        | None = None,
+        invocation_kind: GraphInvocationKind = "invoke",
+        graph_profile: Literal[
+            "standard", "planner", "worker", "verifier"
+        ] = "standard",
+        invocation_token: str | None = None,
+        publish_start: bool = True,
+    ) -> _GraphRunServices:
+        """Build shared invocation-local services without touching Memory lifecycle."""
+
+        base_event_sink = event_sink or self.event_sink
+        run_event_sink = (
+            _ResponseDeltaTrackingEventSink(base_event_sink)
+            if base_event_sink is not None
+            else None
+        )
+        projector_sink: EventSink | None = run_event_sink
+        if run_event_sink is not None and interrupt_request is not None:
+            projector_sink = _InterruptProductEventBarrier(run_event_sink)
+        product_event_projector = ProductEventProjector(event_sink=projector_sink)
+        tool_executor = ToolExecutor(
+            registry=self.registry,
+            event_sink=None,
+            context_metadata={
+                "durable_task_service": self.durable_task_service,
+                "workflow_service": self.workflow_service,
+            },
+            cancel_token=cancel_token,
+            execution_backend=self.tool_execution_backend,
+            operation_store=self.tool_operation_store,
+        )
+        runtime_event_publisher = RuntimeEventPublisher(
+            product_event_projector=product_event_projector,
+            trace_store=self.trace_store,
+        )
+        run_started_at = perf_counter()
+        if publish_start:
+            self._publish_graph_run_started(
+                state,
+                runtime_event_publisher=runtime_event_publisher,
+                trace_context=trace_context,
+                export_trace_context=export_trace_context,
+                execution_engine=execution_engine,
+            )
+        return _GraphRunServices(
+            run_event_sink=run_event_sink,
+            product_event_projector=product_event_projector,
+            runtime_event_publisher=runtime_event_publisher,
+            runtime_context=GraphRuntimeContext(
+                tool_executor=tool_executor,
+                chat_adapter=self.chat_adapter,
+                chat_turn=self._run_native_chat_turn,
+                context_service=self.context_service,
+                context_projector=self._refresh_realtime_video_context,
+                tool_result_handler=self.capability_grant_controller.handle_tool_result,
+                trace_store=self.trace_store,
+                cancel_token=cancel_token,
+                agent_state=state,
+                state_ref_resolver=state_ref_resolver,
+                invocation_claim_store=self.graph_invocation_claim_store,
+                invocation_kind=invocation_kind,
+                graph_profile=graph_profile,
+                **(
+                    {"invocation_token": invocation_token}
+                    if invocation_token is not None
+                    else {}
+                ),
+            ),
+            run_started_at=run_started_at,
+        )
+
+    def _publish_graph_run_started(
+        self,
+        state: AgentState,
+        *,
+        runtime_event_publisher: RuntimeEventPublisher,
+        trace_context: RuntimeTraceContext | None,
+        export_trace_context: RuntimeExportTraceContext | None,
+        execution_engine: str,
+    ) -> None:
+        fact = RunStartedFact(
+            state=state,
+            parent_span_id=(
+                trace_context.parent_span_id if trace_context is not None else None
+            ),
+            execution_engine=execution_engine,
+            export_trace_context=export_trace_context,
+            experiment_trace_link=(
+                trace_context.experiment_link if trace_context is not None else None
+            ),
+        )
+        runtime_event_publisher.deliver_run_started(fact)
+        runtime_event_publisher.record_run_started(fact)
+        if self.run_history is not None:
+            self.run_history.record_start(state.run_id, state.user_id, state.session_id)
+
+    def _load_context_source_result(self, state: AgentState):
+        return self.context_source_coordinator.load_once(
+            ContextSourceRequest(
+                user_id=state.user_id,
+                source_root=Path(self.config.editable_context_root),
+                local_owner_user_id=self.config.editable_context_user_id,
+                provider_mode=self.config.provider_mode,
+                editable_context_enabled=self.config.editable_context_enabled,
+                section_char_budgets={
+                    SOUL_SOURCE_ID: SOUL_COMPILED_MAX_CHARS,
+                    USER_PROFILE_SOURCE_ID: USER_PROFILE_COMPILED_MAX_CHARS,
+                },
+                enabled_source_ids=(
+                    {USER_PROFILE_SOURCE_ID, SOUL_SOURCE_ID}
+                    if self.config.editable_context_user_id
+                    else {USER_PROFILE_SOURCE_ID}
+                ),
+            )
         )
 
     def _begin_graph_execution(
@@ -1286,6 +1690,8 @@ class AgentGraphRuntime:
     ) -> bool:
         """Apply shared pre-graph cancellation and compatibility branches."""
 
+        if resuming:
+            return True
         state = prepared.state
         try:
             raise_if_cancelled(
@@ -1296,8 +1702,6 @@ class AgentGraphRuntime:
         except AgentRunCancelled as exc:
             state.cancel(exc.message, source=exc.source, details=exc.details)
             return False
-        if resuming:
-            return True
         if prepared.deep_research_start:
             _start_deep_research_workflow(
                 state,
@@ -1334,6 +1738,44 @@ class AgentGraphRuntime:
             state.cancel(exc.message, source=exc.source, details=exc.details)
         return state
 
+    def _complete_started_graph_execution(
+        self,
+        prepared: _PreparedGraphRun,
+        final_state: Mapping[str, Any],
+    ) -> AgentState:
+        """Project native output while retaining its already-started phase."""
+
+        try:
+            return self._complete_graph_execution(prepared, final_state)
+        except GraphExecutionError as exc:
+            exc.execution_phase = "native_terminal"
+            raise
+        except Exception as exc:
+            raise GraphExecutionError(
+                "graph_runtime_projection_failed",
+                "Native terminal state could not be projected safely.",
+                execution_phase="native_terminal",
+            ) from exc
+
+    def _complete_pending_graph_execution(
+        self,
+        prepared: _PreparedGraphRun,
+        final_state: Mapping[str, Any],
+    ) -> AgentState:
+        """Project an interrupted snapshot without claiming a terminal outcome."""
+
+        try:
+            return self._complete_graph_execution(prepared, final_state)
+        except GraphExecutionError as exc:
+            exc.execution_phase = "native_started"
+            raise
+        except Exception as exc:
+            raise GraphExecutionError(
+                "graph_runtime_projection_failed",
+                "Pending native state could not be projected safely.",
+                execution_phase="native_started",
+            ) from exc
+
     def _execute_graph_sync(self, prepared: _PreparedGraphRun) -> AgentState:
         if not self._begin_graph_execution(prepared):
             return prepared.state
@@ -1346,7 +1788,7 @@ class AgentGraphRuntime:
                     product_fact_writer=prepared.product_event_projector.project_fact,
                 ),
             )
-            return self._complete_graph_execution(prepared, final_state)
+            return self._complete_started_graph_execution(prepared, final_state)
         except AgentRunCancelled as exc:
             state = exc.state if isinstance(exc.state, AgentState) else prepared.state
             state.cancel(exc.message, source=exc.source, details=exc.details)
@@ -1369,14 +1811,15 @@ class AgentGraphRuntime:
                     part_consumer=prepared.product_event_projector.project_part,
                 )
             else:
-                result = await self.assistant_graph_app.aresume(
-                    identity=prepared.identity,
-                    context=prepared.runtime_context,
-                    resume=resume,
+                assert prepared.graph_continuation is not None
+                result = await self.assistant_graph_app.aexecute_time_travel(
+                    prepared.graph_continuation,
                     part_consumer=prepared.product_event_projector.project_part,
                 )
             if result.status == "interrupted":
-                state = self._complete_graph_execution(prepared, result.final_state)
+                state = self._complete_pending_graph_execution(
+                    prepared, result.final_state
+                )
                 if state.status in {"cancelled", "failed"}:
                     return state
                 if not self.allow_interrupt:
@@ -1396,7 +1839,7 @@ class AgentGraphRuntime:
                 state.status = "waiting_user"
                 state.response = None
                 return state
-            return self._complete_graph_execution(prepared, result.final_state)
+            return self._complete_started_graph_execution(prepared, result.final_state)
         except AgentRunCancelled as exc:
             state = exc.state if isinstance(exc.state, AgentState) else prepared.state
             state.cancel(exc.message, source=exc.source, details=exc.details)
@@ -1540,7 +1983,12 @@ class AgentGraphRuntime:
                     )
                 )
         runtime_event_publisher.deliver_run_terminal(terminal_fact)
-        if terminal_status == "completed" and not prepared.workflow_work_item:
+        if (
+            terminal_status == "completed"
+            and not prepared.workflow_work_item
+            and prepared.invocation_kind in {"invoke", "resume"}
+            and state.turn_provenance == "product_turn"
+        ):
             _record_local_delivered_response(state)
             self.long_term_memory_service.enqueue_completed_turn(
                 trace_store=self.trace_store,

@@ -164,7 +164,9 @@ def test_internal_runtime_waits_then_rebuilt_resume_commits_one_terminal() -> No
             for event in terminal_sink.events
             if event.payload.get("trace_id") is not None
         } == {waiting.trace_id}
-        assert [event.type for event in terminal_sink.events].count("final_response") == 1
+        assert [event.type for event in terminal_sink.events].count(
+            "final_response"
+        ) == 1
         assert tool.terminals == [("run-after-runtime-resume", "completed")]
     finally:
         rebuilt.close()
@@ -295,7 +297,10 @@ def test_post_graph_cancel_wins_over_native_interrupt(tmp_path) -> None:
             "started",
             "cancelled",
         ]
-        assert [event.type for event in sink.events] == ["task_started", "task_cancelled"]
+        assert [event.type for event in sink.events] == [
+            "task_started",
+            "task_cancelled",
+        ]
         assert tool.terminals == [("run-interrupt-cancel-race", "cancelled")]
     finally:
         runtime.close()
@@ -383,8 +388,8 @@ def test_internal_state_stream_uses_async_graph_for_wait_and_resume(
         first.close()
 
 
-def test_invalid_resume_after_prepare_records_one_failed_terminal(tmp_path) -> None:
-    """A resume validation error must not leave a started-only invocation."""
+def test_invalid_resume_preflight_does_not_start_product_lifecycle(tmp_path) -> None:
+    """A resume contract error is rejected before product lifecycle starts."""
 
     saver = InMemorySaver()
     history = RunHistoryStore(tmp_path / "invalid-resume.jsonl")
@@ -427,13 +432,8 @@ def test_invalid_resume_after_prepare_records_one_failed_terminal(tmp_path) -> N
         assert [record.status for record in history.read_all()] == [
             "started",
             "completed",
-            "started",
-            "failed",
         ]
-        assert [event.type for event in sink.events] == ["task_started", "task_failed"]
-        assert tool.terminals == [
-            ("run-before-invalid-resume", "completed"),
-            ("run-invalid-resume", "failed"),
-        ]
+        assert sink.events == []
+        assert tool.terminals == [("run-before-invalid-resume", "completed")]
     finally:
         runtime.close()

@@ -5,7 +5,10 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from assistant_agent.runtime.cancellation import CANCELLATION_ERROR_CODE, DEFAULT_CANCELLATION_MESSAGE
+from assistant_agent.runtime.cancellation import (
+    CANCELLATION_ERROR_CODE,
+    DEFAULT_CANCELLATION_MESSAGE,
+)
 from assistant_agent.memory.models import SessionMemorySnapshot
 from assistant_agent.context.models import ContextSourceResult
 from assistant_agent.media.vision.models import PerceptionBundle
@@ -23,7 +26,10 @@ from assistant_agent.identifiers import (
 )
 
 
-AgentStatus = Literal["created", "running", "waiting_user", "completed", "failed", "cancelled"]
+AgentStatus = Literal[
+    "created", "running", "waiting_user", "completed", "failed", "cancelled"
+]
+TurnProvenance = Literal["product_turn", "time_travel"]
 
 
 class AgentError(BaseModel):
@@ -49,7 +55,14 @@ class AgentState(BaseModel):
         exclude=True,
     )
     memory_context_prepared: bool = Field(default=False, exclude=True)
-    context_source_result: ContextSourceResult = Field(default_factory=ContextSourceResult)
+    memory_origin_run_id: str | None = Field(default=None, exclude=True)
+    turn_provenance: TurnProvenance = Field(
+        default="product_turn",
+        exclude=True,
+    )
+    context_source_result: ContextSourceResult = Field(
+        default_factory=ContextSourceResult
+    )
     perception: PerceptionBundle | None = None
     capability_grants: list[CapabilityGrantValue] = Field(default_factory=list)
     session_restored_grant_ids: list[str] = Field(default_factory=list)
@@ -178,7 +191,10 @@ class AgentState(BaseModel):
         error_details = {"code": CANCELLATION_ERROR_CODE}
         if details is not None:
             error_details.update(details)
-        if not self.errors or self.errors[-1].details.get("code") != CANCELLATION_ERROR_CODE:
+        if (
+            not self.errors
+            or self.errors[-1].details.get("code") != CANCELLATION_ERROR_CODE
+        ):
             self.errors.append(
                 AgentError(
                     message=message,

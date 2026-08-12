@@ -61,6 +61,21 @@ class LongTermMemoryService:
     ) -> SessionMemorySnapshot | None:
         return self.host.attach_frozen_context(state)
 
+    def attach_continuation_snapshot(
+        self,
+        state: AgentState,
+        *,
+        origin_identity: RequestIdentity,
+        origin_run_id: str,
+        expected_memory_refs: tuple[tuple[str, str], ...],
+    ) -> SessionMemorySnapshot | None:
+        return self.host.attach_continuation_context(
+            state,
+            origin_identity=origin_identity,
+            origin_run_id=origin_run_id,
+            expected_memory_refs=expected_memory_refs,
+        )
+
     def release_run_context(
         self,
         *,
@@ -71,6 +86,9 @@ class LongTermMemoryService:
             identity=identity,
             run_id=run_id,
         )
+
+    def release_thread_contexts(self, *, identity: RequestIdentity) -> int:
+        return self.host.release_thread_contexts(identity=identity)
 
     def enqueue_completed_turn(
         self,

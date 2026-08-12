@@ -78,7 +78,19 @@ subgraph 时继承父图 checkpointer/namespace。父子图通过窄 input/outpu
 objective、constraint、capability reference、response、Tool trajectory 和 artifact reference，不传递父图整份
 state 或动态 task UUID。
 
-Graph 身份语义为 stable conversation `thread_id` 加每次调用或 resume 的新 `run_id`。compiled app
+Graph 身份语义为 stable conversation `thread_id` 加每次调用或 resume 的新 `run_id`。进程拥有的
+`AssistantRuntimeApp` 只解析并持有一个 `AgentGraphRuntime`，内部 owner-bound history、Replay 与 Fork
+facade 复用同一个 compiled graph、checkpointer、claim store 和受治理 service。continuation preparation
+从已验证 checkpoint 重建 fresh invocation-local `AgentState`/`GraphRuntimeContext`，不调用 Memory
+`open_session`、`prepare_context` 或 `ingest_turn`：普通 turn 不变，resume 只在成功终态 ingestion 一次，
+Replay/Fork 不 ingestion。非 Memory context ref 必须由当前 owner 重建并严格匹配；Memory ref 只能通过
+Host 的 owner/origin/ref-bound active frozen context attach 契约解析，不读取底层 store、不回退当前 baseline；
+origin 已 terminal/release 或进程重启后缺少 exact frozen context 时 fail closed。checkpoint state schema v3
+显式持久化 logical Memory origin 与 `product_turn|time_travel` provenance，旧 v2 continuation fail closed。该内部
+facade 不进入 `AssistantRunService`、HTTP/WebSocket、Gateway 或 Agent-Service wire，也不产生 selector、
+checkpoint/native task/interrupt ID 产品事件。
+
+compiled app
 显式接收 checkpointer；绑定 saver 时，内部 `AssistantTurnGraphApp` 以 native `aget_state`/
 `aget_state_history` 读取 checkpoint 与 state history，并以 `interrupt()`/
 `Command(resume=...)` 在同一 thread 恢复。`GraphStreamResult` 的 completed/interrupted 分类取自执行后的

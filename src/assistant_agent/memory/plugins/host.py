@@ -774,6 +774,40 @@ class MemoryPluginHost:
             return frozen.model_copy(deep=True)
         return self._publish_snapshot_to_state(state, frozen)
 
+    def attach_continuation_context(
+        self,
+        state: AgentState,
+        *,
+        origin_identity: RequestIdentity,
+        origin_run_id: str,
+        expected_memory_refs: tuple[tuple[str, str], ...],
+    ) -> SessionMemorySnapshot | None:
+        """Transfer one exact owner-bound logical-turn snapshot without recall."""
+
+        if type(origin_run_id) is not str or not origin_run_id:
+            raise ValueError("origin_run_id must be a non-empty string")
+        target_identity = _identity_from_state(state)
+        if runtime_memory_identity_key(target_identity) != runtime_memory_identity_key(
+            origin_identity
+        ):
+            raise ValueError("continuation memory owner does not match origin owner")
+        origin_key = (*runtime_memory_identity_key(origin_identity), origin_run_id)
+        with self._run_condition:
+            while origin_key in self._preparing_runs:
+                self._run_condition.wait()
+            frozen = self._frozen_run_contexts.get(origin_key)
+            if frozen is None:
+                state.session_memory_snapshot = None
+                return None
+            actual_refs = tuple(
+                (item.memory_id, item.source) for item in frozen.memories
+            )
+            if actual_refs != expected_memory_refs:
+                state.session_memory_snapshot = None
+                return None
+            attached = frozen.model_copy(deep=True)
+        return self._publish_snapshot_to_state(state, attached)
+
     def release_run_context(
         self,
         *,
@@ -794,6 +828,18 @@ class MemoryPluginHost:
                 self._run_epochs.pop(run_key, None)
             self._run_condition.notify_all()
             return released
+
+    def release_thread_contexts(self, *, identity: RequestIdentity) -> int:
+        """Release all active frozen contexts after owned thread deletion commits."""
+
+        session_key = runtime_memory_identity_key(identity)
+        with self._run_condition:
+            keys = [key for key in self._frozen_run_contexts if key[:3] == session_key]
+            for key in keys:
+                self._frozen_run_contexts.pop(key, None)
+                self._run_epochs.pop(key, None)
+            self._run_condition.notify_all()
+            return len(keys)
 
     def schedule_ingestion(
         self,
@@ -1516,9 +1562,7 @@ class MemoryPluginHost:
             changes=changes,
             source_turn=scheduled.request.idempotency_key[:24],
             source_user_text=scheduled.request.turn.user_message.text,
-            source_assistant_text=(
-                scheduled.request.turn.assistant_message.text
-            ),
+            source_assistant_text=(scheduled.request.turn.assistant_message.text),
             error_code=failure_code if result is None else None,
             memory_plugin_id=scheduled.plugin_id,
             memory_plugin_version=scheduled.plugin_version,
