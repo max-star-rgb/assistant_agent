@@ -2,7 +2,7 @@
 
 from collections.abc import Callable, Mapping
 from dataclasses import replace
-from typing import Any
+from typing import Any, cast
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.runtime import Runtime
@@ -12,8 +12,11 @@ from assistant_agent.runtime.assistant_loop_nodes import (
     await_input_node,
     compose_response_node,
     execute_requested_tool_node,
+    prepare_invocation_node,
+    time_travel_anchor_node,
 )
 from assistant_agent.runtime.assistant_graph_state import (
+    AssistantGraphContinuation,
     AssistantTurnState,
     route_after_await_input_turn_state,
     route_after_assistant_turn_state,
@@ -26,74 +29,106 @@ from assistant_agent.runtime.graph_runtime import (
 )
 
 
+_CONTINUATION_TARGETS = {
+    "assistant": "assistant",
+    "await_input": "await_input",
+    "execute_tool": "execute_tool",
+    "compose_response": "compose_response",
+    "end": END,
+}
+
+
+def _assistant_continuation(state: AssistantTurnState) -> AssistantGraphContinuation:
+    route = route_after_assistant_turn_state(state)
+    return cast(
+        AssistantGraphContinuation,
+        "compose_response" if route == "finish" else route,
+    )
+
+
+def _await_continuation(state: AssistantTurnState) -> AssistantGraphContinuation:
+    return cast(AssistantGraphContinuation, route_after_await_input_turn_state(state))
+
+
+def _route_prepared(state: Mapping[str, object]) -> AssistantGraphContinuation:
+    return validate_assistant_turn_state(state)["continuation"]
+
+
+def _semantic_node(
+    node: Callable[[AssistantTurnState, Runtime[GraphRuntimeContext]], AssistantTurnState],
+    continuation: Callable[[AssistantTurnState], AssistantGraphContinuation]
+    | AssistantGraphContinuation,
+) -> Callable[[AssistantTurnState, Runtime[GraphRuntimeContext]], AssistantTurnState]:
+    def invoke(
+        state: AssistantTurnState,
+        runtime: Runtime[GraphRuntimeContext],
+    ) -> AssistantTurnState:
+        updated = dict(node(state, runtime))
+        updated["continuation"] = (
+            continuation(updated) if callable(continuation) else continuation
+        )
+        return validate_assistant_turn_state(updated)
+
+    return invoke
+
+
 def build_assistant_loop_graph(
     *,
     checkpointer: Any | None = None,
     profile: AssistantGraphProfileName = "standard",
     graph_name: str = "AssistantTurnGraph",
 ) -> Any:
-    """
-    Build and compile the assistant loop graph.
+    """Build the native loop with one stable invocation gate between semantics."""
 
-    This is a ReAct-style graph:
-        START -> assistant -> route -> finish -> END
-                           -> execute_tool -> assistant
-    """
     graph = StateGraph(AssistantTurnState, context_schema=GraphRuntimeContext)
-
+    graph.add_node("prepare_invocation", prepare_invocation_node)
+    graph.add_node("time_travel_anchor", time_travel_anchor_node)
     graph.add_node(
         "assistant",
-        bind_checkpointed_runtime_node(
-            "assistant",
-            assistant_node,
-            expected_profile=profile,
+        _semantic_node(
+            bind_checkpointed_runtime_node(
+                "assistant", assistant_node, expected_profile=profile
+            ),
+            _assistant_continuation,
         ),
     )
     graph.add_node(
         "await_input",
-        await_input_node,
+        _semantic_node(await_input_node, _await_continuation),
     )
     graph.add_node(
         "execute_tool",
-        bind_checkpointed_runtime_node(
-            "execute_tool",
-            execute_requested_tool_node,
-            expected_profile=profile,
+        _semantic_node(
+            bind_checkpointed_runtime_node(
+                "execute_tool",
+                execute_requested_tool_node,
+                expected_profile=profile,
+            ),
+            "assistant",
         ),
     )
     graph.add_node(
         "compose_response",
-        bind_checkpointed_runtime_node(
-            "compose_response",
-            compose_response_node,
-            expected_profile=profile,
+        _semantic_node(
+            bind_checkpointed_runtime_node(
+                "compose_response", compose_response_node, expected_profile=profile
+            ),
+            "end",
         ),
     )
 
-    graph.add_edge(START, "assistant")
-
+    graph.add_edge(START, "prepare_invocation")
     graph.add_conditional_edges(
+        "prepare_invocation", _route_prepared, _CONTINUATION_TARGETS
+    )
+    for semantic_node in (
         "assistant",
-        route_after_assistant_turn_state,
-        {
-            "await_input": "await_input",
-            "execute_tool": "execute_tool",
-            "finish": "compose_response",
-        },
-    )
-
-    graph.add_conditional_edges(
         "await_input",
-        route_after_await_input_turn_state,
-        {
-            "execute_tool": "execute_tool",
-            "assistant": "assistant",
-        },
-    )
-
-    graph.add_edge("execute_tool", "assistant")
-    graph.add_edge("compose_response", END)
-
+        "execute_tool",
+        "compose_response",
+    ):
+        graph.add_edge(semantic_node, "time_travel_anchor")
+    graph.add_edge("time_travel_anchor", "prepare_invocation")
     return graph.compile(checkpointer=checkpointer, name=graph_name)
 
 
@@ -108,87 +143,95 @@ def build_namespaced_assistant_loop_graph(
     profile: AssistantGraphProfileName,
     graph_name: str,
 ) -> Any:
-    """Compile the same native loop against one explicitly nested state channel.
+    """Compile the same gated loop over one explicit parent child-state channel."""
 
-    This is used when a parent graph owns channels such as ``status`` and
-    ``graph_name`` whose meanings differ from AssistantTurnState.  It invokes
-    no graph from inside a node: the returned compiled graph is itself added as
-    a native subgraph by its caller.
-    """
-
-    def nested_node(node_name: str, node_func: Callable[..., AssistantTurnState]):
-        bound = bind_checkpointed_runtime_node(
-            node_name,
-            node_func,
-            expected_profile=profile,
-        )
-
-        def invoke(
-            state: Mapping[str, object],
-            runtime: Runtime[object],
-        ) -> dict[str, AssistantTurnState]:
-            child = state.get(child_state_key)
-            if not isinstance(child, Mapping):
-                raise ValueError(f"{child_state_key} must contain AssistantTurnState")
-            child_state = validate_assistant_turn_state(child)
-            child_context = runtime_context_resolver(
-                state,
-                child_state,
-                runtime.context,
-            )
-            child_runtime = replace(runtime, context=child_context)
-            return {child_state_key: bound(child_state, child_runtime)}
-
-        return invoke
-
-    def nested_await(
-        state: Mapping[str, object],
-        runtime: Runtime[object],
-    ) -> dict[str, AssistantTurnState]:
+    def child_and_runtime(
+        state: Mapping[str, object], runtime: Runtime[object]
+    ) -> tuple[AssistantTurnState, Runtime[GraphRuntimeContext]]:
         child = state.get(child_state_key)
         if not isinstance(child, Mapping):
             raise ValueError(f"{child_state_key} must contain AssistantTurnState")
         child_state = validate_assistant_turn_state(child)
         child_context = runtime_context_resolver(state, child_state, runtime.context)
+        return child_state, replace(runtime, context=child_context)
+
+    def nested_gate(
+        state: Mapping[str, object], runtime: Runtime[object]
+    ) -> dict[str, AssistantTurnState]:
+        child, child_runtime = child_and_runtime(state, runtime)
+        return {child_state_key: prepare_invocation_node(child, child_runtime)}
+
+    def nested_anchor(
+        state: Mapping[str, object], runtime: Runtime[object]
+    ) -> dict[str, AssistantTurnState]:
+        child, _ = child_and_runtime(state, runtime)
         return {
-            child_state_key: await_input_node(
-                child_state,
-                replace(runtime, context=child_context),
-            )
+            child_state_key: cast(AssistantTurnState, time_travel_anchor_node(child))
         }
 
-    def route_assistant(state: Mapping[str, object]) -> str:
-        return route_after_assistant_turn_state(state[child_state_key])  # type: ignore[arg-type]
+    def nested_semantic(
+        node_name: str,
+        node_func: Callable[..., AssistantTurnState],
+        continuation: Callable[[AssistantTurnState], AssistantGraphContinuation]
+        | AssistantGraphContinuation,
+        *,
+        bind: bool = True,
+    ) -> Callable[[Mapping[str, object], Runtime[object]], dict[str, AssistantTurnState]]:
+        executable = (
+            bind_checkpointed_runtime_node(
+                node_name, node_func, expected_profile=profile
+            )
+            if bind
+            else node_func
+        )
 
-    def route_await(state: Mapping[str, object]) -> str:
-        return route_after_await_input_turn_state(state[child_state_key])  # type: ignore[arg-type]
+        def invoke(
+            state: Mapping[str, object], runtime: Runtime[object]
+        ) -> dict[str, AssistantTurnState]:
+            child, child_runtime = child_and_runtime(state, runtime)
+            updated = dict(executable(child, child_runtime))
+            updated["continuation"] = (
+                continuation(updated) if callable(continuation) else continuation
+            )
+            return {child_state_key: validate_assistant_turn_state(updated)}
+
+        return invoke
+
+    def route_child(state: Mapping[str, object]) -> AssistantGraphContinuation:
+        child = state.get(child_state_key)
+        if not isinstance(child, Mapping):
+            raise ValueError(f"{child_state_key} must contain AssistantTurnState")
+        return _route_prepared(child)
 
     graph = StateGraph(state_schema, context_schema=context_schema)
-    graph.add_node("assistant", nested_node("assistant", assistant_node))
-    graph.add_node("await_input", nested_await)
+    graph.add_node("prepare_invocation", nested_gate)
+    graph.add_node("time_travel_anchor", nested_anchor)
+    graph.add_node(
+        "assistant",
+        nested_semantic("assistant", assistant_node, _assistant_continuation),
+    )
+    graph.add_node(
+        "await_input",
+        nested_semantic(
+            "await_input", await_input_node, _await_continuation, bind=False
+        ),
+    )
     graph.add_node(
         "execute_tool",
-        nested_node("execute_tool", execute_requested_tool_node),
+        nested_semantic("execute_tool", execute_requested_tool_node, "assistant"),
     )
     graph.add_node(
         "compose_response",
-        nested_node("compose_response", compose_response_node),
+        nested_semantic("compose_response", compose_response_node, "end"),
     )
-    graph.add_edge(START, "assistant")
-    graph.add_conditional_edges(
+    graph.add_edge(START, "prepare_invocation")
+    graph.add_conditional_edges("prepare_invocation", route_child, _CONTINUATION_TARGETS)
+    for semantic_node in (
         "assistant",
-        route_assistant,
-        {
-            "await_input": "await_input",
-            "execute_tool": "execute_tool",
-            "finish": "compose_response",
-        },
-    )
-    graph.add_conditional_edges(
         "await_input",
-        route_await,
-        {"execute_tool": "execute_tool", "assistant": "assistant"},
-    )
-    graph.add_edge("execute_tool", "assistant")
-    graph.add_edge("compose_response", END)
+        "execute_tool",
+        "compose_response",
+    ):
+        graph.add_edge(semantic_node, "time_travel_anchor")
+    graph.add_edge("time_travel_anchor", "prepare_invocation")
     return graph.compile(checkpointer=None, name=graph_name)

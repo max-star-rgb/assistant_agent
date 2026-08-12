@@ -19,6 +19,8 @@ from assistant_agent.runtime.assistant_graph_app import (
     GraphExecutionIdentity,
 )
 from assistant_agent.runtime.assistant_graph_state import (
+    ASSISTANT_GRAPH_VERSION,
+    ASSISTANT_STATE_SCHEMA_VERSION,
     assistant_turn_state_from_request,
 )
 from assistant_agent.runtime.graph_time_travel import (
@@ -185,8 +187,8 @@ async def test_history_returns_opaque_selector_without_native_ids() -> None:
         "status": "running",
         "next_nodes": ["prepare_invocation"],
         "has_interrupt": True,
-        "graph_version": "2",
-        "state_schema_version": 1,
+        "graph_version": ASSISTANT_GRAPH_VERSION,
+        "state_schema_version": ASSISTANT_STATE_SCHEMA_VERSION,
     }
     assert payload["history_ref"].startswith("ghr_")
     assert "native-checkpoint-secret" not in payload["history_ref"]
@@ -362,8 +364,9 @@ def test_selector_contract_is_strict_and_opaque() -> None:
 
 
 @_async_test
-async def test_current_assistant_graph_has_no_eligible_selector_before_task_2() -> None:
+async def test_current_assistant_graph_exposes_task_2_reentry_gate() -> None:
     app = AssistantTurnGraphApp(checkpointer=InMemorySaver())
 
-    assert "prepare_invocation" not in app.graph.nodes
+    assert "prepare_invocation" in app.graph.nodes
+    assert "time_travel_anchor" in app.graph.nodes
     assert await app.alist_history(_identity(), limit=10) == ()

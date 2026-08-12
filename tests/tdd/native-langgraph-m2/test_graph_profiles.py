@@ -524,6 +524,7 @@ def test_native_parent_subgraph_namespace_does_not_become_child_business_state()
         profile_allowed_tool_names=frozenset(
             child_input["catalog"]["available_tool_names"]
         ),
+        graph_profile="worker",
     )
     child = AssistantTurnGraphApp().graph_for_profile("worker")
     parent_builder = StateGraph(

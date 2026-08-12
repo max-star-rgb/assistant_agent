@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Protocol, cast
 
 from assistant_agent.context.models import ContextSection, ContextSourceResult
@@ -17,6 +17,10 @@ from assistant_agent.runtime.assistant_graph_state import (
 from assistant_agent.runtime.capability_grants import CapabilityGrantValue
 from assistant_agent.runtime.chat_adapter import ChatAdapter
 from assistant_agent.runtime.graph_runtime import GraphRuntimeContext
+from assistant_agent.runtime.graph_invocation_claims import (
+    GraphInvocationClaimStore,
+    InMemoryGraphInvocationClaimStore,
+)
 from assistant_agent.runtime.requests import RuntimeTaskUpdate, UserRequest
 from assistant_agent.runtime.state import AgentState
 from assistant_agent.runtime.tool_executor import ToolExecutor
@@ -68,6 +72,9 @@ class WorkflowGraphRuntimeServices:
     capability_grant_resolver: CapabilityGrantResolver | None = None
     publish_store: SQLiteWorkflowPublishStore | None = None
     publisher: SQLiteWorkflowPublisher | None = None
+    invocation_claim_store: GraphInvocationClaimStore = field(
+        default_factory=InMemoryGraphInvocationClaimStore
+    )
 
 
 @dataclass(frozen=True)
@@ -160,6 +167,9 @@ class BranchProfileContextFactory:
             agent_state=agent_state,
             state_ref_resolver=_AssignmentStateRefResolver(assignment),
             profile_allowed_tool_names=frozenset(assignment.available_tool_names),
+            invocation_claim_store=services.invocation_claim_store,
+            invocation_token=assignment.assignment_ref,
+            graph_profile=assignment.profile,
         )
 
     @staticmethod
@@ -295,6 +305,7 @@ def _request_from_assignment(assignment: WorkflowProfileAssignment) -> UserReque
         metadata={
             "_trusted_workflow_assignment": assignment.model_dump(mode="json"),
             "_trusted_workflow_allowed_tools": list(assignment.available_tool_names),
+            "_trusted_graph_profile": assignment.profile,
         },
     )
 

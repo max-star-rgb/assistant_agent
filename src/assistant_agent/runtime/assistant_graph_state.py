@@ -36,8 +36,13 @@ from assistant_agent.tools.capability_output import (
 
 
 ASSISTANT_GRAPH_NAME = "AssistantTurnGraph"
-ASSISTANT_GRAPH_VERSION = "2"
-ASSISTANT_STATE_SCHEMA_VERSION = 1
+ASSISTANT_GRAPH_VERSION = "3"
+ASSISTANT_STATE_SCHEMA_VERSION = 2
+
+AssistantGraphContinuation = Literal[
+    "assistant", "await_input", "execute_tool", "compose_response", "end"
+]
+AssistantInvocationKind = Literal["invoke", "resume", "replay", "fork"]
 
 class AssistantStateCompatibilityError(ValueError):
     """Raised when persisted state cannot be safely consumed by this graph."""
@@ -245,10 +250,14 @@ class PersistedResponse(_CheckpointModel):
 
 class _AssistantTurnStateModel(_CheckpointModel):
     graph_name: Literal["AssistantTurnGraph"]
-    graph_version: Literal["2"]
-    state_schema_version: Literal[1]
+    graph_version: Literal["3"]
+    state_schema_version: Literal[2]
     profile: AssistantGraphProfileName
     turn_origin_id: str = Field(min_length=1, max_length=512)
+    invocation_run_id: str = Field(min_length=1, max_length=512)
+    invocation_run_ids: tuple[str, ...] = Field(min_length=1, max_length=1_000)
+    invocation_kind: AssistantInvocationKind = "invoke"
+    continuation: AssistantGraphContinuation = "assistant"
     request: PersistedRequest
     run: PersistedRun
     outputs_by_step: tuple[PersistedStepOutput, ...] = Field(default=(), max_length=128)
@@ -285,10 +294,14 @@ class AssistantTurnState(TypedDict):
     """LangGraph channel schema; values are JSON dumps of the strict DTOs above."""
 
     graph_name: Literal["AssistantTurnGraph"]
-    graph_version: Literal["2"]
-    state_schema_version: Literal[1]
+    graph_version: Literal["3"]
+    state_schema_version: Literal[2]
     profile: AssistantGraphProfileName
     turn_origin_id: str
+    invocation_run_id: str
+    invocation_run_ids: tuple[str, ...]
+    invocation_kind: AssistantInvocationKind
+    continuation: AssistantGraphContinuation
     request: PersistedRequest
     run: PersistedRun
     outputs_by_step: tuple[PersistedStepOutput, ...]
@@ -411,6 +424,10 @@ def assistant_turn_state_from_agent_state(
         state_schema_version=ASSISTANT_STATE_SCHEMA_VERSION,
         profile=profile,
         turn_origin_id=state.run_id,
+        invocation_run_id=state.run_id,
+        invocation_run_ids=(state.run_id,),
+        invocation_kind="invoke",
+        continuation="assistant",
         request=PersistedRequest.model_validate_json(
             json.dumps(request_payload, ensure_ascii=False)
         ),
@@ -443,6 +460,23 @@ def assistant_turn_state_from_loop_state(
             "turn_origin_id": _bounded(
                 str(graph_state.get("turn_origin_id") or state.run_id), 512
             ),
+            "invocation_run_id": _bounded(
+                str(graph_state.get("invocation_run_id") or state.run_id), 512
+            ),
+            "invocation_run_ids": list(
+                dict.fromkeys(
+                    [
+                        *(
+                            str(item)
+                            for item in graph_state.get("invocation_run_ids", ())
+                            if isinstance(item, str) and item
+                        ),
+                        state.run_id,
+                    ]
+                )
+            ),
+            "invocation_kind": graph_state.get("invocation_kind", "invoke"),
+            "continuation": graph_state.get("continuation", "assistant"),
             "outputs_by_step": [
                 _project_step_output(step_id, result).model_dump(mode="json")
                 for step_id, result in _tool_result_items(
@@ -615,6 +649,10 @@ def assistant_loop_state_from_turn_state(
         "request": runtime_state.request,
         "state": runtime_state,
         "turn_origin_id": str(persisted["turn_origin_id"]),
+        "invocation_run_id": str(persisted["invocation_run_id"]),
+        "invocation_run_ids": list(persisted["invocation_run_ids"]),
+        "invocation_kind": str(persisted["invocation_kind"]),
+        "continuation": str(persisted["continuation"]),
         "graph_profile": str(persisted["profile"]),
         "outputs_by_step": outputs_by_step,
         "current_step_index": int(persisted["current_step_index"]),
@@ -679,6 +717,55 @@ def validate_assistant_runtime_refs(
         raise AssistantStateCompatibilityError(
             "Runtime capability refs do not match the checkpoint turn."
         )
+
+
+def reenter_assistant_invocation(
+    value: Mapping[str, object],
+    *,
+    runtime_state: AgentState,
+    invocation_kind: AssistantInvocationKind,
+) -> AssistantTurnState:
+    """Validate historical facts and project a new invocation run id at the gate."""
+
+    try:
+        persisted = validate_assistant_turn_state(value)
+    except AssistantStateCompatibilityError:
+        raise
+    except Exception as exc:
+        raise AssistantStateCompatibilityError(
+            "Assistant checkpoint state is invalid for invocation re-entry."
+        ) from exc
+    request = cast(Mapping[str, Any], persisted["request"])
+    run = cast(Mapping[str, Any], persisted["run"])
+    expected_profile = runtime_state.request.metadata.get("_trusted_graph_profile")
+    if (
+        request.get("user_id") != runtime_state.user_id
+        or request.get("session_id") != runtime_state.session_id
+        or run.get("agent_id") != runtime_state.agent_id
+        or run.get("trace_id") != runtime_state.trace_id
+        or (expected_profile is not None and persisted["profile"] != expected_profile)
+    ):
+        raise AssistantStateCompatibilityError(
+            "Invocation-local owner, profile, or trace does not match the checkpoint."
+        )
+    runtime_request = persisted_request_from_user_request(runtime_state.request)
+    runtime_request["capability_refs"] = list(
+        assistant_capability_ref_identity(runtime_state)
+    )
+    if runtime_request != request:
+        raise AssistantStateCompatibilityError(
+            "Invocation-local request does not match the checkpoint turn."
+        )
+    updated = dict(persisted)
+    updated_run = dict(run)
+    updated_run["run_id"] = runtime_state.run_id
+    updated["run"] = updated_run
+    updated["invocation_run_id"] = runtime_state.run_id
+    updated["invocation_run_ids"] = list(
+        dict.fromkeys([*persisted["invocation_run_ids"], runtime_state.run_id])
+    )
+    updated["invocation_kind"] = invocation_kind
+    return validate_assistant_turn_state(updated)
 
 
 def apply_assistant_turn_state_to_agent_state(

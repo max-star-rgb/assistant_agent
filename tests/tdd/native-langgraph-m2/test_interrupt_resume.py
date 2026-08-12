@@ -192,18 +192,13 @@ def test_interrupt_contract_is_strict_and_graph_has_real_await_input_topology() 
     graph = build_assistant_loop_graph()
     drawable = graph.get_graph()
     assert "await_input" in drawable.nodes
-    assert any(
-        edge.source == "assistant" and edge.target == "await_input"
-        for edge in drawable.edges
-    )
-    assert any(
-        edge.source == "await_input" and edge.target == "execute_tool"
-        for edge in drawable.edges
-    )
-    assert any(
-        edge.source == "await_input" and edge.target == "assistant"
-        for edge in drawable.edges
-    )
+    edges = {(edge.source, edge.target) for edge in drawable.edges}
+    assert ("assistant", "time_travel_anchor") in edges
+    assert ("await_input", "time_travel_anchor") in edges
+    assert ("time_travel_anchor", "prepare_invocation") in edges
+    assert ("prepare_invocation", "await_input") in edges
+    assert ("prepare_invocation", "execute_tool") in edges
+    assert ("prepare_invocation", "assistant") in edges
 
 
 def test_approval_interrupt_is_a_native_pending_checkpoint_before_tool_execution() -> None:

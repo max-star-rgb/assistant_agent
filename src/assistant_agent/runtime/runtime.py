@@ -26,6 +26,9 @@ from assistant_agent.runtime.assistant_graph_state import (
     validate_assistant_turn_state,
 )
 from assistant_agent.runtime.graph_runtime import GraphRuntimeContext
+from assistant_agent.runtime.graph_invocation_claims import (
+    InMemoryGraphInvocationClaimStore,
+)
 from assistant_agent.runtime.run_phase import RunPhase
 from assistant_agent.runtime.state import AgentError, AgentState
 from assistant_agent.runtime.event_stream import AgentRunStream, AsyncQueueEventSink
@@ -285,6 +288,7 @@ class AgentGraphRuntime:
             raise TypeError("allow_interrupt must be a boolean")
         self.allow_interrupt = allow_interrupt
         self.agent_id = agent_id
+        self.graph_invocation_claim_store = InMemoryGraphInvocationClaimStore()
         self.tool_execution_backend = tool_execution_backend
         self.tool_operation_store = (
             tool_operation_store or default_tool_operation_store()
@@ -1194,6 +1198,7 @@ class AgentGraphRuntime:
             trace_store=self.trace_store,
             cancel_token=cancel_token,
             agent_state=state,
+            invocation_claim_store=self.graph_invocation_claim_store,
         )
         legacy_initial_state = {
             "request": request,

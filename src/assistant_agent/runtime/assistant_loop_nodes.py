@@ -11,6 +11,8 @@ limits, trace recording, and state mutation.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from time import perf_counter
 from typing import Any, NotRequired, TypedDict, cast
 
@@ -19,8 +21,10 @@ from langgraph.types import interrupt
 
 from assistant_agent.runtime.action_validator import ActionValidator
 from assistant_agent.runtime.assistant_graph_state import (
+    AssistantStateCompatibilityError,
     AssistantTurnState,
     persisted_request_from_user_request,
+    reenter_assistant_invocation,
     validate_assistant_turn_state,
 )
 from assistant_agent.runtime.assistant_interrupts import (
@@ -109,6 +113,61 @@ MAIN_LLM_NO_ANSWER_MESSAGES = {
     "provider_timeout": "抱歉，刚才主模型没有及时响应，请再说一遍。",
     "provider_empty_response": "抱歉，刚才主模型返回为空，请再说一遍。",
 }
+
+
+def prepare_invocation_node(
+    state: AssistantTurnState,
+    runtime: Runtime[GraphRuntimeContext],
+) -> AssistantTurnState:
+    """Claim and commit invocation-local identity before semantic work."""
+
+    context = runtime.context
+    if context is None or context.agent_state is None:
+        raise AssistantStateCompatibilityError(
+            "Invocation-local AgentState is required."
+        )
+    runtime_state = context.agent_state
+    updated = reenter_assistant_invocation(
+        state,
+        runtime_state=runtime_state,
+        invocation_kind=context.invocation_kind,
+    )
+    if updated["profile"] != context.graph_profile:
+        raise AssistantStateCompatibilityError(
+            "Invocation-local graph profile does not match the checkpoint."
+        )
+    request = updated["request"]
+    run = updated["run"]
+    thread_id = stable_assistant_thread_id(
+        agent_id=str(run["agent_id"]),
+        user_id=str(request["user_id"]),
+        session_id=str(request["session_id"]),
+    )
+    owner_digest = hashlib.sha256(
+        json.dumps(
+            {
+                "agent_id": run["agent_id"],
+                "user_id": request["user_id"],
+                "session_id": request["session_id"],
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    context.invocation_claim_store.claim(
+        owner_digest=owner_digest,
+        thread_id=thread_id,
+        run_id=runtime_state.run_id,
+        invocation_kind=context.invocation_kind,
+        invocation_token=context.invocation_token,
+    )
+    return updated
+
+
+def time_travel_anchor_node(state: AssistantTurnState) -> AssistantTurnState:
+    """Stable no-side-effect boundary whose only successor is the gate."""
+
+    return validate_assistant_turn_state(state)
 
 
 class AssistantLoopState(TypedDict):
@@ -1534,8 +1593,6 @@ def _apply_assistant_resume(
         )
     updated = dict(state)
     run = dict(state["run"])
-    run["run_id"] = context.agent_state.run_id
-    run["trace_id"] = context.agent_state.trace_id
     run["status"] = "running"
     updated["run"] = run
     updated["pending_interrupt"] = None

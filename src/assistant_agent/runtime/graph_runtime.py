@@ -8,7 +8,8 @@ execution and strips them before the node result returns to LangGraph.
 
 from collections.abc import Callable
 from copy import copy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+import secrets
 from typing import Any, Protocol, TypeVar, cast
 
 from langgraph.runtime import Runtime
@@ -36,6 +37,11 @@ from assistant_agent.tools.ids import (
     LOAD_SKILL_TOOL_NAME,
 )
 from assistant_agent.runtime.state import AgentState
+from assistant_agent.runtime.graph_invocation_claims import (
+    GraphInvocationClaimStore,
+    GraphInvocationKind,
+    InMemoryGraphInvocationClaimStore,
+)
 
 
 GraphState = dict[str, Any]
@@ -75,6 +81,12 @@ class GraphRuntimeContext:
     agent_state: AgentState | None = None
     state_ref_resolver: "AssistantRuntimeStateRefResolver | None" = None
     profile_allowed_tool_names: frozenset[str] | None = None
+    invocation_claim_store: GraphInvocationClaimStore = field(
+        default_factory=InMemoryGraphInvocationClaimStore
+    )
+    invocation_kind: GraphInvocationKind = "invoke"
+    invocation_token: str = field(default_factory=lambda: secrets.token_urlsafe(24))
+    graph_profile: AssistantGraphProfileName = "standard"
 
 
 class AssistantRuntimeStateRefResolver(Protocol):
@@ -334,6 +346,10 @@ def _scoped_runtime_context(
         agent_state=runtime_context.agent_state,
         state_ref_resolver=runtime_context.state_ref_resolver,
         profile_allowed_tool_names=runtime_context.profile_allowed_tool_names,
+        invocation_claim_store=runtime_context.invocation_claim_store,
+        invocation_kind=runtime_context.invocation_kind,
+        invocation_token=runtime_context.invocation_token,
+        graph_profile=runtime_context.graph_profile,
     )
 
 

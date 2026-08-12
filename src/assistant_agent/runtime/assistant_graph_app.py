@@ -1,7 +1,7 @@
 """Stable compiled application for the assistant turn graph."""
 
 from collections.abc import AsyncIterator, Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any, Literal, cast
 
@@ -364,7 +364,7 @@ class AssistantTurnGraphApp:
         return await self._consume_stream(
             Command(resume=validated_resume.model_dump(mode="json")),
             identity=identity,
-            context=context,
+            context=replace(context, invocation_kind="resume"),
             part_consumer=part_consumer,
         )
 

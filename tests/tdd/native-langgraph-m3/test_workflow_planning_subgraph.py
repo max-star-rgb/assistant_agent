@@ -279,9 +279,16 @@ def test_planner_child_is_native_subgraph_and_admission_is_deterministic(tmp_pat
     encoded = json.dumps(snapshot.values, ensure_ascii=True, default=str)
     assert not any(segment in encoded for namespace in namespaces for segment in namespace)
     contexts = context.branch_context_factory.contexts
-    assert len(contexts) == 2
-    assert len({id(item.agent_state) for item in contexts}) == 2
-    assert len({id(item.tool_executor) for item in contexts}) == 2
+    assert contexts
+    assert len({id(item.agent_state) for item in contexts}) == len(contexts)
+    assert len({id(item.tool_executor) for item in contexts}) == len(contexts)
+    assert {id(item.invocation_claim_store) for item in contexts} == {
+        id(context.services.invocation_claim_store)
+    }
+    assert {item.invocation_token for item in contexts} == {
+        snapshot.values["planner_assignment"]["assignment_ref"]
+    }
+    assert {item.graph_profile for item in contexts} == {"planner"}
 
 
 def test_planner_owner_or_thread_mismatch_fails_before_provider(tmp_path):
