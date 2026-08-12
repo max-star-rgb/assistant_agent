@@ -133,6 +133,7 @@ def prepare_worker_child_node(
         assignment,
         child,
         context.services,
+        parent_invocation_token=context.invocation_token,
     )
     return {
         "assignment": assignment.model_dump(mode="json"),
@@ -151,6 +152,7 @@ def worker_child_runtime_context(
         assignment,
         child_state,
         context.services,
+        parent_invocation_token=context.invocation_token,
     )
 
 
@@ -293,7 +295,12 @@ def prepare_verifier_child_node(
         model_call_limit=assignment.budget_slice.model_calls,
         tool_call_limit=assignment.budget_slice.tool_calls,
     )
-    context.branch_context_factory.context_for_assignment(assignment, child, context.services)
+    context.branch_context_factory.context_for_assignment(
+        assignment,
+        child,
+        context.services,
+        parent_invocation_token=context.invocation_token,
+    )
     return {"assignment": assignment.model_dump(mode="json"), "verifier_child_state": child}
 
 
@@ -303,8 +310,12 @@ def verifier_child_runtime_context(
     runtime_context: object,
 ) -> GraphRuntimeContext:
     assignment = _assignment(state)
-    return _runtime_context(runtime_context).branch_context_factory.context_for_assignment(
-        assignment, child_state, _runtime_context(runtime_context).services
+    context = _runtime_context(runtime_context)
+    return context.branch_context_factory.context_for_assignment(
+        assignment,
+        child_state,
+        context.services,
+        parent_invocation_token=context.invocation_token,
     )
 
 

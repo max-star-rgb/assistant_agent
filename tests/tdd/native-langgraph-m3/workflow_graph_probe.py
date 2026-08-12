@@ -9,6 +9,9 @@ from langgraph.checkpoint.memory import InMemorySaver
 from assistant_agent.context.service import ContextService
 from assistant_agent.runtime.assistant_graph_app import AssistantTurnGraphApp
 from assistant_agent.runtime.chat_adapter import ChatResult
+from assistant_agent.runtime.graph_invocation_claims import (
+    InMemoryGraphInvocationClaimStore,
+)
 from assistant_agent.runtime.tool_operation_barrier import SQLiteToolOperationStore
 from assistant_agent.tools.registry import ToolRegistry
 from assistant_agent.workflows.artifacts import LocalWorkflowArtifactStore
@@ -212,6 +215,7 @@ def workflow_probe(
         ),
         cancel_reader=lambda _assignment: None,
         stream_writer=lambda _assignment, _fact: None,
+        invocation_claim_store=InMemoryGraphInvocationClaimStore(),
         publish_store=SQLiteWorkflowPublishStore(tmp_path / "publish.sqlite3"),
         publisher=SQLiteWorkflowPublisher(tmp_path / "publish-effects.sqlite3"),
     )
@@ -222,6 +226,7 @@ def workflow_probe(
         context_compiler=WorkflowContextCompiler(artifact_store=artifact_store),
         branch_context_factory=BranchProfileContextFactory(),
         services=services,
+        invocation_token="workflow-probe-invocation",
     )
     planning = build_workflow_planning_subgraph(
         planner_graph=build_workflow_planner_profile_graph(

@@ -40,7 +40,6 @@ from assistant_agent.runtime.state import AgentState
 from assistant_agent.runtime.graph_invocation_claims import (
     GraphInvocationClaimStore,
     GraphInvocationKind,
-    InMemoryGraphInvocationClaimStore,
 )
 
 
@@ -71,6 +70,7 @@ class GraphRuntimeContext:
 
     tool_executor: ToolExecutor
     chat_adapter: ChatAdapter
+    invocation_claim_store: GraphInvocationClaimStore
     chat_turn: Callable[[Any], Any] | None = None
     context_service: ContextService | None = None
     context_projector: Callable[[Any], None] | None = None
@@ -81,9 +81,6 @@ class GraphRuntimeContext:
     agent_state: AgentState | None = None
     state_ref_resolver: "AssistantRuntimeStateRefResolver | None" = None
     profile_allowed_tool_names: frozenset[str] | None = None
-    invocation_claim_store: GraphInvocationClaimStore = field(
-        default_factory=InMemoryGraphInvocationClaimStore
-    )
     invocation_kind: GraphInvocationKind = "invoke"
     invocation_token: str = field(default_factory=lambda: secrets.token_urlsafe(24))
     graph_profile: AssistantGraphProfileName = "standard"

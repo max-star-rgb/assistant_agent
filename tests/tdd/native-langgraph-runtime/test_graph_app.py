@@ -16,10 +16,12 @@ from assistant_agent.runtime.assistant_graph_app import (
 from assistant_agent.runtime.chat_adapter import ChatResult
 from assistant_agent.runtime.assistant_graph_state import ASSISTANT_GRAPH_NAME
 from assistant_agent.runtime.graph_runtime import GraphRuntimeContext
+from assistant_agent.runtime.graph_invocation_claims import InMemoryGraphInvocationClaimStore
 from assistant_agent.runtime.output_models import NativeToolCall
 from assistant_agent.runtime.requests import UserRequest
 from assistant_agent.runtime.runtime import AgentGraphRuntime
 from assistant_agent.runtime.session_store import InMemorySessionStore
+from assistant_agent.runtime.state import AgentState
 from assistant_agent.runtime.tool_executor import ToolExecutor
 from tests.core.support import (
     ProbeTool,
@@ -56,9 +58,21 @@ def _identity(run_id: str = "run-sentinel") -> GraphExecutionIdentity:
 
 
 def _context() -> GraphRuntimeContext:
+    request = UserRequest(
+        user_id="user-sentinel",
+        session_id="session-sentinel",
+        text="probe",
+    )
     return GraphRuntimeContext(
         tool_executor=ToolExecutor(registry=sealed_registry()),
         chat_adapter=ScriptedChatAdapter([]),
+        invocation_claim_store=InMemoryGraphInvocationClaimStore(),
+        agent_state=AgentState.from_request(
+            request,
+            run_id="run-sentinel",
+            trace_id="trace-sentinel",
+            agent_id="agent-sentinel",
+        ),
     )
 
 

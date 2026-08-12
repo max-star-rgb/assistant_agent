@@ -19,6 +19,9 @@ from assistant_agent.runtime.assistant_graph_profiles import (
     profile_output_adapter,
 )
 from assistant_agent.runtime.chat_adapter import MockChatAdapter
+from assistant_agent.runtime.graph_invocation_claims import (
+    InMemoryGraphInvocationClaimStore,
+)
 from assistant_agent.runtime.state import AgentError
 from assistant_agent.runtime.tool_operation_barrier import SQLiteToolOperationStore
 from assistant_agent.tools.registry import ToolRegistry
@@ -270,6 +273,7 @@ def _services(tmp_path, registry: ToolRegistry) -> WorkflowGraphRuntimeServices:
         ),
         cancel_reader=lambda _assignment: None,
         stream_writer=lambda _assignment, _fact: None,
+        invocation_claim_store=InMemoryGraphInvocationClaimStore(),
     )
 
 
@@ -560,8 +564,18 @@ def test_branch_factory_builds_independent_agent_state_executor_and_counters(
     services = _services(tmp_path, registry)
     factory = BranchProfileContextFactory()
 
-    first = factory.context_for_assignment(assignment, child, services)
-    second = factory.context_for_assignment(assignment, child, services)
+    first = factory.context_for_assignment(
+        assignment,
+        child,
+        services,
+        parent_invocation_token="parent-branch-isolation",
+    )
+    second = factory.context_for_assignment(
+        assignment,
+        child,
+        services,
+        parent_invocation_token="parent-branch-isolation",
+    )
 
     assert first is not second
     assert first.agent_state is not second.agent_state
@@ -573,6 +587,43 @@ def test_branch_factory_builds_independent_agent_state_executor_and_counters(
     assert first.agent_state is not None and second.agent_state is not None
     first.agent_state.errors.append(AgentError(message="branch-only-error"))
     assert second.agent_state.errors == []
+
+
+def test_branch_invocation_token_is_stable_only_within_same_parent_invocation(
+    tmp_path,
+) -> None:
+    """Using assignment_ref alone would merge distinct parent graph invocations."""
+
+    registry = ToolRegistry()
+    registry.seal()
+    assignment = _assignment(registry_generation=registry.generation or "")
+    child = _child_state(assignment, registry)
+    services = _services(tmp_path, registry)
+    factory = BranchProfileContextFactory()
+
+    first = factory.context_for_assignment(
+        assignment,
+        child,
+        services,
+        parent_invocation_token="parent-invocation-a",
+    )
+    repeated = factory.context_for_assignment(
+        assignment,
+        child,
+        services,
+        parent_invocation_token="parent-invocation-a",
+    )
+    competing = factory.context_for_assignment(
+        assignment,
+        child,
+        services,
+        parent_invocation_token="parent-invocation-b",
+    )
+
+    assert first.invocation_token == repeated.invocation_token
+    assert competing.invocation_token != first.invocation_token
+    assert assignment.assignment_ref not in first.invocation_token
+    assert "parent-invocation-a" not in first.invocation_token
 
 
 def test_branch_budget_slice_caps_child_even_with_nonempty_tool_catalog(
@@ -601,6 +652,7 @@ def test_branch_budget_slice_caps_child_even_with_nonempty_tool_catalog(
             assignment,
             over_budget,
             _services(tmp_path, registry),
+            parent_invocation_token="parent-budget",
         )
 
 
@@ -625,6 +677,7 @@ def test_fresh_factory_rebuild_matches_uninterrupted_profile_output(
         assignment,
         child,
         _services(tmp_path / "first", registry),
+        parent_invocation_token="parent-rebuild",
     )
     first = asyncio.run(
         first_app.graph_for_profile(profile).ainvoke(child, context=first_context)
@@ -637,6 +690,7 @@ def test_fresh_factory_rebuild_matches_uninterrupted_profile_output(
         WorkflowProfileAssignment.model_validate_json(assignment.model_dump_json()),
         fresh_child,
         _services(tmp_path / "fresh", fresh_registry),
+        parent_invocation_token="parent-rebuild",
     )
     recovered = asyncio.run(
         fresh_app.graph_for_profile(profile).ainvoke(
@@ -672,7 +726,12 @@ def test_branch_factory_fails_before_child_node_on_owner_or_scope_mismatch(
     mismatched_owner = json.loads(json.dumps(child))
     mismatched_owner["request"]["user_id"] = "other-user"
     with pytest.raises(ValueError, match="owner|identity"):
-        factory.context_for_assignment(assignment, mismatched_owner, services)
+        factory.context_for_assignment(
+            assignment,
+            mismatched_owner,
+            services,
+            parent_invocation_token="parent-validation",
+        )
 
     stale_scope = WorkflowProfileAssignment.create(
         **{
@@ -685,7 +744,12 @@ def test_branch_factory_fails_before_child_node_on_owner_or_scope_mismatch(
     )
     stale_child = _child_state(stale_scope, registry)
     with pytest.raises(ValueError, match="Tool scope"):
-        factory.context_for_assignment(stale_scope, stale_child, services)
+        factory.context_for_assignment(
+            stale_scope,
+            stale_child,
+            services,
+            parent_invocation_token="parent-validation",
+        )
 
     mismatched_capability_refs = json.loads(json.dumps(child))
     mismatched_capability_refs["capability_refs"] = ["capability-other"]
@@ -694,6 +758,7 @@ def test_branch_factory_fails_before_child_node_on_owner_or_scope_mismatch(
             assignment,
             mismatched_capability_refs,
             services,
+            parent_invocation_token="parent-validation",
         )
 
     mismatched_assignment_ref = json.loads(json.dumps(child))
@@ -705,6 +770,7 @@ def test_branch_factory_fails_before_child_node_on_owner_or_scope_mismatch(
             assignment,
             mismatched_assignment_ref,
             services,
+            parent_invocation_token="parent-validation",
         )
 
     narrowed_assignment = WorkflowProfileAssignment.create(
@@ -717,7 +783,12 @@ def test_branch_factory_fails_before_child_node_on_owner_or_scope_mismatch(
         }
     )
     with pytest.raises(ValueError, match="Tool scope|assignment reference"):
-        factory.context_for_assignment(narrowed_assignment, child, services)
+        factory.context_for_assignment(
+            narrowed_assignment,
+            child,
+            services,
+            parent_invocation_token="parent-validation",
+        )
 
     next_generation = WorkflowProfileAssignment.create(
         **{
@@ -729,4 +800,9 @@ def test_branch_factory_fails_before_child_node_on_owner_or_scope_mismatch(
         }
     )
     with pytest.raises(ValueError, match="assignment reference"):
-        factory.context_for_assignment(next_generation, child, services)
+        factory.context_for_assignment(
+            next_generation,
+            child,
+            services,
+            parent_invocation_token="parent-validation",
+        )

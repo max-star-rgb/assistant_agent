@@ -30,6 +30,7 @@ from assistant_agent.runtime.graph_runtime import (
     GraphRuntimeContext,
     bind_checkpointed_runtime_node,
 )
+from assistant_agent.runtime.graph_invocation_claims import InMemoryGraphInvocationClaimStore
 from assistant_agent.runtime.output_models import AssistantToolCall
 from assistant_agent.runtime.requests import RuntimeTaskUpdate, UserRequest
 from assistant_agent.runtime.state import AgentState
@@ -313,6 +314,7 @@ def test_profile_scope_filters_provider_specs_and_validator_catalog_together() -
         Runtime(
             context=GraphRuntimeContext(
                 tool_executor=ToolExecutor(registry=registry),
+                invocation_claim_store=InMemoryGraphInvocationClaimStore(),
                 chat_adapter=ScriptedChatAdapter(
                     [
                         ChatResult(
@@ -345,6 +347,7 @@ def test_profile_scope_filters_provider_specs_and_validator_catalog_together() -
             Runtime(
                 context=GraphRuntimeContext(
                     tool_executor=ToolExecutor(registry=registry),
+                    invocation_claim_store=InMemoryGraphInvocationClaimStore(),
                     chat_adapter=ScriptedChatAdapter([]),
                     agent_state=runtime_state,
                     state_ref_resolver=lambda _persisted, _runtime: None,
@@ -376,6 +379,7 @@ def test_profile_scope_filters_provider_specs_and_validator_catalog_together() -
             Runtime(
                 context=GraphRuntimeContext(
                     tool_executor=ToolExecutor(registry=registry),
+                    invocation_claim_store=InMemoryGraphInvocationClaimStore(),
                     chat_adapter=ScriptedChatAdapter([]),
                     agent_state=runtime_state,
                     state_ref_resolver=lambda _persisted, _runtime: None,
@@ -456,6 +460,7 @@ def test_standard_child_scope_is_bound_to_trusted_runtime_assignment() -> None:
             Runtime(
                 context=GraphRuntimeContext(
                     tool_executor=ToolExecutor(registry=registry),
+                    invocation_claim_store=InMemoryGraphInvocationClaimStore(),
                     chat_adapter=ScriptedChatAdapter([]),
                     agent_state=runtime_state,
                     state_ref_resolver=lambda _persisted, _runtime: None,
@@ -508,6 +513,7 @@ def test_native_parent_subgraph_namespace_does_not_become_child_business_state()
     )
     context = GraphRuntimeContext(
         tool_executor=ToolExecutor(registry=registry),
+        invocation_claim_store=InMemoryGraphInvocationClaimStore(),
         chat_adapter=ScriptedChatAdapter(
             [
                 ChatResult(

@@ -29,6 +29,12 @@ from assistant_agent.runtime.assistant_graph_profiles import (
     assistant_graph_profile,
 )
 from assistant_agent.runtime.graph_runtime import GraphRuntimeContext
+from assistant_agent.runtime.graph_invocation_claims import (
+    GraphInvocationClaimCapacityExceeded,
+    GraphInvocationClaimConflict,
+    GraphInvocationClaimResult,
+    graph_invocation_owner_digest,
+)
 from assistant_agent.runtime.graph_time_travel import (
     GraphCheckpointSelector,
     GraphCheckpointSummary,
@@ -231,12 +237,15 @@ class AssistantTurnGraphApp:
         *,
         identity: GraphExecutionIdentity,
         context: GraphRuntimeContext,
+        _stream_started: Callable[[], None] | None = None,
     ) -> AsyncIterator[GraphStreamPart]:
         """Stream normalized native events from the compiled graph."""
 
         with self._native_tracing(identity):
             with native_graph_trace_scope() as callbacks:
                 config = self._runnable_config(identity, callbacks=callbacks)
+                if _stream_started is not None:
+                    _stream_started()
                 async for raw in self._graph.astream(
                     input_state,
                     config=config,
@@ -516,31 +525,63 @@ class AssistantTurnGraphApp:
     ) -> GraphStreamResult:
         """Consume the stream, then use native state—not stream shape—as outcome."""
 
-        parts: list[GraphStreamPart] = []
-        final_state: AssistantTurnState | object = _MISSING_FINAL_STATE
-        async for part in self.astream(
-            input_value,
+        owner_digest, claim_result = self._claim_invocation(
             identity=identity,
             context=context,
-        ):
-            parts.append(part)
-            if part_consumer is not None:
-                part_consumer(part)
-            if part.type == "values" and not part.namespace:
-                final_state = part.data
+        )
+        stream_started = False
+
+        def mark_stream_started() -> None:
+            nonlocal stream_started
+            stream_started = True
+
+        parts: list[GraphStreamPart] = []
+        final_state: AssistantTurnState | object = _MISSING_FINAL_STATE
+        try:
+            async for part in self.astream(
+                input_value,
+                identity=identity,
+                context=context,
+                _stream_started=mark_stream_started,
+            ):
+                parts.append(part)
+                if part_consumer is not None:
+                    part_consumer(part)
+                if part.type == "values" and not part.namespace:
+                    final_state = part.data
+        except BaseException:
+            if (
+                claim_result == "claimed"
+                and not stream_started
+                and getattr(self._graph, "checkpointer", None) is None
+            ):
+                context.invocation_claim_store.release(
+                    owner_digest=owner_digest,
+                    thread_id=identity.thread_id,
+                    run_id=identity.run_id,
+                    invocation_token=context.invocation_token,
+                )
+            raise
         if getattr(self._graph, "checkpointer", None) is None:
             if final_state is _MISSING_FINAL_STATE:
                 raise GraphExecutionError(
                     "graph_final_state_missing",
                     "LangGraph stream ended without root final values.",
                 )
-            return GraphStreamResult(
+            result = GraphStreamResult(
                 final_state=cast(AssistantTurnState, final_state),
                 parts=tuple(parts),
                 status="completed",
                 interrupts=(),
                 checkpoint_config=None,
             )
+            self._release_non_checkpointed_terminal_claim(
+                result=result,
+                identity=identity,
+                context=context,
+                owner_digest=owner_digest,
+            )
+            return result
 
         snapshot = await self.aget_state(identity)
         snapshot_values = getattr(snapshot, "values", None)
@@ -591,6 +632,76 @@ class AssistantTurnGraphApp:
             status=status,
             interrupts=interrupts,
             checkpoint_config=cast(dict[str, Any], snapshot.config),
+        )
+
+    @staticmethod
+    def _claim_invocation(
+        *,
+        identity: GraphExecutionIdentity,
+        context: GraphRuntimeContext,
+    ) -> tuple[str, GraphInvocationClaimResult]:
+        """Claim at the App boundary before tracing or native stream iteration."""
+
+        state = context.agent_state
+        if state is None:
+            raise GraphExecutionError(
+                "graph_invocation_context_missing",
+                "Graph invocation requires invocation-local AgentState.",
+            )
+        expected_thread_id = stable_assistant_thread_id(
+            agent_id=state.agent_id,
+            user_id=state.user_id,
+            session_id=state.session_id,
+        )
+        if (
+            identity.thread_id != expected_thread_id
+            or identity.agent_id != state.agent_id
+            or identity.run_id != state.run_id
+        ):
+            raise GraphExecutionError(
+                "graph_invocation_identity_mismatch",
+                "Graph invocation identity does not match its runtime context.",
+            )
+        owner_digest = graph_invocation_owner_digest(
+            agent_id=state.agent_id,
+            user_id=state.user_id,
+            session_id=state.session_id,
+        )
+        try:
+            result = context.invocation_claim_store.claim(
+                owner_digest=owner_digest,
+                thread_id=identity.thread_id,
+                run_id=identity.run_id,
+                invocation_kind=context.invocation_kind,
+                invocation_token=context.invocation_token,
+            )
+        except (GraphInvocationClaimConflict, GraphInvocationClaimCapacityExceeded) as exc:
+            raise GraphExecutionError(exc.code, str(exc)) from exc
+        return owner_digest, result
+
+    def _release_non_checkpointed_terminal_claim(
+        self,
+        *,
+        result: GraphStreamResult,
+        identity: GraphExecutionIdentity,
+        context: GraphRuntimeContext,
+        owner_digest: str,
+    ) -> None:
+        """Release only terminal runs that have no retained checkpoint/history."""
+
+        if getattr(self._graph, "checkpointer", None) is not None:
+            return
+        try:
+            state = validate_assistant_turn_state(result.final_state)
+        except Exception:
+            return
+        if state["run"]["status"] not in {"completed", "failed", "cancelled"}:
+            return
+        context.invocation_claim_store.release(
+            owner_digest=owner_digest,
+            thread_id=identity.thread_id,
+            run_id=identity.run_id,
+            invocation_token=context.invocation_token,
         )
 
     def _native_tracing(self, identity: GraphExecutionIdentity) -> Any:

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import contextmanager
 from copy import deepcopy
+from dataclasses import replace
 from typing import Any
 
 import pytest
@@ -13,13 +15,16 @@ from assistant_agent.runtime.assistant_graph_state import (
     reenter_assistant_invocation,
 )
 from assistant_agent.runtime.chat_adapter import ChatResult
+from assistant_agent.runtime.assistant_graph_app import GraphExecutionError
 from assistant_agent.runtime.graph_invocation_claims import (
+    GraphInvocationClaimCapacityExceeded,
     GraphInvocationClaimConflict,
     InMemoryGraphInvocationClaimStore,
 )
 from assistant_agent.runtime.output_models import NativeToolCall
 from assistant_agent.runtime.requests import UserRequest
 from assistant_agent.runtime.runtime import AgentGraphRuntime
+from assistant_agent.runtime.run_history import RunHistoryStore
 from assistant_agent.runtime.session_store import InMemorySessionStore
 from assistant_agent.runtime.state import AgentState
 from tests.core.support import (
@@ -67,6 +72,206 @@ def test_claim_store_distinguishes_same_invocation_from_competing_branch() -> No
         store.claim(**CLAIM, invocation_token="token-b")
 
     assert captured.value.code == "graph_invocation_run_id_reused"
+
+
+def test_claim_store_fails_closed_at_capacity_until_owner_deletes_thread() -> None:
+    """Silently evicting an old claim would admit reuse of a retained checkpoint."""
+
+    store = InMemoryGraphInvocationClaimStore(max_entries=1)
+    assert store.claim(**CLAIM, invocation_token="token-a") == "claimed"
+
+    with pytest.raises(GraphInvocationClaimCapacityExceeded):
+        store.claim(
+            **{**CLAIM, "thread_id": "thread-other", "run_id": "run-other"},
+            invocation_token="token-b",
+        )
+
+    assert store.delete_thread(
+        owner_digest=CLAIM["owner_digest"],
+        thread_id=CLAIM["thread_id"],
+    ) == 1
+    assert (
+        store.claim(
+            **{**CLAIM, "thread_id": "thread-other", "run_id": "run-other"},
+            invocation_token="token-b",
+        )
+        == "claimed"
+    )
+
+
+def test_completed_native_noop_rejects_different_token_at_app_boundary() -> None:
+    """A completed checkpoint may no-op before the in-graph gate can reject reuse."""
+
+    runtime = AgentGraphRuntime(
+        registry=sealed_registry(),
+        config=offline_config(),
+        chat_adapter=ScriptedChatAdapter(
+            [
+                ChatResult(
+                    provider="scripted",
+                    model="scripted-model",
+                    finish_reason="stop",
+                    response_text="completed-once",
+                )
+            ]
+        ),
+        session_store=InMemorySessionStore(),
+        checkpointer=InMemorySaver(),
+    )
+    prepared = runtime._prepare_graph_run(  # noqa: SLF001 - native boundary TDD.
+        _request(),
+        event_sink=None,
+        cancel_token=None,
+        trace_context=None,
+        export_trace_context=None,
+        pre_terminal_state_hook=None,
+        run_id="run-completed-noop",
+    )
+
+    async def exercise() -> None:
+        await runtime.assistant_graph_app.arun(
+            prepared.initial_state,
+            identity=prepared.identity,
+            context=prepared.runtime_context,
+        )
+        with pytest.raises(GraphExecutionError) as captured:
+            await runtime.assistant_graph_app.arun(
+                prepared.initial_state,
+                identity=prepared.identity,
+                context=replace(
+                    prepared.runtime_context,
+                    invocation_token="competing-completed-token",
+                ),
+            )
+        assert captured.value.code == "graph_invocation_run_id_reused"
+
+    try:
+        asyncio.run(exercise())
+    finally:
+        runtime.close()
+
+
+def test_no_saver_releases_new_claim_when_tracing_fails_before_stream_start(
+    monkeypatch,
+) -> None:
+    """A pre-stream setup failure must not strand a no-history invocation claim."""
+
+    runtime = AgentGraphRuntime(
+        registry=sealed_registry(),
+        config=offline_config(),
+        chat_adapter=ScriptedChatAdapter(
+            [
+                ChatResult(
+                    provider="scripted",
+                    model="scripted-model",
+                    finish_reason="stop",
+                    response_text="retry-succeeded",
+                )
+            ]
+        ),
+        session_store=InMemorySessionStore(),
+    )
+    prepared = runtime._prepare_graph_run(  # noqa: SLF001 - native boundary TDD.
+        _request(),
+        event_sink=None,
+        cancel_token=None,
+        trace_context=None,
+        export_trace_context=None,
+        pre_terminal_state_hook=None,
+        run_id="run-tracing-retry",
+    )
+    original_tracing = runtime.assistant_graph_app._native_tracing  # noqa: SLF001
+
+    @contextmanager
+    def fail_before_enter():
+        raise RuntimeError("tracing setup failed")
+        yield  # pragma: no cover
+
+    async def exercise() -> None:
+        monkeypatch.setattr(
+            runtime.assistant_graph_app,
+            "_native_tracing",
+            lambda _identity: fail_before_enter(),
+        )
+        with pytest.raises(RuntimeError, match="tracing setup failed"):
+            await runtime.assistant_graph_app.arun(
+                prepared.initial_state,
+                identity=prepared.identity,
+                context=prepared.runtime_context,
+            )
+        monkeypatch.setattr(runtime.assistant_graph_app, "_native_tracing", original_tracing)
+        result = await runtime.assistant_graph_app.arun(
+            prepared.initial_state,
+            identity=prepared.identity,
+            context=replace(
+                prepared.runtime_context,
+                invocation_token="retry-after-tracing-failure",
+            ),
+        )
+        assert result.final_state["run"]["status"] == "completed"
+
+    try:
+        asyncio.run(exercise())
+    finally:
+        runtime.close()
+
+
+def test_concurrent_apps_share_claim_store_and_conflict_closes_runtime_lifecycle(
+    tmp_path,
+) -> None:
+    """Per-app stores could execute the same owner/thread/run concurrently."""
+
+    store = InMemoryGraphInvocationClaimStore()
+    histories = [RunHistoryStore(tmp_path / f"runs-{index}.jsonl") for index in range(2)]
+    adapters = [
+        ScriptedChatAdapter(
+            [
+                ChatResult(
+                    provider="scripted",
+                    model="scripted-model",
+                    finish_reason="stop",
+                    response_text=f"winner-{index}",
+                )
+            ]
+        )
+        for index in range(2)
+    ]
+    runtimes = [
+        AgentGraphRuntime(
+            registry=sealed_registry(),
+            config=offline_config(),
+            chat_adapter=adapters[index],
+            session_store=InMemorySessionStore(),
+            checkpointer=InMemorySaver(),
+            run_history=histories[index],
+            graph_invocation_claim_store=store,
+        )
+        for index in range(2)
+    ]
+
+    async def exercise() -> list[object]:
+        return await asyncio.gather(
+            *(
+                runtime.arun_state(_request(), run_id="run-shared-apps")
+                for runtime in runtimes
+            ),
+            return_exceptions=True,
+        )
+
+    try:
+        outcomes = asyncio.run(exercise())
+    finally:
+        for runtime in runtimes:
+            runtime.close()
+
+    completed = [item for item in outcomes if isinstance(item, AgentState)]
+    conflicts = [item for item in outcomes if isinstance(item, GraphExecutionError)]
+    assert len(completed) == 1
+    assert completed[0].status == "completed"
+    assert len(conflicts) == 1
+    assert conflicts[0].code == "graph_invocation_run_id_reused"
+    all_records = [record for history in histories for record in history.read_all()]
+    assert [record.status for record in all_records].count("failed") == 1
 
 
 def test_prepare_invocation_reenters_same_turn_with_new_run_id() -> None:

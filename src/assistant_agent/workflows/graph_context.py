@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Protocol, cast
 
 from assistant_agent.context.models import ContextSection, ContextSourceResult
@@ -19,7 +19,7 @@ from assistant_agent.runtime.chat_adapter import ChatAdapter
 from assistant_agent.runtime.graph_runtime import GraphRuntimeContext
 from assistant_agent.runtime.graph_invocation_claims import (
     GraphInvocationClaimStore,
-    InMemoryGraphInvocationClaimStore,
+    derive_child_invocation_token,
 )
 from assistant_agent.runtime.requests import RuntimeTaskUpdate, UserRequest
 from assistant_agent.runtime.state import AgentState
@@ -69,12 +69,10 @@ class WorkflowGraphRuntimeServices:
     workflow_identity: PersistedWorkflowIdentity
     cancel_reader: WorkflowCancelReader
     stream_writer: WorkflowStreamWriter
+    invocation_claim_store: GraphInvocationClaimStore
     capability_grant_resolver: CapabilityGrantResolver | None = None
     publish_store: SQLiteWorkflowPublishStore | None = None
     publisher: SQLiteWorkflowPublisher | None = None
-    invocation_claim_store: GraphInvocationClaimStore = field(
-        default_factory=InMemoryGraphInvocationClaimStore
-    )
 
 
 @dataclass(frozen=True)
@@ -86,6 +84,7 @@ class WorkflowGraphRuntimeContext:
     context_compiler: WorkflowContextCompiler
     branch_context_factory: "BranchProfileContextFactory"
     services: WorkflowGraphRuntimeServices
+    invocation_token: str
 
 
 class BranchProfileContextFactory:
@@ -101,6 +100,8 @@ class BranchProfileContextFactory:
         outer_assignment: WorkflowProfileAssignment,
         child_state: AssistantTurnState,
         services: WorkflowGraphRuntimeServices,
+        *,
+        parent_invocation_token: str,
     ) -> GraphRuntimeContext:
         assignment = WorkflowProfileAssignment.model_validate(
             outer_assignment.model_dump(mode="python")
@@ -168,7 +169,10 @@ class BranchProfileContextFactory:
             state_ref_resolver=_AssignmentStateRefResolver(assignment),
             profile_allowed_tool_names=frozenset(assignment.available_tool_names),
             invocation_claim_store=services.invocation_claim_store,
-            invocation_token=assignment.assignment_ref,
+            invocation_token=derive_child_invocation_token(
+                parent_invocation_token=parent_invocation_token,
+                assignment_ref=assignment.assignment_ref,
+            ),
             graph_profile=assignment.profile,
         )
 

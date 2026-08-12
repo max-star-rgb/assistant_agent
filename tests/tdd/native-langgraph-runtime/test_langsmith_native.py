@@ -25,6 +25,7 @@ from assistant_agent.runtime.assistant_graph_app import (
     GraphExecutionIdentity,
 )
 from assistant_agent.runtime.graph_runtime import GraphRuntimeContext
+from assistant_agent.runtime.graph_invocation_claims import InMemoryGraphInvocationClaimStore
 from assistant_agent.runtime.tool_executor import ToolExecutor
 from assistant_agent.runtime.output_models import NativeToolCall
 from assistant_agent.runtime.requests import UserRequest
@@ -659,7 +660,18 @@ def test_graph_sync_and_async_execution_share_native_context(monkeypatch) -> Non
     )
     context = GraphRuntimeContext(
         tool_executor=ToolExecutor(registry=sealed_registry()),
+        invocation_claim_store=InMemoryGraphInvocationClaimStore(),
         chat_adapter=ScriptedChatAdapter([]),
+        agent_state=AgentState.from_request(
+            UserRequest(
+                user_id="raw-user-sentinel",
+                session_id="raw-session-sentinel",
+                text="probe",
+            ),
+            run_id="run-sentinel",
+            trace_id="trace-sentinel",
+            agent_id="agent-sentinel",
+        ),
     )
 
     sync_result = app.invoke({"state": "sync"}, identity=identity, context=context)
@@ -694,6 +706,7 @@ def test_graph_metadata_is_hashed_and_never_tags_raw_user_or_session(monkeypatch
     )
     context = GraphRuntimeContext(
         tool_executor=ToolExecutor(registry=sealed_registry()),
+        invocation_claim_store=InMemoryGraphInvocationClaimStore(),
         chat_adapter=ScriptedChatAdapter([]),
     )
 
@@ -1033,6 +1046,7 @@ def test_real_graph_callback_inherits_experiment_root_without_duplicate_tree() -
             identity=identity,
             context=GraphRuntimeContext(
                 tool_executor=ToolExecutor(registry=sealed_registry()),
+                invocation_claim_store=InMemoryGraphInvocationClaimStore(),
                 chat_adapter=ScriptedChatAdapter([]),
             ),
         )
@@ -1139,6 +1153,7 @@ def test_safe_tracer_constructor_failure_disables_ambient_graph_trace(
             ),
             context=GraphRuntimeContext(
                 tool_executor=ToolExecutor(registry=sealed_registry()),
+                invocation_claim_store=InMemoryGraphInvocationClaimStore(),
                 chat_adapter=ScriptedChatAdapter([]),
             ),
         )
@@ -1200,6 +1215,7 @@ def test_graph_trace_uses_contextvar_fallback_when_public_disable_paths_fail(
             ),
             context=GraphRuntimeContext(
                 tool_executor=ToolExecutor(registry=sealed_registry()),
+                invocation_claim_store=InMemoryGraphInvocationClaimStore(),
                 chat_adapter=ScriptedChatAdapter([]),
             ),
         )

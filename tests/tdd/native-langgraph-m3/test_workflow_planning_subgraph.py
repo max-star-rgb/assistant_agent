@@ -12,6 +12,9 @@ from langgraph.graph import END, START, StateGraph
 from assistant_agent.context.service import ContextService
 from assistant_agent.runtime.assistant_graph_app import AssistantTurnGraphApp
 from assistant_agent.runtime.chat_adapter import ChatResult
+from assistant_agent.runtime.graph_invocation_claims import (
+    InMemoryGraphInvocationClaimStore,
+)
 from assistant_agent.runtime.tool_operation_barrier import SQLiteToolOperationStore
 from assistant_agent.tools.registry import ToolRegistry
 from assistant_agent.workflows.artifacts import LocalWorkflowArtifactStore
@@ -65,9 +68,19 @@ class _RecordingContextFactory(BranchProfileContextFactory):
     def __init__(self) -> None:
         self.contexts = []
 
-    def context_for_assignment(self, outer_assignment, child_state, services):
+    def context_for_assignment(
+        self,
+        outer_assignment,
+        child_state,
+        services,
+        *,
+        parent_invocation_token,
+    ):
         context = super().context_for_assignment(
-            outer_assignment, child_state, services
+            outer_assignment,
+            child_state,
+            services,
+            parent_invocation_token=parent_invocation_token,
         )
         self.contexts.append(context)
         return context
@@ -199,6 +212,7 @@ def _planning_probe(tmp_path, proposal, *, constraints: list[str] | None = None)
         ),
         cancel_reader=lambda _assignment: None,
         stream_writer=lambda _assignment, _fact: None,
+        invocation_claim_store=InMemoryGraphInvocationClaimStore(),
     )
     assistant_app = AssistantTurnGraphApp()
     context = WorkflowGraphRuntimeContext(
@@ -207,6 +221,7 @@ def _planning_probe(tmp_path, proposal, *, constraints: list[str] | None = None)
         context_compiler=WorkflowContextCompiler(artifact_store=artifact_store),
         branch_context_factory=_RecordingContextFactory(),
         services=services,
+        invocation_token="workflow-planning-invocation",
     )
     planner_graph = build_workflow_planner_profile_graph(
         assistant_graph_app=assistant_app
@@ -285,9 +300,12 @@ def test_planner_child_is_native_subgraph_and_admission_is_deterministic(tmp_pat
     assert {id(item.invocation_claim_store) for item in contexts} == {
         id(context.services.invocation_claim_store)
     }
-    assert {item.invocation_token for item in contexts} == {
+    assert len({item.invocation_token for item in contexts}) == 1
+    assert all(
         snapshot.values["planner_assignment"]["assignment_ref"]
-    }
+        not in item.invocation_token
+        for item in contexts
+    )
     assert {item.graph_profile for item in contexts} == {"planner"}
 
 

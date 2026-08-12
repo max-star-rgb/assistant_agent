@@ -27,6 +27,7 @@ from assistant_agent.runtime.assistant_graph_state import (
 )
 from assistant_agent.runtime.graph_runtime import GraphRuntimeContext
 from assistant_agent.runtime.graph_invocation_claims import (
+    GraphInvocationClaimStore,
     InMemoryGraphInvocationClaimStore,
 )
 from assistant_agent.runtime.run_phase import RunPhase
@@ -282,13 +283,16 @@ class AgentGraphRuntime:
         agent_id: str = DEFAULT_AGENT_ID,
         tool_execution_backend: ToolExecutionBackend | None = None,
         tool_operation_store: ToolOperationStore | None = None,
+        graph_invocation_claim_store: GraphInvocationClaimStore | None = None,
         allow_interrupt: bool = False,
     ) -> None:
         if not isinstance(allow_interrupt, bool):
             raise TypeError("allow_interrupt must be a boolean")
         self.allow_interrupt = allow_interrupt
         self.agent_id = agent_id
-        self.graph_invocation_claim_store = InMemoryGraphInvocationClaimStore()
+        self.graph_invocation_claim_store = (
+            graph_invocation_claim_store or InMemoryGraphInvocationClaimStore()
+        )
         self.tool_execution_backend = tool_execution_backend
         self.tool_operation_store = (
             tool_operation_store or default_tool_operation_store()
@@ -878,7 +882,11 @@ class AgentGraphRuntime:
                 run_id=effective_run_id,
                 interrupt_request=interrupt_request,
             )
-            return await self._run_prepared_graph_async(prepared)
+            try:
+                return await self._run_prepared_graph_async(prepared)
+            except GraphExecutionError as exc:
+                self._finalize_graph_execution_error(prepared, exc)
+                raise
         finally:
             self.long_term_memory_service.release_run_context(
                 identity=identity,

@@ -177,6 +177,7 @@ def planner_child_runtime_context(
         assignment,
         child_state,
         context.services,
+        parent_invocation_token=context.invocation_token,
     )
 
 

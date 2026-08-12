@@ -11,8 +11,6 @@ limits, trace recording, and state mutation.
 
 from __future__ import annotations
 
-import hashlib
-import json
 from time import perf_counter
 from typing import Any, NotRequired, TypedDict, cast
 
@@ -53,6 +51,9 @@ from assistant_agent.runtime.tool_operation_barrier import (
     stable_operation_scope_id,
 )
 from assistant_agent.runtime.graph_runtime import GraphRuntimeContext
+from assistant_agent.runtime.graph_invocation_claims import (
+    graph_invocation_owner_digest,
+)
 from assistant_agent.runtime.output_models import (
     AssistantTextOutput,
     AssistantToolCall,
@@ -143,19 +144,12 @@ def prepare_invocation_node(
         user_id=str(request["user_id"]),
         session_id=str(request["session_id"]),
     )
-    owner_digest = hashlib.sha256(
-        json.dumps(
-            {
-                "agent_id": run["agent_id"],
-                "user_id": request["user_id"],
-                "session_id": request["session_id"],
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
-    ).hexdigest()
     context.invocation_claim_store.claim(
-        owner_digest=owner_digest,
+        owner_digest=graph_invocation_owner_digest(
+            agent_id=str(run["agent_id"]),
+            user_id=str(request["user_id"]),
+            session_id=str(request["session_id"]),
+        ),
         thread_id=thread_id,
         run_id=runtime_state.run_id,
         invocation_kind=context.invocation_kind,
