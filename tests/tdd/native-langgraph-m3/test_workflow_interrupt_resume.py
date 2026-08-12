@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -11,8 +12,12 @@ from assistant_agent.workflows.durable_graph_app import (
     WorkflowGraphExecutionError,
     WorkflowGraphExecutionIdentity,
     WorkflowResume,
+    _pending_interrupts,
 )
-from assistant_agent.workflows.graph_state import latest_results
+from assistant_agent.workflows.graph_state import (
+    latest_results,
+    validate_durable_workflow_state,
+)
 
 from workflow_graph_probe import workflow_probe
 
@@ -35,8 +40,14 @@ class ResumeAwareWorker:
     provider = "scripted"
     model = "resume-worker"
 
-    def __init__(self, node_ids: tuple[str, ...]) -> None:
+    def __init__(
+        self,
+        node_ids: tuple[str, ...],
+        *,
+        initially_completed: frozenset[str] = frozenset(),
+    ) -> None:
         self.node_ids = node_ids
+        self.initially_completed = initially_completed
         self.calls: dict[str, int] = {node_id: 0 for node_id in node_ids}
 
     def chat(self, request):
@@ -44,7 +55,7 @@ class ResumeAwareWorker:
         self.calls[node_id] += 1
         response = (
             _blocked(node_id)
-            if self.calls[node_id] == 1
+            if self.calls[node_id] == 1 and node_id not in self.initially_completed
             else json.dumps(
                 {
                     "workflow_control": {
@@ -219,5 +230,177 @@ def test_resume_fails_closed_for_unknown_action_or_reused_run(tmp_path):
             "workflow_resume_run_id_reused",
         )
         assert worker.calls == {"a": 1}
+    finally:
+        artifact_store.close()
+
+
+def test_partial_resume_run_id_cannot_be_reused(tmp_path):
+    graph, context, initial, _worker, artifact_store = workflow_probe(
+        tmp_path, {"a": [], "b": []}
+    )
+    context.services.provider_registry["worker"] = ResumeAwareWorker(("a", "b"))
+    app = DurableWorkflowGraphApp(graph)
+
+    async def execute():
+        await app.arun(initial, identity=_identity("invoke-send"), context=context)
+        await app.aresume(
+            identity=_identity("resume-once"),
+            context=context,
+            resume=WorkflowResume(
+                values_by_action_ref={
+                    "workflow:wf-send:node:a:generation:0": {"answer": "A"}
+                }
+            ),
+        )
+        with pytest.raises(WorkflowGraphExecutionError) as reused:
+            await app.aresume(
+                identity=_identity("resume-once"),
+                context=context,
+                resume=WorkflowResume(
+                    values_by_action_ref={
+                        "workflow:wf-send:node:b:generation:0": {"answer": "B"}
+                    }
+                ),
+            )
+        return reused.value.code
+
+    try:
+        assert asyncio.run(execute()) == "workflow_resume_run_id_reused"
+    finally:
+        artifact_store.close()
+
+
+def test_resume_payload_is_bounded_before_graph_command(tmp_path):
+    graph, context, initial, _worker, artifact_store = workflow_probe(tmp_path, {"a": []})
+    context.services.provider_registry["worker"] = ResumeAwareWorker(("a",))
+    app = DurableWorkflowGraphApp(graph)
+
+    async def execute():
+        await app.arun(initial, identity=_identity("invoke-send"), context=context)
+        with pytest.raises(ValueError):
+            WorkflowResume(
+                values_by_action_ref={
+                    "workflow:wf-send:node:a:generation:0": {"answer": "x" * 4001}
+                }
+            )
+        snapshot = await app.aget_state(_identity("invoke-send"))
+        return tuple(task.name for task in snapshot.tasks)
+
+    try:
+        assert asyncio.run(execute()) == ("await_branch_input",)
+    finally:
+        artifact_store.close()
+
+
+def test_mixed_success_and_blocked_wave_resumes_only_blocked_assignment(tmp_path):
+    graph, context, initial, _worker, artifact_store = workflow_probe(
+        tmp_path, {"a": [], "b": []}
+    )
+    worker = ResumeAwareWorker(
+        ("a", "b"), initially_completed=frozenset({"a"})
+    )
+    context.services.provider_registry["worker"] = worker
+    app = DurableWorkflowGraphApp(graph)
+
+    async def execute():
+        interrupted = await app.arun(
+            initial, identity=_identity("invoke-send"), context=context
+        )
+        resumed = await app.aresume(
+            identity=_identity("resume-mixed"),
+            context=context,
+            resume=WorkflowResume(
+                values_by_action_ref={
+                    "workflow:wf-send:node:b:generation:0": {"answer": "B"}
+                }
+            ),
+        )
+        return interrupted, resumed
+
+    try:
+        interrupted, resumed = asyncio.run(execute())
+        assert [item.action_ref for item in interrupted.interrupts] == [
+            "workflow:wf-send:node:b:generation:0"
+        ]
+        assert resumed.status == "completed"
+        assert worker.calls == {"a": 1, "b": 2}
+        assert resumed.final_state["execution_generation_by_node"] == {"a": 0, "b": 1}
+    finally:
+        artifact_store.close()
+
+
+def test_snapshot_mapping_rejects_wrong_task_name_and_generation(tmp_path):
+    graph, context, initial, _worker, artifact_store = workflow_probe(tmp_path, {"a": []})
+    context.services.provider_registry["worker"] = ResumeAwareWorker(("a",))
+    app = DurableWorkflowGraphApp(graph)
+
+    async def execute():
+        await app.arun(initial, identity=_identity("invoke-send"), context=context)
+        raw = await app._aget_raw_state(_identity("invoke-send"))
+        state = validate_durable_workflow_state(raw.values)
+        native = raw.tasks[0].interrupts[0]
+        wrong_name = SimpleNamespace(
+            tasks=(
+                SimpleNamespace(
+                    name="run_worker",
+                    result=None,
+                    interrupts=(native,),
+                ),
+            )
+        )
+        with pytest.raises(WorkflowGraphExecutionError) as name_error:
+            _pending_interrupts(wrong_name, state)
+        payload = dict(native.value)
+        payload["execution_generation"] = 1
+        payload["action_ref"] = "workflow:wf-send:node:a:generation:1"
+        wrong_generation = SimpleNamespace(
+            tasks=(
+                SimpleNamespace(
+                    name="await_branch_input",
+                    result=None,
+                    interrupts=(SimpleNamespace(id=native.id, value=payload),),
+                ),
+            )
+        )
+        with pytest.raises(WorkflowGraphExecutionError) as generation_error:
+            _pending_interrupts(wrong_generation, state)
+        return name_error.value.code, generation_error.value.code
+
+    try:
+        assert asyncio.run(execute()) == (
+            "workflow_interrupt_task_invalid",
+            "workflow_interrupt_mapping_invalid",
+        )
+    finally:
+        artifact_store.close()
+
+
+def test_state_and_history_reject_cross_owner_identity(tmp_path):
+    graph, context, initial, _worker, artifact_store = workflow_probe(tmp_path, {"a": []})
+    context.services.provider_registry["worker"] = ResumeAwareWorker(("a",))
+    app = DurableWorkflowGraphApp(graph)
+    intruder = WorkflowGraphExecutionIdentity(
+        workflow_id="wf-send",
+        thread_id="workflow-thread-send",
+        run_id="intruder-read",
+        user_id="other-user",
+        session_id="session-send",
+        agent_id="agent-send",
+    )
+
+    async def execute():
+        await app.arun(initial, identity=_identity("invoke-send"), context=context)
+        with pytest.raises(WorkflowGraphExecutionError) as state_error:
+            await app.aget_state(intruder)
+        with pytest.raises(WorkflowGraphExecutionError) as history_error:
+            await app.aget_state_history(intruder, limit=10)
+        safe = await app.aget_state(_identity("invoke-send"))
+        return state_error.value.code, history_error.value.code, safe
+
+    try:
+        state_code, history_code, safe = asyncio.run(execute())
+        assert state_code == history_code == "workflow_resume_identity_mismatch"
+        assert not hasattr(safe, "config")
+        assert all(not hasattr(interrupt, "id") for task in safe.tasks for interrupt in task.interrupts)
     finally:
         artifact_store.close()

@@ -8,12 +8,15 @@ import json
 from typing import Any, Literal, cast
 
 from langgraph.types import Command
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict
 
 from assistant_agent.workflows.graph_context import WorkflowGraphRuntimeContext
 from assistant_agent.workflows.graph_state import (
     DurableWorkflowState,
     WorkflowBranchInterruptInput,
+    WorkflowProfileAssignment,
+    WorkflowResumeInput,
+    latest_results,
     validate_durable_workflow_state,
 )
 
@@ -64,10 +67,8 @@ class _StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
 
-class WorkflowResume(_StrictModel):
-    values_by_action_ref: dict[str, dict[str, str]] = Field(
-        min_length=1, max_length=32
-    )
+class WorkflowResume(WorkflowResumeInput):
+    pass
 
 
 class WorkflowGraphInterrupt(_StrictModel):
@@ -94,6 +95,19 @@ class WorkflowGraphStreamResult:
         "completed", "failed", "cancelled", "interrupted", "infrastructure_error"
     ]
     interrupts: tuple[WorkflowGraphInterrupt, ...] = ()
+
+
+@dataclass(frozen=True)
+class WorkflowStateTask:
+    name: str
+    interrupts: tuple[WorkflowGraphInterrupt, ...]
+
+
+@dataclass(frozen=True)
+class WorkflowStateSnapshot:
+    values: DurableWorkflowState
+    tasks: tuple[WorkflowStateTask, ...]
+    next: tuple[str, ...]
 
 
 class DurableWorkflowGraphApp:
@@ -146,7 +160,7 @@ class DurableWorkflowGraphApp:
         resume: WorkflowResume,
         part_consumer: Callable[[WorkflowGraphStreamPart], object] | None = None,
     ) -> WorkflowGraphStreamResult:
-        snapshot = await self.aget_state(identity)
+        snapshot = await self._aget_raw_state(identity)
         state = self._validated_snapshot(snapshot)
         self._validate_owner(state, identity, context)
         if identity.run_id == state["invocation_run_id"]:
@@ -154,7 +168,12 @@ class DurableWorkflowGraphApp:
                 "workflow_resume_run_id_reused",
                 "Resume requires a new run_id on the same workflow thread.",
             )
-        pending = _pending_interrupts(snapshot)
+        if identity.run_id in state["invocation_run_ids"]:
+            raise WorkflowGraphExecutionError(
+                "workflow_resume_run_id_reused",
+                "Resume invocation run_id was already consumed.",
+            )
+        pending = _pending_interrupts(snapshot, state)
         by_action: dict[str, tuple[str, WorkflowBranchInterruptInput]] = {}
         for native_id, request in pending:
             previous = by_action.get(request.action_ref)
@@ -187,14 +206,22 @@ class DurableWorkflowGraphApp:
         )
 
     async def aget_state(self, identity: WorkflowGraphExecutionIdentity) -> Any:
-        return await self.graph.aget_state(identity.runnable_config(), subgraphs=True)
+        snapshot = await self._aget_raw_state(identity)
+        state = self._validated_snapshot(snapshot)
+        self._validate_identity_only(state, identity)
+        return _safe_snapshot(snapshot, state)
+
+    async def _aget_raw_state(self, identity: WorkflowGraphExecutionIdentity) -> Any:
+        return await self.graph.aget_state(
+            identity.runnable_config(), subgraphs=True
+        )
 
     async def aget_state_history(
         self, identity: WorkflowGraphExecutionIdentity, limit: int
     ) -> tuple[Any, ...]:
         if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
             raise ValueError("state history limit must be between 1 and 100")
-        return tuple(
+        snapshots = tuple(
             [
                 item
                 async for item in self.graph.aget_state_history(
@@ -202,6 +229,17 @@ class DurableWorkflowGraphApp:
                 )
             ]
         )
+        validated_snapshots = []
+        for snapshot in snapshots:
+            values = getattr(snapshot, "values", None)
+            # LangGraph history may include the pre-input empty checkpoint.
+            if not isinstance(values, Mapping) or "graph_name" not in values:
+                continue
+            self._validate_identity_only(self._validated_snapshot(snapshot), identity)
+            validated_snapshots.append(
+                _safe_snapshot(snapshot, self._validated_snapshot(snapshot))
+            )
+        return tuple(validated_snapshots)
 
     async def _consume(
         self,
@@ -218,10 +256,12 @@ class DurableWorkflowGraphApp:
             parts.append(part)
             if part_consumer is not None:
                 part_consumer(part)
-        snapshot = await self.aget_state(identity)
+        snapshot = await self._aget_raw_state(identity)
         state = self._validated_snapshot(snapshot)
         self._validate_owner(state, identity, context)
-        interrupts = tuple(item for _native_id, item in _pending_interrupts(snapshot))
+        interrupts = tuple(
+            item for _native_id, item in _pending_interrupts(snapshot, state)
+        )
         public = tuple(
             WorkflowGraphInterrupt(
                 action_ref=item.action_ref,
@@ -307,16 +347,53 @@ class DurableWorkflowGraphApp:
                 "Workflow execution identity does not own this graph thread.",
             )
 
+    @staticmethod
+    def _validate_identity_only(
+        state: DurableWorkflowState,
+        identity: WorkflowGraphExecutionIdentity,
+    ) -> None:
+        owner = state["identity"]
+        owner_map = owner.model_dump(mode="python") if hasattr(owner, "model_dump") else owner
+        if (
+            state["workflow_id"] != identity.workflow_id
+            or state["workflow_thread_id"] != identity.thread_id
+            or owner_map["user_id"] != identity.user_id
+            or owner_map["session_id"] != identity.session_id
+            or owner_map["agent_id"] != identity.agent_id
+        ):
+            raise WorkflowGraphExecutionError(
+                "workflow_resume_identity_mismatch",
+                "Workflow execution identity does not own this graph thread.",
+            )
+
 
 def _pending_interrupts(
     snapshot: Any,
+    state: DurableWorkflowState,
 ) -> tuple[tuple[str, WorkflowBranchInterruptInput], ...]:
+    assignments = {
+        assignment.node_id: assignment
+        for raw in state["active_wave"]
+        for assignment in (
+            raw
+            if isinstance(raw, WorkflowProfileAssignment)
+            else WorkflowProfileAssignment.model_validate_json(json.dumps(raw)),
+        )
+    }
+    current_results = latest_results(
+        state["result_ledger"], state["execution_generation_by_node"]
+    )
     values: list[tuple[str, WorkflowBranchInterruptInput]] = []
     for task in tuple(getattr(snapshot, "tasks", ()) or ()):
         # LangGraph keeps completed siblings in the interrupted super-step
         # snapshot. Only tasks without a result remain resumable.
         if getattr(task, "result", None) is not None:
             continue
+        if getattr(task, "name", None) != "await_branch_input":
+            raise WorkflowGraphExecutionError(
+                "workflow_interrupt_task_invalid",
+                "Pending workflow interrupt is not owned by the parent await node.",
+            )
         for native in tuple(getattr(task, "interrupts", ()) or ()):
             native_id = getattr(native, "id", None)
             if not isinstance(native_id, str) or not native_id:
@@ -333,8 +410,66 @@ def _pending_interrupts(
                     "workflow_interrupt_payload_invalid",
                     "Native workflow interrupt payload is invalid.",
                 ) from exc
+            assignment = assignments.get(request.node_id)
+            result = current_results.get(request.node_id)
+            if (
+                assignment is None
+                or assignment.workflow_id != state["workflow_id"]
+                or assignment.workflow_id != request.workflow_id
+                or assignment.execution_generation != request.execution_generation
+                or assignment.assignment_ref != request.assignment_ref
+                or result is None
+                or result.status != "blocked"
+                or result.execution_generation != request.execution_generation
+                or result.input_request is None
+                or result.input_request.required_fields != request.required_fields
+                or result.input_request.prompt_code != request.prompt_code
+                or result.input_request.safe_prompt != request.safe_prompt
+            ):
+                raise WorkflowGraphExecutionError(
+                    "workflow_interrupt_mapping_invalid",
+                    "Pending workflow interrupt does not match the current parent wave.",
+                )
             values.append((native_id, request))
     return tuple(values)
+
+
+def _safe_snapshot(
+    snapshot: Any,
+    state: DurableWorkflowState,
+) -> WorkflowStateSnapshot:
+    public_by_action = {
+        request.action_ref: WorkflowGraphInterrupt(
+            action_ref=request.action_ref,
+            node_id=request.node_id,
+            execution_generation=request.execution_generation,
+            required_fields=request.required_fields,
+            prompt_code=request.prompt_code,
+            safe_prompt=request.safe_prompt,
+        )
+        for _native_id, request in _pending_interrupts(snapshot, state)
+    }
+    tasks = tuple(
+        WorkflowStateTask(
+            name=str(getattr(task, "name", "")),
+            interrupts=tuple(
+                public_by_action[request.action_ref]
+                for native in tuple(getattr(task, "interrupts", ()) or ())
+                if (
+                    request := WorkflowBranchInterruptInput.model_validate_json(
+                        json.dumps(getattr(native, "value", None))
+                    )
+                ).action_ref in public_by_action
+            ),
+        )
+        for task in tuple(getattr(snapshot, "tasks", ()) or ())
+        if getattr(task, "result", None) is None
+    )
+    return WorkflowStateSnapshot(
+        values=state,
+        tasks=tasks,
+        next=tuple(getattr(snapshot, "next", ()) or ()),
+    )
 
 
 __all__ = [
@@ -344,5 +479,7 @@ __all__ = [
     "WorkflowGraphInterrupt",
     "WorkflowGraphStreamPart",
     "WorkflowGraphStreamResult",
+    "WorkflowStateSnapshot",
+    "WorkflowStateTask",
     "WorkflowResume",
 ]

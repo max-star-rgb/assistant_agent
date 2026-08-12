@@ -711,6 +711,7 @@ def route_blocked_branches(state: DurableWorkflowState) -> list[Send]:
                     node_id=assignment.node_id,
                     execution_generation=assignment.execution_generation,
                     action_ref=action_ref,
+                    assignment_ref=assignment.assignment_ref,
                     required_fields=result.input_request.required_fields,
                     prompt_code=result.input_request.prompt_code,
                     safe_prompt=result.input_request.safe_prompt,
@@ -726,6 +727,7 @@ def route_blocked_branches(state: DurableWorkflowState) -> list[Send]:
 
 def await_branch_input_node(
     value: WorkflowBranchInterruptInput | Mapping[str, object],
+    config: RunnableConfig,
 ) -> dict[str, object]:
     request = (
         value
@@ -744,6 +746,7 @@ def await_branch_input_node(
         fields=fields,
     )
     return {
+        "invocation_run_ids": (str(config["configurable"]["run_id"]),),
         "resume_values_by_action_ref": {
             request.action_ref: persisted.model_dump(mode="json")
         }
@@ -780,6 +783,11 @@ def apply_branch_resumes_node(
             execution_generation=assignment.execution_generation,
         )
         resume_value = values.get(action_ref)
+        current = latest_results(state["result_ledger"], generations).get(
+            assignment.node_id
+        )
+        if current is None or current.status != "blocked":
+            continue
         if resume_value is None or action_ref in consumed:
             raise WorkflowGraphStateConflict(
                 "workflow branch resume is missing or already consumed"
@@ -806,6 +814,7 @@ def apply_branch_resumes_node(
     return {
         "invocation_run_id": invocation_run_id,
         "invocation_trace_id": invocation_run_id,
+        "invocation_run_ids": (invocation_run_id,),
         "execution_generation_by_node": generations,
         "active_wave": tuple(
             item.model_dump(mode="json") for item in resumed_assignments

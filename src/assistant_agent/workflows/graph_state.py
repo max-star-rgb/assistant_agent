@@ -278,6 +278,25 @@ class PersistedWorkflowResumeField(_CheckpointModel):
     value: str = Field(max_length=4_000)
 
 
+class WorkflowResumeInput(_CheckpointModel):
+    values_by_action_ref: dict[str, dict[str, str]] = Field(
+        min_length=1,
+        max_length=32,
+    )
+
+    @model_validator(mode="after")
+    def validate_values(self) -> "WorkflowResumeInput":
+        for action_ref, fields in self.values_by_action_ref.items():
+            if not action_ref or len(action_ref) > 512:
+                raise ValueError("workflow resume action_ref is invalid")
+            if not fields or len(fields) > 32:
+                raise ValueError("workflow resume fields are invalid")
+            for name, value in fields.items():
+                if not re.fullmatch(_NODE_ID_PATTERN, name) or len(value) > 4_000:
+                    raise ValueError("workflow resume field is invalid")
+        return self
+
+
 class PersistedWorkflowResumeValue(_CheckpointModel):
     action_ref: str = Field(min_length=1, max_length=512)
     fields: tuple[PersistedWorkflowResumeField, ...] = Field(
@@ -300,6 +319,7 @@ class WorkflowBranchInterruptInput(_CheckpointModel):
     node_id: str = Field(pattern=_NODE_ID_PATTERN)
     execution_generation: int = Field(ge=0, le=64)
     action_ref: str = Field(min_length=1, max_length=512)
+    assignment_ref: str = Field(pattern=r"^workflow-assignment:sha256:[0-9a-f]{64}$")
     required_fields: tuple[str, ...] = Field(min_length=1, max_length=32)
     prompt_code: str = Field(pattern=_NODE_ID_PATTERN)
     safe_prompt: str = Field(min_length=1, max_length=2_000)
@@ -800,6 +820,7 @@ class DurableWorkflowState(TypedDict):
     workflow_thread_id: str
     invocation_run_id: str
     invocation_trace_id: str
+    invocation_run_ids: Annotated[tuple[str, ...], merge_sorted_unique_refs]
     definition_version: str
     current_plan_version: int
     submission: PersistedWorkflowSubmission
@@ -832,6 +853,7 @@ class _DurableWorkflowStateModel(_CheckpointModel):
     workflow_thread_id: str = Field(min_length=1, max_length=512)
     invocation_run_id: str = Field(min_length=1, max_length=512)
     invocation_trace_id: str = Field(min_length=1, max_length=512)
+    invocation_run_ids: tuple[str, ...] = Field(min_length=1, max_length=1_000)
     definition_version: str = Field(min_length=1, max_length=80)
     current_plan_version: int = Field(ge=1)
     submission: PersistedWorkflowSubmission
@@ -861,6 +883,8 @@ class _DurableWorkflowStateModel(_CheckpointModel):
     def validate_cross_fields(self) -> "_DurableWorkflowStateModel":
         if self.identity.workflow_thread_id != self.workflow_thread_id:
             raise ValueError("workflow identity thread mismatch")
+        if self.invocation_run_id not in self.invocation_run_ids:
+            raise ValueError("current invocation run must be in invocation ledger")
         if self.submission.workflow_type != self.workflow_type:
             raise ValueError("submission workflow type mismatch")
         if self.admitted_plan is not None:
@@ -1043,6 +1067,7 @@ def initial_workflow_graph_state(
         workflow_thread_id=workflow_thread_id,
         invocation_run_id=invocation_run_id,
         invocation_trace_id=invocation_trace_id,
+        invocation_run_ids=(invocation_run_id,),
         definition_version=workflow.definition_version,
         current_plan_version=workflow.current_plan_version,
         submission=_persist_submission(submission),
