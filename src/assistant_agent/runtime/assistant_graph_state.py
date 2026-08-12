@@ -63,7 +63,7 @@ class PersistedMessage(_CheckpointModel):
 class PersistedRuntimeTaskFacts(_CheckpointModel):
     action: Literal["continue", "revise", "replace", "complete"]
     objective: str = Field(min_length=1, max_length=1_200)
-    constraints: tuple[str, ...] = Field(default=(), max_length=12)
+    constraints: tuple[str, ...] = Field(default=(), max_length=64)
 
 
 class PersistedMediaRef(_CheckpointModel):

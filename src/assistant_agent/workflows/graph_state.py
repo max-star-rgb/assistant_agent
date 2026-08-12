@@ -323,7 +323,7 @@ class WorkflowProfileAssignment(_CheckpointModel):
     run_id: str = Field(min_length=1, max_length=512)
     trace_id: str = Field(min_length=1, max_length=512)
     objective: str = Field(min_length=1, max_length=10_000)
-    constraints: tuple[str, ...] = Field(default=(), max_length=12)
+    constraints: tuple[str, ...] = Field(default=(), max_length=64)
     input_artifact_refs: tuple[str, ...] = Field(default=(), max_length=128)
     acceptance_contract: PersistedWorkflowStepAcceptanceContract
     capability_refs: tuple[str, ...] = Field(default=(), max_length=64)

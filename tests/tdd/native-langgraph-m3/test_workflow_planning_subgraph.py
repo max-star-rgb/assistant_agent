@@ -73,12 +73,12 @@ class _RecordingContextFactory(BranchProfileContextFactory):
         return context
 
 
-def _submission() -> WorkflowSubmission:
+def _submission(constraints: list[str] | None = None) -> WorkflowSubmission:
     return WorkflowSubmission(
         workflow_type="deep_research",
         objective="Compare native graph execution",
         deliverables=["research report"],
-        constraints=["cite evidence"],
+        constraints=constraints or ["cite evidence"],
         inputs={"research_questions": ["How does recovery work?"]},
         requested_budget={
             "model_calls": 12,
@@ -101,7 +101,7 @@ def _budget() -> WorkflowBudget:
     )
 
 
-def _record() -> WorkflowRecord:
+def _record(constraints: list[str] | None = None) -> WorkflowRecord:
     return WorkflowRecord(
         workflow_id="wf-planning",
         execution_engine="langgraph_v3",
@@ -116,7 +116,7 @@ def _record() -> WorkflowRecord:
         submission_digest="b" * 64,
         objective="Compare native graph execution",
         deliverables=["research report"],
-        constraints=["cite evidence"],
+        constraints=constraints or ["cite evidence"],
         inputs={"research_questions": ["How does recovery work?"]},
         phase="planning",
         budget=_budget(),
@@ -124,15 +124,19 @@ def _record() -> WorkflowRecord:
     )
 
 
-def _valid_proposal() -> dict[str, object]:
-    acceptance = lambda criterion: {
-        "schema_version": "workflow_step_acceptance_v2",
-        "output": {
-            "artifact_type": "research_report",
-            "description": "Bounded evidence",
-        },
-        "criteria": [{"criterion_id": criterion, "statement": "Evidence exists"}],
-    }
+def _valid_proposal(constraints: list[str] | None = None) -> dict[str, object]:
+    def acceptance(criterion: str) -> dict[str, object]:
+        return {
+            "schema_version": "workflow_step_acceptance_v2",
+            "output": {
+                "artifact_type": "research_report",
+                "description": "Bounded evidence",
+            },
+            "criteria": [
+                {"criterion_id": criterion, "statement": "Evidence exists"}
+            ],
+        }
+    trusted_constraints = constraints or ["cite evidence"]
     return {
         "schema_version": "workflow_plan_v2",
         "nodes": [
@@ -163,17 +167,18 @@ def _valid_proposal() -> dict[str, object]:
         ],
         "constraint_bindings": [
             {
-                "constraint_id": "cited",
-                "statement": "cite evidence",
+                "constraint_id": f"constraint_{index}",
+                "statement": statement,
                 "owner_node_ids": ["collect_a", "collect_b"],
                 "verifier_node_id": "synthesize",
                 "severity": "required",
             }
+            for index, statement in enumerate(trusted_constraints)
         ],
     }
 
 
-def _planning_probe(tmp_path, proposal):
+def _planning_probe(tmp_path, proposal, *, constraints: list[str] | None = None):
     registry = ToolRegistry()
     registry.register(ProbeTool())
     registry.seal()
@@ -219,8 +224,8 @@ def _planning_probe(tmp_path, proposal):
         name="WorkflowPlanningProbe",
     )
     initial = initial_workflow_graph_state(
-        workflow=_record(),
-        submission=_submission(),
+        workflow=_record(constraints),
+        submission=_submission(constraints),
         admitted_plan=None,
         workflow_thread_id="workflow-thread-planning",
         invocation_run_id="workflow-invoke-planning",
@@ -307,6 +312,31 @@ def test_planner_owner_or_thread_mismatch_fails_before_provider(tmp_path):
     with pytest.raises(ValueError, match="identity mismatch"):
         asyncio.run(execute())
     assert adapter.requests == []
+
+
+def test_planning_admits_all_sixty_four_trusted_constraints(tmp_path):
+    constraints = [f"trusted constraint {index}" for index in range(64)]
+    app, _planning, context, initial, _adapter = _planning_probe(
+        tmp_path,
+        _valid_proposal(constraints),
+        constraints=constraints,
+    )
+
+    async def execute():
+        async for _part in app.astream(
+            initial,
+            config=_config(),
+            context=context,
+            stream_mode=["updates"],
+            subgraphs=True,
+            version="v2",
+        ):
+            pass
+        return await app.aget_state(_config())
+
+    snapshot = asyncio.run(execute())
+    assert snapshot.values["phase"] == "admitted"
+    assert len(snapshot.values["admitted_plan"]["constraint_bindings"]) == 64
 
 
 def _invalid_proposal(case: str) -> dict[str, object]:

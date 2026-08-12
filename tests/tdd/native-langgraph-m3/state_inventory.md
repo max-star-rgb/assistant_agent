@@ -13,7 +13,7 @@
 | `admitted_plan` | admission 后必需 | nodes 256；dependencies 64/node；bindings 64/32 | wave router、join、verifier、repair |
 | `status/phase` | 必需控制事实 | literal enum | conditional edges、product projection |
 | `execution_generation_by_node` | admission 后完整覆盖所有 node | 256 nodes；generation 0..64 | current result 派生、repair |
-| `active_wave` / `WorkflowProfileAssignment` | 当前 `Send` branch 的完整、可恢复 assignment | 256 branches；objective 10k；constraints 12；artifact refs 128；Tool names 256 | branch child adapter、parent join、interrupt mapping |
+| `active_wave` / `WorkflowProfileAssignment` | 当前 `Send` branch 的完整、可恢复 assignment | 256 branches；objective 10k；constraints 64；artifact refs 128；Tool names 256 | branch child adapter、parent join、interrupt mapping |
 | `result_ledger` | append-only `(node_id,generation)` 结果 ledger；ACI reducer | 256×65 logical keys；每 slot 最多两个 digest variant | join、conflict fail-closed、repair/history |
 | `resume_values_by_action_ref` | replay-safe typed resume ledger | 1,000 actions；32 fields/action；4k/value | Task 5 resume apply |
 | `consumed_action_refs` | resume 消费幂等事实 | 1,000 sorted unique refs | Task 5 resume apply |
