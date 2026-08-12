@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from time import perf_counter, time
 from typing import TYPE_CHECKING, Any, Literal
@@ -183,6 +184,22 @@ def _stable_text_observation(
         occurred_at_ms=now_ms if now_ms is not None else int(time() * 1000),
         final=True,
     )
+
+
+@dataclass
+class _PreparedGraphRun:
+    request: UserRequest
+    state: AgentState
+    workflow_work_item: bool
+    deep_research_start: bool
+    run_event_sink: EventSink | None
+    runtime_event_publisher: RuntimeEventPublisher
+    run_started_at: float
+    runtime_context: GraphRuntimeContext
+    initial_state: dict[str, Any]
+    identity: GraphExecutionIdentity
+    cancel_token: Any | None
+    pre_terminal_state_hook: Callable[[AgentState], None] | None
 
 
 class AgentGraphRuntime:
@@ -779,6 +796,42 @@ class AgentGraphRuntime:
                 run_id=effective_run_id,
             )
 
+    async def arun_state(
+        self,
+        request: UserRequest,
+        event_sink: EventSink | None = None,
+        cancel_token: Any | None = None,
+        trace_context: RuntimeTraceContext | None = None,
+        export_trace_context: RuntimeExportTraceContext | None = None,
+        pre_terminal_state_hook: Callable[[AgentState], None] | None = None,
+        run_id: str | None = None,
+    ) -> AgentState:
+        """Run the graph through LangGraph's native asynchronous execution API."""
+
+        effective_run_id = run_id or new_run_id()
+        identity = RequestIdentity.for_user(
+            user_id=request.user_id,
+            agent_id=self.agent_id,
+            session_id=request.session_id,
+        )
+        try:
+            prepared = self._prepare_graph_run(
+                request,
+                event_sink=event_sink,
+                cancel_token=cancel_token,
+                trace_context=trace_context,
+                export_trace_context=export_trace_context,
+                pre_terminal_state_hook=pre_terminal_state_hook,
+                run_id=effective_run_id,
+            )
+            state = await self._execute_graph_async(prepared)
+            return self._finalize_graph_run(prepared, state)
+        finally:
+            self.long_term_memory_service.release_run_context(
+                identity=identity,
+                run_id=effective_run_id,
+            )
+
     def _run_state(
         self,
         request: UserRequest,
@@ -790,6 +843,31 @@ class AgentGraphRuntime:
         run_id: str | None = None,
     ) -> AgentState:
         """Execute one run while the Host retains its frozen Memory context."""
+
+        prepared = self._prepare_graph_run(
+            request,
+            event_sink=event_sink,
+            cancel_token=cancel_token,
+            trace_context=trace_context,
+            export_trace_context=export_trace_context,
+            pre_terminal_state_hook=pre_terminal_state_hook,
+            run_id=run_id,
+        )
+        state = self._execute_graph_sync(prepared)
+        return self._finalize_graph_run(prepared, state)
+
+    def _prepare_graph_run(
+        self,
+        request: UserRequest,
+        *,
+        event_sink: EventSink | None,
+        cancel_token: Any | None,
+        trace_context: RuntimeTraceContext | None,
+        export_trace_context: RuntimeExportTraceContext | None,
+        pre_terminal_state_hook: Callable[[AgentState], None] | None,
+        run_id: str,
+    ) -> _PreparedGraphRun:
+        """Prepare the shared state and runtime-only dependencies for one run."""
 
         request = normalize_task_execution_mode(
             request,
@@ -948,53 +1026,143 @@ class AgentGraphRuntime:
             "response_stream_ends_with_newline": False,
             "response_stream_separator_pending": False,
         }
+        identity = GraphExecutionIdentity.for_assistant_turn(
+            agent_id=self.agent_id,
+            user_id=request.user_id,
+            session_id=request.session_id,
+            run_id=state.run_id,
+        )
+        return _PreparedGraphRun(
+            request=request,
+            state=state,
+            workflow_work_item=workflow_work_item,
+            deep_research_start=deep_research_start,
+            run_event_sink=run_event_sink,
+            runtime_event_publisher=runtime_event_publisher,
+            run_started_at=run_started_at,
+            runtime_context=runtime_context,
+            initial_state=initial_state,
+            identity=identity,
+            cancel_token=cancel_token,
+            pre_terminal_state_hook=pre_terminal_state_hook,
+        )
+
+    def _begin_graph_execution(self, prepared: _PreparedGraphRun) -> bool:
+        """Apply shared pre-graph cancellation and compatibility branches."""
+
+        state = prepared.state
         try:
-            raise_if_cancelled(cancel_token, phase="pre_graph", state=state)
+            raise_if_cancelled(
+                prepared.cancel_token,
+                phase="pre_graph",
+                state=state,
+            )
         except AgentRunCancelled as exc:
             state.cancel(exc.message, source=exc.source, details=exc.details)
-        else:
-            if deep_research_start:
-                _start_deep_research_workflow(
-                    state,
-                    workflow_service=self.workflow_service,
-                )
-            elif request.task_execution_mode == "durable" and not self.config.durable_tasks_enabled:
-                _set_durable_tasks_disabled_response(state)
-            else:
-                self._emit(
-                    AgentEvent(
-                        type="graph_node_started",
-                        session_id=state.session_id,
-                        run_id=state.run_id,
-                        node_name="agent_graph",
-                    ),
-                    run_event_sink,
-                )
-                try:
-                    final_state = self._select_graph().invoke(
-                        initial_state,
-                        config=self._langgraph_config(request, state),
-                        context=runtime_context,
-                    )
-                    state = final_state["state"]
-                    raise_if_cancelled(cancel_token, phase="post_graph", state=state)
-                except AgentRunCancelled as exc:
-                    if isinstance(exc.state, AgentState):
-                        state = exc.state
-                    state.cancel(exc.message, source=exc.source, details=exc.details)
-                finally:
-                    self._emit(
-                        AgentEvent(
-                            type="graph_node_finished",
-                            session_id=state.session_id,
-                            run_id=state.run_id,
-                            node_name="agent_graph",
-                        ),
-                        run_event_sink,
-                    )
-        if pre_terminal_state_hook is not None:
+            return False
+        if prepared.deep_research_start:
+            _start_deep_research_workflow(
+                state,
+                workflow_service=self.workflow_service,
+            )
+            return False
+        if (
+            prepared.request.task_execution_mode == "durable"
+            and not self.config.durable_tasks_enabled
+        ):
+            _set_durable_tasks_disabled_response(state)
+            return False
+        self._emit_graph_execution_event(prepared, event_type="graph_node_started")
+        return True
+
+    def _complete_graph_execution(
+        self,
+        prepared: _PreparedGraphRun,
+        final_state: Mapping[str, Any],
+    ) -> AgentState:
+        state = final_state["state"]
+        try:
+            raise_if_cancelled(
+                prepared.cancel_token,
+                phase="post_graph",
+                state=state,
+            )
+        except AgentRunCancelled as exc:
+            if isinstance(exc.state, AgentState):
+                state = exc.state
+            state.cancel(exc.message, source=exc.source, details=exc.details)
+        return state
+
+    def _emit_graph_execution_event(
+        self,
+        prepared: _PreparedGraphRun,
+        *,
+        event_type: Literal["graph_node_started", "graph_node_finished"],
+    ) -> None:
+        self._emit(
+            AgentEvent(
+                type=event_type,
+                session_id=prepared.state.session_id,
+                run_id=prepared.state.run_id,
+                node_name="agent_graph",
+            ),
+            prepared.run_event_sink,
+        )
+
+    def _execute_graph_sync(self, prepared: _PreparedGraphRun) -> AgentState:
+        if not self._begin_graph_execution(prepared):
+            return prepared.state
+        try:
+            final_state = self.assistant_graph_app.graph.invoke(
+                prepared.initial_state,
+                config=prepared.identity.runnable_config(),
+                context=prepared.runtime_context,
+            )
+            return self._complete_graph_execution(prepared, final_state)
+        except AgentRunCancelled as exc:
+            state = exc.state if isinstance(exc.state, AgentState) else prepared.state
+            state.cancel(exc.message, source=exc.source, details=exc.details)
+            return state
+        finally:
+            self._emit_graph_execution_event(
+                prepared,
+                event_type="graph_node_finished",
+            )
+
+    async def _execute_graph_async(self, prepared: _PreparedGraphRun) -> AgentState:
+        if not self._begin_graph_execution(prepared):
+            return prepared.state
+        try:
+            result = await self.assistant_graph_app.arun(
+                prepared.initial_state,
+                identity=prepared.identity,
+                context=prepared.runtime_context,
+            )
+            return self._complete_graph_execution(prepared, result.final_state)
+        except AgentRunCancelled as exc:
+            state = exc.state if isinstance(exc.state, AgentState) else prepared.state
+            state.cancel(exc.message, source=exc.source, details=exc.details)
+            return state
+        finally:
+            self._emit_graph_execution_event(
+                prepared,
+                event_type="graph_node_finished",
+            )
+
+    def _finalize_graph_run(
+        self,
+        prepared: _PreparedGraphRun,
+        state: AgentState,
+    ) -> AgentState:
+        """Commit the shared terminal lifecycle after sync or async execution."""
+
+        request = prepared.request
+        run_event_sink = prepared.run_event_sink
+        run_started_at = prepared.run_started_at
+        runtime_event_publisher = prepared.runtime_event_publisher
+        if prepared.pre_terminal_state_hook is not None:
             try:
-                pre_terminal_state_hook(state)
+                prepared.pre_terminal_state_hook(state)
             except Exception as exc:  # noqa: BLE001 - trusted hook fails closed.
                 state.errors.append(
                     AgentError(
@@ -1081,7 +1249,7 @@ class AgentGraphRuntime:
                     run_event_sink,
                 )
         runtime_event_publisher.deliver_run_terminal(terminal_fact)
-        if terminal_status == "completed" and not workflow_work_item:
+        if terminal_status == "completed" and not prepared.workflow_work_item:
             _record_local_delivered_response(state)
             self.long_term_memory_service.enqueue_completed_turn(
                 trace_store=self.trace_store,
@@ -1445,19 +1613,6 @@ class AgentGraphRuntime:
         )
         request.metadata["realtime_video_context"] = context.model_dump(mode="json")
         request.metadata["realtime_video_context_trusted"] = True
-
-    def _select_graph(
-        self,
-    ) -> Any:
-        return self.assistant_graph_app.graph
-
-    def _langgraph_config(self, request: UserRequest, state: AgentState) -> dict[str, dict[str, str]]:
-        return GraphExecutionIdentity.for_assistant_turn(
-            agent_id=self.agent_id,
-            user_id=request.user_id,
-            session_id=request.session_id,
-            run_id=state.run_id,
-        ).runnable_config()
 
     def run_stream(
         self,
