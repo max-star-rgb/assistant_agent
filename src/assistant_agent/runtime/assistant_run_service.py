@@ -12,6 +12,7 @@ from time import perf_counter
 from typing import Any, Protocol
 
 from assistant_agent.runtime.event_stream import AgentRunStream, AsyncQueueEventSink
+from assistant_agent.runtime.assistant_graph_app import GraphExecutionError
 from assistant_agent.runtime.runtime import AgentGraphRuntime
 from assistant_agent.runtime.state import AgentState
 from assistant_agent.config import ProviderConfig
@@ -507,6 +508,7 @@ def create_runtime(
         event_sink=event_sink,
         trace_store=trace_store,
         durable_task_service=durable_task_service,
+        allow_interrupt=False,
     )
 
 
@@ -558,6 +560,7 @@ def run_assistant_request(
         cancel_token=cancel_token,
         run_id=run_id,
     )
+    _require_service_terminal_state(state)
     return _finalize_assistant_run(prepared, state)
 
 
@@ -593,6 +596,7 @@ async def run_assistant_request_async(
         cancel_token=cancel_token,
         run_id=run_id,
     )
+    _require_service_terminal_state(state)
     return _finalize_assistant_run(prepared, state)
 
 
@@ -609,6 +613,11 @@ def _prepare_assistant_run(
 ) -> _PreparedAssistantRun:
     sink = event_sink or ListEventSink()
     resolved_runtime = runtime or create_runtime(config=config, event_sink=sink, load_env=load_env)
+    if getattr(resolved_runtime, "allow_interrupt", False):
+        raise GraphExecutionError(
+            "service_interrupt_runtime_forbidden",
+            "Product assistant services require an interrupt-disabled Runtime.",
+        )
     runtime_config = getattr(resolved_runtime, "config", config)
     resolved_store = conversation_store or get_default_conversation_store(runtime_config)
     resolved_task_store = realtime_task_state_store or get_default_realtime_task_state_store()
@@ -650,6 +659,17 @@ def _prepare_assistant_run(
         conversation_store=resolved_store,
         realtime_task_state_store=resolved_task_store,
         enable_conversation_history=enable_conversation_history,
+    )
+
+
+def _require_service_terminal_state(state: AgentState) -> None:
+    """Keep internal Graph waiting state outside every product service contract."""
+
+    if state.status != "waiting_user":
+        return
+    raise GraphExecutionError(
+        "service_graph_waiting_state",
+        "Product assistant service received an unexpected waiting graph state.",
     )
 
 

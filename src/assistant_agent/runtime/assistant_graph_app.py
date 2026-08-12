@@ -241,6 +241,7 @@ class AssistantTurnGraphApp:
         identity: GraphExecutionIdentity,
         context: GraphRuntimeContext,
         resume: AssistantResume,
+        part_consumer: Callable[[GraphStreamPart], object] | None = None,
     ) -> GraphStreamResult:
         """Resume one pending native interrupt on the same thread and a new run."""
 
@@ -324,6 +325,7 @@ class AssistantTurnGraphApp:
             Command(resume=validated_resume.model_dump(mode="json")),
             identity=identity,
             context=context,
+            part_consumer=part_consumer,
         )
 
     async def aget_state(self, identity: GraphExecutionIdentity) -> Any:

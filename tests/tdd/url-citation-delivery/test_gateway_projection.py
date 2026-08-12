@@ -8,8 +8,25 @@ from assistant_agent.gateway.runtime_adapter import GatewayRuntimeAdapter
 from assistant_agent.gateway.runtime_types import RealtimeAgentRequest, RealtimeAgentResult
 from assistant_agent.gateway.session import _run_end_payload
 from assistant_agent.runtime.citations import UrlCitationAnnotation
+from assistant_agent.runtime.event_stream import AgentRunStream
 from assistant_agent.runtime.requests import AgentResponse
 from assistant_agent.runtime.state import AgentState
+
+
+def _as_async_stream(run_request):
+    def run_request_stream(request: Any, **kwargs: Any) -> AgentRunStream[Any]:
+        stream: AgentRunStream[Any] = AgentRunStream(
+            loop=asyncio.get_running_loop()
+        )
+        try:
+            artifacts = run_request(request, event_sink=stream, **kwargs)
+        except BaseException as exc:
+            stream.set_exception(exc)
+        else:
+            stream.set_result(artifacts)
+        return stream
+
+    return run_request_stream
 
 
 def _annotation() -> UrlCitationAnnotation:
@@ -38,7 +55,7 @@ def test_gateway_runtime_result_preserves_agent_response_annotations() -> None:
         )
 
     result = asyncio.run(GatewayRuntimeAdapter(
-        run_request=run_request,
+        run_request_stream=_as_async_stream(run_request),
         load_env=False,
         enable_conversation_history=False,
     ).run_turn(RealtimeAgentRequest(

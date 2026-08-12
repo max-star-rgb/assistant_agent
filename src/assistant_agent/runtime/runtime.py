@@ -13,9 +13,13 @@ from assistant_agent.runtime.action_validator import ActionValidator
 from assistant_agent.runtime.cancellation import AgentRunCancelled, raise_if_cancelled
 from assistant_agent.runtime.assistant_graph_app import (
     AssistantTurnGraphApp,
+    GraphExecutionError,
     GraphExecutionIdentity,
 )
-from assistant_agent.runtime.assistant_interrupts import AssistantInterruptRequest
+from assistant_agent.runtime.assistant_interrupts import (
+    AssistantInterruptRequest,
+    AssistantResume,
+)
 from assistant_agent.runtime.assistant_graph_state import (
     apply_assistant_turn_state_to_agent_state,
     assistant_turn_state_from_loop_state,
@@ -275,7 +279,11 @@ class AgentGraphRuntime:
         agent_id: str = DEFAULT_AGENT_ID,
         tool_execution_backend: ToolExecutionBackend | None = None,
         tool_operation_store: ToolOperationStore | None = None,
+        allow_interrupt: bool = False,
     ) -> None:
+        if not isinstance(allow_interrupt, bool):
+            raise TypeError("allow_interrupt must be a boolean")
+        self.allow_interrupt = allow_interrupt
         self.agent_id = agent_id
         self.tool_execution_backend = tool_execution_backend
         self.tool_operation_store = (
@@ -847,6 +855,8 @@ class AgentGraphRuntime:
     ) -> AgentState:
         """Run the graph through LangGraph's native asynchronous execution API."""
 
+        if interrupt_request is not None:
+            self._require_interrupt_enabled()
         effective_run_id = run_id or new_run_id()
         identity = RequestIdentity.for_user(
             user_id=request.user_id,
@@ -864,15 +874,145 @@ class AgentGraphRuntime:
                 run_id=effective_run_id,
                 interrupt_request=interrupt_request,
             )
-            state = await self._execute_graph_async(prepared)
-            if state.status == "waiting_user":
-                return state
-            return self._finalize_graph_run(prepared, state)
+            return await self._run_prepared_graph_async(prepared)
         finally:
             self.long_term_memory_service.release_run_context(
                 identity=identity,
                 run_id=effective_run_id,
             )
+
+    async def aresume_state(
+        self,
+        request: UserRequest,
+        *,
+        resume: AssistantResume,
+        event_sink: EventSink | None = None,
+        cancel_token: Any | None = None,
+        trace_context: RuntimeTraceContext | None = None,
+        export_trace_context: RuntimeExportTraceContext | None = None,
+        pre_terminal_state_hook: Callable[[AgentState], None] | None = None,
+        run_id: str | None = None,
+    ) -> AgentState:
+        """Resume a pending assistant interrupt on its native graph thread."""
+
+        self._require_interrupt_enabled()
+        effective_run_id = run_id or new_run_id()
+        identity = RequestIdentity.for_user(
+            user_id=request.user_id,
+            agent_id=self.agent_id,
+            session_id=request.session_id,
+        )
+        try:
+            graph_identity = GraphExecutionIdentity.for_assistant_turn(
+                agent_id=self.agent_id,
+                user_id=request.user_id,
+                session_id=request.session_id,
+                run_id=effective_run_id,
+            )
+            snapshot = await self.assistant_graph_app.aget_state(graph_identity)
+            snapshot_values = getattr(snapshot, "values", None)
+            if not snapshot_values:
+                raise GraphExecutionError(
+                    "graph_checkpoint_not_found",
+                    "No assistant checkpoint exists for this thread.",
+                )
+            try:
+                persisted = validate_assistant_turn_state(snapshot_values)
+            except Exception as exc:
+                raise GraphExecutionError(
+                    "graph_checkpoint_incompatible",
+                    "Assistant checkpoint cannot be resumed by this graph version.",
+                ) from exc
+            persisted_trace_id = str(persisted["run"]["trace_id"])
+            if trace_context is not None and trace_context.trace_id != persisted_trace_id:
+                raise GraphExecutionError(
+                    "graph_resume_trace_mismatch",
+                    "Resume trace context does not match the pending assistant thread.",
+                )
+            resume_trace_context = trace_context or RuntimeTraceContext(
+                trace_id=persisted_trace_id
+            )
+            prepared = self._prepare_graph_run(
+                request,
+                event_sink=event_sink,
+                cancel_token=cancel_token,
+                trace_context=resume_trace_context,
+                export_trace_context=export_trace_context,
+                pre_terminal_state_hook=pre_terminal_state_hook,
+                run_id=effective_run_id,
+            )
+            return await self._run_prepared_graph_async(prepared, resume=resume)
+        finally:
+            self.long_term_memory_service.release_run_context(
+                identity=identity,
+                run_id=effective_run_id,
+            )
+
+    def astream_state(
+        self,
+        request: UserRequest,
+        *,
+        resume: AssistantResume | None = None,
+        interrupt_request: AssistantInterruptRequest | None = None,
+        event_sink: EventSink | None = None,
+        cancel_token: Any | None = None,
+        trace_context: RuntimeTraceContext | None = None,
+        export_trace_context: RuntimeExportTraceContext | None = None,
+        pre_terminal_state_hook: Callable[[AgentState], None] | None = None,
+        run_id: str | None = None,
+    ) -> AgentRunStream[AgentState]:
+        """Expose the internal resumable Runtime path as an async event stream."""
+
+        self._require_interrupt_enabled()
+        if resume is not None and interrupt_request is not None:
+            raise GraphExecutionError(
+                "graph_resume_input_conflict",
+                "A graph state stream cannot start and resume the same invocation.",
+            )
+        loop = asyncio.get_running_loop()
+        stream: AgentRunStream[AgentState] = AgentRunStream(loop=loop)
+        inner = event_sink if event_sink is not None else self.event_sink
+        stream_sink = AsyncQueueEventSink(loop=loop, stream=stream, inner=inner)
+
+        async def _run() -> None:
+            try:
+                if resume is None:
+                    state = await self.arun_state(
+                        request,
+                        event_sink=stream_sink,
+                        cancel_token=cancel_token,
+                        trace_context=trace_context,
+                        export_trace_context=export_trace_context,
+                        pre_terminal_state_hook=pre_terminal_state_hook,
+                        run_id=run_id,
+                        interrupt_request=interrupt_request,
+                    )
+                else:
+                    state = await self.aresume_state(
+                        request,
+                        resume=resume,
+                        event_sink=stream_sink,
+                        cancel_token=cancel_token,
+                        trace_context=trace_context,
+                        export_trace_context=export_trace_context,
+                        pre_terminal_state_hook=pre_terminal_state_hook,
+                        run_id=run_id,
+                    )
+            except BaseException as exc:
+                stream.set_exception(exc)
+            else:
+                stream.set_result(state)
+
+        asyncio.create_task(_run())
+        return stream
+
+    def _require_interrupt_enabled(self) -> None:
+        if self.allow_interrupt:
+            return
+        raise GraphExecutionError(
+            "graph_interrupt_disabled",
+            "This Runtime composition does not expose interrupt or resume.",
+        )
 
     def _run_state(
         self,
@@ -1102,7 +1242,12 @@ class AgentGraphRuntime:
             pre_terminal_state_hook=pre_terminal_state_hook,
         )
 
-    def _begin_graph_execution(self, prepared: _PreparedGraphRun) -> bool:
+    def _begin_graph_execution(
+        self,
+        prepared: _PreparedGraphRun,
+        *,
+        resuming: bool = False,
+    ) -> bool:
         """Apply shared pre-graph cancellation and compatibility branches."""
 
         state = prepared.state
@@ -1115,6 +1260,8 @@ class AgentGraphRuntime:
         except AgentRunCancelled as exc:
             state.cancel(exc.message, source=exc.source, details=exc.details)
             return False
+        if resuming:
+            return True
         if prepared.deep_research_start:
             _start_deep_research_workflow(
                 state,
@@ -1169,17 +1316,35 @@ class AgentGraphRuntime:
             state.cancel(exc.message, source=exc.source, details=exc.details)
             return state
 
-    async def _execute_graph_async(self, prepared: _PreparedGraphRun) -> AgentState:
-        if not self._begin_graph_execution(prepared):
+    async def _execute_graph_async(
+        self,
+        prepared: _PreparedGraphRun,
+        *,
+        resume: AssistantResume | None = None,
+    ) -> AgentState:
+        if not self._begin_graph_execution(prepared, resuming=resume is not None):
             return prepared.state
         try:
-            result = await self.assistant_graph_app.arun(
-                prepared.initial_state,
-                identity=prepared.identity,
-                context=prepared.runtime_context,
-                part_consumer=prepared.product_event_projector.project_part,
-            )
+            if resume is None:
+                result = await self.assistant_graph_app.arun(
+                    prepared.initial_state,
+                    identity=prepared.identity,
+                    context=prepared.runtime_context,
+                    part_consumer=prepared.product_event_projector.project_part,
+                )
+            else:
+                result = await self.assistant_graph_app.aresume(
+                    identity=prepared.identity,
+                    context=prepared.runtime_context,
+                    resume=resume,
+                    part_consumer=prepared.product_event_projector.project_part,
+                )
             if result.status == "interrupted":
+                if not self.allow_interrupt:
+                    raise GraphExecutionError(
+                        "graph_interrupt_disabled",
+                        "This Runtime composition received an unexpected graph interrupt.",
+                    )
                 state = self._complete_graph_execution(prepared, result.final_state)
                 state.status = "waiting_user"
                 state.response = None
@@ -1189,6 +1354,19 @@ class AgentGraphRuntime:
             state = exc.state if isinstance(exc.state, AgentState) else prepared.state
             state.cancel(exc.message, source=exc.source, details=exc.details)
             return state
+
+    async def _run_prepared_graph_async(
+        self,
+        prepared: _PreparedGraphRun,
+        *,
+        resume: AssistantResume | None = None,
+    ) -> AgentState:
+        """Run or resume natively, committing lifecycle only for terminal states."""
+
+        state = await self._execute_graph_async(prepared, resume=resume)
+        if state.status == "waiting_user":
+            return state
+        return self._finalize_graph_run(prepared, state)
 
     def _finalize_graph_run(
         self,
@@ -1686,36 +1864,6 @@ class AgentGraphRuntime:
         )
         request.metadata["realtime_video_context"] = context.model_dump(mode="json")
         request.metadata["realtime_video_context_trusted"] = True
-
-    def run_stream(
-        self,
-        request: UserRequest,
-        *,
-        event_sink: EventSink | None = None,
-        cancel_token: Any | None = None,
-    ) -> AgentRunStream[AgentState]:
-        """Run the graph in a worker thread and expose AgentEvent records asynchronously."""
-
-        loop = asyncio.get_running_loop()
-        stream: AgentRunStream[AgentState] = AgentRunStream(loop=loop)
-        inner = event_sink if event_sink is not None else self.event_sink
-        stream_sink = AsyncQueueEventSink(loop=loop, stream=stream, inner=inner)
-
-        async def _run() -> None:
-            try:
-                state = await asyncio.to_thread(
-                    self.run_state,
-                    request,
-                    event_sink=stream_sink,
-                    cancel_token=cancel_token,
-                )
-            except BaseException as exc:
-                stream.set_exception(exc)
-            else:
-                stream.set_result(state)
-
-        asyncio.create_task(_run())
-        return stream
 
     def run(
         self,

@@ -791,6 +791,7 @@ def test_runtime_interrupt_is_waiting_nonterminal_and_buffers_mixed_stream_deliv
         event_sink=sink,
         run_history=history,
         checkpointer=saver,
+        allow_interrupt=True,
     )
     try:
         state = asyncio.run(

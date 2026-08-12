@@ -10,9 +10,26 @@ from assistant_agent.gateway.runtime_types import (
     RealtimeAgentRequest,
 )
 from assistant_agent.runtime.events import AgentEvent
+from assistant_agent.runtime.event_stream import AgentRunStream
 from assistant_agent.runtime.requests import AgentResponse
 from assistant_agent.runtime.state import AgentState
 from assistant_agent.tools.models import ToolResult
+
+
+def _as_async_stream(run_request):
+    def run_request_stream(request: Any, **kwargs: Any) -> AgentRunStream[Any]:
+        stream: AgentRunStream[Any] = AgentRunStream(
+            loop=asyncio.get_running_loop()
+        )
+        try:
+            artifacts = run_request(request, event_sink=stream, **kwargs)
+        except BaseException as exc:
+            stream.set_exception(exc)
+        else:
+            stream.set_result(artifacts)
+        return stream
+
+    return run_request_stream
 
 
 def _tool_result() -> ToolResult:
@@ -68,7 +85,7 @@ def test_gateway_appends_detail_without_mutating_runtime_response() -> None:
             realtime_events.append(event)
 
         return await GatewayRuntimeAdapter(
-            run_request=run_request,
+            run_request_stream=_as_async_stream(run_request),
             load_env=False,
             enable_conversation_history=False,
         ).run_turn(
@@ -125,7 +142,7 @@ def test_streaming_delivery_emits_detail_as_non_token_supplement() -> None:
             realtime_events.append(event)
 
         return await GatewayRuntimeAdapter(
-            run_request=run_request,
+            run_request_stream=_as_async_stream(run_request),
             load_env=False,
             enable_conversation_history=False,
         ).run_turn(

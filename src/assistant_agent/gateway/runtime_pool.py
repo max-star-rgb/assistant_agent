@@ -206,6 +206,7 @@ def shared_gateway_runtime_factory(primary_factory: RuntimeFactory) -> RuntimeFa
             durable_task_service=primary_runtime.durable_task_service,
             workflow_service=primary_runtime.workflow_service,
             workflow_artifact_store=primary_runtime.workflow_artifact_store,
+            allow_interrupt=False,
         )
 
     return create

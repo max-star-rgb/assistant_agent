@@ -7,7 +7,8 @@ from collections.abc import Callable
 from time import perf_counter
 from typing import Any
 
-from assistant_agent.runtime.event_stream import AgentRunStream, AsyncQueueEventSink
+from assistant_agent.runtime.event_stream import AgentRunStream
+from assistant_agent.runtime.assistant_graph_app import GraphExecutionError
 from assistant_agent.runtime.cancellation import cancellation_metadata
 from assistant_agent.gateway.runtime_backend import RealtimeEventSink
 from assistant_agent.gateway.runtime_event_mapping import (
@@ -36,7 +37,6 @@ from assistant_agent.runtime.realtime_task_state import realtime_metadata_reques
 from assistant_agent.observability.trace_store import append_observability_event
 
 
-RunAssistantRequest = Callable[..., Any]
 RunAssistantRequestStream = Callable[..., AgentRunStream[Any]]
 
 _RUN_EVENT_TYPES = {
@@ -72,13 +72,11 @@ class GatewayRuntimeAdapter:
     def __init__(
         self,
         *,
-        run_request: RunAssistantRequest | None = None,
         run_request_stream: RunAssistantRequestStream | None = None,
         load_env: bool = True,
         enable_conversation_history: bool = True,
         progress_policy: ProgressPolicy | None = None,
     ) -> None:
-        self._run_request = run_request
         self._run_request_stream = run_request_stream
         self._load_env = load_env
         self._enable_conversation_history = enable_conversation_history
@@ -143,6 +141,11 @@ class GatewayRuntimeAdapter:
             await forwarder.drain()
 
             state = artifacts.state
+            if state.status == "waiting_user":
+                raise GraphExecutionError(
+                    "service_graph_waiting_state",
+                    "Gateway received an unexpected waiting graph state.",
+                )
             result_run_id = state.run_id
             result_metadata: dict[str, Any] = {}
             _append_realtime_backend_finished_event(
@@ -264,15 +267,6 @@ class GatewayRuntimeAdapter:
     ) -> AgentRunStream[Any]:
         if self._run_request_stream is not None:
             return self._run_request_stream(
-                request,
-                load_env=self._load_env,
-                enable_conversation_history=self._enable_conversation_history,
-                cancel_token=cancel_token,
-                run_id=run_id,
-            )
-        if self._run_request is not None:
-            return _sync_run_request_stream(
-                self._run_request,
                 request,
                 load_env=self._load_env,
                 enable_conversation_history=self._enable_conversation_history,
@@ -454,40 +448,6 @@ class _RealtimeForwardingEventSink:
 
     async def drain(self) -> None:
         return None
-
-
-def _sync_run_request_stream(
-    run_request: RunAssistantRequest,
-    request: UserRequest,
-    *,
-    load_env: bool,
-    enable_conversation_history: bool,
-    cancel_token: RealtimeCancelToken | None,
-    run_id: str | None = None,
-) -> AgentRunStream[Any]:
-    loop = asyncio.get_running_loop()
-    stream: AgentRunStream[Any] = AgentRunStream(loop=loop)
-    stream_sink = AsyncQueueEventSink(loop=loop, stream=stream)
-
-    async def _run() -> None:
-        try:
-            artifacts = await asyncio.to_thread(
-                run_request,
-                request,
-                event_sink=stream_sink,
-                load_env=load_env,
-                enable_conversation_history=enable_conversation_history,
-                cancel_token=cancel_token,
-                run_id=run_id,
-            )
-        except BaseException as exc:
-            stream.set_exception(exc)
-        else:
-            stream.set_result(artifacts)
-
-    asyncio.create_task(_run())
-    return stream
-
 
 async def _stop_task(task: asyncio.Task[None] | None) -> None:
     if task is None or task.done():
