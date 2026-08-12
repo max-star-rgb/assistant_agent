@@ -4,18 +4,13 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 from typing import Sequence
 
 from assistant_agent.config import ProviderConfig
-from assistant_agent.observability.langsmith_config import (
-    create_langsmith_client_from_env,
-)
 from assistant_agent.providers.provider_errors import sanitize_error_message
 
 from .contracts import WORKFLOW_REGRESSION_DATASET
 from .evaluators import REQUIRED_WORKFLOW_FEEDBACK_KEYS
-from .experiment import inspect_workflow_dataset
 
 
 _CASE_TYPES = (
@@ -59,7 +54,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.run and not args.run_name:
         parser.error("--run requires --run-name")
 
-    client = None
     try:
         config = ProviderConfig.from_env()
         if config.provider_mode != "real":
@@ -67,25 +61,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "workflow Experiment requires MULTIMODAL_AGENT_PROVIDER_MODE=real"
             )
         config.validate_provider_mode()
-        if not os.getenv("ASSISTANT_AGENT_WORKFLOW_CHECKPOINT_DB"):
-            raise RuntimeError("persistent workflow saver readiness is missing")
-        if not os.getenv("ASSISTANT_AGENT_WORKFLOW_ARTIFACT_ROOT"):
-            raise RuntimeError("workflow artifact readiness is missing")
-        client = create_langsmith_client_from_env()
-        _dataset, examples, _originals = inspect_workflow_dataset(client)
-        if args.run:
-            raise RuntimeError(
-                "workflow Experiment production host is not available in this cutover"
-            )
-        _print(
-            {
-                "action": "preflight",
-                "status": "ready",
-                "dataset_name": WORKFLOW_REGRESSION_DATASET,
-                "active_example_count": len(examples),
-            }
+        raise RuntimeError(
+            "workflow Experiment production host is not available in this cutover"
         )
-        return 0
     except Exception as exc:
         _print(
             {
@@ -94,19 +72,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             }
         )
         return 2
-    finally:
-        if client is not None:
-            for name in ("flush", "close"):
-                method = getattr(client, name, None)
-                if callable(method):
-                    try:
-                        method()
-                    except Exception:
-                        pass
 
 
 def _print(value: dict[str, object]) -> None:
     print(json.dumps(value, ensure_ascii=False))
+
+
+def _langsmith_client():
+    from assistant_agent.observability.langsmith_config import (
+        create_langsmith_client_from_env,
+    )
+
+    return create_langsmith_client_from_env()
 
 
 __all__ = ["main"]

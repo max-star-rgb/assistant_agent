@@ -90,6 +90,7 @@ class NativeWorkflowTreeAudit:
 @dataclass(frozen=True)
 class WorkflowTreeRequirement:
     require_verifier: bool = True
+    worker_generations: tuple[tuple[str, int], ...] = ()
     repair_generations: tuple[tuple[str, int], ...] = ()
 
 
@@ -192,7 +193,7 @@ def project_workflow_result(
     if terminal_status == "infrastructure_error":
         raise RuntimeError("workflow graph ended with infrastructure_error")
     return {
-        "workflow_id": state["workflow_id"],
+        "workflow_id": _stable_digest(state["workflow_id"]),
         "terminal_status": terminal_status,
         "plan": {
             "node_ids": [node.node_id for node in plan.nodes],
@@ -287,6 +288,15 @@ async def run_workflow_experiment(
         tree_requirements={
             example.id: WorkflowTreeRequirement(
                 require_verifier=(example.inputs.case_type != "parallel_join"),
+                worker_generations=tuple(
+                    (node_id, 0)
+                    for node_id in example.outputs.plan.node_ids
+                    if (
+                        example.inputs.case_type == "parallel_join"
+                        or node_id
+                        not in _terminal_nodes(example.outputs.plan.dependencies)
+                    )
+                ),
                 repair_generations=(
                     tuple((node_id, 1) for node_id in example.outputs.evaluation_contract.repair_scope)
                     if example.inputs.case_type == "minimal_repair"
@@ -344,6 +354,30 @@ def audit_native_workflow_tree(
             for run in subtree
         ):
             item.append("reference example mismatch")
+        workflow_names = {
+            "DurableWorkflowGraph",
+            "WorkflowPlanningSubgraph",
+            "AssistantTurnGraph.planner",
+            "WorkflowWorkerBranch",
+            "AssistantTurnGraph.worker",
+            "WorkflowVerifierBranch",
+            "AssistantTurnGraph.verifier",
+            "join_wave",
+        }
+        detached_workflow_runs = [
+            run
+            for run in runs
+            if _field(run, "name") in workflow_names
+            and (
+                str(_field(run, "trace_id") or "") == trace_id
+                or str(_field(run, "reference_example_id") or "") == example_id
+            )
+            and str(_field(run, "id")) not in {
+                str(_field(member, "id")) for member in subtree
+            }
+        ]
+        if detached_workflow_runs:
+            item.append("detached workflow run detected")
         graphs = _children_named(subtree, root_id, "DurableWorkflowGraph")
         if len(graphs) != 1:
             item.append(f"DurableWorkflowGraph child count={len(graphs)}")
@@ -356,7 +390,7 @@ def audit_native_workflow_tree(
                 or metadata.get("execution_engine") != "durable_workflow_graph"
                 or not _digest(metadata.get("workflow_id"))
                 or not _digest(metadata.get("thread_id"))
-                or not isinstance(metadata.get("run_id"), str)
+                or not _digest(metadata.get("run_id"))
             ):
                 item.append("unsafe or missing DurableWorkflowGraph metadata")
             graph_subtree = [
@@ -403,8 +437,48 @@ def audit_native_workflow_tree(
                     item.append(
                         f"missing repair generation {node_id}:g{generation}"
                     )
-            if any(_field(run, "run_type") != "chain" for run in graph_subtree):
+            for node_id, generation in requirement.worker_generations:
+                matching = [
+                    run
+                    for run in graph_subtree
+                    if _field(run, "name") == "WorkflowWorkerBranch"
+                    and _metadata(run).get("workflow_node_id") == node_id
+                    and _metadata(run).get("workflow_generation") == generation
+                    and _metadata(run).get("workflow_profile") == "worker"
+                    and _digest(_metadata(run).get("workflow_branch_run_id"))
+                ]
+                if len(matching) != 1:
+                    item.append(
+                        f"worker generation count {node_id}:g{generation}={len(matching)}"
+                    )
+            if any(
+                _field(run, "name") in workflow_names
+                and _field(run, "run_type") != "chain"
+                for run in graph_subtree
+            ):
                 item.append("workflow graph node/subgraph run_type must be chain")
+            llm_runs = [
+                run for run in graph_subtree if _field(run, "name") == "llm.chat"
+            ]
+            if any(_field(run, "run_type") != "llm" for run in llm_runs):
+                item.append("llm.chat run_type must be llm")
+            execute_tool_ids = {
+                str(_field(run, "id"))
+                for run in graph_subtree
+                if _field(run, "name") == "execute_tool"
+                and _field(run, "run_type") == "chain"
+            }
+            tool_runs = [
+                run for run in graph_subtree if _field(run, "run_type") == "tool"
+            ]
+            if any(
+                not any(
+                    _is_descendant(run, execute_tool_id, runs_by_id)
+                    for execute_tool_id in execute_tool_ids
+                )
+                for run in tool_runs
+            ):
+                item.append("governed tool outside execute_tool subtree")
             shadow_names = {"deep_research.workflow", "agent.runtime", "workflow.worker"}
             if any(_field(run, "name") in shadow_names for run in graph_subtree):
                 item.append("canonical OTel shadow graph detected")
@@ -524,6 +598,11 @@ def _topological_order(dependencies: Mapping[str, tuple[str, ...]]) -> dict[str,
     return {node_id: index for index, node_id in enumerate(ordered)}
 
 
+def _terminal_nodes(dependencies: Mapping[str, tuple[str, ...]]) -> set[str]:
+    depended_on = {parent for parents in dependencies.values() for parent in parents}
+    return set(dependencies) - depended_on
+
+
 def _children_named(runs: Sequence[Any], parent_id: str, name: str) -> list[Any]:
     return [
         run
@@ -579,6 +658,12 @@ def _digest(value: Any) -> bool:
         and len(value) == 71
         and all(character in "0123456789abcdef" for character in value[7:])
     )
+
+
+def _stable_digest(value: str) -> str:
+    import hashlib
+
+    return "sha256:" + hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
 def _require_id(value: Any, label: str) -> str:

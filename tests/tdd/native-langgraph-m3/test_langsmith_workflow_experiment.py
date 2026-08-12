@@ -51,6 +51,12 @@ def _run(run_id: int, *, name: str, parent: int | None, run_type: str = "chain")
     )
 
 
+def _detached_run(run_id: int, *, name: str, parent: int | None = None):
+    value = _run(run_id, name=name, parent=parent)
+    value.reference_example_id = None
+    return value
+
+
 def _native_workflow_runs():
     return [
         _run(1, name="experiment-item-task", parent=None),
@@ -141,6 +147,35 @@ def test_persisted_tree_audit_requires_one_native_parented_graph_tree() -> None:
         },
     ).complete is False
 
+    with_llm_tool = [
+        *_native_workflow_runs(),
+        _run(20, name="llm.chat", parent=4, run_type="llm"),
+        _run(21, name="execute_tool", parent=6),
+        _run(22, name="governed-tool", parent=21, run_type="tool"),
+    ]
+    assert audit_native_workflow_tree(
+        with_llm_tool, example_ids=(str(EXAMPLE_ID),)
+    ).complete is True
+
+    for detached in (
+        _detached_run(30, name="WorkflowWorkerBranch"),
+        _detached_run(31, name="AssistantTurnGraph.worker", parent=999),
+    ):
+        assert audit_native_workflow_tree(
+            [*_native_workflow_runs(), detached],
+            example_ids=(str(EXAMPLE_ID),),
+        ).complete is False
+
+    assert audit_native_workflow_tree(
+        _native_workflow_runs(),
+        example_ids=(str(EXAMPLE_ID),),
+        requirements={
+            str(EXAMPLE_ID): WorkflowTreeRequirement(
+                worker_generations=(("research_a", 0), ("missing_worker", 0))
+            )
+        },
+    ).complete is False
+
 
 def test_completeness_fails_closed_until_all_four_feedback_are_persisted() -> None:
     class Client:
@@ -212,7 +247,8 @@ def test_direct_target_calls_durable_graph_app_and_projects_only_bounded_facts(
     finally:
         artifact_store.close()
 
-    assert output["workflow_id"] == "wf-send"
+    assert output["workflow_id"].startswith("sha256:")
+    assert output["workflow_id"] != "wf-send"
     assert output["terminal_status"] == "completed"
     assert output["plan"]["node_ids"] == [
         "research_a",
@@ -346,7 +382,7 @@ def test_projector_fails_closed_when_resume_equivalence_has_no_real_evidence():
 def test_cli_inspect_is_local_and_never_creates_langsmith_client(monkeypatch, capsys):
     monkeypatch.setattr(
         workflow_cli,
-        "create_langsmith_client_from_env",
+        "_langsmith_client",
         lambda: (_ for _ in ()).throw(AssertionError("network client")),
     )
 
@@ -361,9 +397,40 @@ def test_cli_inspect_is_local_and_never_creates_langsmith_client(monkeypatch, ca
 def test_cli_preflight_requires_operator_flags_before_client(monkeypatch):
     monkeypatch.setattr(
         workflow_cli,
-        "create_langsmith_client_from_env",
+        "_langsmith_client",
         lambda: (_ for _ in ()).throw(AssertionError("network client")),
     )
 
     with pytest.raises(SystemExit):
         workflow_cli.main(["--preflight", "--allow-real-provider"])
+
+
+def test_cli_preflight_never_claims_ready_without_production_host(
+    monkeypatch, capsys, tmp_path
+):
+    monkeypatch.setattr(
+        workflow_cli.ProviderConfig,
+        "from_env",
+        staticmethod(
+            lambda: SimpleNamespace(
+                provider_mode="real", validate_provider_mode=lambda: None
+            )
+        ),
+    )
+    monkeypatch.setenv("ASSISTANT_AGENT_WORKFLOW_CHECKPOINT_DB", str(tmp_path / "db"))
+    monkeypatch.setenv("ASSISTANT_AGENT_WORKFLOW_ARTIFACT_ROOT", str(tmp_path / "artifacts"))
+    monkeypatch.setattr(
+        workflow_cli,
+        "_langsmith_client",
+        lambda: (_ for _ in ()).throw(AssertionError("client must not be created")),
+    )
+
+    assert workflow_cli.main(
+        [
+            "--preflight",
+            "--allow-real-provider",
+            "--allow-workflow-side-effects",
+        ]
+    ) == 2
+    output = __import__("json").loads(capsys.readouterr().out)
+    assert "production host" in output["message"]
