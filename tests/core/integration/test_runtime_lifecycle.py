@@ -396,9 +396,21 @@ def test_repeated_invalid_tool_input_enters_answer_only_finalization() -> None:
             if message.get("role") == "tool"
         ]
         assert finalization_tool_messages
-        assert all(
-            "at least 1 character" not in str(message.get("content"))
+        finalization_observations = [
+            json.loads(str(message["content"]))
             for message in finalization_tool_messages
+        ]
+        assert all(
+            observation["status"] == "rejected"
+            and observation["is_complete"] is False
+            and observation["error"]["code"] == "invalid_tool_input"
+            and observation["error"]["retryable"] is False
+            and "data" not in observation
+            and isinstance(observation["summary"], str)
+            and observation["summary"]
+            and isinstance(observation["error"]["message"], str)
+            and observation["error"]["message"]
+            for observation in finalization_observations
         )
         assert state.request.metadata["assistant_finalize_reason"] == (
             "invalid_tool_input_limit"
