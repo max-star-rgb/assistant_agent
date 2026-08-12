@@ -39,6 +39,7 @@ from assistant_agent.runtime.graph_invocation_claims import (
 from assistant_agent.runtime.graph_time_travel import (
     GraphCheckpointSelector,
     GraphCheckpointSummary,
+    GraphReplayRequest,
     graph_history_ref,
 )
 from assistant_agent.runtime.tool_operation_barrier import stable_assistant_thread_id
@@ -248,7 +249,7 @@ class AssistantTurnGraphApp:
 
     async def astream(
         self,
-        input_state: AssistantTurnState | Command[Any],
+        input_state: AssistantTurnState | Command[Any] | None,
         *,
         identity: GraphExecutionIdentity,
         context: GraphRuntimeContext,
@@ -278,17 +279,22 @@ class AssistantTurnGraphApp:
 
     async def _astream_unclaimed(
         self,
-        input_state: AssistantTurnState | Command[Any],
+        input_state: AssistantTurnState | Command[Any] | None,
         *,
         identity: GraphExecutionIdentity,
         context: GraphRuntimeContext,
         begin_native: Callable[[], None],
+        runnable_config: Mapping[str, Any] | None = None,
     ) -> AsyncIterator[GraphStreamPart]:
         """Stream native events under a claim owned by the public caller."""
 
         with self._native_tracing(identity):
             with native_graph_trace_scope() as callbacks:
-                config = self._runnable_config(identity, callbacks=callbacks)
+                config = self._runnable_config(
+                    identity,
+                    callbacks=callbacks,
+                    runnable_config=runnable_config,
+                )
                 begin_native()
                 async for raw in self._graph.astream(
                     input_state,
@@ -362,6 +368,104 @@ class AssistantTurnGraphApp:
                 claim_lease.mark_terminal()
             return result
 
+    async def areplay(
+        self,
+        *,
+        identity: GraphExecutionIdentity,
+        context: GraphRuntimeContext,
+        request: GraphReplayRequest,
+        part_consumer: Callable[[GraphStreamPart], object] | None = None,
+    ) -> GraphStreamResult:
+        """Replay from an owned historical config through the invocation gate."""
+
+        if not isinstance(request, GraphReplayRequest):
+            raise TypeError("request must be a GraphReplayRequest")
+        replay_context = replace(context, invocation_kind="replay")
+        with self._invocation_claim_scope(
+            identity=identity,
+            context=replay_context,
+        ) as claim_lease:
+            snapshot = await self._resolve_history_snapshot(identity, request.selector)
+            if tuple(getattr(snapshot, "next", ()) or ()) != ("prepare_invocation",):
+                raise GraphExecutionError(
+                    "graph_checkpoint_not_replayable",
+                    "The selected checkpoint has no safe re-entry gate.",
+                )
+            replay_context = self._replay_context_from_snapshot(
+                snapshot,
+                identity=identity,
+                context=replay_context,
+            )
+            historical_config = _snapshot_config(snapshot)
+            result = await self._consume_stream_unclaimed(
+                None,
+                identity=identity,
+                context=replay_context,
+                begin_native=claim_lease.begin_native,
+                runnable_config=historical_config,
+                part_consumer=part_consumer,
+            )
+            result = replace(result, checkpoint_config=None)
+            if _is_terminal_state(result.final_state):
+                claim_lease.mark_terminal()
+            return result
+
+    @staticmethod
+    def _replay_context_from_snapshot(
+        snapshot: Any,
+        *,
+        identity: GraphExecutionIdentity,
+        context: GraphRuntimeContext,
+    ) -> GraphRuntimeContext:
+        """Bind fresh invocation-local identity to owned historical turn facts."""
+
+        values = getattr(snapshot, "values", None)
+        try:
+            state = validate_assistant_turn_state(values)
+        except Exception as exc:
+            raise GraphExecutionError(
+                "graph_checkpoint_incompatible",
+                "Assistant checkpoint cannot be replayed by this graph version.",
+            ) from exc
+        persisted_run = state["run"]
+        persisted_request = state["request"]
+        runtime_state = context.agent_state
+        if runtime_state is None:
+            raise GraphExecutionError(
+                "graph_replay_context_missing",
+                "Replay requires invocation-local AgentState.",
+            )
+        expected_thread = GraphExecutionIdentity.for_assistant_turn(
+            agent_id=str(persisted_run["agent_id"]),
+            user_id=str(persisted_request["user_id"]),
+            session_id=str(persisted_request["session_id"]),
+            run_id=identity.run_id,
+        ).thread_id
+        if (
+            identity.thread_id != expected_thread
+            or identity.agent_id != persisted_run["agent_id"]
+            or runtime_state.user_id != persisted_request["user_id"]
+            or runtime_state.session_id != persisted_request["session_id"]
+            or runtime_state.agent_id != persisted_run["agent_id"]
+            or runtime_state.run_id != identity.run_id
+            or runtime_state.trace_id != persisted_run["trace_id"]
+        ):
+            raise GraphExecutionError(
+                "graph_replay_identity_mismatch",
+                "Replay identity or runtime context does not own this checkpoint.",
+            )
+        if identity.run_id == persisted_run["run_id"]:
+            raise GraphExecutionError(
+                "graph_replay_run_id_reused",
+                "Replay requires a new invocation run_id.",
+            )
+        if state["profile"] != context.graph_profile:
+            raise GraphExecutionError(
+                "graph_profile_mismatch",
+                "Replay context profile does not match this checkpoint.",
+            )
+        return replace(context, invocation_kind="replay")
+
     async def _aresume_claimed(
         self,
         *,
@@ -417,9 +521,10 @@ class AssistantTurnGraphApp:
             session_id=str(persisted_request["session_id"]),
             run_id=identity.run_id,
         ).thread_id
-        if identity.thread_id != expected_thread or identity.agent_id != persisted_run[
-            "agent_id"
-        ]:
+        if (
+            identity.thread_id != expected_thread
+            or identity.agent_id != persisted_run["agent_id"]
+        ):
             raise GraphExecutionError(
                 "graph_resume_identity_mismatch",
                 "Resume identity does not own the pending assistant thread.",
@@ -529,7 +634,11 @@ class AssistantTurnGraphApp:
     ) -> tuple[Any, ...]:
         """Read bounded newest-first native checkpoint history."""
 
-        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
+        if (
+            isinstance(limit, bool)
+            or not isinstance(limit, int)
+            or not 1 <= limit <= 100
+        ):
             raise ValueError("state history limit must be between 1 and 100")
         history = getattr(self._graph, "aget_state_history", None)
         if not callable(history):
@@ -537,13 +646,15 @@ class AssistantTurnGraphApp:
                 "graph_state_history_api_unavailable",
                 "Compiled graph does not expose native async state history.",
             )
-        return tuple([
-            item
-            async for item in history(
-                identity.runnable_config(),
-                limit=limit,
-            )
-        ])
+        return tuple(
+            [
+                item
+                async for item in history(
+                    identity.runnable_config(),
+                    limit=limit,
+                )
+            ]
+        )
 
     async def alist_history(
         self,
@@ -651,28 +762,37 @@ class AssistantTurnGraphApp:
 
     async def _consume_stream_unclaimed(
         self,
-        input_value: AssistantTurnState | Command[Any],
+        input_value: AssistantTurnState | Command[Any] | None,
         *,
         identity: GraphExecutionIdentity,
         context: GraphRuntimeContext,
         begin_native: Callable[[], None],
+        runnable_config: Mapping[str, Any] | None = None,
         part_consumer: Callable[[GraphStreamPart], object] | None = None,
     ) -> GraphStreamResult:
         """Consume the stream, then use native state—not stream shape—as outcome."""
 
         parts: list[GraphStreamPart] = []
         final_state: AssistantTurnState | object = _MISSING_FINAL_STATE
+        final_checkpoint_config: Mapping[str, Any] | None = None
         async for part in self._astream_unclaimed(
             input_value,
             identity=identity,
             context=context,
             begin_native=begin_native,
+            runnable_config=runnable_config,
         ):
             parts.append(part)
             if part_consumer is not None:
                 part_consumer(part)
             if part.type == "values" and not part.namespace:
                 final_state = part.data
+            if part.type == "checkpoints" and not part.namespace:
+                checkpoint_config = (
+                    part.data.get("config") if isinstance(part.data, Mapping) else None
+                )
+                if isinstance(checkpoint_config, Mapping):
+                    final_checkpoint_config = checkpoint_config
         if getattr(self._graph, "checkpointer", None) is None:
             if final_state is _MISSING_FINAL_STATE:
                 raise GraphExecutionError(
@@ -687,7 +807,21 @@ class AssistantTurnGraphApp:
                 checkpoint_config=None,
             )
 
-        snapshot = await self.aget_state(identity)
+        if final_checkpoint_config is None:
+            raise GraphExecutionError(
+                "graph_final_checkpoint_missing",
+                "LangGraph stream ended without a root checkpoint config.",
+            )
+        getter = getattr(self._graph, "aget_state", None)
+        if not callable(getter):
+            raise GraphExecutionError(
+                "graph_state_api_unavailable",
+                "Compiled graph does not expose native async state access.",
+            )
+        snapshot = await getter(
+            _checkpoint_lookup_config(final_checkpoint_config),
+            subgraphs=True,
+        )
         snapshot_values = getattr(snapshot, "values", None)
         if not snapshot_values:
             raise GraphExecutionError(
@@ -704,6 +838,11 @@ class AssistantTurnGraphApp:
                 "graph_snapshot_invalid",
                 "LangGraph state snapshot is incompatible or unsafe.",
             ) from exc
+        if authoritative_state["run"]["run_id"] != identity.run_id:
+            raise GraphExecutionError(
+                "graph_snapshot_identity_mismatch",
+                "LangGraph final snapshot does not belong to this invocation.",
+            )
         tasks = tuple(getattr(snapshot, "tasks", ()) or ())
         next_nodes = tuple(getattr(snapshot, "next", ()) or ())
         has_pending = bool(tasks or next_nodes)
@@ -773,7 +912,10 @@ class AssistantTurnGraphApp:
                 begin_native=begin_native,
                 mark_terminal=mark_terminal,
             )
-        except (GraphInvocationClaimConflict, GraphInvocationClaimCapacityExceeded) as exc:
+        except (
+            GraphInvocationClaimConflict,
+            GraphInvocationClaimCapacityExceeded,
+        ) as exc:
             raise GraphExecutionError(exc.code, str(exc)) from exc
 
     @staticmethod
@@ -817,7 +959,10 @@ class AssistantTurnGraphApp:
                 invocation_kind=context.invocation_kind,
                 invocation_token=context.invocation_token,
             )
-        except (GraphInvocationClaimConflict, GraphInvocationClaimCapacityExceeded) as exc:
+        except (
+            GraphInvocationClaimConflict,
+            GraphInvocationClaimCapacityExceeded,
+        ) as exc:
             raise GraphExecutionError(exc.code, str(exc)) from exc
         return owner_digest
 
@@ -839,16 +984,29 @@ class AssistantTurnGraphApp:
         identity: GraphExecutionIdentity,
         *,
         callbacks: list[Any],
+        runnable_config: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
-        config: dict[str, Any] = dict(identity.runnable_config())
-        config["metadata"] = {
-            "run_id": identity.run_id,
-            "thread_id": identity.thread_id,
-            "agent_id": identity.agent_id,
-            "execution_engine": "assistant_turn_graph",
-            "graph_profile": "standard",
-        }
-        config["tags"] = ["assistant_turn_graph"]
+        config: dict[str, Any] = dict(
+            runnable_config
+            if runnable_config is not None
+            else identity.runnable_config()
+        )
+        existing_metadata = config.get("metadata")
+        metadata = (
+            dict(existing_metadata) if isinstance(existing_metadata, Mapping) else {}
+        )
+        metadata.update(
+            {
+                "run_id": identity.run_id,
+                "thread_id": identity.thread_id,
+                "agent_id": identity.agent_id,
+                "execution_engine": "assistant_turn_graph",
+                "graph_profile": "standard",
+            }
+        )
+        config["metadata"] = metadata
+        existing_tags = list(config.get("tags") or [])
+        config["tags"] = list(dict.fromkeys([*existing_tags, "assistant_turn_graph"]))
         existing_callbacks = list(config.get("callbacks") or [])
         config["callbacks"] = [*existing_callbacks, *callbacks]
         return config
@@ -896,6 +1054,22 @@ def _snapshot_config(snapshot: Any) -> Mapping[str, Any]:
     return config
 
 
+def _checkpoint_lookup_config(config: Mapping[str, Any]) -> dict[str, Any]:
+    """Keep native checkpoint location while dropping invocation-only run metadata."""
+
+    lookup = dict(config)
+    configurable = config.get("configurable")
+    if not isinstance(configurable, Mapping):
+        raise GraphExecutionError(
+            "graph_checkpoint_history_invalid",
+            "Native graph checkpoint config is invalid.",
+        )
+    lookup_configurable = dict(configurable)
+    lookup_configurable.pop("run_id", None)
+    lookup["configurable"] = lookup_configurable
+    return lookup
+
+
 def _history_summary(
     identity: GraphExecutionIdentity,
     snapshot: Any,
@@ -907,6 +1081,12 @@ def _history_summary(
             "graph_checkpoint_history_invalid",
             "Native graph history contains invalid assistant state.",
         )
+    next_nodes = tuple(getattr(snapshot, "next", ()) or ())
+    if next_nodes == ("__start__",) and not values:
+        # LangGraph persists a root pre-input checkpoint whose values are
+        # intentionally empty.  It is native history, but never product-
+        # selectable and cannot be validated as AssistantTurnState yet.
+        return None
     try:
         state = validate_assistant_turn_state(values)
     except Exception as exc:
@@ -926,6 +1106,7 @@ def _history_summary(
     if (
         identity.thread_id != expected_thread
         or configurable["thread_id"] != identity.thread_id
+        or configurable["checkpoint_ns"] != ""
         or identity.agent_id != run["agent_id"]
         or state["profile"] != "standard"
     ):
@@ -934,7 +1115,6 @@ def _history_summary(
             "Native graph history does not belong to this assistant graph owner.",
         )
 
-    next_nodes = tuple(getattr(snapshot, "next", ()) or ())
     if next_nodes != ("prepare_invocation",):
         return None
     created_at = _history_created_at(snapshot)
@@ -952,9 +1132,9 @@ def _history_summary(
     )
 
 
-def _history_status(value: object) -> Literal[
-    "running", "waiting_user", "completed", "failed", "cancelled"
-]:
+def _history_status(
+    value: object,
+) -> Literal["running", "waiting_user", "completed", "failed", "cancelled"]:
     if value in {"created", "running"}:
         return "running"
     if value == "waiting_user":
@@ -1005,7 +1185,9 @@ def _public_interrupts(snapshot: Any) -> tuple[AssistantInterrupt, ...]:
                 "Native graph interrupt has no stable id.",
             )
         try:
-            request = validate_assistant_interrupt_request(getattr(native, "value", None))
+            request = validate_assistant_interrupt_request(
+                getattr(native, "value", None)
+            )
             projected = AssistantInterrupt(
                 interrupt_id=interrupt_id,
                 kind=request.kind,

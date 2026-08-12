@@ -33,6 +33,12 @@ class GraphCheckpointSummary(_StrictModel):
     state_schema_version: int
 
 
+class GraphReplayRequest(_StrictModel):
+    """Request to replay one owner-bound, re-entry-safe checkpoint."""
+
+    selector: GraphCheckpointSelector
+
+
 def graph_history_ref(
     *,
     thread_id: str,
@@ -57,5 +63,6 @@ def graph_history_ref(
 __all__ = [
     "GraphCheckpointSelector",
     "GraphCheckpointSummary",
+    "GraphReplayRequest",
     "graph_history_ref",
 ]
