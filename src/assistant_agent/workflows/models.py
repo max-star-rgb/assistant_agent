@@ -104,7 +104,7 @@ class WorkflowSubmission(BaseModel):
 
 
 class WorkflowPlanProposal(BaseModel):
-    """Structured DAG produced by the durable Workflow planner Agent."""
+    """Legacy v1 DAG produced by the durable Workflow planner Agent."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -113,6 +113,130 @@ class WorkflowPlanProposal(BaseModel):
         default_factory=list,
         max_length=64,
     )
+
+
+class WorkflowAcceptanceCriterion(BaseModel):
+    """One locally owned and independently identifiable completion criterion."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    criterion_id: str = Field(pattern=r"^[a-zA-Z][a-zA-Z0-9_.-]{0,119}$")
+    statement: str = Field(min_length=1, max_length=4_000)
+
+
+class WorkflowArtifactContract(BaseModel):
+    """The primary artifact a node must make available to its descendants."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    artifact_type: str = Field(pattern=r"^[a-zA-Z][a-zA-Z0-9_.-]{0,119}$")
+    description: str = Field(min_length=1, max_length=4_000)
+
+
+class WorkflowStepAcceptanceContract(BaseModel):
+    """Typed, node-local completion contract for a v2 plan node."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["workflow_step_acceptance_v2"]
+    output: WorkflowArtifactContract
+    criteria: list[WorkflowAcceptanceCriterion] = Field(min_length=1, max_length=64)
+
+    @model_validator(mode="after")
+    def validate_criterion_ids(self) -> "WorkflowStepAcceptanceContract":
+        criterion_ids = [item.criterion_id for item in self.criteria]
+        if len(criterion_ids) != len(set(criterion_ids)):
+            raise ValueError("acceptance criterion ids must be unique within a node")
+        return self
+
+
+class WorkflowPlanNodeV2(BaseModel):
+    """One generic Agent work item in a static v2 DAG."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    node_id: str = Field(pattern=r"^[a-zA-Z][a-zA-Z0-9_.-]{0,119}$")
+    display_title: str = Field(min_length=1, max_length=160)
+    objective: str = Field(min_length=1, max_length=4_000)
+    depends_on: list[str] = Field(default_factory=list, max_length=64)
+    acceptance_contract: WorkflowStepAcceptanceContract
+
+    @model_validator(mode="after")
+    def validate_dependencies(self) -> "WorkflowPlanNodeV2":
+        if len(self.depends_on) != len(set(self.depends_on)):
+            raise ValueError("node dependency ids must be unique")
+        return self
+
+
+class WorkflowDeliverableBindingProposal(BaseModel):
+    """Planner-declared ownership of one requested Workflow deliverable."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    deliverable: str = Field(min_length=1, max_length=240)
+    producer_node_id: str = Field(min_length=1, max_length=160)
+
+
+class WorkflowDeliverableBinding(BaseModel):
+    """Admitted deliverable ownership using persisted work-item identity."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    deliverable: str = Field(min_length=1, max_length=240)
+    producer_work_item_id: str = Field(min_length=1, max_length=160)
+
+
+class WorkflowConstraintProposalV2(BaseModel):
+    """v2 constraint ownership expressed in node terminology."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    constraint_id: str = Field(pattern=r"^[a-zA-Z][a-zA-Z0-9_.-]{0,119}$")
+    statement: str = Field(min_length=1, max_length=4_000)
+    owner_node_ids: list[str] = Field(min_length=1, max_length=64)
+    verifier_node_id: str | None = Field(default=None, min_length=1, max_length=160)
+    severity: ConstraintSeverity = "required"
+
+    @model_validator(mode="after")
+    def validate_owners(self) -> "WorkflowConstraintProposalV2":
+        if len(self.owner_node_ids) != len(set(self.owner_node_ids)):
+            raise ValueError("constraint owner node ids must be unique")
+        if self.severity == "required" and self.verifier_node_id is None:
+            raise ValueError("required constraint must declare a verifier node")
+        return self
+
+
+class WorkflowPlanV2Proposal(BaseModel):
+    """Generic, typed and explicitly versioned static DAG proposal."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["workflow_plan_v2"]
+    nodes: list[WorkflowPlanNodeV2] = Field(min_length=1, max_length=128)
+    deliverable_bindings: list[WorkflowDeliverableBindingProposal] = Field(
+        min_length=1,
+        max_length=32,
+    )
+    constraint_bindings: list[WorkflowConstraintProposalV2] = Field(
+        default_factory=list,
+        max_length=64,
+    )
+
+    @model_validator(mode="after")
+    def validate_local_ids(self) -> "WorkflowPlanV2Proposal":
+        node_ids = [item.node_id for item in self.nodes]
+        if len(node_ids) != len(set(node_ids)):
+            raise ValueError("workflow plan node ids must be unique")
+        deliverables = [item.deliverable for item in self.deliverable_bindings]
+        if len(deliverables) != len(set(deliverables)):
+            raise ValueError("workflow deliverable bindings must be unique")
+        constraint_ids = [item.constraint_id for item in self.constraint_bindings]
+        if len(constraint_ids) != len(set(constraint_ids)):
+            raise ValueError("workflow constraint ids must be unique")
+        return self
+
+
+WorkflowPlannerProposal = WorkflowPlanProposal | WorkflowPlanV2Proposal
 
 
 class WorkflowBudget(BaseModel):
@@ -139,7 +263,9 @@ class WorkflowWorkItem(BaseModel):
     objective: str = Field(min_length=1, max_length=10_000)
     depends_on: list[str] = Field(default_factory=list, max_length=64)
     input_artifact_refs: list[str] = Field(default_factory=list, max_length=128)
-    acceptance_contract: dict[str, JsonValue] = Field(default_factory=dict)
+    acceptance_contract: WorkflowStepAcceptanceContract | dict[str, JsonValue] = Field(
+        default_factory=dict
+    )
     status: WorkItemStatus = "pending"
     attempt_count: int = Field(default=0, ge=0)
     max_attempts: int = Field(default=3, ge=1, le=20)
@@ -187,6 +313,10 @@ class WorkflowPlanVersion(BaseModel):
     constraint_bindings: list[WorkflowConstraintBinding] = Field(
         default_factory=list,
         max_length=64,
+    )
+    deliverable_bindings: list[WorkflowDeliverableBinding] = Field(
+        default_factory=list,
+        max_length=32,
     )
     created_at: datetime = Field(default_factory=utc_now)
 

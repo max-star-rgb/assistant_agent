@@ -59,7 +59,10 @@ from assistant_agent.automation.durable_tasks.service import DurableTaskService
 from assistant_agent.automation.durable_tasks.sqlite_store import SQLiteTaskStore
 from assistant_agent.workflows.artifacts import LocalWorkflowArtifactStore
 from assistant_agent.workflows.builtin import default_workflow_definitions
-from assistant_agent.workflows.models import WorkflowSubmission
+from assistant_agent.workflows.models import (
+    WorkflowStepAcceptanceContract,
+    WorkflowSubmission,
+)
 from assistant_agent.workflows.service import WorkflowService
 from assistant_agent.workflows.observed_store import ObservedWorkflowStore
 from assistant_agent.workflows.sqlite_store import SQLiteWorkflowStore
@@ -616,6 +619,17 @@ class AgentGraphRuntime:
                     for item in assignment.assigned_constraints
                     if item.verifier_work_item_id == assignment.work_item_id
                 ]
+                required_acceptance_ids = (
+                    [
+                        item.criterion_id
+                        for item in assignment.acceptance_contract.criteria
+                    ]
+                    if isinstance(
+                        assignment.acceptance_contract,
+                        WorkflowStepAcceptanceContract,
+                    )
+                    else []
+                )
                 return parse_work_item_response(
                     summary,
                     run_id=state.run_id,
@@ -624,6 +638,7 @@ class AgentGraphRuntime:
                     model_calls_used=model_calls_used,
                     tool_calls_used=len(state.tool_calls),
                     required_verification_ids=required_verification_ids,
+                    required_acceptance_ids=required_acceptance_ids,
                 )
             return AgentWorkItemResult(
                 status=status,
@@ -1808,7 +1823,11 @@ def _start_deep_research_workflow(
                 workflow_type="deep_research",
                 objective=objective,
                 deliverables=["research_report"],
-                inputs={"research_questions": [objective], "source_target": 15},
+                constraints=["最终报告必须引用至少 15 个可信且多样的来源。"],
+                inputs={
+                    "research_questions": [objective],
+                    "source_target": 15,
+                },
                 durability_reasons=["assistant_mode_deep_research"],
                 idempotency_key=f"deep_research:{state.run_id}",
             ),
@@ -1833,7 +1852,7 @@ def _start_deep_research_workflow(
     workflow = bundle.workflow
     state.set_response(
         AgentResponse(
-            message="深度研究已开始。",
+            message="",
             data={
                 "workflow": {
                     "workflow_id": workflow.workflow_id,

@@ -364,14 +364,14 @@ observation 导出到该 trace，不依赖原进程中的 ContextVar 存活。
 Definition materialize/admission 后的事件/状态 commit，不是第二次规划 Agent 运行。work-item
 终态、重试、返工和 Workflow terminal 仍由已提交的 Store 事实驱动投影。Planner 的结构化响应解析与
 Definition materialize/admission 在该 bounded Agent run 写入 terminal canonical event 之前完成；因此
-非法 proposal 会直接把同一个“正在制定研究计划” observation 标为失败，不会先显示成功再由外层
+非法 proposal 会直接把同一个 `workflow.planner` observation 标为失败，不会先显示成功再由外层
 Workflow 反向覆盖。
 
 一个典型 Deep Research 在 Langfuse 中的结构是：
 
 ```text
 deep_research.workflow                         # durable logical root
-├── 正在制定研究计划                     # agent, role=planner
+├── workflow.planner                          # agent, role=planner；内部控制节点
 │   ├── memory.session_recall                  # 若该 canonical run 实际发生
 │   ├── react.iteration
 │   │   ├── context.compile

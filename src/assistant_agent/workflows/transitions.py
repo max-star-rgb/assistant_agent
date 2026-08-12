@@ -86,7 +86,10 @@ def normalize_budget(
 def validate_plan_dag(plan: WorkflowPlanVersion, *, max_work_items: int) -> None:
     if len(plan.work_items) > max_work_items:
         raise WorkflowTransitionRejected("workflow plan exceeds work item limit")
-    ids = {item.work_item_id for item in plan.work_items}
+    work_item_ids = [item.work_item_id for item in plan.work_items]
+    ids = set(work_item_ids)
+    if len(ids) != len(work_item_ids):
+        raise WorkflowTransitionRejected("duplicate work item id")
     incoming: dict[str, int] = {item_id: 0 for item_id in ids}
     outgoing: dict[str, list[str]] = {item_id: [] for item_id in ids}
     for item in plan.work_items:
@@ -113,6 +116,21 @@ def validate_plan_dag(plan: WorkflowPlanVersion, *, max_work_items: int) -> None
                 pending.append(child)
     if visited != len(ids):
         raise WorkflowTransitionRejected("workflow plan contains a cycle")
+    deliverable_names = [
+        item.deliverable for item in plan.deliverable_bindings
+    ]
+    if len(deliverable_names) != len(set(deliverable_names)):
+        raise WorkflowTransitionRejected("duplicate workflow deliverable binding")
+    terminal_ids = {
+        item_id for item_id, children in outgoing.items() if not children
+    }
+    for binding in plan.deliverable_bindings:
+        if binding.producer_work_item_id not in ids:
+            raise WorkflowTransitionRejected("unknown deliverable producer work item")
+        if binding.producer_work_item_id not in terminal_ids:
+            raise WorkflowTransitionRejected(
+                "deliverable producer must be a terminal work item"
+            )
     constraint_ids = [item.constraint_id for item in plan.constraint_bindings]
     if len(constraint_ids) != len(set(constraint_ids)):
         raise WorkflowTransitionRejected("duplicate workflow constraint binding")

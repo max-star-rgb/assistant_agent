@@ -1,12 +1,9 @@
 from __future__ import annotations
 
-import pytest
-
 from assistant_agent.identity import RequestIdentity
 from assistant_agent.workflows.agent_runtime import AgentWorkItemResult
 from assistant_agent.workflows.artifacts import LocalWorkflowArtifactStore
 from assistant_agent.workflows.context import WorkflowContextCompiler
-from assistant_agent.workflows.constraints import assigned_constraints
 from assistant_agent.workflows.definitions import WorkflowDefinitionCatalog
 from assistant_agent.workflows.execution import AgentRuntimeWorkItemExecutor
 from assistant_agent.workflows.models import WorkflowPlanProposal, WorkflowSubmission
@@ -172,7 +169,7 @@ def test_deep_research_infers_missing_required_constraint_verifier_from_dag() ->
     assert planner_binding.verifier_work_item_id == "verify"
 
 
-def test_deep_research_materializes_source_target_as_scoped_bindings() -> None:
+def test_deep_research_does_not_infer_constraint_ownership_from_node_kind() -> None:
     definition, bundle = _submitted_research_workflow()
     proposal = WorkflowPlanProposal(workstreams=[
         {
@@ -217,32 +214,11 @@ def test_deep_research_materializes_source_target_as_scoped_bindings() -> None:
     )
     validate_plan_dag(plan, max_work_items=20)
 
-    evidence = next(
-        item
-        for item in plan.constraint_bindings
-        if item.constraint_id == "evidence-source-count"
-    )
-    final = next(
-        item
-        for item in plan.constraint_bindings
-        if item.constraint_id == "final-source-count"
-    )
-    assert evidence.statement == "已核验证据集合包含至少 12 个可信且多样的来源。"
-    assert evidence.owner_work_item_ids == ["verify"]
-    assert evidence.verifier_work_item_id == "verify"
-    assert final.owner_work_item_ids == ["synthesize"]
-    assert final.verifier_work_item_id == "synthesize"
-    assert assigned_constraints(
-        plan.constraint_bindings,
-        work_item_id="scope",
-    ) == []
-    assert assigned_constraints(
-        plan.constraint_bindings,
-        work_item_id="collect-hermes",
-    ) == []
+    assert plan.constraint_bindings == []
+    assert plan.deliverable_bindings[0].producer_work_item_id == "synthesize"
 
 
-def test_deep_research_rejects_conflicting_reserved_source_binding() -> None:
+def test_deep_research_accepts_generic_explicit_constraint_ids() -> None:
     definition, bundle = _submitted_research_workflow()
     proposal = WorkflowPlanProposal(
         workstreams=[
@@ -269,11 +245,17 @@ def test_deep_research_rejects_conflicting_reserved_source_binding() -> None:
         }],
     )
 
-    with pytest.raises(ValueError, match="conflicting workflow constraint id"):
-        definition.materialize_plan(
-            workflow=bundle.workflow,
-            proposal=proposal,
-        )
+    plan = definition.materialize_plan(
+        workflow=bundle.workflow,
+        proposal=proposal,
+    )
+
+    assert [item.constraint_id for item in plan.constraint_bindings] == [
+        "evidence-source-count"
+    ]
+    assert plan.constraint_bindings[0].statement == (
+        "conflicting-source-rule-sentinel"
+    )
 
 
 def test_agent_executor_compiles_dependency_artifacts_and_persists_output(tmp_path) -> None:

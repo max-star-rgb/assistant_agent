@@ -6,6 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from assistant_agent.identity import RequestIdentity
+from assistant_agent.workflows.builtin import default_workflow_definitions
 from assistant_agent.workflows.definitions import (
     WorkflowDefinitionCatalog,
     WorkflowDefinitionDescriptor,
@@ -24,6 +25,7 @@ from assistant_agent.workflows.runtime import (
 )
 from assistant_agent.workflows.service import WorkflowService
 from assistant_agent.workflows.sqlite_store import SQLiteWorkflowStore
+from assistant_agent.workflows.store import InMemoryWorkflowStore
 from assistant_agent.workflows.worker import DurableWorkflowWorker
 from assistant_agent.workflows.transitions import (
     WorkflowTransitionRejected,
@@ -317,6 +319,36 @@ def test_progress_projects_the_same_ready_item_that_runtime_will_execute(tmp_pat
     assert progress["ready_items"] == 2
     assert executor.executed == ["ws_industry", "ws_openclaw"]
     store.close()
+
+
+def test_progress_hides_the_internal_bootstrap_planner() -> None:
+    service = WorkflowService(
+        store=InMemoryWorkflowStore(),
+        definitions=default_workflow_definitions(),
+    )
+    created = service.submit(
+        identity=_identity(),
+        ingress_run_id="run-planning-sentinel",
+        submission=WorkflowSubmission(
+            workflow_type="deep_research",
+            objective="objective-sentinel",
+            deliverables=["report-sentinel"],
+            inputs={"research_questions": ["question-sentinel"]},
+            durability_reasons=["durable-sentinel"],
+            idempotency_key="planning-progress-sentinel",
+        ),
+    )
+
+    progress = project_workflow_progress(
+        workflow=created.workflow,
+        plan=created.current_plan,
+    )
+
+    assert progress["state"] == "planning"
+    assert progress["display_title"] is None
+    assert progress["completed_items"] == 0
+    assert progress["total_items"] == 0
+    assert progress["active_items"] == []
 
 
 def test_executor_exception_persists_a_prompt_safe_error_type(tmp_path) -> None:

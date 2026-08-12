@@ -494,7 +494,7 @@ async def tail_workflow(
     if workflow_details:
         print(f"Tailing workflow {workflow_id}...", flush=True)
     else:
-        print("正在跟踪研究进度…", flush=True)
+        print("正在跟踪任务进度…", flush=True)
     while True:
         try:
             events_payload = await asyncio.to_thread(
@@ -540,7 +540,9 @@ async def tail_workflow(
         progress = project_workflow_progress(status_payload)
         progress_key = json.dumps(progress, ensure_ascii=False, sort_keys=True)
         if progress and progress_key != last_progress_key:
-            print(_workflow_progress_message(progress), flush=True)
+            progress_message = _workflow_progress_message(progress)
+            if progress_message:
+                print(progress_message, flush=True)
             last_progress_key = progress_key
         if status == "completed":
             result_text = ""
@@ -593,7 +595,7 @@ async def tail_workflow(
                             (
                                 f"[workflow {workflow_id}]> "
                                 if workflow_details
-                                else "[研究补充信息]> "
+                                else "[任务补充信息]> "
                             ),
                         )
                     except EOFError:
@@ -709,6 +711,26 @@ def project_workflow_progress(payload: JsonObject) -> JsonObject:
     if not isinstance(items, list):
         items = []
     normalized_items = [item for item in items if isinstance(item, dict)]
+    if (
+        workflow.get("phase") == "planning"
+        and plan.get("version") == 1
+        and len(normalized_items) == 1
+        and normalized_items[0].get("kind") == "plan"
+    ):
+        return {
+            "state": "planning",
+            "plan_kind": str(workflow.get("workflow_type") or "workflow"),
+            "workflow_type": str(workflow.get("workflow_type") or "workflow"),
+            "work_item_id": "",
+            "work_item_kind": "",
+            "display_title": None,
+            "completed_items": 0,
+            "total_items": 0,
+            "attempt_count": 0,
+            "running_items": 0,
+            "ready_items": 0,
+            "active_items": [],
+        }
     completed = sum(
         item.get("status") in {"succeeded", "skipped", "superseded"}
         for item in normalized_items
@@ -773,13 +795,13 @@ def project_workflow_progress(payload: JsonObject) -> JsonObject:
 
 
 _WORKFLOW_STAGE_LABELS = {
-    "scope": "界定研究范围",
+    "scope": "界定任务范围",
     "collect_sources": "收集并核实资料",
     "extract_evidence": "提取证据与分歧",
-    "outline": "整理报告结构",
-    "draft": "撰写研究报告",
-    "verify": "核验引用与结论",
-    "synthesize": "生成最终报告",
+    "outline": "整理交付结构",
+    "draft": "生成交付内容",
+    "verify": "核验结果与约束",
+    "synthesize": "生成最终交付",
 }
 
 
@@ -787,12 +809,14 @@ def _workflow_progress_message(progress: JsonObject) -> str:
     state = progress.get("state")
     completed = int(progress.get("completed_items") or 0)
     total = int(progress.get("total_items") or 0)
+    if state == "planning":
+        return ""
     if state == "completed":
-        return f"研究完成（{completed}/{total} 个阶段）。"
+        return f"任务完成（{completed}/{total} 个阶段）。"
     if state == "waiting_input":
-        return f"研究需要补充信息（已完成 {completed}/{total} 个阶段）。"
+        return f"任务需要补充信息（已完成 {completed}/{total} 个阶段）。"
     if state == "failed":
-        return f"研究未能完成（已完成 {completed}/{total} 个阶段）。"
+        return f"任务未能完成（已完成 {completed}/{total} 个阶段）。"
     active_items = progress.get("active_items")
     if isinstance(active_items, list):
         active_titles = [
@@ -808,7 +832,7 @@ def _workflow_progress_message(progress: JsonObject) -> str:
             )
     kind = str(progress.get("work_item_kind") or "")
     title = _safe_workflow_display_title(progress.get("display_title"))
-    label = title or _WORKFLOW_STAGE_LABELS.get(kind, "推进研究任务")
+    label = title or _WORKFLOW_STAGE_LABELS.get(kind, "推进当前任务")
     current = min(completed + 1, total) if total else 0
     attempt = int(progress.get("attempt_count") or 0)
     retry = f"，第 {attempt + 1} 次尝试" if attempt else ""

@@ -5,12 +5,15 @@ from __future__ import annotations
 import json
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
 from assistant_agent.runtime.requests import AssistantMode
 from assistant_agent.workflows.context import WorkflowContextManifest
 from assistant_agent.workflows.models import WorkflowConstraintBinding
+from assistant_agent.workflows.models import WorkflowPlannerProposal
 from assistant_agent.workflows.models import WorkflowPlanProposal
+from assistant_agent.workflows.models import WorkflowPlanV2Proposal
+from assistant_agent.workflows.models import WorkflowStepAcceptanceContract
 
 
 class AgentWorkItemRequest(BaseModel):
@@ -33,7 +36,9 @@ class AgentWorkItemRequest(BaseModel):
     attempt_number: int = Field(default=1, ge=1, le=20)
     previous_error_code: str | None = Field(default=None, max_length=160)
     previous_result_summary: str = Field(default="", max_length=4_000)
-    acceptance_contract: dict[str, JsonValue] = Field(default_factory=dict)
+    acceptance_contract: WorkflowStepAcceptanceContract | dict[str, JsonValue] = Field(
+        default_factory=dict
+    )
     assigned_constraints: list[WorkflowConstraintBinding] = Field(
         default_factory=list,
         max_length=64,
@@ -64,17 +69,21 @@ class AgentWorkItemResult(BaseModel):
     model_calls_used: int = Field(default=0, ge=0)
     tool_calls_used: int = Field(default=0, ge=0)
     agent_role: Literal["planner", "worker"] = "worker"
-    plan_proposal: WorkflowPlanProposal | None = None
+    plan_proposal: WorkflowPlannerProposal | None = None
 
 
 def render_work_item_prompt(request: AgentWorkItemRequest) -> str:
-    lines = [
-        "你正在执行一个受限的长期 Workflow work item。",
-        f"Work item kind: {request.work_item_kind}",
-        f"Work item objective: {request.objective}",
-        f"Workflow objective: {request.context_manifest.objective}",
-    ]
-    if request.attempt_number > 1:
+    lines = (
+        []
+        if request.agent_role == "planner"
+        else [
+            "你正在执行一个受限的长期 Workflow work item。",
+            f"Work item kind: {request.work_item_kind}",
+            f"Work item objective: {request.objective}",
+            f"Workflow objective: {request.context_manifest.objective}",
+        ]
+    )
+    if request.attempt_number > 1 and request.agent_role != "planner":
         lines.append(
             "Previous attempt feedback:\n"
             + json.dumps(
@@ -89,35 +98,61 @@ def render_work_item_prompt(request: AgentWorkItemRequest) -> str:
             + "\n纠正上一尝试暴露的问题；不要重复返回相同的无效结果。"
         )
     if request.agent_role == "planner":
-        if request.workflow_deliverables:
-            lines.append(
-                "Workflow deliverables:\n"
-                + json.dumps(request.workflow_deliverables, ensure_ascii=False)
-            )
-        if request.workflow_constraints:
-            lines.append(
-                "Workflow constraints:\n"
-                + json.dumps(request.workflow_constraints, ensure_ascii=False)
-            )
-        if request.workflow_inputs:
-            lines.append(
-                "Workflow inputs:\n"
+        planner_input = {
+            "workflow": {
+                "objective": request.context_manifest.objective,
+                "deliverables": request.workflow_deliverables,
+                "constraints": request.workflow_constraints,
+                "inputs": request.workflow_inputs,
+            },
+            "planning_work_item": {
+                "objective": request.objective,
+                "attempt_number": request.attempt_number,
+                "previous_attempt": (
+                    {
+                        "error_code": request.previous_error_code,
+                        "summary": request.previous_result_summary,
+                    }
+                    if request.attempt_number > 1
+                    else None
+                ),
+            },
+        }
+        lines.extend(
+            [
+                "角色\n你是 durable Plan-and-Execute Workflow 的主规划 Agent。"
+                "你的唯一职责是生成一个可由 controller 接纳和执行的计划版本。",
+                "执行边界\n"
+                "- 只规划，不执行研究、编码、检索或其他业务任务。\n"
+                "- 不调用工具，不创建递归 planner 节点，不在 JSON 外输出解释。\n"
+                "- 普通 ReAct 决策发生在各执行节点内部，不写入 DAG 控制边。",
+                "可信工作流输入\n"
                 + json.dumps(
-                    request.workflow_inputs,
+                    planner_input,
                     ensure_ascii=False,
                     sort_keys=True,
-                )
-            )
-        lines.append(
-            "你是当前 durable Plan-and-Execute execution 的主规划 Agent。"
-            "只返回严格 JSON，不要执行研究，也不要包裹 Markdown："
-            '{"workflow_plan":{"workstreams":[{"seed_id":"...",'
-            '"kind":"...","display_title":"...","objective":"...",'
-            '"depends_on":[],"acceptance_contract":{}}],'
-            '"constraint_bindings":[{"constraint_id":"...",'
-            '"statement":"...","owner_work_item_ids":["..."],'
-            '"verifier_work_item_id":"...","severity":"required|advisory"}]}}。'
-            "步骤只承担自己的 acceptance_contract；最终交付约束绑定到负责产出或验证它的步骤。"
+                ),
+                "DAG 规则\n"
+                "- 生成一个静态有向无环图；depends_on 只能引用同一计划中的 node_id。\n"
+                "- 无依赖节点可并行；需要汇总多个结果的节点必须显式依赖所有上游节点。\n"
+                "- 每个 requested deliverable 必须恰好绑定一个 terminal producer。\n"
+                "- 不为简单任务制造无意义节点；每个节点必须能独立重试并产生一个下游可用 artifact。",
+                "验收与责任规则\n"
+                "- 每个节点必须声明一个类型化 output 和至少一个仅由该节点负责的 criterion。\n"
+                "- 根据用户目标自主提出完成任务所需的可验证 workflow constraint；"
+                "不得使用 Runtime 隐含的固定业务阈值。\n"
+                "- 可信输入中的 workflow constraint 必须逐条原文保留并绑定 owner；"
+                "required constraint 必须指定 verifier。\n"
+                "- verifier 必须等于 owner 或位于所有 owner 的下游；不要用节点名称暗示责任。",
+                "唯一允许的输出 JSON Schema\n"
+                + json.dumps(
+                    _WorkflowPlanV2Envelope.model_json_schema(),
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                "输出要求\n只返回一个符合上述 schema 的 JSON object；"
+                "不得包裹 Markdown，不得增加 schema 未声明字段。",
+            ]
         )
         return "\n\n".join(lines)
     if request.assigned_constraints:
@@ -133,9 +168,14 @@ def render_work_item_prompt(request: AgentWorkItemRequest) -> str:
             )
         )
     if request.acceptance_contract:
+        acceptance_contract = (
+            request.acceptance_contract.model_dump(mode="json")
+            if isinstance(request.acceptance_contract, WorkflowStepAcceptanceContract)
+            else request.acceptance_contract
+        )
         lines.append(
             "Work item acceptance contract:\n"
-            + json.dumps(request.acceptance_contract, ensure_ascii=False, sort_keys=True)
+            + json.dumps(acceptance_contract, ensure_ascii=False, sort_keys=True)
         )
     if request.context_manifest.artifacts:
         lines.append("Artifact excerpts:")
@@ -155,12 +195,28 @@ def render_work_item_prompt(request: AgentWorkItemRequest) -> str:
         for item in request.assigned_constraints
         if item.verifier_work_item_id == request.work_item_id
     ]
-    if verifier_ids:
+    acceptance_ids = (
+        [
+            item.criterion_id
+            for item in request.acceptance_contract.criteria
+        ]
+        if isinstance(request.acceptance_contract, WorkflowStepAcceptanceContract)
+        else []
+    )
+    if verifier_ids or acceptance_ids:
+        success_status = "verified" if verifier_ids else "succeeded"
         control = (
-            "当前步骤是结构化约束 verifier。验证成功也必须把完整最终回复写成严格 JSON："
-            '{"workflow_control":{"status":"verified","summary":"...",'
-            '"content":"可选的完整交付物","verified_constraint_ids":["..."]}}。'
-            "verified_constraint_ids 必须完整覆盖："
+            "当前步骤必须以结构化结果证明自己的验收契约。"
+            "成功时把完整最终回复写成严格 JSON："
+            '{"workflow_control":{"status":"'
+            + success_status
+            + '","summary":"...","content":"完整交付物",'
+            '"acceptance_evidence":[{"criterion_id":"...",'
+            '"evidence":"artifact 中可核对的完成证据"}],'
+            '"verified_constraint_ids":["..."]}}。'
+            "acceptance_evidence 必须精确覆盖："
+            + json.dumps(acceptance_ids, ensure_ascii=False)
+            + "；verified_constraint_ids 必须精确覆盖："
             + json.dumps(verifier_ids, ensure_ascii=False)
             + "。不要把控制 JSON 包在 Markdown 中。"
         )
@@ -180,10 +236,16 @@ def render_work_item_prompt(request: AgentWorkItemRequest) -> str:
     return "\n\n".join(lines)
 
 
-class _WorkflowPlanEnvelope(BaseModel):
+class _WorkflowPlanV1Envelope(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     workflow_plan: WorkflowPlanProposal
+
+
+class _WorkflowPlanV2Envelope(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    workflow_plan: WorkflowPlanV2Proposal
 
 
 def parse_workflow_plan_response(
@@ -197,8 +259,18 @@ def parse_workflow_plan_response(
     """Parse the main planner's strict durable DAG envelope."""
 
     try:
-        proposal = _WorkflowPlanEnvelope.model_validate_json(text).workflow_plan
-    except ValueError:
+        payload = json.loads(text)
+        workflow_plan = payload.get("workflow_plan") if isinstance(payload, dict) else None
+        if (
+            isinstance(workflow_plan, dict)
+            and workflow_plan.get("schema_version") == "workflow_plan_v2"
+        ):
+            proposal: WorkflowPlannerProposal = (
+                _WorkflowPlanV2Envelope.model_validate(payload).workflow_plan
+            )
+        else:
+            proposal = _WorkflowPlanV1Envelope.model_validate(payload).workflow_plan
+    except (json.JSONDecodeError, TypeError, ValueError):
         return AgentWorkItemResult(
             status="failed",
             run_id=run_id,
@@ -209,11 +281,16 @@ def parse_workflow_plan_response(
             tool_calls_used=tool_calls_used,
             agent_role="planner",
         )
+    item_count = (
+        len(proposal.nodes)
+        if isinstance(proposal, WorkflowPlanV2Proposal)
+        else len(proposal.workstreams)
+    )
     return AgentWorkItemResult(
         status="succeeded",
         run_id=run_id,
         trace_id=trace_id,
-        summary=f"Planned {len(proposal.workstreams)} workflow items.",
+        summary=f"Planned {item_count} workflow items.",
         model_calls_used=model_calls_used,
         tool_calls_used=tool_calls_used,
         agent_role="planner",
@@ -221,15 +298,37 @@ def parse_workflow_plan_response(
     )
 
 
+class _WorkflowCriterionEvidence(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    criterion_id: str = Field(min_length=1, max_length=120)
+    evidence: str = Field(min_length=1, max_length=4_000)
+
+
 class _WorkflowControl(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    status: Literal["verified", "repair", "blocked", "failed"]
+    status: Literal["succeeded", "verified", "repair", "blocked", "failed"]
     summary: str = Field(min_length=1, max_length=4_000)
     content: str = Field(default="", max_length=100_000)
+    acceptance_evidence: list[_WorkflowCriterionEvidence] = Field(
+        default_factory=list,
+        max_length=64,
+    )
     verified_constraint_ids: list[str] = Field(default_factory=list, max_length=64)
     unresolved_questions: list[str] = Field(default_factory=list, max_length=64)
     repair_work_item_ids: list[str] = Field(default_factory=list, max_length=128)
+
+    @model_validator(mode="after")
+    def validate_unique_evidence(self) -> "_WorkflowControl":
+        criterion_ids = [item.criterion_id for item in self.acceptance_evidence]
+        if len(criterion_ids) != len(set(criterion_ids)):
+            raise ValueError("acceptance evidence criterion ids must be unique")
+        if len(self.verified_constraint_ids) != len(
+            set(self.verified_constraint_ids)
+        ):
+            raise ValueError("verified constraint ids must be unique")
+        return self
 
 
 class _WorkflowControlEnvelope(BaseModel):
@@ -247,14 +346,27 @@ def parse_work_item_response(
     model_calls_used: int,
     tool_calls_used: int,
     required_verification_ids: list[str] | None = None,
+    required_acceptance_ids: list[str] | None = None,
 ) -> AgentWorkItemResult:
     """Parse the narrow trusted work-item control envelope, with text success fallback."""
 
     required_ids = set(required_verification_ids or [])
+    required_criteria = set(required_acceptance_ids or [])
     try:
         payload = json.loads(text)
         envelope = _WorkflowControlEnvelope.model_validate(payload)
     except (json.JSONDecodeError, TypeError, ValueError):
+        if required_criteria:
+            return AgentWorkItemResult(
+                status="failed",
+                run_id=run_id,
+                trace_id=trace_id,
+                summary="Worker did not return structured acceptance evidence.",
+                error_code="acceptance_result_missing",
+                artifact_refs=artifact_refs,
+                model_calls_used=model_calls_used,
+                tool_calls_used=tool_calls_used,
+            )
         if required_ids:
             return AgentWorkItemResult(
                 status="failed",
@@ -277,9 +389,35 @@ def parse_work_item_response(
             tool_calls_used=tool_calls_used,
         )
     control = envelope.workflow_control
-    if control.status == "verified":
+    if control.status in {"succeeded", "verified"}:
+        evidence_ids = {
+            item.criterion_id for item in control.acceptance_evidence
+        }
+        if evidence_ids != required_criteria:
+            return AgentWorkItemResult(
+                status="failed",
+                run_id=run_id,
+                trace_id=trace_id,
+                summary="Worker result did not cover its acceptance contract.",
+                error_code="acceptance_incomplete",
+                artifact_refs=artifact_refs,
+                model_calls_used=model_calls_used,
+                tool_calls_used=tool_calls_used,
+            )
+        if required_ids and control.status != "verified":
+            return AgentWorkItemResult(
+                status="failed",
+                run_id=run_id,
+                trace_id=trace_id,
+                summary="Constraint verifier did not return verified status.",
+                error_code="verification_result_missing",
+                artifact_refs=artifact_refs,
+                model_calls_used=model_calls_used,
+                tool_calls_used=tool_calls_used,
+            )
         missing_ids = required_ids.difference(control.verified_constraint_ids)
-        if missing_ids:
+        unexpected_ids = set(control.verified_constraint_ids).difference(required_ids)
+        if missing_ids or unexpected_ids:
             return AgentWorkItemResult(
                 status="failed",
                 run_id=run_id,

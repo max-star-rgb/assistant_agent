@@ -2,7 +2,7 @@
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from assistant_agent.runtime.citations import UrlCitationAnnotation
 
@@ -60,8 +60,14 @@ def normalize_task_execution_mode(
 class AgentResponse(BaseModel):
     """Structured response produced by the agent."""
 
-    message: str = Field(min_length=1)
+    message: str = ""
     data: dict[str, Any] | None = None
     followup_question: str | None = None
     output_refs: list[str] = Field(default_factory=list)
     annotations: list[UrlCitationAnnotation] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def require_text_or_structured_output(self) -> "AgentResponse":
+        if not self.message.strip() and not self.output_refs:
+            raise ValueError("response requires message or output_refs")
+        return self

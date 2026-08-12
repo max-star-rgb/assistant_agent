@@ -201,8 +201,9 @@ deliverables、constraints、definition-owned inputs、budget 和 seed artifacts
 显式标记的离线估算器），并按 work-item stage、模型窗口比例、输出 reserve 和 safety margin 计算
 token budget；多个依赖 artifact 在该预算内公平分配，不再使用固定字符上限。
 
-Definition-owned `workflow.inputs`（例如 Deep Research 的 `source_target`）只提供给 planner 和
-Definition materialize，不透传给普通 worker；worker 只接收恢复长流程所需的结构化 `user_inputs`。
+Definition-owned `workflow.inputs` 只提供给 planner 和 Definition materialize，不透传给普通
+worker；Deep Research 入口只保存研究问题，不注入固定来源数量等业务阈值。worker 只接收恢复长流程
+所需的结构化 `user_inputs`。
 具体子任务条件必须进入已获准 work item 的 objective、acceptance contract、assigned constraint 或
 artifact 上下文，不能靠泄露全局 submission input 隐式生效。
 

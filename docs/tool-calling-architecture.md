@@ -358,7 +358,9 @@ Definition 再将 proposal 的 workstreams 和 constraint proposals 领域化为
 
 获准 work item 同时持有内部执行 `objective`、依赖/验收约束和用户可见
 `display_title`。Workflow status facade 从已持久化的当前 Plan 和 item 状态生成统一
-`progress`，入口不得依据事件名称、用户原文或额外 LLM 调用虚构进度。Runtime 与
+`progress`；version 1 bootstrap planner 只作为内部控制节点，不进入用户可见阶段标题和计数，入口成功
+只返回结构化 Workflow handle，不生成模式专属确认文案。admitted Plan 的阶段标题来自 Planner 的结构化
+proposal，入口不得依据事件名称、用户原文或额外 LLM 调用虚构进度。Runtime 与
 progress facade 复用同一个确定性 ready-item 选择器，依赖无关的根可形成 fan-out，
 下游验证或 synthesize 节点只在依赖满足后就绪；验证器返回受限 repair 目标时，controller
 以新 Plan version 做局部返工，而不重启整个 Workflow。
@@ -487,22 +489,31 @@ Gateway 不按 Tool name 或 Provider 错误码改写运行终态。
   Runtime，也预留主 Agent 规划、子 Agent/远程 worker 执行的替换点。
   `agent_role` 由 Workflow controller 根据 version 1 的 bootstrap planner 状态写入可信 assignment，不能
   从 LLM 生成的 work-item `kind` 推断；planner proposal 禁止复用保留的 `plan` id/kind，避免递归重规划。
+  新 planner 只生成显式标记的 `workflow_plan_v2`：每个 plan version 是静态 DAG，节点使用
+  `node_id/display_title/objective/depends_on` 和类型化 `acceptance_contract`，拓扑变化只能通过新的
+  plan version 表达。v2 节点统一 materialize 为通用 `agent` work item，业务 definition 不得根据节点
+  名称或 kind 猜测研究、汇总、验证等语义；旧 v1 proposal 和既有持久 Plan 继续兼容读取与执行。
+  `deliverable_bindings` 必须恰好覆盖 submission deliverables，并将每项交付物绑定到一个 terminal
+  producer；Workflow 完成时按 binding 汇聚最终 artifact，而不是把最后完成节点当成交付节点。
   work-item Tool allowlist 是可信空集合也必须表示“暴露零个 Tool”，不能退化为完整 Registry。
   `deep_research` work item 固定使用空本地 Tool allowlist；联网由 Qwen/Bailian Chat Completions 的
   Provider-native 搜索完成，不注册或调用本地 `web_search`/`web_fetch`，也不会绕过 Tool 治理链。
-  Workflow 级约束使用 `constraint_bindings` 显式声明 `constraint_id/statement/owner_work_item_ids/
-  verifier_work_item_id/severity`。Planner proposal 中它是可补全责任提案；Definition 在 DAG 完成后优先选择
-  位于所有 owner 下游的 `verify` item，其次选择共同下游终端 item，再构造成 admitted binding。Plan
-  admission 校验 required verifier、引用、唯一性以及 verifier 必须等于或位于所有 owner 的下游。每个
+  Workflow 级约束使用 `constraint_bindings` 显式声明 statement、owner 和 verifier 责任。v2 proposal
+  必须逐条原文覆盖 submission constraints，也可提出完成目标所需的额外可验证约束；全部 required
+  constraint 都必须显式指定 verifier。v1 兼容 proposal
+  仍可由 controller 将未绑定 prose constraint 确定性绑定到 terminal item。Plan admission 校验 required
+  verifier、引用、唯一性以及 verifier 必须等于或位于所有 owner 的下游。每个
   worker 只接收绑定给自身 owner/verifier 角色的 `assigned_constraints` 以及自己的
   `acceptance_contract`；definition-owned 全局 inputs 只供 planner/materialize 使用，worker 只保留
-  结构化恢复用 `user_inputs`。prompt renderer 不再用自然语言规则推断全局约束属于哪个阶段。未提供结构化
-  binding 的兼容 prose constraint 会确定性绑定给 DAG 终端 item，由终端 item 同时承担验证，不按约束
-  文本关键词选择步骤。Deep Research definition 则从结构化 `source_target` 生成证据收集与最终引用两个
-  独立 binding。被指定为 verifier 的 work item 必须返回 `workflow_control.status=verified` 和完整的
+  结构化恢复用 `user_inputs`。prompt renderer 不再用自然语言规则推断全局约束属于哪个阶段。Deep
+  Research 的来源数量由可信入口作为普通 constraint 提交，definition 不再注入固定 binding 或解释节点
+  名称。被指定为 verifier 的 work item
+  必须返回 `workflow_control.status=verified` 和完整的
   `verified_constraint_ids`；普通文本或漏验 required constraint 会映射为可重试失败，约束不满足时仍用
   `status=repair + repair_work_item_ids` 进入既有局部返工路径。若 verifier 同时生成最终交付物，完整正文
-  放在 control 的 `content` 字段并写入 artifact。worker 的完整成功正文写入 owner-bound artifact，持久 plan 中只保存
+  放在 control 的 `content` 字段并写入 artifact。v2 worker 成功还必须返回与本节点 criteria 精确对应的
+  `acceptance_evidence`；漏项、重复或未知 criterion ID 均不能提交成功。类型化 output 的
+  `artifact_type` 成为持久 artifact kind。worker 的完整成功正文写入 owner-bound artifact，持久 plan 中只保存
   最多 4000 字的进度摘要；completed Workflow 的完整最终正文由 identity-scoped
   `GET /workflows/{workflow_id}/result` 读取，不能用摘要承担最终报告交付。Executor 边界捕获的意外异常
   只持久化 prompt-safe 的异常类型错误码，不泄露 exception message；模型已成功生成的超长正文不得再

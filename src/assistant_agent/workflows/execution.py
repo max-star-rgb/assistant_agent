@@ -13,6 +13,7 @@ from assistant_agent.workflows.agent_runtime import (
 from assistant_agent.workflows.artifacts import LocalWorkflowArtifactStore
 from assistant_agent.workflows.context import WorkflowContextCompiler
 from assistant_agent.workflows.constraints import assigned_constraints
+from assistant_agent.workflows.models import WorkflowStepAcceptanceContract
 from assistant_agent.workflows.runtime import (
     WorkItemAssignment,
     WorkItemExecutionResult,
@@ -165,10 +166,16 @@ class AgentRuntimeWorkItemExecutor:
                 assistant_run_id=result.run_id,
                 agent_role=agent_role,
             )
+        acceptance_contract = assignment.work_item.acceptance_contract
+        artifact_kind = (
+            acceptance_contract.output.artifact_type
+            if isinstance(acceptance_contract, WorkflowStepAcceptanceContract)
+            else assignment.work_item.kind
+        )
         artifact = self.artifact_store.write_text(
             identity=identity,
             workflow_id=assignment.workflow_id,
-            kind=assignment.work_item.kind,
+            kind=artifact_kind,
             text=result.content or result.summary,
             producer_work_item_id=assignment.work_item.work_item_id,
         )

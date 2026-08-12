@@ -189,19 +189,19 @@ def test_http_status_events_input_and_cancel_are_thin_service_facades() -> None:
     assert status.status_code == 200
     assert status.json()["workflow"]["workflow_id"] == workflow_id
     assert status.json()["progress"] == {
-        "state": "working",
+        "state": "planning",
         "plan_kind": "needs_input",
         "workflow_type": "needs_input",
-        "work_item_id": "plan",
-        "work_item_kind": "plan",
-        "display_title": "正在制定执行计划",
+        "work_item_id": "",
+        "work_item_kind": "",
+        "display_title": None,
         "completed_items": 0,
-            "total_items": 1,
-            "attempt_count": 0,
-            "running_items": 0,
-            "ready_items": 1,
-            "active_items": [],
-        }
+        "total_items": 0,
+        "attempt_count": 0,
+        "running_items": 0,
+        "ready_items": 0,
+        "active_items": [],
+    }
     assert events.json()["next_cursor"] == 2
     assert cancelled.json()["workflow"]["status"] == "cancelled"
 

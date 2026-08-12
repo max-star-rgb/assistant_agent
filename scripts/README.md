@@ -76,7 +76,9 @@ MULTIMODAL_AGENT_PROVIDER_MODE=mock \
   the identity-scoped `/workflows/{workflow_id}/result` artifact and prints the full
   final output, falling back to the bounded final work-item summary only for an older
   server without that endpoint. Default workflow output is product-facing:
-  it uses persisted work-item `display_title` values and completion count; when multiple
+  the structured start response carries no mode-specific confirmation copy, the internal
+  bootstrap planner is hidden, and admitted Plan progress uses persisted work-item
+  `display_title` values and completion count; when multiple
   work-item runs overlap it lists the active stages as one parallel progress update, while
   hiding raw event names and workflow IDs. Use `--workflow-details` to expose
   cursor-based events and identifiers for debugging.

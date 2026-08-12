@@ -214,6 +214,8 @@ observer。VIDEO 消息的 `userNumber` 必须等于握手 `number`，不一致�
   `deep_research`，`/standard` 切回普通模式，命令本身不发送给 Agent。客户端 tail 到
   `waiting_input` 时会在当前 Workflow 上读取一次输入，通过 identity-scoped HTTP facade 携带
   `resume_token` 提交后继续 tail；该输入不会作为新的 `chat` 创建另一个 Workflow。
+  Workflow 启动终包可以只包含 `workflow://` output ref 而没有 `description`；客户端不补写模式专属
+  启动文案，也不展示内部 bootstrap planner，Plan admission 后才显示 Planner 持久化的阶段标题。
 - 只包含 `imageContent` 的内容项可以随请求传入，但当前不单独触发图像理解。
 - `chat` 会进入 `GatewayTurnFacade -> GatewaySessionManager -> GatewayRuntimeAdapter -> AssistantRuntimeApp -> AgentGraphRuntime`。
 - 每个媒体 WebSocket 拥有一个连接级逻辑 AgentSession（本地

@@ -5,15 +5,14 @@ from __future__ import annotations
 from assistant_agent.workflows.definitions import (
     WorkflowDefinitionCatalog,
     WorkflowDefinitionDescriptor,
-    materialize_work_items,
+    materialize_runtime_plan,
 )
 from assistant_agent.workflows.models import (
-    WorkflowPlanProposal,
+    WorkflowPlannerProposal,
     WorkflowPlanVersion,
     WorkflowRecord,
     WorkflowSubmission,
 )
-from assistant_agent.workflows.constraints import resolve_constraint_bindings
 from assistant_agent.workflows.research.definition import DeepResearchWorkflowDefinition
 
 
@@ -31,21 +30,12 @@ class LongHorizonWorkflowDefinition:
         self,
         *,
         workflow: WorkflowRecord,
-        proposal: WorkflowPlanProposal,
+        proposal: WorkflowPlannerProposal,
     ) -> WorkflowPlanVersion:
-        work_items = materialize_work_items(proposal)
-        constraint_bindings = resolve_constraint_bindings(
-            constraints=workflow.constraints,
-            work_items=work_items,
-            proposal_bindings=proposal.constraint_bindings,
-        )
-        return WorkflowPlanVersion(
-            workflow_id=workflow.workflow_id,
-            version=workflow.current_plan_version + 1,
+        return materialize_runtime_plan(
+            workflow=workflow,
+            proposal=proposal,
             definition_version=self.descriptor.definition_version,
-            revision_reason="runtime_planner",
-            work_items=work_items,
-            constraint_bindings=constraint_bindings,
         )
 
 

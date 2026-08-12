@@ -15,6 +15,27 @@ def project_workflow_progress(
 ) -> dict[str, Any]:
     """Return facts suitable for every entry adapter without exposing internals."""
 
+    if (
+        workflow.phase == "planning"
+        and plan.version == 1
+        and len(plan.work_items) == 1
+        and plan.work_items[0].kind == "plan"
+    ):
+        return {
+            "state": "planning",
+            "plan_kind": workflow.workflow_type,
+            "workflow_type": workflow.workflow_type,
+            "work_item_id": "",
+            "work_item_kind": "",
+            "display_title": None,
+            "completed_items": 0,
+            "total_items": 0,
+            "attempt_count": 0,
+            "running_items": 0,
+            "ready_items": 0,
+            "active_items": [],
+        }
+
     completed = sum(
         item.status in {"succeeded", "skipped", "superseded"}
         for item in plan.work_items

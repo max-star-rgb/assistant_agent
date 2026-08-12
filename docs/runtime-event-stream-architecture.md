@@ -305,15 +305,16 @@ Durable Workflow 使用相同的分离原则，但事件事实源是 `WorkflowSt
 
 - `GET /workflows/{workflow_id}/events?after=<cursor>` 先经 `WorkflowService` 做 `user_id + agent_id`
   校验，再读取事务内与 revision 一起提交的 `WorkflowEvent`；
-- 前台 Deep Research start run 在返回 handle 后结束，本身不 tail 后台事件；本地 `media_simulator.py` 可在
+- 前台 Durable Workflow start run 在返回结构化 handle 后结束；成功响应可以没有文本，本身不 tail 后台事件；本地 `media_simulator.py` 可在
   前台终包后另开 identity-scoped HTTP pull 窗口，按 cursor 观察同一 Workflow，但不延长或重新打开
   ingress Gateway run；
-- 显式 Deep Research start 不调用 Provider 或本地 Tool，只持久化用户意图并形成短终态回复。
+- 显式 Workflow mode start 不调用 Provider 或本地 Tool，只持久化用户意图并形成无文案的结构化终态。
   所有 Workflow submission 都先产生仅含 planner item 的 version 1 bootstrap Plan；首个后台
   planner run 由主 Agent 生成严格 `WorkflowPlanProposal`，Definition materialize 和 admission
   后提交 version 2 DAG。得到批准的依赖图可 fan-out 无依赖工作、在受限范围做局部返工，
   并在依赖满足后进入验证或 synthesis；其后
-  status facade 只从持久化当前 item 的 `display_title`、状态和完成数投影产品 `progress`；原始事件
+  bootstrap planner 是内部控制节点，不投影为用户阶段、标题或完成数。Plan admission 后，status facade
+  只从持久化当前 item 的 LLM 生成 `display_title`、状态和完成数投影产品 `progress`；原始事件
   仍是诊断事实，但不是默认产品文案；
 - planner 和每个语义 worker item 都产生独立 bounded `AgentGraphRuntime` canonical run/trace，Workflow event 通过
   `workflow_id/work_item_id/attempt` 关联；Deep Research 的 OTel/Langfuse 投影复用持久化的 ingress

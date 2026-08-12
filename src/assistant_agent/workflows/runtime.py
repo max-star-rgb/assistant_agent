@@ -17,7 +17,8 @@ from assistant_agent.workflows.models import (
     WorkflowBundle,
     WorkflowConstraintBinding,
     WorkflowEvent,
-    WorkflowPlanProposal,
+    WorkflowPlannerProposal,
+    WorkflowPlanV2Proposal,
     WorkflowPlanVersion,
     WorkflowWorkItem,
     utc_now,
@@ -80,7 +81,7 @@ class WorkItemExecutionResult(BaseModel):
     started_at: datetime | None = None
     finished_at: datetime | None = None
     agent_role: Literal["planner", "worker"] = "worker"
-    plan_proposal: WorkflowPlanProposal | None = None
+    plan_proposal: WorkflowPlannerProposal | None = None
 
 
 class WorkItemExecutor(Protocol):
@@ -91,15 +92,19 @@ def materialize_planner_revision(
     *,
     service: WorkflowService,
     bundle: WorkflowBundle,
-    proposal: WorkflowPlanProposal,
+    proposal: WorkflowPlannerProposal,
     now: datetime,
 ) -> WorkflowPlanVersion:
     """Materialize and admit an untrusted planner proposal without committing it."""
 
     workflow = bundle.workflow
-    if any(
-        seed.seed_id == "plan" or seed.kind == "plan"
-        for seed in proposal.workstreams
+    if (
+        any(node.node_id == "plan" for node in proposal.nodes)
+        if isinstance(proposal, WorkflowPlanV2Proposal)
+        else any(
+            seed.seed_id == "plan" or seed.kind == "plan"
+            for seed in proposal.workstreams
+        )
     ):
         raise ValueError("planner proposal uses a reserved plan id or kind")
     definition = service.definitions.require(workflow.workflow_type)
@@ -377,7 +382,10 @@ class WorkflowRuntime:
                     workflow.status = "completed"
                     workflow.phase = "completed"
                     workflow.terminal_at = self.clock()
-                    workflow.result_artifact_refs = list(item.output_artifact_refs)
+                    workflow.result_artifact_refs = self._result_artifact_refs(
+                        bundle.current_plan,
+                        fallback_item=item,
+                    )
                     events.append(WorkflowEvent(
                         workflow_id=workflow.workflow_id,
                         event_type="workflow.completed",
@@ -476,6 +484,21 @@ class WorkflowRuntime:
             ))
 
     @staticmethod
+    def _result_artifact_refs(
+        plan: WorkflowPlanVersion,
+        *,
+        fallback_item: WorkflowWorkItem,
+    ) -> list[str]:
+        if not plan.deliverable_bindings:
+            return list(fallback_item.output_artifact_refs)
+        by_id = {item.work_item_id: item for item in plan.work_items}
+        artifact_refs: list[str] = []
+        for binding in plan.deliverable_bindings:
+            producer = by_id[binding.producer_work_item_id]
+            artifact_refs.extend(producer.output_artifact_refs)
+        return list(dict.fromkeys(artifact_refs))
+
+    @staticmethod
     def _bounded_result(
         result: WorkItemExecutionResult,
         claim: WorkflowDispatch,
@@ -555,7 +578,7 @@ class WorkflowRuntime:
     def _build_planner_revision(
         self,
         bundle: WorkflowBundle,
-        proposal: WorkflowPlanProposal,
+        proposal: WorkflowPlannerProposal,
     ):
         return materialize_planner_revision(
             service=self.service,
