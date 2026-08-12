@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import os
 from pathlib import Path
@@ -11,18 +12,8 @@ from typing import Sequence
 
 from assistant_agent.config import ProviderConfig
 from assistant_agent.evaluation.constants import RUNTIME_REGRESSION_DATASET
-from assistant_agent.evaluation.experiment_runtime import (
-    create_experiment_runtime_host,
-)
-from assistant_agent.evaluation.langsmith_trace import LangSmithExperimentBinding
 from assistant_agent.observability.langsmith_config import (
     create_langsmith_client_from_env,
-)
-from assistant_agent.observability.otel_exporter import (
-    create_langsmith_text_otel_trace_observer_from_env,
-)
-from assistant_agent.observability.trace_persistence import (
-    create_langsmith_experiment_trace_store,
 )
 from assistant_agent.providers.provider_errors import sanitize_error_message
 from assistant_agent.runtime.assistant_run_service import load_env_file
@@ -75,7 +66,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     exit_code = 0
     try:
         client = _langsmith_client()
-        payload = _execute(client, parser, args)
+        payload = asyncio.run(_execute_async(client, parser, args))
     except SystemExit:
         raise
     except Exception as exc:
@@ -93,7 +84,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     return exit_code
 
 
-def _execute(client, parser: argparse.ArgumentParser, args: argparse.Namespace) -> dict:
+async def _execute_async(
+    client,
+    parser: argparse.ArgumentParser,
+    args: argparse.Namespace,
+) -> dict:
     if args.inspect:
         _, active = inspect_langsmith_runtime_regression_dataset(client)
         return {
@@ -144,7 +139,6 @@ def _execute(client, parser: argparse.ArgumentParser, args: argparse.Namespace) 
     config.validate_provider_mode()
     if args.preflight:
         _, active = inspect_langsmith_runtime_regression_dataset(client)
-        _validate_langsmith_exporter()
         return {
             "action": "preflight",
             "backend": "langsmith",
@@ -155,11 +149,11 @@ def _execute(client, parser: argparse.ArgumentParser, args: argparse.Namespace) 
         }
 
     _require_args(parser, args, "run_name")
-    result = run_langsmith_runtime_regression_experiment(
+    result = await run_langsmith_runtime_regression_experiment(
         client,
         LangSmithRuntimeRegressionSettings(
             model=config.resolved_chat_provider().model,
-            runtime_factory=lambda binding: _create_item_runtime(config, binding),
+            runtime_factory=lambda: _create_item_runtime(config),
             run_name=args.run_name,
             git_commit=_git_commit(),
             max_concurrency=args.max_concurrency,
@@ -215,26 +209,8 @@ def _langsmith_client():
 
 def _create_item_runtime(
     config: ProviderConfig,
-    binding: LangSmithExperimentBinding,
 ):
-    return create_experiment_runtime_host(
-        lambda trace_store: AgentGraphRuntime(
-            config=config,
-            trace_store=trace_store,
-        ),
-        trace_store_factory=lambda: create_langsmith_experiment_trace_store(
-            project_id=binding.project_name,
-        ),
-        trace_context_provider=lambda: binding.trace_context,
-    )
-
-
-def _validate_langsmith_exporter() -> None:
-    observer = create_langsmith_text_otel_trace_observer_from_env(required=True)
-    if observer is None:
-        raise RuntimeError("LangSmith trace export is unavailable")
-    if observer.close() is False:
-        raise RuntimeError("LangSmith trace exporter failed to close")
+    return AgentGraphRuntime(config=config)
 
 
 def _git_commit() -> str:

@@ -157,14 +157,16 @@ Experiment、Score 或 Feedback；operator 在哪个 UI 沉淀案例，就用对
 ```
 
 grounding evaluator 使用 Experiment actual output 中受限、脱敏的 `evaluation_evidence`；常规回答字段仍保持
-`role/content/chars/truncated/terminal_status`。代码桥使用 `Client.evaluate()` 读取 UI Dataset 并复用同一个
-`AgentGraphRuntime`。runner 会先显式创建
-Experiment project，再把 project UUID/name 和当前 LangSmith RunTree identity 注入每个 target；不能依赖
-SDK 执行期间可能为空的 `RunTree.session_id`。Experiment 必须出现对象
-input/reference output/actual output，以及 task → `agent.runtime` → `llm.chat`；每个 active Example 必须
-恰有一个根 run 和全部三项 Feedback，否则 runner 返回 infrastructure failure。完整性轮询按 Experiment
-通过 SDK 分页读取完整 run 集合、校验真实父子关系，并对 LangSmith 429 做有界重试；每次 sleep 都截断到
-剩余 deadline。inspect、preflight 和真实运行入口分别为：
+`role/content/chars/truncated/terminal_status`。代码桥使用 `Client.aevaluate()` 读取 UI Dataset；async target
+在当前 LangSmith `RunTree` 内创建 `AgentGraphRuntime`，直接 await 原生 graph，并在 `finally` 关闭 Runtime，
+不再注入 OTel binding 或重建 `agent.runtime` 影子树。runner 会先显式创建 Experiment project，再从当前
+RunTree 的 `reference_example_id` 校验 Example 关联；不能依赖 SDK 执行期间可能为空的
+`RunTree.session_id`。Experiment 必须出现对象 input/reference output/actual output，以及
+task → `AssistantTurnGraph` → `assistant` → `llm.chat`，`compose_response` 是 graph child；Tool 案例中的
+governed tool 必须位于 `execute_tool` 子树。每个 active Example 必须恰有一个根 run 和全部三项 Feedback，
+否则 runner 返回 infrastructure failure。完整性轮询按 Experiment 通过 SDK 分页读取完整 run 集合，基于
+真实 `parent_run_id`、`trace_id` 和 `reference_example_id` 校验父子关系，并对 LangSmith 429 做有界重试；
+每次 sleep 都截断到剩余 deadline。inspect、preflight 和真实运行入口分别为：
 
 ```bash
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python \
