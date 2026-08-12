@@ -6,6 +6,7 @@ from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 import inspect
+import hashlib
 import json
 import re
 import sys
@@ -151,6 +152,7 @@ if LangChainTracer is not None:
         """Project only LangGraph chain payloads at callback persistence time."""
 
         def _persist_run_single(self, run: Any) -> None:
+            _attach_safe_workflow_run_metadata(run)
             run.inputs = {}
             if getattr(run, "error", None):
                 run.error = "Graph execution failed."
@@ -166,6 +168,66 @@ if LangChainTracer is not None:
 
 else:  # pragma: no cover - optional dependency
     SafeLangChainTracer = None  # type: ignore[assignment,misc]
+
+
+def _attach_safe_workflow_run_metadata(run: Any) -> None:
+    """Retain only stable branch identity needed to audit repair generations."""
+
+    assignment = _find_workflow_assignment(getattr(run, "inputs", None), depth=0)
+    if assignment is None:
+        return
+    node_id = assignment.get("node_id")
+    generation = assignment.get("execution_generation")
+    profile = assignment.get("profile")
+    branch_run_id = assignment.get("run_id")
+    if (
+        not isinstance(node_id, str)
+        or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_.-]{0,119}", node_id)
+        or isinstance(generation, bool)
+        or not isinstance(generation, int)
+        or not 0 <= generation <= 64
+        or profile not in {"planner", "worker", "verifier"}
+        or not isinstance(branch_run_id, str)
+        or not branch_run_id
+        or len(branch_run_id) > 512
+    ):
+        return
+    extra = getattr(run, "extra", None)
+    if not isinstance(extra, dict):
+        extra = {}
+        run.extra = extra
+    metadata = extra.get("metadata")
+    if not isinstance(metadata, dict):
+        metadata = {}
+        extra["metadata"] = metadata
+    metadata.update(
+        {
+            "workflow_node_id": node_id,
+            "workflow_generation": generation,
+            "workflow_profile": profile,
+            "workflow_branch_run_id": "sha256:"
+            + hashlib.sha256(branch_run_id.encode("utf-8")).hexdigest(),
+        }
+    )
+
+
+def _find_workflow_assignment(value: Any, *, depth: int) -> dict[str, Any] | None:
+    if depth > 6:
+        return None
+    if isinstance(value, dict):
+        direct = value.get("assignment")
+        if isinstance(direct, dict):
+            return direct
+        for nested in list(value.values())[:64]:
+            found = _find_workflow_assignment(nested, depth=depth + 1)
+            if found is not None:
+                return found
+    elif isinstance(value, (list, tuple)):
+        for nested in list(value)[:64]:
+            found = _find_workflow_assignment(nested, depth=depth + 1)
+            if found is not None:
+                return found
+    return None
 
 
 @contextmanager

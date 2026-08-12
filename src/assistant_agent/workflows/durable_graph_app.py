@@ -4,12 +4,18 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import dataclass
+import hashlib
 import json
 from typing import Any, Literal, cast
 
 from langgraph.types import Command
 from pydantic import BaseModel, ConfigDict
 
+from assistant_agent.observability.langsmith_config import LangSmithConfig
+from assistant_agent.observability.langsmith_native import (
+    native_graph_trace_scope,
+    native_langsmith_tracing,
+)
 from assistant_agent.workflows.graph_context import WorkflowGraphRuntimeContext
 from assistant_agent.workflows.graph_state import (
     DurableWorkflowState,
@@ -111,8 +117,14 @@ class WorkflowStateSnapshot:
 
 
 class DurableWorkflowGraphApp:
-    def __init__(self, graph: Any) -> None:
+    def __init__(
+        self,
+        graph: Any,
+        *,
+        langsmith_config: LangSmithConfig | None = None,
+    ) -> None:
         self.graph = graph
+        self._langsmith_config = langsmith_config or LangSmithConfig.from_env()
 
     async def astream(
         self,
@@ -121,20 +133,43 @@ class DurableWorkflowGraphApp:
         identity: WorkflowGraphExecutionIdentity,
         context: WorkflowGraphRuntimeContext,
     ) -> AsyncIterator[WorkflowGraphStreamPart]:
-        async for raw in self.graph.astream(
-            input_or_command,
-            config=identity.runnable_config(),
-            context=context,
-            stream_mode=["values", "updates", "custom", "tasks", "checkpoints"],
-            subgraphs=True,
-            durability="sync",
-            version="v2",
+        metadata = {
+            "run_id": _identity_digest(identity.run_id),
+            "workflow_id": _identity_digest(identity.workflow_id),
+            "thread_id": _identity_digest(identity.thread_id),
+            "execution_engine": "durable_workflow_graph",
+        }
+        with native_langsmith_tracing(
+            self._langsmith_config,
+            metadata=metadata,
+            tags=("durable_workflow_graph",),
         ):
-            yield WorkflowGraphStreamPart(
-                type=str(raw["type"]),
-                namespace=tuple(raw.get("ns") or ()),
-                data=raw.get("data"),
-            )
+            with native_graph_trace_scope() as callbacks:
+                config: dict[str, Any] = dict(identity.runnable_config())
+                config["metadata"] = metadata
+                config["tags"] = ["durable_workflow_graph"]
+                if callbacks:
+                    config["callbacks"] = callbacks
+                async for raw in self.graph.astream(
+                    input_or_command,
+                    config=config,
+                    context=context,
+                    stream_mode=[
+                        "values",
+                        "updates",
+                        "custom",
+                        "tasks",
+                        "checkpoints",
+                    ],
+                    subgraphs=True,
+                    durability="sync",
+                    version="v2",
+                ):
+                    yield WorkflowGraphStreamPart(
+                        type=str(raw["type"]),
+                        namespace=tuple(raw.get("ns") or ()),
+                        data=raw.get("data"),
+                    )
 
     async def arun(
         self,
@@ -442,6 +477,10 @@ def _pending_interrupts(
                 )
             values.append((native_id, request))
     return tuple(values)
+
+
+def _identity_digest(value: str) -> str:
+    return "sha256:" + hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
 def _safe_snapshot(

@@ -333,6 +333,13 @@ server composition 不再创建 canonical OTel 到 LangSmith 的 observer；旧�
 和 Experiment store 已删除。因此一次执行在 LangSmith 中只有 native graph tree，canonical trace 继续独立
 服务本地查询、ledger、业务 audit、Langfuse 兼容与显式通用 OTel 消费者。
 
+M3 的 `DurableWorkflowGraphApp` 同样在实际 compiled graph async stream 边界注入 payload-safe callback，
+并继承当前 LangSmith Experiment RunTree；不创建 workflow synthetic root，也不从 canonical OTel 或 stream
+parts 重建 graph。workflow、thread、invoke run 和 branch run 关联值在远端只保留稳定 SHA-256，branch
+仅额外保留 allowlist 内的 node id、profile 与 generation；原始 user/session/workflow identity 和 graph
+state input/output 不进入 graph/node run。tree 完整性必须从 LangSmith API persisted run 与 Feedback
+回查；当前真实 operator evidence 仍为 pending。
+
 `build_text_otel_span_specs()` 将 redacted canonical events 投影为依赖无关的 OTel span plan：
 
 - standard Assistant turn 的根 span 为 `agent.runtime`，Langfuse trace 名为 `assistant.turn`；这一投影保持

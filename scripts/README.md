@@ -157,6 +157,11 @@ For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
   LangSmith Experiment，并等待 Runtime/LLM 子树和三项 Feedback 完整。preflight/run 都要求
   `--allow-real-provider` 与 `--allow-runtime-side-effects`。流程与 schema 见
   [`evals/README.md`](../evals/README.md#并行-langsmith-桥)。
+- `scripts/run_langsmith_workflow_regressions.py`：M3 Durable Workflow 原生 LangSmith Experiment
+  入口。`--inspect` 只在本地检查 typed Example、四项 Feedback 和 operator evidence 契约，不创建
+  LangSmith client；`--preflight` 必须显式允许 real Provider 与 Workflow 副作用，并检查远端 Dataset、
+  持久 saver 与 artifact readiness。当前 production `WorkflowGraphHost` cutover 未落地，`--run`
+  fail-closed；真实 UI tree/Feedback 验收仍为 pending。
 - `scripts/run_improvement_lab.py`: offline, non-mutating improvement proposal runner.
 
 ## Specialized integrations

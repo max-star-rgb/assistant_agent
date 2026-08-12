@@ -192,6 +192,20 @@ MULTIMODAL_AGENT_PROVIDER_MODE=real \
 LangSmith CLI 不提供自动收集失败 trace 或 Dataset 写入；案例晋升仍由人工 UI 操作完成。日常 trace export
 fail-open，Experiment 的配置、Dataset、Runtime trace 和 Feedback 完整性 fail-closed。
 
+### M3 Durable Workflow LangSmith 离线准备
+
+固定 Dataset `assistant-agent-durable-workflow-regressions` 的 target 只接收 production composition
+提供的 `DurableWorkflowGraphApp`、strict initial state、execution identity 与 runtime context，并直接运行
+已编译 `DurableWorkflowGraph`；不得装配旧 `WorkflowRuntime`、worker 或 OTel parent bridge。离线 evaluator
+只消费有界的 plan、`(node_id, generation, profile)` trajectory、opaque artifact refs、constraint、repair
+与 resume-equivalence facts。persisted tree completeness 只从 LangSmith API 的 `parent_run_id`、`trace_id`、
+`reference_example_id`、`run_type`、`name` 与安全 metadata 判断实际父图、planning/planner、Send worker、
+join、required verifier 和 repair generation；astream event 不能伪造成 LangSmith run。
+
+`scripts/run_langsmith_workflow_regressions.py --inspect` 完全离线且只读本地 schema。当前 production
+`WorkflowGraphHost` cutover 未提供 runner composition，因此实现状态只能记为 offline prework；真实
+Dataset/Experiment/tree/四项 Feedback 的 operator evidence 保持 pending，`--run` 必须 fail-closed。
+
 ## 本地运行顺序
 
 只读检查案例，不读取 `.env`、不联网：
