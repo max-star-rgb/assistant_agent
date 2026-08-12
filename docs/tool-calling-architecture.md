@@ -494,6 +494,12 @@ Validator、持久化 stable operation scope 并取得 barrier owner 后才可�
 - **Durable Workflow**：它是新增长流程的唯一 DAG/Plan-and-Execute authority。显式 Deep
   Research 由 Runtime 薄启动；普通 assistant loop 没有提交 Workflow 的模型能力。入口只持久化意图
   字段，然后进入 planning 状态与 bootstrap Plan。
+  仓库当前另有一个尚未接入 production composition root 的 M3 `DurableWorkflowGraph` 离线纵切：它以
+  strict checkpoint state、conditional `Send`、Pregel join、planner/worker/verifier profile subgraph、
+  `Command` repair、父图 `interrupt`/resume 和 publish operation barrier 直接运行 `langgraph_v3` record。
+  这条 native graph 路径不调用下述 claim/lease/CAS/ready-node scheduler；但官方 async persistent SQLite
+  saver、跨进程恢复和 production `WorkflowGraphHost` cutover 尚未完成，所以当前产品 Deep Research 仍由
+  legacy scheduler 执行，不能把离线纵切表述为生产迁移完成。
   `DurableWorkflowWorker` 原子 claim 单个 ready work item，并以 work-item lease、attempt 和调用预算作为
   独立所有权边界；一个调度波次可并行运行多个无依赖节点。每个结果分别以 revision CAS 提交，最后一个
   依赖完成时才解锁 join/synthesize 节点。lease heartbeat 防止长模型 run 被误判为崩溃；过期 lease

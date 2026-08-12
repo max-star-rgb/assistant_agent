@@ -91,6 +91,11 @@ assistant turn；普通 write/dangerous category、用户文本和任意 metadat
 async persistent SQLite saver 的依赖、进程级 owner 生命周期和跨 Runtime 重建验收尚未获安装授权，因此生产
 composition root 目前不得声称跨进程 checkpoint 恢复。缺失的持久 saver 不能由自研 saver 或静默 memory
 fallback 代替。
+M3 已在离线路径编译 `DurableWorkflowGraph`，并以 native v2
+`updates/custom/tasks/checkpoints` stream、subgraph namespace、`Send` super-step、父图 interrupt snapshot、
+同 thread 新 run resume 和最终 snapshot 判定验证 Graph API 事实。该 app 目前只由 TDD probe 与 LangSmith
+workflow regression offline target 使用，尚未由 Agent-Service/API 的 production composition root 持有；
+因此它不改变下文所述当前 Deep Research work-item stream、lease 或恢复边界。
 仓库不再保留 conditional graph、rule intent/router/planner 或可切换它们的 `AGENT_GRAPH_MODE`；
 `UserRequest` 也不再接受 `execution_strategy=plan_and_solve`。当前仍存在的
 `task_execution_mode` 是工具/持久执行的结构化治理事实，不是第二张 Agent graph 的选择器。
