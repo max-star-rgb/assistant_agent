@@ -61,7 +61,7 @@ def test_real_compiled_stream_projects_only_strict_product_facts(tmp_path) -> No
             type(result.parts[0])(
                 type="custom",
                 namespace=(),
-                data=product_fact.model_dump(mode="python"),
+                data=product_fact.model_dump(mode="json"),
             )
         )
 

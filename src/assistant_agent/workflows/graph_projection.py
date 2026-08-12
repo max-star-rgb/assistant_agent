@@ -121,8 +121,10 @@ class WorkflowGraphProjector:
         if part.type != "custom" or not isinstance(part.data, Mapping):
             return None
         try:
-            return WorkflowProductEvent.model_validate(part.data)
-        except ValueError:
+            return WorkflowProductEvent.model_validate_json(
+                json.dumps(part.data, ensure_ascii=False, allow_nan=False)
+            )
+        except (TypeError, ValueError):
             return None
 
     def project_snapshot(
