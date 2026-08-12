@@ -16,6 +16,9 @@
 本文是 `assistant_agent` 长期记忆的当前权威。Runtime 只允许一个排他的 active Memory Plugin，
 并且只通过 `MemoryPluginHost` 使用它。Mem0 是默认内置实现；`Mem0Client` 是
 `Mem0MemoryPlugin` 的私有 HTTP/service adapter，不再是 Runtime 依赖。
+LangGraph state/checkpointer 只保存短期执行与恢复事实；当前 Assistant/Workflow graph 没有长期 Memory Store
+consumer，也不装配 `compile(store=...)`。checkpoint 最多保存 Host 已治理贡献的不透明 memory ref，不保存
+memory 正文、Plugin handle 或 lifecycle state；replay/fork 不能借 Graph Store 绕过本节四生命周期。
 
 ## 1. 边界与所有权
 

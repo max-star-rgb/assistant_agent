@@ -263,7 +263,6 @@ def _services(tmp_path, registry: ToolRegistry) -> WorkflowGraphRuntimeServices:
         tool_registry=registry,
         context_service=ContextService(),
         operation_store=SQLiteToolOperationStore(tmp_path / "operations.sqlite3"),
-        memory_host=object(),
         workflow_identity=PersistedWorkflowIdentity(
             user_id="user-1",
             session_id="session-1",

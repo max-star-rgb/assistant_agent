@@ -205,7 +205,6 @@ def workflow_probe(
         tool_registry=registry,
         context_service=ContextService(),
         operation_store=SQLiteToolOperationStore(tmp_path / "operations.sqlite3"),
-        memory_host=object(),
         workflow_identity=PersistedWorkflowIdentity(
             user_id="user-send",
             session_id="session-send",

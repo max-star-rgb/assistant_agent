@@ -32,7 +32,6 @@ def build_durable_workflow_graph(
     worker_branch_subgraph: Any,
     verifier_branch_subgraph: Any,
     checkpointer: Any,
-    store: Any | None = None,
     node_timeout: TimeoutPolicy = WORKFLOW_NODE_TIMEOUT,
 ) -> Any:
     if getattr(planning_subgraph, "name", None) != "WorkflowPlanningSubgraph":
@@ -91,7 +90,6 @@ def build_durable_workflow_graph(
     builder.add_edge("fail", END)
     return builder.compile(
         checkpointer=checkpointer,
-        store=store,
         name="DurableWorkflowGraph",
     )
 

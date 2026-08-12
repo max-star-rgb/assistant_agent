@@ -65,7 +65,6 @@ class WorkflowGraphRuntimeServices:
     tool_registry: ToolRegistry
     context_service: ContextService
     operation_store: ToolOperationStore
-    memory_host: object
     workflow_identity: PersistedWorkflowIdentity
     cancel_reader: WorkflowCancelReader
     stream_writer: WorkflowStreamWriter

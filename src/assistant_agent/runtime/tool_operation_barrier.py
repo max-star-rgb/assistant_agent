@@ -70,17 +70,12 @@ class ToolOperationRequest:
 
     @property
     def operation_key(self) -> str:
-        payload = json.dumps(
-            [
-                self.thread_id,
-                self.operation_scope_id,
-                self.profile,
-                self.tool_name,
-            ],
-            ensure_ascii=False,
-            separators=(",", ":"),
-        ).encode("utf-8")
-        return hashlib.sha256(payload).hexdigest()
+        return tool_operation_key(
+            thread_id=self.thread_id,
+            operation_scope_id=self.operation_scope_id,
+            profile=self.profile,
+            tool_name=self.tool_name,
+        )
 
 
 @dataclass(frozen=True)
@@ -453,6 +448,64 @@ def normalized_tool_input_digest(tool_input: object) -> str:
         allow_nan=False,
     ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def tool_contract_digest(tool_spec: object) -> str:
+    """Hash the trusted ToolSpec fields used by time-travel safety policy."""
+
+    payload = (
+        tool_spec.model_dump(mode="json")
+        if hasattr(tool_spec, "model_dump")
+        else tool_spec
+    )
+    return normalized_tool_input_digest(payload)
+
+
+def tool_execution_contract_digest(tool: object, tool_spec: object) -> str:
+    """Hash model and runtime-owned input semantics for replay compatibility."""
+
+    from assistant_agent.tools.input_binding import llm_hidden_input_fields
+
+    bindings = [
+        (
+            item.model_dump(mode="json")
+            if hasattr(item, "model_dump")
+            else item
+        )
+        for item in getattr(tool, "runtime_input_bindings", ())
+    ]
+    return normalized_tool_input_digest(
+        {
+            "tool_spec": (
+                tool_spec.model_dump(mode="json")
+                if hasattr(tool_spec, "model_dump")
+                else tool_spec
+            ),
+            "full_input_schema": tool.input_schema.model_json_schema(),
+            "runtime_input_bindings": bindings,
+            "llm_hidden_input_fields": list(llm_hidden_input_fields(tool)),
+        }
+    )
+
+
+def tool_operation_key(
+    *,
+    thread_id: str,
+    operation_scope_id: str,
+    profile: str,
+    tool_name: str,
+) -> str:
+    """Derive ledger identity without needing invocation-local bound input."""
+
+    values = (thread_id, operation_scope_id, profile, tool_name)
+    if any(not isinstance(value, str) or not value.strip() for value in values):
+        raise ValueError("tool operation identity fields must not be blank")
+    payload = json.dumps(
+        list(values),
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
 
 
 def stable_assistant_thread_id(

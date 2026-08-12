@@ -445,6 +445,13 @@ Executor retry 复用同一 operation 和业务 `idempotency_key`。`succeeded|f
 但 ledger 只保存安全摘要、output ref 和 digest，不能伪造完整 `ToolResult`；在 Tool/backend 尚未声明并绑定
 同一业务幂等 readback 契约前，checkpoint replay 因而以 `tool_operation_outcome_unknown` fail closed。backend
 返回前或 commit 边界不明确，以及确认死亡 owner 遗留的 `invoking`，都转为 `outcome_unknown`，不得自动重放。
+Assistant graph replay/fork 只按所选 checkpoint 的 `continuation` 和 `pending_tool_calls` 检查将要重复的调用，
+不得扫描同 thread 的无关 ledger row。write/dangerous 缺少当前 `toolop:` stable scope、Tool contract 不再可解析，
+或对应 ledger 为 `reserved|invoking|outcome_unknown` 时，都在 Provider、Tool 和 fork update 前 fail closed；
+checkpoint effect category 与当前 Registry contract 不一致时同样拒绝，不能用同名 Tool 的安全降类绕过历史
+operation；完整 execution contract 与 checkpoint-time bound-input digest 也必须在 ledger lookup 前一致。
+Fork 在任意 pending Tool call 时禁止 request patch，避免 runtime-owned request binding 改变输入；
+已提交的 `succeeded|failed` 仍由 Executor short-circuit 为不可伪造的安全失败，backend 不会再次调用。
 
 execution backend 只能由进程内受信 composition root 显式注入，不能由请求正文、metadata、模型输出或
 Dataset 内容选择。无论使用哪种 backend，Executor 都必须先完成 Registry contract lookup、runtime

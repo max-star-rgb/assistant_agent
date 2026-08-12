@@ -44,6 +44,8 @@ from assistant_agent.runtime.graph_time_travel import (
     GraphCheckpointSummary,
     GraphForkRequest,
     GraphReplayRequest,
+    TimeTravelEffectPolicy,
+    fork_patch_preserves_pending_effects,
     fork_patch_for_assistant_state,
     graph_history_ref,
 )
@@ -522,6 +524,7 @@ class AssistantTurnGraphApp:
                 identity=identity,
                 context=replay_context,
             )
+            self._guard_time_travel_effects(snapshot, replay_context)
             historical_config = _snapshot_config(snapshot)
             result = await self._consume_stream_unclaimed(
                 None,
@@ -558,6 +561,18 @@ class AssistantTurnGraphApp:
                 identity,
                 request.selector,
             )
+            historical_values = getattr(historical, "values", None)
+            if (
+                isinstance(historical_values, Mapping)
+                and not fork_patch_preserves_pending_effects(
+                    historical_values,
+                    request.patch,
+                )
+            ):
+                raise GraphExecutionError(
+                    "graph_time_travel_effect_forbidden",
+                    "A pending Tool call cannot be forked with a request patch.",
+                )
             try:
                 values = fork_patch_for_assistant_state(
                     validate_assistant_turn_state(historical.values),
@@ -572,6 +587,11 @@ class AssistantTurnGraphApp:
                 values,
                 identity=identity,
                 context=fork_context,
+            )
+            self._guard_time_travel_effects(
+                historical,
+                fork_context,
+                state_override=values,
             )
             historical_config = _snapshot_config(historical)
             updater = getattr(self._graph, "aupdate_state", None)
@@ -621,6 +641,40 @@ class AssistantTurnGraphApp:
             if _is_terminal_state(result.final_state):
                 claim_lease.mark_terminal()
             return result
+
+    @staticmethod
+    def _guard_time_travel_effects(
+        snapshot: Any,
+        context: GraphRuntimeContext,
+        *,
+        state_override: Mapping[str, Any] | None = None,
+    ) -> None:
+        state = state_override or getattr(snapshot, "values", None)
+        if not isinstance(state, Mapping):
+            raise GraphExecutionError(
+                "graph_time_travel_effect_forbidden",
+                "The selected checkpoint does not expose governed effect facts.",
+            )
+        policy = TimeTravelEffectPolicy(
+            registry=context.tool_executor.registry,
+            operation_store=context.tool_executor.operation_store,
+            runtime_state=context.agent_state,
+            context_metadata=context.tool_executor.context_metadata,
+        )
+        decision = policy.classify(
+            state,
+            tuple(getattr(snapshot, "next", ()) or ()),
+        )
+        if decision == "outcome_unknown":
+            raise GraphExecutionError(
+                "graph_time_travel_effect_outcome_unknown",
+                "The selected checkpoint cannot safely repeat an unresolved side effect.",
+            )
+        if decision == "forbidden":
+            raise GraphExecutionError(
+                "graph_time_travel_effect_forbidden",
+                "The selected checkpoint is not replayable.",
+            )
 
     @staticmethod
     def _fork_context_from_snapshot(
@@ -834,6 +888,8 @@ class AssistantTurnGraphApp:
         # graph invocation run.  The native node commits that new run_id before
         # downstream governed work can execute.
         context.agent_state.trace_id = str(persisted_run["trace_id"])
+        if validated_resume.kind == "approve" and state.get("pending_tool_calls"):
+            self._guard_time_travel_effects(snapshot, context)
 
         return await self._consume_stream_unclaimed(
             Command(resume=validated_resume.model_dump(mode="json")),

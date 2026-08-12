@@ -114,6 +114,19 @@ M3 已在离线路径编译 `DurableWorkflowGraph`，并以 native v2
 同 thread 新 run resume 和最终 snapshot 判定验证 Graph API 事实。该 app 目前只由 TDD probe 与 LangSmith
 workflow regression offline target 使用，尚未由 Agent-Service/API 的 production composition root 持有；
 因此它不改变下文所述当前 Deep Research work-item stream、lease 或恢复边界。
+当前 Durable Workflow graph 没有跨节点 namespace/key/value consumer，因此不装配 LangGraph Store；短期执行
+记忆只属于 strict state 与 checkpointer，长期记忆仍只通过 `MemoryPluginHost` 生命周期治理，正文不进入
+checkpoint。Assistant graph 的内部 replay/fork 在进入 native stream 或创建 branch 前，只检查所选 checkpoint
+下一步会执行的 pending Tool：read 可重放；write/dangerous 必须保留 `toolop:` stable scope 并复用业务 operation
+ledger。该 operation 已处于 `reserved|invoking|outcome_unknown` 时 fail closed；无关 operation 不参与分类，
+pending call 同时保存 effect category；当前 Registry category 与 checkpoint 不一致、stable scope 无法由
+turn origin/iteration/ordinal/tool/arguments 重算，或 ledger identity/bound-input digest 不一致时均 fail closed。
+Registry generation 是稳定装配清单与 ToolSpec 的 digest；time travel 要求 checkpoint generation 和每个 pending
+Tool contract digest 都与当前受信 Registry 一致。pending effect 另保存完整 execution contract digest（含完整
+input schema、runtime input bindings 与 hidden fields）和 checkpoint-time bound-input digest；当前 Runtime 无法
+重建完全相同输入时，即使 ledger 尚无 row 也禁止重放。新增安全字段保持旧 state schema 的普通 resume 兼容，但缺少
+这些字段的旧 `execute_tool` checkpoint 不可 replay/fork，按 `graph_time_travel_effect_forbidden` fail closed。
+产品事件仍只观察已经发生的 native fact，不能作为重放判据或副作用事实源。
 仓库不再保留 conditional graph、rule intent/router/planner 或可切换它们的 `AGENT_GRAPH_MODE`；
 `UserRequest` 也不再接受 `execution_strategy=plan_and_solve`。当前仍存在的
 `task_execution_mode` 是工具/持久执行的结构化治理事实，不是第二张 Agent graph 的选择器。

@@ -169,6 +169,19 @@ class PersistedToolCallRequest(_CheckpointModel):
     provider_call_id: str = Field(min_length=1, max_length=256)
     operation_scope_id: str = Field(min_length=1, max_length=256)
     tool_name: str = Field(min_length=1, max_length=256)
+    effect_category: Literal["read", "write", "dangerous"] | None = None
+    tool_contract_digest: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+    execution_contract_digest: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+    bound_input_digest: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
     arguments: tuple[PersistedToolArgument, ...] = Field(default=(), max_length=128)
 
 
@@ -221,6 +234,7 @@ class PersistedRunToolCatalog(_CheckpointModel):
     available_tool_names: tuple[str, ...] = Field(default=(), max_length=256)
     selection_reason_codes: tuple[str, ...] = Field(default=(), max_length=256)
     exclusion_reason_codes: tuple[str, ...] = Field(default=(), max_length=512)
+    registry_generation: str | None = Field(default=None, min_length=1, max_length=256)
 
 
 class PersistedInterrupt(_CheckpointModel):
@@ -477,6 +491,10 @@ def assistant_turn_state_from_loop_state(
             ),
             "invocation_kind": graph_state.get("invocation_kind", "invoke"),
             "continuation": graph_state.get("continuation", "assistant"),
+            "catalog": _project_catalog(
+                state.run_tool_catalog,
+                registry_generation=_registry_generation(graph_state),
+            ).model_dump(mode="json"),
             "outputs_by_step": [
                 _project_step_output(step_id, result).model_dump(mode="json")
                 for step_id, result in _tool_result_items(
@@ -490,8 +508,26 @@ def assistant_turn_state_from_loop_state(
                 graph_state.get("assistant_output")
             ),
             "pending_tool_calls": [
-                _project_tool_call_request(call).model_dump(mode="json")
-                for call in _assistant_tool_calls(graph_state.get("pending_tool_calls"))
+                _project_tool_call_request(
+                    call,
+                    effect_category=_tool_effect_category(graph_state, call.tool_name),
+                    tool_contract_digest=_tool_contract_digest(
+                        graph_state,
+                        call.tool_name,
+                    ),
+                    execution_contract_digest=_tool_execution_contract_digest(
+                        graph_state,
+                        call.tool_name,
+                    ),
+                    bound_input_digest=_pending_bound_input_digest(
+                        graph_state,
+                        call,
+                        ordinal=ordinal,
+                    ),
+                ).model_dump(mode="json")
+                for ordinal, call in enumerate(
+                    _assistant_tool_calls(graph_state.get("pending_tool_calls"))
+                )
             ],
             "assistant_iterations": _non_negative_int(
                 graph_state.get("assistant_iterations")
@@ -981,7 +1017,14 @@ def _project_assistant_output(value: object) -> dict[str, object] | None:
     raise TypeError("assistant_output must use the strict assistant output contract")
 
 
-def _project_tool_call_request(call: AssistantToolCall) -> PersistedToolCallRequest:
+def _project_tool_call_request(
+    call: AssistantToolCall,
+    *,
+    effect_category: str | None = None,
+    tool_contract_digest: str | None = None,
+    execution_contract_digest: str | None = None,
+    bound_input_digest: str | None = None,
+) -> PersistedToolCallRequest:
     arguments = tuple(
         PersistedToolArgument(
             name=name,
@@ -1003,8 +1046,124 @@ def _project_tool_call_request(call: AssistantToolCall) -> PersistedToolCallRequ
             or _missing_operation_scope_id(call.tool_name, arguments)
         ),
         tool_name=call.tool_name,
+        effect_category=effect_category,
+        tool_contract_digest=tool_contract_digest,
+        execution_contract_digest=execution_contract_digest,
+        bound_input_digest=bound_input_digest,
         arguments=arguments,
     )
+
+
+def _tool_effect_category(
+    graph_state: Mapping[str, Any],
+    tool_name: str,
+) -> str | None:
+    executor = graph_state.get("tool_executor")
+    registry = getattr(executor, "registry", None)
+    if registry is None:
+        return None
+    try:
+        category = registry.get_spec(tool_name).category
+    except Exception:
+        return None
+    return category if category in {"read", "write", "dangerous"} else None
+
+
+def _tool_contract_digest(
+    graph_state: Mapping[str, Any],
+    tool_name: str,
+) -> str | None:
+    executor = graph_state.get("tool_executor")
+    registry = getattr(executor, "registry", None)
+    if registry is None:
+        return None
+    try:
+        from assistant_agent.runtime.tool_operation_barrier import (
+            tool_contract_digest,
+        )
+
+        return tool_contract_digest(registry.get_spec(tool_name))
+    except Exception:
+        return None
+
+
+def _tool_execution_contract_digest(
+    graph_state: Mapping[str, Any],
+    tool_name: str,
+) -> str | None:
+    executor = graph_state.get("tool_executor")
+    registry = getattr(executor, "registry", None)
+    if registry is None:
+        return None
+    try:
+        from assistant_agent.runtime.tool_operation_barrier import (
+            tool_execution_contract_digest,
+        )
+
+        return tool_execution_contract_digest(
+            registry.get(tool_name),
+            registry.get_spec(tool_name),
+        )
+    except Exception:
+        return None
+
+
+def _pending_bound_input_digest(
+    graph_state: Mapping[str, Any],
+    call: AssistantToolCall,
+    *,
+    ordinal: int,
+) -> str | None:
+    executor = graph_state.get("tool_executor")
+    state = graph_state.get("state")
+    registry = getattr(executor, "registry", None)
+    if registry is None or not isinstance(state, AgentState):
+        return None
+    try:
+        from assistant_agent.tools.input_binding import (
+            bind_runtime_tool_input,
+            runtime_bound_input_fields,
+        )
+        from assistant_agent.runtime.tool_operation_barrier import (
+            normalized_tool_input_digest,
+            stable_assistant_thread_id,
+            tool_operation_key,
+        )
+
+        tool = registry.get(call.tool_name)
+        bound = bind_runtime_tool_input(
+            tool,
+            dict(call.tool_input),
+            state=state,
+            step_id=(
+                f"assistant_loop_{len(graph_state.get('tool_observations') or ()) + ordinal + 1}"
+            ),
+            context_metadata=executor.context_metadata,
+        )
+        if (
+            "idempotency_key" in runtime_bound_input_fields(tool)
+            and not bound.get("idempotency_key")
+        ):
+            bound["idempotency_key"] = tool_operation_key(
+                thread_id=stable_assistant_thread_id(
+                    agent_id=state.agent_id,
+                    user_id=state.user_id,
+                    session_id=state.session_id,
+                ),
+                operation_scope_id=call.operation_scope_id,
+                profile=str(graph_state.get("graph_profile") or "standard"),
+                tool_name=call.tool_name,
+            )
+        validated = tool.input_schema.model_validate(bound)
+        return normalized_tool_input_digest(validated.model_dump(mode="json"))
+    except Exception:
+        return None
+
+
+def _registry_generation(graph_state: Mapping[str, Any]) -> str | None:
+    executor = graph_state.get("tool_executor")
+    value = getattr(getattr(executor, "registry", None), "generation", None)
+    return value if isinstance(value, str) and value else None
 
 
 def _missing_operation_scope_id(
@@ -1624,7 +1783,11 @@ def checkpoint_safe_ref(value: object) -> str | None:
 _safe_checkpoint_ref = checkpoint_safe_ref
 
 
-def _project_catalog(catalog: object | None) -> PersistedRunToolCatalog:
+def _project_catalog(
+    catalog: object | None,
+    *,
+    registry_generation: str | None = None,
+) -> PersistedRunToolCatalog:
     if catalog is None:
         return PersistedRunToolCatalog()
     excluded = getattr(catalog, "excluded_reasons", {})
@@ -1642,6 +1805,7 @@ def _project_catalog(catalog: object | None) -> PersistedRunToolCatalog:
         available_tool_names=tuple(catalog.available_tool_names),
         selection_reason_codes=tuple(catalog.selection_reasons),
         exclusion_reason_codes=tuple(exclusion_codes),
+        registry_generation=registry_generation,
     )
 
 
