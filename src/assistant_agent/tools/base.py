@@ -95,7 +95,16 @@ class ToolBase:
                 error=f"Invalid input: {exc.errors()[0]['msg']}",
             )
         except Exception as exc:  # pragma: no cover - defensive boundary
-            return ToolResult(tool_name=self.name, success=False, error=sanitize_error_message(exc))
+            return ToolResult(
+                tool_name=self.name,
+                success=False,
+                error=sanitize_error_message(exc),
+                data=(
+                    {"side_effect_state": "unknown"}
+                    if self.category in {"write", "dangerous"}
+                    else None
+                ),
+            )
 
     def _validate_input(self, input: BaseModel | dict[str, Any]) -> BaseModel:
         if isinstance(input, self.input_schema):

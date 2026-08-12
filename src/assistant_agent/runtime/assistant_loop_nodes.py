@@ -42,6 +42,11 @@ from assistant_agent.runtime.run_phase import RunPhase
 from assistant_agent.runtime.response_composer import compose_response
 from assistant_agent.runtime.state import AgentError, AgentState
 from assistant_agent.runtime.tool_executor import ToolExecutor
+from assistant_agent.runtime.tool_operation_barrier import (
+    normalized_tool_input_digest,
+    stable_assistant_thread_id,
+    stable_operation_scope_id,
+)
 from assistant_agent.runtime.graph_runtime import GraphRuntimeContext
 from assistant_agent.runtime.output_models import (
     AssistantTextOutput,
@@ -123,6 +128,8 @@ class AssistantLoopState(TypedDict):
     event_sink: NotRequired[Any]
     assistant_output: NotRequired[AssistantTurnOutput | None]
     pending_tool_calls: NotRequired[list[AssistantToolCall]]
+    turn_origin_id: NotRequired[str]
+    graph_profile: NotRequired[str]
     assistant_iterations: NotRequired[int]
     tool_calls_used: NotRequired[int]
     action_tool_calls_used: NotRequired[int]
@@ -225,10 +232,59 @@ def assistant_node(graph_state: AssistantLoopState) -> AssistantLoopState:
             pending_decisions[0] = decision
         else:
             graph_state["pending_tool_calls"] = []
+    decision = _assign_pending_operation_scopes(
+        graph_state,
+        decision=decision,
+        assistant_iteration=iterations + 1,
+    )
     _record_react_decision(graph_state, decision, iterations, context=context)
     _apply_terminal_decision(graph_state, decision, context)
 
     return _assistant_node_result(graph_state, decision, iterations)
+
+
+def _assign_pending_operation_scopes(
+    graph_state: AssistantLoopState,
+    *,
+    decision: AssistantTurnOutput,
+    assistant_iteration: int,
+) -> AssistantTurnOutput:
+    pending = graph_state.get("pending_tool_calls")
+    calls = list(pending) if isinstance(pending, list) else []
+    if not calls and isinstance(decision, AssistantToolCall):
+        calls = [decision]
+    if not calls:
+        return decision
+    state = graph_state["state"]
+    turn_origin_id = str(graph_state.get("turn_origin_id") or state.run_id)
+    thread_id = stable_assistant_thread_id(
+        agent_id=state.agent_id,
+        user_id=state.user_id,
+        session_id=state.session_id,
+    )
+    scoped: list[AssistantToolCall] = []
+    for ordinal, call in enumerate(calls):
+        if call.operation_scope_id:
+            scoped.append(call)
+            continue
+        scoped.append(
+            call.model_copy(
+                update={
+                    "operation_scope_id": stable_operation_scope_id(
+                        thread_id=thread_id,
+                        turn_origin_id=turn_origin_id,
+                        assistant_iteration=assistant_iteration,
+                        call_ordinal=ordinal,
+                        tool_name=call.tool_name,
+                        normalized_input_digest=normalized_tool_input_digest(
+                            call.tool_input
+                        ),
+                    )
+                }
+            )
+        )
+    graph_state["pending_tool_calls"] = scoped
+    return scoped[0] if isinstance(decision, AssistantToolCall) else decision
 
 
 def _assistant_node_result(
@@ -1787,6 +1843,13 @@ def _execute_single_requested_tool_node(graph_state: AssistantLoopState) -> Assi
             validated_input=validation.validated_input,
             failure_mode="continue_to_model",
             progress_message=decision.progress_message,
+            operation_scope_id=decision.operation_scope_id,
+            operation_thread_id=stable_assistant_thread_id(
+                agent_id=state.agent_id,
+                user_id=state.user_id,
+                session_id=state.session_id,
+            ),
+            operation_profile=str(graph_state.get("graph_profile") or "standard"),
         )
         _handle_runtime_tool_result(graph_state, state, result)
         _apply_tool_turn_handoff(state, result)

@@ -7,6 +7,7 @@ boundary between the product/runtime models and LangGraph checkpoints.
 from __future__ import annotations
 
 import json
+import hashlib
 import math
 import re
 from datetime import datetime, timezone
@@ -161,6 +162,7 @@ class PersistedStepOutput(_CheckpointModel):
 
 class PersistedToolCallRequest(_CheckpointModel):
     provider_call_id: str = Field(min_length=1, max_length=256)
+    operation_scope_id: str = Field(min_length=1, max_length=256)
     tool_name: str = Field(min_length=1, max_length=256)
     arguments: tuple[PersistedToolArgument, ...] = Field(default=(), max_length=128)
 
@@ -246,6 +248,7 @@ class _AssistantTurnStateModel(_CheckpointModel):
     graph_version: Literal["2"]
     state_schema_version: Literal[1]
     profile: AssistantGraphProfileName
+    turn_origin_id: str = Field(min_length=1, max_length=512)
     request: PersistedRequest
     run: PersistedRun
     outputs_by_step: tuple[PersistedStepOutput, ...] = Field(default=(), max_length=128)
@@ -285,6 +288,7 @@ class AssistantTurnState(TypedDict):
     graph_version: Literal["2"]
     state_schema_version: Literal[1]
     profile: AssistantGraphProfileName
+    turn_origin_id: str
     request: PersistedRequest
     run: PersistedRun
     outputs_by_step: tuple[PersistedStepOutput, ...]
@@ -406,6 +410,7 @@ def assistant_turn_state_from_agent_state(
         graph_version=ASSISTANT_GRAPH_VERSION,
         state_schema_version=ASSISTANT_STATE_SCHEMA_VERSION,
         profile=profile,
+        turn_origin_id=state.run_id,
         request=PersistedRequest.model_validate_json(
             json.dumps(request_payload, ensure_ascii=False)
         ),
@@ -435,6 +440,9 @@ def assistant_turn_state_from_loop_state(
     projected = dict(assistant_turn_state_from_agent_state(state, profile=profile))
     projected.update(
         {
+            "turn_origin_id": _bounded(
+                str(graph_state.get("turn_origin_id") or state.run_id), 512
+            ),
             "outputs_by_step": [
                 _project_step_output(step_id, result).model_dump(mode="json")
                 for step_id, result in _tool_result_items(
@@ -553,6 +561,20 @@ def assistant_loop_state_from_turn_state(
         _hydrate_tool_call_request(item)
         for item in cast(list[Mapping[str, Any]], persisted["pending_tool_calls"])
     ]
+    if pending and not runtime_state.request.metadata.get("native_tool_calls"):
+        runtime_state.request.metadata["native_tool_calls"] = [
+            {
+                "id": call.provider_tool_call_id,
+                "name": call.tool_name,
+                "arguments": dict(call.tool_input),
+                "provider_format": "checkpoint",
+                "raw": {},
+                "assistant_turn_id": (
+                    f"assistant_loop_turn_{int(persisted['assistant_iterations'])}"
+                ),
+            }
+            for call in pending
+        ]
     outputs_by_step = {
         str(item["step_id"]): _hydrate_step_output(item)
         for item in cast(list[Mapping[str, Any]], persisted["outputs_by_step"])
@@ -586,6 +608,8 @@ def assistant_loop_state_from_turn_state(
     return {
         "request": runtime_state.request,
         "state": runtime_state,
+        "turn_origin_id": str(persisted["turn_origin_id"]),
+        "graph_profile": str(persisted["profile"]),
         "outputs_by_step": outputs_by_step,
         "current_step_index": int(persisted["current_step_index"]),
         "trace_id": runtime_state.trace_id,
@@ -714,6 +738,11 @@ def apply_assistant_turn_state_to_agent_state(
                     str(item["artifact_refs"][0]) if item.get("artifact_refs") else None
                 ),
                 error=cast(str | None, item.get("error_summary")),
+                trace_summary=(
+                    {"operation_key": str(item["operation_key"])}
+                    if item.get("operation_key")
+                    else None
+                ),
                 contract=_hydrate_capability_contract(item.get("capability_contract")),
             )
         )
@@ -865,10 +894,35 @@ def _project_tool_call_request(call: AssistantToolCall) -> PersistedToolCallRequ
         for name, value in call.tool_input.items()
     )
     return PersistedToolCallRequest(
-        provider_call_id=call.provider_tool_call_id or f"local:{call.tool_name}",
+        provider_call_id=(
+            call.provider_tool_call_id
+            or f"local:{call.operation_scope_id or call.tool_name}"
+        ),
+        operation_scope_id=(
+            call.operation_scope_id
+            or _missing_operation_scope_id(call.tool_name, arguments)
+        ),
         tool_name=call.tool_name,
         arguments=arguments,
     )
+
+
+def _missing_operation_scope_id(
+    tool_name: str, arguments: tuple[PersistedToolArgument, ...]
+) -> str:
+    """Bound legacy in-process callers without claiming graph resume identity."""
+
+    encoded = json.dumps(
+        [
+            "legacy-unscoped",
+            tool_name,
+            [item.model_dump(mode="json") for item in arguments],
+        ],
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return f"legacy:{hashlib.sha256(encoded).hexdigest()}"
 
 
 def _hydrate_assistant_output(
@@ -894,6 +948,7 @@ def _hydrate_tool_call_request(item: Mapping[str, Any]) -> AssistantToolCall:
             for argument in cast(list[Mapping[str, Any]], item.get("arguments") or [])
         },
         provider_tool_call_id=str(item["provider_call_id"]),
+        operation_scope_id=str(item["operation_scope_id"]),
         safety_notes=["checkpoint_hydrated"],
     )
 
@@ -1093,10 +1148,18 @@ def _project_tool_result(result: object) -> PersistedToolResult:
     voice_summary = getattr(result, "voice_summary", None)
     summary = voice_summary if isinstance(voice_summary, str) else error or ""
     contract = getattr(result, "contract", None)
+    trace_summary = getattr(result, "trace_summary", None)
+    operation_key = (
+        trace_summary.get("operation_key")
+        if isinstance(trace_summary, Mapping)
+        and isinstance(trace_summary.get("operation_key"), str)
+        else None
+    )
     return PersistedToolResult(
         tool_name=result.tool_name,
         status="succeeded" if result.success else "failed",
         summary=_bounded(str(summary), 2_000),
+        operation_key=_bounded_optional(operation_key, 512),
         output_ref=_safe_checkpoint_ref(result.output_ref),
         artifact_refs=tuple(
             safe_ref

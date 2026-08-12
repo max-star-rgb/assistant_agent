@@ -27,6 +27,10 @@ from assistant_agent.runtime.state import AgentError, AgentState
 from assistant_agent.runtime.event_stream import AgentRunStream, AsyncQueueEventSink
 from assistant_agent.runtime.tool_executor import ToolExecutor
 from assistant_agent.runtime.tool_execution_backend import ToolExecutionBackend
+from assistant_agent.runtime.tool_operation_barrier import (
+    SQLiteToolOperationStore,
+    ToolOperationStore,
+)
 from assistant_agent.runtime.provider_streaming import (
     ProviderStreamingTurnRunner,
     supports_async_streaming_chat,
@@ -262,9 +266,13 @@ class AgentGraphRuntime:
         workflow_artifact_store: LocalWorkflowArtifactStore | None = None,
         agent_id: str = DEFAULT_AGENT_ID,
         tool_execution_backend: ToolExecutionBackend | None = None,
+        tool_operation_store: ToolOperationStore | None = None,
     ) -> None:
         self.agent_id = agent_id
         self.tool_execution_backend = tool_execution_backend
+        self.tool_operation_store = tool_operation_store or SQLiteToolOperationStore(
+            Path(".local") / "langgraph" / "tool_operations.sqlite3"
+        )
         self.config = config or ProviderConfig.from_env()
         self.video_context_store = video_context_store or InMemoryVideoContextStore()
         self.realtime_video_memory_store = (
@@ -501,6 +509,7 @@ class AgentGraphRuntime:
                 "durable_task_service": self.durable_task_service,
             },
             execution_backend=self.tool_execution_backend,
+            operation_store=self.tool_operation_store,
         )
         self.assistant_graph_app = AssistantTurnGraphApp(checkpointer=checkpointer)
 
@@ -927,6 +936,7 @@ class AgentGraphRuntime:
             },
             cancel_token=cancel_token,
             execution_backend=self.tool_execution_backend,
+            operation_store=self.tool_operation_store,
         )
         state = AgentState.from_request(
             request,
@@ -1443,6 +1453,7 @@ class AgentGraphRuntime:
             },
             cancel_token=cancel_token,
             execution_backend=self.tool_execution_backend,
+            operation_store=self.tool_operation_store,
         )
         try:
             raise_if_cancelled(cancel_token, phase="durable_quantum_start", state=state)

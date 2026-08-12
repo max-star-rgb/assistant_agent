@@ -43,6 +43,12 @@ class AssistantToolCall(BaseModel):
         default=None,
         description="Provider-native call identity retained for transcript correlation.",
     )
+    operation_scope_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=256,
+        description="Stable logical call identity persisted before the Tool edge.",
+    )
     progress_message: str | None = Field(
         default=None,
         description="Visible model text emitted with this tool-call turn.",

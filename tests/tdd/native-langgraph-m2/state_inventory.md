@@ -21,7 +21,8 @@ Task 1 的恢复闭包。目标不是把 `AgentState` 原样 JSON 化，而是�
 | `outputs_by_step` | graph execution result/compat consumers | Tool node | ordered `PersistedStepOutput` tuple，仅 step id、Tool/result status、refs、safe observation |
 | `current_step_index` | compatibility plan facts | Runtime input | bounded integer channel，new turn 重置为 `0` |
 | `assistant_output` | route、Tool node、compose/trajectory | assistant node | discriminated `PersistedAssistantOutput`；Tool input 使用严格 bounded JSON value，不保存 provider raw payload |
-| `pending_tool_calls` | assistant、Tool batch | assistant/Tool nodes | `PersistedToolCallRequest` tuple；new turn 重置为空 |
+| `turn_origin_id` | assistant Tool operation identity | Runtime new turn | 当前逻辑 turn 首次 `run_id`；resume 更换 invocation `run_id` 时保持不变，new turn 必须覆盖 |
+| `pending_tool_calls` | assistant、Tool batch | assistant/Tool nodes | `PersistedToolCallRequest` tuple；在 Tool edge 前包含 provider correlation 与稳定 `operation_scope_id`；new turn 重置为空 |
 | Tool/assistant counters 与 `run_phase` | assistant、Tool budget、route | assistant/Tool nodes | 独立 primitive channels；new turn 全部重置 |
 | `tool_observations` | context/assistant/trajectory | Tool node | `PersistedToolObservation` tuple，只保留 prompt-safe summary/status/error/refs/bounded detail |
 | stream boundary facts | Provider delta adapter | assistant/Tool nodes | 三个显式 bool channel；恢复时保持当前 turn，new turn 重置 |

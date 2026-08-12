@@ -1,7 +1,5 @@
 """Stable compiled application for the assistant turn graph."""
 
-import hashlib
-import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any, Literal, cast
@@ -27,6 +25,7 @@ from assistant_agent.runtime.assistant_graph_profiles import (
     assistant_graph_profile,
 )
 from assistant_agent.runtime.graph_runtime import GraphRuntimeContext
+from assistant_agent.runtime.tool_operation_barrier import stable_assistant_thread_id
 from assistant_agent.observability.langsmith_config import LangSmithConfig
 from assistant_agent.observability.langsmith_native import (
     native_graph_trace_scope,
@@ -63,14 +62,12 @@ class GraphExecutionIdentity:
         session_id: str,
         run_id: str,
     ) -> "GraphExecutionIdentity":
-        raw = json.dumps(
-            ["assistant", agent_id, user_id, session_id],
-            ensure_ascii=False,
-            separators=(",", ":"),
-        ).encode()
-        digest = hashlib.sha256(raw).hexdigest()[:32]
         return cls(
-            thread_id=f"assistant:{digest}",
+            thread_id=stable_assistant_thread_id(
+                agent_id=agent_id,
+                user_id=user_id,
+                session_id=session_id,
+            ),
             run_id=run_id,
             agent_id=agent_id,
         )
