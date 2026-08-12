@@ -23,6 +23,7 @@ from assistant_agent.runtime.output_models import AssistantTextOutput, Assistant
 from assistant_agent.runtime.run_phase import RunPhase
 from assistant_agent.runtime.state import AgentError, AgentState
 from assistant_agent.tools.models import RunToolCatalog, ToolCallRecord, ToolResult
+from assistant_agent.tools.observation_safety import sanitize_tool_observation_detail
 
 
 ASSISTANT_GRAPH_NAME = "AssistantTurnGraph"
@@ -152,8 +153,8 @@ class PersistedObservationError(_CheckpointModel):
     retryable: bool = False
 
 
-class PersistedObservationFact(_CheckpointModel):
-    """One prompt-safe observation field encoded as bounded canonical JSON."""
+class PersistedObservationDetail(_CheckpointModel):
+    """One explicitly safety-projected model-visible observation field."""
 
     name: str = Field(min_length=1, max_length=256)
     value_json: str = Field(min_length=1, max_length=16_000)
@@ -169,7 +170,7 @@ class PersistedToolObservation(_CheckpointModel):
     output_ref: str | None = Field(default=None, max_length=1_024)
     artifact_refs: tuple[str, ...] = Field(default=(), max_length=32)
     provider_call_id: str | None = Field(default=None, min_length=1, max_length=256)
-    model_facts: tuple[PersistedObservationFact, ...] = Field(
+    safe_details: tuple[PersistedObservationDetail, ...] = Field(
         default=(), max_length=128
     )
     error: PersistedObservationError | None = None
@@ -472,6 +473,8 @@ def assistant_loop_state_from_turn_state(
     value: Mapping[str, object],
     *,
     runtime_state: AgentState,
+    expected_context_refs: tuple[tuple[object, ...], ...] | None = None,
+    expected_capability_refs: tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
     """Hydrate a temporary legacy node input from strict checkpoint channels.
 
@@ -481,6 +484,20 @@ def assistant_loop_state_from_turn_state(
     """
 
     persisted = validate_assistant_turn_state(value)
+    if (
+        expected_context_refs is not None
+        and _context_ref_identity(persisted["context_refs"]) != expected_context_refs
+    ):
+        raise AssistantStateCompatibilityError(
+            "Runtime context refs do not match the checkpoint turn."
+        )
+    if (
+        expected_capability_refs is not None
+        and tuple(persisted["capability_refs"]) != expected_capability_refs
+    ):
+        raise AssistantStateCompatibilityError(
+            "Runtime capability refs do not match the checkpoint turn."
+        )
     run = cast(Mapping[str, Any], persisted["run"])
     if (
         runtime_state.run_id != run["run_id"]
@@ -490,6 +507,10 @@ def assistant_loop_state_from_turn_state(
         raise AssistantStateCompatibilityError(
             "Runtime state identity does not match the checkpoint turn."
         )
+    apply_assistant_turn_state_to_agent_state(
+        persisted,
+        runtime_state=runtime_state,
+    )
     assistant_output = _hydrate_assistant_output(persisted.get("assistant_output"))
     pending = [
         _hydrate_tool_call_request(item)
@@ -526,6 +547,42 @@ def assistant_loop_state_from_turn_state(
         "response_stream_ends_with_newline": False,
         "response_stream_separator_pending": False,
     }
+
+
+def assistant_context_ref_identity(
+    state: AgentState,
+) -> tuple[tuple[object, ...], ...]:
+    """Return deterministic identity facts for the runtime-prepared context."""
+
+    refs = [item.model_dump(mode="json") for item in _project_context_refs(state)]
+    return _context_ref_identity(refs)
+
+
+def assistant_capability_ref_identity(state: AgentState) -> tuple[str, ...]:
+    """Return deterministic capability grant identities for one prepared run."""
+
+    return tuple(grant.grant_id for grant in state.capability_grants)
+
+
+def validate_assistant_runtime_refs(
+    persisted: Mapping[str, object],
+    runtime_state: AgentState,
+) -> None:
+    """Fail closed unless freshly prepared refs/catalog match the checkpoint."""
+
+    checkpoint = validate_assistant_turn_state(persisted)
+    if _context_ref_identity(
+        checkpoint["context_refs"]
+    ) != assistant_context_ref_identity(runtime_state):
+        raise AssistantStateCompatibilityError(
+            "Runtime context refs do not match the checkpoint turn."
+        )
+    if tuple(checkpoint["capability_refs"]) != assistant_capability_ref_identity(
+        runtime_state
+    ):
+        raise AssistantStateCompatibilityError(
+            "Runtime capability refs do not match the checkpoint turn."
+        )
 
 
 def apply_assistant_turn_state_to_agent_state(
@@ -801,10 +858,15 @@ def _project_tool_observation(value: Mapping[str, Any]) -> PersistedToolObservat
     if outcome not in {"success", "partial", "empty", None}:
         outcome = None
     raw_data = value.get("data")
-    model_facts: list[PersistedObservationFact] = []
+    safe_details: list[PersistedObservationDetail] = []
     if isinstance(raw_data, Mapping):
-        for name, fact in raw_data.items():
+        safe_data = sanitize_tool_observation_detail(raw_data)
+        if not isinstance(safe_data, Mapping):
+            safe_data = {}
+        for name, fact in safe_data.items():
             if not isinstance(name, str) or not name:
+                continue
+            if not _safe_observation_detail_name(name):
                 continue
             encoded = json.dumps(
                 fact,
@@ -813,8 +875,8 @@ def _project_tool_observation(value: Mapping[str, Any]) -> PersistedToolObservat
                 allow_nan=False,
             )
             if len(encoded) <= 16_000:
-                model_facts.append(
-                    PersistedObservationFact(name=name, value_json=encoded)
+                safe_details.append(
+                    PersistedObservationDetail(name=name, value_json=encoded)
                 )
     return PersistedToolObservation(
         tool_name=str(value.get("tool_name") or "unknown"),
@@ -826,7 +888,7 @@ def _project_tool_observation(value: Mapping[str, Any]) -> PersistedToolObservat
         output_ref=_bounded_optional(value.get("output_ref"), 1_024),
         artifact_refs=(),
         provider_call_id=_bounded_optional(value.get("_provider_tool_call_id"), 256),
-        model_facts=tuple(model_facts[:128]),
+        safe_details=tuple(safe_details[:128]),
         error=error,
     )
 
@@ -842,7 +904,7 @@ def _hydrate_tool_observation(item: Mapping[str, Any]) -> dict[str, Any]:
         "output_ref": item.get("output_ref"),
         "data": {
             str(fact["name"]): json.loads(str(fact["value_json"]))
-            for fact in cast(list[Mapping[str, Any]], item.get("model_facts") or [])
+            for fact in cast(list[Mapping[str, Any]], item.get("safe_details") or [])
         },
     }
     if item.get("error") is not None:
@@ -911,6 +973,50 @@ def _run_phase_text(value: object) -> str:
     if isinstance(value, str) and value:
         return value
     return RunPhase.ACT.value
+
+
+_UNSAFE_OBSERVATION_DETAIL_NAME_PARTS = frozenset(
+    {
+        "artifact_body",
+        "authorization",
+        "credential",
+        "data_uri",
+        "data_url",
+        "local_path",
+        "media_body",
+        "password",
+        "provider_payload",
+        "raw",
+        "response_body",
+        "secret",
+        "token",
+    }
+)
+
+
+def _safe_observation_detail_name(name: str) -> bool:
+    normalized = name.strip().lower()
+    if not normalized or len(normalized) > 256:
+        return False
+    return not any(part in normalized for part in _UNSAFE_OBSERVATION_DETAIL_NAME_PARTS)
+
+
+def _context_ref_identity(
+    refs: object,
+) -> tuple[tuple[object, ...], ...]:
+    if not isinstance(refs, (list, tuple)):
+        raise AssistantStateCompatibilityError("Checkpoint context refs are invalid.")
+    return tuple(
+        (
+            item.get("kind"),
+            item.get("ref"),
+            item.get("source"),
+            item.get("version"),
+            item.get("status_code"),
+        )
+        for item in refs
+        if isinstance(item, Mapping)
+    )
 
 
 def _non_negative_int(value: object) -> int:
@@ -1080,6 +1186,8 @@ __all__ = [
     "PersistedRequest",
     "PersistedRun",
     "apply_assistant_turn_state_to_agent_state",
+    "assistant_capability_ref_identity",
+    "assistant_context_ref_identity",
     "assistant_loop_state_from_turn_state",
     "assistant_turn_state_from_agent_state",
     "assistant_turn_state_from_loop_state",
@@ -1087,4 +1195,5 @@ __all__ = [
     "persisted_request_from_user_request",
     "route_after_assistant_turn_state",
     "validate_assistant_turn_state",
+    "validate_assistant_runtime_refs",
 ]

@@ -8,7 +8,7 @@ execution and strips them before the node result returns to LangGraph.
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, TypeVar, cast
+from typing import Any, Protocol, TypeVar, cast
 
 from langgraph.runtime import Runtime
 
@@ -22,6 +22,7 @@ from assistant_agent.runtime.assistant_graph_state import (
     AssistantTurnState,
     assistant_loop_state_from_turn_state,
     assistant_turn_state_from_loop_state,
+    validate_assistant_runtime_refs,
 )
 from assistant_agent.runtime.state import AgentState
 
@@ -60,6 +61,17 @@ class GraphRuntimeContext:
     event_sink: EventSink | None = None
     cancel_token: Any | None = None
     agent_state: AgentState | None = None
+    state_ref_resolver: "AssistantRuntimeStateRefResolver | None" = None
+
+
+class AssistantRuntimeStateRefResolver(Protocol):
+    """Resolve or validate checkpoint refs before a node may consume them."""
+
+    def __call__(
+        self,
+        persisted: AssistantTurnState,
+        runtime_state: AgentState,
+    ) -> None: ...
 
 
 def bind_checkpointed_runtime_node(
@@ -84,6 +96,22 @@ def bind_checkpointed_runtime_node(
             phase="before_node",
             node_name=node_name,
         )
+        resolver = runtime_context.state_ref_resolver or validate_assistant_runtime_refs
+        resolver(graph_state, runtime_context.agent_state)
+        checkpoint_tool_names = set(
+            graph_state.get("catalog", {}).get("available_tool_names", ())
+        )
+        runtime_tool_names = {
+            spec.name for spec in runtime_context.tool_executor.registry.list_specs()
+        }
+        if not checkpoint_tool_names.issubset(runtime_tool_names):
+            from assistant_agent.runtime.assistant_graph_state import (
+                AssistantStateCompatibilityError,
+            )
+
+            raise AssistantStateCompatibilityError(
+                "Checkpoint Tool catalog is unavailable in this runtime."
+            )
         legacy_state = assistant_loop_state_from_turn_state(
             graph_state,
             runtime_state=runtime_context.agent_state,

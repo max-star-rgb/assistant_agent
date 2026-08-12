@@ -48,6 +48,20 @@ event sink、trace store/callback、cancel token、database connection 与 capab
 `GraphRuntimeContext` 注入。它们不能出现在 DTO、nested DTO、checkpoint channel 或任意 metadata/data
 逃生舱中。
 
+Task 1 的恢复边界不虚构尚不存在的 context/memory/perception 历史 snapshot store：
+
+- `GraphRuntimeContext.state_ref_resolver` 是显式 resolver protocol；默认实现把 freshly prepared
+  `context_refs`、`capability_refs` 与 checkpoint 精确比较，缺失、版本变化或 grant 扩缩都在 Provider/Tool
+  调用前 fail closed。
+- checkpoint catalog 是执行事实；node hydrate 前先 apply 到 fresh `AgentState`，同时要求其中每个可用 Tool
+  都仍存在于 runtime Registry。Task 3 profile 会继续收窄 policy，不在 Task 1 推断新 catalog。
+- 真正跨部署恢复 context/memory/perception 正文仍需要后续领域 snapshot resolver/store；在该能力存在前，
+  ref 不一致不得静默重算或采用变化后的快照。
+
+Tool observation 的 model-visible detail 先经 `sanitize_tool_observation_detail`，再通过 bounded
+`PersistedObservationDetail` 显式投影；credential/token/raw/provider/media body/path 等 key 拒绝进入
+checkpoint。它不是 arbitrary `data`/metadata 逃生舱。
+
 ## new-turn overwrite contract
 
 同一 conversation `thread_id` 的新 turn 必须生成一份包含**所有 channel**的完整 input：新 request/run，
