@@ -418,6 +418,14 @@ class _ContractProbeTool(ProbeTool):
         )
 
 
+class _ContractOnlyRefProbeTool(_ContractProbeTool):
+    name = "contract_only_ref_probe_tool"
+
+    def _run(self, input: Any, context: ToolContext) -> ToolResult:
+        result = super()._run(input, context)
+        return result.model_copy(update={"tool_name": self.name, "output_ref": None})
+
+
 def _stable_response_payload(state: AgentState) -> dict[str, Any]:
     assert state.response is not None
     payload = state.response.model_dump(mode="json")
@@ -513,6 +521,134 @@ def test_tool_after_restart_preserves_capability_contract_response_data() -> Non
     assert restart_payload["message"] == baseline_payload["message"]
     assert restart_payload["output_refs"] == baseline_payload["output_refs"]
     assert restart_payload["data"]["contracts"] == baseline_payload["data"]["contracts"]
+
+
+def test_contract_only_output_ref_does_not_become_tool_result_output_ref_after_restart() -> (
+    None
+):
+    """A contract-owned ref must not change the existing result output-ref semantics."""
+
+    tool = _ContractOnlyRefProbeTool()
+    request = lambda: UserRequest(  # noqa: E731 - fresh mutable request per run.
+        user_id="user-state", session_id="session-state", text="contract-only-ref"
+    )
+    tool_call = ChatResult(
+        provider="scripted",
+        model="scripted-model",
+        finish_reason="tool_calls",
+        tool_calls=[
+            NativeToolCall(
+                id="contract-only-call",
+                name=tool.name,
+                arguments={"value": "contract-value"},
+            )
+        ],
+    )
+    final_answer = ChatResult(
+        provider="scripted",
+        model="scripted-model",
+        finish_reason="stop",
+        response_text="contract-only-final",
+    )
+    baseline = AgentGraphRuntime(
+        registry=sealed_registry(tool),
+        config=offline_config(),
+        chat_adapter=ScriptedChatAdapter([tool_call, final_answer]),
+        session_store=InMemorySessionStore(),
+    )
+    try:
+        uninterrupted = baseline.run_state(request(), run_id="contract-only-baseline")
+    finally:
+        baseline.close()
+
+    saver = InMemorySaver()
+    first = AgentGraphRuntime(
+        registry=sealed_registry(tool),
+        config=offline_config(),
+        chat_adapter=ScriptedChatAdapter([tool_call]),
+        session_store=InMemorySessionStore(),
+        checkpointer=saver,
+    )
+    prepared = _prepare(first, request(), run_id="contract-only-resume")
+    config = prepared.identity.runnable_config()
+    try:
+        checkpoint = first.assistant_graph_app.graph.invoke(
+            prepared.initial_state,
+            config=config,
+            context=prepared.runtime_context,
+            interrupt_after=["execute_tool"],
+        )
+    finally:
+        first.close()
+    assert checkpoint["run"]["tool_results"][0]["output_ref"] is None
+    assert (
+        checkpoint["run"]["tool_results"][0]["capability_contract"]["output_ref"]
+        == "artifact://contract-output"
+    )
+
+    rebuilt = AgentGraphRuntime(
+        registry=sealed_registry(tool),
+        config=offline_config(),
+        chat_adapter=ScriptedChatAdapter([final_answer]),
+        session_store=InMemorySessionStore(),
+        checkpointer=saver,
+    )
+    resumed = _prepare(rebuilt, request(), run_id="contract-only-resume")
+    resumed.state.trace_id = checkpoint["run"]["trace_id"]
+    try:
+        final = rebuilt.assistant_graph_app.graph.invoke(
+            None, config=config, context=resumed.runtime_context
+        )
+        restarted = rebuilt._complete_graph_execution(resumed, final)  # noqa: SLF001
+    finally:
+        rebuilt.close()
+
+    assert restarted.tool_results[0].output_ref is None
+    assert _stable_response_payload(restarted) == _stable_response_payload(
+        uninterrupted
+    )
+
+
+@pytest.mark.parametrize(
+    "unsafe_value",
+    [
+        "authorization=Bearer secret-token",
+        "https://user:password@example.com/private",
+        "https://example.com/file?X-Amz-Signature=secret",
+        "data:image/png;base64,AAAA",
+        "file:///home/private/file.png",
+        "/home/private/file.png",
+        "artifact body secret-content",
+    ],
+)
+def test_capability_contract_rejects_unsafe_scalar_strings(
+    unsafe_value: str,
+) -> None:
+    """All contract strings, including independent refs, need checkpoint redaction."""
+
+    state = AgentState.from_request(
+        UserRequest(user_id="u", session_id="s", text="contract-safety"),
+        run_id="run-contract-safety",
+        trace_id="trace-contract-safety",
+    )
+    record = state.add_tool_call("contract-safety-tool", {})
+    result = ToolResult(
+        tool_name="contract-safety-tool",
+        success=True,
+        output_ref=unsafe_value,
+        contract=build_capability_output_contract(
+            capability="contract-safety",
+            status="succeeded",
+            output_ref=unsafe_value,
+            data={"summary": unsafe_value, "render_ref": unsafe_value},
+            metadata={"provider": unsafe_value},
+        ),
+    )
+    state.complete_tool_call(record.tool_call_id, result)
+    persisted = assistant_turn_state_from_agent_state(state)
+    encoded = json.dumps(persisted)
+
+    assert unsafe_value not in encoded
 
 
 def test_node_hydration_applies_persisted_trajectory_to_fresh_agent_state() -> None:

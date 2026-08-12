@@ -67,7 +67,9 @@ credential/token/raw/provider/media body/path 等 key 拒绝进入 checkpoint。
 `CapabilityOutputContract` 通过 `PersistedCapabilityContract` 单独持久化 capability/status/contract output ref、
 error code/message/recoverable，以及少量正向允许的 scalar data/metadata。`ToolResult.output_ref` 与
 contract-owned `output_ref` 保持两个语义字段，不互相提升；恢复后 response 的 public contract projection 与
-不中断路径等价。
+不中断路径等价。所有 string scalar 与 ref 还经过 checkpoint-local 正向 validator：ref 只接受安全 public
+HTTP(S) URL 或 `artifact/memory/media/output` opaque stable scheme；userinfo、signed/credential query、
+data/file URI、绝对路径、credential/body 文本均拒绝。该 validator 不依赖 LangSmith redactor。
 
 ## new-turn overwrite contract
 

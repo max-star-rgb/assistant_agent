@@ -7,8 +7,10 @@ boundary between the product/runtime models and LangGraph checkpoints.
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timezone
 from typing import Any, Literal, Mapping, TypedDict, cast
+from urllib.parse import parse_qsl, urlparse
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
@@ -1034,7 +1036,7 @@ def _project_tool_call(record: object) -> PersistedToolCall:
         status=record.status,
         started_at=_datetime_text(record.started_at) or "invalid",
         finished_at=_datetime_text(record.finished_at),
-        output_ref=_bounded_optional(record.output_ref, 1_024),
+        output_ref=_safe_checkpoint_ref(record.output_ref),
         error_summary=_bounded_optional(record.error_message, 2_000),
     )
 
@@ -1044,18 +1046,15 @@ def _project_tool_result(result: object) -> PersistedToolResult:
     voice_summary = getattr(result, "voice_summary", None)
     summary = voice_summary if isinstance(voice_summary, str) else error or ""
     contract = getattr(result, "contract", None)
-    contract_ref = (
-        getattr(contract, "output_ref", None) if contract is not None else None
-    )
     return PersistedToolResult(
         tool_name=result.tool_name,
         status="succeeded" if result.success else "failed",
         summary=_bounded(str(summary), 2_000),
-        output_ref=_bounded_optional(result.output_ref or contract_ref, 1_024),
+        output_ref=_safe_checkpoint_ref(result.output_ref),
         artifact_refs=tuple(
-            ref
+            safe_ref
             for ref in (getattr(result, "raw_data_ref", None),)
-            if isinstance(ref, str) and ref
+            if (safe_ref := _safe_checkpoint_ref(ref)) is not None
         ),
         error_summary=_bounded_optional(error, 2_000),
         capability_contract=_project_capability_contract(contract),
@@ -1077,8 +1076,6 @@ _CAPABILITY_DATA_SCALAR_FACT_NAMES = frozenset(
     {
         "best_price",
         "count",
-        "download_url",
-        "image_url",
         "outcome",
         "product_title",
         "query_used",
@@ -1101,7 +1098,7 @@ def _project_capability_contract(
     return PersistedCapabilityContract(
         capability=_bounded(contract.capability, 256),
         status=contract.status,
-        output_ref=_bounded_optional(contract.output_ref, 1_024),
+        output_ref=_safe_checkpoint_ref(contract.output_ref),
         data_facts=_project_scalar_facts(
             contract.data,
             allowed_names=_CAPABILITY_DATA_SCALAR_FACT_NAMES,
@@ -1157,6 +1154,13 @@ def _project_scalar_facts(
     for name, child in value.items():
         if name not in allowed_names or not _is_safe_scalar(child):
             continue
+        if isinstance(child, str):
+            if name.endswith("_ref"):
+                child = _safe_checkpoint_ref(child)
+            elif not _checkpoint_string_is_safe(child):
+                child = None
+            if child is None:
+                continue
         encoded = json.dumps(child, ensure_ascii=False, allow_nan=False)
         if len(encoded) <= 4_000:
             facts.append(PersistedObservationDetail(name=name, value_json=encoded))
@@ -1177,6 +1181,60 @@ def _is_safe_scalar(value: object) -> bool:
     return value is None or (
         isinstance(value, (str, bool, int, float)) and not isinstance(value, bytes)
     )
+
+
+_CHECKPOINT_SECRET_RE = re.compile(
+    r"(?i)(authorization\s*[:=]|bearer\s+|api[_-]?key\s*[:=]|password\s*[:=]|secret(?:[_-]?token)?\s*[:=])"
+)
+_SIGNED_QUERY_KEYS = frozenset(
+    {
+        "signature",
+        "sig",
+        "token",
+        "access_token",
+        "x-amz-credential",
+        "x-amz-security-token",
+        "x-amz-signature",
+    }
+)
+
+
+def _checkpoint_string_is_safe(value: str) -> bool:
+    text = value.strip()
+    if not text or len(text) > 4_000:
+        return False
+    lowered = text.lower()
+    if _CHECKPOINT_SECRET_RE.search(text):
+        return False
+    if lowered.startswith(("data:", "file:")):
+        return False
+    if lowered.startswith(("/home/", "/users/", "/tmp/", "/var/", "/mnt/")):
+        return False
+    if "artifact body" in lowered or "media body" in lowered:
+        return False
+    if lowered.startswith(("http://", "https://")):
+        parsed = urlparse(text)
+        if parsed.username is not None or parsed.password is not None:
+            return False
+        if any(key.lower() in _SIGNED_QUERY_KEYS for key, _ in parse_qsl(parsed.query)):
+            return False
+    return True
+
+
+def _safe_checkpoint_ref(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not _checkpoint_string_is_safe(text):
+        return None
+    parsed = urlparse(text)
+    if parsed.scheme in {"http", "https"}:
+        return text if parsed.netloc else None
+    if parsed.scheme and parsed.scheme not in {"artifact", "memory", "media", "output"}:
+        return None
+    if parsed.scheme:
+        return text if parsed.netloc or parsed.path else None
+    return text if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,1023}", text) else None
 
 
 def _project_catalog(catalog: object | None) -> PersistedRunToolCatalog:
