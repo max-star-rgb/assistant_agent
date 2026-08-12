@@ -241,35 +241,6 @@ def create_text_otel_trace_observer(
     )
 
 
-def create_langsmith_text_otel_trace_observer_from_env(
-    env: Mapping[str, str] | None = None,
-    *,
-    project_override: str | None = None,
-    required: bool = False,
-) -> TextOtelTraceObserver | None:
-    """Create an independent LangSmith observer, optionally fail-closed."""
-
-    from assistant_agent.observability.langsmith_config import LangSmithConfig
-
-    try:
-        config = LangSmithConfig.from_env(
-            env,
-            project_override=project_override,
-        )
-    except RuntimeError:
-        if required:
-            raise
-        return None
-    if not config.enabled:
-        if required:
-            raise RuntimeError("LangSmith trace export is not enabled")
-        return None
-    observer = create_text_otel_trace_observer(config.to_otlp_config())
-    if observer is None and required:
-        raise RuntimeError("LangSmith trace export is unavailable")
-    return observer
-
-
 class _OtelSdkSpanBridge:
     """Lazy OpenTelemetry SDK adapter for completed dependency-free span specs."""
 

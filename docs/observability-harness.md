@@ -257,7 +257,7 @@ flush/shutdown 抛错或返回 `False` 必须向 lifecycle 调用者返回 `Fals
 - 进程内查询可能看到尚未落盘的事件；
 - 进程崩溃、队列丢弃或 flush 超时可能产生部分 JSONL；
 - ledger 缺事件不能单独证明运行时没有发出该事件；
-- persistence、Langfuse/LangSmith OTel export 和 Langfuse score observer 都是 secondary，失败必须 fail-open。
+- persistence、Langfuse/通用 OTel export 和 Langfuse score observer 都是 secondary，失败必须 fail-open。
 
 日审计成功发布后执行 ledger retention：默认保留 14 天，并且只有对应日期已经有成功审计证明时才删除
 过期分片；审计失败、尚未审计或仍处于 TTL 内的分片不得删除。成功审计 bundle 记录目标分片的
@@ -314,8 +314,9 @@ authorization、retry 调度、状态提交和业务审计不移入 trace wrappe
 LLM/Tool input/output 进入 LangSmith 前再次做 provider-neutral、有界安全投影，始终排除 credential、callback、
 hidden reasoning、SDK/protocol raw envelope、媒体 bytes/base64/path 与 Tool raw payload。日常 native tracing
 创建或关闭失败保持 fail-open；仅关闭本次 tracing context 自己创建的 client，不关闭外部 Experiment client。
-迁移期 canonical OTel 到 LangSmith 的旧投影仍可能并存，但它不是 graph 执行事实源，也不得继续扩展；其停止
-与删除属于 M1 Task 7。
+server composition 不再创建 canonical OTel 到 LangSmith 的 observer；旧的 LangSmith 专用 OTel factory
+和 Experiment store 已删除。因此一次执行在 LangSmith 中只有 native graph tree，canonical trace 继续独立
+服务本地查询、ledger、业务 audit、Langfuse 兼容与显式通用 OTel 消费者。
 
 `build_text_otel_span_specs()` 将 redacted canonical events 投影为依赖无关的 OTel span plan：
 
@@ -344,14 +345,10 @@ hidden reasoning、SDK/protocol raw envelope、媒体 bytes/base64/path 与 Tool
   preflight 与实际调用重复计量；
 - only-allowlisted metadata 和 output reference 可以进入公开 projection。
 
-同一 span plan 同时携带现有 `langfuse.*` 和 LangSmith OTel semantic attributes；它只是一套 canonical
-事实的两个远端视图，不是两套 Runtime。server 日常装配为 Langfuse 与 LangSmith 分别创建 observer、
-buffer 和 exporter，任一后端配置错误、队列丢弃或导出异常都不得阻断业务结果或另一后端。LangSmith
-Experiment 的 SDK RunTree 与 OTel Runtime 子树混合关联时，root 必须显式携带
-`langsmith.trace.id`、`langsmith.span.id`、`langsmith.span.parent_id`、
-`langsmith.span.dotted_order` 和 `langsmith.trace.session_name`，不得假定活动 RunTree 的
-`session_id` 一定存在。
-默认关闭；只有以下本机未跟踪配置显式启用时才创建其 OTLP exporter：
+span plan 仍保留现有 `langfuse.*`、LangSmith semantic attributes 和通用 OTel attributes，供迁移期
+Langfuse 与显式通用 OTel 消费者兼容；server 不再为这些 attributes 创建 LangSmith 专用 sink，也不借此
+重建 canonical tree。LangSmith native tracing 默认关闭；只有以下本机未跟踪配置显式启用时，graph app
+才创建 SDK tracing context/client：
 
 ```text
 ASSISTANT_AGENT_LANGSMITH_ENABLED=true
@@ -361,9 +358,9 @@ LANGSMITH_PROJECT=assistant-agent-runtime
 LANGSMITH_WORKSPACE_ID=
 ```
 
-启用 LangSmith 表示 operator 允许把现有 content policy 通过的有界用户/助手文本、结构化 LLM/Tool
+启用 LangSmith 表示 operator 允许把 native tracing 安全投影通过的有界用户/助手文本、结构化 LLM/Tool
 input/output 和安全 metadata 发送到所配置 endpoint；credentials、hidden reasoning、inline binary media
-和 Provider raw secret 仍不得进入。关闭时不导入 LangSmith SDK、不创建 client 或 exporter，也不发起
+和 Provider raw secret 仍不得进入。关闭时不创建 LangSmith client 或 tracing context，也不发起
 LangSmith 网络请求。Langfuse 的环境变量、observer、Score writer 和 audit 不依赖该开关。
 
 Deep Research 从前台提交到 durable terminal 使用同一个 `deep_research.workflow` trace。该做法遵循
@@ -718,11 +715,11 @@ assistant-agent-runtime-audit.timer` 查看下次运行，用
 | `src/assistant_agent/observability/agent_service_latency.py` | `agent_service_turn_latency_v2` 和 critical-path 分析 |
 | `src/assistant_agent/observability/trace_content_policy.py` | 本地 content/protocol capture 开关 |
 | `src/assistant_agent/observability/trace_conversation.py` | 有界、进程内 current-turn content overlay |
-| `src/assistant_agent/observability/otel_mapping.py` | canonical trace 到 OTel/Langfuse/LangSmith span plan 的映射 |
-| `src/assistant_agent/observability/langsmith_config.py` | 默认关闭的 LangSmith client 与独立 OTLP 配置 |
+| `src/assistant_agent/observability/otel_mapping.py` | canonical trace 到 OTel/Langfuse 兼容 span plan 的映射；不拥有 LangSmith graph tree |
+| `src/assistant_agent/observability/langsmith_config.py` | 默认关闭的 LangSmith native tracing client 配置 |
+| `src/assistant_agent/observability/langsmith_native.py` | scoped native trace、graph metadata 与安全 LLM/Tool child 投影 |
 | `src/assistant_agent/runtime/runtime_host.py` | 真实入口 Runtime 与 trace store 的统一 bounded lifecycle owner |
 | `src/assistant_agent/evaluation/experiment_runtime.py` | 可注入 Experiment trace context 到 Runtime 的装配桥 |
-| `src/assistant_agent/evaluation/langsmith_trace.py` | LangSmith RunTree 到受校验 Runtime parent identity 的桥 |
 | `src/assistant_agent/evaluation/experiment_trace.py` | Experiment 远端 Runtime 子树完整性门禁 |
 | `src/assistant_agent/media/vision/observability.py` | 内容安全的 `vlm.infer` generation 事件边界 |
 | `src/assistant_agent/observability/operational_logging.py` | Gateway console、JSONL 和兼容 text log |

@@ -12,7 +12,7 @@ def test_langsmith_disabled_needs_no_sdk_or_credentials() -> None:
     assert config.api_key is None
 
 
-def test_langsmith_enabled_builds_independent_otlp_config() -> None:
+def test_langsmith_enabled_builds_native_client_config() -> None:
     config = LangSmithConfig.from_env(
         {
             "ASSISTANT_AGENT_LANGSMITH_ENABLED": "true",
@@ -22,14 +22,9 @@ def test_langsmith_enabled_builds_independent_otlp_config() -> None:
         }
     )
 
-    otlp = config.to_otlp_config()
-
-    assert otlp.endpoint == "https://api.smith.langchain.com/otel/v1/traces"
-    assert otlp.headers == {
-        "x-api-key": "test-key",
-        "Langsmith-Project": "assistant-agent-runtime",
-    }
-    assert otlp.include_content is True
+    assert config.endpoint == "https://api.smith.langchain.com"
+    assert config.api_key == "test-key"
+    assert config.project == "assistant-agent-runtime"
 
 
 def test_langsmith_project_override_isolated_from_daily_project() -> None:
@@ -43,10 +38,9 @@ def test_langsmith_project_override_isolated_from_daily_project() -> None:
     )
 
     assert config.project == "experiment-id"
-    assert config.to_otlp_config().headers["Langsmith-Project"] == "experiment-id"
 
 
-def test_langsmith_self_hosted_api_endpoint_builds_trace_endpoint() -> None:
+def test_langsmith_self_hosted_api_endpoint_is_not_rewritten_for_otel() -> None:
     config = LangSmithConfig.from_env(
         {
             "ASSISTANT_AGENT_LANGSMITH_ENABLED": "true",
@@ -55,9 +49,7 @@ def test_langsmith_self_hosted_api_endpoint_builds_trace_endpoint() -> None:
         }
     )
 
-    assert config.to_otlp_config().endpoint == (
-        "https://smith.internal/api/v1/otel/v1/traces"
-    )
+    assert config.endpoint == "https://smith.internal/api/v1/"
 
 
 def test_langsmith_enabled_rejects_missing_credentials() -> None:

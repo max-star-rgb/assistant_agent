@@ -11,10 +11,7 @@ from typing import Any
 
 from assistant_agent.runtime.hooks import HookManager, HookTraceStore
 from assistant_agent.observability.langfuse_scores import create_langfuse_score_trace_observer_from_env
-from assistant_agent.observability.otel_exporter import (
-    create_langsmith_text_otel_trace_observer_from_env,
-    create_text_otel_trace_observer_from_env,
-)
+from assistant_agent.observability.otel_exporter import create_text_otel_trace_observer_from_env
 from assistant_agent.observability.trace_ledger import DailyTraceLedgerStore
 from assistant_agent.providers.provider_errors import sanitize_error_message
 from assistant_agent.observability.trace_store import (
@@ -204,7 +201,6 @@ def create_server_trace_store(
         observer
         for observer in (
             create_text_otel_trace_observer_from_env(),
-            create_langsmith_text_otel_trace_observer_from_env(),
         )
         if observer is not None
     ]
@@ -242,28 +238,6 @@ def create_langfuse_experiment_trace_store(
     )
 
 
-def create_langsmith_experiment_trace_store(
-    *,
-    project_id: str,
-    path: Path | str = DEFAULT_TRACE_PATH,
-    capacity: int = DEFAULT_TRACE_QUEUE_CAPACITY,
-) -> CompositeTraceStore:
-    """Create a fail-closed store exporting only to one LangSmith Experiment."""
-
-    observer = create_langsmith_text_otel_trace_observer_from_env(
-        project_override=project_id,
-        required=True,
-    )
-    return _create_runtime_trace_store(
-        path=path,
-        capacity=capacity,
-        require_otel=True,
-        include_score_observer=False,
-        otel_observers=[observer],
-        required_backend="LangSmith",
-    )
-
-
 def _create_runtime_trace_store(
     *,
     path: Path | str,
@@ -271,7 +245,6 @@ def _create_runtime_trace_store(
     require_otel: bool,
     include_score_observer: bool,
     otel_observers: list[object] | None = None,
-    required_backend: str = "Langfuse",
 ) -> CompositeTraceStore:
     observers = otel_observers
     if observers is None:
@@ -279,9 +252,7 @@ def _create_runtime_trace_store(
         observers = [observer] if observer is not None else []
     observers = [observer for observer in observers if observer is not None]
     if require_otel and not observers:
-        raise RuntimeError(
-            f"{required_backend} Experiment requires configured OTel trace export"
-        )
+        raise RuntimeError("Langfuse Experiment requires configured OTel trace export")
 
     primary = InMemoryTraceStore()
     secondary = BufferedJsonlTraceStore(DailyTraceLedgerStore(path), capacity=capacity)
