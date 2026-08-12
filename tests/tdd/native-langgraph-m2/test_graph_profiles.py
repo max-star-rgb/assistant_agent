@@ -393,6 +393,78 @@ def test_profile_scope_filters_provider_specs_and_validator_catalog_together() -
     )
 
 
+def test_standard_child_scope_is_bound_to_trusted_runtime_assignment() -> None:
+    """Standard is also a reusable child; its explicit allowlist cannot escalate."""
+
+    registry = sealed_registry(ProbeTool(), _WriteProbe())
+    child_state = profile_input_adapter(
+        {
+            "user_id": "u",
+            "session_id": "s",
+            "run_id": "r-standard",
+            "trace_id": "t-standard",
+            "agent_id": "a",
+            "available_tool_names": tuple(registry.list()),
+            "registered_tool_specs": tuple(registry.list_specs()),
+        },
+        ProfileInvocationInput(
+            profile="standard",
+            assignment_ref="assignment:standard",
+            objective="Perform bounded work.",
+            explicit_tool_allowlist=(ProbeTool.name,),
+        ),
+    )
+    trusted_names = frozenset(child_state["catalog"]["available_tool_names"])
+    escalated = json.loads(json.dumps(child_state))
+    escalated["catalog"]["available_tool_names"].append(_WriteProbe.name)
+    forged_payload = json.dumps(
+        ["standard", sorted(escalated["catalog"]["available_tool_names"])],
+        ensure_ascii=True,
+        separators=(",", ":"),
+    ).encode()
+    escalated["catalog"]["selection_reason_codes"] = [
+        reason
+        for reason in escalated["catalog"]["selection_reason_codes"]
+        if not reason.startswith("graph_profile_scope_sha256:")
+    ] + [f"graph_profile_scope_sha256:{hashlib.sha256(forged_payload).hexdigest()}"]
+    runtime_state = AgentState.from_request(
+        UserRequest(
+            user_id="u",
+            session_id="s",
+            text="Perform bounded work.",
+            response_style="structured",
+            task_execution_mode="foreground",
+            runtime_task_update=RuntimeTaskUpdate(
+                action="continue",
+                objective="Perform bounded work.",
+            ),
+        ),
+        run_id="r-standard",
+        trace_id="t-standard",
+        agent_id="a",
+    )
+    wrapped = bind_checkpointed_runtime_node(
+        "standard_scope_probe",
+        lambda graph_state: graph_state,
+        trace=False,
+        expected_profile="standard",
+    )
+
+    with pytest.raises(GraphProfilePolicyError):
+        wrapped(
+            escalated,
+            Runtime(
+                context=GraphRuntimeContext(
+                    tool_executor=ToolExecutor(registry=registry),
+                    chat_adapter=ScriptedChatAdapter([]),
+                    agent_state=runtime_state,
+                    state_ref_resolver=lambda _persisted, _runtime: None,
+                    profile_allowed_tool_names=trusted_names,
+                )
+            ),
+        )
+
+
 def test_native_parent_subgraph_namespace_does_not_become_child_business_state() -> (
     None
 ):

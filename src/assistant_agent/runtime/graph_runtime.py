@@ -265,9 +265,7 @@ def _scoped_runtime_context(
     profile = assistant_graph_profile(expected_profile)
     allowed_names = frozenset(catalog.get("available_tool_names", ()))
     trusted_names = runtime_context.profile_allowed_tool_names
-    if expected_profile != "standard" and (
-        trusted_names is None or allowed_names != trusted_names
-    ):
+    if trusted_names is None or allowed_names != trusted_names:
         raise GraphProfilePolicyError(
             "checkpoint Tool scope does not match its trusted runtime assignment"
         )
