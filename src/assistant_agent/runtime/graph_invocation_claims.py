@@ -25,6 +25,12 @@ class GraphInvocationClaimCapacityExceeded(RuntimeError):
     code = "graph_invocation_claim_capacity_exceeded"
 
 
+class GraphInvocationThreadActive(RuntimeError):
+    """Raised when retention tries to delete a thread with native work active."""
+
+    code = "graph_thread_active"
+
+
 class GraphInvocationClaimStore(Protocol):
     """Atomically claim one owner/thread/run identity for an invocation token."""
 
@@ -142,6 +148,10 @@ class InMemoryGraphInvocationClaimStore:
         _validate_claim_fields(owner_digest, thread_id, run_id, invocation_token)
         key = (owner_digest, thread_id, run_id)
         with self._lock:
+            if (owner_digest, thread_id) in self._deleting_threads:
+                raise GraphInvocationClaimConflict(
+                    "Graph invocation thread is being deleted by its retention owner."
+                )
             existing = self._claims.get(key)
             if existing == (invocation_token, "pre_native"):
                 self._claims[key] = (invocation_token, "native_started")
@@ -163,6 +173,10 @@ class InMemoryGraphInvocationClaimStore:
         _validate_claim_fields(owner_digest, thread_id, run_id, invocation_token)
         key = (owner_digest, thread_id, run_id)
         with self._lock:
+            if (owner_digest, thread_id) in self._deleting_threads:
+                raise GraphInvocationClaimConflict(
+                    "Graph invocation thread is being deleted by its retention owner."
+                )
             existing = self._claims.get(key)
             if existing is None:
                 if len(self._claims) >= self._max_entries:
@@ -221,6 +235,15 @@ class InMemoryGraphInvocationClaimStore:
             if key in self._deleting_threads:
                 raise GraphInvocationClaimConflict(
                     "Graph invocation thread deletion is already in progress."
+                )
+            if any(
+                claim_key[0] == owner_digest
+                and claim_key[1] == thread_id
+                and phase == "native_started"
+                for claim_key, (_token, phase) in self._claims.items()
+            ):
+                raise GraphInvocationThreadActive(
+                    "Graph invocation thread still has native execution in progress."
                 )
             self._deleting_threads.add(key)
 
@@ -310,6 +333,7 @@ __all__ = [
     "GraphInvocationClaimResult",
     "GraphInvocationClaimStore",
     "GraphInvocationKind",
+    "GraphInvocationThreadActive",
     "InMemoryGraphInvocationClaimStore",
     "derive_child_invocation_token",
     "graph_invocation_owner_digest",

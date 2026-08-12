@@ -24,6 +24,7 @@ from assistant_agent.runtime.assistant_interrupts import AssistantApproveResume
 from assistant_agent.runtime.graph_invocation_claims import (
     GraphInvocationClaimCapacityExceeded,
     GraphInvocationClaimConflict,
+    GraphInvocationThreadActive,
     InMemoryGraphInvocationClaimStore,
     graph_invocation_owner_digest,
 )
@@ -771,6 +772,12 @@ def test_thread_delete_keeps_claim_when_checkpointer_delete_fails() -> None:
             )
 
     asyncio.run(exercise())
+    store.begin_native(
+        owner_digest=owner_digest,
+        thread_id=identity.thread_id,
+        run_id=identity.run_id,
+        invocation_token="delete-order-token",
+    )
     with pytest.raises(GraphInvocationClaimConflict):
         store.claim(
             owner_digest=owner_digest,
@@ -895,6 +902,20 @@ def test_thread_delete_freezes_claims_while_checkpointer_delete_is_pending() -> 
                 invocation_kind="invoke",
                 invocation_token="concurrent-delete-token",
             )
+        with pytest.raises(GraphInvocationClaimConflict):
+            store.begin_native(
+                owner_digest=owner_digest,
+                thread_id=identity.thread_id,
+                run_id="run-before-delete",
+                invocation_token="before-delete-token",
+            )
+        with pytest.raises(GraphInvocationClaimConflict):
+            store.assert_owned(
+                owner_digest=owner_digest,
+                thread_id=identity.thread_id,
+                run_id="direct-graph-during-delete",
+                invocation_token="direct-graph-token",
+            )
         allow_delete.set()
         return await deletion
 
@@ -909,6 +930,41 @@ def test_thread_delete_freezes_claims_while_checkpointer_delete_is_pending() -> 
         )
         == "claimed"
     )
+
+
+def test_thread_delete_rejects_native_started_but_accepts_terminal_phase() -> None:
+    """Retention must distinguish active execution from a retained terminal claim."""
+
+    store = InMemoryGraphInvocationClaimStore()
+    store.claim(**CLAIM, invocation_token="phase-token")
+    store.begin_native(
+        owner_digest=CLAIM["owner_digest"],
+        thread_id=CLAIM["thread_id"],
+        run_id=CLAIM["run_id"],
+        invocation_token="phase-token",
+    )
+    with pytest.raises(GraphInvocationThreadActive) as active:
+        store.begin_thread_delete(
+            owner_digest=CLAIM["owner_digest"],
+            thread_id=CLAIM["thread_id"],
+        )
+    assert getattr(active.value, "code", None) == "graph_thread_active"
+
+    store.mark_terminal(
+        owner_digest=CLAIM["owner_digest"],
+        thread_id=CLAIM["thread_id"],
+        run_id=CLAIM["run_id"],
+        invocation_token="phase-token",
+    )
+    store.begin_thread_delete(
+        owner_digest=CLAIM["owner_digest"],
+        thread_id=CLAIM["thread_id"],
+    )
+    assert store.finish_thread_delete(
+        owner_digest=CLAIM["owner_digest"],
+        thread_id=CLAIM["thread_id"],
+        commit=True,
+    ) == 1
 
 
 def test_all_public_execution_apis_map_raw_claim_conflicts_at_app_boundary() -> None:

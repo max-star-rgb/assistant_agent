@@ -33,6 +33,7 @@ from assistant_agent.runtime.graph_runtime import GraphRuntimeContext
 from assistant_agent.runtime.graph_invocation_claims import (
     GraphInvocationClaimCapacityExceeded,
     GraphInvocationClaimConflict,
+    GraphInvocationThreadActive,
     graph_invocation_owner_digest,
 )
 from assistant_agent.runtime.graph_time_travel import (
@@ -487,10 +488,17 @@ class AssistantTurnGraphApp:
             user_id=user_id,
             session_id=session_id,
         )
-        invocation_claim_store.begin_thread_delete(
-            owner_digest=owner_digest,
-            thread_id=thread_id,
-        )
+        try:
+            invocation_claim_store.begin_thread_delete(
+                owner_digest=owner_digest,
+                thread_id=thread_id,
+            )
+        except (
+            GraphInvocationClaimConflict,
+            GraphInvocationClaimCapacityExceeded,
+            GraphInvocationThreadActive,
+        ) as exc:
+            raise GraphExecutionError(exc.code, str(exc)) from exc
         checkpointer = getattr(self._graph, "checkpointer", None)
         try:
             if checkpointer is not None:

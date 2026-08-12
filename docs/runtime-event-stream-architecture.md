@@ -101,7 +101,9 @@ stream 或执行异常则保持 `native_started`，两者都不得再次执行�
 有界 store 容量耗尽时 fail closed；只有 retention owner 在销毁整个 thread/checkpoint 生命周期后显式调用
 host retention owner 通过 `adelete_thread` 先删除 native checkpointer thread，确认成功后才调用
 claim store 完成该 thread 的全部 claim 删除；删除开始前 store 原子设置 thread tombstone，阻止等待
-checkpointer 期间的新 claim/native execution。checkpointer 删除失败时撤销 tombstone 但保留原 claim；成功时
+checkpointer 期间的新 claim、已取得 pre-native claim 的 `begin_native` 及 direct graph gate。若 thread 存在
+`native_started` claim，删除以 `graph_thread_active` fail closed；只有全部 invocation 已 terminal 或尚未开始时
+才能冻结。checkpointer 删除失败时撤销 tombstone 但保留原 claim；成功时
 原子删除 claim 与 tombstone。底层 `delete_thread(owner, thread_id)` 只供已经协调完外部 retention 的 owner 使用。
 当前业务
 session deletion 尚未拥有完整的多 agent/checkpointer retention 协调，因此不隐式调用该 host API，后续 persistent
