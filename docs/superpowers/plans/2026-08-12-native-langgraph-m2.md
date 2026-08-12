@@ -10,6 +10,10 @@
 
 ## Global Constraints
 
+- 全程以 Graph API 原生语义为执行事实源：`StateGraph/State/Node/Edge/START/END/Conditional Edge`、
+  `Command/Send/Reducer/Subgraph`、Pregel super-step、compile/invoke/stream、checkpoint/checkpointer/thread、
+  interrupt/resume、memory/store/runtime context、retry/timeout/fallback、streaming modes 与
+  time-travel/replay/fork；本里程碑只实施其中属于 M2 的部分，但不得新增与后续原生能力重叠的自研层。
 - 本计划只实现主 spec 的 M2，不提前迁移 Workflow v2 DAG，也不删除 Langfuse；M3/M5 边界不前移。
 - Agent-Service、媒体 API、Tool 治理、身份隔离与 mock/real 显式隔离保持兼容。
 - M2 的 `interrupt/resume/waiting_user` 只作为内部 compiled graph / `AgentGraphRuntime` API；现有 Agent-Service、Gateway、HTTP 和媒体 wire 不接入、不投影 waiting/resume，也不能获得一个会返回内部 waiting 的 composition root。M3 Durable Workflow 再定义产品 waiting-input 投影。
