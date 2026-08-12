@@ -65,6 +65,16 @@ class GraphInvocationClaimStore(Protocol):
         invocation_token: str,
     ) -> None: ...
 
+    def begin_thread_delete(self, *, owner_digest: str, thread_id: str) -> None: ...
+
+    def finish_thread_delete(
+        self,
+        *,
+        owner_digest: str,
+        thread_id: str,
+        commit: bool,
+    ) -> int: ...
+
     def delete_thread(self, *, owner_digest: str, thread_id: str) -> int: ...
 
 
@@ -81,6 +91,7 @@ class InMemoryGraphInvocationClaimStore:
         self._claims: dict[
             tuple[str, str, str], tuple[str, GraphInvocationPhase]
         ] = {}
+        self._deleting_threads: set[tuple[str, str]] = set()
 
     def claim(
         self,
@@ -99,6 +110,10 @@ class InMemoryGraphInvocationClaimStore:
             raise ValueError("graph invocation claim fields must be non-empty strings")
         key = (owner_digest, thread_id, run_id)
         with self._lock:
+            if (owner_digest, thread_id) in self._deleting_threads:
+                raise GraphInvocationClaimConflict(
+                    "Graph invocation thread is being deleted by its retention owner."
+                )
             existing = self._claims.get(key)
             if existing is None:
                 if len(self._claims) >= self._max_entries:
@@ -196,6 +211,49 @@ class InMemoryGraphInvocationClaimStore:
             for key in keys:
                 del self._claims[key]
             return len(keys)
+
+    def begin_thread_delete(self, *, owner_digest: str, thread_id: str) -> None:
+        """Freeze one thread before its external checkpoint deletion begins."""
+
+        _validate_claim_fields(owner_digest, thread_id)
+        key = (owner_digest, thread_id)
+        with self._lock:
+            if key in self._deleting_threads:
+                raise GraphInvocationClaimConflict(
+                    "Graph invocation thread deletion is already in progress."
+                )
+            self._deleting_threads.add(key)
+
+    def finish_thread_delete(
+        self,
+        *,
+        owner_digest: str,
+        thread_id: str,
+        commit: bool,
+    ) -> int:
+        """Commit claim deletion or unfreeze after checkpoint deletion failure."""
+
+        _validate_claim_fields(owner_digest, thread_id)
+        if not isinstance(commit, bool):
+            raise TypeError("commit must be a boolean")
+        thread_key = (owner_digest, thread_id)
+        with self._lock:
+            if thread_key not in self._deleting_threads:
+                raise GraphInvocationClaimConflict(
+                    "Graph invocation thread deletion is not in progress."
+                )
+            deleted = 0
+            if commit:
+                keys = [
+                    key
+                    for key in self._claims
+                    if key[0] == owner_digest and key[1] == thread_id
+                ]
+                for key in keys:
+                    del self._claims[key]
+                deleted = len(keys)
+            self._deleting_threads.remove(thread_key)
+            return deleted
 
 
 def graph_invocation_owner_digest(

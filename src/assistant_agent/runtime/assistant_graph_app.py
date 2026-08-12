@@ -482,22 +482,36 @@ class AssistantTurnGraphApp:
             user_id=user_id,
             session_id=session_id,
         )
-        checkpointer = getattr(self._graph, "checkpointer", None)
-        if checkpointer is not None:
-            delete = getattr(checkpointer, "adelete_thread", None)
-            if not callable(delete):
-                raise GraphExecutionError(
-                    "graph_thread_delete_unavailable",
-                    "Configured checkpointer cannot delete an owned thread safely.",
-                )
-            await delete(thread_id)
-        return invocation_claim_store.delete_thread(
-            owner_digest=graph_invocation_owner_digest(
-                agent_id=agent_id,
-                user_id=user_id,
-                session_id=session_id,
-            ),
+        owner_digest = graph_invocation_owner_digest(
+            agent_id=agent_id,
+            user_id=user_id,
+            session_id=session_id,
+        )
+        invocation_claim_store.begin_thread_delete(
+            owner_digest=owner_digest,
             thread_id=thread_id,
+        )
+        checkpointer = getattr(self._graph, "checkpointer", None)
+        try:
+            if checkpointer is not None:
+                delete = getattr(checkpointer, "adelete_thread", None)
+                if not callable(delete):
+                    raise GraphExecutionError(
+                        "graph_thread_delete_unavailable",
+                        "Configured checkpointer cannot delete an owned thread safely.",
+                    )
+                await delete(thread_id)
+        except BaseException:
+            invocation_claim_store.finish_thread_delete(
+                owner_digest=owner_digest,
+                thread_id=thread_id,
+                commit=False,
+            )
+            raise
+        return invocation_claim_store.finish_thread_delete(
+            owner_digest=owner_digest,
+            thread_id=thread_id,
+            commit=True,
         )
 
     async def aget_state_history(

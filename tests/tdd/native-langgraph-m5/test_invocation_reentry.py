@@ -781,6 +781,136 @@ def test_thread_delete_keeps_claim_when_checkpointer_delete_fails() -> None:
         )
 
 
+def test_runtime_thread_delete_removes_checkpoint_then_releases_claims() -> None:
+    """A successful host retention delete must open a genuinely new lifecycle."""
+
+    saver = InMemorySaver()
+    adapter = ScriptedChatAdapter(
+        [
+            ChatResult(
+                provider="scripted",
+                model="scripted-model",
+                finish_reason="stop",
+                response_text="before-thread-delete",
+            ),
+            ChatResult(
+                provider="scripted",
+                model="scripted-model",
+                finish_reason="stop",
+                response_text="after-thread-delete",
+            ),
+        ]
+    )
+    runtime = AgentGraphRuntime(
+        registry=sealed_registry(),
+        config=offline_config(),
+        chat_adapter=adapter,
+        session_store=InMemorySessionStore(),
+        checkpointer=saver,
+    )
+    request = _request()
+
+    async def exercise() -> None:
+        first = await runtime.arun_state(request, run_id="run-thread-lifecycle")
+        assert first.status == "completed"
+
+        deleted_claims = await runtime.adelete_assistant_thread(
+            user_id=request.user_id,
+            session_id=request.session_id,
+        )
+        assert deleted_claims == 1
+
+        identity = GraphExecutionIdentity.for_assistant_turn(
+            agent_id=runtime.agent_id,
+            user_id=request.user_id,
+            session_id=request.session_id,
+            run_id="run-thread-lifecycle",
+        )
+        snapshot = await runtime.assistant_graph_app.aget_state(identity)
+        assert not getattr(snapshot, "values", None)
+
+        second = await runtime.arun_state(request, run_id="run-thread-lifecycle")
+        assert second.status == "completed"
+        assert second.response is not None
+        assert second.response.message == "after-thread-delete"
+
+    try:
+        asyncio.run(exercise())
+    finally:
+        runtime.close()
+
+    assert len(adapter.requests) == 2
+
+
+def test_thread_delete_freezes_claims_while_checkpointer_delete_is_pending() -> None:
+    """A new run must not enter while retention deletion awaits its checkpointer."""
+
+    delete_started = asyncio.Event()
+    allow_delete = asyncio.Event()
+
+    class BlockingCheckpointer:
+        async def adelete_thread(self, thread_id: str) -> None:
+            del thread_id
+            delete_started.set()
+            await allow_delete.wait()
+
+    graph = type("CompiledGraph", (), {"checkpointer": BlockingCheckpointer()})()
+    app = AssistantTurnGraphApp.from_compiled_graph(graph)
+    store = InMemoryGraphInvocationClaimStore()
+    request = _request()
+    owner_digest = graph_invocation_owner_digest(
+        agent_id="assistant-agent",
+        user_id=request.user_id,
+        session_id=request.session_id,
+    )
+    identity = GraphExecutionIdentity.for_assistant_turn(
+        agent_id="assistant-agent",
+        user_id=request.user_id,
+        session_id=request.session_id,
+        run_id="run-delete-concurrent",
+    )
+    store.claim(
+        owner_digest=owner_digest,
+        thread_id=identity.thread_id,
+        run_id="run-before-delete",
+        invocation_kind="invoke",
+        invocation_token="before-delete-token",
+    )
+
+    async def exercise() -> int:
+        deletion = asyncio.create_task(
+            app.adelete_thread(
+                agent_id="assistant-agent",
+                user_id=request.user_id,
+                session_id=request.session_id,
+                invocation_claim_store=store,
+            )
+        )
+        await delete_started.wait()
+        with pytest.raises(GraphInvocationClaimConflict):
+            store.claim(
+                owner_digest=owner_digest,
+                thread_id=identity.thread_id,
+                run_id=identity.run_id,
+                invocation_kind="invoke",
+                invocation_token="concurrent-delete-token",
+            )
+        allow_delete.set()
+        return await deletion
+
+    assert asyncio.run(exercise()) == 1
+    assert (
+        store.claim(
+            owner_digest=owner_digest,
+            thread_id=identity.thread_id,
+            run_id=identity.run_id,
+            invocation_kind="invoke",
+            invocation_token="new-lifecycle-token",
+        )
+        == "claimed"
+    )
+
+
 def test_all_public_execution_apis_map_raw_claim_conflicts_at_app_boundary() -> None:
     """No public API may expose a store-specific claim exception."""
 
