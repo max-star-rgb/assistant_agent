@@ -91,6 +91,14 @@ assistant turn；普通 write/dangerous category、用户文本和任意 metadat
 async persistent SQLite saver 的依赖、进程级 owner 生命周期和跨 Runtime 重建验收尚未获安装授权，因此生产
 composition root 目前不得声称跨进程 checkpoint 恢复。缺失的持久 saver 不能由自研 saver 或静默 memory
 fallback 代替。
+
+`AssistantTurnGraphApp.invoke/astream/arun/aresume` 在进入 tracing、checkpoint preflight 或 native graph
+之前统一原子 claim `(owner, thread_id, run_id)`；相同 invocation token 的 pre-native 重试幂等放行，不同 token
+复用同一 run 必须以结构化 `GraphExecutionError` 拒绝。claim 不随无 saver 终态、校验失败或执行异常自动释放，
+因此 invalid resume 也会占用该 run identity：调用方只能使用相同 token 和 run 修正重试，不能换 token 复用。
+有界 store 容量耗尽时 fail closed；只有 retention owner 在销毁整个 thread/checkpoint 生命周期后显式调用
+`delete_thread(owner, thread_id)` 才释放该 thread 的全部 claim。thread 已销毁后，确定性 thread key 即使再次出现
+也属于新的 retention 生命周期，可以重新 claim；调用方不得把 `delete_thread` 当作单 run retry 接口。
 M3 已在离线路径编译 `DurableWorkflowGraph`，并以 native v2
 `updates/custom/tasks/checkpoints` stream、subgraph namespace、`Send` super-step、父图 interrupt snapshot、
 同 thread 新 run resume 和最终 snapshot 判定验证 Graph API 事实。该 app 目前只由 TDD probe 与 LangSmith

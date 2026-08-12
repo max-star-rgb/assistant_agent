@@ -37,15 +37,6 @@ class GraphInvocationClaimStore(Protocol):
         invocation_token: str,
     ) -> GraphInvocationClaimResult: ...
 
-    def release(
-        self,
-        *,
-        owner_digest: str,
-        thread_id: str,
-        run_id: str,
-        invocation_token: str,
-    ) -> bool: ...
-
     def delete_thread(self, *, owner_digest: str, thread_id: str) -> int: ...
 
 
@@ -92,24 +83,6 @@ class InMemoryGraphInvocationClaimStore:
         raise GraphInvocationClaimConflict(
             "Graph invocation run_id is already owned by another invocation."
         )
-
-    def release(
-        self,
-        *,
-        owner_digest: str,
-        thread_id: str,
-        run_id: str,
-        invocation_token: str,
-    ) -> bool:
-        """Release one non-checkpointed terminal invocation iff token still owns it."""
-
-        _validate_claim_fields(owner_digest, thread_id, run_id, invocation_token)
-        key = (owner_digest, thread_id, run_id)
-        with self._lock:
-            if self._claims.get(key) != invocation_token:
-                return False
-            del self._claims[key]
-            return True
 
     def delete_thread(self, *, owner_digest: str, thread_id: str) -> int:
         """Delete claims after the owning composition removes the whole thread."""

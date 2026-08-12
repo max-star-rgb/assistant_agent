@@ -16,10 +16,12 @@ from assistant_agent.runtime.assistant_graph_state import (
 )
 from assistant_agent.runtime.chat_adapter import ChatResult
 from assistant_agent.runtime.assistant_graph_app import GraphExecutionError
+from assistant_agent.runtime.assistant_interrupts import AssistantApproveResume
 from assistant_agent.runtime.graph_invocation_claims import (
     GraphInvocationClaimCapacityExceeded,
     GraphInvocationClaimConflict,
     InMemoryGraphInvocationClaimStore,
+    graph_invocation_owner_digest,
 )
 from assistant_agent.runtime.output_models import NativeToolCall
 from assistant_agent.runtime.requests import UserRequest
@@ -90,6 +92,11 @@ def test_claim_store_fails_closed_at_capacity_until_owner_deletes_thread() -> No
         owner_digest=CLAIM["owner_digest"],
         thread_id=CLAIM["thread_id"],
     ) == 1
+    assert store.claim(**CLAIM, invocation_token="token-b") == "claimed"
+    assert store.delete_thread(
+        owner_digest=CLAIM["owner_digest"],
+        thread_id=CLAIM["thread_id"],
+    ) == 1
     assert (
         store.claim(
             **{**CLAIM, "thread_id": "thread-other", "run_id": "run-other"},
@@ -99,8 +106,8 @@ def test_claim_store_fails_closed_at_capacity_until_owner_deletes_thread() -> No
     )
 
 
-def test_sync_no_saver_releases_terminal_claim_before_next_run() -> None:
-    """Retaining a completed no-history claim would exhaust a bounded store."""
+def test_no_saver_retains_claim_until_retention_owner_deletes_thread() -> None:
+    """Terminal execution must not release a claim independently of retention."""
 
     store = InMemoryGraphInvocationClaimStore(max_entries=1)
     runtime = AgentGraphRuntime(
@@ -128,6 +135,27 @@ def test_sync_no_saver_releases_terminal_claim_before_next_run() -> None:
 
     try:
         first = runtime.run_state(_request(), run_id="run-sync-first")
+        with pytest.raises(GraphExecutionError) as captured:
+            runtime.run_state(_request(), run_id="run-sync-second")
+        assert captured.value.code == "graph_invocation_claim_capacity_exceeded"
+
+        identity = runtime._prepare_graph_run(  # noqa: SLF001 - retention TDD.
+            _request(),
+            event_sink=None,
+            cancel_token=None,
+            trace_context=None,
+            export_trace_context=None,
+            pre_terminal_state_hook=None,
+            run_id="run-retention-owner",
+        ).identity
+        assert store.delete_thread(
+            owner_digest=graph_invocation_owner_digest(
+                agent_id=identity.agent_id,
+                user_id="user-reentry",
+                session_id="session-reentry",
+            ),
+            thread_id=identity.thread_id,
+        ) == 1
         second = runtime.run_state(_request(), run_id="run-sync-second")
     finally:
         runtime.close()
@@ -138,6 +166,76 @@ def test_sync_no_saver_releases_terminal_claim_before_next_run() -> None:
     assert second.status == "completed"
     assert second.response is not None
     assert second.response.message == "sync-second"
+
+
+@pytest.mark.parametrize("entrypoint", ["sync", "async", "astream"])
+def test_no_saver_rejects_different_token_for_same_run_without_provider_reexecution(
+    entrypoint: str,
+) -> None:
+    """Removing terminal retention would execute one run twice without history."""
+
+    adapter = ScriptedChatAdapter(
+        [
+            ChatResult(
+                provider="scripted",
+                model="scripted-model",
+                finish_reason="stop",
+                response_text=f"{entrypoint}-once",
+            )
+        ]
+    )
+    runtime = AgentGraphRuntime(
+        registry=sealed_registry(),
+        config=offline_config(),
+        chat_adapter=adapter,
+        session_store=InMemorySessionStore(),
+    )
+
+    async def exercise_async() -> None:
+        if entrypoint == "async":
+            await runtime.arun_state(_request(), run_id="run-no-saver-reuse")
+            with pytest.raises(GraphExecutionError) as captured:
+                await runtime.arun_state(_request(), run_id="run-no-saver-reuse")
+        else:
+            prepared = runtime._prepare_graph_run(  # noqa: SLF001 - App boundary TDD.
+                _request(),
+                event_sink=None,
+                cancel_token=None,
+                trace_context=None,
+                export_trace_context=None,
+                pre_terminal_state_hook=None,
+                run_id="run-no-saver-reuse",
+            )
+            async for _part in runtime.assistant_graph_app.astream(
+                prepared.initial_state,
+                identity=prepared.identity,
+                context=prepared.runtime_context,
+            ):
+                pass
+            with pytest.raises(GraphExecutionError) as captured:
+                async for _part in runtime.assistant_graph_app.astream(
+                    prepared.initial_state,
+                    identity=prepared.identity,
+                    context=replace(
+                        prepared.runtime_context,
+                        invocation_token="competing-astream-token",
+                    ),
+                ):
+                    pass
+        assert captured.value.code == "graph_invocation_run_id_reused"
+
+    try:
+        if entrypoint == "sync":
+            runtime.run_state(_request(), run_id="run-no-saver-reuse")
+            with pytest.raises(GraphExecutionError) as captured:
+                runtime.run_state(_request(), run_id="run-no-saver-reuse")
+            assert captured.value.code == "graph_invocation_run_id_reused"
+        else:
+            asyncio.run(exercise_async())
+    finally:
+        runtime.close()
+
+    assert len(adapter.requests) == 1
 
 
 def test_sync_completed_checkpoint_reuse_maps_conflict_and_closes_lifecycle(
@@ -281,10 +379,67 @@ def test_completed_native_noop_rejects_different_token_at_app_boundary() -> None
         runtime.close()
 
 
-def test_no_saver_releases_new_claim_when_tracing_fails_before_stream_start(
+def test_public_astream_rejects_completed_checkpoint_reuse_before_native_noop() -> None:
+    """Public streaming must claim before a completed checkpoint can no-op."""
+
+    adapter = ScriptedChatAdapter(
+        [
+            ChatResult(
+                provider="scripted",
+                model="scripted-model",
+                finish_reason="stop",
+                response_text="astream-completed-once",
+            )
+        ]
+    )
+    runtime = AgentGraphRuntime(
+        registry=sealed_registry(),
+        config=offline_config(),
+        chat_adapter=adapter,
+        session_store=InMemorySessionStore(),
+        checkpointer=InMemorySaver(),
+    )
+    prepared = runtime._prepare_graph_run(  # noqa: SLF001 - native boundary TDD.
+        _request(),
+        event_sink=None,
+        cancel_token=None,
+        trace_context=None,
+        export_trace_context=None,
+        pre_terminal_state_hook=None,
+        run_id="run-completed-astream",
+    )
+
+    async def exercise() -> None:
+        async for _part in runtime.assistant_graph_app.astream(
+            prepared.initial_state,
+            identity=prepared.identity,
+            context=prepared.runtime_context,
+        ):
+            pass
+        with pytest.raises(GraphExecutionError) as captured:
+            async for _part in runtime.assistant_graph_app.astream(
+                prepared.initial_state,
+                identity=prepared.identity,
+                context=replace(
+                    prepared.runtime_context,
+                    invocation_token="competing-completed-astream-token",
+                ),
+            ):
+                pass
+        assert captured.value.code == "graph_invocation_run_id_reused"
+
+    try:
+        asyncio.run(exercise())
+    finally:
+        runtime.close()
+
+    assert len(adapter.requests) == 1
+
+
+def test_same_token_retry_remains_idempotent_when_tracing_fails_before_native_start(
     monkeypatch,
 ) -> None:
-    """A pre-stream setup failure must not strand a no-history invocation claim."""
+    """Retained claims must still admit the same pre-native invocation token."""
 
     runtime = AgentGraphRuntime(
         registry=sealed_registry(),
@@ -333,10 +488,7 @@ def test_no_saver_releases_new_claim_when_tracing_fails_before_stream_start(
         result = await runtime.assistant_graph_app.arun(
             prepared.initial_state,
             identity=prepared.identity,
-            context=replace(
-                prepared.runtime_context,
-                invocation_token="retry-after-tracing-failure",
-            ),
+            context=prepared.runtime_context,
         )
         assert result.final_state["run"]["status"] == "completed"
 
@@ -344,6 +496,82 @@ def test_no_saver_releases_new_claim_when_tracing_fails_before_stream_start(
         asyncio.run(exercise())
     finally:
         runtime.close()
+
+
+def test_all_public_execution_apis_map_raw_claim_conflicts_at_app_boundary() -> None:
+    """No public API may expose a store-specific claim exception."""
+
+    class ConflictingStore(InMemoryGraphInvocationClaimStore):
+        def claim(self, **kwargs):
+            del kwargs
+            raise GraphInvocationClaimConflict("raw store conflict")
+
+    runtime = AgentGraphRuntime(
+        registry=sealed_registry(),
+        config=offline_config(),
+        chat_adapter=ScriptedChatAdapter([]),
+        session_store=InMemorySessionStore(),
+        graph_invocation_claim_store=ConflictingStore(),
+    )
+
+    def prepared(run_id: str):
+        return runtime._prepare_graph_run(  # noqa: SLF001 - public boundary TDD.
+            _request(),
+            event_sink=None,
+            cancel_token=None,
+            trace_context=None,
+            export_trace_context=None,
+            pre_terminal_state_hook=None,
+            run_id=run_id,
+        )
+
+    invoke_run = prepared("run-public-invoke")
+    with pytest.raises(GraphExecutionError) as invoke_error:
+        runtime.assistant_graph_app.invoke(
+            invoke_run.initial_state,
+            identity=invoke_run.identity,
+            context=invoke_run.runtime_context,
+        )
+
+    async def exercise_async() -> list[GraphExecutionError]:
+        errors: list[GraphExecutionError] = []
+        for api_name in ("astream", "arun", "aresume"):
+            run = prepared(f"run-public-{api_name}")
+            try:
+                if api_name == "astream":
+                    async for _part in runtime.assistant_graph_app.astream(
+                        run.initial_state,
+                        identity=run.identity,
+                        context=run.runtime_context,
+                    ):
+                        pass
+                elif api_name == "arun":
+                    await runtime.assistant_graph_app.arun(
+                        run.initial_state,
+                        identity=run.identity,
+                        context=run.runtime_context,
+                    )
+                else:
+                    await runtime.assistant_graph_app.aresume(
+                        identity=run.identity,
+                        context=run.runtime_context,
+                        resume=AssistantApproveResume(action_ref="action-ref"),
+                    )
+            except GraphExecutionError as exc:
+                errors.append(exc)
+        return errors
+
+    try:
+        async_errors = asyncio.run(exercise_async())
+    finally:
+        runtime.close()
+
+    assert invoke_error.value.code == "graph_invocation_run_id_reused"
+    assert [error.code for error in async_errors] == [
+        "graph_invocation_run_id_reused",
+        "graph_invocation_run_id_reused",
+        "graph_invocation_run_id_reused",
+    ]
 
 
 def test_concurrent_apps_share_claim_store_and_conflict_closes_runtime_lifecycle(

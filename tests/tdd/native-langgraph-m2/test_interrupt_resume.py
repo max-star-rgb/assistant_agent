@@ -656,7 +656,7 @@ def test_resume_preflight_rejects_wrong_ref_kind_thread_and_reused_run() -> None
                 ),
                 fresh.runtime_context,
                 AssistantApproveResume(action_ref="provider-preflight-1"),
-                "graph_checkpoint_not_found",
+                "graph_invocation_identity_mismatch",
             ),
         ]
         for identity, context, resume, expected_code in cases:
