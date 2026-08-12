@@ -7,7 +7,7 @@ Last updated: 2026-08-12
 | 字段 | 内容 |
 | --- | --- |
 | 定位 | Runtime observability 与日常审计的当前权威 |
-| Owns | canonical trace、OTel/Langfuse/LangSmith 投影、redaction、runtime audit、Live Observation Rule |
+| Owns | canonical trace、OTel/Langfuse 投影、LangSmith native tracing、redaction、runtime audit、Live Observation Rule |
 | Does not own | Release Review Dataset、Scenario、Experiment 与 task-level Score |
 | 源码与 schema 入口 | `src/assistant_agent/observability/`、`scripts/run_runtime_audit.py` |
 | 验证入口 | `docs/authority.toml` 中 `runtime-observability.verification` |
@@ -32,7 +32,9 @@ Observability 是运行时行为的只读投影，不是另一套执行状态机
 - `assistant.turn.summary` 是一个 turn 的身份与终态摘要；摘要不能覆盖更细粒度的 raw timeline 事实。
 - Gateway lifecycle 和 Agent-Service delivery audit 分别证明入口生命周期与媒体发送/ACK 状态；它们不能由
   Assistant terminal status 推导。
-- Langfuse、LangSmith、OpenTelemetry、结构化查询和评估分数都是 canonical trace 的投影或派生视图，不得成为冲突的第二事实源。
+- Langfuse、通用 OpenTelemetry、结构化查询和评估分数是 canonical trace 的投影或派生视图；LangSmith
+  native tracing 直接观察实际 graph、node、LLM 与 governed Tool 执行。两类观测都只读，不得成为冲突的
+  第二执行事实源。
 
 发生冲突时按以下顺序判断：当前源码和测试高于 prose；同一运行中，原始 machine event 高于派生摘要，
 派生摘要高于派生查询文案；Git 历史只用于解释演进，不证明当前行为。
@@ -480,15 +482,18 @@ Langfuse 的 trace、observation、score 和 Dataset/Experiment 是远端投影�
 查询 observation 数据或结构化 trace API。当前进程仍可查询内存 canonical timeline；本地 ledger 只证明
 最小完整性和导出缺口，不能替代 Langfuse 的完整 observation 内容。
 
-Experiment 使用共享 Runtime Host 作为装配和资源所有权边界。Langfuse runner 把 SDK 当前 task span
-转换为 `RuntimeTraceContext`，并只装配 Langfuse Experiment exporter；LangSmith runner 先显式创建
-Experiment project，再把其 UUID/name 与当前 RunTree 的 trace、parent run、dotted order 和 reference
-example identity 转换为受校验的 context，并只把 Runtime 子树发送到该 LangSmith Experiment project，
-避免在 Langfuse 形成孤儿子树。Host 都按 Runtime 后
-trace store 的顺序做 bounded close。普通业务运行仍遵循 observability fail-open；Release Review 与
-Runtime Regression 属于证据生成流程，若没有当前 task/RunTree parent、无法装配对应 exporter，或远端
-没有形成 task → `agent.runtime` → `llm.chat`，必须作为 infrastructure failure fail-closed，不能用 task
-output 或 Score/Feedback 齐全掩盖内部 Trace 缺失。
+Experiment 按平台使用各自的 Runtime 资源所有权边界。Langfuse runner 继续通过共享 Runtime Host 把 SDK
+当前 task span 转换为 `RuntimeTraceContext`，并只装配 Langfuse Experiment exporter；Host 按 Runtime 后
+trace store 的顺序做 bounded close。LangSmith runner 则使用 `Client.aevaluate()`：Dataset target 校验
+SDK 当前 `RunTree` 的 reference Example identity，直接 `await AgentGraphRuntime.arun_state()`，graph app 的
+scoped native tracing 继承该 current RunTree，由 SDK 记录真实的 task → graph → node → LLM/governed Tool
+父子树；它不转换 `RuntimeTraceContext`，也不创建 LangSmith OTel trace store。canonical trace 在旁路继续
+承担本地 audit、查询和必要业务关联，不向 LangSmith 重建 Runtime 子树。
+
+普通业务运行仍遵循 observability fail-open；Release Review 与 Runtime Regression 属于证据生成流程。
+Langfuse 缺当前 task parent 或无法装配对应 exporter 时必须 fail-closed；LangSmith 缺 current RunTree、
+reference Example 关联或 native graph/LLM/tool 树不完整时同样必须作为 infrastructure failure fail-closed，
+不能用 task output 或 Score/Feedback 齐全掩盖内部 Trace 缺失。
 
 ### Langfuse-first Runtime 审计
 
@@ -719,8 +724,8 @@ assistant-agent-runtime-audit.timer` 查看下次运行，用
 | `src/assistant_agent/observability/langsmith_config.py` | 默认关闭的 LangSmith native tracing client 配置 |
 | `src/assistant_agent/observability/langsmith_native.py` | scoped native trace、graph metadata 与安全 LLM/Tool child 投影 |
 | `src/assistant_agent/runtime/runtime_host.py` | 真实入口 Runtime 与 trace store 的统一 bounded lifecycle owner |
-| `src/assistant_agent/evaluation/experiment_runtime.py` | 可注入 Experiment trace context 到 Runtime 的装配桥 |
-| `src/assistant_agent/evaluation/experiment_trace.py` | Experiment 远端 Runtime 子树完整性门禁 |
+| `src/assistant_agent/evaluation/experiment_runtime.py` | Langfuse Experiment trace context 到 Runtime 的兼容装配桥 |
+| `src/assistant_agent/evaluation/experiment_trace.py` | Langfuse Experiment 远端 Runtime 子树完整性门禁 |
 | `src/assistant_agent/media/vision/observability.py` | 内容安全的 `vlm.infer` generation 事件边界 |
 | `src/assistant_agent/observability/operational_logging.py` | Gateway console、JSONL 和兼容 text log |
 | `src/assistant_agent/gateway/observability.py` | prompt-safe Gateway lifecycle schema 和 sink |
@@ -732,7 +737,7 @@ assistant-agent-runtime-audit.timer` 查看下次运行，用
 ## 更新规则
 
 修改 trace event、summary schema、ID 传播、persistence、redaction、content capture、Gateway lifecycle、
-delivery audit、latency 归因或 OTel/Langfuse/LangSmith projection 时，必须：
+delivery audit、latency 归因、OTel/Langfuse projection 或 LangSmith native tracing 时，必须：
 
 1. 先修改 owning source 和相应测试；
 2. 更新本文档中的稳定语义和边界，而不是追加开发过程；
