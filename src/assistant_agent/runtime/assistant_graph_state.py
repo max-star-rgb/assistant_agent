@@ -24,6 +24,10 @@ from assistant_agent.runtime.run_phase import RunPhase
 from assistant_agent.runtime.state import AgentError, AgentState
 from assistant_agent.tools.models import RunToolCatalog, ToolCallRecord, ToolResult
 from assistant_agent.tools.observation_safety import sanitize_tool_observation_detail
+from assistant_agent.tools.capability_output import (
+    CapabilityOutputContract,
+    CapabilityOutputError,
+)
 
 
 ASSISTANT_GRAPH_NAME = "AssistantTurnGraph"
@@ -111,6 +115,26 @@ class PersistedToolResult(_CheckpointModel):
     output_ref: str | None = Field(default=None, max_length=1_024)
     artifact_refs: tuple[str, ...] = Field(default=(), max_length=32)
     error_summary: str | None = Field(default=None, max_length=2_000)
+    capability_contract: "PersistedCapabilityContract | None" = None
+
+
+class PersistedCapabilityError(_CheckpointModel):
+    code: str = Field(min_length=1, max_length=160)
+    message: str = Field(min_length=1, max_length=2_000)
+    recoverable: bool = False
+
+
+class PersistedCapabilityContract(_CheckpointModel):
+    capability: str = Field(min_length=1, max_length=256)
+    status: Literal["succeeded", "failed", "partial", "skipped"]
+    output_ref: str | None = Field(default=None, max_length=1_024)
+    data_facts: tuple[PersistedObservationDetail, ...] = Field(
+        default=(), max_length=64
+    )
+    metadata_facts: tuple[PersistedObservationDetail, ...] = Field(
+        default=(), max_length=32
+    )
+    errors: tuple[PersistedCapabilityError, ...] = Field(default=(), max_length=32)
 
 
 class PersistedRun(_CheckpointModel):
@@ -655,6 +679,7 @@ def apply_assistant_turn_state_to_agent_state(
                     str(item["artifact_refs"][0]) if item.get("artifact_refs") else None
                 ),
                 error=cast(str | None, item.get("error_summary")),
+                contract=_hydrate_capability_contract(item.get("capability_contract")),
             )
         )
         for index, item in enumerate(cast(list[Mapping[str, Any]], run["tool_results"]))
@@ -863,21 +888,13 @@ def _project_tool_observation(value: Mapping[str, Any]) -> PersistedToolObservat
         safe_data = sanitize_tool_observation_detail(raw_data)
         if not isinstance(safe_data, Mapping):
             safe_data = {}
-        for name, fact in safe_data.items():
-            if not isinstance(name, str) or not name:
-                continue
-            if not _safe_observation_detail_name(name):
-                continue
-            encoded = json.dumps(
-                fact,
-                ensure_ascii=False,
-                sort_keys=True,
-                allow_nan=False,
+        safe_details.extend(
+            _project_scalar_facts(
+                safe_data,
+                allowed_names=_OBSERVATION_SCALAR_FACT_NAMES,
+                limit=128,
             )
-            if len(encoded) <= 16_000:
-                safe_details.append(
-                    PersistedObservationDetail(name=name, value_json=encoded)
-                )
+        )
     return PersistedToolObservation(
         tool_name=str(value.get("tool_name") or "unknown"),
         status=cast(Any, status),
@@ -975,32 +992,6 @@ def _run_phase_text(value: object) -> str:
     return RunPhase.ACT.value
 
 
-_UNSAFE_OBSERVATION_DETAIL_NAME_PARTS = frozenset(
-    {
-        "artifact_body",
-        "authorization",
-        "credential",
-        "data_uri",
-        "data_url",
-        "local_path",
-        "media_body",
-        "password",
-        "provider_payload",
-        "raw",
-        "response_body",
-        "secret",
-        "token",
-    }
-)
-
-
-def _safe_observation_detail_name(name: str) -> bool:
-    normalized = name.strip().lower()
-    if not normalized or len(normalized) > 256:
-        return False
-    return not any(part in normalized for part in _UNSAFE_OBSERVATION_DETAIL_NAME_PARTS)
-
-
 def _context_ref_identity(
     refs: object,
 ) -> tuple[tuple[object, ...], ...]:
@@ -1067,6 +1058,124 @@ def _project_tool_result(result: object) -> PersistedToolResult:
             if isinstance(ref, str) and ref
         ),
         error_summary=_bounded_optional(error, 2_000),
+        capability_contract=_project_capability_contract(contract),
+    )
+
+
+_OBSERVATION_SCALAR_FACT_NAMES = frozenset(
+    {
+        "count",
+        "outcome",
+        "provider",
+        "query_used",
+        "status",
+        "total",
+        "value",
+    }
+)
+_CAPABILITY_DATA_SCALAR_FACT_NAMES = frozenset(
+    {
+        "best_price",
+        "count",
+        "download_url",
+        "image_url",
+        "outcome",
+        "product_title",
+        "query_used",
+        "render_ref",
+        "summary",
+        "total",
+        "value",
+    }
+)
+_CAPABILITY_METADATA_SCALAR_FACT_NAMES = frozenset(
+    {"latency_ms", "model", "provider", "query_count"}
+)
+
+
+def _project_capability_contract(
+    contract: object | None,
+) -> PersistedCapabilityContract | None:
+    if not isinstance(contract, CapabilityOutputContract):
+        return None
+    return PersistedCapabilityContract(
+        capability=_bounded(contract.capability, 256),
+        status=contract.status,
+        output_ref=_bounded_optional(contract.output_ref, 1_024),
+        data_facts=_project_scalar_facts(
+            contract.data,
+            allowed_names=_CAPABILITY_DATA_SCALAR_FACT_NAMES,
+            limit=64,
+        ),
+        metadata_facts=_project_scalar_facts(
+            contract.metadata,
+            allowed_names=_CAPABILITY_METADATA_SCALAR_FACT_NAMES,
+            limit=32,
+        ),
+        errors=tuple(
+            PersistedCapabilityError(
+                code=_bounded(error.code, 160),
+                message=_bounded(error.message, 2_000),
+                recoverable=error.recoverable,
+            )
+            for error in contract.errors[:32]
+        ),
+    )
+
+
+def _hydrate_capability_contract(
+    value: object,
+) -> CapabilityOutputContract | None:
+    if not isinstance(value, Mapping):
+        return None
+    return CapabilityOutputContract(
+        capability=str(value["capability"]),
+        status=cast(Any, value["status"]),
+        output_ref=cast(str | None, value.get("output_ref")),
+        data=_hydrate_scalar_facts(value.get("data_facts")),
+        metadata=_hydrate_scalar_facts(value.get("metadata_facts")),
+        errors=[
+            CapabilityOutputError(
+                code=str(item["code"]),
+                message=str(item["message"]),
+                recoverable=bool(item.get("recoverable", False)),
+            )
+            for item in cast(list[Mapping[str, Any]], value.get("errors") or [])
+        ],
+    )
+
+
+def _project_scalar_facts(
+    value: object,
+    *,
+    allowed_names: frozenset[str],
+    limit: int,
+) -> tuple[PersistedObservationDetail, ...]:
+    if not isinstance(value, Mapping):
+        return ()
+    facts: list[PersistedObservationDetail] = []
+    for name, child in value.items():
+        if name not in allowed_names or not _is_safe_scalar(child):
+            continue
+        encoded = json.dumps(child, ensure_ascii=False, allow_nan=False)
+        if len(encoded) <= 4_000:
+            facts.append(PersistedObservationDetail(name=name, value_json=encoded))
+    return tuple(facts[:limit])
+
+
+def _hydrate_scalar_facts(value: object) -> dict[str, Any]:
+    if not isinstance(value, (list, tuple)):
+        return {}
+    return {
+        str(item["name"]): json.loads(str(item["value_json"]))
+        for item in value
+        if isinstance(item, Mapping)
+    }
+
+
+def _is_safe_scalar(value: object) -> bool:
+    return value is None or (
+        isinstance(value, (str, bool, int, float)) and not isinstance(value, bytes)
     )
 
 

@@ -59,8 +59,15 @@ Task 1 的恢复边界不虚构尚不存在的 context/memory/perception 历史 
   ref 不一致不得静默重算或采用变化后的快照。
 
 Tool observation 的 model-visible detail 先经 `sanitize_tool_observation_detail`，再通过 bounded
-`PersistedObservationDetail` 显式投影；credential/token/raw/provider/media body/path 等 key 拒绝进入
-checkpoint。它不是 arbitrary `data`/metadata 逃生舱。
+`PersistedObservationDetail` 的 exact scalar allowlist 显式投影；nested/list/dict、未知字段以及
+credential/token/raw/provider/media body/path 等 key 拒绝进入 checkpoint。复杂 observation 若是恢复必要事实，
+必须由后续领域 store 提供稳定 `observation_ref` 并经 resolver 加载，不能回退成 arbitrary `data`/metadata
+逃生舱。
+
+`CapabilityOutputContract` 通过 `PersistedCapabilityContract` 单独持久化 capability/status/contract output ref、
+error code/message/recoverable，以及少量正向允许的 scalar data/metadata。`ToolResult.output_ref` 与
+contract-owned `output_ref` 保持两个语义字段，不互相提升；恢复后 response 的 public contract projection 与
+不中断路径等价。
 
 ## new-turn overwrite contract
 

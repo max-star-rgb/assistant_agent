@@ -26,6 +26,9 @@ from assistant_agent.runtime.requests import UserRequest
 from assistant_agent.runtime.runtime import AgentGraphRuntime
 from assistant_agent.runtime.session_store import InMemorySessionStore
 from assistant_agent.runtime.state import AgentState
+from assistant_agent.tools.base import ToolContext
+from assistant_agent.tools.capability_output import build_capability_output_contract
+from assistant_agent.tools.models import ToolResult
 from tests.core.support import (
     ProbeTool,
     ScriptedChatAdapter,
@@ -365,6 +368,11 @@ def test_checkpoint_observation_projection_rejects_generic_sensitive_payloads() 
                         "raw_response": {"body": "secret-body"},
                         "media_body": "data:image/png;base64,AAAA",
                         "local_path": "/home/private/file.png",
+                        "nested": {
+                            "value": "must-not-survive-container",
+                            "access_token": "nested-secret",
+                        },
+                        "unknown_scalar": "must-not-survive-unknown",
                     },
                 }
             ],
@@ -377,8 +385,134 @@ def test_checkpoint_observation_projection_rejects_generic_sensitive_payloads() 
     assert "secret-body" not in encoded
     assert "data:image" not in encoded
     assert "/home/private" not in encoded
+    assert "must-not-survive-container" not in encoded
+    assert "nested-secret" not in encoded
+    assert "must-not-survive-unknown" not in encoded
     hydrated = assistant_loop_state_from_turn_state(persisted, runtime_state=state)
     assert hydrated["tool_observations"][0]["data"] == {"value": "safe-value"}
+
+
+class _ContractProbeTool(ProbeTool):
+    name = "contract_probe_tool"
+
+    def _run(self, input: Any, context: ToolContext) -> ToolResult:
+        return ToolResult(
+            tool_name=self.name,
+            success=True,
+            data={"value": input.value, "runtime_only": "rich-local-only"},
+            model_observation={"value": input.value},
+            output_ref="artifact://contract-output",
+            contract=build_capability_output_contract(
+                capability="contract_probe",
+                status="succeeded",
+                output_ref="artifact://contract-output",
+                data={
+                    "summary": "contract-summary",
+                    "total": 1,
+                },
+                metadata={
+                    "provider": "probe-provider",
+                    "latency_ms": 7,
+                },
+            ),
+        )
+
+
+def _stable_response_payload(state: AgentState) -> dict[str, Any]:
+    assert state.response is not None
+    payload = state.response.model_dump(mode="json")
+    data = dict(payload.get("data") or {})
+    data.pop("runtime_only", None)
+    payload["data"] = data
+    return payload
+
+
+def test_tool_after_restart_preserves_capability_contract_response_data() -> None:
+    """Rebuilding after Tool completion must retain the public contract response."""
+
+    def contract_request() -> UserRequest:
+        return UserRequest(
+            user_id="user-state", session_id="session-state", text="contract"
+        )
+
+    tool = _ContractProbeTool()
+    calls = [
+        ChatResult(
+            provider="scripted",
+            model="scripted-model",
+            finish_reason="tool_calls",
+            tool_calls=[
+                NativeToolCall(
+                    id="contract-call",
+                    name=tool.name,
+                    arguments={"value": "contract-value"},
+                )
+            ],
+        ),
+        ChatResult(
+            provider="scripted",
+            model="scripted-model",
+            finish_reason="stop",
+            response_text="contract-final",
+        ),
+    ]
+    baseline = AgentGraphRuntime(
+        registry=sealed_registry(tool),
+        config=offline_config(),
+        chat_adapter=ScriptedChatAdapter(list(calls)),
+        session_store=InMemorySessionStore(),
+    )
+    try:
+        uninterrupted = baseline.run_state(
+            contract_request(), run_id="run-contract-baseline"
+        )
+    finally:
+        baseline.close()
+
+    saver = InMemorySaver()
+    first = AgentGraphRuntime(
+        registry=sealed_registry(tool),
+        config=offline_config(),
+        chat_adapter=ScriptedChatAdapter([calls[0]]),
+        session_store=InMemorySessionStore(),
+        checkpointer=saver,
+    )
+    prepared = _prepare(first, contract_request(), run_id="run-contract-resume")
+    config = prepared.identity.runnable_config()
+    try:
+        checkpoint = first.assistant_graph_app.graph.invoke(
+            prepared.initial_state,
+            config=config,
+            context=prepared.runtime_context,
+            interrupt_after=["execute_tool"],
+        )
+    finally:
+        first.close()
+
+    rebuilt = AgentGraphRuntime(
+        registry=sealed_registry(tool),
+        config=offline_config(),
+        chat_adapter=ScriptedChatAdapter([calls[1]]),
+        session_store=InMemorySessionStore(),
+        checkpointer=saver,
+    )
+    resumed = _prepare(rebuilt, contract_request(), run_id="run-contract-resume")
+    resumed.state.trace_id = checkpoint["run"]["trace_id"]
+    try:
+        final = rebuilt.assistant_graph_app.graph.invoke(
+            None,
+            config=config,
+            context=resumed.runtime_context,
+        )
+        restarted = rebuilt._complete_graph_execution(resumed, final)  # noqa: SLF001
+    finally:
+        rebuilt.close()
+
+    baseline_payload = _stable_response_payload(uninterrupted)
+    restart_payload = _stable_response_payload(restarted)
+    assert restart_payload["message"] == baseline_payload["message"]
+    assert restart_payload["output_refs"] == baseline_payload["output_refs"]
+    assert restart_payload["data"]["contracts"] == baseline_payload["data"]["contracts"]
 
 
 def test_node_hydration_applies_persisted_trajectory_to_fresh_agent_state() -> None:
