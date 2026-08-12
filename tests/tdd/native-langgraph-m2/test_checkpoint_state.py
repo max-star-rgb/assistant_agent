@@ -801,6 +801,38 @@ def test_checkpoint_argument_validator_preserves_empty_value_for_tool_repair() -
     assert json.loads(encoded) == {"value": ""}
 
 
+@pytest.mark.parametrize("boundary", ["recorded", "pending"])
+def test_checkpoint_argument_validator_preserves_browser_session_reference(
+    boundary: str,
+) -> None:
+    """Website Guidance resumes with its schema-bound opaque browser reference."""
+
+    payload = {"browser_session_id": "opaque-browser-session-1", "action": "back"}
+    if boundary == "pending":
+        loop_state = _loop_state_with_pending_argument(None)
+        loop_state["pending_tool_calls"] = [
+            AssistantToolCall(
+                tool_name="web_page_explore",
+                tool_input=payload,
+                provider_tool_call_id="provider-browser-ref",
+            )
+        ]
+        persisted = assistant_turn_state_from_loop_state(loop_state)
+        arguments = persisted["pending_tool_calls"][0]["arguments"]
+    else:
+        state = AgentState.from_request(
+            UserRequest(user_id="u", session_id="s", text="website guidance"),
+            run_id="run-browser-ref",
+            trace_id="trace-browser-ref",
+        )
+        state.add_tool_call("web_page_explore", payload)
+        persisted = assistant_turn_state_from_agent_state(state)
+        arguments = persisted["run"]["tool_calls"][0]["arguments"]
+
+    restored = {item["name"]: json.loads(item["value_json"]) for item in arguments}
+    assert restored == payload
+
+
 def test_checkpoint_sanitizer_does_not_inspect_free_form_user_text() -> None:
     """Credential education text is valid input; only persistence-risk fields are strict."""
 

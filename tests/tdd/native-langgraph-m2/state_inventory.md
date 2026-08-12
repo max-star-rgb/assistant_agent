@@ -80,6 +80,9 @@ bounded query、stable opaque ref 和用于 ActionValidator/模型 repair 的空
 token、secret、credential、password、authorization/auth、cookie、signature、private key、access key 均在任意
 JSON 深度 fail closed；仅为实际合法计量/可访问性字段保留已测试的 `token_count`、`token_budget`、
 `accessibility` 精确例外。
+正式 Tool schema 声明且执行后会再次做 owner 校验的 opaque ref 也必须逐字段正向登记；当前仅允许格式受限的
+`browser_session_id`，不会把 `session`、cookie 或 bearer token 类字段整体放宽。Pydantic `AnyUrl` 只在此
+边界规范化为普通字符串后再经过同一 URL credential/signature 校验，其他任意对象仍拒绝。
 
 ## new-turn overwrite contract
 

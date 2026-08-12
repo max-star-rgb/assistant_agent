@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from typing import Any, Literal, Mapping, TypedDict, cast
 from urllib.parse import parse_qsl, urlparse
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
+from pydantic import AnyUrl, BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 from assistant_agent.multi_agent.models import DEFAULT_AGENT_ID
 from assistant_agent.runtime.citations import UrlCitationAnnotation
@@ -551,6 +551,15 @@ def assistant_loop_state_from_turn_state(
         _hydrate_tool_observation(item)
         for item in cast(list[Mapping[str, Any]], persisted["tool_observations"])
     ]
+    # Preserve the richer, policy-projected model observation while this
+    # invocation still owns the governed ToolResult.  It remains runtime-only;
+    # a rebuilt process receives only the strict checkpoint projection above.
+    for index, observation in enumerate(observations):
+        if index >= len(runtime_state.tool_results):
+            break
+        rich_observation = runtime_state.tool_results[index].model_observation
+        if isinstance(rich_observation, Mapping):
+            observation["data"] = dict(rich_observation)
     return {
         "request": runtime_state.request,
         "state": runtime_state,
@@ -1222,9 +1231,7 @@ def _normalized_checkpoint_key(value: str) -> str:
 
 def _checkpoint_key_parts(value: str) -> tuple[str, ...]:
     separated = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", value)
-    return tuple(
-        part for part in re.split(r"[^A-Za-z0-9]+", separated.lower()) if part
-    )
+    return tuple(part for part in re.split(r"[^A-Za-z0-9]+", separated.lower()) if part)
 
 
 def _checkpoint_key_is_sensitive(value: str) -> bool:
@@ -1256,6 +1263,21 @@ def _checkpoint_key_is_sensitive(value: str) -> bool:
     )
 
 
+def _is_schema_bound_opaque_ref(key: str, value: object) -> bool:
+    """Allow only explicit Tool-schema references that are not bearer authority.
+
+    Website Guidance binds this identifier to the request owner again inside
+    its governed backend.  Cookie/token/key variants remain rejected by the
+    semantic classifier above.
+    """
+
+    return (
+        key == "browser_session_id"
+        and isinstance(value, str)
+        and re.fullmatch(r"[A-Za-z0-9_-]{16,128}", value) is not None
+    )
+
+
 def _url_contains_credentials_or_signature(value: str) -> bool:
     parsed = urlparse(value.rstrip(".,);]"))
     if parsed.username is not None or parsed.password is not None:
@@ -1282,9 +1304,7 @@ def _checkpoint_string_is_safe(value: str, *, allow_empty: bool = False) -> bool
         r"(?i)(?:;|\b)\s*base64\s*[, :]", text
     ):
         return False
-    if lowered.startswith(
-        ("/home/", "/users/", "/tmp/", "/var/", "/mnt/", "/media/")
-    ):
+    if lowered.startswith(("/home/", "/users/", "/tmp/", "/var/", "/mnt/", "/media/")):
         return False
     if _WINDOWS_PATH_RE.match(text) or _RELATIVE_MEDIA_PATH_RE.match(text):
         return False
@@ -1315,7 +1335,10 @@ def _checkpoint_json_is_safe(value: object, *, depth: int = 0) -> bool:
                 not isinstance(key, str)
                 or not key
                 or len(key) > 256
-                or _checkpoint_key_is_sensitive(key)
+                or (
+                    _checkpoint_key_is_sensitive(key)
+                    and not _is_schema_bound_opaque_ref(key, child)
+                )
                 or not _checkpoint_json_is_safe(child, depth=depth + 1)
             ):
                 return False
@@ -1328,21 +1351,37 @@ def _checkpoint_json_is_safe(value: object, *, depth: int = 0) -> bool:
 
 
 def _checkpoint_argument_json(name: object, value: object) -> str:
+    value = _normalize_checkpoint_json_value(value)
     if (
         not isinstance(name, str)
-        or _checkpoint_key_is_sensitive(name)
+        or (
+            _checkpoint_key_is_sensitive(name)
+            and not _is_schema_bound_opaque_ref(name, value)
+        )
         or not _checkpoint_json_is_safe(value)
     ):
         raise ValueError("assistant_state_checkpoint_value_unsafe")
     try:
-        encoded = json.dumps(
-            value, ensure_ascii=False, sort_keys=True, allow_nan=False
-        )
+        encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, allow_nan=False)
     except (TypeError, ValueError) as exc:
         raise ValueError("assistant_state_checkpoint_value_unsafe") from exc
     if len(encoded) > 16_000:
         raise ValueError("assistant_state_checkpoint_value_unsafe")
     return encoded
+
+
+def _normalize_checkpoint_json_value(value: object) -> object:
+    """Normalize explicitly supported Pydantic JSON scalar wrappers only."""
+
+    if isinstance(value, AnyUrl):
+        return str(value)
+    if isinstance(value, Mapping):
+        return {
+            key: _normalize_checkpoint_json_value(child) for key, child in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [_normalize_checkpoint_json_value(child) for child in value]
+    return value
 
 
 def _safe_checkpoint_ref(value: object) -> str | None:
