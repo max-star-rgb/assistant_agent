@@ -1,8 +1,6 @@
 """Serial governed Tool execution used by workflows and assistant loops."""
 
 from collections.abc import Callable
-from pathlib import Path
-from threading import Lock
 from time import monotonic, perf_counter, sleep
 from typing import Any
 
@@ -23,14 +21,13 @@ from assistant_agent.runtime.tool_execution_backend import (
     ToolExecutionBackend,
 )
 from assistant_agent.runtime.tool_operation_barrier import (
-    SQLiteToolOperationStore,
     ToolOperationBarrierError,
     ToolOperationRequest,
     ToolOperationReservation,
+    ToolOperationScopeRequired,
     ToolOperationStore,
+    default_tool_operation_store,
     normalized_tool_input_digest,
-    stable_assistant_thread_id,
-    stable_operation_scope_id,
 )
 from assistant_agent.runtime.recovery import RecoveryPolicy, ToolFailureMode, classify_error
 from assistant_agent.runtime.state import AgentState
@@ -85,8 +82,6 @@ _VISUAL_TRACE_LINK_FIELDS = (
     "source_visual_record_id",
     "snapshot_sequence",
 )
-_DEFAULT_OPERATION_STORE: ToolOperationStore | None = None
-_DEFAULT_OPERATION_STORE_LOCK = Lock()
 
 
 class ToolExecutor:
@@ -110,7 +105,7 @@ class ToolExecutor:
         self.context_metadata = dict(context_metadata or {})
         self.cancel_token = cancel_token
         self.execution_backend = execution_backend or RegistryExecutionBackend()
-        self.operation_store = operation_store or _default_operation_store()
+        self.operation_store = operation_store or default_tool_operation_store()
 
     def run_tool(
         self,
@@ -161,24 +156,10 @@ class ToolExecutor:
         )
         tool_spec = self.registry.get_spec(tool_name)
         if tool_spec.category in {"write", "dangerous"}:
-            operation_thread_id = operation_thread_id or stable_assistant_thread_id(
-                agent_id=state.agent_id,
-                user_id=state.user_id,
-                session_id=state.session_id,
-            )
-            operation_scope_id = operation_scope_id or stable_operation_scope_id(
-                thread_id=operation_thread_id,
-                turn_origin_id=state.run_id,
-                assistant_iteration=0,
-                call_ordinal=0,
-                tool_name=tool_name,
-                normalized_input_digest=normalized_tool_input_digest(
-                    {
-                        "step_id": step_id,
-                        "input": _json_compatible_tool_input(tool, bound_input),
-                    }
-                ),
-            )
+            if not operation_scope_id or not operation_thread_id:
+                raise ToolOperationScopeRequired(
+                    "write/dangerous Tool requires a checkpointed operation scope"
+                )
             if (
                 "idempotency_key" in runtime_bound_input_fields(tool)
                 and not bound_input.get("idempotency_key")
@@ -306,8 +287,6 @@ class ToolExecutor:
         try:
             if tool_spec.category in {"write", "dangerous"}:
                 operation_reservation = self._reserve_operation(
-                    state=state,
-                    step_id=step_id,
                     tool=tool,
                     tool_name=tool_name,
                     operation_input=invocation_input.model_dump(mode="json"),
@@ -499,31 +478,14 @@ class ToolExecutor:
     def _reserve_operation(
         self,
         *,
-        state: AgentState,
-        step_id: str,
         tool: object,
         tool_name: str,
         operation_input: dict[str, Any],
-        operation_scope_id: str | None,
-        operation_thread_id: str | None,
+        operation_scope_id: str,
+        operation_thread_id: str,
         operation_profile: str,
     ) -> ToolOperationReservation:
         input_digest = normalized_tool_input_digest(operation_input)
-        thread_id = operation_thread_id or stable_assistant_thread_id(
-            agent_id=state.agent_id,
-            user_id=state.user_id,
-            session_id=state.session_id,
-        )
-        scope_id = operation_scope_id or stable_operation_scope_id(
-            thread_id=thread_id,
-            turn_origin_id=state.run_id,
-            assistant_iteration=0,
-            call_ordinal=0,
-            tool_name=tool_name,
-            normalized_input_digest=normalized_tool_input_digest(
-                {"step_id": step_id, "input": operation_input}
-            ),
-        )
         model_fields = getattr(getattr(tool, "input_schema", None), "model_fields", {})
         business_key = (
             operation_input.get("idempotency_key")
@@ -534,8 +496,8 @@ class ToolExecutor:
         )
         return self.operation_store.reserve_and_mark_invoking(
             ToolOperationRequest(
-                thread_id=thread_id,
-                operation_scope_id=scope_id,
+                thread_id=operation_thread_id,
+                operation_scope_id=operation_scope_id,
                 profile=operation_profile,
                 tool_name=tool_name,
                 input_digest=input_digest,
@@ -1036,16 +998,6 @@ def _effective_max_retries(
     return global_max_retries if tool_spec.category == "read" else 0
 
 
-def _default_operation_store() -> ToolOperationStore:
-    global _DEFAULT_OPERATION_STORE
-    with _DEFAULT_OPERATION_STORE_LOCK:
-        if _DEFAULT_OPERATION_STORE is None:
-            _DEFAULT_OPERATION_STORE = SQLiteToolOperationStore(
-                Path(".local") / "langgraph" / "tool_operations.sqlite3"
-            )
-    return _DEFAULT_OPERATION_STORE
-
-
 def _json_compatible_tool_input(
     tool: object, tool_input: dict[str, Any]
 ) -> dict[str, Any]:
@@ -1059,46 +1011,12 @@ def _result_from_reservation(
     tool_name: str,
     reservation: ToolOperationReservation,
 ) -> ToolResult | None:
-    record = reservation.record
     if reservation.disposition == "invoke":
         return None
-    if reservation.disposition == "replay_success" and record is not None:
-        return ToolResult(
-            tool_name=tool_name,
-            success=True,
-            output_ref=record.output_ref,
-            model_observation={
-                "summary": record.result_summary or "Tool operation succeeded.",
-                "outcome": "success",
-                "operation_replayed": True,
-            },
-            trace_summary={
-                "operation_key": reservation.operation_key,
-                "operation_replayed": True,
-            },
-        )
-    if reservation.disposition == "replay_failure" and record is not None:
-        error = record.error_summary or "tool_failed"
-        return ToolResult(
-            tool_name=tool_name,
-            success=False,
-            error=error,
-            model_observation={
-                "summary": error,
-                "errors": [
-                    {
-                        "code": "tool_failed",
-                        "message": error,
-                        "recoverable": False,
-                    }
-                ],
-                "operation_replayed": True,
-            },
-            trace_summary={
-                "operation_key": reservation.operation_key,
-                "operation_replayed": True,
-            },
-        )
+    # A terminal ledger row proves that the backend must not be called again;
+    # it does not contain enough semantic output to fabricate the original Tool
+    # result.  Until a Tool and backend both declare an actual typed readback
+    # binding, fail closed as unknown.
     return _outcome_unknown_result(
         tool_name,
         operation_key=reservation.operation_key,
@@ -1131,21 +1049,16 @@ def _outcome_unknown_result(
 
 
 def _safe_operation_result_summary(result: ToolResult) -> str:
-    observation = result.model_observation
-    if isinstance(observation, dict):
-        summary = observation.get("summary")
-        if isinstance(summary, str) and summary.strip():
-            return sanitize_error_message(summary)[:2000]
-    if result.voice_summary:
-        return sanitize_error_message(result.voice_summary)[:2000]
+    # The ledger is an idempotency fact store, not a Tool-output store.  Tool
+    # authored prose may contain credentials or response bodies, so only this
+    # fixed outcome label is admitted here.
     return "Tool operation succeeded."
 
 
 def _safe_operation_output_ref(value: str | None) -> str | None:
-    if not value or len(value) > 1024:
-        return None
-    sanitized = sanitize_error_message(value)
-    return value if sanitized == value else None
+    from assistant_agent.runtime.assistant_graph_state import checkpoint_safe_ref
+
+    return checkpoint_safe_ref(value)
 
 
 def _execution_summary(

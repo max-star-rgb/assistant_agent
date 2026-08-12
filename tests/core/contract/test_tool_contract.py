@@ -12,6 +12,7 @@ from assistant_agent.runtime.output_models import AssistantToolCall
 from assistant_agent.runtime.requests import UserRequest
 from assistant_agent.runtime.state import AgentState
 from assistant_agent.runtime.tool_executor import ToolExecutor
+from assistant_agent.runtime.tool_operation_barrier import SQLiteToolOperationStore
 from assistant_agent.tools.base import ToolContext, ToolInputValidationError
 from assistant_agent.tools.input_binding import RuntimeInputBinding
 from assistant_agent.tools.models import RunToolCatalog, ToolResult
@@ -297,7 +298,7 @@ def test_executor_reports_wall_latency(
 
 
 @pytest.mark.core_invariant("TOOL-001")
-def test_write_execution_has_one_structured_terminal_result() -> None:
+def test_write_execution_has_one_structured_terminal_result(tmp_path) -> None:
     tool = WriteProbeTool()
     registry = sealed_registry(tool)
     events = ListEventSink()
@@ -306,11 +307,14 @@ def test_write_execution_has_one_structured_terminal_result() -> None:
     result = ToolExecutor(
         registry=registry,
         event_sink=events,
+        operation_store=SQLiteToolOperationStore(tmp_path / "operations.sqlite3"),
     ).run_tool(
         state,
         "step-sentinel",
         tool.name,
         {"value": "value-sentinel"},
+        operation_scope_id="core-write-operation-sentinel",
+        operation_thread_id="assistant:core-thread-sentinel",
     )
     terminal_events = [
         event

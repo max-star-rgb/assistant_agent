@@ -28,8 +28,10 @@ from assistant_agent.runtime.event_stream import AgentRunStream, AsyncQueueEvent
 from assistant_agent.runtime.tool_executor import ToolExecutor
 from assistant_agent.runtime.tool_execution_backend import ToolExecutionBackend
 from assistant_agent.runtime.tool_operation_barrier import (
-    SQLiteToolOperationStore,
     ToolOperationStore,
+    default_tool_operation_store,
+    normalized_tool_input_digest,
+    stable_operation_scope_id,
 )
 from assistant_agent.runtime.provider_streaming import (
     ProviderStreamingTurnRunner,
@@ -270,8 +272,8 @@ class AgentGraphRuntime:
     ) -> None:
         self.agent_id = agent_id
         self.tool_execution_backend = tool_execution_backend
-        self.tool_operation_store = tool_operation_store or SQLiteToolOperationStore(
-            Path(".local") / "langgraph" / "tool_operations.sqlite3"
+        self.tool_operation_store = (
+            tool_operation_store or default_tool_operation_store()
         )
         self.config = config or ProviderConfig.from_env()
         self.video_context_store = video_context_store or InMemoryVideoContextStore()
@@ -1573,6 +1575,19 @@ class AgentGraphRuntime:
                 trace_store=self.trace_store,
                 trace_id=state.trace_id,
                 node_name="durable_task_quantum",
+                operation_scope_id=stable_operation_scope_id(
+                    thread_id=f"durable-task:{active_binding.task_id}",
+                    turn_origin_id=(
+                        f"task:{active_binding.task_id}:plan:{active_binding.plan_version}"
+                    ),
+                    assistant_iteration=active_binding.task_version,
+                    call_ordinal=active_binding.ready_step_ids.index(decision.step_id),
+                    tool_name=decision.tool_name or "",
+                    normalized_input_digest=normalized_tool_input_digest(
+                        validation.validated_input.model_dump(mode="json")
+                    ),
+                ),
+                operation_thread_id=f"durable-task:{active_binding.task_id}",
             )
             active_binding = active_binding_holder["value"]
             if (tool_result.data or {}).get("side_effect_state") == "unknown":

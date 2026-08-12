@@ -1503,7 +1503,9 @@ def _normalize_checkpoint_json_value(value: object) -> object:
     return value
 
 
-def _safe_checkpoint_ref(value: object) -> str | None:
+def checkpoint_safe_ref(value: object) -> str | None:
+    """Return a public/opaque stable ref safe for checkpoints and ledgers."""
+
     if not isinstance(value, str):
         return None
     text = value.strip()
@@ -1517,6 +1519,9 @@ def _safe_checkpoint_ref(value: object) -> str | None:
     if parsed.scheme:
         return text if parsed.netloc or parsed.path else None
     return text if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,1023}", text) else None
+
+
+_safe_checkpoint_ref = checkpoint_safe_ref
 
 
 def _project_catalog(catalog: object | None) -> PersistedRunToolCatalog:

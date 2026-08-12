@@ -22,6 +22,7 @@ from assistant_agent.runtime.tool_executor import ToolExecutor
 from assistant_agent.runtime.tool_operation_barrier import (
     OperationDigestConflict,
     SQLiteToolOperationStore,
+    ToolOperationScopeRequired,
     ToolOperationRequest,
     normalized_tool_input_digest,
     stable_operation_scope_id,
@@ -102,6 +103,25 @@ class _KnownFailureWriteTool(_CountingWriteTool):
             success=False,
             error="known_write_rejection",
             model_observation={"summary": "known-write-failed"},
+        )
+
+
+class _UnsafeLedgerProjectionTool(_CountingWriteTool):
+    name = "unsafe_ledger_projection_probe"
+
+    def _run(self, input: ProbeInput, context: ToolContext) -> ToolResult:
+        self.invocations += 1
+        return ToolResult(
+            tool_name=self.name,
+            success=True,
+            model_observation={
+                "summary": "credential=secret-value should-not-persist",
+                "outcome": "success",
+            },
+            output_ref=(
+                "https://storage.example.test/object?"
+                "X-Amz-Credential=secret-value&X-Amz-Signature=signed-value"
+            ),
         )
 
 
@@ -212,6 +232,8 @@ def test_rebuilt_store_marks_abandoned_invocation_unknown_and_never_replays_it(t
     assert reservation.disposition == "invoke"
 
     rebuilt = SQLiteToolOperationStore(path)
+    assert rebuilt.load(reservation.operation_key).status == "invoking"
+    rebuilt.recover_abandoned_invocations()
     record = rebuilt.load(reservation.operation_key)
     replay = rebuilt.reserve_and_mark_invoking(_request())
 
@@ -219,6 +241,23 @@ def test_rebuilt_store_marks_abandoned_invocation_unknown_and_never_replays_it(t
     assert record.status == "outcome_unknown"
     assert replay.disposition == "outcome_unknown"
     assert replay.owner_token is None
+
+
+def test_second_live_store_does_not_invalidate_current_owner(tmp_path) -> None:
+    path = tmp_path / "operations.sqlite3"
+    first = SQLiteToolOperationStore(path)
+    reservation = first.reserve_and_mark_invoking(_request())
+
+    second = SQLiteToolOperationStore(path)
+    first.commit_success(
+        reservation.operation_key,
+        owner_token=reservation.owner_token or "",
+        result_summary="created-sentinel",
+        output_ref=None,
+        result_digest="c" * 64,
+    )
+
+    assert second.load(reservation.operation_key).status == "succeeded"
 
 
 def test_committed_record_contains_only_safe_projection_not_result_body(tmp_path) -> None:
@@ -242,7 +281,9 @@ def test_committed_record_contains_only_safe_projection_not_result_body(tmp_path
     assert not hasattr(record, "result_body")
 
 
-def test_read_tool_bypasses_barrier_but_write_replay_never_reinvokes_backend(tmp_path) -> None:
+def test_read_bypasses_barrier_and_committed_write_without_readback_fails_closed(
+    tmp_path,
+) -> None:
     path = tmp_path / "operations.sqlite3"
     store = SQLiteToolOperationStore(path)
     read_tool = ProbeTool()
@@ -281,16 +322,34 @@ def test_read_tool_bypasses_barrier_but_write_replay_never_reinvokes_backend(tmp
         ).fetchone()[0]
     assert read_result.success is True
     assert first.success is True
-    assert replay.success is True
-    assert replay.output_ref == "artifact:sentinel"
-    assert replay.model_observation == {
-        "summary": "created-sentinel",
-        "outcome": "success",
-        "operation_replayed": True,
+    assert replay.success is False
+    assert replay.error == "tool_operation_outcome_unknown"
+    assert replay.trace_summary == {
+        "operation_key": replay.trace_summary["operation_key"],
+        "operation_replayed": False,
+        "outcome_unknown": True,
     }
     assert write_tool.invocations == 1
     assert operation_count == 1
     assert b"must-not-enter-ledger" not in path.read_bytes()
+
+
+def test_write_executor_without_persisted_operation_scope_fails_before_backend(tmp_path) -> None:
+    tool = _CountingWriteTool()
+    executor = ToolExecutor(
+        registry=sealed_registry(tool),
+        operation_store=SQLiteToolOperationStore(tmp_path / "operations.sqlite3"),
+    )
+
+    with pytest.raises(ToolOperationScopeRequired):
+        executor.run_tool(
+            _state(run_id="resume-run-must-not-be-scope"),
+            "step-write",
+            tool.name,
+            {"value": "write-sentinel"},
+        )
+
+    assert tool.invocations == 0
 
 
 @pytest.mark.parametrize("provider_call_id", [None, "provider-call-sentinel"])
@@ -456,7 +515,7 @@ def test_commit_crash_becomes_unknown_after_single_backend_invocation(tmp_path) 
     assert tool.invocations == 1
 
 
-def test_known_failure_is_committed_and_replayed_without_second_backend_call(tmp_path) -> None:
+def test_known_failure_is_committed_but_not_fabricated_on_replay(tmp_path) -> None:
     store = SQLiteToolOperationStore(tmp_path / "operations.sqlite3")
     tool = _KnownFailureWriteTool()
     executor = ToolExecutor(registry=sealed_registry(tool), operation_store=store)
@@ -483,12 +542,42 @@ def test_known_failure_is_committed_and_replayed_without_second_backend_call(tmp
 
     assert first.success is False
     assert replay.success is False
-    assert replay.trace_summary["operation_replayed"] is True
+    assert replay.error == "tool_operation_outcome_unknown"
+    assert replay.trace_summary["operation_replayed"] is False
     assert tool.invocations == 1
     with sqlite3.connect(store.path) as connection:
         assert connection.execute(
             "SELECT status FROM tool_operations"
         ).fetchone()[0] == "failed"
+
+
+def test_ledger_rejects_tool_summary_credentials_and_signed_output_refs(tmp_path) -> None:
+    path = tmp_path / "operations.sqlite3"
+    store = SQLiteToolOperationStore(path)
+    tool = _UnsafeLedgerProjectionTool()
+
+    result = ToolExecutor(
+        registry=sealed_registry(tool), operation_store=store
+    ).run_tool(
+        _state(run_id="run-unsafe-projection"),
+        "step-unsafe-projection",
+        tool.name,
+        {"value": "write-sentinel"},
+        operation_scope_id="scope-unsafe-projection",
+        operation_thread_id="assistant:thread-sentinel",
+        operation_profile="standard",
+    )
+    with sqlite3.connect(path) as connection:
+        summary, output_ref = connection.execute(
+            "SELECT result_summary, output_ref FROM tool_operations"
+        ).fetchone()
+
+    assert result.success is True
+    assert summary == "Tool operation succeeded."
+    assert output_ref is None
+    raw = path.read_bytes()
+    assert b"secret-value" not in raw
+    assert b"signed-value" not in raw
 
 
 def test_backend_internal_retries_share_runtime_bound_business_idempotency_key(
@@ -671,3 +760,124 @@ def test_interrupt_rebuild_resume_matches_uninterrupted_write_trajectory(tmp_pat
     assert baseline_state["run"]["tool_results"] == resumed_state["run"]["tool_results"]
     assert baseline_state["tool_observations"] == resumed_state["tool_observations"]
     assert baseline_state["final_response"] == resumed_state["final_response"]
+
+
+def test_crash_after_commit_before_graph_checkpoint_never_fabricates_or_reinvokes(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from assistant_agent.runtime import graph_runtime
+
+    request = UserRequest(
+        user_id="user-post-commit",
+        session_id="session-post-commit",
+        text="write request",
+    )
+    saver = InMemorySaver()
+    path = tmp_path / "operations.sqlite3"
+    first_tool = _CountingWriteTool()
+    first = AgentGraphRuntime(
+        registry=sealed_registry(first_tool),
+        config=offline_config(),
+        chat_adapter=ScriptedChatAdapter(
+            [
+                ChatResult(
+                    provider="scripted",
+                    model="scripted-model",
+                    finish_reason="tool_calls",
+                    tool_calls=[
+                        NativeToolCall(
+                            id="provider-post-commit",
+                            name=first_tool.name,
+                            arguments={"value": "write-sentinel"},
+                        )
+                    ],
+                )
+            ]
+        ),
+        session_store=InMemorySessionStore(),
+        checkpointer=saver,
+        tool_operation_store=SQLiteToolOperationStore(path),
+    )
+    prepared = first._prepare_graph_run(  # noqa: SLF001
+        request.model_copy(deep=True),
+        event_sink=None,
+        cancel_token=None,
+        trace_context=None,
+        export_trace_context=None,
+        pre_terminal_state_hook=None,
+        run_id="turn-post-commit",
+    )
+    original_project = graph_runtime.assistant_turn_state_from_loop_state
+    crashed = False
+
+    def crash_before_checkpoint(state, *, profile="standard"):
+        nonlocal crashed
+        projected = original_project(state, profile=profile)
+        if projected["run"]["tool_results"] and not crashed:
+            crashed = True
+            raise RuntimeError("process lost before graph checkpoint")
+        return projected
+
+    monkeypatch.setattr(
+        graph_runtime,
+        "assistant_turn_state_from_loop_state",
+        crash_before_checkpoint,
+    )
+    try:
+        with pytest.raises(RuntimeError, match="before graph checkpoint"):
+            first.assistant_graph_app.graph.invoke(
+                prepared.initial_state,
+                config=prepared.identity.runnable_config(),
+                context=prepared.runtime_context,
+            )
+    finally:
+        first.close()
+        monkeypatch.setattr(
+            graph_runtime,
+            "assistant_turn_state_from_loop_state",
+            original_project,
+        )
+
+    rebuilt_tool = _CountingWriteTool()
+    rebuilt = AgentGraphRuntime(
+        registry=sealed_registry(rebuilt_tool),
+        config=offline_config(),
+        chat_adapter=ScriptedChatAdapter(
+            [
+                ChatResult(
+                    provider="scripted",
+                    model="scripted-model",
+                    finish_reason="stop",
+                    response_text="unknown-final",
+                )
+            ]
+        ),
+        session_store=InMemorySessionStore(),
+        checkpointer=saver,
+        tool_operation_store=SQLiteToolOperationStore(path),
+    )
+    resumed = rebuilt._prepare_graph_run(  # noqa: SLF001
+        request.model_copy(deep=True),
+        event_sink=None,
+        cancel_token=None,
+        trace_context=None,
+        export_trace_context=None,
+        pre_terminal_state_hook=None,
+        run_id="turn-post-commit",
+    )
+    resumed.state.trace_id = prepared.state.trace_id
+    try:
+        final = rebuilt.assistant_graph_app.graph.invoke(
+            None,
+            config=prepared.identity.runnable_config(),
+            context=resumed.runtime_context,
+        )
+    finally:
+        rebuilt.close()
+
+    assert first_tool.invocations == 1
+    assert rebuilt_tool.invocations == 0
+    assert final["tool_observations"][0]["status"] == "failed"
+    assert final["tool_observations"][0]["error"]["code"] == (
+        "tool_operation_outcome_unknown"
+    )

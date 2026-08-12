@@ -14,6 +14,11 @@ from assistant_agent.runtime.decision_models import AssistantDecision
 from assistant_agent.runtime.requests import UserRequest
 from assistant_agent.providers.provider_errors import sanitize_error_detail, sanitize_error_message
 from assistant_agent.runtime.tool_executor import ToolExecutor
+from assistant_agent.runtime.tool_operation_barrier import (
+    new_nonresumable_operation_scope_id,
+    normalized_tool_input_digest,
+    stable_assistant_thread_id,
+)
 from assistant_agent.tools.plugins.registry_factory import create_default_registry
 from assistant_agent.tools.registry import ToolRegistry
 
@@ -234,6 +239,22 @@ class OfflineMCPServer:
             trace_store=self.runtime.trace_store,
             trace_id=state.trace_id,
             node_name="mcp_tool_run",
+            operation_scope_id=new_nonresumable_operation_scope_id(
+                thread_id=stable_assistant_thread_id(
+                    agent_id=state.agent_id,
+                    user_id=state.user_id,
+                    session_id=state.session_id,
+                ),
+                tool_name=name,
+                normalized_input_digest=normalized_tool_input_digest(
+                    validation.validated_input.model_dump(mode="json")
+                ),
+            ),
+            operation_thread_id=stable_assistant_thread_id(
+                agent_id=state.agent_id,
+                user_id=state.user_id,
+                session_id=state.session_id,
+            ),
         )
         payload = result.model_dump(mode="json")
         status = "succeeded" if result.success else "failed"

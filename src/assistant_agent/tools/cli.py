@@ -9,6 +9,11 @@ from typing import Any
 from assistant_agent.runtime.action_validator import ActionValidator
 from assistant_agent.runtime.state import AgentState
 from assistant_agent.runtime.tool_executor import ToolExecutor
+from assistant_agent.runtime.tool_operation_barrier import (
+    new_nonresumable_operation_scope_id,
+    normalized_tool_input_digest,
+    stable_assistant_thread_id,
+)
 from assistant_agent.config import ProviderConfig
 from assistant_agent.runtime.decision_models import AssistantDecision
 from assistant_agent.runtime.requests import UserRequest
@@ -148,11 +153,24 @@ def _run_simulate(args: argparse.Namespace) -> int:
         return 1
 
     sink = ListEventSink()
+    operation_thread_id = stable_assistant_thread_id(
+        agent_id=state.agent_id,
+        user_id=state.user_id,
+        session_id=state.session_id,
+    )
     result = ToolExecutor(registry=registry, event_sink=sink).run_tool(
         state,
         "simulate",
         args.tool,
         tool_input,
+        operation_scope_id=new_nonresumable_operation_scope_id(
+            thread_id=operation_thread_id,
+            tool_name=args.tool,
+            normalized_input_digest=normalized_tool_input_digest(
+                validation.validated_input.model_dump(mode="json")
+            ),
+        ),
+        operation_thread_id=operation_thread_id,
     )
     observation = observation_from_tool_result(result)
     finished = next(

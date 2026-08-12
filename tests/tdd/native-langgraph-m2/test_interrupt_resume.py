@@ -26,6 +26,7 @@ from assistant_agent.runtime.chat_adapter import ChatResult
 from assistant_agent.runtime.output_models import NativeToolCall
 from assistant_agent.runtime.requests import UserRequest
 from assistant_agent.runtime.runtime import AgentGraphRuntime
+from assistant_agent.runtime.tool_operation_barrier import SQLiteToolOperationStore
 from assistant_agent.runtime.event_sink import ListEventSink
 from assistant_agent.runtime.run_history import RunHistoryStore
 from assistant_agent.runtime.session_store import InMemorySessionStore
@@ -532,7 +533,9 @@ def test_provide_input_clears_pending_call_and_reenters_assistant_with_new_text(
         rebuilt.close()
 
 
-def test_write_category_without_trusted_request_does_not_automatically_interrupt() -> None:
+def test_write_category_without_trusted_request_does_not_automatically_interrupt(
+    tmp_path,
+) -> None:
     """Inferring HITL from a write category instead of structured policy must fail."""
 
     saver = InMemorySaver()
@@ -564,6 +567,9 @@ def test_write_category_without_trusted_request_does_not_automatically_interrupt
         ),
         session_store=InMemorySessionStore(),
         checkpointer=saver,
+        tool_operation_store=SQLiteToolOperationStore(
+            tmp_path / "operations.sqlite3"
+        ),
     )
     prepared = _prepare(runtime, run_id="run-write-without-gate")
     try:

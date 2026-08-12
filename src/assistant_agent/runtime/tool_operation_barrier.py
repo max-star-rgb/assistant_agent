@@ -14,6 +14,7 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from threading import Lock
 from typing import Literal, Protocol
 
 
@@ -23,6 +24,8 @@ ToolOperationStatus = Literal[
 ReservationDisposition = Literal[
     "invoke", "replay_success", "replay_failure", "in_progress", "outcome_unknown"
 ]
+_DEFAULT_STORE_LOCK = Lock()
+_DEFAULT_STORES: dict[Path, "SQLiteToolOperationStore"] = {}
 
 
 class ToolOperationBarrierError(RuntimeError):
@@ -35,6 +38,10 @@ class OperationDigestConflict(ToolOperationBarrierError):
 
 class OperationOwnershipError(ToolOperationBarrierError):
     """A caller attempted to finish an operation it does not own."""
+
+
+class ToolOperationScopeRequired(ToolOperationBarrierError):
+    """A side-effecting call reached Executor without a persisted stable scope."""
 
 
 @dataclass(frozen=True)
@@ -139,10 +146,6 @@ class SQLiteToolOperationStore:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
-        # A newly constructed composition root represents a rebuilt owner.  Any
-        # row left in ``invoking`` may already have crossed the backend boundary,
-        # so recovery can only make it unknown; it must never replay by default.
-        self._recover_abandoned_invocations()
 
     def reserve_and_mark_invoking(
         self, request: ToolOperationRequest
@@ -273,6 +276,22 @@ class SQLiteToolOperationStore:
             ).fetchone()
         return _record_from_row(row) if row is not None else None
 
+    def recover_abandoned_invocations(self) -> int:
+        """Explicit process-start recovery; composition roots must serialize it."""
+
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            cursor = connection.execute(
+                """
+                UPDATE tool_operations
+                SET status = 'outcome_unknown', owner_token = NULL, updated_at = ?
+                WHERE status = 'invoking'
+                """,
+                (_utc_now(),),
+            )
+            connection.commit()
+            return cursor.rowcount
+
     def _commit(
         self,
         operation_key: str,
@@ -364,23 +383,26 @@ class SQLiteToolOperationStore:
                 """
             )
 
-    def _recover_abandoned_invocations(self) -> None:
-        with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            connection.execute(
-                """
-                UPDATE tool_operations
-                SET status = 'outcome_unknown', owner_token = NULL, updated_at = ?
-                WHERE status = 'invoking'
-                """,
-                (_utc_now(),),
-            )
-            connection.commit()
-
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path, timeout=30.0)
         connection.row_factory = sqlite3.Row
         return connection
+
+
+def default_tool_operation_store(
+    path: str | Path = Path(".local") / "langgraph" / "tool_operations.sqlite3",
+) -> SQLiteToolOperationStore:
+    """Return one process-shared store and recover only at first composition."""
+
+    resolved = Path(path).resolve()
+    with _DEFAULT_STORE_LOCK:
+        existing = _DEFAULT_STORES.get(resolved)
+        if existing is not None:
+            return existing
+        store = SQLiteToolOperationStore(resolved)
+        store.recover_abandoned_invocations()
+        _DEFAULT_STORES[resolved] = store
+        return store
 
 
 def normalized_tool_input_digest(tool_input: object) -> str:
@@ -433,6 +455,21 @@ def stable_operation_scope_id(
         separators=(",", ":"),
     ).encode("utf-8")
     return f"toolop:{hashlib.sha256(encoded).hexdigest()}"
+
+
+def new_nonresumable_operation_scope_id(
+    *, thread_id: str, tool_name: str, normalized_input_digest: str
+) -> str:
+    """Create a caller-owned scope for an explicitly non-resumable entry call."""
+
+    return stable_operation_scope_id(
+        thread_id=thread_id,
+        turn_origin_id=f"ephemeral:{secrets.token_urlsafe(24)}",
+        assistant_iteration=0,
+        call_ordinal=0,
+        tool_name=tool_name,
+        normalized_input_digest=normalized_input_digest,
+    )
 
 
 def _record_from_row(row: sqlite3.Row) -> ToolOperationRecord:
