@@ -81,7 +81,7 @@ Gate 0 不增加第九个 implementation task；它是 Task 1 开始前记录、
 | Invoke | **有限使用** | deterministic node/graph tests 可 `ainvoke`；production facade 以 async stream 为主 |
 | Stream / Streaming Modes | **实施** | Tasks 3、5、6 使用 v2 `updates/custom/tasks/checkpoints`，必要 child message stream 不进入公共协议 |
 | Checkpoint / Checkpointer / Thread | **实施，受 Gate 0 约束** | Task 5 official async SQLite、stable workflow thread、state snapshot/history |
-| Interrupt / Resume | **实施** | Task 5 branch interrupt、multi-interrupt ID map、同 thread 新 run `Command(resume=...)` |
+| Interrupt / Resume | **实施** | Task 5 父图 `await_branch_input` 唯一 interrupt owner、conditional `Send` 并行等待、multi-interrupt ID map、同 thread 新 run `Command(resume=...)` |
 | Memory | **领域服务保留** | memory/artifact 正文不进 state；child 只经 branch-local Runtime Context 调既有治理服务 |
 | Store | **按真实需求使用** | LangGraph checkpointer 保存执行位置；业务 SQLite 保存 owner/artifact/audit/projection；M3 不为覆盖名词强塞 `BaseStore` |
 | Runtime Context | **实施** | Task 1 由 checkpoint-safe assignment/owner/capability/tool-scope facts + runtime services 纯重建；cache 不是恢复事实源 |
@@ -98,22 +98,20 @@ Gate 0 不增加第九个 implementation task；它是 Task 1 开始前记录、
 - Create: `src/assistant_agent/workflows/graph_state.py`
 - Create: `src/assistant_agent/workflows/graph_context.py`
 - Modify: `src/assistant_agent/workflows/models.py`
-- Modify: `src/assistant_agent/runtime/graph_runtime.py`
 - Create: `tests/tdd/native-langgraph-m3/test_workflow_graph_state.py`
 - Create: `tests/tdd/native-langgraph-m3/state_inventory.md`
 
 **Interfaces:**
 - Consumes: `WorkflowSubmission`、`WorkflowPlanVersion`、`WorkflowBudget`、M2 `AssistantTurnGraphApp.graph_for_profile()`、`profile_input_adapter()` 和 `profile_output_adapter()`。
-- Produces: `WorkflowExecutionEngine`、`DurableWorkflowState`、`WorkflowProfileAssignment`、`WorkflowNodeResult`、`WorkflowResultSlot`、`WorkflowResultConflict`、`WorkflowGraphError`、`merge_result_ledger(left, right)`、`latest_results(ledger, generations)`、`merge_graph_errors(left, right)`、`initial_workflow_graph_state(...)`、`validate_durable_workflow_state(...)`。
-- Produces: `BranchProfileContextFactory.context_for_state(child_state) -> GraphRuntimeContext` 与 immutable `WorkflowGraphRuntimeContext`；factory 只依赖 checkpoint-safe child facts 和 process-owned runtime services。可选 cache 仅优化同进程重复构造，清空或跨进程缺失时结果等价。
-- Changes: `GraphRuntimeContext.child_context_resolver` 是 M3 唯一新增的 child 隔离 hook；M2 `bind_checkpointed_runtime_node()` 在读取 `agent_state/tool_executor` 前先以当前 child checkpoint state 解析 branch-local context，因此 compiled `AssistantTurnGraph` 可以作为真实 subgraph node，而不是在 wrapper 内手工 `ainvoke()`。
+- Produces: `WorkflowExecutionEngine`、`DurableWorkflowState`、`WorkflowProfileAssignment`、`WorkflowWorkerControl`、`WorkflowBranchResult`、`WorkflowResultSlot`、`WorkflowResultConflict`、`WorkflowGraphError`、`merge_result_ledger(left, right)`、`merge_resume_values(left, right)`、`merge_sorted_unique_refs(left, right)`、`latest_results(ledger, generations)`、`merge_graph_errors(left, right)`、`initial_workflow_graph_state(...)`、`validate_durable_workflow_state(...)`。
+- Produces: `BranchProfileContextFactory.context_for_assignment(outer_assignment, child_state, services) -> GraphRuntimeContext` 与 immutable `WorkflowGraphRuntimeServices`；factory 每次以 outer checkpoint/`Send` 传入的完整 assignment 和 process-owned services 纯构造 branch context。可选 pool/cache 只是优化，不是 identity、assignment 或 Tool scope 的事实源。
 - Persistent identity: `graph_name="DurableWorkflowGraph"`、`graph_version="3"`、`state_schema_version=1`。
 
 - [ ] **Step 1: 写严格 state 与 reducer RED**
 
 ```python
-def result(node_id: str, generation: int, summary: str) -> WorkflowNodeResult:
-    return WorkflowNodeResult(
+def result(node_id: str, generation: int, summary: str) -> WorkflowBranchResult:
+    return WorkflowBranchResult(
         node_id=node_id,
         execution_generation=generation,
         profile="worker",
@@ -158,14 +156,12 @@ Expected: collection/import FAIL，缺少 `assistant_agent.workflows.graph_state
 - [ ] **Step 3: 实现严格 DTO、TypedDict channel 和 reducer**
 
 ```python
-class WorkflowNodeResult(BaseModel):
+class WorkflowBranchResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     node_id: str = Field(pattern=r"^[a-zA-Z][a-zA-Z0-9_.-]{0,119}$")
     execution_generation: int = Field(ge=0, le=64)
     profile: Literal["worker", "verifier"]
-    status: Literal[
-        "succeeded", "retryable_failed", "repair", "waiting_input", "failed"
-    ]
+    status: Literal["succeeded", "blocked", "retryable_failed", "repair", "failed"]
     summary: str = Field(default="", max_length=4_000)
     artifact_refs: tuple[str, ...] = Field(default=(), max_length=128)
     error_code: str | None = Field(default=None, max_length=160)
@@ -179,7 +175,7 @@ class WorkflowResultSlot(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     node_id: str
     execution_generation: int = Field(ge=0, le=64)
-    variants_by_digest: dict[str, WorkflowNodeResult] = Field(max_length=2)
+    variants_by_digest: dict[str, WorkflowBranchResult] = Field(max_length=2)
     conflict: WorkflowResultConflict | None = None
 
 
@@ -199,7 +195,10 @@ class DurableWorkflowState(TypedDict):
     execution_generation_by_node: dict[str, int]
     active_wave: tuple[WorkflowProfileAssignment, ...]
     result_ledger: Annotated[dict[str, WorkflowResultSlot], merge_result_ledger]
-    pending_inputs_by_node: dict[str, PersistedWorkflowInputRequest]
+    resume_values_by_action_ref: Annotated[
+        dict[str, PersistedWorkflowResumeValue], merge_resume_values
+    ]
+    consumed_action_refs: Annotated[tuple[str, ...], merge_sorted_unique_refs]
     repair_round: int
     budget: PersistedWorkflowBudget
     result_artifact_refs: tuple[str, ...]
@@ -226,17 +225,32 @@ update 的所有排列和两种 parenthesization 验证代数性质。
 
 ```python
 class BranchProfileContextFactory:
-    def context_for_state(
-        self, child_state: AssistantTurnState
+    def context_for_assignment(
+        self,
+        outer_assignment: WorkflowProfileAssignment,
+        child_state: AssistantTurnState,
+        services: WorkflowGraphRuntimeServices,
     ) -> GraphRuntimeContext: ...
 
 
 @dataclass(frozen=True)
-class WorkflowGraphRuntimeContext(GraphRuntimeContext):
+class WorkflowGraphRuntimeServices:
+    provider_registry: ProviderRegistry
+    tool_registry: ToolRegistry
+    context_service: ContextService
+    operation_store: ToolOperationStore
+    memory_host: MemoryPluginHost
+    cancel_reader: WorkflowCancelReader
+    stream_writer: WorkflowStreamWriter
+
+
+@dataclass(frozen=True)
+class WorkflowGraphRuntimeContext:
     assistant_graph_app: AssistantTurnGraphApp
     artifact_store: LocalWorkflowArtifactStore
     context_compiler: WorkflowContextCompiler
     branch_context_factory: BranchProfileContextFactory
+    services: WorkflowGraphRuntimeServices
 ```
 
 `WorkflowProfileAssignment` 必须把 `profile_input_adapter()` 所需事实完整保存为 checkpoint-safe DTO：
@@ -250,13 +264,22 @@ class WorkflowGraphRuntimeContext(GraphRuntimeContext):
   Tool operation store、artifact/memory service、cancel reader 和 stream writer 从 process-owned runtime services
   注入，绝不持久化。
 
-branch adapter 用 assignment 生成 child state；`child_context_resolver=factory.context_for_state` 从 child 的
-persisted request/run/profile/context refs/capability refs/catalog 重建全新 `AgentState`、ToolExecutor 和
-`GraphRuntimeContext`，并以当前 Registry specs 验证 `tool_scope_ref`。factory 可以按完整 assignment fingerprint
-cache context template，但 cache miss/清空必须走相同纯构造路径，cache value 不能拥有可变 `AgentState`。
-测试并发解析两个 branch，断言 AgentState/ToolExecutor/counters/errors 不共享；关闭 app、创建全新 factory 后从
-planning/worker/verifier checkpoint 分别恢复，Provider trajectory/tool scope/output 与不中断 baseline 等价；
-Registry/capability/tool scope 变化、未知 assignment ref 或 owner mismatch 在任何 child node 前 fail closed。
+branch adapter 只把 assignment 中 Assistant 所需的字段投影为 child state；不得向
+`AssistantTurnState` 新增 `workflow_id/node_id/generation/assignment` 等 workflow channel。完整
+`WorkflowProfileAssignment` 始终来自当前 `Send` input/outer checkpoint；child state 只提供
+`assignment_ref`/digest、`user_id/session_id/agent_id/run_id/trace_id`、capability refs 与 tool-scope refs 供 factory
+双向校验，不能用它反向补全 assignment。`context_for_assignment()` 以 outer assignment 的
+owner identity、objective/constraints/input artifact/acceptance specs、capability refs/allowlist/catalog digest 为事实，
+再从 `WorkflowGraphRuntimeServices` 注入 Provider、Registry/ToolExecutor、Context/Memory/Artifact service、
+operation store、cancel reader 和 stream writer，重建全新 `AgentState`、ToolExecutor 和
+`GraphRuntimeContext`。factory 可按 assignment fingerprint cache immutable template，但 cache miss/清空必须走相同
+纯构造路径，cache value 不能拥有可变 `AgentState`。
+
+测试并发解析两个 branch，断言 AgentState/ToolExecutor/counters/errors 不共享；清空 cache、关闭
+app，创建全新 services/factory 后仅用 outer checkpoint assignment + child checkpoint 分别恢复
+planning/worker/verifier，Provider trajectory/tool scope/output 与不中断 baseline 等价；assignment
+digest/ref、owner identity、capability refs、allowlist 或 tool-scope digest 任一不匹配，都在任何 child node 前
+fail closed。
 
 - [ ] **Step 5: 写 state inventory 并运行 GREEN**
 
@@ -276,7 +299,6 @@ Expected: PASS。
 git add src/assistant_agent/workflows/graph_state.py \
   src/assistant_agent/workflows/graph_context.py \
   src/assistant_agent/workflows/models.py \
-  src/assistant_agent/runtime/graph_runtime.py \
   tests/tdd/native-langgraph-m3/test_workflow_graph_state.py \
   tests/tdd/native-langgraph-m3/state_inventory.md
 git commit -m "feat(workflows): define durable graph state and reducers"
@@ -295,7 +317,7 @@ git commit -m "feat(workflows): define durable graph state and reducers"
 
 **Interfaces:**
 - Consumes: Task 1 `DurableWorkflowState` / `WorkflowGraphRuntimeContext`，M2 `AssistantTurnGraphApp.graph_for_profile("planner")`，Workflow v2 `parse_workflow_plan_response()`、`materialize_runtime_plan()`、`validate_plan_dag()`。
-- Produces: `PlanningSubgraphState`（只组合 parent planning fields、严格 AssistantTurnState channels 和 bounded planner result）、`build_workflow_planning_subgraph(*, planner_graph) -> CompiledStateGraph`、`prepare_planner_profile_node(...)`、`project_planner_profile_node(...)`、`admit_planner_result_node(...)`。
+- Produces: `PlanningSubgraphState`（只组合 parent planning fields、完整 planner assignment、严格 AssistantTurnState channels 和 bounded planner result）、`build_workflow_planning_subgraph(*, planner_graph) -> CompiledStateGraph`、`prepare_planner_profile_node(...)`、`run_planner_profile_node(...)`、`project_planner_profile_node(...)`、`admit_planner_result_node(...)`。
 - Produces: strict `PlannerProfileResult(plan_proposal, model_calls_used, tool_calls_used)`；非法 proposal 只产生 `workflow_plan_rejected` graph error，不进入 worker routing。
 
 - [ ] **Step 1: 写真实 planning subgraph RED**
@@ -346,7 +368,7 @@ def build_workflow_planning_subgraph(*, planner_graph: Any) -> Any:
         context_schema=WorkflowGraphRuntimeContext,
     )
     graph.add_node("prepare_planner", prepare_planner_profile_node)
-    graph.add_node("planner_profile", planner_graph)
+    graph.add_node("planner_profile", run_planner_profile_node(planner_graph))
     graph.add_node("project_planner", project_planner_profile_node)
     graph.add_node("admit_plan", admit_planner_result_node)
     graph.add_edge(START, "prepare_planner")
@@ -358,10 +380,12 @@ def build_workflow_planning_subgraph(*, planner_graph: Any) -> Any:
 ```
 
 `prepare_planner_profile_node` 只把 `workflow_id/objective/deliverables/constraints/typed inputs/budget` 转为
-`ProfileInvocationInput(profile="planner", explicit_tool_allowlist=())`，生成 strict child channels 并注册
-branch-local context。`planner_graph` 必须作为 builder 的真实 compiled subgraph node，不能在 Python wrapper
-里手工 `planner_graph.ainvoke()`；因此 parent saver 能继承 namespace，`subgraphs=True` 能看到真实 child
-checkpoint/interrupt。`project_planner_profile_node` 只调用 `profile_output_adapter()`，输出 bounded response、usage
+完整 checkpoint-safe assignment 和 `ProfileInvocationInput(profile="planner", explicit_tool_allowlist=())`。
+`run_planner_profile_node(planner_graph)` 是受控 context-binding runnable：从 outer assignment 构造 child state，用
+`context_for_assignment(outer_assignment, child_state, services)` 绑定 branch-local context，以原样
+`RunnableConfig` 只调用 compiled child 一次。它不实现 loop/router/retry，不共享 mutable
+`AgentState`；实测 `subgraphs=True` 必须仍看到 `AssistantTurnGraph.planner` 的 nested run/namespace，否则该
+wrapper 实现不可接受。`project_planner_profile_node` 只调用 `profile_output_adapter()`，输出 bounded response、usage
 和 parse 后 proposal；父 `DurableWorkflowState`、business DB record 和 Store connection 均不传入 child。
 
 `admit_planner_result_node` 只调用 v2 parser、definition materializer 和 `validate_plan_dag()`；成功写入 admitted plan、每 node generation=0、phase=`admitted`，失败写入结构化 error/status=`failed`。Planner 输出不可信，不允许 prompt 或节点名称决定 admission。
@@ -401,12 +425,14 @@ git commit -m "feat(workflows): compose planner admission subgraph"
 - Create: `src/assistant_agent/workflows/durable_graph.py`
 - Modify: `src/assistant_agent/workflows/graph_state.py`
 - Modify: `src/assistant_agent/workflows/graph_context.py`
+- Modify: `src/assistant_agent/workflows/agent_runtime.py`
 - Create: `tests/tdd/native-langgraph-m3/test_workflow_send_join.py`
+- Create: `tests/tdd/native-langgraph-m3/test_workflow_branch_control.py`
 
 **Interfaces:**
 - Consumes: Task 2 `WorkflowPlanningSubgraph`、Task 1 reducer/context，M2 `AssistantTurnGraph.worker` child。
 - Produces: `build_durable_workflow_graph(*, planning_subgraph, checkpointer, store=None) -> CompiledStateGraph`。
-- Produces: `WorkflowProfileBranchState` / `WorkflowBranchOutput`、`build_worker_branch_subgraph(worker_graph) -> CompiledStateGraph`、`prepare_next_wave_node(state) -> dict`、`route_next_wave(state) -> list[Send] | Literal["publish", "fail"]`、`project_worker_result_node(...) -> dict`、`join_wave_node(state) -> dict`。
+- Produces: strict `WorkflowWorkerControl(outcome="completed"|"blocked"|"failed", ...)`、`WorkflowProfileBranchState` / `WorkflowBranchOutput`、`build_worker_branch_subgraph(worker_graph) -> CompiledStateGraph`、`run_profile_child_node(...)`、`parse_branch_control_node(...) -> dict`、`prepare_next_wave_node(state) -> dict`、`route_next_wave(state) -> list[Send] | Literal["publish", "fail"]`、`join_wave_node(state) -> dict`。
 - Graph topology: `START -> workflow_planning -> prepare_wave -(Conditional Send)-> run_worker -> join_wave -> prepare_wave|publish|fail -> END`；Task 4 在同一 builder 中加入 verifier/repair routing。
 
 - [ ] **Step 1: 写并行 super-step 与任意 DAG RED**
@@ -444,7 +470,39 @@ MULTIMODAL_AGENT_PROVIDER_MODE=mock \
 
 Expected: FAIL，`DurableWorkflowGraph` builder 和 `Send` router 尚不存在。
 
-- [ ] **Step 3: 实现 deterministic wave 与 `Send` router**
+- [ ] **Step 3: 实现严格 child control 和 parent branch projector**
+
+`agent_runtime.py` 将旧的宽松 workflow 控制解析收窄为显式 DTO：
+
+```python
+class WorkflowWorkerControl(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    outcome: Literal["completed", "blocked", "failed"]
+    summary: str = Field(max_length=4_000)
+    required_fields: tuple[str, ...] = Field(default=(), max_length=32)
+    prompt_code: str | None = Field(default=None, max_length=160)
+    safe_prompt: str | None = Field(default=None, max_length=2_000)
+    error_code: str | None = Field(default=None, max_length=160)
+```
+
+model validator 强制：`completed` 禁止 input/error 字段；`blocked` 必须同时有非空
+`required_fields/prompt_code/safe_prompt`，且 prompt 只能是经清洗的用户可见文本；`failed` 必须有
+`error_code` 且禁止 prompt。Assistant child 无论三种 outcome 都正常到 `END`，不调用
+`interrupt()`、不设置 workflow `pending_interrupt`、不识别 native interrupt ID。
+
+`build_worker_branch_subgraph()` 拓扑为
+`START -> prepare_child -> run_profile_child -> parse_branch_control -> END`。`prepare_child` 保留 `Send`
+传入的完整 `WorkflowProfileAssignment`，同时产生严格 Assistant child state；
+`run_profile_child` 以 `context_for_assignment(outer_assignment, child_state, services)` 绑定独立 context，只执行
+compiled worker child 一次。`parse_branch_control` 验证 `WorkflowWorkerControl`，调用 artifact adapter，
+并由**父 branch**生成 `WorkflowBranchResult`的唯一 keyed ledger update；child 不能直接写 outer
+ledger。两个 branch 并发时，outer assignment、child state、AgentState、ToolExecutor 和 usage 计数均不共享。
+
+`test_workflow_branch_control.py` 覆盖三种合法 outcome、extra/missing/unsafe prompt 拒绝、child 正常
+END 且无 interrupt、parent 每 branch 只写一个 result，以及 assignment digest/owner/tool scope 在 child
+首 node 前失配时 fail closed。
+
+- [ ] **Step 4: 实现 deterministic wave 与 `Send` router**
 
 ```python
 def route_next_wave(
@@ -454,7 +512,7 @@ def route_next_wave(
         return "fail"
     branches = tuple(state["active_wave"])
     if branches:
-        return [Send("run_worker", branch.profile_subgraph_input) for branch in branches]
+        return [Send("run_worker", branch) for branch in branches]
     if all_current_generation_nodes_succeeded(state):
         return "publish"
     return "fail"
@@ -462,14 +520,10 @@ def route_next_wave(
 
 `prepare_next_wave_node` 只从 admitted static DAG、current-generation result 和显式 dependency 计算全部 ready node，按 `node_id` 排序后一次写入 `active_wave`；不 claim、不 lease、不轮询、不写 DB。`route_next_wave` 只返回 `Send` 或终态 route；**不得再添加 `prepare_wave -> run_worker` 静态 edge**，否则同一 node 会被重复调度。
 
-`build_worker_branch_subgraph()` 的 `StateGraph` 使用 `input_schema=WorkflowProfileBranchState`、
-`output_schema=WorkflowBranchOutput`，拓扑固定为
-`START -> AssistantTurnGraph.worker -> project_worker_result -> END`。worker compiled graph 是真实 subgraph
-node，不由 Python wrapper 手工 invoke。每个 `Send` PUSH task 收到已经由 Task 1 adapter 从 checkpoint-safe
-assignment 构造的独立窄 child state，不收到整个父 state；outer branch checkpoint 保留完整
-assignment/node/generation，inner assistant child
-checkpoint 只含 AssistantTurnState channels。`project_worker_result` 经 `profile_output_adapter()` 和 artifact store
-adapter 形成一个 keyed ledger update：
+`Send` PUSH input 就是完整且窄的 `WorkflowProfileAssignment`，不是整个父 state。outer branch
+checkpoint 保留 assignment/node/generation；inner assistant checkpoint 仍只含原生 `AssistantTurnState`
+channels。parent `parse_branch_control` 经 `profile_output_adapter()` 和 artifact store adapter 形成一个
+keyed ledger update：
 
 ```python
 return {"result_ledger": ledger_update(node_result)}
@@ -478,7 +532,7 @@ return {"result_ledger": ledger_update(node_result)}
 parent budget 只在 `join_wave_node` 先调用 `latest_results()`、确认本 wave 无 conflict 且每个
 current-generation result 唯一后汇总扣减；parallel child 不并发修改一个 `WorkflowBudget`。
 
-- [ ] **Step 4: 编译真实父图并验证 Pregel 事实**
+- [ ] **Step 5: 编译真实父图并验证 Pregel 事实**
 
 ```python
 builder = StateGraph(
@@ -506,12 +560,13 @@ builder.add_edge("fail", END)
 
 使用真实 `astream(stream_mode=["updates", "tasks", "checkpoints"], subgraphs=True, version="v2")` 断言两个 root worker task 位于同一 super-step、join update 只在两者 task result 后出现、worker child namespace 可见；不能通过自定义 barrier 的调用计数单独证明 Graph 接入。
 
-- [ ] **Step 5: 运行 GREEN 和 no-scheduler gate**
+- [ ] **Step 6: 运行 GREEN 和 no-scheduler gate**
 
 ```bash
 MULTIMODAL_AGENT_PROVIDER_MODE=mock \
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q \
   tests/tdd/native-langgraph-m3/test_workflow_send_join.py \
+  tests/tdd/native-langgraph-m3/test_workflow_branch_control.py \
   tests/tdd/native-langgraph-m3/test_workflow_graph_state.py
 
 rg -n "ThreadPoolExecutor|claim_ready_work_item|renew_work_item_lease|run_claim" \
@@ -522,14 +577,16 @@ rg -n "ThreadPoolExecutor|claim_ready_work_item|renew_work_item_lease|run_claim"
 
 Expected: pytest PASS；`rg` 无输出。
 
-- [ ] **Step 6: 提交**
+- [ ] **Step 7: 提交**
 
 ```bash
 git add src/assistant_agent/workflows/durable_graph_nodes.py \
   src/assistant_agent/workflows/durable_graph.py \
   src/assistant_agent/workflows/graph_state.py \
   src/assistant_agent/workflows/graph_context.py \
-  tests/tdd/native-langgraph-m3/test_workflow_send_join.py
+  src/assistant_agent/workflows/agent_runtime.py \
+  tests/tdd/native-langgraph-m3/test_workflow_send_join.py \
+  tests/tdd/native-langgraph-m3/test_workflow_branch_control.py
 git commit -m "feat(workflows): execute dag waves with native send and join"
 ```
 
@@ -548,7 +605,7 @@ git commit -m "feat(workflows): execute dag waves with native send and join"
 
 **Interfaces:**
 - Consumes: admitted plan 的 explicit constraint verifier、Task 3 wave router、M2 `AssistantTurnGraph.verifier`。
-- Produces: `run_verifier_profile_node(...)`、`decide_verification_node(...) -> Command[Literal["prepare_wave", "publish", "await_input", "fail"]]`、`minimal_repair_closure(plan, requested_ids, verifier_id) -> frozenset[str]`。
+- Produces: `run_verifier_profile_node(...)`、`decide_verification_node(...) -> Command[Literal["prepare_wave", "publish", "join_wave", "fail"]]`、`minimal_repair_closure(plan, requested_ids, verifier_id) -> frozenset[str]`。
 - Produces: `WORKFLOW_TRANSIENT_RETRY_POLICY = RetryPolicy(...)`、`WORKFLOW_NODE_TIMEOUT = TimeoutPolicy(...)`、`workflow_node_error_handler(state, error: NodeError) -> Command`。
 
 - [ ] **Step 1: 写 verifier/repair RED**
@@ -589,28 +646,31 @@ Expected: FAIL，verifier route、generation repair 和原生 policies 尚未注
 
 `prepare_next_wave_node` 根据 constraint binding 的 `verifier_work_item_id` 把 ready branch 的 profile 设置为
 `verifier`，router 分发到 `run_verifier`。`run_verifier` 与 worker 一样由
-`build_verifier_branch_subgraph(verifier_graph)` 把 M2 compiled verifier graph 直接注册为 child node，再由 bounded
-projector 输出 result；不得在 wrapper 手工 invoke。verifier child 只能看到 owner artifact refs、assigned
+`build_verifier_branch_subgraph(verifier_graph)` 按 Task 3 的同一个 context-binding runnable 执行 M2 compiled
+verifier graph 一次，再由 parent bounded projector 输出 result；wrapper 不实现 loop/retry/interrupt。verifier
+child 只能看到 owner artifact refs、assigned
 constraints、acceptance contract 和 read-only catalog。
 
 ```python
 def decide_verification_node(
     state: DurableWorkflowState,
-) -> Command[Literal["prepare_wave", "publish", "await_input", "fail"]]:
+) -> Command[Literal["prepare_wave", "publish", "join_wave", "fail"]]:
     decision = current_verifier_decision(state)
     if decision.status == "repair":
         return Command(
             update=repair_generation_update(state, decision.repair_node_ids),
             goto="prepare_wave",
         )
-    if decision.status == "waiting_input":
-        return Command(update=pending_input_update(decision), goto="await_input")
+    if decision.status == "blocked":
+        return Command(goto="join_wave")
     if decision.status == "succeeded" and all_deliverables_verified(state):
         return Command(goto="publish")
     return Command(update=failure_update(decision), goto="fail")
 ```
 
-`decide_verification` 通过 `destinations=("prepare_wave", "publish", "await_input", "fail")` 注册；它的控制流只由返回的 `Command` 决定，**不得为该 node 再添加静态 edge**。
+`decide_verification` 通过 `destinations=("prepare_wave", "publish", "join_wave", "fail")` 注册；blocked
+结果先由 parent projector 写 outer ledger，再交给 Task 5 的 join/interrupt router。该 node 的控制流只由
+返回的 `Command` 决定，**不得为该 node 再添加静态 edge**。
 
 `minimal_repair_closure` 先验证 requested ID 均为 verifier 的祖先，再取“requested node + 所有依赖它们且已产出 current-generation result 的后代 + verifier/deliverable downstream”闭包；只为该闭包 generation +1。无关 branch 结果仍 current，不重跑。
 
@@ -670,10 +730,6 @@ git commit -m "feat(workflows): verify and repair durable graph natively"
 - Modify: `src/assistant_agent/workflows/durable_graph.py`
 - Modify: `src/assistant_agent/workflows/durable_graph_nodes.py`
 - Modify: `src/assistant_agent/workflows/graph_state.py`
-- Modify: `src/assistant_agent/runtime/assistant_loop_graph.py`
-- Modify: `src/assistant_agent/runtime/assistant_loop_nodes.py`
-- Modify: `src/assistant_agent/runtime/assistant_graph_profiles.py`
-- Modify: `src/assistant_agent/runtime/assistant_interrupts.py`
 - Modify: `src/assistant_agent/runtime/assistant_runtime_app.py`
 - Modify: `src/assistant_agent/runtime/checkpointer.py`
 - Create: `tests/tdd/native-langgraph-m3/test_workflow_interrupt_resume.py`
@@ -681,17 +737,18 @@ git commit -m "feat(workflows): verify and repair durable graph natively"
 
 **Interfaces:**
 - Depends on: M2 Task 2 `open_async_checkpointer(...)`、official `AsyncSqliteSaver` handle 和进程级 `AssistantRuntimeApp.astart()/aclose()` owner。该依赖门未完成时，本任务只能运行 `InMemorySaver` 的同进程 interrupt RED/GREEN，persistent/cross-process acceptance 必须保持 pending。
-- Produces: `WorkflowGraphExecutionIdentity.for_workflow(...)`、`WorkflowInterrupt(action_ref, ...)`、`WorkflowResume(values_by_action_ref)`、`DurableWorkflowGraphApp.arun(...)`、`.aresume(...)`、`.aget_state(...)`、`.aget_state_history(...)`。
+- Produces: `WorkflowGraphExecutionIdentity.for_workflow(...)`、`WorkflowBranchInterruptInput`、`PersistedWorkflowResumeValue`、`WorkflowResume(values_by_action_ref)`、`route_blocked_branches(state) -> list[Send]`、`await_branch_input_node(input) -> dict`、`apply_branch_resumes_node(state) -> dict`、`DurableWorkflowGraphApp.arun(...)`、`.aresume(...)`、`.aget_state(...)`、`.aget_state_history(...)`。
 - Resume contract: 相同 `thread_id`、新 `run_id`；app 从 fresh native snapshot 将业务 `action_ref` 映射为当前
   `Interrupt.id`，再调用 `Command(resume={interrupt_id: value, ...})`。native interrupt ID 不进入外部协议或业务 DB。
 
-- [ ] **Step 1: 写单个和多个 native interrupt RED**
+- [ ] **Step 1: 写父图唯一 interrupt owner 的单个/多个 RED**
 
-使用一个 worker blocked 和两个并行 worker 同时 blocked 的真实 `Send` 图。断言 interrupt 只由
-`AssistantTurnGraph.worker/verifier` 内部 `await_input` node 产生，snapshot 的 native subgraph `tasks` 中分别有
-1/2 个 interrupt；outer worker/verifier wrapper 不调用 `interrupt()`。状态为 `waiting_input` 且无 terminal
-artifact；以业务 `action_ref` 提交完整/部分 multi-resume，app 从当前 snapshot 映射 native IDs，只继续已提供的
-pending child，已成功 sibling 不重跑。
+使用一个 worker blocked 和两个并行 worker 同时 blocked 的真实 `Send` 图。断言 Assistant
+child 都正常到 END 并输出 strict `WorkflowWorkerControl`；它们的 snapshot 没有 interrupt 或
+workflow pending channel。parent projector 把 blocked control 写成 outer `WorkflowBranchResult`；`join_wave`
+从 outer checkpoint 取得对应的完整 `WorkflowProfileAssignment`，并以 conditional `Send` 在同一
+super-step 创建 1/2 个 `await_branch_input` task。只有这些**父图 task**调用 `interrupt()`；root
+snapshot `tasks` 中可见且 payload 可映射，无 terminal artifact。
 
 ```python
 result = await app.aresume(
@@ -709,26 +766,51 @@ assert child_runs("already_done") == 1
 assert result.final_state["invocation_run_id"] == resume_identity.run_id
 ```
 
-- [ ] **Step 2: 让 AssistantTurn child 成为唯一 interrupt owner**
+- [ ] **Step 2: 实现 blocked join、conditional `Send` 和窄 interrupt input**
 
-worker/verifier profile 的 validated structured control 产生 `blocked` 时，由 child graph 内部 profile result adapter
-设置 strict `pending_interrupt`，其 action ref 固定派生为
-`workflow:{workflow_id}:node:{node_id}:generation:{generation}`；child 自己的 conditional edge 随后进入既有
-`await_input` node，且**只有这个 child node 调用 `interrupt()`**。payload 只含 action ref、
-`workflow_id/node_id/generation/required_fields/prompt_code`。outer branch wrapper 既不调用 interrupt，也不把
-`waiting_user` 转成第二个 parent interrupt，只允许 native pending subgraph task 向上冒泡。
+`join_wave_node` 先通过 `latest_results()` 读 outer ledger，再以
+`(node_id, execution_generation)` 在 outer `active_wave/admitted_plan` 定位完整 assignment。任何缺失、
+digest/owner/generation 不匹配均 fail closed。router 对每个 blocked branch 返回：
 
-`DurableWorkflowGraphApp` 递归读取 root/task/subgraph snapshot，收集 native `Interrupt.id` 和 payload，以
-`action_ref` 为业务 key 建立本次内存映射；同一 action ref 对应不同 payload/ID、未知 node、generation 不匹配、
-owner 不匹配全部 fail closed。`WorkflowResume.values_by_action_ref` 可以只恢复部分并行 child；app 只对当前
-snapshot 中匹配的 action ref 构造 `{native_interrupt_id: value}`，未提供 child 保持 pending。native
-interrupt/checkpoint ID 不保存到 Workflow v2 model、业务 projection 或公共 API。
+```python
+Send(
+    "await_branch_input",
+    WorkflowBranchInterruptInput(
+        workflow_id=assignment.workflow_id,
+        node_id=assignment.node_id,
+        execution_generation=assignment.execution_generation,
+        action_ref=stable_action_ref(assignment),
+        required_fields=result.input_request.required_fields,
+        prompt_code=result.input_request.prompt_code,
+        safe_prompt=result.input_request.safe_prompt,
+    ),
+)
+```
 
-如保留媒体消费者所需的 opaque `resume_token`，它只作为 owner-bound action token 指向一个 action ref，不能
-缓存 native interrupt ID；每次恢复仍必须重读 snapshot 映射。一次请求可以提交一个 token/value，内部
-`WorkflowResume` 和 graph API 必须支持多 action map，以便 eval/operator 一次恢复多个 pending child。
+`WorkflowBranchInterruptInput` 只包含上述 owner/generation、业务 action ref 和有界用户提示，不包含
+child state、全量 assignment、runtime service 或 native ID。`await_branch_input_node` 是唯一
+`interrupt(input.model_dump())` owner；返回后校验为 `PersistedWorkflowResumeValue`，并向
+`resume_values_by_action_ref` 的 associative/commutative/idempotent reducer 写一个 keyed update。所有同波
+await task 结束后，Pregel join 才进入 `apply_branch_resumes`。
 
-- [ ] **Step 3: 主 async stream 使用同步 durability**
+`apply_branch_resumes` 以已消费 action ledger 保证 replay 幂等，为每个恢复的 blocked node 将 generation
+精确 `+1`，保留旧 generation blocked result 作历史，并产生含 typed resume value/
+`resume_of_action_ref` 的新 `WorkflowProfileAssignment`；随后重新 `Send` worker/verifier。这避免在同一
+`(node_id,generation)` 下用 completed 覆盖 blocked，也不修改或删除 ledger 历史。已成功 sibling 不重跑。
+
+- [ ] **Step 3: 从父 snapshot 映射 multi-resume**
+
+`DurableWorkflowGraphApp` 只读 root snapshot 的 parent `await_branch_input` tasks，收集 native
+`Interrupt.id` 和 payload，以 `action_ref` 建立本次内存映射；同一 action ref 对应不同 payload/ID、
+未知 node、generation/owner 不匹配全部 fail closed。调用严格使用
+`Command(resume={Interrupt.id: value, ...})`；未提供的并行 interrupt 保持 pending，已提供任务的
+reducer update 可重放且不冲突。native interrupt/checkpoint ID 不保存到 Workflow model、业务
+projection 或公共 API。
+
+如媒体实际消费者仍需 opaque `resume_token`，它只作为 owner-bound token 指向 action ref，不缓存
+native ID；每次恢复重读 snapshot。内部 `WorkflowResume` 和 graph API 支持多 action map。
+
+- [ ] **Step 4: 主 async stream 使用同步 durability**
 
 ```python
 async for raw in self.graph.astream(
@@ -745,13 +827,15 @@ async for raw in self.graph.astream(
 
 run outcome 必须在 stream 结束后调用 `aget_state(..., subgraphs=True)` 判断：pending task + interrupt=`interrupted`；pending task 无 interrupt=`infrastructure_error`；无 pending task且 state terminal=`completed|failed|cancelled`。不得从最后一个自定义 event 猜终态。
 
-- [ ] **Step 4: 在依赖授权门通过后写并运行 SQLite 跨进程恢复 RED/GREEN**
+- [ ] **Step 5: 在依赖授权门通过后写并运行 SQLite 跨进程恢复 RED/GREEN**
 
 测试流程必须真实关闭 app/saver/SQLite connection并丢弃 branch context cache，再新建
 `AssistantRuntimeApp`、official saver、全新 `BranchProfileContextFactory` 和 `DurableWorkflowGraphApp`，使用同一
-DB path/thread resume。分别在 planning 后、第一 wave 后、worker/verifier child interrupt 和 multi-interrupt
-时重建；新的 pure factory 只从 checkpoint assignment/owner/capability/tool-scope facts + runtime services
-重建 child context，恢复结果与不中断 baseline 的 current-generation ledger、artifact refs、budget 和 terminal
+DB path/thread resume。分别在 planning 后、第一 wave 后、parent single/multi-interrupt、部分 multi-resume
+后重建；新 pure factory 必须通过
+`context_for_assignment(outer_checkpoint_assignment, child_checkpoint_state, fresh_services)` 重建 context，即使清空
+pool/cache 也恢复出相同 identity/tool scope。恢复结果与不中断 baseline 的 current-generation
+ledger、artifact refs、budget 和 terminal
 state 等价，已完成 child 与 write operation 不重复。
 
 ```bash
@@ -763,24 +847,20 @@ MULTIMODAL_AGENT_PROVIDER_MODE=mock \
 
 Expected: 授权门通过并完成 M2 Task 2 后 PASS。若门未通过，只可报告 `test_workflow_interrupt_resume.py` 的 InMemory 结果；不得 skip persistent test 后声称完成。
 
-- [ ] **Step 5: 验证 checkpoint version 和身份 fail-closed**
+- [ ] **Step 6: 验证 checkpoint version 和身份 fail-closed**
 
 覆盖不同 user/agent、不同 workflow thread、复用旧 run ID、已消费 resume token、旧 graph/state schema、未知
 interrupt/action ref 和 generation mismatch；这些情况在任何 child/tool/publish 前失败，且 business record 不
-伪造 completed。部分 multi-resume 是合法非终态：只恢复命中的 child，其余 interrupt 继续存在；重复提供已完成
+伪造 completed。部分 multi-resume 是合法非终态：只恢复命中的 parent await task，其余 interrupt 继续存在；重复提供已完成
 action ref 才 fail closed。
 
-- [ ] **Step 6: 提交**
+- [ ] **Step 7: 提交**
 
 ```bash
 git add src/assistant_agent/workflows/durable_graph_app.py \
   src/assistant_agent/workflows/durable_graph.py \
   src/assistant_agent/workflows/durable_graph_nodes.py \
   src/assistant_agent/workflows/graph_state.py \
-  src/assistant_agent/runtime/assistant_loop_graph.py \
-  src/assistant_agent/runtime/assistant_loop_nodes.py \
-  src/assistant_agent/runtime/assistant_graph_profiles.py \
-  src/assistant_agent/runtime/assistant_interrupts.py \
   src/assistant_agent/runtime/assistant_runtime_app.py \
   src/assistant_agent/runtime/checkpointer.py \
   tests/tdd/native-langgraph-m3/test_workflow_interrupt_resume.py \
