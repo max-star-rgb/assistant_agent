@@ -5,8 +5,9 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping
+from copy import deepcopy
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -39,6 +40,59 @@ class GraphReplayRequest(_StrictModel):
     selector: GraphCheckpointSelector
 
 
+class GraphForkPatch(_StrictModel):
+    """Allowlisted product fields that may differ on one native branch."""
+
+    request_text: str | None = Field(default=None, max_length=32_000)
+    response_style: Literal[
+        "conversation", "concise", "structured", "voice"
+    ] | None = None
+
+
+class GraphForkRequest(_StrictModel):
+    """Request one owner-bound branch without exposing native checkpoint IDs."""
+
+    selector: GraphCheckpointSelector
+    patch: GraphForkPatch
+
+
+def fork_patch_for_assistant_state(
+    historical: Mapping[str, Any],
+    patch: GraphForkPatch,
+) -> dict[str, Any]:
+    """Apply only product-owned request fields to validated checkpoint state."""
+
+    if not isinstance(patch, GraphForkPatch):
+        raise TypeError("patch must be a GraphForkPatch")
+    from assistant_agent.runtime.assistant_graph_state import (
+        validate_assistant_turn_state,
+    )
+
+    persisted = validate_assistant_turn_state(historical)
+    updated = deepcopy(dict(persisted))
+    request = dict(cast(Mapping[str, Any], persisted["request"]))
+    if "request_text" in patch.model_fields_set:
+        prior_text = request.get("text")
+        messages = list(request.get("messages") or ())
+        if (
+            prior_text is not None
+            and messages
+            and messages[-1].get("role") == "user"
+            and messages[-1].get("text") == prior_text
+        ):
+            messages.pop()
+        request["text"] = patch.request_text
+        if patch.request_text is not None:
+            messages.append(
+                {"role": "user", "text": patch.request_text, "tool_call_id": None}
+            )
+        request["messages"] = messages[-128:]
+    if "response_style" in patch.model_fields_set and patch.response_style is not None:
+        request["response_style"] = patch.response_style
+    updated["request"] = request
+    return cast(dict[str, Any], validate_assistant_turn_state(updated))
+
+
 def graph_history_ref(
     *,
     thread_id: str,
@@ -63,6 +117,9 @@ def graph_history_ref(
 __all__ = [
     "GraphCheckpointSelector",
     "GraphCheckpointSummary",
+    "GraphForkPatch",
+    "GraphForkRequest",
     "GraphReplayRequest",
+    "fork_patch_for_assistant_state",
     "graph_history_ref",
 ]

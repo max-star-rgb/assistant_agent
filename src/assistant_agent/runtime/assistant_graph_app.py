@@ -14,7 +14,10 @@ from assistant_agent.runtime.assistant_loop_graph import (
 )
 from assistant_agent.runtime.assistant_graph_state import (
     AssistantTurnState,
+    assistant_capability_ref_identity,
+    persisted_request_from_user_request,
     validate_assistant_turn_state,
+    validate_assistant_runtime_refs,
 )
 from assistant_agent.runtime.assistant_interrupts import (
     AssistantInterrupt,
@@ -39,10 +42,15 @@ from assistant_agent.runtime.graph_invocation_claims import (
 from assistant_agent.runtime.graph_time_travel import (
     GraphCheckpointSelector,
     GraphCheckpointSummary,
+    GraphForkRequest,
     GraphReplayRequest,
+    fork_patch_for_assistant_state,
     graph_history_ref,
 )
 from assistant_agent.runtime.tool_operation_barrier import stable_assistant_thread_id
+from assistant_agent.runtime.product_event_projector import (
+    validate_runtime_product_fact,
+)
 from assistant_agent.observability.langsmith_config import LangSmithConfig
 from assistant_agent.observability.langsmith_native import (
     native_graph_trace_scope,
@@ -404,11 +412,166 @@ class AssistantTurnGraphApp:
                 begin_native=claim_lease.begin_native,
                 runnable_config=historical_config,
                 part_consumer=part_consumer,
+                safe_time_travel_parts=True,
             )
             result = replace(result, checkpoint_config=None)
             if _is_terminal_state(result.final_state):
                 claim_lease.mark_terminal()
             return result
+
+    async def afork(
+        self,
+        *,
+        identity: GraphExecutionIdentity,
+        context: GraphRuntimeContext,
+        request: GraphForkRequest,
+        part_consumer: Callable[[GraphStreamPart], object] | None = None,
+    ) -> GraphStreamResult:
+        """Create and execute one native branch from an owned checkpoint."""
+
+        if not isinstance(request, GraphForkRequest):
+            raise TypeError("request must be a GraphForkRequest")
+        fork_context = replace(context, invocation_kind="fork")
+        with self._invocation_claim_scope(
+            identity=identity,
+            context=fork_context,
+        ) as claim_lease:
+            historical = await self._resolve_history_snapshot(
+                identity,
+                request.selector,
+            )
+            try:
+                values = fork_patch_for_assistant_state(
+                    validate_assistant_turn_state(historical.values),
+                    request.patch,
+                )
+            except Exception as exc:
+                raise GraphExecutionError(
+                    "graph_checkpoint_incompatible",
+                    "Assistant checkpoint cannot be forked by this graph version.",
+                ) from exc
+            fork_context = self._fork_context_from_snapshot(
+                values,
+                identity=identity,
+                context=fork_context,
+            )
+            historical_config = _snapshot_config(historical)
+            updater = getattr(self._graph, "aupdate_state", None)
+            if not callable(updater):
+                raise GraphExecutionError(
+                    "graph_update_state_api_unavailable",
+                    "Compiled graph does not expose native async state updates.",
+                )
+            claim_lease.begin_native()
+            try:
+                fork_config = await updater(
+                    historical_config,
+                    values,
+                    as_node="time_travel_anchor",
+                )
+                getter = getattr(self._graph, "aget_state", None)
+                if not callable(getter):
+                    raise GraphExecutionError(
+                        "graph_state_api_unavailable",
+                        "Compiled graph does not expose native async state access.",
+                    )
+                fork_snapshot = await getter(fork_config)
+            except GraphExecutionError:
+                raise
+            except Exception as exc:
+                raise GraphExecutionError(
+                    "graph_fork_update_failed",
+                    "Native graph branch could not be created safely.",
+                ) from exc
+            if tuple(getattr(fork_snapshot, "next", ()) or ()) != (
+                "prepare_invocation",
+            ):
+                raise GraphExecutionError(
+                    "graph_fork_reentry_missing",
+                    "Fork did not enter the invocation gate.",
+                )
+            result = await self._consume_stream_unclaimed(
+                None,
+                identity=identity,
+                context=fork_context,
+                begin_native=lambda: None,
+                runnable_config=fork_config,
+                part_consumer=part_consumer,
+                safe_time_travel_parts=True,
+            )
+            result = replace(result, checkpoint_config=None)
+            if _is_terminal_state(result.final_state):
+                claim_lease.mark_terminal()
+            return result
+
+    @staticmethod
+    def _fork_context_from_snapshot(
+        state: AssistantTurnState,
+        *,
+        identity: GraphExecutionIdentity,
+        context: GraphRuntimeContext,
+    ) -> GraphRuntimeContext:
+        """Validate fresh invocation identity and frozen refs before branching."""
+
+        persisted_run = state["run"]
+        persisted_request = state["request"]
+        runtime_state = context.agent_state
+        if runtime_state is None:
+            raise GraphExecutionError(
+                "graph_fork_context_missing",
+                "Fork requires invocation-local AgentState.",
+            )
+        expected_thread = GraphExecutionIdentity.for_assistant_turn(
+            agent_id=str(persisted_run["agent_id"]),
+            user_id=str(persisted_request["user_id"]),
+            session_id=str(persisted_request["session_id"]),
+            run_id=identity.run_id,
+        ).thread_id
+        runtime_request = persisted_request_from_user_request(runtime_state.request)
+        runtime_request["capability_refs"] = list(
+            assistant_capability_ref_identity(runtime_state)
+        )
+        if (
+            identity.thread_id != expected_thread
+            or identity.agent_id != persisted_run["agent_id"]
+            or runtime_state.user_id != persisted_request["user_id"]
+            or runtime_state.session_id != persisted_request["session_id"]
+            or runtime_state.agent_id != persisted_run["agent_id"]
+            or runtime_state.run_id != identity.run_id
+            or runtime_state.trace_id != persisted_run["trace_id"]
+            or runtime_request != persisted_request
+        ):
+            raise GraphExecutionError(
+                "graph_fork_identity_mismatch",
+                "Fork identity or runtime context does not own this checkpoint branch.",
+            )
+        if identity.run_id == persisted_run["run_id"]:
+            raise GraphExecutionError(
+                "graph_fork_run_id_reused",
+                "Fork requires a new invocation run_id.",
+            )
+        if state["profile"] != context.graph_profile:
+            raise GraphExecutionError(
+                "graph_profile_mismatch",
+                "Fork context profile does not match this checkpoint.",
+            )
+        try:
+            validate_assistant_runtime_refs(state, runtime_state)
+        except Exception as exc:
+            raise GraphExecutionError(
+                "graph_fork_runtime_refs_mismatch",
+                "Fork runtime refs do not match this checkpoint.",
+            ) from exc
+        checkpoint_tools = set(state["catalog"]["available_tool_names"])
+        runtime_tools = {
+            spec.name for spec in context.tool_executor.registry.list_specs()
+        }
+        if not checkpoint_tools.issubset(runtime_tools):
+            raise GraphExecutionError(
+                "graph_fork_catalog_unavailable",
+                "Fork checkpoint Tool catalog is unavailable in this runtime.",
+            )
+        return replace(context, invocation_kind="fork")
 
     @staticmethod
     def _replay_context_from_snapshot(
@@ -769,6 +932,7 @@ class AssistantTurnGraphApp:
         begin_native: Callable[[], None],
         runnable_config: Mapping[str, Any] | None = None,
         part_consumer: Callable[[GraphStreamPart], object] | None = None,
+        safe_time_travel_parts: bool = False,
     ) -> GraphStreamResult:
         """Consume the stream, then use native state—not stream shape—as outcome."""
 
@@ -782,9 +946,6 @@ class AssistantTurnGraphApp:
             begin_native=begin_native,
             runnable_config=runnable_config,
         ):
-            parts.append(part)
-            if part_consumer is not None:
-                part_consumer(part)
             if part.type == "values" and not part.namespace:
                 final_state = part.data
             if part.type == "checkpoints" and not part.namespace:
@@ -793,6 +954,16 @@ class AssistantTurnGraphApp:
                 )
                 if isinstance(checkpoint_config, Mapping):
                     final_checkpoint_config = checkpoint_config
+            public_part = (
+                _safe_time_travel_stream_part(part)
+                if safe_time_travel_parts
+                else part
+            )
+            if public_part is None:
+                continue
+            parts.append(public_part)
+            if part_consumer is not None:
+                part_consumer(public_part)
         if getattr(self._graph, "checkpointer", None) is None:
             if final_state is _MISSING_FINAL_STATE:
                 raise GraphExecutionError(
@@ -1022,6 +1193,57 @@ def _snapshot_interrupt_objects(snapshot: Any) -> tuple[Any, ...]:
         if child is not None and hasattr(child, "tasks"):
             collected.extend(_snapshot_interrupt_objects(child))
     return tuple(collected)
+
+
+def _safe_time_travel_stream_part(part: GraphStreamPart) -> GraphStreamPart | None:
+    """Project native replay/fork stream data without graph state or native IDs."""
+
+    if part.namespace:
+        return None
+    if part.type == "updates" and isinstance(part.data, Mapping):
+        return GraphStreamPart(
+            type="updates",
+            namespace=(),
+            data={str(node_name): None for node_name in part.data},
+        )
+    if part.type == "custom":
+        try:
+            fact = validate_runtime_product_fact(part.data)
+        except Exception:
+            return None
+        data = fact.model_dump(mode="json")
+        if _contains_native_stream_key(data):
+            return None
+        return GraphStreamPart(type="custom", namespace=(), data=data)
+    return None
+
+
+_NATIVE_STREAM_KEYS = frozenset(
+    {
+        "checkpoint",
+        "checkpoints",
+        "checkpoint_id",
+        "checkpoint_ns",
+        "config",
+        "configurable",
+        "interrupt_id",
+        "ns",
+        "state",
+        "tasks",
+    }
+)
+
+
+def _contains_native_stream_key(value: object) -> bool:
+    if isinstance(value, Mapping):
+        return any(
+            str(key).casefold() in _NATIVE_STREAM_KEYS
+            or _contains_native_stream_key(item)
+            for key, item in value.items()
+        )
+    if isinstance(value, (list, tuple)):
+        return any(_contains_native_stream_key(item) for item in value)
+    return False
 
 
 def _validate_history_limit(limit: int) -> None:
