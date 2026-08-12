@@ -118,6 +118,12 @@ class GraphStreamResult:
     checkpoint_config: dict[str, Any] | None = None
 
 
+@dataclass(frozen=True)
+class _GraphInvocationClaimLease:
+    begin_native: Callable[[], None]
+    mark_terminal: Callable[[], None]
+
+
 class AssistantTurnGraphApp:
     """Own the one compiled assistant graph shared by a runtime instance."""
 
@@ -219,10 +225,14 @@ class AssistantTurnGraphApp:
     ) -> AssistantTurnState:
         """Invoke the compiled graph inside the same native tracing context."""
 
-        with self._invocation_claim_scope(identity=identity, context=context):
+        with self._invocation_claim_scope(
+            identity=identity,
+            context=context,
+        ) as claim_lease:
             with self._native_tracing(identity):
                 with native_graph_trace_scope() as callbacks:
                     config = self._runnable_config(identity, callbacks=callbacks)
+                    claim_lease.begin_native()
                     final_state = cast(
                         AssistantTurnState,
                         self._graph.invoke(
@@ -231,6 +241,8 @@ class AssistantTurnGraphApp:
                             context=context,
                         ),
                     )
+            if _is_terminal_state(final_state):
+                claim_lease.mark_terminal()
             return final_state
 
     async def astream(
@@ -242,13 +254,26 @@ class AssistantTurnGraphApp:
     ) -> AsyncIterator[GraphStreamPart]:
         """Stream normalized native events from the compiled graph."""
 
-        with self._invocation_claim_scope(identity=identity, context=context):
+        with self._invocation_claim_scope(
+            identity=identity,
+            context=context,
+        ) as claim_lease:
+            terminal_seen = False
             async for part in self._astream_unclaimed(
                 input_state,
                 identity=identity,
                 context=context,
+                begin_native=claim_lease.begin_native,
             ):
+                if (
+                    part.type == "values"
+                    and not part.namespace
+                    and _is_terminal_state(part.data)
+                ):
+                    terminal_seen = True
                 yield part
+            if terminal_seen:
+                claim_lease.mark_terminal()
 
     async def _astream_unclaimed(
         self,
@@ -256,12 +281,14 @@ class AssistantTurnGraphApp:
         *,
         identity: GraphExecutionIdentity,
         context: GraphRuntimeContext,
+        begin_native: Callable[[], None],
     ) -> AsyncIterator[GraphStreamPart]:
         """Stream native events under a claim owned by the public caller."""
 
         with self._native_tracing(identity):
             with native_graph_trace_scope() as callbacks:
                 config = self._runnable_config(identity, callbacks=callbacks)
+                begin_native()
                 async for raw in self._graph.astream(
                     input_state,
                     config=config,
@@ -293,13 +320,20 @@ class AssistantTurnGraphApp:
     ) -> GraphStreamResult:
         """Consume one native stream and classify its authoritative snapshot."""
 
-        with self._invocation_claim_scope(identity=identity, context=context):
-            return await self._consume_stream_unclaimed(
+        with self._invocation_claim_scope(
+            identity=identity,
+            context=context,
+        ) as claim_lease:
+            result = await self._consume_stream_unclaimed(
                 input_state,
                 identity=identity,
                 context=context,
+                begin_native=claim_lease.begin_native,
                 part_consumer=part_consumer,
             )
+            if _is_terminal_state(result.final_state):
+                claim_lease.mark_terminal()
+            return result
 
     async def aresume(
         self,
@@ -315,13 +349,17 @@ class AssistantTurnGraphApp:
         with self._invocation_claim_scope(
             identity=identity,
             context=resume_context,
-        ):
-            return await self._aresume_claimed(
+        ) as claim_lease:
+            result = await self._aresume_claimed(
                 identity=identity,
                 context=resume_context,
                 resume=resume,
+                begin_native=claim_lease.begin_native,
                 part_consumer=part_consumer,
             )
+            if _is_terminal_state(result.final_state):
+                claim_lease.mark_terminal()
+            return result
 
     async def _aresume_claimed(
         self,
@@ -329,6 +367,7 @@ class AssistantTurnGraphApp:
         identity: GraphExecutionIdentity,
         context: GraphRuntimeContext,
         resume: AssistantResume,
+        begin_native: Callable[[], None],
         part_consumer: Callable[[GraphStreamPart], object] | None,
     ) -> GraphStreamResult:
         """Validate and resume after the public boundary owns its claim."""
@@ -413,6 +452,7 @@ class AssistantTurnGraphApp:
             Command(resume=validated_resume.model_dump(mode="json")),
             identity=identity,
             context=context,
+            begin_native=begin_native,
             part_consumer=part_consumer,
         )
 
@@ -426,6 +466,39 @@ class AssistantTurnGraphApp:
                 "Compiled graph does not expose native async state access.",
             )
         return await getter(identity.runnable_config(), subgraphs=True)
+
+    async def adelete_thread(
+        self,
+        *,
+        agent_id: str,
+        user_id: str,
+        session_id: str,
+        invocation_claim_store: Any,
+    ) -> int:
+        """Delete native checkpoints before releasing the retained thread claims."""
+
+        thread_id = stable_assistant_thread_id(
+            agent_id=agent_id,
+            user_id=user_id,
+            session_id=session_id,
+        )
+        checkpointer = getattr(self._graph, "checkpointer", None)
+        if checkpointer is not None:
+            delete = getattr(checkpointer, "adelete_thread", None)
+            if not callable(delete):
+                raise GraphExecutionError(
+                    "graph_thread_delete_unavailable",
+                    "Configured checkpointer cannot delete an owned thread safely.",
+                )
+            await delete(thread_id)
+        return invocation_claim_store.delete_thread(
+            owner_digest=graph_invocation_owner_digest(
+                agent_id=agent_id,
+                user_id=user_id,
+                session_id=session_id,
+            ),
+            thread_id=thread_id,
+        )
 
     async def aget_state_history(
         self,
@@ -560,6 +633,7 @@ class AssistantTurnGraphApp:
         *,
         identity: GraphExecutionIdentity,
         context: GraphRuntimeContext,
+        begin_native: Callable[[], None],
         part_consumer: Callable[[GraphStreamPart], object] | None = None,
     ) -> GraphStreamResult:
         """Consume the stream, then use native state—not stream shape—as outcome."""
@@ -570,6 +644,7 @@ class AssistantTurnGraphApp:
             input_value,
             identity=identity,
             context=context,
+            begin_native=begin_native,
         ):
             parts.append(part)
             if part_consumer is not None:
@@ -647,15 +722,35 @@ class AssistantTurnGraphApp:
         *,
         identity: GraphExecutionIdentity,
         context: GraphRuntimeContext,
-    ) -> Iterator[None]:
+    ) -> Iterator[_GraphInvocationClaimLease]:
         """Apply one retained claim and exception map to every public API."""
 
-        self._claim_invocation(
+        owner_digest = self._claim_invocation(
             identity=identity,
             context=context,
         )
+
+        def begin_native() -> None:
+            context.invocation_claim_store.begin_native(
+                owner_digest=owner_digest,
+                thread_id=identity.thread_id,
+                run_id=identity.run_id,
+                invocation_token=context.invocation_token,
+            )
+
+        def mark_terminal() -> None:
+            context.invocation_claim_store.mark_terminal(
+                owner_digest=owner_digest,
+                thread_id=identity.thread_id,
+                run_id=identity.run_id,
+                invocation_token=context.invocation_token,
+            )
+
         try:
-            yield
+            yield _GraphInvocationClaimLease(
+                begin_native=begin_native,
+                mark_terminal=mark_terminal,
+            )
         except (GraphInvocationClaimConflict, GraphInvocationClaimCapacityExceeded) as exc:
             raise GraphExecutionError(exc.code, str(exc)) from exc
 
@@ -664,7 +759,7 @@ class AssistantTurnGraphApp:
         *,
         identity: GraphExecutionIdentity,
         context: GraphRuntimeContext,
-    ) -> None:
+    ) -> str:
         """Claim at the App boundary before tracing or native stream iteration."""
 
         state = context.agent_state
@@ -702,6 +797,7 @@ class AssistantTurnGraphApp:
             )
         except (GraphInvocationClaimConflict, GraphInvocationClaimCapacityExceeded) as exc:
             raise GraphExecutionError(exc.code, str(exc)) from exc
+        return owner_digest
 
     def _native_tracing(self, identity: GraphExecutionIdentity) -> Any:
         return native_langsmith_tracing(
@@ -908,6 +1004,14 @@ def _public_interrupts(snapshot: Any) -> tuple[AssistantInterrupt, ...]:
             )
         by_id[interrupt_id] = projected
     return tuple(by_id.values())
+
+
+def _is_terminal_state(value: object) -> bool:
+    try:
+        state = validate_assistant_turn_state(value)
+    except Exception:
+        return False
+    return state["run"]["status"] in {"completed", "failed", "cancelled"}
 
 
 def _default_langsmith_config() -> LangSmithConfig:

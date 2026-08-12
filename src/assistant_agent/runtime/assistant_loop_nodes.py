@@ -144,7 +144,7 @@ def prepare_invocation_node(
         user_id=str(request["user_id"]),
         session_id=str(request["session_id"]),
     )
-    context.invocation_claim_store.claim(
+    context.invocation_claim_store.assert_owned(
         owner_digest=graph_invocation_owner_digest(
             agent_id=str(run["agent_id"]),
             user_id=str(request["user_id"]),
@@ -152,7 +152,6 @@ def prepare_invocation_node(
         ),
         thread_id=thread_id,
         run_id=runtime_state.run_id,
-        invocation_kind=context.invocation_kind,
         invocation_token=context.invocation_token,
     )
     return updated

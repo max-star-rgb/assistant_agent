@@ -10,6 +10,7 @@ from typing import Literal, Protocol
 
 GraphInvocationKind = Literal["invoke", "resume", "replay", "fork"]
 GraphInvocationClaimResult = Literal["claimed", "same_invocation"]
+GraphInvocationPhase = Literal["pre_native", "native_started", "terminal"]
 
 
 class GraphInvocationClaimConflict(RuntimeError):
@@ -37,6 +38,33 @@ class GraphInvocationClaimStore(Protocol):
         invocation_token: str,
     ) -> GraphInvocationClaimResult: ...
 
+    def begin_native(
+        self,
+        *,
+        owner_digest: str,
+        thread_id: str,
+        run_id: str,
+        invocation_token: str,
+    ) -> None: ...
+
+    def assert_owned(
+        self,
+        *,
+        owner_digest: str,
+        thread_id: str,
+        run_id: str,
+        invocation_token: str,
+    ) -> None: ...
+
+    def mark_terminal(
+        self,
+        *,
+        owner_digest: str,
+        thread_id: str,
+        run_id: str,
+        invocation_token: str,
+    ) -> None: ...
+
     def delete_thread(self, *, owner_digest: str, thread_id: str) -> int: ...
 
 
@@ -50,7 +78,9 @@ class InMemoryGraphInvocationClaimStore:
             raise ValueError("max_entries must be positive")
         self._lock = Lock()
         self._max_entries = max_entries
-        self._claims: dict[tuple[str, str, str], str] = {}
+        self._claims: dict[
+            tuple[str, str, str], tuple[str, GraphInvocationPhase]
+        ] = {}
 
     def claim(
         self,
@@ -76,12 +106,81 @@ class InMemoryGraphInvocationClaimStore:
                         "Graph invocation claim capacity is exhausted; the owning "
                         "thread/checkpoint lifecycle must release retained claims."
                     )
-                self._claims[key] = invocation_token
+                self._claims[key] = (invocation_token, "pre_native")
                 return "claimed"
-            if existing == invocation_token:
+            if existing == (invocation_token, "pre_native"):
                 return "same_invocation"
         raise GraphInvocationClaimConflict(
             "Graph invocation run_id is already owned by another invocation."
+        )
+
+    def begin_native(
+        self,
+        *,
+        owner_digest: str,
+        thread_id: str,
+        run_id: str,
+        invocation_token: str,
+    ) -> None:
+        """Atomically admit exactly one native start for the claimed invocation."""
+
+        _validate_claim_fields(owner_digest, thread_id, run_id, invocation_token)
+        key = (owner_digest, thread_id, run_id)
+        with self._lock:
+            existing = self._claims.get(key)
+            if existing == (invocation_token, "pre_native"):
+                self._claims[key] = (invocation_token, "native_started")
+                return
+        raise GraphInvocationClaimConflict(
+            "Graph invocation has already started or is owned by another token."
+        )
+
+    def assert_owned(
+        self,
+        *,
+        owner_digest: str,
+        thread_id: str,
+        run_id: str,
+        invocation_token: str,
+    ) -> None:
+        """Verify an in-graph gate still belongs to the active invocation token."""
+
+        _validate_claim_fields(owner_digest, thread_id, run_id, invocation_token)
+        key = (owner_digest, thread_id, run_id)
+        with self._lock:
+            existing = self._claims.get(key)
+            if existing is None:
+                if len(self._claims) >= self._max_entries:
+                    raise GraphInvocationClaimCapacityExceeded(
+                        "Graph invocation claim capacity is exhausted; the owning "
+                        "thread/checkpoint lifecycle must release retained claims."
+                    )
+                self._claims[key] = (invocation_token, "native_started")
+                return
+            if existing is not None and existing[0] == invocation_token:
+                return
+        raise GraphInvocationClaimConflict(
+            "Graph invocation run_id is owned by another invocation."
+        )
+
+    def mark_terminal(
+        self,
+        *,
+        owner_digest: str,
+        thread_id: str,
+        run_id: str,
+        invocation_token: str,
+    ) -> None:
+        """Record a terminal phase without releasing the retained claim."""
+
+        _validate_claim_fields(owner_digest, thread_id, run_id, invocation_token)
+        key = (owner_digest, thread_id, run_id)
+        with self._lock:
+            if self._claims.get(key) == (invocation_token, "native_started"):
+                self._claims[key] = (invocation_token, "terminal")
+                return
+        raise GraphInvocationClaimConflict(
+            "Graph invocation cannot enter terminal from its current claim phase."
         )
 
     def delete_thread(self, *, owner_digest: str, thread_id: str) -> int:
@@ -149,6 +248,7 @@ def _validate_claim_fields(*values: str) -> None:
 __all__ = [
     "GraphInvocationClaimCapacityExceeded",
     "GraphInvocationClaimConflict",
+    "GraphInvocationPhase",
     "GraphInvocationClaimResult",
     "GraphInvocationClaimStore",
     "GraphInvocationKind",

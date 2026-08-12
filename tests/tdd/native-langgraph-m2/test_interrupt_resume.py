@@ -646,7 +646,7 @@ def test_resume_preflight_rejects_wrong_ref_kind_thread_and_reused_run() -> None
                 pending.identity,
                 pending.runtime_context,
                 AssistantApproveResume(action_ref="provider-preflight-1"),
-                "graph_resume_run_id_reused",
+                "graph_invocation_run_id_reused",
             ),
             (
                 GraphExecutionIdentity(

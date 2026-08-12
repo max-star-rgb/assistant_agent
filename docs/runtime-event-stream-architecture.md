@@ -94,10 +94,15 @@ fallback 代替。
 
 `AssistantTurnGraphApp.invoke/astream/arun/aresume` 在进入 tracing、checkpoint preflight 或 native graph
 之前统一原子 claim `(owner, thread_id, run_id)`；相同 invocation token 的 pre-native 重试幂等放行，不同 token
-复用同一 run 必须以结构化 `GraphExecutionError` 拒绝。claim 不随无 saver 终态、校验失败或执行异常自动释放，
+复用同一 run 必须以结构化 `GraphExecutionError` 拒绝。claim 在 native 边界原子推进
+`pre_native -> native_started`，只允许一个并发 caller 开始执行；观察到完整终态后推进 `terminal`，提前关闭
+stream 或执行异常则保持 `native_started`，两者都不得再次执行。claim 不随无 saver 终态、校验失败或执行异常自动释放，
 因此 invalid resume 也会占用该 run identity：调用方只能使用相同 token 和 run 修正重试，不能换 token 复用。
 有界 store 容量耗尽时 fail closed；只有 retention owner 在销毁整个 thread/checkpoint 生命周期后显式调用
-`delete_thread(owner, thread_id)` 才释放该 thread 的全部 claim。thread 已销毁后，确定性 thread key 即使再次出现
+host retention owner 通过 `adelete_thread` 先删除 native checkpointer thread，确认成功后才调用
+`delete_thread(owner, thread_id)` 释放该 thread 的全部 claim；checkpointer 删除失败必须保留 claim。当前业务
+session deletion 尚未拥有完整的多 agent/checkpointer retention 协调，因此不隐式调用该 host API，后续 persistent
+composition root 必须显式接线。thread 已销毁后，确定性 thread key 即使再次出现
 也属于新的 retention 生命周期，可以重新 claim；调用方不得把 `delete_thread` 当作单 run retry 接口。
 M3 已在离线路径编译 `DurableWorkflowGraph`，并以 native v2
 `updates/custom/tasks/checkpoints` stream、subgraph namespace、`Send` super-step、父图 interrupt snapshot、

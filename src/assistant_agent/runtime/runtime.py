@@ -969,6 +969,16 @@ class AgentGraphRuntime:
                 run_id=effective_run_id,
             )
 
+    async def adelete_assistant_thread(self, *, user_id: str, session_id: str) -> int:
+        """Delete one owned graph thread and then release its invocation claims."""
+
+        return await self.assistant_graph_app.adelete_thread(
+            agent_id=self.agent_id,
+            user_id=user_id,
+            session_id=session_id,
+            invocation_claim_store=self.graph_invocation_claim_store,
+        )
+
     def astream_state(
         self,
         request: UserRequest,
