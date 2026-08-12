@@ -95,3 +95,57 @@ def test_native_timeout_retries_three_attempts_then_runs_error_handler():
     result = asyncio.run(app.ainvoke({}, config={"configurable": {"thread_id": "policy-timeout"}}))
     assert attempts == 3
     assert result["outcome"] == "workflow_node_timeout"
+
+
+def test_native_retry_reaches_success_after_two_transient_failures():
+    attempts = 0
+
+    class State(TypedDict, total=False):
+        outcome: str
+
+    async def transient_worker(_state):
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise OSError("temporary")
+        return {"outcome": "committed-once"}
+
+    builder = StateGraph(State)
+    builder.add_node(
+        "run_worker",
+        transient_worker,
+        retry_policy=WORKFLOW_TRANSIENT_RETRY_POLICY,
+    )
+    builder.add_edge(START, "run_worker")
+    builder.add_edge("run_worker", END)
+    result = asyncio.run(builder.compile().ainvoke({}))
+    assert attempts == 3
+    assert result == {"outcome": "committed-once"}
+
+
+def test_native_retry_does_not_repeat_business_rejection():
+    attempts = 0
+
+    class State(TypedDict, total=False):
+        outcome: str
+
+    async def rejected_worker(_state):
+        nonlocal attempts
+        attempts += 1
+        raise WorkflowTransitionRejected("invalid admitted plan")
+
+    def fallback(_state, error: NodeError) -> Command:
+        assert isinstance(error.error, WorkflowTransitionRejected)
+        return Command(update={"outcome": "rejected"}, goto=END)
+
+    builder = StateGraph(State)
+    builder.add_node(
+        "run_worker",
+        rejected_worker,
+        retry_policy=WORKFLOW_TRANSIENT_RETRY_POLICY,
+        error_handler=fallback,
+    )
+    builder.add_edge(START, "run_worker")
+    result = asyncio.run(builder.compile().ainvoke({}))
+    assert attempts == 1
+    assert result == {"outcome": "rejected"}
