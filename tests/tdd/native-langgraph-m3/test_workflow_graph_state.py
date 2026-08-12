@@ -319,6 +319,16 @@ def test_latest_results_uses_generation_without_deleting_history() -> None:
     assert len(ledger) == 2
 
 
+def test_result_ledger_rejects_invalid_slot_and_canonical_key_mismatch() -> None:
+    valid = ledger_update(_result("a", 0, "a0"))
+    slot = next(iter(valid.values()))
+
+    with pytest.raises(WorkflowGraphStateConflict, match="invalid result slot"):
+        merge_result_ledger({}, {"a:generation:0": {"broken": True}})
+    with pytest.raises(WorkflowGraphStateConflict, match="canonical key"):
+        merge_result_ledger({}, {"b:generation:0": slot})
+
+
 def test_other_state_reducers_are_deterministic_and_replay_safe() -> None:
     resume = {
         "action-a": {

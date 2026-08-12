@@ -566,7 +566,7 @@ def _results_from_ledger(
     value: Mapping[str, object],
 ) -> dict[str, dict[str, WorkflowBranchResult]]:
     collected: dict[str, dict[str, WorkflowBranchResult]] = {}
-    for raw_slot in value.values():
+    for raw_key, raw_slot in value.items():
         try:
             # Checkpoint codecs may restore the outer registered model while
             # leaving nested values as plain mappings.  Re-validate the whole
@@ -579,12 +579,18 @@ def _results_from_ledger(
                     else raw_slot
                 )
             )
-        except (TypeError, ValueError, ValidationError):
-            continue
+        except (TypeError, ValueError, ValidationError) as exc:
+            raise WorkflowGraphStateConflict(
+                f"invalid result slot at {raw_key!r}"
+            ) from exc
         key = WorkflowResultKey(
             node_id=slot.node_id,
             execution_generation=slot.execution_generation,
         ).encode()
+        if raw_key != key:
+            raise WorkflowGraphStateConflict(
+                f"result slot key {raw_key!r} does not match canonical key {key!r}"
+            )
         bucket = collected.setdefault(key, {})
         bucket.update(slot.variants_by_digest)
     return collected

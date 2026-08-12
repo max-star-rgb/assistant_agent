@@ -118,3 +118,46 @@ def test_worker_branch_projects_control_without_child_interrupt(
         assert snapshot.interrupts == ()
     finally:
         artifact_store.close()
+
+
+def test_plain_text_worker_output_fails_closed_without_artifact(tmp_path):
+    from assistant_agent.workflows.graph_state import latest_results
+    from workflow_graph_probe import config, workflow_probe
+
+    app, context, initial, _worker, artifact_store = workflow_probe(
+        tmp_path,
+        {"a": []},
+        worker_responses={"a": "unstructured completion"},
+    )
+    try:
+        final = asyncio.run(app.ainvoke(initial, config=config(), context=context))
+        result = latest_results(
+            final["result_ledger"], final["execution_generation_by_node"]
+        )["a"]
+        assert final["status"] == "failed"
+        assert result.status == "failed"
+        assert result.error_code == "workflow_worker_control_invalid"
+        assert result.artifact_refs == ()
+    finally:
+        artifact_store.close()
+
+
+def test_deep_research_worker_does_not_inherit_registered_read_tools(tmp_path):
+    from workflow_graph_probe import config, workflow_probe
+
+    app, context, initial, worker, artifact_store = workflow_probe(
+        tmp_path,
+        {"a": []},
+        worker_responses={
+            "a": json.dumps(
+                {"workflow_control": {"outcome": "completed", "summary": "done"}}
+            )
+        },
+    )
+    try:
+        final = asyncio.run(app.ainvoke(initial, config=config(), context=context))
+        assert final["status"] == "completed"
+        assert worker.requests[0].tools == []
+        assert tuple(final["active_wave"]) == ()
+    finally:
+        artifact_store.close()

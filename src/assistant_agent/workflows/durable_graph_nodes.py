@@ -154,9 +154,7 @@ def _control_from_child(
             )
         control = WorkflowWorkerControl.model_validate_json(json.dumps(normalized))
         return control, message
-    return WorkflowWorkerControl(
-        outcome="completed", summary="Worker completed."
-    ), message
+    raise ValueError("worker response must contain strict workflow_control")
 
 
 def parse_branch_control_node(
@@ -261,13 +259,10 @@ def _branch_assignment(
     if not isinstance(identity_map, Mapping):
         raise ValueError("workflow identity is invalid")
     registry = context.services.tool_registry
-    eligible = tuple(
-        sorted(
-            spec.name
-            for spec in registry.list_specs()
-            if spec.category in {"read", "generate"}
-        )
-    )
+    # Registry inventory is not a grant. Deep Research currently persists no
+    # local Tool allowlist, so both Provider exposure and Executor scope remain
+    # empty until a trusted definition explicitly admits one.
+    eligible: tuple[str, ...] = ()
     budget_value = state["budget"]
     budget = (
         budget_value

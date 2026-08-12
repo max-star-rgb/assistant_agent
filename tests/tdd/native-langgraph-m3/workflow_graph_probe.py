@@ -107,8 +107,10 @@ class WorkerAdapter:
         self._lock = threading.Lock()
         self.active = 0
         self.max_concurrency = 0
+        self.requests = []
 
     def chat(self, request):
+        self.requests.append(request)
         node_id = next(
             node
             for node in sorted(self._all_nodes)
@@ -124,7 +126,17 @@ class WorkerAdapter:
                 provider=self.provider,
                 model=self.model,
                 finish_reason="stop",
-                response_text=self._responses.get(node_id, f"result for {node_id}"),
+                response_text=self._responses.get(
+                    node_id,
+                    json.dumps(
+                        {
+                            "workflow_control": {
+                                "outcome": "completed",
+                                "summary": f"completed {node_id}",
+                            }
+                        }
+                    ),
+                ),
                 usage={"input_tokens": 1, "output_tokens": 1},
             )
         finally:

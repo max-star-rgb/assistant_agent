@@ -65,23 +65,25 @@ def test_send_runs_ready_nodes_in_one_superstep_and_join_waits_for_all(tmp_path)
         assert "run_worker:" in flattened
         assert "worker_profile:" in flattened
         checkpoint_json = json.dumps(final, ensure_ascii=False, default=str)
-        assert "result for a" not in checkpoint_json
-        assert "result for b" not in checkpoint_json
-        assert "result for c" not in checkpoint_json
+        assert '"workflow_control"' not in checkpoint_json
         assert "workflow-artifact://" in checkpoint_json
         results = latest_results(
             final["result_ledger"], final["execution_generation_by_node"]
         )
-        assert (
-            artifact_store.read_text(
-                identity=RequestIdentity.for_user(
-                    user_id="user-send",
-                    agent_id="agent-send",
-                    session_id="session-send",
-                ),
-                artifact_ref=results["a"].artifact_refs[0],
-            )
-            == "result for a"
+        assert artifact_store.read_text(
+            identity=RequestIdentity.for_user(
+                user_id="user-send",
+                agent_id="agent-send",
+                session_id="session-send",
+            ),
+            artifact_ref=results["a"].artifact_refs[0],
+        ) == json.dumps(
+            {
+                "workflow_control": {
+                    "outcome": "completed",
+                    "summary": "completed a",
+                }
+            }
         )
     finally:
         artifact_store.close()
