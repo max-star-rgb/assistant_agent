@@ -316,6 +316,42 @@ def audit_native_workflow_tree(
 ) -> NativeWorkflowTreeAudit:
     runs_by_id = {str(_field(run, "id")): run for run in runs}
     duplicate_ids = len(runs_by_id) != len(runs)
+    roots_by_example = {
+        example_id: [
+            run
+            for run in runs
+            if str(_field(run, "reference_example_id") or "") == example_id
+            and _field(run, "parent_run_id") is None
+        ]
+        for example_id in example_ids
+    }
+    claimed_run_ids: set[str] = set()
+    for roots in roots_by_example.values():
+        if len(roots) != 1:
+            continue
+        root_id = str(_field(roots[0], "id"))
+        claimed_run_ids.update(
+            str(_field(run, "id"))
+            for run in runs
+            if str(_field(run, "id")) == root_id
+            or _is_descendant(run, root_id, runs_by_id)
+        )
+    workflow_names = {
+        "DurableWorkflowGraph",
+        "WorkflowPlanningSubgraph",
+        "AssistantTurnGraph.planner",
+        "WorkflowWorkerBranch",
+        "AssistantTurnGraph.worker",
+        "WorkflowVerifierBranch",
+        "AssistantTurnGraph.verifier",
+        "join_wave",
+    }
+    detached_workflow_runs = [
+        run
+        for run in runs
+        if _field(run, "name") in workflow_names
+        and str(_field(run, "id")) not in claimed_run_ids
+    ]
     problems: dict[str, tuple[str, ...]] = {}
     root_ids: list[str] = []
     for example_id in example_ids:
@@ -323,12 +359,7 @@ def audit_native_workflow_tree(
             example_id, WorkflowTreeRequirement()
         )
         item: list[str] = []
-        roots = [
-            run
-            for run in runs
-            if str(_field(run, "reference_example_id") or "") == example_id
-            and _field(run, "parent_run_id") is None
-        ]
+        roots = roots_by_example[example_id]
         if duplicate_ids:
             item.append("duplicate run id")
         if len(roots) != 1:
@@ -354,24 +385,6 @@ def audit_native_workflow_tree(
             for run in subtree
         ):
             item.append("reference example mismatch")
-        workflow_names = {
-            "DurableWorkflowGraph",
-            "WorkflowPlanningSubgraph",
-            "AssistantTurnGraph.planner",
-            "WorkflowWorkerBranch",
-            "AssistantTurnGraph.worker",
-            "WorkflowVerifierBranch",
-            "AssistantTurnGraph.verifier",
-            "join_wave",
-        }
-        detached_workflow_runs = [
-            run
-            for run in runs
-            if _field(run, "name") in workflow_names
-            and str(_field(run, "id")) not in {
-                str(_field(member, "id")) for member in subtree
-            }
-        ]
         if detached_workflow_runs:
             item.append("detached workflow run detected")
         graphs = _children_named(subtree, root_id, "DurableWorkflowGraph")

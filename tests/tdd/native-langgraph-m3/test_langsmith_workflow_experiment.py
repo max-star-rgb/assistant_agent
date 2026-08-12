@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
+from copy import deepcopy
 from uuid import UUID
 
 import pytest
@@ -198,6 +199,21 @@ def test_persisted_tree_audit_requires_one_native_parented_graph_tree() -> None:
             )
         },
     ).complete is False
+
+    example_two = UUID("11234567-89ab-cdef-0123-456789abcdef")
+    trace_two = UUID("cccccccc-dddd-eeee-ffff-aaaaaaaaaaaa")
+    second_tree = deepcopy(_native_workflow_runs())
+    for run in second_tree:
+        run.id = UUID(int=run.id.int + 100)
+        run.trace_id = trace_two
+        if run.parent_run_id is not None:
+            run.parent_run_id = UUID(int=run.parent_run_id.int + 100)
+        if run.parent_run_id is None:
+            run.reference_example_id = example_two
+    assert audit_native_workflow_tree(
+        [*_native_workflow_runs(), *second_tree],
+        example_ids=(str(EXAMPLE_ID), str(example_two)),
+    ).complete is True
 
 
 def test_completeness_fails_closed_until_all_four_feedback_are_persisted() -> None:
