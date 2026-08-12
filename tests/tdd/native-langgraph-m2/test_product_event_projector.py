@@ -245,6 +245,9 @@ def test_runtime_product_fact_union_rejects_unknown_fields() -> None:
         {"safe": {"ns": ["assistant", "task"]}},
         {"safe": {"state": {"messages": []}}},
         {"safe": object()},
+        {"safe": "x" * 262_145},
+        {"safe": 2**63},
+        {"safe": -(2**63) - 1},
     ],
 )
 def test_runtime_product_fact_union_rejects_nested_graph_data(
@@ -270,3 +273,36 @@ def test_runtime_product_fact_union_rejects_nested_graph_data(
                 "payload": nested_payload,
             }
         )
+
+
+def test_validated_nested_json_can_always_be_projected() -> None:
+    """Accepted scalar boundaries must remain digestible and projectable."""
+
+    from assistant_agent.runtime.product_event_projector import (
+        ProductEventProjector,
+        validate_runtime_product_fact,
+    )
+
+    sink = ListEventSink()
+    projector = ProductEventProjector(event_sink=sink)
+    fact = validate_runtime_product_fact(
+        {
+            "schema_version": "runtime_product_fact_v1",
+            "kind": "text_delta",
+            "fact_id": "fact-bounded-json",
+            "session_id": "session-product-fact",
+            "run_id": "run-product-fact",
+            "text": "safe-text",
+            "source": "assistant",
+            "payload": {
+                "safe_text": "x" * 262_144,
+                "min_int": -(2**63),
+                "max_int": 2**63 - 1,
+            },
+        }
+    )
+
+    projected = projector.project_fact(fact)
+
+    assert projected is not None
+    assert len(sink.events) == 1

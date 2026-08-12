@@ -32,6 +32,9 @@ _FLEXIBLE_FACT_FIELDS = frozenset(
 )
 _MAX_PUBLIC_JSON_DEPTH = 8
 _MAX_PUBLIC_JSON_ITEMS = 2_048
+_MAX_PUBLIC_JSON_STRING_CHARS = 262_144
+_MIN_PUBLIC_JSON_INT = -(2**63)
+_MAX_PUBLIC_JSON_INT = 2**63 - 1
 
 
 class RuntimeProductFactValidationError(ValueError):
@@ -191,7 +194,15 @@ def _assert_bounded_public_json(
     item_count[0] += 1
     if item_count[0] > _MAX_PUBLIC_JSON_ITEMS:
         raise ValueError("public product payload exceeds maximum item count")
-    if value is None or isinstance(value, (str, bool, int)):
+    if value is None or isinstance(value, bool):
+        return
+    if isinstance(value, str):
+        if len(value) > _MAX_PUBLIC_JSON_STRING_CHARS:
+            raise ValueError("public product payload contains an oversized string")
+        return
+    if isinstance(value, int):
+        if not _MIN_PUBLIC_JSON_INT <= value <= _MAX_PUBLIC_JSON_INT:
+            raise ValueError("public product payload contains an out-of-range integer")
         return
     if isinstance(value, float):
         if not math.isfinite(value):
