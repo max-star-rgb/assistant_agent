@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from collections import OrderedDict
 from contextvars import ContextVar
 from datetime import datetime, timezone
@@ -16,7 +17,7 @@ from threading import RLock
 from typing import Annotated, Any, Callable, Literal, Union
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter, ValidationError
 
 from assistant_agent.api.models import ApiError
 from assistant_agent.runtime.event_sink import EventSink
@@ -25,6 +26,12 @@ from assistant_agent.runtime.events import AgentEvent
 
 RUNTIME_PRODUCT_FACT_SCHEMA_VERSION = "runtime_product_fact_v1"
 _PRODUCT_FACT_ID = ContextVar[str | None]("assistant_agent_product_fact_id", default=None)
+_GRAPH_INTERNAL_KEYS = frozenset({"checkpoint", "checkpoints", "tasks", "ns", "state"})
+_FLEXIBLE_FACT_FIELDS = frozenset(
+    {"payload", "pre_tool_call", "post_tool_call", "contract", "error"}
+)
+_MAX_PUBLIC_JSON_DEPTH = 8
+_MAX_PUBLIC_JSON_ITEMS = 2_048
 
 
 class RuntimeProductFactValidationError(ValueError):
@@ -61,7 +68,7 @@ class TextDeltaProductFact(_RuntimeProductFactBase):
     provider: str | None = Field(default=None, max_length=128)
     model: str | None = Field(default=None, max_length=256)
     finish_reason: str | None = Field(default=None, max_length=128)
-    payload: dict[str, Any] = Field(default_factory=dict)
+    payload: dict[str, JsonValue] = Field(default_factory=dict)
 
 
 class ToolStartedProductFact(_RuntimeProductFactBase):
@@ -70,7 +77,7 @@ class ToolStartedProductFact(_RuntimeProductFactBase):
     tool_call_id: str = Field(min_length=1, max_length=256)
     step_id: str = Field(min_length=1, max_length=256)
     text: str | None = Field(default=None, max_length=4096)
-    pre_tool_call: dict[str, Any] = Field(default_factory=dict)
+    pre_tool_call: dict[str, JsonValue] = Field(default_factory=dict)
 
 
 class ToolTerminalProductFact(_RuntimeProductFactBase):
@@ -81,8 +88,8 @@ class ToolTerminalProductFact(_RuntimeProductFactBase):
     success: bool
     latency_ms: int = Field(ge=0)
     retry_count: int = Field(ge=0)
-    post_tool_call: dict[str, Any] = Field(default_factory=dict)
-    contract: dict[str, Any] | None = None
+    post_tool_call: dict[str, JsonValue] = Field(default_factory=dict)
+    contract: dict[str, JsonValue] | None = None
     output_ref: str | None = Field(default=None, max_length=2048)
     error: ApiError | None = None
     code: str | None = Field(default=None, max_length=256)
@@ -100,8 +107,8 @@ class ProductProgressFact(_RuntimeProductFactBase):
     tool_name: str | None = Field(default=None, max_length=256)
     output_ref: str | None = Field(default=None, max_length=2048)
     text: str | None = Field(default=None, max_length=65_536)
-    error: str | dict[str, Any] | None = None
-    payload: dict[str, Any] = Field(default_factory=dict)
+    error: str | dict[str, JsonValue] | None = None
+    payload: dict[str, JsonValue] = Field(default_factory=dict)
 
 
 class WaitingInputProductFact(_RuntimeProductFactBase):
@@ -155,10 +162,62 @@ def new_runtime_product_fact_id(kind: str) -> str:
 def validate_runtime_product_fact(value: object) -> RuntimeProductFact:
     """Validate one strict fact without accepting undeclared transport fields."""
 
+    candidate = value.model_dump(mode="python") if isinstance(value, BaseModel) else value
     try:
-        return _FACT_ADAPTER.validate_python(value)
-    except ValidationError as exc:
+        _validate_flexible_fact_fields(candidate)
+        return _FACT_ADAPTER.validate_python(candidate)
+    except (TypeError, ValueError, ValidationError) as exc:
         raise RuntimeProductFactValidationError("invalid runtime product fact") from exc
+
+
+def _validate_flexible_fact_fields(value: object) -> None:
+    if not isinstance(value, dict):
+        return
+    for key in _FLEXIBLE_FACT_FIELDS:
+        if key in value and value[key] is not None:
+            _assert_bounded_public_json(value[key], depth=0, item_count=[0])
+
+
+def _assert_bounded_public_json(
+    value: object,
+    *,
+    depth: int,
+    item_count: list[int],
+) -> None:
+    """Reject graph internals and unbounded/non-JSON values at the public boundary."""
+
+    if depth > _MAX_PUBLIC_JSON_DEPTH:
+        raise ValueError("public product payload exceeds maximum nesting depth")
+    item_count[0] += 1
+    if item_count[0] > _MAX_PUBLIC_JSON_ITEMS:
+        raise ValueError("public product payload exceeds maximum item count")
+    if value is None or isinstance(value, (str, bool, int)):
+        return
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError("public product payload contains a non-finite number")
+        return
+    if isinstance(value, list):
+        for item in value:
+            _assert_bounded_public_json(
+                item,
+                depth=depth + 1,
+                item_count=item_count,
+            )
+        return
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if not isinstance(key, str) or not key or len(key) > 256:
+                raise ValueError("public product payload contains an invalid key")
+            if key.casefold() in _GRAPH_INTERNAL_KEYS:
+                raise ValueError("public product payload contains graph-internal data")
+            _assert_bounded_public_json(
+                item,
+                depth=depth + 1,
+                item_count=item_count,
+            )
+        return
+    raise TypeError("public product payload must contain JSON values only")
 
 
 def emit_product_fact(

@@ -235,3 +235,38 @@ def test_runtime_product_fact_union_rejects_unknown_fields() -> None:
                 "checkpoint": {"forbidden": True},
             }
         )
+
+
+@pytest.mark.parametrize(
+    "nested_payload",
+    [
+        {"safe": {"checkpoint": {"forbidden": True}}},
+        {"safe": {"tasks": ["forbidden"]}},
+        {"safe": {"ns": ["assistant", "task"]}},
+        {"safe": {"state": {"messages": []}}},
+        {"safe": object()},
+    ],
+)
+def test_runtime_product_fact_union_rejects_nested_graph_data(
+    nested_payload,
+) -> None:
+    """Nested graph internals and non-JSON objects must not escape custom facts."""
+
+    from assistant_agent.runtime.product_event_projector import (
+        RuntimeProductFactValidationError,
+        validate_runtime_product_fact,
+    )
+
+    with pytest.raises(RuntimeProductFactValidationError):
+        validate_runtime_product_fact(
+            {
+                "schema_version": "runtime_product_fact_v1",
+                "kind": "text_delta",
+                "fact_id": "fact-nested-rejected",
+                "session_id": "session-product-fact",
+                "run_id": "run-product-fact",
+                "text": "safe-text",
+                "source": "assistant",
+                "payload": nested_payload,
+            }
+        )

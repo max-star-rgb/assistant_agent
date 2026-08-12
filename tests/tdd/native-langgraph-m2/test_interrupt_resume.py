@@ -812,8 +812,7 @@ def test_runtime_interrupt_is_waiting_nonterminal_and_buffers_mixed_stream_deliv
         assert state.tool_results == []
         assert [record.status for record in history.read_all()] == ["started"]
         assert tool.terminals == []
-        assert "response_delta" not in [event.type for event in sink.events]
-        assert "final_response" not in [event.type for event in sink.events]
+        assert [event.type for event in sink.events] == ["task_started"]
     finally:
         runtime.close()
 

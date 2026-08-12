@@ -932,7 +932,7 @@ class AgentGraphRuntime:
         )
         projector_sink: EventSink | None = run_event_sink
         if run_event_sink is not None and interrupt_request is not None:
-            projector_sink = _InterruptResponseDeltaBarrier(run_event_sink)
+            projector_sink = _InterruptProductEventBarrier(run_event_sink)
         product_event_projector = ProductEventProjector(event_sink=projector_sink)
         # The per-run ToolExecutor publishes graph-local product facts only
         # through the node's native LangGraph stream writer.
@@ -1807,22 +1807,22 @@ class _ResponseDeltaTrackingEventSink:
         self.inner.emit(event)
 
 
-class _InterruptResponseDeltaBarrier:
-    """Keep provisional text private until a trusted interrupt is resolved."""
+class _InterruptProductEventBarrier:
+    """Keep every provisional graph-local product event private on interrupt."""
 
     def __init__(self, inner: _ResponseDeltaTrackingEventSink) -> None:
         self.inner = inner
-        self.deferred_response_deltas: list[AgentEvent] = []
+        self.deferred_events: list[AgentEvent] = []
 
     @property
     def response_delta_emitted(self) -> bool:
         return self.inner.response_delta_emitted
 
     def emit(self, event: AgentEvent) -> None:
-        if event.type == "response_delta":
-            self.deferred_response_deltas.append(event)
+        if event.type == "task_started":
+            self.inner.emit(event)
             return
-        self.inner.emit(event)
+        self.deferred_events.append(event)
 
 
 def _metadata_text(value: Any) -> str:
