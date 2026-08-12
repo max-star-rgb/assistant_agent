@@ -373,8 +373,12 @@ is detected and routed through `loop.call_soon_threadsafe()` instead. Both paths
 preserve prior event publication before the terminal sentinel.
 
 The realtime backend normally consumes the shared service stream with
-`async for`. Its injected synchronous `run_request=` hook is retained only as a
-compatibility wrapper and still uses a worker-thread bridge. The synchronous
+`async for`. The default HTTP Gateway composition root injects
+`GatewayRuntimePool.run_request_stream()` and keeps its runtime lease until the
+inner stream reaches a result or exception; the Agent-Service composition root
+injects `AssistantRuntimeApp.run_request_stream()`. An explicitly injected
+synchronous `run_request=` hook is retained only as a compatibility wrapper and
+still uses a worker-thread bridge. The synchronous
 `run_assistant_request()` and `AgentGraphRuntime.run_state()` APIs also remain
 available for existing non-async callers; they do not define the production
 Gateway stream path.

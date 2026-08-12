@@ -5,6 +5,10 @@ from typing import Any
 
 import pytest
 
+from assistant_agent.api import agent_service_websocket, gateway_runtime, routes_agent
+from assistant_agent.gateway.runtime_pool import GatewayRuntimePool
+from assistant_agent.gateway.runtime_types import RealtimeAgentRequest
+from assistant_agent.gateway.turn_facade import GatewayTurnFacade, GatewayTurnRequest
 from assistant_agent.runtime.assistant_graph_app import (
     GraphExecutionError,
     GraphStreamResult,
@@ -13,6 +17,7 @@ from assistant_agent.runtime.event_sink import ListEventSink
 from assistant_agent.runtime.event_stream import AgentRunStream
 from assistant_agent.runtime.events import AgentEvent
 from assistant_agent.runtime.assistant_run_service import run_assistant_request_stream
+from assistant_agent.runtime.assistant_runtime_app import AssistantRuntimeApp
 from assistant_agent.runtime.requests import AgentResponse, UserRequest
 from assistant_agent.runtime.runtime import AgentGraphRuntime
 from assistant_agent.runtime.session_store import InMemorySessionStore
@@ -249,3 +254,152 @@ def test_agent_run_stream_enqueues_directly_on_its_owner_loop(
         assert await stream.result() == "result-sentinel"
 
     asyncio.run(exercise())
+
+
+def test_default_gateway_factory_uses_pool_native_async_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Injecting the pool's sync request hook must break the production factory."""
+
+    async def forbidden_to_thread(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("default Gateway graph run must remain async-native")
+
+    async def exercise() -> None:
+        runtime, probe = _runtime_with_graph_probe()
+        pool = GatewayRuntimePool(
+            max_runtime_instances=1,
+            runtime_factory=lambda: runtime,
+            run_request_stream=(
+                gateway_runtime._run_assistant_request_with_http_runtime_stream
+            ),
+            runtime_cleanup=lambda item: item.close(),
+        )
+        backend = gateway_runtime._default_gateway_backend_factory(pool)()
+        capture_id = gateway_runtime.new_gateway_http_response_capture_id()
+        monkeypatch.setattr(asyncio, "to_thread", forbidden_to_thread)
+        try:
+            result = await backend.run_turn(
+                RealtimeAgentRequest(
+                    user_id="user-sentinel",
+                    session_id="session-sentinel",
+                    run_id="gateway-native-run-sentinel",
+                    text="input-sentinel",
+                    metadata=gateway_runtime.gateway_http_capture_metadata(capture_id),
+                )
+            )
+
+            assert result.status == "completed"
+            assert result.response_text == "async-sentinel"
+            assert probe.arun_calls == 1
+            assert probe.invoke_calls == 0
+            assert pool.idle_count == 1
+            captured = gateway_runtime.pop_gateway_http_response(capture_id)
+            assert captured is not None
+            assert captured.response_text == "async-sentinel"
+        finally:
+            gateway_runtime.pop_gateway_http_response(capture_id)
+            pool.close()
+
+    asyncio.run(exercise())
+
+
+def test_agent_service_manager_uses_runtime_app_native_async_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Injecting the Agent-Service sync wrapper must break its default manager."""
+
+    async def forbidden_to_thread(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("Agent-Service graph run must remain async-native")
+
+    async def noop_session_lifecycle(*args: Any, **kwargs: Any) -> None:
+        return None
+
+    async def exercise() -> None:
+        runtime, probe = _runtime_with_graph_probe()
+        app = AssistantRuntimeApp(lambda: runtime)
+        monkeypatch.setattr(routes_agent, "get_assistant_runtime_app", lambda: app)
+        monkeypatch.setattr(
+            agent_service_websocket,
+            "_initialize_agent_service_session_memory",
+            noop_session_lifecycle,
+        )
+        monkeypatch.setattr(
+            agent_service_websocket,
+            "_finalize_agent_service_session_memory",
+            noop_session_lifecycle,
+        )
+        manager = agent_service_websocket._create_agent_service_gateway_manager()
+        facade = GatewayTurnFacade(manager=manager)
+        monkeypatch.setattr(asyncio, "to_thread", forbidden_to_thread)
+        try:
+            result = await facade.run_turn(
+                GatewayTurnRequest(
+                    user_id="user-sentinel",
+                    session_id="session-sentinel",
+                    text="input-sentinel",
+                )
+            )
+
+            assert result.status == "completed"
+            assert result.response_text == "async-sentinel"
+            assert probe.arun_calls == 1
+            assert probe.invoke_calls == 0
+        finally:
+            await facade.close()
+            await manager.close()
+            runtime.close()
+
+    asyncio.run(exercise())
+
+
+def test_gateway_pool_returns_runtime_after_async_failure_and_cancellation() -> None:
+    """Returning or leaking a runtime before terminal failure/cancel must break reuse."""
+
+    async def exercise_failure() -> None:
+        runtime, _ = _runtime_with_graph_probe()
+        runtime.assistant_graph_app = _FailingGraphApp()
+        pool = GatewayRuntimePool(
+            max_runtime_instances=1,
+            runtime_factory=lambda: runtime,
+            runtime_cleanup=lambda item: item.close(),
+        )
+        try:
+            stream = pool.run_request_stream(
+                _request(),
+                enable_conversation_history=False,
+                run_id="pool-failure-run-sentinel",
+            )
+            with pytest.raises(GraphExecutionError):
+                _ = [event async for event in stream]
+            assert pool.idle_count == 1
+        finally:
+            pool.close()
+
+    async def exercise_cancellation() -> None:
+        runtime, probe = _runtime_with_graph_probe()
+        pool = GatewayRuntimePool(
+            max_runtime_instances=1,
+            runtime_factory=lambda: runtime,
+            runtime_cleanup=lambda item: item.close(),
+        )
+        try:
+            stream = pool.run_request_stream(
+                _request(),
+                enable_conversation_history=False,
+                cancel_token=CancelledToken(),
+                run_id="pool-cancelled-run-sentinel",
+            )
+            events = [event async for event in stream]
+            artifacts = await stream.result()
+            assert artifacts.state.status == "cancelled"
+            assert [event.type for event in events] == [
+                "task_started",
+                "task_cancelled",
+            ]
+            assert probe.arun_calls == 0
+            assert pool.idle_count == 1
+        finally:
+            pool.close()
+
+    asyncio.run(exercise_failure())
+    asyncio.run(exercise_cancellation())

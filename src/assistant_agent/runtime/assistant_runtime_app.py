@@ -15,8 +15,10 @@ from assistant_agent.runtime.assistant_run_service import (
     clear_conversation_history,
     clear_user_conversation_history,
     run_assistant_request,
+    run_assistant_request_stream,
     runtime_info,
 )
+from assistant_agent.runtime.event_stream import AgentRunStream
 from assistant_agent.observability.trace_query import TraceQueryService
 
 
@@ -36,6 +38,13 @@ class AssistantRuntimeApp:
 
     def run_request(self, request: UserRequest, **kwargs: Any) -> AssistantRunArtifacts:
         return run_assistant_request(request, runtime=self.runtime, **kwargs)
+
+    def run_request_stream(
+        self,
+        request: UserRequest,
+        **kwargs: Any,
+    ) -> AgentRunStream[AssistantRunArtifacts]:
+        return run_assistant_request_stream(request, runtime=self.runtime, **kwargs)
 
     def run_query(
         self,

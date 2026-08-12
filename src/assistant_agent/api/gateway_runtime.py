@@ -193,6 +193,7 @@ def create_gateway_session_manager(
             max_runtime_instances=max_runtime_instances,
             runtime_factory=_default_gateway_runtime_factory(),
             run_request=_run_assistant_request_with_http_runtime,
+            run_request_stream=_run_assistant_request_with_http_runtime_stream,
             runtime_cleanup=lambda runtime: runtime.close(),
         )
         _GATEWAY_RUNTIME_POOL = runtime_pool
@@ -328,7 +329,9 @@ def _gateway_connection_policy(source: Mapping[str, str]) -> GatewayConnectionPo
 def _default_gateway_backend_factory(
     runtime_pool: GatewayRuntimePool,
 ) -> Callable[[], RealtimeAgentBackend]:
-    return lambda: GatewayRuntimeAdapter(run_request=runtime_pool.run_request)
+    return lambda: GatewayRuntimeAdapter(
+        run_request_stream=runtime_pool.run_request_stream,
+    )
 
 
 def _default_gateway_runtime_factory() -> Callable[[], Any]:
@@ -361,6 +364,44 @@ def _run_assistant_request_with_http_runtime(request: Any, **kwargs: Any) -> Any
     if capture_id is not None:
         _capture_gateway_http_response(capture_id, artifacts.api_response())
     return artifacts
+
+
+def _run_assistant_request_with_http_runtime_stream(
+    request: Any,
+    **kwargs: Any,
+) -> Any:
+    if kwargs.get("runtime") is None:
+        from assistant_agent.api.routes_agent import get_assistant_runtime_app
+
+        inner = get_assistant_runtime_app().run_request_stream(request, **kwargs)
+    else:
+        from assistant_agent.runtime.assistant_run_service import (
+            run_assistant_request_stream,
+        )
+
+        inner = run_assistant_request_stream(request, **kwargs)
+    loop = asyncio.get_running_loop()
+    from assistant_agent.runtime.event_stream import AgentRunStream
+
+    stream = AgentRunStream(loop=loop)
+
+    async def _run() -> None:
+        try:
+            async for event in inner:
+                stream.emit(event)
+            artifacts = await inner.result()
+            capture_id = _gateway_http_response_capture_id(
+                getattr(request, "metadata", {})
+            )
+            if capture_id is not None:
+                _capture_gateway_http_response(capture_id, artifacts.api_response())
+        except BaseException as exc:
+            stream.set_exception(exc)
+        else:
+            stream.set_result(artifacts)
+
+    asyncio.create_task(_run())
+    return stream
 
 
 def new_gateway_http_response_capture_id() -> str:

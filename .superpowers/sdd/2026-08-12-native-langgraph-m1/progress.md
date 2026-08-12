@@ -8,3 +8,5 @@ Task 2: review APPROVED — 0 Critical/Important/Minor; reviewer reran TDD 8/cor
 Task 3: complete — native `arun_state` uses graph app `arun`; sync/async share prepare/finalize and run-context release; TDD 4/graph+runtime 27/default 86 passed; graph exceptions propagate without fake terminal events.
 Task 3: review APPROVED — 0 Critical/Important/Minor; sync/async event and trace parity plus Deep Research branches verified.
 Task 4: implementation complete — service stream awaits native async runtime; same-loop stream publication is direct; Gateway contracts unchanged; TDD 6/gateway 7/runtime+context 27/default 86 passed.
+Task 4: fix round 1/5 started — production HTTP Gateway and Agent-Service composition roots still injected sync `run_request` and selected the `asyncio.to_thread` compatibility path.
+Task 4: fix round 1/5 implementation complete — both production roots inject native async streams; pool lease spans terminal result/error/cancel; TDD 9 passed before full regression.
