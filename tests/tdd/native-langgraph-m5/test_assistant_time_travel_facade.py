@@ -1280,3 +1280,85 @@ async def test_cancelled_time_travel_preflight_has_no_product_lifecycle(
 
     assert reused.value.code == "graph_invocation_run_id_reused"
     assert tuple(history.read_all()) == baseline
+
+
+@_async_test
+async def test_resume_rejects_same_owner_with_different_protected_request_facts(
+    tmp_path,
+) -> None:
+    tool = ProbeTool()
+    history = RunHistoryStore(tmp_path / "resume-request-mismatch.jsonl")
+    adapter = ScriptedChatAdapter(
+        [
+            ChatResult(
+                provider="scripted",
+                model="scripted",
+                finish_reason="tool_calls",
+                tool_calls=[
+                    NativeToolCall(
+                        id="resume-request-action",
+                        name=tool.name,
+                        arguments={"value": "protected"},
+                    )
+                ],
+            ),
+            ChatResult(
+                provider="scripted",
+                model="scripted",
+                finish_reason="stop",
+                response_text="must not execute",
+            ),
+        ]
+    )
+    runtime = AgentGraphRuntime(
+        registry=sealed_registry(tool),
+        config=offline_config(),
+        chat_adapter=adapter,
+        session_store=InMemorySessionStore(),
+        run_history=history,
+        checkpointer=InMemorySaver(),
+        allow_interrupt=True,
+    )
+    original = UserRequest(
+        user_id="resume-request-user",
+        session_id="resume-request-session",
+        text="original protected text",
+        image_ids=["original-image"],
+        assistant_mode="standard",
+        task_execution_mode="foreground",
+        response_style="concise",
+    )
+    try:
+        waiting = await runtime.arun_state(
+            original,
+            run_id="resume-request-origin",
+            interrupt_request=AssistantInterruptRequest(
+                kind="approval",
+                prompt="approve protected request",
+                action_ref="resume-request-action",
+                allowed_resume_kinds=("approve", "reject"),
+            ),
+        )
+        provider_calls = len(adapter.requests)
+        baseline_history = tuple(history.read_all())
+        mismatched = original.model_copy(update={"text": "different protected text"})
+        with pytest.raises(GraphExecutionError) as captured:
+            await runtime.aresume_state(
+                mismatched,
+                resume=AssistantApproveResume(action_ref="resume-request-action"),
+                run_id="resume-request-mismatch",
+            )
+        with pytest.raises(GraphExecutionError) as reused:
+            await runtime.aresume_state(
+                original,
+                resume=AssistantApproveResume(action_ref="resume-request-action"),
+                run_id="resume-request-mismatch",
+            )
+    finally:
+        runtime.close()
+
+    assert waiting.status == "waiting_user"
+    assert captured.value.code == "graph_resume_request_mismatch"
+    assert reused.value.code == "graph_invocation_run_id_reused"
+    assert len(adapter.requests) == provider_calls
+    assert tuple(history.read_all()) == baseline_history

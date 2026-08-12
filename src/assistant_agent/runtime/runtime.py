@@ -24,6 +24,7 @@ from assistant_agent.runtime.assistant_interrupts import (
 from assistant_agent.runtime.assistant_graph_state import (
     apply_assistant_turn_state_to_agent_state,
     assistant_turn_state_from_loop_state,
+    persisted_request_from_user_request,
     validate_assistant_turn_state,
 )
 from assistant_agent.runtime.graph_runtime import (
@@ -973,6 +974,7 @@ class AgentGraphRuntime:
                 run_id=effective_run_id,
                 invocation_kind="resume",
                 resume=resume,
+                caller_request=request,
             )
             try:
                 state = await self._execute_graph_async(prepared, resume=resume)
@@ -1368,6 +1370,7 @@ class AgentGraphRuntime:
         invocation_kind: Literal["resume", "replay", "fork"],
         request: GraphReplayRequest | GraphForkRequest | None = None,
         resume: AssistantResume | None = None,
+        caller_request: UserRequest | None = None,
         event_sink: EventSink | None,
         cancel_token: Any | None,
         trace_context: RuntimeTraceContext | None,
@@ -1436,6 +1439,16 @@ class AgentGraphRuntime:
             ) from exc
         persisted_run = persisted["run"]
         persisted_request = persisted["request"]
+        if invocation_kind == "resume":
+            if caller_request is None:
+                raise TypeError("resume continuation requires the caller request")
+            caller_facts = persisted_request_from_user_request(caller_request)
+            caller_facts["capability_refs"] = list(persisted_request["capability_refs"])
+            if caller_facts != persisted_request:
+                raise GraphExecutionError(
+                    "graph_resume_request_mismatch",
+                    "Resume request facts do not match the pending assistant turn.",
+                )
         persisted_trace_id = str(persisted_run["trace_id"])
         if trace_context is not None and trace_context.trace_id != persisted_trace_id:
             raise GraphExecutionError(
