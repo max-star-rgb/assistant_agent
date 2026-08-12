@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+import multiprocessing
 import sqlite3
 
 import pytest
@@ -24,6 +25,7 @@ from assistant_agent.runtime.tool_operation_barrier import (
     SQLiteToolOperationStore,
     ToolOperationScopeRequired,
     ToolOperationRequest,
+    default_tool_operation_store,
     normalized_tool_input_digest,
     stable_operation_scope_id,
 )
@@ -123,6 +125,51 @@ class _UnsafeLedgerProjectionTool(_CountingWriteTool):
                 "X-Amz-Credential=secret-value&X-Amz-Signature=signed-value"
             ),
         )
+
+
+class _UnsafeFailureLedgerProjectionTool(_CountingWriteTool):
+    name = "unsafe_failure_ledger_projection_probe"
+
+    def _run(self, input: ProbeInput, context: ToolContext) -> ToolResult:
+        self.invocations += 1
+        return ToolResult(
+            tool_name=self.name,
+            success=False,
+            error=(
+                "credential=secret-value "
+                "https://storage.example.test/object?"
+                "X-Amz-Credential=secret-value&X-Amz-Signature=signed-value"
+            ),
+            model_observation={"summary": "failed", "outcome": "failure"},
+        )
+
+
+def _live_default_store_owner(path: str, ready, release, outcome) -> None:
+    store = default_tool_operation_store(path)
+    reservation = store.reserve_and_mark_invoking(_request())
+    ready.set()
+    release.wait(timeout=10)
+    try:
+        store.commit_success(
+            reservation.operation_key,
+            owner_token=reservation.owner_token or "",
+            result_summary="Tool operation succeeded.",
+            output_ref=None,
+            result_digest="c" * 64,
+        )
+    except Exception as error:  # pragma: no cover - asserted in the parent.
+        outcome.put(type(error).__name__)
+    else:
+        outcome.put("succeeded")
+
+
+def _open_default_store_in_second_process(path: str) -> None:
+    default_tool_operation_store(path)
+
+
+def _reserve_then_exit(path: str, operation_key) -> None:
+    reservation = SQLiteToolOperationStore(path).reserve_and_mark_invoking(_request())
+    operation_key.put(reservation.operation_key)
 
 
 class _BackendCrash:
@@ -227,14 +274,19 @@ def test_same_operation_key_with_different_input_digest_fails_closed(tmp_path) -
 
 def test_rebuilt_store_marks_abandoned_invocation_unknown_and_never_replays_it(tmp_path) -> None:
     path = tmp_path / "operations.sqlite3"
-    first = SQLiteToolOperationStore(path)
-    reservation = first.reserve_and_mark_invoking(_request())
-    assert reservation.disposition == "invoke"
+    context = multiprocessing.get_context("spawn")
+    operation_keys = context.Queue()
+    abandoned_owner = context.Process(
+        target=_reserve_then_exit,
+        args=(str(path), operation_keys),
+    )
+    abandoned_owner.start()
+    abandoned_owner.join(timeout=10)
+    assert abandoned_owner.exitcode == 0
+    operation_key = operation_keys.get(timeout=2)
 
-    rebuilt = SQLiteToolOperationStore(path)
-    assert rebuilt.load(reservation.operation_key).status == "invoking"
-    rebuilt.recover_abandoned_invocations()
-    record = rebuilt.load(reservation.operation_key)
+    rebuilt = default_tool_operation_store(path)
+    record = rebuilt.load(operation_key)
     replay = rebuilt.reserve_and_mark_invoking(_request())
 
     assert record is not None
@@ -258,6 +310,30 @@ def test_second_live_store_does_not_invalidate_current_owner(tmp_path) -> None:
     )
 
     assert second.load(reservation.operation_key).status == "succeeded"
+
+
+def test_second_process_default_store_does_not_fence_live_owner(tmp_path) -> None:
+    context = multiprocessing.get_context("spawn")
+    ready = context.Event()
+    release = context.Event()
+    outcome = context.Queue()
+    path = str(tmp_path / "operations.sqlite3")
+    owner = context.Process(
+        target=_live_default_store_owner,
+        args=(path, ready, release, outcome),
+    )
+    observer = context.Process(target=_open_default_store_in_second_process, args=(path,))
+
+    owner.start()
+    assert ready.wait(timeout=10)
+    observer.start()
+    observer.join(timeout=10)
+    release.set()
+    owner.join(timeout=10)
+
+    assert observer.exitcode == 0
+    assert owner.exitcode == 0
+    assert outcome.get(timeout=2) == "succeeded"
 
 
 def test_committed_record_contains_only_safe_projection_not_result_body(tmp_path) -> None:
@@ -575,6 +651,34 @@ def test_ledger_rejects_tool_summary_credentials_and_signed_output_refs(tmp_path
     assert result.success is True
     assert summary == "Tool operation succeeded."
     assert output_ref is None
+    raw = path.read_bytes()
+    assert b"secret-value" not in raw
+    assert b"signed-value" not in raw
+
+
+def test_failure_ledger_persists_only_fixed_error_classification(tmp_path) -> None:
+    path = tmp_path / "operations.sqlite3"
+    store = SQLiteToolOperationStore(path)
+    tool = _UnsafeFailureLedgerProjectionTool()
+
+    result = ToolExecutor(
+        registry=sealed_registry(tool), operation_store=store
+    ).run_tool(
+        _state(run_id="run-unsafe-failure-projection"),
+        "step-unsafe-failure-projection",
+        tool.name,
+        {"value": "write-sentinel"},
+        operation_scope_id="scope-unsafe-failure-projection",
+        operation_thread_id="assistant:thread-sentinel",
+        operation_profile="standard",
+    )
+    with sqlite3.connect(path) as connection:
+        error_summary = connection.execute(
+            "SELECT error_summary FROM tool_operations"
+        ).fetchone()[0]
+
+    assert result.success is False
+    assert error_summary == "unknown_error"
     raw = path.read_bytes()
     assert b"secret-value" not in raw
     assert b"signed-value" not in raw

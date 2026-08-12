@@ -531,7 +531,9 @@ class ToolExecutor:
         self.operation_store.commit_failure(
             reservation.operation_key,
             owner_token=owner_token,
-            error_summary=_policy_safe_error(result.error) or "tool_failed",
+            # The operation ledger is not an observability sink.  Persist only
+            # the closed recovery taxonomy, never Tool-authored error prose.
+            error_summary=classify_error(result.error or ""),
             result_digest=result_digest,
         )
         result.trace_summary = {

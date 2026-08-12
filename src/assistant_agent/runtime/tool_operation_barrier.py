@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import secrets
 import sqlite3
 from dataclasses import dataclass
@@ -92,6 +93,7 @@ class ToolOperationRecord:
     input_digest: str
     business_idempotency_key: str | None
     status: ToolOperationStatus
+    owner_token: str | None
     result_summary: str | None
     output_ref: str | None
     result_digest: str | None
@@ -150,7 +152,7 @@ class SQLiteToolOperationStore:
     def reserve_and_mark_invoking(
         self, request: ToolOperationRequest
     ) -> ToolOperationReservation:
-        owner_token = secrets.token_urlsafe(24)
+        owner_token = _new_owner_token()
         now = _utc_now()
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -189,6 +191,24 @@ class SQLiteToolOperationStore:
 
             record = _record_from_row(row)
             self._validate_existing(record, request)
+            if record.status == "invoking" and _owner_is_confirmed_dead(
+                record.owner_token
+            ):
+                cursor = connection.execute(
+                    """
+                    UPDATE tool_operations
+                    SET status = 'outcome_unknown', owner_token = NULL, updated_at = ?
+                    WHERE operation_key = ? AND status = 'invoking'
+                        AND owner_token = ?
+                    """,
+                    (_utc_now(), request.operation_key, record.owner_token),
+                )
+                if cursor.rowcount == 1:
+                    row = connection.execute(
+                        "SELECT * FROM tool_operations WHERE operation_key = ?",
+                        (request.operation_key,),
+                    ).fetchone()
+                    record = _record_from_row(row)
             connection.commit()
             disposition: ReservationDisposition
             if record.status == "succeeded":
@@ -277,20 +297,35 @@ class SQLiteToolOperationStore:
         return _record_from_row(row) if row is not None else None
 
     def recover_abandoned_invocations(self) -> int:
-        """Explicit process-start recovery; composition roots must serialize it."""
+        """Fence only owners whose OS process incarnation is confirmed dead."""
 
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            cursor = connection.execute(
-                """
-                UPDATE tool_operations
-                SET status = 'outcome_unknown', owner_token = NULL, updated_at = ?
-                WHERE status = 'invoking'
-                """,
-                (_utc_now(),),
-            )
+            rows = connection.execute(
+                "SELECT operation_key, owner_token FROM tool_operations "
+                "WHERE status = 'invoking'"
+            ).fetchall()
+            recovered = 0
+            for row in rows:
+                owner_token = (
+                    str(row["owner_token"])
+                    if row["owner_token"] is not None
+                    else None
+                )
+                if not _owner_is_confirmed_dead(owner_token):
+                    continue
+                cursor = connection.execute(
+                    """
+                    UPDATE tool_operations
+                    SET status = 'outcome_unknown', owner_token = NULL, updated_at = ?
+                    WHERE operation_key = ? AND status = 'invoking'
+                        AND owner_token = ?
+                    """,
+                    (_utc_now(), str(row["operation_key"]), owner_token),
+                )
+                recovered += cursor.rowcount
             connection.commit()
-            return cursor.rowcount
+            return recovered
 
     def _commit(
         self,
@@ -392,7 +427,7 @@ class SQLiteToolOperationStore:
 def default_tool_operation_store(
     path: str | Path = Path(".local") / "langgraph" / "tool_operations.sqlite3",
 ) -> SQLiteToolOperationStore:
-    """Return one process-shared store and recover only at first composition."""
+    """Return one process-shared store and safely fence confirmed-dead owners."""
 
     resolved = Path(path).resolve()
     with _DEFAULT_STORE_LOCK:
@@ -486,6 +521,7 @@ def _record_from_row(row: sqlite3.Row) -> ToolOperationRecord:
             else None
         ),
         status=str(row["status"]),  # type: ignore[arg-type]
+        owner_token=str(row["owner_token"]) if row["owner_token"] is not None else None,
         result_summary=(
             str(row["result_summary"]) if row["result_summary"] is not None else None
         ),
@@ -501,6 +537,47 @@ def _record_from_row(row: sqlite3.Row) -> ToolOperationRecord:
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _new_owner_token() -> str:
+    start_identity = _process_start_identity(os.getpid()) or "unknown"
+    return f"v1:{os.getpid()}:{start_identity}:{secrets.token_urlsafe(24)}"
+
+
+def _owner_is_confirmed_dead(owner_token: str | None) -> bool:
+    if not owner_token:
+        return False
+    parts = owner_token.split(":", maxsplit=3)
+    if len(parts) != 4 or parts[0] != "v1":
+        # Legacy/unrecognized owners cannot be proven dead, so fail closed.
+        return False
+    try:
+        owner_pid = int(parts[1])
+    except ValueError:
+        return False
+    expected_start = parts[2]
+    actual_start = _process_start_identity(owner_pid)
+    if actual_start is not None:
+        return expected_start != "unknown" and actual_start != expected_start
+    try:
+        os.kill(owner_pid, 0)
+    except ProcessLookupError:
+        return True
+    except (PermissionError, OSError):
+        return False
+    return False
+
+
+def _process_start_identity(pid: int) -> str | None:
+    """Return Linux process start ticks, which fence PID reuse when available."""
+
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+    except (FileNotFoundError, PermissionError, OSError):
+        return None
+    closing_paren = stat.rfind(")")
+    fields_after_name = stat[closing_paren + 2 :].split()
+    return fields_after_name[19] if len(fields_after_name) > 19 else None
 
 
 def _bounded(value: str | None, *, limit: int = 2000) -> str | None:
