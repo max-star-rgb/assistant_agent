@@ -92,7 +92,8 @@ def workflow_matches_claim_scope(
 
     workflow = bundle.workflow
     return (
-        workflow.execution_engine in allowed_execution_engines
+        workflow.execution_engine == "legacy_scheduler_v2"
+        and workflow.execution_engine in allowed_execution_engines
         and workflow.workflow_type in allowed_workflow_types
     )
 

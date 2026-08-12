@@ -497,7 +497,9 @@ Validator、持久化 stable operation scope 并取得 barrier owner 后才可�
   `DurableWorkflowWorker` 原子 claim 单个 ready work item，并以 work-item lease、attempt 和调用预算作为
   独立所有权边界；一个调度波次可并行运行多个无依赖节点。每个结果分别以 revision CAS 提交，最后一个
   依赖完成时才解锁 join/synthesize 节点。lease heartbeat 防止长模型 run 被误判为崩溃；过期 lease
-  只重试对应节点，不重启整个 Workflow。首个 planner item 与语义 worker item 都通过
+  只重试对应节点，不重启整个 Workflow。legacy claim 边界只接受
+  `execution_engine=legacy_scheduler_v2`；即使误配置 allowlist，`langgraph_v3` record 也不可由
+  claim/lease/CAS worker 取得。首个 planner item 与语义 worker item 都通过
   `AgentGraphRuntime.run_work_item()` 回到
   同一 assistant loop；executor port 将 `planner_runtime` 与 `agent_runtime` 分开注入，默认可复用同一
   Runtime，也预留主 Agent 规划、子 Agent/远程 worker 执行的替换点。

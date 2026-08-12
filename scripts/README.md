@@ -73,9 +73,9 @@ MULTIMODAL_AGENT_PROVIDER_MODE=mock \
   `waiting_input` opens a Workflow-specific prompt, submits the response with the
   persisted resume token, and continues tailing instead of sending a new chat turn.
   Non-interactive mode stops at action-required state. On completion the client reads
-  the identity-scoped `/workflows/{workflow_id}/result` artifact and prints the full
-  final output, falling back to the bounded final work-item summary only for an older
-  server without that endpoint. Default workflow output is product-facing:
+  the identity-scoped `/workflows/{workflow_id}/result` artifact and prints its full
+  `content`. It does not reconstruct progress or final output from legacy
+  `plan.work_items`. Default workflow output is product-facing:
   the structured start response carries no mode-specific confirmation copy, the internal
   bootstrap planner is hidden, and admitted Plan progress uses persisted work-item
   `display_title` values and completion count; when multiple
