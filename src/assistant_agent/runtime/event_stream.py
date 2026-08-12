@@ -1,4 +1,4 @@
-"""Async stream facade for synchronous agent runtime events."""
+"""Async stream facade for agent runtime events and terminal results."""
 
 from __future__ import annotations
 
@@ -51,7 +51,7 @@ class AgentRunStream(Generic[TResult]):
         return await self.result()
 
     def emit(self, event: AgentEvent) -> None:
-        self._loop.call_soon_threadsafe(self._queue.put_nowait, _EventItem(event))
+        self._publish(self._queue.put_nowait, _EventItem(event))
 
     def set_result(self, result: TResult) -> None:
         self._finish(result=result)
@@ -75,7 +75,19 @@ class AgentRunStream(Generic[TResult]):
                 self._result_future.set_result(result)  # type: ignore[arg-type]
             self._queue.put_nowait(_DoneItem())
 
-        self._loop.call_soon_threadsafe(complete)
+        self._publish(complete)
+
+    def _publish(self, callback: Any, *args: Any) -> None:
+        """Publish directly on the owner loop, bridging only cross-thread calls."""
+
+        try:
+            running_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            running_loop = None
+        if running_loop is self._loop:
+            callback(*args)
+            return
+        self._loop.call_soon_threadsafe(callback, *args)
 
 
 class AsyncQueueEventSink:

@@ -352,28 +352,32 @@ controller 按已提交的 retry/failure 规则收敛，避免内外两层对同
 
 ## Thread Model And Ordering
 
-The core runtime and shared assistant service remain synchronous sources of
-truth. Their async stream facades are deliberately narrow:
+The shared assistant service uses the native asynchronous graph path for its
+production stream:
 
 ```text
 async consumer
-  -> run_stream() / run_assistant_request_stream()
-  -> asyncio.to_thread(sync runtime or service)
-  -> EventSink.emit(AgentEvent) in worker thread
+  -> run_assistant_request_stream()
+  -> run_assistant_request_async()
+  -> AgentGraphRuntime.arun_state()
+  -> compiled graph astream()
+  -> EventSink.emit(AgentEvent)
   -> AsyncQueueEventSink
   -> AgentRunStream in owning event loop
 ```
 
-`asyncio.Queue` is not thread-safe. Worker threads must never call its methods
-directly. `AgentRunStream.emit()` schedules queue insertion with
-`loop.call_soon_threadsafe()`, and terminal result/exception publication uses
-the same loop scheduling boundary. This preserves the order of prior event
-callbacks before the terminal sentinel.
+`AgentRunStream` publishes event and terminal records directly when the caller
+already runs on its owner event loop. `asyncio.Queue` is not thread-safe, so a
+sync LangGraph node or explicit compatibility caller running in another thread
+is detected and routed through `loop.call_soon_threadsafe()` instead. Both paths
+preserve prior event publication before the terminal sentinel.
 
 The realtime backend normally consumes the shared service stream with
 `async for`. Its injected synchronous `run_request=` hook is retained only as a
-compatibility wrapper and uses the same worker-thread stream bridge. New
-production integrations should prefer the stream interface.
+compatibility wrapper and still uses a worker-thread bridge. The synchronous
+`run_assistant_request()` and `AgentGraphRuntime.run_state()` APIs also remain
+available for existing non-async callers; they do not define the production
+Gateway stream path.
 
 Async migration remains selective:
 
@@ -489,7 +493,7 @@ stream，不把向量或媒体证据写入 `AgentEvent`、conversation history �
 | `src/assistant_agent/runtime/runtime.py` | graph lifecycle, provider-path selection, `run_state`/`run`/`run_stream` |
 | `src/assistant_agent/runtime/runtime_host.py` | composed Runtime and trace-store ownership/close boundary for real entries |
 | `src/assistant_agent/memory/ingestion_queue.py` | bounded post-response turn-ingestion queue, per-identity ordering, drain and shutdown |
-| `src/assistant_agent/runtime/assistant_run_service.py` | shared sync and streaming run service, `AssistantRunArtifacts` |
+| `src/assistant_agent/runtime/assistant_run_service.py` | shared sync/native-async run service, stream projection and `AssistantRunArtifacts` |
 | `src/assistant_agent/gateway/runtime_adapter.py` | assistant stream consumption and realtime terminal result |
 | `src/assistant_agent/gateway/runtime_event_mapping.py` | `AgentEvent` to `RealtimeAgentEvent` mapping |
 | `src/assistant_agent/gateway/event_mapping.py` | realtime event to Gateway frame mapping |
