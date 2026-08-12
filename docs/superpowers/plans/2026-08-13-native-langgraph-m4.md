@@ -1233,11 +1233,31 @@ def test_protected_durable_tasks_remain_importable_and_functional():
         "MULTIMODAL_AGENT_DURABLE_WORKFLOW_MAX_CONCURRENT_ITEMS",
     ],
 )
-def test_removed_legacy_worker_env_fails_startup_instead_of_being_ignored(name):
+@pytest.mark.parametrize("value", ["", "0", "false", "1"])
+def test_removed_legacy_worker_env_fails_on_key_presence(name, value):
     source = _minimal_mock_env()
-    source[name] = "1"
+    source[name] = value
     with pytest.raises(ValueError, match=f"removed_legacy_workflow_setting:{name}"):
         ProviderConfig.from_env(source)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "MULTIMODAL_AGENT_DURABLE_WORKFLOW_WORKER_ENABLED",
+        "MULTIMODAL_AGENT_DURABLE_WORKFLOW_LEASE_SECONDS",
+        "MULTIMODAL_AGENT_DURABLE_WORKFLOW_POLL_SECONDS",
+        "MULTIMODAL_AGENT_DURABLE_WORKFLOW_MAX_CONCURRENT_ITEMS",
+    ],
+)
+def test_removed_legacy_worker_env_is_rejected_before_other_invalid_config(name):
+    source = _minimal_mock_env()
+    source[name] = ""
+    source["MULTIMODAL_AGENT_PROVIDER_MODE"] = "invalid-provider-mode"
+    source["MULTIMODAL_AGENT_MAX_TOOL_ITERATIONS"] = "not-an-integer"
+    with pytest.raises(ValueError) as captured:
+        ProviderConfig.from_env(source)
+    assert str(captured.value) == f"removed_legacy_workflow_setting:{name}"
 ```
 
 - [ ] **Step 2: 运行 RED**
