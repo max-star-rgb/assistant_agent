@@ -1,6 +1,6 @@
 # Eval、Runtime Regression 与 Release Review
 
-Last updated: 2026-08-11
+Last updated: 2026-08-12
 
 ## Authority contract
 
@@ -119,11 +119,16 @@ metadata。CLI 必须等每个 item 的 `assistant_agent.quality.response_qualit
 超时、缺分或 Trace 层级不完整属于 infrastructure failure。
 `--inspect` 可只读查看 active item 数量。
 
-### 并行 LangSmith 桥
+### M1 LangSmith Runtime Regression
 
-LangSmith 是可选的并行事实视图，不替代上述 Langfuse 闭环。两个平台各自拥有名为
+M1 已将 LangSmith Runtime Regression 改为直接评估实际 `AssistantTurnGraph`；它不再是从
+canonical OTel 重建的平行 graph tree。在整体评测迁移完成前，LangSmith 与 Langfuse 仍各自拥有名为
 `assistant-agent-runtime-regressions` 的固定 Dataset，但它们是独立资源，不自动同步 Item/Example、
 Experiment、Score 或 Feedback；operator 在哪个 UI 沉淀案例，就用对应 runner 重跑。
+
+Langfuse Release Review、webhook、runner、Score 和相关配置在 M1 继续保留，不得把 Runtime
+Regression 的原生 LangSmith tree 扩大声称为 Release Review 已迁移。Release Review 的
+LangSmith 等价验收和 Langfuse 退出属于 M5。
 
 在 LangSmith 的 Tracing Project 中人工确认异常后，把根 run 加入固定 Dataset；也可以在 Dataset UI
 手工新增 Example。Example 必须保持对象结构：

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import importlib
 import json
 
@@ -9,6 +10,7 @@ from assistant_agent.gateway.event_mapping import realtime_event_to_frame
 from assistant_agent.gateway.runtime_event_mapping import map_agent_event_stream
 from assistant_agent.identity import RequestIdentity
 from assistant_agent.runtime.chat_adapter import ChatProviderError, ChatResult
+from assistant_agent.runtime.assistant_graph_app import GraphExecutionIdentity
 from assistant_agent.runtime.event_sink import ListEventSink
 from assistant_agent.runtime.events import AgentEvent
 from assistant_agent.runtime.output_models import NativeToolCall
@@ -153,6 +155,103 @@ def test_plain_text_run_reaches_completed_terminal_state() -> None:
         runtime.close()
 
 
+@pytest.mark.core_invariant("RUN-001")
+def test_native_async_run_reaches_the_same_completed_terminal_contract() -> None:
+    def create_runtime() -> AgentGraphRuntime:
+        return AgentGraphRuntime(
+            registry=sealed_registry(),
+            config=offline_config(),
+            chat_adapter=ScriptedChatAdapter(
+                [
+                    ChatResult(
+                        provider="scripted",
+                        model="scripted-model",
+                        finish_reason="stop",
+                        response_text="final-sentinel",
+                    )
+                ]
+            ),
+            session_store=InMemorySessionStore(),
+        )
+
+    request = UserRequest(
+        user_id="user-sentinel",
+        session_id="session-sentinel",
+        text="input-sentinel",
+    )
+    sync_sink = ListEventSink()
+    async_sink = ListEventSink()
+    sync_runtime = create_runtime()
+    async_runtime = create_runtime()
+    try:
+        sync_state = sync_runtime.run_state(request, event_sink=sync_sink)
+        async_state = asyncio.run(
+            async_runtime.arun_state(
+                request,
+                event_sink=async_sink,
+            )
+        )
+
+        assert sync_state.status == async_state.status == "completed"
+        assert sync_state.response is not None
+        assert async_state.response is not None
+        assert sync_state.response.message == async_state.response.message
+        assert [sync_sink.events[0].type, sync_sink.events[-1].type] == [
+            async_sink.events[0].type,
+            async_sink.events[-1].type,
+        ] == ["task_started", "final_response"]
+    finally:
+        sync_runtime.close()
+        async_runtime.close()
+
+
+@pytest.mark.core_invariant("LOOP-001")
+def test_runtime_reuses_one_compiled_assistant_graph_across_turns() -> None:
+    runtime = AgentGraphRuntime(
+        registry=sealed_registry(),
+        config=offline_config(),
+        chat_adapter=ScriptedChatAdapter(
+            [
+                ChatResult(
+                    provider="scripted",
+                    model="scripted-model",
+                    finish_reason="stop",
+                    response_text="first-sentinel",
+                ),
+                ChatResult(
+                    provider="scripted",
+                    model="scripted-model",
+                    finish_reason="stop",
+                    response_text="second-sentinel",
+                ),
+            ]
+        ),
+        session_store=InMemorySessionStore(),
+    )
+    try:
+        compiled_graph = runtime.assistant_graph_app.graph
+
+        first = runtime.run_state(
+            UserRequest(
+                user_id="user-sentinel",
+                session_id="session-sentinel",
+                text="first-input-sentinel",
+            )
+        )
+        second = runtime.run_state(
+            UserRequest(
+                user_id="user-sentinel",
+                session_id="session-sentinel",
+                text="second-input-sentinel",
+            )
+        )
+
+        assert first.status == second.status == "completed"
+        assert runtime.assistant_graph_app.graph is compiled_graph
+    finally:
+        runtime.close()
+
+
 @pytest.mark.core_invariant("IDENT-001")
 def test_entry_run_and_agent_identity_are_preserved() -> None:
     runtime = AgentGraphRuntime(
@@ -189,6 +288,38 @@ def test_entry_run_and_agent_identity_are_preserved() -> None:
         } == {"run-sentinel"}
     finally:
         runtime.close()
+
+
+@pytest.mark.core_invariant("IDENT-001")
+def test_graph_thread_identity_is_stable_for_one_conversation() -> None:
+    first = GraphExecutionIdentity.for_assistant_turn(
+        agent_id="agent-sentinel",
+        user_id="user-sentinel",
+        session_id="session-sentinel",
+        run_id="run-one-sentinel",
+    )
+    second = GraphExecutionIdentity.for_assistant_turn(
+        agent_id="agent-sentinel",
+        user_id="user-sentinel",
+        session_id="session-sentinel",
+        run_id="run-two-sentinel",
+    )
+    other_user = GraphExecutionIdentity.for_assistant_turn(
+        agent_id="agent-sentinel",
+        user_id="other-user-sentinel",
+        session_id="session-sentinel",
+        run_id="run-three-sentinel",
+    )
+
+    assert first.thread_id == second.thread_id
+    assert first.thread_id not in {first.run_id, second.run_id}
+    assert other_user.thread_id != first.thread_id
+    assert first.runnable_config() == {
+        "configurable": {
+            "thread_id": first.thread_id,
+            "run_id": "run-one-sentinel",
+        }
+    }
 
 
 @pytest.mark.core_invariant("TOOL-001")

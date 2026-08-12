@@ -1,25 +1,11 @@
 # SDD ledger — plan: docs/superpowers/plans/2026-08-12-native-langgraph-m1.md
-Baseline: complete — commit 59cc6f58; POLICY-001/runtime/default pytest 15/15/86 passed.
-Task 1: fix round 1/5 started — root checkpoint_ns is ignored; main spec governs: M1 disables root checkpointer, M2 owns real persistent namespace/resume.
-Task 1: fix round 1/5 (3 addressed, 0 open; commits b838f1f3..0c22617e).
-Task 1: complete — commits b838f1f3, 0c22617e; TDD 5/core 15/default 86 passed; M1 root checkpointer intentionally disabled per main spec.
-Task 2: complete — native LangGraph v2 async stream normalized; root final values fail-closed; TDD 8/core runtime 15 passed.
-Task 2: review APPROVED — 0 Critical/Important/Minor; reviewer reran TDD 8/core runtime 15 and real compiled graph probe.
-Task 3: complete — native `arun_state` uses graph app `arun`; sync/async share prepare/finalize and run-context release; TDD 4/graph+runtime 27/default 86 passed; graph exceptions propagate without fake terminal events.
-Task 3: review APPROVED — 0 Critical/Important/Minor; sync/async event and trace parity plus Deep Research branches verified.
-Task 4: implementation complete — service stream awaits native async runtime; same-loop stream publication is direct; Gateway contracts unchanged; TDD 6/gateway 7/runtime+context 27/default 86 passed.
-Task 4: fix round 1/5 — production HTTP Gateway and Agent-Service composition roots now inject native async streams; pool leases through terminal/exception/cancel; commit 6f3dfd25.
-Task 4: review APPROVED — prior Important ADDRESSED; 0 Critical/Important/Minor; 43 related tests and authority validator passed.
-Task 4: fix round 1/5 started — production HTTP Gateway and Agent-Service composition roots still injected sync `run_request` and selected the `asyncio.to_thread` compatibility path.
-Task 4: fix round 1/5 implementation complete — both production roots inject native async streams; pool lease spans terminal result/error/cancel; TDD 9 passed before full regression.
-Task 5: implementation complete — native graph sync/async context inherits Experiment parent; real LLM/backend attempts create safe child runs; owned client lifecycle and observability failures are fail-open; TDD 12/related 69/default 86 passed.
-Task 5: fix round 1/5 — removed all Tool output_ref values, safely projects tool-role JSON, and refuses competing root when parent lookup fails; commit 5d84db18; TDD 15/related 72/default 86 passed.
-Task 5: fix round 2/5 — tool trace projections now use strict top-level/content type allowlists and data counts; commit c92f3708; TDD 15/related 72/default 86 passed.
-Task 5: review APPROVED — all projection and parent-context findings ADDRESSED after round 2; no new Critical/Important; Task5 TDD 15 passed.
-Task 5: fix round 1/5 — 2 Important addressed: Tool refs/tool-role JSON are metadata-safe; parent lookup failure cannot create a competing root; TDD 15/related 72/default 86 passed.
-Task 5: fix round 1/5 implementation committed — 5d84db18; post-commit TDD 15/related 72/default 86/doc/compileall/diff all passed.
-Task 5: fix round 2/5 — positive allowlists protect Tool message top-level/content; Tool output exposes data count only; TDD 15/related 72/default 86 passed.
-Task 5: fix round 2/5 implementation committed — c92f3708; post-commit TDD 15/related 72/default 86/doc/compileall/diff all passed.
-Task 6: implementation complete — Runtime Regression uses LangSmith aevaluate/current RunTree/native async graph; OTel binding helper removed; native tree audit is fail-closed; TDD 77/related legacy 31/default 86/doc/compileall/diff passed; no real Provider/network.
-Task 6: verification note — concurrent pytest exposed one existing 50ms Task7 timing failure; isolated 1 passed and serial full related suite 77 passed; no Task7 code/test change.
-Task 6: fix round 1/5 — await async Experiment dataset ID; strict chain/llm/tool run-type audit; execute_tool zero-tool-child accepted; TDD 18/full related 84/legacy 31/default 86 passed.
+
+Baseline: complete — `59cc6f58`；POLICY-001/runtime/default pytest 15/15/86 passed。
+Task 1: complete — `b838f1f3`, `0c22617e`；Runtime 单次编译 graph、native context schema、stable thread；主 spec 裁决 M1 root checkpointer disabled，持久 namespace/resume 归 M2；review approved。
+Task 2: complete — `0d1db3fc`；LangGraph v2 stream 正规化，root final values 缺失 fail-closed；review approved。
+Task 3: complete — `b26c1910`；`arun_state()` 原生异步 graph，sync/async 共用 prepare/finalize/cleanup；review approved。
+Task 4: complete — `8243848d`, `6f3dfd25`；Service、HTTP Gateway 与 Agent-Service production roots 消费 native async stream，runtime lease 覆盖 terminal/error/cancel；review fix 1/5 后 approved。
+Task 5: complete — `6128057a`, `5d84db18`, `c92f3708`；graph/LLM/governed Tool 原生 LangSmith child tree，projection 使用正向安全 schema，日常观测 fail-open；review fix 2/5 后 approved。
+Task 6: complete — `d205ad8e`, `02039476`；Runtime Regression 使用 `Client.aevaluate()`/current RunTree/native graph，tree/type/example/feedback 完整性 fail-closed；LangSmith OTel binding 删除；review fix 1/5 后 approved。
+Task 7: complete — `96971cc3`, `579b2cdb`；server canonical store 不再为 LangSmith 重建 OTel graph tree，无消费者专用 factory/store/config conversion 删除；review fix 1/5 后 approved。
+Task 8: implementation complete — RUN-001/LOOP-001/IDENT-001 最小 core 经 mutation RED/GREEN；authority 对齐 M1 已实现事实与 M2/M5 边界；native TDD 50、LangSmith TDD 40、related core 51、default core 90 passed；validator/compileall/diff/deletion gates passed；未运行真实 LangSmith/Provider。

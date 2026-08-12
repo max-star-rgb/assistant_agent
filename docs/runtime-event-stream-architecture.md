@@ -1,6 +1,6 @@
 # Runtime Event Stream Architecture
 
-Last updated: 2026-08-11
+Last updated: 2026-08-12
 
 ## Authority contract
 
@@ -21,12 +21,13 @@ lifecycle remain authoritative in `docs/gateway-architecture.md`.
 
 ## Scope And Invariants
 
-The streaming stack has four distinct contracts:
+The streaming stack has five distinct contracts:
 
 ```text
 vendor provider chunks
   -> provider adapter -> LLMEvent
-  -> runtime mapping and lifecycle -> AgentEvent
+  -> stable compiled AssistantTurnGraph astream(v2)
+  -> runtime lifecycle / ProductEventProjector -> AgentEvent
   -> AgentRunStream / shared assistant service stream
   -> RealtimeAgentEvent
   -> Gateway frame
@@ -53,8 +54,19 @@ through `RuntimeEventPublisher`, which creates both projections with the same
 occurrence timestamp and correlation identity. Runtime and Tool code must not
 construct a second lifecycle projection by hand after publishing the fact.
 
-standard 模式只有一套主运行图：`AgentGraphRuntime` 运行 Provider-native ReAct assistant
-loop，在 `assistant -> execute_tool -> assistant` 与 `assistant -> compose_response` 之间循环或收口。
+standard 模式只有一套主运行图：每个 `AgentGraphRuntime` 只编译一次并稳定持有
+`AssistantTurnGraph`，在 `assistant -> execute_tool -> assistant` 与
+`assistant -> compose_response` 之间按真实 conditional edge 循环或收口。Provider adapter、
+Tool executor、event sink 与 cancel token 通过 LangGraph runtime context 注入，不存入 graph state。
+生产 Agent-Service 与默认 HTTP Gateway 消费 `astream(v2)` 的 native async Runtime 路径；
+逻辑 `ProductEventProjector` 只把已发生的 Runtime 事实投影为现有 `AgentEvent`/
+`RealtimeAgentEvent`，不决定 graph 路由。`GraphStreamPart`、namespace、checkpoint、task 与完整
+state 不进入产品协议。
+
+M1 身份语义为 stable conversation `thread_id` 加每次调用的 `run_id`。当前根图显式不启用
+checkpointer；同一 Runtime 内的多个 turn 通过每次新建 run-scoped input state 隔离，不伪造
+`checkpoint_ns` 能力。持久 checkpoint、namespace/subgraph 恢复与 `interrupt`/
+`Command(resume=...)` 属于 M2，M1 不宣称已具备。
 仓库不再保留 conditional graph、rule intent/router/planner 或可切换它们的 `AGENT_GRAPH_MODE`；
 `UserRequest` 也不再接受 `execution_strategy=plan_and_solve`。当前仍存在的
 `task_execution_mode` 是工具/持久执行的结构化治理事实，不是第二张 Agent graph 的选择器。
