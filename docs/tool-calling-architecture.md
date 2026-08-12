@@ -427,12 +427,24 @@ Tool calls 立即停止，不能在恢复额度耗尽后继续执行后续动作
 - 按 `category` 和执行策略处理有限自动重试；
 - 默认通过 `RegistryExecutionBackend` 调用 Registry 中的 `tool.run()`；受信 Release Review Decision
   可在同一 Executor 内使用无副作用 `ScenarioExecutionBackend`；
+- 对 `write|dangerous` 调用，在 backend 前使用 checkpoint 已持久化的 operation scope 进入独立 operation
+  barrier；
 - 记录真实墙钟延迟、结果、恢复决策与 terminal event；
 - 把成功或失败提交回 `AgentState`。
 
 一次 Executor 自动重试保持相同 tool call 和输入；模型看到 observation 后修改参数再次调用属于新的
-assistant action。通用 Executor 不维护跨进程幂等 ledger；外部写入需要的幂等键由领域 adapter、
-协议或 durable task 提供。
+assistant action。read Tool 不进入 operation barrier；`write|dangerous` Tool 必须提供由 graph 在 Tool edge
+之前写入 checkpoint 的稳定 `operation_scope_id` 和 conversation `thread_id`，缺失时在 backend 前 fail
+closed。operation key 由 thread、scope、profile 和 canonical Tool name 确定，normalized input digest 独立
+校验；Provider tool-call ID 只用于 correlation，resume `run_id`、attempt、checkpoint namespace 和动态 task
+UUID 都不能改变 operation identity。
+
+`SQLiteToolOperationStore` 是跨 Runtime 重建的业务幂等/审计事实源，不是 LangGraph saver。它在同一 SQLite
+transaction 中完成 reserve 与 `invoking` 标记，保证并发调用只有一个 owner 能进入 backend；一次逻辑调用的
+Executor retry 复用同一 operation 和业务 `idempotency_key`。`succeeded|failed` 证明 backend 不得再次调用，
+但 ledger 只保存安全摘要、output ref 和 digest，不能伪造完整 `ToolResult`；在 Tool/backend 尚未声明并绑定
+同一业务幂等 readback 契约前，checkpoint replay 因而以 `tool_operation_outcome_unknown` fail closed。backend
+返回前或 commit 边界不明确，以及确认死亡 owner 遗留的 `invoking`，都转为 `outcome_unknown`，不得自动重放。
 
 execution backend 只能由进程内受信 composition root 显式注入，不能由请求正文、metadata、模型输出或
 Dataset 内容选择。无论使用哪种 backend，Executor 都必须先完成 Registry contract lookup、runtime
@@ -458,9 +470,11 @@ assistant loop 对模型发起的 Tool 分为 control 与 action 两套额度：
 loop 或上层 workflow 根据恢复策略决定修改输入、改用其他工具、追问、基于已有证据回答或终止。
 Gateway 不按 Tool name 或 Provider 错误码改写运行终态。
 
-`category=read` 才允许通用自动重试；其他 category 默认不自动重试。写入和危险操作在进入 catalog
-并通过 Validator 后由 Executor 直接执行，公共运行时不维护第二次用户确认状态。需要确认、授权或
-幂等的能力必须把这些要求放进入口授权、Tool schema、领域 adapter 或 durable protocol。
+`category=read` 才允许通用自动重试；其他 category 默认不自动重试。写入和危险操作在进入 catalog、通过
+Validator、持久化 stable operation scope 并取得 barrier owner 后才可进入 backend。category 本身不自动触发
+用户确认；若受信 Runtime/父图显式要求 approval，真实 `await_input` node 必须先 `interrupt()`，恢复值通过
+`Command(resume=...)` 校验后才路由到 Tool edge。授权仍由入口/Tool policy/领域协议承担，业务
+`idempotency_key` 仍由领域 Tool/backend 声明和实现；通用 barrier 不把这些领域责任伪装成已完成。
 
 ## 7. 相邻系统边界
 
@@ -571,6 +585,8 @@ payload、凭据、绝对路径和大块内联数据不能因 ToolResult 或调�
 - `tools/spec_adapters.py`：Provider schema 转换；
 - `runtime/action_validator.py`：run catalog、输入、媒体与 durable 校验；
 - `runtime/tool_executor.py`：调用、重试、取消、状态提交和生命周期事件；
+- `runtime/tool_operation_barrier.py`：可恢复写 Tool 的稳定 operation identity、SQLite owner/terminal ledger
+  与 fail-closed replay；
 - `tools/observation.py`：ToolResult 到模型观察的通用投影；
 - `tests/core/contract/test_tool_contract.py`：`TOOL-001` 核心治理契约。
 - `workflows/`：Workflow 契约、definition、Store、work-item controller、worker、artifact/context 和
@@ -588,5 +604,7 @@ payload、凭据、绝对路径和大块内联数据不能因 ToolResult 或调�
 - Registry、catalog、Provider schema、Validator 和 Executor 都从 Tool/ToolSpec 派生当前契约；
   兼容投影不能成为注册或暴露的事实源；
 - Plugin、MCP、Skill、durable task、Memory、Gateway 和内部 worker 不绕过统一工具边界；
+- 可恢复的 `write|dangerous` Tool 在 backend 前必须具有 checkpointed stable operation scope 并进入持久
+  operation barrier；同一 operation 不得因 resume、retry 或 Runtime 重建重复触发副作用；
 - 普通 Tool 失败先形成 ToolResult/observation，再由编排层决定 Agent run 的后续状态；
 - 默认测试与 eval 保持 mock/local/offline，真实 Provider 必须显式启用。

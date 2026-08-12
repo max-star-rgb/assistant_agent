@@ -89,6 +89,13 @@ class WriteProbeTool(ProbeTool):
     name = "write_probe_tool"
     category = "write"
 
+    def __init__(self) -> None:
+        self.invocations = 0
+
+    def _run(self, input: ProbeInput, context: ToolContext) -> ToolResult:
+        self.invocations += 1
+        return super()._run(input, context)
+
 
 class InvocationProbeTool(ProbeTool):
     name = "invocation_probe_tool"
@@ -304,13 +311,23 @@ def test_write_execution_has_one_structured_terminal_result(tmp_path) -> None:
     events = ListEventSink()
     state = AgentState.from_request(_request())
 
-    result = ToolExecutor(
+    operation_store = SQLiteToolOperationStore(tmp_path / "operations.sqlite3")
+    executor = ToolExecutor(
         registry=registry,
         event_sink=events,
-        operation_store=SQLiteToolOperationStore(tmp_path / "operations.sqlite3"),
-    ).run_tool(
+        operation_store=operation_store,
+    )
+    result = executor.run_tool(
         state,
         "step-sentinel",
+        tool.name,
+        {"value": "value-sentinel"},
+        operation_scope_id="core-write-operation-sentinel",
+        operation_thread_id="assistant:core-thread-sentinel",
+    )
+    replay = executor.run_tool(
+        AgentState.from_request(_request()),
+        "step-replay-sentinel",
         tool.name,
         {"value": "value-sentinel"},
         operation_scope_id="core-write-operation-sentinel",
@@ -325,8 +342,17 @@ def test_write_execution_has_one_structured_terminal_result(tmp_path) -> None:
     assert result.success is True
     assert result.data == {"value": "value-sentinel"}
     assert len(state.tool_results) == 1
-    assert len(terminal_events) == 1
+    assert replay.success is False
+    assert replay.error == "tool_operation_outcome_unknown"
+    assert replay.trace_summary["operation_replayed"] is False
+    assert replay.trace_summary["outcome_unknown"] is True
+    assert tool.invocations == 1
+    assert operation_store.load(result.trace_summary["operation_key"]).status == (
+        "succeeded"
+    )
+    assert len(terminal_events) == 2
     assert terminal_events[0].type == "tool_finished"
+    assert terminal_events[1].type == "tool_failed"
 
 
 @pytest.mark.core_invariant("TOOL-001")

@@ -5,12 +5,27 @@ import importlib
 import json
 
 import pytest
+from langgraph.checkpoint.memory import InMemorySaver
 
 from assistant_agent.gateway.event_mapping import realtime_event_to_frame
 from assistant_agent.gateway.runtime_event_mapping import map_agent_event_stream
 from assistant_agent.identity import RequestIdentity
-from assistant_agent.runtime.chat_adapter import ChatProviderError, ChatResult
 from assistant_agent.runtime.assistant_graph_app import GraphExecutionIdentity
+from assistant_agent.runtime.assistant_graph_profiles import (
+    ASSISTANT_GRAPH_PROFILES,
+    ProfileInvocationInput,
+    profile_input_adapter,
+)
+from assistant_agent.runtime.assistant_graph_state import (
+    ASSISTANT_GRAPH_NAME,
+    ASSISTANT_GRAPH_VERSION,
+    ASSISTANT_STATE_SCHEMA_VERSION,
+)
+from assistant_agent.runtime.assistant_interrupts import (
+    AssistantApproveResume,
+    AssistantInterruptRequest,
+)
+from assistant_agent.runtime.chat_adapter import ChatProviderError, ChatResult
 from assistant_agent.runtime.event_sink import ListEventSink
 from assistant_agent.runtime.events import AgentEvent
 from assistant_agent.runtime.output_models import NativeToolCall
@@ -107,6 +122,7 @@ def test_runtime_initializes_offline() -> None:
 
 
 @pytest.mark.core_invariant("RUN-001")
+@pytest.mark.core_invariant("OBS-001")
 def test_plain_text_run_reaches_completed_terminal_state() -> None:
     sink = ListEventSink()
     adapter = ScriptedChatAdapter(
@@ -140,6 +156,10 @@ def test_plain_text_run_reaches_completed_terminal_state() -> None:
         assert state.response.message
         assert sink.events[0].type == "task_started"
         assert sink.events[-1].type == "final_response"
+        assert not {
+            "graph_node_started",
+            "graph_node_finished",
+        }.intersection(event.type for event in sink.events)
         trace_events = runtime.trace_store.list_by_run(state.run_id)
         run_started = next(
             event for event in trace_events if event.canonical_event == "run.started"
@@ -252,6 +272,62 @@ def test_runtime_reuses_one_compiled_assistant_graph_across_turns() -> None:
         runtime.close()
 
 
+@pytest.mark.core_invariant("LOOP-001")
+def test_runtime_exposes_versioned_profile_graph_family() -> None:
+    runtime = AgentGraphRuntime(
+        registry=sealed_registry(),
+        config=offline_config(),
+        session_store=InMemorySessionStore(),
+        checkpointer=InMemorySaver(),
+    )
+    try:
+        profile_graphs = {
+            name: runtime.assistant_graph_app.graph_for_profile(name)
+            for name in ASSISTANT_GRAPH_PROFILES
+        }
+        parent_state = {
+            "user_id": "user-profile-sentinel",
+            "session_id": "session-profile-sentinel",
+            "run_id": "run-profile-sentinel",
+            "trace_id": "trace-profile-sentinel",
+            "agent_id": "agent-profile-sentinel",
+            "available_tool_names": (ProbeTool.name,),
+            "registered_tool_specs": tuple(runtime.registry.list_specs()),
+        }
+        worker_state = profile_input_adapter(
+            parent_state,
+            ProfileInvocationInput(
+                profile="worker",
+                assignment_ref="assignment:profile-sentinel",
+                objective="objective-sentinel",
+                explicit_tool_allowlist=(ProbeTool.name,),
+            ),
+        )
+
+        assert tuple(profile_graphs) == (
+            "standard",
+            "planner",
+            "worker",
+            "verifier",
+        )
+        assert {
+            name: graph.name for name, graph in profile_graphs.items()
+        } == {
+            name: f"AssistantTurnGraph.{name}" for name in profile_graphs
+        }
+        assert runtime.assistant_graph_app.graph_for_profile("worker") is (
+            profile_graphs["worker"]
+        )
+        assert worker_state["graph_name"] == ASSISTANT_GRAPH_NAME
+        assert worker_state["graph_version"] == ASSISTANT_GRAPH_VERSION
+        assert worker_state["state_schema_version"] == ASSISTANT_STATE_SCHEMA_VERSION
+        assert worker_state["profile"] == "worker"
+        assert worker_state["catalog"]["available_tool_names"] == [ProbeTool.name]
+        json.dumps(worker_state)
+    finally:
+        runtime.close()
+
+
 @pytest.mark.core_invariant("IDENT-001")
 def test_entry_run_and_agent_identity_are_preserved() -> None:
     runtime = AgentGraphRuntime(
@@ -320,6 +396,186 @@ def test_graph_thread_identity_is_stable_for_one_conversation() -> None:
             "run_id": "run-one-sentinel",
         }
     }
+
+
+@pytest.mark.core_invariant("RUN-001")
+@pytest.mark.core_invariant("LOOP-001")
+@pytest.mark.core_invariant("IDENT-001")
+def test_interrupted_run_resumes_on_stable_thread_to_one_terminal() -> None:
+    request = UserRequest(
+        user_id="user-resume-sentinel",
+        session_id="session-resume-sentinel",
+        text="input-resume-sentinel",
+    )
+    baseline_tool = _RunLifecycleProbeTool()
+    baseline_runtime = AgentGraphRuntime(
+        registry=sealed_registry(baseline_tool),
+        config=offline_config(),
+        chat_adapter=ScriptedChatAdapter(
+            [
+                ChatResult(
+                    provider="scripted",
+                    model="scripted-model",
+                    finish_reason="tool_calls",
+                    tool_calls=[
+                        NativeToolCall(
+                            id="provider-resume-sentinel",
+                            name=baseline_tool.name,
+                            arguments={"value": "value-resume-sentinel"},
+                        )
+                    ],
+                ),
+                ChatResult(
+                    provider="scripted",
+                    model="scripted-model",
+                    finish_reason="stop",
+                    response_text="final-resume-sentinel",
+                ),
+            ]
+        ),
+        session_store=InMemorySessionStore(),
+        checkpointer=InMemorySaver(),
+    )
+    try:
+        baseline = asyncio.run(
+            baseline_runtime.arun_state(
+                request.model_copy(deep=True),
+                run_id="run-uninterrupted-sentinel",
+            )
+        )
+    finally:
+        baseline_runtime.close()
+
+    saver = InMemorySaver()
+    tool = _RunLifecycleProbeTool()
+    waiting_sink = ListEventSink()
+    waiting_runtime = AgentGraphRuntime(
+        registry=sealed_registry(tool),
+        config=offline_config(),
+        chat_adapter=ScriptedChatAdapter(
+            [
+                ChatResult(
+                    provider="scripted",
+                    model="scripted-model",
+                    finish_reason="tool_calls",
+                    tool_calls=[
+                        NativeToolCall(
+                            id="provider-resume-sentinel",
+                            name=tool.name,
+                            arguments={"value": "value-resume-sentinel"},
+                        )
+                    ],
+                )
+            ]
+        ),
+        session_store=InMemorySessionStore(),
+        checkpointer=saver,
+        allow_interrupt=True,
+    )
+    waiting_identity = GraphExecutionIdentity.for_assistant_turn(
+        agent_id=waiting_runtime.agent_id,
+        user_id=request.user_id,
+        session_id=request.session_id,
+        run_id="run-before-resume-sentinel",
+    )
+    try:
+        waiting = asyncio.run(
+            waiting_runtime.arun_state(
+                request,
+                event_sink=waiting_sink,
+                run_id=waiting_identity.run_id,
+                interrupt_request=AssistantInterruptRequest(
+                    kind="approval",
+                    prompt="approval-prompt-sentinel",
+                    action_ref="provider-resume-sentinel",
+                    allowed_resume_kinds=("approve", "reject"),
+                ),
+            )
+        )
+        snapshot = asyncio.run(
+            waiting_runtime.assistant_graph_app.aget_state(waiting_identity)
+        )
+
+        assert waiting.status == "waiting_user"
+        assert waiting.response is None
+        assert [event.type for event in waiting_sink.events] == ["task_started"]
+        assert tool.terminals == []
+        assert snapshot.next == ("await_input",)
+        assert snapshot.values["graph_name"] == ASSISTANT_GRAPH_NAME
+        assert snapshot.values["graph_version"] == ASSISTANT_GRAPH_VERSION
+        assert snapshot.values["state_schema_version"] == (
+            ASSISTANT_STATE_SCHEMA_VERSION
+        )
+        assert snapshot.values["profile"] == "standard"
+        assert snapshot.values["run"]["run_id"] == waiting_identity.run_id
+    finally:
+        waiting_runtime.close()
+
+    resumed_sink = ListEventSink()
+    resumed_runtime = AgentGraphRuntime(
+        registry=sealed_registry(tool),
+        config=offline_config(),
+        chat_adapter=ScriptedChatAdapter(
+            [
+                ChatResult(
+                    provider="scripted",
+                    model="scripted-model",
+                    finish_reason="stop",
+                    response_text="final-resume-sentinel",
+                )
+            ]
+        ),
+        session_store=InMemorySessionStore(),
+        checkpointer=saver,
+        allow_interrupt=True,
+    )
+    resumed_identity = GraphExecutionIdentity.for_assistant_turn(
+        agent_id=resumed_runtime.agent_id,
+        user_id=request.user_id,
+        session_id=request.session_id,
+        run_id="run-after-resume-sentinel",
+    )
+    try:
+        resumed = asyncio.run(
+            resumed_runtime.aresume_state(
+                request,
+                resume=AssistantApproveResume(
+                    action_ref="provider-resume-sentinel",
+                ),
+                event_sink=resumed_sink,
+                run_id=resumed_identity.run_id,
+            )
+        )
+
+        assert resumed_identity.thread_id == waiting_identity.thread_id
+        assert resumed_identity.run_id != waiting_identity.run_id
+        assert resumed.status == "completed"
+        assert resumed.run_id == resumed_identity.run_id
+        assert resumed.trace_id == waiting.trace_id
+        assert resumed.response is not None
+        assert resumed.response.message == "final-resume-sentinel"
+        assert [call.tool_name for call in resumed.tool_calls] == [tool.name]
+        assert [result.success for result in resumed.tool_results] == [True]
+        assert [
+            (call.tool_name, call.input, call.status)
+            for call in resumed.tool_calls
+        ] == [
+            (call.tool_name, call.input, call.status)
+            for call in baseline.tool_calls
+        ]
+        assert [
+            (result.tool_name, result.success, result.output_ref)
+            for result in resumed.tool_results
+        ] == [
+            (result.tool_name, result.success, result.output_ref)
+            for result in baseline.tool_results
+        ]
+        assert [event.type for event in resumed_sink.events].count(
+            "final_response"
+        ) == 1
+        assert tool.terminals == [(resumed_identity.run_id, "completed")]
+    finally:
+        resumed_runtime.close()
 
 
 @pytest.mark.core_invariant("TOOL-001")

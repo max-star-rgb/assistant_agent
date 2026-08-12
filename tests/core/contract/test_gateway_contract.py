@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 
 import pytest
+from pydantic import ValidationError
 
 from assistant_agent.gateway import GatewaySessionManager, frame
 from assistant_agent.gateway.bridge import GatewayBridge, GatewayConnectionPolicy
@@ -10,6 +11,16 @@ from assistant_agent.gateway.protocol import CALL_HANGUP, CALL_INCOMING
 from assistant_agent.gateway.runtime_types import RealtimeAgentEvent, RealtimeAgentResult
 from assistant_agent.gateway.transport import Endpoint, InMemoryDuplex
 from assistant_agent.gateway.turn_facade import GatewayTurnFacade, GatewayTurnRequest
+
+
+@pytest.mark.core_invariant("GATE-001")
+def test_current_gateway_contract_has_no_graph_waiting_or_resume_wire() -> None:
+    with pytest.raises(ValidationError):
+        RealtimeAgentResult(status="waiting_user")  # type: ignore[arg-type]
+    with pytest.raises(ValidationError):
+        RealtimeAgentEvent(type="waiting_user")  # type: ignore[arg-type]
+    with pytest.raises(ValidationError):
+        RealtimeAgentEvent(type="resume")  # type: ignore[arg-type]
 
 
 class ControllableBackend:

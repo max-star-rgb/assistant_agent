@@ -64,6 +64,20 @@ Tool executor、event sink 与 cancel token 通过 LangGraph runtime context 注
 `RealtimeAgentEvent`，不决定 graph 路由。`GraphStreamPart`、namespace、checkpoint、task 与完整
 state 不进入产品协议。
 
+`AssistantTurnGraph` 的 checkpoint boundary 是版本化、严格 JSON 的 `AssistantTurnState`：只保存 request、
+run、Tool trajectory、prompt-safe observation、稳定 context/capability/artifact reference、profile、phase、
+counter、pending Tool call/interrupt 和 final response 等恢复事实。`AgentState`、Provider/Tool client、Registry、
+Executor、service/store、callback、cancel token、媒体正文、任意 metadata/data 都不进入 checkpoint；节点仅在
+一次调用期间从 `GraphRuntimeContext` hydrate 运行对象，返回前重新投影 strict state。同一 conversation 的新
+turn 会显式覆盖所有 run-scoped channel，不能依靠 LangGraph merge 偶然清除上轮事实。
+
+同一 node/edge 实现还编译为 `standard`、`planner`、`worker`、`verifier` 四个稳定 profile child。
+profile 只能来自受信调用参数或父图 assignment，并同时收窄 Provider Tool schema、RunToolCatalog、Validator
+可执行集合和预算，不能从用户文本推断。standalone root 可绑定 saver；profile child 自身不绑定 saver，作为
+subgraph 时继承父图 checkpointer/namespace。父子图通过窄 input/output adapter 交换 assignment reference、
+objective、constraint、capability reference、response、Tool trajectory 和 artifact reference，不传递父图整份
+state 或动态 task UUID。
+
 Graph 身份语义为 stable conversation `thread_id` 加每次调用或 resume 的新 `run_id`。compiled app
 显式接收 checkpointer；绑定 saver 时，内部 `AssistantTurnGraphApp` 以 native `aget_state`/
 `aget_state_history` 读取 checkpoint 与 state history，并以 `interrupt()`/
@@ -73,6 +87,10 @@ trusted interrupt request 只允许结构化 `approval|input`，并绑定当前 
 assistant turn；普通 write/dangerous category、用户文本和任意 metadata 不自动触发 HITL。该能力当前只供
 内部 compiled graph / Runtime 与后续父图使用；Agent-Service、Gateway、HTTP 和媒体 wire 不接收 resume，
 也不投影 `waiting_user`。未绑定 saver 的显式 offline/test graph 不宣称恢复能力。
+当前仓库只装配官方 `InMemorySaver`（显式 `none|memory`），用于本地/离线 Graph API 执行与恢复验证；官方
+async persistent SQLite saver 的依赖、进程级 owner 生命周期和跨 Runtime 重建验收尚未获安装授权，因此生产
+composition root 目前不得声称跨进程 checkpoint 恢复。缺失的持久 saver 不能由自研 saver 或静默 memory
+fallback 代替。
 仓库不再保留 conditional graph、rule intent/router/planner 或可切换它们的 `AGENT_GRAPH_MODE`；
 `UserRequest` 也不再接受 `execution_strategy=plan_and_solve`。当前仍存在的
 `task_execution_mode` 是工具/持久执行的结构化治理事实，不是第二张 Agent graph 的选择器。
@@ -379,8 +397,9 @@ async consumer
   -> run_assistant_request_stream()
   -> run_assistant_request_async()
   -> AgentGraphRuntime.arun_state()
-  -> compiled graph astream()
-  -> EventSink.emit(AgentEvent)
+  -> compiled graph astream(v2, custom/tasks/checkpoints/...)
+  -> custom RuntimeProductFact
+  -> ProductEventProjector -> EventSink.emit(AgentEvent)
   -> AsyncQueueEventSink
   -> AgentRunStream in owning event loop
 ```
