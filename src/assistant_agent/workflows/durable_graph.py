@@ -8,12 +8,15 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import TimeoutPolicy
 
 from assistant_agent.workflows.durable_graph_nodes import (
+    apply_branch_resumes_node,
+    await_branch_input_node,
     fail_node,
     decide_verification_node,
     join_wave_node,
     prepare_next_wave_node,
     publish_node,
     route_after_join,
+    route_resumed_branches,
     route_next_wave,
     workflow_node_error_handler,
     WORKFLOW_NODE_TIMEOUT,
@@ -59,6 +62,8 @@ def build_durable_workflow_graph(
         error_handler=workflow_node_error_handler,
     )
     builder.add_node("join_wave", join_wave_node)
+    builder.add_node("await_branch_input", await_branch_input_node)
+    builder.add_node("apply_branch_resumes", apply_branch_resumes_node)
     builder.add_node(
         "decide_verification",
         decide_verification_node,
@@ -80,6 +85,8 @@ def build_durable_workflow_graph(
             "fail": "fail",
         },
     )
+    builder.add_edge("await_branch_input", "apply_branch_resumes")
+    builder.add_conditional_edges("apply_branch_resumes", route_resumed_branches)
     builder.add_edge("publish", END)
     builder.add_edge("fail", END)
     return builder.compile(

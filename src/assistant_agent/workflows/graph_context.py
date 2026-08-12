@@ -28,6 +28,10 @@ from assistant_agent.workflows.graph_state import (
     PersistedWorkflowIdentity,
     WorkflowProfileAssignment,
 )
+from assistant_agent.workflows.graph_publish import (
+    SQLiteWorkflowPublishStore,
+    SQLiteWorkflowPublisher,
+)
 
 
 class WorkflowCancelReader(Protocol):
@@ -62,6 +66,8 @@ class WorkflowGraphRuntimeServices:
     cancel_reader: WorkflowCancelReader
     stream_writer: WorkflowStreamWriter
     capability_grant_resolver: CapabilityGrantResolver | None = None
+    publish_store: SQLiteWorkflowPublishStore | None = None
+    publisher: SQLiteWorkflowPublisher | None = None
 
 
 @dataclass(frozen=True)

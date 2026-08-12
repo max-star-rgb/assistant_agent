@@ -115,7 +115,12 @@ def test_worker_branch_projects_control_without_child_interrupt(
         assert final["status"] == expected_status
         assert final["phase"] == expected_phase
         snapshot = asyncio.run(app.aget_state(config()))
-        assert snapshot.interrupts == ()
+        if expected_status == "blocked":
+            assert snapshot.tasks
+            assert all(task.name == "await_branch_input" for task in snapshot.tasks)
+            assert all(task.interrupts for task in snapshot.tasks)
+        else:
+            assert snapshot.interrupts == ()
     finally:
         artifact_store.close()
 

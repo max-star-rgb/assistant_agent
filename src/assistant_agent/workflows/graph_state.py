@@ -293,6 +293,41 @@ class PersistedWorkflowResumeValue(_CheckpointModel):
         return self
 
 
+class WorkflowBranchInterruptInput(_CheckpointModel):
+    """Narrow business payload owned by the parent workflow interrupt node."""
+
+    workflow_id: str = Field(min_length=1, max_length=512)
+    node_id: str = Field(pattern=_NODE_ID_PATTERN)
+    execution_generation: int = Field(ge=0, le=64)
+    action_ref: str = Field(min_length=1, max_length=512)
+    required_fields: tuple[str, ...] = Field(min_length=1, max_length=32)
+    prompt_code: str = Field(pattern=_NODE_ID_PATTERN)
+    safe_prompt: str = Field(min_length=1, max_length=2_000)
+
+    @model_validator(mode="after")
+    def validate_action(self) -> "WorkflowBranchInterruptInput":
+        expected = stable_workflow_action_ref(
+            workflow_id=self.workflow_id,
+            node_id=self.node_id,
+            execution_generation=self.execution_generation,
+        )
+        if self.action_ref != expected:
+            raise ValueError("workflow interrupt action_ref does not match branch")
+        if len(self.required_fields) != len(set(self.required_fields)):
+            raise ValueError("workflow interrupt fields must be unique")
+        if any(not re.fullmatch(_NODE_ID_PATTERN, item) for item in self.required_fields):
+            raise ValueError("workflow interrupt field is invalid")
+        return self
+
+
+def stable_workflow_action_ref(
+    *, workflow_id: str, node_id: str, execution_generation: int
+) -> str:
+    return (
+        f"workflow:{workflow_id}:node:{node_id}:generation:{execution_generation}"
+    )
+
+
 class WorkflowWorkerControl(_CheckpointModel):
     outcome: Literal["completed", "blocked", "failed"]
     summary: str = Field(max_length=4_000)
@@ -419,7 +454,9 @@ class WorkflowProfileAssignment(_CheckpointModel):
         payload.setdefault("resume_value", None)
         payload.setdefault("resume_of_action_ref", None)
         payload["assignment_ref"] = _assignment_ref(payload)
-        return cls.model_validate(payload)
+        return cls.model_validate_json(
+            json.dumps(payload, ensure_ascii=False, default=_json_default)
+        )
 
     @model_validator(mode="after")
     def validate_assignment(self) -> "WorkflowProfileAssignment":
@@ -530,6 +567,13 @@ class WorkflowGraphError(_CheckpointModel):
     execution_generation: int | None = Field(default=None, ge=0, le=64)
 
 
+class PersistedPublishCommitRef(_CheckpointModel):
+    operation_key: str = Field(min_length=1, max_length=1_024)
+    status: Literal["committed"]
+    result_digest: str = Field(pattern=_DIGEST_PATTERN)
+    effect_ref: str = Field(min_length=1, max_length=1_024)
+
+
 def _assignment_ref(values: Mapping[str, object]) -> str:
     payload = {key: value for key, value in values.items() if key != "assignment_ref"}
     encoded = json.dumps(
@@ -544,7 +588,7 @@ def _assignment_ref(values: Mapping[str, object]) -> str:
 
 def _json_default(value: object) -> object:
     if isinstance(value, BaseModel):
-        return value.model_dump(mode="json")
+        return value.model_dump(mode="json", warnings=False)
     if isinstance(value, tuple):
         return list(value)
     raise TypeError(f"not JSON serializable: {type(value).__name__}")
@@ -686,11 +730,12 @@ def latest_results(
 
 def _resume_value(value: object) -> PersistedWorkflowResumeValue | None:
     try:
-        return (
-            value
+        payload = (
+            value.model_dump(mode="json", warnings=False)
             if isinstance(value, PersistedWorkflowResumeValue)
-            else PersistedWorkflowResumeValue.model_validate(value)
+            else value
         )
+        return PersistedWorkflowResumeValue.model_validate_json(json.dumps(payload))
     except (TypeError, ValueError, ValidationError):
         return None
 
@@ -772,6 +817,7 @@ class DurableWorkflowState(TypedDict):
     repair_round: int
     budget: PersistedWorkflowBudget
     result_artifact_refs: tuple[str, ...]
+    publish_commit_ref: PersistedPublishCommitRef | None
     errors: Annotated[tuple[WorkflowGraphError, ...], merge_graph_errors]
 
 
@@ -808,6 +854,7 @@ class _DurableWorkflowStateModel(_CheckpointModel):
     repair_round: int = Field(default=0, ge=0, le=64)
     budget: PersistedWorkflowBudget
     result_artifact_refs: tuple[str, ...] = Field(default=(), max_length=128)
+    publish_commit_ref: PersistedPublishCommitRef | None = None
     errors: tuple[WorkflowGraphError, ...] = Field(default=(), max_length=256)
 
     @model_validator(mode="after")
@@ -835,12 +882,23 @@ class _DurableWorkflowStateModel(_CheckpointModel):
             if any(not re.fullmatch(_NODE_ID_PATTERN, node_id) for node_id in wave):
                 raise ValueError("wave history contains invalid node id")
         normalized = merge_result_ledger({}, self.result_ledger)
-        if normalized != self.result_ledger:
+        serialized_ledger = {
+            key: value.model_dump(mode="json")
+            for key, value in self.result_ledger.items()
+        }
+        if normalized != serialized_ledger:
             raise ValueError("result ledger is not canonical")
-        if (
-            merge_resume_values({}, self.resume_values_by_action_ref)
-            != self.resume_values_by_action_ref
-        ):
+        serialized_resumes = {
+            key: value.model_dump(mode="json")
+            for key, value in self.resume_values_by_action_ref.items()
+        }
+        normalized_resumes = {
+            key: value.model_dump(mode="json")
+            for key, value in merge_resume_values(
+                {}, self.resume_values_by_action_ref
+            ).items()
+        }
+        if normalized_resumes != serialized_resumes:
             raise ValueError("resume ledger is not canonical")
         if (
             merge_sorted_unique_refs((), self.consumed_action_refs)
@@ -1004,6 +1062,7 @@ def initial_workflow_graph_state(
         repair_round=0,
         budget=_persist_budget(workflow.budget),
         result_artifact_refs=tuple(workflow.result_artifact_refs),
+        publish_commit_ref=None,
         errors=(),
     )
     return cast(DurableWorkflowState, envelope.model_dump(mode="json"))
@@ -1021,7 +1080,12 @@ def validate_durable_workflow_state(
         raise WorkflowGraphStateCompatibilityError()
     try:
         validated = _STATE_ADAPTER.validate_json(
-            json.dumps(value, ensure_ascii=False, allow_nan=False)
+            json.dumps(
+                value,
+                ensure_ascii=False,
+                allow_nan=False,
+                default=_json_default,
+            )
         )
     except (TypeError, ValueError, ValidationError) as exc:
         raise ValueError("workflow_graph_state_invalid") from exc

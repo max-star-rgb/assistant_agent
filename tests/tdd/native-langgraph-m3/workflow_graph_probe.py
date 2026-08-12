@@ -39,6 +39,10 @@ from assistant_agent.workflows.planning_graph import (
     build_workflow_planner_profile_graph,
     build_workflow_planning_subgraph,
 )
+from assistant_agent.workflows.graph_publish import (
+    SQLiteWorkflowPublishStore,
+    SQLiteWorkflowPublisher,
+)
 from tests.core.support import ProbeTool
 
 
@@ -208,6 +212,8 @@ def workflow_probe(
         ),
         cancel_reader=lambda _assignment: None,
         stream_writer=lambda _assignment, _fact: None,
+        publish_store=SQLiteWorkflowPublishStore(tmp_path / "publish.sqlite3"),
+        publisher=SQLiteWorkflowPublisher(tmp_path / "publish-effects.sqlite3"),
     )
     assistant_app = AssistantTurnGraphApp()
     context = WorkflowGraphRuntimeContext(

@@ -16,6 +16,7 @@
 | `active_wave` / `WorkflowProfileAssignment` | 当前 `Send` branch 的完整、可恢复 assignment | 256 branches；objective 10k；constraints 64；artifact refs 128；Tool names 256 | branch child adapter、parent join、interrupt mapping |
 | `result_ledger` | append-only `(node_id,generation)` 结果 ledger；ACI reducer | 256×65 logical keys；每 slot 最多两个 digest variant | join、conflict fail-closed、repair/history |
 | `resume_values_by_action_ref` | replay-safe typed resume ledger | 1,000 actions；32 fields/action；4k/value | Task 5 resume apply |
+| `publish_commit_ref` | committed publish business barrier reference | one bounded typed ref | Task 5 publish ordering |
 | `consumed_action_refs` | resume 消费幂等事实 | 1,000 sorted unique refs | Task 5 resume apply |
 | `repair_round` | repair budget/终止事实 | 0..64 | verifier repair router |
 | `budget` / assignment `budget_slice` | 父图剩余预算与 branch 预留 | 非负整数；deadline ISO-8601 | join 集中扣减、admission/policy |

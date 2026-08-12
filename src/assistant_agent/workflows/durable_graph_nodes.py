@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from typing import Annotated, Any, Literal, Mapping, TypedDict, cast
 
+from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
 from langgraph.runtime import Runtime
 from langgraph.errors import NodeError, NodeTimeoutError
-from langgraph.types import Command, RetryPolicy, Send, TimeoutPolicy
+from langgraph.types import Command, RetryPolicy, Send, TimeoutPolicy, interrupt
 from pydantic import ValidationError
 
 from assistant_agent.identity import RequestIdentity
@@ -30,7 +32,11 @@ from assistant_agent.workflows.graph_state import (
     PersistedAdmittedWorkflowPlan,
     PersistedWorkflowBudget,
     PersistedWorkflowBudgetSlice,
+    PersistedPublishCommitRef,
+    PersistedWorkflowResumeField,
+    PersistedWorkflowResumeValue,
     PersistedWorkflowInputRequest,
+    WorkflowBranchInterruptInput,
     WorkflowBranchResult,
     WorkflowGraphError,
     WorkflowGraphStateConflict,
@@ -41,7 +47,9 @@ from assistant_agent.workflows.graph_state import (
     latest_results,
     ledger_update,
     merge_result_ledger,
+    stable_workflow_action_ref,
 )
+from assistant_agent.workflows.graph_publish import WorkflowPublishOperation
 from assistant_agent.workflows.constraints import minimal_repair_closure
 from assistant_agent.workflows.transitions import WorkflowTransitionRejected
 
@@ -82,9 +90,12 @@ def _runtime_context(value: object) -> WorkflowGraphRuntimeContext:
 
 def _assignment(state: Mapping[str, object]) -> WorkflowProfileAssignment:
     value = state.get("assignment")
-    if isinstance(value, WorkflowProfileAssignment):
-        return value
-    return WorkflowProfileAssignment.model_validate_json(json.dumps(value))
+    payload = (
+        value.model_dump(mode="json", warnings=False)
+        if isinstance(value, WorkflowProfileAssignment)
+        else value
+    )
+    return WorkflowProfileAssignment.model_validate_json(json.dumps(payload))
 
 
 def prepare_worker_child_node(
@@ -622,7 +633,11 @@ def join_wave_node(state: DurableWorkflowState) -> dict[str, object]:
         }
     )
     update: dict[str, object] = {
-        "active_wave": (),
+        "active_wave": (
+            tuple(item.model_dump(mode="json") for item in assignments)
+            if blocked is not None
+            else ()
+        ),
         "budget": updated_budget.model_dump(mode="json"),
         "result_artifact_refs": tuple(
             dict.fromkeys(
@@ -655,10 +670,169 @@ def join_wave_node(state: DurableWorkflowState) -> dict[str, object]:
 
 def route_after_join(
     state: DurableWorkflowState,
-) -> Literal["next_wave", "verification", "fail"]:
-    if state["status"] in {"failed", "blocked"}:
+) -> list[Send] | Literal["next_wave", "verification", "fail"]:
+    if state["status"] == "blocked":
+        return route_blocked_branches(state)
+    if state["status"] == "failed":
         return "fail"
     return "verification" if state["phase"] == "verifying" else "next_wave"
+
+
+def route_blocked_branches(state: DurableWorkflowState) -> list[Send]:
+    assignments = tuple(
+        item
+        if isinstance(item, WorkflowProfileAssignment)
+        else WorkflowProfileAssignment.model_validate_json(json.dumps(item))
+        for item in state["active_wave"]
+    )
+    results = latest_results(
+        state["result_ledger"], state["execution_generation_by_node"]
+    )
+    sends: list[Send] = []
+    for assignment in sorted(assignments, key=lambda item: item.node_id):
+        result = results.get(assignment.node_id)
+        if (
+            result is None
+            or result.status != "blocked"
+            or result.input_request is None
+            or result.execution_generation != assignment.execution_generation
+        ):
+            continue
+        action_ref = stable_workflow_action_ref(
+            workflow_id=assignment.workflow_id,
+            node_id=assignment.node_id,
+            execution_generation=assignment.execution_generation,
+        )
+        sends.append(
+            Send(
+                "await_branch_input",
+                WorkflowBranchInterruptInput(
+                    workflow_id=assignment.workflow_id,
+                    node_id=assignment.node_id,
+                    execution_generation=assignment.execution_generation,
+                    action_ref=action_ref,
+                    required_fields=result.input_request.required_fields,
+                    prompt_code=result.input_request.prompt_code,
+                    safe_prompt=result.input_request.safe_prompt,
+                ).model_dump(mode="json"),
+            )
+        )
+    if not sends:
+        raise WorkflowGraphStateConflict(
+            "blocked workflow wave has no valid parent interrupt payload"
+        )
+    return sends
+
+
+def await_branch_input_node(
+    value: WorkflowBranchInterruptInput | Mapping[str, object],
+) -> dict[str, object]:
+    request = (
+        value
+        if isinstance(value, WorkflowBranchInterruptInput)
+        else WorkflowBranchInterruptInput.model_validate_json(json.dumps(value))
+    )
+    resumed = interrupt(request.model_dump(mode="json"))
+    if not isinstance(resumed, Mapping) or set(resumed) != set(request.required_fields):
+        raise ValueError("workflow resume fields do not match the interrupt request")
+    fields = tuple(
+        PersistedWorkflowResumeField(name=name, value=str(resumed[name]))
+        for name in request.required_fields
+    )
+    persisted = PersistedWorkflowResumeValue(
+        action_ref=request.action_ref,
+        fields=fields,
+    )
+    return {
+        "resume_values_by_action_ref": {
+            request.action_ref: persisted.model_dump(mode="json")
+        }
+    }
+
+
+def apply_branch_resumes_node(
+    state: DurableWorkflowState,
+    config: RunnableConfig,
+) -> dict[str, object]:
+    values = {
+        key: PersistedWorkflowResumeValue.model_validate_json(
+            json.dumps(
+                value.model_dump(mode="json", warnings=False)
+                if isinstance(value, PersistedWorkflowResumeValue)
+                else value
+            )
+        )
+        for key, value in state["resume_values_by_action_ref"].items()
+    }
+    consumed = set(state["consumed_action_refs"])
+    generations = dict(state["execution_generation_by_node"])
+    invocation_run_id = str(config["configurable"]["run_id"])
+    resumed_assignments: list[WorkflowProfileAssignment] = []
+    for raw in state["active_wave"]:
+        assignment = (
+            raw
+            if isinstance(raw, WorkflowProfileAssignment)
+            else WorkflowProfileAssignment.model_validate_json(json.dumps(raw))
+        )
+        action_ref = stable_workflow_action_ref(
+            workflow_id=assignment.workflow_id,
+            node_id=assignment.node_id,
+            execution_generation=assignment.execution_generation,
+        )
+        resume_value = values.get(action_ref)
+        if resume_value is None or action_ref in consumed:
+            raise WorkflowGraphStateConflict(
+                "workflow branch resume is missing or already consumed"
+            )
+        generation = assignment.execution_generation + 1
+        if generation > 64:
+            raise WorkflowGraphStateConflict("workflow branch generation exhausted")
+        payload = assignment.model_dump(mode="python", exclude={"assignment_ref"})
+        resume_constraint = (
+            "workflow_resume:"
+            + resume_value.model_dump_json(exclude={"action_ref"})
+        )
+        payload.update(
+            execution_generation=generation,
+            run_id=f"{invocation_run_id}:{assignment.node_id}:g{generation}",
+            trace_id=f"{invocation_run_id}:{assignment.node_id}:g{generation}",
+            constraints=tuple((*assignment.constraints, resume_constraint)),
+            resume_value=resume_value,
+            resume_of_action_ref=action_ref,
+        )
+        resumed_assignments.append(WorkflowProfileAssignment.create(**payload))
+        generations[assignment.node_id] = generation
+        consumed.add(action_ref)
+    return {
+        "invocation_run_id": invocation_run_id,
+        "invocation_trace_id": invocation_run_id,
+        "execution_generation_by_node": generations,
+        "active_wave": tuple(
+            item.model_dump(mode="json") for item in resumed_assignments
+        ),
+        "consumed_action_refs": tuple(sorted(consumed)),
+        "status": "running",
+        "phase": "executing",
+    }
+
+
+def route_resumed_branches(state: DurableWorkflowState) -> list[Send]:
+    return [
+        Send(
+            "run_verifier" if assignment.profile == "verifier" else "run_worker",
+            {"assignment": assignment.model_dump(mode="json")},
+        )
+        for raw in state["active_wave"]
+        for assignment in (
+            WorkflowProfileAssignment.model_validate_json(
+                json.dumps(
+                    raw.model_dump(mode="json", warnings=False)
+                    if isinstance(raw, WorkflowProfileAssignment)
+                    else raw
+                )
+            ),
+        )
+    ]
 
 
 def _verifier_ids(plan: PersistedAdmittedWorkflowPlan) -> frozenset[str]:
@@ -834,8 +1008,59 @@ def workflow_node_error_handler(
     return Command(update={"result_ledger": ledger_update(result)}, goto="join_wave")
 
 
-def publish_node(state: DurableWorkflowState) -> dict[str, object]:
-    return {"status": "completed", "phase": "completed", "active_wave": ()}
+def publish_node(
+    state: DurableWorkflowState,
+    runtime: Runtime[WorkflowGraphRuntimeContext],
+) -> dict[str, object]:
+    context = _runtime_context(runtime.context)
+    store = context.services.publish_store
+    publisher = context.services.publisher
+    if store is None or publisher is None:
+        raise RuntimeError("workflow publish store and publisher are required")
+    plan = _plan(state)
+    generations = dict(sorted(state["execution_generation_by_node"].items()))
+    generation_digest = "sha256:" + hashlib.sha256(
+        json.dumps(generations, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    results = latest_results(state["result_ledger"], generations)
+    result_payload = {
+        node_id: result.model_dump(mode="json")
+        for node_id, result in sorted(results.items())
+    }
+    result_digest = "sha256:" + hashlib.sha256(
+        json.dumps(result_payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    identity = state["identity"]
+    identity_map = (
+        identity.model_dump(mode="python")
+        if hasattr(identity, "model_dump")
+        else identity
+    )
+    operation = WorkflowPublishOperation.create(
+        workflow_id=state["workflow_id"],
+        plan_version=plan.version,
+        current_generation_digest=generation_digest,
+        user_id=str(identity_map["user_id"]),
+        agent_id=str(identity_map["agent_id"]),
+        deliverable_artifact_refs=tuple(state["result_artifact_refs"]),
+        result_digest=result_digest,
+    )
+    store.prepare(operation)
+    effect_ref = publisher.publish(operation)
+    committed = store.commit(operation, effect_ref=effect_ref)
+    if committed.status != "committed":
+        raise RuntimeError("workflow publish did not commit")
+    return {
+        "publish_commit_ref": PersistedPublishCommitRef(
+            operation_key=committed.operation_key,
+            status="committed",
+            result_digest=committed.result_digest,
+            effect_ref=cast(str, committed.effect_ref),
+        ).model_dump(mode="json"),
+        "status": "completed",
+        "phase": "completed",
+        "active_wave": (),
+    }
 
 
 def fail_node(state: DurableWorkflowState) -> dict[str, object]:
@@ -864,11 +1089,15 @@ __all__ = [
     "decide_verification_node",
     "fail_node",
     "join_wave_node",
+    "apply_branch_resumes_node",
+    "await_branch_input_node",
     "parse_branch_control_node",
     "prepare_next_wave_node",
     "prepare_worker_child_node",
     "publish_node",
     "route_after_join",
+    "route_blocked_branches",
+    "route_resumed_branches",
     "route_next_wave",
     "minimal_repair_closure",
     "WORKFLOW_NODE_TIMEOUT",
