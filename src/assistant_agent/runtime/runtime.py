@@ -291,7 +291,9 @@ class AgentGraphRuntime:
         self.allow_interrupt = allow_interrupt
         self.agent_id = agent_id
         self.graph_invocation_claim_store = (
-            graph_invocation_claim_store or InMemoryGraphInvocationClaimStore()
+            graph_invocation_claim_store
+            if graph_invocation_claim_store is not None
+            else InMemoryGraphInvocationClaimStore()
         )
         self.tool_execution_backend = tool_execution_backend
         self.tool_operation_store = (
@@ -1054,7 +1056,11 @@ class AgentGraphRuntime:
             pre_terminal_state_hook=pre_terminal_state_hook,
             run_id=run_id,
         )
-        state = self._execute_graph_sync(prepared)
+        try:
+            state = self._execute_graph_sync(prepared)
+        except GraphExecutionError as exc:
+            self._finalize_graph_execution_error(prepared, exc)
+            raise
         return self._finalize_graph_run(prepared, state)
 
     def _prepare_graph_run(

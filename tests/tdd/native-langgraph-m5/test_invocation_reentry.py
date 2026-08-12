@@ -99,6 +99,136 @@ def test_claim_store_fails_closed_at_capacity_until_owner_deletes_thread() -> No
     )
 
 
+def test_sync_no_saver_releases_terminal_claim_before_next_run() -> None:
+    """Retaining a completed no-history claim would exhaust a bounded store."""
+
+    store = InMemoryGraphInvocationClaimStore(max_entries=1)
+    runtime = AgentGraphRuntime(
+        registry=sealed_registry(),
+        config=offline_config(),
+        chat_adapter=ScriptedChatAdapter(
+            [
+                ChatResult(
+                    provider="scripted",
+                    model="scripted-model",
+                    finish_reason="stop",
+                    response_text="sync-first",
+                ),
+                ChatResult(
+                    provider="scripted",
+                    model="scripted-model",
+                    finish_reason="stop",
+                    response_text="sync-second",
+                ),
+            ]
+        ),
+        session_store=InMemorySessionStore(),
+        graph_invocation_claim_store=store,
+    )
+
+    try:
+        first = runtime.run_state(_request(), run_id="run-sync-first")
+        second = runtime.run_state(_request(), run_id="run-sync-second")
+    finally:
+        runtime.close()
+
+    assert first.status == "completed"
+    assert first.response is not None
+    assert first.response.message == "sync-first"
+    assert second.status == "completed"
+    assert second.response is not None
+    assert second.response.message == "sync-second"
+
+
+def test_sync_completed_checkpoint_reuse_maps_conflict_and_closes_lifecycle(
+    tmp_path,
+) -> None:
+    """A sync completed no-op must not bypass claim or leave Runtime started."""
+
+    history = RunHistoryStore(tmp_path / "sync-conflict.jsonl")
+    runtime = AgentGraphRuntime(
+        registry=sealed_registry(),
+        config=offline_config(),
+        chat_adapter=ScriptedChatAdapter(
+            [
+                ChatResult(
+                    provider="scripted",
+                    model="scripted-model",
+                    finish_reason="stop",
+                    response_text="sync-checkpoint-first",
+                )
+            ]
+        ),
+        session_store=InMemorySessionStore(),
+        checkpointer=InMemorySaver(),
+        run_history=history,
+    )
+
+    try:
+        first = runtime.run_state(_request(), run_id="run-sync-checkpoint")
+        with pytest.raises(GraphExecutionError) as captured:
+            runtime.run_state(_request(), run_id="run-sync-checkpoint")
+    finally:
+        runtime.close()
+
+    assert first.status == "completed"
+    assert captured.value.code == "graph_invocation_run_id_reused"
+    records = history.read_all()
+    assert [record.status for record in records] == [
+        "started",
+        "completed",
+        "started",
+        "failed",
+    ]
+
+
+def test_sync_claim_capacity_error_is_mapped_and_closes_lifecycle(tmp_path) -> None:
+    """Raw claim-store failures must not cross the sync App/Runtime boundary."""
+
+    store = InMemoryGraphInvocationClaimStore(max_entries=1)
+    store.claim(**CLAIM, invocation_token="occupied-token")
+    history = RunHistoryStore(tmp_path / "sync-capacity.jsonl")
+    runtime = AgentGraphRuntime(
+        registry=sealed_registry(),
+        config=offline_config(),
+        chat_adapter=ScriptedChatAdapter([]),
+        session_store=InMemorySessionStore(),
+        run_history=history,
+        graph_invocation_claim_store=store,
+    )
+
+    try:
+        with pytest.raises(GraphExecutionError) as captured:
+            runtime.run_state(_request(), run_id="run-sync-capacity")
+    finally:
+        runtime.close()
+
+    assert captured.value.code == "graph_invocation_claim_capacity_exceeded"
+    assert [record.status for record in history.read_all()] == ["started", "failed"]
+
+
+def test_runtime_preserves_explicit_falsey_invocation_claim_store() -> None:
+    """Truthiness-based defaulting would silently replace an explicit store."""
+
+    class FalseyClaimStore(InMemoryGraphInvocationClaimStore):
+        def __bool__(self) -> bool:
+            return False
+
+    store = FalseyClaimStore()
+    runtime = AgentGraphRuntime(
+        registry=sealed_registry(),
+        config=offline_config(),
+        chat_adapter=ScriptedChatAdapter([]),
+        session_store=InMemorySessionStore(),
+        graph_invocation_claim_store=store,
+    )
+
+    try:
+        assert runtime.graph_invocation_claim_store is store
+    finally:
+        runtime.close()
+
+
 def test_completed_native_noop_rejects_different_token_at_app_boundary() -> None:
     """A completed checkpoint may no-op before the in-graph gate can reject reuse."""
 
