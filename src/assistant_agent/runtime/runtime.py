@@ -70,7 +70,6 @@ from assistant_agent.workflows.service import WorkflowService
 from assistant_agent.workflows.observed_store import ObservedWorkflowStore
 from assistant_agent.workflows.sqlite_store import SQLiteWorkflowStore
 from assistant_agent.runtime.chat_adapter import ChatAdapter, ChatRequest, ChatResult, create_chat_adapter
-from assistant_agent.runtime.checkpointer import create_checkpointer
 from assistant_agent.context.observability import build_traced_assistant_context_pack
 from assistant_agent.context.compactor import ContextCompactor, create_context_compactor
 from assistant_agent.context.token_counter import (
@@ -451,7 +450,6 @@ class AgentGraphRuntime:
                 self.config.deep_research_chat_max_tokens
             ),
         )
-        self.checkpointer = checkpointer if checkpointer is not None else create_checkpointer(self.config)
         self.context_source_coordinator = context_source_coordinator or ContextSourceCoordinator(
             [SoulContextSource(), UserProfileContextSource()]
         )
@@ -463,9 +461,7 @@ class AgentGraphRuntime:
             },
             execution_backend=self.tool_execution_backend,
         )
-        self.assistant_graph_app = AssistantTurnGraphApp(
-            checkpointer=self.checkpointer,
-        )
+        self.assistant_graph_app = AssistantTurnGraphApp()
 
     def _create_session_embedding_coordinator(
         self,

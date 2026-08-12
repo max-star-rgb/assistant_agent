@@ -13,7 +13,6 @@ class GraphExecutionIdentity:
     """LangGraph execution identity for one assistant conversation turn."""
 
     thread_id: str
-    checkpoint_ns: str
     run_id: str
 
     @classmethod
@@ -33,7 +32,6 @@ class GraphExecutionIdentity:
         digest = hashlib.sha256(raw).hexdigest()[:32]
         return cls(
             thread_id=f"assistant:{digest}",
-            checkpoint_ns=f"turn:{run_id}",
             run_id=run_id,
         )
 
@@ -41,7 +39,6 @@ class GraphExecutionIdentity:
         return {
             "configurable": {
                 "thread_id": self.thread_id,
-                "checkpoint_ns": self.checkpoint_ns,
                 "run_id": self.run_id,
             }
         }
@@ -50,8 +47,8 @@ class GraphExecutionIdentity:
 class AssistantTurnGraphApp:
     """Own the one compiled assistant graph shared by a runtime instance."""
 
-    def __init__(self, *, checkpointer: Any | None) -> None:
-        self._graph = build_assistant_loop_graph(checkpointer=checkpointer)
+    def __init__(self) -> None:
+        self._graph = build_assistant_loop_graph()
 
     @property
     def graph(self) -> Any:
