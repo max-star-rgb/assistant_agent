@@ -242,7 +242,8 @@ def profile_input_adapter(
         ],
         "exclusion_reason_codes": excluded_codes,
     }
-    child["max_assistant_iterations"] = profile.max_tool_iterations
+    # A profile with no Tool budget still needs one LLM decision turn.
+    child["max_assistant_iterations"] = max(1, profile.max_tool_iterations)
     child["max_tool_calls_per_run"] = profile.max_tool_iterations
     child["max_action_tool_calls_per_run"] = profile.max_tool_iterations
     child["max_control_tool_calls_per_run"] = profile.max_control_tool_iterations

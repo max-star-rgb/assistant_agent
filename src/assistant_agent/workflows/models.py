@@ -19,6 +19,7 @@ WorkflowStatus = Literal[
     "failed",
     "cancelled",
 ]
+WorkflowExecutionEngine = Literal["legacy_scheduler_v2", "langgraph_v3"]
 WorkItemStatus = Literal[
     "pending",
     "ready",
@@ -325,6 +326,7 @@ class WorkflowRecord(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     workflow_id: str = Field(min_length=1)
+    execution_engine: WorkflowExecutionEngine
     workflow_type: str = Field(min_length=1, max_length=80)
     definition_version: str = Field(min_length=1, max_length=80)
     user_id: str = Field(min_length=1)
@@ -362,10 +364,11 @@ class WorkflowRecord(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def discard_legacy_workflow_lease(cls, data: Any) -> Any:
+    def migrate_legacy_workflow_record(cls, data: Any) -> Any:
         if not isinstance(data, dict):
             return data
         migrated = dict(data)
+        migrated.setdefault("execution_engine", "legacy_scheduler_v2")
         for name in ("lease_owner", "lease_token", "lease_expires_at"):
             migrated.pop(name, None)
         return migrated

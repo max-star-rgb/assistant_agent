@@ -13,6 +13,7 @@ from assistant_agent.workflows.models import (
     WorkflowEvent,
     WorkflowWorkItem,
     WorkflowWorkItemLease,
+    WorkflowExecutionEngine,
     utc_now,
 )
 
@@ -63,6 +64,10 @@ class WorkflowStore(Protocol):
         lease_seconds: int,
         model_call_limit: int,
         tool_call_limit: int,
+        allowed_execution_engines: frozenset[WorkflowExecutionEngine] = frozenset(
+            {"legacy_scheduler_v2"}
+        ),
+        allowed_workflow_types: frozenset[str] | None = None,
     ) -> WorkflowDispatch | None: ...
     def renew_work_item_lease(
         self,
@@ -77,6 +82,21 @@ class WorkflowStore(Protocol):
 def submission_key(bundle: WorkflowBundle) -> tuple[str, str, str, str]:
     item = bundle.workflow
     return item.user_id, item.agent_id, item.ingress_run_id, item.idempotency_key
+
+
+def workflow_matches_claim_scope(
+    bundle: WorkflowBundle,
+    *,
+    allowed_execution_engines: frozenset[WorkflowExecutionEngine],
+    allowed_workflow_types: frozenset[str] | None,
+) -> bool:
+    """Return whether a legacy scheduler may claim this business record."""
+
+    workflow = bundle.workflow
+    return workflow.execution_engine in allowed_execution_engines and (
+        allowed_workflow_types is None
+        or workflow.workflow_type in allowed_workflow_types
+    )
 
 
 def assign_event_cursors(
@@ -376,11 +396,21 @@ class InMemoryWorkflowStore:
         lease_seconds: int,
         model_call_limit: int,
         tool_call_limit: int,
+        allowed_execution_engines: frozenset[WorkflowExecutionEngine] = frozenset(
+            {"legacy_scheduler_v2"}
+        ),
+        allowed_workflow_types: frozenset[str] | None = None,
     ) -> WorkflowDispatch | None:
         with self._lock:
             for bundle in sorted(
                 self._bundles.values(), key=lambda item: item.workflow.updated_at
             ):
+                if not workflow_matches_claim_scope(
+                    bundle,
+                    allowed_execution_engines=allowed_execution_engines,
+                    allowed_workflow_types=allowed_workflow_types,
+                ):
+                    continue
                 previous_revision = bundle.workflow.revision
                 lease, events = claim_ready_item_in_bundle(
                     bundle,

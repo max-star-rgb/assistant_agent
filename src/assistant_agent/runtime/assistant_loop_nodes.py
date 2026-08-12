@@ -139,6 +139,8 @@ class AssistantLoopState(TypedDict):
     tool_observations: NotRequired[list[dict[str, Any]]]
     current_node_name: NotRequired[str]
     max_tool_iterations: NotRequired[int]
+    max_tool_calls_per_run: NotRequired[int]
+    max_action_tool_calls_per_run: NotRequired[int]
     max_control_tool_iterations: NotRequired[int]
     max_plan_steps: NotRequired[int]
     last_llm_span_id: NotRequired[str]
@@ -1391,7 +1393,12 @@ def execute_requested_tool_node(graph_state: AssistantLoopState) -> AssistantLoo
         return graph_state
 
     current = graph_state
-    max_tool_calls = int(graph_state.get("max_tool_iterations", _get_max_tool_iterations()))
+    max_tool_calls = int(
+        graph_state.get(
+            "max_action_tool_calls_per_run",
+            graph_state.get("max_tool_iterations", _get_max_tool_iterations()),
+        )
+    )
     max_control_tool_calls = int(
         graph_state.get(
             "max_control_tool_iterations",

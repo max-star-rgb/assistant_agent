@@ -12,6 +12,7 @@ from assistant_agent.workflows.models import (
     WorkflowBundle,
     WorkflowEvent,
     WorkflowWorkItemLease,
+    WorkflowExecutionEngine,
     utc_now,
 )
 from assistant_agent.workflows.store import (
@@ -21,6 +22,7 @@ from assistant_agent.workflows.store import (
     _lease_matches,
     assign_event_cursors,
     claim_ready_item_in_bundle,
+    workflow_matches_claim_scope,
 )
 
 
@@ -181,6 +183,10 @@ class SQLiteWorkflowStore:
         lease_seconds: int,
         model_call_limit: int,
         tool_call_limit: int,
+        allowed_execution_engines: frozenset[WorkflowExecutionEngine] = frozenset(
+            {"legacy_scheduler_v2"}
+        ),
+        allowed_workflow_types: frozenset[str] | None = None,
     ) -> WorkflowDispatch | None:
         with self._lock:
             try:
@@ -194,6 +200,12 @@ class SQLiteWorkflowStore:
                 ).fetchall()
                 for row in rows:
                     bundle = WorkflowBundle.model_validate_json(row[0])
+                    if not workflow_matches_claim_scope(
+                        bundle,
+                        allowed_execution_engines=allowed_execution_engines,
+                        allowed_workflow_types=allowed_workflow_types,
+                    ):
+                        continue
                     workflow = bundle.workflow
                     previous_revision = workflow.revision
                     lease, events = claim_ready_item_in_bundle(

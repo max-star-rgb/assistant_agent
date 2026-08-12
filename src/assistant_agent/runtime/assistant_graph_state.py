@@ -493,10 +493,16 @@ def assistant_turn_state_from_loop_state(
                 graph_state.get("max_tool_iterations")
             ),
             "max_tool_calls_per_run": _non_negative_int(
-                graph_state.get("max_tool_iterations")
+                graph_state.get(
+                    "max_tool_calls_per_run",
+                    graph_state.get("max_tool_iterations"),
+                )
             ),
             "max_action_tool_calls_per_run": _non_negative_int(
-                graph_state.get("max_tool_iterations")
+                graph_state.get(
+                    "max_action_tool_calls_per_run",
+                    graph_state.get("max_tool_iterations"),
+                )
             ),
             "max_control_tool_calls_per_run": _non_negative_int(
                 graph_state.get("max_control_tool_iterations")
@@ -623,7 +629,14 @@ def assistant_loop_state_from_turn_state(
         "tool_observations": observations,
         "last_llm_span_id": str(persisted.get("last_llm_span_id") or ""),
         "last_llm_attempt_kind": str(persisted.get("last_llm_attempt_kind") or ""),
-        "max_tool_iterations": int(persisted["max_tool_calls_per_run"]),
+        "max_tool_iterations": max(
+            1,
+            int(persisted["max_assistant_iterations"]),
+        ),
+        "max_tool_calls_per_run": int(persisted["max_tool_calls_per_run"]),
+        "max_action_tool_calls_per_run": int(
+            persisted["max_action_tool_calls_per_run"]
+        ),
         "max_control_tool_iterations": int(persisted["max_control_tool_calls_per_run"]),
         "max_plan_steps": int(persisted["max_assistant_iterations"]),
         "response_stream_current_call_emitted": False,

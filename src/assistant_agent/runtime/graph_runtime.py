@@ -383,7 +383,7 @@ def _preserve_profile_scope(
     }
     projected["max_assistant_iterations"] = min(
         int(projected.get("max_assistant_iterations", 0)),
-        profile.max_tool_iterations,
+        max(1, profile.max_tool_iterations),
     )
     projected["max_tool_calls_per_run"] = min(
         int(projected.get("max_tool_calls_per_run", 0)),

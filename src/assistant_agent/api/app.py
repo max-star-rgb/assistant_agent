@@ -162,6 +162,8 @@ async def start_durable_workflow_worker(app: FastAPI) -> DurableWorkflowWorker |
         lease_seconds=config.durable_workflow_lease_seconds,
         poll_seconds=config.durable_workflow_poll_seconds,
         max_concurrent_items=config.durable_workflow_max_concurrent_items,
+        allowed_execution_engines=frozenset({"legacy_scheduler_v2"}),
+        allowed_workflow_types=frozenset(service.definitions.list_types()),
     )
     app.state.durable_workflow_worker = worker
     app.state.durable_workflow_stop_event = stop_event

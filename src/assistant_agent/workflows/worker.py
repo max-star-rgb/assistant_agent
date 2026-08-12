@@ -8,6 +8,7 @@ from threading import Event
 
 from assistant_agent.workflows.runtime import WorkflowRuntime
 from assistant_agent.workflows.service import WorkflowService
+from assistant_agent.workflows.models import WorkflowExecutionEngine
 logger = logging.getLogger(__name__)
 
 
@@ -21,6 +22,10 @@ class DurableWorkflowWorker:
         lease_seconds: int = 30,
         poll_seconds: float = 1.0,
         max_concurrent_items: int = 4,
+        allowed_execution_engines: frozenset[WorkflowExecutionEngine] = frozenset(
+            {"legacy_scheduler_v2"}
+        ),
+        allowed_workflow_types: frozenset[str] | None = None,
     ) -> None:
         if max_concurrent_items < 1:
             raise ValueError("max_concurrent_items must be positive")
@@ -30,6 +35,8 @@ class DurableWorkflowWorker:
         self.lease_seconds = lease_seconds
         self.poll_seconds = poll_seconds
         self.max_concurrent_items = max_concurrent_items
+        self.allowed_execution_engines = allowed_execution_engines
+        self.allowed_workflow_types = allowed_workflow_types
 
     def run_once(self) -> bool:
         claims = []
@@ -44,6 +51,8 @@ class DurableWorkflowWorker:
                 lease_seconds=self.lease_seconds,
                 model_call_limit=self.runtime.model_call_limit_per_item,
                 tool_call_limit=self.runtime.tool_call_limit_per_item,
+                allowed_execution_engines=self.allowed_execution_engines,
+                allowed_workflow_types=self.allowed_workflow_types,
             )
             if dispatch is None:
                 break
