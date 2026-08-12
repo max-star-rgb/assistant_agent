@@ -4,7 +4,7 @@
 
 **Goal:** 将 production Durable Workflow 全量切到持久化 `DurableWorkflowGraph`，安全排空并迁移 legacy rows，随后删除自研 scheduler、lease/CAS/ready-node、影子 Workflow OTel 与无人消费的 legacy definition/config，同时保持真实产品协议、领域事实和独立 `automation.durable_tasks` 能力不变。
 
-**Architecture:** 先建立进程级 official async SQLite saver、严格产品仓库和 `WorkflowGraphHost`，让所有新提交显式写入 `execution_engine="langgraph_v3"` 并由 compiled graph 执行；旧 `legacy_scheduler_v2` 只允许 drain，不再接收新提交。只有 production cutover、跨进程恢复、legacy 非终态归零和终态 rows 迁移共同通过 Gate 0 后，才按消费者从外到内停止 worker、删除 runtime/executor、删除 scheduler store/schema，最后移除影子观测与 legacy config；LangGraph checkpointer 保存执行位置，业务 SQLite 只保存 owner、submission identity、严格产品快照/事件、artifact、审计和幂等事实。
+**Architecture:** 先建立进程级 official async SQLite saver、严格 graph 产品仓库、忠实 legacy archive 和 `WorkflowGraphHost`，让所有新提交显式写入 `execution_engine="langgraph_v3"` 并由 compiled graph 执行；独立 `LegacyDrainHost` 是既有 `legacy_scheduler_v2` rows 的唯一 drain owner，禁止新提交但保留到 Gate 0 通过。只有 production cutover、composition crash/restart 恢复、legacy 非终态归零、终态 rows/events 可审计迁移共同通过 Gate 0 后，才按消费者从外到内停止 drain host、删除 runtime/executor、删除 scheduler store/schema，最后移除影子观测与 legacy config；LangGraph checkpointer 保存执行位置，业务 SQLite 只保存 owner、submission identity、严格产品/历史 archive、artifact、审计和幂等事实。
 
 **Tech Stack:** Python 3.12、LangGraph 1.2.4 Graph API、langgraph-checkpoint 4.1.1、`langgraph-checkpoint-sqlite==3.1.0`、Pydantic v2、asyncio、SQLite、FastAPI、LangSmith、pytest。
 
@@ -16,27 +16,31 @@
 - `langgraph-checkpoint-sqlite==3.1.0` 的安装与 lock 更新需用户明确授权；未授权时 Task 0 保持 RED，不能以手写 saver 或跳过 persistent test 绕过 Gate 0。
 - 新提交只能写 `execution_engine="langgraph_v3"`；`legacy_scheduler_v2` 只读、只 drain、禁止新建。engine 不由请求文本、plan kind、definition 名称或 allowlist 猜测。
 - `WorkflowGraphHost` 只拥有 graph task、订阅、interrupt/resume/cancel/recovery 和产品投影；不计算 ready node、不 claim、不续租、不做 revision CAS。
+- `LegacyDrainHost` 是 cutover 后唯一允许 import `DurableWorkflowWorker`/`WorkflowRuntime` 的 production adapter，只接受已存在的 `legacy_scheduler_v2` rows、拒绝 submit，且必须在 Gate 0 后由 Task 3 整体删除；不得把 drain 逻辑藏回 `WorkflowGraphHost`、`AgentGraphRuntime` 或 API。
 - Workflow API 只返回严格 `WorkflowProductRecord`、`WorkflowProductEvent` 与 artifact 内容；不得返回 raw `WorkflowBundle`、plan/work item、checkpoint、namespace、task、native interrupt ID、Provider raw response 或 Tool raw body。
 - 真实消费者边界：保留 Agent-Service/媒体的 `workflow://<workflow_id>` output ref、身份隔离、`GET /workflows/{id}`、events、result、input、cancel 路径和结果交付语义；同步更新仓库内真实客户端 `scripts/media_simulator.py`。内部 raw plan/event schema、`resume_token`、legacy worker API 和未被真实客户端使用的兼容对象允许 breaking cleanup。
+- legacy archive 必须忠实保留原 `workflow_type` 与 `execution_engine="legacy_scheduler_v2"` provenance；`deep_research`、`long_horizon` 按类型分别统计 row/event count 与 digest。不得把历史 row 改标 `langgraph_v3`，不得因当前零产品入口而无保留删除 `long_horizon` 历史。
 - Tool 调用继续经过 `ActionValidator -> ToolExecutor -> ToolRegistry -> tool`；artifact ownership、业务幂等、审计与 commit barrier 不进入 checkpointer 替代。
 - `src/assistant_agent/automation/durable_tasks/**`、其配置、worker、store、API、测试和 `DUR-001` 永远不在本计划删除或迁移范围；任何 broad source/AST gate 必须显式排除该目录。
 - LangSmith 是 Workflow graph 的原生 trace/eval 目标。Task 7 只删除为 legacy Workflow scheduler 重建树的 `observed_store.py`、`workflow_otel.py`、`workflow_trace.py`；不删除通用 canonical trace、runtime audit、Agent-Service delivery audit 或 Langfuse 的非 Workflow 路径。
 - Core invariant 初始决策：`LOOP-001`、`IDENT-001`、`OBS-001` 需要在 Gate 0 后回补最小长期结构化契约；`DUR-001` 不变且必须继续通过。具体 Workflow definition、DB migration 细节与删除实现继续放在可手动删除的 `tests/tdd/native-langgraph-m4/`。
 - 全部 pytest 默认 `MULTIMODAL_AGENT_PROVIDER_MODE=mock`、local/offline；真实 Provider 与远端 LangSmith 只在正式 Release Review/operator gate 下运行，不能进入 pytest。
 - 每个删除任务先证明最后真实 consumer 已切走，再执行 source gate、AST import gate 和文件删除 gate；“零调用 getter”本身不构成提前删除理由。
+- 每个 Task 的 GREEN 后必须运行 `python -m pytest --collect-only -q tests/tdd/native-langgraph-m4 tests/tdd/durable-workflow-e2e`；迁移或删除 legacy-only tests 后，collect-only 必须无 import error、重复 node ID 或指向已删除模块的 collection failure。
 
 ## Gate 0：删除前不可分割的上线门
 
 Gate 0 由 Task 0–2 共同完成，验收证据必须来自同一候选 checkout：
 
 1. production 使用 official async SQLite saver，跨关闭/重建进程级 owner 后，同一 `thread_id` 能恢复非终态 graph；
-2. `WorkflowGraphHost` 是 production Deep Research 的唯一 submit/resume/cancel/recovery owner；
+2. `WorkflowGraphHost` 是新 Deep Research 的唯一 submit/resume/cancel/recovery owner；`LegacyDrainHost` 是旧 rows 唯一 drain owner且无 submit API；
 3. 新提交业务 row 显式为 `langgraph_v3`，且从提交到终态对 `claim_ready_work_item`、`renew_work_item_lease`、`WorkflowRuntime.run_claim`、`AgentGraphRuntime.run_work_item` 调用数均为零；
 4. cutover 时先禁止 legacy 新提交，再让 legacy worker 只 drain 已存在的 `legacy_scheduler_v2` 非终态 rows；
-5. `legacy_nonterminal_count() == 0`，全部 legacy terminal rows 已幂等迁入严格产品表，迁移计数、owner、artifact refs、terminal status 与 event cursor 守恒；
+5. `legacy_nonterminal_count() == 0`；全部 legacy terminal rows 已幂等迁入独立 archive，原 workflow type/engine、owner、artifact refs、terminal status 忠实保留，`deep_research`/`long_horizon` 分类型 count/digest 守恒；
 6. API 与 `media_simulator` 只消费严格产品 DTO，Agent-Service/媒体 `workflow://` output ref 和 final artifact 交付兼容；
-7. production restart 扫描并恢复 `langgraph_v3` 非终态 thread，不重复 publish/tool 副作用；
-8. Gate 0 artifact 明确记录 DB backup 路径、row counts、迁移校验摘要和 rollback 条件；Task 3 前由 operator 确认，不能由测试自动删除旧表或备份。
+7. production composition 在 graph 已 admission/运行/interrupt 三个窗口分别 crash，按正式 lifespan 重建后 `arecover_nonterminal()` 恢复同一 thread；publish operation key 与 governed write Tool operation key 各只有一次 committed side effect；
+8. 每个 legacy source event 按确定性映射或可审计合成规则生成一个 strict archive product event，保留 `source_cursor`；重复迁移 event ID 不变，`next_cursor` 分页连续单调，分类型 source/event count 与 digest 守恒；
+9. Gate 0 artifact 明确记录 DB backup 路径、graph recovery/exactly-once probe、按 workflow type/engine 的 row/event counts+digests、cursor/page digest、迁移摘要和 rollback 条件；Task 3 前由 operator 确认，不能由测试自动删除旧表或备份。
 
 ---
 
@@ -148,6 +152,13 @@ MULTIMODAL_AGENT_PROVIDER_MODE=mock \
 
 Expected: PASS；第二个 host 使用同一 SQLite checkpoint 继续相同 thread，新 resume run ID 不同；关闭后无遗留 task/connection，setup failure fail closed。
 
+```bash
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest --collect-only -q \
+  tests/tdd/native-langgraph-m4 tests/tdd/durable-workflow-e2e
+```
+
+Expected: collection PASS。
+
 - [ ] **Step 6: 运行 AST/source gate**
 
 ```bash
@@ -194,10 +205,11 @@ git commit -m "feat(workflows): own persistent workflow graph lifecycle"
 
 **Interfaces:**
 - Produces: strict frozen `WorkflowProductRecord`、`WorkflowProductEvent`、`WorkflowSubmissionIdentity`；`WorkflowProductRepository.create_admission()/save_projection()/get_owned()/list_events()/append_event()/list_nonterminal_graph()/close()`。
+- Produces: immutable `ArchivedWorkflowProductRecord`（原 `workflow_type`、`execution_engine=legacy_scheduler_v2`）与 `ArchivedWorkflowProductEvent`（`source_cursor`、安全 source type digest、映射后的 product event type）；archive 与 graph current tables/schema 分离。`WorkflowProductView = GraphWorkflowProductRecord | ArchivedWorkflowProductRecord` 是 repository/API 的严格 discriminated read union。
 - Produces: `LegacyWorkflowMigrator.inventory() -> LegacyInventory`、`.migrate_terminal_rows() -> MigrationReport`、`.legacy_nonterminal_count() -> int`；CLI `inspect|migrate-terminal|verify-drain`。
 - Consumes: legacy `SQLiteWorkflowStore` only inside `legacy_migration.py`; Task 2 的 graph host 和 API 必须消费 `WorkflowProductRepository`，never `WorkflowBundle`。
-- Real consumers: status/events/result/input/cancel routes and media simulator need owner、status、phase、progress、waiting action、artifact refs；这些字段进入严格 DTO。raw plan、work item attempt、lease、budget reservation、legacy event payload 无产品 consumer，明确不迁移。
-- Breaking cleanup boundary: 保留旧 `durable_workflows`/`durable_workflow_events` 表只到 Gate 0 backup+drain 完成；迁移是幂等复制，不在本 Task drop 表。
+- Real consumers: status/events/result/input/cancel routes and media simulator need owner、status、phase、progress、waiting action、artifact refs；这些字段进入严格 DTO。raw plan、work item attempt、lease、budget reservation 无产品 consumer，不进入 public DTO；legacy event 的安全语义、cursor 与 provenance 必须进入 archive event，raw payload 不复制。
+- Breaking cleanup boundary: 保留旧 `durable_workflows`/`durable_workflow_events` 表只到 Gate 0 backup+drain 完成；迁移是幂等复制，不在本 Task drop 表。archive 是历史审计/查询事实，不随 Task 8 删除 legacy executable code。
 
 - [ ] **Step 1: 写产品仓库与 migration RED**
 
@@ -211,7 +223,11 @@ def test_product_repository_rejects_raw_execution_fields(tmp_path):
 
 
 def test_terminal_migration_is_idempotent_and_preserves_product_facts(tmp_path):
-    legacy = _legacy_db(tmp_path, terminal=3, nonterminal=2)
+    legacy = _legacy_db(
+        tmp_path,
+        terminal_by_type={"deep_research": 2, "long_horizon": 1},
+        nonterminal=2,
+    )
     products = SQLiteWorkflowProductRepository(tmp_path / "products.sqlite3")
     migrator = LegacyWorkflowMigrator(legacy=legacy, products=products)
     first = migrator.migrate_terminal_rows()
@@ -219,7 +235,25 @@ def test_terminal_migration_is_idempotent_and_preserves_product_facts(tmp_path):
     assert (first.inserted, first.already_present) == (3, 0)
     assert (second.inserted, second.already_present) == (0, 3)
     assert migrator.legacy_nonterminal_count() == 2
-    assert _terminal_fact_digest(legacy) == _terminal_fact_digest(products)
+    assert _archive_digest_by_type(legacy) == _archive_digest_by_type(products)
+    assert products.get_archive(_legacy_long_horizon_id()).workflow_type == "long_horizon"
+    assert products.get_archive(_legacy_long_horizon_id()).execution_engine == "legacy_scheduler_v2"
+
+
+def test_legacy_event_mapping_preserves_cursor_pages_and_is_idempotent(tmp_path):
+    legacy = _legacy_db_with_events(tmp_path, cursors=(1, 2, 3, 4, 5))
+    products = SQLiteWorkflowProductRepository(tmp_path / "products.sqlite3")
+    migrator = LegacyWorkflowMigrator(legacy=legacy, products=products)
+    first = migrator.migrate_terminal_rows()
+    first_page = products.list_archive_events(_workflow_id(), after=0, limit=2)
+    second_page = products.list_archive_events(
+        _workflow_id(), after=first_page.next_cursor, limit=10
+    )
+    migrator.migrate_terminal_rows()
+    assert [event.source_cursor for event in (*first_page.events, *second_page.events)] == [1, 2, 3, 4, 5]
+    assert first_page.next_cursor == 2
+    assert second_page.next_cursor == 5
+    assert _archive_event_digest(products) == first.event_digest
 ```
 
 - [ ] **Step 2: 运行 RED**
@@ -265,7 +299,11 @@ class WorkflowProductRecord(BaseModel):
     terminal_at: datetime | None
 ```
 
-SQLite 新表固定为 `workflow_products`、`workflow_product_events`；products 表只建立 owner/idempotency、status/update 查询索引，不建 claim/lease/ready 索引。`save_projection()` 以 `event_id` 幂等并只允许合法状态演进；这不是 scheduler revision CAS，不选择下一节点。
+SQLite 新表固定为 `workflow_products`、`workflow_product_events`；products 表只建立 owner/idempotency、status/update 查询索引，不建 claim/lease/ready 索引。`save_projection()` 以 `event_id` 幂等并只允许合法状态演进；这不是 scheduler revision CAS，不选择下一节点。`get_owned()` 先查 current 再查 archive，返回 discriminated `WorkflowProductView`；`list_events()` 同理选择 current/archive event table，绝不把 archive row 升级为 graph row。
+
+历史表固定为 `workflow_archives`、`workflow_archive_events`。`ArchivedWorkflowProductRecord.workflow_type: str` 与 `execution_engine: Literal["legacy_scheduler_v2"]` 逐值复制原 row；它不伪装为 graph current record。`ArchivedWorkflowProductEvent` 的 `event_id=sha256(workflow_id, source_cursor, source_event_digest)`，唯一键 `(workflow_id, source_cursor)`，因此重跑只计 `already_present`。
+
+legacy event 映射表固定为：submission/admitted → `accepted`；planner/plan → `planning`；work-item/lease/retry/repair → `progress`；input-required → `waiting_input`；completed → `completed`；cancelled → `cancelled`；failed/rejected → `failed`。未知 source type → `progress`，但保存 `source_event_type_digest` 与 `mapping_rule="unknown_to_progress_v1"` 以便审计。每个 source cursor 恰好生成一个 archive event，保留同值 `source_cursor`；分页查询 `WHERE source_cursor > ? ORDER BY source_cursor LIMIT ?`，`next_cursor` 等于本页最后 source cursor。映射不复制 raw payload、objective 或 artifact 内容。
 
 - [ ] **Step 4: 实现只读 legacy inventory、终态迁移与 rollback artifact**
 
@@ -280,7 +318,7 @@ CLI 行为：
   --report .data/workflow-m4/migration-report.json
 ```
 
-`migrate-terminal` 先用 SQLite backup API 创建一致性备份，再迁移 completed/failed/cancelled rows；遇到非法 owner、重复 idempotency 不同 digest、非法 artifact ref 或 terminal mismatch 时整体 fail closed，不修改原表。报告只含计数、ID digest、status histogram、backup 路径，不含 objective、input、artifact 内容或 Provider payload。
+`migrate-terminal` 先用 SQLite backup API 创建一致性备份，再迁移 completed/failed/cancelled rows 与它们的全部 source events；遇到非法 owner、重复 idempotency 不同 digest、非法 artifact ref、terminal mismatch、同 cursor 不同 event digest 或 cursor 非严格递增时整体 fail closed，不修改原表。报告按 `(workflow_type, execution_engine)` 分组保存 row count/ID digest/status histogram，并按 workflow type 保存 source/mapped event count、cursor range、cursor digest、mapped event digest、backup 路径；不含 objective、input、artifact 内容或 Provider payload。
 
 - [ ] **Step 5: 运行 GREEN 与 schema 负向检查**
 
@@ -294,6 +332,15 @@ MULTIMODAL_AGENT_PROVIDER_MODE=mock \
 ```
 
 Expected: pytest PASS；CLI 对不存在/非 Workflow DB fail closed 且不创建 production 文件。
+
+同一步运行：
+
+```bash
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest --collect-only -q \
+  tests/tdd/native-langgraph-m4 tests/tdd/durable-workflow-e2e
+```
+
+Expected: collection PASS。
 
 - [ ] **Step 6: 运行 raw-field source gate**
 
@@ -326,27 +373,35 @@ git commit -m "feat(workflows): persist strict graph product records"
 - Modify: `src/assistant_agent/runtime/runtime.py`
 - Modify: `src/assistant_agent/runtime/assistant_runtime_app.py`
 - Create: `src/assistant_agent/workflows/graph_host.py`
+- Create: `src/assistant_agent/workflows/legacy_drain_host.py`
 - Modify: `src/assistant_agent/api/app.py`
 - Modify: `src/assistant_agent/api/routes_workflows.py`
 - Modify: `src/assistant_agent/api/models.py`
 - Modify: `src/assistant_agent/runtime/server_startup_summary.py`
 - Modify: `scripts/media_simulator.py`
 - Modify: `scripts/README.md`
+- Modify: `docs/media-agent-service-websocket.md`
+- Modify: `docs/runtime-event-stream-architecture.md`
+- Modify: `docs/tool-calling-architecture.md`
 - Modify: `evals/release_review/cli.py`
 - Create: `tests/tdd/native-langgraph-m4/test_production_workflow_cutover.py`
 - Create: `tests/tdd/native-langgraph-m4/test_workflow_api_projection.py`
 - Create: `tests/tdd/native-langgraph-m4/test_legacy_drain_gate.py`
+- Create: `tests/tdd/native-langgraph-m4/test_production_workflow_recovery.py`
+- Modify: `tests/tdd/durable-workflow-e2e/test_workflow_result_protocol.py`
+- Modify: `tests/tdd/durable-workflow-e2e/test_workflow_recovery_api.py`
 - Modify: `tests/core/integration/test_runtime_lifecycle.py`
 - Modify: `tests/core/integration/test_durable_lifecycle.py`
 - Modify: `tests/core/contract/test_observability_contract.py`
 
 **Interfaces:**
 - Produces: `WorkflowGraphHost.astart()/asubmit()/aget()/alist_events()/aresume()/acancel()/arecover_nonterminal()/aclose()`；所有公共方法返回 Task 1 strict product DTO，内部 graph result 不越过 host。
+- Produces: `LegacyDrainHost.astart()/drain_once()/aclose()`；constructor 只接收 existing legacy `WorkflowService`/`DurableWorkflowWorker` composition，强制 `allowed_execution_engines={"legacy_scheduler_v2"}` 与 existing-row-only store view，不提供 submit/get API。
 - Replaces: `_start_deep_research_workflow(state, workflow_service=...)` with async `_start_deep_research_workflow(state, workflow_graph_host=...)` calling `await host.asubmit(...)`.
-- API dependency becomes `get_workflow_graph_host() -> WorkflowGraphHost`; response models use concrete `WorkflowProductRecordResponse`/`WorkflowProductEventResponse` rather than `dict[str, Any]`。
+- API dependency becomes `get_workflow_graph_host() -> WorkflowGraphHost`; response models use concrete discriminated `GraphWorkflowProductResponse | ArchivedWorkflowProductResponse` and matching current/archive event response rather than `dict[str, Any]`。历史 terminal deep_research/long_horizon 仍可 GET/events/result；archive input/cancel 固定返回 409 `WORKFLOW_TERMINAL`。
 - Input contract becomes `{action_ref: str, values: dict[str, str]}`；native interrupt ID 和旧 `resume_token` 不接受。cancel remains `POST /workflows/{id}/cancel` and becomes host-owned graph cancellation plus product projection。
 - Real consumers: `scripts/media_simulator.py` reads `workflow.status`、`progress`、`waiting_actions[0].action_ref`、result content；Agent-Service keeps `workflow://` output ref unchanged。
-- Breaking cleanup boundary: route paths、identity/query policy、result artifact response and protocol version stay stable；raw `plan` response member、raw legacy events、`waiting_input.resume_token` are intentionally removed because no protected external contract owns them。
+- Breaking cleanup boundary: route paths、identity/query policy、result artifact response、`workflow://` output ref and protocol version stay stable；raw `plan` response member、raw legacy events、`waiting_input.resume_token` intentionally break。`docs/media-agent-service-websocket.md` 必须逐字段记录兼容/破坏矩阵，`scripts/media_simulator.py` 是仓库内 strict client contract；未声明的第三方旧 client 不获得兼容 façade。
 
 - [ ] **Step 1: 写 production cutover、API 与 drain RED**
 
@@ -362,6 +417,22 @@ async def test_new_deep_research_submission_is_graph_v3_and_never_claimed(spies,
     assert spies.run_work_item.call_count == 0
 
 
+@pytest.mark.asyncio
+async def test_submit_returns_accepted_handle_before_blocked_graph_finishes(app):
+    handle = await asyncio.wait_for(
+        app.state.workflow_graph_host.asubmit(**_blocking_submission()),
+        timeout=0.2,
+    )
+    assert handle.status == "queued"
+    assert app.state.workflow_graph_host.active_task(handle.workflow_id) is not None
+
+
+def test_legacy_drain_host_is_only_old_engine_owner_and_cannot_submit(drain_host):
+    assert drain_host.allowed_execution_engines == frozenset({"legacy_scheduler_v2"})
+    assert not hasattr(drain_host, "submit")
+    assert not hasattr(drain_host, "asubmit")
+
+
 def test_gate_zero_rejects_cleanup_while_legacy_nonterminal_rows_exist(migrator):
     assert migrator.legacy_nonterminal_count() == 1
     with pytest.raises(LegacyDrainIncomplete, match="legacy_nonterminal_rows=1"):
@@ -375,7 +446,8 @@ MULTIMODAL_AGENT_PROVIDER_MODE=mock \
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q \
   tests/tdd/native-langgraph-m4/test_production_workflow_cutover.py \
   tests/tdd/native-langgraph-m4/test_workflow_api_projection.py \
-  tests/tdd/native-langgraph-m4/test_legacy_drain_gate.py
+  tests/tdd/native-langgraph-m4/test_legacy_drain_gate.py \
+  tests/tdd/native-langgraph-m4/test_production_workflow_recovery.py
 ```
 
 Expected: FAIL；production 仍走 `WorkflowService.submit()`、API 仍返回 Bundle/plan，legacy drain 无硬 gate。
@@ -385,19 +457,25 @@ Expected: FAIL；production 仍走 `WorkflowService.submit()`、API 仍返回 Bu
 FastAPI lifespan 顺序固定为：
 
 ```text
-start durable task worker（独立能力）
-→ start shared AsyncCheckpointerOwner
+start shared AsyncCheckpointerOwner
 → start WorkflowGraphHost
-→ recover langgraph_v3 nonterminal rows
+→ create shared AgentGraphRuntime
+→ start durable task worker（独立能力）and LegacyDrainHost（迁移期唯一旧 owner）
+→ WorkflowGraphHost.arecover_nonterminal()
 → serve
 → stop WorkflowGraphHost
+→ stop LegacyDrainHost and durable task worker
+→ close shared AgentGraphRuntime
 → close AsyncCheckpointerOwner
-→ stop durable task worker（独立能力）
 ```
 
 `AgentGraphRuntime` 不再创建 `WorkflowService`/`ObservedWorkflowStore` 作为 Deep Research submit owner；它接收已启动的 `workflow_graph_host`。async 主路径 await host；同步 `run_state()` 若收到 `assistant_mode=deep_research` 返回结构化 `workflow_async_entry_required`，不得重新引入 event-loop thread 或 legacy submit。
 
-`WorkflowGraphHost.asubmit()` 精确执行：验证只允许 `deep_research`；用 `workflow_<32 hex>`、稳定 `workflow_thread_id` 和新 invocation run ID 建立 `langgraph_v3` admission；先 `repository.create_admission()`，再调用 `DurableWorkflowGraphApp.arun()`；stream custom facts 与 final state 分别经 `WorkflowGraphProjector.project_stream_part()`/`.project_snapshot()` 写 `save_projection()`。`aresume()` 从 repository 校验 owner 与 pending `action_ref`，用相同 thread/new run ID 调 graph app；`arecover_nonterminal()` 枚举 repository rows 并从 saver snapshot 恢复。每个 workflow 由 `_tasks: dict[str, asyncio.Task[None]]` 保证单 owner；`aclose()` 有界等待 active tasks，但不关闭共享 saver。
+`WorkflowGraphHost.asubmit()` 精确执行：验证只允许 `deep_research`；用 `workflow_<32 hex>`、稳定 `workflow_thread_id` 和新 invocation run ID 建立 `langgraph_v3` admission；原子 `repository.create_admission()` 后，立刻把 `_run_workflow(...)` 注册进 `_tasks: dict[str, asyncio.Task[None]]`，返回 queued `WorkflowHandle`，不得 await graph 到 interrupt/terminal。后台 task 才调用 `DurableWorkflowGraphApp.arun()`；stream custom facts 与 final state分别经 projector 写 `save_projection()`。注册 task 失败时 admission 标为 infrastructure failed，不留下不可恢复 queued row。
+
+`aresume()` 同样登记后台 resume task 后立即返回 accepted/current handle；`arecover_nonterminal()` 枚举 repository rows，对每个 row 先读取 saver snapshot：存在 checkpoint 则用同一 thread/new recovery run ID 继续，admission 已写但首 checkpoint 尚未落盘则从持久 admission 重建初始 state 后启动；每个 workflow 的 task key 防止重复恢复。`aclose()` 停止接收 submit/resume、给 active graph task 有界 checkpoint 窗口后 cancel subscription，不关闭共享 saver。这样 blocked graph 不阻塞 Agent-Service 请求，process restart 也不依赖旧内存 task。
+
+`LegacyDrainHost` 单独装配旧 service/runtime/worker，store view 只枚举 cutover timestamp 之前已存在且 engine 为 legacy 的 rows。FastAPI/Agent Runtime 不暴露这个 object；Task 3 删除前，只有 `legacy_drain_host.py` 可 import旧 worker/runtime/execution。
 
 - [ ] **Step 4: 切 API 与 media simulator 到 strict projection**
 
@@ -412,6 +490,8 @@ class WorkflowResponse(BaseModel):
 
 events 只返回 `WorkflowProductEvent`；result 从 record 的最后一个 artifact ref 经 owner-bound artifact store 读取；input 按 `action_ref` 调用 `host.aresume()`；cancel 调用 `host.acancel()`。simulator 删除 plan/legacy attempt fallback，只读取 strict active items 和 action ref。
 
+同步更新三篇当前 authority：媒体文档列出不变的 output ref/result delivery 与 breaking 的 plan/resume/event 字段；runtime 文档记录 admission→background task→restart recovery；tool/workflow 文档记录 `LegacyDrainHost` 截止 Gate 0 与 durable task 排除。`tests/tdd/durable-workflow-e2e/test_workflow_result_protocol.py` 改为 strict API consumer contract，`test_workflow_recovery_api.py` 改为 action-ref/restart contract。
+
 - [ ] **Step 5: 执行 legacy drain，并形成 Gate 0 artifact**
 
 部署顺序必须由 operator 执行：先上线“新提交 graph_v3 + legacy worker drain-only”，worker allowlist 固定 `execution_engine=legacy_scheduler_v2` 且只处理已存在 rows；观察到零非终态后运行：
@@ -421,14 +501,35 @@ events 只返回 `WorkflowProductEvent`；result 从 record 的最后一个 arti
   migrate-terminal --db .local/workflows/workflows.sqlite3 \
   --backup .data/workflow-m4/workflows-before-m4.sqlite3 \
   --report .data/workflow-m4/migration-report.json
+```
+
+迁移报告此时必须证明 legacy nonterminal=0 与 terminal/archive row/event 守恒，但 Gate 0 仍未通过；必须继续完成下面 crash/restart probe 和最终 `verify-drain`。
+
+- [ ] **Step 6: 在 production composition 运行 crash/restart 与 exactly-once gate**
+
+`test_production_workflow_recovery.py` 必须装配真实 FastAPI lifespan、official SQLite saver、SQLite product repository、local artifact store 和 scripted governed Tool backend，分别在三点强制终止第一 composition：admission 已提交但 background task 尚未首 checkpoint、graph 正在运行且 saver 已有 checkpoint、graph 已 interrupt。每次完整关闭/重建 composition，调用 startup 自带的 `arecover_nonterminal()`，断言同一 workflow/thread 到 terminal/waiting；publish barrier 的 stable operation key 只有一个 committed artifact，write Tool barrier 的 stable operation key 只有一个 backend side effect。
+
+```bash
+MULTIMODAL_AGENT_PROVIDER_MODE=mock \
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q \
+  tests/tdd/native-langgraph-m4/test_production_workflow_recovery.py
+```
+
+Expected: PASS；test fixture 写 `.data/workflow-m4/recovery-probe.json` 仅在显式 operator Gate 运行时启用，普通 pytest 使用 tmp_path 且不污染仓库。Gate report 合并三个 crash point、thread digests、publish/tool operation counts（均为 1）和 checkpoint/product DB paths。
+
+- [ ] **Step 7: 汇总并验证最终 Gate 0 report**
+
+```bash
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/migrate_legacy_workflows.py \
   verify-drain --db .local/workflows/workflows.sqlite3 \
+  --migration-report .data/workflow-m4/migration-report.json \
+  --recovery-report .data/workflow-m4/recovery-probe.json \
   --report .data/workflow-m4/gate-zero.json
 ```
 
-`verify-drain` 断言：legacy nonterminal=0、legacy terminal=migrated terminal、product owner/status/artifact digest 守恒、graph nonterminal checkpoint 可读、production config=sqlite、backup 存在。任一失败退出非零并禁止 Task 3。
+`verify-drain` 断言：legacy nonterminal=0；legacy terminal/archive 按 `(deep_research|long_horizon, legacy_scheduler_v2)` 的 row count+digest 守恒；source/archive event count、source cursor range/digest、mapped event digest 与分页 `next_cursor` 守恒；graph nonterminal checkpoint 可读；production config=sqlite；backup 存在；三个 crash point 恢复通过；publish/tool operation counts 都为 1。任一失败退出非零并禁止 Task 3。
 
-- [ ] **Step 6: 运行 GREEN、真实消费者与 core gate**
+- [ ] **Step 8: 运行 GREEN、真实消费者、collect-only 与 core gate**
 
 ```bash
 MULTIMODAL_AGENT_PROVIDER_MODE=mock \
@@ -436,6 +537,9 @@ MULTIMODAL_AGENT_PROVIDER_MODE=mock \
   tests/tdd/native-langgraph-m4/test_production_workflow_cutover.py \
   tests/tdd/native-langgraph-m4/test_workflow_api_projection.py \
   tests/tdd/native-langgraph-m4/test_legacy_drain_gate.py \
+  tests/tdd/native-langgraph-m4/test_production_workflow_recovery.py \
+  tests/tdd/durable-workflow-e2e/test_workflow_result_protocol.py \
+  tests/tdd/durable-workflow-e2e/test_workflow_recovery_api.py \
   tests/core/integration/test_runtime_lifecycle.py \
   tests/core/integration/test_durable_lifecycle.py \
   tests/core/contract/test_observability_contract.py
@@ -443,7 +547,14 @@ MULTIMODAL_AGENT_PROVIDER_MODE=mock \
 
 Expected: PASS；`LOOP-001` 证明 production Deep Research 由 graph host 执行，`IDENT-001` 证明 thread/run/owner，`OBS-001` 证明 strict 单向 projection；`DUR-001` 原测试原样通过。
 
-- [ ] **Step 7: 运行 production-negative source/AST gate**
+```bash
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest --collect-only -q \
+  tests/tdd/native-langgraph-m4 tests/tdd/durable-workflow-e2e
+```
+
+Expected: collection PASS。
+
+- [ ] **Step 9: 运行 production-negative source/AST gate**
 
 ```bash
 ! rg -n "WorkflowService\.submit|claim_ready_work_item|renew_work_item_lease|WorkflowRuntime|AgentRuntimeWorkItemExecutor" \
@@ -461,19 +572,42 @@ PY
 
 Expected: 零命中/exit 0。
 
-- [ ] **Step 8: Commit**
+再断言旧 engine imports 只集中在 drain adapter：
+
+```bash
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python - <<'PY'
+import ast
+from pathlib import Path
+owners = set()
+symbols = {'DurableWorkflowWorker', 'WorkflowRuntime', 'AgentRuntimeWorkItemExecutor'}
+for path in Path('src/assistant_agent').rglob('*.py'):
+    tree = ast.parse(path.read_text())
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and symbols & {item.name for item in node.names}:
+            owners.add(path.as_posix())
+assert owners == {'src/assistant_agent/workflows/legacy_drain_host.py'}, owners
+PY
+```
+
+- [ ] **Step 10: Commit**
 
 ```bash
 git add src/assistant_agent/runtime/runtime.py \
   src/assistant_agent/runtime/assistant_runtime_app.py \
   src/assistant_agent/workflows/graph_host.py \
+  src/assistant_agent/workflows/legacy_drain_host.py \
   src/assistant_agent/api/app.py src/assistant_agent/api/routes_workflows.py \
   src/assistant_agent/api/models.py \
   src/assistant_agent/runtime/server_startup_summary.py \
   scripts/media_simulator.py scripts/README.md evals/release_review/cli.py \
+  docs/media-agent-service-websocket.md docs/runtime-event-stream-architecture.md \
+  docs/tool-calling-architecture.md \
   tests/tdd/native-langgraph-m4/test_production_workflow_cutover.py \
   tests/tdd/native-langgraph-m4/test_workflow_api_projection.py \
   tests/tdd/native-langgraph-m4/test_legacy_drain_gate.py \
+  tests/tdd/native-langgraph-m4/test_production_workflow_recovery.py \
+  tests/tdd/durable-workflow-e2e/test_workflow_result_protocol.py \
+  tests/tdd/durable-workflow-e2e/test_workflow_recovery_api.py \
   tests/core/integration/test_runtime_lifecycle.py \
   tests/core/integration/test_durable_lifecycle.py \
   tests/core/contract/test_observability_contract.py
@@ -485,6 +619,7 @@ git commit -m "feat(workflows): cut production over to graph v3"
 **Gate:** 开始前必须读取 `.data/workflow-m4/gate-zero.json` 并人工确认 `ready=true`、legacy nonterminal=0、backup 可读；这些产物不提交 Git。
 
 **Files:**
+- Delete: `src/assistant_agent/workflows/legacy_drain_host.py`
 - Modify: `src/assistant_agent/api/app.py`
 - Modify: `src/assistant_agent/runtime/runtime.py`
 - Modify: `src/assistant_agent/runtime/server_startup_summary.py`
@@ -493,7 +628,7 @@ git commit -m "feat(workflows): cut production over to graph v3"
 - Create: `tests/tdd/native-langgraph-m4/test_legacy_worker_stopped.py`
 
 **Interfaces:**
-- Removes: `start_durable_workflow_worker()`、`shutdown_durable_workflow_worker()`、`get_durable_workflow_worker()`、app state worker/stop/task fields、`workflow_service` injection/creation、`create_workflow_otel_observer_from_env()` production composition。
+- Removes: `LegacyDrainHost`、`start_durable_workflow_worker()`、`shutdown_durable_workflow_worker()`、`get_durable_workflow_worker()`、app state drain/worker/stop/task fields、`workflow_service` injection/creation、`create_workflow_otel_observer_from_env()` production composition。
 - Keeps: `WorkflowGraphHost` lifecycle、product repository/artifact store、durable task worker lifecycle。
 - Real consumer boundary: server startup summary reports graph host/checkpointer readiness instead of legacy worker readiness；Release Review staging still receives workflow DB/checkpoint/artifact paths。
 - Breaking cleanup boundary: 删除 `MULTIMODAL_AGENT_DURABLE_WORKFLOW_WORKER_ENABLED` 读取；lease/poll/concurrency config 暂留到 Task 8 source cleanup，防止同 commit 混淆停止与最终 schema 删除。
@@ -507,6 +642,8 @@ async def test_api_lifespan_starts_graph_host_and_never_creates_legacy_worker(ap
         assert app.state.workflow_graph_host is not None
         assert not hasattr(app.state, "durable_workflow_worker")
         assert not hasattr(app.state, "durable_workflow_worker_task")
+        assert not hasattr(app.state, "legacy_drain_host")
+    assert importlib.util.find_spec("assistant_agent.workflows.legacy_drain_host") is None
 ```
 
 - [ ] **Step 2: 运行 RED**
@@ -521,7 +658,7 @@ Expected: FAIL，lifespan 仍创建 legacy worker state。
 
 - [ ] **Step 3: 删除 production worker/old submit/OTel wiring**
 
-只删除 composition imports/functions/state；本 Task 不删除 `worker.py/runtime.py/execution.py`，以便 commit 可独立证明最后 production consumer 已消失。`AgentGraphRuntime.__init__` 只接收 `workflow_graph_host` 和 artifact store，不创建 `SQLiteWorkflowStore`、`ObservedWorkflowStore` 或 `WorkflowService`。
+先由 `verify-drain` 再次读取同一 production DB，确认 nonterminal=0、archive row/event digest 与 Gate 0 相同、recovery/exactly-once artifact 通过；然后删除 `legacy_drain_host.py` 及 lifespan state。只删除 composition imports/functions/state；本 Task 不删除 `worker.py/runtime.py/execution.py`，以便 commit 可独立证明最后 production consumer 已消失。`AgentGraphRuntime.__init__` 只接收 `workflow_graph_host` 和 artifact store，不创建 `SQLiteWorkflowStore`、`ObservedWorkflowStore` 或 `WorkflowService`。
 
 - [ ] **Step 4: 运行 GREEN 与 import/source gate**
 
@@ -532,6 +669,9 @@ MULTIMODAL_AGENT_PROVIDER_MODE=mock \
   tests/tdd/native-langgraph-m4/test_production_workflow_cutover.py
 ! rg -n "DurableWorkflowWorker|WorkflowRuntime|AgentRuntimeWorkItemExecutor|ObservedWorkflowStore|create_workflow_otel_observer_from_env" \
   src/assistant_agent/api/app.py src/assistant_agent/runtime/runtime.py
+test ! -e src/assistant_agent/workflows/legacy_drain_host.py
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest --collect-only -q \
+  tests/tdd/native-langgraph-m4 tests/tdd/durable-workflow-e2e
 ```
 
 Expected: PASS 且零命中。
@@ -539,7 +679,8 @@ Expected: PASS 且零命中。
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/assistant_agent/api/app.py src/assistant_agent/runtime/runtime.py \
+git add -A src/assistant_agent/workflows/legacy_drain_host.py \
+  src/assistant_agent/api/app.py src/assistant_agent/runtime/runtime.py \
   src/assistant_agent/runtime/server_startup_summary.py \
   src/assistant_agent/config/__init__.py evals/release_review/cli.py \
   tests/tdd/native-langgraph-m4/test_legacy_worker_stopped.py
@@ -555,7 +696,7 @@ git commit -m "refactor(workflows): stop legacy workflow worker"
 - Modify: `src/assistant_agent/runtime/runtime.py`
 - Modify: `src/assistant_agent/workflows/agent_runtime.py`
 - Modify: `src/assistant_agent/workflows/context.py`
-- Delete or rewrite affected legacy-only tests under: `tests/tdd/durable-workflows/`
+- Delete or rewrite affected legacy-only tests under: `tests/tdd/durable-workflow-e2e/`
 - Create: `tests/tdd/native-langgraph-m4/test_legacy_executor_deleted.py`
 
 **Interfaces:**
@@ -563,6 +704,8 @@ git commit -m "refactor(workflows): stop legacy workflow worker"
 - Keeps: planner/worker/verifier `AssistantTurnGraph` profiles in `durable_graph_nodes.py` and `graph_context.py`；这些 graph-native branch 不依赖 deleted executor。
 - Real consumer boundary: M3 native graph and LangSmith experiment directly run compiled subgraphs；no API/media consumer imports removed classes。
 - Breaking cleanup boundary: legacy unit/TDD tests whose sole subject is deleted scheduler are removed/replaced by deletion gates；owner/artifact/graph product tests stay。
+
+`tests/tdd/durable-workflow-e2e/` 逐文件处置固定为：删除 `test_workflow_graph_worker.py`、`test_workflow_definitions_execution.py`、`test_workflow_local_repair.py`（只验证旧 worker/runtime）；把 `test_workflow_foundation.py` 的 owner/idempotency cases 迁入 `native-langgraph-m4/test_workflow_product_repository.py`；把 `test_plan_progress_convergence.py` 迁入 `test_workflow_api_projection.py`；把 `test_workflow_artifact_context.py` 保留并改为 graph context；Task 2 已把 result/recovery 两文件改成 strict consumer。不得留下 import deleted modules 的兼容 fixture。
 
 - [ ] **Step 1: 写 delete RED**
 
@@ -589,7 +732,7 @@ Expected: FAIL，三个模块和 method 仍存在。
 
 - [ ] **Step 3: 删除实现并收缩仍共用的 branch DTO**
 
-删除文件与 import；`agent_runtime.py` 只保留 graph branch 真正消费的 request/result parsing；若某类型仅被 deleted executor 使用则同 commit 删除。`context.py` 保留 artifact/context compilation 的 graph-native consumer，不保留 executor adapter。
+删除文件与 import；`agent_runtime.py` 保留 `AgentWorkItemRequest`、`AgentWorkItemResult`、planner/worker/verifier response parser 和 graph branch prompt renderer，因为 `durable_graph_nodes.py` 直接消费它们；删除只由 `execution.py` 导入的 `BoundedAgentRuntime` adapter。`context.py` 保留 `WorkflowContextCompiler` 与 graph branch artifact/context compilation，删除 executor-specific wrapper。AST gate 证明两文件均不 import deleted modules/types。
 
 - [ ] **Step 4: 运行 GREEN、全仓 AST consumer gate 与 graph regression**
 
@@ -617,6 +760,8 @@ PY
 test ! -e src/assistant_agent/workflows/worker.py
 test ! -e src/assistant_agent/workflows/runtime.py
 test ! -e src/assistant_agent/workflows/execution.py
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest --collect-only -q \
+  tests/tdd/native-langgraph-m4 tests/tdd/durable-workflow-e2e
 ```
 
 Expected: PASS、无 import、三个文件不存在。
@@ -630,7 +775,7 @@ git add -A src/assistant_agent/workflows/worker.py \
   src/assistant_agent/runtime/runtime.py \
   src/assistant_agent/workflows/agent_runtime.py \
   src/assistant_agent/workflows/context.py \
-  tests/tdd/durable-workflows \
+  tests/tdd/durable-workflow-e2e \
   tests/tdd/native-langgraph-m4/test_legacy_executor_deleted.py
 git commit -m "refactor(workflows): delete legacy work item executor"
 ```
@@ -653,7 +798,7 @@ git commit -m "refactor(workflows): delete legacy work item executor"
 **Interfaces:**
 - Removes functions: `workflow_matches_claim_scope()`、`recover_expired_work_item_leases()`、`claim_ready_item_in_bundle()`、`_clear_item_lease()`、`_lease_matches()`、`WorkflowStore.save(expected_revision=...)`、`claim_ready_work_item()`、`renew_work_item_lease()`。
 - Removes models/fields: `WorkflowDispatch`、`WorkflowWorkItemLease`、`WorkItemStatus.ready/running/retryable_failed` scheduler semantics、`active_attempt_id`、`lease_owner`、`lease_token`、`lease_expires_at`、`reserved_model_calls`、`reserved_tool_calls`；legacy `revision` CAS only when it has no product consumer。
-- DB migration: copy verified `workflow_products` and `workflow_product_events` to new tables, validate counts/digests, then rebuild/drop legacy `durable_workflows`、`durable_workflow_events` and `idx_durable_workflows_claim` in one explicit migration transaction after backup。
+- DB migration: copy verified `workflow_products`、`workflow_product_events`、`workflow_archives`、`workflow_archive_events` to new tables, validate current+archive counts/digests/cursors, then rebuild/drop legacy `durable_workflows`、`durable_workflow_events` and `idx_durable_workflows_claim` in one explicit migration transaction after backup。
 - Keeps: `WorkflowSubmission`、v2 admitted plan domain types still consumed by graph state/planner、owner/idempotency/artifact/audit product facts；checkpointer owns execution status, generation and pending tasks。
 - Real consumer boundary: API reads product repository; graph uses `PersistedAdmittedWorkflowPlan` in checkpoint; no consumer reads SQL ready/lease/CAS columns。
 
@@ -672,13 +817,17 @@ def test_workflow_models_have_no_scheduler_lease_fields():
 
 
 def test_schema_rebuild_drops_claim_columns_and_preserves_product_rows(migrated_db):
-    before = _product_digest(migrated_db)
+    before = (_product_digest(migrated_db), _archive_digest_by_type(migrated_db), _archive_event_digest(migrated_db))
     rebuild_workflow_schema(migrated_db)
     assert _table_columns(migrated_db, "workflow_products").isdisjoint(
         {"lease_owner", "lease_token", "lease_expires_at", "bundle_json"}
     )
     assert "idx_durable_workflows_claim" not in _index_names(migrated_db)
-    assert _product_digest(migrated_db) == before
+    assert (
+        _product_digest(migrated_db),
+        _archive_digest_by_type(migrated_db),
+        _archive_event_digest(migrated_db),
+    ) == before
 ```
 
 - [ ] **Step 2: 运行 RED**
@@ -698,7 +847,7 @@ Expected: FAIL，scheduler symbols/columns/indexes 仍存在。
 
 - [ ] **Step 4: 实现显式 DB rebuild migration**
 
-`rebuild-schema` CLI 只在 `verify-drain` report ready、backup 可读且旧 nonterminal=0 时运行；事务内：创建 `_workflow_products_m4`/`_workflow_product_events_m4`、严格 deserialize+insert、核对 row count/status/owner/artifact/event digest、rename 到正式表、drop legacy tables/index。任何校验失败 rollback，不删除 backup。
+`rebuild-schema` CLI 只在 `verify-drain` report ready、backup 可读且旧 nonterminal=0 时运行；事务内：创建 `_workflow_products_m4`/`_workflow_product_events_m4` 与 `_workflow_archives_m4`/`_workflow_archive_events_m4`、严格 deserialize+insert、核对 current rows/events digest、archive 分类型/engine row digest、source cursor/page/event digest，rename 到正式表后才 drop legacy tables/index。任何校验失败 rollback，不删除 backup；archive 表永远不改写历史 engine/type。
 
 ```bash
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/migrate_legacy_workflows.py \
@@ -717,6 +866,8 @@ MULTIMODAL_AGENT_PROVIDER_MODE=mock \
   tests/tdd/native-langgraph-m3/test_workflow_graph_state.py
 ! rg -n "claim_ready_work_item|renew_work_item_lease|recover_expired_work_item_leases|claim_ready_item_in_bundle|WorkflowWorkItemLease|WorkflowDispatch|lease_owner|lease_token|lease_expires_at|reserved_model_calls|reserved_tool_calls|idx_durable_workflows_claim" \
   src/assistant_agent/workflows scripts/migrate_legacy_workflows.py
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest --collect-only -q \
+  tests/tdd/native-langgraph-m4 tests/tdd/durable-workflow-e2e
 ```
 
 Expected: PASS 且零命中。命令 scope 不含 `automation/durable_tasks`，避免把受保护同名 lease 错判为待删。
@@ -801,6 +952,8 @@ for path in planning.py progress.py service.py store.py sqlite_store.py; do
 done
 ! rg -n "WorkflowBundle|next_ready_work_item|project_workflow_progress" \
   src/assistant_agent scripts evals tests/core tests/tdd/native-langgraph-m4
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest --collect-only -q \
+  tests/tdd/native-langgraph-m4 tests/tdd/durable-workflow-e2e
 ```
 
 Expected: PASS、五文件不存在、零 legacy symbol consumer。
@@ -823,7 +976,7 @@ git commit -m "refactor(workflows): remove raw workflow bundle facades"
 - Modify: `src/assistant_agent/runtime/runtime.py`
 - Modify: `docs/observability-harness.md`
 - Modify: `evals/README.md`
-- Modify or delete affected tests under: `tests/tdd/durable-workflows/`
+- Modify or delete affected tests under: `tests/tdd/durable-workflow-e2e/`
 - Create: `tests/tdd/native-langgraph-m4/test_workflow_shadow_observability_deleted.py`
 - Modify: `tests/core/contract/test_observability_contract.py`
 
@@ -874,6 +1027,8 @@ test ! -e src/assistant_agent/observability/workflow_otel.py
 test ! -e src/assistant_agent/observability/workflow_trace.py
 ! rg -n "ObservedWorkflowStore|workflow_otel|workflow_root_span_id|build_workflow_otel_span_specs" \
   src scripts evals tests/core tests/tdd/native-langgraph-m4
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest --collect-only -q \
+  tests/tdd/native-langgraph-m4 tests/tdd/durable-workflow-e2e
 ```
 
 Expected: PASS、文件不存在、零 import/symbol consumer。
@@ -886,7 +1041,7 @@ git add -A src/assistant_agent/workflows/observed_store.py \
   src/assistant_agent/observability/workflow_trace.py \
   src/assistant_agent/observability/__init__.py \
   src/assistant_agent/runtime/runtime.py docs/observability-harness.md \
-  evals/README.md tests/tdd/durable-workflows \
+  evals/README.md tests/tdd/durable-workflow-e2e \
   tests/tdd/native-langgraph-m4/test_workflow_shadow_observability_deleted.py \
   tests/core/contract/test_observability_contract.py
 git commit -m "refactor(observability): delete workflow shadow trace tree"
@@ -895,15 +1050,15 @@ git commit -m "refactor(observability): delete workflow shadow trace tree"
 ### Task 8: Sunset `long_horizon`/legacy config、authority 同步与 M4 最终删除验收
 
 **Files:**
-- Delete: `src/assistant_agent/workflows/builtin.py` if it only contains `LongHorizonWorkflowDefinition`
+- Delete: `src/assistant_agent/workflows/builtin.py`
 - Modify: `src/assistant_agent/workflows/definitions.py`
-- Delete: `src/assistant_agent/workflows/research/definition.py` if graph planning no longer imports the legacy class
+- Delete: `src/assistant_agent/workflows/research/definition.py`
 - Modify: `src/assistant_agent/config/__init__.py`
 - Modify: `src/assistant_agent/runtime/server_startup_summary.py`
 - Modify: `docs/tool-calling-architecture.md`
 - Modify: `docs/runtime-event-stream-architecture.md`
 - Modify: `docs/observability-harness.md`
-- Modify: `docs/authority.toml` only if source ownership globs/verification commands changed
+- Review: `docs/authority.toml`; modify only when deleted explicit paths or verification entries occur (current `src/assistant_agent/workflows/**` glob itself remains valid)
 - Modify: `README.md` and `scripts/README.md` only for current human navigation/commands
 - Create: `tests/tdd/native-langgraph-m4/test_m4_deletion_gates.py`
 - Modify: `tests/core/integration/test_runtime_lifecycle.py`
@@ -911,7 +1066,7 @@ git commit -m "refactor(observability): delete workflow shadow trace tree"
 - Modify: `tests/core/contract/test_observability_contract.py`
 
 **Interfaces:**
-- Removes: `LongHorizonWorkflowDefinition`、`default_workflow_definitions()` legacy catalog、`legacy_scheduler_v2` literal/migration default、worker enable/lease/poll/concurrency env/config and startup status。
+- Removes executable path: `LongHorizonWorkflowDefinition`、`default_workflow_definitions()` legacy catalog、current graph model 中的 `legacy_scheduler_v2` literal/migration default、worker enable/lease/poll/concurrency env/config and startup status。`ArchivedWorkflowProductRecord.execution_engine="legacy_scheduler_v2"` 与任意 archived `workflow_type="long_horizon"` 是历史 provenance，必须永久保留。
 - Keeps: `durable_workflows_enabled`、workflow product DB path、checkpoint DB path、artifact path、graph execution budget/config that native graph actually consumes；field-by-field `rg` decides, not prefix deletion。
 - Real consumer boundary: only `assistant_mode=deep_research -> DurableWorkflowGraph` remains; no product/API consumer could select `long_horizon` before M4。Release Review retains graph/checkpoint/artifact readiness。
 - Breaking cleanup boundary: no alias or hidden fallback for `long_horizon`/`legacy_scheduler_v2`; old deployment config using removed worker env must fail validation or be reported as unknown during one release, never silently re-enable a legacy path。
@@ -931,7 +1086,8 @@ def test_m4_forbidden_symbols_and_files_are_absent():
         "src/assistant_agent/observability/workflow_trace.py",
     }
     assert all(not Path(path).exists() for path in forbidden_files)
-    assert _source_hits("legacy_scheduler_v2|long_horizon|DurableWorkflowWorker") == []
+    assert _executable_source_hits("legacy_scheduler_v2|long_horizon|DurableWorkflowWorker") == []
+    assert _archive_schema_literals() == {"legacy_scheduler_v2"}
 
 
 def test_protected_durable_tasks_remain_importable_and_functional():
@@ -961,7 +1117,7 @@ durable_workflow_poll_seconds / MULTIMODAL_AGENT_DURABLE_WORKFLOW_POLL_SECONDS
 durable_workflow_max_concurrent_items / MULTIMODAL_AGENT_DURABLE_WORKFLOW_MAX_CONCURRENT_ITEMS
 ```
 
-删除 `WorkflowExecutionEngine` 双值 literal；严格 graph/product schema 不再需要 engine discriminator 时，同时删除 product DB engine 列并用小型 rebuild migration核对全表均曾为 `langgraph_v3`。保留 native graph 实际消费的 `durable_workflow_max_quanta`。
+删除 current/executable `WorkflowExecutionEngine` 双值 literal；strict current graph/product schema 不再需要 engine discriminator 时，可删除 current product DB engine 列，但小型 rebuild migration 必须先核对 current 全表均为 `langgraph_v3`。`workflow_archives.execution_engine`、`workflow_archives.workflow_type` 和 archive DTO literals/values 不删除、不改标；source gate 对 archive schema、migration reader 和 migration tests 使用精确 allowlist。保留 native graph 实际消费的 `durable_workflow_max_quanta`。
 
 - [ ] **Step 4: 同步 authority 与当前文档**
 
@@ -978,9 +1134,25 @@ MULTIMODAL_AGENT_PROVIDER_MODE=mock \
   tests/tdd/native-langgraph-runtime
 MULTIMODAL_AGENT_PROVIDER_MODE=mock \
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q
-! rg -n "legacy_scheduler_v2|long_horizon|DurableWorkflowWorker|WorkflowRuntime|AgentRuntimeWorkItemExecutor|claim_ready_work_item|renew_work_item_lease|next_ready_work_item|ObservedWorkflowStore|workflow_otel|workflow_root_span_id" \
+! rg -n "DurableWorkflowWorker|WorkflowRuntime|AgentRuntimeWorkItemExecutor|claim_ready_work_item|renew_work_item_lease|next_ready_work_item|ObservedWorkflowStore|workflow_otel|workflow_root_span_id" \
   src/assistant_agent/workflows src/assistant_agent/runtime src/assistant_agent/api \
   src/assistant_agent/observability src/assistant_agent/config scripts evals
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python - <<'PY'
+from pathlib import Path
+hits=[]
+allow={
+ 'src/assistant_agent/workflows/product_models.py',
+ 'src/assistant_agent/workflows/legacy_migration.py',
+ 'scripts/migrate_legacy_workflows.py',
+}
+for root in ('src/assistant_agent','scripts','evals'):
+    for path in Path(root).rglob('*'):
+        if path.is_file() and path.suffix in {'.py','.md','.toml','.yaml'}:
+            text=path.read_text(errors='ignore')
+            if 'legacy_scheduler_v2' in text or 'long_horizon' in text:
+                hits.append(path.as_posix())
+assert set(hits) <= allow, hits
+PY
 rg -n "automation\.durable_tasks|DurableTaskService|DurableTaskWorker" \
   src/assistant_agent tests/core/integration/test_durable_lifecycle.py
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m ruff check \
@@ -988,6 +1160,8 @@ rg -n "automation\.durable_tasks|DurableTaskService|DurableTaskWorker" \
   src/assistant_agent/observability tests/tdd/native-langgraph-m4
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m compileall -q \
   src/assistant_agent tests/tdd/native-langgraph-m4
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest --collect-only -q \
+  tests/tdd/native-langgraph-m4 tests/tdd/durable-workflow-e2e
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python \
   scripts/check_documentation_authority.py --repo-root .
 git diff --check
