@@ -859,6 +859,8 @@ git commit -m "refactor(workflows): delete legacy work item executor"
 - Modify: `scripts/migrate_legacy_workflows.py`
 - Create: `tests/tdd/native-langgraph-m4/test_scheduler_state_deleted.py`
 - Create: `tests/tdd/native-langgraph-m4/test_workflow_schema_rebuild.py`
+- Modify: `tests/tdd/native-langgraph-m3/test_workflow_graph_state.py`
+- Modify: `tests/tdd/native-langgraph-m3/test_workflow_consumer_contract.py`
 
 **Interfaces:**
 - Removes functions: `workflow_matches_claim_scope()`、`recover_expired_work_item_leases()`、`claim_ready_item_in_bundle()`、`_clear_item_lease()`、`_lease_matches()`、`WorkflowStore.save(expected_revision=...)`、`claim_ready_work_item()`、`renew_work_item_lease()`。
@@ -910,6 +912,11 @@ Expected: FAIL，scheduler symbols/columns/indexes 仍存在。
 
 `initial_workflow_graph_state()` 不再要求 legacy `WorkflowRecord`/`WorkflowPlanVersion` Bundle；改为消费 `GraphWorkflowProductRecord` + `PersistedAdmittedWorkflowPlan | None`。Graph budget/generation 留在 checkpoint DTO，不反写 SQL reservation/attempt 字段。
 
+同一步精确改写两个 M3 测试文件：
+
+- `test_workflow_graph_state.py`：删除 `WorkflowRecord`、`WorkflowPlanVersion`、`default_workflow_definitions`、`WorkflowService`、`SQLiteWorkflowStore`、`InMemoryWorkflowStore` imports 及 `test_workflow_record_migrates_missing_engine_only_to_legacy`、两组 claim allowlist tests；`_record()` 改为 `_graph_product_record() -> GraphWorkflowProductRecord`，`_plan()` 改为 `_persisted_plan() -> PersistedAdmittedWorkflowPlan`，保留 reducer/strict state/runtime-context tests 并让 `initial_workflow_graph_state()` 只消费新类型。历史 engine/type provenance 已由 M4 archive tests 负责，不在 graph-state test 重复。
+- `test_workflow_consumer_contract.py`：删除 `workflow_matches_claim_scope`/`SimpleNamespace` 和 `test_graph_v3_record_is_never_in_legacy_claim_scope`；保留 media strict progress/result tests，并新增 `test_graph_host_has_no_legacy_execution_imports` AST 断言 production host/API/runtime 不 import claim/renew/legacy worker。Task 4 的 `test_no_deep_research_scheduler.py` 继续负责 deleted module gate。
+
 - [ ] **Step 4: 实现显式 DB rebuild migration**
 
 `rebuild-schema` CLI 只在 `verify-drain` report ready、backup 可读且旧 nonterminal=0 时运行；事务内：创建 `_workflow_products_m4`/`_workflow_product_events_m4` 与 `_workflow_archives_m4`/`_workflow_archive_events_m4`、严格 deserialize+insert、核对 current rows/events digest、archive 分类型/engine row digest、source cursor/page/event digest，rename 到正式表后才 drop legacy tables/index。任何校验失败 rollback，不删除 backup；archive 表永远不改写历史 engine/type。
@@ -928,7 +935,8 @@ MULTIMODAL_AGENT_PROVIDER_MODE=mock \
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q \
   tests/tdd/native-langgraph-m4/test_scheduler_state_deleted.py \
   tests/tdd/native-langgraph-m4/test_workflow_schema_rebuild.py \
-  tests/tdd/native-langgraph-m3/test_workflow_graph_state.py
+  tests/tdd/native-langgraph-m3/test_workflow_graph_state.py \
+  tests/tdd/native-langgraph-m3/test_workflow_consumer_contract.py
 ! rg -n "claim_ready_work_item|renew_work_item_lease|recover_expired_work_item_leases|claim_ready_item_in_bundle|WorkflowWorkItemLease|WorkflowDispatch|lease_owner|lease_token|lease_expires_at|reserved_model_calls|reserved_tool_calls|idx_durable_workflows_claim" \
   src/assistant_agent/workflows scripts/migrate_legacy_workflows.py
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest --collect-only -q \
@@ -944,6 +952,8 @@ Expected: PASS 且零命中。命令 scope 不含 `automation/durable_tasks`，�
 git add src/assistant_agent/workflows/models.py \
   src/assistant_agent/workflows/store.py \
   src/assistant_agent/workflows/sqlite_store.py \
+  src/assistant_agent/workflows/product_models.py \
+  src/assistant_agent/workflows/sqlite_product_repository.py \
   src/assistant_agent/workflows/transitions.py \
   src/assistant_agent/workflows/definitions.py \
   src/assistant_agent/workflows/constraints.py \
@@ -951,7 +961,9 @@ git add src/assistant_agent/workflows/models.py \
   src/assistant_agent/workflows/legacy_migration.py \
   scripts/migrate_legacy_workflows.py \
   tests/tdd/native-langgraph-m4/test_scheduler_state_deleted.py \
-  tests/tdd/native-langgraph-m4/test_workflow_schema_rebuild.py
+  tests/tdd/native-langgraph-m4/test_workflow_schema_rebuild.py \
+  tests/tdd/native-langgraph-m3/test_workflow_graph_state.py \
+  tests/tdd/native-langgraph-m3/test_workflow_consumer_contract.py
 git commit -m "refactor(workflows): remove scheduler lease state"
 ```
 
@@ -971,6 +983,11 @@ git commit -m "refactor(workflows): remove scheduler lease state"
 - Modify: `src/assistant_agent/workflows/graph_state.py`
 - Modify: `src/assistant_agent/workflows/graph_projection.py`
 - Modify: `src/assistant_agent/api/routes_workflows.py`
+- Delete: `tests/tdd/native-langgraph-m4/test_legacy_workflow_migration.py`
+- Modify: `tests/tdd/native-langgraph-m4/test_workflow_product_repository.py`
+- Modify: `tests/tdd/native-langgraph-m4/test_workflow_schema_rebuild.py`
+- Modify: `tests/tdd/native-langgraph-m3/test_workflow_graph_state.py`
+- Modify: `tests/tdd/native-langgraph-m3/test_workflow_consumer_contract.py`
 - Create: `tests/tdd/native-langgraph-m4/test_raw_bundle_deleted.py`
 
 **Interfaces:**
@@ -1021,6 +1038,8 @@ Expected: FAIL，legacy modules/Bundle 仍存在。
 
 先验证 Task 5 schema rebuild report 与两个 backup 都存在且 archive/current digest 复核通过；否则本 Task fail closed。再用 `rg -l` 列出每个 legacy model consumer，逐一分类为“移动到 focused plan/product model”或“随 legacy 删除”；禁止创建 `legacy_compat.py` 复制 raw Bundle。删除 one-shot migrator、CLI，并从 `scripts/README.md` 删除 inspect/migrate/verify/rebuild 命令；最终运行时与运维入口只依赖 strict current+archive repository。
 
+删除 `test_legacy_workflow_migration.py` 前，把永久有价值的断言逐项迁走：分类型 archive provenance、event mapping/cursor/next_cursor/idempotent read 迁入 `test_workflow_product_repository.py`；schema rebuild 前后 current/archive digest 与 rollback 迁入 `test_workflow_schema_rebuild.py`。只属于已删除 CLI/migrator 的 inspect/migrate/verify 命令 tests 随文件删除。再次检查 M3 两文件没有 `workflows.store/service/sqlite_store`、`WorkflowRecord/WorkflowPlanVersion/WorkflowBundle` imports；Task 5 已改写的 graph-state/media owner tests 保留。
+
 - [ ] **Step 4: 运行 GREEN、AST/delete gate 与 API regression**
 
 ```bash
@@ -1028,16 +1047,24 @@ MULTIMODAL_AGENT_PROVIDER_MODE=mock \
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q \
   tests/tdd/native-langgraph-m4/test_raw_bundle_deleted.py \
   tests/tdd/native-langgraph-m4/test_workflow_api_projection.py \
-  tests/tdd/native-langgraph-m3/test_workflow_planning_subgraph.py
+  tests/tdd/native-langgraph-m4/test_workflow_product_repository.py \
+  tests/tdd/native-langgraph-m4/test_workflow_schema_rebuild.py \
+  tests/tdd/native-langgraph-m3/test_workflow_planning_subgraph.py \
+  tests/tdd/native-langgraph-m3/test_workflow_graph_state.py \
+  tests/tdd/native-langgraph-m3/test_workflow_consumer_contract.py
 for path in planning.py progress.py service.py store.py sqlite_store.py; do
   test ! -e "src/assistant_agent/workflows/$path"
 done
 test ! -e src/assistant_agent/workflows/legacy_migration.py
 test ! -e scripts/migrate_legacy_workflows.py
+test ! -e tests/tdd/native-langgraph-m4/test_legacy_workflow_migration.py
 ! rg -n "WorkflowBundle|next_ready_work_item|project_workflow_progress" \
   src/assistant_agent scripts evals tests/core tests/tdd/native-langgraph-m4
 ! rg -n "migrate_legacy_workflows|LegacyWorkflowMigrator|migrate-terminal|verify-drain|rebuild-schema" \
   src scripts README.md scripts/README.md
+! rg -n "assistant_agent\.workflows\.(store|service|sqlite_store)|WorkflowRecord|WorkflowPlanVersion|WorkflowBundle" \
+  tests/tdd/native-langgraph-m3/test_workflow_graph_state.py \
+  tests/tdd/native-langgraph-m3/test_workflow_consumer_contract.py
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest --collect-only -q \
   tests/tdd/native-langgraph-m4 tests/tdd/native-langgraph-m3 \
   tests/tdd/durable-workflow-e2e
@@ -1050,7 +1077,12 @@ Expected: PASS、七个 legacy façade/migration 文件不存在、零 legacy sy
 ```bash
 git add -A src/assistant_agent/workflows src/assistant_agent/api/routes_workflows.py \
   scripts/migrate_legacy_workflows.py scripts/README.md \
-  tests/tdd/native-langgraph-m4/test_raw_bundle_deleted.py
+  tests/tdd/native-langgraph-m4/test_raw_bundle_deleted.py \
+  tests/tdd/native-langgraph-m4/test_legacy_workflow_migration.py \
+  tests/tdd/native-langgraph-m4/test_workflow_product_repository.py \
+  tests/tdd/native-langgraph-m4/test_workflow_schema_rebuild.py \
+  tests/tdd/native-langgraph-m3/test_workflow_graph_state.py \
+  tests/tdd/native-langgraph-m3/test_workflow_consumer_contract.py
 git commit -m "refactor(workflows): remove raw workflow bundle facades"
 ```
 
@@ -1190,6 +1222,22 @@ def test_protected_durable_tasks_remain_importable_and_functional():
     from assistant_agent.automation.durable_tasks.service import DurableTaskService
     from assistant_agent.automation.durable_tasks.worker import DurableTaskWorker
     assert DurableTaskService is not None and DurableTaskWorker is not None
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "MULTIMODAL_AGENT_DURABLE_WORKFLOW_WORKER_ENABLED",
+        "MULTIMODAL_AGENT_DURABLE_WORKFLOW_LEASE_SECONDS",
+        "MULTIMODAL_AGENT_DURABLE_WORKFLOW_POLL_SECONDS",
+        "MULTIMODAL_AGENT_DURABLE_WORKFLOW_MAX_CONCURRENT_ITEMS",
+    ],
+)
+def test_removed_legacy_worker_env_fails_startup_instead_of_being_ignored(name):
+    source = _minimal_mock_env()
+    source[name] = "1"
+    with pytest.raises(ValueError, match=f"removed_legacy_workflow_setting:{name}"):
+        ProviderConfig.from_env(source)
 ```
 
 - [ ] **Step 2: 运行 RED**
@@ -1214,6 +1262,8 @@ durable_workflow_max_concurrent_items / MULTIMODAL_AGENT_DURABLE_WORKFLOW_MAX_CO
 ```
 
 删除 current/executable `WorkflowExecutionEngine` 双值 literal；strict current graph/product schema 不再需要 engine discriminator 时，可删除 current product DB engine 列，但小型 rebuild migration 必须先核对 current 全表均为 `langgraph_v3`。`workflow_archives.execution_engine`、`workflow_archives.workflow_type` 和 archive DTO literals/values 不删除、不改标；source gate 对 archive schema、migration reader 和 migration tests 使用精确 allowlist。保留 native graph 实际消费的 `durable_workflow_max_quanta`。
+
+`ProviderConfig.from_env(source)` 在读取任何其他配置前检查上述四个 removed env name；只要 key 存在（包括空字符串、`0`、`false`），就抛出 `ValueError("removed_legacy_workflow_setting:<NAME>")`，保证旧部署显式失败并指向删除项，而不是静默忽略。该检测只针对 Workflow worker env，不触碰 durable task env。
 
 - [ ] **Step 4: 同步 authority 与当前文档**
 
