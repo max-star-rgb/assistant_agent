@@ -53,18 +53,21 @@
 
 **Files:**
 - Create: `src/assistant_agent/runtime/assistant_graph_state.py`
+- Modify: `src/assistant_agent/runtime/assistant_loop_graph.py`
 - Modify: `src/assistant_agent/runtime/assistant_loop_nodes.py`
+- Modify: `src/assistant_agent/runtime/assistant_graph_app.py`
 - Modify: `src/assistant_agent/runtime/graph_runtime.py`
+- Modify: `src/assistant_agent/runtime/runtime.py`
 - Test: `tests/tdd/native-langgraph-m2/test_checkpoint_state.py`
 
 **Interfaces:**
 - Produces: `AssistantTurnState`、`ASSISTANT_GRAPH_NAME = "AssistantTurnGraph"`、`ASSISTANT_GRAPH_VERSION = "2"`、`ASSISTANT_STATE_SCHEMA_VERSION = 1`。
-- Produces: `to_checkpoint_state(execution_state: AssistantLoopState) -> AssistantTurnState` 与 `to_execution_state(state: AssistantTurnState) -> AssistantLoopState`。
-- Consumes later: graph builder 只把 `AssistantTurnState` 交给 LangGraph；node wrapper 执行前 hydrate，返回前 dehydrate。
+- Produces: strict `AssistantTurnState` 及 `AssistantNodeInput/AssistantNodeUpdate` adapter；compiled `StateGraph` 的 schema 直接改为 `AssistantTurnState`。
+- Migration closure: node adapter 可在单个 node 调用期间 hydrate 临时 `AgentState/UserRequest/ToolResult`，但每个 node return 前必须投影回 strict DTO；Task 1 终态 compiled checkpoint 不再存在 legacy `AssistantLoopState` snapshot，后续 task 不允许恢复双 state 轨。
 
 - [ ] **Step 1: 写 state RED 测试**
 
-覆盖：完整 assistant/tool trajectory round-trip；`json.dumps(state)` 成功；递归扫描不存在 `ToolExecutor`、adapter、store、sink、cancel token、bytes、Path、callback；只保留媒体/artifact ref；graph/schema version 不匹配抛 `GraphExecutionError(code="graph_state_incompatible")`。
+覆盖：真实 compiled graph 用 `InMemorySaver` 执行一轮后，直接调用 saver `aget_tuple()`/graph `aget_state()` 检查 checkpoint `channel_values`；递归断言不存在 `AgentState`、`UserRequest`、`ToolResult`、`ToolExecutor`、adapter、store、sink、cancel token、bytes、Path、callback，且 `json.dumps(values)` 成功。再覆盖媒体/artifact 只保存稳定 ref、version 不匹配 fail-closed，以及同一 stable thread 开启新 turn 时旧 observation/pending call/final/error/counter 全部被显式清空。
 
 - [ ] **Step 2: 运行 RED**
 
@@ -76,31 +79,50 @@ Expected: FAIL，缺少 `assistant_graph_state`。
 
 - [ ] **Step 3: 实现显式 JSON DTO**
 
-`AssistantTurnState` 至少包含以下恢复事实，不能用 `model_dump()` 整包保存任意 Runtime 对象：
+不得保留 `request: dict[str, JsonValue]`、`run: dict[str, JsonValue]` 或其他任意字典逃生舱。定义有长度上限的 nested Pydantic DTO（所有 model `extra="forbid"`），再由 TypedDict 作为 LangGraph channel schema：
 
 ```python
-class AssistantTurnState(TypedDict, total=False):
+class PersistedRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    user_id: str = Field(min_length=1, max_length=128)
+    session_id: str = Field(min_length=1, max_length=128)
+    text: str | None = Field(default=None, max_length=32_000)
+    assistant_mode: Literal["standard", "deep_research"]
+    media_refs: tuple[PersistedMediaRef, ...] = Field(max_length=16)
+    capability_refs: tuple[str, ...] = Field(max_length=64)
+
+class PersistedRun(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    run_id: str = Field(min_length=1, max_length=128)
+    trace_id: str = Field(min_length=1, max_length=128)
+    agent_id: str = Field(min_length=1, max_length=128)
+    status: Literal["created", "running", "waiting_user", "completed", "failed", "cancelled"]
+    errors: tuple[PersistedError, ...] = Field(max_length=32)
+    tool_calls: tuple[PersistedToolCall, ...] = Field(max_length=64)
+    tool_results: tuple[PersistedToolResult, ...] = Field(max_length=64)
+
+class AssistantTurnState(TypedDict):
     graph_name: Literal["AssistantTurnGraph"]
     graph_version: Literal["2"]
     state_schema_version: Literal[1]
     profile: Literal["standard", "planner", "worker", "verifier"]
-    request: dict[str, JsonValue]
-    run: dict[str, JsonValue]
-    outputs_by_step: dict[str, dict[str, JsonValue]]
+    request: PersistedRequest
+    run: PersistedRun
+    outputs_by_step: tuple[PersistedStepOutput, ...]
     current_step_index: int
-    assistant_output: dict[str, JsonValue] | None
-    pending_tool_calls: list[dict[str, JsonValue]]
+    assistant_output: PersistedAssistantOutput | None
+    pending_tool_calls: tuple[PersistedToolCallRequest, ...]
     assistant_iterations: int
     tool_calls_used: int
     action_tool_calls_used: int
     control_tool_calls_used: int
     run_phase: str
-    tool_observations: list[dict[str, JsonValue]]
-    pending_interrupt: dict[str, JsonValue] | None
-    final_response: dict[str, JsonValue] | None
+    tool_observations: tuple[PersistedToolObservation, ...]
+    pending_interrupt: PersistedInterrupt | None
+    final_response: PersistedResponse | None
 ```
 
-`run` 只编码恢复所需的 identity/status/error/tool history/catalog/context reference；`frozen_memory_context`、client、正文媒体与任意未知对象 fail-closed。node wrapper 的 hydrate/dehydrate 是唯一兼容旧 `AssistantLoopState` 的边界。
+每个 nested DTO 明列 primitive/enum/有界 tuple/稳定 reference 字段；Tool result 只保留 safe observation、status、operation key、output/artifact refs，不保存任意 `data/audit_payload/raw response`。转换器只能逐字段构造，禁止 `AgentState.model_dump()`、`UserRequest.model_dump()` 或递归通用 JSON sanitizer。Graph input builder 必须为每个 channel 提供显式初值，因此 stable thread 的新 turn 会覆盖并清空全部 run-scoped channel，而不是与上个 checkpoint 合并。
 
 - [ ] **Step 4: 运行 GREEN 与 M1 graph tests**
 
@@ -113,7 +135,7 @@ Expected: PASS。
 - [ ] **Step 5: 提交**
 
 ```bash
-git add src/assistant_agent/runtime/assistant_graph_state.py src/assistant_agent/runtime/assistant_loop_nodes.py src/assistant_agent/runtime/graph_runtime.py tests/tdd/native-langgraph-m2/test_checkpoint_state.py
+git add src/assistant_agent/runtime/assistant_graph_state.py src/assistant_agent/runtime/assistant_loop_graph.py src/assistant_agent/runtime/assistant_loop_nodes.py src/assistant_agent/runtime/assistant_graph_app.py src/assistant_agent/runtime/graph_runtime.py src/assistant_agent/runtime/runtime.py tests/tdd/native-langgraph-m2/test_checkpoint_state.py
 git commit -m "refactor(runtime): define persistent assistant graph state"
 ```
 
@@ -125,12 +147,14 @@ git commit -m "refactor(runtime): define persistent assistant graph state"
 - Modify: `pyproject.toml`
 - Modify: `src/assistant_agent/config/__init__.py`
 - Modify: `src/assistant_agent/runtime/checkpointer.py`
+- Modify: `src/assistant_agent/runtime/assistant_graph_app.py`
+- Modify: `src/assistant_agent/runtime/assistant_loop_graph.py`
 - Modify: `src/assistant_agent/runtime/runtime.py`
 - Test: `tests/tdd/native-langgraph-m2/test_persistent_checkpointer.py`
 
 **Interfaces:**
-- Produces: `AsyncCheckpointerHandle(saver, aclose)`；`create_async_checkpointer(config) -> AsyncCheckpointerHandle | None`。
-- Config: `LANGGRAPH_CHECKPOINTER_BACKEND=none|memory|sqlite` 与独立 `LANGGRAPH_CHECKPOINTER_PATH`；production 默认不得把 `memory` 描述为持久。
+- Produces: `AsyncCheckpointerHandle(saver, aclose)`；`create_async_checkpointer(config) -> AsyncCheckpointerHandle | None`；`AssistantTurnGraphApp(checkpointer_handle=...)` 把 `handle.saver` 传给唯一一次 `build_assistant_loop_graph(checkpointer=saver)` 编译。
+- Config: `LANGGRAPH_CHECKPOINTER_BACKEND=none|memory|sqlite` 与独立 `LANGGRAPH_CHECKPOINTER_PATH`；依赖门通过后的 composition root 默认 `sqlite` + `.local/langgraph/assistant_turns.sqlite3`，`memory` 仅供显式 local/TDD，`none` 仅供无恢复专项测试。production 缺 saver package/path readiness 必须启动失败，不得回退 memory。
 - Depends on: 顶部“依赖授权门”；未授权时不得执行安装/依赖修改或声称完成。
 
 - [ ] **Step 1: 用户授权后先验证官方兼容矩阵**
@@ -139,7 +163,7 @@ git commit -m "refactor(runtime): define persistent assistant graph state"
 
 - [ ] **Step 2: 写 RED**
 
-测试 `none`、显式 memory、SQLite async saver；SQLite 用 `tmp_path`，跨 `AgentGraphRuntime.close()/重建` 后相同 thread 能 `aget_state()`；路径父目录安全创建；缺官方包时报结构化 startup error 而非回退 memory；`aclose()` 恰好一次。
+测试 `none`、显式 memory、SQLite async saver；断言 app 的 compiled graph 实际绑定同一个 saver instance；SQLite 用 `tmp_path`，完成/interrupt checkpoint 跨 `AgentGraphRuntime.aclose()/重建` 后相同 thread 能 `aget_state()`；路径父目录安全创建；缺官方包时报结构化 startup error 而非回退 memory；application root 的 `aclose()` 先停止新 run、等待活动 stream 退出，再让 saver `aclose()` 恰好一次。
 
 - [ ] **Step 3: 运行 RED**
 
@@ -151,13 +175,13 @@ Expected: FAIL，factory 尚不支持 sqlite/async lifecycle。
 
 - [ ] **Step 4: 实现官方 saver adapter**
 
-factory 只负责官方 saver 构造与 close，不实现 `BaseCheckpointSaver` 子类。Runtime application root 持有 handle 并在 async shutdown 关闭；同步 `close()` 只作兼容入口，不能在活动 loop 中嵌套 `asyncio.run()`。
+factory 只负责官方 saver 构造与 close，不实现 `BaseCheckpointSaver` 子类。Runtime composition root 构造 handle，传入 `AssistantTurnGraphApp` 并拥有生命周期；app 只编译一次且不得随后替换 saver。async shutdown 关闭 stream 后关闭 handle；同步 `close()` 只作无活动 event loop 的兼容入口，不能在活动 loop 中嵌套 `asyncio.run()`。
 
 - [ ] **Step 5: 运行 GREEN 并提交**
 
 ```bash
 MULTIMODAL_AGENT_PROVIDER_MODE=mock /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q tests/tdd/native-langgraph-m2/test_persistent_checkpointer.py
-git add pyproject.toml src/assistant_agent/config/__init__.py src/assistant_agent/runtime/checkpointer.py src/assistant_agent/runtime/runtime.py tests/tdd/native-langgraph-m2/test_persistent_checkpointer.py
+git add pyproject.toml src/assistant_agent/config/__init__.py src/assistant_agent/runtime/checkpointer.py src/assistant_agent/runtime/assistant_graph_app.py src/assistant_agent/runtime/assistant_loop_graph.py src/assistant_agent/runtime/runtime.py tests/tdd/native-langgraph-m2/test_persistent_checkpointer.py
 git commit -m "feat(runtime): add official persistent graph checkpointer"
 ```
 
@@ -175,10 +199,11 @@ git commit -m "feat(runtime): add official persistent graph checkpointer"
 **Interfaces:**
 - Produces: `AssistantGraphProfileName = Literal["standard", "planner", "worker", "verifier"]` 和 immutable `AssistantGraphProfile`。
 - Produces: `AssistantTurnGraphApp.graph_for_profile(profile) -> CompiledStateGraph`；standalone graph compile 时接 saver，profile child compile 时 `checkpointer=None`，由未来父图继承。
+- Produces: `ProfileInvocationInput` / `ProfileInvocationResult` 及 `profile_input_adapter(parent_state, assignment) -> AssistantTurnState`、`profile_output_adapter(child_state) -> ProfileInvocationResult`；父图不得把自己的整份 state 直接传入 child。
 
 - [ ] **Step 1: 写 RED**
 
-证明四个 profile 是结构化选择而非文本关键词；每个 compiled child 名称稳定；父 probe graph 嵌入 worker child 后 `subgraphs=True` stream 出现原生 namespace；child 没有独立 saver；profile 只能收窄 Tool catalog/预算，不能绕过治理。
+证明四个 profile 是结构化选择而非文本关键词；每个 compiled child 名称稳定；父 probe graph 通过 input adapter 只传 assignment refs/objective/constraints/capability refs，child output adapter 只返回 response/tool trajectory/artifact refs/status；父 workflow 私有字段不会出现在 child checkpoint。`subgraphs=True` stream 出现原生 namespace且 child 没有独立 saver；namespace 中动态 task UUID 只用于 graph 定位/trace，绝不保存或投影为业务 work-item ID；profile 只能收窄 Tool catalog/预算，不能绕过治理。
 
 - [ ] **Step 2: 运行 RED**
 
@@ -197,7 +222,7 @@ class AssistantGraphProfile:
     allowed_categories: frozenset[ToolCategory]
 ```
 
-profile 来自可信调用参数/runtime context，并写入 checkpoint state 与 LangSmith metadata；禁止从 request text 推断。M2 不为 profile 复制 node 或 loop。
+profile 来自可信调用参数/runtime context，并写入 checkpoint state 与 LangSmith metadata；禁止从 request text 推断。`profile_input_adapter` 在建图输入时把 Registry catalog、Provider tool specs 和 validator allowed set 同时与 `allowed_categories/explicit tool allowlist` 取交集，profile 不可只改提示词或预算；Executor 仍做最终治理。resume 必须读取 checkpoint profile 并与调用 profile 相等，不传则沿用 checkpoint；任何切换以 `graph_profile_mismatch` fail-closed。M2 不为 profile 复制 node 或 loop。
 
 - [ ] **Step 4: 运行 GREEN 并提交**
 
@@ -219,13 +244,13 @@ git commit -m "feat(runtime): expose reusable assistant graph profiles"
 - Test: `tests/tdd/native-langgraph-m2/test_interrupt_resume.py`
 
 **Interfaces:**
-- Produces: `AssistantInterrupt` Pydantic union、`AssistantResume` Pydantic union。
+- Produces: trusted `AssistantInterruptRequest(kind, prompt, action_ref, allowed_resume_kinds)`、public-safe `AssistantInterrupt`、strict `AssistantResume` Pydantic union。
 - Produces: `AssistantTurnGraphApp.aresume(*, identity, context, resume) -> GraphStreamResult`、`aget_state(identity)`、`aget_state_history(identity, limit)`。
 - `aresume` 必须调用 `astream(Command(resume=resume.model_dump(mode="json")), ...)`，同 thread/new run。
 
 - [ ] **Step 1: 写 RED**
 
-用 explicit trusted interrupt fixture 证明首次运行结束为 `interrupted` 而非 completed/failed；snapshot `next/tasks/interrupts` 可读；重建 app 后同 thread resume；interrupt 前 node 可能重跑但不可重复副作用；错 thread、无 pending interrupt、schema/version 不兼容均 fail-closed。
+通过 Runtime 显式参数（以及未来父 graph adapter）注入 trusted `interrupt_request`，不得从用户文本/任意 metadata 推断。真实图路径必须可达：`assistant -> await_input -> execute_tool|assistant`；首次运行在 `await_input` 结束为 `interrupted`，snapshot `next/tasks/interrupts` 可读；重建 app 后同 thread resume。再覆盖：resume kind/action_ref 不匹配被拒绝；成功 resume 原子清除 `pending_interrupt` 并不会再次 gate；错 thread、无 pending interrupt、schema/version 不兼容均 fail-closed。
 
 - [ ] **Step 2: 运行 RED**
 
@@ -235,7 +260,9 @@ MULTIMODAL_AGENT_PROVIDER_MODE=mock /home/lenovo1/miniconda3/envs/hello_agent/bi
 
 - [ ] **Step 3: 实现 interrupt node 与结果分类**
 
-`interrupt()` 只出现在无不可重复副作用的 gate node；`GraphStreamResult` 增加 `status: completed|interrupted`、`interrupts` 和 checkpoint config。stream 结束时若 root values 携带 interrupt，不再误判 `graph_final_state_missing`。
+增加真实 `await_input_node` 与 conditional edges：当已验证的 pending write/dangerous action 或父图显式 input gate 存在时，assistant 路由到 `await_input`；节点先校验 state 中 trusted request，再调用 `interrupt(public_payload)`，恢复值经 `AssistantResume` 和 action_ref allowlist 校验后清除 pending state，才路由到 governed Tool/assistant。`interrupt()` 前不允许执行写 Tool、artifact publish 或 delivery。
+
+`GraphStreamResult` 增加 `status: completed|interrupted`、按 `Interrupt.id` 去重后的 `interrupts` 和 checkpoint config。LangGraph 1.2.4 在 interrupt 时 root `values` 仍会出现，且同一 child interrupt 会同时出现在 child/root stream；因此不能以“存在 root values”判断 completed，也不能按 namespace/动态 task UUID 去重。消费流后必须调用 `aget_state(config, subgraphs=True)`：`tasks/next` 或 task interrupt 非空且 Interrupt.id 存在即为 interrupted；只有 `next == ()`、tasks 无 pending/interrupt 且 state terminal 才是 completed。Runtime 将 interrupted invocation 投影为 `AgentState.status="waiting_user"`，它是可恢复非终态：不得写 completed/failed/cancelled terminal history、不得释放 thread checkpoint、不得触发 terminal Tool hook；resume 完成或显式 cancel 后才终结。
 
 - [ ] **Step 4: 运行 GREEN 并提交**
 
@@ -258,12 +285,13 @@ git commit -m "feat(runtime): add native assistant interrupt resume"
 
 **Interfaces:**
 - Produces: `ToolOperationStore.reserve/commit_success/commit_failure/load` 与 stdlib SQLite 实现。
-- Operation key: SHA-256(`thread_id`, profile, provider tool-call ID, canonical tool name, normalized input digest)；不使用随机 attempt/run ID。
-- 状态：`reserved|succeeded|failed|outcome_unknown`；相同 key 不同 digest fail-closed。
+- Stable identity source: `AssistantToolCall.tool_call_id` 必须直接保留 Provider native tool-call ID；对 write/dangerous call，缺失/空/被重新随机生成的 ID 在 validator 阶段以 `stable_tool_call_id_required` 拒绝。Runtime 在 tool edge 之前用 `thread_id + turn_origin_id + provider tool_call_id` 确定性生成 `operation_scope_id`，先作为 pending call 写入 checkpoint，之后才允许副作用；不同 turn 的 `turn_origin_id` 不同，同一 checkpoint/resume/逻辑重放复用原 scope，不能在 execute node 内临时随机生成。
+- Operation key: SHA-256(`thread_id`, `operation_scope_id`, profile, provider tool-call ID, canonical tool name)；normalized input 单独保存 digest 并参与冲突校验，不使用当前 resume `run_id`、attempt ID、checkpoint namespace 或动态 task UUID。
+- 状态：`reserved|invoking|succeeded|failed|outcome_unknown`；相同 key 不同 digest fail-closed。
 
 - [ ] **Step 1: 写 RED**
 
-覆盖 read Tool 不进 barrier；write/dangerous 首次只执行一次；checkpoint replay 返回已提交的结构化 `ToolResult`；进程在外部调用后、commit 前中断时后续变为 `outcome_unknown` 且不重放；声明 runtime `idempotency_key` binding 的 Tool 可用同 key安全重试；并发 reserve 只有一个 owner。
+覆盖 read Tool 不进 barrier；Provider native ID 从 assistant output → pending call → checkpoint → resume 保持不变；缺稳定 ID 的 write 被拒绝；write/dangerous 首次只执行一次；checkpoint replay 返回已提交的结构化结果；进程在 `mark_invoking` 后、backend 返回前或返回后 commit 前崩溃，重建时均保守变为 `outcome_unknown` 且不自动重放；仅当 Tool 声明并实际绑定同一个业务 `idempotency_key`、且 backend 提供查询/幂等重放契约时才允许 reconcile；并发 reserve 只有一个 owner。
 
 - [ ] **Step 2: 运行 RED**
 
@@ -273,7 +301,7 @@ MULTIMODAL_AGENT_PROVIDER_MODE=mock /home/lenovo1/miniconda3/envs/hello_agent/bi
 
 - [ ] **Step 3: 在 ToolExecutor 内实现 barrier**
 
-barrier 位于 validation 之后、`ToolExecutionBackend.run()` 之前，不能包在 Registry 外侧或从 checkpoint 推断副作用成功。SQLite 是业务幂等/审计事实，不实现 LangGraph saver；payload 仅保存安全 digest、状态、稳定 output ref 和可恢复的结构化结果。
+barrier 位于 validation 之后、`ToolExecutionBackend.run()` 之前，不能包在 Registry 外侧或从 checkpoint 推断副作用成功。事务顺序固定为 `reserve -> mark_invoking -> backend.run(含全部既有 retry) -> commit_success|commit_failure`；一次逻辑 Tool call 的整个 retry loop 只能 reserve 一次，retry 不创建新 operation。只有 `succeeded/failed` 可重放结果；进程重建时遗留 `invoking` 一律 CAS 为 `outcome_unknown`，不得因超时推断失败或成功；遗留 `reserved` 尚未进入 backend，可由同 digest owner recovery CAS 接管。SQLite 是 business idempotency/audit 事实，不实现 LangGraph saver；composition root 默认放在独立 `.local/langgraph/tool_operations.sqlite3`，与 checkpoint DB 分离；payload 仅保存 safe digest、状态、稳定 output ref 和严格 `PersistedToolResult`。
 
 - [ ] **Step 4: 运行 GREEN 与 TOOL-001**
 
@@ -300,12 +328,13 @@ git commit -m "feat(tools): guard resumable side effects by operation key"
 - Test: `tests/tdd/native-langgraph-m2/test_product_event_projector.py`
 
 **Interfaces:**
-- Produces: `ProductEventProjector.project(part: GraphStreamPart) -> tuple[AgentEvent, ...]`。
+- Produces: strict `RuntimeProductFact` union 和 `ProductEventProjector.project(part: GraphStreamPart) -> tuple[AgentEvent, ...]`。
 - Projected facts limited to run started、text delta、governed Tool/product progress、waiting input、final、cancelled、failed；`checkpoints/tasks/完整 state/namespace` 不进入公共 payload。
+- Fact ownership: graph node/LLM callback/ToolExecutor 不再直接向产品 `EventSink` 写 `AgentEvent`；它们通过当前 LangGraph stream writer 写带 `fact_id` 的 `custom` `RuntimeProductFact`。Runtime ingress 的 run-started 也先构造成同 union 再交 projector。`ProductEventProjector` 是唯一 `AgentEvent` 构造与 sink owner；canonical TraceEvent/业务审计继续走各自 store，不经过 projector。
 
 - [ ] **Step 1: 写 RED**
 
-输入真实 v2 `updates/messages/custom/tasks/checkpoints` fixture，断言只投影 allowlist；同一 occurrence 不重复；interrupt → waiting input；projector 不调用 graph、router、store update 或 workflow service。
+输入真实 v2 `updates/messages/custom/tasks/checkpoints` fixture，断言只有 strict custom facts（及原生 interrupt snapshot）可投影产品事件，tasks/checkpoints/updates 不被猜测成进度；相同 `fact_id` 和 child/root 相同 `Interrupt.id` 只投影一次；interrupt → waiting input；direct `EventSink.emit(AgentEvent(...))` 在 node/LLM/Tool 路径的 mutation test 必须失败；projector 不调用 graph、router、store update 或 workflow service。
 
 - [ ] **Step 2: 运行 RED**
 
@@ -315,7 +344,7 @@ MULTIMODAL_AGENT_PROVIDER_MODE=mock /home/lenovo1/miniconda3/envs/hello_agent/bi
 
 - [ ] **Step 3: 让 Runtime 边消费边投影**
 
-`AssistantTurnGraphApp.astream()` 保持原生事实流；Runtime async path `async for part` 收集 root final/interrupt 并立即投影。删除 `_emit_graph_execution_event()` 对整个 graph 的模拟 `graph_node_started/finished`，不得用 projector 决定下一节点。
+`AssistantTurnGraphApp.astream()` 保持原生事实流；Runtime async path `async for part` 收集 strict custom fact、root snapshot/interrupt 并立即投影。把 Provider delta callback 和 Tool lifecycle publisher 的产品输出改为 graph stream writer；删除其 direct product `EventSink` 分支，以及 `_emit_graph_execution_event()` 对整图模拟的 `graph_node_started/finished`。Projector 不查看文本来推断 Tool/progress，不决定下一节点；final/cancel/fail 只来自 Runtime terminal fact，waiting 只来自经 snapshot 确认的 Interrupt.id。
 
 - [ ] **Step 4: 运行 GREEN 并提交**
 
@@ -337,6 +366,7 @@ git commit -m "refactor(runtime): project product events from graph stream"
 - Modify: `src/assistant_agent/gateway/runtime_event_mapping.py`
 - Test: `tests/tdd/native-langgraph-m2/test_runtime_resume.py`
 - Test: `tests/tdd/native-langgraph-m2/test_gateway_compatibility.py`
+- Test: `tests/tdd/native-langgraph-m2/test_no_graph_thread_bridge.py`
 
 **Interfaces:**
 - Produces: `AgentGraphRuntime.aresume_state(request, *, resume, run_id, ...) -> AgentState` 与 `astream_state(...)`；同步 `run_state()` 仅保留兼容，不作为 service 主路。
@@ -344,7 +374,7 @@ git commit -m "refactor(runtime): project product events from graph stream"
 
 - [ ] **Step 1: 写 RED**
 
-证明 service/Gateway 主路不调用 `invoke()`、`asyncio.to_thread()` 或 `run_in_executor()` 执行 graph；interrupt 不发 completed；resume 恰好一个 terminal；disconnect 只停止订阅不删除 checkpoint；cancel 与 interrupt 分离；现有 Agent-Service/media frames 快照不变。
+证明 service/Gateway 主路不调用 `invoke()`、`asyncio.to_thread()` 或 `run_in_executor()` 执行 graph（AST/多行源码扫描覆盖跨行参数，不能只靠单行 regex）；interrupt 后 state 为 `waiting_user` 且不发任何 terminal；resume 恰好一个 terminal；disconnect 只停止订阅不删除 checkpoint；cancel 与 interrupt 分离；现有 Agent-Service/media frames 快照不变。用同一 `ScriptedChatAdapter` 分别跑 M1 async 路径与 M2 persistent 路径，断言 Provider request、governed Tool 顺序/参数/observation 和最终回答等价。
 
 - [ ] **Step 2: 运行 RED**
 
@@ -365,7 +395,7 @@ MULTIMODAL_AGENT_PROVIDER_MODE=mock /home/lenovo1/miniconda3/envs/hello_agent/bi
 - [ ] **Step 5: 提交**
 
 ```bash
-git add src/assistant_agent/runtime/runtime.py src/assistant_agent/runtime/assistant_run_service.py src/assistant_agent/runtime/event_stream.py src/assistant_agent/gateway/runtime_adapter.py src/assistant_agent/gateway/runtime_event_mapping.py tests/tdd/native-langgraph-m2/test_runtime_resume.py tests/tdd/native-langgraph-m2/test_gateway_compatibility.py
+git add src/assistant_agent/runtime/runtime.py src/assistant_agent/runtime/assistant_run_service.py src/assistant_agent/runtime/event_stream.py src/assistant_agent/gateway/runtime_adapter.py src/assistant_agent/gateway/runtime_event_mapping.py tests/tdd/native-langgraph-m2/test_runtime_resume.py tests/tdd/native-langgraph-m2/test_gateway_compatibility.py tests/tdd/native-langgraph-m2/test_no_graph_thread_bridge.py
 git commit -m "refactor(runtime): resume assistant graph through thin async facade"
 ```
 
@@ -382,7 +412,7 @@ git commit -m "refactor(runtime): resume assistant graph through thin async faca
 - Modify: `docs/gateway-architecture.md`
 - Create: `.superpowers/sdd/2026-08-12-native-langgraph-m2/m2-final-report.md`
 
-**Core invariant:** `RUN-001` 增加 interrupted/resume 同义终态；`LOOP-001` 增加 versioned persistent state/profile；`IDENT-001` 删除 M1 root saver 临时说明并增加 stable thread/new run resume；`TOOL-001` 增加 resumable write operation barrier；`GATE-001` 外部协议保持不变。`DUR-001` 的 Workflow scheduler 迁移不属于 M2。
+**Core invariant:** `RUN-001` 增加 `waiting_user` 可恢复非终态及 resume 后唯一终态（不得把 interrupted 称为 terminal）；`LOOP-001` 增加 versioned persistent state/profile 与 scripted trajectory 等价；`IDENT-001` 删除 M1 root saver 临时说明并增加 stable thread/new run resume；`TOOL-001` 增加 resumable write operation barrier；`GATE-001` 外部协议保持不变。`DUR-001` 的 Workflow scheduler 迁移不属于 M2。
 
 - [ ] **Step 1: 先做 mutation RED，再写最小 core assertion**
 
@@ -408,7 +438,8 @@ Expected: 全部 PASS；无真实 Provider/network 调用。
 - [ ] **Step 4: 运行删除门槛**
 
 ```bash
-! rg -n "_emit_graph_execution_event|asyncio\.to_thread\([^)]*(run_state|invoke)|run_in_executor\([^)]*(run_state|invoke)" src/assistant_agent/runtime src/assistant_agent/api src/assistant_agent/gateway
+! rg -n "_emit_graph_execution_event" src/assistant_agent/runtime src/assistant_agent/api src/assistant_agent/gateway
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q tests/tdd/native-langgraph-m2/test_no_graph_thread_bridge.py
 ! rg -n "class .*CheckpointSaver|BaseCheckpointSaver" src/assistant_agent
 rg -n "interrupt\(|Command\(resume=|subgraphs=True|stream_mode=.*checkpoints" src/assistant_agent/runtime
 ```
