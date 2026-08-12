@@ -95,7 +95,7 @@ class PersistedRequest(BaseModel):
     text: str | None = Field(default=None, max_length=32_000)
     assistant_mode: Literal["standard", "deep_research"]
     response_style: PersistedResponseStyle
-    task_execution_mode: Literal["foreground", "durable"]
+    task_execution_mode: Literal["auto", "foreground", "durable"]
     messages: tuple[PersistedMessage, ...] = Field(max_length=128)
     runtime_task_facts: PersistedRuntimeTaskFacts | None
     media_refs: tuple[PersistedMediaRef, ...] = Field(max_length=16)
@@ -162,6 +162,15 @@ git commit -m "refactor(runtime): define persistent assistant graph state"
 - Modify: `src/assistant_agent/runtime/checkpointer.py`
 - Modify: `src/assistant_agent/runtime/assistant_graph_app.py`
 - Modify: `src/assistant_agent/runtime/assistant_loop_graph.py`
+- Modify: `src/assistant_agent/runtime/assistant_runtime_app.py`
+- Modify: `src/assistant_agent/runtime/runtime_host.py`
+- Modify: `src/assistant_agent/runtime/assistant_run_service.py`
+- Modify: `src/assistant_agent/gateway/runtime_pool.py`
+- Modify: `src/assistant_agent/api/routes_agent.py`
+- Modify: `src/assistant_agent/api/app.py`
+- Modify: `src/assistant_agent/api/gateway_runtime.py`
+- Modify: `src/assistant_agent/mcp/server.py`
+- Modify: `src/assistant_agent/multi_agent/agent_router.py`
 - Modify: `src/assistant_agent/runtime/runtime.py`
 - Test: `tests/tdd/native-langgraph-m2/test_persistent_checkpointer.py`
 
@@ -176,7 +185,7 @@ git commit -m "refactor(runtime): define persistent assistant graph state"
 
 - [ ] **Step 2: 写 RED**
 
-测试 `none`、显式 memory、SQLite async saver；断言 app 的 compiled graph 实际绑定同一个 saver instance；SQLite 用 `tmp_path`，完成/interrupt checkpoint 跨 `AgentGraphRuntime.aclose()/重建` 后相同 thread 能 `aget_state()`；路径父目录安全创建；缺官方包时报结构化 startup error 而非回退 memory；application root 的 `aclose()` 先停止新 run、等待活动 stream 退出，再让 saver `aclose()` 恰好一次。
+测试 `none`、显式 memory、SQLite async saver；断言 app compiled graph 绑定同一个 saver instance；SQLite 跨 Runtime 重建可恢复；缺包 fail-closed；application root 的 `aclose()` 顺序正确。逐入口补 startup/shutdown 兼容测试：FastAPI lifespan/routes、Gateway runtime pool、`assistant_run_service.create_runtime` 调用方、Offline MCP server、multi-agent router 都从同一进程级 `AssistantRuntimeApp` async owner checkout Runtime，shutdown 归还 lease 并最终只关闭 saver 一次。
 
 - [ ] **Step 3: 运行 RED**
 
@@ -188,13 +197,13 @@ Expected: FAIL，factory 尚不支持 sqlite/async lifecycle。
 
 - [ ] **Step 4: 实现官方 saver adapter**
 
-factory 只负责官方 saver 的 async context enter/exit，不实现 `BaseCheckpointSaver` 子类。async Runtime/application composition root 进入 handle context，传入 `AssistantTurnGraphApp` 并拥有生命周期；app 只编译一次且不得随后替换 saver。`AssistantRuntimeApp.astart()/aclose()` 关闭 admission、等待 stream、关闭 Runtime，再退出 saver context。同步 `AgentGraphRuntime(...)` 兼容构造只允许调用方显式传入 `none`/`InMemorySaver`，用于 offline/internal sync tests；production `sqlite` 若从同步 root 构造，立即抛 `async_runtime_required`，不得暗建 event-loop thread、嵌套 `asyncio.run()` 或用 `to_thread` 包 graph。
+factory 只负责官方 saver async context，不实现 saver。`AssistantRuntimeApp.astart()/aclose()` 成为进程 owner，并提供 async checkout/checkin；FastAPI lifespan、Gateway pool、MCP server 和 multi-agent router 的 async startup/shutdown 均持有/借用这个 owner，不再各自 `AgentGraphRuntime()`。现有同步 `create_runtime()`/constructor 继续作为显式 offline/test 兼容，用 `none`/`InMemorySaver`，不能因为默认 config 为 sqlite 而让当前产品 import/构造直接报错；production entry 在处理请求前必须完成 async app startup。禁止后台 event-loop thread、嵌套 `asyncio.run()` 或用 thread bridge 包 graph。
 
 - [ ] **Step 5: 运行 GREEN 并提交**
 
 ```bash
 MULTIMODAL_AGENT_PROVIDER_MODE=mock /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q tests/tdd/native-langgraph-m2/test_persistent_checkpointer.py
-git add pyproject.toml src/assistant_agent/config/__init__.py src/assistant_agent/runtime/checkpointer.py src/assistant_agent/runtime/assistant_graph_app.py src/assistant_agent/runtime/assistant_loop_graph.py src/assistant_agent/runtime/runtime.py tests/tdd/native-langgraph-m2/test_persistent_checkpointer.py
+git add pyproject.toml src/assistant_agent/config/__init__.py src/assistant_agent/runtime/checkpointer.py src/assistant_agent/runtime/assistant_graph_app.py src/assistant_agent/runtime/assistant_loop_graph.py src/assistant_agent/runtime/assistant_runtime_app.py src/assistant_agent/runtime/runtime_host.py src/assistant_agent/runtime/assistant_run_service.py src/assistant_agent/gateway/runtime_pool.py src/assistant_agent/api/routes_agent.py src/assistant_agent/api/app.py src/assistant_agent/api/gateway_runtime.py src/assistant_agent/mcp/server.py src/assistant_agent/multi_agent/agent_router.py src/assistant_agent/runtime/runtime.py tests/tdd/native-langgraph-m2/test_persistent_checkpointer.py
 git commit -m "feat(runtime): add official persistent graph checkpointer"
 ```
 
@@ -345,7 +354,7 @@ git commit -m "feat(tools): guard resumable side effects by operation key"
 - Test: `tests/tdd/native-langgraph-m2/test_product_event_projector.py`
 
 **Interfaces:**
-- Produces: strict `RuntimeProductFact` union；所有 producer 统一调用 `project_fact(fact: RuntimeProductFact)`，它通过当前 LangGraph stream writer 发出 custom fact；`ProductEventProjector.project(part) -> tuple[AgentEvent, ...]` 是唯一 public mapping。
+- Produces: strict `RuntimeProductFact` union；graph 内 producer 调用 `emit_product_fact(writer, fact)` 只负责写 custom stream；graph 外 ingress/terminal 直接把 fact 交给 `ProductEventProjector.project_fact(fact)`。`ProductEventProjector.project_part(part)` 仅解析 custom part 后委托同一个 `project_fact`，两条路径共享同一有界 `fact_id` dedupe，projector 是唯一 public mapping。
 - Projected facts limited to run started、text delta、governed Tool/product progress、waiting input、final、cancelled、failed；`checkpoints/tasks/完整 state/namespace` 不进入公共 payload。
 - Fact ownership: graph node/LLM callback/ToolExecutor 不再直接向产品 `EventSink` 写 `AgentEvent`；它们通过当前 LangGraph stream writer 写带 `fact_id` 的 `custom` `RuntimeProductFact`。Runtime ingress 的 run-started 也先构造成同 union 再交 projector。`ProductEventProjector` 是唯一 `AgentEvent` 构造与 sink owner；canonical TraceEvent/业务审计继续走各自 store，不经过 projector。
 
@@ -361,7 +370,7 @@ MULTIMODAL_AGENT_PROVIDER_MODE=mock /home/lenovo1/miniconda3/envs/hello_agent/bi
 
 - [ ] **Step 3: 让 Runtime 边消费边投影**
 
-`AssistantTurnGraphApp.astream()` 保持原生事实流；Runtime async path `async for part` 收集 strict custom fact、root snapshot/interrupt 并立即投影。把 Provider delta callback 和 Tool lifecycle publisher 的产品输出改为 graph stream writer；删除其 direct product `EventSink` 分支，以及 `_emit_graph_execution_event()` 对整图模拟的 `graph_node_started/finished`。Projector 不查看文本来推断 Tool/progress，不决定下一节点；final/cancel/fail 只来自 Runtime terminal fact，waiting 只来自经 snapshot 确认的 Interrupt.id。
+`AssistantTurnGraphApp.astream()` 保持原生事实流；Runtime async path 对 custom part 调 `project_part`。把 Provider delta callback 和 Tool lifecycle publisher 改为 `emit_product_fact(writer, fact)`；run start/final/cancel/fail 是 graph 外事实，调用同一 projector 的 `project_fact`，从而与 custom stream 共用 exactly-once dedupe。删除 direct product `EventSink` 分支及模拟 graph lifecycle。Projector 不推断路由；内部 waiting 不进入 service root。
 
 - [ ] **Step 4: 运行 GREEN 并提交**
 
