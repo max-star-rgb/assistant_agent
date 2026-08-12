@@ -26,6 +26,8 @@ from assistant_agent.runtime.chat_adapter import ChatResult
 from assistant_agent.runtime.output_models import NativeToolCall
 from assistant_agent.runtime.requests import UserRequest
 from assistant_agent.runtime.runtime import AgentGraphRuntime
+from assistant_agent.runtime.event_sink import ListEventSink
+from assistant_agent.runtime.run_history import RunHistoryStore
 from assistant_agent.runtime.session_store import InMemorySessionStore
 from tests.core.support import (
     ProbeTool,
@@ -38,6 +40,48 @@ from tests.core.support import (
 class _WriteProbe(ProbeTool):
     name = "interrupt_write_probe"
     category = "write"
+
+
+class _LifecycleProbe(ProbeTool):
+    name = "interrupt_lifecycle_probe"
+
+    def __init__(self) -> None:
+        self.terminals: list[tuple[str, str]] = []
+
+    def on_run_terminal(self, run_id: str, status: str) -> None:
+        self.terminals.append((run_id, status))
+
+
+class _MixedStreamingToolCallAdapter:
+    provider = "scripted"
+    model = "scripted-model"
+
+    def __init__(self, *, tool_name: str) -> None:
+        self.tool_name = tool_name
+
+    def chat(self, request):
+        if request.stream_callback is not None:
+            request.stream_callback(
+                "provisional text that must not be delivered",
+                {
+                    "provider": self.provider,
+                    "model": self.model,
+                    "finish_reason": None,
+                },
+            )
+        return ChatResult(
+            provider=self.provider,
+            model=self.model,
+            finish_reason="tool_calls",
+            response_text="provisional text that must not be delivered",
+            tool_calls=[
+                NativeToolCall(
+                    id="provider-mixed-stream",
+                    name=self.tool_name,
+                    arguments={"value": "guarded"},
+                )
+            ],
+        )
 
 
 def _request() -> UserRequest:
@@ -722,6 +766,118 @@ def test_resume_without_pending_interrupt_fails_closed() -> None:
         assert captured.value.code == "graph_interrupt_not_pending"
     finally:
         runtime.close()
+
+
+def test_runtime_interrupt_is_waiting_nonterminal_and_buffers_mixed_stream_delivery(
+    tmp_path,
+) -> None:
+    """Finalizing waiting state or delivering mixed text before approval must fail."""
+
+    saver = InMemorySaver()
+    tool = _LifecycleProbe()
+    sink = ListEventSink()
+    history = RunHistoryStore(tmp_path / "interrupt-history.jsonl")
+    runtime = AgentGraphRuntime(
+        registry=sealed_registry(tool),
+        config=offline_config(),
+        chat_adapter=_MixedStreamingToolCallAdapter(tool_name=tool.name),
+        session_store=InMemorySessionStore(),
+        event_sink=sink,
+        run_history=history,
+        checkpointer=saver,
+    )
+    try:
+        state = asyncio.run(
+            runtime.arun_state(
+                _request(),
+                run_id="run-runtime-waiting",
+                interrupt_request=AssistantInterruptRequest(
+                    kind="approval",
+                    prompt="Approve the mixed streaming action?",
+                    action_ref="provider-mixed-stream",
+                    allowed_resume_kinds=("approve", "reject"),
+                ),
+            )
+        )
+
+        assert state.status == "waiting_user"
+        assert state.response is None
+        assert state.tool_calls == []
+        assert state.tool_results == []
+        assert [record.status for record in history.read_all()] == ["started"]
+        assert tool.terminals == []
+        assert "response_delta" not in [event.type for event in sink.events]
+        assert "final_response" not in [event.type for event in sink.events]
+    finally:
+        runtime.close()
+
+
+def test_input_interrupt_preempts_a_direct_answer_and_resumes_from_assistant() -> None:
+    """A direct first answer must not bypass an explicit input interrupt."""
+
+    saver = InMemorySaver()
+    first = _runtime(
+        saver,
+        [
+            ChatResult(
+                provider="scripted",
+                model="scripted-model",
+                finish_reason="stop",
+                response_text="stale-answer-before-input",
+            )
+        ],
+    )
+    original = _prepare(first, run_id="run-direct-input-before")
+    input_ref = assistant_turn_action_ref(original.state.run_id)
+    original.initial_state["pending_interrupt"] = AssistantInterruptRequest(
+        kind="input",
+        prompt="Provide the missing selection.",
+        action_ref=input_ref,
+        allowed_resume_kinds=("provide_input",),
+    ).model_dump(mode="json")
+    try:
+        interrupted = asyncio.run(
+            first.assistant_graph_app.arun(
+                original.initial_state,
+                identity=original.identity,
+                context=original.runtime_context,
+            )
+        )
+        assert interrupted.status == "interrupted"
+        assert interrupted.final_state["run"]["status"] == "running"
+        assert interrupted.final_state["final_response"] is None
+    finally:
+        first.close()
+
+    rebuilt = _runtime(
+        saver,
+        [
+            ChatResult(
+                provider="scripted",
+                model="scripted-model",
+                finish_reason="stop",
+                response_text="answer-after-input",
+            )
+        ],
+    )
+    resumed = _prepare(rebuilt, run_id="run-direct-input-after")
+    try:
+        result = asyncio.run(
+            rebuilt.assistant_graph_app.aresume(
+                identity=resumed.identity,
+                context=resumed.runtime_context,
+                resume=AssistantInputResume(
+                    action_ref=input_ref,
+                    text="Use option B.",
+                ),
+            )
+        )
+        assert result.status == "completed"
+        assert result.final_state["final_response"]["message"] == (
+            "answer-after-input"
+        )
+    finally:
+        rebuilt.close()
 
 
 @pytest.mark.parametrize(

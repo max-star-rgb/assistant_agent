@@ -826,6 +826,7 @@ class AgentGraphRuntime:
         export_trace_context: RuntimeExportTraceContext | None = None,
         pre_terminal_state_hook: Callable[[AgentState], None] | None = None,
         run_id: str | None = None,
+        interrupt_request: AssistantInterruptRequest | None = None,
     ) -> AgentState:
         """Run the graph through LangGraph's native asynchronous execution API."""
 
@@ -844,8 +845,11 @@ class AgentGraphRuntime:
                 export_trace_context=export_trace_context,
                 pre_terminal_state_hook=pre_terminal_state_hook,
                 run_id=effective_run_id,
+                interrupt_request=interrupt_request,
             )
             state = await self._execute_graph_async(prepared)
+            if state.status == "waiting_user":
+                return state
             return self._finalize_graph_run(prepared, state)
         finally:
             self.long_term_memory_service.release_run_context(
@@ -909,11 +913,14 @@ class AgentGraphRuntime:
             if base_event_sink is not None
             else None
         )
+        graph_event_sink: EventSink | None = run_event_sink
+        if run_event_sink is not None and interrupt_request is not None:
+            graph_event_sink = _InterruptResponseDeltaBarrier(run_event_sink)
         # A per-run ToolExecutor binds the run's sink so tool events and agent
         # trace events emitted via graph_state["tool_executor"] reach it.
         tool_executor = ToolExecutor(
             registry=self.registry,
-            event_sink=run_event_sink,
+            event_sink=graph_event_sink,
             context_metadata={
                 "durable_task_service": self.durable_task_service,
                 "workflow_service": self.workflow_service,
@@ -1019,7 +1026,7 @@ class AgentGraphRuntime:
             context_projector=self._refresh_realtime_video_context,
             tool_result_handler=self.capability_grant_controller.handle_tool_result,
             trace_store=self.trace_store,
-            event_sink=run_event_sink,
+            event_sink=graph_event_sink,
             cancel_token=cancel_token,
             agent_state=state,
         )
@@ -1171,6 +1178,11 @@ class AgentGraphRuntime:
                 identity=prepared.identity,
                 context=prepared.runtime_context,
             )
+            if result.status == "interrupted":
+                state = self._complete_graph_execution(prepared, result.final_state)
+                state.status = "waiting_user"
+                state.response = None
+                return state
             return self._complete_graph_execution(prepared, result.final_state)
         except AgentRunCancelled as exc:
             state = exc.state if isinstance(exc.state, AgentState) else prepared.state
@@ -1773,7 +1785,9 @@ def _terminal_history_status(
         return "failed"
     if status == "cancelled":
         return "cancelled"
-    return "completed"
+    if status == "completed":
+        return "completed"
+    raise ValueError("run status is not terminal")
 
 
 class _ResponseDeltaTrackingEventSink:
@@ -1786,6 +1800,24 @@ class _ResponseDeltaTrackingEventSink:
     def emit(self, event: AgentEvent) -> None:
         if event.type == "response_delta":
             self.response_delta_emitted = True
+        self.inner.emit(event)
+
+
+class _InterruptResponseDeltaBarrier:
+    """Keep provisional text private until a trusted interrupt is resolved."""
+
+    def __init__(self, inner: _ResponseDeltaTrackingEventSink) -> None:
+        self.inner = inner
+        self.deferred_response_deltas: list[AgentEvent] = []
+
+    @property
+    def response_delta_emitted(self) -> bool:
+        return self.inner.response_delta_emitted
+
+    def emit(self, event: AgentEvent) -> None:
+        if event.type == "response_delta":
+            self.deferred_response_deltas.append(event)
+            return
         self.inner.emit(event)
 
 

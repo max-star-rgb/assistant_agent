@@ -791,10 +791,10 @@ def route_after_assistant_turn_state(value: Mapping[str, object]) -> str:
 
     state = validate_assistant_turn_state(value)
     run = cast(Mapping[str, Any], state["run"])
-    if run["status"] in {"failed", "completed", "cancelled"}:
-        return "finish"
     if state.get("pending_interrupt") is not None:
         return "await_input"
+    if run["status"] in {"failed", "completed", "cancelled"}:
+        return "finish"
     output = state.get("assistant_output")
     if isinstance(output, Mapping) and output.get("kind") == "tool_calls":
         return "execute_tool"
