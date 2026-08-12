@@ -706,6 +706,7 @@ def test_graph_metadata_is_hashed_and_never_tags_raw_user_or_session(monkeypatch
                 "thread_id": identity.thread_id,
                 "agent_id": "agent-sentinel",
                 "execution_engine": "assistant_turn_graph",
+                "graph_profile": "standard",
             },
             "tags": ["assistant_turn_graph"],
         }
@@ -717,6 +718,7 @@ def test_graph_metadata_is_hashed_and_never_tags_raw_user_or_session(monkeypatch
         "thread_id": identity.thread_id,
         "agent_id": "agent-sentinel",
         "execution_engine": "assistant_turn_graph",
+        "graph_profile": "standard",
     }
     assert probe.sync_kwargs["config"]["tags"] == ["assistant_turn_graph"]
 
@@ -1049,6 +1051,7 @@ def test_real_graph_callback_inherits_experiment_root_without_duplicate_tree() -
         "thread_id": identity.thread_id,
         "agent_id": "agent-sentinel",
         "execution_engine": "assistant_turn_graph",
+        "graph_profile": "standard",
         "ls_integration": "langgraph",
     }
     assert "assistant_turn_graph" in graph_run["tags"]

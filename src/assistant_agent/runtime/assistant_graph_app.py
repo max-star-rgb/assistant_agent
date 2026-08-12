@@ -8,6 +8,11 @@ from typing import Any, cast
 
 from assistant_agent.runtime.assistant_loop_graph import build_assistant_loop_graph
 from assistant_agent.runtime.assistant_graph_state import AssistantTurnState
+from assistant_agent.runtime.assistant_graph_profiles import (
+    AssistantGraphProfile,
+    AssistantGraphProfileName,
+    assistant_graph_profile,
+)
 from assistant_agent.runtime.graph_runtime import GraphRuntimeContext
 from assistant_agent.observability.langsmith_config import LangSmithConfig
 from assistant_agent.observability.langsmith_native import (
@@ -92,7 +97,12 @@ class AssistantTurnGraphApp:
         checkpointer: Any | None = None,
         langsmith_config: LangSmithConfig | None = None,
     ) -> None:
-        self._graph = build_assistant_loop_graph(checkpointer=checkpointer)
+        self._graph = build_assistant_loop_graph(
+            checkpointer=checkpointer,
+            profile="standard",
+            graph_name="AssistantTurnGraph",
+        )
+        self._profile_graphs: dict[AssistantGraphProfileName, Any] = {}
         self._langsmith_config = langsmith_config or _default_langsmith_config()
 
     @classmethod
@@ -106,6 +116,7 @@ class AssistantTurnGraphApp:
 
         app = cls.__new__(cls)
         app._graph = graph
+        app._profile_graphs = {}
         app._langsmith_config = langsmith_config or _default_langsmith_config()
         return app
 
@@ -114,6 +125,31 @@ class AssistantTurnGraphApp:
         """Return the compiled graph without allowing replacement."""
 
         return self._graph
+
+    def graph_for_profile(
+        self,
+        profile: AssistantGraphProfileName | AssistantGraphProfile,
+    ) -> Any:
+        """Return a reusable child graph that inherits its parent's saver."""
+
+        canonical = assistant_graph_profile(profile)
+        cached = self._profile_graphs.get(canonical.name)
+        if cached is not None:
+            return cached
+        graph = build_assistant_loop_graph(
+            checkpointer=None,
+            profile=canonical.name,
+            graph_name=f"AssistantTurnGraph.{canonical.name}",
+        )
+        graph.config = {
+            "metadata": {"graph_profile": canonical.name},
+            "tags": [
+                "assistant_turn_graph",
+                f"assistant_profile:{canonical.name}",
+            ],
+        }
+        self._profile_graphs[canonical.name] = graph
+        return graph
 
     def invoke(
         self,
@@ -206,6 +242,7 @@ class AssistantTurnGraphApp:
                 "thread_id": identity.thread_id,
                 "agent_id": identity.agent_id,
                 "execution_engine": "assistant_turn_graph",
+                "graph_profile": "standard",
             },
             tags=["assistant_turn_graph"],
         )
@@ -222,6 +259,7 @@ class AssistantTurnGraphApp:
             "thread_id": identity.thread_id,
             "agent_id": identity.agent_id,
             "execution_engine": "assistant_turn_graph",
+            "graph_profile": "standard",
         }
         config["tags"] = ["assistant_turn_graph"]
         existing_callbacks = list(config.get("callbacks") or [])

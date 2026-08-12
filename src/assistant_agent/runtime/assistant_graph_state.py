@@ -16,6 +16,7 @@ from urllib.parse import parse_qsl, urlparse
 from pydantic import AnyUrl, BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 from assistant_agent.multi_agent.models import DEFAULT_AGENT_ID
+from assistant_agent.runtime.assistant_graph_profiles import AssistantGraphProfileName
 from assistant_agent.runtime.citations import UrlCitationAnnotation
 from assistant_agent.runtime.requests import (
     AgentResponse,
@@ -36,9 +37,6 @@ from assistant_agent.tools.capability_output import (
 ASSISTANT_GRAPH_NAME = "AssistantTurnGraph"
 ASSISTANT_GRAPH_VERSION = "2"
 ASSISTANT_STATE_SCHEMA_VERSION = 1
-
-AssistantGraphProfileName = Literal["standard", "planner", "worker", "verifier"]
-
 
 class AssistantStateCompatibilityError(ValueError):
     """Raised when persisted state cannot be safely consumed by this graph."""

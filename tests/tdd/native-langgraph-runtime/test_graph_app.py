@@ -284,6 +284,7 @@ def test_astream_normalizes_v2_events_and_preserves_subgraph_namespace() -> None
                 "thread_id": _identity().thread_id,
                 "agent_id": "agent-sentinel",
                 "execution_engine": "assistant_turn_graph",
+                "graph_profile": "standard",
             },
             "tags": ["assistant_turn_graph"],
             "callbacks": [],
