@@ -149,6 +149,8 @@ For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
   [`evals/README.md`](../evals/README.md#日常失败到-runtime-regression)。
 - `scripts/run_langsmith_runtime_regressions.py`：并行 LangSmith Runtime Regression 入口。案例只读取
   LangSmith UI 中同名固定 Dataset，不与 Langfuse 自动同步；`--inspect` 只校验 active Example object，
+  `--configure-evaluators --model-config-id <uuid>` 默认只规划三个 Dataset evaluator，显式 `--apply` 才会
+  创建或更新远端规则且不会运行 Judge；
   `--preflight` 校验真实 Provider 与 LangSmith exporter，`--run` 通过生产 `AgentGraphRuntime` 创建原生
   LangSmith Experiment，并等待 Runtime/LLM 子树和三项 Feedback 完整。preflight/run 都要求
   `--allow-real-provider` 与 `--allow-runtime-side-effects`。流程与 schema 见

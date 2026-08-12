@@ -18,17 +18,13 @@ from assistant_agent.evaluation.langsmith_trace import (
     current_langsmith_experiment_binding,
 )
 from assistant_agent.evaluation.runtime_regression_contract import (
-    assistant_output,
     request_text,
     validate_failure_baseline,
 )
 from assistant_agent.runtime.requests import UserRequest
-
-
-REQUIRED_LANGSMITH_FEEDBACK_KEYS = (
-    "assistant_agent.quality.response_quality.experiment",
-    "assistant_agent.quality.grounding.experiment",
-    "assistant_agent.quality.regression_improvement.experiment",
+from evals.langsmith_runtime_regression.evaluators import (
+    REQUIRED_LANGSMITH_FEEDBACK_KEYS,
+    langsmith_evaluator_output,
 )
 
 
@@ -143,7 +139,8 @@ def run_langsmith_runtime_regression_experiment(
                     },
                 )
             )
-            return assistant_output(state)
+            events = runtime.trace_store.list_by_run(state.run_id)
+            return langsmith_evaluator_output(state, events)
         finally:
             if runtime.close() is False:
                 raise RuntimeError(
