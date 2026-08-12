@@ -144,6 +144,16 @@ class WorkflowProductSnapshot(_StrictProductModel):
         progress = self.progress
         if progress.phase != handle.phase:
             raise ValueError("product progress phase does not match workflow handle")
+        terminal_pairs = {
+            "completed": "completed",
+            "failed": "failed",
+            "cancelled": "cancelled",
+        }
+        if handle.status in terminal_pairs:
+            if handle.phase != terminal_pairs[handle.status]:
+                raise ValueError("terminal workflow status and phase are inconsistent")
+        elif handle.phase in set(terminal_pairs.values()):
+            raise ValueError("non-terminal workflow cannot use a terminal phase")
         for action in self.waiting_actions:
             match = _ACTION_REF_PATTERN.fullmatch(action.action_ref)
             if match is None or match.group("workflow_id") != handle.workflow_id:
@@ -284,18 +294,16 @@ def _handle(state: DurableWorkflowState) -> WorkflowHandle:
 def _progress(state: DurableWorkflowState) -> WorkflowProductProgress:
     plan = state["admitted_plan"]
     if plan is None:
-        return WorkflowProductProgress(
-            state="planning",
-            phase=state["phase"],
-            completed_items=0,
-            total_items=0,
-            active_items=(),
+        nodes = {}
+        results = {}
+    else:
+        checked_plan = PersistedAdmittedWorkflowPlan.model_validate_json(
+            json.dumps(plan)
         )
-    checked_plan = PersistedAdmittedWorkflowPlan.model_validate_json(json.dumps(plan))
-    nodes = {node.node_id: node for node in checked_plan.nodes}
-    results = latest_results(
-        state["result_ledger"], state["execution_generation_by_node"]
-    )
+        nodes = {node.node_id: node for node in checked_plan.nodes}
+        results = latest_results(
+            state["result_ledger"], state["execution_generation_by_node"]
+        )
     completed = sum(result.status == "succeeded" for result in results.values())
     active: list[WorkflowActiveItem] = []
     for raw_assignment in state["active_wave"]:
@@ -327,6 +335,8 @@ def _progress(state: DurableWorkflowState) -> WorkflowProductProgress:
         if state["status"] == "waiting_input"
         else "failed"
         if state["status"] in {"failed", "cancelled", "blocked"}
+        else "planning"
+        if state["phase"] == "planning"
         else "working"
     )
     return WorkflowProductProgress(

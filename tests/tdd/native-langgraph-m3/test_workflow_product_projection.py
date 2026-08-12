@@ -211,6 +211,24 @@ def test_product_custom_fact_enforces_refs_actions_consistency_and_digest(
             result_artifact_refs=("file:///home/user/report.txt",),
         )
 
+    with pytest.raises(ValidationError):
+        WorkflowProductSnapshot(
+            handle=WorkflowHandle(
+                workflow_id="wf-send",
+                workflow_type="deep_research",
+                status="completed",
+                phase="failed",
+                output_ref="workflow://wf-send",
+            ),
+            progress={
+                "state": "working",
+                "phase": "failed",
+                "completed_items": 0,
+                "total_items": 1,
+                "active_items": (),
+            },
+        )
+
     projector = WorkflowGraphProjector()
     assert projector.project_stream_part(
         WorkflowGraphStreamPart(
@@ -245,3 +263,22 @@ def test_product_custom_fact_enforces_refs_actions_consistency_and_digest(
                 "raw_body": {"provider_response": "secret"},
             }
         )
+
+
+def test_pre_admission_failure_projects_safe_failed_terminal(tmp_path) -> None:
+    _graph, _context, initial, _worker, artifact_store = workflow_probe(
+        tmp_path, {"collect": []}
+    )
+    failed = dict(initial)
+    failed.update(status="failed", phase="failed")
+    try:
+        projector = WorkflowGraphProjector()
+        snapshot = projector.project_snapshot(failed)
+        event = projector.project_event(failed)
+
+        assert snapshot.progress.state == "failed"
+        assert snapshot.progress.total_items == 0
+        assert snapshot.terminal_reason_code == "workflow_failed"
+        assert event.event_type == "failed"
+    finally:
+        artifact_store.close()
