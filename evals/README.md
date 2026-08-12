@@ -136,13 +136,29 @@ Experiment、Score 或 Feedback；operator 在哪个 UI 沉淀案例，就用对
 禁止把 input 或 reference output 预序列化成 JSON 字符串。`truncated=true`、空 content、错误 role、
 非对象 reference output 或没有 active Example 都会在 inspect/preflight 阶段 fail-closed。
 
-在 Dataset 中绑定三个 UI evaluator，Feedback key 固定为：
+在 Dataset 中绑定三个 evaluator，Feedback key 固定为：
 
 - `assistant_agent.quality.response_quality.experiment`；
 - `assistant_agent.quality.grounding.experiment`；
 - `assistant_agent.quality.regression_improvement.experiment`。
 
-代码桥使用 `Client.evaluate()` 读取 UI Dataset并复用同一个 `AgentGraphRuntime`。runner 会先显式创建
+三个 evaluator 可以在 UI 手工配置，也可以通过受控 CLI 幂等配置。自动配置要求先在 LangSmith UI
+创建 Model Configuration，并把其 UUID 作为 `--model-config-id` 传入；默认只输出 create/update 计划，
+只有显式 `--apply` 才会写入远端。配置动作不会运行 Dataset、Runtime 或 Judge：
+
+```bash
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python \
+  scripts/run_langsmith_runtime_regressions.py --configure-evaluators \
+  --model-config-id <model-configuration-uuid>
+
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python \
+  scripts/run_langsmith_runtime_regressions.py --configure-evaluators \
+  --model-config-id <model-configuration-uuid> --apply
+```
+
+grounding evaluator 使用 Experiment actual output 中受限、脱敏的 `evaluation_evidence`；常规回答字段仍保持
+`role/content/chars/truncated/terminal_status`。代码桥使用 `Client.evaluate()` 读取 UI Dataset 并复用同一个
+`AgentGraphRuntime`。runner 会先显式创建
 Experiment project，再把 project UUID/name 和当前 LangSmith RunTree identity 注入每个 target；不能依赖
 SDK 执行期间可能为空的 `RunTree.session_id`。Experiment 必须出现对象
 input/reference output/actual output，以及 task → `agent.runtime` → `llm.chat`；每个 active Example 必须

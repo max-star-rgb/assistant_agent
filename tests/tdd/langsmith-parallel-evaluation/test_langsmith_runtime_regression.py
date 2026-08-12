@@ -66,7 +66,7 @@ def _binding() -> LangSmithExperimentBinding:
 
 
 class _Runtime:
-    trace_store = None
+    trace_store = SimpleNamespace(list_by_run=lambda _: [])
 
     def __init__(self) -> None:
         self.requests = []

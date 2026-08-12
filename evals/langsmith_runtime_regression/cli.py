@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 import subprocess
 from typing import Sequence
@@ -33,6 +34,7 @@ from .experiment import (
     run_langsmith_runtime_regression_experiment,
     wait_for_langsmith_runtime_regression_completeness,
 )
+from .evaluators import configure_runtime_regression_evaluators
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -46,6 +48,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     action.add_argument("--inspect", action="store_true")
     action.add_argument("--preflight", action="store_true")
     action.add_argument("--run", action="store_true")
+    action.add_argument("--configure-evaluators", action="store_true")
+    parser.add_argument("--model-config-id")
+    parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="Write evaluator configuration; otherwise only show the plan.",
+    )
     parser.add_argument("--run-name")
     parser.add_argument("--max-concurrency", type=int, default=1)
     parser.add_argument(
@@ -93,6 +102,32 @@ def _execute(client, parser: argparse.ArgumentParser, args: argparse.Namespace) 
             "dataset_name": RUNTIME_REGRESSION_DATASET,
             "active_example_count": len(active),
         }
+    if args.configure_evaluators:
+        model_config_id = args.model_config_id or os.getenv(
+            "LANGSMITH_EVALUATOR_MODEL_CONFIG_ID"
+        )
+        if not model_config_id:
+            parser.error(
+                "--configure-evaluators requires --model-config-id or "
+                "LANGSMITH_EVALUATOR_MODEL_CONFIG_ID"
+            )
+        result = configure_runtime_regression_evaluators(
+            client,
+            model_config_id=model_config_id,
+            apply=args.apply,
+        )
+        return {
+            "action": "configure_evaluators",
+            "backend": "langsmith",
+            "dataset_name": RUNTIME_REGRESSION_DATASET,
+            "dataset_id": result.dataset_id,
+            "status": result.status,
+            "rule_id": result.rule_id,
+            "feedback_keys": list(result.feedback_keys),
+            "apply": args.apply,
+        }
+    if args.apply:
+        parser.error("--apply is only valid with --configure-evaluators")
     action_name = "preflight" if args.preflight else "run"
     if not args.allow_real_provider:
         parser.error(f"--{action_name} requires --allow-real-provider")
