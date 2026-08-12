@@ -27,6 +27,9 @@ class _NamedGraph:
 
 
 def test_retry_classifier_excludes_business_and_permission_failures():
+    class UnclassifiedRetryableError(Exception):
+        retryable = True
+
     assert is_transient_workflow_node_error(OSError("temporary"))
     assert is_transient_workflow_node_error(
         NodeTimeoutError("run_worker", 0.01, kind="run", run_timeout=0.01)
@@ -42,6 +45,7 @@ def test_retry_classifier_excludes_business_and_permission_failures():
     assert not is_transient_workflow_node_error(
         ProviderAdapterError("provider_permission_denied", "denied")
     )
+    assert not is_transient_workflow_node_error(UnclassifiedRetryableError())
 
 
 def test_compiled_worker_and_verifier_nodes_use_native_policies_and_handlers():

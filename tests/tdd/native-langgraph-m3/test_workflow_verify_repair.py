@@ -157,6 +157,12 @@ def test_empty_and_exhausted_repair_requests_fail_closed():
     assert exhausted.goto == "fail"
     assert exhausted.update["errors"][0].code == "repair_budget_exhausted"
 
+    state = _state(_result("verify", status="repair", repair_node_ids=("a",)))
+    state["budget"]["model_calls_remaining"] = 0
+    exhausted = decide_verification_node(state)
+    assert exhausted.goto == "fail"
+    assert exhausted.update["errors"][0].code == "repair_budget_exhausted"
+
 
 def test_verified_result_routes_to_publish_with_only_current_deliverable_refs():
     command = decide_verification_node(_state(_result("verify")))

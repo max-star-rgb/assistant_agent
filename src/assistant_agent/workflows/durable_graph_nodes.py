@@ -746,6 +746,7 @@ def decide_verification_node(
         generations = dict(state["execution_generation_by_node"])
         if (
             int(state["repair_round"]) >= MAX_WORKFLOW_REPAIR_ROUNDS
+            or len(closure) > budget.model_calls_remaining
             or len(closure) > budget.workflow_quanta_remaining
             or any(generations[node_id] >= 64 for node_id in closure)
         ):
@@ -803,9 +804,7 @@ def is_transient_workflow_node_error(error: BaseException) -> bool:
         ),
     ):
         return False
-    return isinstance(error, (OSError, NodeTimeoutError)) or bool(
-        getattr(error, "retryable", False)
-    )
+    return isinstance(error, (OSError, NodeTimeoutError))
 
 
 def workflow_node_error_handler(
