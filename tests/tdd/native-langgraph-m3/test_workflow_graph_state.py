@@ -111,19 +111,21 @@ def _record(*, execution_engine: str | None = "langgraph_v3") -> WorkflowRecord:
 
 def _acceptance() -> PersistedWorkflowStepAcceptanceContract:
     return PersistedWorkflowStepAcceptanceContract.model_validate_json(
-        json.dumps({
-            "schema_version": "workflow_step_acceptance_v2",
-            "output": {
-                "artifact_type": "research_report",
-                "description": "A bounded evidence report",
-            },
-            "criteria": [
-                {
-                    "criterion_id": "evidence",
-                    "statement": "Every claim has evidence",
-                }
-            ],
-        })
+        json.dumps(
+            {
+                "schema_version": "workflow_step_acceptance_v2",
+                "output": {
+                    "artifact_type": "research_report",
+                    "description": "A bounded evidence report",
+                },
+                "criteria": [
+                    {
+                        "criterion_id": "evidence",
+                        "statement": "Every claim has evidence",
+                    }
+                ],
+            }
+        )
     )
 
 
@@ -167,7 +169,7 @@ def _result(node_id: str, generation: int, summary: str) -> WorkflowBranchResult
 def _canonical_ledger(value: object) -> str:
     return json.dumps(
         {
-            key: slot.model_dump(mode="json")
+            key: (slot.model_dump(mode="json") if hasattr(slot, "model_dump") else slot)
             for key, slot in sorted(value.items())
         },
         ensure_ascii=True,
@@ -297,8 +299,9 @@ def test_result_ledger_reducer_is_associative_commutative_and_idempotent() -> No
             execution_generation=0,
             variant_digests=tuple(
                 sorted(
-                    left_grouped[next(key for key in left_grouped if key.startswith("a"))]
-                    .variants_by_digest
+                    left_grouped[
+                        next(key for key in left_grouped if key.startswith("a"))
+                    ]["variants_by_digest"]
                 )
             ),
         ),
@@ -409,8 +412,14 @@ def test_claim_scope_requires_explicit_engine_and_workflow_type_allowlists(
     )
     signature = inspect.signature(store.claim_ready_work_item)
 
-    assert signature.parameters["allowed_execution_engines"].default is inspect.Parameter.empty
-    assert signature.parameters["allowed_workflow_types"].default is inspect.Parameter.empty
+    assert (
+        signature.parameters["allowed_execution_engines"].default
+        is inspect.Parameter.empty
+    )
+    assert (
+        signature.parameters["allowed_workflow_types"].default
+        is inspect.Parameter.empty
+    )
     common = {
         "worker_id": "worker-1",
         "now": datetime.now(timezone.utc),
@@ -547,13 +556,18 @@ def test_branch_factory_builds_independent_agent_state_executor_and_counters(
     assert first is not second
     assert first.agent_state is not second.agent_state
     assert first.tool_executor is not second.tool_executor
-    assert first.tool_executor.context_metadata is not second.tool_executor.context_metadata
+    assert (
+        first.tool_executor.context_metadata
+        is not second.tool_executor.context_metadata
+    )
     assert first.agent_state is not None and second.agent_state is not None
     first.agent_state.errors.append(AgentError(message="branch-only-error"))
     assert second.agent_state.errors == []
 
 
-def test_branch_budget_slice_caps_child_even_with_nonempty_tool_catalog(tmp_path) -> None:
+def test_branch_budget_slice_caps_child_even_with_nonempty_tool_catalog(
+    tmp_path,
+) -> None:
     registry = _probe_registry()
     assignment = _assignment(
         registry_generation=registry.generation or "",

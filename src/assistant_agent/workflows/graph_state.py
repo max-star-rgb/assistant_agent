@@ -92,8 +92,13 @@ class PersistedDeepResearchInputs(_CheckpointModel):
 
     @model_validator(mode="after")
     def validate_questions(self) -> "PersistedDeepResearchInputs":
-        if any(not question.strip() or len(question) > 4_000 for question in self.research_questions):
-            raise ValueError("research_questions must contain bounded non-empty strings")
+        if any(
+            not question.strip() or len(question) > 4_000
+            for question in self.research_questions
+        ):
+            raise ValueError(
+                "research_questions must contain bounded non-empty strings"
+            )
         if len(self.research_questions) != len(set(self.research_questions)):
             raise ValueError("research_questions must be unique")
         return self
@@ -136,6 +141,7 @@ class PersistedWorkflowIdentity(_CheckpointModel):
     agent_id: str = Field(min_length=1, max_length=512)
     workflow_thread_id: str = Field(min_length=1, max_length=512)
     turn_origin_id: str = Field(min_length=1, max_length=512)
+
 
 class PersistedWorkflowAcceptanceCriterion(_CheckpointModel):
     criterion_id: str = Field(pattern=_NODE_ID_PATTERN)
@@ -225,11 +231,15 @@ class PersistedAdmittedWorkflowPlan(_CheckpointModel):
             raise ValueError("admitted plan contains self dependency")
         if any(
             not set(item.owner_node_ids).issubset(known)
-            or (item.verifier_node_id is not None and item.verifier_node_id not in known)
+            or (
+                item.verifier_node_id is not None and item.verifier_node_id not in known
+            )
             for item in self.constraint_bindings
         ):
             raise ValueError("admitted constraint binding references unknown node")
-        if any(item.producer_node_id not in known for item in self.deliverable_bindings):
+        if any(
+            item.producer_node_id not in known for item in self.deliverable_bindings
+        ):
             raise ValueError("admitted deliverable binding references unknown node")
         return self
 
@@ -293,12 +303,19 @@ class WorkflowWorkerControl(_CheckpointModel):
 
     @model_validator(mode="after")
     def validate_outcome_fields(self) -> "WorkflowWorkerControl":
-        has_prompt = bool(self.required_fields and self.prompt_code and self.safe_prompt)
+        has_prompt = bool(
+            self.required_fields and self.prompt_code and self.safe_prompt
+        )
         if self.outcome == "completed" and (
-            self.required_fields or self.prompt_code or self.safe_prompt or self.error_code
+            self.required_fields
+            or self.prompt_code
+            or self.safe_prompt
+            or self.error_code
         ):
             raise ValueError("completed control cannot carry input or error fields")
-        if self.outcome == "blocked" and (not has_prompt or self.error_code is not None):
+        if self.outcome == "blocked" and (
+            not has_prompt or self.error_code is not None
+        ):
             raise ValueError("blocked control requires only complete input fields")
         if self.outcome == "failed" and (
             self.error_code is None
@@ -307,6 +324,20 @@ class WorkflowWorkerControl(_CheckpointModel):
             or self.safe_prompt is not None
         ):
             raise ValueError("failed control requires only error_code")
+        if self.outcome == "blocked" and self.safe_prompt is not None:
+            prompt = self.safe_prompt.casefold()
+            unsafe_fragments = (
+                "/home/",
+                "/root/",
+                "file://",
+                "api_key",
+                "access_token",
+                "password=",
+            )
+            if any(fragment in prompt for fragment in unsafe_fragments):
+                raise ValueError(
+                    "blocked control prompt contains unsafe runtime detail"
+                )
         return self
 
 
@@ -498,7 +529,9 @@ def _result_digest(result: WorkflowBranchResult) -> str:
     return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
 
 
-def _slot_for_results(results: Mapping[str, WorkflowBranchResult]) -> WorkflowResultSlot:
+def _slot_for_results(
+    results: Mapping[str, WorkflowBranchResult],
+) -> WorkflowResultSlot:
     selected = dict(sorted(results.items())[:2])
     first = next(iter(selected.values()))
     digests = tuple(selected)
@@ -519,22 +552,32 @@ def _slot_for_results(results: Mapping[str, WorkflowBranchResult]) -> WorkflowRe
     )
 
 
-def ledger_update(result: WorkflowBranchResult) -> dict[str, WorkflowResultSlot]:
+def ledger_update(result: WorkflowBranchResult) -> dict[str, dict[str, object]]:
     key = WorkflowResultKey(
         node_id=result.node_id,
         execution_generation=result.execution_generation,
     ).encode()
-    return {key: _slot_for_results({_result_digest(result): result})}
+    return {
+        key: _slot_for_results({_result_digest(result): result}).model_dump(mode="json")
+    }
 
 
-def _results_from_ledger(value: Mapping[str, object]) -> dict[str, dict[str, WorkflowBranchResult]]:
+def _results_from_ledger(
+    value: Mapping[str, object],
+) -> dict[str, dict[str, WorkflowBranchResult]]:
     collected: dict[str, dict[str, WorkflowBranchResult]] = {}
     for raw_slot in value.values():
         try:
-            slot = (
-                raw_slot
-                if isinstance(raw_slot, WorkflowResultSlot)
-                else WorkflowResultSlot.model_validate(raw_slot)
+            # Checkpoint codecs may restore the outer registered model while
+            # leaving nested values as plain mappings.  Re-validate the whole
+            # JSON envelope so reducer replay never depends on Python object
+            # identity or codec-specific reconstruction.
+            slot = WorkflowResultSlot.model_validate_json(
+                json.dumps(
+                    raw_slot.model_dump(mode="json", warnings=False)
+                    if isinstance(raw_slot, BaseModel)
+                    else raw_slot
+                )
             )
         except (TypeError, ValueError, ValidationError):
             continue
@@ -550,7 +593,7 @@ def _results_from_ledger(value: Mapping[str, object]) -> dict[str, dict[str, Wor
 def merge_result_ledger(
     left: Mapping[str, object] | None,
     right: Mapping[str, object] | None,
-) -> dict[str, WorkflowResultSlot]:
+) -> dict[str, dict[str, object]]:
     """Bounded top-two union: associative, commutative and replay-idempotent."""
 
     combined = _results_from_ledger(left or {})
@@ -559,7 +602,7 @@ def merge_result_ledger(
         bucket.update(variants)
         combined[key] = dict(sorted(bucket.items())[:2])
     return {
-        key: _slot_for_results(variants)
+        key: _slot_for_results(variants).model_dump(mode="json")
         for key, variants in sorted(combined.items())
         if variants
     }
@@ -570,9 +613,12 @@ def result_conflicts(
 ) -> tuple[WorkflowResultConflict, ...]:
     normalized = merge_result_ledger({}, ledger)
     return tuple(
-        slot.conflict
+        validated.conflict
         for _, slot in sorted(normalized.items())
-        if slot.conflict is not None
+        if (
+            validated := WorkflowResultSlot.model_validate_json(json.dumps(slot))
+        ).conflict
+        is not None
     )
 
 
@@ -596,7 +642,8 @@ def latest_results(
         ).encode()
         slot = normalized.get(key)
         if slot is not None:
-            result[node_id] = next(iter(slot.variants_by_digest.values()))
+            validated = WorkflowResultSlot.model_validate_json(json.dumps(slot))
+            result[node_id] = next(iter(validated.variants_by_digest.values()))
     return result
 
 
@@ -624,9 +671,7 @@ def merge_resume_values(
             digest = hashlib.sha256(value.model_dump_json().encode()).hexdigest()
             candidates.setdefault(key, {})[digest] = value
     return {
-        key: values[min(values)]
-        for key, values in sorted(candidates.items())
-        if values
+        key: values[min(values)] for key, values in sorted(candidates.items()) if values
     }
 
 
@@ -639,7 +684,11 @@ def merge_sorted_unique_refs(
 
 def _graph_error(value: object) -> WorkflowGraphError | None:
     try:
-        return value if isinstance(value, WorkflowGraphError) else WorkflowGraphError.model_validate(value)
+        return (
+            value
+            if isinstance(value, WorkflowGraphError)
+            else WorkflowGraphError.model_validate(value)
+        )
     except (TypeError, ValueError, ValidationError):
         return None
 
@@ -655,9 +704,7 @@ def merge_graph_errors(
             continue
         digest = hashlib.sha256(error.model_dump_json().encode()).hexdigest()
         values[digest] = error
-    return tuple(
-        values[key].model_dump(mode="json") for key in sorted(values)
-    )[:256]
+    return tuple(values[key].model_dump(mode="json") for key in sorted(values))[:256]
 
 
 class DurableWorkflowState(TypedDict):
@@ -679,6 +726,7 @@ class DurableWorkflowState(TypedDict):
     phase: WorkflowPhase
     execution_generation_by_node: dict[str, int]
     active_wave: tuple[WorkflowProfileAssignment, ...]
+    wave_history: tuple[tuple[str, ...], ...]
     result_ledger: Annotated[dict[str, WorkflowResultSlot], merge_result_ledger]
     resume_values_by_action_ref: Annotated[
         dict[str, PersistedWorkflowResumeValue], merge_resume_values
@@ -708,8 +756,13 @@ class _DurableWorkflowStateModel(_CheckpointModel):
     status: WorkflowGraphStatus
     phase: WorkflowPhase
     execution_generation_by_node: dict[str, int] = Field(max_length=256)
-    active_wave: tuple[WorkflowProfileAssignment, ...] = Field(default=(), max_length=256)
-    result_ledger: dict[str, WorkflowResultSlot] = Field(default_factory=dict, max_length=16_640)
+    active_wave: tuple[WorkflowProfileAssignment, ...] = Field(
+        default=(), max_length=256
+    )
+    wave_history: tuple[tuple[str, ...], ...] = Field(default=(), max_length=256)
+    result_ledger: dict[str, WorkflowResultSlot] = Field(
+        default_factory=dict, max_length=16_640
+    )
     resume_values_by_action_ref: dict[str, PersistedWorkflowResumeValue] = Field(
         default_factory=dict,
         max_length=1_000,
@@ -739,12 +792,23 @@ class _DurableWorkflowStateModel(_CheckpointModel):
                 raise ValueError("invalid execution generation entry")
         for ref in self.result_artifact_refs:
             _validate_artifact_ref(ref)
+        for wave in self.wave_history:
+            if not wave or len(wave) > 256 or tuple(sorted(set(wave))) != wave:
+                raise ValueError("wave history entries must be sorted unique node ids")
+            if any(not re.fullmatch(_NODE_ID_PATTERN, node_id) for node_id in wave):
+                raise ValueError("wave history contains invalid node id")
         normalized = merge_result_ledger({}, self.result_ledger)
         if normalized != self.result_ledger:
             raise ValueError("result ledger is not canonical")
-        if merge_resume_values({}, self.resume_values_by_action_ref) != self.resume_values_by_action_ref:
+        if (
+            merge_resume_values({}, self.resume_values_by_action_ref)
+            != self.resume_values_by_action_ref
+        ):
             raise ValueError("resume ledger is not canonical")
-        if merge_sorted_unique_refs((), self.consumed_action_refs) != self.consumed_action_refs:
+        if (
+            merge_sorted_unique_refs((), self.consumed_action_refs)
+            != self.consumed_action_refs
+        ):
             raise ValueError("consumed action refs are not canonical")
         if merge_graph_errors((), self.errors) != tuple(
             item.model_dump(mode="json") for item in self.errors
@@ -852,9 +916,14 @@ def initial_workflow_graph_state(
         raise ValueError(
             f"graph app rejects workflow engine {workflow.execution_engine}"
         )
-    if workflow.workflow_type != "deep_research" or submission.workflow_type != "deep_research":
+    if (
+        workflow.workflow_type != "deep_research"
+        or submission.workflow_type != "deep_research"
+    ):
         raise ValueError("DurableWorkflowGraph only accepts deep_research")
-    if workflow.workflow_id != (admitted_plan.workflow_id if admitted_plan else workflow.workflow_id):
+    if workflow.workflow_id != (
+        admitted_plan.workflow_id if admitted_plan else workflow.workflow_id
+    ):
         raise ValueError("admitted plan references another workflow")
     persisted_plan = (
         persist_admitted_workflow_plan(admitted_plan)
@@ -891,6 +960,7 @@ def initial_workflow_graph_state(
             else {}
         ),
         active_wave=(),
+        wave_history=(),
         result_ledger={},
         resume_values_by_action_ref={},
         consumed_action_refs=(),
