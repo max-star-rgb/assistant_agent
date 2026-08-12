@@ -337,6 +337,8 @@ def test_tool_projection_is_bounded_and_removes_secret_media_and_raw_payload() -
                 "unknown_semantic": "private-natural-language-body",
                 "raw_provider_payload": "raw-payload-secret",
                 "bytes": b"media-bytes-secret",
+                "https://media.example/object?signature=key-secret": "value-one",
+                "signature=signed-key-secret": "value-two",
             },
             output_ref="artifact://safe-ref",
             raw_data_ref="/private/raw.json",
@@ -351,7 +353,7 @@ def test_tool_projection_is_bounded_and_removes_secret_media_and_raw_payload() -
     assert safe_output == {
         "tool_name": "probe_tool",
         "success": True,
-        "data_field_names": ["answer", "bytes", "raw_provider_payload", "unknown_semantic"],
+        "data_field_count": 6,
         "output_ref_present": True,
         "error_code": None,
     }
@@ -364,6 +366,8 @@ def test_tool_projection_is_bounded_and_removes_secret_media_and_raw_payload() -
         "media-bytes-secret",
         "/private/raw.json",
         "artifact://safe-ref",
+        "key-secret",
+        "signed-key-secret",
     ):
         assert forbidden not in serialized
 
@@ -393,7 +397,7 @@ def test_tool_output_projection_never_exports_reference_values() -> None:
         {
             "tool_name": "probe_tool",
             "success": True,
-            "data_field_names": [],
+            "data_field_count": 0,
             "output_ref_present": True,
             "error_code": None,
         }
@@ -411,6 +415,10 @@ def test_tool_role_messages_parse_json_safely_without_hiding_plain_assistant_tex
         '{"answer":"safe-answer","query":"private-query",'
         '"output_ref":"https://media.example/object?signature=signed-secret",'
         '"media":"data:image/png;base64,media-secret",'
+        '"message":"C:\\\\Users\\\\private\\\\media.jpg",'
+        '"summary":"relative/media/result.jpg",'
+        '"unknown_text":"unknown-private-text",'
+        '"count":3,'
         '"nested":{"signature":"nested-secret","count":2}}'
     )
     invalid_tool_content = "https://media.example/raw?token=invalid-secret"
@@ -420,7 +428,14 @@ def test_tool_role_messages_parse_json_safely_without_hiding_plain_assistant_tex
         user_query="query-sentinel",
         messages=[
             {"role": "assistant", "content": "normal-assistant-text"},
-            {"role": "tool", "tool_call_id": "call-one", "content": unsafe_json},
+            {
+                "role": "tool",
+                "tool_call_id": "call-one",
+                "name": "probe_tool",
+                "output_ref": "https://media.example/top?signature=top-secret",
+                "unknown_field": "unknown-top-private",
+                "content": unsafe_json,
+            },
             {
                 "role": "tool",
                 "tool_call_id": "call-two",
@@ -440,8 +455,10 @@ def test_tool_role_messages_parse_json_safely_without_hiding_plain_assistant_tex
         {
             "role": "tool",
             "tool_call_id": "call-one",
+            "name": "probe_tool",
             "content": {
                 "answer": "safe-answer",
+                "count": 3,
                 "nested": {"count": 2},
             },
         },
@@ -462,6 +479,11 @@ def test_tool_role_messages_parse_json_safely_without_hiding_plain_assistant_tex
         "media-secret",
         "nested-secret",
         "invalid-secret",
+        "C:\\Users",
+        "relative/media",
+        "unknown-private-text",
+        "top-secret",
+        "unknown-top-private",
     ):
         assert forbidden not in serialized
 

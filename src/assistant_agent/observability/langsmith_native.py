@@ -50,17 +50,27 @@ _FORBIDDEN_KEY_PARTS = (
     "media",
     "path",
 )
-_FORBIDDEN_TOOL_MESSAGE_KEY_PARTS = _FORBIDDEN_KEY_PARTS + (
-    "query",
-    "url",
-    "uri",
-    "href",
-    "reference",
-    "output_ref",
-    "input_ref",
-    "signature",
-    "signed",
-    "token",
+_TOOL_MESSAGE_TOP_LEVEL_FIELDS = ("tool_call_id", "name")
+_TOOL_MESSAGE_TEXT_FIELDS = frozenset(
+    {
+        "answer",
+        "status",
+        "code",
+        "message",
+        "summary",
+        "name",
+        "value",
+        "title",
+        "kind",
+        "type",
+    }
+)
+_TOOL_MESSAGE_NUMBER_FIELDS = frozenset(
+    {"count", "total", "returned_count", "index", "score", "confidence", "latency_ms"}
+)
+_TOOL_MESSAGE_BOOL_FIELDS = frozenset({"success", "redacted", "truncated"})
+_TOOL_MESSAGE_CONTAINER_FIELDS = frozenset(
+    {"nested", "data", "result", "metadata", "items"}
 )
 _NATIVE_TRACE_ACTIVE: ContextVar[bool] = ContextVar(
     "assistant_agent_native_langsmith_active",
@@ -215,11 +225,7 @@ def project_tool_output(result: Any) -> dict[str, Any]:
     return {
         "tool_name": _bounded_text(str(getattr(result, "tool_name", "unknown"))),
         "success": bool(getattr(result, "success", False)),
-        "data_field_names": (
-            sorted(_bounded_text(str(key)) for key in data)[:_MAX_ITEMS]
-            if isinstance(data, dict)
-            else []
-        ),
+        "data_field_count": len(data) if isinstance(data, dict) else 0,
         "output_ref_present": bool(
             isinstance(output_ref, str) and output_ref.strip()
         ),
@@ -330,10 +336,12 @@ def _project_messages(messages: Any) -> list[dict[str, Any]]:
 
 
 def _project_tool_message(message: dict[str, Any]) -> dict[str, Any]:
-    safe = _safe_value(
-        {key: value for key, value in message.items() if key != "content"}
-    )
-    projected = safe if isinstance(safe, dict) else {"role": "tool"}
+    projected: dict[str, Any] = {"role": "tool"}
+    for field_name in _TOOL_MESSAGE_TOP_LEVEL_FIELDS:
+        value = message.get(field_name)
+        safe_label = _safe_machine_label(value)
+        if safe_label is not None:
+            projected[field_name] = safe_label
     content = message.get("content")
     if isinstance(content, str):
         if len(content) > _MAX_TEXT_CHARS:
@@ -359,42 +367,57 @@ def _safe_tool_message_value(
     depth: int = 0,
     key: str | None = None,
 ) -> Any:
-    if depth > _MAX_DEPTH or _forbidden_tool_message_key(key):
+    if depth > _MAX_DEPTH:
         return _DROP
-    if value is None or isinstance(value, (bool, int, float)):
-        return value
-    if isinstance(value, (bytes, bytearray, memoryview)):
-        return _DROP
-    if isinstance(value, str):
-        lowered = value.strip().lower()
-        if (
-            "://" in lowered
-            or lowered.startswith(("data:", "/"))
-            or "base64," in lowered
-            or "?" in lowered
-        ):
-            return _DROP
-        return _bounded_text(value)
     if isinstance(value, dict):
         projected: dict[str, Any] = {}
         for raw_key, item in list(value.items())[:_MAX_ITEMS]:
             item_key = str(raw_key)
-            safe = _safe_tool_message_value(
-                item,
-                depth=depth + 1,
-                key=item_key,
-            )
+            safe = _safe_tool_message_field(item_key, item, depth=depth + 1)
             if safe is not _DROP:
                 projected[item_key] = safe
         return projected
-    if isinstance(value, (list, tuple)):
+    if isinstance(value, (list, tuple)) and key in _TOOL_MESSAGE_CONTAINER_FIELDS:
         projected_items = []
         for item in list(value)[:_MAX_ITEMS]:
-            safe = _safe_tool_message_value(item, depth=depth + 1)
+            safe = _safe_tool_message_value(item, depth=depth + 1, key="items")
             if safe is not _DROP:
                 projected_items.append(safe)
         return projected_items
     return _DROP
+
+
+def _safe_tool_message_field(key: str, value: Any, *, depth: int) -> Any:
+    if key in _TOOL_MESSAGE_TEXT_FIELDS and isinstance(value, str):
+        return _safe_tool_message_text(value)
+    if (
+        key in _TOOL_MESSAGE_NUMBER_FIELDS
+        and isinstance(value, (int, float))
+        and not isinstance(value, bool)
+    ):
+        return value
+    if key in _TOOL_MESSAGE_BOOL_FIELDS and isinstance(value, bool):
+        return value
+    if key in _TOOL_MESSAGE_CONTAINER_FIELDS and isinstance(
+        value, (dict, list, tuple)
+    ):
+        return _safe_tool_message_value(value, depth=depth, key=key)
+    return _DROP
+
+
+def _safe_tool_message_text(value: str) -> Any:
+    reserved = (":", "/", "\\", "?", "=", "&", "%")
+    if not value or any(character in value for character in reserved):
+        return _DROP
+    return _bounded_text(value)
+
+
+def _safe_machine_label(value: Any) -> str | None:
+    if not isinstance(value, str) or not value or len(value) > 256:
+        return None
+    if not all(character.isalnum() or character in "._-" for character in value):
+        return None
+    return value
 
 
 def _tool_content_summary(value: Any) -> dict[str, Any]:
@@ -445,13 +468,6 @@ def _forbidden_key(key: str | None) -> bool:
         return False
     normalized = key.strip().lower().replace("-", "_")
     return any(part in normalized for part in _FORBIDDEN_KEY_PARTS)
-
-
-def _forbidden_tool_message_key(key: str | None) -> bool:
-    if key is None:
-        return False
-    normalized = key.strip().lower().replace("-", "_")
-    return any(part in normalized for part in _FORBIDDEN_TOOL_MESSAGE_KEY_PARTS)
 
 
 def _bounded_text(value: str) -> str:
