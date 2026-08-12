@@ -147,6 +147,42 @@ def test_disabled_or_broken_daily_tracing_is_fail_open(monkeypatch) -> None:
     assert client_calls == []
 
 
+def test_current_parent_lookup_failure_does_not_create_a_competing_root(
+    monkeypatch,
+) -> None:
+    """Treating an unknown parent as absent must not create or activate a new tree."""
+
+    native = _native()
+    client = _ClientProbe()
+    calls: list[str] = []
+
+    def fail_lookup() -> Any:
+        raise RuntimeError("lookup-sentinel")
+
+    monkeypatch.setattr(native, "get_current_run_tree", fail_lookup)
+    monkeypatch.setattr(
+        native,
+        "create_langsmith_client",
+        lambda config: calls.append("client") or client,
+    )
+    monkeypatch.setattr(
+        native,
+        "tracing_context",
+        lambda **kwargs: calls.append("context") or nullcontext(),
+    )
+
+    entered: list[bool] = []
+    with native.native_langsmith_tracing(
+        _enabled_config(), metadata={"run_id": "run-sentinel"}, tags=[]
+    ):
+        entered.append(native.native_tracing_active())
+
+    assert entered == [False]
+    assert calls == []
+    assert client.flush_timeouts == []
+    assert client.close_timeouts == []
+
+
 def test_context_setup_and_teardown_fail_open_and_close_owned_client(monkeypatch) -> None:
     """A context manager failure must not leak its client or replace business output."""
 
@@ -316,7 +352,7 @@ def test_tool_projection_is_bounded_and_removes_secret_media_and_raw_payload() -
         "tool_name": "probe_tool",
         "success": True,
         "data_field_names": ["answer", "bytes", "raw_provider_payload", "unknown_semantic"],
-        "output_ref": "artifact://safe-ref",
+        "output_ref_present": True,
         "error_code": None,
     }
     for forbidden in (
@@ -327,6 +363,105 @@ def test_tool_projection_is_bounded_and_removes_secret_media_and_raw_payload() -
         "private-natural-language-body",
         "media-bytes-secret",
         "/private/raw.json",
+        "artifact://safe-ref",
+    ):
+        assert forbidden not in serialized
+
+
+def test_tool_output_projection_never_exports_reference_values() -> None:
+    """Artifact, signed remote, and private path references must remain business-only."""
+
+    native = _native()
+    references = (
+        "artifact://owner/private-ref",
+        "https://media.example/object?X-Amz-Signature=signed-secret",
+        "/private/media/result.bin",
+    )
+
+    projected = [
+        native.project_tool_output(
+            ToolResult(
+                tool_name="probe_tool",
+                success=True,
+                output_ref=reference,
+            )
+        )
+        for reference in references
+    ]
+
+    assert projected == [
+        {
+            "tool_name": "probe_tool",
+            "success": True,
+            "data_field_names": [],
+            "output_ref_present": True,
+            "error_code": None,
+        }
+    ] * 3
+    serialized = repr(projected)
+    for reference in references:
+        assert reference not in serialized
+
+
+def test_tool_role_messages_parse_json_safely_without_hiding_plain_assistant_text() -> None:
+    """Tool-result JSON must not bypass redaction through ChatRequest message content."""
+
+    native = _native()
+    unsafe_json = (
+        '{"answer":"safe-answer","query":"private-query",'
+        '"output_ref":"https://media.example/object?signature=signed-secret",'
+        '"media":"data:image/png;base64,media-secret",'
+        '"nested":{"signature":"nested-secret","count":2}}'
+    )
+    invalid_tool_content = "https://media.example/raw?token=invalid-secret"
+    request = ChatRequest(
+        user_id="user-sentinel",
+        session_id="session-sentinel",
+        user_query="query-sentinel",
+        messages=[
+            {"role": "assistant", "content": "normal-assistant-text"},
+            {"role": "tool", "tool_call_id": "call-one", "content": unsafe_json},
+            {
+                "role": "tool",
+                "tool_call_id": "call-two",
+                "content": invalid_tool_content,
+            },
+        ],
+    )
+
+    projected = native.project_llm_inputs(
+        request,
+        provider="provider-sentinel",
+        model="model-sentinel",
+    )["messages"]
+
+    assert projected == [
+        {"role": "assistant", "content": "normal-assistant-text"},
+        {
+            "role": "tool",
+            "tool_call_id": "call-one",
+            "content": {
+                "answer": "safe-answer",
+                "nested": {"count": 2},
+            },
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call-two",
+            "content": {
+                "redacted": True,
+                "content_chars": len(invalid_tool_content),
+            },
+        },
+    ]
+    serialized = repr(projected)
+    for forbidden in (
+        "private-query",
+        "https://media.example",
+        "signed-secret",
+        "media-secret",
+        "nested-secret",
+        "invalid-secret",
     ):
         assert forbidden not in serialized
 

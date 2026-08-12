@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
+import json
 import sys
 from typing import Any
 
@@ -49,6 +50,18 @@ _FORBIDDEN_KEY_PARTS = (
     "media",
     "path",
 )
+_FORBIDDEN_TOOL_MESSAGE_KEY_PARTS = _FORBIDDEN_KEY_PARTS + (
+    "query",
+    "url",
+    "uri",
+    "href",
+    "reference",
+    "output_ref",
+    "input_ref",
+    "signature",
+    "signed",
+    "token",
+)
 _NATIVE_TRACE_ACTIVE: ContextVar[bool] = ContextVar(
     "assistant_agent_native_langsmith_active",
     default=False,
@@ -68,12 +81,14 @@ def native_langsmith_tracing(
 ) -> Iterator[None]:
     """Preserve a current LangSmith parent instead of creating a competing root."""
 
-    current_parent = None
     if get_current_run_tree is not None:
         try:
             current_parent = get_current_run_tree()
         except Exception:
-            current_parent = None
+            yield
+            return
+    else:
+        current_parent = None
     if current_parent is not None:
         token = _NATIVE_TRACE_ACTIVE.set(True)
         try:
@@ -205,10 +220,8 @@ def project_tool_output(result: Any) -> dict[str, Any]:
             if isinstance(data, dict)
             else []
         ),
-        "output_ref": (
-            _bounded_text(output_ref)
-            if isinstance(output_ref, str) and "://" in output_ref
-            else None
+        "output_ref_present": bool(
+            isinstance(output_ref, str) and output_ref.strip()
         ),
         "error_code": _tool_error_code(getattr(result, "error", None)),
     }
@@ -306,10 +319,89 @@ def _project_messages(messages: Any) -> list[dict[str, Any]]:
     for message in messages[:_MAX_ITEMS]:
         if not isinstance(message, dict):
             continue
-        safe = _safe_value(message)
+        safe = (
+            _project_tool_message(message)
+            if message.get("role") == "tool"
+            else _safe_value(message)
+        )
         if isinstance(safe, dict):
             projected.append(safe)
     return projected
+
+
+def _project_tool_message(message: dict[str, Any]) -> dict[str, Any]:
+    safe = _safe_value(
+        {key: value for key, value in message.items() if key != "content"}
+    )
+    projected = safe if isinstance(safe, dict) else {"role": "tool"}
+    content = message.get("content")
+    if isinstance(content, str):
+        if len(content) > _MAX_TEXT_CHARS:
+            projected["content"] = _tool_content_summary(content)
+            return projected
+        try:
+            content = json.loads(content)
+        except (TypeError, ValueError, RecursionError):
+            projected["content"] = _tool_content_summary(content)
+            return projected
+    safe_content = _safe_tool_message_value(content)
+    projected["content"] = (
+        safe_content
+        if safe_content is not _DROP
+        else _tool_content_summary(message.get("content"))
+    )
+    return projected
+
+
+def _safe_tool_message_value(
+    value: Any,
+    *,
+    depth: int = 0,
+    key: str | None = None,
+) -> Any:
+    if depth > _MAX_DEPTH or _forbidden_tool_message_key(key):
+        return _DROP
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return _DROP
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if (
+            "://" in lowered
+            or lowered.startswith(("data:", "/"))
+            or "base64," in lowered
+            or "?" in lowered
+        ):
+            return _DROP
+        return _bounded_text(value)
+    if isinstance(value, dict):
+        projected: dict[str, Any] = {}
+        for raw_key, item in list(value.items())[:_MAX_ITEMS]:
+            item_key = str(raw_key)
+            safe = _safe_tool_message_value(
+                item,
+                depth=depth + 1,
+                key=item_key,
+            )
+            if safe is not _DROP:
+                projected[item_key] = safe
+        return projected
+    if isinstance(value, (list, tuple)):
+        projected_items = []
+        for item in list(value)[:_MAX_ITEMS]:
+            safe = _safe_tool_message_value(item, depth=depth + 1)
+            if safe is not _DROP:
+                projected_items.append(safe)
+        return projected_items
+    return _DROP
+
+
+def _tool_content_summary(value: Any) -> dict[str, Any]:
+    return {
+        "redacted": True,
+        "content_chars": len(value) if isinstance(value, str) else 0,
+    }
 
 
 def _safe_value(value: Any, *, depth: int = 0, key: str | None = None) -> Any:
@@ -353,6 +445,13 @@ def _forbidden_key(key: str | None) -> bool:
         return False
     normalized = key.strip().lower().replace("-", "_")
     return any(part in normalized for part in _FORBIDDEN_KEY_PARTS)
+
+
+def _forbidden_tool_message_key(key: str | None) -> bool:
+    if key is None:
+        return False
+    normalized = key.strip().lower().replace("-", "_")
+    return any(part in normalized for part in _FORBIDDEN_TOOL_MESSAGE_KEY_PARTS)
 
 
 def _bounded_text(value: str) -> str:
