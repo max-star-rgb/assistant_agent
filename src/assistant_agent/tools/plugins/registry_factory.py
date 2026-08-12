@@ -9,7 +9,6 @@ from assistant_agent.config import ProviderConfig
 from assistant_agent.mcp.adapter import MCPToolRunner, namespaced_mcp_tool_name
 from assistant_agent.mcp.config import MCPServerConfig
 from assistant_agent.automation.durable_tasks.service import DurableTaskService
-from assistant_agent.workflows.service import WorkflowService
 from assistant_agent.providers.provider_errors import sanitize_error_message
 from assistant_agent.media.video.realtime_video_memory import RealtimeVideoMemoryStore
 from assistant_agent.media.video.video_context import VideoContextStore
@@ -48,7 +47,6 @@ def create_default_registry(
     video_context_store: VideoContextStore | None = None,
     realtime_video_memory_store: RealtimeVideoMemoryStore | None = None,
     durable_task_service: DurableTaskService | None = None,
-    workflow_service: WorkflowService | None = None,
     enable_mcp_tools: bool = False,
     mcp_server_configs: list[MCPServerConfig] | None = None,
     mcp_config_path: str | None = None,
@@ -80,7 +78,6 @@ def create_default_registry(
         video_context_store=video_context_store,
         realtime_video_memory_store=realtime_video_memory_store,
         durable_task_service=durable_task_service,
-        workflow_service=workflow_service,
         calendar_adapter=calendar_adapter,
         embedding_coordinator_store=embedding_coordinator_store,
         visual_semantic_store_pool=visual_semantic_store_pool,

@@ -2,23 +2,23 @@
 
 from __future__ import annotations
 
-import secrets
 import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
 from threading import RLock
 
 from assistant_agent.workflows.models import (
-    ClaimedWorkflowWorkItem,
+    WorkflowDispatch,
     WorkflowBundle,
     WorkflowEvent,
-    WorkflowLease,
+    WorkflowWorkItemLease,
     utc_now,
 )
 from assistant_agent.workflows.store import (
     WorkflowAlreadyExists,
     WorkflowLeaseConflict,
     WorkflowRevisionConflict,
+    _lease_matches,
     assign_event_cursors,
     claim_ready_item_in_bundle,
 )
@@ -181,7 +181,7 @@ class SQLiteWorkflowStore:
         lease_seconds: int,
         model_call_limit: int,
         tool_call_limit: int,
-    ) -> ClaimedWorkflowWorkItem | None:
+    ) -> WorkflowDispatch | None:
         with self._lock:
             try:
                 self._connection.execute("BEGIN IMMEDIATE")
@@ -233,44 +233,48 @@ class SQLiteWorkflowStore:
                         lease = lease.model_copy(
                             update={"workflow_revision": workflow.revision}
                         )
-                        self._connection.commit()
-                        return ClaimedWorkflowWorkItem(
-                            lease=lease,
-                            bundle=bundle.model_copy(deep=True),
-                            committed_events=committed,
-                        )
+                    self._connection.commit()
+                    return WorkflowDispatch(
+                        lease=lease,
+                        bundle=bundle.model_copy(deep=True),
+                        committed_events=committed,
+                    )
                 self._connection.commit()
                 return None
             except Exception:
                 self._connection.rollback()
                 raise
 
-    def claim_next(
-        self, *, worker_id: str, now: datetime, lease_seconds: int
-    ) -> WorkflowLease | None:
+    def renew_work_item_lease(
+        self,
+        lease: WorkflowWorkItemLease,
+        *,
+        now: datetime,
+        lease_seconds: int,
+    ) -> WorkflowWorkItemLease:
         with self._lock:
             try:
                 self._connection.execute("BEGIN IMMEDIATE")
                 row = self._connection.execute(
-                    """
-                    SELECT bundle_json FROM durable_workflows
-                    WHERE status IN ('queued', 'running', 'recovering')
-                      AND (lease_expires_at IS NULL OR lease_expires_at <= ?)
-                    ORDER BY updated_at, workflow_id LIMIT 1
-                    """,
-                    (now.isoformat(),),
+                    "SELECT bundle_json FROM durable_workflows WHERE workflow_id=?",
+                    (lease.workflow_id,),
                 ).fetchone()
                 if row is None:
-                    self._connection.commit()
-                    return None
+                    raise WorkflowLeaseConflict(lease.workflow_id)
                 bundle = WorkflowBundle.model_validate_json(row[0])
                 workflow = bundle.workflow
+                item = next(
+                    (
+                        candidate
+                        for candidate in bundle.current_plan.work_items
+                        if candidate.work_item_id == lease.work_item_id
+                    ),
+                    None,
+                )
+                if not _lease_matches(item, lease) or item.lease_expires_at <= now:
+                    raise WorkflowLeaseConflict(lease.workflow_id)
                 previous_revision = workflow.revision
-                workflow.lease_owner = worker_id
-                workflow.lease_token = secrets.token_urlsafe(18)
-                workflow.lease_expires_at = now + timedelta(seconds=lease_seconds)
-                if workflow.status == "queued" and not workflow.cancel_requested:
-                    workflow.status = "running"
+                item.lease_expires_at = now + timedelta(seconds=lease_seconds)
                 workflow.revision += 1
                 workflow.updated_at = now
                 updated = self._connection.execute(
@@ -288,61 +292,10 @@ class SQLiteWorkflowStore:
                 if updated.rowcount != 1:
                     raise WorkflowRevisionConflict(workflow.workflow_id)
                 self._connection.commit()
-                return WorkflowLease(
-                    workflow_id=workflow.workflow_id,
-                    workflow_revision=workflow.revision,
-                    worker_id=worker_id,
-                    lease_token=workflow.lease_token,
-                    expires_at=workflow.lease_expires_at,
-                )
-            except Exception:
-                self._connection.rollback()
-                raise
-
-    def release(self, lease: WorkflowLease, *, expected_revision: int) -> None:
-        with self._lock:
-            try:
-                self._connection.execute("BEGIN IMMEDIATE")
-                row = self._connection.execute(
-                    "SELECT bundle_json FROM durable_workflows WHERE workflow_id=?",
-                    (lease.workflow_id,),
-                ).fetchone()
-                if row is None:
-                    raise WorkflowLeaseConflict(lease.workflow_id)
-                bundle = WorkflowBundle.model_validate_json(row[0])
-                workflow = bundle.workflow
-                if (
-                    workflow.revision != expected_revision
-                    or workflow.lease_owner != lease.worker_id
-                    or workflow.lease_token != lease.lease_token
-                ):
-                    raise WorkflowLeaseConflict(lease.workflow_id)
-                previous_revision = workflow.revision
-                workflow.lease_owner = None
-                workflow.lease_token = None
-                workflow.lease_expires_at = None
-                workflow.revision += 1
-                workflow.updated_at = utc_now()
-                updated = self._connection.execute(
-                    """
-                    UPDATE durable_workflows
-                    SET status=?, revision=?, cancel_requested=?, lease_owner=NULL,
-                        lease_token=NULL, lease_expires_at=NULL, bundle_json=?, updated_at=?
-                    WHERE workflow_id=? AND revision=?
-                    """,
-                    (
-                        workflow.status,
-                        workflow.revision,
-                        int(workflow.cancel_requested),
-                        bundle.model_dump_json(),
-                        workflow.updated_at.isoformat(),
-                        workflow.workflow_id,
-                        previous_revision,
-                    ),
-                )
-                if updated.rowcount != 1:
-                    raise WorkflowLeaseConflict(lease.workflow_id)
-                self._connection.commit()
+                return lease.model_copy(update={
+                    "workflow_revision": workflow.revision,
+                    "expires_at": item.lease_expires_at,
+                })
             except Exception:
                 self._connection.rollback()
                 raise
@@ -377,9 +330,9 @@ class SQLiteWorkflowStore:
             workflow.status,
             workflow.revision,
             int(workflow.cancel_requested),
-            workflow.lease_owner,
-            workflow.lease_token,
-            workflow.lease_expires_at.isoformat() if workflow.lease_expires_at else None,
+            None,
+            None,
+            None,
             bundle.model_dump_json(),
             workflow.updated_at.isoformat(),
         )

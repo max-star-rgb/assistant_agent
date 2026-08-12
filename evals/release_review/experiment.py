@@ -149,6 +149,7 @@ def run_release_experiment(
                 ),
                 session_id=f"{settings.release_id}-{scenario_id}-r{repetition}",
                 text=scenario.request,
+                assistant_mode=scenario.assistant_mode,
                 metadata=runtime_metadata,
             )
             state = runtime.run_state(request)

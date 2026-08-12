@@ -237,7 +237,6 @@ class ProviderConfig:
     max_tool_iterations: int = 8
     max_control_tool_iterations: int = 3
     max_plan_steps: int = 8
-    max_plan_revisions: int = 2
     durable_tasks_enabled: bool = False
     durable_task_path: str = ".local/tasks/durable_tasks.sqlite3"
     durable_notification_path: str = ".local/tasks/notifications.sqlite3"
@@ -252,6 +251,7 @@ class ProviderConfig:
     durable_workflow_worker_enabled: bool = False
     durable_workflow_lease_seconds: int = 30
     durable_workflow_poll_seconds: float = 1.0
+    durable_workflow_max_concurrent_items: int = 4
     durable_workflow_artifact_path: str = ".local/workflows/artifacts"
 
     def __post_init__(self) -> None:
@@ -802,6 +802,18 @@ class ProviderConfig:
                     1.0,
                 ),
             ),
+            durable_workflow_max_concurrent_items=min(
+                64,
+                max(
+                    1,
+                    _int_env(
+                        source.get(
+                            "MULTIMODAL_AGENT_DURABLE_WORKFLOW_MAX_CONCURRENT_ITEMS"
+                        ),
+                        4,
+                    ),
+                ),
+            ),
             durable_workflow_artifact_path=(
                 source.get("MULTIMODAL_AGENT_DURABLE_WORKFLOW_ARTIFACT_PATH")
                 or ".local/workflows/artifacts"
@@ -940,7 +952,6 @@ class ProviderConfig:
                 3,
             ),
             max_plan_steps=_int_env(source.get("MAX_PLAN_STEPS"), 8),
-            max_plan_revisions=_int_env(source.get("MAX_PLAN_REVISIONS"), 2),
         )
         return config
 

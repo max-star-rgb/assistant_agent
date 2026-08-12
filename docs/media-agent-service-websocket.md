@@ -268,8 +268,9 @@ observer。VIDEO 消息的 `userNumber` 必须等于握手 `number`，不一致�
 - Agent 图片生成成功后，Gateway `run.end.payload.output_refs` 保留最多 4 个去重后的输出引用。
   Agent-Service 只读取本 Agent 托管的 `/artifacts/generated/` 图片，并在成功终包中投影为
   `intentResult.detail`；不会把 Provider 临时 URL、本地绝对路径或任意外部引用直接发送给媒体。
-- Durable Workflow 提交成功后，Agent-Service 从同一 `run.end.payload.output_refs` 中只保留
-  `workflow://` 引用，并在成功终包顶层投影为有界去重的 `outputRefs`。本地 `scripts/media_simulator.py` 不解析
+- Durable Workflow 或 DurableTask 提交成功后，Agent-Service 从同一
+  `run.end.payload.output_refs` 中只保留 `workflow://`、`task://` 引用，并在成功终包顶层投影为
+  最多 4 个有界去重的 `outputRefs`。本地 `scripts/media_simulator.py` 不解析
   模型正文，而是据此使用已有 `/workflows/{workflow_id}` 与 cursor-based `/events` facade 持续
   pull/tail；默认只显示 status facade 根据持久化 plan 生成的自然语言 `progress`（如当前 item 的
   `display_title` 和完成度），不显示内部 Workflow ID 或原始事件。显式传入 `--workflow-details` 才
@@ -277,6 +278,11 @@ observer。VIDEO 消息的 `userNumber` 必须等于握手 `number`，不一致�
   `/workflows/{workflow_id}/result` 读取并打印完整最终 artifact；旧服务未提供该接口时才降级为最终
   work item 的有界 `result_summary`。failed、cancelled、blocked 或 waiting-input 时结束当前观察窗口。
   该 tail 不把后台 Workflow 重新放回 Gateway active run。
+- 对 `task://` 引用，Simulator 只有在 operator 显式传入 `--wait-proactive` 时才进入 WebSocket
+  监听模式。它不 tail Task HTTP facade；目标 DurableTask 的 notification outbox 命中后，
+  Agent-Service 以独立 `chatResponse` 主动投递。服务重启关闭连接时，Simulator 使用原外层
+  `sessionId + userNumber` 重新握手并继续等待；新连接产生新的内部 Gateway session，但 task 与
+  notification 状态仍由 SQLite 恢复，不依赖旧连接。
 - 图片原始文件必须不超过 25 MiB，并且内容可识别为 JPEG、PNG、GIF 或 WebP。
   `imageId` 使用 Agent 托管 artifact 文件名去掉扩展名后的图片 ID；找不到、超限、越界或无法识别的引用会被忽略，
   不得让已有文本响应失败。
@@ -316,6 +322,34 @@ observer。VIDEO 消息的 `userNumber` 必须等于握手 `number`，不一致�
   conversation turn 或长期记忆，连接关闭即清除；
 - 同一连接切换 `video_id` 时保留 manager；WebSocket close 时先关闭并清空 manager，再关闭 observer
   和注销 owner/session，旧连接不可恢复提醒。
+
+#### 4.2.2 DurableTask 主动提醒 chatResponse
+
+启用 durable task、task worker 与 notification worker 后，酒店价格监控在预算命中或截止时把提醒
+原子写入 notification outbox。Agent-Service 在 `assistantControl` 成功后按可信
+`userNumber + agent_id` 注册当前进程的最新在线投递租约；该租约只保存 sender，不保存任务或通知。
+同一 owner 的新连接覆盖旧租约，旧连接 cleanup 使用 connection id 条件注销，不能误删新连接。
+
+在线时，notification worker 等待当前连接已有普通 chat task 结束，再与其他 Agent-Service 输出共用
+`send_lock` 发送：
+
+```json
+{
+  "message": "chatResponse",
+  "body": "{\"message\":{\"chatIndex\":\"durable-task:task-abc\",\"content\":{\"intentResult\":{\"description\":\"酒店当前每晚价格已达到你的预算\",\"status\":\"SUCCESS\"}}},\"display_only\":false,\"displayOnly\":false}"
+}
+```
+
+规则：
+
+- `chatIndex` 固定为 `durable-task:<task_id>`，不续接普通 chat 的 sequence；
+- 提醒正文由受治理的 DurableTask quantum 预组成，不再次调用主 LLM，也不进入新的 Gateway run；
+- 收件人离线时通知回到 `retry_wait`，`reason_code=recipient_offline`，不消耗 delivery attempt；
+- 新连接注册后 notification worker 的下一次 poll 会重新尝试投递；
+- 第一版以 WebSocket 写入成功作为 `delivery_scope=server_transport` 并把 outbox 标记为 sent，不携带
+  `deliveryId`，不进入 `chatResponseAck` registry，也不提供发送成功后的跨断线重放；
+- 发送异常发生在 outbox 标记 sent 之前时，按既有 notification retry/dead-letter 策略处理；
+- Agent-Service transport 只接受 `channel=agent_service`，不会把其他 channel 静默投影到媒体连接。
 
 协商 `chatProgress` 后，Agent 立即并每 15 秒发送一次：
 

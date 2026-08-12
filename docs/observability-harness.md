@@ -389,6 +389,10 @@ deep_research.workflow                         # durable logical root
 └── workflow.completed                        # terminal event；失败/取消同理
 ```
 
+两个无依赖的研究节点可以在同一调度波次并行运行；树形缩进只表达因果父子关系，不表达二者串行。
+每个节点仍是独立的 bounded Agent run，分别持有 work-item lease、attempt 和 canonical run identity，
+最终报告节点只有在全部依赖提交成功后才会被调度。
+
 对 Agent-backed work item，durable attempt 与 canonical Agent root 在导出层融合为一个
 observation：名称直接使用已持久化的 `display_title`，并复用 attempt span ID。因此界面
 不再展示一层自然语言 attempt chain，也不在其下嵌套 generic `agent.runtime`。非 Agent executor

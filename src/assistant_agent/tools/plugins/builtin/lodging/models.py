@@ -149,11 +149,15 @@ class HotelPriceWatchGoal(BaseModel):
         le=604_800,
         description="两次查价之间的秒数，范围为 60 到 604800。",
     )
+    starts_at: datetime | None = Field(
+        default=None,
+        description="可选的带时区首次查价时间；缺省时立即开始。",
+    )
     ends_at: datetime = Field(
         description="带时区的监控截止时间；超过后停止查价。",
     )
     notification_channel: str = Field(
-        default="mock_app",
+        default="agent_service",
         min_length=1,
         max_length=80,
         description="已配置的传输无关通知通道标识。",
@@ -163,6 +167,11 @@ class HotelPriceWatchGoal(BaseModel):
     def validate_goal(self) -> "HotelPriceWatchGoal":
         if self.ends_at.tzinfo is None:
             raise ValueError("ends_at must be timezone-aware")
+        if self.starts_at is not None:
+            if self.starts_at.tzinfo is None:
+                raise ValueError("starts_at must be timezone-aware")
+            if self.starts_at >= self.ends_at:
+                raise ValueError("starts_at must be earlier than ends_at")
         if self.search.currency.strip() == "":
             raise ValueError("currency is required")
         return self

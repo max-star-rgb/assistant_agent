@@ -8,6 +8,7 @@ from typing import Callable, Protocol
 from assistant_agent.automation.notification_models import (
     DeliveryResult,
     NotificationEnvelope,
+    NotificationOwner,
 )
 from assistant_agent.automation.proactive_wake.models import utc_now
 from assistant_agent.automation.proactive_wake.activity import (
@@ -23,6 +24,11 @@ from assistant_agent.automation.notifications import NotificationDeliveryObserve
 
 class ProactiveNotificationTransport(Protocol):
     async def send(self, notification: NotificationEnvelope) -> DeliveryResult:
+        raise NotImplementedError
+
+
+class NotificationRecipientAvailability(Protocol):
+    async def is_available(self, owner: NotificationOwner) -> bool:
         raise NotImplementedError
 
 
@@ -48,15 +54,21 @@ class NotificationDeliveryWorker:
         store: SQLiteProactiveWakeStore,
         transport: ProactiveNotificationTransport,
         activity_reader: UserActivityReader | None = None,
+        recipient_availability: NotificationRecipientAvailability | None = None,
+        unavailable_retry_seconds: float = 5.0,
         now_fn: Callable[[], datetime] = utc_now,
         max_attempts: int = 3,
         delivery_observer: NotificationDeliveryObserver | None = None,
     ) -> None:
         if max_attempts <= 0:
             raise ValueError("max_attempts must be positive")
+        if unavailable_retry_seconds <= 0:
+            raise ValueError("unavailable_retry_seconds must be positive")
         self.store = store
         self.transport = transport
         self.activity_reader = activity_reader or NullUserActivityReader()
+        self.recipient_availability = recipient_availability
+        self.unavailable_retry_seconds = unavailable_retry_seconds
         self.now_fn = now_fn
         self.max_attempts = max_attempts
         self.delivery_observer = delivery_observer
@@ -96,6 +108,24 @@ class NotificationDeliveryWorker:
                             notification.delivery_id,
                             available_at=item_now + timedelta(seconds=60),
                             reason_code="active_conversation",
+                            now=item_now,
+                            expected_lease_until=lease_until,
+                        )
+                    )
+                    continue
+                if (
+                    self.recipient_availability is not None
+                    and not await self.recipient_availability.is_available(
+                        notification.owner
+                    )
+                ):
+                    item_now = self.now_fn()
+                    completed.append(
+                        self.store.defer_notification(
+                            notification.delivery_id,
+                            available_at=item_now
+                            + timedelta(seconds=self.unavailable_retry_seconds),
+                            reason_code="recipient_offline",
                             now=item_now,
                             expected_lease_until=lease_until,
                         )

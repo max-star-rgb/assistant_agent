@@ -201,7 +201,10 @@ def _work_item_state_span(
         end_time=event.created_at,
         status=(
             "error"
-            if event.event_type == "workflow.work_item.retry_scheduled"
+            if event.event_type in {
+                "workflow.work_item.retry_scheduled",
+                "workflow.work_item.lease_expired",
+            }
             else "unset"
         ),
         attributes={
@@ -368,6 +371,7 @@ def _is_work_item_event(event: WorkflowEvent) -> bool:
     return "work_item_id" in event.payload and event.event_type in {
         "workflow.work_item.succeeded",
         "workflow.work_item.retry_scheduled",
+        "workflow.work_item.lease_expired",
         "workflow.repair.requested",
         "workflow.input.required",
         "workflow.failed",

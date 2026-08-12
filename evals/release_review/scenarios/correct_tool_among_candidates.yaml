@@ -6,7 +6,7 @@ request: 查询我 2026 年 8 月 18 日下午的日程，告诉我是否已有�
 tool_contract:
   required: [calendar_search]
   allowed: []
-  forbidden: [calendar_create, workflow_submit]
+  forbidden: [calendar_create]
   sequence:
     before: []
     before_final_response: [calendar_search]

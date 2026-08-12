@@ -37,8 +37,11 @@ from assistant_agent.automation.durable_tasks.worker import (
 )
 from assistant_agent.observability.operational_logging import configure_operational_logging_from_env
 from assistant_agent.automation.proactive_wake.delivery import (
-    MockProactiveNotificationTransport,
     NotificationDeliveryWorker,
+)
+from assistant_agent.api.agent_service_notifications import (
+    AgentServiceNotificationTransport,
+    get_agent_service_notification_hub,
 )
 from assistant_agent.runtime.server_startup_summary import prepare_server_startup_report
 from assistant_agent.skills.application import (
@@ -152,10 +155,13 @@ async def start_durable_workflow_worker(app: FastAPI) -> DurableWorkflowWorker |
         runtime=WorkflowRuntime(
             service=service,
             work_item_executor=work_item_executor,
+            model_call_limit_per_item=config.max_tool_iterations,
+            tool_call_limit_per_item=max(0, config.max_tool_iterations - 1),
         ),
         worker_id=f"api-workflow-worker-{os.getpid()}-{id(app)}",
         lease_seconds=config.durable_workflow_lease_seconds,
         poll_seconds=config.durable_workflow_poll_seconds,
+        max_concurrent_items=config.durable_workflow_max_concurrent_items,
     )
     app.state.durable_workflow_worker = worker
     app.state.durable_workflow_stop_event = stop_event
@@ -231,13 +237,16 @@ async def start_durable_task_worker(app: FastAPI) -> DurableTaskWorker | None:
     )
     notification_store = getattr(runtime, "notification_outbox_store", None)
     if (
-        config.provider_mode == "mock"
-        and config.durable_notification_worker_enabled
+        config.durable_notification_worker_enabled
         and notification_store is not None
     ):
+        notification_transport = AgentServiceNotificationTransport(
+            get_agent_service_notification_hub()
+        )
         delivery_worker = NotificationDeliveryWorker(
             store=notification_store,
-            transport=MockProactiveNotificationTransport(),
+            transport=notification_transport,
+            recipient_availability=notification_transport,
             delivery_observer=service,
         )
         app.state.notification_delivery_worker = delivery_worker

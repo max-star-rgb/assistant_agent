@@ -33,24 +33,39 @@ class DurableWorkflowWorker:
 
     def run_once(self) -> bool:
         claims = []
-        for slot in range(self.max_concurrent_items):
-            claim = self.service.store.claim_ready_work_item(
+        advanced = False
+        slot = 0
+        probes_remaining = self.max_concurrent_items * 2
+        while slot < self.max_concurrent_items and probes_remaining > 0:
+            probes_remaining -= 1
+            dispatch = self.service.store.claim_ready_work_item(
                 worker_id=f"{self.worker_id}:{slot}",
                 now=self.runtime.clock(),
                 lease_seconds=self.lease_seconds,
                 model_call_limit=self.runtime.model_call_limit_per_item,
                 tool_call_limit=self.runtime.tool_call_limit_per_item,
             )
-            if claim is None:
+            if dispatch is None:
                 break
-            claims.append(claim)
+            advanced = True
+            if dispatch.lease is None:
+                continue
+            claims.append(dispatch)
+            slot += 1
         if not claims:
-            return False
+            return advanced
         with ThreadPoolExecutor(
             max_workers=len(claims),
             thread_name_prefix="durable-workflow",
         ) as executor:
-            futures = [executor.submit(self.runtime.run_claim, claim) for claim in claims]
+            futures = [
+                executor.submit(
+                    self.runtime.run_claim,
+                    claim,
+                    lease_seconds=self.lease_seconds,
+                )
+                for claim in claims
+            ]
             for future in futures:
                 future.result()
         return True

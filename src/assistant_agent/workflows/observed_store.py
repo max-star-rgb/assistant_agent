@@ -6,10 +6,10 @@ from datetime import datetime
 
 from assistant_agent.observability.workflow_otel import WorkflowCommitObserver
 from assistant_agent.workflows.models import (
-    ClaimedWorkflowWorkItem,
+    WorkflowDispatch,
     WorkflowBundle,
     WorkflowEvent,
-    WorkflowLease,
+    WorkflowWorkItemLease,
 )
 from assistant_agent.workflows.store import WorkflowStore, assign_event_cursors
 
@@ -107,7 +107,7 @@ class ObservedWorkflowStore:
         lease_seconds: int,
         model_call_limit: int,
         tool_call_limit: int,
-    ) -> ClaimedWorkflowWorkItem | None:
+    ) -> WorkflowDispatch | None:
         claimed = self.inner.claim_ready_work_item(
             worker_id=worker_id,
             now=now,
@@ -119,21 +119,18 @@ class ObservedWorkflowStore:
             self._observe_committed(claimed.bundle, claimed.committed_events)
         return claimed
 
-    def claim_next(
+    def renew_work_item_lease(
         self,
+        lease: WorkflowWorkItemLease,
         *,
-        worker_id: str,
         now: datetime,
         lease_seconds: int,
-    ) -> WorkflowLease | None:
-        return self.inner.claim_next(
-            worker_id=worker_id,
+    ) -> WorkflowWorkItemLease:
+        return self.inner.renew_work_item_lease(
+            lease,
             now=now,
             lease_seconds=lease_seconds,
         )
-
-    def release(self, lease: WorkflowLease, *, expected_revision: int) -> None:
-        self.inner.release(lease, expected_revision=expected_revision)
 
     def close(self) -> None:
         try:

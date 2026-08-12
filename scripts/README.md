@@ -76,9 +76,15 @@ MULTIMODAL_AGENT_PROVIDER_MODE=mock \
   the identity-scoped `/workflows/{workflow_id}/result` artifact and prints the full
   final output, falling back to the bounded final work-item summary only for an older
   server without that endpoint. Default workflow output is product-facing:
-  it uses the persisted plan item's short natural-language `display_title` and completion
-  count, while hiding raw event names and workflow IDs. Use `--workflow-details` to expose
+  it uses persisted work-item `display_title` values and completion count; when multiple
+  work-item runs overlap it lists the active stages as one parallel progress update, while
+  hiding raw event names and workflow IDs. Use `--workflow-details` to expose
   cursor-based events and identifiers for debugging.
+  当成功终包包含结构化 `task://` output ref 且显式传入 `--wait-proactive` 时，Simulator 不轮询
+  Task HTTP facade，而是在同一 Agent-Service WebSocket 上等待 `durable-task:<task_id>` 主动
+  `chatResponse`。服务重启导致连接关闭时，它使用相同 `sessionId + userNumber` 重新握手并继续
+  等待；任务与通知由 SQLite durable task/outbox 恢复。该模式收到第一条目标提醒后结束等待，
+  Ctrl-C 只停止客户端，不取消后台任务。
   Agent chat responses默认只打印流式正文，不输出 raw vendor envelope 或来源列表。
   `--citations` 显式协商 `urlCitationAnnotationsV1`，但不承担 App UI 渲染；需要检查媒体 wire
   来源时显式增加 `--citation-debug`，该参数也会自动启用 citation capability。

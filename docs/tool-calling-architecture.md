@@ -5,7 +5,7 @@
 | 字段 | 内容 |
 | --- | --- |
 | 定位 | Tool 注册、暴露、调用、执行与 durable workflow 治理的当前权威 |
-| Owns | Tool/ToolSpec、catalog、Plugin、MCP、Validator、Executor、Workflow Tool 与副作用边界 |
+| Owns | Tool/ToolSpec、catalog、Plugin、MCP、Validator、Executor、Durable Workflow Runtime 与副作用边界 |
 | Does not own | 用户意图关键词路由、Gateway 生命周期、Memory Plugin 生命周期、Provider vendor 私有协议 |
 | 源码与 schema 入口 | `src/assistant_agent/tools/`、`src/assistant_agent/workflows/`、`src/assistant_agent/mcp/` |
 | 验证入口 | `docs/authority.toml` 中 `tool-calling.verification` |
@@ -56,24 +56,18 @@ allowlist。Registry inventory 与单轮 catalog 含义不同，不能互相替�
 媒体状态、可信 durable step 等结构化事实确定；是否调用、调用哪个候选工具以及如何填写模型拥有的
 参数由 LLM 决定。
 
-通用长阶段任务遵守同一规则。启用
-`MULTIMODAL_AGENT_DURABLE_WORKFLOWS_ENABLED=true`、绑定 `WorkflowService` 且至少存在一个
-已注册 `WorkflowDefinition` 时，builtin Plugin 才注册 `workflow_submit`。是否调用由现有
-Provider-native ReAct LLM 自主决定；入口不增加关键词路由、正则分类或独立 assistant-decision LLM。
-该 Tool 只原子创建持久 Workflow 并返回 handle，不在前台 run 内执行完整流程。普通任务仍走当前
-assistant loop。
+长阶段任务不通过模型可见的提交 Tool 启动。产品入口把用户显式选择归一化为结构化 mode；Runtime
+只对已获准的 mode 薄启动相应 Durable Workflow。普通任务始终走当前 assistant loop，模型不能根据
+文本关键词把 standard turn 升级成 Workflow，也不能自行创建 Workflow。
 
 显式产品模式是结构化入口事实，不是文本意图路由。当前唯一新增模式
 `assistant_mode=deep_research` 会把前台 RunToolCatalog 收窄为空；用户文本不会隐式开启该模式。
-Runtime 不进行一次仅为调用 `workflow_submit` 的前台 ReAct，而是直接创建 planning 状态的 durable
-Workflow。首个后台 quantum 才调用主 Agent planner，生成结构化 DAG 后再由 worker 执行。若 Durable
+Runtime 不进行一次仅为提交 Workflow 的前台 ReAct，而是直接创建 planning 状态的 durable
+Workflow。首个后台 run 调用主 Agent planner，生成结构化 DAG 后再由 worker 执行。若 Durable
 Workflow 未启用，入口返回结构化不可用错误，不静默退化成另一种执行语义。普通
-`assistant_mode=standard` 不改变现有工具目录和 assistant loop。即使普通模式下模型自主选择了
-`workflow_submit`，Tool 也只允许提交
-`long_horizon` 等通用 Workflow；`deep_research` 必须同时具有 Gateway 固化的
-`assistant_mode=deep_research`，否则返回结构化 `assistant_mode_required`，不能靠模型参数越过产品模式。
-反向同样成立：深度研究模式只能提交 `deep_research` definition，其他类型以结构化
-`workflow_type_mode_mismatch` 拒绝，使产品 mode 与 durable definition 双向绑定。
+`assistant_mode=standard` 不改变现有工具目录和 assistant loop。当前产品只开放
+`assistant_mode=deep_research -> deep_research Workflow` 这一条映射；`long_horizon` 等 definition
+保留为内部扩展点，不是模型或 standard 入口可选择的运行模式。
 
 `visual_memory_search` 遵守同一边界：它是唯一新增的历史视觉 Tool，category 为 `read`，不要求本轮
 附带媒体。Runtime 只依据同 user/session `SessionVisualSemanticStore.has_searchable_history()` 生成可信 exposure fact，并覆盖调用方
@@ -142,8 +136,8 @@ manifest；`tools/ids.py` 只保存已经成为跨层协议的稳定字符串。
 仍复用已有结果。失败调用不消耗成功额度，完全相同的失败输入仍由失败去重 guard 处理。所有策略
 都受全局 `max_tool_iterations` 限制；该字段是 Runtime 治理事实，不进入 Provider Tool schema。
 
-每个内置 concrete Tool 必须显式声明策略。当前 `workflow_submit`、`image_generation` 和
-`image_to_3d` 使用 `once_per_run`，其余内置 Tool 使用 `distinct_inputs`。`ToolSpec` 与 `ToolBase` 的
+每个内置 concrete Tool 必须显式声明策略。当前 `image_generation` 和 `image_to_3d` 使用
+`once_per_run`，其余内置 Tool 使用 `distinct_inputs`。`ToolSpec` 与 `ToolBase` 的
 默认 `once_per_run` 只为旧式或外部 Tool 提供保守兼容回退，不能替代内置 Tool 的显式分类。
 Runtime 只读取 Registry 投影后的 `ToolSpec.repeat_policy`，不按工具名维护终止工具清单或第二套
 重复执行配置。
@@ -338,19 +332,18 @@ Tool 仍按正常 MCP 治理链注册。
 
 MCP server、认证、远端方法映射和部署命令属于配置或对应集成文档，不进入本文。
 
-### 4.5 Durable Workflow Plugin
+### 4.5 Durable Workflow Runtime
 
-`durable_workflow` 是默认关闭的内置 Plugin。它从 `ToolPluginContext.workflow_service` 接收可信服务；
-配置关闭、服务缺失或 definition catalog 为空时返回空工具列表，不能暴露一个无法推进的提交 Tool。
-`workflow_submit` 是 `write/once_per_run/metadata_only` Tool，输入是通用
-`WorkflowSubmission`：`workflow_type/objective/deliverables/constraints/inputs/requested_budget/
-durability_reasons/seed_artifact_refs/idempotency_key`。这些都是用户意图、资源和已有制品事实；
-submission 不接受已规划 DAG、约束责任绑定或 planner mode。Research 问题等业务字段只能
-放在 definition-owned `inputs` schema 中，不能污染通用契约。
+Durable Workflow 是 Runtime-owned 的长流程执行底座，不是 Tool Plugin。只有 Gateway 固化的显式
+产品 mode 可以触发 Runtime submission；默认 Tool Registry、RunToolCatalog 和 Provider schema 中均
+不存在 Workflow 提交 Tool。`WorkflowSubmission` 只保存
+`workflow_type/objective/deliverables/constraints/inputs/requested_budget/durability_reasons/
+seed_artifact_refs/idempotency_key` 等意图与资源事实，不接受已规划 DAG、约束责任绑定或 planner mode。
+Research 问题等业务字段只能放在 definition-owned `inputs` schema 中。
 
 所有 Durable Workflow 使用同一个 Plan-and-Execute 入口。`WorkflowService.submit()` 只持久化
 submission，并创建 version 1 bootstrap Plan：该 Plan 仅包含一个 `kind=plan` 的 planner
-work item，Workflow 进入 `phase=planning`。首个后台 quantum 通过
+work item，Workflow 进入 `phase=planning`。首个后台 run 通过
 `AgentGraphRuntime.run_work_item()` 运行主 Agent planner，要求严格的 `WorkflowPlanProposal`；
 Definition 再将 proposal 的 workstreams 和 constraint proposals 领域化为 version 2
 `WorkflowPlanVersion`，经过 DAG、引用、保留 ID/kind 和验证者拓扑 admission 后才进入执行。
@@ -370,15 +363,11 @@ progress facade 复用同一个确定性 ready-item 选择器，依赖无关的�
 下游验证或 synthesize 节点只在依赖满足后就绪；验证器返回受限 repair 目标时，controller
 以新 Plan version 做局部返工，而不重启整个 Workflow。
 
-Tool 从 `ToolExecutor` 注入的 `request_identity`、`run_id` 和同一 `WorkflowService` binding 构造
-owner-bound submission；模型不能提交 owner、lease、revision、worker 或 Store。成功 observation 只
-包含 `workflow_id/type/status/phase/status_url/events_url/event_cursor` 等安全 handle。重复
+Runtime 从可信 request identity、`run_id` 和同一 `WorkflowService` 构造 owner-bound submission；
+模型不能提交 owner、lease、revision、worker 或 Store。入口只返回
+`workflow_id/type/status/phase` 等安全 handle。重复
 `user + agent + ingress_run + idempotency_key` 且 payload digest 相同返回既有 Workflow；不同 payload
 返回结构化冲突。
-
-提交成功的异步 Tool 可返回受信 `ToolTurnHandoff`。assistant loop 将其作为本轮确定性终态，保留
-`output_ref` 并停止第二次 Provider 调用；模型不会在提交后再生成一份与持久化 plan 可能不一致的
-“计划说明”。`workflow_submit` 遵守该终止语义；DurableTask 不再注册模型可见的 plan submit Tool。
 
 ## 5. 单轮暴露与 Provider 转换
 
@@ -482,12 +471,18 @@ Gateway 不按 Tool name 或 Provider 错误码改写运行终态。
 - **Durable task**：只保留 schedule、external event、notification 和相应 checkpoint/lease 的
   执行底座；可信 ready step 的工具调用仍走统一治理链。它不再向主 LLM 暴露 plan submit
   Tool，也不拥有第二个面向模型的顶层 Planner。新增长流程、DAG、局部返工和进度协议必须
-  进入 Durable Workflow，不再扩张 DurableTask 计划模型。
+  进入 Durable Workflow，不再扩张 DurableTask 计划模型。当前酒店价格监控是明确的垂直
+  DurableTask profile：`starts_at` 只控制首次 schedule checkpoint，后续每次 FlyAI 只读查询仍经
+  Validator、Executor 和 Registry；命中预算或到达截止时间时把预组成提醒写入持久 notification
+  outbox。Agent-Service 在线连接只负责最终 channel 投递，不持有 task、wait 或 notification 状态。
 - **Durable Workflow**：它是新增长流程的唯一 DAG/Plan-and-Execute authority。显式 Deep
-  Research 由 Runtime 薄启动；普通 assistant loop 可以通过 `workflow_submit` 提交其他获准
-  Workflow type。两条入口都只持久化意图字段，然后进入同一 planning 状态与 bootstrap Plan。
-  `DurableWorkflowWorker -> WorkflowRuntime` 每个 quantum 最多提交一个 work item 结果或一个局部
-  plan revision。首个 planner item 与语义 worker item 都通过 `AgentGraphRuntime.run_work_item()` 回到
+  Research 由 Runtime 薄启动；普通 assistant loop 没有提交 Workflow 的模型能力。入口只持久化意图
+  字段，然后进入 planning 状态与 bootstrap Plan。
+  `DurableWorkflowWorker` 原子 claim 单个 ready work item，并以 work-item lease、attempt 和调用预算作为
+  独立所有权边界；一个调度波次可并行运行多个无依赖节点。每个结果分别以 revision CAS 提交，最后一个
+  依赖完成时才解锁 join/synthesize 节点。lease heartbeat 防止长模型 run 被误判为崩溃；过期 lease
+  只重试对应节点，不重启整个 Workflow。首个 planner item 与语义 worker item 都通过
+  `AgentGraphRuntime.run_work_item()` 回到
   同一 assistant loop；executor port 将 `planner_runtime` 与 `agent_runtime` 分开注入，默认可复用同一
   Runtime，也预留主 Agent 规划、子 Agent/远程 worker 执行的替换点。
   `agent_role` 由 Workflow controller 根据 version 1 的 bootstrap planner 状态写入可信 assignment，不能
@@ -527,9 +522,9 @@ Gateway 不按 Tool name 或 Provider 错误码改写运行终态。
   Assistant trace 身份保持不变；不生成额外的前台 `assistant.turn`、后台孤立 trace 或
   `workflow.start`，也不虚构 Provider-native 搜索的内部步骤。该投影只读取成功提交的
   Store 事件且必须 fail-open；缺少完整 ingress trace context 时不阻止 Workflow 提交。
-  每次 work-item run 回传实际 model/tool call 数并在同一 revision commit 中扣减预算；后续 quantum
-  在 model、workflow quantum 或 deadline 耗尽时终止。Tool 预算为零时不再暴露 Tool，剩余预算同时
-  收窄 work-item assistant loop 的 iteration 上限。
+  claim 时为每个 work-item 原子预留 workflow quantum 与 model/tool call 预算，commit 时退回未使用额度，
+  从而避免并行 run 超卖全局预算。Tool 预算为零时不再暴露 Tool，分配给该 run 的预算同时收窄
+  work-item assistant loop 的 iteration 上限。
 - **Memory**：记忆读写遵循 `MemoryPluginHost` 与 Plugin lifecycle；默认长期记忆不是主模型可调用 Tool。
 - **Gateway、CLI、API、demo、eval**：都是入口或观察形态，不能直接调用 Tool 实现来复制 Agent
   逻辑。
@@ -567,9 +562,8 @@ payload、凭据、绝对路径和大块内联数据不能因 ToolResult 或调�
 - `runtime/tool_executor.py`：调用、重试、取消、状态提交和生命周期事件；
 - `tools/observation.py`：ToolResult 到模型观察的通用投影；
 - `tests/core/contract/test_tool_contract.py`：`TOOL-001` 核心治理契约。
-- `workflows/`：Workflow 契约、definition、Store、LangGraph controller、worker、artifact/context 和
+- `workflows/`：Workflow 契约、definition、Store、work-item controller、worker、artifact/context 和
   `AgentGraphRuntime` work-item adapter；
-- `tools/plugins/builtin/workflow/`：`workflow_submit` Tool 与 fail-closed Plugin；
 - `api/routes_workflows.py`：identity-scoped status/events/input/cancel/result 薄入口。
 
 ## 10. 不变量

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
@@ -226,24 +226,26 @@ class WorkflowRecord(BaseModel):
     result_artifact_refs: list[str] = Field(default_factory=list, max_length=128)
     waiting_input: dict[str, JsonValue] | None = None
     consumed_resume_tokens: list[str] = Field(default_factory=list, max_length=1_000)
-    lease_owner: str | None = Field(default=None, min_length=1)
-    lease_token: str | None = Field(default=None, min_length=1)
-    lease_expires_at: datetime | None = None
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
     terminal_at: datetime | None = None
 
+    @model_validator(mode="before")
+    @classmethod
+    def discard_legacy_workflow_lease(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        migrated = dict(data)
+        for name in ("lease_owner", "lease_token", "lease_expires_at"):
+            migrated.pop(name, None)
+        return migrated
+
     @model_validator(mode="after")
-    def validate_times_and_lease(self) -> "WorkflowRecord":
-        for name in ("created_at", "updated_at", "lease_expires_at", "terminal_at"):
+    def validate_times(self) -> "WorkflowRecord":
+        for name in ("created_at", "updated_at", "terminal_at"):
             value = getattr(self, name)
             if value is not None and value.tzinfo is None:
                 raise ValueError(f"{name} must be timezone-aware")
-        lease_values = (self.lease_owner, self.lease_token, self.lease_expires_at)
-        if any(value is None for value in lease_values) and any(
-            value is not None for value in lease_values
-        ):
-            raise ValueError("lease owner, token, and expiry must be set together")
         if self.ingress_parent_span_id is not None and self.ingress_trace_id is None:
             raise ValueError(
                 "ingress parent span id requires an ingress trace id"
@@ -260,16 +262,6 @@ class WorkflowEvent(BaseModel):
     status: str = Field(min_length=1, max_length=80)
     payload: dict[str, JsonValue] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=utc_now)
-
-
-class WorkflowLease(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    workflow_id: str = Field(min_length=1)
-    workflow_revision: int = Field(ge=1)
-    worker_id: str = Field(min_length=1)
-    lease_token: str = Field(min_length=1)
-    expires_at: datetime
 
 
 class WorkflowWorkItemLease(BaseModel):
@@ -324,11 +316,11 @@ class WorkflowBundle(BaseModel):
         )
 
 
-class ClaimedWorkflowWorkItem(BaseModel):
-    """Committed claim plus the immutable execution snapshot for that attempt."""
+class WorkflowDispatch(BaseModel):
+    """One committed scheduler update, optionally carrying executable ownership."""
 
     model_config = ConfigDict(extra="forbid")
 
-    lease: WorkflowWorkItemLease
+    lease: WorkflowWorkItemLease | None = None
     bundle: WorkflowBundle
     committed_events: list[WorkflowEvent] = Field(default_factory=list)

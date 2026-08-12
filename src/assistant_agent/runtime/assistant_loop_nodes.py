@@ -110,7 +110,6 @@ class AssistantLoopState(TypedDict):
     max_tool_iterations: NotRequired[int]
     max_control_tool_iterations: NotRequired[int]
     max_plan_steps: NotRequired[int]
-    max_plan_revisions: NotRequired[int]
     last_llm_span_id: NotRequired[str]
     last_llm_attempt_kind: NotRequired[str]
     response_stream_current_call_emitted: NotRequired[bool]

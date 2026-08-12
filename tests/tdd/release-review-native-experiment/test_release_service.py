@@ -261,7 +261,7 @@ def test_cli_preflight_checks_catalog_without_creating_langfuse_client(
         == 0
     )
 
-    assert required == ["workflow_submit"]
+    assert required == []
     assert '"status": "ready"' in capsys.readouterr().out
 
 

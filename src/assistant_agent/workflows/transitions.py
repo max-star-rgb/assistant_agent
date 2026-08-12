@@ -260,7 +260,11 @@ def request_cancel(
     if workflow.status in {"completed", "failed"}:
         raise WorkflowTransitionRejected("terminal workflow cannot be cancelled")
     workflow.cancel_requested = True
-    if workflow.lease_token is None:
+    has_active_items = any(
+        item.status == "running" and item.lease_token is not None
+        for item in current.current_plan.work_items
+    )
+    if not has_active_items:
         workflow.status = "cancelled"
         workflow.phase = "cancelled"
         workflow.terminal_at = now
@@ -268,6 +272,12 @@ def request_cancel(
         for item in current.current_plan.work_items:
             if item.status not in {"succeeded", "skipped", "superseded"}:
                 item.status = "cancelled"
+                item.active_attempt_id = None
+                item.lease_owner = None
+                item.lease_token = None
+                item.lease_expires_at = None
+                item.reserved_model_calls = 0
+                item.reserved_tool_calls = 0
     return current, [
         WorkflowEvent(
             workflow_id=workflow.workflow_id,

@@ -78,8 +78,8 @@ class ReleaseRunEvidence(BaseModel):
             calls=tuple(calls),
             final_state={
                 "status": state.status,
-                "plan_status": state.plan_status,
-                "current_step_id": state.current_step_id,
+                "plan_status": getattr(state, "plan_status", None),
+                "current_step_id": getattr(state, "current_step_id", None),
                 "response": (
                     state.response.model_dump(mode="json")
                     if state.response is not None

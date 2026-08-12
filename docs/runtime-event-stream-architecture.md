@@ -59,9 +59,9 @@ loop，在 `assistant -> execute_tool -> assistant` 与 `assistant -> compose_re
 `UserRequest` 也不再接受 `execution_strategy=plan_and_solve`。当前仍存在的
 `task_execution_mode` 是工具/持久执行的结构化治理事实，不是第二张 Agent graph 的选择器。
 
-Durable Workflow 的 Plan、quantum、返工和 terminal 生命周期不属于单个 bounded Assistant run，因此其
+Durable Workflow 的 Plan、work-item run、返工和 terminal 生命周期不属于单个 bounded Assistant run，因此其
 事实源是已提交的 `WorkflowEvent`，而不是把它们复制为 `TraceEvent`。Deep Research 是一个逻辑
-Plan-and-Execute runtime：入口把当前 canonical trace ID 持久化到 Workflow，首个 durable quantum 调用
+Plan-and-Execute runtime：入口把当前 canonical trace ID 持久化到 Workflow，首个 durable planner run 调用
 主 Agent planner 生成结构化 DAG，后续 work item 再由可替换的 worker Agent 执行。planner/worker 每次
 调用仍产生自己的 canonical `AgentEvent/TraceEvent`，并保留 trace/run/attempt 身份。Runtime 在可信
 assignment 边界注入 OTel 导出上下文，使 Workflow 和 planner/worker 子树导出到同一个
@@ -310,7 +310,7 @@ Durable Workflow 使用相同的分离原则，但事件事实源是 `WorkflowSt
   ingress Gateway run；
 - 显式 Deep Research start 不调用 Provider 或本地 Tool，只持久化用户意图并形成短终态回复。
   所有 Workflow submission 都先产生仅含 planner item 的 version 1 bootstrap Plan；首个后台
-  quantum 由主 Agent planner 生成严格 `WorkflowPlanProposal`，Definition materialize 和 admission
+  planner run 由主 Agent 生成严格 `WorkflowPlanProposal`，Definition materialize 和 admission
   后提交 version 2 DAG。得到批准的依赖图可 fan-out 无依赖工作、在受限范围做局部返工，
   并在依赖满足后进入验证或 synthesis；其后
   status facade 只从持久化当前 item 的 `display_title`、状态和完成数投影产品 `progress`；原始事件
@@ -323,11 +323,13 @@ Durable Workflow 使用相同的分离原则，但事件事实源是 `WorkflowSt
   临时观察窗口，使用 cursor 可重放；
 - 当前 HTTP facade 是 pull/replay，不建立长期 WebSocket producer，也不把消费者速度耦合到 worker。
 
-当前持久恢复边界刻意放在 work-item quantum 之间：LangGraph controller 每次 invocation 只执行一个
-work item，并在 `commit_quantum` 用 Workflow revision、事件和结果做一次原子提交；进程重启后从
-`WorkflowStore` 重新 hydrate，再由过期 lease 重新 claim。当前实现没有声称可以从一次 Provider/Tool
-调用的中间指令继续，也没有把 LangGraph SQLite checkpointer 作为第二事实源；崩溃在提交前发生时，
-该 quantum 会按 lease/retry 语义重做。因此普通首批内置 definition 只给 work item 暴露只读 Tool；
+当前持久恢复边界刻意放在 work-item run 之间：`DurableWorkflowWorker` 可同时原子 claim 多个依赖已满足的
+work item，每个 item 使用独立 lease、attempt 与预算预留；这些 bounded Agent run 在锁外并行执行，
+再分别以 Workflow revision CAS 提交结果。最后一个依赖成功提交后才解锁 join/synthesis 节点。
+进程重启后从 `WorkflowStore` 恢复，过期 lease 只回收对应 item；执行期间 heartbeat 续租，防止长模型
+run 被误判为崩溃。当前实现没有声称可以从一次 Provider/Tool 调用的中间指令继续，也没有把 LangGraph
+SQLite checkpointer 作为第二事实源；崩溃在提交前发生时，该 work-item run 会按 lease/retry 语义重做。
+因此普通首批内置 definition 只给 work item 暴露只读 Tool；
 `deep_research` 是当前例外，它暴露零个本地 Tool，并在相同 Chat Completions Provider turn 内使用
 百炼原生联网。未来若允许写副作用，必须先增加 operation-level idempotency key 和 side-effect
 commit barrier。
@@ -338,12 +340,12 @@ trusted work-item prompt 返回完整、通过严格 schema
 校验的 `workflow_control` JSON 时，adapter 才会把它解释为 `verified`、`repair`、`blocked` 或
 `failed`；Markdown 代码块、混合文本和未知字段都不会成为控制指令。普通 owner work item 仍可直接
 返回正文；结构化 constraint 指定的 verifier 即使成功也必须返回 `verified` 并完整覆盖分配给它的
-constraint ID，否则该 quantum 进入 retry/failure。`repair_work_item_ids` 只能从 controller 提供的
+constraint ID，否则该 work-item run 进入 retry/failure。`repair_work_item_ids` 只能从 controller 提供的
 祖先候选中选择，并在 plan revision 前再次经过 DAG/descendant 校验。
 重试不是盲重放：下一次 trusted assignment 会携带已提交的前次 attempt number、稳定 error code 和
 有界 result summary，planner/worker prompt 据此纠正 schema、admission 或执行错误；这些反馈来自
 Workflow Store，而不是入口临时状态。
-Planner 的 proposal 解析与同一套 Definition materialize/admission 在该 Agent quantum 发布 terminal
+Planner 的 proposal 解析与同一套 Definition materialize/admission 在该 Agent run 发布 terminal
 canonical event 之前执行；解析或 admission 失败会使这次 planner Agent run 本身失败，再由 Workflow
 controller 按已提交的 retry/failure 规则收敛，避免内外两层对同一次尝试给出相反终态。
 

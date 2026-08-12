@@ -110,10 +110,27 @@ class HotelPriceWatchRuntime:
         state = AgentState.from_request(request)
         now = self.now_fn()
         if now >= goal.ends_at:
+            fingerprint = _digest({
+                "task_id": snapshot.task_id,
+                "outcome": "expired",
+                "ends_at": goal.ends_at.isoformat(),
+            })
             return TaskQuantumResult(
                 checkpoint=TaskCheckpoint(
                     kind="completed",
                     summary="Hotel price watch ended without a matching offer.",
+                    notification=TaskNotificationRequest(
+                        channel=goal.notification_channel,
+                        message=(
+                            f"{goal.search.destination}酒店价格监控已结束，"
+                            "期间未找到符合预算的报价。"
+                        ),
+                        idempotency_key=f"expired:{fingerprint}",
+                        evidence_ids=[f"task:{snapshot.task_id}"],
+                        evidence_fingerprint=fingerprint,
+                        deliver_after=now,
+                        expires_at=now + timedelta(hours=6),
+                    ),
                     workflow_state_patch={
                         "outcome": "expired",
                         "ended_at": now.isoformat(),
@@ -124,6 +141,26 @@ class HotelPriceWatchRuntime:
             )
 
         step_id = _ready_probe_step(snapshot, binding)
+        if goal.starts_at is not None and now < goal.starts_at:
+            return TaskQuantumResult(
+                checkpoint=TaskCheckpoint(
+                    kind="waiting_schedule",
+                    step_id=step_id,
+                    wait=TaskWaitState(
+                        kind="schedule",
+                        reason_code="hotel_watch_not_started",
+                        summary="Waiting for the configured first hotel price check.",
+                        step_id=step_id,
+                        next_eligible_at=goal.starts_at,
+                        expires_at=goal.ends_at + timedelta(seconds=1),
+                    ),
+                    workflow_state_patch={
+                        "scheduled_first_check_at": goal.starts_at.isoformat(),
+                    },
+                ),
+                state=state,
+                binding=binding,
+            )
         tool_input = goal.search.model_dump(mode="json", exclude={"limit"})
         decision = AssistantDecision(
             type="tool_call",

@@ -65,8 +65,13 @@ def test_initial_scenario_inventory_and_release_safety_contracts() -> None:
         "calendar_create",
         "calendar_search",
         "mcp.amap_maps.maps_geo",
-        "workflow_submit",
     }
+    assert all(
+        item.assistant_mode == "deep_research"
+        for item in scenarios
+        if item.id.startswith("deep_research_")
+        or item.id == "staging_deep_research_workflow"
+    )
     by_id = {item.id: item for item in scenarios}
     assert by_id["correct_tool_among_candidates"].tool_contract.arguments == ()
     assert by_id["tool_failure_no_repeat"].tool_contract.arguments == ()

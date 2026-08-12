@@ -64,6 +64,15 @@ from assistant_agent.gateway.turn_facade import (
     GatewayTurnRequest,
     GatewayTurnTimeout,
 )
+from assistant_agent.api.agent_service_notifications import (
+    NotificationSender,
+    get_agent_service_notification_hub,
+)
+from assistant_agent.automation.notification_models import (
+    DeliveryResult,
+    NotificationEnvelope,
+    NotificationOwner,
+)
 
 router = APIRouter()
 logger = logging.getLogger("assistant_agent.api.agent_service_websocket")
@@ -119,6 +128,8 @@ class AgentServiceConnectionState:
     visual_reminder_manager: VisualReminderManager | None = None
     visual_reminder_owner_id: str | None = None
     proactive_message_sink: ProactiveMessageSink | None = None
+    durable_notification_sender: NotificationSender | None = None
+    durable_notification_owner: NotificationOwner | None = None
     chats: list[dict[str, Any]] = field(default_factory=list)
     video_ids: list[str] = field(default_factory=list)
     latest_video_frames: dict[str, VideoFrame] = field(default_factory=dict)
@@ -282,6 +293,10 @@ class AssistantControlStartHandler(BaseHandler):
                     "entry_profile": "agent_service",
                 },
             )
+        await _register_durable_notification_subscriber(
+            state=state,
+            user_id=number,
+        )
         return _response_envelope(
             message=self.response_message,
             session_id=state.response_session_id,
@@ -326,6 +341,10 @@ class AssistantControlHandler(BaseHandler):
             state=state,
             user_id=number,
             call_type=call_type,
+        )
+        await _register_durable_notification_subscriber(
+            state=state,
+            user_id=number,
         )
         return _response_envelope(
             message=self.response_message,
@@ -604,6 +623,10 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
         websocket=websocket,
         state=state,
     )
+    state.durable_notification_sender = _AgentServiceDurableNotificationSender(
+        websocket=websocket,
+        state=state,
+    )
     logger.info(
         "agent-service websocket connected version=%s session_digest=%s query_keys=%s",
         version,
@@ -793,6 +816,7 @@ async def _cleanup_agent_service_connection(
     close_reason: str | None,
 ) -> None:
     state.closed = True
+    await _unregister_durable_notification_subscriber(state)
     reminder_manager = state.visual_reminder_manager
     reminder_owner_id = state.visual_reminder_owner_id
     if reminder_manager is not None:
@@ -1387,6 +1411,43 @@ async def _protect_chat_visual_target(
     )
 
 
+async def _register_durable_notification_subscriber(
+    *,
+    state: AgentServiceConnectionState,
+    user_id: str,
+) -> None:
+    sender = state.durable_notification_sender
+    if sender is None:
+        return
+    owner = NotificationOwner(user_id=user_id)
+    hub = get_agent_service_notification_hub()
+    previous_owner = state.durable_notification_owner
+    if previous_owner is not None and previous_owner != owner:
+        await hub.unregister(
+            owner=previous_owner,
+            subscriber_id=state.connection_id,
+        )
+    await hub.register(
+        owner=owner,
+        subscriber_id=state.connection_id,
+        sender=sender,
+    )
+    state.durable_notification_owner = owner
+
+
+async def _unregister_durable_notification_subscriber(
+    state: AgentServiceConnectionState,
+) -> None:
+    owner = state.durable_notification_owner
+    if owner is None:
+        return
+    await get_agent_service_notification_hub().unregister(
+        owner=owner,
+        subscriber_id=state.connection_id,
+    )
+    state.durable_notification_owner = None
+
+
 async def _emit_periodic_chat_progress(
     websocket: WebSocket,
     *,
@@ -1433,12 +1494,12 @@ def _prepared_chat_response(
             "description": response_text,
             "status": "SUCCESS",
         }
-        workflow_output_refs = _workflow_output_refs(
+        durable_output_refs = _durable_output_refs(
             turn.payload.get("output_refs")
         )
-        workflow_fields = (
-            {"outputRefs": workflow_output_refs}
-            if workflow_output_refs
+        durable_fields = (
+            {"outputRefs": durable_output_refs}
+            if durable_output_refs
             else {}
         )
         image_details = _generated_image_details(turn.payload.get("output_refs"))
@@ -1471,7 +1532,7 @@ def _prepared_chat_response(
                         },
                     },
                 },
-                **workflow_fields,
+                **durable_fields,
             }
         else:
             annotations = _validated_citation_annotations(
@@ -1493,7 +1554,7 @@ def _prepared_chat_response(
                 **_display_flags(sequence > 1),
                 "sequence": sequence,
                 "final": True,
-                **workflow_fields,
+                **durable_fields,
             }
             if delivery.expects_ack:
                 body["deliveryId"] = delivery.delivery_id
@@ -1531,15 +1592,18 @@ def _generated_image_details(output_refs: Any) -> list[dict[str, str]]:
     return details
 
 
-def _workflow_output_refs(output_refs: Any) -> list[str]:
+def _durable_output_refs(output_refs: Any) -> list[str]:
     if not isinstance(output_refs, list):
         return []
     return list(dict.fromkeys(
         output_ref
         for output_ref in output_refs
         if isinstance(output_ref, str)
-        and output_ref.startswith("workflow://")
-        and len(output_ref) > len("workflow://")
+        and any(
+            output_ref.startswith(prefix)
+            and len(output_ref) > len(prefix)
+            for prefix in ("workflow://", "task://")
+        )
     ))[:4]
 
 
@@ -1938,6 +2002,55 @@ class _AgentServiceProactiveMessageSink:
             )
 
 
+@dataclass(frozen=True)
+class _AgentServiceDurableNotificationSender:
+    websocket: WebSocket
+    state: AgentServiceConnectionState
+
+    async def __call__(
+        self,
+        notification: NotificationEnvelope,
+    ) -> DeliveryResult:
+        if self.state.closed:
+            return DeliveryResult(
+                accepted=False,
+                error_code="recipient_offline",
+            )
+        await self._wait_for_active_chats()
+        if self.state.closed:
+            return DeliveryResult(
+                accepted=False,
+                error_code="recipient_offline",
+            )
+        await _send_response(
+            self.websocket,
+            _durable_notification_chat_response(self.state, notification),
+            state=self.state,
+        )
+        return DeliveryResult(
+            accepted=True,
+            provider_message_id=(
+                f"agent-service:{self.state.connection_id}:"
+                f"{notification.delivery_id}"
+            ),
+        )
+
+    async def _wait_for_active_chats(self) -> None:
+        current = asyncio.current_task()
+        while True:
+            tasks = tuple(
+                task
+                for task in self.state.chat_tasks
+                if task is not current and not task.done()
+            )
+            if not tasks:
+                return
+            await asyncio.gather(
+                *(asyncio.shield(task) for task in tasks),
+                return_exceptions=True,
+            )
+
+
 def _proactive_message_chat_response(
     state: AgentServiceConnectionState,
     message: ProactiveMessage,
@@ -1951,6 +2064,29 @@ def _proactive_message_chat_response(
                 "content": {
                     "intentResult": {
                         "description": message.content,
+                        "status": "SUCCESS",
+                    }
+                },
+            },
+            **_display_flags(False),
+        },
+    )
+
+
+def _durable_notification_chat_response(
+    state: AgentServiceConnectionState,
+    notification: NotificationEnvelope,
+) -> dict[str, Any]:
+    task_id = notification.origin_ref or notification.delivery_id
+    return _response_envelope(
+        message="chatResponse",
+        session_id=state.response_session_id,
+        body={
+            "message": {
+                "chatIndex": f"durable-task:{task_id}",
+                "content": {
+                    "intentResult": {
+                        "description": notification.message,
                         "status": "SUCCESS",
                     }
                 },

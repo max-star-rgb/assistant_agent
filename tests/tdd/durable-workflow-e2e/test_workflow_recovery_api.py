@@ -196,9 +196,12 @@ def test_http_status_events_input_and_cancel_are_thin_service_facades() -> None:
         "work_item_kind": "plan",
         "display_title": "正在制定执行计划",
         "completed_items": 0,
-        "total_items": 1,
-        "attempt_count": 0,
-    }
+            "total_items": 1,
+            "attempt_count": 0,
+            "running_items": 0,
+            "ready_items": 1,
+            "active_items": [],
+        }
     assert events.json()["next_cursor"] == 2
     assert cancelled.json()["workflow"]["status"] == "cancelled"
 

@@ -223,7 +223,7 @@ work-item request；它属于用户数据而非权限或控制指令。每个 wo
 `UserRequest.assistant_mode` 是结构化产品模式，只支持 `standard` 与 `deep_research`。standard
 请求由 PromptCompiler 编译正常 assistant-loop `ChatRequest`。`deep_research` 前台入口在进入
 assistant loop/PromptCompiler 之前已由 Runtime 直接创建 planning 状态的 Durable Workflow：该短 run
-不调用 Provider、不暴露或调用 `workflow_submit`，也不在 Workflow 不可用时退化为一次前台
+不调用 Provider、不暴露任何 Workflow 提交 Tool，也不在 Workflow 不可用时退化为一次前台
 Provider-native 深搜，而是返回结构化不可用错误。后台 planner 和 `deep_research` work item
 通过 runtime-owned assignment 编译自己的 `ChatRequest`，可信空 allowlist 表示零个本地 Tool，并使用
 deep research search profile。模式不会从关键词、Skill 或历史内容推断。

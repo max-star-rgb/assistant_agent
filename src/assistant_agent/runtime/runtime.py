@@ -306,7 +306,6 @@ class AgentGraphRuntime:
                 visual_reminder_registry=self.visual_reminder_registry,
                 visual_memory_text_index=self.visual_memory_text_index,
                 durable_task_service=self.durable_task_service,
-                workflow_service=self.workflow_service,
             )
             if self.durable_task_service is not None:
                 self.durable_task_service.registry = self.registry
@@ -323,14 +322,6 @@ class AgentGraphRuntime:
                         self.config.durable_workflow_max_quanta
                     ),
                     notification_outbox=self.notification_outbox_store,
-                )
-            if (
-                self.config.durable_workflows_enabled
-                and "workflow_submit" not in self.registry.list()
-            ):
-                raise ValueError(
-                    "A custom Registry for durable workflows must include "
-                    "workflow_submit before runtime startup."
                 )
         if (
             self.durable_task_service is not None
@@ -463,7 +454,6 @@ class AgentGraphRuntime:
             event_sink=self.event_sink,
             context_metadata={
                 "durable_task_service": self.durable_task_service,
-                "workflow_service": self.workflow_service,
             },
             execution_backend=self.tool_execution_backend,
         )
@@ -932,7 +922,6 @@ class AgentGraphRuntime:
             "action_tool_calls_used": 0,
             "control_tool_calls_used": 0,
             "max_plan_steps": self.config.max_plan_steps,
-            "max_plan_revisions": self.config.max_plan_revisions,
         }
         try:
             raise_if_cancelled(cancel_token, phase="pre_graph", state=state)

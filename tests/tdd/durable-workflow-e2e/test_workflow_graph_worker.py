@@ -229,7 +229,7 @@ def _service(store) -> WorkflowService:
     )
 
 
-def test_worker_advances_one_work_item_per_quantum_and_completes(tmp_path) -> None:
+def test_worker_advances_one_dependency_wave_and_completes(tmp_path) -> None:
     store = SQLiteWorkflowStore(tmp_path / "workflow.sqlite3")
     service = _service(store)
     bundle = service.submit(
@@ -314,7 +314,8 @@ def test_progress_projects_the_same_ready_item_that_runtime_will_execute(tmp_pat
     ).run_once()
 
     assert progress["work_item_id"] == "ws_industry"
-    assert executor.executed == ["ws_industry"]
+    assert progress["ready_items"] == 2
+    assert executor.executed == ["ws_industry", "ws_openclaw"]
     store.close()
 
 
@@ -394,17 +395,18 @@ def test_worker_recovers_next_quantum_after_store_reopen(tmp_path) -> None:
     second_store.close()
 
 
-def test_graph_has_explicit_recovery_and_commit_nodes(tmp_path) -> None:
+def test_runtime_uses_durable_item_claims_without_a_second_scheduler_graph(
+    tmp_path,
+) -> None:
     store = SQLiteWorkflowStore(tmp_path / "workflow.sqlite3")
     runtime = WorkflowRuntime(
         service=_service(store),
         work_item_executor=RecordingExecutor(),
     )
 
-    nodes = set(runtime.graph.get_graph().nodes)
-
-    assert {"hydrate_flow", "guard_execution", "select_ready_work"}.issubset(nodes)
-    assert {"execute_work_item", "commit_quantum", "terminalize"}.issubset(nodes)
+    assert not hasattr(runtime, "graph")
+    assert hasattr(store, "claim_ready_work_item")
+    assert not hasattr(store, "claim_next")
     store.close()
 
 

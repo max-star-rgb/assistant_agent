@@ -82,6 +82,7 @@ class ReleaseScenario(_StrictModel):
     capability: str = Field(min_length=1)
     risk: Literal["critical", "high", "medium", "low"]
     request: str = Field(min_length=1)
+    assistant_mode: Literal["standard", "deep_research"] = "standard"
     repetitions: Literal[1, 2] = 1
     tool_contract: ToolContract
     fixtures: dict[str, tuple[ToolFixture, ...]] = Field(default_factory=dict)

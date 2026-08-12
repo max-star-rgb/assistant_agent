@@ -17,7 +17,6 @@ from assistant_agent.tools.models import RunToolCatalog, ToolSpec
 from assistant_agent.tools.ids import (
     DURABLE_TASK_CREATION_TOOL_NAMES,
     LOAD_SKILL_TOOL_NAME,
-    WORKFLOW_SUBMIT_TOOL_NAME,
 )
 from assistant_agent.skills.loading import (
     SkillCatalog,
@@ -220,11 +219,7 @@ def qualify_tool_specs(
     )
     for spec in tool_specs:
         if request.assistant_mode == "deep_research" and not trusted_workflow:
-            excluded_reasons[spec.name] = [
-                "assistant_mode_runtime_managed"
-                if spec.name == WORKFLOW_SUBMIT_TOOL_NAME
-                else "assistant_mode_not_allowed"
-            ]
+            excluded_reasons[spec.name] = ["assistant_mode_not_allowed"]
             continue
         if visibility_overrides.allowed_tools and spec.name not in visibility_overrides.allowed_tools:
             excluded_reasons[spec.name] = ["entry_profile_not_allowed"]

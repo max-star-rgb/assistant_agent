@@ -330,8 +330,8 @@ WebSocket/coroutine。其具体契约以
 [runtime-event-stream-architecture.md](runtime-event-stream-architecture.md)、源码和测试为准。
 
 通用 Durable Workflow 遵循相同 connection boundary。显式 `deep_research` ingress 由 Runtime
-直接创建 planning 状态的 Workflow；其他入口仍可通过受治理的 `workflow_submit` 提交通用长流程。
-两者提交成功后都不把 `workflow_id` 放入 active-run map、不占用 followup queue，也不要求原 WebSocket
+直接创建 planning 状态的 Workflow；standard 与其他入口不能由模型自行提交 Workflow。
+提交成功后不把 `workflow_id` 放入 active-run map、不占用 followup queue，也不要求原 WebSocket
 保持连接。后续 status/events/input/cancel 由 identity-scoped `/workflows` facade 调用
 `WorkflowService`，不能直接读取 SQLite 或 artifact 文件。后台 planner/worker 的独立 bounded Agent
 run 不重新打开已结束 ingress run 的输出门。

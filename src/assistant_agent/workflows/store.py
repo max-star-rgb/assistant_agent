@@ -8,10 +8,9 @@ from threading import RLock
 from typing import Protocol
 
 from assistant_agent.workflows.models import (
-    ClaimedWorkflowWorkItem,
+    WorkflowDispatch,
     WorkflowBundle,
     WorkflowEvent,
-    WorkflowLease,
     WorkflowWorkItem,
     WorkflowWorkItemLease,
     utc_now,
@@ -64,11 +63,14 @@ class WorkflowStore(Protocol):
         lease_seconds: int,
         model_call_limit: int,
         tool_call_limit: int,
-    ) -> ClaimedWorkflowWorkItem | None: ...
-    def claim_next(
-        self, *, worker_id: str, now: datetime, lease_seconds: int
-    ) -> WorkflowLease | None: ...
-    def release(self, lease: WorkflowLease, *, expected_revision: int) -> None: ...
+    ) -> WorkflowDispatch | None: ...
+    def renew_work_item_lease(
+        self,
+        lease: WorkflowWorkItemLease,
+        *,
+        now: datetime,
+        lease_seconds: int,
+    ) -> WorkflowWorkItemLease: ...
     def close(self) -> None: ...
 
 
@@ -172,25 +174,32 @@ def claim_ready_item_in_bundle(
         return None, events
     if workflow.cancel_requested:
         return None, events
-    if now >= workflow.budget.deadline_at:
-        _terminalize_unclaimed_workflow(bundle, now=now, reason="deadline_exceeded")
-        events.append(_workflow_failed_event(bundle, now=now, reason="deadline_exceeded"))
-        return None, events
-    if workflow.budget.workflow_quanta_remaining <= 0:
-        _terminalize_unclaimed_workflow(bundle, now=now, reason="budget_exhausted")
-        events.append(_workflow_failed_event(bundle, now=now, reason="budget_exhausted"))
-        return None, events
-    if workflow.budget.model_calls_remaining <= 0:
-        _terminalize_unclaimed_workflow(bundle, now=now, reason="model_budget_exhausted")
-        events.append(
-            _workflow_failed_event(bundle, now=now, reason="model_budget_exhausted")
-        )
-        return None, events
     ready = sorted(
         (item for item in bundle.current_plan.work_items if item.status == "ready"),
         key=lambda item: item.work_item_id,
     )
     if not ready:
+        return None, events
+    has_running_items = any(
+        item.status == "running" for item in bundle.current_plan.work_items
+    )
+    if now >= workflow.budget.deadline_at:
+        _terminalize_unclaimed_workflow(bundle, now=now, reason="deadline_exceeded")
+        events.append(_workflow_failed_event(bundle, now=now, reason="deadline_exceeded"))
+        return None, events
+    if workflow.budget.workflow_quanta_remaining <= 0:
+        if has_running_items:
+            return None, events
+        _terminalize_unclaimed_workflow(bundle, now=now, reason="budget_exhausted")
+        events.append(_workflow_failed_event(bundle, now=now, reason="budget_exhausted"))
+        return None, events
+    if workflow.budget.model_calls_remaining <= 0:
+        if has_running_items:
+            return None, events
+        _terminalize_unclaimed_workflow(bundle, now=now, reason="model_budget_exhausted")
+        events.append(
+            _workflow_failed_event(bundle, now=now, reason="model_budget_exhausted")
+        )
         return None, events
     item = ready[0]
     reserved_model_calls = min(
@@ -367,7 +376,7 @@ class InMemoryWorkflowStore:
         lease_seconds: int,
         model_call_limit: int,
         tool_call_limit: int,
-    ) -> ClaimedWorkflowWorkItem | None:
+    ) -> WorkflowDispatch | None:
         with self._lock:
             for bundle in sorted(
                 self._bundles.values(), key=lambda item: item.workflow.updated_at
@@ -396,58 +405,57 @@ class InMemoryWorkflowStore:
                     lease = lease.model_copy(
                         update={"workflow_revision": bundle.workflow.revision}
                     )
-                    return ClaimedWorkflowWorkItem(
-                        lease=lease,
-                        bundle=bundle.model_copy(deep=True),
-                        committed_events=[event.model_copy(deep=True) for event in committed],
-                    )
-            return None
-
-    def claim_next(
-        self, *, worker_id: str, now: datetime, lease_seconds: int
-    ) -> WorkflowLease | None:
-        with self._lock:
-            for bundle in sorted(
-                self._bundles.values(), key=lambda item: item.workflow.updated_at
-            ):
-                workflow = bundle.workflow
-                if workflow.status not in {"queued", "running", "recovering"}:
-                    continue
-                if workflow.lease_expires_at is not None and workflow.lease_expires_at > now:
-                    continue
-                workflow.lease_owner = worker_id
-                workflow.lease_token = secrets.token_urlsafe(18)
-                workflow.lease_expires_at = now + timedelta(seconds=lease_seconds)
-                if workflow.status == "queued" and not workflow.cancel_requested:
-                    workflow.status = "running"
-                workflow.revision += 1
-                workflow.updated_at = now
-                return WorkflowLease(
-                    workflow_id=workflow.workflow_id,
-                    workflow_revision=workflow.revision,
-                    worker_id=worker_id,
-                    lease_token=workflow.lease_token,
-                    expires_at=workflow.lease_expires_at,
+                return WorkflowDispatch(
+                    lease=lease,
+                    bundle=bundle.model_copy(deep=True),
+                    committed_events=[
+                        event.model_copy(deep=True) for event in committed
+                    ],
                 )
             return None
 
-    def release(self, lease: WorkflowLease, *, expected_revision: int) -> None:
+    def renew_work_item_lease(
+        self,
+        lease: WorkflowWorkItemLease,
+        *,
+        now: datetime,
+        lease_seconds: int,
+    ) -> WorkflowWorkItemLease:
         with self._lock:
             bundle = self._bundles.get(lease.workflow_id)
             if bundle is None:
                 raise WorkflowLeaseConflict(lease.workflow_id)
-            workflow = bundle.workflow
-            if (
-                workflow.revision != expected_revision
-                or workflow.lease_owner != lease.worker_id
-                or workflow.lease_token != lease.lease_token
-            ):
+            item = next(
+                (
+                    candidate
+                    for candidate in bundle.current_plan.work_items
+                    if candidate.work_item_id == lease.work_item_id
+                ),
+                None,
+            )
+            if not _lease_matches(item, lease) or item.lease_expires_at <= now:
                 raise WorkflowLeaseConflict(lease.workflow_id)
-            workflow.lease_owner = None
-            workflow.lease_token = None
-            workflow.lease_expires_at = None
-            workflow.revision += 1
-            workflow.updated_at = utc_now()
+            item.lease_expires_at = now + timedelta(seconds=lease_seconds)
+            bundle.workflow.revision += 1
+            bundle.workflow.updated_at = now
+            return lease.model_copy(update={
+                "workflow_revision": bundle.workflow.revision,
+                "expires_at": item.lease_expires_at,
+            })
 
     def close(self) -> None:
         return None
+
+
+def _lease_matches(
+    item: WorkflowWorkItem | None,
+    lease: WorkflowWorkItemLease,
+) -> bool:
+    return bool(
+        item is not None
+        and item.status == "running"
+        and item.active_attempt_id == lease.attempt_id
+        and item.lease_owner == lease.worker_id
+        and item.lease_token == lease.lease_token
+        and item.lease_expires_at is not None
+    )

@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 import re
+import logging
 from collections.abc import Callable
 from datetime import datetime
+from threading import Event, Thread
 from typing import Literal, Protocol
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from assistant_agent.workflows.models import (
-    ClaimedWorkflowWorkItem,
+    WorkflowDispatch,
     WorkflowBundle,
     WorkflowConstraintBinding,
     WorkflowEvent,
@@ -26,6 +28,9 @@ from assistant_agent.workflows.store import (
     WorkflowRevisionConflict,
 )
 from assistant_agent.workflows.transitions import validate_plan_dag
+
+
+logger = logging.getLogger(__name__)
 
 
 class WorkItemAssignment(BaseModel):
@@ -147,11 +152,18 @@ class WorkflowRuntime:
         self.model_call_limit_per_item = model_call_limit_per_item
         self.tool_call_limit_per_item = tool_call_limit_per_item
 
-    def run_claim(self, claim: ClaimedWorkflowWorkItem) -> WorkflowBundle:
+    def run_claim(
+        self,
+        claim: WorkflowDispatch,
+        *,
+        lease_seconds: int | None = None,
+    ) -> WorkflowBundle:
         """Execute outside the store lock, then merge using item-token + revision CAS."""
 
         bundle = claim.bundle
         lease = claim.lease
+        if lease is None:
+            raise WorkflowLeaseConflict(bundle.workflow.workflow_id)
         work_item = self._work_item(bundle, lease.work_item_id)
         if (
             work_item.active_attempt_id != lease.attempt_id
@@ -188,6 +200,16 @@ class WorkflowRuntime:
             work_item=work_item.model_copy(deep=True),
         )
         started_at = self.clock()
+        heartbeat_stop = Event()
+        heartbeat = None
+        if lease_seconds is not None:
+            heartbeat = Thread(
+                target=self._renew_lease_until_stopped,
+                args=(claim, lease_seconds, heartbeat_stop),
+                name=f"workflow-lease-{lease.work_item_id}",
+                daemon=True,
+            )
+            heartbeat.start()
         try:
             result = self.work_item_executor.execute(assignment)
         except Exception as exc:
@@ -196,6 +218,10 @@ class WorkflowRuntime:
                 error_code=_executor_error_code(exc),
                 agent_role=agent_role,
             )
+        finally:
+            heartbeat_stop.set()
+            if heartbeat is not None:
+                heartbeat.join(timeout=min(1.0, max(0.1, lease_seconds / 3)))
         result = result.model_copy(
             update={
                 "started_at": started_at,
@@ -205,12 +231,39 @@ class WorkflowRuntime:
         )
         return self._commit_result(claim, result)
 
+    def _renew_lease_until_stopped(
+        self,
+        claim: WorkflowDispatch,
+        lease_seconds: int,
+        stop: Event,
+    ) -> None:
+        lease = claim.lease
+        if lease is None:
+            return
+        interval = max(0.25, lease_seconds / 3)
+        while not stop.wait(interval):
+            try:
+                lease = self.service.store.renew_work_item_lease(
+                    lease,
+                    now=self.clock(),
+                    lease_seconds=lease_seconds,
+                )
+            except WorkflowLeaseConflict:
+                return
+            except Exception:  # noqa: BLE001 - transient heartbeat failures retry.
+                logger.warning(
+                    "Durable Workflow lease heartbeat failed; retrying.",
+                    exc_info=True,
+                )
+
     def _commit_result(
         self,
-        claim: ClaimedWorkflowWorkItem,
+        claim: WorkflowDispatch,
         execution_result: WorkItemExecutionResult,
     ) -> WorkflowBundle:
         lease = claim.lease
+        if lease is None:
+            raise WorkflowLeaseConflict(claim.bundle.workflow.workflow_id)
         for _ in range(16):
             loaded = self.service.store.load(lease.workflow_id)
             if loaded is None:
@@ -425,9 +478,11 @@ class WorkflowRuntime:
     @staticmethod
     def _bounded_result(
         result: WorkItemExecutionResult,
-        claim: ClaimedWorkflowWorkItem,
+        claim: WorkflowDispatch,
     ) -> WorkItemExecutionResult:
         lease = claim.lease
+        if lease is None:
+            raise WorkflowLeaseConflict(claim.bundle.workflow.workflow_id)
         if (
             result.model_calls_used <= lease.reserved_model_calls
             and result.tool_calls_used <= lease.reserved_tool_calls
@@ -607,7 +662,7 @@ class WorkflowRuntime:
             candidate.output_artifact_refs = []
             candidate.result_summary = ""
             candidate.error_code = None
-            candidate.active_attempt_id = None
+            self._clear_item_lease(candidate)
             if candidate.work_item_id in repair_ids and set(candidate.depends_on).issubset(
                 succeeded_outside
             ):

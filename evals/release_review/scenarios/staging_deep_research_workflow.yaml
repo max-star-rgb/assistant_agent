@@ -3,21 +3,16 @@ phase: staging
 capability: real_deep_research_workflow_submission
 risk: critical
 request: 创建一个可恢复的长期研究任务：分析未来一年企业 Agent 治理的关键趋势，交付带引用的中文报告、风险清单和三阶段落地建议。
+assistant_mode: deep_research
 tool_contract:
-  required: [workflow_submit]
+  required: []
   allowed: []
   forbidden: []
-  arguments:
-    - tool: workflow_submit
-      path: workflow_type
-      equals: deep_research
-  sequence:
-    before: []
-    before_final_response: [workflow_submit]
 state_assertions:
   - path: status
     equals: completed
+  - path: response.data.workflow.workflow_type
+    equals: deep_research
 staging:
   resource_profile: deep_research_workflow
   cleanup: required
-

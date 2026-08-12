@@ -32,7 +32,6 @@ from assistant_agent.runtime.chat_adapter import (
 from assistant_agent.runtime.runtime import AgentGraphRuntime
 from assistant_agent.runtime.requests import UserRequest
 from assistant_agent.skills.loading import SkillCatalog
-from assistant_agent.tools.ids import WORKFLOW_SUBMIT_TOOL_NAME
 from assistant_agent.tools.models import ToolSpec
 from assistant_agent.workflows.agent_runtime import (
     AgentWorkItemRequest,
@@ -286,7 +285,7 @@ def test_standard_mode_remains_the_gateway_default() -> None:
     assert request.assistant_mode == "standard"
 
 
-def test_deep_research_entry_does_not_expose_llm_submission_tools() -> None:
+def test_deep_research_entry_does_not_expose_foreground_tools() -> None:
     request = UserRequest(
         user_id="user-sentinel",
         session_id="session-sentinel",
@@ -294,7 +293,6 @@ def test_deep_research_entry_does_not_expose_llm_submission_tools() -> None:
         assistant_mode="deep_research",
     )
     specs = [
-        ToolSpec(name=WORKFLOW_SUBMIT_TOOL_NAME, category="write"),
         ToolSpec(name="email_search", category="read"),
         ToolSpec(name="maps_text_search", category="read"),
     ]
@@ -307,7 +305,6 @@ def test_deep_research_entry_does_not_expose_llm_submission_tools() -> None:
 
     assert selection.run_tool_catalog.available_tool_names == []
     assert selection.run_tool_catalog.excluded_reasons == {
-        WORKFLOW_SUBMIT_TOOL_NAME: ["assistant_mode_runtime_managed"],
         "email_search": ["assistant_mode_not_allowed"],
         "maps_text_search": ["assistant_mode_not_allowed"],
     }

@@ -166,12 +166,19 @@ def test_sqlite_reopen_recovers_bundle_events_and_expired_lease(tmp_path) -> Non
     created = first_service.submit(
         identity=_identity(),
         ingress_run_id="run-sentinel",
-        submission=_submission(),
+        submission=_submission(requested_budget={
+            "model_calls": 12,
+            "tool_calls": 12,
+            "workflow_quanta": 16,
+            "deadline_seconds": 3600,
+        }),
     )
-    old_lease = first_store.claim_next(
+    old_claim = first_store.claim_ready_work_item(
         worker_id="worker-old",
         now=now,
         lease_seconds=30,
+        model_call_limit=5,
+        tool_call_limit=4,
     )
     first_store.close()
 
@@ -181,16 +188,25 @@ def test_sqlite_reopen_recovers_bundle_events_and_expired_lease(tmp_path) -> Non
         identity=_identity(),
         workflow_id=created.workflow.workflow_id,
     )
-    new_lease = second_store.claim_next(
+    new_claim = second_store.claim_ready_work_item(
         worker_id="worker-new",
         now=now + timedelta(seconds=31),
         lease_seconds=30,
+        model_call_limit=5,
+        tool_call_limit=4,
     )
 
     assert loaded.workflow.workflow_id == created.workflow.workflow_id
-    assert [event.cursor for event in second_service.list_events(
+    event_types = [event.event_type for event in second_service.list_events(
         identity=_identity(), workflow_id=created.workflow.workflow_id
-    )] == [1, 2]
-    assert old_lease is not None and new_lease is not None
-    assert new_lease.lease_token != old_lease.lease_token
+    )]
+    assert event_types == [
+        "workflow.accepted",
+        "workflow.planning.started",
+        "workflow.work_item.started",
+        "workflow.work_item.lease_expired",
+        "workflow.work_item.started",
+    ]
+    assert old_claim is not None and new_claim is not None
+    assert new_claim.lease.lease_token != old_claim.lease.lease_token
     second_store.close()

@@ -38,6 +38,7 @@ JsonObject = dict[str, Any]
 class MediaChatOutcome:
     ok: bool
     workflow_ids: list[str] = field(default_factory=list)
+    task_ids: list[str] = field(default_factory=list)
 
 
 async def run_media_console(
@@ -55,6 +56,7 @@ async def run_media_console(
     citation_debug: bool = False,
     interactive: bool = False,
     workflow_details: bool = False,
+    wait_proactive: bool = False,
 ) -> int:
     """Run a Media-Agent compatible client.
 
@@ -132,6 +134,28 @@ async def run_media_console(
                     interactive=interactive,
                     workflow_details=workflow_details,
                 )
+            if ok and wait_proactive:
+                if not outcome.task_ids:
+                    print(
+                        "ERROR: Agent response did not create a durable task.",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    ok = False
+                else:
+                    websocket, ok = await _wait_for_durable_notification(
+                        websockets,
+                        websocket,
+                        task_ids=outcome.task_ids,
+                        server=server,
+                        session_id=current_session_id,
+                        user_number=user_number,
+                        call_type=call_type,
+                        model_name=model_name,
+                        chat_progress=chat_progress,
+                        chat_response_ack=chat_response_ack,
+                        citations=citations,
+                    )
             if not interactive:
                 return 0 if ok else 1
 
@@ -221,6 +245,20 @@ async def run_media_console(
                     interactive=True,
                     workflow_details=workflow_details,
                 )
+                if wait_proactive and outcome.task_ids:
+                    websocket, _ = await _wait_for_durable_notification(
+                        websockets,
+                        websocket,
+                        task_ids=outcome.task_ids,
+                        server=server,
+                        session_id=current_session_id,
+                        user_number=user_number,
+                        call_type=call_type,
+                        model_name=model_name,
+                        chat_progress=chat_progress,
+                        chat_response_ack=chat_response_ack,
+                        citations=citations,
+                    )
     finally:
         await websocket.close()
 
@@ -347,7 +385,75 @@ async def _send_chat_and_print_responses(
         return MediaChatOutcome(
             ok=status != "FAIL",
             workflow_ids=_workflow_ids_from_chat_response_body(body),
+            task_ids=_task_ids_from_chat_response_body(body),
         )
+
+
+async def _wait_for_durable_notification(
+    websockets_module: Any,
+    websocket: Any,
+    *,
+    task_ids: list[str],
+    server: str,
+    session_id: str,
+    user_number: str,
+    call_type: str,
+    model_name: str | None,
+    chat_progress: bool,
+    chat_response_ack: bool,
+    citations: bool,
+) -> tuple[Any, bool]:
+    expected_indexes = {f"durable-task:{task_id}" for task_id in task_ids}
+    print("Waiting for a proactive durable-task reminder…", flush=True)
+    while True:
+        try:
+            envelope = json.loads(await websocket.recv())
+        except websockets_module.exceptions.ConnectionClosed:
+            print(
+                "Agent-Service connection closed while waiting; reconnecting.",
+                file=sys.stderr,
+                flush=True,
+            )
+            reconnect_delay_s = 1.0
+            while True:
+                try:
+                    websocket = await _reopen_media_session(
+                        websockets_module,
+                        websocket,
+                        server=server,
+                        session_id=session_id,
+                        user_number=user_number,
+                        call_type=call_type,
+                        model_name=model_name,
+                        chat_progress=chat_progress,
+                        chat_response_ack=chat_response_ack,
+                        citations=citations,
+                    )
+                    print(
+                        f"Reconnected session {session_id}; still waiting for reminder.",
+                        flush=True,
+                    )
+                    break
+                except Exception as reconnect_exc:
+                    _print_reconnect_error(reconnect_exc)
+                    await asyncio.sleep(reconnect_delay_s)
+                    reconnect_delay_s = min(5.0, reconnect_delay_s * 2)
+            continue
+        if not isinstance(envelope, dict):
+            continue
+        body = parse_body(envelope)
+        if envelope.get("message") == "error":
+            _print_protocol_error(body)
+            return websocket, False
+        if envelope.get("message") != "chatResponse":
+            continue
+        chat_index = _chat_index_from_chat_response_body(body)
+        if chat_index not in expected_indexes:
+            continue
+        description = chat_response_description(body)
+        if description:
+            print(description, flush=True)
+        return websocket, _intent_status(body) != "FAIL"
 
 
 async def _tail_submitted_workflows(
@@ -616,6 +722,14 @@ def project_workflow_progress(payload: JsonObject) -> JsonObject:
         ),
         None,
     )
+    active_items = sorted(
+        (
+            item
+            for item in normalized_items
+            if item.get("status") in {"running", "blocked"}
+        ),
+        key=lambda item: str(item.get("work_item_id") or ""),
+    )
     state = (
         "completed"
         if status == "completed"
@@ -637,6 +751,24 @@ def project_workflow_progress(payload: JsonObject) -> JsonObject:
         "completed_items": completed,
         "total_items": len(normalized_items),
         "attempt_count": int(active.get("attempt_count") or 0) if active else 0,
+        "running_items": sum(
+            item.get("status") == "running" for item in normalized_items
+        ),
+        "ready_items": sum(
+            item.get("status") == "ready" for item in normalized_items
+        ),
+        "active_items": [
+            {
+                "work_item_id": str(item.get("work_item_id") or ""),
+                "work_item_kind": str(item.get("kind") or ""),
+                "display_title": _safe_workflow_display_title(
+                    item.get("display_title")
+                ),
+                "attempt_count": int(item.get("attempt_count") or 0),
+                "status": str(item.get("status") or ""),
+            }
+            for item in active_items
+        ],
     }
 
 
@@ -661,6 +793,19 @@ def _workflow_progress_message(progress: JsonObject) -> str:
         return f"研究需要补充信息（已完成 {completed}/{total} 个阶段）。"
     if state == "failed":
         return f"研究未能完成（已完成 {completed}/{total} 个阶段）。"
+    active_items = progress.get("active_items")
+    if isinstance(active_items, list):
+        active_titles = [
+            _safe_workflow_display_title(item.get("display_title"))
+            for item in active_items
+            if isinstance(item, dict) and item.get("status") == "running"
+        ]
+        active_titles = [title for title in active_titles if title]
+        if len(active_titles) > 1:
+            return (
+                f"正在并行推进 {len(active_titles)} 个阶段："
+                f"{'、'.join(active_titles)}（已完成 {completed}/{total}）。"
+            )
     kind = str(progress.get("work_item_kind") or "")
     title = _safe_workflow_display_title(progress.get("display_title"))
     label = title or _WORKFLOW_STAGE_LABELS.get(kind, "推进研究任务")
@@ -696,6 +841,20 @@ def _workflow_ids_from_chat_response_body(body: JsonObject) -> list[str]:
     if not isinstance(output_refs, list):
         return []
     prefix = "workflow://"
+    return list(dict.fromkeys(
+        value.removeprefix(prefix)
+        for value in output_refs
+        if isinstance(value, str)
+        and value.startswith(prefix)
+        and len(value) > len(prefix)
+    ))
+
+
+def _task_ids_from_chat_response_body(body: JsonObject) -> list[str]:
+    output_refs = body.get("outputRefs")
+    if not isinstance(output_refs, list):
+        return []
+    prefix = "task://"
     return list(dict.fromkeys(
         value.removeprefix(prefix)
         for value in output_refs
@@ -966,6 +1125,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Print raw durable Workflow events in addition to product progress.",
     )
+    parser.add_argument(
+        "--wait-proactive",
+        action="store_true",
+        help="After a durable task is created, wait for its proactive Agent-Service reminder.",
+    )
     return parser
 
 
@@ -986,6 +1150,7 @@ def main(argv: list[str] | None = None) -> int:
             citation_debug=args.citation_debug,
             interactive=args.interactive or args.text is None,
             workflow_details=args.workflow_details,
+            wait_proactive=args.wait_proactive,
         )
     )
 

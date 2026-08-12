@@ -6,11 +6,10 @@ request: 你好，请用两句话介绍你能帮我做什么。
 tool_contract:
   required: []
   allowed: []
-  forbidden: [workflow_submit]
+  forbidden: []
 fixtures: {}
 state_assertions:
   - path: status
     equals: completed
   - path: tool_calls
     length: 0
-
