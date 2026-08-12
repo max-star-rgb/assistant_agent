@@ -6,11 +6,13 @@ from langgraph.graph import END, START, StateGraph
 
 from assistant_agent.runtime.assistant_loop_nodes import (
     assistant_node,
+    await_input_node,
     compose_response_node,
     execute_requested_tool_node,
 )
 from assistant_agent.runtime.assistant_graph_state import (
     AssistantTurnState,
+    route_after_await_input_turn_state,
     route_after_assistant_turn_state,
 )
 from assistant_agent.runtime.assistant_graph_profiles import AssistantGraphProfileName
@@ -44,6 +46,10 @@ def build_assistant_loop_graph(
         ),
     )
     graph.add_node(
+        "await_input",
+        await_input_node,
+    )
+    graph.add_node(
         "execute_tool",
         bind_checkpointed_runtime_node(
             "execute_tool",
@@ -66,8 +72,18 @@ def build_assistant_loop_graph(
         "assistant",
         route_after_assistant_turn_state,
         {
+            "await_input": "await_input",
             "execute_tool": "execute_tool",
             "finish": "compose_response",
+        },
+    )
+
+    graph.add_conditional_edges(
+        "await_input",
+        route_after_await_input_turn_state,
+        {
+            "execute_tool": "execute_tool",
+            "assistant": "assistant",
         },
     )
 

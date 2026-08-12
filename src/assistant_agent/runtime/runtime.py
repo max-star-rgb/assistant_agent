@@ -15,6 +15,7 @@ from assistant_agent.runtime.assistant_graph_app import (
     AssistantTurnGraphApp,
     GraphExecutionIdentity,
 )
+from assistant_agent.runtime.assistant_interrupts import AssistantInterruptRequest
 from assistant_agent.runtime.assistant_graph_state import (
     apply_assistant_turn_state_to_agent_state,
     assistant_turn_state_from_loop_state,
@@ -886,6 +887,7 @@ class AgentGraphRuntime:
         export_trace_context: RuntimeExportTraceContext | None,
         pre_terminal_state_hook: Callable[[AgentState], None] | None,
         run_id: str,
+        interrupt_request: AssistantInterruptRequest | None = None,
     ) -> _PreparedGraphRun:
         """Prepare the shared state and runtime-only dependencies for one run."""
 
@@ -1048,6 +1050,11 @@ class AgentGraphRuntime:
             "response_stream_separator_pending": False,
         }
         initial_state = assistant_turn_state_from_loop_state(legacy_initial_state)
+        if interrupt_request is not None:
+            initial_state["pending_interrupt"] = interrupt_request.model_dump(
+                mode="json"
+            )
+            initial_state = validate_assistant_turn_state(initial_state)
         identity = GraphExecutionIdentity.for_assistant_turn(
             agent_id=self.agent_id,
             user_id=request.user_id,

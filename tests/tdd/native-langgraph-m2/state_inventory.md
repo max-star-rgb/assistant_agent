@@ -27,7 +27,7 @@ Task 1 的恢复闭包。目标不是把 `AgentState` 原样 JSON 化，而是�
 | stream boundary facts | Provider delta adapter | assistant/Tool nodes | 三个显式 bool channel；恢复时保持当前 turn，new turn 重置 |
 | `last_llm_span_id/attempt_kind` | trace correlation | assistant node | 独立 bounded string；new turn 清空；不是调度身份 |
 | `max_*` budgets | assistant/Tool | Runtime input | 明确非负整数 channel；profile 后可收窄 |
-| `pending_interrupt` | M2 interrupt（Task 4） | Task 4 node | 本 Task 先提供 strict nullable DTO channel，new turn 为 `None` |
+| `pending_interrupt` | native `await_input` node 与 resume preflight | Runtime trusted input / `await_input` resume | strict nullable `approval|input` DTO，含安全 prompt、稳定 `action_ref` 与非空 allowed resume kinds；interrupt 前先进入 checkpoint，成功 resume 原子清空，new turn 为 `None` |
 
 ## node 边界
 

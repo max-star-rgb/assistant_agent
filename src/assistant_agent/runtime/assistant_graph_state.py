@@ -217,9 +217,13 @@ class PersistedRunToolCatalog(_CheckpointModel):
 
 
 class PersistedInterrupt(_CheckpointModel):
-    interrupt_id: str = Field(min_length=1, max_length=256)
-    kind: str = Field(min_length=1, max_length=160)
+    schema_version: Literal[1] = 1
+    kind: Literal["approval", "input"]
     prompt: str = Field(min_length=1, max_length=2_000)
+    action_ref: str = Field(min_length=1, max_length=256)
+    allowed_resume_kinds: tuple[
+        Literal["approve", "reject", "provide_input"], ...
+    ] = Field(min_length=1, max_length=2)
 
 
 class PersistedCitation(_CheckpointModel):
@@ -789,10 +793,23 @@ def route_after_assistant_turn_state(value: Mapping[str, object]) -> str:
     run = cast(Mapping[str, Any], state["run"])
     if run["status"] in {"failed", "completed", "cancelled"}:
         return "finish"
+    if state.get("pending_interrupt") is not None:
+        return "await_input"
     output = state.get("assistant_output")
     if isinstance(output, Mapping) and output.get("kind") == "tool_calls":
         return "execute_tool"
     return "finish"
+
+
+def route_after_await_input_turn_state(value: Mapping[str, object]) -> str:
+    """Continue from a resolved input gate without consulting request text."""
+
+    state = validate_assistant_turn_state(value)
+    if state.get("pending_interrupt") is not None:
+        raise ValueError("assistant_interrupt_not_resolved")
+    if state.get("pending_tool_calls"):
+        return "execute_tool"
+    return "assistant"
 
 
 def _messages_from_request(request: UserRequest) -> tuple[PersistedMessage, ...]:
@@ -1562,6 +1579,7 @@ __all__ = [
     "assistant_turn_state_from_loop_state",
     "assistant_turn_state_from_request",
     "persisted_request_from_user_request",
+    "route_after_await_input_turn_state",
     "route_after_assistant_turn_state",
     "validate_assistant_turn_state",
     "validate_assistant_runtime_refs",

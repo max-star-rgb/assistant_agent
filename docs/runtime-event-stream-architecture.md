@@ -55,18 +55,24 @@ occurrence timestamp and correlation identity. Runtime and Tool code must not
 construct a second lifecycle projection by hand after publishing the fact.
 
 standard 模式只有一套主运行图：每个 `AgentGraphRuntime` 只编译一次并稳定持有
-`AssistantTurnGraph`，在 `assistant -> execute_tool -> assistant` 与
-`assistant -> compose_response` 之间按真实 conditional edge 循环或收口。Provider adapter、
+`AssistantTurnGraph`，在 `assistant -> execute_tool -> assistant`、
+`assistant -> await_input -> execute_tool|assistant` 与
+`assistant -> compose_response` 之间按真实 conditional edge 循环、等待或收口。Provider adapter、
 Tool executor、event sink 与 cancel token 通过 LangGraph runtime context 注入，不存入 graph state。
 生产 Agent-Service 与默认 HTTP Gateway 消费 `astream(v2)` 的 native async Runtime 路径；
 逻辑 `ProductEventProjector` 只把已发生的 Runtime 事实投影为现有 `AgentEvent`/
 `RealtimeAgentEvent`，不决定 graph 路由。`GraphStreamPart`、namespace、checkpoint、task 与完整
 state 不进入产品协议。
 
-M1 身份语义为 stable conversation `thread_id` 加每次调用的 `run_id`。当前根图显式不启用
-checkpointer；同一 Runtime 内的多个 turn 通过每次新建 run-scoped input state 隔离，不伪造
-`checkpoint_ns` 能力。持久 checkpoint、namespace/subgraph 恢复与 `interrupt`/
-`Command(resume=...)` 属于 M2，M1 不宣称已具备。
+Graph 身份语义为 stable conversation `thread_id` 加每次调用或 resume 的新 `run_id`。compiled app
+显式接收 checkpointer；绑定 saver 时，内部 `AssistantTurnGraphApp` 以 native `aget_state`/
+`aget_state_history` 读取 checkpoint 与 state history，并以 `interrupt()`/
+`Command(resume=...)` 在同一 thread 恢复。`GraphStreamResult` 的 completed/interrupted 分类取自执行后的
+native snapshot（pending tasks/next 与稳定 Interrupt id），不从 root `values` 或 stream namespace 猜测。
+trusted interrupt request 只允许结构化 `approval|input`，并绑定当前 pending Provider Tool call 或当前
+assistant turn；普通 write/dangerous category、用户文本和任意 metadata 不自动触发 HITL。该能力当前只供
+内部 compiled graph / Runtime 与后续父图使用；Agent-Service、Gateway、HTTP 和媒体 wire 不接收 resume，
+也不投影 `waiting_user`。未绑定 saver 的显式 offline/test graph 不宣称恢复能力。
 仓库不再保留 conditional graph、rule intent/router/planner 或可切换它们的 `AGENT_GRAPH_MODE`；
 `UserRequest` 也不再接受 `execution_strategy=plan_and_solve`。当前仍存在的
 `task_execution_mode` 是工具/持久执行的结构化治理事实，不是第二张 Agent graph 的选择器。

@@ -331,6 +331,10 @@ def _preserve_profile_scope(
     *,
     expected_profile: AssistantGraphProfileName,
 ) -> AssistantTurnState:
+    # A trusted interrupt request is committed in the graph input before the
+    # assistant decision runs.  Legacy node projection must not erase that
+    # checkpoint channel while the native await_input edge is still pending.
+    projected["pending_interrupt"] = prior.get("pending_interrupt")
     marker = f"graph_profile:{expected_profile}"
     prior_catalog = prior.get("catalog", {})
     prior_reasons = tuple(prior_catalog.get("selection_reason_codes", ()))

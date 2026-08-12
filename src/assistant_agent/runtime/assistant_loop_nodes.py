@@ -9,10 +9,31 @@ tool listing, native tool-call normalization, validation, execution, loop
 limits, trace recording, and state mutation.
 """
 
+from __future__ import annotations
+
 from time import perf_counter
 from typing import Any, NotRequired, TypedDict, cast
 
+from langgraph.runtime import Runtime
+from langgraph.types import interrupt
+
 from assistant_agent.runtime.action_validator import ActionValidator
+from assistant_agent.runtime.assistant_graph_state import (
+    AssistantTurnState,
+    persisted_request_from_user_request,
+    validate_assistant_turn_state,
+)
+from assistant_agent.runtime.assistant_interrupts import (
+    AssistantApproveResume,
+    AssistantInputResume,
+    AssistantInterruptContractError,
+    AssistantInterruptRequest,
+    AssistantRejectResume,
+    assistant_turn_action_ref,
+    validate_assistant_interrupt_request,
+    validate_assistant_resume,
+    validate_resume_for_interrupt,
+)
 from assistant_agent.runtime.cancellation import AgentRunCancelled
 from assistant_agent.runtime.citations import build_url_citation_annotations
 from assistant_agent.runtime.llm_event_mapping import stream_delta_to_agent_event
@@ -21,6 +42,7 @@ from assistant_agent.runtime.run_phase import RunPhase
 from assistant_agent.runtime.response_composer import compose_response
 from assistant_agent.runtime.state import AgentError, AgentState
 from assistant_agent.runtime.tool_executor import ToolExecutor
+from assistant_agent.runtime.graph_runtime import GraphRuntimeContext
 from assistant_agent.runtime.output_models import (
     AssistantTextOutput,
     AssistantToolCall,
@@ -1387,6 +1409,124 @@ def execute_requested_tool_node(graph_state: AssistantLoopState) -> AssistantLoo
 
     current["pending_tool_calls"] = []
     return current
+
+
+def await_input_node(
+    graph_state: AssistantTurnState,
+    runtime: Runtime[GraphRuntimeContext],
+) -> AssistantTurnState:
+    """Pause and resume at a real LangGraph node without preceding side effects."""
+
+    state = validate_assistant_turn_state(graph_state)
+    pending_payload = state.get("pending_interrupt")
+    if pending_payload is None:
+        raise AssistantInterruptContractError(
+            "assistant_interrupt_missing",
+            "await_input requires one persisted interrupt request.",
+        )
+    request = validate_assistant_interrupt_request(pending_payload)
+    _validate_interrupt_action_binding(state, request)
+    resumed = validate_assistant_resume(
+        interrupt(request.model_dump(mode="json"))
+    )
+    validate_resume_for_interrupt(request, resumed)
+    return _apply_assistant_resume(state, runtime=runtime, resume=resumed)
+
+
+def _validate_interrupt_action_binding(
+    state: AssistantTurnState,
+    request: AssistantInterruptRequest,
+) -> None:
+    if request.kind == "approval":
+        pending = list(state.get("pending_tool_calls") or ())
+        if (
+            len(pending) != 1
+            or pending[0].get("provider_call_id") != request.action_ref
+        ):
+            raise AssistantInterruptContractError(
+                "interrupt_action_ref_mismatch",
+                "Approval interrupt is not bound to the current pending Tool call.",
+            )
+        return
+    run = state["run"]
+    if request.action_ref != assistant_turn_action_ref(str(run["run_id"])):
+        raise AssistantInterruptContractError(
+            "interrupt_action_ref_mismatch",
+            "Input interrupt is not bound to the current assistant turn.",
+        )
+
+
+def _apply_assistant_resume(
+    state: AssistantTurnState,
+    *,
+    runtime: Runtime[GraphRuntimeContext],
+    resume: AssistantApproveResume | AssistantRejectResume | AssistantInputResume,
+) -> AssistantTurnState:
+    context = runtime.context
+    if context is None or context.agent_state is None:
+        raise AssistantInterruptContractError(
+            "interrupt_runtime_context_missing",
+            "Resume requires invocation-local AgentState.",
+        )
+    updated = dict(state)
+    run = dict(state["run"])
+    run["run_id"] = context.agent_state.run_id
+    run["trace_id"] = context.agent_state.trace_id
+    run["status"] = "running"
+    updated["run"] = run
+    updated["pending_interrupt"] = None
+
+    if isinstance(resume, AssistantApproveResume):
+        return validate_assistant_turn_state(updated)
+
+    updated["pending_tool_calls"] = []
+    updated["assistant_output"] = None
+    if isinstance(resume, AssistantRejectResume):
+        observations = list(state.get("tool_observations") or ())
+        pending = list(state.get("pending_tool_calls") or ())
+        tool_name = str(pending[0]["tool_name"]) if pending else "pending_action"
+        observations.append(
+            {
+                "tool_name": tool_name,
+                "status": "rejected",
+                "summary": resume.reason or "The pending action was rejected.",
+                "outcome": None,
+                "warnings": [],
+                "is_complete": True,
+                "output_ref": None,
+                "artifact_refs": [],
+                "provider_call_id": resume.action_ref,
+                "safe_details": [],
+                "error": {
+                    "code": "action_rejected",
+                    "message": "The pending action was rejected.",
+                    "retryable": False,
+                },
+            }
+        )
+        updated["tool_observations"] = observations
+        return validate_assistant_turn_state(updated)
+
+    persisted_request = dict(state["request"])
+    prior_messages = list(persisted_request.get("messages") or ())[-127:]
+    persisted_request["text"] = resume.text
+    persisted_request["messages"] = [
+        *prior_messages,
+        {"role": "user", "text": resume.text, "tool_call_id": None},
+    ]
+    runtime_request = context.agent_state.request
+    runtime_request.metadata["conversation_history"] = [
+        {"role": item["role"], "text": item["text"]}
+        for item in prior_messages
+        if item.get("role") in {"user", "assistant"}
+    ]
+    runtime_request.text = resume.text
+    projected_runtime_request = persisted_request_from_user_request(runtime_request)
+    projected_runtime_request["capability_refs"] = list(
+        persisted_request.get("capability_refs") or ()
+    )
+    updated["request"] = projected_runtime_request
+    return validate_assistant_turn_state(updated)
 
 
 def _is_control_tool_name(tool_name: str | None) -> bool:
