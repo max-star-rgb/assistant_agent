@@ -352,12 +352,16 @@ async def _run_release_item(
         _progress(progress, "release_review.item.completed", item_key=key)
         return output
     finally:
-        if runtime is not None and runtime.close() is False:
-            raise RuntimeError(f"Release Review Runtime failed to close for {key}")
-        if lease is not None:
-            cleanup_results[key] = lease.cleanup()
-        if slot_acquired:
-            staging_slots.release()
+        try:
+            if runtime is not None and runtime.close() is False:
+                raise RuntimeError(f"Release Review Runtime failed to close for {key}")
+        finally:
+            try:
+                if lease is not None:
+                    cleanup_results[key] = lease.cleanup()
+            finally:
+                if slot_acquired:
+                    staging_slots.release()
 
 
 async def _arun_state(runtime: Any, request: UserRequest) -> Any:

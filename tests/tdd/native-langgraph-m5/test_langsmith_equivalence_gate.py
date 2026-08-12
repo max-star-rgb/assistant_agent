@@ -22,6 +22,7 @@ from evals.release_review.contracts import ReleaseScenario
 from evals.release_review.loader import scenario_hash
 from evals.release_review.experiment import (
     ReleaseExperimentSettings,
+    _run_release_item,
     run_release_experiment,
 )
 from evals.release_review.report import ReleaseItemAssessment
@@ -41,6 +42,7 @@ from evals.release_review.report import (
     LangSmithEquivalenceReport,
     LangSmithTargetEvidence,
 )
+from evals.release_review.staging import CleanupResult
 
 
 EXAMPLE_ID = UUID("01234567-89ab-cdef-0123-456789abcdef")
@@ -454,6 +456,96 @@ def test_release_experiment_uses_langsmith_target_and_actual_runtime() -> None:
     assert client.aevaluate_kwargs["evaluators"]
     assert runtime.requests[0].text == scenario.request
     assert runtime.closed is True
+
+
+def test_staging_cleanup_and_slot_release_survive_runtime_close_failure() -> None:
+    scenario = ReleaseScenario.model_validate(
+        {
+            "id": "staging_probe",
+            "phase": "staging",
+            "capability": "probe",
+            "risk": "high",
+            "request": "run probe",
+            "tool_contract": {
+                "required": ["probe_tool"],
+                "allowed": [],
+                "forbidden": [],
+            },
+            "state_assertions": [{"path": "status", "equals": "completed"}],
+            "staging": {
+                "resource_profile": "test_calendar",
+                "cleanup": "required",
+            },
+        }
+    )
+    cleanup_result = CleanupResult(status="succeeded")
+
+    class Lease:
+        runtime_metadata = {"release_review": {"namespace": "staging-user"}}
+
+        def __init__(self) -> None:
+            self.cleaned = False
+
+        def cleanup(self):
+            self.cleaned = True
+            return cleanup_result
+
+    lease = Lease()
+
+    class Resources:
+        def prepare(self, release_id, selected_scenario):
+            assert release_id == "release-1"
+            assert selected_scenario is scenario
+            return lease
+
+    class State:
+        run_id = "runtime-run"
+        status = "completed"
+        tool_calls = ()
+        tool_results = ()
+        errors = ()
+        response = SimpleNamespace(
+            message="done",
+            model_dump=lambda **_kwargs: {"message": "done"},
+        )
+
+    class Runtime:
+        trace_store = SimpleNamespace(list_by_run=lambda _run_id: ())
+
+        async def arun_state(self, _request):
+            return State()
+
+        def close(self):
+            return False
+
+    settings = ReleaseExperimentSettings(
+        release_id="release-1",
+        model="model",
+        git_commit="git",
+        catalog_generation="catalog",
+        evaluator_version="evaluator",
+        runtime_factory=lambda _scenario, _backend, _metadata: Runtime(),
+        staging_resources=Resources(),
+    )
+    cleanup_results = {}
+
+    async def exercise() -> None:
+        slots = asyncio.Semaphore(1)
+        with pytest.raises(RuntimeError, match="failed to close"):
+            await _run_release_item(
+                scenario,
+                repetition=1,
+                settings=settings,
+                progress=None,
+                staging_slots=slots,
+                cleanup_results=cleanup_results,
+            )
+        assert slots.locked() is False
+
+    asyncio.run(exercise())
+
+    assert lease.cleaned is True
+    assert cleanup_results == {"staging_probe:r1": cleanup_result}
 
 
 def test_release_service_waits_for_remote_langsmith_evidence_before_report(
