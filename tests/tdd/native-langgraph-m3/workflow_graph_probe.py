@@ -14,7 +14,13 @@ from assistant_agent.tools.registry import ToolRegistry
 from assistant_agent.workflows.artifacts import LocalWorkflowArtifactStore
 from assistant_agent.workflows.context import WorkflowContextCompiler
 from assistant_agent.workflows.durable_graph import build_durable_workflow_graph
-from assistant_agent.workflows.durable_graph_nodes import build_worker_branch_subgraph
+from assistant_agent.workflows.durable_graph_nodes import (
+    WorkflowProfileBranchState,
+    build_verifier_branch_subgraph,
+    build_worker_branch_subgraph,
+    verifier_child_runtime_context,
+    worker_child_runtime_context,
+)
 from assistant_agent.workflows.graph_context import (
     BranchProfileContextFactory,
     WorkflowGraphRuntimeContext,
@@ -105,6 +111,7 @@ class WorkerAdapter:
             else None
         )
         self._lock = threading.Lock()
+        self._barrier_seen: set[str] = set()
         self.active = 0
         self.max_concurrency = 0
         self.requests = []
@@ -120,7 +127,13 @@ class WorkerAdapter:
             self.active += 1
             self.max_concurrency = max(self.max_concurrency, self.active)
         try:
+            wait_at_barrier = False
             if node_id in self._root_nodes and self._barrier is not None:
+                with self._lock:
+                    if node_id not in self._barrier_seen:
+                        self._barrier_seen.add(node_id)
+                        wait_at_barrier = True
+            if wait_at_barrier:
                 self._barrier.wait(timeout=5)
             return ChatResult(
                 provider=self.provider,
@@ -144,21 +157,44 @@ class WorkerAdapter:
                 self.active -= 1
 
 
+class VerifierAdapter:
+    provider = "scripted"
+    model = "verifier-probe"
+
+    def __init__(self, responses: list[dict[str, object]] | None = None) -> None:
+        self.responses = list(responses or [{"status": "verified", "summary": "verified"}])
+        self.requests = []
+
+    def chat(self, request):
+        self.requests.append(request)
+        payload = self.responses.pop(0)
+        return ChatResult(
+            provider=self.provider,
+            model=self.model,
+            finish_reason="stop",
+            response_text=json.dumps({"workflow_verification": payload}),
+            usage={"input_tokens": 1, "output_tokens": 1},
+        )
+
+
 def workflow_probe(
     tmp_path,
     dependencies: dict[str, list[str]],
     *,
     worker_responses: dict[str, str] | None = None,
+    plan_payload: dict[str, object] | None = None,
+    verifier_responses: list[dict[str, object]] | None = None,
 ):
     registry = ToolRegistry()
     registry.register(ProbeTool())
     registry.seal()
-    planner = PlannerAdapter(proposal(dependencies))
+    planner = PlannerAdapter(plan_payload or proposal(dependencies))
     roots = {node for node, parents in dependencies.items() if not parents}
     worker = WorkerAdapter(roots, set(dependencies), worker_responses)
+    verifier = VerifierAdapter(verifier_responses)
     artifact_store = LocalWorkflowArtifactStore(tmp_path / "artifacts")
     services = WorkflowGraphRuntimeServices(
-        provider_registry={"planner": planner, "worker": worker},
+        provider_registry={"planner": planner, "worker": worker, "verifier": verifier},
         tool_registry=registry,
         context_service=ContextService(),
         operation_store=SQLiteToolOperationStore(tmp_path / "operations.sqlite3"),
@@ -189,21 +225,25 @@ def workflow_probe(
     worker_branch = build_worker_branch_subgraph(
         worker_graph=assistant_app.namespaced_graph_for_profile(
             "worker",
-            state_schema=__import__(
-                "assistant_agent.workflows.durable_graph_nodes",
-                fromlist=["WorkflowProfileBranchState"],
-            ).WorkflowProfileBranchState,
+            state_schema=WorkflowProfileBranchState,
             context_schema=WorkflowGraphRuntimeContext,
             child_state_key="worker_child_state",
-            runtime_context_resolver=__import__(
-                "assistant_agent.workflows.durable_graph_nodes",
-                fromlist=["worker_child_runtime_context"],
-            ).worker_child_runtime_context,
+            runtime_context_resolver=worker_child_runtime_context,
+        )
+    )
+    verifier_branch = build_verifier_branch_subgraph(
+        verifier_graph=assistant_app.namespaced_graph_for_profile(
+            "verifier",
+            state_schema=WorkflowProfileBranchState,
+            context_schema=WorkflowGraphRuntimeContext,
+            child_state_key="verifier_child_state",
+            runtime_context_resolver=verifier_child_runtime_context,
         )
     )
     app = build_durable_workflow_graph(
         planning_subgraph=planning,
         worker_branch_subgraph=worker_branch,
+        verifier_branch_subgraph=verifier_branch,
         checkpointer=InMemorySaver(),
     )
     budget = WorkflowBudget(

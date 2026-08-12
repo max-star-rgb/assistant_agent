@@ -9,6 +9,55 @@ from assistant_agent.workflows.models import (
     WorkflowConstraintProposal,
     WorkflowWorkItem,
 )
+from assistant_agent.workflows.graph_state import PersistedAdmittedWorkflowPlan
+
+
+def minimal_repair_closure(
+    plan: PersistedAdmittedWorkflowPlan,
+    requested_ids: Iterable[str],
+    verifier_id: str,
+    *,
+    current_result_ids: Iterable[str] | None = None,
+) -> frozenset[str]:
+    """Return only admitted current-result descendants affected by a repair."""
+
+    requested = frozenset(requested_ids)
+    nodes = {node.node_id: node for node in plan.nodes}
+    if not requested or verifier_id not in nodes or not requested.issubset(nodes):
+        raise ValueError("invalid_repair_scope")
+    ancestors: set[str] = set()
+    pending = list(nodes[verifier_id].depends_on)
+    while pending:
+        node_id = pending.pop()
+        if node_id in ancestors:
+            continue
+        ancestors.add(node_id)
+        pending.extend(nodes[node_id].depends_on)
+    if verifier_id in requested or not requested.issubset(ancestors):
+        raise ValueError("invalid_repair_scope")
+
+    produced = (
+        frozenset(nodes)
+        if current_result_ids is None
+        else frozenset(current_result_ids)
+    )
+    if not requested.issubset(produced):
+        raise ValueError("invalid_repair_scope")
+    closure = set(requested)
+    changed = True
+    while changed:
+        changed = False
+        for node in plan.nodes:
+            if (
+                node.node_id not in closure
+                and node.node_id in produced
+                and set(node.depends_on).intersection(closure)
+            ):
+                closure.add(node.node_id)
+                changed = True
+    if verifier_id not in closure:
+        raise ValueError("invalid_repair_scope")
+    return frozenset(closure)
 
 
 def resolve_constraint_bindings(

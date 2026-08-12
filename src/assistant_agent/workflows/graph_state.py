@@ -341,6 +341,37 @@ class WorkflowWorkerControl(_CheckpointModel):
         return self
 
 
+class WorkflowVerifierControl(_CheckpointModel):
+    """Bounded structured output emitted by an AssistantTurnGraph verifier."""
+
+    status: Literal["verified", "repair", "blocked", "failed"]
+    summary: str = Field(min_length=1, max_length=4_000)
+    repair_node_ids: tuple[str, ...] = Field(default=(), max_length=64)
+    required_fields: tuple[str, ...] = Field(default=(), max_length=32)
+    prompt_code: str | None = Field(default=None, max_length=160)
+    safe_prompt: str | None = Field(default=None, max_length=2_000)
+    error_code: str | None = Field(default=None, max_length=160)
+
+    @model_validator(mode="after")
+    def validate_status_fields(self) -> "WorkflowVerifierControl":
+        if len(self.repair_node_ids) != len(set(self.repair_node_ids)):
+            raise ValueError("repair node ids must be unique")
+        if self.status != "repair" and self.repair_node_ids:
+            raise ValueError("only repair control may carry repair node ids")
+        has_prompt = bool(self.required_fields and self.prompt_code and self.safe_prompt)
+        if self.status == "blocked" and not has_prompt:
+            raise ValueError("blocked verifier control requires input fields")
+        if self.status != "blocked" and (
+            self.required_fields or self.prompt_code is not None or self.safe_prompt is not None
+        ):
+            raise ValueError("only blocked verifier control may request input")
+        if self.status == "failed" and self.error_code is None:
+            raise ValueError("failed verifier control requires error_code")
+        if self.status != "failed" and self.error_code is not None:
+            raise ValueError("only failed verifier control may carry error_code")
+        return self
+
+
 class WorkflowProfileAssignment(_CheckpointModel):
     profile: AssistantGraphProfileName
     user_id: str = Field(min_length=1, max_length=512)
@@ -1015,6 +1046,7 @@ __all__ = [
     "WorkflowResultKey",
     "WorkflowResultSlot",
     "WorkflowWorkerControl",
+    "WorkflowVerifierControl",
     "initial_workflow_graph_state",
     "latest_results",
     "ledger_update",
