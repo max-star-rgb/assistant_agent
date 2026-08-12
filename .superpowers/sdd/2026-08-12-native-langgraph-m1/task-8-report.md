@@ -93,7 +93,7 @@ delete those temporary feature directories manually; they were not automatically
 projection 对 signed credential/media reference 和异常文本也不够严格；Experiment completeness 只查询最近
 一小时；current parent 下 graph metadata/tags 未落到真实 graph run。上述代码 finding 均先由离线 RED 复现。
 
-修复后，锁定 `langchain-core==1.4.3` callback persistence signature 的显式 payload-safe tracer 继承
+修复后，在本机 `langchain-core 1.4.3` 验证且受运行时 signature guard 保护的显式 payload-safe tracer 继承
 Experiment task parent/client/order map，只清空 graph/node chain inputs/outputs 并安全化 chain error；Dataset
 task root input/output、LLM/Tool child 安全投影和唯一真实父子树保留。私有 API 或 tracer 构造失败时，本次
 graph scope 原子关闭远端 tracing，业务 graph 继续执行，不允许 ambient auto tracer 接管。远端 redactor
@@ -101,5 +101,18 @@ graph scope 原子关闭远端 tracing，业务 graph 继续执行，不允许 a
 artifact/file/data URI、绝对/相对媒体路径与原始业务异常不进入 LangSmith。completeness 改为按 project_id
 全量分页，不再使用一小时窗口。
 
-Fix round fresh offline evidence：native TDD 57 passed；LangSmith eval TDD 40 passed；related core 63 passed；
+Fix round fresh offline evidence：native TDD 58 passed；LangSmith eval TDD 40 passed；related core 63 passed；
 default core 90 passed。真实 LangSmith/operator acceptance 仍未授权、未执行。
+
+## M1 final review fix round 2/5
+
+第二轮审查补齐远端文本任意位置的 artifact/file/data URI、Windows/相对媒体路径、HTTP userinfo、
+`sig`/signed/signature/token/credential 与任意 `X-Amz-*` query；普通 article URL 与自然语言仍保留。
+safe tracer、公开 tracing context 和 SDK helper 同时不可用时，第三层 LangSmith tracing ContextVar
+只关闭当前 graph scope，保持业务 fail-open 且 fake client 零 graph create/update；只有 ContextVar
+本身也不可用时才安全 fail-closed。项目没有 pin `langchain-core 1.4.3`，报告只声明本机版本验证与
+运行时 signature guard，不再把环境事实描述为可复现依赖锁定。
+
+Round 2 fresh offline evidence：native TDD 58 passed；LangSmith eval TDD 40 passed；related core
+63 passed；default core 90 passed；authority validator、compileall、diff 与删除门槛通过。真实
+LangSmith/operator acceptance 仍未授权、未执行。

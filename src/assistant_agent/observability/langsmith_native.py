@@ -26,12 +26,14 @@ try:  # LangSmith remains an optional, fail-open observability dependency.
         _set_tracing_context,
         tracing_context,
     )
+    from langsmith._internal._context import _TRACING_ENABLED
     from langchain_core.tracers.langchain import LangChainTracer
 except (ImportError, ModuleNotFoundError):  # pragma: no cover - optional dependency
     traceable = None  # type: ignore[assignment]
     get_current_run_tree = None  # type: ignore[assignment]
     get_tracing_context = None  # type: ignore[assignment]
     _set_tracing_context = None  # type: ignore[assignment]
+    _TRACING_ENABLED = None  # type: ignore[assignment]
     tracing_context = None  # type: ignore[assignment]
     LangChainTracer = None  # type: ignore[assignment,misc]
 
@@ -122,6 +124,16 @@ _MEDIA_REFERENCE_SUFFIXES = (
     ".webm",
     ".pdf",
     ".bin",
+)
+_EMBEDDED_REFERENCE_PATTERN = re.compile(
+    r"(?i)(?:(?:artifact|file)://|data:)[^\s\"'<>]+"
+)
+_WINDOWS_PATH_PATTERN = re.compile(r"(?i)(?<![A-Za-z0-9_])[A-Z]:[\\/][^\s\"'<>]+")
+_RELATIVE_MEDIA_PATH_PATTERN = re.compile(
+    r"(?i)(?<![A-Za-z0-9_.~-])(?:[A-Za-z0-9_.~-]+[\\/])+"
+    r"[A-Za-z0-9_.~-]+(?:"
+    + "|".join(re.escape(suffix) for suffix in _MEDIA_REFERENCE_SUFFIXES)
+    + r")(?![A-Za-z0-9_])"
 )
 
 
@@ -374,9 +386,24 @@ def native_graph_trace_scope() -> Iterator[list[Any]]:
                 except Exception:
                     previous = None
             if previous is None:
-                raise GraphTracingSafetyError(
-                    "Native graph tracing could not be disabled safely."
-                )
+                context_token = None
+                if _TRACING_ENABLED is not None:
+                    try:
+                        context_token = _TRACING_ENABLED.set(False)
+                    except Exception:
+                        context_token = None
+                if context_token is None:
+                    raise GraphTracingSafetyError(
+                        "Native graph tracing could not be disabled safely."
+                    )
+                try:
+                    yield []
+                finally:
+                    try:
+                        _TRACING_ENABLED.reset(context_token)
+                    except Exception:
+                        pass
+                return
             try:
                 yield []
             finally:
@@ -665,6 +692,9 @@ def _bounded_text(value: str) -> str:
     if lowered.startswith(_REFERENCE_PREFIXES) or _looks_like_private_path(sanitized):
         return "[redacted-reference]"
     sanitized = _REMOTE_URL_PATTERN.sub(_redact_remote_url, sanitized)
+    sanitized = _EMBEDDED_REFERENCE_PATTERN.sub("[redacted-reference]", sanitized)
+    sanitized = _WINDOWS_PATH_PATTERN.sub("[redacted-reference]", sanitized)
+    sanitized = _RELATIVE_MEDIA_PATH_PATTERN.sub("[redacted-reference]", sanitized)
     return _REMOTE_CREDENTIAL_PATTERN.sub("[redacted]", sanitized)
 
 
@@ -677,10 +707,14 @@ def _redact_remote_url(match: re.Match[str]) -> str:
             for key, _ in parse_qsl(parsed.query, keep_blank_values=True)
         }
         sensitive_query = any(
-            key in {
+            key.startswith("x_amz_")
+            or key in {
                 "authorization",
+                "auth",
                 "cookie",
                 "credential",
+                "sig",
+                "signed",
                 "signature",
                 "token",
                 "access_token",
@@ -696,6 +730,8 @@ def _redact_remote_url(match: re.Match[str]) -> str:
             "/private/" in path
             and any(marker in path for marker in ("media", "frame", "artifact"))
         )
+        if parsed.username is not None or parsed.password is not None:
+            return "[redacted-reference]"
         if sensitive_query or media_reference:
             return "[redacted-reference]"
     except (TypeError, ValueError):

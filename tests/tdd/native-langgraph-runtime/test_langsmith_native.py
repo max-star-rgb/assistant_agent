@@ -1083,8 +1083,8 @@ def test_unsupported_safe_tracer_api_disables_remote_graph_without_blocking_run(
     assert native._safe_tracer_api_supported() is False
 
 
-def test_locked_langchain_safe_tracer_callback_api_is_supported() -> None:
-    """The M1 callback projection is coupled to langchain-core 1.4.3 signatures."""
+def test_verified_langchain_safe_tracer_callback_api_is_supported() -> None:
+    """The M1 callback projection guards the API signatures verified on 1.4.3."""
 
     assert _native()._safe_tracer_api_supported() is True
 
@@ -1145,6 +1145,67 @@ def test_safe_tracer_constructor_failure_disables_ambient_graph_trace(
     assert remote_calls == []
 
 
+def test_graph_trace_uses_contextvar_fallback_when_public_disable_paths_fail(
+    monkeypatch,
+) -> None:
+    """Broken public disable helpers must still run business code without a trace."""
+
+    native = _native()
+    remote_calls: list[dict[str, Any]] = []
+
+    class RecordingClient:
+        def create_run(self, **kwargs: Any) -> None:
+            remote_calls.append(kwargs)
+
+        def update_run(self, run_id: Any, **kwargs: Any) -> None:
+            remote_calls.append({"id": run_id, **kwargs})
+
+    class BrokenContext:
+        def __enter__(self) -> None:
+            raise RuntimeError("public-disable-failed")
+
+    builder = StateGraph(dict)
+    builder.add_node("assistant", lambda state: {**state, "value": "business-ok"})
+    builder.add_edge(START, "assistant")
+    builder.add_edge("assistant", END)
+    app = AssistantTurnGraphApp.from_compiled_graph(
+        builder.compile(name="AssistantTurnGraph")
+    )
+    client = RecordingClient()
+    parent = RunTree(
+        name="experiment-item-task",
+        inputs={"dataset": "must-remain"},
+        ls_client=client,
+        project_name="project-sentinel",
+    )
+    monkeypatch.setattr(native, "native_graph_callbacks", lambda: [])
+    monkeypatch.setattr(native, "tracing_context", lambda **_kwargs: BrokenContext())
+    monkeypatch.setattr(
+        native,
+        "_set_tracing_context",
+        lambda _context: (_ for _ in ()).throw(RuntimeError("private-disable-failed")),
+    )
+
+    with tracing_context(parent=parent, enabled=True, client=client):
+        result = app.invoke(
+            {"value": "RAW-STATE"},
+            identity=GraphExecutionIdentity.for_assistant_turn(
+                agent_id="agent-sentinel",
+                user_id="raw-user-sentinel",
+                session_id="raw-session-sentinel",
+                run_id="run-sentinel",
+            ),
+            context=GraphRuntimeContext(
+                tool_executor=ToolExecutor(registry=sealed_registry()),
+                chat_adapter=ScriptedChatAdapter([]),
+            ),
+        )
+
+    assert result == {"value": "business-ok"}
+    assert parent.inputs == {"dataset": "must-remain"}
+    assert remote_calls == []
+
+
 def test_remote_projection_redacts_signed_urls_credentials_and_paths() -> None:
     """Remote LangSmith projection is stricter than optional local trace content."""
 
@@ -1156,6 +1217,18 @@ def test_remote_projection_redacts_signed_urls_credentials_and_paths() -> None:
     ordinary_url = "https://docs.example/article?q=langgraph"
     media_url = "https://cdn.example/private/frame.png"
     relative_media_path = "generated/private-media.jpg"
+    embedded_references = (
+        "download artifact://owner/artifact-secret now; "
+        "open file://private/file-secret.pdf then "
+        "decode data:text/plain,data-secret; "
+        "see generated/embedded-media-secret.jpg or "
+        r"C:\private\windows-media-secret.png"
+    )
+    credential_urls = (
+        "https://user:userinfo-secret@example.com/article "
+        "https://example.com/object?sig=query-secret "
+        "https://example.com/object?X-Amz-Expires=amz-secret"
+    )
     request = ChatRequest(
         user_id="user-sentinel",
         session_id="session-sentinel",
@@ -1169,6 +1242,8 @@ def test_remote_projection_redacts_signed_urls_credentials_and_paths() -> None:
             {"role": "user", "content": "Bearer bearer-secret"},
             {"role": "user", "content": "cookie=session-secret"},
             {"role": "user", "content": "/private/media/file.png"},
+            {"role": "user", "content": embedded_references},
+            {"role": "user", "content": credential_urls},
         ],
         tools=[
             {
@@ -1214,6 +1289,14 @@ def test_remote_projection_redacts_signed_urls_credentials_and_paths() -> None:
         signed_url,
         media_url,
         relative_media_path,
+        "artifact-secret",
+        "file-secret",
+        "data-secret",
+        "embedded-media-secret",
+        "windows-media-secret",
+        "userinfo-secret",
+        "query-secret",
+        "amz-secret",
     ):
         assert forbidden not in serialized
 

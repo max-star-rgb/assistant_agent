@@ -318,9 +318,11 @@ task parent/client/order map，但在 SDK create/update 前清空 graph state in
 因此 `UserRequest`、`AgentState`、raw identity/metadata、媒体/reference 与 runtime object 不会因框架自动
 序列化进入远端，Dataset task root 的 evaluator input/output 则保持原样。显式 tracer 与 current parent
 共同保证只有一棵 task → graph → node 树，不再由 ambient callback 自动补第二棵树。
-该边界锁定并验证 `langchain-core 1.4.3` 的 callback persistence signature；API 漂移或 safe tracer 构造失败时，
-本次 graph scope 会原子关闭远端 tracing。若 SDK 连关闭 context 都无法安全完成，则 fail-closed，绝不在
-ambient auto tracer 下继续并泄漏 state。
+该私有 callback persistence 边界已在本机 `langchain-core 1.4.3` 验证，并由运行时 signature guard
+防护；这里不声称项目依赖已经 pin 到该版本。API 漂移或 safe tracer 构造失败时，本次 graph scope 会
+原子关闭远端 tracing；公开 context 和 SDK helper 都失败时，使用 LangSmith tracing ContextVar 仅关闭
+当前 scope，业务 graph 继续。只有连该 ContextVar 也不可用时才安全 fail-closed，绝不在 ambient auto
+tracer 下继续并泄漏 state。
 
 LLM/Tool input/output 进入 LangSmith 前再次做 provider-neutral、有界安全投影，且使用独立于本地 content
 开关的远端严格 redactor，始终排除 credential、authorization/cookie/token、signed URL 参数、callback、

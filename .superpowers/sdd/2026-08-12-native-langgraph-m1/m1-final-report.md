@@ -11,6 +11,8 @@
   canonical audit 不再为 LangSmith 重建 OTel 影子树。
 - graph/node 自动 callback 在远端持久化前移除 runtime state payload；LLM/Tool 使用独立远端严格
   redactor 和安全 error，保留结构化语义但不上传 credential、signed URL、媒体/path/reference 或原始异常。
+- payload-safe callback 的私有边界已在本机 `langchain-core 1.4.3` 验证并受运行时 signature guard
+  保护；项目未将该环境版本描述为已 pin 的依赖。
 - LangSmith Runtime Regression 直接在 current Experiment `RunTree` 内 await 生产 native graph，
   按 project 全量分页读取，并对 graph tree、run type、Example 身份和 Feedback 完整性 fail-closed。
 
@@ -22,7 +24,7 @@
 
 ## 验证摘要
 
-- M1 native graph TDD：57 passed。
+- M1 native graph TDD：58 passed。
 - LangSmith eval TDD：40 passed。
 - Runtime/Context/Gateway/Observability/Tool 关联 core：63 passed。
 - 默认 core：90 passed。
