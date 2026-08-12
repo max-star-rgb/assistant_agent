@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Any, cast
 
 from assistant_agent.runtime.assistant_loop_graph import build_assistant_loop_graph
-from assistant_agent.runtime.assistant_loop_nodes import AssistantLoopState
+from assistant_agent.runtime.assistant_graph_state import AssistantTurnState
 from assistant_agent.runtime.graph_runtime import GraphRuntimeContext
 from assistant_agent.observability.langsmith_config import LangSmithConfig
 from assistant_agent.observability.langsmith_native import (
@@ -79,15 +79,20 @@ class GraphStreamPart:
 class GraphStreamResult:
     """Completed graph state together with the native stream that produced it."""
 
-    final_state: AssistantLoopState
+    final_state: AssistantTurnState
     parts: tuple[GraphStreamPart, ...]
 
 
 class AssistantTurnGraphApp:
     """Own the one compiled assistant graph shared by a runtime instance."""
 
-    def __init__(self, *, langsmith_config: LangSmithConfig | None = None) -> None:
-        self._graph = build_assistant_loop_graph()
+    def __init__(
+        self,
+        *,
+        checkpointer: Any | None = None,
+        langsmith_config: LangSmithConfig | None = None,
+    ) -> None:
+        self._graph = build_assistant_loop_graph(checkpointer=checkpointer)
         self._langsmith_config = langsmith_config or _default_langsmith_config()
 
     @classmethod
@@ -112,18 +117,18 @@ class AssistantTurnGraphApp:
 
     def invoke(
         self,
-        input_state: AssistantLoopState,
+        input_state: AssistantTurnState,
         *,
         identity: GraphExecutionIdentity,
         context: GraphRuntimeContext,
-    ) -> AssistantLoopState:
+    ) -> AssistantTurnState:
         """Invoke the compiled graph inside the same native tracing context."""
 
         with self._native_tracing(identity):
             with native_graph_trace_scope() as callbacks:
                 config = self._runnable_config(identity, callbacks=callbacks)
                 return cast(
-                    AssistantLoopState,
+                    AssistantTurnState,
                     self._graph.invoke(
                         input_state,
                         config=config,
@@ -133,7 +138,7 @@ class AssistantTurnGraphApp:
 
     async def astream(
         self,
-        input_state: AssistantLoopState,
+        input_state: AssistantTurnState,
         *,
         identity: GraphExecutionIdentity,
         context: GraphRuntimeContext,
@@ -166,7 +171,7 @@ class AssistantTurnGraphApp:
 
     async def arun(
         self,
-        input_state: AssistantLoopState,
+        input_state: AssistantTurnState,
         *,
         identity: GraphExecutionIdentity,
         context: GraphRuntimeContext,
@@ -174,7 +179,7 @@ class AssistantTurnGraphApp:
         """Consume one native stream and return its last root ``values`` state."""
 
         parts: list[GraphStreamPart] = []
-        final_state: AssistantLoopState | object = _MISSING_FINAL_STATE
+        final_state: AssistantTurnState | object = _MISSING_FINAL_STATE
         async for part in self.astream(
             input_state,
             identity=identity,
@@ -189,7 +194,7 @@ class AssistantTurnGraphApp:
                 "LangGraph stream ended without root final values.",
             )
         return GraphStreamResult(
-            final_state=cast(AssistantLoopState, final_state),
+            final_state=cast(AssistantTurnState, final_state),
             parts=tuple(parts),
         )
 

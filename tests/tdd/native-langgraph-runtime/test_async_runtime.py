@@ -18,7 +18,7 @@ from assistant_agent.runtime.event_stream import AgentRunStream
 from assistant_agent.runtime.events import AgentEvent
 from assistant_agent.runtime.assistant_run_service import run_assistant_request_stream
 from assistant_agent.runtime.assistant_runtime_app import AssistantRuntimeApp
-from assistant_agent.runtime.requests import AgentResponse, UserRequest
+from assistant_agent.runtime.requests import UserRequest
 from assistant_agent.runtime.runtime import AgentGraphRuntime
 from assistant_agent.runtime.session_store import InMemorySessionStore
 from tests.core.support import CancelledToken, offline_config, sealed_registry
@@ -30,9 +30,7 @@ class _SyncGraphProbe:
 
     def invoke(self, input_state: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
         self.owner.invoke_calls += 1
-        state = input_state["state"]
-        state.set_response(AgentResponse(message="sync-sentinel"))
-        return {**input_state, "state": state}
+        return _completed_graph_state(input_state, message="sync-sentinel")
 
 
 class _GraphAppProbe:
@@ -44,11 +42,35 @@ class _GraphAppProbe:
     def invoke(self, input_state: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
         return self.graph.invoke(input_state, **kwargs)
 
-    async def arun(self, input_state: dict[str, Any], **kwargs: Any) -> GraphStreamResult:
+    async def arun(
+        self, input_state: dict[str, Any], **kwargs: Any
+    ) -> GraphStreamResult:
         self.arun_calls += 1
-        state = input_state["state"]
-        state.set_response(AgentResponse(message="async-sentinel"))
-        return GraphStreamResult(final_state={**input_state, "state": state}, parts=())
+        return GraphStreamResult(
+            final_state=_completed_graph_state(
+                input_state,
+                message="async-sentinel",
+            ),
+            parts=(),
+        )
+
+
+def _completed_graph_state(
+    input_state: dict[str, Any],
+    *,
+    message: str,
+) -> dict[str, Any]:
+    run = {**input_state["run"], "status": "completed"}
+    return {
+        **input_state,
+        "run": run,
+        "final_response": {
+            "message": message,
+            "followup_question": None,
+            "output_refs": [],
+            "citations": [],
+        },
+    }
 
 
 class _FailingSyncGraph:
@@ -62,7 +84,9 @@ class _FailingGraphApp:
     def invoke(self, input_state: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
         return self.graph.invoke(input_state, **kwargs)
 
-    async def arun(self, input_state: dict[str, Any], **kwargs: Any) -> GraphStreamResult:
+    async def arun(
+        self, input_state: dict[str, Any], **kwargs: Any
+    ) -> GraphStreamResult:
         raise GraphExecutionError("graph-sentinel", "failure-sentinel")
 
 
@@ -90,9 +114,7 @@ def test_arun_state_uses_native_graph_async_execution() -> None:
 
     runtime, probe = _runtime_with_graph_probe()
     try:
-        state = asyncio.run(
-            runtime.arun_state(_request(), run_id="async-run-sentinel")
-        )
+        state = asyncio.run(runtime.arun_state(_request(), run_id="async-run-sentinel"))
 
         assert state.status == "completed"
         assert state.response is not None

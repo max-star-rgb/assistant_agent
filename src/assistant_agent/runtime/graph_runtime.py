@@ -18,6 +18,12 @@ from assistant_agent.runtime.chat_adapter import ChatAdapter
 from assistant_agent.context.service import ContextService
 from assistant_agent.runtime.event_sink import EventSink
 from assistant_agent.observability.trace_store import TraceStore, trace_graph_node
+from assistant_agent.runtime.assistant_graph_state import (
+    AssistantTurnState,
+    assistant_loop_state_from_turn_state,
+    assistant_turn_state_from_loop_state,
+)
+from assistant_agent.runtime.state import AgentState
 
 
 GraphState = dict[str, Any]
@@ -53,6 +59,47 @@ class GraphRuntimeContext:
     trace_store: TraceStore | None = None
     event_sink: EventSink | None = None
     cancel_token: Any | None = None
+    agent_state: AgentState | None = None
+
+
+def bind_checkpointed_runtime_node(
+    node_name: str,
+    node_func: Callable[[GraphState], GraphState],
+    *,
+    trace: bool = True,
+) -> Callable[[AssistantTurnState, Runtime[GraphRuntimeContext]], AssistantTurnState]:
+    """Adapt a strict checkpoint state to a temporary legacy node invocation."""
+
+    executable = trace_graph_node(node_name, node_func) if trace else node_func
+
+    def wrapped(
+        graph_state: AssistantTurnState,
+        runtime: Runtime[GraphRuntimeContext],
+    ) -> AssistantTurnState:
+        runtime_context = runtime.context
+        if runtime_context is None or runtime_context.agent_state is None:
+            raise RuntimeError(f"{node_name} requires invocation-local AgentState")
+        raise_if_cancelled(
+            runtime_context.cancel_token,
+            phase="before_node",
+            node_name=node_name,
+        )
+        legacy_state = assistant_loop_state_from_turn_state(
+            graph_state,
+            runtime_state=runtime_context.agent_state,
+        )
+        enriched_state = _with_runtime_context(legacy_state, runtime_context)
+        result = executable(enriched_state)
+        raise_if_cancelled(
+            runtime_context.cancel_token,
+            phase="after_node",
+            node_name=node_name,
+            state=result.get("state") if isinstance(result, dict) else None,
+        )
+        profile = graph_state.get("profile", "standard")
+        return assistant_turn_state_from_loop_state(result, profile=profile)
+
+    return wrapped
 
 
 def bind_runtime_node(
@@ -72,7 +119,9 @@ def bind_runtime_node(
         runtime_context = runtime.context
         if runtime_context is None:
             raise RuntimeError(f"{node_name} requires GraphRuntimeContext")
-        raise_if_cancelled(runtime_context.cancel_token, phase="before_node", node_name=node_name)
+        raise_if_cancelled(
+            runtime_context.cancel_token, phase="before_node", node_name=node_name
+        )
         enriched_state = _with_runtime_context(graph_state, runtime_context)
         result = executable(enriched_state)
         raise_if_cancelled(
@@ -95,7 +144,9 @@ def strip_runtime_context(graph_state: GraphState) -> GraphState:
     return clean_state
 
 
-def _with_runtime_context(graph_state: GraphStateT, runtime_context: GraphRuntimeContext) -> GraphStateT:
+def _with_runtime_context(
+    graph_state: GraphStateT, runtime_context: GraphRuntimeContext
+) -> GraphStateT:
     enriched_state = dict(graph_state)
     enriched_state["tool_executor"] = runtime_context.tool_executor
     enriched_state["chat_adapter"] = runtime_context.chat_adapter

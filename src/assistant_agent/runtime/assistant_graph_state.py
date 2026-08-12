@@ -7,14 +7,22 @@ boundary between the product/runtime models and LangGraph checkpoints.
 from __future__ import annotations
 
 import json
-from datetime import datetime
-from typing import Literal, Mapping, TypedDict, cast
+from datetime import datetime, timezone
+from typing import Any, Literal, Mapping, TypedDict, cast
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 from assistant_agent.multi_agent.models import DEFAULT_AGENT_ID
-from assistant_agent.runtime.requests import UserRequest, resolve_response_style
-from assistant_agent.runtime.state import AgentState
+from assistant_agent.runtime.citations import UrlCitationAnnotation
+from assistant_agent.runtime.requests import (
+    AgentResponse,
+    UserRequest,
+    resolve_response_style,
+)
+from assistant_agent.runtime.output_models import AssistantTextOutput, AssistantToolCall
+from assistant_agent.runtime.run_phase import RunPhase
+from assistant_agent.runtime.state import AgentError, AgentState
+from assistant_agent.tools.models import RunToolCatalog, ToolCallRecord, ToolResult
 
 
 ASSISTANT_GRAPH_NAME = "AssistantTurnGraph"
@@ -29,7 +37,9 @@ class AssistantStateCompatibilityError(ValueError):
 
     code = "assistant_state_version_incompatible"
 
-    def __init__(self, message: str = "Assistant graph state version is incompatible.") -> None:
+    def __init__(
+        self, message: str = "Assistant graph state version is incompatible."
+    ) -> None:
         super().__init__(message)
 
 
@@ -106,7 +116,9 @@ class PersistedRun(_CheckpointModel):
     run_id: str = Field(min_length=1, max_length=512)
     trace_id: str = Field(min_length=1, max_length=512)
     agent_id: str = Field(min_length=1, max_length=512)
-    status: Literal["created", "running", "waiting_user", "completed", "failed", "cancelled"]
+    status: Literal[
+        "created", "running", "waiting_user", "completed", "failed", "cancelled"
+    ]
     errors: tuple[PersistedError, ...] = Field(default=(), max_length=32)
     tool_calls: tuple[PersistedToolCall, ...] = Field(default=(), max_length=64)
     tool_results: tuple[PersistedToolResult, ...] = Field(default=(), max_length=64)
@@ -140,6 +152,13 @@ class PersistedObservationError(_CheckpointModel):
     retryable: bool = False
 
 
+class PersistedObservationFact(_CheckpointModel):
+    """One prompt-safe observation field encoded as bounded canonical JSON."""
+
+    name: str = Field(min_length=1, max_length=256)
+    value_json: str = Field(min_length=1, max_length=16_000)
+
+
 class PersistedToolObservation(_CheckpointModel):
     tool_name: str = Field(min_length=1, max_length=256)
     status: Literal["succeeded", "failed", "rejected"]
@@ -149,6 +168,10 @@ class PersistedToolObservation(_CheckpointModel):
     is_complete: bool = True
     output_ref: str | None = Field(default=None, max_length=1_024)
     artifact_refs: tuple[str, ...] = Field(default=(), max_length=32)
+    provider_call_id: str | None = Field(default=None, min_length=1, max_length=256)
+    model_facts: tuple[PersistedObservationFact, ...] = Field(
+        default=(), max_length=128
+    )
     error: PersistedObservationError | None = None
 
 
@@ -198,13 +221,17 @@ class _AssistantTurnStateModel(_CheckpointModel):
     outputs_by_step: tuple[PersistedStepOutput, ...] = Field(default=(), max_length=128)
     current_step_index: int = Field(default=0, ge=0)
     assistant_output: PersistedAssistantOutput | None = None
-    pending_tool_calls: tuple[PersistedToolCallRequest, ...] = Field(default=(), max_length=64)
+    pending_tool_calls: tuple[PersistedToolCallRequest, ...] = Field(
+        default=(), max_length=64
+    )
     assistant_iterations: int = Field(default=0, ge=0)
     tool_calls_used: int = Field(default=0, ge=0)
     action_tool_calls_used: int = Field(default=0, ge=0)
     control_tool_calls_used: int = Field(default=0, ge=0)
     run_phase: str = Field(default="assistant", min_length=1, max_length=160)
-    tool_observations: tuple[PersistedToolObservation, ...] = Field(default=(), max_length=64)
+    tool_observations: tuple[PersistedToolObservation, ...] = Field(
+        default=(), max_length=64
+    )
     context_refs: tuple[PersistedContextRef, ...] = Field(default=(), max_length=256)
     capability_refs: tuple[str, ...] = Field(default=(), max_length=64)
     catalog: PersistedRunToolCatalog = Field(default_factory=PersistedRunToolCatalog)
@@ -262,10 +289,10 @@ _STATE_ADAPTER = TypeAdapter(_AssistantTurnStateModel)
 def persisted_request_from_user_request(request: UserRequest) -> dict[str, object]:
     """Project only explicitly admitted request fields; arbitrary metadata is dropped."""
 
-    media_refs = [
-        PersistedMediaRef(kind="image", ref=ref) for ref in request.image_ids
-    ]
-    media_refs.extend(PersistedMediaRef(kind="video", ref=ref) for ref in request.video_ids)
+    media_refs = [PersistedMediaRef(kind="image", ref=ref) for ref in request.image_ids]
+    media_refs.extend(
+        PersistedMediaRef(kind="video", ref=ref) for ref in request.video_ids
+    )
     if request.audio_id:
         media_refs.append(PersistedMediaRef(kind="audio", ref=request.audio_id))
     messages = _messages_from_request(request)
@@ -337,7 +364,9 @@ def assistant_turn_state_from_agent_state(
             for error in state.errors
         ),
         tool_calls=tuple(_project_tool_call(record) for record in state.tool_calls),
-        tool_results=tuple(_project_tool_result(result) for result in state.tool_results),
+        tool_results=tuple(
+            _project_tool_result(result) for result in state.tool_results
+        ),
     )
     catalog = _project_catalog(state.run_tool_catalog)
     context_refs = _project_context_refs(state)
@@ -357,6 +386,266 @@ def assistant_turn_state_from_agent_state(
         final_response=final_response,
     )
     return cast(AssistantTurnState, envelope.model_dump(mode="json"))
+
+
+def assistant_turn_state_from_loop_state(
+    graph_state: Mapping[str, Any],
+    *,
+    profile: AssistantGraphProfileName = "standard",
+) -> AssistantTurnState:
+    """Project one legacy node result into the strict checkpoint contract.
+
+    Legacy models may exist while a node is executing, but this function is the
+    mandatory boundary before control returns to LangGraph.
+    """
+
+    state = graph_state.get("state")
+    if not isinstance(state, AgentState):
+        raise TypeError("assistant node result requires AgentState")
+    projected = dict(assistant_turn_state_from_agent_state(state, profile=profile))
+    projected.update(
+        {
+            "outputs_by_step": [
+                _project_step_output(step_id, result).model_dump(mode="json")
+                for step_id, result in _tool_result_items(
+                    graph_state.get("outputs_by_step")
+                )
+            ],
+            "current_step_index": _non_negative_int(
+                graph_state.get("current_step_index")
+            ),
+            "assistant_output": _project_assistant_output(
+                graph_state.get("assistant_output")
+            ),
+            "pending_tool_calls": [
+                _project_tool_call_request(call).model_dump(mode="json")
+                for call in _assistant_tool_calls(graph_state.get("pending_tool_calls"))
+            ],
+            "assistant_iterations": _non_negative_int(
+                graph_state.get("assistant_iterations")
+            ),
+            "tool_calls_used": _non_negative_int(graph_state.get("tool_calls_used")),
+            "action_tool_calls_used": _non_negative_int(
+                graph_state.get("action_tool_calls_used")
+            ),
+            "control_tool_calls_used": _non_negative_int(
+                graph_state.get("control_tool_calls_used")
+            ),
+            "run_phase": _run_phase_text(graph_state.get("run_phase")),
+            "tool_observations": [
+                _project_tool_observation(observation).model_dump(mode="json")
+                for observation in _observation_mappings(
+                    graph_state.get("tool_observations")
+                )
+            ],
+            "assistant_stream_started": bool(
+                graph_state.get("assistant_stream_started", False)
+            ),
+            "assistant_stream_finished": bool(
+                graph_state.get("assistant_stream_finished", False)
+            ),
+            "tool_stream_started": bool(graph_state.get("tool_stream_started", False)),
+            "last_llm_span_id": _bounded_optional(
+                graph_state.get("last_llm_span_id"), 256
+            ),
+            "last_llm_attempt_kind": _bounded_optional(
+                graph_state.get("last_llm_attempt_kind"), 160
+            ),
+            "max_assistant_iterations": _non_negative_int(
+                graph_state.get("max_tool_iterations")
+            ),
+            "max_tool_calls_per_run": _non_negative_int(
+                graph_state.get("max_tool_iterations")
+            ),
+            "max_action_tool_calls_per_run": _non_negative_int(
+                graph_state.get("max_tool_iterations")
+            ),
+            "max_control_tool_calls_per_run": _non_negative_int(
+                graph_state.get("max_control_tool_iterations")
+            ),
+        }
+    )
+    return validate_assistant_turn_state(projected)
+
+
+def assistant_loop_state_from_turn_state(
+    value: Mapping[str, object],
+    *,
+    runtime_state: AgentState,
+) -> dict[str, Any]:
+    """Hydrate a temporary legacy node input from strict checkpoint channels.
+
+    ``runtime_state`` is invocation-local and is never returned to LangGraph.
+    It retains rich request/context objects that are prepared by the runtime;
+    only the explicitly reconstructed trajectory below crosses node boundaries.
+    """
+
+    persisted = validate_assistant_turn_state(value)
+    run = cast(Mapping[str, Any], persisted["run"])
+    if (
+        runtime_state.run_id != run["run_id"]
+        or runtime_state.trace_id != run["trace_id"]
+        or runtime_state.agent_id != run["agent_id"]
+    ):
+        raise AssistantStateCompatibilityError(
+            "Runtime state identity does not match the checkpoint turn."
+        )
+    assistant_output = _hydrate_assistant_output(persisted.get("assistant_output"))
+    pending = [
+        _hydrate_tool_call_request(item)
+        for item in cast(list[Mapping[str, Any]], persisted["pending_tool_calls"])
+    ]
+    outputs_by_step = {
+        str(item["step_id"]): _hydrate_step_output(item)
+        for item in cast(list[Mapping[str, Any]], persisted["outputs_by_step"])
+    }
+    observations = [
+        _hydrate_tool_observation(item)
+        for item in cast(list[Mapping[str, Any]], persisted["tool_observations"])
+    ]
+    return {
+        "request": runtime_state.request,
+        "state": runtime_state,
+        "outputs_by_step": outputs_by_step,
+        "current_step_index": int(persisted["current_step_index"]),
+        "trace_id": runtime_state.trace_id,
+        "assistant_output": assistant_output,
+        "pending_tool_calls": pending,
+        "assistant_iterations": int(persisted["assistant_iterations"]),
+        "tool_calls_used": int(persisted["tool_calls_used"]),
+        "action_tool_calls_used": int(persisted["action_tool_calls_used"]),
+        "control_tool_calls_used": int(persisted["control_tool_calls_used"]),
+        "run_phase": RunPhase(str(persisted["run_phase"])),
+        "tool_observations": observations,
+        "last_llm_span_id": str(persisted.get("last_llm_span_id") or ""),
+        "last_llm_attempt_kind": str(persisted.get("last_llm_attempt_kind") or ""),
+        "max_tool_iterations": int(persisted["max_tool_calls_per_run"]),
+        "max_control_tool_iterations": int(persisted["max_control_tool_calls_per_run"]),
+        "max_plan_steps": int(persisted["max_assistant_iterations"]),
+        "response_stream_current_call_emitted": False,
+        "response_stream_ends_with_newline": False,
+        "response_stream_separator_pending": False,
+    }
+
+
+def apply_assistant_turn_state_to_agent_state(
+    value: Mapping[str, object],
+    *,
+    runtime_state: AgentState,
+) -> AgentState:
+    """Apply persisted run facts to a fresh invocation-local product state.
+
+    This is intentionally an explicit field-by-field projection.  Runtime-only
+    context already prepared on ``runtime_state`` remains local, while all
+    observable run trajectory is reconstructed from the graph result.
+    """
+
+    persisted = validate_assistant_turn_state(value)
+    run = cast(Mapping[str, Any], persisted["run"])
+    if (
+        runtime_state.run_id != run["run_id"]
+        or runtime_state.trace_id != run["trace_id"]
+        or runtime_state.agent_id != run["agent_id"]
+    ):
+        raise AssistantStateCompatibilityError(
+            "Runtime state identity does not match the checkpoint turn."
+        )
+    runtime_state.status = cast(Any, run["status"])
+    runtime_state.errors = [
+        AgentError(
+            message=str(item["message"]),
+            source=cast(str | None, item.get("source")),
+            details=({"code": item["code"]} if item.get("code") is not None else {}),
+            created_at=_parse_datetime(item.get("created_at")),
+        )
+        for item in cast(list[Mapping[str, Any]], run["errors"])
+    ]
+    runtime_state.tool_calls = [
+        ToolCallRecord(
+            tool_call_id=str(item["tool_call_id"]),
+            tool_name=str(item["tool_name"]),
+            input={
+                str(argument["name"]): json.loads(str(argument["value_json"]))
+                for argument in cast(
+                    list[Mapping[str, Any]], item.get("arguments") or []
+                )
+            },
+            status=cast(Any, item["status"]),
+            started_at=_parse_datetime(item.get("started_at")),
+            finished_at=(
+                _parse_datetime(item.get("finished_at"))
+                if item.get("finished_at") is not None
+                else None
+            ),
+            output_ref=cast(str | None, item.get("output_ref")),
+            error_message=cast(str | None, item.get("error_summary")),
+        )
+        for item in cast(list[Mapping[str, Any]], run["tool_calls"])
+    ]
+    local_results = list(runtime_state.tool_results)
+    runtime_state.tool_results = [
+        (
+            local_results[index]
+            if index < len(local_results)
+            and local_results[index].tool_name == item["tool_name"]
+            and local_results[index].success == (item["status"] == "succeeded")
+            else ToolResult(
+                tool_name=str(item["tool_name"]),
+                success=item["status"] == "succeeded",
+                voice_summary=str(item.get("summary") or ""),
+                output_ref=cast(str | None, item.get("output_ref")),
+                raw_data_ref=(
+                    str(item["artifact_refs"][0]) if item.get("artifact_refs") else None
+                ),
+                error=cast(str | None, item.get("error_summary")),
+            )
+        )
+        for index, item in enumerate(cast(list[Mapping[str, Any]], run["tool_results"]))
+    ]
+    catalog = cast(Mapping[str, Any], persisted["catalog"])
+    excluded: dict[str, list[str]] = {}
+    for encoded in cast(list[str], catalog["exclusion_reason_codes"]):
+        tool_name, separator, reason = encoded.partition(":")
+        if separator:
+            excluded.setdefault(tool_name, []).append(reason)
+    runtime_state.run_tool_catalog = RunToolCatalog(
+        schema_version="run_tool_catalog_v1",
+        available_tool_names=list(catalog["available_tool_names"]),
+        selection_reasons=list(catalog["selection_reason_codes"]),
+        excluded_reasons=excluded,
+    )
+    response = persisted.get("final_response")
+    local_response = runtime_state.response
+    reconstructed_response = (
+        AgentResponse(
+            message=str(response["message"]),
+            followup_question=cast(str | None, response.get("followup_question")),
+            output_refs=list(response.get("output_refs") or []),
+            annotations=[
+                UrlCitationAnnotation(
+                    source_id=str(item["source_id"]),
+                    title=str(item["title"]),
+                    url=str(item["url"]),
+                    start_index=int(item["start_index"]),
+                    end_index=int(item["end_index"]),
+                )
+                for item in cast(
+                    list[Mapping[str, Any]], response.get("citations") or []
+                )
+            ],
+        )
+        if isinstance(response, Mapping)
+        else None
+    )
+    runtime_state.response = (
+        local_response
+        if local_response is not None
+        and reconstructed_response is not None
+        and local_response.message == reconstructed_response.message
+        and local_response.output_refs == reconstructed_response.output_refs
+        else reconstructed_response
+    )
+    return runtime_state
 
 
 def validate_assistant_turn_state(value: Mapping[str, object]) -> AssistantTurnState:
@@ -380,6 +669,19 @@ def validate_assistant_turn_state(value: Mapping[str, object]) -> AssistantTurnS
     return cast(AssistantTurnState, validated.model_dump(mode="json"))
 
 
+def route_after_assistant_turn_state(value: Mapping[str, object]) -> str:
+    """Route using only checkpoint-safe facts, without hydrating runtime models."""
+
+    state = validate_assistant_turn_state(value)
+    run = cast(Mapping[str, Any], state["run"])
+    if run["status"] in {"failed", "completed", "cancelled"}:
+        return "finish"
+    output = state.get("assistant_output")
+    if isinstance(output, Mapping) and output.get("kind") == "tool_calls":
+        return "execute_tool"
+    return "finish"
+
+
 def _messages_from_request(request: UserRequest) -> tuple[PersistedMessage, ...]:
     messages: list[PersistedMessage] = []
     history = request.metadata.get("conversation_history")
@@ -390,10 +692,231 @@ def _messages_from_request(request: UserRequest) -> tuple[PersistedMessage, ...]
             role = item.get("role")
             text = item.get("text", item.get("content"))
             if role in {"user", "assistant"} and isinstance(text, str):
-                messages.append(PersistedMessage(role=role, text=_bounded(text, 32_000)))
+                messages.append(
+                    PersistedMessage(role=role, text=_bounded(text, 32_000))
+                )
     if request.text is not None:
         messages.append(PersistedMessage(role="user", text=request.text))
     return tuple(messages[-128:])
+
+
+def _project_assistant_output(value: object) -> dict[str, object] | None:
+    if isinstance(value, AssistantTextOutput):
+        return cast(
+            dict[str, object],
+            PersistedAssistantOutput(
+                kind="text",
+                text=_bounded(value.text, 32_000),
+            ).model_dump(mode="json"),
+        )
+    if isinstance(value, AssistantToolCall):
+        return cast(
+            dict[str, object],
+            PersistedAssistantOutput(
+                kind="tool_calls",
+                tool_calls=(_project_tool_call_request(value),),
+            ).model_dump(mode="json"),
+        )
+    if value is None:
+        return None
+    raise TypeError("assistant_output must use the strict assistant output contract")
+
+
+def _project_tool_call_request(call: AssistantToolCall) -> PersistedToolCallRequest:
+    arguments = tuple(
+        PersistedToolArgument(
+            name=name,
+            value_json=json.dumps(
+                value,
+                ensure_ascii=False,
+                sort_keys=True,
+                allow_nan=False,
+            ),
+        )
+        for name, value in call.tool_input.items()
+    )
+    return PersistedToolCallRequest(
+        provider_call_id=call.provider_tool_call_id or f"local:{call.tool_name}",
+        tool_name=call.tool_name,
+        arguments=arguments,
+    )
+
+
+def _hydrate_assistant_output(
+    value: object,
+) -> AssistantTextOutput | AssistantToolCall | None:
+    if value is None:
+        return None
+    item = cast(Mapping[str, Any], value)
+    kind = item.get("kind")
+    if kind == "text":
+        return AssistantTextOutput(text=str(item.get("text") or ""))
+    if kind == "tool_calls":
+        calls = cast(list[Mapping[str, Any]], item.get("tool_calls") or [])
+        return _hydrate_tool_call_request(calls[0]) if calls else None
+    return None
+
+
+def _hydrate_tool_call_request(item: Mapping[str, Any]) -> AssistantToolCall:
+    return AssistantToolCall(
+        tool_name=str(item["tool_name"]),
+        tool_input={
+            str(argument["name"]): json.loads(str(argument["value_json"]))
+            for argument in cast(list[Mapping[str, Any]], item.get("arguments") or [])
+        },
+        provider_tool_call_id=str(item["provider_call_id"]),
+        safety_notes=["checkpoint_hydrated"],
+    )
+
+
+def _assistant_tool_calls(value: object) -> tuple[AssistantToolCall, ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, (list, tuple)):
+        raise TypeError("pending_tool_calls must be a sequence")
+    calls = tuple(value)
+    if not all(isinstance(item, AssistantToolCall) for item in calls):
+        raise TypeError("pending_tool_calls must contain AssistantToolCall")
+    return cast(tuple[AssistantToolCall, ...], calls)
+
+
+def _project_tool_observation(value: Mapping[str, Any]) -> PersistedToolObservation:
+    raw_error = value.get("error")
+    error = None
+    if isinstance(raw_error, Mapping):
+        error = PersistedObservationError(
+            code=str(raw_error.get("code") or "tool_failed"),
+            message=_bounded(str(raw_error.get("message") or "Tool failed."), 2_000),
+            retryable=bool(raw_error.get("retryable", False)),
+        )
+    warnings = tuple(
+        _bounded(item, 2_000)
+        for item in cast(list[object], value.get("warnings") or [])
+        if isinstance(item, str) and item
+    )
+    status = value.get("status")
+    if status not in {"succeeded", "failed", "rejected"}:
+        raise ValueError("assistant_state_tool_observation_status_invalid")
+    outcome = value.get("outcome")
+    if outcome not in {"success", "partial", "empty", None}:
+        outcome = None
+    raw_data = value.get("data")
+    model_facts: list[PersistedObservationFact] = []
+    if isinstance(raw_data, Mapping):
+        for name, fact in raw_data.items():
+            if not isinstance(name, str) or not name:
+                continue
+            encoded = json.dumps(
+                fact,
+                ensure_ascii=False,
+                sort_keys=True,
+                allow_nan=False,
+            )
+            if len(encoded) <= 16_000:
+                model_facts.append(
+                    PersistedObservationFact(name=name, value_json=encoded)
+                )
+    return PersistedToolObservation(
+        tool_name=str(value.get("tool_name") or "unknown"),
+        status=cast(Any, status),
+        summary=_bounded(str(value.get("summary") or "Tool observation."), 2_000),
+        outcome=cast(Any, outcome),
+        warnings=warnings[:16],
+        is_complete=bool(value.get("is_complete", status == "succeeded")),
+        output_ref=_bounded_optional(value.get("output_ref"), 1_024),
+        artifact_refs=(),
+        provider_call_id=_bounded_optional(value.get("_provider_tool_call_id"), 256),
+        model_facts=tuple(model_facts[:128]),
+        error=error,
+    )
+
+
+def _hydrate_tool_observation(item: Mapping[str, Any]) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "tool_name": item["tool_name"],
+        "status": item["status"],
+        "summary": item["summary"],
+        "outcome": item.get("outcome"),
+        "warnings": list(item.get("warnings") or []),
+        "is_complete": bool(item.get("is_complete", False)),
+        "output_ref": item.get("output_ref"),
+        "data": {
+            str(fact["name"]): json.loads(str(fact["value_json"]))
+            for fact in cast(list[Mapping[str, Any]], item.get("model_facts") or [])
+        },
+    }
+    if item.get("error") is not None:
+        payload["error"] = dict(cast(Mapping[str, Any], item["error"]))
+    if item.get("provider_call_id") is not None:
+        payload["_provider_tool_call_id"] = item["provider_call_id"]
+    return payload
+
+
+def _observation_mappings(value: object) -> tuple[Mapping[str, Any], ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, (list, tuple)):
+        raise TypeError("tool_observations must be a sequence")
+    observations = tuple(value)
+    if not all(isinstance(item, Mapping) for item in observations):
+        raise TypeError("tool_observations must contain mappings")
+    return cast(tuple[Mapping[str, Any], ...], observations)
+
+
+def _tool_result_items(value: object) -> tuple[tuple[str, ToolResult], ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, Mapping):
+        raise TypeError("outputs_by_step must be a mapping")
+    items: list[tuple[str, ToolResult]] = []
+    for step_id, result in value.items():
+        if not isinstance(step_id, str) or not isinstance(result, ToolResult):
+            raise TypeError("outputs_by_step must map strings to ToolResult")
+        items.append((step_id, result))
+    return tuple(items)
+
+
+def _project_step_output(step_id: str, result: ToolResult) -> PersistedStepOutput:
+    projected = _project_tool_result(result)
+    return PersistedStepOutput(
+        step_id=step_id,
+        tool_name=result.tool_name,
+        status="succeeded" if result.success else "failed",
+        summary=projected.summary,
+        output_ref=projected.output_ref,
+        artifact_refs=projected.artifact_refs,
+    )
+
+
+def _hydrate_step_output(item: Mapping[str, Any]) -> ToolResult:
+    return ToolResult(
+        tool_name=str(item["tool_name"]),
+        success=item["status"] == "succeeded",
+        voice_summary=str(item.get("summary") or ""),
+        output_ref=cast(str | None, item.get("output_ref")),
+        raw_data_ref=(
+            str(item["artifact_refs"][0]) if item.get("artifact_refs") else None
+        ),
+        error=(
+            str(item.get("summary") or "Tool failed.")
+            if item["status"] != "succeeded"
+            else None
+        ),
+    )
+
+
+def _run_phase_text(value: object) -> str:
+    if isinstance(value, RunPhase):
+        return value.value
+    if isinstance(value, str) and value:
+        return value
+    return RunPhase.ACT.value
+
+
+def _non_negative_int(value: object) -> int:
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return value
+    return 0
 
 
 def _project_tool_call(record: object) -> PersistedToolCall:
@@ -403,7 +926,9 @@ def _project_tool_call(record: object) -> PersistedToolCall:
         for name, value in raw_input.items():
             if not isinstance(name, str):
                 raise ValueError("assistant_state_tool_argument_name_invalid")
-            encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, allow_nan=False)
+            encoded = json.dumps(
+                value, ensure_ascii=False, sort_keys=True, allow_nan=False
+            )
             arguments.append(PersistedToolArgument(name=name, value_json=encoded))
     return PersistedToolCall(
         tool_call_id=record.tool_call_id,
@@ -422,7 +947,9 @@ def _project_tool_result(result: object) -> PersistedToolResult:
     voice_summary = getattr(result, "voice_summary", None)
     summary = voice_summary if isinstance(voice_summary, str) else error or ""
     contract = getattr(result, "contract", None)
-    contract_ref = getattr(contract, "output_ref", None) if contract is not None else None
+    contract_ref = (
+        getattr(contract, "output_ref", None) if contract is not None else None
+    )
     return PersistedToolResult(
         tool_name=result.tool_name,
         status="succeeded" if result.success else "failed",
@@ -461,18 +988,22 @@ def _project_catalog(catalog: object | None) -> PersistedRunToolCatalog:
 def _project_context_refs(state: AgentState) -> tuple[PersistedContextRef, ...]:
     refs: list[PersistedContextRef] = []
     for section in state.context_source_result.sections:
-        refs.append(PersistedContextRef(
-            kind="context_section",
-            ref=section.source_ref or section.section_id,
-            source=section.source_type,
-            version=section.source_version or None,
-        ))
+        refs.append(
+            PersistedContextRef(
+                kind="context_section",
+                ref=section.source_ref or section.section_id,
+                source=section.source_type,
+                version=section.source_version or None,
+            )
+        )
     for issue in state.context_source_result.issues:
-        refs.append(PersistedContextRef(
-            kind="source_issue",
-            ref=issue.source_ref or issue.section_id or issue.code,
-            status_code=issue.code,
-        ))
+        refs.append(
+            PersistedContextRef(
+                kind="source_issue",
+                ref=issue.source_ref or issue.section_id or issue.code,
+                status_code=issue.code,
+            )
+        )
     snapshot = state.session_memory_snapshot
     if snapshot is not None:
         refs.extend(
@@ -481,11 +1012,13 @@ def _project_context_refs(state: AgentState) -> tuple[PersistedContextRef, ...]:
         )
     visual = getattr(state.perception, "visual", None)
     if visual is not None and visual.output_ref:
-        refs.append(PersistedContextRef(
-            kind="perception",
-            ref=visual.output_ref,
-            source=visual.media_kind,
-        ))
+        refs.append(
+            PersistedContextRef(
+                kind="perception",
+                ref=visual.output_ref,
+                source=visual.media_kind,
+            )
+        )
     return tuple(refs[:256])
 
 
@@ -525,6 +1058,17 @@ def _datetime_text(value: datetime | None) -> str | None:
     return value.isoformat() if value is not None else None
 
 
+def _parse_datetime(value: object) -> datetime:
+    if isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value)
+        except ValueError:
+            pass
+        else:
+            return parsed
+    return datetime.now(timezone.utc)
+
+
 __all__ = [
     "ASSISTANT_GRAPH_NAME",
     "ASSISTANT_GRAPH_VERSION",
@@ -535,8 +1079,12 @@ __all__ = [
     "PersistedMediaRef",
     "PersistedRequest",
     "PersistedRun",
+    "apply_assistant_turn_state_to_agent_state",
+    "assistant_loop_state_from_turn_state",
     "assistant_turn_state_from_agent_state",
+    "assistant_turn_state_from_loop_state",
     "assistant_turn_state_from_request",
     "persisted_request_from_user_request",
+    "route_after_assistant_turn_state",
     "validate_assistant_turn_state",
 ]

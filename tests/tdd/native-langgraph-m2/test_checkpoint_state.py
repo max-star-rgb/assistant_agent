@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 
+from assistant_agent.multi_agent.models import DEFAULT_AGENT_ID
 from assistant_agent.runtime.assistant_graph_app import GraphExecutionIdentity
 from assistant_agent.runtime.assistant_graph_state import (
     ASSISTANT_GRAPH_NAME,
@@ -22,7 +23,12 @@ from assistant_agent.runtime.requests import UserRequest
 from assistant_agent.runtime.runtime import AgentGraphRuntime
 from assistant_agent.runtime.session_store import InMemorySessionStore
 from assistant_agent.runtime.state import AgentState
-from tests.core.support import ProbeTool, ScriptedChatAdapter, offline_config, sealed_registry
+from tests.core.support import (
+    ProbeTool,
+    ScriptedChatAdapter,
+    offline_config,
+    sealed_registry,
+)
 
 
 _FORBIDDEN_TYPES = (
@@ -51,7 +57,9 @@ def _walk(value: Any) -> None:
             _walk(item)
 
 
-def _runtime(*, saver: InMemorySaver, adapter: ScriptedChatAdapter) -> AgentGraphRuntime:
+def _runtime(
+    *, saver: InMemorySaver, adapter: ScriptedChatAdapter
+) -> AgentGraphRuntime:
     return AgentGraphRuntime(
         registry=sealed_registry(),
         config=offline_config(),
@@ -63,7 +71,7 @@ def _runtime(*, saver: InMemorySaver, adapter: ScriptedChatAdapter) -> AgentGrap
 
 def _identity(run_id: str) -> GraphExecutionIdentity:
     return GraphExecutionIdentity.for_assistant_turn(
-        agent_id="assistant",
+        agent_id=DEFAULT_AGENT_ID,
         user_id="user-state",
         session_id="session-state",
         run_id=run_id,
@@ -76,14 +84,16 @@ def test_real_compiled_checkpoint_contains_only_plain_json_state() -> None:
     saver = InMemorySaver()
     runtime = _runtime(
         saver=saver,
-        adapter=ScriptedChatAdapter([
-            ChatResult(
-                provider="scripted",
-                model="scripted-model",
-                finish_reason="stop",
-                response_text="done-state",
-            )
-        ]),
+        adapter=ScriptedChatAdapter(
+            [
+                ChatResult(
+                    provider="scripted",
+                    model="scripted-model",
+                    finish_reason="stop",
+                    response_text="done-state",
+                )
+            ]
+        ),
     )
     try:
         result = runtime.run_state(
@@ -141,30 +151,34 @@ def test_stable_thread_new_turn_overwrites_all_run_scoped_channels() -> None:
     saver = InMemorySaver()
     runtime = _runtime(
         saver=saver,
-        adapter=ScriptedChatAdapter([
-            ChatResult(
-                provider="scripted",
-                model="scripted-model",
-                finish_reason="tool_calls",
-                tool_calls=[NativeToolCall(
-                    id="provider-call-1",
-                    name=ProbeTool.name,
-                    arguments={"value": "first"},
-                )],
-            ),
-            ChatResult(
-                provider="scripted",
-                model="scripted-model",
-                finish_reason="stop",
-                response_text="first-finished",
-            ),
-            ChatResult(
-                provider="scripted",
-                model="scripted-model",
-                finish_reason="stop",
-                response_text="second-finished",
-            ),
-        ]),
+        adapter=ScriptedChatAdapter(
+            [
+                ChatResult(
+                    provider="scripted",
+                    model="scripted-model",
+                    finish_reason="tool_calls",
+                    tool_calls=[
+                        NativeToolCall(
+                            id="provider-call-1",
+                            name=ProbeTool.name,
+                            arguments={"value": "first"},
+                        )
+                    ],
+                ),
+                ChatResult(
+                    provider="scripted",
+                    model="scripted-model",
+                    finish_reason="stop",
+                    response_text="first-finished",
+                ),
+                ChatResult(
+                    provider="scripted",
+                    model="scripted-model",
+                    finish_reason="stop",
+                    response_text="second-finished",
+                ),
+            ]
+        ),
     )
     try:
         first = runtime.run_state(
@@ -172,8 +186,18 @@ def test_stable_thread_new_turn_overwrites_all_run_scoped_channels() -> None:
             run_id="run-state-1",
         )
         assert first.tool_results
+        first_values = runtime.assistant_graph_app.graph.get_state(
+            _identity("run-state-1").runnable_config()
+        ).values
+        assert first_values["tool_observations"][0]["model_facts"] == [
+            {"name": "value", "value_json": '"first"'}
+        ]
+        assert "audit_payload" not in json.dumps(first_values)
+        assert "raw_data" not in json.dumps(first_values)
         second = runtime.run_state(
-            UserRequest(user_id="user-state", session_id="session-state", text="second"),
+            UserRequest(
+                user_id="user-state", session_id="session-state", text="second"
+            ),
             run_id="run-state-2",
         )
         assert second.response is not None

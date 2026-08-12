@@ -14,6 +14,7 @@ from assistant_agent.runtime.assistant_graph_app import (
     GraphExecutionIdentity,
 )
 from assistant_agent.runtime.chat_adapter import ChatResult
+from assistant_agent.runtime.assistant_graph_state import ASSISTANT_GRAPH_NAME
 from assistant_agent.runtime.graph_runtime import GraphRuntimeContext
 from assistant_agent.runtime.output_models import NativeToolCall
 from assistant_agent.runtime.requests import UserRequest
@@ -123,8 +124,8 @@ def test_runtime_exposes_compiled_graph_as_read_only() -> None:
         runtime.close()
 
 
-def test_runtime_reuses_public_graph_without_writing_m1_turn_checkpoints() -> None:
-    """M1 runs reuse the graph but do not claim checkpointer-backed turn isolation."""
+def test_runtime_reuses_public_graph_and_checkpoints_latest_turn() -> None:
+    """M2 keeps one compiled graph and checkpoints the latest conversation turn."""
 
     saver = MemorySaver()
     runtime = _runtime(checkpointer=saver)
@@ -139,7 +140,16 @@ def test_runtime_reuses_public_graph_without_writing_m1_turn_checkpoints() -> No
         assert second.response is not None
         assert second.response.message == "second-sentinel"
         assert runtime.assistant_graph_app.graph is graph
-        assert saver.storage == {}
+        identity = GraphExecutionIdentity.for_assistant_turn(
+            agent_id=second.agent_id,
+            user_id=second.user_id,
+            session_id=second.session_id,
+            run_id=second.run_id,
+        )
+        snapshot = graph.get_state(identity.runnable_config()).values
+        assert snapshot["graph_name"] == ASSISTANT_GRAPH_NAME
+        assert snapshot["run"]["run_id"] == "run-two"
+        assert snapshot["final_response"]["message"] == "second-sentinel"
     finally:
         runtime.close()
 
@@ -191,13 +201,24 @@ def test_runtime_does_not_reuse_prior_turn_tool_observation_in_stable_thread() -
             "system",
             "user",
         ]
-        assert saver.storage == {}
+        identity = GraphExecutionIdentity.for_assistant_turn(
+            agent_id=runtime.agent_id,
+            user_id="user-sentinel",
+            session_id="session-sentinel",
+            run_id="run-two",
+        )
+        snapshot = runtime.assistant_graph_app.graph.get_state(
+            identity.runnable_config()
+        ).values
+        assert snapshot["run"]["run_id"] == "run-two"
+        assert snapshot["tool_observations"] == []
+        assert snapshot["run"]["tool_results"] == []
     finally:
         runtime.close()
 
 
-def test_concurrent_runs_share_compiled_graph_without_checkpoint_cross_talk() -> None:
-    """Concurrent consumers complete independently without creating M1 checkpoints."""
+def test_concurrent_callers_receive_independent_results_on_shared_graph() -> None:
+    """Gateway serialization owns same-thread ordering; callers still get their own result."""
 
     saver = MemorySaver()
     runtime = _runtime(checkpointer=saver)
@@ -211,7 +232,17 @@ def test_concurrent_runs_share_compiled_graph_without_checkpoint_cross_talk() ->
 
         assert {state.run_id for state in states} == {"run-one", "run-two"}
         assert {state.status for state in states} == {"completed"}
-        assert saver.storage == {}
+        identity = GraphExecutionIdentity.for_assistant_turn(
+            agent_id=runtime.agent_id,
+            user_id="user-sentinel",
+            session_id="session-sentinel",
+            run_id="run-two",
+        )
+        snapshot = runtime.assistant_graph_app.graph.get_state(
+            identity.runnable_config()
+        ).values
+        assert snapshot["graph_name"] == ASSISTANT_GRAPH_NAME
+        assert snapshot["run"]["run_id"] in {"run-one", "run-two"}
     finally:
         runtime.close()
 
