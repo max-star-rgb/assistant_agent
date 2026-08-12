@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import FrozenInstanceError
+import hashlib
 import json
 
 import pytest
@@ -54,7 +55,9 @@ class _WriteProbe(ToolBase):
     category = "write"
 
     def _run(self, input: _WriteProbeInput, context: ToolContext) -> ToolResult:
-        return ToolResult(tool_name=self.name, success=True, data={"value": input.value})
+        return ToolResult(
+            tool_name=self.name, success=True, data={"value": input.value}
+        )
 
 
 class _SecondReadProbe(ProbeTool):
@@ -322,6 +325,9 @@ def test_profile_scope_filters_provider_specs_and_validator_catalog_together() -
                 ),
                 agent_state=runtime_state,
                 state_ref_resolver=lambda _persisted, _runtime: None,
+                profile_allowed_tool_names=frozenset(
+                    child_state["catalog"]["available_tool_names"]
+                ),
             )
         ),
     )
@@ -342,6 +348,9 @@ def test_profile_scope_filters_provider_specs_and_validator_catalog_together() -
                     chat_adapter=ScriptedChatAdapter([]),
                     agent_state=runtime_state,
                     state_ref_resolver=lambda _persisted, _runtime: None,
+                    profile_allowed_tool_names=frozenset(
+                        child_state["catalog"]["available_tool_names"]
+                    ),
                 )
             ),
         )
@@ -351,6 +360,16 @@ def test_profile_scope_filters_provider_specs_and_validator_catalog_together() -
     same_category_escalation["catalog"]["available_tool_names"].append(
         _SecondReadProbe.name
     )
+    forged_payload = json.dumps(
+        ["worker", sorted(same_category_escalation["catalog"]["available_tool_names"])],
+        ensure_ascii=True,
+        separators=(",", ":"),
+    ).encode()
+    same_category_escalation["catalog"]["selection_reason_codes"] = [
+        reason
+        for reason in same_category_escalation["catalog"]["selection_reason_codes"]
+        if not reason.startswith("graph_profile_scope_sha256:")
+    ] + [f"graph_profile_scope_sha256:{hashlib.sha256(forged_payload).hexdigest()}"]
     with pytest.raises(GraphProfilePolicyError):
         wrapped(
             same_category_escalation,
@@ -360,6 +379,9 @@ def test_profile_scope_filters_provider_specs_and_validator_catalog_together() -
                     chat_adapter=ScriptedChatAdapter([]),
                     agent_state=runtime_state,
                     state_ref_resolver=lambda _persisted, _runtime: None,
+                    profile_allowed_tool_names=frozenset(
+                        child_state["catalog"]["available_tool_names"]
+                    ),
                 )
             ),
         )
@@ -371,7 +393,9 @@ def test_profile_scope_filters_provider_specs_and_validator_catalog_together() -
     )
 
 
-def test_native_parent_subgraph_namespace_does_not_become_child_business_state() -> None:
+def test_native_parent_subgraph_namespace_does_not_become_child_business_state() -> (
+    None
+):
     registry = sealed_registry()
     assignment = ProfileInvocationInput(
         profile="worker",
@@ -425,6 +449,9 @@ def test_native_parent_subgraph_namespace_does_not_become_child_business_state()
         context_service=ContextService(),
         agent_state=runtime_state,
         state_ref_resolver=lambda _persisted, _runtime: None,
+        profile_allowed_tool_names=frozenset(
+            child_input["catalog"]["available_tool_names"]
+        ),
     )
     child = AssistantTurnGraphApp().graph_for_profile("worker")
     parent_builder = StateGraph(
@@ -453,11 +480,7 @@ def test_native_parent_subgraph_namespace_does_not_become_child_business_state()
         ]
 
     parts = asyncio.run(collect())
-    child_namespaces = {
-        tuple(part.get("ns") or ())
-        for part in parts
-        if part.get("ns")
-    }
+    child_namespaces = {tuple(part.get("ns") or ()) for part in parts if part.get("ns")}
     child_checkpoints = [
         part["data"]["values"]
         for part in parts
@@ -467,7 +490,9 @@ def test_native_parent_subgraph_namespace_does_not_become_child_business_state()
     assert len(child_namespaces) == 1
     namespace = next(iter(child_namespaces))
     assert namespace[0].startswith("worker:")
-    assert all("parent-only-secret" not in json.dumps(value) for value in child_checkpoints)
+    assert all(
+        "parent-only-secret" not in json.dumps(value) for value in child_checkpoints
+    )
     assert all(
         "parent-business-id-must-not-use-task-uuid" not in json.dumps(value)
         for value in child_checkpoints

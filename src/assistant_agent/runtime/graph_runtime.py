@@ -74,6 +74,7 @@ class GraphRuntimeContext:
     cancel_token: Any | None = None
     agent_state: AgentState | None = None
     state_ref_resolver: "AssistantRuntimeStateRefResolver | None" = None
+    profile_allowed_tool_names: frozenset[str] | None = None
 
 
 class AssistantRuntimeStateRefResolver(Protocol):
@@ -263,6 +264,13 @@ def _scoped_runtime_context(
 
     profile = assistant_graph_profile(expected_profile)
     allowed_names = frozenset(catalog.get("available_tool_names", ()))
+    trusted_names = runtime_context.profile_allowed_tool_names
+    if expected_profile != "standard" and (
+        trusted_names is None or allowed_names != trusted_names
+    ):
+        raise GraphProfilePolicyError(
+            "checkpoint Tool scope does not match its trusted runtime assignment"
+        )
     if not profile_scope_matches(
         expected_profile,
         list(allowed_names),
@@ -289,8 +297,7 @@ def _scoped_runtime_context(
             "checkpoint Tool scope exceeds the selected graph profile"
         )
     if (
-        int(graph_state.get("max_tool_calls_per_run", 0))
-        > profile.max_tool_iterations
+        int(graph_state.get("max_tool_calls_per_run", 0)) > profile.max_tool_iterations
         or int(graph_state.get("max_action_tool_calls_per_run", 0))
         > profile.max_tool_iterations
         or int(graph_state.get("max_control_tool_calls_per_run", 0))
@@ -316,6 +323,7 @@ def _scoped_runtime_context(
         cancel_token=runtime_context.cancel_token,
         agent_state=runtime_context.agent_state,
         state_ref_resolver=runtime_context.state_ref_resolver,
+        profile_allowed_tool_names=runtime_context.profile_allowed_tool_names,
     )
 
 
