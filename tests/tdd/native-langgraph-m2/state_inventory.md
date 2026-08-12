@@ -71,6 +71,12 @@ contract-owned `output_ref` 保持两个语义字段，不互相提升；恢复�
 HTTP(S) URL 或 `artifact/memory/media/output` opaque stable scheme；userinfo、signed/credential query、
 data/file URI、绝对路径、credential/body 文本均拒绝。该 validator 不依赖 LangSmith redactor。
 
+Tool call 与 pending provider call 的 argument 使用同一 checkpoint-local sanitizer 递归验证 bounded JSON；
+敏感 key/value、AWS/GCS/OSS/Azure SAS 签名 URL、嵌入式认证、data/base64 body、私有 Unix/Windows 路径、
+相对媒体路径、过深/过大结构与长正文一律 fail closed，不允许通过 drop 改变 Tool 语义。普通 public URL、
+bounded query、stable opaque ref 和用于 ActionValidator/模型 repair 的空 JSON string 保持原值。自由用户文本
+不进入该执行事实 sanitizer，避免把合法 credential 教育/排障请求误判为 checkpoint corruption。
+
 ## new-turn overwrite contract
 
 同一 conversation `thread_id` 的新 turn 必须生成一份包含**所有 channel**的完整 input：新 request/run，

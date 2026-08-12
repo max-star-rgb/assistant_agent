@@ -21,7 +21,7 @@ from assistant_agent.runtime.assistant_graph_state import (
 )
 from assistant_agent.runtime.run_phase import RunPhase
 from assistant_agent.runtime.chat_adapter import ChatResult
-from assistant_agent.runtime.output_models import NativeToolCall
+from assistant_agent.runtime.output_models import AssistantToolCall, NativeToolCall
 from assistant_agent.runtime.requests import UserRequest
 from assistant_agent.runtime.runtime import AgentGraphRuntime
 from assistant_agent.runtime.session_store import InMemorySessionStore
@@ -649,6 +649,122 @@ def test_capability_contract_rejects_unsafe_scalar_strings(
     encoded = json.dumps(persisted)
 
     assert unsafe_value not in encoded
+
+
+_UNSAFE_CHECKPOINT_ARGUMENTS = [
+    {"access_token": "secret"},
+    {"token": "secret"},
+    {"cookie": "session=secret"},
+    {"client_secret": "secret"},
+    {"session": "secret"},
+    {"signature": "secret"},
+    {"nested": {"authorization": "Bearer secret"}},
+    {"query": "access_token=secret"},
+    {"query": "Cookie: session=secret"},
+    {"query": "https://example.com/file?X-Amz-Signature=secret"},
+    {"query": "https://example.com/file?X-Goog-Signature=secret"},
+    {"query": "https://example.com/file?OSSAccessKeyId=key&Signature=secret"},
+    {"query": "https://example.com/file?sv=1&sp=r&se=tomorrow&sig=secret"},
+    {"query": "https://user:secret@example.com/private"},
+    {"content": "data:image/png;base64,AAAA"},
+    {"content": "payload; base64,AAAA"},
+    {"path": "/home/user/private.png"},
+    {"path": r"C:\Users\user\private.png"},
+    {"path": "../uploads/private.png"},
+    {"content": "x" * 16_001},
+]
+
+
+def _loop_state_with_pending_argument(payload: object) -> dict[str, Any]:
+    state = AgentState.from_request(
+        UserRequest(user_id="u", session_id="s", text="argument safety"),
+        run_id="run-argument-safety",
+        trace_id="trace-argument-safety",
+    )
+    return {
+        "state": state,
+        "outputs_by_step": {},
+        "current_step_index": 0,
+        "assistant_output": None,
+        "pending_tool_calls": [
+            AssistantToolCall(
+                tool_name=ProbeTool.name,
+                tool_input={"payload": payload},
+                provider_tool_call_id="provider-argument-safety",
+            )
+        ],
+        "assistant_iterations": 1,
+        "tool_calls_used": 0,
+        "action_tool_calls_used": 0,
+        "control_tool_calls_used": 0,
+        "run_phase": RunPhase.ACT,
+        "tool_observations": [],
+    }
+
+
+@pytest.mark.parametrize("payload", _UNSAFE_CHECKPOINT_ARGUMENTS)
+@pytest.mark.parametrize("boundary", ["recorded", "pending"])
+def test_tool_arguments_fail_closed_on_unsafe_nested_checkpoint_values(
+    payload: object,
+    boundary: str,
+) -> None:
+    """Unsafe Tool payloads must abort projection instead of being silently dropped."""
+
+    if boundary == "pending":
+        project = lambda: assistant_turn_state_from_loop_state(  # noqa: E731
+            _loop_state_with_pending_argument(payload)
+        )
+    else:
+        state = AgentState.from_request(
+            UserRequest(user_id="u", session_id="s", text="argument safety"),
+            run_id="run-argument-safety",
+            trace_id="trace-argument-safety",
+        )
+        state.add_tool_call(ProbeTool.name, {"payload": payload})
+        project = lambda: assistant_turn_state_from_agent_state(state)  # noqa: E731
+
+    with pytest.raises(ValueError, match="assistant_state_checkpoint_value_unsafe"):
+        project()
+
+
+def test_checkpoint_argument_validator_allows_bounded_json_and_public_urls() -> None:
+    """Normal Tool queries and stable refs remain valid checkpoint inputs."""
+
+    payload = {
+        "query": "summarize https://example.com/articles?q=agent " + "context " * 400,
+        "filters": {"enabled": True, "count": 3, "scores": [1, 2.5, None]},
+        "output_ref": "artifact://safe-output-123",
+    }
+    persisted = assistant_turn_state_from_loop_state(
+        _loop_state_with_pending_argument(payload)
+    )
+
+    encoded = persisted["pending_tool_calls"][0]["arguments"][0]["value_json"]
+    assert json.loads(encoded) == payload
+
+
+def test_checkpoint_argument_validator_preserves_empty_value_for_tool_repair() -> None:
+    """Schema-invalid JSON still has to reach ActionValidator and the model repair loop."""
+
+    persisted = assistant_turn_state_from_loop_state(
+        _loop_state_with_pending_argument({"value": ""})
+    )
+
+    encoded = persisted["pending_tool_calls"][0]["arguments"][0]["value_json"]
+    assert json.loads(encoded) == {"value": ""}
+
+
+def test_checkpoint_sanitizer_does_not_inspect_free_form_user_text() -> None:
+    """Credential education text is valid input; only persistence-risk fields are strict."""
+
+    text = "Explain access_token=example and data:image/png;base64,AAAA safely."
+    state = AgentState.from_request(
+        UserRequest(user_id="u", session_id="s", text=text),
+        run_id="run-user-text",
+        trace_id="trace-user-text",
+    )
+
+    assert assistant_turn_state_from_agent_state(state)["request"]["text"] == text
 
 
 def test_node_hydration_applies_persisted_trajectory_to_fresh_agent_state() -> None:

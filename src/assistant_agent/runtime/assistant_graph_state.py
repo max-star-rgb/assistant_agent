@@ -7,6 +7,7 @@ boundary between the product/runtime models and LangGraph checkpoints.
 from __future__ import annotations
 
 import json
+import math
 import re
 from datetime import datetime, timezone
 from typing import Any, Literal, Mapping, TypedDict, cast
@@ -810,12 +811,7 @@ def _project_tool_call_request(call: AssistantToolCall) -> PersistedToolCallRequ
     arguments = tuple(
         PersistedToolArgument(
             name=name,
-            value_json=json.dumps(
-                value,
-                ensure_ascii=False,
-                sort_keys=True,
-                allow_nan=False,
-            ),
+            value_json=_checkpoint_argument_json(name, value),
         )
         for name, value in call.tool_input.items()
     )
@@ -1025,9 +1021,7 @@ def _project_tool_call(record: object) -> PersistedToolCall:
         for name, value in raw_input.items():
             if not isinstance(name, str):
                 raise ValueError("assistant_state_tool_argument_name_invalid")
-            encoded = json.dumps(
-                value, ensure_ascii=False, sort_keys=True, allow_nan=False
-            )
+            encoded = _checkpoint_argument_json(name, value)
             arguments.append(PersistedToolArgument(name=name, value_json=encoded))
     return PersistedToolCall(
         tool_call_id=record.tool_call_id,
@@ -1184,41 +1178,137 @@ def _is_safe_scalar(value: object) -> bool:
 
 
 _CHECKPOINT_SECRET_RE = re.compile(
-    r"(?i)(authorization\s*[:=]|bearer\s+|api[_-]?key\s*[:=]|password\s*[:=]|secret(?:[_-]?token)?\s*[:=])"
+    r"(?ix)\b(?:"
+    r"authorization|access[_-]?token|token|cookie|client[_-]?secret|"
+    r"session(?:[_-]?(?:id|key|token))?|signature|api[_-]?key|password|"
+    r"secret(?:[_-]?token)?"
+    r")\b\s*[:=]\s*\S+|\bbearer\s+\S+"
 )
-_SIGNED_QUERY_KEYS = frozenset(
+_SENSITIVE_KEY_NAMES = frozenset(
     {
+        "authorization",
+        "accesstoken",
+        "token",
+        "cookie",
+        "clientsecret",
+        "session",
+        "sessionid",
+        "sessionkey",
+        "sessiontoken",
         "signature",
         "sig",
-        "token",
-        "access_token",
-        "x-amz-credential",
-        "x-amz-security-token",
-        "x-amz-signature",
+        "apikey",
+        "password",
+        "secret",
+        "xamzcredential",
+        "xamzsecuritytoken",
+        "xamzsignature",
+        "xgoogcredential",
+        "xgoogsignature",
+        "ossaccesskeyid",
+        "securitytoken",
     }
+)
+_SIGNED_QUERY_KEY_NAMES = _SENSITIVE_KEY_NAMES | frozenset({"se", "sp", "sv"})
+_CHECKPOINT_URL_RE = re.compile(r"https?://[^\s<>'\"]+", re.IGNORECASE)
+_WINDOWS_PATH_RE = re.compile(r"^(?:[A-Za-z]:[\\/]|\\\\)")
+_RELATIVE_MEDIA_PATH_RE = re.compile(
+    r"^(?:(?:\.\.?|assets?|media|uploads?|images?|videos?|audio)/).+"
+    r"\.(?:png|jpe?g|gif|webp|svg|mp[34]|mov|avi|wav|m4a|ogg|pdf|zip)$",
+    re.IGNORECASE,
 )
 
 
-def _checkpoint_string_is_safe(value: str) -> bool:
+def _normalized_checkpoint_key(value: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", value.lower())
+
+
+def _checkpoint_key_is_sensitive(value: str) -> bool:
+    return _normalized_checkpoint_key(value) in _SENSITIVE_KEY_NAMES
+
+
+def _url_contains_credentials_or_signature(value: str) -> bool:
+    parsed = urlparse(value.rstrip(".,);]"))
+    if parsed.username is not None or parsed.password is not None:
+        return True
+    query_names = {
+        _normalized_checkpoint_key(key) for key, _ in parse_qsl(parsed.query)
+    }
+    return bool(query_names & _SIGNED_QUERY_KEY_NAMES)
+
+
+def _checkpoint_string_is_safe(value: str, *, allow_empty: bool = False) -> bool:
     text = value.strip()
-    if not text or len(text) > 4_000:
+    if (not text and not allow_empty) or len(text) > 16_000:
         return False
     lowered = text.lower()
     if _CHECKPOINT_SECRET_RE.search(text):
         return False
-    if lowered.startswith(("data:", "file:")):
+    if lowered.startswith(("data:", "file:")) or re.search(
+        r"(?i)(?:;|\b)\s*base64\s*[, :]", text
+    ):
         return False
-    if lowered.startswith(("/home/", "/users/", "/tmp/", "/var/", "/mnt/")):
+    if lowered.startswith(
+        ("/home/", "/users/", "/tmp/", "/var/", "/mnt/", "/media/")
+    ):
+        return False
+    if _WINDOWS_PATH_RE.match(text) or _RELATIVE_MEDIA_PATH_RE.match(text):
         return False
     if "artifact body" in lowered or "media body" in lowered:
         return False
-    if lowered.startswith(("http://", "https://")):
-        parsed = urlparse(text)
-        if parsed.username is not None or parsed.password is not None:
-            return False
-        if any(key.lower() in _SIGNED_QUERY_KEYS for key, _ in parse_qsl(parsed.query)):
-            return False
+    urls = _CHECKPOINT_URL_RE.findall(text)
+    if any(_url_contains_credentials_or_signature(url) for url in urls):
+        return False
     return True
+
+
+def _checkpoint_json_is_safe(value: object, *, depth: int = 0) -> bool:
+    """Validate bounded JSON for checkpoint-sensitive execution facts."""
+
+    if depth > 8:
+        return False
+    if value is None or isinstance(value, (bool, int)):
+        return True
+    if isinstance(value, float):
+        return math.isfinite(value)
+    if isinstance(value, str):
+        return _checkpoint_string_is_safe(value, allow_empty=True)
+    if isinstance(value, Mapping):
+        if len(value) > 128:
+            return False
+        for key, child in value.items():
+            if (
+                not isinstance(key, str)
+                or not key
+                or len(key) > 256
+                or _checkpoint_key_is_sensitive(key)
+                or not _checkpoint_json_is_safe(child, depth=depth + 1)
+            ):
+                return False
+        return True
+    if isinstance(value, (list, tuple)):
+        return len(value) <= 128 and all(
+            _checkpoint_json_is_safe(child, depth=depth + 1) for child in value
+        )
+    return False
+
+
+def _checkpoint_argument_json(name: object, value: object) -> str:
+    if (
+        not isinstance(name, str)
+        or _checkpoint_key_is_sensitive(name)
+        or not _checkpoint_json_is_safe(value)
+    ):
+        raise ValueError("assistant_state_checkpoint_value_unsafe")
+    try:
+        encoded = json.dumps(
+            value, ensure_ascii=False, sort_keys=True, allow_nan=False
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError("assistant_state_checkpoint_value_unsafe") from exc
+    if len(encoded) > 16_000:
+        raise ValueError("assistant_state_checkpoint_value_unsafe")
+    return encoded
 
 
 def _safe_checkpoint_ref(value: object) -> str | None:
