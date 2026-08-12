@@ -94,8 +94,8 @@ M2 不删除 Workflow v2 scheduler（M3/M4）、Langfuse（M5）、Gateway conne
 Task 8 提交前 fresh output：
 
 - `pytest -q tests/tdd/native-langgraph-m2 tests/tdd/native-langgraph-runtime`：`204 passed`；
-- `pytest -q tests/core/integration/test_runtime_lifecycle.py tests/core/contract/test_tool_contract.py tests/core/contract/test_gateway_contract.py`：`40 passed`；
-- 默认 core `pytest -q`：`93 passed`；
+- `pytest -q tests/core/integration/test_runtime_lifecycle.py tests/core/contract/test_tool_contract.py tests/core/contract/test_gateway_contract.py`：`41 passed`；
+- 默认 core `pytest -q`：`94 passed`；
 - `pytest -q tests/tdd/native-langgraph-m2/test_no_graph_thread_bridge.py`：`3 passed`；
 - authority validator：`valid=true`、`errors=[]`；`review_required` 已人工复核对应的 gateway、runtime、Tool
   与 test-policy owner，不要求制造额外文档 diff；

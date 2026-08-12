@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
@@ -8,9 +9,14 @@ from pydantic import ValidationError
 from assistant_agent.gateway import GatewaySessionManager, frame
 from assistant_agent.gateway.bridge import GatewayBridge, GatewayConnectionPolicy
 from assistant_agent.gateway.protocol import CALL_HANGUP, CALL_INCOMING
+from assistant_agent.gateway.runtime_adapter import GatewayRuntimeAdapter
 from assistant_agent.gateway.runtime_types import RealtimeAgentEvent, RealtimeAgentResult
+from assistant_agent.gateway.runtime_types import RealtimeAgentRequest
 from assistant_agent.gateway.transport import Endpoint, InMemoryDuplex
 from assistant_agent.gateway.turn_facade import GatewayTurnFacade, GatewayTurnRequest
+from assistant_agent.runtime.event_stream import AgentRunStream
+from assistant_agent.runtime.requests import UserRequest
+from assistant_agent.runtime.state import AgentState
 
 
 @pytest.mark.core_invariant("GATE-001")
@@ -21,6 +27,51 @@ def test_current_gateway_contract_has_no_graph_waiting_or_resume_wire() -> None:
         RealtimeAgentEvent(type="waiting_user")  # type: ignore[arg-type]
     with pytest.raises(ValidationError):
         RealtimeAgentEvent(type="resume")  # type: ignore[arg-type]
+
+
+@pytest.mark.core_invariant("GATE-001")
+def test_gateway_adapter_fails_closed_on_internal_graph_waiting_state() -> None:
+    waiting = AgentState.from_request(
+        UserRequest(
+            user_id="user-waiting-sentinel",
+            session_id="session-waiting-sentinel",
+            text="input-waiting-sentinel",
+        ),
+        run_id="run-waiting-sentinel",
+    )
+    waiting.status = "waiting_user"
+
+    def waiting_stream(*args, **kwargs):
+        stream = AgentRunStream(loop=asyncio.get_running_loop())
+        stream.set_result(SimpleNamespace(state=waiting, events=[]))
+        return stream
+
+    async def exercise() -> None:
+        emitted: list[RealtimeAgentEvent] = []
+
+        async def collect(event: RealtimeAgentEvent) -> None:
+            emitted.append(event)
+
+        result = await GatewayRuntimeAdapter(
+            run_request_stream=waiting_stream,
+            load_env=False,
+            enable_conversation_history=False,
+        ).run_turn(
+            RealtimeAgentRequest(
+                user_id=waiting.user_id,
+                session_id=waiting.session_id,
+                run_id=waiting.run_id,
+                text="input-waiting-sentinel",
+            ),
+            event_sink=collect,
+        )
+
+        assert result.status == "error"
+        assert result.response_text == ""
+        assert result.metadata["error_type"] == "GraphExecutionError"
+        assert [event.type for event in emitted] == ["error"]
+
+    asyncio.run(exercise())
 
 
 class ControllableBackend:
