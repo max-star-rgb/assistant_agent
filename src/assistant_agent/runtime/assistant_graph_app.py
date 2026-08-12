@@ -472,15 +472,18 @@ class AssistantTurnGraphApp:
             if cursor is not None:
                 kwargs["before"] = cursor
             try:
-                page = tuple(
-                    [
-                        item
-                        async for item in history(
-                            identity.runnable_config(),
-                            **kwargs,
+                page_items: list[Any] = []
+                async for item in history(
+                    identity.runnable_config(),
+                    **kwargs,
+                ):
+                    page_items.append(item)
+                    if len(page_items) > page_limit:
+                        raise GraphExecutionError(
+                            "graph_checkpoint_history_invalid",
+                            "Native graph history exceeded its requested page limit.",
                         )
-                    ]
-                )
+                page = tuple(page_items)
             except GraphExecutionError:
                 raise
             except Exception as exc:
@@ -713,11 +716,30 @@ def _history_summary(
             snapshot_config=config,
         ),
         created_at=created_at,
-        status=cast(Any, run["status"]),
+        status=_history_status(run["status"]),
         next_nodes=next_nodes,
         has_interrupt=bool(_snapshot_interrupt_objects(snapshot)),
         graph_version=str(state["graph_version"]),
         state_schema_version=int(state["state_schema_version"]),
+    )
+
+
+def _history_status(value: object) -> Literal[
+    "running", "waiting_user", "completed", "failed", "cancelled"
+]:
+    if value in {"created", "running"}:
+        return "running"
+    if value == "waiting_user":
+        return "waiting_user"
+    if value == "completed":
+        return "completed"
+    if value == "failed":
+        return "failed"
+    if value == "cancelled":
+        return "cancelled"
+    raise GraphExecutionError(
+        "graph_checkpoint_history_invalid",
+        "Native graph history contains an invalid assistant status.",
     )
 
 

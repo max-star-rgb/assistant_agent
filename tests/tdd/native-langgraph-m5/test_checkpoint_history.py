@@ -150,6 +150,16 @@ class _FailingHistoryGraph:
         yield  # pragma: no cover - keeps this an async iterator.
 
 
+class _UnboundedHistoryGraph:
+    def __init__(self) -> None:
+        self.yielded = 0
+
+    async def aget_state_history(self, *args, **kwargs):
+        for index in range(10_000):
+            self.yielded += 1
+            yield _snapshot(f"ignored-limit-{index}", next_nodes=("assistant",))
+
+
 def _assert_no_native_keys(value: object) -> None:
     if isinstance(value, dict):
         assert not (_NATIVE_KEYS & value.keys())
@@ -237,6 +247,27 @@ async def test_native_history_failure_is_structured_and_does_not_leak() -> None:
 
     assert captured.value.code == "graph_checkpoint_history_unavailable"
     assert "backend-secret" not in captured.value.message
+
+
+@_async_test
+async def test_backend_cannot_exceed_native_page_limit() -> None:
+    graph = _UnboundedHistoryGraph()
+    app = AssistantTurnGraphApp.from_compiled_graph(graph)
+
+    with pytest.raises(GraphExecutionError) as captured:
+        await app.alist_history(_identity(), limit=1)
+
+    assert captured.value.code == "graph_checkpoint_history_invalid"
+    assert graph.yielded == 101
+
+
+@_async_test
+async def test_created_checkpoint_projects_to_running_status() -> None:
+    app, _ = _app(_snapshot("created", state=_state(status="created")))
+
+    items = await app.alist_history(_identity(), limit=1)
+
+    assert items[0].status == "running"
 
 
 @_async_test
