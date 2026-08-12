@@ -22,7 +22,10 @@
 - 所有本地显式 Tool 继续经过 `ActionValidator -> ToolExecutor -> ToolRegistry -> tool`；worker/verifier profile 只能收窄 catalog，不能绕过 M2 operation barrier、安全、授权、schema 或幂等治理。
 - 只有瞬时基础设施异常进入原生 `RetryPolicy`；业务拒绝、非法 plan、acceptance failure 和权限错误不自动重试。node timeout 使用 `TimeoutPolicy`，重试耗尽由 `error_handler` 转为结构化 graph failure/fallback，不吞成成功文本。
 - `astream(..., version="v2", subgraphs=True, durability="sync")` 是主运行路径；按需启用 `updates/custom/tasks/checkpoints/messages`。禁止 `invoke() + asyncio.to_thread`、`ThreadPoolExecutor`、work-item poll/claim/lease heartbeat 推进 `deep_research` DAG。
-- Agent-Service、媒体 API、现有 `/workflows/{id}`、`/events`、`/result`、`/input`、`/cancel` 的外部字段和状态语义保持不变；入口只调用薄 graph application/service，不读取 checkpoint 内部结构来决定下一节点。
+- 兼容保护以真实消费者 inventory 为准：Agent-Service/media wire，以及 `scripts/media_simulator.py` 实际读取的
+  workflow handle、status/progress、cursor events、result content 和 waiting-input action 保持不变。未被这些消费者
+  读取的 Workflow HTTP 字段/route/internal Bundle 不受保护，允许 breaking cleanup；入口仍只能调用薄 graph
+  application/service，不能读取 checkpoint 内部结构决定下一节点。
 - transport disconnect 只停止订阅，不取消 Workflow；cancel 是产品终止意图；interrupt 是可恢复等待。write/publish/delivery 保持稳定 operation key 与 commit barrier。
 - LangSmith 是 M3 唯一新增 trace/eval 目标；不新增 Langfuse span、runner、evaluator 或双平台抽象。M3 不删除全部 Langfuse（M5 负责），但不允许 canonical OTel/Workflow observer 为 `deep_research` 重建影子 graph tree。
 - 默认测试必须 `MULTIMODAL_AGENT_PROVIDER_MODE=mock`、local/offline、无真实 Provider、无网络。所有 M3 RED/GREEN 放入可手动删除的 `tests/tdd/native-langgraph-m3/`；只有 Task 8 依据已登记 invariant 修改最小 core 测试。
@@ -71,7 +74,7 @@ Gate 0 不增加第九个 implementation task；它是 Task 1 开始前记录、
 | Conditional Edge | **实施** | Task 3 wave router 返回 `Send`/terminal route；不得并存同目的 static edge |
 | `Command` | **实施** | Task 4 verifier repair/publish/fail，Task 6 cancel；Command node 只声明 destinations，不加静态控制 edge |
 | `Send` | **实施** | Task 3 按 ready wave fan-out；branch input 窄且每 branch runtime context 独立 |
-| Reducer | **实施** | Task 1 generation-aware result reducer 的交换/结合/幂等/冲突测试 |
+| Reducer | **实施** | Task 1 `(node_id,generation)` 持久 ledger reducer 的严格交换/结合/幂等与 conflict fact tests；latest 结果纯派生 |
 | Subgraph | **实施** | planning wrapper 与 planner/worker/verifier `AssistantTurnGraph` profile namespace |
 | Pregel / Super-step | **实施** | Task 3 native tasks/checkpoints stream 证明同 wave 并行和全量完成后 join |
 | Compile | **实施** | Task 3 唯一 builder；standalone parent attach saver，child `checkpointer=None` 继承 namespace |
@@ -81,7 +84,7 @@ Gate 0 不增加第九个 implementation task；它是 Task 1 开始前记录、
 | Interrupt / Resume | **实施** | Task 5 branch interrupt、multi-interrupt ID map、同 thread 新 run `Command(resume=...)` |
 | Memory | **领域服务保留** | memory/artifact 正文不进 state；child 只经 branch-local Runtime Context 调既有治理服务 |
 | Store | **按真实需求使用** | LangGraph checkpointer 保存执行位置；业务 SQLite 保存 owner/artifact/audit/projection；M3 不为覆盖名词强塞 `BaseStore` |
-| Runtime Context | **实施** | Task 1 immutable parent services + `new_profile_context()`；禁止并行共享 mutable `AgentState` |
+| Runtime Context | **实施** | Task 1 由 checkpoint-safe assignment/owner/capability/tool-scope facts + runtime services 纯重建；cache 不是恢复事实源 |
 | Retry Policy | **实施** | Task 4 仅 transient exception 的 native `RetryPolicy` |
 | Timeout | **实施** | Task 4 node `TimeoutPolicy`，不以线程 join timeout 模拟 |
 | Fallback | **实施** | Task 4 native `error_handler(NodeError)` 输出结构化 failure route |
@@ -101,8 +104,8 @@ Gate 0 不增加第九个 implementation task；它是 Task 1 开始前记录、
 
 **Interfaces:**
 - Consumes: `WorkflowSubmission`、`WorkflowPlanVersion`、`WorkflowBudget`、M2 `AssistantTurnGraphApp.graph_for_profile()`、`profile_input_adapter()` 和 `profile_output_adapter()`。
-- Produces: `WorkflowExecutionEngine`、`DurableWorkflowState`、`WorkflowBranchInput`、`WorkflowNodeResult`、`WorkflowGraphError`、`merge_node_results(left, right)`、`merge_graph_errors(left, right)`、`initial_workflow_graph_state(...)`、`validate_durable_workflow_state(...)`。
-- Produces: `BranchProfileContextPool.context_for_state(child_state) -> GraphRuntimeContext` 与 immutable `WorkflowGraphRuntimeContext`；每个稳定 assignment ref 对应独立 `AgentState` 和 per-branch `ToolExecutor`，共享项仅限 thread-safe Provider adapter、Registry、artifact/memory service 和只读配置。
+- Produces: `WorkflowExecutionEngine`、`DurableWorkflowState`、`WorkflowProfileAssignment`、`WorkflowNodeResult`、`WorkflowResultSlot`、`WorkflowResultConflict`、`WorkflowGraphError`、`merge_result_ledger(left, right)`、`latest_results(ledger, generations)`、`merge_graph_errors(left, right)`、`initial_workflow_graph_state(...)`、`validate_durable_workflow_state(...)`。
+- Produces: `BranchProfileContextFactory.context_for_state(child_state) -> GraphRuntimeContext` 与 immutable `WorkflowGraphRuntimeContext`；factory 只依赖 checkpoint-safe child facts 和 process-owned runtime services。可选 cache 仅优化同进程重复构造，清空或跨进程缺失时结果等价。
 - Changes: `GraphRuntimeContext.child_context_resolver` 是 M3 唯一新增的 child 隔离 hook；M2 `bind_checkpointed_runtime_node()` 在读取 `agent_state/tool_executor` 前先以当前 child checkpoint state 解析 branch-local context，因此 compiled `AssistantTurnGraph` 可以作为真实 subgraph node，而不是在 wrapper 内手工 `ainvoke()`。
 - Persistent identity: `graph_name="DurableWorkflowGraph"`、`graph_version="3"`、`state_schema_version=1`。
 
@@ -120,21 +123,27 @@ def result(node_id: str, generation: int, summary: str) -> WorkflowNodeResult:
     )
 
 
-def test_result_reducer_is_order_independent_idempotent_and_generation_aware():
+def test_result_ledger_reducer_is_associative_commutative_and_idempotent():
     a0 = result("a", 0, "a0")
     b0 = result("b", 0, "b0")
-    a1 = result("a", 1, "a1")
+    conflicting_a0 = result("a", 0, "conflict")
+    updates = [ledger_update(a0), ledger_update(b0), ledger_update(conflicting_a0)]
 
-    assert merge_node_results({"a": a0}, {"b": b0}) == merge_node_results(
-        {"b": b0}, {"a": a0}
+    outcomes = {
+        canonical_ledger(functools.reduce(merge_result_ledger, order, {}))
+        for order in itertools.permutations(updates)
+    }
+    assert len(outcomes) == 1
+    merged = functools.reduce(merge_result_ledger, updates, {})
+    assert merge_result_ledger(merged, merged) == merged
+    assert result_conflicts(merged) == (
+        WorkflowResultConflict(node_id="a", execution_generation=0, ...),
     )
-    assert merge_node_results({"a": a0}, {"a": a0}) == {"a": a0}
-    assert merge_node_results({"a": a0}, {"a": a1}) == {"a": a1}
-    with pytest.raises(WorkflowGraphStateConflict, match="a.*generation 1"):
-        merge_node_results({"a": a1}, {"a": result("a", 1, "conflict")})
+    with pytest.raises(WorkflowGraphStateConflict, match="a.*generation 0"):
+        latest_results(merged, {"a": 0, "b": 0})
 ```
 
-同时覆盖：unknown/extra state 字段被拒绝；Provider client、Registry、Executor、DB connection、event sink、callback、cancel token、绝对路径、credential、artifact/media 正文不能序列化入 state；`WorkflowBranchInput` 只含 workflow/node identity、generation、objective、constraints、artifact refs、budget slice 和显式 tool allowlist。
+同时覆盖：unknown/extra state 字段被拒绝；Provider client、Registry、Executor、DB connection、event sink、callback、cancel token、绝对路径、credential、artifact/media 正文不能序列化入 state；`WorkflowProfileAssignment` 只含后续 Step 4 明列的 checkpoint-safe identity、semantic input、artifact/capability/tool-scope refs 和 budget slice。
 
 - [ ] **Step 2: 运行 RED 并确认缺少 graph state**
 
@@ -166,6 +175,14 @@ class WorkflowNodeResult(BaseModel):
     tool_calls_used: int = Field(default=0, ge=0)
 
 
+class WorkflowResultSlot(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    node_id: str
+    execution_generation: int = Field(ge=0, le=64)
+    variants_by_digest: dict[str, WorkflowNodeResult] = Field(max_length=2)
+    conflict: WorkflowResultConflict | None = None
+
+
 class DurableWorkflowState(TypedDict):
     graph_name: Literal["DurableWorkflowGraph"]
     graph_version: Literal["3"]
@@ -180,8 +197,8 @@ class DurableWorkflowState(TypedDict):
     status: WorkflowStatus
     phase: WorkflowPhase
     execution_generation_by_node: dict[str, int]
-    active_wave: tuple[WorkflowBranchInput, ...]
-    node_results: Annotated[dict[str, WorkflowNodeResult], merge_node_results]
+    active_wave: tuple[WorkflowProfileAssignment, ...]
+    result_ledger: Annotated[dict[str, WorkflowResultSlot], merge_result_ledger]
     pending_inputs_by_node: dict[str, PersistedWorkflowInputRequest]
     repair_round: int
     budget: PersistedWorkflowBudget
@@ -195,16 +212,20 @@ class DurableWorkflowState(TypedDict):
 `legacy_scheduler_v2`；新 graph-backed record 的 constructor 必须显式传 `langgraph_v3`。测试证明 graph
 state 拒绝 legacy engine、graph app 拒绝 legacy record，且旧 fixture 仍能读取但不会被隐式升级。
 
-`merge_node_results` 按 `node_id` 合并：缺失键直接加入；相同 generation 且完整 DTO 相等视为 replay；相同 generation 不等抛 `WorkflowGraphStateConflict`；generation 较大者获胜。该规则必须以三元素全排列测试结合律/交换律，而不是只测一次调用顺序。
+`result_ledger` 的 canonical key 是 `WorkflowResultKey(node_id, execution_generation).encode()`，key 同时在
+slot 内逐字段复核，因 JSON checkpoint 不使用 tuple key。`merge_result_ledger` 对每个 `(node_id, generation)`
+ 只做内容摘要集合的有界 union，并按 digest 排序后保留字典序最小的两个 variant；相同 DTO replay 不增加
+variant，两个或更多不同 variant 固定形成同一个 `WorkflowResultConflict`。`top2(A ∪ B)` 保证任意重放和
+parenthesization 得到同一 bounded slot；reducer 本身
+不得 raise、不得按到达顺序覆盖、不得删除旧 generation，必须严格满足 associative/commutative/idempotent。
+`latest_results()` 是 join/router 使用的纯派生函数：先拒绝 ledger 中任何 conflict，再按
+`execution_generation_by_node` 选择 current result；repair 只推进 generation map，不改写 ledger。使用至少三个
+update 的所有排列和两种 parenthesization 验证代数性质。
 
 - [ ] **Step 4: 实现每 branch 独立 runtime context factory**
 
 ```python
-class BranchProfileContextPool:
-    def register(
-        self, branch: WorkflowBranchInput, child_state: AssistantTurnState
-    ) -> None: ...
-
+class BranchProfileContextFactory:
     def context_for_state(
         self, child_state: AssistantTurnState
     ) -> GraphRuntimeContext: ...
@@ -215,15 +236,27 @@ class WorkflowGraphRuntimeContext(GraphRuntimeContext):
     assistant_graph_app: AssistantTurnGraphApp
     artifact_store: LocalWorkflowArtifactStore
     context_compiler: WorkflowContextCompiler
-    branch_context_pool: BranchProfileContextPool
+    branch_context_factory: BranchProfileContextFactory
 ```
 
-branch builder 使用 `profile_input_adapter()` 生成全新 child state并先向 runtime-only pool 注册；
-`child_context_resolver=pool.context_for_state` 从 checkpointed assignment ref 找回该 branch context。
-`GraphRuntimeContext.agent_state`、Tool budget/counters、stream callback、pending tool calls 和 errors 均不得跨
-child 复用。测试并发注册/解析两个 context，断言 `ctx_a is not ctx_b`、
-`ctx_a.agent_state is not ctx_b.agent_state`、修改一侧 messages/tool counters 不影响另一侧，同时二者共享同一个
-sealed Registry 与 thread-safe adapter。未知/冲突 assignment ref 必须 fail closed；pool 不进入 checkpoint。
+`WorkflowProfileAssignment` 必须把 `profile_input_adapter()` 所需事实完整保存为 checkpoint-safe DTO：
+
+- owner/identity：`user_id/session_id/agent_id/workflow_id/node_id/execution_generation`；
+- invocation identity：稳定派生的 `assignment_ref`、该 child 的 `run_id/trace_id`；
+- semantic input：`objective/constraints/input_artifact_refs/acceptance_contract`；
+- capability/tool scope：`capability_refs`、`explicit_tool_allowlist`、`available_tool_names`、
+  `tool_scope_ref`（catalog digest）；
+- runtime-only source：registered `ToolSpec` 从当前 sealed Registry 重取，Provider adapter、ContextService、
+  Tool operation store、artifact/memory service、cancel reader 和 stream writer 从 process-owned runtime services
+  注入，绝不持久化。
+
+branch adapter 用 assignment 生成 child state；`child_context_resolver=factory.context_for_state` 从 child 的
+persisted request/run/profile/context refs/capability refs/catalog 重建全新 `AgentState`、ToolExecutor 和
+`GraphRuntimeContext`，并以当前 Registry specs 验证 `tool_scope_ref`。factory 可以按完整 assignment fingerprint
+cache context template，但 cache miss/清空必须走相同纯构造路径，cache value 不能拥有可变 `AgentState`。
+测试并发解析两个 branch，断言 AgentState/ToolExecutor/counters/errors 不共享；关闭 app、创建全新 factory 后从
+planning/worker/verifier checkpoint 分别恢复，Provider trajectory/tool scope/output 与不中断 baseline 等价；
+Registry/capability/tool scope 变化、未知 assignment ref 或 owner mismatch 在任何 child node 前 fail closed。
 
 - [ ] **Step 5: 写 state inventory 并运行 GREEN**
 
@@ -394,10 +427,12 @@ async def test_send_runs_all_ready_nodes_in_one_superstep_and_join_waits_for_all
 
     assert barrier.max_concurrency == 2
     assert wave_history(final) == [("a", "b"), ("c",)]
-    assert final["node_results"]["c"].status == "succeeded"
+    assert latest_results(
+        final["result_ledger"], final["execution_generation_by_node"]
+    )["c"].status == "succeeded"
 ```
 
-增加一个 `a,b -> c` 且 `b -> d -> e` 的非对称 DAG，断言波次为 `(a,b) -> (c,d) -> (e)`；输入 node 顺序随机化 20 次，结果和 wave partition 不变。增加 replay 同一 worker update、同 generation 冲突、worker 完成前 join 不运行、无 ready 且未完成时 `workflow_dag_stalled` fail-closed。
+增加一个 `a,b -> c` 且 `b -> d -> e` 的非对称 DAG，断言波次为 `(a,b) -> (c,d) -> (e)`；输入 node 顺序随机化 20 次，结果和 wave partition 不变。增加 replay 同一 ledger update、同 `(node_id,generation)` 两个 variant 形成稳定 conflict fact、worker 完成前 join 不运行、无 ready 且未完成时 `workflow_dag_stalled` fail-closed。
 
 - [ ] **Step 2: 运行 RED**
 
@@ -430,16 +465,18 @@ def route_next_wave(
 `build_worker_branch_subgraph()` 的 `StateGraph` 使用 `input_schema=WorkflowProfileBranchState`、
 `output_schema=WorkflowBranchOutput`，拓扑固定为
 `START -> AssistantTurnGraph.worker -> project_worker_result -> END`。worker compiled graph 是真实 subgraph
-node，不由 Python wrapper 手工 invoke。每个 `Send` PUSH task 收到已经由 Task 1 adapter 构造并注册 context 的
-独立窄 child state，不收到整个父 state；outer branch checkpoint 保留 node/generation，inner assistant child
+node，不由 Python wrapper 手工 invoke。每个 `Send` PUSH task 收到已经由 Task 1 adapter 从 checkpoint-safe
+assignment 构造的独立窄 child state，不收到整个父 state；outer branch checkpoint 保留完整
+assignment/node/generation，inner assistant child
 checkpoint 只含 AssistantTurnState channels。`project_worker_result` 经 `profile_output_adapter()` 和 artifact store
-adapter 形成一个 `WorkflowNodeResult` update：
+adapter 形成一个 keyed ledger update：
 
 ```python
-return {"node_results": {branch.node_id: node_result}}
+return {"result_ledger": ledger_update(node_result)}
 ```
 
-parent budget 只在 `join_wave_node` 根据本 wave 唯一 current-generation results 汇总扣减，parallel child 不并发修改一个 `WorkflowBudget`。
+parent budget 只在 `join_wave_node` 先调用 `latest_results()`、确认本 wave 无 conflict 且每个
+current-generation result 唯一后汇总扣减；parallel child 不并发修改一个 `WorkflowBudget`。
 
 - [ ] **Step 4: 编译真实父图并验证 Pregel 事实**
 
@@ -526,7 +563,9 @@ assert final["execution_generation_by_node"] == {
     "verify": 1,
 }
 assert child_runs("b") == 1
-assert final["node_results"]["verify"].status == "succeeded"
+assert latest_results(
+    final["result_ledger"], final["execution_generation_by_node"]
+)["verify"].status == "succeeded"
 ```
 
 增加非法 repair：非祖先、未知 node、空 scope、超过 repair round/budget；断言进入 `invalid_repair_scope` 或 `repair_budget_exhausted`，不能全 DAG 重跑或自然语言兜底成功。
@@ -631,6 +670,10 @@ git commit -m "feat(workflows): verify and repair durable graph natively"
 - Modify: `src/assistant_agent/workflows/durable_graph.py`
 - Modify: `src/assistant_agent/workflows/durable_graph_nodes.py`
 - Modify: `src/assistant_agent/workflows/graph_state.py`
+- Modify: `src/assistant_agent/runtime/assistant_loop_graph.py`
+- Modify: `src/assistant_agent/runtime/assistant_loop_nodes.py`
+- Modify: `src/assistant_agent/runtime/assistant_graph_profiles.py`
+- Modify: `src/assistant_agent/runtime/assistant_interrupts.py`
 - Modify: `src/assistant_agent/runtime/assistant_runtime_app.py`
 - Modify: `src/assistant_agent/runtime/checkpointer.py`
 - Create: `tests/tdd/native-langgraph-m3/test_workflow_interrupt_resume.py`
@@ -638,20 +681,27 @@ git commit -m "feat(workflows): verify and repair durable graph natively"
 
 **Interfaces:**
 - Depends on: M2 Task 2 `open_async_checkpointer(...)`、official `AsyncSqliteSaver` handle 和进程级 `AssistantRuntimeApp.astart()/aclose()` owner。该依赖门未完成时，本任务只能运行 `InMemorySaver` 的同进程 interrupt RED/GREEN，persistent/cross-process acceptance 必须保持 pending。
-- Produces: `WorkflowGraphExecutionIdentity.for_workflow(...)`、`WorkflowInterrupt`、`WorkflowResume`、`DurableWorkflowGraphApp.arun(...)`、`.aresume(...)`、`.aget_state(...)`、`.aget_state_history(...)`。
-- Resume contract: 相同 `thread_id`、新 `run_id`、`Command(resume={interrupt_id: value, ...})`；公共 API 仍只接受 opaque `resume_token + values`。
+- Produces: `WorkflowGraphExecutionIdentity.for_workflow(...)`、`WorkflowInterrupt(action_ref, ...)`、`WorkflowResume(values_by_action_ref)`、`DurableWorkflowGraphApp.arun(...)`、`.aresume(...)`、`.aget_state(...)`、`.aget_state_history(...)`。
+- Resume contract: 相同 `thread_id`、新 `run_id`；app 从 fresh native snapshot 将业务 `action_ref` 映射为当前
+  `Interrupt.id`，再调用 `Command(resume={interrupt_id: value, ...})`。native interrupt ID 不进入外部协议或业务 DB。
 
 - [ ] **Step 1: 写单个和多个 native interrupt RED**
 
-使用一个 worker blocked 和两个并行 worker 同时 blocked 的真实 `Send` 图。断言 snapshot `tasks` 中分别有 1/2 个 native interrupt；状态为 `waiting_input` 且无 terminal artifact；为每个 interrupt ID 构造 resume map 后只继续对应 pending task，已成功 sibling 不重跑。
+使用一个 worker blocked 和两个并行 worker 同时 blocked 的真实 `Send` 图。断言 interrupt 只由
+`AssistantTurnGraph.worker/verifier` 内部 `await_input` node 产生，snapshot 的 native subgraph `tasks` 中分别有
+1/2 个 interrupt；outer worker/verifier wrapper 不调用 `interrupt()`。状态为 `waiting_input` 且无 terminal
+artifact；以业务 `action_ref` 提交完整/部分 multi-resume，app 从当前 snapshot 映射 native IDs，只继续已提供的
+pending child，已成功 sibling 不重跑。
 
 ```python
 result = await app.aresume(
     identity=resume_identity,
     context=context,
     resume=WorkflowResume(
-        resume_token=public_token,
-        values_by_node={"a": {"answer": "A"}, "b": {"answer": "B"}},
+        values_by_action_ref={
+            "workflow:wf-1:node:a:generation:0": {"answer": "A"},
+            "workflow:wf-1:node:b:generation:0": {"answer": "B"},
+        },
     ),
 )
 assert result.status == "completed"
@@ -659,11 +709,24 @@ assert child_runs("already_done") == 1
 assert result.final_state["invocation_run_id"] == resume_identity.run_id
 ```
 
-- [ ] **Step 2: 实现 interrupt node、snapshot 投影和 resume map**
+- [ ] **Step 2: 让 AssistantTurn child 成为唯一 interrupt owner**
 
-branch child 返回 `waiting_user` 时，wrapper 在该 branch 内调用 `interrupt()`，payload 只含 `workflow_id/node_id/generation/required_fields/prompt_code`；多个 `Send` branch 因而形成多个 pending native task。`DurableWorkflowGraphApp` 递归读取 root/task/subgraph interrupts，以 native interrupt ID 去重，并按 payload `node_id` 映射；冲突 ID、未知 node、generation 不匹配或不完整 resume values 全部 fail closed。
+worker/verifier profile 的 validated structured control 产生 `blocked` 时，由 child graph 内部 profile result adapter
+设置 strict `pending_interrupt`，其 action ref 固定派生为
+`workflow:{workflow_id}:node:{node_id}:generation:{generation}`；child 自己的 conditional edge 随后进入既有
+`await_input` node，且**只有这个 child node 调用 `interrupt()`**。payload 只含 action ref、
+`workflow_id/node_id/generation/required_fields/prompt_code`。outer branch wrapper 既不调用 interrupt，也不把
+`waiting_user` 转成第二个 parent interrupt，只允许 native pending subgraph task 向上冒泡。
 
-业务层生成独立 opaque `resume_token` 并写入 owner-bound audit/query record；恢复时先校验 token/owner，再读取当前 snapshot 动态构造 `{native_interrupt_id: node_value}`。native interrupt/checkpoint ID 不保存到 Workflow v2 model，也不返回公共 API。
+`DurableWorkflowGraphApp` 递归读取 root/task/subgraph snapshot，收集 native `Interrupt.id` 和 payload，以
+`action_ref` 为业务 key 建立本次内存映射；同一 action ref 对应不同 payload/ID、未知 node、generation 不匹配、
+owner 不匹配全部 fail closed。`WorkflowResume.values_by_action_ref` 可以只恢复部分并行 child；app 只对当前
+snapshot 中匹配的 action ref 构造 `{native_interrupt_id: value}`，未提供 child 保持 pending。native
+interrupt/checkpoint ID 不保存到 Workflow v2 model、业务 projection 或公共 API。
+
+如保留媒体消费者所需的 opaque `resume_token`，它只作为 owner-bound action token 指向一个 action ref，不能
+缓存 native interrupt ID；每次恢复仍必须重读 snapshot 映射。一次请求可以提交一个 token/value，内部
+`WorkflowResume` 和 graph API 必须支持多 action map，以便 eval/operator 一次恢复多个 pending child。
 
 - [ ] **Step 3: 主 async stream 使用同步 durability**
 
@@ -684,7 +747,12 @@ run outcome 必须在 stream 结束后调用 `aget_state(..., subgraphs=True)` �
 
 - [ ] **Step 4: 在依赖授权门通过后写并运行 SQLite 跨进程恢复 RED/GREEN**
 
-测试流程必须真实关闭 app/saver/SQLite connection，再新建 `AssistantRuntimeApp`、official saver 和 `DurableWorkflowGraphApp`，使用同一 DB path/thread resume。分别在 planning 后、第一 wave 后、multi-interrupt 时重建；恢复结果与不中断 baseline 的 current-generation node results、artifact refs、budget 和 terminal state 等价，已完成 child 与 write operation 不重复。
+测试流程必须真实关闭 app/saver/SQLite connection并丢弃 branch context cache，再新建
+`AssistantRuntimeApp`、official saver、全新 `BranchProfileContextFactory` 和 `DurableWorkflowGraphApp`，使用同一
+DB path/thread resume。分别在 planning 后、第一 wave 后、worker/verifier child interrupt 和 multi-interrupt
+时重建；新的 pure factory 只从 checkpoint assignment/owner/capability/tool-scope facts + runtime services
+重建 child context，恢复结果与不中断 baseline 的 current-generation ledger、artifact refs、budget 和 terminal
+state 等价，已完成 child 与 write operation 不重复。
 
 ```bash
 MULTIMODAL_AGENT_PROVIDER_MODE=mock \
@@ -697,7 +765,10 @@ Expected: 授权门通过并完成 M2 Task 2 后 PASS。若门未通过，只可
 
 - [ ] **Step 5: 验证 checkpoint version 和身份 fail-closed**
 
-覆盖不同 user/agent、不同 workflow thread、复用旧 run ID、已消费 resume token、旧 graph/state schema、未知 interrupt、部分 multi-resume map。所有情况在任何 child/tool/publish 前失败，且 business record 不伪造 completed。
+覆盖不同 user/agent、不同 workflow thread、复用旧 run ID、已消费 resume token、旧 graph/state schema、未知
+interrupt/action ref 和 generation mismatch；这些情况在任何 child/tool/publish 前失败，且 business record 不
+伪造 completed。部分 multi-resume 是合法非终态：只恢复命中的 child，其余 interrupt 继续存在；重复提供已完成
+action ref 才 fail closed。
 
 - [ ] **Step 6: 提交**
 
@@ -706,6 +777,10 @@ git add src/assistant_agent/workflows/durable_graph_app.py \
   src/assistant_agent/workflows/durable_graph.py \
   src/assistant_agent/workflows/durable_graph_nodes.py \
   src/assistant_agent/workflows/graph_state.py \
+  src/assistant_agent/runtime/assistant_loop_graph.py \
+  src/assistant_agent/runtime/assistant_loop_nodes.py \
+  src/assistant_agent/runtime/assistant_graph_profiles.py \
+  src/assistant_agent/runtime/assistant_interrupts.py \
   src/assistant_agent/runtime/assistant_runtime_app.py \
   src/assistant_agent/runtime/checkpointer.py \
   tests/tdd/native-langgraph-m3/test_workflow_interrupt_resume.py \
@@ -719,7 +794,11 @@ git commit -m "feat(workflows): persist and resume durable graph threads"
 
 **Files:**
 - Create: `src/assistant_agent/workflows/graph_projection.py`
+- Create: `src/assistant_agent/workflows/graph_publish.py`
 - Create: `src/assistant_agent/workflows/graph_host.py`
+- Modify: `src/assistant_agent/workflows/graph_state.py`
+- Modify: `src/assistant_agent/workflows/durable_graph.py`
+- Modify: `src/assistant_agent/workflows/durable_graph_nodes.py`
 - Modify: `src/assistant_agent/workflows/service.py`
 - Modify: `src/assistant_agent/workflows/progress.py`
 - Modify: `src/assistant_agent/workflows/store.py`
@@ -733,68 +812,64 @@ git commit -m "feat(workflows): persist and resume durable graph threads"
 - Create: `tests/tdd/native-langgraph-m3/test_workflow_graph_host.py`
 - Create: `tests/tdd/native-langgraph-m3/test_workflow_api_cutover.py`
 - Create: `tests/tdd/native-langgraph-m3/test_workflow_product_projection.py`
+- Create: `tests/tdd/native-langgraph-m3/test_workflow_publish_barrier.py`
+- Create: `tests/tdd/native-langgraph-m3/workflow_consumer_inventory.md`
+- Create: `tests/tdd/native-langgraph-m3/test_workflow_consumer_contract.py`
 
 **Interfaces:**
-- Consumes: Task 5 `DurableWorkflowGraphApp` 和进程级 async saver owner，existing `WorkflowService` owner/idempotency/artifact/event APIs。
-- Produces: `WorkflowGraphHost.astart()/submit()/resume()/cancel()/recover_nonterminal()/aclose()`；它只拥有 per-workflow asyncio task 和订阅，不计算 ready node。
-- Produces: `WorkflowGraphProjector.project_stream_part(...)` / `.project_snapshot(...)`；单向写 existing `WorkflowRecord/WorkflowEvent` 产品摘要，不能驱动 graph。
-- External API: response models、status code、field names 和 `/input` request body 不变；route 内部改为 async 调 graph host。
+- Consumes: Task 5 `DurableWorkflowGraphApp` 和进程级 async saver owner，existing owner/idempotency/artifact/audit business services；不消费或返回旧 execution `WorkflowBundle`。
+- Produces: `WorkflowGraphHost.astart()/submit()/resume()/cancel()/recover_nonterminal()/aclose()`；其公共结果是严格 `WorkflowProductSnapshot` / `WorkflowHandle`，它只拥有 per-workflow asyncio task 和订阅，不计算 ready node。
+- Produces: `WorkflowGraphProjector.project_stream_part(...)` / `.project_snapshot(...)`；单向写 `WorkflowProductSnapshot/WorkflowProductEvent`，不能驱动 graph。
+- Produces: `WorkflowPublishOperation`、`PublishCommitRef`、`WorkflowPublishLedger.prepare()/commit()/get()` 与 `SQLiteWorkflowPublishLedger`；`commit()` 在一个 business SQLite transaction 内提交 operation outcome、terminal product snapshot、唯一 completed event 和可选 delivery outbox。
+- Compatibility: 只保护 consumer inventory 证明被 Agent-Service/media 使用的 handle/status/progress/cursor event/result content/waiting-input action；未消费的 `plan/work_items/lease/revision`、旧 `WorkflowBundle` shape 和 `/cancel` route 不形成 M3 兼容约束。
 
-- [ ] **Step 1: 写 Deep Research cutover RED**
+- [ ] **Step 1: 先完成真实消费者 inventory 与契约 RED**
 
-从真实 `UserRequest(assistant_mode="deep_research")` 经过 runtime/service 提交，断言：返回既有 workflow envelope；后台只有一个 `DurableWorkflowGraph` task；旧 `DurableWorkflowWorker.run_once`、`WorkflowStore.claim_ready_work_item`、`renew_work_item_lease`、`WorkflowRuntime.run_claim` 均未调用；最终 `/result` 与旧产品字段等价。
+用 `rg` 和 import/call-site inspection 记录所有非历史、非 TDD 的消费者。当前事实基线必须至少包含：
+
+```text
+Agent-Service -> run.end.output_refs -> workflow://<id>
+scripts/media_simulator.py -> GET status/progress
+scripts/media_simulator.py -> GET cursor events
+scripts/media_simulator.py -> GET final result.content
+scripts/media_simulator.py -> POST waiting-input token/value
+```
+
+`workflow_consumer_inventory.md` 对每个字段标明 consumer/file/line、是否 hard-protected、替代投影；没有 call
+site 的 `/cancel`、response `plan`、work item lease/attempt/revision 和 raw `WorkflowBundle` 标记
+`unconsumed-breaking-cleanup-allowed`。`test_workflow_consumer_contract.py` 用 strict fixture 只断言受保护字段，且
+断言投影不含 plan/checkpoint/task/lease/CAS。若执行时发现其他真实 Agent-Service/media consumer，先加入
+inventory 和 narrow contract，再改实现；不得猜测兼容范围。
+
+- [ ] **Step 2: 写 Deep Research cutover RED**
+
+从真实 `UserRequest(assistant_mode="deep_research")` 经过 runtime/service 提交，断言：返回受保护的
+`workflow://` handle；后台只有一个 `DurableWorkflowGraph` task；旧 `DurableWorkflowWorker.run_once`、
+`WorkflowStore.claim_ready_work_item`、`renew_work_item_lease`、`WorkflowRuntime.run_claim` 均未调用；最终
+product snapshot/result 满足 Step 1 consumer contract，不要求旧 Bundle 等价。
 
 另以 `workflow_type="long_horizon"` 构造内部兼容记录，证明 M3 没有把旧 scheduler 全局删掉；它仍只能由显式 legacy composition root 处理，且产品入口不会自动选择该类型。
 
-- [ ] **Step 2: 写投影与 API RED**
+- [ ] **Step 3: 写投影、API 和 publish barrier RED**
 
-使用真实 graph `custom/updates/tasks/checkpoints` stream，断言 projector 只发布/持久化：accepted/planning/worker progress/waiting input/completed/cancelled/failed 和 artifact refs；不投影完整 state、task ID、checkpoint config、namespace、Tool raw body、Provider response。调用原有 GET/events/result/input/cancel API，结构化 JSON 与状态码保持现有契约。
+使用真实 graph `custom/updates/tasks/checkpoints` stream，断言 projector 只发布/持久化：accepted/planning/worker
+progress/waiting input/completed/cancelled/failed 和 artifact refs；不投影完整 state、task ID、checkpoint config、
+namespace、Tool raw body、Provider response。只对 inventory 标为 hard-protected 的 status/events/result/input 路径
+验证字段和状态码；未消费 route/field 可删除或改成窄 snapshot。
 
-- [ ] **Step 3: 运行 RED**
+publish barrier 单独覆盖：
 
-```bash
-MULTIMODAL_AGENT_PROVIDER_MODE=mock \
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q \
-  tests/tdd/native-langgraph-m3/test_workflow_graph_host.py \
-  tests/tdd/native-langgraph-m3/test_workflow_api_cutover.py \
-  tests/tdd/native-langgraph-m3/test_workflow_product_projection.py
-```
+1. `WorkflowPublishOperation` key 固定为
+   `workflow:{workflow_id}:publish:{plan_version}:{current_generation_digest}`，DTO 只含 owner、deliverable artifact refs、
+   result digest、`prepared|committed` 和安全错误；
+2. crash before `commit()`：无 terminal snapshot/event/outbox；replay 使用同 key 可重新提交；
+3. SQLite transaction 已 commit、graph node 返回前 crash：重建 app 后 replay 从 ledger 读取同一
+   `PublishCommitRef`，不重复 completed event/outbox/artifact publish；
+4. 同 key 不同 digest/refs、prepared outcome 不确定或 owner mismatch fail closed；
+5. native `checkpoints` 与 business ledger 证明顺序恒为 publish committed → graph state completed → terminal
+   projector/delivery；任何 checkpoint 不得先出现 completed。
 
-Expected: FAIL，当前 API/worker 仍由 claim/lease/CAS scheduler 推进 Deep Research。
-
-- [ ] **Step 4: 实现薄 graph host 与 lifecycle**
-
-```python
-class WorkflowGraphHost:
-    async def submit(
-        self, *, identity: RequestIdentity, ingress_run_id: str,
-        submission: WorkflowSubmission
-    ) -> WorkflowBundle: ...
-
-    async def resume(
-        self, *, identity: RequestIdentity, workflow_id: str,
-        resume_token: str, values: dict[str, JsonValue]
-    ) -> WorkflowBundle: ...
-
-    async def recover_nonterminal(self) -> None: ...
-    async def aclose(self) -> None: ...
-```
-
-`submit()` 先经 existing service 完成 owner/idempotency/business admission，再以稳定 workflow thread 启动 `graph_app.arun()`；`recover_nonterminal()` 只枚举 `deep_research` 非终态业务记录并对每条调用 `graph_app.aget_state()/arun(None)`，由 checkpoint 决定当前位置。它不读取 plan 计算 ready node，不 claim/lease，不重建 dependency wave。
-
-同一 workflow task 由 async lock/idempotent task map 去重；disconnect 只取消订阅；application shutdown 等待/取消本进程订阅但不把 Workflow 标记 cancelled。cancel 通过 graph `Command(update=..., goto="cancel")` 或 native state update/continue 落到 graph terminal node，不能只改 DB summary。
-
-- [ ] **Step 5: 实现单向产品投影和 API adapter**
-
-projector 以 `(workflow_id, graph run, node_id, generation, fact kind)` 稳定幂等键写业务 event/audit；business SQLite 可保留 `WorkflowBundle` 查询 view，但其中的 `ready/running/lease/revision` 不再参与 Deep Research 执行。`project_workflow_progress()` 对 graph-backed record 读取已投影的 `completed_items/active_items/wave/phase`，不调用 `next_ready_work_item()` 推进状态。
-
-`routes_workflows.py` 的 `/input` 和 `/cancel` 改为 `async def`，调用 host；GET/events/result 仍使用 owner-bound service/artifact store。`AgentGraphRuntime._start_deep_research_workflow` 收窄为调用注入的 graph host，不创建旧 bootstrap planner work item。FastAPI lifespan 先启动 shared `AssistantRuntimeApp` saver，再启动 workflow graph host；shutdown 反序关闭 host、runtime app、saver。
-
-- [ ] **Step 6: 从旧 worker 排除 Deep Research**
-
-为 legacy worker/store claim 增加显式 `included_workflow_types`，production legacy worker 固定不包含 `deep_research`；没有 allowlist 时 fail closed，不以文本、kind 或节点名猜测。测试使用 spy 证明 Deep Research 从提交到完成对 `claim_ready_work_item/renew_work_item_lease/save(expected_revision=...)` 的执行控制调用数均为 0；business projector 的幂等 save 不计为 scheduler CAS，必须用独立明确方法名 `save_projection(...)`。
-
-- [ ] **Step 7: 运行 GREEN、Gateway/媒体兼容与提交**
+- [ ] **Step 4: 运行 RED**
 
 ```bash
 MULTIMODAL_AGENT_PROVIDER_MODE=mock \
@@ -802,11 +877,81 @@ MULTIMODAL_AGENT_PROVIDER_MODE=mock \
   tests/tdd/native-langgraph-m3/test_workflow_graph_host.py \
   tests/tdd/native-langgraph-m3/test_workflow_api_cutover.py \
   tests/tdd/native-langgraph-m3/test_workflow_product_projection.py \
+  tests/tdd/native-langgraph-m3/test_workflow_publish_barrier.py \
+  tests/tdd/native-langgraph-m3/test_workflow_consumer_contract.py
+```
+
+Expected: FAIL，当前 API/worker 仍由 claim/lease/CAS scheduler 推进 Deep Research。
+
+- [ ] **Step 5: 实现薄 graph host 与 lifecycle**
+
+```python
+class WorkflowGraphHost:
+    async def submit(
+        self, *, identity: RequestIdentity, ingress_run_id: str,
+        submission: WorkflowSubmission
+    ) -> WorkflowHandle: ...
+
+    async def resume(
+        self, *, identity: RequestIdentity, workflow_id: str,
+        resume_token: str, values: dict[str, JsonValue]
+    ) -> WorkflowProductSnapshot: ...
+
+    async def recover_nonterminal(self) -> None: ...
+    async def aclose(self) -> None: ...
+```
+
+`submit()` 先经 narrow business repository 完成 owner/idempotency admission，再以稳定 workflow thread 启动
+`graph_app.arun()`；它不创建旧 bootstrap plan/Bundle。`recover_nonterminal()` 只枚举 `langgraph_v3`
+Deep Research 非终态 handle/snapshot，逐条调用 `graph_app.aget_state()/arun(None)`，由 checkpoint 决定位置。
+它不读取 business plan 计算 ready node，不 claim/lease，不重建 dependency wave。
+
+同一 workflow task 由 async lock/idempotent task map 去重；disconnect 只取消订阅；application shutdown 等待/取消本进程订阅但不把 Workflow 标记 cancelled。cancel 通过 graph `Command(update=..., goto="cancel")` 或 native state update/continue 落到 graph terminal node，不能只改 DB summary。
+
+- [ ] **Step 6: 实现 publish operation barrier、单向投影和窄 API adapter**
+
+`publish` node 先从 conflict-free `latest_results()` 解析 deliverable refs/digest，`prepare()` stable operation，再调用
+`commit()`；SQLite `commit()` 必须原子写 committed operation、completed product snapshot、唯一 completed event 和
+可选 idempotent delivery outbox。只有返回 `PublishCommitRef(status="committed")` 后 node 才更新 graph
+`status="completed"/result_artifact_refs`。若 commit 已存在则校验完整 DTO 后短路；prepared ambiguous 或不同
+payload fail closed。artifact/content-addressable write 与 delivery 使用同 operation key，不能在 barrier 前执行
+不可重复副作用。
+
+projector 以 `(workflow_id, graph run, node_id, generation, fact kind)` 稳定幂等键写业务 event/audit；business
+SQLite 保存 narrow `WorkflowProductSnapshot`，不为 graph record制造 ready/running lease/CAS execution view。
+`project_workflow_progress()` 只读投影的 `completed_items/active_items/wave/phase`，不调用
+`next_ready_work_item()` 推进状态；terminal projector 发现 committed publish 已在同 transaction 落库时只发布
+stream/delivery view，不重复 DB event。
+
+`routes_workflows.py` 只保留/重写 inventory 证明被消费的 GET status/progress、events、result 与 POST input；
+`/cancel` 若 inventory 仍无真实 consumer 可删除，不为历史测试保留。routes 返回 strict product models，不返回
+旧 `WorkflowBundle`/plan。`AgentGraphRuntime._start_deep_research_workflow` 收窄为调用注入的 graph host，不创建旧
+bootstrap planner work item。FastAPI lifespan 先启动 shared `AssistantRuntimeApp` saver，再启动 workflow graph
+host；shutdown 反序关闭 host、runtime app、saver。
+
+- [ ] **Step 7: 从旧 worker 排除 Deep Research**
+
+为 legacy worker/store claim 增加显式 `included_workflow_types`，production legacy worker 固定不包含 `deep_research`；没有 allowlist 时 fail closed，不以文本、kind 或节点名猜测。测试使用 spy 证明 Deep Research 从提交到完成对 `claim_ready_work_item/renew_work_item_lease/save(expected_revision=...)` 的执行控制调用数均为 0；business projector 的幂等 save 不计为 scheduler CAS，必须用独立明确方法名 `save_projection(...)`。
+
+- [ ] **Step 8: 运行 GREEN、Gateway/媒体兼容与提交**
+
+```bash
+MULTIMODAL_AGENT_PROVIDER_MODE=mock \
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q \
+  tests/tdd/native-langgraph-m3/test_workflow_graph_host.py \
+  tests/tdd/native-langgraph-m3/test_workflow_api_cutover.py \
+  tests/tdd/native-langgraph-m3/test_workflow_product_projection.py \
+  tests/tdd/native-langgraph-m3/test_workflow_publish_barrier.py \
+  tests/tdd/native-langgraph-m3/test_workflow_consumer_contract.py \
   tests/tdd/deep-research-mode \
   tests/core/contract/test_gateway_contract.py
 
 git add src/assistant_agent/workflows/graph_projection.py \
+  src/assistant_agent/workflows/graph_publish.py \
   src/assistant_agent/workflows/graph_host.py \
+  src/assistant_agent/workflows/graph_state.py \
+  src/assistant_agent/workflows/durable_graph.py \
+  src/assistant_agent/workflows/durable_graph_nodes.py \
   src/assistant_agent/workflows/service.py \
   src/assistant_agent/workflows/progress.py \
   src/assistant_agent/workflows/store.py \
@@ -819,7 +964,10 @@ git add src/assistant_agent/workflows/graph_projection.py \
   src/assistant_agent/gateway/runtime_pool.py \
   tests/tdd/native-langgraph-m3/test_workflow_graph_host.py \
   tests/tdd/native-langgraph-m3/test_workflow_api_cutover.py \
-  tests/tdd/native-langgraph-m3/test_workflow_product_projection.py
+  tests/tdd/native-langgraph-m3/test_workflow_product_projection.py \
+  tests/tdd/native-langgraph-m3/test_workflow_publish_barrier.py \
+  tests/tdd/native-langgraph-m3/test_workflow_consumer_contract.py \
+  tests/tdd/native-langgraph-m3/workflow_consumer_inventory.md
 git commit -m "refactor(workflows): cut deep research over to durable graph"
 ```
 
@@ -953,7 +1101,7 @@ Expected: offline pytest/inspect PASS。真实 Experiment 必须由 operator 明
 **Interfaces:**
 - Removes from `deep_research`: `DurableWorkflowWorker` polling、`claim_ready_work_item`、work-item lease/heartbeat、revision CAS merge、`next_ready_work_item` execution decision、`WorkflowRuntime._refresh_ready_items/_revise_for_repair` 和 Workflow OTel shadow spans。
 - Keeps through M4 only: old scheduler implementation for explicitly allowlisted legacy `long_horizon` internal records；必须在代码与 authority 标注 sunset owner=M4，不能被 Deep Research composition root 引用。
-- Keeps permanently: Workflow submission/owner/idempotency business record、artifact store、audit/events、API query projection；keeps all `automation/durable_tasks` code and tests untouched。
+- Keeps permanently: Workflow submission/owner/idempotency business record、artifact store、audit/events，以及 consumer inventory 证明需要的窄 product query projection；不保留 raw `WorkflowBundle`。keeps all `automation/durable_tasks` code and tests untouched。
 
 - [ ] **Step 1: 写 deletion gate RED**
 
@@ -1010,8 +1158,7 @@ MULTIMODAL_AGENT_PROVIDER_MODE=mock \
   tests/tdd/native-langgraph-m3 \
   tests/tdd/native-langgraph-m2 \
   tests/tdd/native-langgraph-runtime \
-  tests/tdd/deep-research-mode \
-  tests/tdd/durable-workflow-e2e
+  tests/tdd/deep-research-mode
 
 MULTIMODAL_AGENT_PROVIDER_MODE=mock \
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q
@@ -1027,7 +1174,11 @@ MULTIMODAL_AGENT_PROVIDER_MODE=mock \
 git diff --check
 ```
 
-若已被用户手动删除的历史 TDD 目录不存在，从命令移除该路径并在 final report 精确记录；不得为通过命令重建旧 feature test。
+`tests/tdd/durable-workflow-e2e/` 是旧 scheduler 开发期临时测试，不作为 M3 兼容权威：Task 6 inventory 先
+逐文件分类；仍覆盖 owner/artifact/真实消费者/explicit `long_horizon` legacy 的用例单独运行，直接绑定
+Deep Research `WorkflowBundle/claim/lease/CAS/ready` 的用例记录为 `superseded_by_native_langgraph_m3`，不为让其
+继续通过而恢复旧架构，也不擅自删除目录。若其他历史 TDD 已被用户手动删除，从命令移除路径并在 final
+report 精确记录；不得为通过命令重建旧 feature test。
 
 - [ ] **Step 7: 运行 deletion/source gates**
 
@@ -1055,7 +1206,7 @@ Expected: 前两项无 Deep Research/native graph scheduler 命中；第三项�
 2. persistent cross-process tests 未通过；
 3. LangSmith真实 Experiment/tree/Feedback 未由 operator 验收；
 4. Deep Research 仍可达旧 scheduler/lease/CAS/ready-node/OTel 路径；
-5. 外部 API 或 Tool 治理兼容未证明。
+5. Agent-Service/media consumer inventory 的受保护投影或 Tool 治理兼容未证明。
 
 完成 spec compliance review 与 code-quality review，修复后重新运行受影响验收，再提交：
 
