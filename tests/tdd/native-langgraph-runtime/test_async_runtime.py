@@ -173,16 +173,8 @@ def test_sync_and_async_graph_failures_share_cleanup_without_fake_terminal() -> 
             )
 
         assert sync_error.value.code == async_error.value.code == "graph-sentinel"
-        assert [event.type for event in sync_sink.events] == [
-            "task_started",
-            "graph_node_started",
-            "graph_node_finished",
-        ]
-        assert [event.type for event in async_sink.events] == [
-            "task_started",
-            "graph_node_started",
-            "graph_node_finished",
-        ]
+        assert [event.type for event in sync_sink.events] == ["task_started"]
+        assert [event.type for event in async_sink.events] == ["task_started"]
         assert released_run_ids == [
             "sync-failure-sentinel",
             "async-failure-sentinel",
@@ -248,8 +240,6 @@ def test_service_stream_uses_native_async_runtime_without_thread_bridge(
             assert probe.invoke_calls == 0
             assert [event.type for event in events] == [
                 "task_started",
-                "graph_node_started",
-                "graph_node_finished",
                 "response_delta",
                 "final_response",
             ]

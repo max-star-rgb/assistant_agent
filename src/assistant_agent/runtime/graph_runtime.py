@@ -17,7 +17,6 @@ from assistant_agent.runtime.cancellation import raise_if_cancelled
 from assistant_agent.runtime.tool_executor import ToolExecutor
 from assistant_agent.runtime.chat_adapter import ChatAdapter
 from assistant_agent.context.service import ContextService
-from assistant_agent.runtime.event_sink import EventSink
 from assistant_agent.observability.trace_store import TraceStore, trace_graph_node
 from assistant_agent.runtime.assistant_graph_state import (
     AssistantTurnState,
@@ -53,6 +52,7 @@ RUNTIME_STATE_KEYS = frozenset(
         "tool_result_handler",
         "trace_store",
         "event_sink",
+        "product_fact_writer",
         "current_node_name",
         "cancel_token",
     }
@@ -70,7 +70,7 @@ class GraphRuntimeContext:
     context_projector: Callable[[Any], None] | None = None
     tool_result_handler: Callable[[Any, Any], None] | None = None
     trace_store: TraceStore | None = None
-    event_sink: EventSink | None = None
+    product_fact_writer: Callable[[Any], None] | None = None
     cancel_token: Any | None = None
     agent_state: AgentState | None = None
     state_ref_resolver: "AssistantRuntimeStateRefResolver | None" = None
@@ -141,7 +141,11 @@ def bind_checkpointed_runtime_node(
             graph_state,
             runtime_state=runtime_context.agent_state,
         )
-        enriched_state = _with_runtime_context(legacy_state, scoped_runtime_context)
+        enriched_state = _with_runtime_context(
+            legacy_state,
+            scoped_runtime_context,
+            native_stream_writer=runtime.stream_writer,
+        )
         result = executable(enriched_state)
         raise_if_cancelled(
             runtime_context.cancel_token,
@@ -203,7 +207,10 @@ def strip_runtime_context(graph_state: GraphState) -> GraphState:
 
 
 def _with_runtime_context(
-    graph_state: GraphStateT, runtime_context: GraphRuntimeContext
+    graph_state: GraphStateT,
+    runtime_context: GraphRuntimeContext,
+    *,
+    native_stream_writer: Callable[[Any], None] | None = None,
 ) -> GraphStateT:
     enriched_state = dict(graph_state)
     enriched_state["tool_executor"] = runtime_context.tool_executor
@@ -218,8 +225,13 @@ def _with_runtime_context(
         enriched_state["tool_result_handler"] = runtime_context.tool_result_handler
     if runtime_context.trace_store is not None:
         enriched_state["trace_store"] = runtime_context.trace_store
-    if runtime_context.event_sink is not None:
-        enriched_state["event_sink"] = runtime_context.event_sink
+    product_fact_writer = (
+        runtime_context.product_fact_writer
+        if runtime_context.product_fact_writer is not None
+        else native_stream_writer
+    )
+    if product_fact_writer is not None:
+        enriched_state["product_fact_writer"] = product_fact_writer
     if runtime_context.cancel_token is not None:
         enriched_state["cancel_token"] = runtime_context.cancel_token
     return cast(GraphStateT, enriched_state)
@@ -317,7 +329,7 @@ def _scoped_runtime_context(
         context_projector=runtime_context.context_projector,
         tool_result_handler=runtime_context.tool_result_handler,
         trace_store=runtime_context.trace_store,
-        event_sink=runtime_context.event_sink,
+        product_fact_writer=runtime_context.product_fact_writer,
         cancel_token=runtime_context.cancel_token,
         agent_state=runtime_context.agent_state,
         state_ref_resolver=runtime_context.state_ref_resolver,

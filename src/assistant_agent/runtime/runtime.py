@@ -4,7 +4,7 @@ import asyncio
 import hashlib
 import json
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from time import perf_counter, time
 from typing import TYPE_CHECKING, Any, Literal
@@ -44,6 +44,11 @@ from assistant_agent.runtime.decision_models import (
     native_tool_call_to_assistant_decision,
 )
 from assistant_agent.runtime.events import AgentEvent
+from assistant_agent.runtime.product_event_projector import (
+    ProductEventProjector,
+    TextDeltaProductFact,
+    new_runtime_product_fact_id,
+)
 from assistant_agent.runtime.event_publisher import (
     RunStartedFact,
     RunTerminalFact,
@@ -229,7 +234,8 @@ class _PreparedGraphRun:
     state: AgentState
     workflow_work_item: bool
     deep_research_start: bool
-    run_event_sink: EventSink | None
+    run_event_sink: "_ResponseDeltaTrackingEventSink | None"
+    product_event_projector: ProductEventProjector
     runtime_event_publisher: RuntimeEventPublisher
     run_started_at: float
     runtime_context: GraphRuntimeContext
@@ -924,14 +930,15 @@ class AgentGraphRuntime:
             if base_event_sink is not None
             else None
         )
-        graph_event_sink: EventSink | None = run_event_sink
+        projector_sink: EventSink | None = run_event_sink
         if run_event_sink is not None and interrupt_request is not None:
-            graph_event_sink = _InterruptResponseDeltaBarrier(run_event_sink)
-        # A per-run ToolExecutor binds the run's sink so tool events and agent
-        # trace events emitted via graph_state["tool_executor"] reach it.
+            projector_sink = _InterruptResponseDeltaBarrier(run_event_sink)
+        product_event_projector = ProductEventProjector(event_sink=projector_sink)
+        # The per-run ToolExecutor publishes graph-local product facts only
+        # through the node's native LangGraph stream writer.
         tool_executor = ToolExecutor(
             registry=self.registry,
-            event_sink=graph_event_sink,
+            event_sink=None,
             context_metadata={
                 "durable_task_service": self.durable_task_service,
                 "workflow_service": self.workflow_service,
@@ -984,7 +991,7 @@ class AgentGraphRuntime:
         )
         run_started_at = perf_counter()
         runtime_event_publisher = RuntimeEventPublisher(
-            event_sink=run_event_sink,
+            product_event_projector=product_event_projector,
             trace_store=self.trace_store,
         )
         run_started_fact = RunStartedFact(
@@ -1038,7 +1045,6 @@ class AgentGraphRuntime:
             context_projector=self._refresh_realtime_video_context,
             tool_result_handler=self.capability_grant_controller.handle_tool_result,
             trace_store=self.trace_store,
-            event_sink=graph_event_sink,
             cancel_token=cancel_token,
             agent_state=state,
         )
@@ -1086,6 +1092,7 @@ class AgentGraphRuntime:
             workflow_work_item=workflow_work_item,
             deep_research_start=deep_research_start,
             run_event_sink=run_event_sink,
+            product_event_projector=product_event_projector,
             runtime_event_publisher=runtime_event_publisher,
             run_started_at=run_started_at,
             runtime_context=runtime_context,
@@ -1120,7 +1127,6 @@ class AgentGraphRuntime:
         ):
             _set_durable_tasks_disabled_response(state)
             return False
-        self._emit_graph_execution_event(prepared, event_type="graph_node_started")
         return True
 
     def _complete_graph_execution(
@@ -1145,22 +1151,6 @@ class AgentGraphRuntime:
             state.cancel(exc.message, source=exc.source, details=exc.details)
         return state
 
-    def _emit_graph_execution_event(
-        self,
-        prepared: _PreparedGraphRun,
-        *,
-        event_type: Literal["graph_node_started", "graph_node_finished"],
-    ) -> None:
-        self._emit(
-            AgentEvent(
-                type=event_type,
-                session_id=prepared.state.session_id,
-                run_id=prepared.state.run_id,
-                node_name="agent_graph",
-            ),
-            prepared.run_event_sink,
-        )
-
     def _execute_graph_sync(self, prepared: _PreparedGraphRun) -> AgentState:
         if not self._begin_graph_execution(prepared):
             return prepared.state
@@ -1168,18 +1158,16 @@ class AgentGraphRuntime:
             final_state = self.assistant_graph_app.invoke(
                 prepared.initial_state,
                 identity=prepared.identity,
-                context=prepared.runtime_context,
+                context=replace(
+                    prepared.runtime_context,
+                    product_fact_writer=prepared.product_event_projector.project_fact,
+                ),
             )
             return self._complete_graph_execution(prepared, final_state)
         except AgentRunCancelled as exc:
             state = exc.state if isinstance(exc.state, AgentState) else prepared.state
             state.cancel(exc.message, source=exc.source, details=exc.details)
             return state
-        finally:
-            self._emit_graph_execution_event(
-                prepared,
-                event_type="graph_node_finished",
-            )
 
     async def _execute_graph_async(self, prepared: _PreparedGraphRun) -> AgentState:
         if not self._begin_graph_execution(prepared):
@@ -1189,6 +1177,7 @@ class AgentGraphRuntime:
                 prepared.initial_state,
                 identity=prepared.identity,
                 context=prepared.runtime_context,
+                part_consumer=prepared.product_event_projector.project_part,
             )
             if result.status == "interrupted":
                 state = self._complete_graph_execution(prepared, result.final_state)
@@ -1200,11 +1189,6 @@ class AgentGraphRuntime:
             state = exc.state if isinstance(exc.state, AgentState) else prepared.state
             state.cancel(exc.message, source=exc.source, details=exc.details)
             return state
-        finally:
-            self._emit_graph_execution_event(
-                prepared,
-                event_type="graph_node_finished",
-            )
 
     def _finalize_graph_run(
         self,
@@ -1295,19 +1279,18 @@ class AgentGraphRuntime:
                 and run_event_sink is not None
                 and not run_event_sink.response_delta_emitted
             ):
-                self._emit(
-                    AgentEvent(
-                        type="response_delta",
+                prepared.product_event_projector.project_fact(
+                    TextDeltaProductFact(
+                        fact_id=new_runtime_product_fact_id("text_delta"),
                         session_id=state.session_id,
                         run_id=state.run_id,
                         text=response_text,
+                        source="runtime_final_response",
                         payload={
-                            "source": "runtime_final_response",
                             "token_streaming": False,
                             "chunking_strategy": "final_text_fallback",
                         },
-                    ),
-                    run_event_sink,
+                    )
                 )
         runtime_event_publisher.deliver_run_terminal(terminal_fact)
         if terminal_status == "completed" and not prepared.workflow_work_item:
@@ -1762,11 +1745,6 @@ class AgentGraphRuntime:
                 "errors": [error.model_dump(mode="json") for error in state.errors],
             },
         )
-
-    def _emit(self, event: AgentEvent, event_sink: EventSink | None = None) -> None:
-        sink = event_sink or self.event_sink
-        if sink is not None:
-            sink.emit(event)
 
     def _append_observability_event(
         self,

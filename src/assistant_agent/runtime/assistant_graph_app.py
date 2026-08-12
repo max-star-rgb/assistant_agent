@@ -1,6 +1,6 @@
 """Stable compiled application for the assistant turn graph."""
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from typing import Any, Literal, cast
 
@@ -224,6 +224,7 @@ class AssistantTurnGraphApp:
         *,
         identity: GraphExecutionIdentity,
         context: GraphRuntimeContext,
+        part_consumer: Callable[[GraphStreamPart], object] | None = None,
     ) -> GraphStreamResult:
         """Consume one native stream and classify its authoritative snapshot."""
 
@@ -231,6 +232,7 @@ class AssistantTurnGraphApp:
             input_state,
             identity=identity,
             context=context,
+            part_consumer=part_consumer,
         )
 
     async def aresume(
@@ -364,6 +366,7 @@ class AssistantTurnGraphApp:
         *,
         identity: GraphExecutionIdentity,
         context: GraphRuntimeContext,
+        part_consumer: Callable[[GraphStreamPart], object] | None = None,
     ) -> GraphStreamResult:
         """Consume the stream, then use native state—not stream shape—as outcome."""
 
@@ -375,6 +378,8 @@ class AssistantTurnGraphApp:
             context=context,
         ):
             parts.append(part)
+            if part_consumer is not None:
+                part_consumer(part)
             if part.type == "values" and not part.namespace:
                 final_state = part.data
         if getattr(self._graph, "checkpointer", None) is None:

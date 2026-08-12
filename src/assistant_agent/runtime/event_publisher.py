@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from collections.abc import Callable
 from typing import Any, Literal
 
 from assistant_agent.api.models import api_error, api_error_from_agent_error
@@ -14,7 +15,19 @@ from assistant_agent.observability.trace_store import (
     sanitize_trace_value,
 )
 from assistant_agent.runtime.event_sink import EventSink
-from assistant_agent.runtime.events import AgentEvent
+from assistant_agent.runtime.product_event_projector import (
+    ProductEventProjector,
+    ProductProgressFact,
+    RunCancelledProductFact,
+    RunFailedProductFact,
+    RunFinalProductFact,
+    RunStartedProductFact,
+    RuntimeProductFact,
+    ToolStartedProductFact,
+    ToolTerminalProductFact,
+    emit_product_fact,
+    new_runtime_product_fact_id,
+)
 from assistant_agent.runtime.state import AgentState
 from assistant_agent.observability.trace_context import (
     RuntimeExperimentTraceLink,
@@ -154,10 +167,19 @@ class RuntimeEventPublisher:
     def __init__(
         self,
         *,
-        event_sink: EventSink | None,
+        event_sink: EventSink | None = None,
         trace_store: TraceStore | None,
+        product_fact_writer: Callable[[Any], None] | None = None,
+        product_event_projector: ProductEventProjector | None = None,
     ) -> None:
-        self.event_sink = event_sink
+        if event_sink is not None and product_event_projector is not None:
+            raise ValueError("pass event_sink or product_event_projector, not both")
+        self.product_fact_writer = product_fact_writer
+        self.product_event_projector = product_event_projector or (
+            ProductEventProjector(event_sink=event_sink)
+            if event_sink is not None
+            else None
+        )
         self.trace_store = trace_store
 
     def record_run_started(self, fact: RunStartedFact) -> None:
@@ -204,17 +226,15 @@ class RuntimeEventPublisher:
         """Deliver the run-start projection in stream order."""
 
         state = fact.state
-        self._emit(
-            AgentEvent(
-                type="task_started",
+        self._publish_product_fact(
+            RunStartedProductFact(
+                fact_id=new_runtime_product_fact_id("run_started"),
                 session_id=state.session_id,
                 run_id=state.run_id,
-                payload={
-                    "user_id": state.user_id,
-                    "agent_id": state.agent_id,
-                    "trace_id": state.trace_id,
-                },
-                created_at=fact.occurred_at,
+                user_id=state.user_id,
+                agent_id=state.agent_id,
+                trace_id=state.trace_id,
+                occurred_at=fact.occurred_at,
             )
         )
 
@@ -269,56 +289,45 @@ class RuntimeEventPublisher:
 
         state = fact.state
         if fact.terminal_status == "failed":
-            self._emit(
-                AgentEvent(
-                    type="task_failed",
+            self._publish_product_fact(
+                RunFailedProductFact(
+                    fact_id=new_runtime_product_fact_id("run_failed"),
                     session_id=state.session_id,
                     run_id=state.run_id,
                     error=(
-                        api_error_from_agent_error(state.errors[-1]).model_dump(
-                            mode="json"
-                        )
+                        api_error_from_agent_error(state.errors[-1])
                         if state.errors
-                        else {
-                            "code": "TASK_FAILED",
-                            "message": "Agent run failed.",
-                            "detail": {},
-                            "recoverable": False,
-                        }
+                        else api_error("TASK_FAILED", "Agent run failed.")
                     ),
-                    created_at=fact.occurred_at,
+                    occurred_at=fact.occurred_at,
                 )
             )
             return
         if fact.terminal_status == "cancelled":
-            self._emit(
-                AgentEvent(
-                    type="task_cancelled",
+            self._publish_product_fact(
+                RunCancelledProductFact(
+                    fact_id=new_runtime_product_fact_id("run_cancelled"),
                     session_id=state.session_id,
                     run_id=state.run_id,
                     error=(
-                        api_error_from_agent_error(state.errors[-1]).model_dump(
-                            mode="json"
-                        )
+                        api_error_from_agent_error(state.errors[-1])
                         if state.errors
-                        else {
-                            "code": "AGENT_RUN_CANCELLED",
-                            "message": "Agent run cancelled.",
-                            "detail": {},
-                            "recoverable": False,
-                        }
+                        else api_error(
+                            "AGENT_RUN_CANCELLED",
+                            "Agent run cancelled.",
+                        )
                     ),
-                    created_at=fact.occurred_at,
+                    occurred_at=fact.occurred_at,
                 )
             )
             return
-        self._emit(
-            AgentEvent(
-                type="final_response",
+        self._publish_product_fact(
+            RunFinalProductFact(
+                fact_id=new_runtime_product_fact_id("run_final"),
                 session_id=state.session_id,
                 run_id=state.run_id,
                 text=state.response.message if state.response else "",
-                created_at=fact.occurred_at,
+                occurred_at=fact.occurred_at,
             )
         )
         response_text = state.response.message if state.response else ""
@@ -385,22 +394,17 @@ class RuntimeEventPublisher:
                     created_at=fact.occurred_at,
                 )
             )
-        self._emit(
-            AgentEvent(
-                type="tool_started",
+        self._publish_product_fact(
+            ToolStartedProductFact(
+                fact_id=new_runtime_product_fact_id("tool_started"),
                 session_id=fact.state.session_id,
                 run_id=fact.state.run_id,
                 tool_name=fact.tool_name,
+                tool_call_id=fact.tool_call_id,
+                step_id=fact.step_id,
                 text=fact.progress_message,
-                payload=_compact(
-                    {
-                        "tool_call_id": fact.tool_call_id,
-                        "step_id": fact.step_id,
-                        "pre_tool_call": fact.pre_tool_call,
-                        "message": fact.progress_message,
-                    }
-                ),
-                created_at=fact.occurred_at,
+                pre_tool_call=fact.pre_tool_call,
+                occurred_at=fact.occurred_at,
             )
         )
 
@@ -470,11 +474,12 @@ class RuntimeEventPublisher:
             "observation": "agent_trace_observation",
             "final_answer": "agent_trace_final_answer",
         }.get(str(trace_event.get("event")), "agent_trace_decision")
-        self._emit(
-            AgentEvent(
-                type=event_type,
+        self._publish_product_fact(
+            ProductProgressFact(
+                fact_id=new_runtime_product_fact_id("product_progress"),
                 session_id=fact.state.session_id,
                 run_id=fact.state.run_id,
+                event_type=event_type,
                 tool_name=(
                     trace_event.get("action")
                     if isinstance(trace_event.get("action"), str)
@@ -492,7 +497,7 @@ class RuntimeEventPublisher:
                 ),
                 error=trace_event.get("error"),
                 payload={"decision_trace": trace_event},
-                created_at=fact.occurred_at,
+                occurred_at=fact.occurred_at,
             )
         )
         if fact.trace_id is None:
@@ -571,25 +576,19 @@ class RuntimeEventPublisher:
                     created_at=fact.occurred_at,
                 )
             )
-        payload = {
-            "tool_call_id": fact.tool_call_id,
-            "step_id": fact.step_id,
-            "latency_ms": fact.latency_ms,
-            "retry_count": fact.retry_count,
-            "post_tool_call": fact.post_tool_call,
-        }
-        if fact.contract_summary is not None:
-            payload["contract"] = fact.contract_summary
-        if fact.error_code is not None:
-            payload["code"] = fact.error_code
-        if fact.delivery_recovery_action is not None:
-            payload["recovery_action"] = fact.delivery_recovery_action
-        self._emit(
-            AgentEvent(
-                type="tool_finished" if fact.success else "tool_failed",
+        self._publish_product_fact(
+            ToolTerminalProductFact(
+                fact_id=new_runtime_product_fact_id("tool_terminal"),
                 session_id=fact.state.session_id,
                 run_id=fact.state.run_id,
                 tool_name=fact.tool_name,
+                tool_call_id=fact.tool_call_id,
+                step_id=fact.step_id,
+                success=fact.success,
+                latency_ms=fact.latency_ms,
+                retry_count=fact.retry_count,
+                post_tool_call=fact.post_tool_call,
+                contract=fact.contract_summary,
                 output_ref=fact.output_ref if fact.success else None,
                 error=(
                     api_error(
@@ -604,18 +603,22 @@ class RuntimeEventPublisher:
                             }
                         ),
                         recoverable=fact.retryable,
-                    ).model_dump(mode="json")
+                    )
                     if not fact.success
                     else None
                 ),
-                payload=payload,
-                created_at=fact.occurred_at,
+                code=fact.error_code,
+                recovery_action=fact.delivery_recovery_action,
+                occurred_at=fact.occurred_at,
             )
         )
 
-    def _emit(self, event: AgentEvent) -> None:
-        if self.event_sink is not None:
-            self.event_sink.emit(event)
+    def _publish_product_fact(self, fact: RuntimeProductFact) -> None:
+        if self.product_fact_writer is not None:
+            emit_product_fact(self.product_fact_writer, fact)
+            return
+        if self.product_event_projector is not None:
+            self.product_event_projector.project_fact(fact)
 
     def _append_trace(self, event: TraceEvent) -> None:
         if self.trace_store is not None:

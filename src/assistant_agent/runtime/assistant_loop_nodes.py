@@ -36,7 +36,8 @@ from assistant_agent.runtime.assistant_interrupts import (
 )
 from assistant_agent.runtime.cancellation import AgentRunCancelled
 from assistant_agent.runtime.citations import build_url_citation_annotations
-from assistant_agent.runtime.llm_event_mapping import stream_delta_to_agent_event
+from assistant_agent.runtime.llm_event_mapping import stream_delta_to_product_fact
+from assistant_agent.runtime.product_event_projector import emit_product_fact
 from assistant_agent.runtime.loop_guard import LoopGuard, LoopGuardDecision
 from assistant_agent.runtime.run_phase import RunPhase
 from assistant_agent.runtime.response_composer import compose_response
@@ -125,7 +126,7 @@ class AssistantLoopState(TypedDict):
     current_step_index: int
     trace_id: NotRequired[str]
     trace_store: NotRequired[Any]
-    event_sink: NotRequired[Any]
+    product_fact_writer: NotRequired[Any]
     assistant_output: NotRequired[AssistantTurnOutput | None]
     pending_tool_calls: NotRequired[list[AssistantToolCall]]
     turn_origin_id: NotRequired[str]
@@ -1327,8 +1328,8 @@ def _response_stream_callback(
     *,
     source: str,
 ) -> Any | None:
-    event_sink = graph_state.get("event_sink")
-    if event_sink is None:
+    product_fact_writer = graph_state.get("product_fact_writer")
+    if product_fact_writer is None:
         return None
     state = graph_state["state"]
 
@@ -1350,16 +1351,16 @@ def _response_stream_callback(
                     **payload,
                     "runtime_separator_inserted": True,
                 }
-        event = stream_delta_to_agent_event(
+        fact = stream_delta_to_product_fact(
             emitted_text,
             emitted_payload,
             session_id=state.session_id,
             run_id=state.run_id,
             source=source,
         )
-        if event is None:
+        if fact is None:
             return
-        event_sink.emit(event)
+        emit_product_fact(product_fact_writer, fact)
         graph_state["response_stream_current_call_emitted"] = True
         graph_state["response_stream_ends_with_newline"] = emitted_text.endswith(
             ("\n", "\r")
@@ -1850,6 +1851,7 @@ def _execute_single_requested_tool_node(graph_state: AssistantLoopState) -> Assi
                 session_id=state.session_id,
             ),
             operation_profile=str(graph_state.get("graph_profile") or "standard"),
+            product_fact_writer=graph_state.get("product_fact_writer"),
         )
         _handle_runtime_tool_result(graph_state, state, result)
         _apply_tool_turn_handoff(state, result)
@@ -2370,9 +2372,8 @@ def _latest_tool_execution_correlation(
 def _runtime_event_publisher(
     graph_state: AssistantLoopState,
 ) -> RuntimeEventPublisher:
-    tool_executor = graph_state.get("tool_executor")
     return RuntimeEventPublisher(
-        event_sink=getattr(tool_executor, "event_sink", None),
+        product_fact_writer=graph_state.get("product_fact_writer"),
         trace_store=graph_state.get("trace_store"),
     )
 

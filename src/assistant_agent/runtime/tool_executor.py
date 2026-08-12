@@ -124,6 +124,7 @@ class ToolExecutor:
         operation_scope_id: str | None = None,
         operation_thread_id: str | None = None,
         operation_profile: str = "standard",
+        product_fact_writer: Callable[[Any], None] | None = None,
     ) -> ToolResult:
         """Bind, confirm, invoke and commit one governed Tool call."""
 
@@ -193,6 +194,7 @@ class ToolExecutor:
         tool_span_id = new_span_id()
         publisher = RuntimeEventPublisher(
             event_sink=self.event_sink,
+            product_fact_writer=product_fact_writer,
             trace_store=trace_store,
         )
         publisher.publish_tool_started(
@@ -351,6 +353,7 @@ class ToolExecutor:
                 trace_store=trace_store,
                 trace_id=trace_id,
                 node_name=effective_node_name,
+                product_fact_writer=product_fact_writer,
             )
             raise AssertionError("cancellation commit must raise")
         except Exception:
@@ -577,6 +580,7 @@ class ToolExecutor:
         trace_store: TraceStore | None,
         trace_id: str | None,
         node_name: str,
+        product_fact_writer: Callable[[Any], None] | None,
     ) -> None:
         latency_ms = int((perf_counter() - started_at) * 1000)
         error_details = build_realtime_turn_cancellation_metadata(
@@ -619,6 +623,7 @@ class ToolExecutor:
         )
         RuntimeEventPublisher(
             event_sink=self.event_sink,
+            product_fact_writer=product_fact_writer,
             trace_store=trace_store,
         ).publish_tool_terminal(
             ToolTerminalFact(
