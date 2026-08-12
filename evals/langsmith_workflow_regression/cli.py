@@ -69,6 +69,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             {
                 "error": "langsmith_workflow_experiment_infrastructure_failure",
                 "message": sanitize_error_message(exc),
+                "ready": False,
+                "reason_code": (
+                    "workflow_graph_host_unavailable"
+                    if "production host" in str(exc)
+                    else "preflight_failed"
+                ),
+                "persistent_gate": "pending",
             }
         )
         return 2

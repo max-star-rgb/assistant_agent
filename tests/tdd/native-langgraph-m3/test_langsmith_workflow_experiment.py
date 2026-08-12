@@ -166,12 +166,35 @@ def test_persisted_tree_audit_requires_one_native_parented_graph_tree() -> None:
             example_ids=(str(EXAMPLE_ID),),
         ).complete is False
 
+    other_trace = _detached_run(32, name="WorkflowWorkerBranch")
+    other_trace.trace_id = UUID("bbbbbbbb-cccc-dddd-eeee-ffffffffffff")
+    assert audit_native_workflow_tree(
+        [*_native_workflow_runs(), other_trace],
+        example_ids=(str(EXAMPLE_ID),),
+    ).complete is False
+
     assert audit_native_workflow_tree(
         _native_workflow_runs(),
         example_ids=(str(EXAMPLE_ID),),
         requirements={
             str(EXAMPLE_ID): WorkflowTreeRequirement(
                 worker_generations=(("research_a", 0), ("missing_worker", 0))
+            )
+        },
+    ).complete is False
+
+    fake_repair = _run(33, name="inner-node", parent=6)
+    fake_repair.extra["metadata"] = {
+        "workflow_node_id": "research_a",
+        "workflow_generation": 1,
+        "workflow_branch_run_id": "sha256:" + "d" * 64,
+    }
+    assert audit_native_workflow_tree(
+        [*_native_workflow_runs(), fake_repair],
+        example_ids=(str(EXAMPLE_ID),),
+        requirements={
+            str(EXAMPLE_ID): WorkflowTreeRequirement(
+                repair_generations=(("research_a", 1),)
             )
         },
     ).complete is False
@@ -434,3 +457,6 @@ def test_cli_preflight_never_claims_ready_without_production_host(
     ) == 2
     output = __import__("json").loads(capsys.readouterr().out)
     assert "production host" in output["message"]
+    assert output["ready"] is False
+    assert output["reason_code"] == "workflow_graph_host_unavailable"
+    assert output["persistent_gate"] == "pending"

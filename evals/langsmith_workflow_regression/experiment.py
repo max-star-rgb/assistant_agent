@@ -368,10 +368,6 @@ def audit_native_workflow_tree(
             run
             for run in runs
             if _field(run, "name") in workflow_names
-            and (
-                str(_field(run, "trace_id") or "") == trace_id
-                or str(_field(run, "reference_example_id") or "") == example_id
-            )
             and str(_field(run, "id")) not in {
                 str(_field(member, "id")) for member in subtree
             }
@@ -429,7 +425,9 @@ def audit_native_workflow_tree(
                 matching = [
                     run
                     for run in graph_subtree
-                    if _metadata(run).get("workflow_node_id") == node_id
+                    if _field(run, "name")
+                    in {"WorkflowWorkerBranch", "WorkflowVerifierBranch"}
+                    and _metadata(run).get("workflow_node_id") == node_id
                     and _metadata(run).get("workflow_generation") == generation
                     and _digest(_metadata(run).get("workflow_branch_run_id"))
                 ]
