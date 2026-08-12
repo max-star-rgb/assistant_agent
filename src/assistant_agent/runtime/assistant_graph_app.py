@@ -6,7 +6,10 @@ from typing import Any, Literal, cast
 
 from langgraph.types import Command
 
-from assistant_agent.runtime.assistant_loop_graph import build_assistant_loop_graph
+from assistant_agent.runtime.assistant_loop_graph import (
+    build_assistant_loop_graph,
+    build_namespaced_assistant_loop_graph,
+)
 from assistant_agent.runtime.assistant_graph_state import (
     AssistantTurnState,
     validate_assistant_turn_state,
@@ -162,6 +165,35 @@ class AssistantTurnGraphApp:
             ],
         }
         self._profile_graphs[canonical.name] = graph
+        return graph
+
+    def namespaced_graph_for_profile(
+        self,
+        profile: AssistantGraphProfileName | AssistantGraphProfile,
+        *,
+        state_schema: type,
+        context_schema: type,
+        child_state_key: str,
+        runtime_context_resolver: Callable[[Any, Any, object], GraphRuntimeContext],
+    ) -> Any:
+        """Compile a native profile graph over an explicit parent-owned channel."""
+
+        canonical = assistant_graph_profile(profile)
+        graph = build_namespaced_assistant_loop_graph(
+            state_schema=state_schema,
+            context_schema=context_schema,
+            child_state_key=child_state_key,
+            runtime_context_resolver=runtime_context_resolver,
+            profile=canonical.name,
+            graph_name=f"AssistantTurnGraph.{canonical.name}",
+        )
+        graph.config = {
+            "metadata": {"graph_profile": canonical.name},
+            "tags": [
+                "assistant_turn_graph",
+                f"assistant_profile:{canonical.name}",
+            ],
+        }
         return graph
 
     def invoke(

@@ -24,7 +24,10 @@ from assistant_agent.runtime.tool_operation_barrier import ToolOperationStore
 from assistant_agent.tools.registry import ToolRegistry
 from assistant_agent.workflows.artifacts import LocalWorkflowArtifactStore
 from assistant_agent.workflows.context import WorkflowContextCompiler
-from assistant_agent.workflows.graph_state import WorkflowProfileAssignment
+from assistant_agent.workflows.graph_state import (
+    PersistedWorkflowIdentity,
+    WorkflowProfileAssignment,
+)
 
 
 class WorkflowCancelReader(Protocol):
@@ -55,6 +58,7 @@ class WorkflowGraphRuntimeServices:
     context_service: ContextService
     operation_store: ToolOperationStore
     memory_host: object
+    workflow_identity: PersistedWorkflowIdentity
     cancel_reader: WorkflowCancelReader
     stream_writer: WorkflowStreamWriter
     capability_grant_resolver: CapabilityGrantResolver | None = None
@@ -91,6 +95,16 @@ class BranchProfileContextFactory:
             else outer_assignment
         )
         child = validate_assistant_turn_state(child_state)
+        identity = services.workflow_identity
+        if (
+            assignment.user_id != identity.user_id
+            or assignment.session_id != identity.session_id
+            or assignment.agent_id != identity.agent_id
+            or assignment.workflow_thread_id != identity.workflow_thread_id
+        ):
+            raise AssistantStateCompatibilityError(
+                "Workflow branch owner or thread does not match runtime services."
+            )
         self._validate_assignment_child(assignment, child, services)
 
         grants = self._resolve_capability_grants(assignment, services)

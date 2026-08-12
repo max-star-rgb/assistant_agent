@@ -36,6 +36,7 @@ WORKFLOW_GRAPH_VERSION = "3"
 WORKFLOW_STATE_SCHEMA_VERSION = 1
 WorkflowPhase = Literal[
     "planning",
+    "admitted",
     "executing",
     "verifying",
     "repairing",
@@ -126,6 +127,15 @@ class PersistedWorkflowSubmission(_CheckpointModel):
             _validate_artifact_ref(ref)
         return self
 
+
+class PersistedWorkflowIdentity(_CheckpointModel):
+    """Trusted owner and stable thread facts required to rebuild graph branches."""
+
+    user_id: str = Field(min_length=1, max_length=512)
+    session_id: str = Field(min_length=1, max_length=512)
+    agent_id: str = Field(min_length=1, max_length=512)
+    workflow_thread_id: str = Field(min_length=1, max_length=512)
+    turn_origin_id: str = Field(min_length=1, max_length=512)
 
 class PersistedWorkflowAcceptanceCriterion(_CheckpointModel):
     criterion_id: str = Field(pattern=_NODE_ID_PATTERN)
@@ -306,6 +316,7 @@ class WorkflowProfileAssignment(_CheckpointModel):
     session_id: str = Field(min_length=1, max_length=512)
     agent_id: str = Field(min_length=1, max_length=512)
     workflow_id: str = Field(min_length=1, max_length=512)
+    workflow_thread_id: str = Field(min_length=1, max_length=512)
     node_id: str = Field(pattern=_NODE_ID_PATTERN)
     execution_generation: int = Field(ge=0, le=64)
     assignment_ref: str = Field(pattern=r"^workflow-assignment:sha256:[0-9a-f]{64}$")
@@ -636,7 +647,7 @@ def _graph_error(value: object) -> WorkflowGraphError | None:
 def merge_graph_errors(
     left: tuple[object, ...] | list[object] | None,
     right: tuple[object, ...] | list[object] | None,
-) -> tuple[WorkflowGraphError, ...]:
+) -> tuple[dict[str, object], ...]:
     values: dict[str, WorkflowGraphError] = {}
     for raw in (*tuple(left or ()), *tuple(right or ())):
         error = _graph_error(raw)
@@ -644,7 +655,9 @@ def merge_graph_errors(
             continue
         digest = hashlib.sha256(error.model_dump_json().encode()).hexdigest()
         values[digest] = error
-    return tuple(values[key] for key in sorted(values))[:256]
+    return tuple(
+        values[key].model_dump(mode="json") for key in sorted(values)
+    )[:256]
 
 
 class DurableWorkflowState(TypedDict):
@@ -654,8 +667,12 @@ class DurableWorkflowState(TypedDict):
     execution_engine: Literal["langgraph_v3"]
     workflow_id: str
     workflow_type: Literal["deep_research"]
+    identity: PersistedWorkflowIdentity
     workflow_thread_id: str
     invocation_run_id: str
+    invocation_trace_id: str
+    definition_version: str
+    current_plan_version: int
     submission: PersistedWorkflowSubmission
     admitted_plan: PersistedAdmittedWorkflowPlan | None
     status: WorkflowGraphStatus
@@ -680,8 +697,12 @@ class _DurableWorkflowStateModel(_CheckpointModel):
     execution_engine: Literal["langgraph_v3"]
     workflow_id: str = Field(min_length=1, max_length=512)
     workflow_type: Literal["deep_research"]
+    identity: PersistedWorkflowIdentity
     workflow_thread_id: str = Field(min_length=1, max_length=512)
     invocation_run_id: str = Field(min_length=1, max_length=512)
+    invocation_trace_id: str = Field(min_length=1, max_length=512)
+    definition_version: str = Field(min_length=1, max_length=80)
+    current_plan_version: int = Field(ge=1)
     submission: PersistedWorkflowSubmission
     admitted_plan: PersistedAdmittedWorkflowPlan | None
     status: WorkflowGraphStatus
@@ -701,6 +722,8 @@ class _DurableWorkflowStateModel(_CheckpointModel):
 
     @model_validator(mode="after")
     def validate_cross_fields(self) -> "_DurableWorkflowStateModel":
+        if self.identity.workflow_thread_id != self.workflow_thread_id:
+            raise ValueError("workflow identity thread mismatch")
         if self.submission.workflow_type != self.workflow_type:
             raise ValueError("submission workflow type mismatch")
         if self.admitted_plan is not None:
@@ -723,7 +746,9 @@ class _DurableWorkflowStateModel(_CheckpointModel):
             raise ValueError("resume ledger is not canonical")
         if merge_sorted_unique_refs((), self.consumed_action_refs) != self.consumed_action_refs:
             raise ValueError("consumed action refs are not canonical")
-        if merge_graph_errors((), self.errors) != self.errors:
+        if merge_graph_errors((), self.errors) != tuple(
+            item.model_dump(mode="json") for item in self.errors
+        ):
             raise ValueError("graph errors are not canonical")
         return self
 
@@ -750,7 +775,9 @@ def _persist_submission(value: WorkflowSubmission) -> PersistedWorkflowSubmissio
     )
 
 
-def _persist_plan(value: WorkflowPlanVersion) -> PersistedAdmittedWorkflowPlan:
+def persist_admitted_workflow_plan(
+    value: WorkflowPlanVersion,
+) -> PersistedAdmittedWorkflowPlan:
     nodes = tuple(
         PersistedAdmittedWorkflowNode(
             node_id=item.work_item_id,
@@ -819,6 +846,7 @@ def initial_workflow_graph_state(
     admitted_plan: WorkflowPlanVersion | None,
     workflow_thread_id: str,
     invocation_run_id: str,
+    invocation_trace_id: str,
 ) -> DurableWorkflowState:
     if workflow.execution_engine != "langgraph_v3":
         raise ValueError(
@@ -828,7 +856,11 @@ def initial_workflow_graph_state(
         raise ValueError("DurableWorkflowGraph only accepts deep_research")
     if workflow.workflow_id != (admitted_plan.workflow_id if admitted_plan else workflow.workflow_id):
         raise ValueError("admitted plan references another workflow")
-    persisted_plan = _persist_plan(admitted_plan) if admitted_plan is not None else None
+    persisted_plan = (
+        persist_admitted_workflow_plan(admitted_plan)
+        if admitted_plan is not None
+        else None
+    )
     phase: WorkflowPhase = "executing" if persisted_plan is not None else "planning"
     envelope = _DurableWorkflowStateModel(
         graph_name=WORKFLOW_GRAPH_NAME,
@@ -837,8 +869,18 @@ def initial_workflow_graph_state(
         execution_engine="langgraph_v3",
         workflow_id=workflow.workflow_id,
         workflow_type="deep_research",
+        identity=PersistedWorkflowIdentity(
+            user_id=workflow.user_id,
+            session_id=workflow.session_id,
+            agent_id=workflow.agent_id,
+            workflow_thread_id=workflow_thread_id,
+            turn_origin_id=workflow.ingress_run_id,
+        ),
         workflow_thread_id=workflow_thread_id,
         invocation_run_id=invocation_run_id,
+        invocation_trace_id=invocation_trace_id,
+        definition_version=workflow.definition_version,
+        current_plan_version=workflow.current_plan_version,
         submission=_persist_submission(submission),
         admitted_plan=persisted_plan,
         status=cast(WorkflowGraphStatus, workflow.status),
@@ -884,6 +926,7 @@ __all__ = [
     "PersistedAdmittedWorkflowPlan",
     "PersistedWorkflowBudget",
     "PersistedWorkflowBudgetSlice",
+    "PersistedWorkflowIdentity",
     "PersistedWorkflowInputRequest",
     "PersistedWorkflowResumeValue",
     "PersistedWorkflowStepAcceptanceContract",
@@ -903,6 +946,7 @@ __all__ = [
     "merge_result_ledger",
     "merge_resume_values",
     "merge_sorted_unique_refs",
+    "persist_admitted_workflow_plan",
     "result_conflicts",
     "validate_durable_workflow_state",
 ]

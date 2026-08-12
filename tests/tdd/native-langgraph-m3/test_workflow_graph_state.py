@@ -28,6 +28,7 @@ from assistant_agent.workflows.graph_context import (
 )
 from assistant_agent.workflows.graph_state import (
     PersistedWorkflowBudgetSlice,
+    PersistedWorkflowIdentity,
     PersistedWorkflowStepAcceptanceContract,
     WorkflowBranchResult,
     WorkflowGraphStateConflict,
@@ -192,6 +193,7 @@ def _assignment(
         session_id="session-1",
         agent_id="agent-1",
         workflow_id="wf-1",
+        workflow_thread_id="workflow-thread-1",
         node_id=node_id,
         execution_generation=0,
         run_id=f"run-{profile}-{node_id}",
@@ -257,6 +259,13 @@ def _services(tmp_path, registry: ToolRegistry) -> WorkflowGraphRuntimeServices:
         context_service=ContextService(),
         operation_store=SQLiteToolOperationStore(tmp_path / "operations.sqlite3"),
         memory_host=object(),
+        workflow_identity=PersistedWorkflowIdentity(
+            user_id="user-1",
+            session_id="session-1",
+            agent_id="agent-1",
+            workflow_thread_id="workflow-thread-1",
+            turn_origin_id="ingress-run-1",
+        ),
         cancel_reader=lambda _assignment: None,
         stream_writer=lambda _assignment, _fact: None,
     )
@@ -432,6 +441,7 @@ def test_initial_state_rejects_legacy_record_and_preserves_strict_identity() -> 
             admitted_plan=None,
             workflow_thread_id="workflow-thread-1",
             invocation_run_id="workflow-run-1",
+            invocation_trace_id="workflow-trace-1",
         )
 
     state = initial_workflow_graph_state(
@@ -440,6 +450,7 @@ def test_initial_state_rejects_legacy_record_and_preserves_strict_identity() -> 
         admitted_plan=_plan(),
         workflow_thread_id="workflow-thread-1",
         invocation_run_id="workflow-run-1",
+        invocation_trace_id="workflow-trace-1",
     )
 
     assert state["graph_name"] == "DurableWorkflowGraph"
@@ -472,6 +483,7 @@ def test_strict_state_rejects_runtime_objects_and_unknown_channels(mutation) -> 
         admitted_plan=None,
         workflow_thread_id="workflow-thread-1",
         invocation_run_id="workflow-run-1",
+        invocation_trace_id="workflow-trace-1",
     )
 
     with pytest.raises(ValueError):
@@ -489,6 +501,7 @@ def test_checkpoint_models_reject_unbounded_inputs_and_unsafe_artifact_paths() -
             admitted_plan=None,
             workflow_thread_id="workflow-thread-1",
             invocation_run_id="workflow-run-1",
+            invocation_trace_id="workflow-trace-1",
         )
 
     invalid_ref_submission = _submission().model_copy(
@@ -501,6 +514,7 @@ def test_checkpoint_models_reject_unbounded_inputs_and_unsafe_artifact_paths() -
             admitted_plan=None,
             workflow_thread_id="workflow-thread-1",
             invocation_run_id="workflow-run-1",
+            invocation_trace_id="workflow-trace-1",
         )
 
 

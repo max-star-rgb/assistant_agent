@@ -58,8 +58,8 @@ class ProfileInvocationInput(_ProfileModel):
 
     profile: AssistantGraphProfileName
     assignment_ref: str = Field(min_length=1, max_length=1_024)
-    objective: str = Field(min_length=1, max_length=1_200)
-    constraints: tuple[str, ...] = Field(default=(), max_length=12)
+    objective: str = Field(min_length=1, max_length=10_000)
+    constraints: tuple[str, ...] = Field(default=(), max_length=64)
     capability_refs: tuple[str, ...] = Field(default=(), max_length=64)
     explicit_tool_allowlist: tuple[str, ...] | None = Field(
         default=None,
