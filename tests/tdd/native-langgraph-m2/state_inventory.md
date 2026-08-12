@@ -76,6 +76,10 @@ Tool call 与 pending provider call 的 argument 使用同一 checkpoint-local s
 相对媒体路径、过深/过大结构与长正文一律 fail closed，不允许通过 drop 改变 Tool 语义。普通 public URL、
 bounded query、stable opaque ref 和用于 ActionValidator/模型 repair 的空 JSON string 保持原值。自由用户文本
 不进入该执行事实 sanitizer，避免把合法 credential 教育/排障请求误判为 checkpoint corruption。
+敏感 argument key 采用 normalized token semantics 而非有限变体枚举，因此 prefix/suffix/provider 组合中的
+token、secret、credential、password、authorization/auth、cookie、signature、private key、access key 均在任意
+JSON 深度 fail closed；仅为实际合法计量/可访问性字段保留已测试的 `token_count`、`token_budget`、
+`accessibility` 精确例外。
 
 ## new-turn overwrite contract
 

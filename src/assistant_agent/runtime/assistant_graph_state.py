@@ -1177,12 +1177,9 @@ def _is_safe_scalar(value: object) -> bool:
     )
 
 
-_CHECKPOINT_SECRET_RE = re.compile(
-    r"(?ix)\b(?:"
-    r"authorization|access[_-]?token|token|cookie|client[_-]?secret|"
-    r"session(?:[_-]?(?:id|key|token))?|signature|api[_-]?key|password|"
-    r"secret(?:[_-]?token)?"
-    r")\b\s*[:=]\s*\S+|\bbearer\s+\S+"
+_CHECKPOINT_BEARER_RE = re.compile(r"(?i)\bbearer\s+\S+")
+_CHECKPOINT_ASSIGNMENT_RE = re.compile(
+    r"(?i)\b([A-Za-z][A-Za-z0-9_-]{0,127})\s*[:=]\s*\S+"
 )
 _SENSITIVE_KEY_NAMES = frozenset(
     {
@@ -1223,18 +1220,52 @@ def _normalized_checkpoint_key(value: str) -> str:
     return re.sub(r"[^a-z0-9]", "", value.lower())
 
 
+def _checkpoint_key_parts(value: str) -> tuple[str, ...]:
+    separated = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", value)
+    return tuple(
+        part for part in re.split(r"[^A-Za-z0-9]+", separated.lower()) if part
+    )
+
+
 def _checkpoint_key_is_sensitive(value: str) -> bool:
-    return _normalized_checkpoint_key(value) in _SENSITIVE_KEY_NAMES
+    normalized = _normalized_checkpoint_key(value)
+    if normalized in {"tokencount", "tokenbudget", "accessibility"}:
+        return False
+    if normalized in _SENSITIVE_KEY_NAMES:
+        return True
+    parts = _checkpoint_key_parts(value)
+    if any(
+        part
+        in {
+            "authorization",
+            "auth",
+            "cookie",
+            "credential",
+            "password",
+            "secret",
+            "session",
+            "signature",
+            "token",
+        }
+        for part in parts
+    ):
+        return True
+    return any(
+        parts[index : index + 2] in {("private", "key"), ("access", "key")}
+        for index in range(max(0, len(parts) - 1))
+    )
 
 
 def _url_contains_credentials_or_signature(value: str) -> bool:
     parsed = urlparse(value.rstrip(".,);]"))
     if parsed.username is not None or parsed.password is not None:
         return True
-    query_names = {
-        _normalized_checkpoint_key(key) for key, _ in parse_qsl(parsed.query)
-    }
-    return bool(query_names & _SIGNED_QUERY_KEY_NAMES)
+    query_keys = [key for key, _ in parse_qsl(parsed.query)]
+    return any(
+        _normalized_checkpoint_key(key) in _SIGNED_QUERY_KEY_NAMES
+        or _checkpoint_key_is_sensitive(key)
+        for key in query_keys
+    )
 
 
 def _checkpoint_string_is_safe(value: str, *, allow_empty: bool = False) -> bool:
@@ -1242,7 +1273,10 @@ def _checkpoint_string_is_safe(value: str, *, allow_empty: bool = False) -> bool
     if (not text and not allow_empty) or len(text) > 16_000:
         return False
     lowered = text.lower()
-    if _CHECKPOINT_SECRET_RE.search(text):
+    if _CHECKPOINT_BEARER_RE.search(text) or any(
+        _checkpoint_key_is_sensitive(match.group(1))
+        for match in _CHECKPOINT_ASSIGNMENT_RE.finditer(text)
+    ):
         return False
     if lowered.startswith(("data:", "file:")) or re.search(
         r"(?i)(?:;|\b)\s*base64\s*[, :]", text

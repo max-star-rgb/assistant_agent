@@ -674,6 +674,14 @@ _UNSAFE_CHECKPOINT_ARGUMENTS = [
     {"content": "x" * 16_001},
 ]
 
+_SEMANTIC_SECRET_KEY_VARIANTS = [
+    "access_token_backup",
+    "refresh_token",
+    "auth_token",
+    "private_key",
+    "aws_secret_access_key",
+]
+
 
 def _loop_state_with_pending_argument(payload: object) -> dict[str, Any]:
     state = AgentState.from_request(
@@ -727,12 +735,51 @@ def test_tool_arguments_fail_closed_on_unsafe_nested_checkpoint_values(
         project()
 
 
+@pytest.mark.parametrize("secret_key", _SEMANTIC_SECRET_KEY_VARIANTS)
+@pytest.mark.parametrize("boundary", ["recorded", "pending"])
+def test_tool_arguments_fail_closed_on_semantic_secret_key_variants(
+    secret_key: str,
+    boundary: str,
+) -> None:
+    """Suffixes and provider prefixes must not bypass semantic key detection."""
+
+    payload = {"outer": {secret_key: "secret"}}
+    if boundary == "pending":
+        project = lambda: assistant_turn_state_from_loop_state(  # noqa: E731
+            _loop_state_with_pending_argument(payload)
+        )
+    else:
+        state = AgentState.from_request(
+            UserRequest(user_id="u", session_id="s", text="semantic key safety"),
+            run_id="run-semantic-key-safety",
+            trace_id="trace-semantic-key-safety",
+        )
+        state.add_tool_call(ProbeTool.name, {"payload": payload})
+        project = lambda: assistant_turn_state_from_agent_state(state)  # noqa: E731
+
+    with pytest.raises(ValueError, match="assistant_state_checkpoint_value_unsafe"):
+        project()
+
+
+def test_nested_client_secret_backup_fails_closed() -> None:
+    """A nested suffixed client secret is rejected at every JSON depth."""
+
+    with pytest.raises(ValueError, match="assistant_state_checkpoint_value_unsafe"):
+        assistant_turn_state_from_loop_state(
+            _loop_state_with_pending_argument(
+                {"outer": [{"inner": {"client_secret_backup": "secret"}}]}
+            )
+        )
+
+
 def test_checkpoint_argument_validator_allows_bounded_json_and_public_urls() -> None:
     """Normal Tool queries and stable refs remain valid checkpoint inputs."""
 
     payload = {
         "query": "summarize https://example.com/articles?q=agent " + "context " * 400,
         "filters": {"enabled": True, "count": 3, "scores": [1, 2.5, None]},
+        "usage": {"token_count": 128, "token_budget": 4_096},
+        "accessibility": "screen-reader",
         "output_ref": "artifact://safe-output-123",
     }
     persisted = assistant_turn_state_from_loop_state(
