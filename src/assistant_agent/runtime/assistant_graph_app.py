@@ -1,7 +1,8 @@
 """Stable compiled application for the assistant turn graph."""
 
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Literal, cast
 
 from langgraph.types import Command
@@ -28,6 +29,11 @@ from assistant_agent.runtime.assistant_graph_profiles import (
     assistant_graph_profile,
 )
 from assistant_agent.runtime.graph_runtime import GraphRuntimeContext
+from assistant_agent.runtime.graph_time_travel import (
+    GraphCheckpointSelector,
+    GraphCheckpointSummary,
+    graph_history_ref,
+)
 from assistant_agent.runtime.tool_operation_barrier import stable_assistant_thread_id
 from assistant_agent.observability.langsmith_config import LangSmithConfig
 from assistant_agent.observability.langsmith_native import (
@@ -37,6 +43,8 @@ from assistant_agent.observability.langsmith_native import (
 
 
 _MISSING_FINAL_STATE = object()
+_HISTORY_PAGE_SIZE = 100
+_HISTORY_SCAN_LIMIT = 500
 
 
 class GraphExecutionError(RuntimeError):
@@ -394,6 +402,107 @@ class AssistantTurnGraphApp:
             )
         ])
 
+    async def alist_history(
+        self,
+        identity: GraphExecutionIdentity,
+        *,
+        limit: int,
+        before: GraphCheckpointSelector | None = None,
+    ) -> tuple[GraphCheckpointSummary, ...]:
+        """Return newest-first, re-entry-safe history without native internals."""
+
+        _validate_history_limit(limit)
+        before_config: Mapping[str, Any] | None = None
+        if before is not None:
+            if not isinstance(before, GraphCheckpointSelector):
+                raise TypeError("before must be a GraphCheckpointSelector")
+            before_snapshot = await self._resolve_history_snapshot(identity, before)
+            before_config = _snapshot_config(before_snapshot)
+
+        summaries: list[GraphCheckpointSummary] = []
+        async for snapshot in self._scan_history_snapshots(
+            identity,
+            before_config=before_config,
+        ):
+            summary = _history_summary(identity, snapshot)
+            if summary is None:
+                continue
+            summaries.append(summary)
+            if len(summaries) == limit:
+                break
+        return tuple(summaries)
+
+    async def _resolve_history_snapshot(
+        self,
+        identity: GraphExecutionIdentity,
+        selector: GraphCheckpointSelector,
+    ) -> Any:
+        """Resolve an opaque selector by bounded scanning of its owned thread."""
+
+        if not isinstance(selector, GraphCheckpointSelector):
+            raise TypeError("selector must be a GraphCheckpointSelector")
+        async for snapshot in self._scan_history_snapshots(identity):
+            summary = _history_summary(identity, snapshot)
+            if summary is not None and summary.history_ref == selector.history_ref:
+                return snapshot
+        raise GraphExecutionError(
+            "graph_checkpoint_selector_not_found",
+            "Graph checkpoint selector is unknown, expired, or not owned by this thread.",
+        )
+
+    async def _scan_history_snapshots(
+        self,
+        identity: GraphExecutionIdentity,
+        *,
+        before_config: Mapping[str, Any] | None = None,
+    ) -> AsyncIterator[Any]:
+        """Page native history while enforcing a hard total scan bound."""
+
+        history = getattr(self._graph, "aget_state_history", None)
+        if not callable(history):
+            raise GraphExecutionError(
+                "graph_state_history_api_unavailable",
+                "Compiled graph does not expose native async state history.",
+            )
+        cursor = before_config
+        scanned = 0
+        while scanned < _HISTORY_SCAN_LIMIT:
+            page_limit = min(_HISTORY_PAGE_SIZE, _HISTORY_SCAN_LIMIT - scanned)
+            kwargs: dict[str, Any] = {"limit": page_limit}
+            if cursor is not None:
+                kwargs["before"] = cursor
+            try:
+                page = tuple(
+                    [
+                        item
+                        async for item in history(
+                            identity.runnable_config(),
+                            **kwargs,
+                        )
+                    ]
+                )
+            except GraphExecutionError:
+                raise
+            except Exception as exc:
+                raise GraphExecutionError(
+                    "graph_checkpoint_history_unavailable",
+                    "Native graph history could not be read safely.",
+                ) from exc
+            if not page:
+                break
+            for snapshot in page:
+                yield snapshot
+            scanned += len(page)
+            if len(page) < page_limit:
+                break
+            next_cursor = _snapshot_config(page[-1])
+            if cursor is not None and next_cursor == cursor:
+                raise GraphExecutionError(
+                    "graph_checkpoint_history_invalid",
+                    "Native graph history pagination did not advance.",
+                )
+            cursor = next_cursor
+
     async def _consume_stream(
         self,
         input_value: AssistantTurnState | Command[Any],
@@ -524,6 +633,114 @@ def _snapshot_interrupt_objects(snapshot: Any) -> tuple[Any, ...]:
         if child is not None and hasattr(child, "tasks"):
             collected.extend(_snapshot_interrupt_objects(child))
     return tuple(collected)
+
+
+def _validate_history_limit(limit: int) -> None:
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
+        raise ValueError("state history limit must be between 1 and 100")
+
+
+def _snapshot_config(snapshot: Any) -> Mapping[str, Any]:
+    config = getattr(snapshot, "config", None)
+    if not isinstance(config, Mapping):
+        raise GraphExecutionError(
+            "graph_checkpoint_history_invalid",
+            "Native graph history contains an invalid checkpoint config.",
+        )
+    configurable = config.get("configurable")
+    if not isinstance(configurable, Mapping):
+        raise GraphExecutionError(
+            "graph_checkpoint_history_invalid",
+            "Native graph history contains an invalid checkpoint config.",
+        )
+    if (
+        not isinstance(configurable.get("thread_id"), str)
+        or not isinstance(configurable.get("checkpoint_id"), str)
+        or not isinstance(configurable.get("checkpoint_ns"), str)
+    ):
+        raise GraphExecutionError(
+            "graph_checkpoint_history_invalid",
+            "Native graph history contains an invalid checkpoint identity.",
+        )
+    return config
+
+
+def _history_summary(
+    identity: GraphExecutionIdentity,
+    snapshot: Any,
+) -> GraphCheckpointSummary | None:
+    config = _snapshot_config(snapshot)
+    values = getattr(snapshot, "values", None)
+    if not isinstance(values, Mapping):
+        raise GraphExecutionError(
+            "graph_checkpoint_history_invalid",
+            "Native graph history contains invalid assistant state.",
+        )
+    try:
+        state = validate_assistant_turn_state(values)
+    except Exception as exc:
+        raise GraphExecutionError(
+            "graph_checkpoint_history_invalid",
+            "Native graph history contains incompatible assistant state.",
+        ) from exc
+    request = state["request"]
+    run = state["run"]
+    expected_thread = GraphExecutionIdentity.for_assistant_turn(
+        agent_id=str(run["agent_id"]),
+        user_id=str(request["user_id"]),
+        session_id=str(request["session_id"]),
+        run_id=identity.run_id,
+    ).thread_id
+    configurable = cast(Mapping[str, Any], config["configurable"])
+    if (
+        identity.thread_id != expected_thread
+        or configurable["thread_id"] != identity.thread_id
+        or identity.agent_id != run["agent_id"]
+        or state["profile"] != "standard"
+    ):
+        raise GraphExecutionError(
+            "graph_checkpoint_history_invalid",
+            "Native graph history does not belong to this assistant graph owner.",
+        )
+
+    next_nodes = tuple(getattr(snapshot, "next", ()) or ())
+    if next_nodes != ("prepare_invocation",):
+        return None
+    created_at = _history_created_at(snapshot)
+    return GraphCheckpointSummary(
+        history_ref=graph_history_ref(
+            thread_id=identity.thread_id,
+            snapshot_config=config,
+        ),
+        created_at=created_at,
+        status=cast(Any, run["status"]),
+        next_nodes=next_nodes,
+        has_interrupt=bool(_snapshot_interrupt_objects(snapshot)),
+        graph_version=str(state["graph_version"]),
+        state_schema_version=int(state["state_schema_version"]),
+    )
+
+
+def _history_created_at(snapshot: Any) -> datetime:
+    value = getattr(snapshot, "created_at", None)
+    if not isinstance(value, str):
+        raise GraphExecutionError(
+            "graph_checkpoint_history_invalid",
+            "Native graph history contains an invalid creation time.",
+        )
+    try:
+        created_at = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise GraphExecutionError(
+            "graph_checkpoint_history_invalid",
+            "Native graph history contains an invalid creation time.",
+        ) from exc
+    if created_at.tzinfo is None:
+        raise GraphExecutionError(
+            "graph_checkpoint_history_invalid",
+            "Native graph history creation time must include a timezone.",
+        )
+    return created_at
 
 
 def _public_interrupts(snapshot: Any) -> tuple[AssistantInterrupt, ...]:
