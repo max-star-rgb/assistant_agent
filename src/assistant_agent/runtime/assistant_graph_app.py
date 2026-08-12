@@ -10,7 +10,10 @@ from assistant_agent.runtime.assistant_loop_graph import build_assistant_loop_gr
 from assistant_agent.runtime.assistant_loop_nodes import AssistantLoopState
 from assistant_agent.runtime.graph_runtime import GraphRuntimeContext
 from assistant_agent.observability.langsmith_config import LangSmithConfig
-from assistant_agent.observability.langsmith_native import native_langsmith_tracing
+from assistant_agent.observability.langsmith_native import (
+    native_graph_trace_scope,
+    native_langsmith_tracing,
+)
 
 
 _MISSING_FINAL_STATE = object()
@@ -117,14 +120,16 @@ class AssistantTurnGraphApp:
         """Invoke the compiled graph inside the same native tracing context."""
 
         with self._native_tracing(identity):
-            return cast(
-                AssistantLoopState,
-                self._graph.invoke(
-                    input_state,
-                    config=identity.runnable_config(),
-                    context=context,
-                ),
-            )
+            with native_graph_trace_scope() as callbacks:
+                config = self._runnable_config(identity, callbacks=callbacks)
+                return cast(
+                    AssistantLoopState,
+                    self._graph.invoke(
+                        input_state,
+                        config=config,
+                        context=context,
+                    ),
+                )
 
     async def astream(
         self,
@@ -136,26 +141,28 @@ class AssistantTurnGraphApp:
         """Stream normalized native events from the compiled graph."""
 
         with self._native_tracing(identity):
-            async for raw in self._graph.astream(
-                input_state,
-                config=identity.runnable_config(),
-                context=context,
-                stream_mode=[
-                    "values",
-                    "updates",
-                    "messages",
-                    "custom",
-                    "tasks",
-                    "checkpoints",
-                ],
-                subgraphs=True,
-                version="v2",
-            ):
-                yield GraphStreamPart(
-                    type=str(raw["type"]),
-                    namespace=tuple(raw.get("ns") or ()),
-                    data=raw.get("data"),
-                )
+            with native_graph_trace_scope() as callbacks:
+                config = self._runnable_config(identity, callbacks=callbacks)
+                async for raw in self._graph.astream(
+                    input_state,
+                    config=config,
+                    context=context,
+                    stream_mode=[
+                        "values",
+                        "updates",
+                        "messages",
+                        "custom",
+                        "tasks",
+                        "checkpoints",
+                    ],
+                    subgraphs=True,
+                    version="v2",
+                ):
+                    yield GraphStreamPart(
+                        type=str(raw["type"]),
+                        namespace=tuple(raw.get("ns") or ()),
+                        data=raw.get("data"),
+                    )
 
     async def arun(
         self,
@@ -197,6 +204,24 @@ class AssistantTurnGraphApp:
             },
             tags=["assistant_turn_graph"],
         )
+
+    @staticmethod
+    def _runnable_config(
+        identity: GraphExecutionIdentity,
+        *,
+        callbacks: list[Any],
+    ) -> dict[str, Any]:
+        config: dict[str, Any] = dict(identity.runnable_config())
+        config["metadata"] = {
+            "run_id": identity.run_id,
+            "thread_id": identity.thread_id,
+            "agent_id": identity.agent_id,
+            "execution_engine": "assistant_turn_graph",
+        }
+        config["tags"] = ["assistant_turn_graph"]
+        existing_callbacks = list(config.get("callbacks") or [])
+        config["callbacks"] = [*existing_callbacks, *callbacks]
+        return config
 
 
 def _default_langsmith_config() -> LangSmithConfig:

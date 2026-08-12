@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
 import math
 import time
 from typing import Any, Protocol
@@ -209,7 +208,6 @@ def wait_for_langsmith_runtime_regression_completeness(
         raise ValueError("completeness timeout and poll interval must be positive")
     attempts = math.ceil(timeout_seconds / poll_interval_seconds) + 1
     deadline = clock() + timeout_seconds
-    query_start_time = datetime.now(timezone.utc) - timedelta(hours=1)
     latest_problems: dict[str, list[str]] = {}
     for attempt in range(attempts):
         if attempt > 0 and clock() >= deadline:
@@ -219,7 +217,6 @@ def wait_for_langsmith_runtime_regression_completeness(
                 client,
                 experiment_id=experiment_id,
                 example_ids=example_ids,
-                query_start_time=query_start_time,
             )
         except LangSmithRateLimitError:
             result = None
@@ -440,12 +437,10 @@ def _audit_experiment(
     *,
     experiment_id: str,
     example_ids: tuple[str, ...],
-    query_start_time: datetime,
 ) -> tuple[LangSmithCompletenessResult | None, dict[str, list[str]]]:
     runs = list(
         client.list_runs(
             project_id=experiment_id,
-            start_time=query_start_time,
             select=[
                 "id",
                 "parent_run_id",

@@ -1,4 +1,4 @@
-# 原生 LangGraph M1 完成报告
+# 原生 LangGraph M1 离线实现报告（operator 验收待完成）
 
 ## 完成内容
 
@@ -9,8 +9,10 @@
   checkpoint namespace，root checkpointer 明确关闭。
 - LangSmith 由 LangGraph/SDK 原生记录真实 graph/node/subgraph/LLM/governed Tool 层级；
   canonical audit 不再为 LangSmith 重建 OTel 影子树。
+- graph/node 自动 callback 在远端持久化前移除 runtime state payload；LLM/Tool 使用独立远端严格
+  redactor 和安全 error，保留结构化语义但不上传 credential、signed URL、媒体/path/reference 或原始异常。
 - LangSmith Runtime Regression 直接在 current Experiment `RunTree` 内 await 生产 native graph，
-  并对 graph tree、run type、Example 身份和 Feedback 完整性 fail-closed。
+  按 project 全量分页读取，并对 graph tree、run type、Example 身份和 Feedback 完整性 fail-closed。
 
 ## Core invariant
 
@@ -20,9 +22,9 @@
 
 ## 验证摘要
 
-- M1 native graph TDD：50 passed。
+- M1 native graph TDD：57 passed。
 - LangSmith eval TDD：40 passed。
-- Runtime/Context/Gateway/Observability 关联 core：51 passed。
+- Runtime/Context/Gateway/Observability/Tool 关联 core：63 passed。
 - 默认 core：90 passed。
 - documentation authority validator、compileall、`git diff --check` 通过。
 - 删除门槛通过：graph service 主路无 `to_thread`，LangSmith Experiment 无 OTel
@@ -34,8 +36,8 @@ feature，用户可以日后手动整目录删除；本轮没有自动删除或�
 ## 真实验收
 
 未获授权，未运行真实 LangSmith `--inspect`/`--preflight`/`--run`，未运行真实
-Provider，未访问网络或付费服务。因此 M1 的真实 Experiment UI tree 与 Feedback 落库仍是
-operator 验收项，不在本报告中声称已通过。
+Provider，未访问网络或付费服务。因此当前状态是“离线实现完成、operator acceptance pending”；M1 的
+真实 Experiment UI tree 与 Feedback 落库仍是验收阻塞项，不在本报告中声称主 spec 的 M1 里程碑已完整通过。
 
 ## 后续边界
 

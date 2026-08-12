@@ -5,9 +5,12 @@ from __future__ import annotations
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
+import inspect
 import json
+import re
 import sys
 from typing import Any
+from urllib.parse import parse_qsl, urlsplit
 
 from assistant_agent.observability.langsmith_config import (
     LangSmithConfig,
@@ -17,11 +20,20 @@ from assistant_agent.providers.provider_errors import ProviderSafetyPolicy
 
 try:  # LangSmith remains an optional, fail-open observability dependency.
     from langsmith import traceable
-    from langsmith.run_helpers import get_current_run_tree, tracing_context
+    from langsmith.run_helpers import (
+        get_current_run_tree,
+        get_tracing_context,
+        _set_tracing_context,
+        tracing_context,
+    )
+    from langchain_core.tracers.langchain import LangChainTracer
 except (ImportError, ModuleNotFoundError):  # pragma: no cover - optional dependency
     traceable = None  # type: ignore[assignment]
     get_current_run_tree = None  # type: ignore[assignment]
+    get_tracing_context = None  # type: ignore[assignment]
+    _set_tracing_context = None  # type: ignore[assignment]
     tracing_context = None  # type: ignore[assignment]
+    LangChainTracer = None  # type: ignore[assignment,misc]
 
 
 _DROP = object()
@@ -49,6 +61,12 @@ _FORBIDDEN_KEY_PARTS = (
     "video",
     "media",
     "path",
+    "cookie",
+    "signature",
+    "signed",
+    "url",
+    "uri",
+    "ref",
 )
 _TOOL_MESSAGE_TOP_LEVEL_FIELDS = ("tool_call_id", "name")
 _TOOL_MESSAGE_TEXT_FIELDS = frozenset(
@@ -80,6 +98,62 @@ _TEXT_SAFETY_POLICY = ProviderSafetyPolicy(
     max_message_chars=_MAX_TEXT_CHARS,
     max_detail_chars=_MAX_TEXT_CHARS,
 )
+_REMOTE_CREDENTIAL_PATTERN = re.compile(
+    r"(?i)(?:bearer\s+\S+|(?:authorization|cookie|x-amz-[a-z0-9_-]+|"
+    r"credential|signature|api[_-]?key|access[_-]?key|token|secret|password)"
+    r"\s*[=:]\s*\S+)"
+)
+_REFERENCE_PREFIXES = ("artifact://", "file://", "data:")
+_REMOTE_URL_PATTERN = re.compile(r"https?://[^\s\"'<>]+", re.IGNORECASE)
+_MEDIA_REFERENCE_SUFFIXES = (
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".webp",
+    ".bmp",
+    ".svg",
+    ".mp3",
+    ".wav",
+    ".ogg",
+    ".mp4",
+    ".mov",
+    ".avi",
+    ".webm",
+    ".pdf",
+    ".bin",
+)
+
+
+class SafeGraphTraceError(RuntimeError):
+    """Stable error recorded by remote native tracing instead of business text."""
+
+
+class GraphTracingSafetyError(RuntimeError):
+    """Fail closed when an active unsafe remote graph trace cannot be disabled."""
+
+
+if LangChainTracer is not None:
+
+    class SafeLangChainTracer(LangChainTracer):  # type: ignore[misc,valid-type]
+        """Project only LangGraph chain payloads at callback persistence time."""
+
+        def _persist_run_single(self, run: Any) -> None:
+            run.inputs = {}
+            if getattr(run, "error", None):
+                run.error = "Graph execution failed."
+            super()._persist_run_single(run)
+
+        @staticmethod
+        def _update_run_single(run: Any) -> None:
+            run.inputs = {}
+            run.outputs = {}
+            if getattr(run, "error", None):
+                run.error = "Graph execution failed."
+            LangChainTracer._update_run_single(run)
+
+else:  # pragma: no cover - optional dependency
+    SafeLangChainTracer = None  # type: ignore[assignment,misc]
 
 
 @contextmanager
@@ -239,6 +313,104 @@ def native_tracing_active() -> bool:
     return _NATIVE_TRACE_ACTIVE.get()
 
 
+def native_graph_callbacks() -> list[Any]:
+    """Return one payload-safe LangChain tracer for the current graph context."""
+
+    if (
+        not native_tracing_active()
+        or SafeLangChainTracer is None
+        or get_tracing_context is None
+        or not _safe_tracer_api_supported()
+    ):
+        return []
+    try:
+        context = get_tracing_context()
+        parent = context.get("parent")
+        client = getattr(parent, "client", None) or context.get("client")
+        if client is None:
+            return []
+        project_name = context.get("project_name") or getattr(
+            parent, "project_name", None
+        )
+        return [
+            SafeLangChainTracer(
+                project_name=project_name,
+                client=client,
+                tags=list(context.get("tags") or []),
+                metadata=dict(context.get("metadata") or {}),
+            )
+        ]
+    except Exception:
+        return []
+
+
+@contextmanager
+def native_graph_trace_scope() -> Iterator[list[Any]]:
+    """Yield safe callbacks or atomically disable remote graph tracing."""
+
+    if not native_tracing_active():
+        yield []
+        return
+    callbacks = native_graph_callbacks()
+    if callbacks:
+        yield callbacks
+        return
+    token = _NATIVE_TRACE_ACTIVE.set(False)
+    try:
+        context = None
+        try:
+            if tracing_context is None:
+                raise RuntimeError("LangSmith tracing context unavailable")
+            context = tracing_context(enabled=False)
+            context.__enter__()
+        except Exception:
+            previous = None
+            if get_tracing_context is not None and _set_tracing_context is not None:
+                try:
+                    previous = get_tracing_context()
+                    disabled = dict(previous)
+                    disabled["enabled"] = False
+                    _set_tracing_context(disabled)
+                except Exception:
+                    previous = None
+            if previous is None:
+                raise GraphTracingSafetyError(
+                    "Native graph tracing could not be disabled safely."
+                )
+            try:
+                yield []
+            finally:
+                if previous is not None and _set_tracing_context is not None:
+                    try:
+                        _set_tracing_context(previous)
+                    except Exception:
+                        pass
+            return
+        try:
+            yield []
+        finally:
+            try:
+                if context is not None:
+                    context.__exit__(None, None, None)
+            except Exception:
+                pass
+    finally:
+        _NATIVE_TRACE_ACTIVE.reset(token)
+
+
+def _safe_tracer_api_supported() -> bool:
+    if LangChainTracer is None or SafeLangChainTracer is None:
+        return False
+    try:
+        persist = inspect.signature(LangChainTracer._persist_run_single)
+        update = inspect.signature(LangChainTracer._update_run_single)
+    except (AttributeError, TypeError, ValueError):
+        return False
+    return tuple(persist.parameters) == ("self", "run") and tuple(
+        update.parameters
+    ) == ("run",)
+
+
 def trace_llm_call(
     call: Any,
     *,
@@ -255,6 +427,7 @@ def trace_llm_call(
         run_type="llm",
         inputs=inputs,
         output_projector=project_llm_outputs,
+        safe_error_message="LLM call failed.",
     )
 
 
@@ -275,6 +448,7 @@ def trace_governed_tool_call(
             "input": project_tool_input(safe_input),
         },
         output_projector=project_tool_output,
+        safe_error_message="Governed tool call failed.",
     )
 
 
@@ -285,6 +459,7 @@ def _trace_call(
     run_type: str,
     inputs: dict[str, Any],
     output_projector: Any,
+    safe_error_message: str,
 ) -> Any:
     if not native_tracing_active() or traceable is None:
         return call()
@@ -300,7 +475,7 @@ def _trace_call(
             return result
         except BaseException as exc:
             business_error = exc
-            raise
+            raise SafeGraphTraceError(safe_error_message) from None
 
     try:
         wrapped = traceable(
@@ -467,13 +642,75 @@ def _forbidden_key(key: str | None) -> bool:
     if key is None:
         return False
     normalized = key.strip().lower().replace("-", "_")
-    return any(part in normalized for part in _FORBIDDEN_KEY_PARTS)
+    sensitive_token_key = normalized in {
+        "token",
+        "access_token",
+        "refresh_token",
+        "id_token",
+        "session_token",
+    }
+    return (
+        any(part in normalized for part in _FORBIDDEN_KEY_PARTS)
+        or sensitive_token_key
+        or "://" in normalized
+        or "?" in normalized
+    )
 
 
 def _bounded_text(value: str) -> str:
     if not value:
         return ""
-    return _TEXT_SAFETY_POLICY.sanitize_message(value)
+    sanitized = _TEXT_SAFETY_POLICY.sanitize_message(value)
+    lowered = sanitized.strip().lower()
+    if lowered.startswith(_REFERENCE_PREFIXES) or _looks_like_private_path(sanitized):
+        return "[redacted-reference]"
+    sanitized = _REMOTE_URL_PATTERN.sub(_redact_remote_url, sanitized)
+    return _REMOTE_CREDENTIAL_PATTERN.sub("[redacted]", sanitized)
+
+
+def _redact_remote_url(match: re.Match[str]) -> str:
+    value = match.group(0)
+    try:
+        parsed = urlsplit(value)
+        query_keys = {
+            key.strip().lower().replace("-", "_")
+            for key, _ in parse_qsl(parsed.query, keep_blank_values=True)
+        }
+        sensitive_query = any(
+            key in {
+                "authorization",
+                "cookie",
+                "credential",
+                "signature",
+                "token",
+                "access_token",
+                "x_amz_credential",
+                "x_amz_signature",
+                "x_amz_security_token",
+            }
+            or any(marker in key for marker in ("credential", "signature", "token"))
+            for key in query_keys
+        )
+        path = parsed.path.lower()
+        media_reference = path.endswith(_MEDIA_REFERENCE_SUFFIXES) or (
+            "/private/" in path
+            and any(marker in path for marker in ("media", "frame", "artifact"))
+        )
+        if sensitive_query or media_reference:
+            return "[redacted-reference]"
+    except (TypeError, ValueError):
+        return "[redacted-reference]"
+    return value
+
+
+def _looks_like_private_path(value: str) -> bool:
+    stripped = value.strip()
+    if stripped.startswith(("/", "./", "../", "~", "\\\\")):
+        return True
+    if re.match(r"^[A-Za-z]:[\\/]", stripped):
+        return True
+    normalized = stripped.lower().replace("\\", "/")
+    return "/" in normalized and normalized.endswith(_MEDIA_REFERENCE_SUFFIXES)
 
 
 def _optional_text(value: Any) -> str | None:

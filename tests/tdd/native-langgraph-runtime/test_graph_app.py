@@ -246,7 +246,17 @@ def test_astream_normalizes_v2_events_and_preserves_subgraph_namespace() -> None
     ]
     assert probe.input_state == {"state": "initial"}
     assert probe.kwargs == {
-        "config": _identity().runnable_config(),
+        "config": {
+            **_identity().runnable_config(),
+            "metadata": {
+                "run_id": "run-sentinel",
+                "thread_id": _identity().thread_id,
+                "agent_id": "agent-sentinel",
+                "execution_engine": "assistant_turn_graph",
+            },
+            "tags": ["assistant_turn_graph"],
+            "callbacks": [],
+        },
         "context": context,
         "stream_mode": [
             "values",

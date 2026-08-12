@@ -5,6 +5,12 @@ import importlib
 import asyncio
 from typing import Any
 from contextlib import nullcontext
+from uuid import uuid4
+
+import pytest
+from langgraph.graph import END, START, StateGraph
+from langsmith.run_helpers import tracing_context
+from langsmith.run_trees import RunTree
 
 from assistant_agent.observability.langsmith_config import LangSmithConfig
 from assistant_agent.runtime.chat_adapter import (
@@ -602,13 +608,17 @@ class _GraphContextProbe:
         self.native = native
         self.sync_active = False
         self.async_active: list[bool] = []
+        self.sync_kwargs: dict[str, Any] = {}
+        self.async_kwargs: dict[str, Any] = {}
 
     def invoke(self, input_state: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
         self.sync_active = self.native.native_tracing_active()
+        self.sync_kwargs = kwargs
         return input_state
 
     async def astream(self, input_state: dict[str, Any], **kwargs: Any):
         self.async_active.append(self.native.native_tracing_active())
+        self.async_kwargs = kwargs
         yield {"type": "values", "ns": (), "data": input_state}
         self.async_active.append(self.native.native_tracing_active())
 
@@ -617,7 +627,28 @@ def test_graph_sync_and_async_execution_share_native_context(monkeypatch) -> Non
     """Leaving either graph entry outside context must orphan native node traces."""
 
     native = _native()
-    monkeypatch.setattr(native, "get_current_run_tree", lambda: object())
+    client = type(
+        "NoopClient",
+        (),
+        {"create_run": lambda self, **kwargs: None, "update_run": lambda self, **kwargs: None},
+    )()
+    parent = type(
+        "CurrentParent",
+        (),
+        {"client": client, "project_name": "project-sentinel"},
+    )()
+    monkeypatch.setattr(native, "get_current_run_tree", lambda: parent)
+    monkeypatch.setattr(
+        native,
+        "get_tracing_context",
+        lambda: {
+            "parent": parent,
+            "project_name": "project-sentinel",
+            "tags": [],
+            "metadata": {},
+            "client": client,
+        },
+    )
     probe = _GraphContextProbe(native)
     app = AssistantTurnGraphApp.from_compiled_graph(probe)
     identity = GraphExecutionIdentity.for_assistant_turn(
@@ -681,6 +712,13 @@ def test_graph_metadata_is_hashed_and_never_tags_raw_user_or_session(monkeypatch
     ]
     assert "raw-user-sentinel" not in repr(captured)
     assert "raw-session-sentinel" not in repr(captured)
+    assert probe.sync_kwargs["config"]["metadata"] == {
+        "run_id": "run-sentinel",
+        "thread_id": identity.thread_id,
+        "agent_id": "agent-sentinel",
+        "execution_engine": "assistant_turn_graph",
+    }
+    assert probe.sync_kwargs["config"]["tags"] == ["assistant_turn_graph"]
 
 
 def test_runtime_traces_real_llm_and_governed_backend_boundaries(monkeypatch) -> None:
@@ -708,7 +746,28 @@ def test_runtime_traces_real_llm_and_governed_backend_boundaries(monkeypatch) ->
         return decorate
 
     monkeypatch.setattr(native, "traceable", fake_traceable)
-    monkeypatch.setattr(native, "get_current_run_tree", lambda: object())
+    client = type(
+        "NoopClient",
+        (),
+        {"create_run": lambda self, **kwargs: None, "update_run": lambda self, **kwargs: None},
+    )()
+    parent = type(
+        "CurrentParent",
+        (),
+        {"client": client, "project_name": "project-sentinel"},
+    )()
+    monkeypatch.setattr(native, "get_current_run_tree", lambda: parent)
+    monkeypatch.setattr(
+        native,
+        "get_tracing_context",
+        lambda: {
+            "parent": parent,
+            "project_name": "project-sentinel",
+            "tags": [],
+            "metadata": {},
+            "client": client,
+        },
+    )
     adapter = ScriptedChatAdapter(
         [
             ChatResult(
@@ -833,3 +892,365 @@ def test_each_tool_retry_traces_only_backend_attempt_before_commit(monkeypatch) 
     assert traced_statuses == ["running", "running"]
     assert state.tool_calls[0].status == "succeeded"
     assert len(state.tool_results) == 1
+
+
+def test_native_graph_callback_hides_raw_state_at_chain_persistence_boundary(
+    monkeypatch,
+) -> None:
+    """LangGraph graph/node callbacks must never persist raw runtime state."""
+
+    native = _native()
+    created: list[dict[str, Any]] = []
+    updated: list[dict[str, Any]] = []
+
+    class RecordingClient:
+        def create_run(self, **kwargs: Any) -> None:
+            created.append(kwargs)
+
+        def update_run(self, run_id: Any, **kwargs: Any) -> None:
+            updated.append({"id": run_id, **kwargs})
+
+    monkeypatch.setattr(
+        native,
+        "get_tracing_context",
+        lambda: {
+            "parent": None,
+            "project_name": "project-sentinel",
+            "tags": [],
+            "metadata": {},
+            "client": RecordingClient(),
+        },
+    )
+    token = native._NATIVE_TRACE_ACTIVE.set(True)
+    try:
+        callbacks = native.native_graph_callbacks()
+    finally:
+        native._NATIVE_TRACE_ACTIVE.reset(token)
+
+    assert len(callbacks) == 1
+    tracer = callbacks[0]
+    for name in ("AssistantTurnGraph", "assistant", "execute_tool", "compose_response"):
+        run_id = uuid4()
+        tracer.on_chain_start(
+            {"name": name},
+            {
+                "request": {
+                    "user_id": "RAW-USER",
+                    "session_id": "RAW-SESSION",
+                    "text": "RAW-TEXT",
+                    "metadata": {
+                        "authorization": "RAW-SECRET",
+                        "raw_payload": "RAW-PAYLOAD",
+                    },
+                },
+                "state": {"image_id": "RAW-IMAGE", "output_ref": "RAW-REF"},
+            },
+            name=name,
+            run_id=run_id,
+        )
+        tracer.on_chain_end(
+            {"state": {"response": "RAW-OUTPUT", "output_ref": "RAW-REF"}},
+            run_id=run_id,
+        )
+
+    persisted = repr([created, updated])
+    for forbidden in (
+        "RAW-USER",
+        "RAW-SESSION",
+        "RAW-TEXT",
+        "RAW-IMAGE",
+        "RAW-SECRET",
+        "RAW-PAYLOAD",
+        "RAW-REF",
+        "RAW-OUTPUT",
+    ):
+        assert forbidden not in persisted
+    assert [item["name"] for item in created] == [
+        "AssistantTurnGraph",
+        "assistant",
+        "execute_tool",
+        "compose_response",
+    ]
+    assert all(item["inputs"] == {} for item in created)
+    assert all(item["outputs"] in ({}, None) for item in updated)
+
+    error_run_id = uuid4()
+    tracer.on_chain_start(
+        {"name": "assistant"},
+        {"state": "RAW-ERROR-INPUT"},
+        name="assistant",
+        run_id=error_run_id,
+    )
+    tracer.on_chain_error(
+        RuntimeError("RAW-GRAPH-ERROR-SECRET"),
+        inputs={"state": "RAW-ERROR-STATE"},
+        run_id=error_run_id,
+    )
+    error_update = updated[-1]
+    assert error_update["error"] == "Graph execution failed."
+    assert "RAW-" not in repr(error_update)
+
+
+def test_real_graph_callback_inherits_experiment_root_without_duplicate_tree() -> None:
+    """The explicit safe tracer must preserve one native parented graph tree."""
+
+    created: list[dict[str, Any]] = []
+    updated: list[dict[str, Any]] = []
+
+    class RecordingClient:
+        def create_run(self, **kwargs: Any) -> None:
+            created.append(kwargs)
+
+        def update_run(self, run_id: Any, **kwargs: Any) -> None:
+            updated.append({"id": run_id, **kwargs})
+
+    builder = StateGraph(dict)
+    builder.add_node("assistant", lambda state: {**state, "value": "safe-result"})
+    builder.add_edge(START, "assistant")
+    builder.add_edge("assistant", END)
+    graph = builder.compile(name="AssistantTurnGraph")
+    app = AssistantTurnGraphApp.from_compiled_graph(graph)
+    client = RecordingClient()
+    parent = RunTree(
+        name="experiment-item-task",
+        inputs={"dataset": "must-remain"},
+        outputs={"actual": "must-remain"},
+        ls_client=client,
+        project_name="project-sentinel",
+    )
+    identity = GraphExecutionIdentity.for_assistant_turn(
+        agent_id="agent-sentinel",
+        user_id="raw-user-sentinel",
+        session_id="raw-session-sentinel",
+        run_id="run-sentinel",
+    )
+
+    with tracing_context(parent=parent, enabled=True, client=client):
+        result = app.invoke(
+            {"value": "RAW-GRAPH-INPUT"},
+            identity=identity,
+            context=GraphRuntimeContext(
+                tool_executor=ToolExecutor(registry=sealed_registry()),
+                chat_adapter=ScriptedChatAdapter([]),
+            ),
+        )
+
+    assert result == {"value": "safe-result"}
+    assert parent.inputs == {"dataset": "must-remain"}
+    assert parent.outputs == {"actual": "must-remain"}
+    assert [run["name"] for run in created] == ["AssistantTurnGraph", "assistant"]
+    graph_run, node_run = created
+    assert graph_run["parent_run_id"] == parent.id
+    assert node_run["parent_run_id"] == graph_run["id"]
+    assert graph_run["inputs"] == node_run["inputs"] == {}
+    assert "RAW-GRAPH-INPUT" not in repr((created, updated))
+    assert graph_run["extra"]["metadata"] == {
+        "run_id": "run-sentinel",
+        "thread_id": identity.thread_id,
+        "agent_id": "agent-sentinel",
+        "execution_engine": "assistant_turn_graph",
+        "ls_integration": "langgraph",
+    }
+    assert "assistant_turn_graph" in graph_run["tags"]
+
+
+def test_unsupported_safe_tracer_api_disables_remote_graph_without_blocking_run(
+    monkeypatch,
+) -> None:
+    """A LangChain private-API drift must fail closed for trace, open for business."""
+
+    native = _native()
+    context_calls: list[dict[str, Any]] = []
+
+    @contextmanager
+    def recording_context(**kwargs: Any):
+        context_calls.append(kwargs)
+        yield
+
+    monkeypatch.setattr(native, "_safe_tracer_api_supported", lambda: False)
+    monkeypatch.setattr(native, "tracing_context", recording_context)
+    token = native._NATIVE_TRACE_ACTIVE.set(True)
+    try:
+        with native.native_graph_trace_scope() as callbacks:
+            assert native.native_tracing_active() is False
+            assert callbacks == []
+            business_result = "business-result"
+    finally:
+        native._NATIVE_TRACE_ACTIVE.reset(token)
+
+    assert business_result == "business-result"
+    assert context_calls == [{"enabled": False}]
+    assert native._safe_tracer_api_supported() is False
+
+
+def test_locked_langchain_safe_tracer_callback_api_is_supported() -> None:
+    """The M1 callback projection is coupled to langchain-core 1.4.3 signatures."""
+
+    assert _native()._safe_tracer_api_supported() is True
+
+
+def test_safe_tracer_constructor_failure_disables_ambient_graph_trace(
+    monkeypatch,
+) -> None:
+    """A callback construction failure must not hand raw state to auto tracing."""
+
+    native = _native()
+    remote_calls: list[dict[str, Any]] = []
+
+    class RecordingClient:
+        def create_run(self, **kwargs: Any) -> None:
+            remote_calls.append(kwargs)
+
+        def update_run(self, run_id: Any, **kwargs: Any) -> None:
+            remote_calls.append({"id": run_id, **kwargs})
+
+    class BrokenSafeTracer:
+        def __init__(self, **_kwargs: Any) -> None:
+            raise RuntimeError("safe-tracer-construction-failed")
+
+    builder = StateGraph(dict)
+    builder.add_node("assistant", lambda state: {**state, "value": "business-ok"})
+    builder.add_edge(START, "assistant")
+    builder.add_edge("assistant", END)
+    app = AssistantTurnGraphApp.from_compiled_graph(
+        builder.compile(name="AssistantTurnGraph")
+    )
+    client = RecordingClient()
+    parent = RunTree(
+        name="experiment-item-task",
+        inputs={"dataset": "must-remain"},
+        ls_client=client,
+        project_name="project-sentinel",
+    )
+    monkeypatch.setattr(native, "SafeLangChainTracer", BrokenSafeTracer)
+    monkeypatch.setattr(native, "_safe_tracer_api_supported", lambda: True)
+
+    with tracing_context(parent=parent, enabled=True, client=client):
+        result = app.invoke(
+            {"value": "RAW-STATE"},
+            identity=GraphExecutionIdentity.for_assistant_turn(
+                agent_id="agent-sentinel",
+                user_id="raw-user-sentinel",
+                session_id="raw-session-sentinel",
+                run_id="run-sentinel",
+            ),
+            context=GraphRuntimeContext(
+                tool_executor=ToolExecutor(registry=sealed_registry()),
+                chat_adapter=ScriptedChatAdapter([]),
+            ),
+        )
+
+    assert result == {"value": "business-ok"}
+    assert parent.inputs == {"dataset": "must-remain"}
+    assert remote_calls == []
+
+
+def test_remote_projection_redacts_signed_urls_credentials_and_paths() -> None:
+    """Remote LangSmith projection is stricter than optional local trace content."""
+
+    native = _native()
+    signed_url = (
+        "https://media.example/private?X-Amz-Credential=credential-secret"
+        "&X-Amz-Signature=signature-secret"
+    )
+    ordinary_url = "https://docs.example/article?q=langgraph"
+    media_url = "https://cdn.example/private/frame.png"
+    relative_media_path = "generated/private-media.jpg"
+    request = ChatRequest(
+        user_id="user-sentinel",
+        session_id="session-sentinel",
+        user_query="query-sentinel",
+        messages=[
+            {"role": "user", "content": "ordinary semantic text"},
+            {"role": "user", "content": ordinary_url},
+            {"role": "user", "content": signed_url},
+            {"role": "user", "content": media_url},
+            {"role": "user", "content": relative_media_path},
+            {"role": "user", "content": "Bearer bearer-secret"},
+            {"role": "user", "content": "cookie=session-secret"},
+            {"role": "user", "content": "/private/media/file.png"},
+        ],
+        tools=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "probe_tool",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "safe": {"type": "string"},
+                            signed_url: {"default": signed_url},
+                        },
+                    },
+                },
+            }
+        ],
+    )
+    outputs = native.project_llm_outputs(
+        ChatResult(
+            provider="provider-sentinel",
+            model="model-sentinel",
+            response_text=f"ordinary response {signed_url}",
+        )
+    )
+
+    projected = native.project_llm_inputs(
+        request,
+        provider="provider-sentinel",
+        model="model-sentinel",
+    )
+    serialized = repr((projected, outputs))
+
+    assert "ordinary semantic text" in serialized
+    assert "ordinary response" in serialized
+    assert ordinary_url in serialized
+    for forbidden in (
+        "credential-secret",
+        "signature-secret",
+        "bearer-secret",
+        "session-secret",
+        "/private/media/file.png",
+        "X-Amz-Credential",
+        signed_url,
+        media_url,
+        relative_media_path,
+    ):
+        assert forbidden not in serialized
+
+
+def test_native_child_trace_records_safe_error_and_rethrows_business_error(
+    monkeypatch,
+) -> None:
+    """Raw Provider/Tool exception text must not reach the remote child run."""
+
+    native = _native()
+    observed_errors: list[str] = []
+
+    def fake_traceable(**_options: Any):
+        def decorate(call):
+            def wrapped():
+                try:
+                    return call()
+                except Exception as exc:
+                    observed_errors.append(str(exc))
+                    raise
+
+            return wrapped
+
+        return decorate
+
+    monkeypatch.setattr(native, "traceable", fake_traceable)
+    token = native._NATIVE_TRACE_ACTIVE.set(True)
+    business_error = RuntimeError("RAW-AUTHORIZATION-SECRET")
+    try:
+        with pytest.raises(RuntimeError) as captured:
+            native.trace_governed_tool_call(
+                lambda: (_ for _ in ()).throw(business_error),
+                tool_name="probe_tool",
+                safe_input={},
+            )
+    finally:
+        native._NATIVE_TRACE_ACTIVE.reset(token)
+
+    assert captured.value is business_error
+    assert observed_errors == ["Governed tool call failed."]

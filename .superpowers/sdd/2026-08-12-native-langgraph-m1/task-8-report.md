@@ -69,6 +69,8 @@ passed
 `--inspect`、`--preflight` 或 `--run`，也未将 fake/mock 结果冒充真实 Experiment 证据。
 后续由 operator 按 M1 plan Task 8 Step 6 顺序执行这三条命令，并审核每个 Example
 恰有一个 task root、原生 graph/node/LLM/tool 父子树及全部 required Feedback。
+因此 M1 当前只能标记为 offline implementation complete / operator acceptance pending，不能声称主 spec
+要求的真实 LangSmith evidence 已验收完成。
 
 M1 不承诺持久 checkpoint、interrupt/resume、profile/subgraph 恢复或 Durable Workflow Graph；
 分别属于 M2/M3。LangSmith Release Review 等价验收、Langfuse 与兼容 trace/eval 基础设施退出
@@ -84,3 +86,20 @@ contracts. OBS-001/GATE-001 remained covered by their existing core tests.
 Tests: updated `tests/core/integration/test_runtime_lifecycle.py`; retained M1 RED/GREEN under
 `tests/tdd/native-langgraph-runtime` and `tests/tdd/langsmith-parallel-evaluation`. The user may
 delete those temporary feature directories manually; they were not automatically promoted or removed.
+
+## M1 final review fix round 1/5
+
+完整 M1 独立审查发现原生 LangGraph 自动 callback 可能把完整 runtime state 写入 LangSmith；远端 LLM/Tool
+projection 对 signed credential/media reference 和异常文本也不够严格；Experiment completeness 只查询最近
+一小时；current parent 下 graph metadata/tags 未落到真实 graph run。上述代码 finding 均先由离线 RED 复现。
+
+修复后，锁定 `langchain-core==1.4.3` callback persistence signature 的显式 payload-safe tracer 继承
+Experiment task parent/client/order map，只清空 graph/node chain inputs/outputs 并安全化 chain error；Dataset
+task root input/output、LLM/Tool child 安全投影和唯一真实父子树保留。私有 API 或 tracer 构造失败时，本次
+graph scope 原子关闭远端 tracing，业务 graph 继续执行，不允许 ambient auto tracer 接管。远端 redactor
+独立于本地 content 开关：普通网页 URL 和普通语义文本保留，signed/auth/cookie/token URL、媒体 URL、
+artifact/file/data URI、绝对/相对媒体路径与原始业务异常不进入 LangSmith。completeness 改为按 project_id
+全量分页，不再使用一小时窗口。
+
+Fix round fresh offline evidence：native TDD 57 passed；LangSmith eval TDD 40 passed；related core 63 passed；
+default core 90 passed。真实 LangSmith/operator acceptance 仍未授权、未执行。

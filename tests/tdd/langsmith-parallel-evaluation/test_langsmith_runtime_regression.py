@@ -134,6 +134,7 @@ def test_completeness_waits_for_native_tree_and_all_feedback() -> None:
     assert all(call["project_id"] == "experiment-id" for call in client.run_calls)
     assert all("run_type" in call["select"] for call in client.run_calls)
     assert all("limit" not in call for call in client.run_calls)
+    assert all("start_time" not in call for call in client.run_calls)
 
 
 def test_completeness_retries_bounded_langsmith_rate_limit() -> None:

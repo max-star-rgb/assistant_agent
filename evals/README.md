@@ -169,8 +169,9 @@ RunTree 的 `reference_example_id` 校验 Example 关联；不能依赖 SDK 执�
 `RunTree.session_id`。Experiment 必须出现对象 input/reference output/actual output，以及
 task → `AssistantTurnGraph` → `assistant` → `llm.chat`，`compose_response` 是 graph child；Tool 案例中的
 governed tool 必须位于 `execute_tool` 子树。每个 active Example 必须恰有一个根 run 和全部三项 Feedback，
-否则 runner 返回 infrastructure failure。完整性轮询按 Experiment 通过 SDK 分页读取完整 run 集合，基于
-真实 `parent_run_id`、`trace_id` 和 `reference_example_id` 校验父子关系，并对 LangSmith 429 做有界重试；
+否则 runner 返回 infrastructure failure。完整性轮询按 Experiment `project_id` 通过 SDK 全量分页读取 run，
+不使用相对当前时间的一小时窗口；再基于真实 `parent_run_id`、`trace_id` 和 `reference_example_id`
+校验父子关系，并对 LangSmith 429 做有界重试；
 每次 sleep 都截断到剩余 deadline。inspect、preflight 和真实运行入口分别为：
 
 ```bash

@@ -313,8 +313,19 @@ parent、project 与 example/session metadata，不另建 root。graph metadata 
 `llm.chat` child，governed Tool 只在 execution backend 的实际 attempt 边界形成 `tool` child；validation、
 authorization、retry 调度、状态提交和业务审计不移入 trace wrapper。
 
-LLM/Tool input/output 进入 LangSmith 前再次做 provider-neutral、有界安全投影，始终排除 credential、callback、
-hidden reasoning、SDK/protocol raw envelope、媒体 bytes/base64/path 与 Tool raw payload。日常 native tracing
+LangGraph graph/node 的自动 callback 使用显式 payload-safe `LangChainTracer`：它继承当前 Experiment
+task parent/client/order map，但在 SDK create/update 前清空 graph state input/output 并安全化 chain error；
+因此 `UserRequest`、`AgentState`、raw identity/metadata、媒体/reference 与 runtime object 不会因框架自动
+序列化进入远端，Dataset task root 的 evaluator input/output 则保持原样。显式 tracer 与 current parent
+共同保证只有一棵 task → graph → node 树，不再由 ambient callback 自动补第二棵树。
+该边界锁定并验证 `langchain-core 1.4.3` 的 callback persistence signature；API 漂移或 safe tracer 构造失败时，
+本次 graph scope 会原子关闭远端 tracing。若 SDK 连关闭 context 都无法安全完成，则 fail-closed，绝不在
+ambient auto tracer 下继续并泄漏 state。
+
+LLM/Tool input/output 进入 LangSmith 前再次做 provider-neutral、有界安全投影，且使用独立于本地 content
+开关的远端严格 redactor，始终排除 credential、authorization/cookie/token、signed URL 参数、callback、
+hidden reasoning、SDK/protocol raw envelope、媒体 bytes/base64/path/reference 与 Tool raw payload；远端 child
+error 只记录稳定安全错误，业务调用方仍收到原始异常对象且副作用不会二次执行。日常 native tracing
 创建或关闭失败保持 fail-open；仅关闭本次 tracing context 自己创建的 client，不关闭外部 Experiment client。
 server composition 不再创建 canonical OTel 到 LangSmith 的 observer；旧的 LangSmith 专用 OTel factory
 和 Experiment store 已删除。因此一次执行在 LangSmith 中只有 native graph tree，canonical trace 继续独立
@@ -722,7 +733,7 @@ assistant-agent-runtime-audit.timer` 查看下次运行，用
 | `src/assistant_agent/observability/trace_conversation.py` | 有界、进程内 current-turn content overlay |
 | `src/assistant_agent/observability/otel_mapping.py` | canonical trace 到 OTel/Langfuse 兼容 span plan 的映射；不拥有 LangSmith graph tree |
 | `src/assistant_agent/observability/langsmith_config.py` | 默认关闭的 LangSmith native tracing client 配置 |
-| `src/assistant_agent/observability/langsmith_native.py` | scoped native trace、graph metadata 与安全 LLM/Tool child 投影 |
+| `src/assistant_agent/observability/langsmith_native.py` | scoped native trace、payload-safe graph callback、graph metadata 与安全 LLM/Tool child 投影 |
 | `src/assistant_agent/runtime/runtime_host.py` | 真实入口 Runtime 与 trace store 的统一 bounded lifecycle owner |
 | `src/assistant_agent/evaluation/experiment_runtime.py` | Langfuse Experiment trace context 到 Runtime 的兼容装配桥 |
 | `src/assistant_agent/evaluation/experiment_trace.py` | Langfuse Experiment 远端 Runtime 子树完整性门禁 |
