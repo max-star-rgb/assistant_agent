@@ -412,8 +412,18 @@ def _pending_interrupts(
                 ) from exc
             assignment = assignments.get(request.node_id)
             result = current_results.get(request.node_id)
+            outer_identity = state["identity"]
+            owner = (
+                outer_identity.model_dump(mode="python")
+                if hasattr(outer_identity, "model_dump")
+                else outer_identity
+            )
             if (
                 assignment is None
+                or assignment.user_id != owner["user_id"]
+                or assignment.session_id != owner["session_id"]
+                or assignment.agent_id != owner["agent_id"]
+                or assignment.workflow_thread_id != state["workflow_thread_id"]
                 or assignment.workflow_id != state["workflow_id"]
                 or assignment.workflow_id != request.workflow_id
                 or assignment.execution_generation != request.execution_generation

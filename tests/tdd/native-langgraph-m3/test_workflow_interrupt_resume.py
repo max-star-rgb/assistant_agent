@@ -17,6 +17,7 @@ from assistant_agent.workflows.durable_graph_app import (
 from assistant_agent.workflows.graph_state import (
     latest_results,
     validate_durable_workflow_state,
+    WorkflowProfileAssignment,
 )
 
 from workflow_graph_probe import workflow_probe
@@ -364,11 +365,35 @@ def test_snapshot_mapping_rejects_wrong_task_name_and_generation(tmp_path):
         )
         with pytest.raises(WorkflowGraphExecutionError) as generation_error:
             _pending_interrupts(wrong_generation, state)
-        return name_error.value.code, generation_error.value.code
+        assignment = WorkflowProfileAssignment.model_validate_json(
+            json.dumps(state["active_wave"][0])
+        )
+        changed = assignment.model_dump(mode="python", exclude={"assignment_ref"})
+        changed["user_id"] = "other-user"
+        foreign = WorkflowProfileAssignment.create(**changed)
+        foreign_state = dict(state)
+        foreign_state["active_wave"] = [foreign.model_dump(mode="json")]
+        foreign_payload = dict(native.value)
+        foreign_payload["assignment_ref"] = foreign.assignment_ref
+        foreign_snapshot = SimpleNamespace(
+            tasks=(
+                SimpleNamespace(
+                    name="await_branch_input",
+                    result=None,
+                    interrupts=(
+                        SimpleNamespace(id=native.id, value=foreign_payload),
+                    ),
+                ),
+            )
+        )
+        with pytest.raises(WorkflowGraphExecutionError) as owner_error:
+            _pending_interrupts(foreign_snapshot, foreign_state)
+        return name_error.value.code, generation_error.value.code, owner_error.value.code
 
     try:
         assert asyncio.run(execute()) == (
             "workflow_interrupt_task_invalid",
+            "workflow_interrupt_mapping_invalid",
             "workflow_interrupt_mapping_invalid",
         )
     finally:
