@@ -14,7 +14,9 @@ from assistant_agent.workflows.durable_graph_app import (
 from assistant_agent.workflows.graph_projection import (
     WorkflowGraphProjector,
     WorkflowHandle,
+    WorkflowProductEvent,
     WorkflowProductSnapshot,
+    WorkflowWaitingAction,
 )
 
 from workflow_graph_probe import workflow_probe
@@ -113,6 +115,100 @@ def test_product_dtos_reject_native_or_unknown_fields() -> None:
                 "output_ref": "workflow://wf-strict",
                 "checkpoint_id": "native-secret",
             }
+        )
+
+
+def test_compiled_interrupt_projects_waiting_input_instead_of_failure(tmp_path) -> None:
+    blocked = json.dumps(
+        {
+            "workflow_control": {
+                "outcome": "blocked",
+                "summary": "need answer",
+                "required_fields": ["answer"],
+                "prompt_code": "need_answer",
+                "safe_prompt": "Provide the answer.",
+            }
+        }
+    )
+    graph, context, initial, _worker, artifact_store = workflow_probe(
+        tmp_path, {"collect": []}, worker_responses={"collect": blocked}
+    )
+    app = DurableWorkflowGraphApp(graph)
+
+    try:
+        result = asyncio.run(app.arun(initial, identity=_identity(), context=context))
+        projector = WorkflowGraphProjector()
+        snapshot = projector.project_snapshot(result.final_state)
+        event = projector.project_event(result.final_state)
+
+        assert result.status == "interrupted"
+        assert snapshot.handle.status == "blocked"
+        assert snapshot.handle.phase == "waiting_input"
+        assert snapshot.progress.state == "waiting_input"
+        assert len(snapshot.waiting_actions) == 1
+        assert event.event_type == "waiting_input"
+        assert event.terminal_reason_code is None
+    finally:
+        artifact_store.close()
+
+
+def test_product_custom_fact_enforces_refs_actions_consistency_and_digest(
+    tmp_path,
+) -> None:
+    graph, context, initial, _worker, artifact_store = workflow_probe(
+        tmp_path, {"collect": []}
+    )
+    app = DurableWorkflowGraphApp(graph)
+    try:
+        result = asyncio.run(app.arun(initial, identity=_identity(), context=context))
+        projector = WorkflowGraphProjector()
+        valid = projector.project_event(result.final_state)
+        inconsistent = valid.model_dump(mode="json")
+        inconsistent["status"] = "running"
+        assert projector.project_stream_part(
+            WorkflowGraphStreamPart(type="custom", namespace=(), data=inconsistent)
+        ) is None
+        wrong_digest = valid.model_copy(
+            update={"event_id": "workflow-event:sha256:" + "0" * 64}
+        )
+        with pytest.raises(ValidationError):
+            WorkflowProductEvent.model_validate_json(wrong_digest.model_dump_json())
+    finally:
+        artifact_store.close()
+
+    with pytest.raises(ValidationError):
+        WorkflowWaitingAction(
+            action_ref="native-interrupt-123",
+            node_id="collect",
+            required_fields=("answer",),
+            prompt_code="need_answer",
+            safe_prompt="Provide the answer.",
+        )
+    with pytest.raises(ValidationError):
+        WorkflowWaitingAction(
+            action_ref="workflow:wf-send:node:collect:generation:0",
+            node_id="collect",
+            required_fields=("answer",),
+            prompt_code="need_answer",
+            safe_prompt="Read file:///home/user/raw-response.json",
+        )
+    with pytest.raises(ValidationError):
+        WorkflowProductSnapshot(
+            handle=WorkflowHandle(
+                workflow_id="wf-send",
+                workflow_type="deep_research",
+                status="completed",
+                phase="completed",
+                output_ref="workflow://wf-send",
+            ),
+            progress={
+                "state": "completed",
+                "phase": "completed",
+                "completed_items": 1,
+                "total_items": 1,
+                "active_items": (),
+            },
+            result_artifact_refs=("file:///home/user/report.txt",),
         )
 
     projector = WorkflowGraphProjector()
