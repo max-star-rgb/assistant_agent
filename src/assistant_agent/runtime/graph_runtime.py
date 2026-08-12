@@ -10,6 +10,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, TypeVar, cast
 
+from langgraph.runtime import Runtime
+
 from assistant_agent.runtime.cancellation import raise_if_cancelled
 from assistant_agent.runtime.tool_executor import ToolExecutor
 from assistant_agent.runtime.chat_adapter import ChatAdapter
@@ -56,17 +58,20 @@ class GraphRuntimeContext:
 def bind_runtime_node(
     node_name: str,
     node_func: Callable[[GraphStateT], GraphStateT],
-    runtime_context: GraphRuntimeContext | None = None,
     *,
     trace: bool = True,
-) -> Callable[[GraphStateT], GraphStateT]:
+) -> Callable[[GraphStateT, Runtime[GraphRuntimeContext]], GraphStateT]:
     """Return a node that injects runtime objects only during execution."""
 
     executable = trace_graph_node(node_name, node_func) if trace else node_func
-    if runtime_context is None:
-        return executable
 
-    def wrapped(graph_state: GraphStateT) -> GraphStateT:
+    def wrapped(
+        graph_state: GraphStateT,
+        runtime: Runtime[GraphRuntimeContext],
+    ) -> GraphStateT:
+        runtime_context = runtime.context
+        if runtime_context is None:
+            raise RuntimeError(f"{node_name} requires GraphRuntimeContext")
         raise_if_cancelled(runtime_context.cancel_token, phase="before_node", node_name=node_name)
         enriched_state = _with_runtime_context(graph_state, runtime_context)
         result = executable(enriched_state)

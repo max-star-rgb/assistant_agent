@@ -10,7 +10,10 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from assistant_agent.runtime.action_validator import ActionValidator
 from assistant_agent.runtime.cancellation import AgentRunCancelled, raise_if_cancelled
-from assistant_agent.runtime.assistant_loop_graph import build_assistant_loop_graph
+from assistant_agent.runtime.assistant_graph_app import (
+    AssistantTurnGraphApp,
+    GraphExecutionIdentity,
+)
 from assistant_agent.runtime.graph_runtime import GraphRuntimeContext
 from assistant_agent.runtime.run_phase import RunPhase
 from assistant_agent.runtime.state import AgentError, AgentState
@@ -460,7 +463,9 @@ class AgentGraphRuntime:
             },
             execution_backend=self.tool_execution_backend,
         )
-        self._graph = build_assistant_loop_graph()
+        self.assistant_graph_app = AssistantTurnGraphApp(
+            checkpointer=self.checkpointer,
+        )
 
     def _create_session_embedding_coordinator(
         self,
@@ -937,6 +942,15 @@ class AgentGraphRuntime:
             "action_tool_calls_used": 0,
             "control_tool_calls_used": 0,
             "max_plan_steps": self.config.max_plan_steps,
+            "assistant_output": None,
+            "pending_tool_calls": [],
+            "assistant_iterations": 0,
+            "tool_observations": [],
+            "last_llm_span_id": "",
+            "last_llm_attempt_kind": "",
+            "response_stream_current_call_emitted": False,
+            "response_stream_ends_with_newline": False,
+            "response_stream_separator_pending": False,
         }
         try:
             raise_if_cancelled(cancel_token, phase="pre_graph", state=state)
@@ -961,9 +975,10 @@ class AgentGraphRuntime:
                     run_event_sink,
                 )
                 try:
-                    final_state = self._select_graph(request, runtime_context=runtime_context).invoke(
+                    final_state = self._select_graph().invoke(
                         initial_state,
                         config=self._langgraph_config(request, state),
+                        context=runtime_context,
                     )
                     state = final_state["state"]
                     raise_if_cancelled(cancel_token, phase="post_graph", state=state)
@@ -1437,26 +1452,16 @@ class AgentGraphRuntime:
 
     def _select_graph(
         self,
-        request: UserRequest,
-        *,
-        runtime_context: GraphRuntimeContext | None = None,
     ) -> Any:
-        if runtime_context is not None:
-            return build_assistant_loop_graph(
-                checkpointer=self.checkpointer,
-                runtime_context=runtime_context,
-            )
-        return self._graph
+        return self.assistant_graph_app.graph
 
     def _langgraph_config(self, request: UserRequest, state: AgentState) -> dict[str, dict[str, str]]:
-        return {
-            "configurable": {
-                "thread_id": state.run_id,
-                "session_id": request.session_id,
-                "user_id": request.user_id,
-                "run_id": state.run_id,
-            }
-        }
+        return GraphExecutionIdentity.for_assistant_turn(
+            agent_id=self.agent_id,
+            user_id=request.user_id,
+            session_id=request.session_id,
+            run_id=state.run_id,
+        ).runnable_config()
 
     def run_stream(
         self,
