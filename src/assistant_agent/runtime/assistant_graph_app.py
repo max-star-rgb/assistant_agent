@@ -9,6 +9,8 @@ from typing import Any, cast
 from assistant_agent.runtime.assistant_loop_graph import build_assistant_loop_graph
 from assistant_agent.runtime.assistant_loop_nodes import AssistantLoopState
 from assistant_agent.runtime.graph_runtime import GraphRuntimeContext
+from assistant_agent.observability.langsmith_config import LangSmithConfig
+from assistant_agent.observability.langsmith_native import native_langsmith_tracing
 
 
 _MISSING_FINAL_STATE = object()
@@ -29,6 +31,7 @@ class GraphExecutionIdentity:
 
     thread_id: str
     run_id: str
+    agent_id: str
 
     @classmethod
     def for_assistant_turn(
@@ -48,6 +51,7 @@ class GraphExecutionIdentity:
         return cls(
             thread_id=f"assistant:{digest}",
             run_id=run_id,
+            agent_id=agent_id,
         )
 
     def runnable_config(self) -> dict[str, dict[str, str]]:
@@ -79,15 +83,22 @@ class GraphStreamResult:
 class AssistantTurnGraphApp:
     """Own the one compiled assistant graph shared by a runtime instance."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, langsmith_config: LangSmithConfig | None = None) -> None:
         self._graph = build_assistant_loop_graph()
+        self._langsmith_config = langsmith_config or _default_langsmith_config()
 
     @classmethod
-    def from_compiled_graph(cls, graph: Any) -> "AssistantTurnGraphApp":
+    def from_compiled_graph(
+        cls,
+        graph: Any,
+        *,
+        langsmith_config: LangSmithConfig | None = None,
+    ) -> "AssistantTurnGraphApp":
         """Wrap an already compiled graph without compiling another one."""
 
         app = cls.__new__(cls)
         app._graph = graph
+        app._langsmith_config = langsmith_config or _default_langsmith_config()
         return app
 
     @property
@@ -95,6 +106,25 @@ class AssistantTurnGraphApp:
         """Return the compiled graph without allowing replacement."""
 
         return self._graph
+
+    def invoke(
+        self,
+        input_state: AssistantLoopState,
+        *,
+        identity: GraphExecutionIdentity,
+        context: GraphRuntimeContext,
+    ) -> AssistantLoopState:
+        """Invoke the compiled graph inside the same native tracing context."""
+
+        with self._native_tracing(identity):
+            return cast(
+                AssistantLoopState,
+                self._graph.invoke(
+                    input_state,
+                    config=identity.runnable_config(),
+                    context=context,
+                ),
+            )
 
     async def astream(
         self,
@@ -105,26 +135,27 @@ class AssistantTurnGraphApp:
     ) -> AsyncIterator[GraphStreamPart]:
         """Stream normalized native events from the compiled graph."""
 
-        async for raw in self._graph.astream(
-            input_state,
-            config=identity.runnable_config(),
-            context=context,
-            stream_mode=[
-                "values",
-                "updates",
-                "messages",
-                "custom",
-                "tasks",
-                "checkpoints",
-            ],
-            subgraphs=True,
-            version="v2",
-        ):
-            yield GraphStreamPart(
-                type=str(raw["type"]),
-                namespace=tuple(raw.get("ns") or ()),
-                data=raw.get("data"),
-            )
+        with self._native_tracing(identity):
+            async for raw in self._graph.astream(
+                input_state,
+                config=identity.runnable_config(),
+                context=context,
+                stream_mode=[
+                    "values",
+                    "updates",
+                    "messages",
+                    "custom",
+                    "tasks",
+                    "checkpoints",
+                ],
+                subgraphs=True,
+                version="v2",
+            ):
+                yield GraphStreamPart(
+                    type=str(raw["type"]),
+                    namespace=tuple(raw.get("ns") or ()),
+                    data=raw.get("data"),
+                )
 
     async def arun(
         self,
@@ -154,3 +185,22 @@ class AssistantTurnGraphApp:
             final_state=cast(AssistantLoopState, final_state),
             parts=tuple(parts),
         )
+
+    def _native_tracing(self, identity: GraphExecutionIdentity) -> Any:
+        return native_langsmith_tracing(
+            self._langsmith_config,
+            metadata={
+                "run_id": identity.run_id,
+                "thread_id": identity.thread_id,
+                "agent_id": identity.agent_id,
+                "execution_engine": "assistant_turn_graph",
+            },
+            tags=["assistant_turn_graph"],
+        )
+
+
+def _default_langsmith_config() -> LangSmithConfig:
+    try:
+        return LangSmithConfig.from_env()
+    except Exception:
+        return LangSmithConfig(enabled=False)

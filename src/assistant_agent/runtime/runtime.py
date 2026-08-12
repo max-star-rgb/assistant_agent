@@ -1113,9 +1113,9 @@ class AgentGraphRuntime:
         if not self._begin_graph_execution(prepared):
             return prepared.state
         try:
-            final_state = self.assistant_graph_app.graph.invoke(
+            final_state = self.assistant_graph_app.invoke(
                 prepared.initial_state,
-                config=prepared.identity.runnable_config(),
+                identity=prepared.identity,
                 context=prepared.runtime_context,
             )
             return self._complete_graph_execution(prepared, final_state)

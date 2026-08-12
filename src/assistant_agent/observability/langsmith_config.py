@@ -90,6 +90,14 @@ def create_langsmith_client_from_env(
     config = LangSmithConfig.from_env(env)
     if not config.enabled:
         raise RuntimeError("LangSmith is disabled")
+    return create_langsmith_client(config)
+
+
+def create_langsmith_client(config: LangSmithConfig) -> Any:
+    """Create an SDK client for an already validated native tracing config."""
+
+    if not config.enabled:
+        raise RuntimeError("LangSmith is disabled")
     from langsmith import Client
 
     return Client(

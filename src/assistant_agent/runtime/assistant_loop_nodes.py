@@ -55,6 +55,7 @@ from assistant_agent.runtime.chat_adapter import (
     ChatResult,
     chat_result_kind,
 )
+from assistant_agent.observability.langsmith_native import trace_llm_call
 from assistant_agent.context.token_budget import normalize_provider_token_usage
 from assistant_agent.observability.trace_store import (
     TraceEvent,
@@ -518,7 +519,16 @@ def _run_chat_turn(
     )
     runner = graph_state.get("chat_turn")
     try:
-        result = cast(ChatResult, runner(request)) if callable(runner) else chat_adapter.chat(request)
+        result = trace_llm_call(
+            (
+                (lambda: cast(ChatResult, runner(request)))
+                if callable(runner)
+                else (lambda: chat_adapter.chat(request))
+            ),
+            request=request,
+            provider=provider,
+            model=model,
+        )
     except Exception as exc:
         wall_latency_ms = _elapsed_ms(started_at)
         append_observability_event(

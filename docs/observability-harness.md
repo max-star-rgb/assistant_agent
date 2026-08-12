@@ -1,6 +1,6 @@
 # Observability Harness
 
-Last updated: 2026-08-11
+Last updated: 2026-08-12
 
 ## Authority contract
 
@@ -50,7 +50,7 @@ Observability 是运行时行为的只读投影，不是另一套执行状态机
 | Agent-Service delivery audit | 记录媒体响应从 accepted 到 sent/acked/failed/disconnected 的交付状态 | 表示 Assistant 任务本身成功或失败 |
 | Operational console/text log | 提供低噪声、prompt-safe 的运行提示和兼容文本投影 | 作为 runtime 详细开发 timeline |
 | Local trace-content overlay | 在明确边界内保存当前 turn 的 request/response、Provider 语义证据、tool observation，以及显式启用的 Mem0 change text | 写入 conversation history 或公开 trace summary |
-| OTel/Langfuse/LangSmith projection | 把 canonical events 映射为 trace/span/generation、usage 和安全 metadata | 改写 canonical event 的含义 |
+| OTel/Langfuse projection、LangSmith native trace | 前者映射 canonical audit；后者直接观察实际 graph/node/LLM/governed Tool 执行和安全 metadata | 改写执行结果，或用手工 span tree 代替实际 graph |
 | Metrics、scores、eval views | 从 canonical facts 派生统计、诊断和质量分数 | 反向控制 runtime 行为 |
 
 默认本地文件包括：
@@ -303,6 +303,19 @@ Provider protocol capture。overlay 写入失败时 canonical event 仍须保留
 “本地”不是绕过授权或泄露 secret 的理由。
 
 ## Langfuse、LangSmith、OTel 与评估投影
+
+M1 起，普通 `AssistantTurnGraph` 的 LangSmith 主观测路径是 LangGraph/SDK 原生 trace：同步 `invoke` 与
+异步 `astream(v2)` 都在同一个 scoped tracing context 中执行，已有 Experiment `RunTree` 时直接继承其
+parent、project 与 example/session metadata，不另建 root。graph metadata 只包含 `run_id`、哈希化
+`thread_id`、`agent_id` 和执行引擎；原始 user/session identity 不进入 tag。Provider 实际调用形成
+`llm.chat` child，governed Tool 只在 execution backend 的实际 attempt 边界形成 `tool` child；validation、
+authorization、retry 调度、状态提交和业务审计不移入 trace wrapper。
+
+LLM/Tool input/output 进入 LangSmith 前再次做 provider-neutral、有界安全投影，始终排除 credential、callback、
+hidden reasoning、SDK/protocol raw envelope、媒体 bytes/base64/path 与 Tool raw payload。日常 native tracing
+创建或关闭失败保持 fail-open；仅关闭本次 tracing context 自己创建的 client，不关闭外部 Experiment client。
+迁移期 canonical OTel 到 LangSmith 的旧投影仍可能并存，但它不是 graph 执行事实源，也不得继续扩展；其停止
+与删除属于 M1 Task 7。
 
 `build_text_otel_span_specs()` 将 redacted canonical events 投影为依赖无关的 OTel span plan：
 

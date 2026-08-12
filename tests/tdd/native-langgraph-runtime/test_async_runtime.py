@@ -41,6 +41,9 @@ class _GraphAppProbe:
         self.arun_calls = 0
         self.graph = _SyncGraphProbe(self)
 
+    def invoke(self, input_state: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
+        return self.graph.invoke(input_state, **kwargs)
+
     async def arun(self, input_state: dict[str, Any], **kwargs: Any) -> GraphStreamResult:
         self.arun_calls += 1
         state = input_state["state"]
@@ -55,6 +58,9 @@ class _FailingSyncGraph:
 
 class _FailingGraphApp:
     graph = _FailingSyncGraph()
+
+    def invoke(self, input_state: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
+        return self.graph.invoke(input_state, **kwargs)
 
     async def arun(self, input_state: dict[str, Any], **kwargs: Any) -> GraphStreamResult:
         raise GraphExecutionError("graph-sentinel", "failure-sentinel")

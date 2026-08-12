@@ -51,6 +51,7 @@ from assistant_agent.tools.tool_call_boundary import (
     build_pre_tool_call_summary,
 )
 from assistant_agent.observability.trace_content_policy import local_trace_content_enabled
+from assistant_agent.observability.langsmith_native import trace_governed_tool_call
 from assistant_agent.observability.trace_store import (
     TraceStore,
     new_span_id,
@@ -254,6 +255,10 @@ class ToolExecutor:
                 tool_name,
                 invocation_input,
                 context,
+                trace_input_summary=_policy_safe_input_summary(
+                    bound_input,
+                    content_policy=trace_content_policy,
+                ),
                 step_id=step_id,
                 preserve_success_after_cancel=tool_spec.category != "read",
                 max_retries=max_execution_retries,
@@ -490,6 +495,7 @@ class ToolExecutor:
         tool_input: BaseModel | dict[str, Any],
         context: ToolContext,
         *,
+        trace_input_summary: dict[str, Any],
         step_id: str,
         preserve_success_after_cancel: bool,
         max_retries: int,
@@ -508,7 +514,12 @@ class ToolExecutor:
                     "retry_count": retry_count,
                 },
             )
-            result = self._run_once(tool_name, tool_input, context)
+            result = self._run_once(
+                tool_name,
+                tool_input,
+                context,
+                trace_input_summary=trace_input_summary,
+            )
             if not (preserve_success_after_cancel and result.success):
                 raise_if_cancelled(
                     self.cancel_token,
@@ -546,13 +557,19 @@ class ToolExecutor:
         tool_name: str,
         tool_input: BaseModel | dict[str, Any],
         context: ToolContext,
+        *,
+        trace_input_summary: dict[str, Any],
     ) -> ToolResult:
         try:
-            return self.execution_backend.run(
-                self.registry,
-                tool_name,
-                tool_input,
-                context,
+            return trace_governed_tool_call(
+                lambda: self.execution_backend.run(
+                    self.registry,
+                    tool_name,
+                    tool_input,
+                    context,
+                ),
+                tool_name=tool_name,
+                safe_input=trace_input_summary,
             )
         except AgentRunCancelled:
             raise
