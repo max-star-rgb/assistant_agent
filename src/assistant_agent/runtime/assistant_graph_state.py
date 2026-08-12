@@ -534,6 +534,14 @@ def assistant_loop_state_from_turn_state(
         raise AssistantStateCompatibilityError(
             "Runtime state identity does not match the checkpoint turn."
         )
+    runtime_request = persisted_request_from_user_request(runtime_state.request)
+    runtime_request["capability_refs"] = list(
+        assistant_capability_ref_identity(runtime_state)
+    )
+    if runtime_request != persisted["request"]:
+        raise AssistantStateCompatibilityError(
+            "Runtime request does not match the checkpoint turn."
+        )
     apply_assistant_turn_state_to_agent_state(
         persisted,
         runtime_state=runtime_state,
@@ -554,10 +562,23 @@ def assistant_loop_state_from_turn_state(
     # Preserve the richer, policy-projected model observation while this
     # invocation still owns the governed ToolResult.  It remains runtime-only;
     # a rebuilt process receives only the strict checkpoint projection above.
-    for index, observation in enumerate(observations):
-        if index >= len(runtime_state.tool_results):
-            break
-        rich_observation = runtime_state.tool_results[index].model_observation
+    remaining_results = list(runtime_state.tool_results)
+    for observation in observations:
+        if observation["status"] == "rejected":
+            continue
+        expected_success = observation["status"] == "succeeded"
+        result_index = next(
+            (
+                index
+                for index, result in enumerate(remaining_results)
+                if result.tool_name == observation["tool_name"]
+                and result.success == expected_success
+            ),
+            None,
+        )
+        if result_index is None:
+            continue
+        rich_observation = remaining_results.pop(result_index).model_observation
         if isinstance(rich_observation, Mapping):
             observation["data"] = dict(rich_observation)
     return {
@@ -820,7 +841,11 @@ def _project_tool_call_request(call: AssistantToolCall) -> PersistedToolCallRequ
     arguments = tuple(
         PersistedToolArgument(
             name=name,
-            value_json=_checkpoint_argument_json(name, value),
+            value_json=_checkpoint_argument_json(
+                name,
+                value,
+                tool_name=call.tool_name,
+            ),
         )
         for name, value in call.tool_input.items()
     )
@@ -1030,7 +1055,11 @@ def _project_tool_call(record: object) -> PersistedToolCall:
         for name, value in raw_input.items():
             if not isinstance(name, str):
                 raise ValueError("assistant_state_tool_argument_name_invalid")
-            encoded = _checkpoint_argument_json(name, value)
+            encoded = _checkpoint_argument_json(
+                name,
+                value,
+                tool_name=record.tool_name,
+            )
             arguments.append(PersistedToolArgument(name=name, value_json=encoded))
     return PersistedToolCall(
         tool_call_id=record.tool_call_id,
@@ -1263,7 +1292,12 @@ def _checkpoint_key_is_sensitive(value: str) -> bool:
     )
 
 
-def _is_schema_bound_opaque_ref(key: str, value: object) -> bool:
+def _is_schema_bound_opaque_ref(
+    key: str,
+    value: object,
+    *,
+    tool_name: str | None,
+) -> bool:
     """Allow only explicit Tool-schema references that are not bearer authority.
 
     Website Guidance binds this identifier to the request owner again inside
@@ -1272,7 +1306,8 @@ def _is_schema_bound_opaque_ref(key: str, value: object) -> bool:
     """
 
     return (
-        key == "browser_session_id"
+        tool_name == "web_page_explore"
+        and key == "browser_session_id"
         and isinstance(value, str)
         and re.fullmatch(r"[A-Za-z0-9_-]{16,128}", value) is not None
     )
@@ -1335,10 +1370,7 @@ def _checkpoint_json_is_safe(value: object, *, depth: int = 0) -> bool:
                 not isinstance(key, str)
                 or not key
                 or len(key) > 256
-                or (
-                    _checkpoint_key_is_sensitive(key)
-                    and not _is_schema_bound_opaque_ref(key, child)
-                )
+                or _checkpoint_key_is_sensitive(key)
                 or not _checkpoint_json_is_safe(child, depth=depth + 1)
             ):
                 return False
@@ -1350,13 +1382,22 @@ def _checkpoint_json_is_safe(value: object, *, depth: int = 0) -> bool:
     return False
 
 
-def _checkpoint_argument_json(name: object, value: object) -> str:
+def _checkpoint_argument_json(
+    name: object,
+    value: object,
+    *,
+    tool_name: str | None = None,
+) -> str:
     value = _normalize_checkpoint_json_value(value)
     if (
         not isinstance(name, str)
         or (
             _checkpoint_key_is_sensitive(name)
-            and not _is_schema_bound_opaque_ref(name, value)
+            and not _is_schema_bound_opaque_ref(
+                name,
+                value,
+                tool_name=tool_name,
+            )
         )
         or not _checkpoint_json_is_safe(value)
     ):

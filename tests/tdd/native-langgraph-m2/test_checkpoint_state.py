@@ -833,6 +833,25 @@ def test_checkpoint_argument_validator_preserves_browser_session_reference(
     assert restored == payload
 
 
+def test_checkpoint_argument_validator_does_not_generalize_browser_session_ref() -> (
+    None
+):
+    """The opaque exception belongs to one governed Tool schema, not the key name."""
+
+    state = AgentState.from_request(
+        UserRequest(user_id="u", session_id="s", text="probe"),
+        run_id="run-unbound-browser-ref",
+        trace_id="trace-unbound-browser-ref",
+    )
+    state.add_tool_call(
+        "probe_tool",
+        {"browser_session_id": "opaque-browser-session-1"},
+    )
+
+    with pytest.raises(ValueError, match="assistant_state_checkpoint_value_unsafe"):
+        assistant_turn_state_from_agent_state(state)
+
+
 def test_checkpoint_sanitizer_does_not_inspect_free_form_user_text() -> None:
     """Credential education text is valid input; only persistence-risk fields are strict."""
 
@@ -889,6 +908,80 @@ def test_node_hydration_applies_persisted_trajectory_to_fresh_agent_state() -> N
 
     assert reprojected["run"]["tool_calls"] == persisted["run"]["tool_calls"]
     assert reprojected["run"]["tool_results"] == persisted["run"]["tool_results"]
+
+
+def test_node_hydration_rejects_request_drift_before_resume() -> None:
+    """A fresh invocation cannot mix a changed request with old trajectory."""
+
+    original = AgentState.from_request(
+        UserRequest(
+            user_id="user-state",
+            session_id="session-state",
+            text="ORIGINAL",
+            response_style="structured",
+        ),
+        run_id="run-request-resume",
+        trace_id="trace-request-resume",
+    )
+    persisted = assistant_turn_state_from_agent_state(original)
+    persisted["run_phase"] = RunPhase.ACT
+    changed = AgentState.from_request(
+        UserRequest(
+            user_id="user-state",
+            session_id="session-state",
+            text="CHANGED",
+            response_style="voice",
+        ),
+        run_id="run-request-resume",
+        trace_id="trace-request-resume",
+    )
+
+    with pytest.raises(AssistantStateCompatibilityError):
+        assistant_loop_state_from_turn_state(persisted, runtime_state=changed)
+
+
+def test_rich_observation_overlay_correlates_only_executed_result() -> None:
+    """A validation rejection must not receive the next ToolResult's rich data."""
+
+    state = AgentState.from_request(
+        UserRequest(user_id="user-state", session_id="session-state", text="tool"),
+        run_id="run-observation-correlation",
+        trace_id="trace-observation-correlation",
+    )
+    state.tool_results.append(
+        ToolResult(
+            tool_name="probe_tool",
+            success=True,
+            model_observation={"value": "RICH"},
+        )
+    )
+    persisted = assistant_turn_state_from_loop_state(
+        {
+            "state": state,
+            "request": state.request,
+            "tool_observations": [
+                {
+                    "tool_name": "rejected_tool",
+                    "status": "rejected",
+                    "summary": "rejected",
+                    "is_complete": True,
+                    "_provider_tool_call_id": "provider-rejected",
+                },
+                {
+                    "tool_name": "probe_tool",
+                    "status": "succeeded",
+                    "summary": "executed",
+                    "is_complete": True,
+                    "_provider_tool_call_id": "provider-success",
+                },
+            ],
+        }
+    )
+
+    hydrated = assistant_loop_state_from_turn_state(persisted, runtime_state=state)
+
+    assert hydrated["tool_observations"][0]["data"] == {}
+    assert hydrated["tool_observations"][1]["data"] == {"value": "RICH"}
 
 
 @pytest.mark.parametrize("mismatch", ["context", "capability", "catalog"])
