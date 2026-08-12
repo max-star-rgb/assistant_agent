@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import inspect
 import re
 from collections.abc import Callable
 from datetime import datetime, timezone
@@ -10,15 +12,20 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from .experiment import ReleaseExperimentSettings, run_release_experiment
-from .langfuse_backend import audit_release_scores
+from .langsmith_backend import (
+    REQUIRED_RELEASE_FEEDBACK_KEYS,
+    audit_langsmith_feedback,
+    sync_langsmith_examples,
+    wait_for_langsmith_runs,
+)
 from .loader import load_scenarios
 from .report import (
     ApprovedBaseline,
     ReleaseItemAssessment,
     ReleaseReviewReport,
+    LangSmithTargetEvidence,
     build_release_report,
 )
-from .sync_dataset import sync_release_dataset
 
 
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
@@ -51,10 +58,16 @@ class ReleaseReviewService:
         scenario_root: Path | None = None,
         artifact_root: Path = Path(".data/evals/release_review"),
         load_scenarios_fn: Callable[[Path], tuple[Any, ...]] = load_scenarios,
-        settings_factory: Callable[[ReleaseReviewRequest, tuple[Any, ...]], ReleaseExperimentSettings] | None = None,
-        sync_dataset_fn: Callable[..., Any] = sync_release_dataset,
+        settings_factory: Callable[
+            [ReleaseReviewRequest, tuple[Any, ...]], ReleaseExperimentSettings
+        ]
+        | None = None,
+        sync_examples_fn: Callable[..., Any] = sync_langsmith_examples,
         experiment_runner: Callable[..., Any] = run_release_experiment,
-        score_auditor: Callable[..., tuple[ReleaseItemAssessment, ...]] = audit_release_scores,
+        wait_for_runs_fn: Callable[..., Any] = wait_for_langsmith_runs,
+        feedback_auditor: Callable[
+            ..., tuple[ReleaseItemAssessment, ...]
+        ] = audit_langsmith_feedback,
         baseline_loader: Callable[[Any], ApprovedBaseline | None] | None = None,
         monotonic_fn: Callable[[], float] = monotonic,
         progress: Callable[[dict[str, object]], None] | None = None,
@@ -64,9 +77,10 @@ class ReleaseReviewService:
         self.artifact_root = artifact_root
         self._load_scenarios = load_scenarios_fn
         self._settings_factory = settings_factory
-        self._sync_dataset = sync_dataset_fn
+        self._sync_examples = sync_examples_fn
         self._experiment_runner = experiment_runner
-        self._score_auditor = score_auditor
+        self._wait_for_runs = wait_for_runs_fn
+        self._feedback_auditor = feedback_auditor
         self._baseline_loader = baseline_loader
         self._monotonic = monotonic_fn
         self._progress = progress
@@ -76,7 +90,11 @@ class ReleaseReviewService:
         return cls(artifact_root=artifact_root)
 
     def run(self, request: ReleaseReviewRequest) -> ReleaseReviewReport:
-        if self.client is None or self.scenario_root is None or self._settings_factory is None:
+        if (
+            self.client is None
+            or self.scenario_root is None
+            or self._settings_factory is None
+        ):
             raise RuntimeError("release review run service is not fully configured")
         started = self._monotonic()
         scenarios = self._load_scenarios(self.scenario_root)
@@ -89,32 +107,54 @@ class ReleaseReviewService:
                 }
             )
         settings = self._settings_factory(request, selected)
-        self._sync_dataset(self.client, selected, settings.git_commit)
+        sync = self._sync_examples(self.client, scenarios, settings.git_commit)
+        selected_ids = {scenario.id for scenario in selected}
+        selected_bindings = tuple(
+            binding for binding in sync.bindings if binding.scenario_id in selected_ids
+        )
         preflight_elapsed = self._monotonic() - started
         if preflight_elapsed > 30:
             raise TimeoutError("release review preflight exceeded 30 seconds")
         if self._progress is None:
-            experiment = self._experiment_runner(self.client, selected, settings)
+            experiment = _resolve(
+                self._experiment_runner(self.client, selected, settings)
+            )
         else:
-            experiment = self._experiment_runner(
-                self.client,
-                selected,
-                settings,
-                progress=self._progress,
+            experiment = _resolve(
+                self._experiment_runner(
+                    self.client,
+                    selected,
+                    settings,
+                    progress=self._progress,
+                )
+            )
+        if experiment.dataset_id != sync.dataset_id:
+            raise RuntimeError("Release Review Experiment targeted the wrong Dataset")
+        if set(experiment.example_ids) != {
+            binding.example_id for binding in selected_bindings
+        }:
+            raise RuntimeError(
+                "Release Review Experiment Examples do not match Git bindings"
             )
         self.client.flush()
-        assessments = self._score_auditor(self.client, experiment, selected)
-        elapsed = self._monotonic() - started
-        additional = (
-            ("release_review:global_timeout",) if elapsed > 570 else ()
+        completeness = self._wait_for_runs(
+            self.client,
+            experiment_id=experiment.experiment_id,
+            example_ids=experiment.example_ids,
         )
+        assessments = self._feedback_auditor(
+            completeness,
+            selected_bindings,
+            selected,
+            experiment.cleanup_results,
+        )
+        elapsed = self._monotonic() - started
+        additional = ("release_review:global_timeout",) if elapsed > 570 else ()
         baseline = self._baseline_loader(self.client) if self._baseline_loader else None
         report = build_release_report(
             release_id=request.release_id,
-            experiment_run_id=(
-                experiment.dataset_run_id or experiment.run_name
-            ),
-            experiment_run_url=experiment.dataset_run_url,
+            experiment_run_id=experiment.experiment_id,
+            experiment_run_url=experiment.experiment_url,
             model=settings.model,
             git_commit=settings.git_commit,
             catalog_generation=settings.catalog_generation,
@@ -123,6 +163,18 @@ class ReleaseReviewService:
             baseline=baseline,
             elapsed_seconds=elapsed,
             additional_infrastructure=additional,
+            langsmith_evidence=LangSmithTargetEvidence(
+                target="release_review",
+                dataset_id=experiment.dataset_id,
+                project_id=experiment.experiment_id,
+                experiment_id=experiment.experiment_id,
+                active_example_ids=experiment.example_ids,
+                root_run_ids=completeness.root_run_ids,
+                required_feedback=REQUIRED_RELEASE_FEEDBACK_KEYS,
+                feedback=completeness.feedback,
+                native_tree_complete=completeness.native_tree_complete,
+                infrastructure_failures=additional,
+            ),
         )
         self._write_report(report)
         if self._progress is not None:
@@ -189,3 +241,15 @@ def _select_scenarios(
     if missing:
         raise ValueError(f"unknown release scenarios: {', '.join(missing)}")
     return tuple(by_id[scenario_id] for scenario_id in scenario_ids)
+
+
+def _resolve(value: Any) -> Any:
+    if not inspect.isawaitable(value):
+        return value
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(value)
+    raise RuntimeError(
+        "synchronous ReleaseReviewService cannot run inside an event loop"
+    )

@@ -34,6 +34,7 @@ from .evaluators import (
     REQUIRED_WORKFLOW_FEEDBACK_KEYS,
     langsmith_evaluators,
 )
+from evals.release_review.report import LangSmithTargetEvidence
 
 
 class WorkflowInvocationFactory(Protocol):
@@ -94,7 +95,28 @@ class WorkflowTreeRequirement:
     repair_generations: tuple[tuple[str, int], ...] = ()
 
 
-def inspect_workflow_dataset(client: Any) -> tuple[Any, tuple[WorkflowDatasetExample, ...], dict[str, Any]]:
+def workflow_regression_equivalence_evidence(
+    result: WorkflowExperimentResult,
+    completeness: WorkflowCompletenessResult,
+) -> LangSmithTargetEvidence:
+    """Project only persisted Workflow Regression facts into Gate P3."""
+
+    return LangSmithTargetEvidence(
+        target="workflow_regression",
+        dataset_id=result.dataset_id,
+        project_id=result.experiment_id,
+        experiment_id=result.experiment_id,
+        active_example_ids=result.example_ids,
+        root_run_ids=completeness.run_ids,
+        required_feedback=REQUIRED_WORKFLOW_FEEDBACK_KEYS,
+        feedback=completeness.feedback,
+        native_tree_complete=True,
+    )
+
+
+def inspect_workflow_dataset(
+    client: Any,
+) -> tuple[Any, tuple[WorkflowDatasetExample, ...], dict[str, Any]]:
     dataset = client.read_dataset(dataset_name=WORKFLOW_REGRESSION_DATASET)
     raw_examples = []
     originals: dict[str, Any] = {}
@@ -142,9 +164,7 @@ def project_workflow_result(
     plan = PersistedAdmittedWorkflowPlan.model_validate_json(
         json.dumps(state.get("admitted_plan"))
     )
-    dependencies = {
-        node.node_id: tuple(node.depends_on) for node in plan.nodes
-    }
+    dependencies = {node.node_id: tuple(node.depends_on) for node in plan.nodes}
     order = _topological_order(dependencies)
     profile_by_node = {
         node.node_id: (
@@ -197,9 +217,7 @@ def project_workflow_result(
         "terminal_status": terminal_status,
         "plan": {
             "node_ids": [node.node_id for node in plan.nodes],
-            "dependencies": {
-                key: list(value) for key, value in dependencies.items()
-            },
+            "dependencies": {key: list(value) for key, value in dependencies.items()},
         },
         "trajectory": trajectory,
         "result_artifact_refs": list(state["result_artifact_refs"][:128]),
@@ -298,7 +316,10 @@ async def run_workflow_experiment(
                     )
                 ),
                 repair_generations=(
-                    tuple((node_id, 1) for node_id in example.outputs.evaluation_contract.repair_scope)
+                    tuple(
+                        (node_id, 1)
+                        for node_id in example.outputs.evaluation_contract.repair_scope
+                    )
                     if example.inputs.case_type == "minimal_repair"
                     else ()
                 ),
@@ -355,9 +376,7 @@ def audit_native_workflow_tree(
     problems: dict[str, tuple[str, ...]] = {}
     root_ids: list[str] = []
     for example_id in example_ids:
-        requirement = (requirements or {}).get(
-            example_id, WorkflowTreeRequirement()
-        )
+        requirement = (requirements or {}).get(example_id, WorkflowTreeRequirement())
         item: list[str] = []
         roots = roots_by_example[example_id]
         if duplicate_ids:
@@ -412,7 +431,9 @@ def audit_native_workflow_tree(
                 item,
             )
             workers = [
-                run for run in graph_subtree if _field(run, "name") == "WorkflowWorkerBranch"
+                run
+                for run in graph_subtree
+                if _field(run, "name") == "WorkflowWorkerBranch"
             ]
             if not workers:
                 item.append("missing WorkflowWorkerBranch")
@@ -445,9 +466,7 @@ def audit_native_workflow_tree(
                     and _digest(_metadata(run).get("workflow_branch_run_id"))
                 ]
                 if not matching:
-                    item.append(
-                        f"missing repair generation {node_id}:g{generation}"
-                    )
+                    item.append(f"missing repair generation {node_id}:g{generation}")
             for node_id, generation in requirement.worker_generations:
                 matching = [
                     run
@@ -490,7 +509,11 @@ def audit_native_workflow_tree(
                 for run in tool_runs
             ):
                 item.append("governed tool outside execute_tool subtree")
-            shadow_names = {"deep_research.workflow", "agent.runtime", "workflow.worker"}
+            shadow_names = {
+                "deep_research.workflow",
+                "agent.runtime",
+                "workflow.worker",
+            }
             if any(_field(run, "name") in shadow_names for run in graph_subtree):
                 item.append("canonical OTel shadow graph detected")
         if item:
@@ -588,7 +611,9 @@ def _audit_remote(
             if feedback[example_id].get(key) is None
         ]
         if missing:
-            problems.setdefault(example_id, []).append("missing feedback " + repr(missing))
+            problems.setdefault(example_id, []).append(
+                "missing feedback " + repr(missing)
+            )
     if problems:
         return None, problems
     return WorkflowCompletenessResult(audit.run_ids, feedback), {}
@@ -708,4 +733,5 @@ __all__ = [
     "run_workflow_example",
     "run_workflow_experiment",
     "wait_for_workflow_experiment_completeness",
+    "workflow_regression_equivalence_evidence",
 ]

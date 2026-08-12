@@ -21,6 +21,7 @@ from evals.langsmith_runtime_regression.evaluators import (
     REQUIRED_LANGSMITH_FEEDBACK_KEYS,
     langsmith_evaluator_output,
 )
+from evals.release_review.report import LangSmithTargetEvidence
 
 
 class RuntimeRegressionRuntime(Protocol):
@@ -62,6 +63,25 @@ class NativeGraphCompletenessResult:
     complete: bool
     run_ids: tuple[str, ...]
     problems: dict[str, tuple[str, ...]]
+
+
+def runtime_regression_equivalence_evidence(
+    result: LangSmithRuntimeRegressionResult,
+    completeness: LangSmithCompletenessResult,
+) -> LangSmithTargetEvidence:
+    """Project only persisted Runtime Regression facts into Gate P3."""
+
+    return LangSmithTargetEvidence(
+        target="runtime_regression",
+        dataset_id=result.dataset_id,
+        project_id=result.experiment_id,
+        experiment_id=result.experiment_id,
+        active_example_ids=result.example_ids,
+        root_run_ids=completeness.run_ids,
+        required_feedback=REQUIRED_LANGSMITH_FEEDBACK_KEYS,
+        feedback=completeness.feedback,
+        native_tree_complete=True,
+    )
 
 
 def inspect_langsmith_runtime_regression_dataset(
@@ -115,9 +135,7 @@ async def run_langsmith_runtime_regression_experiment(
 
     async def target(inputs: dict[str, Any]) -> dict[str, Any]:
         current_run = _current_run_tree()
-        example_id = str(
-            _field(current_run, "reference_example_id") or ""
-        )
+        example_id = str(_field(current_run, "reference_example_id") or "")
         if (
             current_run is None
             or not _field(current_run, "id")
@@ -147,8 +165,7 @@ async def run_langsmith_runtime_regression_experiment(
         finally:
             if runtime.close() is False:
                 raise RuntimeError(
-                    f"LangSmith Experiment runtime for {example_id!r} "
-                    "failed to close"
+                    f"LangSmith Experiment runtime for {example_id!r} failed to close"
                 )
 
     native = await client.aevaluate(
@@ -231,9 +248,7 @@ def wait_for_langsmith_runtime_regression_completeness(
             if remaining <= 0:
                 break
             sleep(min(poll_interval_seconds, remaining))
-    raise RuntimeError(
-        "LangSmith Experiment incomplete: " + repr(latest_problems)
-    )
+    raise RuntimeError("LangSmith Experiment incomplete: " + repr(latest_problems))
 
 
 def audit_native_graph_tree(
@@ -253,6 +268,31 @@ def audit_native_graph_tree(
         if example_id in roots_by_example and _field(run, "parent_run_id") is None:
             roots_by_example[example_id].append(run)
 
+    claimed_run_ids: set[str] = set()
+    for roots in roots_by_example.values():
+        if len(roots) != 1:
+            continue
+        root_id = str(_field(roots[0], "id"))
+        claimed_run_ids.add(root_id)
+        claimed_run_ids.update(
+            str(_field(run, "id"))
+            for run in runs
+            if _is_descendant(run, ancestor_id=root_id, runs_by_id=runs_by_id)
+        )
+    native_names = {
+        "AssistantTurnGraph",
+        "assistant",
+        "compose_response",
+        "execute_tool",
+        "llm.chat",
+    }
+    detached_native_runs = [
+        run
+        for run in runs
+        if _field(run, "name") in native_names
+        and str(_field(run, "id")) not in claimed_run_ids
+    ]
+
     problems: dict[str, tuple[str, ...]] = {}
     root_ids: list[str] = []
     for example_id in example_ids:
@@ -260,6 +300,8 @@ def audit_native_graph_tree(
         matching_roots = roots_by_example[example_id]
         if duplicate_run_ids:
             item_problems.append("duplicate run id")
+        if detached_native_runs:
+            item_problems.append("detached native graph run detected")
         if len(matching_roots) != 1:
             item_problems.append(f"root_run_count={len(matching_roots)}")
             problems[example_id] = tuple(item_problems)
@@ -286,14 +328,10 @@ def audit_native_graph_tree(
             for run in runs
             if _is_descendant(run, ancestor_id=root_id, runs_by_id=runs_by_id)
         ]
-        if any(
-            str(_field(run, "trace_id") or "") != root_trace_id
-            for run in subtree
-        ):
+        if any(str(_field(run, "trace_id") or "") != root_trace_id for run in subtree):
             item_problems.append("trace mismatch")
         if any(
-            str(_field(run, "reference_example_id") or "")
-            not in ("", example_id)
+            str(_field(run, "reference_example_id") or "") not in ("", example_id)
             for run in subtree
         ):
             item_problems.append("reference example mismatch")
@@ -368,9 +406,7 @@ def audit_native_graph_tree(
                 )
             ]
             valid_llm_runs = [
-                run
-                for run in nested_llm_runs
-                if _field(run, "run_type") == "llm"
+                run for run in nested_llm_runs if _field(run, "run_type") == "llm"
             ]
             for llm_run in nested_llm_runs:
                 if _field(llm_run, "run_type") != "llm":
@@ -381,9 +417,7 @@ def audit_native_graph_tree(
                     )
             if not valid_llm_runs:
                 item_problems.append("missing llm.chat in graph subtree")
-            nested_llm_ids = {
-                str(_field(run, "id")) for run in nested_llm_runs
-            }
+            nested_llm_ids = {str(_field(run, "id")) for run in nested_llm_runs}
             if any(
                 _field(run, "name") == "llm.chat"
                 and str(_field(run, "id")) not in nested_llm_ids
@@ -406,9 +440,7 @@ def audit_native_graph_tree(
                         f"run_type={_field(execute_tool, 'run_type')!r}, "
                         "expected 'chain'"
                     )
-            tool_runs = [
-                run for run in subtree if _field(run, "run_type") == "tool"
-            ]
+            tool_runs = [run for run in subtree if _field(run, "run_type") == "tool"]
             for tool_run in tool_runs:
                 if not any(
                     _is_descendant(
@@ -418,9 +450,7 @@ def audit_native_graph_tree(
                     )
                     for execute_tool_id in execute_tool_ids
                 ):
-                    item_problems.append(
-                        "governed tool outside execute_tool subtree"
-                    )
+                    item_problems.append("governed tool outside execute_tool subtree")
                     break
         if item_problems:
             problems[example_id] = tuple(item_problems)

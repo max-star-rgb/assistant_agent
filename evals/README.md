@@ -1,6 +1,6 @@
 # Eval、Runtime Regression 与 Release Review
 
-Last updated: 2026-08-12
+Last updated: 2026-08-13
 
 ## Authority contract
 
@@ -22,7 +22,7 @@ Last updated: 2026-08-12
 | --- | --- | --- |
 | pytest | 确定性代码契约是否成立 | `mock/local/offline`，见 `tests/README.md` |
 | system eval | 一个真实 Provider、Tool、Context、Memory 或本地模型节点是否可用 | 每项独立显式授权，产物写入 `.data/evals/system/` |
-| Runtime Regression | 已人工确认的日常失败在当前生产 Runtime 上是否复现或修复 | Langfuse 或 LangSmith 各自保存 Dataset、Experiment 与评分；真实运行显式授权 |
+| Runtime Regression | 已人工确认的日常失败在当前生产 Runtime 上是否复现或修复 | LangSmith 保存 Dataset、Experiment 与 Feedback；迁移期旧 Langfuse 链路冻结兼容，真实运行显式授权 |
 | Release Review | 待发布 Agent 是否在关键任务中选对、调用并正确使用工具 | 真实主模型；Decision 使用确定性执行后端，Staging 使用隔离资源 |
 
 Release Review 只在上线前由 operator 显式触发，目标是在 10 分钟内形成可审核证据和风险摘要；它是
@@ -40,10 +40,11 @@ SQLite 等受控能力可以按脚本契约独立运行。禁止以 mock fallbac
 
 Git 是案例事实源。所有案例位于 `evals/release_review/scenarios/*.yaml`，严格 schema 位于
 `evals/release_review/contracts.py`；未知字段、非法断言、缺失 fixture 或不合规 repetitions 会在运行前
-失败。固定 Langfuse Dataset 名为 `assistant-agent-release-review`。`--sync` 将 Git 案例展开成 Dataset
-item；同一 Git-owned 旧 item 会被归档，Langfuse UI 不能新增案例、扩大权限或覆盖 Git oracle。
+失败。固定 LangSmith Dataset 名为 `assistant-agent-release-review`。`--sync` 将 Git 案例展开成稳定 ID 的
+Example；同一 Git-owned 旧 Example 会标为 inactive，非 Git owner 的 Example 不会被改写，LangSmith UI
+不能扩大权限或覆盖 Git oracle。
 
-每次运行只创建一个 Langfuse 原生 Dataset Run / Experiment：
+每次运行只创建一个 LangSmith 原生 Project / Experiment：
 
 - **Decision**：运行真实模型和生产工具目录，但通过注入的 `ToolExecutionBackend` 返回 YAML 中的确定性
   fixture。它检验 Agent 是否选对/漏用工具、参数、顺序、失败后的行为和回答 grounding；不注册模拟
@@ -54,22 +55,23 @@ item；同一 Git-owned 旧 item 会被归档，Langfuse UI 不能新增案例�
   高德案例只允许只读调用。Staging 禁止 fixture 和静默 mock fallback。
 
 `risk=critical` 的 Decision 案例必须 `repetitions: 2`；其他案例为 1 或 2。当前默认并发为 4，Staging
-并发上限为 2；preflight 预算 30 秒，全局预算 570 秒。超时、Langfuse 不可达、凭据、资源、Trace 或
-Score 缺失都是 infrastructure failure，不能写成 Agent 质量失败。
+并发上限为 2；preflight 预算 30 秒，全局预算 570 秒。超时、LangSmith 不可达、凭据、资源、Run 或
+Feedback 缺失都是 infrastructure failure，不能写成 Agent 质量失败。
 
 ## Score 与发布判断
 
 每个 Dataset item 必须落库三个相互独立的 BOOLEAN task-level Score：
 
 - `assistant_agent.quality.task_conformance`：本地确定性规则写入，检查工具、参数、顺序和状态；
-- `assistant_agent.quality.grounding`：Langfuse 原生 Experiment Evaluator 判断回答是否忠于证据；
-- `assistant_agent.quality.response_quality`：Langfuse 原生 Experiment Evaluator 判断回答质量。
+- `assistant_agent.quality.grounding`：LangSmith Experiment Evaluator 判断回答是否忠于证据；
+- `assistant_agent.quality.response_quality`：LangSmith Experiment Evaluator 判断回答质量。
 
 Staging 的单工具 observation 可以额外拥有
-`assistant_agent.quality.tool_result_quality`，但它不替代上述三项。runner 会通过 Langfuse observation 与
-score API 回查完整性；SDK 内存结果不算落库证据。每个 item 的远端 Trace 还必须形成
-`experiment-item-run → experiment-item-task → agent.runtime → llm.chat` 的同 Trace 父子链；缺少 Runtime
-子树、出现孤立 Runtime Trace 或缺少真实模型 generation 都属于 infrastructure failure。报告分别列出
+`assistant_agent.quality.tool_result_quality`，但它不替代上述三项。runner 会通过 LangSmith runs 与
+Feedback API 回查完整性；SDK row、target output、`astream` event 和本地 trace store 都不算落库证据。
+每个 Example 的远端树必须形成 `experiment task → AssistantTurnGraph → assistant → llm.chat`，governed
+Tool 必须位于 `execute_tool` 子树；缺少、脱离 parent/trace/reference 关联或缺少真实模型 run 都属于
+infrastructure failure。报告分别列出
 critical/high、重复运行不一致和 infrastructure 风险，不计算总 reward，也不自动做发布决定。
 
 operator 可把人工决定写入本地审计产物：
@@ -119,16 +121,16 @@ metadata。CLI 必须等每个 item 的 `assistant_agent.quality.response_qualit
 超时、缺分或 Trace 层级不完整属于 infrastructure failure。
 `--inspect` 可只读查看 active item 数量。
 
-### M1 LangSmith Runtime Regression
+### LangSmith Runtime Regression
 
 M1 已将 LangSmith Runtime Regression 改为直接评估实际 `AssistantTurnGraph`；它不再是从
 canonical OTel 重建的平行 graph tree。在整体评测迁移完成前，LangSmith 与 Langfuse 仍各自拥有名为
 `assistant-agent-runtime-regressions` 的固定 Dataset，但它们是独立资源，不自动同步 Item/Example、
 Experiment、Score 或 Feedback；operator 在哪个 UI 沉淀案例，就用对应 runner 重跑。
 
-Langfuse Release Review、webhook、runner、Score 和相关配置在 M1 继续保留，不得把 Runtime
-Regression 的原生 LangSmith tree 扩大声称为 Release Review 已迁移。Release Review 的
-LangSmith 等价验收和 Langfuse 退出属于 M5。
+Release Review runner 已在 M5 切到 LangSmith actual graph target；旧 Langfuse webhook、runner、Score 和
+相关配置仅冻结兼容，删除仍需 P3 真实等价证据与 P4 operator retirement approval，不得在离线实现阶段
+宣称平台退出完成。
 
 在 LangSmith 的 Tracing Project 中人工确认异常后，把根 run 加入固定 Dataset；也可以在 Dataset UI
 手工新增 Example。Example 必须保持对象结构：
@@ -206,6 +208,17 @@ join、required verifier 和 repair generation；astream event 不能伪造成 L
 `WorkflowGraphHost` cutover 未提供 runner composition，因此实现状态只能记为 offline prework；真实
 Dataset/Experiment/tree/四项 Feedback 的 operator evidence 保持 pending，`--run` 必须 fail-closed。
 
+### M5 LangSmith 等价 Gate
+
+三类 runner 统一输出 `LangSmithTargetEvidence`：Dataset、Project/Experiment、active Example、远端 root
+run、required Feedback、native tree 和 infrastructure failure。只有 Release Review、Runtime Regression、
+Workflow Regression 三份 evidence 都 `complete=true` 且零 infrastructure failure，聚合报告才会得到
+`langsmith_equivalence=approved`。离线 pytest 只验证该 fail-closed 规则及 fake client 的完整分页、parent、
+trace、reference 和 Feedback 审计；它不生成 P3 operator evidence。
+
+P3 仍需 operator 在 real mode 下分别运行三个 runner，并保留真实 Dataset/Project/Experiment/run ID。当前
+Workflow production host 尚不可用，故 P3 状态必须保持 pending，Task 11 的 Langfuse 删除不得开始。
+
 ## 本地运行顺序
 
 只读检查案例，不读取 `.env`、不联网：
@@ -214,7 +227,7 @@ Dataset/Experiment/tree/四项 Feedback 的 operator evidence 保持 pending，`
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_release_review.py --inspect
 ```
 
-配置本机 Langfuse 后同步 Dataset：
+配置本机 LangSmith 后同步 Dataset：
 
 ```bash
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_release_review.py --sync
@@ -229,12 +242,16 @@ MULTIMODAL_AGENT_PROVIDER_MODE=real \
   --allow-real-provider --allow-staging-side-effects
 ```
 
-可重复使用 `--scenario <id>` 选择子集。运行前必须确认真实主模型配置完整、Langfuse 可用、所需生产工具
+可重复使用 `--scenario <id>` 选择子集。运行前必须确认真实主模型配置完整、LangSmith 可用、所需生产工具
 已注册以及 Staging 资源可清理。runner 从服务端 `ProviderConfig` 自动取得并记录实际主模型；UI 和 CLI
 不得重复指定模型。结果写入 `.data/evals/release_review/<release-id>/report.{json,md}`；
 远程触发 receipt/log 位于其 `remote/` 子目录。产物、真实响应、凭据和用户数据均不得提交。
 
 ## Langfuse UI 触发
+
+本节是待 P3/P4 后删除的冻结兼容链路。它仍可用固定 webhook 启动同一个 Release Review CLI，但 CLI 的
+Dataset、Experiment、native tree 与 Feedback 事实源已经是 LangSmith；Langfuse UI/旧 Dataset Run 不再是
+Task10 等价验收依据。
 
 内部入口固定为 `POST /internal/evals/langfuse/release-review`。服务端只有在以下本机环境变量同时满足时
 接受触发：
@@ -276,6 +293,6 @@ URL；默认 Config 使用 `{}`，需要指定运行名时使用 `{"runName":"<s
 ## 修改与验证
 
 新增或修改案例时先运行 `--inspect`，再按 `tests/README.md` 运行
-`tests/tdd/release-review-native-experiment/`。变更 runner、同步、评分或 webhook 时，还要验证 Score 审计、
+`tests/tdd/native-langgraph-m5/test_langsmith_equivalence_gate.py`。变更 runner、同步、评分或 webhook 时，还要验证 Feedback 审计、
 幂等和固定命令边界。pytest 始终使用 mock/local/offline；只有 operator 明确执行上述正式命令时才允许
 真实调用。
