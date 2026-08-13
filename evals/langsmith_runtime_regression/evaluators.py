@@ -109,8 +109,8 @@ def runtime_regression_evaluator_rule_payloads(
                 "{{response}}"
             ),
             variable_mapping={
-                "request": "inputs.content",
-                "response": "outputs.content",
+                "request": "input.content",
+                "response": "output.content",
             },
             model_config_id=model_config_id,
             model_settings=safe_model_settings,
@@ -135,9 +135,9 @@ def runtime_regression_evaluator_rule_payloads(
                 "{{response}}\n\nRuntime evidence:\n{{evidence}}"
             ),
             variable_mapping={
-                "request": "inputs.content",
-                "response": "outputs.content",
-                "evidence": "outputs.evaluation_evidence",
+                "request": "input.content",
+                "response": "output.content",
+                "evidence": "output.evaluation_evidence",
             },
             model_config_id=model_config_id,
             model_settings=safe_model_settings,
@@ -161,9 +161,9 @@ def runtime_regression_evaluator_rule_payloads(
                 "{{baseline}}\n\nCurrent assistant response:\n{{response}}"
             ),
             variable_mapping={
-                "request": "inputs.content",
+                "request": "input.content",
                 "baseline": "reference.content",
-                "response": "outputs.content",
+                "response": "output.content",
             },
             model_config_id=model_config_id,
             model_settings=safe_model_settings,

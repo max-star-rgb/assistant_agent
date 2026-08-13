@@ -92,6 +92,22 @@ def test_runtime_evaluator_payloads_use_one_llm_judge_per_rule() -> None:
     assert len({schema["description"] for schema in schemas}) == 3
     assert all(0 < len(schema["title"]) <= 120 for schema in schemas)
     assert all(0 < len(schema["description"]) <= 500 for schema in schemas)
+    assert tuple(
+        payload["evaluators"][0]["structured"]["variable_mapping"]
+        for payload in payloads
+    ) == (
+        {"request": "input.content", "response": "output.content"},
+        {
+            "request": "input.content",
+            "response": "output.content",
+            "evidence": "output.evaluation_evidence",
+        },
+        {
+            "request": "input.content",
+            "baseline": "reference.content",
+            "response": "output.content",
+        },
+    )
     assert (
         tuple(
             next(iter(payload["evaluators"][0]["structured"]["schema"]["properties"]))
