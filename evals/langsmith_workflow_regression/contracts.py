@@ -97,6 +97,9 @@ class WorkflowExampleMetadata(_StrictModel):
     active: bool
     risk: Literal["critical", "high", "medium", "low"]
     source_trace_id: str | None = Field(default=None, min_length=1, max_length=512)
+    owner: Literal["git:assistant_agent"] | None = None
+    case_id: str | None = Field(default=None, min_length=1, max_length=160)
+    git_commit: str | None = Field(default=None, min_length=1, max_length=160)
 
 
 class WorkflowDatasetExample(_StrictModel):

@@ -1,0 +1,106 @@
+[
+  {
+    "id": "parallel_join_v1",
+    "inputs": {
+      "schema_version": "workflow_experiment_input_v1",
+      "case_type": "parallel_join",
+      "workflow_id": "git-parallel-join",
+      "submission": {
+        "workflow_type": "deep_research",
+        "objective": "并行研究两个独立事实并汇总为报告。",
+        "deliverables": ["report"],
+        "constraints": ["报告必须覆盖两个独立研究分支。"],
+        "inputs": {"schema_version": "deep_research_inputs_v2", "research_questions": ["事实 A 是什么？", "事实 B 是什么？"]},
+        "requested_budget": {"model_calls": 12, "tool_calls": 4, "workflow_quanta": 20, "deadline_seconds": 600},
+        "durability_reasons": ["parallel_join_regression"],
+        "seed_artifact_refs": [],
+        "idempotency_key": "parallel-join-v1"
+      },
+      "truncated": false
+    },
+    "outputs": {
+      "terminal_status": "completed",
+      "plan": {"node_ids": ["research_a", "research_b", "synthesize"], "dependencies": {"research_a": [], "research_b": [], "synthesize": ["research_a", "research_b"]}},
+      "evaluation_contract": {"deliverables": {"report": "synthesize"}, "constraint_ids": ["cover_both_branches"], "repair_scope": [], "resume_equivalent": true}
+    },
+    "metadata": {"active": true, "risk": "high", "source_trace_id": null}
+  },
+  {
+    "id": "constraint_verifier_v1",
+    "inputs": {
+      "schema_version": "workflow_experiment_input_v1",
+      "case_type": "constraint_verifier",
+      "workflow_id": "git-constraint-verifier",
+      "submission": {
+        "workflow_type": "deep_research",
+        "objective": "研究一个事实并由独立验证节点检查约束。",
+        "deliverables": ["report"],
+        "constraints": ["每项结论必须经过验证。"],
+        "inputs": {"schema_version": "deep_research_inputs_v2", "research_questions": ["待验证事实是什么？"]},
+        "requested_budget": {"model_calls": 12, "tool_calls": 4, "workflow_quanta": 20, "deadline_seconds": 600},
+        "durability_reasons": ["constraint_verifier_regression"],
+        "seed_artifact_refs": [],
+        "idempotency_key": "constraint-verifier-v1"
+      },
+      "truncated": false
+    },
+    "outputs": {
+      "terminal_status": "completed",
+      "plan": {"node_ids": ["research", "verify"], "dependencies": {"research": [], "verify": ["research"]}},
+      "evaluation_contract": {"deliverables": {"report": "verify"}, "constraint_ids": ["verified_claims"], "repair_scope": [], "resume_equivalent": true}
+    },
+    "metadata": {"active": true, "risk": "critical", "source_trace_id": null}
+  },
+  {
+    "id": "minimal_repair_v1",
+    "inputs": {
+      "schema_version": "workflow_experiment_input_v1",
+      "case_type": "minimal_repair",
+      "workflow_id": "git-minimal-repair",
+      "submission": {
+        "workflow_type": "deep_research",
+        "objective": "并行研究后仅返工验证失败的分支。",
+        "deliverables": ["report"],
+        "constraints": ["返工不得重跑无关分支。"],
+        "inputs": {"schema_version": "deep_research_inputs_v2", "research_questions": ["分支 A", "分支 B"]},
+        "requested_budget": {"model_calls": 18, "tool_calls": 6, "workflow_quanta": 30, "deadline_seconds": 900},
+        "durability_reasons": ["minimal_repair_regression"],
+        "seed_artifact_refs": [],
+        "idempotency_key": "minimal-repair-v1"
+      },
+      "truncated": false
+    },
+    "outputs": {
+      "terminal_status": "completed",
+      "plan": {"node_ids": ["research_a", "research_b", "verify"], "dependencies": {"research_a": [], "research_b": [], "verify": ["research_a", "research_b"]}},
+      "evaluation_contract": {"deliverables": {"report": "verify"}, "constraint_ids": ["minimal_repair"], "repair_scope": ["research_a"], "resume_equivalent": true}
+    },
+    "metadata": {"active": true, "risk": "critical", "source_trace_id": null}
+  },
+  {
+    "id": "interrupt_resume_equivalence_v1",
+    "inputs": {
+      "schema_version": "workflow_experiment_input_v1",
+      "case_type": "interrupt_resume_equivalence",
+      "workflow_id": "git-interrupt-resume",
+      "submission": {
+        "workflow_type": "deep_research",
+        "objective": "遇到缺失输入时请求用户补充，恢复后完成报告。",
+        "deliverables": ["report"],
+        "constraints": ["必须使用恢复输入完成同一 Workflow thread。"],
+        "inputs": {"schema_version": "deep_research_inputs_v2", "research_questions": ["需要用户补充的信息是什么？"]},
+        "requested_budget": {"model_calls": 12, "tool_calls": 4, "workflow_quanta": 20, "deadline_seconds": 600},
+        "durability_reasons": ["interrupt_resume_regression"],
+        "seed_artifact_refs": [],
+        "idempotency_key": "interrupt-resume-v1"
+      },
+      "truncated": false
+    },
+    "outputs": {
+      "terminal_status": "completed",
+      "plan": {"node_ids": ["request_input", "complete_report"], "dependencies": {"request_input": [], "complete_report": ["request_input"]}},
+      "evaluation_contract": {"deliverables": {"report": "complete_report"}, "constraint_ids": ["same_thread_resume"], "repair_scope": [], "resume_equivalent": true}
+    },
+    "metadata": {"active": true, "risk": "critical", "source_trace_id": null}
+  }
+]

@@ -162,7 +162,8 @@ For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
   LangSmith client；`--preflight`/`--run` 必须显式允许 real Provider 与 Workflow 副作用（兼容
   `--allow-runtime-side-effects`），可用 `--env-file` 加载未跟踪配置，并检查远端 Dataset、隔离 artifact、
   shared official SQLite saver 与 production `WorkflowGraphHost` composition readiness。`--run` 直接执行
-  production compiled graph，并等待真实 native tree 与四项 Feedback 完整。
+  production compiled graph，并等待真实 native tree 与四项 Feedback 完整且全部通过。固定 Dataset 不存在时
+  先显式运行 `--sync`，从 Git-owned `examples.json` 幂等创建四类严格 Example。
 - `scripts/run_improvement_lab.py`: offline, non-mutating improvement proposal runner.
 
 ## Specialized integrations

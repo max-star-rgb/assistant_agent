@@ -390,6 +390,10 @@ class WorkflowGraphHost:
         submission: WorkflowSubmission,
         ingress_trace_id: str | None = None,
         ingress_parent_span_id: str | None = None,
+        resume_values_factory: Callable[
+            [tuple[Any, ...]], dict[str, dict[str, str]]
+        ]
+        | None = None,
     ) -> Any:
         """Run one submission through this host's compiled production graph.
 
@@ -448,6 +452,35 @@ class WorkflowGraphHost:
                 context=context,
             )
             await self._commit_projection(result.final_state)
+            resume_count = 0
+            while result.status == "interrupted" and resume_values_factory is not None:
+                resume_count += 1
+                if resume_count > 4:
+                    raise WorkflowGraphHostError(
+                        "workflow_eval_resume_limit",
+                        "Workflow exceeded the controlled resume limit.",
+                    )
+                values = resume_values_factory(result.interrupts)
+                expected = {item.action_ref for item in result.interrupts}
+                if set(values) != expected:
+                    raise WorkflowGraphHostError(
+                        "workflow_eval_resume_incomplete",
+                        "Controlled resume must answer every pending action.",
+                    )
+                resume_run_id = "workflow-resume:" + secrets.token_hex(16)
+                resume_identity = self._execution_identity(
+                    bundle,
+                    run_id=resume_run_id,
+                )
+                result = await self._graph_app.aresume(
+                    identity=resume_identity,
+                    context=self._context(
+                        bundle,
+                        invocation_token=_token(resume_run_id),
+                    ),
+                    resume=WorkflowResume(values_by_action_ref=values),
+                )
+                await self._commit_projection(result.final_state)
             return result
         finally:
             async with self._schedule_lock:

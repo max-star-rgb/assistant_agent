@@ -29,6 +29,7 @@ from .contracts import (
     WorkflowReferenceOutput,
 )
 from .evaluators import REQUIRED_WORKFLOW_FEEDBACK_KEYS
+from .dataset import load_git_workflow_examples, sync_workflow_examples
 from .experiment import (
     DirectWorkflowInvocation,
     WorkflowExperimentSettings,
@@ -102,11 +103,24 @@ class ProductionWorkflowExperimentComposition:
         )
 
         async def invoke():
+            resume_values_factory = None
+            if example.case_type == "interrupt_resume_equivalence":
+                def controlled_resume_values(interrupts):
+                    return {
+                        item.action_ref: {
+                            field: "operator-provided-evaluation-input"
+                            for field in item.required_fields
+                        }
+                        for item in interrupts
+                    }
+
+                resume_values_factory = controlled_resume_values
             result = await self._workflow_host.arun_submission(
                 identity=identity,
                 ingress_run_id=ingress_run_id,
                 submission=submission,
                 ingress_trace_id=ingress_run_id,
+                resume_values_factory=resume_values_factory,
             )
             if example.case_type == "interrupt_resume_equivalence":
                 # The equivalence fact is earned only when this invocation
@@ -155,6 +169,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     action = parser.add_mutually_exclusive_group(required=True)
     action.add_argument("--inspect", action="store_true")
+    action.add_argument("--sync", action="store_true")
     action.add_argument("--preflight", action="store_true")
     action.add_argument("--run", action="store_true")
     parser.add_argument("--run-name")
@@ -172,6 +187,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.inspect:
+        examples = load_git_workflow_examples()
         _print(
             {
                 "action": "inspect",
@@ -179,10 +195,42 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "dataset_name": WORKFLOW_REGRESSION_DATASET,
                 "case_types": list(_CASE_TYPES),
                 "feedback_keys": list(REQUIRED_WORKFLOW_FEEDBACK_KEYS),
+                "example_count": len(examples),
+                "example_ids": [item.id for item in examples],
                 "operator_evidence": "pending",
             }
         )
         return 0
+
+    if args.sync:
+        if not args.no_env_file:
+            load_env_file(args.env_file, override=False)
+        client = None
+        try:
+            client = _langsmith_client()
+            result = sync_workflow_examples(
+                client,
+                load_git_workflow_examples(),
+                git_commit=_git_commit(),
+            )
+            _print(
+                {
+                    "action": "sync",
+                    "backend": "langsmith",
+                    "dataset_name": WORKFLOW_REGRESSION_DATASET,
+                    "dataset_id": result.dataset_id,
+                    "active_example_ids": list(result.active_example_ids),
+                    "archived_example_ids": list(result.archived_example_ids),
+                }
+            )
+            return 0
+        except Exception as exc:
+            _print(_infrastructure_failure(exc))
+            return 2
+        finally:
+            if client is not None:
+                client.flush()
+                client.close()
 
     action_name = "preflight" if args.preflight else "run"
     if not args.allow_real_provider:
@@ -258,6 +306,7 @@ async def _execute_async(config: ProviderConfig, args: argparse.Namespace) -> di
             requirements=result.tree_requirements,
             timeout_seconds=args.feedback_wait_timeout_seconds,
         )
+        _require_passing_feedback(completeness.feedback)
         return {
             "action": "run",
             "backend": "langsmith",
@@ -374,6 +423,18 @@ def _infrastructure_failure(exc: BaseException) -> dict[str, Any]:
         "reason_code": "preflight_failed",
         "persistent_gate": "pending",
     }
+
+
+def _require_passing_feedback(feedback: dict[str, dict[str, Any]]) -> None:
+    failed = {
+        example_id: tuple(
+            key for key, score in scores.items() if score is not True
+        )
+        for example_id, scores in feedback.items()
+    }
+    failed = {key: value for key, value in failed.items() if value}
+    if failed:
+        raise RuntimeError(f"Workflow Experiment persisted false Feedback: {failed!r}")
 
 
 def _print(value: dict[str, object]) -> None:

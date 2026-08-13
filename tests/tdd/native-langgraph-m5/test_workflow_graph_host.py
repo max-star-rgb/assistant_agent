@@ -692,6 +692,52 @@ def test_graph_host_direct_invocation_uses_product_submission_and_persists_proje
     asyncio.run(exercise())
 
 
+def test_graph_host_direct_invocation_resumes_native_interrupt_with_new_run_id(
+    tmp_path,
+) -> None:
+    from assistant_agent.workflows.graph_host import WorkflowGraphHost
+
+    async def exercise() -> None:
+        host = await WorkflowGraphHost.open(
+            config=_config(tmp_path),
+            provider_registry={
+                "planner": _Planner(),
+                "worker": _BlockingWorker(),
+                "verifier": _Verifier(),
+            },
+            tool_registry=_registry(),
+        )
+        try:
+            seen = []
+
+            def resume_values(interrupts):
+                seen.extend(interrupts)
+                return {
+                    item.action_ref: {field: "operator-sentinel" for field in item.required_fields}
+                    for item in interrupts
+                }
+
+            result = await host.arun_submission(
+                identity=_identity(),
+                ingress_run_id="langsmith-native-resume",
+                submission=_submission(),
+                resume_values_factory=resume_values,
+            )
+            assert result.status == "completed"
+            assert seen and all(item.action_ref for item in seen)
+            assert tuple(result.final_state["consumed_action_refs"]) == tuple(
+                sorted(item.action_ref for item in seen)
+            )
+            assert len(result.final_state["invocation_run_ids"]) == 2
+            assert result.final_state["invocation_run_ids"][0] != (
+                result.final_state["invocation_run_ids"][1]
+            )
+        finally:
+            await host.close()
+
+    asyncio.run(exercise())
+
+
 def test_recover_nonterminal_starts_graph_admission_without_checkpoint(tmp_path) -> None:
     """Startup recovery must execute an admitted graph row after a pre-checkpoint crash."""
 

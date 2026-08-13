@@ -439,3 +439,15 @@ def test_cli_preflight_requires_operator_flags_before_client(monkeypatch):
 
     with pytest.raises(SystemExit):
         workflow_cli.main(["--preflight", "--allow-real-provider"])
+
+
+def test_operator_gate_rejects_persisted_false_feedback() -> None:
+    with pytest.raises(RuntimeError, match="false Feedback"):
+        workflow_cli._require_passing_feedback(  # noqa: SLF001
+            {
+                "example-1": {
+                    key: key != REQUIRED_WORKFLOW_FEEDBACK_KEYS[-1]
+                    for key in REQUIRED_WORKFLOW_FEEDBACK_KEYS
+                }
+            }
+        )

@@ -214,7 +214,10 @@ join、required verifier 和 repair generation；astream event 不能伪造成 L
 `--run` 必须同时显式允许 real Provider 和 Workflow/Runtime side effect，并可通过 `--env-file` 加载未跟踪
 operator 配置；两者都会验证真实 Provider、远端 Dataset、LangSmith client 与 persistent production
 composition，不允许 mock fallback。`--run` 还会等待四项 Feedback 与 native tree 远端完整性；缺任一证据
-均 fail-closed。
+或任一持久 Feedback 为 false 均 fail-closed，不返回 `persistent_gate=complete`。四类严格 Example 由
+`evals/langsmith_workflow_regression/examples.json` 持有；首次 operator 运行前先显式执行 `--sync`，幂等创建或
+更新固定 Dataset 并归档过期的 Git-owned Example。interrupt/resume case 必须实际产生 native interrupt，
+通过 public `action_ref` 以同 thread、新 run ID 恢复到参考终态；未发生 resume 不能生成等价证据。
 
 ### M5 LangSmith 等价 Gate
 
