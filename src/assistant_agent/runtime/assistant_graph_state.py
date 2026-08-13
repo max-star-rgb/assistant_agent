@@ -809,6 +809,9 @@ def assistant_loop_state_from_turn_state(
         "memory_origin_run_id": str(persisted["memory_origin_run_id"]),
         "turn_provenance": str(persisted["turn_provenance"]),
         "continuation": str(persisted["continuation"]),
+        "memory_context": persisted["memory_context"],
+        "memory_commit": persisted["memory_commit"],
+        "response_publish": persisted["response_publish"],
         "graph_profile": str(persisted["profile"]),
         "outputs_by_step": outputs_by_step,
         "current_step_index": int(persisted["current_step_index"]),
@@ -953,6 +956,7 @@ def apply_assistant_turn_state_to_agent_state(
         )
     runtime_state.status = cast(Any, run["status"])
     runtime_state.memory_origin_run_id = str(persisted["memory_origin_run_id"])
+    runtime_state.memory_texts = memory_context_texts(persisted["memory_context"])
     runtime_state.turn_provenance = cast(Any, persisted["turn_provenance"])
     runtime_state.errors = [
         AgentError(

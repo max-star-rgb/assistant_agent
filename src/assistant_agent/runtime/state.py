@@ -55,6 +55,7 @@ class AgentState(BaseModel):
         exclude=True,
     )
     memory_context_prepared: bool = Field(default=False, exclude=True)
+    memory_texts: tuple[str, ...] = Field(default=(), exclude=True)
     memory_origin_run_id: str | None = Field(default=None, exclude=True)
     turn_provenance: TurnProvenance = Field(
         default="product_turn",

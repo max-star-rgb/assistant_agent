@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from typing import Any
 
 from assistant_agent.runtime.state import AgentState
-from assistant_agent.memory.plugins.contracts import MemoryContextItem
 from assistant_agent.context.models import (
     AssistantContextPack,
     ContextBudgetReport,
@@ -93,12 +92,9 @@ def build_assistant_context_pack(
         text = "\n".join(summaries)
         memory_source_ids = []
     else:
-        memories = _run_memory_items(state)
-        summaries = [memory.text for memory in memories if memory.text]
+        summaries = list(state.memory_texts)
         text = "\n".join(summaries)
-        memory_source_ids = [
-            memory.memory_id for memory in memories if memory.text
-        ]
+        memory_source_ids = []
     memory_blocks: list[dict[str, Any]] = []
     # Realtime task state remains runtime/session data. It is intentionally not
     # projected into the model context: the current request and conversation
@@ -363,19 +359,6 @@ def build_assistant_context_pack(
         source_counts=source_counts,
         budget=final_budget,
     )
-
-
-def _run_memory_items(state: AgentState) -> list[MemoryContextItem]:
-    """Read the Host-frozen run source before the mutable compatibility copy."""
-
-    snapshot = (
-        state.frozen_memory_context
-        if state.memory_context_prepared
-        else state.session_memory_snapshot
-    )
-    if snapshot is None:
-        return []
-    return list(snapshot.memories)
 
 
 def _conversation_context_text(request: UserRequest) -> str:
