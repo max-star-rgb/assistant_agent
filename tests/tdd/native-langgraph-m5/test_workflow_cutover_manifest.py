@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from contextlib import asynccontextmanager
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 import json
+from threading import Barrier
 from types import SimpleNamespace
 
 import pytest
@@ -329,6 +331,59 @@ def test_retirement_audit_requires_exact_operator_approval_binding(
         assert store.list_retirement_audits() == [forged]
     finally:
         store.close()
+
+
+@pytest.mark.parametrize("backend", ["memory", "sqlite"])
+def test_concurrent_retirement_audit_callers_return_the_persisted_fact(
+    tmp_path,
+    backend: str,
+) -> None:
+    """A losing same-manifest writer must return the winner's stored timestamp."""
+
+    from assistant_agent.workflows.cutover import (
+        WorkflowCutoverController,
+        WorkflowEngineCutoverManifest,
+    )
+
+    underlying = (
+        InMemoryWorkflowStore()
+        if backend == "memory"
+        else SQLiteWorkflowStore(tmp_path / "audit-race.sqlite3")
+    )
+    barrier = Barrier(2)
+
+    class RacingStore:
+        def __getattr__(self, name):
+            return getattr(underlying, name)
+
+        def record_retirement_audit(self, audit):
+            barrier.wait(timeout=5)
+            return underlying.record_retirement_audit(audit)
+
+    store = RacingStore()
+    manifest = WorkflowEngineCutoverManifest.model_validate(
+        _manifest_payload(phase="retired")
+    )
+    callers = (
+        WorkflowCutoverController(store=store, manifest=manifest),
+        WorkflowCutoverController(store=store, manifest=manifest),
+    )
+    timestamps = (
+        datetime(2030, 1, 10, tzinfo=timezone.utc),
+        datetime(2030, 1, 11, tzinfo=timezone.utc),
+    )
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [
+                executor.submit(controller.record_retirement_audit, now=now)
+                for controller, now in zip(callers, timestamps, strict=True)
+            ]
+            returned = [future.result(timeout=5) for future in futures]
+        persisted = underlying.list_retirement_audits()
+        assert len(persisted) == 1
+        assert returned == [persisted[0], persisted[0]]
+    finally:
+        underlying.close()
 
 
 def test_sqlite_retirement_probe_opens_existing_database_read_only(tmp_path) -> None:

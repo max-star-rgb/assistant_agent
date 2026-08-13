@@ -16,6 +16,7 @@
   - 持久 retirement audit 是否与 manifest revision、digest、operator approval ref 完全一致。
 - `ready=false` 使用固定、有界 reason code；状态不包含 workflow ID、owner 或用户正文，也不接受 caller boolean 代替 audit。
 - 新增 content-free `WorkflowRetirementAudit` 业务事实及 memory/SQLite 持久化：仅在 audit 之外的全部前置成立时写入；同一 manifest 幂等，不同 revision/digest/approval ref 冲突。
+- 同一 manifest 的并发 caller 由 Store 原子返回唯一持久 audit；竞争 loser 不返回自己未落库的时间戳。
 - SQLite 新增显式 `open_read_only()`；只读探针不建目录、不初始化 schema、不切换 journal，mutation fail closed。旧库没有 audit 表时返回 audit missing。
 - 同步当前 workflow owner authority，明确未 ready 不得移除 legacy execution path。
 
@@ -36,7 +37,7 @@ MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q \
 ```text
 MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q \
   tests/tdd/native-langgraph-m5/test_workflow_cutover_manifest.py
-22 passed in 17.90s
+24 passed
 
 python -m ruff check <本任务 Python 文件>
 All checks passed!

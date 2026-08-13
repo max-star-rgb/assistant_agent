@@ -261,8 +261,10 @@ class WorkflowCutoverController:
         record = getattr(self.store, "record_retirement_audit", None)
         if not callable(record):
             raise TypeError("workflow store does not support retirement audit facts")
-        record(audit)
-        return audit
+        persisted = record(audit)
+        if not isinstance(persisted, WorkflowRetirementAudit):
+            raise TypeError("workflow store returned an invalid retirement audit")
+        return persisted
 
     def legacy_drain_allowlist(self) -> frozenset[str]:
         """Freeze exact existing non-migratable legacy owners for the drain host."""

@@ -64,7 +64,9 @@ class WorkflowStore(Protocol):
     ) -> list[WorkflowEvent]: ...
     def latest_event_cursor(self, workflow_id: str) -> int: ...
     def list_cutover_bundles(self) -> list[WorkflowBundle]: ...
-    def record_retirement_audit(self, audit: WorkflowRetirementAudit) -> None: ...
+    def record_retirement_audit(
+        self, audit: WorkflowRetirementAudit
+    ) -> WorkflowRetirementAudit: ...
     def list_retirement_audits(self) -> list[WorkflowRetirementAudit]: ...
     def claim_ready_work_item(
         self,
@@ -390,7 +392,9 @@ class InMemoryWorkflowStore:
                 for workflow_id in sorted(self._bundles)
             ]
 
-    def record_retirement_audit(self, audit: WorkflowRetirementAudit) -> None:
+    def record_retirement_audit(
+        self, audit: WorkflowRetirementAudit
+    ) -> WorkflowRetirementAudit:
         """Persist one idempotent manifest-bound retirement approval."""
 
         with self._lock:
@@ -400,7 +404,7 @@ class InMemoryWorkflowStore:
                     self._retirement_audits[key].operator_approval_ref
                     == audit.operator_approval_ref
                 ):
-                    return
+                    return self._retirement_audits[key].model_copy(deep=True)
                 raise WorkflowRetirementAuditConflict(
                     "retirement_audit_manifest_conflict"
                 )
@@ -409,6 +413,7 @@ class InMemoryWorkflowStore:
                     "retirement_audit_manifest_conflict"
                 )
             self._retirement_audits[key] = audit.model_copy(deep=True)
+            return self._retirement_audits[key].model_copy(deep=True)
 
     def list_retirement_audits(self) -> list[WorkflowRetirementAudit]:
         with self._lock:

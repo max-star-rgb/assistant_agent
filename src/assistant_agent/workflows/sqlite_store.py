@@ -215,7 +215,9 @@ class SQLiteWorkflowStore:
             ).fetchall()
             return [_load_bundle_json(row[0]) for row in rows]
 
-    def record_retirement_audit(self, audit: WorkflowRetirementAudit) -> None:
+    def record_retirement_audit(
+        self, audit: WorkflowRetirementAudit
+    ) -> WorkflowRetirementAudit:
         """Persist one idempotent manifest-bound retirement approval."""
 
         self._ensure_writable()
@@ -240,7 +242,7 @@ class SQLiteWorkflowStore:
                 if matching is not None:
                     if matching.operator_approval_ref == audit.operator_approval_ref:
                         self._connection.commit()
-                        return
+                        return matching
                     raise WorkflowRetirementAuditConflict(
                         "retirement_audit_manifest_conflict"
                     )
@@ -261,6 +263,7 @@ class SQLiteWorkflowStore:
                     ),
                 )
                 self._connection.commit()
+                return audit
             except Exception:
                 self._connection.rollback()
                 raise
