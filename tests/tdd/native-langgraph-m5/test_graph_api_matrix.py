@@ -44,6 +44,7 @@ def test_final_graph_api_matrix_is_complete_and_machine_readable() -> None:
     from assistant_agent.runtime.graph_capability_evidence import (
         GRAPH_CAPABILITY_EVIDENCE,
         GraphCapabilityEvidence,
+        evidence_anchor_is_defined,
     )
 
     assert all(
@@ -78,7 +79,7 @@ def test_final_graph_api_matrix_is_complete_and_machine_readable() -> None:
         assert path in tracked, item
         evidence = repo_root / path
         assert evidence.is_file(), item
-        assert anchor in evidence.read_text(encoding="utf-8"), item
+        assert evidence_anchor_is_defined(repo_root, item), item
 
 
 def test_store_is_not_applicable_only_without_a_graph_store_consumer() -> None:
@@ -99,6 +100,80 @@ def test_store_is_not_applicable_only_without_a_graph_store_consumer() -> None:
     )
 
 
+def test_evidence_anchor_rejects_comments_imports_and_plain_references(
+    tmp_path,
+) -> None:
+    """Evidence must be a definition, not text that happens to name a symbol."""
+
+    from assistant_agent.runtime.graph_capability_evidence import (
+        GraphCapabilityEvidence,
+        evidence_anchor_is_defined,
+    )
+
+    source = tmp_path / "source_probe.py"
+    source.write_text(
+        "# forged_source_anchor\n"
+        "from elsewhere import imported_anchor\n"
+        "value = plain_reference_anchor\n"
+        "real_assignment = 1\n"
+        "async def real_async_function():\n"
+        "    return None\n"
+        "class RealClass:\n"
+        "    pass\n",
+        encoding="utf-8",
+    )
+    test_file = tmp_path / "test_probe.py"
+    test_file.write_text(
+        "# test_forged_comment\n"
+        "test_forged_reference = helper\n"
+        "def helper():\n"
+        "    return None\n"
+        "def test_real_case():\n"
+        "    return None\n",
+        encoding="utf-8",
+    )
+
+    def item(path: str, anchor: str, kind: str) -> GraphCapabilityEvidence:
+        return GraphCapabilityEvidence(
+            capability="StateGraph",
+            status="implemented",
+            evidence_path=f"{path}::{anchor}",
+            evidence_kind=kind,
+            gate="P1",
+        )
+
+    assert not evidence_anchor_is_defined(
+        tmp_path, item("source_probe.py", "forged_source_anchor", "source_contract")
+    )
+    assert not evidence_anchor_is_defined(
+        tmp_path, item("source_probe.py", "imported_anchor", "source_contract")
+    )
+    assert not evidence_anchor_is_defined(
+        tmp_path, item("source_probe.py", "plain_reference_anchor", "source_contract")
+    )
+    assert evidence_anchor_is_defined(
+        tmp_path, item("source_probe.py", "real_assignment", "source_contract")
+    )
+    assert evidence_anchor_is_defined(
+        tmp_path, item("source_probe.py", "real_async_function", "source_contract")
+    )
+    assert evidence_anchor_is_defined(
+        tmp_path, item("source_probe.py", "RealClass", "source_contract")
+    )
+    assert not evidence_anchor_is_defined(
+        tmp_path, item("test_probe.py", "test_forged_comment", "contract_test")
+    )
+    assert not evidence_anchor_is_defined(
+        tmp_path, item("test_probe.py", "test_forged_reference", "integration_test")
+    )
+    assert not evidence_anchor_is_defined(
+        tmp_path, item("test_probe.py", "helper", "negative_contract_test")
+    )
+    assert evidence_anchor_is_defined(
+        tmp_path, item("test_probe.py", "test_real_case", "contract_test")
+    )
+
+
 def test_delivery_gate_remains_blocked_without_weakening_capability_statuses() -> None:
     """An open retirement gate blocks M5 delivery, not implemented Graph APIs."""
 
@@ -109,8 +184,7 @@ def test_delivery_gate_remains_blocked_without_weakening_capability_statuses() -
 
     repo_root = Path(__file__).resolve().parents[3]
     relative_evidence_path = (
-        ".superpowers/sdd/2026-08-13-native-langgraph-m5/"
-        "task-9-retirement-status.json"
+        ".superpowers/sdd/2026-08-13-native-langgraph-m5/task-9-retirement-status.json"
     )
     tracked = subprocess.run(
         ["git", "ls-files", "--error-unmatch", relative_evidence_path],

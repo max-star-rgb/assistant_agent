@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 from datetime import datetime
 from pathlib import Path
 from typing import Literal
@@ -63,6 +64,44 @@ class GraphCapabilityEvidence(_StrictFrozenModel):
     evidence_path: str = Field(pattern=r"^[A-Za-z0-9_./-]+(?:::[A-Za-z0-9_./-]+)?$")
     evidence_kind: GraphEvidenceKind
     gate: GraphAcceptanceGate
+
+
+def evidence_anchor_is_defined(
+    repo_root: str | Path,
+    evidence: GraphCapabilityEvidence,
+) -> bool:
+    """Resolve one evidence anchor without importing or executing its module."""
+
+    root = Path(repo_root).resolve()
+    relative_path, anchor = evidence.evidence_path.split("::", 1)
+    try:
+        source_path = (root / relative_path).resolve(strict=True)
+        source_path.relative_to(root)
+        module = ast.parse(source_path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, SyntaxError, UnicodeError, ValueError):
+        return False
+
+    definitions: set[str] = set()
+    for statement in module.body:
+        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            if evidence.evidence_kind == "source_contract" or statement.name.startswith(
+                "test_"
+            ):
+                definitions.add(statement.name)
+            continue
+        if evidence.evidence_kind != "source_contract":
+            continue
+        if isinstance(statement, ast.Assign):
+            definitions.update(
+                target.id
+                for target in statement.targets
+                if isinstance(target, ast.Name)
+            )
+        elif isinstance(statement, ast.AnnAssign) and isinstance(
+            statement.target, ast.Name
+        ):
+            definitions.add(statement.target.id)
+    return anchor in definitions
 
 
 def _implemented(
@@ -353,5 +392,6 @@ __all__ = [
     "GRAPH_CAPABILITY_EVIDENCE",
     "GraphCapabilityEvidence",
     "GraphM5DeliveryEvidence",
+    "evidence_anchor_is_defined",
     "load_graph_m5_delivery_evidence",
 ]
