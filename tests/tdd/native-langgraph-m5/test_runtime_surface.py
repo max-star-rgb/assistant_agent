@@ -26,14 +26,12 @@ def test_runtime_public_surface_is_intentional_with_drain_gate() -> None:
     """Catch reintroduction of unused Runtime facade methods after M5 cleanup."""
 
     stable_surface = {
-        "initialize_session_memory",
         "run_state",
         "arun_state",
         "astream_state",
         "aresume_state",
         "areplay_state",
         "afork_state",
-        "drain_memory_ingestions",
         "run_task_quantum",
         "close",
     }
