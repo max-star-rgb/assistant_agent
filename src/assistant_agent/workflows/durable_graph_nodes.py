@@ -1065,8 +1065,10 @@ def apply_branch_resumes_node(
                 assignment.constraints,
                 strict=True,
             )
-            if not constraint_id.startswith("workflow_resume_")
-            and not statement.startswith("workflow_resume:")
+            if not (
+                constraint_id.startswith("workflow_resume_")
+                and statement.startswith("workflow_resume:")
+            )
         )
         payload.update(
             execution_generation=generation,

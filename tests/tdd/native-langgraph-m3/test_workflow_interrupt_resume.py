@@ -20,7 +20,7 @@ from assistant_agent.workflows.graph_state import (
     WorkflowProfileAssignment,
 )
 
-from workflow_graph_probe import workflow_probe
+from workflow_graph_probe import proposal, workflow_probe
 
 
 def _blocked(node_id: str) -> str:
@@ -52,8 +52,10 @@ class ResumeAwareWorker:
         self.initially_completed = initially_completed
         self.blocked_attempts = blocked_attempts
         self.calls: dict[str, int] = {node_id: 0 for node_id in node_ids}
+        self.requests = []
 
     def chat(self, request):
+        self.requests.append(request)
         node_id = next(node for node in self.node_ids if f"execute {node}" in request.user_query)
         self.calls[node_id] += 1
         response = (
@@ -168,12 +170,28 @@ def test_parent_owns_parallel_interrupts_and_multi_resume_uses_new_generation(tm
 
 
 def test_repeated_resume_replaces_prior_resume_constraint(tmp_path):
+    plan = proposal({"a": []})
+    plan["constraint_bindings"] = [
+        {
+            "constraint_id": "workflow_resume_business_id",
+            "statement": "business constraint with an ordinary statement",
+            "owner_node_ids": ["a"],
+            "verifier_node_id": None,
+            "severity": "advisory",
+        },
+        {
+            "constraint_id": "business_statement_prefix",
+            "statement": "workflow_resume:business constraint statement",
+            "owner_node_ids": ["a"],
+            "verifier_node_id": None,
+            "severity": "advisory",
+        },
+    ]
     graph, context, initial, _worker, artifact_store = workflow_probe(
-        tmp_path, {"a": []}
+        tmp_path, {"a": []}, plan_payload=plan
     )
-    context.services.provider_registry["worker"] = ResumeAwareWorker(
-        ("a",), blocked_attempts=2
-    )
+    worker = ResumeAwareWorker(("a",), blocked_attempts=2)
+    context.services.provider_registry["worker"] = worker
     app = DurableWorkflowGraphApp(graph)
 
     async def execute():
@@ -205,6 +223,11 @@ def test_repeated_resume_replaces_prior_resume_constraint(tmp_path):
         result = asyncio.run(execute())
         assert result.status == "completed"
         assert len(result.final_state["consumed_action_refs"]) == 2
+        final_request = worker.requests[-1].user_query
+        assert "workflow_resume_business_id" in final_request
+        assert "business constraint with an ordinary statement" in final_request
+        assert "business_statement_prefix" in final_request
+        assert "workflow_resume:business constraint statement" in final_request
     finally:
         artifact_store.close()
 
