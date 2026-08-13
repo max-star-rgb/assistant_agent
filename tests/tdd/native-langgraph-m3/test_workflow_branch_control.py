@@ -147,6 +147,27 @@ def test_plain_text_worker_output_fails_closed_without_artifact(tmp_path):
         artifact_store.close()
 
 
+def test_native_worker_request_uses_strict_work_item_control_prompt(tmp_path):
+    from workflow_graph_probe import config, workflow_probe
+
+    app, context, initial, worker, artifact_store = workflow_probe(
+        tmp_path,
+        {"a": []},
+    )
+    try:
+        asyncio.run(app.ainvoke(initial, config=config(), context=context))
+
+        assert len(worker.requests) == 1
+        request_text = worker.requests[0].user_query
+        assert "workflow_control" in request_text
+        assert "acceptance_evidence" in request_text
+        assert "criterion_a" in request_text
+        assert "execute a" in request_text
+        assert len(request_text) <= 32_000
+    finally:
+        artifact_store.close()
+
+
 def test_control_envelope_is_not_written_as_a_deliverable_artifact(tmp_path):
     from assistant_agent.workflows.graph_state import latest_results
     from workflow_graph_probe import config, workflow_probe

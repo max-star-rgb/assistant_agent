@@ -23,6 +23,10 @@ from assistant_agent.runtime.assistant_graph_profiles import (
 )
 from assistant_agent.runtime.assistant_graph_state import AssistantTurnState
 from assistant_agent.runtime.graph_runtime import GraphRuntimeContext
+from assistant_agent.workflows.agent_runtime import (
+    AgentWorkItemRequest,
+    render_work_item_prompt,
+)
 from assistant_agent.workflows.graph_context import (
     WorkflowGraphRuntimeContext,
 )
@@ -107,6 +111,39 @@ def prepare_worker_child_node(
         raise ValueError("worker branch requires worker assignment")
     context = _runtime_context(runtime.context)
     registry = context.services.tool_registry
+    context_manifest = context.context_compiler.compile(
+        identity=RequestIdentity.for_user(
+            user_id=assignment.user_id,
+            agent_id=assignment.agent_id,
+            session_id=assignment.session_id,
+        ),
+        workflow_id=assignment.workflow_id,
+        objective=assignment.objective,
+        constraints=list(assignment.constraints),
+        artifact_refs=list(assignment.input_artifact_refs),
+        work_item_kind=assignment.node_id,
+    )
+    request_text = render_work_item_prompt(
+        AgentWorkItemRequest(
+            workflow_id=assignment.workflow_id,
+            workflow_type="deep_research",
+            work_item_id=assignment.node_id,
+            attempt_id=assignment.run_id,
+            display_title=assignment.node_id,
+            user_id=assignment.user_id,
+            agent_id=assignment.agent_id,
+            session_id=assignment.session_id,
+            objective=assignment.objective,
+            work_item_kind=assignment.node_id,
+            attempt_number=assignment.execution_generation + 1,
+            acceptance_contract=assignment.acceptance_contract.model_dump(mode="json"),
+            context_manifest=context_manifest,
+            workflow_constraints=list(assignment.constraints),
+            allowed_tool_names=list(assignment.available_tool_names),
+            max_iterations=assignment.budget_slice.model_calls,
+            agent_role="worker",
+        )
+    )
     child = profile_input_adapter(
         {
             "user_id": assignment.user_id,
@@ -121,6 +158,7 @@ def prepare_worker_child_node(
             profile="worker",
             assignment_ref=assignment.assignment_ref,
             objective=assignment.objective,
+            request_text=request_text,
             constraints=assignment.constraints,
             capability_refs=assignment.capability_refs,
             explicit_tool_allowlist=assignment.explicit_tool_allowlist,

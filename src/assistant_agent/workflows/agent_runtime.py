@@ -187,15 +187,23 @@ def render_work_item_prompt(request: AgentWorkItemRequest) -> str:
                 sort_keys=True,
             )
         )
-    if request.acceptance_contract:
-        acceptance_contract = (
-            request.acceptance_contract.model_dump(mode="json")
-            if isinstance(request.acceptance_contract, WorkflowStepAcceptanceContract)
-            else request.acceptance_contract
+    acceptance_contract_model = (
+        request.acceptance_contract
+        if isinstance(request.acceptance_contract, WorkflowStepAcceptanceContract)
+        else WorkflowStepAcceptanceContract.model_validate(
+            request.acceptance_contract
         )
+        if request.acceptance_contract
+        else None
+    )
+    if acceptance_contract_model is not None:
         lines.append(
             "Work item acceptance contract:\n"
-            + json.dumps(acceptance_contract, ensure_ascii=False, sort_keys=True)
+            + json.dumps(
+                acceptance_contract_model.model_dump(mode="json"),
+                ensure_ascii=False,
+                sort_keys=True,
+            )
         )
     if request.context_manifest.artifacts:
         lines.append("Artifact excerpts:")
@@ -216,11 +224,8 @@ def render_work_item_prompt(request: AgentWorkItemRequest) -> str:
         if item.verifier_work_item_id == request.work_item_id
     ]
     acceptance_ids = (
-        [
-            item.criterion_id
-            for item in request.acceptance_contract.criteria
-        ]
-        if isinstance(request.acceptance_contract, WorkflowStepAcceptanceContract)
+        [item.criterion_id for item in acceptance_contract_model.criteria]
+        if acceptance_contract_model is not None
         else []
     )
     if verifier_ids or acceptance_ids:
