@@ -6,6 +6,7 @@ import hashlib
 from typing import Any
 
 from assistant_agent.memory.node_bundle import MemoryNodeBundle
+from assistant_agent.memory.node_observability import observe_memory_node
 from assistant_agent.runtime.assistant_graph_state import (
     MemoryCommitState,
     MemoryContext,
@@ -69,8 +70,12 @@ def disabled_memory_commit_node(state: Any, runtime: Any) -> Any:
 def build_disabled_memory_bundle() -> MemoryNodeBundle:
     return MemoryNodeBundle(
         backend_id="disabled",
-        recall_node=disabled_memory_recall_node,
-        commit_node=disabled_memory_commit_node,
+        recall_node=observe_memory_node(
+            disabled_memory_recall_node, backend_id="disabled", phase="recall"
+        ),
+        commit_node=observe_memory_node(
+            disabled_memory_commit_node, backend_id="disabled", phase="commit"
+        ),
     )
 
 

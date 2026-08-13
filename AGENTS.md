@@ -38,7 +38,7 @@ manifest 只用于 coding agent 选择工程文档，不进入产品 Runtime，�
   Provider-native 只读联网属于模型生成能力，不投影为本地 Tool，也不进入该执行链。
 - Provider 运行只分 `mock` 和 `real`。mock 模式下主 LLM 与 Provider-backed tools 强制使用 mock；real 模式下主 LLM 必须完整配置，Provider-backed tools 只注册已完整配置的真实实现，禁止静默回退到 mock。
 - Tool catalog、tool exposure、工具预选和入口路由不得用关键词、正则、高信号话术或手写请求规则推断用户意图；只能基于 `ToolSpec` policy/category、代码配置、结构化显式 opt-in、entry profile、media/env 等结构化事实定义候选工具空间。是否调用候选工具、调用哪个工具和如何构造参数由 LLM 判断；执行阶段仍必须做安全、授权、幂等和 schema 校验。
-- Memory 读写必须经过 `MemoryPluginHost`、Plugin lifecycle、store/audit 边界；Memory adapter 保持薄适配。
+- 长期 Memory 读写只发生在固定的 LangGraph `memory_recall` / `memory_commit` 节点；`memory_context` 是 checkpoint 冻结快照，后端通过纯 `MemoryNodeBundle` 装配，adapter 保持薄适配。
 - MCP、durable task、A2A、API、CLI、demo、eval 都是入口或调度形态，不能绕过 runtime、tool、provider、memory 治理链路。
 - API、demo、eval、CLI 应复用同一套 runtime 行为，避免各自实现 Agent 逻辑。
 - 非 Python 的 Web UI、BFF、vendor adapter 或边缘入口只能做薄适配器；不要把旧 `runTime` agent loop 引入本项目。

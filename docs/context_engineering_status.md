@@ -43,14 +43,14 @@ Context engineering 不负责：
 
 每次 assistant model call 遵循同一条主路径：
 
-1. 入口归一化 `UserRequest`，运行时加载可信的 session conversation、memory snapshot
+1. 入口归一化 `UserRequest`，Graph 先冻结本 turn 的 `memory_context`，运行时加载可信的 session conversation
    和显式启用的 runtime context。
 2. `ContextBuilder` 生成 Provider-neutral 的 `AssistantContextPack`。
 3. `PromptCompiler` 结合当前运行阶段和已治理的 `ToolSpec`，生成完整 `ChatRequest`。
 4. `ContextTokenCounter` 对实际请求的稳定 payload projection 做 tokenizer preflight。
 5. 请求超过 trigger 时，`ContextService` 压缩可压缩的已完成对话，重建 context pack 和请求后重新计数。
 6. 请求满足预算后调用 Provider；工具结果回到同一 assistant loop，再经安全投影参与下一次编译。
-7. 成功回复提交后写入短期 conversation，并通过 Memory service 异步提交长期记忆 ingestion。
+7. 最终回复先发布到产品事件流，随后由 `memory_commit` 节点同步尝试长期记忆写入；短期 conversation 仍在终态提交。
 
 `ContextService` 是 assistant node 的运行时依赖，不是独立 graph node。入口、API、CLI、Gateway
 和 eval 不得复制另一套 context assembly 或 prompt compilation。
@@ -62,7 +62,7 @@ Context engineering 不负责：
 - 当前真实用户请求；
 - session summary 及其后尚未覆盖的已完成原始轮次；
 - 当前连接内已经 server-sent 的有界 proactive session events；
-- session-scoped 长期记忆快照；
+- logical-turn-scoped 长期记忆冻结快照；
 - realtime video 等只供 runtime/观测使用的可信状态，以及 durable task、plan state 等可编译上下文；
 - 当前 run 的 prompt-safe tool observations；
 - 本轮已治理的 `ToolSpec` 与 `RunToolCatalog`；
@@ -147,20 +147,16 @@ Conversation recent window 优先复用同一个目标模型 tokenizer。仅在 
 
 ## 6. 记忆上下文
 
-Context engineering 只消费 `MemoryPluginHost` 提供的结构化、按 run 冻结的 snapshot：
+Context engineering 只消费 checkpoint 中严格的 `state.memory_context`：
 
-- Session 创建时，Host 以可信身份打开唯一 active Memory Plugin，并冻结 Plugin 返回的 session
-  baseline；Mem0 只是默认内置 Plugin 的私有 adapter。
-- 每个 user turn 最多调用一次 `prepare_context()`；Host 将本轮完整 contribution 与 baseline 按
-  `memory_id` 合并，并为当前 run 冻结结果。同一 ReAct run 的后续模型与工具迭代只复用该副本。
-- Plugin 不支持 context refresh、session 尚未打开或召回失败时，Host 分别使用 baseline 或可解释的
-  空/降级 snapshot，不让 Memory 故障阻断当前回答。
+- 新 user turn 的固定 `memory_recall` 节点最多查询一次 active backend，规范化后冻结快照；
+- 同一 ReAct turn 的模型与工具迭代，以及 resume/replay/default fork，只复用该 checkpoint 副本；
+- recall 失败时节点提供可解释的空/降级 snapshot，不让 Memory 故障阻断当前回答；
 - Snapshot 作为独立的合成 `user` 数据消息进入 prompt；当前真实用户请求仍是后一条独立消息。
-- 合成 memory 消息不写入 `ConversationStore`，也不作为原始 user message 再次提交给 Memory Plugin。
-- 成功回复交付后，原始 user/assistant messages 由 Host 通过有界后台队列交给 active Plugin 的通用
-  `ingest_turn()` 生命周期。
+- 合成 memory 消息不写入 `ConversationStore`，也不作为原始 user message 再次提交给 backend。
+- `memory_commit` 只在回答发布后接收原始 user/assistant messages；replay/fork 禁止写入。
 
-Active Memory Plugin 拥有提取、合并、排序、向量化和持久化算法。Context/runtime 不实现第二套
+Active Memory backend 拥有提取、合并、排序、向量化和持久化算法。Context/runtime 不实现第二套
 ranking、promotion、profile、冲突处理或 memory tool。完整 Memory 契约见
 `docs/memory-service-architecture.md`。
 

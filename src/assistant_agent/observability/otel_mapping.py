@@ -1063,6 +1063,8 @@ def _event_io_attributes(
                 ),
             }
     elif name in {
+        "memory.recall.finished",
+        "memory.commit.finished",
         "memory.session_recall.finished",
         "memory.ingestion.finished",
     }:
@@ -1083,6 +1085,12 @@ def _event_io_attributes(
             _selected_payload(
                 {**event.output_summary, **event.attributes},
                 (
+                    "backend_id",
+                    "item_count",
+                    "char_count",
+                    "issue_codes",
+                    "memory_event_id",
+                    "issue_code",
                     "memory_count",
                     "change_counts",
                     "memory_ids",

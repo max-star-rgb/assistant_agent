@@ -34,7 +34,7 @@ Any implementation must not change default single-agent behavior.
 
 Agent communication covers optional collaboration among multiple agent runtime instances. It is separate from:
 
-- Memory service: long-term user/project memory, owned by `LongTermMemoryService`.
+- Graph Memory nodes: long-term user/project memory, owned by the active `MemoryNodeBundle`.
 - Context engineering: prompt/context pack construction, conversation history, observation compaction, and budget reporting.
 - Provider adapters: real or mock LLM/image/video/product/provider integrations.
 - MCP tools: tool exposure boundary. MCP is not the agent-to-agent communication model.
@@ -53,7 +53,7 @@ User / CLI / API / realtime entry
   -> ActionValidator
   -> ToolExecutor
   -> ToolRegistry
-  -> Tool / Adapter / LongTermMemoryService
+  -> Tool / Adapter / memory_recall + memory_commit nodes
 ```
 
 When only `agent.default` exists, routing should behave like the current implementation. Do not introduce router behavior that changes default mock/local/offline runs.

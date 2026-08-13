@@ -14,10 +14,8 @@ eval、Gateway 主链路覆盖的 probe 不应继续沉积到本目录。
   安全开关，以及 Runtime completeness ledger、Langfuse export、Gateway lifecycle、Agent-Service
   delivery audit 和 Gateway text log 的分层观测位置；只有排查 Tool 装配时才使用
   `--startup-details` 展开按 plugin ownership 分组的完整清单。
-  本机 Langfuse 需要查看 Mem0 具体 change text 时，显式增加
-  `--allow-local-memory-trace-content`；它只对 loopback OTLP endpoint 生效，本地 completeness ledger
-  不保留 Memory 正文。在 Langfuse Session 中打开各 turn 的
-  `memory.turn_ingestion` 查看结果，单条演化用 Mem0 原生 history API 钻取。
+  Graph memory 在 Langfuse 中只投影 `memory.recall` / `memory.commit` 的 backend、状态、数量、延迟和
+  issue code，不记录 Memory 或对话正文；单条记忆演化需在受控运维边界使用后端原生 history API 钻取。
 - `scripts/run_langfuse.py`: PyCharm-friendly local Langfuse supervisor. It starts
   the ignored `.data/langfuse` Compose stack, waits for health, stays attached as
   one Run process, and stops the containers without deleting data when terminated.
@@ -37,20 +35,8 @@ eval、Gateway 主链路覆盖的 probe 不应继续沉积到本目录。
   `clear --all` resets every memory plus Mem0 history and always requires typing
   `DELETE ALL MEMORIES` (`--yes` is rejected for this scope). Exiting leaves both
   containers and persistent data running. 这是直接读写 Mem0 sidecar 原生记录的 operator console，
-  不是 Runtime Memory Plugin 管理入口，也不经过 `assistant_memory_plugin_v1` 的
-  `open_session` / `prepare_context` / `ingest_turn` / `close_session` 生命周期。
-
-Runtime Memory Plugin 的只读装配诊断不是 `scripts/` supervisor，直接运行：
-
-```bash
-MULTIMODAL_AGENT_PROVIDER_MODE=mock \
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python \
-  -m assistant_agent.memory.cli plugins
-```
-
-该命令只解析配置并装配 factory，输出脱敏 JSON；不启动 Mem0/Qdrant，不执行远端健康检查、召回、
-写入或真实 Provider 请求。默认 mock 会报告 sealed 的 `mem0` slot，同时以
-`readiness=unavailable` 和 `memory_plugin_offline` 明确表示后端离线。
+  不是 Runtime graph-native Memory 管理入口，也不经过 `memory_recall` / `memory_commit` 节点。
+Runtime 后端由受信 `MEMORY_BACKEND` 配置在 composition root 中排他装配，不提供独立 Plugin CLI。
 - `scripts/migrate_mem0_memories_to_chinese.py`：检查或迁移一个 runtime 用户已有的
   Mem0 记忆为简体中文。默认命令只读；更新要求 real Provider mode、已配置的 Qwen 和
   Mem0，并同时传入 `--apply` 与 `--allow-real-provider`。输出只包含数量、memory ID、

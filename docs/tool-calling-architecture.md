@@ -6,7 +6,7 @@
 | --- | --- |
 | 定位 | Tool 注册、暴露、调用、执行与 durable workflow 治理的当前权威 |
 | Owns | Tool/ToolSpec、catalog、Plugin、MCP、Validator、Executor、Durable Workflow Runtime 与副作用边界 |
-| Does not own | 用户意图关键词路由、Gateway 生命周期、Memory Plugin 生命周期、Provider vendor 私有协议 |
+| Does not own | 用户意图关键词路由、Gateway 生命周期、Graph Memory 节点/后端生命周期、Provider vendor 私有协议 |
 | 源码与 schema 入口 | `src/assistant_agent/tools/`、`src/assistant_agent/workflows/`、`src/assistant_agent/mcp/` |
 | 验证入口 | `docs/authority.toml` 中 `tool-calling.verification` |
 | 相邻 authority | Runtime 见 [`runtime-event-stream-architecture.md`](runtime-event-stream-architecture.md)；Memory 见 [`memory-service-architecture.md`](memory-service-architecture.md) |
@@ -572,7 +572,7 @@ Validator、持久化 stable operation scope 并取得 barrier owner 后才可�
   claim 时为每个 work-item 原子预留 workflow quantum 与 model/tool call 预算，commit 时退回未使用额度，
   从而避免并行 run 超卖全局预算。Tool 预算为零时不再暴露 Tool，分配给该 run 的预算同时收窄
   work-item assistant loop 的 iteration 上限。
-- **Memory**：记忆读写遵循 `MemoryPluginHost` 与 Plugin lifecycle；默认长期记忆不是主模型可调用 Tool。
+- **Memory**：长期记忆读写只发生在固定的 `memory_recall` / `memory_commit` Graph 节点；默认长期记忆不是主模型可调用 Tool。
 - **Gateway、CLI、API、demo、eval**：都是入口或观察形态，不能直接调用 Tool 实现来复制 Agent
   逻辑。
 - **内部 Tool**：后台 observer 或 worker 可以使用独立 Registry/catalog，但仍必须经过 Validator

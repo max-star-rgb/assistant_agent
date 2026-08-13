@@ -92,23 +92,23 @@ exclusive_literals = []
 exclusive_allowlist = []
 
 [[domains]]
-id = "memory-plugin"
+id = "graph-memory"
 authority = "docs/memory-service-architecture.md"
 read_when = [
-  "Memory Plugin、MemoryPluginHost、长期记忆生命周期或 session freeze",
-  "记忆读取、写入、ingestion、identity、媒体引用或 Mem0 Plugin 装配",
+  "LangGraph 长期记忆节点、memory_context、冻结快照或 commit ledger",
+  "记忆读取、写入、time-travel、Mem0/LangMem/disabled 后端装配",
 ]
 source_globs = [
-  "src/assistant_agent/memory/plugins/**",
-  "src/assistant_agent/memory/factory.py",
-  "src/assistant_agent/memory/service.py",
-  "src/assistant_agent/memory/session_snapshot.py",
-  "src/assistant_agent/memory/models.py",
-  "src/assistant_agent/memory/ingestion_queue.py",
+  "src/assistant_agent/memory/**",
+  "src/assistant_agent/runtime/assistant_graph_state.py",
+  "src/assistant_agent/runtime/assistant_loop_graph.py",
+  "src/assistant_agent/runtime/assistant_graph_app.py",
+  "tests/core/integration/test_memory_lifecycle.py",
 ]
 thin_references = ["README.md", "docs/context_engineering_status.md", "scripts/README.md"]
 verification = [
-  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/memory-plugin-api",
+  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/core/integration/test_memory_lifecycle.py",
+  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/langgraph-memory-nodes",
 ]
 exclusive_literals = []
 exclusive_allowlist = []
@@ -117,16 +117,15 @@ exclusive_allowlist = []
 id = "memory-server-api"
 authority = "docs/memory_server_api_spec.md"
 read_when = [
-  "默认 Mem0 Plugin 私有 HTTP adapter 或 OSS REST 子集",
+  "Mem0 graph backend 私有 HTTP adapter 或 OSS REST 子集",
   "Mem0Client request/response、身份 filter 或错误语义",
 ]
 source_globs = [
   "src/assistant_agent/memory/mem0/**",
-  "src/assistant_agent/memory/plugins/builtin/mem0.py",
 ]
 thin_references = ["README.md", "docs/memory-service-architecture.md"]
 verification = [
-  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/memory-plugin-api/test_mem0_plugin.py",
+  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/langgraph-memory-nodes/test_mem0_nodes.py",
 ]
 exclusive_literals = []
 exclusive_allowlist = []

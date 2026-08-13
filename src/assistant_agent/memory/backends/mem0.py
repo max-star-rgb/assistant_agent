@@ -25,6 +25,7 @@ from assistant_agent.memory.mem0.models import (
     Mem0RecallMemory,
 )
 from assistant_agent.memory.node_bundle import MemoryNodeBundle
+from assistant_agent.memory.node_observability import observe_memory_node
 from assistant_agent.runtime.assistant_graph_state import (
     MemoryCommitState,
     MemoryContext,
@@ -233,8 +234,12 @@ def build_mem0_memory_bundle(
 
     return MemoryNodeBundle(
         backend_id="mem0",
-        recall_node=recall_node,
-        commit_node=commit_node,
+        recall_node=observe_memory_node(
+            recall_node, backend_id="mem0", phase="recall"
+        ),
+        commit_node=observe_memory_node(
+            commit_node, backend_id="mem0", phase="commit"
+        ),
         store=None,
         aclose=aclose,
     )

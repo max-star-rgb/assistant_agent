@@ -81,12 +81,11 @@ state 或动态 task UUID。
 Graph 身份语义为 stable conversation `thread_id` 加每次调用或 resume 的新 `run_id`。进程拥有的
 `AssistantRuntimeApp` 只解析并持有一个 `AgentGraphRuntime`，内部 owner-bound history、Replay 与 Fork
 facade 复用同一个 compiled graph、checkpointer、claim store 和受治理 service。continuation preparation
-从已验证 checkpoint 重建 fresh invocation-local `AgentState`/`GraphRuntimeContext`，不调用 Memory
-`open_session`、`prepare_context` 或 `ingest_turn`：普通 turn 不变，resume 只在成功终态 ingestion 一次，
-Replay/Fork 不 ingestion。非 Memory context ref 必须由当前 owner 重建并严格匹配；Memory ref 只能通过
-Host 的 owner/origin/ref-bound active frozen context attach 契约解析，不读取底层 store、不回退当前 baseline；
-origin 已 terminal/release 或进程重启后缺少 exact frozen context 时 fail closed。checkpoint state schema v3
-显式持久化 logical Memory origin 与 `product_turn|time_travel` provenance，旧 v2 continuation fail closed。该内部
+从已验证 checkpoint 重建 fresh invocation-local `AgentState`/`GraphRuntimeContext`。长期记忆正文已经是
+checkpoint 内的 `memory_context` 冻结快照：resume/replay/default fork 不重新 recall，缺少快照时 fail closed；
+显式 refresh fork 重新 recall 但仍不 commit。非 Memory context ref 必须由当前 owner 重建并严格匹配。
+checkpoint state schema v4 显式持久化 logical Memory origin、`product_turn|time_travel` provenance、
+publish barrier 与 commit outcome，旧 schema continuation fail closed。该内部
 facade 不进入 `AssistantRunService`、HTTP/WebSocket、Gateway 或 Agent-Service wire，也不产生 selector、
 checkpoint/native task/interrupt ID 产品事件。
 
@@ -109,9 +108,9 @@ checkpoint channel。`RuntimeHost.aopen/aclose` 固定先开 saver/claim 再构�
 active lease 保护的 facade。关闭时先拒绝新 invocation 并排空已有 consumer，再按 Runtime、trace store、
 claim connection、saver 的顺序释放。Gate P1 已用 first host 完全关闭后创建
 fresh second host，验证同一 thread 的 interrupt/resume、history、Replay、Fork 与 run claim 拒绝；Task 9
-production cutover 前，现有同步 Agent-Service/API composition root 仍不启用 `sqlite`。Memory Plugin 的
-active frozen context 仍是进程内治理事实：checkpoint 携带 Memory ref 而 fresh host 缺 exact frozen context 时
-继续按既有契约 fail closed，持久 checkpointer 不冒充长期 Memory。
+production cutover 前，现有同步 Agent-Service/API composition root 仍不启用 `sqlite`。长期记忆正文已经
+以受限 `memory_context` 随 checkpoint 持久化；fresh host 可精确恢复该快照，但 checkpoint 不替代 active
+backend，也不授权 replay/fork 写入长期记忆。
 
 `AssistantTurnGraphApp.invoke/astream/arun/aresume` 在进入 tracing、checkpoint preflight 或 native graph
 之前统一原子 claim `(owner, thread_id, run_id)`；相同 invocation token 的 pre-native 重试幂等放行，不同 token
@@ -138,9 +137,10 @@ M3 已在离线路径编译 `DurableWorkflowGraph`，并以 native v2
 同 thread 新 run resume 和最终 snapshot 判定验证 Graph API 事实。该 app 目前只由 TDD probe 与 LangSmith
 workflow regression offline target 使用，尚未由 Agent-Service/API 的 production composition root 持有；
 因此它不改变下文所述当前 Deep Research work-item stream、lease 或恢复边界。
-当前 Durable Workflow graph 没有跨节点 namespace/key/value consumer，因此不装配 LangGraph Store；短期执行
-记忆只属于 strict state 与 checkpointer，长期记忆仍只通过 `MemoryPluginHost` 生命周期治理，正文不进入
-checkpoint。Assistant graph 的内部 replay/fork 在进入 native stream 或创建 branch 前，只检查所选 checkpoint
+当前 Durable Workflow graph 没有跨节点 namespace/key/value consumer，因此不装配 LangGraph Store。Assistant
+graph 则固定包含 `memory_recall` / `publish_response` / `memory_commit`；长期记忆正文以严格、受限的
+`memory_context` 进入 checkpoint，LangMem 可选 Store 由 compile 原生注入。Assistant graph 的内部 replay/fork
+在进入 native stream 或创建 branch 前，只检查所选 checkpoint
 下一步会执行的 pending Tool：read 可重放；write/dangerous 必须保留 `toolop:` stable scope 并复用业务 operation
 ledger。该 operation 已处于 `reserved|invoking|outcome_unknown` 时 fail closed；无关 operation 不参与分类，
 pending call 同时保存 effect category；当前 Registry category 与 checkpoint 不一致、stable scope 无法由
@@ -490,16 +490,12 @@ Async migration remains selective:
   measured concurrency or latency justifies a focused migration;
 - do not duplicate business logic merely to remove `asyncio.to_thread()`.
 
-Completed-turn long-term-memory ingestion is a separate post-response thread
-boundary. `AgentGraphRuntime` emits `final_response` and immediately records
-`response.delivered` from the Runtime final answer, then freezes a sanitized
-`CompletedTurn` and submits it to the bounded `MemoryIngestionQueue`
-without waiting for memory Provider I/O. Its trace span carries
-`execution_phase=post_response_background`; Agent-Service critical-path and
-active-stage accounting exclude that background span. Runtime close drains
-accepted work within the configured shutdown bound. Detailed identity,
-ordering, saturation and eventual-consistency rules remain authoritative in
-`docs/memory-service-architecture.md`.
+Completed-turn long-term-memory write is an explicit Graph boundary.
+`publish_response` emits the stable `final_response` fact first; the stream remains active while
+`memory_commit` calls the selected backend and records its redacted outcome. Commit failure or timeout
+does not rewrite the already-published answer. A minimal durable ledger prevents duplicate external
+writes across resume; no background ingestion queue or retry worker exists. Detailed snapshot,
+time-travel and ledger rules remain authoritative in `docs/memory-service-architecture.md`.
 
 Proactive messages are a separate non-turn delivery contract. An LLM-authored
 Tool input may precompose message content, but a later Runtime event only creates
@@ -594,7 +590,7 @@ stream，不把向量或媒体证据写入 `AgentEvent`、conversation history �
 | `src/assistant_agent/runtime/event_stream.py` | `AgentRunStream` and thread-safe queue sink |
 | `src/assistant_agent/runtime/runtime.py` | graph lifecycle, provider-path selection, `run_state`/`run`/`run_stream` |
 | `src/assistant_agent/runtime/runtime_host.py` | composed Runtime and trace-store ownership/close boundary for real entries |
-| `src/assistant_agent/memory/ingestion_queue.py` | bounded post-response turn-ingestion queue, per-identity ordering, drain and shutdown |
+| `src/assistant_agent/memory/` | graph-native backend nodes, composition bundle and external commit ledger |
 | `src/assistant_agent/runtime/assistant_run_service.py` | shared sync/native-async run service, stream projection and `AssistantRunArtifacts` |
 | `src/assistant_agent/gateway/runtime_adapter.py` | assistant stream consumption and realtime terminal result |
 | `src/assistant_agent/gateway/runtime_event_mapping.py` | `AgentEvent` to `RealtimeAgentEvent` mapping |

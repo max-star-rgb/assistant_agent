@@ -1,37 +1,35 @@
-# 默认 Mem0 Plugin 私有 HTTP 接入契约
+# Mem0 Graph Backend 私有 HTTP 接入契约
 
-最后更新：2026-08-08
+最后更新：2026-08-13
 
 ## Authority contract
 
 | 字段 | 内容 |
 | --- | --- |
-| 定位 | 默认 Mem0 Plugin 私有 HTTP adapter 子集的当前权威 |
+| 定位 | Mem0 graph backend 私有 HTTP adapter 子集的当前权威 |
 | Owns | `Mem0Client` 使用的 recall、turn capture、identity filter、响应字段与错误语义 |
-| Does not own | 通用 Memory Server 协议、Runtime Memory 生命周期、第三方 Memory Plugin API |
-| 源码与 schema 入口 | `src/assistant_agent/memory/mem0/`、`src/assistant_agent/memory/plugins/builtin/mem0.py` |
+| Does not own | 通用 Memory Server 协议、Graph memory 节点/快照/ledger、LangMem |
+| 源码与 schema 入口 | `src/assistant_agent/memory/mem0/`、`src/assistant_agent/memory/backends/mem0.py` |
 | 验证入口 | `docs/authority.toml` 中 `memory-server-api.verification` |
-| 相邻 authority | Memory Host 与 Plugin 契约见 [`memory-service-architecture.md`](memory-service-architecture.md) |
+| 相邻 authority | Graph memory 架构见 [`memory-service-architecture.md`](memory-service-architecture.md) |
 
-项目不定义通用 Memory Server 协议。本文件只记录默认 `Mem0MemoryPlugin` 的私有
-`Mem0Client` 实际使用的 Mem0 OSS REST 子集；完整行为以 Mem0 官方 API 为准。
-Runtime 和第三方 Memory Plugin 不依赖本协议，只依赖
-[`assistant_memory_plugin_v1`](memory-service-architecture.md)。
+项目不定义通用 Memory Server 协议。本文件只记录 Mem0 `memory_recall` / `memory_commit` 节点私有
+`Mem0Client` 实际使用的 Mem0 OSS REST 子集；完整行为以 Mem0 官方 API 为准。其他 backend 不依赖本协议。
 
 ## 身份
 
-召回请求携带 Host 从可信 Runtime 身份生成的不透明 `user_id` 和 `agent_id`；写入请求还必须
+召回节点从可信 Runtime 身份生成不透明 `user_id` 和 `agent_id`；写入请求还必须
 携带由 `user_id + agent_id + session_id` 稳定生成的不透明 `run_id`。用户输入不能直接覆盖这些字段。
 
-## Session 启动召回
+## Logical turn 召回
 
 ```http
 GET /memories?user_id=<opaque>&agent_id=<opaque>
 ```
 
-响应全量返回该身份下的长期记忆；只消费 `results` 数组中每条记录的 `id`、`memory`、
-`created_at` 和可选 `score`。该调用只发生在 session 创建阶段，结果冻结为 session snapshot；
-后续进入 Provider 上下文前仍由 ContextBuilder 统一执行预算裁剪。
+响应返回该身份下的长期记忆；只消费 `results` 数组中每条记录的 `id`、`memory`、`created_at` 和可选
+`score`。新 logical turn 的 `memory_recall` 调用一次并将规范化结果冻结为 checkpoint
+`memory_context`；resume/replay/default fork 不重新请求。ContextBuilder 仍执行最终预算裁剪。
 
 ## Turn capture
 
@@ -48,7 +46,7 @@ Content-Type: application/json
   "agent_id": "<opaque>",
   "run_id": "<opaque>",
   "metadata": {
-    "source": "runtime_turn_capture",
+    "source": "runtime_turn_ingestion",
     "source_turn": "<opaque>",
     "occurred_at": "<ISO-8601>"
   }
@@ -56,8 +54,8 @@ Content-Type: application/json
 ```
 
 项目不设置 `infer=false`，不发送自定义 extraction prompt，不创建 core/daily 双记录。
-Host 使用独立的 ingestion deadline 约束该后台调用；Mem0 adapter 仍为原生 HTTP `add` 自动使用
-至少 30 秒的 I/O timeout，不复用 session-start recall 的 5 秒 adapter timeout。
+该调用由 `memory_commit` 在回答发布后同步执行，并先经过最小 durable ledger。Mem0 adapter 为原生 HTTP
+`add` 使用至少 30 秒的 I/O timeout，不自动 retry。
 
 响应只消费原生 `results` 中每条合法记录的 `id`、`memory` 和 `event`。支持的 event 为
 `ADD`、`UPDATE`、`DELETE`；空数组表示没有提炼出长期记忆。memory text 只可进入显式启用的
@@ -65,8 +63,6 @@ Host 使用独立的 ingestion deadline 约束该后台调用；Mem0 adapter 仍
 
 ## 错误语义
 
-- recall 失败：`Mem0MemoryPlugin` 返回 `mem0_recall_failed`，Host 冻结空 baseline，
-  session/turn 继续。
-- capture 失败：Plugin 返回 `mem0_ingestion_failed`，Host 后台任务记录失败，已返回的
-  Assistant 回复不受影响。
+- recall 失败：节点写入 degraded 空 `memory_context` 和 `mem0_recall_failed`，当前 turn 继续。
+- commit 失败或 timeout：节点只写脱敏的 `MemoryCommitState`；已发布的 Assistant 回复不受影响。
 - 响应原文、URL、凭据和异常细节不进入模型上下文。

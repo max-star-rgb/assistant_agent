@@ -342,22 +342,31 @@ def _memory_metrics(events: list[TraceEvent]) -> dict[str, Any]:
     recalls = [
         event
         for event in events
-        if event.canonical_event == "memory.session_recall.finished"
+        if event.canonical_event
+        in {"memory.recall.finished", "memory.session_recall.finished"}
     ]
-    ingestions = [
+    commits = [
         event
         for event in events
-        if event.canonical_event == "memory.ingestion.finished"
+        if event.canonical_event
+        in {"memory.commit.finished", "memory.ingestion.finished"}
     ]
+    recall_failures = sum(
+        event.status not in {"ready", "empty", "succeeded"} for event in recalls
+    )
+    commit_failures = sum(
+        event.status not in {"succeeded", "skipped"} for event in commits
+    )
     return {
+        "recall_count": len(recalls),
+        "recall_failure_count": recall_failures,
+        "commit_count": len(commits),
+        "commit_failure_count": commit_failures,
+        # Compatibility keys for existing metrics consumers.
         "session_recall_count": len(recalls),
-        "session_recall_failure_count": sum(
-            event.status != "succeeded" for event in recalls
-        ),
-        "ingestion_count": len(ingestions),
-        "ingestion_failure_count": sum(
-            event.status != "succeeded" for event in ingestions
-        ),
+        "session_recall_failure_count": recall_failures,
+        "ingestion_count": len(commits),
+        "ingestion_failure_count": commit_failures,
     }
 
 

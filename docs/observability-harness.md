@@ -51,7 +51,7 @@ Observability 是运行时行为的只读投影，不是另一套执行状态机
 | Gateway lifecycle JSONL | 记录 session、queue、admission、run、cancel、interrupt 和 terminal 入口边界 | 承载 Assistant loop 内部推理或 Provider payload |
 | Agent-Service delivery audit | 记录媒体响应从 accepted 到 sent/acked/failed/disconnected 的交付状态 | 表示 Assistant 任务本身成功或失败 |
 | Operational console/text log | 提供低噪声、prompt-safe 的运行提示和兼容文本投影 | 作为 runtime 详细开发 timeline |
-| Local trace-content overlay | 在明确边界内保存当前 turn 的 request/response、Provider 语义证据、tool observation，以及显式启用的 Mem0 change text | 写入 conversation history 或公开 trace summary |
+| Local trace-content overlay | 在明确边界内保存当前 turn 的 request/response、Provider 语义证据和 tool observation | 写入 conversation history、公开 trace summary 或长期记忆正文 |
 | OTel/Langfuse projection、LangSmith native trace | 前者映射 canonical audit；后者直接观察实际 graph/node/LLM/governed Tool 执行和安全 metadata | 改写执行结果，或用手工 span tree 代替实际 graph |
 | Metrics、scores、eval views | 从 canonical facts 派生统计、诊断和质量分数 | 反向控制 runtime 行为 |
 
@@ -287,10 +287,10 @@ Combined console 默认只显示关键 Gateway lifecycle 和普通应用 WARNING
 本项目本地 trace content 默认启用；设置 `MULTIMODAL_AGENT_LOCAL_TRACE_CONTENT=0` 可进入减少内容的兼容模式。
 Provider protocol 语义捕获还受 `MULTIMODAL_AGENT_LOCAL_PROVIDER_PROTOCOL_CAPTURE` 控制。开关语义以
 `src/assistant_agent/observability/trace_content_policy.py` 为准。
-Mem0 change text 额外要求显式设置 `MULTIMODAL_AGENT_LOCAL_MEMORY_TRACE_CONTENT=1`，并且只允许
-投影到 loopback OTLP endpoint；默认 canonical event 仅记录数量、event 计数和 memory ID。
-该开关独立于普通 trace/provider 内容权限，不得隐式启用 request/response、Tool observation 或
-Provider protocol capture。overlay 写入失败时 canonical event 仍须保留，并用安全状态承认证据缺口。
+Graph memory 节点只记录结构化事实：`backend_id`、status、item/char count、latency、event ID 与
+issue code；不得捕获 recall 正文、commit 输入或第三方原始响应。旧版
+`MULTIMODAL_AGENT_LOCAL_MEMORY_TRACE_CONTENT` 只用于读取迁移前已持久化的 ingestion trace，不再控制
+当前 `memory_recall` / `memory_commit` 节点。
 
 内容捕获与 prompt-safe trace 必须分层：
 
@@ -404,7 +404,7 @@ Workflow 反向覆盖。
 ```text
 deep_research.workflow                         # durable logical root
 ├── workflow.planner                          # agent, role=planner；内部控制节点
-│   ├── memory.session_recall                  # 若该 canonical run 实际发生
+│   ├── memory.recall                          # 若该 canonical run 实际发生
 │   ├── react.iteration
 │   │   ├── context.compile
 │   │   ├── llm.chat                       # 第一次 LLM 调用生成 proposal
@@ -452,9 +452,10 @@ objective、deliverable/constraint 正文。observer 获取 cursor 或导出失�
 lease、revision 或持久状态；cursor 读取使用 Store 的 O(1) latest-cursor 契约，不扫描或重放全量历史。
 缺失完整 ingress trace context 时观测链路 fail-open，Workflow 仍提交并退回兼容的独立 Workflow trace。
 
-`assistant.turn.summary` 到达时主 trace 可以先导出；Runtime 随后发出的 `response.delivered` 与后台
-`memory.ingestion.finished` 都不得被静默丢弃。OTel observer 将它们作为单独的 late span 追加到同一 trace，
-parent 使用稳定的 `agent.runtime` root span ID。已有 `langfuse.session.id` 负责在 Session 页面聚合
+`assistant.turn.summary` 到达时主 trace 可以先导出；Runtime 随后发出的 `response.delivered` 不得被静默
+丢弃，OTel observer 将它作为单独的 late span 追加到同一 trace，parent 使用稳定的
+`agent.runtime` root span ID。`memory.recall.finished` 与 `memory.commit.finished` 在 Graph terminal 前产生，
+分别投影为 `memory.recall` / `memory.commit` SPAN。已有 `langfuse.session.id` 负责在 Session 页面聚合
 同一会话的多个 turn；Langfuse 不创建第二套 session 或 memory 数据库。
 
 后台 `vision.observation` 只通过同一 `langfuse.session.id` 与会话聚合；它不创建 Assistant turn summary、
@@ -623,7 +624,7 @@ userinfo 清洗边界。
 | `assistant_agent.quality.response_quality` | 日常 Trace 最终文本回答质量；来自 Live Observation Evaluator |
 | `assistant_agent.quality.grounding` | 日常 Trace 最终文本对工具/上下文证据的忠实度；来自 Live Observation Evaluator |
 | `assistant_agent.quality.tool_result_quality` | 单个 `tool.execute` observation 的结果语义质量；只使用 observation evaluator |
-| `assistant_agent.quality.memory_extraction` | 单个 `memory.turn_ingestion` observation 的长期记忆提取质量 |
+| `assistant_agent.quality.memory_extraction` | 仅用于迁移前 `memory.turn_ingestion` 历史 observation 的提取质量；当前 commit 不导出正文，不能使用该 Judge |
 | `assistant_agent.quality.memory_recall` | 具有实际召回证据的 memory/LLM observation 的召回质量；证据不足时保持 missing/unsupported，不伪造失败 |
 
 Score name 只表达测量对象；`source`、judge/model、evaluator version、live/experiment mode 放 Score
@@ -634,7 +635,8 @@ task-level Score、Dataset 和运行契约统一由 [`evals/README.md`](../evals
 Langfuse 日常 evaluator 使用原生 **Live Observations** 和 observation name/type filter；首次创建
 默认 100% sampling，之后 `enabled/sampling` 由 Langfuse UI 作为运维状态管理。仓库 reconcile 只更新
 evaluator reference、target、filter 和 mapping，不覆盖 UI 中的启停或采样；prompt、output definition 或
-model connection 漂移时创建同名 evaluator 新版本。五个 live evaluator family 服务日常评分；Runtime
+model connection 漂移时创建同名 evaluator 新版本。当前四个 live evaluator family 服务日常评分；迁移前
+`memory_extraction` family 仅兼容历史 observation，不作为新 Graph memory 的完成条件。Runtime
 Regression 另外使用 canonical response-quality evaluator、独立的 evidence-aware grounding evaluator 与
 baseline-aware regression-improvement evaluator，共三条回归 Rule。配置器只管理规则，不创建或启动
 Dataset Experiment。其中 grounding Rule 只命中 `sdk-experiment` 环境下唯一的
@@ -645,15 +647,15 @@ Langfuse 可按 `gen_ai.tool.name` 将 Tool execution SPAN 显示为
 metadata `assistant_agent.observation_kind=tool_execution`；该稳定标记由 canonical
 `tool.finished/tool.failed` 在 OTel 投影边界生成。runtime audit 使用同一标记，并为迁移前 trace 兼容读取
 nested `assistant_agent.canonical_event`，不枚举内置、MCP 或 Plugin 工具名。
-`memory_extraction` 过滤 SPAN `memory.turn_ingestion`，回答、grounding 与 memory recall 过滤
+历史 `memory_extraction` 过滤 SPAN `memory.turn_ingestion`；回答、grounding 与 memory recall 过滤
 GENERATION `llm.chat` 且 metadata `assistant_agent.runtime_action=text`；该 generation 的 input 同时包含
 当前请求、上下文、可用工具结果和长期记忆，比只看根 SPAN 更适合 observation-level 语义判断。
 OTel 普通 span attribute 在 Langfuse 中只进入不可直接筛选的 `metadata.attributes`；因此
 `runtime_action` 与 `memory_semantic_evidence` 还必须通过
 `langfuse.observation.metadata.assistant_agent.*` 显式投影为顶层 observation metadata，供上述 rule
 命中。generic `assistant_agent.*` 属性继续保留用于原始 OTel 诊断。
-必须先在 UI preview 核对 input/output mapping；Mem0 change text 还要求 operator 显式允许本机 memory
-trace content。Evaluator/rule 公共 API 当前仍标为 unstable，因此仓库不自动改写 Langfuse 配置，避免
+必须先在 UI preview 核对 input/output mapping。当前 Graph memory span 只提供结构化诊断 metadata，不向
+Judge 提供 Memory 正文。Evaluator/rule 公共 API 当前仍标为 unstable，因此仓库不自动改写 Langfuse 配置，避免
 定时审计获得管理权限或随版本漂移破坏现有 evaluator。配置依据见 Langfuse 官方的
 [LLM-as-a-Judge](https://langfuse.com/docs/evaluation/evaluation-methods/llm-as-a-judge) 与
 [observation evaluator 排障](https://langfuse.com/faq/all/observation-eval-not-executing)。
@@ -672,12 +674,14 @@ trace content。Evaluator/rule 公共 API 当前仍标为 unstable，因此仓�
 ```
 
 Evaluator 与 Live Observation Rule 使用同一个 `assistant_agent.quality.*` canonical 名称。入口创建
-缺失的五条日常 Rule 和一条 evidence observation Rule；新回归 Dataset 尚不存在时，两条 Dataset-target
+缺失的五条日常 Rule，其中四条服务当前运行，memory extraction Rule 只为迁移前 trace 与既有 Langfuse
+配置保留兼容。新回归 Dataset
+尚不存在时，两条 Dataset-target
 Experiment Rule 会明确列为 skipped，不影响 Live Judge 首次启用；Dataset 由审核后的失败 Score 创建后，
 再次运行配置器即按真实 Dataset ID 补齐规则。
 若检测到早期 `assistant-agent-live-*` Rule 或错误版本创建的
 `assistant_agent.quality.*.live` Rule，则通过同一 Rule ID 原地迁移为 canonical 名称，不删除或回写
-历史 Score。`memory_extraction` Rule 额外过滤
+历史 Score。迁移前 `memory_extraction` Rule 额外过滤
 `assistant_agent.memory_semantic_evidence=available`，因此只有
 显式启用本地 memory trace content 且 observation 同时包含原对话和 Mem0 changes 时才调用 Judge。
 

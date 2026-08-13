@@ -18,6 +18,7 @@ from assistant_agent.memory.commit_ledger import (
     stable_memory_event_id,
 )
 from assistant_agent.memory.node_bundle import MemoryNodeBundle
+from assistant_agent.memory.node_observability import observe_memory_node
 from assistant_agent.runtime.assistant_graph_state import (
     AssistantStateCompatibilityError,
     MemoryCommitState,
@@ -252,8 +253,12 @@ def build_langmem_memory_bundle(
 
     return MemoryNodeBundle(
         backend_id="langmem",
-        recall_node=recall_node,
-        commit_node=commit_node,
+        recall_node=observe_memory_node(
+            recall_node, backend_id="langmem", phase="recall"
+        ),
+        commit_node=observe_memory_node(
+            commit_node, backend_id="langmem", phase="commit"
+        ),
         store=store,
         aclose=close_resources if aclose is not None else None,
     )

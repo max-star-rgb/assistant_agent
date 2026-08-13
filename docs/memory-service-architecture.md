@@ -1,318 +1,155 @@
-# Memory Plugin 架构
+# LangGraph 原生长期记忆架构
 
-最后更新：2026-08-11
+最后更新：2026-08-13
 
 ## Authority contract
 
 | 字段 | 内容 |
 | --- | --- |
-| 定位 | 排他 Memory Plugin 与 Runtime 记忆治理生命周期的当前权威 |
-| Owns | `MemoryPluginHost`、四生命周期、identity、freeze、ingestion、预算投影与 Plugin 装配 |
-| Does not own | 默认 Mem0 私有 HTTP wire、conversation 编译、通用 Memory Server 协议、Memory Tool |
-| 源码与 schema 入口 | `src/assistant_agent/memory/plugins/`、`memory/factory.py`、`memory/service.py` |
-| 验证入口 | `docs/authority.toml` 中 `memory-plugin.verification` |
-| 相邻 authority | Mem0 adapter 见 [`memory_server_api_spec.md`](memory_server_api_spec.md)；Context 见 [`context_engineering_status.md`](context_engineering_status.md) |
+| 定位 | 长期记忆 Graph 节点、冻结快照、后端装配和外部写入幂等的当前权威 |
+| Owns | `MemoryNodeBundle`、`memory_recall` / `memory_commit`、`memory_context`、commit ledger、Mem0/LangMem/disabled 装配与 time-travel 语义 |
+| Does not own | Mem0 私有 HTTP wire、conversation 编译、Gateway delivery ACK、通用 `BaseStore` 协议、模型可调用 Memory Tool |
+| 源码与 schema 入口 | `src/assistant_agent/memory/`、`runtime/assistant_graph_state.py`、`runtime/assistant_loop_graph.py` |
+| 验证入口 | `docs/authority.toml` 中 `graph-memory.verification`；核心不变量 `MEMORY-001` |
+| 相邻 authority | Mem0 wire 见 [`memory_server_api_spec.md`](memory_server_api_spec.md)；Context 见 [`context_engineering_status.md`](context_engineering_status.md)；运行流见 [`runtime-event-stream-architecture.md`](runtime-event-stream-architecture.md) |
 
-本文是 `assistant_agent` 长期记忆的当前权威。Runtime 只允许一个排他的 active Memory Plugin，
-并且只通过 `MemoryPluginHost` 使用它。Mem0 是默认内置实现；`Mem0Client` 是
-`Mem0MemoryPlugin` 的私有 HTTP/service adapter，不再是 Runtime 依赖。
-LangGraph state/checkpointer 只保存短期执行与恢复事实；当前 Assistant/Workflow graph 没有长期 Memory Store
-consumer，也不装配 `compile(store=...)`。checkpoint 最多保存 Host 已治理贡献的不透明 memory ref，不保存
-memory 正文、Plugin handle 或 lifecycle state；replay/fork 不能借 Graph Store 绕过本节四生命周期。
+## 1. 总体边界
 
-Assistant continuation 仅允许通过 Host 的只读 `attach_continuation_context` 绑定仍处于 active
-状态的 frozen logical-turn context。该调用同时校验 owner、origin run 以及 checkpoint 中
-`(memory_id, source)` ref 的精确序列，不调用 Plugin `open_session`/`prepare_context`，不读取
-底层 session/baseline store，也不把派生 invocation 注册为新的 frozen owner。waiting product turn
-保留 origin freeze；product terminal/session close 才释放，derived terminal 不释放其不拥有的
-origin。origin 已释放、Host 进程重启或 ref 不匹配时均 fail closed，不回退当前 baseline。
-长期 waiting/native-started freeze 不建立第二份 retained 仓；其保留必须已经通过 Graph claim
-admission，pre-native claim/capacity 失败由 Runtime rollback 本次 freeze。session close/shutdown 清理
-该 session，owned thread deletion 仅在 checkpoint+claim 删除成功后调用 Host
-`release_thread_contexts` 清理该 thread 的 active freeze；删除失败或 active claim 不清理。
-
-## 1. 边界与所有权
-
-当前调用关系为：
+长期记忆在运行流程中的统一抽象是 LangGraph `Node + State + Runtime`，不是项目自建 Memory SDK：
 
 ```text
-Assistant Runtime / Gateway
-  -> LongTermMemoryService（兼容 facade）
-  -> MemoryPluginHost（唯一 Runtime 治理边界）
-  -> assistant_memory_plugin_v1
-  -> active MemoryPlugin（同一 Runtime 恰好一个）
-       -> Mem0MemoryPlugin（默认内置）
-            -> Mem0Client
-            -> Mem0 service
-
-       或
-
-       -> operator 显式配置的可信 Python Memory Plugin
-            -> Plugin 私有 client / memory service
+Application composition root
+  ├── Checkpointer
+  ├── MemoryNodeBundle
+  │    ├── recall_node
+  │    ├── commit_node
+  │    ├── optional BaseStore
+  │    └── optional aclose
+  └── Assistant StateGraph
+       START
+         ↓
+       memory_recall
+         ↓
+       assistant / tool loop
+         ↓
+       publish_response
+         ↓
+       memory_commit
+         ↓
+        END
 ```
 
-Memory Plugin 负责记忆算法和私有后端，包括召回、搜索、排序、提取、更新、合并、删除、
-embedding、多模态关联以及 Plugin 私有 session/cache。Host 保留不能绕过的治理：
+`MemoryNodeBundle` 是 frozen composition value，只允许
+`backend_id / recall_node / commit_node / store / aclose`。它不提供 `search()`、`save()`、session、
+policy、retry、health、queue 或 worker；新增能力应由明确 Graph node 表达，不能把 bundle 扩展成新的
+Memory Service/Host。
 
-- 从可信 Runtime 身份生成 Plugin-scoped opaque identity；
-- API version、slot、配置、factory、descriptor 和返回 schema 校验；
-- timeout、取消、重试、并发、有界队列、幂等键和 shutdown；
-- owner/session 绑定的媒体读取与 artifact 登记；
-- context 安全投影、去重、硬预算、裁剪和 prompt 编译；
-- 结构化、脱敏的 trace 与失败降级。
+一个 compiled Assistant graph 只装配一个 active backend。当前支持：
 
-第一版 Plugin 是 operator 显式配置的可信进程内 Python 代码。导入 Plugin 等价于允许它在
-Assistant 进程中执行，不是不可信代码沙箱；module import 和 factory build 按契约不应连接远端。
-Plugin 返回的 memory text、metadata 和媒体证据仍是不可信历史数据，不能成为
-system/developer instruction，也不能覆盖当前用户请求、Runtime policy、ToolSpec、身份或授权。
+- `disabled`：完全离线，召回为空，写入跳过；
+- `mem0`：节点直接调用同步 `Mem0Client`，不伪装成 `BaseStore`；
+- `langmem`：manager 保留 extraction/update/merge 语义，Store 由
+  `graph.compile(store=...)` 原生注入，节点从 `runtime.store` 读取。
 
-Memory Plugin API 与 Tool Plugin API 是两条独立边界：
+assistant、tool 和 context compiler 不持有 backend/client/store 写引用。长期记忆写 authority 只在
+`memory_commit`；未来若提供显式用户记忆命令，必须新增受治理的 `memory_command` 节点。
 
-- Memory Plugin 由 Runtime 在固定生命周期调用，不能注册 Tool 或修改 Prompt/AgentState；
-- Tool Plugin 贡献 Tool，但所有本地显式调用仍经过
-  `ActionValidator -> ToolExecutor -> ToolRegistry -> tool`；
-- Memory 不是默认模型可调用 Tool，默认 Registry 不注册 `memory_search`、`memory_get` 或
-  `memory_save`，也不新增项目自建的记忆 CRUD/control-plane API。
+## 2. State 契约与冻结快照
 
-## 2. 装配、排他 slot 与配置
-
-Memory Plugin API 固定为 `assistant_memory_plugin_v1`，`kind` 固定为 `memory`。Registry 在启动期
-先验证完整 inventory，再构造配置选中的唯一 Plugin 并 seal；Host 只持有 sealed Registry。
-以下情况全部 fail closed：重复 `plugin_id`、非法 descriptor/API version/kind、未知或禁用 slot、
-module/export/factory/config/build 失败，以及活动 Plugin 与登记 descriptor 不一致。显式配置失败时
-不会静默回退到 Mem0。
-
-外部 module 必须导出：
-
-```python
-__assistant_memory_plugin_factory__
-```
-
-入口配置为 `MULTIMODAL_AGENT_MEMORY_PLUGIN_CONFIG_PATH`，文件 schema 示例：
-
-```json
-{
-  "schema_version": "assistant_memory_plugins_v1",
-  "slot": "mem0",
-  "plugins": {
-    "mem0": {
-      "enabled": true,
-      "module": "assistant_agent.memory.plugins.builtin.mem0",
-      "config": {
-        "base_url": "${MEM0_BASE_URL}",
-        "api_key": "${MEM0_API_KEY}",
-        "timeout_seconds": 5
-      }
-    }
-  }
-}
-```
-
-配置文件不得保存真实 secret；`${ENV_NAME}` 只由 Host 解析为不回显的 SecretRef。项目不扫描
-目录、不使用 Python entry point 自动启用、不因检测到 key 自动切换 Plugin，配置变化重启后生效。
-没有提供新配置文件时，composition root 继续从兼容的 `MEM0_BASE_URL`、`MEM0_API_KEY`、
-`MEM0_TIMEOUT_SECONDS` 和 `MEM0_IDENTITY_NAMESPACE` 装配默认 `mem0` slot。
-
-Host 执行边界使用：
-
-- `MULTIMODAL_AGENT_MEMORY_PLUGIN_OPEN_TIMEOUT_SECONDS`（默认 `5`）；
-- `MULTIMODAL_AGENT_MEMORY_PLUGIN_PREPARE_TIMEOUT_SECONDS`（默认 `5`）；
-- `MULTIMODAL_AGENT_MEMORY_PLUGIN_INGEST_TIMEOUT_SECONDS`（默认 `30`）；
-- `MULTIMODAL_AGENT_MEMORY_PLUGIN_CLOSE_TIMEOUT_SECONDS`（默认 `5`）；
-- `MULTIMODAL_AGENT_MEMORY_INGESTION_MAX_WORKERS`（默认 `2`）；
-- `MULTIMODAL_AGENT_MEMORY_INGESTION_MAX_PENDING`（默认 `64`）；
-- `MULTIMODAL_AGENT_MEMORY_INGESTION_SHUTDOWN_TIMEOUT_SECONDS`（默认 `10`）；
-- `MULTIMODAL_AGENT_MEMORY_SESSION_SNAPSHOT_MAX_ENTRIES`（默认 `1024`）。
-
-`MULTIMODAL_AGENT_PROVIDER_MODE=mock` 时，默认 Mem0 Plugin 使用明确的 unavailable adapter，
-不连接网络、不保存或召回记忆。只有 provider mode 为 `real` 且 Mem0 配置完整时，默认 Plugin 才构造
-真实 `Mem0Client`；不会从 real 静默回退为一个伪成功的 mock memory backend。
-
-## 3. 四个固定生命周期
-
-Runtime 不广播可修改状态的通用 Memory 事件，而是由 Host 调用四个强类型方法：
+`memory_recall` 将后端结果规范化为严格、版本化、checkpoint-safe 的 `MemoryContext`：
 
 ```text
-open_session -> prepare_context -> ingest_turn -> close_session
+backend_id / status / snapshot_id / items / issue_codes
+item = memory_id / text / source / relevance? / updated_at?
 ```
 
-### 3.1 `open_session`
+`memory_context` 是一次 logical turn 看见的长期记忆“照片”。冻结后，同一 turn 的 assistant/tool
+iteration 与 resume 都只消费 checkpoint 中的快照，不重新查询随时间变化的 backend。模型推理的稳定契约
+只有有序 `text`；其余 item 字段仅用于 recall observability，业务逻辑不得依赖某个后端的 ID、score 或
+时间字段。
 
-Session 创建时，Host 生成 `memory_session_id` 和 Plugin-scoped identity，再调用一次
-`Plugin.open_session()`。Host 校验并保存 Plugin 私有 `session_handle`，把初始 contribution 冻结为
-session baseline；重复初始化由 Host 去重。
+正文限制为每项最多 4,000 字、总计最多 12,000 字、最多 32 项。后端返回文本始终是不可信历史数据，
+不能覆盖 system/developer policy、当前用户请求、ToolSpec、身份或授权。Context compiler 仍负责最终
+token budget 和 prompt-safe 数据边界。
 
-`session_handle` 只回传给创建它的同一 Plugin，不进入 Prompt、日志、公开 trace 或 API。Plugin
-切换后不会复用旧 handle。打开失败会建立 degraded/unavailable session，冻结空 baseline，不能阻断
-session 或后续回答。
+## 3. 回答发布与写入
 
-### 3.2 `prepare_context`
-
-每个 user turn 在首次模型调用前，Host 最多调用一次 `Plugin.prepare_context()`。Plugin 接收当前
-`MemoryMessage`、预算提示和受管 `ManagedMediaRef`，返回本轮完整的结构化 contribution，而不是
-增删 patch。Host 将其与 baseline 按 `memory_id` 确定性合并，并在同一个 Agent run 内冻结结果；
-后续 ReAct/Tool iteration 只复用这份结果，不重复召回。
-
-如果 Plugin 声明 `supports_context_refresh=false`，Host 不调用该方法，只使用 session baseline。
-失败、超时、取消或无效结果统一降级为空的本轮贡献；当前回答继续。
-
-### 3.3 `ingest_turn`
-
-Runtime 形成最终回复并先记录 `response.delivered`，然后把不可变的原始 user/assistant message、
-结构化 Tool evidence、受管媒体引用和发生时间交给 Host。Host 生成稳定 idempotency key，并把任务加入
-有界后台队列；同一 `user_id + agent_id + session_id` 串行，不同身份可并行。
-
-`ingest_turn()` 的队列满、timeout、Plugin 拒绝或失败只写结构化观测，不把已经完成的 Agent run
-改成失败。只有声明 `supports_idempotent_ingestion=true` 的 Plugin 才允许 Host 自动重试。
-
-纯连接级视觉提醒管理 turn 是窄例外：当本轮存在 ToolResult 且全部来自
-`visual_reminder_manage` 时，Runtime 根据结构化工具身份以
-`reason=connection_scoped_visual_reminder` 跳过整轮 ingestion；判断不读取用户或助手文本。
-
-### 3.4 `close_session`
-
-Session reset、expiry、Gateway 销毁或 Runtime shutdown 时，Host 先停止接收该 session 的新 ingestion，
-有界等待已接受任务，再 best-effort 调用幂等的 `Plugin.close_session()`，最后清理 handle、baseline 和
-run freeze。关闭不会隐式获得 consolidation 或其他额外写权限；失败只记录清理风险。
-
-## 4. Context 与安全投影
-
-Plugin 只能返回 `MemoryContextContribution` 和 `MemoryContextItem`，不能返回 role message、prompt
-patch、绝对路径、凭据、未治理 URL 或 inline Base64。Host 在接受结果前校验 item 数量、总字符、
-metadata JSON、ID、时间、relevance、source capability 和媒体 owner。
-
-`ContextBuilder` 从本 run 的冻结 snapshot 读取同一份结构化 items，再执行统一预算和裁剪。
-Context renderer 将正文编码为带中文数据边界的 JSON 对象，并明确标记为不可信历史；
-`PromptCompiler` 把它放入独立的合成 `user` context message，随后才放当前真实 `user` 请求。
-该合成消息不写入 `ConversationStore`，也不再次提交给 Memory Plugin。
-
-固定 system policy 声明记忆可能过期、不完整或错误，当前请求和最新可靠证据优先。Plugin 提供的
-budget 只是一项提示，不能扩大 Host 的硬限制。
-
-## 5. 受管多模态引用
-
-文本以外的输入只通过 `ManagedMediaRef` 传递：
+规范化最终回答形成后，Graph 先通过 `publish_response` 把稳定的 `RunFinalProductFact` 写入产品事件流，
+再进入 `memory_commit`。Graph 等待 publish 调用成功，但不等待 Gateway/客户端 ACK：
 
 ```text
-ref_id / media_type / mime_type / size_bytes / created_at / owner_scope
+response.ready -> response.published -> memory_commit -> graph terminal
+                                      ↘ response.delivered 可独立观测
 ```
 
-Plugin 通过构造期注入的 `MemoryMediaReader` 读取已授权 bytes/stream，通过
-`MemoryArtifactWriter` 登记新 artifact。Host 校验 owner/session、声明 modality、MIME、有效期、
-单项和单 turn 大小、取消与 deadline，并拒绝目录、符号链接和任意路径。Plugin 正常 API 不会获得
-绝对路径、`file://`、未治理下载 URL 或 inline Base64。
+`memory_commit` 只接收受信 runtime identity、规范化 user/assistant 文本和稳定 logical turn origin；
+第三方原始异常与响应不得进入 State。commit 失败或超时只更新精简的 `MemoryCommitState`，不能改写已经
+发布的回答，也不能令产品 run 失败。所有入口收到 final event 后仍须消费 Graph 至终态，不能提前停止。
 
-进程内 Plugin 本身仍是可信代码；受管引用约束的是正式 Host 交互契约和审计边界，不宣称能隔离恶意
-Python 代码。
+## 4. 最小 commit ledger
 
-## 6. 默认 Mem0 Plugin
-
-`Mem0MemoryPlugin` 保持既有产品语义：
-
-- `open_session()` 按 Host 生成的不透明 `user_id + agent_id` 调用 Mem0 `get_all`，完整召回跨
-  session 长期记忆；Mem0 分页窗口由私有 adapter 展开，不在 client 端固定 `top_k` 截断；
-- 它声明 `supports_context_refresh=false`，所以每个 turn 复用 session 创建时的 baseline；
-- `ingest_turn()` 把完整 user/assistant messages 和稳定的 opaque `run_id` 交给 Mem0 原生 `add`，
-  不设置 `infer=false`；事实提取、合并、更新、向量化和持久化仍由 Mem0 完成；
-- `close_session()` 只释放该 Plugin 的进程内幂等记录，不执行 consolidation；
-- Mem0 原生响应只在 Plugin 边界转换为标准 context item、change 和 issue。
-
-Host 的 Plugin-scoped identity namespace 保持现有 Mem0 hash 兼容，用户 metadata 不能覆盖身份。
-仓库 sidecar 的 `custom_instructions` 继续要求只保留可直接支持、对未来跨 session 有持续价值的事实，
-忽略临时视觉环境、短暂状态、凭据、高度敏感信息和未经确认的推断；新提取、合并或更新后的正文使用
-简体中文。带时效且值得长期保留的事实仅在日期可靠时使用 `YYYY-MM-DD：` 前缀。
-
-Mem0 私有 HTTP 子集和 adapter 错误语义见
-[`memory_server_api_spec.md`](memory_server_api_spec.md)。Runtime 和第三方 Memory Plugin 不依赖该协议。
-
-## 7. 只读诊断 CLI
-
-```bash
-MULTIMODAL_AGENT_PROVIDER_MODE=mock \
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python \
-  -m assistant_agent.memory.cli plugins
-```
-
-命令输出固定 JSON schema：`active_slot`、`descriptor`、`source`、`selected`、`readiness`、
-`issues`、`generation` 和 `sealed`，并带 `schema_version=memory_plugin_assembly_v1`。它只解析配置、
-导入显式 module、校验 factory 并装配活动 Plugin；不创建 Host，不调用 `open_session()`、
-`prepare_context()`、`ingest_turn()` 或 `close_session()`，也不执行远端健康检查、recall、写入或真实
-Provider 请求。
-
-`readiness=ready` 只表示配置和 factory build 已就绪，不保证远端服务健康。默认 mock Mem0 会以
-exit code `0` 报告 `sealed=true`、`readiness=unavailable` 和 `memory_plugin_offline`，因为装配有效但
-后端按安全模式离线。装配失败以同一 schema 返回 exit code `1`、`sealed=false`、
-`generation=null`；报告不包含 Plugin config、解析后的 secret、原始异常或远端响应。
-装配期间显式 module、config validator 和 factory 写入的 stdout/stderr 会被丢弃，CLI stdout 只保留
-最终 JSON 报告；Plugin 需要诊断构造逻辑时应返回脱敏的结构化 issue，而不是打印配置或异常。
-
-该 CLI 是 Runtime Plugin 的只读装配诊断，不安装、升级、卸载或运行 Plugin 生命周期。
-
-## 8. 观测与失败降级
-
-每次 Host 生命周期调用只记录 prompt-safe 属性：
+LangGraph checkpoint 不能为外部 Memory API 提供 exactly-once，因此外部写入前必须经过独立
+`MemoryCommitLedger`。稳定 `memory_event_id` 绑定：
 
 ```text
-plugin_id / plugin_version / api_version / memory_session_id
-operation / status / latency_ms / item_count / media_count
-change_counts / issue_codes / retry_count / timeout
+backend_id + logical turn origin + commit schema version + normalized input digest
 ```
 
-普通日志、本地 completeness ledger 和公开 trace 不记录 memory text、原始 user/assistant message、媒体正文、
-session handle、API key、Plugin 原始异常或远端原始响应。Plugin 异常被 Host 转换为稳定的
-`memory_plugin_timeout`、`memory_plugin_unavailable`、`memory_plugin_invalid_result` 或
-`memory_plugin_internal_error`。
+SQLite 表 `memory_commit_events` 只记录 single-owner reserve、输入摘要和
+`invoking / succeeded / failed / outcome_unknown`。`succeeded` 去重；无法证明结果的中断或 timeout 标记为
+`outcome_unknown` 并 fail closed。ledger 不拥有 scheduler、retry、queue、worker、dead-letter 或 session
+lifecycle，也不复用 Tool operation 的业务模型。
 
-| 生命周期 | 失败行为 |
-| --- | --- |
-| `open_session` | degraded/unavailable session，空 baseline，继续运行 |
-| `prepare_context` | 本 run 使用空的本轮贡献，继续回答 |
-| `ingest_turn` | 后台记录失败，不改变已完成 run |
-| `close_session` | best effort 清理并记录风险 |
-| 媒体读取 | 拒绝不安全引用或结果；其他安全贡献仍按 Host 校验处理 |
+## 5. Time-travel 语义
 
-现有 `MULTIMODAL_AGENT_LOCAL_MEMORY_TRACE_CONTENT` 只控制本机 loopback Langfuse 的有界正文
-overlay。启用时可在 `assistant.turn` 下查看 `memory.turn_ingestion` 的 ADD/UPDATE/DELETE 正文；
-canonical event 仍只保留数量、operation 计数和 memory ID。单条 Mem0 演化继续使用其私有 history
-API 钻取，Langfuse 派生视图不反写 Memory Plugin。
+| invocation | recall | memory snapshot | commit |
+| --- | --- | --- | --- |
+| new invoke | 查询一次 | 新建并冻结 | 允许一次 |
+| resume | 不查询 | 复用中断 checkpoint | 原 product turn 以同一 event 去重 |
+| replay | 不查询 | 继承所选历史快照 | 禁止 |
+| default fork | 不查询 | 继承所选历史快照 | 禁止 |
+| `refresh_memory=true` fork | 重新查询 | 新建非精确历史快照 | 默认仍禁止 |
 
-## 9. Operator Mem0 控制台
+精确 resume/replay/fork 缺少 `memory_context` 时 fail closed，不回退当前 backend。refresh fork 是受信请求的
+显式 opt-in：它从 `memory_recall` 重新开始，因此不再是严格历史重现；其 `turn_provenance` 仍为
+`time_travel`，所以 commit 被节点拒绝。
 
-本地 Mem0 + Qdrant 运维入口仍为：
+## 6. 配置与资源生命周期
 
-```bash
-/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_mem0.py
-```
+受信配置 `MEMORY_BACKEND` 只能是 `disabled`、`mem0` 或 `langmem`，默认 `disabled`。mock mode 只能使用
+disabled；远端 backend 必须同时满足 `MULTIMODAL_AGENT_PROVIDER_MODE=real` 和完整显式配置，不能因发现
+key 自动启用，也不能在配置失败时静默 fallback。
 
-它启动并直接管理 Mem0 sidecar 的原生记录，提供 `status`、`list`、`get`、`history`、`add`、
-`update`、`delete`、`clear` 和 `exit`。这是可读写的本地 operator 控制台，不是 Runtime Memory
-Plugin 管理入口、不是 Assistant 可调用 Tool，也不经过 `assistant_memory_plugin_v1` 生命周期。
+Mem0 使用 `MEM0_BASE_URL / MEM0_API_KEY / MEM0_TIMEOUT_SECONDS /
+MEM0_IDENTITY_NAMESPACE`。LangMem 使用 `LANGMEM_MODEL`、显式 composition-owned `BaseStore` 和 optional
+dependency group `memory-langmem`；缺包时启动失败并给出可解释配置错误。
 
-控制台变更不会修改已经创建的 session baseline 或本 run 冻结贡献；必须创建新 session 才能在
-Assistant 上下文中看到更新。`clear --all` 的确认、持久化与其他安全规则见
-[`scripts/README.md`](../scripts/README.md)。
+ledger 默认路径为 `.local/langgraph/memory_commits.sqlite3`，可通过 `MEMORY_COMMIT_LEDGER_PATH` 修改。
+Store setup/migration/close 由 composition root 负责；client/manager 的可选异步关闭通过 bundle `aclose`
+归还 composition root。Runtime 不维护 Memory session、后台 ingestion 或第二条生命周期。
 
-## 10. 代码归属
+## 7. Mem0 与 LangMem 特有语义
 
-| 路径 | 职责 |
-| --- | --- |
-| `memory/plugins/contracts.py` | `assistant_memory_plugin_v1` descriptor、请求、结果与能力契约 |
-| `memory/plugins/config.py` | 显式 JSON 配置、SecretRef 和安全错误 |
-| `memory/plugins/assembly.py` | module/factory 校验、排他 slot 与原子装配 |
-| `memory/plugins/registry.py` | sealed inventory、活动 Plugin、报告和 generation |
-| `memory/plugins/host.py` | 身份、四生命周期、冻结、校验、队列、重试、关闭与降级 |
-| `memory/plugins/media.py` | owner-bound media store、reader 和 writer |
-| `memory/plugins/session_store.py` | Host 私有 handle、baseline、retired state 与并发所有权 |
-| `memory/plugins/builtin/mem0.py` | 默认 `Mem0MemoryPlugin` 与 factory；拥有 Mem0 adapter |
-| `memory/mem0/` | 仅供默认 Plugin 使用的 Mem0 HTTP、身份与原生模型 |
-| `memory/factory.py` | 统一 composition root，装配 Registry、Host 和兼容 facade |
-| `memory/service.py` | Runtime 兼容 facade，只委托 `MemoryPluginHost` |
-| `memory/cli.py` | 不进入生命周期的只读 Plugin 装配报告 |
-| `context/builder.py` | 将本 run 冻结的标准 Memory item 投影进 Assistant context |
+Mem0 recall 使用可信身份绑定后的 opaque `user_id + agent_id`；commit 额外携带 opaque `run_id` 和稳定
+`source_turn=memory_event_id`。节点负责排序、裁剪、状态规范化和错误脱敏；事实提取、合并、更新、向量化
+由 Mem0 完成。私有 HTTP 子集见 [`memory_server_api_spec.md`](memory_server_api_spec.md)。
 
-## 11. 不提供的能力
+LangMem manager 使用 `create_memory_store_manager`，namespace 为
+`("assistant_agent", opaque_subject_id)`。recall 必须读取 compile 注入的同一 `runtime.store`；资源不一致
+属于配置错误。项目不把 LangMem 或 Mem0 的专有 schema 暴露给其他 Graph 节点。
 
-项目不提供多 active Memory Plugin 合并、自建检索排序/冲突策略/TTL/promotion、通用 Memory 事件总线、
-外部 Plugin RPC、Plugin marketplace 或默认 Memory Tool。第三方服务需要实现受信任的
-`assistant_memory_plugin_v1` factory；如果未来需要主动删除、导出、retention 或 consolidation，必须
-新增独立、显式且受治理的契约，不能塞进当前四生命周期或绕过 Host。
+## 8. 可观测性
+
+`memory_recall` 和 `memory_commit` 分别产生 `memory.recall.finished` 与
+`memory.commit.finished` canonical event，并投影为同名 SPAN。只记录 backend ID、节点状态、召回项数、
+裁剪后字符数、latency、memory event ID 与 issue code；不记录 Memory 正文、commit 对话、secret 或第三方
+原始响应。观测写入 fail-open，不得改变 Graph 结果。
+
+迁移前的 `memory.session_recall.finished`、`memory.ingestion.finished` 和 `memory.turn_ingestion` 只在
+trace reader/exporter/evaluator 中保留历史数据兼容，不再由当前 Graph memory 主线产生。
+
+## 9. 非目标
+
+当前不提供多 backend 融合/双写、模型可调用 Memory Tool、自研通用 Memory SDK、Memory session、后台
+reflection worker、重试调度、通用 CRUD/control-plane API，或把 Mem0 包装为 `BaseStore`。这些能力若
+未来需要，必须分别明确产品权限、Graph 位置、数据协议和副作用治理。

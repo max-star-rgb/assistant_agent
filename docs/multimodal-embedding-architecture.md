@@ -198,11 +198,11 @@ lease 条目，避免长连接在持续处理期间被关闭。observer close �
 `runtime_session_id` 创建，切换同一连接的 `video_id` 时保留，WebSocket close 时立即关闭、清空和注销。
 同一连接不允许重复 `assistantControl`，视频帧 `userNumber` 必须与握手 owner 一致。提醒创建还要求
 SigLIP2 image/text 双模态 readiness 和 text event 的 model/revision/space/dimension 契约一致；不可用、
-非归一化、非有限或零范数向量不会登记为 pending。提醒状态不写 `SessionVisualSemanticStore`、Mem0、
+非归一化、非有限或零范数向量不会登记为 pending。提醒状态不写 `SessionVisualSemanticStore`、长期记忆 backend、
 durable task 或 notification outbox，不能跨连接恢复。仅执行 `visual_reminder_manage` 的纯连接级 turn
-还会依据结构化 ToolResult 确定性跳过 Mem0 ingestion；混合其他工具的 turn 不使用这条整体排除。
+不会被 `memory_commit` 当作跨 session 事实；混合其他工具的 turn 仍按正常 commit policy 处理。
 成功 server send 会在同一 runtime session 保存有界的 proactive session event，供下一轮主 LLM 理解
-“知道了”等指代；该事件在连接关闭时清除，不进入 ConversationStore、Mem0 或跨连接恢复。
+“知道了”等指代；该事件在连接关闭时清除，不进入 ConversationStore、长期记忆 backend 或跨连接恢复。
 
 查询时 Runtime 绑定 user/session，ToolContext 提供可信 as-of sequence/time；模型只能提交
 `query/time_window/search_mode`。Tool 先按可信边界读取 Store 最后最多 256 条记录，再把 Store 最早保留

@@ -12,8 +12,8 @@ Core project docs:
 - Observability architecture and trace contract: [docs/observability-harness.md](docs/observability-harness.md)
 - Real-run diagnosis runbook: [docs/observability-diagnosis-runbook.md](docs/observability-diagnosis-runbook.md)
 - Website guidance（Qwen 候选 URL、Playwright 只读浏览与安全边界）: [docs/tool-calling-architecture.md](docs/tool-calling-architecture.md)
-- Memory Plugin architecture（排他 active Plugin，默认 Mem0）: [docs/memory-service-architecture.md](docs/memory-service-architecture.md)
-- 默认 Mem0 Plugin 的私有 HTTP adapter 子集: [docs/memory_server_api_spec.md](docs/memory_server_api_spec.md)
+- LangGraph 原生长期记忆（固定节点、冻结快照、Mem0/LangMem/disabled）: [docs/memory-service-architecture.md](docs/memory-service-architecture.md)
+- Mem0 graph backend 的私有 HTTP adapter 子集: [docs/memory_server_api_spec.md](docs/memory_server_api_spec.md)
 - Context engineering architecture: [docs/context_engineering_status.md](docs/context_engineering_status.md)
 - Multi-agent routing: [docs/agent-communication-routing.md](docs/agent-communication-routing.md)
 - Media-Agent WebSocket contract: [docs/media-agent-service-websocket.md](docs/media-agent-service-websocket.md)
@@ -45,7 +45,7 @@ Provider profiles and external-provider configuration are documented in [docs/to
 | `observability/` | trace、日志、metrics、OpenTelemetry 和 Langfuse |
 | `improvement/` | 离线改进证据、提案、评估和报告 |
 | `providers/` | 跨入口共享的 Provider 配置、错误治理和 adapter |
-| `memory/` | 排他 Memory Plugin Host、session/run freeze、ingestion、受管媒体和默认 Mem0 Plugin |
+| `memory/` | Graph-native Memory bundle、commit ledger、Mem0/LangMem/disabled 后端 |
 | `api/` | FastAPI HTTP/WebSocket 薄入口 |
 | `mcp/` | MCP 配置、client、registration 和 server adapter |
 | `config/` | 进程配置装配 |
@@ -57,11 +57,11 @@ Provider profiles and external-provider configuration are documented in [docs/to
 `python -m assistant_agent.tools.cli plugins` 查看只读装配报告；该机制会执行所配置 module 的进程内代码，
 不是不可信代码沙箱。具体协议和治理边界见 Tool calling 文档。
 
-可信 Python Memory Plugin 使用独立的 `assistant_memory_plugin_v1` 和排他 `memory` slot，通过
-`MULTIMODAL_AGENT_MEMORY_PLUGIN_CONFIG_PATH` 显式配置，重启后生效。可用
-`python -m assistant_agent.memory.cli plugins` 查看只读、脱敏的装配报告；默认内置实现为 Mem0，
-`Mem0Client` 仅是该 Plugin 的私有 adapter。Memory Plugin 不注册 Tool，也不直接修改 Prompt 或
-`AgentState`。具体生命周期、mock/real 边界和 CLI schema 见 Memory Plugin 架构文档。
+长期记忆由固定的 `memory_recall` / `memory_commit` Graph 节点定位，规范化正文冻结在
+`state.memory_context`；assistant/tool 只消费其有序文本。composition root 一次只装配一个
+`MemoryNodeBundle`：默认离线 `disabled`，也可显式选择直接 Mem0 节点或使用 LangGraph
+`BaseStore` 的可选 LangMem 节点。回答先进入产品事件流，随后 commit；最小 ledger 负责外部写入去重，
+replay/fork 默认不写长期记忆。具体配置、time-travel 和 mock/real 边界见长期记忆架构文档。
 
 Basic check（只运行稳定的 `tests/core` 核心框架安全网）：
 
