@@ -8,7 +8,6 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
 
-
 WorkflowStatus = Literal[
     "queued",
     "running",
@@ -57,7 +56,9 @@ class WorkflowConstraintProposal(BaseModel):
     constraint_id: str = Field(pattern=r"^[a-zA-Z][a-zA-Z0-9_.-]{0,119}$")
     statement: str = Field(min_length=1, max_length=4_000)
     owner_work_item_ids: list[str] = Field(min_length=1, max_length=64)
-    verifier_work_item_id: str | None = Field(default=None, min_length=1, max_length=160)
+    verifier_work_item_id: str | None = Field(
+        default=None, min_length=1, max_length=160
+    )
     severity: ConstraintSeverity = "required"
 
     @model_validator(mode="after")
@@ -292,7 +293,9 @@ class WorkflowWorkItem(BaseModel):
         if any(value is None for value in lease_values) and any(
             value is not None for value in lease_values
         ):
-            raise ValueError("attempt id, lease owner, token, and expiry must be set together")
+            raise ValueError(
+                "attempt id, lease owner, token, and expiry must be set together"
+            )
         if self.lease_expires_at is not None and self.lease_expires_at.tzinfo is None:
             raise ValueError("work item lease expiry must be timezone-aware")
         if self.status == "running" and self.lease_token is None:
@@ -337,6 +340,26 @@ class WorkflowEngineMigration(BaseModel):
     source_revision: int = Field(ge=1)
     manifest_revision: int = Field(ge=1)
     manifest_digest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+
+
+class WorkflowRetirementAudit(BaseModel):
+    """Persisted business approval bound to one immutable cutover manifest."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    schema_version: Literal["workflow_engine_retirement_audit_v1"] = (
+        "workflow_engine_retirement_audit_v1"
+    )
+    manifest_revision: int = Field(ge=1)
+    manifest_digest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    operator_approval_ref: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$")
+    created_at: datetime
+
+    @model_validator(mode="after")
+    def validate_created_at(self) -> "WorkflowRetirementAudit":
+        if self.created_at.tzinfo is None:
+            raise ValueError("retirement audit timestamp must be timezone-aware")
+        return self
 
 
 class WorkflowRecord(BaseModel):
@@ -399,9 +422,7 @@ class WorkflowRecord(BaseModel):
             if value is not None and value.tzinfo is None:
                 raise ValueError(f"{name} must be timezone-aware")
         if self.ingress_parent_span_id is not None and self.ingress_trace_id is None:
-            raise ValueError(
-                "ingress parent span id requires an ingress trace id"
-            )
+            raise ValueError("ingress parent span id requires an ingress trace id")
         migration = self.engine_migration
         if self.legacy_claim_frozen != (
             migration is not None and migration.status == "prepared"
@@ -467,7 +488,9 @@ class WorkflowBundle(BaseModel):
         if terminal and self.workflow.terminal_at is None:
             raise ValueError("terminal_at is required for terminal workflow status")
         if not terminal and self.workflow.terminal_at is not None:
-            raise ValueError("terminal_at is forbidden for non-terminal workflow status")
+            raise ValueError(
+                "terminal_at is forbidden for non-terminal workflow status"
+            )
         return self
 
     @property

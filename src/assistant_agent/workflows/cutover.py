@@ -16,6 +16,7 @@ from assistant_agent.workflows.models import (
     WorkflowBundle,
     WorkflowEngineMigration,
     WorkflowEvent,
+    WorkflowRetirementAudit,
 )
 from assistant_agent.workflows.store import WorkflowRevisionConflict, WorkflowStore
 
@@ -31,6 +32,15 @@ LegacyCutoverClass = Literal[
     "migrate_pristine_queued",
     "drain_running",
     "drain_waiting",
+]
+WorkflowRetirementReasonCode = Literal[
+    "nonterminal_legacy_present",
+    "active_legacy_leases_present",
+    "waiting_legacy_present",
+    "manifest_not_retired",
+    "rollback_window_open",
+    "retirement_audit_missing",
+    "retirement_audit_manifest_mismatch",
 ]
 
 
@@ -55,9 +65,7 @@ class WorkflowEngineCutoverManifest(_StrictFrozenModel):
     legacy_rules: WorkflowLegacyCutoverRules
     drain_deadline: datetime
     rollback_deadline: datetime
-    operator_approval_ref: str = Field(
-        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$"
-    )
+    operator_approval_ref: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$")
 
     @model_validator(mode="after")
     def validate_deadlines(self) -> "WorkflowEngineCutoverManifest":
@@ -83,6 +91,24 @@ class WorkflowCutoverInventory(_StrictFrozenModel):
 
     counts: dict[LegacyCutoverClass, int]
     nonterminal_legacy_count: int = Field(ge=0)
+
+
+class WorkflowRetirementStatus(_StrictFrozenModel):
+    """Content-free machine proof for removal of the legacy execution path."""
+
+    schema_version: Literal["workflow_retirement_status_v1"] = (
+        "workflow_retirement_status_v1"
+    )
+    ready: bool
+    nonterminal_legacy_count: int = Field(ge=0)
+    active_legacy_lease_count: int = Field(ge=0)
+    waiting_legacy_count: int = Field(ge=0)
+    manifest_phase: CutoverPhase
+    manifest_revision: int = Field(ge=1)
+    manifest_digest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    rollback_closed: bool
+    retirement_audit_present: bool
+    reason_codes: tuple[WorkflowRetirementReasonCode, ...] = Field(max_length=7)
 
 
 class WorkflowCutoverController:
@@ -138,6 +164,105 @@ class WorkflowCutoverController:
             nonterminal_legacy_count=sum(ordered.values())
             - ordered["terminal_read_only"],
         )
+
+    def retirement_status(self, *, now: datetime) -> WorkflowRetirementStatus:
+        """Recompute every legacy-removal prerequisite from persisted facts."""
+
+        if now.tzinfo is None:
+            raise ValueError("retirement status timestamp must be timezone-aware")
+        self.refresh_manifest()
+        list_bundles = getattr(self.store, "list_cutover_bundles", None)
+        if not callable(list_bundles):
+            raise TypeError("workflow store does not support cutover inventory")
+        bundles = list_bundles()
+        if any(not isinstance(bundle, WorkflowBundle) for bundle in bundles):
+            raise TypeError("workflow cutover inventory returned an invalid bundle")
+        legacy = [
+            bundle
+            for bundle in bundles
+            if bundle.workflow.execution_engine == "legacy_scheduler_v2"
+        ]
+        nonterminal_count = sum(
+            bundle.workflow.status not in {"completed", "failed", "cancelled"}
+            for bundle in legacy
+        )
+        waiting_count = sum(
+            bundle.workflow.status in {"waiting_input", "blocked"} for bundle in legacy
+        )
+        active_lease_count = sum(
+            item.lease_expires_at is not None and item.lease_expires_at > now
+            for bundle in legacy
+            for plan in bundle.plans
+            for item in plan.work_items
+        )
+        rollback_closed = now > self.manifest.rollback_deadline
+        list_audits = getattr(self.store, "list_retirement_audits", None)
+        if not callable(list_audits):
+            raise TypeError("workflow store does not support retirement audit facts")
+        audits = list_audits()
+        audit_present = any(
+            audit.manifest_revision == self.manifest.revision
+            and audit.manifest_digest == self.manifest.digest
+            and audit.operator_approval_ref == self.manifest.operator_approval_ref
+            for audit in audits
+        )
+        reasons: list[WorkflowRetirementReasonCode] = []
+        if nonterminal_count:
+            reasons.append("nonterminal_legacy_present")
+        if active_lease_count:
+            reasons.append("active_legacy_leases_present")
+        if waiting_count:
+            reasons.append("waiting_legacy_present")
+        if self.manifest.phase != "retired":
+            reasons.append("manifest_not_retired")
+        if not rollback_closed:
+            reasons.append("rollback_window_open")
+        if not audit_present:
+            reasons.append(
+                "retirement_audit_manifest_mismatch"
+                if audits
+                else "retirement_audit_missing"
+            )
+        return WorkflowRetirementStatus(
+            ready=not reasons,
+            nonterminal_legacy_count=nonterminal_count,
+            active_legacy_lease_count=active_lease_count,
+            waiting_legacy_count=waiting_count,
+            manifest_phase=self.manifest.phase,
+            manifest_revision=self.manifest.revision,
+            manifest_digest=self.manifest.digest,
+            rollback_closed=rollback_closed,
+            retirement_audit_present=audit_present,
+            reason_codes=tuple(reasons),
+        )
+
+    def record_retirement_audit(self, *, now: datetime) -> WorkflowRetirementAudit:
+        """Persist approval only after every non-audit retirement fact is true."""
+
+        status = self.retirement_status(now=now)
+        if not status.reason_codes:
+            return next(
+                audit
+                for audit in self.store.list_retirement_audits()
+                if audit.manifest_revision == self.manifest.revision
+                and audit.manifest_digest == self.manifest.digest
+                and audit.operator_approval_ref == self.manifest.operator_approval_ref
+            )
+        if status.reason_codes == ("retirement_audit_manifest_mismatch",):
+            raise ValueError("retirement_audit_manifest_conflict")
+        if status.reason_codes != ("retirement_audit_missing",):
+            raise ValueError("workflow_retirement_prerequisites_not_satisfied")
+        audit = WorkflowRetirementAudit(
+            manifest_revision=self.manifest.revision,
+            manifest_digest=self.manifest.digest,
+            operator_approval_ref=self.manifest.operator_approval_ref,
+            created_at=now,
+        )
+        record = getattr(self.store, "record_retirement_audit", None)
+        if not callable(record):
+            raise TypeError("workflow store does not support retirement audit facts")
+        record(audit)
+        return audit
 
     def legacy_drain_allowlist(self) -> frozenset[str]:
         """Freeze exact existing non-migratable legacy owners for the drain host."""
@@ -290,7 +415,9 @@ class WorkflowCutoverController:
                 raise ValueError("workflow migration is not rollback eligible")
             self._validate_manifest_revision(migration)
             if await graph_host.has_checkpoint(workflow_id=workflow_id):
-                raise ValueError("workflow migration checkpoint exists; rollback is unsafe")
+                raise ValueError(
+                    "workflow migration checkpoint exists; rollback is unsafe"
+                )
             changed = bundle.model_copy(deep=True)
             changed.workflow.engine_migration = migration.model_copy(
                 update={"status": "rolled_back"}
@@ -471,6 +598,7 @@ __all__ = [
     "WorkflowCutoverInventory",
     "WorkflowEngineCutoverManifest",
     "WorkflowLegacyCutoverRules",
+    "WorkflowRetirementStatus",
     "WorkflowMigrationReconciler",
     "load_workflow_cutover_manifest",
 ]

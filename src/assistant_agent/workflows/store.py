@@ -14,6 +14,7 @@ from assistant_agent.workflows.models import (
     WorkflowWorkItem,
     WorkflowWorkItemLease,
     WorkflowExecutionEngine,
+    WorkflowRetirementAudit,
     utc_now,
 )
 
@@ -34,8 +35,14 @@ class WorkflowLeaseConflict(WorkflowStoreError):
     pass
 
 
+class WorkflowRetirementAuditConflict(WorkflowStoreError):
+    pass
+
+
 class WorkflowStore(Protocol):
-    def create(self, bundle: WorkflowBundle, events: list[WorkflowEvent]) -> WorkflowBundle: ...
+    def create(
+        self, bundle: WorkflowBundle, events: list[WorkflowEvent]
+    ) -> WorkflowBundle: ...
     def load(self, workflow_id: str) -> WorkflowBundle | None: ...
     def load_by_submission(
         self,
@@ -57,6 +64,8 @@ class WorkflowStore(Protocol):
     ) -> list[WorkflowEvent]: ...
     def latest_event_cursor(self, workflow_id: str) -> int: ...
     def list_cutover_bundles(self) -> list[WorkflowBundle]: ...
+    def record_retirement_audit(self, audit: WorkflowRetirementAudit) -> None: ...
+    def list_retirement_audits(self) -> list[WorkflowRetirementAudit]: ...
     def claim_ready_work_item(
         self,
         *,
@@ -100,8 +109,7 @@ def workflow_matches_claim_scope(
         and workflow.execution_engine in allowed_execution_engines
         and workflow.workflow_type in allowed_workflow_types
         and (
-            allowed_workflow_ids is None
-            or workflow.workflow_id in allowed_workflow_ids
+            allowed_workflow_ids is None or workflow.workflow_id in allowed_workflow_ids
         )
     )
 
@@ -151,32 +159,36 @@ def recover_expired_work_item_leases(
         item.error_code = "work_item_lease_expired"
         _clear_item_lease(item)
         item.status = "ready" if item.attempt_count < item.max_attempts else "blocked"
-        events.append(WorkflowEvent(
-            workflow_id=workflow.workflow_id,
-            event_type="workflow.work_item.lease_expired",
-            status="recovering" if item.status == "ready" else "failed",
-            payload={
-                "work_item_id": item.work_item_id,
-                "attempt_id": expired_attempt_id,
-                "attempt_count": item.attempt_count,
-                "work_item_status": item.status,
-                "error_code": item.error_code,
-            },
-            created_at=now,
-        ))
+        events.append(
+            WorkflowEvent(
+                workflow_id=workflow.workflow_id,
+                event_type="workflow.work_item.lease_expired",
+                status="recovering" if item.status == "ready" else "failed",
+                payload={
+                    "work_item_id": item.work_item_id,
+                    "attempt_id": expired_attempt_id,
+                    "attempt_count": item.attempt_count,
+                    "work_item_status": item.status,
+                    "error_code": item.error_code,
+                },
+                created_at=now,
+            )
+        )
         if item.status == "blocked":
             workflow.status = "failed"
             workflow.phase = "failed"
             workflow.terminal_reason_code = item.error_code
             workflow.terminal_at = now
             _cancel_active_items(bundle)
-            events.append(WorkflowEvent(
-                workflow_id=workflow.workflow_id,
-                event_type="workflow.failed",
-                status="failed",
-                payload={"reason_code": item.error_code},
-                created_at=now,
-            ))
+            events.append(
+                WorkflowEvent(
+                    workflow_id=workflow.workflow_id,
+                    event_type="workflow.failed",
+                    status="failed",
+                    payload={"reason_code": item.error_code},
+                    created_at=now,
+                )
+            )
             break
     if events and workflow.status not in {"failed", "cancelled", "completed"}:
         workflow.status = "recovering"
@@ -212,18 +224,24 @@ def claim_ready_item_in_bundle(
     )
     if now >= workflow.budget.deadline_at:
         _terminalize_unclaimed_workflow(bundle, now=now, reason="deadline_exceeded")
-        events.append(_workflow_failed_event(bundle, now=now, reason="deadline_exceeded"))
+        events.append(
+            _workflow_failed_event(bundle, now=now, reason="deadline_exceeded")
+        )
         return None, events
     if workflow.budget.workflow_quanta_remaining <= 0:
         if has_running_items:
             return None, events
         _terminalize_unclaimed_workflow(bundle, now=now, reason="budget_exhausted")
-        events.append(_workflow_failed_event(bundle, now=now, reason="budget_exhausted"))
+        events.append(
+            _workflow_failed_event(bundle, now=now, reason="budget_exhausted")
+        )
         return None, events
     if workflow.budget.model_calls_remaining <= 0:
         if has_running_items:
             return None, events
-        _terminalize_unclaimed_workflow(bundle, now=now, reason="model_budget_exhausted")
+        _terminalize_unclaimed_workflow(
+            bundle, now=now, reason="model_budget_exhausted"
+        )
         events.append(
             _workflow_failed_event(bundle, now=now, reason="model_budget_exhausted")
         )
@@ -253,20 +271,22 @@ def claim_ready_item_in_bundle(
     workflow.status = "running"
     if workflow.phase != "planning":
         workflow.phase = "executing"
-    events.append(WorkflowEvent(
-        workflow_id=workflow.workflow_id,
-        event_type="workflow.work_item.started",
-        status="running",
-        payload={
-            "work_item_id": item.work_item_id,
-            "plan_version": workflow.current_plan_version,
-            "attempt_id": attempt_id,
-            "worker_id": worker_id,
-            "reserved_model_calls": reserved_model_calls,
-            "reserved_tool_calls": reserved_tool_calls,
-        },
-        created_at=now,
-    ))
+    events.append(
+        WorkflowEvent(
+            workflow_id=workflow.workflow_id,
+            event_type="workflow.work_item.started",
+            status="running",
+            payload={
+                "work_item_id": item.work_item_id,
+                "plan_version": workflow.current_plan_version,
+                "attempt_id": attempt_id,
+                "worker_id": worker_id,
+                "reserved_model_calls": reserved_model_calls,
+                "reserved_tool_calls": reserved_tool_calls,
+            },
+            created_at=now,
+        )
+    )
     return WorkflowWorkItemLease(
         workflow_id=workflow.workflow_id,
         workflow_revision=workflow.revision + 1,
@@ -322,9 +342,12 @@ class InMemoryWorkflowStore:
         self._bundles: dict[str, WorkflowBundle] = {}
         self._submissions: dict[tuple[str, str, str, str], str] = {}
         self._events: dict[str, list[WorkflowEvent]] = {}
+        self._retirement_audits: dict[tuple[int, str], WorkflowRetirementAudit] = {}
         self._lock = RLock()
 
-    def create(self, bundle: WorkflowBundle, events: list[WorkflowEvent]) -> WorkflowBundle:
+    def create(
+        self, bundle: WorkflowBundle, events: list[WorkflowEvent]
+    ) -> WorkflowBundle:
         with self._lock:
             workflow_id = bundle.workflow.workflow_id
             key = submission_key(bundle)
@@ -365,6 +388,33 @@ class InMemoryWorkflowStore:
             return [
                 self._bundles[workflow_id].model_copy(deep=True)
                 for workflow_id in sorted(self._bundles)
+            ]
+
+    def record_retirement_audit(self, audit: WorkflowRetirementAudit) -> None:
+        """Persist one idempotent manifest-bound retirement approval."""
+
+        with self._lock:
+            key = (audit.manifest_revision, audit.manifest_digest)
+            if key in self._retirement_audits:
+                if (
+                    self._retirement_audits[key].operator_approval_ref
+                    == audit.operator_approval_ref
+                ):
+                    return
+                raise WorkflowRetirementAuditConflict(
+                    "retirement_audit_manifest_conflict"
+                )
+            if self._retirement_audits:
+                raise WorkflowRetirementAuditConflict(
+                    "retirement_audit_manifest_conflict"
+                )
+            self._retirement_audits[key] = audit.model_copy(deep=True)
+
+    def list_retirement_audits(self) -> list[WorkflowRetirementAudit]:
+        with self._lock:
+            return [
+                self._retirement_audits[key].model_copy(deep=True)
+                for key in sorted(self._retirement_audits)
             ]
 
     def save(
@@ -486,10 +536,12 @@ class InMemoryWorkflowStore:
             item.lease_expires_at = now + timedelta(seconds=lease_seconds)
             bundle.workflow.revision += 1
             bundle.workflow.updated_at = now
-            return lease.model_copy(update={
-                "workflow_revision": bundle.workflow.revision,
-                "expires_at": item.lease_expires_at,
-            })
+            return lease.model_copy(
+                update={
+                    "workflow_revision": bundle.workflow.revision,
+                    "expires_at": item.lease_expires_at,
+                }
+            )
 
     def close(self) -> None:
         return None

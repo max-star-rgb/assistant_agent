@@ -14,12 +14,15 @@ from assistant_agent.workflows.models import (
     WorkflowEvent,
     WorkflowWorkItemLease,
     WorkflowExecutionEngine,
+    WorkflowRetirementAudit,
     utc_now,
 )
 from assistant_agent.workflows.store import (
     WorkflowAlreadyExists,
     WorkflowLeaseConflict,
     WorkflowRevisionConflict,
+    WorkflowRetirementAuditConflict,
+    WorkflowStoreError,
     _lease_matches,
     assign_event_cursors,
     claim_ready_item_in_bundle,
@@ -83,16 +86,39 @@ def _load_bundle_json(value: str) -> WorkflowBundle:
 
 
 class SQLiteWorkflowStore:
-    def __init__(self, path: Path | str) -> None:
+    def __init__(self, path: Path | str, *, read_only: bool = False) -> None:
         self.path = Path(path)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._connection = sqlite3.connect(self.path, check_same_thread=False)
+        self._read_only = read_only
+        if read_only:
+            resolved = self.path.resolve(strict=True)
+            self._connection = sqlite3.connect(
+                f"{resolved.as_uri()}?mode=ro",
+                uri=True,
+                check_same_thread=False,
+            )
+        else:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self._connection = sqlite3.connect(self.path, check_same_thread=False)
         self._connection.row_factory = sqlite3.Row
-        self._connection.execute("PRAGMA journal_mode=WAL")
-        self._connection.execute("PRAGMA synchronous=NORMAL")
+        if read_only:
+            self._connection.execute("PRAGMA query_only=ON")
+        else:
+            self._connection.execute("PRAGMA journal_mode=WAL")
+            self._connection.execute("PRAGMA synchronous=NORMAL")
         self._connection.execute("PRAGMA busy_timeout=1000")
         self._lock = RLock()
-        self._initialize()
+        if not read_only:
+            self._initialize()
+
+    @classmethod
+    def open_read_only(cls, path: Path | str) -> "SQLiteWorkflowStore":
+        """Open an existing operator database without schema or journal writes."""
+
+        return cls(path, read_only=True)
+
+    def _ensure_writable(self) -> None:
+        if self._read_only:
+            raise WorkflowStoreError("workflow_store_read_only")
 
     def _initialize(self) -> None:
         with self._connection:
@@ -122,19 +148,28 @@ class SQLiteWorkflowStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_durable_workflows_claim
                 ON durable_workflows(status, cancel_requested, lease_expires_at, updated_at);
+                CREATE TABLE IF NOT EXISTS workflow_engine_retirement_audits (
+                  manifest_revision INTEGER NOT NULL,
+                  manifest_digest TEXT NOT NULL,
+                  audit_json TEXT NOT NULL,
+                  PRIMARY KEY (manifest_revision, manifest_digest)
+                );
                 """
             )
 
-    def create(self, bundle: WorkflowBundle, events: list[WorkflowEvent]) -> WorkflowBundle:
+    def create(
+        self, bundle: WorkflowBundle, events: list[WorkflowEvent]
+    ) -> WorkflowBundle:
+        self._ensure_writable()
         with self._lock:
             stored = bundle.model_copy(deep=True)
             stored.workflow.updated_at = utc_now()
             try:
                 self._connection.execute("BEGIN IMMEDIATE")
                 self._insert_bundle(stored)
-                self._insert_events(assign_event_cursors(
-                    stored.workflow.workflow_id, events, start=1
-                ))
+                self._insert_events(
+                    assign_event_cursors(stored.workflow.workflow_id, events, start=1)
+                )
                 self._connection.commit()
             except sqlite3.IntegrityError as exc:
                 self._connection.rollback()
@@ -180,6 +215,74 @@ class SQLiteWorkflowStore:
             ).fetchall()
             return [_load_bundle_json(row[0]) for row in rows]
 
+    def record_retirement_audit(self, audit: WorkflowRetirementAudit) -> None:
+        """Persist one idempotent manifest-bound retirement approval."""
+
+        self._ensure_writable()
+        with self._lock:
+            try:
+                self._connection.execute("BEGIN IMMEDIATE")
+                rows = self._connection.execute(
+                    """
+                    SELECT manifest_revision, manifest_digest, audit_json
+                    FROM workflow_engine_retirement_audits
+                    """
+                ).fetchall()
+                key = (audit.manifest_revision, audit.manifest_digest)
+                matching = next(
+                    (
+                        WorkflowRetirementAudit.model_validate_json(row[2])
+                        for row in rows
+                        if (int(row[0]), str(row[1])) == key
+                    ),
+                    None,
+                )
+                if matching is not None:
+                    if matching.operator_approval_ref == audit.operator_approval_ref:
+                        self._connection.commit()
+                        return
+                    raise WorkflowRetirementAuditConflict(
+                        "retirement_audit_manifest_conflict"
+                    )
+                if rows:
+                    raise WorkflowRetirementAuditConflict(
+                        "retirement_audit_manifest_conflict"
+                    )
+                self._connection.execute(
+                    """
+                    INSERT INTO workflow_engine_retirement_audits (
+                      manifest_revision, manifest_digest, audit_json
+                    ) VALUES (?, ?, ?)
+                    """,
+                    (
+                        audit.manifest_revision,
+                        audit.manifest_digest,
+                        audit.model_dump_json(),
+                    ),
+                )
+                self._connection.commit()
+            except Exception:
+                self._connection.rollback()
+                raise
+
+    def list_retirement_audits(self) -> list[WorkflowRetirementAudit]:
+        with self._lock:
+            table = self._connection.execute(
+                """
+                SELECT 1 FROM sqlite_master
+                WHERE type='table' AND name='workflow_engine_retirement_audits'
+                """
+            ).fetchone()
+            if table is None:
+                return []
+            rows = self._connection.execute(
+                """
+                SELECT audit_json FROM workflow_engine_retirement_audits
+                ORDER BY manifest_revision, manifest_digest
+                """
+            ).fetchall()
+            return [WorkflowRetirementAudit.model_validate_json(row[0]) for row in rows]
+
     def save(
         self,
         bundle: WorkflowBundle,
@@ -187,6 +290,7 @@ class SQLiteWorkflowStore:
         expected_revision: int,
         events: list[WorkflowEvent],
     ) -> WorkflowBundle:
+        self._ensure_writable()
         with self._lock:
             try:
                 self._connection.execute("BEGIN IMMEDIATE")
@@ -206,7 +310,8 @@ class SQLiteWorkflowStore:
                         lease_token=?, lease_expires_at=?, bundle_json=?, updated_at=?
                     WHERE workflow_id=? AND revision=?
                     """,
-                    self._update_values(stored) + (
+                    self._update_values(stored)
+                    + (
                         stored.workflow.workflow_id,
                         expected_revision,
                     ),
@@ -214,9 +319,11 @@ class SQLiteWorkflowStore:
                 if updated.rowcount != 1:
                     raise WorkflowRevisionConflict(stored.workflow.workflow_id)
                 last_cursor = self._last_cursor(stored.workflow.workflow_id)
-                self._insert_events(assign_event_cursors(
-                    stored.workflow.workflow_id, events, start=last_cursor + 1
-                ))
+                self._insert_events(
+                    assign_event_cursors(
+                        stored.workflow.workflow_id, events, start=last_cursor + 1
+                    )
+                )
                 self._connection.commit()
                 return stored.model_copy(deep=True)
             except Exception:
@@ -252,11 +359,14 @@ class SQLiteWorkflowStore:
         allowed_workflow_types: frozenset[str],
         allowed_workflow_ids: frozenset[str] | None = None,
     ) -> WorkflowDispatch | None:
+        self._ensure_writable()
         with self._lock:
             try:
                 self._connection.execute("BEGIN IMMEDIATE")
                 if not allowed_execution_engines or not allowed_workflow_types:
-                    raise ValueError("workflow claim scope allowlists must be non-empty")
+                    raise ValueError(
+                        "workflow claim scope allowlists must be non-empty"
+                    )
                 rows = self._connection.execute(
                     """
                     SELECT bundle_json FROM durable_workflows
@@ -294,7 +404,8 @@ class SQLiteWorkflowStore:
                             lease_token=?, lease_expires_at=?, bundle_json=?, updated_at=?
                         WHERE workflow_id=? AND revision=?
                         """,
-                        self._update_values(bundle) + (
+                        self._update_values(bundle)
+                        + (
                             workflow.workflow_id,
                             previous_revision,
                         ),
@@ -331,6 +442,7 @@ class SQLiteWorkflowStore:
         now: datetime,
         lease_seconds: int,
     ) -> WorkflowWorkItemLease:
+        self._ensure_writable()
         with self._lock:
             try:
                 self._connection.execute("BEGIN IMMEDIATE")
@@ -363,7 +475,8 @@ class SQLiteWorkflowStore:
                         lease_token=?, lease_expires_at=?, bundle_json=?, updated_at=?
                     WHERE workflow_id=? AND revision=?
                     """,
-                    self._update_values(bundle) + (
+                    self._update_values(bundle)
+                    + (
                         workflow.workflow_id,
                         previous_revision,
                     ),
@@ -371,10 +484,12 @@ class SQLiteWorkflowStore:
                 if updated.rowcount != 1:
                     raise WorkflowRevisionConflict(workflow.workflow_id)
                 self._connection.commit()
-                return lease.model_copy(update={
-                    "workflow_revision": workflow.revision,
-                    "expires_at": item.lease_expires_at,
-                })
+                return lease.model_copy(
+                    update={
+                        "workflow_revision": workflow.revision,
+                        "expires_at": item.lease_expires_at,
+                    }
+                )
             except Exception:
                 self._connection.rollback()
                 raise
@@ -399,7 +514,8 @@ class SQLiteWorkflowStore:
                 workflow.agent_id,
                 workflow.ingress_run_id,
                 workflow.idempotency_key,
-            ) + self._update_values(bundle),
+            )
+            + self._update_values(bundle),
         )
 
     @staticmethod
@@ -422,7 +538,10 @@ class SQLiteWorkflowStore:
             INSERT INTO durable_workflow_events (workflow_id, cursor, event_json)
             VALUES (?, ?, ?)
             """,
-            [(event.workflow_id, event.cursor, event.model_dump_json()) for event in events],
+            [
+                (event.workflow_id, event.cursor, event.model_dump_json())
+                for event in events
+            ],
         )
 
     def _last_cursor(self, workflow_id: str) -> int:

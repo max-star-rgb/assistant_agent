@@ -523,8 +523,13 @@ Validator、持久化 stable operation scope 并取得 barrier owner 后才可�
   operator cutover manifest 分类：pristine queued 使用业务 migration-prepared、幂等首 checkpoint、
   migration-committed 两阶段切换；running/recovering/waiting/blocked 只由独立 `LegacyDrainHost` 按启动时
   exact workflow-ID allowlist drain。新提交不能进入 legacy service，prepared row 会冻结旧 claim。
-  retirement 必须等 legacy 非终态、active lease、waiting 全零，manifest phase retired、rollback window
-  关闭且 retirement audit 存在；任一条件不满足时保留下述 legacy 模块。
+  retirement gate 以严格 `WorkflowRetirementStatus` 从业务 Store 复算 legacy 非终态、按当前时间仍有效的
+  active lease、waiting 三项计数，并核对 manifest phase 为 `retired`、rollback window 已关闭，以及
+  持久 retirement audit 与 manifest revision、digest、operator approval ref 三者完全绑定。结果只含计数、
+  manifest 机器字段和有界稳定 reason code，不含 workflow ID、owner 或用户正文；audit 不能由调用方布尔值
+  代替，且只能在其余前置全部满足后幂等写入。SQLite operator 探针使用不初始化 schema、不切换 journal 的
+  显式只读打开方式；旧库没有 audit 表时按 audit missing 处理。任一条件不满足时 `ready=false` 并保留下述
+  legacy 模块。
   drain 期 `DurableWorkflowWorker` 原子 claim 单个 ready work item，并以 work-item lease、attempt 和调用预算作为
   独立所有权边界；一个调度波次可并行运行多个无依赖节点。每个结果分别以 revision CAS 提交，最后一个
   依赖完成时才解锁 join/synthesize 节点。lease heartbeat 防止长模型 run 被误判为崩溃；过期 lease
@@ -623,7 +628,8 @@ payload、凭据、绝对路径和大块内联数据不能因 ToolResult 或调�
 - `tools/observation.py`：ToolResult 到模型观察的通用投影；
 - `tests/core/contract/test_tool_contract.py`：`TOOL-001` 核心治理契约。
 - `workflows/graph_host.py`：process-owned/b borrowed saver 的 graph_v3 产品 facade；
-- `workflows/cutover.py`：operator manifest、content-free inventory 与 queued 两阶段 migration reconciler；
+- `workflows/cutover.py`：operator manifest、content-free inventory、queued 两阶段 migration reconciler 与
+  manifest-bound retirement machine gate；
 - `workflows/legacy_drain_host.py`：cutover 期 exact existing-row allowlist 的唯一 legacy execution owner；
 - `workflows/` 其余模块：Workflow 契约、definition、Store、artifact/context，以及 retirement gate 未关闭前
   保留的 legacy work-item controller/worker/adapter；
