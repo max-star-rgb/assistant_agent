@@ -53,10 +53,59 @@ def test_langmem_backend_requires_explicit_store_before_optional_import() -> Non
     with pytest.raises(MemoryBackendConfigurationError, match="BaseStore"):
         create_memory_node_bundle(config)
 
-    # A Store satisfies composition, after which the absent optional package
-    # fails closed in the LangMem-specific configuration boundary.
-    with pytest.raises(MemoryBackendConfigurationError, match="optional dependency"):
-        create_memory_node_bundle(config, langmem_store=InMemoryStore())
+
+
+def test_langmem_backend_binds_the_configured_openai_compatible_provider(
+    monkeypatch,
+) -> None:
+    for key in (
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("ALL_PROXY", "socks://127.0.0.1:19090")
+    captured = {}
+    expected_bundle = object()
+
+    def capture_bundle(*, model, store, ledger, aclose=None):
+        captured["model"] = model
+        captured["store"] = store
+        captured["ledger"] = ledger
+        captured["aclose"] = aclose
+        return expected_bundle
+
+    monkeypatch.setattr(
+        "assistant_agent.memory.factory.create_langmem_memory_bundle",
+        capture_bundle,
+    )
+    store = InMemoryStore()
+    bundle = create_memory_node_bundle(
+        ProviderConfig(
+            provider_mode="real",
+            chat_provider="qwen",
+            chat_api_key="provider-key-sentinel",
+            chat_base_url="https://provider.example/v1",
+            chat_model="assistant-model",
+            memory_backend="langmem",
+            langmem_model="memory-model",
+        ),
+        langmem_store=store,
+    )
+
+    model = captured["model"]
+    assert bundle is expected_bundle
+    assert model.model_name == "memory-model"
+    assert model.openai_api_base == "https://provider.example/v1"
+    assert model.openai_api_key.get_secret_value() == "provider-key-sentinel"
+    assert model.http_client is not None
+    assert model.http_async_client is not None
+    assert model.http_socket_options == ()
+    assert callable(captured["aclose"])
+    assert captured["store"] is store
 
 
 def test_unknown_memory_backend_is_rejected_by_trusted_config() -> None:

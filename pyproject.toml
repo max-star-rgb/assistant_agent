@@ -37,7 +37,10 @@ local-vision-embedding = [
 visual-memory-search = [
     "fastembed>=0.8,<1",
 ]
-memory-langmem = ["langmem>=0.0.30,<0.1"]
+memory-langmem = [
+    "langmem>=0.0.30,<0.1",
+    "httpx[socks]>=0.28,<0.29",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests/core"]

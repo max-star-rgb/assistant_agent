@@ -121,8 +121,12 @@ disabled；远端 backend 必须同时满足 `MULTIMODAL_AGENT_PROVIDER_MODE=rea
 key 自动启用，也不能在配置失败时静默 fallback。
 
 Mem0 使用 `MEM0_BASE_URL / MEM0_API_KEY / MEM0_TIMEOUT_SECONDS /
-MEM0_IDENTITY_NAMESPACE`。LangMem 使用 `LANGMEM_MODEL`、显式 composition-owned `BaseStore` 和 optional
-dependency group `memory-langmem`；缺包时启动失败并给出可解释配置错误。
+MEM0_IDENTITY_NAMESPACE`。LangMem 使用 `LANGMEM_MODEL` 选择记忆抽取模型，并复用当前受信
+OpenAI-compatible Chat Provider 的 API key、base URL 与 timeout；不支持该协议的主 Provider 会在装配时
+fail closed。它还要求显式 composition-owned `BaseStore` 和 optional dependency group
+`memory-langmem`；缺包时启动失败并给出可解释配置错误。该 optional group 包含 HTTPX SOCKS transport，
+composition root 会把标准 proxy 中的 `socks://` alias 规范化为 HTTPX 接受的 `socks5://`，且通过 bundle
+`aclose` 关闭显式创建的同步/异步 client。
 
 ledger 默认路径为 `.local/langgraph/memory_commits.sqlite3`，可通过 `MEMORY_COMMIT_LEDGER_PATH` 修改。
 Store setup/migration/close 由 composition root 负责；client/manager 的可选异步关闭通过 bundle `aclose`
