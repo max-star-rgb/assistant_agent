@@ -280,14 +280,17 @@ def _control_from_child(
         if not isinstance(raw, Mapping):
             raise ValueError("worker control must be an object")
         control = WorkflowWorkerControl.model_validate_json(json.dumps(raw))
-        evidence_ids = tuple(item.criterion_id for item in control.acceptance_evidence)
-        expected_ids = tuple(
-            item.criterion_id for item in assignment.acceptance_contract.criteria
-        )
-        if len(evidence_ids) != len(set(evidence_ids)) or set(evidence_ids) != set(
-            expected_ids
-        ):
-            raise ValueError("worker acceptance evidence coverage is invalid")
+        if control.outcome == "completed":
+            evidence_ids = tuple(
+                item.criterion_id for item in control.acceptance_evidence
+            )
+            expected_ids = tuple(
+                item.criterion_id for item in assignment.acceptance_contract.criteria
+            )
+            if len(evidence_ids) != len(set(evidence_ids)) or set(
+                evidence_ids
+            ) != set(expected_ids):
+                raise ValueError("worker acceptance evidence coverage is invalid")
         return control, control.content
     raise ValueError("worker response must contain strict workflow_control")
 

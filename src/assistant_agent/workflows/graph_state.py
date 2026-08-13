@@ -409,6 +409,14 @@ class WorkflowWorkerControl(_CheckpointModel):
                 raise ValueError(
                     "blocked control prompt contains unsafe runtime detail"
                 )
+        canonical_envelope = json.dumps(
+            {"workflow_control": self.model_dump(mode="json")},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        if len(canonical_envelope) > 30_000:
+            raise ValueError("worker control exceeds profile response transport")
         return self
 
 

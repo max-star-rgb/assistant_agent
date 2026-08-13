@@ -77,7 +77,7 @@ def test_worker_completed_content_fits_profile_response_transport():
     control = WorkflowWorkerControl(
         outcome="completed",
         summary="s" * 4_000,
-        content="c" * 27_000,
+        content="c" * 25_000,
         acceptance_evidence=(
             {"criterion_id": "criterion_a", "evidence": "delivered"},
         ),
@@ -98,6 +98,47 @@ def test_worker_completed_content_fits_profile_response_transport():
                 {"criterion_id": "criterion_a", "evidence": "delivered"},
             ),
         )
+
+
+def test_worker_control_rejects_combined_transport_overflow():
+    evidence = tuple(
+        {
+            "criterion_id": f"criterion_{index}",
+            "evidence": "证据\\\"" * 500,
+        }
+        for index in range(64)
+    )
+
+    with pytest.raises(ValidationError, match="profile response transport"):
+        WorkflowWorkerControl(
+            outcome="completed",
+            summary="summary",
+            content="deliverable",
+            acceptance_evidence=evidence,
+        )
+
+
+def test_worker_control_unicode_canonical_envelope_keeps_provider_margin():
+    control = WorkflowWorkerControl(
+        outcome="completed",
+        summary="总结\\\"",
+        content="交付物" * 3_000,
+        acceptance_evidence=(
+            {
+                "criterion_id": "criterion_unicode",
+                "evidence": "可核对证据\\路径\"引号",
+            },
+        ),
+    )
+    canonical = json.dumps(
+        {"workflow_control": control.model_dump(mode="json")},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+    assert len(canonical) <= 30_000
+    assert len(canonical) < 32_000
 
 
 def test_worker_branch_is_a_static_expandable_compiled_subgraph(tmp_path):

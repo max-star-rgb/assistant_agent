@@ -62,6 +62,13 @@ class ResumeAwareWorker:
                     "workflow_control": {
                         "outcome": "completed",
                         "summary": f"completed {node_id}",
+                        "content": f"deliverable {node_id}",
+                        "acceptance_evidence": [
+                            {
+                                "criterion_id": f"criterion_{node_id}",
+                                "evidence": "delivered",
+                            }
+                        ],
                     }
                 }
             )
