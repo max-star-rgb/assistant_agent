@@ -216,9 +216,9 @@ def test_verified_intermediate_node_runs_deliverable_descendant_before_publish(t
             final["result_ledger"], final["execution_generation_by_node"]
         )
         assert current["compile_report"].status == "succeeded"
-        assert set(current["compile_report"].artifact_refs).issubset(
-            final["result_artifact_refs"]
-        )
+        assert tuple(final["result_artifact_refs"]) == current[
+            "compile_report"
+        ].artifact_refs
     finally:
         artifact_store.close()
 

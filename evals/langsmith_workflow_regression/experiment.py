@@ -426,6 +426,14 @@ def audit_native_workflow_tree(
                 for graph in graphs
             ):
                 item.append("unsafe or missing DurableWorkflowGraph metadata")
+            graph_metadata = [_metadata(graph) for graph in graphs]
+            if (
+                len({metadata.get("workflow_id") for metadata in graph_metadata}) != 1
+                or len({metadata.get("thread_id") for metadata in graph_metadata}) != 1
+                or len({metadata.get("run_id") for metadata in graph_metadata})
+                != len(graphs)
+            ):
+                item.append("inconsistent DurableWorkflowGraph identity")
             graph_ids = {str(_field(graph, "id")) for graph in graphs}
             graph_subtree = [
                 run
@@ -464,16 +472,39 @@ def audit_native_workflow_tree(
                     item,
                 )
             if actual_trajectory is not None:
+                branch_runs = [
+                    run
+                    for run in graph_subtree
+                    if _field(run, "name")
+                    in {"WorkflowWorkerBranch", "WorkflowVerifierBranch"}
+                ]
+                if any(
+                    not str(_metadata(run).get("workflow_node_id") or "")
+                    or not isinstance(
+                        _metadata(run).get("workflow_generation"), int
+                    )
+                    or isinstance(
+                        _metadata(run).get("workflow_generation"), bool
+                    )
+                    or _metadata(run).get("workflow_profile")
+                    != (
+                        "worker"
+                        if _field(run, "name") == "WorkflowWorkerBranch"
+                        else "verifier"
+                    )
+                    or not _digest(
+                        _metadata(run).get("workflow_branch_run_id")
+                    )
+                    for run in branch_runs
+                ):
+                    item.append("invalid workflow branch metadata")
                 observed = Counter(
                     (
                         str(_metadata(run).get("workflow_node_id") or ""),
                         _metadata(run).get("workflow_generation"),
                         str(_metadata(run).get("workflow_profile") or ""),
                     )
-                    for run in graph_subtree
-                    if _field(run, "name")
-                    in {"WorkflowWorkerBranch", "WorkflowVerifierBranch"}
-                    and _digest(_metadata(run).get("workflow_branch_run_id"))
+                    for run in branch_runs
                 )
                 if observed != Counter(actual_trajectory):
                     item.append("actual tree trajectory mismatch")

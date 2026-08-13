@@ -881,7 +881,7 @@ def prepare_next_wave_node(
 
 def route_next_wave(
     state: DurableWorkflowState,
-) -> list[Send] | Literal["publish", "fail"]:
+) -> list[Send] | Literal["decide_verification", "fail"]:
     if state["status"] == "failed":
         return "fail"
     branches = tuple(state["active_wave"])
@@ -909,7 +909,7 @@ def route_next_wave(
     if len(results) == len(state["execution_generation_by_node"]) and all(
         result.status == "succeeded" for result in results.values()
     ):
-        return "publish"
+        return "decide_verification"
     return "fail"
 
 
@@ -1259,7 +1259,7 @@ def decide_verification_node(
         return _failure_command("workflow_result_conflict", str(exc))
     verifier_ids = _verifier_ids(plan)
     decisions = [results[node_id] for node_id in sorted(verifier_ids) if node_id in results]
-    if not decisions:
+    if verifier_ids and not decisions:
         return _failure_command(
             "workflow_verifier_missing", "Required verifier has no current result."
         )

@@ -290,6 +290,38 @@ def test_tree_audit_derives_actual_node_identity_from_target_output() -> None:
     assert resume_only.complete is False
     assert "missing actual repair round" in resume_only.problems[str(EXAMPLE_ID)]
 
+    extra_branch = _run(40, name="WorkflowWorkerBranch", parent=2)
+    extra_branch.extra["metadata"] = {
+        "workflow_node_id": "unattributed_extra",
+        "workflow_generation": 0,
+        "workflow_profile": "worker",
+        "workflow_branch_run_id": "not-a-digest",
+    }
+    extra_child = _run(41, name="AssistantTurnGraph.worker", parent=40)
+    invalid_extra = audit_native_workflow_tree(
+        iter([*runs, extra_branch, extra_child]),
+        example_ids=(str(EXAMPLE_ID),),
+        requirements={str(EXAMPLE_ID): requirement},
+    )
+    assert invalid_extra.complete is False
+    assert "invalid workflow branch metadata" in invalid_extra.problems[str(EXAMPLE_ID)]
+
+    resume_graph = _run(50, name="DurableWorkflowGraph", parent=1)
+    resume_graph.extra["metadata"] = {
+        **resume_graph.extra["metadata"],
+        "thread_id": "sha256:" + "e" * 64,
+        "run_id": "sha256:" + "f" * 64,
+    }
+    cross_thread = audit_native_workflow_tree(
+        iter([*runs, resume_graph]),
+        example_ids=(str(EXAMPLE_ID),),
+        requirements={str(EXAMPLE_ID): requirement},
+    )
+    assert cross_thread.complete is False
+    assert "inconsistent DurableWorkflowGraph identity" in cross_thread.problems[
+        str(EXAMPLE_ID)
+    ]
+
 
 def test_completeness_fails_closed_until_all_four_feedback_are_persisted() -> None:
     class Client:
