@@ -1,7 +1,8 @@
 # Agent Server 原生部署探针
 
 该专项以 mock Provider 启动真实 `langgraph dev`，通过公开 `langgraph_sdk`
-验证 deployment manifest、custom app、schema、thread/run/state、Store 和 cancel。
+验证 deployment manifest、custom app、schema、thread/run/state、Store、cancel、原生
+`enqueue` 和带 `Last-Event-ID` 的 resumable thread stream。
 它不调用真实 Provider，不读取密钥；in-memory 持久化目录已从 Git 排除。
 
 运行：

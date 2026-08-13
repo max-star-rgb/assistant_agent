@@ -66,7 +66,7 @@ def _context(user_id: str) -> dict[str, object]:
     }
 
 
-async def _probe(url: str) -> None:
+async def _probe(url: str) -> str:
     client = get_client(url=url)
     assistants = await client.assistants.search(graph_id="assistant")
     assistant = assistants[0]
@@ -137,7 +137,98 @@ async def _probe(url: str) -> None:
     cancelled = await client.runs.get(second_id, delayed_id)
     _emit("native_cancel", cancelled["status"] in {"interrupted", "error"})
 
+    await _probe_enqueue(client)
+    await _probe_resumable_thread_stream(client)
+
     await _probe_media_route(url)
+    return first_id
+
+
+async def _probe_enqueue(client: Any) -> None:
+    thread = await client.threads.create(metadata={"probe": "enqueue"})
+    thread_id = str(thread["thread_id"])
+    first, second = await asyncio.gather(
+        client.runs.create(
+            thread_id,
+            "assistant",
+            input={"request_input": {"turn_origin_id": "enqueue-1", "text": "one"}},
+            context=_context("probe-enqueue"),
+            multitask_strategy="enqueue",
+        ),
+        client.runs.create(
+            thread_id,
+            "assistant",
+            input={"request_input": {"turn_origin_id": "enqueue-2", "text": "two"}},
+            context=_context("probe-enqueue"),
+            multitask_strategy="enqueue",
+        ),
+    )
+    await asyncio.gather(
+        client.runs.join(thread_id, str(first["run_id"])),
+        client.runs.join(thread_id, str(second["run_id"])),
+    )
+    runs = await client.runs.list(thread_id, limit=10)
+    statuses = {str(run["run_id"]): run["status"] for run in runs}
+    _emit(
+        "native_enqueue",
+        statuses.get(str(first["run_id"])) == "success"
+        and statuses.get(str(second["run_id"])) == "success",
+        run_count=len(runs),
+    )
+
+
+async def _probe_resumable_thread_stream(client: Any) -> None:
+    thread = await client.threads.create(metadata={"probe": "resumable-stream"})
+    thread_id = str(thread["thread_id"])
+    first_event_id: str | None = None
+    run_id: str | None = None
+    async for part in client.runs.stream(
+        thread_id,
+        "assistant",
+        input={
+            "request_input": {
+                "turn_origin_id": "resumable-stream",
+                "text": "resume me",
+            }
+        },
+        context=_context("probe-stream"),
+        stream_mode=["values"],
+        stream_resumable=True,
+        on_disconnect="continue",
+    ):
+        first_event_id = part.id
+        if part.event == "metadata" and isinstance(part.data, dict):
+            run_id = str(part.data["run_id"])
+        break
+    if first_event_id is None or run_id is None:
+        _emit("native_resumable_stream", False, reason="missing initial event")
+        return
+    await client.runs.join(thread_id, run_id)
+    resumed = await client.threads.join_stream(
+        thread_id,
+        last_event_id=first_event_id,
+        stream_mode="run_modes",
+    )
+    resumed_ids: list[str] = []
+    saw_terminal = False
+    async for part in resumed:
+        if part.id is not None:
+            resumed_ids.append(str(part.id))
+        if (
+            part.event == "metadata"
+            and isinstance(part.data, dict)
+            and part.data.get("status") == "run_done"
+            and str(part.data.get("run_id")) == run_id
+        ):
+            saw_terminal = True
+            break
+    _emit(
+        "native_resumable_stream",
+        saw_terminal
+        and bool(resumed_ids)
+        and first_event_id not in resumed_ids,
+        resumed_event_count=len(resumed_ids),
+    )
 
 
 async def _probe_media_route(url: str) -> None:

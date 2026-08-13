@@ -45,7 +45,7 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
     video_ingestion = (
         ingestion_factory()
         if callable(ingestion_factory)
-        else H264VideoIngestionService(store=SQLiteVideoContextStore())
+        else await asyncio.to_thread(_create_video_ingestion)
     )
     factory = getattr(app.state, "agent_server_client_factory", None)
     client = factory() if callable(factory) else _default_agent_server_client(websocket)
@@ -399,6 +399,10 @@ def _default_agent_server_client(websocket: WebSocket) -> SdkAgentServerClient:
     authorization = websocket.headers.get("authorization")
     headers = {"authorization": authorization} if authorization else None
     return SdkAgentServerClient(url=url, headers=headers)
+
+
+def _create_video_ingestion() -> H264VideoIngestionService:
+    return H264VideoIngestionService(store=SQLiteVideoContextStore())
 
 
 __all__ = ["app"]
