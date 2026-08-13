@@ -136,6 +136,11 @@ class MemoryNodeBundle:
 worker 或 Plugin registry。`MemoryBackendFactory` 在应用启动时根据受信配置构造唯一 bundle；显式配置
 失败时 fail closed，不因发现 API key 自动启用，也不静默回退其他后端。
 
+`MemoryNodeBundle` 是封闭的纯 composition object。后续不得向其中增加 `search()`、`save()`、session、
+policy、retry、health orchestration 或其他运行时行为；后端专有行为留在 node 闭包和后端私有模块中。
+如果新需求无法由现有两个节点表达，应先修改 Graph topology 或另行设计明确节点，不能把 bundle 扩展成
+新的 Memory Service/Host。
+
 Graph builder 使用：
 
 ```python
@@ -179,6 +184,11 @@ class MemoryContext(BaseModel):
 - 不保存 client、Store、session handle、callback、secret、任意 metadata 或媒体正文；
 - `snapshot_id` 是快照内容与可信 identity scope 的摘要，用于恢复校验，不是写入幂等键；
 - checkpoint 会持久化这些记忆正文，因此生产 checkpointer 必须执行既有访问控制、retention、加密和删除策略。
+
+`memory_id`、`source`、`relevance` 和 `updated_at` 是 recall 标准化、排序、诊断和观测 metadata，不是
+assistant reasoning 必须依赖的业务字段。assistant/context compiler 的稳定语义输入只有经过 recall node
+排序和裁剪后的 `text` 序列；不得根据 Mem0 score、LangMem ID、后端 source 名称或更新时间编写业务路由、
+工具选择和回答规则。未来即使 metadata 字段变化，只要有序 `text` 契约不变，assistant 行为契约仍应兼容。
 
 ### 7.2 `memory_commit`
 
@@ -278,6 +288,10 @@ resume 新生成的 invocation run ID。节点执行规则为：
 
 ledger 是外部副作用的业务事实，不是通用 Memory Host。它不得负责 recall、context、队列、session 或后端
 选择。即便给 LangGraph node 配置 retry policy，也必须先经过该 ledger。
+
+ledger 的稳定职责只有 `dedup + outcome tracking`。禁止在该组件中增加 retry scheduler、后台 queue、worker、
+dead-letter、session lifecycle、后端选择或 context 管理；需要人工处理的 `outcome_unknown` 只暴露受限状态
+和运维观测，不由 ledger 自行推进。这样可以防止旧 ingestion Runtime 以“可靠投递”名义重新出现。
 
 commit 采用 best-effort：
 
@@ -380,9 +394,12 @@ mock 模式下默认使用显式 disabled/local fake backend，不连接远端�
 5. State 中只有有界记忆快照和稳定状态，不含运行对象或 secret。
 6. replay/fork/resume 行为符合第 9 节，并有确定性验证。
 7. 最小 ledger 能防止常见 resume/retry 重复写入，并明确处理 outcome unknown。
-8. `MemoryPluginHost` 等复杂并行 Runtime 在无真实消费者后删除，不再保留双轨主路径。
-9. mock/offline、身份隔离、Tool 治理和 Gateway delivery 边界没有被削弱。
-10. 当前 authority 与实际代码、测试一致，文档 authority validator 通过。
+8. `MemoryNodeBundle` 仍只有 node/store/resource composition 字段，没有演化出 Memory Service 行为。
+9. assistant 只把有序 memory text 作为稳定语义输入，不依赖后端 metadata。
+10. ledger 只承担 dedup/outcome tracking，没有 queue、worker、scheduler 或 session lifecycle。
+11. `MemoryPluginHost` 等复杂并行 Runtime 在无真实消费者后删除，不再保留双轨主路径。
+12. mock/offline、身份隔离、Tool 治理和 Gateway delivery 边界没有被削弱。
+13. 当前 authority 与实际代码、测试一致，文档 authority validator 通过。
 
 ## 16. 被否决的替代方案
 
