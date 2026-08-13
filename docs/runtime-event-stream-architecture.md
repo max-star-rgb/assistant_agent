@@ -8,16 +8,16 @@ Last updated: 2026-08-13
 | --- | --- |
 | 定位 | Assistant loop 与 Provider/runtime event stream 的当前权威 |
 | Owns | `LLMEvent`、`AgentEvent`、`AgentRunStream`、stream/result、thread bridge、取消与终态 |
-| Does not own | Agent Server thread/run API、媒体 wire、Tool 治理、trace schema、prompt/context 预算 |
+| Does not own | Gateway frame/session、Tool 治理、trace schema、prompt/context 预算 |
 | 源码与 schema 入口 | `src/assistant_agent/runtime/`、`src/assistant_agent/providers/llm_events.py` |
 | 验证入口 | `docs/authority.toml` 中 `runtime-event-stream.verification` |
-| 相邻 authority | Agent Server 部署见 [`gateway-architecture.md`](gateway-architecture.md)；Tool 见 [`tool-calling-architecture.md`](tool-calling-architecture.md) |
+| 相邻 authority | Gateway 见 [`gateway-architecture.md`](gateway-architecture.md)；Tool 见 [`tool-calling-architecture.md`](tool-calling-architecture.md) |
 
 This document is the current authority for provider and assistant runtime
 streaming in `assistant_agent`. It defines the event contracts, stream/result
 separation, thread bridge, cancellation limits, compatibility boundaries, and
-source ownership implemented inside the Assistant Graph. Agent Server resource
-lifecycle remains authoritative in `docs/gateway-architecture.md`.
+source ownership that are implemented today. Gateway session and wire-frame
+lifecycle remain authoritative in `docs/gateway-architecture.md`.
 
 ## Scope And Invariants
 
@@ -28,19 +28,22 @@ vendor provider chunks
   -> provider adapter -> LLMEvent
   -> stable compiled AssistantTurnGraph astream(v2)
   -> runtime lifecycle / ProductEventProjector -> AgentEvent
-  -> Agent Server native run stream
-  -> custom route/client projection (optional)
+  -> AgentRunStream / shared assistant service stream
+  -> RealtimeAgentEvent
+  -> Gateway frame
 ```
 
 - `LLMEvent` is provider-neutral and internal to the chat/provider boundary.
 - `AgentEvent` describes assistant runtime progress and lifecycle.
-- Agent Server stream events describe the deployed run/checkpoint lifecycle.
+- `RealtimeAgentEvent` is the thin realtime backend boundary.
+- Gateway frames describe session, run, delivery, cancel, interrupt, and
+  transport lifecycle.
 - `TraceEvent` is the independent observability projection consumed by the
-  local trace store, OTel exporter, and Langfuse; it is not part of the
+  local trace store and LangSmith native tracing; it is not part of the
   `AgentRunStream`.
 - Vendor chunks, SDK objects, prompts, credentials, and raw provider responses
   do not cross the provider adapter boundary.
-- Agent Server clients、媒体 custom route、UI 和 TTS 不直接消费 `LLMEvent`。
+- Gateway, UI, TTS, and public API consumers do not consume `LLMEvent`.
 - Provider streaming never bypasses tool governance. Final native tool calls
   still enter `ActionValidator -> ToolExecutor -> ToolRegistry`.
 
@@ -56,7 +59,7 @@ standard 模式只有一套主运行图：每个 `AgentGraphRuntime` 只编译�
 `assistant -> await_input -> execute_tool|assistant` 与
 `assistant -> compose_response` 之间按真实 conditional edge 循环、等待或收口。Provider adapter、
 Tool executor、event sink 与 cancel token 通过 LangGraph runtime context 注入，不存入 graph state。
-生产 Agent Server worker 消费 `astream(v2)` 的 native async Runtime 路径；
+生产 Agent-Service 与默认 HTTP Gateway 消费 `astream(v2)` 的 native async Runtime 路径；
 逻辑 `ProductEventProjector` 只把已发生的 Runtime 事实投影为现有 `AgentEvent`/
 `RealtimeAgentEvent`，不决定 graph 路由。`GraphStreamPart`、namespace、checkpoint、task 与完整
 state 不进入产品协议。
@@ -76,14 +79,16 @@ objective、constraint、capability reference、response、Tool trajectory 和 a
 state 或动态 task UUID。
 
 Graph 身份语义为 stable conversation `thread_id` 加每次调用或 resume 的新 `run_id`。进程拥有的
-`AssistantRuntimeApp` 只解析并持有一个 `AgentGraphRuntime`，内部 owner-bound history、Replay 与 Fork
-facade 复用同一个 compiled graph、checkpointer、claim store 和受治理 service。continuation preparation
-从已验证 checkpoint 重建 fresh invocation-local `AgentState`/`GraphRuntimeContext`。长期记忆正文已经是
-checkpoint 内的 `memory_context` 冻结快照：resume/replay/default fork 不重新 recall，缺少快照时 fail closed；
-显式 refresh fork 重新 recall 但仍不 commit。非 Memory context ref 必须由当前 owner 重建并严格匹配。
-checkpoint state schema v4 显式持久化 logical Memory origin、`product_turn|time_travel` provenance、
-publish barrier 与 commit outcome，旧 schema continuation fail closed。该内部
-facade 不进入媒体 wire，也不产生 selector、
+`AssistantRuntimeApp` 只解析并持有一个 `AgentGraphRuntime`；owner-bound history 由 App/Host 直接委托
+同一个 compiled graph，Replay 与 Fork 通过需要 continuation service preparation 的 Runtime 入口复用该
+graph、checkpointer、claim store 和受治理 service。continuation preparation
+从已验证 checkpoint 重建 fresh invocation-local `AgentState`/`GraphRuntimeContext`，不调用 Memory
+`open_session`、`prepare_context` 或 `ingest_turn`：普通 turn 不变，resume 只在成功终态 ingestion 一次，
+Replay/Fork 不 ingestion。非 Memory context ref 必须由当前 owner 重建并严格匹配；Memory ref 只能通过
+Host 的 owner/origin/ref-bound active frozen context attach 契约解析，不读取底层 store、不回退当前 baseline；
+origin 已 terminal/release 或进程重启后缺少 exact frozen context 时 fail closed。checkpoint state schema v3
+显式持久化 logical Memory origin 与 `product_turn|time_travel` provenance，旧 v2 continuation fail closed。该内部
+facade 不进入 `AssistantRunService`、HTTP/WebSocket、Gateway 或 Agent-Service wire，也不产生 selector、
 checkpoint/native task/interrupt ID 产品事件。
 
 compiled app
@@ -93,7 +98,7 @@ compiled app
 native snapshot（pending tasks/next 与稳定 Interrupt id），不从 root `values` 或 stream namespace 猜测。
 trusted interrupt request 只允许结构化 `approval|input`，并绑定当前 pending Provider Tool call 或当前
 assistant turn；普通 write/dangerous category、用户文本和任意 metadata 不自动触发 HITL。该能力当前只供
-内部 compiled graph / Runtime 与后续父图使用；当前媒体 wire 不接收 resume，
+内部 compiled graph / Runtime 与后续父图使用；Agent-Service、Gateway、HTTP 和媒体 wire 不接收 resume，
 也不投影 `waiting_user`。未绑定 saver 的显式 offline/test graph 不宣称恢复能力。
 checkpointer backend 只允许显式 `none|memory|sqlite`。`none` 不保存执行位置；官方 `InMemorySaver`
 仅用于本地/离线 Graph API 验证，不声明跨 host durability。`sqlite` 由进程级
@@ -105,9 +110,9 @@ checkpoint channel。`RuntimeHost.aopen/aclose` 固定先开 saver/claim 再构�
 active lease 保护的 facade。关闭时先拒绝新 invocation 并排空已有 consumer，再按 Runtime、trace store、
 claim connection、saver 的顺序释放。Gate P1 已用 first host 完全关闭后创建
 fresh second host，验证同一 thread 的 interrupt/resume、history、Replay、Fork 与 run claim 拒绝；Task 9
-生产部署的 saver 由 Agent Server 注入；长期记忆正文已经
-以受限 `memory_context` 随 checkpoint 持久化；fresh host 可精确恢复该快照，但 checkpoint 不替代 active
-backend，也不授权 replay/fork 写入长期记忆。
+production cutover 前，现有同步 Agent-Service/API composition root 仍不启用 `sqlite`。Memory Plugin 的
+active frozen context 仍是进程内治理事实：checkpoint 携带 Memory ref 而 fresh host 缺 exact frozen context 时
+继续按既有契约 fail closed，持久 checkpointer 不冒充长期 Memory。
 
 `AssistantTurnGraphApp.invoke/astream/arun/aresume` 在进入 tracing、checkpoint preflight 或 native graph
 之前统一原子 claim `(owner, thread_id, run_id)`；相同 invocation token 的 pre-native 重试幂等放行，不同 token
@@ -129,15 +134,13 @@ checkpointer 期间的新 claim、已取得 pre-native claim 的 `begin_native` 
 session deletion 尚未拥有完整的多 agent/checkpointer retention 协调，因此不隐式调用该 host API，后续 persistent
 composition root 必须显式接线。thread 已销毁后，确定性 thread key 即使再次出现
 也属于新的 retention 生命周期，可以重新 claim；调用方不得把 `delete_thread` 当作单 run retry 接口。
-M3 已在离线路径编译 `DurableWorkflowGraph`，并以 native v2
+production composition 已持有 `DurableWorkflowGraph`，并以 native v2
 `updates/custom/tasks/checkpoints` stream、subgraph namespace、`Send` super-step、父图 interrupt snapshot、
-同 thread 新 run resume 和最终 snapshot 判定验证 Graph API 事实。该 app 目前只由 TDD probe 与 LangSmith
-workflow regression offline target 使用，尚未注册为 Agent Server production assistant；
-因此它不改变下文所述当前 Deep Research work-item stream、lease 或恢复边界。
-当前 Durable Workflow graph 没有跨节点 namespace/key/value consumer，因此不装配 LangGraph Store。Assistant
-graph 则固定包含 `memory_recall` / `publish_response` / `memory_commit`；长期记忆正文以严格、受限的
-`memory_context` 进入 checkpoint，LangMem 可选 Store 由 compile 原生注入。Assistant graph 的内部 replay/fork
-在进入 native stream 或创建 branch 前，只检查所选 checkpoint
+同 thread 新 run resume 和最终 snapshot 判定验证 Graph API 事实。Agent-Service/API 与 LangSmith
+workflow regression 都复用同一 production GraphHost composition。
+当前 Durable Workflow graph 没有跨节点 namespace/key/value consumer，因此不装配 LangGraph Store；短期执行
+记忆只属于 strict state 与 checkpointer，长期记忆仍只通过 `MemoryPluginHost` 生命周期治理，正文不进入
+checkpoint。Assistant graph 的内部 replay/fork 在进入 native stream 或创建 branch 前，只检查所选 checkpoint
 下一步会执行的 pending Tool：read 可重放；write/dangerous 必须保留 `toolop:` stable scope 并复用业务 operation
 ledger。该 operation 已处于 `reserved|invoking|outcome_unknown` 时 fail closed；无关 operation 不参与分类，
 pending call 同时保存 effect category；当前 Registry category 与 checkpoint 不一致、stable scope 无法由
@@ -148,6 +151,12 @@ input schema、runtime input bindings 与 hidden fields）和 checkpoint-time bo
 重建完全相同输入时，即使 ledger 尚无 row 也禁止重放。新增安全字段保持旧 state schema 的普通 resume 兼容，但缺少
 这些字段的旧 `execute_tool` checkpoint 不可 replay/fork，按 `graph_time_travel_effect_forbidden` fail closed。
 产品事件仍只观察已经发生的 native fact，不能作为重放判据或副作用事实源。
+最终 native Graph API 能力验收由
+`assistant_agent.runtime.graph_capability_evidence.GRAPH_CAPABILITY_EVIDENCE` 提供严格机器矩阵：每项只允许
+`implemented|not_applicable`，并指向 Git tracked 的源码或测试 anchor；`Store` 是唯一
+`not_applicable`，因为当前 graph 没有跨节点 Store consumer 且 compile 不接收空 Store。这个能力矩阵与
+整体交付 gate 与能力矩阵分离：已记录的 retirement evidence 证明 legacy 非终态为零，M5 delivery 为
+`accepted`；该一次性证据不进入生产 Runtime，能力项仍只表达 `implemented|not_applicable`。
 仓库不再保留 conditional graph、rule intent/router/planner 或可切换它们的 `AGENT_GRAPH_MODE`；
 `UserRequest` 也不再接受 `execution_strategy=plan_and_solve`。当前仍存在的
 `task_execution_mode` 是工具/持久执行的结构化治理事实，不是第二张 Agent graph 的选择器。
@@ -156,12 +165,10 @@ Durable Workflow 的 Plan、work-item run、返工和 terminal 生命周期不�
 事实源是已提交的 `WorkflowEvent`，而不是把它们复制为 `TraceEvent`。Deep Research 是一个逻辑
 Plan-and-Execute runtime：入口把当前 canonical trace ID 持久化到 Workflow，首个 durable planner run 调用
 主 Agent planner 生成结构化 DAG，后续 work item 再由可替换的 worker Agent 执行。planner/worker 每次
-调用仍产生自己的 canonical `AgentEvent/TraceEvent`，并保留 trace/run/attempt 身份。Runtime 在可信
-assignment 边界注入 OTel 导出上下文，使 Workflow 和 planner/worker 子树导出到同一个
-`deep_research.workflow` trace。Agent-backed attempt 复用 durable attempt span ID，并直接以 work item
-`display_title` 命名；不另建 `workflow.start`、attempt wrapper 或嵌套的通用 `agent.runtime`。其下
-仍是标准 assistant loop 产生的 memory、ReAct iteration、context、`llm.chat`、Tool 与 response
-observation。这不会改写 canonical event 身份，也不会把 Workflow 状态机塞进单次 Assistant loop。
+调用仍产生自己的 canonical `AgentEvent/TraceEvent`，并保留 trace/run/attempt 身份。LangSmith 通过
+production compiled graph 的 native callback 观察 planner/worker 的 actual tree；Runtime 不注入外部
+trace identity，也不重建 Workflow shadow tree。这不会改写 canonical event 身份，也不会把 Workflow
+状态机塞进单次 Assistant loop。
 
 The projections are not one-to-one. Delivery-only facts such as committed text
 deltas remain `AgentEvent` only, while LLM, context, memory, and graph-node
@@ -173,7 +180,7 @@ is emitted after trace finalization.
 
 Context evidence also has a single owner: `context.build` carries
 `context_report_v2`, while the local `llm.chat` content overlay carries the exact
-Provider input and its Langfuse generation carries the equivalent formatted projection.
+Provider input and its generation span carries the equivalent formatted projection.
 `assistant.output` records only the normalized decision and does not duplicate
 either payload. The `agent.runtime` root may retain the scalar
 `context_peak_ratio` as a turn-level diagnostic, but not the full context report.
@@ -262,8 +269,8 @@ OpenAI-compatible 回退不提供该结构化来源契约。Provider 非工具�
 `UrlCitationAnnotation(type="url_citation")`；正文保持不变，annotation 使用 Unicode code point
 半开区间并携带 `source_id/title/url`。重复角标产生多个 occurrence、复用同一 `source_id`，未引用来源、
 无匹配角标、已是 Markdown link 的角标和非 HTTP(S) URL 不进入产品响应。annotations 随
-`AssistantTextOutput -> final_response annotations` 进入 native run State，不进入 conversation history、
-TTS 或 token delta。可点击样式和跳转仍由客户端负责；CLI 只能验证结构化映射，
+`AssistantTextOutput -> AgentResponse -> AgentRunResponse` 进入 HTTP `/agent/run` 终态，不进入
+conversation history、TTS 或 token delta。可点击样式和跳转仍由客户端负责；CLI 只能验证结构化映射，
 不能替代点击交互验收。
 `MULTIMODAL_AGENT_NATIVE_PROVIDER_STREAMING` 只控制 Runtime 是否使用 async-native stream
 consumer；DashScope 的流式终态继续保留 `request_id`、usage 与结构化搜索来源，传输模式记为
@@ -286,18 +293,12 @@ response content. 它还记录 route、runtime action、transport mode 与 delta
 `ChatResult` and is not a Provider protocol field. Agent-Service latency summaries use wall latency as the
 critical-path `llm_chat[n]` duration and keep Provider latency as a nested
 diagnostic.
-当本地 OTLP export 开启时，Provider adapter 会在 `llm.chat` span id 下记录传给
-Provider 的完整调用参数。该原始对象保留在本地 content overlay，作为请求形状的审计证据；
-Langfuse generation input 使用等价的可读投影。OpenAI Chat 形状保持不变，DashScope
-Generation 形状只把 `input.messages`、`parameters.tools` 和 `parameters.tool_choice`
-提升为顶层 `messages`、`tools` 和 `tool_choice`，其余生成、联网和思考参数归入
-`provider_parameters`。投影不改写 message role、Tool schema 或参数值。
-启用 local trace content 后，进程内 debug overlay 还会保存归一化 `ChatResult`；额外设置
+启用 local trace content 后，进程内 debug overlay 保存发送给 Provider 的请求形状与归一化
+`ChatResult`；额外设置
 `MULTIMODAL_AGENT_LOCAL_PROVIDER_PROTOCOL_CAPTURE=1` 后，还保存原始 content、原始工具参数字符串、
-finish reason、usage、结构化 search sources 与流式事件计数组成的协议语义快照。Langfuse generation output 使用
-assistant message 展示 Provider 的原始语义回复（正文、工具调用或拒绝），
-generation input 保留 SDK 调用的 messages/tools 语义以及生成、stream 和 Provider 特有参数，
-并按上述 Provider-neutral 形状支持 Langfuse formatted renderer，不为展示虚构 message role；
+finish reason、usage、结构化 search sources 与流式事件计数组成的协议语义快照。overlay 不进入
+canonical ledger，也不改变 SDK 调用的 messages/tools 语义、生成参数或 Provider 返回，
+并按上述 Provider-neutral 形状支持 formatted renderer，不为展示虚构 message role；
 finish reason 保留在 trace/协议快照，
 usage、route 与 transport 保留在诊断字段，都不拼接到 output 文本。默认 trace event 保持安全摘要；
 本地 `.data/trace_ledger/YYYY-MM-DD.jsonl` 只保存经过 identifier 约束的最小完整性字段，不保存
@@ -321,9 +322,11 @@ answer-only FINALIZE，工具目录被清空；最终生成上下文会保留失
 Pydantic 详情。Validator、Executor 与 FINALIZE 的职责因此保持分离：安全校验不放松，执行节点不承担
 用户文案，终态也不会宣称被拒绝的 Tool 已执行。
 
-购物结构化详情属于终态交付投影，不属于 assistant loop 文本生成。旧 Gateway 的 `<detail>` 追加协议
-已经随生产入口删除；如需恢复，应从 native final State 由具体 custom route 显式投影，不能塞回 Graph
-推理或再建通用 delivery Runtime。
+购物展示协议属于终态交付投影，不属于 assistant loop 文本生成。支持
+`supports_shopping_detail_v1` 的 Gateway adapter 在 run 完成后从完整 shopping ToolResult 追加
+`<detail>`；`AgentResponse.message` 和 conversation history 保留自然语言。若自然语言 token delta
+已经提交，Gateway 额外发出一个 `token_streaming=false`、`content_type=detail` 的补充
+`response.chunk`，并以包含自然语言和 detail 的 `response.final` 收口。
 
 The compatibility contracts remain supported:
 
@@ -362,6 +365,12 @@ async for event in stream:
 state = await stream.result()
 ```
 
+M5 后 Runtime 的稳定公开方法只有 `initialize_session_memory`、`run_state`、`arun_state`、
+`astream_state`、`aresume_state`、`areplay_state`、`afork_state`、
+`drain_memory_ingestions`、`run_task_quantum` 与 `close`。无人调用的 `run()` 已删除；history 和 thread
+retention 不再作为 Runtime facade 方法。legacy Workflow retirement gate 已闭合，`run_work_item`
+及其 execution adapter 已删除；复杂规划只由 process-owned `WorkflowGraphHost` 和原生 StateGraph 执行。
+
 `run_assistant_request_stream()` returns
 `AgentRunStream[AssistantRunArtifacts]` and preserves the shared service as the
 owner of provider/config resolution, runtime construction, conversation
@@ -395,11 +404,11 @@ DurableTask 当前只作为 schedule、external event 和 notification/checkpoin
 
 Durable Workflow 使用相同的分离原则，但事件事实源是 `WorkflowStore`：
 
-- Workflow consumer 先经 `WorkflowService` 做 `user_id + agent_id` 校验，再读取事务内与 revision 一起
-  提交的 `WorkflowEvent`；当前旧 HTTP route 已移除，后续暴露应使用 Agent Server custom route/API。
+- `GET /workflows/{workflow_id}/events?after=<cursor>` 先经 `WorkflowService` 做 `user_id + agent_id`
+  校验，再读取事务内与 revision 一起提交的 `WorkflowEvent`；
 - 前台 Durable Workflow start run 在返回结构化 handle 后结束；成功响应可以没有文本，本身不 tail 后台事件；本地 `media_simulator.py` 可在
   前台终包后另开 identity-scoped HTTP pull 窗口，按 cursor 观察同一 Workflow，但不延长或重新打开
-  foreground run；
+  ingress Gateway run；
 - 显式 Workflow mode start 不调用 Provider 或本地 Tool，只持久化用户意图并形成无文案的结构化终态。
   所有 Workflow submission 都先产生仅含 planner item 的 version 1 bootstrap Plan；首个后台
   planner run 由主 Agent 生成严格 `WorkflowPlanProposal`，Definition materialize 和 admission
@@ -409,23 +418,16 @@ Durable Workflow 使用相同的分离原则，但事件事实源是 `WorkflowSt
   只从持久化当前 item 的 LLM 生成 `display_title`、状态和完成数投影产品 `progress`；原始事件
   仍是诊断事实，但不是默认产品文案；
 - planner 和每个语义 worker item 都产生独立 bounded `AgentGraphRuntime` canonical run/trace，Workflow event 通过
-  `workflow_id/work_item_id/attempt` 关联；Deep Research 的 OTel/Langfuse 投影复用持久化的 ingress
-  trace ID，但不把多个 canonical run 伪装成一次连续 ReAct；它们共同属于一个 durable
-  Plan-and-Execute execution；
+  `workflow_id/work_item_id/attempt` 关联；LangSmith native graph 保留真实执行父子关系，不把多个
+  canonical run 伪装成一次连续 ReAct；它们共同属于一个 durable Plan-and-Execute execution；
 - waiting-input、cancel、retry、local plan revision 和 terminal 都是持久事件；客户端断线只丢失
   临时观察窗口，使用 cursor 可重放；
 - 当前 HTTP facade 是 pull/replay，不建立长期 WebSocket producer，也不把消费者速度耦合到 worker。
 
-当前持久恢复边界刻意放在 work-item run 之间：`DurableWorkflowWorker` 可同时原子 claim 多个依赖已满足的
-work item，每个 item 使用独立 lease、attempt 与预算预留；这些 bounded Agent run 在锁外并行执行，
-再分别以 Workflow revision CAS 提交结果。最后一个依赖成功提交后才解锁 join/synthesis 节点。
-进程重启后从 `WorkflowStore` 恢复，过期 lease 只回收对应 item；执行期间 heartbeat 续租，防止长模型
-run 被误判为崩溃。当前实现没有声称可以从一次 Provider/Tool 调用的中间指令继续，也没有把 LangGraph
-SQLite checkpointer 作为第二事实源；崩溃在提交前发生时，该 work-item run 会按 lease/retry 语义重做。
-因此普通首批内置 definition 只给 work item 暴露只读 Tool；
-`deep_research` 是当前例外，它暴露零个本地 Tool，并在相同 Chat Completions Provider turn 内使用
-百炼原生联网。未来若允许写副作用，必须先增加 operation-level idempotency key 和 side-effect
-commit barrier。
+当前持久恢复边界是 official LangGraph SQLite checkpointer：StateGraph 直接持久化 plan、wave、branch、
+interrupt 与 resume 状态，进程重启由同一 thread checkpoint 恢复。业务 `WorkflowStore` 仅保存产品投影、
+终态历史和迁移审计，不再拥有 ready-node、claim、lease 或 heartbeat 执行权。写副作用继续复用
+operation-level idempotency key 与 side-effect commit barrier。
 
 普通 work-item 的完整最终文本直接作为成功结果。Provider 截断、错误、拒绝、timeout 或空终态属于
 技术失败，必须进入 work-item retry/failure 状态，不能把用户可见兜底文案写成成功 artifact。只有
@@ -444,21 +446,58 @@ controller 按已提交的 retry/failure 规则收敛，避免内外两层对同
 
 ## Thread Model And Ordering
 
-生产调用由 Agent Server 创建 thread/run，并把 `ServerRuntime` 注入 graph factory。root graph 先把严格
-`request_input` 投影为 Assistant state，再执行 namespaced assistant loop。Provider、ToolExecutor、Registry
-与 Memory bundle 属于 factory lifespan 资源，不进入 checkpoint State。同步 SDK、文件系统或本地模型仍可在
-明确的 thread boundary 后执行，但入口不得因此创建另一套 run queue 或 Graph owner。
+The shared assistant service uses the native asynchronous graph path for its
+production stream:
 
-原生 run stream 是产品执行事实源；custom route 只消费 `values` 等公开 stream mode，并从最终
-`assistant_state.final_response` 投影媒体终包。内部 `AgentEvent`/`AgentRunStream` 仍可服务节点测试和
-观测投影，但不再定义生产 server 的 session、重连或取消语义。
+```text
+async consumer
+  -> run_assistant_request_stream()
+  -> run_assistant_request_async()
+  -> AgentGraphRuntime.arun_state()
+  -> compiled graph astream(v2, custom/tasks/checkpoints/...)
+  -> custom RuntimeProductFact
+  -> ProductEventProjector -> EventSink.emit(AgentEvent)
+  -> AsyncQueueEventSink
+  -> AgentRunStream in owning event loop
+```
 
-Completed-turn long-term-memory write is an explicit Graph boundary.
-`publish_response` emits the stable `final_response` fact first; the stream remains active while
-`memory_commit` calls the selected backend and records its redacted outcome. Commit failure or timeout
-does not rewrite the already-published answer. A minimal durable ledger prevents duplicate external
-writes across resume; no background ingestion queue or retry worker exists. Detailed snapshot,
-time-travel and ledger rules remain authoritative in `docs/memory-service-architecture.md`.
+`AgentRunStream` publishes event and terminal records directly when the caller
+already runs on its owner event loop. `asyncio.Queue` is not thread-safe, so a
+sync LangGraph node or explicit compatibility caller running in another thread
+is detected and routed through `loop.call_soon_threadsafe()` instead. Both paths
+preserve prior event publication before the terminal sentinel.
+
+The realtime backend normally consumes the shared service stream with
+`async for`. The default HTTP Gateway composition root injects
+`GatewayRuntimePool.run_request_stream()` and keeps its runtime lease until the
+inner stream reaches a result or exception; the Agent-Service composition root
+injects `AssistantRuntimeApp.run_request_stream()`. `GatewayRuntimeAdapter` only
+accepts an async `run_request_stream=` boundary; the former synchronous
+`run_request=` worker-thread bridge and `AgentGraphRuntime.run_stream()` bridge
+have been removed. The synchronous `run_assistant_request()` and
+`AgentGraphRuntime.run_state()` APIs remain available for existing non-Gateway
+callers; there is no response-only `AgentGraphRuntime.run()` alias, and these APIs do not
+define a product stream path.
+
+Async migration remains selective:
+
+- keep Gateway, WebSocket, realtime delivery, and supported provider streams
+  async-native;
+- keep sync-only SDKs, governed tools, local memory, filesystem/artifact work,
+  and subprocess-backed operations behind sync/thread boundaries unless
+  measured concurrency or latency justifies a focused migration;
+- do not duplicate business logic merely to remove `asyncio.to_thread()`.
+
+Completed-turn long-term-memory ingestion is a separate post-response thread
+boundary. `AgentGraphRuntime` emits `final_response` and immediately records
+`response.delivered` from the Runtime final answer, then freezes a sanitized
+`CompletedTurn` and submits it to the bounded `MemoryIngestionQueue`
+without waiting for memory Provider I/O. Its trace span carries
+`execution_phase=post_response_background`; Agent-Service critical-path and
+active-stage accounting exclude that background span. Runtime close drains
+accepted work within the configured shutdown bound. Detailed identity,
+ordering, saturation and eventual-consistency rules remain authoritative in
+`docs/memory-service-architecture.md`.
 
 Proactive messages are a separate non-turn delivery contract. An LLM-authored
 Tool input may precompose message content, but a later Runtime event only creates
@@ -476,21 +515,30 @@ normal worker thread and isolates the coroutine in a helper thread if the
 caller already owns a running loop. This is a compatibility bridge, not a
 second agent runtime.
 
-## Agent Server 与媒体投影
+## Realtime And Gateway Mapping
 
-Agent Server 原生 API 拥有 run stream、cancel、reconnect 和 checkpoint。媒体 custom route 使用公开 SDK
-将 `assistantControl` 映射到 thread、将 `chat` 映射到 run、将 `interrupt` 映射到 run cancel；投影不得
-反向决定 graph 路由或终态。具体资源边界见 `docs/gateway-architecture.md`，vendor 字段见
-`docs/media-agent-service-websocket.md`。
+`GatewayRuntimeAdapter` consumes the shared assistant stream, maps each
+`AgentEvent` through `assistant_agent.gateway.runtime_event_mapping`, and awaits the
+realtime event sink. Mapping may produce progress, response chunks, final
+response, tool/trace display events, or errors. Final
+response chunking and duplicate streamed-delta suppression remain realtime
+adapter policy.
+
+Gateway then maps `RealtimeAgentEvent` records to normalized frames, including
+`response.chunk -> stream.chunk` and `run.progress -> event.progress`, while
+owning run/session lifecycle, reconnect, cancel, interrupt, stale-output
+suppression, and transport behavior. Changes to those wire semantics belong in
+`docs/gateway-architecture.md`, not here.
 
 Qwen realtime vision 的 Provider delta 与用户可见 Agent stream 是两条独立流。后台
 `QwenRealtimeVisionAdapter` 为每次 observation 建立新的 WebSocket/Provider conversation，在该连接内
 累积 `response.text.delta`，直到收到 completed `response.done` 后才发布一个结构化
 `VideoUnderstandingResult`，随后无论成功、失败或响应不完整都关闭该连接；这些 delta
 不会映射为 `LLMEvent`、`AgentEvent(response_delta)`、`RealtimeAgentEvent(response.chunk)`
-或媒体 `chatResponse`。最终 Agent stream 仍只来自前台 chat Provider；视觉 Provider 的首 delta 与总耗时
+或 Gateway `stream.chunk`。最终 Agent stream 仍只来自前台 chat Provider，其公开
+`token_delta` 经 `AgentRunStream` 实时进入 realtime/Gateway；视觉 Provider 的首 delta 与总耗时
 只作为 prompt-safe scalar diagnostics，不携带 Qwen 原文或 raw event。
-全语义选帧的 `semantic_frame.*` 是独立的内容安全 side stream，不映射为用户可见 delta 或媒体
+全语义选帧的 `semantic_frame.*` 是独立的内容安全 side stream，不映射为用户可见 delta 或 Gateway
 frame；其事件只描述固定准入、latest-wins 替换和选帧结果。
 
 ## Cancellation And Failure Semantics
@@ -498,7 +546,7 @@ frame；其事件只描述固定准入、latest-wins 替换和选帧结果。
 Cancellation is cooperative:
 
 ```text
-Agent Server run cancel / event-like cancel token
+Gateway/event-like cancel token
   -> run_assistant_request_stream(..., cancel_token=...)
   -> AgentGraphRuntime.run_state(..., cancel_token=...)
   -> raise_if_cancelled()
@@ -529,7 +577,7 @@ separate process or an upstream API that actually provides it.
 文本，Runtime 不处理语音 embedding。只有 coordinator 声明 text consumer 时才编码。Image/text
 embedding、consumer dispatch 和 temporal retention 是独立的内部 side stream，不替代 LLM/provider
 stream，不把向量或媒体证据写入 `AgentEvent`、conversation history 或主 prompt。Runtime pool 实例共享
-同一个 coordinator store；显式 retention 清理它，WebSocket reconnect 不清理。
+同一个 coordinator store；session/user 删除和 pool close 清理它，WebSocket reconnect 不清理。
 完整契约见 `docs/multimodal-embedding-architecture.md`。
 
 ## Source Ownership
@@ -544,14 +592,15 @@ stream，不把向量或媒体证据写入 `AgentEvent`、conversation history �
 | `src/assistant_agent/runtime/event_stream.py` | `AgentRunStream` and thread-safe queue sink |
 | `src/assistant_agent/runtime/runtime.py` | graph lifecycle, provider-path selection, `run_state`/`run`/`run_stream` |
 | `src/assistant_agent/runtime/runtime_host.py` | composed Runtime and trace-store ownership/close boundary for real entries |
-| `src/assistant_agent/memory/` | graph-native backend nodes, composition bundle and external commit ledger |
+| `src/assistant_agent/memory/ingestion_queue.py` | bounded post-response turn-ingestion queue, per-identity ordering, drain and shutdown |
 | `src/assistant_agent/runtime/assistant_run_service.py` | shared sync/native-async run service, stream projection and `AssistantRunArtifacts` |
-| `src/assistant_agent/agent_server/graph.py` | production graph factory and native runtime binding |
-| `src/assistant_agent/agent_server/media_app.py` | native run stream to media wire projection |
+| `src/assistant_agent/gateway/runtime_adapter.py` | assistant stream consumption and realtime terminal result |
+| `src/assistant_agent/gateway/runtime_event_mapping.py` | `AgentEvent` to `RealtimeAgentEvent` mapping |
+| `src/assistant_agent/gateway/event_mapping.py` | realtime event to Gateway frame mapping |
 
 Adjacent authorities remain authoritative for their domains:
 
-- `docs/gateway-architecture.md`: Agent Server resources and deployment lifecycle.
+- `docs/gateway-architecture.md`: Gateway frames and lifecycle.
 - `docs/tool-calling-architecture.md`: tool validation/execution governance.
 - `docs/observability-harness.md`: trace events, persistence, and redaction.
 - `docs/context_engineering_status.md`: prompt/context assembly and budgets.
@@ -565,10 +614,10 @@ Update this document in the same change when any of the following changes:
 - stream/result ownership or terminal exception behavior;
 - worker-thread/event-loop ordering or queue bridging;
 - cancellation guarantees or blocking-call limitations;
-- source ownership or native stream projection before the custom-route boundary.
+- source ownership or realtime mapping before the Gateway frame boundary.
 
-Update the Agent Server authority when thread/run lifecycle、cancel、reconnect 或 deployment behavior changes；
-更新媒体 authority when vendor frame names or WebSocket behavior changes. Historical
+Update the Gateway authority instead when frame names, session/run lifecycle,
+cancel/interrupt delivery, reconnect, or WebSocket behavior changes. Historical
 files under `docs/superpowers/specs/` and `docs/superpowers/plans/` are
 development records, not current architecture authority.
 
@@ -580,7 +629,7 @@ Run the stable core safety net (bare pytest collects only `tests/core`):
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python -m pytest -q
 ```
 
-It protects runtime completion, provider timeout termination and cancellation. Agent Server deployment behavior is
-validated by `evals/system/incubating/agent_server_native_runtime/checks_deployment.py`. Broader media behavior is validated through the explicit offline simulators in
+It protects runtime completion, provider timeout termination, cancellation, and the core event-to-Gateway
+conversion contract. Broader realtime behavior is validated through the explicit offline simulators in
 `scripts/README.md`; real provider streaming requires `MULTIMODAL_AGENT_PROVIDER_MODE=real` and local
 untracked credentials.

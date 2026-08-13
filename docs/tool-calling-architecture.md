@@ -6,7 +6,7 @@
 | --- | --- |
 | 定位 | Tool 注册、暴露、调用、执行与 durable workflow 治理的当前权威 |
 | Owns | Tool/ToolSpec、catalog、Plugin、MCP、Validator、Executor、Durable Workflow Runtime 与副作用边界 |
-| Does not own | 用户意图关键词路由、Gateway 生命周期、Graph Memory 节点/后端生命周期、Provider vendor 私有协议 |
+| Does not own | 用户意图关键词路由、Gateway 生命周期、Memory Plugin 生命周期、Provider vendor 私有协议 |
 | 源码与 schema 入口 | `src/assistant_agent/tools/`、`src/assistant_agent/workflows/`、`src/assistant_agent/mcp/` |
 | 验证入口 | `docs/authority.toml` 中 `tool-calling.verification` |
 | 相邻 authority | Runtime 见 [`runtime-event-stream-architecture.md`](runtime-event-stream-architecture.md)；Memory 见 [`memory-service-architecture.md`](memory-service-architecture.md) |
@@ -90,8 +90,8 @@ vision/video adapter。VLM 是 Tool 的内部 Provider 能力，不注册成主 
 推理的 Tool 不得为了统一形式额外调用 VLM。
 
 上述视觉理解 Tool 声明 `trace_content_policy=metadata_only`。这只收窄 canonical Tool event、当前 turn
-的 trace conversation overlay 和 Langfuse Tool observation，不改变交给主 LLM 的结构化 Tool
-observation；因此 Agent 仍能依据视觉结果回答，但对应 Tool span 不包含媒体引用、视觉正文、本地路径
+的本地 trace conversation overlay，不改变交给主 LLM 的结构化 Tool
+observation；因此 Agent 仍能依据视觉结果回答，但 canonical Tool event 不包含媒体引用、视觉正文、本地路径
 或 Provider 失败原文。
 
 ## 3. 公共契约
@@ -277,6 +277,12 @@ module 等同于执行受信任代码，不是不可信插件沙箱。不可信�
 增加普通 Tool 时只修改其所属 Plugin，不应要求修改 Registry、Validator、Executor、assistant loop
 或中心 Tool name 表。只有新的宿主级共享依赖才扩展 Plugin context 和 composition root。
 
+Tool capability/name/action 的通用映射位于
+`assistant_agent.runtime.tool_capability_mapping`；旧的兼容映射 module 已随 intent planner
+退出而删除，不保留 import alias。`ToolExecutor` 仍使用该结构化映射，并继续通过 `recovery.py` 执行失败
+分类；`recovery.py` 同时服务 LangSmith 安全错误分类。`planning_models.py` 与 `plan_validator.py` 继续由
+独立 DurableTask service 和酒店价格监控 profile 使用，不属于 legacy intent planner 清理范围。
+
 ### 4.3 Website guidance
 
 `website_guidance` 是默认关闭的内置 Plugin。显式启用
@@ -341,14 +347,10 @@ Durable Workflow 是 Runtime-owned 的长流程执行底座，不是 Tool Plugin
 seed_artifact_refs/idempotency_key` 等意图与资源事实，不接受已规划 DAG、约束责任绑定或 planner mode。
 Research 问题等业务字段只能放在 definition-owned `inputs` schema 中。
 
-所有 Durable Workflow 使用同一个 Plan-and-Execute 入口。`WorkflowService.submit()` 只持久化
-submission，并创建 version 1 bootstrap Plan：该 Plan 仅包含一个 `kind=plan` 的 planner
-work item，Workflow 进入 `phase=planning`。首个后台 run 通过
-`AgentGraphRuntime.run_work_item()` 运行主 Agent planner，要求严格的 `WorkflowPlanProposal`；
-Definition 再将 proposal 的 workstreams 和 constraint proposals 领域化为 version 2
-`WorkflowPlanVersion`，经过 DAG、引用、保留 ID/kind 和验证者拓扑 admission 后才进入执行。
-因此第一次 `llm.chat` 就是真实 planner 运行，不存在 submission 阶段的第二套规则 planner
-或预先由模型填写执行 DAG 的兼容路径。
+所有 Durable Workflow 使用同一个原生 StateGraph Plan-and-Execute 入口。`WorkflowGraphHost` 将
+submission 投影为严格 checkpoint state，planner/worker/verifier profile subgraph、conditional `Send`、
+join、repair 与 interrupt/resume 都由 `DurableWorkflowGraph` 推进。旧 `run_work_item`、execution adapter、
+ready-node scheduler 与 worker 已在 retirement gate 闭合后删除。
 
 约束在 planner proposal 与获准执行 Plan 中使用两个不同的 Pydantic 边界：LLM Planner 生成
 `WorkflowConstraintProposal`，可以在完整 DAG 尚不存在时省略 `verifier_work_item_id`；Definition 生成
@@ -508,21 +510,10 @@ Validator、持久化 stable operation scope 并取得 barrier owner 后才可�
   不暴露 checkpoint、thread、task 或 native interrupt identity。`DurableWorkflowGraph` 以
   strict checkpoint state、conditional `Send`、Pregel join、planner/worker/verifier profile subgraph、
   `Command` repair、父图 `interrupt`/resume 和 publish operation barrier 直接运行 `langgraph_v3` record。
-  这条 native graph 路径不调用下述 claim/lease/CAS/ready-node scheduler。现存 legacy rows 按本机
-  operator cutover manifest 分类：pristine queued 使用业务 migration-prepared、幂等首 checkpoint、
-  migration-committed 两阶段切换；running/recovering/waiting/blocked 只由独立 `LegacyDrainHost` 按启动时
-  exact workflow-ID allowlist drain。新提交不能进入 legacy service，prepared row 会冻结旧 claim。
-  retirement 必须等 legacy 非终态、active lease、waiting 全零，manifest phase retired、rollback window
-  关闭且 retirement audit 存在；任一条件不满足时保留下述 legacy 模块。
-  drain 期 `DurableWorkflowWorker` 原子 claim 单个 ready work item，并以 work-item lease、attempt 和调用预算作为
-  独立所有权边界；一个调度波次可并行运行多个无依赖节点。每个结果分别以 revision CAS 提交，最后一个
-  依赖完成时才解锁 join/synthesize 节点。lease heartbeat 防止长模型 run 被误判为崩溃；过期 lease
-  只重试对应节点，不重启整个 Workflow。legacy claim 边界只接受
-  `execution_engine=legacy_scheduler_v2`；即使误配置 allowlist，`langgraph_v3` record 也不可由
-  claim/lease/CAS worker 取得。首个 planner item 与语义 worker item 都通过
-  `AgentGraphRuntime.run_work_item()` 回到
-  同一 assistant loop；executor port 将 `planner_runtime` 与 `agent_runtime` 分开注入，默认可复用同一
-  Runtime，也预留主 Agent 规划、子 Agent/远程 worker 执行的替换点。
+  这条 native graph 路径不调用 claim/lease/CAS/ready-node scheduler。legacy 非终态已由 operator
+  明确终结；历史 terminal row 只保留 owner-scoped 只读投影。生产启动和新 Graph admission 不再读取
+  cutover manifest，也不存在 migration、rollback 或 legacy mutation 控制面。业务 Store 不再提供
+  claim、lease、ready-node、heartbeat 或 retirement-audit 写方法，不能恢复旧执行。
   `agent_role` 由 Workflow controller 根据 version 1 的 bootstrap planner 状态写入可信 assignment，不能
   从 LLM 生成的 work-item `kind` 推断；planner proposal 禁止复用保留的 `plan` id/kind，避免递归重规划。
   新 planner 只生成显式标记的 `workflow_plan_v2`：每个 plan version 是静态 DAG，节点使用
@@ -572,7 +563,7 @@ Validator、持久化 stable operation scope 并取得 barrier owner 后才可�
   claim 时为每个 work-item 原子预留 workflow quantum 与 model/tool call 预算，commit 时退回未使用额度，
   从而避免并行 run 超卖全局预算。Tool 预算为零时不再暴露 Tool，分配给该 run 的预算同时收窄
   work-item assistant loop 的 iteration 上限。
-- **Memory**：长期记忆读写只发生在固定的 `memory_recall` / `memory_commit` Graph 节点；默认长期记忆不是主模型可调用 Tool。
+- **Memory**：记忆读写遵循 `MemoryPluginHost` 与 Plugin lifecycle；默认长期记忆不是主模型可调用 Tool。
 - **Gateway、CLI、API、demo、eval**：都是入口或观察形态，不能直接调用 Tool 实现来复制 Agent
   逻辑。
 - **内部 Tool**：后台 observer 或 worker 可以使用独立 Registry/catalog，但仍必须经过 Validator
@@ -612,11 +603,10 @@ payload、凭据、绝对路径和大块内联数据不能因 ToolResult 或调�
 - `tools/observation.py`：ToolResult 到模型观察的通用投影；
 - `tests/core/contract/test_tool_contract.py`：`TOOL-001` 核心治理契约。
 - `workflows/graph_host.py`：process-owned/b borrowed saver 的 graph_v3 产品 facade；
-- `workflows/cutover.py`：operator manifest、content-free inventory 与 queued 两阶段 migration reconciler；
-- `workflows/legacy_drain_host.py`：cutover 期 exact existing-row allowlist 的唯一 legacy execution owner；
-- `workflows/` 其余模块：Workflow 契约、definition、Store、artifact/context，以及 retirement gate 未关闭前
-  保留的 legacy work-item controller/worker/adapter；
-- 旧 `api/routes_workflows.py` 已随平行 FastAPI Runtime 删除；需要产品 Workflow API 时应作为 Agent Server custom route 重新暴露。
+- `runtime/graph_capability_evidence.py`：最终 native Graph API 机器证据矩阵与独立 M5 delivery gate；其中
+  Tool 副作用安全仍以既有 operation barrier 与治理链为证据，不建立第二套执行规则；
+- `workflows/` 其余模块：Workflow 契约、产品 Store、artifact/context、native graph 与 legacy terminal archive；
+- `api/routes_workflows.py`：identity-scoped status/events/input/cancel/result 薄入口。
 
 ## 10. 不变量
 

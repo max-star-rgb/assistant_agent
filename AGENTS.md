@@ -74,7 +74,7 @@ manifest 只用于 coding agent 选择工程文档，不进入产品 Runtime，�
 | `tests/core/` | 永久、默认收集的离线核心 pytest；只保护已登记 core invariant |
 | `tests/tdd/*/` | 每个 feature 独立、显式运行且可由用户手动删除的临时 RED/GREEN pytest；不自动晋升 core |
 | `evals/system/` | 正式真实能力验证，以及 `incubating/<feature>/` 中可删除的节点专项检查；边界与结果权威见 `evals/README.md` |
-| `evals/release_review/` | 上线前 Agent 行为评审；Git YAML 定义 Decision/Staging 场景，Langfuse 保存 Dataset、Experiment、Trace 和 Score |
+| `evals/release_review/` | 上线前 Agent 行为评审；Git YAML 定义 Decision/Staging 场景，LangSmith 保存 Dataset、Experiment、Trace 和 Feedback |
 | `scripts/` | 服务、demo、system eval 和 Release Review 的稳定命令入口；索引见 `scripts/README.md` |
 | `docs/*.md` | 当前架构、接口和状态权威文档 |
 | `docs/development/`, `docs/superpowers/`, `docs/interview/` | 非默认材料：开发阶段记录、历史计划/spec、面试资料；不作为当前规则入口 |
