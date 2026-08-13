@@ -12,7 +12,9 @@ from assistant_agent.workflows.graph_state import WorkflowWorkerControl
 @pytest.mark.parametrize(
     "control",
     [
-        WorkflowWorkerControl(outcome="completed", summary="done"),
+        WorkflowWorkerControl(
+            outcome="completed", summary="done", content="deliverable"
+        ),
         WorkflowWorkerControl(
             outcome="blocked",
             summary="need input",
@@ -35,7 +37,16 @@ def test_worker_control_accepts_only_complete_outcome_shapes(control):
     "payload",
     [
         {"outcome": "completed", "summary": "done", "extra": "bad"},
+        {"outcome": "completed", "summary": "done"},
         {"outcome": "blocked", "summary": "need input"},
+        {
+            "outcome": "blocked",
+            "summary": "need input",
+            "content": "not allowed",
+            "required_fields": ["topic"],
+            "prompt_code": "need_topic",
+            "safe_prompt": "Which topic should I use?",
+        },
         {
             "outcome": "blocked",
             "summary": "need input",
@@ -44,6 +55,12 @@ def test_worker_control_accepts_only_complete_outcome_shapes(control):
             "safe_prompt": "/home/private/secret.txt",
         },
         {"outcome": "failed", "summary": "failed"},
+        {
+            "outcome": "failed",
+            "summary": "failed",
+            "content": "not allowed",
+            "error_code": "worker_failed",
+        },
     ],
 )
 def test_worker_control_rejects_extra_missing_or_unsafe_fields(payload):
@@ -160,7 +177,10 @@ def test_native_worker_request_uses_strict_work_item_control_prompt(tmp_path):
         assert len(worker.requests) == 1
         request_text = worker.requests[0].user_query
         assert "workflow_control" in request_text
-        assert "acceptance_evidence" in request_text
+        assert '"outcome"' in request_text
+        assert '"completed"' in request_text
+        assert '"content"' in request_text
+        assert '"status"' not in request_text
         assert "criterion_a" in request_text
         assert "execute a" in request_text
         assert len(request_text) <= 32_000
@@ -168,7 +188,42 @@ def test_native_worker_request_uses_strict_work_item_control_prompt(tmp_path):
         artifact_store.close()
 
 
-def test_control_envelope_is_not_written_as_a_deliverable_artifact(tmp_path):
+def test_native_completed_control_projects_envelope_content(tmp_path):
+    from assistant_agent.identity import RequestIdentity
+    from workflow_graph_probe import config, workflow_probe
+
+    response = json.dumps(
+        {
+            "workflow_control": {
+                "outcome": "completed",
+                "summary": "done",
+                "content": "bounded deliverable",
+            }
+        }
+    )
+    app, context, initial, _worker, artifact_store = workflow_probe(
+        tmp_path,
+        {"a": []},
+        worker_responses={"a": response},
+    )
+    try:
+        final = asyncio.run(app.ainvoke(initial, config=config(), context=context))
+        child = final["result_ledger"]
+        assert child
+        result_ref = next(iter(final["result_artifact_refs"]))
+        assert artifact_store.read_text(
+            identity=RequestIdentity.for_user(
+                user_id="user-send",
+                agent_id="agent-send",
+                session_id="session-send",
+            ),
+            artifact_ref=result_ref,
+        ) == "bounded deliverable"
+    finally:
+        artifact_store.close()
+
+
+def test_completed_control_without_content_fails_closed(tmp_path):
     from assistant_agent.workflows.graph_state import latest_results
     from workflow_graph_probe import config, workflow_probe
 
@@ -185,8 +240,9 @@ def test_control_envelope_is_not_written_as_a_deliverable_artifact(tmp_path):
         result = latest_results(
             final["result_ledger"], final["execution_generation_by_node"]
         )["a"]
-        assert final["status"] == "completed"
-        assert result.status == "succeeded"
+        assert final["status"] == "failed"
+        assert result.status == "failed"
+        assert result.error_code == "workflow_worker_control_invalid"
         assert result.artifact_refs == ()
         assert tuple(final["result_artifact_refs"]) == ()
     finally:
@@ -230,8 +286,45 @@ def test_deep_research_worker_does_not_inherit_registered_read_tools(tmp_path):
     )
     try:
         final = asyncio.run(app.ainvoke(initial, config=config(), context=context))
-        assert final["status"] == "completed"
+        assert final["status"] == "failed"
         assert worker.requests[0].tools == []
         assert tuple(final["active_wave"]) == ()
+    finally:
+        artifact_store.close()
+
+
+def test_native_verifier_request_has_strict_schema_constraints_and_repair_scope(
+    tmp_path,
+):
+    from workflow_graph_probe import config, proposal, workflow_probe
+
+    plan = proposal({"a": [], "verify": ["a"]})
+    plan["constraint_bindings"] = [
+        {
+            "constraint_id": "required_evidence",
+            "statement": "cite evidence",
+            "owner_node_ids": ["a"],
+            "verifier_node_id": "verify",
+            "severity": "required",
+        }
+    ]
+    app, context, initial, _worker, artifact_store = workflow_probe(
+        tmp_path,
+        {"a": [], "verify": ["a"]},
+        plan_payload=plan,
+    )
+    try:
+        final = asyncio.run(app.ainvoke(initial, config=config(), context=context))
+        verifier = context.services.provider_registry["verifier"]
+
+        assert final["status"] == "completed"
+        assert len(verifier.requests) == 1
+        request_text = verifier.requests[0].user_query
+        assert "workflow_verification" in request_text
+        assert '"verified"' in request_text
+        assert '"repair_node_ids"' in request_text
+        assert "cite evidence" in request_text
+        assert '"repair_candidate_ids": ["a"]' in request_text
+        assert len(request_text) <= 32_000
     finally:
         artifact_store.close()

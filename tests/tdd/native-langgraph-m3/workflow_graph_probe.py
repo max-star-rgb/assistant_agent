@@ -153,6 +153,7 @@ class WorkerAdapter:
                             "workflow_control": {
                                 "outcome": "completed",
                                 "summary": f"completed {node_id}",
+                                "content": f"deliverable {node_id}",
                             }
                         }
                     ),

@@ -23,10 +23,6 @@ from assistant_agent.runtime.assistant_graph_profiles import (
 )
 from assistant_agent.runtime.assistant_graph_state import AssistantTurnState
 from assistant_agent.runtime.graph_runtime import GraphRuntimeContext
-from assistant_agent.workflows.agent_runtime import (
-    AgentWorkItemRequest,
-    render_work_item_prompt,
-)
 from assistant_agent.workflows.graph_context import (
     WorkflowGraphRuntimeContext,
 )
@@ -72,6 +68,8 @@ WORKFLOW_NODE_TIMEOUT = TimeoutPolicy(
     idle_timeout=10.0,
     refresh_on="auto",
 )
+_MAX_NATIVE_PROFILE_REQUEST_CHARS = 32_000
+_MAX_NATIVE_PROFILE_ARTIFACT_CHARS = 12_000
 
 
 class WorkflowProfileBranchState(TypedDict, total=False):
@@ -102,6 +100,72 @@ def _assignment(state: Mapping[str, object]) -> WorkflowProfileAssignment:
     return WorkflowProfileAssignment.model_validate_json(json.dumps(payload))
 
 
+def _native_profile_prompt(
+    assignment: WorkflowProfileAssignment,
+    *,
+    context_manifest: object,
+    schema_name: Literal["workflow_control", "workflow_verification"],
+    schema: Mapping[str, object],
+    repair_candidate_ids: tuple[str, ...] = (),
+) -> str:
+    manifest = dict(cast(Mapping[str, object], context_manifest))
+    raw_artifacts = cast(list[object], manifest.get("artifacts", []))
+    excerpt_limit = max(
+        1,
+        _MAX_NATIVE_PROFILE_ARTIFACT_CHARS // max(1, len(raw_artifacts)),
+    )
+    artifacts = [
+        {
+            **cast(Mapping[str, object], item),
+            "excerpt": str(
+                cast(Mapping[str, object], item).get("excerpt", "")
+            )[:excerpt_limit],
+        }
+        for item in raw_artifacts
+        if isinstance(item, Mapping)
+    ]
+    manifest["artifacts"] = artifacts
+    manifest["total_excerpt_chars"] = sum(
+        len(str(item.get("excerpt", ""))) for item in artifacts
+    )
+    if any(
+        len(str(cast(Mapping[str, object], item).get("excerpt", "")))
+        > excerpt_limit
+        for item in raw_artifacts
+        if isinstance(item, Mapping)
+    ):
+        manifest["trimmed"] = True
+    facts = {
+        "workflow_id": assignment.workflow_id,
+        "node_id": assignment.node_id,
+        "objective": assignment.objective,
+        "constraints": assignment.constraints,
+        "acceptance_contract": assignment.acceptance_contract.model_dump(mode="json"),
+        "context_manifest": manifest,
+        "repair_candidate_ids": repair_candidate_ids,
+    }
+    envelope_schema = {
+        "type": "object",
+        "properties": {schema_name: schema},
+        "required": [schema_name],
+        "additionalProperties": False,
+    }
+    result = "\n\n".join(
+        (
+            "执行一个受限的 native Durable Workflow profile assignment。",
+            "可信 assignment 与有界 context\n"
+            + json.dumps(facts, ensure_ascii=False, sort_keys=True, default=str),
+            f"唯一允许的输出是 exact JSON envelope `{schema_name}`；"
+            "不要输出 Markdown 或 envelope 外文本。",
+            "严格 control schema\n"
+            + json.dumps(envelope_schema, ensure_ascii=False, sort_keys=True),
+        )
+    )
+    if len(result) > _MAX_NATIVE_PROFILE_REQUEST_CHARS:
+        raise ValueError("native workflow profile request exceeds bounded contract")
+    return result
+
+
 def prepare_worker_child_node(
     state: WorkflowProfileBranchState,
     runtime: Runtime[WorkflowGraphRuntimeContext],
@@ -123,26 +187,11 @@ def prepare_worker_child_node(
         artifact_refs=list(assignment.input_artifact_refs),
         work_item_kind=assignment.node_id,
     )
-    request_text = render_work_item_prompt(
-        AgentWorkItemRequest(
-            workflow_id=assignment.workflow_id,
-            workflow_type="deep_research",
-            work_item_id=assignment.node_id,
-            attempt_id=assignment.run_id,
-            display_title=assignment.node_id,
-            user_id=assignment.user_id,
-            agent_id=assignment.agent_id,
-            session_id=assignment.session_id,
-            objective=assignment.objective,
-            work_item_kind=assignment.node_id,
-            attempt_number=assignment.execution_generation + 1,
-            acceptance_contract=assignment.acceptance_contract.model_dump(mode="json"),
-            context_manifest=context_manifest,
-            workflow_constraints=list(assignment.constraints),
-            allowed_tool_names=list(assignment.available_tool_names),
-            max_iterations=assignment.budget_slice.model_calls,
-            agent_role="worker",
-        )
+    request_text = _native_profile_prompt(
+        assignment,
+        context_manifest=context_manifest.model_dump(mode="json"),
+        schema_name="workflow_control",
+        schema=WorkflowWorkerControl.model_json_schema(),
     )
     child = profile_input_adapter(
         {
@@ -221,7 +270,7 @@ def _control_from_child(
         if not isinstance(raw, Mapping):
             raise ValueError("worker control must be an object")
         control = WorkflowWorkerControl.model_validate_json(json.dumps(raw))
-        return control, ""
+        return control, control.content
     raise ValueError("worker response must contain strict workflow_control")
 
 
@@ -312,6 +361,28 @@ def prepare_verifier_child_node(
         raise ValueError("verifier branch requires verifier assignment")
     context = _runtime_context(runtime.context)
     registry = context.services.tool_registry
+    identity = RequestIdentity.for_user(
+        user_id=assignment.user_id,
+        agent_id=assignment.agent_id,
+        session_id=assignment.session_id,
+    )
+    context_manifest = context.context_compiler.compile(
+        identity=identity,
+        workflow_id=assignment.workflow_id,
+        objective=assignment.objective,
+        constraints=list(assignment.constraints),
+        artifact_refs=list(assignment.input_artifact_refs),
+        work_item_kind=assignment.node_id,
+    )
+    repair_candidate_values: list[str] = []
+    for artifact_ref in assignment.input_artifact_refs:
+        producer = context.artifact_store.get_ref(
+            identity=identity,
+            artifact_ref=artifact_ref,
+        ).producer_work_item_id
+        if producer:
+            repair_candidate_values.append(producer)
+    repair_candidates = tuple(dict.fromkeys(repair_candidate_values))
     child = profile_input_adapter(
         {
             "user_id": assignment.user_id,
@@ -326,6 +397,13 @@ def prepare_verifier_child_node(
             profile="verifier",
             assignment_ref=assignment.assignment_ref,
             objective=assignment.objective,
+            request_text=_native_profile_prompt(
+                assignment,
+                context_manifest=context_manifest.model_dump(mode="json"),
+                schema_name="workflow_verification",
+                schema=WorkflowVerifierControl.model_json_schema(),
+                repair_candidate_ids=repair_candidates,
+            ),
             constraints=assignment.constraints,
             capability_refs=assignment.capability_refs,
             explicit_tool_allowlist=assignment.explicit_tool_allowlist,

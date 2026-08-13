@@ -351,6 +351,7 @@ def stable_workflow_action_ref(
 class WorkflowWorkerControl(_CheckpointModel):
     outcome: Literal["completed", "blocked", "failed"]
     summary: str = Field(max_length=4_000)
+    content: str = Field(default="", max_length=100_000)
     required_fields: tuple[str, ...] = Field(default=(), max_length=32)
     prompt_code: str | None = Field(default=None, max_length=160)
     safe_prompt: str | None = Field(default=None, max_length=2_000)
@@ -362,14 +363,15 @@ class WorkflowWorkerControl(_CheckpointModel):
             self.required_fields and self.prompt_code and self.safe_prompt
         )
         if self.outcome == "completed" and (
-            self.required_fields
+            not self.content.strip()
+            or self.required_fields
             or self.prompt_code
             or self.safe_prompt
             or self.error_code
         ):
             raise ValueError("completed control cannot carry input or error fields")
         if self.outcome == "blocked" and (
-            not has_prompt or self.error_code is not None
+            not has_prompt or self.error_code is not None or self.content
         ):
             raise ValueError("blocked control requires only complete input fields")
         if self.outcome == "failed" and (
@@ -377,6 +379,7 @@ class WorkflowWorkerControl(_CheckpointModel):
             or self.required_fields
             or self.prompt_code is not None
             or self.safe_prompt is not None
+            or self.content
         ):
             raise ValueError("failed control requires only error_code")
         if self.outcome == "blocked" and self.safe_prompt is not None:
