@@ -263,6 +263,62 @@ def test_native_worker_request_uses_strict_work_item_control_prompt(tmp_path):
         artifact_store.close()
 
 
+def test_native_worker_prompt_schema_expresses_outcome_conditionals():
+    from assistant_agent.workflows.durable_graph_nodes import (
+        _workflow_worker_prompt_schema,
+    )
+
+    schema = _workflow_worker_prompt_schema()
+
+    assert "oneOf" in schema
+    branches = schema["oneOf"]
+    assert {
+        branch["properties"]["outcome"]["const"] for branch in branches
+    } == {"completed", "blocked", "failed"}
+    required_by_outcome = {
+        branch["properties"]["outcome"]["const"]: set(branch["required"])
+        for branch in branches
+    }
+    assert {"content", "acceptance_evidence"}.issubset(
+        required_by_outcome["completed"]
+    )
+    assert {"required_fields", "prompt_code", "safe_prompt"}.issubset(
+        required_by_outcome["blocked"]
+    )
+    assert "error_code" in required_by_outcome["failed"]
+
+
+@pytest.mark.parametrize(
+    "control",
+    [
+        {
+            "outcome": "completed",
+            "summary": "done",
+            "content": "bounded deliverable",
+            "acceptance_evidence": [
+                {"criterion_id": "criterion_a", "evidence": "delivered"}
+            ],
+        },
+        {
+            "outcome": "blocked",
+            "summary": "need input",
+            "required_fields": ["topic"],
+            "prompt_code": "need_topic",
+            "safe_prompt": "Which topic should I use?",
+        },
+        {
+            "outcome": "failed",
+            "summary": "failed",
+            "error_code": "worker_failed",
+        },
+    ],
+)
+def test_worker_prompt_outcome_shapes_round_trip_runtime_model(control):
+    parsed = WorkflowWorkerControl.model_validate_json(json.dumps(control))
+
+    assert parsed.outcome == control["outcome"]
+
+
 def test_native_completed_control_projects_envelope_content(tmp_path):
     from assistant_agent.identity import RequestIdentity
     from workflow_graph_probe import config, workflow_probe

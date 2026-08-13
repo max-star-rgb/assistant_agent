@@ -100,6 +100,98 @@ def _assignment(state: Mapping[str, object]) -> WorkflowProfileAssignment:
     return WorkflowProfileAssignment.model_validate_json(json.dumps(payload))
 
 
+def _workflow_worker_prompt_schema() -> dict[str, object]:
+    evidence_item = {
+        "type": "object",
+        "properties": {
+            "criterion_id": {
+                "type": "string",
+                "pattern": r"^[a-zA-Z][a-zA-Z0-9_.-]{0,119}$",
+            },
+            "evidence": {"type": "string", "minLength": 1, "maxLength": 4_000},
+        },
+        "required": ["criterion_id", "evidence"],
+        "additionalProperties": False,
+    }
+    common = {
+        "summary": {"type": "string", "maxLength": 4_000},
+    }
+    return {
+        "oneOf": [
+            {
+                "type": "object",
+                "properties": {
+                    "outcome": {"const": "completed"},
+                    **common,
+                    "content": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 27_000,
+                    },
+                    "acceptance_evidence": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 64,
+                        "items": evidence_item,
+                    },
+                },
+                "required": [
+                    "outcome",
+                    "summary",
+                    "content",
+                    "acceptance_evidence",
+                ],
+                "additionalProperties": False,
+            },
+            {
+                "type": "object",
+                "properties": {
+                    "outcome": {"const": "blocked"},
+                    **common,
+                    "required_fields": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 32,
+                        "items": {"type": "string"},
+                    },
+                    "prompt_code": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 160,
+                    },
+                    "safe_prompt": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 2_000,
+                    },
+                },
+                "required": [
+                    "outcome",
+                    "summary",
+                    "required_fields",
+                    "prompt_code",
+                    "safe_prompt",
+                ],
+                "additionalProperties": False,
+            },
+            {
+                "type": "object",
+                "properties": {
+                    "outcome": {"const": "failed"},
+                    **common,
+                    "error_code": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 160,
+                    },
+                },
+                "required": ["outcome", "summary", "error_code"],
+                "additionalProperties": False,
+            },
+        ]
+    }
+
+
 def _native_profile_prompt(
     assignment: WorkflowProfileAssignment,
     *,
@@ -200,7 +292,7 @@ def prepare_worker_child_node(
         assignment,
         context_manifest=context_manifest.model_dump(mode="json"),
         schema_name="workflow_control",
-        schema=WorkflowWorkerControl.model_json_schema(),
+        schema=_workflow_worker_prompt_schema(),
     )
     child = profile_input_adapter(
         {
