@@ -434,6 +434,7 @@ def test_time_travel_uses_opaque_selector_and_fresh_run() -> None:
     assert fork.model_dump(mode="json", exclude_none=True) == {
         "selector": {"history_ref": "ghr_" + "a" * 32},
         "patch": {"response_style": "concise"},
+        "refresh_memory": False,
     }
     assert origin.thread_id == derived.thread_id
     assert origin.run_id != derived.run_id

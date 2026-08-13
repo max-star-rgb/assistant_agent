@@ -44,10 +44,9 @@ def test_runtime_public_surface_is_intentional_with_drain_gate() -> None:
 def test_legacy_workflow_execution_modules_and_api_lifecycle_are_removed() -> None:
     """A closed retirement gate must leave StateGraph as the only executor."""
 
-    from assistant_agent.api import app as app_module
-    from assistant_agent.api import routes_workflows
-
     for module_name in (
+        "assistant_agent.api.app",
+        "assistant_agent.api.routes_workflows",
         "assistant_agent.workflows.worker",
         "assistant_agent.workflows.runtime",
         "assistant_agent.workflows.execution",
@@ -58,10 +57,6 @@ def test_legacy_workflow_execution_modules_and_api_lifecycle_are_removed() -> No
     ):
         with pytest.raises(ModuleNotFoundError):
             importlib.import_module(module_name)
-
-    assert not hasattr(app_module, "start_durable_workflow_worker")
-    assert not hasattr(app_module, "shutdown_durable_workflow_worker")
-    assert not hasattr(routes_workflows, "get_legacy_drain_host")
 
 
 def test_legacy_scheduler_claim_and_lease_surface_is_removed() -> None:

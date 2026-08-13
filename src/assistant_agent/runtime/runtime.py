@@ -83,12 +83,7 @@ from assistant_agent.runtime.requests import (
     UserRequest,
     normalize_task_execution_mode,
 )
-from assistant_agent.runtime.graph_time_travel import (
-    GraphCheckpointSelector,
-    GraphCheckpointSummary,
-    GraphForkRequest,
-    GraphReplayRequest,
-)
+from assistant_agent.runtime.graph_time_travel import GraphForkRequest, GraphReplayRequest
 from assistant_agent.runtime.generated_artifacts import with_generated_artifact_delivery
 from assistant_agent.multi_agent.models import DEFAULT_AGENT_ID
 from assistant_agent.tools.models import ToolResult, ToolSpec
@@ -628,27 +623,6 @@ class AgentGraphRuntime:
             return state
         return self._finalize_graph_run(prepared, state)
 
-    async def alist_history(
-        self,
-        owner: RequestIdentity,
-        *,
-        limit: int,
-        before: GraphCheckpointSelector | None = None,
-    ) -> tuple[GraphCheckpointSummary, ...]:
-        """List owner-bound product-safe checkpoints from this Runtime's graph."""
-
-        identity = self._graph_identity_for_owner(owner, run_id="history-inspect")
-        if getattr(self.assistant_graph_app.graph, "checkpointer", None) is None:
-            raise GraphExecutionError(
-                "graph_checkpointer_required",
-                "Assistant graph time travel requires an explicitly configured saver.",
-            )
-        return await self.assistant_graph_app.alist_history(
-            identity,
-            limit=limit,
-            before=before,
-        )
-
     async def areplay_state(
         self,
         owner: RequestIdentity,
@@ -730,17 +704,6 @@ class AgentGraphRuntime:
             state = exc.state if isinstance(exc.state, AgentState) else prepared.state
             state.cancel(exc.message, source=exc.source, details=exc.details)
             return self._finalize_graph_run(prepared, state)
-
-    async def adelete_assistant_thread(self, *, user_id: str, session_id: str) -> int:
-        """Delete one owned graph thread and then release its invocation claims."""
-
-        deleted = await self.assistant_graph_app.adelete_thread(
-            agent_id=self.agent_id,
-            user_id=user_id,
-            session_id=session_id,
-            invocation_claim_store=self.graph_invocation_claim_store,
-        )
-        return deleted
 
     def astream_state(
         self,
@@ -1953,35 +1916,6 @@ class AgentGraphRuntime:
         )
         request.metadata["realtime_video_context"] = context.model_dump(mode="json")
         request.metadata["realtime_video_context_trusted"] = True
-
-    def run(
-        self,
-        request: UserRequest,
-        event_sink: EventSink | None = None,
-        cancel_token: Any | None = None,
-    ) -> AgentResponse:
-        """Run the graph and return the final AgentResponse."""
-
-        state = self.run_state(
-            request, event_sink=event_sink, cancel_token=cancel_token
-        )
-        if state.response is not None:
-            return state.response
-        if state.status == "cancelled":
-            return AgentResponse(
-                message="请求已取消。",
-                data={
-                    "status": state.status,
-                    "errors": [error.model_dump(mode="json") for error in state.errors],
-                },
-            )
-        return AgentResponse(
-            message="请求处理失败。",
-            data={
-                "status": state.status,
-                "errors": [error.model_dump(mode="json") for error in state.errors],
-            },
-        )
 
     def _append_observability_event(
         self,
