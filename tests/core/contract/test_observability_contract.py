@@ -1,21 +1,14 @@
 from __future__ import annotations
 
-import asyncio
 import importlib.util
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 from pydantic import TypeAdapter, ValidationError
 
 from assistant_agent.gateway.runtime_event_mapping import map_agent_progress_event
-from assistant_agent.gateway.turn_facade import (
-    GatewayTurnFacade,
-    GatewayTurnRequest,
-    GatewayTurnTimeout,
-)
 from assistant_agent.observability import trace_persistence
 from assistant_agent.observability.agent_service_delivery import (
     AgentServiceDeliveryRegistry,
@@ -58,50 +51,6 @@ def _state() -> AgentState:
         ),
         run_id="run-sentinel",
     )
-
-
-class HangingGatewayEndpoint:
-    def __init__(self) -> None:
-        self.sent: list[dict] = []
-        self.received: asyncio.Queue[dict] = asyncio.Queue()
-        self.correlation_sent = asyncio.Event()
-
-    def __aiter__(self):
-        return self
-
-    async def __anext__(self):
-        return await self.received.get()
-
-    async def send(self, outbound: dict) -> None:
-        self.sent.append(dict(outbound))
-        if outbound.get("type") != "message.user":
-            return
-        payload = outbound["payload"]
-        common = {
-            "session_id": outbound["session_id"],
-            "turn_id": payload["turn_id"],
-            "run_id": payload["run_id"],
-        }
-        await self.received.put({"type": "run.started", **common})
-        await self.received.put(
-            {
-                "type": "event.progress",
-                **common,
-                "payload": {
-                    "agent_event_type": "task_started",
-                    "trace_id": "trace-sentinel",
-                },
-            }
-        )
-        self.correlation_sent.set()
-
-
-class GatewayManagerStub:
-    def __init__(self, endpoint: HangingGatewayEndpoint) -> None:
-        self.endpoint = endpoint
-
-    async def acquire(self, **_kwargs):
-        return SimpleNamespace(endpoint=self.endpoint)
 
 
 class DeliveryAudit:
@@ -458,79 +407,6 @@ def test_runtime_host_owns_runtime_and_trace_store_lifecycle_once() -> None:
     assert host.close(timeout=2.0) is True
     assert host.close(timeout=2.0) is True
     assert lifecycle == ["runtime", "trace_store"]
-
-
-@pytest.mark.core_invariant("OBS-001")
-def test_server_runtime_shutdown_uses_the_same_owned_lifecycle(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from assistant_agent.api import routes_agent
-
-    lifecycle: list[str] = []
-
-    class TraceStore:
-        def close(self, *, timeout: float) -> bool:
-            lifecycle.append("trace_store")
-            return True
-
-    class Runtime:
-        def __init__(self) -> None:
-            self.trace_store = TraceStore()
-
-        def close(self) -> bool:
-            lifecycle.append("runtime")
-            return True
-
-    runtime = Runtime()
-    monkeypatch.setattr(routes_agent, "_RUNTIME", runtime)
-    monkeypatch.setattr(routes_agent, "_RUNTIME_HOST", None, raising=False)
-
-    routes_agent.shutdown_agent_runtime()
-    routes_agent.shutdown_agent_runtime()
-
-    assert lifecycle == ["runtime", "trace_store"]
-
-
-@pytest.mark.core_invariant("OBS-001")
-def test_gateway_timeout_preserves_partial_correlation() -> None:
-    async def scenario() -> None:
-        endpoint = HangingGatewayEndpoint()
-        facade = GatewayTurnFacade(manager=GatewayManagerStub(endpoint))
-        observed = []
-        turn_task = None
-        try:
-            turn_task = asyncio.create_task(
-                facade.run_turn(
-                    GatewayTurnRequest(
-                        user_id="user-sentinel",
-                        session_id="session-sentinel",
-                        text="request-sentinel",
-                        timeout_s=0.1,
-                    ),
-                    on_correlation=observed.append,
-                )
-            )
-            await asyncio.wait_for(
-                endpoint.correlation_sent.wait(),
-                timeout=0.1,
-            )
-            with pytest.raises(GatewayTurnTimeout) as captured:
-                await turn_task
-        finally:
-            if turn_task is not None and not turn_task.done():
-                turn_task.cancel()
-                await asyncio.gather(turn_task, return_exceptions=True)
-            await facade.close()
-
-        correlation = captured.value.correlation
-        assert correlation is not None
-        assert correlation.run_id == endpoint.sent[0]["payload"]["run_id"]
-        assert correlation.trace_id == "trace-sentinel"
-        assert observed[-1] == correlation
-        assert endpoint.sent[-1]["type"] == "run.cancel"
-        assert endpoint.sent[-1]["payload"]["reason"] == "facade_timeout"
-
-    asyncio.run(scenario())
 
 
 @pytest.mark.core_invariant("OBS-001")

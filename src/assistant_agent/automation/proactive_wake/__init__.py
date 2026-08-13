@@ -47,11 +47,7 @@ from assistant_agent.automation.proactive_wake.policy import (
     DeterministicWakeEvaluator,
     build_notification_envelope,
 )
-from assistant_agent.automation.proactive_wake.activity import (
-    GatewayUserActivityReader,
-    NullUserActivityReader,
-    UserActivityReader,
-)
+from assistant_agent.automation.proactive_wake.activity import NullUserActivityReader, UserActivityReader
 from assistant_agent.automation.proactive_wake.coordinator import (
     ProactiveWakeCoordinator,
     ProactiveWakeError,
@@ -70,7 +66,6 @@ __all__ = [
     "DeliveryStatus",
     "DeterministicWakeEvaluator",
     "GovernedProbeRunner",
-    "GatewayUserActivityReader",
     "MockProactiveNotificationTransport",
     "NotificationEnvelope",
     "NotificationDeliveryWorker",

@@ -1,4 +1,4 @@
-"""Lazy public exports for Gateway protocol, bridge, and session services."""
+"""Legacy wire-projection helpers retained outside the production runtime."""
 
 from __future__ import annotations
 
@@ -13,35 +13,21 @@ _EXPORT_MODULES = {
     "CALL_READY": "protocol",
     "CONFIG_UPDATE": "protocol",
     "RUN_QUEUED": "protocol",
-    "AdmissionSnapshot": "queueing",
-    "ActiveRun": "session",
-    "CancelToken": "session",
     "Closed": "transport",
     "Endpoint": "transport",
     "EntryAdapterCapabilities": "capabilities",
     "Frame": "protocol",
-    "GatewayBridge": "bridge",
-    "GatewayConnectionPolicy": "bridge",
-    "GatewayConfigUpdateResult": "session",
     "GatewayLifecycleEvent": "observability",
     "GatewayLifecycleSink": "observability",
-    "GatewayQueuePolicy": "queueing",
-    "GatewayRunAdmissionController": "queueing",
-    "GatewayRuntimePool": "runtime_pool",
-    "GatewaySessionHandle": "session",
-    "GatewaySessionManager": "session",
-    "GatewaySessionService": "session",
     "GatewayTurnArbitrationController": "turn_arbitration",
     "GatewayTurnArbitrationOutcome": "turn_arbitration",
     "GatewayTurnArbitrationPolicy": "turn_arbitration",
     "InMemoryDuplex": "transport",
-    "QueueOverflowError": "queueing",
     "RunEndReason": "protocol",
     "WsEndpoint": "ws",
     "dumps_frame": "ws",
     "emit_gateway_lifecycle_event": "observability",
     "frame": "protocol",
-    "shared_gateway_runtime_factory": "runtime_pool",
     "loads_frame": "ws",
 }
 

@@ -19,9 +19,11 @@ from assistant_agent.agent_server.media_protocol import (
     success_chat_response,
 )
 from assistant_agent.agent_server.media_session import MediaConnectionSession
+from assistant_agent.api.rendering_3d_callback import router as rendering_3d_callback_router
 
 
 app = FastAPI(title="Assistant Agent Server Media Adapter")
+app.include_router(rendering_3d_callback_router)
 
 
 @app.get("/health/agent-server-adapter")

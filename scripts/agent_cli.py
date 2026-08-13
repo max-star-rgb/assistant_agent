@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Interactive HTTP/SSE product client for assistant_agent."""
+"""Interactive client for the native LangGraph Agent Server."""
 
 from __future__ import annotations
 
@@ -7,45 +7,59 @@ import argparse
 from collections.abc import Mapping
 from typing import Any
 
-from assistant_agent.clients.http_agent import HttpAgentClient, HttpAgentClientError
-from assistant_agent.identifiers import new_prefixed_uuid7
+from langgraph_sdk import get_sync_client
+
+
+def _context(*, user_id: str, assistant_mode: str) -> dict[str, object]:
+    return {
+        "user_id": user_id,
+        "tenant_id": "local-cli",
+        "assistant_mode": assistant_mode,
+        "entry_profile": "cli",
+        "media_capabilities": [],
+    }
+
+
+def _response_text(state: Mapping[str, Any]) -> str:
+    assistant_state = state.get("assistant_state")
+    response = assistant_state.get("final_response") if isinstance(assistant_state, Mapping) else None
+    text = response.get("message") if isinstance(response, Mapping) else None
+    return text if isinstance(text, str) else ""
+
+
+def _ensure_thread(client: Any, thread_id: str | None, user_id: str) -> str:
+    thread = client.threads.create(
+        thread_id=thread_id,
+        if_exists="do_nothing",
+        metadata={"user_id": user_id, "client": "agent_cli"},
+    )
+    return str(thread["thread_id"])
+
+
+def _run_once(client: Any, *, text: str, user_id: str, thread_id: str, mode: str) -> int:
+    result = client.runs.wait(
+        thread_id,
+        "assistant",
+        input={"request_input": {"turn_origin_id": f"cli:{thread_id}", "text": text}},
+        context=_context(user_id=user_id, assistant_mode=mode),
+        multitask_strategy="enqueue",
+    )
+    print(_response_text(result))
+    return 0
 
 
 def main() -> int:
     args = build_parser().parse_args()
-    client = HttpAgentClient(server=args.server, timeout_s=args.timeout)
-    session_id = args.session_id or new_prefixed_uuid7("cli-session", separator="-")
-    if args.interactive:
-        return _interactive(
-            client,
-            user_id=args.user_id,
-            session_id=session_id,
-            assistant_mode=args.assistant_mode,
-            stream=not args.no_stream,
-        )
-    text = " ".join(args.text).strip()
-    if not text:
-        raise SystemExit("text is required unless --interactive is used")
-    return _run_once(
-        client,
-        text=text,
-        user_id=args.user_id,
-        session_id=session_id,
-        assistant_mode=args.assistant_mode,
-        stream=not args.no_stream,
-    )
-
-
-def _interactive(
-    client: HttpAgentClient,
-    *,
-    user_id: str,
-    session_id: str,
-    assistant_mode: str,
-    stream: bool,
-) -> int:
-    mode = assistant_mode
-    print(f"Agent CLI session: {session_id}")
+    headers = {"authorization": f"Bearer {args.token}"} if args.token else None
+    client = get_sync_client(url=args.server, headers=headers, timeout=args.timeout)
+    thread_id = _ensure_thread(client, args.thread_id, args.user_id)
+    if not args.interactive:
+        text = " ".join(args.text).strip()
+        if not text:
+            raise SystemExit("text is required unless --interactive is used")
+        return _run_once(client, text=text, user_id=args.user_id, thread_id=thread_id, mode=args.assistant_mode)
+    mode = args.assistant_mode
+    print(f"Agent Server thread: {thread_id}")
     print("Commands: /standard, /deep research, /new, /exit")
     while True:
         try:
@@ -59,134 +73,27 @@ def _interactive(
             return 0
         if text == "/standard":
             mode = "standard"
-            print("assistant mode: standard")
             continue
         if text == "/deep research":
             mode = "deep_research"
-            print("assistant mode: deep_research")
             continue
         if text == "/new":
-            session_id = new_prefixed_uuid7("cli-session", separator="-")
-            print(f"Agent CLI session: {session_id}")
+            thread_id = _ensure_thread(client, None, args.user_id)
+            print(f"Agent Server thread: {thread_id}")
             continue
-        _run_once(
-            client,
-            text=text,
-            user_id=user_id,
-            session_id=session_id,
-            assistant_mode=mode,
-            stream=stream,
-        )
-
-
-def _run_once(
-    client: HttpAgentClient,
-    *,
-    text: str,
-    user_id: str,
-    session_id: str,
-    assistant_mode: str,
-    stream: bool,
-) -> int:
-    request = {
-        "user_id": user_id,
-        "session_id": session_id,
-        "text": text,
-        "assistant_mode": assistant_mode,
-    }
-    try:
-        if stream:
-            return _run_stream(
-                client,
-                request=request,
-                user_id=user_id,
-                session_id=session_id,
-            )
-        response = client.run_json(request)
-        print(response.get("response_text") or "")
-        _print_sources(response)
-        return 0 if response.get("status") != "failed" else 1
-    except HttpAgentClientError as exc:
-        print(f"HTTP {exc.status_code}: {exc.detail}")
-        return 1
-
-
-def _run_stream(
-    client: HttpAgentClient,
-    *,
-    request: Mapping[str, Any],
-    user_id: str,
-    session_id: str,
-) -> int:
-    run_id: str | None = None
-    streamed = ""
-    try:
-        for event in client.run_stream(request):
-            if event.event == "run.started":
-                value = event.data.get("run_id")
-                run_id = value if isinstance(value, str) else None
-            elif event.event == "response.delta":
-                delta = event.data.get("delta")
-                if isinstance(delta, str) and delta:
-                    print(delta, end="", flush=True)
-                    streamed += delta
-            elif event.event == "response.completed":
-                text = event.data.get("response_text")
-                terminal_text = text if isinstance(text, str) else ""
-                remaining = (
-                    terminal_text[len(streamed):]
-                    if terminal_text.startswith(streamed)
-                    else (terminal_text if not streamed else "")
-                )
-                if remaining:
-                    print(remaining, end="", flush=True)
-                print()
-                _print_sources(event.data)
-                return 0
-            elif event.event in {"run.failed", "run.cancelled"}:
-                if streamed:
-                    print()
-                print(f"{event.event}: {event.data}")
-                return 1
-    except KeyboardInterrupt:
-        if run_id:
-            client.cancel(
-                run_id=run_id,
-                user_id=user_id,
-                session_id=session_id,
-            )
-        print("\ncancel requested")
-        return 130
-    return 1
-
-
-def _print_sources(response: Mapping[str, Any]) -> None:
-    annotations = response.get("annotations")
-    if not isinstance(annotations, list):
-        return
-    seen: set[str] = set()
-    for item in annotations:
-        if not isinstance(item, Mapping):
-            continue
-        source_id = str(item.get("source_id") or "")
-        if not source_id or source_id in seen:
-            continue
-        seen.add(source_id)
-        title = str(item.get("title") or "source")
-        url = str(item.get("url") or "")
-        print(f"source {source_id.removeprefix('source_')}: {title} {url}")
+        _run_once(client, text=text, user_id=args.user_id, thread_id=thread_id, mode=mode)
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="HTTP/SSE client for assistant_agent.")
-    parser.add_argument("text", nargs="*", help="One non-interactive user message.")
-    parser.add_argument("--server", default="http://127.0.0.1:8089")
+    parser = argparse.ArgumentParser(description="Client for assistant_agent Agent Server.")
+    parser.add_argument("text", nargs="*")
+    parser.add_argument("--server", default="http://127.0.0.1:8000")
     parser.add_argument("--user-id", default="local-cli")
-    parser.add_argument("--session-id")
+    parser.add_argument("--thread-id")
     parser.add_argument("--assistant-mode", choices=("standard", "deep_research"), default="standard")
     parser.add_argument("--timeout", type=float, default=120.0)
+    parser.add_argument("--token")
     parser.add_argument("--interactive", action="store_true")
-    parser.add_argument("--no-stream", action="store_true")
     return parser
 
 
