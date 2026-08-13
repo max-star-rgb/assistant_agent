@@ -48,10 +48,6 @@ def _state() -> AgentState:
     )
 
 
-
-
-
-
 class DeliveryAudit:
     def __init__(self) -> None:
         self.records: list[tuple[object, str, dict]] = []
@@ -348,10 +344,6 @@ def test_runtime_host_owns_runtime_and_trace_store_lifecycle_once() -> None:
     assert host.close(timeout=2.0) is True
     assert host.close(timeout=2.0) is True
     assert lifecycle == ["runtime", "trace_store"]
-
-
-
-
 
 
 @pytest.mark.core_invariant("OBS-001")

@@ -83,7 +83,10 @@ from assistant_agent.runtime.requests import (
     UserRequest,
     normalize_task_execution_mode,
 )
-from assistant_agent.runtime.graph_time_travel import GraphForkRequest, GraphReplayRequest
+from assistant_agent.runtime.graph_time_travel import (
+    GraphForkRequest,
+    GraphReplayRequest,
+)
 from assistant_agent.runtime.generated_artifacts import with_generated_artifact_delivery
 from assistant_agent.multi_agent.models import DEFAULT_AGENT_ID
 from assistant_agent.tools.models import ToolResult, ToolSpec
