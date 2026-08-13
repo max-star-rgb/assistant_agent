@@ -40,6 +40,17 @@ class Mem0CompletedTurn(BaseModel):
     source_turn: str = Field(min_length=1, max_length=512)
 
 
+class Mem0RecallMemory(BaseModel):
+    """One bounded record returned by the Mem0 transport client."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    memory_id: str = Field(min_length=1, max_length=512)
+    text: str = Field(max_length=4_000)
+    created_at: datetime
+    relevance: float | None = Field(default=None, ge=0.0, le=1.0)
+
+
 class Mem0MemoryChange(BaseModel):
     """One native memory mutation reported by Mem0 ``add``."""
 

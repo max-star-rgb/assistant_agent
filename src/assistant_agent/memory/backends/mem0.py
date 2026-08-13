@@ -22,8 +22,8 @@ from assistant_agent.memory.mem0.models import (
     Mem0CompletedTurn,
     Mem0Identity,
     Mem0IngestionResult,
+    Mem0RecallMemory,
 )
-from assistant_agent.memory.models import LongTermMemory
 from assistant_agent.memory.node_bundle import MemoryNodeBundle
 from assistant_agent.runtime.assistant_graph_state import (
     MemoryCommitState,
@@ -40,7 +40,7 @@ _COMMIT_SCHEMA_VERSION = "completed_turn_v1"
 class Mem0NodeClient(Protocol):
     def recall_long_term_memory(
         self, identity: Mem0Identity
-    ) -> list[LongTermMemory]: ...
+    ) -> list[Mem0RecallMemory]: ...
 
     def ingest_completed_turn(self, turn: Mem0CompletedTurn) -> Mem0IngestionResult: ...
 
@@ -260,7 +260,7 @@ def _invocation_policy(state: Any, runtime: Any) -> tuple[str, bool]:
 
 
 def _normalize_memories(
-    memories: Sequence[LongTermMemory],
+    memories: Sequence[Mem0RecallMemory],
 ) -> tuple[MemoryContextItem, ...]:
     ordered = sorted(
         memories,

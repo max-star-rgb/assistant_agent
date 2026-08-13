@@ -20,6 +20,7 @@ from assistant_agent.providers.specs import (
 ContextCompactorMode = Literal["off", "llm"]
 ConversationHistoryBackend = Literal["memory", "jsonl"]
 LangGraphCheckpointerBackend = Literal["none", "memory", "sqlite"]
+MemoryBackendName = Literal["disabled", "mem0", "langmem"]
 
 
 DEFAULT_QWEN_REALTIME_VISION_BASE_URL = "wss://dashscope.aliyuncs.com/api-ws/v1/realtime"
@@ -113,15 +114,9 @@ class ProviderConfig:
     mem0_api_key: str | None = None
     mem0_timeout_seconds: float = 5.0
     mem0_identity_namespace: str = "assistant-agent"
-    memory_plugin_config_path: str | None = None
-    memory_plugin_open_timeout_seconds: float = 5.0
-    memory_plugin_prepare_timeout_seconds: float = 5.0
-    memory_plugin_ingest_timeout_seconds: float = 30.0
-    memory_plugin_close_timeout_seconds: float = 5.0
-    memory_ingestion_max_workers: int = 2
-    memory_ingestion_max_pending: int = 64
-    memory_ingestion_shutdown_timeout_seconds: float = 10.0
-    memory_session_snapshot_max_entries: int = 1024
+    memory_backend: MemoryBackendName = "disabled"
+    memory_commit_ledger_path: str = ".local/langgraph/memory_commits.sqlite3"
+    langmem_model: str | None = None
     conversation_history_backend: ConversationHistoryBackend = "memory"
     conversation_history_path: str = ".local/memory/conversation_history.jsonl"
     max_conversation_history_turns: int = 0
@@ -257,6 +252,14 @@ class ProviderConfig:
 
     def __post_init__(self) -> None:
         self.validate_provider_mode()
+        if self.memory_backend not in {"disabled", "mem0", "langmem"}:
+            raise ValueError("memory backend must be disabled, mem0, or langmem")
+        if self.mem0_timeout_seconds <= 0:
+            raise ValueError("Mem0 timeout must be positive")
+        if not self.mem0_identity_namespace.strip():
+            raise ValueError("Mem0 identity namespace must be non-empty")
+        if not self.memory_commit_ledger_path.strip():
+            raise ValueError("memory commit ledger path must be non-empty")
         if self.siglip2_cuda_device_id < 0:
             raise ValueError("siglip2 CUDA device id must be non-negative")
         if self.embedding_cuda_device_id < 0:
@@ -524,47 +527,12 @@ class ProviderConfig:
                 source.get("MEM0_IDENTITY_NAMESPACE")
                 or "assistant-agent"
             ),
-            memory_plugin_config_path=source.get(
-                "MULTIMODAL_AGENT_MEMORY_PLUGIN_CONFIG_PATH"
+            memory_backend=source.get("MEMORY_BACKEND", "disabled"),
+            memory_commit_ledger_path=source.get(
+                "MEMORY_COMMIT_LEDGER_PATH",
+                ".local/langgraph/memory_commits.sqlite3",
             ),
-            memory_plugin_open_timeout_seconds=_float_env(
-                source.get("MULTIMODAL_AGENT_MEMORY_PLUGIN_OPEN_TIMEOUT_SECONDS"),
-                5.0,
-            ),
-            memory_plugin_prepare_timeout_seconds=_float_env(
-                source.get("MULTIMODAL_AGENT_MEMORY_PLUGIN_PREPARE_TIMEOUT_SECONDS"),
-                5.0,
-            ),
-            memory_plugin_ingest_timeout_seconds=_float_env(
-                source.get("MULTIMODAL_AGENT_MEMORY_PLUGIN_INGEST_TIMEOUT_SECONDS"),
-                30.0,
-            ),
-            memory_plugin_close_timeout_seconds=_float_env(
-                source.get("MULTIMODAL_AGENT_MEMORY_PLUGIN_CLOSE_TIMEOUT_SECONDS"),
-                5.0,
-            ),
-            memory_ingestion_max_workers=max(
-                1,
-                _int_env(source.get("MULTIMODAL_AGENT_MEMORY_INGESTION_MAX_WORKERS"), 2),
-            ),
-            memory_ingestion_max_pending=max(
-                1,
-                _int_env(source.get("MULTIMODAL_AGENT_MEMORY_INGESTION_MAX_PENDING"), 64),
-            ),
-            memory_ingestion_shutdown_timeout_seconds=max(
-                0.0,
-                _float_env(
-                    source.get("MULTIMODAL_AGENT_MEMORY_INGESTION_SHUTDOWN_TIMEOUT_SECONDS"),
-                    10.0,
-                ),
-            ),
-            memory_session_snapshot_max_entries=max(
-                1,
-                _int_env(
-                    source.get("MULTIMODAL_AGENT_MEMORY_SESSION_SNAPSHOT_MAX_ENTRIES"),
-                    1024,
-                ),
-            ),
+            langmem_model=source.get("LANGMEM_MODEL"),
             conversation_history_backend=conversation_history_backend,
             conversation_history_path=conversation_history_path,
             max_conversation_history_turns=_int_env(

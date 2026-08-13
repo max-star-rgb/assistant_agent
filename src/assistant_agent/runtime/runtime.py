@@ -6,6 +6,7 @@ import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
+from threading import Thread
 from time import perf_counter, time
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -53,8 +54,8 @@ from assistant_agent.runtime.provider_streaming import (
     ProviderStreamingTurnRunner,
     supports_async_streaming_chat,
 )
-from assistant_agent.memory.factory import create_long_term_memory_service
-from assistant_agent.memory.service import LongTermMemoryService
+from assistant_agent.memory.factory import create_memory_node_bundle
+from assistant_agent.memory.node_bundle import MemoryNodeBundle
 from assistant_agent.config import ProviderConfig
 from assistant_agent.runtime.decision_models import (
     native_tool_call_to_assistant_decision,
@@ -210,24 +211,6 @@ if TYPE_CHECKING:
     from assistant_agent.automation.durable_tasks.worker import TaskQuantumResult
 
 
-def _trusted_memory_session_metadata(
-    session_config: Mapping[str, Any] | None,
-) -> dict[str, Any]:
-    if not isinstance(session_config, Mapping):
-        return {}
-    try:
-        entry_profile = session_config.get("entry_profile")
-    except Exception:
-        return {}
-    if type(entry_profile) is not str or not 0 < len(entry_profile) <= 128:
-        return {}
-    return {
-        "gateway": {
-            "session_config": {"entry_profile": entry_profile},
-        }
-    }
-
-
 def _stable_text_observation(
     session_id: str,
     run_id: str,
@@ -284,7 +267,7 @@ class AgentGraphRuntime:
     def __init__(
         self,
         registry: ToolRegistry | None = None,
-        long_term_memory_service: LongTermMemoryService | None = None,
+        memory_bundle: MemoryNodeBundle | None = None,
         config: ProviderConfig | None = None,
         run_history: RunHistoryStore | None = None,
         session_store: SessionStore | None = None,
@@ -356,9 +339,7 @@ class AgentGraphRuntime:
                 )
             )
         )
-        self.long_term_memory_service = (
-            long_term_memory_service or create_long_term_memory_service(self.config)
-        )
+        self.memory_bundle = memory_bundle or create_memory_node_bundle(self.config)
         self.workflow_service = workflow_service
         self.workflow_artifact_store = workflow_artifact_store
         self.workflow_graph_host = workflow_graph_host
@@ -564,7 +545,10 @@ class AgentGraphRuntime:
             execution_backend=self.tool_execution_backend,
             operation_store=self.tool_operation_store,
         )
-        self.assistant_graph_app = AssistantTurnGraphApp(checkpointer=checkpointer)
+        self.assistant_graph_app = AssistantTurnGraphApp(
+            checkpointer=checkpointer,
+            memory_bundle=self.memory_bundle,
+        )
 
     def _create_session_embedding_coordinator(
         self,
@@ -590,35 +574,6 @@ class AgentGraphRuntime:
             overflow_policy="latest_wins",
         )
         return coordinator
-
-    def initialize_session_memory(
-        self,
-        identity: RequestIdentity,
-        *,
-        reset: bool = False,
-        session_config: Mapping[str, Any] | None = None,
-    ) -> AgentState:
-        """Recall and freeze long-term memory before any turn starts."""
-
-        if not identity.session_id:
-            raise ValueError("session_id is required to initialize session memory")
-        identity = identity.model_copy(update={"agent_id": self.agent_id})
-        request = UserRequest(
-            user_id=identity.user_id,
-            session_id=identity.session_id,
-            text="",
-            metadata=_trusted_memory_session_metadata(session_config),
-        )
-        state = AgentState.from_request(request, agent_id=identity.agent_id)
-        state.session_memory_snapshot = (
-            self.long_term_memory_service.initialize_session(
-                identity=identity,
-                state=state,
-                trace_store=self.trace_store,
-                reset=reset,
-            )
-        )
-        return state
 
     def run_work_item(self, request):
         """Execute one bounded Workflow assignment through the existing assistant loop."""
@@ -2026,39 +1981,13 @@ class AgentGraphRuntime:
                 event.model_dump(mode="json") for event in events
             ]
 
-    def drain_memory_ingestions(self, *, timeout: float | None = None) -> bool:
-        """Wait for accepted memory ingestions."""
-
-        return self.long_term_memory_service.drain(timeout=timeout)
-
-    def _attach_session_memory_snapshot(self, state: AgentState) -> None:
-        """Attach the frozen snapshot without performing recall."""
-
-        self.long_term_memory_service.attach_session_snapshot(state)
-
-    def _prepare_run_memory_context(
-        self,
-        state: AgentState,
-        *,
-        cancel_token: Any | None,
-    ) -> None:
-        """Prepare and freeze the active Plugin contribution once per run."""
-
-        self.long_term_memory_service.prepare_context(
-            state=state,
-            trace_store=self.trace_store,
-            cancel_token=cancel_token,
-        )
-
     def close(self) -> bool:
-        """Drain and close runtime-owned background lifecycle services."""
+        """Close composition-owned resources, including the active bundle."""
 
         self.embedding_coordinator_store.close()
         self.visual_semantic_store_pool.close()
         self.visual_memory_text_index.close()
-        return self.long_term_memory_service.close(
-            timeout=self.config.memory_ingestion_shutdown_timeout_seconds,
-        )
+        return _close_memory_bundle(self.memory_bundle)
 
     def run_task_quantum(
         self,
@@ -2080,7 +2009,6 @@ class AgentGraphRuntime:
             request.metadata.get("durable_task_snapshot")
         )
         state = AgentState.from_request(request, agent_id=self.agent_id)
-        self._attach_session_memory_snapshot(state)
         state.request.metadata["durable_task_quantum"] = True
         tool_executor = ToolExecutor(
             registry=self.registry,
@@ -2710,6 +2638,36 @@ def _prepare_refresh_memory_fork(
         }
     )
     return dict(validate_assistant_turn_state(updated))
+
+
+def _close_memory_bundle(bundle: MemoryNodeBundle) -> bool:
+    callback = bundle.aclose
+    if callback is None:
+        return True
+
+    def run() -> None:
+        asyncio.run(callback())
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        try:
+            run()
+        except Exception:
+            return False
+        return True
+    errors: list[BaseException] = []
+
+    def run_in_thread() -> None:
+        try:
+            run()
+        except BaseException as exc:  # Preserve shutdown result across threads.
+            errors.append(exc)
+
+    thread = Thread(target=run_in_thread, name="memory-bundle-close")
+    thread.start()
+    thread.join()
+    return not errors
 
 
 def _set_async_workflow_entry_required(state: AgentState) -> None:

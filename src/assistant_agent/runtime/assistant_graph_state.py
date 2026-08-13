@@ -110,9 +110,9 @@ class MemoryContext(_CheckpointModel):
 class MemoryCommitState(_CheckpointModel):
     """Minimal, redacted outcome of the external memory write side effect."""
 
-    status: Literal[
-        "not_requested", "succeeded", "failed", "timed_out", "skipped"
-    ] = "not_requested"
+    status: Literal["not_requested", "succeeded", "failed", "timed_out", "skipped"] = (
+        "not_requested"
+    )
     memory_event_id: str | None = Field(default=None, min_length=1, max_length=512)
     issue_code: str | None = Field(
         default=None,
@@ -380,9 +380,7 @@ class _AssistantTurnStateModel(_CheckpointModel):
     )
     memory_context: MemoryContext | None = None
     memory_commit: MemoryCommitState = Field(default_factory=MemoryCommitState)
-    response_publish: ResponsePublishState = Field(
-        default_factory=ResponsePublishState
-    )
+    response_publish: ResponsePublishState = Field(default_factory=ResponsePublishState)
     context_refs: tuple[PersistedContextRef, ...] = Field(default=(), max_length=256)
     capability_refs: tuple[str, ...] = Field(default=(), max_length=64)
     catalog: PersistedRunToolCatalog = Field(default_factory=PersistedRunToolCatalog)
@@ -1962,12 +1960,6 @@ def _project_context_refs(state: AgentState) -> tuple[PersistedContextRef, ...]:
                 ref=issue.source_ref or issue.section_id or issue.code,
                 status_code=issue.code,
             )
-        )
-    snapshot = state.session_memory_snapshot
-    if snapshot is not None:
-        refs.extend(
-            PersistedContextRef(kind="memory", ref=item.memory_id, source=item.source)
-            for item in snapshot.memories
         )
     visual = getattr(state.perception, "visual", None)
     if visual is not None and visual.output_ref:

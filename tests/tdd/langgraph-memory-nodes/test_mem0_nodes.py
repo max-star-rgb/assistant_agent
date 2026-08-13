@@ -5,8 +5,7 @@ from datetime import datetime, timezone
 
 from assistant_agent.memory.backends.mem0 import build_mem0_memory_bundle
 from assistant_agent.memory.commit_ledger import SQLiteMemoryCommitLedger
-from assistant_agent.memory.mem0.models import Mem0IngestionResult
-from assistant_agent.memory.models import LongTermMemory
+from assistant_agent.memory.mem0.models import Mem0IngestionResult, Mem0RecallMemory
 from assistant_agent.runtime.assistant_graph_state import (
     assistant_turn_state_from_request,
 )
@@ -17,7 +16,7 @@ class FakeMem0Client:
     configured = True
 
     def __init__(self) -> None:
-        self.memories: list[LongTermMemory] = []
+        self.memories: list[Mem0RecallMemory] = []
         self.recall_error: Exception | None = None
         self.ingest_error: BaseException | None = None
         self.ingest_result = Mem0IngestionResult(accepted=True)
@@ -78,13 +77,13 @@ def _bundle(tmp_path, client: FakeMem0Client):
 def test_mem0_recall_normalizes_orders_and_bounds_snapshot(tmp_path) -> None:
     client = FakeMem0Client()
     client.memories = [
-        LongTermMemory(
+        Mem0RecallMemory(
             memory_id="low",
             text="低相关",
             relevance=0.2,
             created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
         ),
-        LongTermMemory(
+        Mem0RecallMemory(
             memory_id="high",
             text="高相关",
             relevance=0.9,

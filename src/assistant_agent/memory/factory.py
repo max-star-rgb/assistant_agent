@@ -1,111 +1,74 @@
-"""Composition root for the governed long-term Memory Plugin lifecycle."""
+"""Composition root for the single active graph-native memory backend."""
 
 from __future__ import annotations
 
-import os
-from collections.abc import Mapping
-from datetime import datetime, timezone
+from langgraph.store.base import BaseStore
 
 from assistant_agent.config import ProviderConfig
-from assistant_agent.memory.ingestion_queue import MemoryIngestionQueue
-from assistant_agent.memory.plugins.assembly import assemble_memory_plugins
-from assistant_agent.memory.plugins.builtin.mem0 import (
-    default_memory_plugin_factories,
+from assistant_agent.memory.backends.disabled import build_disabled_memory_bundle
+from assistant_agent.memory.backends.langmem import (
+    LangMemConfigurationError,
+    create_langmem_memory_bundle,
 )
-from assistant_agent.memory.plugins.config import (
-    MemoryPluginsConfig,
-    load_memory_plugins_config,
-)
-from assistant_agent.memory.plugins.contracts import (
-    MemoryPluginBuildContext,
-    MemoryPluginExecutionPolicy,
-)
-from assistant_agent.memory.plugins.host import MemoryPluginHost
-from assistant_agent.memory.plugins.media import ManagedMemoryMediaStore
-from assistant_agent.memory.plugins.session_store import MemoryPluginSessionStore
-from assistant_agent.memory.service import LongTermMemoryService
+from assistant_agent.memory.backends.mem0 import build_mem0_memory_bundle
+from assistant_agent.memory.commit_ledger import SQLiteMemoryCommitLedger
+from assistant_agent.memory.mem0.client import Mem0Client
+from assistant_agent.memory.node_bundle import MemoryNodeBundle
 
 
-class _EnvironmentMemorySecretResolver:
-    def __init__(self, source: Mapping[str, str] | None = None) -> None:
-        self._source = os.environ if source is None else source
-
-    def resolve(self, reference: str) -> str:
-        value = self._source.get(reference)
-        if value is None:
-            raise KeyError("memory_plugin_secret_missing")
-        return value
+class MemoryBackendConfigurationError(RuntimeError):
+    """Trusted backend configuration is incomplete or unavailable."""
 
 
-def create_long_term_memory_service(
+def create_memory_node_bundle(
     config: ProviderConfig | None = None,
     *,
-    session_store: MemoryPluginSessionStore | None = None,
-    media_store: ManagedMemoryMediaStore | None = None,
-) -> LongTermMemoryService:
-    """Assemble one exclusive Memory Plugin and its Host-owned resources."""
+    langmem_store: BaseStore | None = None,
+) -> MemoryNodeBundle:
+    """Construct exactly one backend without probing keys or falling back."""
 
     resolved = config or ProviderConfig.from_env()
-    plugin_config = (
-        load_memory_plugins_config(resolved.memory_plugin_config_path)
-        if resolved.memory_plugin_config_path
-        else MemoryPluginsConfig(
-            schema_version="assistant_memory_plugins_v1",
-            slot="mem0",
-            plugins={},
+    if resolved.memory_backend == "disabled":
+        return build_disabled_memory_bundle()
+    if resolved.provider_mode != "real":
+        raise MemoryBackendConfigurationError(
+            f"Memory backend '{resolved.memory_backend}' requires real provider mode."
         )
-    )
-    execution_policy = MemoryPluginExecutionPolicy(
-        open_session_timeout_seconds=(
-            resolved.memory_plugin_open_timeout_seconds
-        ),
-        prepare_context_timeout_seconds=(
-            resolved.memory_plugin_prepare_timeout_seconds
-        ),
-        ingest_turn_timeout_seconds=(
-            resolved.memory_plugin_ingest_timeout_seconds
-        ),
-        close_session_timeout_seconds=(
-            resolved.memory_plugin_close_timeout_seconds
-        ),
-    )
-    resolved_media_store = media_store or ManagedMemoryMediaStore(
-        max_total_bytes=execution_policy.max_media_bytes_per_turn
-    )
-    build_context = MemoryPluginBuildContext(
-        provider_mode=resolved.provider_mode,
-        media_reader=resolved_media_store,
-        artifact_writer=resolved_media_store,
-        secret_resolver=_EnvironmentMemorySecretResolver(),
-        clock=lambda: datetime.now(timezone.utc),
-    )
-    builtin_factories = tuple(
-        factory
-        for factory in default_memory_plugin_factories(resolved)
-        if factory.descriptor.plugin_id not in plugin_config.plugins
-    )
-    registry = assemble_memory_plugins(
-        config=plugin_config,
-        builtin_factories=builtin_factories,
-        build_context=build_context,
-    )
-    host = MemoryPluginHost(
-        registry=registry,
-        session_store=(
-            session_store
-            or MemoryPluginSessionStore(
-                max_entries=resolved.memory_session_snapshot_max_entries
+    ledger = SQLiteMemoryCommitLedger(resolved.memory_commit_ledger_path)
+    if resolved.memory_backend == "mem0":
+        if not resolved.mem0_base_url:
+            raise MemoryBackendConfigurationError(
+                "Memory backend 'mem0' requires MEM0_BASE_URL."
             )
-        ),
-        media_store=resolved_media_store,
-        ingestion_queue=MemoryIngestionQueue(
-            max_workers=resolved.memory_ingestion_max_workers,
-            max_pending=resolved.memory_ingestion_max_pending,
-            shutdown_timeout_seconds=(
-                resolved.memory_ingestion_shutdown_timeout_seconds
+        return build_mem0_memory_bundle(
+            client=Mem0Client(
+                base_url=resolved.mem0_base_url,
+                api_key=resolved.mem0_api_key,
+                timeout_seconds=resolved.mem0_timeout_seconds,
             ),
-        ),
-        execution_policy=execution_policy,
-        identity_namespace=resolved.mem0_identity_namespace,
+            ledger=ledger,
+            identity_namespace=resolved.mem0_identity_namespace,
+        )
+    if resolved.memory_backend == "langmem":
+        if langmem_store is None:
+            raise MemoryBackendConfigurationError(
+                "Memory backend 'langmem' requires an explicit LangGraph BaseStore."
+            )
+        if not resolved.langmem_model:
+            raise MemoryBackendConfigurationError(
+                "Memory backend 'langmem' requires LANGMEM_MODEL."
+            )
+        try:
+            return create_langmem_memory_bundle(
+                model=resolved.langmem_model,
+                store=langmem_store,
+                ledger=ledger,
+            )
+        except LangMemConfigurationError as exc:
+            raise MemoryBackendConfigurationError(str(exc)) from exc
+    raise MemoryBackendConfigurationError(
+        f"Unsupported memory backend: {resolved.memory_backend!r}."
     )
-    return LongTermMemoryService(host=host)
+
+
+__all__ = ["MemoryBackendConfigurationError", "create_memory_node_bundle"]

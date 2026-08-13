@@ -34,4 +34,3 @@ class RegistryExecutionBackend:
         context: ToolContext,
     ) -> ToolResult:
         return registry.run(tool_name, tool_input, context)
-

@@ -9,7 +9,6 @@ from assistant_agent.runtime.cancellation import (
     CANCELLATION_ERROR_CODE,
     DEFAULT_CANCELLATION_MESSAGE,
 )
-from assistant_agent.memory.models import SessionMemorySnapshot
 from assistant_agent.context.models import ContextSourceResult
 from assistant_agent.media.vision.models import PerceptionBundle
 from assistant_agent.runtime.capability_grants import (
@@ -49,12 +48,6 @@ class AgentState(BaseModel):
     agent_id: str = Field(default=DEFAULT_AGENT_ID, min_length=1)
     request: UserRequest
 
-    session_memory_snapshot: SessionMemorySnapshot | None = None
-    frozen_memory_context: SessionMemorySnapshot | None = Field(
-        default=None,
-        exclude=True,
-    )
-    memory_context_prepared: bool = Field(default=False, exclude=True)
     memory_texts: tuple[str, ...] = Field(default=(), exclude=True)
     response_publish_status: str = Field(default="not_requested", exclude=True)
     response_final_fact_id: str | None = Field(default=None, exclude=True)

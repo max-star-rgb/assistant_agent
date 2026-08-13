@@ -1,1 +1,1 @@
-"""Mem0 runtime integration."""
+"""Graph-native long-term-memory composition and backend nodes."""

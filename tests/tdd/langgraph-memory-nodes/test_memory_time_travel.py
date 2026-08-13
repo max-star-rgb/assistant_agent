@@ -7,8 +7,7 @@ import pytest
 
 from assistant_agent.memory.backends.mem0 import build_mem0_memory_bundle
 from assistant_agent.memory.commit_ledger import SQLiteMemoryCommitLedger
-from assistant_agent.memory.mem0.models import Mem0IngestionResult
-from assistant_agent.memory.models import LongTermMemory
+from assistant_agent.memory.mem0.models import Mem0IngestionResult, Mem0RecallMemory
 from assistant_agent.runtime.assistant_graph_state import (
     AssistantStateCompatibilityError,
     assistant_turn_state_from_request,
@@ -36,7 +35,7 @@ class RecordingMem0Client:
         del identity
         self.recall_count += 1
         return [
-            LongTermMemory(
+            Mem0RecallMemory(
                 memory_id=f"memory-{self.recall_count}",
                 text=f"snapshot-{self.recall_count}",
                 relevance=1.0,
@@ -190,23 +189,6 @@ def test_fork_request_exposes_explicit_refresh_memory_opt_in() -> None:
     assert request.refresh_memory is True
 
 
-class ForbiddenParallelMemoryRuntime:
-    def prepare_context(self, *args, **kwargs):
-        raise AssertionError("parallel prepare_context called")
-
-    def attach_continuation_snapshot(self, *args, **kwargs):
-        raise AssertionError("parallel attach_continuation_snapshot called")
-
-    def enqueue_completed_turn(self, *args, **kwargs):
-        raise AssertionError("parallel enqueue_completed_turn called")
-
-    def release_run_context(self, *args, **kwargs):
-        raise AssertionError("parallel release_run_context called")
-
-    def close(self, *args, **kwargs):
-        return True
-
-
 def test_product_run_does_not_enter_parallel_memory_runtime() -> None:
     runtime = AgentGraphRuntime(
         registry=sealed_registry(),
@@ -222,7 +204,6 @@ def test_product_run_does_not_enter_parallel_memory_runtime() -> None:
             ]
         ),
         session_store=InMemorySessionStore(),
-        long_term_memory_service=ForbiddenParallelMemoryRuntime(),
     )
     try:
         state = runtime.run_state(
@@ -232,3 +213,4 @@ def test_product_run_does_not_enter_parallel_memory_runtime() -> None:
         runtime.close()
 
     assert state.status == "completed"
+    assert not hasattr(runtime, "long_term_memory_service")

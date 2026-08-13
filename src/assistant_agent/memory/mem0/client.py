@@ -12,13 +12,13 @@ from assistant_agent.memory.mem0.transport import (
     Mem0Transport,
     urllib_mem0_transport,
 )
-from assistant_agent.memory.models import LongTermMemory
 from assistant_agent.memory.mem0.models import (
     Mem0CompletedTurn,
     Mem0HealthResult,
     Mem0Identity,
     Mem0IngestionResult,
     Mem0MemoryChange,
+    Mem0RecallMemory,
 )
 
 
@@ -33,7 +33,7 @@ class UnavailableMem0Client:
     def recall_long_term_memory(
         self,
         identity: Mem0Identity,
-    ) -> list[LongTermMemory]:
+    ) -> list[Mem0RecallMemory]:
         _ = identity
         raise Mem0OperationError("recall", "Mem0 sidecar is not configured")
 
@@ -75,15 +75,14 @@ class Mem0Client:
     def recall_long_term_memory(
         self,
         identity: Mem0Identity,
-    ) -> list[LongTermMemory]:
+    ) -> list[Mem0RecallMemory]:
         payload = self._request(
             "GET",
             "/memories",
             query=identity.long_term_filters,
         )
         return [
-            _long_term_memory(value)
-            for value in _mapping_list(payload.get("results"))
+            _long_term_memory(value) for value in _mapping_list(payload.get("results"))
         ]
 
     def ingest_completed_turn(
@@ -141,9 +140,7 @@ class Mem0Client:
                 query=query,
                 headers=self._headers,
                 timeout_seconds=(
-                    self.timeout_seconds
-                    if timeout_seconds is None
-                    else timeout_seconds
+                    self.timeout_seconds if timeout_seconds is None else timeout_seconds
                 ),
             )
         )
@@ -152,8 +149,8 @@ class Mem0Client:
         return payload
 
 
-def _long_term_memory(value: Mapping[str, Any]) -> LongTermMemory:
-    return LongTermMemory(
+def _long_term_memory(value: Mapping[str, Any]) -> Mem0RecallMemory:
+    return Mem0RecallMemory(
         memory_id=str(value.get("id") or value.get("memory_id")),
         text=str(value.get("memory") or value.get("text") or ""),
         created_at=(
