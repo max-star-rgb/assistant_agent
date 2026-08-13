@@ -156,8 +156,7 @@ def _workflow_worker_prompt_schema() -> dict[str, object]:
                     },
                     "prompt_code": {
                         "type": "string",
-                        "minLength": 1,
-                        "maxLength": 160,
+                        "pattern": r"^[a-zA-Z][a-zA-Z0-9_.-]{0,119}$",
                     },
                     "safe_prompt": {
                         "type": "string",
@@ -243,8 +242,7 @@ def _workflow_verifier_prompt_schema() -> dict[str, object]:
                     },
                     "prompt_code": {
                         "type": "string",
-                        "minLength": 1,
-                        "maxLength": 160,
+                        "pattern": r"^[a-zA-Z][a-zA-Z0-9_.-]{0,119}$",
                     },
                     "safe_prompt": {
                         "type": "string",

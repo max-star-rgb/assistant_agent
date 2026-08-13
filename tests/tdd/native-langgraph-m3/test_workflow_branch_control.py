@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 
 import pytest
 from pydantic import ValidationError
@@ -289,6 +290,14 @@ def test_native_worker_prompt_schema_expresses_outcome_conditionals():
         required_by_outcome["blocked"]
     )
     assert "error_code" in required_by_outcome["failed"]
+    blocked = next(
+        branch
+        for branch in branches
+        if branch["properties"]["outcome"]["const"] == "blocked"
+    )
+    prompt_code_pattern = blocked["properties"]["prompt_code"]["pattern"]
+    assert re.fullmatch(prompt_code_pattern, "need_topic")
+    assert re.fullmatch(prompt_code_pattern, "not valid") is None
 
 
 @pytest.mark.parametrize(
@@ -490,6 +499,69 @@ def test_native_verifier_prompt_schema_expresses_status_conditionals():
     )
     assert "error_code" in required_by_status["failed"]
     assert all(branch["additionalProperties"] is False for branch in branches)
+    blocked = next(
+        branch
+        for branch in branches
+        if branch["properties"]["status"]["const"] == "blocked"
+    )
+    prompt_code_pattern = blocked["properties"]["prompt_code"]["pattern"]
+    assert re.fullmatch(prompt_code_pattern, "need_source")
+    assert re.fullmatch(prompt_code_pattern, "not valid") is None
+
+
+@pytest.mark.parametrize("profile", ["worker", "verifier"])
+def test_invalid_blocked_prompt_code_fails_closed(profile, tmp_path):
+    from assistant_agent.workflows.graph_state import latest_results
+    from workflow_graph_probe import config, proposal, workflow_probe
+
+    blocked = {
+        "summary": "need input",
+        "required_fields": ["source"],
+        "prompt_code": "not valid",
+        "safe_prompt": "Provide a source identifier.",
+    }
+    if profile == "worker":
+        app, context, initial, _worker, artifact_store = workflow_probe(
+            tmp_path,
+            {"a": []},
+            worker_responses={
+                "a": json.dumps(
+                    {"workflow_control": {"outcome": "blocked", **blocked}}
+                )
+            },
+        )
+        node_id = "a"
+        expected_error = "workflow_worker_control_invalid"
+    else:
+        plan = proposal({"a": [], "verify": ["a"]})
+        plan["constraint_bindings"] = [
+            {
+                "constraint_id": "required_evidence",
+                "statement": "cite evidence",
+                "owner_node_ids": ["a"],
+                "verifier_node_id": "verify",
+                "severity": "required",
+            }
+        ]
+        app, context, initial, _worker, artifact_store = workflow_probe(
+            tmp_path,
+            {"a": [], "verify": ["a"]},
+            plan_payload=plan,
+            verifier_responses=[{"status": "blocked", **blocked}],
+        )
+        node_id = "verify"
+        expected_error = "workflow_verifier_control_invalid"
+    try:
+        final = asyncio.run(app.ainvoke(initial, config=config(), context=context))
+        result = latest_results(
+            final["result_ledger"], final["execution_generation_by_node"]
+        )[node_id]
+
+        assert final["status"] == "failed"
+        assert result.status == "failed"
+        assert result.error_code == expected_error
+    finally:
+        artifact_store.close()
 
 
 @pytest.mark.parametrize(

@@ -361,7 +361,7 @@ class WorkflowWorkerControl(_CheckpointModel):
         default=(), max_length=64
     )
     required_fields: tuple[str, ...] = Field(default=(), max_length=32)
-    prompt_code: str | None = Field(default=None, max_length=160)
+    prompt_code: str | None = Field(default=None, pattern=_NODE_ID_PATTERN)
     safe_prompt: str | None = Field(default=None, max_length=2_000)
     error_code: str | None = Field(default=None, max_length=160)
 
@@ -427,7 +427,7 @@ class WorkflowVerifierControl(_CheckpointModel):
     summary: str = Field(min_length=1, max_length=4_000)
     repair_node_ids: tuple[str, ...] = Field(default=(), max_length=64)
     required_fields: tuple[str, ...] = Field(default=(), max_length=32)
-    prompt_code: str | None = Field(default=None, max_length=160)
+    prompt_code: str | None = Field(default=None, pattern=_NODE_ID_PATTERN)
     safe_prompt: str | None = Field(default=None, max_length=2_000)
     error_code: str | None = Field(default=None, max_length=160)
     verified_constraint_ids: tuple[str, ...] = Field(default=(), max_length=64)
