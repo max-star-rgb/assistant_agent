@@ -16,8 +16,24 @@ from assistant_agent.runtime.assistant_graph_state import (
 def disabled_memory_recall_node(state: Any, runtime: Any) -> Any:
     """Freeze an explicit empty snapshot without touching external resources."""
 
-    del runtime
     validated = validate_assistant_turn_state(state)
+    context = getattr(runtime, "context", None)
+    invocation_kind = str(
+        getattr(context, "invocation_kind", validated["invocation_kind"])
+    )
+    refresh_memory = invocation_kind == "fork" and bool(
+        getattr(context, "refresh_memory", False)
+    )
+    if validated.get("memory_context") is not None and not refresh_memory:
+        return validated
+    if invocation_kind in {"resume", "replay", "fork"} and not refresh_memory:
+        from assistant_agent.runtime.assistant_graph_state import (
+            AssistantStateCompatibilityError,
+        )
+
+        raise AssistantStateCompatibilityError(
+            "Continuation checkpoint has no frozen memory_context."
+        )
     origin = validated["turn_origin_id"]
     digest = hashlib.sha256(f"disabled\0{origin}".encode("utf-8")).hexdigest()
     updated = dict(validated)
@@ -32,12 +48,20 @@ def disabled_memory_recall_node(state: Any, runtime: Any) -> Any:
 def disabled_memory_commit_node(state: Any, runtime: Any) -> Any:
     """Record that the configured backend intentionally performs no write."""
 
-    del runtime
     validated = validate_assistant_turn_state(state)
+    context = getattr(runtime, "context", None)
+    invocation_kind = str(
+        getattr(context, "invocation_kind", validated["invocation_kind"])
+    )
     updated = dict(validated)
     updated["memory_commit"] = MemoryCommitState(
         status="skipped",
-        issue_code="memory_disabled",
+        issue_code=(
+            "time_travel_commit_disabled"
+            if invocation_kind in {"replay", "fork"}
+            or validated["turn_provenance"] == "time_travel"
+            else "memory_disabled"
+        ),
     ).model_dump(mode="json")
     return validate_assistant_turn_state(updated)
 

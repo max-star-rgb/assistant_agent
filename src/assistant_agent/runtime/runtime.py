@@ -362,10 +362,7 @@ class AgentGraphRuntime:
         self.workflow_service = workflow_service
         self.workflow_artifact_store = workflow_artifact_store
         self.workflow_graph_host = workflow_graph_host
-        if (
-            self.config.durable_workflows_enabled
-            and self.workflow_graph_host is None
-        ):
+        if self.config.durable_workflows_enabled and self.workflow_graph_host is None:
             if self.workflow_service is None:
                 workflow_store = SQLiteWorkflowStore(self.config.durable_workflow_path)
                 workflow_observer = create_workflow_otel_observer_from_env()
@@ -860,32 +857,15 @@ class AgentGraphRuntime:
         connection) without mutating ``self.event_sink``.
         """
 
-        effective_run_id = run_id or new_run_id()
-        identity = RequestIdentity.for_user(
-            user_id=request.user_id,
-            agent_id=self.agent_id,
-            session_id=request.session_id,
+        return self._run_state(
+            request,
+            event_sink=event_sink,
+            cancel_token=cancel_token,
+            trace_context=trace_context,
+            export_trace_context=export_trace_context,
+            pre_terminal_state_hook=pre_terminal_state_hook,
+            run_id=run_id or new_run_id(),
         )
-        retain_memory = False
-        try:
-            return self._run_state(
-                request,
-                event_sink=event_sink,
-                cancel_token=cancel_token,
-                trace_context=trace_context,
-                export_trace_context=export_trace_context,
-                pre_terminal_state_hook=pre_terminal_state_hook,
-                run_id=effective_run_id,
-            )
-        except BaseException as exc:
-            retain_memory = bool(getattr(exc, "native_started", False))
-            raise
-        finally:
-            if not retain_memory:
-                self.long_term_memory_service.release_run_context(
-                    identity=identity,
-                    run_id=effective_run_id,
-                )
 
     async def arun_state(
         self,
@@ -903,42 +883,24 @@ class AgentGraphRuntime:
         if interrupt_request is not None:
             self._require_interrupt_enabled()
         effective_run_id = run_id or new_run_id()
-        identity = RequestIdentity.for_user(
-            user_id=request.user_id,
-            agent_id=self.agent_id,
-            session_id=request.session_id,
-        )
         state: AgentState | None = None
-        retain_memory = False
+        prepared = self._prepare_graph_run(
+            request,
+            event_sink=event_sink,
+            cancel_token=cancel_token,
+            trace_context=trace_context,
+            export_trace_context=export_trace_context,
+            pre_terminal_state_hook=pre_terminal_state_hook,
+            run_id=effective_run_id,
+            interrupt_request=interrupt_request,
+        )
         try:
-            prepared = self._prepare_graph_run(
-                request,
-                event_sink=event_sink,
-                cancel_token=cancel_token,
-                trace_context=trace_context,
-                export_trace_context=export_trace_context,
-                pre_terminal_state_hook=pre_terminal_state_hook,
-                run_id=effective_run_id,
-                interrupt_request=interrupt_request,
-            )
-            try:
-                state = await self._run_prepared_graph_async(prepared)
-                return state
-            except GraphExecutionError as exc:
-                if exc.native_started:
-                    retain_memory = True
-                else:
-                    state = self._finalize_graph_execution_error(prepared, exc)
-                raise
-            except BaseException as exc:
-                retain_memory = bool(getattr(exc, "native_started", False))
-                raise
-        finally:
-            if not retain_memory and (state is None or state.status != "waiting_user"):
-                self.long_term_memory_service.release_run_context(
-                    identity=identity,
-                    run_id=effective_run_id,
-                )
+            state = await self._run_prepared_graph_async(prepared)
+            return state
+        except GraphExecutionError as exc:
+            if not exc.native_started:
+                state = self._finalize_graph_execution_error(prepared, exc)
+            raise
 
     async def aresume_state(
         self,
@@ -956,56 +918,33 @@ class AgentGraphRuntime:
 
         self._require_interrupt_enabled()
         effective_run_id = run_id or new_run_id()
-        identity = RequestIdentity.for_user(
-            user_id=request.user_id,
-            agent_id=self.agent_id,
-            session_id=request.session_id,
-        )
         state: AgentState | None = None
         prepared: _PreparedGraphRun | None = None
-        retain_memory = False
+        prepared = await self._prepare_graph_continuation(
+            RequestIdentity.for_user(
+                user_id=request.user_id,
+                agent_id=self.agent_id,
+                session_id=request.session_id,
+            ),
+            event_sink=event_sink,
+            cancel_token=cancel_token,
+            trace_context=trace_context,
+            export_trace_context=export_trace_context,
+            pre_terminal_state_hook=pre_terminal_state_hook,
+            run_id=effective_run_id,
+            invocation_kind="resume",
+            resume=resume,
+            caller_request=request,
+        )
         try:
-            prepared = await self._prepare_graph_continuation(
-                RequestIdentity.for_user(
-                    user_id=request.user_id,
-                    agent_id=self.agent_id,
-                    session_id=request.session_id,
-                ),
-                event_sink=event_sink,
-                cancel_token=cancel_token,
-                trace_context=trace_context,
-                export_trace_context=export_trace_context,
-                pre_terminal_state_hook=pre_terminal_state_hook,
-                run_id=effective_run_id,
-                invocation_kind="resume",
-                resume=resume,
-                caller_request=request,
-            )
-            try:
-                state = await self._execute_graph_async(prepared, resume=resume)
-            except GraphExecutionError as exc:
-                if exc.native_started:
-                    retain_memory = True
-                else:
-                    state = self._finalize_graph_execution_error(prepared, exc)
-                raise
-            except BaseException as exc:
-                retain_memory = bool(getattr(exc, "native_started", False))
-                raise
-            if state.status == "waiting_user":
-                return state
-            return self._finalize_graph_run(prepared, state)
-        finally:
-            if (
-                state is not None
-                and state.status != "waiting_user"
-                and state.turn_provenance == "product_turn"
-                and not retain_memory
-            ):
-                self.long_term_memory_service.release_run_context(
-                    identity=identity,
-                    run_id=state.memory_origin_run_id or effective_run_id,
-                )
+            state = await self._execute_graph_async(prepared, resume=resume)
+        except GraphExecutionError as exc:
+            if not exc.native_started:
+                state = self._finalize_graph_execution_error(prepared, exc)
+            raise
+        if state.status == "waiting_user":
+            return state
+        return self._finalize_graph_run(prepared, state)
 
     async def alist_history(
         self,
@@ -1120,13 +1059,6 @@ class AgentGraphRuntime:
             user_id=user_id,
             session_id=session_id,
             invocation_claim_store=self.graph_invocation_claim_store,
-        )
-        self.long_term_memory_service.release_thread_contexts(
-            identity=RequestIdentity.for_user(
-                user_id=user_id,
-                agent_id=self.agent_id,
-                session_id=session_id,
-            )
         )
         return deleted
 
@@ -1308,11 +1240,6 @@ class AgentGraphRuntime:
                     ),
                 },
             )
-        if not workflow_work_item and not deep_research_start:
-            self._prepare_run_memory_context(
-                state,
-                cancel_token=cancel_token,
-            )
         legacy_initial_state = {
             "request": request,
             "state": state,
@@ -1425,6 +1352,11 @@ class AgentGraphRuntime:
                 request=request,
             )
             snapshot = time_travel_prepared.snapshot
+        refresh_memory = bool(
+            invocation_kind == "fork"
+            and isinstance(request, GraphForkRequest)
+            and request.refresh_memory
+        )
         values = getattr(snapshot, "values", None)
         if not values:
             raise GraphExecutionError(
@@ -1442,6 +1374,18 @@ class AgentGraphRuntime:
                 "graph_checkpoint_incompatible",
                 "Assistant checkpoint cannot be continued by this graph version.",
             ) from exc
+        if refresh_memory:
+            persisted = _prepare_refresh_memory_fork(persisted)
+            assert time_travel_prepared is not None
+            time_travel_prepared = replace(
+                time_travel_prepared,
+                fork_values=persisted,
+            )
+        elif persisted.get("memory_context") is None:
+            raise GraphExecutionError(
+                "graph_memory_snapshot_unavailable",
+                "Continuation requires a frozen memory_context snapshot.",
+            )
         persisted_run = persisted["run"]
         persisted_request = persisted["request"]
         if invocation_kind == "resume":
@@ -1484,22 +1428,6 @@ class AgentGraphRuntime:
                 "graph_continuation_capability_unavailable",
                 "Checkpoint capabilities cannot be reconstructed safely.",
             ) from exc
-        expected_memory_refs = tuple(
-            (str(item["ref"]), str(item["source"]))
-            for item in persisted["context_refs"]
-            if item["kind"] == "memory"
-        )
-        attached_memory = self.long_term_memory_service.attach_continuation_snapshot(
-            state,
-            origin_identity=owner,
-            origin_run_id=state.memory_origin_run_id,
-            expected_memory_refs=expected_memory_refs,
-        )
-        if expected_memory_refs and attached_memory is None:
-            raise GraphExecutionError(
-                "graph_continuation_context_refs_unavailable",
-                "Checkpoint Memory refs are no longer available from their owner.",
-            )
         try:
             resolve_checkpoint_refs = continuation_ref_resolver(persisted, state)
         except ContinuationPreparationError as exc:
@@ -1513,6 +1441,7 @@ class AgentGraphRuntime:
             export_trace_context=export_trace_context,
             state_ref_resolver=resolve_checkpoint_refs,
             invocation_kind=invocation_kind,
+            refresh_memory=refresh_memory,
             graph_profile=persisted["profile"],
             invocation_token=claim_context.invocation_token,
             publish_start=False,
@@ -1586,6 +1515,7 @@ class AgentGraphRuntime:
         state_ref_resolver: Callable[[Mapping[str, object], AgentState], None]
         | None = None,
         invocation_kind: GraphInvocationKind = "invoke",
+        refresh_memory: bool = False,
         graph_profile: Literal[
             "standard", "planner", "worker", "verifier"
         ] = "standard",
@@ -1650,6 +1580,7 @@ class AgentGraphRuntime:
                 state_ref_resolver=state_ref_resolver,
                 invocation_claim_store=self.graph_invocation_claim_store,
                 invocation_kind=invocation_kind,
+                refresh_memory=refresh_memory,
                 graph_profile=graph_profile,
                 **(
                     {"invocation_token": invocation_token}
@@ -2021,10 +1952,6 @@ class AgentGraphRuntime:
             and state.turn_provenance == "product_turn"
         ):
             _record_local_delivered_response(state)
-            self.long_term_memory_service.enqueue_completed_turn(
-                trace_store=self.trace_store,
-                state=state,
-            )
         return state
 
     def _embed_stable_request_text(
@@ -2746,6 +2673,43 @@ def _set_durable_tasks_disabled_response(state: AgentState) -> None:
         data={"errors": [{"code": code, "message": message}]},
     )
     state.status = "failed"
+
+
+def _prepare_refresh_memory_fork(
+    value: Mapping[str, object],
+) -> dict[str, Any]:
+    """Turn an exact fork snapshot into an explicit non-exact recall branch."""
+
+    persisted = validate_assistant_turn_state(value)
+    updated = dict(persisted)
+    run = dict(persisted["run"])
+    run["status"] = "running"
+    updated.update(
+        {
+            "run": run,
+            "continuation": "memory_recall",
+            "memory_context": None,
+            "memory_commit": {
+                "status": "not_requested",
+                "memory_event_id": None,
+                "issue_code": None,
+            },
+            "response_publish": {
+                "status": "not_requested",
+                "final_fact_id": None,
+                "issue_code": None,
+            },
+            "assistant_output": None,
+            "pending_tool_calls": [],
+            "pending_interrupt": None,
+            "final_response": None,
+            "turn_provenance": "time_travel",
+            "context_refs": [
+                ref for ref in persisted["context_refs"] if ref["kind"] != "memory"
+            ],
+        }
+    )
+    return dict(validate_assistant_turn_state(updated))
 
 
 def _set_async_workflow_entry_required(state: AgentState) -> None:

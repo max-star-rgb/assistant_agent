@@ -172,6 +172,7 @@ class GraphRuntimeContext:
     state_ref_resolver: "AssistantRuntimeStateRefResolver | None" = None
     profile_allowed_tool_names: frozenset[str] | None = None
     invocation_kind: GraphInvocationKind = "invoke"
+    refresh_memory: bool = False
     invocation_token: str = field(default_factory=lambda: secrets.token_urlsafe(24))
     graph_profile: AssistantGraphProfileName = "standard"
 
@@ -435,6 +436,7 @@ def _scoped_runtime_context(
         profile_allowed_tool_names=runtime_context.profile_allowed_tool_names,
         invocation_claim_store=runtime_context.invocation_claim_store,
         invocation_kind=runtime_context.invocation_kind,
+        refresh_memory=runtime_context.refresh_memory,
         invocation_token=runtime_context.invocation_token,
         graph_profile=runtime_context.graph_profile,
     )

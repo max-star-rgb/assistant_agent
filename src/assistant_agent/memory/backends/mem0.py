@@ -58,10 +58,18 @@ def build_mem0_memory_bundle(
     )
 
     def recall_node(state: Any, runtime: Any) -> Any:
-        del runtime
         validated = validate_assistant_turn_state(state)
-        if validated.get("memory_context") is not None:
+        invocation_kind, refresh_memory = _invocation_policy(validated, runtime)
+        if validated.get("memory_context") is not None and not refresh_memory:
             return validated
+        if invocation_kind in {"resume", "replay", "fork"} and not refresh_memory:
+            from assistant_agent.runtime.assistant_graph_state import (
+                AssistantStateCompatibilityError,
+            )
+
+            raise AssistantStateCompatibilityError(
+                "Continuation checkpoint has no frozen memory_context."
+            )
         try:
             memories = client.recall_long_term_memory(
                 bind_mem0_identity(_identity(validated), namespace=identity_namespace)
@@ -81,11 +89,20 @@ def build_mem0_memory_bundle(
         )
 
     def commit_node(state: Any, runtime: Any) -> Any:
-        del runtime
         validated = validate_assistant_turn_state(state)
         existing = MemoryCommitState.model_validate(validated["memory_commit"])
         if existing.status != "not_requested":
             return validated
+        invocation_kind, _ = _invocation_policy(validated, runtime)
+        if (
+            invocation_kind in {"replay", "fork"}
+            or validated["turn_provenance"] == "time_travel"
+        ):
+            return _with_commit(
+                validated,
+                status="skipped",
+                issue_code="time_travel_commit_disabled",
+            )
         published = ResponsePublishState.model_validate(validated["response_publish"])
         response = validated.get("final_response")
         user_text = _current_user_text(validated["request"])
@@ -231,6 +248,15 @@ def _identity(state: Any) -> RequestIdentity:
         agent_id=str(run["agent_id"]),
         session_id=str(request["session_id"]),
     )
+
+
+def _invocation_policy(state: Any, runtime: Any) -> tuple[str, bool]:
+    context = getattr(runtime, "context", None)
+    invocation_kind = str(
+        getattr(context, "invocation_kind", state.get("invocation_kind", "invoke"))
+    )
+    refresh_memory = bool(getattr(context, "refresh_memory", False))
+    return invocation_kind, invocation_kind == "fork" and refresh_memory
 
 
 def _normalize_memories(

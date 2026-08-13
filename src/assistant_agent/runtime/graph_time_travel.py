@@ -44,9 +44,9 @@ class GraphForkPatch(_StrictModel):
     """Allowlisted product fields that may differ on one native branch."""
 
     request_text: str | None = Field(default=None, max_length=32_000)
-    response_style: Literal[
-        "conversation", "concise", "structured", "voice"
-    ] | None = None
+    response_style: Literal["conversation", "concise", "structured", "voice"] | None = (
+        None
+    )
 
 
 class GraphForkRequest(_StrictModel):
@@ -54,6 +54,7 @@ class GraphForkRequest(_StrictModel):
 
     selector: GraphCheckpointSelector
     patch: GraphForkPatch
+    refresh_memory: bool = False
 
 
 TimeTravelEffectDecision = Literal[
@@ -183,9 +184,7 @@ class TimeTravelEffectPolicy:
                     assistant_iteration=int(state["assistant_iterations"]),
                     call_ordinal=ordinal,
                     tool_name=tool_name,
-                    normalized_input_digest=normalized_tool_input_digest(
-                        pending_input
-                    ),
+                    normalized_input_digest=normalized_tool_input_digest(pending_input),
                 )
                 operation_key = tool_operation_key(
                     thread_id=thread_id,
@@ -201,8 +200,7 @@ class TimeTravelEffectPolicy:
             if record is not None and (
                 getattr(record, "operation_key", None) != operation_key
                 or getattr(record, "thread_id", None) != thread_id
-                or getattr(record, "operation_scope_id", None)
-                != operation_scope_id
+                or getattr(record, "operation_scope_id", None) != operation_scope_id
                 or getattr(record, "profile", None) != state["profile"]
                 or getattr(record, "tool_name", None) != tool_name
             ):
@@ -226,8 +224,7 @@ class TimeTravelEffectPolicy:
                 or value.get("bound_input_digest") != expected_input_digest
                 or (
                     record is not None
-                    and getattr(record, "input_digest", None)
-                    != expected_input_digest
+                    and getattr(record, "input_digest", None) != expected_input_digest
                 )
             ):
                 return "forbidden"
@@ -273,9 +270,8 @@ class TimeTravelEffectPolicy:
                 step_id=f"assistant_loop_{prior_observation_count + step_ordinal + 1}",
                 context_metadata=self._context_metadata,
             )
-            if (
-                "idempotency_key" in runtime_bound_input_fields(tool)
-                and not bound.get("idempotency_key")
+            if "idempotency_key" in runtime_bound_input_fields(tool) and not bound.get(
+                "idempotency_key"
             ):
                 bound["idempotency_key"] = operation_key
             validated = tool.input_schema.model_validate(bound)
