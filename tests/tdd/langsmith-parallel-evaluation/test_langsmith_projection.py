@@ -45,7 +45,7 @@ def _event(
     )
 
 
-def test_runtime_projection_adds_langsmith_semantics_without_removing_langfuse() -> None:
+def test_runtime_projection_uses_platform_neutral_and_langsmith_semantics() -> None:
     runtime_span_id = "1" * 16
     llm_span_id = "2" * 16
     tool_span_id = "3" * 16
@@ -104,7 +104,6 @@ def test_runtime_projection_adds_langsmith_semantics_without_removing_langfuse()
     root = next(span for span in spans if span.name == "agent.runtime")
     llm = next(span for span in spans if span.name == "llm.chat")
     tool = next(span for span in spans if span.name == "tool.execute")
-    assert root.attributes["langfuse.trace.name"] == "assistant.turn"
     assert root.attributes["langsmith.trace.name"] == "assistant.turn"
     assert root.attributes["langsmith.span.kind"] == "chain"
     assert root.attributes["langsmith.trace.session_id"] == "session-1"
@@ -113,5 +112,5 @@ def test_runtime_projection_adds_langsmith_semantics_without_removing_langfuse()
     assert json.loads(root.attributes["outputs"])["role"] == "assistant"
     assert llm.attributes["langsmith.span.kind"] == "llm"
     assert tool.attributes["langsmith.span.kind"] == "tool"
-    assert "langfuse.observation.type" in llm.attributes
-    assert "langfuse.observation.type" in tool.attributes
+    assert llm.attributes["assistant_agent.observation.type"] == "generation"
+    assert tool.attributes["assistant_agent.observation.type"] == "span"

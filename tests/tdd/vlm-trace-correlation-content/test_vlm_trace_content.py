@@ -225,8 +225,8 @@ def test_vision_mapping_exports_normalized_vlm_text_from_overlay() -> None:
 
     root = next(item for item in specs if item.name == "vision.runtime")
     vlm = next(item for item in specs if item.name == "vlm.infer")
-    vlm_output = json.loads(vlm.attributes["langfuse.observation.output"])
-    root_output = json.loads(root.attributes["langfuse.trace.output"])
+    vlm_output = json.loads(vlm.attributes["assistant_agent.observation.output"])
+    root_output = json.loads(root.attributes["assistant_agent.trace.output"])
     assert vlm_output["summary"] == "窗边有一盆绿植。"
     assert vlm_output["objects"] == ["绿植"]
     assert root_output["summary"] == "窗边有一盆绿植。"

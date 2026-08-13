@@ -132,8 +132,8 @@ def test_observer_exports_late_memory_span_without_reexporting_root() -> None:
     assert span.name == "memory.turn_ingestion"
     assert span.trace_id == "trace-sentinel"
     assert span.parent_span_id == "c41c7edb748a4749"
-    assert span.attributes["langfuse.session.id"] == "session-sentinel"
-    output = json.loads(span.attributes["langfuse.observation.output"])
+    assert span.attributes["session.id"] == "session-sentinel"
+    output = json.loads(span.attributes["assistant_agent.observation.output"])
     assert output["memory_ids"] == ["memory-sentinel"]
     assert output["change_counts"] == {"ADD": 1}
     assert output["content_exported"] is False
@@ -170,10 +170,10 @@ def test_late_memory_span_includes_overlay_when_explicitly_allowed() -> None:
     observer.on_trace_event(_memory_event())
 
     output = json.loads(
-        exporter.batches[1][0].attributes["langfuse.observation.output"]
+        exporter.batches[1][0].attributes["assistant_agent.observation.output"]
     )
     input_payload = json.loads(
-        exporter.batches[1][0].attributes["langfuse.observation.input"]
+        exporter.batches[1][0].attributes["assistant_agent.observation.input"]
     )
     assert input_payload["messages"] == [
         {"role": "user", "content": "我更喜欢用中文交流。"},
@@ -222,7 +222,7 @@ def test_memory_content_is_exported_when_ingestion_finishes_before_summary() -> 
         if span.name == "memory.turn_ingestion"
     )
     output = json.loads(
-        memory_span.attributes["langfuse.observation.output"]
+        memory_span.attributes["assistant_agent.observation.output"]
     )
     assert output["content_exported"] is True
     assert output["changes"][0]["memory"] == "用户偏好使用中文"
@@ -278,7 +278,7 @@ def test_memory_content_export_requires_explicit_flag_and_loopback_endpoint() ->
         {
             **base,
             "ASSISTANT_AGENT_OTEL_EXPORT_ENDPOINT": (
-                "https://langfuse.example/api/public/otel/v1/traces"
+                "https://collector.example/v1/traces"
             ),
         }
     )

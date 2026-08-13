@@ -39,7 +39,7 @@ vendor provider chunks
 - Gateway frames describe session, run, delivery, cancel, interrupt, and
   transport lifecycle.
 - `TraceEvent` is the independent observability projection consumed by the
-  local trace store, OTel exporter, and Langfuse; it is not part of the
+  local trace store and generic OTel exporter; it is not part of the
   `AgentRunStream`.
 - Vendor chunks, SDK objects, prompts, credentials, and raw provider responses
   do not cross the provider adapter boundary.
@@ -176,7 +176,7 @@ is emitted after trace finalization.
 
 Context evidence also has a single owner: `context.build` carries
 `context_report_v2`, while the local `llm.chat` content overlay carries the exact
-Provider input and its Langfuse generation carries the equivalent formatted projection.
+Provider input and its generation span carries the equivalent formatted projection.
 `assistant.output` records only the normalized decision and does not duplicate
 either payload. The `agent.runtime` root may retain the scalar
 `context_peak_ratio` as a turn-level diagnostic, but not the full context report.
@@ -291,16 +291,16 @@ critical-path `llm_chat[n]` duration and keep Provider latency as a nested
 diagnostic.
 当本地 OTLP export 开启时，Provider adapter 会在 `llm.chat` span id 下记录传给
 Provider 的完整调用参数。该原始对象保留在本地 content overlay，作为请求形状的审计证据；
-Langfuse generation input 使用等价的可读投影。OpenAI Chat 形状保持不变，DashScope
+generation span input 使用等价的可读投影。OpenAI Chat 形状保持不变，DashScope
 Generation 形状只把 `input.messages`、`parameters.tools` 和 `parameters.tool_choice`
 提升为顶层 `messages`、`tools` 和 `tool_choice`，其余生成、联网和思考参数归入
 `provider_parameters`。投影不改写 message role、Tool schema 或参数值。
 启用 local trace content 后，进程内 debug overlay 还会保存归一化 `ChatResult`；额外设置
 `MULTIMODAL_AGENT_LOCAL_PROVIDER_PROTOCOL_CAPTURE=1` 后，还保存原始 content、原始工具参数字符串、
-finish reason、usage、结构化 search sources 与流式事件计数组成的协议语义快照。Langfuse generation output 使用
+finish reason、usage、结构化 search sources 与流式事件计数组成的协议语义快照。generation span output 使用
 assistant message 展示 Provider 的原始语义回复（正文、工具调用或拒绝），
 generation input 保留 SDK 调用的 messages/tools 语义以及生成、stream 和 Provider 特有参数，
-并按上述 Provider-neutral 形状支持 Langfuse formatted renderer，不为展示虚构 message role；
+并按上述 Provider-neutral 形状支持 formatted renderer，不为展示虚构 message role；
 finish reason 保留在 trace/协议快照，
 usage、route 与 transport 保留在诊断字段，都不拼接到 output 文本。默认 trace event 保持安全摘要；
 本地 `.data/trace_ledger/YYYY-MM-DD.jsonl` 只保存经过 identifier 约束的最小完整性字段，不保存
@@ -414,7 +414,7 @@ Durable Workflow 使用相同的分离原则，但事件事实源是 `WorkflowSt
   只从持久化当前 item 的 LLM 生成 `display_title`、状态和完成数投影产品 `progress`；原始事件
   仍是诊断事实，但不是默认产品文案；
 - planner 和每个语义 worker item 都产生独立 bounded `AgentGraphRuntime` canonical run/trace，Workflow event 通过
-  `workflow_id/work_item_id/attempt` 关联；Deep Research 的 OTel/Langfuse 投影复用持久化的 ingress
+  `workflow_id/work_item_id/attempt` 关联；Deep Research 的 OTel 投影复用持久化的 ingress
   trace ID，但不把多个 canonical run 伪装成一次连续 ReAct；它们共同属于一个 durable
   Plan-and-Execute execution；
 - waiting-input、cancel、retry、local plan revision 和 terminal 都是持久事件；客户端断线只丢失

@@ -191,23 +191,18 @@ exclusive_allowlist = []
 id = "runtime-observability"
 authority = "docs/observability-harness.md"
 read_when = [
-  "trace、observability、OTel、Langfuse 或 LangSmith 投影",
-  "runtime audit、Live Observation Rule 或日常评分",
+  "trace、observability、OTel 或 LangSmith native tracing",
+  "canonical event、exporter lifecycle 或日常异常 trace 沉淀",
 ]
 source_globs = [
   "src/assistant_agent/observability/**",
-  "scripts/run_runtime_audit.py",
-  "deploy/systemd/user/assistant-agent-runtime-audit.*",
-  "tests/tdd/runtime_audit/**",
 ]
 thin_references = ["scripts/README.md"]
 verification = [
-  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/runtime_audit",
-  "python scripts/run_runtime_audit.py configure-evaluators --model-provider qwen-judge --model qwen-flash",
+  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/core/contract/test_observability_contract.py",
+  "python -m compileall -q src/assistant_agent/observability",
 ]
-exclusive_literals = [
-  "assistant-agent-runtime-audit.service",
-]
+exclusive_literals = []
 exclusive_allowlist = []
 
 [[domains]]
@@ -255,23 +250,16 @@ id = "release-review-eval"
 authority = "evals/README.md"
 read_when = [
   "system eval 或上线前 Release Review",
-  "Langfuse/LangSmith Dataset、Experiment、Release Review webhook 或 Score/Feedback 完整性",
+  "LangSmith Dataset、Experiment、Release Review 或 Feedback 完整性",
 ]
 source_globs = [
   "evals/release_review/**",
-  "evals/runtime_regression/**",
   "evals/langsmith_runtime_regression/**",
-  "evals/langsmith_workflow_regression/**",
   "evals/system/**",
   "src/assistant_agent/evaluation/**",
-  "src/assistant_agent/api/routes_eval_experiments.py",
   "scripts/run_release_review.py",
-  "scripts/run_runtime_regressions.py",
   "scripts/run_langsmith_runtime_regressions.py",
-  "scripts/run_langsmith_workflow_regressions.py",
-  "deploy/langfuse_eval_webhook/**",
   "tests/tdd/release-review-native-experiment/**",
-  "tests/tdd/runtime-eval-feedback-loop/**",
   "tests/tdd/langsmith-parallel-evaluation/**",
 ]
 thin_references = [
@@ -279,14 +267,8 @@ thin_references = [
   "scripts/README.md",
 ]
 verification = [
-  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/native-langgraph-m5/test_langsmith_equivalence_gate.py",
   "python scripts/run_release_review.py --inspect",
-  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/runtime-eval-feedback-loop",
   "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/langsmith-parallel-evaluation",
-  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/native-langgraph-m3/test_langsmith_workflow_experiment.py",
 ]
-exclusive_literals = [
-  "ASSISTANT_AGENT_LANGFUSE_RELEASE_REVIEW_SIGNING_SECRET",
-  "ASSISTANT_AGENT_LANGFUSE_RUNTIME_REGRESSION_SIGNING_SECRET",
-]
+exclusive_literals = []
 exclusive_allowlist = []

@@ -90,16 +90,6 @@ from assistant_agent.runtime.graph_time_travel import (
 )
 from assistant_agent.runtime.generated_artifacts import with_generated_artifact_delivery
 from assistant_agent.multi_agent.models import DEFAULT_AGENT_ID
-from assistant_agent.observability.trace_context import (
-    RuntimeExportTraceContext,
-    RuntimeTraceContext,
-)
-from assistant_agent.observability.workflow_otel import (
-    create_workflow_otel_observer_from_env,
-    workflow_attempt_span_id,
-)
-from assistant_agent.observability.workflow_trace import workflow_root_span_id
-from assistant_agent.observability.otel_mapping import langfuse_trace_id
 from assistant_agent.tools.models import ToolResult, ToolSpec
 from assistant_agent.media.agent_service_entry import is_trusted_agent_service_request
 from assistant_agent.runtime.event_sink import EventSink
@@ -112,7 +102,6 @@ from assistant_agent.workflows.models import (
     WorkflowSubmission,
 )
 from assistant_agent.workflows.service import WorkflowService
-from assistant_agent.workflows.observed_store import ObservedWorkflowStore
 from assistant_agent.workflows.sqlite_store import SQLiteWorkflowStore
 from assistant_agent.runtime.chat_adapter import (
     ChatAdapter,
@@ -368,12 +357,6 @@ class AgentGraphRuntime:
         ):
             if self.workflow_service is None:
                 workflow_store = SQLiteWorkflowStore(self.config.durable_workflow_path)
-                workflow_observer = create_workflow_otel_observer_from_env()
-                if workflow_observer is not None:
-                    workflow_store = ObservedWorkflowStore(
-                        inner=workflow_store,
-                        observer=workflow_observer,
-                    )
                 self.workflow_service = WorkflowService(
                     store=workflow_store,
                     definitions=default_workflow_definitions(),
@@ -820,26 +803,6 @@ class AgentGraphRuntime:
         state = self.run_state(
             user_request,
             pre_terminal_state_hook=admit_work_item_result_before_terminal,
-            export_trace_context=RuntimeExportTraceContext(
-                export_trace_id=(
-                    assignment.workflow_trace_id
-                    or langfuse_trace_id(assignment.workflow_id)
-                ),
-                export_span_id=workflow_attempt_span_id(
-                    assignment.workflow_id,
-                    assignment.attempt_id,
-                ),
-                export_parent_span_id=workflow_root_span_id(
-                    assignment.workflow_trace_id
-                    or langfuse_trace_id(assignment.workflow_id)
-                ),
-                export_trace_name=f"{assignment.workflow_type}.workflow",
-                export_observation_name=assignment.display_title,
-                workflow_id=assignment.workflow_id,
-                work_item_id=assignment.work_item_id,
-                attempt_id=assignment.attempt_id,
-                agent_role=assignment.agent_role,
-            ),
         )
         return parsed_result or parse_terminal_work_item_state(state)
 
@@ -848,8 +811,6 @@ class AgentGraphRuntime:
         request: UserRequest,
         event_sink: EventSink | None = None,
         cancel_token: Any | None = None,
-        trace_context: RuntimeTraceContext | None = None,
-        export_trace_context: RuntimeExportTraceContext | None = None,
         pre_terminal_state_hook: Callable[[AgentState], None] | None = None,
         run_id: str | None = None,
     ) -> AgentState:
@@ -872,8 +833,6 @@ class AgentGraphRuntime:
                 request,
                 event_sink=event_sink,
                 cancel_token=cancel_token,
-                trace_context=trace_context,
-                export_trace_context=export_trace_context,
                 pre_terminal_state_hook=pre_terminal_state_hook,
                 run_id=effective_run_id,
             )
@@ -892,8 +851,6 @@ class AgentGraphRuntime:
         request: UserRequest,
         event_sink: EventSink | None = None,
         cancel_token: Any | None = None,
-        trace_context: RuntimeTraceContext | None = None,
-        export_trace_context: RuntimeExportTraceContext | None = None,
         pre_terminal_state_hook: Callable[[AgentState], None] | None = None,
         run_id: str | None = None,
         interrupt_request: AssistantInterruptRequest | None = None,
@@ -915,8 +872,6 @@ class AgentGraphRuntime:
                 request,
                 event_sink=event_sink,
                 cancel_token=cancel_token,
-                trace_context=trace_context,
-                export_trace_context=export_trace_context,
                 pre_terminal_state_hook=pre_terminal_state_hook,
                 run_id=effective_run_id,
                 interrupt_request=interrupt_request,
@@ -947,8 +902,6 @@ class AgentGraphRuntime:
         resume: AssistantResume,
         event_sink: EventSink | None = None,
         cancel_token: Any | None = None,
-        trace_context: RuntimeTraceContext | None = None,
-        export_trace_context: RuntimeExportTraceContext | None = None,
         pre_terminal_state_hook: Callable[[AgentState], None] | None = None,
         run_id: str | None = None,
     ) -> AgentState:
@@ -973,8 +926,6 @@ class AgentGraphRuntime:
                 ),
                 event_sink=event_sink,
                 cancel_token=cancel_token,
-                trace_context=trace_context,
-                export_trace_context=export_trace_context,
                 pre_terminal_state_hook=pre_terminal_state_hook,
                 run_id=effective_run_id,
                 invocation_kind="resume",
@@ -1085,8 +1036,6 @@ class AgentGraphRuntime:
             invocation_kind=invocation_kind,
             event_sink=event_sink,
             cancel_token=cancel_token,
-            trace_context=None,
-            export_trace_context=None,
             pre_terminal_state_hook=None,
         )
         try:
@@ -1138,8 +1087,6 @@ class AgentGraphRuntime:
         interrupt_request: AssistantInterruptRequest | None = None,
         event_sink: EventSink | None = None,
         cancel_token: Any | None = None,
-        trace_context: RuntimeTraceContext | None = None,
-        export_trace_context: RuntimeExportTraceContext | None = None,
         pre_terminal_state_hook: Callable[[AgentState], None] | None = None,
         run_id: str | None = None,
     ) -> AgentRunStream[AgentState]:
@@ -1163,8 +1110,6 @@ class AgentGraphRuntime:
                         request,
                         event_sink=stream_sink,
                         cancel_token=cancel_token,
-                        trace_context=trace_context,
-                        export_trace_context=export_trace_context,
                         pre_terminal_state_hook=pre_terminal_state_hook,
                         run_id=run_id,
                         interrupt_request=interrupt_request,
@@ -1175,8 +1120,6 @@ class AgentGraphRuntime:
                         resume=resume,
                         event_sink=stream_sink,
                         cancel_token=cancel_token,
-                        trace_context=trace_context,
-                        export_trace_context=export_trace_context,
                         pre_terminal_state_hook=pre_terminal_state_hook,
                         run_id=run_id,
                     )
@@ -1201,8 +1144,6 @@ class AgentGraphRuntime:
         request: UserRequest,
         event_sink: EventSink | None = None,
         cancel_token: Any | None = None,
-        trace_context: RuntimeTraceContext | None = None,
-        export_trace_context: RuntimeExportTraceContext | None = None,
         pre_terminal_state_hook: Callable[[AgentState], None] | None = None,
         run_id: str | None = None,
     ) -> AgentState:
@@ -1212,8 +1153,6 @@ class AgentGraphRuntime:
             request,
             event_sink=event_sink,
             cancel_token=cancel_token,
-            trace_context=trace_context,
-            export_trace_context=export_trace_context,
             pre_terminal_state_hook=pre_terminal_state_hook,
             run_id=run_id,
         )
@@ -1231,8 +1170,6 @@ class AgentGraphRuntime:
         *,
         event_sink: EventSink | None,
         cancel_token: Any | None,
-        trace_context: RuntimeTraceContext | None,
-        export_trace_context: RuntimeExportTraceContext | None,
         pre_terminal_state_hook: Callable[[AgentState], None] | None,
         run_id: str,
         interrupt_request: AssistantInterruptRequest | None = None,
@@ -1254,7 +1191,6 @@ class AgentGraphRuntime:
         state = AgentState.from_request(
             request,
             run_id=run_id,
-            trace_id=trace_context.trace_id if trace_context is not None else None,
             agent_id=self.agent_id,
         )
         try:
@@ -1280,8 +1216,6 @@ class AgentGraphRuntime:
             state,
             event_sink=event_sink,
             cancel_token=cancel_token,
-            trace_context=trace_context,
-            export_trace_context=export_trace_context,
             interrupt_request=interrupt_request,
             execution_engine=(
                 "durable_plan_execute_start"
@@ -1378,8 +1312,6 @@ class AgentGraphRuntime:
         caller_request: UserRequest | None = None,
         event_sink: EventSink | None,
         cancel_token: Any | None,
-        trace_context: RuntimeTraceContext | None,
-        export_trace_context: RuntimeExportTraceContext | None,
         pre_terminal_state_hook: Callable[[AgentState], None] | None,
     ) -> _PreparedGraphRun:
         """Build invocation-local continuation state without Memory lifecycle calls."""
@@ -1455,11 +1387,6 @@ class AgentGraphRuntime:
                     "Resume request facts do not match the pending assistant turn.",
                 )
         persisted_trace_id = str(persisted_run["trace_id"])
-        if trace_context is not None and trace_context.trace_id != persisted_trace_id:
-            raise GraphExecutionError(
-                "graph_resume_trace_mismatch",
-                "Continuation trace context does not match the assistant thread.",
-            )
         continuation_request = user_request_from_checkpoint(persisted_request)
         state = AgentState.from_request(
             continuation_request,
@@ -1509,8 +1436,6 @@ class AgentGraphRuntime:
             state,
             event_sink=event_sink,
             cancel_token=cancel_token,
-            trace_context=trace_context,
-            export_trace_context=export_trace_context,
             state_ref_resolver=resolve_checkpoint_refs,
             invocation_kind=invocation_kind,
             graph_profile=persisted["profile"],
@@ -1531,8 +1456,6 @@ class AgentGraphRuntime:
         self._publish_graph_run_started(
             state,
             runtime_event_publisher=services.runtime_event_publisher,
-            trace_context=trace_context,
-            export_trace_context=export_trace_context,
             execution_engine="langgraph_assistant_loop",
         )
         return _PreparedGraphRun(
@@ -1579,8 +1502,6 @@ class AgentGraphRuntime:
         *,
         event_sink: EventSink | None,
         cancel_token: Any | None,
-        trace_context: RuntimeTraceContext | None,
-        export_trace_context: RuntimeExportTraceContext | None,
         interrupt_request: AssistantInterruptRequest | None = None,
         execution_engine: str = "langgraph_assistant_loop",
         state_ref_resolver: Callable[[Mapping[str, object], AgentState], None]
@@ -1624,8 +1545,6 @@ class AgentGraphRuntime:
             self._publish_graph_run_started(
                 state,
                 runtime_event_publisher=runtime_event_publisher,
-                trace_context=trace_context,
-                export_trace_context=export_trace_context,
                 execution_engine=execution_engine,
             )
         return _GraphRunServices(
@@ -1660,20 +1579,12 @@ class AgentGraphRuntime:
         state: AgentState,
         *,
         runtime_event_publisher: RuntimeEventPublisher,
-        trace_context: RuntimeTraceContext | None,
-        export_trace_context: RuntimeExportTraceContext | None,
         execution_engine: str,
     ) -> None:
         fact = RunStartedFact(
             state=state,
-            parent_span_id=(
-                trace_context.parent_span_id if trace_context is not None else None
-            ),
+            parent_span_id=None,
             execution_engine=execution_engine,
-            export_trace_context=export_trace_context,
-            experiment_trace_link=(
-                trace_context.experiment_link if trace_context is not None else None
-            ),
         )
         runtime_event_publisher.deliver_run_started(fact)
         runtime_event_publisher.record_run_started(fact)

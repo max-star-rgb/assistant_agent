@@ -11,16 +11,12 @@ eval、Gateway 主链路覆盖的 probe 不应继续沉积到本目录。
 - `scripts/run_server.py`: starts the FastAPI backend with Gateway, media, HTTP,
   memory, trace, and tool-governed runtime routes. 启动完成后默认打印从实际 app/runtime
   收集的精简运维摘要，包括 bind、健康检查、Provider、Tool 分类计数、Worker、已启用集成、
-  安全开关，以及 Runtime completeness ledger、Langfuse export、Gateway lifecycle、Agent-Service
+  安全开关，以及 Runtime completeness ledger、通用 OTLP export、Gateway lifecycle、Agent-Service
   delivery audit 和 Gateway text log 的分层观测位置；只有排查 Tool 装配时才使用
   `--startup-details` 展开按 plugin ownership 分组的完整清单。
-  本机 Langfuse 需要查看 Mem0 具体 change text 时，显式增加
-  `--allow-local-memory-trace-content`；它只对 loopback OTLP endpoint 生效，本地 completeness ledger
-  不保留 Memory 正文。在 Langfuse Session 中打开各 turn 的
-  `memory.turn_ingestion` 查看结果，单条演化用 Mem0 原生 history API 钻取。
-- `scripts/run_langfuse.py`: PyCharm-friendly local Langfuse supervisor. It starts
-  the ignored `.data/langfuse` Compose stack, waits for health, stays attached as
-  one Run process, and stops the containers without deleting data when terminated.
+  本地诊断需要查看 Mem0 具体 change text 时，显式增加
+  `--allow-local-memory-trace-content`；本地 completeness ledger 不保留 Memory 正文，单条演化用 Mem0
+  原生 history API 钻取。
 - `scripts/run_qdrant.py`：PyCharm-friendly 本地 Qdrant supervisor。它只启动
   `docker/mem0/compose.yaml` 的 `visual-memory` profile 和 `qdrant` service，等待
   `http://127.0.0.1:6333/healthz` 就绪，并作为一个 Run process 持续运行。仓库已提供共享配置
@@ -101,13 +97,6 @@ For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
 ## Observability and local operations
 
 - `scripts/trace_metrics.py`: redacted trace metric summary.
-- `scripts/run_runtime_audit.py`: 只读日审计稳定入口。`run` 默认审计前一北京时间自然日；Langfuse 查询
-  成功但没有 Trace 时输出“昨天无运行trace”，存在异常时才调用受限 Codex。它不启动 Langfuse、不同步
-  Dataset，也不运行 Agent Experiment；成功发布后清理超过 `--local-ledger-retention-days`（默认 14 天）
-  且已有成功审计证明的 `.data/trace_ledger/YYYY-MM-DD.jsonl` 分片；`configure-evaluators` 管理五条 Live Observation Rule，并在真实
-  回归 Dataset 已存在时管理两条 Experiment Rule。
-  参数、证据边界、状态机、产物和 systemd 配置统一见
-  [`docs/observability-harness.md`](../docs/observability-harness.md#langfuse-first-runtime-审计)。
 - Gateway lifecycle 由 `scripts/run_server.py` 写入 `.data/gateway_events.jsonl`；仓库当前没有
   独立 viewer，按 `run_id`、`turn_id` 或 `trace_id` 使用标准 JSONL/文本工具检索。
 
@@ -144,21 +133,16 @@ For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
   grounding/response-quality 两条独立 Dataset rule，显式 `--apply` 才创建或更新且不运行 Judge；`--run`
   以一个原生 LangSmith Project / Experiment 执行
   Decision fixture backend 与隔离 Staging；`--record-decision` 保存 operator 的人工发布决定。真实运行
-  必须同时显式允许 real Provider 和 Staging 副作用，不会静默回退 mock。Dataset、Feedback、webhook、
-  清理和产物契约统一见 [`evals/README.md`](../evals/README.md)。日常 `run_runtime_audit` 不参与这条链路。
-- `scripts/run_runtime_regressions.py`：Runtime Regression webhook 复用的受控执行内核。案例只来自
-  Langfuse UI 中固定的 `assistant-agent-runtime-regressions` Dataset；`--preflight` 验证 Dataset Item 与
-  real Provider readiness，`--run` 通过生产 `AgentGraphRuntime` 创建真实 Experiment，并等待三项
-  Experiment Score 完整落库。日常操作直接在 Langfuse UI 触发，无需手工运行 CLI。流程与数据契约见
-  [`evals/README.md`](../evals/README.md#日常失败到-runtime-regression)。
-- `scripts/run_langsmith_runtime_regressions.py`：并行 LangSmith Runtime Regression 入口。案例只读取
-  LangSmith UI 中同名固定 Dataset，不与 Langfuse 自动同步；`--inspect` 只校验 active Example object，
+  必须同时显式允许 real Provider 和 Staging 副作用，不会静默回退 mock。Dataset、Feedback、
+  清理和产物契约统一见 [`evals/README.md`](../evals/README.md)。
+- `scripts/run_langsmith_runtime_regressions.py`：LangSmith Runtime Regression 唯一稳定入口。案例由人工从
+  日常异常 trace 脱敏并沉淀到固定 Dataset；`--inspect` 只校验 active Example object，
   `--configure-evaluators --model-config-id <uuid>` 默认只规划三个 Dataset evaluator，显式 `--apply` 才会
   创建或更新远端规则且不会运行 Judge；
   `--preflight` 校验真实 Provider 与 LangSmith exporter，`--run` 通过生产 `AgentGraphRuntime` 创建原生
   LangSmith Experiment，并等待 Runtime/LLM 子树和三项 Feedback 完整。preflight/run 都要求
   `--allow-real-provider` 与 `--allow-runtime-side-effects`。流程与 schema 见
-  [`evals/README.md`](../evals/README.md#并行-langsmith-桥)。
+  [`evals/README.md`](../evals/README.md#3-日常异常到-runtime-regression-的唯一闭环)。
 - `scripts/run_langsmith_workflow_regressions.py`：M3 Durable Workflow 原生 LangSmith Experiment
   入口。`--inspect` 只在本地检查 typed Example、四项 Feedback 和 operator evidence 契约，不创建
   LangSmith client；`--preflight`/`--run` 必须显式允许 real Provider 与 Workflow 副作用（兼容

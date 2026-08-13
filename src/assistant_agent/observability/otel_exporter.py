@@ -19,20 +19,14 @@ from typing import Any, Literal, Protocol
 from urllib.parse import urlparse
 
 from assistant_agent.observability.otel_mapping import (
-    OtelTraceProjectionContext,
     OtelSpanSpec,
     build_late_text_otel_span_spec,
     build_text_otel_span_specs,
-    langfuse_trace_id,
-    text_otel_projection_context,
+    w3c_trace_id,
 )
 from assistant_agent.observability.trace_content_policy import (
     local_trace_content_enabled,
     local_memory_trace_content_enabled,
-)
-from assistant_agent.observability.langfuse_config import (
-    default_langfuse_trace_endpoint,
-    langfuse_authorization_headers,
 )
 from assistant_agent.providers.provider_errors import sanitize_error_message
 from assistant_agent.observability.trace_store import TraceEvent, redact_trace_event
@@ -91,7 +85,7 @@ class OtlpHttpTextExporterConfig:
                 OTEL_EXPORTER_OTLP_TRACES_HEADERS_ENV,
                 OTEL_EXPORTER_OTLP_HEADERS_ENV,
             )
-        ) or langfuse_authorization_headers(values)
+        )
         return cls(
             enabled=enabled,
             endpoint=endpoint,
@@ -287,14 +281,14 @@ class _OtelSdkSpanBridge:
             elif spec.parent_span_id:
                 parent_context = _otel_trace_parent_context(
                     self._trace_module,
-                    trace_id=langfuse_trace_id(spec.trace_id),
+                    trace_id=w3c_trace_id(spec.trace_id),
                     parent_span_id=spec.parent_span_id,
                 )
             else:
                 parent_context = self._context_module.Context()
             with self._id_generator.use_ids(
                 span_id=_otel_spec_span_id(spec.span_id),
-                trace_id=int(langfuse_trace_id(spec.trace_id), 16),
+                trace_id=int(w3c_trace_id(spec.trace_id), 16),
             ):
                 span = self._tracer.start_span(
                     spec.name,
@@ -578,11 +572,7 @@ class TextOtelTraceObserver:
         self._exported_run_ids: set[str] = set()
         self._dropped_run_ids: set[str] = set()
         self._pending_late_events: dict[str, list[TraceEvent]] = {}
-        self._projection_context_by_run: dict[
-            str, OtelTraceProjectionContext
-        ] = {}
         self._runtime_root_span_id_by_run: dict[str, str] = {}
-        self._projection_required_run_ids: set[str] = set()
         self._suppressed_run_ids: set[str] = set()
         self._errors: list[str] = []
         self._exported_run_count = 0
@@ -643,17 +633,9 @@ class TextOtelTraceObserver:
             with self._lock:
                 if event.run_id in self._suppressed_run_ids:
                     return
-                projection_context = self._projection_context_by_run.get(
-                    event.run_id
-                )
                 runtime_parent_span_id = self._runtime_root_span_id_by_run.get(
                     event.run_id
                 )
-                projection_required = (
-                    event.run_id in self._projection_required_run_ids
-                )
-            if projection_required and projection_context is None:
-                return
             memory_content = None
             if (
                 self.include_memory_content
@@ -670,7 +652,6 @@ class TextOtelTraceObserver:
             span = build_late_text_otel_span_spec(
                 event,
                 memory_content=memory_content,
-                projection_context=projection_context,
                 runtime_parent_span_id=runtime_parent_span_id,
             )
             self.exporter.export([span])
@@ -740,10 +721,6 @@ class TextOtelTraceObserver:
             self._dropped_run_count += 1
 
     def _export_events(self, events: list[TraceEvent]) -> None:
-        projection_context = text_otel_projection_context(events)
-        if projection_context is not None:
-            with self._lock:
-                self._projection_required_run_ids.add(events[0].run_id)
         try:
             conversation = self._trace_conversation(events) if self.include_content else None
             memory_content = (
@@ -771,10 +748,6 @@ class TextOtelTraceObserver:
             return
         with self._lock:
             self._runtime_root_span_id_by_run[events[0].run_id] = spans[0].span_id
-            if projection_context is not None:
-                self._projection_context_by_run[events[0].run_id] = (
-                    projection_context
-                )
             self._exported_run_count += 1
 
     def _trace_conversation(self, events: list[TraceEvent]):
@@ -894,7 +867,7 @@ def _trace_endpoint_from_env(values: Mapping[str, str]) -> str | None:
         return trace_endpoint
     generic_endpoint = _first_non_empty(values, OTEL_EXPORTER_OTLP_ENDPOINT_ENV)
     if generic_endpoint is None:
-        return default_langfuse_trace_endpoint(values)
+        return None
     if generic_endpoint.rstrip("/").endswith("/v1/traces"):
         return generic_endpoint
     return f"{generic_endpoint.rstrip('/')}/v1/traces"

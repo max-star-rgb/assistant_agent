@@ -31,14 +31,14 @@ def _terminal_event() -> TraceEvent:
     )
 
 
-def test_server_store_leaves_langsmith_to_native_tracing(
+def test_server_store_keeps_only_local_ledger_and_generic_otel(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ) -> None:
     monkeypatch.setattr(
         persistence,
         "create_text_otel_trace_observer_from_env",
-        lambda: "langfuse",
+        lambda: "generic-otel",
     )
     monkeypatch.setattr(
         persistence,
@@ -46,16 +46,10 @@ def test_server_store_leaves_langsmith_to_native_tracing(
         lambda: pytest.fail("native tracing owns LangSmith"),
         raising=False,
     )
-    monkeypatch.setattr(
-        persistence,
-        "create_langfuse_score_trace_observer_from_env",
-        lambda: None,
-    )
-
     store = persistence.create_server_trace_store(path=tmp_path / "trace.jsonl")
     try:
         store.append(_terminal_event())
-        assert _observer_labels(store) == ["langfuse"]
+        assert _observer_labels(store) == ["generic-otel"]
         assert store.list_by_run("run-1") == [_terminal_event()]
     finally:
         persistence.close_trace_store(store)

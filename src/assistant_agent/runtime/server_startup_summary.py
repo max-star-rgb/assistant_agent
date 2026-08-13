@@ -99,7 +99,7 @@ def build_server_startup_report(
 
     values = os.environ if env is None else env
     config = runtime.config
-    dependencies = collect_startup_dependency_statuses(config, env=values)
+    dependencies = collect_startup_dependency_statuses(config)
     tools = _tool_inventory(runtime.registry)
     workers = _worker_statuses(app, config)
     unavailable = any(item.state == "unavailable" for item in dependencies)
@@ -196,7 +196,7 @@ def format_server_startup_report(
             "",
             "Observability:",
             f"  Runtime ledger:  {report.runtime_trace_path or 'in-memory only'}",
-            f"  Runtime export:  Langfuse {_langfuse_export_state(report.dependencies)}",
+            "  Runtime export:  OTLP configured by environment",
             f"  Gateway events:  {report.gateway_event_path}",
             f"  Delivery audit:  {report.delivery_audit_path}",
             f"  Gateway log:     {report.file_level} -> {report.log_dir.rstrip('/')}/gateway.log",
@@ -382,15 +382,6 @@ def _format_workers(workers: tuple[WorkerStatus, ...]) -> str:
 
 def _detail_suffix(detail: str | None) -> str:
     return f" ({detail})" if detail else ""
-
-
-def _langfuse_export_state(
-    dependencies: tuple[StartupDependencyStatus, ...],
-) -> str:
-    for dependency in dependencies:
-        if dependency.name == "Langfuse" and dependency.detail == "export enabled":
-            return "enabled"
-    return "disabled"
 
 
 def _enabled(value: bool) -> str:

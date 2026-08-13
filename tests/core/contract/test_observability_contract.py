@@ -20,7 +20,6 @@ from assistant_agent.observability import trace_persistence
 from assistant_agent.observability.agent_service_delivery import (
     AgentServiceDeliveryRegistry,
 )
-from assistant_agent.observability.langsmith_config import LangSmithConfig
 from assistant_agent.observability.otel_mapping import build_text_otel_span_specs
 from assistant_agent.observability.trace_persistence import (
     close_trace_store,
@@ -352,7 +351,6 @@ def test_server_trace_store_reads_persisted_trace_after_recreation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("ASSISTANT_AGENT_OTEL_EXPORT_ENABLED", "false")
-    monkeypatch.setenv("ASSISTANT_AGENT_LANGFUSE_SCORE_ENABLED", "false")
     trace_path = tmp_path / "trace.jsonl"
     first_store = create_server_trace_store(path=trace_path)
     first_store.append(
@@ -379,7 +377,7 @@ def test_server_trace_store_reads_persisted_trace_after_recreation(
 
 
 @pytest.mark.core_invariant("OBS-001")
-def test_server_trace_store_does_not_rebuild_langsmith_otel_tree(
+def test_server_trace_store_uses_only_local_ledger_and_generic_otel(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -395,21 +393,6 @@ def test_server_trace_store_does_not_rebuild_langsmith_otel_tree(
         "create_text_otel_trace_observer_from_env",
         lambda: generic_otel_observer,
     )
-    monkeypatch.setattr(
-        trace_persistence,
-        "create_langfuse_score_trace_observer_from_env",
-        lambda: None,
-    )
-    monkeypatch.setattr(
-        LangSmithConfig,
-        "from_env",
-        classmethod(
-            lambda cls, *args, **kwargs: pytest.fail(
-                "native tracing owns LangSmith"
-            )
-        ),
-    )
-
     store = create_server_trace_store(path=tmp_path / "trace.jsonl")
     try:
         store.append(
@@ -661,23 +644,13 @@ def test_context_preflight_metadata_does_not_duplicate_generation_usage() -> Non
         span.attributes for span in spans if span.name == "llm.chat"
     )
 
-    assert context_attributes[
-        "langfuse.observation.metadata.assistant_agent.compiled_input_tokens"
-    ] == 120
-    assert context_attributes[
-        "langfuse.observation.metadata.assistant_agent.effective_input_limit"
-    ] == 1_000
-    assert context_attributes[
-        "langfuse.observation.metadata.assistant_agent.context_token_usage_ratio"
-    ] == 0.12
-    assert context_attributes[
-        "langfuse.observation.metadata.assistant_agent.tokenizer_id"
-    ] == "tokenizer-sentinel"
-    assert context_attributes[
-        "langfuse.observation.metadata.assistant_agent.token_accounting_status"
-    ] == "available"
-    assert "langfuse.observation.usage_details" not in context_attributes
-    assert json.loads(llm_attributes["langfuse.observation.usage_details"]) == {
+    assert context_attributes["assistant_agent.compiled_input_tokens"] == 120
+    assert context_attributes["assistant_agent.effective_input_limit"] == 1_000
+    assert context_attributes["assistant_agent.context_token_usage_ratio"] == 0.12
+    assert context_attributes["assistant_agent.tokenizer_id"] == "tokenizer-sentinel"
+    assert context_attributes["assistant_agent.token_accounting_status"] == "available"
+    assert "gen_ai.usage.details" not in context_attributes
+    assert json.loads(llm_attributes["gen_ai.usage.details"]) == {
         "input": 125,
         "output": 25,
         "total": 150,

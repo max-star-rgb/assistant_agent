@@ -19,9 +19,6 @@ from assistant_agent.api.rendering_3d_callback import router as rendering_3d_cal
 from assistant_agent.api import routes_agent
 from assistant_agent.api.routes_a2a import router as a2a_router
 from assistant_agent.api.routes_agent import router as agent_router
-from assistant_agent.api.routes_eval_experiments import (
-    router as eval_experiments_router,
-)
 from assistant_agent.api.routes_tasks import router as tasks_router
 from assistant_agent.api.routes_workflows import router as workflows_router
 from assistant_agent.api.routes_skills import router as skills_router
@@ -86,7 +83,6 @@ def create_app() -> FastAPI:
     GENERATED_ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
     app.mount("/artifacts/generated", StaticFiles(directory=GENERATED_ARTIFACT_DIR), name="generated_artifacts")
     app.include_router(agent_router)
-    app.include_router(eval_experiments_router)
     app.include_router(tasks_router)
     app.include_router(workflows_router)
     app.include_router(skills_router)

@@ -141,8 +141,8 @@ def test_vlm_generation_uses_local_input_overlay_for_prompt_and_context() -> Non
         "memory_context_present": False,
         "content_exported": True,
     }
-    assert json.loads(vlm.attributes["langfuse.observation.input"]) == expected_input
-    assert json.loads(root.attributes["langfuse.trace.input"]) == expected_input
+    assert json.loads(vlm.attributes["assistant_agent.observation.input"]) == expected_input
+    assert json.loads(root.attributes["assistant_agent.trace.input"]) == expected_input
 
 
 def test_vlm_input_content_export_is_enabled_only_for_loopback() -> None:
@@ -158,7 +158,7 @@ def test_vlm_input_content_export_is_enabled_only_for_loopback() -> None:
         {
             "ASSISTANT_AGENT_OTEL_EXPORT_ENABLED": "true",
             "ASSISTANT_AGENT_OTEL_EXPORT_ENDPOINT": (
-                "https://langfuse.example.com/api/public/otel/v1/traces"
+                "https://collector.example.com/v1/traces"
             ),
         }
     )

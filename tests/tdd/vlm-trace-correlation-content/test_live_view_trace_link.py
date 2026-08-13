@@ -15,7 +15,6 @@ from assistant_agent.media.video.semantic_store_pool import (
 from assistant_agent.media.video.video_adapter import FakeRealtimeVisionAdapter
 from assistant_agent.media.video.video_context import VideoFrame
 from assistant_agent.observability.trace_store import InMemoryTraceStore
-from assistant_agent.observability.langfuse_config import local_langfuse_trace_url
 from assistant_agent.observability.otel_mapping import build_text_otel_span_specs
 from assistant_agent.runtime.requests import UserRequest
 from assistant_agent.runtime.state import AgentState
@@ -26,28 +25,6 @@ from assistant_agent.tools.plugins.builtin.media_inspection.tool import (
     RealtimeVideoObserveTool,
 )
 from assistant_agent.tools.registry import ToolRegistry
-
-
-def test_local_langfuse_trace_url_defaults_project_and_rejects_remote_host() -> None:
-    trace_id = "b" * 32
-    assert local_langfuse_trace_url(
-        trace_id,
-        {"LANGFUSE_HOST": "http://127.0.0.1:3000"},
-    ) == (
-        "http://127.0.0.1:3000/project/assistant-agent-local-project/traces/"
-        + trace_id
-    )
-    assert (
-        local_langfuse_trace_url(
-            trace_id,
-            {
-                "LANGFUSE_HOST": "https://cloud.langfuse.com",
-                "ASSISTANT_AGENT_LANGFUSE_PROJECT_ID": "remote-project",
-            },
-        )
-        is None
-    )
-    assert local_langfuse_trace_url("not-a-trace-id", {}) is None
 
 
 def test_background_record_retains_its_own_trace_link(tmp_path: Path) -> None:
@@ -122,20 +99,14 @@ async def _assert_background_record_trace_link(tmp_path: Path) -> None:
         if item.attributes.get("gen_ai.tool.name") == "realtime_video_observe"
     )
     background_output = json.loads(
-        background_tool.attributes["langfuse.observation.output"]
+        background_tool.attributes["assistant_agent.observation.output"]
     )
     assert "source_vision_trace_url" not in background_output
 
 
 def test_live_view_tool_projects_exact_source_trace_link(
     tmp_path: Path,
-    monkeypatch,
 ) -> None:
-    monkeypatch.setenv("LANGFUSE_HOST", "http://localhost:3000")
-    monkeypatch.setenv(
-        "ASSISTANT_AGENT_LANGFUSE_PROJECT_ID",
-        "assistant-agent-local-project",
-    )
     evidence = tmp_path / "source-frame.jpg"
     evidence.write_bytes(b"offline-frame-sentinel")
     pool = SessionVisualSemanticStorePool(root=tmp_path / "semantic-pool")
@@ -204,23 +175,15 @@ def test_live_view_tool_projects_exact_source_trace_link(
         for item in specs
         if item.attributes.get("gen_ai.tool.name") == LIVE_VIEW_INSPECT_TOOL_NAME
     )
-    output = json.loads(tool.attributes["langfuse.observation.output"])
+    output = json.loads(tool.attributes["assistant_agent.observation.output"])
     assert output["source_vision_trace_id"] == "a" * 32
-    assert output["source_vision_trace_url"] == (
-        "http://localhost:3000/project/assistant-agent-local-project/traces/"
-        + "a" * 32
-    )
+    assert "source_vision_trace_url" not in output
     assert output["source_vlm_span_id"] == "vlm-source-span"
     assert output["source_visual_record_id"] == "visual-record-7"
     assert output["snapshot_sequence"] == 7
     assert tool.attributes[
-        "langfuse.observation.metadata.assistant_agent.source_vision_trace_id"
+        "assistant_agent.source_vision_trace_id"
     ] == "a" * 32
-    assert tool.attributes[
-        "langfuse.observation.metadata.assistant_agent.source_vision_trace_url"
-    ] == (
-        "http://localhost:3000/project/assistant-agent-local-project/traces/"
-        + "a" * 32
-    )
+    assert "assistant_agent.source_vision_trace_url" not in tool.attributes
     assert "桌面上有一个蓝色杯子。" not in str(tool.attributes)
     assert str(evidence) not in str(tool.attributes)

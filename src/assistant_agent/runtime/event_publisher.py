@@ -29,12 +29,6 @@ from assistant_agent.runtime.product_event_projector import (
     new_runtime_product_fact_id,
 )
 from assistant_agent.runtime.state import AgentState
-from assistant_agent.observability.trace_context import (
-    RuntimeExperimentTraceLink,
-    RuntimeExportTraceContext,
-)
-
-
 RunTerminalStatus = Literal["completed", "failed", "cancelled"]
 AssistantStepTraceType = Literal["assistant_output", "tool_observation"]
 
@@ -50,8 +44,6 @@ class RunStartedFact:
     state: AgentState
     parent_span_id: str | None
     execution_engine: str
-    export_trace_context: RuntimeExportTraceContext | None = None
-    experiment_trace_link: RuntimeExperimentTraceLink | None = None
     occurred_at: datetime = field(default_factory=_now)
 
 
@@ -190,21 +182,6 @@ class RuntimeEventPublisher:
             "execution_engine": fact.execution_engine,
             "assistant_mode": state.request.assistant_mode,
         }
-        if fact.export_trace_context is not None:
-            attributes.update(fact.export_trace_context.model_dump(mode="python"))
-        if fact.experiment_trace_link is not None:
-            link = fact.experiment_trace_link
-            attributes.update(
-                {
-                    "evaluation_backend": link.backend,
-                    "trace_id": link.trace_id,
-                    "parent_run_id": link.parent_run_id,
-                    "experiment_id": link.experiment_id,
-                    "experiment_project_name": link.project_name,
-                    "reference_example_id": link.reference_example_id,
-                    "parent_dotted_order": link.parent_dotted_order,
-                }
-            )
         self._append_trace(
             TraceEvent(
                 trace_id=state.trace_id,

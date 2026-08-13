@@ -26,9 +26,6 @@ if str(SRC_ROOT) not in sys.path:
 import uvicorn
 
 from assistant_agent.gateway.observability import GatewayLifecycleEvent
-from assistant_agent.evaluation.remote_run_control import (
-    start_remote_eval_console,
-)
 from assistant_agent.runtime.assistant_run_service import load_env_file
 from assistant_agent.observability.operational_logging import (
     DEFAULT_GATEWAY_EVENT_PATH,
@@ -142,12 +139,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--allow-local-provider-protocol-capture",
         action="store_true",
-        help="Capture selected Provider protocol fields for local Langfuse debugging.",
+        help="Capture selected Provider protocol fields for local diagnostics.",
     )
     parser.add_argument(
         "--allow-local-memory-trace-content",
         action="store_true",
-        help="Show Mem0 change text only in a loopback local Langfuse export.",
+        help="Allow Mem0 change text only in a loopback local OTLP export.",
     )
     parser.add_argument("--env-file", default=".env", help="Env file to load before starting.")
     parser.add_argument("--no-env-file", action="store_true", help="Do not load a dotenv file before starting.")
@@ -339,7 +336,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     _log_gateway_server_starting(args, log_dir=log_dir, gateway_event_path=gateway_event_path)
 
     print(f"assistant_agent  STARTING ({args.host}:{args.port})", flush=True)
-    start_remote_eval_console()
     _run_uvicorn(args)
     return 0
 

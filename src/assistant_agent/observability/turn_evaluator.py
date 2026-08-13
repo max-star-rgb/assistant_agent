@@ -67,29 +67,29 @@ class TurnDiagnostic(BaseModel):
     diagnostic_flags: tuple[str, ...] = ()
     suggested_actions: tuple[str, ...] = ()
 
-    def langfuse_trace_metadata(self) -> dict[str, Any]:
-        """Return safe Langfuse trace metadata attributes."""
+    def otel_trace_attributes(self) -> dict[str, Any]:
+        """Return safe platform-neutral OpenTelemetry attributes."""
 
         metadata: dict[str, Any] = {
-            "langfuse.trace.metadata.execution_status": self.execution_status,
-            "langfuse.trace.metadata.delivery_status": self.delivery_status,
-            "langfuse.trace.metadata.task_outcome": self.task_outcome,
-            "langfuse.trace.metadata.text_ux_status": self.text_ux_status,
-            "langfuse.trace.metadata.clarification_too_late": self.clarification_too_late,
-            "langfuse.trace.metadata.unnecessary_tool_calls": self.unnecessary_tool_calls,
+            "assistant_agent.execution_status": self.execution_status,
+            "assistant_agent.delivery_status": self.delivery_status,
+            "assistant_agent.task_outcome": self.task_outcome,
+            "assistant_agent.text_ux_status": self.text_ux_status,
+            "assistant_agent.clarification_too_late": self.clarification_too_late,
+            "assistant_agent.unnecessary_tool_calls": self.unnecessary_tool_calls,
         }
         if self.prerequisites:
-            metadata["langfuse.trace.metadata.prerequisites"] = list(self.prerequisites)
+            metadata["assistant_agent.prerequisites"] = list(self.prerequisites)
         if self.unresolved_prerequisites:
-            metadata["langfuse.trace.metadata.unresolved_prerequisites"] = list(self.unresolved_prerequisites)
+            metadata["assistant_agent.unresolved_prerequisites"] = list(self.unresolved_prerequisites)
         if self.location_source:
-            metadata["langfuse.trace.metadata.location_source"] = self.location_source
+            metadata["assistant_agent.location_source"] = self.location_source
         if self.context_peak_ratio is not None:
-            metadata["langfuse.trace.metadata.context_peak_ratio"] = self.context_peak_ratio
+            metadata["assistant_agent.context_peak_ratio"] = self.context_peak_ratio
         if self.llm_summary.max_overhead_ms is not None:
-            metadata["langfuse.trace.metadata.llm_max_overhead_ms"] = self.llm_summary.max_overhead_ms
+            metadata["assistant_agent.llm_max_overhead_ms"] = self.llm_summary.max_overhead_ms
         if self.first_text_latency_ms is not None:
-            metadata["langfuse.trace.metadata.first_text_latency_ms"] = self.first_text_latency_ms
+            metadata["assistant_agent.first_text_latency_ms"] = self.first_text_latency_ms
         return metadata
 
 

@@ -220,10 +220,10 @@ def test_background_vision_batch_uses_independent_trace_identity() -> None:
     vlm = next(span for span in specs if span.name == "vlm.infer")
     assert root.name == "vision.runtime"
     assert root.parent_span_id is None
-    assert root.attributes["langfuse.trace.name"] == "vision.observation"
+    assert root.attributes["langsmith.trace.name"] == "vision.observation"
     assert root.attributes["assistant_agent.modality"] == "vision"
     assert vlm.parent_span_id == "tool-span"
-    assert vlm.attributes["langfuse.observation.type"] == "generation"
+    assert vlm.attributes["assistant_agent.observation.type"] == "generation"
 
 
 def test_background_vision_summary_flushes_otel_batch() -> None:
@@ -234,7 +234,7 @@ def test_background_vision_summary_flushes_otel_batch() -> None:
         observer.on_trace_event(event)
 
     assert len(exporter.batches) == 1
-    assert exporter.batches[0][0].attributes["langfuse.trace.name"] == "vision.observation"
+    assert exporter.batches[0][0].attributes["langsmith.trace.name"] == "vision.observation"
 
 
 def test_local_visual_tool_projects_safe_result_and_semantic_observation() -> None:
@@ -331,9 +331,9 @@ def test_local_visual_tool_projects_safe_result_and_semantic_observation() -> No
     tool_span = next(span for span in spans if span.name == "tool.execute")
     observation = next(span for span in spans if span.name == "tool.observation")
 
-    tool_output = json.loads(tool_span.attributes["langfuse.observation.output"])
+    tool_output = json.loads(tool_span.attributes["assistant_agent.observation.output"])
     observation_output = json.loads(
-        observation.attributes["langfuse.observation.output"]
+        observation.attributes["assistant_agent.observation.output"]
     )
     assert tool_output["data"] == {
         "summary": "visual-safe-summary",
@@ -424,7 +424,7 @@ async def _assert_realtime_observer_vlm_trace(tmp_path: Path) -> None:
     assert record.summary not in run_payload
     specs = build_text_otel_span_specs(trace_store.list_by_run(summary.run_id))
     vlm_span = next(item for item in specs if item.name == "vlm.infer")
-    vlm_input = json.loads(vlm_span.attributes["langfuse.observation.input"])
+    vlm_input = json.loads(vlm_span.attributes["assistant_agent.observation.input"])
     assert vlm_input == {
         "operation": "vlm.infer",
         "media_kind": "live_view",

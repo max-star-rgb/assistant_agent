@@ -221,10 +221,10 @@ observer。VIDEO 消息的 `userNumber` 必须等于握手 `number`，不一致�
 - 每个媒体 WebSocket 拥有一个连接级逻辑 AgentSession（本地
   `GatewaySessionManager/GatewaySessionService`）；连接清理会取消 turn 并销毁该
   AgentSession，但不会关闭进程共享的 `AssistantRuntimeApp/AgentGraphRuntime` 执行引擎。
-- Langfuse 的 `langfuse.session.id` 使用这个内部 `agent-service-*` AgentSession id，
-  并标记 `session_scope=agent_service_connection`；`langfuse.user.id` 使用
-  `userNumber`。外层 vendor `sessionId`、`chatIndex`、Gateway `turn_id/run_id` 和
-  delivery id 仍是不同的关联标识，不作为 Langfuse Session 分组键。
+- trace 的 `session.id` 使用这个内部 `agent-service-*` AgentSession id，并标记
+  `session_scope=agent_service_connection`；`enduser.id` 使用内部 identity。外层 vendor
+  `sessionId`、`chatIndex`、Gateway `turn_id/run_id` 和 delivery id 仍是不同的关联标识，
+  不作为 Session 分组键。
 - chat run 在独立任务中执行，WebSocket 主循环会继续接收并 ACK 后续媒体消息。
 - 若 WebSocket 在 chat run 执行期间异常断开，Agent 会记录 ERROR 级安全日志，
   并对本轮 Gateway run 发送 `run.cancel`（`source=gateway_disconnect`、
@@ -1118,8 +1118,8 @@ pytest。只有同时选择 real provider mode、显式配置 Qwen vision provid
 
 ### 7.1 单轮耗时诊断
 
-`scripts/run_server.py` 默认启用非阻塞 trace 持久化。收到安全日志中的 `trace_id` 后，先在 Langfuse
-中按该 ID 查看 `assistant.turn` 的 observation、status 和 latency；若远端缺失，再按同一 ID 检索
+`scripts/run_server.py` 默认启用非阻塞 trace 持久化。收到安全日志中的 `trace_id` 后，先在 LangSmith
+中按该 ID 查看 actual graph 的 node、status 和 latency；若远端缺失，再按同一 ID 检索
 `.data/trace_ledger/*.jsonl`、`.data/gateway_events.jsonl` 和 `.data/agent_service_delivery.jsonl`。
 入口与 Assistant Runtime 共享同一个 `run_id`，LLM/工具事件使用该 `run_id` 与独立 `trace_id` 关联。
 最大关键路径阶段是本轮 bottleneck，常见慢点映射如下：
