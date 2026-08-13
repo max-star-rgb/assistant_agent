@@ -300,6 +300,8 @@ def test_planner_child_is_native_subgraph_and_admission_is_deterministic(tmp_pat
     ).nodes
     assert len(adapter.requests) == 1
     assert adapter.requests[0].tools == []
+    assert adapter.requests[0].response_format == {"type": "json_object"}
+    assert adapter.requests[0].max_tokens == 8_192
     assert "workflow_plan_v2" in adapter.requests[0].user_query
     assert '"workflow_plan"' in adapter.requests[0].user_query
     assert ProbeTool.name not in adapter.requests[0].user_query

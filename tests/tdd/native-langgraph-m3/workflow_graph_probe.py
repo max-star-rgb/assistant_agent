@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import threading
 from datetime import datetime, timedelta, timezone
 
@@ -154,6 +155,12 @@ class WorkerAdapter:
                                 "outcome": "completed",
                                 "summary": f"completed {node_id}",
                                 "content": f"deliverable {node_id}",
+                                "acceptance_evidence": [
+                                    {
+                                        "criterion_id": f"criterion_{node_id}",
+                                        "evidence": "bounded deliverable",
+                                    }
+                                ],
                             }
                         }
                     ),
@@ -176,6 +183,12 @@ class VerifierAdapter:
     def chat(self, request):
         self.requests.append(request)
         payload = self.responses.pop(0)
+        if payload.get("status") == "verified" and "verified_constraint_ids" not in payload:
+            matched = re.search(r'"constraint_ids":\s*(\[[^]]*\])', request.user_query)
+            payload = {
+                **payload,
+                "verified_constraint_ids": json.loads(matched.group(1)) if matched else [],
+            }
         return ChatResult(
             provider=self.provider,
             model=self.model,

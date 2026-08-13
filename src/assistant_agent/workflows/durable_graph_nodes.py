@@ -140,6 +140,7 @@ def _native_profile_prompt(
         "node_id": assignment.node_id,
         "objective": assignment.objective,
         "constraints": assignment.constraints,
+        "constraint_ids": assignment.constraint_ids,
         "acceptance_contract": assignment.acceptance_contract.model_dump(mode="json"),
         "context_manifest": manifest,
         "repair_candidate_ids": repair_candidate_ids,
@@ -253,6 +254,7 @@ def worker_child_runtime_context(
 
 def _control_from_child(
     child: AssistantTurnState,
+    assignment: WorkflowProfileAssignment,
 ) -> tuple[WorkflowWorkerControl, str]:
     projected = profile_output_adapter(child)
     response = projected.response
@@ -278,6 +280,14 @@ def _control_from_child(
         if not isinstance(raw, Mapping):
             raise ValueError("worker control must be an object")
         control = WorkflowWorkerControl.model_validate_json(json.dumps(raw))
+        evidence_ids = tuple(item.criterion_id for item in control.acceptance_evidence)
+        expected_ids = tuple(
+            item.criterion_id for item in assignment.acceptance_contract.criteria
+        )
+        if len(evidence_ids) != len(set(evidence_ids)) or set(evidence_ids) != set(
+            expected_ids
+        ):
+            raise ValueError("worker acceptance evidence coverage is invalid")
         return control, control.content
     raise ValueError("worker response must contain strict workflow_control")
 
@@ -289,7 +299,7 @@ def parse_branch_control_node(
     assignment = _assignment(state)
     child = cast(AssistantTurnState, state["worker_child_state"])
     try:
-        control, content = _control_from_child(child)
+        control, content = _control_from_child(child, assignment)
     except (TypeError, ValueError, ValidationError):
         control = WorkflowWorkerControl(
             outcome="failed",
@@ -459,6 +469,12 @@ def parse_verifier_control_node(
         control = WorkflowVerifierControl.model_validate_json(
             json.dumps(envelope["workflow_verification"])
         )
+        if control.status == "verified" and (
+            len(control.verified_constraint_ids)
+            != len(set(control.verified_constraint_ids))
+            or set(control.verified_constraint_ids) != set(assignment.constraint_ids)
+        ):
+            raise ValueError("verifier constraint coverage is invalid")
     except (TypeError, ValueError, json.JSONDecodeError, ValidationError):
         control = WorkflowVerifierControl(
             status="failed",
@@ -563,6 +579,12 @@ def _branch_assignment(
         if node.node_id in binding.owner_node_ids
         or node.node_id == binding.verifier_node_id
     )
+    constraint_ids = tuple(
+        binding.constraint_id
+        for binding in plan.constraint_bindings
+        if node.node_id in binding.owner_node_ids
+        or node.node_id == binding.verifier_node_id
+    )
     return WorkflowProfileAssignment.create(
         profile="verifier" if is_verifier else "worker",
         user_id=str(identity_map["user_id"]),
@@ -576,6 +598,7 @@ def _branch_assignment(
         trace_id=f"{state['invocation_trace_id']}:{node.node_id}:g{generation}",
         objective=node.objective,
         constraints=constraints,
+        constraint_ids=constraint_ids,
         input_artifact_refs=input_artifact_refs,
         acceptance_contract=node.acceptance_contract,
         capability_refs=(),
@@ -945,6 +968,9 @@ def apply_branch_resumes_node(
             run_id=f"{invocation_run_id}:{assignment.node_id}:g{generation}",
             trace_id=f"{invocation_run_id}:{assignment.node_id}:g{generation}",
             constraints=tuple((*assignment.constraints, resume_constraint)),
+            constraint_ids=tuple(
+                (*assignment.constraint_ids, f"workflow_resume_{generation}")
+            ),
             resume_value=resume_value,
             resume_of_action_ref=action_ref,
         )

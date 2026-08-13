@@ -115,6 +115,10 @@ def prepare_planner_profile_node(
         trace_id=parent["invocation_trace_id"],
         objective=submission.objective,
         constraints=submission.constraints,
+        constraint_ids=tuple(
+            f"trusted_constraint_{index}"
+            for index, _ in enumerate(submission.constraints)
+        ),
         input_artifact_refs=submission.seed_artifact_refs,
         acceptance_contract=PersistedWorkflowStepAcceptanceContract(
             schema_version="workflow_step_acceptance_v2",

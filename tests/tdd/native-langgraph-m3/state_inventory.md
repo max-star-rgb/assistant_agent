@@ -4,7 +4,7 @@
 
 | channel / DTO | checkpoint 必需性 | 上限 | 恢复消费者 |
 | --- | --- | --- | --- |
-| `graph_name/graph_version/state_schema_version` | 必需；拒绝不兼容 checkpoint | 固定 `DurableWorkflowGraph/3/1` | graph app、state validator |
+| `graph_name/graph_version/state_schema_version` | 必需；拒绝不兼容 checkpoint | 固定 `DurableWorkflowGraph/3/2` | graph app、state validator |
 | `execution_engine` | 必需；graph 只接受 `langgraph_v3` | 固定 literal | graph app、legacy claim barrier |
 | `workflow_id/workflow_type/identity` | 必需的 typed owner 与稳定 thread/turn-origin 事实；禁止从 workflow_id 反推 | user/session/agent/thread/turn-origin 单项 512；type 固定 `deep_research` | app、branch context factory、owner/thread fail-closed 校验 |
 | `workflow_thread_id/invocation_run_id/invocation_trace_id` | thread 稳定；run/trace 属于当前 invoke/resume，不与 ingress turn 混用 | 单项 512 | checkpointer config、child invocation identity、trace metadata |

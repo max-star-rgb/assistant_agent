@@ -34,6 +34,7 @@ from assistant_agent.workflows.graph_state import (
     PersistedWorkflowIdentity,
     PersistedWorkflowStepAcceptanceContract,
     WorkflowBranchResult,
+    WorkflowGraphStateCompatibilityError,
     WorkflowGraphStateConflict,
     WorkflowProfileAssignment,
     WorkflowResultConflict,
@@ -205,6 +206,7 @@ def _assignment(
         trace_id=f"trace-{profile}-{node_id}",
         objective="Collect evidence",
         constraints=("cite evidence",),
+        constraint_ids=("constraint_evidence",),
         input_artifact_refs=("artifact://seed/evidence",),
         acceptance_contract=_acceptance(),
         capability_refs=capability_refs,
@@ -477,7 +479,7 @@ def test_initial_state_rejects_legacy_record_and_preserves_strict_identity() -> 
 
     assert state["graph_name"] == "DurableWorkflowGraph"
     assert state["graph_version"] == "3"
-    assert state["state_schema_version"] == 1
+    assert state["state_schema_version"] == 2
     assert state["execution_engine"] == "langgraph_v3"
     assert state["workflow_id"] == "wf-1"
     assert state["submission"]["inputs"] == {
@@ -485,6 +487,10 @@ def test_initial_state_rejects_legacy_record_and_preserves_strict_identity() -> 
         "research_questions": ["How does recovery work?"],
     }
     assert validate_durable_workflow_state(state) == state
+    legacy = dict(state)
+    legacy["state_schema_version"] = 1
+    with pytest.raises(WorkflowGraphStateCompatibilityError):
+        validate_durable_workflow_state(legacy)
 
 
 @pytest.mark.parametrize(
@@ -550,6 +556,16 @@ def test_assignment_is_checkpoint_safe_and_detects_tampering() -> None:
     with pytest.raises(ValidationError, match="assignment_ref"):
         WorkflowProfileAssignment.model_validate(
             {**assignment.model_dump(mode="python"), "objective": "tampered"}
+        )
+
+    with pytest.raises(ValidationError, match="constraint ids"):
+        WorkflowProfileAssignment.create(
+            **{
+                **assignment.model_dump(
+                    mode="python", exclude={"assignment_ref", "constraint_ids"}
+                ),
+                "constraint_ids": (),
+            }
         )
 
 

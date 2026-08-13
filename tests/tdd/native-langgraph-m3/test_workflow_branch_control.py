@@ -13,7 +13,12 @@ from assistant_agent.workflows.graph_state import WorkflowWorkerControl
     "control",
     [
         WorkflowWorkerControl(
-            outcome="completed", summary="done", content="deliverable"
+            outcome="completed",
+            summary="done",
+            content="deliverable",
+            acceptance_evidence=(
+                {"criterion_id": "criterion_a", "evidence": "delivered"},
+            ),
         ),
         WorkflowWorkerControl(
             outcome="blocked",
@@ -73,6 +78,9 @@ def test_worker_completed_content_fits_profile_response_transport():
         outcome="completed",
         summary="s" * 4_000,
         content="c" * 27_000,
+        acceptance_evidence=(
+            {"criterion_id": "criterion_a", "evidence": "delivered"},
+        ),
     )
     envelope = json.dumps(
         {"workflow_control": control.model_dump(mode="json")},
@@ -86,6 +94,9 @@ def test_worker_completed_content_fits_profile_response_transport():
             outcome="completed",
             summary="done",
             content="c" * 27_001,
+            acceptance_evidence=(
+                {"criterion_id": "criterion_a", "evidence": "delivered"},
+            ),
         )
 
 
@@ -197,6 +208,8 @@ def test_native_worker_request_uses_strict_work_item_control_prompt(tmp_path):
 
         assert len(worker.requests) == 1
         request_text = worker.requests[0].user_query
+        assert worker.requests[0].response_format == {"type": "json_object"}
+        assert worker.requests[0].max_tokens == 8_192
         assert "workflow_control" in request_text
         assert '"outcome"' in request_text
         assert '"completed"' in request_text
@@ -219,6 +232,9 @@ def test_native_completed_control_projects_envelope_content(tmp_path):
                 "outcome": "completed",
                 "summary": "done",
                 "content": "bounded deliverable",
+                "acceptance_evidence": [
+                    {"criterion_id": "criterion_a", "evidence": "delivered"}
+                ],
             }
         }
     )
@@ -370,6 +386,9 @@ def test_native_verifier_prompt_bounds_large_ascii_artifact(tmp_path):
                 "outcome": "completed",
                 "summary": "done",
                 "content": "a" * 20_000,
+                "acceptance_evidence": [
+                    {"criterion_id": "criterion_a", "evidence": "delivered"}
+                ],
             }
         }
     )

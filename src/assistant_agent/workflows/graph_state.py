@@ -33,7 +33,7 @@ from assistant_agent.workflows.models import (
 
 WORKFLOW_GRAPH_NAME = "DurableWorkflowGraph"
 WORKFLOW_GRAPH_VERSION = "3"
-WORKFLOW_STATE_SCHEMA_VERSION = 1
+WORKFLOW_STATE_SCHEMA_VERSION = 2
 WorkflowPhase = Literal[
     "planning",
     "admitted",
@@ -348,10 +348,18 @@ def stable_workflow_action_ref(
     )
 
 
+class WorkflowAcceptanceEvidence(_CheckpointModel):
+    criterion_id: str = Field(pattern=_NODE_ID_PATTERN)
+    evidence: str = Field(min_length=1, max_length=4_000)
+
+
 class WorkflowWorkerControl(_CheckpointModel):
     outcome: Literal["completed", "blocked", "failed"]
     summary: str = Field(max_length=4_000)
     content: str = Field(default="", max_length=27_000)
+    acceptance_evidence: tuple[WorkflowAcceptanceEvidence, ...] = Field(
+        default=(), max_length=64
+    )
     required_fields: tuple[str, ...] = Field(default=(), max_length=32)
     prompt_code: str | None = Field(default=None, max_length=160)
     safe_prompt: str | None = Field(default=None, max_length=2_000)
@@ -364,6 +372,7 @@ class WorkflowWorkerControl(_CheckpointModel):
         )
         if self.outcome == "completed" and (
             not self.content.strip()
+            or not self.acceptance_evidence
             or self.required_fields
             or self.prompt_code
             or self.safe_prompt
@@ -371,7 +380,10 @@ class WorkflowWorkerControl(_CheckpointModel):
         ):
             raise ValueError("completed control cannot carry input or error fields")
         if self.outcome == "blocked" and (
-            not has_prompt or self.error_code is not None or self.content
+            not has_prompt
+            or self.error_code is not None
+            or self.content
+            or self.acceptance_evidence
         ):
             raise ValueError("blocked control requires only complete input fields")
         if self.outcome == "failed" and (
@@ -380,6 +392,7 @@ class WorkflowWorkerControl(_CheckpointModel):
             or self.prompt_code is not None
             or self.safe_prompt is not None
             or self.content
+            or self.acceptance_evidence
         ):
             raise ValueError("failed control requires only error_code")
         if self.outcome == "blocked" and self.safe_prompt is not None:
@@ -409,6 +422,7 @@ class WorkflowVerifierControl(_CheckpointModel):
     prompt_code: str | None = Field(default=None, max_length=160)
     safe_prompt: str | None = Field(default=None, max_length=2_000)
     error_code: str | None = Field(default=None, max_length=160)
+    verified_constraint_ids: tuple[str, ...] = Field(default=(), max_length=64)
 
     @model_validator(mode="after")
     def validate_status_fields(self) -> "WorkflowVerifierControl":
@@ -427,6 +441,10 @@ class WorkflowVerifierControl(_CheckpointModel):
             raise ValueError("failed verifier control requires error_code")
         if self.status != "failed" and self.error_code is not None:
             raise ValueError("only failed verifier control may carry error_code")
+        if self.status == "verified" and not self.verified_constraint_ids:
+            raise ValueError("verified control requires constraint ids")
+        if self.status != "verified" and self.verified_constraint_ids:
+            raise ValueError("only verified control may carry constraint ids")
         return self
 
 
@@ -444,6 +462,7 @@ class WorkflowProfileAssignment(_CheckpointModel):
     trace_id: str = Field(min_length=1, max_length=512)
     objective: str = Field(min_length=1, max_length=10_000)
     constraints: tuple[str, ...] = Field(default=(), max_length=64)
+    constraint_ids: tuple[str, ...] = Field(default=(), max_length=64)
     input_artifact_refs: tuple[str, ...] = Field(default=(), max_length=128)
     acceptance_contract: PersistedWorkflowStepAcceptanceContract
     capability_refs: tuple[str, ...] = Field(default=(), max_length=64)
@@ -476,6 +495,7 @@ class WorkflowProfileAssignment(_CheckpointModel):
             )
         payload.setdefault("resume_value", None)
         payload.setdefault("resume_of_action_ref", None)
+        payload.setdefault("constraint_ids", ())
         payload["assignment_ref"] = _assignment_ref(payload)
         return cls.model_validate_json(
             json.dumps(payload, ensure_ascii=False, default=_json_default)
@@ -490,6 +510,7 @@ class WorkflowProfileAssignment(_CheckpointModel):
             _validate_artifact_ref(ref)
         for values, label in (
             (self.constraints, "constraints"),
+            (self.constraint_ids, "constraint_ids"),
             (self.capability_refs, "capability_refs"),
             (self.explicit_tool_allowlist, "explicit_tool_allowlist"),
             (self.available_tool_names, "available_tool_names"),
@@ -505,6 +526,8 @@ class WorkflowProfileAssignment(_CheckpointModel):
             raise ValueError("resume action refs must match")
         if self.budget_slice.model_calls < 1:
             raise ValueError("workflow branch assignment requires model call budget")
+        if len(self.constraint_ids) != len(self.constraints):
+            raise ValueError("constraint ids must match constraint statements")
         return self
 
 
@@ -815,7 +838,7 @@ def merge_graph_errors(
 class DurableWorkflowState(TypedDict):
     graph_name: Literal["DurableWorkflowGraph"]
     graph_version: Literal["3"]
-    state_schema_version: Literal[1]
+    state_schema_version: Literal[2]
     execution_engine: Literal["langgraph_v3"]
     workflow_id: str
     workflow_type: Literal["deep_research"]
@@ -848,7 +871,7 @@ class DurableWorkflowState(TypedDict):
 class _DurableWorkflowStateModel(_CheckpointModel):
     graph_name: Literal["DurableWorkflowGraph"]
     graph_version: Literal["3"]
-    state_schema_version: Literal[1]
+    state_schema_version: Literal[2]
     execution_engine: Literal["langgraph_v3"]
     workflow_id: str = Field(min_length=1, max_length=512)
     workflow_type: Literal["deep_research"]
