@@ -220,6 +220,35 @@ def test_followup_chat_is_submitted_to_native_enqueue_without_waiting_for_first(
             scripted.released.set()
 
 
+def test_duplicate_chat_index_does_not_create_a_second_native_run() -> None:
+    scripted = _BlockingClient()
+    app.state.agent_server_client_factory = lambda: scripted
+    with TestClient(app) as client:
+        with client.websocket_connect("/agent-service/v1") as ws:
+            ws.send_json(_frame("assistantControl", {"number": "user-1", "callType": "AUDIO"}))
+            ws.receive_json()
+            request = _frame(
+                "chat",
+                {
+                    "chatIndex": "duplicate",
+                    "userNumber": "user-1",
+                    "contents": [
+                        {"speakerNumber": "user-1", "time": "1", "speechContent": "hello"}
+                    ],
+                    "stream": True,
+                },
+            )
+            ws.send_json(request)
+            assert ws.receive_json()["message"] == "chatProgress"
+            assert scripted.started.wait(1)
+            ws.send_json(request)
+            duplicate = ws.receive_json()
+            assert duplicate["message"] == "chat"
+            assert "already submitted" in json.loads(duplicate["body"])["message"]
+            assert len(scripted.runs) == 1
+            scripted.released.set()
+
+
 def test_disconnect_best_effort_cancels_the_active_native_run() -> None:
     scripted = _BlockingClient()
     app.state.agent_server_client_factory = lambda: scripted

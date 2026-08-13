@@ -17,6 +17,7 @@ class MediaConnectionSession:
     client_capabilities: dict[str, bool] = field(default_factory=dict)
     media_capabilities: tuple[str, ...] = ()
     video_ids: list[str] = field(default_factory=list)
+    submitted_chat_indexes: set[str] = field(default_factory=set)
 
     def bind_control(
         self,
@@ -40,6 +41,11 @@ class MediaConnectionSession:
         if existing is not None and existing != run_id:
             raise ValueError("chatIndex already maps to another native run")
         self.active_runs[chat_index] = run_id
+
+    def begin_chat(self, chat_index: str) -> None:
+        if chat_index in self.submitted_chat_indexes:
+            raise ValueError("chatIndex already submitted on this connection")
+        self.submitted_chat_indexes.add(chat_index)
 
     def bind_delivery(self, *, delivery_id: str, chat_index: str) -> None:
         self.deliveries[delivery_id] = chat_index

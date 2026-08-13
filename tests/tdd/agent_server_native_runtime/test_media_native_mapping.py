@@ -35,6 +35,7 @@ def test_media_session_tracks_only_native_resource_correlation() -> None:
         "client_capabilities",
         "media_capabilities",
         "video_ids",
+        "submitted_chat_indexes",
     }
 
 
@@ -80,6 +81,19 @@ def test_session_registers_one_run_per_chat_and_cancel_is_precise() -> None:
 
     assert session.active_runs == {"chat-1": "run-1"}
     assert session.active_run_targets() == (("thread-1", "run-1"),)
+
+
+def test_session_rejects_duplicate_chat_before_a_second_native_run() -> None:
+    session = MediaConnectionSession(connection_id="connection-1")
+
+    session.begin_chat("chat-1")
+
+    try:
+        session.begin_chat("chat-1")
+    except ValueError as exc:
+        assert str(exc) == "chatIndex already submitted on this connection"
+    else:
+        raise AssertionError("duplicate chatIndex must be rejected")
 
 
 def test_agent_server_resource_authorization_scopes_native_resources_to_principal() -> None:

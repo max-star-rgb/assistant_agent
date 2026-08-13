@@ -144,6 +144,7 @@ async def _handle_frame(
         chat = parse_chat(frame)
         if chat.user_id != session.user_id:
             raise MediaProtocolError("chat userNumber does not match assistantControl")
+        session.begin_chat(chat.chat_index)
         delivery_id = f"delivery-{uuid4()}"
         session.bind_delivery(delivery_id=delivery_id, chat_index=chat.chat_index)
         await _send_json(websocket, send_lock,

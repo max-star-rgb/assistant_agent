@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Callable, Mapping
 from typing import Any, Protocol
 
+from httpx import TransportError
 from langgraph_sdk import get_client
 
 
@@ -53,30 +54,58 @@ class SdkAgentServerClient:
         return str(thread["thread_id"])
 
     async def stream_run(self, **kwargs):
+        thread_id = kwargs.pop("thread_id")
+        assistant_id = kwargs.pop("assistant_id")
         callback = kwargs.pop("on_run_created")
+        run_id: str | None = None
+        last_event_id: str | None = None
 
         def created(metadata: Mapping[str, Any]) -> None:
-            callback(str(metadata["run_id"]))
+            nonlocal run_id
+            run_id = str(metadata["run_id"])
+            callback(run_id)
 
-        async for part in self._client.runs.stream(
-            kwargs.pop("thread_id"),
-            kwargs.pop("assistant_id"),
-            stream_mode=["values"],
-            stream_resumable=True,
-            on_run_created=created,
-            **kwargs,
-        ):
-            yield {"event": part.event, "data": part.data, "id": part.id}
+        try:
+            async for part in self._client.runs.stream(
+                thread_id,
+                assistant_id,
+                stream_mode=["values"],
+                stream_resumable=True,
+                on_disconnect="continue",
+                on_run_created=created,
+                **kwargs,
+            ):
+                if part.id is not None:
+                    last_event_id = str(part.id)
+                yield {"event": part.event, "data": part.data, "id": part.id}
+        except (ConnectionError, OSError, TransportError):
+            if run_id is None or last_event_id is None:
+                raise
+            stream = await self._client.threads.join_stream(
+                thread_id,
+                last_event_id=last_event_id,
+                stream_mode="run_modes",
+            )
+            async for part in stream:
+                yield {"event": part.event, "data": part.data, "id": part.id}
+                if (
+                    part.event == "metadata"
+                    and isinstance(part.data, Mapping)
+                    and part.data.get("status") == "run_done"
+                    and str(part.data.get("run_id")) == run_id
+                ):
+                    break
 
     async def cancel_run(self, *, thread_id: str, run_id: str) -> None:
         await self._client.runs.cancel(thread_id, run_id, wait=True)
 
     async def join_thread(self, *, thread_id: str, last_event_id: str | None):
-        async for part in self._client.threads.join_stream(
+        stream = await self._client.threads.join_stream(
             thread_id,
             last_event_id=last_event_id,
             stream_mode="run_modes",
-        ):
+        )
+        async for part in stream:
             yield {"event": part.event, "data": part.data, "id": part.id}
 
 
