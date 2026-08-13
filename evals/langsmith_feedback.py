@@ -7,7 +7,7 @@ from typing import Any
 
 
 def normalize_boolean_feedback_score(value: Any) -> bool:
-    """Accept SDK booleans or finite numeric 0/1 and reject every other value."""
+    """Accept SDK strict bool/int/float exact 0/1 and reject every other value."""
 
     if isinstance(value, bool):
         return value

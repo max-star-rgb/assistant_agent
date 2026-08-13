@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from decimal import Decimal
+from fractions import Fraction
 import os
 from pathlib import Path
 import subprocess
@@ -37,6 +39,7 @@ from evals.langsmith_runtime_regression.experiment import (
     audit_native_graph_tree,
     runtime_regression_equivalence_evidence,
 )
+from evals.langsmith_feedback import normalize_boolean_feedback_score
 from evals.langsmith_workflow_regression.experiment import (
     WorkflowCompletenessResult,
     WorkflowExperimentResult,
@@ -358,6 +361,22 @@ def test_release_completeness_normalizes_persisted_zero_one_scores() -> None:
         REQUIRED_RELEASE_FEEDBACK_KEYS[1]: False,
         REQUIRED_RELEASE_FEEDBACK_KEYS[2]: True,
     }
+
+
+@pytest.mark.parametrize(
+    "score",
+    [
+        Decimal("0"),
+        Decimal("1"),
+        Fraction(0, 1),
+        Fraction(1, 1),
+        complex(1, 0),
+        Decimal("NaN"),
+    ],
+)
+def test_feedback_normalizer_rejects_non_sdk_numeric_types(score) -> None:
+    with pytest.raises(ValueError, match="not Boolean"):
+        normalize_boolean_feedback_score(score)
 
 
 @pytest.mark.parametrize("score", [0.5, "1", float("nan")])
