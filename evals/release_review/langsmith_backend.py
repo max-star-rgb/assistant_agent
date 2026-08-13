@@ -11,6 +11,7 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 
 from langsmith.utils import LangSmithNotFoundError, LangSmithRateLimitError
 
+from evals.langsmith_feedback import normalize_boolean_feedback_score
 from evals.langsmith_runtime_regression.experiment import audit_native_graph_tree
 
 from .contracts import ReleaseScenario
@@ -300,10 +301,12 @@ def _audit_remote_release_facts(
                 problems.setdefault(example_id, []).append(f"duplicate feedback {key}")
                 continue
             score = _field(item, "score")
-            if not isinstance(score, bool):
+            try:
+                normalized_score = normalize_boolean_feedback_score(score)
+            except ValueError:
                 problems.setdefault(example_id, []).append(f"invalid feedback {key}")
                 continue
-            feedback[example_id][key] = score
+            feedback[example_id][key] = normalized_score
     required = set(REQUIRED_RELEASE_FEEDBACK_KEYS)
     for example_id in example_ids:
         missing = sorted(required - set(feedback[example_id]))

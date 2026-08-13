@@ -18,6 +18,7 @@ from assistant_agent.workflows.graph_state import (
     WorkflowResultSlot,
     validate_durable_workflow_state,
 )
+from evals.langsmith_feedback import normalize_boolean_feedback_score
 
 from .contracts import (
     WORKFLOW_REGRESSION_DATASET,
@@ -46,9 +47,7 @@ class WorkflowInvocationFactory(Protocol):
 class DirectWorkflowInvocation:
     """All production-owned objects needed to call the already compiled graph."""
 
-    invoke: Callable[
-        [], Awaitable[tuple[WorkflowGraphStreamResult, bool | None]]
-    ]
+    invoke: Callable[[], Awaitable[tuple[WorkflowGraphStreamResult, bool | None]]]
 
 
 @dataclass(frozen=True)
@@ -614,7 +613,14 @@ def _audit_remote(
                     problems.setdefault(example_id, []).append(
                         f"duplicate feedback {key}"
                     )
-                feedback[example_id][key] = _field(item, "score")
+                try:
+                    score = normalize_boolean_feedback_score(_field(item, "score"))
+                except ValueError:
+                    problems.setdefault(example_id, []).append(
+                        f"invalid feedback {key}"
+                    )
+                    continue
+                feedback[example_id][key] = score
     for example_id in example_ids:
         missing = [
             key

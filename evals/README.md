@@ -69,6 +69,8 @@ Feedback 缺失都是 infrastructure failure，不能写成 Agent 质量失败�
 Staging 的单工具 observation 可以额外拥有
 `assistant_agent.quality.tool_result_quality`，但它不替代上述三项。runner 会通过 LangSmith runs 与
 Feedback API 回查完整性；SDK row、target output、`astream` event 和本地 trace store 都不算落库证据。
+LangSmith SDK 会把 BOOLEAN Feedback 的持久化 `score` 返回为 `0.0/1.0`；三个 runner 共用严格
+normalizer，只接受 bool 或 finite numeric exact 0/1，并统一投影为 bool，其他值一律 fail-closed。
 每个 Example 的远端树必须形成 `experiment task → AssistantTurnGraph → assistant → llm.chat`，governed
 Tool 必须位于 `execute_tool` 子树；缺少、脱离 parent/trace/reference 关联或缺少真实模型 run 都属于
 infrastructure failure。报告分别列出

@@ -325,6 +325,65 @@ def test_release_completeness_rejects_in_memory_or_stream_only_success() -> None
         )
 
 
+def test_release_completeness_normalizes_persisted_zero_one_scores() -> None:
+    class Client:
+        def list_runs(self, **_kwargs):
+            return iter(_release_runs())
+
+        def list_feedback(self, **_kwargs):
+            return iter(
+                SimpleNamespace(
+                    run_id=UUID(int=1),
+                    key=key,
+                    score=score,
+                )
+                for key, score in zip(
+                    REQUIRED_RELEASE_FEEDBACK_KEYS,
+                    (1.0, 0.0, 1.0),
+                    strict=True,
+                )
+            )
+
+    result = wait_for_langsmith_runs(
+        Client(),
+        experiment_id="experiment-id",
+        example_ids=(str(EXAMPLE_ID),),
+        timeout_seconds=1,
+        poll_interval_seconds=1,
+        sleep=lambda _seconds: None,
+    )
+
+    assert result.feedback[str(EXAMPLE_ID)] == {
+        REQUIRED_RELEASE_FEEDBACK_KEYS[0]: True,
+        REQUIRED_RELEASE_FEEDBACK_KEYS[1]: False,
+        REQUIRED_RELEASE_FEEDBACK_KEYS[2]: True,
+    }
+
+
+@pytest.mark.parametrize("score", [0.5, "1", float("nan")])
+def test_release_completeness_rejects_non_boolean_numeric_scores(score) -> None:
+    class Client:
+        def list_runs(self, **_kwargs):
+            return iter(_release_runs())
+
+        def list_feedback(self, **_kwargs):
+            return iter(
+                SimpleNamespace(run_id=UUID(int=1), key=key, score=score)
+                for key in REQUIRED_RELEASE_FEEDBACK_KEYS
+            )
+
+    with pytest.raises(RuntimeError, match="invalid feedback"):
+        wait_for_langsmith_runs(
+            Client(),
+            experiment_id="experiment-id",
+            example_ids=(str(EXAMPLE_ID),),
+            timeout_seconds=0.01,
+            poll_interval_seconds=0.01,
+            sleep=lambda _seconds: None,
+            clock=iter((0.0, 0.0, 0.02)).__next__,
+        )
+
+
 def test_shared_assistant_tree_audit_rejects_detached_native_graph_run() -> None:
     detached = _run(90, name="AssistantTurnGraph", parent=999)
     detached.reference_example_id = None

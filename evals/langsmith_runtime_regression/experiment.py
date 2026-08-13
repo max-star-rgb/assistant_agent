@@ -17,6 +17,7 @@ from assistant_agent.evaluation.runtime_regression_contract import (
     validate_failure_baseline,
 )
 from assistant_agent.runtime.requests import UserRequest
+from evals.langsmith_feedback import normalize_boolean_feedback_score
 from evals.langsmith_runtime_regression.evaluators import (
     REQUIRED_LANGSMITH_FEEDBACK_KEYS,
     langsmith_evaluator_output,
@@ -504,7 +505,12 @@ def _audit_experiment(
             key = _field(feedback, "key")
             if example_id is None or key not in REQUIRED_LANGSMITH_FEEDBACK_KEYS:
                 continue
-            feedback_by_example[example_id][str(key)] = _field(feedback, "score")
+            try:
+                score = normalize_boolean_feedback_score(_field(feedback, "score"))
+            except ValueError:
+                problems.setdefault(example_id, []).append(f"invalid feedback {key}")
+                continue
+            feedback_by_example[example_id][str(key)] = score
     required_feedback = set(REQUIRED_LANGSMITH_FEEDBACK_KEYS)
     for example_id in example_ids:
         missing = sorted(
