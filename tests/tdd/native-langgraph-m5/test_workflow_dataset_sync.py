@@ -9,6 +9,7 @@ from evals.langsmith_workflow_regression.dataset import (
     load_git_workflow_examples,
     sync_workflow_examples,
 )
+from evals.langsmith_workflow_regression.contracts import WorkflowDatasetExample
 
 
 def test_git_workflow_examples_cover_all_four_cases_and_sync_idempotently() -> None:
@@ -55,3 +56,18 @@ def test_git_workflow_examples_cover_all_four_cases_and_sync_idempotently() -> N
     assert second.active_example_ids == first.active_example_ids
     assert len(client.examples) == 4
     assert all(item.metadata["git_commit"] == "git-two" for item in client.examples.values())
+
+
+def test_langsmith_roundtrip_accepts_only_bounded_dataset_split() -> None:
+    raw = load_git_workflow_examples()[0].model_dump(mode="json")
+    raw["metadata"]["dataset_split"] = ["base"]
+    parsed = WorkflowDatasetExample.model_validate(raw)
+    assert parsed.metadata.dataset_split == ("base",)
+
+    raw["metadata"]["dataset_split"] = []
+    with __import__("pytest").raises(ValueError):
+        WorkflowDatasetExample.model_validate(raw)
+
+    raw["metadata"]["dataset_split"] = ["unknown"]
+    with __import__("pytest").raises(ValueError):
+        WorkflowDatasetExample.model_validate(raw)

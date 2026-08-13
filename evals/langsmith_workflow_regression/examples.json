@@ -23,7 +23,7 @@
       "plan": {"node_ids": ["research_a", "research_b", "synthesize"], "dependencies": {"research_a": [], "research_b": [], "synthesize": ["research_a", "research_b"]}},
       "evaluation_contract": {"deliverables": {"report": "synthesize"}, "constraint_ids": ["cover_both_branches"], "repair_scope": [], "resume_equivalent": true}
     },
-    "metadata": {"active": true, "risk": "high", "source_trace_id": null}
+    "metadata": {"active": true, "risk": "high", "source_trace_id": null, "dataset_split": ["base"]}
   },
   {
     "id": "constraint_verifier_v1",
@@ -49,7 +49,7 @@
       "plan": {"node_ids": ["research", "verify"], "dependencies": {"research": [], "verify": ["research"]}},
       "evaluation_contract": {"deliverables": {"report": "verify"}, "constraint_ids": ["verified_claims"], "repair_scope": [], "resume_equivalent": true}
     },
-    "metadata": {"active": true, "risk": "critical", "source_trace_id": null}
+    "metadata": {"active": true, "risk": "critical", "source_trace_id": null, "dataset_split": ["base"]}
   },
   {
     "id": "minimal_repair_v1",
@@ -75,7 +75,7 @@
       "plan": {"node_ids": ["research_a", "research_b", "verify"], "dependencies": {"research_a": [], "research_b": [], "verify": ["research_a", "research_b"]}},
       "evaluation_contract": {"deliverables": {"report": "verify"}, "constraint_ids": ["minimal_repair"], "repair_scope": ["research_a"], "resume_equivalent": true}
     },
-    "metadata": {"active": true, "risk": "critical", "source_trace_id": null}
+    "metadata": {"active": true, "risk": "critical", "source_trace_id": null, "dataset_split": ["base"]}
   },
   {
     "id": "interrupt_resume_equivalence_v1",
@@ -101,6 +101,6 @@
       "plan": {"node_ids": ["request_input", "complete_report"], "dependencies": {"request_input": [], "complete_report": ["request_input"]}},
       "evaluation_contract": {"deliverables": {"report": "complete_report"}, "constraint_ids": ["same_thread_resume"], "repair_scope": [], "resume_equivalent": true}
     },
-    "metadata": {"active": true, "risk": "critical", "source_trace_id": null}
+    "metadata": {"active": true, "risk": "critical", "source_trace_id": null, "dataset_split": ["base"]}
   }
 ]

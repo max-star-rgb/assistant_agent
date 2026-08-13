@@ -100,6 +100,11 @@ class WorkflowExampleMetadata(_StrictModel):
     owner: Literal["git:assistant_agent"] | None = None
     case_id: str | None = Field(default=None, min_length=1, max_length=160)
     git_commit: str | None = Field(default=None, min_length=1, max_length=160)
+    dataset_split: tuple[Literal["base"], ...] | None = Field(
+        default=None,
+        min_length=1,
+        max_length=4,
+    )
 
 
 class WorkflowDatasetExample(_StrictModel):
