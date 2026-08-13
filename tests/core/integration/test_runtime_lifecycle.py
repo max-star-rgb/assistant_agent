@@ -170,9 +170,7 @@ def test_plain_text_run_reaches_completed_terminal_state() -> None:
             event for event in trace_events if event.canonical_event == "run.started"
         )
         run_completed = next(
-            event
-            for event in trace_events
-            if event.canonical_event == "run.completed"
+            event for event in trace_events if event.canonical_event == "run.completed"
         )
         assert sink.events[0].created_at == run_started.created_at
         assert sink.events[-1].created_at == run_completed.created_at
@@ -221,10 +219,14 @@ def test_native_async_run_reaches_the_same_completed_terminal_contract() -> None
         assert sync_state.response is not None
         assert async_state.response is not None
         assert sync_state.response.message == async_state.response.message
-        assert [sync_sink.events[0].type, sync_sink.events[-1].type] == [
-            async_sink.events[0].type,
-            async_sink.events[-1].type,
-        ] == ["task_started", "final_response"]
+        assert (
+            [sync_sink.events[0].type, sync_sink.events[-1].type]
+            == [
+                async_sink.events[0].type,
+                async_sink.events[-1].type,
+            ]
+            == ["task_started", "final_response"]
+        )
     finally:
         sync_runtime.close()
         async_runtime.close()
@@ -315,13 +317,12 @@ def test_runtime_exposes_versioned_profile_graph_family() -> None:
             "worker",
             "verifier",
         )
-        assert {
-            name: graph.name for name, graph in profile_graphs.items()
-        } == {
+        assert {name: graph.name for name, graph in profile_graphs.items()} == {
             name: f"AssistantTurnGraph.{name}" for name in profile_graphs
         }
-        assert runtime.assistant_graph_app.graph_for_profile("worker") is (
-            profile_graphs["worker"]
+        assert (
+            runtime.assistant_graph_app.graph_for_profile("worker")
+            is (profile_graphs["worker"])
         )
         assert worker_state["graph_name"] == ASSISTANT_GRAPH_NAME
         assert worker_state["graph_version"] == ASSISTANT_GRAPH_VERSION
@@ -364,8 +365,7 @@ def test_entry_run_and_agent_identity_are_preserved() -> None:
         assert state.run_id == "run-sentinel"
         assert state.agent_id == "agent-sentinel"
         assert {
-            event.run_id
-            for event in runtime.trace_store.list_by_run("run-sentinel")
+            event.run_id for event in runtime.trace_store.list_by_run("run-sentinel")
         } == {"run-sentinel"}
     finally:
         runtime.close()
@@ -592,12 +592,8 @@ def test_interrupted_run_resumes_on_stable_thread_to_one_terminal() -> None:
         assert [call.tool_name for call in resumed.tool_calls] == [tool.name]
         assert [result.success for result in resumed.tool_results] == [True]
         assert [
-            (call.tool_name, call.input, call.status)
-            for call in resumed.tool_calls
-        ] == [
-            (call.tool_name, call.input, call.status)
-            for call in baseline.tool_calls
-        ]
+            (call.tool_name, call.input, call.status) for call in resumed.tool_calls
+        ] == [(call.tool_name, call.input, call.status) for call in baseline.tool_calls]
         assert [
             (result.tool_name, result.success, result.output_ref)
             for result in resumed.tool_results
@@ -660,9 +656,7 @@ def test_probe_tool_call_completes_through_governed_runtime() -> None:
         assert state.tool_results[0].data == {"value": "value-sentinel"}
         trace_events = runtime.trace_store.list_by_run(state.run_id)
         terminal = next(
-            event
-            for event in trace_events
-            if event.canonical_event == "tool.finished"
+            event for event in trace_events if event.canonical_event == "tool.finished"
         )
         observation = next(
             event
@@ -1012,9 +1006,7 @@ def test_runtime_notifies_optional_tool_lifecycle_at_every_run_terminal(
                 ),
             ),
             run_id="run-terminal-sentinel",
-            cancel_token=(
-                CancelledToken() if expected_status == "cancelled" else None
-            ),
+            cancel_token=(CancelledToken() if expected_status == "cancelled" else None),
         )
 
         assert state.status == expected_status
@@ -1059,7 +1051,9 @@ def test_core_event_reaches_gateway_frame() -> None:
 
 
 @pytest.mark.core_invariant("IDENT-001")
-def test_user_session_runs_are_isolated_and_request_identity_fields_are_preserved() -> None:
+def test_user_session_runs_are_isolated_and_request_identity_fields_are_preserved() -> (
+    None
+):
     sessions = InMemorySessionStore()
     sessions.touch_run(
         user_id="user-a-sentinel",
@@ -1096,12 +1090,10 @@ def test_user_session_runs_are_isolated_and_request_identity_fields_are_preserve
     assert session_a.last_run_id == "run-a-sentinel"
     assert session_b.last_run_id == "run-b-sentinel"
     assert [
-        record.last_run_id
-        for record in sessions.list_by_user("user-a-sentinel")
+        record.last_run_id for record in sessions.list_by_user("user-a-sentinel")
     ] == ["run-a-sentinel"]
     assert [
-        record.last_run_id
-        for record in sessions.list_by_user("user-b-sentinel")
+        record.last_run_id for record in sessions.list_by_user("user-b-sentinel")
     ] == ["run-b-sentinel"]
     assert user_a_identity.model_dump() == {
         "user_id": "user-a-sentinel",
