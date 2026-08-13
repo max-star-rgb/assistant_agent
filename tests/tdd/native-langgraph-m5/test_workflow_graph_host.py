@@ -301,7 +301,7 @@ def test_real_host_migration_checkpoint_survives_reopen_before_commit(
         WorkflowCutoverController,
         WorkflowEngineCutoverManifest,
     )
-    from assistant_agent.workflows.graph_host import WorkflowGraphHost
+    from assistant_agent.workflows.graph_host import WorkflowGraphHost, _token
 
     async def exercise() -> None:
         config = _config(tmp_path)
@@ -379,11 +379,28 @@ def test_real_host_migration_checkpoint_survives_reopen_before_commit(
                 assert await second.has_checkpoint(
                     workflow_id=bundle.workflow.workflow_id
                 )
+                checkpoint = await second._graph_app.graph.aget_state(
+                    second._execution_identity(
+                        prepared,
+                        run_id="migration-token-inspect",
+                    ).runnable_config()
+                )
+                observed_tokens: list[str] = []
+                real_context = second._context
+
+                def observe_context(bundle, *, invocation_token):
+                    observed_tokens.append(invocation_token)
+                    return real_context(bundle, invocation_token=invocation_token)
+
+                second._context = observe_context
                 await controller.commit_prepared(
                     bundle.workflow.workflow_id,
                     graph_host=second,
                 )
                 await second.activate(workflow_id=bundle.workflow.workflow_id)
+                assert observed_tokens == [
+                    _token(checkpoint.values["invocation_run_id"])
+                ]
             finally:
                 await second.close()
 

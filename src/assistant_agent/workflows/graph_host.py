@@ -809,7 +809,7 @@ class WorkflowGraphHost:
             return
         context = self._context(
             bundle,
-            invocation_token=_token(migration.idempotency_key),
+            invocation_token=_token(state["invocation_run_id"]),
         )
         self._track_task(
             workflow_id,
