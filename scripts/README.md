@@ -1,21 +1,15 @@
 # Scripts 入口索引
 
 这里只保留当前 runtime、观测、评测和专项验收仍在使用的入口。一次性排障或已由 pytest、
-eval、Gateway 主链路覆盖的 probe 不应继续沉积到本目录。
+eval、Agent Server 主链路覆盖的 probe 不应继续沉积到本目录。
 
 - `scripts/check_documentation_authority.py`：离线校验 `docs/authority.toml` 的 owner、路由、排他事实与
   changed-path 复核范围；输出结构化 JSON，不读取 `.env`、不联网、不改写文档。
 
-## Realtime runtime
+## Agent Server runtime
 
-- `scripts/run_server.py`: starts the FastAPI backend with Gateway, media, HTTP,
-  memory, trace, and tool-governed runtime routes. 启动完成后默认打印从实际 app/runtime
-  收集的精简运维摘要，包括 bind、健康检查、Provider、Tool 分类计数、Worker、已启用集成、
-  安全开关，以及 Runtime completeness ledger、Langfuse export、Gateway lifecycle、Agent-Service
-  delivery audit 和 Gateway text log 的分层观测位置；只有排查 Tool 装配时才使用
-  `--startup-details` 展开按 plugin ownership 分组的完整清单。
-  Graph memory 在 Langfuse 中只投影 `memory.recall` / `memory.commit` 的 backend、状态、数量、延迟和
-  issue code，不记录 Memory 或对话正文；单条记忆演化需在受控运维边界使用后端原生 history API 钻取。
+- `scripts/run_server.py`：启动 `langgraph.json` 定义的本地 Agent Server。它不再启动自研 FastAPI/Gateway
+  composition root；`--no-reload` 可用于稳定 probe。`langgraph dev` 的 in-memory server 仅用于开发。
 - `scripts/run_langfuse.py`: PyCharm-friendly local Langfuse supervisor. It starts
   the ignored `.data/langfuse` Compose stack, waits for health, stays attached as
   one Run process, and stops the containers without deleting data when terminated.
@@ -41,10 +35,8 @@ Runtime 后端由受信 `MEMORY_BACKEND` 配置在 composition root 中排他装
   Mem0 记忆为简体中文。默认命令只读；更新要求 real Provider mode、已配置的 Qwen 和
   Mem0，并同时传入 `--apply` 与 `--allow-real-provider`。输出只包含数量、memory ID、
   状态和稳定错误码，不持久化记忆正文或 Provider 响应。
-- `scripts/agent_cli.py`：HTTP/SSE 产品 CLI，与 Web UI 共用 `/agent/run`。默认请求
-  `text/event-stream` 并逐 delta 输出；`--no-stream` 可验证 JSON 表示，交互模式支持
-  `/standard`、`/deep research`、`/new`，Ctrl-C 会按 `user_id + session_id + run_id`
-  请求取消当前 run。terminal annotations 只打印本轮实际引用来源的紧凑诊断，不修改正文。
+- `scripts/agent_cli.py`：使用公开 `langgraph_sdk` 创建/复用 thread 并执行 assistant run；交互模式支持
+  `/standard`、`/deep research`、`/new`。真实部署可用 `--token` 传 service bearer token。
 - `scripts/media_simulator.py`: server-backed Media-Agent protocol simulator for
   `/agent-service/v1`; type text repeatedly, or use `/new [sessionId]` to open a
   new media session. In interactive mode, `/deep research` selects
@@ -94,14 +86,14 @@ For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
   回归 Dataset 已存在时管理两条 Experiment Rule。
   参数、证据边界、状态机、产物和 systemd 配置统一见
   [`docs/observability-harness.md`](../docs/observability-harness.md#langfuse-first-runtime-审计)。
-- Gateway lifecycle 由 `scripts/run_server.py` 写入 `.data/gateway_events.jsonl`；仓库当前没有
-  独立 viewer，按 `run_id`、`turn_id` 或 `trace_id` 使用标准 JSONL/文本工具检索。
+- thread/run/checkpoint/stream 生命周期以 Agent Server 原生 API 与 LangSmith trace 为准；不再写入自研
+  Gateway lifecycle ledger。
 
 ## Eval and evidence
 
 - `evals/system/incubating/agent_server_native_runtime/checks_deployment.py`：使用 mock
   Provider 启动真实本地 `langgraph dev`，通过公开 SDK 验证 Agent Server 的 schema、
-  thread/run/checkpoint、Store 与 cancel；不调用真实 Provider，结果逐项输出结构化 PASS/FAIL。
+  thread/run/checkpoint、Store、cancel 与媒体 custom route；不调用真实 Provider，结果逐项输出结构化 PASS/FAIL。
 - `scripts/run_demo_flows.py`: offline scenario matrix for regression demos.
 - `scripts/run_evals.py`: offline eval harness for lower-layer behavior checks.
 - `scripts/run_system_tool_evals.py`: 真实 LLM + 真实 Tool 的 system eval；

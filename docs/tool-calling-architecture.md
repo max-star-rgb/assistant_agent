@@ -616,7 +616,7 @@ payload、凭据、绝对路径和大块内联数据不能因 ToolResult 或调�
 - `workflows/legacy_drain_host.py`：cutover 期 exact existing-row allowlist 的唯一 legacy execution owner；
 - `workflows/` 其余模块：Workflow 契约、definition、Store、artifact/context，以及 retirement gate 未关闭前
   保留的 legacy work-item controller/worker/adapter；
-- `api/routes_workflows.py`：identity-scoped status/events/input/cancel/result 薄入口。
+- 旧 `api/routes_workflows.py` 已随平行 FastAPI Runtime 删除；需要产品 Workflow API 时应作为 Agent Server custom route 重新暴露。
 
 ## 10. 不变量
 

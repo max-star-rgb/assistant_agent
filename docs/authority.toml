@@ -2,25 +2,23 @@ schema_version = 1
 coverage = "complete"
 
 [[domains]]
-id = "gateway"
+id = "agent-server"
 authority = "docs/gateway-architecture.md"
 read_when = [
-  "Gateway、session、run、cancel、interrupt、reconnect 或 stream frame 生命周期",
-  "realtime backend、delivery、queue、admission 或入口到 Runtime 的映射",
+  "Agent Server、thread、run、cancel、reconnect、checkpoint、Store 或部署生命周期",
+  "custom route、认证、公开 SDK 或媒体入口到 Graph 的映射",
 ]
 source_globs = [
-  "src/assistant_agent/gateway/**",
-  "src/assistant_agent/api/gateway_runtime.py",
-  "src/assistant_agent/api/gateway_websocket.py",
-  "src/assistant_agent/api/agent_sse.py",
-  "src/assistant_agent/api/routes_agent.py",
-  "src/assistant_agent/clients/http_agent.py",
+  "langgraph.json",
+  "src/assistant_agent/agent_server/**",
+  "scripts/run_server.py",
   "scripts/agent_cli.py",
   "tests/core/contract/test_gateway_contract.py",
+  "tests/tdd/agent_server_native_runtime/**",
 ]
 thin_references = ["README.md", "scripts/README.md"]
 verification = [
-  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/core/contract/test_gateway_contract.py",
+  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/core/contract/test_gateway_contract.py tests/tdd/agent_server_native_runtime",
   "MULTIMODAL_AGENT_PROVIDER_MODE=mock python scripts/agent_cli.py --help",
 ]
 exclusive_literals = []
@@ -34,7 +32,9 @@ read_when = [
   "图片交付、3D submit/callback、H.264 或媒体联调",
 ]
 source_globs = [
-  "src/assistant_agent/api/agent_service_websocket.py",
+  "src/assistant_agent/agent_server/media_app.py",
+  "src/assistant_agent/agent_server/media_protocol.py",
+  "src/assistant_agent/agent_server/media_session.py",
   "src/assistant_agent/api/rendering_3d_callback.py",
   "src/assistant_agent/gateway/artifact_delivery.py",
   "src/assistant_agent/media/video/**",
@@ -57,7 +57,6 @@ read_when = [
 source_globs = [
   "src/assistant_agent/runtime/**",
   "src/assistant_agent/providers/llm_events.py",
-  "src/assistant_agent/gateway/runtime_adapter.py",
   "src/assistant_agent/gateway/runtime_event_mapping.py",
 ]
 thin_references = ["README.md", "docs/gateway-architecture.md"]
@@ -79,7 +78,6 @@ source_globs = [
   "src/assistant_agent/mcp/**",
   "src/assistant_agent/workflows/**",
   "src/assistant_agent/automation/durable_tasks/**",
-  "src/assistant_agent/api/routes_workflows.py",
   "src/assistant_agent/runtime/action_validator.py",
   "src/assistant_agent/runtime/tool_execution_backend.py",
   "src/assistant_agent/runtime/tool_executor.py",
@@ -177,7 +175,6 @@ read_when = [
 ]
 source_globs = [
   "src/assistant_agent/multi_agent/**",
-  "src/assistant_agent/api/routes_a2a.py",
 ]
 thin_references = ["README.md", "scripts/README.md"]
 verification = [
@@ -263,7 +260,6 @@ source_globs = [
   "evals/langsmith_workflow_regression/**",
   "evals/system/**",
   "src/assistant_agent/evaluation/**",
-  "src/assistant_agent/api/routes_eval_experiments.py",
   "scripts/run_release_review.py",
   "scripts/run_runtime_regressions.py",
   "scripts/run_langsmith_runtime_regressions.py",

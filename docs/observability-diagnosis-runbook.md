@@ -195,7 +195,7 @@ started 没有 terminal 只说明 span 未闭合或证据不完整。结合最�
 - Tool lifecycle：`src/assistant_agent/runtime/event_publisher.py` 与 Tool 治理链；
 - trace/summary：`src/assistant_agent/observability/`；
 - Gateway lifecycle：`src/assistant_agent/gateway/` 与 `src/assistant_agent/api/gateway_*`；
-- Agent-Service delivery：`src/assistant_agent/api/agent_service_websocket.py`。
+- Media-Agent delivery：`src/assistant_agent/agent_server/media_app.py`。
 
 源码可以解释“观察到的事件为何按这种规则产生”，不能证明一次缺失 trace 中实际走过了某条分支。
 

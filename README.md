@@ -1,12 +1,12 @@
 # assistant_agent
 
-`assistant_agent` is a local-first multimodal autonomous tool-calling Agent. It uses a LangGraph/ReAct assistant loop, governed tool execution, provider adapters, memory services, API/demo/eval surfaces, and optional realtime Gateway entry layers.
+`assistant_agent` 是本地优先的多模态工具调用 Agent。生产 Assistant Graph 运行在 LangGraph Agent Server；媒体服务通过兼容的 custom route 接入。
 
 ## Start Here
 
 Core project docs:
 
-- Gateway and realtime lifecycle: [docs/gateway-architecture.md](docs/gateway-architecture.md)
+- Agent Server deployment and native resource lifecycle: [docs/gateway-architecture.md](docs/gateway-architecture.md)
 - Runtime and provider event streaming: [docs/runtime-event-stream-architecture.md](docs/runtime-event-stream-architecture.md)
 - Tool calling governance: [docs/tool-calling-architecture.md](docs/tool-calling-architecture.md)
 - Observability architecture and trace contract: [docs/observability-harness.md](docs/observability-harness.md)
@@ -38,7 +38,8 @@ Provider profiles and external-provider configuration are documented in [docs/to
 | `context/` | Context 构建、预算、压缩、渲染和 Tool catalog |
 | `skills/` | Skill 加载、召回、校验、目录、执行与持久化 |
 | `tools/` | Tool 契约、Registry、治理边界和 Plugin |
-| `gateway/` | session/run/cancel/reconnect、Runtime adapter、事件映射和交付 |
+| `agent_server/` | Agent Server graph factory、认证、公开 SDK client 与媒体 custom route |
+| `gateway/` | Graph 内部仍复用的 legacy 事件/取消/交付小类型；不拥有生产 session/run/runtime |
 | `media/` | 音频边缘适配、视频摄取/观察、统一 image/text embedding 及视觉 adapter |
 | `automation/` | durable task、proactive wake 和通知 |
 | `multi_agent/` | Agent routing、delegation、transport 和 A2A |
@@ -46,7 +47,7 @@ Provider profiles and external-provider configuration are documented in [docs/to
 | `improvement/` | 离线改进证据、提案、评估和报告 |
 | `providers/` | 跨入口共享的 Provider 配置、错误治理和 adapter |
 | `memory/` | Graph-native Memory bundle、commit ledger、Mem0/LangMem/disabled 后端 |
-| `api/` | FastAPI HTTP/WebSocket 薄入口 |
+| `api/` | 不执行 Graph 的 callback 与共享协议模型；生产 HTTP 由 Agent Server 提供 |
 | `mcp/` | MCP 配置、client、registration 和 server adapter |
 | `config/` | 进程配置装配 |
 

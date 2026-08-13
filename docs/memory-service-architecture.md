@@ -8,7 +8,7 @@
 | --- | --- |
 | 定位 | 长期记忆 Graph 节点、冻结快照、后端装配和外部写入幂等的当前权威 |
 | Owns | `MemoryNodeBundle`、`memory_recall` / `memory_commit`、`memory_context`、commit ledger、Mem0/LangMem/disabled 装配与 time-travel 语义 |
-| Does not own | Mem0 私有 HTTP wire、conversation 编译、Gateway delivery ACK、通用 `BaseStore` 协议、模型可调用 Memory Tool |
+| Does not own | Mem0 私有 HTTP wire、conversation 编译、媒体 delivery ACK、通用 `BaseStore` 协议、模型可调用 Memory Tool |
 | 源码与 schema 入口 | `src/assistant_agent/memory/`、`runtime/assistant_graph_state.py`、`runtime/assistant_loop_graph.py` |
 | 验证入口 | `docs/authority.toml` 中 `graph-memory.verification`；核心不变量 `MEMORY-001` |
 | 相邻 authority | Mem0 wire 见 [`memory_server_api_spec.md`](memory_server_api_spec.md)；Context 见 [`context_engineering_status.md`](context_engineering_status.md)；运行流见 [`runtime-event-stream-architecture.md`](runtime-event-stream-architecture.md) |
@@ -18,7 +18,7 @@
 长期记忆在运行流程中的统一抽象是 LangGraph `Node + State + Runtime`，不是项目自建 Memory SDK：
 
 ```text
-Application composition root
+Agent Server graph factory
   ├── Checkpointer
   ├── MemoryNodeBundle
   │    ├── recall_node
@@ -75,7 +75,7 @@ token budget 和 prompt-safe 数据边界。
 ## 3. 回答发布与写入
 
 规范化最终回答形成后，Graph 先通过 `publish_response` 把稳定的 `RunFinalProductFact` 写入产品事件流，
-再进入 `memory_commit`。Graph 等待 publish 调用成功，但不等待 Gateway/客户端 ACK：
+再进入 `memory_commit`。Graph 等待 publish 调用成功，但不等待媒体/客户端 ACK：
 
 ```text
 response.ready -> response.published -> memory_commit -> graph terminal
@@ -125,12 +125,12 @@ MEM0_IDENTITY_NAMESPACE`。LangMem 使用 `LANGMEM_MODEL` 选择记忆抽取模�
 OpenAI-compatible Chat Provider 的 API key、base URL 与 timeout；不支持该协议的主 Provider 会在装配时
 fail closed。它还要求显式 composition-owned `BaseStore` 和 optional dependency group
 `memory-langmem`；缺包时启动失败并给出可解释配置错误。该 optional group 包含 HTTPX SOCKS transport，
-composition root 会把标准 proxy 中的 `socks://` alias 规范化为 HTTPX 接受的 `socks5://`，且通过 bundle
+graph factory 会把标准 proxy 中的 `socks://` alias 规范化为 HTTPX 接受的 `socks5://`，且通过 bundle
 `aclose` 关闭显式创建的同步/异步 client。
 
 ledger 默认路径为 `.local/langgraph/memory_commits.sqlite3`，可通过 `MEMORY_COMMIT_LEDGER_PATH` 修改。
-Store setup/migration/close 由 composition root 负责；client/manager 的可选异步关闭通过 bundle `aclose`
-归还 composition root。Runtime 不维护 Memory session、后台 ingestion 或第二条生命周期。
+Store 由 Agent Server 注入，setup/migration 归部署资源所有；client/manager 的可选异步关闭通过 bundle
+`aclose` 归还 graph factory。Runtime 不维护 Memory session、后台 ingestion 或第二条生命周期。
 
 ## 7. Mem0 与 LangMem 特有语义
 

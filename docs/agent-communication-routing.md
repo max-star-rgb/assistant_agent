@@ -9,7 +9,7 @@ Last updated: 2026-07-21
 | 定位 | Multi-agent instance routing、delegation 与 A2A adapter 的当前权威 |
 | Owns | AgentDirectory、routing/delegation policy、transport、control plane、A2A JSON-RPC 与隔离边界 |
 | Does not own | 默认单 Agent loop、Gateway frame、Tool 执行、Memory/context 内部策略 |
-| 源码与 schema 入口 | `src/assistant_agent/multi_agent/`、`src/assistant_agent/api/routes_a2a.py` |
+| 源码与 schema 入口 | `src/assistant_agent/multi_agent/`；当前无生产 A2A HTTP route |
 | 验证入口 | `docs/authority.toml` 中 `agent-communication.verification` |
 | 相邻 authority | Runtime 见 [`runtime-event-stream-architecture.md`](runtime-event-stream-architecture.md)；Gateway 见 [`gateway-architecture.md`](gateway-architecture.md) |
 
@@ -67,7 +67,7 @@ Optional multi-instance routing should be layered as:
 ```text
 User / API / Web UI
   -> Gateway when call/session lifecycle is involved, otherwise existing API route
-  -> GatewayRuntimeAdapter / GatewayRuntimeAdapter when a realtime Gateway turn enters assistant execution
+  -> Assistant Graph delegation boundary when a native run enters assistant execution
   -> AgentGraphRuntime / assistant loop
   -> no model-callable delegation tool (temporarily removed)
   -> AgentCommunicationService
@@ -87,7 +87,7 @@ POST /agents/run
   -> target AgentGraphRuntime
 ```
 
-Do not route realtime Gateway turns directly from `GatewayRuntimeAdapter` into `AgentRouter`. Realtime multi-agent behavior should pass through the main runtime first, then delegate through the tool-governed boundary.
+Do not route Agent Server runs directly from a custom route into `AgentRouter`. Multi-agent behavior should pass through the main graph first, then delegate through the tool-governed boundary.
 
 Agent-to-agent delegation should remain a tool-governed action:
 
@@ -142,8 +142,7 @@ Implemented files:
 | `src/assistant_agent/multi_agent/control_plane_models.py` | implemented | Stable redacted response schemas for read-only control-plane run, route, delegation, budget, audit-event, and replay-preview views. |
 | `src/assistant_agent/multi_agent/agent_control_plane.py` | implemented | Process-local control-plane record/audit-event store and query service over router records plus trace summaries. |
 | `src/assistant_agent/multi_agent/a2a_adapter.py` | implemented | Inbound A2A adapter that maps public agent card and JSON-RPC `SendMessage` requests to/from `AgentRouter`, with public skill filtering. |
-| `src/assistant_agent/api/routes_agent.py` | implemented | Existing `/agent/run` plus separate `/agents/run` router/debug endpoint sharing trial access rules. |
-| `src/assistant_agent/api/routes_a2a.py` | implemented | Inbound A2A-compatible agent card and JSON-RPC endpoint over local AgentRouter, including parse/invalid/method/params/internal error mapping. |
+| Agent Server custom route | not implemented | 旧 `/agents/run` 与 A2A HTTP route 已随平行 FastAPI Runtime 删除；重新暴露前需设计为不绕过主 Graph 的 custom route。 |
 | `docs/development/agent-pilot-operator-runbook.md` | implemented | Operator runbook for local/pilot startup, auth/readiness verification, smoke requests, redacted evidence collection, and backout. |
 
 ## Protocol Boundary
@@ -227,8 +226,7 @@ Module ownership:
 | `src/assistant_agent/multi_agent/a2a_adapter.py` | Protocol adapter between inbound A2A agent card/JSON-RPC payloads and internal router requests/responses. |
 | `src/assistant_agent/multi_agent/agent_communication.py` | Service boundary for sending messages/tasks through transports. |
 | `src/assistant_agent/multi_agent/agent_transports.py` | `LocalAgentTransport`, `A2AJsonRpcTransport`, outbound allowlist/card/timeout/payload/circuit-breaker controls, and transport result normalization. |
-| `src/assistant_agent/api/routes_agent.py` | HTTP interface for `/agent/run` and the separate `/agents/run` router route. |
-| `src/assistant_agent/api/routes_a2a.py` | Inbound A2A-compatible agent card and local JSON-RPC endpoint. |
+| `src/assistant_agent/agent_server/graph.py` | 当前唯一生产 Assistant Graph 入口；multi-agent 只能从图内受治理 delegation 进入。 |
 
 If file names change during implementation, keep the same ownership boundaries and update this table.
 
