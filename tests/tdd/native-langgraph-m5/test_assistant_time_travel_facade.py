@@ -1074,6 +1074,7 @@ async def test_bound_continuation_handle_is_single_consumer() -> None:
         agent_id=runtime.agent_id,
         session_id="single-handle-session",
     )
+    app = AssistantRuntimeApp(runtime_factory=lambda: runtime)
     try:
         await runtime.arun_state(
             UserRequest(
@@ -1081,7 +1082,7 @@ async def test_bound_continuation_handle_is_single_consumer() -> None:
             ),
             run_id="single-handle-origin",
         )
-        history = await runtime.alist_history(owner, limit=10)
+        history = await app.list_turn_history(owner, limit=10)
         prepared = await runtime._prepare_graph_continuation(
             owner,
             run_id="single-handle-replay",
@@ -1091,8 +1092,6 @@ async def test_bound_continuation_handle_is_single_consumer() -> None:
             ),
             event_sink=None,
             cancel_token=None,
-            trace_context=None,
-            export_trace_context=None,
             pre_terminal_state_hook=None,
         )
         assert prepared.graph_continuation is not None
@@ -1141,8 +1140,6 @@ def test_post_native_failures_carry_structured_phase(
         request,
         event_sink=None,
         cancel_token=None,
-        trace_context=None,
-        export_trace_context=None,
         pre_terminal_state_hook=None,
         run_id=f"phase-{failure_point}",
     )
@@ -1253,6 +1250,7 @@ async def test_cancelled_time_travel_preflight_has_no_product_lifecycle(
         agent_id=runtime.agent_id,
         session_id="cancel-cont-session",
     )
+    app = AssistantRuntimeApp(runtime_factory=lambda: runtime)
     try:
         await runtime.arun_state(
             UserRequest(
@@ -1260,7 +1258,7 @@ async def test_cancelled_time_travel_preflight_has_no_product_lifecycle(
             ),
             run_id="cancel-cont-origin",
         )
-        checkpoint = (await runtime.alist_history(owner, limit=10))[1]
+        checkpoint = (await app.list_turn_history(owner, limit=10))[1]
         baseline = tuple(history.read_all())
         with pytest.raises(AgentRunCancelled):
             await runtime.areplay_state(

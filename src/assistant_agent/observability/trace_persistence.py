@@ -9,9 +9,6 @@ from threading import Event, Lock, Thread
 from time import monotonic
 from typing import Any
 
-from assistant_agent.runtime.hooks import HookManager, HookTraceStore
-from assistant_agent.observability.langfuse_scores import create_langfuse_score_trace_observer_from_env
-from assistant_agent.observability.otel_exporter import create_text_otel_trace_observer_from_env
 from assistant_agent.observability.trace_ledger import DailyTraceLedgerStore
 from assistant_agent.providers.provider_errors import sanitize_error_message
 from assistant_agent.observability.trace_store import (
@@ -197,75 +194,11 @@ def create_server_trace_store(
 ) -> CompositeTraceStore:
     """Create immediate reads with background completeness-ledger persistence."""
 
-    observers = [
-        observer
-        for observer in (
-            create_text_otel_trace_observer_from_env(),
-        )
-        if observer is not None
-    ]
-    return _create_runtime_trace_store(
-        path=path,
-        capacity=capacity,
-        require_otel=False,
-        include_score_observer=True,
-        otel_observers=observers,
-    )
-
-
-def create_experiment_trace_store(
-    *,
-    path: Path | str = DEFAULT_TRACE_PATH,
-    capacity: int = DEFAULT_TRACE_QUEUE_CAPACITY,
-) -> CompositeTraceStore:
-    """Compatibility alias for the fail-closed Langfuse Experiment store."""
-
-    return create_langfuse_experiment_trace_store(path=path, capacity=capacity)
-
-
-def create_langfuse_experiment_trace_store(
-    *,
-    path: Path | str = DEFAULT_TRACE_PATH,
-    capacity: int = DEFAULT_TRACE_QUEUE_CAPACITY,
-) -> CompositeTraceStore:
-    """Create an export-capable store for a fail-closed Langfuse Experiment."""
-
-    return _create_runtime_trace_store(
-        path=path,
-        capacity=capacity,
-        require_otel=True,
-        include_score_observer=False,
-    )
-
-
-def _create_runtime_trace_store(
-    *,
-    path: Path | str,
-    capacity: int,
-    require_otel: bool,
-    include_score_observer: bool,
-    otel_observers: list[object] | None = None,
-) -> CompositeTraceStore:
-    observers = otel_observers
-    if observers is None:
-        observer = create_text_otel_trace_observer_from_env()
-        observers = [observer] if observer is not None else []
-    observers = [observer for observer in observers if observer is not None]
-    if require_otel and not observers:
-        raise RuntimeError("Langfuse Experiment requires configured OTel trace export")
-
     primary = InMemoryTraceStore()
     secondary = BufferedJsonlTraceStore(DailyTraceLedgerStore(path), capacity=capacity)
-    secondaries: list[TraceStore] = [secondary]
-    if observers:
-        secondaries.append(HookTraceStore(HookManager(observers)))
-    if include_score_observer:
-        score_observer = create_langfuse_score_trace_observer_from_env()
-        if score_observer is not None:
-            secondaries.append(HookTraceStore(HookManager([score_observer])))
     return CompositeTraceStore(
         primary,
-        secondaries,
+        [secondary],
         read_fallbacks=[secondary],
     )
 

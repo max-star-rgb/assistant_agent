@@ -50,7 +50,7 @@ def test_report_classifies_critical_high_flaky_and_infrastructure() -> None:
     report = build_release_report(
         release_id="release-1",
         experiment_run_id="run-1",
-        experiment_run_url="https://langfuse.invalid/run-1",
+        experiment_run_url="https://smith.invalid/run-1",
         model="model",
         git_commit="git",
         catalog_generation="catalog",
@@ -127,10 +127,13 @@ def test_service_runs_fixed_pipeline_and_marks_global_timeout(tmp_path: Path) ->
     times = iter((0.0, 10.0, 571.0))
     calls = []
     scenarios = (SimpleNamespace(id="high"),)
+    binding = SimpleNamespace(example_id="example-1", scenario_id="high")
     experiment = SimpleNamespace(
-        run_name="run-1",
-        dataset_run_id="run-id-1",
-        dataset_run_url="https://langfuse.invalid/run-id-1",
+        experiment_id="run-id-1",
+        experiment_url="https://smith.invalid/run-id-1",
+        dataset_id="dataset-1",
+        example_ids=("example-1",),
+        cleanup_results={},
     )
     settings = SimpleNamespace(
         release_id="release-1",
@@ -146,9 +149,23 @@ def test_service_runs_fixed_pipeline_and_marks_global_timeout(tmp_path: Path) ->
         artifact_root=tmp_path / "artifacts",
         load_scenarios_fn=lambda root: scenarios,
         settings_factory=lambda request, selected: settings,
-        sync_dataset_fn=lambda client, selected, commit: calls.append("sync"),
+        sync_examples_fn=lambda client, selected, commit: (
+            calls.append("sync")
+            or SimpleNamespace(dataset_id="dataset-1", bindings=(binding,))
+        ),
         experiment_runner=lambda client, selected, built: experiment,
-        score_auditor=lambda client, native, selected: (_assessment("high"),),
+        wait_for_runs_fn=lambda client, **kwargs: SimpleNamespace(
+            root_run_ids=("root-run-1",),
+            feedback={
+                "example-1": {
+                    "assistant_agent.quality.task_conformance": True,
+                    "assistant_agent.quality.grounding": True,
+                    "assistant_agent.quality.response_quality": True,
+                }
+            },
+            native_tree_complete=True,
+        ),
+        feedback_auditor=lambda *args: (_assessment("high"),),
         monotonic_fn=lambda: next(times),
     )
 
@@ -221,7 +238,7 @@ def test_staging_permission_gate_only_considers_selected_scenarios() -> None:
     assert _selection_requires_staging(scenarios, None) is True
 
 
-def test_cli_preflight_checks_catalog_without_creating_langfuse_client(
+def test_cli_preflight_checks_catalog_without_creating_remote_client(
     monkeypatch, capsys
 ) -> None:
     required: list[str] = []
@@ -241,7 +258,7 @@ def test_cli_preflight_checks_catalog_without_creating_langfuse_client(
     monkeypatch.setattr(release_cli, "_catalog_snapshot", lambda config: Catalog())
     monkeypatch.setattr(
         release_cli,
-        "_langfuse_client",
+        "_langsmith_client",
         lambda: (_ for _ in ()).throw(AssertionError("preflight must stay local")),
     )
 
@@ -287,7 +304,7 @@ def test_catalog_probe_runs_in_disposable_working_directory(monkeypatch) -> None
     assert Path.cwd() == starting_directory
 
 
-def test_release_review_builds_items_through_experiment_runtime_host(monkeypatch) -> None:
+def test_release_review_builds_items_with_production_runtime(monkeypatch) -> None:
     assert hasattr(release_cli, "_create_item_runtime")
     captured = {}
 
@@ -298,35 +315,24 @@ def test_release_review_builds_items_through_experiment_runtime_host(monkeypatch
             registry,
             config,
             tool_execution_backend,
-            trace_store,
         ) -> None:
             captured.update(
                 registry=registry,
                 config=config,
                 backend=tool_execution_backend,
-                trace_store=trace_store,
             )
 
-    def create_host(builder):
-        captured["runtime"] = builder("trace-store-sentinel")
-        return "host-sentinel"
-
     monkeypatch.setattr(release_cli, "AgentGraphRuntime", Runtime)
-    monkeypatch.setattr(release_cli, "create_experiment_runtime_host", create_host)
     config = SimpleNamespace()
     registry = SimpleNamespace()
     backend = SimpleNamespace()
 
-    assert (
-        release_cli._create_item_runtime(
-            config=config,
-            registry=registry,
-            backend=backend,
-        )
-        == "host-sentinel"
+    runtime = release_cli._create_item_runtime(
+        config=config,
+        registry=registry,
+        backend=backend,
     )
     assert captured["registry"] is registry
     assert captured["config"] is config
     assert captured["backend"] is backend
-    assert captured["trace_store"] == "trace-store-sentinel"
-    assert isinstance(captured["runtime"], Runtime)
+    assert isinstance(runtime, Runtime)

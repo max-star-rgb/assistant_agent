@@ -203,11 +203,10 @@ worker；Deep Research 入口只保存研究问题，不注入固定来源数量
 具体子任务条件必须进入已获准 work item 的 objective、acceptance contract、assigned constraint 或
 artifact 上下文，不能靠泄露全局 submission input 隐式生效。
 
-`AgentGraphRuntime.run_work_item()` 使用 runtime-owned `_trusted_workflow_assignment` 和显式
-`_trusted_workflow_allowed_tools`。空 allowlist 的含义是零个 Tool，而不是“无覆盖”；普通请求不能通过
-伪造同名自然语言扩大候选集合，HTTP、WebSocket 和 A2A 入口也会剥离这些 runtime-owned metadata。
-Workflow 在 `waiting_input` 后收到的恢复值会作为结构化 `workflow_inputs` 进入下一次
-work-item request；它属于用户数据而非权限或控制指令。每个 work item 的 Provider 输出预算由
+原生 Workflow profile subgraph 使用 graph-owned assignment 和显式 Tool allowlist。空 allowlist 的含义
+是零个 Tool，而不是“无覆盖”；普通请求不能通过伪造同名自然语言扩大候选集合，HTTP、WebSocket 和
+A2A 入口也会剥离 runtime-owned metadata。Workflow 在 `waiting_input` 后收到的恢复值作为结构化
+resume facts 进入下一代 branch；它属于用户数据而非权限或控制指令。每个 profile 的 Provider 输出预算由
 `MULTIMODAL_AGENT_DEEP_RESEARCH_MAX_TOKENS` 独立配置，普通对话继续使用
 `MULTIMODAL_AGENT_CHAT_MAX_TOKENS`，避免启用 thinking/search 后沿用短回复预算。
 当前默认模型窗口映射中，`qwen3.6-flash*` 与 `deepseek-v4-flash*` 都按百炼声明的 1,000,000 token
@@ -370,9 +369,8 @@ memory 文本、完整 tool observation、raw Provider payload 或 secret。Toke
 不是模型窗口准入值。最终 compiled request tokenizer preflight 和 system/developer prompt report 必须包含
 这些渲染开销，并继续作为 hard window 的权威口径。
 
-Langfuse 中 `context.compile` 只把 tokenizer preflight 投影为 observation metadata，不计入 Usage
-breakdown；实际 input/output/total usage 只归属随后对应的 `llm.chat` generation，防止同一 Provider
-调用重复计量。
+canonical `context.compile` 记录 tokenizer preflight，但不把它计入 Provider Usage；实际
+input/output/total usage 只归属随后对应的 `llm.chat`，防止同一 Provider 调用重复计量。
 
 Canonical `context.build.started` / `context.build.finished` 记录 context 编译生命周期；
 最终 compiled `ChatRequest` 只归属对应的 `llm.chat` generation input。查询和脱敏规则见

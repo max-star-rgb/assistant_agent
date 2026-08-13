@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -11,12 +10,9 @@ from typing import Any, Literal
 from urllib.request import urlopen
 
 from assistant_agent.config import ProviderConfig
-from assistant_agent.observability.langfuse_config import langfuse_host_from_env
-from assistant_agent.observability.otel_exporter import OtlpHttpTextExporterConfig
 
 
 DEFAULT_STARTUP_DEPENDENCY_TIMEOUT_SECONDS = 0.75
-LANGFUSE_HEALTH_PATH = "/api/public/health"
 MEM0_READY_PATH = "/ready"
 
 DependencyState = Literal["disabled", "ready", "unavailable"]
@@ -39,42 +35,25 @@ class StartupDependencyStatus:
 def collect_startup_dependency_statuses(
     config: ProviderConfig,
     *,
-    env: Mapping[str, str] | None = None,
     timeout_seconds: float = DEFAULT_STARTUP_DEPENDENCY_TIMEOUT_SECONDS,
     probe: JsonHealthProbe | None = None,
 ) -> tuple[
     StartupDependencyStatus,
     StartupDependencyStatus,
-    StartupDependencyStatus,
 ]:
     """Probe configured local dependencies concurrently without blocking startup."""
 
-    values = os.environ if env is None else env
     health_probe = probe or _read_json_health
     mem0_disabled = not (
         config.provider_mode == "real" and config.mem0_base_url
     )
-    otel_export_enabled = OtlpHttpTextExporterConfig.from_env(values).enabled
-
     mem0_default = StartupDependencyStatus(
         name="Mem0",
         state="disabled" if mem0_disabled else "unavailable",
     )
-    langfuse_default = StartupDependencyStatus(
-        name="Langfuse",
-        state="unavailable" if otel_export_enabled else "disabled",
-        detail=_langfuse_export_detail(otel_export_enabled) if otel_export_enabled else None,
-    )
     web_search_default = _web_search_status(config)
 
     checks: dict[str, Callable[[], StartupDependencyStatus]] = {}
-    if otel_export_enabled:
-        checks["langfuse"] = lambda: _probe_langfuse(
-            values,
-            timeout_seconds=timeout_seconds,
-            probe=health_probe,
-            export_enabled=otel_export_enabled,
-        )
     if not mem0_disabled:
         checks["mem0"] = lambda: _probe_mem0(
             config,
@@ -83,7 +62,6 @@ def collect_startup_dependency_statuses(
         )
     resolved = {
         "mem0": mem0_default,
-        "langfuse": langfuse_default,
         "web_search": web_search_default,
     }
     if checks:
@@ -103,7 +81,6 @@ def collect_startup_dependency_statuses(
                     continue
     return (
         resolved["mem0"],
-        resolved["langfuse"],
         resolved["web_search"],
     )
 
@@ -140,26 +117,6 @@ def _probe_mem0(
     )
 
 
-def _probe_langfuse(
-    env: Mapping[str, str],
-    *,
-    timeout_seconds: float,
-    probe: JsonHealthProbe,
-    export_enabled: bool,
-) -> StartupDependencyStatus:
-    host = langfuse_host_from_env(env).rstrip("/")
-    payload = probe(f"{host}{LANGFUSE_HEALTH_PATH}", timeout_seconds)
-    if str(payload.get("status") or "").lower() != "ok":
-        state: DependencyState = "unavailable" if export_enabled else "disabled"
-    else:
-        state = "ready"
-    return StartupDependencyStatus(
-        name="Langfuse",
-        state=state,
-        detail=_langfuse_export_detail(export_enabled) if state != "disabled" else None,
-    )
-
-
 def _web_search_status(config: ProviderConfig) -> StartupDependencyStatus:
     if config.provider_mode == "mock":
         return StartupDependencyStatus(name="Web search", state="disabled")
@@ -171,10 +128,6 @@ def _web_search_status(config: ProviderConfig) -> StartupDependencyStatus:
         state="ready" if ready else "unavailable",
         detail="bailian native turbo",
     )
-
-
-def _langfuse_export_detail(enabled: bool) -> str:
-    return f"export {'enabled' if enabled else 'disabled'}"
 
 
 def _read_json_health(url: str, timeout_seconds: float) -> Mapping[str, Any]:

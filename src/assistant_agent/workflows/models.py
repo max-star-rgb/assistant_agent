@@ -8,7 +8,6 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
 
-
 WorkflowStatus = Literal[
     "queued",
     "running",
@@ -20,7 +19,6 @@ WorkflowStatus = Literal[
     "cancelled",
 ]
 WorkflowExecutionEngine = Literal["legacy_scheduler_v2", "langgraph_v3"]
-WorkflowEngineMigrationStatus = Literal["prepared", "committed", "rolled_back"]
 WorkItemStatus = Literal[
     "pending",
     "ready",
@@ -57,7 +55,9 @@ class WorkflowConstraintProposal(BaseModel):
     constraint_id: str = Field(pattern=r"^[a-zA-Z][a-zA-Z0-9_.-]{0,119}$")
     statement: str = Field(min_length=1, max_length=4_000)
     owner_work_item_ids: list[str] = Field(min_length=1, max_length=64)
-    verifier_work_item_id: str | None = Field(default=None, min_length=1, max_length=160)
+    verifier_work_item_id: str | None = Field(
+        default=None, min_length=1, max_length=160
+    )
     severity: ConstraintSeverity = "required"
 
     @model_validator(mode="after")
@@ -292,7 +292,9 @@ class WorkflowWorkItem(BaseModel):
         if any(value is None for value in lease_values) and any(
             value is not None for value in lease_values
         ):
-            raise ValueError("attempt id, lease owner, token, and expiry must be set together")
+            raise ValueError(
+                "attempt id, lease owner, token, and expiry must be set together"
+            )
         if self.lease_expires_at is not None and self.lease_expires_at.tzinfo is None:
             raise ValueError("work item lease expiry must be timezone-aware")
         if self.status == "running" and self.lease_token is None:
@@ -321,22 +323,6 @@ class WorkflowPlanVersion(BaseModel):
         max_length=32,
     )
     created_at: datetime = Field(default_factory=utc_now)
-
-
-class WorkflowEngineMigration(BaseModel):
-    """Business-side half of the non-transactional graph migration barrier."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    schema_version: Literal["workflow_engine_migration_v1"] = (
-        "workflow_engine_migration_v1"
-    )
-    status: WorkflowEngineMigrationStatus
-    workflow_thread_id: str = Field(min_length=1, max_length=512)
-    idempotency_key: str = Field(min_length=1, max_length=512)
-    source_revision: int = Field(ge=1)
-    manifest_revision: int = Field(ge=1)
-    manifest_digest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
 
 
 class WorkflowRecord(BaseModel):
@@ -375,8 +361,6 @@ class WorkflowRecord(BaseModel):
     result_artifact_refs: list[str] = Field(default_factory=list, max_length=128)
     waiting_input: dict[str, JsonValue] | None = None
     consumed_resume_tokens: list[str] = Field(default_factory=list, max_length=1_000)
-    engine_migration: WorkflowEngineMigration | None = None
-    legacy_claim_frozen: bool = False
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
     terminal_at: datetime | None = None
@@ -388,6 +372,8 @@ class WorkflowRecord(BaseModel):
             return data
         migrated = dict(data)
         migrated.setdefault("execution_engine", "legacy_scheduler_v2")
+        migrated.pop("engine_migration", None)
+        migrated.pop("legacy_claim_frozen", None)
         for name in ("lease_owner", "lease_token", "lease_expires_at"):
             migrated.pop(name, None)
         return migrated
@@ -399,20 +385,7 @@ class WorkflowRecord(BaseModel):
             if value is not None and value.tzinfo is None:
                 raise ValueError(f"{name} must be timezone-aware")
         if self.ingress_parent_span_id is not None and self.ingress_trace_id is None:
-            raise ValueError(
-                "ingress parent span id requires an ingress trace id"
-            )
-        migration = self.engine_migration
-        if self.legacy_claim_frozen != (
-            migration is not None and migration.status == "prepared"
-        ):
-            raise ValueError("legacy claim freeze must match prepared migration state")
-        if migration is not None and migration.status == "committed":
-            if self.execution_engine != "langgraph_v3":
-                raise ValueError("committed migration requires graph execution engine")
-        if migration is not None and migration.status in {"prepared", "rolled_back"}:
-            if self.execution_engine != "legacy_scheduler_v2":
-                raise ValueError("uncommitted migration must retain legacy provenance")
+            raise ValueError("ingress parent span id requires an ingress trace id")
         return self
 
 
@@ -425,23 +398,6 @@ class WorkflowEvent(BaseModel):
     status: str = Field(min_length=1, max_length=80)
     payload: dict[str, JsonValue] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=utc_now)
-
-
-class WorkflowWorkItemLease(BaseModel):
-    """Durable ownership of one independently executable DAG node."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    workflow_id: str = Field(min_length=1)
-    workflow_revision: int = Field(ge=1)
-    plan_version: int = Field(ge=1)
-    work_item_id: str = Field(min_length=1)
-    attempt_id: str = Field(min_length=1)
-    worker_id: str = Field(min_length=1)
-    lease_token: str = Field(min_length=1)
-    expires_at: datetime
-    reserved_model_calls: int = Field(ge=1)
-    reserved_tool_calls: int = Field(ge=0)
 
 
 class WorkflowBundle(BaseModel):
@@ -467,7 +423,9 @@ class WorkflowBundle(BaseModel):
         if terminal and self.workflow.terminal_at is None:
             raise ValueError("terminal_at is required for terminal workflow status")
         if not terminal and self.workflow.terminal_at is not None:
-            raise ValueError("terminal_at is forbidden for non-terminal workflow status")
+            raise ValueError(
+                "terminal_at is forbidden for non-terminal workflow status"
+            )
         return self
 
     @property
@@ -477,13 +435,3 @@ class WorkflowBundle(BaseModel):
             for plan in self.plans
             if plan.version == self.workflow.current_plan_version
         )
-
-
-class WorkflowDispatch(BaseModel):
-    """One committed scheduler update, optionally carrying executable ownership."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    lease: WorkflowWorkItemLease | None = None
-    bundle: WorkflowBundle
-    committed_events: list[WorkflowEvent] = Field(default_factory=list)

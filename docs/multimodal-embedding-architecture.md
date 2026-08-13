@@ -150,9 +150,7 @@ sequence，完成即返回，不等待更早任务。随后它以该 sequence �
 Store 自身的 retention 继续提供更大的有界历史；`visual_memory_search` 在可信 as-of/time window 内取
 最后最多 256 条。原始记录不做预压缩；是否压缩只在 Tool 即将生成主 LLM observation 时按实际 token
 预算决定。主 turn 的 `live_view_inspect` trace metadata 只关联本次实际选中 record 的来源 trace/span，
-不能从并发 observation 的完成顺序反推。面向本机 loopback Langfuse 的 OTel 投影会额外生成
-`source_vision_trace_url`，用于从 Tool observation 直接打开该来源 trace；它不是视觉记录或 Tool
-结果的领域字段，远程 Langfuse host 不生成该 URL。
+不能从并发 observation 的完成顺序反推；领域结果不生成平台 URL。
 
 仓库中的 `VisualContextService`、视觉压缩配置与对应观测事件仍可供独立兼容代码和专项测试使用，但
 当前 Agent-Service realtime observer 不构造、不调用它们，也不把 revisioned summary 或旧 record 文本
@@ -255,7 +253,7 @@ MULTIMODAL_AGENT_PROVIDER_MODE=mock /home/lenovo1/miniconda3/envs/hello_agent/bi
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_release_review.py --inspect
 ```
 
-真实本地 CUDA 使用 `--allow-local-model`；真实 Chat/Judge 与 Langfuse publish/run 使用各自 operator gate。
+真实本地 CUDA 使用 `--allow-local-model`；真实 Chat/Judge 与 LangSmith publish/run 使用各自 operator gate。
 pytest、dry-run 或检测到凭据都不得自动触发这些调用。
 
 ## 非目标

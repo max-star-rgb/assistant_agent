@@ -2,29 +2,26 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from langsmith.utils import LangSmithNotFoundError
+
 from evals.release_review.contracts import ReleaseScenario
-from evals.release_review.sync_dataset import (
+from evals.release_review.langsmith_backend import (
+    GIT_EXAMPLE_OWNER,
     RELEASE_REVIEW_DATASET,
-    sync_release_dataset,
+    sync_langsmith_examples,
 )
 
 
-def _scenario(
-    scenario_id: str, *, repetitions: int = 1, risk: str = "high"
-) -> ReleaseScenario:
+def _scenario(scenario_id: str, *, repetitions: int = 1) -> ReleaseScenario:
     return ReleaseScenario.model_validate(
         {
             "id": scenario_id,
             "phase": "decision",
             "capability": "probe",
-            "risk": risk,
+            "risk": "high",
             "request": f"request for {scenario_id}",
             "repetitions": repetitions,
-            "tool_contract": {
-                "required": ["probe_tool"],
-                "allowed": [],
-                "forbidden": [],
-            },
+            "tool_contract": {"required": ["probe_tool"]},
             "fixtures": {"probe_tool": [{"success": True, "data": {}}]},
             "state_assertions": [{"path": "status", "equals": "completed"}],
         }
@@ -32,79 +29,82 @@ def _scenario(
 
 
 class FakeClient:
-    def __init__(self, existing: list[object] | None = None) -> None:
+    def __init__(self, existing: list[object] | None = None, *, missing=False) -> None:
+        self.dataset = SimpleNamespace(id="dataset-sentinel")
         self.existing = list(existing or [])
-        self.datasets: list[dict] = []
-        self.items: list[dict] = []
+        self.missing = missing
+        self.created: list[dict] = []
+        self.updated: list[tuple[str, dict]] = []
 
-    def create_dataset(self, **kwargs):
-        self.datasets.append(kwargs)
+    def read_dataset(self, *, dataset_name: str):
+        assert dataset_name == RELEASE_REVIEW_DATASET
+        if self.missing:
+            self.missing = False
+            raise LangSmithNotFoundError("missing")
+        return self.dataset
 
-    def get_dataset(self, name: str):
+    def create_dataset(self, name: str, **_kwargs):
         assert name == RELEASE_REVIEW_DATASET
-        return SimpleNamespace(items=self.existing)
+        return self.dataset
 
-    def create_dataset_item(self, **kwargs):
-        self.items.append(kwargs)
+    def list_examples(self, *, dataset_id: str):
+        assert dataset_id == self.dataset.id
+        return list(self.existing)
+
+    def create_example(self, **kwargs):
+        self.created.append(kwargs)
+        return SimpleNamespace(id=str(kwargs["example_id"]))
+
+    def update_example(self, example_id: str, **kwargs):
+        self.updated.append((str(example_id), kwargs))
 
 
-def test_sync_uses_one_dataset_and_expands_repetitions() -> None:
-    client = FakeClient()
+def test_sync_creates_dataset_and_expands_repetitions() -> None:
+    client = FakeClient(missing=True)
 
-    result = sync_release_dataset(
-        client,
-        [_scenario("critical_probe", repetitions=2, risk="critical"), _scenario("high_probe")],
-        "git-sentinel",
+    result = sync_langsmith_examples(
+        client, [_scenario("critical_probe", repetitions=2)], "git-sentinel"
     )
 
-    assert [dataset["name"] for dataset in client.datasets] == [
-        "assistant-agent-release-review"
-    ]
-    active = [item for item in client.items if item.get("status") != "ARCHIVED"]
-    assert [item["id"] for item in active] == [
-        "assistant-agent-release-review__critical_probe__r1",
-        "assistant-agent-release-review__critical_probe__r2",
-        "assistant-agent-release-review__high_probe__r1",
-    ]
-    assert active[0]["input"] == {
+    assert result.dataset_name == RELEASE_REVIEW_DATASET
+    assert len(result.active_example_ids) == 2
+    assert len(client.created) == 2
+    assert client.created[0]["inputs"] == {
         "scenario_id": "critical_probe",
         "request": "request for critical_probe",
     }
-    assert active[0]["expected_output"] == {
-        "tool_contract": {
-            "required": ["probe_tool"],
-            "allowed": [],
-            "forbidden": [],
-            "arguments": [],
-            "sequence": {"before": [], "before_final_response": []},
+    assert client.created[0]["metadata"]["git_commit"] == "git-sentinel"
+    assert client.created[0]["metadata"]["owner"] == GIT_EXAMPLE_OWNER
+
+
+def test_sync_updates_current_and_archives_only_stale_owned_examples() -> None:
+    current = SimpleNamespace(
+        id="current-example",
+        metadata={
+            "owner": GIT_EXAMPLE_OWNER,
+            "scenario_id": "current",
+            "repetition": 1,
+            "active": True,
         },
-        "state_assertions": [{"path": "status", "equals": "completed"}],
-    }
-    assert active[0]["metadata"]["git_commit"] == "git-sentinel"
-    assert active[0]["metadata"]["repetition"] == 1
-    assert result.active_item_ids == tuple(item["id"] for item in active)
-
-
-def test_sync_archives_only_stale_git_owned_items() -> None:
+    )
     stale = SimpleNamespace(
-        id="assistant-agent-release-review__removed__r1",
-        input={"scenario_id": "removed", "request": "old"},
-        expected_output={},
-        metadata={"owner": "assistant_agent_release_review", "scenario_id": "removed"},
-        status="ACTIVE",
+        id="stale-example",
+        metadata={
+            "owner": GIT_EXAMPLE_OWNER,
+            "scenario_id": "removed",
+            "repetition": 1,
+            "active": True,
+        },
     )
     foreign = SimpleNamespace(
-        id="foreign-item",
-        input={},
-        expected_output=None,
-        metadata={"owner": "someone_else"},
-        status="ACTIVE",
+        id="foreign-example",
+        metadata={"owner": "someone_else", "scenario_id": "foreign", "repetition": 1},
     )
-    client = FakeClient([stale, foreign])
+    client = FakeClient([current, stale, foreign])
 
-    result = sync_release_dataset(client, [_scenario("current")], "git-sentinel")
+    result = sync_langsmith_examples(client, [_scenario("current")], "git-sentinel")
 
-    archived = [item for item in client.items if item.get("status") == "ARCHIVED"]
-    assert [item["id"] for item in archived] == [stale.id]
-    assert result.archived_item_ids == (stale.id,)
-    assert all(item["id"] != foreign.id for item in client.items)
+    assert result.active_example_ids == ("current-example",)
+    assert result.archived_example_ids == ("stale-example",)
+    assert [item[0] for item in client.updated] == ["current-example", "stale-example"]
+    assert client.updated[-1][1]["metadata"]["active"] is False

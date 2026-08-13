@@ -92,7 +92,9 @@ class ProductionWorkflowExperimentComposition:
             deliverables=list(submission_payload.deliverables),
             constraints=list(submission_payload.constraints),
             inputs=submission_payload.inputs.model_dump(mode="json"),
-            requested_budget=submission_payload.requested_budget.model_dump(mode="json"),
+            requested_budget=submission_payload.requested_budget.model_dump(
+                mode="json"
+            ),
             durability_reasons=list(submission_payload.durability_reasons),
             seed_artifact_refs=list(submission_payload.seed_artifact_refs),
             idempotency_key=(
@@ -138,9 +140,7 @@ class ProductionWorkflowExperimentComposition:
                     and reference_output.evaluation_contract.resume_equivalent
                 )
             else:
-                resume_equivalent = (
-                    result.status == reference_output.terminal_status
-                )
+                resume_equivalent = result.status == reference_output.terminal_status
             return result, resume_equivalent
 
         return DirectWorkflowInvocation(invoke=invoke)
@@ -156,7 +156,9 @@ class ProductionWorkflowExperimentComposition:
             errors.append(exc)
         try:
             if not await self._runtime_host.aclose(timeout=5.0):
-                errors.append(RuntimeError("shared Agent Runtime did not close cleanly"))
+                errors.append(
+                    RuntimeError("shared Agent Runtime did not close cleanly")
+                )
         except BaseException as exc:
             errors.append(exc)
         try:
@@ -165,7 +167,9 @@ class ProductionWorkflowExperimentComposition:
             errors.append(exc)
         self._temporary_directory.cleanup()
         if errors:
-            raise RuntimeError("workflow Experiment composition close failed") from errors[0]
+            raise RuntimeError(
+                "workflow Experiment composition close failed"
+            ) from errors[0]
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -271,7 +275,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     return 0
 
 
-async def _execute_async(config: ProviderConfig, args: argparse.Namespace) -> dict[str, Any]:
+async def _execute_async(
+    config: ProviderConfig, args: argparse.Namespace
+) -> dict[str, Any]:
     run_name = args.run_name or f"workflow-preflight-{uuid4().hex[:12]}"
     composition = None
     client = None
@@ -342,7 +348,9 @@ async def _execute_async(config: ProviderConfig, args: argparse.Namespace) -> di
             except BaseException as exc:
                 lifecycle_errors.append(exc)
         if primary_error is None and lifecycle_errors:
-            raise RuntimeError("workflow Experiment lifecycle close failed") from lifecycle_errors[0]
+            raise RuntimeError(
+                "workflow Experiment lifecycle close failed"
+            ) from lifecycle_errors[0]
 
 
 async def _open_production_workflow_composition(
@@ -357,7 +365,6 @@ async def _open_production_workflow_composition(
     isolated_config = replace(
         config,
         durable_workflows_enabled=True,
-        durable_workflow_worker_enabled=False,
         durable_workflow_path=str(root / "workflows.sqlite3"),
         durable_workflow_artifact_path=str(root / "artifacts"),
         langgraph_checkpointer_backend="sqlite",
@@ -422,10 +429,7 @@ def _git_commit() -> str:
 
 def _workflow_trace_id(run_name: str, example_id: str) -> str:
     payload = (
-        "assistant-agent:langsmith-workflow-trace:v1\0"
-        + run_name
-        + "\0"
-        + example_id
+        "assistant-agent:langsmith-workflow-trace:v1\0" + run_name + "\0" + example_id
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:32]
 
@@ -442,9 +446,7 @@ def _infrastructure_failure(exc: BaseException) -> dict[str, Any]:
 
 def _require_passing_feedback(feedback: dict[str, dict[str, Any]]) -> None:
     failed = {
-        example_id: tuple(
-            key for key, score in scores.items() if score is not True
-        )
+        example_id: tuple(key for key, score in scores.items() if score is not True)
         for example_id, scores in feedback.items()
     }
     failed = {key: value for key, value in failed.items() if value}

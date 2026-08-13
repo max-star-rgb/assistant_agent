@@ -1,4 +1,0 @@
-interface:
-  display_name: "Langfuse Release Review"
-  short_description: "设计、运行并审计上线前 Agent Release Review"
-  default_prompt: "Use $langfuse-eval-engineering to add or audit a Git-owned Release Review scenario and its native Langfuse Experiment evidence."

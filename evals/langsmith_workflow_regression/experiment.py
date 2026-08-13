@@ -568,7 +568,7 @@ def audit_native_workflow_tree(
                 "workflow.worker",
             }
             if any(_field(run, "name") in shadow_names for run in graph_subtree):
-                item.append("canonical OTel shadow graph detected")
+                item.append("canonical shadow graph detected")
         if item:
             problems[example_id] = tuple(dict.fromkeys(item))
     return NativeWorkflowTreeAudit(

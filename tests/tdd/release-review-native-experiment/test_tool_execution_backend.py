@@ -73,7 +73,7 @@ def test_custom_backend_preserves_executor_governance() -> None:
     assert received_registry is registry
     assert received_registry.sealed is True
     assert tool_name == ProbeTool.name
-    assert tool_input == {"value": "value-sentinel"}
+    assert tool_input.model_dump() == {"value": "value-sentinel"}
     assert context.user_id == "user-sentinel"
     assert context.session_id == "session-sentinel"
     assert result.data == {"sentinel": 1}
