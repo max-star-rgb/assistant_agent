@@ -45,8 +45,14 @@ class _PlannerAdapter:
     provider = "scripted"
     model = "planner-probe"
 
-    def __init__(self, proposal: dict[str, object]) -> None:
+    def __init__(
+        self,
+        proposal: dict[str, object],
+        *,
+        response_text: str | None = None,
+    ) -> None:
         self._proposal = proposal
+        self._response_text = response_text
         self.requests = []
 
     def chat(self, request):
@@ -55,7 +61,8 @@ class _PlannerAdapter:
             provider=self.provider,
             model=self.model,
             finish_reason="stop",
-            response_text=json.dumps(
+            response_text=self._response_text
+            or json.dumps(
                 {"workflow_plan": self._proposal},
                 ensure_ascii=False,
                 sort_keys=True,
@@ -191,11 +198,17 @@ def _valid_proposal(constraints: list[str] | None = None) -> dict[str, object]:
     }
 
 
-def _planning_probe(tmp_path, proposal, *, constraints: list[str] | None = None):
+def _planning_probe(
+    tmp_path,
+    proposal,
+    *,
+    constraints: list[str] | None = None,
+    response_text: str | None = None,
+):
     registry = ToolRegistry()
     registry.register(ProbeTool())
     registry.seal()
-    adapter = _PlannerAdapter(proposal)
+    adapter = _PlannerAdapter(proposal, response_text=response_text)
     artifact_store = LocalWorkflowArtifactStore(tmp_path / "artifacts")
     services = WorkflowGraphRuntimeServices(
         provider_registry={"planner": adapter},
@@ -287,6 +300,8 @@ def test_planner_child_is_native_subgraph_and_admission_is_deterministic(tmp_pat
     ).nodes
     assert len(adapter.requests) == 1
     assert adapter.requests[0].tools == []
+    assert "workflow_plan_v2" in adapter.requests[0].user_query
+    assert '"workflow_plan"' in adapter.requests[0].user_query
     assert ProbeTool.name not in adapter.requests[0].user_query
     assert snapshot.values["planner_assignment"]["available_tool_names"] == []
     assert snapshot.values["planner_assignment"]["explicit_tool_allowlist"] == []
@@ -336,6 +351,42 @@ def test_planner_owner_or_thread_mismatch_fails_before_provider(tmp_path):
     with pytest.raises(ValueError, match="identity mismatch"):
         asyncio.run(execute())
     assert adapter.requests == []
+
+
+def test_non_json_planner_response_has_bounded_failure_state(tmp_path):
+    app, _planning, context, initial, _adapter = _planning_probe(
+        tmp_path,
+        _valid_proposal(),
+        response_text="ordinary prose response",
+    )
+
+    async def execute():
+        async for _part in app.astream(
+            initial,
+            config=_config(),
+            context=context,
+            stream_mode=["updates"],
+            subgraphs=True,
+            version="v2",
+        ):
+            pass
+        return await app.aget_state(_config())
+
+    snapshot = asyncio.run(execute())
+    child_response = snapshot.values["planner_child_state"].get("final_response")
+
+    assert snapshot.values["status"] == "failed"
+    assert snapshot.values["phase"] == "failed"
+    assert [error["code"] for error in snapshot.values["errors"]] == [
+        "workflow_plan_rejected"
+    ]
+    assert snapshot.values["planner_result"]["error_code"] == (
+        "workflow_plan_invalid"
+    )
+    assert child_response is not None
+    assert child_response["message"]
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(child_response["message"])
 
 
 def test_planning_admits_all_sixty_four_trusted_constraints(tmp_path):

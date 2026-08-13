@@ -35,7 +35,10 @@ from assistant_agent.workflows.graph_state import (
     validate_durable_workflow_state,
 )
 from assistant_agent.workflows.models import WorkflowPlannerProposal, WorkflowPlanV2Proposal
-from assistant_agent.workflows.agent_runtime import parse_workflow_plan_response
+from assistant_agent.workflows.agent_runtime import (
+    parse_workflow_plan_response,
+    render_workflow_planner_prompt,
+)
 from assistant_agent.workflows.transitions import (
     WorkflowTransitionRejected,
     validate_plan_dag,
@@ -150,6 +153,13 @@ def prepare_planner_profile_node(
             profile="planner",
             assignment_ref=assignment.assignment_ref,
             objective=assignment.objective,
+            request_text=render_workflow_planner_prompt(
+                workflow_objective=submission.objective,
+                workflow_deliverables=submission.deliverables,
+                workflow_constraints=submission.constraints,
+                workflow_inputs=submission.inputs.model_dump(mode="json"),
+                planning_objective=assignment.objective,
+            ),
             constraints=assignment.constraints,
             explicit_tool_allowlist=(),
         ),

@@ -59,6 +59,7 @@ class ProfileInvocationInput(_ProfileModel):
     profile: AssistantGraphProfileName
     assignment_ref: str = Field(min_length=1, max_length=1_024)
     objective: str = Field(min_length=1, max_length=10_000)
+    request_text: str | None = Field(default=None, min_length=1, max_length=32_000)
     constraints: tuple[str, ...] = Field(default=(), max_length=64)
     capability_refs: tuple[str, ...] = Field(default=(), max_length=64)
     explicit_tool_allowlist: tuple[str, ...] | None = Field(
@@ -210,7 +211,7 @@ def profile_input_adapter(
     request = UserRequest(
         user_id=_parent_text(parent_state, "user_id"),
         session_id=_parent_text(parent_state, "session_id"),
-        text=invocation.objective,
+        text=invocation.request_text or invocation.objective,
         task_execution_mode="foreground",
         response_style="structured",
         runtime_task_update=RuntimeTaskUpdate(

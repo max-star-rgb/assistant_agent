@@ -121,7 +121,11 @@ class BranchProfileContextFactory:
         self._validate_assignment_child(assignment, child, services)
 
         grants = self._resolve_capability_grants(assignment, services)
-        request = _request_from_assignment(assignment)
+        child_request = cast(Mapping[str, Any], child["request"])
+        request = _request_from_assignment(
+            assignment,
+            request_text=str(child_request["text"]),
+        )
         agent_state = AgentState.from_request(
             request,
             run_id=assignment.run_id,
@@ -293,11 +297,15 @@ class _AssignmentStateRefResolver:
             )
 
 
-def _request_from_assignment(assignment: WorkflowProfileAssignment) -> UserRequest:
+def _request_from_assignment(
+    assignment: WorkflowProfileAssignment,
+    *,
+    request_text: str | None = None,
+) -> UserRequest:
     return UserRequest(
         user_id=assignment.user_id,
         session_id=assignment.session_id,
-        text=assignment.objective,
+        text=request_text or assignment.objective,
         task_execution_mode="foreground",
         response_style="structured",
         runtime_task_update=RuntimeTaskUpdate(
