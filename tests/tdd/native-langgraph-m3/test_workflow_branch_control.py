@@ -328,3 +328,44 @@ def test_native_verifier_request_has_strict_schema_constraints_and_repair_scope(
         assert len(request_text) <= 32_000
     finally:
         artifact_store.close()
+
+
+def test_native_verifier_prompt_bounds_large_ascii_artifact(tmp_path):
+    from workflow_graph_probe import config, proposal, workflow_probe
+
+    plan = proposal({"a": [], "verify": ["a"]})
+    plan["constraint_bindings"] = [
+        {
+            "constraint_id": "required_evidence",
+            "statement": "cite evidence",
+            "owner_node_ids": ["a"],
+            "verifier_node_id": "verify",
+            "severity": "required",
+        }
+    ]
+    response = json.dumps(
+        {
+            "workflow_control": {
+                "outcome": "completed",
+                "summary": "done",
+                "content": "a" * 20_000,
+            }
+        }
+    )
+    app, context, initial, _worker, artifact_store = workflow_probe(
+        tmp_path,
+        {"a": [], "verify": ["a"]},
+        plan_payload=plan,
+        worker_responses={"a": response},
+    )
+    try:
+        final = asyncio.run(app.ainvoke(initial, config=config(), context=context))
+        verifier = context.services.provider_registry["verifier"]
+
+        assert final["status"] == "completed"
+        request_text = verifier.requests[0].user_query
+        assert len(request_text) <= 32_000
+        assert '"repair_candidate_ids": ["a"]' in request_text
+        assert '"trimmed": true' in request_text
+    finally:
+        artifact_store.close()

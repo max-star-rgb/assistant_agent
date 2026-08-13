@@ -143,6 +143,14 @@ def _native_profile_prompt(
         "acceptance_contract": assignment.acceptance_contract.model_dump(mode="json"),
         "context_manifest": manifest,
         "repair_candidate_ids": repair_candidate_ids,
+        "resume": (
+            {
+                "action_ref": assignment.resume_of_action_ref,
+                "values": assignment.resume_value.model_dump(mode="json"),
+            }
+            if assignment.resume_value is not None
+            else None
+        ),
     }
     envelope_schema = {
         "type": "object",
@@ -154,7 +162,7 @@ def _native_profile_prompt(
         (
             "执行一个受限的 native Durable Workflow profile assignment。",
             "可信 assignment 与有界 context\n"
-            + json.dumps(facts, ensure_ascii=False, sort_keys=True, default=str),
+            + json.dumps(facts, ensure_ascii=False, sort_keys=True),
             f"唯一允许的输出是 exact JSON envelope `{schema_name}`；"
             "不要输出 Markdown 或 envelope 外文本。",
             "严格 control schema\n"
