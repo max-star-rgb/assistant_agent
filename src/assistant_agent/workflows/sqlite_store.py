@@ -115,6 +115,15 @@ class SQLiteWorkflowStore:
             ).fetchone()
             return WorkflowBundle.model_validate_json(row[0]) if row is not None else None
 
+    def list_cutover_bundles(self) -> list[WorkflowBundle]:
+        """Read all business records in deterministic order for cutover inventory."""
+
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT bundle_json FROM durable_workflows ORDER BY workflow_id"
+            ).fetchall()
+            return [WorkflowBundle.model_validate_json(row[0]) for row in rows]
+
     def save(
         self,
         bundle: WorkflowBundle,
@@ -185,6 +194,7 @@ class SQLiteWorkflowStore:
         tool_call_limit: int,
         allowed_execution_engines: frozenset[WorkflowExecutionEngine],
         allowed_workflow_types: frozenset[str],
+        allowed_workflow_ids: frozenset[str] | None = None,
     ) -> WorkflowDispatch | None:
         with self._lock:
             try:
@@ -204,6 +214,7 @@ class SQLiteWorkflowStore:
                         bundle,
                         allowed_execution_engines=allowed_execution_engines,
                         allowed_workflow_types=allowed_workflow_types,
+                        allowed_workflow_ids=allowed_workflow_ids,
                     ):
                         continue
                     workflow = bundle.workflow

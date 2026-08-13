@@ -305,6 +305,7 @@ class AgentGraphRuntime:
         durable_task_service: DurableTaskService | None = None,
         workflow_service: WorkflowService | None = None,
         workflow_artifact_store: LocalWorkflowArtifactStore | None = None,
+        workflow_graph_host: Any | None = None,
         agent_id: str = DEFAULT_AGENT_ID,
         tool_execution_backend: ToolExecutionBackend | None = None,
         tool_operation_store: ToolOperationStore | None = None,
@@ -360,7 +361,11 @@ class AgentGraphRuntime:
         )
         self.workflow_service = workflow_service
         self.workflow_artifact_store = workflow_artifact_store
-        if self.config.durable_workflows_enabled:
+        self.workflow_graph_host = workflow_graph_host
+        if (
+            self.config.durable_workflows_enabled
+            and self.workflow_graph_host is None
+        ):
             if self.workflow_service is None:
                 workflow_store = SQLiteWorkflowStore(self.config.durable_workflow_path)
                 workflow_observer = create_workflow_otel_observer_from_env()
@@ -1716,10 +1721,7 @@ class AgentGraphRuntime:
             state.cancel(exc.message, source=exc.source, details=exc.details)
             return False
         if prepared.deep_research_start:
-            _start_deep_research_workflow(
-                state,
-                workflow_service=self.workflow_service,
-            )
+            _set_async_workflow_entry_required(state)
             return False
         if (
             prepared.request.task_execution_mode == "durable"
@@ -1813,6 +1815,12 @@ class AgentGraphRuntime:
         *,
         resume: AssistantResume | None = None,
     ) -> AgentState:
+        if prepared.deep_research_start and resume is None:
+            await _start_deep_research_workflow_async(
+                prepared.state,
+                workflow_graph_host=self.workflow_graph_host,
+            )
+            return prepared.state
         if not self._begin_graph_execution(prepared, resuming=resume is not None):
             return prepared.state
         try:
@@ -2730,18 +2738,34 @@ def _set_durable_tasks_disabled_response(state: AgentState) -> None:
     state.status = "failed"
 
 
-def _start_deep_research_workflow(
+def _set_async_workflow_entry_required(state: AgentState) -> None:
+    code = "workflow_async_entry_required"
+    state.errors.append(
+        AgentError(
+            message="Deep Research requires the asynchronous Workflow graph entry.",
+            source="deep_research_start",
+            details={"code": code},
+        )
+    )
+    state.response = AgentResponse(
+        message="深度研究工作流需要异步入口。",
+        data={"errors": [{"code": code}]},
+    )
+    state.status = "failed"
+
+
+async def _start_deep_research_workflow_async(
     state: AgentState,
     *,
-    workflow_service: WorkflowService | None,
+    workflow_graph_host: Any | None,
 ) -> None:
-    """Start one durable Plan-and-Execute execution without an ingress ReAct."""
+    """Submit one graph-native Workflow without an ingress ReAct or scheduler."""
 
     objective = (state.request.text or "").strip()
-    if workflow_service is None or not objective:
+    if workflow_graph_host is None or not objective:
         code = (
             "durable_workflows_disabled"
-            if workflow_service is None
+            if workflow_graph_host is None
             else "deep_research_objective_required"
         )
         state.errors.append(
@@ -2758,7 +2782,7 @@ def _start_deep_research_workflow(
         state.status = "failed"
         return
     try:
-        bundle = workflow_service.submit(
+        handle = await workflow_graph_host.start(
             identity=RequestIdentity.for_user(
                 user_id=state.user_id,
                 agent_id=state.agent_id,
@@ -2797,18 +2821,18 @@ def _start_deep_research_workflow(
         )
         state.status = "failed"
         return
-    workflow = bundle.workflow
     state.set_response(
         AgentResponse(
             message="",
             data={
                 "workflow": {
-                    "workflow_id": workflow.workflow_id,
-                    "workflow_type": workflow.workflow_type,
-                    "status": workflow.status,
-                    "phase": workflow.phase,
+                    "workflow_id": handle.workflow_id,
+                    "workflow_type": handle.workflow_type,
+                    "execution_engine": handle.execution_engine,
+                    "status": handle.status,
+                    "phase": handle.phase,
                 }
             },
-            output_refs=[f"workflow://{workflow.workflow_id}"],
+            output_refs=[handle.output_ref],
         )
     )

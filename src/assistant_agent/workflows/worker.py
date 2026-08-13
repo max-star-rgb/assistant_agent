@@ -24,10 +24,15 @@ class DurableWorkflowWorker:
         max_concurrent_items: int = 4,
         allowed_execution_engines: frozenset[WorkflowExecutionEngine],
         allowed_workflow_types: frozenset[str],
+        allowed_workflow_ids: frozenset[str],
     ) -> None:
         if max_concurrent_items < 1:
             raise ValueError("max_concurrent_items must be positive")
-        if not allowed_execution_engines or not allowed_workflow_types:
+        if (
+            not allowed_execution_engines
+            or not allowed_workflow_types
+            or not allowed_workflow_ids
+        ):
             raise ValueError("workflow worker claim allowlists must be non-empty")
         self.service = service
         self.runtime = runtime
@@ -37,6 +42,7 @@ class DurableWorkflowWorker:
         self.max_concurrent_items = max_concurrent_items
         self.allowed_execution_engines = allowed_execution_engines
         self.allowed_workflow_types = allowed_workflow_types
+        self.allowed_workflow_ids = allowed_workflow_ids
 
     def run_once(self) -> bool:
         claims = []
@@ -53,6 +59,7 @@ class DurableWorkflowWorker:
                 tool_call_limit=self.runtime.tool_call_limit_per_item,
                 allowed_execution_engines=self.allowed_execution_engines,
                 allowed_workflow_types=self.allowed_workflow_types,
+                allowed_workflow_ids=self.allowed_workflow_ids,
             )
             if dispatch is None:
                 break

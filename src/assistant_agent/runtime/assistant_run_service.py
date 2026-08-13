@@ -500,17 +500,26 @@ def create_runtime(
     trace_store: TraceStore | None = None,
     load_env: bool = True,
     durable_task_service: DurableTaskService | None = None,
+    checkpointer: Any | None = None,
+    graph_invocation_claim_store: Any | None = None,
+    workflow_graph_host: Any | None = None,
 ) -> AgentGraphRuntime:
     """Create the shared runtime with manual `.env` loading and offline test isolation."""
 
     resolved_config = resolve_runtime_config(config=config, load_env=load_env)
-    checkpointer = create_checkpointer(resolved_config)
+    resolved_checkpointer = (
+        checkpointer
+        if checkpointer is not None
+        else create_checkpointer(resolved_config)
+    )
     return AgentGraphRuntime(
         config=resolved_config,
         event_sink=event_sink,
         trace_store=trace_store,
         durable_task_service=durable_task_service,
-        checkpointer=checkpointer,
+        checkpointer=resolved_checkpointer,
+        graph_invocation_claim_store=graph_invocation_claim_store,
+        workflow_graph_host=workflow_graph_host,
         allow_interrupt=False,
     )
 

@@ -20,6 +20,7 @@ WorkflowStatus = Literal[
     "cancelled",
 ]
 WorkflowExecutionEngine = Literal["legacy_scheduler_v2", "langgraph_v3"]
+WorkflowEngineMigrationStatus = Literal["prepared", "committed", "rolled_back"]
 WorkItemStatus = Literal[
     "pending",
     "ready",
@@ -322,6 +323,22 @@ class WorkflowPlanVersion(BaseModel):
     created_at: datetime = Field(default_factory=utc_now)
 
 
+class WorkflowEngineMigration(BaseModel):
+    """Business-side half of the non-transactional graph migration barrier."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["workflow_engine_migration_v1"] = (
+        "workflow_engine_migration_v1"
+    )
+    status: WorkflowEngineMigrationStatus
+    workflow_thread_id: str = Field(min_length=1, max_length=512)
+    idempotency_key: str = Field(min_length=1, max_length=512)
+    source_revision: int = Field(ge=1)
+    manifest_revision: int = Field(ge=1)
+    manifest_digest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+
+
 class WorkflowRecord(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -358,6 +375,8 @@ class WorkflowRecord(BaseModel):
     result_artifact_refs: list[str] = Field(default_factory=list, max_length=128)
     waiting_input: dict[str, JsonValue] | None = None
     consumed_resume_tokens: list[str] = Field(default_factory=list, max_length=1_000)
+    engine_migration: WorkflowEngineMigration | None = None
+    legacy_claim_frozen: bool = False
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
     terminal_at: datetime | None = None
@@ -383,6 +402,17 @@ class WorkflowRecord(BaseModel):
             raise ValueError(
                 "ingress parent span id requires an ingress trace id"
             )
+        migration = self.engine_migration
+        if self.legacy_claim_frozen != (
+            migration is not None and migration.status == "prepared"
+        ):
+            raise ValueError("legacy claim freeze must match prepared migration state")
+        if migration is not None and migration.status == "committed":
+            if self.execution_engine != "langgraph_v3":
+                raise ValueError("committed migration requires graph execution engine")
+        if migration is not None and migration.status in {"prepared", "rolled_back"}:
+            if self.execution_engine != "legacy_scheduler_v2":
+                raise ValueError("uncommitted migration must retain legacy provenance")
         return self
 
 

@@ -501,13 +501,20 @@ Validator、持久化 stable operation scope 并取得 barrier owner 后才可�
 - **Durable Workflow**：它是新增长流程的唯一 DAG/Plan-and-Execute authority。显式 Deep
   Research 由 Runtime 薄启动；普通 assistant loop 没有提交 Workflow 的模型能力。入口只持久化意图
   字段，然后进入 planning 状态与 bootstrap Plan。
-  仓库当前另有一个尚未接入 production composition root 的 M3 `DurableWorkflowGraph` 离线纵切：它以
+  production composition 先打开进程共享的 official async SQLite saver owner，再依次编译
+  `WorkflowGraphHost` 与共享 `AgentGraphRuntime`；两个顶层 graph 共用同一 saver 与 invocation claim
+  store，Host 关闭时不关闭借用的 saver。`WorkflowGraphHost` 是新 Deep Research submit、status、events、
+  result、resume、cancel 的唯一产品 owner；HTTP 只返回 strict product handle/progress/action/event，
+  不暴露 checkpoint、thread、task 或 native interrupt identity。`DurableWorkflowGraph` 以
   strict checkpoint state、conditional `Send`、Pregel join、planner/worker/verifier profile subgraph、
   `Command` repair、父图 `interrupt`/resume 和 publish operation barrier 直接运行 `langgraph_v3` record。
-  这条 native graph 路径不调用下述 claim/lease/CAS/ready-node scheduler；但官方 async persistent SQLite
-  saver、跨进程恢复和 production `WorkflowGraphHost` cutover 尚未完成，所以当前产品 Deep Research 仍由
-  legacy scheduler 执行，不能把离线纵切表述为生产迁移完成。
-  `DurableWorkflowWorker` 原子 claim 单个 ready work item，并以 work-item lease、attempt 和调用预算作为
+  这条 native graph 路径不调用下述 claim/lease/CAS/ready-node scheduler。现存 legacy rows 按本机
+  operator cutover manifest 分类：pristine queued 使用业务 migration-prepared、幂等首 checkpoint、
+  migration-committed 两阶段切换；running/recovering/waiting/blocked 只由独立 `LegacyDrainHost` 按启动时
+  exact workflow-ID allowlist drain。新提交不能进入 legacy service，prepared row 会冻结旧 claim。
+  retirement 必须等 legacy 非终态、active lease、waiting 全零，manifest phase retired、rollback window
+  关闭且 retirement audit 存在；任一条件不满足时保留下述 legacy 模块。
+  drain 期 `DurableWorkflowWorker` 原子 claim 单个 ready work item，并以 work-item lease、attempt 和调用预算作为
   独立所有权边界；一个调度波次可并行运行多个无依赖节点。每个结果分别以 revision CAS 提交，最后一个
   依赖完成时才解锁 join/synthesize 节点。lease heartbeat 防止长模型 run 被误判为崩溃；过期 lease
   只重试对应节点，不重启整个 Workflow。legacy claim 边界只接受
@@ -604,8 +611,11 @@ payload、凭据、绝对路径和大块内联数据不能因 ToolResult 或调�
   与 fail-closed replay；
 - `tools/observation.py`：ToolResult 到模型观察的通用投影；
 - `tests/core/contract/test_tool_contract.py`：`TOOL-001` 核心治理契约。
-- `workflows/`：Workflow 契约、definition、Store、work-item controller、worker、artifact/context 和
-  `AgentGraphRuntime` work-item adapter；
+- `workflows/graph_host.py`：process-owned/b borrowed saver 的 graph_v3 产品 facade；
+- `workflows/cutover.py`：operator manifest、content-free inventory 与 queued 两阶段 migration reconciler；
+- `workflows/legacy_drain_host.py`：cutover 期 exact existing-row allowlist 的唯一 legacy execution owner；
+- `workflows/` 其余模块：Workflow 契约、definition、Store、artifact/context，以及 retirement gate 未关闭前
+  保留的 legacy work-item controller/worker/adapter；
 - `api/routes_workflows.py`：identity-scoped status/events/input/cancel/result 薄入口。
 
 ## 10. 不变量

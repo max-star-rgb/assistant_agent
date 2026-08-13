@@ -127,6 +127,55 @@ def get_agent_runtime() -> Any:
     return _RUNTIME
 
 
+def create_agent_runtime_for_composition(
+    *,
+    config: Any,
+    checkpointer: Any,
+    graph_invocation_claim_store: Any,
+    workflow_graph_host: Any | None,
+) -> tuple[Any, Any | None]:
+    """Build, but do not publish, the process Runtime on borrowed graph resources."""
+
+    trace_store = (
+        create_server_trace_store()
+        if os.environ.get(SERVER_TRACE_ENABLED_ENV) == "1"
+        else None
+    )
+    try:
+        runtime = create_runtime(
+            config=config,
+            trace_store=trace_store,
+            load_env=False,
+            checkpointer=checkpointer,
+            graph_invocation_claim_store=graph_invocation_claim_store,
+            workflow_graph_host=workflow_graph_host,
+        )
+    except BaseException:
+        if trace_store is not None:
+            RuntimeHost(runtime=object(), owned_trace_store=trace_store).close(
+                timeout=1.0
+            )
+        raise
+    return runtime, trace_store
+
+
+def install_agent_runtime(
+    runtime: Any,
+    *,
+    owned_trace_store: Any | None = None,
+) -> None:
+    """Publish one lifespan-composed Runtime without taking saver ownership."""
+
+    global _RUNTIME, _RUNTIME_HOST
+    if _RUNTIME is not None and _RUNTIME is not runtime:
+        raise RuntimeError("agent runtime is already installed")
+    _RUNTIME = runtime
+    _RUNTIME_HOST = RuntimeHost(
+        runtime=runtime,
+        owned_trace_store=owned_trace_store,
+    )
+
+
 def shutdown_agent_runtime() -> None:
     """Flush owned trace persistence and clear the process runtime singleton."""
 

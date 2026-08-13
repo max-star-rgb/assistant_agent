@@ -134,7 +134,7 @@ class DurableWorkflowGraphApp:
 
     async def astream(
         self,
-        input_or_command: DurableWorkflowState | Command[Any],
+        input_or_command: DurableWorkflowState | Command[Any] | None,
         *,
         identity: WorkflowGraphExecutionIdentity,
         context: WorkflowGraphRuntimeContext,
@@ -175,6 +175,25 @@ class DurableWorkflowGraphApp:
         self._validate_initial(initial_state, identity, context)
         return await self._consume(
             initial_state,
+            identity=identity,
+            context=context,
+            part_consumer=part_consumer,
+        )
+
+    async def acontinue(
+        self,
+        *,
+        identity: WorkflowGraphExecutionIdentity,
+        context: WorkflowGraphRuntimeContext,
+        part_consumer: Callable[[WorkflowGraphStreamPart], object] | None = None,
+    ) -> WorkflowGraphStreamResult:
+        """Continue an existing non-terminal checkpoint without new input."""
+
+        snapshot = await self._aget_raw_state(identity)
+        state = self._validated_snapshot(snapshot)
+        self._validate_owner(state, identity, context)
+        return await self._consume(
+            None,
             identity=identity,
             context=context,
             part_consumer=part_consumer,
@@ -273,7 +292,7 @@ class DurableWorkflowGraphApp:
 
     async def _consume(
         self,
-        input_or_command: DurableWorkflowState | Command[Any],
+        input_or_command: DurableWorkflowState | Command[Any] | None,
         *,
         identity: WorkflowGraphExecutionIdentity,
         context: WorkflowGraphRuntimeContext,

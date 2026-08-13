@@ -351,6 +351,11 @@ def _progress(state: DurableWorkflowState) -> WorkflowProductProgress:
 def _waiting_actions(
     state: DurableWorkflowState,
 ) -> tuple[WorkflowWaitingAction, ...]:
+    if state["phase"] != "waiting_input" and state["status"] not in {
+        "waiting_input",
+        "blocked",
+    }:
+        return ()
     results = latest_results(
         state["result_ledger"], state["execution_generation_by_node"]
     )

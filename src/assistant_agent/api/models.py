@@ -2,7 +2,7 @@
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from assistant_agent.runtime.citations import UrlCitationAnnotation
 from assistant_agent.runtime.state import AgentError, AgentState
@@ -127,20 +127,82 @@ class DurableTaskEventsResponse(BaseModel):
     next_cursor: int = Field(default=0, ge=0)
 
 
+class WorkflowApiHandle(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    workflow_id: str
+    workflow_type: Literal["deep_research"]
+    execution_engine: Literal["langgraph_v3"]
+    status: str
+    phase: str
+    output_ref: str
+
+
+class WorkflowApiActiveItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    node_id: str
+    display_title: str
+    status: Literal["running", "blocked"]
+    execution_generation: int
+
+
+class WorkflowApiProgress(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    state: Literal["planning", "working", "waiting_input", "completed", "failed"]
+    phase: str
+    completed_items: int
+    total_items: int
+    active_items: tuple[WorkflowApiActiveItem, ...] = ()
+
+
+class WorkflowApiWaitingAction(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    action_ref: str
+    node_id: str
+    required_fields: tuple[str, ...]
+    prompt_code: str
+    safe_prompt: str
+
+
+class WorkflowApiProductEvent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["workflow_product_event_v1"]
+    event_id: str
+    workflow_id: str
+    event_type: str
+    status: str
+    phase: str
+    progress: WorkflowApiProgress
+    result_artifact_refs: tuple[str, ...] = ()
+    waiting_actions: tuple[WorkflowApiWaitingAction, ...] = ()
+    terminal_reason_code: str | None = None
+
+
 class WorkflowResponse(BaseModel):
     """Identity-safe durable Workflow projection."""
 
     protocol_version: str = PROTOCOL_VERSION
-    workflow: dict[str, Any]
-    plan: dict[str, Any]
-    progress: dict[str, Any]
+    workflow: WorkflowApiHandle
+    progress: WorkflowApiProgress
+    result_artifact_refs: tuple[str, ...] = ()
+    waiting_actions: tuple[WorkflowApiWaitingAction, ...] = ()
+    terminal_reason_code: str | None = None
 
 
 class WorkflowEventsResponse(BaseModel):
     protocol_version: str = PROTOCOL_VERSION
     workflow_id: str
-    events: list[dict[str, Any]] = Field(default_factory=list)
+    events: tuple[WorkflowApiProductEvent, ...] = ()
     next_cursor: int = Field(default=0, ge=0)
+
+
+class WorkflowActionResponse(BaseModel):
+    protocol_version: str = PROTOCOL_VERSION
+    workflow: WorkflowApiHandle
 
 
 class WorkflowResultResponse(BaseModel):

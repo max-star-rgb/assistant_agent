@@ -18,7 +18,7 @@ from assistant_agent.api.gateway_websocket import router as gateway_websocket_ro
 from assistant_agent.api.rendering_3d_callback import router as rendering_3d_callback_router
 from assistant_agent.api import routes_agent
 from assistant_agent.api.routes_a2a import router as a2a_router
-from assistant_agent.api.routes_agent import router as agent_router, shutdown_agent_runtime
+from assistant_agent.api.routes_agent import router as agent_router
 from assistant_agent.api.routes_eval_experiments import (
     router as eval_experiments_router,
 )
@@ -27,6 +27,8 @@ from assistant_agent.api.routes_workflows import router as workflows_router
 from assistant_agent.api.routes_skills import router as skills_router
 from assistant_agent.api.models import PROTOCOL_VERSION, api_error
 from assistant_agent.runtime.generated_artifacts import GENERATED_ARTIFACT_DIR
+from assistant_agent.runtime.assistant_run_service import resolve_runtime_config
+from assistant_agent.runtime.checkpointer import AsyncCheckpointerOwner
 from assistant_agent.automation.durable_tasks.hotel_price_watch import (
     HOTEL_PRICE_WATCH_PROFILE,
     HotelPriceWatchRuntime,
@@ -47,10 +49,10 @@ from assistant_agent.runtime.server_startup_summary import prepare_server_startu
 from assistant_agent.skills.application import (
     create_skill_runtime_app_from_env,
 )
-from assistant_agent.workflows.context import WorkflowContextCompiler
-from assistant_agent.workflows.execution import AgentRuntimeWorkItemExecutor
-from assistant_agent.workflows.runtime import WorkflowRuntime
 from assistant_agent.workflows.worker import DurableWorkflowWorker
+from assistant_agent.workflows.graph_host import WorkflowGraphHost
+from assistant_agent.workflows.cutover import load_workflow_cutover_manifest
+from assistant_agent.workflows.legacy_drain_host import LegacyDrainHost
 
 SKIP_DOTENV_ENV = "MULTIMODAL_AGENT_SKIP_DOTENV"
 
@@ -98,16 +100,99 @@ def create_app() -> FastAPI:
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
-    await start_durable_task_worker(app)
-    await start_durable_workflow_worker(app)
-    prepare_server_startup_report(app, app.state.agent_runtime)
+    await start_shared_checkpointer_owner(app)
     try:
+        await start_workflow_graph_host(app)
+        start_shared_agent_runtime(app)
+        await start_durable_task_worker(app)
+        await start_durable_workflow_worker(app)
+        prepare_server_startup_report(app, app.state.agent_runtime)
         yield
     finally:
+        await shutdown_workflow_graph_host(app)
         await shutdown_durable_workflow_worker(app)
         await shutdown_durable_task_worker(app)
         await shutdown_gateway_runtime()
-        shutdown_agent_runtime()
+        shutdown_shared_agent_runtime(app)
+        await shutdown_shared_checkpointer_owner(app)
+
+
+async def start_shared_checkpointer_owner(app: FastAPI) -> AsyncCheckpointerOwner:
+    """Open the process saver before compiling either production graph."""
+
+    os.environ.setdefault("LANGGRAPH_STRICT_MSGPACK", "true")
+    config = resolve_runtime_config()
+    owner = AsyncCheckpointerOwner(config)
+    await owner.open()
+    app.state.runtime_config = config
+    app.state.shared_checkpointer_owner = owner
+    return owner
+
+
+async def start_workflow_graph_host(app: FastAPI) -> WorkflowGraphHost | None:
+    """Compile WorkflowGraph on the already-open process saver."""
+
+    config = app.state.runtime_config
+    owner = app.state.shared_checkpointer_owner
+    app.state.workflow_graph_host = None
+    if not config.durable_workflows_enabled:
+        return None
+    host = await WorkflowGraphHost.open(
+        config=config,
+        checkpointer_owner=owner,
+    )
+    app.state.workflow_graph_host = host
+    return host
+
+
+def start_shared_agent_runtime(app: FastAPI) -> Any:
+    """Compile Assistant graph on the same saver, then bind Workflow services."""
+
+    owner = app.state.shared_checkpointer_owner
+    workflow_host = getattr(app.state, "workflow_graph_host", None)
+    runtime, trace_store = routes_agent.create_agent_runtime_for_composition(
+        config=app.state.runtime_config,
+        checkpointer=owner.checkpointer,
+        graph_invocation_claim_store=owner.invocation_claim_store,
+        workflow_graph_host=workflow_host,
+    )
+    if isinstance(workflow_host, WorkflowGraphHost):
+        adapter = runtime.chat_adapter
+        workflow_host.bind_runtime_services(
+            provider_registry={
+                "planner": adapter,
+                "worker": adapter,
+                "verifier": adapter,
+            },
+            tool_registry=runtime.registry,
+        )
+    routes_agent.install_agent_runtime(
+        runtime,
+        owned_trace_store=trace_store,
+    )
+    app.state.agent_runtime = runtime
+    app.state.shared_runtime_lifespan_owned = True
+    return runtime
+
+
+async def shutdown_workflow_graph_host(app: FastAPI) -> None:
+    host = getattr(app.state, "workflow_graph_host", None)
+    app.state.workflow_graph_host = None
+    if isinstance(host, WorkflowGraphHost):
+        await host.close()
+
+
+def shutdown_shared_agent_runtime(app: FastAPI) -> None:
+    app.state.shared_runtime_lifespan_owned = False
+    routes_agent.shutdown_agent_runtime()
+    app.state.agent_runtime = None
+
+
+async def shutdown_shared_checkpointer_owner(app: FastAPI) -> None:
+    owner = getattr(app.state, "shared_checkpointer_owner", None)
+    app.state.shared_checkpointer_owner = None
+    if isinstance(owner, AsyncCheckpointerOwner):
+        await owner.aclose()
 
 
 def get_durable_task_worker(app: FastAPI) -> DurableTaskWorker | None:
@@ -121,81 +206,41 @@ def get_durable_workflow_worker(app: FastAPI) -> DurableWorkflowWorker | None:
 
 
 async def start_durable_workflow_worker(app: FastAPI) -> DurableWorkflowWorker | None:
-    runtime = getattr(app.state, "agent_runtime", None) or routes_agent.get_agent_runtime()
-    service = getattr(runtime, "workflow_service", None)
-    artifact_store = getattr(runtime, "workflow_artifact_store", None)
-    config = getattr(runtime, "config", None)
+    """Start the manifest-bounded legacy drain; never derive a dynamic scope."""
+
+    runtime = getattr(app.state, "agent_runtime", None)
+    config = getattr(app.state, "runtime_config", None)
     app.state.durable_workflow_worker = None
-    app.state.durable_workflow_stop_event = None
-    app.state.durable_workflow_worker_task = None
-    app.state.durable_workflow_store_closed = False
-    app.state.durable_workflow_artifact_store_closed = False
     if (
-        service is None
-        or artifact_store is None
+        runtime is None
         or config is None
         or not config.durable_workflow_worker_enabled
     ):
         return None
-    stop_event = Event()
-    work_item_executor = AgentRuntimeWorkItemExecutor(
+    manifest_path = os.environ.get(
+        "MULTIMODAL_AGENT_WORKFLOW_CUTOVER_MANIFEST_PATH", ""
+    )
+    if not manifest_path:
+        raise RuntimeError(
+            "durable workflow drain requires an operator cutover manifest"
+        )
+    host = LegacyDrainHost.compose(
+        config=config,
         agent_runtime=runtime,
-        artifact_store=artifact_store,
-        context_compiler=WorkflowContextCompiler(
-            artifact_store=artifact_store,
-            token_counter=getattr(runtime, "context_token_counter", None),
-            model_context_window_tokens=config.context_input_token_limit,
-            output_reserve_tokens=config.deep_research_chat_max_tokens,
-            safety_margin_tokens=config.context_compaction_safety_margin_tokens,
-        ),
-        max_iterations=config.max_tool_iterations,
+        manifest=load_workflow_cutover_manifest(manifest_path),
     )
-    worker = DurableWorkflowWorker(
-        service=service,
-        runtime=WorkflowRuntime(
-            service=service,
-            work_item_executor=work_item_executor,
-            model_call_limit_per_item=config.max_tool_iterations,
-            tool_call_limit_per_item=max(0, config.max_tool_iterations - 1),
-        ),
-        worker_id=f"api-workflow-worker-{os.getpid()}-{id(app)}",
-        lease_seconds=config.durable_workflow_lease_seconds,
-        poll_seconds=config.durable_workflow_poll_seconds,
-        max_concurrent_items=config.durable_workflow_max_concurrent_items,
-        allowed_execution_engines=frozenset({"legacy_scheduler_v2"}),
-        allowed_workflow_types=frozenset(service.definitions.list_types()),
-    )
-    app.state.durable_workflow_worker = worker
-    app.state.durable_workflow_stop_event = stop_event
-    app.state.durable_workflow_worker_task = asyncio.create_task(
-        asyncio.to_thread(worker.run, stop_event)
-    )
-    return worker
+    app.state.legacy_drain_host = host
+    app.state.durable_workflow_worker = host.worker
+    await host.start()
+    return host.worker
 
 
 async def shutdown_durable_workflow_worker(app: FastAPI) -> None:
-    stop_event = getattr(app.state, "durable_workflow_stop_event", None)
-    worker_task = getattr(app.state, "durable_workflow_worker_task", None)
-    if stop_event is not None:
-        stop_event.set()
-    if worker_task is not None:
-        try:
-            await asyncio.wait_for(asyncio.shield(worker_task), timeout=5.0)
-        except asyncio.TimeoutError:
-            worker_task.cancel()
-    runtime = getattr(app.state, "agent_runtime", None)
-    service = getattr(runtime, "workflow_service", None) if runtime is not None else None
-    artifacts = (
-        getattr(runtime, "workflow_artifact_store", None)
-        if runtime is not None
-        else None
-    )
-    if service is not None and not app.state.durable_workflow_store_closed:
-        service.store.close()
-        app.state.durable_workflow_store_closed = True
-    if artifacts is not None and not app.state.durable_workflow_artifact_store_closed:
-        artifacts.close()
-        app.state.durable_workflow_artifact_store_closed = True
+    host = getattr(app.state, "legacy_drain_host", None)
+    app.state.legacy_drain_host = None
+    app.state.durable_workflow_worker = None
+    if isinstance(host, LegacyDrainHost):
+        await host.close()
 
 
 async def start_durable_task_worker(app: FastAPI) -> DurableTaskWorker | None:
@@ -291,7 +336,9 @@ async def shutdown_durable_task_worker(app: FastAPI) -> None:
             close()
         app.state.durable_task_store_closed = True
     runtime: Any = getattr(app.state, "agent_runtime", None)
-    if runtime is not None:
+    if runtime is not None and not getattr(
+        app.state, "shared_runtime_lifespan_owned", False
+    ):
         routes_agent.release_agent_runtime(runtime)
 
 

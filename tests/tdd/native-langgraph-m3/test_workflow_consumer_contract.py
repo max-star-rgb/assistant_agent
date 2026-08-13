@@ -93,3 +93,28 @@ def test_graph_v3_record_is_never_in_legacy_claim_scope() -> None:
         ),
         allowed_workflow_types=frozenset({"deep_research"}),
     )
+
+
+def test_legacy_drain_claim_requires_exact_existing_workflow_allowlist() -> None:
+    bundle = SimpleNamespace(
+        workflow=SimpleNamespace(
+            workflow_id="legacy-inflight",
+            execution_engine="legacy_scheduler_v2",
+            workflow_type="deep_research",
+            legacy_claim_frozen=False,
+        )
+    )
+    common = {
+        "allowed_execution_engines": frozenset({"legacy_scheduler_v2"}),
+        "allowed_workflow_types": frozenset({"deep_research"}),
+    }
+    assert workflow_matches_claim_scope(
+        bundle,
+        allowed_workflow_ids=frozenset({"legacy-inflight"}),
+        **common,
+    )
+    assert not workflow_matches_claim_scope(
+        bundle,
+        allowed_workflow_ids=frozenset({"another-workflow"}),
+        **common,
+    )

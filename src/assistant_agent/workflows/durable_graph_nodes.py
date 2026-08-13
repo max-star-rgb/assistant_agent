@@ -533,7 +533,9 @@ def prepare_next_wave_node(
     if not history or history[-1] != wave_ids:
         history = (*history, wave_ids)
     return {
-        "active_wave": tuple(assignments),
+        "active_wave": tuple(
+            item.model_dump(mode="json") for item in assignments
+        ),
         "wave_history": history,
         "status": "running",
         "phase": "executing",
@@ -550,13 +552,16 @@ def route_next_wave(
         return [
             Send(
                 "run_verifier" if assignment.profile == "verifier" else "run_worker",
-                {
-                    "assignment": assignment.model_dump(mode="json")
-                    if hasattr(assignment, "model_dump")
-                    else assignment
-                },
+                {"assignment": assignment.model_dump(mode="json")},
             )
-            for assignment in branches
+            for raw_assignment in branches
+            for assignment in (
+                raw_assignment
+                if isinstance(raw_assignment, WorkflowProfileAssignment)
+                else WorkflowProfileAssignment.model_validate_json(
+                    json.dumps(raw_assignment)
+                ),
+            )
         ]
     try:
         results = latest_results(
