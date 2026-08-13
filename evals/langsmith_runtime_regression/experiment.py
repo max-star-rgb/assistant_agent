@@ -505,6 +505,9 @@ def _audit_experiment(
             key = _field(feedback, "key")
             if example_id is None or key not in REQUIRED_LANGSMITH_FEEDBACK_KEYS:
                 continue
+            if str(key) in feedback_by_example[example_id]:
+                problems.setdefault(example_id, []).append(f"duplicate feedback {key}")
+                continue
             try:
                 score = normalize_boolean_feedback_score(_field(feedback, "score"))
             except ValueError:

@@ -172,6 +172,40 @@ def test_completeness_retries_bounded_langsmith_rate_limit() -> None:
     assert sleeps == [1]
 
 
+def test_completeness_rejects_duplicate_feedback_for_one_example() -> None:
+    required = experiment.REQUIRED_LANGSMITH_FEEDBACK_KEYS
+
+    class Client:
+        def list_runs(self, **_kwargs):
+            return iter(_native_runs())
+
+        def list_feedback(self, **_kwargs):
+            return iter(
+                [
+                    SimpleNamespace(run_id=UUID(int=1), key=key, score=True)
+                    for key in required
+                ]
+                + [
+                    SimpleNamespace(
+                        run_id=UUID(int=1),
+                        key=required[0],
+                        score=False,
+                    )
+                ]
+            )
+
+    with pytest.raises(RuntimeError, match="duplicate feedback"):
+        experiment.wait_for_langsmith_runtime_regression_completeness(
+            Client(),
+            experiment_id="experiment-id",
+            example_ids=(str(EXAMPLE_ID),),
+            timeout_seconds=0.01,
+            poll_interval_seconds=0.01,
+            sleep=lambda _seconds: None,
+            clock=iter((0.0, 0.0, 0.02)).__next__,
+        )
+
+
 def test_completeness_sleep_never_exceeds_remaining_deadline() -> None:
     now = [100.0]
     sleeps = []
