@@ -5,6 +5,7 @@
       "schema_version": "workflow_experiment_input_v1",
       "case_type": "parallel_join",
       "workflow_id": "git-parallel-join",
+      "resume_values_by_field": {},
       "submission": {
         "workflow_type": "deep_research",
         "objective": "并行研究两个独立事实并汇总为报告。",
@@ -31,6 +32,7 @@
       "schema_version": "workflow_experiment_input_v1",
       "case_type": "constraint_verifier",
       "workflow_id": "git-constraint-verifier",
+      "resume_values_by_field": {},
       "submission": {
         "workflow_type": "deep_research",
         "objective": "研究一个事实并由独立验证节点检查约束。",
@@ -57,6 +59,7 @@
       "schema_version": "workflow_experiment_input_v1",
       "case_type": "minimal_repair",
       "workflow_id": "git-minimal-repair",
+      "resume_values_by_field": {},
       "submission": {
         "workflow_type": "deep_research",
         "objective": "并行研究后仅返工验证失败的分支。",
@@ -83,6 +86,7 @@
       "schema_version": "workflow_experiment_input_v1",
       "case_type": "interrupt_resume_equivalence",
       "workflow_id": "git-interrupt-resume",
+      "resume_values_by_field": {"research_questions": "请研究 Durable Workflow 在同一 thread 中断恢复后，是否继续原任务并完成最终报告。"},
       "submission": {
         "workflow_type": "deep_research",
         "objective": "遇到缺失输入时请求用户补充，恢复后完成报告。",

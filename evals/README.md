@@ -241,7 +241,9 @@ composition，不允许 mock fallback。`--run` 还会等待四项 Feedback 与 
 或任一持久 Feedback 为 false 均 fail-closed，不返回 `persistent_gate=complete`。四类严格 Example 由
 `evals/langsmith_workflow_regression/examples.json` 持有；首次 operator 运行前先显式执行 `--sync`，幂等创建或
 更新固定 Dataset 并归档过期的 Git-owned Example。interrupt/resume case 必须实际产生 native interrupt，
-通过 public `action_ref` 以同 thread、新 run ID 恢复到参考终态；未发生 resume 不能生成等价证据。
+通过 public `action_ref` 以同 thread、新 run ID 恢复到参考终态；其输入只能从 Example 中 strict、bounded、
+Git-owned 的 `resume_values_by_field` 按实际 required field 精确读取，未知字段 fail-closed；未发生 resume 不能
+生成等价证据。
 
 ### M5 LangSmith 等价 Gate
 

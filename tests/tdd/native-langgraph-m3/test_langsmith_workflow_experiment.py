@@ -9,6 +9,7 @@ from uuid import UUID
 import pytest
 from langsmith.run_helpers import tracing_context
 from langsmith.run_trees import RunTree
+from pydantic import ValidationError
 
 from assistant_agent.workflows.durable_graph_app import (
     DurableWorkflowGraphApp,
@@ -25,7 +26,11 @@ from evals.langsmith_workflow_regression.experiment import (
 )
 from workflow_graph_probe import acceptance, workflow_probe
 import evals.langsmith_workflow_regression.cli as workflow_cli
-from evals.langsmith_workflow_regression.dataset import load_git_workflow_examples
+from evals.langsmith_workflow_regression.dataset import (
+    load_git_workflow_examples,
+    sync_workflow_examples,
+)
+from evals.langsmith_workflow_regression.contracts import WorkflowExampleInput
 
 
 EXAMPLE_ID = UUID("01234567-89ab-cdef-0123-456789abcdef")
@@ -622,7 +627,73 @@ def test_zero_root_runs_fail_locally_without_unfiltered_feedback_query() -> None
     assert client.feedback_called is False
 
 
-def test_every_workflow_regression_case_can_converge_a_native_interrupt() -> None:
+def test_git_workflow_examples_round_trip_typed_resume_values() -> None:
+    examples = load_git_workflow_examples()
+
+    for example in examples:
+        round_trip = WorkflowExampleInput.model_validate(
+            example.inputs.model_dump(mode="json")
+        )
+        if round_trip.case_type == "interrupt_resume_equivalence":
+            assert round_trip.resume_values_by_field == {
+                "research_questions": (
+                    "请研究 Durable Workflow 在同一 thread 中断恢复后，"
+                    "是否继续原任务并完成最终报告。"
+                )
+            }
+        else:
+            assert round_trip.resume_values_by_field == {}
+
+    interrupt = next(
+        example.inputs.model_dump(mode="json")
+        for example in examples
+        if example.inputs.case_type == "interrupt_resume_equivalence"
+    )
+    interrupt["resume_values_by_field"] = {}
+    with pytest.raises(ValidationError):
+        WorkflowExampleInput.model_validate(interrupt)
+
+    ordinary = next(
+        example.inputs.model_dump(mode="json")
+        for example in examples
+        if example.inputs.case_type == "parallel_join"
+    )
+    ordinary["resume_values_by_field"] = {"research_questions": "not allowed"}
+    with pytest.raises(ValidationError):
+        WorkflowExampleInput.model_validate(ordinary)
+
+
+def test_dataset_sync_persists_typed_resume_values() -> None:
+    class Client:
+        def __init__(self) -> None:
+            self.inputs = []
+
+        def read_dataset(self, **_kwargs):
+            return SimpleNamespace(id=UUID(int=900))
+
+        def list_examples(self, **_kwargs):
+            return iter(())
+
+        def create_example(self, *, example_id, inputs, **_kwargs):
+            self.inputs.append(inputs)
+            return SimpleNamespace(id=example_id)
+
+    client = Client()
+    examples = load_git_workflow_examples()
+
+    result = sync_workflow_examples(client, examples, git_commit="deadbeef")
+
+    assert len(result.active_example_ids) == 4
+    by_case = {item["case_type"]: item for item in client.inputs}
+    assert by_case["interrupt_resume_equivalence"]["resume_values_by_field"]
+    assert all(
+        item["resume_values_by_field"] == {}
+        for case_type, item in by_case.items()
+        if case_type != "interrupt_resume_equivalence"
+    )
+
+
+def test_interrupt_resume_factory_uses_only_git_owned_typed_values() -> None:
     captured = {}
 
     class Host:
@@ -641,7 +712,7 @@ def test_every_workflow_regression_case_can_converge_a_native_interrupt() -> Non
     example = next(
         item
         for item in load_git_workflow_examples()
-        if item.inputs.case_type == "constraint_verifier"
+        if item.inputs.case_type == "interrupt_resume_equivalence"
     )
     invocation = composition.invocation_factory(
         example.inputs.model_dump(mode="json"),
@@ -655,14 +726,20 @@ def test_every_workflow_regression_case_can_converge_a_native_interrupt() -> Non
     interrupts = (
         SimpleNamespace(
             action_ref="workflow:test:node:a:generation:0",
-            required_fields=("research_questions", "tool_access"),
+            required_fields=("research_questions",),
         ),
     )
     first = captured["resume_values_factory"](interrupts)
     second = captured["resume_values_factory"](interrupts)
     assert first == second
     values = first[interrupts[0].action_ref]
-    assert set(values) == {"research_questions", "tool_access"}
-    assert all(value.strip() for value in values.values())
-    assert values["research_questions"] != values["tool_access"]
-    assert all(len(value) <= 4_000 for value in values.values())
+    assert values == example.inputs.resume_values_by_field
+
+    unknown = (
+        SimpleNamespace(
+            action_ref="workflow:test:node:a:generation:1",
+            required_fields=("tool_access",),
+        ),
+    )
+    with pytest.raises(RuntimeError, match="workflow_eval_resume_field_missing"):
+        captured["resume_values_factory"](unknown)

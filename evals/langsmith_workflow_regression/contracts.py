@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -61,7 +62,25 @@ class WorkflowExampleInput(_StrictModel):
     ]
     workflow_id: str = Field(min_length=1, max_length=512)
     submission: WorkflowSubmissionInput
+    resume_values_by_field: dict[str, str] = Field(default_factory=dict, max_length=32)
     truncated: Literal[False]
+
+    @model_validator(mode="after")
+    def validate_resume_values(self) -> "WorkflowExampleInput":
+        values = self.resume_values_by_field
+        requires_values = self.case_type == "interrupt_resume_equivalence"
+        if requires_values != bool(values):
+            raise ValueError(
+                "only interrupt/resume Workflow examples require resume values"
+            )
+        if any(
+            not re.fullmatch(r"^[a-zA-Z][a-zA-Z0-9_.-]{0,119}$", name)
+            or not value.strip()
+            or len(value) > 4_000
+            for name, value in values.items()
+        ):
+            raise ValueError("Workflow example resume values are invalid")
+        return self
 
 
 class ExpectedPlan(_StrictModel):

@@ -48,10 +48,6 @@ _CASE_TYPES = (
 )
 
 
-def _controlled_resume_field_value(field: str) -> str:
-    return f"git-owned-safe-evaluation-value-for:{field}"
-
-
 class ProductionWorkflowExperimentComposition:
     """Run-scoped production graph composition on one shared official saver."""
 
@@ -109,13 +105,20 @@ class ProductionWorkflowExperimentComposition:
 
         async def invoke():
             def controlled_resume_values(interrupts):
-                return {
-                    item.action_ref: {
-                        field: _controlled_resume_field_value(field)
+                result = {}
+                for item in interrupts:
+                    missing = sorted(
+                        set(item.required_fields) - set(example.resume_values_by_field)
+                    )
+                    if missing:
+                        raise RuntimeError(
+                            "workflow_eval_resume_field_missing: " + repr(missing)
+                        )
+                    result[item.action_ref] = {
+                        field: example.resume_values_by_field[field]
                         for field in item.required_fields
                     }
-                    for item in interrupts
-                }
+                return result
 
             result = await self._workflow_host.arun_submission(
                 identity=identity,
