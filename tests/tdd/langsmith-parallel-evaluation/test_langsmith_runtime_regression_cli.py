@@ -69,9 +69,7 @@ def test_preflight_requires_both_operator_flags(monkeypatch) -> None:
     monkeypatch.setattr(cli, "_langsmith_client", _Client)
 
     with pytest.raises(SystemExit):
-        cli.main(
-            ["--preflight", "--no-env-file", "--allow-real-provider"]
-        )
+        cli.main(["--preflight", "--no-env-file", "--allow-real-provider"])
 
 
 def test_run_requires_real_provider(monkeypatch, capsys) -> None:
@@ -82,16 +80,19 @@ def test_run_requires_real_provider(monkeypatch, capsys) -> None:
         staticmethod(lambda: SimpleNamespace(provider_mode="mock")),
     )
 
-    assert cli.main(
-        [
-            "--run",
-            "--run-name",
-            "r1",
-            "--no-env-file",
-            "--allow-real-provider",
-            "--allow-runtime-side-effects",
-        ]
-    ) == 2
+    assert (
+        cli.main(
+            [
+                "--run",
+                "--run-name",
+                "r1",
+                "--no-env-file",
+                "--allow-real-provider",
+                "--allow-runtime-side-effects",
+            ]
+        )
+        == 2
+    )
     assert "requires MULTIMODAL_AGENT_PROVIDER_MODE=real" in capsys.readouterr().out
 
 
@@ -167,6 +168,61 @@ def test_cli_owns_one_top_level_asyncio_run(monkeypatch, capsys) -> None:
     assert json.loads(capsys.readouterr().out)["action"] == "inspect"
 
 
+def test_configure_evaluators_reports_each_rule_mapping(monkeypatch, capsys) -> None:
+    client = _Client()
+    monkeypatch.setattr(cli, "_langsmith_client", lambda: client)
+    monkeypatch.setattr(
+        cli,
+        "configure_runtime_regression_evaluators",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            dataset_id="dataset-id",
+            status="planned_reconcile",
+            rules=(
+                SimpleNamespace(
+                    rule_name="rule-quality",
+                    feedback_key="quality",
+                    action="create",
+                    rule_id=None,
+                ),
+                SimpleNamespace(
+                    rule_name="rule-grounding",
+                    feedback_key="grounding",
+                    action="update",
+                    rule_id="rule-id",
+                ),
+            ),
+        ),
+    )
+
+    assert (
+        cli.main(
+            [
+                "--configure-evaluators",
+                "--model-config-id",
+                "model-config-id",
+                "--no-env-file",
+            ]
+        )
+        == 0
+    )
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["rules"] == [
+        {
+            "rule_name": "rule-quality",
+            "feedback_key": "quality",
+            "action": "create",
+            "rule_id": None,
+        },
+        {
+            "rule_name": "rule-grounding",
+            "feedback_key": "grounding",
+            "action": "update",
+            "rule_id": "rule-id",
+        },
+    ]
+
+
 def test_run_reports_experiment_and_complete_feedback(monkeypatch, capsys) -> None:
     client = _Client()
     monkeypatch.setattr(cli, "_langsmith_client", lambda: client)
@@ -176,6 +232,7 @@ def test_run_reports_experiment_and_complete_feedback(monkeypatch, capsys) -> No
         staticmethod(_RealConfig),
     )
     monkeypatch.setattr(cli, "_git_commit", lambda: "abc123")
+
     async def run_experiment(client, settings):
         return SimpleNamespace(
             experiment_id="experiment-id",
@@ -199,16 +256,19 @@ def test_run_reports_experiment_and_complete_feedback(monkeypatch, capsys) -> No
         ),
     )
 
-    assert cli.main(
-        [
-            "--run",
-            "--run-name",
-            "r1",
-            "--no-env-file",
-            "--allow-real-provider",
-            "--allow-runtime-side-effects",
-        ]
-    ) == 0
+    assert (
+        cli.main(
+            [
+                "--run",
+                "--run-name",
+                "r1",
+                "--no-env-file",
+                "--allow-real-provider",
+                "--allow-runtime-side-effects",
+            ]
+        )
+        == 0
+    )
 
     output = json.loads(capsys.readouterr().out)
     assert output["backend"] == "langsmith"

@@ -153,7 +153,8 @@ Release Review runner 已在 M5 切到 LangSmith actual graph target；旧 Langf
 创建 Model Configuration，并把其 UUID 作为 `--model-config-id` 传入；默认只输出 create/update 计划，
 只有显式 `--apply` 才会写入远端。每个 LLM evaluator 使用一条独立的 Dataset rule；CLI 以固定 rule
 name 分别 create/update，不能把多个 code/LLM evaluator 合并进同一 rule。配置动作不会运行 Dataset、
-Runtime 或 Judge：
+Runtime 或 Judge。dry-run 与 apply 都逐条输出 `rule_name`、`feedback_key`、`action` 和 `rule_id`，同名
+rule 落在其他 Dataset、缺少 ID 或 Model Configuration 不唯一/未明确允许 evaluator 时一律 fail-closed：
 
 ```bash
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python \

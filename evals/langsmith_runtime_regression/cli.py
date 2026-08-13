@@ -117,8 +117,15 @@ async def _execute_async(
             "dataset_name": RUNTIME_REGRESSION_DATASET,
             "dataset_id": result.dataset_id,
             "status": result.status,
-            "rule_ids": list(result.rule_ids),
-            "feedback_keys": list(result.feedback_keys),
+            "rules": [
+                {
+                    "rule_name": rule.rule_name,
+                    "feedback_key": rule.feedback_key,
+                    "action": rule.action,
+                    "rule_id": rule.rule_id,
+                }
+                for rule in result.rules
+            ],
             "apply": args.apply,
         }
     if args.apply:

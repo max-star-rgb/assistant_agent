@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 from assistant_agent.evaluation.constants import RUNTIME_REGRESSION_DATASET
 from assistant_agent.evaluation.runtime_regression_contract import assistant_output
@@ -30,11 +30,18 @@ RUNTIME_REGRESSION_RULE_NAMES = (
 
 
 @dataclass(frozen=True)
+class LangSmithEvaluatorRuleAction:
+    rule_name: str
+    feedback_key: str
+    action: Literal["create", "update"]
+    rule_id: str | None
+
+
+@dataclass(frozen=True)
 class LangSmithEvaluatorConfigurationResult:
     status: str
     dataset_id: str
-    rule_ids: tuple[str, ...]
-    feedback_keys: tuple[str, ...]
+    rules: tuple[LangSmithEvaluatorRuleAction, ...]
 
 
 def langsmith_evaluator_output(state: Any, events: list[Any]) -> dict[str, Any]:
@@ -165,13 +172,16 @@ def configure_runtime_regression_evaluators(
     rules = _response_json(client.request_with_retries("GET", "/runs/rules"))
     if not isinstance(rules, list):
         raise RuntimeError("LangSmith evaluator rules response must be a list")
-    existing_ids: list[str | None] = []
-    for payload in payloads:
+    plans: list[LangSmithEvaluatorRuleAction] = []
+    for payload, feedback_key in zip(
+        payloads,
+        REQUIRED_LANGSMITH_FEEDBACK_KEYS,
+        strict=True,
+    ):
         matching = [
             rule
             for rule in rules
             if isinstance(rule, dict)
-            and str(rule.get("dataset_id")) == dataset_id
             and rule.get("display_name") == payload["display_name"]
         ]
         if len(matching) > 1:
@@ -179,25 +189,42 @@ def configure_runtime_regression_evaluators(
                 "duplicate LangSmith Runtime Regression evaluator rule "
                 f"{payload['display_name']!r}"
             )
-        existing_ids.append(
-            str(matching[0].get("id")) if matching and matching[0].get("id") else None
+        rule_id: str | None = None
+        if matching:
+            owned = matching[0]
+            if str(owned.get("dataset_id") or "") != dataset_id:
+                raise RuntimeError(
+                    "owned evaluator rule targets the wrong Dataset: "
+                    f"{payload['display_name']!r}"
+                )
+            if not owned.get("id"):
+                raise RuntimeError(
+                    f"owned evaluator rule has no id: {payload['display_name']!r}"
+                )
+            rule_id = str(owned["id"])
+        plans.append(
+            LangSmithEvaluatorRuleAction(
+                rule_name=payload["display_name"],
+                feedback_key=feedback_key,
+                action="update" if rule_id else "create",
+                rule_id=rule_id,
+            )
         )
     if not apply:
         return LangSmithEvaluatorConfigurationResult(
             status=_aggregate_status(
-                existing_ids,
+                plans,
                 created="planned_create",
                 updated="planned_update",
             ),
             dataset_id=dataset_id,
-            rule_ids=tuple(rule_id for rule_id in existing_ids if rule_id),
-            feedback_keys=REQUIRED_LANGSMITH_FEEDBACK_KEYS,
+            rules=tuple(plans),
         )
 
-    written_ids: list[str] = []
-    for payload, existing_rule_id in zip(payloads, existing_ids, strict=True):
-        method = "PATCH" if existing_rule_id else "POST"
-        path = f"/runs/rules/{existing_rule_id}" if existing_rule_id else "/runs/rules"
+    written_rules: list[LangSmithEvaluatorRuleAction] = []
+    for payload, plan in zip(payloads, plans, strict=True):
+        method = "PATCH" if plan.action == "update" else "POST"
+        path = f"/runs/rules/{plan.rule_id}" if plan.rule_id else "/runs/rules"
         response = client.request_with_retries(
             method,
             path,
@@ -210,24 +237,31 @@ def configure_runtime_regression_evaluators(
             raise RuntimeError(
                 "LangSmith evaluator rule write targeted the wrong Dataset"
             )
-        written_ids.append(str(written["id"]))
+        written_rules.append(
+            LangSmithEvaluatorRuleAction(
+                rule_name=plan.rule_name,
+                feedback_key=plan.feedback_key,
+                action=plan.action,
+                rule_id=str(written["id"]),
+            )
+        )
     return LangSmithEvaluatorConfigurationResult(
-        status=_aggregate_status(existing_ids, created="created", updated="updated"),
+        status=_aggregate_status(plans, created="created", updated="updated"),
         dataset_id=dataset_id,
-        rule_ids=tuple(written_ids),
-        feedback_keys=REQUIRED_LANGSMITH_FEEDBACK_KEYS,
+        rules=tuple(written_rules),
     )
 
 
 def _aggregate_status(
-    existing_ids: list[str | None],
+    plans: list[LangSmithEvaluatorRuleAction],
     *,
     created: str,
     updated: str,
 ) -> str:
-    if all(existing_ids):
+    actions = {plan.action for plan in plans}
+    if actions == {"update"}:
         return updated
-    if not any(existing_ids):
+    if actions == {"create"}:
         return created
     return "planned_reconcile" if created.startswith("planned_") else "reconciled"
 
@@ -276,12 +310,12 @@ def _validate_model_configuration(client: Any, model_config_id: str) -> None:
         for item in configurations
         if isinstance(item, dict) and str(item.get("id")) == model_config_id
     ]
-    if not matching:
+    if len(matching) != 1:
         raise RuntimeError(
-            "LangSmith evaluator model configuration does not exist in the "
-            "active Workspace"
+            "LangSmith evaluator model configuration must uniquely exist in "
+            "the active Workspace"
         )
-    if matching[0].get("available_in_evaluators") is False:
+    if matching[0].get("available_in_evaluators") is not True:
         raise RuntimeError(
             "LangSmith model configuration is not available to evaluators"
         )
