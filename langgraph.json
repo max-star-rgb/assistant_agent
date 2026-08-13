@@ -1,0 +1,13 @@
+{
+  "dependencies": ["."],
+  "graphs": {
+    "assistant": "assistant_agent.agent_server.graph:assistant_graph"
+  },
+  "auth": {
+    "path": "assistant_agent.agent_server.auth:auth"
+  },
+  "http": {
+    "app": "assistant_agent.agent_server.media_app:app",
+    "enable_custom_route_auth": true
+  }
+}

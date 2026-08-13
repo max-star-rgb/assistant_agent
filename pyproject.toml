@@ -41,6 +41,9 @@ memory-langmem = [
     "langmem>=0.0.30,<0.1",
     "httpx[socks]>=0.28,<0.29",
 ]
+agent-server-dev = [
+    "langgraph-cli[inmem]>=0.4.30,<0.5",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests/core"]
