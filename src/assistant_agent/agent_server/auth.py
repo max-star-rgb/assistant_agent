@@ -40,4 +40,80 @@ async def authenticate(authorization: str | None) -> Auth.types.MinimalUserDict:
     }
 
 
-__all__ = ["auth"]
+@auth.on.threads.create
+async def authorize_thread_create(
+    ctx: Auth.types.AuthContext,
+    value: Auth.types.on.threads.create.value,
+) -> None:
+    metadata = value.setdefault("metadata", {})
+    metadata["owner"] = str(ctx.user.identity)
+
+
+@auth.on.threads.read
+async def authorize_thread_read(
+    ctx: Auth.types.AuthContext,
+    value: Auth.types.on.threads.read.value,
+) -> Auth.types.FilterType:
+    _ = value
+    return {"owner": str(ctx.user.identity)}
+
+
+@auth.on.threads.update
+async def authorize_thread_update(
+    ctx: Auth.types.AuthContext,
+    value: Auth.types.on.threads.update.value,
+) -> Auth.types.FilterType:
+    _ = value
+    return {"owner": str(ctx.user.identity)}
+
+
+@auth.on.threads.delete
+async def authorize_thread_delete(
+    ctx: Auth.types.AuthContext,
+    value: Auth.types.on.threads.delete.value,
+) -> Auth.types.FilterType:
+    _ = value
+    return {"owner": str(ctx.user.identity)}
+
+
+@auth.on.threads.search
+async def authorize_thread_search(
+    ctx: Auth.types.AuthContext,
+    value: Auth.types.on.threads.search.value,
+) -> Auth.types.FilterType:
+    _ = value
+    return {"owner": str(ctx.user.identity)}
+
+
+@auth.on.threads.create_run
+async def authorize_run_create(
+    ctx: Auth.types.AuthContext,
+    value: Auth.types.on.threads.create_run.value,
+) -> Auth.types.FilterType:
+    metadata = value.setdefault("metadata", {})
+    metadata["owner"] = str(ctx.user.identity)
+    return {"owner": str(ctx.user.identity)}
+
+
+@auth.on.store
+async def scope_store(
+    ctx: Auth.types.AuthContext,
+    value: Auth.types.on.store.value,
+) -> None:
+    identity = str(ctx.user.identity)
+    namespace = tuple(value.get("namespace") or ())
+    if not namespace or namespace[0] != identity:
+        value["namespace"] = (identity, *namespace)
+
+
+__all__ = [
+    "auth",
+    "authenticate",
+    "authorize_run_create",
+    "authorize_thread_create",
+    "authorize_thread_delete",
+    "authorize_thread_read",
+    "authorize_thread_search",
+    "authorize_thread_update",
+    "scope_store",
+]

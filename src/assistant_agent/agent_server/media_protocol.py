@@ -24,6 +24,7 @@ class MediaChat:
     user_id: str
     text: str
     stream: bool
+    assistant_mode: str
 
 
 def parse_envelope(value: Mapping[str, Any]) -> MediaEnvelope:
@@ -70,6 +71,7 @@ def parse_chat(envelope: MediaEnvelope) -> MediaChat:
         user_id=user_id,
         text=latest_speech,
         stream=body.get("stream") is True,
+        assistant_mode=_assistant_mode(body.get("assistantMode")),
     )
 
 
@@ -99,9 +101,21 @@ def success_chat_response(
     *,
     session_id: str | None,
     chat: MediaChat,
-    text: str,
+    response: Mapping[str, Any],
     delivery_id: str,
+    capabilities: Mapping[str, bool] | None = None,
 ) -> dict[str, Any]:
+    text = str(response.get("message") or "")
+    intent_result: dict[str, Any] = {"description": text, "status": "SUCCESS"}
+    annotations = response.get("citations")
+    if capabilities and capabilities.get("urlCitationAnnotationsV1") and isinstance(annotations, list):
+        intent_result["annotations"] = annotations
+        intent_result["fullDescription"] = text
+    output_refs = [
+        item
+        for item in response.get("output_refs", [])
+        if isinstance(item, str) and item.startswith(("workflow://", "task://"))
+    ][:4]
     return envelope(
         message="chatResponse",
         session_id=session_id,
@@ -111,7 +125,7 @@ def success_chat_response(
                 "type": "BRIEF",
                 "chatIndex": chat.chat_index,
                 "content": {
-                    "intentResult": {"description": text, "status": "SUCCESS"}
+                    "intentResult": intent_result
                 },
             },
             "displayOnly": False,
@@ -119,6 +133,7 @@ def success_chat_response(
             "sequence": 1,
             "final": True,
             "deliveryId": delivery_id,
+            **({"outputRefs": output_refs} if output_refs else {}),
         },
     )
 
@@ -145,6 +160,13 @@ def _optional_text(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _assistant_mode(value: Any) -> str:
+    mode = "standard" if value is None else str(value)
+    if mode not in {"standard", "deep_research"}:
+        raise MediaProtocolError("assistantMode must be standard or deep_research")
+    return mode
 
 
 __all__ = [

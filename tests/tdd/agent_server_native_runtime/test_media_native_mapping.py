@@ -2,7 +2,14 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import fields
+from uuid import UUID
 
+from assistant_agent.agent_server.auth import (
+    authorize_thread_create,
+    authorize_thread_read,
+    authorize_thread_search,
+    scope_store,
+)
 from assistant_agent.agent_server.media_session import MediaConnectionSession
 from assistant_agent.agent_server.media_protocol import (
     parse_envelope,
@@ -22,6 +29,8 @@ def test_media_session_tracks_only_native_resource_correlation() -> None:
         "active_runs",
         "deliveries",
         "last_event_id",
+        "client_capabilities",
+        "media_capabilities",
     }
 
 
@@ -39,7 +48,7 @@ def test_chat_parser_and_success_projection_keep_vendor_wire_shape() -> None:
     response = success_chat_response(
         session_id="vendor-session",
         chat=chat,
-        text="你好，收到",
+        response={"message": "你好，收到", "output_refs": [], "citations": []},
         delivery_id="delivery-1",
     )
 
@@ -67,3 +76,27 @@ def test_session_registers_one_run_per_chat_and_cancel_is_precise() -> None:
 
     assert session.active_runs == {"chat-1": "run-1"}
     assert session.active_run_targets() == (("thread-1", "run-1"),)
+
+
+def test_agent_server_resource_authorization_scopes_native_resources_to_principal() -> None:
+    class User:
+        identity = "principal-1"
+        permissions = []
+
+    class Context:
+        user = User()
+
+    ctx = Context()
+    create = {"metadata": {"protocol": "agent-service-v1"}}
+    asyncio.run(authorize_thread_create(ctx, create))
+    assert create["metadata"] == {
+        "protocol": "agent-service-v1",
+        "owner": "principal-1",
+    }
+    assert asyncio.run(authorize_thread_read(ctx, {"thread_id": UUID(int=1)})) == {
+        "owner": "principal-1"
+    }
+    assert asyncio.run(authorize_thread_search(ctx, {})) == {"owner": "principal-1"}
+    store = {"namespace": ("assistant_agent", "subject-1")}
+    asyncio.run(scope_store(ctx, store))
+    assert store["namespace"] == ("principal-1", "assistant_agent", "subject-1")

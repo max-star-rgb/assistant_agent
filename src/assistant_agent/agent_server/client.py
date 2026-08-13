@@ -9,7 +9,9 @@ from langgraph_sdk import get_client
 
 
 class AgentServerClient(Protocol):
-    async def create_thread(self, *, metadata: Mapping[str, object]) -> str: ...
+    async def create_thread(
+        self, *, metadata: Mapping[str, object], thread_id: str | None = None
+    ) -> str: ...
 
     def stream_run(
         self,
@@ -40,8 +42,14 @@ class SdkAgentServerClient:
     ) -> None:
         self._client = get_client(url=url, headers=headers)
 
-    async def create_thread(self, *, metadata: Mapping[str, object]) -> str:
-        thread = await self._client.threads.create(metadata=dict(metadata))
+    async def create_thread(
+        self, *, metadata: Mapping[str, object], thread_id: str | None = None
+    ) -> str:
+        thread = await self._client.threads.create(
+            metadata=dict(metadata),
+            thread_id=thread_id,
+            if_exists="do_nothing" if thread_id is not None else None,
+        )
         return str(thread["thread_id"])
 
     async def stream_run(self, **kwargs):
