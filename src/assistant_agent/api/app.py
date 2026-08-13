@@ -142,6 +142,10 @@ async def start_workflow_graph_host(app: FastAPI) -> WorkflowGraphHost | None:
     manifest_path = os.environ.get(
         "MULTIMODAL_AGENT_WORKFLOW_CUTOVER_MANIFEST_PATH", ""
     )
+    if not manifest_path:
+        raise RuntimeError(
+            "durable workflows require an operator cutover manifest"
+        )
 
     def manifest_source():
         return load_workflow_cutover_manifest(manifest_path)
@@ -149,7 +153,7 @@ async def start_workflow_graph_host(app: FastAPI) -> WorkflowGraphHost | None:
     host = await WorkflowGraphHost.open(
         config=config,
         checkpointer_owner=owner,
-        cutover_manifest_source=manifest_source if manifest_path else None,
+        cutover_manifest_source=manifest_source,
     )
     app.state.workflow_graph_host = host
     return host

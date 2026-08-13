@@ -402,10 +402,6 @@ class WorkflowGraphHost:
                 execution = self._execution_identity(
                     bundle, run_id="workflow-startup-recovery"
                 )
-                context = self._context(
-                    bundle,
-                    invocation_token=_token(f"recover:{workflow_id}"),
-                )
                 raw = await self._graph_app.graph.aget_state(
                     execution.runnable_config(), subgraphs=True
                 )
@@ -421,6 +417,10 @@ class WorkflowGraphHost:
                         invocation_run_id=execution.run_id,
                         invocation_trace_id=workflow.ingress_trace_id
                         or workflow.ingress_run_id,
+                    )
+                    context = self._context(
+                        bundle,
+                        invocation_token=_token(initial["invocation_run_id"]),
                     )
                     await self._commit_projection(initial)
                     self._track_task(
@@ -440,6 +440,10 @@ class WorkflowGraphHost:
                 if state["status"] in {"waiting_input", "blocked"}:
                     await self._commit_projection(state)
                     continue
+                context = self._context(
+                    bundle,
+                    invocation_token=_token(state["invocation_run_id"]),
+                )
                 self._track_task(
                     workflow_id,
                     self._run_continue(identity=execution, context=context),

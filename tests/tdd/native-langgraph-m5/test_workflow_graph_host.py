@@ -180,6 +180,31 @@ def _identity() -> RequestIdentity:
     )
 
 
+def _write_cutover_manifest(tmp_path) -> str:
+    path = tmp_path / "operator-cutover.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": "workflow_engine_cutover_v1",
+                "revision": 7,
+                "phase": "cutover_active",
+                "new_submission_engine": "langgraph_v3",
+                "legacy_rules": {
+                    "terminal": "read_only",
+                    "pristine_queued": "migrate_two_phase",
+                    "running": "drain_allowlist",
+                    "waiting": "drain_allowlist",
+                },
+                "drain_deadline": "2030-01-02T00:00:00Z",
+                "rollback_deadline": "2030-01-03T00:00:00Z",
+                "operator_approval_ref": "operator-approval:test-host",
+            }
+        ),
+        encoding="utf-8",
+    )
+    return str(path)
+
+
 def _forbidden_keys(value: object) -> set[str]:
     if isinstance(value, dict):
         return set(value).union(
@@ -667,6 +692,66 @@ def test_recover_nonterminal_starts_graph_admission_without_checkpoint(tmp_path)
     asyncio.run(exercise())
 
 
+def test_recover_nonterminal_reuses_checkpoint_invocation_token(tmp_path) -> None:
+    """In-flight recovery must retain child claim ownership from the checkpoint."""
+
+    from assistant_agent.workflows.graph_host import WorkflowGraphHost, _token
+    from assistant_agent.workflows.graph_state import initial_workflow_graph_state
+
+    async def exercise() -> None:
+        config = _config(tmp_path)
+        store = SQLiteWorkflowStore(config.durable_workflow_path)
+        try:
+            bundle = WorkflowService(
+                store=store,
+                definitions=default_workflow_definitions(),
+                submission_engine="langgraph_v3",
+            ).submit(
+                identity=_identity(),
+                ingress_run_id="crash-with-checkpoint",
+                submission=_submission(),
+            )
+        finally:
+            store.close()
+        host = await WorkflowGraphHost.open(
+            config=config,
+            provider_registry={
+                "planner": _Planner(),
+                "worker": _Worker(),
+                "verifier": _Verifier(),
+            },
+            tool_registry=_registry(),
+        )
+        original_run_id = "workflow-original-invocation"
+        execution = host._execution_identity(bundle, run_id=original_run_id)
+        initial = initial_workflow_graph_state(
+            workflow=bundle.workflow,
+            submission=_submission(),
+            admitted_plan=None,
+            workflow_thread_id=execution.thread_id,
+            invocation_run_id=original_run_id,
+            invocation_trace_id="workflow-original-trace",
+        )
+        await host._graph_app.graph.aupdate_state(
+            execution.runnable_config(), initial, as_node="__start__"
+        )
+        observed: list[str] = []
+        real_context = host._context
+
+        def observe_context(bundle, *, invocation_token):
+            observed.append(invocation_token)
+            return real_context(bundle, invocation_token=invocation_token)
+
+        host._context = observe_context
+        try:
+            assert await host.recover_nonterminal() == 1
+        finally:
+            await host.close()
+        assert observed == [_token(original_run_id)]
+
+    asyncio.run(exercise())
+
+
 def test_real_api_composition_shares_one_saver_owner(tmp_path, monkeypatch) -> None:
     """Both compiled graphs borrow one process owner; Host must not close it."""
 
@@ -675,6 +760,10 @@ def test_real_api_composition_shares_one_saver_owner(tmp_path, monkeypatch) -> N
 
     config = _config(tmp_path)
     application = FastAPI()
+    monkeypatch.setenv(
+        "MULTIMODAL_AGENT_WORKFLOW_CUTOVER_MANIFEST_PATH",
+        _write_cutover_manifest(tmp_path),
+    )
     monkeypatch.setattr(
         app_module,
         "resolve_runtime_config",
@@ -733,6 +822,32 @@ def test_real_api_composition_shares_one_saver_owner(tmp_path, monkeypatch) -> N
         asyncio.run(exercise())
     finally:
         routes_agent.shutdown_agent_runtime()
+
+
+def test_api_workflow_host_requires_operator_manifest(tmp_path, monkeypatch) -> None:
+    """Production graph admission cannot start without the signed local gate."""
+
+    from assistant_agent.api import app as app_module
+
+    application = FastAPI()
+    monkeypatch.delenv(
+        "MULTIMODAL_AGENT_WORKFLOW_CUTOVER_MANIFEST_PATH",
+        raising=False,
+    )
+    monkeypatch.setattr(app_module, "resolve_runtime_config", lambda: _config(tmp_path))
+
+    async def exercise() -> None:
+        await app_module.start_shared_checkpointer_owner(application)
+        try:
+            with pytest.raises(RuntimeError, match="operator cutover manifest"):
+                await app_module.start_workflow_graph_host(application)
+            assert not hasattr(application.state, "workflow_graph_host") or (
+                application.state.workflow_graph_host is None
+            )
+        finally:
+            await app_module.shutdown_shared_checkpointer_owner(application)
+
+    asyncio.run(exercise())
 
 
 def test_workflow_api_get_uses_graph_host_strict_product_snapshot() -> None:
