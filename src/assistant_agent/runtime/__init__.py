@@ -1,1 +1,1 @@
-"""Agent orchestration and decision modules."""
+"""Compiled assistant runtime modules and focused composition owners."""

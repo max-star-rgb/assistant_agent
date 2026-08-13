@@ -79,8 +79,9 @@ objective、constraint、capability reference、response、Tool trajectory 和 a
 state 或动态 task UUID。
 
 Graph 身份语义为 stable conversation `thread_id` 加每次调用或 resume 的新 `run_id`。进程拥有的
-`AssistantRuntimeApp` 只解析并持有一个 `AgentGraphRuntime`，内部 owner-bound history、Replay 与 Fork
-facade 复用同一个 compiled graph、checkpointer、claim store 和受治理 service。continuation preparation
+`AssistantRuntimeApp` 只解析并持有一个 `AgentGraphRuntime`；owner-bound history 由 App/Host 直接委托
+同一个 compiled graph，Replay 与 Fork 通过需要 continuation service preparation 的 Runtime 入口复用该
+graph、checkpointer、claim store 和受治理 service。continuation preparation
 从已验证 checkpoint 重建 fresh invocation-local `AgentState`/`GraphRuntimeContext`，不调用 Memory
 `open_session`、`prepare_context` 或 `ingest_turn`：普通 turn 不变，resume 只在成功终态 ingestion 一次，
 Replay/Fork 不 ingestion。非 Memory context ref 必须由当前 owner 重建并严格匹配；Memory ref 只能通过
@@ -359,6 +360,13 @@ async for event in stream:
 state = await stream.result()
 ```
 
+M5 后 Runtime 的稳定公开方法只有 `initialize_session_memory`、`run_state`、`arun_state`、
+`astream_state`、`aresume_state`、`areplay_state`、`afork_state`、
+`drain_memory_ingestions`、`run_task_quantum` 与 `close`。无人调用的 `run()` 已删除；history 和 thread
+retention 不再作为 Runtime facade 方法。唯一临时例外是 `run_work_item`：legacy Workflow DB 的只读
+operator gate 仍有 `running=1`、`waiting_input=1`，因此它继续只服务 drain 中的
+`workflows/execution.py`，不得被新入口采用，待 Task 9 retirement gate 全部满足后再删除。
+
 `run_assistant_request_stream()` returns
 `AgentRunStream[AssistantRunArtifacts]` and preserves the shared service as the
 owner of provider/config resolution, runtime construction, conversation
@@ -470,7 +478,8 @@ accepts an async `run_request_stream=` boundary; the former synchronous
 `run_request=` worker-thread bridge and `AgentGraphRuntime.run_stream()` bridge
 have been removed. The synchronous `run_assistant_request()` and
 `AgentGraphRuntime.run_state()` APIs remain available for existing non-Gateway
-callers; they do not define a product stream path.
+callers; there is no response-only `AgentGraphRuntime.run()` alias, and these APIs do not
+define a product stream path.
 
 Async migration remains selective:
 

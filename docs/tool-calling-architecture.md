@@ -277,6 +277,12 @@ module 等同于执行受信任代码，不是不可信插件沙箱。不可信�
 增加普通 Tool 时只修改其所属 Plugin，不应要求修改 Registry、Validator、Executor、assistant loop
 或中心 Tool name 表。只有新的宿主级共享依赖才扩展 Plugin context 和 composition root。
 
+Tool capability/name/action 的通用映射位于
+`assistant_agent.runtime.tool_capability_mapping`；旧的 `legacy_tool_mapping` module 已随 intent planner
+退出而删除，不保留 import alias。`ToolExecutor` 仍使用该结构化映射，并继续通过 `recovery.py` 执行失败
+分类；`recovery.py` 同时服务 LangSmith 安全错误分类。`planning_models.py` 与 `plan_validator.py` 继续由
+独立 DurableTask service 和酒店价格监控 profile 使用，不属于 legacy intent planner 清理范围。
+
 ### 4.3 Website guidance
 
 `website_guidance` 是默认关闭的内置 Plugin。显式启用
@@ -349,6 +355,11 @@ Definition 再将 proposal 的 workstreams 和 constraint proposals 领域化为
 `WorkflowPlanVersion`，经过 DAG、引用、保留 ID/kind 和验证者拓扑 admission 后才进入执行。
 因此第一次 `llm.chat` 就是真实 planner 运行，不存在 submission 阶段的第二套规则 planner
 或预先由模型填写执行 DAG 的兼容路径。
+
+这里的 `run_work_item()` 是 legacy drain 期间唯一保留的临时 Runtime surface。2026-08-13 的只读
+operator gate 仍有 legacy workflow `running=1`、`waiting_input=1`，所以 Task 9 retirement 条件尚未
+满足；不得提前删除 `workflows/execution.py` 或该方法，也不得让新入口依赖它。全部非终态/lease/waiting
+归零并通过 manifest、rollback window 与 retirement audit gate 后，两者才能一起退出。
 
 约束在 planner proposal 与获准执行 Plan 中使用两个不同的 Pydantic 边界：LLM Planner 生成
 `WorkflowConstraintProposal`，可以在完整 DAG 尚不存在时省略 `verifier_work_item_id`；Definition 生成

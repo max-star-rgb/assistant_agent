@@ -12,7 +12,7 @@ from assistant_agent.runtime.cancellation import (
     DEFAULT_CANCELLATION_MESSAGE,
     raise_if_cancelled,
 )
-from assistant_agent.runtime.legacy_tool_mapping import (
+from assistant_agent.runtime.tool_capability_mapping import (
     canonical_capability_for_action,
     canonical_capability_for_tool,
 )

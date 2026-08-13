@@ -31,6 +31,7 @@ from assistant_agent.runtime.graph_invocation_claims import (
 from assistant_agent.runtime.output_models import NativeToolCall
 from assistant_agent.runtime.requests import UserRequest
 from assistant_agent.runtime.runtime import AgentGraphRuntime
+from assistant_agent.runtime.runtime_host import RuntimeHost
 from assistant_agent.runtime.run_history import RunHistoryStore
 from assistant_agent.runtime.session_store import InMemorySessionStore
 from assistant_agent.runtime.state import AgentState
@@ -797,13 +798,14 @@ def test_runtime_thread_delete_removes_checkpoint_then_releases_claims() -> None
         session_store=InMemorySessionStore(),
         checkpointer=saver,
     )
+    host = RuntimeHost(runtime=runtime)
     request = _request()
 
     async def exercise() -> None:
         first = await runtime.arun_state(request, run_id="run-thread-lifecycle")
         assert first.status == "completed"
 
-        deleted_claims = await runtime.adelete_assistant_thread(
+        deleted_claims = await host.adelete_assistant_thread(
             user_id=request.user_id,
             session_id=request.session_id,
         )
@@ -826,7 +828,7 @@ def test_runtime_thread_delete_removes_checkpoint_then_releases_claims() -> None
     try:
         asyncio.run(exercise())
     finally:
-        runtime.close()
+        host.close()
 
     assert len(adapter.requests) == 2
 

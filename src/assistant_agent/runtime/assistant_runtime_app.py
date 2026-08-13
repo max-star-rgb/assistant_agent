@@ -6,6 +6,10 @@ from collections.abc import Callable
 from typing import Any
 
 from assistant_agent.runtime.runtime import AgentGraphRuntime
+from assistant_agent.runtime.assistant_graph_app import (
+    GraphExecutionError,
+    GraphExecutionIdentity,
+)
 from assistant_agent.config import ProviderConfig
 from assistant_agent.identity import RequestIdentity
 from assistant_agent.runtime.requests import UserRequest
@@ -90,7 +94,18 @@ class AssistantRuntimeApp:
     ) -> tuple[GraphCheckpointSummary, ...]:
         """List safe checkpoints from the process-owned Runtime graph."""
 
-        return await self.runtime.alist_history(owner, limit=limit, before=before)
+        runtime = self.runtime
+        identity = _graph_identity_for_owner(runtime, owner, run_id="history-inspect")
+        if getattr(runtime.assistant_graph_app.graph, "checkpointer", None) is None:
+            raise GraphExecutionError(
+                "graph_checkpointer_required",
+                "Assistant graph time travel requires an explicitly configured saver.",
+            )
+        return await runtime.assistant_graph_app.alist_history(
+            identity,
+            limit=limit,
+            before=before,
+        )
 
     async def replay_turn(
         self,
@@ -190,3 +205,24 @@ class AssistantRuntimeApp:
             "session_records": session_records_deleted,
             "visual_semantic_sessions": visual_sessions_deleted,
         }
+
+
+def _graph_identity_for_owner(
+    runtime: AgentGraphRuntime,
+    owner: RequestIdentity,
+    *,
+    run_id: str,
+) -> GraphExecutionIdentity:
+    if not isinstance(owner, RequestIdentity):
+        raise TypeError("owner must be a RequestIdentity")
+    if owner.agent_id != runtime.agent_id or owner.session_id is None:
+        raise GraphExecutionError(
+            "graph_checkpoint_owner_mismatch",
+            "Assistant graph owner must match this Runtime and include a session.",
+        )
+    return GraphExecutionIdentity.for_assistant_turn(
+        agent_id=owner.agent_id,
+        user_id=owner.user_id,
+        session_id=owner.session_id,
+        run_id=run_id,
+    )
