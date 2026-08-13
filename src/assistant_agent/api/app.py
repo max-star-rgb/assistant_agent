@@ -53,7 +53,6 @@ from assistant_agent.skills.application import (
     create_skill_runtime_app_from_env,
 )
 from assistant_agent.workflows.graph_host import WorkflowGraphHost
-from assistant_agent.workflows.cutover import load_workflow_cutover_manifest
 
 SKIP_DOTENV_ENV = "MULTIMODAL_AGENT_SKIP_DOTENV"
 
@@ -146,19 +145,9 @@ async def start_workflow_graph_host(app: FastAPI) -> WorkflowGraphHost | None:
     app.state.workflow_graph_host = None
     if not config.durable_workflows_enabled:
         return None
-    manifest_path = os.environ.get(
-        "MULTIMODAL_AGENT_WORKFLOW_CUTOVER_MANIFEST_PATH", ""
-    )
-    if not manifest_path:
-        raise RuntimeError("durable workflows require an operator cutover manifest")
-
-    def manifest_source():
-        return load_workflow_cutover_manifest(manifest_path)
-
     host = await WorkflowGraphHost.open(
         config=config,
         checkpointer_owner=owner,
-        cutover_manifest_source=manifest_source,
     )
     app.state.workflow_graph_host = host
     return host

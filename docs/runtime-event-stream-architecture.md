@@ -155,8 +155,8 @@ input schema、runtime input bindings 与 hidden fields）和 checkpoint-time bo
 `assistant_agent.runtime.graph_capability_evidence.GRAPH_CAPABILITY_EVIDENCE` 提供严格机器矩阵：每项只允许
 `implemented|not_applicable`，并指向 Git tracked 的源码或测试 anchor；`Store` 是唯一
 `not_applicable`，因为当前 graph 没有跨节点 Store consumer 且 compile 不接收空 Store。这个能力矩阵与
-整体交付 gate 与能力矩阵分离：持久 operator retirement evidence 已关闭 legacy gate，M5 delivery 为
-`accepted`；能力项仍只表达 `implemented|not_applicable`。
+整体交付 gate 与能力矩阵分离：已记录的 retirement evidence 证明 legacy 非终态为零，M5 delivery 为
+`accepted`；该一次性证据不进入生产 Runtime，能力项仍只表达 `implemented|not_applicable`。
 仓库不再保留 conditional graph、rule intent/router/planner 或可切换它们的 `AGENT_GRAPH_MODE`；
 `UserRequest` 也不再接受 `execution_strategy=plan_and_solve`。当前仍存在的
 `task_execution_mode` 是工具/持久执行的结构化治理事实，不是第二张 Agent graph 的选择器。

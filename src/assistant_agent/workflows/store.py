@@ -8,7 +8,6 @@ from typing import Protocol
 from assistant_agent.workflows.models import (
     WorkflowBundle,
     WorkflowEvent,
-    WorkflowRetirementAudit,
     utc_now,
 )
 
@@ -22,10 +21,6 @@ class WorkflowAlreadyExists(WorkflowStoreError):
 
 
 class WorkflowRevisionConflict(WorkflowStoreError):
-    pass
-
-
-class WorkflowRetirementAuditConflict(WorkflowStoreError):
     pass
 
 
@@ -53,11 +48,7 @@ class WorkflowStore(Protocol):
         self, workflow_id: str, *, after: int = 0, limit: int = 100
     ) -> list[WorkflowEvent]: ...
     def latest_event_cursor(self, workflow_id: str) -> int: ...
-    def list_cutover_bundles(self) -> list[WorkflowBundle]: ...
-    def record_retirement_audit(
-        self, audit: WorkflowRetirementAudit
-    ) -> WorkflowRetirementAudit: ...
-    def list_retirement_audits(self) -> list[WorkflowRetirementAudit]: ...
+    def list_bundles(self) -> list[WorkflowBundle]: ...
     def close(self) -> None: ...
 
 
@@ -86,7 +77,6 @@ class InMemoryWorkflowStore:
         self._bundles: dict[str, WorkflowBundle] = {}
         self._submissions: dict[tuple[str, str, str, str], str] = {}
         self._events: dict[str, list[WorkflowEvent]] = {}
-        self._retirement_audits: dict[tuple[int, str], WorkflowRetirementAudit] = {}
         self._lock = RLock()
 
     def create(
@@ -125,43 +115,13 @@ class InMemoryWorkflowStore:
             )
             return self.load(workflow_id) if workflow_id is not None else None
 
-    def list_cutover_bundles(self) -> list[WorkflowBundle]:
-        """Return a stable snapshot for the operator cutover controller."""
+    def list_bundles(self) -> list[WorkflowBundle]:
+        """Return a stable snapshot for native recovery and archive reads."""
 
         with self._lock:
             return [
                 self._bundles[workflow_id].model_copy(deep=True)
                 for workflow_id in sorted(self._bundles)
-            ]
-
-    def record_retirement_audit(
-        self, audit: WorkflowRetirementAudit
-    ) -> WorkflowRetirementAudit:
-        """Persist one idempotent manifest-bound retirement approval."""
-
-        with self._lock:
-            key = (audit.manifest_revision, audit.manifest_digest)
-            if key in self._retirement_audits:
-                if (
-                    self._retirement_audits[key].operator_approval_ref
-                    == audit.operator_approval_ref
-                ):
-                    return self._retirement_audits[key].model_copy(deep=True)
-                raise WorkflowRetirementAuditConflict(
-                    "retirement_audit_manifest_conflict"
-                )
-            if self._retirement_audits:
-                raise WorkflowRetirementAuditConflict(
-                    "retirement_audit_manifest_conflict"
-                )
-            self._retirement_audits[key] = audit.model_copy(deep=True)
-            return self._retirement_audits[key].model_copy(deep=True)
-
-    def list_retirement_audits(self) -> list[WorkflowRetirementAudit]:
-        with self._lock:
-            return [
-                self._retirement_audits[key].model_copy(deep=True)
-                for key in sorted(self._retirement_audits)
             ]
 
     def save(

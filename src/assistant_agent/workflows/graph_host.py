@@ -3,13 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-import fcntl
 import hashlib
 import json
-import os
 import secrets
-from contextlib import asynccontextmanager
-from collections.abc import AsyncIterator, Callable
+from collections.abc import Callable
 from pathlib import Path
 from threading import Event
 from typing import Any, Literal
@@ -59,7 +56,6 @@ from assistant_agent.workflows.graph_publish import (
     SQLiteWorkflowPublisher,
     SQLiteWorkflowPublishStore,
 )
-from assistant_agent.workflows.cutover import WorkflowEngineCutoverManifest
 from assistant_agent.workflows.graph_state import (
     PersistedWorkflowIdentity,
     initial_workflow_graph_state,
@@ -185,7 +181,6 @@ class WorkflowGraphHost:
         operation_store: SQLiteToolOperationStore,
         publish_store: SQLiteWorkflowPublishStore,
         publisher: SQLiteWorkflowPublisher,
-        cutover_manifest_source: Callable[[], WorkflowEngineCutoverManifest] | None,
     ) -> None:
         self.config = config
         self._owner = owner
@@ -200,17 +195,10 @@ class WorkflowGraphHost:
         self._operation_store = operation_store
         self._publish_store = publish_store
         self._publisher = publisher
-        self._cutover_manifest_source = cutover_manifest_source
-        self._cutover_manifest: WorkflowEngineCutoverManifest | None = None
-        self._migration_local_lock = asyncio.Lock()
-        self._migration_lock_path = Path(
-            f"{config.langgraph_checkpoint_path}.workflow-migration.lock"
-        )
         self._projector = WorkflowGraphProjector()
         self._tasks: dict[str, asyncio.Task[Any]] = {}
         self._task_errors: list[BaseException] = []
         self._schedule_lock = asyncio.Lock()
-        self._activated_workflows: set[str] = set()
         self._cancel_tokens: dict[str, Event] = {}
         self._accepting = True
         self._closed = False
@@ -223,8 +211,6 @@ class WorkflowGraphHost:
         provider_registry: Any | None = None,
         tool_registry: ToolRegistry | None = None,
         checkpointer_owner: AsyncCheckpointerOwner | None = None,
-        cutover_manifest_source: Callable[[], WorkflowEngineCutoverManifest]
-        | None = None,
     ) -> "WorkflowGraphHost":
         if config.langgraph_checkpointer_backend != "sqlite":
             raise WorkflowGraphHostError(
@@ -304,13 +290,11 @@ class WorkflowGraphHost:
                 service=WorkflowService(
                     store=product_store,
                     definitions=default_workflow_definitions(),
-                    submission_engine="langgraph_v3",
                 ),
                 artifact_store=artifact_store,
                 operation_store=operation_store,
                 publish_store=publish_store,
                 publisher=publisher,
-                cutover_manifest_source=cutover_manifest_source,
             )
         except BaseException:
             if artifact_store is not None:
@@ -357,7 +341,7 @@ class WorkflowGraphHost:
         ingress_trace_id: str | None = None,
         ingress_parent_span_id: str | None = None,
     ) -> WorkflowGraphHandle:
-        self._require_submission_allowed()
+        self._require_accepting()
         bundle = self._service.submit(
             identity=identity,
             ingress_run_id=ingress_run_id,
@@ -431,7 +415,7 @@ class WorkflowGraphHost:
         continues to use :meth:`start` and its background lifecycle.
         """
 
-        self._require_submission_allowed()
+        self._require_accepting()
         invocation_task = asyncio.current_task()
         if invocation_task is None:
             raise WorkflowGraphHostError(
@@ -521,7 +505,7 @@ class WorkflowGraphHost:
 
         self._require_accepting()
         recovered = 0
-        for bundle in self._product_store.list_cutover_bundles():
+        for bundle in self._product_store.list_bundles():
             workflow = bundle.workflow
             if workflow.execution_engine != "langgraph_v3" or workflow.status in {
                 "completed",
@@ -855,130 +839,6 @@ class WorkflowGraphHost:
             )
         return True
 
-    async def ensure_started(
-        self,
-        *,
-        workflow_id: str,
-        idempotency_key: str,
-    ) -> None:
-        """Idempotently create the initial checkpoint without executing a node."""
-
-        self._require_accepting()
-        async with self.migration_guard(workflow_id=workflow_id):
-            await self._ensure_started_locked(
-                workflow_id=workflow_id,
-                idempotency_key=idempotency_key,
-            )
-
-    async def _ensure_started_locked(
-        self,
-        *,
-        workflow_id: str,
-        idempotency_key: str,
-    ) -> None:
-        bundle = self._require_bundle(workflow_id)
-        migration = bundle.workflow.engine_migration
-        if (
-            migration is None
-            or migration.status != "prepared"
-            or migration.idempotency_key != idempotency_key
-            or bundle.workflow.execution_engine != "legacy_scheduler_v2"
-        ):
-            raise WorkflowGraphHostError(
-                "workflow_migration_prepare_invalid",
-                "Workflow is not eligible for graph checkpoint preparation.",
-            )
-        if await self.has_checkpoint(workflow_id=workflow_id):
-            return
-        graph_record = bundle.workflow.model_copy(deep=True)
-        graph_record.execution_engine = "langgraph_v3"
-        graph_record.engine_migration = migration.model_copy(
-            update={"status": "committed"}
-        )
-        graph_record.legacy_claim_frozen = False
-        execution = self._execution_identity(
-            bundle, run_id=f"workflow-migration:{idempotency_key}"
-        )
-        initial = initial_workflow_graph_state(
-            workflow=graph_record,
-            submission=_submission_from_bundle(bundle),
-            admitted_plan=None,
-            workflow_thread_id=execution.thread_id,
-            invocation_run_id=execution.run_id,
-            invocation_trace_id=bundle.workflow.ingress_trace_id
-            or bundle.workflow.ingress_run_id,
-        )
-        await self._graph_app.graph.aupdate_state(
-            execution.runnable_config(),
-            initial,
-            as_node="__start__",
-        )
-        if not await self.has_checkpoint(workflow_id=workflow_id):
-            raise WorkflowGraphHostError(
-                "workflow_migration_checkpoint_missing",
-                "Workflow initial checkpoint was not persisted.",
-            )
-
-    @asynccontextmanager
-    async def migration_guard(self, *, workflow_id: str) -> AsyncIterator[None]:
-        """Serialize checkpoint/commit/rollback across hosts sharing the saver."""
-
-        _ = workflow_id
-        self._migration_lock_path.parent.mkdir(parents=True, exist_ok=True)
-        async with self._migration_local_lock:
-            file_descriptor = os.open(
-                self._migration_lock_path,
-                os.O_CREAT | os.O_RDWR,
-                0o600,
-            )
-            try:
-                await asyncio.to_thread(fcntl.flock, file_descriptor, fcntl.LOCK_EX)
-                yield
-            finally:
-                await asyncio.to_thread(fcntl.flock, file_descriptor, fcntl.LOCK_UN)
-                os.close(file_descriptor)
-
-    async def activate(self, *, workflow_id: str) -> None:
-        """Continue one committed checkpoint; repeated calls on this host are inert."""
-
-        self._require_accepting()
-        if workflow_id in self._activated_workflows:
-            return
-        bundle = self._require_bundle(workflow_id)
-        migration = bundle.workflow.engine_migration
-        if (
-            bundle.workflow.execution_engine != "langgraph_v3"
-            or migration is None
-            or migration.status != "committed"
-        ):
-            raise WorkflowGraphHostError(
-                "workflow_migration_not_committed",
-                "Workflow cannot execute before business migration commit.",
-            )
-        execution = self._execution_identity(
-            bundle,
-            run_id=f"workflow-migration:{migration.idempotency_key}",
-        )
-        raw_snapshot = await self._graph_app.graph.aget_state(
-            execution.runnable_config(), subgraphs=True
-        )
-        state = validate_durable_workflow_state(raw_snapshot.values)
-        if state["status"] in {"completed", "failed", "cancelled"}:
-            self._activated_workflows.add(workflow_id)
-            return
-        context = self._context(
-            bundle,
-            invocation_token=_token(state["invocation_run_id"]),
-        )
-        self._track_task(
-            workflow_id,
-            self._run_continue(
-                identity=execution,
-                context=context,
-            ),
-        )
-        self._activated_workflows.add(workflow_id)
-
     def _track_task(self, workflow_id: str, awaitable: Any) -> None:
         current = self._tasks.get(workflow_id)
         if current is not None and not current.done():
@@ -1213,35 +1073,6 @@ class WorkflowGraphHost:
                 "WorkflowGraphHost is not accepting new submissions.",
             )
 
-    def _require_submission_allowed(self) -> None:
-        self._require_accepting()
-        source = self._cutover_manifest_source
-        if source is None:
-            return
-        current = source()
-        previous = self._cutover_manifest
-        if previous is not None:
-            if current.revision < previous.revision:
-                raise WorkflowGraphHostError(
-                    "workflow_cutover_manifest_stale",
-                    "Workflow cutover manifest revision moved backwards.",
-                )
-            if (
-                current.revision == previous.revision
-                and current.digest != previous.digest
-            ):
-                raise WorkflowGraphHostError(
-                    "workflow_cutover_manifest_conflict",
-                    "Workflow cutover manifest revision is not immutable.",
-                )
-        self._cutover_manifest = current
-        if current.phase == "rollback_requested":
-            self._accepting = False
-            raise WorkflowGraphHostError(
-                "workflow_cutover_rollback_active",
-                "Workflow Graph admission is stopped during operator rollback.",
-            )
-
     def _require_open(self) -> None:
         if self._closed:
             raise WorkflowGraphHostError(
@@ -1276,7 +1107,7 @@ def _submission_from_bundle(bundle: WorkflowBundle) -> WorkflowSubmission:
                 ),
             ),
         },
-        durability_reasons=["legacy_cutover_migration"],
+        durability_reasons=["native_graph_recovery"],
         seed_artifact_refs=list(workflow.seed_artifact_refs),
         idempotency_key=workflow.idempotency_key,
     )

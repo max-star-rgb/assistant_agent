@@ -10,6 +10,7 @@ import pytest
 from assistant_agent.runtime.runtime import AgentGraphRuntime
 from assistant_agent.config import ProviderConfig
 from assistant_agent.workflows.sqlite_store import SQLiteWorkflowStore
+from assistant_agent.workflows.service import WorkflowService
 from assistant_agent.workflows.store import InMemoryWorkflowStore, WorkflowStore
 
 
@@ -53,6 +54,7 @@ def test_legacy_workflow_execution_modules_and_api_lifecycle_are_removed() -> No
         "assistant_agent.workflows.legacy_drain_host",
         "assistant_agent.workflows.planning",
         "assistant_agent.workflows.progress",
+        "assistant_agent.workflows.cutover",
     ):
         with pytest.raises(ModuleNotFoundError):
             importlib.import_module(module_name)
@@ -72,6 +74,38 @@ def test_legacy_scheduler_claim_and_lease_surface_is_removed() -> None:
     assert not hasattr(config, "durable_workflow_worker_enabled")
     assert not hasattr(config, "durable_workflow_lease_seconds")
     assert not hasattr(config, "durable_workflow_poll_seconds")
+    assert "submission_engine" not in inspect.signature(WorkflowService).parameters
+    assert not hasattr(WorkflowService, "cancel")
+    assert not hasattr(WorkflowService, "provide_input")
+
+
+def test_workflow_service_creates_only_native_graph_records() -> None:
+    """Every new business row must be owned by the StateGraph engine."""
+
+    from assistant_agent.identity import RequestIdentity
+    from assistant_agent.workflows.builtin import default_workflow_definitions
+    from assistant_agent.workflows.models import WorkflowSubmission
+
+    service = WorkflowService(
+        store=InMemoryWorkflowStore(),
+        definitions=default_workflow_definitions(),
+    )
+    bundle = service.submit(
+        identity=RequestIdentity.for_user(
+            user_id="native-user",
+            agent_id="native-agent",
+            session_id="native-session",
+        ),
+        ingress_run_id="native-run",
+        submission=WorkflowSubmission(
+            workflow_type="deep_research",
+            objective="verify native ownership",
+            deliverables=["research_report"],
+            durability_reasons=["native_stategraph_only"],
+            idempotency_key="native-only-submit",
+        ),
+    )
+    assert bundle.workflow.execution_engine == "langgraph_v3"
 
 
 def test_tool_capability_mapping_replaces_legacy_module_without_alias() -> None:

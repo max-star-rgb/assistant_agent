@@ -12,10 +12,8 @@ HTTP response 的全部字段自动升级为兼容承诺。
 | final result content | `scripts/media_simulator.py:550-560` | hard-protected | identity-scoped result adapter 返回 artifact `content`；无 `result_summary` fallback |
 | waiting-input token/value | `scripts/media_simulator.py:583-614` | hard-protected | stable business `action_ref` / resume token adapter；native interrupt ID 不出 wire |
 
-下列当前旧字段没有上述真实 consumer，标记为 `unconsumed-breaking-cleanup-allowed`：response `plan`、
-`work_items`、lease、attempt、revision、raw `WorkflowBundle`、`/cancel` route。它们在本次安全 prework 中
-尚未从 production route 删除；Task 5 persistent saver gate 通过后的正式 Task 6 cutover 才能重写或删除
-production API。
+旧 response `plan`、`work_items`、lease、attempt、revision 与 raw `WorkflowBundle` 不再进入 production
+route；`/cancel` 由 GraphHost 直接修改 native checkpoint 并提交产品投影。
 
 禁止投影字段：`checkpoint_id`、`checkpoint_ns`、native task/interrupt ID、subgraph namespace、完整 graph
 state、Provider response、Tool raw body、scheduler lease/CAS。

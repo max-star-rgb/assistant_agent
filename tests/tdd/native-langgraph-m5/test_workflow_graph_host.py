@@ -181,31 +181,6 @@ def _identity() -> RequestIdentity:
     )
 
 
-def _write_cutover_manifest(tmp_path) -> str:
-    path = tmp_path / "operator-cutover.json"
-    path.write_text(
-        json.dumps(
-            {
-                "schema_version": "workflow_engine_cutover_v1",
-                "revision": 7,
-                "phase": "cutover_active",
-                "new_submission_engine": "langgraph_v3",
-                "legacy_rules": {
-                    "terminal": "read_only",
-                    "pristine_queued": "migrate_two_phase",
-                    "running": "drain_allowlist",
-                    "waiting": "drain_allowlist",
-                },
-                "drain_deadline": "2030-01-02T00:00:00Z",
-                "rollback_deadline": "2030-01-03T00:00:00Z",
-                "operator_approval_ref": "operator-approval:test-host",
-            }
-        ),
-        encoding="utf-8",
-    )
-    return str(path)
-
-
 def _forbidden_keys(value: object) -> set[str]:
     if isinstance(value, dict):
         return set(value).union(
@@ -287,140 +262,6 @@ def test_workflow_graph_host_reopens_persistent_thread_and_projects_strict_statu
             )
         finally:
             await second.close()
-
-    asyncio.run(exercise())
-
-
-def test_real_host_migration_checkpoint_survives_reopen_before_commit(
-    tmp_path,
-) -> None:
-    """The prepared/checkpoint crash gap must recover through the official saver."""
-
-    from assistant_agent.workflows.cutover import (
-        WorkflowCutoverController,
-        WorkflowEngineCutoverManifest,
-    )
-    from assistant_agent.workflows.graph_host import WorkflowGraphHost, _token
-
-    async def exercise() -> None:
-        config = _config(tmp_path)
-        seed_store = SQLiteWorkflowStore(config.durable_workflow_path)
-        service = WorkflowService(
-            store=seed_store,
-            definitions=default_workflow_definitions(),
-        )
-        try:
-            bundle = service.submit(
-                identity=_identity(),
-                ingress_run_id="legacy-before-cutover",
-                submission=_submission(),
-            )
-        finally:
-            seed_store.close()
-
-        manifest = WorkflowEngineCutoverManifest.model_validate(
-            {
-                "schema_version": "workflow_engine_cutover_v1",
-                "revision": 1,
-                "phase": "cutover_active",
-                "new_submission_engine": "langgraph_v3",
-                "legacy_rules": {
-                    "terminal": "read_only",
-                    "pristine_queued": "migrate_two_phase",
-                    "running": "drain_allowlist",
-                    "waiting": "drain_allowlist",
-                },
-                "drain_deadline": datetime(2030, 1, 2, tzinfo=timezone.utc),
-                "rollback_deadline": datetime(2030, 1, 3, tzinfo=timezone.utc),
-                "operator_approval_ref": "operator-approval:test",
-            }
-        )
-        controller_store = SQLiteWorkflowStore(config.durable_workflow_path)
-        try:
-            controller = WorkflowCutoverController(
-                store=controller_store,
-                manifest=manifest,
-            )
-            prepared = controller.prepare_pristine_queued(bundle.workflow.workflow_id)
-            migration = prepared.workflow.engine_migration
-            assert migration is not None
-
-            first = await WorkflowGraphHost.open(
-                config=config,
-                provider_registry={
-                    "planner": _Planner(),
-                    "worker": _Worker(),
-                    "verifier": _Verifier(),
-                },
-                tool_registry=_registry(),
-            )
-            try:
-                await first.ensure_started(
-                    workflow_id=bundle.workflow.workflow_id,
-                    idempotency_key=migration.idempotency_key,
-                )
-                assert await first.has_checkpoint(
-                    workflow_id=bundle.workflow.workflow_id
-                )
-            finally:
-                await first.close()
-
-            second = await WorkflowGraphHost.open(
-                config=config,
-                provider_registry={
-                    "planner": _Planner(),
-                    "worker": _Worker(),
-                    "verifier": _Verifier(),
-                },
-                tool_registry=_registry(),
-            )
-            try:
-                assert await second.has_checkpoint(
-                    workflow_id=bundle.workflow.workflow_id
-                )
-                checkpoint = await second._graph_app.graph.aget_state(
-                    second._execution_identity(
-                        prepared,
-                        run_id="migration-token-inspect",
-                    ).runnable_config()
-                )
-                observed_tokens: list[str] = []
-                real_context = second._context
-
-                def observe_context(bundle, *, invocation_token):
-                    observed_tokens.append(invocation_token)
-                    return real_context(bundle, invocation_token=invocation_token)
-
-                second._context = observe_context
-                await controller.commit_prepared(
-                    bundle.workflow.workflow_id,
-                    graph_host=second,
-                )
-                await second.activate(workflow_id=bundle.workflow.workflow_id)
-                assert observed_tokens == [
-                    _token(checkpoint.values["invocation_run_id"])
-                ]
-            finally:
-                await second.close()
-
-            third = await WorkflowGraphHost.open(
-                config=config,
-                provider_registry={
-                    "planner": _Planner(),
-                    "worker": _Worker(),
-                    "verifier": _Verifier(),
-                },
-                tool_registry=_registry(),
-            )
-            try:
-                status = await third.get_status(
-                    identity=_identity(), workflow_id=bundle.workflow.workflow_id
-                )
-                assert status.handle.status == "completed"
-            finally:
-                await third.close()
-        finally:
-            controller_store.close()
 
     asyncio.run(exercise())
 
@@ -549,87 +390,6 @@ def test_duplicate_submission_coalesces_one_graph_execution(tmp_path) -> None:
     asyncio.run(exercise())
 
 
-def test_rollback_requested_manifest_fences_new_graph_admission(tmp_path) -> None:
-    """Fresh operator rollback phase must stop new graph submissions first."""
-
-    from assistant_agent.workflows.cutover import WorkflowEngineCutoverManifest
-    from assistant_agent.workflows.graph_host import WorkflowGraphHost
-
-    manifest = WorkflowEngineCutoverManifest.model_validate(
-        {
-            "schema_version": "workflow_engine_cutover_v1",
-            "revision": 8,
-            "phase": "rollback_requested",
-            "new_submission_engine": "langgraph_v3",
-            "legacy_rules": {
-                "terminal": "read_only",
-                "pristine_queued": "migrate_two_phase",
-                "running": "drain_allowlist",
-                "waiting": "drain_allowlist",
-            },
-            "drain_deadline": datetime(2030, 1, 2, tzinfo=timezone.utc),
-            "rollback_deadline": datetime(2030, 1, 3, tzinfo=timezone.utc),
-            "operator_approval_ref": "operator-approval:rollback",
-        }
-    )
-
-    async def exercise() -> None:
-        host = await WorkflowGraphHost.open(
-            config=_config(tmp_path),
-            provider_registry={
-                "planner": _Planner(),
-                "worker": _Worker(),
-                "verifier": _Verifier(),
-            },
-            tool_registry=_registry(),
-            cutover_manifest_source=lambda: manifest,
-        )
-        try:
-            with pytest.raises(Exception) as exc_info:
-                await host.start(
-                    identity=_identity(),
-                    ingress_run_id="fenced-during-rollback",
-                    submission=_submission(),
-                )
-            assert getattr(exc_info.value, "code", None) == (
-                "workflow_cutover_rollback_active"
-            )
-            assert host._product_store.list_cutover_bundles() == []
-        finally:
-            await host.close()
-
-    asyncio.run(exercise())
-
-
-def test_separate_hosts_serialize_migration_checkpoint_and_rollback(tmp_path) -> None:
-    """The migration barrier must coordinate independent hosts, not only tasks."""
-
-    from assistant_agent.workflows.graph_host import WorkflowGraphHost
-
-    async def exercise() -> None:
-        config = _config(tmp_path)
-        first = await WorkflowGraphHost.open(config=config)
-        second = await WorkflowGraphHost.open(config=config)
-        entered = asyncio.Event()
-
-        async def contender() -> None:
-            async with second.migration_guard(workflow_id="workflow-lock-probe"):
-                entered.set()
-
-        try:
-            async with first.migration_guard(workflow_id="workflow-lock-probe"):
-                task = asyncio.create_task(contender())
-                await asyncio.sleep(0.05)
-                assert not entered.is_set()
-            await asyncio.wait_for(task, timeout=1.0)
-            assert entered.is_set()
-        finally:
-            await first.close()
-            await second.close()
-
-    asyncio.run(exercise())
-
-
 def test_graph_host_close_cancels_after_bounded_drain(tmp_path, monkeypatch) -> None:
     """A stuck invocation cannot hold process shutdown indefinitely."""
 
@@ -746,7 +506,6 @@ def test_recover_nonterminal_starts_graph_admission_without_checkpoint(
             bundle = WorkflowService(
                 store=store,
                 definitions=default_workflow_definitions(),
-                submission_engine="langgraph_v3",
             ).submit(
                 identity=_identity(),
                 ingress_run_id="crash-before-checkpoint",
@@ -800,7 +559,6 @@ def test_recover_nonterminal_reuses_checkpoint_invocation_token(tmp_path) -> Non
             bundle = WorkflowService(
                 store=store,
                 definitions=default_workflow_definitions(),
-                submission_engine="langgraph_v3",
             ).submit(
                 identity=_identity(),
                 ingress_run_id="crash-with-checkpoint",
@@ -855,10 +613,6 @@ def test_real_api_composition_shares_one_saver_owner(tmp_path, monkeypatch) -> N
 
     config = _config(tmp_path)
     application = FastAPI()
-    monkeypatch.setenv(
-        "MULTIMODAL_AGENT_WORKFLOW_CUTOVER_MANIFEST_PATH",
-        _write_cutover_manifest(tmp_path),
-    )
     monkeypatch.setattr(
         app_module,
         "resolve_runtime_config",
@@ -917,32 +671,6 @@ def test_real_api_composition_shares_one_saver_owner(tmp_path, monkeypatch) -> N
         routes_agent.shutdown_agent_runtime()
 
 
-def test_api_workflow_host_requires_operator_manifest(tmp_path, monkeypatch) -> None:
-    """Production graph admission cannot start without the signed local gate."""
-
-    from assistant_agent.api import app as app_module
-
-    application = FastAPI()
-    monkeypatch.delenv(
-        "MULTIMODAL_AGENT_WORKFLOW_CUTOVER_MANIFEST_PATH",
-        raising=False,
-    )
-    monkeypatch.setattr(app_module, "resolve_runtime_config", lambda: _config(tmp_path))
-
-    async def exercise() -> None:
-        await app_module.start_shared_checkpointer_owner(application)
-        try:
-            with pytest.raises(RuntimeError, match="operator cutover manifest"):
-                await app_module.start_workflow_graph_host(application)
-            assert not hasattr(application.state, "workflow_graph_host") or (
-                application.state.workflow_graph_host is None
-            )
-        finally:
-            await app_module.shutdown_shared_checkpointer_owner(application)
-
-    asyncio.run(exercise())
-
-
 def test_workflow_api_get_uses_graph_host_strict_product_snapshot() -> None:
     """HTTP read composition must not route through legacy service or expose native IDs."""
 
@@ -954,7 +682,6 @@ def test_workflow_api_get_uses_graph_host_strict_product_snapshot() -> None:
     service = WorkflowService(
         store=record_store,
         definitions=default_workflow_definitions(),
-        submission_engine="langgraph_v3",
     )
     try:
         bundle = service.submit(
@@ -1075,6 +802,7 @@ def test_nonterminal_legacy_row_is_not_executable_after_retirement() -> None:
         submission=_submission(),
     )
     changed = bundle.model_copy(deep=True)
+    changed.workflow.execution_engine = "legacy_scheduler_v2"
     item = changed.current_plan.work_items[0]
     item.status = "blocked"
     changed.workflow.status = "waiting_input"
@@ -1119,6 +847,7 @@ def test_legacy_archived_long_horizon_remains_queryable() -> None:
         submission=submission,
     )
     changed = bundle.model_copy(deep=True)
+    changed.workflow.execution_engine = "legacy_scheduler_v2"
     changed.workflow.status = "completed"
     changed.workflow.phase = "completed"
     changed.workflow.terminal_at = datetime.now(timezone.utc)

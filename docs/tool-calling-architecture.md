@@ -511,14 +511,9 @@ Validator、持久化 stable operation scope 并取得 barrier owner 后才可�
   strict checkpoint state、conditional `Send`、Pregel join、planner/worker/verifier profile subgraph、
   `Command` repair、父图 `interrupt`/resume 和 publish operation barrier 直接运行 `langgraph_v3` record。
   这条 native graph 路径不调用 claim/lease/CAS/ready-node scheduler。legacy 非终态已由 operator
-  明确终结，retirement audit 已与 manifest 精确绑定；历史 terminal row 只保留 owner-scoped 只读投影。
-  retirement gate 以严格 `WorkflowRetirementStatus` 从业务 Store 复算 legacy 非终态、按当前时间仍有效的
-  active lease、waiting 三项计数，并核对 manifest phase 为 `retired`、rollback window 已关闭，以及
-  持久 retirement audit 与 manifest revision、digest、operator approval ref 三者完全绑定。结果只含计数、
-  manifest 机器字段和有界稳定 reason code，不含 workflow ID、owner 或用户正文；audit 不能由调用方布尔值
-  代替，且只能在其余前置全部满足后幂等写入。SQLite operator 探针使用不初始化 schema、不切换 journal 的
-  显式只读打开方式；旧库没有 audit 表时按 audit missing 处理。任一条件不满足时 `ready=false` 并保留下述
-  legacy 执行模块。业务 Store 不再提供 claim、lease、ready-node 或 heartbeat 方法，也不能恢复旧执行。
+  明确终结；历史 terminal row 只保留 owner-scoped 只读投影。生产启动和新 Graph admission 不再读取
+  cutover manifest，也不存在 migration、rollback 或 legacy mutation 控制面。业务 Store 不再提供
+  claim、lease、ready-node、heartbeat 或 retirement-audit 写方法，不能恢复旧执行。
   `agent_role` 由 Workflow controller 根据 version 1 的 bootstrap planner 状态写入可信 assignment，不能
   从 LLM 生成的 work-item `kind` 推断；planner proposal 禁止复用保留的 `plan` id/kind，避免递归重规划。
   新 planner 只生成显式标记的 `workflow_plan_v2`：每个 plan version 是静态 DAG，节点使用
@@ -608,11 +603,9 @@ payload、凭据、绝对路径和大块内联数据不能因 ToolResult 或调�
 - `tools/observation.py`：ToolResult 到模型观察的通用投影；
 - `tests/core/contract/test_tool_contract.py`：`TOOL-001` 核心治理契约。
 - `workflows/graph_host.py`：process-owned/b borrowed saver 的 graph_v3 产品 facade；
-- `workflows/cutover.py`：operator manifest、content-free inventory、queued 两阶段 migration reconciler 与
-  manifest-bound retirement machine gate；
 - `runtime/graph_capability_evidence.py`：最终 native Graph API 机器证据矩阵与独立 M5 delivery gate；其中
   Tool 副作用安全仍以既有 operation barrier 与治理链为证据，不建立第二套执行规则；
-- `workflows/` 其余模块：Workflow 契约、产品 Store、artifact/context、native graph 与只读 retirement audit；
+- `workflows/` 其余模块：Workflow 契约、产品 Store、artifact/context、native graph 与 legacy terminal archive；
 - `api/routes_workflows.py`：identity-scoped status/events/input/cancel/result 薄入口。
 
 ## 10. 不变量

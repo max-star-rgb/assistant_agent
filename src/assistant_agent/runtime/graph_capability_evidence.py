@@ -343,29 +343,17 @@ class _WorkflowRetirementProbeReport(_StrictFrozenModel):
     schema_version: Literal["workflow_retirement_probe_v1"]
     observed_at: datetime
     probe_mode: Literal["sqlite_read_only", "operator_retirement"]
-    operator_manifest_available: bool
     ready: bool
     nonterminal_legacy_count: int = Field(ge=0)
     active_legacy_lease_count: int = Field(ge=0)
     waiting_legacy_count: int = Field(ge=0)
     legacy_status_counts: dict[str, int]
-    persisted_retirement_audit_count: int = Field(ge=0)
-    gate_blocker: Literal["operator_manifest_unavailable"] | None = None
     database_metadata_unchanged: bool
 
     @model_validator(mode="after")
     def validate_probe(self) -> "_WorkflowRetirementProbeReport":
         if self.observed_at.tzinfo is None:
             raise ValueError("retirement probe timestamp must be timezone-aware")
-        if self.ready:
-            if not self.operator_manifest_available or self.gate_blocker is not None:
-                raise ValueError("ready probe requires an available retired manifest")
-            if self.persisted_retirement_audit_count < 1:
-                raise ValueError("ready probe requires a persisted retirement audit")
-        elif self.operator_manifest_available or self.gate_blocker is None:
-            raise ValueError(
-                "blocked probe must carry its unavailable manifest blocker"
-            )
         if not self.database_metadata_unchanged:
             raise ValueError("retirement probe changed the operator database")
         if self.nonterminal_legacy_count != sum(

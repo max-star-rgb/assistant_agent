@@ -26,7 +26,6 @@ from assistant_agent.workflows.service import (
     WorkflowAccessDenied,
     WorkflowNotFound,
     WorkflowServiceError,
-    WorkflowStateConflict,
 )
 from assistant_agent.workflows.store import WorkflowStoreError
 from assistant_agent.workflows.graph_host import (
@@ -214,8 +213,6 @@ def _map_error(exc: Exception) -> HTTPException:
         return _http_error(409, "WORKFLOW_CONFLICT", str(exc))
     if isinstance(exc, (WorkflowNotFound, WorkflowAccessDenied)):
         return _http_error(404, "WORKFLOW_NOT_FOUND", "Workflow not found.")
-    if isinstance(exc, WorkflowStateConflict):
-        return _http_error(409, "WORKFLOW_CONFLICT", str(exc))
     return _http_error(409, "WORKFLOW_CONFLICT", "Workflow operation failed.")
 
 

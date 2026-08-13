@@ -10,13 +10,11 @@ from threading import RLock
 from assistant_agent.workflows.models import (
     WorkflowBundle,
     WorkflowEvent,
-    WorkflowRetirementAudit,
     utc_now,
 )
 from assistant_agent.workflows.store import (
     WorkflowAlreadyExists,
     WorkflowRevisionConflict,
-    WorkflowRetirementAuditConflict,
     WorkflowStoreError,
     assign_event_cursors,
 )
@@ -138,14 +136,6 @@ class SQLiteWorkflowStore:
                   event_json TEXT NOT NULL,
                   PRIMARY KEY (workflow_id, cursor)
                 );
-                CREATE INDEX IF NOT EXISTS idx_durable_workflows_claim
-                ON durable_workflows(status, cancel_requested, lease_expires_at, updated_at);
-                CREATE TABLE IF NOT EXISTS workflow_engine_retirement_audits (
-                  manifest_revision INTEGER NOT NULL,
-                  manifest_digest TEXT NOT NULL,
-                  audit_json TEXT NOT NULL,
-                  PRIMARY KEY (manifest_revision, manifest_digest)
-                );
                 """
             )
 
@@ -198,85 +188,14 @@ class SQLiteWorkflowStore:
             ).fetchone()
             return _load_bundle_json(row[0]) if row is not None else None
 
-    def list_cutover_bundles(self) -> list[WorkflowBundle]:
-        """Read all business records in deterministic order for cutover inventory."""
+    def list_bundles(self) -> list[WorkflowBundle]:
+        """Read all business records for native recovery and archive reads."""
 
         with self._lock:
             rows = self._connection.execute(
                 "SELECT bundle_json FROM durable_workflows ORDER BY workflow_id"
             ).fetchall()
             return [_load_bundle_json(row[0]) for row in rows]
-
-    def record_retirement_audit(
-        self, audit: WorkflowRetirementAudit
-    ) -> WorkflowRetirementAudit:
-        """Persist one idempotent manifest-bound retirement approval."""
-
-        self._ensure_writable()
-        with self._lock:
-            try:
-                self._connection.execute("BEGIN IMMEDIATE")
-                rows = self._connection.execute(
-                    """
-                    SELECT manifest_revision, manifest_digest, audit_json
-                    FROM workflow_engine_retirement_audits
-                    """
-                ).fetchall()
-                key = (audit.manifest_revision, audit.manifest_digest)
-                matching = next(
-                    (
-                        WorkflowRetirementAudit.model_validate_json(row[2])
-                        for row in rows
-                        if (int(row[0]), str(row[1])) == key
-                    ),
-                    None,
-                )
-                if matching is not None:
-                    if matching.operator_approval_ref == audit.operator_approval_ref:
-                        self._connection.commit()
-                        return matching
-                    raise WorkflowRetirementAuditConflict(
-                        "retirement_audit_manifest_conflict"
-                    )
-                if rows:
-                    raise WorkflowRetirementAuditConflict(
-                        "retirement_audit_manifest_conflict"
-                    )
-                self._connection.execute(
-                    """
-                    INSERT INTO workflow_engine_retirement_audits (
-                      manifest_revision, manifest_digest, audit_json
-                    ) VALUES (?, ?, ?)
-                    """,
-                    (
-                        audit.manifest_revision,
-                        audit.manifest_digest,
-                        audit.model_dump_json(),
-                    ),
-                )
-                self._connection.commit()
-                return audit
-            except Exception:
-                self._connection.rollback()
-                raise
-
-    def list_retirement_audits(self) -> list[WorkflowRetirementAudit]:
-        with self._lock:
-            table = self._connection.execute(
-                """
-                SELECT 1 FROM sqlite_master
-                WHERE type='table' AND name='workflow_engine_retirement_audits'
-                """
-            ).fetchone()
-            if table is None:
-                return []
-            rows = self._connection.execute(
-                """
-                SELECT audit_json FROM workflow_engine_retirement_audits
-                ORDER BY manifest_revision, manifest_digest
-                """
-            ).fetchall()
-            return [WorkflowRetirementAudit.model_validate_json(row[0]) for row in rows]
 
     def save(
         self,
