@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from types import SimpleNamespace
 
 import pytest
@@ -13,6 +14,11 @@ from evals.langsmith_runtime_regression.evaluators import (
 
 MODEL_CONFIG_ID = "00000000-0000-0000-0000-000000000123"
 DATASET_ID = "00000000-0000-0000-0000-000000000456"
+MODEL_SETTINGS = {
+    "model": "gpt-4.1-mini",
+    "model_provider": "openai",
+    "temperature": 0,
+}
 
 
 class Response:
@@ -37,6 +43,7 @@ class Client:
                 {
                     "id": MODEL_CONFIG_ID,
                     "available_in_evaluators": True,
+                    "settings": deepcopy(MODEL_SETTINGS),
                 }
             ]
         )
@@ -64,12 +71,22 @@ def test_runtime_evaluator_payloads_use_one_llm_judge_per_rule() -> None:
     payloads = runtime_regression_evaluator_rule_payloads(
         dataset_id=DATASET_ID,
         model_config_id=MODEL_CONFIG_ID,
+        model_settings=MODEL_SETTINGS,
     )
 
     assert len(payloads) == 3
     assert len({payload["display_name"] for payload in payloads}) == 3
     assert all(payload["dataset_id"] == DATASET_ID for payload in payloads)
     assert all(len(payload["evaluators"]) == 1 for payload in payloads)
+    assert all(
+        payload["evaluators"][0]["structured"]["model"] == MODEL_SETTINGS
+        for payload in payloads
+    )
+    assert all(
+        payload["evaluators"][0]["structured"]["playground_settings_id"]
+        == MODEL_CONFIG_ID
+        for payload in payloads
+    )
     assert (
         tuple(
             next(iter(payload["evaluators"][0]["structured"]["schema"]["properties"]))
@@ -83,6 +100,7 @@ def test_runtime_evaluator_rules_are_independently_idempotent() -> None:
     payloads = runtime_regression_evaluator_rule_payloads(
         dataset_id=DATASET_ID,
         model_config_id=MODEL_CONFIG_ID,
+        model_settings=MODEL_SETTINGS,
     )
     client = Client(
         [
@@ -135,6 +153,15 @@ def test_runtime_evaluator_rules_are_independently_idempotent() -> None:
         ("POST", "/runs/rules"),
     ]
     assert all(len(payload["evaluators"]) == 1 for _, _, payload in client.writes)
+    assert all(
+        payload["evaluators"][0]["structured"]["model"] == MODEL_SETTINGS
+        for _, _, payload in client.writes
+    )
+    assert all(
+        payload["evaluators"][0]["structured"]["playground_settings_id"]
+        == MODEL_CONFIG_ID
+        for _, _, payload in client.writes
+    )
 
 
 @pytest.mark.parametrize(
@@ -151,6 +178,7 @@ def test_owned_rule_name_conflict_fails_closed(conflicting_rule) -> None:
     payload = runtime_regression_evaluator_rule_payloads(
         dataset_id=DATASET_ID,
         model_config_id=MODEL_CONFIG_ID,
+        model_settings=MODEL_SETTINGS,
     )[0]
     client = Client([{**conflicting_rule, "display_name": payload["display_name"]}])
 
@@ -191,10 +219,77 @@ def test_model_configuration_must_be_unique_and_strictly_available(
     assert client.writes == []
 
 
+@pytest.mark.parametrize(
+    "settings",
+    [
+        None,
+        [],
+        {},
+        {1: "non-string-key"},
+        {"model": object()},
+        {"model": float("nan")},
+    ],
+)
+def test_model_configuration_settings_must_be_a_strict_json_object(settings) -> None:
+    configuration = {
+        "id": MODEL_CONFIG_ID,
+        "available_in_evaluators": True,
+    }
+    if settings is not None:
+        configuration["settings"] = settings
+    client = Client([], model_configurations=[configuration])
+
+    with pytest.raises(RuntimeError, match="model configuration settings"):
+        configure_runtime_regression_evaluators(
+            client,
+            model_config_id=MODEL_CONFIG_ID,
+            apply=True,
+        )
+
+    assert client.writes == []
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [
+        {"model": "gpt-4.1-mini", "api_key": "secret"},
+        {
+            "model": "gpt-4.1-mini",
+            "provider": {"clientSecret": "secret"},
+        },
+        {
+            "model": "gpt-4.1-mini",
+            "transport": [{"access-token": "secret"}],
+        },
+    ],
+)
+def test_model_configuration_settings_reject_credential_like_keys(settings) -> None:
+    client = Client(
+        [],
+        model_configurations=[
+            {
+                "id": MODEL_CONFIG_ID,
+                "available_in_evaluators": True,
+                "settings": settings,
+            }
+        ],
+    )
+
+    with pytest.raises(RuntimeError, match="credential-like"):
+        configure_runtime_regression_evaluators(
+            client,
+            model_config_id=MODEL_CONFIG_ID,
+            apply=True,
+        )
+
+    assert client.writes == []
+
+
 def test_partial_dry_run_reports_each_rule_action_and_identity() -> None:
     payloads = runtime_regression_evaluator_rule_payloads(
         dataset_id=DATASET_ID,
         model_config_id=MODEL_CONFIG_ID,
+        model_settings=MODEL_SETTINGS,
     )
     client = Client(
         [

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -27,6 +28,24 @@ RUNTIME_REGRESSION_RULE_NAMES = (
     f"{RUNTIME_REGRESSION_RULE_NAME}-grounding",
     f"{RUNTIME_REGRESSION_RULE_NAME}-regression-improvement",
 )
+_CREDENTIAL_SETTING_KEYS = (
+    "apikey",
+    "accesstoken",
+    "authtoken",
+    "authorization",
+    "bearer",
+    "clientsecret",
+    "cookie",
+    "credential",
+    "credentials",
+    "password",
+    "refreshtoken",
+    "secret",
+    "secrettoken",
+    "token",
+)
+_MAX_MODEL_SETTINGS_DEPTH = 16
+_MAX_MODEL_SETTINGS_NODES = 1_024
 
 
 @dataclass(frozen=True)
@@ -57,11 +76,13 @@ def runtime_regression_evaluator_rule_payloads(
     *,
     dataset_id: str,
     model_config_id: str,
+    model_settings: dict[str, Any],
 ) -> tuple[dict[str, Any], ...]:
     """Build one legal Dataset rule per independent Boolean LLM judge."""
 
     if not model_config_id.strip():
         raise ValueError("LangSmith evaluator model configuration id is required")
+    safe_model_settings = _strict_model_settings(model_settings)
     common = {
         "dataset_id": dataset_id,
         "sampling_rate": 1.0,
@@ -89,6 +110,7 @@ def runtime_regression_evaluator_rule_payloads(
                 "response": "outputs.content",
             },
             model_config_id=model_config_id,
+            model_settings=safe_model_settings,
         ),
         _structured_evaluator(
             feedback_key=GROUNDING_FEEDBACK_KEY,
@@ -114,6 +136,7 @@ def runtime_regression_evaluator_rule_payloads(
                 "evidence": "outputs.evaluation_evidence",
             },
             model_config_id=model_config_id,
+            model_settings=safe_model_settings,
         ),
         _structured_evaluator(
             feedback_key=REGRESSION_IMPROVEMENT_FEEDBACK_KEY,
@@ -138,6 +161,7 @@ def runtime_regression_evaluator_rule_payloads(
                 "response": "outputs.content",
             },
             model_config_id=model_config_id,
+            model_settings=safe_model_settings,
         ),
     )
     return tuple(
@@ -164,11 +188,12 @@ def configure_runtime_regression_evaluators(
 
     dataset = client.read_dataset(dataset_name=RUNTIME_REGRESSION_DATASET)
     dataset_id = str(dataset.id)
+    model_settings = _validate_model_configuration(client, model_config_id)
     payloads = runtime_regression_evaluator_rule_payloads(
         dataset_id=dataset_id,
         model_config_id=model_config_id,
+        model_settings=model_settings,
     )
-    _validate_model_configuration(client, model_config_id)
     rules = _response_json(client.request_with_retries("GET", "/runs/rules"))
     if not isinstance(rules, list):
         raise RuntimeError("LangSmith evaluator rules response must be a list")
@@ -274,6 +299,7 @@ def _structured_evaluator(
     human_prompt: str,
     variable_mapping: dict[str, str],
     model_config_id: str,
+    model_settings: dict[str, Any],
 ) -> dict[str, Any]:
     return {
         "structured": {
@@ -291,12 +317,16 @@ def _structured_evaluator(
                 "additionalProperties": False,
             },
             "variable_mapping": variable_mapping,
+            "model": model_settings,
             "playground_settings_id": model_config_id,
         }
     }
 
 
-def _validate_model_configuration(client: Any, model_config_id: str) -> None:
+def _validate_model_configuration(
+    client: Any,
+    model_config_id: str,
+) -> dict[str, Any]:
     configurations = _response_json(
         client.request_with_retries(
             "GET",
@@ -319,6 +349,59 @@ def _validate_model_configuration(client: Any, model_config_id: str) -> None:
         raise RuntimeError(
             "LangSmith model configuration is not available to evaluators"
         )
+    return _strict_model_settings(matching[0].get("settings"))
+
+
+def _strict_model_settings(settings: Any) -> dict[str, Any]:
+    if not isinstance(settings, dict) or not settings:
+        raise RuntimeError(
+            "LangSmith model configuration settings must be a non-empty JSON object"
+        )
+    node_count = 0
+
+    def validate(value: Any, *, depth: int) -> None:
+        nonlocal node_count
+        node_count += 1
+        if depth > _MAX_MODEL_SETTINGS_DEPTH or node_count > _MAX_MODEL_SETTINGS_NODES:
+            raise RuntimeError(
+                "LangSmith model configuration settings exceed structural limits"
+            )
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if not isinstance(key, str) or not key.strip():
+                    raise RuntimeError(
+                        "LangSmith model configuration settings require string keys"
+                    )
+                normalized = "".join(
+                    character for character in key.lower() if character.isalnum()
+                )
+                if any(
+                    normalized == marker or normalized.endswith(marker)
+                    for marker in _CREDENTIAL_SETTING_KEYS
+                ):
+                    raise RuntimeError(
+                        "LangSmith model configuration settings contain a "
+                        "credential-like key"
+                    )
+                validate(item, depth=depth + 1)
+            return
+        if isinstance(value, list):
+            for item in value:
+                validate(item, depth=depth + 1)
+            return
+        if value is None or isinstance(value, (str, bool, int, float)):
+            return
+        raise RuntimeError(
+            "LangSmith model configuration settings must contain only JSON values"
+        )
+
+    validate(settings, depth=0)
+    try:
+        return json.loads(json.dumps(settings, allow_nan=False))
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(
+            "LangSmith model configuration settings must contain only strict JSON values"
+        ) from exc
 
 
 def _response_json(response: Any) -> Any:
