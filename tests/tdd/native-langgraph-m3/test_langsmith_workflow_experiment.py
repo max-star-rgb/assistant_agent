@@ -218,6 +218,79 @@ def test_persisted_tree_audit_requires_one_native_parented_graph_tree() -> None:
     ).complete is True
 
 
+def test_tree_audit_derives_actual_node_identity_from_target_output() -> None:
+    runs = _native_workflow_runs()
+    root = runs[0]
+    root.outputs = {
+        "output": {
+            "repair_round": 0,
+            "plan": {
+                "node_ids": ["actual_research_a", "actual_research_b", "actual_verify"],
+                "dependencies": {
+                    "actual_research_a": [],
+                    "actual_research_b": [],
+                    "actual_verify": ["actual_research_a", "actual_research_b"],
+                },
+            },
+            "trajectory": [
+                {"node_id": "actual_research_a", "generation": 0, "profile": "worker"},
+                {"node_id": "actual_research_b", "generation": 0, "profile": "worker"},
+                {"node_id": "actual_verify", "generation": 0, "profile": "verifier"},
+            ],
+        }
+    }
+    for run, node_id, profile in (
+        (runs[4], "actual_research_a", "worker"),
+        (runs[6], "actual_research_b", "worker"),
+        (runs[9], "actual_verify", "verifier"),
+    ):
+        run.extra["metadata"] = {
+            "workflow_node_id": node_id,
+            "workflow_generation": 0,
+            "workflow_profile": profile,
+            "workflow_branch_run_id": "sha256:" + "d" * 64,
+        }
+    requirement = WorkflowTreeRequirement(
+        require_verifier=True,
+        derive_from_root_output=True,
+    )
+
+    complete = audit_native_workflow_tree(
+        iter(runs),
+        example_ids=(str(EXAMPLE_ID),),
+        requirements={str(EXAMPLE_ID): requirement},
+    )
+    assert complete.complete is True
+
+    truncated_page = [run for run in runs if run.id != runs[6].id]
+    truncated = audit_native_workflow_tree(
+        iter(truncated_page),
+        example_ids=(str(EXAMPLE_ID),),
+        requirements={str(EXAMPLE_ID): requirement},
+    )
+    assert truncated.complete is False
+    assert any(
+        "actual tree trajectory mismatch" in problem
+        for problem in truncated.problems[str(EXAMPLE_ID)]
+    )
+
+    root.outputs["output"]["trajectory"][0]["generation"] = 1
+    runs[4].extra["metadata"]["workflow_generation"] = 1
+    resume_only = audit_native_workflow_tree(
+        iter(runs),
+        example_ids=(str(EXAMPLE_ID),),
+        requirements={
+            str(EXAMPLE_ID): WorkflowTreeRequirement(
+                require_verifier=True,
+                derive_from_root_output=True,
+                require_repair=True,
+            )
+        },
+    )
+    assert resume_only.complete is False
+    assert "missing actual repair round" in resume_only.problems[str(EXAMPLE_ID)]
+
+
 def test_completeness_fails_closed_until_all_four_feedback_are_persisted() -> None:
     class Client:
         def __init__(self) -> None:

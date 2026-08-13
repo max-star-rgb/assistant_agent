@@ -170,6 +170,59 @@ def test_verified_result_routes_to_publish_with_only_current_deliverable_refs():
     assert command.update["result_artifact_refs"] == ("artifact://synthesize-g0",)
 
 
+def test_verified_intermediate_node_runs_deliverable_descendant_before_publish(tmp_path):
+    dependencies = {
+        "research_fact": [],
+        "verify_constraints": ["research_fact"],
+        "compile_report": ["verify_constraints"],
+    }
+    payload = {
+        "schema_version": "workflow_plan_v2",
+        "nodes": [
+            {
+                "node_id": node_id,
+                "display_title": node_id,
+                "objective": f"execute {node_id}",
+                "depends_on": parents,
+                "acceptance_contract": acceptance(f"criterion_{node_id}"),
+            }
+            for node_id, parents in dependencies.items()
+        ],
+        "deliverable_bindings": [
+            {"deliverable": "report", "producer_node_id": "compile_report"}
+        ],
+        "constraint_bindings": [
+            {
+                "constraint_id": "constraint_every_conclusion_verified",
+                "statement": "every conclusion is verified",
+                "owner_node_ids": ["verify_constraints"],
+                "verifier_node_id": "verify_constraints",
+                "severity": "required",
+            }
+        ],
+    }
+    app, context, initial, worker, artifact_store = workflow_probe(
+        tmp_path,
+        dependencies,
+        plan_payload=payload,
+    )
+    try:
+        final = asyncio.run(app.ainvoke(initial, config=config(), context=context))
+
+        assert final["status"] == "completed"
+        assert final["phase"] == "completed"
+        assert any("execute compile_report" in request.user_query for request in worker.requests)
+        current = latest_results(
+            final["result_ledger"], final["execution_generation_by_node"]
+        )
+        assert current["compile_report"].status == "succeeded"
+        assert set(current["compile_report"].artifact_refs).issubset(
+            final["result_artifact_refs"]
+        )
+    finally:
+        artifact_store.close()
+
+
 def test_compiled_verifier_subgraph_repairs_only_affected_branch(tmp_path):
     dependencies = {
         "a": [],

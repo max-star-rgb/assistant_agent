@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections import Counter
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 import json
 import math
@@ -89,6 +90,8 @@ class WorkflowTreeRequirement:
     require_verifier: bool = True
     worker_generations: tuple[tuple[str, int], ...] = ()
     repair_generations: tuple[tuple[str, int], ...] = ()
+    derive_from_root_output: bool = False
+    require_repair: bool = False
 
 
 def workflow_regression_equivalence_evidence(
@@ -218,6 +221,7 @@ def project_workflow_result(
     return {
         "workflow_id": _stable_digest(state["workflow_id"]),
         "terminal_status": terminal_status,
+        "repair_round": int(state["repair_round"]),
         "plan": {
             "node_ids": [node.node_id for node in plan.nodes],
             "dependencies": {key: list(value) for key, value in dependencies.items()},
@@ -313,23 +317,8 @@ async def run_workflow_experiment(
         tree_requirements={
             example.id: WorkflowTreeRequirement(
                 require_verifier=(example.inputs.case_type != "parallel_join"),
-                worker_generations=tuple(
-                    (node_id, 0)
-                    for node_id in example.outputs.plan.node_ids
-                    if (
-                        example.inputs.case_type == "parallel_join"
-                        or node_id
-                        not in _terminal_nodes(example.outputs.plan.dependencies)
-                    )
-                ),
-                repair_generations=(
-                    tuple(
-                        (node_id, 1)
-                        for node_id in example.outputs.evaluation_contract.repair_scope
-                    )
-                    if example.inputs.case_type == "minimal_repair"
-                    else ()
-                ),
+                derive_from_root_output=True,
+                require_repair=(example.inputs.case_type == "minimal_repair"),
             )
             for example in examples
         },
@@ -337,11 +326,12 @@ async def run_workflow_experiment(
 
 
 def audit_native_workflow_tree(
-    runs: Sequence[Any],
+    runs: Iterable[Any],
     *,
     example_ids: tuple[str, ...],
     requirements: Mapping[str, WorkflowTreeRequirement] | None = None,
 ) -> NativeWorkflowTreeAudit:
+    runs = tuple(runs)
     runs_by_id = {str(_field(run, "id")): run for run in runs}
     duplicate_ids = len(runs_by_id) != len(runs)
     roots_by_example = {
@@ -404,6 +394,15 @@ def audit_native_workflow_tree(
             if str(_field(run, "id")) == root_id
             or _is_descendant(run, root_id, runs_by_id)
         ]
+        actual_trajectory: tuple[tuple[str, int, str], ...] | None = None
+        if requirement.derive_from_root_output:
+            try:
+                actual_trajectory, actual_repair_round = _actual_tree_facts(root)
+            except (RuntimeError, TypeError, ValueError):
+                item.append("invalid actual tree requirement output")
+            else:
+                if requirement.require_repair and actual_repair_round == 0:
+                    item.append("missing actual repair round")
         if any(str(_field(run, "trace_id") or "") != trace_id for run in subtree):
             item.append("trace mismatch")
         if any(
@@ -414,22 +413,24 @@ def audit_native_workflow_tree(
         if detached_workflow_runs:
             item.append("detached workflow run detected")
         graphs = _children_named(subtree, root_id, "DurableWorkflowGraph")
-        if len(graphs) != 1:
-            item.append(f"DurableWorkflowGraph child count={len(graphs)}")
+        if not graphs:
+            item.append("DurableWorkflowGraph child count=0")
         else:
-            graph = graphs[0]
-            graph_id = str(_field(graph, "id"))
-            metadata = _metadata(graph)
-            if (
+            if any(
                 _field(graph, "run_type") != "chain"
-                or metadata.get("execution_engine") != "durable_workflow_graph"
-                or not _digest(metadata.get("workflow_id"))
-                or not _digest(metadata.get("thread_id"))
-                or not _digest(metadata.get("run_id"))
+                or _metadata(graph).get("execution_engine")
+                != "durable_workflow_graph"
+                or not _digest(_metadata(graph).get("workflow_id"))
+                or not _digest(_metadata(graph).get("thread_id"))
+                or not _digest(_metadata(graph).get("run_id"))
+                for graph in graphs
             ):
                 item.append("unsafe or missing DurableWorkflowGraph metadata")
+            graph_ids = {str(_field(graph, "id")) for graph in graphs}
             graph_subtree = [
-                run for run in subtree if _is_descendant(run, graph_id, runs_by_id)
+                run
+                for run in subtree
+                if any(_is_descendant(run, graph_id, runs_by_id) for graph_id in graph_ids)
             ]
             _require_native_path(
                 graph_subtree,
@@ -462,6 +463,20 @@ def audit_native_workflow_tree(
                     ("WorkflowVerifierBranch", "AssistantTurnGraph.verifier"),
                     item,
                 )
+            if actual_trajectory is not None:
+                observed = Counter(
+                    (
+                        str(_metadata(run).get("workflow_node_id") or ""),
+                        _metadata(run).get("workflow_generation"),
+                        str(_metadata(run).get("workflow_profile") or ""),
+                    )
+                    for run in graph_subtree
+                    if _field(run, "name")
+                    in {"WorkflowWorkerBranch", "WorkflowVerifierBranch"}
+                    and _digest(_metadata(run).get("workflow_branch_run_id"))
+                )
+                if observed != Counter(actual_trajectory):
+                    item.append("actual tree trajectory mismatch")
             for node_id, generation in requirement.repair_generations:
                 matching = [
                     run
@@ -654,6 +669,75 @@ def _topological_order(dependencies: Mapping[str, tuple[str, ...]]) -> dict[str,
 def _terminal_nodes(dependencies: Mapping[str, tuple[str, ...]]) -> set[str]:
     depended_on = {parent for parents in dependencies.values() for parent in parents}
     return set(dependencies) - depended_on
+
+
+def _actual_tree_facts(
+    root: Any,
+) -> tuple[tuple[tuple[str, int, str], ...], int]:
+    outputs = _field(root, "outputs")
+    if not isinstance(outputs, Mapping):
+        raise TypeError("root outputs are missing")
+    projected = outputs.get("output", outputs)
+    if not isinstance(projected, Mapping):
+        raise TypeError("root output is invalid")
+    plan = projected.get("plan")
+    trajectory = projected.get("trajectory")
+    repair_round = projected.get("repair_round")
+    if (
+        not isinstance(plan, Mapping)
+        or not isinstance(trajectory, list)
+        or not isinstance(repair_round, int)
+        or isinstance(repair_round, bool)
+        or not 0 <= repair_round <= 3
+    ):
+        raise TypeError("actual plan, trajectory, and repair round are required")
+    node_ids = plan.get("node_ids")
+    dependencies = plan.get("dependencies")
+    if (
+        not isinstance(node_ids, list)
+        or not node_ids
+        or len(node_ids) > 256
+        or not all(isinstance(node_id, str) and node_id for node_id in node_ids)
+        or len(node_ids) != len(set(node_ids))
+        or not isinstance(dependencies, Mapping)
+        or set(dependencies) != set(node_ids)
+    ):
+        raise ValueError("actual plan identity is invalid")
+    normalized_dependencies: dict[str, tuple[str, ...]] = {}
+    for node_id, parents in dependencies.items():
+        if (
+            not isinstance(parents, list)
+            or not all(isinstance(parent, str) for parent in parents)
+            or not set(parents).issubset(node_ids)
+        ):
+            raise ValueError("actual plan dependencies are invalid")
+        normalized_dependencies[str(node_id)] = tuple(parents)
+    _topological_order(normalized_dependencies)
+    if not trajectory or len(trajectory) > 16_640:
+        raise ValueError("actual trajectory is invalid")
+    result: list[tuple[str, int, str]] = []
+    for item in trajectory:
+        if not isinstance(item, Mapping) or set(item) != {
+            "node_id",
+            "generation",
+            "profile",
+        }:
+            raise ValueError("actual trajectory item is invalid")
+        node_id = item.get("node_id")
+        generation = item.get("generation")
+        profile = item.get("profile")
+        if (
+            node_id not in node_ids
+            or not isinstance(generation, int)
+            or isinstance(generation, bool)
+            or not 0 <= generation <= 64
+            or profile not in {"worker", "verifier"}
+        ):
+            raise ValueError("actual trajectory identity is invalid")
+        result.append((str(node_id), generation, str(profile)))
+    if len(result) != len(set(result)):
+        raise ValueError("actual trajectory identity is duplicated")
+    return tuple(result), repair_round
 
 
 def _children_named(runs: Sequence[Any], parent_id: str, name: str) -> list[Any]:

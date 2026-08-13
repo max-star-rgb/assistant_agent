@@ -1325,6 +1325,15 @@ def decide_verification_node(
         return _failure_command(
             "workflow_verification_rejected", "Workflow verification was rejected."
         )
+    if len(results) < len(plan.nodes):
+        return Command(
+            update={
+                "status": "running",
+                "phase": "executing",
+                "active_wave": (),
+            },
+            goto="prepare_wave",
+        )
     deliverable_refs: list[str] = []
     for binding in plan.deliverable_bindings:
         producer = results.get(binding.producer_node_id)

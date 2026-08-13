@@ -230,6 +230,9 @@ Workflow Host、Agent Runtime、saver owner。离线 evaluator
 与 resume-equivalence facts。persisted tree completeness 只从 LangSmith API 的 `parent_run_id`、`trace_id`、
 `reference_example_id`、`run_type`、`name` 与安全 metadata 判断实际父图、planning/planner、Send worker、
 join、required verifier 和 repair generation；astream event 不能伪造成 LangSmith run。
+其中 node identity、profile 与 generation 必须从当前 root target 的有界 actual plan、trajectory 和
+`repair_round` 投影派生，再与持久 Run metadata 精确核对；Git reference plan 只表达案例语义合同，不能替代
+真实 admitted plan 的节点身份。
 
 `scripts/run_langsmith_workflow_regressions.py --inspect` 完全离线且只读本地 schema。`--preflight` 与
 `--run` 必须同时显式允许 real Provider 和 Workflow/Runtime side effect，并可通过 `--env-file` 加载未跟踪
