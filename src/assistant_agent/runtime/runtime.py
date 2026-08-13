@@ -4,25 +4,67 @@ import asyncio
 import hashlib
 import json
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass, replace
 from pathlib import Path
 from time import perf_counter, time
 from typing import TYPE_CHECKING, Any, Literal
 
 from assistant_agent.runtime.action_validator import ActionValidator
 from assistant_agent.runtime.cancellation import AgentRunCancelled, raise_if_cancelled
-from assistant_agent.runtime.assistant_loop_graph import build_assistant_loop_graph
-from assistant_agent.runtime.graph_runtime import GraphRuntimeContext
+from assistant_agent.runtime.assistant_graph_app import (
+    AssistantTurnGraphApp,
+    _BoundGraphContinuation,
+    GraphExecutionError,
+    GraphExecutionIdentity,
+)
+from assistant_agent.runtime.assistant_interrupts import (
+    AssistantInterruptRequest,
+    AssistantResume,
+)
+from assistant_agent.runtime.assistant_graph_state import (
+    apply_assistant_turn_state_to_agent_state,
+    assistant_turn_state_from_loop_state,
+    persisted_request_from_user_request,
+    validate_assistant_turn_state,
+)
+from assistant_agent.runtime.graph_runtime import (
+    ContinuationPreparationError,
+    GraphRuntimeContext,
+    continuation_ref_resolver,
+    user_request_from_checkpoint,
+)
+from assistant_agent.runtime.graph_invocation_claims import (
+    GraphInvocationKind,
+    GraphInvocationClaimStore,
+    InMemoryGraphInvocationClaimStore,
+)
 from assistant_agent.runtime.run_phase import RunPhase
 from assistant_agent.runtime.state import AgentError, AgentState
 from assistant_agent.runtime.event_stream import AgentRunStream, AsyncQueueEventSink
 from assistant_agent.runtime.tool_executor import ToolExecutor
 from assistant_agent.runtime.tool_execution_backend import ToolExecutionBackend
-from assistant_agent.runtime.provider_streaming import ProviderStreamingTurnRunner, supports_async_streaming_chat
+from assistant_agent.runtime.tool_operation_barrier import (
+    ToolOperationStore,
+    default_tool_operation_store,
+    normalized_tool_input_digest,
+    stable_operation_scope_id,
+)
+from assistant_agent.runtime.provider_streaming import (
+    ProviderStreamingTurnRunner,
+    supports_async_streaming_chat,
+)
 from assistant_agent.memory.factory import create_long_term_memory_service
 from assistant_agent.memory.service import LongTermMemoryService
 from assistant_agent.config import ProviderConfig
-from assistant_agent.runtime.decision_models import native_tool_call_to_assistant_decision
+from assistant_agent.runtime.decision_models import (
+    native_tool_call_to_assistant_decision,
+)
 from assistant_agent.runtime.events import AgentEvent
+from assistant_agent.runtime.product_event_projector import (
+    ProductEventProjector,
+    TextDeltaProductFact,
+    new_runtime_product_fact_id,
+)
 from assistant_agent.runtime.event_publisher import (
     RunStartedFact,
     RunTerminalFact,
@@ -39,6 +81,12 @@ from assistant_agent.runtime.requests import (
     AgentResponse,
     UserRequest,
     normalize_task_execution_mode,
+)
+from assistant_agent.runtime.graph_time_travel import (
+    GraphCheckpointSelector,
+    GraphCheckpointSummary,
+    GraphForkRequest,
+    GraphReplayRequest,
 )
 from assistant_agent.runtime.generated_artifacts import with_generated_artifact_delivery
 from assistant_agent.multi_agent.models import DEFAULT_AGENT_ID
@@ -66,8 +114,12 @@ from assistant_agent.workflows.models import (
 from assistant_agent.workflows.service import WorkflowService
 from assistant_agent.workflows.observed_store import ObservedWorkflowStore
 from assistant_agent.workflows.sqlite_store import SQLiteWorkflowStore
-from assistant_agent.runtime.chat_adapter import ChatAdapter, ChatRequest, ChatResult, create_chat_adapter
-from assistant_agent.runtime.checkpointer import create_checkpointer
+from assistant_agent.runtime.chat_adapter import (
+    ChatAdapter,
+    ChatRequest,
+    ChatResult,
+    create_chat_adapter,
+)
 from assistant_agent.context.observability import build_traced_assistant_context_pack
 from assistant_agent.context.compactor import ContextCompactor, create_context_compactor
 from assistant_agent.context.token_counter import (
@@ -82,7 +134,9 @@ from assistant_agent.context.prompt_compiler import (
     PromptCompileRequest,
     PromptCompiler,
 )
-from assistant_agent.media.video.realtime_video_memory import project_realtime_video_context
+from assistant_agent.media.video.realtime_video_memory import (
+    project_realtime_video_context,
+)
 from assistant_agent.media.video.visual_context_compactor import (
     create_visual_context_compactor,
 )
@@ -114,9 +168,16 @@ from assistant_agent.tools.ids import (
     LIVE_VIEW_INSPECT_TOOL_NAME,
     VISUAL_MEMORY_SEARCH_TOOL_NAME,
 )
-from assistant_agent.observability.trace_store import InMemoryTraceStore, TraceStore, append_observability_event
+from assistant_agent.observability.trace_store import (
+    InMemoryTraceStore,
+    TraceStore,
+    append_observability_event,
+)
 from assistant_agent.observability.turn_summary import append_runtime_turn_summary
-from assistant_agent.media.video.video_context import InMemoryVideoContextStore, VideoContextStore
+from assistant_agent.media.video.video_context import (
+    InMemoryVideoContextStore,
+    VideoContextStore,
+)
 from assistant_agent.media.video.realtime_video_memory import RealtimeVideoMemoryStore
 from assistant_agent.media.video.visual_reminder import VisualReminderRegistry
 from assistant_agent.media.video.semantic_store_pool import (
@@ -127,9 +188,15 @@ from assistant_agent.media.video.qdrant_visual_memory_index import (
 )
 from assistant_agent.media.video.visual_memory_index import VisualMemoryTextIndex
 from assistant_agent.media.embedding.coordinator import SessionEmbeddingCoordinator
-from assistant_agent.media.embedding.coordinator_store import SessionEmbeddingCoordinatorStore
-from assistant_agent.media.embedding.provider import create_multimodal_embedding_provider
-from assistant_agent.media.embedding.consumers.alignment import CrossModalAlignmentConsumer
+from assistant_agent.media.embedding.coordinator_store import (
+    SessionEmbeddingCoordinatorStore,
+)
+from assistant_agent.media.embedding.provider import (
+    create_multimodal_embedding_provider,
+)
+from assistant_agent.media.embedding.consumers.alignment import (
+    CrossModalAlignmentConsumer,
+)
 from assistant_agent.media.embedding.consumers.attention import VisualAttentionConsumer
 from assistant_agent.media.embedding.models import TextObservation
 from assistant_agent.media.embedding.observability import (
@@ -183,6 +250,34 @@ def _stable_text_observation(
     )
 
 
+@dataclass
+class _PreparedGraphRun:
+    request: UserRequest
+    state: AgentState
+    workflow_work_item: bool
+    deep_research_start: bool
+    run_event_sink: "_ResponseDeltaTrackingEventSink | None"
+    product_event_projector: ProductEventProjector
+    runtime_event_publisher: RuntimeEventPublisher
+    run_started_at: float
+    runtime_context: GraphRuntimeContext
+    initial_state: dict[str, Any]
+    identity: GraphExecutionIdentity
+    cancel_token: Any | None
+    pre_terminal_state_hook: Callable[[AgentState], None] | None
+    invocation_kind: GraphInvocationKind = "invoke"
+    graph_continuation: _BoundGraphContinuation | None = None
+
+
+@dataclass(frozen=True)
+class _GraphRunServices:
+    run_event_sink: "_ResponseDeltaTrackingEventSink | None"
+    product_event_projector: ProductEventProjector
+    runtime_event_publisher: RuntimeEventPublisher
+    runtime_context: GraphRuntimeContext
+    run_started_at: float
+
+
 class AgentGraphRuntime:
     """Run agent requests through the compiled LangGraph workflow."""
 
@@ -210,14 +305,31 @@ class AgentGraphRuntime:
         durable_task_service: DurableTaskService | None = None,
         workflow_service: WorkflowService | None = None,
         workflow_artifact_store: LocalWorkflowArtifactStore | None = None,
+        workflow_graph_host: Any | None = None,
         agent_id: str = DEFAULT_AGENT_ID,
         tool_execution_backend: ToolExecutionBackend | None = None,
+        tool_operation_store: ToolOperationStore | None = None,
+        graph_invocation_claim_store: GraphInvocationClaimStore | None = None,
+        allow_interrupt: bool = False,
     ) -> None:
+        if not isinstance(allow_interrupt, bool):
+            raise TypeError("allow_interrupt must be a boolean")
+        self.allow_interrupt = allow_interrupt
         self.agent_id = agent_id
+        self.graph_invocation_claim_store = (
+            graph_invocation_claim_store
+            if graph_invocation_claim_store is not None
+            else InMemoryGraphInvocationClaimStore()
+        )
         self.tool_execution_backend = tool_execution_backend
+        self.tool_operation_store = (
+            tool_operation_store or default_tool_operation_store()
+        )
         self.config = config or ProviderConfig.from_env()
         self.video_context_store = video_context_store or InMemoryVideoContextStore()
-        self.realtime_video_memory_store = realtime_video_memory_store or RealtimeVideoMemoryStore()
+        self.realtime_video_memory_store = (
+            realtime_video_memory_store or RealtimeVideoMemoryStore()
+        )
         self.embedding_provider = create_multimodal_embedding_provider(self.config)
         self.embedding_observer = embedding_observer or LoggingEmbeddingObserver()
         self.embedding_coordinator_store = (
@@ -234,8 +346,7 @@ class AgentGraphRuntime:
             )
         )
         self.visual_memory_text_index = (
-            visual_memory_text_index
-            or create_visual_memory_text_index(self.config)
+            visual_memory_text_index or create_visual_memory_text_index(self.config)
         )
         self.visual_reminder_registry = (
             visual_reminder_registry
@@ -246,16 +357,17 @@ class AgentGraphRuntime:
             )
         )
         self.long_term_memory_service = (
-            long_term_memory_service
-            or create_long_term_memory_service(self.config)
+            long_term_memory_service or create_long_term_memory_service(self.config)
         )
         self.workflow_service = workflow_service
         self.workflow_artifact_store = workflow_artifact_store
-        if self.config.durable_workflows_enabled:
+        self.workflow_graph_host = workflow_graph_host
+        if (
+            self.config.durable_workflows_enabled
+            and self.workflow_graph_host is None
+        ):
             if self.workflow_service is None:
-                workflow_store = SQLiteWorkflowStore(
-                    self.config.durable_workflow_path
-                )
+                workflow_store = SQLiteWorkflowStore(self.config.durable_workflow_path)
                 workflow_observer = create_workflow_otel_observer_from_env()
                 if workflow_observer is not None:
                     workflow_store = ObservedWorkflowStore(
@@ -268,16 +380,15 @@ class AgentGraphRuntime:
                 )
             self.workflow_artifact_store = (
                 self.workflow_artifact_store
-                or LocalWorkflowArtifactStore(self.config.durable_workflow_artifact_path)
+                or LocalWorkflowArtifactStore(
+                    self.config.durable_workflow_artifact_path
+                )
             )
         self.durable_task_service = durable_task_service
         self.notification_outbox_store = None
-        if (
-            self.config.durable_tasks_enabled
-            and (
-                self.durable_task_service is None
-                or self.durable_task_service.notification_outbox is None
-            )
+        if self.config.durable_tasks_enabled and (
+            self.durable_task_service is None
+            or self.durable_task_service.notification_outbox is None
         ):
             from assistant_agent.automation.proactive_wake.store import (
                 SQLiteProactiveWakeStore,
@@ -295,9 +406,7 @@ class AgentGraphRuntime:
                     max_plan_steps=self.config.max_plan_steps,
                     lease_seconds=self.config.durable_task_lease_seconds,
                     max_task_seconds=self.config.durable_task_max_seconds,
-                    max_workflow_quanta=(
-                        self.config.durable_workflow_max_quanta
-                    ),
+                    max_workflow_quanta=(self.config.durable_workflow_max_quanta),
                     notification_outbox=self.notification_outbox_store,
                 )
             self.registry = create_default_registry(
@@ -315,16 +424,17 @@ class AgentGraphRuntime:
         else:
             self.registry = registry
             if self.config.durable_tasks_enabled:
-                self.durable_task_service = self.durable_task_service or DurableTaskService(
-                    store=SQLiteTaskStore(self.config.durable_task_path),
-                    registry=self.registry,
-                    max_plan_steps=self.config.max_plan_steps,
-                    lease_seconds=self.config.durable_task_lease_seconds,
-                    max_task_seconds=self.config.durable_task_max_seconds,
-                    max_workflow_quanta=(
-                        self.config.durable_workflow_max_quanta
-                    ),
-                    notification_outbox=self.notification_outbox_store,
+                self.durable_task_service = (
+                    self.durable_task_service
+                    or DurableTaskService(
+                        store=SQLiteTaskStore(self.config.durable_task_path),
+                        registry=self.registry,
+                        max_plan_steps=self.config.max_plan_steps,
+                        lease_seconds=self.config.durable_task_lease_seconds,
+                        max_task_seconds=self.config.durable_task_max_seconds,
+                        max_workflow_quanta=(self.config.durable_workflow_max_quanta),
+                        notification_outbox=self.notification_outbox_store,
+                    )
                 )
         if (
             self.durable_task_service is not None
@@ -392,9 +502,7 @@ class AgentGraphRuntime:
             else None
         )
         try:
-            visual_memory_tool = self.registry.get(
-                VISUAL_MEMORY_SEARCH_TOOL_NAME
-            )
+            visual_memory_tool = self.registry.get(VISUAL_MEMORY_SEARCH_TOOL_NAME)
         except KeyError:
             pass
         else:
@@ -404,9 +512,7 @@ class AgentGraphRuntime:
                 None,
             )
             if callable(configure_timeline_context):
-                configure_timeline_context(
-                    self.visual_timeline_context_service
-                )
+                configure_timeline_context(self.visual_timeline_context_service)
         self.context_token_counter = (
             context_token_counter
             if context_token_counter is not None
@@ -444,13 +550,13 @@ class AgentGraphRuntime:
                 )
             ),
             chat_max_tokens=self.config.chat_max_tokens,
-            deep_research_chat_max_tokens=(
-                self.config.deep_research_chat_max_tokens
-            ),
+            deep_research_chat_max_tokens=(self.config.deep_research_chat_max_tokens),
         )
-        self.checkpointer = checkpointer if checkpointer is not None else create_checkpointer(self.config)
-        self.context_source_coordinator = context_source_coordinator or ContextSourceCoordinator(
-            [SoulContextSource(), UserProfileContextSource()]
+        self.context_source_coordinator = (
+            context_source_coordinator
+            or ContextSourceCoordinator(
+                [SoulContextSource(), UserProfileContextSource()]
+            )
         )
         self.tool_executor = ToolExecutor(
             registry=self.registry,
@@ -459,8 +565,9 @@ class AgentGraphRuntime:
                 "durable_task_service": self.durable_task_service,
             },
             execution_backend=self.tool_execution_backend,
+            operation_store=self.tool_operation_store,
         )
-        self._graph = build_assistant_loop_graph()
+        self.assistant_graph_app = AssistantTurnGraphApp(checkpointer=checkpointer)
 
     def _create_session_embedding_coordinator(
         self,
@@ -545,9 +652,7 @@ class AgentGraphRuntime:
                     "attempt_id": assignment.attempt_id,
                 },
                 "_trusted_workflow_max_iterations": assignment.max_iterations,
-                "_trusted_workflow_allowed_tools": list(
-                    assignment.allowed_tool_names
-                ),
+                "_trusted_workflow_allowed_tools": list(assignment.allowed_tool_names),
                 "tool_visibility": {
                     "allowed_tools": list(assignment.allowed_tool_names),
                     "profile": "workflow_work_item",
@@ -575,9 +680,7 @@ class AgentGraphRuntime:
                 for step in state.request.metadata.get("assistant_loop_steps", [])
                 if isinstance(step, dict) and step.get("output_type") is not None
             )
-            artifact_refs = (
-                list(state.response.output_refs) if state.response else []
-            )
+            artifact_refs = list(state.response.output_refs) if state.response else []
             loop_steps = [
                 step
                 for step in state.request.metadata.get("assistant_loop_steps", [])
@@ -590,7 +693,8 @@ class AgentGraphRuntime:
                 (
                     note
                     for note in terminal_notes
-                    if note in {
+                    if note
+                    in {
                         "provider_context_overflow",
                         "provider_context_overflow_retry_failed",
                         "provider_response_truncated",
@@ -647,7 +751,8 @@ class AgentGraphRuntime:
                 summary=summary,
                 error_code=(
                     "provider_context_overflow"
-                    if terminal_failure_note in {
+                    if terminal_failure_note
+                    in {
                         "provider_context_overflow",
                         "provider_context_overflow_retry_failed",
                     }
@@ -701,8 +806,7 @@ class AgentGraphRuntime:
             if parsed_result.status == "succeeded" or state.status == "cancelled":
                 return
             error_code = (
-                parsed_result.error_code
-                or f"workflow_work_item_{parsed_result.status}"
+                parsed_result.error_code or f"workflow_work_item_{parsed_result.status}"
             )
             state.errors.append(
                 AgentError(
@@ -762,6 +866,7 @@ class AgentGraphRuntime:
             agent_id=self.agent_id,
             session_id=request.session_id,
         )
+        retain_memory = False
         try:
             return self._run_state(
                 request,
@@ -772,11 +877,324 @@ class AgentGraphRuntime:
                 pre_terminal_state_hook=pre_terminal_state_hook,
                 run_id=effective_run_id,
             )
+        except BaseException as exc:
+            retain_memory = bool(getattr(exc, "native_started", False))
+            raise
         finally:
-            self.long_term_memory_service.release_run_context(
-                identity=identity,
+            if not retain_memory:
+                self.long_term_memory_service.release_run_context(
+                    identity=identity,
+                    run_id=effective_run_id,
+                )
+
+    async def arun_state(
+        self,
+        request: UserRequest,
+        event_sink: EventSink | None = None,
+        cancel_token: Any | None = None,
+        trace_context: RuntimeTraceContext | None = None,
+        export_trace_context: RuntimeExportTraceContext | None = None,
+        pre_terminal_state_hook: Callable[[AgentState], None] | None = None,
+        run_id: str | None = None,
+        interrupt_request: AssistantInterruptRequest | None = None,
+    ) -> AgentState:
+        """Run the graph through LangGraph's native asynchronous execution API."""
+
+        if interrupt_request is not None:
+            self._require_interrupt_enabled()
+        effective_run_id = run_id or new_run_id()
+        identity = RequestIdentity.for_user(
+            user_id=request.user_id,
+            agent_id=self.agent_id,
+            session_id=request.session_id,
+        )
+        state: AgentState | None = None
+        retain_memory = False
+        try:
+            prepared = self._prepare_graph_run(
+                request,
+                event_sink=event_sink,
+                cancel_token=cancel_token,
+                trace_context=trace_context,
+                export_trace_context=export_trace_context,
+                pre_terminal_state_hook=pre_terminal_state_hook,
                 run_id=effective_run_id,
+                interrupt_request=interrupt_request,
             )
+            try:
+                state = await self._run_prepared_graph_async(prepared)
+                return state
+            except GraphExecutionError as exc:
+                if exc.native_started:
+                    retain_memory = True
+                else:
+                    state = self._finalize_graph_execution_error(prepared, exc)
+                raise
+            except BaseException as exc:
+                retain_memory = bool(getattr(exc, "native_started", False))
+                raise
+        finally:
+            if not retain_memory and (state is None or state.status != "waiting_user"):
+                self.long_term_memory_service.release_run_context(
+                    identity=identity,
+                    run_id=effective_run_id,
+                )
+
+    async def aresume_state(
+        self,
+        request: UserRequest,
+        *,
+        resume: AssistantResume,
+        event_sink: EventSink | None = None,
+        cancel_token: Any | None = None,
+        trace_context: RuntimeTraceContext | None = None,
+        export_trace_context: RuntimeExportTraceContext | None = None,
+        pre_terminal_state_hook: Callable[[AgentState], None] | None = None,
+        run_id: str | None = None,
+    ) -> AgentState:
+        """Resume a pending assistant interrupt on its native graph thread."""
+
+        self._require_interrupt_enabled()
+        effective_run_id = run_id or new_run_id()
+        identity = RequestIdentity.for_user(
+            user_id=request.user_id,
+            agent_id=self.agent_id,
+            session_id=request.session_id,
+        )
+        state: AgentState | None = None
+        prepared: _PreparedGraphRun | None = None
+        retain_memory = False
+        try:
+            prepared = await self._prepare_graph_continuation(
+                RequestIdentity.for_user(
+                    user_id=request.user_id,
+                    agent_id=self.agent_id,
+                    session_id=request.session_id,
+                ),
+                event_sink=event_sink,
+                cancel_token=cancel_token,
+                trace_context=trace_context,
+                export_trace_context=export_trace_context,
+                pre_terminal_state_hook=pre_terminal_state_hook,
+                run_id=effective_run_id,
+                invocation_kind="resume",
+                resume=resume,
+                caller_request=request,
+            )
+            try:
+                state = await self._execute_graph_async(prepared, resume=resume)
+            except GraphExecutionError as exc:
+                if exc.native_started:
+                    retain_memory = True
+                else:
+                    state = self._finalize_graph_execution_error(prepared, exc)
+                raise
+            except BaseException as exc:
+                retain_memory = bool(getattr(exc, "native_started", False))
+                raise
+            if state.status == "waiting_user":
+                return state
+            return self._finalize_graph_run(prepared, state)
+        finally:
+            if (
+                state is not None
+                and state.status != "waiting_user"
+                and state.turn_provenance == "product_turn"
+                and not retain_memory
+            ):
+                self.long_term_memory_service.release_run_context(
+                    identity=identity,
+                    run_id=state.memory_origin_run_id or effective_run_id,
+                )
+
+    async def alist_history(
+        self,
+        owner: RequestIdentity,
+        *,
+        limit: int,
+        before: GraphCheckpointSelector | None = None,
+    ) -> tuple[GraphCheckpointSummary, ...]:
+        """List owner-bound product-safe checkpoints from this Runtime's graph."""
+
+        identity = self._graph_identity_for_owner(owner, run_id="history-inspect")
+        if getattr(self.assistant_graph_app.graph, "checkpointer", None) is None:
+            raise GraphExecutionError(
+                "graph_checkpointer_required",
+                "Assistant graph time travel requires an explicitly configured saver.",
+            )
+        return await self.assistant_graph_app.alist_history(
+            identity,
+            limit=limit,
+            before=before,
+        )
+
+    async def areplay_state(
+        self,
+        owner: RequestIdentity,
+        request: GraphReplayRequest,
+        *,
+        run_id: str,
+        event_sink: EventSink | None = None,
+        cancel_token: Any | None = None,
+    ) -> AgentState:
+        """Replay an owned checkpoint without entering Memory lifecycle."""
+
+        return await self._atime_travel_state(
+            owner,
+            request,
+            run_id=run_id,
+            invocation_kind="replay",
+            event_sink=event_sink,
+            cancel_token=cancel_token,
+        )
+
+    async def afork_state(
+        self,
+        owner: RequestIdentity,
+        request: GraphForkRequest,
+        *,
+        run_id: str,
+        event_sink: EventSink | None = None,
+        cancel_token: Any | None = None,
+    ) -> AgentState:
+        """Fork an owned checkpoint without entering Memory lifecycle."""
+
+        return await self._atime_travel_state(
+            owner,
+            request,
+            run_id=run_id,
+            invocation_kind="fork",
+            event_sink=event_sink,
+            cancel_token=cancel_token,
+        )
+
+    async def _atime_travel_state(
+        self,
+        owner: RequestIdentity,
+        request: GraphReplayRequest | GraphForkRequest,
+        *,
+        run_id: str,
+        invocation_kind: Literal["replay", "fork"],
+        event_sink: EventSink | None,
+        cancel_token: Any | None,
+    ) -> AgentState:
+        prepared = await self._prepare_graph_continuation(
+            owner,
+            request=request,
+            run_id=run_id,
+            invocation_kind=invocation_kind,
+            event_sink=event_sink,
+            cancel_token=cancel_token,
+            trace_context=None,
+            export_trace_context=None,
+            pre_terminal_state_hook=None,
+        )
+        try:
+            assert prepared.graph_continuation is not None
+            result = await self.assistant_graph_app.aexecute_time_travel(
+                prepared.graph_continuation,
+                part_consumer=prepared.product_event_projector.project_part,
+            )
+            if result.status == "interrupted":
+                state = self._complete_pending_graph_execution(
+                    prepared, result.final_state
+                )
+                state.status = "waiting_user"
+                return state
+            state = self._complete_started_graph_execution(prepared, result.final_state)
+            return self._finalize_graph_run(prepared, state)
+        except GraphExecutionError as exc:
+            if exc.execution_phase in {"pre_native", "native_terminal"}:
+                self._finalize_graph_execution_error(prepared, exc)
+            raise
+        except AgentRunCancelled as exc:
+            state = exc.state if isinstance(exc.state, AgentState) else prepared.state
+            state.cancel(exc.message, source=exc.source, details=exc.details)
+            return self._finalize_graph_run(prepared, state)
+
+    async def adelete_assistant_thread(self, *, user_id: str, session_id: str) -> int:
+        """Delete one owned graph thread and then release its invocation claims."""
+
+        deleted = await self.assistant_graph_app.adelete_thread(
+            agent_id=self.agent_id,
+            user_id=user_id,
+            session_id=session_id,
+            invocation_claim_store=self.graph_invocation_claim_store,
+        )
+        self.long_term_memory_service.release_thread_contexts(
+            identity=RequestIdentity.for_user(
+                user_id=user_id,
+                agent_id=self.agent_id,
+                session_id=session_id,
+            )
+        )
+        return deleted
+
+    def astream_state(
+        self,
+        request: UserRequest,
+        *,
+        resume: AssistantResume | None = None,
+        interrupt_request: AssistantInterruptRequest | None = None,
+        event_sink: EventSink | None = None,
+        cancel_token: Any | None = None,
+        trace_context: RuntimeTraceContext | None = None,
+        export_trace_context: RuntimeExportTraceContext | None = None,
+        pre_terminal_state_hook: Callable[[AgentState], None] | None = None,
+        run_id: str | None = None,
+    ) -> AgentRunStream[AgentState]:
+        """Expose the internal resumable Runtime path as an async event stream."""
+
+        self._require_interrupt_enabled()
+        if resume is not None and interrupt_request is not None:
+            raise GraphExecutionError(
+                "graph_resume_input_conflict",
+                "A graph state stream cannot start and resume the same invocation.",
+            )
+        loop = asyncio.get_running_loop()
+        stream: AgentRunStream[AgentState] = AgentRunStream(loop=loop)
+        inner = event_sink if event_sink is not None else self.event_sink
+        stream_sink = AsyncQueueEventSink(loop=loop, stream=stream, inner=inner)
+
+        async def _run() -> None:
+            try:
+                if resume is None:
+                    state = await self.arun_state(
+                        request,
+                        event_sink=stream_sink,
+                        cancel_token=cancel_token,
+                        trace_context=trace_context,
+                        export_trace_context=export_trace_context,
+                        pre_terminal_state_hook=pre_terminal_state_hook,
+                        run_id=run_id,
+                        interrupt_request=interrupt_request,
+                    )
+                else:
+                    state = await self.aresume_state(
+                        request,
+                        resume=resume,
+                        event_sink=stream_sink,
+                        cancel_token=cancel_token,
+                        trace_context=trace_context,
+                        export_trace_context=export_trace_context,
+                        pre_terminal_state_hook=pre_terminal_state_hook,
+                        run_id=run_id,
+                    )
+            except BaseException as exc:
+                stream.set_exception(exc)
+            else:
+                stream.set_result(state)
+
+        asyncio.create_task(_run())
+        return stream
+
+    def _require_interrupt_enabled(self) -> None:
+        if self.allow_interrupt:
+            return
+        raise GraphExecutionError(
+            "graph_interrupt_disabled",
+            "This Runtime composition does not expose interrupt or resume.",
+        )
 
     def _run_state(
         self,
@@ -790,6 +1208,37 @@ class AgentGraphRuntime:
     ) -> AgentState:
         """Execute one run while the Host retains its frozen Memory context."""
 
+        prepared = self._prepare_graph_run(
+            request,
+            event_sink=event_sink,
+            cancel_token=cancel_token,
+            trace_context=trace_context,
+            export_trace_context=export_trace_context,
+            pre_terminal_state_hook=pre_terminal_state_hook,
+            run_id=run_id,
+        )
+        try:
+            state = self._execute_graph_sync(prepared)
+        except GraphExecutionError as exc:
+            if not exc.native_started:
+                self._finalize_graph_execution_error(prepared, exc)
+            raise
+        return self._finalize_graph_run(prepared, state)
+
+    def _prepare_graph_run(
+        self,
+        request: UserRequest,
+        *,
+        event_sink: EventSink | None,
+        cancel_token: Any | None,
+        trace_context: RuntimeTraceContext | None,
+        export_trace_context: RuntimeExportTraceContext | None,
+        pre_terminal_state_hook: Callable[[AgentState], None] | None,
+        run_id: str,
+        interrupt_request: AssistantInterruptRequest | None = None,
+    ) -> _PreparedGraphRun:
+        """Prepare the shared state and runtime-only dependencies for one run."""
+
         request = normalize_task_execution_mode(
             request,
             durable_tasks_enabled=self.config.durable_tasks_enabled,
@@ -802,24 +1251,6 @@ class AgentGraphRuntime:
             self._refresh_visual_memory_capability(request)
             self._refresh_visual_reminder_capability(request)
             self._attach_proactive_session_context(request)
-        base_event_sink = event_sink or self.event_sink
-        run_event_sink = (
-            _ResponseDeltaTrackingEventSink(base_event_sink)
-            if base_event_sink is not None
-            else None
-        )
-        # A per-run ToolExecutor binds the run's sink so tool events and agent
-        # trace events emitted via graph_state["tool_executor"] reach it.
-        tool_executor = ToolExecutor(
-            registry=self.registry,
-            event_sink=run_event_sink,
-            context_metadata={
-                "durable_task_service": self.durable_task_service,
-                "workflow_service": self.workflow_service,
-            },
-            cancel_token=cancel_token,
-            execution_backend=self.tool_execution_backend,
-        )
         state = AgentState.from_request(
             request,
             run_id=run_id,
@@ -844,7 +1275,413 @@ class AgentGraphRuntime:
             )
         if not workflow_work_item and not deep_research_start:
             self._embed_stable_request_text(state, request)
-        state.context_source_result = self.context_source_coordinator.load_once(
+        state.context_source_result = self._load_context_source_result(state)
+        services = self._prepare_graph_services(
+            state,
+            event_sink=event_sink,
+            cancel_token=cancel_token,
+            trace_context=trace_context,
+            export_trace_context=export_trace_context,
+            interrupt_request=interrupt_request,
+            execution_engine=(
+                "durable_plan_execute_start"
+                if deep_research_start
+                else "langgraph_assistant_loop"
+            ),
+        )
+        conversation_prepare_latency_ms = request.metadata.get(
+            "conversation_prepare_latency_ms"
+        )
+        if (
+            isinstance(conversation_prepare_latency_ms, int)
+            and not isinstance(conversation_prepare_latency_ms, bool)
+            and conversation_prepare_latency_ms >= 0
+        ):
+            self._append_observability_event(
+                state,
+                canonical_event="conversation.prepare.finished",
+                status="succeeded",
+                latency_ms=conversation_prepare_latency_ms,
+                attributes={
+                    "conversation_turn_index": request.metadata.get(
+                        "conversation_turn_index"
+                    ),
+                },
+            )
+        if not workflow_work_item and not deep_research_start:
+            self._prepare_run_memory_context(
+                state,
+                cancel_token=cancel_token,
+            )
+        legacy_initial_state = {
+            "request": request,
+            "state": state,
+            "outputs_by_step": {},
+            "current_step_index": 0,
+            "run_phase": RunPhase.ACT,
+            "trace_id": state.trace_id,
+            "max_tool_iterations": _workflow_iteration_limit(
+                request,
+                configured=self.config.max_tool_iterations,
+            ),
+            "max_control_tool_iterations": self.config.max_control_tool_iterations,
+            "tool_calls_used": 0,
+            "action_tool_calls_used": 0,
+            "control_tool_calls_used": 0,
+            "max_plan_steps": self.config.max_plan_steps,
+            "assistant_output": None,
+            "pending_tool_calls": [],
+            "assistant_iterations": 0,
+            "tool_observations": [],
+            "last_llm_span_id": "",
+            "last_llm_attempt_kind": "",
+            "response_stream_current_call_emitted": False,
+            "response_stream_ends_with_newline": False,
+            "response_stream_separator_pending": False,
+        }
+        initial_state = assistant_turn_state_from_loop_state(legacy_initial_state)
+        if interrupt_request is not None:
+            initial_state["pending_interrupt"] = interrupt_request.model_dump(
+                mode="json"
+            )
+            initial_state = validate_assistant_turn_state(initial_state)
+        identity = GraphExecutionIdentity.for_assistant_turn(
+            agent_id=self.agent_id,
+            user_id=request.user_id,
+            session_id=request.session_id,
+            run_id=state.run_id,
+        )
+        return _PreparedGraphRun(
+            request=request,
+            state=state,
+            workflow_work_item=workflow_work_item,
+            deep_research_start=deep_research_start,
+            run_event_sink=services.run_event_sink,
+            product_event_projector=services.product_event_projector,
+            runtime_event_publisher=services.runtime_event_publisher,
+            run_started_at=services.run_started_at,
+            runtime_context=services.runtime_context,
+            initial_state=initial_state,
+            identity=identity,
+            cancel_token=cancel_token,
+            pre_terminal_state_hook=pre_terminal_state_hook,
+        )
+
+    async def _prepare_graph_continuation(
+        self,
+        owner: RequestIdentity,
+        *,
+        run_id: str,
+        invocation_kind: Literal["resume", "replay", "fork"],
+        request: GraphReplayRequest | GraphForkRequest | None = None,
+        resume: AssistantResume | None = None,
+        caller_request: UserRequest | None = None,
+        event_sink: EventSink | None,
+        cancel_token: Any | None,
+        trace_context: RuntimeTraceContext | None,
+        export_trace_context: RuntimeExportTraceContext | None,
+        pre_terminal_state_hook: Callable[[AgentState], None] | None,
+    ) -> _PreparedGraphRun:
+        """Build invocation-local continuation state without Memory lifecycle calls."""
+
+        identity = self._graph_identity_for_owner(owner, run_id=run_id)
+        if getattr(self.assistant_graph_app.graph, "checkpointer", None) is None:
+            raise GraphExecutionError(
+                "graph_checkpointer_required",
+                "Assistant graph time travel requires an explicitly configured saver.",
+            )
+        claim_state = AgentState.from_request(
+            UserRequest(
+                user_id=owner.user_id,
+                session_id=owner.session_id or "",
+                text=None,
+            ),
+            run_id=run_id,
+            agent_id=self.agent_id,
+        )
+        claim_context = GraphRuntimeContext(
+            tool_executor=self.tool_executor,
+            chat_adapter=self.chat_adapter,
+            invocation_claim_store=self.graph_invocation_claim_store,
+            agent_state=claim_state,
+            invocation_kind=invocation_kind,
+        )
+        time_travel_prepared = None
+        if invocation_kind == "resume":
+            if resume is None:
+                raise TypeError("resume continuation requires a resume payload")
+            time_travel_prepared = await self.assistant_graph_app.aprepare_resume(
+                identity=identity,
+                context=claim_context,
+                resume=resume,
+            )
+            snapshot = time_travel_prepared.snapshot
+        else:
+            if request is None:
+                raise TypeError("replay/fork continuation requires a request")
+            time_travel_prepared = await self.assistant_graph_app.aprepare_time_travel(
+                identity=identity,
+                context=claim_context,
+                request=request,
+            )
+            snapshot = time_travel_prepared.snapshot
+        values = getattr(snapshot, "values", None)
+        if not values:
+            raise GraphExecutionError(
+                "graph_checkpoint_not_found",
+                "No assistant checkpoint exists for this thread.",
+            )
+        try:
+            persisted = validate_assistant_turn_state(values)
+            if invocation_kind == "fork":
+                assert time_travel_prepared is not None
+                persisted = time_travel_prepared.fork_values
+                assert persisted is not None
+        except Exception as exc:
+            raise GraphExecutionError(
+                "graph_checkpoint_incompatible",
+                "Assistant checkpoint cannot be continued by this graph version.",
+            ) from exc
+        persisted_run = persisted["run"]
+        persisted_request = persisted["request"]
+        if invocation_kind == "resume":
+            if caller_request is None:
+                raise TypeError("resume continuation requires the caller request")
+            caller_facts = persisted_request_from_user_request(caller_request)
+            caller_facts["capability_refs"] = list(persisted_request["capability_refs"])
+            if caller_facts != persisted_request:
+                raise GraphExecutionError(
+                    "graph_resume_request_mismatch",
+                    "Resume request facts do not match the pending assistant turn.",
+                )
+        persisted_trace_id = str(persisted_run["trace_id"])
+        if trace_context is not None and trace_context.trace_id != persisted_trace_id:
+            raise GraphExecutionError(
+                "graph_resume_trace_mismatch",
+                "Continuation trace context does not match the assistant thread.",
+            )
+        continuation_request = user_request_from_checkpoint(persisted_request)
+        state = AgentState.from_request(
+            continuation_request,
+            run_id=run_id,
+            trace_id=persisted_trace_id,
+            agent_id=self.agent_id,
+        )
+        state.memory_origin_run_id = str(persisted["memory_origin_run_id"])
+        state.turn_provenance = (
+            "time_travel"
+            if invocation_kind in {"replay", "fork"}
+            else persisted["turn_provenance"]
+        )
+        state.context_source_result = self._load_context_source_result(state)
+        try:
+            self.capability_grant_controller.prepare_run(
+                state,
+                self.registry.list_specs(),
+            )
+        except Exception as exc:
+            raise GraphExecutionError(
+                "graph_continuation_capability_unavailable",
+                "Checkpoint capabilities cannot be reconstructed safely.",
+            ) from exc
+        expected_memory_refs = tuple(
+            (str(item["ref"]), str(item["source"]))
+            for item in persisted["context_refs"]
+            if item["kind"] == "memory"
+        )
+        attached_memory = self.long_term_memory_service.attach_continuation_snapshot(
+            state,
+            origin_identity=owner,
+            origin_run_id=state.memory_origin_run_id,
+            expected_memory_refs=expected_memory_refs,
+        )
+        if expected_memory_refs and attached_memory is None:
+            raise GraphExecutionError(
+                "graph_continuation_context_refs_unavailable",
+                "Checkpoint Memory refs are no longer available from their owner.",
+            )
+        try:
+            resolve_checkpoint_refs = continuation_ref_resolver(persisted, state)
+        except ContinuationPreparationError as exc:
+            raise GraphExecutionError(exc.code, str(exc)) from exc
+
+        services = self._prepare_graph_services(
+            state,
+            event_sink=event_sink,
+            cancel_token=cancel_token,
+            trace_context=trace_context,
+            export_trace_context=export_trace_context,
+            state_ref_resolver=resolve_checkpoint_refs,
+            invocation_kind=invocation_kind,
+            graph_profile=persisted["profile"],
+            invocation_token=claim_context.invocation_token,
+            publish_start=False,
+        )
+        bound_continuation = None
+        assert time_travel_prepared is not None
+        bound_continuation = self.assistant_graph_app.bind_time_travel_context(
+            time_travel_prepared,
+            context=services.runtime_context,
+        )
+        raise_if_cancelled(
+            cancel_token,
+            phase="continuation_pre_native",
+            state=state,
+        )
+        self._publish_graph_run_started(
+            state,
+            runtime_event_publisher=services.runtime_event_publisher,
+            trace_context=trace_context,
+            export_trace_context=export_trace_context,
+            execution_engine="langgraph_assistant_loop",
+        )
+        return _PreparedGraphRun(
+            request=continuation_request,
+            state=state,
+            workflow_work_item=False,
+            deep_research_start=False,
+            run_event_sink=services.run_event_sink,
+            product_event_projector=services.product_event_projector,
+            runtime_event_publisher=services.runtime_event_publisher,
+            run_started_at=services.run_started_at,
+            runtime_context=services.runtime_context,
+            initial_state={},
+            identity=identity,
+            cancel_token=cancel_token,
+            pre_terminal_state_hook=pre_terminal_state_hook,
+            invocation_kind=invocation_kind,
+            graph_continuation=bound_continuation,
+        )
+
+    def _graph_identity_for_owner(
+        self,
+        owner: RequestIdentity,
+        *,
+        run_id: str,
+    ) -> GraphExecutionIdentity:
+        if not isinstance(owner, RequestIdentity):
+            raise TypeError("owner must be a RequestIdentity")
+        if owner.agent_id != self.agent_id or owner.session_id is None:
+            raise GraphExecutionError(
+                "graph_checkpoint_owner_mismatch",
+                "Assistant graph owner must match this Runtime and include a session.",
+            )
+        return GraphExecutionIdentity.for_assistant_turn(
+            agent_id=owner.agent_id,
+            user_id=owner.user_id,
+            session_id=owner.session_id,
+            run_id=run_id,
+        )
+
+    def _prepare_graph_services(
+        self,
+        state: AgentState,
+        *,
+        event_sink: EventSink | None,
+        cancel_token: Any | None,
+        trace_context: RuntimeTraceContext | None,
+        export_trace_context: RuntimeExportTraceContext | None,
+        interrupt_request: AssistantInterruptRequest | None = None,
+        execution_engine: str = "langgraph_assistant_loop",
+        state_ref_resolver: Callable[[Mapping[str, object], AgentState], None]
+        | None = None,
+        invocation_kind: GraphInvocationKind = "invoke",
+        graph_profile: Literal[
+            "standard", "planner", "worker", "verifier"
+        ] = "standard",
+        invocation_token: str | None = None,
+        publish_start: bool = True,
+    ) -> _GraphRunServices:
+        """Build shared invocation-local services without touching Memory lifecycle."""
+
+        base_event_sink = event_sink or self.event_sink
+        run_event_sink = (
+            _ResponseDeltaTrackingEventSink(base_event_sink)
+            if base_event_sink is not None
+            else None
+        )
+        projector_sink: EventSink | None = run_event_sink
+        if run_event_sink is not None and interrupt_request is not None:
+            projector_sink = _InterruptProductEventBarrier(run_event_sink)
+        product_event_projector = ProductEventProjector(event_sink=projector_sink)
+        tool_executor = ToolExecutor(
+            registry=self.registry,
+            event_sink=None,
+            context_metadata={
+                "durable_task_service": self.durable_task_service,
+                "workflow_service": self.workflow_service,
+            },
+            cancel_token=cancel_token,
+            execution_backend=self.tool_execution_backend,
+            operation_store=self.tool_operation_store,
+        )
+        runtime_event_publisher = RuntimeEventPublisher(
+            product_event_projector=product_event_projector,
+            trace_store=self.trace_store,
+        )
+        run_started_at = perf_counter()
+        if publish_start:
+            self._publish_graph_run_started(
+                state,
+                runtime_event_publisher=runtime_event_publisher,
+                trace_context=trace_context,
+                export_trace_context=export_trace_context,
+                execution_engine=execution_engine,
+            )
+        return _GraphRunServices(
+            run_event_sink=run_event_sink,
+            product_event_projector=product_event_projector,
+            runtime_event_publisher=runtime_event_publisher,
+            runtime_context=GraphRuntimeContext(
+                tool_executor=tool_executor,
+                chat_adapter=self.chat_adapter,
+                chat_turn=self._run_native_chat_turn,
+                context_service=self.context_service,
+                context_projector=self._refresh_realtime_video_context,
+                tool_result_handler=self.capability_grant_controller.handle_tool_result,
+                trace_store=self.trace_store,
+                cancel_token=cancel_token,
+                agent_state=state,
+                state_ref_resolver=state_ref_resolver,
+                invocation_claim_store=self.graph_invocation_claim_store,
+                invocation_kind=invocation_kind,
+                graph_profile=graph_profile,
+                **(
+                    {"invocation_token": invocation_token}
+                    if invocation_token is not None
+                    else {}
+                ),
+            ),
+            run_started_at=run_started_at,
+        )
+
+    def _publish_graph_run_started(
+        self,
+        state: AgentState,
+        *,
+        runtime_event_publisher: RuntimeEventPublisher,
+        trace_context: RuntimeTraceContext | None,
+        export_trace_context: RuntimeExportTraceContext | None,
+        execution_engine: str,
+    ) -> None:
+        fact = RunStartedFact(
+            state=state,
+            parent_span_id=(
+                trace_context.parent_span_id if trace_context is not None else None
+            ),
+            execution_engine=execution_engine,
+            export_trace_context=export_trace_context,
+            experiment_trace_link=(
+                trace_context.experiment_link if trace_context is not None else None
+            ),
+        )
+        runtime_event_publisher.deliver_run_started(fact)
+        runtime_event_publisher.record_run_started(fact)
+        if self.run_history is not None:
+            self.run_history.record_start(state.run_id, state.user_id, state.session_id)
+
+    def _load_context_source_result(self, state: AgentState):
+        return self.context_source_coordinator.load_once(
             ContextSourceRequest(
                 user_id=state.user_id,
                 source_root=Path(self.config.editable_context_root),
@@ -862,128 +1699,222 @@ class AgentGraphRuntime:
                 ),
             )
         )
-        run_started_at = perf_counter()
-        runtime_event_publisher = RuntimeEventPublisher(
-            event_sink=run_event_sink,
-            trace_store=self.trace_store,
-        )
-        run_started_fact = RunStartedFact(
-            state=state,
-            parent_span_id=(
-                trace_context.parent_span_id
-                if trace_context is not None
-                else None
-            ),
-            execution_engine=(
-                "durable_plan_execute_start"
-                if deep_research_start
-                else "langgraph_assistant_loop"
-            ),
-            export_trace_context=export_trace_context,
-            experiment_trace_link=(
-                trace_context.experiment_link
-                if trace_context is not None
-                else None
-            ),
-        )
-        runtime_event_publisher.deliver_run_started(run_started_fact)
-        if self.run_history is not None:
-            self.run_history.record_start(state.run_id, state.user_id, state.session_id)
-        conversation_prepare_latency_ms = request.metadata.get("conversation_prepare_latency_ms")
-        if (
-            isinstance(conversation_prepare_latency_ms, int)
-            and not isinstance(conversation_prepare_latency_ms, bool)
-            and conversation_prepare_latency_ms >= 0
-        ):
-            self._append_observability_event(
-                state,
-                canonical_event="conversation.prepare.finished",
-                status="succeeded",
-                latency_ms=conversation_prepare_latency_ms,
-                attributes={
-                    "conversation_turn_index": request.metadata.get("conversation_turn_index"),
-                },
-            )
-        runtime_event_publisher.record_run_started(run_started_fact)
-        if not workflow_work_item and not deep_research_start:
-            self._prepare_run_memory_context(
-                state,
-                cancel_token=cancel_token,
-            )
-        runtime_context = GraphRuntimeContext(
-            tool_executor=tool_executor,
-            chat_adapter=self.chat_adapter,
-            chat_turn=self._run_native_chat_turn,
-            context_service=self.context_service,
-            context_projector=self._refresh_realtime_video_context,
-            tool_result_handler=self.capability_grant_controller.handle_tool_result,
-            trace_store=self.trace_store,
-            event_sink=run_event_sink,
-            cancel_token=cancel_token,
-        )
-        initial_state = {
-            "request": request,
-            "state": state,
-            "outputs_by_step": {},
-            "current_step_index": 0,
-            "run_phase": RunPhase.ACT,
-            "trace_id": state.trace_id,
-            "max_tool_iterations": _workflow_iteration_limit(
-                request,
-                configured=self.config.max_tool_iterations,
-            ),
-            "max_control_tool_iterations": self.config.max_control_tool_iterations,
-            "tool_calls_used": 0,
-            "action_tool_calls_used": 0,
-            "control_tool_calls_used": 0,
-            "max_plan_steps": self.config.max_plan_steps,
-        }
+
+    def _begin_graph_execution(
+        self,
+        prepared: _PreparedGraphRun,
+        *,
+        resuming: bool = False,
+    ) -> bool:
+        """Apply shared pre-graph cancellation and compatibility branches."""
+
+        if resuming:
+            return True
+        state = prepared.state
         try:
-            raise_if_cancelled(cancel_token, phase="pre_graph", state=state)
+            raise_if_cancelled(
+                prepared.cancel_token,
+                phase="pre_graph",
+                state=state,
+            )
         except AgentRunCancelled as exc:
             state.cancel(exc.message, source=exc.source, details=exc.details)
-        else:
-            if deep_research_start:
-                _start_deep_research_workflow(
-                    state,
-                    workflow_service=self.workflow_service,
+            return False
+        if prepared.deep_research_start:
+            _set_async_workflow_entry_required(state)
+            return False
+        if (
+            prepared.request.task_execution_mode == "durable"
+            and not self.config.durable_tasks_enabled
+        ):
+            _set_durable_tasks_disabled_response(state)
+            return False
+        return True
+
+    def _complete_graph_execution(
+        self,
+        prepared: _PreparedGraphRun,
+        final_state: Mapping[str, Any],
+    ) -> AgentState:
+        persisted = validate_assistant_turn_state(final_state)
+        state = apply_assistant_turn_state_to_agent_state(
+            persisted,
+            runtime_state=prepared.state,
+        )
+        try:
+            raise_if_cancelled(
+                prepared.cancel_token,
+                phase="post_graph",
+                state=state,
+            )
+        except AgentRunCancelled as exc:
+            if isinstance(exc.state, AgentState):
+                state = exc.state
+            state.cancel(exc.message, source=exc.source, details=exc.details)
+        return state
+
+    def _complete_started_graph_execution(
+        self,
+        prepared: _PreparedGraphRun,
+        final_state: Mapping[str, Any],
+    ) -> AgentState:
+        """Project native output while retaining its already-started phase."""
+
+        try:
+            return self._complete_graph_execution(prepared, final_state)
+        except GraphExecutionError as exc:
+            exc.execution_phase = "native_terminal"
+            raise
+        except Exception as exc:
+            raise GraphExecutionError(
+                "graph_runtime_projection_failed",
+                "Native terminal state could not be projected safely.",
+                execution_phase="native_terminal",
+            ) from exc
+
+    def _complete_pending_graph_execution(
+        self,
+        prepared: _PreparedGraphRun,
+        final_state: Mapping[str, Any],
+    ) -> AgentState:
+        """Project an interrupted snapshot without claiming a terminal outcome."""
+
+        try:
+            return self._complete_graph_execution(prepared, final_state)
+        except GraphExecutionError as exc:
+            exc.execution_phase = "native_started"
+            raise
+        except Exception as exc:
+            raise GraphExecutionError(
+                "graph_runtime_projection_failed",
+                "Pending native state could not be projected safely.",
+                execution_phase="native_started",
+            ) from exc
+
+    def _execute_graph_sync(self, prepared: _PreparedGraphRun) -> AgentState:
+        if not self._begin_graph_execution(prepared):
+            return prepared.state
+        try:
+            final_state = self.assistant_graph_app.invoke(
+                prepared.initial_state,
+                identity=prepared.identity,
+                context=replace(
+                    prepared.runtime_context,
+                    product_fact_writer=prepared.product_event_projector.project_fact,
+                ),
+            )
+            return self._complete_started_graph_execution(prepared, final_state)
+        except AgentRunCancelled as exc:
+            state = exc.state if isinstance(exc.state, AgentState) else prepared.state
+            state.cancel(exc.message, source=exc.source, details=exc.details)
+            return state
+
+    async def _execute_graph_async(
+        self,
+        prepared: _PreparedGraphRun,
+        *,
+        resume: AssistantResume | None = None,
+    ) -> AgentState:
+        if prepared.deep_research_start and resume is None:
+            await _start_deep_research_workflow_async(
+                prepared.state,
+                workflow_graph_host=self.workflow_graph_host,
+            )
+            return prepared.state
+        if not self._begin_graph_execution(prepared, resuming=resume is not None):
+            return prepared.state
+        try:
+            if resume is None:
+                result = await self.assistant_graph_app.arun(
+                    prepared.initial_state,
+                    identity=prepared.identity,
+                    context=prepared.runtime_context,
+                    part_consumer=prepared.product_event_projector.project_part,
                 )
-            elif request.task_execution_mode == "durable" and not self.config.durable_tasks_enabled:
-                _set_durable_tasks_disabled_response(state)
             else:
-                self._emit(
-                    AgentEvent(
-                        type="graph_node_started",
-                        session_id=state.session_id,
-                        run_id=state.run_id,
-                        node_name="agent_graph",
-                    ),
-                    run_event_sink,
+                assert prepared.graph_continuation is not None
+                result = await self.assistant_graph_app.aexecute_time_travel(
+                    prepared.graph_continuation,
+                    part_consumer=prepared.product_event_projector.project_part,
                 )
-                try:
-                    final_state = self._select_graph(request, runtime_context=runtime_context).invoke(
-                        initial_state,
-                        config=self._langgraph_config(request, state),
+            if result.status == "interrupted":
+                state = self._complete_pending_graph_execution(
+                    prepared, result.final_state
+                )
+                if state.status in {"cancelled", "failed"}:
+                    return state
+                if not self.allow_interrupt:
+                    state.errors.append(
+                        AgentError(
+                            message="Assistant graph interrupted outside an enabled internal composition.",
+                            source="assistant_graph",
+                            details={
+                                "code": "graph_unexpected_interrupt",
+                                "failure_kind": "infrastructure_error",
+                            },
+                        )
                     )
-                    state = final_state["state"]
-                    raise_if_cancelled(cancel_token, phase="post_graph", state=state)
-                except AgentRunCancelled as exc:
-                    if isinstance(exc.state, AgentState):
-                        state = exc.state
-                    state.cancel(exc.message, source=exc.source, details=exc.details)
-                finally:
-                    self._emit(
-                        AgentEvent(
-                            type="graph_node_finished",
-                            session_id=state.session_id,
-                            run_id=state.run_id,
-                            node_name="agent_graph",
-                        ),
-                        run_event_sink,
-                    )
-        if pre_terminal_state_hook is not None:
+                    state.status = "failed"
+                    state.response = None
+                    return state
+                state.status = "waiting_user"
+                state.response = None
+                return state
+            return self._complete_started_graph_execution(prepared, result.final_state)
+        except AgentRunCancelled as exc:
+            state = exc.state if isinstance(exc.state, AgentState) else prepared.state
+            state.cancel(exc.message, source=exc.source, details=exc.details)
+            return state
+
+    async def _run_prepared_graph_async(
+        self,
+        prepared: _PreparedGraphRun,
+        *,
+        resume: AssistantResume | None = None,
+    ) -> AgentState:
+        """Run or resume natively, committing lifecycle only for terminal states."""
+
+        state = await self._execute_graph_async(prepared, resume=resume)
+        if state.status == "waiting_user":
+            return state
+        return self._finalize_graph_run(prepared, state)
+
+    def _finalize_graph_execution_error(
+        self,
+        prepared: _PreparedGraphRun,
+        exc: GraphExecutionError,
+    ) -> AgentState:
+        """Close a started graph invocation that failed during native validation."""
+
+        state = prepared.state
+        state.errors.append(
+            AgentError(
+                message="Assistant graph execution failed.",
+                source="assistant_graph",
+                details={
+                    "code": exc.code,
+                    "failure_kind": "infrastructure_error",
+                },
+            )
+        )
+        state.status = "failed"
+        state.response = None
+        return self._finalize_graph_run(prepared, state)
+
+    def _finalize_graph_run(
+        self,
+        prepared: _PreparedGraphRun,
+        state: AgentState,
+    ) -> AgentState:
+        """Commit the shared terminal lifecycle after sync or async execution."""
+
+        request = prepared.request
+        run_event_sink = prepared.run_event_sink
+        run_started_at = prepared.run_started_at
+        runtime_event_publisher = prepared.runtime_event_publisher
+        if prepared.pre_terminal_state_hook is not None:
             try:
-                pre_terminal_state_hook(state)
+                prepared.pre_terminal_state_hook(state)
             except Exception as exc:  # noqa: BLE001 - trusted hook fails closed.
                 state.errors.append(
                     AgentError(
@@ -1054,23 +1985,31 @@ class AgentGraphRuntime:
         append_runtime_turn_summary(self.trace_store, state=state)
         if terminal_status == "completed":
             response_text = state.response.message if state.response else ""
-            if response_text and run_event_sink is not None and not run_event_sink.response_delta_emitted:
-                self._emit(
-                    AgentEvent(
-                        type="response_delta",
+            if (
+                response_text
+                and run_event_sink is not None
+                and not run_event_sink.response_delta_emitted
+            ):
+                prepared.product_event_projector.project_fact(
+                    TextDeltaProductFact(
+                        fact_id=new_runtime_product_fact_id("text_delta"),
                         session_id=state.session_id,
                         run_id=state.run_id,
                         text=response_text,
+                        source="runtime_final_response",
                         payload={
-                            "source": "runtime_final_response",
                             "token_streaming": False,
                             "chunking_strategy": "final_text_fallback",
                         },
-                    ),
-                    run_event_sink,
+                    )
                 )
         runtime_event_publisher.deliver_run_terminal(terminal_fact)
-        if terminal_status == "completed" and not workflow_work_item:
+        if (
+            terminal_status == "completed"
+            and not prepared.workflow_work_item
+            and prepared.invocation_kind in {"invoke", "resume"}
+            and state.turn_provenance == "product_turn"
+        ):
             _record_local_delivered_response(state)
             self.long_term_memory_service.enqueue_completed_turn(
                 trace_store=self.trace_store,
@@ -1107,10 +2046,7 @@ class AgentGraphRuntime:
             request.user_id,
             request.session_id,
         )
-        if (
-            semantic_store is not None
-            and semantic_store.has_visual_history()
-        ):
+        if semantic_store is not None and semantic_store.has_visual_history():
             request.metadata["_trusted_visual_memory_available"] = True
         if is_trusted_agent_service_request(request):
             target_sequence = request.metadata.get("realtime_video_target_sequence")
@@ -1119,7 +2055,9 @@ class AgentGraphRuntime:
                 and not isinstance(target_sequence, bool)
                 and target_sequence >= 0
             ):
-                request.metadata["_trusted_visual_memory_as_of_sequence"] = target_sequence
+                request.metadata["_trusted_visual_memory_as_of_sequence"] = (
+                    target_sequence
+                )
 
     def _refresh_visual_reminder_capability(self, request: UserRequest) -> None:
         """Overwrite caller metadata with a live trusted VIDEO connection fact."""
@@ -1127,9 +2065,7 @@ class AgentGraphRuntime:
         request.metadata.pop("_trusted_visual_reminder_available", None)
         agent_service = request.metadata.get("agent_service")
         call_type = (
-            agent_service.get("call_type")
-            if isinstance(agent_service, dict)
-            else None
+            agent_service.get("call_type") if isinstance(agent_service, dict) else None
         )
         if not is_trusted_agent_service_request(request) or call_type != "VIDEO":
             return
@@ -1199,7 +2135,9 @@ class AgentGraphRuntime:
 
         from assistant_agent.automation.durable_tasks.worker import TaskQuantumResult
 
-        request = request.model_copy(update={"task_execution_mode": "durable"}, deep=True)
+        request = request.model_copy(
+            update={"task_execution_mode": "durable"}, deep=True
+        )
         request.metadata["durable_task_binding"] = binding.model_dump(mode="json")
         snapshot = DurableTaskSnapshot.model_validate(
             request.metadata.get("durable_task_snapshot")
@@ -1216,6 +2154,7 @@ class AgentGraphRuntime:
             },
             cancel_token=cancel_token,
             execution_backend=self.tool_execution_backend,
+            operation_store=self.tool_operation_store,
         )
         try:
             raise_if_cancelled(cancel_token, phase="durable_quantum_start", state=state)
@@ -1227,7 +2166,11 @@ class AgentGraphRuntime:
                 )
             result = self._run_native_chat_turn(chat_request)
             if not result.success:
-                message = result.errors[0].message if result.errors else "Provider call failed."
+                message = (
+                    result.errors[0].message
+                    if result.errors
+                    else "Provider call failed."
+                )
                 return TaskQuantumResult(
                     TaskCheckpoint(
                         kind="failed",
@@ -1238,9 +2181,14 @@ class AgentGraphRuntime:
                 )
             if not result.tool_calls:
                 if not binding.ready_step_ids:
-                    state.set_response(AgentResponse(message=result.response_text or "任务完成。"))
+                    state.set_response(
+                        AgentResponse(message=result.response_text or "任务完成。")
+                    )
                     return TaskQuantumResult(
-                        TaskCheckpoint(kind="completed", summary=result.response_text or "Task completed."),
+                        TaskCheckpoint(
+                            kind="completed",
+                            summary=result.response_text or "Task completed.",
+                        ),
                         state,
                     )
                 step_id = binding.ready_step_ids[0]
@@ -1274,8 +2222,11 @@ class AgentGraphRuntime:
             if not validation.accepted:
                 checkpoint_kind = (
                     "waiting_input"
-                    if validation.code in {"invalid_tool_input", "missing_required_input"}
-                    else "tool_failed" if decision.step_id else "failed"
+                    if validation.code
+                    in {"invalid_tool_input", "missing_required_input"}
+                    else "tool_failed"
+                    if decision.step_id
+                    else "failed"
                 )
                 return TaskQuantumResult(
                     TaskCheckpoint(
@@ -1323,6 +2274,19 @@ class AgentGraphRuntime:
                 trace_store=self.trace_store,
                 trace_id=state.trace_id,
                 node_name="durable_task_quantum",
+                operation_scope_id=stable_operation_scope_id(
+                    thread_id=f"durable-task:{active_binding.task_id}",
+                    turn_origin_id=(
+                        f"task:{active_binding.task_id}:plan:{active_binding.plan_version}"
+                    ),
+                    assistant_iteration=active_binding.task_version,
+                    call_ordinal=active_binding.ready_step_ids.index(decision.step_id),
+                    tool_name=decision.tool_name or "",
+                    normalized_input_digest=normalized_tool_input_digest(
+                        validation.validated_input.model_dump(mode="json")
+                    ),
+                ),
+                operation_thread_id=f"durable-task:{active_binding.task_id}",
             )
             active_binding = active_binding_holder["value"]
             if (tool_result.data or {}).get("side_effect_state") == "unknown":
@@ -1366,8 +2330,12 @@ class AgentGraphRuntime:
             )
 
     def _run_native_chat_turn(self, chat_request: ChatRequest) -> ChatResult:
-        if self.config.native_provider_streaming and supports_async_streaming_chat(self.chat_adapter):
-            return ProviderStreamingTurnRunner().run_turn(self.chat_adapter, chat_request)
+        if self.config.native_provider_streaming and supports_async_streaming_chat(
+            self.chat_adapter
+        ):
+            return ProviderStreamingTurnRunner().run_turn(
+                self.chat_adapter, chat_request
+            )
         return self.chat_adapter.chat(chat_request)
 
     def _durable_quantum_chat_request(
@@ -1435,59 +2403,6 @@ class AgentGraphRuntime:
         request.metadata["realtime_video_context"] = context.model_dump(mode="json")
         request.metadata["realtime_video_context_trusted"] = True
 
-    def _select_graph(
-        self,
-        request: UserRequest,
-        *,
-        runtime_context: GraphRuntimeContext | None = None,
-    ) -> Any:
-        if runtime_context is not None:
-            return build_assistant_loop_graph(
-                checkpointer=self.checkpointer,
-                runtime_context=runtime_context,
-            )
-        return self._graph
-
-    def _langgraph_config(self, request: UserRequest, state: AgentState) -> dict[str, dict[str, str]]:
-        return {
-            "configurable": {
-                "thread_id": state.run_id,
-                "session_id": request.session_id,
-                "user_id": request.user_id,
-                "run_id": state.run_id,
-            }
-        }
-
-    def run_stream(
-        self,
-        request: UserRequest,
-        *,
-        event_sink: EventSink | None = None,
-        cancel_token: Any | None = None,
-    ) -> AgentRunStream[AgentState]:
-        """Run the graph in a worker thread and expose AgentEvent records asynchronously."""
-
-        loop = asyncio.get_running_loop()
-        stream: AgentRunStream[AgentState] = AgentRunStream(loop=loop)
-        inner = event_sink if event_sink is not None else self.event_sink
-        stream_sink = AsyncQueueEventSink(loop=loop, stream=stream, inner=inner)
-
-        async def _run() -> None:
-            try:
-                state = await asyncio.to_thread(
-                    self.run_state,
-                    request,
-                    event_sink=stream_sink,
-                    cancel_token=cancel_token,
-                )
-            except BaseException as exc:
-                stream.set_exception(exc)
-            else:
-                stream.set_result(state)
-
-        asyncio.create_task(_run())
-        return stream
-
     def run(
         self,
         request: UserRequest,
@@ -1496,7 +2411,9 @@ class AgentGraphRuntime:
     ) -> AgentResponse:
         """Run the graph and return the final AgentResponse."""
 
-        state = self.run_state(request, event_sink=event_sink, cancel_token=cancel_token)
+        state = self.run_state(
+            request, event_sink=event_sink, cancel_token=cancel_token
+        )
         if state.response is not None:
             return state.response
         if state.status == "cancelled":
@@ -1514,11 +2431,6 @@ class AgentGraphRuntime:
                 "errors": [error.model_dump(mode="json") for error in state.errors],
             },
         )
-
-    def _emit(self, event: AgentEvent, event_sink: EventSink | None = None) -> None:
-        sink = event_sink or self.event_sink
-        if sink is not None:
-            sink.emit(event)
 
     def _append_observability_event(
         self,
@@ -1556,12 +2468,16 @@ class AgentGraphRuntime:
         )
 
 
-def _terminal_history_status(status: str) -> Literal["completed", "failed", "cancelled"]:
+def _terminal_history_status(
+    status: str,
+) -> Literal["completed", "failed", "cancelled"]:
     if status == "failed":
         return "failed"
     if status == "cancelled":
         return "cancelled"
-    return "completed"
+    if status == "completed":
+        return "completed"
+    raise ValueError("run status is not terminal")
 
 
 class _ResponseDeltaTrackingEventSink:
@@ -1577,22 +2493,46 @@ class _ResponseDeltaTrackingEventSink:
         self.inner.emit(event)
 
 
+class _InterruptProductEventBarrier:
+    """Keep every provisional graph-local product event private on interrupt."""
+
+    def __init__(self, inner: _ResponseDeltaTrackingEventSink) -> None:
+        self.inner = inner
+        self.deferred_events: list[AgentEvent] = []
+
+    @property
+    def response_delta_emitted(self) -> bool:
+        return self.inner.response_delta_emitted
+
+    def emit(self, event: AgentEvent) -> None:
+        if event.type == "task_started":
+            self.inner.emit(event)
+            return
+        self.deferred_events.append(event)
+
+
 def _metadata_text(value: Any) -> str:
     return value.strip() if isinstance(value, str) and value.strip() else ""
 
 
 def _record_local_trace_conversation(state: AgentState) -> None:
-    from assistant_agent.observability.trace_content_policy import local_trace_content_enabled
+    from assistant_agent.observability.trace_content_policy import (
+        local_trace_content_enabled,
+    )
 
     if not local_trace_content_enabled():
         return
     user_text = (state.request.text or "").strip()
-    assistant_text = (state.response.message if state.response is not None else "").strip()
+    assistant_text = (
+        state.response.message if state.response is not None else ""
+    ).strip()
     if not assistant_text and state.errors:
         assistant_text = state.errors[-1].message.strip()
     if not user_text or not assistant_text:
         return
-    from assistant_agent.observability.trace_conversation import get_default_trace_conversation_store
+    from assistant_agent.observability.trace_conversation import (
+        get_default_trace_conversation_store,
+    )
 
     get_default_trace_conversation_store().append(
         user_id=state.user_id,
@@ -1604,7 +2544,9 @@ def _record_local_trace_conversation(state: AgentState) -> None:
 
 
 def _record_local_delivered_response(state: AgentState) -> None:
-    from assistant_agent.observability.trace_content_policy import local_trace_content_enabled
+    from assistant_agent.observability.trace_content_policy import (
+        local_trace_content_enabled,
+    )
 
     if not local_trace_content_enabled() or state.response is None:
         return
@@ -1623,10 +2565,14 @@ def _record_local_delivered_response(state: AgentState) -> None:
     )
 
 
-def _append_trace_content_event(trace_store: TraceStore | None, state: AgentState) -> None:
+def _append_trace_content_event(
+    trace_store: TraceStore | None, state: AgentState
+) -> None:
     """Persist complete run evidence for later trace-driven evaluation."""
 
-    from assistant_agent.observability.trace_content_policy import local_trace_content_enabled
+    from assistant_agent.observability.trace_content_policy import (
+        local_trace_content_enabled,
+    )
 
     if trace_store is None or not local_trace_content_enabled():
         return
@@ -1684,7 +2630,9 @@ def _append_trace_content_event(trace_store: TraceStore | None, state: AgentStat
     )
 
 
-def _durable_quantum_tool_specs(registry: Any, state: AgentState) -> list[ToolSpec] | None:
+def _durable_quantum_tool_specs(
+    registry: Any, state: AgentState
+) -> list[ToolSpec] | None:
     try:
         if hasattr(registry, "list_specs"):
             specs = registry.list_specs()
@@ -1714,7 +2662,9 @@ def _is_workflow_work_item_request(request: UserRequest) -> bool:
     return isinstance(request.metadata.get("_trusted_workflow_assignment"), dict)
 
 
-def _set_durable_tool_description_failure_response(state: AgentState, exc: Exception) -> None:
+def _set_durable_tool_description_failure_response(
+    state: AgentState, exc: Exception
+) -> None:
     message = f"工具描述读取失败：{exc}"
     state.request.metadata["tool_description_error"] = {
         "code": "tool_description_unavailable",
@@ -1723,7 +2673,10 @@ def _set_durable_tool_description_failure_response(state: AgentState, exc: Excep
     error = AgentError(
         message=message,
         source="durable_task_quantum",
-        details={"code": "tool_description_unavailable", "recovery_action": "stop_with_error"},
+        details={
+            "code": "tool_description_unavailable",
+            "recovery_action": "stop_with_error",
+        },
     )
     state.errors.append(error)
     state.response = AgentResponse(
@@ -1734,6 +2687,7 @@ def _set_durable_tool_description_failure_response(state: AgentState, exc: Excep
         },
     )
     state.status = "failed"
+
 
 def _durable_step_id_for_call(
     snapshot: DurableTaskSnapshot,
@@ -1774,7 +2728,9 @@ def _durable_tool_result_summary(result: ToolResult) -> str:
 def _set_durable_tasks_disabled_response(state: AgentState) -> None:
     code = "durable_tasks_disabled"
     message = "Durable task execution is disabled for this runtime."
-    state.errors.append(AgentError(message=message, source="runtime", details={"code": code}))
+    state.errors.append(
+        AgentError(message=message, source="runtime", details={"code": code})
+    )
     state.response = AgentResponse(
         message="当前运行时未启用持久化任务执行。",
         data={"errors": [{"code": code, "message": message}]},
@@ -1782,18 +2738,34 @@ def _set_durable_tasks_disabled_response(state: AgentState) -> None:
     state.status = "failed"
 
 
-def _start_deep_research_workflow(
+def _set_async_workflow_entry_required(state: AgentState) -> None:
+    code = "workflow_async_entry_required"
+    state.errors.append(
+        AgentError(
+            message="Deep Research requires the asynchronous Workflow graph entry.",
+            source="deep_research_start",
+            details={"code": code},
+        )
+    )
+    state.response = AgentResponse(
+        message="深度研究工作流需要异步入口。",
+        data={"errors": [{"code": code}]},
+    )
+    state.status = "failed"
+
+
+async def _start_deep_research_workflow_async(
     state: AgentState,
     *,
-    workflow_service: WorkflowService | None,
+    workflow_graph_host: Any | None,
 ) -> None:
-    """Start one durable Plan-and-Execute execution without an ingress ReAct."""
+    """Submit one graph-native Workflow without an ingress ReAct or scheduler."""
 
     objective = (state.request.text or "").strip()
-    if workflow_service is None or not objective:
+    if workflow_graph_host is None or not objective:
         code = (
             "durable_workflows_disabled"
-            if workflow_service is None
+            if workflow_graph_host is None
             else "deep_research_objective_required"
         )
         state.errors.append(
@@ -1810,7 +2782,7 @@ def _start_deep_research_workflow(
         state.status = "failed"
         return
     try:
-        bundle = workflow_service.submit(
+        handle = await workflow_graph_host.start(
             identity=RequestIdentity.for_user(
                 user_id=state.user_id,
                 agent_id=state.agent_id,
@@ -1849,18 +2821,18 @@ def _start_deep_research_workflow(
         )
         state.status = "failed"
         return
-    workflow = bundle.workflow
     state.set_response(
         AgentResponse(
             message="",
             data={
                 "workflow": {
-                    "workflow_id": workflow.workflow_id,
-                    "workflow_type": workflow.workflow_type,
-                    "status": workflow.status,
-                    "phase": workflow.phase,
+                    "workflow_id": handle.workflow_id,
+                    "workflow_type": handle.workflow_type,
+                    "execution_engine": handle.execution_engine,
+                    "status": handle.status,
+                    "phase": handle.phase,
                 }
             },
-            output_refs=[f"workflow://{workflow.workflow_id}"],
+            output_refs=[handle.output_ref],
         )
     )

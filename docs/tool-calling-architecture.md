@@ -427,12 +427,31 @@ Tool calls 立即停止，不能在恢复额度耗尽后继续执行后续动作
 - 按 `category` 和执行策略处理有限自动重试；
 - 默认通过 `RegistryExecutionBackend` 调用 Registry 中的 `tool.run()`；受信 Release Review Decision
   可在同一 Executor 内使用无副作用 `ScenarioExecutionBackend`；
+- 对 `write|dangerous` 调用，在 backend 前使用 checkpoint 已持久化的 operation scope 进入独立 operation
+  barrier；
 - 记录真实墙钟延迟、结果、恢复决策与 terminal event；
 - 把成功或失败提交回 `AgentState`。
 
 一次 Executor 自动重试保持相同 tool call 和输入；模型看到 observation 后修改参数再次调用属于新的
-assistant action。通用 Executor 不维护跨进程幂等 ledger；外部写入需要的幂等键由领域 adapter、
-协议或 durable task 提供。
+assistant action。read Tool 不进入 operation barrier；`write|dangerous` Tool 必须提供由 graph 在 Tool edge
+之前写入 checkpoint 的稳定 `operation_scope_id` 和 conversation `thread_id`，缺失时在 backend 前 fail
+closed。operation key 由 thread、scope、profile 和 canonical Tool name 确定，normalized input digest 独立
+校验；Provider tool-call ID 只用于 correlation，resume `run_id`、attempt、checkpoint namespace 和动态 task
+UUID 都不能改变 operation identity。
+
+`SQLiteToolOperationStore` 是跨 Runtime 重建的业务幂等/审计事实源，不是 LangGraph saver。它在同一 SQLite
+transaction 中完成 reserve 与 `invoking` 标记，保证并发调用只有一个 owner 能进入 backend；一次逻辑调用的
+Executor retry 复用同一 operation 和业务 `idempotency_key`。`succeeded|failed` 证明 backend 不得再次调用，
+但 ledger 只保存安全摘要、output ref 和 digest，不能伪造完整 `ToolResult`；在 Tool/backend 尚未声明并绑定
+同一业务幂等 readback 契约前，checkpoint replay 因而以 `tool_operation_outcome_unknown` fail closed。backend
+返回前或 commit 边界不明确，以及确认死亡 owner 遗留的 `invoking`，都转为 `outcome_unknown`，不得自动重放。
+Assistant graph replay/fork 只按所选 checkpoint 的 `continuation` 和 `pending_tool_calls` 检查将要重复的调用，
+不得扫描同 thread 的无关 ledger row。write/dangerous 缺少当前 `toolop:` stable scope、Tool contract 不再可解析，
+或对应 ledger 为 `reserved|invoking|outcome_unknown` 时，都在 Provider、Tool 和 fork update 前 fail closed；
+checkpoint effect category 与当前 Registry contract 不一致时同样拒绝，不能用同名 Tool 的安全降类绕过历史
+operation；完整 execution contract 与 checkpoint-time bound-input digest 也必须在 ledger lookup 前一致。
+Fork 在任意 pending Tool call 时禁止 request patch，避免 runtime-owned request binding 改变输入；
+已提交的 `succeeded|failed` 仍由 Executor short-circuit 为不可伪造的安全失败，backend 不会再次调用。
 
 execution backend 只能由进程内受信 composition root 显式注入，不能由请求正文、metadata、模型输出或
 Dataset 内容选择。无论使用哪种 backend，Executor 都必须先完成 Registry contract lookup、runtime
@@ -458,9 +477,11 @@ assistant loop 对模型发起的 Tool 分为 control 与 action 两套额度：
 loop 或上层 workflow 根据恢复策略决定修改输入、改用其他工具、追问、基于已有证据回答或终止。
 Gateway 不按 Tool name 或 Provider 错误码改写运行终态。
 
-`category=read` 才允许通用自动重试；其他 category 默认不自动重试。写入和危险操作在进入 catalog
-并通过 Validator 后由 Executor 直接执行，公共运行时不维护第二次用户确认状态。需要确认、授权或
-幂等的能力必须把这些要求放进入口授权、Tool schema、领域 adapter 或 durable protocol。
+`category=read` 才允许通用自动重试；其他 category 默认不自动重试。写入和危险操作在进入 catalog、通过
+Validator、持久化 stable operation scope 并取得 barrier owner 后才可进入 backend。category 本身不自动触发
+用户确认；若受信 Runtime/父图显式要求 approval，真实 `await_input` node 必须先 `interrupt()`，恢复值通过
+`Command(resume=...)` 校验后才路由到 Tool edge。授权仍由入口/Tool policy/领域协议承担，业务
+`idempotency_key` 仍由领域 Tool/backend 声明和实现；通用 barrier 不把这些领域责任伪装成已完成。
 
 ## 7. 相邻系统边界
 
@@ -480,10 +501,25 @@ Gateway 不按 Tool name 或 Provider 错误码改写运行终态。
 - **Durable Workflow**：它是新增长流程的唯一 DAG/Plan-and-Execute authority。显式 Deep
   Research 由 Runtime 薄启动；普通 assistant loop 没有提交 Workflow 的模型能力。入口只持久化意图
   字段，然后进入 planning 状态与 bootstrap Plan。
-  `DurableWorkflowWorker` 原子 claim 单个 ready work item，并以 work-item lease、attempt 和调用预算作为
+  production composition 先打开进程共享的 official async SQLite saver owner，再依次编译
+  `WorkflowGraphHost` 与共享 `AgentGraphRuntime`；两个顶层 graph 共用同一 saver 与 invocation claim
+  store，Host 关闭时不关闭借用的 saver。`WorkflowGraphHost` 是新 Deep Research submit、status、events、
+  result、resume、cancel 的唯一产品 owner；HTTP 只返回 strict product handle/progress/action/event，
+  不暴露 checkpoint、thread、task 或 native interrupt identity。`DurableWorkflowGraph` 以
+  strict checkpoint state、conditional `Send`、Pregel join、planner/worker/verifier profile subgraph、
+  `Command` repair、父图 `interrupt`/resume 和 publish operation barrier 直接运行 `langgraph_v3` record。
+  这条 native graph 路径不调用下述 claim/lease/CAS/ready-node scheduler。现存 legacy rows 按本机
+  operator cutover manifest 分类：pristine queued 使用业务 migration-prepared、幂等首 checkpoint、
+  migration-committed 两阶段切换；running/recovering/waiting/blocked 只由独立 `LegacyDrainHost` 按启动时
+  exact workflow-ID allowlist drain。新提交不能进入 legacy service，prepared row 会冻结旧 claim。
+  retirement 必须等 legacy 非终态、active lease、waiting 全零，manifest phase retired、rollback window
+  关闭且 retirement audit 存在；任一条件不满足时保留下述 legacy 模块。
+  drain 期 `DurableWorkflowWorker` 原子 claim 单个 ready work item，并以 work-item lease、attempt 和调用预算作为
   独立所有权边界；一个调度波次可并行运行多个无依赖节点。每个结果分别以 revision CAS 提交，最后一个
   依赖完成时才解锁 join/synthesize 节点。lease heartbeat 防止长模型 run 被误判为崩溃；过期 lease
-  只重试对应节点，不重启整个 Workflow。首个 planner item 与语义 worker item 都通过
+  只重试对应节点，不重启整个 Workflow。legacy claim 边界只接受
+  `execution_engine=legacy_scheduler_v2`；即使误配置 allowlist，`langgraph_v3` record 也不可由
+  claim/lease/CAS worker 取得。首个 planner item 与语义 worker item 都通过
   `AgentGraphRuntime.run_work_item()` 回到
   同一 assistant loop；executor port 将 `planner_runtime` 与 `agent_runtime` 分开注入，默认可复用同一
   Runtime，也预留主 Agent 规划、子 Agent/远程 worker 执行的替换点。
@@ -571,10 +607,15 @@ payload、凭据、绝对路径和大块内联数据不能因 ToolResult 或调�
 - `tools/spec_adapters.py`：Provider schema 转换；
 - `runtime/action_validator.py`：run catalog、输入、媒体与 durable 校验；
 - `runtime/tool_executor.py`：调用、重试、取消、状态提交和生命周期事件；
+- `runtime/tool_operation_barrier.py`：可恢复写 Tool 的稳定 operation identity、SQLite owner/terminal ledger
+  与 fail-closed replay；
 - `tools/observation.py`：ToolResult 到模型观察的通用投影；
 - `tests/core/contract/test_tool_contract.py`：`TOOL-001` 核心治理契约。
-- `workflows/`：Workflow 契约、definition、Store、work-item controller、worker、artifact/context 和
-  `AgentGraphRuntime` work-item adapter；
+- `workflows/graph_host.py`：process-owned/b borrowed saver 的 graph_v3 产品 facade；
+- `workflows/cutover.py`：operator manifest、content-free inventory 与 queued 两阶段 migration reconciler；
+- `workflows/legacy_drain_host.py`：cutover 期 exact existing-row allowlist 的唯一 legacy execution owner；
+- `workflows/` 其余模块：Workflow 契约、definition、Store、artifact/context，以及 retirement gate 未关闭前
+  保留的 legacy work-item controller/worker/adapter；
 - `api/routes_workflows.py`：identity-scoped status/events/input/cancel/result 薄入口。
 
 ## 10. 不变量
@@ -588,5 +629,7 @@ payload、凭据、绝对路径和大块内联数据不能因 ToolResult 或调�
 - Registry、catalog、Provider schema、Validator 和 Executor 都从 Tool/ToolSpec 派生当前契约；
   兼容投影不能成为注册或暴露的事实源；
 - Plugin、MCP、Skill、durable task、Memory、Gateway 和内部 worker 不绕过统一工具边界；
+- 可恢复的 `write|dangerous` Tool 在 backend 前必须具有 checkpointed stable operation scope 并进入持久
+  operation barrier；同一 operation 不得因 resume、retry 或 Runtime 重建重复触发副作用；
 - 普通 Tool 失败先形成 ToolResult/observation，再由编排层决定 Agent run 的后续状态；
 - 默认测试与 eval 保持 mock/local/offline，真实 Provider 必须显式启用。

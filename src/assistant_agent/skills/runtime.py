@@ -13,6 +13,11 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 from assistant_agent.runtime.action_validator import ActionValidator
 from assistant_agent.runtime.state import AgentState
 from assistant_agent.runtime.tool_executor import ToolExecutor
+from assistant_agent.runtime.tool_operation_barrier import (
+    normalized_tool_input_digest,
+    stable_assistant_thread_id,
+    stable_operation_scope_id,
+)
 from assistant_agent.multi_agent.control_plane_models import AgentAuditEvent
 from assistant_agent.runtime.decision_models import AssistantDecision
 from assistant_agent.tools.models import ToolResult, ToolSpec
@@ -553,6 +558,25 @@ class SkillRunner:
                 trace_id=state.trace_id,
                 node_name="skill_runner",
                 validated_input=validation.validated_input,
+                operation_scope_id=stable_operation_scope_id(
+                    thread_id=stable_assistant_thread_id(
+                        agent_id=state.agent_id,
+                        user_id=state.user_id,
+                        session_id=state.session_id,
+                    ),
+                    turn_origin_id=state.run_id,
+                    assistant_iteration=0,
+                    call_ordinal=_skill_step_ordinal(manifest, step),
+                    tool_name=step.tool,
+                    normalized_input_digest=normalized_tool_input_digest(
+                        validation.validated_input.model_dump(mode="json")
+                    ),
+                ),
+                operation_thread_id=stable_assistant_thread_id(
+                    agent_id=state.agent_id,
+                    user_id=state.user_id,
+                    session_id=state.session_id,
+                ),
             )
             status = _attempt_status(result)
             attempts.append(
@@ -1033,6 +1057,12 @@ def _bind_step_idempotency(
         **tool_input,
         "idempotency_key": f"skill:{manifest.name}:{state.run_id}:{step.id}",
     }
+
+
+def _skill_step_ordinal(manifest: SkillManifest, step: SkillStep) -> int:
+    return next(
+        index for index, candidate in enumerate(manifest.steps) if candidate.id == step.id
+    )
 
 
 def _attempt_status(result: ToolResult) -> SkillAttemptStatus:

@@ -163,16 +163,35 @@ class ContextService:
                 max_tokens=(
                     self.deep_research_chat_max_tokens
                     if (
-                        context.request.assistant_mode == "deep_research"
-                        and isinstance(
+                        isinstance(
                             context.request.metadata.get("_trusted_workflow_assignment"),
                             dict,
+                        )
+                        and (
+                            context.request.assistant_mode == "deep_research"
+                            or context.request.metadata.get("_trusted_graph_profile")
+                            in {"planner", "worker", "verifier"}
                         )
                     )
                     else self.chat_max_tokens
                 ),
             )
         )
+        assignment = context.request.metadata.get("_trusted_workflow_assignment")
+        profile = context.request.metadata.get("_trusted_graph_profile")
+        if isinstance(assignment, dict) and profile in {
+            "planner",
+            "worker",
+            "verifier",
+        }:
+            compilation = PromptCompileResult(
+                chat_request=compilation.chat_request.model_copy(
+                    update={"response_format": {"type": "json_object"}}
+                ),
+                system_instruction=compilation.system_instruction,
+                rendered_context=compilation.rendered_context,
+                selected_tool_specs=compilation.selected_tool_specs,
+            )
         if compilation.selected_tool_specs:
             return compilation
         return PromptCompileResult(

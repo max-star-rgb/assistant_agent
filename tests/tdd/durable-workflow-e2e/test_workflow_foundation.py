@@ -179,6 +179,8 @@ def test_sqlite_reopen_recovers_bundle_events_and_expired_lease(tmp_path) -> Non
         lease_seconds=30,
         model_call_limit=5,
         tool_call_limit=4,
+        allowed_execution_engines=frozenset({"legacy_scheduler_v2"}),
+        allowed_workflow_types=frozenset(first_service.definitions.list_types()),
     )
     first_store.close()
 
@@ -194,6 +196,8 @@ def test_sqlite_reopen_recovers_bundle_events_and_expired_lease(tmp_path) -> Non
         lease_seconds=30,
         model_call_limit=5,
         tool_call_limit=4,
+        allowed_execution_engines=frozenset({"legacy_scheduler_v2"}),
+        allowed_workflow_types=frozenset(second_service.definitions.list_types()),
     )
 
     assert loaded.workflow.workflow_id == created.workflow.workflow_id

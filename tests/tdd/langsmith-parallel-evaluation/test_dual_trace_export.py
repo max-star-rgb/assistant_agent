@@ -31,7 +31,7 @@ def _terminal_event() -> TraceEvent:
     )
 
 
-def test_server_store_registers_langfuse_and_langsmith_observers(
+def test_server_store_leaves_langsmith_to_native_tracing(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ) -> None:
@@ -43,7 +43,7 @@ def test_server_store_registers_langfuse_and_langsmith_observers(
     monkeypatch.setattr(
         persistence,
         "create_langsmith_text_otel_trace_observer_from_env",
-        lambda: "langsmith",
+        lambda: pytest.fail("native tracing owns LangSmith"),
         raising=False,
     )
     monkeypatch.setattr(
@@ -54,64 +54,9 @@ def test_server_store_registers_langfuse_and_langsmith_observers(
 
     store = persistence.create_server_trace_store(path=tmp_path / "trace.jsonl")
     try:
-        assert _observer_labels(store) == ["langfuse", "langsmith"]
-    finally:
-        persistence.close_trace_store(store)
-
-
-def test_langsmith_observer_factory_applies_experiment_project_override(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    captured: list[object] = []
-    monkeypatch.setattr(
-        otel_exporter,
-        "create_text_otel_trace_observer",
-        lambda config: captured.append(config) or "langsmith",
-        raising=False,
-    )
-
-    observer = otel_exporter.create_langsmith_text_otel_trace_observer_from_env(
-        {
-            "ASSISTANT_AGENT_LANGSMITH_ENABLED": "true",
-            "LANGSMITH_API_KEY": "test-key",
-            "LANGSMITH_PROJECT": "daily-project",
-        },
-        project_override="experiment-project",
-        required=True,
-    )
-
-    assert observer == "langsmith"
-    assert captured[0].headers["Langsmith-Project"] == "experiment-project"
-
-
-def test_langsmith_experiment_store_excludes_langfuse(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path,
-) -> None:
-    langfuse_calls: list[bool] = []
-    langsmith_projects: list[str] = []
-    monkeypatch.setattr(
-        persistence,
-        "create_text_otel_trace_observer_from_env",
-        lambda: langfuse_calls.append(True) or "langfuse",
-    )
-    monkeypatch.setattr(
-        persistence,
-        "create_langsmith_text_otel_trace_observer_from_env",
-        lambda *, project_override, required: (
-            langsmith_projects.append(project_override) or "langsmith"
-        ),
-        raising=False,
-    )
-
-    store = persistence.create_langsmith_experiment_trace_store(
-        project_id="experiment-id",
-        path=tmp_path / "trace.jsonl",
-    )
-    try:
-        assert _observer_labels(store) == ["langsmith"]
-        assert langsmith_projects == ["experiment-id"]
-        assert langfuse_calls == []
+        store.append(_terminal_event())
+        assert _observer_labels(store) == ["langfuse"]
+        assert store.list_by_run("run-1") == [_terminal_event()]
     finally:
         persistence.close_trace_store(store)
 
@@ -132,45 +77,6 @@ def test_one_observer_failure_does_not_block_the_other() -> None:
 
     assert len(calls) == 1
     assert len(manager.errors) == 1
-
-
-def test_langsmith_close_cannot_consume_langfuse_close_budget(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path,
-) -> None:
-    close_calls: list[tuple[str, float]] = []
-
-    class Observer:
-        def __init__(self, name: str, *, delay: float = 0.0) -> None:
-            self.name = name
-            self.delay = delay
-
-        def close(self, *, timeout: float) -> bool:
-            close_calls.append((self.name, timeout))
-            if self.delay:
-                time.sleep(self.delay)
-            return self.name != "langsmith"
-
-    monkeypatch.setattr(
-        persistence,
-        "create_text_otel_trace_observer_from_env",
-        lambda: Observer("langfuse"),
-    )
-    monkeypatch.setattr(
-        persistence,
-        "create_langsmith_text_otel_trace_observer_from_env",
-        lambda: Observer("langsmith", delay=0.02),
-    )
-    monkeypatch.setattr(
-        persistence,
-        "create_langfuse_score_trace_observer_from_env",
-        lambda: None,
-    )
-    store = persistence.create_server_trace_store(path=tmp_path / "trace.jsonl")
-
-    assert persistence.close_trace_store(store, timeout=0.01) is False
-    assert [name for name, _ in close_calls] == ["langsmith", "langfuse"]
-    assert close_calls[1][1] > 0
 
 
 def test_observer_close_uses_one_parallel_deadline() -> None:

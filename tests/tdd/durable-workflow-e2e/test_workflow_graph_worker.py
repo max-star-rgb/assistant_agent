@@ -245,6 +245,8 @@ def test_worker_advances_one_dependency_wave_and_completes(tmp_path) -> None:
         service=service,
         runtime=runtime,
         worker_id="worker-sentinel",
+        allowed_execution_engines=frozenset({"legacy_scheduler_v2"}),
+        allowed_workflow_types=frozenset(service.definitions.list_types()),
     )
 
     assert worker.run_once() is True
@@ -300,6 +302,8 @@ def test_progress_projects_the_same_ready_item_that_runtime_will_execute(tmp_pat
         service=service,
         runtime=WorkflowRuntime(service=service, work_item_executor=executor),
         worker_id="worker-planner",
+        allowed_execution_engines=frozenset({"legacy_scheduler_v2"}),
+        allowed_workflow_types=frozenset(service.definitions.list_types()),
     ).run_once()
     planned = service.get_workflow(
         identity=_identity(), workflow_id=created.workflow.workflow_id
@@ -313,6 +317,8 @@ def test_progress_projects_the_same_ready_item_that_runtime_will_execute(tmp_pat
         service=service,
         runtime=WorkflowRuntime(service=service, work_item_executor=executor),
         worker_id="worker-sentinel",
+        allowed_execution_engines=frozenset({"legacy_scheduler_v2"}),
+        allowed_workflow_types=frozenset(service.definitions.list_types()),
     ).run_once()
 
     assert progress["work_item_id"] == "ws_industry"
@@ -367,6 +373,8 @@ def test_executor_exception_persists_a_prompt_safe_error_type(tmp_path) -> None:
             work_item_executor=ExplodingExecutor(),
         ),
         worker_id="worker-sentinel",
+        allowed_execution_engines=frozenset({"legacy_scheduler_v2"}),
+        allowed_workflow_types=frozenset(service.definitions.list_types()),
     ).run_once()
 
     events = service.list_events(
@@ -394,6 +402,8 @@ def test_worker_recovers_next_quantum_after_store_reopen(tmp_path) -> None:
             work_item_executor=RecordingExecutor(),
         ),
         worker_id="worker-first",
+        allowed_execution_engines=frozenset({"legacy_scheduler_v2"}),
+        allowed_workflow_types=frozenset(first_service.definitions.list_types()),
     )
     assert first_worker.run_once() is True
     assert first_worker.run_once() is True
@@ -409,6 +419,8 @@ def test_worker_recovers_next_quantum_after_store_reopen(tmp_path) -> None:
             work_item_executor=second_executor,
         ),
         worker_id="worker-second",
+        allowed_execution_engines=frozenset({"legacy_scheduler_v2"}),
+        allowed_workflow_types=frozenset(second_service.definitions.list_types()),
     )
     assert second_worker.run_once() is True
 
@@ -460,6 +472,8 @@ def test_worker_accounts_actual_call_usage_and_stops_before_overspending(tmp_pat
         service=service,
         runtime=WorkflowRuntime(service=service, work_item_executor=executor),
         worker_id="worker-sentinel",
+        allowed_execution_engines=frozenset({"legacy_scheduler_v2"}),
+        allowed_workflow_types=frozenset(service.definitions.list_types()),
     )
 
     assert worker.run_once() is True
@@ -497,6 +511,8 @@ def test_worker_loop_survives_one_quantum_infrastructure_failure() -> None:
         runtime=None,
         worker_id="worker-sentinel",
         poll_seconds=0.001,
+        allowed_execution_engines=frozenset({"legacy_scheduler_v2"}),
+        allowed_workflow_types=frozenset({"deep_research"}),
     )
 
     worker.run(stop_event)

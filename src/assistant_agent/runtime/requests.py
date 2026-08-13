@@ -17,7 +17,7 @@ class RuntimeTaskUpdate(BaseModel):
 
     action: Literal["continue", "revise", "replace", "complete"]
     objective: str = Field(min_length=1, max_length=1200)
-    constraints: list[str] = Field(default_factory=list, max_length=12)
+    constraints: list[str] = Field(default_factory=list, max_length=64)
 
 
 class UserRequest(BaseModel):

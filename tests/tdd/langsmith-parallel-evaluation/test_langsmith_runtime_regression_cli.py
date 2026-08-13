@@ -1,16 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
 
-from assistant_agent.evaluation.langsmith_trace import LangSmithExperimentBinding
-from assistant_agent.observability.trace_context import (
-    RuntimeExperimentTraceLink,
-    RuntimeTraceContext,
-)
 import evals.langsmith_runtime_regression.cli as cli
 
 
@@ -53,30 +49,6 @@ class _RealConfig:
         return SimpleNamespace(model="production-model")
 
 
-def _binding() -> LangSmithExperimentBinding:
-    link = RuntimeExperimentTraceLink(
-        backend="langsmith",
-        trace_id="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
-        parent_run_id="11111111-2222-3333-4444-555555555555",
-        experiment_id="99999999-8888-7777-6666-555555555555",
-        project_name="run-name-12345678",
-        reference_example_id=str(EXAMPLE_ID),
-        parent_dotted_order=(
-            "20260811T120000000000Z"
-            "11111111-2222-3333-4444-555555555555"
-        ),
-    )
-    return LangSmithExperimentBinding(
-        project_id=link.experiment_id,
-        project_name=link.project_name,
-        trace_context=RuntimeTraceContext(
-            trace_id="a" * 32,
-            parent_span_id="1" * 16,
-            experiment_link=link,
-        ),
-    )
-
-
 def test_inspect_never_builds_provider_or_runtime(monkeypatch, capsys) -> None:
     client = _Client()
     monkeypatch.setattr(cli, "_langsmith_client", lambda: client)
@@ -97,9 +69,7 @@ def test_preflight_requires_both_operator_flags(monkeypatch) -> None:
     monkeypatch.setattr(cli, "_langsmith_client", _Client)
 
     with pytest.raises(SystemExit):
-        cli.main(
-            ["--preflight", "--no-env-file", "--allow-real-provider"]
-        )
+        cli.main(["--preflight", "--no-env-file", "--allow-real-provider"])
 
 
 def test_run_requires_real_provider(monkeypatch, capsys) -> None:
@@ -110,16 +80,19 @@ def test_run_requires_real_provider(monkeypatch, capsys) -> None:
         staticmethod(lambda: SimpleNamespace(provider_mode="mock")),
     )
 
-    assert cli.main(
-        [
-            "--run",
-            "--run-name",
-            "r1",
-            "--no-env-file",
-            "--allow-real-provider",
-            "--allow-runtime-side-effects",
-        ]
-    ) == 2
+    assert (
+        cli.main(
+            [
+                "--run",
+                "--run-name",
+                "r1",
+                "--no-env-file",
+                "--allow-real-provider",
+                "--allow-runtime-side-effects",
+            ]
+        )
+        == 2
+    )
     assert "requires MULTIMODAL_AGENT_PROVIDER_MODE=real" in capsys.readouterr().out
 
 
@@ -162,33 +135,92 @@ def test_client_lifecycle_failure_is_controlled_and_closes_client(
     assert client.closed is True
 
 
-def test_item_runtime_uses_langsmith_only_experiment_store(monkeypatch) -> None:
+def test_item_runtime_is_the_native_runtime_without_otel_binding(monkeypatch) -> None:
     captured = {}
 
     class Runtime:
-        def __init__(self, *, config, trace_store):
+        def __init__(self, *, config):
             captured["config"] = config
-            captured["trace_store"] = trace_store
-
-    def create_store(*, project_id):
-        captured["project_id"] = project_id
-        return "langsmith-store"
-
-    def create_host(builder, *, trace_store_factory, trace_context_provider):
-        captured["runtime"] = builder(trace_store_factory())
-        captured["trace_context"] = trace_context_provider()
-        return "host"
 
     monkeypatch.setattr(cli, "AgentGraphRuntime", Runtime)
-    monkeypatch.setattr(cli, "create_langsmith_experiment_trace_store", create_store)
-    monkeypatch.setattr(cli, "create_experiment_runtime_host", create_host)
-    binding = _binding()
     config = _RealConfig()
 
-    assert cli._create_item_runtime(config, binding) == "host"
-    assert captured["project_id"] == binding.project_name
-    assert captured["trace_store"] == "langsmith-store"
-    assert captured["trace_context"] == binding.trace_context
+    runtime = cli._create_item_runtime(config)
+
+    assert isinstance(runtime, Runtime)
+    assert captured == {"config": config}
+
+
+def test_cli_owns_one_top_level_asyncio_run(monkeypatch, capsys) -> None:
+    client = _Client()
+    real_asyncio_run = asyncio.run
+    calls = []
+
+    def run_once(coroutine):
+        calls.append(coroutine)
+        return real_asyncio_run(coroutine)
+
+    monkeypatch.setattr(cli, "_langsmith_client", lambda: client)
+    monkeypatch.setattr(cli.asyncio, "run", run_once)
+
+    assert cli.main(["--inspect", "--no-env-file"]) == 0
+    assert len(calls) == 1
+    assert json.loads(capsys.readouterr().out)["action"] == "inspect"
+
+
+def test_configure_evaluators_reports_each_rule_mapping(monkeypatch, capsys) -> None:
+    client = _Client()
+    monkeypatch.setattr(cli, "_langsmith_client", lambda: client)
+    monkeypatch.setattr(
+        cli,
+        "configure_runtime_regression_evaluators",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            dataset_id="dataset-id",
+            status="planned_reconcile",
+            rules=(
+                SimpleNamespace(
+                    rule_name="rule-quality",
+                    feedback_key="quality",
+                    action="create",
+                    rule_id=None,
+                ),
+                SimpleNamespace(
+                    rule_name="rule-grounding",
+                    feedback_key="grounding",
+                    action="update",
+                    rule_id="rule-id",
+                ),
+            ),
+        ),
+    )
+
+    assert (
+        cli.main(
+            [
+                "--configure-evaluators",
+                "--model-config-id",
+                "model-config-id",
+                "--no-env-file",
+            ]
+        )
+        == 0
+    )
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["rules"] == [
+        {
+            "rule_name": "rule-quality",
+            "feedback_key": "quality",
+            "action": "create",
+            "rule_id": None,
+        },
+        {
+            "rule_name": "rule-grounding",
+            "feedback_key": "grounding",
+            "action": "update",
+            "rule_id": "rule-id",
+        },
+    ]
 
 
 def test_run_reports_experiment_and_complete_feedback(monkeypatch, capsys) -> None:
@@ -200,16 +232,20 @@ def test_run_reports_experiment_and_complete_feedback(monkeypatch, capsys) -> No
         staticmethod(_RealConfig),
     )
     monkeypatch.setattr(cli, "_git_commit", lambda: "abc123")
-    monkeypatch.setattr(
-        cli,
-        "run_langsmith_runtime_regression_experiment",
-        lambda client, settings: SimpleNamespace(
+
+    async def run_experiment(client, settings):
+        return SimpleNamespace(
             experiment_id="experiment-id",
             experiment_name=settings.run_name,
             experiment_url="https://smith.invalid/experiment",
             example_ids=(str(EXAMPLE_ID),),
             run_ids=("run-id",),
-        ),
+        )
+
+    monkeypatch.setattr(
+        cli,
+        "run_langsmith_runtime_regression_experiment",
+        run_experiment,
     )
     monkeypatch.setattr(
         cli,
@@ -220,16 +256,19 @@ def test_run_reports_experiment_and_complete_feedback(monkeypatch, capsys) -> No
         ),
     )
 
-    assert cli.main(
-        [
-            "--run",
-            "--run-name",
-            "r1",
-            "--no-env-file",
-            "--allow-real-provider",
-            "--allow-runtime-side-effects",
-        ]
-    ) == 0
+    assert (
+        cli.main(
+            [
+                "--run",
+                "--run-name",
+                "r1",
+                "--no-env-file",
+                "--allow-real-provider",
+                "--allow-runtime-side-effects",
+            ]
+        )
+        == 0
+    )
 
     output = json.loads(capsys.readouterr().out)
     assert output["backend"] == "langsmith"

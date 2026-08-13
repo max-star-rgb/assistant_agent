@@ -38,6 +38,18 @@ trace tree 重建逻辑。
 - Langfuse 在迁移期只保持兼容，达到等价验收后退出；
 - 删除自研 DAG scheduler、影子状态机、重复事件流、远端 trace 投影和无人依赖的兼容抽象。
 
+### 2.1 Graph API 原生开发硬约束
+
+后续 M2–M5 始终围绕 LangGraph Graph API 的真实执行语义开发，而不是在自研框架中仅调用一层
+LangGraph。实现与验收应按场景使用并核对：`StateGraph`、`State`、`Node`、`Edge`、`START`、`END`、
+`Conditional Edge`、`Command`、`Send`、`Reducer`、`Subgraph`、Pregel / Super-step、`Compile`、
+`Invoke`、`Stream`、`Checkpoint`、`Checkpointer`、`Thread`、`Interrupt`、`Resume`、`Memory`、`Store`、
+`Runtime Context`、`Retry Policy`、`Timeout`、`Fallback`、Streaming Modes、Time Travel、Replay 与 Fork。
+
+该清单不是要求为覆盖名词而机械调用 API；要求是：只要项目自研层正在承担其中已有的通用 Graph
+Runtime 职责，默认迁移到对应原生机制，并删除或降级原实现为薄产品适配。每个里程碑的测试必须观察
+实际 compiled graph、stream、checkpoint 或 state history 事实，不能用旁路模拟器证明原生能力已经接入。
+
 ## 3. 兼容范围与非目标
 
 ### 3.1 必须保护

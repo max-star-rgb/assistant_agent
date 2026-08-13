@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -12,6 +13,7 @@ from assistant_agent.workflows.models import (
     WorkflowBundle,
     WorkflowEvent,
     WorkflowWorkItemLease,
+    WorkflowExecutionEngine,
     utc_now,
 )
 from assistant_agent.workflows.store import (
@@ -21,7 +23,63 @@ from assistant_agent.workflows.store import (
     _lease_matches,
     assign_event_cursors,
     claim_ready_item_in_bundle,
+    workflow_matches_claim_scope,
 )
+
+
+_LEGACY_WORK_ITEM_TITLE = "Legacy workflow step"
+
+
+def _load_bundle_json(value: str) -> WorkflowBundle:
+    """Decode persisted bundles with the one pre-cutover schema migration.
+
+    `display_title` was added after legacy scheduler rows were already durable.
+    The compatibility value is deliberately content-free: it neither interprets
+    the objective/kind nor changes execution-engine provenance.
+    """
+
+    raw = json.loads(value)
+    workflow = raw.get("workflow") if isinstance(raw, dict) else None
+    engine = (
+        workflow.get("execution_engine", "legacy_scheduler_v2")
+        if isinstance(workflow, dict)
+        else None
+    )
+    if engine == "legacy_scheduler_v2":
+        plans = raw.get("plans")
+        if isinstance(plans, list):
+            for plan in plans:
+                if not isinstance(plan, dict):
+                    continue
+                work_items = plan.get("work_items")
+                if not isinstance(work_items, list):
+                    continue
+                for item in work_items:
+                    if isinstance(item, dict) and "display_title" not in item:
+                        item["display_title"] = _LEGACY_WORK_ITEM_TITLE
+                    if not isinstance(item, dict) or item.get("status") != "running":
+                        continue
+                    lease_fields = (
+                        item.get("active_attempt_id"),
+                        item.get("lease_owner"),
+                        item.get("lease_token"),
+                        item.get("lease_expires_at"),
+                    )
+                    if all(value is not None for value in lease_fields):
+                        continue
+                    # A pre-cutover crash could persist `running` after its lease
+                    # fields were cleared. Re-project it as retryable without
+                    # interpreting user content, so the bounded drain can reclaim it.
+                    item["status"] = "retryable_failed"
+                    item["active_attempt_id"] = None
+                    item["lease_owner"] = None
+                    item["lease_token"] = None
+                    item["lease_expires_at"] = None
+                    item["reserved_model_calls"] = 0
+                    item["reserved_tool_calls"] = 0
+                    if not item.get("error_code"):
+                        item["error_code"] = "legacy_orphaned_running_attempt"
+    return WorkflowBundle.model_validate(raw)
 
 
 class SQLiteWorkflowStore:
@@ -92,7 +150,7 @@ class SQLiteWorkflowStore:
                 "SELECT bundle_json FROM durable_workflows WHERE workflow_id = ?",
                 (workflow_id,),
             ).fetchone()
-            return WorkflowBundle.model_validate_json(row[0]) if row is not None else None
+            return _load_bundle_json(row[0]) if row is not None else None
 
     def load_by_submission(
         self,
@@ -111,7 +169,16 @@ class SQLiteWorkflowStore:
                 """,
                 (user_id, agent_id, ingress_run_id, idempotency_key),
             ).fetchone()
-            return WorkflowBundle.model_validate_json(row[0]) if row is not None else None
+            return _load_bundle_json(row[0]) if row is not None else None
+
+    def list_cutover_bundles(self) -> list[WorkflowBundle]:
+        """Read all business records in deterministic order for cutover inventory."""
+
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT bundle_json FROM durable_workflows ORDER BY workflow_id"
+            ).fetchall()
+            return [_load_bundle_json(row[0]) for row in rows]
 
     def save(
         self,
@@ -181,10 +248,15 @@ class SQLiteWorkflowStore:
         lease_seconds: int,
         model_call_limit: int,
         tool_call_limit: int,
+        allowed_execution_engines: frozenset[WorkflowExecutionEngine],
+        allowed_workflow_types: frozenset[str],
+        allowed_workflow_ids: frozenset[str] | None = None,
     ) -> WorkflowDispatch | None:
         with self._lock:
             try:
                 self._connection.execute("BEGIN IMMEDIATE")
+                if not allowed_execution_engines or not allowed_workflow_types:
+                    raise ValueError("workflow claim scope allowlists must be non-empty")
                 rows = self._connection.execute(
                     """
                     SELECT bundle_json FROM durable_workflows
@@ -193,7 +265,14 @@ class SQLiteWorkflowStore:
                     """
                 ).fetchall()
                 for row in rows:
-                    bundle = WorkflowBundle.model_validate_json(row[0])
+                    bundle = _load_bundle_json(row[0])
+                    if not workflow_matches_claim_scope(
+                        bundle,
+                        allowed_execution_engines=allowed_execution_engines,
+                        allowed_workflow_types=allowed_workflow_types,
+                        allowed_workflow_ids=allowed_workflow_ids,
+                    ):
+                        continue
                     workflow = bundle.workflow
                     previous_revision = workflow.revision
                     lease, events = claim_ready_item_in_bundle(
@@ -261,7 +340,7 @@ class SQLiteWorkflowStore:
                 ).fetchone()
                 if row is None:
                     raise WorkflowLeaseConflict(lease.workflow_id)
-                bundle = WorkflowBundle.model_validate_json(row[0])
+                bundle = _load_bundle_json(row[0])
                 workflow = bundle.workflow
                 item = next(
                     (

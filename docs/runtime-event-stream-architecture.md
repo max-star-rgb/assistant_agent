@@ -1,6 +1,6 @@
 # Runtime Event Stream Architecture
 
-Last updated: 2026-08-11
+Last updated: 2026-08-13
 
 ## Authority contract
 
@@ -21,12 +21,13 @@ lifecycle remain authoritative in `docs/gateway-architecture.md`.
 
 ## Scope And Invariants
 
-The streaming stack has four distinct contracts:
+The streaming stack has five distinct contracts:
 
 ```text
 vendor provider chunks
   -> provider adapter -> LLMEvent
-  -> runtime mapping and lifecycle -> AgentEvent
+  -> stable compiled AssistantTurnGraph astream(v2)
+  -> runtime lifecycle / ProductEventProjector -> AgentEvent
   -> AgentRunStream / shared assistant service stream
   -> RealtimeAgentEvent
   -> Gateway frame
@@ -53,8 +54,103 @@ through `RuntimeEventPublisher`, which creates both projections with the same
 occurrence timestamp and correlation identity. Runtime and Tool code must not
 construct a second lifecycle projection by hand after publishing the fact.
 
-standard 模式只有一套主运行图：`AgentGraphRuntime` 运行 Provider-native ReAct assistant
-loop，在 `assistant -> execute_tool -> assistant` 与 `assistant -> compose_response` 之间循环或收口。
+standard 模式只有一套主运行图：每个 `AgentGraphRuntime` 只编译一次并稳定持有
+`AssistantTurnGraph`，在 `assistant -> execute_tool -> assistant`、
+`assistant -> await_input -> execute_tool|assistant` 与
+`assistant -> compose_response` 之间按真实 conditional edge 循环、等待或收口。Provider adapter、
+Tool executor、event sink 与 cancel token 通过 LangGraph runtime context 注入，不存入 graph state。
+生产 Agent-Service 与默认 HTTP Gateway 消费 `astream(v2)` 的 native async Runtime 路径；
+逻辑 `ProductEventProjector` 只把已发生的 Runtime 事实投影为现有 `AgentEvent`/
+`RealtimeAgentEvent`，不决定 graph 路由。`GraphStreamPart`、namespace、checkpoint、task 与完整
+state 不进入产品协议。
+
+`AssistantTurnGraph` 的 checkpoint boundary 是版本化、严格 JSON 的 `AssistantTurnState`：只保存 request、
+run、Tool trajectory、prompt-safe observation、稳定 context/capability/artifact reference、profile、phase、
+counter、pending Tool call/interrupt 和 final response 等恢复事实。`AgentState`、Provider/Tool client、Registry、
+Executor、service/store、callback、cancel token、媒体正文、任意 metadata/data 都不进入 checkpoint；节点仅在
+一次调用期间从 `GraphRuntimeContext` hydrate 运行对象，返回前重新投影 strict state。同一 conversation 的新
+turn 会显式覆盖所有 run-scoped channel，不能依靠 LangGraph merge 偶然清除上轮事实。
+
+同一 node/edge 实现还编译为 `standard`、`planner`、`worker`、`verifier` 四个稳定 profile child。
+profile 只能来自受信调用参数或父图 assignment，并同时收窄 Provider Tool schema、RunToolCatalog、Validator
+可执行集合和预算，不能从用户文本推断。standalone root 可绑定 saver；profile child 自身不绑定 saver，作为
+subgraph 时继承父图 checkpointer/namespace。父子图通过窄 input/output adapter 交换 assignment reference、
+objective、constraint、capability reference、response、Tool trajectory 和 artifact reference，不传递父图整份
+state 或动态 task UUID。
+
+Graph 身份语义为 stable conversation `thread_id` 加每次调用或 resume 的新 `run_id`。进程拥有的
+`AssistantRuntimeApp` 只解析并持有一个 `AgentGraphRuntime`，内部 owner-bound history、Replay 与 Fork
+facade 复用同一个 compiled graph、checkpointer、claim store 和受治理 service。continuation preparation
+从已验证 checkpoint 重建 fresh invocation-local `AgentState`/`GraphRuntimeContext`，不调用 Memory
+`open_session`、`prepare_context` 或 `ingest_turn`：普通 turn 不变，resume 只在成功终态 ingestion 一次，
+Replay/Fork 不 ingestion。非 Memory context ref 必须由当前 owner 重建并严格匹配；Memory ref 只能通过
+Host 的 owner/origin/ref-bound active frozen context attach 契约解析，不读取底层 store、不回退当前 baseline；
+origin 已 terminal/release 或进程重启后缺少 exact frozen context 时 fail closed。checkpoint state schema v3
+显式持久化 logical Memory origin 与 `product_turn|time_travel` provenance，旧 v2 continuation fail closed。该内部
+facade 不进入 `AssistantRunService`、HTTP/WebSocket、Gateway 或 Agent-Service wire，也不产生 selector、
+checkpoint/native task/interrupt ID 产品事件。
+
+compiled app
+显式接收 checkpointer；绑定 saver 时，内部 `AssistantTurnGraphApp` 以 native `aget_state`/
+`aget_state_history` 读取 checkpoint 与 state history，并以 `interrupt()`/
+`Command(resume=...)` 在同一 thread 恢复。`GraphStreamResult` 的 completed/interrupted 分类取自执行后的
+native snapshot（pending tasks/next 与稳定 Interrupt id），不从 root `values` 或 stream namespace 猜测。
+trusted interrupt request 只允许结构化 `approval|input`，并绑定当前 pending Provider Tool call 或当前
+assistant turn；普通 write/dangerous category、用户文本和任意 metadata 不自动触发 HITL。该能力当前只供
+内部 compiled graph / Runtime 与后续父图使用；Agent-Service、Gateway、HTTP 和媒体 wire 不接收 resume，
+也不投影 `waiting_user`。未绑定 saver 的显式 offline/test graph 不宣称恢复能力。
+checkpointer backend 只允许显式 `none|memory|sqlite`。`none` 不保存执行位置；官方 `InMemorySaver`
+仅用于本地/离线 Graph API 验证，不声明跨 host durability。`sqlite` 由进程级
+`AsyncCheckpointerOwner` 唯一创建、`setup` 并关闭官方 `AsyncSqliteSaver`，要求部署方提供绝对
+`LANGGRAPH_CHECKPOINT_PATH`；缺依赖、路径、async owner 或无法打开时 fail closed，不允许自研 saver 或
+静默 memory fallback。该 owner 同时持有独立 sibling 业务 SQLite claim store，但 invocation claim 绝不写入
+checkpoint channel。`RuntimeHost.aopen/aclose` 固定先开 saver/claim 再构造 Runtime；async-owned host
+不暴露裸 Runtime 或同步 graph 入口，invoke/resume/history/Replay/Fork/stream/thread delete 只能走受
+active lease 保护的 facade。关闭时先拒绝新 invocation 并排空已有 consumer，再按 Runtime、trace store、
+claim connection、saver 的顺序释放。Gate P1 已用 first host 完全关闭后创建
+fresh second host，验证同一 thread 的 interrupt/resume、history、Replay、Fork 与 run claim 拒绝；Task 9
+production cutover 前，现有同步 Agent-Service/API composition root 仍不启用 `sqlite`。Memory Plugin 的
+active frozen context 仍是进程内治理事实：checkpoint 携带 Memory ref 而 fresh host 缺 exact frozen context 时
+继续按既有契约 fail closed，持久 checkpointer 不冒充长期 Memory。
+
+`AssistantTurnGraphApp.invoke/astream/arun/aresume` 在进入 tracing、checkpoint preflight 或 native graph
+之前统一原子 claim `(owner, thread_id, run_id)`；相同 invocation token 的 pre-native 重试幂等放行，不同 token
+复用同一 run 必须以结构化 `GraphExecutionError` 拒绝。claim 在 native 边界原子推进
+`pre_native -> native_started`，只允许一个并发 caller 开始执行；观察到完整终态后推进 `terminal`，提前关闭
+stream 或执行异常则保持 `native_started`，两者都不得再次执行。claim 不随无 saver 终态、校验失败或执行异常自动释放，
+因此 invalid resume 也会占用该 run identity：调用方只能使用相同 token 和 run 修正重试，不能换 token 复用。
+`memory` backend 使用有界进程内 store，容量耗尽时 fail closed；`sqlite` backend 在独立业务表上以
+`PRIMARY KEY (owner_digest, thread_id, run_id)`、事务与 phase CAS 持久化 claim，并在独立表持久化 thread
+tombstone，fresh host 不能重新执行已 claim 的 run。只有 retention owner 在销毁整个 thread/checkpoint
+生命周期后显式调用
+host retention owner 通过 `adelete_thread` 先删除 native checkpointer thread，确认成功后才调用
+claim store 完成该 thread 的全部 claim 删除；删除开始前 store 原子设置 thread tombstone，阻止等待
+checkpointer 期间的新 claim、已取得 pre-native claim 的 `begin_native` 及 direct graph gate。若 thread 存在
+`native_started` claim，删除以 `graph_thread_active` fail closed；只有全部 invocation 已 terminal 或尚未开始时
+才能冻结。checkpointer 删除失败时撤销 tombstone 但保留原 claim；成功时
+原子删除 claim 与 tombstone。底层 `delete_thread(owner, thread_id)` 只供已经协调完外部 retention 的 owner 使用。
+当前业务
+session deletion 尚未拥有完整的多 agent/checkpointer retention 协调，因此不隐式调用该 host API，后续 persistent
+composition root 必须显式接线。thread 已销毁后，确定性 thread key 即使再次出现
+也属于新的 retention 生命周期，可以重新 claim；调用方不得把 `delete_thread` 当作单 run retry 接口。
+M3 已在离线路径编译 `DurableWorkflowGraph`，并以 native v2
+`updates/custom/tasks/checkpoints` stream、subgraph namespace、`Send` super-step、父图 interrupt snapshot、
+同 thread 新 run resume 和最终 snapshot 判定验证 Graph API 事实。该 app 目前只由 TDD probe 与 LangSmith
+workflow regression offline target 使用，尚未由 Agent-Service/API 的 production composition root 持有；
+因此它不改变下文所述当前 Deep Research work-item stream、lease 或恢复边界。
+当前 Durable Workflow graph 没有跨节点 namespace/key/value consumer，因此不装配 LangGraph Store；短期执行
+记忆只属于 strict state 与 checkpointer，长期记忆仍只通过 `MemoryPluginHost` 生命周期治理，正文不进入
+checkpoint。Assistant graph 的内部 replay/fork 在进入 native stream 或创建 branch 前，只检查所选 checkpoint
+下一步会执行的 pending Tool：read 可重放；write/dangerous 必须保留 `toolop:` stable scope 并复用业务 operation
+ledger。该 operation 已处于 `reserved|invoking|outcome_unknown` 时 fail closed；无关 operation 不参与分类，
+pending call 同时保存 effect category；当前 Registry category 与 checkpoint 不一致、stable scope 无法由
+turn origin/iteration/ordinal/tool/arguments 重算，或 ledger identity/bound-input digest 不一致时均 fail closed。
+Registry generation 是稳定装配清单与 ToolSpec 的 digest；time travel 要求 checkpoint generation 和每个 pending
+Tool contract digest 都与当前受信 Registry 一致。pending effect 另保存完整 execution contract digest（含完整
+input schema、runtime input bindings 与 hidden fields）和 checkpoint-time bound-input digest；当前 Runtime 无法
+重建完全相同输入时，即使 ledger 尚无 row 也禁止重放。新增安全字段保持旧 state schema 的普通 resume 兼容，但缺少
+这些字段的旧 `execute_tool` checkpoint 不可 replay/fork，按 `graph_time_travel_effect_forbidden` fail closed。
+产品事件仍只观察已经发生的 native fact，不能作为重放判据或副作用事实源。
 仓库不再保留 conditional graph、rule intent/router/planner 或可切换它们的 `AGENT_GRAPH_MODE`；
 `UserRequest` 也不再接受 `execution_strategy=plan_and_solve`。当前仍存在的
 `task_execution_mode` 是工具/持久执行的结构化治理事实，不是第二张 Agent graph 的选择器。
@@ -260,11 +356,12 @@ status, errors, output refs, trace ids, conversation-history effects, realtime
 task-state effects, and other metadata that is not guaranteed to appear in the
 stream.
 
-`AgentGraphRuntime.run_stream()` returns
-`AgentRunStream[AgentState]`:
+`AgentGraphRuntime.astream_state()` is the internal resumable graph stream and
+returns `AgentRunStream[AgentState]`; it is available only on a Runtime explicitly
+constructed with `allow_interrupt=True`:
 
 ```python
-stream = runtime.run_stream(request, cancel_token=cancel_token)
+stream = runtime.astream_state(request, cancel_token=cancel_token)
 async for event in stream:
     consume(event)
 state = await stream.result()
@@ -352,28 +449,37 @@ controller 按已提交的 retry/failure 规则收敛，避免内外两层对同
 
 ## Thread Model And Ordering
 
-The core runtime and shared assistant service remain synchronous sources of
-truth. Their async stream facades are deliberately narrow:
+The shared assistant service uses the native asynchronous graph path for its
+production stream:
 
 ```text
 async consumer
-  -> run_stream() / run_assistant_request_stream()
-  -> asyncio.to_thread(sync runtime or service)
-  -> EventSink.emit(AgentEvent) in worker thread
+  -> run_assistant_request_stream()
+  -> run_assistant_request_async()
+  -> AgentGraphRuntime.arun_state()
+  -> compiled graph astream(v2, custom/tasks/checkpoints/...)
+  -> custom RuntimeProductFact
+  -> ProductEventProjector -> EventSink.emit(AgentEvent)
   -> AsyncQueueEventSink
   -> AgentRunStream in owning event loop
 ```
 
-`asyncio.Queue` is not thread-safe. Worker threads must never call its methods
-directly. `AgentRunStream.emit()` schedules queue insertion with
-`loop.call_soon_threadsafe()`, and terminal result/exception publication uses
-the same loop scheduling boundary. This preserves the order of prior event
-callbacks before the terminal sentinel.
+`AgentRunStream` publishes event and terminal records directly when the caller
+already runs on its owner event loop. `asyncio.Queue` is not thread-safe, so a
+sync LangGraph node or explicit compatibility caller running in another thread
+is detected and routed through `loop.call_soon_threadsafe()` instead. Both paths
+preserve prior event publication before the terminal sentinel.
 
 The realtime backend normally consumes the shared service stream with
-`async for`. Its injected synchronous `run_request=` hook is retained only as a
-compatibility wrapper and uses the same worker-thread stream bridge. New
-production integrations should prefer the stream interface.
+`async for`. The default HTTP Gateway composition root injects
+`GatewayRuntimePool.run_request_stream()` and keeps its runtime lease until the
+inner stream reaches a result or exception; the Agent-Service composition root
+injects `AssistantRuntimeApp.run_request_stream()`. `GatewayRuntimeAdapter` only
+accepts an async `run_request_stream=` boundary; the former synchronous
+`run_request=` worker-thread bridge and `AgentGraphRuntime.run_stream()` bridge
+have been removed. The synchronous `run_assistant_request()` and
+`AgentGraphRuntime.run_state()` APIs remain available for existing non-Gateway
+callers; they do not define a product stream path.
 
 Async migration remains selective:
 
@@ -489,7 +595,7 @@ stream，不把向量或媒体证据写入 `AgentEvent`、conversation history �
 | `src/assistant_agent/runtime/runtime.py` | graph lifecycle, provider-path selection, `run_state`/`run`/`run_stream` |
 | `src/assistant_agent/runtime/runtime_host.py` | composed Runtime and trace-store ownership/close boundary for real entries |
 | `src/assistant_agent/memory/ingestion_queue.py` | bounded post-response turn-ingestion queue, per-identity ordering, drain and shutdown |
-| `src/assistant_agent/runtime/assistant_run_service.py` | shared sync and streaming run service, `AssistantRunArtifacts` |
+| `src/assistant_agent/runtime/assistant_run_service.py` | shared sync/native-async run service, stream projection and `AssistantRunArtifacts` |
 | `src/assistant_agent/gateway/runtime_adapter.py` | assistant stream consumption and realtime terminal result |
 | `src/assistant_agent/gateway/runtime_event_mapping.py` | `AgentEvent` to `RealtimeAgentEvent` mapping |
 | `src/assistant_agent/gateway/event_mapping.py` | realtime event to Gateway frame mapping |

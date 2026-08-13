@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import asdict
 import json
 import os
 import subprocess
@@ -12,18 +13,11 @@ from tempfile import TemporaryDirectory
 from time import monotonic
 from typing import Sequence
 
-from langfuse import Langfuse
-
 from assistant_agent.config import ProviderConfig
-from assistant_agent.evaluation.experiment_runtime import (
-    create_experiment_runtime_host,
-)
 from assistant_agent.mcp.config import DEFAULT_MCP_CONFIG_PATH, MCP_CONFIG_PATH_ENV
-from assistant_agent.observability.langfuse_config import (
-    langfuse_credentials_from_env,
-    langfuse_host_from_env,
+from assistant_agent.observability.langsmith_config import (
+    create_langsmith_client_from_env,
 )
-from assistant_agent.providers.provider_http import without_unsupported_socks_proxy_env
 from assistant_agent.runtime.assistant_run_service import load_env_file
 from assistant_agent.runtime.runtime import AgentGraphRuntime
 from assistant_agent.tools.plugins.builtin.calendar_weather_contacts.local_calendar import (
@@ -33,10 +27,11 @@ from assistant_agent.tools.plugins.registry_factory import create_default_regist
 
 from .catalog import ReleaseCatalogSnapshot, build_catalog_snapshot
 from .experiment import ReleaseExperimentSettings
+from .evaluators import configure_release_review_evaluators
 from .loader import load_scenarios
 from .service import ReleaseReviewRequest, ReleaseReviewService
 from .staging import LocalStagingProfileAdapter, StagingResourceManager
-from .sync_dataset import sync_release_dataset
+from .langsmith_backend import sync_langsmith_examples
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -47,13 +42,14 @@ EVALUATOR_VERSION = "release-review-rule-v1"
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Run the native Langfuse pre-release Agent review."
+        description="Run the native LangSmith pre-release Agent review."
     )
     action = parser.add_mutually_exclusive_group(required=True)
     action.add_argument("--inspect", action="store_true")
     action.add_argument("--sync", action="store_true")
     action.add_argument("--preflight", action="store_true")
     action.add_argument("--run", action="store_true")
+    action.add_argument("--configure-evaluators", action="store_true")
     action.add_argument("--record-decision", action="store_true")
     parser.add_argument("--scenario-root", type=Path, default=DEFAULT_SCENARIO_ROOT)
     parser.add_argument("--artifact-root", type=Path, default=DEFAULT_ARTIFACT_ROOT)
@@ -63,6 +59,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--run-name")
     parser.add_argument("--scenario", action="append", dest="scenario_ids")
     parser.add_argument("--git-commit")
+    parser.add_argument("--model-config-id")
+    parser.add_argument("--apply", action="store_true")
     parser.add_argument("--allow-real-provider", action="store_true")
     parser.add_argument("--allow-staging-side-effects", action="store_true")
     parser.add_argument("--experiment-run-id")
@@ -82,9 +80,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                         "action": "inspect",
                         "dataset_name": "assistant-agent-release-review",
                         "scenario_count": len(scenarios),
-                        "decision_count": sum(item.phase == "decision" for item in scenarios),
-                        "staging_count": sum(item.phase == "staging" for item in scenarios),
-                        "dataset_item_count": sum(item.repetitions for item in scenarios),
+                        "decision_count": sum(
+                            item.phase == "decision" for item in scenarios
+                        ),
+                        "staging_count": sum(
+                            item.phase == "staging" for item in scenarios
+                        ),
+                        "dataset_item_count": sum(
+                            item.repetitions for item in scenarios
+                        ),
                         "scenarios": [
                             {
                                 "id": item.id,
@@ -125,14 +129,54 @@ def main(argv: Sequence[str] | None = None) -> int:
         if not args.no_env_file:
             load_env_file(args.env_file)
         scenarios = load_scenarios(args.scenario_root)
-        if args.sync:
-            client = _langfuse_client()
-            git_commit = args.git_commit or _git_commit()
-            result = sync_release_dataset(client, scenarios, git_commit)
-            client.flush()
+        if args.configure_evaluators:
+            model_config_id = args.model_config_id or os.getenv(
+                "LANGSMITH_EVALUATOR_MODEL_CONFIG_ID"
+            )
+            if not model_config_id:
+                parser.error(
+                    "--configure-evaluators requires --model-config-id or "
+                    "LANGSMITH_EVALUATOR_MODEL_CONFIG_ID"
+                )
+            client = _langsmith_client()
+            try:
+                result = configure_release_review_evaluators(
+                    client,
+                    model_config_id=model_config_id,
+                    apply=args.apply,
+                )
+                client.flush()
+            finally:
+                _close_client(client)
             print(
                 json.dumps(
-                    result.__dict__,
+                    {
+                        "action": "configure_evaluators",
+                        "backend": "langsmith",
+                        "dataset_name": "assistant-agent-release-review",
+                        "dataset_id": result.dataset_id,
+                        "status": result.status,
+                        "rules": [asdict(rule) for rule in result.rules],
+                        "apply": args.apply,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            return 0
+        if args.apply:
+            parser.error("--apply is only valid with --configure-evaluators")
+        if args.sync:
+            client = _langsmith_client()
+            try:
+                git_commit = args.git_commit or _git_commit()
+                result = sync_langsmith_examples(client, scenarios, git_commit)
+                client.flush()
+            finally:
+                _close_client(client)
+            print(
+                json.dumps(
+                    asdict(result),
                     ensure_ascii=False,
                     default=list,
                     indent=2,
@@ -144,7 +188,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         if not args.allow_real_provider:
             parser.error("--preflight/--run requires --allow-real-provider")
         selected_ids = tuple(args.scenario_ids) if args.scenario_ids else None
-        if _selection_requires_staging(scenarios, selected_ids) and not args.allow_staging_side_effects:
+        if (
+            _selection_requires_staging(scenarios, selected_ids)
+            and not args.allow_staging_side_effects
+        ):
             parser.error(
                 "--preflight/--run with Staging scenarios requires "
                 "--allow-staging-side-effects"
@@ -176,7 +223,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             )
             return 0
-        client = _langfuse_client()
+        client = _langsmith_client()
         git_commit = args.git_commit or _git_commit()
         request = ReleaseReviewRequest(
             release_id=args.release_id,
@@ -191,7 +238,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             artifact_root=args.artifact_root,
             git_commit=git_commit,
         )
-        report = service.run(request)
+        try:
+            report = service.run(request)
+        finally:
+            _close_client(client)
         print(report.model_dump_json(indent=2))
         return 0
     except SystemExit:
@@ -234,7 +284,7 @@ def _select_scenarios(
 
 def _build_service(
     *,
-    client: Langfuse,
+    client,
     config: ProviderConfig,
     request: ReleaseReviewRequest,
     scenario_root: Path,
@@ -314,7 +364,9 @@ def _catalog_snapshot(config: ProviderConfig) -> ReleaseCatalogSnapshot:
     previous_mcp_path = os.environ.get(MCP_CONFIG_PATH_ENV)
     try:
         os.environ[MCP_CONFIG_PATH_ENV] = str(configured_mcp_path)
-        with TemporaryDirectory(prefix="assistant-agent-release-preflight-") as temporary:
+        with TemporaryDirectory(
+            prefix="assistant-agent-release-preflight-"
+        ) as temporary:
             with chdir(temporary):
                 probe = AgentGraphRuntime(config=config)
                 try:
@@ -329,32 +381,27 @@ def _catalog_snapshot(config: ProviderConfig) -> ReleaseCatalogSnapshot:
 
 
 def _create_item_runtime(*, config, registry, backend):
-    return create_experiment_runtime_host(
-        lambda trace_store: AgentGraphRuntime(
-            registry=registry,
-            config=config,
-            tool_execution_backend=backend,
-            trace_store=trace_store,
-        )
+    return AgentGraphRuntime(
+        registry=registry,
+        config=config,
+        tool_execution_backend=backend,
     )
 
 
 def _validate_real_config(config: ProviderConfig) -> None:
     if config.provider_mode != "real":
-        raise RuntimeError("Release Review requires MULTIMODAL_AGENT_PROVIDER_MODE=real")
+        raise RuntimeError(
+            "Release Review requires MULTIMODAL_AGENT_PROVIDER_MODE=real"
+        )
     config.validate_provider_mode()
 
 
-def _langfuse_client() -> Langfuse:
-    public_key, secret_key = langfuse_credentials_from_env(os.environ)
-    if not public_key or not secret_key:
-        raise RuntimeError("Langfuse credentials are required")
-    with without_unsupported_socks_proxy_env():
-        return Langfuse(
-            public_key=public_key,
-            secret_key=secret_key,
-            host=langfuse_host_from_env(os.environ),
-        )
+def _langsmith_client():
+    return create_langsmith_client_from_env()
+
+
+def _close_client(client) -> None:
+    client.close()
 
 
 def _git_commit() -> str:
@@ -367,8 +414,12 @@ def _git_commit() -> str:
     ).stdout.strip()
 
 
-def _require_args(parser: argparse.ArgumentParser, args: argparse.Namespace, *names: str) -> None:
-    missing = [f"--{name.replace('_', '-')}" for name in names if not getattr(args, name)]
+def _require_args(
+    parser: argparse.ArgumentParser, args: argparse.Namespace, *names: str
+) -> None:
+    missing = [
+        f"--{name.replace('_', '-')}" for name in names if not getattr(args, name)
+    ]
     if missing:
         parser.error("missing required arguments: " + ", ".join(missing))
 

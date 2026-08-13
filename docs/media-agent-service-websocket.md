@@ -277,8 +277,8 @@ observer。VIDEO 消息的 `userNumber` 必须等于握手 `number`，不一致�
   pull/tail；默认只显示 status facade 根据持久化 plan 生成的自然语言 `progress`（如当前 item 的
   `display_title` 和完成度），不显示内部 Workflow ID 或原始事件。显式传入 `--workflow-details` 才
   展开 cursor/event 诊断信息。completed 时通过 identity-scoped
-  `/workflows/{workflow_id}/result` 读取并打印完整最终 artifact；旧服务未提供该接口时才降级为最终
-  work item 的有界 `result_summary`。failed、cancelled、blocked 或 waiting-input 时结束当前观察窗口。
+  `/workflows/{workflow_id}/result` 读取并打印完整最终 artifact `content`；客户端不再从旧
+  `plan.work_items/result_summary` 重建最终结果。failed、cancelled、blocked 或 waiting-input 时结束当前观察窗口。
   该 tail 不把后台 Workflow 重新放回 Gateway active run。
 - 对 `task://` 引用，Simulator 只有在 operator 显式传入 `--wait-proactive` 时才进入 WebSocket
   监听模式。它不 tail Task HTTP facade；目标 DurableTask 的 notification outbox 命中后，

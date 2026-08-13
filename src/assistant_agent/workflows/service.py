@@ -13,6 +13,7 @@ from assistant_agent.workflows.definitions import (
     build_bootstrap_plan,
 )
 from assistant_agent.workflows.models import WorkflowBundle, WorkflowSubmission, utc_now
+from assistant_agent.workflows.models import WorkflowExecutionEngine
 from assistant_agent.workflows.models import WorkflowEvent
 from assistant_agent.workflows.store import (
     WorkflowAlreadyExists,
@@ -70,11 +71,13 @@ class WorkflowService:
         definitions: WorkflowDefinitionCatalog,
         limits: WorkflowLimits | None = None,
         clock: Callable = utc_now,
+        submission_engine: WorkflowExecutionEngine = "legacy_scheduler_v2",
     ) -> None:
         self.store = store
         self.definitions = definitions
         self.limits = limits or WorkflowLimits()
         self.clock = clock
+        self.submission_engine = submission_engine
 
     def submit(
         self,
@@ -125,6 +128,7 @@ class WorkflowService:
                 plan=plan,
                 limits=self.limits,
                 now=now,
+                execution_engine=self.submission_engine,
             )
             return self.store.create(bundle, events)
         except WorkflowAlreadyExists:

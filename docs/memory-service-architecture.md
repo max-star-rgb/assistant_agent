@@ -16,6 +16,20 @@
 本文是 `assistant_agent` 长期记忆的当前权威。Runtime 只允许一个排他的 active Memory Plugin，
 并且只通过 `MemoryPluginHost` 使用它。Mem0 是默认内置实现；`Mem0Client` 是
 `Mem0MemoryPlugin` 的私有 HTTP/service adapter，不再是 Runtime 依赖。
+LangGraph state/checkpointer 只保存短期执行与恢复事实；当前 Assistant/Workflow graph 没有长期 Memory Store
+consumer，也不装配 `compile(store=...)`。checkpoint 最多保存 Host 已治理贡献的不透明 memory ref，不保存
+memory 正文、Plugin handle 或 lifecycle state；replay/fork 不能借 Graph Store 绕过本节四生命周期。
+
+Assistant continuation 仅允许通过 Host 的只读 `attach_continuation_context` 绑定仍处于 active
+状态的 frozen logical-turn context。该调用同时校验 owner、origin run 以及 checkpoint 中
+`(memory_id, source)` ref 的精确序列，不调用 Plugin `open_session`/`prepare_context`，不读取
+底层 session/baseline store，也不把派生 invocation 注册为新的 frozen owner。waiting product turn
+保留 origin freeze；product terminal/session close 才释放，derived terminal 不释放其不拥有的
+origin。origin 已释放、Host 进程重启或 ref 不匹配时均 fail closed，不回退当前 baseline。
+长期 waiting/native-started freeze 不建立第二份 retained 仓；其保留必须已经通过 Graph claim
+admission，pre-native claim/capacity 失败由 Runtime rollback 本次 freeze。session close/shutdown 清理
+该 session，owned thread deletion 仅在 checkpoint+claim 删除成功后调用 Host
+`release_thread_contexts` 清理该 thread 的 active freeze；删除失败或 active claim 不清理。
 
 ## 1. 边界与所有权
 

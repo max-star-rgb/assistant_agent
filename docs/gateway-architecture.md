@@ -249,6 +249,18 @@ output versioning 契约。
 TTS pause/duck/resume 属于 media entry adapter。Gateway 只提供文本/run 的 speakable 与
 stale-output 语义，不直接控制仓库外的 TTS provider。
 
+### 5.3 内部 Graph interrupt/resume
+
+LangGraph `interrupt()`/`Command(resume=...)` 是执行图内部等待外部输入并从 checkpoint 继续的语义，
+与 Gateway 的 cancel/replace/semantic interrupt 不是同一协议。M2 只向内部 compiled graph、
+`AgentGraphRuntime(allow_interrupt=True)` 和后续父图开放 `waiting_user`/resume；Agent-Service、Gateway、
+HTTP 与媒体 composition root 固定使用 `allow_interrupt=False`，不接收 trusted interrupt request，也不增加
+waiting/resume frame 或 route。若产品路径意外返回 `waiting_user`，adapter 必须按既有 error terminal fail
+closed，不能把内部 checkpoint/interrupt/task/namespace 投影到 wire。
+
+未来只有在 Durable Workflow 产品契约明确 owner、输入 schema、恢复身份和交付语义后，Gateway 才能增加
+对应 waiting-input 投影；不能因为内部 Graph API 已可恢复，就扩张当前外部协议。
+
 ## 6. Runtime adapter contract
 
 Gateway 与 Assistant Runtime 之间的公共契约由以下类型组成：

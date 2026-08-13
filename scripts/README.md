@@ -73,9 +73,9 @@ MULTIMODAL_AGENT_PROVIDER_MODE=mock \
   `waiting_input` opens a Workflow-specific prompt, submits the response with the
   persisted resume token, and continues tailing instead of sending a new chat turn.
   Non-interactive mode stops at action-required state. On completion the client reads
-  the identity-scoped `/workflows/{workflow_id}/result` artifact and prints the full
-  final output, falling back to the bounded final work-item summary only for an older
-  server without that endpoint. Default workflow output is product-facing:
+  the identity-scoped `/workflows/{workflow_id}/result` artifact and prints its full
+  `content`. It does not reconstruct progress or final output from legacy
+  `plan.work_items`. Default workflow output is product-facing:
   the structured start response carries no mode-specific confirmation copy, the internal
   bootstrap planner is hidden, and admitted Plan progress uses persisted work-item
   `display_title` values and completion count; when multiple
@@ -140,9 +140,11 @@ For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
   固定 5 FPS、latest-wins、纯语义选帧、VLM 文本索引和无 query-time VLM 的架构检查面；流水线行为
   由离线 pytest 验证。
 - `scripts/run_release_review.py`：上线前 Release Review 的唯一稳定入口。`--inspect` 离线检查 Git YAML
-  scenario；`--sync` 同步固定 Langfuse Dataset；`--run` 以一个原生 Dataset Run / Experiment 执行
+  scenario；`--sync` 同步固定 LangSmith Dataset；`--configure-evaluators --model-config-id <uuid>` 默认规划
+  grounding/response-quality 两条独立 Dataset rule，显式 `--apply` 才创建或更新且不运行 Judge；`--run`
+  以一个原生 LangSmith Project / Experiment 执行
   Decision fixture backend 与隔离 Staging；`--record-decision` 保存 operator 的人工发布决定。真实运行
-  必须同时显式允许 real Provider 和 Staging 副作用，不会静默回退 mock。Dataset、Score、webhook、
+  必须同时显式允许 real Provider 和 Staging 副作用，不会静默回退 mock。Dataset、Feedback、webhook、
   清理和产物契约统一见 [`evals/README.md`](../evals/README.md)。日常 `run_runtime_audit` 不参与这条链路。
 - `scripts/run_runtime_regressions.py`：Runtime Regression webhook 复用的受控执行内核。案例只来自
   Langfuse UI 中固定的 `assistant-agent-runtime-regressions` Dataset；`--preflight` 验证 Dataset Item 与
@@ -157,6 +159,13 @@ For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
   LangSmith Experiment，并等待 Runtime/LLM 子树和三项 Feedback 完整。preflight/run 都要求
   `--allow-real-provider` 与 `--allow-runtime-side-effects`。流程与 schema 见
   [`evals/README.md`](../evals/README.md#并行-langsmith-桥)。
+- `scripts/run_langsmith_workflow_regressions.py`：M3 Durable Workflow 原生 LangSmith Experiment
+  入口。`--inspect` 只在本地检查 typed Example、四项 Feedback 和 operator evidence 契约，不创建
+  LangSmith client；`--preflight`/`--run` 必须显式允许 real Provider 与 Workflow 副作用（兼容
+  `--allow-runtime-side-effects`），可用 `--env-file` 加载未跟踪配置，并检查远端 Dataset、隔离 artifact、
+  shared official SQLite saver 与 production `WorkflowGraphHost` composition readiness。`--run` 直接执行
+  production compiled graph，并等待真实 native tree 与四项 Feedback 完整且全部通过。固定 Dataset 不存在时
+  先显式运行 `--sync`，从 Git-owned `examples.json` 幂等创建四类严格 Example。
 - `scripts/run_improvement_lab.py`: offline, non-mutating improvement proposal runner.
 
 ## Specialized integrations

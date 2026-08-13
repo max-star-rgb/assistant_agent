@@ -1,13 +1,13 @@
 # Observability Harness
 
-Last updated: 2026-08-11
+Last updated: 2026-08-12
 
 ## Authority contract
 
 | 字段 | 内容 |
 | --- | --- |
 | 定位 | Runtime observability 与日常审计的当前权威 |
-| Owns | canonical trace、OTel/Langfuse/LangSmith 投影、redaction、runtime audit、Live Observation Rule |
+| Owns | canonical trace、OTel/Langfuse 投影、LangSmith native tracing、redaction、runtime audit、Live Observation Rule |
 | Does not own | Release Review Dataset、Scenario、Experiment 与 task-level Score |
 | 源码与 schema 入口 | `src/assistant_agent/observability/`、`scripts/run_runtime_audit.py` |
 | 验证入口 | `docs/authority.toml` 中 `runtime-observability.verification` |
@@ -32,7 +32,9 @@ Observability 是运行时行为的只读投影，不是另一套执行状态机
 - `assistant.turn.summary` 是一个 turn 的身份与终态摘要；摘要不能覆盖更细粒度的 raw timeline 事实。
 - Gateway lifecycle 和 Agent-Service delivery audit 分别证明入口生命周期与媒体发送/ACK 状态；它们不能由
   Assistant terminal status 推导。
-- Langfuse、LangSmith、OpenTelemetry、结构化查询和评估分数都是 canonical trace 的投影或派生视图，不得成为冲突的第二事实源。
+- Langfuse、通用 OpenTelemetry、结构化查询和评估分数是 canonical trace 的投影或派生视图；LangSmith
+  native tracing 直接观察实际 graph、node、LLM 与 governed Tool 执行。两类观测都只读，不得成为冲突的
+  第二执行事实源。
 
 发生冲突时按以下顺序判断：当前源码和测试高于 prose；同一运行中，原始 machine event 高于派生摘要，
 派生摘要高于派生查询文案；Git 历史只用于解释演进，不证明当前行为。
@@ -50,7 +52,7 @@ Observability 是运行时行为的只读投影，不是另一套执行状态机
 | Agent-Service delivery audit | 记录媒体响应从 accepted 到 sent/acked/failed/disconnected 的交付状态 | 表示 Assistant 任务本身成功或失败 |
 | Operational console/text log | 提供低噪声、prompt-safe 的运行提示和兼容文本投影 | 作为 runtime 详细开发 timeline |
 | Local trace-content overlay | 在明确边界内保存当前 turn 的 request/response、Provider 语义证据、tool observation，以及显式启用的 Mem0 change text | 写入 conversation history 或公开 trace summary |
-| OTel/Langfuse/LangSmith projection | 把 canonical events 映射为 trace/span/generation、usage 和安全 metadata | 改写 canonical event 的含义 |
+| OTel/Langfuse projection、LangSmith native trace | 前者映射 canonical audit；后者直接观察实际 graph/node/LLM/governed Tool 执行和安全 metadata | 改写执行结果，或用手工 span tree 代替实际 graph |
 | Metrics、scores、eval views | 从 canonical facts 派生统计、诊断和质量分数 | 反向控制 runtime 行为 |
 
 默认本地文件包括：
@@ -257,7 +259,7 @@ flush/shutdown 抛错或返回 `False` 必须向 lifecycle 调用者返回 `Fals
 - 进程内查询可能看到尚未落盘的事件；
 - 进程崩溃、队列丢弃或 flush 超时可能产生部分 JSONL；
 - ledger 缺事件不能单独证明运行时没有发出该事件；
-- persistence、Langfuse/LangSmith OTel export 和 Langfuse score observer 都是 secondary，失败必须 fail-open。
+- persistence、Langfuse/通用 OTel export 和 Langfuse score observer 都是 secondary，失败必须 fail-open。
 
 日审计成功发布后执行 ledger retention：默认保留 14 天，并且只有对应日期已经有成功审计证明时才删除
 过期分片；审计失败、尚未审计或仍处于 TTL 内的分片不得删除。成功审计 bundle 记录目标分片的
@@ -304,6 +306,40 @@ Provider protocol capture。overlay 写入失败时 canonical event 仍须保留
 
 ## Langfuse、LangSmith、OTel 与评估投影
 
+M1 起，普通 `AssistantTurnGraph` 的 LangSmith 主观测路径是 LangGraph/SDK 原生 trace：同步 `invoke` 与
+异步 `astream(v2)` 都在同一个 scoped tracing context 中执行，已有 Experiment `RunTree` 时直接继承其
+parent、project 与 example/session metadata，不另建 root。graph metadata 只包含 `run_id`、哈希化
+`thread_id`、`agent_id` 和执行引擎；原始 user/session identity 不进入 tag。Provider 实际调用形成
+`llm.chat` child，governed Tool 只在 execution backend 的实际 attempt 边界形成 `tool` child；validation、
+authorization、retry 调度、状态提交和业务审计不移入 trace wrapper。
+
+LangGraph graph/node 的自动 callback 使用显式 payload-safe `LangChainTracer`：它继承当前 Experiment
+task parent/client/order map，但在 SDK create/update 前清空 graph state input/output 并安全化 chain error；
+因此 `UserRequest`、`AgentState`、raw identity/metadata、媒体/reference 与 runtime object 不会因框架自动
+序列化进入远端，Dataset task root 的 evaluator input/output 则保持原样。显式 tracer 与 current parent
+共同保证只有一棵 task → graph → node 树，不再由 ambient callback 自动补第二棵树。
+该私有 callback persistence 边界已在本机 `langchain-core 1.4.3` 验证，并由运行时 signature guard
+防护；这里不声称项目依赖已经 pin 到该版本。API 漂移或 safe tracer 构造失败时，本次 graph scope 会
+原子关闭远端 tracing；公开 context 和 SDK helper 都失败时，使用 LangSmith tracing ContextVar 仅关闭
+当前 scope，业务 graph 继续。只有连该 ContextVar 也不可用时才安全 fail-closed，绝不在 ambient auto
+tracer 下继续并泄漏 state。
+
+LLM/Tool input/output 进入 LangSmith 前再次做 provider-neutral、有界安全投影，且使用独立于本地 content
+开关的远端严格 redactor，始终排除 credential、authorization/cookie/token、signed URL 参数、callback、
+hidden reasoning、SDK/protocol raw envelope、媒体 bytes/base64/path/reference 与 Tool raw payload；远端 child
+error 只记录稳定安全错误，业务调用方仍收到原始异常对象且副作用不会二次执行。日常 native tracing
+创建或关闭失败保持 fail-open；仅关闭本次 tracing context 自己创建的 client，不关闭外部 Experiment client。
+server composition 不再创建 canonical OTel 到 LangSmith 的 observer；旧的 LangSmith 专用 OTel factory
+和 Experiment store 已删除。因此一次执行在 LangSmith 中只有 native graph tree，canonical trace 继续独立
+服务本地查询、ledger、业务 audit、Langfuse 兼容与显式通用 OTel 消费者。
+
+M3 的 `DurableWorkflowGraphApp` 同样在实际 compiled graph async stream 边界注入 payload-safe callback，
+并继承当前 LangSmith Experiment RunTree；不创建 workflow synthetic root，也不从 canonical OTel 或 stream
+parts 重建 graph。workflow、thread、invoke run 和 branch run 关联值在远端只保留稳定 SHA-256，branch
+仅额外保留 allowlist 内的 node id、profile 与 generation；原始 user/session/workflow identity 和 graph
+state input/output 不进入 graph/node run。tree 完整性必须从 LangSmith API persisted run 与 Feedback
+回查；当前真实 operator evidence 仍为 pending。
+
 `build_text_otel_span_specs()` 将 redacted canonical events 投影为依赖无关的 OTel span plan：
 
 - standard Assistant turn 的根 span 为 `agent.runtime`，Langfuse trace 名为 `assistant.turn`；这一投影保持
@@ -331,14 +367,10 @@ Provider protocol capture。overlay 写入失败时 canonical event 仍须保留
   preflight 与实际调用重复计量；
 - only-allowlisted metadata 和 output reference 可以进入公开 projection。
 
-同一 span plan 同时携带现有 `langfuse.*` 和 LangSmith OTel semantic attributes；它只是一套 canonical
-事实的两个远端视图，不是两套 Runtime。server 日常装配为 Langfuse 与 LangSmith 分别创建 observer、
-buffer 和 exporter，任一后端配置错误、队列丢弃或导出异常都不得阻断业务结果或另一后端。LangSmith
-Experiment 的 SDK RunTree 与 OTel Runtime 子树混合关联时，root 必须显式携带
-`langsmith.trace.id`、`langsmith.span.id`、`langsmith.span.parent_id`、
-`langsmith.span.dotted_order` 和 `langsmith.trace.session_name`，不得假定活动 RunTree 的
-`session_id` 一定存在。
-默认关闭；只有以下本机未跟踪配置显式启用时才创建其 OTLP exporter：
+span plan 仍保留现有 `langfuse.*`、LangSmith semantic attributes 和通用 OTel attributes，供迁移期
+Langfuse 与显式通用 OTel 消费者兼容；server 不再为这些 attributes 创建 LangSmith 专用 sink，也不借此
+重建 canonical tree。LangSmith native tracing 默认关闭；只有以下本机未跟踪配置显式启用时，graph app
+才创建 SDK tracing context/client：
 
 ```text
 ASSISTANT_AGENT_LANGSMITH_ENABLED=true
@@ -348,9 +380,9 @@ LANGSMITH_PROJECT=assistant-agent-runtime
 LANGSMITH_WORKSPACE_ID=
 ```
 
-启用 LangSmith 表示 operator 允许把现有 content policy 通过的有界用户/助手文本、结构化 LLM/Tool
+启用 LangSmith 表示 operator 允许把 native tracing 安全投影通过的有界用户/助手文本、结构化 LLM/Tool
 input/output 和安全 metadata 发送到所配置 endpoint；credentials、hidden reasoning、inline binary media
-和 Provider raw secret 仍不得进入。关闭时不导入 LangSmith SDK、不创建 client 或 exporter，也不发起
+和 Provider raw secret 仍不得进入。关闭时不创建 LangSmith client 或 tracing context，也不发起
 LangSmith 网络请求。Langfuse 的环境变量、observer、Score writer 和 audit 不依赖该开关。
 
 Deep Research 从前台提交到 durable terminal 使用同一个 `deep_research.workflow` trace。该做法遵循
@@ -470,15 +502,18 @@ Langfuse 的 trace、observation、score 和 Dataset/Experiment 是远端投影�
 查询 observation 数据或结构化 trace API。当前进程仍可查询内存 canonical timeline；本地 ledger 只证明
 最小完整性和导出缺口，不能替代 Langfuse 的完整 observation 内容。
 
-Experiment 使用共享 Runtime Host 作为装配和资源所有权边界。Langfuse runner 把 SDK 当前 task span
-转换为 `RuntimeTraceContext`，并只装配 Langfuse Experiment exporter；LangSmith runner 先显式创建
-Experiment project，再把其 UUID/name 与当前 RunTree 的 trace、parent run、dotted order 和 reference
-example identity 转换为受校验的 context，并只把 Runtime 子树发送到该 LangSmith Experiment project，
-避免在 Langfuse 形成孤儿子树。Host 都按 Runtime 后
-trace store 的顺序做 bounded close。普通业务运行仍遵循 observability fail-open；Release Review 与
-Runtime Regression 属于证据生成流程，若没有当前 task/RunTree parent、无法装配对应 exporter，或远端
-没有形成 task → `agent.runtime` → `llm.chat`，必须作为 infrastructure failure fail-closed，不能用 task
-output 或 Score/Feedback 齐全掩盖内部 Trace 缺失。
+Experiment 按平台使用各自的 Runtime 资源所有权边界。Langfuse runner 继续通过共享 Runtime Host 把 SDK
+当前 task span 转换为 `RuntimeTraceContext`，并只装配 Langfuse Experiment exporter；Host 按 Runtime 后
+trace store 的顺序做 bounded close。LangSmith runner 则使用 `Client.aevaluate()`：Dataset target 校验
+SDK 当前 `RunTree` 的 reference Example identity，直接 `await AgentGraphRuntime.arun_state()`，graph app 的
+scoped native tracing 继承该 current RunTree，由 SDK 记录真实的 task → graph → node → LLM/governed Tool
+父子树；它不转换 `RuntimeTraceContext`，也不创建 LangSmith OTel trace store。canonical trace 在旁路继续
+承担本地 audit、查询和必要业务关联，不向 LangSmith 重建 Runtime 子树。
+
+普通业务运行仍遵循 observability fail-open；Release Review 与 Runtime Regression 属于证据生成流程。
+Langfuse 缺当前 task parent 或无法装配对应 exporter 时必须 fail-closed；LangSmith 缺 current RunTree、
+reference Example 关联或 native graph/LLM/tool 树不完整时同样必须作为 infrastructure failure fail-closed，
+不能用 task output 或 Score/Feedback 齐全掩盖内部 Trace 缺失。
 
 ### Langfuse-first Runtime 审计
 
@@ -705,12 +740,12 @@ assistant-agent-runtime-audit.timer` 查看下次运行，用
 | `src/assistant_agent/observability/agent_service_latency.py` | `agent_service_turn_latency_v2` 和 critical-path 分析 |
 | `src/assistant_agent/observability/trace_content_policy.py` | 本地 content/protocol capture 开关 |
 | `src/assistant_agent/observability/trace_conversation.py` | 有界、进程内 current-turn content overlay |
-| `src/assistant_agent/observability/otel_mapping.py` | canonical trace 到 OTel/Langfuse/LangSmith span plan 的映射 |
-| `src/assistant_agent/observability/langsmith_config.py` | 默认关闭的 LangSmith client 与独立 OTLP 配置 |
+| `src/assistant_agent/observability/otel_mapping.py` | canonical trace 到 OTel/Langfuse 兼容 span plan 的映射；不拥有 LangSmith graph tree |
+| `src/assistant_agent/observability/langsmith_config.py` | 默认关闭的 LangSmith native tracing client 配置 |
+| `src/assistant_agent/observability/langsmith_native.py` | scoped native trace、payload-safe graph callback、graph metadata 与安全 LLM/Tool child 投影 |
 | `src/assistant_agent/runtime/runtime_host.py` | 真实入口 Runtime 与 trace store 的统一 bounded lifecycle owner |
-| `src/assistant_agent/evaluation/experiment_runtime.py` | 可注入 Experiment trace context 到 Runtime 的装配桥 |
-| `src/assistant_agent/evaluation/langsmith_trace.py` | LangSmith RunTree 到受校验 Runtime parent identity 的桥 |
-| `src/assistant_agent/evaluation/experiment_trace.py` | Experiment 远端 Runtime 子树完整性门禁 |
+| `src/assistant_agent/evaluation/experiment_runtime.py` | Langfuse Experiment trace context 到 Runtime 的兼容装配桥 |
+| `src/assistant_agent/evaluation/experiment_trace.py` | Langfuse Experiment 远端 Runtime 子树完整性门禁 |
 | `src/assistant_agent/media/vision/observability.py` | 内容安全的 `vlm.infer` generation 事件边界 |
 | `src/assistant_agent/observability/operational_logging.py` | Gateway console、JSONL 和兼容 text log |
 | `src/assistant_agent/gateway/observability.py` | prompt-safe Gateway lifecycle schema 和 sink |
@@ -722,7 +757,7 @@ assistant-agent-runtime-audit.timer` 查看下次运行，用
 ## 更新规则
 
 修改 trace event、summary schema、ID 传播、persistence、redaction、content capture、Gateway lifecycle、
-delivery audit、latency 归因或 OTel/Langfuse/LangSmith projection 时，必须：
+delivery audit、latency 归因、OTel/Langfuse projection 或 LangSmith native tracing 时，必须：
 
 1. 先修改 owning source 和相应测试；
 2. 更新本文档中的稳定语义和边界，而不是追加开发过程；

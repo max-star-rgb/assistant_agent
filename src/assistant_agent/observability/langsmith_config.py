@@ -60,34 +60,20 @@ class LangSmithConfig:
             workspace_id=workspace_id,
         )
 
-    def to_otlp_config(self) -> Any:
-        """Build the repository's existing OTLP exporter config lazily."""
-
-        from assistant_agent.observability.otel_exporter import (
-            OtlpHttpTextExporterConfig,
-        )
-
-        headers: dict[str, str] = {}
-        if self.api_key is not None:
-            headers = {
-                "x-api-key": self.api_key,
-                "Langsmith-Project": self.project,
-            }
-        return OtlpHttpTextExporterConfig(
-            enabled=self.enabled,
-            endpoint=_otel_trace_endpoint(self.endpoint),
-            headers=headers,
-            service_name="assistant-agent-langsmith",
-            include_content=self.enabled,
-        )
-
-
 def create_langsmith_client_from_env(
     env: Mapping[str, str] | None = None,
 ) -> Any:
     """Create the optional SDK client only after explicit enablement."""
 
     config = LangSmithConfig.from_env(env)
+    if not config.enabled:
+        raise RuntimeError("LangSmith is disabled")
+    return create_langsmith_client(config)
+
+
+def create_langsmith_client(config: LangSmithConfig) -> Any:
+    """Create an SDK client for an already validated native tracing config."""
+
     if not config.enabled:
         raise RuntimeError("LangSmith is disabled")
     from langsmith import Client
@@ -97,11 +83,6 @@ def create_langsmith_client_from_env(
         api_url=config.endpoint,
         workspace_id=config.workspace_id,
     )
-
-
-def _otel_trace_endpoint(api_endpoint: str) -> str:
-    return f"{api_endpoint.rstrip('/')}/otel/v1/traces"
-
 
 def _truthy(value: str | None) -> bool:
     return value is not None and value.strip().lower() in _TRUTHY_VALUES

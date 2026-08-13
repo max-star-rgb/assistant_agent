@@ -12,6 +12,8 @@ from time import perf_counter
 from typing import Any, Protocol
 
 from assistant_agent.runtime.event_stream import AgentRunStream, AsyncQueueEventSink
+from assistant_agent.runtime.assistant_graph_app import GraphExecutionError
+from assistant_agent.runtime.checkpointer import create_checkpointer
 from assistant_agent.runtime.runtime import AgentGraphRuntime
 from assistant_agent.runtime.state import AgentState
 from assistant_agent.config import ProviderConfig
@@ -459,6 +461,17 @@ class AssistantRunArtifacts:
         }
 
 
+@dataclass(frozen=True)
+class _PreparedAssistantRun:
+    runtime: AgentGraphRuntime
+    request: UserRequest
+    sink: EventSink
+    runtime_sink: EventSink
+    conversation_store: ConversationStore
+    realtime_task_state_store: RealtimeTaskStateStore
+    enable_conversation_history: bool
+
+
 def load_env_file(path: Path | str = DEFAULT_ENV_FILE, *, override: bool = False) -> dict[str, str]:
     """Load dotenv-style KEY=VALUE pairs without adding a dependency."""
 
@@ -487,15 +500,27 @@ def create_runtime(
     trace_store: TraceStore | None = None,
     load_env: bool = True,
     durable_task_service: DurableTaskService | None = None,
+    checkpointer: Any | None = None,
+    graph_invocation_claim_store: Any | None = None,
+    workflow_graph_host: Any | None = None,
 ) -> AgentGraphRuntime:
     """Create the shared runtime with manual `.env` loading and offline test isolation."""
 
     resolved_config = resolve_runtime_config(config=config, load_env=load_env)
+    resolved_checkpointer = (
+        checkpointer
+        if checkpointer is not None
+        else create_checkpointer(resolved_config)
+    )
     return AgentGraphRuntime(
         config=resolved_config,
         event_sink=event_sink,
         trace_store=trace_store,
         durable_task_service=durable_task_service,
+        checkpointer=resolved_checkpointer,
+        graph_invocation_claim_store=graph_invocation_claim_store,
+        workflow_graph_host=workflow_graph_host,
+        allow_interrupt=False,
     )
 
 
@@ -530,8 +555,81 @@ def run_assistant_request(
 ) -> AssistantRunArtifacts:
     """Run one request and return shared artifacts."""
 
+    prepared = _prepare_assistant_run(
+        request,
+        config=config,
+        event_sink=event_sink,
+        runtime=runtime,
+        load_env=load_env,
+        conversation_store=conversation_store,
+        enable_conversation_history=enable_conversation_history,
+        realtime_task_state_store=realtime_task_state_store,
+    )
+    state = _run_state_with_sink(
+        prepared.runtime,
+        prepared.request,
+        prepared.runtime_sink,
+        cancel_token=cancel_token,
+        run_id=run_id,
+    )
+    _require_service_terminal_state(state)
+    return _finalize_assistant_run(prepared, state)
+
+
+async def run_assistant_request_async(
+    request: UserRequest,
+    *,
+    config: ProviderConfig | None = None,
+    event_sink: EventSink | None = None,
+    runtime: AgentGraphRuntime | None = None,
+    load_env: bool = True,
+    conversation_store: ConversationStore | None = None,
+    enable_conversation_history: bool = True,
+    realtime_task_state_store: RealtimeTaskStateStore | None = None,
+    cancel_token: Any | None = None,
+    run_id: str | None = None,
+) -> AssistantRunArtifacts:
+    """Run one request through the native asynchronous graph execution path."""
+
+    prepared = _prepare_assistant_run(
+        request,
+        config=config,
+        event_sink=event_sink,
+        runtime=runtime,
+        load_env=load_env,
+        conversation_store=conversation_store,
+        enable_conversation_history=enable_conversation_history,
+        realtime_task_state_store=realtime_task_state_store,
+    )
+    state = await _arun_state_with_sink(
+        prepared.runtime,
+        prepared.request,
+        prepared.runtime_sink,
+        cancel_token=cancel_token,
+        run_id=run_id,
+    )
+    _require_service_terminal_state(state)
+    return _finalize_assistant_run(prepared, state)
+
+
+def _prepare_assistant_run(
+    request: UserRequest,
+    *,
+    config: ProviderConfig | None,
+    event_sink: EventSink | None,
+    runtime: AgentGraphRuntime | None,
+    load_env: bool,
+    conversation_store: ConversationStore | None,
+    enable_conversation_history: bool,
+    realtime_task_state_store: RealtimeTaskStateStore | None,
+) -> _PreparedAssistantRun:
     sink = event_sink or ListEventSink()
     resolved_runtime = runtime or create_runtime(config=config, event_sink=sink, load_env=load_env)
+    if getattr(resolved_runtime, "allow_interrupt", False):
+        raise GraphExecutionError(
+            "service_interrupt_runtime_forbidden",
+            "Product assistant services require an interrupt-disabled Runtime.",
+        )
     runtime_config = getattr(resolved_runtime, "config", config)
     resolved_store = conversation_store or get_default_conversation_store(runtime_config)
     resolved_task_store = realtime_task_state_store or get_default_realtime_task_state_store()
@@ -565,24 +663,46 @@ def run_assistant_request(
         store=resolved_task_store,
     )
     _emit_realtime_task_state_progress(resolved_request, runtime_sink)
-    state = _run_state_with_sink(
-        resolved_runtime,
-        resolved_request,
-        runtime_sink,
-        cancel_token=cancel_token,
-        run_id=run_id,
-    )
-    apply_realtime_task_update(state, store=resolved_task_store)
-    record_realtime_task_state_run_artifacts(state, store=resolved_task_store)
-    _record_conversation_turn(
-        state,
+    return _PreparedAssistantRun(
+        runtime=resolved_runtime,
+        request=resolved_request,
+        sink=sink,
+        runtime_sink=runtime_sink,
         conversation_store=resolved_store,
+        realtime_task_state_store=resolved_task_store,
         enable_conversation_history=enable_conversation_history,
     )
+
+
+def _require_service_terminal_state(state: AgentState) -> None:
+    """Keep internal Graph waiting state outside every product service contract."""
+
+    if state.status != "waiting_user":
+        return
+    raise GraphExecutionError(
+        "service_graph_waiting_state",
+        "Product assistant service received an unexpected waiting graph state.",
+    )
+
+
+def _finalize_assistant_run(
+    prepared: _PreparedAssistantRun,
+    state: AgentState,
+) -> AssistantRunArtifacts:
+    apply_realtime_task_update(state, store=prepared.realtime_task_state_store)
+    record_realtime_task_state_run_artifacts(
+        state,
+        store=prepared.realtime_task_state_store,
+    )
+    _record_conversation_turn(
+        state,
+        conversation_store=prepared.conversation_store,
+        enable_conversation_history=prepared.enable_conversation_history,
+    )
     _record_trace_conversation_turn(state)
-    raw_events = getattr(sink, "events", [])
+    raw_events = getattr(prepared.sink, "events", [])
     events = list(raw_events) if isinstance(raw_events, list) else []
-    return AssistantRunArtifacts(runtime=resolved_runtime, state=state, events=events)
+    return AssistantRunArtifacts(runtime=prepared.runtime, state=state, events=events)
 
 
 def run_assistant_request_stream(
@@ -606,8 +726,7 @@ def run_assistant_request_stream(
 
     async def _run() -> None:
         try:
-            artifacts = await asyncio.to_thread(
-                run_assistant_request,
+            artifacts = await run_assistant_request_async(
                 request,
                 config=config,
                 event_sink=stream_sink,
@@ -800,6 +919,33 @@ def _run_state_with_sink(
     if kwargs:
         return runtime.run_state(request, **kwargs)
     return runtime.run_state(request)
+
+
+async def _arun_state_with_sink(
+    runtime: AgentGraphRuntime,
+    request: UserRequest,
+    sink: EventSink,
+    *,
+    cancel_token: Any | None = None,
+    run_id: str | None = None,
+) -> AgentState:
+    """Call native async graph execution with the same per-run options."""
+
+    arun_state = runtime.arun_state
+    try:
+        parameters = inspect.signature(arun_state).parameters
+    except (TypeError, ValueError):
+        parameters = {}
+    kwargs: dict[str, Any] = {}
+    if "event_sink" in parameters:
+        kwargs["event_sink"] = sink
+    if cancel_token is not None and "cancel_token" in parameters:
+        kwargs["cancel_token"] = cancel_token
+    if run_id is not None and "run_id" in parameters:
+        kwargs["run_id"] = run_id
+    if kwargs:
+        return await arun_state(request, **kwargs)
+    return await arun_state(request)
 
 
 def _preload_demo_video_context(request: UserRequest, runtime: AgentGraphRuntime) -> None:

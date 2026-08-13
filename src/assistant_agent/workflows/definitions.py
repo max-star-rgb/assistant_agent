@@ -50,6 +50,17 @@ class WorkflowDefinitionDescriptor(BaseModel):
     )
 
 
+class WorkflowPlanMaterializationInput(BaseModel):
+    """Minimum trusted facts needed to turn an untrusted proposal into a plan."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    workflow_id: str = Field(min_length=1, max_length=512)
+    current_plan_version: int = Field(ge=1)
+    deliverables: tuple[str, ...] = Field(min_length=1, max_length=32)
+    constraints: tuple[str, ...] = Field(default=(), max_length=64)
+
+
 class WorkflowDefinition(Protocol):
     descriptor: WorkflowDefinitionDescriptor
 
@@ -181,7 +192,7 @@ def materialize_planner_proposal(
 
 def materialize_runtime_plan(
     *,
-    workflow: WorkflowRecord,
+    workflow: WorkflowRecord | WorkflowPlanMaterializationInput,
     proposal: WorkflowPlannerProposal,
     definition_version: str,
 ) -> WorkflowPlanVersion:

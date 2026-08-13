@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
 import math
 import time
 from typing import Any, Protocol
@@ -13,25 +12,23 @@ from uuid import uuid4
 from langsmith.utils import LangSmithRateLimitError
 
 from assistant_agent.evaluation.constants import RUNTIME_REGRESSION_DATASET
-from assistant_agent.evaluation.langsmith_trace import (
-    LangSmithExperimentBinding,
-    current_langsmith_experiment_binding,
-)
 from assistant_agent.evaluation.runtime_regression_contract import (
     request_text,
     validate_failure_baseline,
 )
 from assistant_agent.runtime.requests import UserRequest
+from evals.langsmith_feedback import normalize_boolean_feedback_score
 from evals.langsmith_runtime_regression.evaluators import (
     REQUIRED_LANGSMITH_FEEDBACK_KEYS,
     langsmith_evaluator_output,
 )
+from evals.release_review.report import LangSmithTargetEvidence
 
 
 class RuntimeRegressionRuntime(Protocol):
     trace_store: Any
 
-    def run_state(self, request: UserRequest) -> Any: ...
+    async def arun_state(self, request: UserRequest) -> Any: ...
 
     def close(self) -> bool: ...
 
@@ -39,9 +36,7 @@ class RuntimeRegressionRuntime(Protocol):
 @dataclass(frozen=True)
 class LangSmithRuntimeRegressionSettings:
     model: str
-    runtime_factory: Callable[
-        [LangSmithExperimentBinding], RuntimeRegressionRuntime
-    ]
+    runtime_factory: Callable[[], RuntimeRegressionRuntime]
     run_name: str
     git_commit: str
     max_concurrency: int = 1
@@ -62,6 +57,32 @@ class LangSmithRuntimeRegressionResult:
 class LangSmithCompletenessResult:
     run_ids: tuple[str, ...]
     feedback: dict[str, dict[str, Any]]
+
+
+@dataclass(frozen=True)
+class NativeGraphCompletenessResult:
+    complete: bool
+    run_ids: tuple[str, ...]
+    problems: dict[str, tuple[str, ...]]
+
+
+def runtime_regression_equivalence_evidence(
+    result: LangSmithRuntimeRegressionResult,
+    completeness: LangSmithCompletenessResult,
+) -> LangSmithTargetEvidence:
+    """Project only persisted Runtime Regression facts into Gate P3."""
+
+    return LangSmithTargetEvidence(
+        target="runtime_regression",
+        dataset_id=result.dataset_id,
+        project_id=result.experiment_id,
+        experiment_id=result.experiment_id,
+        active_example_ids=result.example_ids,
+        root_run_ids=completeness.run_ids,
+        required_feedback=REQUIRED_LANGSMITH_FEEDBACK_KEYS,
+        feedback=completeness.feedback,
+        native_tree_complete=True,
+    )
 
 
 def inspect_langsmith_runtime_regression_dataset(
@@ -92,7 +113,7 @@ def inspect_langsmith_runtime_regression_dataset(
     return dataset, examples
 
 
-def run_langsmith_runtime_regression_experiment(
+async def run_langsmith_runtime_regression_experiment(
     client: Any,
     settings: LangSmithRuntimeRegressionSettings,
 ) -> LangSmithRuntimeRegressionResult:
@@ -113,20 +134,21 @@ def run_langsmith_runtime_regression_experiment(
         evaluator_keys=list(REQUIRED_LANGSMITH_FEEDBACK_KEYS),
     )
 
-    def target(inputs: dict[str, Any]) -> dict[str, Any]:
-        binding = current_langsmith_experiment_binding(
-            experiment_id=str(project.id),
-            project_name=str(project.name),
-        )
-        if binding is None or binding.trace_context.experiment_link is None:
+    async def target(inputs: dict[str, Any]) -> dict[str, Any]:
+        current_run = _current_run_tree()
+        example_id = str(_field(current_run, "reference_example_id") or "")
+        if (
+            current_run is None
+            or not _field(current_run, "id")
+            or not _field(current_run, "trace_id")
+            or example_id not in example_ids
+        ):
             raise RuntimeError(
-                "LangSmith Experiment target has no active RunTree binding"
+                "LangSmith Experiment target has no matching current RunTree"
             )
-        link = binding.trace_context.experiment_link
-        example_id = link.reference_example_id
-        runtime = settings.runtime_factory(binding)
+        runtime = settings.runtime_factory()
         try:
-            state = runtime.run_state(
+            state = await runtime.arun_state(
                 UserRequest(
                     user_id="runtime-regression",
                     session_id=f"runtime-regression-{example_id}",
@@ -144,11 +166,10 @@ def run_langsmith_runtime_regression_experiment(
         finally:
             if runtime.close() is False:
                 raise RuntimeError(
-                    f"LangSmith Experiment runtime for {example_id!r} "
-                    "failed to close"
+                    f"LangSmith Experiment runtime for {example_id!r} failed to close"
                 )
 
-    native = client.evaluate(
+    native = await client.aevaluate(
         target,
         data=examples,
         evaluators=[],
@@ -158,7 +179,7 @@ def run_langsmith_runtime_regression_experiment(
         max_concurrency=settings.max_concurrency,
         metadata=experiment_metadata,
     )
-    rows = list(native)
+    rows = [row async for row in native]
     rows_by_example: dict[str, Any] = {}
     for row in rows:
         row_example = _field(row, "example")
@@ -177,12 +198,13 @@ def run_langsmith_runtime_regression_experiment(
         _require_run_id(_field(rows_by_example[example_id], "run"))
         for example_id in example_ids
     )
+    native_dataset_id = await native.get_dataset_id()
     return LangSmithRuntimeRegressionResult(
         native_result=native,
         experiment_id=str(native.experiment_id),
         experiment_name=str(native.experiment_name),
         experiment_url=(str(native.url) if getattr(native, "url", None) else None),
-        dataset_id=str(native.get_dataset_id() or dataset.id),
+        dataset_id=str(native_dataset_id or dataset.id),
         example_ids=example_ids,
         run_ids=run_ids,
     )
@@ -204,7 +226,6 @@ def wait_for_langsmith_runtime_regression_completeness(
         raise ValueError("completeness timeout and poll interval must be positive")
     attempts = math.ceil(timeout_seconds / poll_interval_seconds) + 1
     deadline = clock() + timeout_seconds
-    query_start_time = datetime.now(timezone.utc) - timedelta(hours=1)
     latest_problems: dict[str, list[str]] = {}
     for attempt in range(attempts):
         if attempt > 0 and clock() >= deadline:
@@ -214,7 +235,6 @@ def wait_for_langsmith_runtime_regression_completeness(
                 client,
                 experiment_id=experiment_id,
                 example_ids=example_ids,
-                query_start_time=query_start_time,
             )
         except LangSmithRateLimitError:
             result = None
@@ -229,8 +249,217 @@ def wait_for_langsmith_runtime_regression_completeness(
             if remaining <= 0:
                 break
             sleep(min(poll_interval_seconds, remaining))
-    raise RuntimeError(
-        "LangSmith Experiment incomplete: " + repr(latest_problems)
+    raise RuntimeError("LangSmith Experiment incomplete: " + repr(latest_problems))
+
+
+def audit_native_graph_tree(
+    runs: Sequence[Any],
+    *,
+    example_ids: tuple[str, ...],
+) -> NativeGraphCompletenessResult:
+    """Audit native LangGraph parentage from persisted LangSmith run facts."""
+
+    runs_by_id = {str(_field(run, "id")): run for run in runs}
+    duplicate_run_ids = len(runs_by_id) != len(runs)
+    roots_by_example: dict[str, list[Any]] = {
+        example_id: [] for example_id in example_ids
+    }
+    for run in runs:
+        example_id = str(_field(run, "reference_example_id") or "")
+        if example_id in roots_by_example and _field(run, "parent_run_id") is None:
+            roots_by_example[example_id].append(run)
+
+    claimed_run_ids: set[str] = set()
+    for roots in roots_by_example.values():
+        if len(roots) != 1:
+            continue
+        root_id = str(_field(roots[0], "id"))
+        claimed_run_ids.add(root_id)
+        claimed_run_ids.update(
+            str(_field(run, "id"))
+            for run in runs
+            if _is_descendant(run, ancestor_id=root_id, runs_by_id=runs_by_id)
+        )
+    native_names = {
+        "AssistantTurnGraph",
+        "assistant",
+        "compose_response",
+        "execute_tool",
+        "llm.chat",
+    }
+    detached_native_runs = [
+        run
+        for run in runs
+        if _field(run, "name") in native_names
+        and str(_field(run, "id")) not in claimed_run_ids
+    ]
+
+    problems: dict[str, tuple[str, ...]] = {}
+    root_ids: list[str] = []
+    for example_id in example_ids:
+        item_problems: list[str] = []
+        matching_roots = roots_by_example[example_id]
+        if duplicate_run_ids:
+            item_problems.append("duplicate run id")
+        if detached_native_runs:
+            item_problems.append("detached native graph run detected")
+        if len(matching_roots) != 1:
+            item_problems.append(f"root_run_count={len(matching_roots)}")
+            problems[example_id] = tuple(item_problems)
+            continue
+
+        root = matching_roots[0]
+        root_id = str(_field(root, "id"))
+        root_ids.append(root_id)
+        root_trace_id = str(_field(root, "trace_id") or "")
+        if not root_trace_id:
+            item_problems.append("root trace missing")
+        if _field(root, "run_type") != "chain":
+            item_problems.append(
+                f"experiment task run_type={_field(root, 'run_type')!r}, "
+                "expected 'chain'"
+            )
+        if not isinstance(_field(root, "inputs"), dict) or not _field(root, "inputs"):
+            item_problems.append("root inputs missing or not an object")
+        if not isinstance(_field(root, "outputs"), dict) or not _field(root, "outputs"):
+            item_problems.append("root outputs missing or not an object")
+
+        subtree = [
+            run
+            for run in runs
+            if _is_descendant(run, ancestor_id=root_id, runs_by_id=runs_by_id)
+        ]
+        if any(str(_field(run, "trace_id") or "") != root_trace_id for run in subtree):
+            item_problems.append("trace mismatch")
+        if any(
+            str(_field(run, "reference_example_id") or "") not in ("", example_id)
+            for run in subtree
+        ):
+            item_problems.append("reference example mismatch")
+
+        graphs = [
+            run
+            for run in runs
+            if _field(run, "name") == "AssistantTurnGraph"
+            and str(_field(run, "parent_run_id") or "") == root_id
+            and str(_field(run, "trace_id") or "") == root_trace_id
+        ]
+        if len(graphs) != 1:
+            item_problems.append(f"AssistantTurnGraph child count={len(graphs)}")
+        else:
+            if _field(graphs[0], "run_type") != "chain":
+                item_problems.append(
+                    "AssistantTurnGraph "
+                    f"run_type={_field(graphs[0], 'run_type')!r}, expected 'chain'"
+                )
+            graph_id = str(_field(graphs[0], "id"))
+            graph_subtree = [
+                run
+                for run in runs
+                if str(_field(run, "trace_id") or "") == root_trace_id
+                and _is_descendant(
+                    run,
+                    ancestor_id=graph_id,
+                    runs_by_id=runs_by_id,
+                )
+            ]
+            assistants = [
+                run
+                for run in graph_subtree
+                if _field(run, "name") == "assistant"
+                and str(_field(run, "parent_run_id") or "") == graph_id
+            ]
+            if not assistants:
+                item_problems.append("missing assistant graph child")
+            for assistant in assistants:
+                if _field(assistant, "run_type") != "chain":
+                    item_problems.append(
+                        "assistant "
+                        f"run_type={_field(assistant, 'run_type')!r}, "
+                        "expected 'chain'"
+                    )
+            compose_responses = [
+                run
+                for run in graph_subtree
+                if _field(run, "name") == "compose_response"
+                and str(_field(run, "parent_run_id") or "") == graph_id
+            ]
+            if not compose_responses:
+                item_problems.append("missing compose_response graph child")
+            for compose_response in compose_responses:
+                if _field(compose_response, "run_type") != "chain":
+                    item_problems.append(
+                        "compose_response "
+                        f"run_type={_field(compose_response, 'run_type')!r}, "
+                        "expected 'chain'"
+                    )
+            nested_llm_runs = [
+                run
+                for run in graph_subtree
+                if _field(run, "name") == "llm.chat"
+                and any(
+                    _is_descendant(
+                        run,
+                        ancestor_id=str(_field(assistant, "id")),
+                        runs_by_id=runs_by_id,
+                    )
+                    for assistant in assistants
+                )
+            ]
+            valid_llm_runs = [
+                run for run in nested_llm_runs if _field(run, "run_type") == "llm"
+            ]
+            for llm_run in nested_llm_runs:
+                if _field(llm_run, "run_type") != "llm":
+                    item_problems.append(
+                        "llm.chat "
+                        f"run_type={_field(llm_run, 'run_type')!r}, "
+                        "expected 'llm'"
+                    )
+            if not valid_llm_runs:
+                item_problems.append("missing llm.chat in graph subtree")
+            nested_llm_ids = {str(_field(run, "id")) for run in nested_llm_runs}
+            if any(
+                _field(run, "name") == "llm.chat"
+                and str(_field(run, "id")) not in nested_llm_ids
+                for run in subtree
+            ):
+                item_problems.append("llm.chat outside assistant subtree")
+
+            execute_tool_ids = {
+                str(_field(run, "id"))
+                for run in graph_subtree
+                if _field(run, "name") == "execute_tool"
+            }
+            for execute_tool in graph_subtree:
+                if (
+                    _field(execute_tool, "name") == "execute_tool"
+                    and _field(execute_tool, "run_type") != "chain"
+                ):
+                    item_problems.append(
+                        "execute_tool "
+                        f"run_type={_field(execute_tool, 'run_type')!r}, "
+                        "expected 'chain'"
+                    )
+            tool_runs = [run for run in subtree if _field(run, "run_type") == "tool"]
+            for tool_run in tool_runs:
+                if not any(
+                    _is_descendant(
+                        tool_run,
+                        ancestor_id=execute_tool_id,
+                        runs_by_id=runs_by_id,
+                    )
+                    for execute_tool_id in execute_tool_ids
+                ):
+                    item_problems.append("governed tool outside execute_tool subtree")
+                    break
+        if item_problems:
+            problems[example_id] = tuple(item_problems)
+
+    return NativeGraphCompletenessResult(
+        complete=not problems,
+        run_ids=tuple(root_ids),
+        problems=problems,
     )
 
 
@@ -239,17 +468,15 @@ def _audit_experiment(
     *,
     experiment_id: str,
     example_ids: tuple[str, ...],
-    query_start_time: datetime,
 ) -> tuple[LangSmithCompletenessResult | None, dict[str, list[str]]]:
-    expected = set(example_ids)
     runs = list(
         client.list_runs(
             project_id=experiment_id,
-            start_time=query_start_time,
             select=[
                 "id",
                 "parent_run_id",
                 "name",
+                "run_type",
                 "reference_example_id",
                 "trace_id",
                 "inputs",
@@ -257,75 +484,20 @@ def _audit_experiment(
             ],
         )
     )
-    runs_by_id = {str(_field(run, "id")): run for run in runs}
-    roots_by_example: dict[str, list[Any]] = {key: [] for key in expected}
-    for run in runs:
-        example_id = str(_field(run, "reference_example_id") or "")
-        if (
-            example_id in roots_by_example
-            and _field(run, "parent_run_id") is None
-        ):
-            roots_by_example[example_id].append(run)
-
-    problems: dict[str, list[str]] = {}
-    roots: dict[str, Any] = {}
-    for example_id in example_ids:
-        matching = roots_by_example[example_id]
-        item_problems: list[str] = []
-        if len(matching) != 1:
-            item_problems.append(f"root_run_count={len(matching)}")
-        else:
-            root = matching[0]
-            roots[example_id] = root
-            if not isinstance(_field(root, "inputs"), dict) or not _field(
-                root, "inputs"
-            ):
-                item_problems.append("root inputs missing or not an object")
-            if not isinstance(_field(root, "outputs"), dict) or not _field(
-                root, "outputs"
-            ):
-                item_problems.append("root outputs missing or not an object")
-            root_id = str(_field(root, "id"))
-            runtimes = [
-                run
-                for run in runs
-                if _field(run, "name") == "agent.runtime"
-                and str(_field(run, "parent_run_id")) == root_id
-                and str(_field(run, "reference_example_id") or "")
-                == example_id
-            ]
-            if len(runtimes) != 1:
-                item_problems.append(
-                    f"agent.runtime child count={len(runtimes)}"
-                )
-            else:
-                runtime_id = str(_field(runtimes[0], "id"))
-                llm_descendants = [
-                    run
-                    for run in runs
-                    if _field(run, "name") == "llm.chat"
-                    and _is_descendant(
-                        run,
-                        ancestor_id=runtime_id,
-                        runs_by_id=runs_by_id,
-                    )
-                ]
-                if not llm_descendants:
-                    item_problems.append("missing llm.chat descendant")
-        if item_problems:
-            problems[example_id] = item_problems
-
-    run_ids = tuple(
-        str(_field(roots[example_id], "id"))
-        for example_id in example_ids
-        if example_id in roots
-    )
+    tree_audit = audit_native_graph_tree(runs, example_ids=example_ids)
+    problems = {
+        example_id: list(item_problems)
+        for example_id, item_problems in tree_audit.problems.items()
+    }
+    run_ids = tree_audit.run_ids
     feedback_by_example: dict[str, dict[str, Any]] = {
         example_id: {} for example_id in example_ids
     }
     run_to_example = {
-        str(_field(root, "id")): example_id
-        for example_id, root in roots.items()
+        str(_field(run, "id")): str(_field(run, "reference_example_id"))
+        for run in runs
+        if _field(run, "parent_run_id") is None
+        and str(_field(run, "reference_example_id") or "") in example_ids
     }
     if run_ids:
         for feedback in client.list_feedback(run_ids=run_ids):
@@ -333,7 +505,15 @@ def _audit_experiment(
             key = _field(feedback, "key")
             if example_id is None or key not in REQUIRED_LANGSMITH_FEEDBACK_KEYS:
                 continue
-            feedback_by_example[example_id][str(key)] = _field(feedback, "score")
+            if str(key) in feedback_by_example[example_id]:
+                problems.setdefault(example_id, []).append(f"duplicate feedback {key}")
+                continue
+            try:
+                score = normalize_boolean_feedback_score(_field(feedback, "score"))
+            except ValueError:
+                problems.setdefault(example_id, []).append(f"invalid feedback {key}")
+                continue
+            feedback_by_example[example_id][str(key)] = score
     required_feedback = set(REQUIRED_LANGSMITH_FEEDBACK_KEYS)
     for example_id in example_ids:
         missing = sorted(
@@ -396,3 +576,9 @@ def _require_run_id(run: Any) -> str:
 
 def _field(value: Any, name: str) -> Any:
     return value.get(name) if isinstance(value, dict) else getattr(value, name, None)
+
+
+def _current_run_tree() -> Any | None:
+    from langsmith.run_helpers import get_current_run_tree
+
+    return get_current_run_tree()

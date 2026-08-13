@@ -20,6 +20,15 @@ from assistant_agent.runtime.tool_execution_backend import (
     RegistryExecutionBackend,
     ToolExecutionBackend,
 )
+from assistant_agent.runtime.tool_operation_barrier import (
+    ToolOperationBarrierError,
+    ToolOperationRequest,
+    ToolOperationReservation,
+    ToolOperationScopeRequired,
+    ToolOperationStore,
+    default_tool_operation_store,
+    normalized_tool_input_digest,
+)
 from assistant_agent.runtime.recovery import RecoveryPolicy, ToolFailureMode, classify_error
 from assistant_agent.runtime.state import AgentState
 from assistant_agent.tools.capability_output import contract_summary
@@ -51,13 +60,17 @@ from assistant_agent.tools.tool_call_boundary import (
     build_pre_tool_call_summary,
 )
 from assistant_agent.observability.trace_content_policy import local_trace_content_enabled
+from assistant_agent.observability.langsmith_native import trace_governed_tool_call
 from assistant_agent.observability.trace_store import (
     TraceStore,
     new_span_id,
     sanitize_trace_value,
 )
 from assistant_agent.tools.base import ToolContext
-from assistant_agent.tools.input_binding import bind_runtime_tool_input
+from assistant_agent.tools.input_binding import (
+    bind_runtime_tool_input,
+    runtime_bound_input_fields,
+)
 from assistant_agent.tools.plugins.registry_factory import create_default_registry
 from assistant_agent.tools.registry import ToolRegistry
 
@@ -83,6 +96,7 @@ class ToolExecutor:
         context_metadata: dict[str, Any] | None = None,
         cancel_token: Any | None = None,
         execution_backend: ToolExecutionBackend | None = None,
+        operation_store: ToolOperationStore | None = None,
     ) -> None:
         self.registry = registry or create_default_registry()
         self.event_sink = event_sink
@@ -91,6 +105,7 @@ class ToolExecutor:
         self.context_metadata = dict(context_metadata or {})
         self.cancel_token = cancel_token
         self.execution_backend = execution_backend or RegistryExecutionBackend()
+        self.operation_store = operation_store or default_tool_operation_store()
 
     def run_tool(
         self,
@@ -106,6 +121,10 @@ class ToolExecutor:
         runtime_input: dict[str, Any] | None = None,
         failure_mode: ToolFailureMode = "stop_run",
         progress_message: str | None = None,
+        operation_scope_id: str | None = None,
+        operation_thread_id: str | None = None,
+        operation_profile: str = "standard",
+        product_fact_writer: Callable[[Any], None] | None = None,
     ) -> ToolResult:
         """Bind, confirm, invoke and commit one governed Tool call."""
 
@@ -137,6 +156,23 @@ class ToolExecutor:
             runtime_input=runtime_input,
         )
         tool_spec = self.registry.get_spec(tool_name)
+        if tool_spec.category in {"write", "dangerous"}:
+            if not operation_scope_id or not operation_thread_id:
+                raise ToolOperationScopeRequired(
+                    "write/dangerous Tool requires a checkpointed operation scope"
+                )
+            if (
+                "idempotency_key" in runtime_bound_input_fields(tool)
+                and not bound_input.get("idempotency_key")
+            ):
+                provisional = ToolOperationRequest(
+                    thread_id=operation_thread_id,
+                    operation_scope_id=operation_scope_id,
+                    profile=operation_profile,
+                    tool_name=tool_name,
+                    input_digest="0" * 64,
+                )
+                bound_input["idempotency_key"] = provisional.operation_key
         trace_content_policy = _trace_content_policy(tool)
         execution_summary = {
             "category": tool_spec.category,
@@ -158,6 +194,7 @@ class ToolExecutor:
         tool_span_id = new_span_id()
         publisher = RuntimeEventPublisher(
             event_sink=self.event_sink,
+            product_fact_writer=product_fact_writer,
             trace_store=trace_store,
         )
         publisher.publish_tool_started(
@@ -217,15 +254,15 @@ class ToolExecutor:
             },
             cancel_token=self.cancel_token,
         )
-        invocation_input: BaseModel | dict[str, Any] = bound_input
         if validated_input is not None and bound_input == normalized_input:
             invocation_input = validated_input
-        elif validated_input is not None:
+        else:
             invocation_input = tool.input_schema.model_validate(bound_input)
         max_execution_retries = _effective_max_retries(
             tool_spec=tool_spec,
             global_max_retries=self.execution_policy.retry.max_retries,
         )
+        operation_reservation: ToolOperationReservation | None = None
 
         def record_retry(
             failed_attempt: int,
@@ -250,16 +287,58 @@ class ToolExecutor:
             )
 
         try:
-            result, retry_count = self._run_with_retry(
-                tool_name,
-                invocation_input,
-                context,
-                step_id=step_id,
-                preserve_success_after_cancel=tool_spec.category != "read",
-                max_retries=max_execution_retries,
-                on_retry=record_retry,
-            )
+            if tool_spec.category in {"write", "dangerous"}:
+                operation_reservation = self._reserve_operation(
+                    tool=tool,
+                    tool_name=tool_name,
+                    operation_input=invocation_input.model_dump(mode="json"),
+                    operation_scope_id=operation_scope_id,
+                    operation_thread_id=operation_thread_id,
+                    operation_profile=operation_profile,
+                )
+                replayed = _result_from_reservation(tool_name, operation_reservation)
+                if replayed is not None:
+                    result = replayed
+                else:
+                    result, retry_count = self._run_with_retry(
+                        tool_name,
+                        invocation_input,
+                        context,
+                        trace_input_summary=_policy_safe_input_summary(
+                            bound_input,
+                            content_policy=trace_content_policy,
+                        ),
+                        step_id=step_id,
+                        preserve_success_after_cancel=True,
+                        max_retries=max_execution_retries,
+                        on_retry=record_retry,
+                        propagate_backend_exceptions=True,
+                    )
+                    if (result.data or {}).get("side_effect_state") == "unknown":
+                        self._mark_operation_unknown(operation_reservation)
+                        result = _outcome_unknown_result(
+                            tool_name,
+                            operation_key=operation_reservation.operation_key,
+                        )
+                    else:
+                        self._commit_operation(operation_reservation, result)
+            else:
+                result, retry_count = self._run_with_retry(
+                    tool_name,
+                    invocation_input,
+                    context,
+                    trace_input_summary=_policy_safe_input_summary(
+                        bound_input,
+                        content_policy=trace_content_policy,
+                    ),
+                    step_id=step_id,
+                    preserve_success_after_cancel=False,
+                    max_retries=max_execution_retries,
+                    on_retry=record_retry,
+                    propagate_backend_exceptions=False,
+                )
         except AgentRunCancelled as exc:
+            self._mark_operation_unknown(operation_reservation)
             self._commit_cancellation(
                 state=state,
                 exc=exc,
@@ -274,8 +353,21 @@ class ToolExecutor:
                 trace_store=trace_store,
                 trace_id=trace_id,
                 node_name=effective_node_name,
+                product_fact_writer=product_fact_writer,
             )
             raise AssertionError("cancellation commit must raise")
+        except Exception:
+            if tool_spec.category not in {"write", "dangerous"}:
+                raise
+            self._mark_operation_unknown(operation_reservation)
+            result = _outcome_unknown_result(
+                tool_name,
+                operation_key=(
+                    operation_reservation.operation_key
+                    if operation_reservation is not None
+                    else None
+                ),
+            )
 
         reported_latency_ms = result.latency_ms
         latency_ms = int((perf_counter() - started_at) * 1000)
@@ -386,6 +478,92 @@ class ToolExecutor:
         )
         return result
 
+    def _reserve_operation(
+        self,
+        *,
+        tool: object,
+        tool_name: str,
+        operation_input: dict[str, Any],
+        operation_scope_id: str,
+        operation_thread_id: str,
+        operation_profile: str,
+    ) -> ToolOperationReservation:
+        input_digest = normalized_tool_input_digest(operation_input)
+        model_fields = getattr(getattr(tool, "input_schema", None), "model_fields", {})
+        business_key = (
+            operation_input.get("idempotency_key")
+            if "idempotency_key" in model_fields
+            and isinstance(operation_input.get("idempotency_key"), str)
+            and operation_input["idempotency_key"]
+            else None
+        )
+        return self.operation_store.reserve_and_mark_invoking(
+            ToolOperationRequest(
+                thread_id=operation_thread_id,
+                operation_scope_id=operation_scope_id,
+                profile=operation_profile,
+                tool_name=tool_name,
+                input_digest=input_digest,
+                business_idempotency_key=business_key,
+            )
+        )
+
+    def _commit_operation(
+        self,
+        reservation: ToolOperationReservation,
+        result: ToolResult,
+    ) -> None:
+        owner_token = reservation.owner_token
+        if reservation.disposition != "invoke" or owner_token is None:
+            raise ToolOperationBarrierError("operation reservation has no invoking owner")
+        result_digest = normalized_tool_input_digest(result.model_dump(mode="json"))
+        if result.success:
+            self.operation_store.commit_success(
+                reservation.operation_key,
+                owner_token=owner_token,
+                result_summary=_safe_operation_result_summary(result),
+                output_ref=_safe_operation_output_ref(result.output_ref),
+                result_digest=result_digest,
+            )
+            result.trace_summary = {
+                **(result.trace_summary or {}),
+                "operation_key": reservation.operation_key,
+                "operation_replayed": False,
+            }
+            return
+        self.operation_store.commit_failure(
+            reservation.operation_key,
+            owner_token=owner_token,
+            # The operation ledger is not an observability sink.  Persist only
+            # the closed recovery taxonomy, never Tool-authored error prose.
+            error_summary=classify_error(result.error or ""),
+            result_digest=result_digest,
+        )
+        result.trace_summary = {
+            **(result.trace_summary or {}),
+            "operation_key": reservation.operation_key,
+            "operation_replayed": False,
+        }
+
+    def _mark_operation_unknown(
+        self, reservation: ToolOperationReservation | None
+    ) -> None:
+        if (
+            reservation is None
+            or reservation.disposition != "invoke"
+            or reservation.owner_token is None
+        ):
+            return
+        try:
+            self.operation_store.mark_outcome_unknown(
+                reservation.operation_key,
+                owner_token=reservation.owner_token,
+            )
+        except Exception:
+            # A commit may have become durable immediately before its caller
+            # lost the response.  Never overwrite that terminal ledger fact.
+            return
+
     def _commit_cancellation(
         self,
         *,
@@ -402,6 +580,7 @@ class ToolExecutor:
         trace_store: TraceStore | None,
         trace_id: str | None,
         node_name: str,
+        product_fact_writer: Callable[[Any], None] | None,
     ) -> None:
         latency_ms = int((perf_counter() - started_at) * 1000)
         error_details = build_realtime_turn_cancellation_metadata(
@@ -444,6 +623,7 @@ class ToolExecutor:
         )
         RuntimeEventPublisher(
             event_sink=self.event_sink,
+            product_fact_writer=product_fact_writer,
             trace_store=trace_store,
         ).publish_tool_terminal(
             ToolTerminalFact(
@@ -490,10 +670,12 @@ class ToolExecutor:
         tool_input: BaseModel | dict[str, Any],
         context: ToolContext,
         *,
+        trace_input_summary: dict[str, Any],
         step_id: str,
         preserve_success_after_cancel: bool,
         max_retries: int,
         on_retry: Callable[[int, int, str], None] | None = None,
+        propagate_backend_exceptions: bool = False,
     ) -> tuple[ToolResult, int]:
         failed_attempts = 0
         retry_count = 0
@@ -508,7 +690,13 @@ class ToolExecutor:
                     "retry_count": retry_count,
                 },
             )
-            result = self._run_once(tool_name, tool_input, context)
+            result = self._run_once(
+                tool_name,
+                tool_input,
+                context,
+                trace_input_summary=trace_input_summary,
+                propagate_backend_exceptions=propagate_backend_exceptions,
+            )
             if not (preserve_success_after_cancel and result.success):
                 raise_if_cancelled(
                     self.cancel_token,
@@ -546,17 +734,26 @@ class ToolExecutor:
         tool_name: str,
         tool_input: BaseModel | dict[str, Any],
         context: ToolContext,
+        *,
+        trace_input_summary: dict[str, Any],
+        propagate_backend_exceptions: bool = False,
     ) -> ToolResult:
         try:
-            return self.execution_backend.run(
-                self.registry,
-                tool_name,
-                tool_input,
-                context,
+            return trace_governed_tool_call(
+                lambda: self.execution_backend.run(
+                    self.registry,
+                    tool_name,
+                    tool_input,
+                    context,
+                ),
+                tool_name=tool_name,
+                safe_input=trace_input_summary,
             )
         except AgentRunCancelled:
             raise
         except Exception as exc:  # pragma: no cover - registry boundary
+            if propagate_backend_exceptions:
+                raise
             return ToolResult(
                 tool_name=tool_name,
                 success=False,
@@ -806,6 +1003,69 @@ def _effective_max_retries(
     global_max_retries: int,
 ) -> int:
     return global_max_retries if tool_spec.category == "read" else 0
+
+
+def _json_compatible_tool_input(
+    tool: object, tool_input: dict[str, Any]
+) -> dict[str, Any]:
+    input_schema = getattr(tool, "input_schema", None)
+    if input_schema is None:
+        raise TypeError("Tool input schema is unavailable")
+    return input_schema.model_validate(tool_input).model_dump(mode="json")
+
+
+def _result_from_reservation(
+    tool_name: str,
+    reservation: ToolOperationReservation,
+) -> ToolResult | None:
+    if reservation.disposition == "invoke":
+        return None
+    # A terminal ledger row proves that the backend must not be called again;
+    # it does not contain enough semantic output to fabricate the original Tool
+    # result.  Until a Tool and backend both declare an actual typed readback
+    # binding, fail closed as unknown.
+    return _outcome_unknown_result(
+        tool_name,
+        operation_key=reservation.operation_key,
+    )
+
+
+def _outcome_unknown_result(
+    tool_name: str, *, operation_key: str | None = None
+) -> ToolResult:
+    return ToolResult(
+        tool_name=tool_name,
+        success=False,
+        error="tool_operation_outcome_unknown",
+        model_observation={
+            "summary": "The operation outcome is unknown and was not replayed.",
+            "errors": [
+                {
+                    "code": "tool_operation_outcome_unknown",
+                    "message": "The operation was not replayed.",
+                    "recoverable": False,
+                }
+            ],
+        },
+        trace_summary={
+            "operation_key": operation_key,
+            "operation_replayed": False,
+            "outcome_unknown": True,
+        },
+    )
+
+
+def _safe_operation_result_summary(result: ToolResult) -> str:
+    # The ledger is an idempotency fact store, not a Tool-output store.  Tool
+    # authored prose may contain credentials or response bodies, so only this
+    # fixed outcome label is admitted here.
+    return "Tool operation succeeded."
+
+
+def _safe_operation_output_ref(value: str | None) -> str | None:
+    from assistant_agent.runtime.assistant_graph_state import checkpoint_safe_ref
+
+    return checkpoint_safe_ref(value)
 
 
 def _execution_summary(

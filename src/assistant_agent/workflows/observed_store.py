@@ -10,6 +10,7 @@ from assistant_agent.workflows.models import (
     WorkflowBundle,
     WorkflowEvent,
     WorkflowWorkItemLease,
+    WorkflowExecutionEngine,
 )
 from assistant_agent.workflows.store import WorkflowStore, assign_event_cursors
 
@@ -99,6 +100,9 @@ class ObservedWorkflowStore:
     def latest_event_cursor(self, workflow_id: str) -> int:
         return self.inner.latest_event_cursor(workflow_id)
 
+    def list_cutover_bundles(self) -> list[WorkflowBundle]:
+        return self.inner.list_cutover_bundles()
+
     def claim_ready_work_item(
         self,
         *,
@@ -107,6 +111,9 @@ class ObservedWorkflowStore:
         lease_seconds: int,
         model_call_limit: int,
         tool_call_limit: int,
+        allowed_execution_engines: frozenset[WorkflowExecutionEngine],
+        allowed_workflow_types: frozenset[str],
+        allowed_workflow_ids: frozenset[str] | None = None,
     ) -> WorkflowDispatch | None:
         claimed = self.inner.claim_ready_work_item(
             worker_id=worker_id,
@@ -114,6 +121,9 @@ class ObservedWorkflowStore:
             lease_seconds=lease_seconds,
             model_call_limit=model_call_limit,
             tool_call_limit=tool_call_limit,
+            allowed_execution_engines=allowed_execution_engines,
+            allowed_workflow_types=allowed_workflow_types,
+            allowed_workflow_ids=allowed_workflow_ids,
         )
         if claimed is not None:
             self._observe_committed(claimed.bundle, claimed.committed_events)

@@ -139,6 +139,8 @@ def test_waiting_input_resumes_once_with_matching_token() -> None:
             work_item_executor=InputThenSuccessExecutor(),
         ),
         worker_id="worker-sentinel",
+        allowed_execution_engines=frozenset({"legacy_scheduler_v2"}),
+        allowed_workflow_types=frozenset(service.definitions.list_types()),
     )
     assert worker.run_once() is True
     assert worker.run_once() is True
@@ -227,6 +229,8 @@ def test_http_result_returns_the_identity_scoped_full_final_artifact(
             work_item_executor=ArtifactSuccessExecutor(artifact.uri),
         ),
         worker_id="worker-sentinel",
+        allowed_execution_engines=frozenset({"legacy_scheduler_v2"}),
+        allowed_workflow_types=frozenset(service.definitions.list_types()),
     )
     assert worker.run_once() is True
     assert worker.run_once() is True

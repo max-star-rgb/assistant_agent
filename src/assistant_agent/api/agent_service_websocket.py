@@ -1707,7 +1707,7 @@ def _required_item_text(item: dict[str, Any], index: int, field_name: str) -> st
 def _create_agent_service_gateway_manager() -> GatewaySessionManager:
     return GatewaySessionManager(
         backend_factory=lambda: GatewayRuntimeAdapter(
-            run_request=_run_assistant_request_for_agent_service,
+            run_request_stream=_run_assistant_request_for_agent_service_stream,
             load_env=False,
         ),
         session_initializer=_initialize_agent_service_session_memory,
@@ -2133,10 +2133,13 @@ def _is_provider_token_delta(chunk_frame: dict[str, Any]) -> bool:
     return isinstance(realtime, dict) and realtime.get("token_streaming") is True
 
 
-def _run_assistant_request_for_agent_service(request: UserRequest, **kwargs: Any) -> Any:
+def _run_assistant_request_for_agent_service_stream(
+    request: UserRequest,
+    **kwargs: Any,
+) -> Any:
     from assistant_agent.api import routes_agent
 
-    return routes_agent.get_assistant_runtime_app().run_request(request, **kwargs)
+    return routes_agent.get_assistant_runtime_app().run_request_stream(request, **kwargs)
 
 
 async def _run_agent_service_chat_turn(

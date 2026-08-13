@@ -261,12 +261,14 @@ source_globs = [
   "evals/release_review/**",
   "evals/runtime_regression/**",
   "evals/langsmith_runtime_regression/**",
+  "evals/langsmith_workflow_regression/**",
   "evals/system/**",
   "src/assistant_agent/evaluation/**",
   "src/assistant_agent/api/routes_eval_experiments.py",
   "scripts/run_release_review.py",
   "scripts/run_runtime_regressions.py",
   "scripts/run_langsmith_runtime_regressions.py",
+  "scripts/run_langsmith_workflow_regressions.py",
   "deploy/langfuse_eval_webhook/**",
   "tests/tdd/release-review-native-experiment/**",
   "tests/tdd/runtime-eval-feedback-loop/**",
@@ -277,10 +279,11 @@ thin_references = [
   "scripts/README.md",
 ]
 verification = [
-  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/release-review-native-experiment",
+  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/native-langgraph-m5/test_langsmith_equivalence_gate.py",
   "python scripts/run_release_review.py --inspect",
   "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/runtime-eval-feedback-loop",
   "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/langsmith-parallel-evaluation",
+  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/native-langgraph-m3/test_langsmith_workflow_experiment.py",
 ]
 exclusive_literals = [
   "ASSISTANT_AGENT_LANGFUSE_RELEASE_REVIEW_SIGNING_SECRET",

@@ -72,6 +72,73 @@ class AgentWorkItemResult(BaseModel):
     plan_proposal: WorkflowPlannerProposal | None = None
 
 
+def render_workflow_planner_prompt(
+    *,
+    workflow_objective: str,
+    workflow_deliverables: list[str] | tuple[str, ...],
+    workflow_constraints: list[str] | tuple[str, ...],
+    workflow_inputs: dict[str, JsonValue],
+    planning_objective: str,
+    attempt_number: int = 1,
+    previous_error_code: str | None = None,
+    previous_result_summary: str = "",
+) -> str:
+    """Compile trusted Workflow inputs into the strict planner envelope prompt."""
+
+    planner_input = {
+        "workflow": {
+            "objective": workflow_objective,
+            "deliverables": workflow_deliverables,
+            "constraints": workflow_constraints,
+            "inputs": workflow_inputs,
+        },
+        "planning_work_item": {
+            "objective": planning_objective,
+            "attempt_number": attempt_number,
+            "previous_attempt": (
+                {
+                    "error_code": previous_error_code,
+                    "summary": previous_result_summary,
+                }
+                if attempt_number > 1
+                else None
+            ),
+        },
+    }
+    return "\n\n".join(
+        [
+            "角色\n你是 durable Plan-and-Execute Workflow 的主规划 Agent。"
+            "你的唯一职责是生成一个可由 controller 接纳和执行的计划版本。",
+            "执行边界\n"
+            "- 只规划，不执行研究、编码、检索或其他业务任务。\n"
+            "- 不调用工具，不创建递归 planner 节点，不在 JSON 外输出解释。\n"
+            "- 普通 ReAct 决策发生在各执行节点内部，不写入 DAG 控制边。",
+            "可信工作流输入\n"
+            + json.dumps(planner_input, ensure_ascii=False, sort_keys=True),
+            "DAG 规则\n"
+            "- 生成一个静态有向无环图；depends_on 只能引用同一计划中的 node_id。\n"
+            "- 无依赖节点可并行；需要汇总多个结果的节点必须显式依赖所有上游节点。\n"
+            "- 每个 requested deliverable 必须恰好绑定一个 terminal producer。\n"
+            "- 不为简单任务制造无意义节点；每个节点必须能独立重试并产生一个下游可用 artifact。",
+            "验收与责任规则\n"
+            "- 每个节点必须声明一个类型化 output 和至少一个仅由该节点负责的 criterion。\n"
+            "- 根据用户目标自主提出完成任务所需的可验证 workflow constraint；"
+            "不得使用 Runtime 隐含的固定业务阈值。\n"
+            "- 可信输入中的 workflow constraint 必须逐条原文保留并绑定 owner；"
+            "required constraint 必须指定 verifier。\n"
+            "- verifier 必须等于 owner 或位于所有 owner 的下游；不要用节点名称暗示责任。",
+            "唯一允许的输出 JSON Schema\n"
+            + json.dumps(
+                _WorkflowPlanV2Envelope.model_json_schema(),
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            "输出要求\n只返回一个符合上述 schema 的 JSON object；"
+            "不得包裹 Markdown，不得增加 schema 未声明字段。",
+        ]
+    )
+
+
 def render_work_item_prompt(request: AgentWorkItemRequest) -> str:
     lines = (
         []
@@ -98,63 +165,16 @@ def render_work_item_prompt(request: AgentWorkItemRequest) -> str:
             + "\n纠正上一尝试暴露的问题；不要重复返回相同的无效结果。"
         )
     if request.agent_role == "planner":
-        planner_input = {
-            "workflow": {
-                "objective": request.context_manifest.objective,
-                "deliverables": request.workflow_deliverables,
-                "constraints": request.workflow_constraints,
-                "inputs": request.workflow_inputs,
-            },
-            "planning_work_item": {
-                "objective": request.objective,
-                "attempt_number": request.attempt_number,
-                "previous_attempt": (
-                    {
-                        "error_code": request.previous_error_code,
-                        "summary": request.previous_result_summary,
-                    }
-                    if request.attempt_number > 1
-                    else None
-                ),
-            },
-        }
-        lines.extend(
-            [
-                "角色\n你是 durable Plan-and-Execute Workflow 的主规划 Agent。"
-                "你的唯一职责是生成一个可由 controller 接纳和执行的计划版本。",
-                "执行边界\n"
-                "- 只规划，不执行研究、编码、检索或其他业务任务。\n"
-                "- 不调用工具，不创建递归 planner 节点，不在 JSON 外输出解释。\n"
-                "- 普通 ReAct 决策发生在各执行节点内部，不写入 DAG 控制边。",
-                "可信工作流输入\n"
-                + json.dumps(
-                    planner_input,
-                    ensure_ascii=False,
-                    sort_keys=True,
-                ),
-                "DAG 规则\n"
-                "- 生成一个静态有向无环图；depends_on 只能引用同一计划中的 node_id。\n"
-                "- 无依赖节点可并行；需要汇总多个结果的节点必须显式依赖所有上游节点。\n"
-                "- 每个 requested deliverable 必须恰好绑定一个 terminal producer。\n"
-                "- 不为简单任务制造无意义节点；每个节点必须能独立重试并产生一个下游可用 artifact。",
-                "验收与责任规则\n"
-                "- 每个节点必须声明一个类型化 output 和至少一个仅由该节点负责的 criterion。\n"
-                "- 根据用户目标自主提出完成任务所需的可验证 workflow constraint；"
-                "不得使用 Runtime 隐含的固定业务阈值。\n"
-                "- 可信输入中的 workflow constraint 必须逐条原文保留并绑定 owner；"
-                "required constraint 必须指定 verifier。\n"
-                "- verifier 必须等于 owner 或位于所有 owner 的下游；不要用节点名称暗示责任。",
-                "唯一允许的输出 JSON Schema\n"
-                + json.dumps(
-                    _WorkflowPlanV2Envelope.model_json_schema(),
-                    ensure_ascii=False,
-                    sort_keys=True,
-                ),
-                "输出要求\n只返回一个符合上述 schema 的 JSON object；"
-                "不得包裹 Markdown，不得增加 schema 未声明字段。",
-            ]
+        return render_workflow_planner_prompt(
+            workflow_objective=request.context_manifest.objective,
+            workflow_deliverables=request.workflow_deliverables,
+            workflow_constraints=request.workflow_constraints,
+            workflow_inputs=request.workflow_inputs,
+            planning_objective=request.objective,
+            attempt_number=request.attempt_number,
+            previous_error_code=request.previous_error_code,
+            previous_result_summary=request.previous_result_summary,
         )
-        return "\n\n".join(lines)
     if request.assigned_constraints:
         lines.append(
             "Assigned workflow constraints:\n"
@@ -167,15 +187,23 @@ def render_work_item_prompt(request: AgentWorkItemRequest) -> str:
                 sort_keys=True,
             )
         )
-    if request.acceptance_contract:
-        acceptance_contract = (
-            request.acceptance_contract.model_dump(mode="json")
-            if isinstance(request.acceptance_contract, WorkflowStepAcceptanceContract)
-            else request.acceptance_contract
+    acceptance_contract_model = (
+        request.acceptance_contract
+        if isinstance(request.acceptance_contract, WorkflowStepAcceptanceContract)
+        else WorkflowStepAcceptanceContract.model_validate(
+            request.acceptance_contract
         )
+        if request.acceptance_contract
+        else None
+    )
+    if acceptance_contract_model is not None:
         lines.append(
             "Work item acceptance contract:\n"
-            + json.dumps(acceptance_contract, ensure_ascii=False, sort_keys=True)
+            + json.dumps(
+                acceptance_contract_model.model_dump(mode="json"),
+                ensure_ascii=False,
+                sort_keys=True,
+            )
         )
     if request.context_manifest.artifacts:
         lines.append("Artifact excerpts:")
@@ -196,11 +224,8 @@ def render_work_item_prompt(request: AgentWorkItemRequest) -> str:
         if item.verifier_work_item_id == request.work_item_id
     ]
     acceptance_ids = (
-        [
-            item.criterion_id
-            for item in request.acceptance_contract.criteria
-        ]
-        if isinstance(request.acceptance_contract, WorkflowStepAcceptanceContract)
+        [item.criterion_id for item in acceptance_contract_model.criteria]
+        if acceptance_contract_model is not None
         else []
     )
     if verifier_ids or acceptance_ids:

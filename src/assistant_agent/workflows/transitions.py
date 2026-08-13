@@ -204,6 +204,7 @@ def create_initial_bundle(
     plan: WorkflowPlanVersion,
     limits: WorkflowLimits,
     now: datetime,
+    execution_engine: str = "legacy_scheduler_v2",
 ) -> tuple[WorkflowBundle, list[WorkflowEvent]]:
     if plan.workflow_id != workflow_id:
         raise WorkflowTransitionRejected("initial plan references another workflow")
@@ -219,6 +220,7 @@ def create_initial_bundle(
             item.status = "ready"
     record = WorkflowRecord(
         workflow_id=workflow_id,
+        execution_engine=execution_engine,
         workflow_type=workflow_type,
         definition_version=definition_version,
         user_id=user_id,

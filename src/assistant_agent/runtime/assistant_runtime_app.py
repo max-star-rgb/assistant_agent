@@ -9,14 +9,27 @@ from assistant_agent.runtime.runtime import AgentGraphRuntime
 from assistant_agent.config import ProviderConfig
 from assistant_agent.identity import RequestIdentity
 from assistant_agent.runtime.requests import UserRequest
-from assistant_agent.runtime.session_models import SessionCreate, SessionList, SessionRecord
+from assistant_agent.runtime.session_models import (
+    SessionCreate,
+    SessionList,
+    SessionRecord,
+)
 from assistant_agent.runtime.assistant_run_service import (
     AssistantRunArtifacts,
     clear_conversation_history,
     clear_user_conversation_history,
     run_assistant_request,
+    run_assistant_request_stream,
     runtime_info,
 )
+from assistant_agent.runtime.event_stream import AgentRunStream
+from assistant_agent.runtime.graph_time_travel import (
+    GraphCheckpointSelector,
+    GraphCheckpointSummary,
+    GraphForkRequest,
+    GraphReplayRequest,
+)
+from assistant_agent.runtime.state import AgentState
 from assistant_agent.observability.trace_query import TraceQueryService
 
 
@@ -25,10 +38,11 @@ class AssistantRuntimeApp:
 
     def __init__(self, runtime_factory: Callable[[], AgentGraphRuntime]) -> None:
         self._runtime_factory = runtime_factory
+        self._runtime = runtime_factory()
 
     @property
     def runtime(self) -> AgentGraphRuntime:
-        return self._runtime_factory()
+        return self._runtime
 
     @property
     def config(self) -> ProviderConfig:
@@ -36,6 +50,13 @@ class AssistantRuntimeApp:
 
     def run_request(self, request: UserRequest, **kwargs: Any) -> AssistantRunArtifacts:
         return run_assistant_request(request, runtime=self.runtime, **kwargs)
+
+    def run_request_stream(
+        self,
+        request: UserRequest,
+        **kwargs: Any,
+    ) -> AgentRunStream[AssistantRunArtifacts]:
+        return run_assistant_request_stream(request, runtime=self.runtime, **kwargs)
 
     def run_query(
         self,
@@ -59,6 +80,39 @@ class AssistantRuntimeApp:
             ),
             **kwargs,
         )
+
+    async def list_turn_history(
+        self,
+        owner: RequestIdentity,
+        *,
+        limit: int,
+        before: GraphCheckpointSelector | None = None,
+    ) -> tuple[GraphCheckpointSummary, ...]:
+        """List safe checkpoints from the process-owned Runtime graph."""
+
+        return await self.runtime.alist_history(owner, limit=limit, before=before)
+
+    async def replay_turn(
+        self,
+        owner: RequestIdentity,
+        request: GraphReplayRequest,
+        *,
+        run_id: str,
+    ) -> AgentState:
+        """Replay one owned checkpoint on the process-owned Runtime graph."""
+
+        return await self.runtime.areplay_state(owner, request, run_id=run_id)
+
+    async def fork_turn(
+        self,
+        owner: RequestIdentity,
+        request: GraphForkRequest,
+        *,
+        run_id: str,
+    ) -> AgentState:
+        """Fork one owned checkpoint on the process-owned Runtime graph."""
+
+        return await self.runtime.afork_state(owner, request, run_id=run_id)
 
     def runtime_info(self) -> dict[str, Any]:
         return runtime_info(self.config)
@@ -112,9 +166,15 @@ class AssistantRuntimeApp:
 
     def delete_user_runtime_data(self, user_id: str) -> dict[str, int]:
         runtime = self.runtime
-        run_history_deleted = runtime.run_history.delete_by_user(user_id) if runtime.run_history is not None else 0
+        run_history_deleted = (
+            runtime.run_history.delete_by_user(user_id)
+            if runtime.run_history is not None
+            else 0
+        )
         trace_deleted = runtime.trace_store.delete_by_user(user_id)
-        conversation_sessions_deleted = clear_user_conversation_history(user_id, config=runtime.config)
+        conversation_sessions_deleted = clear_user_conversation_history(
+            user_id, config=runtime.config
+        )
         runtime.long_term_memory_service.reset_user_sessions(
             user_id=user_id,
             agent_id=runtime.agent_id,

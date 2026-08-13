@@ -13,6 +13,7 @@ from assistant_agent.workflows.models import (
     WorkflowEvent,
     WorkflowWorkItem,
     WorkflowWorkItemLease,
+    WorkflowExecutionEngine,
     utc_now,
 )
 
@@ -55,6 +56,7 @@ class WorkflowStore(Protocol):
         self, workflow_id: str, *, after: int = 0, limit: int = 100
     ) -> list[WorkflowEvent]: ...
     def latest_event_cursor(self, workflow_id: str) -> int: ...
+    def list_cutover_bundles(self) -> list[WorkflowBundle]: ...
     def claim_ready_work_item(
         self,
         *,
@@ -63,6 +65,9 @@ class WorkflowStore(Protocol):
         lease_seconds: int,
         model_call_limit: int,
         tool_call_limit: int,
+        allowed_execution_engines: frozenset[WorkflowExecutionEngine],
+        allowed_workflow_types: frozenset[str],
+        allowed_workflow_ids: frozenset[str] | None = None,
     ) -> WorkflowDispatch | None: ...
     def renew_work_item_lease(
         self,
@@ -77,6 +82,28 @@ class WorkflowStore(Protocol):
 def submission_key(bundle: WorkflowBundle) -> tuple[str, str, str, str]:
     item = bundle.workflow
     return item.user_id, item.agent_id, item.ingress_run_id, item.idempotency_key
+
+
+def workflow_matches_claim_scope(
+    bundle: WorkflowBundle,
+    *,
+    allowed_execution_engines: frozenset[WorkflowExecutionEngine],
+    allowed_workflow_types: frozenset[str],
+    allowed_workflow_ids: frozenset[str] | None = None,
+) -> bool:
+    """Return whether a legacy scheduler may claim this business record."""
+
+    workflow = bundle.workflow
+    return (
+        workflow.execution_engine == "legacy_scheduler_v2"
+        and not workflow.legacy_claim_frozen
+        and workflow.execution_engine in allowed_execution_engines
+        and workflow.workflow_type in allowed_workflow_types
+        and (
+            allowed_workflow_ids is None
+            or workflow.workflow_id in allowed_workflow_ids
+        )
+    )
 
 
 def assign_event_cursors(
@@ -331,6 +358,15 @@ class InMemoryWorkflowStore:
             )
             return self.load(workflow_id) if workflow_id is not None else None
 
+    def list_cutover_bundles(self) -> list[WorkflowBundle]:
+        """Return a stable snapshot for the operator cutover controller."""
+
+        with self._lock:
+            return [
+                self._bundles[workflow_id].model_copy(deep=True)
+                for workflow_id in sorted(self._bundles)
+            ]
+
     def save(
         self,
         bundle: WorkflowBundle,
@@ -376,11 +412,23 @@ class InMemoryWorkflowStore:
         lease_seconds: int,
         model_call_limit: int,
         tool_call_limit: int,
+        allowed_execution_engines: frozenset[WorkflowExecutionEngine],
+        allowed_workflow_types: frozenset[str],
+        allowed_workflow_ids: frozenset[str] | None = None,
     ) -> WorkflowDispatch | None:
+        if not allowed_execution_engines or not allowed_workflow_types:
+            raise ValueError("workflow claim scope allowlists must be non-empty")
         with self._lock:
             for bundle in sorted(
                 self._bundles.values(), key=lambda item: item.workflow.updated_at
             ):
+                if not workflow_matches_claim_scope(
+                    bundle,
+                    allowed_execution_engines=allowed_execution_engines,
+                    allowed_workflow_types=allowed_workflow_types,
+                    allowed_workflow_ids=allowed_workflow_ids,
+                ):
+                    continue
                 previous_revision = bundle.workflow.revision
                 lease, events = claim_ready_item_in_bundle(
                     bundle,

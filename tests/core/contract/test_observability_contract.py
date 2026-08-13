@@ -16,9 +16,11 @@ from assistant_agent.gateway.turn_facade import (
     GatewayTurnRequest,
     GatewayTurnTimeout,
 )
+from assistant_agent.observability import trace_persistence
 from assistant_agent.observability.agent_service_delivery import (
     AgentServiceDeliveryRegistry,
 )
+from assistant_agent.observability.langsmith_config import LangSmithConfig
 from assistant_agent.observability.otel_mapping import build_text_otel_span_specs
 from assistant_agent.observability.trace_persistence import (
     close_trace_store,
@@ -374,6 +376,62 @@ def test_server_trace_store_reads_persisted_trace_after_recreation(
         close_trace_store(recreated_store, timeout=2.0)
 
     assert [event.canonical_event for event in events] == ["run.completed"]
+
+
+@pytest.mark.core_invariant("OBS-001")
+def test_server_trace_store_does_not_rebuild_langsmith_otel_tree(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    generic_otel_events: list[TraceEvent] = []
+
+    class GenericOtelObserver:
+        def on_trace_event(self, event: TraceEvent) -> None:
+            generic_otel_events.append(event)
+
+    generic_otel_observer = GenericOtelObserver()
+    monkeypatch.setattr(
+        trace_persistence,
+        "create_text_otel_trace_observer_from_env",
+        lambda: generic_otel_observer,
+    )
+    monkeypatch.setattr(
+        trace_persistence,
+        "create_langfuse_score_trace_observer_from_env",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        LangSmithConfig,
+        "from_env",
+        classmethod(
+            lambda cls, *args, **kwargs: pytest.fail(
+                "native tracing owns LangSmith"
+            )
+        ),
+    )
+
+    store = create_server_trace_store(path=tmp_path / "trace.jsonl")
+    try:
+        store.append(
+            TraceEvent(
+                trace_id="trace-sentinel",
+                run_id="run-sentinel",
+                user_id="user-sentinel",
+                session_id="session-sentinel",
+                node_name="runtime",
+                event_type="observability",
+                canonical_event="run.completed",
+                status="completed",
+            )
+        )
+        assert [
+            event.canonical_event for event in store.list_by_run("run-sentinel")
+        ] == ["run.completed"]
+        assert [event.canonical_event for event in generic_otel_events] == [
+            "run.completed"
+        ]
+    finally:
+        close_trace_store(store, timeout=2.0)
 
 
 @pytest.mark.core_invariant("OBS-001")

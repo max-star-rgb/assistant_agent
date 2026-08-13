@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable, Mapping
 from threading import Condition
 from typing import Any, Literal
@@ -13,11 +14,14 @@ from assistant_agent.runtime.assistant_run_service import (
     AssistantRunArtifacts,
     create_runtime,
     run_assistant_request,
+    run_assistant_request_stream,
 )
+from assistant_agent.runtime.event_stream import AgentRunStream
 
 RuntimeFactory = Callable[[], AgentGraphRuntime]
 RuntimeCleanup = Callable[[AgentGraphRuntime], None]
 RunRequest = Callable[..., AssistantRunArtifacts]
+RunRequestStream = Callable[..., AgentRunStream[AssistantRunArtifacts]]
 
 
 class GatewayRuntimePool:
@@ -29,6 +33,7 @@ class GatewayRuntimePool:
         max_runtime_instances: int,
         runtime_factory: RuntimeFactory | None = None,
         run_request: RunRequest | None = None,
+        run_request_stream: RunRequestStream | None = None,
         runtime_cleanup: RuntimeCleanup | None = None,
     ) -> None:
         if (
@@ -40,6 +45,7 @@ class GatewayRuntimePool:
         self.max_runtime_instances = max_runtime_instances
         self._runtime_factory = runtime_factory or create_runtime
         self._run_request = run_request or run_assistant_request
+        self._run_request_stream = run_request_stream or run_assistant_request_stream
         self._runtime_cleanup = runtime_cleanup
         self._condition = Condition()
         self._runtimes: list[AgentGraphRuntime] = []
@@ -62,6 +68,44 @@ class GatewayRuntimePool:
             return self._run_request(request, runtime=runtime, **kwargs)
         finally:
             self._checkin(runtime)
+
+    def run_request_stream(
+        self,
+        request: UserRequest,
+        **kwargs: Any,
+    ) -> AgentRunStream[AssistantRunArtifacts]:
+        """Lease one runtime until its native async stream reaches terminal state."""
+
+        loop = asyncio.get_running_loop()
+        stream: AgentRunStream[AssistantRunArtifacts] = AgentRunStream(loop=loop)
+
+        async def _run() -> None:
+            runtime: AgentGraphRuntime | None = None
+            result: AssistantRunArtifacts | None = None
+            error: BaseException | None = None
+            try:
+                runtime = await loop.run_in_executor(None, self._checkout)
+                runtime_stream = self._run_request_stream(
+                    request,
+                    runtime=runtime,
+                    **kwargs,
+                )
+                async for event in runtime_stream:
+                    stream.emit(event)
+                result = await runtime_stream.result()
+            except BaseException as exc:
+                error = exc
+            finally:
+                if runtime is not None:
+                    await loop.run_in_executor(None, self._checkin, runtime)
+            if error is not None:
+                stream.set_exception(error)
+            else:
+                assert result is not None
+                stream.set_result(result)
+
+        asyncio.create_task(_run())
+        return stream
 
     def initialize_session_memory(
         self,
@@ -162,6 +206,7 @@ def shared_gateway_runtime_factory(primary_factory: RuntimeFactory) -> RuntimeFa
             durable_task_service=primary_runtime.durable_task_service,
             workflow_service=primary_runtime.workflow_service,
             workflow_artifact_store=primary_runtime.workflow_artifact_store,
+            allow_interrupt=False,
         )
 
     return create

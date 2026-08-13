@@ -9,18 +9,51 @@ tool listing, native tool-call normalization, validation, execution, loop
 limits, trace recording, and state mutation.
 """
 
+from __future__ import annotations
+
 from time import perf_counter
 from typing import Any, NotRequired, TypedDict, cast
 
+from langgraph.runtime import Runtime
+from langgraph.types import interrupt
+
 from assistant_agent.runtime.action_validator import ActionValidator
+from assistant_agent.runtime.assistant_graph_state import (
+    AssistantStateCompatibilityError,
+    AssistantTurnState,
+    persisted_request_from_user_request,
+    reenter_assistant_invocation,
+    validate_assistant_turn_state,
+)
+from assistant_agent.runtime.assistant_interrupts import (
+    AssistantApproveResume,
+    AssistantInputResume,
+    AssistantInterruptContractError,
+    AssistantInterruptRequest,
+    AssistantRejectResume,
+    assistant_turn_action_ref,
+    validate_assistant_interrupt_request,
+    validate_assistant_resume,
+    validate_resume_for_interrupt,
+)
 from assistant_agent.runtime.cancellation import AgentRunCancelled
 from assistant_agent.runtime.citations import build_url_citation_annotations
-from assistant_agent.runtime.llm_event_mapping import stream_delta_to_agent_event
+from assistant_agent.runtime.llm_event_mapping import stream_delta_to_product_fact
+from assistant_agent.runtime.product_event_projector import emit_product_fact
 from assistant_agent.runtime.loop_guard import LoopGuard, LoopGuardDecision
 from assistant_agent.runtime.run_phase import RunPhase
 from assistant_agent.runtime.response_composer import compose_response
 from assistant_agent.runtime.state import AgentError, AgentState
 from assistant_agent.runtime.tool_executor import ToolExecutor
+from assistant_agent.runtime.tool_operation_barrier import (
+    normalized_tool_input_digest,
+    stable_assistant_thread_id,
+    stable_operation_scope_id,
+)
+from assistant_agent.runtime.graph_runtime import GraphRuntimeContext
+from assistant_agent.runtime.graph_invocation_claims import (
+    graph_invocation_owner_digest,
+)
 from assistant_agent.runtime.output_models import (
     AssistantTextOutput,
     AssistantToolCall,
@@ -55,6 +88,7 @@ from assistant_agent.runtime.chat_adapter import (
     ChatResult,
     chat_result_kind,
 )
+from assistant_agent.observability.langsmith_native import trace_llm_call
 from assistant_agent.context.token_budget import normalize_provider_token_usage
 from assistant_agent.observability.trace_store import (
     TraceEvent,
@@ -82,6 +116,53 @@ MAIN_LLM_NO_ANSWER_MESSAGES = {
 }
 
 
+def prepare_invocation_node(
+    state: AssistantTurnState,
+    runtime: Runtime[GraphRuntimeContext],
+) -> AssistantTurnState:
+    """Claim and commit invocation-local identity before semantic work."""
+
+    context = runtime.context
+    if context is None or context.agent_state is None:
+        raise AssistantStateCompatibilityError(
+            "Invocation-local AgentState is required."
+        )
+    runtime_state = context.agent_state
+    updated = reenter_assistant_invocation(
+        state,
+        runtime_state=runtime_state,
+        invocation_kind=context.invocation_kind,
+    )
+    if updated["profile"] != context.graph_profile:
+        raise AssistantStateCompatibilityError(
+            "Invocation-local graph profile does not match the checkpoint."
+        )
+    request = updated["request"]
+    run = updated["run"]
+    thread_id = stable_assistant_thread_id(
+        agent_id=str(run["agent_id"]),
+        user_id=str(request["user_id"]),
+        session_id=str(request["session_id"]),
+    )
+    context.invocation_claim_store.assert_owned(
+        owner_digest=graph_invocation_owner_digest(
+            agent_id=str(run["agent_id"]),
+            user_id=str(request["user_id"]),
+            session_id=str(request["session_id"]),
+        ),
+        thread_id=thread_id,
+        run_id=runtime_state.run_id,
+        invocation_token=context.invocation_token,
+    )
+    return updated
+
+
+def time_travel_anchor_node(state: AssistantTurnState) -> AssistantTurnState:
+    """Stable no-side-effect boundary whose only successor is the gate."""
+
+    return validate_assistant_turn_state(state)
+
+
 class AssistantLoopState(TypedDict):
     """State for the assistant loop graph."""
 
@@ -97,9 +178,11 @@ class AssistantLoopState(TypedDict):
     current_step_index: int
     trace_id: NotRequired[str]
     trace_store: NotRequired[Any]
-    event_sink: NotRequired[Any]
+    product_fact_writer: NotRequired[Any]
     assistant_output: NotRequired[AssistantTurnOutput | None]
     pending_tool_calls: NotRequired[list[AssistantToolCall]]
+    turn_origin_id: NotRequired[str]
+    graph_profile: NotRequired[str]
     assistant_iterations: NotRequired[int]
     tool_calls_used: NotRequired[int]
     action_tool_calls_used: NotRequired[int]
@@ -108,6 +191,8 @@ class AssistantLoopState(TypedDict):
     tool_observations: NotRequired[list[dict[str, Any]]]
     current_node_name: NotRequired[str]
     max_tool_iterations: NotRequired[int]
+    max_tool_calls_per_run: NotRequired[int]
+    max_action_tool_calls_per_run: NotRequired[int]
     max_control_tool_iterations: NotRequired[int]
     max_plan_steps: NotRequired[int]
     last_llm_span_id: NotRequired[str]
@@ -202,10 +287,59 @@ def assistant_node(graph_state: AssistantLoopState) -> AssistantLoopState:
             pending_decisions[0] = decision
         else:
             graph_state["pending_tool_calls"] = []
+    decision = _assign_pending_operation_scopes(
+        graph_state,
+        decision=decision,
+        assistant_iteration=iterations + 1,
+    )
     _record_react_decision(graph_state, decision, iterations, context=context)
     _apply_terminal_decision(graph_state, decision, context)
 
     return _assistant_node_result(graph_state, decision, iterations)
+
+
+def _assign_pending_operation_scopes(
+    graph_state: AssistantLoopState,
+    *,
+    decision: AssistantTurnOutput,
+    assistant_iteration: int,
+) -> AssistantTurnOutput:
+    pending = graph_state.get("pending_tool_calls")
+    calls = list(pending) if isinstance(pending, list) else []
+    if not calls and isinstance(decision, AssistantToolCall):
+        calls = [decision]
+    if not calls:
+        return decision
+    state = graph_state["state"]
+    turn_origin_id = str(graph_state.get("turn_origin_id") or state.run_id)
+    thread_id = stable_assistant_thread_id(
+        agent_id=state.agent_id,
+        user_id=state.user_id,
+        session_id=state.session_id,
+    )
+    scoped: list[AssistantToolCall] = []
+    for ordinal, call in enumerate(calls):
+        if call.operation_scope_id:
+            scoped.append(call)
+            continue
+        scoped.append(
+            call.model_copy(
+                update={
+                    "operation_scope_id": stable_operation_scope_id(
+                        thread_id=thread_id,
+                        turn_origin_id=turn_origin_id,
+                        assistant_iteration=assistant_iteration,
+                        call_ordinal=ordinal,
+                        tool_name=call.tool_name,
+                        normalized_input_digest=normalized_tool_input_digest(
+                            call.tool_input
+                        ),
+                    )
+                }
+            )
+        )
+    graph_state["pending_tool_calls"] = scoped
+    return scoped[0] if isinstance(decision, AssistantToolCall) else decision
 
 
 def _assistant_node_result(
@@ -518,7 +652,16 @@ def _run_chat_turn(
     )
     runner = graph_state.get("chat_turn")
     try:
-        result = cast(ChatResult, runner(request)) if callable(runner) else chat_adapter.chat(request)
+        result = trace_llm_call(
+            (
+                (lambda: cast(ChatResult, runner(request)))
+                if callable(runner)
+                else (lambda: chat_adapter.chat(request))
+            ),
+            request=request,
+            provider=provider,
+            model=model,
+        )
     except Exception as exc:
         wall_latency_ms = _elapsed_ms(started_at)
         append_observability_event(
@@ -1239,8 +1382,8 @@ def _response_stream_callback(
     *,
     source: str,
 ) -> Any | None:
-    event_sink = graph_state.get("event_sink")
-    if event_sink is None:
+    product_fact_writer = graph_state.get("product_fact_writer")
+    if product_fact_writer is None:
         return None
     state = graph_state["state"]
 
@@ -1262,16 +1405,16 @@ def _response_stream_callback(
                     **payload,
                     "runtime_separator_inserted": True,
                 }
-        event = stream_delta_to_agent_event(
+        fact = stream_delta_to_product_fact(
             emitted_text,
             emitted_payload,
             session_id=state.session_id,
             run_id=state.run_id,
             source=source,
         )
-        if event is None:
+        if fact is None:
             return
-        event_sink.emit(event)
+        emit_product_fact(product_fact_writer, fact)
         graph_state["response_stream_current_call_emitted"] = True
         graph_state["response_stream_ends_with_newline"] = emitted_text.endswith(
             ("\n", "\r")
@@ -1302,7 +1445,12 @@ def execute_requested_tool_node(graph_state: AssistantLoopState) -> AssistantLoo
         return graph_state
 
     current = graph_state
-    max_tool_calls = int(graph_state.get("max_tool_iterations", _get_max_tool_iterations()))
+    max_tool_calls = int(
+        graph_state.get(
+            "max_action_tool_calls_per_run",
+            graph_state.get("max_tool_iterations", _get_max_tool_iterations()),
+        )
+    )
     max_control_tool_calls = int(
         graph_state.get(
             "max_control_tool_iterations",
@@ -1377,6 +1525,122 @@ def execute_requested_tool_node(graph_state: AssistantLoopState) -> AssistantLoo
 
     current["pending_tool_calls"] = []
     return current
+
+
+def await_input_node(
+    graph_state: AssistantTurnState,
+    runtime: Runtime[GraphRuntimeContext],
+) -> AssistantTurnState:
+    """Pause and resume at a real LangGraph node without preceding side effects."""
+
+    state = validate_assistant_turn_state(graph_state)
+    pending_payload = state.get("pending_interrupt")
+    if pending_payload is None:
+        raise AssistantInterruptContractError(
+            "assistant_interrupt_missing",
+            "await_input requires one persisted interrupt request.",
+        )
+    request = validate_assistant_interrupt_request(pending_payload)
+    _validate_interrupt_action_binding(state, request)
+    resumed = validate_assistant_resume(
+        interrupt(request.model_dump(mode="json"))
+    )
+    validate_resume_for_interrupt(request, resumed)
+    return _apply_assistant_resume(state, runtime=runtime, resume=resumed)
+
+
+def _validate_interrupt_action_binding(
+    state: AssistantTurnState,
+    request: AssistantInterruptRequest,
+) -> None:
+    if request.kind == "approval":
+        pending = list(state.get("pending_tool_calls") or ())
+        if (
+            len(pending) != 1
+            or pending[0].get("provider_call_id") != request.action_ref
+        ):
+            raise AssistantInterruptContractError(
+                "interrupt_action_ref_mismatch",
+                "Approval interrupt is not bound to the current pending Tool call.",
+            )
+        return
+    run = state["run"]
+    if request.action_ref != assistant_turn_action_ref(str(run["run_id"])):
+        raise AssistantInterruptContractError(
+            "interrupt_action_ref_mismatch",
+            "Input interrupt is not bound to the current assistant turn.",
+        )
+
+
+def _apply_assistant_resume(
+    state: AssistantTurnState,
+    *,
+    runtime: Runtime[GraphRuntimeContext],
+    resume: AssistantApproveResume | AssistantRejectResume | AssistantInputResume,
+) -> AssistantTurnState:
+    context = runtime.context
+    if context is None or context.agent_state is None:
+        raise AssistantInterruptContractError(
+            "interrupt_runtime_context_missing",
+            "Resume requires invocation-local AgentState.",
+        )
+    updated = dict(state)
+    run = dict(state["run"])
+    run["status"] = "running"
+    updated["run"] = run
+    updated["pending_interrupt"] = None
+
+    if isinstance(resume, AssistantApproveResume):
+        return validate_assistant_turn_state(updated)
+
+    updated["pending_tool_calls"] = []
+    updated["assistant_output"] = None
+    if isinstance(resume, AssistantRejectResume):
+        observations = list(state.get("tool_observations") or ())
+        pending = list(state.get("pending_tool_calls") or ())
+        tool_name = str(pending[0]["tool_name"]) if pending else "pending_action"
+        observations.append(
+            {
+                "tool_name": tool_name,
+                "status": "rejected",
+                "summary": resume.reason or "The pending action was rejected.",
+                "outcome": None,
+                "warnings": [],
+                "is_complete": True,
+                "output_ref": None,
+                "artifact_refs": [],
+                "provider_call_id": resume.action_ref,
+                "safe_details": [],
+                "error": {
+                    "code": "action_rejected",
+                    "message": "The pending action was rejected.",
+                    "retryable": False,
+                },
+            }
+        )
+        updated["tool_observations"] = observations
+        return validate_assistant_turn_state(updated)
+
+    persisted_request = dict(state["request"])
+    prior_messages = list(persisted_request.get("messages") or ())[-127:]
+    persisted_request["text"] = resume.text
+    persisted_request["messages"] = [
+        *prior_messages,
+        {"role": "user", "text": resume.text, "tool_call_id": None},
+    ]
+    runtime_request = context.agent_state.request
+    runtime_request.metadata["conversation_history"] = [
+        {"role": item["role"], "text": item["text"]}
+        for item in prior_messages
+        if item.get("role") in {"user", "assistant"}
+    ]
+    runtime_request.text = resume.text
+    projected_runtime_request = persisted_request_from_user_request(runtime_request)
+    projected_runtime_request["capability_refs"] = list(
+        persisted_request.get("capability_refs") or ()
+    )
+    updated["request"] = projected_runtime_request
+    return validate_assistant_turn_state(updated)
 
 
 def _is_control_tool_name(tool_name: str | None) -> bool:
@@ -1637,6 +1901,14 @@ def _execute_single_requested_tool_node(graph_state: AssistantLoopState) -> Assi
             validated_input=validation.validated_input,
             failure_mode="continue_to_model",
             progress_message=decision.progress_message,
+            operation_scope_id=decision.operation_scope_id,
+            operation_thread_id=stable_assistant_thread_id(
+                agent_id=state.agent_id,
+                user_id=state.user_id,
+                session_id=state.session_id,
+            ),
+            operation_profile=str(graph_state.get("graph_profile") or "standard"),
+            product_fact_writer=graph_state.get("product_fact_writer"),
         )
         _handle_runtime_tool_result(graph_state, state, result)
         _apply_tool_turn_handoff(state, result)
@@ -2157,9 +2429,8 @@ def _latest_tool_execution_correlation(
 def _runtime_event_publisher(
     graph_state: AssistantLoopState,
 ) -> RuntimeEventPublisher:
-    tool_executor = graph_state.get("tool_executor")
     return RuntimeEventPublisher(
-        event_sink=getattr(tool_executor, "event_sink", None),
+        product_fact_writer=graph_state.get("product_fact_writer"),
         trace_store=graph_state.get("trace_store"),
     )
 

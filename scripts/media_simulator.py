@@ -565,8 +565,6 @@ async def tail_workflow(
                         file=sys.stderr,
                         flush=True,
                     )
-            if not result_text:
-                result_text = _workflow_result_summary(status_payload)
             if result_text:
                 print(f"\n{result_text}", flush=True)
             return True
@@ -702,96 +700,7 @@ def project_workflow_progress(payload: JsonObject) -> JsonObject:
     projected = payload.get("progress")
     if isinstance(projected, dict):
         return dict(projected)
-
-    workflow = payload.get("workflow")
-    plan = payload.get("plan")
-    if not isinstance(workflow, dict) or not isinstance(plan, dict):
-        return {}
-    items = plan.get("work_items")
-    if not isinstance(items, list):
-        items = []
-    normalized_items = [item for item in items if isinstance(item, dict)]
-    if (
-        workflow.get("phase") == "planning"
-        and plan.get("version") == 1
-        and len(normalized_items) == 1
-        and normalized_items[0].get("kind") == "plan"
-    ):
-        return {
-            "state": "planning",
-            "plan_kind": str(workflow.get("workflow_type") or "workflow"),
-            "workflow_type": str(workflow.get("workflow_type") or "workflow"),
-            "work_item_id": "",
-            "work_item_kind": "",
-            "display_title": None,
-            "completed_items": 0,
-            "total_items": 0,
-            "attempt_count": 0,
-            "running_items": 0,
-            "ready_items": 0,
-            "active_items": [],
-        }
-    completed = sum(
-        item.get("status") in {"succeeded", "skipped", "superseded"}
-        for item in normalized_items
-    )
-    status = str(workflow.get("status") or "unknown")
-    active = next(
-        (
-            item
-            for item in normalized_items
-            if item.get("status") in {"running", "ready", "blocked"}
-        ),
-        None,
-    )
-    active_items = sorted(
-        (
-            item
-            for item in normalized_items
-            if item.get("status") in {"running", "blocked"}
-        ),
-        key=lambda item: str(item.get("work_item_id") or ""),
-    )
-    state = (
-        "completed"
-        if status == "completed"
-        else "waiting_input"
-        if status == "waiting_input"
-        else "failed"
-        if status in {"failed", "cancelled", "blocked"}
-        else "working"
-    )
-    return {
-        "state": state,
-        "plan_kind": str(workflow.get("workflow_type") or "workflow"),
-        "workflow_type": str(workflow.get("workflow_type") or "workflow"),
-        "work_item_id": str(active.get("work_item_id") or "") if active else "",
-        "work_item_kind": str(active.get("kind") or "") if active else "",
-        "display_title": _safe_workflow_display_title(
-            active.get("display_title") if active else None
-        ),
-        "completed_items": completed,
-        "total_items": len(normalized_items),
-        "attempt_count": int(active.get("attempt_count") or 0) if active else 0,
-        "running_items": sum(
-            item.get("status") == "running" for item in normalized_items
-        ),
-        "ready_items": sum(
-            item.get("status") == "ready" for item in normalized_items
-        ),
-        "active_items": [
-            {
-                "work_item_id": str(item.get("work_item_id") or ""),
-                "work_item_kind": str(item.get("kind") or ""),
-                "display_title": _safe_workflow_display_title(
-                    item.get("display_title")
-                ),
-                "attempt_count": int(item.get("attempt_count") or 0),
-                "status": str(item.get("status") or ""),
-            }
-            for item in active_items
-        ],
-    }
+    return {}
 
 
 _WORKFLOW_STAGE_LABELS = {
@@ -844,20 +753,6 @@ def _safe_workflow_display_title(value: object) -> str:
     if not isinstance(value, str):
         return ""
     return " ".join(value.split())[:160]
-
-
-def _workflow_result_summary(payload: JsonObject) -> str:
-    plan = payload.get("plan")
-    items = plan.get("work_items") if isinstance(plan, dict) else None
-    if not isinstance(items, list):
-        return ""
-    for item in reversed(items):
-        if not isinstance(item, dict) or item.get("status") != "succeeded":
-            continue
-        summary = item.get("result_summary")
-        if isinstance(summary, str) and summary.strip():
-            return summary.strip()
-    return ""
 
 
 def _workflow_ids_from_chat_response_body(body: JsonObject) -> list[str]:

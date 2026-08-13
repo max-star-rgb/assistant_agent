@@ -1,60 +1,65 @@
-"""Map provider-neutral LLM events onto runtime AgentEvent records."""
+"""Map provider-neutral LLM events onto native custom-stream product facts."""
 
 from __future__ import annotations
 
 from typing import Any
 
-from assistant_agent.runtime.events import AgentEvent
 from assistant_agent.providers.llm_events import LLMEvent
+from assistant_agent.runtime.product_event_projector import (
+    TextDeltaProductFact,
+    new_runtime_product_fact_id,
+)
 
 
 RUNTIME_STREAM_PROVIDER = "runtime"
 
 
-def llm_event_to_agent_event(
+def llm_event_to_product_fact(
     event: LLMEvent,
     *,
     session_id: str,
     run_id: str | None,
     source: str,
-) -> AgentEvent | None:
-    """Convert user-visible token deltas to the existing runtime event shape."""
+) -> TextDeltaProductFact | None:
+    """Convert one visible token occurrence to a strict product fact."""
 
     if event.event_type != "token_delta" or not event.text:
         return None
 
-    payload = dict(event.metadata)
-    if event.provider != RUNTIME_STREAM_PROVIDER:
-        payload["provider"] = event.provider
-    if event.model is not None:
-        payload["model"] = event.model
-    if event.finish_reason is not None:
-        payload["finish_reason"] = event.finish_reason
-    payload["source"] = source
-
-    return AgentEvent(
-        type="response_delta",
+    payload = {
+        key: value
+        for key, value in dict(event.metadata).items()
+        if key not in {"provider", "model", "finish_reason", "source"}
+    }
+    return TextDeltaProductFact(
+        fact_id=new_runtime_product_fact_id("text_delta"),
         session_id=session_id,
-        run_id=run_id,
+        run_id=run_id or "unknown-run",
         text=event.text,
+        provider=(
+            event.provider if event.provider != RUNTIME_STREAM_PROVIDER else None
+        ),
+        model=event.model,
+        finish_reason=event.finish_reason,
+        source=source,
         payload=payload,
     )
 
 
-def stream_delta_to_agent_event(
+def stream_delta_to_product_fact(
     text: str,
     payload: dict[str, Any],
     *,
     session_id: str,
     run_id: str | None,
     source: str,
-) -> AgentEvent | None:
-    """Adapt legacy stream callbacks through the LLMEvent mapping boundary."""
+) -> TextDeltaProductFact | None:
+    """Adapt legacy callbacks without constructing a public ``AgentEvent``."""
 
     event = stream_delta_to_llm_event(text, payload)
     if event is None:
         return None
-    return llm_event_to_agent_event(
+    return llm_event_to_product_fact(
         event,
         session_id=session_id,
         run_id=run_id,
