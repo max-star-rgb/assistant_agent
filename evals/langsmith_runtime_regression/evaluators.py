@@ -93,6 +93,7 @@ def runtime_regression_evaluator_rule_payloads(
     evaluators = (
         _structured_evaluator(
             feedback_key=RESPONSE_QUALITY_FEEDBACK_KEY,
+            schema_title="Assistant Agent response quality feedback",
             description=(
                 "True only when the current assistant response directly, "
                 "correctly, clearly, and sufficiently answers the user request."
@@ -116,6 +117,7 @@ def runtime_regression_evaluator_rule_payloads(
         ),
         _structured_evaluator(
             feedback_key=GROUNDING_FEEDBACK_KEY,
+            schema_title="Assistant Agent grounding feedback",
             description=(
                 "True only when material claims in the current response are "
                 "supported by the captured Runtime tool and state evidence."
@@ -142,6 +144,7 @@ def runtime_regression_evaluator_rule_payloads(
         ),
         _structured_evaluator(
             feedback_key=REGRESSION_IMPROVEMENT_FEEDBACK_KEY,
+            schema_title="Assistant Agent regression improvement feedback",
             description=(
                 "True only when the current response materially improves on "
                 "the original failed response without introducing a new failure."
@@ -296,6 +299,7 @@ def _aggregate_status(
 def _structured_evaluator(
     *,
     feedback_key: str,
+    schema_title: str,
     description: str,
     system_prompt: str,
     human_prompt: str,
@@ -308,6 +312,8 @@ def _structured_evaluator(
             "prompt": [["system", system_prompt], ["human", human_prompt]],
             "template_format": "mustache",
             "schema": {
+                "title": schema_title,
+                "description": description,
                 "type": "object",
                 "properties": {
                     feedback_key: {
