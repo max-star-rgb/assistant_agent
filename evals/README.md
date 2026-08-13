@@ -156,8 +156,9 @@ name 分别 create/update，不能把多个 code/LLM evaluator 合并进同一 r
 Runtime 或 Judge。dry-run 与 apply 都逐条输出 `rule_name`、`feedback_key`、`action` 和 `rule_id`，同名
 rule 落在其他 Dataset、缺少 ID 或 Model Configuration 不唯一/未明确允许 evaluator 时一律 fail-closed：
 CLI 会把唯一配置返回的无凭证、严格 JSON `settings` 同时写入每个 evaluator 的
-`structured.model`，并保留 `playground_settings_id`；`settings` 缺失、结构非法或任意层包含凭证类字段时，
-必须在读取现有 rules 和任何远端写入前 fail-closed。
+`structured.model`，并保留 `playground_settings_id`；凭证类字段只允许 LangChain 的严格、bounded 环境变量
+secret reference（不含 secret 值），`settings` 缺失、结构非法、原始凭证或非法 reference 必须在读取现有
+rules 和任何远端写入前 fail-closed。
 
 ```bash
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python \

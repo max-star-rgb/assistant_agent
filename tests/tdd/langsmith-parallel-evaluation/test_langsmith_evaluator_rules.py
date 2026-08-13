@@ -285,6 +285,88 @@ def test_model_configuration_settings_reject_credential_like_keys(settings) -> N
     assert client.writes == []
 
 
+@pytest.mark.parametrize("secret_ids", [["QWEN_API_KEY"], ("QWEN_API_KEY",)])
+def test_model_configuration_settings_allow_strict_langchain_secret_reference(
+    secret_ids,
+) -> None:
+    settings = {
+        "model": "qwen-plus",
+        "model_provider": "openai",
+        "kwargs": {
+            "openai_api_key": {
+                "id": secret_ids,
+                "lc": 1,
+                "type": "secret",
+            }
+        },
+    }
+    client = Client(
+        [],
+        model_configurations=[
+            {
+                "id": MODEL_CONFIG_ID,
+                "available_in_evaluators": True,
+                "settings": settings,
+            }
+        ],
+    )
+
+    configure_runtime_regression_evaluators(
+        client,
+        model_config_id=MODEL_CONFIG_ID,
+        apply=True,
+    )
+
+    expected = deepcopy(settings)
+    expected["kwargs"]["openai_api_key"]["id"] = ["QWEN_API_KEY"]
+    assert all(
+        payload["evaluators"][0]["structured"]["model"] == expected
+        for _, _, payload in client.writes
+    )
+
+
+@pytest.mark.parametrize(
+    "secret_reference",
+    [
+        {"id": [], "lc": 1, "type": "secret"},
+        {"id": ["lowercase_key"], "lc": 1, "type": "secret"},
+        {"id": ["QWEN_API_KEY"], "lc": True, "type": "secret"},
+        {"id": ["QWEN_API_KEY"], "lc": 1, "type": "password"},
+        {"id": ["QWEN_API_KEY"], "lc": 1, "type": "secret", "value": "raw"},
+        {
+            "id": ["A", "B", "C", "D", "E"],
+            "lc": 1,
+            "type": "secret",
+        },
+    ],
+)
+def test_model_configuration_settings_reject_invalid_secret_reference(
+    secret_reference,
+) -> None:
+    client = Client(
+        [],
+        model_configurations=[
+            {
+                "id": MODEL_CONFIG_ID,
+                "available_in_evaluators": True,
+                "settings": {
+                    "model": "qwen-plus",
+                    "kwargs": {"openai_api_key": secret_reference},
+                },
+            }
+        ],
+    )
+
+    with pytest.raises(RuntimeError, match="credential-like"):
+        configure_runtime_regression_evaluators(
+            client,
+            model_config_id=MODEL_CONFIG_ID,
+            apply=True,
+        )
+
+    assert client.writes == []
+
+
 def test_partial_dry_run_reports_each_rule_action_and_identity() -> None:
     payloads = runtime_regression_evaluator_rule_payloads(
         dataset_id=DATASET_ID,

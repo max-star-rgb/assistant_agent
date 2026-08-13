@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -46,6 +47,7 @@ _CREDENTIAL_SETTING_KEYS = (
 )
 _MAX_MODEL_SETTINGS_DEPTH = 16
 _MAX_MODEL_SETTINGS_NODES = 1_024
+_SECRET_REFERENCE_ENV_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,127}$")
 
 
 @dataclass(frozen=True)
@@ -379,10 +381,21 @@ def _strict_model_settings(settings: Any) -> dict[str, Any]:
                     normalized == marker or normalized.endswith(marker)
                     for marker in _CREDENTIAL_SETTING_KEYS
                 ):
-                    raise RuntimeError(
-                        "LangSmith model configuration settings contain a "
-                        "credential-like key"
-                    )
+                    if not _is_strict_secret_reference(item):
+                        raise RuntimeError(
+                            "LangSmith model configuration settings contain a "
+                            "credential-like key without a strict secret reference"
+                        )
+                    node_count += 3 + len(item["id"])
+                    if (
+                        depth + 2 > _MAX_MODEL_SETTINGS_DEPTH
+                        or node_count > _MAX_MODEL_SETTINGS_NODES
+                    ):
+                        raise RuntimeError(
+                            "LangSmith model configuration settings exceed "
+                            "structural limits"
+                        )
+                    continue
                 validate(item, depth=depth + 1)
             return
         if isinstance(value, list):
@@ -402,6 +415,24 @@ def _strict_model_settings(settings: Any) -> dict[str, Any]:
         raise RuntimeError(
             "LangSmith model configuration settings must contain only strict JSON values"
         ) from exc
+
+
+def _is_strict_secret_reference(value: Any) -> bool:
+    if not isinstance(value, dict) or set(value) != {"id", "lc", "type"}:
+        return False
+    identifiers = value["id"]
+    return (
+        isinstance(identifiers, (list, tuple))
+        and 1 <= len(identifiers) <= 4
+        and all(
+            isinstance(identifier, str)
+            and _SECRET_REFERENCE_ENV_RE.fullmatch(identifier) is not None
+            for identifier in identifiers
+        )
+        and type(value["lc"]) is int
+        and value["lc"] == 1
+        and value["type"] == "secret"
+    )
 
 
 def _response_json(response: Any) -> Any:
