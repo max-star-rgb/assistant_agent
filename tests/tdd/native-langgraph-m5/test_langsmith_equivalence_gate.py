@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import os
+from pathlib import Path
+import subprocess
+import sys
 from types import SimpleNamespace
 from uuid import UUID
 
@@ -47,6 +51,85 @@ from evals.release_review.staging import CleanupResult
 
 EXAMPLE_ID = UUID("01234567-89ab-cdef-0123-456789abcdef")
 TRACE_ID = UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+STABLE_EVAL_SCRIPTS = (
+    "run_release_review.py",
+    "run_langsmith_runtime_regressions.py",
+    "run_langsmith_workflow_regressions.py",
+)
+
+
+@pytest.fixture
+def foreign_assistant_agent(tmp_path: Path) -> Path:
+    source = tmp_path / "foreign-checkout" / "src"
+    package = source / "assistant_agent"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text('CHECKOUT = "foreign"\n', encoding="utf-8")
+    return source
+
+
+@pytest.mark.parametrize("script_name", STABLE_EVAL_SCRIPTS)
+def test_stable_eval_script_prioritizes_its_checkout_source(
+    script_name: str,
+    foreign_assistant_agent: Path,
+    tmp_path: Path,
+) -> None:
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = str(foreign_assistant_agent)
+    script = PROJECT_ROOT / "scripts" / script_name
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import runpy, sys; "
+                "runpy.run_path(sys.argv[1], run_name='bootstrap_probe'); "
+                "import assistant_agent; print(assistant_agent.__file__)"
+            ),
+            str(script),
+        ],
+        cwd=tmp_path,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (
+        Path(result.stdout.strip()).resolve()
+        == (PROJECT_ROOT / "src" / "assistant_agent" / "__init__.py").resolve()
+    )
+
+
+@pytest.mark.parametrize("script_name", STABLE_EVAL_SCRIPTS)
+def test_stable_eval_script_rejects_preloaded_foreign_checkout(
+    script_name: str,
+    foreign_assistant_agent: Path,
+    tmp_path: Path,
+) -> None:
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = str(foreign_assistant_agent)
+    script = PROJECT_ROOT / "scripts" / script_name
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import assistant_agent, runpy, sys; "
+                "runpy.run_path(sys.argv[1], run_name='bootstrap_probe')"
+            ),
+            str(script),
+        ],
+        cwd=tmp_path,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "current checkout" in result.stderr
 
 
 def _run(
