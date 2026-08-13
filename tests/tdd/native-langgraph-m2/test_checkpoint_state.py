@@ -233,8 +233,6 @@ def _prepare(runtime: AgentGraphRuntime, request: UserRequest, *, run_id: str) -
         request,
         event_sink=None,
         cancel_token=None,
-        trace_context=None,
-        export_trace_context=None,
         pre_terminal_state_hook=None,
         run_id=run_id,
     )

@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import asyncio
-from types import SimpleNamespace
-
 import pytest
 
-from assistant_agent.workflows.store import workflow_matches_claim_scope
+from assistant_agent.workflows.sqlite_store import SQLiteWorkflowStore
+from assistant_agent.workflows.store import InMemoryWorkflowStore, WorkflowStore
 from scripts import media_simulator
 
 
@@ -21,12 +20,15 @@ def test_media_progress_requires_strict_progress_projection() -> None:
         "plan": {"work_items": [{"result_summary": "legacy-secret"}]},
     }
     assert media_simulator.project_workflow_progress(strict) == strict["progress"]
-    assert media_simulator.project_workflow_progress(
-        {
-            "workflow": {"status": "running"},
-            "plan": {"work_items": [{"status": "running"}]},
-        }
-    ) == {}
+    assert (
+        media_simulator.project_workflow_progress(
+            {
+                "workflow": {"status": "running"},
+                "plan": {"work_items": [{"status": "running"}]},
+            }
+        )
+        == {}
+    )
 
 
 @pytest.mark.parametrize(
@@ -80,41 +82,7 @@ def test_media_completion_reads_only_result_content(
     assert forbidden not in output
 
 
-def test_graph_v3_record_is_never_in_legacy_claim_scope() -> None:
-    bundle = SimpleNamespace(
-        workflow=SimpleNamespace(
-            execution_engine="langgraph_v3", workflow_type="deep_research"
-        )
-    )
-    assert not workflow_matches_claim_scope(
-        bundle,
-        allowed_execution_engines=frozenset(
-            {"legacy_scheduler_v2", "langgraph_v3"}
-        ),
-        allowed_workflow_types=frozenset({"deep_research"}),
-    )
-
-
-def test_legacy_drain_claim_requires_exact_existing_workflow_allowlist() -> None:
-    bundle = SimpleNamespace(
-        workflow=SimpleNamespace(
-            workflow_id="legacy-inflight",
-            execution_engine="legacy_scheduler_v2",
-            workflow_type="deep_research",
-            legacy_claim_frozen=False,
-        )
-    )
-    common = {
-        "allowed_execution_engines": frozenset({"legacy_scheduler_v2"}),
-        "allowed_workflow_types": frozenset({"deep_research"}),
-    }
-    assert workflow_matches_claim_scope(
-        bundle,
-        allowed_workflow_ids=frozenset({"legacy-inflight"}),
-        **common,
-    )
-    assert not workflow_matches_claim_scope(
-        bundle,
-        allowed_workflow_ids=frozenset({"another-workflow"}),
-        **common,
-    )
+def test_business_store_has_no_legacy_execution_authority() -> None:
+    retired = {"claim_ready_work_item", "renew_work_item_lease"}
+    for owner in (WorkflowStore, InMemoryWorkflowStore, SQLiteWorkflowStore):
+        assert retired.isdisjoint(dir(owner))

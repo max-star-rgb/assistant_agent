@@ -1,0 +1,15 @@
+{
+  "schema_version": "workflow_retirement_probe_v1",
+  "observed_at": "2026-08-13T11:32:03+08:00",
+  "probe_mode": "operator_retirement",
+  "ready": true,
+  "nonterminal_legacy_count": 0,
+  "active_legacy_lease_count": 0,
+  "waiting_legacy_count": 0,
+  "legacy_status_counts": {
+    "completed": 6,
+    "failed": 2,
+    "cancelled": 2
+  },
+  "database_metadata_unchanged": true
+}

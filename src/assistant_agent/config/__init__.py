@@ -23,7 +23,9 @@ LangGraphCheckpointerBackend = Literal["none", "memory", "sqlite"]
 MemoryBackendName = Literal["disabled", "mem0", "langmem"]
 
 
-DEFAULT_QWEN_REALTIME_VISION_BASE_URL = "wss://dashscope.aliyuncs.com/api-ws/v1/realtime"
+DEFAULT_QWEN_REALTIME_VISION_BASE_URL = (
+    "wss://dashscope.aliyuncs.com/api-ws/v1/realtime"
+)
 DEFAULT_QWEN_REALTIME_VISION_REGION = "cn-beijing"
 DEFAULT_QWEN_IMAGE_SEARCH_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 DEFAULT_QWEN_IMAGE_SEARCH_MODEL = "qwen3.7-plus"
@@ -244,10 +246,6 @@ class ProviderConfig:
     durable_workflow_max_quanta: int = 1_000
     durable_workflows_enabled: bool = False
     durable_workflow_path: str = ".local/workflows/workflows.sqlite3"
-    durable_workflow_worker_enabled: bool = False
-    durable_workflow_lease_seconds: int = 30
-    durable_workflow_poll_seconds: float = 1.0
-    durable_workflow_max_concurrent_items: int = 4
     durable_workflow_artifact_path: str = ".local/workflows/artifacts"
 
     def __post_init__(self) -> None:
@@ -294,7 +292,9 @@ class ProviderConfig:
         if self.visual_memory_result_limit <= 0:
             raise ValueError("visual memory result limit must be positive")
         if not 0.0 <= self.visual_reminder_similarity_threshold <= 1.0:
-            raise ValueError("visual reminder similarity threshold must be within [0, 1]")
+            raise ValueError(
+                "visual reminder similarity threshold must be within [0, 1]"
+            )
         if self.visual_reminder_max_active <= 0:
             raise ValueError("visual reminder active limit must be positive")
         if self.visual_reminder_terminal_history_limit <= 0:
@@ -384,7 +384,9 @@ class ProviderConfig:
             source.get("MULTIMODAL_AGENT_IMAGE_PROVIDER"),
             allow_real=allow_real_providers,
         )
-        image_generation_settings = resolve_image_generation_provider(image_generation_provider, source)
+        image_generation_settings = resolve_image_generation_provider(
+            image_generation_provider, source
+        )
         qwen_realtime_vision_workspace_id = _qwen_realtime_vision_workspace_id(source)
         qwen_realtime_vision_region = _qwen_realtime_vision_region(
             source.get("QWEN_REALTIME_VISION_REGION")
@@ -392,11 +394,13 @@ class ProviderConfig:
         conversation_history_backend = _conversation_history_backend(
             source.get("MULTIMODAL_AGENT_CONVERSATION_HISTORY_BACKEND"),
         )
-        conversation_history_path = source.get("MULTIMODAL_AGENT_CONVERSATION_HISTORY_PATH") or (
-            ".local/memory/conversation_history.jsonl"
-        )
-        website_guidance_navigation_timeout_seconds = _website_guidance_navigation_timeout(
-            source.get("WEBSITE_GUIDANCE_NAVIGATION_TIMEOUT_SECONDS")
+        conversation_history_path = source.get(
+            "MULTIMODAL_AGENT_CONVERSATION_HISTORY_PATH"
+        ) or (".local/memory/conversation_history.jsonl")
+        website_guidance_navigation_timeout_seconds = (
+            _website_guidance_navigation_timeout(
+                source.get("WEBSITE_GUIDANCE_NAVIGATION_TIMEOUT_SECONDS")
+            )
         )
         config = cls(
             provider_mode=provider_mode,
@@ -405,7 +409,9 @@ class ProviderConfig:
             dashscope_api_key=source.get("DASHSCOPE_API_KEY"),
             ark_api_key=_ark_provider_api_key(source),
             qwen_vision_api_key=_qwen_capability_api_key(source, "QWEN_VISION_API_KEY"),
-            qwen_realtime_vision_api_key=_qwen_capability_api_key(source, "QWEN_VISION_API_KEY"),
+            qwen_realtime_vision_api_key=_qwen_capability_api_key(
+                source, "QWEN_VISION_API_KEY"
+            ),
             qwen_image_api_key=_qwen_capability_api_key(source, "QWEN_IMAGE_API_KEY"),
             ark_vision_api_key=_ark_capability_api_key(source, "ARK_VISION_API_KEY"),
             ark_image_api_key=_ark_capability_api_key(source, "ARK_IMAGE_API_KEY"),
@@ -422,7 +428,9 @@ class ProviderConfig:
             vision_embedding_provider=vision_embedding_provider,
             embedding_provider=vision_embedding_provider,
             vision_embedding_api_key=(
-                _vision_embedding_api_key(source) if vision_embedding_provider == "dashscope" else None
+                _vision_embedding_api_key(source)
+                if vision_embedding_provider == "dashscope"
+                else None
             ),
             vision_embedding_base_url=source.get(
                 "DASHSCOPE_MULTIMODAL_EMBEDDING_BASE_URL",
@@ -433,7 +441,9 @@ class ProviderConfig:
                 "DASHSCOPE_VISION_EMBEDDING_MODEL",
                 "tongyi-embedding-vision-flash-2026-03-06",
             ),
-            vision_embedding_dimension=_int_env(source.get("DASHSCOPE_VISION_EMBEDDING_DIMENSION"), 768),
+            vision_embedding_dimension=_int_env(
+                source.get("DASHSCOPE_VISION_EMBEDDING_DIMENSION"), 768
+            ),
             vision_embedding_timeout_seconds=_float_env(
                 source.get("DASHSCOPE_VISION_EMBEDDING_TIMEOUT_SECONDS"),
                 30.0,
@@ -495,7 +505,9 @@ class ProviderConfig:
                 source.get("PROACTIVE_MESSAGE_DELIVERY_TIMEOUT_SECONDS"),
                 95.0,
             ),
-            openai_vision_base_url=source.get("OPENAI_VISION_BASE_URL", "https://api.openai.com/v1"),
+            openai_vision_base_url=source.get(
+                "OPENAI_VISION_BASE_URL", "https://api.openai.com/v1"
+            ),
             openai_vision_model=source.get("OPENAI_VISION_MODEL", "gpt-4o-mini"),
             qwen_vision_base_url=source.get(
                 "QWEN_VISION_BASE_URL",
@@ -513,9 +525,15 @@ class ProviderConfig:
             ),
             qwen_realtime_vision_workspace_id=qwen_realtime_vision_workspace_id,
             qwen_realtime_vision_region=qwen_realtime_vision_region,
-            ark_vision_base_url=source.get("ARK_VISION_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3"),
-            ark_vision_model=source.get("ARK_VISION_MODEL", "doubao-seed-2-0-lite-260215"),
-            seed_vision_base_url=source.get("SEED_VISION_BASE_URL", "https://api.seed.example/v1/vision"),
+            ark_vision_base_url=source.get(
+                "ARK_VISION_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3"
+            ),
+            ark_vision_model=source.get(
+                "ARK_VISION_MODEL", "doubao-seed-2-0-lite-260215"
+            ),
+            seed_vision_base_url=source.get(
+                "SEED_VISION_BASE_URL", "https://api.seed.example/v1/vision"
+            ),
             seed_vision_model=source.get("SEED_VISION_MODEL", "seed-vision"),
             mem0_base_url=source.get("MEM0_BASE_URL"),
             mem0_api_key=source.get("MEM0_API_KEY"),
@@ -524,8 +542,7 @@ class ProviderConfig:
                 5.0,
             ),
             mem0_identity_namespace=(
-                source.get("MEM0_IDENTITY_NAMESPACE")
-                or "assistant-agent"
+                source.get("MEM0_IDENTITY_NAMESPACE") or "assistant-agent"
             ),
             memory_backend=source.get("MEMORY_BACKEND", "disabled"),
             memory_commit_ledger_path=source.get(
@@ -553,9 +570,7 @@ class ProviderConfig:
             local_file_access_root=(
                 source.get("MULTIMODAL_AGENT_FILE_ACCESS_ROOT") or ".data/files"
             ),
-            current_location=(
-                source.get("MULTIMODAL_AGENT_CURRENT_LOCATION") or None
-            ),
+            current_location=(source.get("MULTIMODAL_AGENT_CURRENT_LOCATION") or None),
             chat_provider=chat_provider,
             chat_api_key=chat_settings.api_key,
             chat_base_url=chat_settings.base_url,
@@ -718,9 +733,7 @@ class ProviderConfig:
                 False,
             ),
             durable_notification_worker_enabled=_bool_env(
-                source.get(
-                    "MULTIMODAL_AGENT_DURABLE_NOTIFICATION_WORKER_ENABLED"
-                ),
+                source.get("MULTIMODAL_AGENT_DURABLE_NOTIFICATION_WORKER_ENABLED"),
                 False,
             ),
             durable_task_lease_seconds=max(
@@ -729,7 +742,9 @@ class ProviderConfig:
             ),
             durable_task_poll_seconds=max(
                 0.1,
-                _float_env(source.get("MULTIMODAL_AGENT_DURABLE_TASK_POLL_SECONDS"), 1.0),
+                _float_env(
+                    source.get("MULTIMODAL_AGENT_DURABLE_TASK_POLL_SECONDS"), 1.0
+                ),
             ),
             durable_task_max_seconds=max(
                 3_600,
@@ -753,48 +768,27 @@ class ProviderConfig:
                 source.get("MULTIMODAL_AGENT_DURABLE_WORKFLOW_PATH")
                 or ".local/workflows/workflows.sqlite3"
             ),
-            durable_workflow_worker_enabled=_bool_env(
-                source.get("MULTIMODAL_AGENT_DURABLE_WORKFLOW_WORKER_ENABLED"),
-                False,
-            ),
-            durable_workflow_lease_seconds=max(
-                5,
-                _int_env(
-                    source.get("MULTIMODAL_AGENT_DURABLE_WORKFLOW_LEASE_SECONDS"),
-                    30,
-                ),
-            ),
-            durable_workflow_poll_seconds=max(
-                0.1,
-                _float_env(
-                    source.get("MULTIMODAL_AGENT_DURABLE_WORKFLOW_POLL_SECONDS"),
-                    1.0,
-                ),
-            ),
-            durable_workflow_max_concurrent_items=min(
-                64,
-                max(
-                    1,
-                    _int_env(
-                        source.get(
-                            "MULTIMODAL_AGENT_DURABLE_WORKFLOW_MAX_CONCURRENT_ITEMS"
-                        ),
-                        4,
-                    ),
-                ),
-            ),
             durable_workflow_artifact_path=(
                 source.get("MULTIMODAL_AGENT_DURABLE_WORKFLOW_ARTIFACT_PATH")
                 or ".local/workflows/artifacts"
             ),
-            openai_chat_base_url=source.get("OPENAI_CHAT_BASE_URL", "https://api.openai.com/v1"),
+            openai_chat_base_url=source.get(
+                "OPENAI_CHAT_BASE_URL", "https://api.openai.com/v1"
+            ),
             openai_chat_model=source.get("OPENAI_CHAT_MODEL", "gpt-4o-mini"),
-            qwen_chat_base_url=source.get("QWEN_CHAT_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
+            qwen_chat_base_url=source.get(
+                "QWEN_CHAT_BASE_URL",
+                "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            ),
             qwen_chat_workspace_id=qwen_chat_workspace_id,
             qwen_chat_model=source.get("QWEN_CHAT_MODEL", "qwen-plus"),
-            deepseek_chat_base_url=source.get("DEEPSEEK_CHAT_BASE_URL", "https://api.deepseek.com/v1"),
+            deepseek_chat_base_url=source.get(
+                "DEEPSEEK_CHAT_BASE_URL", "https://api.deepseek.com/v1"
+            ),
             deepseek_chat_model=source.get("DEEPSEEK_CHAT_MODEL", "deepseek-chat"),
-            ark_chat_base_url=source.get("ARK_CHAT_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3"),
+            ark_chat_base_url=source.get(
+                "ARK_CHAT_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3"
+            ),
             ark_chat_model=source.get("ARK_CHAT_MODEL"),
             local_chat_base_url=source.get("LOCAL_CHAT_BASE_URL"),
             local_chat_model=source.get("LOCAL_CHAT_MODEL", "local-chat"),
@@ -804,7 +798,9 @@ class ProviderConfig:
             image_generation_model=image_generation_settings.model,
             image_generation_adapter_kind=image_generation_settings.adapter_kind,
             openai_image_model=source.get("OPENAI_IMAGE_MODEL", "gpt-image-1"),
-            qwen_image_base_url=source.get("QWEN_IMAGE_BASE_URL", "https://dashscope.aliyuncs.com/api/v1"),
+            qwen_image_base_url=source.get(
+                "QWEN_IMAGE_BASE_URL", "https://dashscope.aliyuncs.com/api/v1"
+            ),
             qwen_image_model=source.get("QWEN_IMAGE_MODEL", "qwen-image-2.0-pro"),
             qwen_image_default_size="1024*1024",
             ark_image_base_url=source.get("ARK_IMAGE_BASE_URL"),
@@ -828,7 +824,9 @@ class ProviderConfig:
             ),
             web_search_base_url=source.get("WEB_SEARCH_BASE_URL"),
             web_search_api_key=source.get("WEB_SEARCH_API_KEY"),
-            web_search_timeout_seconds=_float_env(source.get("WEB_SEARCH_TIMEOUT_SECONDS"), 10.0),
+            web_search_timeout_seconds=_float_env(
+                source.get("WEB_SEARCH_TIMEOUT_SECONDS"), 10.0
+            ),
             website_guidance_enabled=(
                 _bool_env(
                     source.get("MULTIMODAL_AGENT_WEBSITE_GUIDANCE_ENABLED"),
@@ -896,21 +894,30 @@ class ProviderConfig:
                 30.0,
             ),
             haodanku_api_key=source.get("HAODANKU_API_KEY"),
-            haodanku_base_url=source.get("HAODANKU_BASE_URL") or "https://v3.api.haodanku.com",
-            haodanku_timeout_seconds=_float_env(source.get("HAODANKU_TIMEOUT_SECONDS"), 10.0),
+            haodanku_base_url=source.get("HAODANKU_BASE_URL")
+            or "https://v3.api.haodanku.com",
+            haodanku_timeout_seconds=_float_env(
+                source.get("HAODANKU_TIMEOUT_SECONDS"), 10.0
+            ),
             haodanku_enabled_platforms=_haodanku_enabled_platforms(
                 source.get("HAODANKU_ENABLED_PLATFORMS")
             ),
             haodanku_taobao_pid=source.get("HAODANKU_TAOBAO_PID"),
-            haodanku_taobao_authorized_name=source.get("HAODANKU_TAOBAO_AUTHORIZED_NAME"),
+            haodanku_taobao_authorized_name=source.get(
+                "HAODANKU_TAOBAO_AUTHORIZED_NAME"
+            ),
             haodanku_jd_sub_union_id=source.get("HAODANKU_JD_SUB_UNION_ID"),
             haodanku_pdd_channel=source.get("HAODANKU_PDD_CHANNEL"),
             video_understanding_timeout_seconds=_float_env(
                 source.get("VIDEO_UNDERSTANDING_TIMEOUT_SECONDS"),
                 60.0,
             ),
-            max_video_bytes=_int_env(source.get("MULTIMODAL_AGENT_MAX_VIDEO_BYTES"), 52_428_800),
-            max_video_seconds=_float_env(source.get("MULTIMODAL_AGENT_MAX_VIDEO_SECONDS"), 60.0),
+            max_video_bytes=_int_env(
+                source.get("MULTIMODAL_AGENT_MAX_VIDEO_BYTES"), 52_428_800
+            ),
+            max_video_seconds=_float_env(
+                source.get("MULTIMODAL_AGENT_MAX_VIDEO_SECONDS"), 60.0
+            ),
             langgraph_checkpointer_backend=_langgraph_checkpointer_backend(
                 source.get("LANGGRAPH_CHECKPOINTER_BACKEND")
                 or source.get("MULTIMODAL_AGENT_CHECKPOINTER_BACKEND")
@@ -1041,7 +1048,10 @@ class ProviderConfig:
                 "OPENAI_API_KEY": self.openai_api_key or "",
                 "OPENAI_VISION_BASE_URL": self.openai_vision_base_url,
                 "OPENAI_VISION_MODEL": self.openai_vision_model,
-                "QWEN_API_KEY": self.qwen_api_key or self.qwen_vision_api_key or self.dashscope_api_key or "",
+                "QWEN_API_KEY": self.qwen_api_key
+                or self.qwen_vision_api_key
+                or self.dashscope_api_key
+                or "",
                 "QWEN_VISION_API_KEY": self.qwen_vision_api_key or "",
                 "QWEN_VISION_BASE_URL": self.qwen_vision_base_url,
                 "QWEN_VISION_MODEL": self.qwen_vision_model,
@@ -1059,7 +1069,11 @@ class ProviderConfig:
     def resolved_image_generation_provider(self) -> ResolvedProviderSpec:
         """Return selected image generation provider config with legacy compatibility."""
 
-        if self.image_generation_api_key or self.image_generation_base_url or self.image_generation_model:
+        if (
+            self.image_generation_api_key
+            or self.image_generation_base_url
+            or self.image_generation_model
+        ):
             return resolve_image_generation_provider(
                 self.image_generation_provider,
                 {
@@ -1085,7 +1099,10 @@ class ProviderConfig:
                 "OPENAI_API_KEY": self.openai_api_key or "",
                 "OPENAI_IMAGE_MODEL": self.openai_image_model,
                 "DASHSCOPE_API_KEY": self.dashscope_api_key or "",
-                "QWEN_API_KEY": self.qwen_api_key or self.qwen_image_api_key or self.dashscope_api_key or "",
+                "QWEN_API_KEY": self.qwen_api_key
+                or self.qwen_image_api_key
+                or self.dashscope_api_key
+                or "",
                 "QWEN_IMAGE_API_KEY": self.qwen_image_api_key or "",
                 "QWEN_IMAGE_BASE_URL": self.qwen_image_base_url,
                 "QWEN_IMAGE_MODEL": self.qwen_image_model,
@@ -1118,11 +1135,15 @@ def _langgraph_checkpointer_backend(value: str | None) -> LangGraphCheckpointerB
     )
 
 
-def _vision_provider(value: str | None, *, allow_real: bool = True) -> VisionProviderName:
+def _vision_provider(
+    value: str | None, *, allow_real: bool = True
+) -> VisionProviderName:
     return select_vision_provider(value, allow_real=allow_real)
 
 
-def _vision_embedding_provider(value: str | None, *, allow_real: bool = True) -> VisionEmbeddingProviderName:
+def _vision_embedding_provider(
+    value: str | None, *, allow_real: bool = True
+) -> VisionEmbeddingProviderName:
     if allow_real and value in {"dashscope", "local_siglip2"}:
         return value
     return "mock"
@@ -1176,7 +1197,9 @@ def _deepseek_provider_api_key(source: Mapping[str, str]) -> str | None:
     return None
 
 
-def _qwen_capability_api_key(source: Mapping[str, str], *legacy_api_key_envs: str) -> str | None:
+def _qwen_capability_api_key(
+    source: Mapping[str, str], *legacy_api_key_envs: str
+) -> str | None:
     for key_env in ("QWEN_API_KEY", "DASHSCOPE_API_KEY", *legacy_api_key_envs):
         value = source.get(key_env)
         if value:
@@ -1184,7 +1207,9 @@ def _qwen_capability_api_key(source: Mapping[str, str], *legacy_api_key_envs: st
     return None
 
 
-def _ark_capability_api_key(source: Mapping[str, str], *legacy_api_key_envs: str) -> str | None:
+def _ark_capability_api_key(
+    source: Mapping[str, str], *legacy_api_key_envs: str
+) -> str | None:
     for key_env in ("ARK_API_KEY", *legacy_api_key_envs):
         value = source.get(key_env)
         if value:
@@ -1251,23 +1276,31 @@ def _qwen_chat_api_protocol(value: str | None) -> QwenChatApiProtocol:
     return normalized  # type: ignore[return-value]
 
 
-def _image_generation_provider(value: str | None, *, allow_real: bool = True) -> ImageGenerationProviderName:
+def _image_generation_provider(
+    value: str | None, *, allow_real: bool = True
+) -> ImageGenerationProviderName:
     return select_image_generation_provider(value, allow_real=allow_real)
 
 
-def _search_provider(value: str | None, *, allow_real: bool = True) -> SearchProviderName:
+def _search_provider(
+    value: str | None, *, allow_real: bool = True
+) -> SearchProviderName:
     if allow_real and value in {"http", "tavily"}:
         return value
     return "mock"
 
 
-def _visual_image_search_provider(value: str | None, *, allow_real: bool = True) -> VisualImageSearchProviderName:
+def _visual_image_search_provider(
+    value: str | None, *, allow_real: bool = True
+) -> VisualImageSearchProviderName:
     if allow_real and value == "qwen":
         return "qwen"
     return "mock"
 
 
-def _shopping_search_provider(value: str | None, *, allow_real: bool = True) -> ShoppingSearchProviderName:
+def _shopping_search_provider(
+    value: str | None, *, allow_real: bool = True
+) -> ShoppingSearchProviderName:
     if not allow_real:
         return "mock"
     if value in {"http", "haodanku"}:
@@ -1275,7 +1308,9 @@ def _shopping_search_provider(value: str | None, *, allow_real: bool = True) -> 
     return "mock"
 
 
-def _shopping_compare_provider(value: str | None, *, allow_real: bool = True) -> ShoppingCompareProviderName:
+def _shopping_compare_provider(
+    value: str | None, *, allow_real: bool = True
+) -> ShoppingCompareProviderName:
     if not allow_real:
         return "mock"
     if value in {"http", "haodanku"}:
@@ -1283,7 +1318,9 @@ def _shopping_compare_provider(value: str | None, *, allow_real: bool = True) ->
     return "mock"
 
 
-def _lodging_provider(value: str | None, *, allow_real: bool = True) -> LodgingProviderName:
+def _lodging_provider(
+    value: str | None, *, allow_real: bool = True
+) -> LodgingProviderName:
     if allow_real and value == "flyai":
         return "flyai"
     return "mock"
@@ -1306,7 +1343,12 @@ def _clean_env_value(value: str) -> str:
     cleaned = value.strip()
     if " #" in cleaned:
         cleaned = cleaned.split(" #", 1)[0].strip()
-    if len(cleaned) >= 2 and (cleaned[0], cleaned[-1]) in {('"', '"'), ("'", "'"), ("“", "”"), ("‘", "’")}:
+    if len(cleaned) >= 2 and (cleaned[0], cleaned[-1]) in {
+        ('"', '"'),
+        ("'", "'"),
+        ("“", "”"),
+        ("‘", "’"),
+    }:
         cleaned = cleaned[1:-1]
     return cleaned.strip().strip('"').strip("'").strip("“”‘’")
 
@@ -1333,7 +1375,9 @@ def _ratio_env(value: str | None, default: float) -> float:
 
 
 def _chat_stream(source: Mapping[str, str], chat_provider: ChatProviderName) -> bool:
-    provider_override = source.get("DEEPSEEK_CHAT_STREAM") if chat_provider == "deepseek" else None
+    provider_override = (
+        source.get("DEEPSEEK_CHAT_STREAM") if chat_provider == "deepseek" else None
+    )
     if provider_override is not None:
         return _bool_env(provider_override, True)
     if chat_provider == "deepseek":

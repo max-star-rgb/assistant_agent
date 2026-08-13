@@ -9,7 +9,12 @@ from time import monotonic
 from typing import Any
 
 from assistant_agent.config import ProviderConfig
+from assistant_agent.identity import RequestIdentity
 from assistant_agent.observability.trace_persistence import close_trace_store
+from assistant_agent.runtime.assistant_graph_app import (
+    GraphExecutionError,
+    GraphExecutionIdentity,
+)
 from assistant_agent.runtime.checkpointer import AsyncCheckpointerOwner
 
 
@@ -124,16 +129,56 @@ class RuntimeHost:
 
         await self._begin_async_invocation()
         try:
-            return await self._runtime.alist_history(owner, **kwargs)
+            identity = _graph_identity_for_owner(
+                self._runtime,
+                owner,
+                run_id="history-inspect",
+            )
+            if (
+                getattr(
+                    self._runtime.assistant_graph_app.graph,
+                    "checkpointer",
+                    None,
+                )
+                is None
+            ):
+                raise GraphExecutionError(
+                    "graph_checkpointer_required",
+                    "Assistant graph time travel requires an explicitly configured saver.",
+                )
+            return await self._runtime.assistant_graph_app.alist_history(
+                identity,
+                **kwargs,
+            )
         finally:
             await self._finish_async_invocation()
 
-    async def adelete_assistant_thread(self, **kwargs: Any) -> Any:
+    async def adelete_assistant_thread(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+    ) -> int:
         """Delete one thread while saver and claim resources remain leased."""
 
         await self._begin_async_invocation()
         try:
-            return await self._runtime.adelete_assistant_thread(**kwargs)
+            deleted = await self._runtime.assistant_graph_app.adelete_thread(
+                agent_id=self._runtime.agent_id,
+                user_id=user_id,
+                session_id=session_id,
+                invocation_claim_store=(
+                    self._runtime.graph_invocation_claim_store
+                ),
+            )
+            self._runtime.long_term_memory_service.release_thread_contexts(
+                identity=RequestIdentity.for_user(
+                    user_id=user_id,
+                    agent_id=self._runtime.agent_id,
+                    session_id=session_id,
+                )
+            )
+            return deleted
         finally:
             await self._finish_async_invocation()
 
@@ -239,3 +284,24 @@ def _close_runtime(runtime: Any) -> bool:
     except Exception:
         return False
     return result is not False
+
+
+def _graph_identity_for_owner(
+    runtime: Any,
+    owner: RequestIdentity,
+    *,
+    run_id: str,
+) -> GraphExecutionIdentity:
+    if not isinstance(owner, RequestIdentity):
+        raise TypeError("owner must be a RequestIdentity")
+    if owner.agent_id != runtime.agent_id or owner.session_id is None:
+        raise GraphExecutionError(
+            "graph_checkpoint_owner_mismatch",
+            "Assistant graph owner must match this Runtime and include a session.",
+        )
+    return GraphExecutionIdentity.for_assistant_turn(
+        agent_id=owner.agent_id,
+        user_id=owner.user_id,
+        session_id=owner.session_id,
+        run_id=run_id,
+    )

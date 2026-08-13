@@ -13,19 +13,14 @@ from assistant_agent.workflows.definitions import (
     build_bootstrap_plan,
 )
 from assistant_agent.workflows.models import WorkflowBundle, WorkflowSubmission, utc_now
-from assistant_agent.workflows.models import WorkflowExecutionEngine
-from assistant_agent.workflows.models import WorkflowEvent
 from assistant_agent.workflows.store import (
     WorkflowAlreadyExists,
-    WorkflowRevisionConflict,
     WorkflowStore,
 )
 from assistant_agent.workflows.transitions import (
     WorkflowLimits,
-    WorkflowTransitionRejected,
     create_initial_bundle,
     normalize_budget,
-    request_cancel,
 )
 
 
@@ -49,10 +44,6 @@ class WorkflowSubmissionConflict(WorkflowServiceError):
     code = "workflow_submission_conflict"
 
 
-class WorkflowStateConflict(WorkflowServiceError):
-    code = "workflow_state_conflict"
-
-
 def submission_digest(submission: WorkflowSubmission) -> str:
     payload = json.dumps(
         submission.model_dump(mode="json"),
@@ -71,13 +62,11 @@ class WorkflowService:
         definitions: WorkflowDefinitionCatalog,
         limits: WorkflowLimits | None = None,
         clock: Callable = utc_now,
-        submission_engine: WorkflowExecutionEngine = "legacy_scheduler_v2",
     ) -> None:
         self.store = store
         self.definitions = definitions
         self.limits = limits or WorkflowLimits()
         self.clock = clock
-        self.submission_engine = submission_engine
 
     def submit(
         self,
@@ -89,7 +78,9 @@ class WorkflowService:
         ingress_parent_span_id: str | None = None,
     ) -> WorkflowBundle:
         if identity.session_id is None or not ingress_run_id:
-            raise WorkflowSubmissionRejected("trusted session and run identity are required")
+            raise WorkflowSubmissionRejected(
+                "trusted session and run identity are required"
+            )
         digest = submission_digest(submission)
         existing = self._load_submission(identity, ingress_run_id, submission)
         if existing is not None:
@@ -128,7 +119,7 @@ class WorkflowService:
                 plan=plan,
                 limits=self.limits,
                 now=now,
-                execution_engine=self.submission_engine,
+                execution_engine="langgraph_v3",
             )
             return self.store.create(bundle, events)
         except WorkflowAlreadyExists:
@@ -139,7 +130,9 @@ class WorkflowService:
         except WorkflowServiceError:
             raise
         except Exception as exc:
-            raise WorkflowSubmissionRejected("workflow submission was rejected") from exc
+            raise WorkflowSubmissionRejected(
+                "workflow submission was rejected"
+            ) from exc
 
     def get_workflow(
         self, *, identity: RequestIdentity, workflow_id: str
@@ -168,81 +161,6 @@ class WorkflowService:
             after=max(0, after),
             limit=min(max(1, limit), 500),
         )
-
-    def cancel(
-        self,
-        *,
-        identity: RequestIdentity,
-        workflow_id: str,
-        reason_code: str = "user_cancelled",
-    ) -> WorkflowBundle:
-        bundle = self.get_workflow(identity=identity, workflow_id=workflow_id)
-        try:
-            changed, events = request_cancel(
-                bundle,
-                now=self.clock(),
-                reason_code=reason_code,
-            )
-            if not events:
-                return changed
-            return self.store.save(
-                changed,
-                expected_revision=bundle.workflow.revision,
-                events=events,
-            )
-        except WorkflowTransitionRejected as exc:
-            raise WorkflowStateConflict(str(exc)) from exc
-        except WorkflowRevisionConflict as exc:
-            raise WorkflowStateConflict(workflow_id) from exc
-
-    def provide_input(
-        self,
-        *,
-        identity: RequestIdentity,
-        workflow_id: str,
-        resume_token: str,
-        values: dict,
-    ) -> WorkflowBundle:
-        bundle = self.get_workflow(identity=identity, workflow_id=workflow_id)
-        workflow = bundle.workflow
-        if resume_token in workflow.consumed_resume_tokens:
-            return bundle
-        waiting = workflow.waiting_input
-        if (
-            workflow.status != "waiting_input"
-            or not isinstance(waiting, dict)
-            or waiting.get("resume_token") != resume_token
-        ):
-            raise WorkflowStateConflict("workflow resume token is invalid or stale")
-        changed = bundle.model_copy(deep=True)
-        changed.workflow.inputs.setdefault("user_inputs", [])
-        user_inputs = changed.workflow.inputs["user_inputs"]
-        if not isinstance(user_inputs, list):
-            raise WorkflowStateConflict("workflow user input state is invalid")
-        user_inputs.append({"resume_token": resume_token, "values": dict(values)})
-        changed.workflow.consumed_resume_tokens.append(resume_token)
-        changed.workflow.waiting_input = None
-        changed.workflow.status = "queued"
-        changed.workflow.phase = "resumed"
-        for item in changed.current_plan.work_items:
-            if item.status == "blocked":
-                item.status = "ready"
-        try:
-            return self.store.save(
-                changed,
-                expected_revision=bundle.workflow.revision,
-                events=[WorkflowEvent(
-                    workflow_id=workflow_id,
-                    event_type="workflow.input.received",
-                    status="queued",
-                    payload={"resume_token": resume_token},
-                )],
-            )
-        except WorkflowRevisionConflict as exc:
-            latest = self.get_workflow(identity=identity, workflow_id=workflow_id)
-            if resume_token in latest.workflow.consumed_resume_tokens:
-                return latest
-            raise WorkflowStateConflict(workflow_id) from exc
 
     def _load_submission(
         self,

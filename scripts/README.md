@@ -1,18 +1,20 @@
 # Scripts 入口索引
 
 这里只保留当前 runtime、观测、评测和专项验收仍在使用的入口。一次性排障或已由 pytest、
-eval、Agent Server 主链路覆盖的 probe 不应继续沉积到本目录。
+eval、Gateway 主链路覆盖的 probe 不应继续沉积到本目录。
 
 - `scripts/check_documentation_authority.py`：离线校验 `docs/authority.toml` 的 owner、路由、排他事实与
   changed-path 复核范围；输出结构化 JSON，不读取 `.env`、不联网、不改写文档。
 
-## Agent Server runtime
+## Realtime runtime
 
-- `scripts/run_server.py`：启动 `langgraph.json` 定义的本地 Agent Server。它不再启动自研 FastAPI/Gateway
-  composition root；`--no-reload` 可用于稳定 probe。`langgraph dev` 的 in-memory server 仅用于开发。
-- `scripts/run_langfuse.py`: PyCharm-friendly local Langfuse supervisor. It starts
-  the ignored `.data/langfuse` Compose stack, waits for health, stays attached as
-  one Run process, and stops the containers without deleting data when terminated.
+- `scripts/run_server.py`: starts the FastAPI backend with Gateway, media, HTTP,
+  memory, trace, and tool-governed runtime routes. 启动完成后默认打印从实际 app/runtime
+  收集的精简运维摘要，包括 bind、健康检查、Provider、Tool 分类计数、Worker、已启用集成、
+  安全开关，以及 Runtime completeness ledger、LangSmith native tracing、Gateway lifecycle、Agent-Service
+  delivery audit 和 Gateway text log 的分层观测位置；只有排查 Tool 装配时才使用
+  `--startup-details` 展开按 plugin ownership 分组的完整清单。
+  本地 completeness ledger 不保留 Memory 正文；单条 Mem0 演化用其原生 history API 钻取。
 - `scripts/run_qdrant.py`：PyCharm-friendly 本地 Qdrant supervisor。它只启动
   `docker/mem0/compose.yaml` 的 `visual-memory` profile 和 `qdrant` service，等待
   `http://127.0.0.1:6333/healthz` 就绪，并作为一个 Run process 持续运行。仓库已提供共享配置
@@ -29,14 +31,28 @@ eval、Agent Server 主链路覆盖的 probe 不应继续沉积到本目录。
   `clear --all` resets every memory plus Mem0 history and always requires typing
   `DELETE ALL MEMORIES` (`--yes` is rejected for this scope). Exiting leaves both
   containers and persistent data running. 这是直接读写 Mem0 sidecar 原生记录的 operator console，
-  不是 Runtime graph-native Memory 管理入口，也不经过 `memory_recall` / `memory_commit` 节点。
-Runtime 后端由受信 `MEMORY_BACKEND` 配置在 composition root 中排他装配，不提供独立 Plugin CLI。
+  不是 Runtime Memory Plugin 管理入口，也不经过 `assistant_memory_plugin_v1` 的
+  `open_session` / `prepare_context` / `ingest_turn` / `close_session` 生命周期。
+
+Runtime Memory Plugin 的只读装配诊断不是 `scripts/` supervisor，直接运行：
+
+```bash
+MULTIMODAL_AGENT_PROVIDER_MODE=mock \
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python \
+  -m assistant_agent.memory.cli plugins
+```
+
+该命令只解析配置并装配 factory，输出脱敏 JSON；不启动 Mem0/Qdrant，不执行远端健康检查、召回、
+写入或真实 Provider 请求。默认 mock 会报告 sealed 的 `mem0` slot，同时以
+`readiness=unavailable` 和 `memory_plugin_offline` 明确表示后端离线。
 - `scripts/migrate_mem0_memories_to_chinese.py`：检查或迁移一个 runtime 用户已有的
   Mem0 记忆为简体中文。默认命令只读；更新要求 real Provider mode、已配置的 Qwen 和
   Mem0，并同时传入 `--apply` 与 `--allow-real-provider`。输出只包含数量、memory ID、
   状态和稳定错误码，不持久化记忆正文或 Provider 响应。
-- `scripts/agent_cli.py`：使用公开 `langgraph_sdk` 创建/复用 thread 并执行 assistant run；交互模式支持
-  `/standard`、`/deep research`、`/new`。真实部署可用 `--token` 传 service bearer token。
+- `scripts/agent_cli.py`：HTTP/SSE 产品 CLI，与 Web UI 共用 `/agent/run`。默认请求
+  `text/event-stream` 并逐 delta 输出；`--no-stream` 可验证 JSON 表示，交互模式支持
+  `/standard`、`/deep research`、`/new`，Ctrl-C 会按 `user_id + session_id + run_id`
+  请求取消当前 run。terminal annotations 只打印本轮实际引用来源的紧凑诊断，不修改正文。
 - `scripts/media_simulator.py`: server-backed Media-Agent protocol simulator for
   `/agent-service/v1`; type text repeatedly, or use `/new [sessionId]` to open a
   new media session. In interactive mode, `/deep research` selects
@@ -79,21 +95,11 @@ For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
 ## Observability and local operations
 
 - `scripts/trace_metrics.py`: redacted trace metric summary.
-- `scripts/run_runtime_audit.py`: 只读日审计稳定入口。`run` 默认审计前一北京时间自然日；Langfuse 查询
-  成功但没有 Trace 时输出“昨天无运行trace”，存在异常时才调用受限 Codex。它不启动 Langfuse、不同步
-  Dataset，也不运行 Agent Experiment；成功发布后清理超过 `--local-ledger-retention-days`（默认 14 天）
-  且已有成功审计证明的 `.data/trace_ledger/YYYY-MM-DD.jsonl` 分片；`configure-evaluators` 管理五条 Live Observation Rule，并在真实
-  回归 Dataset 已存在时管理两条 Experiment Rule。
-  参数、证据边界、状态机、产物和 systemd 配置统一见
-  [`docs/observability-harness.md`](../docs/observability-harness.md#langfuse-first-runtime-审计)。
-- thread/run/checkpoint/stream 生命周期以 Agent Server 原生 API 与 LangSmith trace 为准；不再写入自研
-  Gateway lifecycle ledger。
+- Gateway lifecycle 由 `scripts/run_server.py` 写入 `.data/gateway_events.jsonl`；仓库当前没有
+  独立 viewer，按 `run_id`、`turn_id` 或 `trace_id` 使用标准 JSONL/文本工具检索。
 
 ## Eval and evidence
 
-- `evals/system/incubating/agent_server_native_runtime/checks_deployment.py`：使用 mock
-  Provider 启动真实本地 `langgraph dev`，通过公开 SDK 验证 Agent Server 的 schema、
-  thread/run/checkpoint、Store、cancel 与媒体 custom route；不调用真实 Provider，结果逐项输出结构化 PASS/FAIL。
 - `scripts/run_demo_flows.py`: offline scenario matrix for regression demos.
 - `scripts/run_evals.py`: offline eval harness for lower-layer behavior checks.
 - `scripts/run_system_tool_evals.py`: 真实 LLM + 真实 Tool 的 system eval；
@@ -125,21 +131,16 @@ For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
   grounding/response-quality 两条独立 Dataset rule，显式 `--apply` 才创建或更新且不运行 Judge；`--run`
   以一个原生 LangSmith Project / Experiment 执行
   Decision fixture backend 与隔离 Staging；`--record-decision` 保存 operator 的人工发布决定。真实运行
-  必须同时显式允许 real Provider 和 Staging 副作用，不会静默回退 mock。Dataset、Feedback、webhook、
-  清理和产物契约统一见 [`evals/README.md`](../evals/README.md)。日常 `run_runtime_audit` 不参与这条链路。
-- `scripts/run_runtime_regressions.py`：Runtime Regression webhook 复用的受控执行内核。案例只来自
-  Langfuse UI 中固定的 `assistant-agent-runtime-regressions` Dataset；`--preflight` 验证 Dataset Item 与
-  real Provider readiness，`--run` 通过生产 `AgentGraphRuntime` 创建真实 Experiment，并等待三项
-  Experiment Score 完整落库。日常操作直接在 Langfuse UI 触发，无需手工运行 CLI。流程与数据契约见
-  [`evals/README.md`](../evals/README.md#日常失败到-runtime-regression)。
-- `scripts/run_langsmith_runtime_regressions.py`：并行 LangSmith Runtime Regression 入口。案例只读取
-  LangSmith UI 中同名固定 Dataset，不与 Langfuse 自动同步；`--inspect` 只校验 active Example object，
+  必须同时显式允许 real Provider 和 Staging 副作用，不会静默回退 mock。Dataset、Feedback、
+  清理和产物契约统一见 [`evals/README.md`](../evals/README.md)。
+- `scripts/run_langsmith_runtime_regressions.py`：LangSmith Runtime Regression 唯一稳定入口。案例由人工从
+  日常异常 trace 脱敏并沉淀到固定 Dataset；`--inspect` 只校验 active Example object，
   `--configure-evaluators --model-config-id <uuid>` 默认只规划三个 Dataset evaluator，显式 `--apply` 才会
   创建或更新远端规则且不会运行 Judge；
   `--preflight` 校验真实 Provider 与 LangSmith exporter，`--run` 通过生产 `AgentGraphRuntime` 创建原生
   LangSmith Experiment，并等待 Runtime/LLM 子树和三项 Feedback 完整。preflight/run 都要求
   `--allow-real-provider` 与 `--allow-runtime-side-effects`。流程与 schema 见
-  [`evals/README.md`](../evals/README.md#并行-langsmith-桥)。
+  [`evals/README.md`](../evals/README.md#3-日常异常到-runtime-regression-的唯一闭环)。
 - `scripts/run_langsmith_workflow_regressions.py`：M3 Durable Workflow 原生 LangSmith Experiment
   入口。`--inspect` 只在本地检查 typed Example、四项 Feedback 和 operator evidence 契约，不创建
   LangSmith client；`--preflight`/`--run` 必须显式允许 real Provider 与 Workflow 副作用（兼容
@@ -147,6 +148,8 @@ For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
   shared official SQLite saver 与 production `WorkflowGraphHost` composition readiness。`--run` 直接执行
   production compiled graph，并等待真实 native tree 与四项 Feedback 完整且全部通过。固定 Dataset 不存在时
   先显式运行 `--sync`，从 Git-owned `examples.json` 幂等创建四类严格 Example。
+- 最终 Graph API capability matrix 是 `assistant_agent.runtime.graph_capability_evidence` 的只读机器合同，
+  由显式 TDD 验证 tracked evidence anchor；它不新增 runner，也不调用 Provider、LangSmith 或真实 Workflow DB。
 - `scripts/run_improvement_lab.py`: offline, non-mutating improvement proposal runner.
 
 ## Specialized integrations

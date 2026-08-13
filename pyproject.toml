@@ -22,12 +22,7 @@ dependencies = [
 [project.optional-dependencies]
 browser = ["playwright>=1.62,<2"]
 dev = ["pytest>=8.0"]
-eval = ["langfuse>=4.10,<5", "langsmith>=0.9.8,<1", "PyYAML>=6.0,<7"]
-observability = [
-    "opentelemetry-api>=1.25,<2",
-    "opentelemetry-sdk>=1.25,<2",
-    "opentelemetry-exporter-otlp-proto-http>=1.25,<2",
-]
+eval = ["langsmith>=0.9.8,<1", "PyYAML>=6.0,<7"]
 local-vision-embedding = [
     "numpy>=2.0,<3",
     "onnx>=1.17,<2",

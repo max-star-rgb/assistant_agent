@@ -866,7 +866,7 @@ def _record_local_llm_input(
     attempt_kind: str,
     provider_payload: dict[str, Any] | None = None,
 ) -> None:
-    """Capture one Provider request for local Langfuse generation input."""
+    """Capture one Provider request for the structured generation trace."""
 
     from assistant_agent.observability.trace_conversation import (
         TraceLlmInput,

@@ -1,19 +1,11 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
-import json
 from typing import Any
 
 from assistant_agent.media.vision import observability as vision_observability
 from assistant_agent.media.vision.models import VideoUnderstandingResult
 from assistant_agent.media.vision.observability import observe_vision_inference
-from assistant_agent.observability.otel_mapping import build_text_otel_span_specs
-from assistant_agent.observability.trace_conversation import (
-    TraceConversationText,
-    TraceConversationView,
-    TraceVlmOutput,
-)
-from assistant_agent.observability.trace_store import InMemoryTraceStore, TraceEvent
+from assistant_agent.observability.trace_store import InMemoryTraceStore
 from assistant_agent.tools.base import ToolContext
 
 
@@ -199,89 +191,3 @@ def test_vlm_inference_reports_its_trace_link_fail_open(monkeypatch) -> None:
         ),
     )
     assert result.summary == "关联测试。"
-
-
-def test_vision_mapping_exports_normalized_vlm_text_from_overlay() -> None:
-    events = _background_vision_events()
-    conversation = TraceConversationView(
-        trace_id="4" * 32,
-        user=TraceConversationText(text="", chars=0),
-        assistant=TraceConversationText(text="", chars=0),
-        vlm_outputs=[
-            TraceVlmOutput(
-                span_id="vlm-span",
-                provider="mock",
-                model="mock-vlm",
-                normalized_result={
-                    "summary": "窗边有一盆绿植。",
-                    "scene": "室内窗边",
-                    "objects": ["绿植"],
-                },
-            )
-        ],
-    )
-
-    specs = build_text_otel_span_specs(events, conversation=conversation)
-
-    root = next(item for item in specs if item.name == "vision.runtime")
-    vlm = next(item for item in specs if item.name == "vlm.infer")
-    vlm_output = json.loads(vlm.attributes["langfuse.observation.output"])
-    root_output = json.loads(root.attributes["langfuse.trace.output"])
-    assert vlm_output["summary"] == "窗边有一盆绿植。"
-    assert vlm_output["objects"] == ["绿植"]
-    assert root_output["summary"] == "窗边有一盆绿植。"
-    assert root_output["scene"] == "室内窗边"
-
-
-def _background_vision_events() -> list[TraceEvent]:
-    created_at = datetime(2026, 8, 6, tzinfo=timezone.utc)
-    common = {
-        "trace_id": "4" * 32,
-        "run_id": "vision-run-mapping",
-        "user_id": "user-vlm",
-        "session_id": "session-vlm",
-        "node_name": "realtime_video_observer",
-        "event_type": "observability",
-        "created_at": created_at,
-    }
-    return [
-        TraceEvent(
-            **common,
-            canonical_event="tool.started",
-            span_id="tool-span",
-            tool_name="realtime_video_observe",
-            status="started",
-        ),
-        TraceEvent(
-            **common,
-            canonical_event="vlm.infer.finished",
-            observation_name="vlm.infer",
-            observation_type="generation",
-            span_id="vlm-span",
-            parent_span_id="tool-span",
-            provider="mock",
-            model="mock-vlm",
-            status="succeeded",
-            output_summary={"status": "succeeded"},
-            attributes={"model_role": "vlm", "media_kind": "live_view"},
-        ),
-        TraceEvent(
-            **common,
-            canonical_event="tool.finished",
-            observation_type="span",
-            span_id="tool-span",
-            tool_name="realtime_video_observe",
-            status="succeeded",
-        ),
-        TraceEvent(
-            **common,
-            canonical_event="vision.observation.summary",
-            status="completed",
-            attributes={
-                "trace_kind": "vision_observation",
-                "media_kind": "live_view",
-                "frame_sequence": 7,
-            },
-            output_summary={"status": "succeeded"},
-        ),
-    ]

@@ -487,8 +487,6 @@ def test_graph_checkpoints_stable_operation_scope_before_tool_edge(
         ),
         event_sink=None,
         cancel_token=None,
-        trace_context=None,
-        export_trace_context=None,
         pre_terminal_state_hook=None,
         run_id="turn-origin-sentinel",
     )
@@ -780,8 +778,6 @@ def test_interrupt_rebuild_resume_matches_uninterrupted_write_trajectory(tmp_pat
         request.model_copy(deep=True),
         event_sink=None,
         cancel_token=None,
-        trace_context=None,
-        export_trace_context=None,
         pre_terminal_state_hook=None,
         run_id="turn-equivalence",
     )
@@ -812,8 +808,6 @@ def test_interrupt_rebuild_resume_matches_uninterrupted_write_trajectory(tmp_pat
         request.model_copy(deep=True),
         event_sink=None,
         cancel_token=None,
-        trace_context=None,
-        export_trace_context=None,
         pre_terminal_state_hook=None,
         run_id="turn-equivalence",
         interrupt_request=AssistantInterruptRequest(
@@ -848,8 +842,6 @@ def test_interrupt_rebuild_resume_matches_uninterrupted_write_trajectory(tmp_pat
         request.model_copy(deep=True),
         event_sink=None,
         cancel_token=None,
-        trace_context=None,
-        export_trace_context=None,
         pre_terminal_state_hook=None,
         run_id="resume-equivalence",
     )
@@ -928,8 +920,6 @@ def test_crash_after_commit_before_graph_checkpoint_never_fabricates_or_reinvoke
         request.model_copy(deep=True),
         event_sink=None,
         cancel_token=None,
-        trace_context=None,
-        export_trace_context=None,
         pre_terminal_state_hook=None,
         run_id="turn-post-commit",
     )
@@ -986,8 +976,6 @@ def test_crash_after_commit_before_graph_checkpoint_never_fabricates_or_reinvoke
         request.model_copy(deep=True),
         event_sink=None,
         cancel_token=None,
-        trace_context=None,
-        export_trace_context=None,
         pre_terminal_state_hook=None,
         run_id="turn-post-commit",
     )

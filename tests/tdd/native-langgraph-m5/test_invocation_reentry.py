@@ -31,6 +31,7 @@ from assistant_agent.runtime.graph_invocation_claims import (
 from assistant_agent.runtime.output_models import NativeToolCall
 from assistant_agent.runtime.requests import UserRequest
 from assistant_agent.runtime.runtime import AgentGraphRuntime
+from assistant_agent.runtime.runtime_host import RuntimeHost
 from assistant_agent.runtime.run_history import RunHistoryStore
 from assistant_agent.runtime.session_store import InMemorySessionStore
 from assistant_agent.runtime.state import AgentState
@@ -172,8 +173,6 @@ def test_no_saver_retains_claim_until_retention_owner_deletes_thread() -> None:
             _request(),
             event_sink=None,
             cancel_token=None,
-            trace_context=None,
-            export_trace_context=None,
             pre_terminal_state_hook=None,
             run_id="run-retention-owner",
         ).identity
@@ -230,8 +229,6 @@ def test_no_saver_rejects_different_token_for_same_run_without_provider_reexecut
                 _request(),
                 event_sink=None,
                 cancel_token=None,
-                trace_context=None,
-                export_trace_context=None,
                 pre_terminal_state_hook=None,
                 run_id="run-no-saver-reuse",
             )
@@ -379,8 +376,6 @@ def test_completed_native_noop_rejects_different_token_at_app_boundary() -> None
         _request(),
         event_sink=None,
         cancel_token=None,
-        trace_context=None,
-        export_trace_context=None,
         pre_terminal_state_hook=None,
         run_id="run-completed-noop",
     )
@@ -432,8 +427,6 @@ def test_public_astream_rejects_completed_checkpoint_reuse_before_native_noop() 
         _request(),
         event_sink=None,
         cancel_token=None,
-        trace_context=None,
-        export_trace_context=None,
         pre_terminal_state_hook=None,
         run_id="run-completed-astream",
     )
@@ -489,8 +482,6 @@ def test_same_token_retry_remains_idempotent_when_tracing_fails_before_native_st
         _request(),
         event_sink=None,
         cancel_token=None,
-        trace_context=None,
-        export_trace_context=None,
         pre_terminal_state_hook=None,
         run_id="run-tracing-retry",
     )
@@ -550,8 +541,6 @@ def test_same_token_cannot_reenter_after_native_execution_starts() -> None:
         _request(),
         event_sink=None,
         cancel_token=None,
-        trace_context=None,
-        export_trace_context=None,
         pre_terminal_state_hook=None,
         run_id="run-same-token-native-started",
     )
@@ -601,8 +590,6 @@ def test_sync_same_token_cannot_reenter_after_native_execution_starts() -> None:
         _request(),
         event_sink=None,
         cancel_token=None,
-        trace_context=None,
-        export_trace_context=None,
         pre_terminal_state_hook=None,
         run_id="run-sync-same-token-native-started",
     )
@@ -648,8 +635,6 @@ def test_concurrent_same_token_public_arun_admits_only_one_native_start() -> Non
         _request(),
         event_sink=None,
         cancel_token=None,
-        trace_context=None,
-        export_trace_context=None,
         pre_terminal_state_hook=None,
         run_id="run-concurrent-same-token",
     )
@@ -702,8 +687,6 @@ def test_astream_early_close_keeps_native_started_claim() -> None:
         _request(),
         event_sink=None,
         cancel_token=None,
-        trace_context=None,
-        export_trace_context=None,
         pre_terminal_state_hook=None,
         run_id="run-astream-early-close",
     )
@@ -815,13 +798,14 @@ def test_runtime_thread_delete_removes_checkpoint_then_releases_claims() -> None
         session_store=InMemorySessionStore(),
         checkpointer=saver,
     )
+    host = RuntimeHost(runtime=runtime)
     request = _request()
 
     async def exercise() -> None:
         first = await runtime.arun_state(request, run_id="run-thread-lifecycle")
         assert first.status == "completed"
 
-        deleted_claims = await runtime.adelete_assistant_thread(
+        deleted_claims = await host.adelete_assistant_thread(
             user_id=request.user_id,
             session_id=request.session_id,
         )
@@ -844,7 +828,7 @@ def test_runtime_thread_delete_removes_checkpoint_then_releases_claims() -> None
     try:
         asyncio.run(exercise())
     finally:
-        runtime.close()
+        host.close()
 
     assert len(adapter.requests) == 2
 
@@ -988,8 +972,6 @@ def test_all_public_execution_apis_map_raw_claim_conflicts_at_app_boundary() -> 
             _request(),
             event_sink=None,
             cancel_token=None,
-            trace_context=None,
-            export_trace_context=None,
             pre_terminal_state_hook=None,
             run_id=run_id,
         )
@@ -1203,8 +1185,6 @@ def test_real_tool_stream_crosses_gate_before_every_semantic_node() -> None:
         _request(),
         event_sink=None,
         cancel_token=None,
-        trace_context=None,
-        export_trace_context=None,
         pre_terminal_state_hook=None,
         run_id="run-loop",
     )

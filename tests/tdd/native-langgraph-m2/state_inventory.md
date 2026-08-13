@@ -42,6 +42,18 @@ Task 1 的恢复闭包。目标不是把 `AgentState` 原样 JSON 化，而是�
 - Runtime finalize：从最终 strict state hydrate 外部兼容 `AgentState`，继续维持既有 public API、Agent-Service
   和媒体交付行为；hydrate 对版本不匹配与缺字段 fail closed。
 
+## M5 Runtime public surface inventory
+
+`AgentGraphRuntime` 的稳定公开方法收缩为
+`initialize_session_memory`、`run_state`、`arun_state`、`astream_state`、
+`aresume_state`、`areplay_state`、`afork_state`、`drain_memory_ingestions`、
+`run_task_quantum` 与 `close`。仓库没有 `run()` 的真实调用方，终态兼容统一通过
+`run_state` / `arun_state` 表达；history 与 thread retention 由持有 compiled app 的
+`AssistantRuntimeApp` / `RuntimeHost` 直接治理，不再扩张 Runtime facade。
+
+legacy retirement gate 已闭合，`run_work_item` 与 `workflows/execution.py` 均已删除；不得新增
+compatibility alias。
+
 ## Runtime-only 重建项
 
 `ToolExecutor`/Registry、`ChatAdapter`/chat callback、`ContextService`/projector、memory/media/artifact stores、
