@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 from dataclasses import fields
 
 from assistant_agent.agent_server.media_session import MediaConnectionSession
