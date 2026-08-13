@@ -89,6 +89,15 @@ class _Worker:
         )
 
 
+class _CountingWorker(_Worker):
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def chat(self, request):
+        self.calls += 1
+        return super().chat(request)
+
+
 class _BlockingWorker:
     provider = "scripted"
     model = "workflow-host-blocking-worker"
@@ -345,7 +354,10 @@ def test_real_host_migration_checkpoint_survives_reopen_before_commit(
                 assert await second.has_checkpoint(
                     workflow_id=bundle.workflow.workflow_id
                 )
-                controller.commit_prepared(bundle.workflow.workflow_id)
+                await controller.commit_prepared(
+                    bundle.workflow.workflow_id,
+                    graph_host=second,
+                )
                 await second.activate(workflow_id=bundle.workflow.workflow_id)
             finally:
                 await second.close()
@@ -394,9 +406,16 @@ def test_api_lifespan_opens_owner_before_both_graphs_and_closes_in_reverse(
         "start_shared_checkpointer_owner",
         async_call("start_saver_owner"),
     )
-    monkeypatch.setattr(
-        app_module, "start_workflow_graph_host", async_call("start_graph_host")
-    )
+    class RecoveringHost:
+        async def recover_nonterminal(self) -> int:
+            calls.append("recover_nonterminal")
+            return 0
+
+    async def start_graph_host(app, *_args, **_kwargs):
+        calls.append("start_graph_host")
+        app.state.workflow_graph_host = RecoveringHost()
+
+    monkeypatch.setattr(app_module, "start_workflow_graph_host", start_graph_host)
     monkeypatch.setattr(
         app_module,
         "start_shared_agent_runtime",
@@ -442,6 +461,7 @@ def test_api_lifespan_opens_owner_before_both_graphs_and_closes_in_reverse(
                 "start_runtime",
                 "start_tasks",
                 "start_legacy_drain",
+                "recover_nonterminal",
             ]
 
     asyncio.run(exercise())
@@ -451,6 +471,7 @@ def test_api_lifespan_opens_owner_before_both_graphs_and_closes_in_reverse(
         "start_runtime",
         "start_tasks",
         "start_legacy_drain",
+        "recover_nonterminal",
         "stop_graph_host",
         "stop_legacy_drain",
         "stop_tasks",
@@ -458,6 +479,94 @@ def test_api_lifespan_opens_owner_before_both_graphs_and_closes_in_reverse(
         "stop_runtime",
         "stop_saver_owner",
     ]
+
+
+def test_duplicate_submission_coalesces_one_graph_execution(tmp_path) -> None:
+    """A retried admission must not schedule the same product execution twice."""
+
+    from assistant_agent.workflows.graph_host import WorkflowGraphHost
+
+    async def exercise() -> None:
+        worker = _CountingWorker()
+        host = await WorkflowGraphHost.open(
+            config=_config(tmp_path),
+            provider_registry={
+                "planner": _Planner(),
+                "worker": worker,
+                "verifier": _Verifier(),
+            },
+            tool_registry=_registry(),
+        )
+        try:
+            first = await host.start(
+                identity=_identity(),
+                ingress_run_id="duplicate-ingress",
+                submission=_submission(),
+            )
+            second = await host.start(
+                identity=_identity(),
+                ingress_run_id="duplicate-ingress",
+                submission=_submission(),
+            )
+            assert second.workflow_id == first.workflow_id
+        finally:
+            await host.close()
+        assert worker.calls == 1
+
+    asyncio.run(exercise())
+
+
+def test_recover_nonterminal_starts_graph_admission_without_checkpoint(tmp_path) -> None:
+    """Startup recovery must execute an admitted graph row after a pre-checkpoint crash."""
+
+    from assistant_agent.workflows.graph_host import WorkflowGraphHost
+
+    async def exercise() -> None:
+        config = _config(tmp_path)
+        store = SQLiteWorkflowStore(config.durable_workflow_path)
+        try:
+            bundle = WorkflowService(
+                store=store,
+                definitions=default_workflow_definitions(),
+                submission_engine="langgraph_v3",
+            ).submit(
+                identity=_identity(),
+                ingress_run_id="crash-before-checkpoint",
+                submission=_submission(),
+            )
+        finally:
+            store.close()
+        host = await WorkflowGraphHost.open(
+            config=config,
+            provider_registry={
+                "planner": _Planner(),
+                "worker": _Worker(),
+                "verifier": _Verifier(),
+            },
+            tool_registry=_registry(),
+        )
+        try:
+            assert await host.recover_nonterminal() == 1
+        finally:
+            await host.close()
+        reopened = await WorkflowGraphHost.open(
+            config=config,
+            provider_registry={
+                "planner": _Planner(),
+                "worker": _Worker(),
+                "verifier": _Verifier(),
+            },
+            tool_registry=_registry(),
+        )
+        try:
+            status = await reopened.get_status(
+                identity=_identity(), workflow_id=bundle.workflow.workflow_id
+            )
+            assert status.handle.status == "completed"
+        finally:
+            await reopened.close()
+
+    asyncio.run(exercise())
 
 
 def test_real_api_composition_shares_one_saver_owner(tmp_path, monkeypatch) -> None:
@@ -639,6 +748,131 @@ def test_workflow_api_resume_and_cancel_are_graph_host_owned() -> None:
     assert calls[0][1]["action_ref"] == (
         "workflow:workflow-api-action:node:collect:generation:0"
     )
+
+
+def test_legacy_waiting_row_keeps_product_action_facade_during_drain(tmp_path) -> None:
+    """A frozen legacy row must resume without exposing its raw resume token."""
+
+    from assistant_agent.api import routes_workflows
+    from assistant_agent.workflows.artifacts import LocalWorkflowArtifactStore
+    from assistant_agent.workflows.legacy_drain_host import LegacyDrainHost
+
+    store = SQLiteWorkflowStore(tmp_path / "legacy-products.sqlite3")
+    artifact_store = LocalWorkflowArtifactStore(tmp_path / "legacy-artifacts")
+    service = WorkflowService(
+        store=store,
+        definitions=default_workflow_definitions(),
+    )
+    bundle = service.submit(
+        identity=_identity(),
+        ingress_run_id="legacy-waiting-api",
+        submission=_submission(),
+    )
+    changed = bundle.model_copy(deep=True)
+    item = changed.current_plan.work_items[0]
+    item.status = "blocked"
+    changed.workflow.status = "waiting_input"
+    changed.workflow.phase = "waiting_input"
+    changed.workflow.waiting_input = {
+        "required_fields": ["answer"],
+        "prompt_code": "answer_required",
+        "safe_prompt": "Please provide the requested answer.",
+        "resume_token": "private-legacy-resume-token",
+    }
+    saved = store.save(
+        changed,
+        expected_revision=bundle.workflow.revision,
+        events=[],
+    )
+    drain = LegacyDrainHost(
+        service=service,
+        artifact_store=artifact_store,
+        worker=None,
+        allowed_workflow_ids=frozenset({saved.workflow.workflow_id}),
+    )
+
+    class GraphHost:
+        async def get_status(self, **_kwargs):
+            raise AssertionError("legacy row reached graph status")
+
+        async def resume(self, **_kwargs):
+            raise AssertionError("legacy row reached graph resume")
+
+        async def get_events(self, **_kwargs):
+            raise AssertionError("legacy row reached graph events")
+
+        async def get_result(self, **_kwargs):
+            raise AssertionError("legacy row reached graph result")
+
+        async def cancel(self, **_kwargs):
+            raise AssertionError("legacy row reached graph cancel")
+
+    try:
+        response = asyncio.run(
+            routes_workflows.get_workflow(
+                workflow_id=saved.workflow.workflow_id,
+                identity=_identity(),
+                host=GraphHost(),
+                legacy_host=drain,
+            )
+        )
+        body = response.model_dump(mode="json")
+        assert body["workflow"]["execution_engine"] == "legacy_scheduler_v2"
+        assert "resume_token" not in str(body)
+        action_ref = body["waiting_actions"][0]["action_ref"]
+        action = asyncio.run(
+            routes_workflows.provide_workflow_input(
+                workflow_id=saved.workflow.workflow_id,
+                body=routes_workflows.WorkflowInputRequest(
+                    action_ref=action_ref,
+                    values={"answer": "approved"},
+                ),
+                identity=_identity(),
+                host=GraphHost(),
+                legacy_host=drain,
+            )
+        )
+        assert action.workflow.execution_engine == "legacy_scheduler_v2"
+        resumed = store.load(saved.workflow.workflow_id)
+        assert resumed is not None
+        assert resumed.workflow.status == "queued"
+        assert resumed.workflow.consumed_resume_tokens == [
+            "private-legacy-resume-token"
+        ]
+        events = asyncio.run(
+            routes_workflows.get_workflow_events(
+                workflow_id=saved.workflow.workflow_id,
+                after=0,
+                limit=100,
+                identity=_identity(),
+                host=GraphHost(),
+                legacy_host=drain,
+            )
+        )
+        assert events.events
+        assert "resume_token" not in str(events.model_dump(mode="json"))
+        with pytest.raises(Exception) as exc_info:
+            asyncio.run(
+                routes_workflows.get_workflow_result(
+                    workflow_id=saved.workflow.workflow_id,
+                    identity=_identity(),
+                    host=GraphHost(),
+                    legacy_host=drain,
+                )
+            )
+        assert getattr(exc_info.value, "status_code", None) == 409
+        cancelled = asyncio.run(
+            routes_workflows.cancel_workflow(
+                workflow_id=saved.workflow.workflow_id,
+                body=routes_workflows.WorkflowCancelRequest(),
+                identity=_identity(),
+                host=GraphHost(),
+                legacy_host=drain,
+            )
+        )
+        assert cancelled.workflow.execution_engine == "legacy_scheduler_v2"
+    finally:
+        asyncio.run(drain.close())
 
 
 def test_real_host_resume_and_cancel_use_only_product_action_refs(tmp_path) -> None:

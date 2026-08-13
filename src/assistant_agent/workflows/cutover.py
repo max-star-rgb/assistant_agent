@@ -7,7 +7,7 @@ import json
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal, Protocol
+from typing import Callable, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -92,9 +92,20 @@ class WorkflowCutoverController:
         *,
         store: WorkflowStore,
         manifest: WorkflowEngineCutoverManifest,
+        manifest_source: Callable[[], WorkflowEngineCutoverManifest] | None = None,
     ) -> None:
         self.store = store
         self.manifest = manifest
+        self._manifest_source = manifest_source
+
+    def refresh_manifest(self) -> WorkflowEngineCutoverManifest:
+        if self._manifest_source is None:
+            return self.manifest
+        current = self._manifest_source()
+        if current.revision < self.manifest.revision:
+            raise ValueError("workflow cutover manifest revision moved backwards")
+        self.manifest = current
+        return current
 
     def inventory(self) -> WorkflowCutoverInventory:
         list_bundles = getattr(self.store, "list_cutover_bundles", None)
@@ -135,7 +146,26 @@ class WorkflowCutoverController:
             and self._classify(bundle) in {"drain_running", "drain_waiting"}
         )
 
+    def pristine_migration_ids(self) -> tuple[str, ...]:
+        """Return only existing prepared or pristine queued legacy rows."""
+
+        list_bundles = getattr(self.store, "list_cutover_bundles", None)
+        if not callable(list_bundles):
+            raise TypeError("workflow store does not support cutover inventory")
+        candidates: list[str] = []
+        for bundle in list_bundles():
+            workflow = bundle.workflow
+            migration = workflow.engine_migration
+            if workflow.execution_engine != "legacy_scheduler_v2":
+                continue
+            if migration is not None and migration.status == "prepared":
+                candidates.append(workflow.workflow_id)
+            elif _is_pristine_queued(bundle):
+                candidates.append(workflow.workflow_id)
+        return tuple(sorted(candidates))
+
     def prepare_pristine_queued(self, workflow_id: str) -> WorkflowBundle:
+        self.refresh_manifest()
         if self.manifest.phase not in {"cutover_active", "draining"}:
             raise ValueError("current cutover phase does not allow migration prepare")
         bundle = self._require_bundle(workflow_id)
@@ -187,13 +217,22 @@ class WorkflowCutoverController:
                 return raced
             raise
 
-    def commit_prepared(self, workflow_id: str) -> WorkflowBundle:
+    async def commit_prepared(
+        self,
+        workflow_id: str,
+        *,
+        graph_host: "WorkflowMigrationGraphHost",
+    ) -> WorkflowBundle:
+        self.refresh_manifest()
         bundle = self._require_bundle(workflow_id)
         migration = bundle.workflow.engine_migration
         if migration is not None and migration.status == "committed":
             return bundle
         if migration is None or migration.status != "prepared":
             raise ValueError("workflow migration is not prepared")
+        self._validate_manifest_revision(migration)
+        if not await graph_host.has_checkpoint(workflow_id=workflow_id):
+            raise ValueError("workflow migration checkpoint proof is required")
         changed = bundle.model_copy(deep=True)
         changed.workflow.execution_engine = "langgraph_v3"
         changed.workflow.engine_migration = migration.model_copy(
@@ -223,12 +262,14 @@ class WorkflowCutoverController:
                 return raced
             raise
 
-    def rollback_prepared(
+    async def rollback_prepared(
         self,
         workflow_id: str,
         *,
+        graph_host: "WorkflowMigrationGraphHost",
         now: datetime | None = None,
     ) -> WorkflowBundle:
+        self.refresh_manifest()
         observed = now or datetime.now(timezone.utc)
         if (
             self.manifest.phase != "rollback_requested"
@@ -239,6 +280,9 @@ class WorkflowCutoverController:
         migration = bundle.workflow.engine_migration
         if migration is None or migration.status != "prepared":
             raise ValueError("workflow migration is not rollback eligible")
+        self._validate_manifest_revision(migration)
+        if await graph_host.has_checkpoint(workflow_id=workflow_id):
+            raise ValueError("workflow migration checkpoint exists; rollback is unsafe")
         changed = bundle.model_copy(deep=True)
         changed.workflow.engine_migration = migration.model_copy(
             update={"status": "rolled_back"}
@@ -266,6 +310,16 @@ class WorkflowCutoverController:
             if current is not None and current.status == "rolled_back":
                 return raced
             raise
+
+    def _validate_manifest_revision(self, migration: WorkflowEngineMigration) -> None:
+        current = self.manifest
+        if current.revision < migration.manifest_revision:
+            raise ValueError("workflow cutover manifest is older than migration")
+        if (
+            current.revision == migration.manifest_revision
+            and current.digest != migration.manifest_digest
+        ):
+            raise ValueError("workflow cutover manifest revision digest changed")
 
     def _require_bundle(self, workflow_id: str) -> WorkflowBundle:
         bundle = self.store.load(workflow_id)
@@ -349,6 +403,7 @@ class WorkflowMigrationReconciler:
         self.graph_host = graph_host
 
     async def reconcile_one(self, workflow_id: str) -> str:
+        self.controller.refresh_manifest()
         bundle = self.controller._require_bundle(workflow_id)
         migration = bundle.workflow.engine_migration
         if migration is None:
@@ -360,11 +415,15 @@ class WorkflowMigrationReconciler:
         checkpoint_exists = await self.graph_host.has_checkpoint(
             workflow_id=workflow_id
         )
+        self.controller.refresh_manifest()
         if (
             not checkpoint_exists
             and self.controller.manifest.phase == "rollback_requested"
         ):
-            self.controller.rollback_prepared(workflow_id)
+            await self.controller.rollback_prepared(
+                workflow_id,
+                graph_host=self.graph_host,
+            )
             return "migration_rolled_back"
         if not checkpoint_exists:
             await self.graph_host.ensure_started(
@@ -376,7 +435,10 @@ class WorkflowMigrationReconciler:
             )
         if not checkpoint_exists:
             raise RuntimeError("workflow graph checkpoint was not created")
-        self.controller.commit_prepared(workflow_id)
+        await self.controller.commit_prepared(
+            workflow_id,
+            graph_host=self.graph_host,
+        )
         await self.graph_host.activate(workflow_id=workflow_id)
         return "migration_committed"
 

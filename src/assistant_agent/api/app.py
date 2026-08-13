@@ -49,7 +49,6 @@ from assistant_agent.runtime.server_startup_summary import prepare_server_startu
 from assistant_agent.skills.application import (
     create_skill_runtime_app_from_env,
 )
-from assistant_agent.workflows.worker import DurableWorkflowWorker
 from assistant_agent.workflows.graph_host import WorkflowGraphHost
 from assistant_agent.workflows.cutover import load_workflow_cutover_manifest
 from assistant_agent.workflows.legacy_drain_host import LegacyDrainHost
@@ -106,6 +105,9 @@ async def _lifespan(app: FastAPI):
         start_shared_agent_runtime(app)
         await start_durable_task_worker(app)
         await start_durable_workflow_worker(app)
+        workflow_host = getattr(app.state, "workflow_graph_host", None)
+        if workflow_host is not None:
+            await workflow_host.recover_nonterminal()
         prepare_server_startup_report(app, app.state.agent_runtime)
         yield
     finally:
@@ -200,12 +202,12 @@ def get_durable_task_worker(app: FastAPI) -> DurableTaskWorker | None:
     return worker if isinstance(worker, DurableTaskWorker) else None
 
 
-def get_durable_workflow_worker(app: FastAPI) -> DurableWorkflowWorker | None:
+def get_durable_workflow_worker(app: FastAPI) -> Any | None:
     worker = getattr(app.state, "durable_workflow_worker", None)
-    return worker if isinstance(worker, DurableWorkflowWorker) else None
+    return worker
 
 
-async def start_durable_workflow_worker(app: FastAPI) -> DurableWorkflowWorker | None:
+async def start_durable_workflow_worker(app: FastAPI) -> Any | None:
     """Start the manifest-bounded legacy drain; never derive a dynamic scope."""
 
     runtime = getattr(app.state, "agent_runtime", None)
@@ -224,13 +226,24 @@ async def start_durable_workflow_worker(app: FastAPI) -> DurableWorkflowWorker |
         raise RuntimeError(
             "durable workflow drain requires an operator cutover manifest"
         )
+    def manifest_source():
+        return load_workflow_cutover_manifest(manifest_path)
+
+    manifest = manifest_source()
     host = LegacyDrainHost.compose(
         config=config,
         agent_runtime=runtime,
-        manifest=load_workflow_cutover_manifest(manifest_path),
+        manifest=manifest,
     )
     app.state.legacy_drain_host = host
     app.state.durable_workflow_worker = host.worker
+    graph_host = getattr(app.state, "workflow_graph_host", None)
+    if isinstance(graph_host, WorkflowGraphHost):
+        await host.reconcile_pristine_migrations(
+            graph_host=graph_host,
+            manifest=manifest,
+            manifest_source=manifest_source,
+        )
     await host.start()
     return host.worker
 

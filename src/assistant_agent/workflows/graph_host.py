@@ -168,7 +168,9 @@ class WorkflowGraphHost:
         self._publish_store = publish_store
         self._publisher = publisher
         self._projector = WorkflowGraphProjector()
-        self._tasks: set[asyncio.Task[Any]] = set()
+        self._tasks: dict[str, asyncio.Task[Any]] = {}
+        self._task_errors: list[BaseException] = []
+        self._schedule_lock = asyncio.Lock()
         self._activated_workflows: set[str] = set()
         self._cancel_tokens: dict[str, Event] = {}
         self._accepting = True
@@ -321,30 +323,114 @@ class WorkflowGraphHost:
             ingress_trace_id=ingress_trace_id,
             ingress_parent_span_id=ingress_parent_span_id,
         )
-        graph_identity = self._execution_identity(
-            bundle, run_id=f"workflow-start:{ingress_run_id}"
-        )
-        initial = initial_workflow_graph_state(
-            workflow=bundle.workflow,
-            submission=submission,
-            admitted_plan=None,
-            workflow_thread_id=graph_identity.thread_id,
-            invocation_run_id=graph_identity.run_id,
-            invocation_trace_id=ingress_trace_id or ingress_run_id,
-        )
-        context = self._context(bundle, invocation_token=_token(graph_identity.run_id))
-        await self._commit_projection(initial)
-        task = asyncio.create_task(
-            self._run_initial(
-                initial,
-                identity=graph_identity,
-                context=context,
+        workflow_id = bundle.workflow.workflow_id
+        async with self._schedule_lock:
+            existing = self._tasks.get(workflow_id)
+            if existing is not None and not existing.done():
+                return WorkflowGraphHandle.from_product(
+                    (await self.get_status(
+                        identity=identity,
+                        workflow_id=workflow_id,
+                    )).handle
+                )
+            if await self.has_checkpoint(workflow_id=workflow_id):
+                return WorkflowGraphHandle.from_product(
+                    (await self.get_status(
+                        identity=identity,
+                        workflow_id=workflow_id,
+                    )).handle
+                )
+            graph_identity = self._execution_identity(
+                bundle, run_id=f"workflow-start:{ingress_run_id}"
             )
-        )
-        self._tasks.add(task)
+            initial = initial_workflow_graph_state(
+                workflow=bundle.workflow,
+                submission=submission,
+                admitted_plan=None,
+                workflow_thread_id=graph_identity.thread_id,
+                invocation_run_id=graph_identity.run_id,
+                invocation_trace_id=ingress_trace_id or ingress_run_id,
+            )
+            context = self._context(
+                bundle, invocation_token=_token(graph_identity.run_id)
+            )
+            await self._commit_projection(initial)
+            self._track_task(
+                workflow_id,
+                self._run_initial(
+                    initial,
+                    identity=graph_identity,
+                    context=context,
+                ),
+            )
         return WorkflowGraphHandle.from_product(
             self._projector.project_snapshot(initial).handle
         )
+
+    async def recover_nonterminal(self) -> int:
+        """Schedule every graph-owned nonterminal row after process restart."""
+
+        self._require_accepting()
+        recovered = 0
+        for bundle in self._product_store.list_cutover_bundles():
+            workflow = bundle.workflow
+            if (
+                workflow.execution_engine != "langgraph_v3"
+                or workflow.status in {"completed", "failed", "cancelled"}
+            ):
+                continue
+            workflow_id = workflow.workflow_id
+            async with self._schedule_lock:
+                existing = self._tasks.get(workflow_id)
+                if existing is not None and not existing.done():
+                    continue
+                execution = self._execution_identity(
+                    bundle, run_id="workflow-startup-recovery"
+                )
+                context = self._context(
+                    bundle,
+                    invocation_token=_token(f"recover:{workflow_id}"),
+                )
+                raw = await self._graph_app.graph.aget_state(
+                    execution.runnable_config(), subgraphs=True
+                )
+                values = getattr(raw, "values", None)
+                if not isinstance(values, dict) or values.get("graph_name") != (
+                    "DurableWorkflowGraph"
+                ):
+                    initial = initial_workflow_graph_state(
+                        workflow=workflow,
+                        submission=_submission_from_bundle(bundle),
+                        admitted_plan=None,
+                        workflow_thread_id=execution.thread_id,
+                        invocation_run_id=execution.run_id,
+                        invocation_trace_id=workflow.ingress_trace_id
+                        or workflow.ingress_run_id,
+                    )
+                    await self._commit_projection(initial)
+                    self._track_task(
+                        workflow_id,
+                        self._run_initial(
+                            initial,
+                            identity=execution,
+                            context=context,
+                        ),
+                    )
+                    recovered += 1
+                    continue
+                state = validate_durable_workflow_state(values)
+                if state["status"] in {"completed", "failed", "cancelled"}:
+                    await self._commit_projection(state)
+                    continue
+                if state["status"] in {"waiting_input", "blocked"}:
+                    await self._commit_projection(state)
+                    continue
+                self._track_task(
+                    workflow_id,
+                    self._run_continue(identity=execution, context=context),
+                )
+                recovered += 1
+        return recovered
 
     async def get_status(
         self,
@@ -480,16 +566,16 @@ class WorkflowGraphHost:
         run_id = "workflow-resume:" + secrets.token_hex(16)
         execution = self._execution_identity(bundle, run_id=run_id)
         context = self._context(bundle, invocation_token=_token(run_id))
-        task = asyncio.create_task(
+        self._track_task(
+            workflow_id,
             self._run_resume(
                 identity=execution,
                 context=context,
                 resume=WorkflowResume(
                     values_by_action_ref={action_ref: dict(values)}
                 ),
-            )
+            ),
         )
-        self._tasks.add(task)
         return WorkflowGraphHandle.from_product(current.handle)
 
     async def cancel(
@@ -566,9 +652,28 @@ class WorkflowGraphHost:
             ).runnable_config()
         )
         values = getattr(snapshot, "values", None)
-        return isinstance(values, dict) and values.get("graph_name") == (
-            "DurableWorkflowGraph"
-        )
+        if not isinstance(values, dict) or not values:
+            return False
+        try:
+            state = validate_durable_workflow_state(values)
+        except (TypeError, ValueError) as exc:
+            raise WorkflowGraphHostError(
+                "workflow_checkpoint_invalid",
+                "Workflow checkpoint does not match the durable graph schema.",
+            ) from exc
+        expected_thread_id = _thread_id(workflow_id)
+        if (
+            state["workflow_id"] != workflow_id
+            or state["workflow_thread_id"] != expected_thread_id
+            or state["identity"]["workflow_thread_id"] != expected_thread_id
+            or state["identity"]["user_id"] != bundle.workflow.user_id
+            or state["identity"]["agent_id"] != bundle.workflow.agent_id
+        ):
+            raise WorkflowGraphHostError(
+                "workflow_checkpoint_owner_mismatch",
+                "Workflow checkpoint identity does not match the business owner.",
+            )
+        return True
 
     async def ensure_started(
         self,
@@ -654,14 +759,33 @@ class WorkflowGraphHost:
             bundle,
             invocation_token=_token(migration.idempotency_key),
         )
-        task = asyncio.create_task(
+        self._track_task(
+            workflow_id,
             self._run_continue(
                 identity=execution,
                 context=context,
-            )
+            ),
         )
         self._activated_workflows.add(workflow_id)
-        self._tasks.add(task)
+
+    def _track_task(self, workflow_id: str, awaitable: Any) -> None:
+        current = self._tasks.get(workflow_id)
+        if current is not None and not current.done():
+            if hasattr(awaitable, "close"):
+                awaitable.close()
+            return
+        task = asyncio.create_task(awaitable)
+        self._tasks[workflow_id] = task
+
+        def discard(completed: asyncio.Task[Any]) -> None:
+            if not completed.cancelled():
+                error = completed.exception()
+                if error is not None:
+                    self._task_errors.append(error)
+            if self._tasks.get(workflow_id) is completed:
+                self._tasks.pop(workflow_id, None)
+
+        task.add_done_callback(discard)
 
     async def _run_initial(
         self,
@@ -768,8 +892,8 @@ class WorkflowGraphHost:
         if self._closed:
             return
         self._accepting = False
-        errors: list[BaseException] = []
-        tasks = tuple(self._tasks)
+        errors: list[BaseException] = list(self._task_errors)
+        tasks = tuple(self._tasks.values())
         if tasks:
             results = await asyncio.gather(*tasks, return_exceptions=True)
             errors.extend(item for item in results if isinstance(item, BaseException))

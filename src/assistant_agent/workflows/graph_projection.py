@@ -265,6 +265,13 @@ class WorkflowGraphProjector:
         self, state: Mapping[str, object]
     ) -> WorkflowProductEvent:
         snapshot = self.project_snapshot(state)
+        return self.project_snapshot_event(snapshot)
+
+    def project_snapshot_event(
+        self, snapshot: WorkflowProductSnapshot
+    ) -> WorkflowProductEvent:
+        """Create one stable event from an already-sanitized product snapshot."""
+
         event_type = _event_type(snapshot)
         event_fact = _event_fact(snapshot, event_type)
         return WorkflowProductEvent(

@@ -132,7 +132,7 @@ class WorkflowApiHandle(BaseModel):
 
     workflow_id: str
     workflow_type: Literal["deep_research"]
-    execution_engine: Literal["langgraph_v3"]
+    execution_engine: Literal["langgraph_v3", "legacy_scheduler_v2"]
     status: str
     phase: str
     output_ref: str

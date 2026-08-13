@@ -13,8 +13,24 @@ from assistant_agent.workflows.context import WorkflowContextCompiler
 from assistant_agent.workflows.cutover import (
     WorkflowCutoverController,
     WorkflowEngineCutoverManifest,
+    WorkflowMigrationGraphHost,
+    WorkflowMigrationReconciler,
 )
 from assistant_agent.workflows.execution import AgentRuntimeWorkItemExecutor
+from assistant_agent.workflows.graph_host import (
+    WorkflowGraphEventsPage,
+    WorkflowGraphHandle,
+    WorkflowGraphHostError,
+    WorkflowGraphResult,
+)
+from assistant_agent.workflows.graph_projection import (
+    WorkflowActiveItem,
+    WorkflowHandle,
+    WorkflowGraphProjector,
+    WorkflowProductProgress,
+    WorkflowProductSnapshot,
+    WorkflowWaitingAction,
+)
 from assistant_agent.workflows.runtime import WorkflowRuntime
 from assistant_agent.workflows.service import WorkflowService
 from assistant_agent.workflows.sqlite_store import SQLiteWorkflowStore
@@ -41,6 +57,7 @@ class LegacyDrainHost:
         self._stop_event: Event | None = None
         self._task: asyncio.Task[Any] | None = None
         self._closed = False
+        self._projector = WorkflowGraphProjector()
 
     @classmethod
     def compose(
@@ -131,6 +148,275 @@ class LegacyDrainHost:
         self._stop_event = Event()
         self._task = asyncio.create_task(
             asyncio.to_thread(self.worker.run, self._stop_event)
+        )
+
+    async def reconcile_pristine_migrations(
+        self,
+        *,
+        graph_host: WorkflowMigrationGraphHost,
+        manifest: WorkflowEngineCutoverManifest,
+        manifest_source: Any,
+    ) -> tuple[str, ...]:
+        """Migrate existing pristine admissions before serving new requests."""
+
+        controller = WorkflowCutoverController(
+            store=self.service.store,
+            manifest=manifest,
+            manifest_source=manifest_source,
+        )
+        reconciler = WorkflowMigrationReconciler(
+            controller=controller,
+            graph_host=graph_host,
+        )
+        outcomes: list[str] = []
+        for workflow_id in controller.pristine_migration_ids():
+            bundle = self.service.store.load(workflow_id)
+            if bundle is None:
+                continue
+            if bundle.workflow.engine_migration is None:
+                controller.prepare_pristine_queued(workflow_id)
+            outcomes.append(await reconciler.reconcile_one(workflow_id))
+        return tuple(outcomes)
+
+    def owns_legacy(self, *, identity: Any, workflow_id: str) -> bool:
+        bundle = self.service.get_workflow(identity=identity, workflow_id=workflow_id)
+        return bundle.workflow.execution_engine == "legacy_scheduler_v2"
+
+    def get_status(self, *, identity: Any, workflow_id: str) -> WorkflowProductSnapshot:
+        bundle = self.service.get_workflow(identity=identity, workflow_id=workflow_id)
+        workflow = bundle.workflow
+        if workflow.execution_engine != "legacy_scheduler_v2":
+            raise WorkflowGraphHostError(
+                "workflow_engine_not_legacy", "Workflow is not owned by legacy drain."
+            )
+        waiting = workflow.status in {"waiting_input", "blocked"}
+        terminal = workflow.status in {"completed", "failed", "cancelled"}
+        phase = (
+            workflow.status
+            if terminal
+            else "waiting_input"
+            if waiting
+            else "planning"
+            if workflow.phase == "planning"
+            else "executing"
+        )
+        active_items = tuple(
+            WorkflowActiveItem(
+                node_id=item.work_item_id,
+                display_title=item.display_title,
+                status=item.status,
+                execution_generation=min(item.attempt_count, 64),
+            )
+            for item in bundle.current_plan.work_items
+            if item.status in {"running", "blocked"} and not terminal
+        )
+        completed_items = sum(
+            item.status in {"succeeded", "skipped", "superseded"}
+            for item in bundle.current_plan.work_items
+        )
+        waiting_actions: tuple[WorkflowWaitingAction, ...] = ()
+        if waiting:
+            request = workflow.waiting_input
+            blocked = next(
+                (
+                    item
+                    for item in bundle.current_plan.work_items
+                    if item.status == "blocked"
+                ),
+                None,
+            )
+            if not isinstance(request, dict) or blocked is None:
+                raise WorkflowGraphHostError(
+                    "workflow_resume_action_unknown",
+                    "Legacy Workflow has no resumable product action.",
+                )
+            required = request.get("required_fields")
+            if not isinstance(required, list) or not all(
+                isinstance(item, str) for item in required
+            ):
+                raise WorkflowGraphHostError(
+                    "workflow_resume_action_invalid",
+                    "Legacy Workflow input contract is invalid.",
+                )
+            waiting_actions = (
+                WorkflowWaitingAction(
+                    action_ref=self._action_ref(bundle, blocked.work_item_id),
+                    node_id=blocked.work_item_id,
+                    required_fields=tuple(required),
+                    prompt_code=str(request.get("prompt_code") or "input_required"),
+                    safe_prompt=str(
+                        request.get("safe_prompt") or "Additional input is required."
+                    ),
+                ),
+            )
+        progress_state = (
+            "waiting_input"
+            if waiting
+            else "completed"
+            if workflow.status == "completed"
+            else "failed"
+            if workflow.status in {"failed", "cancelled"}
+            else "planning"
+            if phase == "planning"
+            else "working"
+        )
+        reason = workflow.terminal_reason_code
+        if workflow.status in {"failed", "cancelled"} and reason is None:
+            reason = "legacy_workflow_failed"
+        return WorkflowProductSnapshot(
+            handle=WorkflowHandle(
+                workflow_id=workflow.workflow_id,
+                workflow_type=workflow.workflow_type,
+                status=workflow.status,
+                phase=phase,
+                output_ref=f"workflow://{workflow.workflow_id}",
+            ),
+            progress=WorkflowProductProgress(
+                state=progress_state,
+                phase=phase,
+                completed_items=completed_items,
+                total_items=len(bundle.current_plan.work_items),
+                active_items=active_items,
+            ),
+            result_artifact_refs=tuple(workflow.result_artifact_refs),
+            waiting_actions=waiting_actions,
+            terminal_reason_code=reason,
+        )
+
+    def resume(
+        self,
+        *,
+        identity: Any,
+        workflow_id: str,
+        action_ref: str,
+        values: dict[str, str],
+    ) -> WorkflowGraphHandle:
+        if workflow_id not in self.allowed_workflow_ids:
+            raise WorkflowGraphHostError(
+                "workflow_legacy_drain_forbidden",
+                "Legacy Workflow is not in the frozen drain allowlist.",
+            )
+        bundle = self.service.get_workflow(identity=identity, workflow_id=workflow_id)
+        snapshot = self.get_status(identity=identity, workflow_id=workflow_id)
+        if action_ref not in {item.action_ref for item in snapshot.waiting_actions}:
+            raise WorkflowGraphHostError(
+                "workflow_resume_action_unknown", "Workflow action is not pending."
+            )
+        waiting = bundle.workflow.waiting_input
+        resume_token = waiting.get("resume_token") if isinstance(waiting, dict) else None
+        if not isinstance(resume_token, str):
+            raise WorkflowGraphHostError(
+                "workflow_resume_action_invalid",
+                "Legacy Workflow resume state is unavailable.",
+            )
+        resumed = self.service.provide_input(
+            identity=identity,
+            workflow_id=workflow_id,
+            resume_token=resume_token,
+            values=dict(values),
+        )
+        return WorkflowGraphHandle(
+            workflow_id=workflow_id,
+            workflow_type=resumed.workflow.workflow_type,
+            execution_engine="legacy_scheduler_v2",
+            status=resumed.workflow.status,
+            phase="executing",
+            output_ref=f"workflow://{workflow_id}",
+        )
+
+    def cancel(
+        self,
+        *,
+        identity: Any,
+        workflow_id: str,
+        reason_code: str,
+    ) -> WorkflowGraphHandle:
+        if workflow_id not in self.allowed_workflow_ids:
+            raise WorkflowGraphHostError(
+                "workflow_legacy_drain_forbidden",
+                "Legacy Workflow is not in the frozen drain allowlist.",
+            )
+        bundle = self.service.cancel(
+            identity=identity,
+            workflow_id=workflow_id,
+            reason_code=reason_code,
+        )
+        snapshot = self.get_status(identity=identity, workflow_id=workflow_id)
+        return WorkflowGraphHandle(
+            workflow_id=workflow_id,
+            workflow_type=bundle.workflow.workflow_type,
+            execution_engine="legacy_scheduler_v2",
+            status=snapshot.handle.status,
+            phase=snapshot.handle.phase,
+            output_ref=f"workflow://{workflow_id}",
+        )
+
+    def get_events(
+        self,
+        *,
+        identity: Any,
+        workflow_id: str,
+        after: int = 0,
+        limit: int = 100,
+    ) -> WorkflowGraphEventsPage:
+        self.service.get_workflow(identity=identity, workflow_id=workflow_id)
+        committed = self.service.list_events(
+            identity=identity,
+            workflow_id=workflow_id,
+            after=after,
+            limit=limit,
+        )
+        events = ()
+        if committed:
+            snapshot = self.get_status(identity=identity, workflow_id=workflow_id)
+            events = (self._projector.project_snapshot_event(snapshot),)
+        return WorkflowGraphEventsPage(
+            workflow_id=workflow_id,
+            events=events,
+            next_cursor=committed[-1].cursor if committed else max(0, after),
+        )
+
+    def get_result(
+        self,
+        *,
+        identity: Any,
+        workflow_id: str,
+    ) -> WorkflowGraphResult:
+        snapshot = self.get_status(identity=identity, workflow_id=workflow_id)
+        if snapshot.handle.status != "completed":
+            raise WorkflowGraphHostError(
+                "workflow_result_not_ready", "Workflow result is not ready."
+            )
+        if not snapshot.result_artifact_refs:
+            raise WorkflowGraphHostError(
+                "workflow_result_not_found", "Workflow result was not found."
+            )
+        artifact_ref = snapshot.result_artifact_refs[-1]
+        try:
+            content = self.artifact_store.read_text(
+                identity=identity,
+                artifact_ref=artifact_ref,
+            )
+        except Exception as exc:
+            raise WorkflowGraphHostError(
+                "workflow_result_not_found", "Workflow result was not found."
+            ) from exc
+        return WorkflowGraphResult(
+            workflow_id=workflow_id,
+            artifact_ref=artifact_ref,
+            content=content,
+        )
+
+    @staticmethod
+    def _action_ref(bundle: Any, node_id: str) -> str:
+        item = next(
+            item
+            for item in bundle.current_plan.work_items
+            if item.work_item_id == node_id
+        )
+        return (
+            f"workflow:{bundle.workflow.workflow_id}:node:{node_id}:generation:"
+            f"{min(item.attempt_count, 64)}"
         )
 
     async def close(self) -> None:

@@ -15,7 +15,7 @@ def _manifest_payload(*, phase: str = "cutover_active") -> dict[str, object]:
     now = datetime(2030, 1, 1, tzinfo=timezone.utc)
     return {
         "schema_version": "workflow_engine_cutover_v1",
-        "revision": 7,
+        "revision": 7 if phase == "cutover_active" else 8,
         "phase": phase,
         "new_submission_engine": "langgraph_v3",
         "legacy_rules": {
@@ -268,6 +268,123 @@ def test_prepared_without_checkpoint_obeys_fresh_manifest_phase(
             else:
                 assert record.execution_engine == "langgraph_v3"
                 assert host.start_counts[workflow_id] == 1
+        finally:
+            store.close()
+
+    import asyncio
+
+    asyncio.run(exercise())
+
+
+def test_direct_rollback_fails_closed_when_graph_checkpoint_exists(tmp_path) -> None:
+    """No caller may roll business ownership back after graph state exists."""
+
+    from assistant_agent.workflows.cutover import (
+        WorkflowCutoverController,
+        WorkflowEngineCutoverManifest,
+    )
+
+    async def exercise() -> None:
+        store = _legacy_store(tmp_path, ("queued",))
+        host = _CheckpointHost()
+        try:
+            workflow_id = store.list_cutover_bundles()[0].workflow.workflow_id
+            WorkflowCutoverController(
+                store=store,
+                manifest=WorkflowEngineCutoverManifest.model_validate(
+                    _manifest_payload(phase="cutover_active")
+                ),
+            ).prepare_pristine_queued(workflow_id)
+            controller = WorkflowCutoverController(
+                store=store,
+                manifest=WorkflowEngineCutoverManifest.model_validate(
+                    _manifest_payload(phase="rollback_requested")
+                ),
+            )
+            host.checkpoints.add(workflow_id)
+            with pytest.raises(ValueError, match="checkpoint"):
+                await controller.rollback_prepared(
+                    workflow_id,
+                    graph_host=host,
+                    now=datetime(2030, 1, 1, tzinfo=timezone.utc),
+                )
+            assert store.load(workflow_id).workflow.engine_migration.status == "prepared"
+        finally:
+            store.close()
+
+    import asyncio
+
+    asyncio.run(exercise())
+
+
+def test_direct_commit_requires_matching_graph_checkpoint(tmp_path) -> None:
+    """Transaction B cannot switch engine without current checkpoint proof."""
+
+    from assistant_agent.workflows.cutover import (
+        WorkflowCutoverController,
+        WorkflowEngineCutoverManifest,
+    )
+
+    async def exercise() -> None:
+        store = _legacy_store(tmp_path, ("queued",))
+        host = _CheckpointHost()
+        try:
+            controller = WorkflowCutoverController(
+                store=store,
+                manifest=WorkflowEngineCutoverManifest.model_validate(
+                    _manifest_payload()
+                ),
+            )
+            workflow_id = store.list_cutover_bundles()[0].workflow.workflow_id
+            controller.prepare_pristine_queued(workflow_id)
+            with pytest.raises(ValueError, match="checkpoint proof"):
+                await controller.commit_prepared(workflow_id, graph_host=host)
+            assert store.load(workflow_id).workflow.execution_engine == (
+                "legacy_scheduler_v2"
+            )
+        finally:
+            store.close()
+
+    import asyncio
+
+    asyncio.run(exercise())
+
+
+def test_reconciler_refreshes_manifest_before_no_checkpoint_decision(tmp_path) -> None:
+    """One long-lived reconciler must observe an operator phase revision change."""
+
+    from assistant_agent.workflows.cutover import (
+        WorkflowCutoverController,
+        WorkflowEngineCutoverManifest,
+        WorkflowMigrationReconciler,
+    )
+
+    async def exercise() -> None:
+        store = _legacy_store(tmp_path, ("queued",))
+        host = _CheckpointHost()
+        current = WorkflowEngineCutoverManifest.model_validate(_manifest_payload())
+        def source():
+            return current
+
+        try:
+            controller = WorkflowCutoverController(
+                store=store,
+                manifest=current,
+                manifest_source=source,
+            )
+            workflow_id = store.list_cutover_bundles()[0].workflow.workflow_id
+            controller.prepare_pristine_queued(workflow_id)
+            current = WorkflowEngineCutoverManifest.model_validate(
+                _manifest_payload(phase="rollback_requested")
+            )
+            reconciler = WorkflowMigrationReconciler(
+                controller=controller,
+                graph_host=host,
+            )
+            assert await reconciler.reconcile_one(workflow_id) == (
+                "migration_rolled_back"
+            )
+            assert host.start_counts == {}
         finally:
             store.close()
 
