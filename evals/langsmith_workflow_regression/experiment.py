@@ -154,6 +154,20 @@ def project_workflow_result(
     if require_resume_equivalence and resume_equivalent is None:
         raise RuntimeError("resume equivalence requires real comparison evidence")
     state = validate_durable_workflow_state(result.final_state)
+    terminal_status = str(result.status)
+    if terminal_status != "completed" or state.get("admitted_plan") is None:
+        codes = sorted(
+            {
+                str(_field(item, "code"))
+                for item in state.get("errors", ())
+                if _field(item, "code")
+            }
+        )[:32]
+        encoded_codes = ",".join(codes) if codes else "workflow_graph_failed"
+        raise RuntimeError(
+            "workflow_experiment_graph_failed: "
+            f"status={terminal_status};phase={state['phase']};codes={encoded_codes}"
+        )
     plan = PersistedAdmittedWorkflowPlan.model_validate_json(
         json.dumps(state.get("admitted_plan"))
     )
@@ -202,9 +216,6 @@ def project_workflow_result(
     repair_scope = sorted(
         {node_id for node_id, generation, _refs in ledger_results if generation > 0}
     )
-    terminal_status = str(result.status)
-    if terminal_status == "infrastructure_error":
-        raise RuntimeError("workflow graph ended with infrastructure_error")
     return {
         "workflow_id": _stable_digest(state["workflow_id"]),
         "terminal_status": terminal_status,

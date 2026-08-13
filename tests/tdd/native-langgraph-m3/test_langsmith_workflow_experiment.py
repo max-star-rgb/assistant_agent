@@ -415,6 +415,44 @@ def test_projector_fails_closed_when_resume_equivalence_has_no_real_evidence():
         )
 
 
+def test_projector_reports_safe_graph_failure_before_parsing_missing_plan():
+    _graph, _context, initial, _worker, artifact_store = workflow_probe(
+        __import__("pathlib").Path("/tmp") / "workflow-projector-failure-probe",
+        {"research": []},
+        plan_payload=_verifier_plan(),
+    )
+    failed = dict(initial)
+    failed.update(
+        {
+            "status": "failed",
+            "phase": "planning",
+            "admitted_plan": None,
+            "errors": (
+                {
+                    "code": "workflow_plan_admission_failed",
+                    "message": "provider raw secret must not escape",
+                    "node_id": None,
+                    "execution_generation": None,
+                },
+            ),
+        }
+    )
+    try:
+        with pytest.raises(RuntimeError) as exc_info:
+            project_workflow_result(
+                SimpleNamespace(final_state=failed, status="failed"),
+                resume_equivalent=False,
+                require_resume_equivalence=False,
+            )
+    finally:
+        artifact_store.close()
+    message = str(exc_info.value)
+    assert message.startswith("workflow_experiment_graph_failed")
+    assert "phase=planning" in message
+    assert "workflow_plan_admission_failed" in message
+    assert "provider raw secret" not in message
+
+
 def test_cli_inspect_is_local_and_never_creates_langsmith_client(monkeypatch, capsys):
     monkeypatch.setattr(
         workflow_cli,
