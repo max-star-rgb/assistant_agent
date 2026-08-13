@@ -18,11 +18,13 @@ from assistant_agent.agent_server.media_protocol import (
     parse_envelope,
     progress_response,
     success_chat_response,
+    artifact_completed_response,
 )
 from assistant_agent.agent_server.media_session import MediaConnectionSession
 from assistant_agent.api.rendering_3d_callback import router as rendering_3d_callback_router
 from assistant_agent.media.video.h264_video_ingestion import H264VideoIngestionService
 from assistant_agent.media.video.video_context import SQLiteVideoContextStore
+from assistant_agent.media.artifact_delivery import get_media_artifact_delivery_hub
 
 
 app = FastAPI(title="Assistant Agent Server Media Adapter")
@@ -49,6 +51,9 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
     )
     factory = getattr(app.state, "agent_server_client_factory", None)
     client = factory() if callable(factory) else _default_agent_server_client(websocket)
+    artifact_hub = getattr(app.state, "artifact_delivery_hub", None)
+    if artifact_hub is None:
+        artifact_hub = get_media_artifact_delivery_hub()
     try:
         if version != "v1":
             await websocket.send_json(
@@ -73,6 +78,7 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
                     chat_tasks=chat_tasks,
                     interrupted_chats=interrupted_chats,
                     video_ingestion=video_ingestion,
+                    artifact_hub=artifact_hub,
                 )
             except (MediaProtocolError, ValueError) as exc:
                 await _send_json(websocket, send_lock,
@@ -92,6 +98,11 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
             await asyncio.gather(*chat_tasks.values(), return_exceptions=True)
         for video_id in session.video_ids:
             await asyncio.to_thread(video_ingestion.cleanup, video_id)
+        if session.thread_id is not None:
+            await artifact_hub.unregister(
+                session_id=session.thread_id,
+                subscriber_id=session.connection_id,
+            )
 
 
 async def _handle_frame(
@@ -104,6 +115,7 @@ async def _handle_frame(
     chat_tasks,
     interrupted_chats,
     video_ingestion,
+    artifact_hub,
 ) -> None:
     if frame.message in {"assistantControl", "assistantControlStart"}:
         user_id = _control_user_id(frame.message, frame.body)
@@ -123,6 +135,19 @@ async def _handle_frame(
             thread_id=thread_id,
             client_capabilities=_client_capabilities(frame.body),
             media_capabilities=("audio", "video") if call_type == "VIDEO" else ("audio",),
+        )
+        await artifact_hub.register(
+            session_id=thread_id,
+            subscriber_id=session.connection_id,
+            sender=lambda event: _send_json(
+                websocket,
+                send_lock,
+                artifact_completed_response(
+                    session_id=session.protocol_session_id,
+                    user_id=user_id,
+                    event=event,
+                ),
+            ),
         )
         message = (
             "assistantControlStartAck"

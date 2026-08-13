@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import threading
 import time
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
@@ -86,6 +88,18 @@ class _VideoIngestion:
     def cleanup(self, video_id):
         self.cleaned.append(video_id)
         self.cleanup_event.set()
+
+
+class _ArtifactHub:
+    def __init__(self) -> None:
+        self.binding = None
+        self.unregistered = []
+
+    async def register(self, *, session_id, subscriber_id, sender):
+        self.binding = (session_id, subscriber_id, sender)
+
+    async def unregister(self, *, session_id, subscriber_id):
+        self.unregistered.append((session_id, subscriber_id))
 
 
 def _frame(message, body, session_id="vendor-session"):
@@ -329,3 +343,36 @@ def test_video_is_edge_ingested_and_only_stable_reference_enters_graph_context()
     )
     assert ingestion.cleanup_event.wait(1)
     assert ingestion.cleaned == ["video-native-1"]
+
+
+def test_completed_artifact_is_projected_without_executing_another_graph_run() -> None:
+    scripted = _ScriptedClient()
+    hub = _ArtifactHub()
+    app.state.agent_server_client_factory = lambda: scripted
+    app.state.artifact_delivery_hub = hub
+    try:
+        with TestClient(app) as client:
+            with client.websocket_connect("/agent-service/v1") as ws:
+                ws.send_json(_frame("assistantControl", {"number": "user-1", "callType": "AUDIO"}))
+                ws.receive_json()
+                assert hub.binding is not None
+                _session_id, _subscriber_id, sender = hub.binding
+                asyncio.run(
+                    sender(
+                        SimpleNamespace(
+                            artifact_id="artifact-1",
+                            media_type="glb",
+                            uri="https://example.com/model.glb",
+                            inline_data=None,
+                        )
+                    )
+                )
+                projected = json.loads(ws.receive_json()["body"])
+                detail = projected["message"]["content"]["intentResult"]["detail"]
+                assert detail == [
+                    {"type": "TD_MODEL", "modelUrl": "https://example.com/model.glb"}
+                ]
+    finally:
+        del app.state.artifact_delivery_hub
+    assert scripted.runs == []
+    assert hub.unregistered

@@ -36,7 +36,7 @@ source_globs = [
   "src/assistant_agent/agent_server/media_protocol.py",
   "src/assistant_agent/agent_server/media_session.py",
   "src/assistant_agent/api/rendering_3d_callback.py",
-  "src/assistant_agent/gateway/artifact_delivery.py",
+  "src/assistant_agent/media/artifact_delivery.py",
   "src/assistant_agent/media/video/**",
   "scripts/media_simulator.py",
 ]

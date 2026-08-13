@@ -1,4 +1,4 @@
-"""Gateway-owned delivery of neutral asynchronous artifact events."""
+"""Connection-scoped delivery of neutral asynchronous media artifacts."""
 
 from __future__ import annotations
 
@@ -11,8 +11,6 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class ArtifactCompleted(BaseModel):
-    """Entry-neutral notification that an asynchronous artifact is available."""
-
     model_config = ConfigDict(frozen=True)
 
     type: Literal["artifact.completed"] = "artifact.completed"
@@ -33,8 +31,8 @@ class ArtifactDeliveryBinding:
     sender: ArtifactSubscriber
 
 
-class GatewayArtifactDeliveryHub:
-    """Route artifact events to the current subscriber for a session."""
+class MediaArtifactDeliveryHub:
+    """Route an artifact to the current online connection for a native thread."""
 
     def __init__(self) -> None:
         self._bindings: dict[str, ArtifactDeliveryBinding] = {}
@@ -47,12 +45,11 @@ class GatewayArtifactDeliveryHub:
         subscriber_id: str,
         sender: ArtifactSubscriber,
     ) -> None:
-        binding = ArtifactDeliveryBinding(
-            subscriber_id=subscriber_id,
-            sender=sender,
-        )
         async with self._lock:
-            self._bindings[session_id] = binding
+            self._bindings[session_id] = ArtifactDeliveryBinding(
+                subscriber_id=subscriber_id,
+                sender=sender,
+            )
 
     async def unregister(self, *, session_id: str, subscriber_id: str) -> None:
         async with self._lock:
@@ -69,8 +66,15 @@ class GatewayArtifactDeliveryHub:
         return True
 
 
-_artifact_delivery_hub = GatewayArtifactDeliveryHub()
+_artifact_delivery_hub = MediaArtifactDeliveryHub()
 
 
-def get_gateway_artifact_delivery_hub() -> GatewayArtifactDeliveryHub:
+def get_media_artifact_delivery_hub() -> MediaArtifactDeliveryHub:
     return _artifact_delivery_hub
+
+
+__all__ = [
+    "ArtifactCompleted",
+    "MediaArtifactDeliveryHub",
+    "get_media_artifact_delivery_hub",
+]

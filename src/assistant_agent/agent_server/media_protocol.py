@@ -11,6 +11,7 @@ from assistant_agent.runtime.generated_artifacts import (
     MAX_DELIVERED_IMAGE_COUNT,
     generated_artifact_payload,
 )
+from assistant_agent.media.artifact_delivery import ArtifactCompleted
 
 
 class MediaProtocolError(ValueError):
@@ -170,6 +171,42 @@ def failure_response(
     )
 
 
+def artifact_completed_response(
+    *,
+    session_id: str | None,
+    user_id: str,
+    event: ArtifactCompleted,
+) -> dict[str, Any]:
+    if event.media_type in {"ply", "glb"}:
+        detail = {"type": "TD_MODEL", "modelUrl": event.uri}
+    elif event.media_type == "mp4":
+        detail = {"type": "VIDEO", "videoUrl": event.uri}
+    elif event.media_type == "image":
+        detail = {"type": "IMAGE", "image": event.inline_data}
+    else:
+        raise MediaProtocolError("unsupported completed artifact media type")
+    return envelope(
+        message="chatResponse",
+        session_id=session_id,
+        body={
+            "number": user_id,
+            "message": {
+                "type": "BRIEF",
+                "chatIndex": f"artifact:{event.artifact_id}",
+                "content": {
+                    "intentResult": {
+                        "description": "异步媒体已生成，请查看。",
+                        "status": "SUCCESS",
+                        "detail": [detail],
+                    }
+                },
+            },
+            "displayOnly": False,
+            "display_only": False,
+        },
+    )
+
+
 def _required_text(value: Mapping[str, Any], key: str) -> str:
     text = _optional_text(value.get(key))
     if text is None:
@@ -195,6 +232,7 @@ __all__ = [
     "MediaChat",
     "MediaEnvelope",
     "MediaProtocolError",
+    "artifact_completed_response",
     "envelope",
     "failure_response",
     "parse_chat",

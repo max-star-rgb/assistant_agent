@@ -5,10 +5,10 @@ from __future__ import annotations
 from fastapi import APIRouter
 from pydantic import BaseModel
 
-from assistant_agent.gateway.artifact_delivery import (
+from assistant_agent.media.artifact_delivery import (
     ArtifactCompleted,
-    GatewayArtifactDeliveryHub,
-    get_gateway_artifact_delivery_hub,
+    MediaArtifactDeliveryHub,
+    get_media_artifact_delivery_hub,
 )
 from assistant_agent.runtime.image_to_3d_jobs import (
     ImageTo3DArtifact,
@@ -31,12 +31,12 @@ class ArtifactDeliveryUnavailable(RuntimeError):
 
 
 def create_rendering_3d_callback_router(
-    delivery_hub: GatewayArtifactDeliveryHub | None = None,
+    delivery_hub: MediaArtifactDeliveryHub | None = None,
     *,
     job_registry: ImageTo3DJobRegistry | None = None,
 ) -> APIRouter:
     router = APIRouter()
-    hub = delivery_hub or get_gateway_artifact_delivery_hub()
+    hub = delivery_hub or get_media_artifact_delivery_hub()
     jobs = job_registry or get_image_to_3d_job_registry()
 
     @router.post(
