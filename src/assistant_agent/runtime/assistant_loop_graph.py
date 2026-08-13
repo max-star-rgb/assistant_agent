@@ -82,59 +82,77 @@ def build_assistant_loop_graph(
     *,
     checkpointer: Any | None = None,
     memory_bundle: MemoryNodeBundle | None = None,
+    context_schema: type = GraphRuntimeContext,
+    runtime_context_resolver: Callable[
+        [AssistantTurnState, Runtime[Any]], GraphRuntimeContext
+    ]
+    | None = None,
     profile: AssistantGraphProfileName = "standard",
     graph_name: str = "AssistantTurnGraph",
 ) -> Any:
     """Build the native loop with one stable invocation gate between semantics."""
 
     bundle = memory_bundle or build_disabled_memory_bundle()
-    graph = StateGraph(AssistantTurnState, context_schema=GraphRuntimeContext)
-    graph.add_node("prepare_invocation", prepare_invocation_node)
+    def resolved_node(node: Callable[..., AssistantTurnState]) -> Callable[..., AssistantTurnState]:
+        if runtime_context_resolver is None:
+            return node
+
+        def invoke(
+            state: AssistantTurnState,
+            runtime: Runtime[Any],
+        ) -> AssistantTurnState:
+            worker_context = runtime_context_resolver(state, runtime)
+            return node(state, runtime.override(context=worker_context))
+
+        return invoke
+
+    graph = StateGraph(AssistantTurnState, context_schema=context_schema)
+    graph.add_node("prepare_invocation", resolved_node(prepare_invocation_node))
     graph.add_node("time_travel_anchor", time_travel_anchor_node)
     graph.add_node(
         "memory_recall",
-        _semantic_node(bundle.recall_node, "assistant"),
+        resolved_node(_semantic_node(bundle.recall_node, "assistant")),
     )
     graph.add_node(
         "assistant",
-        _semantic_node(
+        resolved_node(_semantic_node(
             bind_checkpointed_runtime_node(
                 "assistant", assistant_node, expected_profile=profile
             ),
             _assistant_continuation,
-        ),
+        )),
     )
     graph.add_node(
         "await_input",
-        _semantic_node(await_input_node, _await_continuation),
+        resolved_node(_semantic_node(await_input_node, _await_continuation)),
     )
     graph.add_node(
         "execute_tool",
-        _semantic_node(
+        resolved_node(_semantic_node(
             bind_checkpointed_runtime_node(
                 "execute_tool",
                 execute_requested_tool_node,
                 expected_profile=profile,
             ),
             "assistant",
-        ),
+        )),
     )
     graph.add_node(
         "compose_response",
-        _semantic_node(
+        resolved_node(_semantic_node(
             bind_checkpointed_runtime_node(
                 "compose_response", compose_response_node, expected_profile=profile
             ),
             "publish_response",
-        ),
+        )),
     )
     graph.add_node(
         "publish_response",
-        _semantic_node(publish_response_node, "memory_commit"),
+        resolved_node(_semantic_node(publish_response_node, "memory_commit")),
     )
     graph.add_node(
         "memory_commit",
-        _semantic_node(bundle.commit_node, "end"),
+        resolved_node(_semantic_node(bundle.commit_node, "end")),
     )
 
     graph.add_edge(START, "prepare_invocation")

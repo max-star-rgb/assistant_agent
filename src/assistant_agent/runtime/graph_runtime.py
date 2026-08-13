@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from copy import copy
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import secrets
 from typing import Any, Protocol, TypeVar, cast
 
@@ -155,8 +155,8 @@ RUNTIME_STATE_KEYS = frozenset(
 
 
 @dataclass(frozen=True)
-class GraphRuntimeContext:
-    """Non-checkpointable dependencies used by graph nodes."""
+class GraphExecutionServices:
+    """Worker-owned Python services that must never enter run context or state."""
 
     tool_executor: ToolExecutor
     chat_adapter: ChatAdapter
@@ -171,10 +171,102 @@ class GraphRuntimeContext:
     agent_state: AgentState | None = None
     state_ref_resolver: "AssistantRuntimeStateRefResolver | None" = None
     profile_allowed_tool_names: frozenset[str] | None = None
+
+
+@dataclass(frozen=True, init=False)
+class GraphRuntimeContext:
+    """Invocation facts plus an explicitly run-owned service bundle.
+
+    The keyword compatibility path lets the existing in-process runtime migrate
+    incrementally. Agent Server code supplies ``services`` and keeps its public
+    run context strictly JSON-only.
+    """
+
+    services: GraphExecutionServices
     invocation_kind: GraphInvocationKind = "invoke"
     refresh_memory: bool = False
     invocation_token: str = field(default_factory=lambda: secrets.token_urlsafe(24))
     graph_profile: AssistantGraphProfileName = "standard"
+
+    def __init__(
+        self,
+        *,
+        services: GraphExecutionServices | None = None,
+        tool_executor: ToolExecutor | None = None,
+        chat_adapter: ChatAdapter | None = None,
+        invocation_claim_store: GraphInvocationClaimStore | None = None,
+        chat_turn: Callable[[Any], Any] | None = None,
+        context_service: ContextService | None = None,
+        context_projector: Callable[[Any], None] | None = None,
+        tool_result_handler: Callable[[Any, Any], None] | None = None,
+        trace_store: TraceStore | None = None,
+        product_fact_writer: Callable[[Any], None] | None = None,
+        cancel_token: Any | None = None,
+        agent_state: AgentState | None = None,
+        state_ref_resolver: "AssistantRuntimeStateRefResolver | None" = None,
+        profile_allowed_tool_names: frozenset[str] | None = None,
+        invocation_kind: GraphInvocationKind = "invoke",
+        refresh_memory: bool = False,
+        invocation_token: str | None = None,
+        graph_profile: AssistantGraphProfileName = "standard",
+    ) -> None:
+        if services is None:
+            if tool_executor is None or chat_adapter is None or invocation_claim_store is None:
+                raise TypeError(
+                    "GraphRuntimeContext requires services or all core service arguments"
+                )
+            services = GraphExecutionServices(
+                tool_executor=tool_executor,
+                chat_adapter=chat_adapter,
+                invocation_claim_store=invocation_claim_store,
+                chat_turn=chat_turn,
+                context_service=context_service,
+                context_projector=context_projector,
+                tool_result_handler=tool_result_handler,
+                trace_store=trace_store,
+                product_fact_writer=product_fact_writer,
+                cancel_token=cancel_token,
+                agent_state=agent_state,
+                state_ref_resolver=state_ref_resolver,
+                profile_allowed_tool_names=profile_allowed_tool_names,
+            )
+        else:
+            service_overrides = {
+                name: value
+                for name, value in (
+                    ("tool_executor", tool_executor),
+                    ("chat_adapter", chat_adapter),
+                    ("invocation_claim_store", invocation_claim_store),
+                    ("chat_turn", chat_turn),
+                    ("context_service", context_service),
+                    ("context_projector", context_projector),
+                    ("tool_result_handler", tool_result_handler),
+                    ("trace_store", trace_store),
+                    ("product_fact_writer", product_fact_writer),
+                    ("cancel_token", cancel_token),
+                    ("agent_state", agent_state),
+                    ("state_ref_resolver", state_ref_resolver),
+                    ("profile_allowed_tool_names", profile_allowed_tool_names),
+                )
+                if value is not None
+            }
+            if service_overrides:
+                services = replace(services, **service_overrides)
+        object.__setattr__(self, "services", services)
+        object.__setattr__(self, "invocation_kind", invocation_kind)
+        object.__setattr__(self, "refresh_memory", refresh_memory)
+        object.__setattr__(
+            self,
+            "invocation_token",
+            invocation_token or secrets.token_urlsafe(24),
+        )
+        object.__setattr__(self, "graph_profile", graph_profile)
+
+    def __getattr__(self, name: str) -> Any:
+        try:
+            return getattr(self.services, name)
+        except AttributeError:
+            raise AttributeError(name) from None
 
 
 class AssistantRuntimeStateRefResolver(Protocol):
@@ -269,16 +361,24 @@ def bind_runtime_node(
     node_func: Callable[[GraphStateT], GraphStateT],
     *,
     trace: bool = True,
-) -> Callable[[GraphStateT, Runtime[GraphRuntimeContext]], GraphStateT]:
+    runtime_context_resolver: Callable[
+        [GraphStateT, Runtime[Any]], GraphRuntimeContext
+    ]
+    | None = None,
+) -> Callable[[GraphStateT, Runtime[Any]], GraphStateT]:
     """Return a node that injects runtime objects only during execution."""
 
     executable = trace_graph_node(node_name, node_func) if trace else node_func
 
     def wrapped(
         graph_state: GraphStateT,
-        runtime: Runtime[GraphRuntimeContext],
+        runtime: Runtime[Any],
     ) -> GraphStateT:
-        runtime_context = runtime.context
+        runtime_context = (
+            runtime_context_resolver(graph_state, runtime)
+            if runtime_context_resolver is not None
+            else runtime.context
+        )
         if runtime_context is None:
             raise RuntimeError(f"{node_name} requires GraphRuntimeContext")
         raise_if_cancelled(
