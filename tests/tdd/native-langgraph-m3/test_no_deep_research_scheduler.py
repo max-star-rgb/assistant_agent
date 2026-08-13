@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 from dataclasses import replace
 
 from assistant_agent.workflows import planning as legacy_planning
@@ -10,7 +11,6 @@ from assistant_agent.workflows.durable_graph_app import (
     DurableWorkflowGraphApp,
     WorkflowGraphExecutionIdentity,
 )
-from assistant_agent.workflows.observed_store import ObservedWorkflowStore
 from assistant_agent.workflows.runtime import WorkflowRuntime
 from assistant_agent.workflows.store import InMemoryWorkflowStore
 from assistant_agent.config import ProviderConfig
@@ -37,7 +37,11 @@ def _identity() -> WorkflowGraphExecutionIdentity:
 def test_native_graph_execution_never_calls_legacy_scheduler_boundaries(
     tmp_path, monkeypatch
 ) -> None:
-    """A graph_v3 execution must fail this test if a shadow scheduler is added."""
+    """A graph_v3 execution must not restore the deleted shadow-store scheduler."""
+
+    assert importlib.util.find_spec(
+        "assistant_agent.workflows.observed_store"
+    ) is None
 
     def unexpected_legacy_call(*_args, **_kwargs):
         raise AssertionError("native graph called a legacy scheduler boundary")
@@ -51,12 +55,6 @@ def test_native_graph_execution_never_calls_legacy_scheduler_boundaries(
     )
     monkeypatch.setattr(
         InMemoryWorkflowStore, "renew_work_item_lease", unexpected_legacy_call
-    )
-    monkeypatch.setattr(
-        ObservedWorkflowStore, "claim_ready_work_item", unexpected_legacy_call
-    )
-    monkeypatch.setattr(
-        ObservedWorkflowStore, "renew_work_item_lease", unexpected_legacy_call
     )
     monkeypatch.setattr(
         legacy_planning, "next_ready_work_item", unexpected_legacy_call

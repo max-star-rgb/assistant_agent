@@ -1091,8 +1091,6 @@ async def test_bound_continuation_handle_is_single_consumer() -> None:
             ),
             event_sink=None,
             cancel_token=None,
-            trace_context=None,
-            export_trace_context=None,
             pre_terminal_state_hook=None,
         )
         assert prepared.graph_continuation is not None
@@ -1141,8 +1139,6 @@ def test_post_native_failures_carry_structured_phase(
         request,
         event_sink=None,
         cancel_token=None,
-        trace_context=None,
-        export_trace_context=None,
         pre_terminal_state_hook=None,
         run_id=f"phase-{failure_point}",
     )
