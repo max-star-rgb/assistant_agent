@@ -957,6 +957,11 @@ def apply_assistant_turn_state_to_agent_state(
     runtime_state.status = cast(Any, run["status"])
     runtime_state.memory_origin_run_id = str(persisted["memory_origin_run_id"])
     runtime_state.memory_texts = memory_context_texts(persisted["memory_context"])
+    response_publish = persisted["response_publish"]
+    runtime_state.response_publish_status = str(response_publish["status"])
+    runtime_state.response_final_fact_id = cast(
+        str | None, response_publish.get("final_fact_id")
+    )
     runtime_state.turn_provenance = cast(Any, persisted["turn_provenance"])
     runtime_state.errors = [
         AgentError(

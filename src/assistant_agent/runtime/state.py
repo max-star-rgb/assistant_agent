@@ -56,6 +56,8 @@ class AgentState(BaseModel):
     )
     memory_context_prepared: bool = Field(default=False, exclude=True)
     memory_texts: tuple[str, ...] = Field(default=(), exclude=True)
+    response_publish_status: str = Field(default="not_requested", exclude=True)
+    response_final_fact_id: str | None = Field(default=None, exclude=True)
     memory_origin_run_id: str | None = Field(default=None, exclude=True)
     turn_provenance: TurnProvenance = Field(
         default="product_turn",

@@ -52,6 +52,7 @@ _RUN_EVENT_TYPES = {
     "agent_trace_decision",
     "agent_trace_observation",
     "response_delta",
+    "final_response",
     "agent_error",
     "task_failed",
     "task_cancelled",
@@ -209,7 +210,11 @@ class GatewayRuntimeAdapter:
                 "shopping_detail_v1" if shopping_detail else "assistant_response"
             )
 
-            if status == "completed" and event_sink is not None:
+            if (
+                status == "completed"
+                and event_sink is not None
+                and not forwarder.final_response_seen
+            ):
                 if shopping_detail and forwarder.response_delta_seen:
                     await forwarder.forward_realtime_event(
                         RealtimeAgentEvent(
@@ -381,16 +386,23 @@ class _RealtimeForwardingEventSink:
         self._event_sink = event_sink
         self._progress: ProgressTracker = progress_policy.tracker()
         self._response_delta_seen = False
+        self._final_response_seen = False
 
     @property
     def response_delta_seen(self) -> bool:
         return self._response_delta_seen
+
+    @property
+    def final_response_seen(self) -> bool:
+        return self._final_response_seen
 
     def progress_summary(self) -> dict[str, object]:
         return self._progress.summary()
 
     async def forward_agent_event(self, event: AgentEvent) -> None:
         self.events.append(event)
+        if event.type == "final_response":
+            self._final_response_seen = True
         if self._event_sink is None or event.type not in _RUN_EVENT_TYPES:
             return
         if event.type == "response_delta":

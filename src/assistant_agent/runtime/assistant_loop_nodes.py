@@ -11,6 +11,7 @@ limits, trace recording, and state mutation.
 
 from __future__ import annotations
 
+import hashlib
 from time import perf_counter
 from typing import Any, NotRequired, TypedDict, cast
 
@@ -21,6 +22,7 @@ from assistant_agent.runtime.action_validator import ActionValidator
 from assistant_agent.runtime.assistant_graph_state import (
     AssistantStateCompatibilityError,
     AssistantTurnState,
+    ResponsePublishState,
     persisted_request_from_user_request,
     reenter_assistant_invocation,
     validate_assistant_turn_state,
@@ -39,7 +41,10 @@ from assistant_agent.runtime.assistant_interrupts import (
 from assistant_agent.runtime.cancellation import AgentRunCancelled
 from assistant_agent.runtime.citations import build_url_citation_annotations
 from assistant_agent.runtime.llm_event_mapping import stream_delta_to_product_fact
-from assistant_agent.runtime.product_event_projector import emit_product_fact
+from assistant_agent.runtime.product_event_projector import (
+    RunFinalProductFact,
+    emit_product_fact,
+)
 from assistant_agent.runtime.loop_guard import LoopGuard, LoopGuardDecision
 from assistant_agent.runtime.run_phase import RunPhase
 from assistant_agent.runtime.response_composer import compose_response
@@ -167,10 +172,89 @@ def publish_response_node(
     state: AssistantTurnState,
     runtime: Runtime[GraphRuntimeContext],
 ) -> AssistantTurnState:
-    """Reserved product-publication position; Task 4 installs the side effect."""
+    """Publish the completed response before any long-term-memory write."""
 
-    del runtime
-    return validate_assistant_turn_state(state)
+    validated = validate_assistant_turn_state(state)
+    published = ResponsePublishState.model_validate(validated["response_publish"])
+    if published.status == "published":
+        return validated
+    run = validated["run"]
+    response = validated.get("final_response")
+    if run["status"] != "completed" or response is None:
+        return validated
+    context = runtime.context
+    writer = context.product_fact_writer if context is not None else None
+    if writer is None:
+        writer = runtime.stream_writer
+    updated = dict(validated)
+    if writer is None:
+        updated["response_publish"] = ResponsePublishState(
+            status="failed",
+            issue_code="response_publisher_unavailable",
+        ).model_dump(mode="json")
+        return validate_assistant_turn_state(updated)
+    digest = hashlib.sha256(
+        (
+            f"run_final\0{validated['turn_origin_id']}\0"
+            f"{validated['invocation_run_id']}\0{response['message']}"
+        ).encode("utf-8")
+    ).hexdigest()
+    final_fact_id = f"pf.run_final.{digest}"
+    fact = RunFinalProductFact(
+        fact_id=final_fact_id,
+        session_id=str(validated["request"]["session_id"]),
+        run_id=str(run["run_id"]),
+        text=str(response["message"]),
+    )
+    try:
+        writer(fact)
+    except Exception:
+        updated["response_publish"] = ResponsePublishState(
+            status="failed",
+            final_fact_id=final_fact_id,
+            issue_code="response_publish_failed",
+        ).model_dump(mode="json")
+        return validate_assistant_turn_state(updated)
+    try:
+        if context is not None and context.trace_store is not None:
+            context.trace_store.append(
+                TraceEvent(
+                    trace_id=str(run["trace_id"]),
+                    run_id=str(run["run_id"]),
+                    user_id=str(validated["request"]["user_id"]),
+                    session_id=str(validated["request"]["session_id"]),
+                    node_name="publish_response",
+                    event_type="observability",
+                    canonical_event="response.delivered",
+                    observation_type="span",
+                    observation_name="response.delivered",
+                    observation_scope="runtime",
+                    span_id=new_span_id(),
+                    status="succeeded",
+                    attributes={
+                        "source": "graph_publish_response",
+                        "message_present": bool(response["message"]),
+                        "message_chars": len(str(response["message"])),
+                    },
+                    output_summary={
+                        "response": {
+                            "message_present": bool(response["message"]),
+                            "message_chars": len(str(response["message"])),
+                            "source": "graph_publish_response",
+                        }
+                    },
+                    created_at=fact.occurred_at,
+                )
+            )
+    except Exception:
+        # Delivery already succeeded; trace failure must not trigger another
+        # final product event during terminal projection.
+        pass
+    updated["response_publish"] = ResponsePublishState(
+        status="published",
+        final_fact_id=final_fact_id,
+    ).model_dump(mode="json")
+    return validate_assistant_turn_state(updated)
 
 
 class AssistantLoopState(TypedDict):

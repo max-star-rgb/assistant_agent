@@ -284,7 +284,13 @@ class RuntimeEventPublisher:
             )
         )
 
-    def deliver_run_terminal(self, fact: RunTerminalFact) -> None:
+    def deliver_run_terminal(
+        self,
+        fact: RunTerminalFact,
+        *,
+        publish_product: bool = True,
+        final_fact_id: str | None = None,
+    ) -> None:
         """Deliver the terminal projection after trace finalization."""
 
         state = fact.state
@@ -321,44 +327,46 @@ class RuntimeEventPublisher:
                 )
             )
             return
-        self._publish_product_fact(
-            RunFinalProductFact(
-                fact_id=new_runtime_product_fact_id("run_final"),
-                session_id=state.session_id,
-                run_id=state.run_id,
-                text=state.response.message if state.response else "",
-                occurred_at=fact.occurred_at,
+        if publish_product:
+            self._publish_product_fact(
+                RunFinalProductFact(
+                    fact_id=final_fact_id or new_runtime_product_fact_id("run_final"),
+                    session_id=state.session_id,
+                    run_id=state.run_id,
+                    text=state.response.message if state.response else "",
+                    occurred_at=fact.occurred_at,
+                )
             )
-        )
-        response_text = state.response.message if state.response else ""
-        self._append_trace(
-            TraceEvent(
-                trace_id=state.trace_id,
-                run_id=state.run_id,
-                user_id=state.user_id,
-                session_id=state.session_id,
-                node_name="runtime",
-                event_type="observability",
-                canonical_event="response.delivered",
-                observation_type="span",
-                observation_name="response.delivered",
-                span_id=new_span_id(),
-                status="succeeded",
-                attributes={
-                    "source": "runtime_final_response",
-                    "message_present": bool(response_text),
-                    "message_chars": len(response_text),
-                },
-                output_summary={
-                    "response": {
+        if publish_product:
+            response_text = state.response.message if state.response else ""
+            self._append_trace(
+                TraceEvent(
+                    trace_id=state.trace_id,
+                    run_id=state.run_id,
+                    user_id=state.user_id,
+                    session_id=state.session_id,
+                    node_name="runtime",
+                    event_type="observability",
+                    canonical_event="response.delivered",
+                    observation_type="span",
+                    observation_name="response.delivered",
+                    span_id=new_span_id(),
+                    status="succeeded",
+                    attributes={
+                        "source": "runtime_final_response",
                         "message_present": bool(response_text),
                         "message_chars": len(response_text),
-                        "source": "runtime_final_response",
-                    }
-                },
-                created_at=fact.occurred_at,
+                    },
+                    output_summary={
+                        "response": {
+                            "message_present": bool(response_text),
+                            "message_chars": len(response_text),
+                            "source": "runtime_final_response",
+                        }
+                    },
+                    created_at=fact.occurred_at,
+                )
             )
-        )
 
     def publish_tool_started(self, fact: ToolStartedFact) -> None:
         """Publish one tool-start fact to both projections."""

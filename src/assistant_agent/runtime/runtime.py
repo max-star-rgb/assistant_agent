@@ -1640,6 +1640,11 @@ class AgentGraphRuntime:
                 context_projector=self._refresh_realtime_video_context,
                 tool_result_handler=self.capability_grant_controller.handle_tool_result,
                 trace_store=self.trace_store,
+                product_fact_writer=(
+                    product_event_projector.project_fact
+                    if invocation_kind in {"resume", "replay", "fork"}
+                    else None
+                ),
                 cancel_token=cancel_token,
                 agent_state=state,
                 state_ref_resolver=state_ref_resolver,
@@ -1989,6 +1994,7 @@ class AgentGraphRuntime:
                 response_text
                 and run_event_sink is not None
                 and not run_event_sink.response_delta_emitted
+                and state.response_publish_status != "published"
             ):
                 prepared.product_event_projector.project_fact(
                     TextDeltaProductFact(
@@ -2003,7 +2009,11 @@ class AgentGraphRuntime:
                         },
                     )
                 )
-        runtime_event_publisher.deliver_run_terminal(terminal_fact)
+        runtime_event_publisher.deliver_run_terminal(
+            terminal_fact,
+            publish_product=state.response_publish_status != "published",
+            final_fact_id=state.response_final_fact_id,
+        )
         if (
             terminal_status == "completed"
             and not prepared.workflow_work_item

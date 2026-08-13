@@ -169,8 +169,14 @@ def test_plain_text_run_reaches_completed_terminal_state() -> None:
             for event in trace_events
             if event.canonical_event == "run.completed"
         )
+        response_delivered = next(
+            event
+            for event in trace_events
+            if event.canonical_event == "response.delivered"
+        )
         assert sink.events[0].created_at == run_started.created_at
-        assert sink.events[-1].created_at == run_completed.created_at
+        assert sink.events[-1].created_at == response_delivered.created_at
+        assert response_delivered.created_at <= run_completed.created_at
     finally:
         runtime.close()
 
