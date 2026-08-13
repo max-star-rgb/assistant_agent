@@ -397,8 +397,16 @@ def _default_agent_server_client(websocket: WebSocket) -> SdkAgentServerClient:
 
     configured_url = os.environ.get("ASSISTANT_AGENT_SERVER_URL")
     url = configured_url or str(websocket.base_url).rstrip("/")
-    authorization = websocket.headers.get("authorization")
-    headers = {"authorization": authorization} if authorization else None
+    headers = {
+        name: value
+        for name in (
+            "authorization",
+            "x-assistant-user",
+            "x-assistant-tenant",
+            "x-assistant-signature",
+        )
+        if (value := websocket.headers.get(name)) is not None
+    } or None
     return SdkAgentServerClient(url=url, headers=headers)
 
 

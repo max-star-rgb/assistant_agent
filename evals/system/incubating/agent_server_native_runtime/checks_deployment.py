@@ -67,7 +67,7 @@ def _context(user_id: str) -> dict[str, object]:
 
 
 async def _probe(url: str) -> str:
-    client = get_client(url=url)
+    client = get_client(url=url, headers=_headers("probe-admin"))
     assistants = await client.assistants.search(graph_id="assistant")
     assistant = assistants[0]
     assistant_id = str(assistant["assistant_id"])
@@ -80,13 +80,24 @@ async def _probe(url: str) -> str:
         assistant_id=assistant_id,
     )
 
-    first = await client.threads.create(metadata={"probe_user": "probe-user-a"})
-    second = await client.threads.create(metadata={"probe_user": "probe-user-b"})
+    first_client = get_client(url=url, headers=_headers("probe-user-a"))
+    second_client = get_client(url=url, headers=_headers("probe-user-b"))
+    first = await first_client.threads.create(metadata={"probe_user": "probe-user-a"})
+    second = await second_client.threads.create(metadata={"probe_user": "probe-user-b"})
     first_id = str(first["thread_id"])
     second_id = str(second["thread_id"])
     _emit("thread_isolation", first_id != second_id, thread_count=2)
+    first_visible = await first_client.threads.search(limit=20)
+    second_visible = await second_client.threads.search(limit=20)
+    _emit(
+        "principal_thread_isolation",
+        first_id in {str(item["thread_id"]) for item in first_visible}
+        and second_id not in {str(item["thread_id"]) for item in first_visible}
+        and second_id in {str(item["thread_id"]) for item in second_visible}
+        and first_id not in {str(item["thread_id"]) for item in second_visible},
+    )
 
-    result = await client.runs.wait(
+    result = await first_client.runs.wait(
         first_id,
         "assistant",
         input={
@@ -108,7 +119,7 @@ async def _probe(url: str) -> str:
         and state["continuation"] == "end",
         run_id=state["run"]["run_id"],
     )
-    snapshot = await client.threads.get_state(first_id, subgraphs=True)
+    snapshot = await first_client.threads.get_state(first_id, subgraphs=True)
     _emit(
         "checkpoint_state",
         snapshot["values"]["assistant_state"]["run"]["run_id"]
@@ -120,7 +131,7 @@ async def _probe(url: str) -> str:
     item = await client.store.get_item(namespace, "probe-key")
     _emit("native_store", item["value"] == {"value": "probe-value"})
 
-    delayed = await client.runs.create(
+    delayed = await second_client.runs.create(
         second_id,
         "assistant",
         input={
@@ -133,8 +144,8 @@ async def _probe(url: str) -> str:
         after_seconds=10,
     )
     delayed_id = str(delayed["run_id"])
-    await client.runs.cancel(second_id, delayed_id, wait=True)
-    cancelled = await client.runs.get(second_id, delayed_id)
+    await second_client.runs.cancel(second_id, delayed_id, wait=True)
+    cancelled = await second_client.runs.get(second_id, delayed_id)
     _emit("native_cancel", cancelled["status"] in {"interrupted", "error"})
 
     await _probe_enqueue(client)
@@ -275,6 +286,13 @@ def _media_frame(message: str, body: Mapping[str, object]) -> str:
     return json.dumps(
         {"message": message, "sessionId": "probe-media-session", "body": json.dumps(body)}
     )
+
+
+def _headers(user_id: str) -> dict[str, str]:
+    return {
+        "x-assistant-user": user_id,
+        "x-assistant-tenant": "probe-tenant",
+    }
 
 
 def main() -> int:

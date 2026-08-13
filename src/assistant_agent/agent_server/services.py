@@ -217,7 +217,7 @@ def _authorize_context(user: BaseUser, context: AgentServerRunContext) -> None:
     permissions = set(getattr(user, "permissions", ()) or ())
     if identity == context.user_id:
         return
-    if permissions.intersection({"assistant:invoke", "assistant:developer"}):
+    if "assistant:developer" in permissions:
         return
     raise PermissionError("Authenticated principal cannot delegate this user context.")
 

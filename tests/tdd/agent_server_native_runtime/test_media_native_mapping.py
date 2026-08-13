@@ -12,6 +12,8 @@ from assistant_agent.agent_server.auth import (
     authorize_thread_read,
     authorize_thread_search,
     scope_store,
+    authenticate,
+    delegated_identity_signature,
 )
 from assistant_agent.agent_server.media_session import MediaConnectionSession
 from assistant_agent.agent_server.media_protocol import (
@@ -120,6 +122,56 @@ def test_agent_server_resource_authorization_scopes_native_resources_to_principa
     assert store["namespace"] == ("principal-1", "assistant_agent", "subject-1")
     assert asyncio.run(allow_assistant_read(ctx, {})) is True
     assert asyncio.run(deny_all(ctx, {})) is False
+
+
+def test_mock_auth_can_model_two_end_users_without_trusting_run_context(monkeypatch) -> None:
+    monkeypatch.setenv("MULTIMODAL_AGENT_PROVIDER_MODE", "mock")
+
+    first = asyncio.run(
+        authenticate(
+            None,
+            {b"x-assistant-user": b"user-a", b"x-assistant-tenant": b"tenant-a"},
+        )
+    )
+    second = asyncio.run(
+        authenticate(
+            None,
+            {b"x-assistant-user": b"user-b", b"x-assistant-tenant": b"tenant-a"},
+        )
+    )
+
+    assert first["identity"] == "user-a"
+    assert first["tenant_id"] == "tenant-a"
+    assert second["identity"] == "user-b"
+    assert first["identity"] != second["identity"]
+
+
+def test_real_auth_requires_signed_end_user_delegation(monkeypatch) -> None:
+    monkeypatch.setenv("MULTIMODAL_AGENT_PROVIDER_MODE", "real")
+    monkeypatch.setenv("ASSISTANT_AGENT_SERVER_SERVICE_TOKEN", "service-secret")
+    signature = delegated_identity_signature(
+        secret="service-secret",
+        identity="user-a",
+        tenant_id="tenant-a",
+    )
+
+    user = asyncio.run(
+        authenticate(
+            "Bearer service-secret",
+            {
+                b"x-assistant-user": b"user-a",
+                b"x-assistant-tenant": b"tenant-a",
+                b"x-assistant-signature": signature.encode(),
+            },
+        )
+    )
+
+    assert user == {
+        "identity": "user-a",
+        "permissions": [],
+        "is_authenticated": True,
+        "tenant_id": "tenant-a",
+    }
 
 
 def test_success_projection_preserves_citations_durable_refs_and_generated_images(
