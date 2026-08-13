@@ -10,10 +10,11 @@ import socket
 import subprocess
 import sys
 import time
-from typing import Any
+from typing import Any, Mapping
 from urllib.request import urlopen
 
 from langgraph_sdk import get_client
+import websockets
 
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
@@ -135,6 +136,54 @@ async def _probe(url: str) -> None:
     await client.runs.cancel(second_id, delayed_id, wait=True)
     cancelled = await client.runs.get(second_id, delayed_id)
     _emit("native_cancel", cancelled["status"] in {"interrupted", "error"})
+
+    await _probe_media_route(url)
+
+
+async def _probe_media_route(url: str) -> None:
+    websocket_url = url.replace("http://", "ws://", 1) + "/agent-service/v1"
+    async with websockets.connect(websocket_url) as websocket:
+        await websocket.send(
+            _media_frame(
+                "assistantControl",
+                {"number": "probe-media-user", "callType": "AUDIO"},
+            )
+        )
+        control = json.loads(await websocket.recv())
+        await websocket.send(
+            _media_frame(
+                "chat",
+                {
+                    "chatIndex": "probe-chat-1",
+                    "userNumber": "probe-media-user",
+                    "contents": [
+                        {
+                            "speakerNumber": "probe-media-user",
+                            "time": "1",
+                            "speechContent": "你好",
+                        }
+                    ],
+                    "stream": True,
+                },
+            )
+        )
+        progress = json.loads(await websocket.recv())
+        final = json.loads(await websocket.recv())
+    control_body = json.loads(control["body"])
+    final_body = json.loads(final["body"])
+    _emit(
+        "media_native_route",
+        control_body["code"] == 0
+        and progress["message"] == "chatProgress"
+        and final["message"] == "chatResponse"
+        and final_body["message"]["content"]["intentResult"]["status"] == "SUCCESS",
+    )
+
+
+def _media_frame(message: str, body: Mapping[str, object]) -> str:
+    return json.dumps(
+        {"message": message, "sessionId": "probe-media-session", "body": json.dumps(body)}
+    )
 
 
 def main() -> int:
