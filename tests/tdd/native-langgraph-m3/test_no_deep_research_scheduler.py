@@ -4,15 +4,10 @@ import asyncio
 import importlib.util
 from dataclasses import replace
 
-from assistant_agent.workflows import planning as legacy_planning
-from assistant_agent.workflows import store as legacy_store
-from assistant_agent.workflows import worker as legacy_worker
 from assistant_agent.workflows.durable_graph_app import (
     DurableWorkflowGraphApp,
     WorkflowGraphExecutionIdentity,
 )
-from assistant_agent.workflows.runtime import WorkflowRuntime
-from assistant_agent.workflows.store import InMemoryWorkflowStore
 from assistant_agent.config import ProviderConfig
 from assistant_agent.runtime.chat_adapter import MockChatAdapter
 from assistant_agent.runtime.requests import UserRequest
@@ -35,43 +30,23 @@ def _identity() -> WorkflowGraphExecutionIdentity:
 
 
 def test_native_graph_execution_never_calls_legacy_scheduler_boundaries(
-    tmp_path, monkeypatch
+    tmp_path,
 ) -> None:
     """A graph_v3 execution must not restore the deleted shadow-store scheduler."""
 
-    assert importlib.util.find_spec(
-        "assistant_agent.workflows.observed_store"
-    ) is None
+    assert importlib.util.find_spec("assistant_agent.workflows.observed_store") is None
 
-    def unexpected_legacy_call(*_args, **_kwargs):
-        raise AssertionError("native graph called a legacy scheduler boundary")
-
-    monkeypatch.setattr(WorkflowRuntime, "run_claim", unexpected_legacy_call)
-    monkeypatch.setattr(
-        legacy_worker.DurableWorkflowWorker, "run_once", unexpected_legacy_call
-    )
-    monkeypatch.setattr(
-        InMemoryWorkflowStore, "claim_ready_work_item", unexpected_legacy_call
-    )
-    monkeypatch.setattr(
-        InMemoryWorkflowStore, "renew_work_item_lease", unexpected_legacy_call
-    )
-    monkeypatch.setattr(
-        legacy_planning, "next_ready_work_item", unexpected_legacy_call
-    )
-    monkeypatch.setattr(
-        legacy_store, "claim_ready_item_in_bundle", unexpected_legacy_call
-    )
-    monkeypatch.setattr(legacy_worker, "ThreadPoolExecutor", unexpected_legacy_call)
+    for module_name in ("worker", "runtime", "execution", "planning", "progress"):
+        assert (
+            importlib.util.find_spec(f"assistant_agent.workflows.{module_name}") is None
+        )
 
     graph, context, initial, _worker, artifact_store = workflow_probe(
         tmp_path, {"collect": [], "write": ["collect"]}
     )
     app = DurableWorkflowGraphApp(graph)
     try:
-        result = asyncio.run(
-            app.arun(initial, identity=_identity(), context=context)
-        )
+        result = asyncio.run(app.arun(initial, identity=_identity(), context=context))
         assert result.status == "completed"
         assert result.final_state["execution_engine"] == "langgraph_v3"
         assert result.final_state["wave_history"] == [["collect"], ["write"]]
@@ -81,10 +56,6 @@ def test_native_graph_execution_never_calls_legacy_scheduler_boundaries(
 
 def test_async_deep_research_uses_graph_host_and_never_legacy_submit() -> None:
     """Restoring the old service submit call must fail this production cutover test."""
-
-    class ForbiddenLegacyService:
-        def submit(self, **_kwargs):
-            raise AssertionError("deep research called legacy workflow submit")
 
     class RecordingGraphHost:
         def __init__(self) -> None:
@@ -108,7 +79,6 @@ def test_async_deep_research_uses_graph_host_and_never_legacy_submit() -> None:
         registry=registry,
         chat_adapter=MockChatAdapter(),
         config=replace(ProviderConfig(), durable_workflows_enabled=False),
-        workflow_service=ForbiddenLegacyService(),
         workflow_graph_host=host,
     )
     request = UserRequest(

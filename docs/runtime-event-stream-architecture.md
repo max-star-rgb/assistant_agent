@@ -134,11 +134,10 @@ checkpointer 期间的新 claim、已取得 pre-native claim 的 `begin_native` 
 session deletion 尚未拥有完整的多 agent/checkpointer retention 协调，因此不隐式调用该 host API，后续 persistent
 composition root 必须显式接线。thread 已销毁后，确定性 thread key 即使再次出现
 也属于新的 retention 生命周期，可以重新 claim；调用方不得把 `delete_thread` 当作单 run retry 接口。
-M3 已在离线路径编译 `DurableWorkflowGraph`，并以 native v2
+production composition 已持有 `DurableWorkflowGraph`，并以 native v2
 `updates/custom/tasks/checkpoints` stream、subgraph namespace、`Send` super-step、父图 interrupt snapshot、
-同 thread 新 run resume 和最终 snapshot 判定验证 Graph API 事实。该 app 目前只由 TDD probe 与 LangSmith
-workflow regression offline target 使用，尚未由 Agent-Service/API 的 production composition root 持有；
-因此它不改变下文所述当前 Deep Research work-item stream、lease 或恢复边界。
+同 thread 新 run resume 和最终 snapshot 判定验证 Graph API 事实。Agent-Service/API 与 LangSmith
+workflow regression 都复用同一 production GraphHost composition。
 当前 Durable Workflow graph 没有跨节点 namespace/key/value consumer，因此不装配 LangGraph Store；短期执行
 记忆只属于 strict state 与 checkpointer，长期记忆仍只通过 `MemoryPluginHost` 生命周期治理，正文不进入
 checkpoint。Assistant graph 的内部 replay/fork 在进入 native stream 或创建 branch 前，只检查所选 checkpoint
@@ -156,8 +155,8 @@ input schema、runtime input bindings 与 hidden fields）和 checkpoint-time bo
 `assistant_agent.runtime.graph_capability_evidence.GRAPH_CAPABILITY_EVIDENCE` 提供严格机器矩阵：每项只允许
 `implemented|not_applicable`，并指向 Git tracked 的源码或测试 anchor；`Store` 是唯一
 `not_applicable`，因为当前 graph 没有跨节点 Store consumer 且 compile 不接收空 Store。这个能力矩阵与
-整体交付 gate 分离：legacy retirement 未关闭时，已实现能力仍保持 `implemented`，M5 delivery 另以持久的
-只读 retirement probe 证据标记 `blocked`，不能据此删除 legacy。
+整体交付 gate 与能力矩阵分离：持久 operator retirement evidence 已关闭 legacy gate，M5 delivery 为
+`accepted`；能力项仍只表达 `implemented|not_applicable`。
 仓库不再保留 conditional graph、rule intent/router/planner 或可切换它们的 `AGENT_GRAPH_MODE`；
 `UserRequest` 也不再接受 `execution_strategy=plan_and_solve`。当前仍存在的
 `task_execution_mode` 是工具/持久执行的结构化治理事实，不是第二张 Agent graph 的选择器。
@@ -369,9 +368,8 @@ state = await stream.result()
 M5 后 Runtime 的稳定公开方法只有 `initialize_session_memory`、`run_state`、`arun_state`、
 `astream_state`、`aresume_state`、`areplay_state`、`afork_state`、
 `drain_memory_ingestions`、`run_task_quantum` 与 `close`。无人调用的 `run()` 已删除；history 和 thread
-retention 不再作为 Runtime facade 方法。唯一临时例外是 `run_work_item`：legacy Workflow DB 的只读
-operator gate 仍有 `running=1`、`waiting_input=1`，因此它继续只服务 drain 中的
-`workflows/execution.py`，不得被新入口采用，待 Task 9 retirement gate 全部满足后再删除。
+retention 不再作为 Runtime facade 方法。legacy Workflow retirement gate 已闭合，`run_work_item`
+及其 execution adapter 已删除；复杂规划只由 process-owned `WorkflowGraphHost` 和原生 StateGraph 执行。
 
 `run_assistant_request_stream()` returns
 `AgentRunStream[AssistantRunArtifacts]` and preserves the shared service as the
@@ -426,16 +424,10 @@ Durable Workflow 使用相同的分离原则，但事件事实源是 `WorkflowSt
   临时观察窗口，使用 cursor 可重放；
 - 当前 HTTP facade 是 pull/replay，不建立长期 WebSocket producer，也不把消费者速度耦合到 worker。
 
-当前持久恢复边界刻意放在 work-item run 之间：`DurableWorkflowWorker` 可同时原子 claim 多个依赖已满足的
-work item，每个 item 使用独立 lease、attempt 与预算预留；这些 bounded Agent run 在锁外并行执行，
-再分别以 Workflow revision CAS 提交结果。最后一个依赖成功提交后才解锁 join/synthesis 节点。
-进程重启后从 `WorkflowStore` 恢复，过期 lease 只回收对应 item；执行期间 heartbeat 续租，防止长模型
-run 被误判为崩溃。当前实现没有声称可以从一次 Provider/Tool 调用的中间指令继续，也没有把 LangGraph
-SQLite checkpointer 作为第二事实源；崩溃在提交前发生时，该 work-item run 会按 lease/retry 语义重做。
-因此普通首批内置 definition 只给 work item 暴露只读 Tool；
-`deep_research` 是当前例外，它暴露零个本地 Tool，并在相同 Chat Completions Provider turn 内使用
-百炼原生联网。未来若允许写副作用，必须先增加 operation-level idempotency key 和 side-effect
-commit barrier。
+当前持久恢复边界是 official LangGraph SQLite checkpointer：StateGraph 直接持久化 plan、wave、branch、
+interrupt 与 resume 状态，进程重启由同一 thread checkpoint 恢复。业务 `WorkflowStore` 仅保存产品投影、
+终态历史和迁移审计，不再拥有 ready-node、claim、lease 或 heartbeat 执行权。写副作用继续复用
+operation-level idempotency key 与 side-effect commit barrier。
 
 普通 work-item 的完整最终文本直接作为成功结果。Provider 截断、错误、拒绝、timeout 或空终态属于
 技术失败，必须进入 work-item retry/failure 状态，不能把用户可见兜底文案写成成功 artifact。只有

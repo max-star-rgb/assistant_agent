@@ -448,23 +448,6 @@ class WorkflowEvent(BaseModel):
     created_at: datetime = Field(default_factory=utc_now)
 
 
-class WorkflowWorkItemLease(BaseModel):
-    """Durable ownership of one independently executable DAG node."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    workflow_id: str = Field(min_length=1)
-    workflow_revision: int = Field(ge=1)
-    plan_version: int = Field(ge=1)
-    work_item_id: str = Field(min_length=1)
-    attempt_id: str = Field(min_length=1)
-    worker_id: str = Field(min_length=1)
-    lease_token: str = Field(min_length=1)
-    expires_at: datetime
-    reserved_model_calls: int = Field(ge=1)
-    reserved_tool_calls: int = Field(ge=0)
-
-
 class WorkflowBundle(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -500,13 +483,3 @@ class WorkflowBundle(BaseModel):
             for plan in self.plans
             if plan.version == self.workflow.current_plan_version
         )
-
-
-class WorkflowDispatch(BaseModel):
-    """One committed scheduler update, optionally carrying executable ownership."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    lease: WorkflowWorkItemLease | None = None
-    bundle: WorkflowBundle
-    committed_events: list[WorkflowEvent] = Field(default_factory=list)

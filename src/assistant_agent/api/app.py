@@ -12,10 +12,14 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from assistant_agent.api.agent_service_websocket import router as agent_service_websocket_router
+from assistant_agent.api.agent_service_websocket import (
+    router as agent_service_websocket_router,
+)
 from assistant_agent.api.gateway_runtime import shutdown_gateway_runtime
 from assistant_agent.api.gateway_websocket import router as gateway_websocket_router
-from assistant_agent.api.rendering_3d_callback import router as rendering_3d_callback_router
+from assistant_agent.api.rendering_3d_callback import (
+    router as rendering_3d_callback_router,
+)
 from assistant_agent.api import routes_agent
 from assistant_agent.api.routes_a2a import router as a2a_router
 from assistant_agent.api.routes_agent import router as agent_router
@@ -34,7 +38,9 @@ from assistant_agent.automation.durable_tasks.worker import (
     DurableTaskRuntimeRouter,
     DurableTaskWorker,
 )
-from assistant_agent.observability.operational_logging import configure_operational_logging_from_env
+from assistant_agent.observability.operational_logging import (
+    configure_operational_logging_from_env,
+)
 from assistant_agent.automation.proactive_wake.delivery import (
     NotificationDeliveryWorker,
 )
@@ -48,7 +54,6 @@ from assistant_agent.skills.application import (
 )
 from assistant_agent.workflows.graph_host import WorkflowGraphHost
 from assistant_agent.workflows.cutover import load_workflow_cutover_manifest
-from assistant_agent.workflows.legacy_drain_host import LegacyDrainHost
 
 SKIP_DOTENV_ENV = "MULTIMODAL_AGENT_SKIP_DOTENV"
 
@@ -60,11 +65,15 @@ def create_app() -> FastAPI:
     app.state.skill_app = create_skill_runtime_app_from_env()
 
     @app.exception_handler(RequestValidationError)
-    async def validation_exception_handler(request, exc: RequestValidationError) -> JSONResponse:
+    async def validation_exception_handler(
+        request, exc: RequestValidationError
+    ) -> JSONResponse:
         error = api_error(
             "INVALID_REQUEST",
             "请求参数无效。",
-            detail={"fields": [_validation_error_summary(item) for item in exc.errors()]},
+            detail={
+                "fields": [_validation_error_summary(item) for item in exc.errors()]
+            },
             recoverable=True,
         )
         return JSONResponse(
@@ -81,7 +90,11 @@ def create_app() -> FastAPI:
         return {"status": "ok"}
 
     GENERATED_ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
-    app.mount("/artifacts/generated", StaticFiles(directory=GENERATED_ARTIFACT_DIR), name="generated_artifacts")
+    app.mount(
+        "/artifacts/generated",
+        StaticFiles(directory=GENERATED_ARTIFACT_DIR),
+        name="generated_artifacts",
+    )
     app.include_router(agent_router)
     app.include_router(tasks_router)
     app.include_router(workflows_router)
@@ -100,7 +113,6 @@ async def _lifespan(app: FastAPI):
         await start_workflow_graph_host(app)
         start_shared_agent_runtime(app)
         await start_durable_task_worker(app)
-        await start_durable_workflow_worker(app)
         workflow_host = getattr(app.state, "workflow_graph_host", None)
         if workflow_host is not None:
             await workflow_host.recover_nonterminal()
@@ -108,7 +120,6 @@ async def _lifespan(app: FastAPI):
         yield
     finally:
         await shutdown_workflow_graph_host(app)
-        await shutdown_durable_workflow_worker(app)
         await shutdown_durable_task_worker(app)
         await shutdown_gateway_runtime()
         shutdown_shared_agent_runtime(app)
@@ -139,9 +150,7 @@ async def start_workflow_graph_host(app: FastAPI) -> WorkflowGraphHost | None:
         "MULTIMODAL_AGENT_WORKFLOW_CUTOVER_MANIFEST_PATH", ""
     )
     if not manifest_path:
-        raise RuntimeError(
-            "durable workflows require an operator cutover manifest"
-        )
+        raise RuntimeError("durable workflows require an operator cutover manifest")
 
     def manifest_source():
         return load_workflow_cutover_manifest(manifest_path)
@@ -210,60 +219,6 @@ def get_durable_task_worker(app: FastAPI) -> DurableTaskWorker | None:
     return worker if isinstance(worker, DurableTaskWorker) else None
 
 
-def get_durable_workflow_worker(app: FastAPI) -> Any | None:
-    worker = getattr(app.state, "durable_workflow_worker", None)
-    return worker
-
-
-async def start_durable_workflow_worker(app: FastAPI) -> Any | None:
-    """Start the manifest-bounded legacy drain; never derive a dynamic scope."""
-
-    runtime = getattr(app.state, "agent_runtime", None)
-    config = getattr(app.state, "runtime_config", None)
-    app.state.durable_workflow_worker = None
-    if (
-        runtime is None
-        or config is None
-        or not config.durable_workflow_worker_enabled
-    ):
-        return None
-    manifest_path = os.environ.get(
-        "MULTIMODAL_AGENT_WORKFLOW_CUTOVER_MANIFEST_PATH", ""
-    )
-    if not manifest_path:
-        raise RuntimeError(
-            "durable workflow drain requires an operator cutover manifest"
-        )
-    def manifest_source():
-        return load_workflow_cutover_manifest(manifest_path)
-
-    manifest = manifest_source()
-    host = LegacyDrainHost.compose(
-        config=config,
-        agent_runtime=runtime,
-        manifest=manifest,
-    )
-    app.state.legacy_drain_host = host
-    app.state.durable_workflow_worker = host.worker
-    graph_host = getattr(app.state, "workflow_graph_host", None)
-    if isinstance(graph_host, WorkflowGraphHost):
-        await host.reconcile_pristine_migrations(
-            graph_host=graph_host,
-            manifest=manifest,
-            manifest_source=manifest_source,
-        )
-    await host.start()
-    return host.worker
-
-
-async def shutdown_durable_workflow_worker(app: FastAPI) -> None:
-    host = getattr(app.state, "legacy_drain_host", None)
-    app.state.legacy_drain_host = None
-    app.state.durable_workflow_worker = None
-    if isinstance(host, LegacyDrainHost):
-        await host.close()
-
-
 async def start_durable_task_worker(app: FastAPI) -> DurableTaskWorker | None:
     """Bind the app to the shared runtime service and optionally start one worker."""
 
@@ -304,10 +259,7 @@ async def start_durable_task_worker(app: FastAPI) -> DurableTaskWorker | None:
         asyncio.to_thread(worker.run, stop_event)
     )
     notification_store = getattr(runtime, "notification_outbox_store", None)
-    if (
-        config.durable_notification_worker_enabled
-        and notification_store is not None
-    ):
+    if config.durable_notification_worker_enabled and notification_store is not None:
         notification_transport = AgentServiceNotificationTransport(
             get_agent_service_notification_hub()
         )
@@ -351,7 +303,9 @@ async def shutdown_durable_task_worker(app: FastAPI) -> None:
         except asyncio.TimeoutError:
             delivery_task.cancel()
     service = getattr(app.state, "durable_task_service", None)
-    if service is not None and not getattr(app.state, "durable_task_store_closed", False):
+    if service is not None and not getattr(
+        app.state, "durable_task_store_closed", False
+    ):
         close = getattr(service.store, "close", None)
         if callable(close):
             close()
@@ -374,7 +328,9 @@ async def _run_notification_delivery_worker(
         await asyncio.to_thread(stop_event.wait, poll_seconds)
 
 
-def load_repo_env_file(path: Path | None = None, *, override: bool = False) -> dict[str, str]:
+def load_repo_env_file(
+    path: Path | None = None, *, override: bool = False
+) -> dict[str, str]:
     """Load repo `.env` for manual API/Web runs without adding a dependency."""
 
     if (

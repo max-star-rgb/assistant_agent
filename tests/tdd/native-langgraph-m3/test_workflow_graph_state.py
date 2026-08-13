@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import functools
-import inspect
 import itertools
 import json
 from datetime import datetime, timedelta, timezone
@@ -11,7 +10,6 @@ import pytest
 from pydantic import ValidationError
 
 from assistant_agent.context.service import ContextService
-from assistant_agent.identity import RequestIdentity
 from assistant_agent.runtime.assistant_graph_app import AssistantTurnGraphApp
 from assistant_agent.runtime.assistant_graph_profiles import (
     ProfileInvocationInput,
@@ -54,10 +52,6 @@ from assistant_agent.workflows.models import (
     WorkflowRecord,
     WorkflowSubmission,
 )
-from assistant_agent.workflows.builtin import default_workflow_definitions
-from assistant_agent.workflows.service import WorkflowService
-from assistant_agent.workflows.sqlite_store import SQLiteWorkflowStore
-from assistant_agent.workflows.store import InMemoryWorkflowStore
 from tests.core.support import ProbeTool
 
 
@@ -351,8 +345,7 @@ def test_other_state_reducers_are_deterministic_and_replay_safe() -> None:
     assert merge_sorted_unique_refs(("b", "a"), ("c", "a")) == ("a", "b", "c")
     assert merge_resume_values(resume, resume) == merge_resume_values({}, resume)
     assert all(
-        isinstance(value, dict)
-        for value in merge_resume_values({}, resume).values()
+        isinstance(value, dict) for value in merge_resume_values({}, resume).values()
     )
     assert merge_graph_errors((error,), (error,)) == merge_graph_errors((), (error,))
 
@@ -364,101 +357,6 @@ def test_workflow_record_migrates_missing_engine_only_to_legacy() -> None:
     assert legacy.execution_engine == "legacy_scheduler_v2"
     assert graph.execution_engine == "langgraph_v3"
     assert legacy.model_dump(mode="json")["execution_engine"] == "legacy_scheduler_v2"
-
-
-@pytest.mark.parametrize("store_kind", ["memory", "sqlite"])
-@pytest.mark.parametrize(
-    ("record_engine", "allowed_types"),
-    [
-        ("langgraph_v3", frozenset({"deep_research"})),
-        ("legacy_scheduler_v2", frozenset({"long_horizon"})),
-    ],
-)
-def test_legacy_claim_filters_engine_and_workflow_type_inside_store_boundary(
-    tmp_path,
-    store_kind,
-    record_engine,
-    allowed_types,
-) -> None:
-    store = (
-        InMemoryWorkflowStore()
-        if store_kind == "memory"
-        else SQLiteWorkflowStore(tmp_path / "workflows.sqlite3")
-    )
-    service = WorkflowService(
-        store=store,
-        definitions=default_workflow_definitions(),
-    )
-    created = service.submit(
-        identity=RequestIdentity.for_user(
-            user_id="user-1",
-            agent_id="agent-1",
-            session_id="session-1",
-        ),
-        ingress_run_id="ingress-run-1",
-        submission=_submission(),
-    )
-    changed = created.model_copy(deep=True)
-    changed.workflow.execution_engine = record_engine
-    store.save(changed, expected_revision=created.workflow.revision, events=[])
-
-    claimed = store.claim_ready_work_item(
-        worker_id="legacy-worker-1",
-        now=datetime.now(timezone.utc),
-        lease_seconds=30,
-        model_call_limit=2,
-        tool_call_limit=0,
-        allowed_execution_engines=frozenset({"legacy_scheduler_v2"}),
-        allowed_workflow_types=allowed_types,
-    )
-
-    assert claimed is None
-    loaded = store.load(created.workflow.workflow_id)
-    assert loaded is not None
-    assert loaded.current_plan.work_items[0].status == "ready"
-    store.close()
-
-
-@pytest.mark.parametrize("store_kind", ["memory", "sqlite"])
-def test_claim_scope_requires_explicit_engine_and_workflow_type_allowlists(
-    tmp_path,
-    store_kind,
-) -> None:
-    store = (
-        InMemoryWorkflowStore()
-        if store_kind == "memory"
-        else SQLiteWorkflowStore(tmp_path / "workflows.sqlite3")
-    )
-    signature = inspect.signature(store.claim_ready_work_item)
-
-    assert (
-        signature.parameters["allowed_execution_engines"].default
-        is inspect.Parameter.empty
-    )
-    assert (
-        signature.parameters["allowed_workflow_types"].default
-        is inspect.Parameter.empty
-    )
-    common = {
-        "worker_id": "worker-1",
-        "now": datetime.now(timezone.utc),
-        "lease_seconds": 30,
-        "model_call_limit": 1,
-        "tool_call_limit": 0,
-    }
-    with pytest.raises(ValueError, match="allowlists.*non-empty"):
-        store.claim_ready_work_item(
-            **common,
-            allowed_execution_engines=frozenset(),
-            allowed_workflow_types=frozenset({"deep_research"}),
-        )
-    with pytest.raises(ValueError, match="allowlists.*non-empty"):
-        store.claim_ready_work_item(
-            **common,
-            allowed_execution_engines=frozenset({"legacy_scheduler_v2"}),
-            allowed_workflow_types=frozenset(),
-        )
-    store.close()
 
 
 def test_initial_state_rejects_legacy_record_and_preserves_strict_identity() -> None:

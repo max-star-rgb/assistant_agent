@@ -51,9 +51,7 @@ Task 1 的恢复闭包。目标不是把 `AgentState` 原样 JSON 化，而是�
 `run_state` / `arun_state` 表达；history 与 thread retention 由持有 compiled app 的
 `AssistantRuntimeApp` / `RuntimeHost` 直接治理，不再扩张 Runtime facade。
 
-`run_work_item` 是唯一临时例外：`src/assistant_agent/workflows/execution.py` 仍是其真实消费者。
-2026-08-13 的只读 operator gate 事实仍有 `running=1`、`waiting_input=1`，因此 Task 9 retirement
-gate 未满足；在 legacy workflow 全部 drain 且 gate 明确通过前不得删除该方法，也不得新增第二个
+legacy retirement gate 已闭合，`run_work_item` 与 `workflows/execution.py` 均已删除；不得新增
 compatibility alias。
 
 ## Runtime-only 重建项

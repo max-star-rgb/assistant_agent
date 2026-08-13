@@ -82,7 +82,10 @@ from assistant_agent.runtime.requests import (
     UserRequest,
     normalize_task_execution_mode,
 )
-from assistant_agent.runtime.graph_time_travel import GraphForkRequest, GraphReplayRequest
+from assistant_agent.runtime.graph_time_travel import (
+    GraphForkRequest,
+    GraphReplayRequest,
+)
 from assistant_agent.runtime.generated_artifacts import with_generated_artifact_delivery
 from assistant_agent.multi_agent.models import DEFAULT_AGENT_ID
 from assistant_agent.tools.models import ToolResult, ToolSpec
@@ -90,14 +93,7 @@ from assistant_agent.media.agent_service_entry import is_trusted_agent_service_r
 from assistant_agent.runtime.event_sink import EventSink
 from assistant_agent.automation.durable_tasks.service import DurableTaskService
 from assistant_agent.automation.durable_tasks.sqlite_store import SQLiteTaskStore
-from assistant_agent.workflows.artifacts import LocalWorkflowArtifactStore
-from assistant_agent.workflows.builtin import default_workflow_definitions
-from assistant_agent.workflows.models import (
-    WorkflowStepAcceptanceContract,
-    WorkflowSubmission,
-)
-from assistant_agent.workflows.service import WorkflowService
-from assistant_agent.workflows.sqlite_store import SQLiteWorkflowStore
+from assistant_agent.workflows.models import WorkflowSubmission
 from assistant_agent.runtime.chat_adapter import (
     ChatAdapter,
     ChatRequest,
@@ -287,8 +283,6 @@ class AgentGraphRuntime:
         checkpointer: Any | None = None,
         context_source_coordinator: ContextSourceCoordinator | None = None,
         durable_task_service: DurableTaskService | None = None,
-        workflow_service: WorkflowService | None = None,
-        workflow_artifact_store: LocalWorkflowArtifactStore | None = None,
         workflow_graph_host: Any | None = None,
         agent_id: str = DEFAULT_AGENT_ID,
         tool_execution_backend: ToolExecutionBackend | None = None,
@@ -343,25 +337,7 @@ class AgentGraphRuntime:
         self.long_term_memory_service = (
             long_term_memory_service or create_long_term_memory_service(self.config)
         )
-        self.workflow_service = workflow_service
-        self.workflow_artifact_store = workflow_artifact_store
         self.workflow_graph_host = workflow_graph_host
-        if (
-            self.config.durable_workflows_enabled
-            and self.workflow_graph_host is None
-        ):
-            if self.workflow_service is None:
-                workflow_store = SQLiteWorkflowStore(self.config.durable_workflow_path)
-                self.workflow_service = WorkflowService(
-                    store=workflow_store,
-                    definitions=default_workflow_definitions(),
-                )
-            self.workflow_artifact_store = (
-                self.workflow_artifact_store
-                or LocalWorkflowArtifactStore(
-                    self.config.durable_workflow_artifact_path
-                )
-            )
         self.durable_task_service = durable_task_service
         self.notification_outbox_store = None
         if self.config.durable_tasks_enabled and (
@@ -600,206 +576,6 @@ class AgentGraphRuntime:
             )
         )
         return state
-
-    def run_work_item(self, request):
-        """Execute one bounded Workflow assignment through the existing assistant loop."""
-
-        from assistant_agent.workflows.agent_runtime import (
-            AgentWorkItemRequest,
-            AgentWorkItemResult,
-            parse_work_item_response,
-            parse_workflow_plan_response,
-            render_work_item_prompt,
-        )
-
-        assignment = (
-            request
-            if isinstance(request, AgentWorkItemRequest)
-            else AgentWorkItemRequest.model_validate(request)
-        )
-        user_request = UserRequest(
-            user_id=assignment.user_id,
-            session_id=assignment.session_id,
-            text=render_work_item_prompt(assignment),
-            assistant_mode=assignment.assistant_mode,
-            task_execution_mode="foreground",
-            metadata={
-                "_trusted_workflow_assignment": {
-                    "workflow_id": assignment.workflow_id,
-                    "work_item_id": assignment.work_item_id,
-                    "attempt_id": assignment.attempt_id,
-                },
-                "_trusted_workflow_max_iterations": assignment.max_iterations,
-                "_trusted_workflow_allowed_tools": list(assignment.allowed_tool_names),
-                "tool_visibility": {
-                    "allowed_tools": list(assignment.allowed_tool_names),
-                    "profile": "workflow_work_item",
-                },
-            },
-        )
-        parsed_result: AgentWorkItemResult | None = None
-
-        def parse_terminal_work_item_state(state: AgentState) -> AgentWorkItemResult:
-            if state.status == "completed" and state.response is not None:
-                status = "succeeded"
-                summary = state.response.message
-            elif state.status == "cancelled":
-                status = "blocked"
-                summary = "Work item execution was cancelled."
-            else:
-                status = "failed"
-                summary = (
-                    state.response.message
-                    if state.response is not None
-                    else "Work item execution failed."
-                )
-            model_calls_used = sum(
-                1
-                for step in state.request.metadata.get("assistant_loop_steps", [])
-                if isinstance(step, dict) and step.get("output_type") is not None
-            )
-            artifact_refs = list(state.response.output_refs) if state.response else []
-            loop_steps = [
-                step
-                for step in state.request.metadata.get("assistant_loop_steps", [])
-                if isinstance(step, dict) and step.get("output_type") is not None
-            ]
-            terminal_notes = (
-                loop_steps[-1].get("safety_notes", []) if loop_steps else []
-            )
-            terminal_failure_note = next(
-                (
-                    note
-                    for note in terminal_notes
-                    if note
-                    in {
-                        "provider_context_overflow",
-                        "provider_context_overflow_retry_failed",
-                        "provider_response_truncated",
-                        "provider_error",
-                        "provider_refusal",
-                        "provider_timeout",
-                        "provider_empty_response",
-                        "empty_native_final_answer",
-                    }
-                ),
-                None,
-            )
-            if status == "succeeded" and terminal_failure_note is not None:
-                status = "failed"
-            if status == "succeeded":
-                if assignment.agent_role == "planner":
-                    return parse_workflow_plan_response(
-                        summary,
-                        run_id=state.run_id,
-                        trace_id=state.trace_id,
-                        model_calls_used=model_calls_used,
-                        tool_calls_used=len(state.tool_calls),
-                    )
-                required_verification_ids = [
-                    item.constraint_id
-                    for item in assignment.assigned_constraints
-                    if item.verifier_work_item_id == assignment.work_item_id
-                ]
-                required_acceptance_ids = (
-                    [
-                        item.criterion_id
-                        for item in assignment.acceptance_contract.criteria
-                    ]
-                    if isinstance(
-                        assignment.acceptance_contract,
-                        WorkflowStepAcceptanceContract,
-                    )
-                    else []
-                )
-                return parse_work_item_response(
-                    summary,
-                    run_id=state.run_id,
-                    trace_id=state.trace_id,
-                    artifact_refs=artifact_refs,
-                    model_calls_used=model_calls_used,
-                    tool_calls_used=len(state.tool_calls),
-                    required_verification_ids=required_verification_ids,
-                    required_acceptance_ids=required_acceptance_ids,
-                )
-            return AgentWorkItemResult(
-                status=status,
-                run_id=state.run_id,
-                trace_id=state.trace_id,
-                summary=summary,
-                error_code=(
-                    "provider_context_overflow"
-                    if terminal_failure_note
-                    in {
-                        "provider_context_overflow",
-                        "provider_context_overflow_retry_failed",
-                    }
-                    else terminal_failure_note
-                ),
-                artifact_refs=artifact_refs,
-                model_calls_used=model_calls_used,
-                tool_calls_used=len(state.tool_calls),
-                agent_role=assignment.agent_role,
-            )
-
-        def admit_work_item_result_before_terminal(state: AgentState) -> None:
-            nonlocal parsed_result
-            parsed_result = parse_terminal_work_item_state(state)
-            if (
-                parsed_result.status == "succeeded"
-                and assignment.agent_role == "planner"
-                and parsed_result.plan_proposal is not None
-                and self.workflow_service is not None
-            ):
-                workflow_bundle = self.workflow_service.store.load(
-                    assignment.workflow_id
-                )
-                if workflow_bundle is not None:
-                    try:
-                        from assistant_agent.workflows.runtime import (
-                            materialize_planner_revision,
-                        )
-
-                        materialize_planner_revision(
-                            service=self.workflow_service,
-                            bundle=workflow_bundle,
-                            proposal=parsed_result.plan_proposal,
-                            now=self.workflow_service.clock(),
-                        )
-                    except Exception:  # noqa: BLE001 - proposal is untrusted.
-                        parsed_result = parsed_result.model_copy(
-                            update={
-                                "status": "failed",
-                                "summary": (
-                                    "Planner proposal failed Workflow admission."
-                                ),
-                                "error_code": "workflow_plan_rejected",
-                                "plan_proposal": None,
-                            }
-                        )
-            state.request.metadata["_trusted_workflow_work_item_outcome"] = {
-                "status": parsed_result.status,
-                "error_code": parsed_result.error_code,
-            }
-            if parsed_result.status == "succeeded" or state.status == "cancelled":
-                return
-            error_code = (
-                parsed_result.error_code or f"workflow_work_item_{parsed_result.status}"
-            )
-            state.errors.append(
-                AgentError(
-                    message="Workflow work item result requires outer recovery.",
-                    source="workflow_work_item_result",
-                    details={"code": error_code},
-                )
-            )
-            state.status = "failed"
-
-        state = self.run_state(
-            user_request,
-            pre_terminal_state_hook=admit_work_item_result_before_terminal,
-        )
-        return parsed_result or parse_terminal_work_item_state(state)
 
     def run_state(
         self,
@@ -1484,10 +1260,7 @@ class AgentGraphRuntime:
         tool_executor = ToolExecutor(
             registry=self.registry,
             event_sink=None,
-            context_metadata={
-                "durable_task_service": self.durable_task_service,
-                "workflow_service": self.workflow_service,
-            },
+            context_metadata={"durable_task_service": self.durable_task_service},
             cancel_token=cancel_token,
             execution_backend=self.tool_execution_backend,
             operation_store=self.tool_operation_store,

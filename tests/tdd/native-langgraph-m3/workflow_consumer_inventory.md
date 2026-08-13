@@ -22,11 +22,8 @@ state、Provider response、Tool raw body、scheduler lease/CAS。
 
 ## M5 legacy drain consumer gate
 
-`src/assistant_agent/workflows/execution.py` 对 `AgentGraphRuntime.run_work_item()` 的调用是当前唯一保留的
-legacy Runtime surface consumer。2026-08-13 的只读 operator 检查仍显示 legacy workflow
-`running=1`、`waiting_input=1`，所以 Task 9 retirement gate 未满足；本清单将该方法标记为
-`drain-gated-temporary`，不把它误报为已退休，也不允许新入口依赖它。
+legacy retirement gate 已闭合；`src/assistant_agent/workflows/execution.py` 与
+`AgentGraphRuntime.run_work_item()` 均已删除，不允许新入口依赖或恢复它们。
 
 其余 Runtime consumer 已统一到 `run_state` / `arun_state` / `astream_state` 或 compiled app owner；仓库
-没有 `AgentGraphRuntime.run()` 调用方。`run_work_item` 只能在非终态、active lease 与 waiting 全部归零且
-manifest/rollback/audit gate 完整通过后，随 legacy workflow execution 一起退出。
+没有 `AgentGraphRuntime.run()` 或 `run_work_item()` 调用方；复杂规划统一由原生 StateGraph 执行。

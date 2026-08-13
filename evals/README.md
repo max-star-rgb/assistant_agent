@@ -23,8 +23,8 @@
 不能伪装成 core 或 Release Review。
 
 `GraphCapabilityEvidence` 是 Git 内的实现/合同证据索引，不是 Dataset、Experiment、Feedback 或发布批准，
-也不替代本文件的 Runtime Regression/Release Review。它可以证明 Graph API 矩阵无 partial/missing，但 legacy
-retirement gate 未关闭时整体交付仍必须报告 `blocked`。
+也不替代本文件的 Runtime Regression/Release Review。它可以证明 Graph API 矩阵无 partial/missing；当前
+legacy retirement machine evidence 已为 `accepted`，但这仍不等同于行为质量批准。
 
 ## 2. 真实运行安全
 

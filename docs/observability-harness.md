@@ -46,7 +46,8 @@ Release Review 与 Runtime Regression 使用独立 Experiment project，但 targ
 评测重建 canonical shadow graph。
 最终 Graph capability 机器矩阵的 `Stream/Streaming Modes/Time Travel/Replay/Fork` 证据指向 actual compiled
 graph 的 tracked tests；矩阵本身不发 trace、不访问 LangSmith，也不把 canonical event 或旧平台 exporter
-当作 graph 执行证据。整体 retirement `blocked` 只从已记录的只读业务 probe 加载，不触碰真实主库。
+当作 graph 执行证据。整体 retirement 状态只从已记录的机器证据加载；当前持久 operator audit 已使其
+成为 `accepted`。
 
 日常异常不由仓库定时审计。operator 在 LangSmith UI 或 SDK 中人工选择异常 trace、核实脱敏内容并沉淀为
 固定 Runtime Regression Dataset；之后只通过 `evals/langsmith_runtime_regression` runner 回放。这个流程

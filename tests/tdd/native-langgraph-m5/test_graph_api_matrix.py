@@ -174,8 +174,10 @@ def test_evidence_anchor_rejects_comments_imports_and_plain_references(
     )
 
 
-def test_delivery_gate_remains_blocked_without_weakening_capability_statuses() -> None:
-    """An open retirement gate blocks M5 delivery, not implemented Graph APIs."""
+def test_delivery_gate_accepts_persisted_retirement_without_weakening_capabilities() -> (
+    None
+):
+    """Persisted operator retirement closes delivery while preserving capability facts."""
 
     from assistant_agent.runtime.graph_capability_evidence import (
         GRAPH_CAPABILITY_EVIDENCE,
@@ -195,10 +197,10 @@ def test_delivery_gate_remains_blocked_without_weakening_capability_statuses() -
     ).stdout.strip()
     assert tracked == relative_evidence_path
     delivery = load_graph_m5_delivery_evidence(repo_root / relative_evidence_path)
-    assert delivery.status == "blocked"
-    assert delivery.reason_codes == ("legacy_retirement_gate_open",)
-    assert delivery.nonterminal_legacy_count == 2
-    assert delivery.waiting_legacy_count == 1
+    assert delivery.status == "accepted"
+    assert delivery.reason_codes == ()
+    assert delivery.nonterminal_legacy_count == 0
+    assert delivery.waiting_legacy_count == 0
     assert delivery.active_legacy_lease_count == 0
     assert delivery.evidence_path.endswith("task-9-retirement-status.json")
     assert all(

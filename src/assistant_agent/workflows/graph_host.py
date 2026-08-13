@@ -12,7 +12,7 @@ from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from threading import Event
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -51,6 +51,7 @@ from assistant_agent.workflows.graph_context import (
 from assistant_agent.workflows.graph_projection import (
     WorkflowGraphProjector,
     WorkflowHandle,
+    WorkflowProductProgress,
     WorkflowProductEvent,
     WorkflowProductSnapshot,
 )
@@ -140,6 +141,31 @@ class WorkflowGraphResult(BaseModel):
     content: str
 
 
+class ArchivedWorkflowHandle(BaseModel):
+    """Read-only product identity for terminal pre-StateGraph records."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    workflow_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,511}$")
+    workflow_type: str = Field(pattern=r"^[a-z][a-z0-9_.-]{0,79}$")
+    execution_engine: Literal["legacy_scheduler_v2"] = "legacy_scheduler_v2"
+    status: Literal["completed", "failed", "cancelled"]
+    phase: Literal["completed", "failed", "cancelled"]
+    output_ref: str
+
+
+class ArchivedWorkflowProductSnapshot(BaseModel):
+    """Terminal legacy history projection with no execution capability."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    handle: ArchivedWorkflowHandle
+    progress: WorkflowProductProgress
+    result_artifact_refs: tuple[str, ...] = ()
+    waiting_actions: tuple[()] = ()
+    terminal_reason_code: str | None = None
+
+
 class WorkflowGraphHost:
     """Own one official async saver, one compiled graph, and product services."""
 
@@ -197,7 +223,8 @@ class WorkflowGraphHost:
         provider_registry: Any | None = None,
         tool_registry: ToolRegistry | None = None,
         checkpointer_owner: AsyncCheckpointerOwner | None = None,
-        cutover_manifest_source: Callable[[], WorkflowEngineCutoverManifest] | None = None,
+        cutover_manifest_source: Callable[[], WorkflowEngineCutoverManifest]
+        | None = None,
     ) -> "WorkflowGraphHost":
         if config.langgraph_checkpointer_backend != "sqlite":
             raise WorkflowGraphHostError(
@@ -343,17 +370,21 @@ class WorkflowGraphHost:
             existing = self._tasks.get(workflow_id)
             if existing is not None and not existing.done():
                 return WorkflowGraphHandle.from_product(
-                    (await self.get_status(
-                        identity=identity,
-                        workflow_id=workflow_id,
-                    )).handle
+                    (
+                        await self.get_status(
+                            identity=identity,
+                            workflow_id=workflow_id,
+                        )
+                    ).handle
                 )
             if await self.has_checkpoint(workflow_id=workflow_id):
                 return WorkflowGraphHandle.from_product(
-                    (await self.get_status(
-                        identity=identity,
-                        workflow_id=workflow_id,
-                    )).handle
+                    (
+                        await self.get_status(
+                            identity=identity,
+                            workflow_id=workflow_id,
+                        )
+                    ).handle
                 )
             graph_identity = self._execution_identity(
                 bundle, run_id=f"workflow-start:{ingress_run_id}"
@@ -390,9 +421,7 @@ class WorkflowGraphHost:
         submission: WorkflowSubmission,
         ingress_trace_id: str | None = None,
         ingress_parent_span_id: str | None = None,
-        resume_values_factory: Callable[
-            [tuple[Any, ...]], dict[str, dict[str, str]]
-        ]
+        resume_values_factory: Callable[[tuple[Any, ...]], dict[str, dict[str, str]]]
         | None = None,
     ) -> Any:
         """Run one submission through this host's compiled production graph.
@@ -494,10 +523,11 @@ class WorkflowGraphHost:
         recovered = 0
         for bundle in self._product_store.list_cutover_bundles():
             workflow = bundle.workflow
-            if (
-                workflow.execution_engine != "langgraph_v3"
-                or workflow.status in {"completed", "failed", "cancelled"}
-            ):
+            if workflow.execution_engine != "langgraph_v3" or workflow.status in {
+                "completed",
+                "failed",
+                "cancelled",
+            }:
                 continue
             workflow_id = workflow.workflow_id
             async with self._schedule_lock:
@@ -561,15 +591,15 @@ class WorkflowGraphHost:
         *,
         identity: RequestIdentity,
         workflow_id: str,
-    ) -> WorkflowProductSnapshot:
+    ) -> WorkflowProductSnapshot | ArchivedWorkflowProductSnapshot:
         self._require_open()
         bundle = self._service.get_workflow(
             identity=identity,
             workflow_id=workflow_id,
         )
-        execution = self._execution_identity(
-            bundle, run_id="workflow-product-read"
-        )
+        if bundle.workflow.execution_engine == "legacy_scheduler_v2":
+            return _archived_snapshot(bundle)
+        execution = self._execution_identity(bundle, run_id="workflow-product-read")
         raw = await self._graph_app.graph.aget_state(
             execution.runnable_config(), subgraphs=True
         )
@@ -599,7 +629,33 @@ class WorkflowGraphHost:
         """Read committed graph product facts without native stream payloads."""
 
         self._require_open()
-        self._service.get_workflow(identity=identity, workflow_id=workflow_id)
+        bundle = self._service.get_workflow(identity=identity, workflow_id=workflow_id)
+        if bundle.workflow.execution_engine == "legacy_scheduler_v2":
+            snapshot = _archived_snapshot(bundle)
+            committed = self._product_store.list_events(
+                workflow_id,
+                after=max(0, after),
+                limit=min(max(1, limit), 500),
+            )
+            graph_snapshot = WorkflowProductSnapshot(
+                handle=WorkflowHandle(
+                    workflow_id=snapshot.handle.workflow_id,
+                    workflow_type="deep_research",
+                    status=snapshot.handle.status,
+                    phase=snapshot.handle.phase,
+                    output_ref=snapshot.handle.output_ref,
+                ),
+                progress=snapshot.progress,
+                result_artifact_refs=snapshot.result_artifact_refs,
+                terminal_reason_code=snapshot.terminal_reason_code,
+            )
+            return WorkflowGraphEventsPage(
+                workflow_id=workflow_id,
+                events=(self._projector.project_snapshot_event(graph_snapshot),)
+                if committed
+                else (),
+                next_cursor=committed[-1].cursor if committed else max(0, after),
+            )
         bounded_limit = min(max(1, limit), 500)
         committed = self._product_store.list_events(
             workflow_id,
@@ -696,9 +752,7 @@ class WorkflowGraphHost:
             self._run_resume(
                 identity=execution,
                 context=context,
-                resume=WorkflowResume(
-                    values_by_action_ref={action_ref: dict(values)}
-                ),
+                resume=WorkflowResume(values_by_action_ref={action_ref: dict(values)}),
             ),
         )
         return WorkflowGraphHandle.from_product(current.handle)
@@ -1172,7 +1226,10 @@ class WorkflowGraphHost:
                     "workflow_cutover_manifest_stale",
                     "Workflow cutover manifest revision moved backwards.",
                 )
-            if current.revision == previous.revision and current.digest != previous.digest:
+            if (
+                current.revision == previous.revision
+                and current.digest != previous.digest
+            ):
                 raise WorkflowGraphHostError(
                     "workflow_cutover_manifest_conflict",
                     "Workflow cutover manifest revision is not immutable.",
@@ -1215,10 +1272,7 @@ def _submission_from_bundle(bundle: WorkflowBundle) -> WorkflowSubmission:
             "deadline_seconds": max(
                 60,
                 int(
-                    (
-                        workflow.budget.deadline_at
-                        - workflow.created_at
-                    ).total_seconds()
+                    (workflow.budget.deadline_at - workflow.created_at).total_seconds()
                 ),
             ),
         },
@@ -1228,7 +1282,54 @@ def _submission_from_bundle(bundle: WorkflowBundle) -> WorkflowSubmission:
     )
 
 
+def _archived_snapshot(bundle: WorkflowBundle) -> ArchivedWorkflowProductSnapshot:
+    """Project terminal legacy data without reconstructing an execution engine."""
+
+    workflow = bundle.workflow
+    if workflow.execution_engine != "legacy_scheduler_v2":
+        raise WorkflowGraphHostError(
+            "workflow_archive_engine_invalid",
+            "Workflow is not an archived legacy record.",
+        )
+    if workflow.status not in {"completed", "failed", "cancelled"}:
+        raise WorkflowGraphHostError(
+            "workflow_legacy_nonterminal_retired",
+            "Legacy Workflow execution has been retired.",
+        )
+    total_items = len(bundle.current_plan.work_items)
+    completed_items = (
+        total_items
+        if workflow.status == "completed"
+        else sum(
+            item.status in {"succeeded", "skipped", "superseded"}
+            for item in bundle.current_plan.work_items
+        )
+    )
+    terminal_reason = workflow.terminal_reason_code
+    if workflow.status in {"failed", "cancelled"} and terminal_reason is None:
+        terminal_reason = "legacy_workflow_failed"
+    return ArchivedWorkflowProductSnapshot(
+        handle=ArchivedWorkflowHandle(
+            workflow_id=workflow.workflow_id,
+            workflow_type=workflow.workflow_type,
+            status=workflow.status,
+            phase=workflow.status,
+            output_ref=f"workflow://{workflow.workflow_id}",
+        ),
+        progress=WorkflowProductProgress(
+            state="completed" if workflow.status == "completed" else "failed",
+            phase=workflow.status,
+            completed_items=completed_items,
+            total_items=total_items,
+        ),
+        result_artifact_refs=tuple(workflow.result_artifact_refs),
+        terminal_reason_code=terminal_reason,
+    )
+
+
 __all__ = [
+    "ArchivedWorkflowHandle",
+    "ArchivedWorkflowProductSnapshot",
     "WorkflowGraphEventsPage",
     "WorkflowGraphHandle",
     "WorkflowGraphHost",

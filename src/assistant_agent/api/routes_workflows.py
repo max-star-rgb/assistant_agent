@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
 
 from assistant_agent.api import routes_agent
@@ -25,18 +25,15 @@ from assistant_agent.identity import RequestIdentity
 from assistant_agent.workflows.service import (
     WorkflowAccessDenied,
     WorkflowNotFound,
-    WorkflowService,
     WorkflowServiceError,
     WorkflowStateConflict,
 )
 from assistant_agent.workflows.store import WorkflowStoreError
-from assistant_agent.workflows.artifacts import LocalWorkflowArtifactStore
 from assistant_agent.workflows.graph_host import (
     WorkflowGraphHandle,
     WorkflowGraphHost,
     WorkflowGraphHostError,
 )
-from assistant_agent.workflows.legacy_drain_host import LegacyDrainHost
 
 
 router = APIRouter(prefix="/workflows", tags=["durable-workflows"])
@@ -53,34 +50,11 @@ class WorkflowCancelRequest(BaseModel):
     reason_code: Literal["user_requested"] = "user_requested"
 
 
-def get_workflow_service() -> WorkflowService:
-    service = getattr(routes_agent.get_agent_runtime(), "workflow_service", None)
-    if not isinstance(service, WorkflowService):
-        raise _http_error(503, "WORKFLOWS_DISABLED", "Durable workflows are disabled.")
-    return service
-
-
-def get_workflow_artifact_store() -> LocalWorkflowArtifactStore:
-    store = getattr(
-        routes_agent.get_agent_runtime(),
-        "workflow_artifact_store",
-        None,
-    )
-    if not isinstance(store, LocalWorkflowArtifactStore):
-        raise _http_error(503, "WORKFLOWS_DISABLED", "Workflow artifacts are disabled.")
-    return store
-
-
 def get_workflow_graph_host() -> WorkflowGraphHost:
     host = getattr(routes_agent.get_agent_runtime(), "workflow_graph_host", None)
     if not isinstance(host, WorkflowGraphHost):
         raise _http_error(503, "WORKFLOWS_DISABLED", "Durable workflows are disabled.")
     return host
-
-
-def get_legacy_drain_host(request: Request) -> LegacyDrainHost | None:
-    host = getattr(request.app.state, "legacy_drain_host", None)
-    return host if isinstance(host, LegacyDrainHost) else None
 
 
 def workflow_request_identity(
@@ -89,7 +63,9 @@ def workflow_request_identity(
     session_id: Annotated[str | None, Query()] = None,
 ) -> RequestIdentity:
     requested_user_id = auth_context.user_id if auth_context.authenticated else user_id
-    requested_session_id = auth_context.session_id if auth_context.authenticated else session_id
+    requested_session_id = (
+        auth_context.session_id if auth_context.authenticated else session_id
+    )
     try:
         resolution = resolve_request_identity(
             user_id=requested_user_id or "",
@@ -106,7 +82,9 @@ def workflow_request_identity(
         raise HTTPException(status_code=403, detail=detail) from exc
     trial = resolution.trial_access(routes_agent.get_trial_access_gate())
     if not trial.allowed:
-        raise _http_error(403, "TRIAL_ACCESS_DENIED", trial.reason or "Trial access denied.")
+        raise _http_error(
+            403, "TRIAL_ACCESS_DENIED", trial.reason or "Trial access denied."
+        )
     return resolution.identity
 
 
@@ -115,15 +93,8 @@ async def get_workflow(
     workflow_id: str,
     identity: RequestIdentity = Depends(workflow_request_identity),
     host: WorkflowGraphHost = Depends(get_workflow_graph_host),
-    legacy_host: LegacyDrainHost | None = Depends(get_legacy_drain_host),
 ) -> WorkflowResponse:
     try:
-        legacy = _legacy_owner(legacy_host, identity=identity, workflow_id=workflow_id)
-        if legacy is not None:
-            return _graph_workflow_response(
-                legacy.get_status(identity=identity, workflow_id=workflow_id),
-                execution_engine="legacy_scheduler_v2",
-            )
         snapshot = await host.get_status(
             identity=identity,
             workflow_id=workflow_id,
@@ -140,24 +111,13 @@ async def get_workflow_events(
     limit: int = Query(default=100, ge=1, le=500),
     identity: RequestIdentity = Depends(workflow_request_identity),
     host: WorkflowGraphHost = Depends(get_workflow_graph_host),
-    legacy_host: LegacyDrainHost | None = Depends(get_legacy_drain_host),
 ) -> WorkflowEventsResponse:
     try:
-        legacy = _legacy_owner(legacy_host, identity=identity, workflow_id=workflow_id)
-        page = (
-            legacy.get_events(
-                identity=identity,
-                workflow_id=workflow_id,
-                after=after,
-                limit=limit,
-            )
-            if legacy is not None
-            else await host.get_events(
-                identity=identity,
-                workflow_id=workflow_id,
-                after=after,
-                limit=limit,
-            )
+        page = await host.get_events(
+            identity=identity,
+            workflow_id=workflow_id,
+            after=after,
+            limit=limit,
         )
     except (WorkflowGraphHostError, WorkflowServiceError, WorkflowStoreError) as exc:
         raise _map_error(exc) from exc
@@ -173,15 +133,9 @@ async def get_workflow_result(
     workflow_id: str,
     identity: RequestIdentity = Depends(workflow_request_identity),
     host: WorkflowGraphHost = Depends(get_workflow_graph_host),
-    legacy_host: LegacyDrainHost | None = Depends(get_legacy_drain_host),
 ) -> WorkflowResultResponse:
     try:
-        legacy = _legacy_owner(legacy_host, identity=identity, workflow_id=workflow_id)
-        result = (
-            legacy.get_result(identity=identity, workflow_id=workflow_id)
-            if legacy is not None
-            else await host.get_result(identity=identity, workflow_id=workflow_id)
-        )
+        result = await host.get_result(identity=identity, workflow_id=workflow_id)
     except (WorkflowGraphHostError, WorkflowServiceError, WorkflowStoreError) as exc:
         raise _map_error(exc) from exc
     return WorkflowResultResponse(
@@ -197,27 +151,15 @@ async def provide_workflow_input(
     body: WorkflowInputRequest,
     identity: RequestIdentity = Depends(workflow_request_identity),
     host: WorkflowGraphHost = Depends(get_workflow_graph_host),
-    legacy_host: LegacyDrainHost | None = Depends(get_legacy_drain_host),
 ) -> WorkflowActionResponse:
     try:
-        legacy = _legacy_owner(legacy_host, identity=identity, workflow_id=workflow_id)
-        if legacy is not None:
-            handle = legacy.resume(
-                identity=identity,
-                workflow_id=workflow_id,
-                action_ref=body.action_ref,
-                values=dict(body.values),
-            )
-            return WorkflowActionResponse(workflow=handle.model_dump(mode="json"))
         handle = await host.resume(
             identity=identity,
             workflow_id=workflow_id,
             action_ref=body.action_ref,
             values=dict(body.values),
         )
-        return WorkflowActionResponse(
-            workflow=handle.model_dump(mode="json")
-        )
+        return WorkflowActionResponse(workflow=handle.model_dump(mode="json"))
     except (WorkflowGraphHostError, WorkflowServiceError, WorkflowStoreError) as exc:
         raise _map_error(exc) from exc
 
@@ -228,37 +170,30 @@ async def cancel_workflow(
     body: WorkflowCancelRequest,
     identity: RequestIdentity = Depends(workflow_request_identity),
     host: WorkflowGraphHost = Depends(get_workflow_graph_host),
-    legacy_host: LegacyDrainHost | None = Depends(get_legacy_drain_host),
 ) -> WorkflowActionResponse:
     try:
-        legacy = _legacy_owner(legacy_host, identity=identity, workflow_id=workflow_id)
-        handle = (
-            legacy.cancel(
-                identity=identity,
-                workflow_id=workflow_id,
-                reason_code=body.reason_code,
-            )
-            if legacy is not None
-            else await host.cancel(
-                identity=identity,
-                workflow_id=workflow_id,
-                reason_code=body.reason_code,
-            )
+        handle = await host.cancel(
+            identity=identity,
+            workflow_id=workflow_id,
+            reason_code=body.reason_code,
         )
-        return WorkflowActionResponse(
-            workflow=handle.model_dump(mode="json")
-        )
+        return WorkflowActionResponse(workflow=handle.model_dump(mode="json"))
     except (WorkflowGraphHostError, WorkflowServiceError, WorkflowStoreError) as exc:
         raise _map_error(exc) from exc
 
 
 def _graph_workflow_response(
     snapshot,
-    *,
-    execution_engine: str = "langgraph_v3",
 ) -> WorkflowResponse:
-    handle = WorkflowGraphHandle.from_product(snapshot.handle).model_dump(mode="json")
-    handle["execution_engine"] = execution_engine
+    source = snapshot.handle
+    handle = WorkflowGraphHandle(
+        workflow_id=source.workflow_id,
+        workflow_type=source.workflow_type,
+        execution_engine=getattr(source, "execution_engine", "langgraph_v3"),
+        status=source.status,
+        phase=source.phase,
+        output_ref=source.output_ref,
+    ).model_dump(mode="json")
     return WorkflowResponse(
         workflow=handle,
         progress=snapshot.progress.model_dump(mode="json"),
@@ -268,17 +203,6 @@ def _graph_workflow_response(
         ),
         terminal_reason_code=snapshot.terminal_reason_code,
     )
-
-
-def _legacy_owner(
-    value: object,
-    *,
-    identity: RequestIdentity,
-    workflow_id: str,
-) -> LegacyDrainHost | None:
-    if not isinstance(value, LegacyDrainHost):
-        return None
-    return value if value.owns_legacy(identity=identity, workflow_id=workflow_id) else None
 
 
 def _map_error(exc: Exception) -> HTTPException:

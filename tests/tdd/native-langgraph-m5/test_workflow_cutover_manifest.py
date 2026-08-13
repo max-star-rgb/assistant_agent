@@ -3,15 +3,12 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from contextlib import asynccontextmanager
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import replace
 import json
 from threading import Barrier
-from types import SimpleNamespace
 
 import pytest
 
 from assistant_agent.identity import RequestIdentity
-from assistant_agent.config import ProviderConfig
 from assistant_agent.workflows.builtin import default_workflow_definitions
 from assistant_agent.workflows.models import WorkflowSubmission
 from assistant_agent.workflows.service import WorkflowService
@@ -181,17 +178,21 @@ def test_retirement_gate_reports_every_unmet_fact_without_content(
             )
         ids = [bundle.workflow.workflow_id for bundle in store.list_cutover_bundles()]
         lease_now = datetime.now(timezone.utc)
-        dispatch = store.claim_ready_work_item(
-            worker_id="retirement-secret-worker",
-            now=lease_now,
-            lease_seconds=600,
-            model_call_limit=1,
-            tool_call_limit=1,
-            allowed_execution_engines=frozenset({"legacy_scheduler_v2"}),
-            allowed_workflow_types=frozenset({"deep_research"}),
-            allowed_workflow_ids=frozenset({ids[0]}),
+        active = store.load(ids[0])
+        assert active is not None
+        active_item = active.current_plan.work_items[0]
+        active_item.status = "running"
+        active_item.active_attempt_id = "retired-attempt"
+        active_item.lease_owner = "retired-worker"
+        active_item.lease_token = "retired-lease"
+        active_item.lease_expires_at = lease_now + timedelta(seconds=600)
+        active.workflow.status = "running"
+        active.workflow.phase = "executing"
+        store.save(
+            active,
+            expected_revision=active.workflow.revision,
+            events=[],
         )
-        assert dispatch is not None
         waiting = store.load(ids[1])
         assert waiting is not None
         waiting.workflow.status = "waiting_input"
@@ -228,7 +229,7 @@ def test_retirement_gate_reports_every_unmet_fact_without_content(
             manifest=WorkflowEngineCutoverManifest.model_validate(
                 _manifest_payload(phase="cutover_active")
             ),
-        ).retirement_status(now=dispatch.lease.expires_at)
+        ).retirement_status(now=active_item.lease_expires_at)
         assert expired_status.active_legacy_lease_count == 0
         assert "active_legacy_leases_present" not in expired_status.reason_codes
         rendered = status.model_dump_json()
@@ -491,19 +492,11 @@ def test_cutover_inventory_classifies_every_legacy_status_without_user_text(
         public = inventory.model_dump(mode="json")
         assert "legacy objective" not in str(public)
         assert "cutover-user" not in str(public)
-        allowed = controller.legacy_drain_allowlist()
-        assert {store.load(workflow_id).workflow.status for workflow_id in allowed} == {
-            "running",
-            "recovering",
-            "waiting_input",
-            "blocked",
-        }
-        assert len(allowed) == 4
     finally:
         store.close()
 
 
-def test_legacy_bundle_without_display_title_remains_readable_for_drain_inventory(
+def test_legacy_bundle_without_display_title_remains_readable_for_retirement_inventory(
     tmp_path,
 ) -> None:
     """Pre-display-title rows must be projected safely without rewriting source text."""
@@ -512,7 +505,6 @@ def test_legacy_bundle_without_display_title_remains_readable_for_drain_inventor
         WorkflowCutoverController,
         WorkflowEngineCutoverManifest,
     )
-    from assistant_agent.workflows.legacy_drain_host import LegacyDrainHost
 
     store = _legacy_store(tmp_path, ("running",))
     try:
@@ -557,26 +549,8 @@ def test_legacy_bundle_without_display_title_remains_readable_for_drain_inventor
             "drain_running": 1,
             "drain_waiting": 0,
         }
-        assert controller.legacy_drain_allowlist() == frozenset(
-            {current.workflow.workflow_id}
-        )
     finally:
         store.close()
-
-    config = replace(
-        ProviderConfig(),
-        durable_workflow_path=str(tmp_path / "legacy.sqlite3"),
-        durable_workflow_artifact_path=str(tmp_path / "artifacts"),
-    )
-    host = LegacyDrainHost.compose(
-        config=config,
-        agent_runtime=SimpleNamespace(context_token_counter=None),
-        manifest=manifest,
-    )
-    try:
-        assert host.allowed_workflow_ids == frozenset({current.workflow.workflow_id})
-    finally:
-        __import__("asyncio").run(host.close())
 
 
 class _CheckpointHost:

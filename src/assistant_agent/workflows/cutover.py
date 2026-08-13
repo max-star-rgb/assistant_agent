@@ -266,19 +266,6 @@ class WorkflowCutoverController:
             raise TypeError("workflow store returned an invalid retirement audit")
         return persisted
 
-    def legacy_drain_allowlist(self) -> frozenset[str]:
-        """Freeze exact existing non-migratable legacy owners for the drain host."""
-
-        list_bundles = getattr(self.store, "list_cutover_bundles", None)
-        if not callable(list_bundles):
-            raise TypeError("workflow store does not support cutover inventory")
-        return frozenset(
-            bundle.workflow.workflow_id
-            for bundle in list_bundles()
-            if bundle.workflow.execution_engine == "legacy_scheduler_v2"
-            and self._classify(bundle) in {"drain_running", "drain_waiting"}
-        )
-
     def pristine_migration_ids(self) -> tuple[str, ...]:
         """Return only existing prepared or pristine queued legacy rows."""
 

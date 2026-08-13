@@ -125,7 +125,9 @@ def build_server_startup_report(
         auth_bound_identity_required=require_auth_bound_identity(values),
         trial_user_count=gate.allowed_user_count,
         trace_content_enabled=local_trace_content_enabled(values),
-        provider_protocol_capture_enabled=local_provider_protocol_capture_enabled(values),
+        provider_protocol_capture_enabled=local_provider_protocol_capture_enabled(
+            values
+        ),
         console_level=str(values.get(OPERATIONAL_CONSOLE_LEVEL_ENV) or "INFO"),
         file_level=str(values.get(OPERATIONAL_FILE_LEVEL_ENV) or "DEBUG"),
         log_dir=str(values.get(OPERATIONAL_LOG_DIR_ENV) or ".data/logs"),
@@ -146,8 +148,13 @@ def format_server_startup_report(
     """Render the compact default view and optional ownership details."""
 
     bind = _format_host_port(report.bind_host, report.bind_port)
-    local_base = report.public_url or _local_base_url(report.bind_host, report.bind_port)
-    route_parts = [f"HTTP {report.routes.http_count}", f"WebSocket {report.routes.websocket_count}"]
+    local_base = report.public_url or _local_base_url(
+        report.bind_host, report.bind_port
+    )
+    route_parts = [
+        f"HTTP {report.routes.http_count}",
+        f"WebSocket {report.routes.websocket_count}",
+    ]
     category_summary = _format_counts(report.tools.category_counts)
     source_summary = _format_counts(report.tools.source_counts)
     sealed = "sealed" if report.tools.sealed else "unsealed"
@@ -160,7 +167,9 @@ def format_server_startup_report(
         f"  Routes:     {', '.join(route_parts)}",
     ]
     if report.routes.health_path:
-        lines.append(f"  Health:     GET {local_base.rstrip('/')}{report.routes.health_path}")
+        lines.append(
+            f"  Health:     GET {local_base.rstrip('/')}{report.routes.health_path}"
+        )
     lines.extend(
         [
             "",
@@ -178,7 +187,10 @@ def format_server_startup_report(
     )
     if visible_dependencies:
         lines.extend(["", "Integrations:"])
-        lines.extend(f"  {item.name}: {item.state}{_detail_suffix(item.detail)}" for item in visible_dependencies)
+        lines.extend(
+            f"  {item.name}: {item.state}{_detail_suffix(item.detail)}"
+            for item in visible_dependencies
+        )
 
     lines.extend(
         [
@@ -269,7 +281,8 @@ def _tool_inventory(registry: ToolRegistry) -> ToolInventory:
     records = registry.list_registration_records()
     categories = Counter(spec.category for spec in specs)
     source_types = Counter(
-        source_type for source_type, _ in {
+        source_type
+        for source_type, _ in {
             (record.source_type, record.plugin_id) for record in records
         }
     )
@@ -323,12 +336,6 @@ def _worker_statuses(app: Any, config: Any) -> tuple[WorkerStatus, ...]:
             enabled=bool(getattr(config, "durable_task_worker_enabled", False)),
             task_attribute="durable_task_worker_task",
         ),
-        _worker_status(
-            app,
-            name="workflow",
-            enabled=bool(getattr(config, "durable_workflow_worker_enabled", False)),
-            task_attribute="durable_workflow_worker_task",
-        ),
     )
 
 
@@ -358,8 +365,13 @@ def _report_warnings(report: ServerStartupReport) -> list[str]:
         for item in report.workers
         if item.state == "unavailable"
     )
-    if _network_accessible(report.bind_host) and not report.auth_bound_identity_required:
-        warnings.append("Service is network-accessible without requiring auth-bound identity.")
+    if (
+        _network_accessible(report.bind_host)
+        and not report.auth_bound_identity_required
+    ):
+        warnings.append(
+            "Service is network-accessible without requiring auth-bound identity."
+        )
     if report.provider_protocol_capture_enabled:
         warnings.append("Provider protocol capture is enabled for local diagnostics.")
     return warnings

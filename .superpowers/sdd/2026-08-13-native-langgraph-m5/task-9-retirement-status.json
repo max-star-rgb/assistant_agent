@@ -1,19 +1,18 @@
 {
   "schema_version": "workflow_retirement_probe_v1",
-  "observed_at": "2026-08-13T00:00:00+08:00",
-  "probe_mode": "sqlite_read_only",
-  "operator_manifest_available": false,
-  "ready": false,
-  "nonterminal_legacy_count": 2,
+  "observed_at": "2026-08-13T11:32:03+08:00",
+  "probe_mode": "operator_retirement",
+  "operator_manifest_available": true,
+  "ready": true,
+  "nonterminal_legacy_count": 0,
   "active_legacy_lease_count": 0,
-  "waiting_legacy_count": 1,
+  "waiting_legacy_count": 0,
   "legacy_status_counts": {
     "completed": 6,
     "failed": 2,
-    "running": 1,
-    "waiting_input": 1
+    "cancelled": 2
   },
-  "persisted_retirement_audit_count": 0,
-  "gate_blocker": "operator_manifest_unavailable",
+  "persisted_retirement_audit_count": 1,
+  "gate_blocker": null,
   "database_metadata_unchanged": true
 }
