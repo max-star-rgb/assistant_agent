@@ -1049,6 +1049,14 @@ def test_legacy_waiting_row_keeps_product_action_facade_during_drain(tmp_path) -
         body = response.model_dump(mode="json")
         assert body["workflow"]["execution_engine"] == "legacy_scheduler_v2"
         assert "resume_token" not in str(body)
+        assert f":node:{item.work_item_id}:" not in body["waiting_actions"][0][
+            "action_ref"
+        ]
+        assert all(
+            active["node_id"] != item.work_item_id
+            for active in body["progress"]["active_items"]
+        )
+        assert body["waiting_actions"][0]["node_id"].startswith("legacy_")
         action_ref = body["waiting_actions"][0]["action_ref"]
         action = asyncio.run(
             routes_workflows.provide_workflow_input(
@@ -1103,6 +1111,97 @@ def test_legacy_waiting_row_keeps_product_action_facade_during_drain(tmp_path) -
         assert cancelled.workflow.execution_engine == "legacy_scheduler_v2"
     finally:
         asyncio.run(drain.close())
+
+
+def test_legacy_archived_long_horizon_remains_queryable(tmp_path) -> None:
+    """Archived legacy types use their faithful DTO instead of graph literals."""
+
+    from assistant_agent.api import routes_workflows
+    from assistant_agent.workflows.artifacts import LocalWorkflowArtifactStore
+    from assistant_agent.workflows.legacy_drain_host import LegacyDrainHost
+
+    store = SQLiteWorkflowStore(tmp_path / "archive-products.sqlite3")
+    artifact_store = LocalWorkflowArtifactStore(tmp_path / "archive-artifacts")
+    service = WorkflowService(store=store, definitions=default_workflow_definitions())
+    submission = _submission().model_copy(
+        update={
+            "workflow_type": "long_horizon",
+            "idempotency_key": "legacy-archive-long-horizon",
+        }
+    )
+    bundle = service.submit(
+        identity=_identity(),
+        ingress_run_id="legacy-archive-read",
+        submission=submission,
+    )
+    changed = bundle.model_copy(deep=True)
+    changed.workflow.status = "completed"
+    changed.workflow.phase = "completed"
+    changed.workflow.terminal_at = datetime.now(timezone.utc)
+    archived = store.save(
+        changed,
+        expected_revision=bundle.workflow.revision,
+        events=[],
+    )
+    drain = LegacyDrainHost(
+        service=service,
+        artifact_store=artifact_store,
+        worker=None,
+        allowed_workflow_ids=frozenset(),
+    )
+
+    class GraphHost:
+        async def get_status(self, **_kwargs):
+            raise AssertionError("legacy archive reached graph status")
+
+        async def get_events(self, **_kwargs):
+            raise AssertionError("legacy archive reached graph events")
+
+        async def get_result(self, **_kwargs):
+            raise AssertionError("legacy archive reached graph result")
+
+    try:
+        response = asyncio.run(
+            routes_workflows.get_workflow(
+                workflow_id=archived.workflow.workflow_id,
+                identity=_identity(),
+                host=GraphHost(),
+                legacy_host=drain,
+            )
+        )
+        assert response.workflow.workflow_type == "long_horizon"
+        events = asyncio.run(
+            routes_workflows.get_workflow_events(
+                workflow_id=archived.workflow.workflow_id,
+                after=0,
+                limit=100,
+                identity=_identity(),
+                host=GraphHost(),
+                legacy_host=drain,
+            )
+        )
+        assert events.events
+        with pytest.raises(Exception) as exc_info:
+            asyncio.run(
+                routes_workflows.get_workflow_result(
+                    workflow_id=archived.workflow.workflow_id,
+                    identity=_identity(),
+                    host=GraphHost(),
+                    legacy_host=drain,
+                )
+            )
+        assert getattr(exc_info.value, "status_code", None) == 404
+    finally:
+        asyncio.run(drain.close())
+
+
+def test_workflow_cancel_reason_is_validated_before_persistence() -> None:
+    """Public cancel only accepts the stable product reason allowlist."""
+
+    from assistant_agent.api import routes_workflows
+
+    with pytest.raises(ValueError):
+        routes_workflows.WorkflowCancelRequest(reason_code="invalid reason / private")
 
 
 def test_real_host_resume_and_cancel_use_only_product_action_refs(tmp_path) -> None:

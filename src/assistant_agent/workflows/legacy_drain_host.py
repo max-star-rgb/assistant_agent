@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import os
 from threading import Event
 from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from assistant_agent.config import ProviderConfig
 from assistant_agent.workflows.artifacts import LocalWorkflowArtifactStore
@@ -36,6 +40,28 @@ from assistant_agent.workflows.service import WorkflowService
 from assistant_agent.workflows.sqlite_store import SQLiteWorkflowStore
 from assistant_agent.workflows.builtin import default_workflow_definitions
 from assistant_agent.workflows.worker import DurableWorkflowWorker
+
+
+class LegacyWorkflowHandle(BaseModel):
+    """Faithful archived/legacy handle, separate from graph-only type constraints."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    workflow_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,511}$")
+    workflow_type: str = Field(pattern=r"^[a-z][a-z0-9_.-]{0,79}$")
+    status: str
+    phase: str
+    output_ref: str
+
+
+class LegacyWorkflowProductSnapshot(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    handle: LegacyWorkflowHandle
+    progress: WorkflowProductProgress
+    result_artifact_refs: tuple[str, ...] = ()
+    waiting_actions: tuple[WorkflowWaitingAction, ...] = ()
+    terminal_reason_code: str | None = None
 
 
 class LegacyDrainHost:
@@ -182,7 +208,9 @@ class LegacyDrainHost:
         bundle = self.service.get_workflow(identity=identity, workflow_id=workflow_id)
         return bundle.workflow.execution_engine == "legacy_scheduler_v2"
 
-    def get_status(self, *, identity: Any, workflow_id: str) -> WorkflowProductSnapshot:
+    def get_status(
+        self, *, identity: Any, workflow_id: str
+    ) -> LegacyWorkflowProductSnapshot:
         bundle = self.service.get_workflow(identity=identity, workflow_id=workflow_id)
         workflow = bundle.workflow
         if workflow.execution_engine != "legacy_scheduler_v2":
@@ -202,7 +230,7 @@ class LegacyDrainHost:
         )
         active_items = tuple(
             WorkflowActiveItem(
-                node_id=item.work_item_id,
+                node_id=self._opaque_node_id(workflow.workflow_id, item.work_item_id),
                 display_title=item.display_title,
                 status=item.status,
                 execution_generation=min(item.attempt_count, 64),
@@ -241,7 +269,9 @@ class LegacyDrainHost:
             waiting_actions = (
                 WorkflowWaitingAction(
                     action_ref=self._action_ref(bundle, blocked.work_item_id),
-                    node_id=blocked.work_item_id,
+                    node_id=self._opaque_node_id(
+                        workflow.workflow_id, blocked.work_item_id
+                    ),
                     required_fields=tuple(required),
                     prompt_code=str(request.get("prompt_code") or "input_required"),
                     safe_prompt=str(
@@ -263,8 +293,8 @@ class LegacyDrainHost:
         reason = workflow.terminal_reason_code
         if workflow.status in {"failed", "cancelled"} and reason is None:
             reason = "legacy_workflow_failed"
-        return WorkflowProductSnapshot(
-            handle=WorkflowHandle(
+        return LegacyWorkflowProductSnapshot(
+            handle=LegacyWorkflowHandle(
                 workflow_id=workflow.workflow_id,
                 workflow_type=workflow.workflow_type,
                 status=workflow.status,
@@ -297,8 +327,19 @@ class LegacyDrainHost:
                 "Legacy Workflow is not in the frozen drain allowlist.",
             )
         bundle = self.service.get_workflow(identity=identity, workflow_id=workflow_id)
-        snapshot = self.get_status(identity=identity, workflow_id=workflow_id)
-        if action_ref not in {item.action_ref for item in snapshot.waiting_actions}:
+        blocked = next(
+            (
+                item
+                for item in bundle.current_plan.work_items
+                if item.status == "blocked"
+                and hmac.compare_digest(
+                    action_ref,
+                    self._action_ref(bundle, item.work_item_id),
+                )
+            ),
+            None,
+        )
+        if blocked is None:
             raise WorkflowGraphHostError(
                 "workflow_resume_action_unknown", "Workflow action is not pending."
             )
@@ -369,7 +410,22 @@ class LegacyDrainHost:
         events = ()
         if committed:
             snapshot = self.get_status(identity=identity, workflow_id=workflow_id)
-            events = (self._projector.project_snapshot_event(snapshot),)
+            graph_event_snapshot = WorkflowProductSnapshot(
+                handle=WorkflowHandle(
+                    workflow_id=snapshot.handle.workflow_id,
+                    workflow_type="deep_research",
+                    status=snapshot.handle.status,
+                    phase=snapshot.handle.phase,
+                    output_ref=snapshot.handle.output_ref,
+                ),
+                progress=snapshot.progress,
+                result_artifact_refs=snapshot.result_artifact_refs,
+                waiting_actions=snapshot.waiting_actions,
+                terminal_reason_code=snapshot.terminal_reason_code,
+            )
+            events = (
+                self._projector.project_snapshot_event(graph_event_snapshot),
+            )
         return WorkflowGraphEventsPage(
             workflow_id=workflow_id,
             events=events,
@@ -414,10 +470,23 @@ class LegacyDrainHost:
             for item in bundle.current_plan.work_items
             if item.work_item_id == node_id
         )
+        opaque_node_id = LegacyDrainHost._opaque_node_id(
+            bundle.workflow.workflow_id, node_id
+        )
         return (
-            f"workflow:{bundle.workflow.workflow_id}:node:{node_id}:generation:"
+            f"workflow:{bundle.workflow.workflow_id}:node:{opaque_node_id}:generation:"
             f"{min(item.attempt_count, 64)}"
         )
+
+    @staticmethod
+    def _opaque_node_id(workflow_id: str, work_item_id: str) -> str:
+        digest = hashlib.sha256(
+            b"assistant-agent:legacy-workflow-action:v1\0"
+            + workflow_id.encode("utf-8")
+            + b"\0"
+            + work_item_id.encode("utf-8")
+        ).hexdigest()
+        return f"legacy_{digest[:32]}"
 
     async def close(self) -> None:
         if self._closed:

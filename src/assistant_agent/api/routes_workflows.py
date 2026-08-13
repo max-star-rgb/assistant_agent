@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
@@ -50,7 +50,7 @@ class WorkflowInputRequest(BaseModel):
 
 class WorkflowCancelRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    reason_code: str = Field(default="user_requested", min_length=1, max_length=160)
+    reason_code: Literal["user_requested"] = "user_requested"
 
 
 def get_workflow_service() -> WorkflowService:

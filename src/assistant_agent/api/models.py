@@ -131,7 +131,7 @@ class WorkflowApiHandle(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     workflow_id: str
-    workflow_type: Literal["deep_research"]
+    workflow_type: str = Field(pattern=r"^[a-z][a-z0-9_.-]{0,79}$")
     execution_engine: Literal["langgraph_v3", "legacy_scheduler_v2"]
     status: str
     phase: str
