@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import fields
+from pathlib import Path
 from uuid import UUID
 
 from assistant_agent.agent_server.auth import (
+    allow_assistant_read,
+    deny_all,
     authorize_thread_create,
     authorize_thread_read,
     authorize_thread_search,
@@ -100,3 +103,51 @@ def test_agent_server_resource_authorization_scopes_native_resources_to_principa
     store = {"namespace": ("assistant_agent", "subject-1")}
     asyncio.run(scope_store(ctx, store))
     assert store["namespace"] == ("principal-1", "assistant_agent", "subject-1")
+    assert asyncio.run(allow_assistant_read(ctx, {})) is True
+    assert asyncio.run(deny_all(ctx, {})) is False
+
+
+def test_success_projection_preserves_citations_durable_refs_and_generated_images(
+    tmp_path: Path,
+) -> None:
+    image = tmp_path / "generated.png"
+    image.write_bytes(
+        b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+    )
+    envelope = parse_envelope(
+        {
+            "message": "chat",
+            "body": '{"chatIndex":"chat-2","userNumber":"user-1",'
+            '"contents":[{"speakerNumber":"user-1","time":"1",'
+            '"speechContent":"draw"}],"stream":true}',
+        }
+    )
+    response = success_chat_response(
+        session_id=None,
+        chat=parse_chat(envelope),
+        response={
+            "message": "answer [1]",
+            "output_refs": [
+                "/artifacts/generated/generated.png",
+                "workflow://workflow-1",
+            ],
+            "citations": [
+                {
+                    "source_id": "source_1",
+                    "title": "source",
+                    "url": "https://example.com",
+                    "start_index": 7,
+                    "end_index": 10,
+                }
+            ],
+        },
+        delivery_id="delivery-2",
+        capabilities={"urlCitationAnnotationsV1": True},
+        artifact_dir=tmp_path,
+    )
+    body = parse_envelope(response).body
+    result = body["message"]["content"]["intentResult"]
+    assert result["annotations"][0]["url"] == "https://example.com"
+    assert body["outputRefs"] == ["workflow://workflow-1"]
+    assert result["detail"][0]["type"] == "IMAGE"
+    assert result["detail"][0]["imageId"] == "generated"

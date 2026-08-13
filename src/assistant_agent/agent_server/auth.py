@@ -20,6 +20,12 @@ _SERVICE_TOKEN_ENV = "ASSISTANT_AGENT_SERVER_SERVICE_TOKEN"
 auth = Auth()
 
 
+@auth.on
+async def deny_all(ctx: Auth.types.AuthContext, value: object) -> bool:
+    _ = ctx, value
+    return False
+
+
 @auth.authenticate
 async def authenticate(authorization: str | None) -> Auth.types.MinimalUserDict:
     if os.environ.get(_PROVIDER_MODE_ENV, "mock") == "mock":
@@ -38,6 +44,24 @@ async def authenticate(authorization: str | None) -> Auth.types.MinimalUserDict:
         "permissions": ["assistant:invoke"],
         "is_authenticated": True,
     }
+
+
+@auth.on.assistants.read
+async def allow_assistant_read(
+    ctx: Auth.types.AuthContext,
+    value: Auth.types.on.assistants.read.value,
+) -> bool:
+    _ = ctx, value
+    return True
+
+
+@auth.on.assistants.search
+async def allow_assistant_search(
+    ctx: Auth.types.AuthContext,
+    value: Auth.types.on.assistants.search.value,
+) -> bool:
+    _ = ctx, value
+    return True
 
 
 @auth.on.threads.create
@@ -108,6 +132,8 @@ async def scope_store(
 
 __all__ = [
     "auth",
+    "allow_assistant_read",
+    "allow_assistant_search",
     "authenticate",
     "authorize_run_create",
     "authorize_thread_create",
@@ -115,5 +141,6 @@ __all__ = [
     "authorize_thread_read",
     "authorize_thread_search",
     "authorize_thread_update",
+    "deny_all",
     "scope_store",
 ]

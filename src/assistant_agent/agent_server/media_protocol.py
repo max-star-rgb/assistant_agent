@@ -4,7 +4,13 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Mapping
+
+from assistant_agent.runtime.generated_artifacts import (
+    MAX_DELIVERED_IMAGE_COUNT,
+    generated_artifact_payload,
+)
 
 
 class MediaProtocolError(ValueError):
@@ -104,6 +110,7 @@ def success_chat_response(
     response: Mapping[str, Any],
     delivery_id: str,
     capabilities: Mapping[str, bool] | None = None,
+    artifact_dir: Path | None = None,
 ) -> dict[str, Any]:
     text = str(response.get("message") or "")
     intent_result: dict[str, Any] = {"description": text, "status": "SUCCESS"}
@@ -116,6 +123,21 @@ def success_chat_response(
         for item in response.get("output_refs", [])
         if isinstance(item, str) and item.startswith(("workflow://", "task://"))
     ][:4]
+    image_details = []
+    for output_ref in response.get("output_refs", [])[:MAX_DELIVERED_IMAGE_COUNT]:
+        if not isinstance(output_ref, str):
+            continue
+        artifact = generated_artifact_payload(output_ref, artifact_dir=artifact_dir)
+        if artifact is not None:
+            image_details.append(
+                {
+                    "type": "IMAGE",
+                    "imageId": Path(artifact.image_id).stem,
+                    "image": artifact.base64_data,
+                }
+            )
+    if image_details:
+        intent_result["detail"] = image_details
     return envelope(
         message="chatResponse",
         session_id=session_id,
