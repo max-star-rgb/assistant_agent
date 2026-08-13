@@ -84,14 +84,14 @@ def runtime_regression_evaluator_rule_payloads(
 
     if not model_config_id.strip():
         raise ValueError("LangSmith evaluator model configuration id is required")
-    safe_model_settings = _strict_model_settings(model_settings)
+    safe_model_settings = strict_langsmith_model_settings(model_settings)
     common = {
         "dataset_id": dataset_id,
         "sampling_rate": 1.0,
         "is_enabled": True,
     }
     evaluators = (
-        _structured_evaluator(
+        structured_langsmith_evaluator(
             feedback_key=RESPONSE_QUALITY_FEEDBACK_KEY,
             schema_title="Assistant Agent response quality feedback",
             description=(
@@ -115,7 +115,7 @@ def runtime_regression_evaluator_rule_payloads(
             model_config_id=model_config_id,
             model_settings=safe_model_settings,
         ),
-        _structured_evaluator(
+        structured_langsmith_evaluator(
             feedback_key=GROUNDING_FEEDBACK_KEY,
             schema_title="Assistant Agent grounding feedback",
             description=(
@@ -142,7 +142,7 @@ def runtime_regression_evaluator_rule_payloads(
             model_config_id=model_config_id,
             model_settings=safe_model_settings,
         ),
-        _structured_evaluator(
+        structured_langsmith_evaluator(
             feedback_key=REGRESSION_IMPROVEMENT_FEEDBACK_KEY,
             schema_title="Assistant Agent regression improvement feedback",
             description=(
@@ -193,7 +193,7 @@ def configure_runtime_regression_evaluators(
 
     dataset = client.read_dataset(dataset_name=RUNTIME_REGRESSION_DATASET)
     dataset_id = str(dataset.id)
-    model_settings = _validate_model_configuration(client, model_config_id)
+    model_settings = validate_langsmith_model_configuration(client, model_config_id)
     payloads = runtime_regression_evaluator_rule_payloads(
         dataset_id=dataset_id,
         model_config_id=model_config_id,
@@ -296,7 +296,7 @@ def _aggregate_status(
     return "planned_reconcile" if created.startswith("planned_") else "reconciled"
 
 
-def _structured_evaluator(
+def structured_langsmith_evaluator(
     *,
     feedback_key: str,
     schema_title: str,
@@ -331,7 +331,7 @@ def _structured_evaluator(
     }
 
 
-def _validate_model_configuration(
+def validate_langsmith_model_configuration(
     client: Any,
     model_config_id: str,
 ) -> dict[str, Any]:
@@ -357,10 +357,10 @@ def _validate_model_configuration(
         raise RuntimeError(
             "LangSmith model configuration is not available to evaluators"
         )
-    return _strict_model_settings(matching[0].get("settings"))
+    return strict_langsmith_model_settings(matching[0].get("settings"))
 
 
-def _strict_model_settings(settings: Any) -> dict[str, Any]:
+def strict_langsmith_model_settings(settings: Any) -> dict[str, Any]:
     if not isinstance(settings, dict) or not settings:
         raise RuntimeError(
             "LangSmith model configuration settings must be a non-empty JSON object"

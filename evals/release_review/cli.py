@@ -27,6 +27,7 @@ from assistant_agent.tools.plugins.registry_factory import create_default_regist
 
 from .catalog import ReleaseCatalogSnapshot, build_catalog_snapshot
 from .experiment import ReleaseExperimentSettings
+from .evaluators import configure_release_review_evaluators
 from .loader import load_scenarios
 from .service import ReleaseReviewRequest, ReleaseReviewService
 from .staging import LocalStagingProfileAdapter, StagingResourceManager
@@ -48,6 +49,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     action.add_argument("--sync", action="store_true")
     action.add_argument("--preflight", action="store_true")
     action.add_argument("--run", action="store_true")
+    action.add_argument("--configure-evaluators", action="store_true")
     action.add_argument("--record-decision", action="store_true")
     parser.add_argument("--scenario-root", type=Path, default=DEFAULT_SCENARIO_ROOT)
     parser.add_argument("--artifact-root", type=Path, default=DEFAULT_ARTIFACT_ROOT)
@@ -57,6 +59,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--run-name")
     parser.add_argument("--scenario", action="append", dest="scenario_ids")
     parser.add_argument("--git-commit")
+    parser.add_argument("--model-config-id")
+    parser.add_argument("--apply", action="store_true")
     parser.add_argument("--allow-real-provider", action="store_true")
     parser.add_argument("--allow-staging-side-effects", action="store_true")
     parser.add_argument("--experiment-run-id")
@@ -125,6 +129,43 @@ def main(argv: Sequence[str] | None = None) -> int:
         if not args.no_env_file:
             load_env_file(args.env_file)
         scenarios = load_scenarios(args.scenario_root)
+        if args.configure_evaluators:
+            model_config_id = args.model_config_id or os.getenv(
+                "LANGSMITH_EVALUATOR_MODEL_CONFIG_ID"
+            )
+            if not model_config_id:
+                parser.error(
+                    "--configure-evaluators requires --model-config-id or "
+                    "LANGSMITH_EVALUATOR_MODEL_CONFIG_ID"
+                )
+            client = _langsmith_client()
+            try:
+                result = configure_release_review_evaluators(
+                    client,
+                    model_config_id=model_config_id,
+                    apply=args.apply,
+                )
+                client.flush()
+            finally:
+                _close_client(client)
+            print(
+                json.dumps(
+                    {
+                        "action": "configure_evaluators",
+                        "backend": "langsmith",
+                        "dataset_name": "assistant-agent-release-review",
+                        "dataset_id": result.dataset_id,
+                        "status": result.status,
+                        "rules": [asdict(rule) for rule in result.rules],
+                        "apply": args.apply,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            return 0
+        if args.apply:
+            parser.error("--apply is only valid with --configure-evaluators")
         if args.sync:
             client = _langsmith_client()
             try:

@@ -74,6 +74,20 @@ Tool 必须位于 `execute_tool` 子树；缺少、脱离 parent/trace/reference
 infrastructure failure。报告分别列出
 critical/high、重复运行不一致和 infrastructure 风险，不计算总 reward，也不自动做发布决定。
 
+grounding 与 response-quality 各自使用一条独立的 LangSmith Dataset evaluator rule；task-conformance 仍由
+Experiment 的本地确定性 evaluator 写入。受控 CLI 使用与 Runtime Regression 相同的严格 Model
+Configuration settings、LangChain secret reference、root schema title/description 以及 singular
+`input/output/reference` mapping。默认只输出逐 rule create/update 计划，显式 `--apply` 才写规则，且配置
+动作不会运行 Dataset、Runtime 或 Judge：
+
+```bash
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_release_review.py \
+  --configure-evaluators --model-config-id <model-configuration-uuid>
+
+/home/lenovo1/miniconda3/envs/hello_agent/bin/python scripts/run_release_review.py \
+  --configure-evaluators --model-config-id <model-configuration-uuid> --apply
+```
+
 operator 可把人工决定写入本地审计产物：
 
 ```bash

@@ -140,7 +140,9 @@ For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
   固定 5 FPS、latest-wins、纯语义选帧、VLM 文本索引和无 query-time VLM 的架构检查面；流水线行为
   由离线 pytest 验证。
 - `scripts/run_release_review.py`：上线前 Release Review 的唯一稳定入口。`--inspect` 离线检查 Git YAML
-  scenario；`--sync` 同步固定 LangSmith Dataset；`--run` 以一个原生 LangSmith Project / Experiment 执行
+  scenario；`--sync` 同步固定 LangSmith Dataset；`--configure-evaluators --model-config-id <uuid>` 默认规划
+  grounding/response-quality 两条独立 Dataset rule，显式 `--apply` 才创建或更新且不运行 Judge；`--run`
+  以一个原生 LangSmith Project / Experiment 执行
   Decision fixture backend 与隔离 Staging；`--record-decision` 保存 operator 的人工发布决定。真实运行
   必须同时显式允许 real Provider 和 Staging 副作用，不会静默回退 mock。Dataset、Feedback、webhook、
   清理和产物契约统一见 [`evals/README.md`](../evals/README.md)。日常 `run_runtime_audit` 不参与这条链路。
