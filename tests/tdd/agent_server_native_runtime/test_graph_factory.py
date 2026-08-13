@@ -8,6 +8,7 @@ from langgraph.runtime import ExecutionInfo, Runtime
 from langgraph.store.memory import InMemoryStore
 
 from assistant_agent.agent_server.context import AgentServerRunContext
+from assistant_agent.agent_server.services import AgentServerExecutionOwner
 from assistant_agent.agent_server.graph import (
     AgentServerGraphInput,
     assistant_graph,
@@ -154,3 +155,28 @@ def test_factory_opens_execution_owner_only_for_native_runs(monkeypatch) -> None
         assert run_graph.store is None
 
     asyncio.run(exercise())
+
+
+def test_execution_owner_rejects_tenant_mismatch_even_when_user_matches(monkeypatch) -> None:
+    user = SimpleNamespace(
+        identity="user-sentinel",
+        permissions=[],
+        tenant_id="tenant-authenticated",
+    )
+
+    async def exercise():
+        await AgentServerExecutionOwner.open(
+            context=AgentServerRunContext(
+                user_id="user-sentinel",
+                tenant_id="tenant-forged",
+            ),
+            store=InMemoryStore(),
+            user=user,
+        )
+
+    try:
+        asyncio.run(exercise())
+    except PermissionError as exc:
+        assert "tenant" in str(exc).lower()
+    else:
+        raise AssertionError("tenant mismatch must be rejected before composition")

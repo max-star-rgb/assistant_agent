@@ -215,11 +215,17 @@ class AgentServerExecutionOwner:
 def _authorize_context(user: BaseUser, context: AgentServerRunContext) -> None:
     identity = str(user.identity)
     permissions = set(getattr(user, "permissions", ()) or ())
-    if identity == context.user_id:
-        return
     if "assistant:developer" in permissions:
         return
-    raise PermissionError("Authenticated principal cannot delegate this user context.")
+    if identity != context.user_id:
+        raise PermissionError("Authenticated principal cannot delegate this user context.")
+    try:
+        tenant_id = str(user["tenant_id"])
+    except (KeyError, TypeError):
+        tenant_id = str(getattr(user, "tenant_id", ""))
+    if not tenant_id or tenant_id != context.tenant_id:
+        raise PermissionError("Authenticated principal tenant does not match run context.")
+    return
 
 
 async def _close_if_supported(value: Any) -> None:
