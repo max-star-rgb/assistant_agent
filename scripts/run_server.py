@@ -68,7 +68,6 @@ SKIP_DOTENV_ENV = "MULTIMODAL_AGENT_SKIP_DOTENV"
 SERVER_TRACE_ENABLED_ENV = "MULTIMODAL_AGENT_SERVER_TRACE_ENABLED"
 LOCAL_TRACE_CONTENT_ENV = "MULTIMODAL_AGENT_LOCAL_TRACE_CONTENT"
 LOCAL_PROVIDER_PROTOCOL_CAPTURE_ENV = "MULTIMODAL_AGENT_LOCAL_PROVIDER_PROTOCOL_CAPTURE"
-LOCAL_MEMORY_TRACE_CONTENT_ENV = "MULTIMODAL_AGENT_LOCAL_MEMORY_TRACE_CONTENT"
 PROVIDER_MODE_ENV = "MULTIMODAL_AGENT_PROVIDER_MODE"
 
 
@@ -141,11 +140,6 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Capture selected Provider protocol fields for local diagnostics.",
     )
-    parser.add_argument(
-        "--allow-local-memory-trace-content",
-        action="store_true",
-        help="Allow Mem0 change text only in a loopback local OTLP export.",
-    )
     parser.add_argument("--env-file", default=".env", help="Env file to load before starting.")
     parser.add_argument("--no-env-file", action="store_true", help="Do not load a dotenv file before starting.")
     parser.add_argument(
@@ -212,8 +206,6 @@ def _prepare_environment(args: argparse.Namespace) -> dict[str, str]:
         os.environ[LOCAL_TRACE_CONTENT_ENV] = "1"
     if args.allow_local_provider_protocol_capture:
         os.environ[LOCAL_PROVIDER_PROTOCOL_CAPTURE_ENV] = "1"
-    if args.allow_local_memory_trace_content:
-        os.environ[LOCAL_MEMORY_TRACE_CONTENT_ENV] = "1"
     if args.enable_skills:
         os.environ[SKILLS_ENABLED_ENV] = "1"
     os.environ[SKILL_MANIFEST_DIR_ENV] = args.skill_manifest_dir

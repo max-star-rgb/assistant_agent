@@ -191,8 +191,8 @@ exclusive_allowlist = []
 id = "runtime-observability"
 authority = "docs/observability-harness.md"
 read_when = [
-  "trace、observability、OTel 或 LangSmith native tracing",
-  "canonical event、exporter lifecycle 或日常异常 trace 沉淀",
+  "trace、observability、canonical ledger 或 LangSmith native tracing",
+  "canonical event、trace lifecycle 或日常异常 trace 沉淀",
 ]
 source_globs = [
   "src/assistant_agent/observability/**",

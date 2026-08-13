@@ -8,14 +8,6 @@ from typing import Any
 
 from assistant_agent.memory.mem0.models import Mem0MemoryChange
 from assistant_agent.memory.plugins.contracts import MemoryChange
-from assistant_agent.memory.trace_content import (
-    MemoryIngestionTraceContent,
-    MemoryTraceContentStore,
-    get_default_memory_trace_content_store,
-)
-from assistant_agent.observability.trace_content_policy import (
-    local_memory_trace_content_enabled,
-)
 from assistant_agent.runtime.state import AgentState
 from assistant_agent.observability.trace_store import (
     TraceStore,
@@ -167,9 +159,6 @@ def record_ingestion_finished(
     memory_ids: list[str] | None = None,
     changes: list[Mem0MemoryChange | MemoryChange] | None = None,
     source_turn: str | None = None,
-    source_user_text: str | None = None,
-    source_assistant_text: str | None = None,
-    content_store: MemoryTraceContentStore | None = None,
     errors: list[dict[str, Any]] | None = None,
     error: Exception | None = None,
     error_code: str | None = None,
@@ -194,43 +183,12 @@ def record_ingestion_finished(
         if changes is not None
         else list(memory_ids or [])
     )
-    content_capture_status = "disabled"
-    content_capture_enabled = local_memory_trace_content_enabled()
-    if content_capture_enabled:
-        content_capture_status = "skipped"
-    if (
-        content_capture_enabled
-        and source_turn
-        and resolved.user_id
-        and resolved.session_id
-        and all(
-            isinstance(change, (Mem0MemoryChange, MemoryChange))
-            for change in resolved_changes
-        )
-    ):
-        try:
-            (content_store or get_default_memory_trace_content_store()).put(
-                MemoryIngestionTraceContent(
-                    trace_id=resolved.trace_id,
-                    run_id=resolved.run_id,
-                    user_id=resolved.user_id,
-                    session_id=resolved.session_id,
-                    source_turn=source_turn,
-                    user_text=source_user_text,
-                    assistant_text=source_assistant_text,
-                    changes=resolved_changes,
-                )
-            )
-            content_capture_status = "captured"
-        except Exception:
-            content_capture_status = "failed"
     summary = {
         "memory_count": resolved_memory_count,
         "change_counts": change_counts,
         "memory_ids": resolved_memory_ids,
         "source_turn": source_turn,
         "errors": _safe_error_summaries(errors),
-        "content_capture_status": content_capture_status,
         **_memory_plugin_attributes(
             plugin_id=memory_plugin_id,
             plugin_version=memory_plugin_version,

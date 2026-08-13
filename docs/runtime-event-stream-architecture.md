@@ -39,7 +39,7 @@ vendor provider chunks
 - Gateway frames describe session, run, delivery, cancel, interrupt, and
   transport lifecycle.
 - `TraceEvent` is the independent observability projection consumed by the
-  local trace store and generic OTel exporter; it is not part of the
+  local trace store and LangSmith native tracing; it is not part of the
   `AgentRunStream`.
 - Vendor chunks, SDK objects, prompts, credentials, and raw provider responses
   do not cross the provider adapter boundary.
@@ -159,12 +159,10 @@ Durable Workflow 的 Plan、work-item run、返工和 terminal 生命周期不�
 事实源是已提交的 `WorkflowEvent`，而不是把它们复制为 `TraceEvent`。Deep Research 是一个逻辑
 Plan-and-Execute runtime：入口把当前 canonical trace ID 持久化到 Workflow，首个 durable planner run 调用
 主 Agent planner 生成结构化 DAG，后续 work item 再由可替换的 worker Agent 执行。planner/worker 每次
-调用仍产生自己的 canonical `AgentEvent/TraceEvent`，并保留 trace/run/attempt 身份。Runtime 在可信
-assignment 边界注入 OTel 导出上下文，使 Workflow 和 planner/worker 子树导出到同一个
-`deep_research.workflow` trace。Agent-backed attempt 复用 durable attempt span ID，并直接以 work item
-`display_title` 命名；不另建 `workflow.start`、attempt wrapper 或嵌套的通用 `agent.runtime`。其下
-仍是标准 assistant loop 产生的 memory、ReAct iteration、context、`llm.chat`、Tool 与 response
-observation。这不会改写 canonical event 身份，也不会把 Workflow 状态机塞进单次 Assistant loop。
+调用仍产生自己的 canonical `AgentEvent/TraceEvent`，并保留 trace/run/attempt 身份。LangSmith 通过
+production compiled graph 的 native callback 观察 planner/worker 的 actual tree；Runtime 不注入外部
+trace identity，也不重建 Workflow shadow tree。这不会改写 canonical event 身份，也不会把 Workflow
+状态机塞进单次 Assistant loop。
 
 The projections are not one-to-one. Delivery-only facts such as committed text
 deltas remain `AgentEvent` only, while LLM, context, memory, and graph-node
@@ -289,17 +287,11 @@ response content. 它还记录 route、runtime action、transport mode 与 delta
 `ChatResult` and is not a Provider protocol field. Agent-Service latency summaries use wall latency as the
 critical-path `llm_chat[n]` duration and keep Provider latency as a nested
 diagnostic.
-当本地 OTLP export 开启时，Provider adapter 会在 `llm.chat` span id 下记录传给
-Provider 的完整调用参数。该原始对象保留在本地 content overlay，作为请求形状的审计证据；
-generation span input 使用等价的可读投影。OpenAI Chat 形状保持不变，DashScope
-Generation 形状只把 `input.messages`、`parameters.tools` 和 `parameters.tool_choice`
-提升为顶层 `messages`、`tools` 和 `tool_choice`，其余生成、联网和思考参数归入
-`provider_parameters`。投影不改写 message role、Tool schema 或参数值。
-启用 local trace content 后，进程内 debug overlay 还会保存归一化 `ChatResult`；额外设置
+启用 local trace content 后，进程内 debug overlay 保存发送给 Provider 的请求形状与归一化
+`ChatResult`；额外设置
 `MULTIMODAL_AGENT_LOCAL_PROVIDER_PROTOCOL_CAPTURE=1` 后，还保存原始 content、原始工具参数字符串、
-finish reason、usage、结构化 search sources 与流式事件计数组成的协议语义快照。generation span output 使用
-assistant message 展示 Provider 的原始语义回复（正文、工具调用或拒绝），
-generation input 保留 SDK 调用的 messages/tools 语义以及生成、stream 和 Provider 特有参数，
+finish reason、usage、结构化 search sources 与流式事件计数组成的协议语义快照。overlay 不进入
+canonical ledger，也不改变 SDK 调用的 messages/tools 语义、生成参数或 Provider 返回，
 并按上述 Provider-neutral 形状支持 formatted renderer，不为展示虚构 message role；
 finish reason 保留在 trace/协议快照，
 usage、route 与 transport 保留在诊断字段，都不拼接到 output 文本。默认 trace event 保持安全摘要；
@@ -414,9 +406,8 @@ Durable Workflow 使用相同的分离原则，但事件事实源是 `WorkflowSt
   只从持久化当前 item 的 LLM 生成 `display_title`、状态和完成数投影产品 `progress`；原始事件
   仍是诊断事实，但不是默认产品文案；
 - planner 和每个语义 worker item 都产生独立 bounded `AgentGraphRuntime` canonical run/trace，Workflow event 通过
-  `workflow_id/work_item_id/attempt` 关联；Deep Research 的 OTel 投影复用持久化的 ingress
-  trace ID，但不把多个 canonical run 伪装成一次连续 ReAct；它们共同属于一个 durable
-  Plan-and-Execute execution；
+  `workflow_id/work_item_id/attempt` 关联；LangSmith native graph 保留真实执行父子关系，不把多个
+  canonical run 伪装成一次连续 ReAct；它们共同属于一个 durable Plan-and-Execute execution；
 - waiting-input、cancel、retry、local plan revision 和 terminal 都是持久事件；客户端断线只丢失
   临时观察窗口，使用 cursor 可重放；
 - 当前 HTTP facade 是 pull/replay，不建立长期 WebSocket producer，也不把消费者速度耦合到 worker。

@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
-import json
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -16,11 +14,9 @@ from assistant_agent.gateway.turn_facade import (
     GatewayTurnRequest,
     GatewayTurnTimeout,
 )
-from assistant_agent.observability import trace_persistence
 from assistant_agent.observability.agent_service_delivery import (
     AgentServiceDeliveryRegistry,
 )
-from assistant_agent.observability.otel_mapping import build_text_otel_span_specs
 from assistant_agent.observability.trace_persistence import (
     close_trace_store,
     create_server_trace_store,
@@ -350,7 +346,6 @@ def test_server_trace_store_reads_persisted_trace_after_recreation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("ASSISTANT_AGENT_OTEL_EXPORT_ENABLED", "false")
     trace_path = tmp_path / "trace.jsonl"
     first_store = create_server_trace_store(path=trace_path)
     first_store.append(
@@ -374,47 +369,6 @@ def test_server_trace_store_reads_persisted_trace_after_recreation(
         close_trace_store(recreated_store, timeout=2.0)
 
     assert [event.canonical_event for event in events] == ["run.completed"]
-
-
-@pytest.mark.core_invariant("OBS-001")
-def test_server_trace_store_uses_only_local_ledger_and_generic_otel(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    generic_otel_events: list[TraceEvent] = []
-
-    class GenericOtelObserver:
-        def on_trace_event(self, event: TraceEvent) -> None:
-            generic_otel_events.append(event)
-
-    generic_otel_observer = GenericOtelObserver()
-    monkeypatch.setattr(
-        trace_persistence,
-        "create_text_otel_trace_observer_from_env",
-        lambda: generic_otel_observer,
-    )
-    store = create_server_trace_store(path=tmp_path / "trace.jsonl")
-    try:
-        store.append(
-            TraceEvent(
-                trace_id="trace-sentinel",
-                run_id="run-sentinel",
-                user_id="user-sentinel",
-                session_id="session-sentinel",
-                node_name="runtime",
-                event_type="observability",
-                canonical_event="run.completed",
-                status="completed",
-            )
-        )
-        assert [
-            event.canonical_event for event in store.list_by_run("run-sentinel")
-        ] == ["run.completed"]
-        assert [event.canonical_event for event in generic_otel_events] == [
-            "run.completed"
-        ]
-    finally:
-        close_trace_store(store, timeout=2.0)
 
 
 @pytest.mark.core_invariant("OBS-001")
@@ -544,142 +498,3 @@ def test_timeout_audit_keeps_all_correlation_ids() -> None:
         "runtime_status": "pending_cancel",
         "failure_source": "gateway_turn_facade",
     }
-
-
-@pytest.mark.core_invariant("OBS-001")
-def test_started_events_define_span_start_times() -> None:
-    base = datetime(2026, 7, 28, 7, 27, 20, tzinfo=timezone.utc)
-    context_started_at = base
-    context_finished_at = base + timedelta(microseconds=500)
-    llm_started_at = base + timedelta(microseconds=700)
-    llm_finished_at = base + timedelta(seconds=2, microseconds=100)
-    events = [
-        _trace_event(
-            canonical_event="context.build.started",
-            span_id="context-span",
-            created_at=context_started_at,
-            status="started",
-        ),
-        _trace_event(
-            canonical_event="context.build.finished",
-            span_id="context-span",
-            created_at=context_finished_at,
-            status="succeeded",
-            latency_ms=0,
-            observation_type="span",
-            observation_name="context.compile",
-        ),
-        _trace_event(
-            canonical_event="llm.chat.started",
-            span_id="llm-span",
-            created_at=llm_started_at,
-            status="started",
-        ),
-        _trace_event(
-            canonical_event="llm.chat.finished",
-            span_id="llm-span",
-            created_at=llm_finished_at,
-            status="succeeded",
-            latency_ms=2_000,
-            observation_type="generation",
-        ),
-    ]
-
-    spans = build_text_otel_span_specs(events)
-    context_span = next(
-        span for span in spans if span.name == "context.compile"
-    )
-    llm_span = next(span for span in spans if span.name == "llm.chat")
-
-    assert context_span.start_time == context_started_at
-    assert context_span.end_time == context_finished_at
-    assert llm_span.start_time == llm_started_at
-    assert llm_span.end_time == llm_finished_at
-    assert context_span.end_time <= llm_span.start_time
-
-
-@pytest.mark.core_invariant("OBS-001")
-def test_context_preflight_metadata_does_not_duplicate_generation_usage() -> None:
-    created_at = datetime(2026, 8, 6, 10, 0, tzinfo=timezone.utc)
-    events = [
-        _trace_event(
-            canonical_event="context.build.finished",
-            span_id="context-span",
-            created_at=created_at,
-            status="succeeded",
-            observation_type="span",
-            observation_name="context.compile",
-            attributes={
-                "iteration": 1,
-                "compiled_input_tokens": 120,
-                "effective_input_limit": 1_000,
-                "context_token_usage_ratio": 0.12,
-                "tokenizer_id": "tokenizer-sentinel",
-                "token_accounting_status": "available",
-                "total_tokens": 0,
-            },
-        ),
-        _trace_event(
-            canonical_event="llm.chat.finished",
-            span_id="llm-span",
-            created_at=created_at + timedelta(seconds=1),
-            status="succeeded",
-            observation_type="generation",
-            attributes={
-                "iteration": 1,
-                "usage": {
-                    "prompt_tokens": 125,
-                    "completion_tokens": 25,
-                    "total_tokens": 150,
-                },
-            },
-        ),
-    ]
-
-    spans = build_text_otel_span_specs(events)
-    context_attributes = next(
-        span.attributes for span in spans if span.name == "context.compile"
-    )
-    llm_attributes = next(
-        span.attributes for span in spans if span.name == "llm.chat"
-    )
-
-    assert context_attributes["assistant_agent.compiled_input_tokens"] == 120
-    assert context_attributes["assistant_agent.effective_input_limit"] == 1_000
-    assert context_attributes["assistant_agent.context_token_usage_ratio"] == 0.12
-    assert context_attributes["assistant_agent.tokenizer_id"] == "tokenizer-sentinel"
-    assert context_attributes["assistant_agent.token_accounting_status"] == "available"
-    assert "gen_ai.usage.details" not in context_attributes
-    assert json.loads(llm_attributes["gen_ai.usage.details"]) == {
-        "input": 125,
-        "output": 25,
-        "total": 150,
-    }
-
-
-def _trace_event(
-    *,
-    canonical_event: str,
-    span_id: str,
-    created_at: datetime,
-    status: str,
-    latency_ms: int | None = None,
-    observation_type: str | None = None,
-    observation_name: str | None = None,
-    attributes: dict | None = None,
-) -> TraceEvent:
-    return TraceEvent(
-        trace_id="trace-sentinel",
-        run_id="run-sentinel",
-        node_name="node-sentinel",
-        event_type="observability",
-        canonical_event=canonical_event,
-        observation_type=observation_type,
-        observation_name=observation_name,
-        observation_scope="iteration",
-        span_id=span_id,
-        status=status,
-        latency_ms=latency_ms,
-        attributes=attributes or {"iteration": 1},
-        created_at=created_at,
-    )

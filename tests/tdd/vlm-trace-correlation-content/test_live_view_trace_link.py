@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from pathlib import Path
 
 from assistant_agent.media.embedding.coordinator import SessionEmbeddingCoordinator
@@ -15,7 +14,6 @@ from assistant_agent.media.video.semantic_store_pool import (
 from assistant_agent.media.video.video_adapter import FakeRealtimeVisionAdapter
 from assistant_agent.media.video.video_context import VideoFrame
 from assistant_agent.observability.trace_store import InMemoryTraceStore
-from assistant_agent.observability.otel_mapping import build_text_otel_span_specs
 from assistant_agent.runtime.requests import UserRequest
 from assistant_agent.runtime.state import AgentState
 from assistant_agent.runtime.tool_executor import ToolExecutor
@@ -90,18 +88,6 @@ async def _assert_background_record_trace_link(tmp_path: Path) -> None:
     assert record.source_vision_run_id == summary.run_id
     assert record.source_vlm_span_id == vlm.span_id
     assert vlm.parent_span_id == tool.span_id
-    specs = build_text_otel_span_specs(
-        trace_store.list_by_run(summary.run_id)
-    )
-    background_tool = next(
-        item
-        for item in specs
-        if item.attributes.get("gen_ai.tool.name") == "realtime_video_observe"
-    )
-    background_output = json.loads(
-        background_tool.attributes["assistant_agent.observation.output"]
-    )
-    assert "source_vision_trace_url" not in background_output
 
 
 def test_live_view_tool_projects_exact_source_trace_link(
@@ -169,21 +155,6 @@ def test_live_view_tool_projects_exact_source_trace_link(
     assert result.success is True
     assert result.trace_summary is not None
     assert result.trace_summary["source_vision_trace_id"] == "a" * 32
-    specs = build_text_otel_span_specs(trace_store.list_by_run(state.run_id))
-    tool = next(
-        item
-        for item in specs
-        if item.attributes.get("gen_ai.tool.name") == LIVE_VIEW_INSPECT_TOOL_NAME
-    )
-    output = json.loads(tool.attributes["assistant_agent.observation.output"])
-    assert output["source_vision_trace_id"] == "a" * 32
-    assert "source_vision_trace_url" not in output
-    assert output["source_vlm_span_id"] == "vlm-source-span"
-    assert output["source_visual_record_id"] == "visual-record-7"
-    assert output["snapshot_sequence"] == 7
-    assert tool.attributes[
-        "assistant_agent.source_vision_trace_id"
-    ] == "a" * 32
-    assert "assistant_agent.source_vision_trace_url" not in tool.attributes
-    assert "桌面上有一个蓝色杯子。" not in str(tool.attributes)
-    assert str(evidence) not in str(tool.attributes)
+    assert result.trace_summary["source_vlm_span_id"] == "vlm-source-span"
+    assert result.trace_summary["source_visual_record_id"] == "visual-record-7"
+    assert result.trace_summary["snapshot_sequence"] == 7

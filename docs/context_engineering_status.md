@@ -374,9 +374,8 @@ memory 文本、完整 tool observation、raw Provider payload 或 secret。Toke
 不是模型窗口准入值。最终 compiled request tokenizer preflight 和 system/developer prompt report 必须包含
 这些渲染开销，并继续作为 hard window 的权威口径。
 
-OTel 中 `context.compile` 只把 tokenizer preflight 投影为 span attributes，不计入 Usage
-breakdown；实际 input/output/total usage 只归属随后对应的 `llm.chat` generation，防止同一 Provider
-调用重复计量。
+canonical `context.compile` 记录 tokenizer preflight，但不把它计入 Provider Usage；实际
+input/output/total usage 只归属随后对应的 `llm.chat`，防止同一 Provider 调用重复计量。
 
 Canonical `context.build.started` / `context.build.finished` 记录 context 编译生命周期；
 最终 compiled `ChatRequest` 只归属对应的 `llm.chat` generation input。查询和脱敏规则见

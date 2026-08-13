@@ -1,4 +1,4 @@
-"""Optional LangSmith client and OTLP configuration."""
+"""Optional native LangSmith client configuration."""
 
 from __future__ import annotations
 

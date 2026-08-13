@@ -82,3 +82,30 @@ def test_runtime_audit_surface_is_removed() -> None:
         / "user"
         / "assistant-agent-runtime-audit.timer"
     ).exists()
+
+
+def test_otel_export_surface_is_removed() -> None:
+    repo_root = Path(__file__).resolve().parents[3]
+    for module_name in (
+        "assistant_agent.observability.otel_exporter",
+        "assistant_agent.observability.otel_mapping",
+    ):
+        assert importlib.util.find_spec(module_name) is None
+
+    forbidden = repository_matches(
+        repo_root,
+        r"\botel\b|\botlp\b|opentelemetry|ASSISTANT_AGENT_OTEL|OTEL_EXPORTER_",
+        roots=(
+            "src",
+            "evals",
+            "scripts",
+            "deploy",
+            "docs",
+            "README.md",
+            "AGENTS.md",
+            ".env.example",
+            "pyproject.toml",
+        ),
+        exclude=("docs/development", "docs/superpowers"),
+    )
+    assert forbidden == []

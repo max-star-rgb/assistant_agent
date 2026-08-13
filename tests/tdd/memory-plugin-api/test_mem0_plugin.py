@@ -51,9 +51,6 @@ from assistant_agent.memory.plugins.registry import (
     MemoryPluginRegistry,
 )
 from assistant_agent.memory.plugins.session_store import MemoryPluginSessionStore
-from assistant_agent.memory.trace_content import (
-    get_default_memory_trace_content_store,
-)
 from assistant_agent.observability.trace_store import InMemoryTraceStore
 from assistant_agent.runtime.requests import AgentResponse, UserRequest
 from assistant_agent.runtime.state import AgentState
@@ -942,72 +939,3 @@ def test_explicit_mem0_config_rejects_plaintext_api_key(
     assert issue_codes == ["memory_plugin_config_invalid"]
     assert plaintext_secret not in str(captured.value)
     assert plaintext_secret not in captured.value.report.model_dump_json()
-
-
-def test_mem0_local_trace_overlay_keeps_turn_text_out_of_canonical_event(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Local-only Mem0 content must survive the standard result projection."""
-
-    monkeypatch.setenv("MULTIMODAL_AGENT_LOCAL_MEMORY_TRACE_CONTENT", "1")
-    client = RecordingMem0Client(
-        memories=[],
-        ingestion_result=Mem0IngestionResult(
-            accepted=True,
-            changes=[
-                Mem0MemoryChange(
-                    memory_id="memory-overlay-sentinel",
-                    memory="private-memory-text-sentinel",
-                    event="ADD",
-                )
-            ],
-        ),
-    )
-    host = _host_for_plugin(Mem0MemoryPlugin(client=client))
-    state = _completed_state()
-    identity = RequestIdentity.for_user(
-        user_id=state.user_id,
-        agent_id=state.agent_id,
-        session_id=state.session_id,
-    )
-    trace_store = InMemoryTraceStore()
-
-    try:
-        host.open_session(
-            identity=identity,
-            state=state,
-            trace_store=trace_store,
-        )
-        assert host.schedule_ingestion(
-            state=state,
-            trace_store=trace_store,
-        )
-        assert host.drain(timeout=1.0)
-
-        content = get_default_memory_trace_content_store().get(
-            trace_id=state.trace_id,
-            run_id=state.run_id,
-        )
-        finished = next(
-            event
-            for event in trace_store.list_by_run(state.run_id)
-            if event.canonical_event == "memory.ingestion.finished"
-        )
-        assert content is not None
-        assert content.user_text == "request-sentinel"
-        assert content.assistant_text == "response-sentinel"
-        assert content.changes[0].model_dump(mode="json") == {
-            "operation": "created",
-            "memory_id": "memory-overlay-sentinel",
-            "memory_type": "long_term",
-        }
-        assert "private-memory-text-sentinel" not in content.model_dump_json()
-        assert finished.attributes["content_capture_status"] == "captured"
-        assert "private-memory-text-sentinel" not in finished.model_dump_json()
-        assert "request-sentinel" not in finished.model_dump_json()
-        assert "response-sentinel" not in finished.model_dump_json()
-        assert finished.attributes["memory_ids"] == [
-            "memory-overlay-sentinel"
-        ]
-    finally:
-        assert host.close(timeout=1.0)

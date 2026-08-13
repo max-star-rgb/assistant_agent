@@ -42,7 +42,7 @@ Provider profiles and external-provider configuration are documented in [docs/to
 | `media/` | 音频边缘适配、视频摄取/观察、统一 image/text embedding 及视觉 adapter |
 | `automation/` | durable task、proactive wake 和通知 |
 | `multi_agent/` | Agent routing、delegation、transport 和 A2A |
-| `observability/` | trace、日志、metrics、OpenTelemetry 和 LangSmith 配置 |
+| `observability/` | canonical trace、日志、metrics 和 LangSmith native tracing |
 | `improvement/` | 离线改进证据、提案、评估和报告 |
 | `providers/` | 跨入口共享的 Provider 配置、错误治理和 adapter |
 | `memory/` | 排他 Memory Plugin Host、session/run freeze、ingestion、受管媒体和默认 Mem0 Plugin |

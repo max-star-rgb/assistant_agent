@@ -19,7 +19,6 @@ from assistant_agent.observability.operational_logging import (
     OPERATIONAL_LOG_DIR_ENV,
 )
 from assistant_agent.observability.trace_content_policy import (
-    local_memory_trace_content_enabled,
     local_provider_protocol_capture_enabled,
     local_trace_content_enabled,
 )
@@ -79,7 +78,6 @@ class ServerStartupReport:
     trial_user_count: int
     trace_content_enabled: bool
     provider_protocol_capture_enabled: bool
-    memory_trace_content_enabled: bool
     console_level: str
     file_level: str
     log_dir: str
@@ -128,7 +126,6 @@ def build_server_startup_report(
         trial_user_count=gate.allowed_user_count,
         trace_content_enabled=local_trace_content_enabled(values),
         provider_protocol_capture_enabled=local_provider_protocol_capture_enabled(values),
-        memory_trace_content_enabled=local_memory_trace_content_enabled(values),
         console_level=str(values.get(OPERATIONAL_CONSOLE_LEVEL_ENV) or "INFO"),
         file_level=str(values.get(OPERATIONAL_FILE_LEVEL_ENV) or "DEBUG"),
         log_dir=str(values.get(OPERATIONAL_LOG_DIR_ENV) or ".data/logs"),
@@ -192,11 +189,9 @@ def format_server_startup_report(
             f"  Trial allowlist:           {report.trial_user_count} users",
             f"  Local trace content:       {_enabled(report.trace_content_enabled)}",
             f"  Provider protocol capture: {_enabled(report.provider_protocol_capture_enabled)}",
-            f"  Memory trace content:      {_enabled(report.memory_trace_content_enabled)}",
             "",
             "Observability:",
             f"  Runtime ledger:  {report.runtime_trace_path or 'in-memory only'}",
-            "  Runtime export:  OTLP configured by environment",
             f"  Gateway events:  {report.gateway_event_path}",
             f"  Delivery audit:  {report.delivery_audit_path}",
             f"  Gateway log:     {report.file_level} -> {report.log_dir.rstrip('/')}/gateway.log",
@@ -367,8 +362,6 @@ def _report_warnings(report: ServerStartupReport) -> list[str]:
         warnings.append("Service is network-accessible without requiring auth-bound identity.")
     if report.provider_protocol_capture_enabled:
         warnings.append("Provider protocol capture is enabled for local diagnostics.")
-    if report.memory_trace_content_enabled:
-        warnings.append("Memory trace content is enabled for local diagnostics.")
     return warnings
 
 

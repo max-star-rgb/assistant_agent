@@ -271,10 +271,8 @@ session handle、API key、Plugin 原始异常或远端原始响应。Plugin 异
 | `close_session` | best effort 清理并记录风险 |
 | 媒体读取 | 拒绝不安全引用或结果；其他安全贡献仍按 Host 校验处理 |
 
-现有 `MULTIMODAL_AGENT_LOCAL_MEMORY_TRACE_CONTENT` 只控制本机诊断 trace 的有界正文
-overlay。启用时可在 `assistant.turn` 下查看 `memory.turn_ingestion` 的 ADD/UPDATE/DELETE 正文；
-canonical event 仍只保留数量、operation 计数和 memory ID。单条 Mem0 演化继续使用其私有 history
-API 钻取，任何远端派生视图不反写 Memory Plugin。
+canonical `memory.turn_ingestion` 只保留数量、operation 计数和 memory ID，不保留记忆正文或本轮对话
+正文。单条 Mem0 演化继续使用其私有 history API 钻取；LangSmith native tracing 不反写 Memory Plugin。
 
 ## 9. Operator Mem0 控制台
 

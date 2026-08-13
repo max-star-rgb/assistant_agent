@@ -11,12 +11,10 @@ eval、Gateway 主链路覆盖的 probe 不应继续沉积到本目录。
 - `scripts/run_server.py`: starts the FastAPI backend with Gateway, media, HTTP,
   memory, trace, and tool-governed runtime routes. 启动完成后默认打印从实际 app/runtime
   收集的精简运维摘要，包括 bind、健康检查、Provider、Tool 分类计数、Worker、已启用集成、
-  安全开关，以及 Runtime completeness ledger、通用 OTLP export、Gateway lifecycle、Agent-Service
+  安全开关，以及 Runtime completeness ledger、LangSmith native tracing、Gateway lifecycle、Agent-Service
   delivery audit 和 Gateway text log 的分层观测位置；只有排查 Tool 装配时才使用
   `--startup-details` 展开按 plugin ownership 分组的完整清单。
-  本地诊断需要查看 Mem0 具体 change text 时，显式增加
-  `--allow-local-memory-trace-content`；本地 completeness ledger 不保留 Memory 正文，单条演化用 Mem0
-  原生 history API 钻取。
+  本地 completeness ledger 不保留 Memory 正文；单条 Mem0 演化用其原生 history API 钻取。
 - `scripts/run_qdrant.py`：PyCharm-friendly 本地 Qdrant supervisor。它只启动
   `docker/mem0/compose.yaml` 的 `visual-memory` profile 和 `qdrant` service，等待
   `http://127.0.0.1:6333/healthz` 就绪，并作为一个 Run process 持续运行。仓库已提供共享配置

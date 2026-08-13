@@ -90,8 +90,8 @@ vision/video adapter。VLM 是 Tool 的内部 Provider 能力，不注册成主 
 推理的 Tool 不得为了统一形式额外调用 VLM。
 
 上述视觉理解 Tool 声明 `trace_content_policy=metadata_only`。这只收窄 canonical Tool event、当前 turn
-的 trace conversation overlay 和 OTel Tool span，不改变交给主 LLM 的结构化 Tool
-observation；因此 Agent 仍能依据视觉结果回答，但对应 Tool span 不包含媒体引用、视觉正文、本地路径
+的本地 trace conversation overlay，不改变交给主 LLM 的结构化 Tool
+observation；因此 Agent 仍能依据视觉结果回答，但 canonical Tool event 不包含媒体引用、视觉正文、本地路径
 或 Provider 失败原文。
 
 ## 3. 公共契约
