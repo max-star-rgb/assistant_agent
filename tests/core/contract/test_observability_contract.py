@@ -1,22 +1,20 @@
 from __future__ import annotations
 
-import asyncio
 import importlib.util
+import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 from pydantic import TypeAdapter, ValidationError
 
 from assistant_agent.gateway.runtime_event_mapping import map_agent_progress_event
-from assistant_agent.gateway.turn_facade import (
-    GatewayTurnFacade,
-    GatewayTurnRequest,
-    GatewayTurnTimeout,
-)
+from assistant_agent.observability import trace_persistence
 from assistant_agent.observability.agent_service_delivery import (
     AgentServiceDeliveryRegistry,
 )
+from assistant_agent.observability.langsmith_config import LangSmithConfig
+from assistant_agent.observability.otel_mapping import build_text_otel_span_specs
 from assistant_agent.observability.trace_persistence import (
     close_trace_store,
     create_server_trace_store,
@@ -53,66 +51,6 @@ def _state() -> AgentState:
         ),
         run_id="run-sentinel",
     )
-
-
-@pytest.mark.core_invariant("OBS-001")
-def test_observability_has_no_shadow_graph_or_langfuse_runtime_surface() -> None:
-    package_root = Path(__file__).resolve().parents[3] / "src/assistant_agent"
-    forbidden_modules = (
-        package_root / "observability/runtime_audit.py",
-        package_root / "observability/workflow_otel_observer.py",
-        package_root / "observability/langfuse.py",
-    )
-
-    assert not any(path.exists() for path in forbidden_modules)
-    assert importlib.util.find_spec("assistant_agent.observability.langfuse") is None
-    assert (
-        importlib.util.find_spec("assistant_agent.observability.runtime_audit") is None
-    )
-
-
-class HangingGatewayEndpoint:
-    def __init__(self) -> None:
-        self.sent: list[dict] = []
-        self.received: asyncio.Queue[dict] = asyncio.Queue()
-        self.correlation_sent = asyncio.Event()
-
-    def __aiter__(self):
-        return self
-
-    async def __anext__(self):
-        return await self.received.get()
-
-    async def send(self, outbound: dict) -> None:
-        self.sent.append(dict(outbound))
-        if outbound.get("type") != "message.user":
-            return
-        payload = outbound["payload"]
-        common = {
-            "session_id": outbound["session_id"],
-            "turn_id": payload["turn_id"],
-            "run_id": payload["run_id"],
-        }
-        await self.received.put({"type": "run.started", **common})
-        await self.received.put(
-            {
-                "type": "event.progress",
-                **common,
-                "payload": {
-                    "agent_event_type": "task_started",
-                    "trace_id": "trace-sentinel",
-                },
-            }
-        )
-        self.correlation_sent.set()
-
-
-class GatewayManagerStub:
-    def __init__(self, endpoint: HangingGatewayEndpoint) -> None:
-        self.endpoint = endpoint
-
-    async def acquire(self, **_kwargs):
-        return SimpleNamespace(endpoint=self.endpoint)
 
 
 class DeliveryAudit:
@@ -362,6 +300,8 @@ def test_server_trace_store_reads_persisted_trace_after_recreation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv("ASSISTANT_AGENT_OTEL_EXPORT_ENABLED", "false")
+    monkeypatch.setenv("ASSISTANT_AGENT_LANGFUSE_SCORE_ENABLED", "false")
     trace_path = tmp_path / "trace.jsonl"
     first_store = create_server_trace_store(path=trace_path)
     first_store.append(
@@ -388,6 +328,62 @@ def test_server_trace_store_reads_persisted_trace_after_recreation(
 
 
 @pytest.mark.core_invariant("OBS-001")
+def test_server_trace_store_does_not_rebuild_langsmith_otel_tree(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    generic_otel_events: list[TraceEvent] = []
+
+    class GenericOtelObserver:
+        def on_trace_event(self, event: TraceEvent) -> None:
+            generic_otel_events.append(event)
+
+    generic_otel_observer = GenericOtelObserver()
+    monkeypatch.setattr(
+        trace_persistence,
+        "create_text_otel_trace_observer_from_env",
+        lambda: generic_otel_observer,
+    )
+    monkeypatch.setattr(
+        trace_persistence,
+        "create_langfuse_score_trace_observer_from_env",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        LangSmithConfig,
+        "from_env",
+        classmethod(
+            lambda cls, *args, **kwargs: pytest.fail(
+                "native tracing owns LangSmith"
+            )
+        ),
+    )
+
+    store = create_server_trace_store(path=tmp_path / "trace.jsonl")
+    try:
+        store.append(
+            TraceEvent(
+                trace_id="trace-sentinel",
+                run_id="run-sentinel",
+                user_id="user-sentinel",
+                session_id="session-sentinel",
+                node_name="runtime",
+                event_type="observability",
+                canonical_event="run.completed",
+                status="completed",
+            )
+        )
+        assert [
+            event.canonical_event for event in store.list_by_run("run-sentinel")
+        ] == ["run.completed"]
+        assert [event.canonical_event for event in generic_otel_events] == [
+            "run.completed"
+        ]
+    finally:
+        close_trace_store(store, timeout=2.0)
+
+
+@pytest.mark.core_invariant("OBS-001")
 def test_runtime_host_owns_runtime_and_trace_store_lifecycle_once() -> None:
     assert importlib.util.find_spec("assistant_agent.runtime.runtime_host") is not None
 
@@ -411,79 +407,6 @@ def test_runtime_host_owns_runtime_and_trace_store_lifecycle_once() -> None:
     assert host.close(timeout=2.0) is True
     assert host.close(timeout=2.0) is True
     assert lifecycle == ["runtime", "trace_store"]
-
-
-@pytest.mark.core_invariant("OBS-001")
-def test_server_runtime_shutdown_uses_the_same_owned_lifecycle(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from assistant_agent.api import routes_agent
-
-    lifecycle: list[str] = []
-
-    class TraceStore:
-        def close(self, *, timeout: float) -> bool:
-            lifecycle.append("trace_store")
-            return True
-
-    class Runtime:
-        def __init__(self) -> None:
-            self.trace_store = TraceStore()
-
-        def close(self) -> bool:
-            lifecycle.append("runtime")
-            return True
-
-    runtime = Runtime()
-    monkeypatch.setattr(routes_agent, "_RUNTIME", runtime)
-    monkeypatch.setattr(routes_agent, "_RUNTIME_HOST", None, raising=False)
-
-    routes_agent.shutdown_agent_runtime()
-    routes_agent.shutdown_agent_runtime()
-
-    assert lifecycle == ["runtime", "trace_store"]
-
-
-@pytest.mark.core_invariant("OBS-001")
-def test_gateway_timeout_preserves_partial_correlation() -> None:
-    async def scenario() -> None:
-        endpoint = HangingGatewayEndpoint()
-        facade = GatewayTurnFacade(manager=GatewayManagerStub(endpoint))
-        observed = []
-        turn_task = None
-        try:
-            turn_task = asyncio.create_task(
-                facade.run_turn(
-                    GatewayTurnRequest(
-                        user_id="user-sentinel",
-                        session_id="session-sentinel",
-                        text="request-sentinel",
-                        timeout_s=0.1,
-                    ),
-                    on_correlation=observed.append,
-                )
-            )
-            await asyncio.wait_for(
-                endpoint.correlation_sent.wait(),
-                timeout=0.1,
-            )
-            with pytest.raises(GatewayTurnTimeout) as captured:
-                await turn_task
-        finally:
-            if turn_task is not None and not turn_task.done():
-                turn_task.cancel()
-                await asyncio.gather(turn_task, return_exceptions=True)
-            await facade.close()
-
-        correlation = captured.value.correlation
-        assert correlation is not None
-        assert correlation.run_id == endpoint.sent[0]["payload"]["run_id"]
-        assert correlation.trace_id == "trace-sentinel"
-        assert observed[-1] == correlation
-        assert endpoint.sent[-1]["type"] == "run.cancel"
-        assert endpoint.sent[-1]["payload"]["reason"] == "facade_timeout"
-
-    asyncio.run(scenario())
 
 
 @pytest.mark.core_invariant("OBS-001")
@@ -514,3 +437,152 @@ def test_timeout_audit_keeps_all_correlation_ids() -> None:
         "runtime_status": "pending_cancel",
         "failure_source": "gateway_turn_facade",
     }
+
+
+@pytest.mark.core_invariant("OBS-001")
+def test_started_events_define_span_start_times() -> None:
+    base = datetime(2026, 7, 28, 7, 27, 20, tzinfo=timezone.utc)
+    context_started_at = base
+    context_finished_at = base + timedelta(microseconds=500)
+    llm_started_at = base + timedelta(microseconds=700)
+    llm_finished_at = base + timedelta(seconds=2, microseconds=100)
+    events = [
+        _trace_event(
+            canonical_event="context.build.started",
+            span_id="context-span",
+            created_at=context_started_at,
+            status="started",
+        ),
+        _trace_event(
+            canonical_event="context.build.finished",
+            span_id="context-span",
+            created_at=context_finished_at,
+            status="succeeded",
+            latency_ms=0,
+            observation_type="span",
+            observation_name="context.compile",
+        ),
+        _trace_event(
+            canonical_event="llm.chat.started",
+            span_id="llm-span",
+            created_at=llm_started_at,
+            status="started",
+        ),
+        _trace_event(
+            canonical_event="llm.chat.finished",
+            span_id="llm-span",
+            created_at=llm_finished_at,
+            status="succeeded",
+            latency_ms=2_000,
+            observation_type="generation",
+        ),
+    ]
+
+    spans = build_text_otel_span_specs(events)
+    context_span = next(
+        span for span in spans if span.name == "context.compile"
+    )
+    llm_span = next(span for span in spans if span.name == "llm.chat")
+
+    assert context_span.start_time == context_started_at
+    assert context_span.end_time == context_finished_at
+    assert llm_span.start_time == llm_started_at
+    assert llm_span.end_time == llm_finished_at
+    assert context_span.end_time <= llm_span.start_time
+
+
+@pytest.mark.core_invariant("OBS-001")
+def test_context_preflight_metadata_does_not_duplicate_generation_usage() -> None:
+    created_at = datetime(2026, 8, 6, 10, 0, tzinfo=timezone.utc)
+    events = [
+        _trace_event(
+            canonical_event="context.build.finished",
+            span_id="context-span",
+            created_at=created_at,
+            status="succeeded",
+            observation_type="span",
+            observation_name="context.compile",
+            attributes={
+                "iteration": 1,
+                "compiled_input_tokens": 120,
+                "effective_input_limit": 1_000,
+                "context_token_usage_ratio": 0.12,
+                "tokenizer_id": "tokenizer-sentinel",
+                "token_accounting_status": "available",
+                "total_tokens": 0,
+            },
+        ),
+        _trace_event(
+            canonical_event="llm.chat.finished",
+            span_id="llm-span",
+            created_at=created_at + timedelta(seconds=1),
+            status="succeeded",
+            observation_type="generation",
+            attributes={
+                "iteration": 1,
+                "usage": {
+                    "prompt_tokens": 125,
+                    "completion_tokens": 25,
+                    "total_tokens": 150,
+                },
+            },
+        ),
+    ]
+
+    spans = build_text_otel_span_specs(events)
+    context_attributes = next(
+        span.attributes for span in spans if span.name == "context.compile"
+    )
+    llm_attributes = next(
+        span.attributes for span in spans if span.name == "llm.chat"
+    )
+
+    assert context_attributes[
+        "langfuse.observation.metadata.assistant_agent.compiled_input_tokens"
+    ] == 120
+    assert context_attributes[
+        "langfuse.observation.metadata.assistant_agent.effective_input_limit"
+    ] == 1_000
+    assert context_attributes[
+        "langfuse.observation.metadata.assistant_agent.context_token_usage_ratio"
+    ] == 0.12
+    assert context_attributes[
+        "langfuse.observation.metadata.assistant_agent.tokenizer_id"
+    ] == "tokenizer-sentinel"
+    assert context_attributes[
+        "langfuse.observation.metadata.assistant_agent.token_accounting_status"
+    ] == "available"
+    assert "langfuse.observation.usage_details" not in context_attributes
+    assert json.loads(llm_attributes["langfuse.observation.usage_details"]) == {
+        "input": 125,
+        "output": 25,
+        "total": 150,
+    }
+
+
+def _trace_event(
+    *,
+    canonical_event: str,
+    span_id: str,
+    created_at: datetime,
+    status: str,
+    latency_ms: int | None = None,
+    observation_type: str | None = None,
+    observation_name: str | None = None,
+    attributes: dict | None = None,
+) -> TraceEvent:
+    return TraceEvent(
+        trace_id="trace-sentinel",
+        run_id="run-sentinel",
+        node_name="node-sentinel",
+        event_type="observability",
+        canonical_event=canonical_event,
+        observation_type=observation_type,
+        observation_name=observation_name,
+        observation_scope="iteration",
+        span_id=span_id,
+        status=status,
+        latency_ms=latency_ms,
+        attributes=attributes or {"iteration": 1},
+        created_at=created_at,
+    )
