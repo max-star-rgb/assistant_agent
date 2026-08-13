@@ -382,6 +382,78 @@ class WorkflowGraphHost:
             self._projector.project_snapshot(initial).handle
         )
 
+    async def arun_submission(
+        self,
+        *,
+        identity: RequestIdentity,
+        ingress_run_id: str,
+        submission: WorkflowSubmission,
+        ingress_trace_id: str | None = None,
+        ingress_parent_span_id: str | None = None,
+    ) -> Any:
+        """Run one submission through this host's compiled production graph.
+
+        Controlled evaluators use this synchronous-awaiting facade so the native
+        graph remains under the current LangSmith task RunTree. Product ingress
+        continues to use :meth:`start` and its background lifecycle.
+        """
+
+        self._require_submission_allowed()
+        invocation_task = asyncio.current_task()
+        if invocation_task is None:
+            raise WorkflowGraphHostError(
+                "workflow_invocation_task_missing",
+                "Workflow invocation requires an active event-loop task.",
+            )
+        bundle = self._service.submit(
+            identity=identity,
+            ingress_run_id=ingress_run_id,
+            submission=submission,
+            ingress_trace_id=ingress_trace_id,
+            ingress_parent_span_id=ingress_parent_span_id,
+        )
+        workflow_id = bundle.workflow.workflow_id
+        async with self._schedule_lock:
+            active = self._tasks.get(workflow_id)
+            if active is not None and not active.done():
+                raise WorkflowGraphHostError(
+                    "workflow_invocation_active",
+                    "Workflow already has an active graph invocation.",
+                )
+            if await self.has_checkpoint(workflow_id=workflow_id):
+                raise WorkflowGraphHostError(
+                    "workflow_invocation_already_started",
+                    "Workflow already has a persisted graph invocation.",
+                )
+            graph_identity = self._execution_identity(
+                bundle, run_id=f"workflow-start:{ingress_run_id}"
+            )
+            initial = initial_workflow_graph_state(
+                workflow=bundle.workflow,
+                submission=submission,
+                admitted_plan=None,
+                workflow_thread_id=graph_identity.thread_id,
+                invocation_run_id=graph_identity.run_id,
+                invocation_trace_id=ingress_trace_id or ingress_run_id,
+            )
+            context = self._context(
+                bundle, invocation_token=_token(graph_identity.run_id)
+            )
+            await self._commit_projection(initial)
+            self._tasks[workflow_id] = invocation_task
+        try:
+            result = await self._graph_app.arun(
+                initial,
+                identity=graph_identity,
+                context=context,
+            )
+            await self._commit_projection(result.final_state)
+            return result
+        finally:
+            async with self._schedule_lock:
+                if self._tasks.get(workflow_id) is invocation_task:
+                    self._tasks.pop(workflow_id, None)
+
     async def recover_nonterminal(self) -> int:
         """Schedule every graph-owned nonterminal row after process restart."""
 

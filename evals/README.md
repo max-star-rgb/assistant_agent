@@ -197,19 +197,24 @@ MULTIMODAL_AGENT_PROVIDER_MODE=real \
 LangSmith CLI 不提供自动收集失败 trace 或 Dataset 写入；案例晋升仍由人工 UI 操作完成。日常 trace export
 fail-open，Experiment 的配置、Dataset、Runtime trace 和 Feedback 完整性 fail-closed。
 
-### M3 Durable Workflow LangSmith 离线准备
+### Durable Workflow LangSmith Regression
 
 固定 Dataset `assistant-agent-durable-workflow-regressions` 的 target 只接收 production composition
-提供的 `DurableWorkflowGraphApp`、strict initial state、execution identity 与 runtime context，并直接运行
-已编译 `DurableWorkflowGraph`；不得装配旧 `WorkflowRuntime`、worker 或 OTel parent bridge。离线 evaluator
+提供的 `WorkflowGraphHost` invocation factory，并直接 await Host 已编译的
+`DurableWorkflowGraph`；不得装配旧 `WorkflowRuntime`、worker 或 OTel parent bridge。operator runner 为每次
+Experiment 建立隔离的 business SQLite/artifact 目录，先打开唯一 official async SQLite saver，再让
+`WorkflowGraphHost` 与 shared `AgentGraphRuntime` 共用该 saver 和 invocation claim store；关闭顺序为
+Workflow Host、Agent Runtime、saver owner。离线 evaluator
 只消费有界的 plan、`(node_id, generation, profile)` trajectory、opaque artifact refs、constraint、repair
 与 resume-equivalence facts。persisted tree completeness 只从 LangSmith API 的 `parent_run_id`、`trace_id`、
 `reference_example_id`、`run_type`、`name` 与安全 metadata 判断实际父图、planning/planner、Send worker、
 join、required verifier 和 repair generation；astream event 不能伪造成 LangSmith run。
 
-`scripts/run_langsmith_workflow_regressions.py --inspect` 完全离线且只读本地 schema。当前 production
-`WorkflowGraphHost` cutover 未提供 runner composition，因此实现状态只能记为 offline prework；真实
-Dataset/Experiment/tree/四项 Feedback 的 operator evidence 保持 pending，`--run` 必须 fail-closed。
+`scripts/run_langsmith_workflow_regressions.py --inspect` 完全离线且只读本地 schema。`--preflight` 与
+`--run` 必须同时显式允许 real Provider 和 Workflow/Runtime side effect，并可通过 `--env-file` 加载未跟踪
+operator 配置；两者都会验证真实 Provider、远端 Dataset、LangSmith client 与 persistent production
+composition，不允许 mock fallback。`--run` 还会等待四项 Feedback 与 native tree 远端完整性；缺任一证据
+均 fail-closed。
 
 ### M5 LangSmith 等价 Gate
 
@@ -219,8 +224,9 @@ Workflow Regression 三份 evidence 都 `complete=true` 且零 infrastructure fa
 `langsmith_equivalence=approved`。离线 pytest 只验证该 fail-closed 规则及 fake client 的完整分页、parent、
 trace、reference 和 Feedback 审计；它不生成 P3 operator evidence。
 
-P3 仍需 operator 在 real mode 下分别运行三个 runner，并保留真实 Dataset/Project/Experiment/run ID。当前
-Workflow production host 尚不可用，故 P3 状态必须保持 pending，Task 11 的 Langfuse 删除不得开始。
+P3 仍需 operator 在 real mode 下分别运行三个 runner，并保留真实 Dataset/Project/Experiment/run ID。
+Workflow production composition 已接入 runner，但在真实 Workflow Experiment 与四项 Feedback 完整性证据
+落库前，P3 仍保持 pending，Task 11 的 Langfuse 删除不得开始。
 
 ## 本地运行顺序
 

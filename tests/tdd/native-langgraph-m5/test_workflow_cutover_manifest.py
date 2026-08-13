@@ -2,10 +2,14 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from contextlib import asynccontextmanager
+from dataclasses import replace
+import json
+from types import SimpleNamespace
 
 import pytest
 
 from assistant_agent.identity import RequestIdentity
+from assistant_agent.config import ProviderConfig
 from assistant_agent.workflows.builtin import default_workflow_definitions
 from assistant_agent.workflows.models import WorkflowSubmission
 from assistant_agent.workflows.service import WorkflowService
@@ -143,6 +147,84 @@ def test_cutover_inventory_classifies_every_legacy_status_without_user_text(
         assert len(allowed) == 4
     finally:
         store.close()
+
+
+def test_legacy_bundle_without_display_title_remains_readable_for_drain_inventory(
+    tmp_path,
+) -> None:
+    """Pre-display-title rows must be projected safely without rewriting source text."""
+
+    from assistant_agent.workflows.cutover import (
+        WorkflowCutoverController,
+        WorkflowEngineCutoverManifest,
+    )
+    from assistant_agent.workflows.legacy_drain_host import LegacyDrainHost
+
+    store = _legacy_store(tmp_path, ("running",))
+    try:
+        current = store.list_cutover_bundles()[0]
+        original = current.current_plan.work_items[0]
+        raw = json.loads(current.model_dump_json())
+        raw["workflow"].pop("execution_engine")
+        for plan in raw["plans"]:
+            for item in plan["work_items"]:
+                item.pop("display_title")
+        orphaned = raw["plans"][0]["work_items"][0]
+        orphaned["status"] = "running"
+        orphaned["attempt_count"] = 1
+        for field in (
+            "active_attempt_id",
+            "lease_owner",
+            "lease_token",
+            "lease_expires_at",
+        ):
+            orphaned[field] = None
+        store._connection.execute(  # noqa: SLF001 - historical DB fixture
+            "UPDATE durable_workflows SET bundle_json=? WHERE workflow_id=?",
+            (json.dumps(raw), current.workflow.workflow_id),
+        )
+        store._connection.commit()  # noqa: SLF001 - historical DB fixture
+
+        loaded = store.list_cutover_bundles()[0]
+        migrated = loaded.current_plan.work_items[0]
+        assert loaded.workflow.execution_engine == "legacy_scheduler_v2"
+        assert migrated.display_title == "Legacy workflow step"
+        assert migrated.work_item_id == original.work_item_id
+        assert migrated.kind == original.kind
+        assert migrated.objective == original.objective
+        assert migrated.status == "retryable_failed"
+        assert migrated.error_code == "legacy_orphaned_running_attempt"
+
+        manifest = WorkflowEngineCutoverManifest.model_validate(_manifest_payload())
+        controller = WorkflowCutoverController(store=store, manifest=manifest)
+        assert controller.inventory().counts == {
+            "terminal_read_only": 0,
+            "migrate_pristine_queued": 0,
+            "drain_running": 1,
+            "drain_waiting": 0,
+        }
+        assert controller.legacy_drain_allowlist() == frozenset(
+            {current.workflow.workflow_id}
+        )
+    finally:
+        store.close()
+
+    config = replace(
+        ProviderConfig(),
+        durable_workflow_path=str(tmp_path / "legacy.sqlite3"),
+        durable_workflow_artifact_path=str(tmp_path / "artifacts"),
+    )
+    host = LegacyDrainHost.compose(
+        config=config,
+        agent_runtime=SimpleNamespace(context_token_counter=None),
+        manifest=manifest,
+    )
+    try:
+        assert host.allowed_workflow_ids == frozenset(
+            {current.workflow.workflow_id}
+        )
+    finally:
+        __import__("asyncio").run(host.close())
 
 
 class _CheckpointHost:

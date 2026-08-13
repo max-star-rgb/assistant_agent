@@ -274,13 +274,10 @@ def test_direct_target_calls_durable_graph_app_and_projects_only_bounded_facts(
         session_id="session-send",
         agent_id="agent-send",
     )
-    invocation = DirectWorkflowInvocation(
-        app=app,
-        initial_state=initial,
-        identity=identity,
-        context=context,
-        resume_equivalent=True,
-    )
+    async def invoke():
+        return await app.arun(initial, identity=identity, context=context), True
+
+    invocation = DirectWorkflowInvocation(invoke=invoke)
     try:
         output = asyncio.run(run_workflow_example(invocation))
     finally:
@@ -442,37 +439,3 @@ def test_cli_preflight_requires_operator_flags_before_client(monkeypatch):
 
     with pytest.raises(SystemExit):
         workflow_cli.main(["--preflight", "--allow-real-provider"])
-
-
-def test_cli_preflight_never_claims_ready_without_production_host(
-    monkeypatch, capsys, tmp_path
-):
-    monkeypatch.setattr(
-        workflow_cli.ProviderConfig,
-        "from_env",
-        staticmethod(
-            lambda: SimpleNamespace(
-                provider_mode="real", validate_provider_mode=lambda: None
-            )
-        ),
-    )
-    monkeypatch.setenv("ASSISTANT_AGENT_WORKFLOW_CHECKPOINT_DB", str(tmp_path / "db"))
-    monkeypatch.setenv("ASSISTANT_AGENT_WORKFLOW_ARTIFACT_ROOT", str(tmp_path / "artifacts"))
-    monkeypatch.setattr(
-        workflow_cli,
-        "_langsmith_client",
-        lambda: (_ for _ in ()).throw(AssertionError("client must not be created")),
-    )
-
-    assert workflow_cli.main(
-        [
-            "--preflight",
-            "--allow-real-provider",
-            "--allow-workflow-side-effects",
-        ]
-    ) == 2
-    output = __import__("json").loads(capsys.readouterr().out)
-    assert "production host" in output["message"]
-    assert output["ready"] is False
-    assert output["reason_code"] == "workflow_graph_host_unavailable"
-    assert output["persistent_gate"] == "pending"

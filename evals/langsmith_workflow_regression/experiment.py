@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 import json
 import math
@@ -12,14 +12,8 @@ from uuid import uuid4
 
 from langsmith.utils import LangSmithRateLimitError
 
-from assistant_agent.workflows.durable_graph_app import (
-    DurableWorkflowGraphApp,
-    WorkflowGraphExecutionIdentity,
-    WorkflowGraphStreamResult,
-)
-from assistant_agent.workflows.graph_context import WorkflowGraphRuntimeContext
+from assistant_agent.workflows.durable_graph_app import WorkflowGraphStreamResult
 from assistant_agent.workflows.graph_state import (
-    DurableWorkflowState,
     PersistedAdmittedWorkflowPlan,
     WorkflowResultSlot,
     validate_durable_workflow_state,
@@ -28,6 +22,7 @@ from assistant_agent.workflows.graph_state import (
 from .contracts import (
     WORKFLOW_REGRESSION_DATASET,
     WorkflowDatasetExample,
+    WorkflowReferenceOutput,
     validate_active_examples,
 )
 from .evaluators import (
@@ -39,7 +34,11 @@ from evals.release_review.report import LangSmithTargetEvidence
 
 class WorkflowInvocationFactory(Protocol):
     def __call__(
-        self, inputs: dict[str, Any], *, example_id: str
+        self,
+        inputs: dict[str, Any],
+        *,
+        example_id: str,
+        reference_output: WorkflowReferenceOutput,
     ) -> "DirectWorkflowInvocation": ...
 
 
@@ -47,11 +46,9 @@ class WorkflowInvocationFactory(Protocol):
 class DirectWorkflowInvocation:
     """All production-owned objects needed to call the already compiled graph."""
 
-    app: DurableWorkflowGraphApp
-    initial_state: DurableWorkflowState
-    identity: WorkflowGraphExecutionIdentity
-    context: WorkflowGraphRuntimeContext
-    resume_equivalent: bool | None
+    invoke: Callable[
+        [], Awaitable[tuple[WorkflowGraphStreamResult, bool | None]]
+    ]
 
 
 @dataclass(frozen=True)
@@ -140,14 +137,10 @@ async def run_workflow_example(
 ) -> dict[str, Any]:
     """Execute the actual compiled graph app; no scheduler/eval runtime exists here."""
 
-    result = await invocation.app.arun(
-        invocation.initial_state,
-        identity=invocation.identity,
-        context=invocation.context,
-    )
+    result, resume_equivalent = await invocation.invoke()
     return project_workflow_result(
         result,
-        resume_equivalent=invocation.resume_equivalent,
+        resume_equivalent=resume_equivalent,
         require_resume_equivalence=require_resume_equivalence,
     )
 
@@ -262,7 +255,11 @@ async def run_workflow_experiment(
         ):
             raise RuntimeError("workflow target has no matching LangSmith RunTree")
         example = next(item for item in examples if item.id == example_id)
-        invocation = settings.invocation_factory(inputs, example_id=example_id)
+        invocation = settings.invocation_factory(
+            inputs,
+            example_id=example_id,
+            reference_output=example.outputs,
+        )
         return await run_workflow_example(
             invocation,
             require_resume_equivalence=(

@@ -656,6 +656,42 @@ def test_graph_host_close_cancels_after_bounded_drain(tmp_path, monkeypatch) -> 
     asyncio.run(exercise())
 
 
+def test_graph_host_direct_invocation_uses_product_submission_and_persists_projection(
+    tmp_path,
+) -> None:
+    """Eval targets must run the production host graph, not a second workflow engine."""
+
+    from assistant_agent.workflows.graph_host import WorkflowGraphHost
+
+    async def exercise() -> None:
+        host = await WorkflowGraphHost.open(
+            config=_config(tmp_path),
+            provider_registry={
+                "planner": _Planner(),
+                "worker": _Worker(),
+                "verifier": _Verifier(),
+            },
+            tool_registry=_registry(),
+        )
+        try:
+            result = await host.arun_submission(
+                identity=_identity(),
+                ingress_run_id="langsmith-direct-invocation",
+                submission=_submission(),
+            )
+            snapshot = await host.get_status(
+                identity=_identity(),
+                workflow_id=result.final_state["workflow_id"],
+            )
+            assert result.status == "completed"
+            assert result.final_state["execution_engine"] == "langgraph_v3"
+            assert snapshot.handle.status == "completed"
+        finally:
+            await host.close()
+
+    asyncio.run(exercise())
+
+
 def test_recover_nonterminal_starts_graph_admission_without_checkpoint(tmp_path) -> None:
     """Startup recovery must execute an admitted graph row after a pre-checkpoint crash."""
 
