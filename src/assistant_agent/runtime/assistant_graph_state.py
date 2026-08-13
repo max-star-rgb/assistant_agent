@@ -14,7 +14,15 @@ from datetime import datetime, timezone
 from typing import Any, Literal, Mapping, TypedDict, cast
 from urllib.parse import parse_qsl, urlparse
 
-from pydantic import AnyUrl, BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
+from pydantic import (
+    AnyUrl,
+    BaseModel,
+    ConfigDict,
+    Field,
+    TypeAdapter,
+    ValidationError,
+    model_validator,
+)
 
 from assistant_agent.multi_agent.models import DEFAULT_AGENT_ID
 from assistant_agent.runtime.assistant_graph_profiles import AssistantGraphProfileName
@@ -36,11 +44,18 @@ from assistant_agent.tools.capability_output import (
 
 
 ASSISTANT_GRAPH_NAME = "AssistantTurnGraph"
-ASSISTANT_GRAPH_VERSION = "3"
-ASSISTANT_STATE_SCHEMA_VERSION = 3
+ASSISTANT_GRAPH_VERSION = "4"
+ASSISTANT_STATE_SCHEMA_VERSION = 4
 
 AssistantGraphContinuation = Literal[
-    "assistant", "await_input", "execute_tool", "compose_response", "end"
+    "memory_recall",
+    "assistant",
+    "await_input",
+    "execute_tool",
+    "compose_response",
+    "publish_response",
+    "memory_commit",
+    "end",
 ]
 AssistantInvocationKind = Literal["invoke", "resume", "replay", "fork"]
 
@@ -58,6 +73,78 @@ class AssistantStateCompatibilityError(ValueError):
 
 class _CheckpointModel(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
+
+
+class MemoryContextItem(_CheckpointModel):
+    """One bounded backend-neutral long-term-memory recall result."""
+
+    memory_id: str = Field(min_length=1, max_length=512)
+    text: str = Field(min_length=1, max_length=4_000)
+    source: str = Field(min_length=1, max_length=160)
+    relevance: float | None = Field(default=None, ge=0.0, le=1.0)
+    updated_at: datetime | None = None
+
+
+class MemoryContext(_CheckpointModel):
+    """Frozen, checkpoint-safe memory snapshot for one logical turn."""
+
+    schema_version: Literal[1] = 1
+    backend_id: str = Field(min_length=1, max_length=160)
+    status: Literal["ready", "empty", "degraded"]
+    snapshot_id: str = Field(min_length=1, max_length=256)
+    items: tuple[MemoryContextItem, ...] = Field(default=(), max_length=32)
+    issue_codes: tuple[str, ...] = Field(default=(), max_length=16)
+
+    @model_validator(mode="after")
+    def _validate_bounded_snapshot(self) -> "MemoryContext":
+        if sum(len(item.text) for item in self.items) > 12_000:
+            raise ValueError("memory_context_text_limit_exceeded")
+        if any(
+            re.fullmatch(r"[a-z0-9][a-z0-9_.-]{0,159}", code) is None
+            for code in self.issue_codes
+        ):
+            raise ValueError("memory_context_issue_code_invalid")
+        return self
+
+
+class MemoryCommitState(_CheckpointModel):
+    """Minimal, redacted outcome of the external memory write side effect."""
+
+    status: Literal[
+        "not_requested", "succeeded", "failed", "timed_out", "skipped"
+    ] = "not_requested"
+    memory_event_id: str | None = Field(default=None, min_length=1, max_length=512)
+    issue_code: str | None = Field(
+        default=None,
+        pattern=r"^[a-z0-9][a-z0-9_.-]{0,159}$",
+    )
+
+
+class ResponsePublishState(_CheckpointModel):
+    """Graph-local product publication barrier, distinct from client ACK."""
+
+    status: Literal["not_requested", "published", "failed"] = "not_requested"
+    final_fact_id: str | None = Field(default=None, min_length=1, max_length=512)
+    issue_code: str | None = Field(
+        default=None,
+        pattern=r"^[a-z0-9][a-z0-9_.-]{0,159}$",
+    )
+
+
+def memory_context_texts(
+    value: MemoryContext | Mapping[str, object] | None,
+) -> tuple[str, ...]:
+    """Return the only memory fields assistant reasoning may depend on."""
+
+    if value is None:
+        return ()
+    if isinstance(value, MemoryContext):
+        context = value
+    else:
+        context = MemoryContext.model_validate_json(
+            json.dumps(value, ensure_ascii=False, allow_nan=False)
+        )
+    return tuple(item.text for item in context.items)
 
 
 class PersistedMessage(_CheckpointModel):
@@ -265,8 +352,8 @@ class PersistedResponse(_CheckpointModel):
 
 class _AssistantTurnStateModel(_CheckpointModel):
     graph_name: Literal["AssistantTurnGraph"]
-    graph_version: Literal["3"]
-    state_schema_version: Literal[3]
+    graph_version: Literal["4"]
+    state_schema_version: Literal[4]
     profile: AssistantGraphProfileName
     turn_origin_id: str = Field(min_length=1, max_length=512)
     invocation_run_id: str = Field(min_length=1, max_length=512)
@@ -291,6 +378,11 @@ class _AssistantTurnStateModel(_CheckpointModel):
     tool_observations: tuple[PersistedToolObservation, ...] = Field(
         default=(), max_length=64
     )
+    memory_context: MemoryContext | None = None
+    memory_commit: MemoryCommitState = Field(default_factory=MemoryCommitState)
+    response_publish: ResponsePublishState = Field(
+        default_factory=ResponsePublishState
+    )
     context_refs: tuple[PersistedContextRef, ...] = Field(default=(), max_length=256)
     capability_refs: tuple[str, ...] = Field(default=(), max_length=64)
     catalog: PersistedRunToolCatalog = Field(default_factory=PersistedRunToolCatalog)
@@ -311,8 +403,8 @@ class AssistantTurnState(TypedDict):
     """LangGraph channel schema; values are JSON dumps of the strict DTOs above."""
 
     graph_name: Literal["AssistantTurnGraph"]
-    graph_version: Literal["3"]
-    state_schema_version: Literal[3]
+    graph_version: Literal["4"]
+    state_schema_version: Literal[4]
     profile: AssistantGraphProfileName
     turn_origin_id: str
     invocation_run_id: str
@@ -333,6 +425,9 @@ class AssistantTurnState(TypedDict):
     control_tool_calls_used: int
     run_phase: str
     tool_observations: tuple[PersistedToolObservation, ...]
+    memory_context: MemoryContext | None
+    memory_commit: MemoryCommitState
+    response_publish: ResponsePublishState
     context_refs: tuple[PersistedContextRef, ...]
     capability_refs: tuple[str, ...]
     catalog: PersistedRunToolCatalog
@@ -453,6 +548,9 @@ def assistant_turn_state_from_agent_state(
             json.dumps(request_payload, ensure_ascii=False)
         ),
         run=run,
+        memory_context=None,
+        memory_commit=MemoryCommitState(),
+        response_publish=ResponsePublishState(),
         context_refs=context_refs,
         capability_refs=capability_refs,
         catalog=catalog,
@@ -504,6 +602,13 @@ def assistant_turn_state_from_loop_state(
                 "turn_provenance", state.turn_provenance
             ),
             "continuation": graph_state.get("continuation", "assistant"),
+            "memory_context": graph_state.get("memory_context"),
+            "memory_commit": graph_state.get(
+                "memory_commit", MemoryCommitState().model_dump(mode="json")
+            ),
+            "response_publish": graph_state.get(
+                "response_publish", ResponsePublishState().model_dump(mode="json")
+            ),
             "catalog": _project_catalog(
                 state.run_tool_catalog,
                 registry_generation=_registry_generation(graph_state),
@@ -1921,9 +2026,13 @@ __all__ = [
     "AssistantGraphProfileName",
     "AssistantStateCompatibilityError",
     "AssistantTurnState",
+    "MemoryCommitState",
+    "MemoryContext",
+    "MemoryContextItem",
     "PersistedMediaRef",
     "PersistedRequest",
     "PersistedRun",
+    "ResponsePublishState",
     "apply_assistant_turn_state_to_agent_state",
     "assistant_capability_ref_identity",
     "assistant_context_ref_identity",
@@ -1931,6 +2040,7 @@ __all__ = [
     "assistant_turn_state_from_agent_state",
     "assistant_turn_state_from_loop_state",
     "assistant_turn_state_from_request",
+    "memory_context_texts",
     "persisted_request_from_user_request",
     "route_after_await_input_turn_state",
     "route_after_assistant_turn_state",
