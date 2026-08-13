@@ -278,7 +278,7 @@ module 等同于执行受信任代码，不是不可信插件沙箱。不可信�
 或中心 Tool name 表。只有新的宿主级共享依赖才扩展 Plugin context 和 composition root。
 
 Tool capability/name/action 的通用映射位于
-`assistant_agent.runtime.tool_capability_mapping`；旧的 `legacy_tool_mapping` module 已随 intent planner
+`assistant_agent.runtime.tool_capability_mapping`；旧的兼容映射 module 已随 intent planner
 退出而删除，不保留 import alias。`ToolExecutor` 仍使用该结构化映射，并继续通过 `recovery.py` 执行失败
 分类；`recovery.py` 同时服务 LangSmith 安全错误分类。`planning_models.py` 与 `plan_validator.py` 继续由
 独立 DurableTask service 和酒店价格监控 profile 使用，不属于 legacy intent planner 清理范围。
