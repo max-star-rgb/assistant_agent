@@ -451,3 +451,27 @@ def test_operator_gate_rejects_persisted_false_feedback() -> None:
                 }
             }
         )
+
+
+def test_zero_root_runs_fail_locally_without_unfiltered_feedback_query() -> None:
+    class Client:
+        feedback_called = False
+
+        def list_runs(self, **_kwargs):
+            return iter(())
+
+        def list_feedback(self, **_kwargs):
+            self.feedback_called = True
+            raise AssertionError("zero root runs must not query all Feedback")
+
+    client = Client()
+    with pytest.raises(RuntimeError, match="root_run_count=0"):
+        wait_for_workflow_experiment_completeness(
+            client,
+            experiment_id="empty-experiment",
+            example_ids=(str(EXAMPLE_ID),),
+            timeout_seconds=0.01,
+            poll_interval_seconds=0.01,
+            sleep=lambda _seconds: None,
+        )
+    assert client.feedback_called is False

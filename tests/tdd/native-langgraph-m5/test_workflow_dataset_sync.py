@@ -10,6 +10,7 @@ from evals.langsmith_workflow_regression.dataset import (
     sync_workflow_examples,
 )
 from evals.langsmith_workflow_regression.contracts import WorkflowDatasetExample
+from evals.langsmith_workflow_regression.cli import _workflow_trace_id
 
 
 def test_git_workflow_examples_cover_all_four_cases_and_sync_idempotently() -> None:
@@ -71,3 +72,13 @@ def test_langsmith_roundtrip_accepts_only_bounded_dataset_split() -> None:
     raw["metadata"]["dataset_split"] = ["unknown"]
     with __import__("pytest").raises(ValueError):
         WorkflowDatasetExample.model_validate(raw)
+
+
+def test_workflow_trace_id_is_stable_hex_and_hides_operator_inputs() -> None:
+    value = _workflow_trace_id("run-name-secret", "example-secret")
+    assert len(value) == 32
+    assert set(value) <= set("0123456789abcdef")
+    assert value == _workflow_trace_id("run-name-secret", "example-secret")
+    assert value != _workflow_trace_id("other-run", "example-secret")
+    assert "run-name" not in value
+    assert "example" not in value

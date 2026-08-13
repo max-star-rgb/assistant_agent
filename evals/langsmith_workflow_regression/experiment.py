@@ -594,13 +594,16 @@ def _audit_remote(
         if _field(run, "parent_run_id") is None
     }
     feedback: dict[str, dict[str, Any]] = {key: {} for key in example_ids}
-    for item in client.list_feedback(run_ids=list(audit.run_ids)):
-        example_id = roots.get(str(_field(item, "run_id")))
-        key = str(_field(item, "key") or "")
-        if example_id in feedback and key in REQUIRED_WORKFLOW_FEEDBACK_KEYS:
-            if key in feedback[example_id]:
-                problems.setdefault(example_id, []).append(f"duplicate feedback {key}")
-            feedback[example_id][key] = _field(item, "score")
+    if audit.run_ids:
+        for item in client.list_feedback(run_ids=list(audit.run_ids)):
+            example_id = roots.get(str(_field(item, "run_id")))
+            key = str(_field(item, "key") or "")
+            if example_id in feedback and key in REQUIRED_WORKFLOW_FEEDBACK_KEYS:
+                if key in feedback[example_id]:
+                    problems.setdefault(example_id, []).append(
+                        f"duplicate feedback {key}"
+                    )
+                feedback[example_id][key] = _field(item, "score")
     for example_id in example_ids:
         missing = [
             key

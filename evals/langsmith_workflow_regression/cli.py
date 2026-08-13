@@ -84,6 +84,7 @@ class ProductionWorkflowExperimentComposition:
             session_id=f"langsmith-workflow-{identity_digest}",
         )
         ingress_run_id = f"langsmith:{self.run_name}:{identity_digest}"
+        ingress_trace_id = _workflow_trace_id(self.run_name, example_id)
         submission_payload = example.submission
         submission = WorkflowSubmission(
             workflow_type=submission_payload.workflow_type,
@@ -119,7 +120,7 @@ class ProductionWorkflowExperimentComposition:
                 identity=identity,
                 ingress_run_id=ingress_run_id,
                 submission=submission,
-                ingress_trace_id=ingress_run_id,
+                ingress_trace_id=ingress_trace_id,
                 resume_values_factory=resume_values_factory,
             )
             if example.case_type == "interrupt_resume_equivalence":
@@ -413,6 +414,16 @@ def _git_commit() -> str:
     if not value:
         raise RuntimeError("git commit identity is unavailable")
     return value
+
+
+def _workflow_trace_id(run_name: str, example_id: str) -> str:
+    payload = (
+        "assistant-agent:langsmith-workflow-trace:v1\0"
+        + run_name
+        + "\0"
+        + example_id
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:32]
 
 
 def _infrastructure_failure(exc: BaseException) -> dict[str, Any]:
