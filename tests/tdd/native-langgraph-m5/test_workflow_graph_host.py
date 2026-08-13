@@ -516,6 +516,104 @@ def test_duplicate_submission_coalesces_one_graph_execution(tmp_path) -> None:
     asyncio.run(exercise())
 
 
+def test_rollback_requested_manifest_fences_new_graph_admission(tmp_path) -> None:
+    """Fresh operator rollback phase must stop new graph submissions first."""
+
+    from assistant_agent.workflows.cutover import WorkflowEngineCutoverManifest
+    from assistant_agent.workflows.graph_host import WorkflowGraphHost
+
+    manifest = WorkflowEngineCutoverManifest.model_validate(
+        {
+            "schema_version": "workflow_engine_cutover_v1",
+            "revision": 8,
+            "phase": "rollback_requested",
+            "new_submission_engine": "langgraph_v3",
+            "legacy_rules": {
+                "terminal": "read_only",
+                "pristine_queued": "migrate_two_phase",
+                "running": "drain_allowlist",
+                "waiting": "drain_allowlist",
+            },
+            "drain_deadline": datetime(2030, 1, 2, tzinfo=timezone.utc),
+            "rollback_deadline": datetime(2030, 1, 3, tzinfo=timezone.utc),
+            "operator_approval_ref": "operator-approval:rollback",
+        }
+    )
+
+    async def exercise() -> None:
+        host = await WorkflowGraphHost.open(
+            config=_config(tmp_path),
+            provider_registry={
+                "planner": _Planner(),
+                "worker": _Worker(),
+                "verifier": _Verifier(),
+            },
+            tool_registry=_registry(),
+            cutover_manifest_source=lambda: manifest,
+        )
+        try:
+            with pytest.raises(Exception) as exc_info:
+                await host.start(
+                    identity=_identity(),
+                    ingress_run_id="fenced-during-rollback",
+                    submission=_submission(),
+                )
+            assert getattr(exc_info.value, "code", None) == (
+                "workflow_cutover_rollback_active"
+            )
+            assert host._product_store.list_cutover_bundles() == []
+        finally:
+            await host.close()
+
+    asyncio.run(exercise())
+
+
+def test_separate_hosts_serialize_migration_checkpoint_and_rollback(tmp_path) -> None:
+    """The migration barrier must coordinate independent hosts, not only tasks."""
+
+    from assistant_agent.workflows.graph_host import WorkflowGraphHost
+
+    async def exercise() -> None:
+        config = _config(tmp_path)
+        first = await WorkflowGraphHost.open(config=config)
+        second = await WorkflowGraphHost.open(config=config)
+        entered = asyncio.Event()
+
+        async def contender() -> None:
+            async with second.migration_guard(workflow_id="workflow-lock-probe"):
+                entered.set()
+
+        try:
+            async with first.migration_guard(workflow_id="workflow-lock-probe"):
+                task = asyncio.create_task(contender())
+                await asyncio.sleep(0.05)
+                assert not entered.is_set()
+            await asyncio.wait_for(task, timeout=1.0)
+            assert entered.is_set()
+        finally:
+            await first.close()
+            await second.close()
+
+    asyncio.run(exercise())
+
+
+def test_graph_host_close_cancels_after_bounded_drain(tmp_path, monkeypatch) -> None:
+    """A stuck invocation cannot hold process shutdown indefinitely."""
+
+    from assistant_agent.workflows import graph_host as graph_host_module
+
+    async def exercise() -> None:
+        host = await graph_host_module.WorkflowGraphHost.open(config=_config(tmp_path))
+        never = asyncio.Event()
+        task = asyncio.create_task(never.wait())
+        host._tasks["stuck-workflow"] = task
+        monkeypatch.setattr(graph_host_module, "_SHUTDOWN_TIMEOUT_SECONDS", 0.01)
+        await asyncio.wait_for(host.close(), timeout=0.5)
+        assert task.cancelled()
+
+    asyncio.run(exercise())
+
+
 def test_recover_nonterminal_starts_graph_admission_without_checkpoint(tmp_path) -> None:
     """Startup recovery must execute an admitted graph row after a pre-checkpoint crash."""
 

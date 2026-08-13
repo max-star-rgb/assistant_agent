@@ -7,6 +7,7 @@ import json
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
+from contextlib import AbstractAsyncContextManager
 from typing import Callable, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -104,6 +105,11 @@ class WorkflowCutoverController:
         current = self._manifest_source()
         if current.revision < self.manifest.revision:
             raise ValueError("workflow cutover manifest revision moved backwards")
+        if (
+            current.revision == self.manifest.revision
+            and current.digest != self.manifest.digest
+        ):
+            raise ValueError("same manifest revision must be immutable")
         self.manifest = current
         return current
 
@@ -223,44 +229,45 @@ class WorkflowCutoverController:
         *,
         graph_host: "WorkflowMigrationGraphHost",
     ) -> WorkflowBundle:
-        self.refresh_manifest()
-        bundle = self._require_bundle(workflow_id)
-        migration = bundle.workflow.engine_migration
-        if migration is not None and migration.status == "committed":
-            return bundle
-        if migration is None or migration.status != "prepared":
-            raise ValueError("workflow migration is not prepared")
-        self._validate_manifest_revision(migration)
-        if not await graph_host.has_checkpoint(workflow_id=workflow_id):
-            raise ValueError("workflow migration checkpoint proof is required")
-        changed = bundle.model_copy(deep=True)
-        changed.workflow.execution_engine = "langgraph_v3"
-        changed.workflow.engine_migration = migration.model_copy(
-            update={"status": "committed"}
-        )
-        changed.workflow.legacy_claim_frozen = False
-        try:
-            return self.store.save(
-                changed,
-                expected_revision=bundle.workflow.revision,
-                events=[
-                    WorkflowEvent(
-                        workflow_id=workflow_id,
-                        event_type="workflow.engine.migration_committed",
-                        status="queued",
-                        payload={
-                            "schema_version": "workflow_engine_migration_v1",
-                            "manifest_digest": migration.manifest_digest,
-                        },
-                    )
-                ],
+        async with graph_host.migration_guard(workflow_id=workflow_id):
+            self.refresh_manifest()
+            bundle = self._require_bundle(workflow_id)
+            migration = bundle.workflow.engine_migration
+            if migration is not None and migration.status == "committed":
+                return bundle
+            if migration is None or migration.status != "prepared":
+                raise ValueError("workflow migration is not prepared")
+            self._validate_manifest_revision(migration)
+            if not await graph_host.has_checkpoint(workflow_id=workflow_id):
+                raise ValueError("workflow migration checkpoint proof is required")
+            changed = bundle.model_copy(deep=True)
+            changed.workflow.execution_engine = "langgraph_v3"
+            changed.workflow.engine_migration = migration.model_copy(
+                update={"status": "committed"}
             )
-        except WorkflowRevisionConflict:
-            raced = self._require_bundle(workflow_id)
-            current = raced.workflow.engine_migration
-            if current is not None and current.status == "committed":
-                return raced
-            raise
+            changed.workflow.legacy_claim_frozen = False
+            try:
+                return self.store.save(
+                    changed,
+                    expected_revision=bundle.workflow.revision,
+                    events=[
+                        WorkflowEvent(
+                            workflow_id=workflow_id,
+                            event_type="workflow.engine.migration_committed",
+                            status="queued",
+                            payload={
+                                "schema_version": "workflow_engine_migration_v1",
+                                "manifest_digest": migration.manifest_digest,
+                            },
+                        )
+                    ],
+                )
+            except WorkflowRevisionConflict:
+                raced = self._require_bundle(workflow_id)
+                current = raced.workflow.engine_migration
+                if current is not None and current.status == "committed":
+                    return raced
+                raise
 
     async def rollback_prepared(
         self,
@@ -269,47 +276,48 @@ class WorkflowCutoverController:
         graph_host: "WorkflowMigrationGraphHost",
         now: datetime | None = None,
     ) -> WorkflowBundle:
-        self.refresh_manifest()
-        observed = now or datetime.now(timezone.utc)
-        if (
-            self.manifest.phase != "rollback_requested"
-            or observed > self.manifest.rollback_deadline
-        ):
-            raise ValueError("operator rollback phase or window is not active")
-        bundle = self._require_bundle(workflow_id)
-        migration = bundle.workflow.engine_migration
-        if migration is None or migration.status != "prepared":
-            raise ValueError("workflow migration is not rollback eligible")
-        self._validate_manifest_revision(migration)
-        if await graph_host.has_checkpoint(workflow_id=workflow_id):
-            raise ValueError("workflow migration checkpoint exists; rollback is unsafe")
-        changed = bundle.model_copy(deep=True)
-        changed.workflow.engine_migration = migration.model_copy(
-            update={"status": "rolled_back"}
-        )
-        changed.workflow.legacy_claim_frozen = False
-        try:
-            return self.store.save(
-                changed,
-                expected_revision=bundle.workflow.revision,
-                events=[
-                    WorkflowEvent(
-                        workflow_id=workflow_id,
-                        event_type="workflow.engine.migration_rolled_back",
-                        status="queued",
-                        payload={
-                            "schema_version": "workflow_engine_migration_v1",
-                            "manifest_digest": migration.manifest_digest,
-                        },
-                    )
-                ],
+        async with graph_host.migration_guard(workflow_id=workflow_id):
+            self.refresh_manifest()
+            observed = now or datetime.now(timezone.utc)
+            if (
+                self.manifest.phase != "rollback_requested"
+                or observed > self.manifest.rollback_deadline
+            ):
+                raise ValueError("operator rollback phase or window is not active")
+            bundle = self._require_bundle(workflow_id)
+            migration = bundle.workflow.engine_migration
+            if migration is None or migration.status != "prepared":
+                raise ValueError("workflow migration is not rollback eligible")
+            self._validate_manifest_revision(migration)
+            if await graph_host.has_checkpoint(workflow_id=workflow_id):
+                raise ValueError("workflow migration checkpoint exists; rollback is unsafe")
+            changed = bundle.model_copy(deep=True)
+            changed.workflow.engine_migration = migration.model_copy(
+                update={"status": "rolled_back"}
             )
-        except WorkflowRevisionConflict:
-            raced = self._require_bundle(workflow_id)
-            current = raced.workflow.engine_migration
-            if current is not None and current.status == "rolled_back":
-                return raced
-            raise
+            changed.workflow.legacy_claim_frozen = False
+            try:
+                return self.store.save(
+                    changed,
+                    expected_revision=bundle.workflow.revision,
+                    events=[
+                        WorkflowEvent(
+                            workflow_id=workflow_id,
+                            event_type="workflow.engine.migration_rolled_back",
+                            status="queued",
+                            payload={
+                                "schema_version": "workflow_engine_migration_v1",
+                                "manifest_digest": migration.manifest_digest,
+                            },
+                        )
+                    ],
+                )
+            except WorkflowRevisionConflict:
+                raced = self._require_bundle(workflow_id)
+                current = raced.workflow.engine_migration
+                if current is not None and current.status == "rolled_back":
+                    return raced
+                raise
 
     def _validate_manifest_revision(self, migration: WorkflowEngineMigration) -> None:
         current = self.manifest
@@ -378,6 +386,10 @@ def _is_pristine_queued(bundle: WorkflowBundle) -> bool:
 
 
 class WorkflowMigrationGraphHost(Protocol):
+    def migration_guard(
+        self, *, workflow_id: str
+    ) -> AbstractAsyncContextManager[None]: ...
+
     async def has_checkpoint(self, *, workflow_id: str) -> bool: ...
 
     async def ensure_started(

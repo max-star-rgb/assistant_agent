@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from contextlib import asynccontextmanager
 
 import pytest
 
@@ -146,9 +147,18 @@ def test_cutover_inventory_classifies_every_legacy_status_without_user_text(
 
 class _CheckpointHost:
     def __init__(self) -> None:
+        import asyncio
+
         self.checkpoints: set[str] = set()
         self.start_counts: dict[str, int] = {}
         self.activation_counts: dict[str, int] = {}
+        self._migration_lock = asyncio.Lock()
+
+    @asynccontextmanager
+    async def migration_guard(self, *, workflow_id: str):
+        _ = workflow_id
+        async with self._migration_lock:
+            yield
 
     async def has_checkpoint(self, *, workflow_id: str) -> bool:
         return workflow_id in self.checkpoints
@@ -391,3 +401,31 @@ def test_reconciler_refreshes_manifest_before_no_checkpoint_decision(tmp_path) -
     import asyncio
 
     asyncio.run(exercise())
+
+
+def test_manifest_same_revision_is_immutable(tmp_path) -> None:
+    """Operator phase changes must advance revision instead of rewriting history."""
+
+    from assistant_agent.workflows.cutover import (
+        WorkflowCutoverController,
+        WorkflowEngineCutoverManifest,
+    )
+
+    store = _legacy_store(tmp_path, ())
+    initial = WorkflowEngineCutoverManifest.model_validate(_manifest_payload())
+    changed_payload = _manifest_payload(phase="rollback_requested")
+    changed_payload["revision"] = initial.revision
+    changed = WorkflowEngineCutoverManifest.model_validate(changed_payload)
+    def source():
+        return changed
+
+    try:
+        controller = WorkflowCutoverController(
+            store=store,
+            manifest=initial,
+            manifest_source=source,
+        )
+        with pytest.raises(ValueError, match="same manifest revision"):
+            controller.refresh_manifest()
+    finally:
+        store.close()
