@@ -102,9 +102,10 @@ Graph 完成后发唯一成功终包：
 
 ## 5. audio、video 与 3D callback
 
-当前 custom route 对 `audio`、`video` 只做传输层 ACK，分别返回 `audioResponse`、`videoResponse`；尚未把
-媒体 payload 摄取为 Graph 输入或实时视觉上下文。旧实现中的 H.264 解码、视觉 observer、图片/3D 主动
-WebSocket 投递尚未迁入原生 route，不能视为当前受支持能力。
+`audio` 继续做字段校验后的传输层 ACK，不把原始音频写入 Graph State。`video` 校验独立 Annex-B H.264
+frame，在 media edge 的工作线程中解码为有界 JPEG window，Graph 输入只携带稳定 `video_id`。Graph worker
+的受治理 `media_inspect/live_view_inspect` Tool 通过共享 SQLite frame index 解析该引用；H.264 hex、JPEG
+正文和本地路径均不进入 Graph State、prompt 或 Agent Server Store。
 
 保留 callback：
 
@@ -112,27 +113,32 @@ WebSocket 投递尚未迁入原生 route，不能视为当前受支持能力。
 POST /calling-agent-service/v1/{job_or_session_id}/{chat_index}/3d-gen-back
 ```
 
-它记录中性 3D job artifact；不执行 Assistant Graph。callback 的 delivery hub 仍是过渡组件，后续应迁移到
-Agent Server 可持久通知资源，不能据此宣称跨进程可靠交付。
+它记录中性 3D job artifact；不执行 Assistant Graph。在线连接以 native `thread_id` 订阅完成事件，并机械
+投影为带 `TD_MODEL/VIDEO/IMAGE` detail 的 `chatResponse`。当前 hub 是进程内在线交付，不是 Agent Server
+run/checkpoint，也不宣称跨进程、离线或 exactly-once 投递；没有 job 且没有在线 subscriber 时 callback
+返回失败，让上游决定是否重试。
 
 ## 6. 错误与认证
 
 - 非 `v1` 连接返回失败并以 1008 关闭。
 - 非法 JSON body、缺字段、identity mismatch、重复关联或未知消息返回结构化失败 envelope。
-- custom route 启用 Agent Server auth。内部 thread/run 调用走同源公开 API 并只转发 Authorization header，
+- custom route 启用 Agent Server auth。内部 thread/run 调用走同源公开 API 并转发认证与 delegation header，
   使 Graph factory 能从 `ServerRuntime.user` 校验 context delegation；不得使用 `/noauth` 后信任客户端 context。
-- mock mode 使用本地 developer principal；real mode 要求显式 `ASSISTANT_AGENT_SERVER_SERVICE_TOKEN`。
+- mock mode 默认使用本地 developer principal，也可用 `X-Assistant-User/Tenant` 模拟用户隔离。
+- real mode 要求显式 `ASSISTANT_AGENT_SERVER_SERVICE_TOKEN`，并要求媒体服务提供 user、tenant 与
+  HMAC-SHA256 签名；资源 owner 是验签后的 user，裸 `userNumber` 不能授权。
 
 ## 7. 重连与当前限制
 
-Agent Server 原生 thread/run/stream 支持 SDK join/resumable stream，但当前媒体 connection 尚未实现 vendor
-重连后恢复旧 thread/run 的握手字段。因此当前断线重连会创建新 thread，不自动重放未 ACK delivery，也不自动
-恢复上一条 chat。实现这项能力时应只保存最小 vendor-to-native correlation，并使用
-`threads.join_stream(last_event_id=...)`；不得重建 Gateway session/runtime。
+相同 `user + vendor sessionId` 通过确定性 UUID 映射到同一个 native thread；重连不会创建第二份对话轴。
+custom route 创建 run 时使用 `stream_resumable=true` 与 `on_disconnect=continue`，内部订阅临时断开后从最后
+event ID 调用 `threads.join_stream`，而不是重建 Gateway session/runtime。同一连接的重复 `chatIndex` 在创建
+第二个 run 前拒绝，后续不同 chat 使用 Agent Server `enqueue`。
 
-当前还未迁移：并发 chat task consumer、周期 progress、citation/图片/detail 增强包、durable task/workflow
-主动通知、实时 H.264/视觉观察和断线 delivery outbox。媒体服务在采用本版本前必须按本节核对能力，而不能仅
-依据 URL 未变化判断完全等价。
+媒体 WebSocket 本身断开时，当前兼容策略 best-effort cancel 该连接仍活动的 run；已完成但未 ACK 的终包不会
+跨连接重投。Agent Server 的 stream resume 解决执行事件订阅恢复，不等于媒体 delivery outbox。尚未迁移的
+能力是周期 progress、durable task/workflow 主动通知、后台实时视觉 observer/视觉提醒和跨连接 delivery
+outbox；citation、生成图片 detail、H.264 显式视觉引用和在线 3D artifact 投影已支持。
 
 ## 8. 验证
 

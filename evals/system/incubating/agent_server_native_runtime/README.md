@@ -3,6 +3,8 @@
 该专项以 mock Provider 启动真实 `langgraph dev`，通过公开 `langgraph_sdk`
 验证 deployment manifest、custom app、schema、thread/run/state、Store、cancel、原生
 `enqueue` 和带 `Last-Event-ID` 的 resumable thread stream。
+probe 还使用两个 mock auth principal 验证 thread 搜索互不可见；这验证的是 Agent Server resource filter，
+不是仅比较两个随机 thread ID。
 它不调用真实 Provider，不读取密钥；in-memory 持久化目录已从 Git 排除。
 
 运行：

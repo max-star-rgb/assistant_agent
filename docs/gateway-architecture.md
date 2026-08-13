@@ -62,6 +62,12 @@ Graph 输入只含 `request_input`；可信身份、tenant、mode、entry profil
 `AgentServerRunContext`。factory 必须用认证 principal 校验 context delegation。custom route 内部若要发起
 run，必须经公开同源 API 并转发 Authorization；不得用 `/noauth` 后再相信客户端可伪造的 context。
 
+mock/local 模式可用 `X-Assistant-User`、`X-Assistant-Tenant` 构造多个开发 principal。real mode 先验证
+`ASSISTANT_AGENT_SERVER_SERVICE_TOKEN`，再要求媒体服务提供 `X-Assistant-User`、
+`X-Assistant-Tenant` 与 `X-Assistant-Signature`；签名是服务 secret 对
+`<user>\n<tenant>` 的 HMAC-SHA256。认证结果的 identity 是终端 user，不是固定媒体服务账号；thread、run
+和 Store 均按该 identity 授权。裸 `userNumber` 或未签名 header 不能形成生产 principal。
+
 ## custom route 边界
 
 `/agent-service/v1` 保留媒体侧 envelope。适配器只允许：
@@ -74,6 +80,11 @@ run，必须经公开同源 API 并转发 Authorization；不得用 `/noauth` �
 
 它不得构造 `AgentGraphRuntime`，不得实现排队、checkpoint、长期记忆策略或 Tool 执行。Graph State 也不放
 WebSocket、SDK client、Provider client 或回调对象。
+
+H.264 解码与 3D callback 属于媒体边缘资源。解码后的有界 JPEG 引用保存在 SQLite frame index，Graph
+State 只携带 `video_id`；视觉 Tool 在 worker 中按引用读取。该本地实现要求 API/worker 共享受控数据卷，
+多主机部署应把同一协议替换为对象存储 URI + 共享索引。3D callback 只向当前在线连接发布中性 artifact
+事件，不启动第二次 Graph，也不宣称跨进程或离线可靠投递。
 
 ## 本地运行与生产边界
 
