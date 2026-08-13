@@ -351,7 +351,7 @@ def stable_workflow_action_ref(
 class WorkflowWorkerControl(_CheckpointModel):
     outcome: Literal["completed", "blocked", "failed"]
     summary: str = Field(max_length=4_000)
-    content: str = Field(default="", max_length=100_000)
+    content: str = Field(default="", max_length=27_000)
     required_fields: tuple[str, ...] = Field(default=(), max_length=32)
     prompt_code: str | None = Field(default=None, max_length=160)
     safe_prompt: str | None = Field(default=None, max_length=2_000)

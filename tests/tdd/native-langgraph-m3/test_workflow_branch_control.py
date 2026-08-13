@@ -68,6 +68,27 @@ def test_worker_control_rejects_extra_missing_or_unsafe_fields(payload):
         WorkflowWorkerControl.model_validate(payload)
 
 
+def test_worker_completed_content_fits_profile_response_transport():
+    control = WorkflowWorkerControl(
+        outcome="completed",
+        summary="s" * 4_000,
+        content="c" * 27_000,
+    )
+    envelope = json.dumps(
+        {"workflow_control": control.model_dump(mode="json")},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+    assert len(envelope) < 32_000
+    with pytest.raises(ValidationError):
+        WorkflowWorkerControl(
+            outcome="completed",
+            summary="done",
+            content="c" * 27_001,
+        )
+
+
 def test_worker_branch_is_a_static_expandable_compiled_subgraph(tmp_path):
     from workflow_graph_probe import workflow_probe
 
