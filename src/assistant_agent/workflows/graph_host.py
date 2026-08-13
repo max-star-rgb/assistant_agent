@@ -566,6 +566,7 @@ class WorkflowGraphHost:
         run_id = "workflow-resume:" + secrets.token_hex(16)
         execution = self._execution_identity(bundle, run_id=run_id)
         context = self._context(bundle, invocation_token=_token(run_id))
+        await self._wait_for_active_invocation(workflow_id)
         self._track_task(
             workflow_id,
             self._run_resume(
@@ -606,6 +607,7 @@ class WorkflowGraphHost:
             )
         token = self._cancel_tokens.setdefault(workflow_id, Event())
         token.set()
+        await self._wait_for_active_invocation(workflow_id)
         execution = self._execution_identity(
             bundle,
             run_id="workflow-cancel:" + secrets.token_hex(16),
@@ -786,6 +788,11 @@ class WorkflowGraphHost:
                 self._tasks.pop(workflow_id, None)
 
         task.add_done_callback(discard)
+
+    async def _wait_for_active_invocation(self, workflow_id: str) -> None:
+        current = self._tasks.get(workflow_id)
+        if current is not None and not current.done():
+            await asyncio.shield(current)
 
     async def _run_initial(
         self,
