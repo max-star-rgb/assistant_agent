@@ -55,6 +55,22 @@ def _state() -> AgentState:
     )
 
 
+@pytest.mark.core_invariant("OBS-001")
+def test_observability_has_no_shadow_graph_or_langfuse_runtime_surface() -> None:
+    package_root = Path(__file__).resolve().parents[3] / "src/assistant_agent"
+    forbidden_modules = (
+        package_root / "observability/runtime_audit.py",
+        package_root / "observability/workflow_otel_observer.py",
+        package_root / "observability/langfuse.py",
+    )
+
+    assert not any(path.exists() for path in forbidden_modules)
+    assert importlib.util.find_spec("assistant_agent.observability.langfuse") is None
+    assert (
+        importlib.util.find_spec("assistant_agent.observability.runtime_audit") is None
+    )
+
+
 class HangingGatewayEndpoint:
     def __init__(self) -> None:
         self.sent: list[dict] = []

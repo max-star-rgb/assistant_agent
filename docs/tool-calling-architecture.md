@@ -630,6 +630,8 @@ payload、凭据、绝对路径和大块内联数据不能因 ToolResult 或调�
 - `workflows/graph_host.py`：process-owned/b borrowed saver 的 graph_v3 产品 facade；
 - `workflows/cutover.py`：operator manifest、content-free inventory、queued 两阶段 migration reconciler 与
   manifest-bound retirement machine gate；
+- `runtime/graph_capability_evidence.py`：最终 native Graph API 机器证据矩阵与独立 M5 delivery gate；其中
+  Tool 副作用安全仍以既有 operation barrier 与治理链为证据，不建立第二套执行规则；
 - `workflows/legacy_drain_host.py`：cutover 期 exact existing-row allowlist 的唯一 legacy execution owner；
 - `workflows/` 其余模块：Workflow 契约、definition、Store、artifact/context，以及 retirement gate 未关闭前
   保留的 legacy work-item controller/worker/adapter；

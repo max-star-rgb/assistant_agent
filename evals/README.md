@@ -22,6 +22,10 @@
 默认 pytest 和 core invariant 见 `tests/README.md`。`evals/system/incubating/<feature>/` 是可删除的节点专项，
 不能伪装成 core 或 Release Review。
 
+`GraphCapabilityEvidence` 是 Git 内的实现/合同证据索引，不是 Dataset、Experiment、Feedback 或发布批准，
+也不替代本文件的 Runtime Regression/Release Review。它可以证明 Graph API 矩阵无 partial/missing，但 legacy
+retirement gate 未关闭时整体交付仍必须报告 `blocked`。
+
 ## 2. 真实运行安全
 
 System eval 与 Release Review 只有在 operator 明确授权后才允许真实 Provider。必须同时满足：

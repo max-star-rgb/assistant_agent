@@ -148,6 +148,8 @@ For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
   shared official SQLite saver 与 production `WorkflowGraphHost` composition readiness。`--run` 直接执行
   production compiled graph，并等待真实 native tree 与四项 Feedback 完整且全部通过。固定 Dataset 不存在时
   先显式运行 `--sync`，从 Git-owned `examples.json` 幂等创建四类严格 Example。
+- 最终 Graph API capability matrix 是 `assistant_agent.runtime.graph_capability_evidence` 的只读机器合同，
+  由显式 TDD 验证 tracked evidence anchor；它不新增 runner，也不调用 Provider、LangSmith 或真实 Workflow DB。
 - `scripts/run_improvement_lab.py`: offline, non-mutating improvement proposal runner.
 
 ## Specialized integrations

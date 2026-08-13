@@ -28,6 +28,11 @@ from assistant_agent.runtime.assistant_interrupts import (
 from assistant_agent.runtime.chat_adapter import ChatProviderError, ChatResult
 from assistant_agent.runtime.event_sink import ListEventSink
 from assistant_agent.runtime.events import AgentEvent
+from assistant_agent.runtime.graph_time_travel import (
+    GraphCheckpointSelector,
+    GraphForkRequest,
+    GraphReplayRequest,
+)
 from assistant_agent.runtime.output_models import NativeToolCall
 from assistant_agent.runtime.requests import UserRequest
 from assistant_agent.runtime.runtime import AgentGraphRuntime
@@ -396,6 +401,36 @@ def test_graph_thread_identity_is_stable_for_one_conversation() -> None:
             "run_id": "run-one-sentinel",
         }
     }
+
+
+@pytest.mark.core_invariant("LOOP-001")
+@pytest.mark.core_invariant("IDENT-001")
+def test_time_travel_uses_opaque_selector_and_fresh_run() -> None:
+    selector = GraphCheckpointSelector(history_ref="ghr_" + "a" * 32)
+    replay = GraphReplayRequest(selector=selector)
+    fork = GraphForkRequest(selector=selector, patch={"response_style": "concise"})
+    origin = GraphExecutionIdentity.for_assistant_turn(
+        agent_id="agent-sentinel",
+        user_id="user-sentinel",
+        session_id="session-sentinel",
+        run_id="origin-run-sentinel",
+    )
+    derived = GraphExecutionIdentity.for_assistant_turn(
+        agent_id="agent-sentinel",
+        user_id="user-sentinel",
+        session_id="session-sentinel",
+        run_id="derived-run-sentinel",
+    )
+
+    assert replay.model_dump(mode="json") == {
+        "selector": {"history_ref": "ghr_" + "a" * 32}
+    }
+    assert fork.model_dump(mode="json", exclude_none=True) == {
+        "selector": {"history_ref": "ghr_" + "a" * 32},
+        "patch": {"response_style": "concise"},
+    }
+    assert origin.thread_id == derived.thread_id
+    assert origin.run_id != derived.run_id
 
 
 @pytest.mark.core_invariant("RUN-001")

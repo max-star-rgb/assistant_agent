@@ -152,6 +152,12 @@ input schema、runtime input bindings 与 hidden fields）和 checkpoint-time bo
 重建完全相同输入时，即使 ledger 尚无 row 也禁止重放。新增安全字段保持旧 state schema 的普通 resume 兼容，但缺少
 这些字段的旧 `execute_tool` checkpoint 不可 replay/fork，按 `graph_time_travel_effect_forbidden` fail closed。
 产品事件仍只观察已经发生的 native fact，不能作为重放判据或副作用事实源。
+最终 native Graph API 能力验收由
+`assistant_agent.runtime.graph_capability_evidence.GRAPH_CAPABILITY_EVIDENCE` 提供严格机器矩阵：每项只允许
+`implemented|not_applicable`，并指向 Git tracked 的源码或测试 anchor；`Store` 是唯一
+`not_applicable`，因为当前 graph 没有跨节点 Store consumer 且 compile 不接收空 Store。这个能力矩阵与
+整体交付 gate 分离：legacy retirement 未关闭时，已实现能力仍保持 `implemented`，M5 delivery 另以持久的
+只读 retirement probe 证据标记 `blocked`，不能据此删除 legacy。
 仓库不再保留 conditional graph、rule intent/router/planner 或可切换它们的 `AGENT_GRAPH_MODE`；
 `UserRequest` 也不再接受 `execution_strategy=plan_and_solve`。当前仍存在的
 `task_execution_mode` 是工具/持久执行的结构化治理事实，不是第二张 Agent graph 的选择器。

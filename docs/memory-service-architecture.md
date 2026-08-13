@@ -19,6 +19,9 @@
 LangGraph state/checkpointer 只保存短期执行与恢复事实；当前 Assistant/Workflow graph 没有长期 Memory Store
 consumer，也不装配 `compile(store=...)`。checkpoint 最多保存 Host 已治理贡献的不透明 memory ref，不保存
 memory 正文、Plugin handle 或 lifecycle state；replay/fork 不能借 Graph Store 绕过本节四生命周期。
+最终 Graph capability 机器矩阵因此把 `Memory` 记为已实现的 Host/checkpointer 职责边界，把 LangGraph
+`Store` 记为唯一 `not_applicable`；该分类由 tracked negative contract 验证 compile 没有空 Store 参数，不能
+解释为长期记忆缺失或为未来占位而机械接入 Store。
 
 Assistant continuation 仅允许通过 Host 的只读 `attach_continuation_context` 绑定仍处于 active
 状态的 frozen logical-turn context。该调用同时校验 owner、origin run 以及 checkpoint 中

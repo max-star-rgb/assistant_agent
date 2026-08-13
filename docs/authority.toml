@@ -63,6 +63,7 @@ source_globs = [
 thin_references = ["README.md", "docs/gateway-architecture.md"]
 verification = [
   "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q",
+  "MULTIMODAL_AGENT_PROVIDER_MODE=mock python -m pytest -q tests/tdd/native-langgraph-m5/test_graph_api_matrix.py",
 ]
 exclusive_literals = []
 exclusive_allowlist = []
