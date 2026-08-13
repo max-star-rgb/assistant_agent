@@ -34,6 +34,7 @@ def test_media_session_tracks_only_native_resource_correlation() -> None:
         "last_event_id",
         "client_capabilities",
         "media_capabilities",
+        "video_ids",
     }
 
 

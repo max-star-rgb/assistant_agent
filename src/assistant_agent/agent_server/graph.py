@@ -7,7 +7,7 @@ from typing import Any, Protocol, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.runtime import Runtime
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from langgraph_sdk.runtime import ServerRuntime
 
 from assistant_agent.agent_server.context import AgentServerRunContext
@@ -26,6 +26,16 @@ class AgentServerGraphInput(BaseModel):
 
     turn_origin_id: str = Field(min_length=1, max_length=512)
     text: str = Field(min_length=1, max_length=32_000)
+    image_ids: tuple[str, ...] = Field(default=(), max_length=16)
+    video_ids: tuple[str, ...] = Field(default=(), max_length=16)
+    audio_id: str | None = Field(default=None, min_length=1, max_length=512)
+
+    @field_validator("image_ids", "video_ids", mode="before")
+    @classmethod
+    def _normalize_json_arrays(cls, value: object) -> object:
+        if isinstance(value, list):
+            return tuple(value)
+        return value
 
 
 class AgentServerGraphState(TypedDict, total=False):

@@ -73,6 +73,21 @@ class _BlockingClient(_ScriptedClient):
         self.released.set()
 
 
+class _VideoIngestion:
+    def __init__(self) -> None:
+        self.calls = []
+        self.cleaned = []
+        self.cleanup_event = threading.Event()
+
+    def ingest(self, session_id, frame_index, video_hex, video_config, timestamp):
+        self.calls.append((session_id, frame_index, video_hex, video_config, timestamp))
+        return type("Frame", (), {"video_id": "video-native-1"})()
+
+    def cleanup(self, video_id):
+        self.cleaned.append(video_id)
+        self.cleanup_event.set()
+
+
 def _frame(message, body, session_id="vendor-session"):
     return {"message": message, "sessionId": session_id, "body": json.dumps(body)}
 
@@ -227,3 +242,61 @@ def test_disconnect_best_effort_cancels_the_active_native_run() -> None:
             assert scripted.started.wait(1)
         assert scripted.cancelled_event.wait(1)
     assert scripted.cancelled == [(scripted.requested_thread_ids[0], "run-native-1")]
+
+
+def test_video_is_edge_ingested_and_only_stable_reference_enters_graph_context() -> None:
+    scripted = _ScriptedClient()
+    ingestion = _VideoIngestion()
+    app.state.agent_server_client_factory = lambda: scripted
+    app.state.video_ingestion_factory = lambda: ingestion
+    try:
+        with TestClient(app) as client:
+            with client.websocket_connect("/agent-service/v1") as ws:
+                ws.send_json(_frame("assistantControl", {"number": "user-1", "callType": "VIDEO"}))
+                ws.receive_json()
+                ws.send_json(
+                    _frame(
+                        "video",
+                        {
+                            "userNumber": "user-1",
+                            "videoIndex": "7",
+                            "contents": [
+                                {
+                                    "speakerNumber": "user-1",
+                                    "time": "9",
+                                    "videoContent": "00000165",
+                                }
+                            ],
+                            "videoConfig": {"codec": "H264"},
+                        },
+                    )
+                )
+                assert ws.receive_json()["message"] == "videoResponse"
+                ws.send_json(
+                    _frame(
+                        "chat",
+                        {
+                            "chatIndex": "video-chat",
+                            "userNumber": "user-1",
+                            "contents": [
+                                {"speakerNumber": "user-1", "time": "10", "speechContent": "what do you see"}
+                            ],
+                            "stream": True,
+                        },
+                    )
+                )
+                ws.receive_json()
+                ws.receive_json()
+    finally:
+        del app.state.video_ingestion_factory
+    assert ingestion.calls[0][1:] == ("7", "00000165", {"codec": "H264"}, "9")
+    request_input = scripted.runs[0]["input"]["request_input"]
+    assert request_input["video_ids"] == ["video-native-1"]
+    assert "videoContent" not in json.dumps(
+        {
+            "input": scripted.runs[0]["input"],
+            "context": scripted.runs[0]["context"],
+        }
+    )
+    assert ingestion.cleanup_event.wait(1)
+    assert ingestion.cleaned == ["video-native-1"]

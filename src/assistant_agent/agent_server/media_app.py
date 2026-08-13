@@ -21,6 +21,8 @@ from assistant_agent.agent_server.media_protocol import (
 )
 from assistant_agent.agent_server.media_session import MediaConnectionSession
 from assistant_agent.api.rendering_3d_callback import router as rendering_3d_callback_router
+from assistant_agent.media.video.h264_video_ingestion import H264VideoIngestionService
+from assistant_agent.media.video.video_context import SQLiteVideoContextStore
 
 
 app = FastAPI(title="Assistant Agent Server Media Adapter")
@@ -39,6 +41,12 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
     send_lock = asyncio.Lock()
     chat_tasks: dict[str, asyncio.Task[None]] = {}
     interrupted_chats: set[str] = set()
+    ingestion_factory = getattr(app.state, "video_ingestion_factory", None)
+    video_ingestion = (
+        ingestion_factory()
+        if callable(ingestion_factory)
+        else H264VideoIngestionService(store=SQLiteVideoContextStore())
+    )
     factory = getattr(app.state, "agent_server_client_factory", None)
     client = factory() if callable(factory) else _default_agent_server_client(websocket)
     try:
@@ -64,6 +72,7 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
                     send_lock=send_lock,
                     chat_tasks=chat_tasks,
                     interrupted_chats=interrupted_chats,
+                    video_ingestion=video_ingestion,
                 )
             except (MediaProtocolError, ValueError) as exc:
                 await _send_json(websocket, send_lock,
@@ -81,6 +90,8 @@ async def agent_service_websocket(websocket: WebSocket, version: str) -> None:
             task.cancel()
         if chat_tasks:
             await asyncio.gather(*chat_tasks.values(), return_exceptions=True)
+        for video_id in session.video_ids:
+            await asyncio.to_thread(video_ingestion.cleanup, video_id)
 
 
 async def _handle_frame(
@@ -92,6 +103,7 @@ async def _handle_frame(
     send_lock,
     chat_tasks,
     interrupted_chats,
+    video_ingestion,
 ) -> None:
     if frame.message in {"assistantControl", "assistantControlStart"}:
         user_id = _control_user_id(frame.message, frame.body)
@@ -188,7 +200,41 @@ async def _handle_frame(
             )
         )
         return
-    if frame.message in {"audio", "video"}:
+    if frame.message == "video":
+        if session.thread_id is None or session.user_id is None:
+            raise MediaProtocolError("video requires assistantControl handshake")
+        if _required_text(frame.body, "userNumber") != session.user_id:
+            raise MediaProtocolError("video userNumber does not match assistantControl")
+        video_index = _required_text(frame.body, "videoIndex")
+        video_config = frame.body.get("videoConfig")
+        contents = frame.body.get("contents")
+        if not isinstance(video_config, dict):
+            raise MediaProtocolError("missing videoConfig")
+        if not isinstance(contents, list) or not contents:
+            raise MediaProtocolError("missing contents")
+        for index, item in enumerate(contents):
+            if not isinstance(item, dict):
+                raise MediaProtocolError(f"contents[{index}] must be an object")
+            frame_result = await asyncio.to_thread(
+                video_ingestion.ingest,
+                session.thread_id,
+                video_index if len(contents) == 1 else f"{video_index}-{index}",
+                _required_text(item, "videoContent"),
+                video_config,
+                _required_text(item, "time"),
+            )
+            session.bind_video(frame_result.video_id)
+        await _send_json(
+            websocket,
+            send_lock,
+            envelope(
+                message="videoResponse",
+                session_id=frame.session_id,
+                body={"code": 0, "message": "video received"},
+            ),
+        )
+        return
+    if frame.message == "audio":
         await _send_json(websocket, send_lock,
             envelope(
                 message=f"{frame.message}Response",
@@ -223,6 +269,7 @@ async def _run_chat(
                 "request_input": {
                     "turn_origin_id": f"media:{session.connection_id}:{chat.chat_index}",
                     "text": chat.text,
+                    "video_ids": list(session.video_ids),
                 }
             },
             context={

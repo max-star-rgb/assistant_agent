@@ -18,7 +18,7 @@ from assistant_agent.media.video.video_context import VideoContextStore, VideoFr
 DEFAULT_MAX_FRAME_BYTES = 8 * 1024 * 1024
 DEFAULT_DECODE_TIMEOUT_SECONDS = 3.0
 DEFAULT_WINDOW_SIZE = 3
-REPO_ROOT = Path(__file__).resolve().parents[3]
+REPO_ROOT = Path(__file__).resolve().parents[4]
 DEFAULT_FRAME_ROOT = REPO_ROOT / ".data" / "agent_service_video_frames"
 
 

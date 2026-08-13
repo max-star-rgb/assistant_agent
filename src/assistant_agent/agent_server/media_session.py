@@ -16,6 +16,7 @@ class MediaConnectionSession:
     last_event_id: str | None = None
     client_capabilities: dict[str, bool] = field(default_factory=dict)
     media_capabilities: tuple[str, ...] = ()
+    video_ids: list[str] = field(default_factory=list)
 
     def bind_control(
         self,
@@ -55,6 +56,10 @@ class MediaConnectionSession:
 
     def finish_run(self, *, chat_index: str) -> None:
         self.active_runs.pop(chat_index, None)
+
+    def bind_video(self, video_id: str) -> None:
+        if video_id not in self.video_ids:
+            self.video_ids.append(video_id)
 
 
 __all__ = ["MediaConnectionSession"]

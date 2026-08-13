@@ -22,6 +22,7 @@ from assistant_agent.context.token_budget import ContextWindowPolicy
 from assistant_agent.context.tool_catalog import select_prompt_tool_specs
 from assistant_agent.memory.factory import create_memory_node_bundle
 from assistant_agent.memory.node_bundle import MemoryNodeBundle
+from assistant_agent.media.video.video_context import SQLiteVideoContextStore
 from assistant_agent.multi_agent.models import DEFAULT_AGENT_ID
 from assistant_agent.observability.trace_store import InMemoryTraceStore
 from assistant_agent.runtime.assistant_graph_state import (
@@ -76,6 +77,9 @@ class AgentServerGraphWorker:
             user_id=self.context.user_id,
             session_id=execution.thread_id,
             text=value.text,
+            image_ids=list(value.image_ids),
+            video_ids=list(value.video_ids),
+            audio_id=value.audio_id,
             assistant_mode=self.context.assistant_mode,
             metadata={
                 "entry_profile": self.context.entry_profile,
@@ -183,7 +187,10 @@ class AgentServerExecutionOwner:
         """Build synchronous SDKs away from Agent Server's event loop."""
 
         config = ProviderConfig.from_env()
-        registry = create_default_registry(config)
+        registry = create_default_registry(
+            config,
+            video_context_store=SQLiteVideoContextStore(),
+        )
         chat_adapter = create_chat_adapter(config)
         worker = AgentServerGraphWorker(
             context=context,
