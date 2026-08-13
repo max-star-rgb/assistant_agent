@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
+from contextlib import contextmanager
+from pathlib import Path
 from threading import Lock
-from typing import Literal, Protocol
+from typing import Iterator, Literal, Protocol
 
 
 GraphInvocationKind = Literal["invoke", "resume", "replay", "fork"]
@@ -94,9 +97,7 @@ class InMemoryGraphInvocationClaimStore:
             raise ValueError("max_entries must be positive")
         self._lock = Lock()
         self._max_entries = max_entries
-        self._claims: dict[
-            tuple[str, str, str], tuple[str, GraphInvocationPhase]
-        ] = {}
+        self._claims: dict[tuple[str, str, str], tuple[str, GraphInvocationPhase]] = {}
         self._deleting_threads: set[tuple[str, str]] = set()
 
     def claim(
@@ -279,6 +280,313 @@ class InMemoryGraphInvocationClaimStore:
             return deleted
 
 
+class SQLiteGraphInvocationClaimStore:
+    """Persistent business barrier for graph invocation identities.
+
+    This database is deliberately separate from LangGraph checkpoint channels:
+    it owns product invocation uniqueness and phase CAS, not graph execution
+    state.
+    """
+
+    def __init__(self, path: str | Path) -> None:
+        if not isinstance(path, (str, Path)) or not str(path).strip():
+            raise ValueError("SQLite graph invocation claim path is required")
+        resolved_path = Path(path)
+        resolved_path.parent.mkdir(parents=True, exist_ok=True)
+        self.path = resolved_path
+        self._lock = Lock()
+        self._closed = False
+        self._connection = sqlite3.connect(
+            str(resolved_path),
+            timeout=5.0,
+            isolation_level=None,
+            check_same_thread=False,
+        )
+        try:
+            self._connection.execute("PRAGMA journal_mode=WAL")
+            self._connection.execute("PRAGMA synchronous=FULL")
+            self._connection.execute("PRAGMA busy_timeout=5000")
+            self._connection.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS graph_invocation_claims (
+                    owner_digest TEXT NOT NULL,
+                    thread_id TEXT NOT NULL,
+                    run_id TEXT NOT NULL,
+                    invocation_kind TEXT NOT NULL CHECK (
+                        invocation_kind IN ('invoke', 'resume', 'replay', 'fork')
+                    ),
+                    invocation_token TEXT NOT NULL,
+                    phase TEXT NOT NULL CHECK (
+                        phase IN ('pre_native', 'native_started', 'terminal')
+                    ),
+                    PRIMARY KEY (owner_digest, thread_id, run_id)
+                );
+                CREATE TABLE IF NOT EXISTS graph_invocation_thread_tombstones (
+                    owner_digest TEXT NOT NULL,
+                    thread_id TEXT NOT NULL,
+                    PRIMARY KEY (owner_digest, thread_id)
+                );
+                """
+            )
+        except BaseException:
+            self._connection.close()
+            self._closed = True
+            raise
+
+    def claim(
+        self,
+        *,
+        owner_digest: str,
+        thread_id: str,
+        run_id: str,
+        invocation_kind: GraphInvocationKind,
+        invocation_token: str,
+    ) -> GraphInvocationClaimResult:
+        _validate_claim_fields(owner_digest, thread_id, run_id, invocation_token)
+        if invocation_kind not in {"invoke", "resume", "replay", "fork"}:
+            raise ValueError("unsupported graph invocation kind")
+        with self._transaction() as connection:
+            self._reject_tombstone(connection, owner_digest, thread_id)
+            cursor = connection.execute(
+                """
+                INSERT OR IGNORE INTO graph_invocation_claims (
+                    owner_digest, thread_id, run_id, invocation_kind,
+                    invocation_token, phase
+                ) VALUES (?, ?, ?, ?, ?, 'pre_native')
+                """,
+                (
+                    owner_digest,
+                    thread_id,
+                    run_id,
+                    invocation_kind,
+                    invocation_token,
+                ),
+            )
+            if cursor.rowcount == 1:
+                return "claimed"
+            existing = connection.execute(
+                """
+                SELECT invocation_token, phase
+                FROM graph_invocation_claims
+                WHERE owner_digest = ? AND thread_id = ? AND run_id = ?
+                """,
+                (owner_digest, thread_id, run_id),
+            ).fetchone()
+            if existing == (invocation_token, "pre_native"):
+                return "same_invocation"
+        raise GraphInvocationClaimConflict(
+            "Graph invocation run_id is already owned by another invocation."
+        )
+
+    def begin_native(
+        self,
+        *,
+        owner_digest: str,
+        thread_id: str,
+        run_id: str,
+        invocation_token: str,
+    ) -> None:
+        _validate_claim_fields(owner_digest, thread_id, run_id, invocation_token)
+        with self._transaction() as connection:
+            self._reject_tombstone(connection, owner_digest, thread_id)
+            cursor = connection.execute(
+                """
+                UPDATE graph_invocation_claims
+                SET phase = 'native_started'
+                WHERE owner_digest = ? AND thread_id = ? AND run_id = ?
+                  AND invocation_token = ? AND phase = 'pre_native'
+                """,
+                (owner_digest, thread_id, run_id, invocation_token),
+            )
+            if cursor.rowcount == 1:
+                return
+        raise GraphInvocationClaimConflict(
+            "Graph invocation has already started or is owned by another token."
+        )
+
+    def assert_owned(
+        self,
+        *,
+        owner_digest: str,
+        thread_id: str,
+        run_id: str,
+        invocation_token: str,
+    ) -> None:
+        _validate_claim_fields(owner_digest, thread_id, run_id, invocation_token)
+        with self._transaction() as connection:
+            self._reject_tombstone(connection, owner_digest, thread_id)
+            cursor = connection.execute(
+                """
+                INSERT OR IGNORE INTO graph_invocation_claims (
+                    owner_digest, thread_id, run_id, invocation_kind,
+                    invocation_token, phase
+                ) VALUES (?, ?, ?, 'invoke', ?, 'native_started')
+                """,
+                (owner_digest, thread_id, run_id, invocation_token),
+            )
+            if cursor.rowcount == 1:
+                return
+            existing = connection.execute(
+                """
+                SELECT invocation_token
+                FROM graph_invocation_claims
+                WHERE owner_digest = ? AND thread_id = ? AND run_id = ?
+                """,
+                (owner_digest, thread_id, run_id),
+            ).fetchone()
+            if existing == (invocation_token,):
+                return
+        raise GraphInvocationClaimConflict(
+            "Graph invocation run_id is owned by another invocation."
+        )
+
+    def mark_terminal(
+        self,
+        *,
+        owner_digest: str,
+        thread_id: str,
+        run_id: str,
+        invocation_token: str,
+    ) -> None:
+        _validate_claim_fields(owner_digest, thread_id, run_id, invocation_token)
+        with self._transaction() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE graph_invocation_claims
+                SET phase = 'terminal'
+                WHERE owner_digest = ? AND thread_id = ? AND run_id = ?
+                  AND invocation_token = ? AND phase = 'native_started'
+                """,
+                (owner_digest, thread_id, run_id, invocation_token),
+            )
+            if cursor.rowcount == 1:
+                return
+        raise GraphInvocationClaimConflict(
+            "Graph invocation cannot enter terminal from its current claim phase."
+        )
+
+    def begin_thread_delete(self, *, owner_digest: str, thread_id: str) -> None:
+        _validate_claim_fields(owner_digest, thread_id)
+        with self._transaction() as connection:
+            inserted = connection.execute(
+                """
+                INSERT OR IGNORE INTO graph_invocation_thread_tombstones (
+                    owner_digest, thread_id
+                ) VALUES (?, ?)
+                """,
+                (owner_digest, thread_id),
+            )
+            if inserted.rowcount != 1:
+                raise GraphInvocationClaimConflict(
+                    "Graph invocation thread deletion is already in progress."
+                )
+            active = connection.execute(
+                """
+                SELECT 1 FROM graph_invocation_claims
+                WHERE owner_digest = ? AND thread_id = ?
+                  AND phase = 'native_started'
+                LIMIT 1
+                """,
+                (owner_digest, thread_id),
+            ).fetchone()
+            if active is not None:
+                raise GraphInvocationThreadActive(
+                    "Graph invocation thread still has native execution in progress."
+                )
+
+    def finish_thread_delete(
+        self,
+        *,
+        owner_digest: str,
+        thread_id: str,
+        commit: bool,
+    ) -> int:
+        _validate_claim_fields(owner_digest, thread_id)
+        if not isinstance(commit, bool):
+            raise TypeError("commit must be a boolean")
+        with self._transaction() as connection:
+            tombstone = connection.execute(
+                """
+                SELECT 1 FROM graph_invocation_thread_tombstones
+                WHERE owner_digest = ? AND thread_id = ?
+                """,
+                (owner_digest, thread_id),
+            ).fetchone()
+            if tombstone is None:
+                raise GraphInvocationClaimConflict(
+                    "Graph invocation thread deletion is not in progress."
+                )
+            deleted = 0
+            if commit:
+                deleted = connection.execute(
+                    """
+                    DELETE FROM graph_invocation_claims
+                    WHERE owner_digest = ? AND thread_id = ?
+                    """,
+                    (owner_digest, thread_id),
+                ).rowcount
+            connection.execute(
+                """
+                DELETE FROM graph_invocation_thread_tombstones
+                WHERE owner_digest = ? AND thread_id = ?
+                """,
+                (owner_digest, thread_id),
+            )
+            return deleted
+
+    def delete_thread(self, *, owner_digest: str, thread_id: str) -> int:
+        _validate_claim_fields(owner_digest, thread_id)
+        with self._transaction() as connection:
+            return connection.execute(
+                """
+                DELETE FROM graph_invocation_claims
+                WHERE owner_digest = ? AND thread_id = ?
+                """,
+                (owner_digest, thread_id),
+            ).rowcount
+
+    def close(self) -> None:
+        """Close this process-owned connection once."""
+
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            self._connection.close()
+
+    @contextmanager
+    def _transaction(self) -> Iterator[sqlite3.Connection]:
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("SQLite graph invocation claim store is closed")
+            self._connection.execute("BEGIN IMMEDIATE")
+            try:
+                yield self._connection
+            except BaseException:
+                self._connection.rollback()
+                raise
+            else:
+                self._connection.commit()
+
+    @staticmethod
+    def _reject_tombstone(
+        connection: sqlite3.Connection,
+        owner_digest: str,
+        thread_id: str,
+    ) -> None:
+        deleting = connection.execute(
+            """
+            SELECT 1 FROM graph_invocation_thread_tombstones
+            WHERE owner_digest = ? AND thread_id = ?
+            """,
+            (owner_digest, thread_id),
+        ).fetchone()
+        if deleting is not None:
+            raise GraphInvocationClaimConflict(
+                "Graph invocation thread is being deleted by its retention owner."
+            )
+
+
 def graph_invocation_owner_digest(
     *,
     agent_id: str,
@@ -335,6 +643,7 @@ __all__ = [
     "GraphInvocationKind",
     "GraphInvocationThreadActive",
     "InMemoryGraphInvocationClaimStore",
+    "SQLiteGraphInvocationClaimStore",
     "derive_child_invocation_token",
     "graph_invocation_owner_digest",
 ]

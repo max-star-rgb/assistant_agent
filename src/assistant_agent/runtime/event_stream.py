@@ -45,7 +45,7 @@ class AgentRunStream(Generic[TResult]):
         raise StopAsyncIteration
 
     async def result(self) -> TResult:
-        return await self._result_future
+        return await asyncio.shield(self._result_future)
 
     async def wait(self) -> TResult:
         return await self.result()

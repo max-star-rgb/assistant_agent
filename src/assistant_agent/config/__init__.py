@@ -19,7 +19,7 @@ from assistant_agent.providers.specs import (
 
 ContextCompactorMode = Literal["off", "llm"]
 ConversationHistoryBackend = Literal["memory", "jsonl"]
-LangGraphCheckpointerBackend = Literal["none", "memory"]
+LangGraphCheckpointerBackend = Literal["none", "memory", "sqlite"]
 
 
 DEFAULT_QWEN_REALTIME_VISION_BASE_URL = "wss://dashscope.aliyuncs.com/api-ws/v1/realtime"
@@ -234,6 +234,7 @@ class ProviderConfig:
     max_video_bytes: int = 52_428_800
     max_video_seconds: float = 60.0
     langgraph_checkpointer_backend: LangGraphCheckpointerBackend = "memory"
+    langgraph_checkpoint_path: str | None = None
     max_tool_iterations: int = 8
     max_control_tool_iterations: int = 3
     max_plan_steps: int = 8
@@ -946,6 +947,7 @@ class ProviderConfig:
                 source.get("LANGGRAPH_CHECKPOINTER_BACKEND")
                 or source.get("MULTIMODAL_AGENT_CHECKPOINTER_BACKEND")
             ),
+            langgraph_checkpoint_path=source.get("LANGGRAPH_CHECKPOINT_PATH"),
             max_tool_iterations=_int_env(source.get("MAX_TOOL_ITERATIONS"), 8),
             max_control_tool_iterations=_int_env(
                 source.get("MAX_CONTROL_TOOL_ITERATIONS"),
@@ -1139,9 +1141,13 @@ def _conversation_history_backend(
 
 
 def _langgraph_checkpointer_backend(value: str | None) -> LangGraphCheckpointerBackend:
-    if value == "none":
-        return "none"
-    return "memory"
+    if value is None or not value.strip():
+        return "memory"
+    if value in {"none", "memory", "sqlite"}:
+        return value
+    raise ValueError(
+        "LANGGRAPH_CHECKPOINTER_BACKEND must be one of: none, memory, sqlite"
+    )
 
 
 def _vision_provider(value: str | None, *, allow_real: bool = True) -> VisionProviderName:

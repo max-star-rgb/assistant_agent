@@ -13,6 +13,7 @@ from typing import Any, Protocol
 
 from assistant_agent.runtime.event_stream import AgentRunStream, AsyncQueueEventSink
 from assistant_agent.runtime.assistant_graph_app import GraphExecutionError
+from assistant_agent.runtime.checkpointer import create_checkpointer
 from assistant_agent.runtime.runtime import AgentGraphRuntime
 from assistant_agent.runtime.state import AgentState
 from assistant_agent.config import ProviderConfig
@@ -503,11 +504,13 @@ def create_runtime(
     """Create the shared runtime with manual `.env` loading and offline test isolation."""
 
     resolved_config = resolve_runtime_config(config=config, load_env=load_env)
+    checkpointer = create_checkpointer(resolved_config)
     return AgentGraphRuntime(
         config=resolved_config,
         event_sink=event_sink,
         trace_store=trace_store,
         durable_task_service=durable_task_service,
+        checkpointer=checkpointer,
         allow_interrupt=False,
     )
 

@@ -1,6 +1,6 @@
 # Runtime Event Stream Architecture
 
-Last updated: 2026-08-12
+Last updated: 2026-08-13
 
 ## Authority contract
 
@@ -99,10 +99,19 @@ trusted interrupt request 只允许结构化 `approval|input`，并绑定当前 
 assistant turn；普通 write/dangerous category、用户文本和任意 metadata 不自动触发 HITL。该能力当前只供
 内部 compiled graph / Runtime 与后续父图使用；Agent-Service、Gateway、HTTP 和媒体 wire 不接收 resume，
 也不投影 `waiting_user`。未绑定 saver 的显式 offline/test graph 不宣称恢复能力。
-当前仓库只装配官方 `InMemorySaver`（显式 `none|memory`），用于本地/离线 Graph API 执行与恢复验证；官方
-async persistent SQLite saver 的依赖、进程级 owner 生命周期和跨 Runtime 重建验收尚未获安装授权，因此生产
-composition root 目前不得声称跨进程 checkpoint 恢复。缺失的持久 saver 不能由自研 saver 或静默 memory
-fallback 代替。
+checkpointer backend 只允许显式 `none|memory|sqlite`。`none` 不保存执行位置；官方 `InMemorySaver`
+仅用于本地/离线 Graph API 验证，不声明跨 host durability。`sqlite` 由进程级
+`AsyncCheckpointerOwner` 唯一创建、`setup` 并关闭官方 `AsyncSqliteSaver`，要求部署方提供绝对
+`LANGGRAPH_CHECKPOINT_PATH`；缺依赖、路径、async owner 或无法打开时 fail closed，不允许自研 saver 或
+静默 memory fallback。该 owner 同时持有独立 sibling 业务 SQLite claim store，但 invocation claim 绝不写入
+checkpoint channel。`RuntimeHost.aopen/aclose` 固定先开 saver/claim 再构造 Runtime；async-owned host
+不暴露裸 Runtime 或同步 graph 入口，invoke/resume/history/Replay/Fork/stream/thread delete 只能走受
+active lease 保护的 facade。关闭时先拒绝新 invocation 并排空已有 consumer，再按 Runtime、trace store、
+claim connection、saver 的顺序释放。Gate P1 已用 first host 完全关闭后创建
+fresh second host，验证同一 thread 的 interrupt/resume、history、Replay、Fork 与 run claim 拒绝；Task 9
+production cutover 前，现有同步 Agent-Service/API composition root 仍不启用 `sqlite`。Memory Plugin 的
+active frozen context 仍是进程内治理事实：checkpoint 携带 Memory ref 而 fresh host 缺 exact frozen context 时
+继续按既有契约 fail closed，持久 checkpointer 不冒充长期 Memory。
 
 `AssistantTurnGraphApp.invoke/astream/arun/aresume` 在进入 tracing、checkpoint preflight 或 native graph
 之前统一原子 claim `(owner, thread_id, run_id)`；相同 invocation token 的 pre-native 重试幂等放行，不同 token
@@ -110,7 +119,10 @@ fallback 代替。
 `pre_native -> native_started`，只允许一个并发 caller 开始执行；观察到完整终态后推进 `terminal`，提前关闭
 stream 或执行异常则保持 `native_started`，两者都不得再次执行。claim 不随无 saver 终态、校验失败或执行异常自动释放，
 因此 invalid resume 也会占用该 run identity：调用方只能使用相同 token 和 run 修正重试，不能换 token 复用。
-有界 store 容量耗尽时 fail closed；只有 retention owner 在销毁整个 thread/checkpoint 生命周期后显式调用
+`memory` backend 使用有界进程内 store，容量耗尽时 fail closed；`sqlite` backend 在独立业务表上以
+`PRIMARY KEY (owner_digest, thread_id, run_id)`、事务与 phase CAS 持久化 claim，并在独立表持久化 thread
+tombstone，fresh host 不能重新执行已 claim 的 run。只有 retention owner 在销毁整个 thread/checkpoint
+生命周期后显式调用
 host retention owner 通过 `adelete_thread` 先删除 native checkpointer thread，确认成功后才调用
 claim store 完成该 thread 的全部 claim 删除；删除开始前 store 原子设置 thread tombstone，阻止等待
 checkpointer 期间的新 claim、已取得 pre-native claim 的 `begin_native` 及 direct graph gate。若 thread 存在
