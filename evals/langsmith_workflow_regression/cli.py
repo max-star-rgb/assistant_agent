@@ -48,6 +48,10 @@ _CASE_TYPES = (
 )
 
 
+def _controlled_resume_field_value(field: str) -> str:
+    return f"git-owned-safe-evaluation-value-for:{field}"
+
+
 class ProductionWorkflowExperimentComposition:
     """Run-scoped production graph composition on one shared official saver."""
 
@@ -107,7 +111,7 @@ class ProductionWorkflowExperimentComposition:
             def controlled_resume_values(interrupts):
                 return {
                     item.action_ref: {
-                        field: "operator-provided-evaluation-input"
+                        field: _controlled_resume_field_value(field)
                         for field in item.required_fields
                     }
                     for item in interrupts

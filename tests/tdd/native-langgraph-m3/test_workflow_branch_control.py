@@ -6,7 +6,10 @@ import json
 import pytest
 from pydantic import ValidationError
 
-from assistant_agent.workflows.graph_state import WorkflowWorkerControl
+from assistant_agent.workflows.graph_state import (
+    WorkflowVerifierControl,
+    WorkflowWorkerControl,
+)
 
 
 @pytest.mark.parametrize(
@@ -462,6 +465,64 @@ def test_native_verifier_request_has_strict_schema_constraints_and_repair_scope(
         assert len(request_text) <= 32_000
     finally:
         artifact_store.close()
+
+
+def test_native_verifier_prompt_schema_expresses_status_conditionals():
+    from assistant_agent.workflows.durable_graph_nodes import (
+        _workflow_verifier_prompt_schema,
+    )
+
+    schema = _workflow_verifier_prompt_schema()
+
+    assert "oneOf" in schema
+    branches = schema["oneOf"]
+    assert {
+        branch["properties"]["status"]["const"] for branch in branches
+    } == {"verified", "repair", "blocked", "failed"}
+    required_by_status = {
+        branch["properties"]["status"]["const"]: set(branch["required"])
+        for branch in branches
+    }
+    assert "verified_constraint_ids" in required_by_status["verified"]
+    assert "repair_node_ids" in required_by_status["repair"]
+    assert {"required_fields", "prompt_code", "safe_prompt"}.issubset(
+        required_by_status["blocked"]
+    )
+    assert "error_code" in required_by_status["failed"]
+    assert all(branch["additionalProperties"] is False for branch in branches)
+
+
+@pytest.mark.parametrize(
+    "control",
+    [
+        {
+            "status": "verified",
+            "summary": "verified",
+            "verified_constraint_ids": ["required_evidence"],
+        },
+        {
+            "status": "repair",
+            "summary": "repair needed",
+            "repair_node_ids": ["a"],
+        },
+        {
+            "status": "blocked",
+            "summary": "need input",
+            "required_fields": ["source"],
+            "prompt_code": "need_source",
+            "safe_prompt": "Provide a source identifier.",
+        },
+        {
+            "status": "failed",
+            "summary": "failed",
+            "error_code": "verification_failed",
+        },
+    ],
+)
+def test_verifier_prompt_status_shapes_round_trip_runtime_model(control):
+    parsed = WorkflowVerifierControl.model_validate_json(json.dumps(control))
+
+    assert parsed.status == control["status"]
 
 
 def test_native_verifier_prompt_bounds_large_ascii_artifact(tmp_path):

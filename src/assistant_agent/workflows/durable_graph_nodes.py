@@ -192,6 +192,93 @@ def _workflow_worker_prompt_schema() -> dict[str, object]:
     }
 
 
+def _workflow_verifier_prompt_schema() -> dict[str, object]:
+    identifier = {
+        "type": "string",
+        "pattern": r"^[a-zA-Z][a-zA-Z0-9_.-]{0,119}$",
+    }
+    summary = {"type": "string", "minLength": 1, "maxLength": 4_000}
+    return {
+        "oneOf": [
+            {
+                "type": "object",
+                "properties": {
+                    "status": {"const": "verified"},
+                    "summary": summary,
+                    "verified_constraint_ids": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 64,
+                        "items": identifier,
+                    },
+                },
+                "required": ["status", "summary", "verified_constraint_ids"],
+                "additionalProperties": False,
+            },
+            {
+                "type": "object",
+                "properties": {
+                    "status": {"const": "repair"},
+                    "summary": summary,
+                    "repair_node_ids": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 64,
+                        "items": identifier,
+                    },
+                },
+                "required": ["status", "summary", "repair_node_ids"],
+                "additionalProperties": False,
+            },
+            {
+                "type": "object",
+                "properties": {
+                    "status": {"const": "blocked"},
+                    "summary": summary,
+                    "required_fields": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 32,
+                        "items": identifier,
+                    },
+                    "prompt_code": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 160,
+                    },
+                    "safe_prompt": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 2_000,
+                    },
+                },
+                "required": [
+                    "status",
+                    "summary",
+                    "required_fields",
+                    "prompt_code",
+                    "safe_prompt",
+                ],
+                "additionalProperties": False,
+            },
+            {
+                "type": "object",
+                "properties": {
+                    "status": {"const": "failed"},
+                    "summary": summary,
+                    "error_code": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 160,
+                    },
+                },
+                "required": ["status", "summary", "error_code"],
+                "additionalProperties": False,
+            },
+        ]
+    }
+
+
 def _native_profile_prompt(
     assignment: WorkflowProfileAssignment,
     *,
@@ -251,16 +338,26 @@ def _native_profile_prompt(
         "required": [schema_name],
         "additionalProperties": False,
     }
+    resume_instruction = (
+        "The resume object contains authoritative provided values. "
+        "Treat every provided field as satisfied and MUST NOT request any "
+        "provided field again."
+        if assignment.resume_value is not None
+        else ""
+    )
     result = "\n\n".join(
-        (
+        part
+        for part in (
             "执行一个受限的 native Durable Workflow profile assignment。",
             "可信 assignment 与有界 context\n"
             + json.dumps(facts, ensure_ascii=False, sort_keys=True),
+            resume_instruction,
             f"唯一允许的输出是 exact JSON envelope `{schema_name}`；"
             "不要输出 Markdown 或 envelope 外文本。",
             "严格 control schema\n"
             + json.dumps(envelope_schema, ensure_ascii=False, sort_keys=True),
         )
+        if part
     )
     if len(result) > _MAX_NATIVE_PROFILE_REQUEST_CHARS:
         raise ValueError("native workflow profile request exceeds bounded contract")
@@ -514,7 +611,7 @@ def prepare_verifier_child_node(
                 assignment,
                 context_manifest=context_manifest.model_dump(mode="json"),
                 schema_name="workflow_verification",
-                schema=WorkflowVerifierControl.model_json_schema(),
+                schema=_workflow_verifier_prompt_schema(),
                 repair_candidate_ids=repair_candidates,
             ),
             constraints=assignment.constraints,

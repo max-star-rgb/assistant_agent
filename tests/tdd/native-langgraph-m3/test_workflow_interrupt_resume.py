@@ -228,6 +228,8 @@ def test_repeated_resume_replaces_prior_resume_constraint(tmp_path):
         assert "business constraint with an ordinary statement" in final_request
         assert "business_statement_prefix" in final_request
         assert "workflow_resume:business constraint statement" in final_request
+        assert "authoritative provided values" in final_request
+        assert "MUST NOT request any provided field again" in final_request
     finally:
         artifact_store.close()
 

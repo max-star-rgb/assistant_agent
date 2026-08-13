@@ -547,3 +547,17 @@ def test_every_workflow_regression_case_can_converge_a_native_interrupt() -> Non
     asyncio.run(invocation.invoke())
 
     assert callable(captured["resume_values_factory"])
+    interrupts = (
+        SimpleNamespace(
+            action_ref="workflow:test:node:a:generation:0",
+            required_fields=("research_questions", "tool_access"),
+        ),
+    )
+    first = captured["resume_values_factory"](interrupts)
+    second = captured["resume_values_factory"](interrupts)
+    assert first == second
+    values = first[interrupts[0].action_ref]
+    assert set(values) == {"research_questions", "tool_access"}
+    assert all(value.strip() for value in values.values())
+    assert values["research_questions"] != values["tool_access"]
+    assert all(len(value) <= 4_000 for value in values.values())
