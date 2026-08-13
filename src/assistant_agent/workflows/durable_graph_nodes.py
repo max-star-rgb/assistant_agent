@@ -85,6 +85,8 @@ class WorkflowBranchOutput(TypedDict):
 
 
 def _runtime_context(value: object) -> WorkflowGraphRuntimeContext:
+    if isinstance(value, Runtime):
+        value = value.context
     if not isinstance(value, WorkflowGraphRuntimeContext):
         raise TypeError("workflow graph runtime context is required")
     return value

@@ -183,11 +183,12 @@ def build_namespaced_assistant_loop_graph(
     context_schema: type,
     child_state_key: str,
     runtime_context_resolver: Callable[
-        [Mapping[str, object], AssistantTurnState, object], GraphRuntimeContext
+        [Mapping[str, object], AssistantTurnState, Runtime[Any]], GraphRuntimeContext
     ],
     profile: AssistantGraphProfileName,
     graph_name: str,
     memory_bundle: MemoryNodeBundle | None = None,
+    bind_store: bool = True,
 ) -> Any:
     """Compile the same gated loop over one explicit parent child-state channel."""
 
@@ -200,7 +201,7 @@ def build_namespaced_assistant_loop_graph(
         if not isinstance(child, Mapping):
             raise ValueError(f"{child_state_key} must contain AssistantTurnState")
         child_state = validate_assistant_turn_state(child)
-        child_context = runtime_context_resolver(state, child_state, runtime.context)
+        child_context = runtime_context_resolver(state, child_state, runtime)
         return child_state, replace(runtime, context=child_context)
 
     def nested_gate(
@@ -301,4 +302,8 @@ def build_namespaced_assistant_loop_graph(
     ):
         graph.add_edge(semantic_node, "time_travel_anchor")
     graph.add_edge("time_travel_anchor", "prepare_invocation")
-    return graph.compile(checkpointer=None, store=bundle.store, name=graph_name)
+    return graph.compile(
+        checkpointer=None,
+        store=bundle.store if bind_store else None,
+        name=graph_name,
+    )

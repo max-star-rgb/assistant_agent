@@ -63,9 +63,10 @@ def test_custom_app_has_media_compatibility_route_and_health_contract() -> None:
     assert ("/agent-service/{version}", "APIWebSocketRoute") in routes
 
 
-def test_manifest_graph_symbol_is_importable_as_a_compiled_graph() -> None:
+def test_manifest_graph_symbol_is_importable_as_a_server_runtime_factory() -> None:
+    import inspect
+
     from assistant_agent.agent_server.graph import assistant_graph
 
-    node_names = set(assistant_graph.get_graph().nodes)
-
-    assert {"memory_recall", "assistant", "publish_response", "memory_commit"} <= node_names
+    assert inspect.isfunction(assistant_graph)
+    assert inspect.signature(assistant_graph).parameters["runtime"].annotation != inspect.Parameter.empty

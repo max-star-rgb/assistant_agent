@@ -64,6 +64,8 @@ class PlanningSubgraphState(DurableWorkflowState, total=False):
 
 
 def _require_context(value: object) -> WorkflowGraphRuntimeContext:
+    if isinstance(value, Runtime):
+        value = value.context
     if not isinstance(value, WorkflowGraphRuntimeContext):
         raise RuntimeError("workflow planning requires WorkflowGraphRuntimeContext")
     return value
