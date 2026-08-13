@@ -9,6 +9,8 @@ from typing import Any, Iterator, Literal, TypeAlias, cast
 
 from langgraph.types import Command
 
+from assistant_agent.memory.backends.disabled import build_disabled_memory_bundle
+from assistant_agent.memory.node_bundle import MemoryNodeBundle
 from assistant_agent.runtime.assistant_loop_graph import (
     build_assistant_loop_graph,
     build_namespaced_assistant_loop_graph,
@@ -330,10 +332,13 @@ class AssistantTurnGraphApp:
         self,
         *,
         checkpointer: Any | None = None,
+        memory_bundle: MemoryNodeBundle | None = None,
         langsmith_config: LangSmithConfig | None = None,
     ) -> None:
+        self._memory_bundle = memory_bundle or build_disabled_memory_bundle()
         self._graph = build_assistant_loop_graph(
             checkpointer=checkpointer,
+            memory_bundle=self._memory_bundle,
             profile="standard",
             graph_name="AssistantTurnGraph",
         )
@@ -346,12 +351,14 @@ class AssistantTurnGraphApp:
         cls,
         graph: Any,
         *,
+        memory_bundle: MemoryNodeBundle | None = None,
         langsmith_config: LangSmithConfig | None = None,
     ) -> "AssistantTurnGraphApp":
         """Wrap an already compiled graph without compiling another one."""
 
         app = cls.__new__(cls)
         app._graph = graph
+        app._memory_bundle = memory_bundle or build_disabled_memory_bundle()
         app._profile_graphs = {}
         app._langsmith_config = langsmith_config or _default_langsmith_config()
         app._continuation_nonce = object()
@@ -375,6 +382,7 @@ class AssistantTurnGraphApp:
             return cached
         graph = build_assistant_loop_graph(
             checkpointer=None,
+            memory_bundle=self._memory_bundle,
             profile=canonical.name,
             graph_name=f"AssistantTurnGraph.{canonical.name}",
         )
@@ -407,6 +415,7 @@ class AssistantTurnGraphApp:
             runtime_context_resolver=runtime_context_resolver,
             profile=canonical.name,
             graph_name=f"AssistantTurnGraph.{canonical.name}",
+            memory_bundle=self._memory_bundle,
         )
         graph.config = {
             "metadata": {"graph_profile": canonical.name},

@@ -163,6 +163,16 @@ def time_travel_anchor_node(state: AssistantTurnState) -> AssistantTurnState:
     return validate_assistant_turn_state(state)
 
 
+def publish_response_node(
+    state: AssistantTurnState,
+    runtime: Runtime[GraphRuntimeContext],
+) -> AssistantTurnState:
+    """Reserved product-publication position; Task 4 installs the side effect."""
+
+    del runtime
+    return validate_assistant_turn_state(state)
+
+
 class AssistantLoopState(TypedDict):
     """State for the assistant loop graph."""
 

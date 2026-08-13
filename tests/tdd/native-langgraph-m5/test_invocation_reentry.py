@@ -1229,6 +1229,9 @@ def test_real_tool_stream_crosses_gate_before_every_semantic_node() -> None:
 
     assert order == [
         "prepare_invocation",
+        "memory_recall",
+        "time_travel_anchor",
+        "prepare_invocation",
         "assistant",
         "time_travel_anchor",
         "prepare_invocation",
@@ -1239,6 +1242,12 @@ def test_real_tool_stream_crosses_gate_before_every_semantic_node() -> None:
         "time_travel_anchor",
         "prepare_invocation",
         "compose_response",
+        "time_travel_anchor",
+        "prepare_invocation",
+        "publish_response",
+        "time_travel_anchor",
+        "prepare_invocation",
+        "memory_commit",
         "time_travel_anchor",
         "prepare_invocation",
     ]

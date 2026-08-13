@@ -543,7 +543,7 @@ def assistant_turn_state_from_agent_state(
         invocation_kind="invoke",
         memory_origin_run_id=state.memory_origin_run_id or state.run_id,
         turn_provenance=state.turn_provenance,
-        continuation="assistant",
+        continuation="memory_recall",
         request=PersistedRequest.model_validate_json(
             json.dumps(request_payload, ensure_ascii=False)
         ),
@@ -601,7 +601,7 @@ def assistant_turn_state_from_loop_state(
             "turn_provenance": graph_state.get(
                 "turn_provenance", state.turn_provenance
             ),
-            "continuation": graph_state.get("continuation", "assistant"),
+            "continuation": graph_state.get("continuation", "memory_recall"),
             "memory_context": graph_state.get("memory_context"),
             "memory_commit": graph_state.get(
                 "memory_commit", MemoryCommitState().model_dump(mode="json")

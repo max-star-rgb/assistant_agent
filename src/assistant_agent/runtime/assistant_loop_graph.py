@@ -7,12 +7,15 @@ from typing import Any, cast
 from langgraph.graph import END, START, StateGraph
 from langgraph.runtime import Runtime
 
+from assistant_agent.memory.backends.disabled import build_disabled_memory_bundle
+from assistant_agent.memory.node_bundle import MemoryNodeBundle
 from assistant_agent.runtime.assistant_loop_nodes import (
     assistant_node,
     await_input_node,
     compose_response_node,
     execute_requested_tool_node,
     prepare_invocation_node,
+    publish_response_node,
     time_travel_anchor_node,
 )
 from assistant_agent.runtime.assistant_graph_state import (
@@ -30,10 +33,13 @@ from assistant_agent.runtime.graph_runtime import (
 
 
 _CONTINUATION_TARGETS = {
+    "memory_recall": "memory_recall",
     "assistant": "assistant",
     "await_input": "await_input",
     "execute_tool": "execute_tool",
     "compose_response": "compose_response",
+    "publish_response": "publish_response",
+    "memory_commit": "memory_commit",
     "end": END,
 }
 
@@ -75,14 +81,20 @@ def _semantic_node(
 def build_assistant_loop_graph(
     *,
     checkpointer: Any | None = None,
+    memory_bundle: MemoryNodeBundle | None = None,
     profile: AssistantGraphProfileName = "standard",
     graph_name: str = "AssistantTurnGraph",
 ) -> Any:
     """Build the native loop with one stable invocation gate between semantics."""
 
+    bundle = memory_bundle or build_disabled_memory_bundle()
     graph = StateGraph(AssistantTurnState, context_schema=GraphRuntimeContext)
     graph.add_node("prepare_invocation", prepare_invocation_node)
     graph.add_node("time_travel_anchor", time_travel_anchor_node)
+    graph.add_node(
+        "memory_recall",
+        _semantic_node(bundle.recall_node, "assistant"),
+    )
     graph.add_node(
         "assistant",
         _semantic_node(
@@ -113,8 +125,16 @@ def build_assistant_loop_graph(
             bind_checkpointed_runtime_node(
                 "compose_response", compose_response_node, expected_profile=profile
             ),
-            "end",
+            "publish_response",
         ),
+    )
+    graph.add_node(
+        "publish_response",
+        _semantic_node(publish_response_node, "memory_commit"),
+    )
+    graph.add_node(
+        "memory_commit",
+        _semantic_node(bundle.commit_node, "end"),
     )
 
     graph.add_edge(START, "prepare_invocation")
@@ -122,14 +142,21 @@ def build_assistant_loop_graph(
         "prepare_invocation", _route_prepared, _CONTINUATION_TARGETS
     )
     for semantic_node in (
+        "memory_recall",
         "assistant",
         "await_input",
         "execute_tool",
         "compose_response",
+        "publish_response",
+        "memory_commit",
     ):
         graph.add_edge(semantic_node, "time_travel_anchor")
     graph.add_edge("time_travel_anchor", "prepare_invocation")
-    return graph.compile(checkpointer=checkpointer, name=graph_name)
+    return graph.compile(
+        checkpointer=checkpointer,
+        store=bundle.store,
+        name=graph_name,
+    )
 
 
 def build_namespaced_assistant_loop_graph(
@@ -142,8 +169,11 @@ def build_namespaced_assistant_loop_graph(
     ],
     profile: AssistantGraphProfileName,
     graph_name: str,
+    memory_bundle: MemoryNodeBundle | None = None,
 ) -> Any:
     """Compile the same gated loop over one explicit parent child-state channel."""
+
+    bundle = memory_bundle or build_disabled_memory_bundle()
 
     def child_and_runtime(
         state: Mapping[str, object], runtime: Runtime[object]
@@ -207,6 +237,10 @@ def build_namespaced_assistant_loop_graph(
     graph.add_node("prepare_invocation", nested_gate)
     graph.add_node("time_travel_anchor", nested_anchor)
     graph.add_node(
+        "memory_recall",
+        nested_semantic("memory_recall", bundle.recall_node, "assistant", bind=False),
+    )
+    graph.add_node(
         "assistant",
         nested_semantic("assistant", assistant_node, _assistant_continuation),
     )
@@ -222,16 +256,31 @@ def build_namespaced_assistant_loop_graph(
     )
     graph.add_node(
         "compose_response",
-        nested_semantic("compose_response", compose_response_node, "end"),
+        nested_semantic(
+            "compose_response", compose_response_node, "publish_response"
+        ),
+    )
+    graph.add_node(
+        "publish_response",
+        nested_semantic(
+            "publish_response", publish_response_node, "memory_commit", bind=False
+        ),
+    )
+    graph.add_node(
+        "memory_commit",
+        nested_semantic("memory_commit", bundle.commit_node, "end", bind=False),
     )
     graph.add_edge(START, "prepare_invocation")
     graph.add_conditional_edges("prepare_invocation", route_child, _CONTINUATION_TARGETS)
     for semantic_node in (
+        "memory_recall",
         "assistant",
         "await_input",
         "execute_tool",
         "compose_response",
+        "publish_response",
+        "memory_commit",
     ):
         graph.add_edge(semantic_node, "time_travel_anchor")
     graph.add_edge("time_travel_anchor", "prepare_invocation")
-    return graph.compile(checkpointer=None, name=graph_name)
+    return graph.compile(checkpointer=None, store=bundle.store, name=graph_name)

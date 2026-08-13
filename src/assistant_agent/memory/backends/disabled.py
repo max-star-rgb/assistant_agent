@@ -1,0 +1,57 @@
+"""Explicit no-op memory backend used when long-term memory is disabled."""
+
+from __future__ import annotations
+
+import hashlib
+from typing import Any
+
+from assistant_agent.memory.node_bundle import MemoryNodeBundle
+from assistant_agent.runtime.assistant_graph_state import (
+    MemoryCommitState,
+    MemoryContext,
+    validate_assistant_turn_state,
+)
+
+
+def disabled_memory_recall_node(state: Any, runtime: Any) -> Any:
+    """Freeze an explicit empty snapshot without touching external resources."""
+
+    del runtime
+    validated = validate_assistant_turn_state(state)
+    origin = validated["turn_origin_id"]
+    digest = hashlib.sha256(f"disabled\0{origin}".encode("utf-8")).hexdigest()
+    updated = dict(validated)
+    updated["memory_context"] = MemoryContext(
+        backend_id="disabled",
+        status="empty",
+        snapshot_id=f"disabled:{digest}",
+    ).model_dump(mode="json")
+    return validate_assistant_turn_state(updated)
+
+
+def disabled_memory_commit_node(state: Any, runtime: Any) -> Any:
+    """Record that the configured backend intentionally performs no write."""
+
+    del runtime
+    validated = validate_assistant_turn_state(state)
+    updated = dict(validated)
+    updated["memory_commit"] = MemoryCommitState(
+        status="skipped",
+        issue_code="memory_disabled",
+    ).model_dump(mode="json")
+    return validate_assistant_turn_state(updated)
+
+
+def build_disabled_memory_bundle() -> MemoryNodeBundle:
+    return MemoryNodeBundle(
+        backend_id="disabled",
+        recall_node=disabled_memory_recall_node,
+        commit_node=disabled_memory_commit_node,
+    )
+
+
+__all__ = [
+    "build_disabled_memory_bundle",
+    "disabled_memory_commit_node",
+    "disabled_memory_recall_node",
+]
