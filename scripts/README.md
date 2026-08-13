@@ -99,6 +99,9 @@ For process-level keepalive, `deploy/supervisord/assistant-agent.conf` can run
 
 ## Eval and evidence
 
+- `evals/system/incubating/agent_server_native_runtime/checks_deployment.py`：使用 mock
+  Provider 启动真实本地 `langgraph dev`，通过公开 SDK 验证 Agent Server 的 schema、
+  thread/run/checkpoint、Store 与 cancel；不调用真实 Provider，结果逐项输出结构化 PASS/FAIL。
 - `scripts/run_demo_flows.py`: offline scenario matrix for regression demos.
 - `scripts/run_evals.py`: offline eval harness for lower-layer behavior checks.
 - `scripts/run_system_tool_evals.py`: 真实 LLM + 真实 Tool 的 system eval；

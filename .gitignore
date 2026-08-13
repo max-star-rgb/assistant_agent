@@ -26,5 +26,6 @@ htmlcov/
 /tmp/
 /.worktrees
 /.worktrees/
+/.langgraph_api/
 /openclaw-study/
 /tests/tdd/
