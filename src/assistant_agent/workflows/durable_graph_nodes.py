@@ -1058,13 +1058,25 @@ def apply_branch_resumes_node(
             "workflow_resume:"
             + resume_value.model_dump_json(exclude={"action_ref"})
         )
+        base_pairs = tuple(
+            (constraint_id, statement)
+            for constraint_id, statement in zip(
+                assignment.constraint_ids,
+                assignment.constraints,
+                strict=True,
+            )
+            if not constraint_id.startswith("workflow_resume_")
+            and not statement.startswith("workflow_resume:")
+        )
         payload.update(
             execution_generation=generation,
             run_id=f"{invocation_run_id}:{assignment.node_id}:g{generation}",
             trace_id=f"{invocation_run_id}:{assignment.node_id}:g{generation}",
-            constraints=tuple((*assignment.constraints, resume_constraint)),
+            constraints=tuple(
+                (*(statement for _, statement in base_pairs), resume_constraint)
+            ),
             constraint_ids=tuple(
-                (*assignment.constraint_ids, f"workflow_resume_{generation}")
+                (*(constraint_id for constraint_id, _ in base_pairs), f"workflow_resume_{generation}")
             ),
             resume_value=resume_value,
             resume_of_action_ref=action_ref,

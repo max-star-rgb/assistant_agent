@@ -797,7 +797,7 @@ def _resume_value(value: object) -> PersistedWorkflowResumeValue | None:
 def merge_resume_values(
     left: Mapping[str, object] | None,
     right: Mapping[str, object] | None,
-) -> dict[str, PersistedWorkflowResumeValue]:
+) -> dict[str, dict[str, object]]:
     candidates: dict[str, dict[str, PersistedWorkflowResumeValue]] = {}
     for source in (left or {}, right or {}):
         for key, raw in source.items():
@@ -807,7 +807,9 @@ def merge_resume_values(
             digest = hashlib.sha256(value.model_dump_json().encode()).hexdigest()
             candidates.setdefault(key, {})[digest] = value
     return {
-        key: values[min(values)] for key, values in sorted(candidates.items()) if values
+        key: values[min(values)].model_dump(mode="json")
+        for key, values in sorted(candidates.items())
+        if values
     }
 
 
@@ -866,7 +868,7 @@ class DurableWorkflowState(TypedDict):
     wave_history: tuple[tuple[str, ...], ...]
     result_ledger: Annotated[dict[str, WorkflowResultSlot], merge_result_ledger]
     resume_values_by_action_ref: Annotated[
-        dict[str, PersistedWorkflowResumeValue], merge_resume_values
+        dict[str, dict[str, object]], merge_resume_values
     ]
     consumed_action_refs: Annotated[tuple[str, ...], merge_sorted_unique_refs]
     repair_round: int
@@ -951,7 +953,7 @@ class _DurableWorkflowStateModel(_CheckpointModel):
             for key, value in self.resume_values_by_action_ref.items()
         }
         normalized_resumes = {
-            key: value.model_dump(mode="json")
+            key: value
             for key, value in merge_resume_values(
                 {}, self.resume_values_by_action_ref
             ).items()

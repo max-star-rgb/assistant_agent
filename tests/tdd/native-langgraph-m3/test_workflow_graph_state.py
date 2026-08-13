@@ -350,6 +350,10 @@ def test_other_state_reducers_are_deterministic_and_replay_safe() -> None:
 
     assert merge_sorted_unique_refs(("b", "a"), ("c", "a")) == ("a", "b", "c")
     assert merge_resume_values(resume, resume) == merge_resume_values({}, resume)
+    assert all(
+        isinstance(value, dict)
+        for value in merge_resume_values({}, resume).values()
+    )
     assert merge_graph_errors((error,), (error,)) == merge_graph_errors((), (error,))
 
 

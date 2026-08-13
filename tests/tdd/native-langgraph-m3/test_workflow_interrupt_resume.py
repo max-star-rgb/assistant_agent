@@ -46,9 +46,11 @@ class ResumeAwareWorker:
         node_ids: tuple[str, ...],
         *,
         initially_completed: frozenset[str] = frozenset(),
+        blocked_attempts: int = 1,
     ) -> None:
         self.node_ids = node_ids
         self.initially_completed = initially_completed
+        self.blocked_attempts = blocked_attempts
         self.calls: dict[str, int] = {node_id: 0 for node_id in node_ids}
 
     def chat(self, request):
@@ -56,7 +58,8 @@ class ResumeAwareWorker:
         self.calls[node_id] += 1
         response = (
             _blocked(node_id)
-            if self.calls[node_id] == 1 and node_id not in self.initially_completed
+            if self.calls[node_id] <= self.blocked_attempts
+            and node_id not in self.initially_completed
             else json.dumps(
                 {
                     "workflow_control": {
@@ -160,6 +163,48 @@ def test_parent_owns_parallel_interrupts_and_multi_resume_uses_new_generation(tm
             "b": "succeeded",
         }
         assert worker.calls == {"a": 2, "b": 2}
+    finally:
+        artifact_store.close()
+
+
+def test_repeated_resume_replaces_prior_resume_constraint(tmp_path):
+    graph, context, initial, _worker, artifact_store = workflow_probe(
+        tmp_path, {"a": []}
+    )
+    context.services.provider_registry["worker"] = ResumeAwareWorker(
+        ("a",), blocked_attempts=2
+    )
+    app = DurableWorkflowGraphApp(graph)
+
+    async def execute():
+        first = await app.arun(
+            initial,
+            identity=_identity("invoke-send"),
+            context=context,
+        )
+        second = await app.aresume(
+            identity=_identity("resume-send-1"),
+            context=context,
+            resume=WorkflowResume(
+                values_by_action_ref={
+                    first.interrupts[0].action_ref: {"answer": "A"}
+                }
+            ),
+        )
+        return await app.aresume(
+            identity=_identity("resume-send-2"),
+            context=context,
+            resume=WorkflowResume(
+                values_by_action_ref={
+                    second.interrupts[0].action_ref: {"answer": "A"}
+                }
+            ),
+        )
+
+    try:
+        result = asyncio.run(execute())
+        assert result.status == "completed"
+        assert len(result.final_state["consumed_action_refs"]) == 2
     finally:
         artifact_store.close()
 

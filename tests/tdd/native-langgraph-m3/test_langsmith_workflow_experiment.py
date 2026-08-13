@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 from copy import deepcopy
+import tempfile
 from uuid import UUID
 
 import pytest
@@ -24,6 +25,7 @@ from evals.langsmith_workflow_regression.experiment import (
 )
 from workflow_graph_probe import acceptance, workflow_probe
 import evals.langsmith_workflow_regression.cli as workflow_cli
+from evals.langsmith_workflow_regression.dataset import load_git_workflow_examples
 
 
 EXAMPLE_ID = UUID("01234567-89ab-cdef-0123-456789abcdef")
@@ -513,3 +515,35 @@ def test_zero_root_runs_fail_locally_without_unfiltered_feedback_query() -> None
             sleep=lambda _seconds: None,
         )
     assert client.feedback_called is False
+
+
+def test_every_workflow_regression_case_can_converge_a_native_interrupt() -> None:
+    captured = {}
+
+    class Host:
+        async def arun_submission(self, **kwargs):
+            captured["resume_values_factory"] = kwargs.get("resume_values_factory")
+            return SimpleNamespace(status="interrupted", final_state={})
+
+    composition = workflow_cli.ProductionWorkflowExperimentComposition(
+        run_name="controlled-resume-probe",
+        model="model-probe",
+        temporary_directory=tempfile.TemporaryDirectory(),
+        owner=SimpleNamespace(),
+        workflow_host=Host(),
+        runtime_host=SimpleNamespace(),
+    )
+    example = next(
+        item
+        for item in load_git_workflow_examples()
+        if item.inputs.case_type == "constraint_verifier"
+    )
+    invocation = composition.invocation_factory(
+        example.inputs.model_dump(mode="json"),
+        example_id=example.id,
+        reference_output=example.outputs,
+    )
+
+    asyncio.run(invocation.invoke())
+
+    assert callable(captured["resume_values_factory"])

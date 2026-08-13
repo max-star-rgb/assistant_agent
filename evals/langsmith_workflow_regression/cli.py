@@ -104,24 +104,21 @@ class ProductionWorkflowExperimentComposition:
         )
 
         async def invoke():
-            resume_values_factory = None
-            if example.case_type == "interrupt_resume_equivalence":
-                def controlled_resume_values(interrupts):
-                    return {
-                        item.action_ref: {
-                            field: "operator-provided-evaluation-input"
-                            for field in item.required_fields
-                        }
-                        for item in interrupts
+            def controlled_resume_values(interrupts):
+                return {
+                    item.action_ref: {
+                        field: "operator-provided-evaluation-input"
+                        for field in item.required_fields
                     }
+                    for item in interrupts
+                }
 
-                resume_values_factory = controlled_resume_values
             result = await self._workflow_host.arun_submission(
                 identity=identity,
                 ingress_run_id=ingress_run_id,
                 submission=submission,
                 ingress_trace_id=ingress_trace_id,
-                resume_values_factory=resume_values_factory,
+                resume_values_factory=controlled_resume_values,
             )
             if example.case_type == "interrupt_resume_equivalence":
                 # The equivalence fact is earned only when this invocation
