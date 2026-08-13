@@ -151,7 +151,9 @@ Release Review runner 已在 M5 切到 LangSmith actual graph target；旧 Langf
 
 三个 evaluator 可以在 UI 手工配置，也可以通过受控 CLI 幂等配置。自动配置要求先在 LangSmith UI
 创建 Model Configuration，并把其 UUID 作为 `--model-config-id` 传入；默认只输出 create/update 计划，
-只有显式 `--apply` 才会写入远端。配置动作不会运行 Dataset、Runtime 或 Judge：
+只有显式 `--apply` 才会写入远端。每个 LLM evaluator 使用一条独立的 Dataset rule；CLI 以固定 rule
+name 分别 create/update，不能把多个 code/LLM evaluator 合并进同一 rule。配置动作不会运行 Dataset、
+Runtime 或 Judge：
 
 ```bash
 /home/lenovo1/miniconda3/envs/hello_agent/bin/python \

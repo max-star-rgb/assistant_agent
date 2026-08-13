@@ -117,7 +117,7 @@ async def _execute_async(
             "dataset_name": RUNTIME_REGRESSION_DATASET,
             "dataset_id": result.dataset_id,
             "status": result.status,
-            "rule_id": result.rule_id,
+            "rule_ids": list(result.rule_ids),
             "feedback_keys": list(result.feedback_keys),
             "apply": args.apply,
         }
@@ -133,8 +133,7 @@ async def _execute_async(
     config = ProviderConfig.from_env()
     if config.provider_mode != "real":
         raise RuntimeError(
-            "runtime regression Experiment requires "
-            "MULTIMODAL_AGENT_PROVIDER_MODE=real"
+            "runtime regression Experiment requires MULTIMODAL_AGENT_PROVIDER_MODE=real"
         )
     config.validate_provider_mode()
     if args.preflight:
